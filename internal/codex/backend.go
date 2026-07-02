@@ -66,6 +66,7 @@ func agentUpdateFromCodex(update Update) runner.AgentUpdate {
 		ItemID:          update.ItemID,
 		Delta:           update.Delta,
 		Status:          update.Status,
+		Model:           update.Model,
 		Tokens: runner.AgentTokenUsage{
 			InputTokens:           update.Tokens.InputTokens,
 			CachedInputTokens:     update.Tokens.CachedInputTokens,

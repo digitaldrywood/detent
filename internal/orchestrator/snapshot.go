@@ -502,10 +502,13 @@ func latestBefore(current *time.Time, candidate *time.Time, before time.Time) *t
 
 func tokensFromTokenTotals(totals TokenTotals) telemetry.Tokens {
 	return telemetry.Tokens{
-		Input:          totals.InputTokens,
-		Output:         totals.OutputTokens,
-		Total:          totals.TotalTokens,
-		RuntimeSeconds: totals.RuntimeSeconds,
+		Input:              totals.InputTokens,
+		CachedInput:        totals.CachedInputTokens,
+		Output:             totals.OutputTokens,
+		ReasoningOutput:    totals.ReasoningOutputTokens,
+		Total:              totals.TotalTokens,
+		ModelContextWindow: totals.ModelContextWindow,
+		RuntimeSeconds:     totals.RuntimeSeconds,
 	}
 }
 

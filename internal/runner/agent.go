@@ -239,6 +239,21 @@ func (r agentRuntime) selectBackendForRole(issue connector.Issue, ctx selector.C
 	return selection, backend, backendKind, nil
 }
 
+func (r agentRuntime) defaultModelForRole(role string) string {
+	if r.router == nil {
+		return ""
+	}
+	role = normalizeRole(role)
+	index, ok := r.router.defaultIndexes[role]
+	if !ok && role != RoleCode {
+		index, ok = r.router.defaultIndexes[RoleCode]
+	}
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(r.router.routes[index].Model)
+}
+
 func cloneAgentBackends(in map[string]AgentBackend) map[string]AgentBackend {
 	if len(in) == 0 {
 		return nil
@@ -335,8 +350,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		startedAt = r.now().UTC()
 	}
 	runStartedAt := r.now()
-	model := selection.Model
-	sessionID, sessionStarted, err := r.startSession(ctx, req.Issue, startedAt, model)
+	selectedModel := selection.Model
+	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleCode))
+	sessionID, sessionStarted, err := r.startSession(ctx, req.Issue, startedAt, sessionModel)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -346,7 +362,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		"backend_id", selection.BackendID,
 		"route", selection.RouteName,
 		"role", RoleCode,
-		"model", model,
+		"model", sessionModel,
 		"mode", normalizeRunMode(req.Mode),
 	)
 	result := RunResult{FinalState: FinalStateCompleted}
@@ -354,7 +370,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	turnResult, turnErr := backend.RunTurn(ctx, AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             prompt,
-		Model:              model,
+		Model:              selectedModel,
 		ExtraWritableRoots: extraWritableRootsForWorkspace(ctx, info.Path, r.logger),
 	}, func(update AgentUpdate) error {
 		r.logAgentUpdate(req.Issue, update)
@@ -379,7 +395,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		"backend_id", selection.BackendID,
 		"route", selection.RouteName,
 		"role", RoleCode,
-		"model", model,
+		"model", effectiveModel(result.Model, sessionModel),
 		"outcome", workerRunOutcome(turnErr, result.FinalState),
 		"error", errorString(turnErr),
 	)
@@ -400,7 +416,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
 			fmt.Errorf("run agent turn: %w", turnErr),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendKind, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendKind, 1),
 		)
 	}
 
@@ -417,7 +433,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			)
 			finishedAt := r.now().UTC()
 			result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-			if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendKind, 1); err != nil {
+			if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendKind, 1); err != nil {
 				return result, err
 			}
 			return result, nil
@@ -430,14 +446,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
 			fmt.Errorf("workspace diff stat: %w", err),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendKind, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendKind, 1),
 		)
 	}
 
 	result.DiffStats = diffStatsFromWorkspace(diffStat)
 	finishedAt := r.now().UTC()
 	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendKind, 1); err != nil {
+	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendKind, 1); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -482,17 +498,18 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		return gate.ValidatorResult{}, err
 	}
 
-	model := selection.Model
+	selectedModel := selection.Model
 	if override := strings.TrimSpace(validator.Model); override != "" {
-		model = override
+		selectedModel = override
 	}
+	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleValidator))
 
 	startedAt := req.StartedAt
 	if startedAt.IsZero() {
 		startedAt = r.now().UTC()
 	}
 	runStartedAt := r.now()
-	sessionID, sessionStarted, err := r.startSession(ctx, req.Issue, startedAt, model)
+	sessionID, sessionStarted, err := r.startSession(ctx, req.Issue, startedAt, sessionModel)
 	if err != nil {
 		return gate.ValidatorResult{}, err
 	}
@@ -502,7 +519,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		"backend_id", selection.BackendID,
 		"route", selection.RouteName,
 		"role", RoleValidator,
-		"model", model,
+		"model", sessionModel,
 	)
 	runReq := RunRequest{
 		Issue:           req.Issue,
@@ -516,8 +533,8 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	turnResult, turnErr := backend.RunTurn(ctx, AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             prompt,
-		Model:              model,
-		TurnTimeout:        durationFromMillis(workflow.Config.Gate.Validator.TurnTimeoutMS),
+		Model:              selectedModel,
+		TurnTimeout:        durationFromMillis(validator.TurnTimeoutMS),
 		ExtraWritableRoots: extraWritableRootsForWorkspace(ctx, info.Path, r.logger),
 	}, func(update AgentUpdate) error {
 		r.logAgentUpdate(req.Issue, update)
@@ -541,7 +558,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		"backend_id", selection.BackendID,
 		"route", selection.RouteName,
 		"role", RoleValidator,
-		"model", model,
+		"model", effectiveModel(runResult.Model, sessionModel),
 		"outcome", workerRunOutcome(turnErr, runResult.FinalState),
 		"error", errorString(turnErr),
 	)
@@ -558,7 +575,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runResult.FinalState = finalStateForTurnError(turnErr)
 		return gate.ValidatorResult{}, errors.Join(
 			fmt.Errorf("run validator turn: %w", turnErr),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendKind, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendKind, 1),
 		)
 	}
 
@@ -567,10 +584,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runResult.FinalState = FinalStateFailed
 		return gate.ValidatorResult{}, errors.Join(
 			fmt.Errorf("parse validator result: %w", err),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendKind, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendKind, 1),
 		)
 	}
-	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendKind, 1); err != nil {
+	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendKind, 1); err != nil {
 		return gate.ValidatorResult{}, err
 	}
 	return validation, nil
@@ -840,16 +857,20 @@ func (r *Runner) finishSession(
 	if result.FinalState == "" {
 		result.FinalState = FinalStateCompleted
 	}
+	model = effectiveModel(result.Model, model)
 
 	if err := r.store.FinishSession(ctx, sessionID, store.SessionFinish{
-		CompletedAt:    finishedAt,
-		Turns:          turns,
-		InputTokens:    result.Tokens.InputTokens,
-		OutputTokens:   result.Tokens.OutputTokens,
-		TotalTokens:    result.Tokens.TotalTokens,
-		RuntimeSeconds: int64(math.Round(result.Tokens.RuntimeSeconds)),
-		FinalState:     result.FinalState,
-		Model:          model,
+		CompletedAt:           finishedAt,
+		Turns:                 turns,
+		InputTokens:           result.Tokens.InputTokens,
+		CachedInputTokens:     result.Tokens.CachedInputTokens,
+		OutputTokens:          result.Tokens.OutputTokens,
+		ReasoningOutputTokens: result.Tokens.ReasoningOutputTokens,
+		TotalTokens:           result.Tokens.TotalTokens,
+		ModelContextWindow:    result.Tokens.ModelContextWindow,
+		RuntimeSeconds:        int64(math.Round(result.Tokens.RuntimeSeconds)),
+		FinalState:            result.FinalState,
+		Model:                 model,
 	}); err != nil {
 		return fmt.Errorf("finish agent session: %w", err)
 	}
@@ -860,20 +881,23 @@ func (r *Runner) finishSession(
 		"turns", turns,
 	)
 	if _, err := r.store.RecordUsageEvent(ctx, store.UsageEvent{
-		ProjectID:      r.projectID,
-		SessionID:      sessionID,
-		IssueID:        issue.ID,
-		Identifier:     issue.Identifier,
-		PRNumber:       pullRequestNumber(issue),
-		Model:          model,
-		InputTokens:    result.Tokens.InputTokens,
-		OutputTokens:   result.Tokens.OutputTokens,
-		TotalTokens:    result.Tokens.TotalTokens,
-		CostUSD:        r.usageCostUSD(model, result.Tokens.InputTokens, result.Tokens.OutputTokens),
-		RuntimeSeconds: int64(math.Round(result.Tokens.RuntimeSeconds)),
-		StartedAt:      startedAt,
-		FinishedAt:     finishedAt,
-		Outcome:        result.FinalState,
+		ProjectID:             r.projectID,
+		SessionID:             sessionID,
+		IssueID:               issue.ID,
+		Identifier:            issue.Identifier,
+		PRNumber:              pullRequestNumber(issue),
+		Model:                 model,
+		InputTokens:           result.Tokens.InputTokens,
+		CachedInputTokens:     result.Tokens.CachedInputTokens,
+		OutputTokens:          result.Tokens.OutputTokens,
+		ReasoningOutputTokens: result.Tokens.ReasoningOutputTokens,
+		TotalTokens:           result.Tokens.TotalTokens,
+		ModelContextWindow:    result.Tokens.ModelContextWindow,
+		CostUSD:               r.usageCostUSD(model, result.Tokens.InputTokens, result.Tokens.CachedInputTokens, result.Tokens.OutputTokens, backendKind),
+		RuntimeSeconds:        int64(math.Round(result.Tokens.RuntimeSeconds)),
+		StartedAt:             startedAt,
+		FinishedAt:            finishedAt,
+		Outcome:               result.FinalState,
 	}); err != nil {
 		return fmt.Errorf("record usage event: %w", err)
 	}
@@ -901,38 +925,41 @@ func (r *Runner) recordAgentSessionPhase(
 	}
 	endpointFamily := strings.TrimSpace(backendKind)
 	if _, err := phaseStore.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
-		ProjectID:       r.projectID,
-		SessionID:       sessionID,
-		IssueID:         issue.ID,
-		Identifier:      issue.Identifier,
-		IssueURL:        issue.URL,
-		PRNumber:        pullRequestNumber(issue),
-		PhaseType:       store.WorkflowPhaseTypeAgentSession,
-		PhaseName:       "agent_active",
-		Status:          result.FinalState,
-		StartedAt:       startedAt,
-		FinishedAt:      finishedAt,
-		DurationSeconds: int64(math.Round(result.Tokens.RuntimeSeconds)),
-		Turns:           1,
-		InputTokens:     result.Tokens.InputTokens,
-		OutputTokens:    result.Tokens.OutputTokens,
-		TotalTokens:     result.Tokens.TotalTokens,
-		EndpointFamily:  endpointFamily,
+		ProjectID:             r.projectID,
+		SessionID:             sessionID,
+		IssueID:               issue.ID,
+		Identifier:            issue.Identifier,
+		IssueURL:              issue.URL,
+		PRNumber:              pullRequestNumber(issue),
+		PhaseType:             store.WorkflowPhaseTypeAgentSession,
+		PhaseName:             "agent_active",
+		Status:                result.FinalState,
+		StartedAt:             startedAt,
+		FinishedAt:            finishedAt,
+		DurationSeconds:       int64(math.Round(result.Tokens.RuntimeSeconds)),
+		Turns:                 1,
+		InputTokens:           result.Tokens.InputTokens,
+		CachedInputTokens:     result.Tokens.CachedInputTokens,
+		OutputTokens:          result.Tokens.OutputTokens,
+		ReasoningOutputTokens: result.Tokens.ReasoningOutputTokens,
+		TotalTokens:           result.Tokens.TotalTokens,
+		ModelContextWindow:    result.Tokens.ModelContextWindow,
+		EndpointFamily:        endpointFamily,
 	}); err != nil {
 		return fmt.Errorf("record agent session phase: %w", err)
 	}
 	return nil
 }
 
-func (r *Runner) usageCostUSD(model string, inputTokens int64, outputTokens int64) float64 {
+func (r *Runner) usageCostUSD(model string, inputTokens int64, cachedInputTokens int64, outputTokens int64, backendKind string) float64 {
 	model = strings.TrimSpace(model)
 	if model == "" {
-		r.logger.Debug("usage event model unavailable; skipping cost pricing")
+		r.logger.Debug("usage event model unavailable; skipping cost pricing", "backend_kind", strings.TrimSpace(backendKind))
 		return 0
 	}
-	cost, ok := budget.UsageCostUSD(r.pricing, model, inputTokens, outputTokens)
+	cost, ok := budget.UsageCostUSD(r.pricing, model, inputTokens, cachedInputTokens, outputTokens)
 	if !ok {
-		r.logger.Warn("usage event model pricing not found", "model", model)
+		r.logger.Warn("usage event model pricing not found", "model", model, "backend_kind", strings.TrimSpace(backendKind))
 		return 0
 	}
 	return cost
@@ -1060,6 +1087,16 @@ func durationFromMillis(ms int) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
+func effectiveModel(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 	baseRef := ""
 	if issue.PullRequest != nil {
@@ -1075,11 +1112,17 @@ func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 }
 
 func applyAgentUpdate(result *RunResult, update AgentUpdate) {
+	if model := strings.TrimSpace(update.Model); model != "" {
+		result.Model = model
+	}
 	switch update.Type {
 	case AgentUpdateTokenUsage:
 		result.Tokens.InputTokens = update.Tokens.InputTokens
+		result.Tokens.CachedInputTokens = update.Tokens.CachedInputTokens
 		result.Tokens.OutputTokens = update.Tokens.OutputTokens
+		result.Tokens.ReasoningOutputTokens = update.Tokens.ReasoningOutputTokens
 		result.Tokens.TotalTokens = update.Tokens.TotalTokens
+		result.Tokens.ModelContextWindow = update.Tokens.ModelContextWindow
 	case AgentUpdateRateLimits:
 		result.RateLimits = update.RateLimits
 	}

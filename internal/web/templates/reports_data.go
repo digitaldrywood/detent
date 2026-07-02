@@ -41,36 +41,48 @@ type UsageReportData struct {
 }
 
 type UsageTotalsData struct {
-	InputTokens    int64
-	OutputTokens   int64
-	TotalTokens    int64
-	RuntimeSeconds int64
-	Events         int64
-	SpendUSD       float64
-	Models         []UsageModelData
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
+	ModelContextWindow    int64
+	RuntimeSeconds        int64
+	Events                int64
+	SpendUSD              float64
+	CacheReadFraction     float64
+	Models                []UsageModelData
 }
 
 type UsageBucketData struct {
-	Bucket         string
-	Label          string
-	Date           string
-	InputTokens    int64
-	OutputTokens   int64
-	TotalTokens    int64
-	RuntimeSeconds int64
-	Events         int64
-	SpendUSD       float64
-	Models         []UsageModelData
+	Bucket                string
+	Label                 string
+	Date                  string
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
+	ModelContextWindow    int64
+	RuntimeSeconds        int64
+	Events                int64
+	SpendUSD              float64
+	CacheReadFraction     float64
+	Models                []UsageModelData
 }
 
 type UsageModelData struct {
-	Model          string
-	InputTokens    int64
-	OutputTokens   int64
-	TotalTokens    int64
-	RuntimeSeconds int64
-	Events         int64
-	SpendUSD       float64
+	Model                 string
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
+	ModelContextWindow    int64
+	RuntimeSeconds        int64
+	Events                int64
+	SpendUSD              float64
+	CacheReadFraction     float64
 }
 
 func reportsPageTitle(data ReportsData) string {
@@ -253,11 +265,25 @@ func reportBucketLabel(row UsageBucketData) string {
 }
 
 func reportInputOutputLabel(row UsageBucketData) string {
-	return "In " + formatInt(row.InputTokens) + " / Out " + formatInt(row.OutputTokens)
+	return "In " + formatInt(row.InputTokens) + " / Cache " + reportCacheReadFraction(row.CacheReadFraction) + " / Out " + formatInt(row.OutputTokens)
 }
 
 func reportInputOutputTotals(totals UsageTotalsData) string {
-	return "In " + formatInt(totals.InputTokens) + " / Out " + formatInt(totals.OutputTokens)
+	return "In " + formatInt(totals.InputTokens) + " / Cache " + reportCacheReadFraction(totals.CacheReadFraction) + " / Out " + formatInt(totals.OutputTokens)
+}
+
+func reportCachedInputTotals(totals UsageTotalsData) string {
+	return formatInt(totals.CachedInputTokens) + " cached input"
+}
+
+func reportCacheReadFraction(fraction float64) string {
+	if fraction < 0 {
+		fraction = 0
+	}
+	if fraction > 1 {
+		fraction = 1
+	}
+	return formatDecimal(fraction*100) + "%"
 }
 
 func reportTokenShareStyle(row UsageBucketData, total int64) string {

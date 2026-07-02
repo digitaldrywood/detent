@@ -188,14 +188,15 @@ func (s *sqliteStore) StartSession(ctx context.Context, attrs SessionStart) (int
 	}
 
 	session, err := s.queries.CreateCodexSession(ctx, sqlc.CreateCodexSessionParams{
-		RunID:       nullPositiveInt64(attrs.RunID),
-		IssueID:     nullString(attrs.IssueID),
-		Identifier:  nullString(attrs.Identifier),
-		IssueURL:    nullString(attrs.IssueURL),
-		StartedAt:   sql.NullString{String: startedAt, Valid: true},
-		CompletedAt: sql.NullString{},
-		FinalState:  sql.NullString{},
-		Model:       nullString(attrs.Model),
+		RunID:              nullPositiveInt64(attrs.RunID),
+		IssueID:            nullString(attrs.IssueID),
+		Identifier:         nullString(attrs.Identifier),
+		IssueURL:           nullString(attrs.IssueURL),
+		StartedAt:          sql.NullString{String: startedAt, Valid: true},
+		CompletedAt:        sql.NullString{},
+		ModelContextWindow: sql.NullInt64{},
+		FinalState:         sql.NullString{},
+		Model:              nullString(attrs.Model),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("starting codex session: %w", err)
@@ -210,15 +211,18 @@ func (s *sqliteStore) FinishSession(ctx context.Context, sessionID int64, attrs 
 	}
 
 	rows, err := s.queries.FinishCodexSession(ctx, sqlc.FinishCodexSessionParams{
-		CompletedAt:    sql.NullString{String: completedAt, Valid: true},
-		Turns:          nonNegative(attrs.Turns),
-		InputTokens:    nonNegative(attrs.InputTokens),
-		OutputTokens:   nonNegative(attrs.OutputTokens),
-		TotalTokens:    nonNegative(attrs.TotalTokens),
-		RuntimeSeconds: nonNegative(attrs.RuntimeSeconds),
-		FinalState:     nullString(attrs.FinalState),
-		Model:          nullString(attrs.Model),
-		ID:             sessionID,
+		CompletedAt:           sql.NullString{String: completedAt, Valid: true},
+		Turns:                 nonNegative(attrs.Turns),
+		InputTokens:           nonNegative(attrs.InputTokens),
+		CachedInputTokens:     nullNonNegativeInt64(attrs.CachedInputTokens),
+		OutputTokens:          nonNegative(attrs.OutputTokens),
+		ReasoningOutputTokens: nullNonNegativeInt64(attrs.ReasoningOutputTokens),
+		TotalTokens:           nonNegative(attrs.TotalTokens),
+		ModelContextWindow:    nullOptionalInt64(attrs.ModelContextWindow),
+		RuntimeSeconds:        nonNegative(attrs.RuntimeSeconds),
+		FinalState:            nullString(attrs.FinalState),
+		Model:                 nullString(attrs.Model),
+		ID:                    sessionID,
 	})
 	if err != nil {
 		return fmt.Errorf("finishing codex session: %w", err)
@@ -247,22 +251,25 @@ func (s *sqliteStore) RecordUsageEvent(ctx context.Context, attrs UsageEvent) (i
 	}
 
 	event, err := s.queries.CreateUsageEvent(ctx, sqlc.CreateUsageEventParams{
-		ProjectID:      projectID,
-		RunID:          nullPositiveInt64(attrs.RunID),
-		SessionID:      nullPositiveInt64(attrs.SessionID),
-		IssueID:        nullString(attrs.IssueID),
-		Identifier:     nullString(attrs.Identifier),
-		PrNumber:       nullOptionalInt64(attrs.PRNumber),
-		Model:          strings.TrimSpace(attrs.Model),
-		InputTokens:    nonNegative(attrs.InputTokens),
-		OutputTokens:   nonNegative(attrs.OutputTokens),
-		TotalTokens:    nonNegative(attrs.TotalTokens),
-		CostUsd:        nonNegativeFloat(attrs.CostUSD),
-		RuntimeSeconds: nonNegative(attrs.RuntimeSeconds),
-		StartedAt:      startedAt,
-		FinishedAt:     finishedAt,
-		EventDay:       attrs.FinishedAt.UTC().Format("2006-01-02"),
-		Outcome:        outcome,
+		ProjectID:             projectID,
+		RunID:                 nullPositiveInt64(attrs.RunID),
+		SessionID:             nullPositiveInt64(attrs.SessionID),
+		IssueID:               nullString(attrs.IssueID),
+		Identifier:            nullString(attrs.Identifier),
+		PrNumber:              nullOptionalInt64(attrs.PRNumber),
+		Model:                 strings.TrimSpace(attrs.Model),
+		InputTokens:           nonNegative(attrs.InputTokens),
+		CachedInputTokens:     nullNonNegativeInt64(attrs.CachedInputTokens),
+		OutputTokens:          nonNegative(attrs.OutputTokens),
+		ReasoningOutputTokens: nullNonNegativeInt64(attrs.ReasoningOutputTokens),
+		TotalTokens:           nonNegative(attrs.TotalTokens),
+		ModelContextWindow:    nullOptionalInt64(attrs.ModelContextWindow),
+		CostUsd:               nonNegativeFloat(attrs.CostUSD),
+		RuntimeSeconds:        nonNegative(attrs.RuntimeSeconds),
+		StartedAt:             startedAt,
+		FinishedAt:            finishedAt,
+		EventDay:              attrs.FinishedAt.UTC().Format("2006-01-02"),
+		Outcome:               outcome,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("recording usage event: %w", err)
@@ -324,27 +331,40 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 		}
 
 		model := UsageReportModel{
-			Model:          row.Model,
-			InputTokens:    row.InputTokens,
-			OutputTokens:   row.OutputTokens,
-			TotalTokens:    row.TotalTokens,
-			RuntimeSeconds: row.RuntimeSeconds,
-			Events:         row.Events,
+			Model:                 row.Model,
+			InputTokens:           row.InputTokens,
+			CachedInputTokens:     row.CachedInputTokens,
+			OutputTokens:          row.OutputTokens,
+			ReasoningOutputTokens: row.ReasoningOutputTokens,
+			TotalTokens:           row.TotalTokens,
+			ModelContextWindow:    row.ModelContextWindow,
+			RuntimeSeconds:        row.RuntimeSeconds,
+			Events:                row.Events,
 		}
 		if model.Model == "" {
 			model.Model = "unassigned"
 		}
 
 		report.Rows[index].InputTokens += model.InputTokens
+		report.Rows[index].CachedInputTokens += model.CachedInputTokens
 		report.Rows[index].OutputTokens += model.OutputTokens
+		report.Rows[index].ReasoningOutputTokens += model.ReasoningOutputTokens
 		report.Rows[index].TotalTokens += model.TotalTokens
+		if model.ModelContextWindow > report.Rows[index].ModelContextWindow {
+			report.Rows[index].ModelContextWindow = model.ModelContextWindow
+		}
 		report.Rows[index].RuntimeSeconds += model.RuntimeSeconds
 		report.Rows[index].Events += model.Events
 		report.Rows[index].Models = append(report.Rows[index].Models, model)
 
 		report.Totals.InputTokens += model.InputTokens
+		report.Totals.CachedInputTokens += model.CachedInputTokens
 		report.Totals.OutputTokens += model.OutputTokens
+		report.Totals.ReasoningOutputTokens += model.ReasoningOutputTokens
 		report.Totals.TotalTokens += model.TotalTokens
+		if model.ModelContextWindow > report.Totals.ModelContextWindow {
+			report.Totals.ModelContextWindow = model.ModelContextWindow
+		}
 		report.Totals.RuntimeSeconds += model.RuntimeSeconds
 		report.Totals.Events += model.Events
 
@@ -357,8 +377,13 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 			modelTotals[model.Model] = modelIndex
 		}
 		report.Totals.Models[modelIndex].InputTokens += model.InputTokens
+		report.Totals.Models[modelIndex].CachedInputTokens += model.CachedInputTokens
 		report.Totals.Models[modelIndex].OutputTokens += model.OutputTokens
+		report.Totals.Models[modelIndex].ReasoningOutputTokens += model.ReasoningOutputTokens
 		report.Totals.Models[modelIndex].TotalTokens += model.TotalTokens
+		if model.ModelContextWindow > report.Totals.Models[modelIndex].ModelContextWindow {
+			report.Totals.Models[modelIndex].ModelContextWindow = model.ModelContextWindow
+		}
 		report.Totals.Models[modelIndex].RuntimeSeconds += model.RuntimeSeconds
 		report.Totals.Models[modelIndex].Events += model.Events
 	}
@@ -413,12 +438,14 @@ func (s *sqliteStore) LifetimeTotals(ctx context.Context) (LifetimeTotals, error
 		return LifetimeTotals{}, fmt.Errorf("reading lifetime totals: %w", err)
 	}
 	return LifetimeTotals{
-		InputTokens:    row.InputTokens,
-		OutputTokens:   row.OutputTokens,
-		TotalTokens:    row.TotalTokens,
-		RuntimeSeconds: row.RuntimeSeconds,
-		Sessions:       row.Sessions,
-		Runs:           row.Runs,
+		InputTokens:           row.InputTokens,
+		CachedInputTokens:     row.CachedInputTokens,
+		OutputTokens:          row.OutputTokens,
+		ReasoningOutputTokens: row.ReasoningOutputTokens,
+		TotalTokens:           row.TotalTokens,
+		RuntimeSeconds:        row.RuntimeSeconds,
+		Sessions:              row.Sessions,
+		Runs:                  row.Runs,
 	}, nil
 }
 
@@ -439,14 +466,18 @@ func (s *sqliteStore) DailyTokenSpend(ctx context.Context, day time.Time) (Token
 	}
 	for _, row := range rows {
 		modelSpend := ModelTokenSpend{
-			Model:        row.Model,
-			InputTokens:  row.InputTokens,
-			OutputTokens: row.OutputTokens,
-			TotalTokens:  row.TotalTokens,
-			Sessions:     row.Sessions,
+			Model:                 row.Model,
+			InputTokens:           row.InputTokens,
+			CachedInputTokens:     row.CachedInputTokens,
+			OutputTokens:          row.OutputTokens,
+			ReasoningOutputTokens: row.ReasoningOutputTokens,
+			TotalTokens:           row.TotalTokens,
+			Sessions:              row.Sessions,
 		}
 		spend.InputTokens += modelSpend.InputTokens
+		spend.CachedInputTokens += modelSpend.CachedInputTokens
 		spend.OutputTokens += modelSpend.OutputTokens
+		spend.ReasoningOutputTokens += modelSpend.ReasoningOutputTokens
 		spend.TotalTokens += modelSpend.TotalTokens
 		spend.Sessions += modelSpend.Sessions
 		spend.ByModel = append(spend.ByModel, modelSpend)
@@ -474,14 +505,18 @@ func (s *sqliteStore) IssueTokenSpend(ctx context.Context, identity IssueIdentit
 	}
 	for _, row := range rows {
 		modelSpend := ModelTokenSpend{
-			Model:        row.Model,
-			InputTokens:  row.InputTokens,
-			OutputTokens: row.OutputTokens,
-			TotalTokens:  row.TotalTokens,
-			Sessions:     row.Sessions,
+			Model:                 row.Model,
+			InputTokens:           row.InputTokens,
+			CachedInputTokens:     row.CachedInputTokens,
+			OutputTokens:          row.OutputTokens,
+			ReasoningOutputTokens: row.ReasoningOutputTokens,
+			TotalTokens:           row.TotalTokens,
+			Sessions:              row.Sessions,
 		}
 		spend.InputTokens += modelSpend.InputTokens
+		spend.CachedInputTokens += modelSpend.CachedInputTokens
 		spend.OutputTokens += modelSpend.OutputTokens
+		spend.ReasoningOutputTokens += modelSpend.ReasoningOutputTokens
 		spend.TotalTokens += modelSpend.TotalTokens
 		spend.Sessions += modelSpend.Sessions
 		spend.ByModel = append(spend.ByModel, modelSpend)
@@ -771,6 +806,10 @@ func nullOptionalInt64(value *int64) sql.NullInt64 {
 		return sql.NullInt64{}
 	}
 	return sql.NullInt64{Int64: *value, Valid: true}
+}
+
+func nullNonNegativeInt64(value int64) sql.NullInt64 {
+	return sql.NullInt64{Int64: nonNegative(value), Valid: true}
 }
 
 func nonNegative(value int64) int64 {

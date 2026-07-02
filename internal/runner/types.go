@@ -83,6 +83,7 @@ type AgentUpdate struct {
 	ItemID          string
 	Delta           string
 	Status          string
+	Model           string
 	Tokens          AgentTokenUsage
 	RateLimits      *telemetry.RateLimits
 }
@@ -145,6 +146,7 @@ type ValidatorRequest struct {
 type RunResult struct {
 	FinalState    string
 	Output        string
+	Model         string
 	Tokens        TokenTotals
 	DiffStats     DiffStats
 	RateLimits    *telemetry.RateLimits
@@ -186,10 +188,13 @@ type DiffStats struct {
 }
 
 type TokenTotals struct {
-	InputTokens    int64
-	OutputTokens   int64
-	TotalTokens    int64
-	RuntimeSeconds float64
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
+	ModelContextWindow    *int64
+	RuntimeSeconds        float64
 }
 
 type PriorAttempt struct {

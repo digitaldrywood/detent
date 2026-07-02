@@ -50,10 +50,11 @@ type DispatchRequest struct {
 }
 
 type TokenEstimate struct {
-	InputTokens  int64
-	OutputTokens int64
-	TotalTokens  int64
-	Sessions     int64
+	InputTokens       int64
+	CachedInputTokens int64
+	OutputTokens      int64
+	TotalTokens       int64
+	Sessions          int64
 }
 
 type Decision struct {
@@ -182,10 +183,11 @@ func SpendUSD(spend store.TokenSpend, pricing PricingTable) float64 {
 			continue
 		}
 		total += tokenCostUSD(TokenEstimate{
-			InputTokens:  row.InputTokens,
-			OutputTokens: row.OutputTokens,
-			TotalTokens:  row.TotalTokens,
-			Sessions:     row.Sessions,
+			InputTokens:       row.InputTokens,
+			CachedInputTokens: row.CachedInputTokens,
+			OutputTokens:      row.OutputTokens,
+			TotalTokens:       row.TotalTokens,
+			Sessions:          row.Sessions,
 		}, modelPricing)
 	}
 	return total
@@ -342,7 +344,10 @@ func (e TokenEstimate) normalized() TokenEstimate {
 }
 
 func tokenCostUSD(tokens TokenEstimate, pricing ModelPricing) float64 {
-	return float64(tokens.InputTokens)*pricing.USDPerInputToken +
+	inputTokens := nonNegative(tokens.InputTokens)
+	cachedInputTokens := min(nonNegative(tokens.CachedInputTokens), inputTokens)
+	return float64(inputTokens-cachedInputTokens)*pricing.USDPerInputToken +
+		float64(cachedInputTokens)*pricing.USDPerCachedInputToken +
 		float64(tokens.OutputTokens)*pricing.USDPerOutputToken
 }
 

@@ -9,20 +9,23 @@ import (
 )
 
 type CodexSession struct {
-	ID             int64          `json:"id"`
-	RunID          sql.NullInt64  `json:"run_id"`
-	IssueID        sql.NullString `json:"issue_id"`
-	Identifier     sql.NullString `json:"identifier"`
-	IssueURL       sql.NullString `json:"issue_url"`
-	StartedAt      sql.NullString `json:"started_at"`
-	CompletedAt    sql.NullString `json:"completed_at"`
-	Turns          int64          `json:"turns"`
-	InputTokens    int64          `json:"input_tokens"`
-	OutputTokens   int64          `json:"output_tokens"`
-	TotalTokens    int64          `json:"total_tokens"`
-	RuntimeSeconds int64          `json:"runtime_seconds"`
-	FinalState     sql.NullString `json:"final_state"`
-	Model          sql.NullString `json:"model"`
+	ID                    int64          `json:"id"`
+	RunID                 sql.NullInt64  `json:"run_id"`
+	IssueID               sql.NullString `json:"issue_id"`
+	Identifier            sql.NullString `json:"identifier"`
+	IssueURL              sql.NullString `json:"issue_url"`
+	StartedAt             sql.NullString `json:"started_at"`
+	CompletedAt           sql.NullString `json:"completed_at"`
+	Turns                 int64          `json:"turns"`
+	InputTokens           int64          `json:"input_tokens"`
+	OutputTokens          int64          `json:"output_tokens"`
+	TotalTokens           int64          `json:"total_tokens"`
+	RuntimeSeconds        int64          `json:"runtime_seconds"`
+	FinalState            sql.NullString `json:"final_state"`
+	Model                 sql.NullString `json:"model"`
+	CachedInputTokens     sql.NullInt64  `json:"cached_input_tokens"`
+	ReasoningOutputTokens sql.NullInt64  `json:"reasoning_output_tokens"`
+	ModelContextWindow    sql.NullInt64  `json:"model_context_window"`
 }
 
 type DetentRun struct {
@@ -70,23 +73,26 @@ type SchedulerDecision struct {
 }
 
 type UsageEvent struct {
-	ID             int64          `json:"id"`
-	ProjectID      string         `json:"project_id"`
-	RunID          sql.NullInt64  `json:"run_id"`
-	SessionID      sql.NullInt64  `json:"session_id"`
-	IssueID        sql.NullString `json:"issue_id"`
-	Identifier     sql.NullString `json:"identifier"`
-	PrNumber       sql.NullInt64  `json:"pr_number"`
-	Model          string         `json:"model"`
-	InputTokens    int64          `json:"input_tokens"`
-	OutputTokens   int64          `json:"output_tokens"`
-	TotalTokens    int64          `json:"total_tokens"`
-	RuntimeSeconds int64          `json:"runtime_seconds"`
-	StartedAt      string         `json:"started_at"`
-	FinishedAt     string         `json:"finished_at"`
-	EventDay       string         `json:"event_day"`
-	Outcome        string         `json:"outcome"`
-	CostUsd        float64        `json:"cost_usd"`
+	ID                    int64          `json:"id"`
+	ProjectID             string         `json:"project_id"`
+	RunID                 sql.NullInt64  `json:"run_id"`
+	SessionID             sql.NullInt64  `json:"session_id"`
+	IssueID               sql.NullString `json:"issue_id"`
+	Identifier            sql.NullString `json:"identifier"`
+	PrNumber              sql.NullInt64  `json:"pr_number"`
+	Model                 string         `json:"model"`
+	InputTokens           int64          `json:"input_tokens"`
+	OutputTokens          int64          `json:"output_tokens"`
+	TotalTokens           int64          `json:"total_tokens"`
+	RuntimeSeconds        int64          `json:"runtime_seconds"`
+	StartedAt             string         `json:"started_at"`
+	FinishedAt            string         `json:"finished_at"`
+	EventDay              string         `json:"event_day"`
+	Outcome               string         `json:"outcome"`
+	CostUsd               float64        `json:"cost_usd"`
+	CachedInputTokens     sql.NullInt64  `json:"cached_input_tokens"`
+	ReasoningOutputTokens sql.NullInt64  `json:"reasoning_output_tokens"`
+	ModelContextWindow    sql.NullInt64  `json:"model_context_window"`
 }
 
 type ValidatorVerdict struct {
@@ -143,29 +149,32 @@ type WorkAttempt struct {
 }
 
 type WorkflowPhaseEvent struct {
-	ID                int64          `json:"id"`
-	ProjectID         string         `json:"project_id"`
-	RunID             sql.NullInt64  `json:"run_id"`
-	SessionID         sql.NullInt64  `json:"session_id"`
-	IssueID           sql.NullString `json:"issue_id"`
-	Identifier        sql.NullString `json:"identifier"`
-	IssueURL          sql.NullString `json:"issue_url"`
-	PrNumber          sql.NullInt64  `json:"pr_number"`
-	PhaseType         string         `json:"phase_type"`
-	PhaseName         string         `json:"phase_name"`
-	PreviousPhaseName sql.NullString `json:"previous_phase_name"`
-	Reason            sql.NullString `json:"reason"`
-	Status            sql.NullString `json:"status"`
-	StartedAt         string         `json:"started_at"`
-	FinishedAt        sql.NullString `json:"finished_at"`
-	DurationSeconds   int64          `json:"duration_seconds"`
-	EventDay          string         `json:"event_day"`
-	CommandName       sql.NullString `json:"command_name"`
-	ExitCode          sql.NullInt64  `json:"exit_code"`
-	Turns             int64          `json:"turns"`
-	InputTokens       int64          `json:"input_tokens"`
-	OutputTokens      int64          `json:"output_tokens"`
-	TotalTokens       int64          `json:"total_tokens"`
-	EndpointFamily    sql.NullString `json:"endpoint_family"`
-	MetadataJson      string         `json:"metadata_json"`
+	ID                    int64          `json:"id"`
+	ProjectID             string         `json:"project_id"`
+	RunID                 sql.NullInt64  `json:"run_id"`
+	SessionID             sql.NullInt64  `json:"session_id"`
+	IssueID               sql.NullString `json:"issue_id"`
+	Identifier            sql.NullString `json:"identifier"`
+	IssueURL              sql.NullString `json:"issue_url"`
+	PrNumber              sql.NullInt64  `json:"pr_number"`
+	PhaseType             string         `json:"phase_type"`
+	PhaseName             string         `json:"phase_name"`
+	PreviousPhaseName     sql.NullString `json:"previous_phase_name"`
+	Reason                sql.NullString `json:"reason"`
+	Status                sql.NullString `json:"status"`
+	StartedAt             string         `json:"started_at"`
+	FinishedAt            sql.NullString `json:"finished_at"`
+	DurationSeconds       int64          `json:"duration_seconds"`
+	EventDay              string         `json:"event_day"`
+	CommandName           sql.NullString `json:"command_name"`
+	ExitCode              sql.NullInt64  `json:"exit_code"`
+	Turns                 int64          `json:"turns"`
+	InputTokens           int64          `json:"input_tokens"`
+	OutputTokens          int64          `json:"output_tokens"`
+	TotalTokens           int64          `json:"total_tokens"`
+	EndpointFamily        sql.NullString `json:"endpoint_family"`
+	MetadataJson          string         `json:"metadata_json"`
+	CachedInputTokens     sql.NullInt64  `json:"cached_input_tokens"`
+	ReasoningOutputTokens sql.NullInt64  `json:"reasoning_output_tokens"`
+	ModelContextWindow    sql.NullInt64  `json:"model_context_window"`
 }

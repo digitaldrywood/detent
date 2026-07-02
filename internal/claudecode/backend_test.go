@@ -57,13 +57,19 @@ func TestAgentBackendRunTurnSuccess(t *testing.T) {
 	if firstDelta.Delta != "hello " || secondDelta.Delta != "world" {
 		t.Fatalf("message deltas = %q %q, want hello/world", firstDelta.Delta, secondDelta.Delta)
 	}
-	if got := requireUpdate(t, updates, 4).Tokens; got.InputTokens != 10 || got.CachedInputTokens != 5 || got.OutputTokens != 4 || got.TotalTokens != 14 {
-		t.Fatalf("message token usage = %#v, want 10 input, 5 cached, 4 output, 14 total", got)
+	if got := requireUpdate(t, updates, 1).Model; got != "fable" {
+		t.Fatalf("TurnStarted model = %q, want fable", got)
 	}
-	if got := requireUpdate(t, updates, 5).Tokens; got.InputTokens != 12 || got.CachedInputTokens != 6 || got.OutputTokens != 6 || got.TotalTokens != 18 {
-		t.Fatalf("final token usage = %#v, want 12 input, 6 cached, 6 output, 18 total", got)
+	if got := requireUpdate(t, updates, 4).Tokens; got.InputTokens != 10 || got.CachedInputTokens != 5 || got.OutputTokens != 4 || got.ReasoningOutputTokens != 2 || got.TotalTokens != 14 {
+		t.Fatalf("message token usage = %#v, want 10 input, 5 cached, 4 output, 2 reasoning, 14 total", got)
 	}
-	if got := requireUpdate(t, updates, 6); got.Status != runner.FinalStateCompleted {
+	if got := requireUpdate(t, updates, 4).Model; got != "fable" {
+		t.Fatalf("message token model = %q, want fable", got)
+	}
+	if got := requireUpdate(t, updates, 5).Tokens; got.InputTokens != 12 || got.CachedInputTokens != 6 || got.OutputTokens != 6 || got.ReasoningOutputTokens != 3 || got.TotalTokens != 18 {
+		t.Fatalf("final token usage = %#v, want 12 input, 6 cached, 6 output, 3 reasoning, 18 total", got)
+	}
+	if got := requireUpdate(t, updates, 6); got.Status != runner.FinalStateCompleted || got.Model != "fable" {
 		t.Fatalf("TurnCompleted status = %q, want completed", got.Status)
 	}
 }

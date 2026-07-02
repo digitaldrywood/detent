@@ -70,6 +70,7 @@ type claudeUsage struct {
 
 type turnState struct {
 	sessionID       string
+	model           string
 	partialItemID   string
 	usage           runner.AgentTokenUsage
 	sawResult       bool
@@ -114,6 +115,7 @@ func (s *turnState) apply(event claudeEvent, includePartialMessages bool, onUpda
 	if event.SessionID != "" {
 		s.sessionID = event.SessionID
 	}
+	s.observeModel(event)
 
 	switch event.Type {
 	case "system", "init":
@@ -141,6 +143,7 @@ func (s *turnState) applyInit(event claudeEvent, onUpdate runner.AgentUpdateHand
 		Type:     runner.AgentUpdateTurnStarted,
 		ThreadID: event.SessionID,
 		TurnID:   event.SessionID,
+		Model:    s.model,
 	})
 }
 
@@ -166,6 +169,7 @@ func (s *turnState) applyAssistant(
 				TurnID:   s.sessionID,
 				ItemID:   event.Message.ID,
 				Delta:    block.Text,
+				Model:    s.model,
 			}); err != nil {
 				return err
 			}
@@ -198,6 +202,7 @@ func (s *turnState) applyStreamEvent(
 			TurnID:   s.sessionID,
 			ItemID:   s.partialItemID,
 			Delta:    event.StreamEvent.Delta.Text,
+			Model:    s.model,
 		}); err != nil {
 			return err
 		}
@@ -230,8 +235,32 @@ func (s *turnState) emitUsage(onUpdate runner.AgentUpdateHandler) error {
 		Type:     runner.AgentUpdateTokenUsage,
 		ThreadID: s.sessionID,
 		TurnID:   s.sessionID,
+		Model:    s.model,
 		Tokens:   s.usage,
 	})
+}
+
+func (s *turnState) observeModel(event claudeEvent) {
+	if model := event.modelName(); model != "" {
+		s.model = model
+	}
+}
+
+func (e claudeEvent) modelName() string {
+	if model := strings.TrimSpace(e.Model); model != "" {
+		return model
+	}
+	if e.Message != nil {
+		if model := strings.TrimSpace(e.Message.Model); model != "" {
+			return model
+		}
+	}
+	if e.StreamEvent != nil && e.StreamEvent.Message != nil {
+		if model := strings.TrimSpace(e.StreamEvent.Message.Model); model != "" {
+			return model
+		}
+	}
+	return ""
 }
 
 func (e claudeEvent) topLevelUsage() claudeUsage {

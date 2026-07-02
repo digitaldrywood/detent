@@ -121,13 +121,17 @@ func usageReportTemplateData(response usageReportAPIResponse) templates.UsageRep
 
 func usageTotalsTemplateData(totals usageTotalsAPIResponse) templates.UsageTotalsData {
 	return templates.UsageTotalsData{
-		InputTokens:    totals.InputTokens,
-		OutputTokens:   totals.OutputTokens,
-		TotalTokens:    totals.TotalTokens,
-		RuntimeSeconds: totals.RuntimeSeconds,
-		Events:         totals.Events,
-		SpendUSD:       totals.SpendUSD,
-		Models:         usageModelsTemplateData(totals.Models),
+		InputTokens:           totals.InputTokens,
+		CachedInputTokens:     totals.CachedInputTokens,
+		OutputTokens:          totals.OutputTokens,
+		ReasoningOutputTokens: totals.ReasoningOutputTokens,
+		TotalTokens:           totals.TotalTokens,
+		ModelContextWindow:    totals.ModelContextWindow,
+		RuntimeSeconds:        totals.RuntimeSeconds,
+		Events:                totals.Events,
+		SpendUSD:              totals.SpendUSD,
+		CacheReadFraction:     totals.CacheReadFraction,
+		Models:                usageModelsTemplateData(totals.Models),
 	}
 }
 
@@ -135,16 +139,20 @@ func usageBucketTemplateData(rows []usageBucketAPIResponse) []templates.UsageBuc
 	payload := make([]templates.UsageBucketData, 0, len(rows))
 	for _, row := range rows {
 		payload = append(payload, templates.UsageBucketData{
-			Bucket:         row.Bucket,
-			Label:          row.Label,
-			Date:           optionalStringValue(row.Date),
-			InputTokens:    row.InputTokens,
-			OutputTokens:   row.OutputTokens,
-			TotalTokens:    row.TotalTokens,
-			RuntimeSeconds: row.RuntimeSeconds,
-			Events:         row.Events,
-			SpendUSD:       row.SpendUSD,
-			Models:         usageModelsTemplateData(row.Models),
+			Bucket:                row.Bucket,
+			Label:                 row.Label,
+			Date:                  optionalStringValue(row.Date),
+			InputTokens:           row.InputTokens,
+			CachedInputTokens:     row.CachedInputTokens,
+			OutputTokens:          row.OutputTokens,
+			ReasoningOutputTokens: row.ReasoningOutputTokens,
+			TotalTokens:           row.TotalTokens,
+			ModelContextWindow:    row.ModelContextWindow,
+			RuntimeSeconds:        row.RuntimeSeconds,
+			Events:                row.Events,
+			SpendUSD:              row.SpendUSD,
+			CacheReadFraction:     row.CacheReadFraction,
+			Models:                usageModelsTemplateData(row.Models),
 		})
 	}
 	return payload
@@ -154,13 +162,17 @@ func usageModelsTemplateData(models []usageModelAPIResponse) []templates.UsageMo
 	payload := make([]templates.UsageModelData, 0, len(models))
 	for _, model := range models {
 		payload = append(payload, templates.UsageModelData{
-			Model:          model.Model,
-			InputTokens:    model.InputTokens,
-			OutputTokens:   model.OutputTokens,
-			TotalTokens:    model.TotalTokens,
-			RuntimeSeconds: model.RuntimeSeconds,
-			Events:         model.Events,
-			SpendUSD:       model.SpendUSD,
+			Model:                 model.Model,
+			InputTokens:           model.InputTokens,
+			CachedInputTokens:     model.CachedInputTokens,
+			OutputTokens:          model.OutputTokens,
+			ReasoningOutputTokens: model.ReasoningOutputTokens,
+			TotalTokens:           model.TotalTokens,
+			ModelContextWindow:    model.ModelContextWindow,
+			RuntimeSeconds:        model.RuntimeSeconds,
+			Events:                model.Events,
+			SpendUSD:              model.SpendUSD,
+			CacheReadFraction:     model.CacheReadFraction,
 		})
 	}
 	return payload

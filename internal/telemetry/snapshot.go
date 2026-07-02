@@ -500,10 +500,13 @@ type RESTUsageContributor struct {
 }
 
 type Tokens struct {
-	Input          int64   `json:"input_tokens"`
-	Output         int64   `json:"output_tokens"`
-	Total          int64   `json:"total_tokens"`
-	RuntimeSeconds float64 `json:"seconds_running,omitempty"`
+	Input              int64   `json:"input_tokens"`
+	CachedInput        int64   `json:"cached_input_tokens,omitempty"`
+	Output             int64   `json:"output_tokens"`
+	ReasoningOutput    int64   `json:"reasoning_output_tokens,omitempty"`
+	Total              int64   `json:"total_tokens"`
+	ModelContextWindow *int64  `json:"model_context_window,omitempty"`
+	RuntimeSeconds     float64 `json:"seconds_running,omitempty"`
 }
 
 type TokenThroughput struct {
@@ -513,14 +516,16 @@ type TokenThroughput struct {
 }
 
 type LifetimeTotals struct {
-	Available      bool   `json:"available"`
-	DegradedReason string `json:"degraded_reason,omitempty"`
-	InputTokens    int64  `json:"input_tokens"`
-	OutputTokens   int64  `json:"output_tokens"`
-	TotalTokens    int64  `json:"total_tokens"`
-	RuntimeSeconds int64  `json:"runtime_seconds"`
-	Sessions       int64  `json:"sessions"`
-	Runs           int64  `json:"runs"`
+	Available             bool   `json:"available"`
+	DegradedReason        string `json:"degraded_reason,omitempty"`
+	InputTokens           int64  `json:"input_tokens"`
+	CachedInputTokens     int64  `json:"cached_input_tokens,omitempty"`
+	OutputTokens          int64  `json:"output_tokens"`
+	ReasoningOutputTokens int64  `json:"reasoning_output_tokens,omitempty"`
+	TotalTokens           int64  `json:"total_tokens"`
+	RuntimeSeconds        int64  `json:"runtime_seconds"`
+	Sessions              int64  `json:"sessions"`
+	Runs                  int64  `json:"runs"`
 }
 
 type CycleTimeReport struct {
@@ -588,26 +593,28 @@ type WorkflowMetricsWindow struct {
 }
 
 type WorkflowPhaseMetric struct {
-	ProjectID       string                      `json:"project_id,omitempty"`
-	PhaseType       string                      `json:"phase_type"`
-	PhaseName       string                      `json:"phase_name"`
-	Count           int64                       `json:"count"`
-	TotalSeconds    int64                       `json:"total_seconds"`
-	AverageSeconds  int64                       `json:"average_seconds"`
-	P50Seconds      int64                       `json:"p50_seconds"`
-	P90Seconds      int64                       `json:"p90_seconds"`
-	P95Seconds      int64                       `json:"p95_seconds"`
-	InputTokens     int64                       `json:"input_tokens,omitempty"`
-	OutputTokens    int64                       `json:"output_tokens,omitempty"`
-	TotalTokens     int64                       `json:"total_tokens,omitempty"`
-	Turns           int64                       `json:"turns,omitempty"`
-	EndpointFamily  string                      `json:"endpoint_family,omitempty"`
-	ActiveSeconds   int64                       `json:"active_seconds,omitempty"`
-	WaitSeconds     int64                       `json:"wait_seconds,omitempty"`
-	ActivePercent   float64                     `json:"active_percent,omitempty"`
-	Representatives []WorkflowRepresentativeRun `json:"representative_runs,omitempty"`
-	Bottleneck      bool                        `json:"bottleneck,omitempty"`
-	Comparison      *WorkflowMetricComparison   `json:"comparison,omitempty"`
+	ProjectID             string                      `json:"project_id,omitempty"`
+	PhaseType             string                      `json:"phase_type"`
+	PhaseName             string                      `json:"phase_name"`
+	Count                 int64                       `json:"count"`
+	TotalSeconds          int64                       `json:"total_seconds"`
+	AverageSeconds        int64                       `json:"average_seconds"`
+	P50Seconds            int64                       `json:"p50_seconds"`
+	P90Seconds            int64                       `json:"p90_seconds"`
+	P95Seconds            int64                       `json:"p95_seconds"`
+	InputTokens           int64                       `json:"input_tokens,omitempty"`
+	CachedInputTokens     int64                       `json:"cached_input_tokens,omitempty"`
+	OutputTokens          int64                       `json:"output_tokens,omitempty"`
+	ReasoningOutputTokens int64                       `json:"reasoning_output_tokens,omitempty"`
+	TotalTokens           int64                       `json:"total_tokens,omitempty"`
+	Turns                 int64                       `json:"turns,omitempty"`
+	EndpointFamily        string                      `json:"endpoint_family,omitempty"`
+	ActiveSeconds         int64                       `json:"active_seconds,omitempty"`
+	WaitSeconds           int64                       `json:"wait_seconds,omitempty"`
+	ActivePercent         float64                     `json:"active_percent,omitempty"`
+	Representatives       []WorkflowRepresentativeRun `json:"representative_runs,omitempty"`
+	Bottleneck            bool                        `json:"bottleneck,omitempty"`
+	Comparison            *WorkflowMetricComparison   `json:"comparison,omitempty"`
 }
 
 type WorkflowRepresentativeRun struct {

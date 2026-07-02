@@ -196,29 +196,35 @@ INSERT INTO codex_sessions (
   completed_at,
   turns,
   input_tokens,
+  cached_input_tokens,
   output_tokens,
+  reasoning_output_tokens,
   total_tokens,
+  model_context_window,
   runtime_seconds,
   final_state,
   model
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window
 `
 
 type CreateCodexSessionParams struct {
-	RunID          sql.NullInt64  `json:"run_id"`
-	IssueID        sql.NullString `json:"issue_id"`
-	Identifier     sql.NullString `json:"identifier"`
-	IssueURL       sql.NullString `json:"issue_url"`
-	StartedAt      sql.NullString `json:"started_at"`
-	CompletedAt    sql.NullString `json:"completed_at"`
-	Turns          int64          `json:"turns"`
-	InputTokens    int64          `json:"input_tokens"`
-	OutputTokens   int64          `json:"output_tokens"`
-	TotalTokens    int64          `json:"total_tokens"`
-	RuntimeSeconds int64          `json:"runtime_seconds"`
-	FinalState     sql.NullString `json:"final_state"`
-	Model          sql.NullString `json:"model"`
+	RunID                 sql.NullInt64  `json:"run_id"`
+	IssueID               sql.NullString `json:"issue_id"`
+	Identifier            sql.NullString `json:"identifier"`
+	IssueURL              sql.NullString `json:"issue_url"`
+	StartedAt             sql.NullString `json:"started_at"`
+	CompletedAt           sql.NullString `json:"completed_at"`
+	Turns                 int64          `json:"turns"`
+	InputTokens           int64          `json:"input_tokens"`
+	CachedInputTokens     sql.NullInt64  `json:"cached_input_tokens"`
+	OutputTokens          int64          `json:"output_tokens"`
+	ReasoningOutputTokens sql.NullInt64  `json:"reasoning_output_tokens"`
+	TotalTokens           int64          `json:"total_tokens"`
+	ModelContextWindow    sql.NullInt64  `json:"model_context_window"`
+	RuntimeSeconds        int64          `json:"runtime_seconds"`
+	FinalState            sql.NullString `json:"final_state"`
+	Model                 sql.NullString `json:"model"`
 }
 
 func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSessionParams) (CodexSession, error) {
@@ -231,8 +237,11 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		arg.CompletedAt,
 		arg.Turns,
 		arg.InputTokens,
+		arg.CachedInputTokens,
 		arg.OutputTokens,
+		arg.ReasoningOutputTokens,
 		arg.TotalTokens,
+		arg.ModelContextWindow,
 		arg.RuntimeSeconds,
 		arg.FinalState,
 		arg.Model,
@@ -253,6 +262,9 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		&i.RuntimeSeconds,
 		&i.FinalState,
 		&i.Model,
+		&i.CachedInputTokens,
+		&i.ReasoningOutputTokens,
+		&i.ModelContextWindow,
 	)
 	return i, err
 }
@@ -417,35 +429,41 @@ INSERT INTO usage_events (
   pr_number,
   model,
   input_tokens,
+  cached_input_tokens,
   output_tokens,
+  reasoning_output_tokens,
   total_tokens,
+  model_context_window,
   cost_usd,
   runtime_seconds,
   started_at,
   finished_at,
   event_day,
   outcome
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd, cached_input_tokens, reasoning_output_tokens, model_context_window
 `
 
 type CreateUsageEventParams struct {
-	ProjectID      string         `json:"project_id"`
-	RunID          sql.NullInt64  `json:"run_id"`
-	SessionID      sql.NullInt64  `json:"session_id"`
-	IssueID        sql.NullString `json:"issue_id"`
-	Identifier     sql.NullString `json:"identifier"`
-	PrNumber       sql.NullInt64  `json:"pr_number"`
-	Model          string         `json:"model"`
-	InputTokens    int64          `json:"input_tokens"`
-	OutputTokens   int64          `json:"output_tokens"`
-	TotalTokens    int64          `json:"total_tokens"`
-	CostUsd        float64        `json:"cost_usd"`
-	RuntimeSeconds int64          `json:"runtime_seconds"`
-	StartedAt      string         `json:"started_at"`
-	FinishedAt     string         `json:"finished_at"`
-	EventDay       string         `json:"event_day"`
-	Outcome        string         `json:"outcome"`
+	ProjectID             string         `json:"project_id"`
+	RunID                 sql.NullInt64  `json:"run_id"`
+	SessionID             sql.NullInt64  `json:"session_id"`
+	IssueID               sql.NullString `json:"issue_id"`
+	Identifier            sql.NullString `json:"identifier"`
+	PrNumber              sql.NullInt64  `json:"pr_number"`
+	Model                 string         `json:"model"`
+	InputTokens           int64          `json:"input_tokens"`
+	CachedInputTokens     sql.NullInt64  `json:"cached_input_tokens"`
+	OutputTokens          int64          `json:"output_tokens"`
+	ReasoningOutputTokens sql.NullInt64  `json:"reasoning_output_tokens"`
+	TotalTokens           int64          `json:"total_tokens"`
+	ModelContextWindow    sql.NullInt64  `json:"model_context_window"`
+	CostUsd               float64        `json:"cost_usd"`
+	RuntimeSeconds        int64          `json:"runtime_seconds"`
+	StartedAt             string         `json:"started_at"`
+	FinishedAt            string         `json:"finished_at"`
+	EventDay              string         `json:"event_day"`
+	Outcome               string         `json:"outcome"`
 }
 
 func (q *Queries) CreateUsageEvent(ctx context.Context, arg CreateUsageEventParams) (UsageEvent, error) {
@@ -458,8 +476,11 @@ func (q *Queries) CreateUsageEvent(ctx context.Context, arg CreateUsageEventPara
 		arg.PrNumber,
 		arg.Model,
 		arg.InputTokens,
+		arg.CachedInputTokens,
 		arg.OutputTokens,
+		arg.ReasoningOutputTokens,
 		arg.TotalTokens,
+		arg.ModelContextWindow,
 		arg.CostUsd,
 		arg.RuntimeSeconds,
 		arg.StartedAt,
@@ -486,6 +507,9 @@ func (q *Queries) CreateUsageEvent(ctx context.Context, arg CreateUsageEventPara
 		&i.EventDay,
 		&i.Outcome,
 		&i.CostUsd,
+		&i.CachedInputTokens,
+		&i.ReasoningOutputTokens,
+		&i.ModelContextWindow,
 	)
 	return i, err
 }
@@ -643,39 +667,45 @@ INSERT INTO workflow_phase_events (
   exit_code,
   turns,
   input_tokens,
+  cached_input_tokens,
   output_tokens,
+  reasoning_output_tokens,
   total_tokens,
+  model_context_window,
   endpoint_family,
   metadata_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, project_id, run_id, session_id, issue_id, identifier, issue_url, pr_number, phase_type, phase_name, previous_phase_name, reason, status, started_at, finished_at, duration_seconds, event_day, command_name, exit_code, turns, input_tokens, output_tokens, total_tokens, endpoint_family, metadata_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, run_id, session_id, issue_id, identifier, issue_url, pr_number, phase_type, phase_name, previous_phase_name, reason, status, started_at, finished_at, duration_seconds, event_day, command_name, exit_code, turns, input_tokens, output_tokens, total_tokens, endpoint_family, metadata_json, cached_input_tokens, reasoning_output_tokens, model_context_window
 `
 
 type CreateWorkflowPhaseEventParams struct {
-	ProjectID         string         `json:"project_id"`
-	RunID             sql.NullInt64  `json:"run_id"`
-	SessionID         sql.NullInt64  `json:"session_id"`
-	IssueID           sql.NullString `json:"issue_id"`
-	Identifier        sql.NullString `json:"identifier"`
-	IssueURL          sql.NullString `json:"issue_url"`
-	PrNumber          sql.NullInt64  `json:"pr_number"`
-	PhaseType         string         `json:"phase_type"`
-	PhaseName         string         `json:"phase_name"`
-	PreviousPhaseName sql.NullString `json:"previous_phase_name"`
-	Reason            sql.NullString `json:"reason"`
-	Status            sql.NullString `json:"status"`
-	StartedAt         string         `json:"started_at"`
-	FinishedAt        sql.NullString `json:"finished_at"`
-	DurationSeconds   int64          `json:"duration_seconds"`
-	EventDay          string         `json:"event_day"`
-	CommandName       sql.NullString `json:"command_name"`
-	ExitCode          sql.NullInt64  `json:"exit_code"`
-	Turns             int64          `json:"turns"`
-	InputTokens       int64          `json:"input_tokens"`
-	OutputTokens      int64          `json:"output_tokens"`
-	TotalTokens       int64          `json:"total_tokens"`
-	EndpointFamily    sql.NullString `json:"endpoint_family"`
-	MetadataJson      string         `json:"metadata_json"`
+	ProjectID             string         `json:"project_id"`
+	RunID                 sql.NullInt64  `json:"run_id"`
+	SessionID             sql.NullInt64  `json:"session_id"`
+	IssueID               sql.NullString `json:"issue_id"`
+	Identifier            sql.NullString `json:"identifier"`
+	IssueURL              sql.NullString `json:"issue_url"`
+	PrNumber              sql.NullInt64  `json:"pr_number"`
+	PhaseType             string         `json:"phase_type"`
+	PhaseName             string         `json:"phase_name"`
+	PreviousPhaseName     sql.NullString `json:"previous_phase_name"`
+	Reason                sql.NullString `json:"reason"`
+	Status                sql.NullString `json:"status"`
+	StartedAt             string         `json:"started_at"`
+	FinishedAt            sql.NullString `json:"finished_at"`
+	DurationSeconds       int64          `json:"duration_seconds"`
+	EventDay              string         `json:"event_day"`
+	CommandName           sql.NullString `json:"command_name"`
+	ExitCode              sql.NullInt64  `json:"exit_code"`
+	Turns                 int64          `json:"turns"`
+	InputTokens           int64          `json:"input_tokens"`
+	CachedInputTokens     sql.NullInt64  `json:"cached_input_tokens"`
+	OutputTokens          int64          `json:"output_tokens"`
+	ReasoningOutputTokens sql.NullInt64  `json:"reasoning_output_tokens"`
+	TotalTokens           int64          `json:"total_tokens"`
+	ModelContextWindow    sql.NullInt64  `json:"model_context_window"`
+	EndpointFamily        sql.NullString `json:"endpoint_family"`
+	MetadataJson          string         `json:"metadata_json"`
 }
 
 func (q *Queries) CreateWorkflowPhaseEvent(ctx context.Context, arg CreateWorkflowPhaseEventParams) (WorkflowPhaseEvent, error) {
@@ -700,8 +730,11 @@ func (q *Queries) CreateWorkflowPhaseEvent(ctx context.Context, arg CreateWorkfl
 		arg.ExitCode,
 		arg.Turns,
 		arg.InputTokens,
+		arg.CachedInputTokens,
 		arg.OutputTokens,
+		arg.ReasoningOutputTokens,
 		arg.TotalTokens,
+		arg.ModelContextWindow,
 		arg.EndpointFamily,
 		arg.MetadataJson,
 	)
@@ -732,6 +765,9 @@ func (q *Queries) CreateWorkflowPhaseEvent(ctx context.Context, arg CreateWorkfl
 		&i.TotalTokens,
 		&i.EndpointFamily,
 		&i.MetadataJson,
+		&i.CachedInputTokens,
+		&i.ReasoningOutputTokens,
+		&i.ModelContextWindow,
 	)
 	return i, err
 }
@@ -740,7 +776,9 @@ const dailyTokenSpend = `-- name: DailyTokenSpend :many
 SELECT
   CAST(COALESCE(model, '') AS TEXT) AS model,
   CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(cached_input_tokens), 0) AS INTEGER) AS cached_input_tokens,
   CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(reasoning_output_tokens), 0) AS INTEGER) AS reasoning_output_tokens,
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions
 FROM codex_sessions
@@ -750,11 +788,13 @@ ORDER BY COALESCE(model, '')
 `
 
 type DailyTokenSpendRow struct {
-	Model        string `json:"model"`
-	InputTokens  int64  `json:"input_tokens"`
-	OutputTokens int64  `json:"output_tokens"`
-	TotalTokens  int64  `json:"total_tokens"`
-	Sessions     int64  `json:"sessions"`
+	Model                 string `json:"model"`
+	InputTokens           int64  `json:"input_tokens"`
+	CachedInputTokens     int64  `json:"cached_input_tokens"`
+	OutputTokens          int64  `json:"output_tokens"`
+	ReasoningOutputTokens int64  `json:"reasoning_output_tokens"`
+	TotalTokens           int64  `json:"total_tokens"`
+	Sessions              int64  `json:"sessions"`
 }
 
 func (q *Queries) DailyTokenSpend(ctx context.Context, completedAt sql.NullString) ([]DailyTokenSpendRow, error) {
@@ -769,7 +809,9 @@ func (q *Queries) DailyTokenSpend(ctx context.Context, completedAt sql.NullStrin
 		if err := rows.Scan(
 			&i.Model,
 			&i.InputTokens,
+			&i.CachedInputTokens,
 			&i.OutputTokens,
+			&i.ReasoningOutputTokens,
 			&i.TotalTokens,
 			&i.Sessions,
 		); err != nil {
@@ -791,8 +833,11 @@ UPDATE codex_sessions
 SET completed_at = ?,
     turns = ?,
     input_tokens = ?,
+    cached_input_tokens = ?,
     output_tokens = ?,
+    reasoning_output_tokens = ?,
     total_tokens = ?,
+    model_context_window = COALESCE(?, model_context_window),
     runtime_seconds = ?,
     final_state = ?,
     model = COALESCE(?, model)
@@ -800,15 +845,18 @@ WHERE id = ?
 `
 
 type FinishCodexSessionParams struct {
-	CompletedAt    sql.NullString `json:"completed_at"`
-	Turns          int64          `json:"turns"`
-	InputTokens    int64          `json:"input_tokens"`
-	OutputTokens   int64          `json:"output_tokens"`
-	TotalTokens    int64          `json:"total_tokens"`
-	RuntimeSeconds int64          `json:"runtime_seconds"`
-	FinalState     sql.NullString `json:"final_state"`
-	Model          sql.NullString `json:"model"`
-	ID             int64          `json:"id"`
+	CompletedAt           sql.NullString `json:"completed_at"`
+	Turns                 int64          `json:"turns"`
+	InputTokens           int64          `json:"input_tokens"`
+	CachedInputTokens     sql.NullInt64  `json:"cached_input_tokens"`
+	OutputTokens          int64          `json:"output_tokens"`
+	ReasoningOutputTokens sql.NullInt64  `json:"reasoning_output_tokens"`
+	TotalTokens           int64          `json:"total_tokens"`
+	ModelContextWindow    sql.NullInt64  `json:"model_context_window"`
+	RuntimeSeconds        int64          `json:"runtime_seconds"`
+	FinalState            sql.NullString `json:"final_state"`
+	Model                 sql.NullString `json:"model"`
+	ID                    int64          `json:"id"`
 }
 
 func (q *Queries) FinishCodexSession(ctx context.Context, arg FinishCodexSessionParams) (int64, error) {
@@ -816,8 +864,11 @@ func (q *Queries) FinishCodexSession(ctx context.Context, arg FinishCodexSession
 		arg.CompletedAt,
 		arg.Turns,
 		arg.InputTokens,
+		arg.CachedInputTokens,
 		arg.OutputTokens,
+		arg.ReasoningOutputTokens,
 		arg.TotalTokens,
+		arg.ModelContextWindow,
 		arg.RuntimeSeconds,
 		arg.FinalState,
 		arg.Model,
@@ -830,7 +881,7 @@ func (q *Queries) FinishCodexSession(ctx context.Context, arg FinishCodexSession
 }
 
 const getCodexSession = `-- name: GetCodexSession :one
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window
 FROM codex_sessions
 WHERE id = ?
 `
@@ -853,6 +904,9 @@ func (q *Queries) GetCodexSession(ctx context.Context, id int64) (CodexSession, 
 		&i.RuntimeSeconds,
 		&i.FinalState,
 		&i.Model,
+		&i.CachedInputTokens,
+		&i.ReasoningOutputTokens,
+		&i.ModelContextWindow,
 	)
 	return i, err
 }
@@ -882,7 +936,7 @@ func (q *Queries) GetDetentRun(ctx context.Context, id int64) (DetentRun, error)
 }
 
 const getUsageEvent = `-- name: GetUsageEvent :one
-SELECT id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd
+SELECT id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd, cached_input_tokens, reasoning_output_tokens, model_context_window
 FROM usage_events
 WHERE id = ?
 `
@@ -908,6 +962,9 @@ func (q *Queries) GetUsageEvent(ctx context.Context, id int64) (UsageEvent, erro
 		&i.EventDay,
 		&i.Outcome,
 		&i.CostUsd,
+		&i.CachedInputTokens,
+		&i.ReasoningOutputTokens,
+		&i.ModelContextWindow,
 	)
 	return i, err
 }
@@ -999,7 +1056,9 @@ const issueTokenSpend = `-- name: IssueTokenSpend :many
 SELECT
   CAST(COALESCE(model, '') AS TEXT) AS model,
   CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(cached_input_tokens), 0) AS INTEGER) AS cached_input_tokens,
   CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(reasoning_output_tokens), 0) AS INTEGER) AS reasoning_output_tokens,
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions
 FROM codex_sessions
@@ -1017,11 +1076,13 @@ type IssueTokenSpendParams struct {
 }
 
 type IssueTokenSpendRow struct {
-	Model        string `json:"model"`
-	InputTokens  int64  `json:"input_tokens"`
-	OutputTokens int64  `json:"output_tokens"`
-	TotalTokens  int64  `json:"total_tokens"`
-	Sessions     int64  `json:"sessions"`
+	Model                 string `json:"model"`
+	InputTokens           int64  `json:"input_tokens"`
+	CachedInputTokens     int64  `json:"cached_input_tokens"`
+	OutputTokens          int64  `json:"output_tokens"`
+	ReasoningOutputTokens int64  `json:"reasoning_output_tokens"`
+	TotalTokens           int64  `json:"total_tokens"`
+	Sessions              int64  `json:"sessions"`
 }
 
 func (q *Queries) IssueTokenSpend(ctx context.Context, arg IssueTokenSpendParams) ([]IssueTokenSpendRow, error) {
@@ -1036,7 +1097,9 @@ func (q *Queries) IssueTokenSpend(ctx context.Context, arg IssueTokenSpendParams
 		if err := rows.Scan(
 			&i.Model,
 			&i.InputTokens,
+			&i.CachedInputTokens,
 			&i.OutputTokens,
+			&i.ReasoningOutputTokens,
 			&i.TotalTokens,
 			&i.Sessions,
 		); err != nil {
@@ -1054,32 +1117,7 @@ func (q *Queries) IssueTokenSpend(ctx context.Context, arg IssueTokenSpendParams
 }
 
 const issueWorkflowTimelineRows = `-- name: IssueWorkflowTimelineRows :many
-SELECT
-  id,
-  project_id,
-  run_id,
-  session_id,
-  issue_id,
-  identifier,
-  issue_url,
-  pr_number,
-  phase_type,
-  phase_name,
-  previous_phase_name,
-  reason,
-  status,
-  started_at,
-  finished_at,
-  duration_seconds,
-  event_day,
-  command_name,
-  exit_code,
-  turns,
-  input_tokens,
-  output_tokens,
-  total_tokens,
-  endpoint_family,
-  metadata_json
+SELECT id, project_id, run_id, session_id, issue_id, identifier, issue_url, pr_number, phase_type, phase_name, previous_phase_name, reason, status, started_at, finished_at, duration_seconds, event_day, command_name, exit_code, turns, input_tokens, output_tokens, total_tokens, endpoint_family, metadata_json, cached_input_tokens, reasoning_output_tokens, model_context_window
 FROM workflow_phase_events
 WHERE issue_id = ?1
    OR identifier = ?2
@@ -1128,6 +1166,9 @@ func (q *Queries) IssueWorkflowTimelineRows(ctx context.Context, arg IssueWorkfl
 			&i.TotalTokens,
 			&i.EndpointFamily,
 			&i.MetadataJson,
+			&i.CachedInputTokens,
+			&i.ReasoningOutputTokens,
+			&i.ModelContextWindow,
 		); err != nil {
 			return nil, err
 		}
@@ -1145,7 +1186,9 @@ func (q *Queries) IssueWorkflowTimelineRows(ctx context.Context, arg IssueWorkfl
 const lifetimeTotals = `-- name: LifetimeTotals :one
 SELECT
   CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(cached_input_tokens), 0) AS INTEGER) AS cached_input_tokens,
   CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(reasoning_output_tokens), 0) AS INTEGER) AS reasoning_output_tokens,
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COALESCE(SUM(runtime_seconds), 0) AS INTEGER) AS runtime_seconds,
   CAST(COUNT(*) AS INTEGER) AS sessions,
@@ -1155,12 +1198,14 @@ WHERE completed_at IS NOT NULL
 `
 
 type LifetimeTotalsRow struct {
-	InputTokens    int64 `json:"input_tokens"`
-	OutputTokens   int64 `json:"output_tokens"`
-	TotalTokens    int64 `json:"total_tokens"`
-	RuntimeSeconds int64 `json:"runtime_seconds"`
-	Sessions       int64 `json:"sessions"`
-	Runs           int64 `json:"runs"`
+	InputTokens           int64 `json:"input_tokens"`
+	CachedInputTokens     int64 `json:"cached_input_tokens"`
+	OutputTokens          int64 `json:"output_tokens"`
+	ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
+	TotalTokens           int64 `json:"total_tokens"`
+	RuntimeSeconds        int64 `json:"runtime_seconds"`
+	Sessions              int64 `json:"sessions"`
+	Runs                  int64 `json:"runs"`
 }
 
 func (q *Queries) LifetimeTotals(ctx context.Context) (LifetimeTotalsRow, error) {
@@ -1168,7 +1213,9 @@ func (q *Queries) LifetimeTotals(ctx context.Context) (LifetimeTotalsRow, error)
 	var i LifetimeTotalsRow
 	err := row.Scan(
 		&i.InputTokens,
+		&i.CachedInputTokens,
 		&i.OutputTokens,
+		&i.ReasoningOutputTokens,
 		&i.TotalTokens,
 		&i.RuntimeSeconds,
 		&i.Sessions,
@@ -1282,7 +1329,7 @@ func (q *Queries) ListFairShareUsage(ctx context.Context) ([]FairShareUsage, err
 }
 
 const listRecentCodexSessions = `-- name: ListRecentCodexSessions :many
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window
 FROM codex_sessions
 ORDER BY completed_at DESC, id DESC
 LIMIT ?
@@ -1312,6 +1359,9 @@ func (q *Queries) ListRecentCodexSessions(ctx context.Context, limit int64) ([]C
 			&i.RuntimeSeconds,
 			&i.FinalState,
 			&i.Model,
+			&i.CachedInputTokens,
+			&i.ReasoningOutputTokens,
+			&i.ModelContextWindow,
 		); err != nil {
 			return nil, err
 		}
@@ -1854,8 +1904,11 @@ WITH usage_report_rows AS (
     END AS group_key,
     COALESCE(NULLIF(model, ''), 'unassigned') AS model,
     input_tokens,
+    cached_input_tokens,
     output_tokens,
+    reasoning_output_tokens,
     total_tokens,
+    model_context_window,
     runtime_seconds
   FROM usage_events
   WHERE (?2 IS NULL OR event_day >= ?2)
@@ -1865,8 +1918,11 @@ SELECT
   CAST(usage_report_rows.group_key AS TEXT) AS group_key,
   CAST(usage_report_rows.model AS TEXT) AS model,
   CAST(COALESCE(SUM(usage_report_rows.input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(usage_report_rows.cached_input_tokens), 0) AS INTEGER) AS cached_input_tokens,
   CAST(COALESCE(SUM(usage_report_rows.output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(usage_report_rows.reasoning_output_tokens), 0) AS INTEGER) AS reasoning_output_tokens,
   CAST(COALESCE(SUM(usage_report_rows.total_tokens), 0) AS INTEGER) AS total_tokens,
+  CAST(COALESCE(MAX(usage_report_rows.model_context_window), 0) AS INTEGER) AS model_context_window,
   CAST(COALESCE(SUM(usage_report_rows.runtime_seconds), 0) AS INTEGER) AS runtime_seconds,
   CAST(COUNT(*) AS INTEGER) AS events
 FROM usage_report_rows
@@ -1881,13 +1937,16 @@ type UsageReportRowsParams struct {
 }
 
 type UsageReportRowsRow struct {
-	GroupKey       string `json:"group_key"`
-	Model          string `json:"model"`
-	InputTokens    int64  `json:"input_tokens"`
-	OutputTokens   int64  `json:"output_tokens"`
-	TotalTokens    int64  `json:"total_tokens"`
-	RuntimeSeconds int64  `json:"runtime_seconds"`
-	Events         int64  `json:"events"`
+	GroupKey              string `json:"group_key"`
+	Model                 string `json:"model"`
+	InputTokens           int64  `json:"input_tokens"`
+	CachedInputTokens     int64  `json:"cached_input_tokens"`
+	OutputTokens          int64  `json:"output_tokens"`
+	ReasoningOutputTokens int64  `json:"reasoning_output_tokens"`
+	TotalTokens           int64  `json:"total_tokens"`
+	ModelContextWindow    int64  `json:"model_context_window"`
+	RuntimeSeconds        int64  `json:"runtime_seconds"`
+	Events                int64  `json:"events"`
 }
 
 func (q *Queries) UsageReportRows(ctx context.Context, arg UsageReportRowsParams) ([]UsageReportRowsRow, error) {
@@ -1903,8 +1962,11 @@ func (q *Queries) UsageReportRows(ctx context.Context, arg UsageReportRowsParams
 			&i.GroupKey,
 			&i.Model,
 			&i.InputTokens,
+			&i.CachedInputTokens,
 			&i.OutputTokens,
+			&i.ReasoningOutputTokens,
 			&i.TotalTokens,
+			&i.ModelContextWindow,
 			&i.RuntimeSeconds,
 			&i.Events,
 		); err != nil {
@@ -1922,32 +1984,7 @@ func (q *Queries) UsageReportRows(ctx context.Context, arg UsageReportRowsParams
 }
 
 const workflowPhaseDurationRows = `-- name: WorkflowPhaseDurationRows :many
-SELECT
-  id,
-  project_id,
-  run_id,
-  session_id,
-  issue_id,
-  identifier,
-  issue_url,
-  pr_number,
-  phase_type,
-  phase_name,
-  previous_phase_name,
-  reason,
-  status,
-  started_at,
-  finished_at,
-  duration_seconds,
-  event_day,
-  command_name,
-  exit_code,
-  turns,
-  input_tokens,
-  output_tokens,
-  total_tokens,
-  endpoint_family,
-  metadata_json
+SELECT id, project_id, run_id, session_id, issue_id, identifier, issue_url, pr_number, phase_type, phase_name, previous_phase_name, reason, status, started_at, finished_at, duration_seconds, event_day, command_name, exit_code, turns, input_tokens, output_tokens, total_tokens, endpoint_family, metadata_json, cached_input_tokens, reasoning_output_tokens, model_context_window
 FROM workflow_phase_events
 WHERE finished_at IS NOT NULL
   AND (?1 IS NULL OR project_id = ?1)
@@ -1997,6 +2034,9 @@ func (q *Queries) WorkflowPhaseDurationRows(ctx context.Context, arg WorkflowPha
 			&i.TotalTokens,
 			&i.EndpointFamily,
 			&i.MetadataJson,
+			&i.CachedInputTokens,
+			&i.ReasoningOutputTokens,
+			&i.ModelContextWindow,
 		); err != nil {
 			return nil, err
 		}
@@ -2012,32 +2052,7 @@ func (q *Queries) WorkflowPhaseDurationRows(ctx context.Context, arg WorkflowPha
 }
 
 const workflowPhaseFlowRows = `-- name: WorkflowPhaseFlowRows :many
-SELECT
-  event.id,
-  event.project_id,
-  event.run_id,
-  event.session_id,
-  event.issue_id,
-  event.identifier,
-  event.issue_url,
-  event.pr_number,
-  event.phase_type,
-  event.phase_name,
-  event.previous_phase_name,
-  event.reason,
-  event.status,
-  event.started_at,
-  event.finished_at,
-  event.duration_seconds,
-  event.event_day,
-  event.command_name,
-  event.exit_code,
-  event.turns,
-  event.input_tokens,
-  event.output_tokens,
-  event.total_tokens,
-  event.endpoint_family,
-  event.metadata_json
+SELECT event.id, event.project_id, event.run_id, event.session_id, event.issue_id, event.identifier, event.issue_url, event.pr_number, event.phase_type, event.phase_name, event.previous_phase_name, event.reason, event.status, event.started_at, event.finished_at, event.duration_seconds, event.event_day, event.command_name, event.exit_code, event.turns, event.input_tokens, event.output_tokens, event.total_tokens, event.endpoint_family, event.metadata_json, event.cached_input_tokens, event.reasoning_output_tokens, event.model_context_window
 FROM workflow_phase_events AS event
 WHERE event.finished_at IS NOT NULL
   AND event.phase_type IN ('agent_session', 'local_check', 'ci')
@@ -2104,6 +2119,9 @@ func (q *Queries) WorkflowPhaseFlowRows(ctx context.Context, arg WorkflowPhaseFl
 			&i.TotalTokens,
 			&i.EndpointFamily,
 			&i.MetadataJson,
+			&i.CachedInputTokens,
+			&i.ReasoningOutputTokens,
+			&i.ModelContextWindow,
 		); err != nil {
 			return nil, err
 		}

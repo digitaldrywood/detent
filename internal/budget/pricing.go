@@ -12,8 +12,9 @@ import (
 const DefaultPricingPath = "priv/pricing/models.yaml"
 
 type ModelPricing struct {
-	USDPerInputToken  float64
-	USDPerOutputToken float64
+	USDPerInputToken       float64
+	USDPerCachedInputToken float64
+	USDPerOutputToken      float64
 }
 
 type PricingTable map[string]ModelPricing
@@ -22,38 +23,46 @@ type PricingTable map[string]ModelPricing
 // computed USD is notional but still used for budget pacing.
 func DefaultPricingTable() PricingTable {
 	claudeFable5 := ModelPricing{
-		USDPerInputToken:  0.000010,
-		USDPerOutputToken: 0.000050,
+		USDPerInputToken:       0.000010,
+		USDPerCachedInputToken: 0.000010,
+		USDPerOutputToken:      0.000050,
 	}
 	claudeOpus48 := ModelPricing{
-		USDPerInputToken:  0.000005,
-		USDPerOutputToken: 0.000025,
+		USDPerInputToken:       0.000005,
+		USDPerCachedInputToken: 0.000005,
+		USDPerOutputToken:      0.000025,
 	}
 	claudeSonnet5 := ModelPricing{
-		USDPerInputToken:  0.000002,
-		USDPerOutputToken: 0.000010,
+		USDPerInputToken:       0.000002,
+		USDPerCachedInputToken: 0.000002,
+		USDPerOutputToken:      0.000010,
 	}
 	claudeHaiku45 := ModelPricing{
-		USDPerInputToken:  0.000001,
-		USDPerOutputToken: 0.000005,
+		USDPerInputToken:       0.000001,
+		USDPerCachedInputToken: 0.000001,
+		USDPerOutputToken:      0.000005,
 	}
 
 	return PricingTable{
 		"gpt-5.5": {
-			USDPerInputToken:  0.000005,
-			USDPerOutputToken: 0.000030,
+			USDPerInputToken:       0.000005,
+			USDPerCachedInputToken: 0.000005,
+			USDPerOutputToken:      0.000030,
 		},
 		"gpt-5.4": {
-			USDPerInputToken:  0.0000025,
-			USDPerOutputToken: 0.000015,
+			USDPerInputToken:       0.0000025,
+			USDPerCachedInputToken: 0.0000025,
+			USDPerOutputToken:      0.000015,
 		},
 		"gpt-5.4-mini": {
-			USDPerInputToken:  0.00000075,
-			USDPerOutputToken: 0.0000045,
+			USDPerInputToken:       0.00000075,
+			USDPerCachedInputToken: 0.00000075,
+			USDPerOutputToken:      0.0000045,
 		},
 		"gpt-5.3-codex": {
-			USDPerInputToken:  0.00000175,
-			USDPerOutputToken: 0.000014,
+			USDPerInputToken:       0.00000175,
+			USDPerCachedInputToken: 0.00000175,
+			USDPerOutputToken:      0.000014,
 		},
 		"claude-fable-5":   claudeFable5,
 		"fable":            claudeFable5,
@@ -126,12 +135,16 @@ func (p PricingTable) Lookup(model string) (ModelPricing, bool) {
 	return row, ok
 }
 
-func UsageCostUSD(pricing PricingTable, model string, inputTokens int64, outputTokens int64) (float64, bool) {
+func UsageCostUSD(pricing PricingTable, model string, inputTokens int64, cachedInputTokens int64, outputTokens int64) (float64, bool) {
 	modelPricing, ok := pricing.Lookup(model)
 	if !ok {
 		return 0, false
 	}
-	return float64(nonNegative(inputTokens))*modelPricing.USDPerInputToken +
+	input := nonNegative(inputTokens)
+	cached := min(nonNegative(cachedInputTokens), input)
+	uncached := input - cached
+	return float64(uncached)*modelPricing.USDPerInputToken +
+		float64(cached)*modelPricing.USDPerCachedInputToken +
 		float64(nonNegative(outputTokens))*modelPricing.USDPerOutputToken, true
 }
 
@@ -151,13 +164,23 @@ func normalizePricingRow(value any) (ModelPricing, bool) {
 		output, outputOK = perTokenFromMillion(row["output_usd_per_1m_tokens"])
 	}
 
-	if !inputOK || !outputOK || input < 0 || output < 0 {
+	cached, cachedOK := numericValue(row["usd_per_cached_input_token"])
+	if !cachedOK {
+		cached, cachedOK = perTokenFromMillion(row["cached_input_usd_per_1m_tokens"])
+	}
+	if !cachedOK {
+		cached = input
+		cachedOK = true
+	}
+
+	if !inputOK || !cachedOK || !outputOK || input < 0 || cached < 0 || output < 0 {
 		return ModelPricing{}, false
 	}
 
 	return ModelPricing{
-		USDPerInputToken:  input,
-		USDPerOutputToken: output,
+		USDPerInputToken:       input,
+		USDPerCachedInputToken: cached,
+		USDPerOutputToken:      output,
 	}, true
 }
 

@@ -33,14 +33,19 @@ func TestReportsRendersEveryProjectBreakdown(t *testing.T) {
 		GeneratedAt: time.Date(2026, 5, 31, 17, 0, 0, 0, time.UTC),
 		Day: templates.UsageReportData{
 			Totals: templates.UsageTotalsData{
-				TotalTokens: totalTokens,
-				Events:      int64(len(projects)),
+				InputTokens:       totalTokens / 2,
+				CachedInputTokens: totalTokens / 4,
+				OutputTokens:      totalTokens / 2,
+				TotalTokens:       totalTokens,
+				CacheReadFraction: 0.5,
+				Events:            int64(len(projects)),
 			},
 		},
 		Project: templates.UsageReportData{
 			Totals: templates.UsageTotalsData{
-				TotalTokens: totalTokens,
-				Events:      int64(len(projects)),
+				TotalTokens:       totalTokens,
+				CacheReadFraction: 0.5,
+				Events:            int64(len(projects)),
 			},
 			Breakdowns: projects,
 		},
@@ -69,9 +74,13 @@ func TestReportsIncludesResponsiveLayoutClasses(t *testing.T) {
 		},
 		Day: templates.UsageReportData{
 			Totals: templates.UsageTotalsData{
-				TotalTokens: 125_000,
-				SpendUSD:    4.25,
-				Events:      3,
+				InputTokens:       100_000,
+				CachedInputTokens: 75_000,
+				OutputTokens:      25_000,
+				TotalTokens:       125_000,
+				SpendUSD:          4.25,
+				CacheReadFraction: 0.75,
+				Events:            3,
 			},
 		},
 	}))
@@ -96,6 +105,10 @@ func TestReportsIncludesResponsiveLayoutClasses(t *testing.T) {
 		"dashboard-topbar",
 		`data-tui-sidebar-target="dashboard-sidebar"`,
 		`<h1 class="sr-only">Reports</h1>`,
+		"lg:grid-cols-5",
+		"Cache reads",
+		"75%",
+		"75,000 cached input",
 		"grid min-w-0 gap-5 xl:grid-cols-2",
 		"grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]",
 		"break-all font-mono text-2xl",

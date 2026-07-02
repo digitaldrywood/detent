@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -85,6 +86,7 @@ type Update struct {
 	ItemID          string
 	Delta           string
 	Status          string
+	Model           string
 	Tokens          TokenUsage
 	RateLimits      *RateLimitSnapshot
 	Payload         json.RawMessage
@@ -201,7 +203,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		return RunTurnResult{}, err
 	}
 
-	threadID, err := s.startThread(ctx, transport, req, onUpdate)
+	threadID, model, err := s.startThread(ctx, transport, req, onUpdate)
 	if err != nil {
 		return RunTurnResult{}, err
 	}
@@ -222,6 +224,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		ThreadID: threadID,
 		TurnID:   turnID,
 		Status:   "started",
+		Model:    model,
 	}, onUpdate); err != nil {
 		return RunTurnResult{}, err
 	}
@@ -259,7 +262,7 @@ func (s *AppServer) startThread(
 	transport Transport,
 	req RunTurnRequest,
 	onUpdate UpdateHandler,
-) (string, error) {
+) (string, string, error) {
 	params := map[string]any{
 		"cwd": req.Workspace,
 	}
@@ -278,27 +281,42 @@ func (s *AppServer) startThread(
 	}
 
 	if err := sendRequest(ctx, transport, threadStartRequestID, "thread/start", params); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	result, err := s.awaitResponse(ctx, transport, threadStartRequestID, onUpdate)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	var response struct {
 		Thread struct {
-			ID string `json:"id"`
+			ID            string `json:"id"`
+			Model         string `json:"model"`
+			ModelID       string `json:"model_id"`
+			ResolvedModel string `json:"resolvedModel"`
 		} `json:"thread"`
+		Model         string `json:"model"`
+		ModelID       string `json:"model_id"`
+		ResolvedModel string `json:"resolvedModel"`
 	}
 	if err := json.Unmarshal(result, &response); err != nil {
-		return "", fmt.Errorf("%w: decode thread/start result: %w", ErrInvalidResponse, err)
+		return "", "", fmt.Errorf("%w: decode thread/start result: %w", ErrInvalidResponse, err)
 	}
 	if response.Thread.ID == "" {
-		return "", fmt.Errorf("%w: thread/start result missing thread id", ErrInvalidResponse)
+		return "", "", fmt.Errorf("%w: thread/start result missing thread id", ErrInvalidResponse)
 	}
 
-	return response.Thread.ID, nil
+	model := firstNonBlank(
+		response.Thread.Model,
+		response.Thread.ResolvedModel,
+		response.Thread.ModelID,
+		response.Model,
+		response.ResolvedModel,
+		response.ModelID,
+	)
+
+	return response.Thread.ID, model, nil
 }
 
 func (s *AppServer) startTurn(
@@ -719,6 +737,15 @@ func rawPayload(msg Message) json.RawMessage {
 		return nil
 	}
 	return data
+}
+
+func firstNonBlank(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func closeTransport(ctx context.Context, transport Transport, timeout time.Duration) error {

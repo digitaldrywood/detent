@@ -817,18 +817,23 @@ func workspaceResponse(path string, host string) workspaceAPIResponse {
 
 func totalsResponse(tokens telemetry.Tokens) tokenTotalsAPIResponse {
 	return tokenTotalsAPIResponse{
-		Input:          tokens.Input,
-		Output:         tokens.Output,
-		Total:          tokens.Total,
-		RuntimeSeconds: tokens.RuntimeSeconds,
+		Input:              tokens.Input,
+		CachedInput:        tokens.CachedInput,
+		Output:             tokens.Output,
+		ReasoningOutput:    tokens.ReasoningOutput,
+		Total:              tokens.Total,
+		ModelContextWindow: tokens.ModelContextWindow,
+		RuntimeSeconds:     tokens.RuntimeSeconds,
 	}
 }
 
 func tokenCountsResponse(tokens telemetry.Tokens) tokenCountsAPIResponse {
 	return tokenCountsAPIResponse{
-		Input:  tokens.Input,
-		Output: tokens.Output,
-		Total:  tokens.Total,
+		Input:           tokens.Input,
+		CachedInput:     tokens.CachedInput,
+		Output:          tokens.Output,
+		ReasoningOutput: tokens.ReasoningOutput,
+		Total:           tokens.Total,
 	}
 }
 
@@ -846,14 +851,16 @@ func lifetimeTotalsResponseFromTelemetry(totals telemetry.LifetimeTotals) lifeti
 		reason = "runtime store unavailable"
 	}
 	return lifetimeTotalsResponse{
-		Available:      totals.Available,
-		DegradedReason: reason,
-		InputTokens:    totals.InputTokens,
-		OutputTokens:   totals.OutputTokens,
-		TotalTokens:    totals.TotalTokens,
-		RuntimeSeconds: totals.RuntimeSeconds,
-		Sessions:       totals.Sessions,
-		Runs:           totals.Runs,
+		Available:             totals.Available,
+		DegradedReason:        reason,
+		InputTokens:           totals.InputTokens,
+		CachedInputTokens:     totals.CachedInputTokens,
+		OutputTokens:          totals.OutputTokens,
+		ReasoningOutputTokens: totals.ReasoningOutputTokens,
+		TotalTokens:           totals.TotalTokens,
+		RuntimeSeconds:        totals.RuntimeSeconds,
+		Sessions:              totals.Sessions,
+		Runs:                  totals.Runs,
 	}
 }
 
@@ -1001,28 +1008,36 @@ func usageBucketResponses(group store.UsageReportGroup, rows []store.UsageReport
 
 func usageBucketResponse(group store.UsageReportGroup, row store.UsageReportRow, pricing budget.PricingTable) usageBucketAPIResponse {
 	return usageBucketAPIResponse{
-		Bucket:         row.Key,
-		Label:          row.Key,
-		Date:           usageBucketDate(group, row.Key),
-		InputTokens:    row.InputTokens,
-		OutputTokens:   row.OutputTokens,
-		TotalTokens:    row.TotalTokens,
-		RuntimeSeconds: row.RuntimeSeconds,
-		Events:         row.Events,
-		SpendUSD:       usageSpendUSD(row.Models, pricing),
-		Models:         usageModelResponses(row.Models, pricing),
+		Bucket:                row.Key,
+		Label:                 row.Key,
+		Date:                  usageBucketDate(group, row.Key),
+		InputTokens:           row.InputTokens,
+		CachedInputTokens:     row.CachedInputTokens,
+		OutputTokens:          row.OutputTokens,
+		ReasoningOutputTokens: row.ReasoningOutputTokens,
+		TotalTokens:           row.TotalTokens,
+		ModelContextWindow:    row.ModelContextWindow,
+		CacheReadFraction:     usageCacheReadFraction(row.InputTokens, row.CachedInputTokens),
+		RuntimeSeconds:        row.RuntimeSeconds,
+		Events:                row.Events,
+		SpendUSD:              usageSpendUSD(row.Models, pricing),
+		Models:                usageModelResponses(row.Models, pricing),
 	}
 }
 
 func usageTotalsResponse(totals store.UsageReportTotals, pricing budget.PricingTable) usageTotalsAPIResponse {
 	return usageTotalsAPIResponse{
-		InputTokens:    totals.InputTokens,
-		OutputTokens:   totals.OutputTokens,
-		TotalTokens:    totals.TotalTokens,
-		RuntimeSeconds: totals.RuntimeSeconds,
-		Events:         totals.Events,
-		SpendUSD:       usageSpendUSD(totals.Models, pricing),
-		Models:         usageModelResponses(totals.Models, pricing),
+		InputTokens:           totals.InputTokens,
+		CachedInputTokens:     totals.CachedInputTokens,
+		OutputTokens:          totals.OutputTokens,
+		ReasoningOutputTokens: totals.ReasoningOutputTokens,
+		TotalTokens:           totals.TotalTokens,
+		ModelContextWindow:    totals.ModelContextWindow,
+		CacheReadFraction:     usageCacheReadFraction(totals.InputTokens, totals.CachedInputTokens),
+		RuntimeSeconds:        totals.RuntimeSeconds,
+		Events:                totals.Events,
+		SpendUSD:              usageSpendUSD(totals.Models, pricing),
+		Models:                usageModelResponses(totals.Models, pricing),
 	}
 }
 
@@ -1030,13 +1045,17 @@ func usageModelResponses(models []store.UsageReportModel, pricing budget.Pricing
 	payload := make([]usageModelAPIResponse, 0, len(models))
 	for _, model := range models {
 		payload = append(payload, usageModelAPIResponse{
-			Model:          model.Model,
-			InputTokens:    model.InputTokens,
-			OutputTokens:   model.OutputTokens,
-			TotalTokens:    model.TotalTokens,
-			RuntimeSeconds: model.RuntimeSeconds,
-			Events:         model.Events,
-			SpendUSD:       usageSpendUSD([]store.UsageReportModel{model}, pricing),
+			Model:                 model.Model,
+			InputTokens:           model.InputTokens,
+			CachedInputTokens:     model.CachedInputTokens,
+			OutputTokens:          model.OutputTokens,
+			ReasoningOutputTokens: model.ReasoningOutputTokens,
+			TotalTokens:           model.TotalTokens,
+			ModelContextWindow:    model.ModelContextWindow,
+			CacheReadFraction:     usageCacheReadFraction(model.InputTokens, model.CachedInputTokens),
+			RuntimeSeconds:        model.RuntimeSeconds,
+			Events:                model.Events,
+			SpendUSD:              usageSpendUSD([]store.UsageReportModel{model}, pricing),
 		})
 	}
 	return payload
@@ -1048,14 +1067,24 @@ func usageSpendUSD(models []store.UsageReportModel, pricing budget.PricingTable)
 	}
 	for _, model := range models {
 		spend.ByModel = append(spend.ByModel, store.ModelTokenSpend{
-			Model:        model.Model,
-			InputTokens:  model.InputTokens,
-			OutputTokens: model.OutputTokens,
-			TotalTokens:  model.TotalTokens,
-			Sessions:     model.Events,
+			Model:                 model.Model,
+			InputTokens:           model.InputTokens,
+			CachedInputTokens:     model.CachedInputTokens,
+			OutputTokens:          model.OutputTokens,
+			ReasoningOutputTokens: model.ReasoningOutputTokens,
+			TotalTokens:           model.TotalTokens,
+			Sessions:              model.Events,
 		})
 	}
 	return budget.SpendUSD(spend, pricing)
+}
+
+func usageCacheReadFraction(inputTokens int64, cachedInputTokens int64) float64 {
+	if inputTokens <= 0 || cachedInputTokens <= 0 {
+		return 0
+	}
+	cached := min(cachedInputTokens, inputTokens)
+	return float64(cached) / float64(inputTokens)
 }
 
 func usageBucketDate(group store.UsageReportGroup, key string) *string {
@@ -1080,29 +1109,32 @@ func workflowTimelineResponse(timeline store.WorkflowTimeline) workflowTimelineA
 	events := make([]workflowPhaseEventAPIResponse, 0, len(timeline.Events))
 	for _, event := range timeline.Events {
 		events = append(events, workflowPhaseEventAPIResponse{
-			ID:                event.ID,
-			ProjectID:         event.ProjectID,
-			RunID:             event.RunID,
-			SessionID:         event.SessionID,
-			IssueID:           event.IssueID,
-			Identifier:        event.Identifier,
-			IssueURL:          event.IssueURL,
-			PRNumber:          event.PRNumber,
-			PhaseType:         string(event.PhaseType),
-			PhaseName:         event.PhaseName,
-			PreviousPhaseName: event.PreviousPhaseName,
-			Reason:            event.Reason,
-			Status:            event.Status,
-			StartedAt:         event.StartedAt,
-			FinishedAt:        optionalTime(event.FinishedAt),
-			DurationSeconds:   event.DurationSeconds,
-			CommandName:       event.CommandName,
-			ExitCode:          event.ExitCode,
-			Turns:             event.Turns,
-			InputTokens:       event.InputTokens,
-			OutputTokens:      event.OutputTokens,
-			TotalTokens:       event.TotalTokens,
-			EndpointFamily:    event.EndpointFamily,
+			ID:                    event.ID,
+			ProjectID:             event.ProjectID,
+			RunID:                 event.RunID,
+			SessionID:             event.SessionID,
+			IssueID:               event.IssueID,
+			Identifier:            event.Identifier,
+			IssueURL:              event.IssueURL,
+			PRNumber:              event.PRNumber,
+			PhaseType:             string(event.PhaseType),
+			PhaseName:             event.PhaseName,
+			PreviousPhaseName:     event.PreviousPhaseName,
+			Reason:                event.Reason,
+			Status:                event.Status,
+			StartedAt:             event.StartedAt,
+			FinishedAt:            optionalTime(event.FinishedAt),
+			DurationSeconds:       event.DurationSeconds,
+			CommandName:           event.CommandName,
+			ExitCode:              event.ExitCode,
+			Turns:                 event.Turns,
+			InputTokens:           event.InputTokens,
+			CachedInputTokens:     event.CachedInputTokens,
+			OutputTokens:          event.OutputTokens,
+			ReasoningOutputTokens: event.ReasoningOutputTokens,
+			TotalTokens:           event.TotalTokens,
+			ModelContextWindow:    event.ModelContextWindow,
+			EndpointFamily:        event.EndpointFamily,
 		})
 	}
 	return workflowTimelineAPIResponse{Events: events}
@@ -1396,16 +1428,21 @@ type statsAPIResponse struct {
 }
 
 type tokenCountsAPIResponse struct {
-	Input  int64 `json:"input_tokens"`
-	Output int64 `json:"output_tokens"`
-	Total  int64 `json:"total_tokens"`
+	Input           int64 `json:"input_tokens"`
+	CachedInput     int64 `json:"cached_input_tokens,omitempty"`
+	Output          int64 `json:"output_tokens"`
+	ReasoningOutput int64 `json:"reasoning_output_tokens,omitempty"`
+	Total           int64 `json:"total_tokens"`
 }
 
 type tokenTotalsAPIResponse struct {
-	Input          int64   `json:"input_tokens"`
-	Output         int64   `json:"output_tokens"`
-	Total          int64   `json:"total_tokens"`
-	RuntimeSeconds float64 `json:"seconds_running"`
+	Input              int64   `json:"input_tokens"`
+	CachedInput        int64   `json:"cached_input_tokens,omitempty"`
+	Output             int64   `json:"output_tokens"`
+	ReasoningOutput    int64   `json:"reasoning_output_tokens,omitempty"`
+	Total              int64   `json:"total_tokens"`
+	ModelContextWindow *int64  `json:"model_context_window,omitempty"`
+	RuntimeSeconds     float64 `json:"seconds_running"`
 }
 
 type throughputAPIResponse struct {
@@ -1415,14 +1452,16 @@ type throughputAPIResponse struct {
 }
 
 type lifetimeTotalsResponse struct {
-	Available      bool   `json:"available"`
-	DegradedReason string `json:"degraded_reason,omitempty"`
-	InputTokens    int64  `json:"input_tokens"`
-	OutputTokens   int64  `json:"output_tokens"`
-	TotalTokens    int64  `json:"total_tokens"`
-	RuntimeSeconds int64  `json:"runtime_seconds"`
-	Sessions       int64  `json:"sessions"`
-	Runs           int64  `json:"runs"`
+	Available             bool   `json:"available"`
+	DegradedReason        string `json:"degraded_reason,omitempty"`
+	InputTokens           int64  `json:"input_tokens"`
+	CachedInputTokens     int64  `json:"cached_input_tokens,omitempty"`
+	OutputTokens          int64  `json:"output_tokens"`
+	ReasoningOutputTokens int64  `json:"reasoning_output_tokens,omitempty"`
+	TotalTokens           int64  `json:"total_tokens"`
+	RuntimeSeconds        int64  `json:"runtime_seconds"`
+	Sessions              int64  `json:"sessions"`
+	Runs                  int64  `json:"runs"`
 }
 
 type recentSessionAPIResponse struct {
@@ -1470,36 +1509,48 @@ type usageReportAPIResponse struct {
 }
 
 type usageTotalsAPIResponse struct {
-	InputTokens    int64                   `json:"input_tokens"`
-	OutputTokens   int64                   `json:"output_tokens"`
-	TotalTokens    int64                   `json:"total_tokens"`
-	RuntimeSeconds int64                   `json:"runtime_seconds"`
-	Events         int64                   `json:"events"`
-	SpendUSD       float64                 `json:"spend_usd"`
-	Models         []usageModelAPIResponse `json:"models"`
+	InputTokens           int64                   `json:"input_tokens"`
+	CachedInputTokens     int64                   `json:"cached_input_tokens"`
+	OutputTokens          int64                   `json:"output_tokens"`
+	ReasoningOutputTokens int64                   `json:"reasoning_output_tokens"`
+	TotalTokens           int64                   `json:"total_tokens"`
+	ModelContextWindow    int64                   `json:"model_context_window,omitempty"`
+	CacheReadFraction     float64                 `json:"cache_read_fraction"`
+	RuntimeSeconds        int64                   `json:"runtime_seconds"`
+	Events                int64                   `json:"events"`
+	SpendUSD              float64                 `json:"spend_usd"`
+	Models                []usageModelAPIResponse `json:"models"`
 }
 
 type usageBucketAPIResponse struct {
-	Bucket         string                  `json:"bucket"`
-	Label          string                  `json:"label"`
-	Date           *string                 `json:"date"`
-	InputTokens    int64                   `json:"input_tokens"`
-	OutputTokens   int64                   `json:"output_tokens"`
-	TotalTokens    int64                   `json:"total_tokens"`
-	RuntimeSeconds int64                   `json:"runtime_seconds"`
-	Events         int64                   `json:"events"`
-	SpendUSD       float64                 `json:"spend_usd"`
-	Models         []usageModelAPIResponse `json:"models"`
+	Bucket                string                  `json:"bucket"`
+	Label                 string                  `json:"label"`
+	Date                  *string                 `json:"date"`
+	InputTokens           int64                   `json:"input_tokens"`
+	CachedInputTokens     int64                   `json:"cached_input_tokens"`
+	OutputTokens          int64                   `json:"output_tokens"`
+	ReasoningOutputTokens int64                   `json:"reasoning_output_tokens"`
+	TotalTokens           int64                   `json:"total_tokens"`
+	ModelContextWindow    int64                   `json:"model_context_window,omitempty"`
+	CacheReadFraction     float64                 `json:"cache_read_fraction"`
+	RuntimeSeconds        int64                   `json:"runtime_seconds"`
+	Events                int64                   `json:"events"`
+	SpendUSD              float64                 `json:"spend_usd"`
+	Models                []usageModelAPIResponse `json:"models"`
 }
 
 type usageModelAPIResponse struct {
-	Model          string  `json:"model"`
-	InputTokens    int64   `json:"input_tokens"`
-	OutputTokens   int64   `json:"output_tokens"`
-	TotalTokens    int64   `json:"total_tokens"`
-	RuntimeSeconds int64   `json:"runtime_seconds"`
-	Events         int64   `json:"events"`
-	SpendUSD       float64 `json:"spend_usd"`
+	Model                 string  `json:"model"`
+	InputTokens           int64   `json:"input_tokens"`
+	CachedInputTokens     int64   `json:"cached_input_tokens"`
+	OutputTokens          int64   `json:"output_tokens"`
+	ReasoningOutputTokens int64   `json:"reasoning_output_tokens"`
+	TotalTokens           int64   `json:"total_tokens"`
+	ModelContextWindow    int64   `json:"model_context_window,omitempty"`
+	CacheReadFraction     float64 `json:"cache_read_fraction"`
+	RuntimeSeconds        int64   `json:"runtime_seconds"`
+	Events                int64   `json:"events"`
+	SpendUSD              float64 `json:"spend_usd"`
 }
 
 type workflowTimelineAPIResponse struct {
@@ -1507,29 +1558,32 @@ type workflowTimelineAPIResponse struct {
 }
 
 type workflowPhaseEventAPIResponse struct {
-	ID                int64      `json:"id"`
-	ProjectID         string     `json:"project_id"`
-	RunID             int64      `json:"run_id,omitempty"`
-	SessionID         int64      `json:"session_id,omitempty"`
-	IssueID           string     `json:"issue_id,omitempty"`
-	Identifier        string     `json:"identifier,omitempty"`
-	IssueURL          string     `json:"issue_url,omitempty"`
-	PRNumber          *int64     `json:"pr_number,omitempty"`
-	PhaseType         string     `json:"phase_type"`
-	PhaseName         string     `json:"phase_name"`
-	PreviousPhaseName string     `json:"previous_phase_name,omitempty"`
-	Reason            string     `json:"reason,omitempty"`
-	Status            string     `json:"status,omitempty"`
-	StartedAt         time.Time  `json:"started_at"`
-	FinishedAt        *time.Time `json:"finished_at,omitempty"`
-	DurationSeconds   int64      `json:"duration_seconds"`
-	CommandName       string     `json:"command_name,omitempty"`
-	ExitCode          *int64     `json:"exit_code,omitempty"`
-	Turns             int64      `json:"turns,omitempty"`
-	InputTokens       int64      `json:"input_tokens,omitempty"`
-	OutputTokens      int64      `json:"output_tokens,omitempty"`
-	TotalTokens       int64      `json:"total_tokens,omitempty"`
-	EndpointFamily    string     `json:"endpoint_family,omitempty"`
+	ID                    int64      `json:"id"`
+	ProjectID             string     `json:"project_id"`
+	RunID                 int64      `json:"run_id,omitempty"`
+	SessionID             int64      `json:"session_id,omitempty"`
+	IssueID               string     `json:"issue_id,omitempty"`
+	Identifier            string     `json:"identifier,omitempty"`
+	IssueURL              string     `json:"issue_url,omitempty"`
+	PRNumber              *int64     `json:"pr_number,omitempty"`
+	PhaseType             string     `json:"phase_type"`
+	PhaseName             string     `json:"phase_name"`
+	PreviousPhaseName     string     `json:"previous_phase_name,omitempty"`
+	Reason                string     `json:"reason,omitempty"`
+	Status                string     `json:"status,omitempty"`
+	StartedAt             time.Time  `json:"started_at"`
+	FinishedAt            *time.Time `json:"finished_at,omitempty"`
+	DurationSeconds       int64      `json:"duration_seconds"`
+	CommandName           string     `json:"command_name,omitempty"`
+	ExitCode              *int64     `json:"exit_code,omitempty"`
+	Turns                 int64      `json:"turns,omitempty"`
+	InputTokens           int64      `json:"input_tokens,omitempty"`
+	CachedInputTokens     int64      `json:"cached_input_tokens,omitempty"`
+	OutputTokens          int64      `json:"output_tokens,omitempty"`
+	ReasoningOutputTokens int64      `json:"reasoning_output_tokens,omitempty"`
+	TotalTokens           int64      `json:"total_tokens,omitempty"`
+	ModelContextWindow    *int64     `json:"model_context_window,omitempty"`
+	EndpointFamily        string     `json:"endpoint_family,omitempty"`
 }
 
 type issueAPIResponse struct {

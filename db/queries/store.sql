@@ -39,12 +39,15 @@ INSERT INTO codex_sessions (
   completed_at,
   turns,
   input_tokens,
+  cached_input_tokens,
   output_tokens,
+  reasoning_output_tokens,
   total_tokens,
+  model_context_window,
   runtime_seconds,
   final_state,
   model
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetCodexSession :one
@@ -57,8 +60,11 @@ UPDATE codex_sessions
 SET completed_at = ?,
     turns = ?,
     input_tokens = ?,
+    cached_input_tokens = ?,
     output_tokens = ?,
+    reasoning_output_tokens = ?,
     total_tokens = ?,
+    model_context_window = COALESCE(?, model_context_window),
     runtime_seconds = ?,
     final_state = ?,
     model = COALESCE(?, model)
@@ -103,7 +109,9 @@ ORDER BY completed_at DESC, issue_key;
 -- name: LifetimeTotals :one
 SELECT
   CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(cached_input_tokens), 0) AS INTEGER) AS cached_input_tokens,
   CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(reasoning_output_tokens), 0) AS INTEGER) AS reasoning_output_tokens,
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COALESCE(SUM(runtime_seconds), 0) AS INTEGER) AS runtime_seconds,
   CAST(COUNT(*) AS INTEGER) AS sessions,
@@ -115,7 +123,9 @@ WHERE completed_at IS NOT NULL;
 SELECT
   CAST(COALESCE(model, '') AS TEXT) AS model,
   CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(cached_input_tokens), 0) AS INTEGER) AS cached_input_tokens,
   CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(reasoning_output_tokens), 0) AS INTEGER) AS reasoning_output_tokens,
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions
 FROM codex_sessions
@@ -127,7 +137,9 @@ ORDER BY COALESCE(model, '');
 SELECT
   CAST(COALESCE(model, '') AS TEXT) AS model,
   CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(cached_input_tokens), 0) AS INTEGER) AS cached_input_tokens,
   CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(reasoning_output_tokens), 0) AS INTEGER) AS reasoning_output_tokens,
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions
 FROM codex_sessions
@@ -147,15 +159,18 @@ INSERT INTO usage_events (
   pr_number,
   model,
   input_tokens,
+  cached_input_tokens,
   output_tokens,
+  reasoning_output_tokens,
   total_tokens,
+  model_context_window,
   cost_usd,
   runtime_seconds,
   started_at,
   finished_at,
   event_day,
   outcome
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetUsageEvent :one
@@ -176,8 +191,11 @@ WITH usage_report_rows AS (
     END AS group_key,
     COALESCE(NULLIF(model, ''), 'unassigned') AS model,
     input_tokens,
+    cached_input_tokens,
     output_tokens,
+    reasoning_output_tokens,
     total_tokens,
+    model_context_window,
     runtime_seconds
   FROM usage_events
   WHERE (sqlc.narg(from_day) IS NULL OR event_day >= sqlc.narg(from_day))
@@ -187,8 +205,11 @@ SELECT
   CAST(usage_report_rows.group_key AS TEXT) AS group_key,
   CAST(usage_report_rows.model AS TEXT) AS model,
   CAST(COALESCE(SUM(usage_report_rows.input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(usage_report_rows.cached_input_tokens), 0) AS INTEGER) AS cached_input_tokens,
   CAST(COALESCE(SUM(usage_report_rows.output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(usage_report_rows.reasoning_output_tokens), 0) AS INTEGER) AS reasoning_output_tokens,
   CAST(COALESCE(SUM(usage_report_rows.total_tokens), 0) AS INTEGER) AS total_tokens,
+  CAST(COALESCE(MAX(usage_report_rows.model_context_window), 0) AS INTEGER) AS model_context_window,
   CAST(COALESCE(SUM(usage_report_rows.runtime_seconds), 0) AS INTEGER) AS runtime_seconds,
   CAST(COUNT(*) AS INTEGER) AS events
 FROM usage_report_rows
@@ -252,40 +273,18 @@ INSERT INTO workflow_phase_events (
   exit_code,
   turns,
   input_tokens,
+  cached_input_tokens,
   output_tokens,
+  reasoning_output_tokens,
   total_tokens,
+  model_context_window,
   endpoint_family,
   metadata_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: WorkflowPhaseDurationRows :many
-SELECT
-  id,
-  project_id,
-  run_id,
-  session_id,
-  issue_id,
-  identifier,
-  issue_url,
-  pr_number,
-  phase_type,
-  phase_name,
-  previous_phase_name,
-  reason,
-  status,
-  started_at,
-  finished_at,
-  duration_seconds,
-  event_day,
-  command_name,
-  exit_code,
-  turns,
-  input_tokens,
-  output_tokens,
-  total_tokens,
-  endpoint_family,
-  metadata_json
+SELECT *
 FROM workflow_phase_events
 WHERE finished_at IS NOT NULL
   AND (sqlc.narg(project_id) IS NULL OR project_id = sqlc.narg(project_id))
@@ -294,32 +293,7 @@ WHERE finished_at IS NOT NULL
 ORDER BY project_id, phase_type, phase_name, finished_at, id;
 
 -- name: WorkflowPhaseFlowRows :many
-SELECT
-  event.id,
-  event.project_id,
-  event.run_id,
-  event.session_id,
-  event.issue_id,
-  event.identifier,
-  event.issue_url,
-  event.pr_number,
-  event.phase_type,
-  event.phase_name,
-  event.previous_phase_name,
-  event.reason,
-  event.status,
-  event.started_at,
-  event.finished_at,
-  event.duration_seconds,
-  event.event_day,
-  event.command_name,
-  event.exit_code,
-  event.turns,
-  event.input_tokens,
-  event.output_tokens,
-  event.total_tokens,
-  event.endpoint_family,
-  event.metadata_json
+SELECT event.*
 FROM workflow_phase_events AS event
 WHERE event.finished_at IS NOT NULL
   AND event.phase_type IN ('agent_session', 'local_check', 'ci')
@@ -345,32 +319,7 @@ WHERE event.finished_at IS NOT NULL
 ORDER BY event.project_id, event.phase_type, event.phase_name, event.finished_at, event.id;
 
 -- name: IssueWorkflowTimelineRows :many
-SELECT
-  id,
-  project_id,
-  run_id,
-  session_id,
-  issue_id,
-  identifier,
-  issue_url,
-  pr_number,
-  phase_type,
-  phase_name,
-  previous_phase_name,
-  reason,
-  status,
-  started_at,
-  finished_at,
-  duration_seconds,
-  event_day,
-  command_name,
-  exit_code,
-  turns,
-  input_tokens,
-  output_tokens,
-  total_tokens,
-  endpoint_family,
-  metadata_json
+SELECT *
 FROM workflow_phase_events
 WHERE issue_id = sqlc.arg(issue_id)
    OR identifier = sqlc.arg(identifier)
