@@ -116,6 +116,60 @@ func TestCommandSpecUsesConfiguredShell(t *testing.T) {
 	}
 }
 
+func TestCommandSpecWithArgsQuotesForConfiguredShell(t *testing.T) {
+	t.Parallel()
+
+	args := []string{"-p", "--model", "fable", "Bash(git *)", "quoted'value", "percent%value"}
+	tests := []struct {
+		name     string
+		goos     string
+		shell    string
+		wantName string
+		wantArgs []string
+	}{
+		{
+			name:     "unix",
+			goos:     "linux",
+			wantName: "sh",
+			wantArgs: []string{"-c", "claude '-p' '--model' 'fable' 'Bash(git *)' 'quoted'\\''value' 'percent%value'"},
+		},
+		{
+			name:     "windows cmd",
+			goos:     "windows",
+			wantName: "cmd",
+			wantArgs: []string{"/C", `claude "-p" "--model" "fable" "Bash(git *)" "quoted'value" "percent%%value"`},
+		},
+		{
+			name:     "windows powershell",
+			goos:     "windows",
+			shell:    "pwsh",
+			wantName: "pwsh",
+			wantArgs: []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "claude '-p' '--model' 'fable' 'Bash(git *)' 'quoted''value' 'percent%value'"},
+		},
+		{
+			name:     "windows posix shell",
+			goos:     "windows",
+			shell:    "bash",
+			wantName: "bash",
+			wantArgs: []string{"-c", "claude '-p' '--model' 'fable' 'Bash(git *)' 'quoted'\\''value' 'percent%value'"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := CommandSpecWithArgsForOS("claude", tt.shell, args, tt.goos)
+			if got.Name != tt.wantName {
+				t.Fatalf("Name = %q, want %q", got.Name, tt.wantName)
+			}
+			if !reflect.DeepEqual(got.Args, tt.wantArgs) {
+				t.Fatalf("Args = %#v, want %#v", got.Args, tt.wantArgs)
+			}
+		})
+	}
+}
+
 func TestCommandBuildsExecCommand(t *testing.T) {
 	t.Parallel()
 

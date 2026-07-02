@@ -177,8 +177,8 @@ func buildClaudeAgentBackend(command string, cfg workflowconfig.ClaudeCodeOption
 	}
 
 	backend, err := claudecode.NewAgentBackend(claudecode.Options{
-		CommandFactory: func(ctx context.Context) *exec.Cmd {
-			return buildClaudeCommandFromConfig(ctx, command, cfg.Shell)
+		CommandFactoryWithArgs: func(ctx context.Context, args []string) *exec.Cmd {
+			return buildClaudeCommandFromConfig(ctx, command, cfg.Shell, args)
 		},
 		PermissionMode:         cfg.PermissionMode,
 		AllowedTools:           cfg.AllowedTools,
@@ -234,8 +234,8 @@ func buildCodexCommandFromConfig(ctx context.Context, command string, shell stri
 	return commandshell.Command(ctx, strings.TrimSpace(command), shell)
 }
 
-func buildClaudeCommandFromConfig(ctx context.Context, command string, shell string) *exec.Cmd {
-	return commandshell.Command(ctx, strings.TrimSpace(command)+` "$0" "$@"`, shell)
+func buildClaudeCommandFromConfig(ctx context.Context, command string, shell string, args []string) *exec.Cmd {
+	return commandshell.CommandWithArgs(ctx, strings.TrimSpace(command), shell, args)
 }
 
 // publishSnapshots ticks at interval, building a merged telemetry snapshot

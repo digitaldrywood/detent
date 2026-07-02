@@ -24,8 +24,11 @@ var (
 
 type CommandFactory func(context.Context) *exec.Cmd
 
+type CommandFactoryWithArgs func(context.Context, []string) *exec.Cmd
+
 type Options struct {
 	CommandFactory         CommandFactory
+	CommandFactoryWithArgs CommandFactoryWithArgs
 	PermissionMode         string
 	AllowedTools           []string
 	DisallowedTools        []string
@@ -44,7 +47,7 @@ type AgentBackend struct {
 var _ runner.AgentBackend = (*AgentBackend)(nil)
 
 func NewAgentBackend(options Options) (*AgentBackend, error) {
-	if options.CommandFactory == nil {
+	if options.CommandFactory == nil && options.CommandFactoryWithArgs == nil {
 		options.CommandFactory = defaultCommandFactory
 	}
 	if options.MaxScanTokenSize <= 0 {
