@@ -1,0 +1,159 @@
+package workspace
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+const (
+	defaultMergeRemote       = "origin"
+	defaultMergeTargetBranch = "main"
+)
+
+func (l *LocalGit) PrepareMerge(
+	ctx context.Context,
+	info Info,
+	issue Issue,
+	opts MergePrepareOptions,
+) (MergePrepareResult, error) {
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return MergePrepareResult{}, err
+	}
+	remote := strings.TrimSpace(opts.Remote)
+	if remote == "" {
+		remote = defaultMergeRemote
+	}
+	targetBranch := strings.TrimSpace(opts.TargetBranch)
+	if targetBranch == "" {
+		targetBranch = defaultMergeTargetBranch
+	}
+	targetRef := remote + "/" + targetBranch
+
+	if _, err := runGitAt(ctx, normalized.Path, "fetch", remote, targetBranch); err != nil {
+		return MergePrepareResult{}, errors.Join(
+			fmt.Errorf("git fetch %s %s: %w", remote, targetBranch, err),
+			abortRebaseIfInProgress(ctx, normalized.Path),
+		)
+	}
+	if _, err := runGitAt(ctx, normalized.Path, "rebase", targetRef); err != nil {
+		abortErr := abortRebaseIfInProgress(ctx, normalized.Path)
+		if abortErr != nil {
+			return MergePrepareResult{}, errors.Join(
+				fmt.Errorf("git rebase %s: %w", targetRef, err),
+				abortErr,
+			)
+		}
+		return MergePrepareResult{
+			Status:  MergePrepareStatusConflict,
+			Message: commandErrorOutput(err),
+		}, nil
+	}
+
+	diffStat, err := l.DiffStat(ctx, normalized, issue)
+	if err != nil {
+		return MergePrepareResult{}, errors.Join(
+			fmt.Errorf("workspace diff stat after rebase: %w", err),
+			abortRebaseIfInProgress(ctx, normalized.Path),
+		)
+	}
+	if diffStat != (DiffStat{}) {
+		return MergePrepareResult{Status: MergePrepareStatusDirty, DiffStat: diffStat}, nil
+	}
+
+	branch := strings.TrimSpace(normalized.Branch)
+	if branch == "" {
+		return MergePrepareResult{}, errors.New("workspace branch is required for merge fast-path push")
+	}
+	remoteHead, remoteBranchExists, err := remoteBranchHead(ctx, normalized.Path, remote, branch)
+	if err != nil {
+		return MergePrepareResult{}, errors.Join(
+			fmt.Errorf("inspect remote branch %s/%s: %w", remote, branch, err),
+			abortRebaseIfInProgress(ctx, normalized.Path),
+		)
+	}
+	pushArgs := []string{"push"}
+	if remoteBranchExists {
+		pushArgs = append(pushArgs, "--force-with-lease=refs/heads/"+branch+":"+remoteHead)
+	}
+	pushArgs = append(pushArgs, remote, "HEAD:"+branch)
+	if _, err := runGitAt(ctx, normalized.Path, pushArgs...); err != nil {
+		return MergePrepareResult{}, errors.Join(
+			fmt.Errorf("git %s: %w", strings.Join(pushArgs, " "), err),
+			abortRebaseIfInProgress(ctx, normalized.Path),
+		)
+	}
+	return MergePrepareResult{Status: MergePrepareStatusClean, DiffStat: diffStat}, nil
+}
+
+func remoteBranchHead(ctx context.Context, workspacePath string, remote string, branch string) (string, bool, error) {
+	ref := "refs/heads/" + branch
+	output, err := runGitAt(ctx, workspacePath, "ls-remote", remote, ref)
+	if err != nil {
+		return "", false, err
+	}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[1] != ref {
+			continue
+		}
+		return fields[0], true, nil
+	}
+	return "", false, nil
+}
+
+func abortRebaseIfInProgress(ctx context.Context, workspacePath string) error {
+	inProgress, err := rebaseInProgress(ctx, workspacePath)
+	if err != nil {
+		return err
+	}
+	if !inProgress {
+		return nil
+	}
+	if _, err := runGitAt(ctx, workspacePath, "rebase", "--abort"); err != nil {
+		return fmt.Errorf("git rebase --abort: %w", err)
+	}
+	return nil
+}
+
+func rebaseInProgress(ctx context.Context, workspacePath string) (bool, error) {
+	for _, gitPath := range []string{"rebase-merge", "rebase-apply"} {
+		path, err := gitPathFor(ctx, workspacePath, gitPath)
+		if err != nil {
+			return false, err
+		}
+		if _, err := os.Stat(path); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+func gitPathFor(ctx context.Context, workspacePath string, gitPath string) (string, error) {
+	output, err := runGitAt(ctx, workspacePath, "rev-parse", "--git-path", gitPath)
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(output)
+	if path == "" {
+		return "", errors.New("git path is empty")
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(workspacePath, path)
+	}
+	return filepath.Clean(path), nil
+}
+
+func commandErrorOutput(err error) string {
+	var commandErr *CommandError
+	if errors.As(err, &commandErr) {
+		return strings.TrimSpace(commandErr.Output)
+	}
+	return strings.TrimSpace(err.Error())
+}

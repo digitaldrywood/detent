@@ -613,6 +613,120 @@ func TestSessionTokenCeilingForUsageUsesTightestConfiguredLimit(t *testing.T) {
 	}
 }
 
+func TestRunnerMergeModeCleanPrecheckSkipsAgent(t *testing.T) {
+	t.Parallel()
+
+	workspacePath := t.TempDir()
+	workspaceBackend := &fakeMergeWorkspaceBackend{
+		fakeWorkspaceBackend: fakeWorkspaceBackend{
+			info: workspace.Info{
+				Path:   workspacePath,
+				Key:    "digitaldrywood_detent_860",
+				Branch: "detent/digitaldrywood_detent_860",
+			},
+		},
+		prepareResult: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean},
+	}
+	codexClient := &fakeCodexClient{}
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}},
+		Workspace:    workspaceBackend,
+		AgentBackend: codexClient,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-860",
+			Identifier: "digitaldrywood/detent#860",
+			BranchName: "detent/digitaldrywood_detent_860",
+		},
+		Mode: RunModeMerge,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.FinalState != FinalStateCompleted {
+		t.Fatalf("FinalState = %q, want completed", result.FinalState)
+	}
+	if !workspaceBackend.prepareCalled {
+		t.Fatal("PrepareMerge() was not called")
+	}
+	if !workspaceBackend.afterRun {
+		t.Fatal("AfterRun() was not called")
+	}
+	if codexClient.request.Prompt != "" {
+		t.Fatalf("agent prompt = %q, want no agent dispatch", codexClient.request.Prompt)
+	}
+}
+
+func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
+	t.Parallel()
+
+	workspacePath := t.TempDir()
+	workspaceBackend := &fakeMergeWorkspaceBackend{
+		fakeWorkspaceBackend: fakeWorkspaceBackend{
+			info: workspace.Info{
+				Path:   workspacePath,
+				Key:    "digitaldrywood_detent_860",
+				Branch: "detent/digitaldrywood_detent_860",
+			},
+		},
+		prepareResult: workspace.MergePrepareResult{
+			Status:  workspace.MergePrepareStatusConflict,
+			Message: "CONFLICT (content): Merge conflict in README.md",
+		},
+	}
+	codexClient := &fakeCodexClient{
+		result: AgentTurnResult{ThreadID: "thread-merge", TurnID: "turn-1"},
+	}
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{},
+			Prompt: "Full implement workflow playbook for {{ issue.identifier }}",
+		},
+		Workspace:    workspaceBackend,
+		AgentBackend: codexClient,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-860",
+			Identifier: "digitaldrywood/detent#860",
+			Title:      "Deterministic merge fast-path",
+			BranchName: "detent/digitaldrywood_detent_860",
+			PullRequest: &connector.PullRequest{
+				URL: "https://github.com/digitaldrywood/detent/pull/900",
+			},
+		},
+		Mode: RunModeMerge,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	prompt := codexClient.request.Prompt
+	for _, want := range []string{
+		"merge-worker fallback",
+		"Deterministic merge pre-check status: conflict",
+		"CONFLICT (content): Merge conflict in README.md",
+		"Re-run the fetch/rebase onto the target branch",
+		"https://github.com/digitaldrywood/detent/pull/900",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "Full implement workflow playbook") {
+		t.Fatalf("prompt included full workflow playbook:\n%s", prompt)
+	}
+}
+
 func TestRunnerRunAddsGitMetadataExtraRootsForManagedWorkspace(t *testing.T) {
 	t.Parallel()
 
@@ -1507,6 +1621,23 @@ func (b *fakeWorkspaceBackend) DiffStat(context.Context, workspace.Info, workspa
 		return b.diffStats[index], nil
 	}
 	return b.diffStat, nil
+}
+
+type fakeMergeWorkspaceBackend struct {
+	fakeWorkspaceBackend
+	prepareResult workspace.MergePrepareResult
+	prepareErr    error
+	prepareCalled bool
+}
+
+func (b *fakeMergeWorkspaceBackend) PrepareMerge(
+	context.Context,
+	workspace.Info,
+	workspace.Issue,
+	workspace.MergePrepareOptions,
+) (workspace.MergePrepareResult, error) {
+	b.prepareCalled = true
+	return b.prepareResult, b.prepareErr
 }
 
 type fakeCodexClient struct {

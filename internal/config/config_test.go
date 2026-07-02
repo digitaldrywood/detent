@@ -567,6 +567,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if cfg.Agent.MaxSessionContextMultiplier != 0 {
 		t.Fatalf("Agent.MaxSessionContextMultiplier = %v, want disabled default", cfg.Agent.MaxSessionContextMultiplier)
 	}
+	if cfg.Agent.MergeFastPath.Enabled {
+		t.Fatal("Agent.MergeFastPath.Enabled = true, want false default")
+	}
 	if cfg.Agent.Shutdown.DrainTimeoutMS != DefaultShutdownDrainTimeoutMS {
 		t.Fatalf("Agent.Shutdown.DrainTimeoutMS = %d, want %d", cfg.Agent.Shutdown.DrainTimeoutMS, DefaultShutdownDrainTimeoutMS)
 	}
@@ -633,6 +636,24 @@ func TestValidatePlanRejectsInvalidConfig(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("Validate() error = %v, want %q", err, want)
 		}
+	}
+}
+
+func TestParseWorkflowAgentMergeFastPath(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+agent:
+  merge_fast_path:
+    enabled: true
+---
+Body
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if !workflow.Config.Agent.MergeFastPath.Enabled {
+		t.Fatal("Agent.MergeFastPath.Enabled = false, want true")
 	}
 }
 

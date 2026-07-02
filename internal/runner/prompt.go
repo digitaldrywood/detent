@@ -37,13 +37,16 @@ var (
 )
 
 type PromptOptions struct {
-	Attempt         *int
-	PlanOnly        bool
-	WorkspacePath   string
-	Branch          string
-	AutoBranch      *bool
-	AvailableSkills []skills.Skill
-	PriorAttempt    PriorAttempt
+	Attempt              *int
+	PlanOnly             bool
+	MergeFallback        bool
+	MergePrecheckStatus  string
+	MergePrecheckMessage string
+	WorkspacePath        string
+	Branch               string
+	AutoBranch           *bool
+	AvailableSkills      []skills.Skill
+	PriorAttempt         PriorAttempt
 }
 
 type ValidatorPromptOptions struct {
@@ -57,6 +60,10 @@ type ValidatorPromptOptions struct {
 }
 
 func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOptions) (string, error) {
+	if opts.MergeFallback {
+		return BuildMergeFallbackPrompt(workflow, issue, opts)
+	}
+
 	template := workflow.Prompt
 	if strings.TrimSpace(template) == "" {
 		template = DefaultPromptTemplate
@@ -92,6 +99,52 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		return rendered, nil
 	}
 	return appendClosingReferenceInstruction(rendered, issue), nil
+}
+
+func BuildMergeFallbackPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOptions) (string, error) {
+	var b strings.Builder
+	b.WriteString("You are resolving a Detent merge-worker fallback for ")
+	b.WriteString(issue.Identifier)
+	if title := strings.TrimSpace(issue.Title); title != "" {
+		b.WriteString(": ")
+		b.WriteString(title)
+	}
+	b.WriteString(".\n\n")
+	if status := strings.TrimSpace(opts.MergePrecheckStatus); status != "" {
+		b.WriteString("Deterministic merge pre-check status: ")
+		b.WriteString(status)
+		b.WriteString("\n")
+	}
+	if message := strings.TrimSpace(opts.MergePrecheckMessage); message != "" {
+		b.WriteString("\nPre-check output:\n")
+		b.WriteString(message)
+		b.WriteString("\n")
+	}
+	if issue.PullRequest != nil && strings.TrimSpace(issue.PullRequest.URL) != "" {
+		b.WriteString("\nPull request: ")
+		b.WriteString(strings.TrimSpace(issue.PullRequest.URL))
+		b.WriteString("\n")
+	}
+	b.WriteString("\nYour task is only to finish the merge-worker handoff:\n")
+	b.WriteString("- Re-run the fetch/rebase onto the target branch if needed.\n")
+	b.WriteString("- Resolve merge conflicts or other rebase blockers without unrelated refactors.\n")
+	b.WriteString("- Run the focused merge gate when the branch is source-clean; run the full configured gate if you edit code, resolve conflicts, or validation state is stale.\n")
+	b.WriteString("- Push the branch with lease protection after a successful rebase; never use an unguarded force-push.\n")
+	b.WriteString("- Leave the issue in Merging with a concrete blocker if the merge cannot continue without human action.\n")
+
+	prompt := prependWorkspaceIsolationBlock(b.String(), workflow.Config, opts.WorkspacePath, opts.Branch)
+	var err error
+	prompt, err = appendNotesBlock(prompt, opts.WorkspacePath)
+	if err != nil {
+		return "", err
+	}
+	prompt = appendBlockedHandoffBlock(prompt)
+	prompt = appendGateBlock(prompt, workflow.Config.Gate)
+	prompt = appendAvailableSkills(prompt, AvailableSkillsBlock(opts.AvailableSkills))
+	if promptDeliverableKind(workflow.Config.Deliverable) != config.DeliverablePullRequest {
+		return prompt, nil
+	}
+	return appendClosingReferenceInstruction(prompt, issue), nil
 }
 
 func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts ValidatorPromptOptions) string {

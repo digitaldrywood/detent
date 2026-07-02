@@ -57,6 +57,7 @@ type Config struct {
 	MaxConcurrentAgentsByState    map[string]int
 	DispatchPriorityByState       []string
 	DispatchPriorityByLabel       []string
+	MergeFastPathEnabled          bool
 	MaxConcurrentAgentsPerHost    int
 	MaxRetryBackoff               time.Duration
 	Project                       scheduler.ProjectCandidate
@@ -188,6 +189,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		MaxConcurrentAgentsByState: cloneStateLimits(cfg.Agent.MaxConcurrentAgentsByState),
 		DispatchPriorityByState:    append([]string(nil), cfg.Agent.DispatchPriorityByState...),
 		DispatchPriorityByLabel:    append([]string(nil), cfg.Agent.DispatchPriorityByLabel...),
+		MergeFastPathEnabled:       cfg.Agent.MergeFastPath.Enabled,
 		MaxConcurrentAgentsPerHost: positiveIntValue(cfg.Worker.MaxConcurrentAgentsPerHost),
 		MaxRetryBackoff:            durationFromMillis(cfg.Agent.MaxRetryBackoffMS),
 		Claiming: ClaimingConfig{
@@ -1715,6 +1717,9 @@ func dispatchStartTransitionState(issue connector.Issue, mode string, activeStat
 }
 
 func (o *Orchestrator) dispatchMode(state *State, issue connector.Issue) string {
+	if normalizeState(issue.State) == normalizeState(autoPromoteMergingState) && o.cfg.MergeFastPathEnabled {
+		return runpkg.RunModeMerge
+	}
 	cfg := gate.EffectivePlan(o.cfg.Plan)
 	if !cfg.Enabled {
 		return runpkg.RunModeImplement
@@ -2146,6 +2151,10 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	}
 	issue = refreshedIssue
 	if !mergeWorkerProgrammaticMergeReady(issue) {
+		if mergeFastPathCleanResult(event) && mergeWorkerProgrammaticMergeWaiting(issue) {
+			o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
+			return true
+		}
 		return false
 	}
 	merger, ok := o.connector.(connector.PullRequestMerger)
@@ -2209,6 +2218,30 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	return true
 }
 
+func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+) {
+	running.Issue = issue
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", "merge fast-path waiting for current-head CI")
+	attempt := running.Attempt
+	if attempt < 1 {
+		attempt = 1
+	}
+	o.scheduleRetry(state, issue, attempt, event.CompletedAt, "waiting for current-head CI", true, running.WorkerHost)
+	if o.logger != nil {
+		o.logger.Info("merge_worker_waiting_current_head_ci", mergeWorkerLogAttrs(issue, "attempt", attempt)...)
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "merge_worker_waiting_current_head_ci",
+		Message: "merge worker is waiting for current-head CI for " + issueLabel(issue),
+	})
+}
+
 func (o *Orchestrator) failProgrammaticMergeWorkerResult(
 	ctx context.Context,
 	state *State,
@@ -2246,6 +2279,11 @@ func mergeWorkerTurnSucceeded(event runpkg.Completion) bool {
 	return event.Err == nil && !strings.EqualFold(strings.TrimSpace(event.Result.FinalState), runpkg.FinalStateFailed)
 }
 
+func mergeFastPathCleanResult(event runpkg.Completion) bool {
+	return event.Request.Mode == runpkg.RunModeMerge &&
+		strings.TrimSpace(event.Result.Output) == runpkg.RunOutputMergeFastPathClean
+}
+
 func mergeWorkerProgrammaticMergeReady(issue connector.Issue) bool {
 	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
 		return false
@@ -2266,6 +2304,31 @@ func mergeWorkerProgrammaticMergeReady(issue connector.Issue) bool {
 	return pullRequestRepository(issue) != "" &&
 		pullRequestNumber(issue) > 0 &&
 		strings.TrimSpace(pullRequest.HeadSHA) != ""
+}
+
+func mergeWorkerProgrammaticMergeWaiting(issue connector.Issue) bool {
+	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
+		return false
+	}
+	pullRequest := issue.PullRequest
+	if pullRequestHydrationBlocksProgress(pullRequest) {
+		return false
+	}
+	if normalizePullRequestState(pullRequest.State) != "open" || pullRequest.Draft {
+		return false
+	}
+	if mergeable := strings.ToLower(strings.TrimSpace(pullRequest.MergeableState)); mergeable != "" && mergeable != "clean" && mergeable != "unknown" {
+		return false
+	}
+	if pullRequestRepository(issue) == "" || pullRequestNumber(issue) <= 0 || strings.TrimSpace(pullRequest.HeadSHA) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(pullRequest.CIStatus)) {
+	case "", "pending", "running", "queued", "in_progress", "waiting":
+		return true
+	default:
+		return false
+	}
 }
 
 func mergeWorkerCIGreen(status string) bool {

@@ -231,6 +231,130 @@ func TestLocalGitCreateAndCleanupWithoutHooks(t *testing.T) {
 	}
 }
 
+func TestLocalGitPrepareMergeRebasesAndPushesCleanBranch(t *testing.T) {
+	t.Parallel()
+
+	source := initSourceRepo(t)
+	remote := initBareRemote(t)
+	runGit(t, source, "remote", "add", "origin", remote)
+	runGit(t, source, "push", "-u", "origin", "main")
+
+	root := filepath.Join(t.TempDir(), "workspaces")
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+	preparer, ok := backend.(MergePreparer)
+	if !ok {
+		t.Fatal("backend does not implement MergePreparer")
+	}
+	issue := Issue{Identifier: "DD-MERGE"}
+	info, err := backend.Create(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(info.Path, "feature.txt"), []byte("feature\n"), 0o600); err != nil {
+		t.Fatalf("write feature: %v", err)
+	}
+	runGit(t, info.Path, "add", "feature.txt")
+	runGit(t, info.Path, "commit", "-m", "feature")
+	runGit(t, info.Path, "push", "origin", "HEAD:"+info.Branch)
+
+	if err := os.WriteFile(filepath.Join(source, "main.txt"), []byte("main\n"), 0o600); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+	runGit(t, source, "add", "main.txt")
+	runGit(t, source, "commit", "-m", "main change")
+	runGit(t, source, "push", "origin", "main")
+
+	result, err := preparer.PrepareMerge(context.Background(), info, issue, MergePrepareOptions{})
+	if err != nil {
+		t.Fatalf("PrepareMerge() error = %v", err)
+	}
+	if result.Status != MergePrepareStatusClean {
+		t.Fatalf("PrepareMerge() status = %q, want clean", result.Status)
+	}
+	if result.DiffStat != (DiffStat{}) {
+		t.Fatalf("PrepareMerge() DiffStat = %#v, want zero", result.DiffStat)
+	}
+	if got := readFile(t, filepath.Join(info.Path, "main.txt")); got != "main\n" {
+		t.Fatalf("main.txt = %q, want rebased main file", got)
+	}
+	head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+	remoteHead := strings.Fields(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch))
+	if len(remoteHead) == 0 || remoteHead[0] != head {
+		t.Fatalf("remote branch head = %#v, want %s", remoteHead, head)
+	}
+}
+
+func TestLocalGitPrepareMergeAbortsConflictingRebase(t *testing.T) {
+	t.Parallel()
+
+	source := initSourceRepo(t)
+	remote := initBareRemote(t)
+	runGit(t, source, "remote", "add", "origin", remote)
+	runGit(t, source, "push", "-u", "origin", "main")
+
+	root := filepath.Join(t.TempDir(), "workspaces")
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+	preparer, ok := backend.(MergePreparer)
+	if !ok {
+		t.Fatal("backend does not implement MergePreparer")
+	}
+	issue := Issue{Identifier: "DD-CONFLICT"}
+	info, err := backend.Create(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("feature\n"), 0o600); err != nil {
+		t.Fatalf("write feature README: %v", err)
+	}
+	runGit(t, info.Path, "add", "README.md")
+	runGit(t, info.Path, "commit", "-m", "feature conflict")
+
+	if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("main\n"), 0o600); err != nil {
+		t.Fatalf("write main README: %v", err)
+	}
+	runGit(t, source, "add", "README.md")
+	runGit(t, source, "commit", "-m", "main conflict")
+	runGit(t, source, "push", "origin", "main")
+
+	result, err := preparer.PrepareMerge(context.Background(), info, issue, MergePrepareOptions{})
+	if err != nil {
+		t.Fatalf("PrepareMerge() error = %v", err)
+	}
+	if result.Status != MergePrepareStatusConflict {
+		t.Fatalf("PrepareMerge() status = %q, want conflict", result.Status)
+	}
+	if got := strings.TrimSpace(runGit(t, info.Path, "status", "--short")); got != "" {
+		t.Fatalf("status after aborted rebase = %q, want clean", got)
+	}
+	if got := strings.TrimSpace(runGit(t, info.Path, "branch", "--show-current")); got != info.Branch {
+		t.Fatalf("branch after aborted rebase = %q, want %q", got, info.Branch)
+	}
+	if got := readFile(t, filepath.Join(info.Path, "README.md")); got != "feature\n" {
+		t.Fatalf("README after aborted rebase = %q, want feature branch content", got)
+	}
+	inProgress, err := rebaseInProgress(context.Background(), info.Path)
+	if err != nil {
+		t.Fatalf("rebaseInProgress() error = %v", err)
+	}
+	if inProgress {
+		t.Fatal("rebase still in progress after PrepareMerge conflict")
+	}
+}
+
 func TestGitMetadataWritableRootsForLinkedWorktree(t *testing.T) {
 	t.Parallel()
 	skipWindows(t)
@@ -1061,6 +1185,14 @@ func initSourceRepo(t *testing.T) string {
 	runGit(t, dir, "add", "README.md")
 	runGit(t, dir, "commit", "-m", "initial")
 
+	return dir
+}
+
+func initBareRemote(t *testing.T) string {
+	t.Helper()
+
+	dir := filepath.Join(t.TempDir(), "origin.git")
+	runCommand(t, t.TempDir(), "git", "init", "--bare", "-b", "main", dir)
 	return dir
 }
 
