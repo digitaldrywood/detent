@@ -282,13 +282,14 @@ func (u claudeUsage) empty() bool {
 }
 
 func (u claudeUsage) agentUsage() runner.AgentTokenUsage {
-	cached := u.CacheCreationInputTokens + u.CacheReadInputTokens + u.CachedInputTokens
+	cached := u.CacheReadInputTokens + u.CachedInputTokens
+	input := u.InputTokens + u.CacheCreationInputTokens + cached
 	total := u.TotalTokens
-	if total == 0 {
-		total = u.InputTokens + u.OutputTokens
+	if minimumTotal := input + u.OutputTokens; total < minimumTotal {
+		total = minimumTotal
 	}
 	return runner.AgentTokenUsage{
-		InputTokens:           u.InputTokens,
+		InputTokens:           input,
 		CachedInputTokens:     cached,
 		OutputTokens:          u.OutputTokens,
 		ReasoningOutputTokens: u.ReasoningOutputTokens,
