@@ -912,6 +912,43 @@ func (q *Queries) GetUsageEvent(ctx context.Context, id int64) (UsageEvent, erro
 	return i, err
 }
 
+const getValidatorVerdict = `-- name: GetValidatorVerdict :one
+SELECT id, project_id, issue_id, head_sha, identifier, issue_url, pr_number, submitted, verdict, score, summary, findings_json, commented, recorded_at, updated_at
+FROM validator_verdicts
+WHERE project_id = ?
+  AND issue_id = ?
+  AND head_sha = ?
+`
+
+type GetValidatorVerdictParams struct {
+	ProjectID string `json:"project_id"`
+	IssueID   string `json:"issue_id"`
+	HeadSha   string `json:"head_sha"`
+}
+
+func (q *Queries) GetValidatorVerdict(ctx context.Context, arg GetValidatorVerdictParams) (ValidatorVerdict, error) {
+	row := q.db.QueryRowContext(ctx, getValidatorVerdict, arg.ProjectID, arg.IssueID, arg.HeadSha)
+	var i ValidatorVerdict
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.IssueID,
+		&i.HeadSha,
+		&i.Identifier,
+		&i.IssueURL,
+		&i.PrNumber,
+		&i.Submitted,
+		&i.Verdict,
+		&i.Score,
+		&i.Summary,
+		&i.FindingsJson,
+		&i.Commented,
+		&i.RecordedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getWorkAttempt = `-- name: GetWorkAttempt :one
 SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action
 FROM work_attempts
@@ -1346,6 +1383,35 @@ func (q *Queries) ListRecentSchedulerDecisions(ctx context.Context, arg ListRece
 	return items, nil
 }
 
+const markValidatorVerdictCommented = `-- name: MarkValidatorVerdictCommented :execrows
+UPDATE validator_verdicts
+SET commented = 1,
+    updated_at = ?
+WHERE project_id = ?
+  AND issue_id = ?
+  AND head_sha = ?
+`
+
+type MarkValidatorVerdictCommentedParams struct {
+	UpdatedAt string `json:"updated_at"`
+	ProjectID string `json:"project_id"`
+	IssueID   string `json:"issue_id"`
+	HeadSha   string `json:"head_sha"`
+}
+
+func (q *Queries) MarkValidatorVerdictCommented(ctx context.Context, arg MarkValidatorVerdictCommentedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markValidatorVerdictCommented,
+		arg.UpdatedAt,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.HeadSha,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const reclaimActiveWorkAttempts = `-- name: ReclaimActiveWorkAttempts :many
 UPDATE work_attempts
 SET status = ?,
@@ -1683,6 +1749,93 @@ func (q *Queries) UpsertFairShareUsage(ctx context.Context, arg UpsertFairShareU
 		&i.Weight,
 		&i.Dispatches,
 		&i.RuntimeSeconds,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertValidatorVerdict = `-- name: UpsertValidatorVerdict :one
+INSERT INTO validator_verdicts (
+  project_id,
+  issue_id,
+  head_sha,
+  identifier,
+  issue_url,
+  pr_number,
+  submitted,
+  verdict,
+  score,
+  summary,
+  findings_json,
+  commented,
+  recorded_at,
+  updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(project_id, issue_id, head_sha) DO UPDATE SET
+  identifier = excluded.identifier,
+  issue_url = excluded.issue_url,
+  pr_number = excluded.pr_number,
+  submitted = excluded.submitted,
+  verdict = excluded.verdict,
+  score = excluded.score,
+  summary = excluded.summary,
+  findings_json = excluded.findings_json,
+  commented = excluded.commented,
+  recorded_at = excluded.recorded_at,
+  updated_at = excluded.updated_at
+RETURNING id, project_id, issue_id, head_sha, identifier, issue_url, pr_number, submitted, verdict, score, summary, findings_json, commented, recorded_at, updated_at
+`
+
+type UpsertValidatorVerdictParams struct {
+	ProjectID    string         `json:"project_id"`
+	IssueID      string         `json:"issue_id"`
+	HeadSha      string         `json:"head_sha"`
+	Identifier   sql.NullString `json:"identifier"`
+	IssueURL     sql.NullString `json:"issue_url"`
+	PrNumber     sql.NullInt64  `json:"pr_number"`
+	Submitted    int64          `json:"submitted"`
+	Verdict      string         `json:"verdict"`
+	Score        float64        `json:"score"`
+	Summary      sql.NullString `json:"summary"`
+	FindingsJson string         `json:"findings_json"`
+	Commented    int64          `json:"commented"`
+	RecordedAt   string         `json:"recorded_at"`
+	UpdatedAt    string         `json:"updated_at"`
+}
+
+func (q *Queries) UpsertValidatorVerdict(ctx context.Context, arg UpsertValidatorVerdictParams) (ValidatorVerdict, error) {
+	row := q.db.QueryRowContext(ctx, upsertValidatorVerdict,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.HeadSha,
+		arg.Identifier,
+		arg.IssueURL,
+		arg.PrNumber,
+		arg.Submitted,
+		arg.Verdict,
+		arg.Score,
+		arg.Summary,
+		arg.FindingsJson,
+		arg.Commented,
+		arg.RecordedAt,
+		arg.UpdatedAt,
+	)
+	var i ValidatorVerdict
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.IssueID,
+		&i.HeadSha,
+		&i.Identifier,
+		&i.IssueURL,
+		&i.PrNumber,
+		&i.Submitted,
+		&i.Verdict,
+		&i.Score,
+		&i.Summary,
+		&i.FindingsJson,
+		&i.Commented,
+		&i.RecordedAt,
 		&i.UpdatedAt,
 	)
 	return i, err

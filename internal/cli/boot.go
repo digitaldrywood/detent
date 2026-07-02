@@ -215,6 +215,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		GlobalDispatchGate: globalDispatchGate,
 		WorkflowMetrics:    runtimeStore,
 		WorkAttempts:       runtimeStore,
+		ValidatorMemo:      runtimeStore,
 		GitHubToken:        runtimeGitHubToken.get(),
 		RefreshGitHubToken: refreshGitHubToken,
 		ConnectorFactory:   cfg.ConnectorFactory,

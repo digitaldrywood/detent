@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -1047,6 +1048,201 @@ func TestTickAutoPromoteRunsValidatorStage(t *testing.T) {
 			t.Fatalf("pull request comment %q missing %q", tracker.prComments[0].body, fragment)
 		}
 	}
+}
+
+func TestTickAutoPromoteUsesPersistedValidatorVerdictAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	memo := openValidatorMemoStore(t)
+	now := time.Date(2026, 6, 14, 10, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	cfg := autoPromoteValidatorTestConfig()
+	issue := autoPromoteTickIssue("issue-validator-restart", []string{"enhancement"}, &connector.PullRequest{
+		Number:                 858,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/858",
+		BranchName:             "detent/digitaldrywood_detent_858",
+		HeadSHA:                "head-validator-restart",
+		State:                  "OPEN",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	validator := &autoPromoteTickValidator{
+		result: gate.ValidatorResult{
+			Submitted: true,
+			Verdict:   gate.ValidatorVerdictPass,
+			Score:     0.94,
+			Summary:   "Stored validator result.",
+			Findings: []gate.Finding{{
+				Severity: "p2",
+				Body:     "non-blocking note",
+				Path:     "internal/orchestrator/autopromote_tick.go",
+				Line:     12,
+			}},
+		},
+	}
+	orch := &Orchestrator{
+		cfg:           cfg,
+		connector:     &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
+		validator:     validator,
+		validatorMemo: memo,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		now: func() time.Time {
+			return now
+		},
+	}
+	state := newState(cfg)
+	orch.tick(ctx, &state, now)
+	waitForValidatorRequests(t, validator, 1)
+	waitForPersistedValidatorVerdict(t, memo, store.ValidatorVerdictKey{
+		ProjectID: "detent",
+		IssueID:   issue.ID,
+		HeadSHA:   "head-validator-restart",
+	})
+
+	restartedValidator := &autoPromoteTickValidator{err: errors.New("validator should not dispatch")}
+	restartedTracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	restarted := &Orchestrator{
+		cfg:           cfg,
+		connector:     restartedTracker,
+		validator:     restartedValidator,
+		validatorMemo: memo,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		now: func() time.Time {
+			return now.Add(time.Minute)
+		},
+	}
+	restartedState := newState(cfg)
+	mergingSlot := dispatchTestIssue("issue-validator-restart-merging-slot", "Merging")
+	restartedState.Running[mergingSlot.ID] = Running{Issue: mergingSlot}
+	restarted.tick(ctx, &restartedState, now.Add(time.Minute))
+
+	if got := restartedValidator.Requests(); len(got) != 0 {
+		t.Fatalf("validator requests after restart = %#v, want none", got)
+	}
+	if got, want := restartedTracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates after restart = %#v, want %#v", got, want)
+	}
+	if len(restartedTracker.prComments) != 1 {
+		t.Fatalf("pull request comments after restart = %#v, want one validator result comment", restartedTracker.prComments)
+	}
+	for _, fragment := range []string{"Validator verdict: pass", "score: 0.94", "Stored validator result.", "non-blocking note"} {
+		if !strings.Contains(restartedTracker.prComments[0].body, fragment) {
+			t.Fatalf("pull request comment %q missing %q", restartedTracker.prComments[0].body, fragment)
+		}
+	}
+}
+
+func TestTickAutoPromoteValidatorVerdictHeadSHAInvalidatesMemo(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	memo := openValidatorMemoStore(t)
+	now := time.Date(2026, 6, 14, 10, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	cfg := autoPromoteValidatorTestConfig()
+	issue := autoPromoteTickIssue("issue-validator-new-head", []string{"enhancement"}, &connector.PullRequest{
+		Number:                 859,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/859",
+		BranchName:             "detent/digitaldrywood_detent_859",
+		HeadSHA:                "head-validator-old",
+		State:                  "OPEN",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	if err := memo.RecordValidatorVerdict(ctx, store.ValidatorVerdict{
+		ProjectID:  "detent",
+		IssueID:    issue.ID,
+		HeadSHA:    "head-validator-old",
+		Identifier: issue.Identifier,
+		Submitted:  true,
+		Verdict:    gate.ValidatorVerdictPass,
+		Score:      0.99,
+		RecordedAt: now.Add(-time.Minute),
+		UpdatedAt:  now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("RecordValidatorVerdict() error = %v", err)
+	}
+
+	fresh := cloneIssue(issue)
+	fresh.PullRequest.HeadSHA = "head-validator-new"
+	validator := &autoPromoteTickValidator{
+		result: gate.ValidatorResult{
+			Submitted: true,
+			Verdict:   gate.ValidatorVerdictPass,
+			Score:     0.91,
+		},
+	}
+	orch := &Orchestrator{
+		cfg:           cfg,
+		connector:     &autoPromoteTickConnector{stateIssues: []connector.Issue{fresh}},
+		validator:     validator,
+		validatorMemo: memo,
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		now: func() time.Time {
+			return now
+		},
+	}
+	state := newState(cfg)
+	orch.tick(ctx, &state, now)
+
+	waitForValidatorRequests(t, validator, 1)
+	requests := validator.Requests()
+	if requests[0].Issue.PullRequest == nil || requests[0].Issue.PullRequest.HeadSHA != "head-validator-new" {
+		t.Fatalf("validator request head SHA = %#v, want new head", requests[0].Issue.PullRequest)
+	}
+}
+
+func TestTickAutoPromoteValidatorFailureBackoff(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	clock := newAutoPromoteTickClock(time.Date(2026, 6, 14, 10, 0, 0, 0, time.UTC))
+	oldReview := clock.Now().Add(-20 * time.Minute)
+	cfg := autoPromoteValidatorTestConfig()
+	cfg.FailureRetryBaseDelay = 30 * time.Second
+	cfg.MaxRetryBackoff = 2 * time.Minute
+	issue := autoPromoteTickIssue("issue-validator-backoff", []string{"enhancement"}, &connector.PullRequest{
+		Number:                 860,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/860",
+		BranchName:             "detent/digitaldrywood_detent_860",
+		HeadSHA:                "head-validator-backoff",
+		State:                  "OPEN",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	validator := &autoPromoteTickValidator{err: errors.New("validator unavailable")}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		validator: validator,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		now:       clock.Now,
+	}
+	state := newState(cfg)
+
+	orch.tick(ctx, &state, clock.Now())
+	waitForValidatorRequests(t, validator, 1)
+	failure := waitForValidatorFailure(t, orch, issue, 1)
+	if got, want := failure.NextRetryAt, clock.Now().Add(30*time.Second); !got.Equal(want) {
+		t.Fatalf("NextRetryAt = %s, want %s", got, want)
+	}
+
+	immediate := clock.Now().Add(time.Second)
+	clock.Set(immediate)
+	orch.tick(ctx, &state, immediate)
+	if got := len(validator.Requests()); got != 1 {
+		t.Fatalf("validator requests during backoff = %d, want 1", got)
+	}
+
+	resumeAt := failure.NextRetryAt
+	clock.Set(resumeAt)
+	orch.tick(ctx, &state, resumeAt)
+	waitForValidatorRequests(t, validator, 2)
 }
 
 func TestRunDrainsInFlightValidatorStageOnShutdown(t *testing.T) {
@@ -3281,12 +3477,106 @@ func waitForValidatorResult(t *testing.T, orch *Orchestrator, issue connector.Is
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if _, _, ok := orch.validatorStageResult(issue); ok {
+		if _, _, ok := orch.validatorStageResult(context.Background(), issue); ok {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("validator result was not recorded")
+}
+
+func waitForPersistedValidatorVerdict(t *testing.T, memo store.ValidatorMemoStore, key store.ValidatorVerdictKey) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := memo.ValidatorVerdict(context.Background(), key); err == nil {
+			return
+		} else if !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("ValidatorVerdict() error = %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("validator verdict was not persisted for %#v", key)
+}
+
+func waitForValidatorFailure(t *testing.T, orch *Orchestrator, issue connector.Issue, attempt int) validatorStageFailure {
+	t.Helper()
+
+	identity := validatorStageIdentityForIssue(issue)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		orch.validatorMu.Lock()
+		failure, ok := orch.validatorFailures[identity.Key]
+		orch.validatorMu.Unlock()
+		if ok && failure.Attempt >= attempt {
+			return failure
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("validator failure attempt %d was not recorded", attempt)
+	return validatorStageFailure{}
+}
+
+func openValidatorMemoStore(t *testing.T) store.Store {
+	t.Helper()
+
+	backend, err := store.Open(context.Background(), store.Config{
+		Backend: store.BackendSQLite,
+		Path:    filepath.Join(t.TempDir(), "detent.db"),
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	return backend
+}
+
+func autoPromoteValidatorTestConfig() Config {
+	return normalizeConfig(Config{
+		Project:             scheduler.ProjectCandidate{ID: "detent", Weight: 1},
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate: gate.Config{
+				Kind: gate.KindCommand,
+				Validator: gate.ValidatorConfig{
+					Enabled:  true,
+					MinScore: 0.8,
+					BlockOn:  []string{"p1"},
+				},
+			},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+}
+
+type autoPromoteTickClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newAutoPromoteTickClock(now time.Time) *autoPromoteTickClock {
+	return &autoPromoteTickClock{now: now}
+}
+
+func (c *autoPromoteTickClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *autoPromoteTickClock) Set(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = now
 }
 
 func waitForGlobalDispatchSlot(t *testing.T, globalGate scheduler.ProjectDispatchGate, projectID string) {

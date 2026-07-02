@@ -29,6 +29,7 @@ type Store interface {
 	BudgetCostStore
 	WorkflowMetricsStore
 	WorkAttemptStore
+	ValidatorMemoStore
 	RuntimeEvidenceStore
 	Queries() *sqlc.Queries
 	Close() error
@@ -72,6 +73,12 @@ type WorkAttemptStore interface {
 	ReclaimActiveWorkAttempts(context.Context, WorkAttemptReclaim) ([]WorkAttempt, error)
 	RecordSchedulerDecision(context.Context, SchedulerDecision) (int64, error)
 	ListRecentSchedulerDecisions(context.Context, SchedulerDecisionQuery) ([]SchedulerDecision, error)
+}
+
+type ValidatorMemoStore interface {
+	RecordValidatorVerdict(context.Context, ValidatorVerdict) error
+	ValidatorVerdict(context.Context, ValidatorVerdictKey) (ValidatorVerdict, error)
+	MarkValidatorVerdictCommented(context.Context, ValidatorVerdictKey, time.Time) error
 }
 
 type RuntimeEvidenceStore interface {
@@ -234,6 +241,37 @@ type WorkflowPhaseEvent struct {
 	TotalTokens       int64
 	EndpointFamily    string
 	MetadataJSON      string
+}
+
+type ValidatorVerdictKey struct {
+	ProjectID string
+	IssueID   string
+	HeadSHA   string
+}
+
+type ValidatorFinding struct {
+	Severity string `json:"severity,omitempty"`
+	Body     string `json:"body,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Path     string `json:"path,omitempty"`
+	Line     int    `json:"line,omitempty"`
+}
+
+type ValidatorVerdict struct {
+	ProjectID  string
+	IssueID    string
+	HeadSHA    string
+	Identifier string
+	IssueURL   string
+	PRNumber   *int64
+	Submitted  bool
+	Verdict    string
+	Score      float64
+	Summary    string
+	Findings   []ValidatorFinding
+	Commented  bool
+	RecordedAt time.Time
+	UpdatedAt  time.Time
 }
 
 type WorkAttempt struct {
