@@ -1457,6 +1457,15 @@ func TestProjectKanbanCompactChipsSummarizeSecondaryMetadata(t *testing.T) {
 			want: []string{"3m 0s", "1 blocker"},
 		},
 		{
+			name: "upstream-divergence",
+			card: projectKanbanCard{
+				TimeInStage:     "3m 0s",
+				AttentionLabel:  "Upstream closed",
+				AttentionDetail: "closed upstream while locally active",
+			},
+			want: []string{"3m 0s", "Upstream closed"},
+		},
+		{
 			name: "review",
 			card: projectKanbanCard{
 				HasPullRequest:   true,

@@ -44,6 +44,44 @@ func TestOnboardingDocsRequireMutationAuthorization(t *testing.T) {
 	assertContains(t, readme, "Defaults are recommendations only")
 }
 
+func TestDocsCoverGitHubLocalTrackerMode(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+	readme := readRepositoryTextFile(t, "README.md")
+	template := readRepositoryTextFile(t, "docs/templates/WORKFLOW.github_local.md")
+
+	for _, want := range []string{
+		"WORKFLOW.github_local.md",
+		"tracker.kind: github_local",
+		"Do not set `tracker.github_status_source`",
+		"detent github-local import",
+		"does not create or mutate GitHub Projects, issue fields, repository labels, status labels, GitHub issue comments, or GitHub issue close state",
+	} {
+		assertContainsWords(t, onboarding, want)
+	}
+	for _, want := range []string{
+		"WORKFLOW.github_local.md",
+		"`tracker.kind: github_local` is a separate backend, not a fourth",
+		"detent github-local import",
+		"GitHub closes or transfers an imported issue while local state is still active",
+	} {
+		assertContainsWords(t, readme, want)
+	}
+	for _, want := range []string{
+		"kind: github_local",
+		"repository: <repo-owner>/<repo-name>",
+		"local_sqlite:",
+		"path: .detent/github-local-work-items.db",
+		"do not add `tracker.github_status_source`",
+	} {
+		assertContainsWords(t, template, want)
+	}
+	if strings.Contains(template, "github_status_source:") {
+		t.Fatal("WORKFLOW.github_local.md must not set github_status_source")
+	}
+}
+
 func TestOnboardingDocsRequireIdentityGateBeforeDiscovery(t *testing.T) {
 	t.Parallel()
 

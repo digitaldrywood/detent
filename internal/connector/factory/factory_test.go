@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 )
 
@@ -159,6 +160,39 @@ func TestFactoryGitHubConnectorImplementsAuthenticator(t *testing.T) {
 	}
 	if _, ok := c.(connector.Authenticator); !ok {
 		t.Fatalf("connector = %T, want connector.Authenticator", c)
+	}
+}
+
+func TestFactoryGitHubLocalConnectorSelection(t *testing.T) {
+	t.Parallel()
+
+	c, err := NewFromConfig(Config{
+		Kind:       "github_local",
+		Repository: "digitaldrywood/detent",
+		LocalSQLite: local.Config{
+			Path: ":memory:",
+		},
+		ActiveStates:   []string{"Todo", "In Progress"},
+		TerminalStates: []string{"Done"},
+	})
+	if err != nil {
+		t.Fatalf("NewFromConfig() error = %v", err)
+	}
+	if closer, ok := c.(connector.Closer); ok {
+		t.Cleanup(func() {
+			if err := closer.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+		})
+	}
+	if c.Name() != "github_local" {
+		t.Fatalf("Name() = %q, want github_local", c.Name())
+	}
+	if _, ok := c.(connector.PullRequestCommenter); !ok {
+		t.Fatalf("connector = %T, want connector.PullRequestCommenter", c)
+	}
+	if _, ok := c.(connector.PullRequestMerger); !ok {
+		t.Fatalf("connector = %T, want connector.PullRequestMerger", c)
 	}
 }
 

@@ -29,6 +29,7 @@ type ReadinessCheck struct {
 
 type ReadinessConfig struct {
 	AuthPath                      string
+	LocalStatusMode               bool
 	WriteProbeIssue               string
 	Repositories                  []string
 	StatusStates                  []string
@@ -96,6 +97,18 @@ func (c githubReadinessChecker) Check(ctx context.Context, cfg ReadinessConfig) 
 	if hasGitHubAppCredentials(c.cfg, c.cfg.LookupEnv) {
 		checks = append(checks, c.appInstallationCheck(ctx, cfg))
 	}
+	if cfg.LocalStatusMode {
+		checks = append(checks, c.userCheck(ctx))
+		checks = append(checks, c.repositoryChecks(ctx, cfg.Repositories, cfg)...)
+		probe, hasProbe, probeCheck := c.resolveWriteProbe(ctx, cfg)
+		if probeCheck != nil {
+			checks = append(checks, *probeCheck)
+		}
+		checks = append(checks, c.probeReadChecks(ctx, cfg, probe, hasProbe)...)
+		checks = append(checks, c.localWriteAllowlistCheck())
+		checks = append(checks, c.rateLimitCheck(ctx))
+		return checks
+	}
 	if c.connector.usesLabelStatus() {
 		checks = append(checks,
 			c.labelStatusOptionsCheck(ctx, cfg.StatusStates),
@@ -161,6 +174,31 @@ func (c githubReadinessChecker) authPathCheck(cfg ReadinessConfig) ReadinessChec
 		Name:   "GitHub auth path",
 		Status: ReadinessOK,
 		Detail: authPath,
+	}
+}
+
+func (c githubReadinessChecker) userCheck(ctx context.Context) ReadinessCheck {
+	var user restAuthenticatedUser
+	if err := c.connector.client.REST(ctx, http.MethodGet, "/user", nil, &user); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub user",
+			Status: ReadinessFail,
+			Detail: "cannot read authenticated user: " + err.Error(),
+			Hint:   "Configure a GitHub token with read access for the target repository.",
+		}
+	}
+	if strings.TrimSpace(user.Login) == "" {
+		return ReadinessCheck{
+			Name:   "GitHub user",
+			Status: ReadinessFail,
+			Detail: "authenticated user response did not include a login",
+			Hint:   "Check GitHub API compatibility and rerun detent doctor.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub user",
+		Status: ReadinessOK,
+		Detail: "authenticated as " + strings.TrimSpace(user.Login),
 	}
 }
 
@@ -844,6 +882,14 @@ func (c githubReadinessChecker) writeChecks(ctx context.Context, cfg ReadinessCo
 		checks = append(checks, c.issueCloseWriteCheck(ctx, probe, hasProbe))
 	}
 	return checks
+}
+
+func (c githubReadinessChecker) localWriteAllowlistCheck() ReadinessCheck {
+	return ReadinessCheck{
+		Name:   "GitHub local write allowlist",
+		Status: ReadinessOK,
+		Detail: "issue status, fields, labels, projects, issue comments, and issue close stay local; PR comments and merge remain allowlisted",
+	}
 }
 
 type restRateLimitResponse struct {

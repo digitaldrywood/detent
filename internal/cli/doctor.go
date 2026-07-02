@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/factory"
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/dependencyline"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -844,7 +845,7 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " auto-promote")
 		checks = append(checks, checkDoctorAutoPromote(ctx, id, workflow.Config, deps, time.Now()))
 	}
-	if workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHub {
+	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
 		if workflow.Config.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceLabel {
 			setDoctorCurrentCheck("Project " + id + " label status drift")
 			checks = append(checks, checkDoctorLabelStatusDrift(ctx, id, workflow.Config, deps))
@@ -854,7 +855,7 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " blocked recovery")
 		checks = append(checks, checkDoctorBlockedRecovery(ctx, id, workflow.Config, deps))
 	}
-	if workflow.Config.Tracker.Kind == workflowconfig.TrackerLocalSQLite {
+	if workflow.Config.Tracker.Kind == workflowconfig.TrackerLocalSQLite || workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
 		setDoctorCurrentCheck("Project " + id + " local SQLite tracker")
 		checks = append(checks, checkDoctorLocalSQLiteTracker(ctx, id, project, workflow.Config, deps))
 	}
@@ -897,7 +898,7 @@ func checkDoctorProjectWithProgress(
 		Status: doctorOK,
 		Detail: expandedSourceRoot + " is a git worktree",
 	})
-	if workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHub {
+	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
 		setDoctorCurrentCheck("Project " + id + " GitHub readiness")
 		checks = append(checks, checkDoctorGitHubReadiness(ctx, id, project, workflow.Config, deps, githubToken, expandedSourceRoot, allowWriteProbes)...)
 	}
@@ -945,7 +946,7 @@ func checkDoctorAutoPromote(ctx context.Context, id string, cfg workflowconfig.C
 			Hint:   "Add " + reworkState + " to tracker.active_states or tracker.terminal_states.",
 		}
 	}
-	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub {
+	if !doctorTrackerUsesGitHubReads(cfg.Tracker.Kind) {
 		return doctorCheck{
 			Name:   name,
 			Status: doctorOK,
@@ -1399,7 +1400,7 @@ type doctorDependencyDiagnostic struct {
 
 func checkDoctorBlockedRecovery(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {
 	name := "Project " + id + " blocked recovery"
-	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub {
+	if !doctorTrackerUsesGitHubReads(cfg.Tracker.Kind) {
 		return doctorCheck{
 			Name:   name,
 			Status: doctorOK,
@@ -1564,7 +1565,7 @@ func doctorBlockedRecoveryIssueLabel(candidate doctorBlockedRecoveryCandidateDia
 
 func checkDoctorDependencyAutoUnblock(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {
 	name := "Project " + id + " dependency auto-unblock"
-	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub {
+	if !doctorTrackerUsesGitHubReads(cfg.Tracker.Kind) {
 		return doctorCheck{
 			Name:   name,
 			Status: doctorOK,
@@ -2314,8 +2315,16 @@ func closeDoctorAutoPromoteConnector(projectConnector doctorAutoPromoteConnector
 
 func defaultDoctorAutoPromoteConnector(cfg workflowconfig.Config) (doctorAutoPromoteConnector, error) {
 	return factory.NewFromConfig(factory.Config{
-		Kind:                        cfg.Tracker.Kind,
-		Memory:                      memory.Config{Issues: cfg.Tracker.Issues},
+		Kind:   cfg.Tracker.Kind,
+		Memory: memory.Config{Issues: cfg.Tracker.Issues},
+		LocalSQLite: local.Config{
+			Path:           cfg.Tracker.LocalSQLite.Path,
+			ProjectID:      cfg.Tracker.LocalSQLite.ProjectID,
+			Issues:         cfg.Tracker.Issues,
+			ActiveStates:   cfg.Tracker.ActiveStates,
+			ObservedStates: cfg.Tracker.ObservedStates,
+			TerminalStates: cfg.Tracker.TerminalStates,
+		},
 		Endpoint:                    cfg.Tracker.Endpoint,
 		APIKey:                      cfg.Tracker.APIKey,
 		HTTPMaxIdleConns:            cfg.Tracker.HTTPMaxIdleConns,
@@ -2445,6 +2454,20 @@ func doctorGitHubReadinessConfig(
 	githubToken RuntimeSecret,
 	sourceRoot string,
 ) ghconnector.ReadinessConfig {
+	if cfg.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
+		return ghconnector.ReadinessConfig{
+			AuthPath:                      doctorGitHubAuthPath(cfg, githubToken, deps.lookupEnv),
+			LocalStatusMode:               true,
+			Repositories:                  doctorGitHubRepositories(ctx, project, cfg, deps, sourceRoot),
+			RequireIssueCommentsRead:      true,
+			RequireDependencyMetadataRead: true,
+			RequireIssueChildrenRead:      doctorRequiresIssueChildrenRead(cfg),
+			RequireIssueParentsRead:       doctorRequiresIssueParentsRead(cfg),
+			RequirePullRequestRead:        true,
+			RequirePullRequestReviews:     true,
+			RequirePullRequestChecks:      true,
+		}
+	}
 	return ghconnector.ReadinessConfig{
 		AuthPath:                      doctorGitHubAuthPath(cfg, githubToken, deps.lookupEnv),
 		WriteProbeIssue:               cfg.Tracker.WriteProbeIssue,
@@ -2729,10 +2752,14 @@ func doctorTrackerStateMap(value workflowconfig.StringOrMap) map[string]string {
 
 func doctorWorkflowConfigWithRuntimeGitHubToken(cfg workflowconfig.Config, token string) workflowconfig.Config {
 	token = strings.TrimSpace(token)
-	if token != "" && cfg.Tracker.Kind == workflowconfig.TrackerGitHub {
+	if token != "" && doctorTrackerUsesGitHubReads(cfg.Tracker.Kind) {
 		cfg.Tracker.APIKey = token
 	}
 	return cfg
+}
+
+func doctorTrackerUsesGitHubReads(kind string) bool {
+	return kind == workflowconfig.TrackerGitHub || kind == workflowconfig.TrackerGitHubLocal
 }
 
 func checkDoctorConfigReload(cfg globalconfig.Config) doctorCheck {
@@ -3223,7 +3250,7 @@ func doctorHasGitHubProject(ctx context.Context, cfg *globalconfig.Config, deps 
 	if cfg != nil {
 		for _, project := range cfg.Projects {
 			workflow, err := loadDoctorProjectWorkflow(ctx, project, deps)
-			if err != nil || workflow.Config.Tracker.Kind != workflowconfig.TrackerGitHub {
+			if err != nil || !doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
 				continue
 			}
 			return true
@@ -3238,7 +3265,7 @@ func doctorRequiresRuntimeGitHubToken(ctx context.Context, cfg *globalconfig.Con
 	}
 	for _, project := range cfg.Projects {
 		workflow, err := loadDoctorProjectWorkflow(ctx, project, deps)
-		if err != nil || workflow.Config.Tracker.Kind != workflowconfig.TrackerGitHub {
+		if err != nil || !doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
 			continue
 		}
 		if trackerHasGitHubAppCredentials(workflow.Config.Tracker, deps.lookupEnv) {
@@ -3291,19 +3318,25 @@ func doctorRequiredGitHubScopes(ctx context.Context, cfg *globalconfig.Config, d
 	}
 	for _, project := range cfg.Projects {
 		workflow, err := loadDoctorProjectWorkflow(ctx, project, deps)
-		if err != nil || workflow.Config.Tracker.Kind != workflowconfig.TrackerGitHub {
+		if err != nil || !doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
 			continue
 		}
 		if trackerHasGitHubAppCredentials(workflow.Config.Tracker, deps.lookupEnv) {
 			continue
 		}
+		if workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
+			add(requiredLabelGitHubScopes)
+			continue
+		}
 		switch workflow.Config.Tracker.GitHubStatusSource {
+		case workflowconfig.GitHubStatusSourceProjectV2:
+			add(requiredProjectV2GitHubScopes)
 		case workflowconfig.GitHubStatusSourceIssueField:
 			add(requiredIssueFieldGitHubScopes)
 		case workflowconfig.GitHubStatusSourceLabel:
 			add(requiredLabelGitHubScopes)
 		default:
-			add(requiredProjectV2GitHubScopes)
+			add(requiredLabelGitHubScopes)
 		}
 	}
 	if len(required) == 0 {

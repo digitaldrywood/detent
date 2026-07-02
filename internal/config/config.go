@@ -23,6 +23,7 @@ const (
 	TrackerLinear      = "linear"
 	TrackerMemory      = "memory"
 	TrackerLocalSQLite = "local_sqlite"
+	TrackerGitHubLocal = "github_local"
 
 	GitHubStatusSourceProjectV2  = "project_v2"
 	GitHubStatusSourceIssueField = "issue_field"
@@ -122,6 +123,8 @@ type Tracker struct {
 	Authorization               selector.Selector     `yaml:"authorization,omitempty"`
 	LocalSQLite                 LocalSQLite           `yaml:"local_sqlite,omitempty"`
 	Issues                      []connector.Issue     `yaml:"issues"`
+
+	gitHubStatusSourceSet bool
 }
 
 type LocalSQLite struct {
@@ -664,9 +667,11 @@ func ParseWorkflow(raw []byte) (Workflow, error) {
 			return Workflow{}, errors.New("workflow frontmatter must be a mapping")
 		}
 		normalizeTrackerIDFields(root)
+		gitHubStatusSourceSet := trackerFieldSet(root, "github_status_source")
 		if err := root.Decode(&cfg); err != nil {
 			return Workflow{}, fmt.Errorf("decode YAML frontmatter: %w", err)
 		}
+		cfg.Tracker.gitHubStatusSourceSet = gitHubStatusSourceSet
 	}
 
 	cfg.normalize()
@@ -914,7 +919,7 @@ func cloneYAMLNode(in *yaml.Node) *yaml.Node {
 func (c *Config) normalize() {
 	c.Identity.Normalize()
 	c.Tracker.Kind = strings.ToLower(strings.TrimSpace(c.Tracker.Kind))
-	if c.Tracker.Kind == TrackerGitHub && c.Tracker.Endpoint == defaultLinearEndpoint {
+	if (c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal) && c.Tracker.Endpoint == defaultLinearEndpoint {
 		c.Tracker.Endpoint = defaultGitHubEndpoint
 	}
 	c.Tracker.GitHubStatusSource = normalizeGitHubStatusSource(c.Tracker.GitHubStatusSource)
@@ -975,11 +980,13 @@ func (c *Config) validateTracker(problems *[]string) {
 	case TrackerGitHub:
 		c.Tracker.validateGitHubAuth(problems)
 		c.Tracker.validateGitHubStatusSource(problems)
+	case TrackerGitHubLocal:
+		c.Tracker.validateGitHubLocal(problems)
 	case TrackerMemory:
 	case TrackerLocalSQLite:
 		*problems = append(*problems, c.Tracker.LocalSQLite.Validate("tracker.local_sqlite")...)
 	default:
-		*problems = append(*problems, "tracker.kind must be one of github, linear, memory, local_sqlite")
+		*problems = append(*problems, "tracker.kind must be one of github, github_local, linear, memory, local_sqlite")
 	}
 
 	validateStateList("tracker.active_states", c.Tracker.ActiveStates, problems)
@@ -1045,6 +1052,10 @@ func (t *Tracker) validateGitHubStatusSource(problems *[]string) {
 }
 
 func (t *Tracker) validateGitHubAuth(problems *[]string) {
+	t.validateGitHubAuthFor("github", problems)
+}
+
+func (t *Tracker) validateGitHubAuthFor(kind string, problems *[]string) {
 	if strings.TrimSpace(t.APIKey) != "" || t.hasGitHubAppCredentials() {
 		return
 	}
@@ -1053,7 +1064,7 @@ func (t *Tracker) validateGitHubAuth(problems *[]string) {
 		strings.TrimSpace(t.GitHubAppInstallationID) == "" &&
 		strings.TrimSpace(t.GitHubAppPrivateKey) == "" &&
 		strings.TrimSpace(t.GitHubAppPrivateKeyPath) == "" {
-		*problems = append(*problems, "tracker.api_key or GitHub App credentials are required for github")
+		*problems = append(*problems, "tracker.api_key or GitHub App credentials are required for "+kind)
 		return
 	}
 
@@ -1061,6 +1072,18 @@ func (t *Tracker) validateGitHubAuth(problems *[]string) {
 	validateRequired("tracker.github_app_installation_id", t.GitHubAppInstallationID, " for github app", problems)
 	if strings.TrimSpace(t.GitHubAppPrivateKey) == "" && strings.TrimSpace(t.GitHubAppPrivateKeyPath) == "" {
 		*problems = append(*problems, "tracker.github_app_private_key or tracker.github_app_private_key_path is required for github app")
+	}
+}
+
+func (t *Tracker) validateGitHubLocal(problems *[]string) {
+	t.validateGitHubAuthFor(TrackerGitHubLocal, problems)
+	validateRequired("tracker.repository", t.Repository, " for github_local", problems)
+	if strings.TrimSpace(t.Repository) != "" && !validRepositoryName(t.Repository) {
+		*problems = append(*problems, "tracker.repository must be owner/name")
+	}
+	*problems = append(*problems, t.LocalSQLite.Validate("tracker.local_sqlite")...)
+	if t.gitHubStatusSourceSet {
+		*problems = append(*problems, "tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite")
 	}
 }
 
@@ -1565,6 +1588,14 @@ func normalizeTrackerIDFields(root *yaml.Node) {
 
 	normalizeScalarField(tracker, "github_app_id")
 	normalizeScalarField(tracker, "github_app_installation_id")
+}
+
+func trackerFieldSet(root *yaml.Node, key string) bool {
+	tracker := mappingValue(root, "tracker")
+	if tracker == nil || tracker.Kind != yaml.MappingNode {
+		return false
+	}
+	return mappingValue(tracker, key) != nil
 }
 
 func mappingValue(node *yaml.Node, key string) *yaml.Node {

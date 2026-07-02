@@ -1321,6 +1321,64 @@ Produce the video artifact.
 	}
 }
 
+func TestParseWorkflowGitHubLocalTracker(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: github_local
+  api_key: ghp_example
+  repository: digitaldrywood/detent
+  local_sqlite:
+    path: .detent/work-items.db
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	cfg := workflow.Config
+	if cfg.Tracker.Kind != TrackerGitHubLocal {
+		t.Fatalf("Tracker.Kind = %q, want %q", cfg.Tracker.Kind, TrackerGitHubLocal)
+	}
+	if cfg.Tracker.Endpoint != defaultGitHubEndpoint {
+		t.Fatalf("Tracker.Endpoint = %q, want %q", cfg.Tracker.Endpoint, defaultGitHubEndpoint)
+	}
+	if cfg.Tracker.GitHubStatusSource != GitHubStatusSourceProjectV2 {
+		t.Fatalf("GitHubStatusSource default changed to %q", cfg.Tracker.GitHubStatusSource)
+	}
+}
+
+func TestParseWorkflowGitHubLocalRejectsGitHubStatusSource(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: github_local
+  api_key: ghp_example
+  repository: digitaldrywood/detent
+  github_status_source: label
+  local_sqlite:
+    path: .detent/work-items.db
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	err = workflow.Config.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want github_status_source rejection")
+	}
+	if !strings.Contains(err.Error(), "tracker.github_status_source must be omitted when tracker.kind is github_local") {
+		t.Fatalf("Validate() error = %q, want github_status_source rejection", err)
+	}
+}
+
 func TestParseWorkflowNormalizesGitHubAppIDs(t *testing.T) {
 	t.Parallel()
 

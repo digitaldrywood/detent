@@ -502,6 +502,8 @@ type projectKanbanCard struct {
 	TimeInStage      string
 	TimeInStageTitle string
 	WaitDetail       string
+	AttentionLabel   string
+	AttentionDetail  string
 	MergeLaneStatus  string
 	MergeLaneDetail  string
 	MergeLaneClass   string
@@ -519,6 +521,12 @@ type projectKanbanCard struct {
 	Movable          bool
 	DisabledText     string
 }
+
+const (
+	githubLocalDivergenceMetadataKey       = "github_local_divergence"
+	githubLocalDivergenceDetailMetadataKey = "github_local_divergence_detail"
+	githubLocalClosedUpstreamDivergence    = "closed_upstream_local_active"
+)
 
 type projectOverviewCard struct {
 	ID       string
@@ -2596,6 +2604,8 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		TimeInStage:      prPipelineAge(stageAt, now),
 		TimeInStageTitle: prPipelineAgeTitle(state, stageAt, now),
 		WaitDetail:       prPipelineWaitDetail(issue),
+		AttentionLabel:   projectKanbanAttentionLabel(issue),
+		AttentionDetail:  projectKanbanAttentionDetail(issue),
 		Stage:            chartText(state, "n/a"),
 		StageAt:          stageAt.UTC(),
 		Labels:           uniqueStrings(issue.Labels),
@@ -2653,6 +2663,9 @@ func projectKanbanCompactChips(card projectKanbanCard) []projectKanbanCompactChi
 	if strings.TrimSpace(card.ConflictReason) != "" {
 		chips = append(chips, newProjectKanbanCompactChip("Conflict", card.ConflictReason, "border-danger-soft bg-danger-soft text-danger"))
 	}
+	if strings.TrimSpace(card.AttentionLabel) != "" {
+		chips = append(chips, newProjectKanbanCompactChip(card.AttentionLabel, card.AttentionDetail, "border-warning-soft bg-warning-soft text-warning"))
+	}
 	if len(card.Blockers) > 0 {
 		chips = append(chips, newProjectKanbanCompactChip(projectKanbanCountLabel(len(card.Blockers), "blocker", "blockers"), strings.Join(card.Blockers, ", "), "border-danger-soft bg-danger-soft text-danger"))
 	}
@@ -2660,6 +2673,27 @@ func projectKanbanCompactChips(card projectKanbanCard) []projectKanbanCompactChi
 		chips = append(chips, newProjectKanbanCompactChip("Waits", card.WaitDetail, "border-warning-soft bg-warning-soft text-warning"))
 	}
 	return chips
+}
+
+func projectKanbanAttentionLabel(issue telemetry.Issue) string {
+	switch strings.TrimSpace(issue.Metadata[githubLocalDivergenceMetadataKey]) {
+	case githubLocalClosedUpstreamDivergence:
+		return "Upstream closed"
+	default:
+		return ""
+	}
+}
+
+func projectKanbanAttentionDetail(issue telemetry.Issue) string {
+	if detail := strings.TrimSpace(issue.Metadata[githubLocalDivergenceDetailMetadataKey]); detail != "" {
+		return detail
+	}
+	switch strings.TrimSpace(issue.Metadata[githubLocalDivergenceMetadataKey]) {
+	case githubLocalClosedUpstreamDivergence:
+		return "closed upstream while locally active"
+	default:
+		return ""
+	}
 }
 
 func newProjectKanbanCompactChip(label string, title string, class string) projectKanbanCompactChip {

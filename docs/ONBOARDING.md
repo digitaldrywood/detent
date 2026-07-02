@@ -1779,8 +1779,11 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    human-authored contract without explicit approval. The maintained templates
    are `docs/templates/WORKFLOW.project_v2.md`,
    `docs/templates/WORKFLOW.issue_field.md`, and
-   `docs/templates/WORKFLOW.label.md`. Non-code artifact projects can start
-   from `docs/templates/WORKFLOW.non_code_artifact.md`; the rest of this
+   `docs/templates/WORKFLOW.label.md`. The CLI-only local-status template is
+   `docs/templates/WORKFLOW.github_local.md`; use it when the target repository
+   must remain read-only and Detent status should live only in local SQLite.
+   Non-code artifact projects can start from
+   `docs/templates/WORKFLOW.non_code_artifact.md`; the rest of this
    onboarding flow remains GitHub-focused. The `/onboarding` web wizard can
    write the same tracker blocks interactively: choose **Repository labels**
    for `GITHUB_MODE=label`, enter the repository and status label prefix such
@@ -1853,6 +1856,24 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      write_probe_issue: <write-probe-issue>
    ```
 
+   GitHub local-status tracker snippet:
+
+   ```yaml
+   tracker:
+     kind: github_local
+     repository: <repo-owner>/<repo-name>
+     local_sqlite:
+       path: .detent/github-local-work-items.db
+   ```
+
+   Do not add `tracker.github_status_source` to `github_local`; it is a
+   composite backend, not a fourth GitHub status source. Import issues
+   explicitly after the project is registered:
+
+   ```sh
+   detent github-local import <local-detent-project-id> <issue-number>[,<issue-number>...] --state Todo
+   ```
+
    ```sh
    # ProjectV2 mode:
    PROJECT_NODE_ID="$(jq -r '.id' "$ONBOARDING_DIR/project.json")"
@@ -1863,6 +1884,9 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    # Label mode:
    rg -n 'github_status_source: label|repository: <repo-owner>/<repo-name>|status_label_prefix: "<status-label-prefix>"|write_probe_issue:' <source-root>/WORKFLOW.md
+
+   # GitHub local-status mode:
+   rg -n 'kind: github_local|repository: <repo-owner>/<repo-name>|local_sqlite:|path: .detent/github-local-work-items.db' <source-root>/WORKFLOW.md
 
    # All modes:
    perl -0pi -e 's#(?m)^  source_root: .*$#  source_root: <source-root>#' <source-root>/WORKFLOW.md
@@ -2735,11 +2759,40 @@ write-probe, comment-write, and rate-limit checks before dispatching. GitHub
 status labels apply to issues only, so linked PR cards derive status from the
 linked issue.
 
+Use local-only GitHub status mode when GitHub issues and PRs should remain
+read-only inputs. Change `WORKFLOW.md` to:
+
+```yaml
+tracker:
+  kind: github_local
+  repository: <repo-owner>/<repo-name>
+  local_sqlite:
+    path: .detent/github-local-work-items.db
+```
+
+Do not set `tracker.github_status_source` for this mode. Detent reads issue
+bodies, labels, assignees, dependencies, linked pull requests, reviews, checks,
+and rate-limit health from GitHub, but stores Detent workflow state, priority,
+claim fields, audit comments, and local close decisions in SQLite. It does not
+create or mutate GitHub Projects, issue fields, repository labels, status
+labels, GitHub issue comments, or GitHub issue close state. Import explicit
+issues only:
+
+```sh
+detent github-local import <local-detent-project-id> 123,456 --state Todo
+detent doctor --project <local-detent-project-id> --port 0
+```
+
+Unimported issues stay invisible on Detent boards. If an imported issue is
+closed upstream while still locally active, Detent surfaces that divergence on
+the card instead of auto-resolving it.
+
 ### Interview Answers To Config Keys
 
 | Interview answer | Config or system target |
 | --- | --- |
 | GitHub status source | `tracker.github_status_source: project_v2`, `issue_field`, or `label` in `WORKFLOW.md`. |
+| GitHub local status | `tracker.kind: github_local`, `tracker.repository`, and `tracker.local_sqlite.path`; no `tracker.github_status_source`. |
 | Board node id | `tracker.project_slug` in `WORKFLOW.md` for ProjectV2 mode only. |
 | Boardless repository | `tracker.repository` in `WORKFLOW.md` for issue-field and label modes. |
 | Boardless issue field | `tracker.status_field` in `WORKFLOW.md`; defaults to `Status` when omitted. |
