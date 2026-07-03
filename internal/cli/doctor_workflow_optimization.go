@@ -162,6 +162,7 @@ func checkDoctorWorkflowOptimization(
 	resolution globalconfig.PathResolution,
 	cfg globalconfig.Config,
 	deps doctorDeps,
+	githubToken RuntimeSecret,
 	includeDiff bool,
 ) doctorCheck {
 	if strings.TrimSpace(resolution.Path) == "" {
@@ -197,7 +198,7 @@ func checkDoctorWorkflowOptimization(
 			Hint:   "Run detent after current migrations are applied, then rerun detent doctor.",
 		}
 	}
-	report, err := doctorWorkflowOptimization(ctx, db, storePath, cfg, deps, includeDiff)
+	report, err := doctorWorkflowOptimization(ctx, db, storePath, cfg, deps, runtimeGlobalGitHubToken(githubToken), includeDiff)
 	closeErr := db.Close()
 	if err != nil {
 		return doctorCheck{
@@ -237,6 +238,7 @@ func doctorWorkflowOptimization(
 	storePath string,
 	cfg globalconfig.Config,
 	deps doctorDeps,
+	runtimeGitHubToken string,
 	includeDiff bool,
 ) (doctorWorkflowOptimizationReport, error) {
 	report := doctorWorkflowOptimizationReport{StorePath: storePath}
@@ -252,7 +254,7 @@ func doctorWorkflowOptimization(
 			})
 			continue
 		}
-		workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, "")
+		workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, runtimeGitHubToken)
 		if err := workflow.Config.Validate(); err != nil {
 			report.Projects = append(report.Projects, doctorWorkflowOptimizationProjectReport{
 				ProjectID:    projectID,
@@ -265,8 +267,7 @@ func doctorWorkflowOptimization(
 			workflowPath = ""
 		}
 
-		projectStoreID := doctorWorkflowOptimizationProjectStoreID(projectID, workflow.Config)
-		metrics, err := doctorWorkflowOptimizationMetricsForProject(ctx, db, projectStoreID, workflow.Config)
+		metrics, err := doctorWorkflowOptimizationMetricsForProject(ctx, db, projectID, workflow.Config)
 		if err != nil {
 			return doctorWorkflowOptimizationReport{}, err
 		}
@@ -295,20 +296,13 @@ func doctorWorkflowOptimization(
 	return report, nil
 }
 
-func doctorWorkflowOptimizationProjectStoreID(projectID string, cfg workflowconfig.Config) string {
-	if id := strings.TrimSpace(cfg.Tracker.LocalSQLite.ProjectID); id != "" {
-		return id
-	}
-	return strings.TrimSpace(projectID)
-}
-
 func doctorWorkflowOptimizationMetricsForProject(
 	ctx context.Context,
 	db doctorTelemetryStore,
 	projectID string,
 	cfg workflowconfig.Config,
 ) (doctorWorkflowOptimizationMetrics, error) {
-	sessions, err := doctorWorkflowSessionTelemetry(ctx, db)
+	sessions, err := doctorWorkflowSessionTelemetry(ctx, db, projectID)
 	if err != nil {
 		return doctorWorkflowOptimizationMetrics{}, err
 	}
@@ -366,19 +360,28 @@ func doctorWorkflowOptimizationMetricsForProject(
 	return metrics, nil
 }
 
-func doctorWorkflowSessionTelemetry(ctx context.Context, db doctorTelemetryStore) (doctorWorkflowSessionMetrics, error) {
+func doctorWorkflowSessionTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string) (doctorWorkflowSessionMetrics, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT
-  COALESCE(total_tokens, 0),
-  COALESCE(input_tokens, 0),
-  COALESCE(cached_input_tokens, 0),
-  COALESCE(output_tokens, 0),
-  COALESCE(model, ''),
-  COALESCE(final_state, ''),
-  COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned')
-FROM codex_sessions
-WHERE completed_at IS NOT NULL
-ORDER BY completed_at DESC, id DESC`)
+  COALESCE(s.total_tokens, 0),
+  COALESCE(s.input_tokens, 0),
+  COALESCE(s.cached_input_tokens, 0),
+  COALESCE(s.output_tokens, 0),
+  COALESCE(s.model, ''),
+  COALESCE(s.final_state, ''),
+  COALESCE(NULLIF(s.identifier, ''), NULLIF(s.issue_id, ''), NULLIF(s.issue_url, ''), 'unassigned')
+FROM codex_sessions s
+WHERE s.completed_at IS NOT NULL
+  AND (
+    ? = ''
+    OR s.id IN (
+      SELECT DISTINCT session_id
+      FROM usage_events
+      WHERE session_id IS NOT NULL
+        AND project_id = ?
+    )
+  )
+ORDER BY s.completed_at DESC, s.id DESC`, projectID, projectID)
 	if err != nil {
 		return doctorWorkflowSessionMetrics{}, fmt.Errorf("read codex session telemetry: %w", err)
 	}

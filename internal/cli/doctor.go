@@ -403,7 +403,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		jobs = append(jobs, doctorCheckJob{
 			Name: "Workflow optimization",
 			Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorWorkflowOptimization(jobCtx, resolution, globalConfig, deps, cfg.WorkflowDiff)}
+				return []doctorCheck{checkDoctorWorkflowOptimization(jobCtx, resolution, globalConfig, deps, githubToken, cfg.WorkflowDiff)}
 			},
 		})
 	}

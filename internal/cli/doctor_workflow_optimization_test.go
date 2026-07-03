@@ -34,7 +34,7 @@ func TestDoctorWorkflowOptimizationFindsFixtureRules(t *testing.T) {
 	global := doctorWorkflowOptimizationGlobal(paths)
 	deps := successfulDoctorDeps()
 	deps.loadWorkflow = workflowconfig.LoadWorkflow
-	report, err := doctorWorkflowOptimization(ctx, db, paths.db, global, deps, true)
+	report, err := doctorWorkflowOptimization(ctx, db, paths.db, global, deps, "", true)
 	if err != nil {
 		t.Fatalf("doctorWorkflowOptimization() error = %v", err)
 	}
@@ -98,6 +98,16 @@ func TestDoctorWorkflowOptimizationFindsFixtureRules(t *testing.T) {
 	scheduler := doctorWorkflowFindingByRule(t, report.Findings, doctorWorkflowRuleSchedulerSkipRate)
 	if got := evidenceFloat64(t, scheduler, "scheduler_skip_rate"); got != 0.67 {
 		t.Fatalf("scheduler skip rate = %v, want 0.67", got)
+	}
+	if len(report.Projects) != 1 {
+		t.Fatalf("projects len = %d, want 1", len(report.Projects))
+	}
+	metrics := report.Projects[0].Metrics
+	if metrics.SessionCount != 5 || metrics.UsageEventCount != 5 {
+		t.Fatalf("metrics counts = sessions %d usage %d, want 5 and 5", metrics.SessionCount, metrics.UsageEventCount)
+	}
+	if metrics.MaxSessionTokens != 300000 {
+		t.Fatalf("MaxSessionTokens = %d, want 300000", metrics.MaxSessionTokens)
 	}
 }
 
@@ -213,6 +223,71 @@ func TestDoctorWorkflowOptimizationWriteRoundTripsWorkflow(t *testing.T) {
 	}
 }
 
+func TestDoctorWorkflowOptimizationUsesRuntimeGitHubToken(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "detent.db")
+	backend, err := store.Open(ctx, store.Config{
+		Backend: store.BackendSQLite,
+		Path:    dbPath,
+	})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	if err := os.WriteFile(workflowPath, []byte(`---
+tracker:
+  kind: github_local
+  repository: digitaldrywood/detent
+  local_sqlite:
+    path: `+dbPath+`
+---
+Prompt
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile(WORKFLOW.md) error = %v", err)
+	}
+
+	db, err := openDoctorSQLiteReadOnly(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("openDoctorSQLiteReadOnly() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	global := globalconfig.Config{
+		Path:       filepath.Join(dir, "global.yaml"),
+		APIVersion: globalconfig.APIVersion,
+		Kind:       globalconfig.Kind,
+		Projects: []globalconfig.Project{{
+			ID:       "detent",
+			Workflow: workflowPath,
+			Workdir:  dir,
+			Weight:   1,
+		}},
+	}
+	deps := successfulDoctorDeps()
+	deps.loadWorkflow = workflowconfig.LoadWorkflow
+	report, err := doctorWorkflowOptimization(ctx, db, dbPath, global, deps, "runtime-token", false)
+	if err != nil {
+		t.Fatalf("doctorWorkflowOptimization() error = %v", err)
+	}
+	if len(report.Projects) != 1 {
+		t.Fatalf("projects len = %d, want 1", len(report.Projects))
+	}
+	if report.Projects[0].Error != "" {
+		t.Fatalf("project error = %q, want none", report.Projects[0].Error)
+	}
+}
+
 type doctorWorkflowOptimizationFixturePaths struct {
 	dir      string
 	db       string
@@ -228,6 +303,8 @@ func seedDoctorWorkflowOptimizationFixture(t *testing.T) doctorWorkflowOptimizat
 	if err := os.WriteFile(workflowPath, []byte(`---
 tracker:
   kind: memory
+  local_sqlite:
+    project_id: detent-local
 polling:
   interval_ms: 60000
 agent:
@@ -305,6 +382,42 @@ Prompt
 		}); err != nil {
 			t.Fatalf("RecordUsageEvent() error = %v", err)
 		}
+	}
+
+	otherStartedAt := now
+	otherSessionID, err := backend.StartSession(ctx, store.SessionStart{
+		Identifier: "digitaldrywood/other#99",
+		StartedAt:  otherStartedAt,
+	})
+	if err != nil {
+		t.Fatalf("StartSession(other) error = %v", err)
+	}
+	if err := backend.FinishSession(ctx, otherSessionID, store.SessionFinish{
+		CompletedAt:       otherStartedAt.Add(5 * time.Minute),
+		Turns:             1,
+		InputTokens:       899000,
+		CachedInputTokens: 449500,
+		OutputTokens:      1000,
+		TotalTokens:       900000,
+		RuntimeSeconds:    300,
+		FinalState:        "failed",
+	}); err != nil {
+		t.Fatalf("FinishSession(other) error = %v", err)
+	}
+	if _, err := backend.RecordUsageEvent(ctx, store.UsageEvent{
+		ProjectID:         "other",
+		SessionID:         otherSessionID,
+		Identifier:        "digitaldrywood/other#99",
+		InputTokens:       899000,
+		CachedInputTokens: 449500,
+		OutputTokens:      1000,
+		TotalTokens:       900000,
+		RuntimeSeconds:    300,
+		StartedAt:         otherStartedAt,
+		FinishedAt:        otherStartedAt.Add(5 * time.Minute),
+		Outcome:           "failed",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent(other) error = %v", err)
 	}
 
 	for index := range 3 {
