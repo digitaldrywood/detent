@@ -34,6 +34,16 @@ func TestConnectorIssueFieldFetchIssuesByStates(t *testing.T) {
 			path:   "/repos/digitaldrywood/detent/issues/2/issue-field-values?per_page=100",
 			body:   `[{"issue_field_id":10,"node_id":"IFV_4","data_type":"single_select","value":3,"single_select_option":{"id":3,"name":"Working","color":"yellow"}}]`,
 		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/42",
+			body:   `{"node_id":"I_42","number":42,"title":"External dependency","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/42","assignees":[],"labels":[]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/42/issue-field-values?per_page=100",
+			body:   `[]`,
+		},
 	})
 	c := newGitHubTestConnector(t, server, Config{
 		GitHubStatusSource: GitHubStatusSourceIssueField,
@@ -66,13 +76,13 @@ func TestConnectorIssueFieldFetchIssuesByStates(t *testing.T) {
 	if got[0].AuthorID != "author-1" || got[0].AssigneeID != "worker-1" {
 		t.Fatalf("identity fields = author %q assignee %q", got[0].AuthorID, got[0].AssigneeID)
 	}
-	if !reflect.DeepEqual(got[0].BlockedBy, []connector.BlockedRef{{Identifier: "digitaldrywood/detent#42"}}) {
+	if !reflect.DeepEqual(got[0].BlockedBy, []connector.BlockedRef{{ID: "I_42", Identifier: "digitaldrywood/detent#42", State: "Open"}}) {
 		t.Fatalf("BlockedBy = %#v", got[0].BlockedBy)
 	}
 
 	requests := server.requests()
-	if len(requests) != 4 {
-		t.Fatalf("request count = %d, want metadata, search, and two field reads", len(requests))
+	if len(requests) != 6 {
+		t.Fatalf("request count = %d, want metadata, search, three issue field reads, and blocker issue fetch", len(requests))
 	}
 	searchPath := requests[1]["path"].(string)
 	for _, want := range []string{"repo%3Adigitaldrywood%2Fdetent", "is%3Aissue", "field.Status%3AReady%2CWorking"} {

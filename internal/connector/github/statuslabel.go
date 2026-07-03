@@ -70,7 +70,9 @@ func (c *Connector) fetchLabelIssuesByStates(ctx context.Context, stateNames []s
 				c.cacheIssueRef(issue)
 				issues = append(issues, c.buildLabelIssue(issue, externalState))
 				if limit > 0 && len(issues) >= limit {
-					resolveBlockedByProjectState(issues)
+					if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+						return nil, err
+					}
 					return issues, nil
 				}
 			}
@@ -79,7 +81,9 @@ func (c *Connector) fetchLabelIssuesByStates(ctx context.Context, stateNames []s
 			}
 		}
 	}
-	resolveBlockedByProjectState(issues)
+	if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+		return nil, err
+	}
 	return issues, nil
 }
 
