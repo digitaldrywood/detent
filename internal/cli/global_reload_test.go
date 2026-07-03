@@ -193,6 +193,10 @@ func TestChangedGlobalConfigFieldsReloadMatrix(t *testing.T) {
 	next := reloadTestConfig("global.yaml", 4, []globalconfig.Project{{ID: "bravo", Weight: 2, CredentialRef: "github-app"}})
 	next.Env = "dev"
 	next.LogLevel = "debug"
+	logMaxSizeBytes := 2048
+	logMaxBackups := 2
+	next.LogMaxSizeBytes = &logMaxSizeBytes
+	next.LogMaxBackups = &logMaxBackups
 	next.GitHubToken = "gh"
 	port := 4101
 	next.Port = &port
@@ -205,6 +209,8 @@ func TestChangedGlobalConfigFieldsReloadMatrix(t *testing.T) {
 	want := []globalConfigChange{
 		{Field: "env", RequiresRestart: true},
 		{Field: "log_level", RequiresRestart: true},
+		{Field: "log_max_size_bytes", RequiresRestart: true},
+		{Field: "log_max_backups", RequiresRestart: true},
 		{Field: "github_token", RequiresRestart: false},
 		{Field: "port", RequiresRestart: true},
 		{Field: "instance_name", RequiresRestart: false},

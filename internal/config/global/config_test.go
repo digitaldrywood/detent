@@ -241,6 +241,8 @@ func TestReadParsesRuntimeSettings(t *testing.T) {
 kind: GlobalConfig
 env: dev
 log_level: debug
+log_max_size_bytes: 4096
+log_max_backups: 3
 github_token: gh
 port: 4100
 instance_name: " buildbox "
@@ -267,6 +269,12 @@ projects:
 	}
 	if cfg.LogLevel != "debug" {
 		t.Fatalf("LogLevel = %q, want debug", cfg.LogLevel)
+	}
+	if cfg.LogMaxSizeBytes == nil || *cfg.LogMaxSizeBytes != 4096 {
+		t.Fatalf("LogMaxSizeBytes = %v, want 4096", cfg.LogMaxSizeBytes)
+	}
+	if cfg.LogMaxBackups == nil || *cfg.LogMaxBackups != 3 {
+		t.Fatalf("LogMaxBackups = %v, want 3", cfg.LogMaxBackups)
 	}
 	if cfg.GitHubToken != "gh" {
 		t.Fatalf("GitHubToken = %q, want gh", cfg.GitHubToken)
@@ -373,15 +381,19 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 	paths := createProjectFiles(t)
 	configPath := filepath.Join(paths.root, "written", "global.yaml")
 	port := 4100
+	logMaxSizeBytes := 4096
+	logMaxBackups := 3
 
 	cfg := Config{
-		Path:        configPath,
-		APIVersion:  APIVersion,
-		Kind:        Kind,
-		Env:         "dev",
-		LogLevel:    "debug",
-		GitHubToken: "gh",
-		Port:        &port,
+		Path:            configPath,
+		APIVersion:      APIVersion,
+		Kind:            Kind,
+		Env:             "dev",
+		LogLevel:        "debug",
+		LogMaxSizeBytes: &logMaxSizeBytes,
+		LogMaxBackups:   &logMaxBackups,
+		GitHubToken:     "gh",
+		Port:            &port,
 		Global: Settings{
 			MaxConcurrentAgents: 3,
 			Scheduling:          SchedulingStrict,
@@ -429,6 +441,12 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 	}
 	if got.LogLevel != cfg.LogLevel {
 		t.Fatalf("LogLevel = %q, want %q", got.LogLevel, cfg.LogLevel)
+	}
+	if got.LogMaxSizeBytes == nil || *got.LogMaxSizeBytes != *cfg.LogMaxSizeBytes {
+		t.Fatalf("LogMaxSizeBytes = %v, want %d", got.LogMaxSizeBytes, *cfg.LogMaxSizeBytes)
+	}
+	if got.LogMaxBackups == nil || *got.LogMaxBackups != *cfg.LogMaxBackups {
+		t.Fatalf("LogMaxBackups = %v, want %d", got.LogMaxBackups, *cfg.LogMaxBackups)
 	}
 	if got.GitHubToken != cfg.GitHubToken {
 		t.Fatalf("GitHubToken = %q, want %q", got.GitHubToken, cfg.GitHubToken)

@@ -1120,7 +1120,7 @@ func (o *Orchestrator) logGraphQLRateLimitCycle(cycle graphQLRateLimitCycle) {
 		contributors = cycle.Cost.Contributors
 	}
 
-	o.logger.Info(
+	o.logger.Debug(
 		"github graphql budget summary",
 		"cycle_cost", cycleCost,
 		"query_count", queryCount,

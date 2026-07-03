@@ -79,9 +79,10 @@ func TestConnectorUsesDefaultLoggerForClientDiagnostics(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	c, err := NewConnector(Config{
-		Endpoint:   server.URL,
-		APIKey:     "token",
-		HTTPClient: server.Client(),
+		Endpoint:         server.URL,
+		APIKey:           "token",
+		HTTPClient:       server.Client(),
+		RESTDebugLogging: true,
 	})
 	if err != nil {
 		t.Fatalf("NewConnector() error = %v", err)

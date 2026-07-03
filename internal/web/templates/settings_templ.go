@@ -333,7 +333,7 @@ func settingsReloadMatrix() templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = settingsReloadRow("port, env, log_level", "Restart required").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = settingsReloadRow("port, env, log_level, log rotation", "Restart required").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

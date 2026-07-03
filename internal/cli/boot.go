@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -153,7 +154,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 
 	useDashboard := shouldLaunchTerminalDashboard(cfg)
 	if useDashboard {
-		restoreLogger, err := redirectDefaultLogger(runtimeLogPath(cfg), cfg.Runtime.LogLevel.Value)
+		restoreLogger, err := redirectDefaultLoggerWithRotation(runtimeLogPath(cfg), cfg.Runtime.LogLevel.Value, runtimeLogRotation(cfg.Runtime))
 		if err != nil {
 			return err
 		}
@@ -616,6 +617,10 @@ func hardExitProcess(hardExit func(int)) {
 }
 
 func redirectDefaultLogger(path string, level string) (func(), error) {
+	return redirectDefaultLoggerWithRotation(path, level, defaultRuntimeLogRotation())
+}
+
+func redirectDefaultLoggerWithRotation(path string, level string, rotation logRotation) (func(), error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("log path is required")
 	}
@@ -623,7 +628,7 @@ func redirectDefaultLogger(path string, level string) (func(), error) {
 		return nil, fmt.Errorf("create log directory: %w", err)
 	}
 
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := newRotatingLogWriter(path, rotation)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}
@@ -641,6 +646,143 @@ func redirectDefaultLogger(path string, level string) (func(), error) {
 			previous.Warn("close log file failed", "path", path, "error", err)
 		}
 	}, nil
+}
+
+type logRotation struct {
+	MaxSizeBytes int64
+	MaxBackups   int
+}
+
+type rotatingLogWriter struct {
+	mu   sync.Mutex
+	path string
+	cfg  logRotation
+	file *os.File
+	size int64
+}
+
+func defaultRuntimeLogRotation() logRotation {
+	return logRotation{
+		MaxSizeBytes: int64(defaultRuntimeLogMaxSizeBytes),
+		MaxBackups:   defaultRuntimeLogMaxBackups,
+	}
+}
+
+func runtimeLogRotation(settings RuntimeSettings) logRotation {
+	return logRotation{
+		MaxSizeBytes: int64(settings.LogMaxSizeBytes.Value),
+		MaxBackups:   settings.LogMaxBackups.Value,
+	}
+}
+
+func newRotatingLogWriter(path string, cfg logRotation) (*rotatingLogWriter, error) {
+	if cfg.MaxSizeBytes < 0 {
+		cfg.MaxSizeBytes = 0
+	}
+	if cfg.MaxBackups < 0 {
+		cfg.MaxBackups = 0
+	}
+	file, size, err := openRotatingLogFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return &rotatingLogWriter{
+		path: path,
+		cfg:  cfg,
+		file: file,
+		size: size,
+	}, nil
+}
+
+func openRotatingLogFile(path string) (*os.File, int64, error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, 0, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		if closeErr := file.Close(); closeErr != nil {
+			return nil, 0, errors.Join(err, closeErr)
+		}
+		return nil, 0, err
+	}
+	return file, info.Size(), nil
+}
+
+func (w *rotatingLogWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.file == nil {
+		return 0, os.ErrClosed
+	}
+	if w.cfg.MaxSizeBytes > 0 && w.size > 0 && w.size+int64(len(p)) > w.cfg.MaxSizeBytes {
+		if err := w.rotateLocked(); err != nil {
+			return 0, err
+		}
+	}
+	n, err := w.file.Write(p)
+	w.size += int64(n)
+	return n, err
+}
+
+func (w *rotatingLogWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.file == nil {
+		return nil
+	}
+	err := w.file.Close()
+	w.file = nil
+	return err
+}
+
+func (w *rotatingLogWriter) rotateLocked() error {
+	if w.file != nil {
+		if err := w.file.Close(); err != nil {
+			return err
+		}
+		w.file = nil
+	}
+	if err := rotateLogFiles(w.path, w.cfg.MaxBackups); err != nil {
+		return err
+	}
+	file, size, err := openRotatingLogFile(w.path)
+	if err != nil {
+		return err
+	}
+	w.file = file
+	w.size = size
+	return nil
+}
+
+func rotateLogFiles(path string, maxBackups int) error {
+	if maxBackups <= 0 {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+
+	if err := os.Remove(rotatedLogPath(path, maxBackups)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for index := maxBackups - 1; index >= 1; index-- {
+		from := rotatedLogPath(path, index)
+		to := rotatedLogPath(path, index+1)
+		if err := os.Rename(from, to); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if err := os.Rename(path, rotatedLogPath(path, 1)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func rotatedLogPath(path string, index int) string {
+	return fmt.Sprintf("%s.%d", path, index)
 }
 
 func missingGlobalConfig(err error) bool {

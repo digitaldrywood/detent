@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -285,22 +286,21 @@ func TestClientRESTDebugLogsEndpointPurposeWithoutSecrets(t *testing.T) {
 	t.Parallel()
 
 	var logs bytes.Buffer
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	httpClient := staticHTTPClient{do: func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path != "/repos/digitaldrywood/detent/commits/abc/check-runs" {
 			t.Fatalf("path = %s, want check-runs path", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer super-secret-token" {
 			t.Fatalf("Authorization = %q, want bearer token", got)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"check_runs":[],"body_secret":"do-not-log-response-body"}`))
-	}))
-	t.Cleanup(server.Close)
+		return jsonResponse(r, http.StatusOK, `{"check_runs":[],"body_secret":"do-not-log-response-body"}`, nil), nil
+	}}
 
 	client, err := NewClient(ClientConfig{
-		Endpoint:    server.URL,
-		TokenSource: StaticTokenSource("super-secret-token"),
-		HTTPClient:  server.Client(),
+		Endpoint:         "https://api.github.test/graphql",
+		TokenSource:      StaticTokenSource("super-secret-token"),
+		HTTPClient:       httpClient,
+		RESTDebugLogging: true,
 		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
 			Level: slog.LevelDebug,
 		})),
@@ -328,6 +328,153 @@ func TestClientRESTDebugLogsEndpointPurposeWithoutSecrets(t *testing.T) {
 	for _, leaked := range []string{"super-secret-token", "do-not-log-response-body"} {
 		if strings.Contains(logText, leaked) {
 			t.Fatalf("logs leaked %q:\n%s", leaked, logText)
+		}
+	}
+}
+
+func TestClientRESTDebugLoggingOffByDefault(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	httpClient := staticHTTPClient{do: func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/repos/digitaldrywood/detent/commits/abc/check-runs" {
+			t.Fatalf("path = %s, want check-runs path", r.URL.Path)
+		}
+		return jsonResponse(r, http.StatusOK, `{"check_runs":[]}`, nil), nil
+	}}
+	client, err := NewClient(ClientConfig{
+		Endpoint:    "https://api.github-debug-off.test/graphql",
+		TokenSource: StaticTokenSource("debug-off-token"),
+		HTTPClient:  httpClient,
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/commits/abc/check-runs", nil, nil); err != nil {
+		t.Fatalf("REST() error = %v", err)
+	}
+
+	logText := logs.String()
+	for _, fragment := range []string{"github rest request", "github rest response"} {
+		if strings.Contains(logText, fragment) {
+			t.Fatalf("logs contained %q with RESTDebugLogging=false:\n%s", fragment, logText)
+		}
+	}
+}
+
+func TestClientRESTLogsRateLimitFailuresByDefault(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	httpClient := staticHTTPClient{do: func(r *http.Request) (*http.Response, error) {
+		headers := http.Header{
+			"X-Ratelimit-Limit":     []string{"5000"},
+			"X-Ratelimit-Remaining": []string{"0"},
+			"X-Ratelimit-Reset":     []string{strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10)},
+		}
+		return jsonResponse(r, http.StatusForbidden, `{"message":"API rate limit exceeded"}`, headers), nil
+	}}
+	client, err := NewClient(ClientConfig{
+		Endpoint:    "https://api.github-rate-limit.test/graphql",
+		TokenSource: StaticTokenSource("rate-limit-token"),
+		HTTPClient:  httpClient,
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		})),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues", nil, nil)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("REST() error = %v, want %v", err, ErrRateLimited)
+	}
+
+	logText := logs.String()
+	for _, fragment := range []string{
+		"github rest shared backoff recorded",
+		"github rest request failed",
+		"rate_limited=true",
+		"status=403",
+	} {
+		if !strings.Contains(logText, fragment) {
+			t.Fatalf("logs missing %q:\n%s", fragment, logText)
+		}
+	}
+	for _, fragment := range []string{`msg="github rest request"`, `msg="github rest response"`} {
+		if strings.Contains(logText, fragment) {
+			t.Fatalf("logs contained per-request debug %q:\n%s", fragment, logText)
+		}
+	}
+}
+
+func TestClientRESTDoesNotWarnOnNotFoundByDefault(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	httpClient := staticHTTPClient{do: func(r *http.Request) (*http.Response, error) {
+		return jsonResponse(r, http.StatusNotFound, `{"message":"Not Found"}`, nil), nil
+	}}
+	client, err := NewClient(ClientConfig{
+		Endpoint:    "https://api.github-not-found.test/graphql",
+		TokenSource: StaticTokenSource("not-found-token"),
+		HTTPClient:  httpClient,
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		})),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues/404", nil, nil)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("REST() error = %v, want %v", err, ErrNotFound)
+	}
+
+	logText := logs.String()
+	if strings.Contains(logText, "github rest request failed") {
+		t.Fatalf("logs contained default not-found warning:\n%s", logText)
+	}
+}
+
+func TestClientRESTLogsUnexpectedFailuresByDefault(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	httpClient := staticHTTPClient{do: func(r *http.Request) (*http.Response, error) {
+		return jsonResponse(r, http.StatusInternalServerError, `{"message":"server error"}`, nil), nil
+	}}
+	client, err := NewClient(ClientConfig{
+		Endpoint:    "https://api.github-unexpected.test/graphql",
+		TokenSource: StaticTokenSource("unexpected-token"),
+		HTTPClient:  httpClient,
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		})),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues", nil, nil)
+	if !errors.Is(err, ErrTransient) {
+		t.Fatalf("REST() error = %v, want %v", err, ErrTransient)
+	}
+
+	logText := logs.String()
+	for _, fragment := range []string{
+		"github rest request failed",
+		"rate_limited=false",
+		"status=500",
+	} {
+		if !strings.Contains(logText, fragment) {
+			t.Fatalf("logs missing %q:\n%s", fragment, logText)
 		}
 	}
 }
@@ -1258,6 +1405,27 @@ func TestClientGraphQLRejectsInvalidPayloads(t *testing.T) {
 				t.Fatalf("GraphQL() error = %v, want ErrInvalidResponse", err)
 			}
 		})
+	}
+}
+
+type staticHTTPClient struct {
+	do func(*http.Request) (*http.Response, error)
+}
+
+func (c staticHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	return c.do(req)
+}
+
+func jsonResponse(req *http.Request, status int, body string, headers http.Header) *http.Response {
+	if headers == nil {
+		headers = http.Header{}
+	}
+	headers.Set("Content-Type", "application/json")
+	return &http.Response{
+		StatusCode: status,
+		Header:     headers,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
 	}
 }
 

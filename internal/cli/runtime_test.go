@@ -111,6 +111,113 @@ func TestResolveRuntimeSettingsPrecedence(t *testing.T) {
 	}
 }
 
+func TestResolveRuntimeSettingsLogRotation(t *testing.T) {
+	t.Parallel()
+
+	configSize := 4096
+	configBackups := 3
+	tests := []struct {
+		name           string
+		env            map[string]string
+		cfg            *globalconfig.Config
+		wantMaxSize    RuntimeIntValue
+		wantMaxBackups RuntimeIntValue
+	}{
+		{
+			name: "env wins before config",
+			env: map[string]string{
+				"LOG_MAX_SIZE_BYTES": "2048",
+				"LOG_MAX_BACKUPS":    "2",
+			},
+			cfg: &globalconfig.Config{
+				LogMaxSizeBytes: &configSize,
+				LogMaxBackups:   &configBackups,
+			},
+			wantMaxSize:    RuntimeIntValue{Value: 2048, Source: "LOG_MAX_SIZE_BYTES"},
+			wantMaxBackups: RuntimeIntValue{Value: 2, Source: "LOG_MAX_BACKUPS"},
+		},
+		{
+			name: "deprecated env fallbacks win before config",
+			env: map[string]string{
+				"DETENT_LOG_MAX_SIZE_BYTES": "1024",
+				"DETENT_LOG_MAX_BACKUPS":    "1",
+			},
+			cfg: &globalconfig.Config{
+				LogMaxSizeBytes: &configSize,
+				LogMaxBackups:   &configBackups,
+			},
+			wantMaxSize:    RuntimeIntValue{Value: 1024, Source: "DETENT_LOG_MAX_SIZE_BYTES"},
+			wantMaxBackups: RuntimeIntValue{Value: 1, Source: "DETENT_LOG_MAX_BACKUPS"},
+		},
+		{
+			name: "config wins before default",
+			cfg: &globalconfig.Config{
+				LogMaxSizeBytes: &configSize,
+				LogMaxBackups:   &configBackups,
+			},
+			wantMaxSize:    RuntimeIntValue{Value: configSize, Source: runtimeSourceConfig},
+			wantMaxBackups: RuntimeIntValue{Value: configBackups, Source: runtimeSourceConfig},
+		},
+		{
+			name:           "defaults are enabled",
+			cfg:            &globalconfig.Config{},
+			wantMaxSize:    RuntimeIntValue{Value: defaultRuntimeLogMaxSizeBytes, Source: runtimeSourceDefault},
+			wantMaxBackups: RuntimeIntValue{Value: defaultRuntimeLogMaxBackups, Source: runtimeSourceDefault},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := resolveRuntimeSettings(context.Background(), runtimeInput{
+				Config: tt.cfg,
+			}, runtimeDeps{
+				lookupEnv: mapLookup(tt.env),
+			})
+			if err != nil {
+				t.Fatalf("resolveRuntimeSettings() error = %v", err)
+			}
+
+			if got.LogMaxSizeBytes != tt.wantMaxSize {
+				t.Fatalf("LogMaxSizeBytes = %#v, want %#v", got.LogMaxSizeBytes, tt.wantMaxSize)
+			}
+			if got.LogMaxBackups != tt.wantMaxBackups {
+				t.Fatalf("LogMaxBackups = %#v, want %#v", got.LogMaxBackups, tt.wantMaxBackups)
+			}
+		})
+	}
+}
+
+func TestResolveRuntimeSettingsRejectsInvalidLogRotationEnv(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{name: "invalid size", env: map[string]string{"LOG_MAX_SIZE_BYTES": "large"}, want: "LOG_MAX_SIZE_BYTES"},
+		{name: "negative backups", env: map[string]string{"LOG_MAX_BACKUPS": "-1"}, want: "LOG_MAX_BACKUPS"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := resolveRuntimeSettings(context.Background(), runtimeInput{}, runtimeDeps{
+				lookupEnv: mapLookup(tt.env),
+			})
+			if err == nil {
+				t.Fatal("resolveRuntimeSettings() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("resolveRuntimeSettings() error = %v, want containing %s", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveRuntimeSettingsUsesWorkflowRefForServerPort(t *testing.T) {
 	repo := initRuntimeWorkflowRepo(t)
 	writeRuntimeWorkflow(t, filepath.Join(repo, "WORKFLOW.md"), 4109)

@@ -119,7 +119,7 @@ func TestSSEStreamLogsMetricsByEvent(t *testing.T) {
 	t.Parallel()
 
 	var logs bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
 	stream := newSSEStream(logger, time.Second)
 	stream.startedAt = now

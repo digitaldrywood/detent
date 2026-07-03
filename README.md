@@ -622,6 +622,7 @@ tracker:
   github_graphql_min_remaining_reserve: 1000
   github_rest_min_remaining_reserve: 1000
   github_rest_fanout_max_requests: 80
+  github_rest_debug_logging: false
   active_states:
     - Todo
     - In Progress
@@ -2200,6 +2201,11 @@ Detent logs with `log/slog`.
 - `--env` and `--log-level` override environment variables for one run.
 - `DETENT_ENV` and `DETENT_LOG_LEVEL` remain deprecated fallbacks for one release. The unprefixed names win when both are set.
 - Text logs are written to stdout; JSON logs are written to stderr.
+- The terminal dashboard writes JSON logs to `detent.log` next to the runtime
+  database. `log_max_size_bytes` defaults to 52428800 and `log_max_backups`
+  defaults to 5.
+- Per-request GitHub REST request/response debug logs are off by default. Set
+  `tracker.github_rest_debug_logging: true` only while diagnosing REST traffic.
 
 ## CLI Output
 
@@ -2252,6 +2258,8 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | --- | --- | --- | --- | --- |
 | Environment | `--env` | `ENV`, then `DETENT_ENV` | `env` | `prod` |
 | Log level | `--log-level` | `LOG_LEVEL`, then `DETENT_LOG_LEVEL` | `log_level` | `info` |
+| Log max size | | `LOG_MAX_SIZE_BYTES`, then `DETENT_LOG_MAX_SIZE_BYTES` | `log_max_size_bytes` | `52428800` |
+| Log backups | | `LOG_MAX_BACKUPS`, then `DETENT_LOG_MAX_BACKUPS` | `log_max_backups` | `5` |
 | GitHub token | | `GITHUB_TOKEN` | `github_token` | required for GitHub projects |
 | Web port | `--port` | `PORT` | `port` | `4000` |
 | Instance name | | | `instance_name` | short hostname |

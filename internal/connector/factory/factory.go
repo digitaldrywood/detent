@@ -31,6 +31,7 @@ type Config struct {
 	HTTPIdleConnTimeoutMS       int
 	GitHubRESTMinReserve        int
 	GitHubRESTFanoutMaxRequests int
+	GitHubRESTDebugLogging      bool
 	GitHubAppID                 string
 	GitHubAppPrivateKey         string
 	GitHubAppPrivateKeyPath     string
@@ -73,6 +74,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 			},
 			RESTMinRemainingReserve: cfg.GitHubRESTMinReserve,
 			RESTFanoutMaxRequests:   cfg.GitHubRESTFanoutMaxRequests,
+			RESTDebugLogging:        cfg.GitHubRESTDebugLogging,
 			GitHubAppID:             cfg.GitHubAppID,
 			GitHubAppPrivateKey:     cfg.GitHubAppPrivateKey,
 			GitHubAppPrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
@@ -115,6 +117,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 				},
 				RESTMinRemainingReserve: cfg.GitHubRESTMinReserve,
 				RESTFanoutMaxRequests:   cfg.GitHubRESTFanoutMaxRequests,
+				RESTDebugLogging:        cfg.GitHubRESTDebugLogging,
 				GitHubAppID:             cfg.GitHubAppID,
 				GitHubAppPrivateKey:     cfg.GitHubAppPrivateKey,
 				GitHubAppPrivateKeyPath: cfg.GitHubAppPrivateKeyPath,

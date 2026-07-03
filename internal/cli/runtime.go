@@ -18,9 +18,11 @@ import (
 )
 
 const (
-	defaultRuntimeEnv      = "prod"
-	defaultRuntimeLogLevel = "info"
-	runtimeCommandTimeout  = 5 * time.Second
+	defaultRuntimeEnv             = "prod"
+	defaultRuntimeLogLevel        = "info"
+	defaultRuntimeLogMaxSizeBytes = 50 * 1024 * 1024
+	defaultRuntimeLogMaxBackups   = 5
+	runtimeCommandTimeout         = 5 * time.Second
 
 	runtimeSourceFlag     = "flag"
 	runtimeSourceConfig   = "config"
@@ -54,12 +56,14 @@ type RuntimeWarning struct {
 }
 
 type RuntimeSettings struct {
-	ConfigPath  RuntimeValue
-	Env         RuntimeValue
-	LogLevel    RuntimeValue
-	Port        RuntimeIntValue
-	GitHubToken RuntimeSecret
-	Warnings    []RuntimeWarning
+	ConfigPath      RuntimeValue
+	Env             RuntimeValue
+	LogLevel        RuntimeValue
+	LogMaxSizeBytes RuntimeIntValue
+	LogMaxBackups   RuntimeIntValue
+	Port            RuntimeIntValue
+	GitHubToken     RuntimeSecret
+	Warnings        []RuntimeWarning
 }
 
 type runtimeInput struct {
@@ -142,6 +146,28 @@ func resolveRuntimeSettings(ctx context.Context, input runtimeInput, deps runtim
 		}, deps.lookupEnv),
 	}
 
+	logMaxSizeBytes, err := resolveRuntimeInt(runtimeIntInput{
+		EnvCandidates: []string{"LOG_MAX_SIZE_BYTES", "DETENT_LOG_MAX_SIZE_BYTES"},
+		ConfigValue:   configLogMaxSizeBytes(input.Config),
+		DefaultValue:  defaultRuntimeLogMaxSizeBytes,
+		Name:          "log_max_size_bytes",
+	}, deps.lookupEnv)
+	if err != nil {
+		return RuntimeSettings{}, err
+	}
+	settings.LogMaxSizeBytes = logMaxSizeBytes
+
+	logMaxBackups, err := resolveRuntimeInt(runtimeIntInput{
+		EnvCandidates: []string{"LOG_MAX_BACKUPS", "DETENT_LOG_MAX_BACKUPS"},
+		ConfigValue:   configLogMaxBackups(input.Config),
+		DefaultValue:  defaultRuntimeLogMaxBackups,
+		Name:          "log_max_backups",
+	}, deps.lookupEnv)
+	if err != nil {
+		return RuntimeSettings{}, err
+	}
+	settings.LogMaxBackups = logMaxBackups
+
 	port, err := resolveRuntimePort(ctx, input, deps)
 	if err != nil {
 		return RuntimeSettings{}, err
@@ -164,6 +190,13 @@ type runtimeStringInput struct {
 	DefaultValue  string
 }
 
+type runtimeIntInput struct {
+	EnvCandidates []string
+	ConfigValue   *int
+	DefaultValue  int
+	Name          string
+}
+
 func resolveRuntimeString(input runtimeStringInput, lookupEnv func(string) string) RuntimeValue {
 	if input.Flag.Set {
 		if value := strings.TrimSpace(input.Flag.Value); value != "" {
@@ -179,6 +212,37 @@ func resolveRuntimeString(input runtimeStringInput, lookupEnv func(string) strin
 		return RuntimeValue{Value: value, Source: runtimeSourceConfig}
 	}
 	return RuntimeValue{Value: input.DefaultValue, Source: runtimeSourceDefault}
+}
+
+func resolveRuntimeInt(input runtimeIntInput, lookupEnv func(string) string) (RuntimeIntValue, error) {
+	for _, key := range input.EnvCandidates {
+		raw := strings.TrimSpace(lookupEnv(key))
+		if raw == "" {
+			continue
+		}
+		value, err := strconv.Atoi(raw)
+		if err == nil && value >= 0 {
+			return RuntimeIntValue{Value: value, Source: key}, nil
+		}
+		return RuntimeIntValue{}, WrapValidation(fmt.Errorf("%s must be an integer greater than or equal to 0", key))
+	}
+	if input.ConfigValue != nil {
+		if *input.ConfigValue < 0 {
+			return RuntimeIntValue{}, WrapValidation(fmt.Errorf("%s must be an integer greater than or equal to 0", runtimeIntName(input)))
+		}
+		return RuntimeIntValue{Value: *input.ConfigValue, Source: runtimeSourceConfig}, nil
+	}
+	return RuntimeIntValue{Value: input.DefaultValue, Source: runtimeSourceDefault}, nil
+}
+
+func runtimeIntName(input runtimeIntInput) string {
+	if strings.TrimSpace(input.Name) != "" {
+		return strings.TrimSpace(input.Name)
+	}
+	if len(input.EnvCandidates) > 0 {
+		return input.EnvCandidates[0]
+	}
+	return "runtime integer"
 }
 
 func resolveRuntimePort(ctx context.Context, input runtimeInput, deps runtimeDeps) (RuntimeIntValue, error) {
@@ -384,6 +448,8 @@ func runtimeSettingsDetail(settings RuntimeSettings) string {
 		runtimeTextDetail("config_path", settings.ConfigPath.Value, settings.ConfigPath.Source),
 		runtimeTextDetail("env", settings.Env.Value, settings.Env.Source),
 		runtimeTextDetail("log_level", settings.LogLevel.Value, settings.LogLevel.Source),
+		runtimeIntDetail("log_max_size_bytes", settings.LogMaxSizeBytes.Value, settings.LogMaxSizeBytes.Source),
+		runtimeIntDetail("log_max_backups", settings.LogMaxBackups.Value, settings.LogMaxBackups.Source),
 		runtimeIntDetail("port", settings.Port.Value, settings.Port.Source),
 		runtimeGitHubTokenDetail(settings.GitHubToken),
 	}
@@ -459,6 +525,20 @@ func configLogLevel(cfg *globalconfig.Config) string {
 		return ""
 	}
 	return cfg.LogLevel
+}
+
+func configLogMaxSizeBytes(cfg *globalconfig.Config) *int {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.LogMaxSizeBytes
+}
+
+func configLogMaxBackups(cfg *globalconfig.Config) *int {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.LogMaxBackups
 }
 
 func (d runtimeDeps) withDefaults() runtimeDeps {
