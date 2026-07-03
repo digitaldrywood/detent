@@ -946,6 +946,9 @@ func doctorSQLiteURIPath(path string) string {
 	uriPath := filepath.ToSlash(cleaned)
 	if doctorWindowsDrivePath(uriPath) {
 		uriPath = strings.ReplaceAll(cleaned, `\`, "/")
+		if !strings.HasPrefix(uriPath, "/") {
+			uriPath = "/" + uriPath
+		}
 	}
 	return uriPath
 }

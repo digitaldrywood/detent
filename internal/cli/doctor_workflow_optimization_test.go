@@ -170,7 +170,7 @@ func TestDoctorSQLiteReadOnlyDSNFormatsWindowsDrivePath(t *testing.T) {
 	t.Parallel()
 
 	dsn := doctorSQLiteReadOnlyDSN(`C:\Users\RUNNER~1\AppData\Local\Temp\detent db.sqlite`)
-	want := `file:C:/Users/RUNNER~1/AppData/Local/Temp/detent%20db.sqlite?cache=shared&mode=ro`
+	want := `file:/C:/Users/RUNNER~1/AppData/Local/Temp/detent%20db.sqlite?cache=shared&mode=ro`
 	if dsn != want {
 		t.Fatalf("doctorSQLiteReadOnlyDSN() = %q, want %q", dsn, want)
 	}
