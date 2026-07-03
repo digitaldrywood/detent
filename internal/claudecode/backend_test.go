@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +25,6 @@ func TestAgentBackendRunTurnSuccess(t *testing.T) {
 
 	backend := newTestBackend(t, Options{
 		CommandFactory: fixtureCommand(t, "success.jsonl", "", 0),
-		StallTimeout:   time.Second,
 	})
 
 	var updates []runner.AgentUpdate
@@ -511,15 +511,39 @@ func fixtureCommand(t *testing.T, name string, stderr string, exitCode int) Comm
 
 func catCommand(path string, stderr string, exitCode int) CommandFactory {
 	return func(ctx context.Context) *exec.Cmd {
-		script := "cat " + shellQuote(path)
-		if stderr != "" {
-			script += "; printf '%s' " + shellQuote(stderr) + " >&2"
-		}
-		if exitCode != 0 {
-			script += fmt.Sprintf("; exit %d", exitCode)
-		}
-		return exec.CommandContext(ctx, "sh", "-c", script)
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestClaudeCodeFixtureProcess", "--")
+		cmd.Env = append(os.Environ(),
+			"CLAUDECODE_HELPER=fixture",
+			"CLAUDECODE_FIXTURE_PATH="+path,
+			"CLAUDECODE_FIXTURE_STDERR="+stderr,
+			fmt.Sprintf("CLAUDECODE_FIXTURE_EXIT_CODE=%d", exitCode),
+		)
+		return cmd
 	}
+}
+
+func TestClaudeCodeFixtureProcess(t *testing.T) {
+	if os.Getenv("CLAUDECODE_HELPER") != "fixture" {
+		return
+	}
+
+	raw, err := os.ReadFile(os.Getenv("CLAUDECODE_FIXTURE_PATH"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	if _, err := os.Stdout.Write(raw); err != nil {
+		os.Exit(3)
+	}
+	if stderr := os.Getenv("CLAUDECODE_FIXTURE_STDERR"); stderr != "" {
+		fmt.Fprint(os.Stderr, stderr)
+	}
+	exitCode, err := strconv.Atoi(os.Getenv("CLAUDECODE_FIXTURE_EXIT_CODE"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(4)
+	}
+	os.Exit(exitCode)
 }
 
 func appendUpdate(updates *[]runner.AgentUpdate) runner.AgentUpdateHandler {

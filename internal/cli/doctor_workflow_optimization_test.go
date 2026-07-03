@@ -166,6 +166,19 @@ func TestDoctorWorkflowOptimizationJSONReportSchema(t *testing.T) {
 	}
 }
 
+func TestDoctorSQLiteReadOnlyDSNFormatsWindowsDrivePath(t *testing.T) {
+	t.Parallel()
+
+	dsn := doctorSQLiteReadOnlyDSN(`C:\Users\RUNNER~1\AppData\Local\Temp\detent db.sqlite`)
+	want := `file:/C:/Users/RUNNER~1/AppData/Local/Temp/detent%20db.sqlite?cache=shared&mode=ro`
+	if dsn != want {
+		t.Fatalf("doctorSQLiteReadOnlyDSN() = %q, want %q", dsn, want)
+	}
+	if strings.Contains(dsn, "file://C:") || strings.Contains(dsn, "%5C") {
+		t.Fatalf("doctorSQLiteReadOnlyDSN() = %q, want no URI authority or escaped backslashes", dsn)
+	}
+}
+
 func TestDoctorWorkflowOptimizationWriteRoundTripsWorkflow(t *testing.T) {
 	t.Parallel()
 

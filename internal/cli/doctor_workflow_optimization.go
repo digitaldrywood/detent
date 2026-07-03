@@ -935,12 +935,35 @@ func openDoctorSQLiteReadOnly(ctx context.Context, path string) (doctorTelemetry
 }
 
 func doctorSQLiteReadOnlyDSN(path string) string {
-	uri := url.URL{Scheme: "file", Path: filepath.Clean(path)}
-	values := uri.Query()
+	values := url.Values{}
 	values.Set("mode", "ro")
 	values.Set("cache", "shared")
-	uri.RawQuery = values.Encode()
-	return uri.String()
+	return "file:" + doctorEscapeSQLiteURIPath(doctorSQLiteURIPath(path)) + "?" + values.Encode()
+}
+
+func doctorSQLiteURIPath(path string) string {
+	cleaned := filepath.Clean(path)
+	uriPath := filepath.ToSlash(cleaned)
+	if doctorWindowsDrivePath(uriPath) {
+		uriPath = strings.ReplaceAll(cleaned, `\`, "/")
+		if !strings.HasPrefix(uriPath, "/") {
+			uriPath = "/" + uriPath
+		}
+	}
+	return uriPath
+}
+
+func doctorWindowsDrivePath(path string) bool {
+	return len(path) >= 2 && path[1] == ':' &&
+		(path[0] >= 'A' && path[0] <= 'Z' || path[0] >= 'a' && path[0] <= 'z')
+}
+
+func doctorEscapeSQLiteURIPath(path string) string {
+	parts := strings.Split(path, "/")
+	for index, part := range parts {
+		parts[index] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
 }
 
 func confirmDoctorWorkflowOptimizationWrite(cmd *cobra.Command, report doctorWorkflowOptimizationReport) error {
