@@ -153,6 +153,7 @@ gate:
   kind: command
   run: make check
   require_automated_review: true
+  required_status_checks: []
   validator:
     enabled: true
     min_score: 0.8

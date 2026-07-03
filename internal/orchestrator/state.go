@@ -292,6 +292,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		}
 		pullRequest.SlowChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.SlowChecks...)
 		pullRequest.RunningChecks = append([]string(nil), issue.PullRequest.RunningChecks...)
+		pullRequest.RequiredCheckFailures = append([]connector.PullRequestCheck(nil), issue.PullRequest.RequiredCheckFailures...)
 		pullRequest.TransientFailedChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.TransientFailedChecks...)
 		pullRequest.CodexReviewFindings = append([]connector.PullRequestFinding(nil), issue.PullRequest.CodexReviewFindings...)
 		cloned.PullRequest = &pullRequest

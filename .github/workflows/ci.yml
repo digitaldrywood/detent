@@ -184,7 +184,6 @@ jobs:
           retention-days: 14
 
   portability-verify:
-    if: ${{ github.event_name != 'pull_request' }}
     name: Portability Verify (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -215,7 +214,6 @@ jobs:
         run: go test -race ./...
 
   windows-core:
-    if: ${{ github.event_name != 'pull_request' }}
     name: Windows Core
     runs-on: windows-latest
     steps:
@@ -233,7 +231,6 @@ jobs:
         run: go build ./cmd/detent
 
   installer-smoke:
-    if: ${{ github.event_name != 'pull_request' }}
     name: Installer Smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -327,10 +324,8 @@ jobs:
           & $binary version
 
   goreleaser-snapshot:
-    if: ${{ github.event_name != 'pull_request' }}
     name: GoReleaser Snapshot
     runs-on: ubuntu-latest
-    needs: [lint, verify, test-cover, browser-visual, portability-verify, windows-core, installer-smoke]
     steps:
       - uses: actions/checkout@v5
         with:

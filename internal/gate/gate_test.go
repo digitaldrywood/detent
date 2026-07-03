@@ -1,6 +1,7 @@
 package gate
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +44,21 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 			name: "command can explicitly disable transient ci retries",
 			cfg:  Config{Kind: KindCommand, Run: "make verify", TransientCIRetryLimit: newInt(0)},
 			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true), CIFailureAction: CIFailureActionRework, TransientCIRetryLimit: newInt(0)},
+		},
+		{
+			name: "command normalizes required status checks",
+			cfg: Config{
+				Kind:                 KindCommand,
+				RequiredStatusChecks: []string{" Lint ", "Windows Core", "Lint", ""},
+			},
+			want: Config{
+				Kind:                   KindCommand,
+				Run:                    DefaultCommand,
+				ApprovalLabel:          DefaultApprovalLabel,
+				RequireAutomatedReview: new(true),
+				RequiredStatusChecks:   []string{"Lint", "Windows Core"},
+				CIFailureAction:        CIFailureActionRework,
+			},
 		},
 		{
 			name: "human review normalizes alias and approval label",
@@ -554,11 +570,31 @@ func TestInstructionsDescribeOptimizedMergingGate(t *testing.T) {
 	}
 }
 
+func TestInstructionsDescribeRequiredStatusChecks(t *testing.T) {
+	t.Parallel()
+
+	got := Instructions(Config{
+		Kind:                 KindCommand,
+		Run:                  "make check",
+		RequiredStatusChecks: []string{"Windows Core"},
+	})
+
+	for _, want := range []string{
+		"required status checks must be present on the current PR head",
+		"missing, skipped, failed, cancelled, or still-running required checks block promotion",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Instructions() missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func configsEqual(left Config, right Config) bool {
 	return left.Kind == right.Kind &&
 		left.Run == right.Run &&
 		left.ApprovalLabel == right.ApprovalLabel &&
 		left.CIFailureAction == right.CIFailureAction &&
+		slices.Equal(left.RequiredStatusChecks, right.RequiredStatusChecks) &&
 		intPointerEqual(left.TransientCIRetryLimit, right.TransientCIRetryLimit) &&
 		boolPointerEqual(left.RequireAutomatedReview, right.RequireAutomatedReview) &&
 		validatorConfigsEqual(left.Validator, right.Validator) &&

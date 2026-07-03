@@ -43,41 +43,44 @@ var requiredPRStatusChecks = []requiredStatusCheck{
 		jobEnd:   "  portability-verify:",
 		markers:  []string{"name: Browser Visual", "Run full browser visual gate", "Run browser smoke gate"},
 	},
-}
-
-var confidenceStatusChecks = []requiredStatusCheck{
 	{
 		name:     "Portability Verify (macos-latest)",
+		budget:   "8m",
 		jobStart: "  portability-verify:",
 		jobEnd:   "  windows-core:",
 		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]"},
 	},
 	{
 		name:     "Portability Verify (windows-latest)",
+		budget:   "8m",
 		jobStart: "  portability-verify:",
 		jobEnd:   "  windows-core:",
 		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]"},
 	},
 	{
 		name:     "Windows Core",
+		budget:   "4m",
 		jobStart: "  windows-core:",
 		jobEnd:   "  installer-smoke:",
 		markers:  []string{"name: Windows Core"},
 	},
 	{
 		name:     "Installer Smoke (ubuntu-latest)",
+		budget:   "6m",
 		jobStart: "  installer-smoke:",
 		jobEnd:   "  goreleaser-snapshot:",
 		markers:  []string{"name: Installer Smoke (${{ matrix.os }})", "os: [ubuntu-latest, windows-latest]"},
 	},
 	{
 		name:     "Installer Smoke (windows-latest)",
+		budget:   "6m",
 		jobStart: "  installer-smoke:",
 		jobEnd:   "  goreleaser-snapshot:",
 		markers:  []string{"name: Installer Smoke (${{ matrix.os }})", "os: [ubuntu-latest, windows-latest]"},
 	},
 	{
 		name:     "GoReleaser Snapshot",
+		budget:   "8m",
 		jobStart: "  goreleaser-snapshot:",
 		jobEnd:   "",
 		markers:  []string{"name: GoReleaser Snapshot"},
@@ -109,9 +112,9 @@ func TestMainProtectionDocumentationMatchesWorkflow(t *testing.T) {
 	for _, want := range []string{
 		"`required_status_checks.strict: true`",
 		"must not report success from a path- or event-dependent no-op",
+		"`gate.required_status_checks`",
 		"`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`",
 		"`Browser Visual`",
-		"Release and portability confidence checks",
 	} {
 		if !strings.Contains(protection, want) {
 			t.Fatalf("main branch protection docs missing %q", want)
@@ -127,22 +130,6 @@ func TestMainProtectionDocumentationMatchesWorkflow(t *testing.T) {
 		for _, marker := range check.markers {
 			if !strings.Contains(job, marker) {
 				t.Fatalf("workflow job for required check %q missing %q", check.name, marker)
-			}
-		}
-	}
-
-	for _, check := range confidenceStatusChecks {
-		if !strings.Contains(protection, "- `"+check.name+"`") {
-			t.Fatalf("main branch protection docs missing confidence check %q", check.name)
-		}
-
-		job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
-		if !strings.Contains(job, "if: ${{ github.event_name != 'pull_request' }}") {
-			t.Fatalf("confidence check %q must stay outside the normal PR path", check.name)
-		}
-		for _, marker := range check.markers {
-			if !strings.Contains(job, marker) {
-				t.Fatalf("workflow job for confidence check %q missing %q", check.name, marker)
 			}
 		}
 	}

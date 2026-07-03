@@ -63,6 +63,10 @@ artifact workflows. GitHub PR delivery remains the default.
 - `gate.kind: command` with `require_automated_review: false` keeps the
   command, linked PR, green CI, no-P1, and quiet-period checks but does not
   require an automated GitHub PR review to exist before promotion.
+- `gate.required_status_checks` lists release-blocking check-run names or
+  commit status contexts that must be present on the current PR head, completed,
+  and successful. Missing, skipped, failed, cancelled, neutral, or still-running
+  required checks keep CI non-green and block promotion.
 - `gate.kind: command` routes failed or cancelled current-head CI from
   `Human Review` back to `Rework` by default. Set
   `ci_failure_action: skip` only when red CI should remain parked in
@@ -103,9 +107,8 @@ artifact workflows. GitHub PR delivery remains the default.
 - The CI lint job keeps the project-pinned golangci-lint version and caches its
   binary so cache hits avoid a per-run `go install` without changing lint
   coverage.
-- `GoReleaser Snapshot` is a release confidence check that runs after merges to
-  `main`, on release tags, on the nightly CI schedule, and from manual
-  workflow dispatch instead of blocking the normal PR merge lane.
+- `GoReleaser Snapshot` is a release-blocking check that runs on pull requests,
+  `main`, release tags, the nightly CI schedule, and manual workflow dispatch.
 
 ### Main Branch Protection
 
@@ -121,23 +124,25 @@ the same named check runs real validation on `main`; `Browser Visual` is still a
 real gate because non-UI pull requests run a Detent binary smoke instead of a
 green no-op.
 
-Required PR merge checks:
+Required PR merge checks, branch protection/rulesets, and
+`gate.required_status_checks` must name the same release-blocking checks:
 
 - `Lint` - budget: `2m`
 - `Verify (ubuntu-latest)` - budget: `4m`
 - `Test Coverage` - budget: `4m`
 - `Browser Visual` - budget: `5m`
+- `Portability Verify (macos-latest)` - budget: `8m`
+- `Portability Verify (windows-latest)` - budget: `8m`
+- `Windows Core` - budget: `4m`
+- `Installer Smoke (ubuntu-latest)` - budget: `6m`
+- `Installer Smoke (windows-latest)` - budget: `6m`
+- `GoReleaser Snapshot` - budget: `8m`
 
-Release and portability confidence checks run after merges to `main`, on `v*`
-release tags, on the nightly CI schedule, and from manual workflow dispatch.
-They are not required for normal PR merge:
-
-- `Portability Verify (macos-latest)`
-- `Portability Verify (windows-latest)`
-- `Windows Core`
-- `Installer Smoke (ubuntu-latest)`
-- `Installer Smoke (windows-latest)`
-- `GoReleaser Snapshot`
+Release and portability checks also run on `main`, on `v*` release tags, on the
+nightly CI schedule, and from manual workflow dispatch. They are still
+release-blocking for pull requests; Detent must not promote or merge a PR head
+where one of these checks is missing, skipped, failed, cancelled, neutral, or
+still running.
 
 The CI workflow keeps pull request runs cancellable by newer pushes to the same
 PR through `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`.

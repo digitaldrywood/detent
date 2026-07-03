@@ -193,6 +193,7 @@ func githubLocalConnectorFromWorkflow(ctx context.Context, cfg workflowconfig.Co
 		TerminalStates:              cfg.Tracker.TerminalStates,
 		StateMap:                    githubLocalTrackerStateMap(cfg.Tracker.StateMap),
 		PriorityMap:                 githubLocalTrackerPriorityMap(cfg.Tracker.PriorityMap),
+		RequiredStatusChecks:        cfg.Gate.RequiredStatusChecks,
 	})
 	if err != nil {
 		return nil, err

@@ -46,6 +46,7 @@ type Config struct {
 	TerminalStates              []string
 	StateMap                    map[string]string
 	PriorityMap                 map[string]*int
+	RequiredStatusChecks        []string
 }
 
 func NewFromConfig(cfg Config) (connector.Connector, error) {
@@ -89,6 +90,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 			TerminalStates:          cfg.TerminalStates,
 			StateMap:                cfg.StateMap,
 			PriorityMap:             cfg.PriorityMap,
+			RequiredStatusChecks:    cfg.RequiredStatusChecks,
 		})
 	case connector.BackendGitHubLocal:
 		var tokenSource githubconnector.TokenSource
@@ -130,6 +132,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 				TerminalStates:          cfg.TerminalStates,
 				StateMap:                cfg.StateMap,
 				PriorityMap:             cfg.PriorityMap,
+				RequiredStatusChecks:    cfg.RequiredStatusChecks,
 			},
 			Local:          localCfg,
 			Repository:     cfg.Repository,
