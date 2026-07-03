@@ -1121,6 +1121,33 @@ Prompt
 	}
 }
 
+func TestParseWorkflowGateRequiredStatusChecks(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+gate:
+  required_status_checks:
+    - " Lint "
+    - Windows Core
+    - Lint
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	want := []string{"Lint", "Windows Core"}
+	if !reflect.DeepEqual(workflow.Config.Gate.RequiredStatusChecks, want) {
+		t.Fatalf("Gate.RequiredStatusChecks = %#v, want %#v", workflow.Config.Gate.RequiredStatusChecks, want)
+	}
+}
+
 func TestParseWorkflowGateTransientCIRetryLimitCanDisable(t *testing.T) {
 	t.Parallel()
 

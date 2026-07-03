@@ -1452,6 +1452,93 @@ func TestCheckRunTelemetryUsesWorkflowRunTimingForQueue(t *testing.T) {
 	}
 }
 
+func TestRequiredStatusCheckFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		checkRuns  []restCheckRun
+		statuses   []restCommitStatus
+		required   []string
+		wantState  string
+		wantChecks []connector.PullRequestCheck
+	}{
+		{
+			name:      "all required check runs succeeded",
+			checkRuns: []restCheckRun{{Name: "Lint", Status: "completed", Conclusion: "success"}},
+			required:  []string{"Lint"},
+		},
+		{
+			name:      "missing required check blocks as pending",
+			checkRuns: []restCheckRun{{Name: "Lint", Status: "completed", Conclusion: "success"}},
+			required:  []string{"Lint", "Windows Core"},
+			wantState: "pending",
+			wantChecks: []connector.PullRequestCheck{{
+				Name:       "Windows Core",
+				Status:     "missing",
+				Conclusion: "missing",
+			}},
+		},
+		{
+			name:      "running required check blocks as pending",
+			checkRuns: []restCheckRun{{Name: "Windows Core", Status: "in_progress"}},
+			required:  []string{"Windows Core"},
+			wantState: "pending",
+			wantChecks: []connector.PullRequestCheck{{
+				Name:   "Windows Core",
+				Status: "in_progress",
+			}},
+		},
+		{
+			name:      "skipped required check fails",
+			checkRuns: []restCheckRun{{Name: "Windows Core", Status: "completed", Conclusion: "skipped"}},
+			required:  []string{"Windows Core"},
+			wantState: "failure",
+			wantChecks: []connector.PullRequestCheck{{
+				Name:       "Windows Core",
+				Status:     "completed",
+				Conclusion: "skipped",
+			}},
+		},
+		{
+			name:      "neutral required check fails",
+			checkRuns: []restCheckRun{{Name: "GoReleaser Snapshot", Status: "completed", Conclusion: "neutral"}},
+			required:  []string{"GoReleaser Snapshot"},
+			wantState: "failure",
+			wantChecks: []connector.PullRequestCheck{{
+				Name:       "GoReleaser Snapshot",
+				Status:     "completed",
+				Conclusion: "neutral",
+			}},
+		},
+		{
+			name:      "required commit status context fails",
+			statuses:  []restCommitStatus{{Context: "release/check", State: "failure"}},
+			required:  []string{"release/check"},
+			wantState: "failure",
+			wantChecks: []connector.PullRequestCheck{{
+				Name:       "release/check",
+				Status:     "failure",
+				Conclusion: "failure",
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotChecks := requiredStatusCheckFailures(tt.checkRuns, tt.statuses, tt.required)
+			if !reflect.DeepEqual(gotChecks, tt.wantChecks) {
+				t.Fatalf("requiredStatusCheckFailures() = %#v, want %#v", gotChecks, tt.wantChecks)
+			}
+			if gotState := requiredStatusCheckState(gotChecks); gotState != tt.wantState {
+				t.Fatalf("requiredStatusCheckState() = %q, want %q", gotState, tt.wantState)
+			}
+		})
+	}
+}
+
 func TestCheckRunWorkflowRunIDs(t *testing.T) {
 	t.Parallel()
 
@@ -2571,6 +2658,116 @@ func TestConnectorHydratePullRequestRefreshesCurrentStatus(t *testing.T) {
 	}
 	if got.PRRepository != "example/repo" {
 		t.Fatalf("PRRepository = %q, want example/repo", got.PRRepository)
+	}
+}
+
+func TestConnectorHydratePullRequestBlocksSkippedRequiredStatusCheck(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/pulls/42",
+			body:   `{"number":42,"html_url":"https://github.com/example/repo/pull/42","state":"open","mergeable_state":"clean","draft":false,"head":{"ref":"detent/example_repo_1","sha":"head-sha"},"base":{"sha":"base-sha"}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/commits/head-sha/check-runs?per_page=100",
+			body:   `{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success"},{"name":"Windows Core","status":"completed","conclusion":"skipped"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/commits/head-sha/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/pulls/42/reviews?per_page=100",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{RequiredStatusChecks: []string{"Lint", "Windows Core"}})
+	prNumber := 42
+	issue := connector.Issue{
+		ID:         "I_kw42",
+		Identifier: "example/repo#1",
+		PRNumber:   &prNumber,
+	}
+
+	got, err := c.HydratePullRequest(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("HydratePullRequest() error = %v", err)
+	}
+
+	pr := got.PullRequest
+	if pr == nil {
+		t.Fatalf("PullRequest = nil, want hydrated pull request")
+	}
+	if pr.CIStatus != "fail" {
+		t.Fatalf("CIStatus = %q, want fail for skipped required check", pr.CIStatus)
+	}
+	want := []connector.PullRequestCheck{{
+		Name:       "Windows Core",
+		Status:     "completed",
+		Conclusion: "skipped",
+	}}
+	if !reflect.DeepEqual(pr.RequiredCheckFailures, want) {
+		t.Fatalf("RequiredCheckFailures = %#v, want %#v", pr.RequiredCheckFailures, want)
+	}
+}
+
+func TestConnectorHydratePullRequestBlocksMissingRequiredStatusCheck(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/pulls/42",
+			body:   `{"number":42,"html_url":"https://github.com/example/repo/pull/42","state":"open","mergeable_state":"clean","draft":false,"head":{"ref":"detent/example_repo_1","sha":"head-sha"},"base":{"sha":"base-sha"}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/commits/head-sha/check-runs?per_page=100",
+			body:   `{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/commits/head-sha/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/pulls/42/reviews?per_page=100",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{RequiredStatusChecks: []string{"Lint", "Windows Core"}})
+	prNumber := 42
+	issue := connector.Issue{
+		ID:         "I_kw42",
+		Identifier: "example/repo#1",
+		PRNumber:   &prNumber,
+	}
+
+	got, err := c.HydratePullRequest(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("HydratePullRequest() error = %v", err)
+	}
+
+	pr := got.PullRequest
+	if pr == nil {
+		t.Fatalf("PullRequest = nil, want hydrated pull request")
+	}
+	if pr.CIStatus != "pending" {
+		t.Fatalf("CIStatus = %q, want pending for missing required check", pr.CIStatus)
+	}
+	want := []connector.PullRequestCheck{{
+		Name:       "Windows Core",
+		Status:     "missing",
+		Conclusion: "missing",
+	}}
+	if !reflect.DeepEqual(pr.RequiredCheckFailures, want) {
+		t.Fatalf("RequiredCheckFailures = %#v, want %#v", pr.RequiredCheckFailures, want)
 	}
 }
 

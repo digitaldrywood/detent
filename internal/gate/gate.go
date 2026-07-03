@@ -32,6 +32,7 @@ type Config struct {
 	Run                    string          `yaml:"run"`
 	ApprovalLabel          string          `yaml:"approval_label"`
 	RequireAutomatedReview *bool           `yaml:"require_automated_review"`
+	RequiredStatusChecks   []string        `yaml:"required_status_checks"`
 	CIFailureAction        string          `yaml:"ci_failure_action"`
 	TransientCIRetryLimit  *int            `yaml:"transient_ci_retry_limit"`
 	Validator              ValidatorConfig `yaml:"validator"`
@@ -166,6 +167,7 @@ func Effective(cfg Config) Config {
 	cfg.Kind = NormalizeKind(cfg.Kind)
 	cfg.Run = strings.TrimSpace(cfg.Run)
 	cfg.ApprovalLabel = normalizeLabel(cfg.ApprovalLabel)
+	cfg.RequiredStatusChecks = NormalizeRequiredStatusChecks(cfg.RequiredStatusChecks)
 	cfg.CIFailureAction = NormalizeCIFailureAction(cfg.CIFailureAction)
 	if cfg.TransientCIRetryLimit == nil {
 		cfg.TransientCIRetryLimit = newInt(DefaultTransientCIRetries)
@@ -260,6 +262,23 @@ func NormalizeCIFailureAction(action string) string {
 	}
 }
 
+func NormalizeRequiredStatusChecks(checks []string) []string {
+	normalized := make([]string, 0, len(checks))
+	seen := make(map[string]struct{}, len(checks))
+	for _, check := range checks {
+		check = strings.TrimSpace(check)
+		if check == "" {
+			continue
+		}
+		if _, ok := seen[check]; ok {
+			continue
+		}
+		seen[check] = struct{}{}
+		normalized = append(normalized, check)
+	}
+	return normalized
+}
+
 func Validate(prefix string, cfg Config) []string {
 	var problems []string
 	switch NormalizeKind(cfg.Kind) {
@@ -274,6 +293,12 @@ func Validate(prefix string, cfg Config) []string {
 	}
 	if cfg.TransientCIRetryLimit != nil && *cfg.TransientCIRetryLimit < 0 {
 		problems = append(problems, prefix+".transient_ci_retry_limit must be greater than or equal to 0")
+	}
+	for _, check := range cfg.RequiredStatusChecks {
+		if strings.TrimSpace(check) == "" {
+			problems = append(problems, prefix+".required_status_checks must not contain blank names")
+			break
+		}
 	}
 	problems = append(problems, validateValidator(prefix+".validator", cfg.Validator)...)
 	problems = append(problems, validateArtifact(prefix+".artifact", cfg.Artifact)...)
@@ -305,6 +330,7 @@ func Instructions(cfg Config) string {
 	default:
 		instructions := "The validation gate is a command. Run `" + cfg.Run +
 			"` from the workspace root before Human Review; the pull request still needs green CI before promotion. " +
+			requiredStatusCheckInstructions(cfg.RequiredStatusChecks) +
 			"In Merging, run a focused rebase/smoke gate after a clean rebase when the PR already passed current-head validation and no source files changed during rebase. " +
 			"Run full `" + cfg.Run + "` in Merging when code changes, conflicts are resolved, or validation state is stale or unknown. " +
 			"Watch current-head CI with REST check-runs polling/backoff, report slow checks, and record merge wait telemetry in the Workpad: quiet-window wait, local merge-gate duration, PR CI duration, slow check names, and whether post-merge main CI is still running."
@@ -318,6 +344,14 @@ func Instructions(cfg Config) string {
 		}
 		return instructions
 	}
+}
+
+func requiredStatusCheckInstructions(checks []string) string {
+	checks = NormalizeRequiredStatusChecks(checks)
+	if len(checks) == 0 {
+		return ""
+	}
+	return "Configured required status checks must be present on the current PR head, completed, and successful; missing, skipped, failed, cancelled, or still-running required checks block promotion. "
 }
 
 func EvaluatePlan(cfg PlanConfig, labels []string, summary Summary) Decision {

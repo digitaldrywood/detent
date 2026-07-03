@@ -2405,6 +2405,7 @@ func defaultDoctorAutoPromoteConnector(cfg workflowconfig.Config) (doctorAutoPro
 		ObservedStates:              cfg.Tracker.ObservedStates,
 		TerminalStates:              cfg.Tracker.TerminalStates,
 		StateMap:                    doctorTrackerStateMap(cfg.Tracker.StateMap),
+		RequiredStatusChecks:        cfg.Gate.RequiredStatusChecks,
 	})
 }
 

@@ -515,10 +515,10 @@ skips publishing when `SCOOP_BUCKET_GITHUB_TOKEN` or `WINGET_GITHUB_TOKEN` is
 not configured.
 
 CI runs `GoReleaser Snapshot` after merges to `main`, on `v*` release tags, on
-the nightly schedule, and from manual workflow dispatch so release packaging is
-validated outside the normal PR merge lane. Required branch checks must not pass
-as path- or event-dependent no-ops on pull requests when the same check name
-runs real validation on `main`.
+pull requests, on the nightly schedule, and from manual workflow dispatch so
+release packaging is validated before the PR merge lane and after it lands.
+Required branch checks must not pass as path- or event-dependent no-ops on pull
+requests when the same check name runs real validation on `main`.
 
 ## Quick Start
 
@@ -700,6 +700,7 @@ gate:
   kind: command
   run: make check
   require_automated_review: true
+  required_status_checks: []
   ci_failure_action: rework
   transient_ci_retry_limit: 2
   validator:
@@ -757,6 +758,7 @@ agent:
 gate:
   kind: command
   run: make check
+  required_status_checks: []
   ci_failure_action: rework
   transient_ci_retry_limit: 2
   validator:
@@ -805,6 +807,7 @@ agent:
 gate:
   kind: command
   run: make check
+  required_status_checks: []
   ci_failure_action: rework
   transient_ci_retry_limit: 2
   validator:
@@ -885,6 +888,10 @@ current-head CI moves a `Human Review` item back to
 in `Human Review`; pending CI stays parked. Use
 `kind: human_review` with `approval_label` only when the workflow explicitly
 requires a human approval label to promote.
+Set `required_status_checks` to the exact branch-protection or ruleset check
+names that are release-blocking for the project. Detent treats a configured
+required check as non-green when it is missing, skipped, failed, cancelled,
+neutral, or still running on the current PR head.
 
 Set `gate.validator.enabled: true` to add a validator-agent review before
 auto-promotion. The validator inspects the PR diff against the issue acceptance
@@ -1512,6 +1519,9 @@ of that state is controlled by the workflow:
 - `gate.kind: command` with `require_automated_review: false` keeps the linked
   PR, green CI, no-P1, and quiet-period checks but does not require a bot PR
   review to exist.
+- `gate.required_status_checks` names release-blocking check runs or commit
+  status contexts that must be present, completed, and successful on the current
+  PR head.
 - `gate.ci_failure_action: rework` routes failed or cancelled current-head CI
   from `Human Review` back to `Rework` by default; set
   `gate.ci_failure_action: skip` only when non-green CI should leave the item
@@ -1730,20 +1740,22 @@ or cannot prove the final rebase was source-clean, it must run the full
 configured gate again.
 
 CI waiting should poll current-head REST check runs with backoff, not loop on
-GraphQL-heavy PR status commands. Merge handoff telemetry should record the
+GraphQL-heavy PR status commands. Required release checks must run on the PR
+head before merge; post-merge-only failures cannot be part of the merge
+decision. Merge handoff telemetry should record the
 quiet-window wait, GitHub queue/start wait, local merge-gate duration,
 current-head PR CI duration, active slow-check runtimes, and whether post-merge
 `main` CI is still running. The quiet window, current-head required CI, and
 conflict/full-gate fallback are quality gates; repeated full local validation
 after a source-clean rebase, noisy status polling, uncached tool install, and
-duplicated post-merge work are optimization targets.
+duplicated non-blocking post-merge work are optimization targets.
 
 The repository CI caches the project-pinned golangci-lint binary and only builds
 it with `go install` on cache miss. The official prebuilt action was evaluated,
 but the prebuilt `v2.1.6` binary targets an older Go toolchain than this repo and
 newer prebuilt lint releases change the enforced lint set. `GoReleaser Snapshot`
-now runs as release confidence coverage outside normal PR merges so packaging
-signal remains available without extending the required merge lane.
+now runs on pull requests, `main`, release tags, nightly schedule, and manual
+dispatch so packaging signal is available before and after merge.
 
 ## Multi-Project Operation
 

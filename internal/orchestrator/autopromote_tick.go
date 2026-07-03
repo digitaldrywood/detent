@@ -1337,6 +1337,7 @@ func autoPromoteFailedChecksFromPullRequest(pullRequest *connector.PullRequest) 
 		return nil
 	}
 	allChecks := append([]connector.PullRequestCheck{}, pullRequest.SlowChecks...)
+	allChecks = append(allChecks, pullRequest.RequiredCheckFailures...)
 	allChecks = append(allChecks, pullRequest.TransientFailedChecks...)
 	checks := make([]string, 0, len(allChecks))
 	for _, check := range allChecks {
@@ -1350,7 +1351,7 @@ func autoPromoteFailedChecksFromPullRequest(pullRequest *connector.PullRequest) 
 
 func autoPromoteCheckFailed(check connector.PullRequestCheck) bool {
 	switch strings.ToLower(strings.TrimSpace(check.Conclusion)) {
-	case "failure", "failed", "error", "timed_out", "startup_failure", "action_required", "cancelled", "canceled":
+	case "failure", "failed", "error", "timed_out", "startup_failure", "action_required", "cancelled", "canceled", "missing", "skipped", "neutral":
 		return true
 	default:
 		return false

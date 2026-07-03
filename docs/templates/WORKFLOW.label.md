@@ -110,6 +110,7 @@ gate:
   kind: command
   run: make check
   require_automated_review: true
+  required_status_checks: []
   ci_failure_action: rework
   transient_ci_retry_limit: 2
   validator:

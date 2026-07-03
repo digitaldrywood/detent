@@ -64,6 +64,7 @@ type PullRequest struct {
 	CIDurationSeconds            int64                `json:"ci_duration_seconds,omitempty" yaml:"ci_duration_seconds,omitempty"`
 	SlowChecks                   []PullRequestCheck   `json:"slow_checks,omitempty" yaml:"slow_checks,omitempty"`
 	RunningChecks                []string             `json:"running_checks,omitempty" yaml:"running_checks,omitempty"`
+	RequiredCheckFailures        []PullRequestCheck   `json:"required_check_failures,omitempty" yaml:"required_check_failures,omitempty"`
 	TransientFailedChecks        []PullRequestCheck   `json:"transient_failed_checks,omitempty" yaml:"transient_failed_checks,omitempty"`
 	CodexReviewState             string               `json:"codex_review_state,omitempty" yaml:"codex_review_state,omitempty"`
 	CodexReviewSubmittedAt       *time.Time           `json:"codex_review_submitted_at,omitempty" yaml:"codex_review_submitted_at,omitempty"`

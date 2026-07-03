@@ -67,6 +67,7 @@ type Config struct {
 	TerminalStates          []string
 	StateMap                map[string]string
 	PriorityMap             map[string]*int
+	RequiredStatusChecks    []string
 	TokenSource             TokenSource
 	HTTPClient              HTTPClient
 	HTTPTransport           HTTPTransportConfig
@@ -91,6 +92,7 @@ type Connector struct {
 	terminalStates    []string
 	stateMap          map[string]string
 	priorityMap       map[string]*int
+	requiredChecks    []string
 	statusCache       *statusCache
 	issueFields       *issueFieldCache
 	projectCache      *projectCache
@@ -166,6 +168,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 		terminalStates:    normalizeStateList(cfg.TerminalStates, []string{"Done", "Cancelled", "Canceled", "Closed"}),
 		stateMap:          cloneStateMap(cfg.StateMap),
 		priorityMap:       clonePriorityMapWithDefault(cfg.PriorityMap),
+		requiredChecks:    normalizeRequiredStatusChecks(cfg.RequiredStatusChecks),
 		statusCache:       newStatusCache(githubCacheTTL, cfg.Now),
 		issueFields:       newIssueFieldCache(githubCacheTTL, cfg.Now),
 		projectCache:      newProjectCache(githubCacheTTL, cfg.Now),

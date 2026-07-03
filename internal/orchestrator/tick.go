@@ -614,6 +614,9 @@ func applyPullRequestHydrationBlock(target *connector.PullRequest, source connec
 	if strings.TrimSpace(target.CIStatus) == "" {
 		target.CIStatus = source.CIStatus
 	}
+	if len(target.RequiredCheckFailures) == 0 {
+		target.RequiredCheckFailures = append([]connector.PullRequestCheck(nil), source.RequiredCheckFailures...)
+	}
 }
 
 func retainUnavailablePullRequests(current []connector.Issue, previous []connector.Issue) []connector.Issue {

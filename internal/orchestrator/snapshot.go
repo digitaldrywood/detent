@@ -433,6 +433,7 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 		QuietWaitSeconds:           pullRequestQuietWaitSeconds(issue, quietDuration, pollInterval),
 		SlowChecks:                 telemetryPullRequestChecks(pullRequest.SlowChecks),
 		RunningChecks:              append([]string(nil), pullRequest.RunningChecks...),
+		RequiredCheckFailures:      telemetryPullRequestChecks(pullRequest.RequiredCheckFailures),
 		CodexReviewState:           pullRequest.CodexReviewState,
 	}
 }

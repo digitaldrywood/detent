@@ -2089,9 +2089,13 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    `require_automated_review: true`, it also requires a current-head automated
    GitHub PR review. With `require_automated_review: false`, bot PR review is
    not required to exist, but any observed P1 bot findings still route the item
-   to `Rework`. Failed or cancelled current-head CI also routes the item to
-   `Rework` by default; set `ci_failure_action: skip` only when red CI should
-   stay parked in `Human Review`. `agent.auto_promote.rework_limit: 0` leaves
+   to `Rework`. `gate.required_status_checks` should list every
+   release-blocking branch-protection or ruleset check name; Detent treats
+   missing, skipped, failed, cancelled, neutral, or still-running required
+   checks as non-green on the current PR head. Failed or cancelled current-head
+   CI also routes the item to `Rework` by default; set `ci_failure_action: skip`
+   only when red CI should stay parked in `Human Review`.
+   `agent.auto_promote.rework_limit: 0` leaves
    repeated rework unlimited; a positive value requires `Blocked` in a configured
    tracker state list and blocks the next lap after that many persisted Rework
    entries. Pending CI stays parked. The quiet
@@ -2814,6 +2818,7 @@ the card instead of auto-resolving it.
 | Dashboard bind | `server.host` in `WORKFLOW.md`, or `--host` in the startup command or service `ExecStart`. |
 | Validation command | `gate.kind: command` and `gate.run` in `WORKFLOW.md`. |
 | Automated PR review requirement | `gate.kind: command` and `gate.require_automated_review` in `WORKFLOW.md`. |
+| Release-blocking CI names | `gate.required_status_checks` in `WORKFLOW.md`; keep it aligned with branch protection or rulesets. |
 | Failed CI recovery | `gate.kind: command` and `gate.ci_failure_action` in `WORKFLOW.md`. |
 | Validator-agent review | `gate.validator.enabled`, `gate.validator.min_score`, and `gate.validator.block_on` in `WORKFLOW.md`. |
 | Human validation label | `gate.kind: human_review` and `gate.approval_label` in `WORKFLOW.md`. |
