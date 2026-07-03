@@ -101,6 +101,9 @@ func buildRunner(
 	if err != nil {
 		return nil, fmt.Errorf("load pricing: %w", err)
 	}
+	budgetGuardBuilder := func(cfg workflowconfig.Budget) (runnerpkg.BudgetChecker, runnerpkg.DispatchEstimator, error) {
+		return buildBudgetDispatchGuards(cfg, sessionStore, pricing)
+	}
 
 	run, err := runnerpkg.NewRunner(runnerpkg.Dependencies{
 		ProjectID:           projectID,
@@ -109,12 +112,42 @@ func buildRunner(
 		AgentBackendFactory: runnerpkg.AgentBackendFactoryFunc(buildAgentBackend),
 		Store:               sessionStore,
 		Pricing:             pricing,
+		BudgetGuardBuilder:  budgetGuardBuilder,
 		Logger:              logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create runner: %w", err)
 	}
 	return run, nil
+}
+
+func buildBudgetDispatchGuards(
+	cfg workflowconfig.Budget,
+	sessionStore runnerpkg.SessionStore,
+	pricing budget.PricingTable,
+) (runnerpkg.BudgetChecker, runnerpkg.DispatchEstimator, error) {
+	if !cfg.Enabled {
+		return nil, nil, nil
+	}
+
+	spendStore, ok := sessionStore.(budget.SpendStore)
+	if !ok {
+		return nil, nil, budget.ErrMissingSpendStore
+	}
+
+	checker := budget.NewChecker(budget.Config{
+		Enabled:         cfg.Enabled,
+		PerDayMaxUSD:    cfg.PerDayMaxUSD,
+		PerIssueMaxUSD:  cfg.PerIssueMaxUSD,
+		RefusalCooldown: time.Duration(cfg.RefusalCooldownSeconds) * time.Second,
+		PricingPath:     cfg.PricingPath,
+	}, spendStore, pricing)
+
+	estimateStore, ok := sessionStore.(budget.DispatchEstimateStore)
+	if !ok {
+		return checker, nil, nil
+	}
+	return checker, budget.NewDispatchEstimator(estimateStore), nil
 }
 
 func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string, logger *slog.Logger) (workspace.Backend, error) {

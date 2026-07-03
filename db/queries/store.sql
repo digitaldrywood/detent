@@ -149,6 +149,55 @@ WHERE issue_id = sqlc.arg(issue_id)
 GROUP BY COALESCE(model, '')
 ORDER BY COALESCE(model, '');
 
+-- name: RecentModelTokenQuantiles :one
+WITH recent AS (
+  SELECT
+    input_tokens,
+    COALESCE(cached_input_tokens, 0) AS cached_input_tokens,
+    output_tokens,
+    total_tokens
+  FROM codex_sessions
+  WHERE completed_at IS NOT NULL
+    AND lower(trim(COALESCE(model, ''))) = lower(trim(sqlc.arg(model)))
+  ORDER BY completed_at DESC, id DESC
+  LIMIT sqlc.arg(limit)
+),
+counts AS (
+  SELECT
+    CAST(COUNT(*) AS INTEGER) AS sessions
+  FROM recent
+),
+targets AS (
+  SELECT
+    sessions,
+    CAST((sessions + 1) / 2 AS INTEGER) AS p50_rank,
+    CAST(((sessions * 9) + 9) / 10 AS INTEGER) AS p90_rank
+  FROM counts
+),
+ranked AS (
+  SELECT
+    input_tokens,
+    cached_input_tokens,
+    output_tokens,
+    total_tokens,
+    ROW_NUMBER() OVER (ORDER BY input_tokens) AS input_rank,
+    ROW_NUMBER() OVER (ORDER BY cached_input_tokens) AS cached_input_rank,
+    ROW_NUMBER() OVER (ORDER BY output_tokens) AS output_rank,
+    ROW_NUMBER() OVER (ORDER BY total_tokens) AS total_rank
+  FROM recent
+)
+SELECT
+  CAST(targets.sessions AS INTEGER) AS sessions,
+  CAST(COALESCE((SELECT input_tokens FROM ranked WHERE input_rank = targets.p50_rank), 0) AS INTEGER) AS p50_input_tokens,
+  CAST(COALESCE((SELECT input_tokens FROM ranked WHERE input_rank = targets.p90_rank), 0) AS INTEGER) AS p90_input_tokens,
+  CAST(COALESCE((SELECT cached_input_tokens FROM ranked WHERE cached_input_rank = targets.p50_rank), 0) AS INTEGER) AS p50_cached_input_tokens,
+  CAST(COALESCE((SELECT cached_input_tokens FROM ranked WHERE cached_input_rank = targets.p90_rank), 0) AS INTEGER) AS p90_cached_input_tokens,
+  CAST(COALESCE((SELECT output_tokens FROM ranked WHERE output_rank = targets.p50_rank), 0) AS INTEGER) AS p50_output_tokens,
+  CAST(COALESCE((SELECT output_tokens FROM ranked WHERE output_rank = targets.p90_rank), 0) AS INTEGER) AS p90_output_tokens,
+  CAST(COALESCE((SELECT total_tokens FROM ranked WHERE total_rank = targets.p50_rank), 0) AS INTEGER) AS p50_total_tokens,
+  CAST(COALESCE((SELECT total_tokens FROM ranked WHERE total_rank = targets.p90_rank), 0) AS INTEGER) AS p90_total_tokens
+FROM targets;
+
 -- name: CreateUsageEvent :one
 INSERT INTO usage_events (
   project_id,

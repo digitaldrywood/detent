@@ -524,6 +524,37 @@ func (s *sqliteStore) IssueTokenSpend(ctx context.Context, identity IssueIdentit
 	return spend, nil
 }
 
+func (s *sqliteStore) RecentModelTokenQuantiles(ctx context.Context, query ModelTokenQuantileQuery) (ModelTokenQuantiles, error) {
+	model := strings.TrimSpace(query.Model)
+	if model == "" {
+		return ModelTokenQuantiles{}, nil
+	}
+	limit := nonNegative(query.Limit)
+	if limit == 0 {
+		limit = 50
+	}
+
+	row, err := s.queries.RecentModelTokenQuantiles(ctx, sqlc.RecentModelTokenQuantilesParams{
+		Model: model,
+		Limit: limit,
+	})
+	if err != nil {
+		return ModelTokenQuantiles{}, fmt.Errorf("reading model token quantiles: %w", err)
+	}
+	return ModelTokenQuantiles{
+		Model:                model,
+		Sessions:             row.Sessions,
+		P50InputTokens:       row.P50InputTokens,
+		P90InputTokens:       row.P90InputTokens,
+		P50CachedInputTokens: row.P50CachedInputTokens,
+		P90CachedInputTokens: row.P90CachedInputTokens,
+		P50OutputTokens:      row.P50OutputTokens,
+		P90OutputTokens:      row.P90OutputTokens,
+		P50TotalTokens:       row.P50TotalTokens,
+		P90TotalTokens:       row.P90TotalTokens,
+	}, nil
+}
+
 func (s *sqliteStore) CycleTimeReport(ctx context.Context) (CycleTimeReport, error) {
 	rows, err := s.queries.CompletedIssueCycleRows(ctx)
 	if err != nil {

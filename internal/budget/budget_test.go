@@ -264,6 +264,34 @@ func TestCheckerUsesDefaultEstimate(t *testing.T) {
 	assertInDelta(t, decision.Refusal.ProjectedCostUSD, 0.19)
 }
 
+func TestRefusalCommentUsesEffectiveDueAt(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC)
+	resetAt := now.Add(14 * time.Hour)
+	cooldownUntil := now.Add(time.Hour)
+	maxUSD := 1.50
+	refusal := Refusal{
+		Code:              ReasonPerDayMaxUSD,
+		Model:             "gpt-test",
+		CurrentSpendUSD:   1.25,
+		ProjectedCostUSD:  0.50,
+		ProjectedSpendUSD: 1.75,
+		MaxUSD:            &maxUSD,
+		ResetAt:           &resetAt,
+		CooldownUntil:     cooldownUntil,
+	}
+
+	comment := refusal.Comment()
+	wantDueAt := "This issue will be reconsidered after: " + resetAt.Format(time.RFC3339)
+	if !strings.Contains(comment, wantDueAt) {
+		t.Fatalf("Refusal.Comment() = %q, want %q", comment, wantDueAt)
+	}
+	if strings.Contains(comment, "This issue will be reconsidered after: "+cooldownUntil.Format(time.RFC3339)) {
+		t.Fatalf("Refusal.Comment() = %q, want reconsideration after reset rather than cooldown", comment)
+	}
+}
+
 func TestRefusalTrackerRecordsOncePerCooldown(t *testing.T) {
 	t.Parallel()
 
@@ -304,6 +332,32 @@ func TestRefusalTrackerRecordsOncePerCooldown(t *testing.T) {
 	}
 	if third.DueAt != now.Add(2*time.Hour) {
 		t.Fatalf("third DueAt = %s, want %s", third.DueAt, now.Add(2*time.Hour))
+	}
+}
+
+func TestRefusalTrackerUsesResetAtWhenLaterThanCooldown(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC)
+	resetAt := now.Add(14 * time.Hour)
+	refusal := Refusal{
+		Code:          ReasonPerDayMaxUSD,
+		IssueID:       "issue-daily",
+		RefusedAt:     now,
+		ResetAt:       &resetAt,
+		CooldownUntil: now.Add(time.Hour),
+	}
+	tracker := NewRefusalTracker()
+
+	tracked, shouldComment := tracker.Record(refusal)
+	if !shouldComment {
+		t.Fatal("Record() shouldComment = false, want true")
+	}
+	if tracked.DueAt != resetAt {
+		t.Fatalf("DueAt = %s, want reset %s", tracked.DueAt, resetAt)
+	}
+	if !tracker.CooldownActive("issue-daily", now.Add(2*time.Hour)) {
+		t.Fatal("CooldownActive() after cooldown before reset = false, want true")
 	}
 }
 

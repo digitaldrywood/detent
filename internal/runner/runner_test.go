@@ -302,6 +302,103 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 }
 
+func TestRunnerRunRefusesDispatchWhenBudgetExceeded(t *testing.T) {
+	t.Parallel()
+
+	workspacePath := t.TempDir()
+	startedAt := time.Date(2026, 6, 2, 9, 0, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{
+			Path:   workspacePath,
+			Key:    "digitaldrywood_detent_855",
+			Branch: "detent/digitaldrywood_detent_855",
+		},
+	}
+	agentBackend := &fakeCodexClient{
+		updates: []AgentUpdate{
+			{Type: AgentUpdateMessageDelta, Delta: "should not run"},
+		},
+	}
+	spendStore := &fakeRunnerBudgetSpendStore{
+		daily: store.TokenSpend{
+			ByModel: []store.ModelTokenSpend{
+				{Model: "gpt-budget", InputTokens: 120},
+			},
+		},
+	}
+	checker := budget.NewChecker(budget.Config{
+		Enabled:         true,
+		PerDayMaxUSD:    1.25,
+		RefusalCooldown: time.Hour,
+	}, spendStore, budget.PricingTable{
+		"gpt-budget": {
+			USDPerInputToken:  0.01,
+			USDPerOutputToken: 0.02,
+		},
+	})
+	estimator := &fakeDispatchEstimator{
+		estimate: budget.TokenEstimate{
+			InputTokens:  10,
+			OutputTokens: 0,
+			TotalTokens:  10,
+			Sessions:     5,
+		},
+	}
+	sessionStore := &fakeSessionStore{sessionID: 855}
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{},
+			Prompt: "Work on {{ issue.identifier }}",
+		},
+		Workspace:         workspaceBackend,
+		AgentBackend:      agentBackend,
+		Store:             sessionStore,
+		BudgetChecker:     checker,
+		DispatchEstimator: estimator,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:            "issue-855",
+			Identifier:    "digitaldrywood/detent#855",
+			URL:           "https://github.com/digitaldrywood/detent/issues/855",
+			BranchName:    "detent/digitaldrywood_detent_855",
+			ModelOverride: "gpt-budget",
+		},
+		StartedAt: startedAt,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.BudgetRefusal == nil {
+		t.Fatal("BudgetRefusal = nil, want refusal")
+	}
+	if result.BudgetRefusal.Code != string(budget.ReasonPerDayMaxUSD) || result.BudgetRefusal.Message != "daily budget exceeded" {
+		t.Fatalf("BudgetRefusal = %#v, want daily budget refusal", result.BudgetRefusal)
+	}
+	if !strings.Contains(result.BudgetRefusal.Comment, "projected dispatch would exceed the daily budget") {
+		t.Fatalf("BudgetRefusal.Comment = %q, want refusal comment", result.BudgetRefusal.Comment)
+	}
+	if agentBackend.calls != 0 {
+		t.Fatalf("RunTurn calls = %d, want 0", agentBackend.calls)
+	}
+	if sessionStore.startCalls != 0 || sessionStore.finishCalls != 0 || sessionStore.usageCalls != 0 {
+		t.Fatalf("session store calls = start %d finish %d usage %d, want none", sessionStore.startCalls, sessionStore.finishCalls, sessionStore.usageCalls)
+	}
+	if !workspaceBackend.afterRun {
+		t.Fatal("workspace AfterRun = false, want cleanup after refusal")
+	}
+	if spendStore.dailyCalls != 1 {
+		t.Fatalf("DailyTokenSpend calls = %d, want 1", spendStore.dailyCalls)
+	}
+	if estimator.model != "gpt-budget" {
+		t.Fatalf("estimator model = %q, want gpt-budget", estimator.model)
+	}
+}
+
 func TestRunnerRunKillsSessionAtTokenCeilingAndRecordsLesson(t *testing.T) {
 	t.Parallel()
 
@@ -1443,6 +1540,90 @@ func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
 	}
 }
 
+func TestRunnerUpdateWorkflowRefreshesBudgetGuards(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 2, 11, 0, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-42", Branch: "detent/issue-42"},
+	}
+	agentBackend := &fakeCodexClient{}
+	maxUSD := 2.0
+	checker := &fakeBudgetChecker{
+		refusal: budget.Refusal{
+			Code:              budget.ReasonPerDayMaxUSD,
+			Message:           "daily budget exceeded",
+			Model:             "gpt-budget",
+			CurrentSpendUSD:   1.90,
+			ProjectedCostUSD:  0.20,
+			ProjectedSpendUSD: 2.10,
+			MaxUSD:            &maxUSD,
+			RefusedAt:         now,
+			CooldownUntil:     now.Add(time.Hour),
+		},
+	}
+	estimator := &fakeDispatchEstimator{
+		estimate: budget.TokenEstimate{
+			InputTokens: 10,
+			TotalTokens: 10,
+			Sessions:    5,
+		},
+	}
+	var guardCalls []bool
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{},
+			Prompt: "initial {{ issue.identifier }}",
+		},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		BudgetGuardBuilder: func(cfg config.Budget) (BudgetChecker, DispatchEstimator, error) {
+			guardCalls = append(guardCalls, cfg.Enabled)
+			if !cfg.Enabled {
+				return nil, nil, nil
+			}
+			return checker, estimator, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	enabled := config.Config{}
+	enabled.Budget.Enabled = true
+	runner.UpdateWorkflow(config.Workflow{
+		Config: enabled,
+		Prompt: "reloaded {{ issue.identifier }}",
+	})
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:            "issue-42",
+			Identifier:    "digitaldrywood/detent#42",
+			ModelOverride: "gpt-budget",
+		},
+		StartedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(guardCalls) != 2 || guardCalls[0] || !guardCalls[1] {
+		t.Fatalf("budget guard builder calls = %v, want [false true]", guardCalls)
+	}
+	if result.BudgetRefusal == nil || result.BudgetRefusal.Code != string(budget.ReasonPerDayMaxUSD) {
+		t.Fatalf("BudgetRefusal = %#v, want daily budget refusal", result.BudgetRefusal)
+	}
+	if checker.calls != 1 || checker.model != "gpt-budget" {
+		t.Fatalf("budget checker calls/model = %d/%q, want 1/gpt-budget", checker.calls, checker.model)
+	}
+	if estimator.model != "gpt-budget" {
+		t.Fatalf("estimator model = %q, want gpt-budget", estimator.model)
+	}
+	if agentBackend.calls != 0 {
+		t.Fatalf("RunTurn calls = %d, want 0 after budget refusal", agentBackend.calls)
+	}
+}
+
 func TestRunnerRunUsesSingleConfiguredBackendDefaultRoute(t *testing.T) {
 	t.Parallel()
 
@@ -2019,24 +2200,30 @@ func (c *cancelingCodexClient) RunTurn(context.Context, AgentTurnRequest, AgentU
 }
 
 type fakeSessionStore struct {
-	sessionID int64
-	started   store.SessionStart
-	finished  store.SessionFinish
-	usage     store.UsageEvent
-	phase     store.WorkflowPhaseEvent
+	sessionID   int64
+	started     store.SessionStart
+	finished    store.SessionFinish
+	usage       store.UsageEvent
+	phase       store.WorkflowPhaseEvent
+	startCalls  int
+	finishCalls int
+	usageCalls  int
 }
 
 func (s *fakeSessionStore) StartSession(_ context.Context, attrs store.SessionStart) (int64, error) {
+	s.startCalls++
 	s.started = attrs
 	return s.sessionID, nil
 }
 
 func (s *fakeSessionStore) FinishSession(_ context.Context, _ int64, attrs store.SessionFinish) error {
+	s.finishCalls++
 	s.finished = attrs
 	return nil
 }
 
 func (s *fakeSessionStore) RecordUsageEvent(_ context.Context, attrs store.UsageEvent) (int64, error) {
+	s.usageCalls++
 	s.usage = attrs
 	return 1, nil
 }
@@ -2044,6 +2231,50 @@ func (s *fakeSessionStore) RecordUsageEvent(_ context.Context, attrs store.Usage
 func (s *fakeSessionStore) RecordWorkflowPhaseEvent(_ context.Context, attrs store.WorkflowPhaseEvent) (int64, error) {
 	s.phase = attrs
 	return 1, nil
+}
+
+type fakeDispatchEstimator struct {
+	model    string
+	estimate budget.TokenEstimate
+	err      error
+}
+
+func (e *fakeDispatchEstimator) EstimateDispatch(_ context.Context, model string) (budget.TokenEstimate, error) {
+	e.model = model
+	return e.estimate, e.err
+}
+
+type fakeBudgetChecker struct {
+	refusal budget.Refusal
+	model   string
+	calls   int
+}
+
+func (c *fakeBudgetChecker) CheckDispatch(_ context.Context, req budget.DispatchRequest) (budget.Decision, error) {
+	c.calls++
+	c.model = req.Model
+	if c.refusal.Code == "" {
+		return budget.Decision{Allowed: true}, nil
+	}
+	refusal := c.refusal
+	return budget.Decision{Refusal: &refusal}, nil
+}
+
+type fakeRunnerBudgetSpendStore struct {
+	daily      store.TokenSpend
+	issue      store.TokenSpend
+	dailyCalls int
+	issueCalls int
+}
+
+func (s *fakeRunnerBudgetSpendStore) DailyTokenSpend(context.Context, time.Time) (store.TokenSpend, error) {
+	s.dailyCalls++
+	return s.daily, nil
+}
+
+func (s *fakeRunnerBudgetSpendStore) IssueTokenSpend(context.Context, store.IssueIdentity) (store.TokenSpend, error) {
+	s.issueCalls++
+	return s.issue, nil
 }
 
 type fakeClock struct {

@@ -249,6 +249,66 @@ func TestDispatchableFiltersIneligibleCandidates(t *testing.T) {
 	}
 }
 
+func TestHandleRunResultRecordsBudgetRefusalAndComment(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:    1,
+		ActiveStates:           []string{"Todo"},
+		TerminalStates:         []string{"Done"},
+		BudgetRefusalCooldown:  time.Hour,
+		ContinuationRetryDelay: time.Second,
+	})
+	commentConnector := &budgetRefusalCommentConnector{}
+	orch := Orchestrator{
+		cfg:       cfg,
+		connector: commentConnector,
+	}
+	state := newState(cfg)
+	issue := dispatchTestIssue("issue-budget-refused", "Todo")
+	state.Running[issue.ID] = Running{
+		Issue:      issue,
+		StartedAt:  now.Add(-time.Minute),
+		WorkerHost: "local",
+	}
+	maxUSD := 2.5
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     issue.ID,
+		CompletedAt: now,
+		Result: runpkg.RunResult{
+			FinalState: runpkg.FinalStateCompleted,
+			BudgetRefusal: &runpkg.BudgetRefusal{
+				Code:             "per_day_max_usd",
+				Message:          "daily budget exceeded",
+				Comment:          "Detent refused to dispatch this issue because the projected dispatch would exceed the daily budget.",
+				CurrentSpendUSD:  2.40,
+				ProjectedCostUSD: 0.20,
+				MaxUSD:           &maxUSD,
+				RefusedAt:        now,
+			},
+		},
+	})
+
+	refusal, ok := state.BudgetRefusals[issue.ID]
+	if !ok {
+		t.Fatal("BudgetRefusals missing issue, want recorded refusal")
+	}
+	if refusal.Issue.ID != issue.ID || refusal.Code != "per_day_max_usd" || refusal.ProjectedCostUSD != 0.20 {
+		t.Fatalf("BudgetRefusal = %#v, want recorded issue and spend", refusal)
+	}
+	if orch.dispatchable(issue, &state, now.Add(time.Minute)) {
+		t.Fatal("dispatchable during budget cooldown = true, want false")
+	}
+	if len(commentConnector.comments) != 1 {
+		t.Fatalf("comments len = %d, want 1", len(commentConnector.comments))
+	}
+	if commentConnector.comments[0].issueID != issue.ID || !strings.Contains(commentConnector.comments[0].body, "projected dispatch would exceed the daily budget") {
+		t.Fatalf("comment = %#v, want budget refusal comment", commentConnector.comments[0])
+	}
+}
+
 func TestDispatchableFiltersUnauthorizedCandidates(t *testing.T) {
 	t.Parallel()
 
@@ -1517,6 +1577,50 @@ func dispatchTestIssueWithUnknownUnavailablePullRequestHydration(id, state strin
 	}
 	return issue
 }
+
+type budgetRefusalComment struct {
+	issueID string
+	body    string
+}
+
+type budgetRefusalCommentConnector struct {
+	comments []budgetRefusalComment
+}
+
+func (c *budgetRefusalCommentConnector) Name() string {
+	return "budget-refusal-comment"
+}
+
+func (c *budgetRefusalCommentConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (c *budgetRefusalCommentConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (c *budgetRefusalCommentConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (c *budgetRefusalCommentConnector) CreateComment(_ context.Context, issueID string, body string) error {
+	c.comments = append(c.comments, budgetRefusalComment{issueID: issueID, body: body})
+	return nil
+}
+
+func (c *budgetRefusalCommentConnector) UpdateIssueState(context.Context, string, string) error {
+	return nil
+}
+
+func (c *budgetRefusalCommentConnector) SetAssignee(context.Context, string, string) error {
+	return nil
+}
+
+func (c *budgetRefusalCommentConnector) SetField(context.Context, string, string, string) error {
+	return nil
+}
+
+var _ connector.Connector = (*budgetRefusalCommentConnector)(nil)
 
 type hydratingDispatchConnector struct {
 	issue connector.Issue

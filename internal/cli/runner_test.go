@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/budget"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -188,6 +189,48 @@ func TestBuildRunnerUsesTopLevelPricingPath(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "load pricing") {
 		t.Fatalf("buildRunner() error = %v, want load pricing error", err)
+	}
+}
+
+func TestBuildBudgetDispatchGuards(t *testing.T) {
+	t.Parallel()
+
+	disabled := workflowconfig.Default().Budget
+	checker, estimator, err := buildBudgetDispatchGuards(disabled, nil, nil)
+	if err != nil {
+		t.Fatalf("buildBudgetDispatchGuards(disabled) error = %v", err)
+	}
+	if checker != nil || estimator != nil {
+		t.Fatalf("disabled guards = %T/%T, want nil guards", checker, estimator)
+	}
+
+	enabled := disabled
+	enabled.Enabled = true
+	_, _, err = buildBudgetDispatchGuards(enabled, &runnerSessionStore{}, nil)
+	if !errors.Is(err, budget.ErrMissingSpendStore) {
+		t.Fatalf("buildBudgetDispatchGuards(missing spend store) error = %v, want ErrMissingSpendStore", err)
+	}
+
+	ctx := context.Background()
+	storeBackend, err := store.Open(ctx, store.Config{
+		Backend: store.BackendSQLite,
+		Path:    filepath.Join(t.TempDir(), "detent.db"),
+	})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := storeBackend.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	checker, estimator, err = buildBudgetDispatchGuards(enabled, storeBackend, nil)
+	if err != nil {
+		t.Fatalf("buildBudgetDispatchGuards(enabled) error = %v", err)
+	}
+	if checker == nil || estimator == nil {
+		t.Fatalf("enabled guards = %T/%T, want checker and estimator", checker, estimator)
 	}
 }
 
