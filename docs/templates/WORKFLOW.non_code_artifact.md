@@ -29,6 +29,9 @@ deliverable:
   review_url: http://127.0.0.1:8080/review
 
 agent:
+  max_session_tokens: 2000000
+  max_session_context_multiplier: 4
+  max_session_token_override_label: allow-large-session
   auto_promote:
     enabled: true
     quiet_seconds: 0
@@ -40,6 +43,15 @@ agent:
 
 gate:
   kind: artifact
+  ci_failure_action: rework
+  transient_ci_retry_limit: 2
+  validator:
+    enabled: false
+    model: gpt-5.4-mini
+    min_score: 0.8
+    max_inline_diff_bytes: 65536
+    block_on:
+      - p1
   artifact:
     status_field: render_status
     pass_statuses:
@@ -80,6 +92,12 @@ server:
         - Done
       Done: []
       Cancelled: []
+budget:
+  enabled: true
+  per_day_max_usd: 50
+  per_issue_max_usd: 5
+  refusal_cooldown_seconds: 3600
+  pricing_path: priv/pricing/models.yaml
 ---
 # Non-Code Artifact Workflow
 
