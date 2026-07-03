@@ -53,6 +53,8 @@ type DispatchEstimator interface {
 	EstimateDispatch(context.Context, string) (budget.TokenEstimate, error)
 }
 
+type BudgetGuardBuilder func(config.Budget) (BudgetChecker, DispatchEstimator, error)
+
 type workflowPhaseStore interface {
 	RecordWorkflowPhaseEvent(context.Context, store.WorkflowPhaseEvent) (int64, error)
 }
@@ -78,6 +80,7 @@ type Dependencies struct {
 	Pricing             budget.PricingTable
 	BudgetChecker       BudgetChecker
 	DispatchEstimator   DispatchEstimator
+	BudgetGuardBuilder  BudgetGuardBuilder
 	Now                 func() time.Time
 	Logger              *slog.Logger
 	AfterRunTimeout     time.Duration
@@ -94,6 +97,7 @@ type Runner struct {
 	pricing             budget.PricingTable
 	budgetChecker       BudgetChecker
 	dispatchEstimator   DispatchEstimator
+	budgetGuardBuilder  BudgetGuardBuilder
 	now                 func() time.Time
 	logger              *slog.Logger
 	afterRunTimeout     time.Duration
@@ -128,6 +132,15 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		return nil, err
 	}
 
+	budgetChecker := deps.BudgetChecker
+	dispatchEstimator := deps.DispatchEstimator
+	if deps.BudgetGuardBuilder != nil {
+		budgetChecker, dispatchEstimator, err = deps.BudgetGuardBuilder(deps.Workflow.Config.Budget)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return &Runner{
 		projectID:           projectID,
 		workflow:            deps.Workflow,
@@ -136,8 +149,9 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		agentBackendFactory: deps.AgentBackendFactory,
 		store:               deps.Store,
 		pricing:             deps.Pricing,
-		budgetChecker:       deps.BudgetChecker,
-		dispatchEstimator:   deps.DispatchEstimator,
+		budgetChecker:       budgetChecker,
+		dispatchEstimator:   dispatchEstimator,
+		budgetGuardBuilder:  deps.BudgetGuardBuilder,
 		now:                 deps.Now,
 		logger:              deps.Logger,
 		afterRunTimeout:     deps.AfterRunTimeout,
@@ -148,14 +162,29 @@ func (r *Runner) UpdateWorkflow(workflow config.Workflow) {
 	r.mu.RLock()
 	currentBackends := cloneAgentBackends(r.agentRuntime.backends)
 	factory := r.agentBackendFactory
+	budgetGuardBuilder := r.budgetGuardBuilder
+	currentBudgetChecker := r.budgetChecker
+	currentDispatchEstimator := r.dispatchEstimator
 	r.mu.RUnlock()
 
 	runtime, err := newAgentRuntime(workflow, currentBackends, factory)
+	budgetChecker := currentBudgetChecker
+	dispatchEstimator := currentDispatchEstimator
+	var budgetErr error
+	if budgetGuardBuilder != nil {
+		budgetChecker, dispatchEstimator, budgetErr = budgetGuardBuilder(workflow.Config.Budget)
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.workflow = workflow
+	if budgetErr != nil {
+		r.logger.Warn("reload budget dispatch guards failed", "error", budgetErr)
+	} else {
+		r.budgetChecker = budgetChecker
+		r.dispatchEstimator = dispatchEstimator
+	}
 	if err != nil {
 		r.logger.Warn("reload agent runtime failed", "error", err)
 		return
@@ -367,7 +396,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	workflow, agentRuntime := r.runtimeSnapshot()
+	workflow, agentRuntime, budgetChecker, dispatchEstimator := r.runtimeSnapshot()
 
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
 	r.logWorkerEvent(req.Issue, "worker_workspace_create_started")
@@ -446,7 +475,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	runStartedAt := r.now()
 	selectedModel := selection.Model
 	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleCode))
-	if result, refused, err := r.checkDispatchBudget(ctx, req.Issue, sessionModel, startedAt); err != nil {
+	if result, refused, err := r.checkDispatchBudget(ctx, budgetChecker, dispatchEstimator, req.Issue, sessionModel, startedAt); err != nil {
 		return RunResult{}, err
 	} else if refused {
 		r.logWorkerEvent(req.Issue, "worker_budget_refused",
@@ -566,20 +595,20 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	return result, nil
 }
 
-func (r *Runner) checkDispatchBudget(ctx context.Context, issue connector.Issue, model string, now time.Time) (RunResult, bool, error) {
-	if r.budgetChecker == nil {
+func (r *Runner) checkDispatchBudget(ctx context.Context, checker BudgetChecker, estimator DispatchEstimator, issue connector.Issue, model string, now time.Time) (RunResult, bool, error) {
+	if checker == nil {
 		return RunResult{}, false, nil
 	}
 
 	estimate := budget.TokenEstimate{}
-	if r.dispatchEstimator != nil {
+	if estimator != nil {
 		var err error
-		estimate, err = r.dispatchEstimator.EstimateDispatch(ctx, model)
+		estimate, err = estimator.EstimateDispatch(ctx, model)
 		if err != nil {
 			return RunResult{}, false, fmt.Errorf("estimate dispatch budget: %w", err)
 		}
 	}
-	decision, err := r.budgetChecker.CheckDispatch(ctx, budget.DispatchRequest{
+	decision, err := checker.CheckDispatch(ctx, budget.DispatchRequest{
 		IssueID:    issue.ID,
 		Identifier: issue.Identifier,
 		IssueURL:   issue.URL,
@@ -627,7 +656,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	workflow, agentRuntime := r.runtimeSnapshot()
+	workflow, agentRuntime, _, _ := r.runtimeSnapshot()
 
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
 	r.logWorkerEvent(req.Issue, "worker_check_workspace_create_started")
@@ -900,11 +929,11 @@ func (r *Runner) ReapWorkspace(ctx context.Context, issue connector.Issue) (Work
 	return WorkspaceReapResult{}, nil
 }
 
-func (r *Runner) runtimeSnapshot() (config.Workflow, agentRuntime) {
+func (r *Runner) runtimeSnapshot() (config.Workflow, agentRuntime, BudgetChecker, DispatchEstimator) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	return r.workflow, r.agentRuntime
+	return r.workflow, r.agentRuntime, r.budgetChecker, r.dispatchEstimator
 }
 
 func (r *Runner) availableSkills(workflow config.Workflow, workspacePath string) ([]skills.Skill, error) {

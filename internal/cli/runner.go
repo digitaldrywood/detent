@@ -101,9 +101,8 @@ func buildRunner(
 	if err != nil {
 		return nil, fmt.Errorf("load pricing: %w", err)
 	}
-	budgetChecker, dispatchEstimator, err := buildBudgetDispatchGuards(cfg.Budget, sessionStore, pricing)
-	if err != nil {
-		return nil, err
+	budgetGuardBuilder := func(cfg workflowconfig.Budget) (runnerpkg.BudgetChecker, runnerpkg.DispatchEstimator, error) {
+		return buildBudgetDispatchGuards(cfg, sessionStore, pricing)
 	}
 
 	run, err := runnerpkg.NewRunner(runnerpkg.Dependencies{
@@ -113,8 +112,7 @@ func buildRunner(
 		AgentBackendFactory: runnerpkg.AgentBackendFactoryFunc(buildAgentBackend),
 		Store:               sessionStore,
 		Pricing:             pricing,
-		BudgetChecker:       budgetChecker,
-		DispatchEstimator:   dispatchEstimator,
+		BudgetGuardBuilder:  budgetGuardBuilder,
 		Logger:              logger,
 	})
 	if err != nil {

@@ -231,7 +231,7 @@ func (t *RefusalTracker) Record(refusal Refusal) (TrackedRefusal, bool) {
 
 	tracked := TrackedRefusal{
 		Refusal: refusal,
-		DueAt:   refusal.CooldownUntil.UTC(),
+		DueAt:   refusal.dueAt(),
 	}
 	t.entries[key] = tracked
 	return tracked, true
@@ -258,6 +258,7 @@ func (r Refusal) Comment() string {
 	if strings.TrimSpace(model) == "" {
 		model = "unknown"
 	}
+	dueAt := r.dueAt().Format(time.RFC3339)
 
 	switch r.Code {
 	case ReasonPerDayMaxUSD:
@@ -274,7 +275,7 @@ Projected daily spend: %s / %s
 Model: %s
 Daily budget resets at: %s
 This issue will be reconsidered after: %s
-`, currentSpend, projectedCost, projectedSpend, max, model, resetAt, r.CooldownUntil.UTC().Format(time.RFC3339)))
+`, currentSpend, projectedCost, projectedSpend, max, model, resetAt, dueAt))
 	case ReasonPerIssueMaxUSD:
 		return strings.TrimSpace(fmt.Sprintf(`
 Detent refused to dispatch this issue because the projected dispatch would exceed the per-issue budget.
@@ -285,7 +286,7 @@ Projected issue spend: %s / %s
 Model: %s
 The per-issue budget has no automatic reset.
 This issue will be reconsidered after: %s
-`, currentSpend, projectedCost, projectedSpend, max, model, r.CooldownUntil.UTC().Format(time.RFC3339)))
+`, currentSpend, projectedCost, projectedSpend, max, model, dueAt))
 	default:
 		return strings.TrimSpace(fmt.Sprintf(`
 Detent refused to dispatch this issue because the budget check failed.
@@ -295,8 +296,19 @@ Projected dispatch cost: %s
 Projected spend: %s / %s
 Model: %s
 This issue will be reconsidered after: %s
-`, currentSpend, projectedCost, projectedSpend, max, model, r.CooldownUntil.UTC().Format(time.RFC3339)))
+`, currentSpend, projectedCost, projectedSpend, max, model, dueAt))
 	}
+}
+
+func (r Refusal) dueAt() time.Time {
+	dueAt := r.CooldownUntil.UTC()
+	if r.ResetAt != nil {
+		resetAt := r.ResetAt.UTC()
+		if dueAt.IsZero() || resetAt.After(dueAt) {
+			dueAt = resetAt
+		}
+	}
+	return dueAt
 }
 
 func (c *Checker) refusal(code ReasonCode, req DispatchRequest, now time.Time, currentSpend float64, projectedCost float64, maxUSD float64, resetAt *time.Time) *Refusal {

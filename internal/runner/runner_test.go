@@ -1540,6 +1540,90 @@ func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
 	}
 }
 
+func TestRunnerUpdateWorkflowRefreshesBudgetGuards(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 2, 11, 0, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-42", Branch: "detent/issue-42"},
+	}
+	agentBackend := &fakeCodexClient{}
+	maxUSD := 2.0
+	checker := &fakeBudgetChecker{
+		refusal: budget.Refusal{
+			Code:              budget.ReasonPerDayMaxUSD,
+			Message:           "daily budget exceeded",
+			Model:             "gpt-budget",
+			CurrentSpendUSD:   1.90,
+			ProjectedCostUSD:  0.20,
+			ProjectedSpendUSD: 2.10,
+			MaxUSD:            &maxUSD,
+			RefusedAt:         now,
+			CooldownUntil:     now.Add(time.Hour),
+		},
+	}
+	estimator := &fakeDispatchEstimator{
+		estimate: budget.TokenEstimate{
+			InputTokens: 10,
+			TotalTokens: 10,
+			Sessions:    5,
+		},
+	}
+	var guardCalls []bool
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{},
+			Prompt: "initial {{ issue.identifier }}",
+		},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		BudgetGuardBuilder: func(cfg config.Budget) (BudgetChecker, DispatchEstimator, error) {
+			guardCalls = append(guardCalls, cfg.Enabled)
+			if !cfg.Enabled {
+				return nil, nil, nil
+			}
+			return checker, estimator, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	enabled := config.Config{}
+	enabled.Budget.Enabled = true
+	runner.UpdateWorkflow(config.Workflow{
+		Config: enabled,
+		Prompt: "reloaded {{ issue.identifier }}",
+	})
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:            "issue-42",
+			Identifier:    "digitaldrywood/detent#42",
+			ModelOverride: "gpt-budget",
+		},
+		StartedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(guardCalls) != 2 || guardCalls[0] || !guardCalls[1] {
+		t.Fatalf("budget guard builder calls = %v, want [false true]", guardCalls)
+	}
+	if result.BudgetRefusal == nil || result.BudgetRefusal.Code != string(budget.ReasonPerDayMaxUSD) {
+		t.Fatalf("BudgetRefusal = %#v, want daily budget refusal", result.BudgetRefusal)
+	}
+	if checker.calls != 1 || checker.model != "gpt-budget" {
+		t.Fatalf("budget checker calls/model = %d/%q, want 1/gpt-budget", checker.calls, checker.model)
+	}
+	if estimator.model != "gpt-budget" {
+		t.Fatalf("estimator model = %q, want gpt-budget", estimator.model)
+	}
+	if agentBackend.calls != 0 {
+		t.Fatalf("RunTurn calls = %d, want 0 after budget refusal", agentBackend.calls)
+	}
+}
+
 func TestRunnerRunUsesSingleConfiguredBackendDefaultRoute(t *testing.T) {
 	t.Parallel()
 
@@ -2158,6 +2242,22 @@ type fakeDispatchEstimator struct {
 func (e *fakeDispatchEstimator) EstimateDispatch(_ context.Context, model string) (budget.TokenEstimate, error) {
 	e.model = model
 	return e.estimate, e.err
+}
+
+type fakeBudgetChecker struct {
+	refusal budget.Refusal
+	model   string
+	calls   int
+}
+
+func (c *fakeBudgetChecker) CheckDispatch(_ context.Context, req budget.DispatchRequest) (budget.Decision, error) {
+	c.calls++
+	c.model = req.Model
+	if c.refusal.Code == "" {
+		return budget.Decision{Allowed: true}, nil
+	}
+	refusal := c.refusal
+	return budget.Decision{Refusal: &refusal}, nil
 }
 
 type fakeRunnerBudgetSpendStore struct {
