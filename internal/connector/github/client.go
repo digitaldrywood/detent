@@ -450,6 +450,9 @@ func (c *Client) logRESTResponse(ctx context.Context, message string, method str
 }
 
 func (c *Client) logRESTStatusError(ctx context.Context, method string, path string, family string, status int, err error) {
+	if !shouldLogRESTStatusError(err) {
+		return
+	}
 	c.logger.WarnContext(ctx, "github rest request failed",
 		"method", strings.ToUpper(strings.TrimSpace(method)),
 		"path", path,
@@ -459,6 +462,10 @@ func (c *Client) logRESTStatusError(ctx context.Context, method string, path str
 		"rate_limited", errors.Is(err, ErrRateLimited),
 		"error", err,
 	)
+}
+
+func shouldLogRESTStatusError(err error) bool {
+	return !errors.Is(err, ErrNotFound)
 }
 
 func (c *Client) AuthHealth() (connector.AuthHealth, bool) {

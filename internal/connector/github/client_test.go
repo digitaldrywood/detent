@@ -413,6 +413,72 @@ func TestClientRESTLogsRateLimitFailuresByDefault(t *testing.T) {
 	}
 }
 
+func TestClientRESTDoesNotWarnOnNotFoundByDefault(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	httpClient := staticHTTPClient{do: func(r *http.Request) (*http.Response, error) {
+		return jsonResponse(r, http.StatusNotFound, `{"message":"Not Found"}`, nil), nil
+	}}
+	client, err := NewClient(ClientConfig{
+		Endpoint:    "https://api.github-not-found.test/graphql",
+		TokenSource: StaticTokenSource("not-found-token"),
+		HTTPClient:  httpClient,
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		})),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues/404", nil, nil)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("REST() error = %v, want %v", err, ErrNotFound)
+	}
+
+	logText := logs.String()
+	if strings.Contains(logText, "github rest request failed") {
+		t.Fatalf("logs contained default not-found warning:\n%s", logText)
+	}
+}
+
+func TestClientRESTLogsUnexpectedFailuresByDefault(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	httpClient := staticHTTPClient{do: func(r *http.Request) (*http.Response, error) {
+		return jsonResponse(r, http.StatusInternalServerError, `{"message":"server error"}`, nil), nil
+	}}
+	client, err := NewClient(ClientConfig{
+		Endpoint:    "https://api.github-unexpected.test/graphql",
+		TokenSource: StaticTokenSource("unexpected-token"),
+		HTTPClient:  httpClient,
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		})),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues", nil, nil)
+	if !errors.Is(err, ErrTransient) {
+		t.Fatalf("REST() error = %v, want %v", err, ErrTransient)
+	}
+
+	logText := logs.String()
+	for _, fragment := range []string{
+		"github rest request failed",
+		"rate_limited=false",
+		"status=500",
+	} {
+		if !strings.Contains(logText, fragment) {
+			t.Fatalf("logs missing %q:\n%s", fragment, logText)
+		}
+	}
+}
+
 func TestClientRESTAggregatesUsageAndBacksOffAfterRateLimit(t *testing.T) {
 	t.Parallel()
 
