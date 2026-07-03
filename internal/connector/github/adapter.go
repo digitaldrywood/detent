@@ -976,6 +976,9 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 			if err := c.populateBlockerReasons(ctx, issues); err != nil {
 				return nil, err
 			}
+			if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+				return nil, err
+			}
 		}
 		if attachPullRequestsForStates(wantedStates) {
 			if err := c.attachFreshPullRequests(ctx, issues); err != nil {
@@ -991,6 +994,9 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 		}
 		if _, ok := wantedStates[normalizeStateName("Blocked")]; ok {
 			if err := c.populateBlockerReasons(ctx, issues); err != nil {
+				return nil, err
+			}
+			if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
 				return nil, err
 			}
 		}
@@ -1014,6 +1020,9 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 	}
 	if _, ok := wantedStates[normalizeStateName("Blocked")]; ok {
 		if err := c.populateBlockerReasons(ctx, issues); err != nil {
+			return nil, err
+		}
+		if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
 			return nil, err
 		}
 	}
@@ -1042,6 +1051,9 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 			if err := c.populateBlockerReasons(ctx, issues); err != nil {
 				return nil, err
 			}
+			if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+				return nil, err
+			}
 		}
 		if attachPullRequestsForStates(wantedStates) {
 			if err := c.attachFreshPullRequests(ctx, issues); err != nil {
@@ -1057,6 +1069,9 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 		}
 		if _, ok := wantedStates[normalizeStateName("Blocked")]; ok {
 			if err := c.populateBlockerReasons(ctx, issues); err != nil {
+				return nil, err
+			}
+			if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
 				return nil, err
 			}
 		}
@@ -1080,6 +1095,9 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 	}
 	if _, ok := wantedStates[normalizeStateName("Blocked")]; ok {
 		if err := c.populateBlockerReasons(ctx, issues); err != nil {
+			return nil, err
+		}
+		if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
 			return nil, err
 		}
 	}
@@ -2920,7 +2938,9 @@ func (c *Connector) fetchProjectItemsWithLimit(
 				issues := keptProjectIssues(allIssues, keepIssue, limit)
 				if len(issues) >= limit {
 					c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-					resolveBlockedByProjectState(issues)
+					if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+						return nil, err
+					}
 					return issues, nil
 				}
 			}
@@ -2928,7 +2948,9 @@ func (c *Connector) fetchProjectItemsWithLimit(
 
 		if !response.Node.Items.PageInfo.HasNextPage {
 			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-			resolveBlockedByProjectState(allIssues)
+			if err := c.resolveBlockedByProjectState(ctx, allIssues); err != nil {
+				return nil, err
+			}
 			return keptProjectIssues(allIssues, keepIssue, limit), nil
 		}
 		cursor := strings.TrimSpace(response.Node.Items.PageInfo.EndCursor)
@@ -3072,7 +3094,7 @@ func joinErrors(errs <-chan error) error {
 	return joined
 }
 
-func resolveBlockedByProjectState(issues []connector.Issue) {
+func (c *Connector) resolveBlockedByProjectState(ctx context.Context, issues []connector.Issue) error {
 	byIdentifier := make(map[string]connector.Issue, len(issues))
 	for _, issue := range issues {
 		identifier := normalizedIssueIdentifier(issue.Identifier)
@@ -3081,18 +3103,78 @@ func resolveBlockedByProjectState(issues []connector.Issue) {
 		}
 	}
 
+	missing := []string{}
+	seenMissing := map[string]struct{}{}
 	for issueIndex := range issues {
 		for blockerIndex := range issues[issueIndex].BlockedBy {
 			identifier := normalizedIssueIdentifier(issues[issueIndex].BlockedBy[blockerIndex].Identifier)
 			blocker, ok := byIdentifier[identifier]
 			if !ok {
+				if identifier == "" || strings.TrimSpace(issues[issueIndex].BlockedBy[blockerIndex].State) != "" {
+					continue
+				}
+				if _, seen := seenMissing[identifier]; seen {
+					continue
+				}
+				seenMissing[identifier] = struct{}{}
+				missing = append(missing, issues[issueIndex].BlockedBy[blockerIndex].Identifier)
 				continue
 			}
-			issues[issueIndex].BlockedBy[blockerIndex].ID = blocker.ID
-			issues[issueIndex].BlockedBy[blockerIndex].Identifier = blocker.Identifier
-			issues[issueIndex].BlockedBy[blockerIndex].State = blocker.State
+			c.applyBlockedByIssueState(&issues[issueIndex].BlockedBy[blockerIndex], blocker)
 		}
 	}
+
+	resolved := make(map[string]connector.Issue, len(missing))
+	for _, identifier := range missing {
+		blocker, ok, err := c.fetchIssueByIdentifier(ctx, identifier)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return fmt.Errorf("resolve blocked-by issue %s: %w", identifier, err)
+			}
+			c.logBlockedByHydrationError(ctx, identifier, err)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		key := normalizedIssueIdentifier(identifier)
+		if key != "" {
+			resolved[key] = blocker
+		}
+	}
+
+	for issueIndex := range issues {
+		for blockerIndex := range issues[issueIndex].BlockedBy {
+			identifier := normalizedIssueIdentifier(issues[issueIndex].BlockedBy[blockerIndex].Identifier)
+			blocker, ok := resolved[identifier]
+			if !ok {
+				continue
+			}
+			c.applyBlockedByIssueState(&issues[issueIndex].BlockedBy[blockerIndex], blocker)
+		}
+	}
+	return nil
+}
+
+func (c *Connector) applyBlockedByIssueState(ref *connector.BlockedRef, blocker connector.Issue) {
+	if id := strings.TrimSpace(blocker.ID); id != "" {
+		ref.ID = id
+	}
+	if identifier := strings.TrimSpace(blocker.Identifier); identifier != "" {
+		ref.Identifier = identifier
+	}
+	state := strings.TrimSpace(blocker.State)
+	if blocker.Closed && !stateInList(state, c.terminalStates) {
+		state = c.closedIssueState()
+	}
+	ref.State = state
+}
+
+func (c *Connector) logBlockedByHydrationError(ctx context.Context, identifier string, err error) {
+	if c == nil || c.logger == nil {
+		return
+	}
+	c.logger.DebugContext(ctx, "github blocked-by hydration skipped", "identifier", identifier, "error", err)
 }
 
 func normalizedIssueIdentifier(identifier string) string {

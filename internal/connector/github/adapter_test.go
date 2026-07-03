@@ -1920,6 +1920,22 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadBlockedByRefs(t *testing.T) 
 			path:   "/repos/digitaldrywood/detent/issues/416/comments?per_page=100",
 			body:   `[{"body":"## Codex Workpad\n\n### Blockers\n- Blocked by: #415\n- Waiting for digitaldrywood/agent-runtime#25\n- Human action needed: merge #415, then move #416 back to Todo.\n\n### Validation\n- Pending."}]`,
 		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/415",
+			body:   `{"node_id":"I_kw415","number":415,"title":"Closed dependency","body":"","state":"CLOSED","html_url":"https://github.com/digitaldrywood/detent/issues/415","labels":[]}`,
+		},
+		{
+			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/agent-runtime/issues/25",
+			body:   `{"node_id":"I_runtime25","number":25,"title":"Open dependency","body":"","state":"OPEN","html_url":"https://github.com/digitaldrywood/agent-runtime/issues/25","labels":[]}`,
+		},
+		{
+			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+		},
 	})
 
 	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
@@ -1933,9 +1949,93 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadBlockedByRefs(t *testing.T) 
 	}
 
 	want := []connector.BlockedRef{
-		{Identifier: "digitaldrywood/detent#415"},
-		{Identifier: "digitaldrywood/agent-runtime#25"},
+		{ID: "I_kw415", Identifier: "digitaldrywood/detent#415", State: "Done"},
+		{ID: "I_runtime25", Identifier: "digitaldrywood/agent-runtime#25", State: "Open"},
 	}
+	if !reflect.DeepEqual(got[0].BlockedBy, want) {
+		t.Fatalf("BlockedBy = %#v, want %#v", got[0].BlockedBy, want)
+	}
+}
+
+func TestConnectorFetchIssuesByStatesResolvesBodyDependencyMissingFromSnapshot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		restState string
+		wantState string
+	}{
+		{name: "closed dependency clears", restState: "CLOSED", wantState: "Done"},
+		{name: "open dependency stays active", restState: "OPEN", wantState: "Open"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := newGraphQLTestServer(t, []graphqlTestResponse{
+				{
+					body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_163","content":{"__typename":"Issue","id":"I_163","number":163,"title":"Running with body dependency","body":"Depends on: #162","state":"OPEN","url":"https://github.com/digitaldrywood/creswoodcorners-phone/issues/163","repository":{"nameWithOwner":"digitaldrywood/creswoodcorners-phone"}},"statusValue":{"name":"In Progress"},"priorityValue":null}]}}}}`,
+				},
+				{
+					method: http.MethodGet,
+					path:   "/repos/digitaldrywood/creswoodcorners-phone/issues/162",
+					body:   `{"node_id":"I_162","number":162,"title":"Dependency","body":"","state":"` + tt.restState + `","html_url":"https://github.com/digitaldrywood/creswoodcorners-phone/issues/162","labels":[]}`,
+				},
+				{
+					body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+				},
+			})
+			c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+			got, err := c.FetchIssuesByStates(context.Background(), []string{"In Progress"})
+			if err != nil {
+				t.Fatalf("FetchIssuesByStates() error = %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+			}
+			if len(got[0].BlockedBy) != 1 {
+				t.Fatalf("BlockedBy len = %d, want 1; got %#v", len(got[0].BlockedBy), got[0].BlockedBy)
+			}
+
+			want := connector.BlockedRef{
+				ID:         "I_162",
+				Identifier: "digitaldrywood/creswoodcorners-phone#162",
+				State:      tt.wantState,
+			}
+			if got[0].BlockedBy[0] != want {
+				t.Fatalf("BlockedBy[0] = %#v, want %#v", got[0].BlockedBy[0], want)
+			}
+		})
+	}
+}
+
+func TestConnectorFetchIssuesByStatesKeepsBodyDependencyWhenHydrationFails(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_163","content":{"__typename":"Issue","id":"I_163","number":163,"title":"Running with body dependency","body":"Depends on: #162","state":"OPEN","url":"https://github.com/digitaldrywood/creswoodcorners-phone/issues/163","repository":{"nameWithOwner":"digitaldrywood/creswoodcorners-phone"}},"statusValue":{"name":"In Progress"},"priorityValue":null}]}}}}`,
+		},
+		{
+			status: http.StatusInternalServerError,
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/creswoodcorners-phone/issues/162",
+			body:   `{"message":"temporary github failure"}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"In Progress"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+
+	want := []connector.BlockedRef{{Identifier: "digitaldrywood/creswoodcorners-phone#162"}}
 	if !reflect.DeepEqual(got[0].BlockedBy, want) {
 		t.Fatalf("BlockedBy = %#v, want %#v", got[0].BlockedBy, want)
 	}

@@ -262,12 +262,16 @@ func (c *Connector) fetchIssueFieldIssuesByStates(
 			}
 			allIssues = append(allIssues, issue)
 			if limit > 0 && len(allIssues) >= limit {
-				resolveBlockedByProjectState(allIssues)
+				if err := c.resolveBlockedByProjectState(ctx, allIssues); err != nil {
+					return nil, err
+				}
 				return allIssues, nil
 			}
 		}
 		if len(response.Items) == 0 || page*issueSearchPageSize >= response.TotalCount {
-			resolveBlockedByProjectState(allIssues)
+			if err := c.resolveBlockedByProjectState(ctx, allIssues); err != nil {
+				return nil, err
+			}
 			return allIssues, nil
 		}
 	}
