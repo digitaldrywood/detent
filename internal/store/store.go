@@ -31,6 +31,7 @@ type Store interface {
 	WorkAttemptStore
 	ValidatorMemoStore
 	RuntimeEvidenceStore
+	AgentResumeStore
 	Queries() *sqlc.Queries
 	Close() error
 }
@@ -84,6 +85,10 @@ type ValidatorMemoStore interface {
 
 type RuntimeEvidenceStore interface {
 	RuntimeEvidence(context.Context, RuntimeEvidenceQuery) (RuntimeEvidence, error)
+}
+
+type AgentResumeStore interface {
+	LatestCompletedAgentResumeState(context.Context, AgentResumeLookup) (AgentResumeState, error)
 }
 
 type RuntimeEvidenceQuery struct {
@@ -180,12 +185,16 @@ type RunStop struct {
 }
 
 type SessionStart struct {
-	RunID      int64
-	IssueID    string
-	Identifier string
-	IssueURL   string
-	StartedAt  time.Time
-	Model      string
+	RunID            int64
+	IssueID          string
+	Identifier       string
+	IssueURL         string
+	StartedAt        time.Time
+	Model            string
+	RequestedModel   string
+	AgentBackendID   string
+	AgentBackendKind string
+	AgentRole        string
 }
 
 type SessionFinish struct {
@@ -200,6 +209,31 @@ type SessionFinish struct {
 	RuntimeSeconds        int64
 	FinalState            string
 	Model                 string
+	ProviderThreadID      string
+	ProviderSessionID     string
+	ResumedFromSessionID  int64
+}
+
+type AgentResumeLookup struct {
+	IssueID          string
+	Identifier       string
+	IssueURL         string
+	RequestedModel   string
+	AgentBackendID   string
+	AgentBackendKind string
+	AgentRole        string
+}
+
+type AgentResumeState struct {
+	DetentSessionID   int64
+	ProviderThreadID  string
+	ProviderSessionID string
+	RequestedModel    string
+	Model             string
+	AgentBackendID    string
+	AgentBackendKind  string
+	AgentRole         string
+	CompletedAt       time.Time
 }
 
 type UsageEvent struct {

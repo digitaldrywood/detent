@@ -161,6 +161,64 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	}
 }
 
+func TestAppServerRunTurnResumesThreadBeforeStartingTurn(t *testing.T) {
+	t.Parallel()
+
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.142.5"}`),
+		responseMessage(t, 4, `{"thread":{"id":"thread-existing","model":"gpt-5-codex-resumed"}}`),
+		responseMessage(t, 3, `{"turn":{"id":"turn-2"}}`),
+		notificationMessage(t, "turn/completed", `{"threadId":"thread-existing","turn":{"id":"turn-2","status":"completed"}}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport},
+		WithReadTimeout(time.Second),
+		WithTurnTimeout(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	var updates []Update
+	result, err := server.RunTurn(context.Background(), RunTurnRequest{
+		Workspace:      "/tmp/detent-workspace",
+		Prompt:         "Continue issue #18",
+		ResumeThreadID: "thread-existing",
+		Model:          "gpt-5-codex",
+	}, func(update Update) error {
+		updates = append(updates, update)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if result.ThreadID != "thread-existing" || result.TurnID != "turn-2" || result.SessionID != "thread-existing-turn-2" {
+		t.Fatalf("RunTurn() result = %#v, want resumed thread and new turn", result)
+	}
+
+	sent := transport.sentMessages()
+	if len(sent) != 4 {
+		t.Fatalf("sent messages = %d, want 4", len(sent))
+	}
+	assertRequest(t, sent[0], 1, "initialize")
+	if sent[1].Method != "initialized" || len(sent[1].ID) != 0 {
+		t.Fatalf("sent[1] = %#v, want initialized notification", sent[1])
+	}
+	assertRequest(t, sent[2], 4, "thread/resume")
+	assertJSONContains(t, sent[2].Params, "threadId", "thread-existing")
+	assertJSONContains(t, sent[2].Params, "cwd", "/tmp/detent-workspace")
+	assertJSONContains(t, sent[2].Params, "model", "gpt-5-codex")
+	assertRequest(t, sent[3], 3, "turn/start")
+	assertJSONContains(t, sent[3].Params, "threadId", "thread-existing")
+	assertJSONContains(t, sent[3].Params, "input.0.text", "Continue issue #18")
+
+	if len(updates) != 2 {
+		t.Fatalf("updates = %d, want turn started and completed: %#v", len(updates), updates)
+	}
+	if updates[0].Type != UpdateTurnStarted || updates[0].ThreadID != "thread-existing" || updates[0].TurnID != "turn-2" || updates[0].Model != "gpt-5-codex-resumed" {
+		t.Fatalf("updates[0] = %#v, want resumed turn started", updates[0])
+	}
+}
+
 func TestAppServerRunTurnRequestTurnTimeoutOverridesDefault(t *testing.T) {
 	t.Parallel()
 

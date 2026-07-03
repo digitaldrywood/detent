@@ -193,6 +193,7 @@ type Agent struct {
 	MaxSessionContextMultiplier  float64        `yaml:"max_session_context_multiplier"`
 	MaxSessionTokenOverrideLabel string         `yaml:"max_session_token_override_label"`
 	MaxSessionTokenOverrideField string         `yaml:"max_session_token_override_field"`
+	ExperimentalThreadResume     bool           `yaml:"experimental_thread_resume"`
 	Shutdown                     Shutdown       `yaml:"shutdown"`
 	MaxConcurrentAgentsByState   map[string]int `yaml:"max_concurrent_agents_by_state"`
 	DispatchPriorityByState      []string       `yaml:"dispatch_priority_by_state"`

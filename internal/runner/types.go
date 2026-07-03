@@ -54,8 +54,14 @@ type AgentTurnRequest struct {
 	Workspace          string
 	Prompt             string
 	Model              string
+	Resume             AgentResume
 	TurnTimeout        time.Duration
 	ExtraWritableRoots []string
+}
+
+type AgentResume struct {
+	ThreadID  string
+	SessionID string
 }
 
 type AgentTurnResult struct {

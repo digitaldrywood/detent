@@ -342,6 +342,55 @@ func TestAgentBackendBuildsCommandArgumentsAndWritesPromptToStdin(t *testing.T) 
 	}
 }
 
+func TestAgentBackendAddsResumeSessionArgument(t *testing.T) {
+	t.Parallel()
+
+	observedPath := filepath.Join(t.TempDir(), "observed.json")
+	backend := newTestBackend(t, Options{
+		CommandFactory: func(ctx context.Context) *exec.Cmd {
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestClaudeCodeHelperProcess", "--")
+			cmd.Env = append(os.Environ(),
+				"CLAUDECODE_HELPER=argv",
+				"CLAUDECODE_OBSERVED_PATH="+observedPath,
+			)
+			return cmd
+		},
+	})
+
+	_, err := backend.RunTurn(context.Background(), runner.AgentTurnRequest{
+		Workspace: t.TempDir(),
+		Prompt:    "continue from prior session",
+		Model:     "fable",
+		Resume: runner.AgentResume{
+			SessionID: "session-existing",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+
+	var observed helperObservation
+	raw, err := os.ReadFile(observedPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if err := json.Unmarshal(raw, &observed); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	wantArgs := []string{
+		"-p", "--output-format", "stream-json", "--verbose",
+		"--model", "fable",
+		"--resume", "session-existing",
+	}
+	if !reflect.DeepEqual(observed.Args, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", observed.Args, wantArgs)
+	}
+	if observed.Stdin != "continue from prior session" {
+		t.Fatalf("stdin = %q, want resume prompt", observed.Stdin)
+	}
+}
+
 func TestAgentBackendRequestTurnTimeoutOverridesOptions(t *testing.T) {
 	t.Parallel()
 

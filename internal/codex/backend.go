@@ -35,6 +35,7 @@ func (b *AgentBackend) RunTurn(
 	result, err := b.client.RunTurn(ctx, RunTurnRequest{
 		Workspace:         req.Workspace,
 		Prompt:            req.Prompt,
+		ResumeThreadID:    req.Resume.ThreadID,
 		ApprovalPolicy:    b.options.ApprovalPolicy,
 		ThreadSandbox:     b.options.ThreadSandbox,
 		TurnSandboxPolicy: turnSandboxPolicyForWorkspace(b.options.ThreadSandbox, b.options.TurnSandboxPolicy, req.ExtraWritableRoots),

@@ -89,6 +89,7 @@ agent:
   max_session_context_multiplier: 3.5
   max_session_token_override_label: Allow-Large-Session
   max_session_token_override_field: Token Override
+  experimental_thread_resume: true
   shutdown:
     drain_timeout_ms: 300000
   max_concurrent_agents_by_state:
@@ -293,6 +294,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Agent.MaxSessionTokenOverrideField != "Token Override" {
 		t.Fatalf("Agent.MaxSessionTokenOverrideField = %q, want Token Override", cfg.Agent.MaxSessionTokenOverrideField)
+	}
+	if !cfg.Agent.ExperimentalThreadResume {
+		t.Fatal("Agent.ExperimentalThreadResume = false, want true")
 	}
 	if cfg.Agent.Shutdown.DrainTimeoutMS != 300000 {
 		t.Fatalf("Agent.Shutdown.DrainTimeoutMS = %d, want 300000", cfg.Agent.Shutdown.DrainTimeoutMS)
@@ -569,6 +573,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Agent.MergeFastPath.Enabled {
 		t.Fatal("Agent.MergeFastPath.Enabled = true, want false default")
+	}
+	if cfg.Agent.ExperimentalThreadResume {
+		t.Fatal("Agent.ExperimentalThreadResume = true, want disabled default")
 	}
 	if cfg.Agent.Shutdown.DrainTimeoutMS != DefaultShutdownDrainTimeoutMS {
 		t.Fatalf("Agent.Shutdown.DrainTimeoutMS = %d, want %d", cfg.Agent.Shutdown.DrainTimeoutMS, DefaultShutdownDrainTimeoutMS)

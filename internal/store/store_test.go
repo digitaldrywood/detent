@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"math"
 	"path/filepath"
 	"strings"
@@ -108,6 +109,53 @@ VALUES ('detent', 'agent_session', 'agent_active', '2026-05-31T13:00:00Z', 5, '2
 		assertColumnAbsent(t, db, table, "cached_input_tokens")
 		assertColumnAbsent(t, db, table, "reasoning_output_tokens")
 		assertColumnAbsent(t, db, table, "model_context_window")
+	}
+}
+
+func TestAgentResumeStateMigrationUpDown(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "detent.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("db.Close() error = %v", err)
+		}
+	})
+	if err := configureSQLite(ctx, db, 0); err != nil {
+		t.Fatalf("configureSQLite() error = %v", err)
+	}
+
+	migrationMu.Lock()
+	defer migrationMu.Unlock()
+	goose.SetBaseFS(migrationsFS)
+	defer goose.SetBaseFS(nil)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("goose.SetDialect() error = %v", err)
+	}
+	if err := goose.UpToContext(ctx, db, "migrations", 8); err != nil {
+		t.Fatalf("goose.UpToContext(8) error = %v", err)
+	}
+
+	for _, column := range []string{"requested_model", "agent_backend_id", "agent_backend_kind", "agent_role", "provider_thread_id", "provider_session_id", "resumed_from_session_id"} {
+		assertColumnAbsent(t, db, "codex_sessions", column)
+	}
+
+	if err := goose.UpToContext(ctx, db, "migrations", 9); err != nil {
+		t.Fatalf("goose.UpToContext(9) error = %v", err)
+	}
+	for _, column := range []string{"requested_model", "agent_backend_id", "agent_backend_kind", "agent_role", "provider_thread_id", "provider_session_id", "resumed_from_session_id"} {
+		assertColumnPresent(t, db, "codex_sessions", column)
+	}
+
+	if err := goose.DownToContext(ctx, db, "migrations", 8); err != nil {
+		t.Fatalf("goose.DownToContext(8) error = %v", err)
+	}
+	for _, column := range []string{"requested_model", "agent_backend_id", "agent_backend_kind", "agent_role", "provider_thread_id", "provider_session_id", "resumed_from_session_id"} {
+		assertColumnAbsent(t, db, "codex_sessions", column)
 	}
 }
 
@@ -637,6 +685,151 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 				t.Fatalf("LifetimeTotals() sessions/runs = %#v, want 1/1", lifetime)
 			}
 		})
+	}
+}
+
+func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	startedAt := time.Date(2026, 7, 2, 17, 0, 0, 0, time.UTC)
+	failedID, err := backend.StartSession(ctx, SessionStart{
+		IssueID:          "issue-859",
+		Identifier:       "digitaldrywood/detent#859",
+		IssueURL:         "https://github.com/digitaldrywood/detent/issues/859",
+		StartedAt:        startedAt,
+		Model:            "gpt-5-codex",
+		RequestedModel:   "gpt-5-codex",
+		AgentBackendID:   "codex",
+		AgentBackendKind: "codex",
+		AgentRole:        "code",
+	})
+	if err != nil {
+		t.Fatalf("StartSession(failed) error = %v", err)
+	}
+	if err := backend.FinishSession(ctx, failedID, SessionFinish{
+		CompletedAt:       startedAt.Add(time.Minute),
+		FinalState:        "failed",
+		Model:             "gpt-5-codex",
+		ProviderThreadID:  "thread-failed",
+		ProviderSessionID: "session-failed",
+	}); err != nil {
+		t.Fatalf("FinishSession(failed) error = %v", err)
+	}
+
+	firstID, err := backend.StartSession(ctx, SessionStart{
+		IssueID:          "issue-859",
+		Identifier:       "digitaldrywood/detent#859",
+		IssueURL:         "https://github.com/digitaldrywood/detent/issues/859",
+		StartedAt:        startedAt.Add(2 * time.Minute),
+		Model:            "gpt-5-codex",
+		RequestedModel:   "gpt-5-codex",
+		AgentBackendID:   "codex",
+		AgentBackendKind: "codex",
+		AgentRole:        "code",
+	})
+	if err != nil {
+		t.Fatalf("StartSession(first) error = %v", err)
+	}
+	if err := backend.FinishSession(ctx, firstID, SessionFinish{
+		CompletedAt:       startedAt.Add(3 * time.Minute),
+		FinalState:        "completed",
+		Model:             "gpt-5-codex-resolved",
+		ProviderThreadID:  "thread-first",
+		ProviderSessionID: "session-first",
+	}); err != nil {
+		t.Fatalf("FinishSession(first) error = %v", err)
+	}
+
+	secondID, err := backend.StartSession(ctx, SessionStart{
+		IssueID:          "issue-859",
+		Identifier:       "digitaldrywood/detent#859",
+		IssueURL:         "https://github.com/digitaldrywood/detent/issues/859",
+		StartedAt:        startedAt.Add(4 * time.Minute),
+		Model:            "gpt-5-codex",
+		RequestedModel:   "gpt-5-codex",
+		AgentBackendID:   "codex",
+		AgentBackendKind: "codex",
+		AgentRole:        "code",
+	})
+	if err != nil {
+		t.Fatalf("StartSession(second) error = %v", err)
+	}
+	if err := backend.FinishSession(ctx, secondID, SessionFinish{
+		CompletedAt:          startedAt.Add(5 * time.Minute),
+		FinalState:           "completed",
+		Model:                "gpt-5-codex-resolved",
+		ProviderThreadID:     "thread-second",
+		ProviderSessionID:    "session-second",
+		ResumedFromSessionID: firstID,
+	}); err != nil {
+		t.Fatalf("FinishSession(second) error = %v", err)
+	}
+
+	validatorID, err := backend.StartSession(ctx, SessionStart{
+		IssueID:          "issue-859",
+		Identifier:       "digitaldrywood/detent#859",
+		IssueURL:         "https://github.com/digitaldrywood/detent/issues/859",
+		StartedAt:        startedAt.Add(6 * time.Minute),
+		Model:            "gpt-5-codex",
+		RequestedModel:   "gpt-5-codex",
+		AgentBackendID:   "codex",
+		AgentBackendKind: "codex",
+		AgentRole:        "validator",
+	})
+	if err != nil {
+		t.Fatalf("StartSession(validator) error = %v", err)
+	}
+	if err := backend.FinishSession(ctx, validatorID, SessionFinish{
+		CompletedAt:       startedAt.Add(7 * time.Minute),
+		FinalState:        "completed",
+		Model:             "gpt-5-codex-resolved",
+		ProviderThreadID:  "thread-validator",
+		ProviderSessionID: "session-validator",
+	}); err != nil {
+		t.Fatalf("FinishSession(validator) error = %v", err)
+	}
+
+	got, err := backend.LatestCompletedAgentResumeState(ctx, AgentResumeLookup{
+		IssueID:          "issue-859",
+		Identifier:       "digitaldrywood/detent#859",
+		IssueURL:         "https://github.com/digitaldrywood/detent/issues/859",
+		RequestedModel:   "gpt-5-codex",
+		AgentBackendID:   "codex",
+		AgentBackendKind: "codex",
+		AgentRole:        "code",
+	})
+	if err != nil {
+		t.Fatalf("LatestCompletedAgentResumeState() error = %v", err)
+	}
+	if got.DetentSessionID != secondID || got.ProviderThreadID != "thread-second" || got.ProviderSessionID != "session-second" {
+		t.Fatalf("resume state = %#v, want newest completed second session", got)
+	}
+	if got.RequestedModel != "gpt-5-codex" || got.Model != "gpt-5-codex-resolved" || got.AgentRole != "code" {
+		t.Fatalf("resume models = %#v, want requested and resolved model", got)
+	}
+
+	_, err = backend.LatestCompletedAgentResumeState(ctx, AgentResumeLookup{
+		IssueID:          "issue-859",
+		RequestedModel:   "gpt-5-codex-mini",
+		AgentBackendID:   "codex",
+		AgentBackendKind: "codex",
+		AgentRole:        "code",
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("LatestCompletedAgentResumeState(model mismatch) error = %v, want ErrNotFound", err)
+	}
+
+	_, err = backend.LatestCompletedAgentResumeState(ctx, AgentResumeLookup{
+		IssueID:          "issue-859",
+		RequestedModel:   "gpt-5-codex",
+		AgentBackendID:   "codex",
+		AgentBackendKind: "codex",
+		AgentRole:        "merge",
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("LatestCompletedAgentResumeState(role mismatch) error = %v, want ErrNotFound", err)
 	}
 }
 
