@@ -5987,6 +5987,9 @@ func rateLimitRows(limits *telemetry.RateLimits) []rateLimitRow {
 }
 
 func rateLimitRemainingLabel(bucket *telemetry.RateLimitBucket) string {
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusUnknown {
+		return "unknown"
+	}
 	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusExhausted && bucket.Limit <= 0 && bucket.Remaining == 0 {
 		return "exhausted"
 	}
@@ -5997,6 +6000,9 @@ func rateLimitRemainingLabel(bucket *telemetry.RateLimitBucket) string {
 }
 
 func rateLimitUsedLabel(bucket *telemetry.RateLimitBucket) string {
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusUnknown {
+		return "usage unknown"
+	}
 	label := formatInt(bucket.Used) + " used"
 	if bucket.Cost > 0 {
 		label += " / cost " + formatInt(bucket.Cost)
@@ -6005,6 +6011,9 @@ func rateLimitUsedLabel(bucket *telemetry.RateLimitBucket) string {
 }
 
 func rateLimitLimitLabel(bucket *telemetry.RateLimitBucket) string {
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusUnknown {
+		return "limit unknown"
+	}
 	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusExhausted && bucket.Limit <= 0 {
 		return "limit unknown"
 	}
@@ -6073,6 +6082,9 @@ func graphQLBudgetRemaining(limits *telemetry.RateLimits) string {
 		return "n/a"
 	}
 	bucket := limits.GitHubGraphQL
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusUnknown {
+		return "unknown"
+	}
 	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusExhausted && bucket.Limit <= 0 && bucket.Remaining == 0 {
 		return "exhausted"
 	}

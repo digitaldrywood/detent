@@ -474,6 +474,30 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 	}
 }
 
+func TestGraphQLUnknownStatusFormatsBudgetLabels(t *testing.T) {
+	t.Parallel()
+
+	limits := &telemetry.RateLimits{
+		GitHubGraphQL: &telemetry.RateLimitBucket{Status: telemetry.RateLimitStatusUnknown},
+	}
+
+	if got := graphQLBudgetRemaining(limits); got != "unknown" {
+		t.Fatalf("graphQLBudgetRemaining() = %q, want unknown", got)
+	}
+
+	rows := rateLimitRows(limits)
+	if len(rows) != 1 {
+		t.Fatalf("rateLimitRows() len = %d, want 1: %#v", len(rows), rows)
+	}
+	row := rows[0]
+	if row.Name != "GitHub GraphQL" ||
+		row.Remaining != "unknown" ||
+		row.Used != "usage unknown" ||
+		row.Limit != "limit unknown" {
+		t.Fatalf("rateLimitRows()[0] = %#v, want unknown GraphQL labels", row)
+	}
+}
+
 func TestThroughputTrendPoints(t *testing.T) {
 	t.Parallel()
 
