@@ -90,6 +90,7 @@ type doctorReport struct {
 	WorkflowOptimization doctorWorkflowOptimizationReport `json:"workflow_optimization"`
 	Summary              doctorSummary                    `json:"summary"`
 	Result               string                           `json:"result"`
+	strict               bool
 }
 
 type doctorScope struct {
@@ -237,6 +238,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 	allowWriteProbes := false
 	workflowDiff := false
 	workflowWrite := false
+	strict := false
 	projectID := ""
 	cmd := &cobra.Command{
 		Use:          "doctor",
@@ -268,6 +270,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 					Port:     runtimeIntFlag{Value: derefInt(port, -1), Set: flagChanged(cmd, "port")},
 				},
 			}, opts, deps)
+			report.strict = strict
 			if workflowWrite {
 				if err := confirmDoctorWorkflowOptimizationWrite(cmd, report.WorkflowOptimization); err != nil {
 					return err
@@ -283,7 +286,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 			}, newDoctorOutputReport(report)); err != nil {
 				return err
 			}
-			if report.HasFailures() {
+			if report.hasExitFailure() {
 				return ErrDoctorFailed
 			}
 			return nil
@@ -293,6 +296,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 	cmd.Flags().BoolVar(&allowWriteProbes, "allow-write-probes", false, "run configured GitHub write probes")
 	cmd.Flags().BoolVar(&workflowDiff, "diff", false, "print proposed WORKFLOW.md frontmatter changes for workflow optimization findings")
 	cmd.Flags().BoolVar(&workflowWrite, "write", false, "apply proposed WORKFLOW.md frontmatter changes after confirmation")
+	cmd.Flags().BoolVar(&strict, "strict", false, "fail when checks warn or workflow optimization findings exist")
 	cmd.Flags().StringVar(&projectID, "project", "", "limit project checks to the selected project id")
 	cmd.SetContext(withCommandOutputOptions(context.Background(), commandOutputOptions{
 		lookupEnv: opts.lookupEnv,
@@ -541,7 +545,30 @@ func (r doctorReport) HasFailures() bool {
 			return true
 		}
 	}
+	return false
+}
+
+func (r doctorReport) HasStrictFailures() bool {
+	for _, check := range r.Checks {
+		if check.Status == doctorFail || check.Status == doctorWarn {
+			return true
+		}
+	}
 	return len(r.WorkflowOptimization.Findings) > 0
+}
+
+func (r doctorReport) hasExitFailure() bool {
+	if r.strict {
+		return r.HasStrictFailures()
+	}
+	return r.HasFailures()
+}
+
+func (r doctorReport) result() string {
+	if r.hasExitFailure() {
+		return "FAIL"
+	}
+	return "PASS"
 }
 
 func (r doctorReport) counts() map[doctorStatus]int {
@@ -563,10 +590,7 @@ func (r doctorReport) withSummary() doctorReport {
 		Warn: counts[doctorWarn],
 		Fail: counts[doctorFail],
 	}
-	r.Result = "PASS"
-	if r.Summary.Fail > 0 || len(r.WorkflowOptimization.Findings) > 0 {
-		r.Result = "FAIL"
-	}
+	r.Result = r.result()
 	return r
 }
 
@@ -655,10 +679,6 @@ func writeDoctorReport(out io.Writer, report doctorReport, format ...OutputForma
 
 func newDoctorOutputReport(report doctorReport) doctorOutputReport {
 	counts := report.counts()
-	result := "PASS"
-	if counts[doctorFail] > 0 || len(report.WorkflowOptimization.Findings) > 0 {
-		result = "FAIL"
-	}
 	return doctorOutputReport{
 		Checks:               report.Checks,
 		Scope:                report.Scope,
@@ -668,7 +688,7 @@ func newDoctorOutputReport(report doctorReport) doctorOutputReport {
 			Warn: counts[doctorWarn],
 			Fail: counts[doctorFail],
 		},
-		Result: result,
+		Result: report.result(),
 	}
 }
 

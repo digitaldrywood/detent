@@ -1445,6 +1445,66 @@ func TestRunDoctorHostWideIncludesAllProjectFailures(t *testing.T) {
 	assertDoctorCheck(t, report, "Project beta workflow", doctorFail, "beta workflow is broken")
 }
 
+func TestDoctorReportFailurePredicates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		report     doctorReport
+		want       bool
+		wantStrict bool
+	}{
+		{
+			name: "ok checks pass",
+			report: doctorReport{Checks: []doctorCheck{{
+				Name:   "Config resolution",
+				Status: doctorOK,
+			}}},
+		},
+		{
+			name: "warnings are advisory by default",
+			report: doctorReport{Checks: []doctorCheck{{
+				Name:   "Workflow optimization",
+				Status: doctorWarn,
+			}}},
+			wantStrict: true,
+		},
+		{
+			name: "workflow findings are advisory by default",
+			report: doctorReport{
+				WorkflowOptimization: doctorWorkflowOptimizationReport{
+					Findings: []doctorWorkflowOptimizationFinding{{
+						RuleID: "advisory",
+					}},
+				},
+			},
+			wantStrict: true,
+		},
+		{
+			name: "fail checks fail by default",
+			report: doctorReport{Checks: []doctorCheck{{
+				Name:   "SQLite database",
+				Status: doctorFail,
+			}}},
+			want:       true,
+			wantStrict: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := tt.report.HasFailures(); got != tt.want {
+				t.Fatalf("HasFailures() = %v, want %v", got, tt.want)
+			}
+			if got := tt.report.HasStrictFailures(); got != tt.wantStrict {
+				t.Fatalf("HasStrictFailures() = %v, want %v", got, tt.wantStrict)
+			}
+		})
+	}
+}
+
 func TestDoctorCommandProjectFlagScopesJSONReport(t *testing.T) {
 	t.Setenv("DETENT_FORMAT", "json")
 
@@ -2584,6 +2644,7 @@ func TestDoctorCommandExitStatus(t *testing.T) {
 
 	tests := []struct {
 		name       string
+		args       []string
 		deps       doctorDeps
 		wantErr    error
 		wantOutput string
@@ -2592,6 +2653,13 @@ func TestDoctorCommandExitStatus(t *testing.T) {
 			name:       "passes with warnings only",
 			deps:       successfulDoctorDeps(),
 			wantOutput: "Result: PASS",
+		},
+		{
+			name:       "strict fails with warnings only",
+			args:       []string{"--strict"},
+			deps:       successfulDoctorDeps(),
+			wantErr:    ErrDoctorFailed,
+			wantOutput: "Result: FAIL",
 		},
 		{
 			name: "fails when any check fails",
@@ -2627,6 +2695,7 @@ func TestDoctorCommandExitStatus(t *testing.T) {
 			}
 
 			cmd := newDoctorCommandWithDeps(&configPath, &env, &logLevel, &host, &port, opts, deps)
+			cmd.SetArgs(tt.args)
 			var stdout bytes.Buffer
 			cmd.SetOut(&stdout)
 			cmd.SetErr(&bytes.Buffer{})
