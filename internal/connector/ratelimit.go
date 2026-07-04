@@ -3,6 +3,7 @@ package connector
 import "time"
 
 const (
+	GraphQLRateLimitStatusUnknown   = "unknown"
 	GraphQLRateLimitStatusBackoff   = "backoff"
 	GraphQLRateLimitStatusExhausted = "exhausted"
 )

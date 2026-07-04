@@ -1023,10 +1023,15 @@ func restUsageSummary(usage connector.RESTRateLimitUsage) *telemetry.RESTUsage {
 func gitHubRESTBucket(usage connector.RESTRateLimitUsage, now time.Time) *telemetry.RateLimitBucket {
 	rateLimit := usage.RateLimit
 	var resetAt *time.Time
+	var observedAt *time.Time
 	var resetInSeconds int64
 	if !rateLimit.ResetAt.IsZero() {
 		value := rateLimit.ResetAt
 		resetAt = &value
+	}
+	if !rateLimit.UpdatedAt.IsZero() {
+		value := rateLimit.UpdatedAt
+		observedAt = &value
 	}
 	if rateLimit.RetryAfter > 0 {
 		updatedAt := rateLimit.UpdatedAt
@@ -1049,6 +1054,7 @@ func gitHubRESTBucket(usage connector.RESTRateLimitUsage, now time.Time) *teleme
 		Limit:          rateLimit.Limit,
 		Cost:           usage.TotalRequests,
 		ResetAt:        resetAt,
+		ObservedAt:     observedAt,
 		ResetInSeconds: resetInSeconds,
 	}
 }
@@ -1143,6 +1149,8 @@ func (o *Orchestrator) logGraphQLRateLimitCycle(cycle graphQLRateLimitCycle) {
 
 func graphQLRateLimitTelemetryStatus(status string) string {
 	switch strings.TrimSpace(status) {
+	case connector.GraphQLRateLimitStatusUnknown:
+		return telemetry.RateLimitStatusUnknown
 	case connector.GraphQLRateLimitStatusExhausted:
 		return telemetry.RateLimitStatusExhausted
 	case connector.GraphQLRateLimitStatusBackoff:
@@ -1154,10 +1162,15 @@ func graphQLRateLimitTelemetryStatus(status string) string {
 
 func gitHubGraphQLBucket(rateLimit connector.GraphQLRateLimit, now time.Time, status string) *telemetry.RateLimitBucket {
 	var resetAt *time.Time
+	var observedAt *time.Time
 	var resetInSeconds int64
 	if !rateLimit.ResetAt.IsZero() {
 		value := rateLimit.ResetAt
 		resetAt = &value
+	}
+	if !rateLimit.UpdatedAt.IsZero() {
+		value := rateLimit.UpdatedAt
+		observedAt = &value
 	}
 	if rateLimit.RetryAfter > 0 {
 		updatedAt := rateLimit.UpdatedAt
@@ -1179,6 +1192,7 @@ func gitHubGraphQLBucket(rateLimit connector.GraphQLRateLimit, now time.Time, st
 		Cost:           rateLimit.Cost,
 		Status:         status,
 		ResetAt:        resetAt,
+		ObservedAt:     observedAt,
 		ResetInSeconds: resetInSeconds,
 	}
 }

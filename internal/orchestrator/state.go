@@ -431,6 +431,10 @@ func cloneRateLimitBucket(bucket *telemetry.RateLimitBucket) *telemetry.RateLimi
 		resetAt := *bucket.ResetAt
 		cloned.ResetAt = &resetAt
 	}
+	if bucket.ObservedAt != nil {
+		observedAt := *bucket.ObservedAt
+		cloned.ObservedAt = &observedAt
+	}
 	return &cloned
 }
 

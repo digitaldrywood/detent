@@ -150,6 +150,7 @@ type gitHubAPIHealthState string
 
 const (
 	gitHubAPIHealthStateUnknown   gitHubAPIHealthState = "unknown"
+	gitHubAPIHealthStateAtRest    gitHubAPIHealthState = "at-rest"
 	gitHubAPIHealthStateHealthy   gitHubAPIHealthState = "healthy"
 	gitHubAPIHealthStateWarning   gitHubAPIHealthState = "warning"
 	gitHubAPIHealthStateBackoff   gitHubAPIHealthState = "backoff"
@@ -5986,6 +5987,9 @@ func rateLimitRows(limits *telemetry.RateLimits) []rateLimitRow {
 }
 
 func rateLimitRemainingLabel(bucket *telemetry.RateLimitBucket) string {
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusUnknown {
+		return "unknown"
+	}
 	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusExhausted && bucket.Limit <= 0 && bucket.Remaining == 0 {
 		return "exhausted"
 	}
@@ -5996,6 +6000,9 @@ func rateLimitRemainingLabel(bucket *telemetry.RateLimitBucket) string {
 }
 
 func rateLimitUsedLabel(bucket *telemetry.RateLimitBucket) string {
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusUnknown {
+		return "usage unknown"
+	}
 	label := formatInt(bucket.Used) + " used"
 	if bucket.Cost > 0 {
 		label += " / cost " + formatInt(bucket.Cost)
@@ -6004,6 +6011,9 @@ func rateLimitUsedLabel(bucket *telemetry.RateLimitBucket) string {
 }
 
 func rateLimitLimitLabel(bucket *telemetry.RateLimitBucket) string {
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusUnknown {
+		return "limit unknown"
+	}
 	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusExhausted && bucket.Limit <= 0 {
 		return "limit unknown"
 	}
@@ -6072,6 +6082,9 @@ func graphQLBudgetRemaining(limits *telemetry.RateLimits) string {
 		return "n/a"
 	}
 	bucket := limits.GitHubGraphQL
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusUnknown {
+		return "unknown"
+	}
 	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusExhausted && bucket.Limit <= 0 && bucket.Remaining == 0 {
 		return "exhausted"
 	}
@@ -6291,19 +6304,26 @@ func gitHubAPIHealth(snapshot telemetry.Snapshot) gitHubAPIHealthView {
 		view.Detail = "Primary quota is below the warning threshold; " + gitHubAPIWarningReset(snapshot.RateLimits) + "."
 		return view
 	}
+	if gitHubAPIGraphQLAtRest(snapshot.RateLimits) {
+		view.State = gitHubAPIHealthStateAtRest
+		view.Label = "GitHub API at rest"
+		view.Summary = gitHubAPIAtRestSummary(snapshot.RateLimits)
+		view.Detail = "GraphQL quota is reported from live GraphQL traffic; none has occurred in this session. This is expected while boards are idle or when the status source is label-backed."
+		return view
+	}
 	if gitHubAPIGraphQLPrimaryUnknown(snapshot.RateLimits) {
 		restContext := gitHubAPIRESTPrimaryContext(snapshot.RateLimits)
 		view.State = gitHubAPIHealthStateUnknown
 		view.Label = "GitHub API GraphQL unknown"
 		view.Summary = restContext + ". GraphQL primary quota unavailable."
-		view.Detail = "REST primary quota is visible, but GraphQL primary quota is unavailable; doctor may still fail when GraphQL is exhausted."
+		view.Detail = "REST primary quota is visible, but GraphQL primary quota could not be determined after an observation attempt."
 		return view
 	}
 
 	view.State = gitHubAPIHealthStateHealthy
 	view.Label = "GitHub API healthy"
 	view.Summary = primarySummary
-	view.Detail = "Primary quota is available and no secondary REST backoff is active."
+	view.Detail = gitHubAPIHealthyDetail(snapshot)
 	return view
 }
 
@@ -6322,6 +6342,8 @@ func gitHubAPIHealthClass(snapshot telemetry.Snapshot) string {
 	switch gitHubAPIHealth(snapshot).State {
 	case gitHubAPIHealthStateHealthy:
 		return "border-success-soft bg-success-soft text-success"
+	case gitHubAPIHealthStateAtRest:
+		return "border-accent-soft bg-accent-soft text-accent"
 	case gitHubAPIHealthStateWarning, gitHubAPIHealthStateBackoff:
 		return "border-warning-soft bg-warning-soft text-warning"
 	case gitHubAPIHealthStateExhausted:
@@ -6335,6 +6357,8 @@ func gitHubAPIHealthDotClass(snapshot telemetry.Snapshot) string {
 	switch gitHubAPIHealth(snapshot).State {
 	case gitHubAPIHealthStateHealthy:
 		return "bg-success"
+	case gitHubAPIHealthStateAtRest:
+		return "bg-accent"
 	case gitHubAPIHealthStateWarning, gitHubAPIHealthStateBackoff:
 		return "bg-warning"
 	case gitHubAPIHealthStateExhausted:
@@ -6348,6 +6372,8 @@ func gitHubAPIHealthBadgeClass(snapshot telemetry.Snapshot) string {
 	switch gitHubAPIHealth(snapshot).State {
 	case gitHubAPIHealthStateHealthy:
 		return "border-success-soft bg-success-soft text-success"
+	case gitHubAPIHealthStateAtRest:
+		return "border-accent-soft bg-accent-soft text-accent"
 	case gitHubAPIHealthStateWarning, gitHubAPIHealthStateBackoff:
 		return "border-warning-soft bg-warning-soft text-warning"
 	case gitHubAPIHealthStateExhausted:
@@ -6361,6 +6387,8 @@ func gitHubAPIHealthStateLabel(snapshot telemetry.Snapshot) string {
 	switch gitHubAPIHealth(snapshot).State {
 	case gitHubAPIHealthStateHealthy:
 		return "Healthy"
+	case gitHubAPIHealthStateAtRest:
+		return "At rest"
 	case gitHubAPIHealthStateWarning:
 		return "Warning"
 	case gitHubAPIHealthStateBackoff:
@@ -6403,6 +6431,9 @@ func gitHubAPIHealthPrimaryQuotaLabel(snapshot telemetry.Snapshot) string {
 }
 
 func gitHubAPIHealthPrimaryQuotaDetail(snapshot telemetry.Snapshot) string {
+	if gitHubAPIGraphQLAtRest(snapshot.RateLimits) {
+		return "REST primary quota is shown below. GraphQL quota will appear after live GraphQL traffic is observed."
+	}
 	if gitHubAPIHasSnapshot(snapshot.RateLimits) {
 		return "REST and GraphQL primary buckets are shown below with remaining quota, usage, limits, and reset timing."
 	}
@@ -6445,6 +6476,7 @@ func gitHubAPIBucketKnown(bucket *telemetry.RateLimitBucket) bool {
 			bucket.Remaining > 0 ||
 			bucket.Used > 0 ||
 			bucket.ResetAt != nil ||
+			bucket.ObservedAt != nil ||
 			bucket.ResetInSeconds > 0)
 }
 
@@ -6490,6 +6522,15 @@ func gitHubAPIBucketWarning(bucket *telemetry.RateLimitBucket) bool {
 		return true
 	}
 	return float64(bucket.Remaining)/float64(bucket.Limit) <= gitHubAPIWarningRatio
+}
+
+func gitHubAPIGraphQLAtRest(limits *telemetry.RateLimits) bool {
+	return limits != nil &&
+		gitHubAPIBucketKnown(limits.GitHubREST) &&
+		!gitHubAPIBucketWarning(limits.GitHubREST) &&
+		!gitHubAPIBucketExhausted(limits.GitHubREST) &&
+		!gitHubAPIBucketKnown(limits.GitHubGraphQL) &&
+		(limits.GraphQLCost == nil || limits.GraphQLCost.TotalQueries == 0)
 }
 
 func gitHubAPIInBackoff(snapshot telemetry.Snapshot) bool {
@@ -6547,7 +6588,9 @@ func gitHubAPIDeadlineActive(generatedAt time.Time, deadline *time.Time) bool {
 }
 
 func gitHubAPIGraphQLPrimaryUnknown(limits *telemetry.RateLimits) bool {
-	return limits != nil && gitHubAPIBucketKnown(limits.GitHubREST) && !gitHubAPIBucketKnown(limits.GitHubGraphQL)
+	return limits != nil &&
+		gitHubAPIBucketKnown(limits.GitHubREST) &&
+		rateLimitBucketStatus(limits.GitHubGraphQL) == telemetry.RateLimitStatusUnknown
 }
 
 func gitHubAPIPrimarySummary(limits *telemetry.RateLimits) string {
@@ -6567,6 +6610,9 @@ func gitHubAPIPrimarySummary(limits *telemetry.RateLimits) string {
 }
 
 func gitHubAPIPrimaryBucketSummary(label string, bucket *telemetry.RateLimitBucket) string {
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusUnknown {
+		return label + ": unknown"
+	}
 	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusExhausted && bucket.Limit <= 0 && bucket.Remaining == 0 {
 		return label + ": exhausted"
 	}
@@ -6581,6 +6627,30 @@ func gitHubAPIPrimaryBucketSummary(label string, bucket *telemetry.RateLimitBuck
 		return label + ": " + remaining + " (" + formatInt(bucket.Used) + " used)"
 	}
 	return label + ": " + remaining
+}
+
+func gitHubAPIHealthyDetail(snapshot telemetry.Snapshot) string {
+	detail := "Primary quota is available and no secondary REST backoff is active."
+	freshness := gitHubAPIGraphQLObservationFreshness(snapshot)
+	if freshness == "" {
+		return detail
+	}
+	return detail + " GraphQL quota " + freshness + "."
+}
+
+func gitHubAPIAtRestSummary(limits *telemetry.RateLimits) string {
+	return "REST primary: " + gitHubAPIPrimaryBucketCompact(limits.GitHubREST) + ". No GraphQL usage this session."
+}
+
+func gitHubAPIGraphQLObservationFreshness(snapshot telemetry.Snapshot) string {
+	if snapshot.RateLimits == nil || snapshot.RateLimits.GitHubGraphQL == nil || snapshot.RateLimits.GitHubGraphQL.ObservedAt == nil {
+		return ""
+	}
+	observedAt := snapshot.RateLimits.GitHubGraphQL.ObservedAt.UTC()
+	if snapshot.GeneratedAt.IsZero() || observedAt.After(snapshot.GeneratedAt) {
+		return "observed " + timeLabel(observedAt)
+	}
+	return "observed " + formatDuration(snapshot.GeneratedAt.Sub(observedAt).Seconds()) + " ago"
 }
 
 func gitHubAPIPrimaryBucketUsed(bucket *telemetry.RateLimitBucket) int64 {
@@ -6750,6 +6820,9 @@ func gitHubAPIHealthBucketRows(limits *telemetry.RateLimits) []gitHubAPIHealthBu
 }
 
 func gitHubAPIHealthBucketRemaining(bucket *telemetry.RateLimitBucket) string {
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusUnknown {
+		return "unknown"
+	}
 	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusExhausted && bucket.Limit <= 0 && bucket.Remaining == 0 {
 		return "exhausted"
 	}

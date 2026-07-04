@@ -185,6 +185,9 @@ func TestTickPublishesAndLogsGitHubGraphQLCostSummary(t *testing.T) {
 	if state.RateLimits.GitHubGraphQL.Cost != 8 {
 		t.Fatalf("GitHubGraphQL.Cost = %d, want cycle cost 8", state.RateLimits.GitHubGraphQL.Cost)
 	}
+	if state.RateLimits.GitHubGraphQL.ObservedAt == nil || !state.RateLimits.GitHubGraphQL.ObservedAt.Equal(now) {
+		t.Fatalf("GitHubGraphQL.ObservedAt = %v, want %v", state.RateLimits.GitHubGraphQL.ObservedAt, now)
+	}
 	if state.RateLimits.GraphQLCost.TotalCost != 8 || state.RateLimits.GraphQLCost.TotalQueries != 2 {
 		t.Fatalf("GraphQLCost = %#v, want cost 8 queries 2", state.RateLimits.GraphQLCost)
 	}
@@ -235,6 +238,37 @@ func TestTickPublishesGitHubGraphQLExhaustionWithoutRateLimitSnapshot(t *testing
 	}
 	if state.RateLimits.GitHubGraphQL.Limit != 0 || state.RateLimits.GitHubGraphQL.Remaining != 0 {
 		t.Fatalf("GitHubGraphQL = %#v, want status-only exhausted bucket", state.RateLimits.GitHubGraphQL)
+	}
+}
+
+func TestTickPublishesGitHubGraphQLUnknownWithoutRateLimitSnapshot(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        30 * time.Second,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &rateLimitConnector{
+		usage: connector.GraphQLRateLimitUsage{
+			RateLimitStatus: connector.GraphQLRateLimitStatusUnknown,
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if state.RateLimits == nil || state.RateLimits.GitHubGraphQL == nil {
+		t.Fatalf("RateLimits = %#v, want GitHub GraphQL status bucket", state.RateLimits)
+	}
+	if state.RateLimits.GitHubGraphQL.Status != telemetry.RateLimitStatusUnknown {
+		t.Fatalf("GitHubGraphQL.Status = %q, want %q", state.RateLimits.GitHubGraphQL.Status, telemetry.RateLimitStatusUnknown)
+	}
+	if state.RateLimits.GitHubGraphQL.Limit != 0 || state.RateLimits.GitHubGraphQL.Remaining != 0 {
+		t.Fatalf("GitHubGraphQL = %#v, want status-only unknown bucket", state.RateLimits.GitHubGraphQL)
 	}
 }
 
