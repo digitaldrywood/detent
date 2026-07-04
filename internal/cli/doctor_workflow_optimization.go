@@ -40,7 +40,10 @@ const (
 	doctorWorkflowRecentSessionLimit      = 50
 	doctorWorkflowRecentSessionWindow     = 24 * time.Hour
 	doctorWorkflowEmptyModelMinFraction   = 0.20
-	doctorWorkflowBudgetEstimateTotal     = int64(170_000)
+	doctorWorkflowBudgetEstimateInput     = int64(150_000)
+	doctorWorkflowBudgetEstimateOutput    = int64(20_000)
+	doctorWorkflowBudgetEstimateTotal     = doctorWorkflowBudgetEstimateInput + doctorWorkflowBudgetEstimateOutput
+	doctorWorkflowBudgetEstimateBillable  = doctorWorkflowBudgetEstimateInput + doctorWorkflowBudgetEstimateOutput
 	doctorWorkflowBudgetDriftRatio        = 1.50
 	doctorWorkflowSchedulerMinDecisions   = int64(5)
 	doctorWorkflowSchedulerHighSkipRate   = 0.50
@@ -65,34 +68,37 @@ type doctorWorkflowOptimizationProjectReport struct {
 }
 
 type doctorWorkflowOptimizationMetrics struct {
-	SessionCount              int64   `json:"session_count"`
-	UsageEventCount           int64   `json:"usage_event_count"`
-	InputTokens               int64   `json:"input_tokens"`
-	CachedInputTokens         int64   `json:"cached_input_tokens"`
-	OutputTokens              int64   `json:"output_tokens"`
-	TotalTokens               int64   `json:"total_tokens"`
-	InputOutputRatio          float64 `json:"input_output_ratio"`
-	CacheReadFraction         float64 `json:"cache_read_fraction"`
-	MedianSessionTokens       int64   `json:"median_session_tokens"`
-	P90SessionTokens          int64   `json:"p90_session_tokens"`
-	MaxSessionTokens          int64   `json:"max_session_tokens"`
-	MaxSessionsPerIssue       int64   `json:"max_sessions_per_issue"`
-	MaxSessionsIssue          string  `json:"max_sessions_issue,omitempty"`
-	RecentSessionCount        int64   `json:"recent_session_count"`
-	EmptyModelRecentSessions  int64   `json:"empty_model_recent_sessions"`
-	EmptyModelRecentFraction  float64 `json:"empty_model_recent_fraction"`
-	MaxReworkLapsPerIssue     int64   `json:"max_rework_laps_per_issue"`
-	MaxReworkLapsIssue        string  `json:"max_rework_laps_issue,omitempty"`
-	FailureTokens             int64   `json:"failure_tokens"`
-	SchedulerDecisionCount    int64   `json:"scheduler_decision_count"`
-	SchedulerSkippedDecisions int64   `json:"scheduler_skipped_decisions"`
-	SchedulerSkipRate         float64 `json:"scheduler_skip_rate"`
-	LaneEventCount            int64   `json:"lane_event_count"`
-	LaneDwellP90Seconds       int64   `json:"lane_dwell_p90_seconds"`
-	SlowestLane               string  `json:"slowest_lane,omitempty"`
-	SlowestLaneP90Seconds     int64   `json:"slowest_lane_p90_seconds"`
-	BudgetEstimateTokens      int64   `json:"budget_estimate_tokens"`
-	BudgetEstimateDriftRatio  float64 `json:"budget_estimate_drift_ratio"`
+	SessionCount                     int64   `json:"session_count"`
+	UsageEventCount                  int64   `json:"usage_event_count"`
+	InputTokens                      int64   `json:"input_tokens"`
+	CachedInputTokens                int64   `json:"cached_input_tokens"`
+	OutputTokens                     int64   `json:"output_tokens"`
+	TotalTokens                      int64   `json:"total_tokens"`
+	InputOutputRatio                 float64 `json:"input_output_ratio"`
+	CacheReadFraction                float64 `json:"cache_read_fraction"`
+	MedianSessionTokens              int64   `json:"median_session_tokens"`
+	P90SessionTokens                 int64   `json:"p90_session_tokens"`
+	MaxSessionTokens                 int64   `json:"max_session_tokens"`
+	MaxSessionsPerIssue              int64   `json:"max_sessions_per_issue"`
+	MaxSessionsIssue                 string  `json:"max_sessions_issue,omitempty"`
+	RecentSessionCount               int64   `json:"recent_session_count"`
+	EmptyModelRecentSessions         int64   `json:"empty_model_recent_sessions"`
+	EmptyModelRecentFraction         float64 `json:"empty_model_recent_fraction"`
+	MaxReworkLapsPerIssue            int64   `json:"max_rework_laps_per_issue"`
+	MaxReworkLapsIssue               string  `json:"max_rework_laps_issue,omitempty"`
+	FailureTokens                    int64   `json:"failure_tokens"`
+	SchedulerDecisionCount           int64   `json:"scheduler_decision_count"`
+	SchedulerSkippedDecisions        int64   `json:"scheduler_skipped_decisions"`
+	SchedulerSkipRate                float64 `json:"scheduler_skip_rate"`
+	LaneEventCount                   int64   `json:"lane_event_count"`
+	LaneDwellP90Seconds              int64   `json:"lane_dwell_p90_seconds"`
+	SlowestLane                      string  `json:"slowest_lane,omitempty"`
+	SlowestLaneP90Seconds            int64   `json:"slowest_lane_p90_seconds"`
+	BudgetEstimateTokens             int64   `json:"budget_estimate_tokens"`
+	BudgetEstimateBillableTokens     int64   `json:"budget_estimate_billable_tokens"`
+	P90SessionBillableTokens         int64   `json:"p90_session_billable_tokens"`
+	BudgetEstimateBillableDriftRatio float64 `json:"budget_estimate_billable_drift_ratio"`
+	BudgetEstimateDriftRatio         float64 `json:"budget_estimate_drift_ratio"`
 }
 
 type doctorWorkflowOptimizationFinding struct {
@@ -119,6 +125,7 @@ type doctorWorkflowSessionMetrics struct {
 	outputTokens             int64
 	totalTokens              int64
 	totalTokensBySession     []int64
+	billableTokensBySession  []int64
 	issueSessionCounts       map[string]int64
 	recentSessionCount       int64
 	emptyModelRecentSessions int64
@@ -323,27 +330,29 @@ func doctorWorkflowOptimizationMetricsForProject(
 	}
 
 	metrics := doctorWorkflowOptimizationMetrics{
-		SessionCount:              sessions.count,
-		UsageEventCount:           usage.count,
-		InputTokens:               sessions.inputTokens,
-		CachedInputTokens:         sessions.cachedInputTokens,
-		OutputTokens:              sessions.outputTokens,
-		TotalTokens:               sessions.totalTokens,
-		MedianSessionTokens:       doctorPercentileInt64(sessions.totalTokensBySession, 0.50),
-		P90SessionTokens:          doctorPercentileInt64(sessions.totalTokensBySession, 0.90),
-		MaxSessionTokens:          doctorMaxInt64(sessions.totalTokensBySession),
-		RecentSessionCount:        sessions.recentSessionCount,
-		EmptyModelRecentSessions:  sessions.emptyModelRecentSessions,
-		MaxSessionsPerIssue:       doctorMaxMapValue(sessions.issueSessionCounts),
-		MaxSessionsIssue:          doctorMaxMapKey(sessions.issueSessionCounts),
-		FailureTokens:             sessions.failureTokens,
-		SchedulerDecisionCount:    scheduler.count,
-		SchedulerSkippedDecisions: scheduler.skipped,
-		LaneEventCount:            lanes.count,
-		LaneDwellP90Seconds:       doctorPercentileInt64(lanes.durations, 0.90),
-		MaxReworkLapsPerIssue:     doctorMaxMapValue(lanes.reworkLaps),
-		MaxReworkLapsIssue:        doctorMaxMapKey(lanes.reworkLaps),
-		BudgetEstimateTokens:      doctorWorkflowBudgetEstimateTotal,
+		SessionCount:                 sessions.count,
+		UsageEventCount:              usage.count,
+		InputTokens:                  sessions.inputTokens,
+		CachedInputTokens:            sessions.cachedInputTokens,
+		OutputTokens:                 sessions.outputTokens,
+		TotalTokens:                  sessions.totalTokens,
+		MedianSessionTokens:          doctorPercentileInt64(sessions.totalTokensBySession, 0.50),
+		P90SessionTokens:             doctorPercentileInt64(sessions.totalTokensBySession, 0.90),
+		P90SessionBillableTokens:     doctorPercentileInt64(sessions.billableTokensBySession, 0.90),
+		MaxSessionTokens:             doctorMaxInt64(sessions.totalTokensBySession),
+		RecentSessionCount:           sessions.recentSessionCount,
+		EmptyModelRecentSessions:     sessions.emptyModelRecentSessions,
+		MaxSessionsPerIssue:          doctorMaxMapValue(sessions.issueSessionCounts),
+		MaxSessionsIssue:             doctorMaxMapKey(sessions.issueSessionCounts),
+		FailureTokens:                sessions.failureTokens,
+		SchedulerDecisionCount:       scheduler.count,
+		SchedulerSkippedDecisions:    scheduler.skipped,
+		LaneEventCount:               lanes.count,
+		LaneDwellP90Seconds:          doctorPercentileInt64(lanes.durations, 0.90),
+		MaxReworkLapsPerIssue:        doctorMaxMapValue(lanes.reworkLaps),
+		MaxReworkLapsIssue:           doctorMaxMapKey(lanes.reworkLaps),
+		BudgetEstimateTokens:         doctorWorkflowBudgetEstimateTotal,
+		BudgetEstimateBillableTokens: doctorWorkflowBudgetEstimateBillable,
 	}
 	if usage.count > 0 {
 		metrics.InputTokens = usage.inputTokens
@@ -357,8 +366,9 @@ func doctorWorkflowOptimizationMetricsForProject(
 	metrics.EmptyModelRecentFraction = doctorRatio(metrics.EmptyModelRecentSessions, metrics.RecentSessionCount)
 	metrics.SchedulerSkipRate = doctorRatio(metrics.SchedulerSkippedDecisions, metrics.SchedulerDecisionCount)
 	metrics.SlowestLane, metrics.SlowestLaneP90Seconds = doctorSlowestLane(lanes.laneDuration)
-	if metrics.P90SessionTokens > 0 {
-		metrics.BudgetEstimateDriftRatio = doctorRoundedFloat(float64(metrics.P90SessionTokens)/float64(doctorWorkflowBudgetEstimateTotal), 4)
+	if metrics.P90SessionBillableTokens > 0 && metrics.BudgetEstimateBillableTokens > 0 {
+		metrics.BudgetEstimateBillableDriftRatio = doctorRoundedFloat(float64(metrics.P90SessionBillableTokens)/float64(metrics.BudgetEstimateBillableTokens), 4)
+		metrics.BudgetEstimateDriftRatio = metrics.BudgetEstimateBillableDriftRatio
 	}
 	return metrics, nil
 }
@@ -418,6 +428,9 @@ ORDER BY s.completed_at DESC, s.id DESC`, projectID, projectID)
 		metrics.totalTokens += totalTokens
 		if totalTokens > 0 {
 			metrics.totalTokensBySession = append(metrics.totalTokensBySession, totalTokens)
+		}
+		if billableTokens := doctorWorkflowBillableTokens(inputTokens, cachedInputTokens, outputTokens, totalTokens); billableTokens > 0 {
+			metrics.billableTokensBySession = append(metrics.billableTokensBySession, billableTokens)
 		}
 		metrics.issueSessionCounts[issueKey]++
 		if metrics.count == 1 {
@@ -634,19 +647,18 @@ func doctorWorkflowOptimizationFindings(
 			evidence,
 		))
 	}
-	if metrics.P90SessionTokens > 0 && metrics.BudgetEstimateDriftRatio >= doctorWorkflowBudgetDriftRatio {
-		value := doctorRoundedFloat(cfg.Budget.PerIssueMaxUSD*metrics.BudgetEstimateDriftRatio, 2)
+	if metrics.P90SessionBillableTokens > 0 && metrics.BudgetEstimateDriftRatio >= doctorWorkflowBudgetDriftRatio {
 		findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleBudgetEstimateDrift,
 			"Budget estimate is below observed p90",
-			fmt.Sprintf("observed p90 session tokens are %.2fx the default dispatch estimate", metrics.BudgetEstimateDriftRatio),
-			metrics.P90SessionTokens-doctorWorkflowBudgetEstimateTotal,
+			fmt.Sprintf("observed p90 billable session tokens are %.2fx the default dispatch estimate", metrics.BudgetEstimateDriftRatio),
+			metrics.P90SessionBillableTokens-metrics.BudgetEstimateBillableTokens,
 			map[string]any{
-				"budget_estimate_tokens":      doctorWorkflowBudgetEstimateTotal,
-				"observed_p90_session_tokens": metrics.P90SessionTokens,
-				"drift_ratio":                 metrics.BudgetEstimateDriftRatio,
-				"current_per_issue_max_usd":   cfg.Budget.PerIssueMaxUSD,
+				"budget_estimate_billable_tokens":      metrics.BudgetEstimateBillableTokens,
+				"budget_estimate_tokens":               doctorWorkflowBudgetEstimateTotal,
+				"observed_p90_billable_session_tokens": metrics.P90SessionBillableTokens,
+				"observed_p90_session_tokens":          metrics.P90SessionTokens,
+				"drift_ratio":                          metrics.BudgetEstimateDriftRatio,
 			},
-			doctorWorkflowOptimizationPatch{Path: "budget.per_issue_max_usd", Value: value},
 		))
 	}
 	if metrics.SchedulerDecisionCount >= doctorWorkflowSchedulerMinDecisions && metrics.SchedulerSkipRate >= doctorWorkflowSchedulerHighSkipRate {
@@ -957,6 +969,23 @@ func doctorWorkflowUsageFailed(outcome string) bool {
 	default:
 		return false
 	}
+}
+
+func doctorWorkflowBillableTokens(inputTokens int64, cachedInputTokens int64, outputTokens int64, totalTokens int64) int64 {
+	inputTokens = doctorNonNegativeInt64(inputTokens)
+	cachedInputTokens = min(doctorNonNegativeInt64(cachedInputTokens), inputTokens)
+	outputTokens = doctorNonNegativeInt64(outputTokens)
+	if inputTokens == 0 && cachedInputTokens == 0 && outputTokens == 0 {
+		return doctorNonNegativeInt64(totalTokens)
+	}
+	return inputTokens - cachedInputTokens + outputTokens
+}
+
+func doctorNonNegativeInt64(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
 }
 
 func doctorRatio(numerator int64, denominator int64) float64 {

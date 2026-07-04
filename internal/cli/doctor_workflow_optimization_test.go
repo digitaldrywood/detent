@@ -90,9 +90,8 @@ func TestDoctorWorkflowOptimizationFindsFixtureRules(t *testing.T) {
 		t.Fatalf("empty model fraction = %v, want 0.8", got)
 	}
 
-	budget := doctorWorkflowFindingByRule(t, report.Findings, doctorWorkflowRuleBudgetEstimateDrift)
-	if got := evidenceInt64(t, budget, "observed_p90_session_tokens"); got != 300000 {
-		t.Fatalf("budget p90 = %d, want 300000", got)
+	if doctorWorkflowFindingExists(report.Findings, doctorWorkflowRuleBudgetEstimateDrift) {
+		t.Fatalf("budget drift finding should not be emitted for cached-heavy raw token drift: %#v", report.Findings)
 	}
 
 	scheduler := doctorWorkflowFindingByRule(t, report.Findings, doctorWorkflowRuleSchedulerSkipRate)
@@ -108,6 +107,12 @@ func TestDoctorWorkflowOptimizationFindsFixtureRules(t *testing.T) {
 	}
 	if metrics.MaxSessionTokens != 300000 {
 		t.Fatalf("MaxSessionTokens = %d, want 300000", metrics.MaxSessionTokens)
+	}
+	if metrics.P90SessionBillableTokens != 150500 {
+		t.Fatalf("P90SessionBillableTokens = %d, want 150500", metrics.P90SessionBillableTokens)
+	}
+	if metrics.BudgetEstimateDriftRatio != 0.8853 {
+		t.Fatalf("BudgetEstimateDriftRatio = %v, want 0.8853", metrics.BudgetEstimateDriftRatio)
 	}
 }
 
@@ -209,6 +214,34 @@ func TestDoctorWorkflowOptimizationJSONReportSchema(t *testing.T) {
 	}
 }
 
+func TestDoctorWorkflowOptimizationBudgetDriftFindingIsAdvisory(t *testing.T) {
+	t.Parallel()
+
+	cfg := workflowconfig.Default()
+	metrics := doctorWorkflowOptimizationMetrics{
+		P90SessionTokens:                 500000,
+		P90SessionBillableTokens:         300000,
+		BudgetEstimateTokens:             doctorWorkflowBudgetEstimateTotal,
+		BudgetEstimateBillableTokens:     doctorWorkflowBudgetEstimateBillable,
+		BudgetEstimateDriftRatio:         doctorRoundedFloat(float64(300000)/float64(doctorWorkflowBudgetEstimateBillable), 4),
+		BudgetEstimateBillableDriftRatio: doctorRoundedFloat(float64(300000)/float64(doctorWorkflowBudgetEstimateBillable), 4),
+	}
+	findings := doctorWorkflowOptimizationFindings("detent", "/tmp/WORKFLOW.md", cfg, metrics)
+	budget := doctorWorkflowFindingByRule(t, findings, doctorWorkflowRuleBudgetEstimateDrift)
+	if len(budget.Patch) != 0 {
+		t.Fatalf("budget drift patches = %#v, want advisory finding with no patches", budget.Patch)
+	}
+	if got := evidenceInt64(t, budget, "observed_p90_billable_session_tokens"); got != 300000 {
+		t.Fatalf("billable p90 = %d, want 300000", got)
+	}
+	if got := evidenceInt64(t, budget, "budget_estimate_billable_tokens"); got != doctorWorkflowBudgetEstimateBillable {
+		t.Fatalf("budget estimate billable tokens = %d, want %d", got, doctorWorkflowBudgetEstimateBillable)
+	}
+	if _, ok := budget.Evidence["current_per_issue_max_usd"]; ok {
+		t.Fatalf("budget drift evidence should not point at per_issue_max_usd: %#v", budget.Evidence)
+	}
+}
+
 func TestDoctorSQLiteReadOnlyDSNFormatsWindowsDrivePath(t *testing.T) {
 	t.Parallel()
 
@@ -271,8 +304,8 @@ func TestDoctorWorkflowOptimizationWriteRoundTripsWorkflow(t *testing.T) {
 	if workflow.Config.Polling.IntervalMS != 120000 {
 		t.Fatalf("Polling.IntervalMS = %d, want 120000", workflow.Config.Polling.IntervalMS)
 	}
-	if workflow.Config.Budget.PerIssueMaxUSD != 8.82 {
-		t.Fatalf("Budget.PerIssueMaxUSD = %v, want 8.82", workflow.Config.Budget.PerIssueMaxUSD)
+	if workflow.Config.Budget.PerIssueMaxUSD != 5 {
+		t.Fatalf("Budget.PerIssueMaxUSD = %v, want unchanged default 5", workflow.Config.Budget.PerIssueMaxUSD)
 	}
 	if doctorWorkflowHasDefaultRouteModel(workflow.Config) {
 		t.Fatalf("workflow gained unexpected default route model after write: %#v", workflow.Config.Agents.Routes)
@@ -822,6 +855,15 @@ func doctorWorkflowFindingByRule(t *testing.T, findings []doctorWorkflowOptimiza
 	}
 	t.Fatalf("missing finding %q in %#v", ruleID, findings)
 	return doctorWorkflowOptimizationFinding{}
+}
+
+func doctorWorkflowFindingExists(findings []doctorWorkflowOptimizationFinding, ruleID string) bool {
+	for _, finding := range findings {
+		if finding.RuleID == ruleID {
+			return true
+		}
+	}
+	return false
 }
 
 func evidenceInt64(t *testing.T, finding doctorWorkflowOptimizationFinding, key string) int64 {
