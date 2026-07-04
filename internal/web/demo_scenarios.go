@@ -273,7 +273,7 @@ func (s *Server) apiDemoScenarios(c echo.Context) error {
 func (s *Server) demoDashboard(c echo.Context, scenario demoScenario) error {
 	data := s.demoDashboardData(c.Request().Context(), scenario)
 	applyDashboardPreferences(c.Request(), &data)
-	return render(c, templates.Dashboard(data))
+	return render(c, templates.FleetPage(data))
 }
 
 func (s *Server) demoBoard(c echo.Context, scenario demoScenario) error {

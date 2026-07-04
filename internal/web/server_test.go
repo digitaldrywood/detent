@@ -253,7 +253,7 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 	page := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/fleet", http.StatusOK, map[string]string{
 		web.DemoScenarioHeader: "fleet-healthy-parallel-work",
 	})
-	for _, want := range []string{"Implement page-addressable screenshot scenarios", "detent-core", "GraphQL"} {
+	for _, want := range []string{"Implement page-addressable screenshot scenarios", "detent-core", "GitHub quota", `id="agent-activity"`} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("fleet scenario page missing %q:\n%s", want, page)
 		}
@@ -1791,16 +1791,17 @@ func TestServerRendersInstanceNameInPagesStateAndMetadata(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		handler http.Handler
-		path    string
-		title   string
+		name      string
+		handler   http.Handler
+		path      string
+		title     string
+		wantBadge bool
 	}{
 		{name: "dashboard", handler: server.Handler(), path: "/fleet", title: "buildbox · Detent"},
-		{name: "analytics", handler: server.Handler(), path: "/analytics", title: "buildbox · Analytics - Detent"},
-		{name: "reports", handler: server.Handler(), path: "/reports", title: "buildbox · Detent reports"},
-		{name: "settings", handler: server.Handler(), path: "/settings", title: "buildbox · Detent settings"},
-		{name: "onboarding", handler: onboardingServer.Handler(), path: "/onboarding", title: "buildbox · Detent onboarding"},
+		{name: "analytics", handler: server.Handler(), path: "/analytics", title: "buildbox · Analytics - Detent", wantBadge: true},
+		{name: "reports", handler: server.Handler(), path: "/reports", title: "buildbox · Detent reports", wantBadge: true},
+		{name: "settings", handler: server.Handler(), path: "/settings", title: "buildbox · Detent settings", wantBadge: true},
+		{name: "onboarding", handler: onboardingServer.Handler(), path: "/onboarding", title: "buildbox · Detent onboarding", wantBadge: true},
 	}
 
 	for _, tt := range tests {
@@ -1808,12 +1809,14 @@ func TestServerRendersInstanceNameInPagesStateAndMetadata(t *testing.T) {
 			t.Parallel()
 
 			body := requestHTML(t, tt.handler, http.MethodGet, tt.path, http.StatusOK)
-			for _, want := range []string{
+			wants := []string{
 				"<title>" + tt.title + "</title>",
 				`name="application-name" content="buildbox · Detent"`,
-				`aria-label="Instance name"`,
-				">buildbox</span>",
-			} {
+			}
+			if tt.wantBadge {
+				wants = append(wants, `aria-label="Instance name"`, ">buildbox</span>")
+			}
+			for _, want := range wants {
 				if !strings.Contains(body, want) {
 					t.Fatalf("%s body missing %q:\n%s", tt.path, want, body)
 				}
@@ -1921,8 +1924,8 @@ func TestServerUsesHostnameFallbackForInstanceName(t *testing.T) {
 	if !strings.Contains(body, "<title>runner-01 · Detent</title>") {
 		t.Fatalf("body missing hostname title:\n%s", body)
 	}
-	if !strings.Contains(body, ">runner-01</span>") {
-		t.Fatalf("body missing hostname badge:\n%s", body)
+	if !strings.Contains(body, `name="application-name" content="runner-01 · Detent"`) {
+		t.Fatalf("body missing hostname application-name:\n%s", body)
 	}
 }
 
@@ -2016,7 +2019,6 @@ func TestServerEscapesInstanceName(t *testing.T) {
 	for _, want := range []string{
 		"<title>&lt;b&gt;prod&lt;/b&gt; · Detent</title>",
 		`name="application-name" content="&lt;b&gt;prod&lt;/b&gt; · Detent"`,
-		">&lt;b&gt;prod&lt;/b&gt;</span>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body missing escaped instance name %q:\n%s", want, body)
@@ -2326,9 +2328,12 @@ func TestDashboardRendersLatestSnapshot(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	for _, want := range []string{
-		"digitaldrywood/detent#35",
+		"digitaldrywood/detent",
+		"#35",
 		"Dashboard templates",
-		"42,000",
+		"2 turns",
+		"tps",
+		`id="agent-35"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
@@ -2340,24 +2345,30 @@ func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
 	t.Parallel()
 
 	routes := []struct {
-		name string
-		path string
+		name  string
+		path  string
+		shell string
 	}{
-		{name: "dashboard", path: "/fleet"},
-		{name: "project", path: "/projects/detent"},
-		{name: "reports", path: "/reports"},
-		{name: "settings", path: "/settings"},
+		{name: "board", path: "/", shell: "v2"},
+		{name: "dashboard", path: "/fleet", shell: "v2"},
+		{name: "project", path: "/projects/detent", shell: "legacy"},
+		{name: "reports", path: "/reports", shell: "legacy"},
+		{name: "settings", path: "/settings", shell: "legacy"},
 	}
 	states := []struct {
-		name        string
-		cookie      *http.Cookie
-		wantState   string
-		forbidState string
+		name          string
+		cookie        *http.Cookie
+		wantLegacy    string
+		forbidLegacy  string
+		wantShellV2   string
+		forbidShellV2 string
 	}{
 		{
-			name:        "defaults expanded",
-			wantState:   `data-tui-sidebar-state="expanded"`,
-			forbidState: `data-tui-sidebar-state="collapsed"`,
+			name:          "defaults expanded",
+			wantLegacy:    `data-tui-sidebar-state="expanded"`,
+			forbidLegacy:  `data-tui-sidebar-state="collapsed"`,
+			wantShellV2:   `data-rail="false"`,
+			forbidShellV2: `data-rail="true"`,
 		},
 		{
 			name: "renders collapsed from templui cookie",
@@ -2365,8 +2376,10 @@ func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
 				Name:  "sidebar_state",
 				Value: "false",
 			},
-			wantState:   `data-tui-sidebar-state="collapsed"`,
-			forbidState: `data-tui-sidebar-state="expanded"`,
+			wantLegacy:    `data-tui-sidebar-state="collapsed"`,
+			forbidLegacy:  `data-tui-sidebar-state="expanded"`,
+			wantShellV2:   `data-rail="true"`,
+			forbidShellV2: `data-rail="false"`,
 		},
 		{
 			name: "renders expanded from templui cookie",
@@ -2374,8 +2387,10 @@ func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
 				Name:  "sidebar_state",
 				Value: "true",
 			},
-			wantState:   `data-tui-sidebar-state="expanded"`,
-			forbidState: `data-tui-sidebar-state="collapsed"`,
+			wantLegacy:    `data-tui-sidebar-state="expanded"`,
+			forbidLegacy:  `data-tui-sidebar-state="collapsed"`,
+			wantShellV2:   `data-rail="false"`,
+			forbidShellV2: `data-rail="true"`,
 		},
 	}
 
@@ -2412,11 +2427,15 @@ func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
 				if rec.Code != http.StatusOK {
 					t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 				}
-				if !strings.Contains(rec.Body.String(), state.wantState) {
-					t.Fatalf("%s missing %q:\n%s", route.path, state.wantState, rec.Body.String())
+				wantState, forbidState := state.wantLegacy, state.forbidLegacy
+				if route.shell == "v2" {
+					wantState, forbidState = state.wantShellV2, state.forbidShellV2
 				}
-				if strings.Contains(rec.Body.String(), state.forbidState) {
-					t.Fatalf("%s rendered forbidden state %q:\n%s", route.path, state.forbidState, rec.Body.String())
+				if !strings.Contains(rec.Body.String(), wantState) {
+					t.Fatalf("%s missing %q:\n%s", route.path, wantState, rec.Body.String())
+				}
+				if strings.Contains(rec.Body.String(), forbidState) {
+					t.Fatalf("%s rendered forbidden state %q:\n%s", route.path, forbidState, rec.Body.String())
 				}
 			})
 		}
@@ -4064,8 +4083,6 @@ func TestDashboardRendersServerMetadata(t *testing.T) {
 	}
 	for _, want := range []string{
 		"v9.8.7",
-		"Build v9.8.7 (abcdef1) 2026-06-05T21:00:00Z",
-		`aria-label="Detent dashboard"`,
 		`href="/"`,
 		`href="/analytics"`,
 		`href="/reports"`,
@@ -4073,6 +4090,9 @@ func TestDashboardRendersServerMetadata(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
 		}
+	}
+	if strings.Contains(rec.Body.String(), "Build v9.8.7 (abcdef1) 2026-06-05T21:00:00Z") {
+		t.Fatalf("fleet page rendered the full build string; it belongs to Settings:\n%s", rec.Body.String())
 	}
 	if strings.Contains(rec.Body.String(), `href="http://localhost:4000"`) {
 		t.Fatalf("dashboard rendered the dashboard URL chip:\n%s", rec.Body.String())
@@ -4104,16 +4124,14 @@ func TestDashboardWiresHTMXSSE(t *testing.T) {
 		`src="https://unpkg.com/htmx.org@2.0.4"`,
 		`src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"`,
 		`src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"`,
-		`/static/vendor/chartjs/chart.umd.min`,
-		`/static/js/dashboard-charts`,
 		`hx-ext="sse, morph"`,
-		`sse-connect="/events"`,
+		`sse-connect="/events?view=fleet"`,
 		`sse-swap="snapshot"`,
 		`sse-swap="tick"`,
 		`hx-swap="morph:innerHTML"`,
-		`hx-preserve`,
-		`data-detent-charts`,
-		`data-chart-endpoint="/api/v1/timeseries"`,
+		`id="agent-activity"`,
+		`id="fleet-pr-pipeline"`,
+		`id="fleet-metrics"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, rec.Body.String())
@@ -4121,6 +4139,15 @@ func TestDashboardWiresHTMXSSE(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), `hx-ext="sse morph"`) {
 		t.Fatalf("dashboard rendered space-separated htmx extensions:\n%s", rec.Body.String())
+	}
+	for _, forbidden := range []string{
+		`/static/vendor/chartjs/chart.umd.min`,
+		`/static/js/dashboard-charts`,
+		`data-detent-charts`,
+	} {
+		if strings.Contains(rec.Body.String(), forbidden) {
+			t.Fatalf("fleet page rendered forbidden Chart.js wiring %q:\n%s", forbidden, rec.Body.String())
+		}
 	}
 }
 
@@ -5949,17 +5976,17 @@ func TestDashboardRendersProjectSmallMultiplesFromSnapshots(t *testing.T) {
 
 	html := rec.Body.String()
 	for _, want := range []string{
-		"Fleet grid",
-		"Detent project",
-		"Pyro Apex project",
-		"1 running / 3 queued / 0 blocked",
-		"2 tps",
-		"$2.50",
-		`aria-label="Detent throughput sparkline"`,
+		">Detent</span>",
+		">Pyro Apex</span>",
+		`href="/projects/detent"`,
+		`href="/projects/pyroapex"`,
 	} {
 		if !strings.Contains(html, want) {
-			t.Fatalf("dashboard missing %q:\n%s", want, html)
+			t.Fatalf("dashboard sidebar missing project row %q:\n%s", want, html)
 		}
+	}
+	if !strings.Contains(html, `id="fig-running"`) {
+		t.Fatalf("fleet page missing running figure:\n%s", html)
 	}
 }
 
@@ -6154,7 +6181,7 @@ func TestDashboardRendersDisabledBudgetAsSingleNote(t *testing.T) {
 	}
 }
 
-func TestDashboardRendersRESTBudgetContributorsCollapsed(t *testing.T) {
+func TestFleetRendersGitHubQuotaMetric(t *testing.T) {
 	t.Parallel()
 
 	resetAt := time.Date(2026, 6, 30, 15, 0, 0, 0, time.UTC)
@@ -6192,24 +6219,13 @@ func TestDashboardRendersRESTBudgetContributorsCollapsed(t *testing.T) {
 	}
 	html := rec.Body.String()
 	for _, want := range []string{
-		"REST budget",
-		"4,200 / 5,000",
-		"30m 0s",
-		`data-preserve-details="rest-budget-contributors"`,
-		"Endpoint details",
-		"pull requests",
-		"check runs",
+		`id="metric-quota"`,
+		"GitHub quota",
+		"800 / 5,000",
 	} {
 		if !strings.Contains(html, want) {
-			t.Fatalf("dashboard missing %q:\n%s", want, html)
+			t.Fatalf("fleet quota metric missing %q:\n%s", want, html)
 		}
-	}
-	detailsTag := regexp.MustCompile(`<details[^>]*data-preserve-details="rest-budget-contributors"[^>]*>`).FindString(html)
-	if detailsTag == "" {
-		t.Fatalf("dashboard missing REST budget details tag:\n%s", html)
-	}
-	if strings.Contains(detailsTag, " open") {
-		t.Fatalf("REST budget details rendered open by default: %s", detailsTag)
 	}
 }
 

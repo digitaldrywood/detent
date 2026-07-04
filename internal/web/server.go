@@ -268,7 +268,7 @@ func (s *Server) dashboard(c echo.Context) error {
 	ctx := c.Request().Context()
 	data := s.dashboardData(ctx, s.latestSnapshot(ctx))
 	applyDashboardPreferences(c.Request(), &data)
-	return render(c, templates.Dashboard(data))
+	return render(c, templates.FleetPage(data))
 }
 
 func (s *Server) board(c echo.Context) error {

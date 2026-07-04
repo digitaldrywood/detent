@@ -26,6 +26,7 @@ const (
 	sseViewHealth        = "health"
 	sseViewAnalytics     = "analytics"
 	sseViewBoard         = "board"
+	sseViewFleet         = "fleet"
 	sseViewKanban        = "kanban"
 	sseViewRuns          = "runs"
 	sseViewDiagnostics   = "diagnostics"
@@ -109,6 +110,9 @@ func (s *Server) events(c echo.Context) error {
 			} else if selectedView == sseViewBoard && (selectedProjectID == "" || data.ProjectID != "") {
 				data.ActiveNav = "board"
 				snapshotComponent = templates.BoardSnapshot(data)
+			} else if selectedView == sseViewFleet && selectedProjectID == "" {
+				data.ActiveNav = "fleet"
+				snapshotComponent = templates.FleetSnapshotV2(data)
 			} else if selectedView == sseViewKanban && (selectedProjectID == "" || data.ProjectID != "") {
 				data.ActiveNav = "kanban"
 				data = s.withKanbanRefreshFeedback(data)
