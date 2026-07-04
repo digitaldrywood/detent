@@ -452,6 +452,7 @@ type RateLimits struct {
 }
 
 const (
+	RateLimitStatusUnknown   = "unknown"
 	RateLimitStatusBackoff   = "backoff"
 	RateLimitStatusExhausted = "exhausted"
 )
@@ -463,6 +464,7 @@ type RateLimitBucket struct {
 	Cost           int64      `json:"cost,omitempty"`
 	Status         string     `json:"status,omitempty"`
 	ResetAt        *time.Time `json:"reset_at,omitempty"`
+	ObservedAt     *time.Time `json:"observed_at,omitempty"`
 	ResetInSeconds int64      `json:"reset_in_seconds,omitempty"`
 	HasCredits     bool       `json:"has_credits,omitempty"`
 	Unlimited      bool       `json:"unlimited,omitempty"`

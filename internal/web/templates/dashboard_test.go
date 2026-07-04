@@ -619,6 +619,17 @@ func TestDashboardRendersSidebarGitHubAPIHealthStateMetadata(t *testing.T) {
 			wantLabel: "GitHub API healthy",
 		},
 		{
+			name: "at rest",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST: &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+				},
+			},
+			wantState: "at-rest",
+			wantLabel: "GitHub API at rest",
+		},
+		{
 			name: "warning",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
@@ -4717,6 +4728,8 @@ func gitHubAPIHealthStateTestLabel(state string) string {
 	switch state {
 	case "healthy":
 		return "Healthy"
+	case "at-rest":
+		return "At rest"
 	case "warning":
 		return "Warning"
 	case "backoff":

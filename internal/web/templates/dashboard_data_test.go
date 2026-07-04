@@ -161,6 +161,7 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 	lastRefresh := now.Add(-30 * time.Second)
 	nextRefresh := now.Add(90 * time.Second)
 	resetAt := now.Add(30 * time.Minute)
+	observedAt := now.Add(-3 * time.Hour)
 	backoffUntil := now.Add(5 * time.Minute)
 	expiredBackoffUntil := now.Add(-5 * time.Minute)
 
@@ -215,11 +216,50 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			wantSummaryPart: "REST primary: 4,878 remaining / 5,000 total (122 used)",
 		},
 		{
-			name: "rest primary without graphql remains unknown",
+			name: "never observed graphql stays at rest",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
 				RateLimits: &telemetry.RateLimits{
 					GitHubREST: &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+				},
+			},
+			wantState:       gitHubAPIHealthStateAtRest,
+			wantLabel:       "GitHub API at rest",
+			wantSummaryPart: "REST primary: 4,878/5,000 remaining. No GraphQL usage this session.",
+			wantDetailParts: []string{
+				"GraphQL quota is reported from live GraphQL traffic",
+				"none has occurred in this session",
+				"This is expected while boards are idle or when the status source is label-backed",
+			},
+			rejectDetailPart: "GraphQL unknown",
+		},
+		{
+			name: "observed then idle shows freshness",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST: &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{
+						Remaining:  4880,
+						Used:       120,
+						Limit:      5000,
+						ResetAt:    &resetAt,
+						ObservedAt: &observedAt,
+					},
+				},
+			},
+			wantState:       gitHubAPIHealthStateHealthy,
+			wantLabel:       "GitHub API healthy",
+			wantSummaryPart: "GraphQL primary: 4,880 remaining / 5,000 total (120 used)",
+			wantDetailParts: []string{"GraphQL quota observed 3h 0m ago"},
+		},
+		{
+			name: "probe failed keeps graphql unknown",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Status: telemetry.RateLimitStatusUnknown},
 				},
 			},
 			wantState:       gitHubAPIHealthStateUnknown,
@@ -227,7 +267,7 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			wantSummaryPart: "GraphQL primary quota unavailable",
 			wantDetailParts: []string{
 				"REST primary quota is visible",
-				"GraphQL primary quota is unavailable",
+				"could not be determined after an observation attempt",
 			},
 		},
 		{
