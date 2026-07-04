@@ -261,8 +261,8 @@ func TestDoctorWorkflowOptimizationJSONReportSchema(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal() error = %v\n%s", err, output.String())
 	}
-	if got.Result != "FAIL" {
-		t.Fatalf("Result = %q, want FAIL for nonzero findings", got.Result)
+	if got.Result != "PASS" {
+		t.Fatalf("Result = %q, want PASS for advisory findings", got.Result)
 	}
 	if got.WorkflowOptimization.StorePath != "/tmp/detent.db" {
 		t.Fatalf("StorePath = %q, want /tmp/detent.db", got.WorkflowOptimization.StorePath)
@@ -358,9 +358,8 @@ func TestDoctorWorkflowOptimizationWriteRoundTripsWorkflow(t *testing.T) {
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
 
-	err := cmd.Execute()
-	if !errors.Is(err, ErrDoctorFailed) {
-		t.Fatalf("Execute() error = %v, want ErrDoctorFailed for nonzero findings\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v, want nil for advisory findings\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 	}
 
 	workflow, err := workflowconfig.LoadWorkflow(paths.workflow)
@@ -387,6 +386,41 @@ func TestDoctorWorkflowOptimizationWriteRoundTripsWorkflow(t *testing.T) {
 	}
 	if doctorWorkflowHasDefaultRouteModel(workflow.Config) {
 		t.Fatalf("workflow gained unexpected default route model after write: %#v", workflow.Config.Agents.Routes)
+	}
+}
+
+func TestDoctorWorkflowOptimizationStrictFailsOnAdvisoryFindings(t *testing.T) {
+	t.Parallel()
+
+	paths := seedDoctorWorkflowOptimizationFixture(t)
+	configPath := filepath.Join(paths.dir, "global.yaml")
+	global := doctorWorkflowOptimizationGlobal(paths)
+	global.Path = configPath
+
+	deps := successfulDoctorDeps()
+	deps.loadWorkflow = workflowconfig.LoadWorkflow
+	deps.openSQLiteReadOnly = openDoctorSQLiteReadOnly
+
+	configFlag := configPath
+	envFlag := ""
+	logLevelFlag := ""
+	hostFlag := "127.0.0.1"
+	portFlag := 0
+	cmd := newDoctorCommandWithDeps(&configFlag, &envFlag, &logLevelFlag, &hostFlag, &portFlag, successfulDoctorOptionsWithConfig(configPath, global), deps)
+	cmd.SetArgs([]string{"--project", "detent", "--strict"})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	err := cmd.Execute()
+	if !errors.Is(err, ErrDoctorFailed) {
+		t.Fatalf("Execute() error = %v, want ErrDoctorFailed for strict advisory findings\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{"Workflow Optimization", "Summary:", "0 FAIL", "Result: FAIL"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout missing %q:\n%s", want, stdout.String())
+		}
 	}
 }
 
@@ -733,6 +767,15 @@ tracker:
   kind: memory
   local_sqlite:
     project_id: detent-local
+  active_states:
+    - Todo
+    - In Progress
+    - Rework
+    - Merging
+  observed_states:
+    - Backlog
+    - Human Review
+    - Blocked
 polling:
   interval_ms: 60000
 agent:
