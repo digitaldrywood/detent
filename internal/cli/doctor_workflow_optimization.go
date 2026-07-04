@@ -589,19 +589,21 @@ func doctorWorkflowOptimizationFindings(
 		ratio := float64(metrics.MaxSessionTokens) / float64(metrics.MedianSessionTokens)
 		if ratio >= doctorWorkflowRunawayMedianMultiplier {
 			value := doctorRoundUpInt64(int64(float64(metrics.MedianSessionTokens)*doctorWorkflowRunawayMedianMultiplier), 1000)
-			findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleRunawaySessionTokens,
-				"Runaway session tail",
-				fmt.Sprintf("max session tokens are %.1fx the median", ratio),
-				metrics.MaxSessionTokens-metrics.MedianSessionTokens,
-				map[string]any{
-					"session_count":         metrics.SessionCount,
-					"median_session_tokens": metrics.MedianSessionTokens,
-					"p90_session_tokens":    metrics.P90SessionTokens,
-					"max_session_tokens":    metrics.MaxSessionTokens,
-					"max_to_median_ratio":   doctorRoundedFloat(ratio, 2),
-				},
-				doctorWorkflowOptimizationPatch{Path: "agent.max_session_tokens", Value: value},
-			))
+			if cfg.Agent.MaxSessionTokens <= 0 || cfg.Agent.MaxSessionTokens > value {
+				findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleRunawaySessionTokens,
+					"Runaway session tail",
+					fmt.Sprintf("max session tokens are %.1fx the median", ratio),
+					metrics.MaxSessionTokens-metrics.MedianSessionTokens,
+					map[string]any{
+						"session_count":         metrics.SessionCount,
+						"median_session_tokens": metrics.MedianSessionTokens,
+						"p90_session_tokens":    metrics.P90SessionTokens,
+						"max_session_tokens":    metrics.MaxSessionTokens,
+						"max_to_median_ratio":   doctorRoundedFloat(ratio, 2),
+					},
+					doctorWorkflowOptimizationPatch{Path: "agent.max_session_tokens", Value: value},
+				))
+			}
 		}
 	}
 	if metrics.MaxReworkLapsPerIssue > doctorWorkflowReworkLapThreshold && (cfg.Agent.AutoPromote.ReworkLimit == 0 || metrics.MaxReworkLapsPerIssue > int64(cfg.Agent.AutoPromote.ReworkLimit)) {
