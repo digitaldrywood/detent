@@ -71,7 +71,7 @@ templ boardSnapshotBody(data DashboardData) {
 templ boardLaneView2(lane boardLaneView) {
 	<section
 		id={ lane.DomID }
-		class="flex min-w-44 flex-1 flex-col overflow-hidden rounded-card border border-line bg-surface data-[lane-hidden=true]:hidden"
+		class="flex min-w-44 max-w-80 flex-1 flex-col overflow-hidden rounded-card border border-line bg-surface data-[lane-hidden=true]:hidden"
 		data-board-lane={ lane.LaneID }
 		data-board-lane-title={ lane.Title }
 		data-board-lane-default={ boardBoolAttr(lane.DefaultVisible) }
