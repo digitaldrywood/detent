@@ -107,7 +107,8 @@ func (s *Server) events(c echo.Context) error {
 			if selectedNav == sseViewHealth {
 				snapshotComponent = templates.HealthSnapshotV2(data)
 			} else if selectedNav == sseViewAnalytics {
-				snapshotComponent = templates.AnalyticsSnapshot(data)
+				data.AnalyticsKind = strings.TrimSpace(c.QueryParam("kind"))
+				snapshotComponent = templates.AnalyticsSnapshotV2(data)
 			} else if selectedView == sseViewBoard && (selectedProjectID == "" || data.ProjectID != "") {
 				data.ActiveNav = "board"
 				snapshotComponent = templates.BoardSnapshot(data)

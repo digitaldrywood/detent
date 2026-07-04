@@ -307,8 +307,9 @@ func (s *Server) analyticsDashboard(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 	data := s.analyticsDashboardData(ctx, s.latestSnapshot(ctx))
+	data.AnalyticsKind = c.QueryParam("kind")
 	applyDashboardPreferences(c.Request(), &data)
-	return render(c, templates.AnalyticsPage(data))
+	return render(c, templates.AnalyticsPageV2(data))
 }
 
 func (s *Server) projectDashboard(c echo.Context) error {

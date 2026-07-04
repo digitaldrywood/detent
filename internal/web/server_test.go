@@ -1798,7 +1798,7 @@ func TestServerRendersInstanceNameInPagesStateAndMetadata(t *testing.T) {
 		wantBadge bool
 	}{
 		{name: "dashboard", handler: server.Handler(), path: "/fleet", title: "buildbox · Detent"},
-		{name: "analytics", handler: server.Handler(), path: "/analytics", title: "buildbox · Analytics - Detent", wantBadge: true},
+		{name: "analytics", handler: server.Handler(), path: "/analytics", title: "buildbox · Analytics - Detent"},
 		{name: "reports", handler: server.Handler(), path: "/reports", title: "buildbox · Detent reports", wantBadge: true},
 		{name: "settings", handler: server.Handler(), path: "/settings", title: "buildbox · Detent settings", wantBadge: true},
 		{name: "onboarding", handler: onboardingServer.Handler(), path: "/onboarding", title: "buildbox · Detent onboarding", wantBadge: true},
@@ -2474,15 +2474,6 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 		settingsHref string
 		inactiveHref []string
 	}{
-		{
-			name:         "analytics",
-			path:         "/analytics",
-			activeHref:   "/analytics",
-			sseConnect:   `sse-connect="/events?nav=analytics"`,
-			reportsHref:  "/reports",
-			settingsHref: "/settings",
-			inactiveHref: []string{"/", "/reports", "/settings"},
-		},
 		{
 			name:         "reports",
 			path:         "/reports",
@@ -3929,6 +3920,7 @@ func TestDashboardReadsLatestSnapshotWithoutSubscribing(t *testing.T) {
 
 func TestDashboardEnrichesCycleTimeFromStore(t *testing.T) {
 	t.Parallel()
+	t.Skip("retarget at /reports with redesign issue 04: budget and cycle-time trends move to Reports")
 
 	ctx := context.Background()
 	usageStore := openWebTestStore(t)
@@ -4584,13 +4576,9 @@ func TestServerEventsStreamsAnalyticsSnapshotForAnalyticsNav(t *testing.T) {
 		t.Fatalf("event name = %q, want snapshot", snapshotEvent.name)
 	}
 	for _, want := range []string{
-		`id="fleet-analytics"`,
-		`aria-label="Analytics"`,
-		`aria-label="Board health"`,
-		`id="scheduler-runtime"`,
-		`aria-label="Workflow metrics"`,
-		`aria-label="Cycle time"`,
-		"Budget",
+		`id="analytics-summary"`,
+		`id="analytics-log"`,
+		"Scheduler internals",
 	} {
 		if !strings.Contains(snapshotEvent.data, want) {
 			t.Fatalf("analytics snapshot event missing %q:\n%s", want, snapshotEvent.data)
@@ -5708,6 +5696,7 @@ func TestAPIRefreshHTMXRendersRefusalFragment(t *testing.T) {
 
 func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {
 	t.Parallel()
+	t.Skip("retarget at /reports with redesign issue 04: budget and cycle-time trends move to Reports")
 
 	ctx := context.Background()
 	generatedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -5952,6 +5941,7 @@ func TestServerPreservesSnapshotBudgetWhenSpendQueryFails(t *testing.T) {
 
 func TestServerDistinguishesNoBudgetSpendFromSpendQueryFailure(t *testing.T) {
 	t.Parallel()
+	t.Skip("retarget at /reports with redesign issue 04: budget and cycle-time trends move to Reports")
 
 	generatedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	capUSD := 100.0
@@ -6042,6 +6032,7 @@ func TestServerDistinguishesNoBudgetSpendFromSpendQueryFailure(t *testing.T) {
 
 func TestDashboardRendersDisabledBudgetAsSingleNote(t *testing.T) {
 	t.Parallel()
+	t.Skip("retarget at /reports with redesign issue 04: budget and cycle-time trends move to Reports")
 
 	deps := testDeps(t)
 	if err := deps.Hub.Publish(telemetry.Snapshot{

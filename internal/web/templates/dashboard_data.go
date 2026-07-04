@@ -55,6 +55,7 @@ type DashboardData struct {
 	SidebarCollapsed bool
 	Theme            string
 	Density          string
+	AnalyticsKind    string
 }
 
 type DashboardShellData struct {
@@ -75,6 +76,7 @@ type DashboardShellData struct {
 	IncludeDashboardCharts bool
 	Theme                  string
 	Density                string
+	AnalyticsKind          string
 }
 
 type Budget = telemetry.Budget
@@ -575,6 +577,7 @@ func DashboardShellDataFromDashboard(data DashboardData) DashboardShellData {
 		IncludeDashboardCharts: true,
 		Theme:                  data.Theme,
 		Density:                data.Density,
+		AnalyticsKind:          data.AnalyticsKind,
 	}
 }
 
@@ -701,6 +704,11 @@ func eventsPath(data DashboardShellData) string {
 		values := url.Values{"nav": []string{activeNav}}
 		if id := strings.TrimSpace(data.ProjectID); id != "" {
 			values.Set("project", id)
+		}
+		if activeNav == "analytics" {
+			if kind := strings.TrimSpace(data.AnalyticsKind); kind != "" {
+				values.Set("kind", kind)
+			}
 		}
 		return "/events?" + values.Encode()
 	}

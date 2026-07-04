@@ -1,0 +1,78 @@
+package templates
+
+import "github.com/digitaldrywood/detent/internal/web/ui/primitives"
+
+// AnalyticsPageV2 renders scheduler internals as one dense, filterable
+// log. Decisions are a dot plus plain text; reasons are readable
+// sentences in the DETAIL column, never chips.
+templ AnalyticsPageV2(data DashboardData) {
+	@AppShell(AnalyticsShellDataFromDashboardV2(data), analyticsKindSelect(data)) {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div
+				id="snapshot"
+				class="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden px-5 py-5"
+				sse-swap="snapshot"
+				hx-swap="morph:innerHTML"
+				data-preserve-scroll="analytics-scroll"
+			>
+				@AnalyticsSnapshotV2(data)
+			</div>
+		</main>
+	}
+}
+
+templ AnalyticsSnapshotV2(data DashboardData) {
+	{{ view := analyticsViewFromDashboard(data) }}
+	<p id="analytics-summary" class="flex-none text-xs text-sec">
+		Scheduler internals — work attempts and activity, newest first.
+		{ " " }
+		<span class="text-dim">{ view.Summary }</span>
+	</p>
+	<section id="analytics-log" class="flex flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
+		<div class="grid grid-cols-[70px_140px_120px_70px_130px_minmax(0,1fr)] gap-3.5 border-b border-line px-4 py-2">
+			<span class="text-2xs font-semibold uppercase text-dim">Time</span>
+			<span class="text-2xs font-semibold uppercase text-dim">Event</span>
+			<span class="text-2xs font-semibold uppercase text-dim">Project</span>
+			<span class="text-2xs font-semibold uppercase text-dim">Issue</span>
+			<span class="text-2xs font-semibold uppercase text-dim">Decision</span>
+			<span class="text-2xs font-semibold uppercase text-dim">Detail</span>
+		</div>
+		if len(view.Rows) == 0 {
+			if view.Filtered {
+				@primitives.FilteredEmptyLine("No events match the current filter —", "clear filters", templ.Attributes{"href": "/analytics"})
+			} else {
+				@primitives.EmptyLine("No scheduler events in the current snapshot")
+			}
+		}
+		for i, row := range view.Rows {
+			<div id={ row.ID } class={ analyticsRowClass(i == len(view.Rows)-1) }>
+				<span class="font-mono text-xs text-sec tabular-nums">{ row.Time }</span>
+				<span class="truncate text-xs text-text">{ row.Event }</span>
+				<span class="truncate font-mono text-xs text-sec">{ row.Project }</span>
+				<span class="whitespace-nowrap font-mono text-xs font-medium text-text tabular-nums">{ row.Ref }</span>
+				<span class={ "flex items-center gap-1.5 text-xs " + boardExtraTextClass(row.Kind) }>
+					@primitives.StatusDot(row.Kind, false)
+					{ row.Decision }
+				</span>
+				<span class="truncate text-xs text-sec" title={ row.Detail }>{ row.Detail }</span>
+			</div>
+		}
+	</section>
+	<p class="flex-none text-2xs text-dim">This is a log; exceptions surface on the Board.</p>
+}
+
+// analyticsKindSelect is the topbar event-type filter: a CSS-only
+// dropdown outside #snapshot, reloading the page with a query param.
+templ analyticsKindSelect(data DashboardData) {
+	<details class="relative">
+		<summary class="flex cursor-pointer list-none items-center gap-1.5 rounded-card border border-line px-2.5 py-1 text-xs text-sec hover:text-text [&::-webkit-details-marker]:hidden">
+			{ analyticsKindLabel(analyticsKindFilter(data.AnalyticsKind)) }
+			<span aria-hidden="true">▾</span>
+		</summary>
+		<div class="absolute left-0 top-full z-40 mt-1 flex w-44 flex-col gap-0.5 rounded-card border border-line bg-elev p-1.5">
+			<a href="/analytics" class="rounded-chip px-2 py-1 text-xs text-text hover:bg-surface">All events</a>
+			<a href="/analytics?kind=attempts" class="rounded-chip px-2 py-1 text-xs text-text hover:bg-surface">Work attempts</a>
+			<a href="/analytics?kind=activity" class="rounded-chip px-2 py-1 text-xs text-text hover:bg-surface">Activity</a>
+		</div>
+	</details>
+}

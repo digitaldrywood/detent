@@ -296,7 +296,7 @@ func (s *Server) demoAnalyticsDashboard(c echo.Context, scenario demoScenario) e
 	data.ActiveNav = "analytics"
 	data.Title = instancePageTitle(s.instanceName(), "Analytics - Detent")
 	applyDashboardPreferences(c.Request(), &data)
-	return render(c, templates.AnalyticsPage(data))
+	return render(c, templates.AnalyticsPageV2(data))
 }
 
 func (s *Server) demoProjectDashboard(c echo.Context, scenario demoScenario, view string) error {
@@ -1613,7 +1613,7 @@ func (s *Server) writeDemoSSE(ctx context.Context, res *echo.Response, scenario 
 		snapshotComponent = templates.HealthSnapshotV2(data)
 	case sseViewAnalytics:
 		data.ActiveNav = "analytics"
-		snapshotComponent = templates.AnalyticsSnapshot(data)
+		snapshotComponent = templates.AnalyticsSnapshotV2(data)
 	case sseViewKanban:
 		data.ActiveNav = "kanban"
 		snapshotComponent = templates.ProjectKanbanSnapshot(data)
