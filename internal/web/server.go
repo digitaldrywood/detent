@@ -251,6 +251,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed)
 	s.echo.GET("/api/v1/usage", s.apiUsage)
 	s.echo.GET("/api/v1/workflow/timeline", s.apiWorkflowTimeline)
+	s.echo.GET("/api/v1/board/card", s.apiBoardCard)
 	s.echo.GET("/api/v1/kanban/move", s.apiKanbanMoveDialog)
 	s.echo.POST("/api/v1/kanban/move", s.apiKanbanMove)
 	s.echo.POST("/api/v1/kanban/remove", s.apiKanbanRemove)
@@ -285,6 +286,23 @@ func (s *Server) board(c echo.Context) error {
 
 func (s *Server) redirectToBoard(c echo.Context) error {
 	return c.Redirect(http.StatusFound, "/")
+}
+
+// apiBoardCard renders the session detail sheet for one board card into
+// the body-level sheet host.
+func (s *Server) apiBoardCard(c echo.Context) error {
+	ctx := c.Request().Context()
+	data := s.boardData(ctx, s.latestSnapshot(ctx))
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		data = s.demoDashboardData(ctx, scenario)
+	}
+	card, ok := templates.FindBoardCard(data, c.QueryParam("project"), c.QueryParam("issue"))
+	if !ok {
+		return echo.NewHTTPError(http.StatusNotFound, "Card not found")
+	}
+	return render(c, templates.BoardCardSheet(data, card))
 }
 
 func (s *Server) healthDashboard(c echo.Context) error {

@@ -39,6 +39,7 @@ templ AppShell(data DashboardShellData, scope templ.Component) {
 		<body class="h-screen overflow-hidden bg-page font-sans text-text antialiased">
 			@helpTooltipHost()
 			@kanbanDialogHost()
+			@DetailSheetHost()
 			<div
 				class="flex h-full"
 				hx-ext="sse, morph"
@@ -282,7 +283,18 @@ templ liveBehaviorScript() {
 templ appShellScript() {
 	<script>
 		(function () {
+			function closeDetailSheet() {
+				var host = document.getElementById("detail-sheet-host");
+				if (host) host.innerHTML = "";
+			}
+			document.addEventListener("keydown", function (event) {
+				if (event.key === "Escape") closeDetailSheet();
+			});
 			document.addEventListener("click", function (event) {
+				if (event.target.closest("[data-sheet-close]")) {
+					closeDetailSheet();
+					return;
+				}
 				var toggle = event.target.closest("[data-sidebar-toggle]");
 				if (toggle) {
 					var sidebar = document.getElementById("app-sidebar");

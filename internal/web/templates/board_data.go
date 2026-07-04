@@ -114,10 +114,8 @@ func boardExceptions(snapshot telemetry.Snapshot) []primitives.Exception {
 			Ref:   projectKanbanIssueNumber(row.Issue),
 			Rest:  boardExceptionDetail(row, now),
 		}
-		if url := strings.TrimSpace(row.URL); url != "" {
-			exception.ActionLabel = "Review"
-			exception.ActionHref = url
-		}
+		exception.ActionLabel = "Review"
+		exception.ActionAttrs = sheetOpenAttrs(row.ProjectID, projectKanbanIssueNumber(row.Issue))
 		exceptions = append(exceptions, exception)
 	}
 	return exceptions

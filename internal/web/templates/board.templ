@@ -96,7 +96,13 @@ templ boardLaneView2(lane boardLaneView) {
 }
 
 templ boardCardView2(card boardCardView) {
-	<article id={ card.DomID } class={ boardCardClass(card) }>
+	<article
+		id={ card.DomID }
+		class={ boardCardClass(card) + " cursor-pointer hover:border-accent/50" }
+		role="button"
+		tabindex="0"
+		{ sheetOpenAttrs(card.Project, card.Number)... }
+	>
 		<div class="flex items-center gap-1.5 font-mono text-2xs font-medium text-sec">
 			if card.Running {
 				@primitives.StatusDot(primitives.KindOK, true)

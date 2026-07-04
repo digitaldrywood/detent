@@ -181,8 +181,11 @@ func TestBoardExceptions(t *testing.T) {
 	if !strings.Contains(exception.Rest, "waiting 12m") {
 		t.Fatalf("exception detail should carry waiting duration, got %q", exception.Rest)
 	}
-	if exception.ActionHref == "" || exception.ActionLabel != "Review" {
-		t.Fatalf("exception should link to review target, got %+v", exception)
+	if exception.ActionLabel != "Review" {
+		t.Fatalf("exception should carry the Review action, got %+v", exception)
+	}
+	if got := exception.ActionAttrs["hx-get"]; got != "/api/v1/board/card?issue=92&project=detent" {
+		t.Fatalf("exception review target = %v", got)
 	}
 
 	data.Snapshot.Blocked = nil
