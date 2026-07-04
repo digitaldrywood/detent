@@ -2,6 +2,7 @@ package budget
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -12,56 +13,60 @@ import (
 const DefaultPricingPath = "priv/pricing/models.yaml"
 
 type ModelPricing struct {
-	USDPerInputToken       float64
+	USDPerInputToken float64
+	// Cache-write premiums are not modeled until telemetry records cache creation
+	// tokens separately.
 	USDPerCachedInputToken float64
 	USDPerOutputToken      float64
 }
 
 type PricingTable map[string]ModelPricing
 
-// DefaultPricingTable returns published API token rates. Under subscription auth,
-// computed USD is notional but still used for budget pacing.
+// DefaultPricingTable returns published API token rates. Cached input rates are
+// provider cache-read prices and must be verified against published pricing
+// when models are added or updated. Under subscription auth, computed USD is
+// notional but still used for budget pacing.
 func DefaultPricingTable() PricingTable {
 	claudeFable5 := ModelPricing{
 		USDPerInputToken:       0.000010,
-		USDPerCachedInputToken: 0.000010,
+		USDPerCachedInputToken: 0.000001,
 		USDPerOutputToken:      0.000050,
 	}
 	claudeOpus48 := ModelPricing{
 		USDPerInputToken:       0.000005,
-		USDPerCachedInputToken: 0.000005,
+		USDPerCachedInputToken: 0.0000005,
 		USDPerOutputToken:      0.000025,
 	}
 	claudeSonnet5 := ModelPricing{
-		USDPerInputToken:       0.000002,
-		USDPerCachedInputToken: 0.000002,
-		USDPerOutputToken:      0.000010,
+		USDPerInputToken:       0.000003,
+		USDPerCachedInputToken: 0.0000003,
+		USDPerOutputToken:      0.000015,
 	}
 	claudeHaiku45 := ModelPricing{
 		USDPerInputToken:       0.000001,
-		USDPerCachedInputToken: 0.000001,
+		USDPerCachedInputToken: 0.0000001,
 		USDPerOutputToken:      0.000005,
 	}
 
 	return PricingTable{
 		"gpt-5.5": {
 			USDPerInputToken:       0.000005,
-			USDPerCachedInputToken: 0.000005,
+			USDPerCachedInputToken: 0.0000005,
 			USDPerOutputToken:      0.000030,
 		},
 		"gpt-5.4": {
 			USDPerInputToken:       0.0000025,
-			USDPerCachedInputToken: 0.0000025,
+			USDPerCachedInputToken: 0.00000025,
 			USDPerOutputToken:      0.000015,
 		},
 		"gpt-5.4-mini": {
 			USDPerInputToken:       0.00000075,
-			USDPerCachedInputToken: 0.00000075,
+			USDPerCachedInputToken: 0.000000075,
 			USDPerOutputToken:      0.0000045,
 		},
 		"gpt-5.3-codex": {
 			USDPerInputToken:       0.00000175,
-			USDPerCachedInputToken: 0.00000175,
+			USDPerCachedInputToken: 0.000000175,
 			USDPerOutputToken:      0.000014,
 		},
 		"claude-fable-5":   claudeFable5,
@@ -117,7 +122,7 @@ func DecodePricing(raw []byte) (PricingTable, error) {
 		if model == "" {
 			continue
 		}
-		modelPricing, ok := normalizePricingRow(row)
+		modelPricing, ok := normalizePricingRow(model, row)
 		if !ok {
 			continue
 		}
@@ -148,7 +153,7 @@ func UsageCostUSD(pricing PricingTable, model string, inputTokens int64, cachedI
 		float64(nonNegative(outputTokens))*modelPricing.USDPerOutputToken, true
 }
 
-func normalizePricingRow(value any) (ModelPricing, bool) {
+func normalizePricingRow(model string, value any) (ModelPricing, bool) {
 	row := mapValue(value)
 	if row == nil {
 		return ModelPricing{}, false
@@ -168,7 +173,8 @@ func normalizePricingRow(value any) (ModelPricing, bool) {
 	if !cachedOK {
 		cached, cachedOK = perTokenFromMillion(row["cached_input_usd_per_1m_tokens"])
 	}
-	if !cachedOK {
+	if !cachedOK && inputOK {
+		slog.Warn("pricing row missing cached input rate; using input rate", "model", model)
 		cached = input
 		cachedOK = true
 	}

@@ -1,8 +1,11 @@
 package budget
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -20,73 +23,73 @@ func TestDefaultPricingTable(t *testing.T) {
 		{
 			model:      " GPT-5.5 ",
 			wantInput:  0.000005,
-			wantCached: 0.000005,
+			wantCached: 0.0000005,
 			wantOutput: 0.000030,
 		},
 		{
 			model:      "gpt-5.4",
 			wantInput:  0.0000025,
-			wantCached: 0.0000025,
+			wantCached: 0.00000025,
 			wantOutput: 0.000015,
 		},
 		{
 			model:      "gpt-5.4-mini",
 			wantInput:  0.00000075,
-			wantCached: 0.00000075,
+			wantCached: 0.000000075,
 			wantOutput: 0.0000045,
 		},
 		{
 			model:      "gpt-5.3-codex",
 			wantInput:  0.00000175,
-			wantCached: 0.00000175,
+			wantCached: 0.000000175,
 			wantOutput: 0.000014,
 		},
 		{
 			model:      "claude-fable-5",
 			wantInput:  0.000010,
-			wantCached: 0.000010,
+			wantCached: 0.000001,
 			wantOutput: 0.000050,
 		},
 		{
 			model:      "fable",
 			wantInput:  0.000010,
-			wantCached: 0.000010,
+			wantCached: 0.000001,
 			wantOutput: 0.000050,
 		},
 		{
 			model:      "claude-opus-4-8",
 			wantInput:  0.000005,
-			wantCached: 0.000005,
+			wantCached: 0.0000005,
 			wantOutput: 0.000025,
 		},
 		{
 			model:      "opus",
 			wantInput:  0.000005,
-			wantCached: 0.000005,
+			wantCached: 0.0000005,
 			wantOutput: 0.000025,
 		},
 		{
 			model:      "claude-sonnet-5",
-			wantInput:  0.000002,
-			wantCached: 0.000002,
-			wantOutput: 0.000010,
+			wantInput:  0.000003,
+			wantCached: 0.0000003,
+			wantOutput: 0.000015,
 		},
 		{
 			model:      "sonnet",
-			wantInput:  0.000002,
-			wantCached: 0.000002,
-			wantOutput: 0.000010,
+			wantInput:  0.000003,
+			wantCached: 0.0000003,
+			wantOutput: 0.000015,
 		},
 		{
 			model:      "claude-haiku-4-5",
 			wantInput:  0.000001,
-			wantCached: 0.000001,
+			wantCached: 0.0000001,
 			wantOutput: 0.000005,
 		},
 		{
 			model:      "haiku",
 			wantInput:  0.000001,
-			wantCached: 0.000001,
+			wantCached: 0.0000001,
 			wantOutput: 0.000005,
 		},
 	}
@@ -103,6 +106,16 @@ func TestDefaultPricingTable(t *testing.T) {
 			assertInDelta(t, row.USDPerCachedInputToken, tt.wantCached)
 			assertInDelta(t, row.USDPerOutputToken, tt.wantOutput)
 		})
+	}
+}
+
+func TestDefaultPricingTableCachedInputRatesAreDiscounted(t *testing.T) {
+	t.Parallel()
+
+	for model, row := range DefaultPricingTable() {
+		if row.USDPerCachedInputToken >= row.USDPerInputToken {
+			t.Fatalf("%s cached input rate = %.12f, want less than input rate %.12f", model, row.USDPerCachedInputToken, row.USDPerInputToken)
+		}
 	}
 }
 
@@ -166,6 +179,39 @@ models:
 	}
 }
 
+func TestDecodePricingWarnsWhenCachedInputRateMissing(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	raw := []byte(`
+models:
+  gpt-fallback:
+    usd_per_input_token: 0.04
+    usd_per_output_token: 0.05
+`)
+
+	pricing, err := DecodePricing(raw)
+	if err != nil {
+		t.Fatalf("DecodePricing() error = %v", err)
+	}
+
+	row, ok := pricing.Lookup("gpt-fallback")
+	if !ok {
+		t.Fatal("pricing.Lookup(gpt-fallback) ok = false, want true")
+	}
+	assertInDelta(t, row.USDPerCachedInputToken, 0.04)
+
+	output := logs.String()
+	if !strings.Contains(output, "pricing row missing cached input rate; using input rate") ||
+		!strings.Contains(output, "model=gpt-fallback") {
+		t.Fatalf("log output = %q, want missing cached input warning", output)
+	}
+}
+
 func TestLoadPricing(t *testing.T) {
 	t.Parallel()
 
@@ -175,6 +221,7 @@ func TestLoadPricing(t *testing.T) {
 models:
   gpt-file:
     usd_per_input_token: 0.03
+    usd_per_cached_input_token: 0.003
     usd_per_output_token: 0.04
 `), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -189,7 +236,7 @@ models:
 		t.Fatal("pricing.Lookup(gpt-file) ok = false, want true")
 	}
 	assertInDelta(t, row.USDPerInputToken, 0.03)
-	assertInDelta(t, row.USDPerCachedInputToken, 0.03)
+	assertInDelta(t, row.USDPerCachedInputToken, 0.003)
 	assertInDelta(t, row.USDPerOutputToken, 0.04)
 
 	if _, err := LoadPricing(filepath.Join(dir, "missing.yaml")); err == nil {
@@ -298,6 +345,43 @@ func TestUsageCostUSD(t *testing.T) {
 	}
 }
 
+func TestUsageCostUSDDefaultGPT55CachedSession(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		model             string
+		inputTokens       int64
+		cachedInputTokens int64
+		outputTokens      int64
+		want              float64
+	}{
+		{
+			name:              "prices live cached session near provider cost",
+			model:             "gpt-5.5",
+			inputTokens:       12_590_000,
+			cachedInputTokens: 12_380_000,
+			outputTokens:      41_000,
+			want:              8.47,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := UsageCostUSD(nil, tt.model, tt.inputTokens, tt.cachedInputTokens, tt.outputTokens)
+			if !ok {
+				t.Fatal("UsageCostUSD() ok = false, want true")
+			}
+			assertInDelta(t, got, tt.want)
+			if got >= 60 {
+				t.Fatalf("UsageCostUSD() = %.2f, want cached-rate pricing", got)
+			}
+		})
+	}
+}
+
 func TestUsageCostUSDDefaultClaudePricing(t *testing.T) {
 	t.Parallel()
 
@@ -328,12 +412,12 @@ func TestUsageCostUSDDefaultClaudePricing(t *testing.T) {
 		},
 		{
 			model:  "claude-sonnet-5",
-			want:   12,
+			want:   18,
 			wantOK: true,
 		},
 		{
 			model:  "sonnet",
-			want:   12,
+			want:   18,
 			wantOK: true,
 		},
 		{
