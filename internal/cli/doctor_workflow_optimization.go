@@ -600,7 +600,7 @@ func doctorWorkflowOptimizationFindings(
 		findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleEmptyModelTelemetry,
 			"Session model telemetry is incomplete",
 			fmt.Sprintf("%d of %d recent sessions have an empty model", metrics.EmptyModelRecentSessions, metrics.RecentSessionCount),
-			int64(float64(metrics.TotalTokens)*metrics.EmptyModelRecentFraction),
+			0,
 			map[string]any{
 				"recent_session_count":        metrics.RecentSessionCount,
 				"empty_model_recent_sessions": metrics.EmptyModelRecentSessions,
@@ -635,7 +635,7 @@ func doctorWorkflowOptimizationFindings(
 		findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleSchedulerSkipRate,
 			"Scheduler skip rate is high",
 			fmt.Sprintf("%.0f%% of recent scheduler decisions skipped dispatch", metrics.SchedulerSkipRate*100),
-			metrics.SchedulerSkippedDecisions*metrics.MedianSessionTokens,
+			0,
 			map[string]any{
 				"scheduler_decision_count":    metrics.SchedulerDecisionCount,
 				"scheduler_skipped_decisions": metrics.SchedulerSkippedDecisions,
