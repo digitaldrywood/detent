@@ -160,6 +160,63 @@ func TestDoctorWorkflowOptimizationFindingsTokenImpactIsAvoidable(t *testing.T) 
 	}
 }
 
+func TestDoctorWorkflowOptimizationRunawaySessionTokensRespectsConfiguredCap(t *testing.T) {
+	t.Parallel()
+
+	metrics := doctorWorkflowOptimizationMetrics{
+		SessionCount:        3,
+		MedianSessionTokens: 10000,
+		P90SessionTokens:    120000,
+		MaxSessionTokens:    300000,
+	}
+	tests := []struct {
+		name          string
+		configuredCap int64
+		wantFinding   bool
+	}{
+		{
+			name:        "uncapped",
+			wantFinding: true,
+		},
+		{
+			name:          "configured cap above suggested cap",
+			configuredCap: 50000,
+			wantFinding:   true,
+		},
+		{
+			name:          "configured cap equals suggested cap",
+			configuredCap: 40000,
+		},
+		{
+			name:          "configured cap below suggested cap",
+			configuredCap: 30000,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := workflowconfig.Default()
+			cfg.Agent.MaxSessionTokens = tt.configuredCap
+
+			findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", cfg, metrics)
+			gotFinding := doctorWorkflowFindingExists(findings, doctorWorkflowRuleRunawaySessionTokens)
+			if gotFinding != tt.wantFinding {
+				t.Fatalf("runaway finding exists = %v, want %v: %#v", gotFinding, tt.wantFinding, findings)
+			}
+			if !tt.wantFinding {
+				return
+			}
+
+			runaway := doctorWorkflowFindingByRule(t, findings, doctorWorkflowRuleRunawaySessionTokens)
+			if got := runaway.Patch[0].Value; got != int64(40000) {
+				t.Fatalf("runaway patch value = %#v, want 40000", got)
+			}
+		})
+	}
+}
+
 func TestDoctorWorkflowOptimizationJSONReportSchema(t *testing.T) {
 	t.Parallel()
 
