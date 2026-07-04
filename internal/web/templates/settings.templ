@@ -1,165 +1,176 @@
 package templates
 
+import "github.com/digitaldrywood/detent/internal/web/ui/primitives"
+
+// Settings is the read-only view of the running configuration, rendered as
+// definition lists: key / mono value / hover-only copy. Theme and density
+// preferences live here, and the full build string retires to the footer.
 templ Settings(data SettingsData) {
-	@DashboardShell(settingsDashboardShellData(data)) {
-		<script>
-			function copySettingValue(button) {
-				const value = button.dataset.copy || ""
-				const label = button.querySelector("[data-copy-label]")
-				const reset = button.dataset.label || "Copy"
-				const done = () => {
-					if (!label) return
-					label.textContent = "Copied!"
-					clearTimeout(button._copyTimer)
-					button._copyTimer = setTimeout(() => { label.textContent = reset }, 1200)
+	@AppShell(settingsDashboardShellData(data), nil) {
+		@settingsCopyScript()
+		if settingsProjectTabsVisible(data) {
+			<nav class="flex flex-none gap-5.5 border-b border-line px-5" aria-label="Project views">
+				for _, tab := range projectTabs(DashboardData{ProjectID: data.ProjectID}, "configuration") {
+					<a href={ templ.SafeURL(tab.Href) } class={ projectTabClass(tab) } { sidebarAriaCurrent(tab.Active)... }>{ tab.Label }</a>
 				}
-				if (navigator.clipboard && navigator.clipboard.writeText) {
-					navigator.clipboard.writeText(value).then(done, done)
-					return
+			</nav>
+		}
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div class="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-y-auto overflow-x-hidden px-5 py-5">
+				<p class="flex-none text-xs text-sec">Read-only view of the running configuration. Copy appears on row hover.</p>
+				@settingsSection("settings-preferences", "Preferences") {
+					<div class={ settingsRowClass(false) }>
+						<span class="text-xs text-sec">Theme</span>
+						<div class="flex gap-4 text-xs text-text" role="radiogroup" aria-label="Theme">
+							@settingsRadio("theme", "dark", "Dark", settingsThemeChecked(data, "dark"))
+							@settingsRadio("theme", "light", "Light", settingsThemeChecked(data, "light"))
+						</div>
+						<span></span>
+					</div>
+					<div class={ settingsRowClass(true) }>
+						<span class="text-xs text-sec">Density</span>
+						<div class="flex gap-4 text-xs text-text" role="radiogroup" aria-label="Density">
+							@settingsRadio("density", "compact", "Compact", settingsDensityChecked(data, "compact"))
+							@settingsRadio("density", "cozy", "Cozy", settingsDensityChecked(data, "cozy"))
+						</div>
+						<span></span>
+					</div>
 				}
-				done()
-			}
-		</script>
-		<div class="mx-auto grid w-full max-w-7xl content-start gap-3 sm:gap-4">
-			<header class="dashboard-topbar min-w-0 border-b border-border py-2">
-				<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
-					@dashboardMobileSidebarTrigger()
-					@dashboardPageHeading("Settings")
-					<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
-						<span class="truncate font-mono">{ settingsVersionLabel(data) }</span>
-					</div>
-				</div>
-				<span class="sr-only">Startup configuration, project paths, and runtime files.</span>
-			</header>
-			<section class="grid gap-5">
-				<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
-					<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
-						<div>
-							@helpHeading2("Global config", helpSettingsConfig, "settings-global-config")
-							<p class="text-sm text-muted-foreground">Live reload applies to project membership, credentials, startup, instance display, and telemetry identity. Runtime scheduling, concurrency, fair share, and server binding require a restart.</p>
-						</div>
-						<span class="rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent">{ settingsPathRule(data.Global.PathRule) }</span>
-					</div>
-					<div class="mt-5 grid gap-3">
-						@settingsPathRow("Resolved global config path", data.Global.ConfigPath)
-						@settingsValueRow("Discovery rule", settingsPathRule(data.Global.PathRule))
-					</div>
-					@settingsReloadMatrix()
-				</section>
-				<section id="settings-projects" class="scroll-mt-3 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" tabindex="-1">
-					<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
-						<div>
-							@helpHeading2("Projects", helpSettingsProjects, "settings-projects")
-							<p class="text-sm text-muted-foreground">Loaded project configuration and tracker wiring.</p>
-						</div>
-						<span class="inline-flex min-w-9 justify-center rounded-full bg-muted px-2 py-1 text-sm font-medium text-muted-foreground">{ settingsInt(len(data.Projects)) }</span>
-					</div>
-					if len(data.Projects) == 0 {
-						<p class="mt-5 rounded-md border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">No projects loaded.</p>
-					} else {
-						<div class="mt-5 grid gap-4">
-							for _, project := range data.Projects {
-								<article class="border-t border-border pt-4 first:border-t-0 first:pt-0">
-									<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-										<div class="min-w-0">
-											<h3 class="truncate text-sm font-semibold text-foreground">{ settingsText(project.ID) }</h3>
-											<p class="font-mono text-xs text-muted-foreground">{ settingsText(project.TrackerKind) }</p>
-										</div>
-										<div class="flex flex-wrap gap-2 text-xs">
-											<span class="rounded-full bg-card px-2 py-1 font-mono text-muted-foreground">weight { settingsInt(project.Weight) }</span>
-											<span class="rounded-full bg-card px-2 py-1 font-mono text-muted-foreground">priority { settingsInt(project.Priority) }</span>
-											<span class="rounded-full bg-card px-2 py-1 font-mono text-muted-foreground">paused { settingsBool(project.Paused) }</span>
-										</div>
-									</div>
-									<div class="mt-4 grid gap-3">
-										@settingsPathRow("Workflow path", project.WorkflowPath)
-										@settingsPathRow("Workdir", project.Workdir)
-										@settingsPathRow("Worktree root", project.WorktreeRoot)
-										@settingsValueRow("Tracker kind", settingsText(project.TrackerKind))
-										@settingsPathRow("Project URL", project.TrackerProject)
-										@settingsValueRow("Dependency auto-unblock", settingsText(project.DependencyAutoUnblock))
-									</div>
-								</article>
-							}
-						</div>
+				@settingsSection("settings-global", "Global") {
+					@settingsRow("Instance", data.InstanceName, false, false)
+					@settingsRow("Version", settingsVersionLabel(data), false, false)
+					@settingsRow("Resolved global config path", data.Global.ConfigPath, true, false)
+					@settingsRow("Discovery rule", settingsPathRule(data.Global.PathRule), false, true)
+				}
+				if len(data.Projects) == 0 {
+					@settingsSection("settings-projects", "Projects") {
+						@primitives.EmptyLine("No projects loaded")
 					}
-				</section>
-				<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
-					<div>
-						@helpHeading2("Runtime paths", helpSettingsRuntime, "settings-runtime-paths")
-						<p class="text-sm text-muted-foreground">Files and listener for this running server.</p>
+				}
+				for _, project := range data.Projects {
+					<div
+						if project.ID == data.Projects[0].ID {
+							id="settings-projects"
+						}
+					>
+						@settingsSection("settings-project-"+project.ID, "Project · "+settingsText(project.ID)) {
+							@settingsRow("Tracker", settingsText(project.TrackerKind), false, false)
+							@settingsRow("Project URL", project.TrackerProject, true, false)
+							@settingsRow("Workflow path", project.WorkflowPath, true, false)
+							@settingsRow("Workdir", project.Workdir, true, false)
+							@settingsRow("Worktree root", project.WorktreeRoot, true, false)
+							@settingsRow("Weight", settingsInt(project.Weight), false, false)
+							@settingsRow("Priority", settingsInt(project.Priority), false, false)
+							@settingsRow("Paused", settingsBool(project.Paused), false, false)
+							@settingsRow("Dependency auto-unblock", settingsText(project.DependencyAutoUnblock), false, true)
+						}
 					</div>
-					<div class="mt-5 grid gap-3">
-						@settingsPathRow("SQLite db path", data.Runtime.DBPath)
-						@settingsPathRow("Log file path", data.Runtime.LogPath)
-						@settingsPathRow("Server host:port", data.Runtime.ServerAddress)
-					</div>
-				</section>
-			</section>
-		</div>
+				}
+				@settingsSection("settings-runtime", "Runtime paths") {
+					@settingsRow("SQLite db path", data.Runtime.DBPath, true, false)
+					@settingsRow("Log file path", data.Runtime.LogPath, true, false)
+					@settingsRow("Server host:port", data.Runtime.ServerAddress, true, true)
+				}
+				@settingsSection("settings-reload", "Configuration reload") {
+					@settingsRow("Live reload", "project list and settings · credentials · startup · instance_name · identity", false, false)
+					@settingsRow("Restart required", "max_concurrent_agents · scheduling · fair_share · port · env · log settings", false, true)
+				}
+				<p class="flex-none font-mono text-2xs text-dim">{ settingsBuildFooter(data) }</p>
+			</div>
+		</main>
 	}
 }
 
-templ settingsReloadMatrix() {
-	<div class="mt-5 overflow-hidden rounded-md border border-border">
-		<table class="w-full text-left text-sm">
-			<thead class="bg-muted text-xs uppercase text-muted-foreground">
-				<tr>
-					<th class="px-3 py-2 font-medium">Field</th>
-					<th class="px-3 py-2 font-medium">Behavior</th>
-				</tr>
-			</thead>
-			<tbody class="divide-y divide-border">
-				@settingsReloadRow("Project list and project settings", "Live reload")
-				@settingsReloadRow("Credentials: github_token and project credentials", "Live reload")
-				@settingsReloadRow("global.startup", "Live reload")
-				@settingsReloadRow("instance_name", "Live reload")
-				@settingsReloadRow("global.identity", "Live reload; project runtimes restart in-process and /api/v1/state.instance.name updates after the next telemetry snapshot")
-				@settingsReloadRow("global.max_concurrent_agents, global.scheduling, global.fair_share", "Restart required")
-				@settingsReloadRow("port, env, log_level, log rotation", "Restart required")
-			</tbody>
-		</table>
+templ settingsSection(id string, title string) {
+	<div class="flex flex-none flex-col gap-2.5">
+		<h2 class="text-sm font-semibold text-text">{ title }</h2>
+		<section id={ id } class="flex flex-col overflow-hidden rounded-card border border-line bg-surface">
+			{ children... }
+		</section>
 	</div>
 }
 
-templ settingsReloadRow(field string, behavior string) {
-	<tr>
-		<td class="px-3 py-2 font-mono text-xs text-foreground">{ field }</td>
-		<td class="px-3 py-2 text-muted-foreground">{ behavior }</td>
-	</tr>
-}
-
-templ settingsPathRow(label string, value string) {
-	<div class="grid gap-2 border-t border-border py-3 first:border-t-0 first:pt-0 md:grid-cols-[13rem_minmax(0,1fr)_auto] md:items-center">
-		<span class="text-xs font-medium uppercase text-muted-foreground">{ label }</span>
-		<code class="min-w-0 break-all font-mono text-sm text-foreground">{ settingsText(value) }</code>
-		if hasSettingsValue(value) {
-			@settingsCopyButton(label, value)
-		}
+// settingsRow is one definition row: key (12px sec), mono value that
+// ellipsizes with the full value in its title, and a copy control that
+// only reveals on hover or keyboard focus.
+templ settingsRow(key string, value string, copyable bool, last bool) {
+	<div class={ settingsRowClass(last) }>
+		<span class="text-xs text-sec">{ key }</span>
+		<span class="min-w-0 truncate font-mono text-xs text-text tabular-nums" title={ settingsText(value) }>{ settingsText(value) }</span>
+		<span class="text-right">
+			if copyable && hasSettingsValue(value) {
+				<button
+					type="button"
+					class="text-2xs font-medium text-accent opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+					data-copy={ value }
+					data-label="Copy"
+					aria-label={ "Copy " + key }
+				>
+					<span data-copy-label>Copy</span>
+				</button>
+			}
+		</span>
 	</div>
 }
 
-templ settingsValueRow(label string, value string) {
-	<div class="grid gap-2 border-t border-border py-3 first:border-t-0 first:pt-0 md:grid-cols-[13rem_minmax(0,1fr)] md:items-center">
-		<span class="text-xs font-medium uppercase text-muted-foreground">{ label }</span>
-		<span class="min-w-0 break-all font-mono text-sm text-foreground">{ settingsText(value) }</span>
-	</div>
+templ settingsRadio(name string, value string, label string, checked bool) {
+	<label class="flex cursor-pointer items-center gap-1.5">
+		<input
+			type="radio"
+			name={ name }
+			value={ value }
+			class="accent-accent"
+			checked?={ checked }
+			data-preference={ name }
+		/>
+		{ label }
+	</label>
 }
 
-templ settingsCopyButton(label string, value string) {
-	<button
-		type="button"
-		class="inline-flex w-fit items-center gap-1 rounded-md border border-border bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-		data-label="Copy"
-		data-copy={ value }
-		title={ "Copy " + label }
-		aria-label={ "Copy " + label }
-		onclick="copySettingValue(this)"
-	>
-		<svg class="shrink-0" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-			<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-			<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-		</svg>
-		<span data-copy-label>Copy</span>
-	</button>
+// settingsCopyScript is one delegated listener outside any live region:
+// copy on click, preference radios persist via cookie and apply live.
+templ settingsCopyScript() {
+	<script>
+		(function () {
+			document.addEventListener("click", function (event) {
+				var button = event.target.closest("[data-copy]");
+				if (!button) return;
+				var value = button.getAttribute("data-copy") || "";
+				var label = button.querySelector("[data-copy-label]");
+				var done = function () {
+					if (!label) return;
+					label.textContent = "Copied!";
+					clearTimeout(button._copyTimer);
+					button._copyTimer = setTimeout(function () {
+						label.textContent = button.getAttribute("data-label") || "Copy";
+					}, 1200);
+				};
+				if (navigator.clipboard && navigator.clipboard.writeText) {
+					navigator.clipboard.writeText(value).then(done, done);
+					return;
+				}
+				done();
+			});
+			document.addEventListener("change", function (event) {
+				var radio = event.target.closest("[data-preference]");
+				if (!radio || !radio.checked) return;
+				var name = radio.getAttribute("data-preference");
+				document.cookie = name + "=" + radio.value + "; path=/; max-age=31536000; samesite=lax";
+				if (name === "theme") {
+					if (radio.value === "light") {
+						document.documentElement.setAttribute("data-theme", "light");
+					} else {
+						document.documentElement.removeAttribute("data-theme");
+					}
+				}
+				if (name === "density") {
+					if (radio.value === "cozy") {
+						document.documentElement.setAttribute("data-density", "cozy");
+					} else {
+						document.documentElement.removeAttribute("data-density");
+					}
+				}
+			});
+		})();
+	</script>
 }

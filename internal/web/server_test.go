@@ -1800,7 +1800,7 @@ func TestServerRendersInstanceNameInPagesStateAndMetadata(t *testing.T) {
 		{name: "dashboard", handler: server.Handler(), path: "/fleet", title: "buildbox · Detent"},
 		{name: "analytics", handler: server.Handler(), path: "/analytics", title: "buildbox · Analytics - Detent"},
 		{name: "reports", handler: server.Handler(), path: "/reports", title: "buildbox · Detent reports"},
-		{name: "settings", handler: server.Handler(), path: "/settings", title: "buildbox · Detent settings", wantBadge: true},
+		{name: "settings", handler: server.Handler(), path: "/settings", title: "buildbox · Detent settings"},
 		{name: "onboarding", handler: onboardingServer.Handler(), path: "/onboarding", title: "buildbox · Detent onboarding", wantBadge: true},
 	}
 
@@ -2353,7 +2353,7 @@ func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
 		{name: "dashboard", path: "/fleet", shell: "v2"},
 		{name: "project", path: "/projects/detent", shell: "v2"},
 		{name: "reports", path: "/reports", shell: "v2"},
-		{name: "settings", path: "/settings", shell: "legacy"},
+		{name: "settings", path: "/settings", shell: "v2"},
 	}
 	states := []struct {
 		name          string
@@ -2475,15 +2475,6 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 		inactiveHref []string
 	}{
 		{
-			name:         "project configuration",
-			path:         "/projects/detent/configuration",
-			activeHref:   "/projects/detent/configuration",
-			sseConnect:   `sse-connect="/events?project=detent&amp;view=configuration"`,
-			reportsHref:  "/reports?project=detent",
-			settingsHref: "/settings?project=detent",
-			inactiveHref: []string{"/", "/analytics", "/reports?project=detent", "/settings?project=detent", "/projects/detent", "/projects/detent/kanban", "/projects/detent/runs", "/projects/detent/diagnostics"},
-		},
-		{
 			name:         "project diagnostics",
 			path:         "/projects/detent/diagnostics",
 			activeHref:   "/projects/detent/diagnostics",
@@ -2491,15 +2482,6 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			reportsHref:  "/reports?project=detent",
 			settingsHref: "/settings?project=detent",
 			inactiveHref: []string{"/", "/analytics", "/reports?project=detent", "/settings?project=detent", "/projects/detent", "/projects/detent/kanban", "/projects/detent/runs", "/projects/detent/configuration"},
-		},
-		{
-			name:         "settings",
-			path:         "/settings",
-			activeHref:   "/settings",
-			sseConnect:   `sse-connect="/events?nav=settings"`,
-			reportsHref:  "/reports",
-			settingsHref: "/settings",
-			inactiveHref: []string{"/", "/analytics", "/reports"},
 		},
 	}
 
@@ -2611,14 +2593,7 @@ func TestStaticPagesPreserveProjectSidebarContext(t *testing.T) {
 		path       string
 		activeHref string
 		sseConnect string
-	}{
-		{
-			name:       "settings",
-			path:       "/settings?project=detent",
-			activeHref: "/projects/detent/configuration",
-			sseConnect: `sse-connect="/events?nav=settings&amp;project=detent"`,
-		},
-	}
+	}{}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3039,19 +3014,18 @@ func TestProjectDashboardRoutesSplitOverviewAndDetailPages(t *testing.T) {
 
 	configuration := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/configuration", http.StatusOK)
 	for _, want := range []string{
-		`sse-connect="/events?project=detent&amp;view=configuration"`,
+		`id="settings-global"`,
 		`id="settings-projects"`,
-		"Global config",
-		"Projects",
 		"Runtime paths",
-		`data-dashboard-view="configuration"`,
 	} {
 		if !strings.Contains(configuration, want) {
 			t.Fatalf("project configuration route missing %q:\n%s", want, configuration)
 		}
 	}
-	assertActiveSidebarLink(t, configuration, "/projects/detent/configuration")
-	assertInactiveSidebarLink(t, configuration, "/settings?project=detent")
+	configTab := regexp.MustCompile(`<a[^>]*href="/projects/detent/configuration"[^>]*aria-current="page"[^>]*>`).FindString(configuration)
+	if configTab == "" {
+		t.Fatalf("project configuration route missing active configuration tab:\n%s", configuration)
+	}
 	for _, forbidden := range []string{
 		`aria-label="Project Kanban"`,
 		`aria-label="Agent activity timeline"`,
@@ -4102,13 +4076,8 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Settings",
-		"Startup configuration, project paths, and runtime files.",
-		"Live reload applies to project membership, credentials, startup, instance display, and telemetry identity.",
-		"Project list and project settings",
-		"Credentials: github_token and project credentials",
-		"global.identity",
-		"Live reload; project runtimes restart in-process",
-		"global.max_concurrent_agents, global.scheduling, global.fair_share",
+		"Read-only view of the running configuration.",
+		"Live reload",
 		"Restart required",
 		`href="/"`,
 		`href="/reports"`,
@@ -4122,9 +4091,9 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 		workflowPath,
 		workdir,
 		worktreeRoot,
-		"weight 3",
-		"priority 2",
-		"paused true",
+		">3</span>",
+		">2</span>",
+		">true</span>",
 		"github",
 		projectURL,
 		"Dependency auto-unblock",
@@ -4134,6 +4103,9 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 		"127.0.0.1:4101",
 		"navigator.clipboard.writeText",
 		"Copied!",
+		"Build v1.2.3",
+		"Theme",
+		"Density",
 		`data-copy="` + configPath + `"`,
 		`data-copy="` + workflowPath + `"`,
 		`data-copy="` + workdir + `"`,

@@ -3,6 +3,7 @@ package templates
 import (
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -11,6 +12,8 @@ type SettingsData struct {
 	ApplicationName  string
 	InstanceName     string
 	Version          string
+	Build            buildinfo.Info
+	StoreName        string
 	Snapshot         telemetry.Snapshot
 	Global           SettingsGlobal
 	Projects         []SettingsProject
@@ -84,6 +87,57 @@ func settingsVersionLabel(data SettingsData) string {
 		return "dev"
 	}
 	return version
+}
+
+// settingsBuildFooter is the one place the full build string lives; every
+// other page shows at most the short version.
+func settingsBuildFooter(data SettingsData) string {
+	parts := make([]string, 0, 3)
+	version := strings.TrimSpace(data.Build.Version)
+	if version == "" {
+		version = settingsVersionLabel(data)
+	}
+	build := "Build " + version
+	if commit := strings.TrimSpace(data.Build.Commit); commit != "" {
+		if len(commit) > 7 {
+			commit = commit[:7]
+		}
+		build += " (" + commit + ")"
+	}
+	if date := strings.TrimSpace(data.Build.Date); date != "" {
+		build += " " + date
+	}
+	parts = append(parts, build)
+	if store := strings.TrimSpace(data.StoreName); store != "" {
+		parts = append(parts, "store: "+store)
+	}
+	return strings.Join(parts, " · ")
+}
+
+func settingsProjectTabsVisible(data SettingsData) bool {
+	return strings.TrimSpace(data.ActiveNav) == "configuration" && strings.TrimSpace(data.ProjectID) != ""
+}
+
+func settingsRowClass(last bool) string {
+	base := "group grid grid-cols-[220px_minmax(0,1fr)_60px] items-center gap-3.5 px-4 py-2.5"
+	if !last {
+		return base + " border-b border-line"
+	}
+	return base
+}
+
+func settingsThemeChecked(data SettingsData, theme string) bool {
+	if strings.TrimSpace(data.Theme) == "light" {
+		return theme == "light"
+	}
+	return theme == "dark"
+}
+
+func settingsDensityChecked(data SettingsData, density string) bool {
+	if strings.TrimSpace(data.Density) == "cozy" {
+		return density == "cozy"
+	}
+	return density == "compact"
 }
 
 func settingsText(value string) string {
