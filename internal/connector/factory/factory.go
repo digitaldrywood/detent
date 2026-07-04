@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -47,6 +48,7 @@ type Config struct {
 	StateMap                    map[string]string
 	PriorityMap                 map[string]*int
 	RequiredStatusChecks        []string
+	Logger                      *slog.Logger
 }
 
 func NewFromConfig(cfg Config) (connector.Connector, error) {
@@ -91,6 +93,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 			StateMap:                cfg.StateMap,
 			PriorityMap:             cfg.PriorityMap,
 			RequiredStatusChecks:    cfg.RequiredStatusChecks,
+			Logger:                  cfg.Logger,
 		})
 	case connector.BackendGitHubLocal:
 		var tokenSource githubconnector.TokenSource
@@ -133,6 +136,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 				StateMap:                cfg.StateMap,
 				PriorityMap:             cfg.PriorityMap,
 				RequiredStatusChecks:    cfg.RequiredStatusChecks,
+				Logger:                  cfg.Logger,
 			},
 			Local:          localCfg,
 			Repository:     cfg.Repository,

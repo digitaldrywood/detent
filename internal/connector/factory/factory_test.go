@@ -1,9 +1,15 @@
 package factory
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -205,5 +211,56 @@ func TestFactoryGitHubConnectorImplementsProvisioner(t *testing.T) {
 	}
 	if _, ok := c.(connector.Provisioner); !ok {
 		t.Fatalf("connector = %T, want connector.Provisioner", c)
+	}
+}
+
+func TestFactoryGitHubConnectorUsesConfiguredLogger(t *testing.T) {
+	var defaultLogs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&defaultLogs, &slog.HandlerOptions{
+		Level: slog.LevelWarn,
+	})))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/digitaldrywood/detent/issues" {
+			t.Fatalf("path = %s, want repository issues path", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("state"); got != "open" {
+			t.Fatalf("state query = %q, want open", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewFromConfig(Config{
+		Kind:                        "github",
+		Endpoint:                    server.URL + "/graphql",
+		APIKey:                      "token",
+		GitHubStatusSource:          githubconnector.GitHubStatusSourceLabel,
+		Repository:                  "digitaldrywood/detent",
+		GitHubRESTFanoutMaxRequests: 1,
+		Logger:                      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewFromConfig() error = %v", err)
+	}
+
+	driftReader, ok := c.(connector.StatusDriftReader)
+	if !ok {
+		t.Fatalf("connector = %T, want connector.StatusDriftReader", c)
+	}
+	if _, err := driftReader.FetchStatusDrift(context.Background()); err != nil {
+		t.Fatalf("FetchStatusDrift() first error = %v", err)
+	}
+	_, err = driftReader.FetchStatusDrift(context.Background())
+	if !errors.Is(err, githubconnector.ErrRESTBudgetReserved) {
+		t.Fatalf("FetchStatusDrift() error = %v, want ErrRESTBudgetReserved", err)
+	}
+	if strings.Contains(defaultLogs.String(), "github rest budget preserved") {
+		t.Fatalf("default logger received connector warning:\n%s", defaultLogs.String())
 	}
 }

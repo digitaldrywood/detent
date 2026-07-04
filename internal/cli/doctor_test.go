@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1565,6 +1566,71 @@ func TestDoctorCommandAllowWriteProbesFlagEnablesWriteReadiness(t *testing.T) {
 	}
 	if !gotReadiness.RequireLabelStatusWrite || !gotReadiness.RequireIssueComments {
 		t.Fatalf("readiness write requirements = %#v, want write probes enabled by flag", gotReadiness)
+	}
+}
+
+func TestRunDoctorSuppressesConnectorLogsFromProgress(t *testing.T) {
+	workflow := validDoctorWorkflow("/repo")
+	workflow.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflow.Tracker.APIKey = "token"
+	workflow.Tracker.ProjectSlug = "PVT_1"
+	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress"}
+	workflow.Tracker.ObservedStates = []string{"Human Review", "Blocked"}
+	workflow.Tracker.TerminalStates = []string{"Done", "Cancelled"}
+
+	configPath := filepath.Join(t.TempDir(), "global.yaml")
+	global := validDoctorGlobalWithProjects(configPath, "alpha")
+	deps := successfulDoctorDeps()
+	deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
+		return workflowconfig.Workflow{Config: workflow}, nil
+	}
+	deps.autoPromoteConnector = func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+		return &fakeDoctorAutoPromoteConnector{}, nil
+	}
+
+	var progress bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&progress, &slog.HandlerOptions{
+		Level: slog.LevelWarn,
+	})))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	deps.githubReadiness = func(_ context.Context, connectorCfg ghconnector.Config, _ ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
+		logger := connectorCfg.Logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn(
+			"github rest budget preserved",
+			"method", "GET",
+			"path", "/repos/digitaldrywood/detent/pulls?state=all",
+			"endpoint_family", "pull requests",
+		)
+		return []ghconnector.ReadinessCheck{{
+			Name:   "GitHub readiness",
+			Status: ghconnector.ReadinessOK,
+			Detail: "ready",
+		}}, nil
+	}
+
+	report := runDoctor(context.Background(), doctorConfig{
+		ConfigPath:   configPath,
+		Output:       &progress,
+		CheckTimeout: time.Second,
+		Flags: runtimeFlags{
+			Port: runtimeIntFlag{Value: 0, Set: true},
+		},
+	}, successfulDoctorOptionsWithConfig(configPath, global), deps)
+
+	assertDoctorCheck(t, report, "Project alpha GitHub readiness", doctorOK, "ready")
+	got := progress.String()
+	if strings.Contains(got, "github rest budget preserved") {
+		t.Fatalf("doctor progress contains connector log record:\n%s", got)
+	}
+	if !strings.Contains(got, "RUN    Project alpha checks") || !strings.Contains(got, "OK     Project alpha GitHub readiness") {
+		t.Fatalf("doctor progress missing expected check lines:\n%s", got)
 	}
 }
 

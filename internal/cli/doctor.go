@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -2406,6 +2407,7 @@ func defaultDoctorAutoPromoteConnector(cfg workflowconfig.Config) (doctorAutoPro
 		TerminalStates:              cfg.Tracker.TerminalStates,
 		StateMap:                    doctorTrackerStateMap(cfg.Tracker.StateMap),
 		RequiredStatusChecks:        cfg.Gate.RequiredStatusChecks,
+		Logger:                      doctorConnectorLogger(),
 	})
 }
 
@@ -2505,7 +2507,12 @@ func doctorGitHubConnectorConfig(cfg workflowconfig.Config) ghconnector.Config {
 		ObservedStates:          cfg.Tracker.ObservedStates,
 		TerminalStates:          cfg.Tracker.TerminalStates,
 		StateMap:                doctorTrackerStateMap(cfg.Tracker.StateMap),
+		Logger:                  doctorConnectorLogger(),
 	}
+}
+
+func doctorConnectorLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 func doctorGitHubReadinessConfig(
