@@ -1422,24 +1422,25 @@ func TestRunnerRunThreadResumeUsesDerivedRoleKey(t *testing.T) {
 			Config: config.Config{
 				Agent: config.Agent{ExperimentalThreadResume: true},
 				Agents: config.Agents{
-					Backends: []config.AgentBackend{
-						{ID: "codex-code", Kind: "codex", Protocol: "app-server", Command: "codex app-server"},
-						{ID: "codex-merge", Kind: "codex", Protocol: "app-server", Command: "codex app-server --profile merge"},
-					},
-					Routes: []config.AgentRoute{
-						{Name: "merge", Role: RoleMerge, Backend: "codex-merge", Model: "gpt-5-merge", Default: true},
-						{Name: "default", Backend: "codex-code", Model: "gpt-5-code", Default: true},
-					},
+					Backends: []config.AgentBackend{{
+						ID:       "codex-code",
+						Kind:     "codex",
+						Protocol: "app-server",
+						Command:  "codex app-server",
+					}},
+					Routes: []config.AgentRoute{{
+						Name:    "default",
+						Backend: "codex-code",
+						Model:   "gpt-5-code",
+						Default: true,
+					}},
 				},
 			},
 			Prompt: "work {{ issue.identifier }}",
 		},
-		Workspace: workspaceBackend,
-		AgentBackends: map[string]AgentBackend{
-			"codex-code":  &fakeCodexClient{},
-			"codex-merge": agentBackend,
-		},
-		Store: sessionStore,
+		Workspace:     workspaceBackend,
+		AgentBackends: map[string]AgentBackend{"codex-code": agentBackend},
+		Store:         sessionStore,
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
@@ -1464,6 +1465,9 @@ func TestRunnerRunThreadResumeUsesDerivedRoleKey(t *testing.T) {
 	}
 	if sessionStore.started.AgentRole != RoleMerge {
 		t.Fatalf("SessionStart.AgentRole = %q, want %q", sessionStore.started.AgentRole, RoleMerge)
+	}
+	if sessionStore.started.Model != "gpt-5-code" {
+		t.Fatalf("SessionStart.Model = %q, want fallback code model", sessionStore.started.Model)
 	}
 }
 
@@ -1542,13 +1546,14 @@ func TestRunnerRunUnroutedStageRolesUseCodeDefaultRoute(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		mode  string
-		state string
+		name     string
+		mode     string
+		state    string
+		wantRole string
 	}{
-		{name: "plan role", mode: RunModePlan, state: "Todo"},
-		{name: "rework role", mode: RunModeImplement, state: "Rework"},
-		{name: "merge role", mode: RunModeImplement, state: "Merging"},
+		{name: "plan role", mode: RunModePlan, state: "Todo", wantRole: RolePlan},
+		{name: "rework role", mode: RunModeImplement, state: "Rework", wantRole: RoleRework},
+		{name: "merge role", mode: RunModeImplement, state: "Merging", wantRole: RoleMerge},
 	}
 
 	for _, tt := range tests {
@@ -1559,6 +1564,7 @@ func TestRunnerRunUnroutedStageRolesUseCodeDefaultRoute(t *testing.T) {
 				info: workspace.Info{Path: t.TempDir(), Key: "issue-fallback", Branch: "detent/issue-fallback"},
 			}
 			backend := &fakeCodexClient{}
+			sessionStore := &fakeSessionStore{sessionID: 862}
 			runner, err := NewRunner(Dependencies{
 				Workflow: config.Workflow{
 					Config: config.Config{
@@ -1583,6 +1589,7 @@ func TestRunnerRunUnroutedStageRolesUseCodeDefaultRoute(t *testing.T) {
 				AgentBackends: map[string]AgentBackend{
 					"codex-code": backend,
 				},
+				Store: sessionStore,
 			})
 			if err != nil {
 				t.Fatalf("NewRunner() error = %v", err)
@@ -1606,6 +1613,12 @@ func TestRunnerRunUnroutedStageRolesUseCodeDefaultRoute(t *testing.T) {
 			}
 			if backend.request.Model != "gpt-5-code" {
 				t.Fatalf("Model = %q, want code default model", backend.request.Model)
+			}
+			if sessionStore.started.AgentRole != tt.wantRole {
+				t.Fatalf("SessionStart.AgentRole = %q, want %q", sessionStore.started.AgentRole, tt.wantRole)
+			}
+			if sessionStore.started.Model != "gpt-5-code" {
+				t.Fatalf("SessionStart.Model = %q, want fallback code model", sessionStore.started.Model)
 			}
 		})
 	}

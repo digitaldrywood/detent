@@ -571,8 +571,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, fmt.Errorf("build prompt: %w", err)
 	}
-	role := agentRuntime.effectiveRunRole(runRole(req.Mode, req.Issue))
-	selection, backend, backendKind, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), role)
+	role := runRole(req.Mode, req.Issue)
+	routeRole := agentRuntime.effectiveRunRole(role)
+	selection, backend, backendKind, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), routeRole)
 	if err != nil {
 		return RunResult{}, err
 	}
