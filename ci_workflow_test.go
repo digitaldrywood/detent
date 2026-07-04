@@ -241,10 +241,10 @@ func TestKanbanBrowserDragDropRunsInVisualGate(t *testing.T) {
 	}
 	visualSpec := strings.ReplaceAll(string(visualSpecRaw), "\r\n", "\n")
 	for _, want := range []string{
-		`test("direct Kanban blocked drag stays client-side"`,
-		`Move blocked by transition policy.`,
-		`expect(moveRequests).toHaveLength(0)`,
-		`#kanban-action-dialog`,
+		`test("board card opens the detail sheet"`,
+		`[data-detail-sheet]`,
+		`test("board lane picker hides and restores lanes"`,
+		`test("board applies snapshot updates without reload"`,
 	} {
 		if !strings.Contains(visualSpec, want) {
 			t.Fatalf("browser visual spec missing %q", want)

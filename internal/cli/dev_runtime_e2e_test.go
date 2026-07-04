@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -76,15 +77,10 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	waitForDashboard(t, dashboardURL+"/health", done)
 	postRuntimeRefresh(t, dashboardURL, done)
 
-	fleetBody := waitForDashboardCondition(t, dashboardURL+"/kanban", done, "fleet kanban demo board", func(body string) bool {
-		return strings.Contains(body, `aria-label="Fleet Kanban"`) &&
-			strings.Contains(body, `data-project-kanban-visibility-key="fleet"`) &&
-			strings.Contains(body, `id="kanban-feedback"`) &&
-			strings.Contains(body, `hx-get="/api/v1/kanban/move?`) &&
-			strings.Contains(body, `kanban_board=fleet`) &&
-			strings.Contains(body, `project_id=`+projectID) &&
-			strings.Contains(body, `href="/projects/`+projectID+`/kanban"`) &&
-			strings.Contains(body, `href="/projects/docs-site/kanban"`) &&
+	fleetBody := waitForDashboardCondition(t, dashboardURL+"/", done, "fleet board demo", func(body string) bool {
+		return strings.Contains(body, `id="board-lanes"`) &&
+			strings.Contains(body, `data-board-key="fleet"`) &&
+			strings.Contains(body, `href="/projects/`+projectID+`"`) &&
 			strings.Contains(body, "Kanban demo backlog intake") &&
 			strings.Contains(body, "Kanban demo todo ready card")
 	})
@@ -95,23 +91,27 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 		`data-kanban-drag-move-form>`,
 	} {
 		if strings.Contains(fleetBody, forbidden) {
-			t.Fatalf("fleet kanban demo rendered project-only affordance %q:\n%s", forbidden, fleetBody)
+			t.Fatalf("fleet board demo rendered forbidden affordance %q:\n%s", forbidden, fleetBody)
 		}
 	}
 
 	pageURL := dashboardURL + "/projects/" + projectID + "/kanban"
-	body := waitForDashboardCondition(t, pageURL, done, "kanban demo mutation controls", func(body string) bool {
+	body := waitForDashboardCondition(t, pageURL, done, "project board demo", func(body string) bool {
 		return strings.Contains(body, "Kanban demo backlog intake") &&
-			strings.Contains(body, `data-kanban-action="move"`) &&
-			strings.Contains(body, `hx-get="/api/v1/kanban/comment?`) &&
-			strings.Contains(body, `data-kanban-drop-state="Todo"`) &&
-			strings.Contains(body, `name="project_id" value="`+projectID+`"`)
+			strings.Contains(body, `data-board-key="project.`+projectID+`"`)
 	})
 	for _, want := range []string{"Backlog", "Todo", "In Progress", "Blocked", "Human Review", "Rework", "Merging", "Done", "Cancelled"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("kanban page missing lane %q:\n%s", want, body)
 		}
 	}
+
+	sheetURL := dashboardURL + "/api/v1/board/card?project=" + projectID + "&issue=9511"
+	waitForDashboardCondition(t, sheetURL, done, "board card detail sheet", func(body string) bool {
+		return strings.Contains(body, "Kanban demo backlog intake") &&
+			strings.Contains(body, `hx-get="/api/v1/kanban/move?`) &&
+			strings.Contains(body, `data-detail-sheet`)
+	})
 
 	dragDialogValues := url.Values{
 		"project_id":    {projectID},
@@ -135,22 +135,21 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 		"target_state":  {"Todo"},
 	})
 	for _, want := range []string{
-		`id="project-kanban"`,
+		`id="board-lanes"`,
 		"Moved card to Todo.",
-		`data-kanban-issue-id="kanban-demo-backlog"`,
-		`data-kanban-current-state="Todo"`,
+		`id="card-` + projectID + `-9511"`,
 	} {
 		if !strings.Contains(moveBody, want) {
 			t.Fatalf("immediate Kanban move response missing %q:\n%s", want, moveBody)
 		}
 	}
-	if got := strings.Count(moveBody, `data-kanban-issue-id="kanban-demo-backlog"`); got != 1 {
+	if got := strings.Count(moveBody, `id="card-`+projectID+`-9511"`); got != 1 {
 		t.Fatalf("immediate Kanban move response rendered moved card %d times, want 1:\n%s", got, moveBody)
 	}
 	postRuntimeRefresh(t, dashboardURL, done)
+	movedCardPattern := regexp.MustCompile(`data-board-lane="todo"[\s\S]*?id="card-` + projectID + `-9511"`)
 	waitForDashboardCondition(t, pageURL, done, "backlog card moved to todo", func(body string) bool {
-		return strings.Contains(body, `data-kanban-issue-id="kanban-demo-backlog"`) &&
-			strings.Contains(body, `data-kanban-current-state="Todo"`)
+		return movedCardPattern.MatchString(body)
 	})
 
 	postRuntimeKanbanForm(t, dashboardURL+"/api/v1/kanban/comment", done, url.Values{

@@ -31,7 +31,9 @@
   --color-line: #262b33;
   --color-text: #edf0f4;
   --color-sec: #8a93a2;
-  --color-dim: #5c6470;
+  /* dim brightened from the brief's #5C6470 to keep 11px footnotes at
+     WCAG AA on every surface (4.7:1 on elev) */
+  --color-dim: #808a97;
   /* semantics — exactly five, plus one accent. Never invent a 7th color. */
   --color-ok: #34d399;
   --color-warn: #fbbf24;
@@ -87,19 +89,22 @@
   --color-sidebar-ring: var(--color-accent);
 }
 
+/* Light theme. Several values are darkened from the brief's suggestions so
+   every text/surface and status-tint pair holds WCAG AA — ratios are
+   documented in docs/redesign-contrast.md. */
 [data-theme="light"] {
   --color-page: #f7f8fa;
   --color-surface: #ffffff;
   --color-elev: #f0f2f5;
   --color-line: #e4e7ec;
   --color-text: #1a1f27;
-  --color-sec: #667085;
-  --color-dim: #98a2b3;
-  --color-ok: #059669;
-  --color-warn: #b45309;
-  --color-err: #dc2626;
+  --color-sec: #5d6b80;
+  --color-dim: #5f6b7e;
+  --color-ok: #046c4e;
+  --color-warn: #92400e;
+  --color-err: #b42318;
   --color-info: #1d4ed8;
-  --color-accent: #0d9488;
+  --color-accent: #0f766e;
 }
 
 /* Density: one token multiplier, not per-component overrides. */

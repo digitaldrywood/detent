@@ -1593,7 +1593,11 @@ func (s *Server) writeDemoSSE(ctx context.Context, res *echo.Response, scenario 
 		data.ActiveNav = selectedNav
 	}
 	if selectedView == "" {
-		selectedView = demoSSEViewForScenario(scenario)
+		if selectedNav == sseViewHealth || selectedNav == sseViewAnalytics {
+			selectedView = selectedNav
+		} else {
+			selectedView = demoSSEViewForScenario(scenario)
+		}
 	}
 	data.Snapshot.GeneratedAt = now
 	if len(data.Snapshot.Running) > 0 && now.After(demoBaseTime) {
@@ -1614,12 +1618,18 @@ func (s *Server) writeDemoSSE(ctx context.Context, res *echo.Response, scenario 
 	case sseViewAnalytics:
 		data.ActiveNav = "analytics"
 		snapshotComponent = templates.AnalyticsSnapshotV2(data)
-	case sseViewKanban:
-		data.ActiveNav = "kanban"
-		snapshotComponent = templates.ProjectKanbanSnapshot(data)
+	case sseViewBoard, sseViewKanban:
+		data.ActiveNav = selectedView
+		snapshotComponent = templates.BoardSnapshot(data)
+	case sseViewFleet:
+		data.ActiveNav = "fleet"
+		snapshotComponent = templates.FleetSnapshotV2(data)
+	case sseViewOverview:
+		data.ActiveNav = "overview"
+		snapshotComponent = templates.ProjectOverviewSnapshotV2(data)
 	case sseViewRuns:
 		data.ActiveNav = "runs"
-		snapshotComponent = templates.ProjectRunsSnapshot(data)
+		snapshotComponent = templates.ProjectRunsSnapshotV2(data)
 	case sseViewDiagnostics:
 		data.ActiveNav = "diagnostics"
 		snapshotComponent = templates.ProjectDiagnosticsSnapshot(data)
@@ -1632,7 +1642,10 @@ func (s *Server) writeDemoSSE(ctx context.Context, res *echo.Response, scenario 
 	if err := writeSSEComponent(ctx, res.Writer, sseEventSidebar, templates.DashboardSidebarContent(templates.DashboardShellDataFromDashboard(data))); err != nil {
 		return err
 	}
-	return writeSSEComponent(ctx, res.Writer, sseEventGitHubAPI, templates.GitHubAPIHealthSidebarItem(templates.DashboardShellDataFromDashboard(data)))
+	if err := writeSSEComponent(ctx, res.Writer, sseEventGitHubAPI, templates.GitHubAPIHealthSidebarItem(templates.DashboardShellDataFromDashboard(data))); err != nil {
+		return err
+	}
+	return writeSSEComponent(ctx, res.Writer, sseEventSidebarV2, templates.AppSidebarContent(templates.DashboardShellDataFromDashboard(data)))
 }
 
 func demoSSEViewForScenario(scenario demoScenario) string {
@@ -1641,8 +1654,10 @@ func demoSSEViewForScenario(scenario demoScenario) string {
 		return sseViewHealth
 	case "analytics":
 		return sseViewAnalytics
+	case "fleet":
+		return sseViewFleet
 	case "fleet-kanban":
-		return sseViewKanban
+		return sseViewBoard
 	case "kanban":
 		return sseViewKanban
 	case "runs":

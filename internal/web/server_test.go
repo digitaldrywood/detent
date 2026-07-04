@@ -330,13 +330,10 @@ func TestDemoScenarioEventsPreserveProjectSubview(t *testing.T) {
 	if event.name != "snapshot" {
 		t.Fatalf("event name = %q, want snapshot", event.name)
 	}
-	for _, want := range []string{`id="project-kanban"`, "Project Kanban"} {
+	for _, want := range []string{`id="board-lanes"`, `data-board-key="project.dogfood"`} {
 		if !strings.Contains(event.data, want) {
 			t.Fatalf("demo Kanban SSE event missing %q:\n%s", want, event.data)
 		}
-	}
-	if strings.Contains(event.data, ">Integration</span>") {
-		t.Fatalf("demo Kanban SSE event rendered normal Integration badge:\n%s", event.data)
 	}
 	if strings.Contains(event.data, "Fleet grid") {
 		t.Fatalf("demo Kanban SSE event rendered fleet snapshot:\n%s", event.data)
@@ -362,8 +359,8 @@ func TestDemoScenarioKanbanFragments(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Moved card to Todo") {
 		t.Fatalf("move success status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	if rec.Header().Get("HX-Retarget") != "#project-kanban" {
-		t.Fatalf("move success HX-Retarget = %q, want #project-kanban", rec.Header().Get("HX-Retarget"))
+	if rec.Header().Get("HX-Retarget") != "#snapshot" {
+		t.Fatalf("move success HX-Retarget = %q, want #snapshot", rec.Header().Get("HX-Retarget"))
 	}
 	backlogLane := projectKanbanLaneHTML(t, rec.Body.String(), "backlog")
 	if strings.Contains(backlogLane, "Backlog observability fixture intake") {
@@ -834,32 +831,27 @@ func TestKanbanMoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if rec.Header().Get("HX-Retarget") != "#project-kanban" {
-		t.Fatalf("HX-Retarget = %q, want #project-kanban", rec.Header().Get("HX-Retarget"))
+	if rec.Header().Get("HX-Retarget") != "#snapshot" {
+		t.Fatalf("HX-Retarget = %q, want #snapshot", rec.Header().Get("HX-Retarget"))
 	}
-	if rec.Header().Get("HX-Reswap") != "outerHTML" {
-		t.Fatalf("HX-Reswap = %q, want outerHTML", rec.Header().Get("HX-Reswap"))
+	if rec.Header().Get("HX-Reswap") != "morph:innerHTML" {
+		t.Fatalf("HX-Reswap = %q, want morph:innerHTML", rec.Header().Get("HX-Reswap"))
 	}
 	for _, want := range []string{
-		`id="project-kanban"`,
+		`id="board-lanes"`,
 		"Moved card to Todo.",
-		`data-project-kanban-lane="backlog"`,
-		`data-project-kanban-lane="todo"`,
+		`data-board-lane="backlog"`,
+		`data-board-lane="todo"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("response missing %q:\n%s", want, rec.Body.String())
 		}
 	}
-	if got := strings.Count(rec.Body.String(), `data-kanban-issue-id="I_kw559"`); got != 1 {
+	if got := strings.Count(rec.Body.String(), "Move regression card"); got != 1 {
 		t.Fatalf("card render count = %d, want 1:\n%s", got, rec.Body.String())
 	}
-	backlogLane := projectKanbanLaneHTML(t, rec.Body.String(), "backlog")
-	if strings.Contains(backlogLane, "Move regression card") {
-		t.Fatalf("Backlog lane still contains moved card:\n%s", backlogLane)
-	}
-	todoLane := projectKanbanLaneHTML(t, rec.Body.String(), "todo")
-	if !strings.Contains(todoLane, "Move regression card") {
-		t.Fatalf("Todo lane missing moved card:\n%s", todoLane)
+	if !regexp.MustCompile(`data-board-lane="todo"[\s\S]*Move regression card`).MatchString(rec.Body.String()) {
+		t.Fatalf("Todo lane missing moved card:\n%s", rec.Body.String())
 	}
 	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_kw559", state: "Todo"}}; !equalStateUpdates(got, want) {
 		t.Fatalf("state updates = %#v, want %#v", got, want)
@@ -989,8 +981,8 @@ func TestKanbanRemoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if rec.Header().Get("HX-Retarget") != "#project-kanban" {
-		t.Fatalf("HX-Retarget = %q, want #project-kanban", rec.Header().Get("HX-Retarget"))
+	if rec.Header().Get("HX-Retarget") != "#snapshot" {
+		t.Fatalf("HX-Retarget = %q, want #snapshot", rec.Header().Get("HX-Retarget"))
 	}
 	if rec.Header().Get("HX-Reswap") != "outerHTML" {
 		t.Fatalf("HX-Reswap = %q, want outerHTML", rec.Header().Get("HX-Reswap"))
@@ -1145,29 +1137,24 @@ func TestKanbanDragMoveSuccessResponseRefreshesProjectBoardWithoutInlineFlash(t 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if rec.Header().Get("HX-Retarget") != "#project-kanban" {
-		t.Fatalf("HX-Retarget = %q, want #project-kanban", rec.Header().Get("HX-Retarget"))
+	if rec.Header().Get("HX-Retarget") != "#snapshot" {
+		t.Fatalf("HX-Retarget = %q, want #snapshot", rec.Header().Get("HX-Retarget"))
 	}
-	if rec.Header().Get("HX-Reswap") != "outerHTML" {
-		t.Fatalf("HX-Reswap = %q, want outerHTML", rec.Header().Get("HX-Reswap"))
+	if rec.Header().Get("HX-Reswap") != "morph:innerHTML" {
+		t.Fatalf("HX-Reswap = %q, want morph:innerHTML", rec.Header().Get("HX-Reswap"))
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `id="project-kanban"`) {
+	if !strings.Contains(body, `id="board-lanes"`) {
 		t.Fatalf("response missing project board:\n%s", body)
 	}
-	if got := strings.Count(body, `data-kanban-issue-id="I_kw579"`); got != 1 {
+	if got := strings.Count(body, "Drag feedback card"); got != 1 {
 		t.Fatalf("card render count = %d, want 1:\n%s", got, body)
 	}
-	if feedback := kanbanFeedbackTextFromHTML(t, body); strings.Contains(feedback, "Moved card to Todo.") {
-		t.Fatalf("drag success feedback = %q, want no inline success flash:\n%s", feedback, body)
+	if strings.Contains(body, "Moved card to Todo.") {
+		t.Fatalf("drag success rendered inline success flash:\n%s", body)
 	}
-	backlogLane := projectKanbanLaneHTML(t, body, "backlog")
-	if strings.Contains(backlogLane, "Drag feedback card") {
-		t.Fatalf("Backlog lane still contains moved card:\n%s", backlogLane)
-	}
-	todoLane := projectKanbanLaneHTML(t, body, "todo")
-	if !strings.Contains(todoLane, "Drag feedback card") {
-		t.Fatalf("Todo lane missing moved card:\n%s", todoLane)
+	if !regexp.MustCompile(`data-board-lane="todo"[\s\S]*Drag feedback card`).MatchString(body) {
+		t.Fatalf("Todo lane missing moved card:\n%s", body)
 	}
 	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_kw579", state: "Todo"}}; !equalStateUpdates(got, want) {
 		t.Fatalf("state updates = %#v, want %#v", got, want)
@@ -7593,16 +7580,6 @@ func projectKanbanLaneHTML(t *testing.T, body string, laneID string) string {
 		return rest[:len(marker)+next]
 	}
 	return rest
-}
-
-func kanbanFeedbackTextFromHTML(t *testing.T, body string) string {
-	t.Helper()
-
-	matches := regexp.MustCompile(`<div id="kanban-feedback"[^>]*>([^<]*)</div>`).FindStringSubmatch(body)
-	if len(matches) != 2 {
-		t.Fatalf("missing kanban feedback in:\n%s", body)
-	}
-	return matches[1]
 }
 
 func performForm(t *testing.T, handler http.Handler, method string, path string, form url.Values) *httptest.ResponseRecorder {

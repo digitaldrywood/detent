@@ -111,8 +111,7 @@ templ boardCardView2(card boardCardView) {
 			<span class="truncate">{ card.Project }</span>
 			<span class="flex-1"></span>
 			if card.Done {
-				<span class="text-ok" aria-hidden="true">✓</span>
-				<span class="sr-only">done</span>
+				<span class="text-ok" role="img" aria-label="done">✓</span>
 			} else if card.MetaRight != "" {
 				<span class="flex-none whitespace-nowrap tabular-nums">{ card.MetaRight }</span>
 			}
