@@ -1,0 +1,68 @@
+package templates
+
+import "github.com/digitaldrywood/detent/internal/web/ui/primitives"
+
+// HealthPageV2 is quiet when healthy: one verdict line, one details table,
+// one footnote. The verdict is the only element allowed to get loud, and
+// only when something is actually degraded.
+templ HealthPageV2(data DashboardData) {
+	@AppShell(HealthShellDataFromDashboardV2(data), nil) {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div
+				id="snapshot"
+				class="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-hidden px-5 py-5"
+				sse-swap="snapshot"
+				hx-swap="morph:innerHTML"
+			>
+				@HealthSnapshotV2(data)
+			</div>
+		</main>
+	}
+}
+
+templ HealthSnapshotV2(data DashboardData) {
+	{{ view := healthViewFromDashboard(data) }}
+	<p id="health-verdict" class="flex flex-none items-center gap-2 text-sm">
+		<span class={ healthVerdictGlyphClass(view.Kind) } aria-hidden="true">{ view.Kind.Glyph() }</span>
+		<span class="font-medium text-text">{ view.Verdict }</span>
+		<span class="text-sec">
+			{ view.Detail }
+			{ " " }
+			Checked <span class="font-mono tabular-nums">{ view.Checked }</span>.
+		</span>
+	</p>
+	<section id="health-details" class="flex flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
+		<div class="grid grid-cols-[180px_140px_minmax(0,1fr)_200px_90px] gap-3.5 border-b border-line px-4 py-2">
+			<span class="text-2xs font-semibold uppercase text-dim">Component</span>
+			<span class="text-2xs font-semibold uppercase text-dim">Status</span>
+			<span class="text-2xs font-semibold uppercase text-dim">Detail</span>
+			<span class="text-2xs font-semibold uppercase text-dim">Quota</span>
+			<span class="text-2xs font-semibold uppercase text-dim text-right">Resets</span>
+		</div>
+		if len(view.Rows) == 0 {
+			@primitives.EmptyLine("No health signals yet")
+		}
+		for i, row := range view.Rows {
+			<div id={ row.ID } class={ healthRowClass(i == len(view.Rows)-1) }>
+				<span class="text-sm font-medium text-text">{ row.Component }</span>
+				<span class={ "flex items-center gap-1.5 text-xs " + boardExtraTextClass(row.Kind) }>
+					<span class="text-2xs" aria-hidden="true">{ row.Kind.Glyph() }</span>
+					{ row.Status }
+				</span>
+				<span class="truncate text-xs text-sec" title={ row.Detail }>{ row.Detail }</span>
+				if row.Quota != "" {
+					<span class="flex items-center gap-2.5">
+						<span class="whitespace-nowrap font-mono text-xs text-sec tabular-nums">{ row.Quota }</span>
+						<span class="h-1 min-w-0 flex-1 overflow-hidden rounded-xs bg-line">
+							<span class={ "block " + healthQuotaBarClass(row.QuotaWarn) } style={ fleetProgressStyle(row.QuotaPct) }></span>
+						</span>
+					</span>
+				} else {
+					<span class="text-xs text-dim">—</span>
+				}
+				<span class="text-right font-mono text-xs text-sec tabular-nums">{ row.Resets }</span>
+			</div>
+		}
+	</section>
+	<p class="flex-none text-2xs text-dim">{ view.Footnote }</p>
+}

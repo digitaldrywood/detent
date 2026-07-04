@@ -296,7 +296,7 @@ func (s *Server) healthDashboard(c echo.Context) error {
 	ctx := c.Request().Context()
 	data := s.healthDashboardData(ctx, s.latestSnapshot(ctx))
 	applyDashboardPreferences(c.Request(), &data)
-	return render(c, templates.HealthPage(data))
+	return render(c, templates.HealthPageV2(data))
 }
 
 func (s *Server) analyticsDashboard(c echo.Context) error {

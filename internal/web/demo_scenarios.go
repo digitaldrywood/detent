@@ -288,7 +288,7 @@ func (s *Server) demoHealthDashboard(c echo.Context, scenario demoScenario) erro
 	data.ActiveNav = "health"
 	data.Title = instancePageTitle(s.instanceName(), "Health - Detent")
 	applyDashboardPreferences(c.Request(), &data)
-	return render(c, templates.HealthPage(data))
+	return render(c, templates.HealthPageV2(data))
 }
 
 func (s *Server) demoAnalyticsDashboard(c echo.Context, scenario demoScenario) error {
@@ -1610,7 +1610,7 @@ func (s *Server) writeDemoSSE(ctx context.Context, res *echo.Response, scenario 
 	switch selectedView {
 	case sseViewHealth:
 		data.ActiveNav = "health"
-		snapshotComponent = templates.HealthSnapshot(data)
+		snapshotComponent = templates.HealthSnapshotV2(data)
 	case sseViewAnalytics:
 		data.ActiveNav = "analytics"
 		snapshotComponent = templates.AnalyticsSnapshot(data)

@@ -2493,15 +2493,6 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			inactiveHref: []string{"/", "/analytics", "/settings"},
 		},
 		{
-			name:         "health",
-			path:         "/health/ui",
-			activeHref:   "/health/ui",
-			sseConnect:   `sse-connect="/events?nav=health"`,
-			reportsHref:  "/reports",
-			settingsHref: "/settings",
-			inactiveHref: []string{"/", "/analytics", "/reports", "/settings"},
-		},
-		{
 			name:         "project configuration",
 			path:         "/projects/detent/configuration",
 			activeHref:   "/projects/detent/configuration",
@@ -4654,13 +4645,12 @@ func TestServerEventsStreamsHealthSnapshotForHealthNav(t *testing.T) {
 		t.Fatalf("event name = %q, want snapshot", snapshotEvent.name)
 	}
 	for _, want := range []string{
-		`id="health-dashboard"`,
-		`aria-label="GitHub API health details"`,
-		"Backoff state",
-		"REST primary",
-		"Affected endpoints",
-		"pull requests",
-		"retry 14:35 UTC",
+		`id="health-verdict"`,
+		`id="health-details"`,
+		`id="health-github-rest"`,
+		`id="health-github-graphql"`,
+		"122 / 5,000",
+		"120 / 5,000",
 	} {
 		if !strings.Contains(snapshotEvent.data, want) {
 			t.Fatalf("health snapshot event missing %q:\n%s", want, snapshotEvent.data)
