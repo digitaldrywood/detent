@@ -268,18 +268,59 @@ func TestReadinessAssigneeReportsMissingAccess(t *testing.T) {
 	}
 }
 
-func TestReadinessIssueCloseTreatsOpenHTTP200AsPermissionProof(t *testing.T) {
+func TestReadinessWriteProbeTargetWarnsWhenClosed(t *testing.T) {
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{{
-		method: http.MethodPatch,
+		method: http.MethodGet,
 		path:   "/repos/digitaldrywood/detent/issues/1",
-		status: http.StatusOK,
-		headers: map[string]string{
-			"X-Accepted-GitHub-Permissions": "issues=write",
-		},
-		body: `{"node_id":"I_kw1","number":1,"title":"` + strings.Repeat("x", maxErrorBodyBytes) + `","state":"open"}`,
+		body:   `{"node_id":"I_kw1","number":1,"title":"Scratch","state":"closed","html_url":"https://github.com/digitaldrywood/detent/issues/1"}`,
 	}})
+	c := newGitHubTestConnector(t, server, Config{})
+	checker := githubReadinessChecker{connector: c}
+
+	probe, hasProbe, check := checker.resolveWriteProbe(context.Background(), ReadinessConfig{
+		WriteProbeIssue:   "digitaldrywood/detent#1",
+		RequireIssueClose: true,
+	})
+	if !hasProbe {
+		t.Fatal("hasProbe = false, want true")
+	}
+	if probe.State != "closed" {
+		t.Fatalf("probe.State = %q, want closed", probe.State)
+	}
+	if check == nil {
+		t.Fatal("check = nil, want warning")
+	}
+	if check.Status != ReadinessWarn {
+		t.Fatalf("Status = %s, want %s: %#v", check.Status, ReadinessWarn, *check)
+	}
+	for _, want := range []string{"state closed", "dedicated open scratch issue"} {
+		if !strings.Contains(check.Detail+check.Hint, want) {
+			t.Fatalf("check = %#v, want containing %q", *check, want)
+		}
+	}
+}
+
+func TestReadinessIssueCloseTreatsOpenHTTP200AsPermissionProof(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/1",
+			body:   `{"node_id":"I_kw1","number":1,"title":"Scratch","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1"}`,
+		},
+		{
+			method: http.MethodPatch,
+			path:   "/repos/digitaldrywood/detent/issues/1",
+			status: http.StatusOK,
+			headers: map[string]string{
+				"X-Accepted-GitHub-Permissions": "issues=write",
+			},
+			body: `{"node_id":"I_kw1","number":1,"title":"` + strings.Repeat("x", maxErrorBodyBytes) + `","state":"open"}`,
+		},
+	})
 	c := newGitHubTestConnector(t, server, Config{})
 	checker := githubReadinessChecker{connector: c}
 
@@ -291,6 +332,78 @@ func TestReadinessIssueCloseTreatsOpenHTTP200AsPermissionProof(t *testing.T) {
 		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessOK, got)
 	}
 	for _, want := range []string{"HTTP 200", "issues=write", "remained open"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+}
+
+func TestReadinessIssueCloseTreatsClosedHTTP200AsUnchangedPermissionProof(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/1",
+			body:   `{"node_id":"I_kw1","number":1,"title":"Scratch","state":"closed","html_url":"https://github.com/digitaldrywood/detent/issues/1"}`,
+		},
+		{
+			method: http.MethodPatch,
+			path:   "/repos/digitaldrywood/detent/issues/1",
+			status: http.StatusOK,
+			headers: map[string]string{
+				"X-Accepted-GitHub-Permissions": "issues=write",
+			},
+			body: `{"node_id":"I_kw1","number":1,"state":"closed"}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.issueCloseWriteCheck(context.Background(), readinessProbeIssue{
+		ID:  "I_kw1",
+		Ref: issueRef{Owner: "digitaldrywood", Name: "detent", Number: 1},
+	}, true)
+	if got.Status != ReadinessOK {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessOK, got)
+	}
+	for _, want := range []string{"HTTP 200", "issues=write", "remained closed"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+}
+
+func TestReadinessIssueCloseWarnsWhenProbeChangesOpenToClosed(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/1",
+			body:   `{"node_id":"I_kw1","number":1,"title":"Scratch","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1"}`,
+		},
+		{
+			method: http.MethodPatch,
+			path:   "/repos/digitaldrywood/detent/issues/1",
+			status: http.StatusOK,
+			headers: map[string]string{
+				"X-Accepted-GitHub-Permissions": "issues=write",
+			},
+			body: `{"node_id":"I_kw1","number":1,"state":"closed"}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.issueCloseWriteCheck(context.Background(), readinessProbeIssue{
+		ID:  "I_kw1",
+		Ref: issueRef{Owner: "digitaldrywood", Name: "detent", Number: 1},
+	}, true)
+	if got.Status != ReadinessWarn {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessWarn, got)
+	}
+	for _, want := range []string{"HTTP 200", "issues=write", "changed from open to closed"} {
 		if !strings.Contains(got.Detail, want) {
 			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
 		}
