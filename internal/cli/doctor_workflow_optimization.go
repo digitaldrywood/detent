@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/digitaldrywood/detent/internal/budget"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
@@ -312,7 +313,11 @@ func doctorWorkflowOptimizationMetricsForProject(
 	projectID string,
 	cfg workflowconfig.Config,
 ) (doctorWorkflowOptimizationMetrics, error) {
-	sessions, err := doctorWorkflowSessionTelemetry(ctx, db, projectID)
+	pricing, err := budget.PricingForConfig(budget.Config{PricingPath: cfg.Budget.PricingPath})
+	if err != nil {
+		return doctorWorkflowOptimizationMetrics{}, fmt.Errorf("load budget pricing: %w", err)
+	}
+	sessions, err := doctorWorkflowSessionTelemetry(ctx, db, projectID, pricing)
 	if err != nil {
 		return doctorWorkflowOptimizationMetrics{}, err
 	}
@@ -373,7 +378,7 @@ func doctorWorkflowOptimizationMetricsForProject(
 	return metrics, nil
 }
 
-func doctorWorkflowSessionTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string) (doctorWorkflowSessionMetrics, error) {
+func doctorWorkflowSessionTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string, pricing budget.PricingTable) (doctorWorkflowSessionMetrics, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT
   COALESCE(s.total_tokens, 0),
@@ -429,7 +434,7 @@ ORDER BY s.completed_at DESC, s.id DESC`, projectID, projectID)
 		if totalTokens > 0 {
 			metrics.totalTokensBySession = append(metrics.totalTokensBySession, totalTokens)
 		}
-		if billableTokens := doctorWorkflowBillableTokens(inputTokens, cachedInputTokens, outputTokens, totalTokens); billableTokens > 0 {
+		if billableTokens := doctorWorkflowBillableTokens(inputTokens, cachedInputTokens, outputTokens, totalTokens, model, pricing); billableTokens > 0 {
 			metrics.billableTokensBySession = append(metrics.billableTokensBySession, billableTokens)
 		}
 		metrics.issueSessionCounts[issueKey]++
@@ -971,12 +976,17 @@ func doctorWorkflowUsageFailed(outcome string) bool {
 	}
 }
 
-func doctorWorkflowBillableTokens(inputTokens int64, cachedInputTokens int64, outputTokens int64, totalTokens int64) int64 {
+func doctorWorkflowBillableTokens(inputTokens int64, cachedInputTokens int64, outputTokens int64, totalTokens int64, model string, pricing budget.PricingTable) int64 {
 	inputTokens = doctorNonNegativeInt64(inputTokens)
 	cachedInputTokens = min(doctorNonNegativeInt64(cachedInputTokens), inputTokens)
 	outputTokens = doctorNonNegativeInt64(outputTokens)
 	if inputTokens == 0 && cachedInputTokens == 0 && outputTokens == 0 {
 		return doctorNonNegativeInt64(totalTokens)
+	}
+	observedCost, observedOK := budget.UsageCostUSD(pricing, model, inputTokens, cachedInputTokens, outputTokens)
+	estimateCost, estimateOK := budget.UsageCostUSD(pricing, model, doctorWorkflowBudgetEstimateInput, 0, doctorWorkflowBudgetEstimateOutput)
+	if observedOK && estimateOK && estimateCost > 0 {
+		return int64(math.Round((observedCost / estimateCost) * float64(doctorWorkflowBudgetEstimateBillable)))
 	}
 	return inputTokens - cachedInputTokens + outputTokens
 }

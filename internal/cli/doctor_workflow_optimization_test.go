@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/budget"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -242,6 +243,26 @@ func TestDoctorWorkflowOptimizationBudgetDriftFindingIsAdvisory(t *testing.T) {
 	}
 }
 
+func TestDoctorWorkflowBillableTokensWeightsCachedInputCost(t *testing.T) {
+	t.Parallel()
+
+	pricing := budget.PricingTable{
+		"gpt-test": {
+			USDPerInputToken:       0.01,
+			USDPerCachedInputToken: 0.001,
+			USDPerOutputToken:      0.02,
+		},
+	}
+
+	got := doctorWorkflowBillableTokens(1_000_000, 900_000, 20_000, 1_020_000, "gpt-test", pricing)
+	if got != 205789 {
+		t.Fatalf("doctorWorkflowBillableTokens() = %d, want 205789", got)
+	}
+	if got <= doctorWorkflowBudgetEstimateBillable {
+		t.Fatalf("doctorWorkflowBillableTokens() = %d, want over default budget estimate", got)
+	}
+}
+
 func TestDoctorSQLiteReadOnlyDSNFormatsWindowsDrivePath(t *testing.T) {
 	t.Parallel()
 
@@ -456,7 +477,7 @@ func TestDoctorWorkflowSessionTelemetryBoundsRecentEmptyModelsByLatestSessionWin
 		}
 	})
 
-	metrics, err := doctorWorkflowSessionTelemetry(ctx, db, "detent")
+	metrics, err := doctorWorkflowSessionTelemetry(ctx, db, "detent", budget.DefaultPricingTable())
 	if err != nil {
 		t.Fatalf("doctorWorkflowSessionTelemetry() error = %v", err)
 	}
