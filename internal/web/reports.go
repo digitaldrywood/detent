@@ -31,7 +31,7 @@ func (s *Server) reports(c echo.Context) error {
 	}
 	applyReportsPreferences(c.Request(), &data)
 
-	return render(c, templates.Reports(data))
+	return render(c, templates.ReportsPageV2(data))
 }
 
 func reportsDateRange(c echo.Context) (time.Time, time.Time, *apiErrorResponse, int) {

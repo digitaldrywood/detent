@@ -34,7 +34,7 @@ func fleetTestData() DashboardData {
 				{RuntimeSeconds: 400},
 				{RuntimeSeconds: 600},
 			},
-			Budget: telemetry.Budget{CurrentSpendUSD: 45.5, PerDayMaxUSD: &cap},
+			Budget: telemetry.Budget{Enabled: true, CurrentSpendUSD: 45.5, PerDayMaxUSD: &cap},
 			RateLimits: &telemetry.RateLimits{
 				GitHubREST: &telemetry.RateLimitBucket{Remaining: 400, Limit: 5000},
 			},

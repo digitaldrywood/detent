@@ -339,7 +339,7 @@ func (s *Server) demoReports(c echo.Context, scenario demoScenario) error {
 	if scenario.Variant == "reports-empty" {
 		data := s.demoEmptyReportsData(c.Request().Context(), scenario)
 		applyReportsPreferences(c.Request(), &data)
-		return render(c, templates.Reports(data))
+		return render(c, templates.ReportsPageV2(data))
 	}
 	projectID := ""
 	if scenario.Variant == "filtered-project" {
@@ -353,7 +353,7 @@ func (s *Server) demoReports(c echo.Context, scenario demoScenario) error {
 	data.Projects = demoProjectsForVariant(scenario.Variant)
 	data.Snapshot = demoSnapshotForScenario(scenario)
 	applyReportsPreferences(c.Request(), &data)
-	return render(c, templates.Reports(data))
+	return render(c, templates.ReportsPageV2(data))
 }
 
 func (s *Server) demoSettings(c echo.Context, scenario demoScenario, selectedProjectID string) error {

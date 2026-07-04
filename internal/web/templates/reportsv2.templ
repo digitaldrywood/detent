@@ -1,0 +1,126 @@
+package templates
+
+import "github.com/digitaldrywood/detent/internal/web/ui/primitives"
+
+// ReportsPageV2 is where history lives: KPI figures (never wrapping),
+// server-rendered SVG charts, top-consumer tables, and the budget and
+// cycle-time trends. The Board and Fleet are for now; this page is for
+// trends.
+templ ReportsPageV2(data ReportsData) {
+	@AppShell(ReportsShellDataFromData(data), nil) {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div
+				id="snapshot"
+				class="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-y-auto overflow-x-hidden px-5 py-5"
+			>
+				@ReportsSnapshotV2(data)
+			</div>
+		</main>
+	}
+}
+
+templ ReportsSnapshotV2(data ReportsData) {
+	{{ view := reportsViewFromData(data) }}
+	if !reportsHasUsage(data) {
+		<p id="reports-empty" class="flex-none text-xs text-sec">No usage events recorded yet — charts populate after the first completed session.</p>
+	}
+	<div id="reports-kpis" class="flex flex-none flex-wrap gap-x-14 gap-y-4">
+		for _, kpi := range view.KPIs {
+			<div id={ kpi.ID } class="flex flex-col gap-1">
+				<span
+					class="whitespace-nowrap text-xl font-semibold text-text tabular-nums"
+					if kpi.Full != "" {
+						title={ kpi.Full }
+					}
+				>{ kpi.Value }</span>
+				<span class="text-xs text-sec">{ kpi.Label }</span>
+			</div>
+		}
+	</div>
+	<div class="grid flex-none grid-cols-2 gap-3">
+		@primitives.Panel(primitives.PanelProps{ID: "reports-spend", Title: "Spend · by day"}) {
+			if view.Spend.Annotation != "" {
+				<p class="px-4 pt-2.5 text-2xs text-dim">{ view.Spend.Annotation }</p>
+			}
+			<div class="p-4">
+				if view.HasSeries && view.Spend.HasSpend {
+					@MiniBarChart(view.Spend.Chart)
+				} else {
+					@primitives.EmptyLine("No spend recorded in this window")
+				}
+			</div>
+		}
+		@primitives.Panel(primitives.PanelProps{ID: "reports-tokens", Title: "Tokens · cumulative", Count: view.TokensTotal}) {
+			<div class="p-4">
+				if view.HasSeries {
+					@SparklineChart(view.TokenChart)
+				} else {
+					@primitives.EmptyLine("No token trend yet")
+				}
+			</div>
+		}
+	</div>
+	<div class="grid flex-none grid-cols-2 gap-3">
+		@reportsTopTable("reports-top-issues", "Top issues by tokens", view.TopIssues)
+		@reportsTopTable("reports-top-prs", "Top PRs by tokens", view.TopPRs)
+	</div>
+	<div class="grid flex-none grid-cols-2 gap-3">
+		@primitives.Panel(primitives.PanelProps{ID: "reports-budget", Title: "Daily budget"}) {
+			if view.Budget.State == "ok" {
+				<div class="flex flex-col gap-2.5 p-4">
+					<div class="flex items-baseline justify-between gap-2">
+						<span class="text-xs text-sec">Spend today</span>
+						<span class="whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums">{ view.Budget.Value }</span>
+					</div>
+					if view.Budget.Percent > 0 {
+						<div class="h-1 overflow-hidden rounded-xs bg-line">
+							<div class={ fleetMeterClass(view.Budget.Warn) } style={ fleetProgressStyle(view.Budget.Percent) }></div>
+						</div>
+					}
+					if view.Budget.HasDays {
+						@MiniBarChart(view.Budget.Chart)
+					}
+				</div>
+			} else {
+				@primitives.EmptyLine(view.Budget.Detail)
+			}
+		}
+		@primitives.Panel(primitives.PanelProps{ID: "reports-cycle-time", Title: "Cycle time", Count: view.CycleTime.Completed}) {
+			if view.CycleTime.Available {
+				<div class="flex flex-col gap-2.5 p-4">
+					<div class="flex items-baseline justify-between gap-2">
+						<span class="text-xs text-sec">Average issue cycle</span>
+						<span class="whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums">{ view.CycleTime.Average }</span>
+					</div>
+					if len(view.CycleTime.Chart.Bars) > 0 {
+						@MiniBarChart(view.CycleTime.Chart)
+					}
+				</div>
+			} else {
+				@primitives.EmptyLine("No completed issues in the current window")
+			}
+		}
+	</div>
+}
+
+templ reportsTopTable(id string, title string, rows []reportsTopRow) {
+	@primitives.Panel(primitives.PanelProps{ID: id, Title: title}) {
+		<div class="grid grid-cols-[90px_minmax(0,1fr)_110px_90px] gap-3.5 border-b border-line px-4 py-2">
+			<span class="text-2xs font-semibold uppercase text-dim">ID</span>
+			<span class="text-2xs font-semibold uppercase text-dim">Title</span>
+			<span class="text-2xs font-semibold uppercase text-dim text-right">Tokens</span>
+			<span class="text-2xs font-semibold uppercase text-dim text-right">Cost</span>
+		</div>
+		if len(rows) == 0 {
+			@primitives.EmptyLine("No usage buckets yet")
+		}
+		for i, row := range rows {
+			<div id={ row.ID } class={ reportsTopRowClass(i == len(rows)-1) }>
+				<span class="truncate font-mono text-xs font-medium text-text tabular-nums">{ row.Ref }</span>
+				<span class="truncate text-sm text-text">{ row.Title }</span>
+				<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Tokens }</span>
+				<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Cost }</span>
+			</div>
+		}
+	}
+}

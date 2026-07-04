@@ -160,7 +160,7 @@ func TestServerRoutes(t *testing.T) {
 			name:        "reports",
 			path:        "/reports",
 			wantStatus:  http.StatusOK,
-			wantContent: "Spend trend",
+			wantContent: `id="reports-kpis"`,
 		},
 		{
 			name:        "health",
@@ -1799,7 +1799,7 @@ func TestServerRendersInstanceNameInPagesStateAndMetadata(t *testing.T) {
 	}{
 		{name: "dashboard", handler: server.Handler(), path: "/fleet", title: "buildbox · Detent"},
 		{name: "analytics", handler: server.Handler(), path: "/analytics", title: "buildbox · Analytics - Detent"},
-		{name: "reports", handler: server.Handler(), path: "/reports", title: "buildbox · Detent reports", wantBadge: true},
+		{name: "reports", handler: server.Handler(), path: "/reports", title: "buildbox · Detent reports"},
 		{name: "settings", handler: server.Handler(), path: "/settings", title: "buildbox · Detent settings", wantBadge: true},
 		{name: "onboarding", handler: onboardingServer.Handler(), path: "/onboarding", title: "buildbox · Detent onboarding", wantBadge: true},
 	}
@@ -2352,7 +2352,7 @@ func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
 		{name: "board", path: "/", shell: "v2"},
 		{name: "dashboard", path: "/fleet", shell: "v2"},
 		{name: "project", path: "/projects/detent", shell: "v2"},
-		{name: "reports", path: "/reports", shell: "legacy"},
+		{name: "reports", path: "/reports", shell: "v2"},
 		{name: "settings", path: "/settings", shell: "legacy"},
 	}
 	states := []struct {
@@ -2474,15 +2474,6 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 		settingsHref string
 		inactiveHref []string
 	}{
-		{
-			name:         "reports",
-			path:         "/reports",
-			activeHref:   "/reports",
-			sseConnect:   `sse-connect="/events?nav=reports"`,
-			reportsHref:  "/reports",
-			settingsHref: "/settings",
-			inactiveHref: []string{"/", "/analytics", "/settings"},
-		},
 		{
 			name:         "project configuration",
 			path:         "/projects/detent/configuration",
@@ -2621,12 +2612,6 @@ func TestStaticPagesPreserveProjectSidebarContext(t *testing.T) {
 		activeHref string
 		sseConnect string
 	}{
-		{
-			name:       "reports",
-			path:       "/reports?project=detent",
-			activeHref: "/reports?project=detent",
-			sseConnect: `sse-connect="/events?nav=reports&amp;project=detent"`,
-		},
 		{
 			name:       "settings",
 			path:       "/settings?project=detent",
@@ -3920,7 +3905,6 @@ func TestDashboardReadsLatestSnapshotWithoutSubscribing(t *testing.T) {
 
 func TestDashboardEnrichesCycleTimeFromStore(t *testing.T) {
 	t.Parallel()
-	t.Skip("retarget at /reports with redesign issue 04: budget and cycle-time trends move to Reports")
 
 	ctx := context.Background()
 	usageStore := openWebTestStore(t)
@@ -3955,7 +3939,7 @@ func TestDashboardEnrichesCycleTimeFromStore(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/analytics", nil)
+	req := httptest.NewRequest(http.MethodGet, "/reports", nil)
 	server.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -3968,7 +3952,7 @@ func TestDashboardEnrichesCycleTimeFromStore(t *testing.T) {
 		"<title>1-4h: 1 issues</title>",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
-			t.Fatalf("analytics page missing %q:\n%s", want, rec.Body.String())
+			t.Fatalf("reports page missing %q:\n%s", want, rec.Body.String())
 		}
 	}
 }
@@ -5696,7 +5680,6 @@ func TestAPIRefreshHTMXRendersRefusalFragment(t *testing.T) {
 
 func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {
 	t.Parallel()
-	t.Skip("retarget at /reports with redesign issue 04: budget and cycle-time trends move to Reports")
 
 	ctx := context.Background()
 	generatedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -5774,20 +5757,20 @@ func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/analytics", nil)
+	req := httptest.NewRequest(http.MethodGet, "/reports", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("analytics status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("reports status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 	for _, want := range []string{
-		"Cost burn-down",
-		"$3.50",
-		"$100.00",
-		"$7.00",
-		"Projected period end: $7.00",
+		`id="reports-budget"`,
+		"Daily budget",
+		"$3.50 / $100.00",
+		"2026-05-31: 1.25 USD",
+		"2026-06-01: 3.5 USD",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
-			t.Fatalf("analytics page missing %q:\n%s", want, rec.Body.String())
+			t.Fatalf("reports page missing %q:\n%s", want, rec.Body.String())
 		}
 	}
 }
@@ -5941,7 +5924,6 @@ func TestServerPreservesSnapshotBudgetWhenSpendQueryFails(t *testing.T) {
 
 func TestServerDistinguishesNoBudgetSpendFromSpendQueryFailure(t *testing.T) {
 	t.Parallel()
-	t.Skip("retarget at /reports with redesign issue 04: budget and cycle-time trends move to Reports")
 
 	generatedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	capUSD := 100.0
@@ -6012,18 +5994,18 @@ func TestServerDistinguishesNoBudgetSpendFromSpendQueryFailure(t *testing.T) {
 			}
 
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, "/analytics", nil)
+			req := httptest.NewRequest(http.MethodGet, "/fleet", nil)
 			server.Handler().ServeHTTP(rec, req)
 			if rec.Code != http.StatusOK {
-				t.Fatalf("analytics status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+				t.Fatalf("fleet status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 			}
 			html := rec.Body.String()
 			if !strings.Contains(html, tt.wantHTML) {
-				t.Fatalf("analytics page missing %q:\n%s", tt.wantHTML, html)
+				t.Fatalf("fleet page missing %q:\n%s", tt.wantHTML, html)
 			}
 			for _, forbidden := range tt.forbiddenHTML {
 				if strings.Contains(html, forbidden) {
-					t.Fatalf("analytics page rendered %q:\n%s", forbidden, html)
+					t.Fatalf("fleet page rendered %q:\n%s", forbidden, html)
 				}
 			}
 		})
@@ -6032,7 +6014,6 @@ func TestServerDistinguishesNoBudgetSpendFromSpendQueryFailure(t *testing.T) {
 
 func TestDashboardRendersDisabledBudgetAsSingleNote(t *testing.T) {
 	t.Parallel()
-	t.Skip("retarget at /reports with redesign issue 04: budget and cycle-time trends move to Reports")
 
 	deps := testDeps(t)
 	if err := deps.Hub.Publish(telemetry.Snapshot{
@@ -6049,25 +6030,23 @@ func TestDashboardRendersDisabledBudgetAsSingleNote(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/analytics", nil)
+	req := httptest.NewRequest(http.MethodGet, "/fleet", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("analytics status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("fleet status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 	html := rec.Body.String()
-	if !strings.Contains(html, "Budget disabled - enable a daily cap in configuration.") {
-		t.Fatalf("analytics page missing compact disabled budget note:\n%s", html)
+	if !strings.Contains(html, "Budget disabled — enable a daily cap in configuration.") {
+		t.Fatalf("fleet page missing compact disabled budget note:\n%s", html)
 	}
 	for _, forbidden := range []string{
-		"Spend today",
 		"Budget history",
 		"No budget history yet.",
 		"Projected",
-		"Daily cap",
 		"Issue cap",
 	} {
 		if strings.Contains(html, forbidden) {
-			t.Fatalf("analytics page rendered disabled budget detail %q:\n%s", forbidden, html)
+			t.Fatalf("fleet page rendered disabled budget detail %q:\n%s", forbidden, html)
 		}
 	}
 }
@@ -6676,22 +6655,24 @@ func TestReportsPageRendersUsageCharts(t *testing.T) {
 		`href="/reports"`,
 		`href="/"`,
 		`href="/settings"`,
-		"Spend trend",
-		"Token trend",
+		`id="reports-kpis"`,
+		"Total spend",
+		"Cache hit",
+		"Sessions",
+		"Spend · by day",
+		"Tokens · cumulative",
 		"Top issues by tokens",
 		"Top PRs by tokens",
-		"Per-project breakdown",
-		"Model split",
 		"$3.40",
-		"325",
-		"digitaldrywood/detent#119",
-		"detent#141",
-		"pyroapex",
-		"gpt-report",
+		"#119",
+		"#141",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("reports page missing %q:\n%s", want, rec.Body.String())
 		}
+	}
+	if strings.Contains(rec.Body.String(), "/static/vendor/chartjs/") {
+		t.Fatalf("reports page loaded Chart.js; charts must be server-rendered SVG:\n%s", rec.Body.String())
 	}
 }
 

@@ -139,8 +139,9 @@ templ fleetMetricCards(metrics fleetMetrics) {
 				<div class="mt-2 h-1 overflow-hidden rounded-xs bg-line" title={ metrics.SpendTitle }>
 					<div class={ fleetMeterClass(metrics.SpendWarn) } style={ fleetProgressStyle(metrics.SpendPct) }></div>
 				</div>
-			} else {
-				<p class="text-2xs text-dim">No daily budget configured</p>
+			}
+			if metrics.SpendNote != "" {
+				<p class="text-2xs text-dim">{ metrics.SpendNote }</p>
 			}
 		</section>
 		<section id="metric-tokens" class="flex flex-col gap-2 rounded-card border border-line bg-surface px-3.5 py-3">

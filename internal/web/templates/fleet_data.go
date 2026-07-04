@@ -55,6 +55,7 @@ type fleetPRCard struct {
 
 type fleetMetrics struct {
 	SpendValue string
+	SpendNote  string
 	SpendPct   int
 	SpendTitle string
 	SpendWarn  bool
@@ -231,17 +232,30 @@ func fleetMetricsFromSnapshot(data DashboardData) fleetMetrics {
 	snapshot := data.Snapshot
 	metrics := fleetMetrics{}
 
-	metrics.SpendValue = formatUSD(snapshot.Budget.CurrentSpendUSD)
-	if cap := snapshot.Budget.PerDayMaxUSD; cap != nil && *cap > 0 {
-		metrics.HasSpend = true
-		percent := int(snapshot.Budget.CurrentSpendUSD / *cap * 100)
-		if percent > 100 {
-			percent = 100
+	budget := snapshot.Budget
+	switch {
+	case strings.TrimSpace(budget.DegradedReason) != "":
+		metrics.SpendValue = "—"
+		metrics.SpendNote = "Budget data unavailable."
+	case !budget.Enabled:
+		metrics.SpendValue = formatUSD(budget.CurrentSpendUSD)
+		metrics.SpendNote = "Budget disabled — enable a daily cap in configuration."
+	default:
+		metrics.SpendValue = formatUSD(budget.CurrentSpendUSD)
+		if cap := budget.PerDayMaxUSD; cap != nil && *cap > 0 {
+			metrics.HasSpend = true
+			percent := int(budget.CurrentSpendUSD / *cap * 100)
+			if percent > 100 {
+				percent = 100
+			}
+			metrics.SpendPct = percent
+			metrics.SpendWarn = percent >= 90
+			metrics.SpendTitle = formatUSD(budget.CurrentSpendUSD) + " of " + formatUSD(*cap) + " daily budget"
+			metrics.SpendValue += " / " + formatUSD(*cap)
 		}
-		metrics.SpendPct = percent
-		metrics.SpendWarn = percent >= 90
-		metrics.SpendTitle = formatUSD(snapshot.Budget.CurrentSpendUSD) + " of " + formatUSD(*cap) + " daily budget"
-		metrics.SpendValue += " / " + formatUSD(*cap)
+		if budget.CurrentSpendUSD <= 0 && len(budget.Days) == 0 {
+			metrics.SpendNote = "No budget spend yet."
+		}
 	}
 
 	if points := tokenTrendPoints(snapshot); len(points) > 1 {
