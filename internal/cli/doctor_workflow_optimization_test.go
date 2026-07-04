@@ -111,6 +111,49 @@ func TestDoctorWorkflowOptimizationFindsFixtureRules(t *testing.T) {
 	}
 }
 
+func TestDoctorWorkflowOptimizationFindingsTokenImpactIsAvoidable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		ruleID  string
+		metrics doctorWorkflowOptimizationMetrics
+	}{
+		{
+			name:   "empty model telemetry does not charge historical usage",
+			ruleID: doctorWorkflowRuleEmptyModelTelemetry,
+			metrics: doctorWorkflowOptimizationMetrics{
+				TotalTokens:              4_720_170_000,
+				RecentSessionCount:       50,
+				EmptyModelRecentSessions: 48,
+				EmptyModelRecentFraction: 0.96,
+			},
+		},
+		{
+			name:   "scheduler skips do not charge full agent sessions",
+			ruleID: doctorWorkflowRuleSchedulerSkipRate,
+			metrics: doctorWorkflowOptimizationMetrics{
+				MedianSessionTokens:       7_710_440,
+				SchedulerDecisionCount:    1_704,
+				SchedulerSkippedDecisions: 1_136,
+				SchedulerSkipRate:         0.67,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", workflowconfig.Config{}, tt.metrics)
+			finding := doctorWorkflowFindingByRule(t, findings, tt.ruleID)
+			if finding.EstimatedTokenImpact != 0 {
+				t.Fatalf("EstimatedTokenImpact = %d, want 0", finding.EstimatedTokenImpact)
+			}
+		})
+	}
+}
+
 func TestDoctorWorkflowOptimizationJSONReportSchema(t *testing.T) {
 	t.Parallel()
 
