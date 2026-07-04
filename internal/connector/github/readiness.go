@@ -57,8 +57,9 @@ type ReadinessProjectFieldWrite struct {
 }
 
 type readinessProbeIssue struct {
-	ID  string
-	Ref issueRef
+	ID    string
+	Ref   issueRef
+	State string
 }
 
 func CheckReadiness(ctx context.Context, cfg Config, readiness ReadinessConfig) ([]ReadinessCheck, error) {
@@ -754,12 +755,38 @@ func (c githubReadinessChecker) resolveWriteProbe(ctx context.Context, cfg Readi
 		}
 		return readinessProbeIssue{}, false, &check
 	}
-	check := ReadinessCheck{
-		Name:   "GitHub write probe target",
-		Status: ReadinessOK,
-		Detail: fmt.Sprintf("%s resolves to %s#%d and node %s", probeID, probe.Ref.Owner+"/"+probe.Ref.Name, probe.Ref.Number, probe.ID),
-	}
+	check := writeProbeTargetCheck(probeID, probe)
 	return probe, true, &check
+}
+
+func writeProbeTargetCheck(probeID string, probe readinessProbeIssue) ReadinessCheck {
+	state := normalizeStateName(probe.State)
+	detail := fmt.Sprintf("%s resolves to %s#%d and node %s", probeID, probe.Ref.Owner+"/"+probe.Ref.Name, probe.Ref.Number, probe.ID)
+	if state != "" {
+		detail += "; state " + state
+	}
+	switch state {
+	case "closed":
+		return ReadinessCheck{
+			Name:   "GitHub write probe target",
+			Status: ReadinessWarn,
+			Detail: detail,
+			Hint:   "Set tracker.write_probe_issue to a dedicated open scratch issue in the configured repository.",
+		}
+	case "":
+		return ReadinessCheck{
+			Name:   "GitHub write probe target",
+			Status: ReadinessWarn,
+			Detail: detail + "; issue state was not returned",
+			Hint:   "Check GitHub API compatibility or choose a dedicated open scratch issue.",
+		}
+	default:
+		return ReadinessCheck{
+			Name:   "GitHub write probe target",
+			Status: ReadinessOK,
+			Detail: detail,
+		}
+	}
 }
 
 func (cfg ReadinessConfig) requiresProbeIssue() bool {
@@ -788,7 +815,7 @@ func (c githubReadinessChecker) resolveProbeIssue(ctx context.Context, value str
 			return readinessProbeIssue{}, ErrNotFound
 		}
 		c.connector.cacheIssueRef(issue)
-		return readinessProbeIssue{ID: strings.TrimSpace(issue.ID), Ref: ref}, nil
+		return readinessProbeIssue{ID: strings.TrimSpace(issue.ID), Ref: ref, State: issue.State}, nil
 	}
 	ref, ok, err := c.connector.issueRefForID(ctx, value, graphQLQueryIssueLookup)
 	if err != nil {
@@ -804,7 +831,7 @@ func (c githubReadinessChecker) resolveProbeIssue(ctx context.Context, value str
 	if strings.TrimSpace(issue.ID) == "" {
 		return readinessProbeIssue{}, ErrNotFound
 	}
-	return readinessProbeIssue{ID: strings.TrimSpace(issue.ID), Ref: ref}, nil
+	return readinessProbeIssue{ID: strings.TrimSpace(issue.ID), Ref: ref, State: issue.State}, nil
 }
 
 func (c githubReadinessChecker) probeReadChecks(ctx context.Context, cfg ReadinessConfig, probe readinessProbeIssue, hasProbe bool) []ReadinessCheck {
@@ -1095,13 +1122,34 @@ func (c githubReadinessChecker) issueCloseWriteCheck(ctx context.Context, probe 
 	if !hasProbe {
 		return unprovenWriteCheck("GitHub issue close")
 	}
+	beforeState := normalizeStateName(probe.State)
+	if beforeState == "" {
+		issue, err := c.connector.fetchRESTIssue(ctx, probe.Ref)
+		if err != nil {
+			return ReadinessCheck{
+				Name:   "GitHub issue close",
+				Status: ReadinessFail,
+				Detail: "token cannot read current state for probe issue: " + err.Error(),
+				Hint:   "Grant Issues repository read permission for the probe issue repository.",
+			}
+		}
+		beforeState = normalizeStateName(issue.State)
+	}
+	if beforeState == "" {
+		return ReadinessCheck{
+			Name:   "GitHub issue close",
+			Status: ReadinessWarn,
+			Detail: "probe issue current state was not returned; close permission probe was not executed",
+			Hint:   "Check GitHub API compatibility or choose a dedicated open scratch issue.",
+		}
+	}
 	result, err := c.connector.client.restProbe(ctx, http.MethodPatch, restIssuePath(probe.Ref), map[string]any{
 		"state": "detent-doctor-invalid-state",
 	})
 	if err != nil {
 		return failedWriteProbeCheck("GitHub issue close", "close issues", err)
 	}
-	return issueCloseWriteProbeCheck(result)
+	return issueCloseWriteProbeCheck(result, beforeState)
 }
 
 func (c githubReadinessChecker) invalidWriteProbe(ctx context.Context, name string, method string, path string, body any, capability string) ReadinessCheck {
@@ -1155,38 +1203,50 @@ func invalidWriteProbeCheck(name string, capability string, result restProbeResu
 	}
 }
 
-func issueCloseWriteProbeCheck(result restProbeResult) ReadinessCheck {
+func issueCloseWriteProbeCheck(result restProbeResult, beforeState string) ReadinessCheck {
 	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
 		return invalidWriteProbeCheck("GitHub issue close", "close issues", result)
 	}
 
 	detailSuffix := acceptedPermissionsDetail(result.Headers)
-	switch state := issueStateFromProbeBody(result.FullBody); strings.ToLower(state) {
-	case "open":
-		return ReadinessCheck{
-			Name:   "GitHub issue close",
-			Status: ReadinessOK,
-			Detail: fmt.Sprintf("endpoint accepted auth with HTTP %d%s and ignored the intentionally invalid close state; probe issue remained open", result.StatusCode, detailSuffix),
-		}
-	case "closed":
-		return ReadinessCheck{
-			Name:   "GitHub issue close",
-			Status: ReadinessWarn,
-			Detail: fmt.Sprintf("permission probe returned HTTP %d%s after sending an intentionally invalid close state, and the response says the probe issue is closed", result.StatusCode, detailSuffix),
-			Hint:   "Inspect the scratch issue before rerunning detent doctor.",
-		}
-	case "":
+	beforeState = normalizeStateName(beforeState)
+	afterState := normalizeStateName(issueStateFromProbeBody(result.FullBody))
+	if afterState == "" {
 		return ReadinessCheck{
 			Name:   "GitHub issue close",
 			Status: ReadinessWarn,
 			Detail: fmt.Sprintf("permission probe returned HTTP %d%s after sending an intentionally invalid close state, but the response did not include issue state", result.StatusCode, detailSuffix),
 			Hint:   "Inspect the scratch issue and rerun detent doctor with a different write probe target if needed.",
 		}
+	}
+	if beforeState == afterState {
+		return ReadinessCheck{
+			Name:   "GitHub issue close",
+			Status: ReadinessOK,
+			Detail: fmt.Sprintf("endpoint accepted auth with HTTP %d%s and ignored the intentionally invalid close state; probe issue remained %s", result.StatusCode, detailSuffix, afterState),
+		}
+	}
+	if beforeState == "open" && afterState == "closed" {
+		return ReadinessCheck{
+			Name:   "GitHub issue close",
+			Status: ReadinessWarn,
+			Detail: fmt.Sprintf("permission probe returned HTTP %d%s after sending an intentionally invalid close state, and the probe issue changed from open to closed", result.StatusCode, detailSuffix),
+			Hint:   "Inspect the scratch issue before rerunning detent doctor.",
+		}
+	}
+	switch afterState {
+	case "open", "closed":
+		return ReadinessCheck{
+			Name:   "GitHub issue close",
+			Status: ReadinessWarn,
+			Detail: fmt.Sprintf("permission probe returned HTTP %d%s after sending an intentionally invalid close state, and the probe issue changed from %s to %s", result.StatusCode, detailSuffix, beforeState, afterState),
+			Hint:   "Inspect the scratch issue and rerun detent doctor with a different write probe target if needed.",
+		}
 	default:
 		return ReadinessCheck{
 			Name:   "GitHub issue close",
 			Status: ReadinessWarn,
-			Detail: fmt.Sprintf("permission probe returned HTTP %d%s after sending an intentionally invalid close state, and the response says the probe issue state is %q", result.StatusCode, detailSuffix, state),
+			Detail: fmt.Sprintf("permission probe returned HTTP %d%s after sending an intentionally invalid close state, and the response says the probe issue state is %q", result.StatusCode, detailSuffix, afterState),
 			Hint:   "Inspect the scratch issue and rerun detent doctor with a different write probe target if needed.",
 		}
 	}
