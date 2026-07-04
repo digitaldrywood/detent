@@ -796,6 +796,71 @@ func TestClientRESTStopsFanoutBelowReserve(t *testing.T) {
 	}
 }
 
+func TestClientRESTAllowsCoreFanoutAfterSearchPoolBelowReserve(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch call := calls.Add(1); call {
+		case 1:
+			if r.URL.Path != "/search/issues" {
+				t.Fatalf("first path = %s, want search issues path", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-RateLimit-Limit", "30")
+			w.Header().Set("X-RateLimit-Used", "2")
+			w.Header().Set("X-RateLimit-Remaining", "28")
+			w.Header().Set("X-RateLimit-Resource", "search")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"total_count":0,"incomplete_results":false,"items":[]}`))
+		case 2:
+			if r.URL.Path != "/repos/digitaldrywood/detent/pulls" {
+				t.Fatalf("second path = %s, want pull requests path", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-RateLimit-Limit", "5000")
+			w.Header().Set("X-RateLimit-Used", "19")
+			w.Header().Set("X-RateLimit-Remaining", "4981")
+			w.Header().Set("X-RateLimit-Resource", "core")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			t.Fatalf("unexpected REST call %d to %s", call, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+		RESTPolicy:  RESTBudgetPolicy{MinRemainingReserve: 1000},
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	var search restIssueSearchResponse
+	if err := client.REST(context.Background(), http.MethodGet, "/search/issues?q=repo%3Adigitaldrywood%2Fdetent", nil, &search); err != nil {
+		t.Fatalf("REST() issue search error = %v", err)
+	}
+	var pulls []restPullRequest
+	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/pulls?state=all", nil, &pulls); err != nil {
+		t.Fatalf("REST() pull requests after search budget error = %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("REST calls = %d, want search and pull requests sent", calls.Load())
+	}
+
+	usage := client.FlushRESTRateLimitUsage()
+	if usage.RateLimited {
+		t.Fatalf("RESTRateLimitUsage.RateLimited = true, want no reserved budget throttle")
+	}
+	if usage.RateLimit.Resource != "core" || usage.RateLimit.Remaining != 4981 {
+		t.Fatalf("RateLimit = %#v, want latest core pull request snapshot", usage.RateLimit)
+	}
+}
+
 func TestClientRESTBackoffAppliesAcrossClientsWithSharedToken(t *testing.T) {
 	t.Parallel()
 

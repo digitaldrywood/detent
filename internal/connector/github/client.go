@@ -66,6 +66,7 @@ type Client struct {
 	hasRateLimitUsage      bool
 	graphQLRateLimitStatus string
 	restRateLimit          connector.RESTRateLimit
+	restRateLimits         map[string]connector.RESTRateLimit
 	restRequests           map[string]connector.RESTEndpointUsage
 	restBackoffUntil       time.Time
 	restBackoffKey         string
@@ -621,8 +622,9 @@ func (c *Client) restBudgetPolicyError(method string, path string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	rateLimit, hasRateLimit := c.restRateLimitForResourceLocked(restEndpointRateLimitResource(family))
 	if c.restPolicy.FanoutMaxRequests > 0 && c.restFanoutRequestCountLocked() >= c.restPolicy.FanoutMaxRequests {
-		c.recordRESTBudgetThrottleLocked(method, path, family)
+		c.recordRESTBudgetThrottleLocked(method, path, family, rateLimit, hasRateLimit)
 		return &StatusError{
 			StatusCode: http.StatusTooManyRequests,
 			Body:       "REST fanout request cap reached for " + family,
@@ -630,10 +632,10 @@ func (c *Client) restBudgetPolicyError(method string, path string) error {
 		}
 	}
 	if c.restPolicy.MinRemainingReserve > 0 &&
-		c.hasRestRateLimit &&
-		c.restRateLimit.Limit > 0 &&
-		c.restRateLimit.Remaining <= c.restPolicy.MinRemainingReserve {
-		c.recordRESTBudgetThrottleLocked(method, path, family)
+		hasRateLimit &&
+		rateLimit.Limit > 0 &&
+		rateLimit.Remaining <= c.restPolicy.MinRemainingReserve {
+		c.recordRESTBudgetThrottleLocked(method, path, family, rateLimit, hasRateLimit)
 		return &StatusError{
 			StatusCode: http.StatusTooManyRequests,
 			Body:       "REST remaining budget is reserved for shared GitHub work",
@@ -653,7 +655,20 @@ func (c *Client) restFanoutRequestCountLocked() int64 {
 	return count
 }
 
-func (c *Client) recordRESTBudgetThrottleLocked(method string, path string, family string) {
+func (c *Client) restRateLimitForResourceLocked(resource string) (connector.RESTRateLimit, bool) {
+	resource = strings.TrimSpace(resource)
+	if resource != "" && c.restRateLimits != nil {
+		if rateLimit, ok := c.restRateLimits[resource]; ok {
+			return rateLimit, true
+		}
+	}
+	if c.hasRestRateLimit && (resource == "" || c.restRateLimit.Resource == "" || c.restRateLimit.Resource == resource) {
+		return c.restRateLimit, true
+	}
+	return connector.RESTRateLimit{}, false
+}
+
+func (c *Client) recordRESTBudgetThrottleLocked(method string, path string, family string, rateLimit connector.RESTRateLimit, hasRateLimit bool) {
 	if c.restRequests == nil {
 		c.restRequests = make(map[string]connector.RESTEndpointUsage)
 	}
@@ -662,13 +677,13 @@ func (c *Client) recordRESTBudgetThrottleLocked(method string, path string, fami
 	request.Count++
 	request.RateLimited = true
 	request.LastStatus = http.StatusTooManyRequests
-	if c.hasRestRateLimit {
-		request.Limit = c.restRateLimit.Limit
-		request.Used = c.restRateLimit.Used
-		request.Remaining = c.restRateLimit.Remaining
-		request.Resource = c.restRateLimit.Resource
-		request.ResetAt = c.restRateLimit.ResetAt
-		request.RetryAfter = c.restRateLimit.RetryAfter
+	if hasRateLimit {
+		request.Limit = rateLimit.Limit
+		request.Used = rateLimit.Used
+		request.Remaining = rateLimit.Remaining
+		request.Resource = rateLimit.Resource
+		request.ResetAt = rateLimit.ResetAt
+		request.RetryAfter = rateLimit.RetryAfter
 	}
 	c.restRequests[family] = request
 	c.logger.Warn(
@@ -676,7 +691,8 @@ func (c *Client) recordRESTBudgetThrottleLocked(method string, path string, fami
 		"method", strings.ToUpper(strings.TrimSpace(method)),
 		"path", path,
 		"endpoint_family", family,
-		"remaining", c.restRateLimit.Remaining,
+		"resource", rateLimit.Resource,
+		"remaining", rateLimit.Remaining,
 		"reserve", c.restPolicy.MinRemainingReserve,
 		"fanout_cap", c.restPolicy.FanoutMaxRequests,
 	)
@@ -702,9 +718,10 @@ func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, method string
 	remaining, hasRemaining := int64Header(headers, "X-RateLimit-Remaining")
 	reset, hasReset := int64Header(headers, "X-RateLimit-Reset")
 	retryAfter, hasRetryAfter := parseRetryAfter(headers.Get("Retry-After"), now)
-	resource := strings.TrimSpace(headers.Get("X-RateLimit-Resource"))
 	rateLimited := restStatusRateLimited(status, headers)
 	family := restEndpointFamily(method, path)
+	resourceHeader := strings.TrimSpace(headers.Get("X-RateLimit-Resource"))
+	resource := restRateLimitResourceName(resourceHeader, family)
 	sharedBackoff := rateLimited && restShouldApplySharedBackoff(family, remaining, hasRemaining)
 
 	var resetAt time.Time
@@ -719,6 +736,9 @@ func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, method string
 		c.restBackoffKey = backoffKey
 	}
 	snapshot := c.restRateLimit
+	if resource != "" && c.restRateLimits != nil {
+		snapshot = c.restRateLimits[resource]
+	}
 	hasSnapshot := false
 	if hasLimit {
 		snapshot.Limit = limit
@@ -736,19 +756,25 @@ func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, method string
 		snapshot.ResetAt = resetAt
 		hasSnapshot = true
 	}
-	if resource != "" {
-		snapshot.Resource = resource
-		hasSnapshot = true
-	}
 	if hasRetryAfter && sharedBackoff {
 		snapshot.RetryAfter = retryAfter
 		hasSnapshot = true
 	} else if hasSnapshot {
 		snapshot.RetryAfter = 0
 	}
+	if resource != "" && (hasSnapshot || resourceHeader != "") {
+		snapshot.Resource = resource
+		hasSnapshot = true
+	}
 	if hasSnapshot {
 		snapshot.UpdatedAt = now
 		c.restRateLimit = snapshot
+		if resource != "" {
+			if c.restRateLimits == nil {
+				c.restRateLimits = make(map[string]connector.RESTRateLimit)
+			}
+			c.restRateLimits[resource] = snapshot
+		}
 		c.hasRestRateLimit = true
 	}
 
@@ -772,7 +798,7 @@ func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, method string
 	if hasReset {
 		request.ResetAt = resetAt
 	}
-	if resource != "" {
+	if resource != "" && (hasLimit || hasUsed || hasRemaining || hasReset || hasRetryAfter || resourceHeader != "") {
 		request.Resource = resource
 	}
 	if hasRetryAfter {
@@ -1245,6 +1271,20 @@ func restShouldApplySharedBackoff(family string, remaining int64, hasRemaining b
 		return true
 	}
 	return hasRemaining && remaining <= 0
+}
+
+func restRateLimitResourceName(headerResource string, family string) string {
+	if headerResource != "" {
+		return headerResource
+	}
+	return restEndpointRateLimitResource(family)
+}
+
+func restEndpointRateLimitResource(family string) string {
+	if family == "search" {
+		return "search"
+	}
+	return "core"
 }
 
 func restBackoffUntil(
