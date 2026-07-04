@@ -49,6 +49,7 @@ const (
 	doctorWorkflowSchedulerMinDecisions   = int64(5)
 	doctorWorkflowSchedulerHighSkipRate   = 0.50
 	doctorWorkflowValidatorModel          = "gpt-5.4-mini"
+	doctorWorkflowRunawayCapTolerance     = 1.25
 )
 
 var errDoctorTelemetryStoreUnavailable = errors.New("telemetry store unavailable")
@@ -589,7 +590,8 @@ func doctorWorkflowOptimizationFindings(
 		ratio := float64(metrics.MaxSessionTokens) / float64(metrics.MedianSessionTokens)
 		if ratio >= doctorWorkflowRunawayMedianMultiplier {
 			value := doctorRoundUpInt64(int64(float64(metrics.MedianSessionTokens)*doctorWorkflowRunawayMedianMultiplier), 1000)
-			if cfg.Agent.MaxSessionTokens <= 0 || cfg.Agent.MaxSessionTokens > value {
+			configuredCapLimit := int64(math.Ceil(float64(value) * doctorWorkflowRunawayCapTolerance))
+			if cfg.Agent.MaxSessionTokens <= 0 || cfg.Agent.MaxSessionTokens > configuredCapLimit {
 				findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleRunawaySessionTokens,
 					"Runaway session tail",
 					fmt.Sprintf("max session tokens are %.1fx the median", ratio),
