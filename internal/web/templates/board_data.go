@@ -60,16 +60,19 @@ func boardViewFromDashboard(data DashboardData) boardView {
 	}
 	terminalStates := projectKanbanTerminalStateSet(data.Kanban.TerminalStates)
 	for _, lane := range board.AllLanes {
+		terminal := projectKanbanTerminalState(lane.Title, terminalStates)
 		laneView := boardLaneView{
-			DomID:          "lane-" + lane.ID,
-			LaneID:         lane.ID,
-			Title:          lane.Title,
-			Count:          formatCount(len(lane.Cards)),
-			Live:           strings.EqualFold(lane.Title, "In Progress") && len(lane.Cards) > 0,
-			DefaultVisible: len(lane.Cards) > 0,
+			DomID:  "lane-" + lane.ID,
+			LaneID: lane.ID,
+			Title:  lane.Title,
+			Count:  formatCount(len(lane.Cards)),
+			Live:   strings.EqualFold(lane.Title, "In Progress") && len(lane.Cards) > 0,
+			// Populated lanes show by default, except terminal graveyards
+			// (Cancelled, Closed, …). Done stays visible so finished work
+			// reads at a glance; everything is reachable via the picker.
+			DefaultVisible: len(lane.Cards) > 0 && (!terminal || strings.EqualFold(lane.Title, "Done")),
 			EmptyMessage:   "No issues in " + lane.Title,
 		}
-		terminal := projectKanbanTerminalState(lane.Title, terminalStates)
 		for _, card := range lane.Cards {
 			laneView.Cards = append(laneView.Cards, boardCardViewFromCard(lane, card, terminal))
 		}

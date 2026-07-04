@@ -312,11 +312,11 @@ func (s *Server) demoProjectDashboard(c echo.Context, scenario demoScenario, vie
 	case "kanban":
 		data.ActiveNav = "kanban"
 		data.Title = s.projectPageTitle(data, "Kanban")
-		return render(c, templates.ProjectKanbanPage(data))
+		return render(c, templates.ProjectBoardPage(data))
 	case "runs":
 		data.ActiveNav = "runs"
 		data.Title = s.projectPageTitle(data, "Runs")
-		return render(c, templates.ProjectRunsPage(data))
+		return render(c, templates.ProjectRunsPageV2(data))
 	case "diagnostics":
 		data.ActiveNav = "diagnostics"
 		data.Title = s.projectPageTitle(data, "Diagnostics")
@@ -327,7 +327,8 @@ func (s *Server) demoProjectDashboard(c echo.Context, scenario demoScenario, vie
 		applySettingsPreferences(c.Request(), &settingsData)
 		return render(c, templates.Settings(settingsData))
 	default:
-		return render(c, templates.Dashboard(data))
+		data.ActiveNav = "overview"
+		return render(c, templates.ProjectOverviewPage(data))
 	}
 }
 

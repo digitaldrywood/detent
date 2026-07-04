@@ -714,6 +714,8 @@ func eventsPath(data DashboardShellData) string {
 			return projectDiagnosticsEventsPath(data)
 		case "configuration":
 			return projectConfigurationEventsPath(data)
+		case "overview":
+			return "/events?" + url.Values{"project": []string{id}, "view": []string{"overview"}}.Encode()
 		}
 		return "/events?project=" + url.QueryEscape(id)
 	}

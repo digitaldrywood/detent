@@ -331,11 +331,13 @@ func (s *Server) projectDashboard(c echo.Context) error {
 		data.ActiveNav = "kanban"
 		data.Title = s.projectPageTitle(data, "Kanban")
 		data = s.withKanbanRefreshFeedback(data)
-		return render(c, templates.ProjectKanbanPage(data))
+		applyDashboardPreferences(c.Request(), &data)
+		return render(c, templates.ProjectBoardPage(data))
 	case "runs":
 		data.ActiveNav = "runs"
 		data.Title = s.projectPageTitle(data, "Runs")
-		return render(c, templates.ProjectRunsPage(data))
+		applyDashboardPreferences(c.Request(), &data)
+		return render(c, templates.ProjectRunsPageV2(data))
 	case "diagnostics":
 		data.ActiveNav = "diagnostics"
 		data.Title = s.projectPageTitle(data, "Diagnostics")
@@ -347,8 +349,9 @@ func (s *Server) projectDashboard(c echo.Context) error {
 		applySettingsPreferences(c.Request(), &settingsData)
 		return render(c, templates.Settings(settingsData))
 	}
+	data.ActiveNav = "overview"
 	applyDashboardPreferences(c.Request(), &data)
-	return render(c, templates.Dashboard(data))
+	return render(c, templates.ProjectOverviewPage(data))
 }
 
 func dashboardSidebarCollapsed(r *http.Request) bool {

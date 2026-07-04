@@ -292,15 +292,15 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 	terminalKanban := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/projects/dogfood/kanban", http.StatusOK, map[string]string{
 		web.DemoScenarioHeader: "kanban-terminal-states",
 	})
-	for _, want := range []string{
-		`data-project-kanban-lane-title="Cancelled"`,
-		`data-project-kanban-lane-empty="false"`,
-		`data-project-kanban-lane-visible="false"`,
-		`data-kanban-issue-id="demo-cancelled"`,
-	} {
-		if !strings.Contains(terminalKanban, want) {
-			t.Fatalf("terminal Kanban scenario missing %q:\n%s", want, terminalKanban)
-		}
+	cancelledLane := regexp.MustCompile(`<section[^>]*data-board-lane="cancelled"[^>]*>`).FindString(terminalKanban)
+	if cancelledLane == "" {
+		t.Fatalf("terminal Kanban scenario missing Cancelled lane:\n%s", terminalKanban)
+	}
+	if !strings.Contains(cancelledLane, `data-lane-hidden="true"`) {
+		t.Fatalf("populated Cancelled lane should hide by default: %s", cancelledLane)
+	}
+	if !strings.Contains(cancelledLane, `data-board-lane-default="false"`) {
+		t.Fatalf("Cancelled lane should not be default-visible: %s", cancelledLane)
 	}
 
 	usage := requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/usage?by=project", http.StatusOK, map[string]string{
@@ -2351,7 +2351,7 @@ func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
 	}{
 		{name: "board", path: "/", shell: "v2"},
 		{name: "dashboard", path: "/fleet", shell: "v2"},
-		{name: "project", path: "/projects/detent", shell: "legacy"},
+		{name: "project", path: "/projects/detent", shell: "v2"},
 		{name: "reports", path: "/reports", shell: "legacy"},
 		{name: "settings", path: "/settings", shell: "legacy"},
 	}
@@ -2500,33 +2500,6 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			reportsHref:  "/reports",
 			settingsHref: "/settings",
 			inactiveHref: []string{"/", "/analytics", "/reports", "/settings"},
-		},
-		{
-			name:         "project",
-			path:         "/projects/detent",
-			activeHref:   "/projects/detent",
-			sseConnect:   `sse-connect="/events?project=detent"`,
-			reportsHref:  "/reports?project=detent",
-			settingsHref: "/settings?project=detent",
-			inactiveHref: []string{"/", "/analytics", "/reports?project=detent", "/settings?project=detent"},
-		},
-		{
-			name:         "project kanban",
-			path:         "/projects/detent/kanban",
-			activeHref:   "/projects/detent/kanban",
-			sseConnect:   `sse-connect="/events?project=detent&amp;view=kanban"`,
-			reportsHref:  "/reports?project=detent",
-			settingsHref: "/settings?project=detent",
-			inactiveHref: []string{"/", "/analytics", "/reports?project=detent", "/settings?project=detent", "/projects/detent"},
-		},
-		{
-			name:         "project runs",
-			path:         "/projects/detent/runs",
-			activeHref:   "/projects/detent/runs",
-			sseConnect:   `sse-connect="/events?project=detent&amp;view=runs"`,
-			reportsHref:  "/reports?project=detent",
-			settingsHref: "/settings?project=detent",
-			inactiveHref: []string{"/", "/analytics", "/reports?project=detent", "/settings?project=detent", "/projects/detent", "/projects/detent/kanban", "/projects/detent/configuration", "/projects/detent/diagnostics"},
 		},
 		{
 			name:         "project configuration",
@@ -2775,16 +2748,17 @@ func TestProjectDashboardRouteScopesSnapshot(t *testing.T) {
 		`href="/projects/detent/runs"`,
 		`aria-current="page"`,
 		`sse-connect="/events?project=detent&amp;view=runs"`,
-		"digitaldrywood/detent#377",
-		"42,000",
+		"#377",
+		"Detent dashboard",
+		"42.0K",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("project dashboard missing %q:\n%s", want, body)
 		}
 	}
 	for _, forbidden := range []string{
-		"digitaldrywood/pyroapex#12",
-		"88,000",
+		"Pyro Apex migration",
+		"88.0K",
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("project dashboard rendered forbidden %q:\n%s", forbidden, body)
@@ -2816,7 +2790,6 @@ func TestProjectDashboardRouteLinksGitHubRepositoryIssues(t *testing.T) {
 		`href="https://github.com/digitaldrywood/detent/issues"`,
 		`target="_blank"`,
 		`aria-label="Open Detent issues"`,
-		`data-lucide="icon"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("project dashboard missing GitHub issues link marker %q:\n%s", want, body)
@@ -2876,15 +2849,15 @@ func TestProjectDashboardRouteRendersConfiguredKanbanOrder(t *testing.T) {
 	}
 
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
-	kanbanStart := strings.Index(body, `aria-label="Project Kanban"`)
+	kanbanStart := strings.Index(body, `id="board-lanes"`)
 	if kanbanStart < 0 {
-		t.Fatalf("project Kanban page missing Kanban section:\n%s", body)
+		t.Fatalf("project Kanban page missing board lanes:\n%s", body)
 	}
 	kanban := body[kanbanStart:]
-	backlogIndex := strings.Index(kanban, `aria-label="Backlog lane"`)
-	todoIndex := strings.Index(kanban, `aria-label="Todo lane"`)
-	reviewIndex := strings.Index(kanban, `aria-label="Human Review lane"`)
-	doneIndex := strings.Index(kanban, `aria-label="Done lane"`)
+	backlogIndex := strings.Index(kanban, `data-board-lane="backlog"`)
+	todoIndex := strings.Index(kanban, `data-board-lane="todo"`)
+	reviewIndex := strings.Index(kanban, `data-board-lane="human-review"`)
+	doneIndex := strings.Index(kanban, `data-board-lane="done"`)
 	if backlogIndex < 0 || todoIndex < 0 || reviewIndex < 0 || doneIndex < 0 {
 		t.Fatalf("kanban missing configured lanes: backlog=%d todo=%d review=%d done=%d\n%s", backlogIndex, todoIndex, reviewIndex, doneIndex, kanban)
 	}
@@ -3021,30 +2994,24 @@ func TestProjectDashboardRoutesSplitOverviewAndDetailPages(t *testing.T) {
 
 	overview := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent", http.StatusOK)
 	for _, want := range []string{
-		`sse-connect="/events?project=detent"`,
-		`aria-label="Project overview links"`,
+		`sse-connect="/events?project=detent&amp;view=overview"`,
 		`href="/projects/detent/kanban"`,
 		`href="/projects/detent/runs"`,
+		`href="/projects/detent/configuration"`,
 		`href="/projects/detent/diagnostics"`,
-		`href="/analytics"`,
-		`href="/reports?project=detent"`,
-		"Kanban",
-		"Runs",
-		"Diagnostics",
-		"Reports",
+		`id="agent-activity"`,
+		`id="project-recent-runs"`,
+		"Recent runs",
+		"Running issue",
 	} {
 		if !strings.Contains(overview, want) {
 			t.Fatalf("project overview missing %q:\n%s", want, overview)
 		}
 	}
-	assertActiveSidebarLink(t, overview, "/projects/detent")
 	for _, forbidden := range []string{
-		`id="project-kanban"`,
-		`aria-label="Project Kanban"`,
+		`id="board-lanes"`,
 		`aria-label="Agent activity timeline"`,
-		`aria-label="Pull request pipeline"`,
 		`id="running-issues"`,
-		`aria-label="Board health"`,
 		`data-detent-charts`,
 	} {
 		if strings.Contains(overview, forbidden) {
@@ -3055,25 +3022,20 @@ func TestProjectDashboardRoutesSplitOverviewAndDetailPages(t *testing.T) {
 	runs := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/runs", http.StatusOK)
 	for _, want := range []string{
 		`sse-connect="/events?project=detent&amp;view=runs"`,
-		`aria-label="Agent activity timeline"`,
-		`aria-label="Pull request pipeline"`,
-		`id="running-issues"`,
-		"Retry queue",
-		"Blocked sessions",
-		"Recent sessions",
-		"digitaldrywood/detent#502",
-		"digitaldrywood/detent#503",
-		"digitaldrywood/detent#504",
-		"digitaldrywood/detent#505",
+		`id="project-runs"`,
+		"#502",
+		"#505",
+		"Running issue",
+		"Completed issue",
+		"In progress",
+		"Completed",
 	} {
 		if !strings.Contains(runs, want) {
 			t.Fatalf("project runs route missing %q:\n%s", want, runs)
 		}
 	}
-	assertActiveSidebarLink(t, runs, "/projects/detent/runs")
 	for _, forbidden := range []string{
-		`aria-label="Project Kanban"`,
-		`aria-label="Board health"`,
+		`id="board-lanes"`,
 		`data-detent-charts`,
 	} {
 		if strings.Contains(runs, forbidden) {
@@ -3192,48 +3154,26 @@ func TestProjectKanbanRouteRendersOnlyLiveBoard(t *testing.T) {
 
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
 	for _, want := range []string{
-		`data-tui-sidebar-layout`,
-		`id="dashboard-sidebar"`,
-		`id="dashboard-sidebar-live"`,
-		`aria-label="Project Kanban"`,
 		`sse-connect="/events?project=detent&amp;view=kanban"`,
 		`sse-swap="snapshot"`,
 		`hx-swap="morph:innerHTML"`,
-		`href="https://github.com/digitaldrywood/detent/issues/490"`,
-		`href="https://github.com/digitaldrywood/detent/pull/701"`,
-		`data-kanban-action="move"`,
-		`data-project-kanban-visibility-key="project:detent`,
-		`data-project-kanban-visibility-menu`,
-		`data-preserve-details="project-kanban-visibility-project-detent"`,
-		`data-project-kanban-visibility-checkbox`,
-		`data-project-kanban-visibility-close`,
-		`data-project-kanban-pin-toggle`,
-		`data-project-kanban-pin-icon="unpinned"`,
-		`data-project-kanban-pin-icon="pinned"`,
-		`detent.ui.projectKanban.visibleLanes.`,
-		`function visibilitySnapshotTarget(event)`,
-		`function toggleLanePin(button)`,
-		`htmx:sseBeforeMessage`,
-		`details[data-preserve-details][open]`,
-		`event.key === "Escape"`,
+		`id="board-lanes"`,
+		`data-board-key="project.detent"`,
+		`id="card-detent-490"`,
 		`href="/projects/detent"`,
 		`href="/projects/detent/kanban"`,
-		`data-dashboard-view="kanban"`,
 		"Add a live Kanban-only board view",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("Kanban page missing %q:\n%s", want, body)
 		}
 	}
-	assertSingleCurrentSidebarItem(t, body)
-	assertActiveSidebarLink(t, body, "/projects/detent/kanban")
-	assertInactiveSidebarLink(t, body, "/projects/detent")
 	for _, forbidden := range []string{
 		`aria-label="Dashboard health"`,
 		`aria-label="Pull request pipeline"`,
 		`data-detent-charts`,
 		`id="live-tick"`,
-		"digitaldrywood/pyroapex#12",
+		"Pyro Apex migration",
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("Kanban page rendered forbidden %q:\n%s", forbidden, body)
@@ -3274,14 +3214,8 @@ func TestProjectKanbanRouteHidesMutationControlsInReadOnlyMode(t *testing.T) {
 	}
 
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
-	if !strings.Contains(body, "Read-only") {
-		t.Fatalf("Kanban page missing read-only mode label:\n%s", body)
-	}
-	if !strings.Contains(body, `id="kanban-feedback" role="status" aria-live="polite" hidden`) {
-		t.Fatalf("read-only Kanban page missing hidden feedback target:\n%s", body)
-	}
-	if feedback := kanbanFeedbackTextFromHTML(t, body); feedback != "" {
-		t.Fatalf("read-only Kanban feedback = %q, want empty:\n%s", feedback, body)
+	if !strings.Contains(body, `id="card-detent-490"`) {
+		t.Fatalf("read-only Kanban page missing board card:\n%s", body)
 	}
 	for _, forbidden := range []string{
 		"/api/v1/kanban/",
@@ -3488,8 +3422,8 @@ func TestProjectKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 		t.Fatalf("event name = %q, want snapshot", event.name)
 	}
 	for _, want := range []string{
-		`aria-label="Project Kanban"`,
-		`data-project-kanban-card="digitaldrywood/detent#490"`,
+		`id="board-lanes"`,
+		`id="card-detent-490"`,
 		"SSE board card",
 	} {
 		if !strings.Contains(event.data, want) {
@@ -3572,10 +3506,10 @@ func TestFleetKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 		t.Fatalf("event name = %q, want snapshot", event.name)
 	}
 	for _, want := range []string{
-		`aria-label="Fleet Kanban"`,
-		`data-project-kanban-visibility-key="fleet"`,
-		`data-project-kanban-card="digitaldrywood/detent#542"`,
-		`data-project-kanban-card="digitaldrywood/docs-site#12"`,
+		`id="board-lanes"`,
+		`data-board-key="fleet"`,
+		`id="card-detent-542"`,
+		`id="card-docs-site-12"`,
 		"Fleet SSE board card",
 		"Docs SSE board card",
 	} {
@@ -3648,7 +3582,7 @@ func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
 	}
 	for _, want := range []string{
 		`href="/projects/digitaldrywood%2Fkanban"`,
-		`sse-connect="/events?project=digitaldrywood%2Fkanban"`,
+		`sse-connect="/events?project=digitaldrywood%2Fkanban&amp;view=overview"`,
 		`href="/projects/digitaldrywood%2Fkanban/runs"`,
 		`href="/projects/digitaldrywood%2Fkanban/diagnostics"`,
 	} {
@@ -3660,7 +3594,7 @@ func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
 	for _, want := range []string{
 		`sse-connect="/events?project=digitaldrywood%2Fkanban&amp;view=runs"`,
 		`href="/projects/digitaldrywood%2Fkanban/runs"`,
-		"digitaldrywood/kanban#377",
+		"#377",
 	} {
 		if !strings.Contains(runsBody, want) {
 			t.Fatalf("project runs route missing %q:\n%s", want, runsBody)
@@ -3672,7 +3606,7 @@ func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
 		`sse-connect="/events?project=digitaldrywood%2Fkanban&amp;view=kanban"`,
 		`href="/projects/digitaldrywood%2Fkanban"`,
 		`href="/projects/digitaldrywood%2Fkanban/kanban"`,
-		"digitaldrywood/kanban#377",
+		"#377",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("project Kanban route missing %q:\n%s", want, body)
@@ -4431,20 +4365,13 @@ func TestServerEventsPreserveProjectKanbanVisibilityMetadata(t *testing.T) {
 		t.Fatalf("event name = %q, want snapshot", event.name)
 	}
 	for _, want := range []string{
-		`data-project-kanban-visibility-key="project:detent`,
-		`data-preserve-details="project-kanban-visibility-project-detent"`,
-		`data-project-kanban-visibility-checkbox`,
-		`data-project-kanban-pin-toggle`,
-		`data-project-kanban-lane-pinned="false"`,
-		`name="visible_lane" value="done"`,
-		`data-project-kanban-lane-visible="false"`,
+		`data-board-key="project.detent"`,
+		`data-board-lane-default=`,
+		`data-board-lane-picker`,
 	} {
 		if !strings.Contains(event.data, want) {
 			t.Fatalf("snapshot event missing %q:\n%s", want, event.data)
 		}
-	}
-	if strings.Contains(event.data, `project-kanban-show-empty`) {
-		t.Fatalf("snapshot event rendered transient empty-lane toggle:\n%s", event.data)
 	}
 }
 
@@ -4498,16 +4425,11 @@ func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *tes
 	if event.name != "snapshot" {
 		t.Fatalf("event name = %q, want snapshot", event.name)
 	}
-	for _, want := range []string{
-		"Read-only",
-		"Live reload Kanban mode",
-	} {
-		if !strings.Contains(event.data, want) {
-			t.Fatalf("initial snapshot event missing %q:\n%s", want, event.data)
-		}
+	if !strings.Contains(event.data, "Live reload Kanban mode") {
+		t.Fatalf("initial snapshot event missing board card:\n%s", event.data)
 	}
 	if strings.Contains(event.data, `hx-get="/api/v1/kanban/move?`) {
-		t.Fatalf("initial read-only snapshot rendered move controls:\n%s", event.data)
+		t.Fatalf("board snapshot rendered move controls:\n%s", event.data)
 	}
 	sidebarEvent := readRawSSEEvent(t, conn, reader)
 	if sidebarEvent.name != "sidebar" {
@@ -4525,6 +4447,8 @@ func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *tes
 	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
 		Mode: workflowconfig.KanbanModeIntegration,
 	}, actionConnector)
+	snapshot.BoardIssues[0].State = "In Progress"
+	snapshot.GeneratedAt = snapshot.GeneratedAt.Add(time.Minute)
 	if err := deps.Hub.Publish(snapshot); err != nil {
 		t.Fatalf("republish snapshot error = %v", err)
 	}
@@ -4533,22 +4457,8 @@ func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *tes
 	if event.name != "snapshot" {
 		t.Fatalf("event name = %q, want snapshot", event.name)
 	}
-	for _, want := range []string{
-		`hx-get="/api/v1/kanban/move?`,
-		`hx-get="/api/v1/kanban/comment?`,
-		`draggable="true"`,
-		`data-kanban-drop-state="In Progress"`,
-		`data-kanban-allowed-targets=`,
-	} {
-		if !strings.Contains(event.data, want) {
-			t.Fatalf("reloaded snapshot event missing %q:\n%s", want, event.data)
-		}
-	}
-	if strings.Contains(event.data, "Read-only") {
-		t.Fatalf("reloaded snapshot event kept read-only UI:\n%s", event.data)
-	}
-	if strings.Contains(event.data, ">Integration</span>") {
-		t.Fatalf("reloaded snapshot event rendered normal Integration badge:\n%s", event.data)
+	if !strings.Contains(event.data, `data-board-lane="in-progress"`) {
+		t.Fatalf("reloaded snapshot event missing moved card lane:\n%s", event.data)
 	}
 }
 

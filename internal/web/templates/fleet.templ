@@ -33,42 +33,7 @@ templ FleetSnapshotV2(data DashboardData) {
 			@primitives.AllClear(view.AllClear)
 		</div>
 	}
-	@primitives.Panel(primitives.PanelProps{ID: "agent-activity", Title: "Agent activity", Count: view.AgentCount, Live: len(view.Agents) > 0, Class: "flex-none"}) {
-		if len(view.Agents) == 0 {
-			@primitives.EmptyLine("All agents idle")
-		}
-		for i, agent := range view.Agents {
-			<div
-				id={ agent.ID }
-				class={ fleetAgentRowClass(i == len(view.Agents)-1) }
-			>
-				<div class="flex min-w-0 flex-col gap-1">
-					<div class="flex items-center gap-2 font-mono text-xs font-medium text-sec">
-						@primitives.StatusDot(primitives.KindOK, true)
-						<span class="truncate">{ agent.Repo }</span>
-						<span class="flex-none text-text">{ agent.Number }</span>
-					</div>
-					<div class="truncate text-sm font-medium text-text">{ agent.Title }</div>
-				</div>
-				<div class="font-mono text-xs text-sec tabular-nums">{ agent.Elapsed }</div>
-				<div class="flex min-w-0 items-center gap-1.5 text-xs text-info">
-					@primitives.StatusDot(primitives.KindInfo, false)
-					<span class="truncate">{ agent.Stage }</span>
-				</div>
-				<div
-					class="h-1 overflow-hidden rounded-xs bg-line"
-					if agent.ProgressTitle != "" {
-						title={ agent.ProgressTitle }
-					}
-				>
-					if agent.Progress > 0 {
-						<div class="h-full bg-ok" style={ fleetProgressStyle(agent.Progress) }></div>
-					}
-				</div>
-				<div class="text-right font-mono text-xs text-sec tabular-nums">{ agent.TPS }</div>
-			</div>
-		}
-	}
+	@AgentActivityPanel(view.Agents, view.AgentCount)
 	<div id="fleet-figures" class="flex-none">
 		@primitives.FigureRow(view.Figures) {
 			@primitives.MonoFigure("fig-tps", view.TPS)
@@ -107,15 +72,61 @@ templ FleetSnapshotV2(data DashboardData) {
 			}
 		</div>
 	</div>
+	@fleetMetricCards(view.Metrics)
+}
+
+// AgentActivityPanel is the hero: one row per live agent, shared between
+// Fleet and the project Overview tab so the composition never drifts.
+templ AgentActivityPanel(agents []fleetAgentRow, count string) {
+	@primitives.Panel(primitives.PanelProps{ID: "agent-activity", Title: "Agent activity", Count: count, Live: len(agents) > 0, Class: "flex-none"}) {
+		if len(agents) == 0 {
+			@primitives.EmptyLine("All agents idle")
+		}
+		for i, agent := range agents {
+			<div
+				id={ agent.ID }
+				class={ fleetAgentRowClass(i == len(agents)-1) }
+			>
+				<div class="flex min-w-0 flex-col gap-1">
+					<div class="flex items-center gap-2 font-mono text-xs font-medium text-sec">
+						@primitives.StatusDot(primitives.KindOK, true)
+						<span class="truncate">{ agent.Repo }</span>
+						<span class="flex-none text-text">{ agent.Number }</span>
+					</div>
+					<div class="truncate text-sm font-medium text-text">{ agent.Title }</div>
+				</div>
+				<div class="font-mono text-xs text-sec tabular-nums">{ agent.Elapsed }</div>
+				<div class="flex min-w-0 items-center gap-1.5 text-xs text-info">
+					@primitives.StatusDot(primitives.KindInfo, false)
+					<span class="truncate">{ agent.Stage }</span>
+				</div>
+				<div
+					class="h-1 overflow-hidden rounded-xs bg-line"
+					if agent.ProgressTitle != "" {
+						title={ agent.ProgressTitle }
+					}
+				>
+					if agent.Progress > 0 {
+						<div class="h-full bg-ok" style={ fleetProgressStyle(agent.Progress) }></div>
+					}
+				</div>
+				<div class="text-right font-mono text-xs text-sec tabular-nums">{ agent.TPS }</div>
+			</div>
+		}
+	}
+}
+
+// fleetMetricCards renders the three quiet metric cards.
+templ fleetMetricCards(metrics fleetMetrics) {
 	<div id="fleet-metrics" class="grid flex-none grid-cols-3 gap-3">
 		<section id="metric-spend" class="flex flex-col gap-2 rounded-card border border-line bg-surface px-3.5 py-3">
 			<div class="flex items-baseline justify-between gap-2">
 				<span class="text-xs text-sec">Spend · today</span>
-				<span class="whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums">{ view.Metrics.SpendValue }</span>
+				<span class="whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums">{ metrics.SpendValue }</span>
 			</div>
-			if view.Metrics.HasSpend {
-				<div class="mt-2 h-1 overflow-hidden rounded-xs bg-line" title={ view.Metrics.SpendTitle }>
-					<div class={ fleetMeterClass(view.Metrics.SpendWarn) } style={ fleetProgressStyle(view.Metrics.SpendPct) }></div>
+			if metrics.HasSpend {
+				<div class="mt-2 h-1 overflow-hidden rounded-xs bg-line" title={ metrics.SpendTitle }>
+					<div class={ fleetMeterClass(metrics.SpendWarn) } style={ fleetProgressStyle(metrics.SpendPct) }></div>
 				</div>
 			} else {
 				<p class="text-2xs text-dim">No daily budget configured</p>
@@ -124,10 +135,10 @@ templ FleetSnapshotV2(data DashboardData) {
 		<section id="metric-tokens" class="flex flex-col gap-2 rounded-card border border-line bg-surface px-3.5 py-3">
 			<div class="flex items-baseline justify-between gap-2">
 				<span class="text-xs text-sec">Tokens · total</span>
-				<span class="whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums">{ view.Metrics.TokensValue }</span>
+				<span class="whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums">{ metrics.TokensValue }</span>
 			</div>
-			if view.Metrics.HasTokens {
-				@SparklineChart(view.Metrics.TokenChart)
+			if metrics.HasTokens {
+				@SparklineChart(metrics.TokenChart)
 			} else {
 				<p class="text-2xs text-dim">No throughput trend yet</p>
 			}
@@ -135,11 +146,11 @@ templ FleetSnapshotV2(data DashboardData) {
 		<section id="metric-quota" class="flex flex-col gap-2 rounded-card border border-line bg-surface px-3.5 py-3">
 			<div class="flex items-baseline justify-between gap-2">
 				<span class="text-xs text-sec">GitHub quota</span>
-				<span class="whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums">{ view.Metrics.QuotaValue }</span>
+				<span class="whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums">{ metrics.QuotaValue }</span>
 			</div>
-			if view.Metrics.HasQuota {
+			if metrics.HasQuota {
 				<div class="mt-2 h-1 overflow-hidden rounded-xs bg-line">
-					<div class={ fleetMeterClass(view.Metrics.QuotaWarn) } style={ fleetProgressStyle(view.Metrics.QuotaPct) }></div>
+					<div class={ fleetMeterClass(metrics.QuotaWarn) } style={ fleetProgressStyle(metrics.QuotaPct) }></div>
 				</div>
 			} else {
 				<p class="text-2xs text-dim">No quota data yet</p>

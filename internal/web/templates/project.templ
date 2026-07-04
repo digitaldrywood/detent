@@ -1,0 +1,154 @@
+package templates
+
+import "github.com/digitaldrywood/detent/internal/web/ui/primitives"
+
+// projectFrame wraps every project tab: the shared shell, the repo slug in
+// the topbar, the tab sub-nav, then tab content via children (which owns
+// #snapshot). Tabs live outside the live region.
+templ projectFrame(data DashboardData, activeTab string) {
+	@AppShell(ProjectShellDataFromDashboard(data, activeTab), projectSlugBadge(data)) {
+		<nav class="flex flex-none gap-5.5 border-b border-line px-5" aria-label="Project views">
+			for _, tab := range projectTabs(data, activeTab) {
+				<a href={ templ.SafeURL(tab.Href) } class={ projectTabClass(tab) } { sidebarAriaCurrent(tab.Active)... }>{ tab.Label }</a>
+			}
+		</nav>
+		{ children... }
+	}
+}
+
+templ projectSlugBadge(data DashboardData) {
+	if projectRepoURL(data) != "" {
+		<a
+			href={ templ.SafeURL(projectRepoURL(data)) }
+			target="_blank"
+			rel="noopener noreferrer"
+			class="min-w-0 truncate font-mono text-xs text-dim hover:text-accent"
+			aria-label={ projectExternalLinkLabel(data) }
+		>{ projectSlugLabel(data) }</a>
+	} else {
+		<span class="min-w-0 truncate font-mono text-xs text-dim">{ projectSlugLabel(data) }</span>
+	}
+}
+
+// ProjectOverviewPage is the project home: the Fleet layout system scoped
+// to one project, plus the recent-runs table.
+templ ProjectOverviewPage(data DashboardData) {
+	@projectFrame(data, "overview") {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div
+				id="snapshot"
+				class="flex min-h-0 min-w-0 flex-1 flex-col gap-4.5 overflow-y-auto overflow-x-hidden px-5 py-4.5"
+				sse-swap="snapshot"
+				hx-swap="morph:innerHTML"
+				data-preserve-scroll="project-overview-scroll"
+			>
+				@ProjectOverviewSnapshotV2(data)
+			</div>
+		</main>
+	}
+}
+
+templ ProjectOverviewSnapshotV2(data DashboardData) {
+	{{ view := fleetViewFromDashboard(data) }}
+	if len(view.Exceptions) > 0 {
+		<div id="project-exceptions" class="flex-none">
+			@primitives.ExceptionStrip(view.Exceptions)
+		</div>
+	} else {
+		<div id="project-all-clear" class="flex-none">
+			@primitives.AllClear(projectAllClearLabel(data))
+		</div>
+	}
+	@AgentActivityPanel(view.Agents, view.AgentCount)
+	<div id="project-figures" class="flex-none">
+		@primitives.FigureRow(view.Figures) {
+			@primitives.MonoFigure("fig-tps", view.TPS)
+			@primitives.MonoFigure("fig-spend", view.Spend)
+		}
+	</div>
+	<div class="flex flex-none flex-col gap-2.5">
+		<h2 class="text-sm font-semibold text-text">Recent runs</h2>
+		@projectRunsTable("project-recent-runs", projectRunRows(data.Snapshot, 10))
+	</div>
+	@fleetMetricCards(view.Metrics)
+}
+
+// ProjectBoardPage is the Kanban tab: the shared Board component scoped to
+// this project.
+templ ProjectBoardPage(data DashboardData) {
+	@projectFrame(data, "kanban") {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div
+				id="snapshot"
+				class="flex min-h-0 min-w-0 flex-1 flex-col"
+				sse-swap="snapshot"
+				hx-swap="morph:innerHTML"
+			>
+				@BoardSnapshot(data)
+			</div>
+		</main>
+		@boardLaneScript()
+	}
+}
+
+// ProjectRunsPageV2 is the full runs table.
+templ ProjectRunsPageV2(data DashboardData) {
+	@projectFrame(data, "runs") {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div
+				id="snapshot"
+				class="flex min-h-0 min-w-0 flex-1 flex-col gap-4.5 overflow-y-auto overflow-x-hidden px-5 py-4.5"
+				sse-swap="snapshot"
+				hx-swap="morph:innerHTML"
+				data-preserve-scroll="project-runs-scroll"
+			>
+				@ProjectRunsSnapshotV2(data)
+			</div>
+		</main>
+	}
+}
+
+templ ProjectRunsSnapshotV2(data DashboardData) {
+	{{ view := fleetViewFromDashboard(data) }}
+	<div id="project-figures" class="flex-none">
+		@primitives.FigureRow(view.Figures) {
+			@primitives.MonoFigure("fig-tps", view.TPS)
+			@primitives.MonoFigure("fig-spend", view.Spend)
+		}
+	</div>
+	@projectRunsTable("project-runs", projectRunRows(data.Snapshot, 0))
+}
+
+// projectRunsTable never clips columns: TITLE is the only flexible column
+// and it ellipsizes. Machine values are mono with tabular numerals; state
+// is a dot plus text, never color alone.
+templ projectRunsTable(id string, rows []projectRunRow) {
+	<section id={ id } class="flex flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
+		<div class="grid grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_70px_110px] items-center gap-3.5 border-b border-line px-4 py-2">
+			<span class="text-2xs font-semibold uppercase text-dim">Issue</span>
+			<span class="text-2xs font-semibold uppercase text-dim">Title</span>
+			<span class="text-2xs font-semibold uppercase text-dim">State</span>
+			<span class="text-2xs font-semibold uppercase text-dim">Runtime · Turns</span>
+			<span class="text-2xs font-semibold uppercase text-dim text-right">Tokens</span>
+			<span class="text-2xs font-semibold uppercase text-dim text-right">Cost</span>
+			<span class="text-2xs font-semibold uppercase text-dim text-right">Finished</span>
+		</div>
+		if len(rows) == 0 {
+			@primitives.EmptyLine("No runs recorded")
+		}
+		for i, row := range rows {
+			<div id={ row.DomID } class={ projectRunRowClass(i == len(rows)-1) }>
+				<span class="whitespace-nowrap font-mono text-xs font-medium text-text tabular-nums">{ row.Ref }</span>
+				<span class="truncate text-sm text-text">{ row.Title }</span>
+				<span class={ "flex items-center gap-1.5 text-xs " + boardExtraTextClass(row.StateKind) }>
+					@primitives.StatusDot(row.StateKind, row.StateLive)
+					{ row.StateText }
+				</span>
+				<span class="whitespace-nowrap font-mono text-xs text-sec tabular-nums">{ row.Runtime }</span>
+				<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Tokens }</span>
+				<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Cost }</span>
+				<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Finished }</span>
+			</div>
+		}
+	</section>
+}
