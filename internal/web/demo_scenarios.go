@@ -276,12 +276,11 @@ func (s *Server) demoDashboard(c echo.Context, scenario demoScenario) error {
 	return render(c, templates.Dashboard(data))
 }
 
-func (s *Server) demoFleetKanban(c echo.Context, scenario demoScenario) error {
+func (s *Server) demoBoard(c echo.Context, scenario demoScenario) error {
 	data := s.demoDashboardData(c.Request().Context(), scenario)
-	data.ActiveNav = "kanban"
-	data.Title = instancePageTitle(s.instanceName(), "Kanban - Detent")
+	data.ActiveNav = "board"
 	applyDashboardPreferences(c.Request(), &data)
-	return render(c, templates.ProjectKanbanPage(data))
+	return render(c, templates.BoardPage(data))
 }
 
 func (s *Server) demoHealthDashboard(c echo.Context, scenario demoScenario) error {

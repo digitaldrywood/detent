@@ -63,7 +63,30 @@ templ appSidebar(data DashboardShellData) {
 			<span class="grid size-5 flex-none place-items-center rounded-card bg-accent font-mono text-2xs font-semibold text-page">D</span>
 			<span class="text-sm font-semibold group-data-[rail=true]/rail:hidden">Detent</span>
 		</a>
-		for _, item := range appShellNavItems(data) {
+		<div id="app-sidebar-content" class="contents" sse-swap="sidebar-v2" hx-swap="morph:innerHTML">
+			@AppSidebarContent(data)
+		</div>
+		<div class="flex-1"></div>
+		<div class="flex items-center px-2.5 group-data-[rail=true]/rail:px-0">
+			<span class="min-w-0 truncate text-2xs text-dim group-data-[rail=true]/rail:hidden" title={ appShellVersionLabel(data) }>{ appShellVersionLabel(data) }</span>
+			<span class="flex-1 group-data-[rail=true]/rail:hidden"></span>
+			<button
+				type="button"
+				class="rounded-chip p-1 text-dim hover:bg-elev hover:text-sec"
+				data-sidebar-toggle
+				aria-label="Toggle sidebar"
+				aria-controls="app-sidebar"
+			>
+				@icon.PanelLeft(icon.Props{Class: "size-3.5"})
+			</button>
+		</div>
+	</aside>
+}
+
+// AppSidebarContent is the live part of the sidebar (nav health dot and
+// project rows), streamed as the sidebar-v2 SSE event and morphed in place.
+templ AppSidebarContent(data DashboardShellData) {
+	for _, item := range appShellNavItems(data) {
 			<a
 				href={ templ.SafeURL(item.Href) }
 				class={ appNavLinkClass(item) }
@@ -99,21 +122,6 @@ templ appSidebar(data DashboardShellData) {
 				</a>
 			}
 		}
-		<div class="flex-1"></div>
-		<div class="flex items-center px-2.5 group-data-[rail=true]/rail:px-0">
-			<span class="text-2xs text-dim group-data-[rail=true]/rail:hidden">{ appShellVersionLabel(data) }</span>
-			<span class="flex-1 group-data-[rail=true]/rail:hidden"></span>
-			<button
-				type="button"
-				class="rounded-chip p-1 text-dim hover:bg-elev hover:text-sec"
-				data-sidebar-toggle
-				aria-label="Toggle sidebar"
-				aria-controls="app-sidebar"
-			>
-				@icon.PanelLeft(icon.Props{Class: "size-3.5"})
-			</button>
-		</div>
-	</aside>
 }
 
 templ appTopbar(data DashboardShellData, scope templ.Component) {

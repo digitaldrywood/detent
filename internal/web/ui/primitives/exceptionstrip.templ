@@ -13,8 +13,10 @@ type Exception struct {
 	Ref  string
 	Rest string
 	// ActionLabel + ActionAttrs wire the right-aligned action (e.g. Review
-	// with hx-get opening the session detail sheet).
+	// with hx-get opening the session detail sheet). When ActionHref is set
+	// the action renders as a plain link instead of a button.
 	ActionLabel string
+	ActionHref  string
 	ActionAttrs templ.Attributes
 }
 
@@ -54,7 +56,9 @@ templ ExceptionStrip(items []Exception) {
 							{ item.Rest }
 						</span>
 						<span class="flex-1"></span>
-						if item.ActionLabel != "" {
+						if item.ActionLabel != "" && item.ActionHref != "" {
+							<a href={ templ.SafeURL(item.ActionHref) } class={ item.actionClass() } { item.ActionAttrs... }>{ item.ActionLabel }</a>
+						} else if item.ActionLabel != "" {
 							<button type="button" class={ item.actionClass() } { item.ActionAttrs... }>{ item.ActionLabel }</button>
 						}
 					</div>

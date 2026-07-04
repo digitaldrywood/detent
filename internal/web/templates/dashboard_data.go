@@ -688,6 +688,9 @@ func chartEndpoint(data DashboardData) string {
 }
 
 func eventsPath(data DashboardShellData) string {
+	if strings.TrimSpace(data.ProjectID) == "" && strings.TrimSpace(data.ActiveNav) == "board" {
+		return "/events?view=board"
+	}
 	if strings.TrimSpace(data.ProjectID) == "" && strings.TrimSpace(data.ActiveNav) == "kanban" {
 		return "/events?view=kanban"
 	}

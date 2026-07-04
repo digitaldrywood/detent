@@ -22,8 +22,10 @@ const (
 	sseEventSidebar      = "sidebar"
 	sseEventGitHubAPI    = "github-api-health"
 	sseEventTick         = "tick"
+	sseEventSidebarV2    = "sidebar-v2"
 	sseViewHealth        = "health"
 	sseViewAnalytics     = "analytics"
+	sseViewBoard         = "board"
 	sseViewKanban        = "kanban"
 	sseViewRuns          = "runs"
 	sseViewDiagnostics   = "diagnostics"
@@ -104,6 +106,9 @@ func (s *Server) events(c echo.Context) error {
 				snapshotComponent = templates.HealthSnapshot(data)
 			} else if selectedNav == sseViewAnalytics {
 				snapshotComponent = templates.AnalyticsSnapshot(data)
+			} else if selectedView == sseViewBoard && (selectedProjectID == "" || data.ProjectID != "") {
+				data.ActiveNav = "board"
+				snapshotComponent = templates.BoardSnapshot(data)
 			} else if selectedView == sseViewKanban && (selectedProjectID == "" || data.ProjectID != "") {
 				data.ActiveNav = "kanban"
 				data = s.withKanbanRefreshFeedback(data)
@@ -127,6 +132,11 @@ func (s *Server) events(c echo.Context) error {
 				sent = true
 			}
 			if ok, err := stream.sendComponent(ctx, res.Writer, sseEventGitHubAPI, templates.GitHubAPIHealthSidebarItem(templates.DashboardShellDataFromDashboard(data)), s.sseHealthInterval); err != nil {
+				return err
+			} else if ok {
+				sent = true
+			}
+			if ok, err := stream.sendComponent(ctx, res.Writer, sseEventSidebarV2, templates.AppSidebarContent(templates.DashboardShellDataFromDashboard(data)), s.sseFragmentInterval); err != nil {
 				return err
 			} else if ok {
 				sent = true

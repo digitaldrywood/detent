@@ -5,8 +5,8 @@ package primitives
 // the state alone. Chips are reserved for action-required states — callers
 // must not render one for a zero count or a passive fact.
 templ Chip(kind Kind, label string) {
-	<span class={ "inline-flex items-center gap-1.5 rounded-chip px-2 py-0.5 text-2xs font-medium " + kind.chipClass() }>
-		<span aria-hidden="true">{ kind.Glyph() }</span>
-		{ label }
+	<span class={ "inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-chip px-2 py-0.5 text-2xs font-medium " + kind.chipClass() } title={ label }>
+		<span class="flex-none" aria-hidden="true">{ kind.Glyph() }</span>
+		<span class="truncate">{ label }</span>
 	</span>
 }
