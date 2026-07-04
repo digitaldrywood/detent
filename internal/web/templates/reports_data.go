@@ -29,6 +29,8 @@ type ReportsData struct {
 	ProjectID        string
 	ProjectName      string
 	SidebarCollapsed bool
+	Theme            string
+	Density          string
 }
 
 type UsageReportData struct {
@@ -109,6 +111,8 @@ func reportsDashboardShellData(data ReportsData) DashboardShellData {
 		ProjectID:        data.ProjectID,
 		ProjectName:      data.ProjectName,
 		SidebarCollapsed: data.SidebarCollapsed,
+		Theme:            data.Theme,
+		Density:          data.Density,
 	}
 }
 

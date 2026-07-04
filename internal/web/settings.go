@@ -18,7 +18,7 @@ func (s *Server) settings(c echo.Context) error {
 		return s.demoSettings(c, scenario, c.QueryParam("project"))
 	}
 	data := s.settingsData(c.Request().Context(), c.QueryParam("project"))
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applySettingsPreferences(c.Request(), &data)
 	return render(c, templates.Settings(data))
 }
 

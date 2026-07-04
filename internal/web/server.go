@@ -54,6 +54,8 @@ const (
 	defaultSSEHealthInterval     = 10 * time.Second
 	defaultSSEMetricsInterval    = time.Minute
 	sidebarStateCookieName       = "sidebar_state"
+	themeCookieName              = "theme"
+	densityCookieName            = "density"
 )
 
 type Config struct {
@@ -264,7 +266,7 @@ func (s *Server) dashboard(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 	data := s.dashboardData(ctx, s.latestSnapshot(ctx))
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applyDashboardPreferences(c.Request(), &data)
 	return render(c, templates.Dashboard(data))
 }
 
@@ -277,7 +279,7 @@ func (s *Server) fleetKanban(c echo.Context) error {
 	ctx := c.Request().Context()
 	data := s.fleetKanbanData(ctx, s.latestSnapshot(ctx))
 	data = s.withKanbanRefreshFeedback(data)
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applyDashboardPreferences(c.Request(), &data)
 	return render(c, templates.ProjectKanbanPage(data))
 }
 
@@ -289,7 +291,7 @@ func (s *Server) healthDashboard(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 	data := s.healthDashboardData(ctx, s.latestSnapshot(ctx))
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applyDashboardPreferences(c.Request(), &data)
 	return render(c, templates.HealthPage(data))
 }
 
@@ -301,7 +303,7 @@ func (s *Server) analyticsDashboard(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 	data := s.analyticsDashboardData(ctx, s.latestSnapshot(ctx))
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applyDashboardPreferences(c.Request(), &data)
 	return render(c, templates.AnalyticsPage(data))
 }
 
@@ -338,10 +340,10 @@ func (s *Server) projectDashboard(c echo.Context) error {
 		settingsData := s.settingsData(ctx, projectID)
 		settingsData.ActiveNav = "configuration"
 		settingsData.Title = s.projectPageTitle(data, "Configuration")
-		settingsData.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+		applySettingsPreferences(c.Request(), &settingsData)
 		return render(c, templates.Settings(settingsData))
 	}
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applyDashboardPreferences(c.Request(), &data)
 	return render(c, templates.Dashboard(data))
 }
 
@@ -351,6 +353,46 @@ func dashboardSidebarCollapsed(r *http.Request) bool {
 		return false
 	}
 	return strings.TrimSpace(cookie.Value) == "false"
+}
+
+func dashboardTheme(r *http.Request) string {
+	cookie, err := r.Cookie(themeCookieName)
+	if err != nil {
+		return ""
+	}
+	if strings.TrimSpace(cookie.Value) == "light" {
+		return "light"
+	}
+	return ""
+}
+
+func dashboardDensity(r *http.Request) string {
+	cookie, err := r.Cookie(densityCookieName)
+	if err != nil {
+		return ""
+	}
+	if strings.TrimSpace(cookie.Value) == "cozy" {
+		return "cozy"
+	}
+	return ""
+}
+
+func applyDashboardPreferences(r *http.Request, data *templates.DashboardData) {
+	data.SidebarCollapsed = dashboardSidebarCollapsed(r)
+	data.Theme = dashboardTheme(r)
+	data.Density = dashboardDensity(r)
+}
+
+func applySettingsPreferences(r *http.Request, data *templates.SettingsData) {
+	data.SidebarCollapsed = dashboardSidebarCollapsed(r)
+	data.Theme = dashboardTheme(r)
+	data.Density = dashboardDensity(r)
+}
+
+func applyReportsPreferences(r *http.Request, data *templates.ReportsData) {
+	data.SidebarCollapsed = dashboardSidebarCollapsed(r)
+	data.Theme = dashboardTheme(r)
+	data.Density = dashboardDensity(r)
 }
 
 func projectRouteParam(c echo.Context) string {

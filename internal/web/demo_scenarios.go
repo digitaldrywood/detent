@@ -272,7 +272,7 @@ func (s *Server) apiDemoScenarios(c echo.Context) error {
 
 func (s *Server) demoDashboard(c echo.Context, scenario demoScenario) error {
 	data := s.demoDashboardData(c.Request().Context(), scenario)
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applyDashboardPreferences(c.Request(), &data)
 	return render(c, templates.Dashboard(data))
 }
 
@@ -280,7 +280,7 @@ func (s *Server) demoFleetKanban(c echo.Context, scenario demoScenario) error {
 	data := s.demoDashboardData(c.Request().Context(), scenario)
 	data.ActiveNav = "kanban"
 	data.Title = instancePageTitle(s.instanceName(), "Kanban - Detent")
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applyDashboardPreferences(c.Request(), &data)
 	return render(c, templates.ProjectKanbanPage(data))
 }
 
@@ -288,7 +288,7 @@ func (s *Server) demoHealthDashboard(c echo.Context, scenario demoScenario) erro
 	data := s.demoDashboardData(c.Request().Context(), scenario)
 	data.ActiveNav = "health"
 	data.Title = instancePageTitle(s.instanceName(), "Health - Detent")
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applyDashboardPreferences(c.Request(), &data)
 	return render(c, templates.HealthPage(data))
 }
 
@@ -296,7 +296,7 @@ func (s *Server) demoAnalyticsDashboard(c echo.Context, scenario demoScenario) e
 	data := s.demoDashboardData(c.Request().Context(), scenario)
 	data.ActiveNav = "analytics"
 	data.Title = instancePageTitle(s.instanceName(), "Analytics - Detent")
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applyDashboardPreferences(c.Request(), &data)
 	return render(c, templates.AnalyticsPage(data))
 }
 
@@ -308,7 +308,7 @@ func (s *Server) demoProjectDashboard(c echo.Context, scenario demoScenario, vie
 	if !ok {
 		return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
 	}
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applyDashboardPreferences(c.Request(), &data)
 	switch view {
 	case "kanban":
 		data.ActiveNav = "kanban"
@@ -325,7 +325,7 @@ func (s *Server) demoProjectDashboard(c echo.Context, scenario demoScenario, vie
 	case "configuration":
 		settingsData := s.demoSettingsData(c.Request().Context(), scenario, scenario.ProjectID)
 		settingsData.ActiveNav = "configuration"
-		settingsData.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+		applySettingsPreferences(c.Request(), &settingsData)
 		return render(c, templates.Settings(settingsData))
 	default:
 		return render(c, templates.Dashboard(data))
@@ -338,7 +338,7 @@ func (s *Server) demoReports(c echo.Context, scenario demoScenario) error {
 	}
 	if scenario.Variant == "reports-empty" {
 		data := s.demoEmptyReportsData(c.Request().Context(), scenario)
-		data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+		applyReportsPreferences(c.Request(), &data)
 		return render(c, templates.Reports(data))
 	}
 	projectID := ""
@@ -352,13 +352,13 @@ func (s *Server) demoReports(c echo.Context, scenario demoScenario) error {
 	data.GeneratedAt = demoBaseTime
 	data.Projects = demoProjectsForVariant(scenario.Variant)
 	data.Snapshot = demoSnapshotForScenario(scenario)
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applyReportsPreferences(c.Request(), &data)
 	return render(c, templates.Reports(data))
 }
 
 func (s *Server) demoSettings(c echo.Context, scenario demoScenario, selectedProjectID string) error {
 	data := s.demoSettingsData(c.Request().Context(), scenario, selectedProjectID)
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applySettingsPreferences(c.Request(), &data)
 	return render(c, templates.Settings(data))
 }
 

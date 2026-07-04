@@ -1,0 +1,38 @@
+package primitives
+
+// PanelProps configures a surface card with an optional pinned header.
+type PanelProps struct {
+	// ID must be stable so idiomorph preserves the DOM node across ticks.
+	ID    string
+	Title string
+	// Count renders as an 11px mono figure next to the title.
+	Count string
+	// Live adds a pulsing ok dot before the title (e.g. agents running).
+	Live bool
+	// Class appends layout classes (e.g. flex sizing inside a lane grid).
+	Class string
+}
+
+// Panel is the only card treatment in the app: surface background, hairline
+// border, 6px radius, no shadows. Content renders inside via children.
+templ Panel(props PanelProps) {
+	<section
+		if props.ID != "" {
+			id={ props.ID }
+		}
+		class={ "flex min-w-0 flex-col overflow-hidden rounded-card border border-line bg-surface " + props.Class }
+	>
+		if props.Title != "" {
+			<header class="flex flex-none items-center gap-2 border-b border-line px-4 py-3">
+				if props.Live {
+					@StatusDot(KindOK, true)
+				}
+				<h2 class="text-sm font-semibold text-text">{ props.Title }</h2>
+				if props.Count != "" {
+					<span class="font-mono text-2xs font-medium text-sec tabular-nums">{ props.Count }</span>
+				}
+			</header>
+		}
+		{ children... }
+	</section>
+}

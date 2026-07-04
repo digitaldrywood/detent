@@ -53,6 +53,8 @@ type DashboardData struct {
 	ProjectName      string
 	ProjectPaused    bool
 	SidebarCollapsed bool
+	Theme            string
+	Density          string
 }
 
 type DashboardShellData struct {
@@ -71,6 +73,8 @@ type DashboardShellData struct {
 	ProjectName            string
 	SidebarCollapsed       bool
 	IncludeDashboardCharts bool
+	Theme                  string
+	Density                string
 }
 
 type Budget = telemetry.Budget
@@ -569,6 +573,8 @@ func DashboardShellDataFromDashboard(data DashboardData) DashboardShellData {
 		ProjectName:            data.ProjectName,
 		SidebarCollapsed:       data.SidebarCollapsed,
 		IncludeDashboardCharts: true,
+		Theme:                  data.Theme,
+		Density:                data.Density,
 	}
 }
 

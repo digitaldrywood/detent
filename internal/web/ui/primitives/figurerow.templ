@@ -1,0 +1,56 @@
+package primitives
+
+// Figure is one inline stat: a 16px/600 value with a 12px secondary label.
+// This row replaces every stat-card grid in the app.
+type Figure struct {
+	// ID must be stable for idiomorph and the tick highlight (e.g. "fig-running").
+	ID    string
+	Value string
+	Label string
+	// Err colors the value only when the figure demands attention
+	// (e.g. blocked > 0). Zero stays neutral — no red zeros, ever.
+	Err bool
+	// Changed marks the node for the one-shot tick tint fade.
+	Changed bool
+}
+
+func (f Figure) valueClass() string {
+	if f.Err {
+		return "text-base font-semibold text-err tabular-nums"
+	}
+	return "text-base font-semibold text-text tabular-nums"
+}
+
+// FigureRow lays figures out on one baseline with 28px gaps. Right-aligned
+// extras (mono tps, spend, controls) render via children after the spacer.
+templ FigureRow(figures []Figure) {
+	<div class="flex min-w-0 flex-wrap items-baseline gap-x-7 gap-y-2 text-xs text-sec">
+		for _, f := range figures {
+			<span
+				if f.ID != "" {
+					id={ f.ID }
+				}
+				if f.Changed {
+					data-changed="true"
+				}
+			>
+				<span class={ f.valueClass() }>{ f.Value }</span>
+				{ " " }
+				{ f.Label }
+			</span>
+		}
+		<span class="flex-1"></span>
+		{ children... }
+	</div>
+}
+
+// MonoFigure renders a right-side machine value (tps, money, quota) in
+// 12px mono with tabular numerals.
+templ MonoFigure(id string, value string) {
+	<span
+		if id != "" {
+			id={ id }
+		}
+		class="font-mono text-xs text-sec tabular-nums"
+	>{ value }</span>
+}

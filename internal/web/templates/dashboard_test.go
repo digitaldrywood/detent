@@ -2329,7 +2329,7 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 	}
 }
 
-func TestProjectKanbanCSSStylesLaneScrollbars(t *testing.T) {
+func TestGlobalCSSStylesThinScrollbars(t *testing.T) {
 	t.Parallel()
 
 	css, err := os.ReadFile("../../../static/css/input.css")
@@ -2339,16 +2339,13 @@ func TestProjectKanbanCSSStylesLaneScrollbars(t *testing.T) {
 	text := string(css)
 
 	for _, want := range []string{
-		".project-kanban-lane-scroll",
+		"::-webkit-scrollbar",
+		"::-webkit-scrollbar-thumb",
+		"scrollbar-color: var(--color-line) transparent;",
 		"scrollbar-width: thin;",
-		"scrollbar-color: var(--project-kanban-lane-scrollbar-thumb) transparent;",
-		".project-kanban-lane-scroll::-webkit-scrollbar",
-		".project-kanban-lane-scroll::-webkit-scrollbar-thumb",
-		"var(--color-border)",
-		"var(--color-muted-foreground)",
 	} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("kanban CSS missing %q:\n%s", want, text)
+			t.Fatalf("global CSS missing %q", want)
 		}
 	}
 }

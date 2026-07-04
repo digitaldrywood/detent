@@ -29,7 +29,7 @@ func (s *Server) reports(c echo.Context) error {
 		s.logger.Error("usage reports page failed", slog.Any("error", err))
 		return c.JSON(http.StatusInternalServerError, errorResponse("usage_reports_failed", "Usage reports failed"))
 	}
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applyReportsPreferences(c.Request(), &data)
 
 	return render(c, templates.Reports(data))
 }

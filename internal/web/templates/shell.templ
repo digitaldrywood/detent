@@ -1,0 +1,172 @@
+package templates
+
+import (
+	"github.com/digitaldrywood/detent/internal/web/ui/components/dialog"
+	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
+)
+
+// AppShell is the redesigned application frame: a 208px sidebar collapsible
+// to a 52px icon rail, and a 48px topbar with page title, optional scope
+// control, live indicator, and density toggle. Page content renders via
+// children and owns the #snapshot live region. The scope component renders
+// in the topbar next to the title; pass nil when the page has no scope.
+templ AppShell(data DashboardShellData, scope templ.Component) {
+	<!DOCTYPE html>
+	<html { appShellHTMLAttributes(data)... }>
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="application-name" content={ applicationName(data.ApplicationName) }/>
+			<title>{ pageTitle(data) }</title>
+			@helpScript()
+			<link rel="icon" type="image/svg+xml" href={ faviconPath(data.Assets) }/>
+			<link rel="preload" href="/static/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin/>
+			<link rel="preload" href="/static/fonts/GeistMono-Variable.woff2" as="font" type="font/woff2" crossorigin/>
+			<link rel="stylesheet" href={ stylesheetPath(data.Assets) }/>
+			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+			<script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"></script>
+			<script src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"></script>
+			@dashboardSSEMetricsScript()
+			if data.IncludeDashboardCharts {
+				<script src={ chartJSPath(data.Assets) } defer></script>
+				<script src={ dashboardChartsScriptPath(data.Assets) } defer></script>
+			}
+			@dialog.Script()
+			@appShellScript()
+		</head>
+		<body class="h-screen overflow-hidden bg-page font-sans text-text antialiased">
+			@helpTooltipHost()
+			@kanbanDialogHost()
+			<div
+				class="flex h-full"
+				hx-ext="sse, morph"
+				sse-connect={ eventsPath(data) }
+			>
+				@appSidebar(data)
+				<div class="flex min-w-0 flex-1 flex-col">
+					@appTopbar(data, scope)
+					{ children... }
+				</div>
+			</div>
+		</body>
+	</html>
+}
+
+templ appSidebar(data DashboardShellData) {
+	<aside
+		id="app-sidebar"
+		class="group/rail flex h-full w-52 flex-none flex-col gap-0.5 overflow-y-auto border-r border-line px-2.5 py-3.5 data-[rail=true]:w-13 data-[rail=true]:items-center data-[rail=true]:px-1.5"
+		data-rail={ appShellRailValue(data) }
+	>
+		<a href="/" class="flex items-center gap-2 rounded-card px-2.5 pb-4 pt-1 group-data-[rail=true]/rail:justify-center group-data-[rail=true]/rail:px-0" aria-label="Detent board">
+			<span class="grid size-5 flex-none place-items-center rounded-card bg-accent font-mono text-2xs font-semibold text-page">D</span>
+			<span class="text-sm font-semibold group-data-[rail=true]/rail:hidden">Detent</span>
+		</a>
+		for _, item := range appShellNavItems(data) {
+			<a
+				href={ templ.SafeURL(item.Href) }
+				class={ appNavLinkClass(item) }
+				title={ item.Label }
+				{ sidebarAriaCurrent(item.Active)... }
+			>
+				<span class="flex-1 group-data-[rail=true]/rail:hidden">{ item.Label }</span>
+				<span class="hidden font-mono text-2xs font-medium group-data-[rail=true]/rail:block" aria-hidden="true">{ appNavInitial(item) }</span>
+				if item.HealthDot {
+					<span class="group-data-[rail=true]/rail:hidden">
+						@primitives.StatusDot(appShellHealthKind(data), false)
+					</span>
+				}
+			</a>
+		}
+		if len(appShellProjects(data)) > 0 {
+			<p class="px-2.5 pb-1.5 pt-4.5 text-2xs font-semibold uppercase tracking-[0.06em] text-dim group-data-[rail=true]/rail:hidden">Projects</p>
+			<div class="hidden pb-1 pt-4.5 group-data-[rail=true]/rail:block" aria-hidden="true">
+				<span class="mx-auto block h-px w-4 bg-line"></span>
+			</div>
+			for _, project := range appShellProjects(data) {
+				<a
+					href={ templ.SafeURL(project.Href) }
+					class={ appProjectLinkClass(project) }
+					title={ project.Name }
+					{ sidebarAriaCurrent(project.Active)... }
+				>
+					@primitives.StatusDot(project.Kind, project.Pulse)
+					<span class="min-w-0 flex-1 truncate group-data-[rail=true]/rail:hidden">{ project.Name }</span>
+					if project.Count != "" {
+						<span class={ appProjectCountClass(project) }>{ project.Count }</span>
+					}
+				</a>
+			}
+		}
+		<div class="flex-1"></div>
+		<div class="flex items-center px-2.5 group-data-[rail=true]/rail:px-0">
+			<span class="text-2xs text-dim group-data-[rail=true]/rail:hidden">{ appShellVersionLabel(data) }</span>
+			<span class="flex-1 group-data-[rail=true]/rail:hidden"></span>
+			<button
+				type="button"
+				class="rounded-chip p-1 text-dim hover:bg-elev hover:text-sec"
+				data-sidebar-toggle
+				aria-label="Toggle sidebar"
+				aria-controls="app-sidebar"
+			>
+				@icon.PanelLeft(icon.Props{Class: "size-3.5"})
+			</button>
+		</div>
+	</aside>
+}
+
+templ appTopbar(data DashboardShellData, scope templ.Component) {
+	<header class="flex h-12 flex-none items-center gap-4 border-b border-line px-5">
+		<h1 class="text-base font-semibold">{ appShellTopbarTitle(data) }</h1>
+		if scope != nil {
+			@scope
+		}
+		<div class="flex-1"></div>
+		<div id="live-indicator" class="flex items-center gap-2 text-xs text-sec" data-live-indicator>
+			@primitives.StatusDot(primitives.KindOK, true)
+			<span data-live-label>Live ·</span>
+			<span id="live-clock" class="font-mono tabular-nums" sse-swap="tick" hx-swap="innerHTML">{ appShellSnapshotClock(data) }</span>
+		</div>
+		<div class="flex overflow-hidden rounded-card border border-line" role="group" aria-label="Density">
+			<button type="button" class={ appDensityButtonClass(data, "compact") } data-density-choice="compact" aria-pressed={ appDensityPressed(data, "compact") }>Compact</button>
+			<button type="button" class={ appDensityButtonClass(data, "cozy") } data-density-choice="cozy" aria-pressed={ appDensityPressed(data, "cozy") }>Cozy</button>
+		</div>
+	</header>
+}
+
+templ appShellScript() {
+	<script>
+		(function () {
+			document.addEventListener("click", function (event) {
+				var toggle = event.target.closest("[data-sidebar-toggle]");
+				if (toggle) {
+					var sidebar = document.getElementById("app-sidebar");
+					if (!sidebar) return;
+					var rail = sidebar.getAttribute("data-rail") !== "true";
+					sidebar.setAttribute("data-rail", rail ? "true" : "false");
+					document.cookie = "sidebar_state=" + (rail ? "false" : "true") + "; path=/; max-age=31536000; samesite=lax";
+					return;
+				}
+				var density = event.target.closest("[data-density-choice]");
+				if (density) {
+					var choice = density.getAttribute("data-density-choice");
+					if (choice === "cozy") {
+						document.documentElement.setAttribute("data-density", "cozy");
+					} else {
+						document.documentElement.removeAttribute("data-density");
+					}
+					document.cookie = "density=" + choice + "; path=/; max-age=31536000; samesite=lax";
+					document.querySelectorAll("[data-density-choice]").forEach(function (button) {
+						var active = button === density;
+						button.setAttribute("aria-pressed", active ? "true" : "false");
+						button.classList.toggle("bg-elev", active);
+						button.classList.toggle("text-text", active);
+						button.classList.toggle("font-medium", active);
+						button.classList.toggle("text-sec", !active);
+					});
+				}
+			});
+		})();
+	</script>
+}

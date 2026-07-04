@@ -1,0 +1,77 @@
+package primitives
+
+// Exception is one blocked / failed / needs-operator item. The strip is the
+// only loud element on any page, so its inputs stay narrow: a bold title,
+// a plain-text detail with an optional mono reference, and one action.
+type Exception struct {
+	// ID must be stable across ticks (e.g. "exception-detent-92").
+	ID    string
+	Kind  Kind // KindErr for blocked/failed, KindWarn for thresholds
+	Title string
+	// Detail renders as secondary text: Repo, then mono Ref, then Rest.
+	Repo string
+	Ref  string
+	Rest string
+	// ActionLabel + ActionAttrs wire the right-aligned action (e.g. Review
+	// with hx-get opening the session detail sheet).
+	ActionLabel string
+	ActionAttrs templ.Attributes
+}
+
+func (e Exception) stripClass() string {
+	if e.Kind == KindWarn {
+		return "flex flex-none items-center gap-3 rounded-card border border-warn/35 bg-warn/9 px-3.5 py-2"
+	}
+	return "flex flex-none items-center gap-3 rounded-card border border-err/35 bg-err/9 px-3.5 py-2"
+}
+
+func (e Exception) actionClass() string {
+	if e.Kind == KindWarn {
+		return "rounded-chip border border-warn/40 px-3 py-1 text-xs font-medium text-warn hover:bg-warn/15"
+	}
+	return "rounded-chip border border-err/40 px-3 py-1 text-xs font-medium text-err hover:bg-err/15"
+}
+
+// ExceptionStrip renders nothing when there are no exceptions: a healthy
+// page shows a quiet all-clear line instead (see AllClear), never an empty
+// alert box or a zero-count bubble. At most three rows render; the rest
+// collapse into one dim "and N more" line.
+templ ExceptionStrip(items []Exception) {
+	if len(items) > 0 {
+		<div class="flex flex-none flex-col gap-2">
+			for i, item := range items {
+				if i < 3 {
+					<div id={ item.ID } class={ item.stripClass() }>
+						<span class={ "text-sm leading-none " + item.Kind.textClass() } aria-hidden="true">{ item.Kind.Glyph() }</span>
+						<span class="text-sm font-medium text-text">{ item.Title }</span>
+						<span class="min-w-0 truncate text-sm text-sec">
+							{ item.Repo }
+							if item.Ref != "" {
+								{ " " }
+								<span class="font-mono text-xs font-medium text-text">{ item.Ref }</span>
+							}
+							{ " " }
+							{ item.Rest }
+						</span>
+						<span class="flex-1"></span>
+						if item.ActionLabel != "" {
+							<button type="button" class={ item.actionClass() } { item.ActionAttrs... }>{ item.ActionLabel }</button>
+						}
+					</div>
+				}
+			}
+			if len(items) > 3 {
+				<p class="px-3.5 text-xs text-dim">and { moreCountLabel(len(items) - 3) } more</p>
+			}
+		</div>
+	}
+}
+
+// AllClear is the healthy counterpart of the exception strip: one quiet
+// sentence, e.g. "All clear — nothing needs you. 2 agents working."
+templ AllClear(message string) {
+	<p class="flex flex-none items-center gap-2 text-xs text-sec">
+		<span class="text-ok" aria-hidden="true">✓</span>
+		{ message }
+	</p>
+}

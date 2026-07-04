@@ -21,6 +21,8 @@ type SettingsData struct {
 	ProjectID        string
 	ProjectName      string
 	SidebarCollapsed bool
+	Theme            string
+	Density          string
 }
 
 type SettingsGlobal struct {
@@ -71,6 +73,8 @@ func settingsDashboardShellData(data SettingsData) DashboardShellData {
 		ProjectID:        data.ProjectID,
 		ProjectName:      data.ProjectName,
 		SidebarCollapsed: data.SidebarCollapsed,
+		Theme:            data.Theme,
+		Density:          data.Density,
 	}
 }
 
