@@ -571,8 +571,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, fmt.Errorf("build prompt: %w", err)
 	}
-	role := agentRuntime.effectiveRunRole(runRole(req.Mode, req.Issue))
-	selection, backend, backendKind, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), role)
+	role := runRole(req.Mode, req.Issue)
+	routeRole := agentRuntime.effectiveRunRole(role)
+	selection, backend, backendKind, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), routeRole)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -583,7 +584,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	runStartedAt := r.now()
 	selectedModel := selection.Model
-	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleCode))
+	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(role))
 	if result, refused, err := r.checkDispatchBudget(ctx, budgetChecker, dispatchEstimator, req.Issue, sessionModel, startedAt); err != nil {
 		return RunResult{}, err
 	} else if refused {
@@ -591,14 +592,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			"workspace_path", info.Path,
 			"backend_id", selection.BackendID,
 			"route", selection.RouteName,
-			"role", RoleCode,
+			"role", role,
 			"model", sessionModel,
 			"code", result.BudgetRefusal.Code,
 		)
 		return result, nil
 	}
-	resumeState := r.agentResumeState(ctx, workflow.Config.Agent, req.Issue, sessionModel, selection.BackendID, backendKind, RoleCode)
-	sessionID, sessionStarted, err := r.startSession(ctx, req.Issue, startedAt, sessionModel, selection.BackendID, backendKind, RoleCode)
+	resumeState := r.agentResumeState(ctx, workflow.Config.Agent, req.Issue, sessionModel, selection.BackendID, backendKind, role)
+	sessionID, sessionStarted, err := r.startSession(ctx, req.Issue, startedAt, sessionModel, selection.BackendID, backendKind, role)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -624,7 +625,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			"workspace_path", info.Path,
 			"backend_id", selection.BackendID,
 			"route", selection.RouteName,
-			"role", RoleCode,
+			"role", role,
 			"thread_id", turnRequest.Resume.ThreadID,
 			"provider_session_id", turnRequest.Resume.SessionID,
 			"error", errorString(execution.err),

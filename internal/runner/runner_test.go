@@ -402,6 +402,81 @@ func TestRunnerRunRefusesDispatchWhenBudgetExceeded(t *testing.T) {
 	}
 }
 
+func TestRunnerRunLogsBudgetRefusalWithDerivedRole(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	now := time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-903", Branch: "detent/issue-903"},
+	}
+	agentBackend := &fakeCodexClient{}
+	checker := &fakeBudgetChecker{
+		refusal: budget.Refusal{
+			Code:      budget.ReasonPerDayMaxUSD,
+			Message:   "daily budget exceeded",
+			RefusedAt: now,
+		},
+	}
+
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{
+				Agents: config.Agents{
+					Backends: []config.AgentBackend{{
+						ID:       "codex-rework",
+						Kind:     "codex",
+						Protocol: "app-server",
+						Command:  "codex app-server --profile rework",
+					}},
+					Routes: []config.AgentRoute{{
+						Name:    "rework",
+						Role:    RoleRework,
+						Backend: "codex-rework",
+						Model:   "gpt-5-rework",
+						Default: true,
+					}},
+				},
+			},
+			Prompt: "work {{ issue.identifier }}",
+		},
+		Workspace:     workspaceBackend,
+		AgentBackends: map[string]AgentBackend{"codex-rework": agentBackend},
+		BudgetChecker: checker,
+		Now:           newFakeClock(now).Now,
+		Logger:        slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-903",
+			Identifier: "digitaldrywood/detent#903",
+			State:      "Rework",
+		},
+		Mode:      RunModeImplement,
+		StartedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.BudgetRefusal == nil {
+		t.Fatal("BudgetRefusal = nil, want refusal")
+	}
+	logText := logs.String()
+	if !strings.Contains(logText, "worker_budget_refused") {
+		t.Fatalf("logs missing worker_budget_refused:\n%s", logText)
+	}
+	if !strings.Contains(logText, "role=rework") {
+		t.Fatalf("budget refusal log = %q, want role=rework", logText)
+	}
+	if strings.Contains(logText, "worker_budget_refused") && strings.Contains(logText, "role=code") {
+		t.Fatalf("budget refusal log = %q, want no code role for rework refusal", logText)
+	}
+}
+
 func TestRunnerRunLeavesThreadResumeDisabledByDefault(t *testing.T) {
 	t.Parallel()
 
@@ -1226,11 +1301,12 @@ func TestRunnerRunRoutesPerStageRoles(t *testing.T) {
 		state       string
 		wantBackend string
 		wantModel   string
+		wantRole    string
 	}{
-		{name: "code default", state: "Todo", wantBackend: "codex-code", wantModel: "gpt-5-code"},
-		{name: "plan mode", mode: RunModePlan, state: "Todo", wantBackend: "codex-plan", wantModel: "gpt-5-plan"},
-		{name: "rework state", mode: RunModeImplement, state: "Rework", wantBackend: "codex-rework", wantModel: "gpt-5-rework"},
-		{name: "merge state", mode: RunModeImplement, state: "Merging", wantBackend: "codex-merge", wantModel: "gpt-5-merge"},
+		{name: "code default", state: "Todo", wantBackend: "codex-code", wantModel: "gpt-5-code", wantRole: RoleCode},
+		{name: "plan mode", mode: RunModePlan, state: "Todo", wantBackend: "codex-plan", wantModel: "gpt-5-plan", wantRole: RolePlan},
+		{name: "rework state", mode: RunModeImplement, state: "Rework", wantBackend: "codex-rework", wantModel: "gpt-5-rework", wantRole: RoleRework},
+		{name: "merge mode", mode: RunModeMerge, state: "Merging", wantBackend: "codex-merge", wantModel: "gpt-5-merge", wantRole: RoleMerge},
 	}
 
 	for _, tt := range tests {
@@ -1246,6 +1322,7 @@ func TestRunnerRunRoutesPerStageRoles(t *testing.T) {
 				"codex-rework": {},
 				"codex-merge":  {},
 			}
+			sessionStore := &fakeSessionStore{sessionID: 861}
 			runner, err := NewRunner(Dependencies{
 				Workflow: config.Workflow{
 					Config: config.Config{
@@ -1273,6 +1350,7 @@ func TestRunnerRunRoutesPerStageRoles(t *testing.T) {
 					"codex-rework": clients["codex-rework"],
 					"codex-merge":  clients["codex-merge"],
 				},
+				Store: sessionStore,
 			})
 			if err != nil {
 				t.Fatalf("NewRunner() error = %v", err)
@@ -1303,7 +1381,164 @@ func TestRunnerRunRoutesPerStageRoles(t *testing.T) {
 			if clients[tt.wantBackend].request.Model != tt.wantModel {
 				t.Fatalf("Model = %q, want %q", clients[tt.wantBackend].request.Model, tt.wantModel)
 			}
+			if sessionStore.started.AgentRole != tt.wantRole {
+				t.Fatalf("SessionStart.AgentRole = %q, want %q", sessionStore.started.AgentRole, tt.wantRole)
+			}
+			if sessionStore.started.Model != tt.wantModel {
+				t.Fatalf("SessionStart.Model = %q, want %q", sessionStore.started.Model, tt.wantModel)
+			}
+			if sessionStore.usage.SessionID != 861 {
+				t.Fatalf("UsageEvent.SessionID = %d, want role-bearing session 861", sessionStore.usage.SessionID)
+			}
+			if sessionStore.phase.SessionID != 861 {
+				t.Fatalf("WorkflowPhaseEvent.SessionID = %d, want role-bearing session 861", sessionStore.phase.SessionID)
+			}
 		})
+	}
+}
+
+func TestRunnerRunThreadResumeUsesDerivedRoleKey(t *testing.T) {
+	t.Parallel()
+
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-903", Branch: "detent/issue-903"},
+	}
+	agentBackend := &fakeCodexClient{
+		result: AgentTurnResult{ThreadID: "thread-merge", TurnID: "turn-merge", SessionID: "session-merge"},
+	}
+	sessionStore := &fakeSessionStore{
+		sessionID: 903,
+		resumeStates: map[string]store.AgentResumeState{
+			RoleCode: {
+				DetentSessionID:   100,
+				ProviderThreadID:  "thread-code",
+				ProviderSessionID: "session-code",
+			},
+		},
+	}
+
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{
+				Agent: config.Agent{ExperimentalThreadResume: true},
+				Agents: config.Agents{
+					Backends: []config.AgentBackend{{
+						ID:       "codex-code",
+						Kind:     "codex",
+						Protocol: "app-server",
+						Command:  "codex app-server",
+					}},
+					Routes: []config.AgentRoute{{
+						Name:    "default",
+						Backend: "codex-code",
+						Model:   "gpt-5-code",
+						Default: true,
+					}},
+				},
+			},
+			Prompt: "work {{ issue.identifier }}",
+		},
+		Workspace:     workspaceBackend,
+		AgentBackends: map[string]AgentBackend{"codex-code": agentBackend},
+		Store:         sessionStore,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-903",
+			Identifier: "digitaldrywood/detent#903",
+			State:      "Merging",
+		},
+		Mode: RunModeMerge,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if sessionStore.resumeLookup.AgentRole != RoleMerge {
+		t.Fatalf("resume lookup role = %q, want %q", sessionStore.resumeLookup.AgentRole, RoleMerge)
+	}
+	if !agentResumeEmpty(agentBackend.request.Resume) {
+		t.Fatalf("AgentTurnRequest.Resume = %#v, want no implement resume state for merge", agentBackend.request.Resume)
+	}
+	if sessionStore.started.AgentRole != RoleMerge {
+		t.Fatalf("SessionStart.AgentRole = %q, want %q", sessionStore.started.AgentRole, RoleMerge)
+	}
+	if sessionStore.started.Model != "gpt-5-code" {
+		t.Fatalf("SessionStart.Model = %q, want fallback code model", sessionStore.started.Model)
+	}
+}
+
+func TestRunnerRunUsesStageDefaultModelForReworkFallback(t *testing.T) {
+	t.Parallel()
+
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-903", Branch: "detent/issue-903"},
+	}
+	agentBackend := &fakeCodexClient{}
+	sessionStore := &fakeSessionStore{sessionID: 904}
+	checker := &fakeBudgetChecker{}
+	estimator := &fakeDispatchEstimator{}
+
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{
+				Agents: config.Agents{
+					Backends: []config.AgentBackend{
+						{ID: "codex-code", Kind: "codex", Protocol: "app-server", Command: "codex app-server"},
+						{ID: "codex-rework", Kind: "codex", Protocol: "app-server", Command: "codex app-server --profile rework"},
+					},
+					Routes: []config.AgentRoute{
+						{
+							Name:    "rework-selector",
+							Role:    RoleRework,
+							Backend: "codex-rework",
+							Selector: selector.Selector{
+								Labels: selector.Labels{Include: []string{"needs-rework"}},
+							},
+						},
+						{Name: "rework-default", Role: RoleRework, Backend: "codex-rework", Model: "gpt-5-rework-default", Default: true},
+						{Name: "default", Backend: "codex-code", Model: "gpt-5-code-default", Default: true},
+					},
+				},
+			},
+			Prompt: "work {{ issue.identifier }}",
+		},
+		Workspace:         workspaceBackend,
+		AgentBackends:     map[string]AgentBackend{"codex-code": &fakeCodexClient{}, "codex-rework": agentBackend},
+		Store:             sessionStore,
+		BudgetChecker:     checker,
+		DispatchEstimator: estimator,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-903",
+			Identifier: "digitaldrywood/detent#903",
+			State:      "Rework",
+			Labels:     []string{"needs-rework"},
+		},
+		Mode: RunModeImplement,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if estimator.model != "gpt-5-rework-default" {
+		t.Fatalf("dispatch estimate model = %q, want rework default", estimator.model)
+	}
+	if checker.model != "gpt-5-rework-default" {
+		t.Fatalf("budget check model = %q, want rework default", checker.model)
+	}
+	if sessionStore.started.Model != "gpt-5-rework-default" {
+		t.Fatalf("SessionStart.Model = %q, want rework default", sessionStore.started.Model)
+	}
+	if sessionStore.started.AgentRole != RoleRework {
+		t.Fatalf("SessionStart.AgentRole = %q, want %q", sessionStore.started.AgentRole, RoleRework)
 	}
 }
 
@@ -1311,13 +1546,14 @@ func TestRunnerRunUnroutedStageRolesUseCodeDefaultRoute(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		mode  string
-		state string
+		name     string
+		mode     string
+		state    string
+		wantRole string
 	}{
-		{name: "plan role", mode: RunModePlan, state: "Todo"},
-		{name: "rework role", mode: RunModeImplement, state: "Rework"},
-		{name: "merge role", mode: RunModeImplement, state: "Merging"},
+		{name: "plan role", mode: RunModePlan, state: "Todo", wantRole: RolePlan},
+		{name: "rework role", mode: RunModeImplement, state: "Rework", wantRole: RoleRework},
+		{name: "merge role", mode: RunModeImplement, state: "Merging", wantRole: RoleMerge},
 	}
 
 	for _, tt := range tests {
@@ -1328,6 +1564,7 @@ func TestRunnerRunUnroutedStageRolesUseCodeDefaultRoute(t *testing.T) {
 				info: workspace.Info{Path: t.TempDir(), Key: "issue-fallback", Branch: "detent/issue-fallback"},
 			}
 			backend := &fakeCodexClient{}
+			sessionStore := &fakeSessionStore{sessionID: 862}
 			runner, err := NewRunner(Dependencies{
 				Workflow: config.Workflow{
 					Config: config.Config{
@@ -1352,6 +1589,7 @@ func TestRunnerRunUnroutedStageRolesUseCodeDefaultRoute(t *testing.T) {
 				AgentBackends: map[string]AgentBackend{
 					"codex-code": backend,
 				},
+				Store: sessionStore,
 			})
 			if err != nil {
 				t.Fatalf("NewRunner() error = %v", err)
@@ -1375,6 +1613,12 @@ func TestRunnerRunUnroutedStageRolesUseCodeDefaultRoute(t *testing.T) {
 			}
 			if backend.request.Model != "gpt-5-code" {
 				t.Fatalf("Model = %q, want code default model", backend.request.Model)
+			}
+			if sessionStore.started.AgentRole != tt.wantRole {
+				t.Fatalf("SessionStart.AgentRole = %q, want %q", sessionStore.started.AgentRole, tt.wantRole)
+			}
+			if sessionStore.started.Model != "gpt-5-code" {
+				t.Fatalf("SessionStart.Model = %q, want fallback code model", sessionStore.started.Model)
 			}
 		})
 	}
@@ -2438,6 +2682,7 @@ type fakeSessionStore struct {
 	finishCalls   int
 	usageCalls    int
 	resumeState   store.AgentResumeState
+	resumeStates  map[string]store.AgentResumeState
 	resumeErr     error
 	resumeLookups int
 	resumeLookup  store.AgentResumeLookup
@@ -2515,6 +2760,13 @@ func (s *fakeSessionStore) LatestCompletedAgentResumeState(_ context.Context, at
 	s.resumeLookup = attrs
 	if s.resumeErr != nil {
 		return store.AgentResumeState{}, s.resumeErr
+	}
+	if s.resumeStates != nil {
+		state := s.resumeStates[attrs.AgentRole]
+		if state.DetentSessionID == 0 && state.ProviderThreadID == "" && state.ProviderSessionID == "" {
+			return store.AgentResumeState{}, store.ErrNotFound
+		}
+		return state, nil
 	}
 	if s.resumeState.DetentSessionID == 0 && s.resumeState.ProviderThreadID == "" && s.resumeState.ProviderSessionID == "" {
 		return store.AgentResumeState{}, store.ErrNotFound
