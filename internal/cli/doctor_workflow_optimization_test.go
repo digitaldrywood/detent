@@ -179,9 +179,13 @@ func TestDoctorWorkflowOptimizationRunawaySessionTokensRespectsConfiguredCap(t *
 			wantFinding: true,
 		},
 		{
-			name:          "configured cap above suggested cap",
-			configuredCap: 50000,
+			name:          "configured cap above tolerance",
+			configuredCap: 51000,
 			wantFinding:   true,
+		},
+		{
+			name:          "configured cap within median drift tolerance",
+			configuredCap: 50000,
 		},
 		{
 			name:          "configured cap equals suggested cap",
