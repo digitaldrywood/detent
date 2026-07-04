@@ -49,6 +49,15 @@ templ ProjectOverviewPage(data DashboardData) {
 }
 
 templ ProjectOverviewSnapshotV2(data DashboardData) {
+	if !snapshotReady(data.Snapshot) {
+		@primitives.SkeletonPanel(2)
+		@primitives.SkeletonPanel(4)
+	} else {
+		@projectOverviewSnapshotBody(data)
+	}
+}
+
+templ projectOverviewSnapshotBody(data DashboardData) {
 	{{ view := fleetViewFromDashboard(data) }}
 	if len(view.Exceptions) > 0 {
 		<div id="project-exceptions" class="flex-none">
@@ -109,6 +118,14 @@ templ ProjectRunsPageV2(data DashboardData) {
 }
 
 templ ProjectRunsSnapshotV2(data DashboardData) {
+	if !snapshotReady(data.Snapshot) {
+		@primitives.SkeletonPanel(6)
+	} else {
+		@projectRunsSnapshotBody(data)
+	}
+}
+
+templ projectRunsSnapshotBody(data DashboardData) {
 	{{ view := fleetViewFromDashboard(data) }}
 	<div id="project-figures" class="flex-none">
 		@primitives.FigureRow(view.Figures) {

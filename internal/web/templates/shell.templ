@@ -34,6 +34,7 @@ templ AppShell(data DashboardShellData, scope templ.Component) {
 			}
 			@dialog.Script()
 			@appShellScript()
+			@liveBehaviorScript()
 		</head>
 		<body class="h-screen overflow-hidden bg-page font-sans text-text antialiased">
 			@helpTooltipHost()
@@ -141,6 +142,141 @@ templ appTopbar(data DashboardShellData, scope templ.Component) {
 			<button type="button" class={ appDensityButtonClass(data, "cozy") } data-density-choice="cozy" aria-pressed={ appDensityPressed(data, "cozy") }>Cozy</button>
 		</div>
 	</header>
+}
+
+// liveBehaviorScript implements the cross-cutting SSE behavior rules from
+// redesign issue 08. It lives outside #snapshot and works by delegation,
+// so idiomorph swaps can never tear it down:
+//   - disconnect degrade: the Live indicator becomes "Reconnecting… data
+//     as of HH:MM" (warn dot) and #snapshot dims; reconnecting restores it
+//   - tick highlight: after each morph, identified nodes whose text
+//     changed get a one-shot data-changed tint (disabled under
+//     prefers-reduced-motion via CSS)
+//   - scroll accumulation: a scrolled lane/log that gains rows shows an
+//     "N new ↑" chip instead of scroll-jacking
+templ liveBehaviorScript() {
+	<script>
+		(function () {
+			var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+			function liveParts() {
+				var indicator = document.querySelector("[data-live-indicator]");
+				if (!indicator) return null;
+				return {
+					indicator: indicator,
+					dot: indicator.querySelector("span[aria-hidden]"),
+					label: indicator.querySelector("[data-live-label]"),
+					clock: document.getElementById("live-clock"),
+				};
+			}
+			function setDisconnected() {
+				var parts = liveParts();
+				if (!parts || document.documentElement.getAttribute("data-live") === "stale") return;
+				document.documentElement.setAttribute("data-live", "stale");
+				if (parts.label) parts.label.textContent = "Reconnecting… data as of";
+				if (parts.dot) {
+					parts.dot.classList.remove("bg-ok");
+					parts.dot.classList.add("bg-warn");
+				}
+				parts.indicator.classList.remove("text-sec");
+				parts.indicator.classList.add("text-warn");
+				var snapshot = document.getElementById("snapshot");
+				if (snapshot) snapshot.style.opacity = "0.85";
+			}
+			function setConnected() {
+				var parts = liveParts();
+				if (!parts) return;
+				document.documentElement.removeAttribute("data-live");
+				if (parts.label) parts.label.textContent = "Live ·";
+				if (parts.dot) {
+					parts.dot.classList.remove("bg-warn");
+					parts.dot.classList.add("bg-ok");
+				}
+				parts.indicator.classList.remove("text-warn");
+				parts.indicator.classList.add("text-sec");
+				var snapshot = document.getElementById("snapshot");
+				if (snapshot) snapshot.style.opacity = "";
+			}
+			document.addEventListener("htmx:sseError", setDisconnected);
+			document.addEventListener("htmx:sseClose", setDisconnected);
+			document.addEventListener("htmx:sseOpen", setConnected);
+			document.addEventListener("htmx:sseBeforeMessage", setConnected);
+
+			var previousText = new Map();
+			var previousCounts = new Map();
+			function snapshotState() {
+				var snapshot = document.getElementById("snapshot");
+				if (!snapshot) return;
+				previousText = new Map();
+				snapshot.querySelectorAll("[id]").forEach(function (node) {
+					previousText.set(node.id, node.textContent);
+				});
+				previousCounts = new Map();
+				snapshot.querySelectorAll("[data-preserve-scroll]").forEach(function (container) {
+					previousCounts.set(container.getAttribute("data-preserve-scroll"), {
+						count: container.childElementCount,
+						scrolled: container.scrollTop > 24,
+					});
+				});
+			}
+			function highlightChanges() {
+				if (reduceMotion) return;
+				var snapshot = document.getElementById("snapshot");
+				if (!snapshot || previousText.size === 0) return;
+				snapshot.querySelectorAll("[id]").forEach(function (node) {
+					var before = previousText.get(node.id);
+					if (before === undefined || before === node.textContent) return;
+					node.removeAttribute("data-changed");
+					void node.offsetWidth;
+					node.setAttribute("data-changed", "true");
+					setTimeout(function () {
+						node.removeAttribute("data-changed");
+					}, 1100);
+				});
+			}
+			function accumulateNew() {
+				var snapshot = document.getElementById("snapshot");
+				if (!snapshot) return;
+				snapshot.querySelectorAll("[data-preserve-scroll]").forEach(function (container) {
+					var key = container.getAttribute("data-preserve-scroll");
+					var before = previousCounts.get(key);
+					if (!before || !before.scrolled) return;
+					var added = container.childElementCount - before.count;
+					if (added <= 0) return;
+					var chip = container.querySelector("[data-new-chip]");
+					var count = added;
+					if (chip) {
+						count += parseInt(chip.getAttribute("data-new-count") || "0", 10);
+					} else {
+						chip = document.createElement("button");
+						chip.type = "button";
+						chip.setAttribute("data-new-chip", "");
+						chip.className = "sticky top-0 z-10 mx-auto flex-none rounded-chip border border-line bg-elev px-2.5 py-1 text-2xs font-medium text-accent";
+						chip.addEventListener("click", function () {
+							container.scrollTo({ top: 0 });
+							chip.remove();
+						});
+						container.prepend(chip);
+					}
+					chip.setAttribute("data-new-count", String(count));
+					chip.textContent = count + " new ↑";
+				});
+			}
+			document.addEventListener("htmx:beforeSwap", function (event) {
+				var target = event.detail && event.detail.target;
+				if (target instanceof Element && (target.id === "snapshot" || target.closest("#snapshot"))) {
+					snapshotState();
+				}
+			});
+			document.addEventListener("htmx:afterSettle", function (event) {
+				var target = event.detail && event.detail.target;
+				if (target instanceof Element && (target.id === "snapshot" || target.closest("#snapshot"))) {
+					highlightChanges();
+					accumulateNew();
+				}
+			});
+		})();
+	</script>
 }
 
 templ appShellScript() {

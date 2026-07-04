@@ -23,6 +23,17 @@ templ FleetPage(data DashboardData) {
 
 // FleetSnapshotV2 is the morph target streamed on SSE ticks for /fleet.
 templ FleetSnapshotV2(data DashboardData) {
+	if boardFirstRun(data) {
+		@primitives.FirstRun("Connect a repository to start orchestrating.", "Add project", "/settings", "projects are defined in the global config")
+	} else if !snapshotReady(data.Snapshot) {
+		@primitives.SkeletonPanel(2)
+		@primitives.SkeletonLanes(3)
+	} else {
+		@fleetSnapshotBody(data)
+	}
+}
+
+templ fleetSnapshotBody(data DashboardData) {
 	{{ view := fleetViewFromDashboard(data) }}
 	if len(view.Exceptions) > 0 {
 		<div id="fleet-exceptions" class="flex-none">

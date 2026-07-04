@@ -226,6 +226,31 @@ func renderBoardComponent(t *testing.T, component templ.Component) string {
 	return buf.String()
 }
 
+func TestBoardSnapshotStates(t *testing.T) {
+	firstRun := renderBoardComponent(t, BoardSnapshot(DashboardData{}))
+	if !strings.Contains(firstRun, "Connect a repository to start orchestrating.") {
+		t.Fatalf("unconfigured board should render first-run state:\n%s", firstRun)
+	}
+	if strings.Contains(firstRun, "dt-skeleton") {
+		t.Fatalf("first-run state must not render skeletons")
+	}
+
+	pending := renderBoardComponent(t, BoardSnapshot(DashboardData{
+		Projects: []ProjectSmallMultiple{{ID: "detent"}},
+	}))
+	if !strings.Contains(pending, "dt-skeleton") {
+		t.Fatalf("configured board awaiting first snapshot should render skeletons:\n%s", pending)
+	}
+	if strings.Contains(pending, `id="board-lanes"`) {
+		t.Fatalf("skeleton state must not render live lanes")
+	}
+
+	ready := renderBoardComponent(t, BoardSnapshot(boardTestData()))
+	if strings.Contains(ready, "dt-skeleton") {
+		t.Fatalf("ready board must never render skeletons")
+	}
+}
+
 func TestBoardSnapshotRenders(t *testing.T) {
 	data := boardTestData()
 	html := renderBoardComponent(t, BoardSnapshot(data))

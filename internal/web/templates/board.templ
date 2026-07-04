@@ -22,7 +22,20 @@ templ BoardPage(data DashboardData) {
 
 // BoardSnapshot is the morph target for SSE ticks. Every element carries a
 // stable id so idiomorph preserves DOM (and lane scroll positions).
+// First paint: an unconfigured instance gets the first-run state, a
+// configured one waiting on its first snapshot gets lane skeletons —
+// never again once data exists.
 templ BoardSnapshot(data DashboardData) {
+	if boardFirstRun(data) {
+		@primitives.FirstRun("Connect a repository to start orchestrating.", "Add project", "/settings", "projects are defined in the global config")
+	} else if !snapshotReady(data.Snapshot) {
+		@primitives.SkeletonLanes(4)
+	} else {
+		@boardSnapshotBody(data)
+	}
+}
+
+templ boardSnapshotBody(data DashboardData) {
 	{{ view := boardViewFromDashboard(data) }}
 	if len(view.Exceptions) > 0 {
 		<div id="board-exceptions" class="flex-none px-5 pt-3.5">

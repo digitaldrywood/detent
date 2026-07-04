@@ -182,6 +182,12 @@ func boardCardExtra(card projectKanbanCard, view boardCardView) (primitives.Kind
 	return primitives.KindNeutral, "", false
 }
 
+// boardFirstRun is true only when nothing is configured at all: no
+// projects registered and no board data ever observed.
+func boardFirstRun(data DashboardData) bool {
+	return len(data.Projects) == 0 && !snapshotReady(data.Snapshot)
+}
+
 func BoardShellDataFromDashboard(data DashboardData) DashboardShellData {
 	shell := DashboardShellDataFromDashboard(data)
 	shell.ActiveNav = "board"
