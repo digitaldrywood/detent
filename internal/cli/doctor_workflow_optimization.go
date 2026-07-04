@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -36,6 +38,7 @@ const (
 	doctorWorkflowRunawayMedianMultiplier = 4.0
 	doctorWorkflowReworkLapThreshold      = 1
 	doctorWorkflowRecentSessionLimit      = 50
+	doctorWorkflowRecentSessionWindow     = 24 * time.Hour
 	doctorWorkflowEmptyModelMinFraction   = 0.20
 	doctorWorkflowBudgetEstimateTotal     = int64(170_000)
 	doctorWorkflowBudgetDriftRatio        = 1.50
@@ -369,7 +372,8 @@ SELECT
   COALESCE(s.output_tokens, 0),
   COALESCE(s.model, ''),
   COALESCE(s.final_state, ''),
-  COALESCE(NULLIF(s.identifier, ''), NULLIF(s.issue_id, ''), NULLIF(s.issue_url, ''), 'unassigned')
+  COALESCE(NULLIF(s.identifier, ''), NULLIF(s.issue_id, ''), NULLIF(s.issue_url, ''), 'unassigned'),
+  COALESCE(s.completed_at, '')
 FROM codex_sessions s
 WHERE s.completed_at IS NOT NULL
   AND (
@@ -390,6 +394,7 @@ ORDER BY s.completed_at DESC, s.id DESC`, projectID, projectID)
 	metrics := doctorWorkflowSessionMetrics{
 		issueSessionCounts: map[string]int64{},
 	}
+	var recentCutoff time.Time
 	for rows.Next() {
 		var totalTokens int64
 		var inputTokens int64
@@ -398,7 +403,12 @@ ORDER BY s.completed_at DESC, s.id DESC`, projectID, projectID)
 		var model string
 		var finalState string
 		var issueKey string
-		if err := rows.Scan(&totalTokens, &inputTokens, &cachedInputTokens, &outputTokens, &model, &finalState, &issueKey); err != nil {
+		var completedAtRaw string
+		if err := rows.Scan(&totalTokens, &inputTokens, &cachedInputTokens, &outputTokens, &model, &finalState, &issueKey, &completedAtRaw); err != nil {
+			return doctorWorkflowSessionMetrics{}, err
+		}
+		completedAt, err := doctorWorkflowSessionTimestamp(completedAtRaw)
+		if err != nil {
 			return doctorWorkflowSessionMetrics{}, err
 		}
 		metrics.count++
@@ -410,7 +420,10 @@ ORDER BY s.completed_at DESC, s.id DESC`, projectID, projectID)
 			metrics.totalTokensBySession = append(metrics.totalTokensBySession, totalTokens)
 		}
 		metrics.issueSessionCounts[issueKey]++
-		if metrics.recentSessionCount < doctorWorkflowRecentSessionLimit {
+		if metrics.count == 1 {
+			recentCutoff = completedAt.Add(-doctorWorkflowRecentSessionWindow)
+		}
+		if metrics.recentSessionCount < doctorWorkflowRecentSessionLimit && !completedAt.Before(recentCutoff) {
 			metrics.recentSessionCount++
 			if strings.TrimSpace(model) == "" {
 				metrics.emptyModelRecentSessions++
@@ -424,6 +437,14 @@ ORDER BY s.completed_at DESC, s.id DESC`, projectID, projectID)
 		return doctorWorkflowSessionMetrics{}, err
 	}
 	return metrics, nil
+}
+
+func doctorWorkflowSessionTimestamp(value string) (time.Time, error) {
+	completedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse codex session completed_at: %w", err)
+	}
+	return completedAt, nil
 }
 
 func doctorWorkflowUsageTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string) (doctorWorkflowUsageMetrics, error) {
@@ -593,20 +614,24 @@ func doctorWorkflowOptimizationFindings(
 		))
 	}
 	if metrics.RecentSessionCount > 0 && metrics.EmptyModelRecentSessions > 0 && metrics.EmptyModelRecentFraction >= doctorWorkflowEmptyModelMinFraction {
-		patches := []doctorWorkflowOptimizationPatch{}
-		if !doctorWorkflowHasDefaultRouteModel(cfg) {
-			patches = append(patches, doctorWorkflowOptimizationPatch{Path: "agents.routes.default.model", Value: "gpt-5-codex"})
+		detail := fmt.Sprintf("%d of %d recent sessions have an empty model", metrics.EmptyModelRecentSessions, metrics.RecentSessionCount)
+		evidence := map[string]any{
+			"recent_session_count":        metrics.RecentSessionCount,
+			"empty_model_recent_sessions": metrics.EmptyModelRecentSessions,
+			"empty_model_recent_fraction": doctorRoundedFloat(metrics.EmptyModelRecentFraction, 2),
+		}
+		if modelConfig, ok := doctorWorkflowDefaultRouteModelConfig(cfg); ok {
+			detail += "; workflow model is configured via " + modelConfig.Source
+			evidence["configured_model_source"] = modelConfig.Source
+			if modelConfig.Model != "" {
+				evidence["configured_model"] = modelConfig.Model
+			}
 		}
 		findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleEmptyModelTelemetry,
 			"Session model telemetry is incomplete",
-			fmt.Sprintf("%d of %d recent sessions have an empty model", metrics.EmptyModelRecentSessions, metrics.RecentSessionCount),
+			detail,
 			0,
-			map[string]any{
-				"recent_session_count":        metrics.RecentSessionCount,
-				"empty_model_recent_sessions": metrics.EmptyModelRecentSessions,
-				"empty_model_recent_fraction": doctorRoundedFloat(metrics.EmptyModelRecentFraction, 2),
-			},
-			patches...,
+			evidence,
 		))
 	}
 	if metrics.P90SessionTokens > 0 && metrics.BudgetEstimateDriftRatio >= doctorWorkflowBudgetDriftRatio {
@@ -672,16 +697,136 @@ func doctorWorkflowFinding(
 }
 
 func doctorWorkflowHasDefaultRouteModel(cfg workflowconfig.Config) bool {
+	_, ok := doctorWorkflowDefaultRouteModelConfig(cfg)
+	return ok
+}
+
+type doctorWorkflowModelConfig struct {
+	Model  string
+	Source string
+}
+
+func doctorWorkflowDefaultRouteModelConfig(cfg workflowconfig.Config) (doctorWorkflowModelConfig, bool) {
+	backends := doctorWorkflowBackendConfigsByID(cfg)
 	for _, route := range cfg.AgentRouteConfigs() {
 		role := strings.ToLower(strings.TrimSpace(route.Role))
 		if role != "" && role != "code" {
 			continue
 		}
-		if route.Default && strings.TrimSpace(route.Model) != "" {
-			return true
+		if !route.Default {
+			continue
+		}
+		if model := strings.TrimSpace(route.Model); model != "" {
+			return doctorWorkflowModelConfig{
+				Model:  model,
+				Source: "agents.routes.model",
+			}, true
+		}
+		if strings.TrimSpace(route.ModelField) != "" {
+			return doctorWorkflowModelConfig{
+				Source: "agents.routes.model_field",
+			}, true
+		}
+		backend, ok := backends[strings.TrimSpace(route.Backend)]
+		if !ok {
+			continue
+		}
+		if model := doctorWorkflowBackendCommandModel(backend); model != "" {
+			return doctorWorkflowModelConfig{
+				Model:  model,
+				Source: "agents.backends.command",
+			}, true
 		}
 	}
-	return false
+	return doctorWorkflowModelConfig{}, false
+}
+
+func doctorWorkflowBackendConfigsByID(cfg workflowconfig.Config) map[string]workflowconfig.AgentBackend {
+	backends := cfg.AgentBackendConfigs()
+	byID := make(map[string]workflowconfig.AgentBackend, len(backends))
+	for _, backend := range backends {
+		byID[strings.TrimSpace(backend.ID)] = backend
+	}
+	return byID
+}
+
+func doctorWorkflowBackendCommandModel(backend workflowconfig.AgentBackend) string {
+	if strings.TrimSpace(backend.Kind) != workflowconfig.AgentBackendCodex {
+		return ""
+	}
+	return doctorWorkflowCommandConfigModel(backend.Command)
+}
+
+func doctorWorkflowCommandConfigModel(command string) string {
+	fields := doctorWorkflowCommandFields(command)
+	for index, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "--config" {
+			if index+1 >= len(fields) {
+				continue
+			}
+			if model := doctorWorkflowConfigModel(fields[index+1]); model != "" {
+				return model
+			}
+			continue
+		}
+		if value, ok := strings.CutPrefix(field, "--config="); ok {
+			if model := doctorWorkflowConfigModel(value); model != "" {
+				return model
+			}
+		}
+	}
+	return ""
+}
+
+func doctorWorkflowConfigModel(value string) string {
+	key, model, ok := strings.Cut(strings.TrimSpace(value), "=")
+	if !ok || strings.TrimSpace(key) != "model" {
+		return ""
+	}
+	return strings.Trim(strings.TrimSpace(model), `"'`)
+}
+
+func doctorWorkflowCommandFields(command string) []string {
+	var fields []string
+	var field strings.Builder
+	var quote rune
+	escaped := false
+	flush := func() {
+		if field.Len() == 0 {
+			return
+		}
+		fields = append(fields, field.String())
+		field.Reset()
+	}
+	for _, r := range command {
+		if escaped {
+			field.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		if quote == 0 && unicode.IsSpace(r) {
+			flush()
+			continue
+		}
+		switch {
+		case quote == 0 && (r == '\'' || r == '"'):
+			quote = r
+		case quote != 0 && r == quote:
+			quote = 0
+		default:
+			field.WriteRune(r)
+		}
+	}
+	if escaped {
+		field.WriteRune('\\')
+	}
+	flush()
+	return fields
 }
 
 func doctorWorkflowOptimizationWorkflowPath(project globalconfig.Project) (string, error) {

@@ -274,8 +274,269 @@ func TestDoctorWorkflowOptimizationWriteRoundTripsWorkflow(t *testing.T) {
 	if workflow.Config.Budget.PerIssueMaxUSD != 8.82 {
 		t.Fatalf("Budget.PerIssueMaxUSD = %v, want 8.82", workflow.Config.Budget.PerIssueMaxUSD)
 	}
+	if doctorWorkflowHasDefaultRouteModel(workflow.Config) {
+		t.Fatalf("workflow gained unexpected default route model after write: %#v", workflow.Config.Agents.Routes)
+	}
+}
+
+func TestDoctorWorkflowOptimizationEmptyModelTelemetryRespectsBackendCommandModel(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: codex-main
+      kind: codex
+      command: codex --config 'model="gpt-5.5"' app-server
+  routes:
+    - name: default
+      backend: codex-main
+      default: true
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
 	if !doctorWorkflowHasDefaultRouteModel(workflow.Config) {
-		t.Fatalf("workflow missing default route model after write: %#v", workflow.Config.Agents.Routes)
+		t.Fatal("doctorWorkflowHasDefaultRouteModel() = false, want true for backend command model")
+	}
+
+	findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", workflow.Config, doctorWorkflowOptimizationMetrics{
+		RecentSessionCount:       50,
+		EmptyModelRecentSessions: 48,
+		EmptyModelRecentFraction: 0.96,
+		TotalTokens:              100_000,
+	})
+	emptyModel := doctorWorkflowFindingByRule(t, findings, doctorWorkflowRuleEmptyModelTelemetry)
+	if len(emptyModel.Patch) != 0 {
+		t.Fatalf("empty model telemetry patch = %#v, want none for configured backend command model", emptyModel.Patch)
+	}
+	if got := emptyModel.Evidence["configured_model"]; got != "gpt-5.5" {
+		t.Fatalf("configured_model evidence = %#v, want gpt-5.5", got)
+	}
+}
+
+func TestDoctorWorkflowOptimizationEmptyModelTelemetryHasNoHardcodedModelPatch(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+codex:
+  command: codex app-server
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+
+	findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", workflow.Config, doctorWorkflowOptimizationMetrics{
+		RecentSessionCount:       50,
+		EmptyModelRecentSessions: 48,
+		EmptyModelRecentFraction: 0.96,
+		TotalTokens:              100_000,
+	})
+	emptyModel := doctorWorkflowFindingByRule(t, findings, doctorWorkflowRuleEmptyModelTelemetry)
+	if len(emptyModel.Patch) != 0 {
+		t.Fatalf("empty model telemetry patch = %#v, want none when configured model is unknown", emptyModel.Patch)
+	}
+}
+
+func TestDoctorWorkflowSessionTelemetryBoundsRecentEmptyModelsByLatestSessionWindow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "detent.db")
+	backend, err := store.Open(ctx, store.Config{
+		Backend: store.BackendSQLite,
+		Path:    dbPath,
+	})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+
+	base := time.Date(2026, 7, 3, 18, 0, 0, 0, time.UTC)
+	recordSession := func(completedAt time.Time, model string) {
+		t.Helper()
+
+		startedAt := completedAt.Add(-5 * time.Minute)
+		sessionID, err := backend.StartSession(ctx, store.SessionStart{
+			Identifier: "digitaldrywood/detent#890",
+			StartedAt:  startedAt,
+			Model:      model,
+		})
+		if err != nil {
+			t.Fatalf("StartSession() error = %v", err)
+		}
+		if err := backend.FinishSession(ctx, sessionID, store.SessionFinish{
+			CompletedAt:       completedAt,
+			Turns:             1,
+			InputTokens:       900,
+			CachedInputTokens: 450,
+			OutputTokens:      100,
+			TotalTokens:       1000,
+			RuntimeSeconds:    300,
+			FinalState:        "completed",
+			Model:             model,
+		}); err != nil {
+			t.Fatalf("FinishSession() error = %v", err)
+		}
+		if _, err := backend.RecordUsageEvent(ctx, store.UsageEvent{
+			ProjectID:         "detent",
+			SessionID:         sessionID,
+			Identifier:        "digitaldrywood/detent#890",
+			Model:             model,
+			InputTokens:       900,
+			CachedInputTokens: 450,
+			OutputTokens:      100,
+			TotalTokens:       1000,
+			RuntimeSeconds:    300,
+			StartedAt:         startedAt,
+			FinishedAt:        completedAt,
+			Outcome:           "completed",
+		}); err != nil {
+			t.Fatalf("RecordUsageEvent() error = %v", err)
+		}
+	}
+
+	for index := range 48 {
+		recordSession(base.Add(-doctorWorkflowRecentSessionWindow-time.Hour-time.Duration(index)*time.Minute), "")
+	}
+	recordSession(base.Add(-time.Minute), "gpt-5.5")
+	recordSession(base, "gpt-5.5")
+
+	if err := backend.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	db, err := openDoctorSQLiteReadOnly(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("openDoctorSQLiteReadOnly() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	metrics, err := doctorWorkflowSessionTelemetry(ctx, db, "detent")
+	if err != nil {
+		t.Fatalf("doctorWorkflowSessionTelemetry() error = %v", err)
+	}
+	if metrics.count != 50 {
+		t.Fatalf("count = %d, want 50", metrics.count)
+	}
+	if metrics.recentSessionCount != 2 {
+		t.Fatalf("recentSessionCount = %d, want 2", metrics.recentSessionCount)
+	}
+	if metrics.emptyModelRecentSessions != 0 {
+		t.Fatalf("emptyModelRecentSessions = %d, want 0", metrics.emptyModelRecentSessions)
+	}
+}
+
+func TestDoctorWorkflowDefaultRouteModelConfigSources(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		raw       string
+		wantOK    bool
+		wantModel string
+	}{
+		{
+			name: "route model",
+			raw: `---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: codex-main
+      kind: codex
+      command: codex app-server
+  routes:
+    - name: default
+      backend: codex-main
+      model: gpt-5-route
+      default: true
+---
+Prompt
+`,
+			wantOK:    true,
+			wantModel: "gpt-5-route",
+		},
+		{
+			name: "backend command config model",
+			raw: `---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: codex-main
+      kind: codex
+      command: codex --config=model=\"gpt-5.5\" app-server
+  routes:
+    - name: default
+      backend: codex-main
+      default: true
+---
+Prompt
+`,
+			wantOK:    true,
+			wantModel: "gpt-5.5",
+		},
+		{
+			name: "route model field",
+			raw: `---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: codex-main
+      kind: codex
+      command: codex app-server
+  routes:
+    - name: default
+      backend: codex-main
+      model_field: Model
+      default: true
+---
+Prompt
+`,
+			wantOK: true,
+		},
+		{
+			name: "no model source",
+			raw: `---
+tracker:
+  kind: memory
+codex:
+  command: codex app-server
+---
+Prompt
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workflow, err := workflowconfig.ParseWorkflow([]byte(tt.raw))
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			got, ok := doctorWorkflowDefaultRouteModelConfig(workflow.Config)
+			if ok != tt.wantOK {
+				t.Fatalf("doctorWorkflowDefaultRouteModelConfig() ok = %v, want %v; config = %#v", ok, tt.wantOK, got)
+			}
+			if got.Model != tt.wantModel {
+				t.Fatalf("doctorWorkflowDefaultRouteModelConfig() model = %q, want %q", got.Model, tt.wantModel)
+			}
+		})
 	}
 }
 
