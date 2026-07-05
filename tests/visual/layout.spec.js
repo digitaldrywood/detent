@@ -331,6 +331,11 @@ async function openScenario(page, options) {
 }
 
 async function capturePageAndAttach(page, name, testInfo) {
+  // Compare against the committed baseline so the visual gate catches pixel
+  // regressions, not just selector/overflow breakage. Baselines are
+  // Linux-rendered (see playwright.config.js: comparison is enabled on Linux
+  // or under DETENT_VISUAL_STRICT); on other platforms this is a no-op.
+  await expect(page).toHaveScreenshot(name);
   const evidenceDir = path.join(process.cwd(), "tmp", "playwright-evidence", testInfo.project.name);
   fs.mkdirSync(evidenceDir, { recursive: true });
   const evidencePath = path.join(evidenceDir, name);
