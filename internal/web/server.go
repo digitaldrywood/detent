@@ -368,6 +368,7 @@ func (s *Server) projectDashboard(c echo.Context) error {
 	case "diagnostics":
 		data.ActiveNav = "diagnostics"
 		data.Title = s.projectPageTitle(data, "Diagnostics")
+		applyDashboardPreferences(c.Request(), &data)
 		return render(c, templates.ProjectDiagnosticsPageV2(data))
 	case "configuration":
 		settingsData := s.settingsData(ctx, projectID)

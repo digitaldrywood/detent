@@ -292,6 +292,30 @@ func renderBoardComponent(t *testing.T, component templ.Component) string {
 	return buf.String()
 }
 
+func TestBoardSnapshotKeepsLanesDuringDegradedRefresh(t *testing.T) {
+	// A degraded refresh that still carries prior tracker data must keep the
+	// last-known lanes visible, not flash skeletons.
+	data := DashboardData{
+		Projects: []ProjectSmallMultiple{{ID: "detent"}},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
+			Refresh:     telemetry.Refresh{Status: telemetry.RefreshStatusDegraded, LastError: "tracker unavailable"},
+			BoardIssues: []telemetry.Issue{
+				{ID: "i1", Identifier: "digitaldrywood/detent#7", ProjectID: "detent", Title: "Last known card", State: "Backlog"},
+			},
+		},
+		Kanban: KanbanData{States: []string{"Backlog"}},
+	}
+
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	if strings.Contains(html, "dt-skeleton") {
+		t.Fatalf("degraded refresh with prior data must not render skeletons:\n%s", html)
+	}
+	if !strings.Contains(html, `id="board-lanes"`) || !strings.Contains(html, "Last known card") {
+		t.Fatalf("degraded refresh should keep the last-known board:\n%s", html)
+	}
+}
+
 func TestBoardSnapshotStates(t *testing.T) {
 	firstRun := renderBoardComponent(t, BoardSnapshot(DashboardData{}))
 	if !strings.Contains(firstRun, "Connect a repository to start orchestrating.") {

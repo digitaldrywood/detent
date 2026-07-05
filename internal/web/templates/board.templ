@@ -24,11 +24,13 @@ templ BoardPage(data DashboardData) {
 // stable id so idiomorph preserves DOM (and lane scroll positions).
 // First paint: an unconfigured instance gets the first-run state, a
 // configured one waiting on its first snapshot gets lane skeletons —
-// never again once data exists.
+// never again once data exists. A degraded refresh that still carries
+// prior tracker data keeps the last-known lanes visible (via
+// projectKanbanBoardLoaded) rather than flashing skeletons.
 templ BoardSnapshot(data DashboardData) {
 	if boardFirstRun(data) {
 		@primitives.FirstRun("Connect a repository to start orchestrating.", "Add project", "/settings", "projects are defined in the global config")
-	} else if !snapshotReady(data.Snapshot) {
+	} else if !projectKanbanBoardLoaded(data) {
 		@primitives.SkeletonLanes(4)
 	} else {
 		@boardSnapshotBody(data)
