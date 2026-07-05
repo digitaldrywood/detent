@@ -1,12 +1,44 @@
 package templates
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
+
+func TestProjectRunRowsUniqueIDsForNonGitHubIdentifiers(t *testing.T) {
+	// Non-GitHub tracker identifiers (e.g. MT-1) split to an empty #number;
+	// each running row must still get a unique, stable DOM id for morph.
+	snapshot := telemetry.Snapshot{
+		Running: []telemetry.Running{
+			{Issue: telemetry.Issue{Identifier: "MT-1", ProjectID: "detent"}},
+			{Issue: telemetry.Issue{Identifier: "MT-2", ProjectID: "detent"}},
+		},
+	}
+	rows := projectRunRows(snapshot, 0)
+	if len(rows) != 2 {
+		t.Fatalf("expected two run rows, got %d", len(rows))
+	}
+	if rows[0].DomID == rows[1].DomID {
+		t.Fatalf("non-GitHub run rows share a DOM id: %q", rows[0].DomID)
+	}
+}
+
+func TestSheetRowLinkSanitizesURL(t *testing.T) {
+	// templ sanitizes plain-string href values; a tracker-provided
+	// javascript: URL must not survive into the detail sheet.
+	var sb strings.Builder
+	if err := sheetRowLink("PR", "#1", "javascript:alert(1)").Render(context.Background(), &sb); err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if strings.Contains(sb.String(), "javascript:alert(1)") {
+		t.Fatalf("javascript URL not sanitized:\n%s", sb.String())
+	}
+}
 
 func TestProjectTabs(t *testing.T) {
 	data := DashboardData{ProjectID: "gopher-ai"}

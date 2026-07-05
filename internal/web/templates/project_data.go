@@ -62,12 +62,22 @@ type projectRunRow struct {
 // first. Per-run dollar cost is not part of the telemetry snapshot; the
 // column renders an em dash until usage data carries it (Reports has the
 // authoritative per-issue spend).
+// runRowIDKey keeps run-row DOM ids unique for non-GitHub tracker
+// identifiers (e.g. memory IDs like MT-1), whose split yields an empty
+// #number; it falls back to the full identifier as fleetAgentRows does.
+func runRowIDKey(repo string, number string) string {
+	if strings.TrimSpace(number) != "" {
+		return number
+	}
+	return repo
+}
+
 func projectRunRows(snapshot telemetry.Snapshot, limit int) []projectRunRow {
 	rows := make([]projectRunRow, 0, len(snapshot.Running)+len(snapshot.Completed))
 	for _, running := range snapshot.Running {
-		_, number := splitIssueIdentifier(issueIdentifier(running.Issue))
+		repo, number := splitIssueIdentifier(issueIdentifier(running.Issue))
 		rows = append(rows, projectRunRow{
-			DomID:     "run-" + boardCardSlug(running.ProjectID, number),
+			DomID:     "run-" + boardCardSlug(running.ProjectID, runRowIDKey(repo, number)),
 			Ref:       projectKanbanIssueNumber(running.Issue),
 			Title:     issueTitle(running.Issue),
 			StateKind: primitives.KindOK,
@@ -85,10 +95,10 @@ func projectRunRows(snapshot telemetry.Snapshot, limit int) []projectRunRow {
 		return completed[i].CompletedAt.After(completed[j].CompletedAt)
 	})
 	for _, session := range completed {
-		_, number := splitIssueIdentifier(issueIdentifier(session.Issue))
+		repo, number := splitIssueIdentifier(issueIdentifier(session.Issue))
 		kind, text := projectRunFinalState(session.FinalState)
 		rows = append(rows, projectRunRow{
-			DomID:     "run-" + boardCardSlug(session.ProjectID, number) + "-" + strings.TrimSpace(session.SessionID),
+			DomID:     "run-" + boardCardSlug(session.ProjectID, runRowIDKey(repo, number)) + "-" + strings.TrimSpace(session.SessionID),
 			Ref:       projectKanbanIssueNumber(session.Issue),
 			Title:     issueTitle(session.Issue),
 			StateKind: kind,

@@ -19,7 +19,7 @@ templ projectFrame(data DashboardData, activeTab string) {
 templ projectSlugBadge(data DashboardData) {
 	if projectRepoURL(data) != "" {
 		<a
-			href={ templ.SafeURL(projectRepoURL(data)) }
+			href={ projectRepoURL(data) }
 			target="_blank"
 			rel="noopener noreferrer"
 			class="min-w-0 truncate font-mono text-xs text-dim hover:text-accent"

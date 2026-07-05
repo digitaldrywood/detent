@@ -132,12 +132,12 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 					}
 					<span class="flex-1"></span>
 					if card.URL != "" {
-						<a href={ templ.SafeURL(card.URL) } target="_blank" rel="noopener noreferrer" class="text-xs font-medium text-accent hover:underline">Open on GitHub ↗</a>
+						<a href={ card.URL } target="_blank" rel="noopener noreferrer" class="text-xs font-medium text-accent hover:underline">Open on GitHub ↗</a>
 					}
 				</footer>
 			} else if card.URL != "" {
 				<footer class="flex flex-none items-center justify-end border-t border-line px-5 py-3">
-					<a href={ templ.SafeURL(card.URL) } target="_blank" rel="noopener noreferrer" class="text-xs font-medium text-accent hover:underline">Open on GitHub ↗</a>
+					<a href={ card.URL } target="_blank" rel="noopener noreferrer" class="text-xs font-medium text-accent hover:underline">Open on GitHub ↗</a>
 				</footer>
 			}
 		</aside>
@@ -163,7 +163,7 @@ templ sheetRowLink(label string, value string, href string) {
 		<div class="flex items-center justify-between gap-3">
 			<span class="flex-none text-sec">{ label }</span>
 			if href != "" {
-				<a class="min-w-0 truncate font-mono text-accent hover:underline" href={ templ.SafeURL(href) } target="_blank" rel="noopener noreferrer">{ value }</a>
+				<a class="min-w-0 truncate font-mono text-accent hover:underline" href={ href } target="_blank" rel="noopener noreferrer">{ value }</a>
 			} else {
 				<span class="min-w-0 truncate font-mono text-text">{ value }</span>
 			}
