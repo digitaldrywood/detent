@@ -111,6 +111,7 @@ func (s *Server) events(c echo.Context) error {
 				snapshotComponent = templates.AnalyticsSnapshotV2(data)
 			} else if selectedView == sseViewBoard && (selectedProjectID == "" || data.ProjectID != "") {
 				data.ActiveNav = "board"
+				data = s.withKanbanRefreshFeedback(data)
 				snapshotComponent = templates.BoardSnapshot(data)
 			} else if selectedView == sseViewFleet && selectedProjectID == "" {
 				data.ActiveNav = "fleet"
