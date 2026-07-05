@@ -138,10 +138,18 @@ func reportsSpendBars(data ReportsData) reportsSpendChart {
 }
 
 func reportsP95(values []float64) float64 {
-	if len(values) < 2 {
+	// Compute the percentile over positive spend only; otherwise a window
+	// dominated by $0 buckets pushes P95 to 0, disables the clamp, and lets a
+	// single spike flatten every other nonzero bar.
+	sorted := make([]float64, 0, len(values))
+	for _, v := range values {
+		if v > 0 {
+			sorted = append(sorted, v)
+		}
+	}
+	if len(sorted) < 2 {
 		return 0
 	}
-	sorted := append([]float64(nil), values...)
 	sort.Float64s(sorted)
 	index := int(float64(len(sorted))*0.95) - 1
 	if index < 0 {
