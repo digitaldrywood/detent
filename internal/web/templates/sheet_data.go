@@ -61,7 +61,7 @@ func FindBoardCard(data DashboardData, projectID string, issueNumber string) (pr
 
 func sheetSessionFor(snapshot telemetry.Snapshot, card projectKanbanCard) sheetSession {
 	for _, running := range snapshot.Running {
-		if issueIdentifier(running.Issue) == card.Identifier {
+		if issueIdentifier(running.Issue) == card.Identifier && sheetSessionMatchesProject(running.ProjectID, card) {
 			session := sheetSession{
 				Present:   true,
 				Kind:      primitives.KindOK,
@@ -77,7 +77,7 @@ func sheetSessionFor(snapshot telemetry.Snapshot, card projectKanbanCard) sheetS
 		}
 	}
 	for _, blocked := range snapshot.Blocked {
-		if issueIdentifier(blocked.Issue) == card.Identifier {
+		if issueIdentifier(blocked.Issue) == card.Identifier && sheetSessionMatchesProject(blocked.ProjectID, card) {
 			session := sheetSession{
 				Present:   true,
 				Kind:      primitives.KindErr,
@@ -92,6 +92,19 @@ func sheetSessionFor(snapshot telemetry.Snapshot, card projectKanbanCard) sheetS
 		}
 	}
 	return sheetSession{}
+}
+
+// sheetSessionMatchesProject guards against cross-project identifier
+// collisions: non-GitHub trackers can reuse an identifier (e.g. MT-1)
+// across projects, so a session only matches a card when their project
+// ids agree. Empty ids on either side stay permissive.
+func sheetSessionMatchesProject(sessionProjectID string, card projectKanbanCard) bool {
+	sessionProjectID = strings.TrimSpace(sessionProjectID)
+	cardProjectID := strings.TrimSpace(card.ProjectID)
+	if sessionProjectID == "" || cardProjectID == "" {
+		return true
+	}
+	return sessionProjectID == cardProjectID
 }
 
 // boardCardSheetPath is the hx-get target that opens the detail sheet.

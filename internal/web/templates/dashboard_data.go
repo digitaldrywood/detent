@@ -2216,6 +2216,14 @@ func projectKanbanActionsEnabled(data DashboardData) bool {
 }
 
 func projectKanbanBoardLoaded(data DashboardData) bool {
+	return snapshotCarriesData(data)
+}
+
+// snapshotCarriesData reports whether the snapshot has data worth rendering:
+// a ready refresh, or a degraded one that still carries prior tracker data.
+// The redesigned snapshot views use it so a transient tracker/API failure
+// keeps the last-known content visible instead of flashing skeletons.
+func snapshotCarriesData(data DashboardData) bool {
 	return snapshotReady(data.Snapshot) ||
 		(snapshotDegraded(data.Snapshot) && snapshotHasPriorTrackerSnapshot(data.Snapshot))
 }

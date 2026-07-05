@@ -25,9 +25,15 @@ templ FleetPage(data DashboardData) {
 templ FleetSnapshotV2(data DashboardData) {
 	if boardFirstRun(data) {
 		@primitives.FirstRun("Connect a repository to start orchestrating.", "Add project", "/settings", "projects are defined in the global config")
-	} else if !snapshotReady(data.Snapshot) {
-		@primitives.SkeletonPanel(2)
-		@primitives.SkeletonLanes(3)
+	} else if !snapshotCarriesData(data) {
+		if snapshotDegraded(data.Snapshot) {
+			<div class="flex-none px-5 pt-4">
+				@snapshotReadiness(data.Snapshot)
+			</div>
+		} else {
+			@primitives.SkeletonPanel(2)
+			@primitives.SkeletonLanes(3)
+		}
 	} else {
 		@fleetSnapshotBody(data)
 	}

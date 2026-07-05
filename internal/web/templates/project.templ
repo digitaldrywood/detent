@@ -49,9 +49,15 @@ templ ProjectOverviewPage(data DashboardData) {
 }
 
 templ ProjectOverviewSnapshotV2(data DashboardData) {
-	if !snapshotReady(data.Snapshot) {
-		@primitives.SkeletonPanel(2)
-		@primitives.SkeletonPanel(4)
+	if !snapshotCarriesData(data) {
+		if snapshotDegraded(data.Snapshot) {
+			<div class="flex-none px-5 pt-4">
+				@snapshotReadiness(data.Snapshot)
+			</div>
+		} else {
+			@primitives.SkeletonPanel(2)
+			@primitives.SkeletonPanel(4)
+		}
 	} else {
 		@projectOverviewSnapshotBody(data)
 	}
@@ -139,8 +145,14 @@ templ ProjectRunsPageV2(data DashboardData) {
 }
 
 templ ProjectRunsSnapshotV2(data DashboardData) {
-	if !snapshotReady(data.Snapshot) {
-		@primitives.SkeletonPanel(6)
+	if !snapshotCarriesData(data) {
+		if snapshotDegraded(data.Snapshot) {
+			<div class="flex-none px-5 pt-4">
+				@snapshotReadiness(data.Snapshot)
+			</div>
+		} else {
+			@primitives.SkeletonPanel(6)
+		}
 	} else {
 		@projectRunsSnapshotBody(data)
 	}

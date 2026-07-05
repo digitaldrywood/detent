@@ -207,3 +207,45 @@ func TestSplitIssueIdentifier(t *testing.T) {
 		}
 	}
 }
+
+func TestFleetSnapshotKeepsBodyDuringDegradedRefresh(t *testing.T) {
+	// A degraded refresh with prior tracker data must keep the fleet body
+	// visible, not flash skeletons.
+	data := DashboardData{
+		Projects: []ProjectSmallMultiple{{ID: "detent"}},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
+			Refresh:     telemetry.Refresh{Status: telemetry.RefreshStatusDegraded, LastError: "tracker unavailable"},
+			BoardIssues: []telemetry.Issue{
+				{ID: "i1", Identifier: "digitaldrywood/detent#7", ProjectID: "detent", Title: "Prior card", State: "Backlog"},
+			},
+		},
+		Kanban: KanbanData{States: []string{"Backlog"}},
+	}
+	html := renderBoardComponent(t, FleetSnapshotV2(data))
+	if strings.Contains(html, "dt-skeleton") {
+		t.Fatalf("degraded fleet refresh must not render skeletons:\n%s", html)
+	}
+	if !strings.Contains(html, "agent-activity") {
+		t.Fatalf("degraded fleet refresh should keep the agent panel:\n%s", html)
+	}
+}
+
+func TestSheetSessionForScopesToProject(t *testing.T) {
+	// Non-GitHub identifiers can repeat across projects; the session lookup
+	// must not surface another project's running session.
+	snapshot := telemetry.Snapshot{
+		Running: []telemetry.Running{
+			{Issue: telemetry.Issue{Identifier: "MT-1", ProjectID: "other"}, WorkerHost: "wrong-host"},
+		},
+	}
+	card := projectKanbanCard{Identifier: "MT-1", ProjectID: "detent"}
+	if got := sheetSessionFor(snapshot, card); got.Present {
+		t.Fatalf("session from another project should not match: %+v", got)
+	}
+
+	snapshot.Running[0].ProjectID = "detent"
+	if got := sheetSessionFor(snapshot, card); !got.Present || got.Host != "wrong-host" {
+		t.Fatalf("same-project session should match: %+v", got)
+	}
+}
