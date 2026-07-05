@@ -288,7 +288,16 @@ templ appShellScript() {
 				if (host) host.innerHTML = "";
 			}
 			document.addEventListener("keydown", function (event) {
-				if (event.key === "Escape") closeDetailSheet();
+				if (event.key === "Escape") {
+					closeDetailSheet();
+					return;
+				}
+				if (event.key !== "Enter" && event.key !== " ") return;
+				var target = event.target;
+				if (target instanceof Element && target.matches('[role="button"][hx-get]')) {
+					event.preventDefault();
+					target.click();
+				}
 			});
 			document.addEventListener("click", function (event) {
 				if (event.target.closest("[data-sheet-close]")) {

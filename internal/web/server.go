@@ -289,16 +289,23 @@ func (s *Server) redirectToBoard(c echo.Context) error {
 }
 
 // apiBoardCard renders the session detail sheet for one board card into
-// the body-level sheet host.
+// the body-level sheet host. The scope param mirrors the board that
+// opened the sheet so its kanban actions post against the same scope
+// and success responses return the matching board fragment.
 func (s *Server) apiBoardCard(c echo.Context) error {
 	ctx := c.Request().Context()
+	projectID := strings.TrimSpace(c.QueryParam("project"))
 	data := s.boardData(ctx, s.latestSnapshot(ctx))
 	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
 		return err
 	} else if ok {
 		data = s.demoDashboardData(ctx, scenario)
+	} else if c.QueryParam("scope") == "project" && projectID != "" {
+		if scoped, ok := s.projectDashboardData(ctx, projectID, s.latestSnapshot(ctx)); ok {
+			data = scoped
+		}
 	}
-	card, ok := templates.FindBoardCard(data, c.QueryParam("project"), c.QueryParam("issue"))
+	card, ok := templates.FindBoardCard(data, projectID, c.QueryParam("issue"))
 	if !ok {
 		return echo.NewHTTPError(http.StatusNotFound, "Card not found")
 	}

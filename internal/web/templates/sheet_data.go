@@ -80,18 +80,24 @@ func sheetSessionFor(snapshot telemetry.Snapshot, card projectKanbanCard) sheetS
 }
 
 // boardCardSheetPath is the hx-get target that opens the detail sheet.
-func boardCardSheetPath(projectID string, issueNumber string) string {
+// Scope records which board hosts the sheet (fleet or project) so the
+// server rebuilds the same scope and the sheet's kanban actions target
+// the right board fragment on success.
+func boardCardSheetPath(projectID string, issueNumber string, scope string) string {
 	values := url.Values{}
 	if projectID = strings.TrimSpace(projectID); projectID != "" {
 		values.Set("project", projectID)
 	}
 	values.Set("issue", strings.TrimPrefix(strings.TrimSpace(issueNumber), "#"))
+	if scope = strings.TrimSpace(scope); scope != "" && scope != "fleet" {
+		values.Set("scope", scope)
+	}
 	return "/api/v1/board/card?" + values.Encode()
 }
 
-func sheetOpenAttrs(projectID string, issueNumber string) templ.Attributes {
+func sheetOpenAttrs(projectID string, issueNumber string, scope string) templ.Attributes {
 	return templ.Attributes{
-		"hx-get":    boardCardSheetPath(projectID, issueNumber),
+		"hx-get":    boardCardSheetPath(projectID, issueNumber, scope),
 		"hx-target": "#detail-sheet-host",
 		"hx-swap":   "innerHTML",
 	}

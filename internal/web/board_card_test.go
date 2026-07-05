@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	web "github.com/digitaldrywood/detent/internal/web"
 )
@@ -58,5 +59,58 @@ func TestAPIBoardCardRendersDetailSheet(t *testing.T) {
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("missing card status = %d, want 404", rec.Code)
+	}
+}
+
+func TestAPIBoardCardPreservesProjectScope(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+		AllowedTransitions: map[string][]string{
+			"Todo": {"In Progress"},
+		},
+	}, &kanbanActionConnector{name: "github"})
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:         "I_scope",
+				Identifier: "digitaldrywood/detent#42",
+				ProjectID:  "detent",
+				Title:      "Scoped sheet card",
+				State:      "Todo",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=42&scope=project", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "kanban_board=project") {
+		t.Fatalf("project-scoped sheet should target the project board:\n%s", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=42", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fleet status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "kanban_board=fleet") {
+		t.Fatalf("fleet sheet should target the fleet board:\n%s", rec.Body.String())
 	}
 }

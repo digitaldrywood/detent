@@ -491,7 +491,7 @@ func boardCardView2(card boardCardView) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templ.RenderAttributes(ctx, templ_7745c5c3_Buffer, sheetOpenAttrs(card.Project, card.Number))
+		templ_7745c5c3_Err = templ.RenderAttributes(ctx, templ_7745c5c3_Buffer, sheetOpenAttrs(card.Project, card.Number, card.Scope))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

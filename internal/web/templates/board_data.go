@@ -40,6 +40,7 @@ type boardCardView struct {
 	DomID     string
 	Number    string
 	Project   string
+	Scope     string
 	Running   bool
 	Done      bool
 	MetaRight string
@@ -53,7 +54,7 @@ func boardViewFromDashboard(data DashboardData) boardView {
 	board := projectKanbanBoardView(data)
 	view := boardView{
 		Key:        boardVisibilityKey(data),
-		Exceptions: boardExceptions(data.Snapshot),
+		Exceptions: boardExceptions(data),
 		Figures:    boardFigures(data.Snapshot),
 		TPS:        throughputRate(data.Snapshot),
 		Spend:      formatUSD(data.Snapshot.Budget.CurrentSpendUSD) + " today",
@@ -74,7 +75,7 @@ func boardViewFromDashboard(data DashboardData) boardView {
 			EmptyMessage:   "No issues in " + lane.Title,
 		}
 		for _, card := range lane.Cards {
-			laneView.Cards = append(laneView.Cards, boardCardViewFromCard(lane, card, terminal))
+			laneView.Cards = append(laneView.Cards, boardCardViewFromCard(lane, card, terminal, projectKanbanBoardScope(data)))
 		}
 		view.Lanes = append(view.Lanes, laneView)
 		view.Total++
@@ -102,7 +103,8 @@ func boardFigures(snapshot telemetry.Snapshot) []primitives.Figure {
 	}
 }
 
-func boardExceptions(snapshot telemetry.Snapshot) []primitives.Exception {
+func boardExceptions(data DashboardData) []primitives.Exception {
+	snapshot := data.Snapshot
 	now := pipelineNow(snapshot)
 	exceptions := make([]primitives.Exception, 0, len(snapshot.Blocked))
 	for _, row := range snapshot.Blocked {
@@ -115,7 +117,7 @@ func boardExceptions(snapshot telemetry.Snapshot) []primitives.Exception {
 			Rest:  boardExceptionDetail(row, now),
 		}
 		exception.ActionLabel = "Review"
-		exception.ActionAttrs = sheetOpenAttrs(row.ProjectID, projectKanbanIssueNumber(row.Issue))
+		exception.ActionAttrs = sheetOpenAttrs(row.ProjectID, projectKanbanIssueNumber(row.Issue), projectKanbanBoardScope(data))
 		exceptions = append(exceptions, exception)
 	}
 	return exceptions
@@ -132,11 +134,12 @@ func boardExceptionDetail(row telemetry.Blocked, now time.Time) string {
 	return detail
 }
 
-func boardCardViewFromCard(lane projectKanbanLane, card projectKanbanCard, terminal bool) boardCardView {
+func boardCardViewFromCard(lane projectKanbanLane, card projectKanbanCard, terminal bool, scope string) boardCardView {
 	view := boardCardView{
 		DomID:   "card-" + boardCardSlug(card.ProjectID, card.IssueNumber),
 		Number:  card.IssueNumber,
 		Project: strings.TrimSpace(card.ProjectID),
+		Scope:   scope,
 		Running: strings.EqualFold(lane.Title, "In Progress"),
 		Done:    terminal,
 		Title:   card.Title,

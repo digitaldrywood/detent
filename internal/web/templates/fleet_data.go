@@ -74,7 +74,7 @@ type fleetMetrics struct {
 func fleetViewFromDashboard(data DashboardData) fleetView {
 	snapshot := data.Snapshot
 	view := fleetView{
-		Exceptions: boardExceptions(snapshot),
+		Exceptions: boardExceptions(data),
 		Agents:     fleetAgentRows(snapshot),
 		AgentCount: formatCount(runningCount(snapshot)) + " running",
 		Figures:    boardFigures(snapshot),

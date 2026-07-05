@@ -164,7 +164,7 @@ func TestBoardFigures(t *testing.T) {
 
 func TestBoardExceptions(t *testing.T) {
 	data := boardTestData()
-	exceptions := boardExceptions(data.Snapshot)
+	exceptions := boardExceptions(data)
 	if len(exceptions) != 1 {
 		t.Fatalf("expected one exception, got %d", len(exceptions))
 	}
@@ -189,7 +189,7 @@ func TestBoardExceptions(t *testing.T) {
 	}
 
 	data.Snapshot.Blocked = nil
-	if got := boardExceptions(data.Snapshot); len(got) != 0 {
+	if got := boardExceptions(data); len(got) != 0 {
 		t.Fatalf("healthy snapshot should produce no exceptions, got %d", len(got))
 	}
 }

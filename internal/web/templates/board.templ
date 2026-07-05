@@ -101,7 +101,7 @@ templ boardCardView2(card boardCardView) {
 		class={ boardCardClass(card) + " cursor-pointer hover:border-accent/50" }
 		role="button"
 		tabindex="0"
-		{ sheetOpenAttrs(card.Project, card.Number)... }
+		{ sheetOpenAttrs(card.Project, card.Number, card.Scope)... }
 	>
 		<div class="flex items-center gap-1.5 font-mono text-2xs font-medium text-sec">
 			if card.Running {

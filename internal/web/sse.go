@@ -224,7 +224,7 @@ func newSSEStream(logger *slog.Logger, metricsEvery time.Duration) *sseStream {
 		last:              make(map[string]sseSentEvent),
 		pending:           make(map[string]ssePendingEvent),
 		metrics:           make(map[string]*sseEventMetrics),
-		pendingFlushOrder: []string{sseEventSnapshot, sseEventSidebar, sseEventGitHubAPI},
+		pendingFlushOrder: []string{sseEventSnapshot, sseEventSidebar, sseEventGitHubAPI, sseEventSidebarV2},
 	}
 }
 
