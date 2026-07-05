@@ -32,6 +32,9 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	} else {
 		refresh.Status = telemetry.RefreshStatusReady
 	}
+	boardIssues := authorizedSnapshotIssues(s.BoardIssues, s.Authorization, s.SelectorContext)
+	pipeline := authorizedSnapshotIssues(s.Pipeline, s.Authorization, s.SelectorContext)
+	statusDrift := authorizedStatusDrift(s.StatusDrift, s.Authorization, s.SelectorContext)
 	snapshot := telemetry.Snapshot{
 		GeneratedAt:        now,
 		Instance:           s.Instance,
@@ -39,9 +42,9 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Shutdown:           shutdownSnapshot(s),
 		Events:             cloneActivityEvents(s.RecentEvents),
 		Refresh:            refresh,
-		TrackerDrift:       statusDriftSnapshot(s.StatusDrift, s.AutoPromoteQuietDuration, s.PollInterval, now),
-		BoardIssues:        issueSnapshots(s.BoardIssues, s.AutoPromoteQuietDuration, s.PollInterval, now),
-		Pipeline:           pipelineSnapshots(s.Pipeline, s.AutoPromoteQuietDuration, s.PollInterval, s.MergeTimings, now),
+		TrackerDrift:       statusDriftSnapshot(statusDrift, s.AutoPromoteQuietDuration, s.PollInterval, now),
+		BoardIssues:        issueSnapshots(boardIssues, s.AutoPromoteQuietDuration, s.PollInterval, now),
+		Pipeline:           pipelineSnapshots(pipeline, s.AutoPromoteQuietDuration, s.PollInterval, s.MergeTimings, now),
 		Running:            runningSnapshots(s.Running, s.Claimed, s.MergeTimings, now),
 		WorkAttempts:       cloneTelemetryWorkAttempts(s.WorkAttempts),
 		SchedulerDecisions: cloneTelemetrySchedulerDecisions(s.SchedulerDecisions),
@@ -61,6 +64,29 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Completed: len(snapshot.Completed),
 	}
 	return snapshot
+}
+
+func authorizedSnapshotIssues(issues []connector.Issue, authorization selector.Selector, ctx selector.Context) []connector.Issue {
+	if !authorization.Configured() {
+		return issues
+	}
+	out := make([]connector.Issue, 0, len(issues))
+	for _, issue := range issues {
+		if selector.Match(issue, authorization, ctx) {
+			out = append(out, issue)
+		}
+	}
+	return out
+}
+
+func authorizedStatusDrift(drift connector.StatusDrift, authorization selector.Selector, ctx selector.Context) connector.StatusDrift {
+	if !authorization.Configured() {
+		return drift
+	}
+	return connector.StatusDrift{
+		UntrackedOpen: authorizedSnapshotIssues(drift.UntrackedOpen, authorization, ctx),
+		OpenTerminal:  authorizedSnapshotIssues(drift.OpenTerminal, authorization, ctx),
+	}
 }
 
 func statusDriftSnapshot(

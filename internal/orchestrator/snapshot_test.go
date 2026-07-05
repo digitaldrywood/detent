@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -104,6 +105,147 @@ func TestStateSnapshotIncludesInstanceIdentityAndScope(t *testing.T) {
 	wantScope := "assignee in @me (detent-bot, release-captain); labels include release"
 	if snapshot.Instance.AuthorizationScope != wantScope {
 		t.Fatalf("Instance.AuthorizationScope = %q, want %q", snapshot.Instance.AuthorizationScope, wantScope)
+	}
+}
+
+func TestStateSnapshotFiltersIssueListsByAuthorization(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name              string
+		cfg               Config
+		boardIssues       []connector.Issue
+		pipeline          []connector.Issue
+		statusDrift       connector.StatusDrift
+		wantBoard         []string
+		wantPipeline      []string
+		wantUntrackedOpen []string
+		wantOpenTerminal  []string
+	}{
+		{
+			name: "no authorization leaves board and pipeline unchanged",
+			cfg:  Config{},
+			boardIssues: []connector.Issue{
+				{ID: "mine", AuthorID: "detent-bot", State: "Todo"},
+				{ID: "teammate", AuthorID: "teammate", State: "In Progress"},
+			},
+			pipeline: []connector.Issue{
+				{ID: "review", AuthorID: "teammate", State: "Human Review"},
+			},
+			statusDrift: connector.StatusDrift{
+				UntrackedOpen: []connector.Issue{
+					{ID: "drift-mine", AuthorID: "detent-bot", State: "Backlog"},
+					{ID: "drift-teammate", AuthorID: "teammate", State: "Backlog"},
+				},
+				OpenTerminal: []connector.Issue{
+					{ID: "done-teammate", AuthorID: "teammate", State: "Done"},
+				},
+			},
+			wantBoard:         []string{"mine", "teammate"},
+			wantPipeline:      []string{"review"},
+			wantUntrackedOpen: []string{"drift-mine", "drift-teammate"},
+			wantOpenTerminal:  []string{"done-teammate"},
+		},
+		{
+			name: "author selector keeps only matching board and pipeline issues",
+			cfg: Config{
+				Authorization: selector.Selector{
+					AuthorIn: []string{"@me"},
+				},
+				SelectorContext: selector.Context{
+					InstanceLogin: "detent-bot",
+					Persona:       "release-captain",
+				},
+			},
+			boardIssues: []connector.Issue{
+				{ID: "mine", AuthorID: "detent-bot", State: "Todo"},
+				{ID: "persona", AuthorID: "release-captain", State: "In Progress"},
+				{ID: "teammate", AuthorID: "teammate", State: "Todo"},
+			},
+			pipeline: []connector.Issue{
+				{ID: "review-mine", AuthorID: "detent-bot", State: "Human Review"},
+				{ID: "review-teammate", AuthorID: "teammate", State: "Human Review"},
+			},
+			statusDrift: connector.StatusDrift{
+				UntrackedOpen: []connector.Issue{
+					{ID: "drift-mine", AuthorID: "detent-bot", State: "Backlog"},
+					{ID: "drift-persona", AuthorID: "release-captain", State: "Backlog"},
+					{ID: "drift-teammate", AuthorID: "teammate", State: "Backlog"},
+				},
+				OpenTerminal: []connector.Issue{
+					{ID: "done-mine", AuthorID: "detent-bot", State: "Done"},
+					{ID: "done-teammate", AuthorID: "teammate", State: "Done"},
+				},
+			},
+			wantBoard:         []string{"mine", "persona"},
+			wantPipeline:      []string{"review-mine"},
+			wantUntrackedOpen: []string{"drift-mine", "drift-persona"},
+			wantOpenTerminal:  []string{"done-mine"},
+		},
+		{
+			name: "compound selector uses selector match semantics",
+			cfg: Config{
+				Authorization: selector.Selector{
+					Labels:     selector.Labels{Include: []string{"release"}},
+					AssigneeIn: []string{"@me"},
+				},
+				SelectorContext: selector.Context{
+					InstanceLogin: "detent-bot",
+				},
+			},
+			boardIssues: []connector.Issue{
+				{ID: "assigned-release", Labels: []string{"release"}, Assignees: []string{"detent-bot"}, State: "Todo"},
+				{ID: "assigned-other-label", Labels: []string{"bug"}, Assignees: []string{"detent-bot"}, State: "Todo"},
+				{ID: "release-unassigned", Labels: []string{"release"}, Assignees: []string{"teammate"}, State: "Todo"},
+			},
+			pipeline: []connector.Issue{
+				{ID: "pipeline-release", Labels: []string{"release"}, Assignees: []string{"detent-bot"}, State: "Merging"},
+				{ID: "pipeline-other", Labels: []string{"release"}, Assignees: []string{"teammate"}, State: "Merging"},
+			},
+			statusDrift: connector.StatusDrift{
+				UntrackedOpen: []connector.Issue{
+					{ID: "drift-release", Labels: []string{"release"}, Assignees: []string{"detent-bot"}, State: "Backlog"},
+					{ID: "drift-other-label", Labels: []string{"bug"}, Assignees: []string{"detent-bot"}, State: "Backlog"},
+					{ID: "drift-unassigned", Labels: []string{"release"}, Assignees: []string{"teammate"}, State: "Backlog"},
+				},
+				OpenTerminal: []connector.Issue{
+					{ID: "done-release", Labels: []string{"release"}, Assignees: []string{"detent-bot"}, State: "Done"},
+					{ID: "done-unassigned", Labels: []string{"release"}, Assignees: []string{"teammate"}, State: "Done"},
+				},
+			},
+			wantBoard:         []string{"assigned-release"},
+			wantPipeline:      []string{"pipeline-release"},
+			wantUntrackedOpen: []string{"drift-release"},
+			wantOpenTerminal:  []string{"done-release"},
+		},
+	}
+
+	for _, tt := range cases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := newState(normalizeConfig(tt.cfg))
+			state.BoardIssues = tt.boardIssues
+			state.Pipeline = tt.pipeline
+			state.StatusDrift = tt.statusDrift
+
+			snapshot := state.Snapshot(now)
+
+			if got := telemetryIssueIDs(snapshot.BoardIssues); !slices.Equal(got, tt.wantBoard) {
+				t.Fatalf("BoardIssues ids = %#v, want %#v", got, tt.wantBoard)
+			}
+			if got := telemetryIssueIDs(snapshot.Pipeline); !slices.Equal(got, tt.wantPipeline) {
+				t.Fatalf("Pipeline ids = %#v, want %#v", got, tt.wantPipeline)
+			}
+			if got := telemetryIssueIDs(snapshot.TrackerDrift.UntrackedOpen); !slices.Equal(got, tt.wantUntrackedOpen) {
+				t.Fatalf("TrackerDrift.UntrackedOpen ids = %#v, want %#v", got, tt.wantUntrackedOpen)
+			}
+			if got := telemetryIssueIDs(snapshot.TrackerDrift.OpenTerminal); !slices.Equal(got, tt.wantOpenTerminal) {
+				t.Fatalf("TrackerDrift.OpenTerminal ids = %#v, want %#v", got, tt.wantOpenTerminal)
+			}
+		})
 	}
 }
 
@@ -740,4 +882,12 @@ func TestStateSnapshotDeterministicOrdering(t *testing.T) {
 		t.Fatalf("Running order = [%s,%s,%s], want [a,b,c]",
 			first.Running[0].ID, first.Running[1].ID, first.Running[2].ID)
 	}
+}
+
+func telemetryIssueIDs(issues []telemetry.Issue) []string {
+	out := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		out = append(out, issue.ID)
+	}
+	return out
 }

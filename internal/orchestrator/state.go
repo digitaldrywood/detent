@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -17,6 +18,8 @@ type State struct {
 	MaxConcurrentAgents      int
 	AutoPromoteQuietDuration time.Duration
 	Instance                 telemetry.Instance
+	Authorization            selector.Selector
+	SelectorContext          selector.Context
 	Draining                 bool
 	DrainStartedAt           time.Time
 	LastRefreshAt            time.Time
@@ -145,6 +148,8 @@ func newState(cfg Config) State {
 		MaxConcurrentAgents:      cfg.MaxConcurrentAgents,
 		AutoPromoteQuietDuration: cfg.AutoPromote.QuietDuration,
 		Instance:                 instanceSnapshot(cfg),
+		Authorization:            cloneSelector(cfg.Authorization),
+		SelectorContext:          cfg.SelectorContext,
 		Running:                  map[string]Running{},
 		Claimed:                  map[string]Claimed{},
 		Blocked:                  map[string]Blocked{},
@@ -167,6 +172,8 @@ func (s State) clone() State {
 		MaxConcurrentAgents:      s.MaxConcurrentAgents,
 		AutoPromoteQuietDuration: s.AutoPromoteQuietDuration,
 		Instance:                 s.Instance,
+		Authorization:            cloneSelector(s.Authorization),
+		SelectorContext:          s.SelectorContext,
 		Draining:                 s.Draining,
 		DrainStartedAt:           s.DrainStartedAt,
 		LastRefreshAt:            s.LastRefreshAt,
@@ -241,6 +248,30 @@ func (s State) clone() State {
 	maps.Copy(cloned.planRework, s.planRework)
 
 	return cloned
+}
+
+func cloneSelector(in selector.Selector) selector.Selector {
+	out := in
+	out.AssigneeIn = cloneStringSlice(in.AssigneeIn)
+	out.AuthorIn = cloneStringSlice(in.AuthorIn)
+	out.PriorityIn = append([]int(nil), in.PriorityIn...)
+	out.Labels.Include = cloneStringSlice(in.Labels.Include)
+	out.Labels.Exclude = cloneStringSlice(in.Labels.Exclude)
+	out.Fields = append([]selector.FieldEquals(nil), in.Fields...)
+	out.And = cloneSelectors(in.And)
+	out.Or = cloneSelectors(in.Or)
+	return out
+}
+
+func cloneSelectors(in []selector.Selector) []selector.Selector {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]selector.Selector, 0, len(in))
+	for _, item := range in {
+		out = append(out, cloneSelector(item))
+	}
+	return out
 }
 
 func clonePriorAttempts(in map[string]runpkg.PriorAttempt) map[string]runpkg.PriorAttempt {
