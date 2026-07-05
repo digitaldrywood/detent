@@ -36,13 +36,12 @@ templ AppShell(data DashboardShellData, scope templ.Component) {
 			@appShellScript()
 			@liveBehaviorScript()
 		</head>
-		<body class="h-screen overflow-hidden bg-page font-sans text-text antialiased">
+		<body class="h-screen overflow-hidden bg-page font-sans text-text antialiased" hx-ext="sse, morph">
 			@helpTooltipHost()
 			@kanbanDialogHost()
 			@DetailSheetHost()
 			<div
 				class="flex h-full"
-				hx-ext="sse, morph"
 				sse-connect={ eventsPath(data) }
 			>
 				@appSidebar(data)

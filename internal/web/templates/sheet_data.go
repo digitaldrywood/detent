@@ -33,10 +33,21 @@ func FindBoardCard(data DashboardData, projectID string, issueNumber string) (pr
 	if !strings.HasPrefix(issueNumber, "#") && issueNumber != "" {
 		issueNumber = "#" + issueNumber
 	}
+	// Legacy single-project snapshots can leave Issue.ProjectID empty, so a
+	// card matches when its project id equals the request or when the card
+	// carries none and the request scopes to the dashboard's project.
+	fallbackProjectID := strings.TrimSpace(data.ProjectID)
 	board := projectKanbanBoardView(data)
 	for _, lane := range board.AllLanes {
 		for _, card := range lane.Cards {
-			if card.IssueNumber == issueNumber && (projectID == "" || strings.TrimSpace(card.ProjectID) == projectID) {
+			if card.IssueNumber != issueNumber {
+				continue
+			}
+			cardProjectID := strings.TrimSpace(card.ProjectID)
+			if cardProjectID == "" {
+				cardProjectID = fallbackProjectID
+			}
+			if projectID == "" || cardProjectID == projectID {
 				return card, true
 			}
 		}

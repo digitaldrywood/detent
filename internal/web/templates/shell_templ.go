@@ -160,7 +160,7 @@ func AppShell(data DashboardShellData, scope templ.Component) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "</head><body class=\"h-screen overflow-hidden bg-page font-sans text-text antialiased\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "</head><body class=\"h-screen overflow-hidden bg-page font-sans text-text antialiased\" hx-ext=\"sse, morph\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -176,14 +176,14 @@ func AppShell(data DashboardShellData, scope templ.Component) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "<div class=\"flex h-full\" hx-ext=\"sse, morph\" sse-connect=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "<div class=\"flex h-full\" sse-connect=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(eventsPath(data))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 46, Col: 34}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 45, Col: 34}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 		if templ_7745c5c3_Err != nil {
@@ -245,7 +245,7 @@ func appSidebar(data DashboardShellData) templ.Component {
 		var templ_7745c5c3_Var10 string
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(appShellRailValue(data))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 62, Col: 37}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 61, Col: 37}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 		if templ_7745c5c3_Err != nil {
@@ -266,7 +266,7 @@ func appSidebar(data DashboardShellData) templ.Component {
 		var templ_7745c5c3_Var11 string
 		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(appShellVersionLabel(data))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 73, Col: 121}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 72, Col: 121}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 		if templ_7745c5c3_Err != nil {
@@ -279,7 +279,7 @@ func appSidebar(data DashboardShellData) templ.Component {
 		var templ_7745c5c3_Var12 string
 		templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(appShellVersionLabel(data))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 73, Col: 152}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 72, Col: 152}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 		if templ_7745c5c3_Err != nil {
@@ -337,7 +337,7 @@ func AppSidebarContent(data DashboardShellData) templ.Component {
 			var templ_7745c5c3_Var15 templ.SafeURL
 			templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(item.Href))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 93, Col: 35}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 92, Col: 35}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 			if templ_7745c5c3_Err != nil {
@@ -363,7 +363,7 @@ func AppSidebarContent(data DashboardShellData) templ.Component {
 			var templ_7745c5c3_Var17 string
 			templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(item.Label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 95, Col: 22}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 94, Col: 22}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 			if templ_7745c5c3_Err != nil {
@@ -384,7 +384,7 @@ func AppSidebarContent(data DashboardShellData) templ.Component {
 			var templ_7745c5c3_Var18 string
 			templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(item.Label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 98, Col: 72}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 97, Col: 72}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 			if templ_7745c5c3_Err != nil {
@@ -397,7 +397,7 @@ func AppSidebarContent(data DashboardShellData) templ.Component {
 			var templ_7745c5c3_Var19 string
 			templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(appNavInitial(item))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 99, Col: 130}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 98, Col: 130}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 			if templ_7745c5c3_Err != nil {
@@ -444,7 +444,7 @@ func AppSidebarContent(data DashboardShellData) templ.Component {
 				var templ_7745c5c3_Var21 templ.SafeURL
 				templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(project.Href))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 114, Col: 39}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 113, Col: 39}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 				if templ_7745c5c3_Err != nil {
@@ -470,7 +470,7 @@ func AppSidebarContent(data DashboardShellData) templ.Component {
 				var templ_7745c5c3_Var23 string
 				templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(project.Name)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 116, Col: 25}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 115, Col: 25}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 				if templ_7745c5c3_Err != nil {
@@ -499,7 +499,7 @@ func AppSidebarContent(data DashboardShellData) templ.Component {
 				var templ_7745c5c3_Var24 string
 				templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(project.Name)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 120, Col: 92}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 119, Col: 92}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 				if templ_7745c5c3_Err != nil {
@@ -535,7 +535,7 @@ func AppSidebarContent(data DashboardShellData) templ.Component {
 					var templ_7745c5c3_Var27 string
 					templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(project.Count)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 122, Col: 67}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 121, Col: 67}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 					if templ_7745c5c3_Err != nil {
@@ -584,7 +584,7 @@ func appTopbar(data DashboardShellData, scope templ.Component) templ.Component {
 		var templ_7745c5c3_Var29 string
 		templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(appShellTopbarTitle(data))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 131, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 130, Col: 65}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 		if templ_7745c5c3_Err != nil {
@@ -615,7 +615,7 @@ func appTopbar(data DashboardShellData, scope templ.Component) templ.Component {
 		var templ_7745c5c3_Var30 string
 		templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(appShellSnapshotClock(data))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 139, Col: 121}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 138, Col: 121}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 		if templ_7745c5c3_Err != nil {
@@ -650,7 +650,7 @@ func appTopbar(data DashboardShellData, scope templ.Component) templ.Component {
 		var templ_7745c5c3_Var33 string
 		templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(appDensityPressed(data, "compact"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 142, Col: 153}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 141, Col: 153}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 		if templ_7745c5c3_Err != nil {
@@ -685,7 +685,7 @@ func appTopbar(data DashboardShellData, scope templ.Component) templ.Component {
 		var templ_7745c5c3_Var36 string
 		templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(appDensityPressed(data, "cozy"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 143, Col: 144}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 142, Col: 144}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 		if templ_7745c5c3_Err != nil {

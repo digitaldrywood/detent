@@ -75,7 +75,7 @@ func boardViewFromDashboard(data DashboardData) boardView {
 			EmptyMessage:   "No issues in " + lane.Title,
 		}
 		for _, card := range lane.Cards {
-			laneView.Cards = append(laneView.Cards, boardCardViewFromCard(lane, card, terminal, projectKanbanBoardScope(data)))
+			laneView.Cards = append(laneView.Cards, boardCardViewFromCard(lane, card, terminal, projectKanbanBoardScope(data), strings.TrimSpace(data.ProjectID)))
 		}
 		view.Lanes = append(view.Lanes, laneView)
 		view.Total++
@@ -138,11 +138,18 @@ func boardExceptionDetail(row telemetry.Blocked, now time.Time) string {
 	return detail
 }
 
-func boardCardViewFromCard(lane projectKanbanLane, card projectKanbanCard, terminal bool, scope string) boardCardView {
+func boardCardViewFromCard(lane projectKanbanLane, card projectKanbanCard, terminal bool, scope string, fallbackProjectID string) boardCardView {
+	// Legacy single-project snapshots can include issues without setting
+	// Issue.ProjectID, so fall back to the scoped dashboard project so the
+	// card slug and the sheet's project-scoped Move/Remove links resolve.
+	projectID := strings.TrimSpace(card.ProjectID)
+	if projectID == "" {
+		projectID = fallbackProjectID
+	}
 	view := boardCardView{
-		DomID:   "card-" + boardCardSlug(card.ProjectID, card.IssueNumber),
+		DomID:   "card-" + boardCardSlug(projectID, card.IssueNumber),
 		Number:  card.IssueNumber,
-		Project: strings.TrimSpace(card.ProjectID),
+		Project: projectID,
 		Scope:   scope,
 		Running: strings.EqualFold(lane.Title, "In Progress"),
 		Done:    terminal,

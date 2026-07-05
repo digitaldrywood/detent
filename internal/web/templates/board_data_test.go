@@ -218,6 +218,45 @@ func TestBoardCardSlug(t *testing.T) {
 	}
 }
 
+func TestBoardCardFallsBackToDashboardProjectID(t *testing.T) {
+	// Legacy single-project snapshots can omit Issue.ProjectID; the card
+	// slug and sheet links must still resolve against the scoped project.
+	data := DashboardData{
+		ProjectID: "detent",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
+			Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			BoardIssues: []telemetry.Issue{
+				{ID: "i1", Identifier: "digitaldrywood/detent#42", Title: "No project id card", State: "Todo"},
+			},
+		},
+		Kanban: KanbanData{States: []string{"Todo"}},
+	}
+
+	view := boardViewFromDashboard(data)
+	var card boardCardView
+	for _, lane := range view.Lanes {
+		for _, c := range lane.Cards {
+			if c.Number == "#42" {
+				card = c
+			}
+		}
+	}
+	if card.DomID != "card-detent-42" {
+		t.Fatalf("card dom id = %q, want card-detent-42", card.DomID)
+	}
+	if card.Project != "detent" {
+		t.Fatalf("card project = %q, want detent fallback", card.Project)
+	}
+	if got, _ := sheetOpenAttrs(card.Project, card.Number, card.Scope, true)["hx-get"].(string); !strings.Contains(got, "project=detent") {
+		t.Fatalf("card sheet link should carry the fallback project, got %q", got)
+	}
+
+	if _, ok := FindBoardCard(data, "detent", "42"); !ok {
+		t.Fatalf("FindBoardCard should match a card by the fallback project id")
+	}
+}
+
 func TestBoardScopeLabel(t *testing.T) {
 	if got := boardScopeLabel(DashboardData{}); got != "All projects" {
 		t.Fatalf("fleet scope label = %q", got)
