@@ -164,7 +164,7 @@ func TestBoardFigures(t *testing.T) {
 
 func TestBoardExceptions(t *testing.T) {
 	data := boardTestData()
-	exceptions := boardExceptions(data)
+	exceptions := boardExceptions(data, true)
 	if len(exceptions) != 1 {
 		t.Fatalf("expected one exception, got %d", len(exceptions))
 	}
@@ -184,12 +184,19 @@ func TestBoardExceptions(t *testing.T) {
 	if exception.ActionLabel != "Review" {
 		t.Fatalf("exception should carry the Review action, got %+v", exception)
 	}
-	if got := exception.ActionAttrs["hx-get"]; got != "/api/v1/board/card?issue=92&project=detent" {
-		t.Fatalf("exception review target = %v", got)
+	if got := exception.ActionAttrs["hx-get"]; got != "/api/v1/board/card?actions=board&issue=92&project=detent" {
+		t.Fatalf("board exception review target = %v", got)
+	}
+
+	// From a non-board surface (Fleet/Overview) the Review sheet must not
+	// carry the board-actions flag, so its Move/Remove stay hidden.
+	fleetExceptions := boardExceptions(data, false)
+	if got, _ := fleetExceptions[0].ActionAttrs["hx-get"].(string); strings.Contains(got, "actions=board") {
+		t.Fatalf("fleet exception review target should omit board actions, got %v", got)
 	}
 
 	data.Snapshot.Blocked = nil
-	if got := boardExceptions(data); len(got) != 0 {
+	if got := boardExceptions(data, true); len(got) != 0 {
 		t.Fatalf("healthy snapshot should produce no exceptions, got %d", len(got))
 	}
 }

@@ -54,7 +54,7 @@ func boardViewFromDashboard(data DashboardData) boardView {
 	board := projectKanbanBoardView(data)
 	view := boardView{
 		Key:        boardVisibilityKey(data),
-		Exceptions: boardExceptions(data),
+		Exceptions: boardExceptions(data, true),
 		Figures:    boardFigures(data.Snapshot),
 		TPS:        throughputRate(data.Snapshot),
 		Spend:      formatUSD(data.Snapshot.Budget.CurrentSpendUSD) + " today",
@@ -103,7 +103,11 @@ func boardFigures(snapshot telemetry.Snapshot) []primitives.Figure {
 	}
 }
 
-func boardExceptions(data DashboardData) []primitives.Exception {
+// boardExceptions builds the exception strip. boardActions is true only
+// when the calling page renders a board into #snapshot (Board, project
+// Kanban), so the Review sheet may offer inline Move/Remove; the Fleet and
+// Overview pages pass false so their Review sheets stay read-only.
+func boardExceptions(data DashboardData, boardActions bool) []primitives.Exception {
 	snapshot := data.Snapshot
 	now := pipelineNow(snapshot)
 	exceptions := make([]primitives.Exception, 0, len(snapshot.Blocked))
@@ -117,7 +121,7 @@ func boardExceptions(data DashboardData) []primitives.Exception {
 			Rest:  boardExceptionDetail(row, now),
 		}
 		exception.ActionLabel = "Review"
-		exception.ActionAttrs = sheetOpenAttrs(row.ProjectID, projectKanbanIssueNumber(row.Issue), projectKanbanBoardScope(data))
+		exception.ActionAttrs = sheetOpenAttrs(row.ProjectID, projectKanbanIssueNumber(row.Issue), projectKanbanBoardScope(data), boardActions)
 		exceptions = append(exceptions, exception)
 	}
 	return exceptions

@@ -309,7 +309,8 @@ func (s *Server) apiBoardCard(c echo.Context) error {
 	if !ok {
 		return echo.NewHTTPError(http.StatusNotFound, "Card not found")
 	}
-	return render(c, templates.BoardCardSheet(data, card))
+	boardActions := c.QueryParam("actions") == "board"
+	return render(c, templates.BoardCardSheet(data, card, boardActions))
 }
 
 func (s *Server) healthDashboard(c echo.Context) error {

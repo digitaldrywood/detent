@@ -81,9 +81,13 @@ func sheetSessionFor(snapshot telemetry.Snapshot, card projectKanbanCard) sheetS
 
 // boardCardSheetPath is the hx-get target that opens the detail sheet.
 // Scope records which board hosts the sheet (fleet or project) so the
-// server rebuilds the same scope and the sheet's kanban actions target
-// the right board fragment on success.
-func boardCardSheetPath(projectID string, issueNumber string, scope string) string {
+// server rebuilds the same scope. boardActions records whether the
+// opening page's #snapshot region actually holds a board — only then can
+// the sheet's Move/Remove actions safely morph the board back into it.
+// The Fleet and project Overview pages show the exception strip but their
+// #snapshot holds other content, so their Review sheets omit those
+// actions rather than swap board lanes over the page the user is on.
+func boardCardSheetPath(projectID string, issueNumber string, scope string, boardActions bool) string {
 	values := url.Values{}
 	if projectID = strings.TrimSpace(projectID); projectID != "" {
 		values.Set("project", projectID)
@@ -92,19 +96,22 @@ func boardCardSheetPath(projectID string, issueNumber string, scope string) stri
 	if scope = strings.TrimSpace(scope); scope != "" && scope != "fleet" {
 		values.Set("scope", scope)
 	}
+	if boardActions {
+		values.Set("actions", "board")
+	}
 	return "/api/v1/board/card?" + values.Encode()
 }
 
-func sheetOpenAttrs(projectID string, issueNumber string, scope string) templ.Attributes {
+func sheetOpenAttrs(projectID string, issueNumber string, scope string, boardActions bool) templ.Attributes {
 	return templ.Attributes{
-		"hx-get":    boardCardSheetPath(projectID, issueNumber, scope),
+		"hx-get":    boardCardSheetPath(projectID, issueNumber, scope, boardActions),
 		"hx-target": "#detail-sheet-host",
 		"hx-swap":   "innerHTML",
 	}
 }
 
-func sheetHasActions(data DashboardData, card projectKanbanCard) bool {
-	return projectKanbanCardCanMove(data, card) || projectKanbanCardCanRemove(data, card)
+func sheetHasActions(data DashboardData, card projectKanbanCard, boardActions bool) bool {
+	return boardActions && (projectKanbanCardCanMove(data, card) || projectKanbanCardCanRemove(data, card))
 }
 
 func sheetAttentionLabel(card projectKanbanCard) string {

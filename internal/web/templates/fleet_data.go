@@ -73,8 +73,10 @@ type fleetMetrics struct {
 
 func fleetViewFromDashboard(data DashboardData) fleetView {
 	snapshot := data.Snapshot
+	// Fleet and project Overview render agent/PR content into #snapshot, not
+	// a board, so their Review sheets omit inline board actions.
 	view := fleetView{
-		Exceptions: boardExceptions(data),
+		Exceptions: boardExceptions(data, false),
 		Agents:     fleetAgentRows(snapshot),
 		AgentCount: formatCount(runningCount(snapshot)) + " running",
 		Figures:    boardFigures(snapshot),

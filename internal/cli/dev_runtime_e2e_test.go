@@ -106,7 +106,7 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 		}
 	}
 
-	sheetURL := dashboardURL + "/api/v1/board/card?project=" + projectID + "&issue=9511"
+	sheetURL := dashboardURL + "/api/v1/board/card?project=" + projectID + "&issue=9511&scope=project&actions=board"
 	waitForDashboardCondition(t, sheetURL, done, "board card detail sheet", func(body string) bool {
 		return strings.Contains(body, "Kanban demo backlog intake") &&
 			strings.Contains(body, `hx-get="/api/v1/kanban/move?`) &&

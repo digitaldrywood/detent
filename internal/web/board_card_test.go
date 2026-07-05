@@ -95,7 +95,7 @@ func TestAPIBoardCardPreservesProjectScope(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=42&scope=project", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=42&scope=project&actions=board", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -105,12 +105,25 @@ func TestAPIBoardCardPreservesProjectScope(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=42", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=42&actions=board", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("fleet status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), "kanban_board=fleet") {
 		t.Fatalf("fleet sheet should target the fleet board:\n%s", rec.Body.String())
+	}
+
+	// Without the board-actions flag (opened from Fleet/Overview) the sheet
+	// must not offer inline kanban actions that would swap board lanes over
+	// the page the user is on.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=42", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("no-actions status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "kanban_board=") {
+		t.Fatalf("sheet opened without board actions must omit kanban actions:\n%s", rec.Body.String())
 	}
 }

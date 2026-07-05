@@ -131,10 +131,10 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "fleet-draining-shutdown", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "draining"},
 		{ID: "fleet-dense-multiproject", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "dense"},
 		{ID: "fleet-degraded-telemetry", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "degraded"},
-		{ID: "github-api-healthy", Route: "/health/ui", WaitSelector: "#health-dashboard", Page: "health", Variant: "github-api-healthy"},
-		{ID: "github-api-warning", Route: "/health/ui", WaitSelector: "#health-dashboard", Page: "health", Variant: "github-api-warning"},
-		{ID: "github-api-secondary-backoff", Route: "/health/ui", WaitSelector: "#health-dashboard", Page: "health", Variant: "github-api-secondary-backoff"},
-		{ID: "github-api-primary-exhausted", Route: "/health/ui", WaitSelector: "#health-dashboard", Page: "health", Variant: "github-api-primary-exhausted"},
+		{ID: "github-api-healthy", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-healthy"},
+		{ID: "github-api-warning", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-warning"},
+		{ID: "github-api-secondary-backoff", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-secondary-backoff"},
+		{ID: "github-api-primary-exhausted", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-primary-exhausted"},
 		{ID: "fleet-kanban-multiproject", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "dense-kanban", KanbanMode: workflowconfig.KanbanModeReadOnly},
 		{ID: "project-active-overview", Route: "/projects/dogfood", WaitSelector: "#snapshot", Page: "project", Variant: "healthy", ProjectID: demoPrimaryProjectID},
 		{ID: "project-paused-overview", Route: "/projects/mobile-client", WaitSelector: "#snapshot", Page: "project", Variant: "paused", ProjectID: "mobile-client"},
@@ -216,15 +216,18 @@ func demoScenarioDefinitions() []demoScenario {
 func demoKeySelectors(def demoScenario) []string {
 	switch def.Page {
 	case "fleet":
-		return []string{"#snapshot", "[aria-label=\"Dashboard health\"]", "[aria-label=\"Project overview\"]"}
+		// The fleet demo scenarios route to the board home ("/").
+		return []string{"#snapshot"}
 	case "fleet-kanban":
-		return []string{"#fleet-kanban", "[data-project-kanban-card]", "[data-project-kanban-visibility-menu]"}
+		return []string{"#snapshot", "#board-lanes"}
 	case "kanban":
-		return []string{"#project-kanban", "[data-kanban-card]", "[data-project-kanban-visibility-menu]"}
+		// The startup-loading scenario renders a skeleton, so only
+		// #snapshot is reliably present across every kanban scenario.
+		return []string{"#snapshot"}
 	case "reports":
-		return []string{"main", "[aria-label=\"Usage reports\"]"}
+		return []string{"main", "#reports-kpis"}
 	case "settings":
-		return []string{"main", "[aria-label=\"Settings\"]"}
+		return []string{"main", "#settings-global"}
 	case "onboarding":
 		return []string{"#onboarding-step"}
 	default:
