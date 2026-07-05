@@ -82,6 +82,32 @@ func TestDocsCoverGitHubLocalTrackerMode(t *testing.T) {
 	}
 }
 
+func TestOnboardingDocsDescribeNoPersistentLabelWriteProbes(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+	readme := readRepositoryTextFile(t, "README.md")
+	template := readRepositoryTextFile(t, "docs/templates/WORKFLOW.label.md")
+
+	for _, want := range []string{
+		"Label mode should not create or require a status-labeled scratch issue by default",
+		"issue-write permission-class proof",
+		"remove its Detent status label or close it",
+	} {
+		assertContainsWords(t, onboarding, want)
+	}
+	for _, want := range []string{
+		"does not need a persistent status-labeled scratch issue",
+		"proving the token has the repository Issues write permission class",
+		"remove any Detent status label from old scratch issues or close them",
+	} {
+		assertContainsWords(t, readme, want)
+	}
+	if strings.Contains(template, "write_probe_issue:") {
+		t.Fatalf("WORKFLOW.label.md contains write_probe_issue default:\n%s", template)
+	}
+}
+
 func TestOnboardingDocsRequireIdentityGateBeforeDiscovery(t *testing.T) {
 	t.Parallel()
 
@@ -431,7 +457,7 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 			for _, want := range tt.want {
 				assertContains(t, content, want)
 			}
-			for _, unwanted := range append(tt.unwanted, "endpoint:", "api_key:", "interval_ms: 15000") {
+			for _, unwanted := range append(tt.unwanted, "endpoint:", "api_key:", "interval_ms: 15000", "write_probe_issue:") {
 				if strings.Contains(content, unwanted) {
 					t.Fatalf("%s contains stale or wrong field %q:\n%s", tt.path, unwanted, content)
 				}

@@ -497,7 +497,7 @@ func applyOnboardingWorkflowDecisions(
 		decisions.set(root, "tracker.write_probe_issue", writeProbeIssue, "answer", "WRITE_PROBE_ISSUE")
 	} else if preset != "github_local" && preset != "non_code_artifact" {
 		deleteOnboardingYAMLPath(root, []string{"tracker", "write_probe_issue"})
-		decisions.add("tracker.write_probe_issue", "omitted", "preset", "write probes require an explicit issue answer")
+		decisions.add("tracker.write_probe_issue", "omitted", "preset", "legacy/deep issue-object probes require an explicit issue answer")
 	}
 	return nil
 }

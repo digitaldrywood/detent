@@ -807,6 +807,12 @@ func (cfg ReadinessConfig) requiresWriteProbe() bool {
 		len(cfg.ProjectFieldWrites) > 0
 }
 
+func (cfg ReadinessConfig) requiresIssueObjectWriteProbe() bool {
+	return cfg.RequireIssueComments ||
+		cfg.RequireAssigneeWrite ||
+		cfg.RequireIssueClose
+}
+
 func (c githubReadinessChecker) resolveProbeIssue(ctx context.Context, value string) (readinessProbeIssue, error) {
 	if ref, ok := issueRefFromIdentifier(value); ok {
 		issue, err := c.connector.fetchRESTIssue(ctx, ref)
@@ -898,16 +904,20 @@ func (c githubReadinessChecker) writeChecks(ctx context.Context, cfg ReadinessCo
 	if cfg.RequireLabelStatusWrite {
 		checks = append(checks, c.labelStatusWriteCheck(ctx, probe, hasProbe))
 	}
-	if cfg.RequireIssueComments {
-		checks = append(checks, c.issueCommentWriteCheck(ctx, probe, hasProbe))
-	}
-	if cfg.RequireAssigneeWrite {
-		checks = append(checks, c.assigneeWriteCheck(ctx, probe, hasProbe))
+	if cfg.requiresIssueObjectWriteProbe() && !hasProbe && c.canUseRepositoryIssueWriteProbe() {
+		checks = append(checks, c.repositoryIssueWritePermissionCheck(ctx))
+	} else {
+		if cfg.RequireIssueComments {
+			checks = append(checks, c.issueCommentWriteCheck(ctx, probe, hasProbe))
+		}
+		if cfg.RequireAssigneeWrite {
+			checks = append(checks, c.assigneeWriteCheck(ctx, probe, hasProbe))
+		}
 	}
 	for _, field := range cfg.ProjectFieldWrites {
 		checks = append(checks, c.projectFieldWriteCheck(ctx, probe, hasProbe, field))
 	}
-	if cfg.RequireIssueClose {
+	if cfg.RequireIssueClose && (hasProbe || !c.canUseRepositoryIssueWriteProbe()) {
 		checks = append(checks, c.issueCloseWriteCheck(ctx, probe, hasProbe))
 	}
 	return checks
@@ -1069,6 +1079,9 @@ func (c githubReadinessChecker) issueFieldStatusWriteCheck(ctx context.Context, 
 
 func (c githubReadinessChecker) labelStatusWriteCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool) ReadinessCheck {
 	if !hasProbe {
+		if c.canUseRepositoryIssueWriteProbe() {
+			return c.repositoryLabelWritePermissionCheck(ctx)
+		}
 		return unprovenWriteCheck("GitHub status label update")
 	}
 	issue, err := c.connector.fetchRESTIssue(ctx, probe.Ref)
@@ -1102,6 +1115,23 @@ func (c githubReadinessChecker) labelStatusWriteCheck(ctx context.Context, probe
 		Status: ReadinessOK,
 		Detail: "reapplied existing status label on the write probe issue",
 	}
+}
+
+func (c githubReadinessChecker) canUseRepositoryIssueWriteProbe() bool {
+	return c.connector != nil && c.connector.usesLabelStatus() && validPullRequestRepo(c.connector.repository)
+}
+
+func (c githubReadinessChecker) repositoryLabelWritePermissionCheck(ctx context.Context) ReadinessCheck {
+	return c.invalidNoPersistentWriteProbe(ctx, "GitHub status label update", http.MethodPost, restRepositoryLabelsPath(c.connector.repository), map[string]any{
+		"name":  "",
+		"color": "not-a-hex-color",
+	}, "write repository labels")
+}
+
+func (c githubReadinessChecker) repositoryIssueWritePermissionCheck(ctx context.Context) ReadinessCheck {
+	return c.invalidNoPersistentWriteProbe(ctx, "GitHub issue write permission", http.MethodPost, restRepositoryIssueCreatePath(c.connector.repository), map[string]any{
+		"title": "",
+	}, "write issues")
 }
 
 func (c githubReadinessChecker) issueCommentWriteCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool) ReadinessCheck {
@@ -1162,6 +1192,14 @@ func (c githubReadinessChecker) invalidWriteProbe(ctx context.Context, name stri
 	return invalidWriteProbeCheck(name, capability, result)
 }
 
+func (c githubReadinessChecker) invalidNoPersistentWriteProbe(ctx context.Context, name string, method string, path string, body any, capability string) ReadinessCheck {
+	result, err := c.connector.client.restProbe(ctx, method, path, body)
+	if err != nil {
+		return failedWriteProbeCheck(name, capability, err)
+	}
+	return invalidWriteProbeCheckWithHint(name, capability, result, "Inspect the target repository for unexpected changes and rerun detent doctor.")
+}
+
 func failedWriteProbeCheck(name string, capability string, err error) ReadinessCheck {
 	return ReadinessCheck{
 		Name:   name,
@@ -1172,6 +1210,10 @@ func failedWriteProbeCheck(name string, capability string, err error) ReadinessC
 }
 
 func invalidWriteProbeCheck(name string, capability string, result restProbeResult) ReadinessCheck {
+	return invalidWriteProbeCheckWithHint(name, capability, result, "Inspect the scratch issue and rerun detent doctor with a different write probe target if needed.")
+}
+
+func invalidWriteProbeCheckWithHint(name string, capability string, result restProbeResult, unexpectedSuccessHint string) ReadinessCheck {
 	detailSuffix := acceptedPermissionsDetail(result.Headers)
 	switch result.StatusCode {
 	case http.StatusBadRequest, http.StatusUnprocessableEntity:
@@ -1193,7 +1235,7 @@ func invalidWriteProbeCheck(name string, capability string, result restProbeResu
 				Name:   name,
 				Status: ReadinessWarn,
 				Detail: fmt.Sprintf("permission probe unexpectedly returned HTTP %d%s", result.StatusCode, detailSuffix),
-				Hint:   "Inspect the scratch issue and rerun detent doctor with a different write probe target if needed.",
+				Hint:   unexpectedSuccessHint,
 			}
 		}
 		return ReadinessCheck{
@@ -1544,6 +1586,10 @@ func restRepositoryIssuesPath(repo string) string {
 	values.Set("per_page", "1")
 	values.Set("state", "all")
 	return restRepositoryPath(repo) + "/issues?" + values.Encode()
+}
+
+func restRepositoryIssueCreatePath(repo pullRequestRepo) string {
+	return restRepositoryPath(pullRequestRepoName(repo)) + "/issues"
 }
 
 func restRepositoryIssueCommentsPath(repo string) string {
