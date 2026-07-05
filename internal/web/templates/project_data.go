@@ -160,6 +160,9 @@ func projectSlugLabel(data DashboardData) string {
 }
 
 func projectAllClearLabel(data DashboardData) string {
+	if snapshotDegraded(data.Snapshot) {
+		return "Showing last-known data — tracker refresh is degraded."
+	}
 	running := runningCount(data.Snapshot)
 	switch running {
 	case 0:

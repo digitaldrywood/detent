@@ -87,7 +87,14 @@ func fleetViewFromDashboard(data DashboardData) fleetView {
 		Metrics:    fleetMetricsFromSnapshot(data),
 	}
 	if len(view.Exceptions) == 0 {
-		view.AllClear = "All clear — nothing needs you. " + fleetAgentsWorkingLabel(runningCount(snapshot))
+		if snapshotDegraded(snapshot) {
+			// Body renders on degraded-with-prior-data, so the reassurance
+			// line must flag that the tracker data is stale rather than
+			// claim nothing needs attention.
+			view.AllClear = "Showing last-known data — tracker refresh is degraded."
+		} else {
+			view.AllClear = "All clear — nothing needs you. " + fleetAgentsWorkingLabel(runningCount(snapshot))
+		}
 	}
 	return view
 }
@@ -267,12 +274,15 @@ func fleetMetricsFromSnapshot(data DashboardData) fleetMetrics {
 		}
 	}
 
-	if points := tokenTrendPoints(snapshot); len(points) > 1 {
+	// Gate on the points the chart actually plots (throughputTrendPoints
+	// filters zero/negative deltas and invalid timestamps), so the meter
+	// never renders an empty SVG when the raw trend has no usable throughput.
+	if points := throughputTrendPoints(snapshot); len(points) > 1 {
 		metrics.HasTokens = true
 		metrics.TokenChart = SeriesChartData{
 			Title:      "Token throughput trend",
 			AriaLabel:  "Rolling token throughput trend",
-			Points:     throughputTrendPoints(snapshot),
+			Points:     points,
 			ColorClass: "text-sec",
 			Class:      "h-6 w-full",
 		}

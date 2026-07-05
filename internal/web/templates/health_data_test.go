@@ -129,3 +129,20 @@ func TestHealthRowsIdleWithoutData(t *testing.T) {
 		t.Fatalf("idle rows = %+v", rows)
 	}
 }
+
+func TestHealthExhaustedRowDetailNotHealthy(t *testing.T) {
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
+		RateLimits: &telemetry.RateLimits{
+			GitHubREST: &telemetry.RateLimitBucket{Remaining: 0, Limit: 5000},
+			RESTUsage:  &telemetry.RESTUsage{TotalRequests: 4200},
+		},
+	}
+	rest := healthRows(snapshot)[0]
+	if rest.Status != "Exhausted" {
+		t.Fatalf("expected Exhausted, got %q", rest.Status)
+	}
+	if rest.Detail == "Within budget" {
+		t.Fatalf("exhausted row detail must not say Within budget: %q", rest.Detail)
+	}
+}

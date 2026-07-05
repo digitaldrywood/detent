@@ -43,6 +43,7 @@ type boardCardView struct {
 	Scope     string
 	Running   bool
 	Done      bool
+	Terminal  bool
 	MetaRight string
 	Title     string
 	ExtraKind primitives.Kind
@@ -60,6 +61,16 @@ func boardViewFromDashboard(data DashboardData) boardView {
 		Spend:      formatUSD(data.Snapshot.Budget.CurrentSpendUSD) + " today",
 	}
 	terminalStates := projectKanbanTerminalStateSet(data.Kanban.TerminalStates)
+	// An entirely empty board shows its non-terminal lanes so the operator
+	// sees the empty states rather than a blank strip; once any lane has
+	// cards, empty lanes collapse to reduce clutter.
+	boardHasCards := false
+	for _, lane := range board.AllLanes {
+		if len(lane.Cards) > 0 {
+			boardHasCards = true
+			break
+		}
+	}
 	for _, lane := range board.AllLanes {
 		terminal := projectKanbanTerminalState(lane.Title, terminalStates)
 		laneView := boardLaneView{
@@ -71,7 +82,7 @@ func boardViewFromDashboard(data DashboardData) boardView {
 			// Populated lanes show by default, except terminal graveyards
 			// (Cancelled, Closed, …). Done stays visible so finished work
 			// reads at a glance; everything is reachable via the picker.
-			DefaultVisible: len(lane.Cards) > 0 && (!terminal || strings.EqualFold(lane.Title, "Done")),
+			DefaultVisible: boardLaneDefaultVisible(lane, terminal, boardHasCards),
 			EmptyMessage:   "No issues in " + lane.Title,
 		}
 		for _, card := range lane.Cards {
@@ -84,6 +95,15 @@ func boardViewFromDashboard(data DashboardData) boardView {
 		}
 	}
 	return view
+}
+
+func boardLaneDefaultVisible(lane projectKanbanLane, terminal bool, boardHasCards bool) bool {
+	if !boardHasCards {
+		// Empty board: keep non-terminal lanes visible so their empty
+		// states are legible instead of a blank strip.
+		return !terminal
+	}
+	return len(lane.Cards) > 0 && (!terminal || strings.EqualFold(lane.Title, "Done"))
 }
 
 func boardVisibilityKey(data DashboardData) string {
@@ -160,11 +180,15 @@ func boardCardViewFromCard(lane projectKanbanLane, card projectKanbanCard, termi
 		Project: projectID,
 		Scope:   scope,
 		Running: strings.EqualFold(lane.Title, "In Progress"),
-		Done:    terminal,
-		Title:   card.Title,
+		// Done drives the green ✓; other terminal states (Cancelled, Closed)
+		// are terminal but not done, so they suppress meta without claiming
+		// success.
+		Done:     strings.EqualFold(lane.Title, "Done"),
+		Terminal: terminal,
+		Title:    card.Title,
 	}
 	switch {
-	case view.Done:
+	case view.Done || view.Terminal:
 		view.MetaRight = ""
 	case card.PRNumber > 0 && !view.Running:
 		view.MetaRight = "PR #" + strconv.Itoa(card.PRNumber)
@@ -178,7 +202,7 @@ func boardCardViewFromCard(lane projectKanbanLane, card projectKanbanCard, termi
 // boardCardExtra picks the single allowed extra signal, most urgent first:
 // an exception chip, then a status line. Cards never stack signals.
 func boardCardExtra(card projectKanbanCard, view boardCardView) (primitives.Kind, string, bool) {
-	if view.Done {
+	if view.Done || view.Terminal {
 		return primitives.KindNeutral, "", false
 	}
 	if label := strings.TrimSpace(card.AttentionLabel); label != "" {
@@ -203,7 +227,8 @@ func boardCardExtra(card projectKanbanCard, view boardCardView) (primitives.Kind
 }
 
 // boardFirstRun is true only when nothing is configured at all: no
-// projects registered and no board data ever observed.
+// projects registered and no usable board data. Running mode always has
+// at least one project, so this is effectively the unconfigured guard.
 func boardFirstRun(data DashboardData) bool {
 	return len(data.Projects) == 0 && !projectKanbanBoardLoaded(data)
 }

@@ -64,14 +64,16 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	if snapshot.RateLimits != nil {
 		if bucket := snapshot.RateLimits.GitHubREST; bucket != nil {
 			row := healthBucketRow("health-github-rest", "GitHub REST", bucket)
-			if usage := snapshot.RateLimits.RESTUsage; usage != nil && usage.TotalRequests > 0 {
+			// Keep the exhaustion/backoff detail on unhealthy rows rather than
+			// overwriting it with the raw request count.
+			if usage := snapshot.RateLimits.RESTUsage; usage != nil && usage.TotalRequests > 0 && row.Kind == primitives.KindOK {
 				row.Detail = formatInt(usage.TotalRequests) + " requests in the last poll cycle"
 			}
 			rows = append(rows, row)
 		}
 		if bucket := snapshot.RateLimits.GitHubGraphQL; bucket != nil {
 			row := healthBucketRow("health-github-graphql", "GitHub GraphQL", bucket)
-			if cost := snapshot.RateLimits.GraphQLCost; cost != nil && cost.TotalQueries > 0 {
+			if cost := snapshot.RateLimits.GraphQLCost; cost != nil && cost.TotalQueries > 0 && row.Kind == primitives.KindOK {
 				row.Detail = formatInt(cost.TotalQueries) + " queries · cost " + formatInt(cost.TotalCost)
 			}
 			rows = append(rows, row)
@@ -94,9 +96,11 @@ func healthBucketRow(id string, component string, bucket *telemetry.RateLimitBuc
 	case telemetry.RateLimitStatusBackoff:
 		row.Kind = primitives.KindWarn
 		row.Status = "Backoff"
+		row.Detail = "Requests in backoff"
 	case telemetry.RateLimitStatusExhausted:
 		row.Kind = primitives.KindErr
 		row.Status = "Exhausted"
+		row.Detail = "Quota exhausted"
 	}
 	// A bucket can be exhausted via zero remaining without an explicit status
 	// (the orchestrator and primary-exhausted demo snapshots use this shape),
@@ -105,6 +109,7 @@ func healthBucketRow(id string, component string, bucket *telemetry.RateLimitBuc
 	if row.Kind != primitives.KindErr && gitHubAPIBucketExhausted(bucket) {
 		row.Kind = primitives.KindErr
 		row.Status = "Exhausted"
+		row.Detail = "Quota exhausted"
 	}
 	if bucket.Limit > 0 {
 		used := bucket.Limit - bucket.Remaining

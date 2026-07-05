@@ -249,3 +249,16 @@ func TestSheetSessionForScopesToProject(t *testing.T) {
 		t.Fatalf("same-project session should match: %+v", got)
 	}
 }
+
+func TestFleetAllClearReflectsDegraded(t *testing.T) {
+	data := fleetTestData()
+	data.Snapshot.Blocked = nil
+	data.Snapshot.Refresh = telemetry.Refresh{Status: telemetry.RefreshStatusDegraded, LastError: "tracker unavailable"}
+	view := fleetViewFromDashboard(data)
+	if strings.Contains(view.AllClear, "nothing needs you") {
+		t.Fatalf("degraded fleet must not claim all clear: %q", view.AllClear)
+	}
+	if !strings.Contains(view.AllClear, "degraded") {
+		t.Fatalf("degraded fleet all-clear should flag staleness: %q", view.AllClear)
+	}
+}

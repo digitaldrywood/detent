@@ -383,3 +383,40 @@ func TestBoardSnapshotRenders(t *testing.T) {
 		t.Fatalf("board snapshot must not contain raw hex colors")
 	}
 }
+
+func TestBoardEmptyBoardKeepsNonTerminalLanesVisible(t *testing.T) {
+	data := DashboardData{
+		ProjectID: "detent",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
+			Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			BoardIssues: []telemetry.Issue{},
+			Refresh:     telemetry.Refresh{LastRefreshAt: timePtr(time.Date(2026, 7, 4, 15, 59, 0, 0, time.UTC))},
+		},
+		Kanban: KanbanData{States: []string{"Backlog", "In Progress", "Done"}, TerminalStates: []string{"Cancelled"}},
+	}
+	view := boardViewFromDashboard(data)
+	if view.Total == 0 {
+		t.Fatalf("expected lanes on an empty configured board")
+	}
+	if view.Visible == 0 {
+		t.Fatalf("empty board should keep non-terminal lanes visible, got 0 of %d", view.Total)
+	}
+}
+
+func TestBoardCardTerminalNotDone(t *testing.T) {
+	card := projectKanbanCard{IssueNumber: "#9", ProjectID: "detent", Title: "Cancelled work"}
+	done := boardCardViewFromCard(projectKanbanLane{Title: "Done"}, card, true, "fleet", "detent")
+	if !done.Done || !done.Terminal {
+		t.Fatalf("Done lane card should be Done and Terminal: %+v", done)
+	}
+	cancelled := boardCardViewFromCard(projectKanbanLane{Title: "Cancelled"}, card, true, "fleet", "detent")
+	if cancelled.Done {
+		t.Fatalf("Cancelled card must not be marked Done (no ✓): %+v", cancelled)
+	}
+	if !cancelled.Terminal {
+		t.Fatalf("Cancelled card should still be Terminal: %+v", cancelled)
+	}
+}
+
+func timePtr(t time.Time) *time.Time { return &t }
