@@ -1835,11 +1835,12 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 2. **Substitute the tracker and workspace answers.** In ProjectV2 mode, use the
    ProjectV2 node id as `tracker.project_slug`. In boardless issue-field mode,
    set the repository and issue field. In label mode, set the repository and
-   status-label prefix. In every mode, set `write_probe_issue` only when using
-   legacy/deep issue-object probes, use absolute paths for
-   `workspace.source_root` and `workspace.root`, and leave `tracker.api_key`
-   out unless this workflow intentionally carries a workflow-local token
-   instead of using `github_token: gh` from `global.yaml`.
+   status-label prefix. Set `write_probe_issue` for ProjectV2 or issue-field
+   status-write proof; in label mode, set it only when using legacy/deep
+   issue-object probes. Use absolute paths for `workspace.source_root` and
+   `workspace.root`, and leave `tracker.api_key` out unless this workflow
+   intentionally carries a workflow-local token instead of using
+   `github_token: gh` from `global.yaml`.
    Verify the selected tracker block:
 
    ProjectV2 tracker snippet:
@@ -1849,6 +1850,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      kind: github
      github_status_source: project_v2
      project_slug: <project-node-id>
+     write_probe_issue: <write-probe-issue>
    ```
 
    Boardless issue-field tracker snippet:
@@ -1859,6 +1861,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      github_status_source: issue_field
      repository: <repo-owner>/<repo-name>
      status_field: <status-field-name>
+     write_probe_issue: <write-probe-issue>
    ```
 
    Repository label tracker snippet:
@@ -1892,10 +1895,10 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    ```sh
    # ProjectV2 mode:
    PROJECT_NODE_ID="$(jq -r '.id' "$ONBOARDING_DIR/project.json")"
-   rg -n 'github_status_source: project_v2|project_slug: <project-node-id>' <source-root>/WORKFLOW.md
+   rg -n 'github_status_source: project_v2|project_slug: <project-node-id>|write_probe_issue:' <source-root>/WORKFLOW.md
 
    # Boardless issue-field mode:
-   rg -n 'github_status_source: issue_field|repository: <repo-owner>/<repo-name>|status_field: <status-field-name>' <source-root>/WORKFLOW.md
+   rg -n 'github_status_source: issue_field|repository: <repo-owner>/<repo-name>|status_field: <status-field-name>|write_probe_issue:' <source-root>/WORKFLOW.md
 
    # Label mode:
    rg -n 'github_status_source: label|repository: <repo-owner>/<repo-name>|status_label_prefix: "<status-label-prefix>"' <source-root>/WORKFLOW.md
@@ -2276,17 +2279,18 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 4. **Run full preflight until every check passes.** Fix every `FAIL`; do not
    dispatch work from a failed doctor run. In ProjectV2 mode, confirm doctor
    reports project access, Status option discovery, repository issue/PR access,
-   issue-object write probes when configured, and rate-limit visibility. In
+   configured issue-object status-write probes, and rate-limit visibility. In
    issue-field mode, confirm repository access, issue field discovery, option
-   discovery, issue reads by field value, optional issue-field write probe,
+   discovery, issue reads by field value, configured issue-field write probe,
    issue/PR comment write when integration-capable features are configured, and
    rate-limit visibility. In label mode, confirm repository access, status
    label mappings, issue reads by configured status labels, no-persistent
    repository write probes, issue-write permission-class proof, and rate-limit
    visibility. Label mode should not create or require a status-labeled scratch
-   issue by default. Set `tracker.write_probe_issue` only for legacy/deep
-   issue-object proof; after switching away from an old scratch issue, remove
-   its Detent status label or close it so it stops appearing as board work.
+   issue by default. Set `tracker.write_probe_issue` in label mode only for
+   legacy/deep issue-object proof; after switching away from an old scratch
+   issue, remove its Detent status label or close it so it stops appearing as
+   board work.
    Verify:
 
    ```sh

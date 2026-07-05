@@ -614,6 +614,7 @@ tracker:
   kind: github
   github_status_source: project_v2
   project_slug: PVT_replace_with_project_id
+  write_probe_issue: owner/repo#123
   http_max_idle_conns: 100
   http_max_idle_conns_per_host: 32
   http_idle_conn_timeout_ms: 90000
@@ -733,6 +734,7 @@ tracker:
   github_status_source: issue_field
   repository: owner/repo
   status_field: Status
+  write_probe_issue: owner/repo#123
   active_states:
     - Todo
     - In Progress
@@ -974,21 +976,20 @@ mappings, issue reads by configured status labels, and REST/GraphQL rate-limit
 visibility. By default doctor is read-only: if a configured workflow would run
 write probes, the report warns that they were skipped. Pass
 `--allow-write-probes` only after the onboarding mutation gate has passed and
-the operator has explicitly confirmed mutation. With that flag, ProjectV2 mode
-also checks issue-object write probes when `tracker.write_probe_issue` is
-configured; issue-field mode checks optional issue-field write probes and
-issue/PR comment write when integration-capable features are configured. Label
-mode does not need a persistent status-labeled scratch issue for the default
-permission proof: doctor sends intentionally invalid repository-label and
-issue-create requests, expecting GitHub to reject them with validation while
-proving the token has the repository Issues write permission class. Configure
-`tracker.write_probe_issue` only for legacy/deep issue-object proof, such as
-reapplying an existing status label on a scratch issue. That proof is stronger
-for the chosen issue object, but the issue must be kept off the board by
-removing Detent status labels or closing it after migration. Before starting
-Detent, fix any `FAIL` (missing `github_token: gh` or an unauthenticated
-`codex` are the usual culprits). If Detent is already running on the configured
-port, the server-port check can fail because
+the operator has explicitly confirmed mutation. With that flag, ProjectV2 and
+issue-field modes require `tracker.write_probe_issue` when integration needs
+status-write proof, because their status mutations target a concrete project
+item or issue field value. Label mode does not need a persistent status-labeled
+scratch issue for the default permission proof: doctor sends intentionally
+invalid repository-label and issue-create requests, expecting GitHub to reject
+them with validation while proving the token has the repository Issues write
+permission class. Configure `tracker.write_probe_issue` in label mode only for
+legacy/deep issue-object proof, such as reapplying an existing status label on a
+scratch issue. That proof is stronger for the chosen issue object, but the issue
+must be kept off the board by removing Detent status labels or closing it after
+migration. Before starting Detent, fix any `FAIL` (missing `github_token: gh` or
+an unauthenticated `codex` are the usual culprits). If Detent is already running
+on the configured port, the server-port check can fail because
 the live service owns the port; use `detent doctor --port 0` for the same
 read-only config, toolchain, token, and database preflight without the port
 collision, or `detent doctor --port 0 --allow-write-probes` after mutation
@@ -1333,8 +1334,9 @@ repo is a real, working instance of this setup to copy from.
    import explicit issue numbers with
    `detent github-local import <project-id> <issue-number> --state Todo`. In
    every mode, set `workspace.source_root` (`<source-root>`), `workspace.root`
-   (a worktrees directory), `write_probe_issue` only when using legacy/deep
-   issue-object probes, and the prompt body.
+   (a worktrees directory), `write_probe_issue` for ProjectV2 or issue-field
+   status-write proof, and the prompt body. In label mode, set
+   `write_probe_issue` only when using legacy/deep issue-object probes.
    If the repository already has a `WORKFLOW.md`, audit its prompt body for the
    same Required Execution Flow and `Current Detent status: {{ issue.state }}`
    line before dispatching Detent against it.
@@ -1438,17 +1440,18 @@ create or mutate GitHub Projects, issue fields, repository labels, status
 labels, GitHub issue comments, or GitHub issue close state. Pull request
 lifecycle writes for Detent-owned PRs remain allowlisted.
 Plain `detent doctor` is read-only and reports that write probes were skipped.
-After mutation authorization, `detent doctor --allow-write-probes` proves label
-mode repository write access without a scratch issue by sending intentionally
-invalid repository-label and issue-create requests. GitHub should answer with
-validation errors, which proves the Issues write permission class without
-creating board-visible work. Set `tracker.write_probe_issue` only when you
-need legacy/deep issue-object proof by replaying existing values on a scratch
-issue already present on the ProjectV2 board or in the boardless repository. In
-label mode, that scratch issue must already have one configured status label so
-doctor can reapply it; after switching to the no-persistent probe path, remove
-any Detent status label from old scratch issues or close them so they stop
-appearing as normal board inventory.
+After mutation authorization, ProjectV2 and issue-field modes still need a
+configured `tracker.write_probe_issue` to prove concrete status writes against
+a project item or issue field value. Label mode can prove repository write
+access without a scratch issue by sending intentionally invalid repository-label
+and issue-create requests. GitHub should answer with validation errors, which
+proves the Issues write permission class without creating board-visible work.
+Set `tracker.write_probe_issue` in label mode only when you need legacy/deep
+issue-object proof by replaying existing values on a scratch issue. That scratch
+issue must already have one configured status label so doctor can reapply it;
+after switching to the no-persistent probe path, remove any Detent status label
+from old scratch issues or close them so they stop appearing as normal board
+inventory.
 
 GitHub issue fields apply to issues, not pull requests. In issue-field mode,
 boardless status comes from the linked issue. In label mode, Detent treats

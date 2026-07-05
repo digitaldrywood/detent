@@ -423,27 +423,30 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 		wantRepository   bool
 		wantStatusField  string
 		wantStatusPrefix string
+		wantWriteProbe   bool
 	}{
 		{
 			path:            "docs/templates/WORKFLOW.project_v2.md",
 			source:          workflowconfig.GitHubStatusSourceProjectV2,
-			want:            []string{"github_status_source: project_v2", "project_slug: <project-node-id>"},
+			want:            []string{"github_status_source: project_v2", "project_slug: <project-node-id>", "write_probe_issue:"},
 			unwanted:        []string{"repository: <repo-owner>/<repo-name>"},
 			wantProjectSlug: true,
+			wantWriteProbe:  true,
 		},
 		{
 			path:            "docs/templates/WORKFLOW.issue_field.md",
 			source:          workflowconfig.GitHubStatusSourceIssueField,
-			want:            []string{"github_status_source: issue_field", "repository: <repo-owner>/<repo-name>", "status_field: Status"},
+			want:            []string{"github_status_source: issue_field", "repository: <repo-owner>/<repo-name>", "status_field: Status", "write_probe_issue:"},
 			unwanted:        []string{"project_slug:"},
 			wantRepository:  true,
 			wantStatusField: "Status",
+			wantWriteProbe:  true,
 		},
 		{
 			path:             "docs/templates/WORKFLOW.label.md",
 			source:           workflowconfig.GitHubStatusSourceLabel,
 			want:             []string{"github_status_source: label", "repository: <repo-owner>/<repo-name>", `status_label_prefix: "detent:"`},
-			unwanted:         []string{"project_slug:", "status_field:"},
+			unwanted:         []string{"project_slug:", "status_field:", "write_probe_issue:"},
 			wantRepository:   true,
 			wantStatusPrefix: "detent:",
 		},
@@ -457,7 +460,7 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 			for _, want := range tt.want {
 				assertContains(t, content, want)
 			}
-			for _, unwanted := range append(tt.unwanted, "endpoint:", "api_key:", "interval_ms: 15000", "write_probe_issue:") {
+			for _, unwanted := range append(tt.unwanted, "endpoint:", "api_key:", "interval_ms: 15000") {
 				if strings.Contains(content, unwanted) {
 					t.Fatalf("%s contains stale or wrong field %q:\n%s", tt.path, unwanted, content)
 				}
@@ -494,6 +497,12 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 			}
 			if tt.wantStatusPrefix != "" && cfg.Tracker.StatusLabelPrefix != tt.wantStatusPrefix {
 				t.Fatalf("StatusLabelPrefix = %q, want %q", cfg.Tracker.StatusLabelPrefix, tt.wantStatusPrefix)
+			}
+			if tt.wantWriteProbe && strings.TrimSpace(cfg.Tracker.WriteProbeIssue) == "" {
+				t.Fatal("WriteProbeIssue is blank")
+			}
+			if !tt.wantWriteProbe && strings.TrimSpace(cfg.Tracker.WriteProbeIssue) != "" {
+				t.Fatalf("WriteProbeIssue = %q, want blank", cfg.Tracker.WriteProbeIssue)
 			}
 		})
 	}
