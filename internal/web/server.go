@@ -280,6 +280,7 @@ func (s *Server) board(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 	data := s.boardData(ctx, s.latestSnapshot(ctx))
+	data = s.withKanbanRefreshFeedback(data)
 	applyDashboardPreferences(c.Request(), &data)
 	return render(c, templates.BoardPage(data))
 }
@@ -295,12 +296,20 @@ func (s *Server) redirectToBoard(c echo.Context) error {
 func (s *Server) apiBoardCard(c echo.Context) error {
 	ctx := c.Request().Context()
 	projectID := strings.TrimSpace(c.QueryParam("project"))
+	projectScope := c.QueryParam("scope") == "project" && projectID != ""
 	data := s.boardData(ctx, s.latestSnapshot(ctx))
 	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
 		return err
 	} else if ok {
 		data = s.demoDashboardData(ctx, scenario)
-	} else if c.QueryParam("scope") == "project" && projectID != "" {
+		if projectScope {
+			projectScenario := scenario
+			projectScenario.ProjectID = projectID
+			if scoped, ok := s.demoProjectDashboardData(ctx, projectScenario); ok {
+				data = scoped
+			}
+		}
+	} else if projectScope {
 		if scoped, ok := s.projectDashboardData(ctx, projectID, s.latestSnapshot(ctx)); ok {
 			data = scoped
 		}

@@ -62,6 +62,28 @@ func TestAPIBoardCardRendersDetailSheet(t *testing.T) {
 	}
 }
 
+func TestAPIBoardCardScopesDemoProjectSheets(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{Demo: web.DemoConfig{Mode: "screenshots"}}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	// A card opened from an integration-mode demo project board must keep its
+	// project-scoped Move/Remove actions, not fall back to fleet-scoped data.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=dogfood&issue=5251&scope=project&actions=board", nil)
+	req.Header.Set(web.DemoScenarioHeader, "kanban-full-integration")
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "kanban_board=project") {
+		t.Fatalf("demo project sheet should keep project-scoped actions:\n%s", rec.Body.String())
+	}
+}
+
 func TestAPIBoardCardPreservesProjectScope(t *testing.T) {
 	t.Parallel()
 
