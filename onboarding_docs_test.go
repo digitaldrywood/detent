@@ -82,6 +82,32 @@ func TestDocsCoverGitHubLocalTrackerMode(t *testing.T) {
 	}
 }
 
+func TestOnboardingDocsDescribeNoPersistentLabelWriteProbes(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+	readme := readRepositoryTextFile(t, "README.md")
+	template := readRepositoryTextFile(t, "docs/templates/WORKFLOW.label.md")
+
+	for _, want := range []string{
+		"Label mode should not create or require a status-labeled scratch issue by default",
+		"issue-write permission-class proof",
+		"remove its Detent status label or close it",
+	} {
+		assertContainsWords(t, onboarding, want)
+	}
+	for _, want := range []string{
+		"does not need a persistent status-labeled scratch issue",
+		"proving the token has the repository Issues write permission class",
+		"remove any Detent status label from old scratch issues or close them",
+	} {
+		assertContainsWords(t, readme, want)
+	}
+	if strings.Contains(template, "write_probe_issue:") {
+		t.Fatalf("WORKFLOW.label.md contains write_probe_issue default:\n%s", template)
+	}
+}
+
 func TestOnboardingDocsRequireIdentityGateBeforeDiscovery(t *testing.T) {
 	t.Parallel()
 
@@ -397,27 +423,30 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 		wantRepository   bool
 		wantStatusField  string
 		wantStatusPrefix string
+		wantWriteProbe   bool
 	}{
 		{
 			path:            "docs/templates/WORKFLOW.project_v2.md",
 			source:          workflowconfig.GitHubStatusSourceProjectV2,
-			want:            []string{"github_status_source: project_v2", "project_slug: <project-node-id>"},
+			want:            []string{"github_status_source: project_v2", "project_slug: <project-node-id>", "write_probe_issue:"},
 			unwanted:        []string{"repository: <repo-owner>/<repo-name>"},
 			wantProjectSlug: true,
+			wantWriteProbe:  true,
 		},
 		{
 			path:            "docs/templates/WORKFLOW.issue_field.md",
 			source:          workflowconfig.GitHubStatusSourceIssueField,
-			want:            []string{"github_status_source: issue_field", "repository: <repo-owner>/<repo-name>", "status_field: Status"},
+			want:            []string{"github_status_source: issue_field", "repository: <repo-owner>/<repo-name>", "status_field: Status", "write_probe_issue:"},
 			unwanted:        []string{"project_slug:"},
 			wantRepository:  true,
 			wantStatusField: "Status",
+			wantWriteProbe:  true,
 		},
 		{
 			path:             "docs/templates/WORKFLOW.label.md",
 			source:           workflowconfig.GitHubStatusSourceLabel,
 			want:             []string{"github_status_source: label", "repository: <repo-owner>/<repo-name>", `status_label_prefix: "detent:"`},
-			unwanted:         []string{"project_slug:", "status_field:"},
+			unwanted:         []string{"project_slug:", "status_field:", "write_probe_issue:"},
 			wantRepository:   true,
 			wantStatusPrefix: "detent:",
 		},
@@ -468,6 +497,12 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 			}
 			if tt.wantStatusPrefix != "" && cfg.Tracker.StatusLabelPrefix != tt.wantStatusPrefix {
 				t.Fatalf("StatusLabelPrefix = %q, want %q", cfg.Tracker.StatusLabelPrefix, tt.wantStatusPrefix)
+			}
+			if tt.wantWriteProbe && strings.TrimSpace(cfg.Tracker.WriteProbeIssue) == "" {
+				t.Fatal("WriteProbeIssue is blank")
+			}
+			if !tt.wantWriteProbe && strings.TrimSpace(cfg.Tracker.WriteProbeIssue) != "" {
+				t.Fatalf("WriteProbeIssue = %q, want blank", cfg.Tracker.WriteProbeIssue)
 			}
 		})
 	}

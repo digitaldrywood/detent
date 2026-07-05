@@ -22,7 +22,7 @@ Use these placeholders consistently:
 | `<project-node-id>` | ProjectV2 node id, starting with `PVT_`. |
 | `<status-field-name>` | Organization issue field Detent uses as status in boardless mode, usually `Status`. |
 | `<status-label-prefix>` | Repository label prefix Detent uses for status labels in label mode, usually `detent:`. |
-| `<write-probe-issue>` | Scratch issue reference such as `<repo-owner>/<repo-name>#123` for doctor write probes. |
+| `<write-probe-issue>` | Scratch issue reference such as `<repo-owner>/<repo-name>#123` for legacy/deep doctor write probes. |
 | `<detent-project-id>` | Local `global.yaml` project id, such as `api`. |
 
 ## Source Freshness Gate
@@ -153,8 +153,7 @@ Classify the work into one of these modes:
   to be running. Verify the binary, config path, registered projects, service
   health, GitHub auth, Codex auth, and read-only `detent doctor --port 0`
   before proposing changes. Do not pass `--allow-write-probes` during this
-  identity-safe verification; when a configured workflow has
-  `tracker.write_probe_issue`, defer doctor write probes until Phase 2.5
+  identity-safe verification; defer doctor write probes until Phase 2.5
   authorizes GitHub mutations.
 - `add-project`: An existing Detent install is present and the target repository
   is not registered yet. Reuse the existing `global.yaml`, preserve current
@@ -1836,10 +1835,12 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 2. **Substitute the tracker and workspace answers.** In ProjectV2 mode, use the
    ProjectV2 node id as `tracker.project_slug`. In boardless issue-field mode,
    set the repository and issue field. In label mode, set the repository and
-   status-label prefix. In every mode, set `write_probe_issue` when using write
-   probes, use absolute paths for `workspace.source_root` and `workspace.root`,
-   and leave `tracker.api_key` out unless this workflow intentionally carries a
-   workflow-local token instead of using `github_token: gh` from `global.yaml`.
+   status-label prefix. Set `write_probe_issue` for ProjectV2 or issue-field
+   status-write proof; in label mode, set it only when using legacy/deep
+   issue-object probes. Use absolute paths for `workspace.source_root` and
+   `workspace.root`, and leave `tracker.api_key` out unless this workflow
+   intentionally carries a workflow-local token instead of using
+   `github_token: gh` from `global.yaml`.
    Verify the selected tracker block:
 
    ProjectV2 tracker snippet:
@@ -1871,7 +1872,6 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      github_status_source: label
      repository: <repo-owner>/<repo-name>
      status_label_prefix: "<status-label-prefix>"
-     write_probe_issue: <write-probe-issue>
    ```
 
    GitHub local-status tracker snippet:
@@ -1901,7 +1901,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    rg -n 'github_status_source: issue_field|repository: <repo-owner>/<repo-name>|status_field: <status-field-name>|write_probe_issue:' <source-root>/WORKFLOW.md
 
    # Label mode:
-   rg -n 'github_status_source: label|repository: <repo-owner>/<repo-name>|status_label_prefix: "<status-label-prefix>"|write_probe_issue:' <source-root>/WORKFLOW.md
+   rg -n 'github_status_source: label|repository: <repo-owner>/<repo-name>|status_label_prefix: "<status-label-prefix>"' <source-root>/WORKFLOW.md
 
    # GitHub local-status mode:
    rg -n 'kind: github_local|repository: <repo-owner>/<repo-name>|local_sqlite:|path: .detent/github-local-work-items.db' <source-root>/WORKFLOW.md
@@ -2279,17 +2279,19 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 4. **Run full preflight until every check passes.** Fix every `FAIL`; do not
    dispatch work from a failed doctor run. In ProjectV2 mode, confirm doctor
    reports project access, Status option discovery, repository issue/PR access,
-   write probes when configured, and rate-limit visibility. In issue-field mode,
-   confirm repository access, issue field discovery, option discovery, issue
-   reads by field value, optional issue-field write probe, issue/PR comment
-   write when integration-capable features are configured, and rate-limit
-   visibility. In label mode, confirm repository access, status label mappings,
-   issue reads by configured status labels, optional status-label write probe,
+   configured issue-object status-write probes, and rate-limit visibility. In
+   issue-field mode, confirm repository access, issue field discovery, option
+   discovery, issue reads by field value, configured issue-field write probe,
    issue/PR comment write when integration-capable features are configured, and
-   rate-limit visibility. A label-mode write probe only runs when
-   `tracker.write_probe_issue` points to a scratch issue that already has one
-   configured status label; doctor reapplies that same label to prove write
-   permission without changing the issue's state. Verify:
+   rate-limit visibility. In label mode, confirm repository access, status
+   label mappings, issue reads by configured status labels, no-persistent
+   repository write probes, issue-write permission-class proof, and rate-limit
+   visibility. Label mode should not create or require a status-labeled scratch
+   issue by default. Set `tracker.write_probe_issue` in label mode only for
+   legacy/deep issue-object proof; after switching away from an old scratch
+   issue, remove its Detent status label or close it so it stops appearing as
+   board work.
+   Verify:
 
    ```sh
    detent doctor --allow-write-probes
