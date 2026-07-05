@@ -316,6 +316,27 @@ func TestBoardSnapshotKeepsLanesDuringDegradedRefresh(t *testing.T) {
 	}
 }
 
+func TestBoardSnapshotShowsDegradedFirstRefresh(t *testing.T) {
+	// A configured instance whose first tracker refresh fails (degraded, no
+	// prior data) must surface the readiness error, not spin skeletons.
+	data := DashboardData{
+		Projects: []ProjectSmallMultiple{{ID: "detent"}},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
+			Refresh:     telemetry.Refresh{Status: telemetry.RefreshStatusDegraded, LastError: "tracker unavailable"},
+		},
+		Kanban: KanbanData{States: []string{"Backlog"}},
+	}
+
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	if strings.Contains(html, "dt-skeleton") {
+		t.Fatalf("degraded first refresh must not render skeletons:\n%s", html)
+	}
+	if !strings.Contains(html, `aria-label="Snapshot readiness"`) {
+		t.Fatalf("degraded first refresh should render the readiness state:\n%s", html)
+	}
+}
+
 func TestBoardSnapshotStates(t *testing.T) {
 	firstRun := renderBoardComponent(t, BoardSnapshot(DashboardData{}))
 	if !strings.Contains(firstRun, "Connect a repository to start orchestrating.") {

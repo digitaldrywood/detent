@@ -31,7 +31,13 @@ templ BoardSnapshot(data DashboardData) {
 	if boardFirstRun(data) {
 		@primitives.FirstRun("Connect a repository to start orchestrating.", "Add project", "/settings", "projects are defined in the global config")
 	} else if !projectKanbanBoardLoaded(data) {
-		@primitives.SkeletonLanes(4)
+		if snapshotDegraded(data.Snapshot) {
+			<div class="flex-none px-5 pt-4">
+				@snapshotReadiness(data.Snapshot)
+			</div>
+		} else {
+			@primitives.SkeletonLanes(4)
+		}
 	} else {
 		@boardSnapshotBody(data)
 	}
