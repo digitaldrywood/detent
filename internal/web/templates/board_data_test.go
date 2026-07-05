@@ -255,6 +255,23 @@ func TestBoardCardFallsBackToDashboardProjectID(t *testing.T) {
 	if _, ok := FindBoardCard(data, "detent", "42"); !ok {
 		t.Fatalf("FindBoardCard should match a card by the fallback project id")
 	}
+
+	// A blocked row with no ProjectID must still carry the scoped project in
+	// its Review link so the sheet keeps project-scoped actions.
+	blockedAt := data.Snapshot.GeneratedAt.Add(-time.Minute)
+	data.Snapshot.Blocked = []telemetry.Blocked{
+		{Issue: telemetry.Issue{Identifier: "digitaldrywood/detent#43"}, Error: "blocked", BlockedAt: &blockedAt},
+	}
+	exceptions := boardExceptions(data, true)
+	if len(exceptions) != 1 {
+		t.Fatalf("expected one exception, got %d", len(exceptions))
+	}
+	if got, _ := exceptions[0].ActionAttrs["hx-get"].(string); !strings.Contains(got, "project=detent") {
+		t.Fatalf("exception review link should carry the fallback project, got %q", got)
+	}
+	if exceptions[0].ID != "exception-detent-43" {
+		t.Fatalf("exception id = %q, want exception-detent-43", exceptions[0].ID)
+	}
 }
 
 func TestBoardScopeLabel(t *testing.T) {

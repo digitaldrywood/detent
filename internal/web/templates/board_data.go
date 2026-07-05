@@ -110,18 +110,26 @@ func boardFigures(snapshot telemetry.Snapshot) []primitives.Figure {
 func boardExceptions(data DashboardData, boardActions bool) []primitives.Exception {
 	snapshot := data.Snapshot
 	now := pipelineNow(snapshot)
+	fallbackProjectID := strings.TrimSpace(data.ProjectID)
 	exceptions := make([]primitives.Exception, 0, len(snapshot.Blocked))
 	for _, row := range snapshot.Blocked {
+		// Legacy single-project snapshots can leave Issue.ProjectID empty; fall
+		// back to the scoped dashboard project so the Review sheet keeps its
+		// project-scoped Move/Remove links (matching board card views).
+		projectID := strings.TrimSpace(row.ProjectID)
+		if projectID == "" {
+			projectID = fallbackProjectID
+		}
 		exception := primitives.Exception{
-			ID:    "exception-" + boardCardSlug(row.ProjectID, projectKanbanIssueNumber(row.Issue)),
+			ID:    "exception-" + boardCardSlug(projectID, projectKanbanIssueNumber(row.Issue)),
 			Kind:  primitives.KindErr,
 			Title: "Session blocked",
-			Repo:  strings.TrimSpace(row.ProjectID),
+			Repo:  projectID,
 			Ref:   projectKanbanIssueNumber(row.Issue),
 			Rest:  boardExceptionDetail(row, now),
 		}
 		exception.ActionLabel = "Review"
-		exception.ActionAttrs = sheetOpenAttrs(row.ProjectID, projectKanbanIssueNumber(row.Issue), projectKanbanBoardScope(data), boardActions)
+		exception.ActionAttrs = sheetOpenAttrs(projectID, projectKanbanIssueNumber(row.Issue), projectKanbanBoardScope(data), boardActions)
 		exceptions = append(exceptions, exception)
 	}
 	return exceptions

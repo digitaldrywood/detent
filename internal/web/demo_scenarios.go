@@ -323,7 +323,7 @@ func (s *Server) demoProjectDashboard(c echo.Context, scenario demoScenario, vie
 	case "diagnostics":
 		data.ActiveNav = "diagnostics"
 		data.Title = s.projectPageTitle(data, "Diagnostics")
-		return render(c, templates.ProjectDiagnosticsPage(data))
+		return render(c, templates.ProjectDiagnosticsPageV2(data))
 	case "configuration":
 		settingsData := s.demoSettingsData(c.Request().Context(), scenario, scenario.ProjectID)
 		settingsData.ActiveNav = "configuration"

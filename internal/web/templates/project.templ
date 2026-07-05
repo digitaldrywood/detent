@@ -100,6 +100,27 @@ templ ProjectBoardPage(data DashboardData) {
 	}
 }
 
+// ProjectDiagnosticsPageV2 keeps the dense diagnostics debugging surface
+// inside the redesigned project tab frame instead of dropping the user out
+// to the legacy shell. The diagnostics content is server-rendered, so it
+// needs no Chart.js.
+templ ProjectDiagnosticsPageV2(data DashboardData) {
+	@projectFrame(data, "diagnostics") {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div
+				id="snapshot"
+				class="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-hidden px-5 py-4.5"
+				sse-swap="snapshot"
+				hx-swap="morph:innerHTML"
+				data-preserve-scroll="project-diagnostics-scroll"
+			>
+				@ProjectDiagnosticsSnapshot(data)
+			</div>
+		</main>
+		@diagnosticsTabsScript()
+	}
+}
+
 // ProjectRunsPageV2 is the full runs table.
 templ ProjectRunsPageV2(data DashboardData) {
 	@projectFrame(data, "runs") {
