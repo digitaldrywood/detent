@@ -60,7 +60,8 @@ func boardViewFromDashboard(data DashboardData) boardView {
 		TPS:        throughputRate(data.Snapshot),
 		Spend:      formatUSD(data.Snapshot.Budget.CurrentSpendUSD) + " today",
 	}
-	terminalStates := projectKanbanTerminalStateSet(data.Kanban.TerminalStates)
+	fallbackProjectID := boardFallbackProjectID(data)
+	globalTerminalStates := projectKanbanTerminalStateSet(data.Kanban.TerminalStates)
 	// An entirely empty board shows its non-terminal lanes so the operator
 	// sees the empty states rather than a blank strip; once any lane has
 	// cards, empty lanes collapse to reduce clutter.
@@ -72,7 +73,11 @@ func boardViewFromDashboard(data DashboardData) boardView {
 		}
 	}
 	for _, lane := range board.AllLanes {
-		terminal := projectKanbanTerminalState(lane.Title, terminalStates)
+		// The fleet board mixes projects, so a lane's terminal-ness is
+		// resolved per card. A populated lane counts as terminal only when it
+		// is terminal for every card's own project; an empty lane falls back
+		// to the global set.
+		laneTerminal := boardLaneTerminal(data, lane, globalTerminalStates)
 		laneView := boardLaneView{
 			DomID:  "lane-" + lane.ID,
 			LaneID: lane.ID,
@@ -82,11 +87,12 @@ func boardViewFromDashboard(data DashboardData) boardView {
 			// Populated lanes show by default, except terminal graveyards
 			// (Cancelled, Closed, …). Done stays visible so finished work
 			// reads at a glance; everything is reachable via the picker.
-			DefaultVisible: boardLaneDefaultVisible(lane, terminal, boardHasCards),
+			DefaultVisible: boardLaneDefaultVisible(lane, laneTerminal, boardHasCards),
 			EmptyMessage:   "No issues in " + lane.Title,
 		}
 		for _, card := range lane.Cards {
-			laneView.Cards = append(laneView.Cards, boardCardViewFromCard(lane, card, terminal, projectKanbanBoardScope(data), strings.TrimSpace(data.ProjectID)))
+			cardTerminal := projectKanbanTerminalState(lane.Title, projectKanbanTerminalStateSetForProject(data, card.ProjectID))
+			laneView.Cards = append(laneView.Cards, boardCardViewFromCard(lane, card, cardTerminal, projectKanbanBoardScope(data), fallbackProjectID))
 		}
 		view.Lanes = append(view.Lanes, laneView)
 		view.Total++
@@ -95,6 +101,39 @@ func boardViewFromDashboard(data DashboardData) boardView {
 		}
 	}
 	return view
+}
+
+// boardFallbackProjectID resolves the project a card belongs to when its
+// Issue.ProjectID is empty (legacy single-project snapshots): the scoped
+// dashboard project, then the snapshot project, then the sole configured
+// project. Without it the sheet request omits project scope and eligible
+// cards lose their Move action on the home board.
+func boardFallbackProjectID(data DashboardData) string {
+	if id := strings.TrimSpace(data.ProjectID); id != "" {
+		return id
+	}
+	if id := strings.TrimSpace(data.Snapshot.Project.ID); id != "" {
+		return id
+	}
+	if len(data.Projects) == 1 {
+		return strings.TrimSpace(data.Projects[0].ID)
+	}
+	return ""
+}
+
+// boardLaneTerminal reports whether a lane should be treated as a terminal
+// graveyard. A populated lane is terminal only when it is terminal for every
+// card's own project; an empty lane uses the global terminal set.
+func boardLaneTerminal(data DashboardData, lane projectKanbanLane, globalTerminalStates map[string]struct{}) bool {
+	if len(lane.Cards) == 0 {
+		return projectKanbanTerminalState(lane.Title, globalTerminalStates)
+	}
+	for _, card := range lane.Cards {
+		if !projectKanbanTerminalState(lane.Title, projectKanbanTerminalStateSetForProject(data, card.ProjectID)) {
+			return false
+		}
+	}
+	return true
 }
 
 func boardLaneDefaultVisible(lane projectKanbanLane, terminal bool, boardHasCards bool) bool {

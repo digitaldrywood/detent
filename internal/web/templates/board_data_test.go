@@ -420,3 +420,61 @@ func TestBoardCardTerminalNotDone(t *testing.T) {
 }
 
 func timePtr(t time.Time) *time.Time { return &t }
+
+func TestBoardFallsBackToSnapshotProjectID(t *testing.T) {
+	// Legacy single-project snapshot: Issue.ProjectID empty, data.ProjectID
+	// empty, but Snapshot.Project.ID identifies the project.
+	data := DashboardData{
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
+			Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			BoardIssues: []telemetry.Issue{
+				{ID: "i1", Identifier: "digitaldrywood/detent#7", Title: "Card without project id", State: "Backlog"},
+			},
+		},
+		Kanban: KanbanData{States: []string{"Backlog"}},
+	}
+	if got := boardFallbackProjectID(data); got != "detent" {
+		t.Fatalf("fallback project id = %q, want detent", got)
+	}
+	view := boardViewFromDashboard(data)
+	for _, lane := range view.Lanes {
+		for _, c := range lane.Cards {
+			if c.Project != "detent" {
+				t.Fatalf("card project = %q, want detent snapshot fallback", c.Project)
+			}
+		}
+	}
+}
+
+func TestBoardLaneTerminalPerProject(t *testing.T) {
+	// Fleet board: "Released" is terminal for project-b but not project-a.
+	// A lane holding only project-b cards should read terminal; the global
+	// set (from project-a) must not override that.
+	data := DashboardData{
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
+			BoardIssues: []telemetry.Issue{
+				{ID: "b1", Identifier: "b#1", ProjectID: "project-b", Title: "Released work", State: "Released"},
+			},
+		},
+		Kanban: KanbanData{
+			States:                  []string{"Backlog", "Released"},
+			TerminalStates:          []string{"Cancelled"},
+			TerminalStatesByProject: map[string][]string{"project-b": {"Released"}},
+		},
+	}
+	view := boardViewFromDashboard(data)
+	var released boardLaneView
+	for _, lane := range view.Lanes {
+		if strings.EqualFold(lane.Title, "Released") {
+			released = lane
+		}
+	}
+	if released.DefaultVisible {
+		t.Fatalf("Released lane is terminal for project-b and should hide by default")
+	}
+	if len(released.Cards) == 1 && !released.Cards[0].Terminal {
+		t.Fatalf("project-b Released card should get terminal treatment: %+v", released.Cards[0])
+	}
+}

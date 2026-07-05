@@ -2793,8 +2793,16 @@ func projectKanbanBlockedRefCleared(ref telemetry.BlockedRef, terminalStates map
 }
 
 func projectKanbanTerminalStateSetForIssue(data DashboardData, issue telemetry.Issue) map[string]struct{} {
+	return projectKanbanTerminalStateSetForProject(data, strings.TrimSpace(issue.ProjectID))
+}
+
+// projectKanbanTerminalStateSetForProject resolves terminal states for a
+// specific project, falling back to the snapshot project then the global
+// set. The fleet board mixes projects, so terminal treatment must be
+// evaluated per card rather than from the default project's states alone.
+func projectKanbanTerminalStateSetForProject(data DashboardData, projectID string) map[string]struct{} {
 	states := data.Kanban.TerminalStates
-	projectID := strings.TrimSpace(issue.ProjectID)
+	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {
 		projectID = strings.TrimSpace(data.Snapshot.Project.ID)
 	}
