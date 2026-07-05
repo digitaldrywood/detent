@@ -98,6 +98,14 @@ func healthBucketRow(id string, component string, bucket *telemetry.RateLimitBuc
 		row.Kind = primitives.KindErr
 		row.Status = "Exhausted"
 	}
+	// A bucket can be exhausted via zero remaining without an explicit status
+	// (the orchestrator and primary-exhausted demo snapshots use this shape),
+	// so mirror the verdict's exhaustion test to avoid a Healthy row under an
+	// exhaustion alert.
+	if row.Kind != primitives.KindErr && gitHubAPIBucketExhausted(bucket) {
+		row.Kind = primitives.KindErr
+		row.Status = "Exhausted"
+	}
 	if bucket.Limit > 0 {
 		used := bucket.Limit - bucket.Remaining
 		if used < 0 {
@@ -144,6 +152,14 @@ func healthBackoffRow(snapshot telemetry.Snapshot) healthRow {
 		return row
 	}
 	affected := make([]string, 0, 2)
+	seen := make(map[string]bool, 3)
+	addAffected := func(name string) {
+		if seen[name] {
+			return
+		}
+		seen[name] = true
+		affected = append(affected, name)
+	}
 	for _, candidate := range []struct {
 		name   string
 		bucket *telemetry.RateLimitBucket
@@ -157,8 +173,13 @@ func healthBackoffRow(snapshot telemetry.Snapshot) healthRow {
 		}
 		switch strings.TrimSpace(candidate.bucket.Status) {
 		case telemetry.RateLimitStatusBackoff, telemetry.RateLimitStatusExhausted:
-			affected = append(affected, candidate.name)
+			addAffected(candidate.name)
 		}
+	}
+	// A secondary REST throttle surfaces through RESTUsage.RateLimited /
+	// BackoffUntil, not a bucket status, so include it explicitly.
+	if gitHubAPIInBackoff(snapshot) {
+		addAffected("REST")
 	}
 	if len(affected) > 0 {
 		row.Kind = primitives.KindWarn

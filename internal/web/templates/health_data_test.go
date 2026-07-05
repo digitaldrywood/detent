@@ -87,6 +87,39 @@ func TestHealthRows(t *testing.T) {
 	}
 }
 
+func TestHealthRowsExhaustedByRemainingCount(t *testing.T) {
+	// Zero remaining with no explicit status must read Exhausted so the
+	// details row matches the exhaustion verdict.
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 4, 16, 42, 0, 0, time.UTC),
+		RateLimits: &telemetry.RateLimits{
+			GitHubREST: &telemetry.RateLimitBucket{Remaining: 0, Limit: 5000},
+		},
+	}
+	rest := healthRows(snapshot)[0]
+	if rest.Kind != primitives.KindErr || rest.Status != "Exhausted" {
+		t.Fatalf("exhausted REST row = %+v", rest)
+	}
+}
+
+func TestHealthRowsRESTUsageBackoff(t *testing.T) {
+	// A secondary REST throttle lives in RESTUsage, not a bucket status; the
+	// Backoff row must still surface it.
+	backoffUntil := time.Date(2026, 7, 4, 16, 45, 0, 0, time.UTC)
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 4, 16, 42, 0, 0, time.UTC),
+		RateLimits: &telemetry.RateLimits{
+			GitHubREST: &telemetry.RateLimitBucket{Remaining: 4000, Limit: 5000},
+			RESTUsage:  &telemetry.RESTUsage{RateLimited: true, BackoffUntil: &backoffUntil},
+		},
+	}
+	rows := healthRows(snapshot)
+	backoff := rows[len(rows)-1]
+	if backoff.Status != "Active" || !strings.Contains(backoff.Detail, "REST") {
+		t.Fatalf("REST usage backoff row = %+v", backoff)
+	}
+}
+
 func TestHealthRowsIdleWithoutData(t *testing.T) {
 	rows := healthRows(telemetry.Snapshot{})
 	if len(rows) != 2 {
