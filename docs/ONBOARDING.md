@@ -1128,11 +1128,29 @@ probes.
    and `$ONBOARDING_DIR/priority-counts.json`, plus any repo/workstream labels
    already in use. Show the total count for `none`, counts for each label,
    assignee, author, and priority option, and the remaining count for any
-   proposed `labels.exclude`. Default if silent: no filter for a dedicated repo
-   board; otherwise the narrowest label or assignee filter that matches the
-   intended workstream. In label status-source mode, keep authorization filters
-   focused on workstream labels such as `documentation` or `backend`; do not
-   use the `detent:*` status labels as authorization filters unless you are
+   proposed `labels.exclude`. When the author counts include open issues
+   authored by logins other than the operator's login, call that out as a
+   shared repo / multiple humans signal and recommend
+   `author_in: [<operator login>]` by default. Show the per-author counts
+   before asking so the operator can decide whether to keep that guard, expand
+   it, or choose a different selector. Default if silent: for a shared board
+   with foreign authors, set `author_in: [<operator login>]`; use no filter for
+   a dedicated repo board with only operator-authored open issues; otherwise
+   use the narrowest label or assignee filter that matches the intended
+   workstream.
+
+   Shared repo / multiple humans callout: Detent's claim and lease system
+   prevents duplicate dispatch among Detent instances that can see the same
+   issue, but manual work outside Detent writes no Detent claim or lease, so
+   authorization filters are the guardrail that keeps a new instance from
+   dispatching another person's manual work. Frame the answer as selector-level
+   `tracker.authorization`; it matches the neutral `connector.Issue` data
+   Detent already fetched and applies the same way across current and future
+   tracker backends.
+
+   In label status-source mode, keep authorization filters focused on
+   workstream labels such as `documentation` or `backend`; do not use the
+   `detent:*` status labels as authorization filters unless you are
    deliberately narrowing the state machine. Verify:
 
    ```sh
