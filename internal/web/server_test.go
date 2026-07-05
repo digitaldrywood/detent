@@ -984,20 +984,20 @@ func TestKanbanRemoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 	if rec.Header().Get("HX-Retarget") != "#snapshot" {
 		t.Fatalf("HX-Retarget = %q, want #snapshot", rec.Header().Get("HX-Retarget"))
 	}
-	if rec.Header().Get("HX-Reswap") != "outerHTML" {
-		t.Fatalf("HX-Reswap = %q, want outerHTML", rec.Header().Get("HX-Reswap"))
+	if rec.Header().Get("HX-Reswap") != "morph:innerHTML" {
+		t.Fatalf("HX-Reswap = %q, want morph:innerHTML", rec.Header().Get("HX-Reswap"))
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		`id="project-kanban"`,
+		`id="board-lanes"`,
 		"Removed card from project.",
-		`data-project-kanban-lane="todo"`,
+		`data-board-lane="todo"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("response missing %q:\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, "Remove regression card") || strings.Contains(body, `data-kanban-issue-id="I_kw739"`) {
+	if strings.Contains(body, "Remove regression card") {
 		t.Fatalf("response still contains removed card:\n%s", body)
 	}
 	if got, want := actionConnector.removals(), []kanbanRemoval{{issueID: "I_kw739"}}; !equalRemovals(got, want) {

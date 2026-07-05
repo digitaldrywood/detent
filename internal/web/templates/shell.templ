@@ -287,6 +287,14 @@ templ appShellScript() {
 				var host = document.getElementById("detail-sheet-host");
 				if (host) host.innerHTML = "";
 			}
+			document.addEventListener("kanbanActionSucceeded", function () {
+				if (window.tui && window.tui.dialog) {
+					window.tui.dialog.close("kanban-action-dialog");
+				}
+				var content = document.getElementById("kanban-dialog-content");
+				if (content) content.replaceChildren();
+				closeDetailSheet();
+			});
 			document.addEventListener("keydown", function (event) {
 				if (event.key === "Escape") {
 					closeDetailSheet();

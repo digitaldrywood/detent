@@ -458,8 +458,8 @@ func (s *Server) kanbanRemoveSuccess(c echo.Context, req kanbanRemoveRequest, me
 
 	c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
 	c.Response().Header().Set("HX-Retarget", kanbanProjectBoardTarget)
-	c.Response().Header().Set("HX-Reswap", "outerHTML")
-	return render(c, templates.ProjectKanbanSnapshot(data))
+	c.Response().Header().Set("HX-Reswap", "morph:innerHTML")
+	return render(c, templates.BoardSnapshot(data))
 }
 
 func (s *Server) kanbanSnapshotWithPendingStates(lockKey string, projectID string, snapshot telemetry.Snapshot) telemetry.Snapshot {
