@@ -125,12 +125,12 @@ func demoScenarioInManifest(scenario demoScenario) bool {
 
 func demoScenarioDefinitions() []demoScenario {
 	return []demoScenario{
-		{ID: "fleet-empty-first-snapshot", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "empty"},
-		{ID: "fleet-healthy-parallel-work", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "healthy"},
-		{ID: "fleet-overloaded-rate-limited", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "overloaded"},
-		{ID: "fleet-draining-shutdown", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "draining"},
-		{ID: "fleet-dense-multiproject", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "dense"},
-		{ID: "fleet-degraded-telemetry", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "degraded"},
+		{ID: "fleet-empty-first-snapshot", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "empty"},
+		{ID: "fleet-healthy-parallel-work", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "healthy"},
+		{ID: "fleet-overloaded-rate-limited", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "overloaded"},
+		{ID: "fleet-draining-shutdown", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "draining"},
+		{ID: "fleet-dense-multiproject", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "dense"},
+		{ID: "fleet-degraded-telemetry", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "degraded"},
 		{ID: "github-api-healthy", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-healthy"},
 		{ID: "github-api-warning", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-warning"},
 		{ID: "github-api-secondary-backoff", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-secondary-backoff"},
