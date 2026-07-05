@@ -478,8 +478,8 @@ func (s *Server) demoKanbanMoveSuccess(c echo.Context, scenario demoScenario) er
 	}
 	c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
 	c.Response().Header().Set("HX-Retarget", kanbanProjectBoardTarget)
-	c.Response().Header().Set("HX-Reswap", "outerHTML")
-	return render(c, templates.ProjectKanbanSnapshot(data))
+	c.Response().Header().Set("HX-Reswap", "morph:innerHTML")
+	return render(c, templates.BoardSnapshot(data))
 }
 
 func applyDemoKanbanMove(snapshot *telemetry.Snapshot, projectID string, issueID string, targetState string) {

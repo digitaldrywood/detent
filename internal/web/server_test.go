@@ -362,13 +362,15 @@ func TestDemoScenarioKanbanFragments(t *testing.T) {
 	if rec.Header().Get("HX-Retarget") != "#snapshot" {
 		t.Fatalf("move success HX-Retarget = %q, want #snapshot", rec.Header().Get("HX-Retarget"))
 	}
-	backlogLane := projectKanbanLaneHTML(t, rec.Body.String(), "backlog")
-	if strings.Contains(backlogLane, "Backlog observability fixture intake") {
-		t.Fatalf("demo Backlog lane still contains moved card:\n%s", backlogLane)
+	if rec.Header().Get("HX-Reswap") != "morph:innerHTML" {
+		t.Fatalf("move success HX-Reswap = %q, want morph:innerHTML", rec.Header().Get("HX-Reswap"))
 	}
-	todoLane := projectKanbanLaneHTML(t, rec.Body.String(), "todo")
-	if !strings.Contains(todoLane, "Backlog observability fixture intake") {
-		t.Fatalf("demo Todo lane missing moved card:\n%s", todoLane)
+	moveBody := rec.Body.String()
+	if !strings.Contains(moveBody, `id="board-lanes"`) {
+		t.Fatalf("demo move success should return the redesigned board:\n%s", moveBody)
+	}
+	if !regexp.MustCompile(`data-board-lane="todo"[\s\S]*Backlog observability fixture intake`).MatchString(moveBody) {
+		t.Fatalf("demo Todo lane missing moved card:\n%s", moveBody)
 	}
 
 	rec = performDemoForm(t, server.Handler(), "/api/v1/kanban/comment", "api-kanban-comment-connector-failure", nil)
@@ -7443,21 +7445,6 @@ func mustSetKanbanProject(t *testing.T, registry *project.Registry, id string, k
 	if err := registry.Set(trackedProject); err != nil {
 		t.Fatalf("Registry.Set() error = %v", err)
 	}
-}
-
-func projectKanbanLaneHTML(t *testing.T, body string, laneID string) string {
-	t.Helper()
-
-	marker := `data-project-kanban-lane="` + laneID + `"`
-	start := strings.Index(body, marker)
-	if start < 0 {
-		t.Fatalf("missing project Kanban lane %q in:\n%s", laneID, body)
-	}
-	rest := body[start:]
-	if next := strings.Index(rest[len(marker):], `data-project-kanban-lane="`); next >= 0 {
-		return rest[:len(marker)+next]
-	}
-	return rest
 }
 
 func performForm(t *testing.T, handler http.Handler, method string, path string, form url.Values) *httptest.ResponseRecorder {
