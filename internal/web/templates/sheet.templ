@@ -122,6 +122,12 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 							>Move</button>
 						}
 					}
+					if card.IssueID != "" && projectKanbanCardCanComment(data, card) {
+						@sheetCommentTrigger(data, card, "issue", "Comment on issue")
+					}
+					if card.PRNumber > 0 && card.PRRepository != "" && projectKanbanCardCanComment(data, card) {
+						@sheetCommentTrigger(data, card, "pr", "Comment on PR")
+					}
 					if projectKanbanCardCanRemove(data, card) {
 						<form class="inline-flex" hx-post="/api/v1/kanban/remove" hx-target="#kanban-feedback" hx-swap="outerHTML" hx-confirm="Remove this item from the project?">
 							<input type="hidden" name="project_id" value={ projectKanbanCardProjectID(data, card) }/>
@@ -142,6 +148,28 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 			}
 		</aside>
 	</div>
+}
+
+// sheetCommentTrigger opens the shared kanban comment dialog for the card's
+// issue or PR, preserving the pre-redesign operator comment workflow.
+templ sheetCommentTrigger(data DashboardData, card projectKanbanCard, target string, label string) {
+	@dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}) {
+		<button
+			type="button"
+			class="rounded-card border border-line px-3 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent"
+			hx-get={ projectKanbanCommentDialogPath(data, card, target) }
+			hx-target={ kanbanDialogTargetSelector() }
+			hx-swap="innerHTML"
+			aria-label={ label + " " + card.IssueNumber }
+			title={ label }
+		>
+			if target == "pr" {
+				Comment · PR
+			} else {
+				Comment
+			}
+		</button>
+	}
 }
 
 templ sheetRowText(label string) {

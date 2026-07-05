@@ -139,7 +139,9 @@ func sheetOpenAttrs(projectID string, issueNumber string, scope string, boardAct
 }
 
 func sheetHasActions(data DashboardData, card projectKanbanCard, boardActions bool) bool {
-	return boardActions && (projectKanbanCardCanMove(data, card) || projectKanbanCardCanRemove(data, card))
+	return boardActions && (projectKanbanCardCanMove(data, card) ||
+		projectKanbanCardCanRemove(data, card) ||
+		projectKanbanCardCanComment(data, card))
 }
 
 func sheetAttentionLabel(card projectKanbanCard) string {

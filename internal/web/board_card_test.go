@@ -125,6 +125,10 @@ func TestAPIBoardCardPreservesProjectScope(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "kanban_board=project") {
 		t.Fatalf("project-scoped sheet should target the project board:\n%s", rec.Body.String())
 	}
+	// Integration-mode cards keep the operator comment workflow in the sheet.
+	if !strings.Contains(rec.Body.String(), "/api/v1/kanban/comment") {
+		t.Fatalf("integration-mode sheet should offer a comment action:\n%s", rec.Body.String())
+	}
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=42&actions=board", nil)
