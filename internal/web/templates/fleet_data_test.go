@@ -66,6 +66,42 @@ func TestFleetAgentRows(t *testing.T) {
 	}
 }
 
+func TestFleetAgentRowsUniqueIDsForNonGitHubIdentifiers(t *testing.T) {
+	// Memory/non-GitHub tracker identifiers have no #number; each running
+	// session must still get a unique, stable DOM id for SSE morph targeting.
+	snapshot := telemetry.Snapshot{
+		Running: []telemetry.Running{
+			{Issue: telemetry.Issue{Identifier: "MT-1", ProjectID: "detent"}},
+			{Issue: telemetry.Issue{Identifier: "MT-2", ProjectID: "detent"}},
+		},
+	}
+	rows := fleetAgentRows(snapshot)
+	if len(rows) != 2 {
+		t.Fatalf("expected two agent rows, got %d", len(rows))
+	}
+	if rows[0].ID == rows[1].ID {
+		t.Fatalf("non-GitHub agent rows share a DOM id: %q", rows[0].ID)
+	}
+}
+
+func TestFindBoardCardMatchesNonGitHubIdentifier(t *testing.T) {
+	// A card whose identifier has no #number must be found by its bare id.
+	data := DashboardData{
+		ProjectID: "detent",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
+			Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			BoardIssues: []telemetry.Issue{
+				{ID: "mt1", Identifier: "MT-1", ProjectID: "detent", Title: "Memory tracker card", State: "Backlog"},
+			},
+		},
+		Kanban: KanbanData{States: []string{"Backlog"}},
+	}
+	if _, ok := FindBoardCard(data, "detent", "MT-1"); !ok {
+		t.Fatalf("FindBoardCard should match a non-GitHub identifier sent bare")
+	}
+}
+
 func TestFleetAgentProgressBounds(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -30,8 +30,12 @@ type sheetSession struct {
 func FindBoardCard(data DashboardData, projectID string, issueNumber string) (projectKanbanCard, bool) {
 	projectID = strings.TrimSpace(projectID)
 	issueNumber = strings.TrimSpace(issueNumber)
-	if !strings.HasPrefix(issueNumber, "#") && issueNumber != "" {
-		issueNumber = "#" + issueNumber
+	// GitHub-style cards render as "#92" while callers send "92"; non-GitHub
+	// tracker IDs (e.g. memory IDs like "MT-1") render bare and are sent bare.
+	// Match against both forms so neither kind 404s.
+	hashedNumber := issueNumber
+	if issueNumber != "" && !strings.HasPrefix(issueNumber, "#") {
+		hashedNumber = "#" + issueNumber
 	}
 	// Legacy single-project snapshots can leave Issue.ProjectID empty, so a
 	// card matches when its project id equals the request or when the card
@@ -40,7 +44,7 @@ func FindBoardCard(data DashboardData, projectID string, issueNumber string) (pr
 	board := projectKanbanBoardView(data)
 	for _, lane := range board.AllLanes {
 		for _, card := range lane.Cards {
-			if card.IssueNumber != issueNumber {
+			if card.IssueNumber != issueNumber && card.IssueNumber != hashedNumber {
 				continue
 			}
 			cardProjectID := strings.TrimSpace(card.ProjectID)

@@ -107,8 +107,15 @@ func fleetAgentRows(snapshot telemetry.Snapshot) []fleetAgentRow {
 	rows := make([]fleetAgentRow, 0, len(snapshot.Running))
 	for _, running := range snapshot.Running {
 		repo, number := splitIssueIdentifier(issueIdentifier(running.Issue))
+		// Non-GitHub tracker identifiers (e.g. memory IDs like MT-1) have no
+		// #number, so fall back to the full identifier to keep each agent
+		// row's DOM id unique and stable for SSE morph/highlight targeting.
+		idKey := number
+		if strings.TrimSpace(idKey) == "" {
+			idKey = repo
+		}
 		row := fleetAgentRow{
-			ID:      "agent-" + boardCardSlug(running.ProjectID, number),
+			ID:      "agent-" + boardCardSlug(running.ProjectID, idKey),
 			Repo:    repo,
 			Number:  number,
 			Title:   issueTitle(running.Issue),
