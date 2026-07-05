@@ -922,6 +922,14 @@ func (c *Connector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue
 }
 
 func (c *Connector) FetchCandidateIssuesByStates(ctx context.Context, stateNames []string) ([]connector.Issue, error) {
+	return c.FetchCandidateIssuesByStatesWithFilter(ctx, stateNames, connector.IssueFilterHint{})
+}
+
+func (c *Connector) FetchCandidateIssuesByStatesWithFilter(
+	ctx context.Context,
+	stateNames []string,
+	hint connector.IssueFilterHint,
+) ([]connector.Issue, error) {
 	stateNames = normalizeStateList(stateNames, nil)
 	if len(stateNames) == 0 {
 		return []connector.Issue{}, nil
@@ -937,7 +945,7 @@ func (c *Connector) FetchCandidateIssuesByStates(ctx context.Context, stateNames
 		return issues, nil
 	}
 	if c.usesIssueFieldStatus() {
-		issues, err := c.fetchIssueFieldIssuesByStates(ctx, stateNames, 0)
+		issues, err := c.fetchIssueFieldIssuesByStates(ctx, stateNames, 0, hint)
 		if err != nil {
 			return nil, err
 		}
@@ -988,7 +996,7 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 		return issues, nil
 	}
 	if c.usesIssueFieldStatus() {
-		issues, err := c.fetchIssueFieldIssuesByStates(ctx, stateNames, 0)
+		issues, err := c.fetchIssueFieldIssuesByStates(ctx, stateNames, 0, connector.IssueFilterHint{})
 		if err != nil {
 			return nil, err
 		}
@@ -1063,7 +1071,7 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 		return issues, nil
 	}
 	if c.usesIssueFieldStatus() {
-		issues, err := c.fetchIssueFieldIssuesByStates(ctx, stateNames, limit)
+		issues, err := c.fetchIssueFieldIssuesByStates(ctx, stateNames, limit, connector.IssueFilterHint{})
 		if err != nil {
 			return nil, err
 		}
@@ -1121,7 +1129,7 @@ func (c *Connector) FetchIssueStateProbe(ctx context.Context, stateNames []strin
 		return c.fetchLabelIssuesByStates(ctx, stateNames, limit)
 	}
 	if c.usesIssueFieldStatus() {
-		return c.fetchIssueFieldIssuesByStates(ctx, stateNames, limit)
+		return c.fetchIssueFieldIssuesByStates(ctx, stateNames, limit, connector.IssueFilterHint{})
 	}
 	if c.projectID == "" {
 		return nil, ErrMissingProject

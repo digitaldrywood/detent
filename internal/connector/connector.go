@@ -18,6 +18,17 @@ type Connector interface {
 	SetField(context.Context, string, string, string) error
 }
 
+type IssueFilterHint struct {
+	Authors      []string
+	Assignees    []string
+	LabelInclude []string
+	LabelExclude []string
+}
+
+type CandidateIssuesFilterFetcher interface {
+	FetchCandidateIssuesByStatesWithFilter(context.Context, []string, IssueFilterHint) ([]Issue, error)
+}
+
 type Closer interface {
 	Close() error
 }

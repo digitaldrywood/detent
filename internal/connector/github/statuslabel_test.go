@@ -57,6 +57,50 @@ func TestConnectorFetchCandidateIssuesUsesStatusLabels(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchCandidateIssuesWithFilterIgnoresStatusLabels(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Aready&page=1&per_page=100&state=all",
+			body:   `[{"node_id":"I_485","number":485,"title":"Installer packages","body":"Ship packages","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/485","assignees":[],"labels":[{"name":"detent:ready"},{"name":"enhancement"}]}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+		ActiveStates:       []string{"Todo"},
+		StateMap:           map[string]string{"Todo": "Ready"},
+	})
+
+	got, err := c.FetchCandidateIssuesByStatesWithFilter(context.Background(), []string{"Todo"}, connector.IssueFilterHint{
+		Authors:      []string{"alice"},
+		Assignees:    []string{"worker-1"},
+		LabelInclude: []string{"ready"},
+		LabelExclude: []string{"blocked"},
+	})
+	if err != nil {
+		t.Fatalf("FetchCandidateIssuesByStatesWithFilter() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchCandidateIssuesByStatesWithFilter() len = %d, want 1", len(got))
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want label issue list and pull request list", len(requests))
+	}
+	if requests[0]["path"] != "/repos/digitaldrywood/detent/issues?labels=detent%3Aready&page=1&per_page=100&state=all" {
+		t.Fatalf("label issue path = %q, want status label only", requests[0]["path"])
+	}
+}
+
 func TestConnectorFetchStatusDriftReportsUntrackedAndOpenTerminalIssues(t *testing.T) {
 	t.Parallel()
 

@@ -364,6 +364,190 @@ func TestDispatchableFiltersUnauthorizedCandidates(t *testing.T) {
 	}
 }
 
+func TestAuthorizationFilterHintUsesTopLevelSelectorFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		auth selector.Selector
+		ctx  selector.Context
+		want connector.IssueFilterHint
+	}{
+		{
+			name: "resolves identities and labels",
+			auth: selector.Selector{
+				AuthorIn:   []string{" alice ", "@me", "ALICE"},
+				AssigneeIn: []string{" team-a ", "@me"},
+				Labels: selector.Labels{
+					Include: []string{" ready ", "READY"},
+					Exclude: []string{" blocked "},
+				},
+			},
+			ctx: selector.Context{
+				InstanceLogin: "worker-1",
+				Persona:       "release-captain",
+			},
+			want: connector.IssueFilterHint{
+				Authors:      []string{"alice", "worker-1", "release-captain"},
+				Assignees:    []string{"team-a", "worker-1", "release-captain"},
+				LabelInclude: []string{"ready"},
+				LabelExclude: []string{"blocked"},
+			},
+		},
+		{
+			name: "ignores nested selectors",
+			auth: selector.Selector{
+				And: []selector.Selector{{
+					AuthorIn: []string{"nested-author"},
+					Labels:   selector.Labels{Include: []string{"nested-label"}},
+				}},
+				Or: []selector.Selector{{
+					AssigneeIn: []string{"nested-assignee"},
+					Labels:     selector.Labels{Exclude: []string{"nested-exclude"}},
+				}},
+			},
+			want: connector.IssueFilterHint{},
+		},
+		{
+			name: "drops unresolved me token",
+			auth: selector.Selector{
+				AuthorIn:   []string{"@me"},
+				AssigneeIn: []string{"@me"},
+			},
+			want: connector.IssueFilterHint{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := authorizationFilterHint(tt.auth, tt.ctx)
+			assertIssueFilterHint(t, got, tt.want)
+		})
+	}
+}
+
+func TestFetchCandidateIssuesForTickPassesAuthorizationFilterHint(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		ActiveStates: []string{"Todo", "In Progress"},
+		Authorization: selector.Selector{
+			AuthorIn:   []string{"@me", "alice"},
+			AssigneeIn: []string{"worker-2"},
+			Labels: selector.Labels{
+				Include: []string{"ready"},
+				Exclude: []string{"blocked"},
+			},
+		},
+		SelectorContext: selector.Context{
+			InstanceLogin: "worker-1",
+			Persona:       "release-captain",
+		},
+	})
+	tracker := &filterFetchConnector{
+		issues: []connector.Issue{dispatchTestIssue("issue-authorized", "Todo")},
+	}
+	orch := Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+
+	got, err := orch.fetchCandidateIssuesForTick(context.Background(), &state)
+	if err != nil {
+		t.Fatalf("fetchCandidateIssuesForTick() error = %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "issue-authorized" {
+		t.Fatalf("fetchCandidateIssuesForTick() = %#v, want authorized issue", got)
+	}
+	if tracker.baseFetches != 0 {
+		t.Fatalf("FetchCandidateIssues calls = %d, want 0", tracker.baseFetches)
+	}
+	if !slices.Equal(tracker.states, []string{"todo", "in progress"}) {
+		t.Fatalf("states = %#v, want todo/in progress", tracker.states)
+	}
+	assertIssueFilterHint(t, tracker.hint, connector.IssueFilterHint{
+		Authors:      []string{"worker-1", "release-captain", "alice"},
+		Assignees:    []string{"worker-2"},
+		LabelInclude: []string{"ready"},
+		LabelExclude: []string{"blocked"},
+	})
+}
+
+func TestDispatchPlanMatchesWithAndWithoutAuthorizationPushdown(t *testing.T) {
+	t.Parallel()
+
+	authorMatch := dispatchTestIssue("issue-author-match", "Todo")
+	authorMatch.AuthorID = "alice"
+	authorMiss := dispatchTestIssue("issue-author-miss", "Todo")
+	authorMiss.AuthorID = "bob"
+
+	combinedMatch := dispatchTestIssue("issue-combined-match", "Todo")
+	combinedMatch.AuthorID = "worker-1"
+	combinedMatch.Assignees = []string{"release-captain"}
+	combinedMatch.Labels = []string{"ready", "team-a"}
+	combinedMiss := dispatchTestIssue("issue-combined-miss", "Todo")
+	combinedMiss.AuthorID = "worker-1"
+	combinedMiss.Assignees = []string{"release-captain"}
+	combinedMiss.Labels = []string{"blocked", "ready"}
+
+	tests := []struct {
+		name       string
+		auth       selector.Selector
+		ctx        selector.Context
+		all        []connector.Issue
+		pushedDown []connector.Issue
+		want       []string
+	}{
+		{
+			name:       "author hint",
+			auth:       selector.Selector{AuthorIn: []string{"alice"}},
+			all:        []connector.Issue{authorMatch, authorMiss},
+			pushedDown: []connector.Issue{authorMatch},
+			want:       []string{authorMatch.ID},
+		},
+		{
+			name: "combined top-level hint",
+			auth: selector.Selector{
+				AuthorIn:   []string{"@me"},
+				AssigneeIn: []string{"release-captain"},
+				Labels: selector.Labels{
+					Include: []string{"ready"},
+					Exclude: []string{"blocked"},
+				},
+			},
+			ctx: selector.Context{
+				InstanceLogin: "worker-1",
+				Persona:       "release-captain",
+			},
+			all:        []connector.Issue{combinedMatch, combinedMiss},
+			pushedDown: []connector.Issue{combinedMatch},
+			want:       []string{combinedMatch.ID},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := Config{
+				MaxConcurrentAgents: 10,
+				ActiveStates:        []string{"Todo"},
+				TerminalStates:      []string{"Done"},
+				Authorization:       tt.auth,
+				SelectorContext:     tt.ctx,
+			}
+			withoutPushdown := dispatchPlanIssueIDs(cfg, tt.all)
+			withPushdown := dispatchPlanIssueIDs(cfg, tt.pushedDown)
+			if !slices.Equal(withoutPushdown, withPushdown) {
+				t.Fatalf("dispatch IDs without pushdown = %#v, with pushdown = %#v", withoutPushdown, withPushdown)
+			}
+			if !slices.Equal(withPushdown, tt.want) {
+				t.Fatalf("dispatch IDs = %#v, want %#v", withPushdown, tt.want)
+			}
+		})
+	}
+}
+
 func TestMemoryConnectorOrchestratorsPartitionSharedIssuesByAuthorization(t *testing.T) {
 	t.Parallel()
 
@@ -1576,6 +1760,89 @@ func dispatchTestIssueWithUnknownUnavailablePullRequestHydration(id, state strin
 		HydrationUnavailableReason: "rest_budget_reserved",
 	}
 	return issue
+}
+
+func assertIssueFilterHint(t *testing.T, got connector.IssueFilterHint, want connector.IssueFilterHint) {
+	t.Helper()
+
+	if !slices.Equal(got.Authors, want.Authors) {
+		t.Fatalf("Authors = %#v, want %#v", got.Authors, want.Authors)
+	}
+	if !slices.Equal(got.Assignees, want.Assignees) {
+		t.Fatalf("Assignees = %#v, want %#v", got.Assignees, want.Assignees)
+	}
+	if !slices.Equal(got.LabelInclude, want.LabelInclude) {
+		t.Fatalf("LabelInclude = %#v, want %#v", got.LabelInclude, want.LabelInclude)
+	}
+	if !slices.Equal(got.LabelExclude, want.LabelExclude) {
+		t.Fatalf("LabelExclude = %#v, want %#v", got.LabelExclude, want.LabelExclude)
+	}
+}
+
+func dispatchPlanIssueIDs(cfg Config, candidates []connector.Issue) []string {
+	cfg = normalizeConfig(cfg)
+	state := newState(cfg)
+	plan := newDispatchPlanner(cfg).plan(&state, candidates, time.Now(), dispatchPlanHooks{})
+	ids := make([]string, 0, len(plan.Dispatches))
+	for _, dispatch := range plan.Dispatches {
+		ids = append(ids, dispatch.IssueID)
+	}
+	return ids
+}
+
+type filterFetchConnector struct {
+	issues      []connector.Issue
+	states      []string
+	hint        connector.IssueFilterHint
+	baseFetches int
+}
+
+func (c *filterFetchConnector) Name() string {
+	return "filter-fetch"
+}
+
+func (c *filterFetchConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	c.baseFetches++
+	return cloneIssues(c.issues), nil
+}
+
+func (c *filterFetchConnector) FetchCandidateIssuesByStatesWithFilter(
+	_ context.Context,
+	states []string,
+	hint connector.IssueFilterHint,
+) ([]connector.Issue, error) {
+	c.states = append([]string(nil), states...)
+	c.hint = connector.IssueFilterHint{
+		Authors:      append([]string(nil), hint.Authors...),
+		Assignees:    append([]string(nil), hint.Assignees...),
+		LabelInclude: append([]string(nil), hint.LabelInclude...),
+		LabelExclude: append([]string(nil), hint.LabelExclude...),
+	}
+	return cloneIssues(c.issues), nil
+}
+
+func (c *filterFetchConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (c *filterFetchConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (c *filterFetchConnector) CreateComment(context.Context, string, string) error {
+	return nil
+}
+
+func (c *filterFetchConnector) UpdateIssueState(context.Context, string, string) error {
+	return nil
+}
+
+func (c *filterFetchConnector) SetAssignee(context.Context, string, string) error {
+	return nil
+}
+
+func (c *filterFetchConnector) SetField(context.Context, string, string, string) error {
+	return nil
 }
 
 type budgetRefusalComment struct {

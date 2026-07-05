@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -310,6 +311,13 @@ func (o *Orchestrator) fetchTickIssues(
 }
 
 func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *State) ([]connector.Issue, error) {
+	if fetcher, ok := o.connector.(connector.CandidateIssuesFilterFetcher); ok {
+		states := o.candidateFetchStatesForTick(state)
+		if len(states) == 0 {
+			return []connector.Issue{}, nil
+		}
+		return fetcher.FetchCandidateIssuesByStatesWithFilter(ctx, states, o.authorizationFilterHint())
+	}
 	if fetcher, ok := o.connector.(connector.CandidateIssuesByStatesFetcher); ok {
 		states := o.candidateFetchStatesForTick(state)
 		if len(states) == 0 {
@@ -318,6 +326,60 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 		return fetcher.FetchCandidateIssuesByStates(ctx, states)
 	}
 	return o.connector.FetchCandidateIssues(ctx)
+}
+
+func (o *Orchestrator) authorizationFilterHint() connector.IssueFilterHint {
+	return authorizationFilterHint(o.cfg.Authorization, o.cfg.SelectorContext)
+}
+
+func authorizationFilterHint(auth selector.Selector, ctx selector.Context) connector.IssueFilterHint {
+	return connector.IssueFilterHint{
+		Authors:      resolveFilterHintIdentities(auth.AuthorIn, ctx),
+		Assignees:    resolveFilterHintIdentities(auth.AssigneeIn, ctx),
+		LabelInclude: filterHintStrings(auth.Labels.Include),
+		LabelExclude: filterHintStrings(auth.Labels.Exclude),
+	}
+}
+
+func resolveFilterHintIdentities(values []string, ctx selector.Context) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if strings.EqualFold(value, "@me") {
+			for _, resolved := range []string{ctx.InstanceLogin, ctx.Persona} {
+				appendFilterHintString(&out, seen, resolved)
+			}
+			continue
+		}
+		appendFilterHintString(&out, seen, value)
+	}
+	return out
+}
+
+func filterHintStrings(values []string) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		appendFilterHintString(&out, seen, value)
+	}
+	return out
+}
+
+func appendFilterHintString(out *[]string, seen map[string]struct{}, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	key := strings.ToLower(value)
+	if _, ok := seen[key]; ok {
+		return
+	}
+	seen[key] = struct{}{}
+	*out = append(*out, value)
 }
 
 func (o *Orchestrator) refreshStatusDrift(
