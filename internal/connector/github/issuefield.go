@@ -762,9 +762,13 @@ func restIssueFieldSearchPath(repo pullRequestRepo, fieldName string, values []s
 		"is:issue",
 		issueFieldSearchQualifier(fieldName, values),
 	}
-	terms = append(terms, issueFilterSearchQualifiers(hint)...)
+	filterQualifiers := issueFilterSearchQualifiers(hint)
+	terms = append(terms, filterQualifiers...)
 	query := strings.Join(terms, " ")
 	params.Set("q", query)
+	if githubSearchNeedsAdvanced(filterQualifiers) {
+		params.Set("advanced_search", "true")
+	}
 	params.Set("per_page", strconv.Itoa(issueSearchPageSize))
 	params.Set("page", strconv.Itoa(page))
 	return "/search/issues?" + params.Encode()
@@ -801,6 +805,15 @@ func githubSearchAnyQualifier(name string, values []string) string {
 		parts = append(parts, name+":"+token)
 	}
 	return "(" + strings.Join(parts, " OR ") + ")"
+}
+
+func githubSearchNeedsAdvanced(terms []string) bool {
+	for _, term := range terms {
+		if strings.Contains(term, " OR ") || strings.Contains(term, "(") || strings.Contains(term, ")") {
+			return true
+		}
+	}
+	return false
 }
 
 func githubSearchTokens(values []string) []string {

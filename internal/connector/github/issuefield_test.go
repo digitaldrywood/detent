@@ -146,6 +146,9 @@ func TestConnectorIssueFieldFetchCandidateIssuesWithFilterAddsSearchQualifiers(t
 		t.Fatalf("parse search path: %v", err)
 	}
 	query := searchURL.Query().Get("q")
+	if got := searchURL.Query().Get("advanced_search"); got != "true" {
+		t.Fatalf("advanced_search = %q, want true", got)
+	}
 	for _, want := range []string{
 		"repo:digitaldrywood/detent",
 		"is:issue",
