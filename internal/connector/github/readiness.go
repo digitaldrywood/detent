@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 type ReadinessStatus string
@@ -393,7 +395,7 @@ func (c githubReadinessChecker) issueFieldIssuesReadCheck(ctx context.Context, s
 			Detail: "skipped because no active or observed tracker states are configured",
 		}
 	}
-	issues, err := c.connector.fetchIssueFieldIssuesByStates(ctx, states, 5)
+	issues, err := c.connector.fetchIssueFieldIssuesByStates(ctx, states, 5, connector.IssueFilterHint{})
 	if err != nil {
 		return ReadinessCheck{
 			Name:   "GitHub issue field issue read",

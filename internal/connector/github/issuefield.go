@@ -223,6 +223,7 @@ func (c *Connector) fetchIssueFieldIssuesByStates(
 	ctx context.Context,
 	stateNames []string,
 	limit int,
+	hint connector.IssueFilterHint,
 ) ([]connector.Issue, error) {
 	if !validPullRequestRepo(c.repository) {
 		return nil, ErrMissingRepository
@@ -242,7 +243,8 @@ func (c *Connector) fetchIssueFieldIssuesByStates(
 	allIssues := []connector.Issue{}
 	for page := 1; ; page++ {
 		var response restIssueSearchResponse
-		if err := c.client.REST(ctx, http.MethodGet, restIssueFieldSearchPath(c.repository, c.statusField, githubStates, page), nil, &response); err != nil {
+		path := restIssueFieldSearchPath(c.repository, c.statusField, githubStates, hint, page)
+		if err := c.client.REST(ctx, http.MethodGet, path, nil, &response); err != nil {
 			return nil, fmt.Errorf("search github issue field values: %w", err)
 		}
 		for _, item := range response.Items {
@@ -753,17 +755,83 @@ func restIssueFieldValueString(value restIssueFieldValue) string {
 	return ""
 }
 
-func restIssueFieldSearchPath(repo pullRequestRepo, fieldName string, values []string, page int) string {
+func restIssueFieldSearchPath(repo pullRequestRepo, fieldName string, values []string, hint connector.IssueFilterHint, page int) string {
 	params := url.Values{}
-	query := strings.Join([]string{
+	terms := []string{
 		"repo:" + repo.Owner + "/" + repo.Name,
 		"is:issue",
 		issueFieldSearchQualifier(fieldName, values),
-	}, " ")
+	}
+	filterQualifiers := issueFilterSearchQualifiers(hint)
+	terms = append(terms, filterQualifiers...)
+	query := strings.Join(terms, " ")
 	params.Set("q", query)
+	if githubSearchNeedsAdvanced(filterQualifiers) {
+		params.Set("advanced_search", "true")
+	}
 	params.Set("per_page", strconv.Itoa(issueSearchPageSize))
 	params.Set("page", strconv.Itoa(page))
 	return "/search/issues?" + params.Encode()
+}
+
+func issueFilterSearchQualifiers(hint connector.IssueFilterHint) []string {
+	qualifiers := []string{}
+	if author := githubSearchAnyQualifier("author", hint.Authors); author != "" {
+		qualifiers = append(qualifiers, author)
+	}
+	if assignee := githubSearchAnyQualifier("assignee", hint.Assignees); assignee != "" {
+		qualifiers = append(qualifiers, assignee)
+	}
+	for _, label := range githubSearchTokens(hint.LabelInclude) {
+		qualifiers = append(qualifiers, "label:"+label)
+	}
+	for _, label := range githubSearchTokens(hint.LabelExclude) {
+		qualifiers = append(qualifiers, "-label:"+label)
+	}
+	return qualifiers
+}
+
+func githubSearchAnyQualifier(name string, values []string) string {
+	tokens := githubSearchTokens(values)
+	if len(tokens) == 0 {
+		return ""
+	}
+	if len(tokens) == 1 {
+		return name + ":" + tokens[0]
+	}
+
+	parts := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		parts = append(parts, name+":"+token)
+	}
+	return "(" + strings.Join(parts, " OR ") + ")"
+}
+
+func githubSearchNeedsAdvanced(terms []string) bool {
+	for _, term := range terms {
+		if strings.Contains(term, " OR ") || strings.Contains(term, "(") || strings.Contains(term, ")") {
+			return true
+		}
+	}
+	return false
+}
+
+func githubSearchTokens(values []string) []string {
+	tokens := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		token := githubSearchToken(value)
+		if token == "" {
+			continue
+		}
+		key := strings.ToLower(token)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		tokens = append(tokens, token)
+	}
+	return tokens
 }
 
 func issueFieldSearchQualifier(fieldName string, values []string) string {
@@ -791,7 +859,7 @@ func githubSearchToken(value string) string {
 		if r >= '0' && r <= '9' {
 			continue
 		}
-		if r == '_' || r == '-' || r == '.' {
+		if r == '_' || r == '-' || r == '.' || r == '/' || r == '@' {
 			continue
 		}
 		return strconv.Quote(value)

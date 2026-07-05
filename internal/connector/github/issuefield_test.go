@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -88,6 +89,78 @@ func TestConnectorIssueFieldFetchIssuesByStates(t *testing.T) {
 	for _, want := range []string{"repo%3Adigitaldrywood%2Fdetent", "is%3Aissue", "field.Status%3AReady%2CWorking"} {
 		if !strings.Contains(searchPath, want) {
 			t.Fatalf("search path = %q, missing %q", searchPath, want)
+		}
+	}
+}
+
+func TestConnectorIssueFieldFetchCandidateIssuesWithFilterAddsSearchQualifiers(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/orgs/digitaldrywood/issue-fields?per_page=100",
+			body:   `[{"id":10,"node_id":"IFSS_status","name":"Status","data_type":"single_select","options":[{"id":1,"name":"Ready","color":"green"}]}]`,
+		},
+		{
+			method: http.MethodGet,
+			body:   `{"total_count":1,"items":[{"node_id":"I_1","number":1,"title":"Ready issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1","user":{"login":"alice"},"assignees":[{"node_id":"U_1","login":"worker-1"}],"labels":[{"name":"ready"}]}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/1/issue-field-values?per_page=100",
+			body:   `[{"issue_field_id":10,"node_id":"IFV_1","data_type":"single_select","value":1,"single_select_option":{"id":1,"name":"Ready","color":"green"}}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceIssueField,
+		Repository:         "digitaldrywood/detent",
+		StatusField:        "Status",
+		StateMap:           map[string]string{"Todo": "Ready"},
+	})
+
+	got, err := c.FetchCandidateIssuesByStatesWithFilter(context.Background(), []string{"Todo"}, connector.IssueFilterHint{
+		Authors:      []string{"alice", "bob", "alice"},
+		Assignees:    []string{"worker-1"},
+		LabelInclude: []string{"ready", "help wanted"},
+		LabelExclude: []string{"blocked"},
+	})
+	if err != nil {
+		t.Fatalf("FetchCandidateIssuesByStatesWithFilter() error = %v", err)
+	}
+	if len(got) != 1 || got[0].AuthorID != "alice" {
+		t.Fatalf("FetchCandidateIssuesByStatesWithFilter() = %#v, want alice issue", got)
+	}
+
+	requests := server.requests()
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want metadata, search, field read, and pull request list", len(requests))
+	}
+	searchURL, err := url.Parse(requests[1]["path"].(string))
+	if err != nil {
+		t.Fatalf("parse search path: %v", err)
+	}
+	query := searchURL.Query().Get("q")
+	if got := searchURL.Query().Get("advanced_search"); got != "true" {
+		t.Fatalf("advanced_search = %q, want true", got)
+	}
+	for _, want := range []string{
+		"repo:digitaldrywood/detent",
+		"is:issue",
+		"field.Status:Ready",
+		"(author:alice OR author:bob)",
+		"assignee:worker-1",
+		"label:ready",
+		`label:"help wanted"`,
+		"-label:blocked",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("search query = %q, missing %q", query, want)
 		}
 	}
 }

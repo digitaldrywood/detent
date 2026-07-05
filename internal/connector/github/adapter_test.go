@@ -100,6 +100,46 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchCandidateIssuesWithFilterIgnoresProjectV2(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":26,"title":"GitHub adapter","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/26","labels":{"nodes":[{"name":"enhancement"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Ready"}}]}}}}`,
+	}, {
+		method: http.MethodGet,
+		path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
+		body:   `[]`,
+	}})
+
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug:  "PVT_1",
+		ActiveStates: []string{"Todo"},
+		StateMap:     map[string]string{"Todo": "Ready"},
+	})
+
+	got, err := c.FetchCandidateIssuesByStatesWithFilter(context.Background(), []string{"Todo"}, connector.IssueFilterHint{
+		Authors:      []string{"alice"},
+		Assignees:    []string{"worker-1"},
+		LabelInclude: []string{"ready"},
+		LabelExclude: []string{"blocked"},
+	})
+	if err != nil {
+		t.Fatalf("FetchCandidateIssuesByStatesWithFilter() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchCandidateIssuesByStatesWithFilter() len = %d, want 1", len(got))
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want project query and pull request list", len(requests))
+	}
+	variables := requests[0]["variables"].(map[string]any)
+	if variables["query"] != "status:Ready" {
+		t.Fatalf("query = %v, want status-only ProjectV2 query", variables["query"])
+	}
+}
+
 func TestAllAssigneeLogins(t *testing.T) {
 	t.Parallel()
 
