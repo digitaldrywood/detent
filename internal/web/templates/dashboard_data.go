@@ -53,6 +53,9 @@ type DashboardData struct {
 	ProjectName      string
 	ProjectPaused    bool
 	SidebarCollapsed bool
+	Theme            string
+	Density          string
+	AnalyticsKind    string
 }
 
 type DashboardShellData struct {
@@ -71,6 +74,9 @@ type DashboardShellData struct {
 	ProjectName            string
 	SidebarCollapsed       bool
 	IncludeDashboardCharts bool
+	Theme                  string
+	Density                string
+	AnalyticsKind          string
 }
 
 type Budget = telemetry.Budget
@@ -569,6 +575,9 @@ func DashboardShellDataFromDashboard(data DashboardData) DashboardShellData {
 		ProjectName:            data.ProjectName,
 		SidebarCollapsed:       data.SidebarCollapsed,
 		IncludeDashboardCharts: true,
+		Theme:                  data.Theme,
+		Density:                data.Density,
+		AnalyticsKind:          data.AnalyticsKind,
 	}
 }
 
@@ -682,6 +691,12 @@ func chartEndpoint(data DashboardData) string {
 }
 
 func eventsPath(data DashboardShellData) string {
+	if strings.TrimSpace(data.ProjectID) == "" && strings.TrimSpace(data.ActiveNav) == "board" {
+		return "/events?view=board"
+	}
+	if strings.TrimSpace(data.ProjectID) == "" && strings.TrimSpace(data.ActiveNav) == "fleet" {
+		return "/events?view=fleet"
+	}
 	if strings.TrimSpace(data.ProjectID) == "" && strings.TrimSpace(data.ActiveNav) == "kanban" {
 		return "/events?view=kanban"
 	}
@@ -689,6 +704,11 @@ func eventsPath(data DashboardShellData) string {
 		values := url.Values{"nav": []string{activeNav}}
 		if id := strings.TrimSpace(data.ProjectID); id != "" {
 			values.Set("project", id)
+		}
+		if activeNav == "analytics" {
+			if kind := strings.TrimSpace(data.AnalyticsKind); kind != "" {
+				values.Set("kind", kind)
+			}
 		}
 		return "/events?" + values.Encode()
 	}
@@ -702,6 +722,8 @@ func eventsPath(data DashboardShellData) string {
 			return projectDiagnosticsEventsPath(data)
 		case "configuration":
 			return projectConfigurationEventsPath(data)
+		case "overview":
+			return "/events?" + url.Values{"project": []string{id}, "view": []string{"overview"}}.Encode()
 		}
 		return "/events?project=" + url.QueryEscape(id)
 	}
@@ -2194,6 +2216,14 @@ func projectKanbanActionsEnabled(data DashboardData) bool {
 }
 
 func projectKanbanBoardLoaded(data DashboardData) bool {
+	return snapshotCarriesData(data)
+}
+
+// snapshotCarriesData reports whether the snapshot has data worth rendering:
+// a ready refresh, or a degraded one that still carries prior tracker data.
+// The redesigned snapshot views use it so a transient tracker/API failure
+// keeps the last-known content visible instead of flashing skeletons.
+func snapshotCarriesData(data DashboardData) bool {
 	return snapshotReady(data.Snapshot) ||
 		(snapshotDegraded(data.Snapshot) && snapshotHasPriorTrackerSnapshot(data.Snapshot))
 }
@@ -2763,8 +2793,16 @@ func projectKanbanBlockedRefCleared(ref telemetry.BlockedRef, terminalStates map
 }
 
 func projectKanbanTerminalStateSetForIssue(data DashboardData, issue telemetry.Issue) map[string]struct{} {
+	return projectKanbanTerminalStateSetForProject(data, strings.TrimSpace(issue.ProjectID))
+}
+
+// projectKanbanTerminalStateSetForProject resolves terminal states for a
+// specific project, falling back to the snapshot project then the global
+// set. The fleet board mixes projects, so terminal treatment must be
+// evaluated per card rather than from the default project's states alone.
+func projectKanbanTerminalStateSetForProject(data DashboardData, projectID string) map[string]struct{} {
 	states := data.Kanban.TerminalStates
-	projectID := strings.TrimSpace(issue.ProjectID)
+	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {
 		projectID = strings.TrimSpace(data.Snapshot.Project.ID)
 	}

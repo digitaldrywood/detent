@@ -1,0 +1,12 @@
+package primitives
+
+// StatusDot renders the 6px status dot. Pulse is reserved for live agent
+// activity — at most one continuously-animating element per active agent —
+// and freezes under prefers-reduced-motion via the dt-pulse rule.
+templ StatusDot(kind Kind, pulse bool) {
+	if pulse {
+		<span class={ "inline-block size-1.5 flex-none rounded-full dt-pulse " + kind.dotClass() } aria-hidden="true"></span>
+	} else {
+		<span class={ "inline-block size-1.5 flex-none rounded-full " + kind.dotClass() } aria-hidden="true"></span>
+	}
+}

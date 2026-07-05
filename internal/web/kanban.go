@@ -73,8 +73,8 @@ type kanbanCommentRequest struct {
 
 const (
 	kanbanDialogContentTarget = "#kanban-dialog-content"
-	kanbanProjectBoardTarget  = "#project-kanban"
-	kanbanFleetBoardTarget    = "#fleet-kanban"
+	kanbanProjectBoardTarget  = "#snapshot"
+	kanbanFleetBoardTarget    = "#snapshot"
 	kanbanDialogSucceeded     = "kanbanActionSucceeded"
 	kanbanRemovalPendingTTL   = 5 * time.Minute
 )
@@ -344,14 +344,14 @@ func (s *Server) kanbanMoveSuccess(c echo.Context, req kanbanMoveRequest, messag
 		return kanbanFeedback(c, http.StatusOK, message)
 	}
 	if strings.EqualFold(strings.TrimSpace(req.board), "fleet") {
-		data := s.fleetKanbanData(ctx, s.latestSnapshot(ctx))
+		data := s.boardData(ctx, s.latestSnapshot(ctx))
 		data.Kanban.Feedback = message
 		data.Kanban.FeedbackKind = "success"
 
 		c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
 		c.Response().Header().Set("HX-Retarget", kanbanFleetBoardTarget)
-		c.Response().Header().Set("HX-Reswap", "outerHTML")
-		return render(c, templates.ProjectKanbanSnapshot(data))
+		c.Response().Header().Set("HX-Reswap", "morph:innerHTML")
+		return render(c, templates.BoardSnapshot(data))
 	}
 
 	data, ok := s.projectDashboardData(ctx, req.projectID, s.latestSnapshot(ctx))
@@ -365,8 +365,8 @@ func (s *Server) kanbanMoveSuccess(c echo.Context, req kanbanMoveRequest, messag
 
 	c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
 	c.Response().Header().Set("HX-Retarget", kanbanProjectBoardTarget)
-	c.Response().Header().Set("HX-Reswap", "outerHTML")
-	return render(c, templates.ProjectKanbanSnapshot(data))
+	c.Response().Header().Set("HX-Reswap", "morph:innerHTML")
+	return render(c, templates.BoardSnapshot(data))
 }
 
 func (s *Server) apiKanbanRemove(c echo.Context) error {
@@ -458,8 +458,8 @@ func (s *Server) kanbanRemoveSuccess(c echo.Context, req kanbanRemoveRequest, me
 
 	c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
 	c.Response().Header().Set("HX-Retarget", kanbanProjectBoardTarget)
-	c.Response().Header().Set("HX-Reswap", "outerHTML")
-	return render(c, templates.ProjectKanbanSnapshot(data))
+	c.Response().Header().Set("HX-Reswap", "morph:innerHTML")
+	return render(c, templates.BoardSnapshot(data))
 }
 
 func (s *Server) kanbanSnapshotWithPendingStates(lockKey string, projectID string, snapshot telemetry.Snapshot) telemetry.Snapshot {

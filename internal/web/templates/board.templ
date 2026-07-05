@@ -1,0 +1,254 @@
+package templates
+
+import "github.com/digitaldrywood/detent/internal/web/ui/primitives"
+
+// BoardPage is the app's home: exception strip → figure row → fixed-height,
+// independently-scrollable lanes. The page itself never scrolls.
+templ BoardPage(data DashboardData) {
+	@AppShell(BoardShellDataFromDashboard(data), boardScopeSelect(data)) {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div
+				id="snapshot"
+				class="flex min-h-0 min-w-0 flex-1 flex-col"
+				sse-swap="snapshot"
+				hx-swap="morph:innerHTML"
+			>
+				@BoardSnapshot(data)
+			</div>
+		</main>
+		@boardLaneScript()
+	}
+}
+
+// BoardSnapshot is the morph target for SSE ticks. Every element carries a
+// stable id so idiomorph preserves DOM (and lane scroll positions).
+// First paint: an unconfigured instance gets the first-run state, a
+// configured one waiting on its first snapshot gets lane skeletons —
+// never again once data exists. A degraded refresh that still carries
+// prior tracker data keeps the last-known lanes visible (via
+// projectKanbanBoardLoaded) rather than flashing skeletons.
+templ BoardSnapshot(data DashboardData) {
+	if boardFirstRun(data) {
+		@primitives.FirstRun("Connect a repository to start orchestrating.", "Add project", "/settings", "projects are defined in the global config")
+	} else if !projectKanbanBoardLoaded(data) {
+		if snapshotDegraded(data.Snapshot) {
+			<div class="flex-none px-5 pt-4">
+				@snapshotReadiness(data.Snapshot)
+			</div>
+		} else {
+			@primitives.SkeletonLanes(4)
+		}
+	} else {
+		@boardSnapshotBody(data)
+	}
+}
+
+templ boardSnapshotBody(data DashboardData) {
+	{{ view := boardViewFromDashboard(data) }}
+	if len(view.Exceptions) > 0 {
+		<div id="board-exceptions" class="flex-none px-5 pt-3.5">
+			@primitives.ExceptionStrip(view.Exceptions)
+		</div>
+	}
+	if data.Kanban.Feedback != "" {
+		<p id="board-feedback" class={ "flex flex-none items-center gap-2 px-5 pt-3.5 text-xs " + boardFeedbackClass(data.Kanban.FeedbackKind) } role="status">
+			<span aria-hidden="true">{ boardFeedbackGlyph(data.Kanban.FeedbackKind) }</span>
+			{ data.Kanban.Feedback }
+		</p>
+	}
+	<div id="board-figures" class="flex-none px-5 pb-3 pt-4">
+		@primitives.FigureRow(view.Figures) {
+			@primitives.MonoFigure("fig-tps", view.TPS)
+			@primitives.MonoFigure("fig-spend", view.Spend)
+			@boardLanePicker(view)
+		}
+	</div>
+	<div
+		id="board-lanes"
+		class="dt-lane-scroll flex min-h-0 min-w-0 flex-1 gap-3 overflow-x-auto overflow-y-hidden px-5 pb-5"
+		data-board-lanes
+		data-board-key={ view.Key }
+		data-preserve-scroll="board-lanes"
+	>
+		for _, lane := range view.Lanes {
+			@boardLaneView2(lane)
+		}
+	</div>
+}
+
+templ boardLaneView2(lane boardLaneView) {
+	<section
+		id={ lane.DomID }
+		class="flex min-w-44 max-w-80 flex-1 flex-col overflow-hidden rounded-card border border-line bg-surface data-[lane-hidden=true]:hidden"
+		data-board-lane={ lane.LaneID }
+		data-board-lane-title={ lane.Title }
+		data-board-lane-default={ boardBoolAttr(lane.DefaultVisible) }
+		data-lane-hidden={ boardBoolAttr(!lane.DefaultVisible) }
+	>
+		<header class="flex flex-none items-center gap-1.5 border-b border-line px-3 py-2">
+			if lane.Live {
+				@primitives.StatusDot(primitives.KindOK, true)
+			}
+			<h2 class="text-xs font-semibold text-text">{ lane.Title }</h2>
+			<span class="font-mono text-2xs font-medium text-sec tabular-nums">{ lane.Count }</span>
+		</header>
+		<div class="dt-lane-scroll flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden p-2" data-preserve-scroll={ lane.DomID + "-scroll" }>
+			if len(lane.Cards) == 0 {
+				@primitives.EmptyLine(lane.EmptyMessage)
+			}
+			for _, card := range lane.Cards {
+				@boardCardView2(card)
+			}
+		</div>
+	</section>
+}
+
+templ boardCardView2(card boardCardView) {
+	<article
+		id={ card.DomID }
+		class={ boardCardClass(card) + " cursor-pointer hover:border-accent/50" }
+		role="button"
+		tabindex="0"
+		{ sheetOpenAttrs(card.Project, card.Number, card.Scope, true)... }
+	>
+		<div class="flex items-center gap-1.5 font-mono text-2xs font-medium text-sec">
+			if card.Running {
+				@primitives.StatusDot(primitives.KindOK, true)
+			}
+			<span class={ boardCardNumberClass(card) }>{ card.Number }</span>
+			<span class="truncate">{ card.Project }</span>
+			<span class="flex-1"></span>
+			if card.Done {
+				<span class="text-ok" role="img" aria-label="done">✓</span>
+			} else if card.MetaRight != "" {
+				<span class="flex-none whitespace-nowrap tabular-nums">{ card.MetaRight }</span>
+			}
+		</div>
+		<div class={ boardCardTitleClass(card) }>{ card.Title }</div>
+		if card.ExtraText != "" {
+			if card.ExtraChip {
+				<div class="flex">
+					@primitives.Chip(card.ExtraKind, card.ExtraText)
+				</div>
+			} else {
+				<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.ExtraKind) }>
+					@primitives.StatusDot(card.ExtraKind, false)
+					{ card.ExtraText }
+				</div>
+			}
+		}
+	</article>
+}
+
+// boardLanePicker renders inside the figure row but is driven by the
+// delegated boardLaneScript outside #snapshot, so morphs cannot tear its
+// behavior down; the script re-asserts open state on htmx:afterSettle.
+templ boardLanePicker(view boardView) {
+	<details id="board-lane-picker" class="relative" data-board-lane-picker data-preserve-details="board-lane-picker">
+		<summary class="flex cursor-pointer list-none items-center gap-1.5 rounded-chip border border-line px-2.5 py-1 text-2xs text-sec hover:text-text [&::-webkit-details-marker]:hidden">
+			Lanes <span data-board-lane-count class="tabular-nums">{ boardLaneCountLabel(view) }</span>
+			<span aria-hidden="true">▾</span>
+		</summary>
+		<div class="absolute right-0 top-full z-40 mt-1 flex w-56 flex-col gap-0.5 rounded-card border border-line bg-elev p-1.5">
+			for _, lane := range view.Lanes {
+				<label class="flex cursor-pointer items-center gap-2 rounded-chip px-2 py-1 text-xs text-text hover:bg-surface">
+					<input
+						type="checkbox"
+						class="accent-accent"
+						data-board-lane-toggle={ lane.LaneID }
+						checked?={ lane.DefaultVisible }
+					/>
+					<span class="flex-1">{ lane.Title }</span>
+					<span class="font-mono text-2xs text-sec tabular-nums">{ lane.Count }</span>
+				</label>
+			}
+		</div>
+	</details>
+}
+
+templ boardLaneScript() {
+	<script>
+		(function () {
+			function storageKey(root) {
+				return "detent.ui.board.lanes." + (root.getAttribute("data-board-key") || "fleet");
+			}
+			function readPrefs(root) {
+				try {
+					return JSON.parse(localStorage.getItem(storageKey(root)) || "{}");
+				} catch (err) {
+					return {};
+				}
+			}
+			function writePrefs(root, prefs) {
+				try {
+					localStorage.setItem(storageKey(root), JSON.stringify(prefs));
+				} catch (err) {}
+			}
+			var pickerOpen = false;
+			function apply() {
+				var root = document.querySelector("[data-board-lanes]");
+				if (!root) return;
+				var prefs = readPrefs(root);
+				var total = 0;
+				var visible = 0;
+				root.querySelectorAll("[data-board-lane]").forEach(function (lane) {
+					total += 1;
+					var id = lane.getAttribute("data-board-lane");
+					var byDefault = lane.getAttribute("data-board-lane-default") === "true";
+					var show = Object.prototype.hasOwnProperty.call(prefs, id) ? Boolean(prefs[id]) : byDefault;
+					lane.setAttribute("data-lane-hidden", show ? "false" : "true");
+					if (show) visible += 1;
+					var toggle = document.querySelector('[data-board-lane-toggle="' + id + '"]');
+					if (toggle) toggle.checked = show;
+				});
+				var count = document.querySelector("[data-board-lane-count]");
+				if (count) count.textContent = visible + "/" + total;
+				var picker = document.querySelector("[data-board-lane-picker]");
+				if (picker && pickerOpen) picker.setAttribute("open", "");
+			}
+			document.addEventListener("change", function (event) {
+				var toggle = event.target.closest("[data-board-lane-toggle]");
+				if (!toggle) return;
+				var root = document.querySelector("[data-board-lanes]");
+				if (!root) return;
+				var prefs = readPrefs(root);
+				prefs[toggle.getAttribute("data-board-lane-toggle")] = toggle.checked;
+				writePrefs(root, prefs);
+				apply();
+			});
+			document.addEventListener("toggle", function (event) {
+				var picker = event.target;
+				if (picker instanceof Element && picker.hasAttribute("data-board-lane-picker")) {
+					pickerOpen = picker.open;
+				}
+			}, true);
+			document.addEventListener("click", function (event) {
+				var picker = document.querySelector("[data-board-lane-picker]");
+				if (picker && picker.open && !picker.contains(event.target)) {
+					picker.removeAttribute("open");
+					pickerOpen = false;
+				}
+			});
+			document.addEventListener("htmx:afterSettle", apply);
+			document.addEventListener("DOMContentLoaded", apply);
+			apply();
+		})();
+	</script>
+}
+
+// boardScopeSelect is the topbar scope control: a CSS-only dropdown living
+// outside #snapshot linking to each project's board.
+templ boardScopeSelect(data DashboardData) {
+	<details class="group/scope relative">
+		<summary class="flex cursor-pointer list-none items-center gap-1.5 rounded-card border border-line px-2.5 py-1 text-xs text-sec hover:text-text [&::-webkit-details-marker]:hidden">
+			{ boardScopeLabel(data) }
+			<span aria-hidden="true">▾</span>
+		</summary>
+		<div class="absolute left-0 top-full z-40 mt-1 flex w-52 flex-col gap-0.5 rounded-card border border-line bg-elev p-1.5">
+			<a href="/" class="rounded-chip px-2 py-1 text-xs text-text hover:bg-surface">All projects</a>
+			for _, project := range appShellProjects(DashboardShellDataFromDashboard(data)) {
+				<a href={ templ.SafeURL(project.Href + "/kanban") } class="truncate rounded-chip px-2 py-1 text-xs text-text hover:bg-surface">{ project.Name }</a>
+			}
+		</div>
+	</details>
+}

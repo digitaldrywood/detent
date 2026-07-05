@@ -1,6 +1,7 @@
 package templates_test
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -32,26 +33,16 @@ func TestSettingsIncludesSharedSidebarShell(t *testing.T) {
 
 	for _, want := range []string{
 		`<title>Detent settings</title>`,
-		`data-tui-sidebar-layout`,
-		`id="dashboard-sidebar"`,
-		`data-tui-sidebar-state="collapsed"`,
-		`data-tui-sidebar-collapsible="icon"`,
-		`data-tui-sidebar="menu-badge"`,
-		`data-tui-sheet`,
-		`/static/js/templui/sidebar.min.js`,
-		`/static/js/templui/dialog.min.js`,
+		`id="app-sidebar"`,
+		`data-rail="true"`,
 		`href="/"`,
 		`href="/reports"`,
 		`href="/settings"`,
 		`href="/projects/detent"`,
 		`href="/health/ui"`,
-		`id="github-api-health"`,
 		"Health",
-		"Unknown",
-		`Detent - active, 2 running`,
-		`<h1 class="sr-only">Settings</h1>`,
-		"Startup configuration, project paths, and runtime files.",
-		"Project list and project settings",
+		">Detent</span>",
+		"Read-only view of the running configuration.",
 		"v1.2.3",
 	} {
 		if !strings.Contains(html, want) {
@@ -69,11 +60,11 @@ func TestSettingsIncludesSharedSidebarShell(t *testing.T) {
 		}
 	}
 
-	assertTemplateSharedDashboardShellOnce(t, html)
-	assertTemplateHealthInSidebar(t, html)
-	assertTemplateSingleCurrentSidebarItem(t, html)
-	assertTemplateActiveSidebarLink(t, html, "/settings")
-	assertTemplateInactiveSidebarLink(t, html, "/")
-	assertTemplateInactiveSidebarLink(t, html, "/reports")
-	assertTemplateInactiveSidebarLink(t, html, "/projects/detent")
+	currentLinks := regexp.MustCompile(`<a[^>]*aria-current="page"[^>]*>`).FindAllString(html, -1)
+	if len(currentLinks) != 1 {
+		t.Fatalf("page rendered %d current sidebar links, want 1: %v\n%s", len(currentLinks), currentLinks, html)
+	}
+	if !strings.Contains(currentLinks[0], `href="/settings"`) {
+		t.Fatalf("current sidebar link is not settings: %s", currentLinks[0])
+	}
 }

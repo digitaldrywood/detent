@@ -1,0 +1,211 @@
+package templates
+
+import (
+	"github.com/digitaldrywood/detent/internal/web/ui/components/dialog"
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
+)
+
+// DetailSheetHost is the body-level mount point for the session detail
+// sheet. It lives outside #snapshot so SSE morphs can never tear an open
+// sheet down.
+templ DetailSheetHost() {
+	<div id="detail-sheet-host"></div>
+}
+
+// BoardCardSheet is the Linear-style right panel opened from board cards
+// and exception-strip Review actions: issue identity, state, PR facts,
+// blockers, the live session, and the kanban actions the project's mode
+// allows.
+templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bool) {
+	{{ session := sheetSessionFor(data.Snapshot, card) }}
+	<div class="fixed inset-0 z-50 flex justify-end" data-detail-sheet>
+		<div class="flex-1 bg-page/60" data-sheet-close aria-hidden="true"></div>
+		<aside class="flex h-full w-100 flex-none flex-col overflow-hidden border-l border-line bg-surface" role="dialog" aria-modal="true" aria-label={ "Details for " + card.IssueNumber }>
+			<header class="flex flex-none items-start gap-3 border-b border-line px-5 py-4">
+				<div class="flex min-w-0 flex-1 flex-col gap-1">
+					<div class="flex items-center gap-2 font-mono text-xs font-medium text-sec">
+						<span class="truncate">{ projectKanbanCardProjectID(data, card) }</span>
+						<span class="flex-none text-text">{ card.IssueNumber }</span>
+					</div>
+					<h2 class="text-sm font-medium leading-snug text-text">{ card.Title }</h2>
+				</div>
+				<button type="button" class="flex-none rounded-chip p-1 text-sec hover:bg-elev hover:text-text" data-sheet-close aria-label="Close details">✕</button>
+			</header>
+			<div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
+				<div class="flex flex-col gap-2 text-xs">
+					@sheetRowText("State") {
+						<span class={ "flex items-center gap-1.5 " + boardExtraTextClass(sheetStateKind(data, card)) }>
+							@primitives.StatusDot(sheetStateKind(data, card), false)
+							{ card.Stage }
+						</span>
+					}
+					if card.TimeInStage != "" && card.TimeInStage != "n/a" {
+						@sheetRowValue("Time in stage", card.TimeInStage, card.TimeInStageTitle)
+					}
+					if card.WaitDetail != "" {
+						@sheetRowValue("Waiting on", card.WaitDetail, card.WaitDetail)
+					}
+					@sheetRowLink("Issue", card.Identifier, card.URL)
+					if card.HasPullRequest {
+						@sheetRowLink("Pull request", card.PullRequestLabel, card.PRURL)
+						if card.CIStatus != "" {
+							@sheetRowValue("CI", card.CIStatus, "Continuous integration status")
+						}
+						if card.CodexReviewState != "" {
+							@sheetRowValue("Codex review", card.CodexReviewState, "Codex review state")
+						}
+						if card.MergeableState != "" {
+							@sheetRowValue("Merge state", card.MergeableState, "GitHub mergeStateStatus")
+						}
+					}
+				</div>
+				if card.AttentionLabel != "" || len(card.Blockers) > 0 || card.ConflictReason != "" {
+					<div class="flex flex-col gap-1.5">
+						<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Needs attention</h3>
+						if card.AttentionLabel != "" {
+							@primitives.Chip(primitives.KindErr, sheetAttentionLabel(card))
+						}
+						for _, blocker := range card.Blockers {
+							@primitives.Chip(primitives.KindErr, "blocked — "+blocker)
+						}
+						if card.ConflictReason != "" {
+							@primitives.Chip(primitives.KindWarn, card.ConflictReason)
+						}
+					</div>
+				}
+				if session.Present {
+					<div class="flex flex-col gap-2">
+						<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Session</h3>
+						<div class="flex flex-col gap-2 rounded-card border border-line bg-elev p-3 text-xs">
+							@sheetRowText("Status") {
+								<span class={ "flex items-center gap-1.5 " + boardExtraTextClass(session.Kind) }>
+									@primitives.StatusDot(session.Kind, session.Kind == primitives.KindOK)
+									{ session.State }
+								</span>
+							}
+							if session.Runtime != "" {
+								@sheetRowValue("Runtime", session.Runtime+" · "+session.Turns+" turns", "")
+							}
+							if session.Host != "" {
+								@sheetRowValue("Worker", session.Host, "")
+							}
+							if session.SessionID != "" {
+								@sheetRowValue("Session", session.SessionID, session.SessionID)
+							}
+							if session.LastEvent != "" {
+								@sheetRowValue("Last event", session.LastEvent, session.Message)
+							}
+							if session.Error != "" {
+								<p class="text-err">{ session.Error }</p>
+							}
+						</div>
+					</div>
+				}
+				if len(card.Labels) > 0 {
+					@sheetTagRow("Labels", card.Labels)
+				}
+				if len(card.Assignees) > 0 {
+					@sheetTagRow("Assignees", card.Assignees)
+				}
+			</div>
+			if sheetHasActions(data, card, boardActions) {
+				<footer class="flex flex-none items-center gap-2 border-t border-line px-5 py-3">
+					<div id="kanban-feedback" role="status" aria-live="polite" hidden></div>
+					if projectKanbanCardCanMove(data, card) {
+						@dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}) {
+							<button
+								type="button"
+								class="rounded-card border border-line px-3 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent"
+								hx-get={ projectKanbanMoveDialogPath(data, card) }
+								hx-target={ kanbanDialogTargetSelector() }
+								hx-swap="innerHTML"
+							>Move</button>
+						}
+					}
+					if card.IssueID != "" && projectKanbanCardCanComment(data, card) {
+						@sheetCommentTrigger(data, card, "issue", "Comment on issue")
+					}
+					if card.PRNumber > 0 && card.PRRepository != "" && projectKanbanCardCanComment(data, card) {
+						@sheetCommentTrigger(data, card, "pr", "Comment on PR")
+					}
+					if projectKanbanCardCanRemove(data, card) {
+						<form class="inline-flex" hx-post="/api/v1/kanban/remove" hx-target="#kanban-feedback" hx-swap="outerHTML" hx-confirm="Remove this item from the project?">
+							<input type="hidden" name="project_id" value={ projectKanbanCardProjectID(data, card) }/>
+							<input type="hidden" name="issue_id" value={ card.IssueID }/>
+							<input type="hidden" name="current_state" value={ card.Stage }/>
+							<button type="submit" class="rounded-card border border-err/40 px-3 py-1.5 text-xs font-medium text-err hover:bg-err/15">Remove</button>
+						</form>
+					}
+					<span class="flex-1"></span>
+					if card.URL != "" {
+						<a href={ card.URL } target="_blank" rel="noopener noreferrer" class="text-xs font-medium text-accent hover:underline">Open on GitHub ↗</a>
+					}
+				</footer>
+			} else if card.URL != "" {
+				<footer class="flex flex-none items-center justify-end border-t border-line px-5 py-3">
+					<a href={ card.URL } target="_blank" rel="noopener noreferrer" class="text-xs font-medium text-accent hover:underline">Open on GitHub ↗</a>
+				</footer>
+			}
+		</aside>
+	</div>
+}
+
+// sheetCommentTrigger opens the shared kanban comment dialog for the card's
+// issue or PR, preserving the pre-redesign operator comment workflow.
+templ sheetCommentTrigger(data DashboardData, card projectKanbanCard, target string, label string) {
+	@dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}) {
+		<button
+			type="button"
+			class="rounded-card border border-line px-3 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent"
+			hx-get={ projectKanbanCommentDialogPath(data, card, target) }
+			hx-target={ kanbanDialogTargetSelector() }
+			hx-swap="innerHTML"
+			aria-label={ label + " " + card.IssueNumber }
+			title={ label }
+		>
+			if target == "pr" {
+				Comment · PR
+			} else {
+				Comment
+			}
+		</button>
+	}
+}
+
+templ sheetRowText(label string) {
+	<div class="flex items-center justify-between gap-3">
+		<span class="flex-none text-sec">{ label }</span>
+		{ children... }
+	</div>
+}
+
+templ sheetRowValue(label string, value string, title string) {
+	<div class="flex items-center justify-between gap-3">
+		<span class="flex-none text-sec">{ label }</span>
+		<span class="min-w-0 truncate font-mono text-text tabular-nums" title={ title }>{ value }</span>
+	</div>
+}
+
+templ sheetRowLink(label string, value string, href string) {
+	if value != "" {
+		<div class="flex items-center justify-between gap-3">
+			<span class="flex-none text-sec">{ label }</span>
+			if href != "" {
+				<a class="min-w-0 truncate font-mono text-accent hover:underline" href={ href } target="_blank" rel="noopener noreferrer">{ value }</a>
+			} else {
+				<span class="min-w-0 truncate font-mono text-text">{ value }</span>
+			}
+		</div>
+	}
+}
+
+templ sheetTagRow(label string, values []string) {
+	<div class="flex flex-col gap-1.5">
+		<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">{ label }</h3>
+		<div class="flex flex-wrap gap-1.5">
+			for _, value := range values {
+				<span class="truncate rounded-chip bg-elev px-2 py-0.5 font-mono text-2xs text-sec" title={ value }>{ value }</span>
+			}
+		</div>
+	</div>
+}

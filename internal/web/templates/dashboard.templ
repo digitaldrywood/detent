@@ -3614,7 +3614,7 @@ templ lifetimeCard(totals telemetry.LifetimeTotals) {
 }
 
 templ LiveTick(timestamp time.Time) {
-	<span class="font-mono">Updated { timestamp.UTC().Format("15:04:05 UTC") }</span>
+	<span class="font-mono tabular-nums">{ timestamp.UTC().Format("15:04:05") }</span>
 }
 
 templ trackerDriftWarning(snapshot telemetry.Snapshot) {

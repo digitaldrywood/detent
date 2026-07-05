@@ -125,29 +125,29 @@ func demoScenarioInManifest(scenario demoScenario) bool {
 
 func demoScenarioDefinitions() []demoScenario {
 	return []demoScenario{
-		{ID: "fleet-empty-first-snapshot", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "empty"},
-		{ID: "fleet-healthy-parallel-work", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "healthy"},
-		{ID: "fleet-overloaded-rate-limited", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "overloaded"},
-		{ID: "fleet-draining-shutdown", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "draining"},
-		{ID: "fleet-dense-multiproject", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "dense"},
-		{ID: "fleet-degraded-telemetry", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "degraded"},
-		{ID: "github-api-healthy", Route: "/health/ui", WaitSelector: "#health-dashboard", Page: "health", Variant: "github-api-healthy"},
-		{ID: "github-api-warning", Route: "/health/ui", WaitSelector: "#health-dashboard", Page: "health", Variant: "github-api-warning"},
-		{ID: "github-api-secondary-backoff", Route: "/health/ui", WaitSelector: "#health-dashboard", Page: "health", Variant: "github-api-secondary-backoff"},
-		{ID: "github-api-primary-exhausted", Route: "/health/ui", WaitSelector: "#health-dashboard", Page: "health", Variant: "github-api-primary-exhausted"},
-		{ID: "fleet-kanban-multiproject", Route: "/kanban", WaitSelector: "#fleet-kanban", Page: "fleet-kanban", Variant: "dense-kanban", KanbanMode: workflowconfig.KanbanModeReadOnly},
+		{ID: "fleet-empty-first-snapshot", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "empty"},
+		{ID: "fleet-healthy-parallel-work", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "healthy"},
+		{ID: "fleet-overloaded-rate-limited", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "overloaded"},
+		{ID: "fleet-draining-shutdown", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "draining"},
+		{ID: "fleet-dense-multiproject", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "dense"},
+		{ID: "fleet-degraded-telemetry", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "degraded"},
+		{ID: "github-api-healthy", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-healthy"},
+		{ID: "github-api-warning", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-warning"},
+		{ID: "github-api-secondary-backoff", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-secondary-backoff"},
+		{ID: "github-api-primary-exhausted", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-primary-exhausted"},
+		{ID: "fleet-kanban-multiproject", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "dense-kanban", KanbanMode: workflowconfig.KanbanModeReadOnly},
 		{ID: "project-active-overview", Route: "/projects/dogfood", WaitSelector: "#snapshot", Page: "project", Variant: "healthy", ProjectID: demoPrimaryProjectID},
 		{ID: "project-paused-overview", Route: "/projects/mobile-client", WaitSelector: "#snapshot", Page: "project", Variant: "paused", ProjectID: "mobile-client"},
 		{ID: "project-empty-overview", Route: "/projects/agent-lab", WaitSelector: "#snapshot", Page: "project", Variant: "project-empty", ProjectID: "agent-lab"},
 		{ID: "project-hot-path", Route: "/projects/billing-api", WaitSelector: "#snapshot", Page: "project", Variant: "hot-path", ProjectID: "billing-api"},
 		{ID: "project-not-found", Route: "/projects/missing-project", WaitSelector: "body", Page: "project", Variant: "not-found", ProjectID: "missing-project", Status: http.StatusNotFound},
-		{ID: "kanban-full-integration", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "healthy", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
-		{ID: "kanban-startup-loading", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "startup-loading", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
-		{ID: "kanban-read-only", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "healthy", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeReadOnly},
-		{ID: "kanban-empty-lanes", Route: "/projects/agent-lab/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "project-empty", ProjectID: "agent-lab", KanbanMode: workflowconfig.KanbanModeIntegration},
-		{ID: "kanban-dense-overflow", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "dense-kanban", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
-		{ID: "kanban-transition-blocked", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "transition-blocked", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
-		{ID: "kanban-terminal-states", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "terminal", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
+		{ID: "kanban-full-integration", Route: "/projects/dogfood/kanban", WaitSelector: "#board-lanes", Page: "kanban", Variant: "healthy", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
+		{ID: "kanban-startup-loading", Route: "/projects/dogfood/kanban", WaitSelector: "#snapshot", Page: "kanban", Variant: "startup-loading", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
+		{ID: "kanban-read-only", Route: "/projects/dogfood/kanban", WaitSelector: "#board-lanes", Page: "kanban", Variant: "healthy", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeReadOnly},
+		{ID: "kanban-empty-lanes", Route: "/projects/agent-lab/kanban", WaitSelector: "#board-lanes", Page: "kanban", Variant: "project-empty", ProjectID: "agent-lab", KanbanMode: workflowconfig.KanbanModeIntegration},
+		{ID: "kanban-dense-overflow", Route: "/projects/dogfood/kanban", WaitSelector: "#board-lanes", Page: "kanban", Variant: "dense-kanban", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
+		{ID: "kanban-transition-blocked", Route: "/projects/dogfood/kanban", WaitSelector: "#board-lanes", Page: "kanban", Variant: "transition-blocked", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
+		{ID: "kanban-terminal-states", Route: "/projects/dogfood/kanban", WaitSelector: "#board-lanes", Page: "kanban", Variant: "terminal", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
 		{ID: "runs-active-work", Route: "/projects/dogfood/runs", WaitSelector: "#snapshot", Page: "runs", Variant: "healthy", ProjectID: demoPrimaryProjectID},
 		{ID: "runs-tracker-refresh-gap", Route: "/projects/dogfood/runs", WaitSelector: "#snapshot", Page: "runs", Variant: "tracker-refresh-gap", ProjectID: demoPrimaryProjectID},
 		{ID: "runs-idle", Route: "/projects/agent-lab/runs", WaitSelector: "#snapshot", Page: "runs", Variant: "project-empty", ProjectID: "agent-lab"},
@@ -216,15 +216,18 @@ func demoScenarioDefinitions() []demoScenario {
 func demoKeySelectors(def demoScenario) []string {
 	switch def.Page {
 	case "fleet":
-		return []string{"#snapshot", "[aria-label=\"Dashboard health\"]", "[aria-label=\"Project overview\"]"}
+		// The fleet demo scenarios route to the board home ("/").
+		return []string{"#snapshot"}
 	case "fleet-kanban":
-		return []string{"#fleet-kanban", "[data-project-kanban-card]", "[data-project-kanban-visibility-menu]"}
+		return []string{"#snapshot", "#board-lanes"}
 	case "kanban":
-		return []string{"#project-kanban", "[data-kanban-card]", "[data-project-kanban-visibility-menu]"}
+		// The startup-loading scenario renders a skeleton, so only
+		// #snapshot is reliably present across every kanban scenario.
+		return []string{"#snapshot"}
 	case "reports":
-		return []string{"main", "[aria-label=\"Usage reports\"]"}
+		return []string{"main", "#reports-kpis"}
 	case "settings":
-		return []string{"main", "[aria-label=\"Settings\"]"}
+		return []string{"main", "#settings-global"}
 	case "onboarding":
 		return []string{"#onboarding-step"}
 	default:
@@ -272,32 +275,31 @@ func (s *Server) apiDemoScenarios(c echo.Context) error {
 
 func (s *Server) demoDashboard(c echo.Context, scenario demoScenario) error {
 	data := s.demoDashboardData(c.Request().Context(), scenario)
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
-	return render(c, templates.Dashboard(data))
+	applyDashboardPreferences(c.Request(), &data)
+	return render(c, templates.FleetPage(data))
 }
 
-func (s *Server) demoFleetKanban(c echo.Context, scenario demoScenario) error {
+func (s *Server) demoBoard(c echo.Context, scenario demoScenario) error {
 	data := s.demoDashboardData(c.Request().Context(), scenario)
-	data.ActiveNav = "kanban"
-	data.Title = instancePageTitle(s.instanceName(), "Kanban - Detent")
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
-	return render(c, templates.ProjectKanbanPage(data))
+	data.ActiveNav = "board"
+	applyDashboardPreferences(c.Request(), &data)
+	return render(c, templates.BoardPage(data))
 }
 
 func (s *Server) demoHealthDashboard(c echo.Context, scenario demoScenario) error {
 	data := s.demoDashboardData(c.Request().Context(), scenario)
 	data.ActiveNav = "health"
 	data.Title = instancePageTitle(s.instanceName(), "Health - Detent")
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
-	return render(c, templates.HealthPage(data))
+	applyDashboardPreferences(c.Request(), &data)
+	return render(c, templates.HealthPageV2(data))
 }
 
 func (s *Server) demoAnalyticsDashboard(c echo.Context, scenario demoScenario) error {
 	data := s.demoDashboardData(c.Request().Context(), scenario)
 	data.ActiveNav = "analytics"
 	data.Title = instancePageTitle(s.instanceName(), "Analytics - Detent")
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
-	return render(c, templates.AnalyticsPage(data))
+	applyDashboardPreferences(c.Request(), &data)
+	return render(c, templates.AnalyticsPageV2(data))
 }
 
 func (s *Server) demoProjectDashboard(c echo.Context, scenario demoScenario, view string) error {
@@ -308,27 +310,28 @@ func (s *Server) demoProjectDashboard(c echo.Context, scenario demoScenario, vie
 	if !ok {
 		return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
 	}
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applyDashboardPreferences(c.Request(), &data)
 	switch view {
 	case "kanban":
 		data.ActiveNav = "kanban"
 		data.Title = s.projectPageTitle(data, "Kanban")
-		return render(c, templates.ProjectKanbanPage(data))
+		return render(c, templates.ProjectBoardPage(data))
 	case "runs":
 		data.ActiveNav = "runs"
 		data.Title = s.projectPageTitle(data, "Runs")
-		return render(c, templates.ProjectRunsPage(data))
+		return render(c, templates.ProjectRunsPageV2(data))
 	case "diagnostics":
 		data.ActiveNav = "diagnostics"
 		data.Title = s.projectPageTitle(data, "Diagnostics")
-		return render(c, templates.ProjectDiagnosticsPage(data))
+		return render(c, templates.ProjectDiagnosticsPageV2(data))
 	case "configuration":
 		settingsData := s.demoSettingsData(c.Request().Context(), scenario, scenario.ProjectID)
 		settingsData.ActiveNav = "configuration"
-		settingsData.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+		applySettingsPreferences(c.Request(), &settingsData)
 		return render(c, templates.Settings(settingsData))
 	default:
-		return render(c, templates.Dashboard(data))
+		data.ActiveNav = "overview"
+		return render(c, templates.ProjectOverviewPage(data))
 	}
 }
 
@@ -338,8 +341,8 @@ func (s *Server) demoReports(c echo.Context, scenario demoScenario) error {
 	}
 	if scenario.Variant == "reports-empty" {
 		data := s.demoEmptyReportsData(c.Request().Context(), scenario)
-		data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
-		return render(c, templates.Reports(data))
+		applyReportsPreferences(c.Request(), &data)
+		return render(c, templates.ReportsPageV2(data))
 	}
 	projectID := ""
 	if scenario.Variant == "filtered-project" {
@@ -352,13 +355,13 @@ func (s *Server) demoReports(c echo.Context, scenario demoScenario) error {
 	data.GeneratedAt = demoBaseTime
 	data.Projects = demoProjectsForVariant(scenario.Variant)
 	data.Snapshot = demoSnapshotForScenario(scenario)
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
-	return render(c, templates.Reports(data))
+	applyReportsPreferences(c.Request(), &data)
+	return render(c, templates.ReportsPageV2(data))
 }
 
 func (s *Server) demoSettings(c echo.Context, scenario demoScenario, selectedProjectID string) error {
 	data := s.demoSettingsData(c.Request().Context(), scenario, selectedProjectID)
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applySettingsPreferences(c.Request(), &data)
 	return render(c, templates.Settings(data))
 }
 
@@ -475,8 +478,8 @@ func (s *Server) demoKanbanMoveSuccess(c echo.Context, scenario demoScenario) er
 	}
 	c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
 	c.Response().Header().Set("HX-Retarget", kanbanProjectBoardTarget)
-	c.Response().Header().Set("HX-Reswap", "outerHTML")
-	return render(c, templates.ProjectKanbanSnapshot(data))
+	c.Response().Header().Set("HX-Reswap", "morph:innerHTML")
+	return render(c, templates.BoardSnapshot(data))
 }
 
 func applyDemoKanbanMove(snapshot *telemetry.Snapshot, projectID string, issueID string, targetState string) {
@@ -1593,7 +1596,11 @@ func (s *Server) writeDemoSSE(ctx context.Context, res *echo.Response, scenario 
 		data.ActiveNav = selectedNav
 	}
 	if selectedView == "" {
-		selectedView = demoSSEViewForScenario(scenario)
+		if selectedNav == sseViewHealth || selectedNav == sseViewAnalytics {
+			selectedView = selectedNav
+		} else {
+			selectedView = demoSSEViewForScenario(scenario)
+		}
 	}
 	data.Snapshot.GeneratedAt = now
 	if len(data.Snapshot.Running) > 0 && now.After(demoBaseTime) {
@@ -1610,16 +1617,22 @@ func (s *Server) writeDemoSSE(ctx context.Context, res *echo.Response, scenario 
 	switch selectedView {
 	case sseViewHealth:
 		data.ActiveNav = "health"
-		snapshotComponent = templates.HealthSnapshot(data)
+		snapshotComponent = templates.HealthSnapshotV2(data)
 	case sseViewAnalytics:
 		data.ActiveNav = "analytics"
-		snapshotComponent = templates.AnalyticsSnapshot(data)
-	case sseViewKanban:
-		data.ActiveNav = "kanban"
-		snapshotComponent = templates.ProjectKanbanSnapshot(data)
+		snapshotComponent = templates.AnalyticsSnapshotV2(data)
+	case sseViewBoard, sseViewKanban:
+		data.ActiveNav = selectedView
+		snapshotComponent = templates.BoardSnapshot(data)
+	case sseViewFleet:
+		data.ActiveNav = "fleet"
+		snapshotComponent = templates.FleetSnapshotV2(data)
+	case sseViewOverview:
+		data.ActiveNav = "overview"
+		snapshotComponent = templates.ProjectOverviewSnapshotV2(data)
 	case sseViewRuns:
 		data.ActiveNav = "runs"
-		snapshotComponent = templates.ProjectRunsSnapshot(data)
+		snapshotComponent = templates.ProjectRunsSnapshotV2(data)
 	case sseViewDiagnostics:
 		data.ActiveNav = "diagnostics"
 		snapshotComponent = templates.ProjectDiagnosticsSnapshot(data)
@@ -1632,7 +1645,10 @@ func (s *Server) writeDemoSSE(ctx context.Context, res *echo.Response, scenario 
 	if err := writeSSEComponent(ctx, res.Writer, sseEventSidebar, templates.DashboardSidebarContent(templates.DashboardShellDataFromDashboard(data))); err != nil {
 		return err
 	}
-	return writeSSEComponent(ctx, res.Writer, sseEventGitHubAPI, templates.GitHubAPIHealthSidebarItem(templates.DashboardShellDataFromDashboard(data)))
+	if err := writeSSEComponent(ctx, res.Writer, sseEventGitHubAPI, templates.GitHubAPIHealthSidebarItem(templates.DashboardShellDataFromDashboard(data))); err != nil {
+		return err
+	}
+	return writeSSEComponent(ctx, res.Writer, sseEventSidebarV2, templates.AppSidebarContent(templates.DashboardShellDataFromDashboard(data)))
 }
 
 func demoSSEViewForScenario(scenario demoScenario) string {
@@ -1641,8 +1657,10 @@ func demoSSEViewForScenario(scenario demoScenario) string {
 		return sseViewHealth
 	case "analytics":
 		return sseViewAnalytics
+	case "fleet":
+		return sseViewFleet
 	case "fleet-kanban":
-		return sseViewKanban
+		return sseViewBoard
 	case "kanban":
 		return sseViewKanban
 	case "runs":

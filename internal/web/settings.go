@@ -18,7 +18,7 @@ func (s *Server) settings(c echo.Context) error {
 		return s.demoSettings(c, scenario, c.QueryParam("project"))
 	}
 	data := s.settingsData(c.Request().Context(), c.QueryParam("project"))
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	applySettingsPreferences(c.Request(), &data)
 	return render(c, templates.Settings(data))
 }
 
@@ -33,6 +33,8 @@ func (s *Server) settingsData(ctx context.Context, selectedProjectID string) tem
 		ApplicationName: applicationName(instanceName),
 		InstanceName:    instanceName,
 		Version:         s.version,
+		Build:           s.build,
+		StoreName:       s.storeName(),
 		Snapshot:        snapshot,
 		Global: templates.SettingsGlobal{
 			ConfigPath: globalConfig.Path,
@@ -50,6 +52,13 @@ func (s *Server) settingsData(ctx context.Context, selectedProjectID string) tem
 		ProjectID:       projectID,
 		ProjectName:     projectName,
 	}
+}
+
+func (s *Server) storeName() string {
+	if strings.TrimSpace(s.dbPath) != "" {
+		return "sqlite"
+	}
+	return "memory"
 }
 
 func settingsProjects(registry *project.Registry) []templates.SettingsProject {

@@ -22,8 +22,12 @@ const (
 	sseEventSidebar      = "sidebar"
 	sseEventGitHubAPI    = "github-api-health"
 	sseEventTick         = "tick"
+	sseEventSidebarV2    = "sidebar-v2"
 	sseViewHealth        = "health"
 	sseViewAnalytics     = "analytics"
+	sseViewBoard         = "board"
+	sseViewFleet         = "fleet"
+	sseViewOverview      = "overview"
 	sseViewKanban        = "kanban"
 	sseViewRuns          = "runs"
 	sseViewDiagnostics   = "diagnostics"
@@ -101,16 +105,27 @@ func (s *Server) events(c echo.Context) error {
 			}
 			snapshotComponent := templates.SnapshotView(data)
 			if selectedNav == sseViewHealth {
-				snapshotComponent = templates.HealthSnapshot(data)
+				snapshotComponent = templates.HealthSnapshotV2(data)
 			} else if selectedNav == sseViewAnalytics {
-				snapshotComponent = templates.AnalyticsSnapshot(data)
+				data.AnalyticsKind = strings.TrimSpace(c.QueryParam("kind"))
+				snapshotComponent = templates.AnalyticsSnapshotV2(data)
+			} else if selectedView == sseViewBoard && (selectedProjectID == "" || data.ProjectID != "") {
+				data.ActiveNav = "board"
+				data = s.withKanbanRefreshFeedback(data)
+				snapshotComponent = templates.BoardSnapshot(data)
+			} else if selectedView == sseViewFleet && selectedProjectID == "" {
+				data.ActiveNav = "fleet"
+				snapshotComponent = templates.FleetSnapshotV2(data)
 			} else if selectedView == sseViewKanban && (selectedProjectID == "" || data.ProjectID != "") {
 				data.ActiveNav = "kanban"
 				data = s.withKanbanRefreshFeedback(data)
-				snapshotComponent = templates.ProjectKanbanSnapshot(data)
+				snapshotComponent = templates.BoardSnapshot(data)
+			} else if selectedView == sseViewOverview && selectedProjectID != "" {
+				data.ActiveNav = "overview"
+				snapshotComponent = templates.ProjectOverviewSnapshotV2(data)
 			} else if selectedView == sseViewRuns && selectedProjectID != "" {
 				data.ActiveNav = "runs"
-				snapshotComponent = templates.ProjectRunsSnapshot(data)
+				snapshotComponent = templates.ProjectRunsSnapshotV2(data)
 			} else if selectedView == sseViewDiagnostics && selectedProjectID != "" {
 				data.ActiveNav = "diagnostics"
 				snapshotComponent = templates.ProjectDiagnosticsSnapshot(data)
@@ -127,6 +142,11 @@ func (s *Server) events(c echo.Context) error {
 				sent = true
 			}
 			if ok, err := stream.sendComponent(ctx, res.Writer, sseEventGitHubAPI, templates.GitHubAPIHealthSidebarItem(templates.DashboardShellDataFromDashboard(data)), s.sseHealthInterval); err != nil {
+				return err
+			} else if ok {
+				sent = true
+			}
+			if ok, err := stream.sendComponent(ctx, res.Writer, sseEventSidebarV2, templates.AppSidebarContent(templates.DashboardShellDataFromDashboard(data)), s.sseFragmentInterval); err != nil {
 				return err
 			} else if ok {
 				sent = true
@@ -205,7 +225,7 @@ func newSSEStream(logger *slog.Logger, metricsEvery time.Duration) *sseStream {
 		last:              make(map[string]sseSentEvent),
 		pending:           make(map[string]ssePendingEvent),
 		metrics:           make(map[string]*sseEventMetrics),
-		pendingFlushOrder: []string{sseEventSnapshot, sseEventSidebar, sseEventGitHubAPI},
+		pendingFlushOrder: []string{sseEventSnapshot, sseEventSidebar, sseEventGitHubAPI, sseEventSidebarV2},
 	}
 }
 

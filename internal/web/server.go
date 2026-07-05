@@ -54,6 +54,8 @@ const (
 	defaultSSEHealthInterval     = 10 * time.Second
 	defaultSSEMetricsInterval    = time.Minute
 	sidebarStateCookieName       = "sidebar_state"
+	themeCookieName              = "theme"
+	densityCookieName            = "density"
 )
 
 type Config struct {
@@ -225,8 +227,9 @@ func (s *Server) registerRoutes() {
 		return
 	}
 
-	s.echo.GET("/", s.dashboard)
-	s.echo.GET("/kanban", s.fleetKanban)
+	s.echo.GET("/", s.board)
+	s.echo.GET("/fleet", s.dashboard)
+	s.echo.GET("/kanban", s.redirectToBoard)
 	s.echo.GET("/health/ui", s.healthDashboard)
 	s.echo.GET("/analytics", s.analyticsDashboard)
 	s.echo.GET("/projects/*", s.projectDashboard)
@@ -248,6 +251,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed)
 	s.echo.GET("/api/v1/usage", s.apiUsage)
 	s.echo.GET("/api/v1/workflow/timeline", s.apiWorkflowTimeline)
+	s.echo.GET("/api/v1/board/card", s.apiBoardCard)
 	s.echo.GET("/api/v1/kanban/move", s.apiKanbanMoveDialog)
 	s.echo.POST("/api/v1/kanban/move", s.apiKanbanMove)
 	s.echo.POST("/api/v1/kanban/remove", s.apiKanbanRemove)
@@ -264,21 +268,58 @@ func (s *Server) dashboard(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 	data := s.dashboardData(ctx, s.latestSnapshot(ctx))
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
-	return render(c, templates.Dashboard(data))
+	applyDashboardPreferences(c.Request(), &data)
+	return render(c, templates.FleetPage(data))
 }
 
-func (s *Server) fleetKanban(c echo.Context) error {
+func (s *Server) board(c echo.Context) error {
 	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
 		return err
 	} else if ok {
-		return s.demoFleetKanban(c, scenario)
+		return s.demoBoard(c, scenario)
 	}
 	ctx := c.Request().Context()
-	data := s.fleetKanbanData(ctx, s.latestSnapshot(ctx))
+	data := s.boardData(ctx, s.latestSnapshot(ctx))
 	data = s.withKanbanRefreshFeedback(data)
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
-	return render(c, templates.ProjectKanbanPage(data))
+	applyDashboardPreferences(c.Request(), &data)
+	return render(c, templates.BoardPage(data))
+}
+
+func (s *Server) redirectToBoard(c echo.Context) error {
+	return c.Redirect(http.StatusFound, "/")
+}
+
+// apiBoardCard renders the session detail sheet for one board card into
+// the body-level sheet host. The scope param mirrors the board that
+// opened the sheet so its kanban actions post against the same scope
+// and success responses return the matching board fragment.
+func (s *Server) apiBoardCard(c echo.Context) error {
+	ctx := c.Request().Context()
+	projectID := strings.TrimSpace(c.QueryParam("project"))
+	projectScope := c.QueryParam("scope") == "project" && projectID != ""
+	data := s.boardData(ctx, s.latestSnapshot(ctx))
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		data = s.demoDashboardData(ctx, scenario)
+		if projectScope {
+			projectScenario := scenario
+			projectScenario.ProjectID = projectID
+			if scoped, ok := s.demoProjectDashboardData(ctx, projectScenario); ok {
+				data = scoped
+			}
+		}
+	} else if projectScope {
+		if scoped, ok := s.projectDashboardData(ctx, projectID, s.latestSnapshot(ctx)); ok {
+			data = scoped
+		}
+	}
+	card, ok := templates.FindBoardCard(data, projectID, c.QueryParam("issue"))
+	if !ok {
+		return echo.NewHTTPError(http.StatusNotFound, "Card not found")
+	}
+	boardActions := c.QueryParam("actions") == "board"
+	return render(c, templates.BoardCardSheet(data, card, boardActions))
 }
 
 func (s *Server) healthDashboard(c echo.Context) error {
@@ -289,8 +330,8 @@ func (s *Server) healthDashboard(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 	data := s.healthDashboardData(ctx, s.latestSnapshot(ctx))
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
-	return render(c, templates.HealthPage(data))
+	applyDashboardPreferences(c.Request(), &data)
+	return render(c, templates.HealthPageV2(data))
 }
 
 func (s *Server) analyticsDashboard(c echo.Context) error {
@@ -301,8 +342,9 @@ func (s *Server) analyticsDashboard(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 	data := s.analyticsDashboardData(ctx, s.latestSnapshot(ctx))
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
-	return render(c, templates.AnalyticsPage(data))
+	data.AnalyticsKind = c.QueryParam("kind")
+	applyDashboardPreferences(c.Request(), &data)
+	return render(c, templates.AnalyticsPageV2(data))
 }
 
 func (s *Server) projectDashboard(c echo.Context) error {
@@ -325,24 +367,28 @@ func (s *Server) projectDashboard(c echo.Context) error {
 		data.ActiveNav = "kanban"
 		data.Title = s.projectPageTitle(data, "Kanban")
 		data = s.withKanbanRefreshFeedback(data)
-		return render(c, templates.ProjectKanbanPage(data))
+		applyDashboardPreferences(c.Request(), &data)
+		return render(c, templates.ProjectBoardPage(data))
 	case "runs":
 		data.ActiveNav = "runs"
 		data.Title = s.projectPageTitle(data, "Runs")
-		return render(c, templates.ProjectRunsPage(data))
+		applyDashboardPreferences(c.Request(), &data)
+		return render(c, templates.ProjectRunsPageV2(data))
 	case "diagnostics":
 		data.ActiveNav = "diagnostics"
 		data.Title = s.projectPageTitle(data, "Diagnostics")
-		return render(c, templates.ProjectDiagnosticsPage(data))
+		applyDashboardPreferences(c.Request(), &data)
+		return render(c, templates.ProjectDiagnosticsPageV2(data))
 	case "configuration":
 		settingsData := s.settingsData(ctx, projectID)
 		settingsData.ActiveNav = "configuration"
 		settingsData.Title = s.projectPageTitle(data, "Configuration")
-		settingsData.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+		applySettingsPreferences(c.Request(), &settingsData)
 		return render(c, templates.Settings(settingsData))
 	}
-	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
-	return render(c, templates.Dashboard(data))
+	data.ActiveNav = "overview"
+	applyDashboardPreferences(c.Request(), &data)
+	return render(c, templates.ProjectOverviewPage(data))
 }
 
 func dashboardSidebarCollapsed(r *http.Request) bool {
@@ -351,6 +397,46 @@ func dashboardSidebarCollapsed(r *http.Request) bool {
 		return false
 	}
 	return strings.TrimSpace(cookie.Value) == "false"
+}
+
+func dashboardTheme(r *http.Request) string {
+	cookie, err := r.Cookie(themeCookieName)
+	if err != nil {
+		return ""
+	}
+	if strings.TrimSpace(cookie.Value) == "light" {
+		return "light"
+	}
+	return ""
+}
+
+func dashboardDensity(r *http.Request) string {
+	cookie, err := r.Cookie(densityCookieName)
+	if err != nil {
+		return ""
+	}
+	if strings.TrimSpace(cookie.Value) == "cozy" {
+		return "cozy"
+	}
+	return ""
+}
+
+func applyDashboardPreferences(r *http.Request, data *templates.DashboardData) {
+	data.SidebarCollapsed = dashboardSidebarCollapsed(r)
+	data.Theme = dashboardTheme(r)
+	data.Density = dashboardDensity(r)
+}
+
+func applySettingsPreferences(r *http.Request, data *templates.SettingsData) {
+	data.SidebarCollapsed = dashboardSidebarCollapsed(r)
+	data.Theme = dashboardTheme(r)
+	data.Density = dashboardDensity(r)
+}
+
+func applyReportsPreferences(r *http.Request, data *templates.ReportsData) {
+	data.SidebarCollapsed = dashboardSidebarCollapsed(r)
+	data.Theme = dashboardTheme(r)
+	data.Density = dashboardDensity(r)
 }
 
 func projectRouteParam(c echo.Context) string {
@@ -415,10 +501,10 @@ func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot)
 	}
 }
 
-func (s *Server) fleetKanbanData(ctx context.Context, snapshot telemetry.Snapshot) templates.DashboardData {
+func (s *Server) boardData(ctx context.Context, snapshot telemetry.Snapshot) templates.DashboardData {
 	data := s.dashboardData(ctx, snapshot)
-	data.ActiveNav = "kanban"
-	data.Title = instancePageTitle(s.instanceName(), "Kanban - Detent")
+	data.ActiveNav = "board"
+	data.Title = instancePageTitle(s.instanceName(), "Detent")
 	return data
 }
 

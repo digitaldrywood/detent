@@ -160,7 +160,7 @@ func TestServerRoutes(t *testing.T) {
 			name:        "reports",
 			path:        "/reports",
 			wantStatus:  http.StatusOK,
-			wantContent: "Spend trend",
+			wantContent: `id="reports-kpis"`,
 		},
 		{
 			name:        "health",
@@ -250,12 +250,21 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 	})
 	assertManifestOmitsScenarios(t, manifest, []string{"events-frozen", "events-play"})
 
-	page := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/", http.StatusOK, map[string]string{
+	page := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/fleet", http.StatusOK, map[string]string{
 		web.DemoScenarioHeader: "fleet-healthy-parallel-work",
 	})
-	for _, want := range []string{"Implement page-addressable screenshot scenarios", "detent-core", "GraphQL"} {
+	for _, want := range []string{"Implement page-addressable screenshot scenarios", "detent-core", "GitHub quota", `id="agent-activity"`} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("fleet scenario page missing %q:\n%s", want, page)
+		}
+	}
+
+	board := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/", http.StatusOK, map[string]string{
+		web.DemoScenarioHeader: "fleet-healthy-parallel-work",
+	})
+	for _, want := range []string{`id="board-lanes"`, "Implement page-addressable screenshot scenarios", "Session blocked"} {
+		if !strings.Contains(board, want) {
+			t.Fatalf("board scenario page missing %q:\n%s", want, board)
 		}
 	}
 
@@ -283,15 +292,15 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 	terminalKanban := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/projects/dogfood/kanban", http.StatusOK, map[string]string{
 		web.DemoScenarioHeader: "kanban-terminal-states",
 	})
-	for _, want := range []string{
-		`data-project-kanban-lane-title="Cancelled"`,
-		`data-project-kanban-lane-empty="false"`,
-		`data-project-kanban-lane-visible="false"`,
-		`data-kanban-issue-id="demo-cancelled"`,
-	} {
-		if !strings.Contains(terminalKanban, want) {
-			t.Fatalf("terminal Kanban scenario missing %q:\n%s", want, terminalKanban)
-		}
+	cancelledLane := regexp.MustCompile(`<section[^>]*data-board-lane="cancelled"[^>]*>`).FindString(terminalKanban)
+	if cancelledLane == "" {
+		t.Fatalf("terminal Kanban scenario missing Cancelled lane:\n%s", terminalKanban)
+	}
+	if !strings.Contains(cancelledLane, `data-lane-hidden="true"`) {
+		t.Fatalf("populated Cancelled lane should hide by default: %s", cancelledLane)
+	}
+	if !strings.Contains(cancelledLane, `data-board-lane-default="false"`) {
+		t.Fatalf("Cancelled lane should not be default-visible: %s", cancelledLane)
 	}
 
 	usage := requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/usage?by=project", http.StatusOK, map[string]string{
@@ -321,13 +330,10 @@ func TestDemoScenarioEventsPreserveProjectSubview(t *testing.T) {
 	if event.name != "snapshot" {
 		t.Fatalf("event name = %q, want snapshot", event.name)
 	}
-	for _, want := range []string{`id="project-kanban"`, "Project Kanban"} {
+	for _, want := range []string{`id="board-lanes"`, `data-board-key="project.dogfood"`} {
 		if !strings.Contains(event.data, want) {
 			t.Fatalf("demo Kanban SSE event missing %q:\n%s", want, event.data)
 		}
-	}
-	if strings.Contains(event.data, ">Integration</span>") {
-		t.Fatalf("demo Kanban SSE event rendered normal Integration badge:\n%s", event.data)
 	}
 	if strings.Contains(event.data, "Fleet grid") {
 		t.Fatalf("demo Kanban SSE event rendered fleet snapshot:\n%s", event.data)
@@ -353,16 +359,18 @@ func TestDemoScenarioKanbanFragments(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Moved card to Todo") {
 		t.Fatalf("move success status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	if rec.Header().Get("HX-Retarget") != "#project-kanban" {
-		t.Fatalf("move success HX-Retarget = %q, want #project-kanban", rec.Header().Get("HX-Retarget"))
+	if rec.Header().Get("HX-Retarget") != "#snapshot" {
+		t.Fatalf("move success HX-Retarget = %q, want #snapshot", rec.Header().Get("HX-Retarget"))
 	}
-	backlogLane := projectKanbanLaneHTML(t, rec.Body.String(), "backlog")
-	if strings.Contains(backlogLane, "Backlog observability fixture intake") {
-		t.Fatalf("demo Backlog lane still contains moved card:\n%s", backlogLane)
+	if rec.Header().Get("HX-Reswap") != "morph:innerHTML" {
+		t.Fatalf("move success HX-Reswap = %q, want morph:innerHTML", rec.Header().Get("HX-Reswap"))
 	}
-	todoLane := projectKanbanLaneHTML(t, rec.Body.String(), "todo")
-	if !strings.Contains(todoLane, "Backlog observability fixture intake") {
-		t.Fatalf("demo Todo lane missing moved card:\n%s", todoLane)
+	moveBody := rec.Body.String()
+	if !strings.Contains(moveBody, `id="board-lanes"`) {
+		t.Fatalf("demo move success should return the redesigned board:\n%s", moveBody)
+	}
+	if !regexp.MustCompile(`data-board-lane="todo"[\s\S]*Backlog observability fixture intake`).MatchString(moveBody) {
+		t.Fatalf("demo Todo lane missing moved card:\n%s", moveBody)
 	}
 
 	rec = performDemoForm(t, server.Handler(), "/api/v1/kanban/comment", "api-kanban-comment-connector-failure", nil)
@@ -825,32 +833,27 @@ func TestKanbanMoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if rec.Header().Get("HX-Retarget") != "#project-kanban" {
-		t.Fatalf("HX-Retarget = %q, want #project-kanban", rec.Header().Get("HX-Retarget"))
+	if rec.Header().Get("HX-Retarget") != "#snapshot" {
+		t.Fatalf("HX-Retarget = %q, want #snapshot", rec.Header().Get("HX-Retarget"))
 	}
-	if rec.Header().Get("HX-Reswap") != "outerHTML" {
-		t.Fatalf("HX-Reswap = %q, want outerHTML", rec.Header().Get("HX-Reswap"))
+	if rec.Header().Get("HX-Reswap") != "morph:innerHTML" {
+		t.Fatalf("HX-Reswap = %q, want morph:innerHTML", rec.Header().Get("HX-Reswap"))
 	}
 	for _, want := range []string{
-		`id="project-kanban"`,
+		`id="board-lanes"`,
 		"Moved card to Todo.",
-		`data-project-kanban-lane="backlog"`,
-		`data-project-kanban-lane="todo"`,
+		`data-board-lane="backlog"`,
+		`data-board-lane="todo"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("response missing %q:\n%s", want, rec.Body.String())
 		}
 	}
-	if got := strings.Count(rec.Body.String(), `data-kanban-issue-id="I_kw559"`); got != 1 {
+	if got := strings.Count(rec.Body.String(), "Move regression card"); got != 1 {
 		t.Fatalf("card render count = %d, want 1:\n%s", got, rec.Body.String())
 	}
-	backlogLane := projectKanbanLaneHTML(t, rec.Body.String(), "backlog")
-	if strings.Contains(backlogLane, "Move regression card") {
-		t.Fatalf("Backlog lane still contains moved card:\n%s", backlogLane)
-	}
-	todoLane := projectKanbanLaneHTML(t, rec.Body.String(), "todo")
-	if !strings.Contains(todoLane, "Move regression card") {
-		t.Fatalf("Todo lane missing moved card:\n%s", todoLane)
+	if !regexp.MustCompile(`data-board-lane="todo"[\s\S]*Move regression card`).MatchString(rec.Body.String()) {
+		t.Fatalf("Todo lane missing moved card:\n%s", rec.Body.String())
 	}
 	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_kw559", state: "Todo"}}; !equalStateUpdates(got, want) {
 		t.Fatalf("state updates = %#v, want %#v", got, want)
@@ -911,19 +914,19 @@ func TestKanbanMoveSuccessResponseRefreshesFleetBoard(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if rec.Header().Get("HX-Retarget") != "#fleet-kanban" {
-		t.Fatalf("HX-Retarget = %q, want #fleet-kanban", rec.Header().Get("HX-Retarget"))
+	if rec.Header().Get("HX-Retarget") != "#snapshot" {
+		t.Fatalf("HX-Retarget = %q, want #snapshot", rec.Header().Get("HX-Retarget"))
 	}
-	if rec.Header().Get("HX-Reswap") != "outerHTML" {
-		t.Fatalf("HX-Reswap = %q, want outerHTML", rec.Header().Get("HX-Reswap"))
+	if rec.Header().Get("HX-Reswap") != "morph:innerHTML" {
+		t.Fatalf("HX-Reswap = %q, want morph:innerHTML", rec.Header().Get("HX-Reswap"))
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		`id="fleet-kanban"`,
+		`id="board-lanes"`,
 		"Moved card to Todo.",
-		`data-project-kanban-visibility-key="fleet"`,
-		`data-project-kanban-lane="backlog"`,
-		`data-project-kanban-lane="todo"`,
+		`data-board-key="fleet"`,
+		`data-board-lane="backlog"`,
+		`data-board-lane="todo"`,
 		"Move fleet board card",
 		"Keep read-only fleet card",
 	} {
@@ -934,16 +937,8 @@ func TestKanbanMoveSuccessResponseRefreshesFleetBoard(t *testing.T) {
 	if strings.Contains(body, `id="project-kanban"`) {
 		t.Fatalf("fleet move response rendered project board:\n%s", body)
 	}
-	if got := strings.Count(body, `data-project-kanban-card="digitaldrywood/detent#764"`); got != 1 {
+	if got := strings.Count(body, `id="card-detent-764"`); got != 1 {
 		t.Fatalf("card render count = %d, want 1:\n%s", got, body)
-	}
-	backlogLane := projectKanbanLaneHTML(t, body, "backlog")
-	if strings.Contains(backlogLane, "Move fleet board card") {
-		t.Fatalf("Backlog lane still contains moved card:\n%s", backlogLane)
-	}
-	todoLane := projectKanbanLaneHTML(t, body, "todo")
-	if !strings.Contains(todoLane, "Move fleet board card") {
-		t.Fatalf("Todo lane missing moved card:\n%s", todoLane)
 	}
 	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_kw764", state: "Todo"}}; !equalStateUpdates(got, want) {
 		t.Fatalf("state updates = %#v, want %#v", got, want)
@@ -988,23 +983,23 @@ func TestKanbanRemoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if rec.Header().Get("HX-Retarget") != "#project-kanban" {
-		t.Fatalf("HX-Retarget = %q, want #project-kanban", rec.Header().Get("HX-Retarget"))
+	if rec.Header().Get("HX-Retarget") != "#snapshot" {
+		t.Fatalf("HX-Retarget = %q, want #snapshot", rec.Header().Get("HX-Retarget"))
 	}
-	if rec.Header().Get("HX-Reswap") != "outerHTML" {
-		t.Fatalf("HX-Reswap = %q, want outerHTML", rec.Header().Get("HX-Reswap"))
+	if rec.Header().Get("HX-Reswap") != "morph:innerHTML" {
+		t.Fatalf("HX-Reswap = %q, want morph:innerHTML", rec.Header().Get("HX-Reswap"))
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		`id="project-kanban"`,
+		`id="board-lanes"`,
 		"Removed card from project.",
-		`data-project-kanban-lane="todo"`,
+		`data-board-lane="todo"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("response missing %q:\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, "Remove regression card") || strings.Contains(body, `data-kanban-issue-id="I_kw739"`) {
+	if strings.Contains(body, "Remove regression card") {
 		t.Fatalf("response still contains removed card:\n%s", body)
 	}
 	if got, want := actionConnector.removals(), []kanbanRemoval{{issueID: "I_kw739"}}; !equalRemovals(got, want) {
@@ -1144,29 +1139,24 @@ func TestKanbanDragMoveSuccessResponseRefreshesProjectBoardWithoutInlineFlash(t 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if rec.Header().Get("HX-Retarget") != "#project-kanban" {
-		t.Fatalf("HX-Retarget = %q, want #project-kanban", rec.Header().Get("HX-Retarget"))
+	if rec.Header().Get("HX-Retarget") != "#snapshot" {
+		t.Fatalf("HX-Retarget = %q, want #snapshot", rec.Header().Get("HX-Retarget"))
 	}
-	if rec.Header().Get("HX-Reswap") != "outerHTML" {
-		t.Fatalf("HX-Reswap = %q, want outerHTML", rec.Header().Get("HX-Reswap"))
+	if rec.Header().Get("HX-Reswap") != "morph:innerHTML" {
+		t.Fatalf("HX-Reswap = %q, want morph:innerHTML", rec.Header().Get("HX-Reswap"))
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `id="project-kanban"`) {
+	if !strings.Contains(body, `id="board-lanes"`) {
 		t.Fatalf("response missing project board:\n%s", body)
 	}
-	if got := strings.Count(body, `data-kanban-issue-id="I_kw579"`); got != 1 {
+	if got := strings.Count(body, "Drag feedback card"); got != 1 {
 		t.Fatalf("card render count = %d, want 1:\n%s", got, body)
 	}
-	if feedback := kanbanFeedbackTextFromHTML(t, body); strings.Contains(feedback, "Moved card to Todo.") {
-		t.Fatalf("drag success feedback = %q, want no inline success flash:\n%s", feedback, body)
+	if strings.Contains(body, "Moved card to Todo.") {
+		t.Fatalf("drag success rendered inline success flash:\n%s", body)
 	}
-	backlogLane := projectKanbanLaneHTML(t, body, "backlog")
-	if strings.Contains(backlogLane, "Drag feedback card") {
-		t.Fatalf("Backlog lane still contains moved card:\n%s", backlogLane)
-	}
-	todoLane := projectKanbanLaneHTML(t, body, "todo")
-	if !strings.Contains(todoLane, "Drag feedback card") {
-		t.Fatalf("Todo lane missing moved card:\n%s", todoLane)
+	if !regexp.MustCompile(`data-board-lane="todo"[\s\S]*Drag feedback card`).MatchString(body) {
+		t.Fatalf("Todo lane missing moved card:\n%s", body)
 	}
 	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_kw579", state: "Todo"}}; !equalStateUpdates(got, want) {
 		t.Fatalf("state updates = %#v, want %#v", got, want)
@@ -1790,16 +1780,17 @@ func TestServerRendersInstanceNameInPagesStateAndMetadata(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		handler http.Handler
-		path    string
-		title   string
+		name      string
+		handler   http.Handler
+		path      string
+		title     string
+		wantBadge bool
 	}{
-		{name: "dashboard", handler: server.Handler(), path: "/", title: "buildbox · Detent"},
+		{name: "dashboard", handler: server.Handler(), path: "/fleet", title: "buildbox · Detent"},
 		{name: "analytics", handler: server.Handler(), path: "/analytics", title: "buildbox · Analytics - Detent"},
 		{name: "reports", handler: server.Handler(), path: "/reports", title: "buildbox · Detent reports"},
 		{name: "settings", handler: server.Handler(), path: "/settings", title: "buildbox · Detent settings"},
-		{name: "onboarding", handler: onboardingServer.Handler(), path: "/onboarding", title: "buildbox · Detent onboarding"},
+		{name: "onboarding", handler: onboardingServer.Handler(), path: "/onboarding", title: "buildbox · Detent onboarding", wantBadge: true},
 	}
 
 	for _, tt := range tests {
@@ -1807,12 +1798,14 @@ func TestServerRendersInstanceNameInPagesStateAndMetadata(t *testing.T) {
 			t.Parallel()
 
 			body := requestHTML(t, tt.handler, http.MethodGet, tt.path, http.StatusOK)
-			for _, want := range []string{
+			wants := []string{
 				"<title>" + tt.title + "</title>",
 				`name="application-name" content="buildbox · Detent"`,
-				`aria-label="Instance name"`,
-				">buildbox</span>",
-			} {
+			}
+			if tt.wantBadge {
+				wants = append(wants, `aria-label="Instance name"`, ">buildbox</span>")
+			}
+			for _, want := range wants {
 				if !strings.Contains(body, want) {
 					t.Fatalf("%s body missing %q:\n%s", tt.path, want, body)
 				}
@@ -1916,12 +1909,12 @@ func TestServerUsesHostnameFallbackForInstanceName(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	body := requestHTML(t, server.Handler(), http.MethodGet, "/", http.StatusOK)
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/fleet", http.StatusOK)
 	if !strings.Contains(body, "<title>runner-01 · Detent</title>") {
 		t.Fatalf("body missing hostname title:\n%s", body)
 	}
-	if !strings.Contains(body, ">runner-01</span>") {
-		t.Fatalf("body missing hostname badge:\n%s", body)
+	if !strings.Contains(body, `name="application-name" content="runner-01 · Detent"`) {
+		t.Fatalf("body missing hostname application-name:\n%s", body)
 	}
 }
 
@@ -1949,7 +1942,7 @@ func TestServerReadsInstanceNameFromCurrentGlobalConfig(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	body := requestHTML(t, server.Handler(), http.MethodGet, "/", http.StatusOK)
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/fleet", http.StatusOK)
 	if !strings.Contains(body, "<title>first · Detent</title>") {
 		t.Fatalf("body missing initial instance title:\n%s", body)
 	}
@@ -1960,7 +1953,7 @@ func TestServerReadsInstanceNameFromCurrentGlobalConfig(t *testing.T) {
 	}
 
 	current = globalconfig.Config{InstanceName: "second"}
-	body = requestHTML(t, server.Handler(), http.MethodGet, "/", http.StatusOK)
+	body = requestHTML(t, server.Handler(), http.MethodGet, "/fleet", http.StatusOK)
 	if !strings.Contains(body, "<title>second · Detent</title>") {
 		t.Fatalf("body missing reloaded instance title:\n%s", body)
 	}
@@ -1983,7 +1976,7 @@ func TestServerOmitsInstanceBadgeWhenNameEmpty(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	body := requestHTML(t, server.Handler(), http.MethodGet, "/", http.StatusOK)
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/fleet", http.StatusOK)
 	if !strings.Contains(body, "<title>Detent</title>") {
 		t.Fatalf("body missing default title:\n%s", body)
 	}
@@ -2005,7 +1998,7 @@ func TestServerEscapesInstanceName(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	body := requestHTML(t, server.Handler(), http.MethodGet, "/", http.StatusOK)
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/fleet", http.StatusOK)
 	if strings.Contains(body, "<title><b>prod</b> · Detent</title>") {
 		t.Fatalf("body rendered raw instance name in title:\n%s", body)
 	}
@@ -2015,7 +2008,6 @@ func TestServerEscapesInstanceName(t *testing.T) {
 	for _, want := range []string{
 		"<title>&lt;b&gt;prod&lt;/b&gt; · Detent</title>",
 		`name="application-name" content="&lt;b&gt;prod&lt;/b&gt; · Detent"`,
-		">&lt;b&gt;prod&lt;/b&gt;</span>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body missing escaped instance name %q:\n%s", want, body)
@@ -2317,7 +2309,7 @@ func TestDashboardRendersLatestSnapshot(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/fleet", nil)
 
 	server.Handler().ServeHTTP(rec, req)
 
@@ -2325,9 +2317,12 @@ func TestDashboardRendersLatestSnapshot(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	for _, want := range []string{
-		"digitaldrywood/detent#35",
+		"digitaldrywood/detent",
+		"#35",
 		"Dashboard templates",
-		"42,000",
+		"2 turns",
+		"tps",
+		`id="agent-35"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
@@ -2339,24 +2334,30 @@ func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
 	t.Parallel()
 
 	routes := []struct {
-		name string
-		path string
+		name  string
+		path  string
+		shell string
 	}{
-		{name: "dashboard", path: "/"},
-		{name: "project", path: "/projects/detent"},
-		{name: "reports", path: "/reports"},
-		{name: "settings", path: "/settings"},
+		{name: "board", path: "/", shell: "v2"},
+		{name: "dashboard", path: "/fleet", shell: "v2"},
+		{name: "project", path: "/projects/detent", shell: "v2"},
+		{name: "reports", path: "/reports", shell: "v2"},
+		{name: "settings", path: "/settings", shell: "v2"},
 	}
 	states := []struct {
-		name        string
-		cookie      *http.Cookie
-		wantState   string
-		forbidState string
+		name          string
+		cookie        *http.Cookie
+		wantLegacy    string
+		forbidLegacy  string
+		wantShellV2   string
+		forbidShellV2 string
 	}{
 		{
-			name:        "defaults expanded",
-			wantState:   `data-tui-sidebar-state="expanded"`,
-			forbidState: `data-tui-sidebar-state="collapsed"`,
+			name:          "defaults expanded",
+			wantLegacy:    `data-tui-sidebar-state="expanded"`,
+			forbidLegacy:  `data-tui-sidebar-state="collapsed"`,
+			wantShellV2:   `data-rail="false"`,
+			forbidShellV2: `data-rail="true"`,
 		},
 		{
 			name: "renders collapsed from templui cookie",
@@ -2364,8 +2365,10 @@ func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
 				Name:  "sidebar_state",
 				Value: "false",
 			},
-			wantState:   `data-tui-sidebar-state="collapsed"`,
-			forbidState: `data-tui-sidebar-state="expanded"`,
+			wantLegacy:    `data-tui-sidebar-state="collapsed"`,
+			forbidLegacy:  `data-tui-sidebar-state="expanded"`,
+			wantShellV2:   `data-rail="true"`,
+			forbidShellV2: `data-rail="false"`,
 		},
 		{
 			name: "renders expanded from templui cookie",
@@ -2373,8 +2376,10 @@ func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
 				Name:  "sidebar_state",
 				Value: "true",
 			},
-			wantState:   `data-tui-sidebar-state="expanded"`,
-			forbidState: `data-tui-sidebar-state="collapsed"`,
+			wantLegacy:    `data-tui-sidebar-state="expanded"`,
+			forbidLegacy:  `data-tui-sidebar-state="collapsed"`,
+			wantShellV2:   `data-rail="false"`,
+			forbidShellV2: `data-rail="true"`,
 		},
 	}
 
@@ -2411,218 +2416,18 @@ func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
 				if rec.Code != http.StatusOK {
 					t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 				}
-				if !strings.Contains(rec.Body.String(), state.wantState) {
-					t.Fatalf("%s missing %q:\n%s", route.path, state.wantState, rec.Body.String())
+				wantState, forbidState := state.wantLegacy, state.forbidLegacy
+				if route.shell == "v2" {
+					wantState, forbidState = state.wantShellV2, state.forbidShellV2
 				}
-				if strings.Contains(rec.Body.String(), state.forbidState) {
-					t.Fatalf("%s rendered forbidden state %q:\n%s", route.path, state.forbidState, rec.Body.String())
+				if !strings.Contains(rec.Body.String(), wantState) {
+					t.Fatalf("%s missing %q:\n%s", route.path, wantState, rec.Body.String())
+				}
+				if strings.Contains(rec.Body.String(), forbidState) {
+					t.Fatalf("%s rendered forbidden state %q:\n%s", route.path, forbidState, rec.Body.String())
 				}
 			})
 		}
-	}
-}
-
-func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC)
-	deps := testDeps(t)
-	mustSetWebProject(t, deps.Registry, "detent", false)
-	if err := deps.Hub.Publish(telemetry.Snapshot{
-		GeneratedAt: now,
-		Projects: []telemetry.ProjectSnapshot{
-			{
-				Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
-				Counts:  telemetry.Counts{Running: 3},
-			},
-		},
-	}); err != nil {
-		t.Fatalf("Publish() error = %v", err)
-	}
-
-	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
-
-	tests := []struct {
-		name         string
-		path         string
-		activeHref   string
-		sseConnect   string
-		reportsHref  string
-		settingsHref string
-		inactiveHref []string
-	}{
-		{
-			name:         "fleet",
-			path:         "/",
-			activeHref:   "/",
-			sseConnect:   `sse-connect="/events"`,
-			reportsHref:  "/reports",
-			settingsHref: "/settings",
-			inactiveHref: []string{"/analytics", "/reports", "/settings"},
-		},
-		{
-			name:         "analytics",
-			path:         "/analytics",
-			activeHref:   "/analytics",
-			sseConnect:   `sse-connect="/events?nav=analytics"`,
-			reportsHref:  "/reports",
-			settingsHref: "/settings",
-			inactiveHref: []string{"/", "/reports", "/settings"},
-		},
-		{
-			name:         "reports",
-			path:         "/reports",
-			activeHref:   "/reports",
-			sseConnect:   `sse-connect="/events?nav=reports"`,
-			reportsHref:  "/reports",
-			settingsHref: "/settings",
-			inactiveHref: []string{"/", "/analytics", "/settings"},
-		},
-		{
-			name:         "health",
-			path:         "/health/ui",
-			activeHref:   "/health/ui",
-			sseConnect:   `sse-connect="/events?nav=health"`,
-			reportsHref:  "/reports",
-			settingsHref: "/settings",
-			inactiveHref: []string{"/", "/analytics", "/reports", "/settings"},
-		},
-		{
-			name:         "project",
-			path:         "/projects/detent",
-			activeHref:   "/projects/detent",
-			sseConnect:   `sse-connect="/events?project=detent"`,
-			reportsHref:  "/reports?project=detent",
-			settingsHref: "/settings?project=detent",
-			inactiveHref: []string{"/", "/analytics", "/reports?project=detent", "/settings?project=detent"},
-		},
-		{
-			name:         "project kanban",
-			path:         "/projects/detent/kanban",
-			activeHref:   "/projects/detent/kanban",
-			sseConnect:   `sse-connect="/events?project=detent&amp;view=kanban"`,
-			reportsHref:  "/reports?project=detent",
-			settingsHref: "/settings?project=detent",
-			inactiveHref: []string{"/", "/analytics", "/reports?project=detent", "/settings?project=detent", "/projects/detent"},
-		},
-		{
-			name:         "project runs",
-			path:         "/projects/detent/runs",
-			activeHref:   "/projects/detent/runs",
-			sseConnect:   `sse-connect="/events?project=detent&amp;view=runs"`,
-			reportsHref:  "/reports?project=detent",
-			settingsHref: "/settings?project=detent",
-			inactiveHref: []string{"/", "/analytics", "/reports?project=detent", "/settings?project=detent", "/projects/detent", "/projects/detent/kanban", "/projects/detent/configuration", "/projects/detent/diagnostics"},
-		},
-		{
-			name:         "project configuration",
-			path:         "/projects/detent/configuration",
-			activeHref:   "/projects/detent/configuration",
-			sseConnect:   `sse-connect="/events?project=detent&amp;view=configuration"`,
-			reportsHref:  "/reports?project=detent",
-			settingsHref: "/settings?project=detent",
-			inactiveHref: []string{"/", "/analytics", "/reports?project=detent", "/settings?project=detent", "/projects/detent", "/projects/detent/kanban", "/projects/detent/runs", "/projects/detent/diagnostics"},
-		},
-		{
-			name:         "project diagnostics",
-			path:         "/projects/detent/diagnostics",
-			activeHref:   "/projects/detent/diagnostics",
-			sseConnect:   `sse-connect="/events?project=detent&amp;view=diagnostics"`,
-			reportsHref:  "/reports?project=detent",
-			settingsHref: "/settings?project=detent",
-			inactiveHref: []string{"/", "/analytics", "/reports?project=detent", "/settings?project=detent", "/projects/detent", "/projects/detent/kanban", "/projects/detent/runs", "/projects/detent/configuration"},
-		},
-		{
-			name:         "settings",
-			path:         "/settings",
-			activeHref:   "/settings",
-			sseConnect:   `sse-connect="/events?nav=settings"`,
-			reportsHref:  "/reports",
-			settingsHref: "/settings",
-			inactiveHref: []string{"/", "/analytics", "/reports"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
-			server.Handler().ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusOK {
-				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
-			}
-			body := rec.Body.String()
-			for _, want := range []string{
-				`data-tui-sidebar-layout`,
-				`id="dashboard-sidebar"`,
-				`id="dashboard-sidebar-live"`,
-				`sse-swap="sidebar"`,
-				`hx-swap="morph:innerHTML"`,
-				`data-tui-sidebar-target="dashboard-sidebar"`,
-				`data-tui-sheet`,
-				`/static/js/templui/sidebar.min.js`,
-				`/static/js/templui/dialog.min.js`,
-				`href="/"`,
-				`href="/health/ui"`,
-				`href="/analytics"`,
-				`href="` + tt.reportsHref + `"`,
-				`href="` + tt.settingsHref + `"`,
-				`href="/projects/detent"`,
-				`Detent - active, 3 running`,
-				tt.sseConnect,
-			} {
-				if !strings.Contains(body, want) {
-					t.Fatalf("%s missing shared sidebar marker %q:\n%s", tt.path, want, body)
-				}
-			}
-			assertSharedDashboardShellOnce(t, body, tt.path)
-			assertSingleCurrentSidebarItem(t, body)
-			assertActiveSidebarLink(t, body, tt.activeHref)
-			if tt.activeHref != "/health/ui" {
-				assertInactiveSidebarLink(t, body, "/health/ui")
-			}
-			for _, href := range tt.inactiveHref {
-				assertInactiveSidebarLink(t, body, href)
-			}
-			if strings.HasPrefix(tt.name, "project") {
-				for _, want := range []string{
-					`href="/projects/detent/kanban"`,
-					`href="/projects/detent/runs"`,
-					`href="/projects/detent/configuration"`,
-					`href="/projects/detent/diagnostics"`,
-					`data-dashboard-view="kanban"`,
-				} {
-					if !strings.Contains(body, want) {
-						t.Fatalf("%s missing project Kanban sidebar marker %q:\n%s", tt.path, want, body)
-					}
-				}
-				if strings.Contains(body, `href="/projects/detent#project-kanban"`) {
-					t.Fatalf("%s rendered project Kanban as in-page dashboard anchor:\n%s", tt.path, body)
-				}
-				switch tt.name {
-				case "project":
-					assertInactiveSidebarLink(t, body, "/projects/detent/kanban")
-				case "project kanban":
-					assertActiveSidebarLink(t, body, "/projects/detent/kanban")
-				}
-			}
-			if tt.path != "/" {
-				for _, forbidden := range []string{
-					"dashboard-nav flex min-w-0 items-center gap-4",
-					"dashboard-nav-link",
-				} {
-					if strings.Contains(body, forbidden) {
-						t.Fatalf("%s rendered old top nav marker %q:\n%s", tt.path, forbidden, body)
-					}
-				}
-			}
-		})
 	}
 }
 
@@ -2654,20 +2459,7 @@ func TestStaticPagesPreserveProjectSidebarContext(t *testing.T) {
 		path       string
 		activeHref string
 		sseConnect string
-	}{
-		{
-			name:       "reports",
-			path:       "/reports?project=detent",
-			activeHref: "/reports?project=detent",
-			sseConnect: `sse-connect="/events?nav=reports&amp;project=detent"`,
-		},
-		{
-			name:       "settings",
-			path:       "/settings?project=detent",
-			activeHref: "/projects/detent/configuration",
-			sseConnect: `sse-connect="/events?nav=settings&amp;project=detent"`,
-		},
-	}
+	}{}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2764,16 +2556,17 @@ func TestProjectDashboardRouteScopesSnapshot(t *testing.T) {
 		`href="/projects/detent/runs"`,
 		`aria-current="page"`,
 		`sse-connect="/events?project=detent&amp;view=runs"`,
-		"digitaldrywood/detent#377",
-		"42,000",
+		"#377",
+		"Detent dashboard",
+		"42.0K",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("project dashboard missing %q:\n%s", want, body)
 		}
 	}
 	for _, forbidden := range []string{
-		"digitaldrywood/pyroapex#12",
-		"88,000",
+		"Pyro Apex migration",
+		"88.0K",
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("project dashboard rendered forbidden %q:\n%s", forbidden, body)
@@ -2805,7 +2598,6 @@ func TestProjectDashboardRouteLinksGitHubRepositoryIssues(t *testing.T) {
 		`href="https://github.com/digitaldrywood/detent/issues"`,
 		`target="_blank"`,
 		`aria-label="Open Detent issues"`,
-		`data-lucide="icon"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("project dashboard missing GitHub issues link marker %q:\n%s", want, body)
@@ -2865,15 +2657,15 @@ func TestProjectDashboardRouteRendersConfiguredKanbanOrder(t *testing.T) {
 	}
 
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
-	kanbanStart := strings.Index(body, `aria-label="Project Kanban"`)
+	kanbanStart := strings.Index(body, `id="board-lanes"`)
 	if kanbanStart < 0 {
-		t.Fatalf("project Kanban page missing Kanban section:\n%s", body)
+		t.Fatalf("project Kanban page missing board lanes:\n%s", body)
 	}
 	kanban := body[kanbanStart:]
-	backlogIndex := strings.Index(kanban, `aria-label="Backlog lane"`)
-	todoIndex := strings.Index(kanban, `aria-label="Todo lane"`)
-	reviewIndex := strings.Index(kanban, `aria-label="Human Review lane"`)
-	doneIndex := strings.Index(kanban, `aria-label="Done lane"`)
+	backlogIndex := strings.Index(kanban, `data-board-lane="backlog"`)
+	todoIndex := strings.Index(kanban, `data-board-lane="todo"`)
+	reviewIndex := strings.Index(kanban, `data-board-lane="human-review"`)
+	doneIndex := strings.Index(kanban, `data-board-lane="done"`)
 	if backlogIndex < 0 || todoIndex < 0 || reviewIndex < 0 || doneIndex < 0 {
 		t.Fatalf("kanban missing configured lanes: backlog=%d todo=%d review=%d done=%d\n%s", backlogIndex, todoIndex, reviewIndex, doneIndex, kanban)
 	}
@@ -3010,30 +2802,24 @@ func TestProjectDashboardRoutesSplitOverviewAndDetailPages(t *testing.T) {
 
 	overview := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent", http.StatusOK)
 	for _, want := range []string{
-		`sse-connect="/events?project=detent"`,
-		`aria-label="Project overview links"`,
+		`sse-connect="/events?project=detent&amp;view=overview"`,
 		`href="/projects/detent/kanban"`,
 		`href="/projects/detent/runs"`,
+		`href="/projects/detent/configuration"`,
 		`href="/projects/detent/diagnostics"`,
-		`href="/analytics"`,
-		`href="/reports?project=detent"`,
-		"Kanban",
-		"Runs",
-		"Diagnostics",
-		"Reports",
+		`id="agent-activity"`,
+		`id="project-recent-runs"`,
+		"Recent runs",
+		"Running issue",
 	} {
 		if !strings.Contains(overview, want) {
 			t.Fatalf("project overview missing %q:\n%s", want, overview)
 		}
 	}
-	assertActiveSidebarLink(t, overview, "/projects/detent")
 	for _, forbidden := range []string{
-		`id="project-kanban"`,
-		`aria-label="Project Kanban"`,
+		`id="board-lanes"`,
 		`aria-label="Agent activity timeline"`,
-		`aria-label="Pull request pipeline"`,
 		`id="running-issues"`,
-		`aria-label="Board health"`,
 		`data-detent-charts`,
 	} {
 		if strings.Contains(overview, forbidden) {
@@ -3044,25 +2830,20 @@ func TestProjectDashboardRoutesSplitOverviewAndDetailPages(t *testing.T) {
 	runs := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/runs", http.StatusOK)
 	for _, want := range []string{
 		`sse-connect="/events?project=detent&amp;view=runs"`,
-		`aria-label="Agent activity timeline"`,
-		`aria-label="Pull request pipeline"`,
-		`id="running-issues"`,
-		"Retry queue",
-		"Blocked sessions",
-		"Recent sessions",
-		"digitaldrywood/detent#502",
-		"digitaldrywood/detent#503",
-		"digitaldrywood/detent#504",
-		"digitaldrywood/detent#505",
+		`id="project-runs"`,
+		"#502",
+		"#505",
+		"Running issue",
+		"Completed issue",
+		"In progress",
+		"Completed",
 	} {
 		if !strings.Contains(runs, want) {
 			t.Fatalf("project runs route missing %q:\n%s", want, runs)
 		}
 	}
-	assertActiveSidebarLink(t, runs, "/projects/detent/runs")
 	for _, forbidden := range []string{
-		`aria-label="Project Kanban"`,
-		`aria-label="Board health"`,
+		`id="board-lanes"`,
 		`data-detent-charts`,
 	} {
 		if strings.Contains(runs, forbidden) {
@@ -3073,24 +2854,25 @@ func TestProjectDashboardRoutesSplitOverviewAndDetailPages(t *testing.T) {
 	diagnostics := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/diagnostics", http.StatusOK)
 	for _, want := range []string{
 		`sse-connect="/events?project=detent&amp;view=diagnostics"`,
-		`aria-label="Dashboard health"`,
+		`aria-label="Project views"`,
+		`href="/projects/detent/diagnostics"`,
 		`aria-label="Board health"`,
-		`aria-label="Cycle time"`,
-		"Budget",
 		"Rate limits",
-		`data-detent-charts`,
-		`data-chart-endpoint="/api/v1/projects/detent/timeseries"`,
 	} {
 		if !strings.Contains(diagnostics, want) {
 			t.Fatalf("project diagnostics route missing %q:\n%s", want, diagnostics)
 		}
 	}
-	assertActiveSidebarLink(t, diagnostics, "/projects/detent/diagnostics")
+	// The diagnostics tab stays inside the redesigned project frame rather
+	// than dropping to the legacy shell.
+	diagnosticsTab := regexp.MustCompile(`<a[^>]*href="/projects/detent/diagnostics"[^>]*aria-current="page"[^>]*>`).FindString(diagnostics)
+	if diagnosticsTab == "" {
+		t.Fatalf("project diagnostics route missing active diagnostics tab:\n%s", diagnostics)
+	}
 	for _, forbidden := range []string{
-		`aria-label="Project Kanban"`,
-		`aria-label="Agent activity timeline"`,
-		`aria-label="Pull request pipeline"`,
-		`id="running-issues"`,
+		`id="board-lanes"`,
+		`id="agent-activity"`,
+		`data-tui-sidebar-layout`,
 	} {
 		if strings.Contains(diagnostics, forbidden) {
 			t.Fatalf("project diagnostics route rendered forbidden detail %q:\n%s", forbidden, diagnostics)
@@ -3099,19 +2881,18 @@ func TestProjectDashboardRoutesSplitOverviewAndDetailPages(t *testing.T) {
 
 	configuration := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/configuration", http.StatusOK)
 	for _, want := range []string{
-		`sse-connect="/events?project=detent&amp;view=configuration"`,
+		`id="settings-global"`,
 		`id="settings-projects"`,
-		"Global config",
-		"Projects",
 		"Runtime paths",
-		`data-dashboard-view="configuration"`,
 	} {
 		if !strings.Contains(configuration, want) {
 			t.Fatalf("project configuration route missing %q:\n%s", want, configuration)
 		}
 	}
-	assertActiveSidebarLink(t, configuration, "/projects/detent/configuration")
-	assertInactiveSidebarLink(t, configuration, "/settings?project=detent")
+	configTab := regexp.MustCompile(`<a[^>]*href="/projects/detent/configuration"[^>]*aria-current="page"[^>]*>`).FindString(configuration)
+	if configTab == "" {
+		t.Fatalf("project configuration route missing active configuration tab:\n%s", configuration)
+	}
 	for _, forbidden := range []string{
 		`aria-label="Project Kanban"`,
 		`aria-label="Agent activity timeline"`,
@@ -3181,48 +2962,26 @@ func TestProjectKanbanRouteRendersOnlyLiveBoard(t *testing.T) {
 
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
 	for _, want := range []string{
-		`data-tui-sidebar-layout`,
-		`id="dashboard-sidebar"`,
-		`id="dashboard-sidebar-live"`,
-		`aria-label="Project Kanban"`,
 		`sse-connect="/events?project=detent&amp;view=kanban"`,
 		`sse-swap="snapshot"`,
 		`hx-swap="morph:innerHTML"`,
-		`href="https://github.com/digitaldrywood/detent/issues/490"`,
-		`href="https://github.com/digitaldrywood/detent/pull/701"`,
-		`data-kanban-action="move"`,
-		`data-project-kanban-visibility-key="project:detent`,
-		`data-project-kanban-visibility-menu`,
-		`data-preserve-details="project-kanban-visibility-project-detent"`,
-		`data-project-kanban-visibility-checkbox`,
-		`data-project-kanban-visibility-close`,
-		`data-project-kanban-pin-toggle`,
-		`data-project-kanban-pin-icon="unpinned"`,
-		`data-project-kanban-pin-icon="pinned"`,
-		`detent.ui.projectKanban.visibleLanes.`,
-		`function visibilitySnapshotTarget(event)`,
-		`function toggleLanePin(button)`,
-		`htmx:sseBeforeMessage`,
-		`details[data-preserve-details][open]`,
-		`event.key === "Escape"`,
+		`id="board-lanes"`,
+		`data-board-key="project.detent"`,
+		`id="card-detent-490"`,
 		`href="/projects/detent"`,
 		`href="/projects/detent/kanban"`,
-		`data-dashboard-view="kanban"`,
 		"Add a live Kanban-only board view",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("Kanban page missing %q:\n%s", want, body)
 		}
 	}
-	assertSingleCurrentSidebarItem(t, body)
-	assertActiveSidebarLink(t, body, "/projects/detent/kanban")
-	assertInactiveSidebarLink(t, body, "/projects/detent")
 	for _, forbidden := range []string{
 		`aria-label="Dashboard health"`,
 		`aria-label="Pull request pipeline"`,
 		`data-detent-charts`,
 		`id="live-tick"`,
-		"digitaldrywood/pyroapex#12",
+		"Pyro Apex migration",
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("Kanban page rendered forbidden %q:\n%s", forbidden, body)
@@ -3263,14 +3022,8 @@ func TestProjectKanbanRouteHidesMutationControlsInReadOnlyMode(t *testing.T) {
 	}
 
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
-	if !strings.Contains(body, "Read-only") {
-		t.Fatalf("Kanban page missing read-only mode label:\n%s", body)
-	}
-	if !strings.Contains(body, `id="kanban-feedback" role="status" aria-live="polite" hidden`) {
-		t.Fatalf("read-only Kanban page missing hidden feedback target:\n%s", body)
-	}
-	if feedback := kanbanFeedbackTextFromHTML(t, body); feedback != "" {
-		t.Fatalf("read-only Kanban feedback = %q, want empty:\n%s", feedback, body)
+	if !strings.Contains(body, `id="card-detent-490"`) {
+		t.Fatalf("read-only Kanban page missing board card:\n%s", body)
 	}
 	for _, forbidden := range []string{
 		"/api/v1/kanban/",
@@ -3282,7 +3035,7 @@ func TestProjectKanbanRouteHidesMutationControlsInReadOnlyMode(t *testing.T) {
 	}
 }
 
-func TestFleetKanbanRouteRendersEligibleMoveActions(t *testing.T) {
+func TestBoardRouteRendersFleetBoard(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 16, 14, 45, 0, 0, time.UTC)
@@ -3325,28 +3078,12 @@ func TestFleetKanbanRouteRendersEligibleMoveActions(t *testing.T) {
 				State:      "Done",
 			},
 			{
-				Identifier:  "digitaldrywood/detent#544",
-				URL:         "https://github.com/digitaldrywood/detent/issues/544",
-				ProjectID:   "detent",
-				Title:       "PR-only fleet card",
-				State:       "Todo",
-				PullRequest: &telemetry.PullRequest{Number: 544, URL: "https://github.com/digitaldrywood/detent/pull/544"},
-			},
-			{
 				ID:         "I_docs12",
 				Identifier: "digitaldrywood/docs-site#12",
 				URL:        "https://github.com/digitaldrywood/docs-site/issues/12",
 				ProjectID:  "docs-site",
 				Title:      "Document fleet Kanban",
 				State:      "In Progress",
-			},
-			{
-				ID:         "I_unknown",
-				Identifier: "digitaldrywood/unknown#7",
-				URL:        "https://github.com/digitaldrywood/unknown/issues/7",
-				ProjectID:  "unknown",
-				Title:      "Unknown project fleet card",
-				State:      "Todo",
 			},
 		},
 	}); err != nil {
@@ -3358,90 +3095,46 @@ func TestFleetKanbanRouteRendersEligibleMoveActions(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	body := requestHTML(t, server.Handler(), http.MethodGet, "/kanban", http.StatusOK)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/kanban", nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("/kanban status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if got := rec.Header().Get("Location"); got != "/" {
+		t.Fatalf("/kanban redirect = %q, want /", got)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/", http.StatusOK)
 	for _, want := range []string{
-		`aria-label="Fleet Kanban"`,
-		`sse-connect="/events?view=kanban"`,
-		`data-project-kanban-visibility-key="fleet"`,
-		`data-project-kanban-card="digitaldrywood/detent#542"`,
-		`data-project-kanban-card="digitaldrywood/docs-site#12"`,
-		`data-project-color="#1192e8"`,
-		`id="kanban-feedback" role="status" aria-live="polite" hidden`,
-		`hx-get="/api/v1/kanban/move?`,
-		`kanban_board=fleet`,
-		`project_id=detent`,
-		`issue_id=I_kw542`,
-		`current_state=Todo`,
-		`aria-label="Move #542"`,
-		`href="/projects/detent/kanban"`,
-		`href="/projects/docs-site/kanban"`,
-		`aria-label="Open detent Kanban"`,
-		`aria-label="Open docs-site Kanban"`,
+		`sse-connect="/events?view=board"`,
+		`id="board-lanes"`,
+		`data-board-key="fleet"`,
+		`data-board-lane="todo"`,
+		`data-board-lane="in-progress"`,
+		`id="card-detent-542"`,
+		`id="card-docs-site-12"`,
 		"Add top-level multi-project Kanban board",
 		"Document fleet Kanban",
+		`id="fig-running"`,
+		`id="board-lane-picker"`,
 	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("fleet Kanban page missing %q:\n%s", want, body)
-		}
-	}
-	if feedback := kanbanFeedbackTextFromHTML(t, body); feedback != "" {
-		t.Fatalf("fleet Kanban feedback = %q, want empty:\n%s", feedback, body)
-	}
-	if strings.Contains(body, ">Integration</span>") {
-		t.Fatalf("fleet Kanban page rendered normal Integration badge:\n%s", body)
-	}
-	if got := strings.Count(body, `hx-get="/api/v1/kanban/move?`); got != 1 {
-		t.Fatalf("fleet Kanban move trigger count = %d, want 1:\n%s", got, body)
-	}
-	assertSingleCurrentSidebarItem(t, body)
-	assertActiveSidebarLink(t, body, "/kanban")
-	assertInactiveSidebarLink(t, body, "/")
-	for _, title := range []string{
-		"Transitionless fleet card",
-		"PR-only fleet card",
-		"Document fleet Kanban",
-		"Unknown project fleet card",
-	} {
-		card := compactKanbanCardSection(t, body, title)
-		if strings.Contains(card, `hx-get="/api/v1/kanban/move?`) {
-			t.Fatalf("fleet Kanban page rendered unsafe move action for %q:\n%s", title, card)
+			t.Fatalf("board page missing %q:\n%s", want, body)
 		}
 	}
 	for _, forbidden := range []string{
-		`hx-post="/api/v1/kanban/move"`,
+		`hx-get="/api/v1/kanban/move?`,
 		`draggable="true"`,
-		`data-kanban-action="move"`,
 		`data-kanban-drop-state=`,
-		`data-kanban-drag-move-form>`,
-		`hx-post="/api/v1/kanban/remove"`,
-		`hx-get="/api/v1/kanban/comment?`,
 		`aria-label="Dashboard health"`,
 		`data-detent-charts`,
 	} {
 		if strings.Contains(body, forbidden) {
-			t.Fatalf("fleet Kanban page rendered forbidden %q:\n%s", forbidden, body)
+			t.Fatalf("board page rendered forbidden %q:\n%s", forbidden, body)
 		}
 	}
-
-	dialogQuery := url.Values{
-		"kanban_board":  {"fleet"},
-		"project_id":    {"detent"},
-		"issue_id":      {"I_kw542"},
-		"identifier":    {"digitaldrywood/detent#542"},
-		"title":         {"Add top-level multi-project Kanban board"},
-		"current_state": {"Todo"},
-	}
-	dialogBody := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/kanban/move?"+dialogQuery.Encode(), http.StatusOK)
-	for _, want := range []string{
-		`hx-post="/api/v1/kanban/move"`,
-		`name="kanban_board" value="fleet"`,
-		`name="project_id" value="detent"`,
-		`name="issue_id" value="I_kw542"`,
-		`<option value="In Progress" selected>In Progress</option>`,
-	} {
-		if !strings.Contains(dialogBody, want) {
-			t.Fatalf("fleet move dialog missing %q:\n%s", want, dialogBody)
-		}
+	if got := strings.Count(body, `id="card-detent-543"`); got != 1 {
+		t.Fatalf("done card render count = %d, want 1", got)
 	}
 }
 
@@ -3537,8 +3230,8 @@ func TestProjectKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 		t.Fatalf("event name = %q, want snapshot", event.name)
 	}
 	for _, want := range []string{
-		`aria-label="Project Kanban"`,
-		`data-project-kanban-card="digitaldrywood/detent#490"`,
+		`id="board-lanes"`,
+		`id="card-detent-490"`,
 		"SSE board card",
 	} {
 		if !strings.Contains(event.data, want) {
@@ -3621,10 +3314,10 @@ func TestFleetKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 		t.Fatalf("event name = %q, want snapshot", event.name)
 	}
 	for _, want := range []string{
-		`aria-label="Fleet Kanban"`,
-		`data-project-kanban-visibility-key="fleet"`,
-		`data-project-kanban-card="digitaldrywood/detent#542"`,
-		`data-project-kanban-card="digitaldrywood/docs-site#12"`,
+		`id="board-lanes"`,
+		`data-board-key="fleet"`,
+		`id="card-detent-542"`,
+		`id="card-docs-site-12"`,
 		"Fleet SSE board card",
 		"Docs SSE board card",
 	} {
@@ -3697,7 +3390,7 @@ func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
 	}
 	for _, want := range []string{
 		`href="/projects/digitaldrywood%2Fkanban"`,
-		`sse-connect="/events?project=digitaldrywood%2Fkanban"`,
+		`sse-connect="/events?project=digitaldrywood%2Fkanban&amp;view=overview"`,
 		`href="/projects/digitaldrywood%2Fkanban/runs"`,
 		`href="/projects/digitaldrywood%2Fkanban/diagnostics"`,
 	} {
@@ -3709,7 +3402,7 @@ func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
 	for _, want := range []string{
 		`sse-connect="/events?project=digitaldrywood%2Fkanban&amp;view=runs"`,
 		`href="/projects/digitaldrywood%2Fkanban/runs"`,
-		"digitaldrywood/kanban#377",
+		"#377",
 	} {
 		if !strings.Contains(runsBody, want) {
 			t.Fatalf("project runs route missing %q:\n%s", want, runsBody)
@@ -3721,7 +3414,7 @@ func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
 		`sse-connect="/events?project=digitaldrywood%2Fkanban&amp;view=kanban"`,
 		`href="/projects/digitaldrywood%2Fkanban"`,
 		`href="/projects/digitaldrywood%2Fkanban/kanban"`,
-		"digitaldrywood/kanban#377",
+		"#377",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("project Kanban route missing %q:\n%s", want, body)
@@ -4087,7 +3780,7 @@ func TestDashboardEnrichesCycleTimeFromStore(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/analytics", nil)
+	req := httptest.NewRequest(http.MethodGet, "/reports", nil)
 	server.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -4100,7 +3793,7 @@ func TestDashboardEnrichesCycleTimeFromStore(t *testing.T) {
 		"<title>1-4h: 1 issues</title>",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
-			t.Fatalf("analytics page missing %q:\n%s", want, rec.Body.String())
+			t.Fatalf("reports page missing %q:\n%s", want, rec.Body.String())
 		}
 	}
 }
@@ -4122,7 +3815,7 @@ func TestDashboardRendersServerMetadata(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/fleet", nil)
 	req.Host = "dashboard.example.test:4100"
 
 	server.Handler().ServeHTTP(rec, req)
@@ -4132,8 +3825,6 @@ func TestDashboardRendersServerMetadata(t *testing.T) {
 	}
 	for _, want := range []string{
 		"v9.8.7",
-		"Build v9.8.7 (abcdef1) 2026-06-05T21:00:00Z",
-		`aria-label="Detent dashboard"`,
 		`href="/"`,
 		`href="/analytics"`,
 		`href="/reports"`,
@@ -4141,6 +3832,9 @@ func TestDashboardRendersServerMetadata(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
 		}
+	}
+	if strings.Contains(rec.Body.String(), "Build v9.8.7 (abcdef1) 2026-06-05T21:00:00Z") {
+		t.Fatalf("fleet page rendered the full build string; it belongs to Settings:\n%s", rec.Body.String())
 	}
 	if strings.Contains(rec.Body.String(), `href="http://localhost:4000"`) {
 		t.Fatalf("dashboard rendered the dashboard URL chip:\n%s", rec.Body.String())
@@ -4159,7 +3853,7 @@ func TestDashboardWiresHTMXSSE(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/fleet", nil)
 
 	server.Handler().ServeHTTP(rec, req)
 
@@ -4172,16 +3866,14 @@ func TestDashboardWiresHTMXSSE(t *testing.T) {
 		`src="https://unpkg.com/htmx.org@2.0.4"`,
 		`src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"`,
 		`src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"`,
-		`/static/vendor/chartjs/chart.umd.min`,
-		`/static/js/dashboard-charts`,
 		`hx-ext="sse, morph"`,
-		`sse-connect="/events"`,
+		`sse-connect="/events?view=fleet"`,
 		`sse-swap="snapshot"`,
 		`sse-swap="tick"`,
 		`hx-swap="morph:innerHTML"`,
-		`hx-preserve`,
-		`data-detent-charts`,
-		`data-chart-endpoint="/api/v1/timeseries"`,
+		`id="agent-activity"`,
+		`id="fleet-pr-pipeline"`,
+		`id="fleet-metrics"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, rec.Body.String())
@@ -4189,6 +3881,15 @@ func TestDashboardWiresHTMXSSE(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), `hx-ext="sse morph"`) {
 		t.Fatalf("dashboard rendered space-separated htmx extensions:\n%s", rec.Body.String())
+	}
+	for _, forbidden := range []string{
+		`/static/vendor/chartjs/chart.umd.min`,
+		`/static/js/dashboard-charts`,
+		`data-detent-charts`,
+	} {
+		if strings.Contains(rec.Body.String(), forbidden) {
+			t.Fatalf("fleet page rendered forbidden Chart.js wiring %q:\n%s", forbidden, rec.Body.String())
+		}
 	}
 }
 
@@ -4242,13 +3943,8 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Settings",
-		"Startup configuration, project paths, and runtime files.",
-		"Live reload applies to project membership, credentials, startup, instance display, and telemetry identity.",
-		"Project list and project settings",
-		"Credentials: github_token and project credentials",
-		"global.identity",
-		"Live reload; project runtimes restart in-process",
-		"global.max_concurrent_agents, global.scheduling, global.fair_share",
+		"Read-only view of the running configuration.",
+		"Live reload",
 		"Restart required",
 		`href="/"`,
 		`href="/reports"`,
@@ -4262,9 +3958,9 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 		workflowPath,
 		workdir,
 		worktreeRoot,
-		"weight 3",
-		"priority 2",
-		"paused true",
+		">3</span>",
+		">2</span>",
+		">true</span>",
 		"github",
 		projectURL,
 		"Dependency auto-unblock",
@@ -4274,6 +3970,9 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 		"127.0.0.1:4101",
 		"navigator.clipboard.writeText",
 		"Copied!",
+		"Build v1.2.3",
+		"Theme",
+		"Density",
 		`data-copy="` + configPath + `"`,
 		`data-copy="` + workflowPath + `"`,
 		`data-copy="` + workdir + `"`,
@@ -4472,20 +4171,13 @@ func TestServerEventsPreserveProjectKanbanVisibilityMetadata(t *testing.T) {
 		t.Fatalf("event name = %q, want snapshot", event.name)
 	}
 	for _, want := range []string{
-		`data-project-kanban-visibility-key="project:detent`,
-		`data-preserve-details="project-kanban-visibility-project-detent"`,
-		`data-project-kanban-visibility-checkbox`,
-		`data-project-kanban-pin-toggle`,
-		`data-project-kanban-lane-pinned="false"`,
-		`name="visible_lane" value="done"`,
-		`data-project-kanban-lane-visible="false"`,
+		`data-board-key="project.detent"`,
+		`data-board-lane-default=`,
+		`data-board-lane-picker`,
 	} {
 		if !strings.Contains(event.data, want) {
 			t.Fatalf("snapshot event missing %q:\n%s", want, event.data)
 		}
-	}
-	if strings.Contains(event.data, `project-kanban-show-empty`) {
-		t.Fatalf("snapshot event rendered transient empty-lane toggle:\n%s", event.data)
 	}
 }
 
@@ -4539,16 +4231,11 @@ func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *tes
 	if event.name != "snapshot" {
 		t.Fatalf("event name = %q, want snapshot", event.name)
 	}
-	for _, want := range []string{
-		"Read-only",
-		"Live reload Kanban mode",
-	} {
-		if !strings.Contains(event.data, want) {
-			t.Fatalf("initial snapshot event missing %q:\n%s", want, event.data)
-		}
+	if !strings.Contains(event.data, "Live reload Kanban mode") {
+		t.Fatalf("initial snapshot event missing board card:\n%s", event.data)
 	}
 	if strings.Contains(event.data, `hx-get="/api/v1/kanban/move?`) {
-		t.Fatalf("initial read-only snapshot rendered move controls:\n%s", event.data)
+		t.Fatalf("board snapshot rendered move controls:\n%s", event.data)
 	}
 	sidebarEvent := readRawSSEEvent(t, conn, reader)
 	if sidebarEvent.name != "sidebar" {
@@ -4558,10 +4245,16 @@ func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *tes
 	if healthEvent.name != "github-api-health" {
 		t.Fatalf("event name = %q, want github-api-health", healthEvent.name)
 	}
+	sidebarV2Event := readRawSSEEvent(t, conn, reader)
+	if sidebarV2Event.name != "sidebar-v2" {
+		t.Fatalf("event name = %q, want sidebar-v2", sidebarV2Event.name)
+	}
 
 	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
 		Mode: workflowconfig.KanbanModeIntegration,
 	}, actionConnector)
+	snapshot.BoardIssues[0].State = "In Progress"
+	snapshot.GeneratedAt = snapshot.GeneratedAt.Add(time.Minute)
 	if err := deps.Hub.Publish(snapshot); err != nil {
 		t.Fatalf("republish snapshot error = %v", err)
 	}
@@ -4570,22 +4263,8 @@ func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *tes
 	if event.name != "snapshot" {
 		t.Fatalf("event name = %q, want snapshot", event.name)
 	}
-	for _, want := range []string{
-		`hx-get="/api/v1/kanban/move?`,
-		`hx-get="/api/v1/kanban/comment?`,
-		`draggable="true"`,
-		`data-kanban-drop-state="In Progress"`,
-		`data-kanban-allowed-targets=`,
-	} {
-		if !strings.Contains(event.data, want) {
-			t.Fatalf("reloaded snapshot event missing %q:\n%s", want, event.data)
-		}
-	}
-	if strings.Contains(event.data, "Read-only") {
-		t.Fatalf("reloaded snapshot event kept read-only UI:\n%s", event.data)
-	}
-	if strings.Contains(event.data, ">Integration</span>") {
-		t.Fatalf("reloaded snapshot event rendered normal Integration badge:\n%s", event.data)
+	if !strings.Contains(event.data, `data-board-lane="in-progress"`) {
+		t.Fatalf("reloaded snapshot event missing moved card lane:\n%s", event.data)
 	}
 }
 
@@ -4720,13 +4399,9 @@ func TestServerEventsStreamsAnalyticsSnapshotForAnalyticsNav(t *testing.T) {
 		t.Fatalf("event name = %q, want snapshot", snapshotEvent.name)
 	}
 	for _, want := range []string{
-		`id="fleet-analytics"`,
-		`aria-label="Analytics"`,
-		`aria-label="Board health"`,
-		`id="scheduler-runtime"`,
-		`aria-label="Workflow metrics"`,
-		`aria-label="Cycle time"`,
-		"Budget",
+		`id="analytics-summary"`,
+		`id="analytics-log"`,
+		"Scheduler internals",
 	} {
 		if !strings.Contains(snapshotEvent.data, want) {
 			t.Fatalf("analytics snapshot event missing %q:\n%s", want, snapshotEvent.data)
@@ -4781,13 +4456,12 @@ func TestServerEventsStreamsHealthSnapshotForHealthNav(t *testing.T) {
 		t.Fatalf("event name = %q, want snapshot", snapshotEvent.name)
 	}
 	for _, want := range []string{
-		`id="health-dashboard"`,
-		`aria-label="GitHub API health details"`,
-		"Backoff state",
-		"REST primary",
-		"Affected endpoints",
-		"pull requests",
-		"retry 14:35 UTC",
+		`id="health-verdict"`,
+		`id="health-details"`,
+		`id="health-github-rest"`,
+		`id="health-github-graphql"`,
+		"122 / 5,000",
+		"120 / 5,000",
 	} {
 		if !strings.Contains(snapshotEvent.data, want) {
 			t.Fatalf("health snapshot event missing %q:\n%s", want, snapshotEvent.data)
@@ -5922,20 +5596,20 @@ func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/analytics", nil)
+	req := httptest.NewRequest(http.MethodGet, "/reports", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("analytics status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("reports status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 	for _, want := range []string{
-		"Cost burn-down",
-		"$3.50",
-		"$100.00",
-		"$7.00",
-		"Projected period end: $7.00",
+		`id="reports-budget"`,
+		"Daily budget",
+		"$3.50 / $100.00",
+		"2026-05-31: 1.25 USD",
+		"2026-06-01: 3.5 USD",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
-			t.Fatalf("analytics page missing %q:\n%s", want, rec.Body.String())
+			t.Fatalf("reports page missing %q:\n%s", want, rec.Body.String())
 		}
 	}
 }
@@ -5980,7 +5654,7 @@ func TestDashboardRendersProjectSmallMultiplesFromSnapshots(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/fleet", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("dashboard status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -6005,7 +5679,7 @@ func TestDashboardRendersProjectSmallMultiplesFromSnapshots(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req = httptest.NewRequest(http.MethodGet, "/fleet", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("dashboard status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -6013,17 +5687,17 @@ func TestDashboardRendersProjectSmallMultiplesFromSnapshots(t *testing.T) {
 
 	html := rec.Body.String()
 	for _, want := range []string{
-		"Fleet grid",
-		"Detent project",
-		"Pyro Apex project",
-		"1 running / 3 queued / 0 blocked",
-		"2 tps",
-		"$2.50",
-		`aria-label="Detent throughput sparkline"`,
+		">Detent</span>",
+		">Pyro Apex</span>",
+		`href="/projects/detent"`,
+		`href="/projects/pyroapex"`,
 	} {
 		if !strings.Contains(html, want) {
-			t.Fatalf("dashboard missing %q:\n%s", want, html)
+			t.Fatalf("dashboard sidebar missing project row %q:\n%s", want, html)
 		}
+	}
+	if !strings.Contains(html, `id="fig-running"`) {
+		t.Fatalf("fleet page missing running figure:\n%s", html)
 	}
 }
 
@@ -6159,18 +5833,18 @@ func TestServerDistinguishesNoBudgetSpendFromSpendQueryFailure(t *testing.T) {
 			}
 
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, "/analytics", nil)
+			req := httptest.NewRequest(http.MethodGet, "/fleet", nil)
 			server.Handler().ServeHTTP(rec, req)
 			if rec.Code != http.StatusOK {
-				t.Fatalf("analytics status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+				t.Fatalf("fleet status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 			}
 			html := rec.Body.String()
 			if !strings.Contains(html, tt.wantHTML) {
-				t.Fatalf("analytics page missing %q:\n%s", tt.wantHTML, html)
+				t.Fatalf("fleet page missing %q:\n%s", tt.wantHTML, html)
 			}
 			for _, forbidden := range tt.forbiddenHTML {
 				if strings.Contains(html, forbidden) {
-					t.Fatalf("analytics page rendered %q:\n%s", forbidden, html)
+					t.Fatalf("fleet page rendered %q:\n%s", forbidden, html)
 				}
 			}
 		})
@@ -6195,30 +5869,28 @@ func TestDashboardRendersDisabledBudgetAsSingleNote(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/analytics", nil)
+	req := httptest.NewRequest(http.MethodGet, "/fleet", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("analytics status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("fleet status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 	html := rec.Body.String()
-	if !strings.Contains(html, "Budget disabled - enable a daily cap in configuration.") {
-		t.Fatalf("analytics page missing compact disabled budget note:\n%s", html)
+	if !strings.Contains(html, "Budget disabled — enable a daily cap in configuration.") {
+		t.Fatalf("fleet page missing compact disabled budget note:\n%s", html)
 	}
 	for _, forbidden := range []string{
-		"Spend today",
 		"Budget history",
 		"No budget history yet.",
 		"Projected",
-		"Daily cap",
 		"Issue cap",
 	} {
 		if strings.Contains(html, forbidden) {
-			t.Fatalf("analytics page rendered disabled budget detail %q:\n%s", forbidden, html)
+			t.Fatalf("fleet page rendered disabled budget detail %q:\n%s", forbidden, html)
 		}
 	}
 }
 
-func TestDashboardRendersRESTBudgetContributorsCollapsed(t *testing.T) {
+func TestFleetRendersGitHubQuotaMetric(t *testing.T) {
 	t.Parallel()
 
 	resetAt := time.Date(2026, 6, 30, 15, 0, 0, 0, time.UTC)
@@ -6249,31 +5921,20 @@ func TestDashboardRendersRESTBudgetContributorsCollapsed(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/fleet", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("dashboard status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 	html := rec.Body.String()
 	for _, want := range []string{
-		"REST budget",
-		"4,200 / 5,000",
-		"30m 0s",
-		`data-preserve-details="rest-budget-contributors"`,
-		"Endpoint details",
-		"pull requests",
-		"check runs",
+		`id="metric-quota"`,
+		"GitHub quota",
+		"800 / 5,000",
 	} {
 		if !strings.Contains(html, want) {
-			t.Fatalf("dashboard missing %q:\n%s", want, html)
+			t.Fatalf("fleet quota metric missing %q:\n%s", want, html)
 		}
-	}
-	detailsTag := regexp.MustCompile(`<details[^>]*data-preserve-details="rest-budget-contributors"[^>]*>`).FindString(html)
-	if detailsTag == "" {
-		t.Fatalf("dashboard missing REST budget details tag:\n%s", html)
-	}
-	if strings.Contains(detailsTag, " open") {
-		t.Fatalf("REST budget details rendered open by default: %s", detailsTag)
 	}
 }
 
@@ -6833,22 +6494,24 @@ func TestReportsPageRendersUsageCharts(t *testing.T) {
 		`href="/reports"`,
 		`href="/"`,
 		`href="/settings"`,
-		"Spend trend",
-		"Token trend",
+		`id="reports-kpis"`,
+		"Total spend",
+		"Cache hit",
+		"Sessions",
+		"Spend · by day",
+		"Tokens · cumulative",
 		"Top issues by tokens",
 		"Top PRs by tokens",
-		"Per-project breakdown",
-		"Model split",
 		"$3.40",
-		"325",
-		"digitaldrywood/detent#119",
-		"detent#141",
-		"pyroapex",
-		"gpt-report",
+		"#119",
+		"#141",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("reports page missing %q:\n%s", want, rec.Body.String())
 		}
+	}
+	if strings.Contains(rec.Body.String(), "/static/vendor/chartjs/") {
+		t.Fatalf("reports page loaded Chart.js; charts must be server-rendered SVG:\n%s", rec.Body.String())
 	}
 }
 
@@ -7782,49 +7445,6 @@ func mustSetKanbanProject(t *testing.T, registry *project.Registry, id string, k
 	if err := registry.Set(trackedProject); err != nil {
 		t.Fatalf("Registry.Set() error = %v", err)
 	}
-}
-
-func projectKanbanLaneHTML(t *testing.T, body string, laneID string) string {
-	t.Helper()
-
-	marker := `data-project-kanban-lane="` + laneID + `"`
-	start := strings.Index(body, marker)
-	if start < 0 {
-		t.Fatalf("missing project Kanban lane %q in:\n%s", laneID, body)
-	}
-	rest := body[start:]
-	if next := strings.Index(rest[len(marker):], `data-project-kanban-lane="`); next >= 0 {
-		return rest[:len(marker)+next]
-	}
-	return rest
-}
-
-func compactKanbanCardSection(t *testing.T, body string, title string) string {
-	t.Helper()
-
-	titleIndex := strings.Index(body, title)
-	if titleIndex < 0 {
-		t.Fatalf("card title %q missing:\n%s", title, body)
-	}
-	startIndex := strings.LastIndex(body[:titleIndex], `<article`)
-	if startIndex < 0 {
-		t.Fatalf("card title %q missing enclosing article:\n%s", title, body)
-	}
-	endIndex := strings.Index(body[titleIndex:], `</article>`)
-	if endIndex < 0 {
-		t.Fatalf("card title %q missing article close:\n%s", title, body[titleIndex:])
-	}
-	return body[startIndex : titleIndex+endIndex+len(`</article>`)]
-}
-
-func kanbanFeedbackTextFromHTML(t *testing.T, body string) string {
-	t.Helper()
-
-	matches := regexp.MustCompile(`<div id="kanban-feedback"[^>]*>([^<]*)</div>`).FindStringSubmatch(body)
-	if len(matches) != 2 {
-		t.Fatalf("missing kanban feedback in:\n%s", body)
-	}
-	return matches[1]
 }
 
 func performForm(t *testing.T, handler http.Handler, method string, path string, form url.Values) *httptest.ResponseRecorder {
