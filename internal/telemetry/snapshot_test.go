@@ -101,7 +101,8 @@ func TestSnapshotJSONShape(t *testing.T) {
 					Identifier: "DD-3",
 					State:      "Blocked",
 				},
-				Error: "dependency #2 is not merged",
+				Error:  "dependency #2 is not merged",
+				Source: telemetry.BlockedSourceDependency,
 			},
 		},
 		Completed: []telemetry.Completed{
@@ -272,6 +273,11 @@ func TestSnapshotJSONShape(t *testing.T) {
 	}
 	if _, ok := running["issue"]; ok {
 		t.Fatalf("running row has nested issue: %#v", running)
+	}
+
+	blocked := got["blocked"].([]any)[0].(map[string]any)
+	if blocked["source"] != string(telemetry.BlockedSourceDependency) {
+		t.Fatalf("blocked source = %#v", blocked["source"])
 	}
 
 	budget := got["budget"].(map[string]any)

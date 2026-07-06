@@ -264,7 +264,7 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 	board := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/", http.StatusOK, map[string]string{
 		web.DemoScenarioHeader: "fleet-healthy-parallel-work",
 	})
-	for _, want := range []string{`id="board-lanes"`, "Implement page-addressable screenshot scenarios", "Session blocked"} {
+	for _, want := range []string{`id="board-lanes"`, "Implement page-addressable screenshot scenarios", "Dependency waiting"} {
 		if !strings.Contains(board, want) {
 			t.Fatalf("board scenario page missing %q:\n%s", want, board)
 		}

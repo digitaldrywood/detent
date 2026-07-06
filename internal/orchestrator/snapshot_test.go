@@ -501,6 +501,7 @@ func TestStateSnapshotPopulated(t *testing.T) {
 		Issue:     connector.Issue{ID: "i-4", Identifier: "ISS-4", Title: "Four", State: "Todo"},
 		Reason:    "blocked by non-terminal dependency",
 		BlockedAt: blockedAt,
+		Source:    BlockedSourceDependency,
 	}
 	state.Completed["i-5"] = Completed{
 		Issue:       connector.Issue{ID: "i-5", Identifier: "ISS-5", Title: "Five", State: "Done"},
@@ -621,7 +622,7 @@ func TestStateSnapshotPopulated(t *testing.T) {
 		t.Fatalf("Blocked len = %d, want 1", len(snapshot.Blocked))
 	}
 	b := snapshot.Blocked[0]
-	if b.ID != "i-4" || b.Error != "blocked by non-terminal dependency" {
+	if b.ID != "i-4" || b.Error != "blocked by non-terminal dependency" || b.Source != telemetry.BlockedSourceDependency {
 		t.Fatalf("Blocked[0] = %#v", b)
 	}
 	if b.BlockedAt == nil || !b.BlockedAt.Equal(blockedAt) {

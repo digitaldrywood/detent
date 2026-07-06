@@ -36,6 +36,12 @@ const (
 	httpStatusTooManyRequests = 429
 )
 
+const (
+	projectKanbanBlockedSourceMetadataKey         = "detent.blocked_source"
+	projectKanbanBlockedReasonMetadataKey         = "detent.blocked_reason"
+	projectKanbanBlockedRecoveryReasonMetadataKey = "detent.blocked_recovery_reason"
+)
+
 type DashboardData struct {
 	Title            string
 	ApplicationName  string
@@ -493,42 +499,45 @@ type projectKanbanLane struct {
 }
 
 type projectKanbanCard struct {
-	IssueNumber      string
-	Identity         string
-	Identifier       string
-	ProjectID        string
-	ProjectColor     string
-	Title            string
-	Description      string
-	URL              string
-	PullRequestLabel string
-	MergeableState   string
-	ConflictReason   string
-	CIStatus         string
-	CIClass          string
-	CodexReviewState string
-	CodexReviewClass string
-	TimeInStage      string
-	TimeInStageTitle string
-	WaitDetail       string
-	AttentionLabel   string
-	AttentionDetail  string
-	MergeLaneStatus  string
-	MergeLaneDetail  string
-	MergeLaneClass   string
-	Stage            string
-	StageAt          time.Time
-	Labels           []string
-	Assignees        []string
-	Blockers         []string
-	ClearedBlockers  []string
-	HasPullRequest   bool
-	IssueID          string
-	PRNumber         int
-	PRRepository     string
-	PRURL            string
-	Movable          bool
-	DisabledText     string
+	IssueNumber           string
+	Identity              string
+	Identifier            string
+	ProjectID             string
+	ProjectColor          string
+	Title                 string
+	Description           string
+	URL                   string
+	PullRequestLabel      string
+	MergeableState        string
+	ConflictReason        string
+	CIStatus              string
+	CIClass               string
+	CodexReviewState      string
+	CodexReviewClass      string
+	TimeInStage           string
+	TimeInStageTitle      string
+	WaitDetail            string
+	BlockedSource         telemetry.BlockedSource
+	BlockedReason         string
+	BlockedRecoveryReason string
+	AttentionLabel        string
+	AttentionDetail       string
+	MergeLaneStatus       string
+	MergeLaneDetail       string
+	MergeLaneClass        string
+	Stage                 string
+	StageAt               time.Time
+	Labels                []string
+	Assignees             []string
+	Blockers              []string
+	ClearedBlockers       []string
+	HasPullRequest        bool
+	IssueID               string
+	PRNumber              int
+	PRRepository          string
+	PRURL                 string
+	Movable               bool
+	DisabledText          string
 }
 
 const (
@@ -2139,7 +2148,15 @@ func projectKanbanIssues(snapshot telemetry.Snapshot) []projectKanbanIssueCard {
 		if row.BlockedAt != nil {
 			stageAt = *row.BlockedAt
 		}
-		appendIssue(row.Issue, issueState(row.Issue, "Blocked"), stageAt, 40)
+		issue := row.Issue
+		issue.Metadata = maps.Clone(issue.Metadata)
+		if issue.Metadata == nil {
+			issue.Metadata = map[string]string{}
+		}
+		issue.Metadata[projectKanbanBlockedSourceMetadataKey] = string(row.Source)
+		issue.Metadata[projectKanbanBlockedReasonMetadataKey] = row.Error
+		issue.Metadata[projectKanbanBlockedRecoveryReasonMetadataKey] = row.RecoveryReason
+		appendIssue(issue, issueState(issue, "Blocked"), stageAt, 40)
 	}
 
 	issues := make([]projectKanbanIssueCard, 0, len(byIssue))
@@ -2533,29 +2550,32 @@ func projectKanbanLaneID(state string) string {
 func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state string, stageAt time.Time, now time.Time) projectKanbanCard {
 	blockers, clearedBlockers := projectKanbanBlockerLabels(issue.BlockedBy, projectKanbanTerminalStateSetForIssue(data, issue))
 	card := projectKanbanCard{
-		IssueNumber:      projectKanbanIssueNumber(issue),
-		Identity:         boardCardIdentityToken(issue.Identifier, issue.ID, projectKanbanIssueNumber(issue)),
-		IssueID:          strings.TrimSpace(issue.ID),
-		Identifier:       issueIdentifier(issue),
-		ProjectID:        strings.TrimSpace(issue.ProjectID),
-		ProjectColor:     projectColorForID(issue.ProjectID, data.Projects),
-		Title:            issueTitle(issue),
-		Description:      issueDescriptionPreview(issue),
-		URL:              strings.TrimSpace(issue.URL),
-		PullRequestLabel: projectKanbanPullRequestLabel(issue),
-		TimeInStage:      prPipelineAge(stageAt, now),
-		TimeInStageTitle: prPipelineAgeTitle(state, stageAt, now),
-		WaitDetail:       prPipelineWaitDetail(issue),
-		AttentionLabel:   projectKanbanAttentionLabel(issue),
-		AttentionDetail:  projectKanbanAttentionDetail(issue),
-		Stage:            chartText(state, "n/a"),
-		StageAt:          stageAt.UTC(),
-		Labels:           uniqueStrings(issue.Labels),
-		Assignees:        uniqueStrings(issue.Assignees),
-		Blockers:         blockers,
-		ClearedBlockers:  clearedBlockers,
-		HasPullRequest:   issue.PullRequest != nil,
-		Movable:          strings.TrimSpace(issue.ID) != "",
+		IssueNumber:           projectKanbanIssueNumber(issue),
+		Identity:              boardCardIdentityToken(issue.Identifier, issue.ID, projectKanbanIssueNumber(issue)),
+		IssueID:               strings.TrimSpace(issue.ID),
+		Identifier:            issueIdentifier(issue),
+		ProjectID:             strings.TrimSpace(issue.ProjectID),
+		ProjectColor:          projectColorForID(issue.ProjectID, data.Projects),
+		Title:                 issueTitle(issue),
+		Description:           issueDescriptionPreview(issue),
+		URL:                   strings.TrimSpace(issue.URL),
+		PullRequestLabel:      projectKanbanPullRequestLabel(issue),
+		TimeInStage:           prPipelineAge(stageAt, now),
+		TimeInStageTitle:      prPipelineAgeTitle(state, stageAt, now),
+		WaitDetail:            prPipelineWaitDetail(issue),
+		BlockedSource:         telemetry.BlockedSource(strings.TrimSpace(issue.Metadata[projectKanbanBlockedSourceMetadataKey])),
+		BlockedReason:         strings.TrimSpace(issue.Metadata[projectKanbanBlockedReasonMetadataKey]),
+		BlockedRecoveryReason: strings.TrimSpace(issue.Metadata[projectKanbanBlockedRecoveryReasonMetadataKey]),
+		AttentionLabel:        projectKanbanAttentionLabel(issue),
+		AttentionDetail:       projectKanbanAttentionDetail(issue),
+		Stage:                 chartText(state, "n/a"),
+		StageAt:               stageAt.UTC(),
+		Labels:                uniqueStrings(issue.Labels),
+		Assignees:             uniqueStrings(issue.Assignees),
+		Blockers:              blockers,
+		ClearedBlockers:       clearedBlockers,
+		HasPullRequest:        issue.PullRequest != nil,
+		Movable:               strings.TrimSpace(issue.ID) != "",
 	}
 	if issue.PullRequest != nil {
 		ciStatus := prPipelineCIStatus(issue, projectKanbanLaneID(state))
