@@ -427,6 +427,7 @@ type prPipelineLane struct {
 type prPipelineCard struct {
 	IssueNumber      string
 	Identity         issueIdentityView
+	IdentityToken    string
 	Identifier       string
 	ProjectID        string
 	Title            string
@@ -492,6 +493,7 @@ type projectKanbanLane struct {
 
 type projectKanbanCard struct {
 	IssueNumber      string
+	Identity         string
 	Identifier       string
 	ProjectID        string
 	ProjectColor     string
@@ -2531,6 +2533,7 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 	blockers, clearedBlockers := projectKanbanBlockerLabels(issue.BlockedBy, projectKanbanTerminalStateSetForIssue(data, issue))
 	card := projectKanbanCard{
 		IssueNumber:      projectKanbanIssueNumber(issue),
+		Identity:         boardCardIdentityToken(issue.Identifier, issue.ID, projectKanbanIssueNumber(issue)),
 		IssueID:          strings.TrimSpace(issue.ID),
 		Identifier:       issueIdentifier(issue),
 		ProjectID:        strings.TrimSpace(issue.ProjectID),
@@ -3331,10 +3334,8 @@ func appendPRPipelineCard(
 		return
 	}
 
-	key := laneID + ":" + issueIdentifier(issue)
-	if issue.ID != "" {
-		key = laneID + ":" + issue.ID
-	}
+	identity := boardCardIdentityToken(issue.Identifier, issue.ID, issueNumber(issue))
+	key := laneID + ":" + boardCardScopedIdentityToken(issue.ProjectID, identity)
 	if _, ok := seen[key]; ok {
 		return
 	}
@@ -3385,6 +3386,7 @@ func prPipelineCardForIssue(issue telemetry.Issue, state string, laneID string, 
 	return prPipelineCard{
 		IssueNumber:      issueNumber(issue),
 		Identity:         issueIdentity(issue),
+		IdentityToken:    boardCardIdentityToken(issue.Identifier, issue.ID, issueNumber(issue)),
 		Identifier:       issueIdentifier(issue),
 		ProjectID:        strings.TrimSpace(issue.ProjectID),
 		Title:            issueTitle(issue),

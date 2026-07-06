@@ -114,15 +114,9 @@ func fleetAgentRows(snapshot telemetry.Snapshot) []fleetAgentRow {
 	rows := make([]fleetAgentRow, 0, len(snapshot.Running))
 	for _, running := range snapshot.Running {
 		repo, number := splitIssueIdentifier(issueIdentifier(running.Issue))
-		// Non-GitHub tracker identifiers (e.g. memory IDs like MT-1) have no
-		// #number, so fall back to the full identifier to keep each agent
-		// row's DOM id unique and stable for SSE morph/highlight targeting.
-		idKey := number
-		if strings.TrimSpace(idKey) == "" {
-			idKey = repo
-		}
+		identity := boardCardIdentityToken(running.Identifier, running.ID, projectKanbanIssueNumber(running.Issue))
 		row := fleetAgentRow{
-			ID:      "agent-" + boardCardSlug(running.ProjectID, idKey),
+			ID:      "agent-" + boardCardScopedSlug(running.ProjectID, identity),
 			Repo:    repo,
 			Number:  number,
 			Title:   issueTitle(running.Issue),
@@ -213,7 +207,7 @@ func fleetPRLanes(snapshot telemetry.Snapshot) []fleetPRLane {
 		}
 		for _, card := range lane.Cards {
 			view.Cards = append(view.Cards, fleetPRCard{
-				DomID:   "pr-card-" + boardCardSlug(card.ProjectID, card.IssueNumber),
+				DomID:   "pr-card-" + boardCardScopedSlug(card.ProjectID, card.IdentityToken),
 				Ref:     fleetPRCardRef(card),
 				Project: strings.TrimSpace(card.ProjectID),
 				Meta:    boardCompactAge(card.TimeInStage),

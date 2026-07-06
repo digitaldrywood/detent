@@ -51,6 +51,9 @@ func TestFleetAgentRows(t *testing.T) {
 	if row.Repo != "gopherguides/gopher-ai" || row.Number != "#185" {
 		t.Fatalf("identifier split = %q %q", row.Repo, row.Number)
 	}
+	if row.ID != "agent-gopherguides-gopher-ai-185" {
+		t.Fatalf("agent row id = %q, want full identifier slug", row.ID)
+	}
 	if !strings.Contains(row.Elapsed, "1 turn") {
 		t.Fatalf("elapsed = %q, want turn count", row.Elapsed)
 	}
@@ -66,6 +69,58 @@ func TestFleetAgentRows(t *testing.T) {
 	}
 }
 
+func TestFleetPRLanesUseIdentityIDs(t *testing.T) {
+	now := time.Date(2026, 7, 4, 16, 42, 7, 0, time.UTC)
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: now,
+		Pipeline: []telemetry.Issue{
+			{
+				ID:         "issue-a-7",
+				Identifier: "digitaldrywood/repo-a#7",
+				ProjectID:  "aggregate",
+				Title:      "Repo A",
+				State:      "Human Review",
+			},
+			{
+				ID:         "issue-b-7",
+				Identifier: "digitaldrywood/repo-b#7",
+				ProjectID:  "aggregate",
+				Title:      "Repo B",
+				State:      "Human Review",
+			},
+		},
+	}
+
+	lanes := fleetPRLanes(snapshot)
+	if len(lanes) == 0 || len(lanes[0].Cards) != 2 {
+		t.Fatalf("expected two PR cards, got %+v", lanes)
+	}
+	if lanes[0].Cards[0].DomID != "pr-card-digitaldrywood-repo-a-7" ||
+		lanes[0].Cards[1].DomID != "pr-card-digitaldrywood-repo-b-7" {
+		t.Fatalf("PR card ids = %+v", lanes[0].Cards)
+	}
+}
+
+func TestFleetPRLanesScopeLocalIdentityIDs(t *testing.T) {
+	now := time.Date(2026, 7, 4, 16, 42, 7, 0, time.UTC)
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: now,
+		Pipeline: []telemetry.Issue{
+			{ID: "issue-1", Identifier: "MT-1", ProjectID: "project-a", Title: "Project A", State: "Human Review"},
+			{ID: "issue-1", Identifier: "MT-1", ProjectID: "project-b", Title: "Project B", State: "Human Review"},
+		},
+	}
+
+	lanes := fleetPRLanes(snapshot)
+	if len(lanes) == 0 || len(lanes[0].Cards) != 2 {
+		t.Fatalf("expected two PR cards, got %+v", lanes)
+	}
+	if lanes[0].Cards[0].DomID != "pr-card-project-a-issue-1" ||
+		lanes[0].Cards[1].DomID != "pr-card-project-b-issue-1" {
+		t.Fatalf("PR card ids = %+v", lanes[0].Cards)
+	}
+}
+
 func TestFleetAgentRowsUniqueIDsForNonGitHubIdentifiers(t *testing.T) {
 	// Memory/non-GitHub tracker identifiers have no #number; each running
 	// session must still get a unique, stable DOM id for SSE morph targeting.
@@ -73,14 +128,20 @@ func TestFleetAgentRowsUniqueIDsForNonGitHubIdentifiers(t *testing.T) {
 		Running: []telemetry.Running{
 			{Issue: telemetry.Issue{Identifier: "MT-1", ProjectID: "detent"}},
 			{Issue: telemetry.Issue{Identifier: "MT-2", ProjectID: "detent"}},
+			{Issue: telemetry.Issue{ID: "issue-1", Identifier: "MT-3", ProjectID: "project-a"}},
+			{Issue: telemetry.Issue{ID: "issue-1", Identifier: "MT-3", ProjectID: "project-b"}},
 		},
 	}
 	rows := fleetAgentRows(snapshot)
-	if len(rows) != 2 {
-		t.Fatalf("expected two agent rows, got %d", len(rows))
+	if len(rows) != 4 {
+		t.Fatalf("expected four agent rows, got %d", len(rows))
 	}
-	if rows[0].ID == rows[1].ID {
-		t.Fatalf("non-GitHub agent rows share a DOM id: %q", rows[0].ID)
+	seen := map[string]struct{}{}
+	for _, row := range rows {
+		if _, ok := seen[row.ID]; ok {
+			t.Fatalf("non-GitHub agent rows share a DOM id: %q", row.ID)
+		}
+		seen[row.ID] = struct{}{}
 	}
 }
 

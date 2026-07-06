@@ -17,14 +17,20 @@ func TestProjectRunRowsUniqueIDsForNonGitHubIdentifiers(t *testing.T) {
 		Running: []telemetry.Running{
 			{Issue: telemetry.Issue{Identifier: "MT-1", ProjectID: "detent"}},
 			{Issue: telemetry.Issue{Identifier: "MT-2", ProjectID: "detent"}},
+			{Issue: telemetry.Issue{ID: "issue-1", Identifier: "MT-3", ProjectID: "project-a"}},
+			{Issue: telemetry.Issue{ID: "issue-1", Identifier: "MT-3", ProjectID: "project-b"}},
 		},
 	}
 	rows := projectRunRows(snapshot, 0)
-	if len(rows) != 2 {
-		t.Fatalf("expected two run rows, got %d", len(rows))
+	if len(rows) != 4 {
+		t.Fatalf("expected four run rows, got %d", len(rows))
 	}
-	if rows[0].DomID == rows[1].DomID {
-		t.Fatalf("non-GitHub run rows share a DOM id: %q", rows[0].DomID)
+	seen := map[string]struct{}{}
+	for _, row := range rows {
+		if _, ok := seen[row.DomID]; ok {
+			t.Fatalf("non-GitHub run rows share a DOM id: %q", row.DomID)
+		}
+		seen[row.DomID] = struct{}{}
 	}
 }
 
@@ -95,8 +101,14 @@ func TestProjectRunRows(t *testing.T) {
 	if !rows[0].StateLive || rows[0].StateText != "In progress" {
 		t.Fatalf("first row should be the live session: %+v", rows[0])
 	}
+	if rows[0].DomID != "run-digitaldrywood-detent-502" {
+		t.Fatalf("running row id = %q, want full identifier slug", rows[0].DomID)
+	}
 	if rows[1].Ref != "#501" {
 		t.Fatalf("completed rows should be newest first, got %q", rows[1].Ref)
+	}
+	if rows[1].DomID != "run-digitaldrywood-detent-501-s-2" {
+		t.Fatalf("completed row id = %q, want full identifier slug plus session", rows[1].DomID)
 	}
 	if rows[1].StateKind != primitives.KindErr || rows[1].StateText != "Failed" {
 		t.Fatalf("failed run state = %q %q", rows[1].StateKind, rows[1].StateText)

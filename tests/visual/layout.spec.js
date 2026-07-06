@@ -197,7 +197,9 @@ test("project kanban board scopes cards to the project", async ({ page }, testIn
   await page.locator("#board-lanes").waitFor({ state: "visible" });
 
   await expect(page.locator('[data-board-key="project.demo-project"]')).toBeVisible();
-  const foreign = await page.locator("#board-lanes article[id^='card-']:not([id^='card-demo-project-'])").count();
+  const foreign = await page.locator("#board-lanes article[id^='card-']").evaluateAll((cards) =>
+    cards.filter((card) => !card.textContent.includes("demo-project")).length
+  );
   expect(foreign).toBe(0);
   await assertNoDocumentOverflow(page);
   await capturePageAndAttach(page, "project-kanban.png", testInfo);

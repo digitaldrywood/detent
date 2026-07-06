@@ -104,7 +104,13 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 		}
 	}
 
-	sheetURL := dashboardURL + "/api/v1/board/card?project=" + projectID + "&issue=9511&scope=project&actions=board"
+	sheetQuery := url.Values{
+		"project": {projectID},
+		"issue":   {"digitaldrywood/detent#9511"},
+		"scope":   {"project"},
+		"actions": {"board"},
+	}
+	sheetURL := dashboardURL + "/api/v1/board/card?" + sheetQuery.Encode()
 	waitForDashboardCondition(t, sheetURL, done, "board card detail sheet", func(body string) bool {
 		return strings.Contains(body, "Kanban demo backlog intake") &&
 			strings.Contains(body, `hx-get="/api/v1/kanban/move?`) &&
@@ -135,17 +141,17 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	for _, want := range []string{
 		`id="board-lanes"`,
 		"Moved card to Todo.",
-		`id="card-` + projectID + `-9511"`,
+		`id="card-digitaldrywood-detent-9511"`,
 	} {
 		if !strings.Contains(moveBody, want) {
 			t.Fatalf("immediate Kanban move response missing %q:\n%s", want, moveBody)
 		}
 	}
-	if got := strings.Count(moveBody, `id="card-`+projectID+`-9511"`); got != 1 {
+	if got := strings.Count(moveBody, `id="card-digitaldrywood-detent-9511"`); got != 1 {
 		t.Fatalf("immediate Kanban move response rendered moved card %d times, want 1:\n%s", got, moveBody)
 	}
 	postRuntimeRefresh(t, dashboardURL, done)
-	movedCardPattern := regexp.MustCompile(`data-board-lane="todo"[\s\S]*?id="card-` + projectID + `-9511"`)
+	movedCardPattern := regexp.MustCompile(`data-board-lane="todo"[\s\S]*?id="card-digitaldrywood-detent-9511"`)
 	waitForDashboardCondition(t, pageURL, done, "backlog card moved to todo", func(body string) bool {
 		return movedCardPattern.MatchString(body)
 	})

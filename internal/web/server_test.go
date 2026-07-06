@@ -1178,7 +1178,7 @@ func TestKanbanMoveSuccessResponseRefreshesFleetBoard(t *testing.T) {
 	if strings.Contains(body, `id="project-kanban"`) {
 		t.Fatalf("fleet move response rendered project board:\n%s", body)
 	}
-	if got := strings.Count(body, `id="card-detent-764"`); got != 1 {
+	if got := strings.Count(body, `id="card-digitaldrywood-detent-764"`); got != 1 {
 		t.Fatalf("card render count = %d, want 1:\n%s", got, body)
 	}
 	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_kw764", state: "Todo"}}; !equalStateUpdates(got, want) {
@@ -2563,7 +2563,7 @@ func TestDashboardRendersLatestSnapshot(t *testing.T) {
 		"Dashboard templates",
 		"2 turns",
 		"tps",
-		`id="agent-35"`,
+		`id="agent-digitaldrywood-detent-35"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
@@ -3208,7 +3208,7 @@ func TestProjectKanbanRouteRendersOnlyLiveBoard(t *testing.T) {
 		`hx-swap="morph:innerHTML"`,
 		`id="board-lanes"`,
 		`data-board-key="project.detent"`,
-		`id="card-detent-490"`,
+		`id="card-digitaldrywood-detent-490"`,
 		`href="/projects/detent"`,
 		`href="/projects/detent/kanban"`,
 		"Add a live Kanban-only board view",
@@ -3263,7 +3263,7 @@ func TestProjectKanbanRouteHidesMutationControlsInReadOnlyMode(t *testing.T) {
 	}
 
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
-	if !strings.Contains(body, `id="card-detent-490"`) {
+	if !strings.Contains(body, `id="card-digitaldrywood-detent-490"`) {
 		t.Fatalf("read-only Kanban page missing board card:\n%s", body)
 	}
 	for _, forbidden := range []string{
@@ -3352,8 +3352,8 @@ func TestBoardRouteRendersFleetBoard(t *testing.T) {
 		`data-board-key="fleet"`,
 		`data-board-lane="todo"`,
 		`data-board-lane="in-progress"`,
-		`id="card-detent-542"`,
-		`id="card-docs-site-12"`,
+		`id="card-digitaldrywood-detent-542"`,
+		`id="card-digitaldrywood-docs-site-12"`,
 		"Add top-level multi-project Kanban board",
 		"Document fleet Kanban",
 		`id="fig-running"`,
@@ -3372,7 +3372,7 @@ func TestBoardRouteRendersFleetBoard(t *testing.T) {
 			t.Fatalf("board page rendered forbidden %q:\n%s", forbidden, body)
 		}
 	}
-	if got := strings.Count(body, `id="card-detent-543"`); got != 1 {
+	if got := strings.Count(body, `id="card-digitaldrywood-detent-543"`); got != 1 {
 		t.Fatalf("done card render count = %d, want 1", got)
 	}
 }
@@ -3470,7 +3470,7 @@ func TestProjectKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 	}
 	for _, want := range []string{
 		`id="board-lanes"`,
-		`id="card-detent-490"`,
+		`id="card-digitaldrywood-detent-490"`,
 		"SSE board card",
 	} {
 		if !strings.Contains(event.data, want) {
@@ -3555,8 +3555,8 @@ func TestFleetKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 	for _, want := range []string{
 		`id="board-lanes"`,
 		`data-board-key="fleet"`,
-		`id="card-detent-542"`,
-		`id="card-docs-site-12"`,
+		`id="card-digitaldrywood-detent-542"`,
+		`id="card-digitaldrywood-docs-site-12"`,
 		"Fleet SSE board card",
 		"Docs SSE board card",
 	} {

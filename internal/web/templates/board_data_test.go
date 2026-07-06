@@ -102,7 +102,10 @@ func TestBoardViewLanes(t *testing.T) {
 	if card.MetaRight == "" {
 		t.Fatalf("running card should show elapsed time")
 	}
-	if card.DomID != "card-gopher-ai-185" {
+	if card.Identity != "gopherguides/gopher-ai#185" {
+		t.Fatalf("card identity = %q, want full identifier", card.Identity)
+	}
+	if card.DomID != "card-gopherguides-gopher-ai-185" {
 		t.Fatalf("card dom id = %q", card.DomID)
 	}
 
@@ -184,7 +187,7 @@ func TestBoardExceptions(t *testing.T) {
 	if exception.ActionLabel != "Review" {
 		t.Fatalf("exception should carry the Review action, got %+v", exception)
 	}
-	if got := exception.ActionAttrs["hx-get"]; got != "/api/v1/board/card?actions=board&issue=92&project=detent" {
+	if got := exception.ActionAttrs["hx-get"]; got != "/api/v1/board/card?actions=board&issue=digitaldrywood%2Fdetent%2392&project=detent" {
 		t.Fatalf("board exception review target = %v", got)
 	}
 
@@ -201,20 +204,61 @@ func TestBoardExceptions(t *testing.T) {
 	}
 }
 
-func TestBoardCardSlug(t *testing.T) {
+func TestBoardCardIdentityToken(t *testing.T) {
 	tests := []struct {
-		project string
-		number  string
-		want    string
+		name       string
+		identifier string
+		issueID    string
+		number     string
+		want       string
 	}{
-		{project: "gopher-ai", number: "#185", want: "gopher-ai-185"},
-		{project: "My Project", number: "#9", want: "my-project-9"},
-		{project: "", number: "#12", want: "12"},
+		{name: "full identifier", identifier: "digitaldrywood/detent#919", issueID: "I_kw919", number: "#919", want: "digitaldrywood/detent#919"},
+		{name: "tracker issue id", identifier: "MT-1", issueID: "memory-1", number: "MT-1", want: "memory-1"},
+		{name: "display number", number: "#12", want: "#12"},
 	}
 	for _, tt := range tests {
-		if got := boardCardSlug(tt.project, tt.number); got != tt.want {
-			t.Fatalf("boardCardSlug(%q, %q) = %q, want %q", tt.project, tt.number, got, tt.want)
+		t.Run(tt.name, func(t *testing.T) {
+			if got := boardCardIdentityToken(tt.identifier, tt.issueID, tt.number); got != tt.want {
+				t.Fatalf("boardCardIdentityToken(%q, %q, %q) = %q, want %q", tt.identifier, tt.issueID, tt.number, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBoardCardSlug(t *testing.T) {
+	tests := []struct {
+		token string
+		want  string
+	}{
+		{token: "gopherguides/gopher-ai#185", want: "gopherguides-gopher-ai-185"},
+		{token: "My Project #9", want: "my-project-9"},
+		{token: "#12", want: "12"},
+		{token: "", want: "unknown"},
+	}
+	for _, tt := range tests {
+		if got := boardCardSlug(tt.token); got != tt.want {
+			t.Fatalf("boardCardSlug(%q) = %q, want %q", tt.token, got, tt.want)
 		}
+	}
+}
+
+func TestBoardCardScopedSlug(t *testing.T) {
+	tests := []struct {
+		name     string
+		project  string
+		identity string
+		want     string
+	}{
+		{name: "repository identity stays global", project: "detent", identity: "digitaldrywood/detent#919", want: "digitaldrywood-detent-919"},
+		{name: "local identity keeps project scope", project: "detent", identity: "issue-919", want: "detent-issue-919"},
+		{name: "missing project keeps identity", identity: "issue-919", want: "issue-919"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := boardCardScopedSlug(tt.project, tt.identity); got != tt.want {
+				t.Fatalf("boardCardScopedSlug(%q, %q) = %q, want %q", tt.project, tt.identity, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -242,13 +286,13 @@ func TestBoardCardFallsBackToDashboardProjectID(t *testing.T) {
 			}
 		}
 	}
-	if card.DomID != "card-detent-42" {
-		t.Fatalf("card dom id = %q, want card-detent-42", card.DomID)
+	if card.DomID != "card-digitaldrywood-detent-42" {
+		t.Fatalf("card dom id = %q, want card-digitaldrywood-detent-42", card.DomID)
 	}
 	if card.Project != "detent" {
 		t.Fatalf("card project = %q, want detent fallback", card.Project)
 	}
-	if got, _ := sheetOpenAttrs(card.Project, card.Number, card.Scope, true)["hx-get"].(string); !strings.Contains(got, "project=detent") {
+	if got, _ := sheetOpenAttrs(card.Project, card.Identity, card.Scope, true)["hx-get"].(string); !strings.Contains(got, "project=detent") {
 		t.Fatalf("card sheet link should carry the fallback project, got %q", got)
 	}
 
@@ -269,8 +313,52 @@ func TestBoardCardFallsBackToDashboardProjectID(t *testing.T) {
 	if got, _ := exceptions[0].ActionAttrs["hx-get"].(string); !strings.Contains(got, "project=detent") {
 		t.Fatalf("exception review link should carry the fallback project, got %q", got)
 	}
-	if exceptions[0].ID != "exception-detent-43" {
-		t.Fatalf("exception id = %q, want exception-detent-43", exceptions[0].ID)
+	if exceptions[0].ID != "exception-digitaldrywood-detent-43" {
+		t.Fatalf("exception id = %q, want exception-digitaldrywood-detent-43", exceptions[0].ID)
+	}
+}
+
+func TestFindBoardCardUsesIdentityBeforeDisplayNumber(t *testing.T) {
+	data := DashboardData{
+		ProjectID: "aggregate",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
+			BoardIssues: []telemetry.Issue{
+				{ID: "repo-a-7", Identifier: "digitaldrywood/repo-a#7", ProjectID: "aggregate", Title: "Repo A", State: "Todo"},
+				{ID: "repo-b-7", Identifier: "digitaldrywood/repo-b#7", ProjectID: "aggregate", Title: "Repo B", State: "Todo"},
+			},
+		},
+		Kanban: KanbanData{States: []string{"Todo"}},
+	}
+
+	view := boardViewFromDashboard(data)
+	var ids []string
+	for _, lane := range view.Lanes {
+		for _, card := range lane.Cards {
+			ids = append(ids, card.DomID)
+			if card.Number != "#7" {
+				t.Fatalf("visible card number = %q, want #7", card.Number)
+			}
+		}
+	}
+	if strings.Join(ids, ",") != "card-digitaldrywood-repo-a-7,card-digitaldrywood-repo-b-7" {
+		t.Fatalf("card dom ids = %v", ids)
+	}
+
+	card, ok := FindBoardCard(data, "aggregate", "digitaldrywood/repo-b#7")
+	if !ok {
+		t.Fatalf("FindBoardCard should match repo-b by identity")
+	}
+	if card.Identifier != "digitaldrywood/repo-b#7" {
+		t.Fatalf("FindBoardCard matched %q, want repo-b", card.Identifier)
+	}
+
+	legacy, ok := FindBoardCard(data, "aggregate", "7")
+	if !ok {
+		t.Fatalf("FindBoardCard should keep bare-number fallback")
+	}
+	if legacy.IssueNumber != "#7" {
+		t.Fatalf("legacy fallback issue number = %q, want #7", legacy.IssueNumber)
 	}
 }
 
@@ -368,7 +456,7 @@ func TestBoardSnapshotRenders(t *testing.T) {
 
 	for _, want := range []string{
 		`id="board-lanes"`,
-		`id="card-gopher-ai-185"`,
+		`id="card-gopherguides-gopher-ai-185"`,
 		`id="fig-running"`,
 		`id="fig-blocked"`,
 		"Session blocked",

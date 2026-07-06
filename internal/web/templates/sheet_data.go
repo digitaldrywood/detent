@@ -26,16 +26,12 @@ type sheetSession struct {
 }
 
 // FindBoardCard locates one card on the fleet board by project and issue
-// number so the detail sheet can render it.
-func FindBoardCard(data DashboardData, projectID string, issueNumber string) (projectKanbanCard, bool) {
+// identity so the detail sheet can render it.
+func FindBoardCard(data DashboardData, projectID string, issueIdentity string) (projectKanbanCard, bool) {
 	projectID = strings.TrimSpace(projectID)
-	issueNumber = strings.TrimSpace(issueNumber)
-	// GitHub-style cards render as "#92" while callers send "92"; non-GitHub
-	// tracker IDs (e.g. memory IDs like "MT-1") render bare and are sent bare.
-	// Match against both forms so neither kind 404s.
-	hashedNumber := issueNumber
-	if issueNumber != "" && !strings.HasPrefix(issueNumber, "#") {
-		hashedNumber = "#" + issueNumber
+	issueIdentity = strings.TrimSpace(issueIdentity)
+	if issueIdentity == "" {
+		return projectKanbanCard{}, false
 	}
 	// Legacy single-project snapshots can leave Issue.ProjectID empty, so a
 	// card matches when its project id equals the request or when the card
@@ -44,7 +40,7 @@ func FindBoardCard(data DashboardData, projectID string, issueNumber string) (pr
 	board := projectKanbanBoardView(data)
 	for _, lane := range board.AllLanes {
 		for _, card := range lane.Cards {
-			if card.IssueNumber != issueNumber && card.IssueNumber != hashedNumber {
+			if !boardCardMatchesIdentity(card, issueIdentity) {
 				continue
 			}
 			cardProjectID := strings.TrimSpace(card.ProjectID)
@@ -57,6 +53,34 @@ func FindBoardCard(data DashboardData, projectID string, issueNumber string) (pr
 		}
 	}
 	return projectKanbanCard{}, false
+}
+
+func boardCardMatchesIdentity(card projectKanbanCard, issueIdentity string) bool {
+	issueIdentity = strings.TrimSpace(issueIdentity)
+	if issueIdentity == "" {
+		return false
+	}
+	for _, candidate := range []string{card.Identity, card.Identifier, card.IssueID} {
+		if strings.TrimSpace(candidate) == issueIdentity {
+			return true
+		}
+	}
+	return boardCardMatchesLegacyIssueNumber(card.IssueNumber, issueIdentity)
+}
+
+func boardCardMatchesLegacyIssueNumber(cardNumber string, issueIdentity string) bool {
+	cardNumber = strings.TrimSpace(cardNumber)
+	issueIdentity = strings.TrimSpace(issueIdentity)
+	if cardNumber == "" || issueIdentity == "" {
+		return false
+	}
+	if cardNumber == issueIdentity {
+		return true
+	}
+	if strings.HasPrefix(cardNumber, "#") {
+		return strings.TrimPrefix(cardNumber, "#") == strings.TrimPrefix(issueIdentity, "#")
+	}
+	return false
 }
 
 func sheetSessionFor(snapshot telemetry.Snapshot, card projectKanbanCard) sheetSession {
@@ -115,12 +139,12 @@ func sheetSessionMatchesProject(sessionProjectID string, card projectKanbanCard)
 // The Fleet and project Overview pages show the exception strip but their
 // #snapshot holds other content, so their Review sheets omit those
 // actions rather than swap board lanes over the page the user is on.
-func boardCardSheetPath(projectID string, issueNumber string, scope string, boardActions bool) string {
+func boardCardSheetPath(projectID string, issueIdentity string, scope string, boardActions bool) string {
 	values := url.Values{}
 	if projectID = strings.TrimSpace(projectID); projectID != "" {
 		values.Set("project", projectID)
 	}
-	values.Set("issue", strings.TrimPrefix(strings.TrimSpace(issueNumber), "#"))
+	values.Set("issue", strings.TrimSpace(issueIdentity))
 	if scope = strings.TrimSpace(scope); scope != "" && scope != "fleet" {
 		values.Set("scope", scope)
 	}
@@ -130,9 +154,9 @@ func boardCardSheetPath(projectID string, issueNumber string, scope string, boar
 	return "/api/v1/board/card?" + values.Encode()
 }
 
-func sheetOpenAttrs(projectID string, issueNumber string, scope string, boardActions bool) templ.Attributes {
+func sheetOpenAttrs(projectID string, issueIdentity string, scope string, boardActions bool) templ.Attributes {
 	return templ.Attributes{
-		"hx-get":    boardCardSheetPath(projectID, issueNumber, scope, boardActions),
+		"hx-get":    boardCardSheetPath(projectID, issueIdentity, scope, boardActions),
 		"hx-target": "#detail-sheet-host",
 		"hx-swap":   "innerHTML",
 	}
