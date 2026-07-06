@@ -115,6 +115,12 @@ agent:
     max_entries: 5
     recall_n: 2
     postmortem_max_tokens: 256
+  knowledge:
+    enabled: true
+    max_bytes: 2048
+    sources:
+      - name: Team standards
+        path: ../knowledge/team.md
   skills:
     enabled: true
     path: ".detent/skills"
@@ -304,6 +310,18 @@ Ticket prompt {{ issue.title }}
 	}
 	if !cfg.Agent.ExperimentalThreadResume {
 		t.Fatal("Agent.ExperimentalThreadResume = false, want true")
+	}
+	if !cfg.Agent.Knowledge.Enabled {
+		t.Fatal("Agent.Knowledge.Enabled = false, want true")
+	}
+	if cfg.Agent.Knowledge.MaxBytes != 2048 {
+		t.Fatalf("Agent.Knowledge.MaxBytes = %d, want 2048", cfg.Agent.Knowledge.MaxBytes)
+	}
+	if len(cfg.Agent.Knowledge.Sources) != 1 {
+		t.Fatalf("Agent.Knowledge.Sources len = %d, want 1", len(cfg.Agent.Knowledge.Sources))
+	}
+	if source := cfg.Agent.Knowledge.Sources[0]; source.Name != "Team standards" || source.Path != "../knowledge/team.md" {
+		t.Fatalf("Agent.Knowledge.Sources[0] = %#v, want team standards source", source)
 	}
 	if !cfg.Agent.Skills.Creation.Enabled {
 		t.Fatal("Agent.Skills.Creation.Enabled = false, want true")
@@ -602,6 +620,15 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if cfg.Agent.Skills.Path != ".detent/skills" {
 		t.Fatalf("Agent.Skills.Path = %q", cfg.Agent.Skills.Path)
 	}
+	if !cfg.Agent.Knowledge.Enabled {
+		t.Fatal("Agent.Knowledge.Enabled = false, want true default")
+	}
+	if cfg.Agent.Knowledge.MaxBytes != DefaultKnowledgeMaxBytes {
+		t.Fatalf("Agent.Knowledge.MaxBytes = %d, want %d", cfg.Agent.Knowledge.MaxBytes, DefaultKnowledgeMaxBytes)
+	}
+	if len(cfg.Agent.Knowledge.Sources) != 0 {
+		t.Fatalf("Agent.Knowledge.Sources = %#v, want empty default", cfg.Agent.Knowledge.Sources)
+	}
 	if !cfg.Agent.Skills.Creation.Enabled {
 		t.Fatal("Agent.Skills.Creation.Enabled = false, want true default")
 	}
@@ -643,6 +670,57 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Plan.Enabled || cfg.Plan.Review != gate.PlanReviewHuman || cfg.Plan.ApprovalLabel != gate.DefaultPlanApprovalLabel || cfg.Plan.Stop != gate.DefaultPlanStop {
 		t.Fatalf("Plan = %#v, want disabled human review plan default", cfg.Plan)
+	}
+}
+
+func TestParseWorkflowMarksAgentKnowledgeConfigured(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+agent:
+  knowledge:
+    max_bytes: 2048
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+
+	if !workflow.Config.Agent.Knowledge.Configured {
+		t.Fatal("Agent.Knowledge.Configured = false, want true")
+	}
+	if workflow.Config.Agent.Knowledge.MaxBytes != 2048 {
+		t.Fatalf("Agent.Knowledge.MaxBytes = %d, want 2048", workflow.Config.Agent.Knowledge.MaxBytes)
+	}
+}
+
+func TestKnowledgeWithSourcesAllowsSourceLessMaxBytesOverride(t *testing.T) {
+	t.Parallel()
+
+	workflowDefault := defaultKnowledge()
+	got := KnowledgeWithSources(
+		Knowledge{
+			Enabled:  true,
+			MaxBytes: 4096,
+			Sources: []KnowledgeSource{{
+				Name: "Global",
+				Path: "global.md",
+			}},
+		},
+		Knowledge{
+			Enabled:    true,
+			MaxBytes:   1024,
+			Configured: true,
+		},
+		workflowDefault,
+	)
+
+	if got.MaxBytes != 1024 {
+		t.Fatalf("MaxBytes = %d, want 1024", got.MaxBytes)
+	}
+	if len(got.Sources) != 1 || got.Sources[0].Path != "global.md" {
+		t.Fatalf("Sources = %#v, want inherited global source", got.Sources)
 	}
 }
 
@@ -1826,6 +1904,9 @@ tracker:
 agent:
   lessons:
     path: ../lessons.md
+  knowledge:
+    sources:
+      - path: ""
   skills:
     path: /tmp/skills
     creation:
@@ -1837,6 +1918,7 @@ Prompt
 				"tracker.priority_map option names must not be blank",
 				"tracker.priority_map ranks must be integers 1 through 4 or null",
 				"agent.lessons.path must be a relative path inside the workspace",
+				"agent.knowledge.sources[0].path must not be blank",
 				"agent.skills.path must be a relative path inside the workspace",
 				"agent.skills.creation.max_drafts_per_run must be greater than 0",
 			},

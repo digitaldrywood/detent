@@ -74,25 +74,30 @@ type Settings struct {
 	MaxConcurrentAgents int            `yaml:"max_concurrent_agents"`
 	Scheduling          string         `yaml:"scheduling"`
 	Identity            Identity       `yaml:"identity,omitempty"`
+	Knowledge           Knowledge      `yaml:"knowledge,omitempty"`
 	FairShare           map[string]any `yaml:"fair_share,omitempty"`
 	Startup             map[string]any `yaml:"startup,omitempty"`
 }
 
 type Project struct {
-	ID            string            `yaml:"id"`
-	Workflow      string            `yaml:"workflow"`
-	WorkflowRef   string            `yaml:"workflow_ref,omitempty"`
-	Workdir       string            `yaml:"workdir"`
-	Color         string            `yaml:"color,omitempty"`
-	Weight        int               `yaml:"weight"`
-	Priority      int               `yaml:"priority"`
-	Paused        bool              `yaml:"paused,omitempty"`
-	CredentialRef string            `yaml:"credential_ref,omitempty"`
-	Authorization selector.Selector `yaml:"authorization,omitempty"`
-	Identity      Identity          `yaml:"-"`
+	ID              string            `yaml:"id"`
+	Workflow        string            `yaml:"workflow"`
+	WorkflowRef     string            `yaml:"workflow_ref,omitempty"`
+	Workdir         string            `yaml:"workdir"`
+	Color           string            `yaml:"color,omitempty"`
+	Knowledge       Knowledge         `yaml:"knowledge,omitempty"`
+	Weight          int               `yaml:"weight"`
+	Priority        int               `yaml:"priority"`
+	Paused          bool              `yaml:"paused,omitempty"`
+	CredentialRef   string            `yaml:"credential_ref,omitempty"`
+	Authorization   selector.Selector `yaml:"authorization,omitempty"`
+	Identity        Identity          `yaml:"-"`
+	GlobalKnowledge Knowledge         `yaml:"-"`
 }
 
 type Identity = workflowconfig.Identity
+type Knowledge = workflowconfig.Knowledge
+type KnowledgeSource = workflowconfig.KnowledgeSource
 
 type Option func(*options)
 
@@ -716,6 +721,7 @@ func globalErrors(value any) []string {
 	problems = append(problems, schedulingErrors(global["scheduling"])...)
 	problems = append(problems, optionalMapErrors(global, "identity")...)
 	problems = append(problems, identityErrors(global["identity"], "global.identity")...)
+	problems = append(problems, knowledgeErrors(global["knowledge"], "global.knowledge")...)
 	problems = append(problems, optionalMapErrors(global, "fair_share")...)
 	problems = append(problems, optionalMapErrors(global, "startup")...)
 
@@ -810,6 +816,7 @@ func projectErrors(value any, index int, opts options) []string {
 	problems = append(problems, positiveIntegerError(project["weight"], prefix+".weight")...)
 	problems = append(problems, integerError(project["priority"], prefix+".priority")...)
 	problems = append(problems, pausedErrors(project, prefix)...)
+	problems = append(problems, knowledgeErrors(project["knowledge"], prefix+".knowledge")...)
 	problems = append(problems, credentialRefErrors(project, prefix)...)
 	problems = append(problems, authorizationErrors(project["authorization"], prefix+".authorization")...)
 
@@ -830,6 +837,53 @@ func identityErrors(value any, prefix string) []string {
 	}
 	identity.Normalize()
 	return identity.Validate(prefix)
+}
+
+func knowledgeErrors(value any, prefix string) []string {
+	if value == nil {
+		return nil
+	}
+	knowledge, ok := value.(map[string]any)
+	if !ok {
+		return []string{prefix + ": must be a mapping"}
+	}
+
+	var problems []string
+	if enabled, ok := knowledge["enabled"]; ok {
+		if _, ok := enabled.(bool); !ok {
+			problems = append(problems, prefix+".enabled: must be a boolean")
+		}
+	}
+	if maxBytes, ok := knowledge["max_bytes"]; ok && !positiveInteger(maxBytes) {
+		problems = append(problems, prefix+".max_bytes: must be a positive integer")
+	}
+	if sources, ok := knowledge["sources"]; ok {
+		problems = append(problems, knowledgeSourceErrors(sources, prefix+".sources")...)
+	}
+	return problems
+}
+
+func knowledgeSourceErrors(value any, prefix string) []string {
+	sources, ok := value.([]any)
+	if !ok {
+		return []string{prefix + ": must be a list"}
+	}
+
+	var problems []string
+	for index, item := range sources {
+		source, ok := item.(map[string]any)
+		sourcePrefix := fmt.Sprintf("%s[%d]", prefix, index)
+		if !ok {
+			problems = append(problems, sourcePrefix+": must be a mapping")
+			continue
+		}
+		problems = append(problems, prefixErrors(requiredErrors(source, []string{"path"}), sourcePrefix)...)
+		problems = append(problems, stringErrors(source, "name", sourcePrefix)...)
+		problems = append(problems, singleLineStringErrors(source, "name", sourcePrefix)...)
+		problems = append(problems, stringErrors(source, "path", sourcePrefix)...)
+		problems = append(problems, singleLineStringErrors(source, "path", sourcePrefix)...)
+	}
+	return problems
 }
 
 func authorizationErrors(value any, prefix string) []string {
@@ -1184,7 +1238,7 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
-	settings, err := buildSettings(global)
+	settings, err := buildSettings(global, opts)
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
@@ -1210,7 +1264,7 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	}, nil
 }
 
-func buildSettings(attrs map[string]any) (Settings, error) {
+func buildSettings(attrs map[string]any, opts options) (Settings, error) {
 	settings := defaultSettings()
 	maxConcurrentAgents, err := intValue(attrs["max_concurrent_agents"], "global.max_concurrent_agents")
 	if err != nil {
@@ -1232,10 +1286,15 @@ func buildSettings(attrs map[string]any) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
+	knowledge, err := buildKnowledge(attrs["knowledge"], "global.knowledge", opts)
+	if err != nil {
+		return Settings{}, err
+	}
 
 	settings.MaxConcurrentAgents = maxConcurrentAgents
 	settings.Scheduling = scheduling
 	settings.Identity = identity
+	settings.Knowledge = knowledge
 	settings.FairShare = fairShare
 	settings.Startup = startup
 	return settings, nil
@@ -1313,6 +1372,10 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 		if err != nil {
 			return nil, err
 		}
+		knowledge, err := buildKnowledge(project["knowledge"], prefix+".knowledge", opts)
+		if err != nil {
+			return nil, err
+		}
 
 		out = append(out, Project{
 			ID:            strings.TrimSpace(id),
@@ -1320,6 +1383,7 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 			WorkflowRef:   strings.TrimSpace(workflowRef),
 			Workdir:       workdir,
 			Color:         color,
+			Knowledge:     knowledge,
 			Weight:        weight,
 			Priority:      priority,
 			Paused:        paused,
@@ -1346,6 +1410,39 @@ func buildIdentity(value any, field string) (Identity, error) {
 		return Identity{}, errors.New(strings.Join(problems, "; "))
 	}
 	return identity, nil
+}
+
+func buildKnowledge(value any, field string, opts options) (Knowledge, error) {
+	if value == nil {
+		return Knowledge{}, nil
+	}
+	if _, err := mapValue(value, field); err != nil {
+		return Knowledge{}, err
+	}
+
+	knowledge := Knowledge{
+		Enabled:    true,
+		MaxBytes:   workflowconfig.DefaultKnowledgeMaxBytes,
+		Configured: true,
+	}
+	if err := decodeYAMLValue(value, &knowledge); err != nil {
+		return Knowledge{}, fmt.Errorf("%s: %w", field, err)
+	}
+	if !opts.projectPathLiterals {
+		for index := range knowledge.Sources {
+			path := strings.TrimSpace(knowledge.Sources[index].Path)
+			if path == "" {
+				continue
+			}
+			expanded, err := expandPath(path, opts)
+			if err != nil {
+				return Knowledge{}, fmt.Errorf("%s.sources[%d].path: expand path: %w", field, index, err)
+			}
+			knowledge.Sources[index].Path = expanded
+		}
+	}
+	knowledge.Normalize()
+	return knowledge, nil
 }
 
 func buildAuthorization(value any, field string) (selector.Selector, error) {

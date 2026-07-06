@@ -59,6 +59,79 @@ func TestWorkflowConfigWithProjectPathsResolvesArtifactWorkflowPaths(t *testing.
 	}
 }
 
+func TestWorkflowConfigWithProjectKnowledgeMergesGlobalProjectAndWorkflowSources(t *testing.T) {
+	t.Parallel()
+
+	workdir := t.TempDir()
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Agent.Knowledge = workflowconfig.Knowledge{
+		Enabled:  true,
+		MaxBytes: 4096,
+		Sources: []workflowconfig.KnowledgeSource{{
+			Name: "Workflow",
+			Path: "docs/workflow.md",
+		}},
+	}
+
+	got := workflowConfigWithProjectIdentity(globalconfig.Project{
+		Workdir: workdir,
+		GlobalKnowledge: workflowconfig.Knowledge{
+			Enabled:  true,
+			MaxBytes: 1024,
+			Sources: []workflowconfig.KnowledgeSource{{
+				Name: "Global",
+				Path: "/shared/global.md",
+			}},
+		},
+		Knowledge: workflowconfig.Knowledge{
+			Enabled:  true,
+			MaxBytes: 2048,
+			Sources: []workflowconfig.KnowledgeSource{{
+				Name: "Project",
+				Path: "/shared/project.md",
+			}},
+		},
+	}, cfg)
+
+	if got.Agent.Knowledge.MaxBytes != 4096 {
+		t.Fatalf("Knowledge.MaxBytes = %d, want 4096", got.Agent.Knowledge.MaxBytes)
+	}
+	want := []workflowconfig.KnowledgeSource{
+		{Name: "Global", Path: "/shared/global.md"},
+		{Name: "Project", Path: "/shared/project.md"},
+		{Name: "Workflow", Path: filepath.Join(workdir, "docs", "workflow.md")},
+	}
+	if !reflect.DeepEqual(got.Agent.Knowledge.Sources, want) {
+		t.Fatalf("Knowledge.Sources = %#v, want %#v", got.Agent.Knowledge.Sources, want)
+	}
+}
+
+func TestWorkflowConfigWithProjectKnowledgeAllowsWorkflowOptOut(t *testing.T) {
+	t.Parallel()
+
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Agent.Knowledge = workflowconfig.Knowledge{Enabled: false}
+
+	got := workflowConfigWithProjectIdentity(globalconfig.Project{
+		GlobalKnowledge: workflowconfig.Knowledge{
+			Enabled: true,
+			Sources: []workflowconfig.KnowledgeSource{{
+				Name: "Global",
+				Path: "/shared/global.md",
+			}},
+		},
+	}, cfg)
+
+	if got.Agent.Knowledge.Enabled {
+		t.Fatal("Knowledge.Enabled = true, want workflow opt-out")
+	}
+	if len(got.Agent.Knowledge.Sources) != 0 {
+		t.Fatalf("Knowledge.Sources = %#v, want none", got.Agent.Knowledge.Sources)
+	}
+}
+
 func TestTrackerPriorityMapConvertsWorkflowMap(t *testing.T) {
 	t.Parallel()
 
