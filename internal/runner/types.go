@@ -84,17 +84,19 @@ const (
 )
 
 type AgentUpdate struct {
-	Type            AgentUpdateType
-	Method          string
-	ProcessIdentity string
-	ThreadID        string
-	TurnID          string
-	ItemID          string
-	Delta           string
-	Status          string
-	Model           string
-	Tokens          AgentTokenUsage
-	RateLimits      *telemetry.RateLimits
+	Type                AgentUpdateType
+	Method              string
+	ProcessIdentity     string
+	ThreadID            string
+	TurnID              string
+	ItemID              string
+	Delta               string
+	Status              string
+	Model               string
+	BackendErrorBody    string
+	BackendErrorMessage string
+	Tokens              AgentTokenUsage
+	RateLimits          *telemetry.RateLimits
 }
 
 type AgentTokenUsage struct {

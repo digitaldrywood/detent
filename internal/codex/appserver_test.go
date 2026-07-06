@@ -320,6 +320,54 @@ func TestAppServerRunTurnReportsResponseErrors(t *testing.T) {
 	}
 }
 
+func TestAppServerRunTurnReportsTurnErrorBody(t *testing.T) {
+	t.Parallel()
+
+	backendError := `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account."}}`
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.142.5"}`),
+		responseMessage(t, 2, `{"thread":{"id":"thread-1","model":"gpt-5-codex"}}`),
+		responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+		notificationMessage(t, "turn/completed", backendError),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport},
+		WithReadTimeout(time.Second),
+		WithTurnTimeout(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	var updates []Update
+	_, err = server.RunTurn(context.Background(), RunTurnRequest{
+		Workspace: "/tmp/detent-workspace",
+		Prompt:    "Ship issue #927",
+		Model:     "gpt-5-codex",
+	}, func(update Update) error {
+		updates = append(updates, update)
+		return nil
+	})
+	if !errors.Is(err, ErrTurnFailed) {
+		t.Fatalf("RunTurn() error = %v, want ErrTurnFailed", err)
+	}
+	var turnErr *TurnFailedError
+	if !errors.As(err, &turnErr) {
+		t.Fatalf("RunTurn() error = %T, want TurnFailedError", err)
+	}
+	if turnErr.BackendErrorBody() != backendError {
+		t.Fatalf("BackendErrorBody = %q, want %q", turnErr.BackendErrorBody(), backendError)
+	}
+	if !strings.Contains(err.Error(), backendError) {
+		t.Fatalf("RunTurn() error = %v, want backend body", err)
+	}
+	if len(updates) != 2 {
+		t.Fatalf("updates = %#v, want turn started and failed turn completed", updates)
+	}
+	if updates[1].Status != "failed" || updates[1].BackendErrorBody != backendError {
+		t.Fatalf("failed update = %#v, want status failed with backend error", updates[1])
+	}
+}
+
 type staticTransportFactory struct {
 	transport Transport
 }

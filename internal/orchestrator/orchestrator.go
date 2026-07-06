@@ -37,6 +37,9 @@ const (
 	defaultContinuationRetry          = time.Second
 	defaultFailureRetryBaseDelay      = 10 * time.Second
 	maxMergeWorkerRunnerFailures      = 3
+	instantFailureThreshold           = 5
+	instantFailureMaxDuration         = 10 * time.Second
+	instantFailureBlockedReasonPrefix = "instant fail circuit breaker: "
 	continuationDispatchBackoff       = 100 * time.Millisecond
 	runUpdateBufferSize               = 128
 	maxRecentEvents                   = 50
@@ -1354,6 +1357,14 @@ func (o *Orchestrator) upsertBlockedStatusIssues(state *State, issues []connecto
 }
 
 func (o *Orchestrator) setBlockedStatusIssue(state *State, issue connector.Issue, now time.Time) {
+	if existing, ok := state.Blocked[issue.ID]; ok &&
+		existing.Source == BlockedSourceProjectStatus &&
+		strings.HasPrefix(existing.Reason, instantFailureBlockedReasonPrefix) &&
+		strings.TrimSpace(issue.BlockerReason) == "" {
+		existing.Issue = cloneIssue(issue)
+		state.Blocked[issue.ID] = existing
+		return
+	}
 	recovery := EvaluateBlockedRecovery(issue)
 	state.Blocked[issue.ID] = Blocked{
 		Issue:          cloneIssue(issue),
@@ -1999,6 +2010,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 				return
 			}
 		}
+		if o.tripInstantFailureCircuitBreaker(ctx, state, event, running, attempt) {
+			return
+		}
 		delay := event.RetryDelay
 		if delay <= 0 {
 			delay = o.retryDelay(attempt, false)
@@ -2057,6 +2071,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		errorMessage = finalState
 	}
 	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, "completed", "worker completed")
+	delete(state.InstantFailures, event.IssueID)
 
 	state.Completed[event.IssueID] = Completed{
 		Issue:       cloneIssue(running.Issue),
@@ -2108,6 +2123,177 @@ func (o *Orchestrator) commentBudgetRefusal(ctx context.Context, issueID string,
 	}
 }
 
+func (o *Orchestrator) tripInstantFailureCircuitBreaker(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	attempt int,
+) bool {
+	if state == nil || event.Err == nil || !instantFailureDuration(running, event) {
+		delete(state.InstantFailures, event.IssueID)
+		return false
+	}
+	if state.InstantFailures == nil {
+		state.InstantFailures = map[string]InstantFailure{}
+	}
+	key := instantFailureErrorKey(event.Err)
+	if key == "" {
+		key = event.Err.Error()
+	}
+	failure := state.InstantFailures[event.IssueID]
+	if failure.Error != key {
+		failure = InstantFailure{
+			Issue:          cloneIssue(running.Issue),
+			Error:          key,
+			FirstFailureAt: event.CompletedAt,
+		}
+	}
+	failure.Count++
+	failure.Issue = cloneIssue(running.Issue)
+	failure.LastFailureAt = event.CompletedAt
+	state.InstantFailures[event.IssueID] = failure
+	if failure.Count < instantFailureThreshold {
+		return false
+	}
+
+	o.parkInstantFailure(ctx, state, event, running, failure, attempt)
+	return true
+}
+
+func instantFailureDuration(running Running, event runpkg.Completion) bool {
+	if !running.StartedAt.IsZero() && !event.CompletedAt.IsZero() {
+		duration := event.CompletedAt.Sub(running.StartedAt)
+		return duration >= 0 && duration < instantFailureMaxDuration
+	}
+	if event.Result.Tokens.RuntimeSeconds > 0 {
+		return event.Result.Tokens.RuntimeSeconds < instantFailureMaxDuration.Seconds()
+	}
+	return false
+}
+
+func instantFailureErrorKey(err error) string {
+	var carrier interface {
+		BackendErrorBody() string
+	}
+	if errors.As(err, &carrier) {
+		if body := strings.TrimSpace(carrier.BackendErrorBody()); body != "" {
+			return body
+		}
+	}
+	return strings.TrimSpace(err.Error())
+}
+
+func (o *Orchestrator) parkInstantFailure(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	failure InstantFailure,
+	attempt int,
+) {
+	targetState := o.instantFailureParkState()
+	issue := cloneIssue(running.Issue)
+	if targetState != "" {
+		if err := o.updateIssueState(ctx, issue, targetState, event.CompletedAt, "instant_fail_circuit_breaker"); err != nil {
+			if o.logger != nil {
+				o.logger.Error(
+					"instant fail circuit breaker state transition failed",
+					"issue_id", issue.ID,
+					"identifier", issue.Identifier,
+					"target_state", targetState,
+					"error", err,
+				)
+			}
+		} else {
+			issue.State = targetState
+		}
+	}
+	if o.connector != nil {
+		if err := o.connector.CreateComment(ctx, issue.ID, instantFailureComment(issue, event.Err, failure, attempt, targetState)); err != nil && o.logger != nil {
+			o.logger.Error("instant fail circuit breaker comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+	}
+	if err := o.abandonClaim(ctx, issue.ID); err != nil && o.logger != nil {
+		o.logger.Error("instant fail circuit breaker claim release failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+	}
+	delete(state.Claimed, issue.ID)
+	delete(state.Retry, issue.ID)
+	delete(state.BudgetRefusals, issue.ID)
+	delete(state.PriorAttempts, issue.ID)
+	if state.Blocked == nil {
+		state.Blocked = map[string]Blocked{}
+	}
+	state.Blocked[issue.ID] = Blocked{
+		Issue:          issue,
+		Reason:         instantFailureBlockedReasonPrefix + failure.Error,
+		RecoveryReason: "fix the pinned agent model or backend configuration, then move the issue back to Todo or Rework",
+		RecoveryTarget: "Todo",
+		BlockedAt:      event.CompletedAt,
+		Source:         BlockedSourceProjectStatus,
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "worker_instant_fail_circuit_breaker_tripped",
+		Message: "parked " + issueLabel(issue) + " after repeated instant worker failures: " + failure.Error,
+	})
+	if o.logger != nil {
+		attrs := []any{
+			"event", "worker_instant_fail_circuit_breaker_tripped",
+			"issue_id", issue.ID,
+			"issue_identifier", issue.Identifier,
+			"attempt", attempt,
+			"instant_failures", failure.Count,
+			"target_state", targetState,
+			"error", event.Err,
+		}
+		if body := instantFailureErrorKey(event.Err); body != "" {
+			attrs = append(attrs, "backend_error_body", body)
+		}
+		var carrier interface {
+			BackendErrorMessage() string
+		}
+		if errors.As(event.Err, &carrier) {
+			if message := strings.TrimSpace(carrier.BackendErrorMessage()); message != "" {
+				attrs = append(attrs, "backend_error_message", message)
+			}
+		}
+		o.logger.Error("worker instant fail circuit breaker tripped", attrs...)
+	}
+}
+
+func (o *Orchestrator) instantFailureParkState() string {
+	return blockedStatusState
+}
+
+func instantFailureComment(issue connector.Issue, err error, failure InstantFailure, attempt int, targetState string) string {
+	var b strings.Builder
+	b.WriteString("Detent stopped retrying this worker after ")
+	b.WriteString(strconv.Itoa(failure.Count))
+	b.WriteString(" consecutive instant failures with the same backend error.")
+	if targetState = strings.TrimSpace(targetState); targetState != "" {
+		b.WriteString("\n\nIssue parked in `")
+		b.WriteString(targetState)
+		b.WriteString("`.")
+	}
+	b.WriteString("\n\n- issue: ")
+	b.WriteString(issueLabel(issue))
+	b.WriteString("\n- latest_attempt: ")
+	b.WriteString(strconv.Itoa(attempt))
+	b.WriteString("\n- failure_window_seconds: ")
+	b.WriteString(strconv.FormatInt(int64(instantFailureMaxDuration/time.Second), 10))
+	b.WriteString("\n- error:\n\n```text\n")
+	b.WriteString(strings.TrimSpace(err.Error()))
+	b.WriteString("\n```")
+	if body := instantFailureErrorKey(err); body != "" && body != strings.TrimSpace(err.Error()) {
+		b.WriteString("\n\n- backend_error_body:\n\n```json\n")
+		b.WriteString(body)
+		b.WriteString("\n```")
+	}
+	b.WriteString("\n\nFix the pinned agent model or backend configuration, then move the issue back to Todo or Rework.")
+	return b.String()
+}
+
 func (o *Orchestrator) cleanupDrainedRun(ctx context.Context, state *State, issueID string) {
 	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
 		o.logger.Warn("abandon completed drain claim failed", "issue_id", issueID, "error", err)
@@ -2116,6 +2302,7 @@ func (o *Orchestrator) cleanupDrainedRun(ctx context.Context, state *State, issu
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
 	delete(state.PriorAttempts, issueID)
+	delete(state.InstantFailures, issueID)
 }
 
 func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
@@ -2604,6 +2791,7 @@ func (o *Orchestrator) completeTerminalRunning(
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
 	delete(state.PriorAttempts, issueID)
+	delete(state.InstantFailures, issueID)
 	if err := o.abandonClaim(ctx, issueID); err != nil {
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      cleanupEventAt(completedAt),

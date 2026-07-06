@@ -36,6 +36,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/dependencyline"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
+	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 )
 
 var ErrDoctorFailed = errors.New("doctor found failed checks")
@@ -226,6 +227,7 @@ type doctorDeps struct {
 	gitWorkTree          func(context.Context, string) error
 	gitRemoteURL         func(context.Context, string) (string, error)
 	autoPromoteConnector func(workflowconfig.Config) (doctorAutoPromoteConnector, error)
+	modelProbe           func(context.Context, doctorRouteModelProbeRequest) error
 	executable           func() (string, error)
 }
 
@@ -445,6 +447,9 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		for _, check := range checks {
 			report.Add(check)
 		}
+	}
+	if cfg.WorkflowDiff {
+		report.WorkflowOptimization.Diff = doctorWorkflowOptimizationDiff(report.WorkflowOptimization)
 	}
 
 	return report
@@ -901,6 +906,8 @@ func checkDoctorProjectWithProgress(
 			Detail: doctorWorkflowDetail(project.Workflow, project, workflow.Config),
 		},
 	}
+	setDoctorCurrentCheck("Project " + id + " pinned route models")
+	checks = append(checks, checkDoctorRouteModels(ctx, id, project, workflow.Config, deps))
 	if workflow.Config.Agent.AutoPromote.Enabled {
 		setDoctorCurrentCheck("Project " + id + " auto-promote")
 		checks = append(checks, checkDoctorAutoPromote(ctx, id, workflow.Config, deps, time.Now()))
@@ -963,6 +970,124 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, checkDoctorGitHubReadiness(ctx, id, project, workflow.Config, deps, githubToken, expandedSourceRoot, allowWriteProbes)...)
 	}
 	return checks
+}
+
+type doctorRouteModelProbeRequest struct {
+	ProjectID    string
+	Workspace    string
+	WorkflowPath string
+	RouteIndex   int
+	RouteName    string
+	RouteRole    string
+	Model        string
+	Backend      workflowconfig.AgentBackend
+}
+
+func checkDoctorRouteModels(ctx context.Context, id string, project globalconfig.Project, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {
+	if deps.modelProbe == nil {
+		deps.modelProbe = defaultDoctorRouteModelProbe
+	}
+	name := "Project " + id + " pinned route models"
+	backends := doctorWorkflowBackendConfigsByID(cfg)
+	workflowPath, workflowPathErr := doctorWorkflowOptimizationWorkflowPath(project)
+	workspacePath := projectSourceRoot(project, cfg)
+	if expanded, err := expandDoctorWorkspacePath(workspacePath); err == nil {
+		workspacePath = expanded
+	}
+
+	var probed int
+	var skipped int
+	var failures []string
+	var findings []doctorWorkflowOptimizationFinding
+	for index, route := range cfg.AgentRouteConfigs() {
+		model := strings.TrimSpace(route.Model)
+		if model == "" {
+			continue
+		}
+		backend, ok := backends[strings.TrimSpace(route.Backend)]
+		if !ok || strings.TrimSpace(backend.Kind) != workflowconfig.AgentBackendCodex {
+			skipped++
+			continue
+		}
+		probed++
+		routeName := doctorRouteModelName(route, index)
+		err := deps.modelProbe(ctx, doctorRouteModelProbeRequest{
+			ProjectID:    id,
+			Workspace:    workspacePath,
+			WorkflowPath: workflowPath,
+			RouteIndex:   index,
+			RouteName:    routeName,
+			RouteRole:    strings.TrimSpace(route.Role),
+			Model:        model,
+			Backend:      backend,
+		})
+		if err == nil {
+			continue
+		}
+		detail := fmt.Sprintf("project %s route %s model %s rejected by backend: %v", id, routeName, model, err)
+		failures = append(failures, detail)
+		if workflowPathErr != nil {
+			continue
+		}
+		findings = append(findings, doctorWorkflowOptimizationFinding{
+			RuleID:       doctorWorkflowRulePinnedRouteModelRejected,
+			ProjectID:    id,
+			WorkflowPath: workflowPath,
+			Severity:     "error",
+			Title:        "Pinned route model rejected",
+			Detail:       detail,
+			Evidence: map[string]any{
+				"backend": backend.ID,
+				"error":   err.Error(),
+				"model":   model,
+				"route":   routeName,
+			},
+			Patch: []doctorWorkflowOptimizationPatch{{
+				Path:  doctorWorkflowRouteModelPatchPath(index),
+				Value: "",
+			}},
+		})
+	}
+
+	if len(failures) == 0 {
+		detail := fmt.Sprintf("validated %d pinned Codex route model(s)", probed)
+		if skipped > 0 {
+			detail += fmt.Sprintf("; skipped %d non-Codex pinned route model(s)", skipped)
+		}
+		return doctorCheck{Name: name, Status: doctorOK, Detail: detail}
+	}
+	report := doctorWorkflowOptimizationReport{Findings: findings}
+	return doctorCheck{
+		Name:                 name,
+		Status:               doctorFail,
+		Detail:               strings.Join(failures, "; "),
+		Hint:                 "Remove the route model pin to inherit the Codex default, or update it to a backend-supported model.",
+		WorkflowOptimization: report,
+	}
+}
+
+func doctorRouteModelName(route workflowconfig.AgentRoute, index int) string {
+	if name := strings.TrimSpace(route.Name); name != "" {
+		return name
+	}
+	return fmt.Sprintf("routes[%d]", index)
+}
+
+func doctorWorkflowRouteModelPatchPath(index int) string {
+	return fmt.Sprintf("agents.routes[%d].model", index)
+}
+
+func defaultDoctorRouteModelProbe(ctx context.Context, req doctorRouteModelProbeRequest) error {
+	backend, err := buildAgentBackend(req.Backend)
+	if err != nil {
+		return err
+	}
+	_, err = backend.RunTurn(ctx, runnerpkg.AgentTurnRequest{
+		Workspace: strings.TrimSpace(req.Workspace),
+		Prompt:    "Reply exactly: OK",
+		Model:     strings.TrimSpace(req.Model),
+	}, nil)
+	return err
 }
 
 func doctorProjectID(project globalconfig.Project) string {
@@ -3687,6 +3812,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.autoPromoteConnector == nil {
 		d.autoPromoteConnector = defaults.autoPromoteConnector
 	}
+	if d.modelProbe == nil {
+		d.modelProbe = defaults.modelProbe
+	}
 	if d.executable == nil {
 		d.executable = defaults.executable
 	}
@@ -3709,6 +3837,7 @@ func defaultDoctorDeps() doctorDeps {
 		gitWorkTree:          defaultGitWorkTree,
 		gitRemoteURL:         defaultGitRemoteURL,
 		autoPromoteConnector: defaultDoctorAutoPromoteConnector,
+		modelProbe:           defaultDoctorRouteModelProbe,
 		executable:           os.Executable,
 	}
 }

@@ -59,15 +59,17 @@ func (b *AgentBackend) RunTurn(
 
 func agentUpdateFromCodex(update Update) runner.AgentUpdate {
 	return runner.AgentUpdate{
-		Type:            runner.AgentUpdateType(update.Type),
-		Method:          update.Method,
-		ProcessIdentity: update.ProcessIdentity,
-		ThreadID:        update.ThreadID,
-		TurnID:          update.TurnID,
-		ItemID:          update.ItemID,
-		Delta:           update.Delta,
-		Status:          update.Status,
-		Model:           update.Model,
+		Type:                runner.AgentUpdateType(update.Type),
+		Method:              update.Method,
+		ProcessIdentity:     update.ProcessIdentity,
+		ThreadID:            update.ThreadID,
+		TurnID:              update.TurnID,
+		ItemID:              update.ItemID,
+		Delta:               update.Delta,
+		Status:              update.Status,
+		Model:               update.Model,
+		BackendErrorBody:    update.BackendErrorBody,
+		BackendErrorMessage: update.BackendErrorMessage,
 		Tokens: runner.AgentTokenUsage{
 			InputTokens:           update.Tokens.InputTokens,
 			CachedInputTokens:     update.Tokens.CachedInputTokens,

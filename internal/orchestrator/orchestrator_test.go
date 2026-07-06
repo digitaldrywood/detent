@@ -1132,6 +1132,114 @@ func TestRunSchedulesRetryAfterRunnerPanic(t *testing.T) {
 	}
 }
 
+func TestRunParksIssueAfterRepeatedInstantBackendFailures(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-instant-fail", "digitaldrywood/detent#927", "Todo")
+	tracker := newFakeConnector(issue)
+	backendBody := `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"model rejected"}}`
+	runner := &staticRunner{err: instantBackendError{body: backendBody}}
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:           time.Millisecond,
+		MaxConcurrentAgents:    1,
+		MaxRetryBackoff:        time.Millisecond,
+		FailureRetryBaseDelay:  time.Millisecond,
+		ActiveStates:           []string{"Todo", "In Progress"},
+		ObservedStates:         []string{"Blocked"},
+		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
+		ContinuationRetryDelay: time.Second,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		_, ok := state.Blocked[issue.ID]
+		return ok
+	})
+
+	if got := runner.calls.Load(); got != 5 {
+		t.Fatalf("runner calls = %d, want 5", got)
+	}
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatalf("Retry[%q] present after circuit breaker", issue.ID)
+	}
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present after circuit breaker", issue.ID)
+	}
+	if !strings.Contains(state.Blocked[issue.ID].Reason, backendBody) {
+		t.Fatalf("Blocked[%q].Reason = %q, want backend body", issue.ID, state.Blocked[issue.ID].Reason)
+	}
+	updates := tracker.stateUpdateCalls()
+	if len(updates) == 0 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Blocked"}) {
+		t.Fatalf("state updates = %#v, want final Blocked transition", updates)
+	}
+	comments := tracker.commentCalls()
+	if len(comments) != 1 {
+		t.Fatalf("comments = %#v, want one circuit breaker comment", comments)
+	}
+	if !strings.Contains(comments[0].body, backendBody) || !strings.Contains(comments[0].body, "stopped retrying") {
+		t.Fatalf("comment body missing backend error:\n%s", comments[0].body)
+	}
+}
+
+func TestRunParksInstantBackendFailuresInBlockedWithDefaultStates(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-default-instant-fail", "digitaldrywood/detent#928", "Todo")
+	tracker := newFakeConnector(issue)
+	backendBody := `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"model rejected"}}`
+	runner := &staticRunner{err: instantBackendError{body: backendBody}}
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:           time.Millisecond,
+		MaxConcurrentAgents:    1,
+		MaxRetryBackoff:        time.Millisecond,
+		FailureRetryBaseDelay:  time.Millisecond,
+		ActiveStates:           []string{"Todo", "In Progress"},
+		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
+		ContinuationRetryDelay: time.Second,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		blocked, ok := state.Blocked[issue.ID]
+		return ok && strings.Contains(blocked.Reason, backendBody)
+	})
+
+	updates := tracker.stateUpdateCalls()
+	if len(updates) == 0 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Blocked"}) {
+		t.Fatalf("state updates = %#v, want final Blocked transition", updates)
+	}
+	if got := state.Blocked[issue.ID].Issue.State; got != "Blocked" {
+		t.Fatalf("Blocked[%q].Issue.State = %q, want Blocked", issue.ID, got)
+	}
+	fetchesAtBlock := tracker.fetchByStatesCalls()
+	state = waitForState(t, orch, func(state orchestrator.State) bool {
+		_, ok := state.Blocked[issue.ID]
+		return ok && tracker.fetchByStatesCalls() > fetchesAtBlock
+	})
+	if _, ok := state.Blocked[issue.ID]; !ok {
+		t.Fatalf("Blocked[%q] missing after blocked-status refresh", issue.ID)
+	}
+	if got := runner.calls.Load(); got != 5 {
+		t.Fatalf("runner calls = %d, want 5", got)
+	}
+}
+
 func TestRunRedispatchesDueRetryWithExistingClaim(t *testing.T) {
 	t.Parallel()
 
@@ -2842,6 +2950,22 @@ func (r *staticRunner) Run(_ context.Context, request orchestrator.RunRequest) (
 		r.onRun(request)
 	}
 	return r.result, r.err
+}
+
+type instantBackendError struct {
+	body string
+}
+
+func (e instantBackendError) Error() string {
+	return "codex turn failed: status failed: " + e.body
+}
+
+func (e instantBackendError) BackendErrorBody() string {
+	return e.body
+}
+
+func (e instantBackendError) BackendErrorMessage() string {
+	return "model rejected"
 }
 
 func (r *staticRunner) requests() []orchestrator.RunRequest {

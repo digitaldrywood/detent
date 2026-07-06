@@ -45,6 +45,7 @@ type State struct {
 	TransientCheckRetries    map[string]TransientCheckRetry
 	BudgetRefusals           map[string]BudgetRefusal
 	PriorAttempts            map[string]runpkg.PriorAttempt
+	InstantFailures          map[string]InstantFailure
 	DiffStats                map[string]DiffStats
 	ReapedWorkspaces         map[string]time.Time
 	TokenTotals              TokenTotals
@@ -132,6 +133,14 @@ type Retry struct {
 	WorkerHost string
 }
 
+type InstantFailure struct {
+	Issue          connector.Issue
+	Error          string
+	Count          int
+	FirstFailureAt time.Time
+	LastFailureAt  time.Time
+}
+
 type TransientCheckRetry struct {
 	IssueID       string
 	HeadSHA       string
@@ -159,6 +168,7 @@ func newState(cfg Config) State {
 		TransientCheckRetries:    map[string]TransientCheckRetry{},
 		BudgetRefusals:           map[string]BudgetRefusal{},
 		PriorAttempts:            map[string]runpkg.PriorAttempt{},
+		InstantFailures:          map[string]InstantFailure{},
 		DiffStats:                map[string]DiffStats{},
 		ReapedWorkspaces:         map[string]time.Time{},
 		planRework:               map[string]struct{}{},
@@ -199,6 +209,7 @@ func (s State) clone() State {
 		TransientCheckRetries:    maps.Clone(s.TransientCheckRetries),
 		BudgetRefusals:           make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
 		PriorAttempts:            clonePriorAttempts(s.PriorAttempts),
+		InstantFailures:          make(map[string]InstantFailure, len(s.InstantFailures)),
 		DiffStats:                make(map[string]DiffStats, len(s.DiffStats)),
 		ReapedWorkspaces:         make(map[string]time.Time, len(s.ReapedWorkspaces)),
 		TokenTotals:              s.TokenTotals,
@@ -230,6 +241,10 @@ func (s State) clone() State {
 	for id, retry := range s.Retry {
 		retry.Issue = cloneIssue(retry.Issue)
 		cloned.Retry[id] = retry
+	}
+	for id, failure := range s.InstantFailures {
+		failure.Issue = cloneIssue(failure.Issue)
+		cloned.InstantFailures[id] = failure
 	}
 	for id, refusal := range s.BudgetRefusals {
 		refusal.Issue = cloneIssue(refusal.Issue)
