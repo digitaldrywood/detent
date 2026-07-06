@@ -109,6 +109,24 @@ Commit generated output with the source change that produced it.
 - Use Templ, HTMX, and Tailwind v4 for server-rendered UI.
 - Prefer self-documenting code over comments.
 
+## UI Surface Guardrails
+
+High-impact UI changes require explicit issue authorization before implementation starts. If an issue does not describe the affected surface and real-estate tradeoff, choose a local or contextual treatment instead of a persistent global surface, or stop and ask for a more specific issue.
+
+A high-impact UI change adds or significantly alters any of the following:
+
+- Persistent banners, toasts, alerts, modals, drawers, or other elevated surfaces.
+- First-viewport real estate on primary operator screens such as Board, Fleet, Reports, Analytics, Health, API Keys, or Settings.
+- Kanban lane layout, card density, column spacing, sticky headers, or top-of-board summary regions.
+- Navigation, status counters, page chrome, or live dashboard regions.
+- Responsive behavior that changes what is visible on desktop, laptop, or mobile viewports.
+
+Issues that authorize high-impact UI work must include a UI surface contract covering the affected screen and component area, current and desired behavior, whether persistent global messaging is allowed, what information must stay contextual on cards, rows, or details, density expectations when relevant, an expected first-viewport screenshot, mockup, or text description, and the screenshot or browser verification expected.
+
+Persistent top-of-screen messages require explicit issue authorization. Do not infer permission for global banners, alerts, or notification rows from generic words like "alert", "blocked", "status", or "notify". Workflow state that is already visible in a Kanban card defaults to contextual card indicators instead of duplicated global messaging.
+
+Small copy changes, icon swaps, and local component styling do not need a heavyweight UI surface contract unless they affect layout, persistent surfaces, density, or viewport visibility. Visual changes to primary operator screens require screenshot or browser verification before review.
+
 ## Tests
 
 New or changed observable behavior needs tests.
