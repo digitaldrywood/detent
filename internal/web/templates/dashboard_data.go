@@ -90,24 +90,26 @@ type Budget = telemetry.Budget
 type RateLimits = telemetry.RateLimits
 
 type KanbanData struct {
-	Mode                    string
-	ProjectID               string
-	States                  []string
-	TerminalStates          []string
-	TerminalStatesByProject map[string][]string
-	AllowedTransitions      map[string][]string
-	ShowBlockedAlerts       bool
-	Projects                map[string]KanbanProjectData
-	Feedback                string
-	FeedbackKind            string
+	Mode                        string
+	ProjectID                   string
+	States                      []string
+	TerminalStates              []string
+	TerminalStatesByProject     map[string][]string
+	AllowedTransitions          map[string][]string
+	ShowBlockedAlerts           bool
+	SupportsPullRequestComments bool
+	Projects                    map[string]KanbanProjectData
+	Feedback                    string
+	FeedbackKind                string
 }
 
 type KanbanProjectData struct {
-	Mode               string
-	ProjectID          string
-	States             []string
-	TerminalStates     []string
-	AllowedTransitions map[string][]string
+	Mode                        string
+	ProjectID                   string
+	States                      []string
+	TerminalStates              []string
+	AllowedTransitions          map[string][]string
+	SupportsPullRequestComments bool
 }
 
 type KanbanMoveDialogData struct {
@@ -2240,11 +2242,12 @@ func projectKanbanCardKanbanData(data DashboardData, card projectKanbanCard) Kan
 		projectID = configuredProjectID
 	}
 	return KanbanData{
-		Mode:               projectData.Mode,
-		ProjectID:          projectID,
-		States:             projectData.States,
-		TerminalStates:     projectData.TerminalStates,
-		AllowedTransitions: projectData.AllowedTransitions,
+		Mode:                        projectData.Mode,
+		ProjectID:                   projectID,
+		States:                      projectData.States,
+		TerminalStates:              projectData.TerminalStates,
+		AllowedTransitions:          projectData.AllowedTransitions,
+		SupportsPullRequestComments: projectData.SupportsPullRequestComments,
 	}
 }
 
@@ -2814,10 +2817,25 @@ func projectKanbanCardCanRemove(data DashboardData, card projectKanbanCard) bool
 }
 
 func projectKanbanCardCanComment(data DashboardData, card projectKanbanCard) bool {
-	if !snapshotReady(data.Snapshot) || !isProjectDashboard(data) || !kanbanIntegrationEnabled(data) {
+	if !projectKanbanCardCanUseComments(data, card) {
 		return false
 	}
-	return strings.TrimSpace(card.IssueID) != "" || (card.PRNumber > 0 && strings.TrimSpace(card.PRRepository) != "")
+	return strings.TrimSpace(card.IssueID) != "" || projectKanbanCardCanCommentOnPullRequest(data, card)
+}
+
+func projectKanbanCardCanCommentOnIssue(data DashboardData, card projectKanbanCard) bool {
+	return projectKanbanCardCanUseComments(data, card) && strings.TrimSpace(card.IssueID) != ""
+}
+
+func projectKanbanCardCanCommentOnPullRequest(data DashboardData, card projectKanbanCard) bool {
+	if !projectKanbanCardCanUseComments(data, card) || card.PRNumber <= 0 || strings.TrimSpace(card.PRRepository) == "" {
+		return false
+	}
+	return projectKanbanCardKanbanData(data, card).SupportsPullRequestComments
+}
+
+func projectKanbanCardCanUseComments(data DashboardData, card projectKanbanCard) bool {
+	return snapshotReady(data.Snapshot) && isProjectDashboard(data) && projectKanbanCardIntegrationEnabled(data, card)
 }
 
 func projectKanbanMoveTargetStates(data DashboardData, card projectKanbanCard) []string {

@@ -169,6 +169,21 @@ func TestFactoryGitHubConnectorImplementsAuthenticator(t *testing.T) {
 	}
 }
 
+func TestFactoryLinearConnectorSupportsIssueCommentsOnly(t *testing.T) {
+	t.Parallel()
+
+	c, err := NewFromConfig(Config{Kind: "linear"})
+	if err != nil {
+		t.Fatalf("NewFromConfig() error = %v", err)
+	}
+	if _, ok := c.(connector.IssueCommentReader); !ok {
+		t.Fatalf("connector = %T, want connector.IssueCommentReader", c)
+	}
+	if _, ok := c.(connector.PullRequestCommenter); ok {
+		t.Fatalf("connector = %T, want no connector.PullRequestCommenter", c)
+	}
+}
+
 func TestFactoryGitHubLocalConnectorSelection(t *testing.T) {
 	t.Parallel()
 

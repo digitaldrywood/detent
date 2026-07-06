@@ -454,13 +454,13 @@ func BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions boo
 					return templ_7745c5c3_Err
 				}
 			}
-			if card.IssueID != "" && projectKanbanCardCanComment(data, card) {
+			if projectKanbanCardCanCommentOnIssue(data, card) {
 				templ_7745c5c3_Err = sheetCommentTrigger(data, card, "issue", "Comment on issue").Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			if card.PRNumber > 0 && card.PRRepository != "" && projectKanbanCardCanComment(data, card) {
+			if projectKanbanCardCanCommentOnPullRequest(data, card) {
 				templ_7745c5c3_Err = sheetCommentTrigger(data, card, "pr", "Comment on PR").Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
