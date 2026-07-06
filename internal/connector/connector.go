@@ -89,6 +89,10 @@ type IssueCommentDeleter interface {
 	DeleteIssueComment(context.Context, string, string) error
 }
 
+type PullRequestCommentReader interface {
+	FetchPullRequestComments(context.Context, string, int) ([]IssueComment, error)
+}
+
 type IssueDraft struct {
 	Title  string
 	Body   string

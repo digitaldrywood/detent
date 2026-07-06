@@ -2707,6 +2707,44 @@ func TestConnectorFetchIssueCommentsMapsRESTMetadata(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchPullRequestCommentsMapsRESTMetadata(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodGet,
+		path:   "/repos/example/repo/issues/42/comments?per_page=100",
+		body:   `[{"id":202,"node_id":"IC_pr","body":"Review note","html_url":"https://github.com/example/repo/pull/42#issuecomment-202","user":{"login":"reviewer"},"created_at":"2026-07-06T13:00:00Z","updated_at":"2026-07-06T13:10:00Z"}]`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	got, err := c.FetchPullRequestComments(context.Background(), "example/repo", 42)
+	if err != nil {
+		t.Fatalf("FetchPullRequestComments() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchPullRequestComments() len = %d, want 1", len(got))
+	}
+
+	comment := got[0]
+	if comment.ID != "IC_pr" ||
+		comment.Backend != connector.BackendGitHub.String() ||
+		comment.Body != "Review note" ||
+		comment.URL != "https://github.com/example/repo/pull/42#issuecomment-202" ||
+		comment.AuthorLogin != "reviewer" ||
+		comment.Local ||
+		comment.TargetType != connector.IssueCommentTargetPullRequest {
+		t.Fatalf("FetchPullRequestComments()[0] = %#v, want normalized GitHub PR metadata", comment)
+	}
+	createdAt := time.Date(2026, 7, 6, 13, 0, 0, 0, time.UTC)
+	updatedAt := time.Date(2026, 7, 6, 13, 10, 0, 0, time.UTC)
+	if comment.CreatedAt == nil || !comment.CreatedAt.Equal(createdAt) {
+		t.Fatalf("CreatedAt = %v, want %v", comment.CreatedAt, createdAt)
+	}
+	if comment.UpdatedAt == nil || !comment.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("UpdatedAt = %v, want %v", comment.UpdatedAt, updatedAt)
+	}
+}
+
 func TestConnectorCreateCommentCallsAddComment(t *testing.T) {
 	t.Parallel()
 

@@ -861,6 +861,9 @@ func (s *Server) apiKanbanComment(c echo.Context) error {
 	}
 	req, response, status := parseKanbanCommentRequest(c)
 	if response != "" {
+		if kanbanThreadForm(c) {
+			return s.kanbanIssueCommentThread(c, response, kanbanRequestValue(c, "body"), "")
+		}
 		if kanbanDialogForm(c) {
 			return s.kanbanCommentDialogValidation(c, response)
 		}
@@ -869,12 +872,18 @@ func (s *Server) apiKanbanComment(c echo.Context) error {
 
 	target, response, status := s.kanbanActionTarget(req.projectID)
 	if response != "" {
+		if kanbanThreadForm(c) {
+			return s.kanbanIssueCommentThread(c, response, req.body, "")
+		}
 		if kanbanDialogForm(c) {
 			return s.kanbanCommentDialogValidation(c, response)
 		}
 		return kanbanFeedback(c, status, response)
 	}
 	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
+		if kanbanThreadForm(c) {
+			return s.kanbanIssueCommentThread(c, "Kanban integration mode is not enabled.", req.body, "")
+		}
 		if kanbanDialogForm(c) {
 			return s.kanbanCommentDialogValidation(c, "Kanban integration mode is not enabled.")
 		}
@@ -887,6 +896,9 @@ func (s *Server) apiKanbanComment(c echo.Context) error {
 		return kanbanFeedback(c, http.StatusNotFound, "Comment target is not available on the current board.")
 	}
 	if !s.kanbanCommentTargetKnown(req) {
+		if kanbanThreadForm(c) {
+			return s.kanbanIssueCommentThread(c, "Comment target is not available on the current board.", req.body, "")
+		}
 		if kanbanDialogForm(c) {
 			return s.kanbanCommentDialogValidation(c, "Comment target is not available on the current board.")
 		}
@@ -909,9 +921,15 @@ func (s *Server) apiKanbanComment(c echo.Context) error {
 	})
 	if err != nil {
 		s.logger.WarnContext(c.Request().Context(), "kanban comment failed", "project", req.projectID, "target", req.target, "error", err)
+		if kanbanThreadForm(c) {
+			return s.kanbanIssueCommentThread(c, "Comment failed: "+err.Error(), req.body, "")
+		}
 		return kanbanFeedback(c, http.StatusBadGateway, "Comment failed: "+err.Error())
 	}
 	s.requestKanbanRefresh(c.Request().Context())
+	if kanbanThreadForm(c) {
+		return s.kanbanIssueCommentThread(c, "", "", "Comment submitted.")
+	}
 	return kanbanFeedback(c, http.StatusOK, "Comment submitted.")
 }
 
@@ -1014,7 +1032,8 @@ func (s *Server) kanbanCommentThreadResponse(c echo.Context, target kanbanAction
 		}
 		card = templates.WithKanbanCardComments(card, telemetryIssueComments(comments))
 	}
-	return render(c, templates.KanbanCommentThread(data, card, true))
+	conversation := templates.BoardCardConversationData(data, card, true, false)
+	return render(c, templates.KanbanIssueCommentsPanel(conversation))
 }
 
 func kanbanCommentMutationPastTense(verb string) string {
@@ -1157,6 +1176,119 @@ func (s *Server) kanbanCommentDialogData(c echo.Context, message string) (templa
 	return data, ""
 }
 
+func (s *Server) kanbanIssueCommentThread(c echo.Context, message string, body string, notice string) error {
+	data := s.kanbanThreadConversationData(c)
+	data = templates.KanbanConversationWithIssueForm(data, body, message, notice)
+	return render(c, templates.KanbanIssueCommentsPanel(data))
+}
+
+func (s *Server) kanbanThreadConversationData(c echo.Context) templates.KanbanConversationData {
+	ctx := c.Request().Context()
+	projectID := kanbanRequestValue(c, "project_id")
+	projectScope := kanbanRequestValue(c, "kanban_board") == "project" && projectID != ""
+	data := s.boardData(ctx, s.latestSnapshot(ctx))
+	if projectScope {
+		if scoped, ok := s.projectDashboardData(ctx, projectID, s.latestSnapshot(ctx)); ok {
+			data = scoped
+		}
+	}
+	issueIdentity := kanbanRequestValue(c, "issue_identity")
+	if issueIdentity == "" {
+		issueIdentity = kanbanRequestValue(c, "identifier")
+	}
+	if issueIdentity == "" {
+		issueIdentity = kanbanRequestValue(c, "issue_id")
+	}
+	card, ok := templates.FindBoardCard(data, projectID, issueIdentity)
+	if !ok {
+		return templates.KanbanConversationData{
+			ProjectID:     projectID,
+			BoardScope:    kanbanRequestValue(c, "kanban_board"),
+			IssueIdentity: issueIdentity,
+			IssueID:       kanbanRequestValue(c, "issue_id"),
+			Identifier:    kanbanRequestValue(c, "identifier"),
+			Title:         kanbanRequestValue(c, "title"),
+			CanComment:    true,
+		}
+	}
+	boardActions := strings.EqualFold(kanbanRequestValue(c, "board_actions"), "true")
+	expanded := strings.EqualFold(kanbanRequestValue(c, "expanded"), "true")
+	conversation := templates.BoardCardConversationData(data, card, boardActions, expanded)
+	return s.hydrateKanbanConversation(ctx, conversation)
+}
+
+func (s *Server) hydrateKanbanConversation(ctx context.Context, data templates.KanbanConversationData) templates.KanbanConversationData {
+	target, response, _ := s.kanbanActionTarget(data.ProjectID)
+	if response != "" {
+		data.IssueError = response
+		if data.PRNumber > 0 {
+			data.PRCommentsSupported = false
+			data.PRComments = nil
+		}
+		return data
+	}
+	if reader, ok := target.connector.(connector.IssueCommentReader); ok {
+		comments, err := reader.FetchIssueComments(ctx, connector.Issue{
+			ID:         data.IssueID,
+			Identifier: data.Identifier,
+			URL:        data.IssueURL,
+		})
+		if err != nil {
+			data.IssueError = "Issue comments unavailable: " + err.Error()
+		} else {
+			data = templates.KanbanConversationWithIssueComments(data, telemetryCommentsFromConnector(comments), data.IssueError)
+		}
+	}
+	if data.PRNumber <= 0 || strings.TrimSpace(data.PRRepository) == "" {
+		data.PRCommentsSupported = false
+		data.PRComments = nil
+		return data
+	}
+	reader, ok := target.connector.(connector.PullRequestCommentReader)
+	if !ok {
+		data.PRCommentsSupported = false
+		data.PRComments = nil
+		data.PRError = ""
+		return data
+	}
+	comments, err := reader.FetchPullRequestComments(ctx, data.PRRepository, data.PRNumber)
+	data.PRCommentsSupported = true
+	if err != nil {
+		data.PRError = "PR comments unavailable: " + err.Error()
+		return data
+	}
+	return templates.KanbanConversationWithPRComments(data, telemetryCommentsFromConnector(comments), true, data.PRError)
+}
+
+func telemetryCommentsFromConnector(comments []connector.IssueComment) []telemetry.IssueComment {
+	out := make([]telemetry.IssueComment, 0, len(comments))
+	for _, comment := range comments {
+		out = append(out, telemetry.IssueComment{
+			ID:                comment.ID,
+			Backend:           comment.Backend,
+			Body:              comment.Body,
+			URL:               comment.URL,
+			AuthorLogin:       comment.AuthorLogin,
+			AuthorDisplayName: comment.AuthorDisplayName,
+			CreatedAt:         cloneCommentTime(comment.CreatedAt),
+			UpdatedAt:         cloneCommentTime(comment.UpdatedAt),
+			Local:             comment.Local,
+			CanEdit:           comment.CanEdit,
+			CanDelete:         comment.CanDelete,
+			TargetType:        comment.TargetType,
+		})
+	}
+	return out
+}
+
+func cloneCommentTime(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	out := *value
+	return &out
+}
+
 func parseKanbanMoveRequest(c echo.Context) (kanbanMoveRequest, string, int) {
 	req := kanbanMoveRequest{
 		projectID:    strings.TrimSpace(c.FormValue("project_id")),
@@ -1256,6 +1388,10 @@ func kanbanFormOrQueryValue(c echo.Context, key string) string {
 
 func kanbanDialogForm(c echo.Context) bool {
 	return c.Request().Header.Get("HX-Request") == "true" && strings.EqualFold(strings.TrimSpace(c.FormValue("kanban_dialog")), "true")
+}
+
+func kanbanThreadForm(c echo.Context) bool {
+	return c.Request().Header.Get("HX-Request") == "true" && strings.EqualFold(strings.TrimSpace(c.FormValue("kanban_thread")), "true")
 }
 
 func kanbanRequestValue(c echo.Context, key string) string {

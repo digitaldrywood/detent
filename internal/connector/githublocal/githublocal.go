@@ -65,6 +65,7 @@ var _ connector.IssueStateProber = (*Connector)(nil)
 var _ connector.IssuesByStatesLimiter = (*Connector)(nil)
 var _ connector.ProjectRemover = (*Connector)(nil)
 var _ connector.PullRequestCommenter = (*Connector)(nil)
+var _ connector.PullRequestCommentReader = (*Connector)(nil)
 var _ connector.PullRequestHydrator = (*Connector)(nil)
 var _ connector.PullRequestMerger = (*Connector)(nil)
 var _ connector.RESTRateLimitUsageReporter = (*Connector)(nil)
@@ -315,6 +316,10 @@ func (c *Connector) RemoveIssueFromProject(ctx context.Context, issueID string) 
 
 func (c *Connector) CreatePullRequestComment(ctx context.Context, repository string, number int, body string) error {
 	return c.github.CreatePullRequestComment(ctx, repository, number, body)
+}
+
+func (c *Connector) FetchPullRequestComments(ctx context.Context, repository string, number int) ([]connector.IssueComment, error) {
+	return c.github.FetchPullRequestComments(ctx, repository, number)
 }
 
 func (c *Connector) MergePullRequest(ctx context.Context, repository string, number int, headSHA string) error {

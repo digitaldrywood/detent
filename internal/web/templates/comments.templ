@@ -1,0 +1,247 @@
+package templates
+
+import "github.com/digitaldrywood/detent/internal/web/ui/components/icon"
+
+templ KanbanConversation(data KanbanConversationData) {
+	@kanbanConversationScript()
+	<section class="flex min-h-0 flex-col gap-3" aria-label="Conversation" data-kanban-comment-tabs>
+		<header class="flex flex-none items-center gap-2">
+			<div class="min-w-0 flex-1">
+				<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Conversation</h3>
+			</div>
+			<button
+				type="button"
+				class="inline-flex size-7 items-center justify-center rounded-chip text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+				hx-get={ kanbanConversationSheetPath(data, !data.Expanded) }
+				hx-target="#detail-sheet-host"
+				hx-swap="innerHTML"
+				aria-label={ kanbanConversationExpandLabel(data) }
+				title={ kanbanConversationExpandLabel(data) }
+			>
+				if data.Expanded {
+					@icon.Minimize2(icon.Props{Class: "size-4"})
+				} else {
+					@icon.Maximize2(icon.Props{Class: "size-4"})
+				}
+			</button>
+		</header>
+		if kanbanConversationHasPRTab(data) {
+			<div class="flex flex-none items-center gap-1 rounded-card bg-elev p-1" role="tablist" aria-label="Comment threads">
+				@kanbanConversationTabButton("issue", "Issue comments", len(data.IssueComments), true)
+				@kanbanConversationTabButton("pr", "PR comments", len(data.PRComments), false)
+			</div>
+		}
+		<div id="kanban-issue-comments-tab-panel" role="tabpanel" data-kanban-comment-panel="issue">
+			@KanbanIssueCommentsPanel(data)
+		</div>
+		if kanbanConversationHasPRTab(data) {
+			<div id="kanban-pr-comments-tab-panel" role="tabpanel" data-kanban-comment-panel="pr" hidden>
+				@kanbanPRCommentsPanel(data)
+			</div>
+		}
+	</section>
+}
+
+templ kanbanConversationTabButton(id string, label string, count int, active bool) {
+	<button
+		type="button"
+		class="inline-flex min-h-7 flex-1 items-center justify-center gap-1.5 rounded-chip px-2 text-xs font-medium text-sec hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent data-[kanban-comment-active=true]:bg-surface data-[kanban-comment-active=true]:text-accent"
+		role="tab"
+		aria-selected={ kanbanBool(active) }
+		aria-controls={ "kanban-" + id + "-comments-tab-panel" }
+		tabindex={ kanbanTabIndex(active) }
+		data-kanban-comment-tab={ id }
+		data-kanban-comment-active={ kanbanBool(active) }
+	>
+		<span class="truncate">{ label }</span>
+		<span class="rounded-chip bg-page px-1.5 py-0.5 font-mono text-2xs text-sec">{ kanbanConversationCountLabel(count) }</span>
+	</button>
+}
+
+templ KanbanIssueCommentsPanel(data KanbanConversationData) {
+	<div id="kanban-issue-comments-panel" class="flex min-h-0 flex-col gap-3">
+		@kanbanThreadState(data.IssueError, data.IssueNotice)
+		@kanbanCommentList(data, data.IssueComments, "No issue comments yet.", data.Expanded, true)
+		if data.CanComment {
+			<form class="flex flex-none flex-col gap-2" hx-post="/api/v1/kanban/comment" hx-target="#kanban-issue-comments-panel" hx-swap="outerHTML" hx-disabled-elt="find button" hx-indicator="#kanban-comment-submit-indicator">
+				<input type="hidden" name="kanban_thread" value="true"/>
+				<input type="hidden" name="project_id" value={ data.ProjectID }/>
+				<input type="hidden" name="kanban_board" value={ data.BoardScope }/>
+				<input type="hidden" name="target" value="issue"/>
+				<input type="hidden" name="issue_id" value={ data.IssueID }/>
+				<input type="hidden" name="identifier" value={ data.Identifier }/>
+				<input type="hidden" name="issue_identity" value={ data.IssueIdentity }/>
+				<input type="hidden" name="title" value={ data.Title }/>
+				if data.BoardActions {
+					<input type="hidden" name="board_actions" value="true"/>
+				}
+				if data.Expanded {
+					<input type="hidden" name="expanded" value="true"/>
+				}
+				<label class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim" for="kanban-thread-comment-body">Add comment</label>
+				<textarea id="kanban-thread-comment-body" name="body" rows="4" class="min-h-24 w-full resize-y rounded-md border border-line bg-page px-3 py-2 text-sm text-text placeholder:text-sec focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent" placeholder="Issue comment">{ data.Body }</textarea>
+				<div class="flex items-center justify-end gap-2">
+					<span id="kanban-comment-submit-indicator" class="htmx-indicator text-xs text-sec">Submitting...</span>
+					<button type="submit" class="inline-flex min-h-8 items-center gap-1.5 rounded-card border border-line px-3 text-xs font-medium text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+						@icon.MessageSquarePlus(icon.Props{Class: "size-4"})
+						Comment
+					</button>
+				</div>
+			</form>
+		}
+	</div>
+}
+
+templ kanbanPRCommentsPanel(data KanbanConversationData) {
+	<div id="kanban-pr-comments-panel" class="flex min-h-0 flex-col gap-3">
+		<div class="flex flex-none items-center justify-between gap-2 text-xs">
+			<span class="font-mono text-sec">{ kanbanConversationPRLabel(data) }</span>
+			if data.PRURL != "" {
+				<a href={ data.PRURL } target="_blank" rel="noopener noreferrer" class="font-medium text-accent hover:underline">Open PR ↗</a>
+			}
+		</div>
+		@kanbanThreadState(data.PRError, "")
+		@kanbanCommentList(data, data.PRComments, "No PR comments yet.", data.Expanded, false)
+	</div>
+}
+
+templ kanbanThreadState(err string, notice string) {
+	if err != "" {
+		<div class="rounded-card border border-err/40 bg-err/10 px-3 py-2 text-xs text-err" role="alert">{ err }</div>
+	}
+	if notice != "" {
+		<div class="rounded-card border border-ok/40 bg-ok/10 px-3 py-2 text-xs text-ok" role="status">{ notice }</div>
+	}
+}
+
+templ kanbanCommentList(data KanbanConversationData, comments []KanbanConversationComment, empty string, expanded bool, mutable bool) {
+	<div class={ kanbanCommentListClass(expanded) }>
+		if len(comments) == 0 {
+			<div class="flex min-h-24 items-center justify-center px-3 text-center text-xs text-sec">{ empty }</div>
+		}
+		for _, comment := range comments {
+			<article class="flex flex-col gap-2 rounded-card border border-line bg-surface px-3 py-2.5">
+				<div class="flex items-start gap-3">
+					<div class="min-w-0 flex-1">
+						<header class="flex min-w-0 items-center gap-2 text-2xs">
+							<span class="min-w-0 truncate font-medium text-text">{ comment.Author }</span>
+							<span class="font-mono text-sec" title={ comment.CreatedTitle }>{ comment.Created }</span>
+							<span class="flex-1"></span>
+							<span class="rounded-chip bg-elev px-1.5 py-0.5 font-mono text-dim">{ comment.Backend }</span>
+							<span class="rounded-chip bg-elev px-1.5 py-0.5 font-mono text-dim">{ comment.LocationStatus }</span>
+							if comment.URL != "" {
+								<a href={ comment.URL } target="_blank" rel="noopener noreferrer" class="font-medium text-accent hover:underline">Open ↗</a>
+							}
+						</header>
+						<p class="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-text">{ comment.Body }</p>
+					</div>
+					if mutable && kanbanConversationCanMutateComment(data, comment) {
+						<div class="flex flex-none items-center gap-1">
+							if comment.CanDelete {
+								<form class="inline-flex" hx-delete={ kanbanConversationCommentDeletePath(data, comment) } hx-target="#kanban-issue-comments-panel" hx-swap="outerHTML" hx-confirm="Delete this comment?">
+									<input type="hidden" name="project_id" value={ data.ProjectID }/>
+									<input type="hidden" name="issue_id" value={ data.IssueID }/>
+									<input type="hidden" name="comment_id" value={ comment.ID }/>
+									<button type="submit" class="rounded-chip p-1 text-sec hover:bg-err/15 hover:text-err" title="Delete comment" aria-label="Delete comment">
+										@icon.Trash2(icon.Props{Class: "size-3.5"})
+									</button>
+								</form>
+							}
+						</div>
+					}
+				</div>
+				if mutable && kanbanConversationCanEditComment(data, comment) {
+					<details>
+						<summary class="inline-flex cursor-pointer list-none items-center gap-1.5 rounded-card border border-line px-2.5 py-1.5 text-xs font-medium text-sec hover:border-accent hover:text-accent">
+							@icon.PencilLine(icon.Props{Class: "size-3.5"})
+							Edit
+						</summary>
+						<form class="mt-2 grid gap-2" hx-post="/api/v1/kanban/comment/edit" hx-target="#kanban-issue-comments-panel" hx-swap="outerHTML">
+							<input type="hidden" name="project_id" value={ data.ProjectID }/>
+							<input type="hidden" name="issue_id" value={ data.IssueID }/>
+							<input type="hidden" name="comment_id" value={ comment.ID }/>
+							<textarea name="body" rows="4" class="min-h-24 w-full resize-y rounded-md border border-line bg-page px-3 py-2 text-xs text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent">{ comment.Body }</textarea>
+							<div class="flex justify-end">
+								<button type="submit" class="inline-flex items-center gap-1.5 rounded-card border border-line px-2.5 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent">
+									@icon.Save(icon.Props{Class: "size-3.5"})
+									Save
+								</button>
+							</div>
+						</form>
+					</details>
+				}
+			</article>
+		}
+	</div>
+}
+
+templ kanbanConversationScript() {
+	<script>
+		(function() {
+			if (window.__detentKanbanCommentTabsRegistered) {
+				return;
+			}
+			window.__detentKanbanCommentTabsRegistered = true;
+
+			function tabs(root) {
+				return Array.from(root.querySelectorAll("[data-kanban-comment-tab]"));
+			}
+
+			function panels(root) {
+				return Array.from(root.querySelectorAll("[data-kanban-comment-panel]"));
+			}
+
+			function setActive(root, id) {
+				tabs(root).forEach(function(tab) {
+					const active = tab.dataset.kanbanCommentTab === id;
+					tab.setAttribute("aria-selected", active ? "true" : "false");
+					tab.setAttribute("tabindex", active ? "0" : "-1");
+					tab.dataset.kanbanCommentActive = active ? "true" : "false";
+				});
+				panels(root).forEach(function(panel) {
+					panel.hidden = panel.dataset.kanbanCommentPanel !== id;
+				});
+			}
+
+			function moveFocus(tab, offset) {
+				const root = tab.closest("[data-kanban-comment-tabs]");
+				if (!root) {
+					return;
+				}
+				const list = tabs(root);
+				const index = list.indexOf(tab);
+				if (index < 0) {
+					return;
+				}
+				const next = list[(index + offset + list.length) % list.length];
+				next.focus();
+				setActive(root, next.dataset.kanbanCommentTab || "issue");
+			}
+
+			document.addEventListener("click", function(event) {
+				const tab = event.target instanceof Element ? event.target.closest("[data-kanban-comment-tab]") : null;
+				if (!tab) {
+					return;
+				}
+				const root = tab.closest("[data-kanban-comment-tabs]");
+				if (root) {
+					setActive(root, tab.dataset.kanbanCommentTab || "issue");
+				}
+			});
+
+			document.addEventListener("keydown", function(event) {
+				const tab = event.target instanceof Element ? event.target.closest("[data-kanban-comment-tab]") : null;
+				if (!tab) {
+					return;
+				}
+				if (event.key === "ArrowRight") {
+					event.preventDefault();
+					moveFocus(tab, 1);
+				} else if (event.key === "ArrowLeft") {
+					event.preventDefault();
+					moveFocus(tab, -1);
+				}
+			});
+		})();
+	</script>
+}
