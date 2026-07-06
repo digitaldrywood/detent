@@ -182,51 +182,54 @@ func boardFigures(snapshot telemetry.Snapshot) []primitives.Figure {
 // Kanban), so the Review sheet may offer inline Move/Remove; the Fleet and
 // Overview pages pass false so their Review sheets stay read-only.
 func boardExceptions(data DashboardData, boardActions bool) []primitives.Exception {
-	snapshot := data.Snapshot
-	now := pipelineNow(snapshot)
-	fallbackProjectID := strings.TrimSpace(data.ProjectID)
-	exceptions := make([]primitives.Exception, 0, len(snapshot.Blocked))
-	for _, row := range snapshot.Blocked {
-		// Legacy single-project snapshots can leave Issue.ProjectID empty; fall
-		// back to the scoped dashboard project so the Review sheet keeps its
-		// project-scoped Move/Remove links (matching board card views).
-		projectID := strings.TrimSpace(row.ProjectID)
-		if projectID == "" {
-			projectID = fallbackProjectID
-		}
-		identity := boardCardIdentityToken(row.Identifier, row.ID, projectKanbanIssueNumber(row.Issue))
-		exception := primitives.Exception{
-			ID:    "exception-" + boardCardScopedSlug(projectID, identity),
-			Kind:  boardExceptionKind(row),
-			Title: boardExceptionTitle(row),
-			Repo:  projectID,
-			Ref:   projectKanbanIssueNumber(row.Issue),
-			Rest:  boardExceptionDetail(row, now),
-		}
-		if !boardBlockedWaiting(row.Source, row.RecoveryReason, row.Error) {
-			exception.ActionLabel = "Review"
-			exception.ActionAttrs = sheetOpenAttrs(projectID, identity, projectKanbanBoardScope(data), boardActions)
-		}
-		exceptions = append(exceptions, exception)
+	if boardActions && !data.Kanban.ShowBlockedAlerts {
+		return nil
 	}
-	return exceptions
+
+	rows := make([]telemetry.Blocked, 0, len(data.Snapshot.Blocked))
+	for _, row := range data.Snapshot.Blocked {
+		if boardBlockedWaiting(row.Source, row.RecoveryReason, row.Error) {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return []primitives.Exception{boardBlockedExceptionSummary(data, rows, boardActions)}
 }
 
-func boardExceptionKind(row telemetry.Blocked) primitives.Kind {
-	if boardBlockedWaiting(row.Source, row.RecoveryReason, row.Error) {
-		return primitives.KindWarn
+func boardBlockedExceptionSummary(data DashboardData, rows []telemetry.Blocked, boardActions bool) primitives.Exception {
+	row := rows[0]
+	projectID := strings.TrimSpace(row.ProjectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(data.ProjectID)
 	}
-	return primitives.KindErr
+	identity := boardCardIdentityToken(row.Identifier, row.ID, projectKanbanIssueNumber(row.Issue))
+	exception := primitives.Exception{
+		ID:    "exception-" + boardCardScopedSlug(projectID, identity),
+		Kind:  primitives.KindErr,
+		Title: "Needs review",
+		Repo:  projectID,
+		Ref:   projectKanbanIssueNumber(row.Issue),
+		Rest:  boardExceptionDetail(row, pipelineNow(data.Snapshot)),
+	}
+	if len(rows) == 1 {
+		exception.ActionLabel = "Review"
+		exception.ActionAttrs = sheetOpenAttrs(projectID, identity, projectKanbanBoardScope(data), boardActions)
+		return exception
+	}
+	exception.ID = "exception-blocked-review"
+	exception.Title = formatCount(len(rows)) + " blocked items need review"
+	exception.Rest = strings.TrimSpace(exception.Rest + " · " + boardMoreBlockedLabel(len(rows)-1))
+	return exception
 }
 
-func boardExceptionTitle(row telemetry.Blocked) string {
-	if !boardBlockedWaiting(row.Source, row.RecoveryReason, row.Error) {
-		return "Needs review"
+func boardMoreBlockedLabel(count int) string {
+	if count == 1 {
+		return "plus 1 more"
 	}
-	if boardBlockedDependencyWaiting(row.Source, row.RecoveryReason, row.Error, row.BlockedBy) {
-		return "Dependency waiting"
-	}
-	return "Blocked status waiting"
+	return "plus " + formatCount(count) + " more"
 }
 
 func boardExceptionDetail(row telemetry.Blocked, now time.Time) string {

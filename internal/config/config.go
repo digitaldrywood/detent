@@ -506,6 +506,7 @@ type Kanban struct {
 	Mode               string              `yaml:"mode,omitempty"`
 	IssueStateFieldID  int                 `yaml:"issue_state_field_id,omitempty"`
 	AllowedTransitions map[string][]string `yaml:"allowed_transitions,omitempty"`
+	ShowBlockedAlerts  bool                `yaml:"show_blocked_alerts,omitempty"`
 }
 
 type Observability struct {

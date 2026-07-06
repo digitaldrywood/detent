@@ -135,6 +135,9 @@ server:
   port: 4000
   kanban:
     mode: integration
+    # Set show_blocked_alerts: true only when red blocked states should appear
+    # as one compact top-of-board alert; dependency waits stay on cards.
+    # show_blocked_alerts: true
     # Use mode: read_only for observer/shared dashboards or until write probes pass.
     # Optional allowed_transitions expose broader manual status editing.
     # allowed_transitions:

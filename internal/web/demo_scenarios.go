@@ -62,15 +62,16 @@ type demoScenarioSet struct {
 }
 
 type demoScenario struct {
-	ID           string
-	Route        string
-	Method       string
-	WaitSelector string
-	Page         string
-	Variant      string
-	ProjectID    string
-	KanbanMode   string
-	Status       int
+	ID                string
+	Route             string
+	Method            string
+	WaitSelector      string
+	Page              string
+	Variant           string
+	ProjectID         string
+	KanbanMode        string
+	ShowBlockedAlerts bool
+	Status            int
 }
 
 type demoScenariosResponse struct {
@@ -136,6 +137,7 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "github-api-secondary-backoff", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-secondary-backoff"},
 		{ID: "github-api-primary-exhausted", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-primary-exhausted"},
 		{ID: "fleet-kanban-multiproject", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "dense-kanban", KanbanMode: workflowconfig.KanbanModeReadOnly},
+		{ID: "fleet-kanban-blocked-alerts", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "healthy", KanbanMode: workflowconfig.KanbanModeReadOnly, ShowBlockedAlerts: true},
 		{ID: "project-active-overview", Route: "/projects/dogfood", WaitSelector: "#snapshot", Page: "project", Variant: "healthy", ProjectID: demoPrimaryProjectID},
 		{ID: "project-paused-overview", Route: "/projects/mobile-client", WaitSelector: "#snapshot", Page: "project", Variant: "paused", ProjectID: "mobile-client"},
 		{ID: "project-empty-overview", Route: "/projects/agent-lab", WaitSelector: "#snapshot", Page: "project", Variant: "project-empty", ProjectID: "agent-lab"},
@@ -440,6 +442,7 @@ func demoKanbanData(scenario demoScenario, projectID string) templates.KanbanDat
 		States:             states,
 		TerminalStates:     []string{"Done", "Cancelled"},
 		AllowedTransitions: demoKanbanTransitions(states),
+		ShowBlockedAlerts:  scenario.ShowBlockedAlerts,
 	}
 }
 

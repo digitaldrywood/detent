@@ -96,6 +96,7 @@ type KanbanData struct {
 	TerminalStates          []string
 	TerminalStatesByProject map[string][]string
 	AllowedTransitions      map[string][]string
+	ShowBlockedAlerts       bool
 	Projects                map[string]KanbanProjectData
 	Feedback                string
 	FeedbackKind            string

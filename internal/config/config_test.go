@@ -152,6 +152,7 @@ server:
   port: 4001
   kanban:
     mode: integration
+    show_blocked_alerts: true
     allowed_transitions:
       In Progress:
         - Blocked
@@ -358,6 +359,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Server.Kanban.Mode != KanbanModeIntegration {
 		t.Fatalf("Server.Kanban.Mode = %q, want %q", cfg.Server.Kanban.Mode, KanbanModeIntegration)
+	}
+	if !cfg.Server.Kanban.ShowBlockedAlerts {
+		t.Fatal("Server.Kanban.ShowBlockedAlerts = false, want true")
 	}
 	wantTransitions := map[string][]string{
 		"In Progress": {"Blocked", "Cancelled"},
@@ -825,6 +829,9 @@ func TestKanbanTransitionPolicyAllowsConfiguredOverrides(t *testing.T) {
 	t.Parallel()
 
 	cfg := Default()
+	if cfg.Server.Kanban.ShowBlockedAlerts {
+		t.Fatal("Default Server.Kanban.ShowBlockedAlerts = true, want false")
+	}
 	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "Rework", "Merging"}
 	cfg.Tracker.ObservedStates = []string{"Backlog", "Blocked", "Human Review"}
 	cfg.Tracker.TerminalStates = []string{"Done", "Cancelled"}

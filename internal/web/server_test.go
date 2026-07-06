@@ -1147,10 +1147,25 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 	board := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/", http.StatusOK, map[string]string{
 		web.DemoScenarioHeader: "fleet-healthy-parallel-work",
 	})
-	for _, want := range []string{`id="board-lanes"`, "Implement page-addressable screenshot scenarios", "Dependency waiting"} {
+	for _, want := range []string{`id="board-lanes"`, "Implement page-addressable screenshot scenarios", "Dependency issue waiting on ledger migration"} {
 		if !strings.Contains(board, want) {
 			t.Fatalf("board scenario page missing %q:\n%s", want, board)
 		}
+	}
+	if strings.Contains(board, `id="board-exceptions"`) || strings.Contains(board, "Dependency waiting") {
+		t.Fatalf("board scenario should keep dependency waits off global alerts:\n%s", board)
+	}
+
+	alertsBoard := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/", http.StatusOK, map[string]string{
+		web.DemoScenarioHeader: "fleet-kanban-blocked-alerts",
+	})
+	for _, want := range []string{`id="board-exceptions"`, "Needs review", "after_create hook exited 2"} {
+		if !strings.Contains(alertsBoard, want) {
+			t.Fatalf("blocked-alerts board scenario missing %q:\n%s", want, alertsBoard)
+		}
+	}
+	if strings.Contains(alertsBoard, "Dependency waiting") {
+		t.Fatalf("blocked-alerts board scenario should not elevate dependency waits:\n%s", alertsBoard)
 	}
 
 	state := requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/state", http.StatusOK, map[string]string{

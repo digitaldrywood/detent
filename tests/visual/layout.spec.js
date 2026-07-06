@@ -70,6 +70,7 @@ test("screenshots manifest includes visual gate scenarios", async ({
       "diagnostics-healthy",
       "settings-project-context",
       "onboarding-project-selection",
+      "fleet-kanban-blocked-alerts",
     ]),
   );
 });
@@ -92,7 +93,7 @@ test("board home renders lanes without page overflow", async ({
   await capturePageAndAttach(page, "board-home.png", testInfo);
 });
 
-test("board exception strip only appears when sessions block", async ({
+test("board keeps dependency waits on cards without global alerts", async ({
   page,
 }, testInfo) => {
   await openScenario(page, {
@@ -106,20 +107,34 @@ test("board exception strip only appears when sessions block", async ({
   const exceptions = page.locator("#board-exceptions");
   const blockedFigure = page.locator("#fig-blocked");
   await expect(blockedFigure).toBeVisible();
-  const blockedText = await blockedFigure.textContent();
-  const blockedCount = parseInt(blockedText.trim(), 10) || 0;
-  if (blockedCount > 0) {
-    const dependencyWaiting = exceptions
-      .locator("[id^='exception-']", { hasText: "Dependency waiting" })
-      .first();
-    await expect(dependencyWaiting).toBeVisible();
-    await expect(
-      dependencyWaiting.getByRole("button", { name: "Review" }),
-    ).toHaveCount(0);
-  } else {
-    await expect(exceptions).toHaveCount(0);
-  }
-  await capturePageAndAttach(page, "board-exceptions.png", testInfo);
+  await expect(exceptions).toHaveCount(0);
+  const waitingCard = page.locator("#board-lanes article", {
+    hasText: "Dependency issue waiting on ledger migration",
+  });
+  await expect(waitingCard).toBeVisible();
+  await expect(waitingCard).toContainText("waiting -");
+  await capturePageAndAttach(page, "board-dependency-waits.png", testInfo);
+});
+
+test("board elevated blockers render one compact opt-in alert", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-kanban-blocked-alerts",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const exceptions = page.locator("#board-exceptions [id^='exception-']");
+  await expect(exceptions).toHaveCount(1);
+  await expect(exceptions.first()).toContainText("Needs review");
+  await expect(exceptions.first()).toContainText("after_create hook exited 2");
+  await expect(page.locator("#board-exceptions")).not.toContainText(
+    "Dependency waiting",
+  );
+  await capturePageAndAttach(page, "board-blocked-alerts.png", testInfo);
 });
 
 test("board lane picker hides and restores lanes", async ({ page }) => {

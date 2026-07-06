@@ -1174,6 +1174,7 @@ func (s *Server) dashboardKanbanData(ctx context.Context, projectID string, snap
 		TerminalStates:          target.workflow.Tracker.TerminalStates,
 		TerminalStatesByProject: s.kanbanTerminalStatesByProject(projectID),
 		AllowedTransitions:      kanbanAllowedTransitions(target.workflow, states),
+		ShowBlockedAlerts:       target.kanban.ShowBlockedAlerts,
 	}
 	if strings.TrimSpace(projectID) == "" {
 		data.Projects = s.kanbanProjectsData(snapshot)

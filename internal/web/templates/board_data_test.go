@@ -165,8 +165,13 @@ func TestBoardFigures(t *testing.T) {
 	}
 }
 
-func TestBoardExceptions(t *testing.T) {
+func TestBoardExceptionsRequireOptIn(t *testing.T) {
 	data := boardTestData()
+	if got := boardExceptions(data, true); len(got) != 0 {
+		t.Fatalf("default board should hide elevated blocked alerts, got %d", len(got))
+	}
+
+	data.Kanban.ShowBlockedAlerts = true
 	exceptions := boardExceptions(data, true)
 	if len(exceptions) != 1 {
 		t.Fatalf("expected one exception, got %d", len(exceptions))
@@ -194,6 +199,9 @@ func TestBoardExceptions(t *testing.T) {
 	// From a non-board surface (Fleet/Overview) the Review sheet must not
 	// carry the board-actions flag, so its Move/Remove stay hidden.
 	fleetExceptions := boardExceptions(data, false)
+	if len(fleetExceptions) != 1 {
+		t.Fatalf("expected one fleet exception, got %d", len(fleetExceptions))
+	}
 	if got, _ := fleetExceptions[0].ActionAttrs["hx-get"].(string); strings.Contains(got, "actions=board") {
 		t.Fatalf("fleet exception review target should omit board actions, got %v", got)
 	}
@@ -204,18 +212,14 @@ func TestBoardExceptions(t *testing.T) {
 	}
 }
 
-func TestBoardExceptionsDistinguishWaitingBlocks(t *testing.T) {
+func TestBoardExceptionsSuppressExpectedWaitingBlocks(t *testing.T) {
 	blockedAt := time.Date(2026, 7, 4, 16, 30, 0, 0, time.UTC)
 	tests := []struct {
-		name             string
-		blocked          telemetry.Blocked
-		wantKind         primitives.Kind
-		wantTitle        string
-		wantDetail       string
-		wantReviewAction bool
+		name    string
+		blocked telemetry.Blocked
 	}{
 		{
-			name: "dependency source waits without review",
+			name: "dependency source waits on card only",
 			blocked: telemetry.Blocked{
 				Issue: telemetry.Issue{
 					ID:         "issue-176",
@@ -228,12 +232,9 @@ func TestBoardExceptionsDistinguishWaitingBlocks(t *testing.T) {
 				Source:    telemetry.BlockedSourceDependency,
 				BlockedAt: &blockedAt,
 			},
-			wantKind:   primitives.KindWarn,
-			wantTitle:  "Dependency waiting",
-			wantDetail: "dependency not ready",
 		},
 		{
-			name: "project status waits without review",
+			name: "project status waits on card only",
 			blocked: telemetry.Blocked{
 				Issue: telemetry.Issue{
 					ID:         "issue-177",
@@ -245,28 +246,6 @@ func TestBoardExceptionsDistinguishWaitingBlocks(t *testing.T) {
 				Source:    telemetry.BlockedSourceProjectStatus,
 				BlockedAt: &blockedAt,
 			},
-			wantKind:   primitives.KindWarn,
-			wantTitle:  "Blocked status waiting",
-			wantDetail: "paused by project status",
-		},
-		{
-			name: "human project block keeps review",
-			blocked: telemetry.Blocked{
-				Issue: telemetry.Issue{
-					ID:         "issue-178",
-					Identifier: "digitaldrywood/detent#178",
-					ProjectID:  "detent",
-					State:      "Blocked",
-				},
-				Error:          "needs operator approval",
-				Source:         telemetry.BlockedSourceProjectStatus,
-				RecoveryReason: "human_blocker",
-				BlockedAt:      &blockedAt,
-			},
-			wantKind:         primitives.KindErr,
-			wantTitle:        "Needs review",
-			wantDetail:       "needs operator approval",
-			wantReviewAction: true,
 		},
 	}
 
@@ -275,25 +254,66 @@ func TestBoardExceptionsDistinguishWaitingBlocks(t *testing.T) {
 			data := boardTestData()
 			data.Snapshot.GeneratedAt = blockedAt.Add(12 * time.Minute)
 			data.Snapshot.Blocked = []telemetry.Blocked{tt.blocked}
+			data.Kanban.ShowBlockedAlerts = true
 
 			exceptions := boardExceptions(data, true)
-			if len(exceptions) != 1 {
-				t.Fatalf("expected one exception, got %d", len(exceptions))
-			}
-			exception := exceptions[0]
-			if exception.Kind != tt.wantKind {
-				t.Fatalf("Kind = %q, want %q", exception.Kind, tt.wantKind)
-			}
-			if exception.Title != tt.wantTitle {
-				t.Fatalf("Title = %q, want %q", exception.Title, tt.wantTitle)
-			}
-			if !strings.Contains(exception.Rest, tt.wantDetail) {
-				t.Fatalf("Rest = %q, want detail containing %q", exception.Rest, tt.wantDetail)
-			}
-			if got := exception.ActionLabel == "Review"; got != tt.wantReviewAction {
-				t.Fatalf("Review action present = %t, want %t; exception = %+v", got, tt.wantReviewAction, exception)
+			if len(exceptions) != 0 {
+				t.Fatalf("expected waiting block to stay out of elevated alerts, got %+v", exceptions)
 			}
 		})
+	}
+}
+
+func TestBoardExceptionsCompactHumanBlocks(t *testing.T) {
+	data := boardTestData()
+	blockedAt := data.Snapshot.GeneratedAt.Add(-12 * time.Minute)
+	data.Kanban.ShowBlockedAlerts = true
+	data.Snapshot.Blocked = []telemetry.Blocked{
+		{
+			Issue: telemetry.Issue{
+				ID:         "issue-178",
+				Identifier: "digitaldrywood/detent#178",
+				ProjectID:  "detent",
+				State:      "Blocked",
+			},
+			Error:          "needs operator approval",
+			Source:         telemetry.BlockedSourceProjectStatus,
+			RecoveryReason: "human_blocker",
+			BlockedAt:      &blockedAt,
+		},
+		{
+			Issue: telemetry.Issue{
+				ID:         "issue-179",
+				Identifier: "digitaldrywood/detent#179",
+				ProjectID:  "detent",
+				State:      "Blocked",
+			},
+			Error:          "missing credentials",
+			Source:         telemetry.BlockedSourceProjectStatus,
+			RecoveryReason: "human_blocker",
+			BlockedAt:      &blockedAt,
+		},
+	}
+
+	exceptions := boardExceptions(data, true)
+	if len(exceptions) != 1 {
+		t.Fatalf("expected compact blocker summary, got %d", len(exceptions))
+	}
+	exception := exceptions[0]
+	if exception.ID != "exception-blocked-review" {
+		t.Fatalf("summary id = %q, want exception-blocked-review", exception.ID)
+	}
+	if exception.Kind != primitives.KindErr {
+		t.Fatalf("summary kind = %q, want err", exception.Kind)
+	}
+	if exception.Title != "2 blocked items need review" {
+		t.Fatalf("summary title = %q", exception.Title)
+	}
+	if !strings.Contains(exception.Rest, "needs operator approval") || !strings.Contains(exception.Rest, "plus 1 more") {
+		t.Fatalf("summary rest = %q", exception.Rest)
+	}
+	if exception.ActionLabel != "" {
+		t.Fatalf("multi-blocker summary should not render one row action, got %+v", exception)
 	}
 }
 
@@ -493,6 +513,7 @@ func TestBoardCardFallsBackToDashboardProjectID(t *testing.T) {
 	data.Snapshot.Blocked = []telemetry.Blocked{
 		{Issue: telemetry.Issue{Identifier: "digitaldrywood/detent#43"}, Error: "blocked", BlockedAt: &blockedAt},
 	}
+	data.Kanban.ShowBlockedAlerts = true
 	exceptions := boardExceptions(data, true)
 	if len(exceptions) != 1 {
 		t.Fatalf("expected one exception, got %d", len(exceptions))
@@ -646,16 +667,33 @@ func TestBoardSnapshotRenders(t *testing.T) {
 		`id="card-gopherguides-gopher-ai-185"`,
 		`id="fig-running"`,
 		`id="fig-blocked"`,
-		"Needs review",
-		"needs operator approval",
 		"data-board-lane-picker",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("board snapshot missing %q", want)
 		}
 	}
+	if strings.Contains(html, `id="board-exceptions"`) {
+		t.Fatalf("default board snapshot should not render elevated blocked alerts:\n%s", html)
+	}
 	if strings.Contains(html, "#0B0D10") || strings.Contains(html, "#14171C") {
 		t.Fatalf("board snapshot must not contain raw hex colors")
+	}
+}
+
+func TestBoardSnapshotRendersOptInBlockedAlert(t *testing.T) {
+	data := boardTestData()
+	data.Kanban.ShowBlockedAlerts = true
+	html := renderBoardComponent(t, BoardSnapshot(data))
+
+	for _, want := range []string{
+		`id="board-exceptions"`,
+		"Needs review",
+		"needs operator approval",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("opt-in board snapshot missing %q:\n%s", want, html)
+		}
 	}
 }
 
