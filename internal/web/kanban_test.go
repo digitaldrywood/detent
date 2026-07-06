@@ -120,6 +120,39 @@ func TestKanbanSnapshotWithPendingStatesUpdatesBlockedRefs(t *testing.T) {
 	}
 }
 
+func TestKanbanSnapshotWithPendingStatesIgnoresCompletedHistoryForMissingPendingMove(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{kanbanMutations: newKanbanMutationLocks()}
+	pendingIssue := telemetry.Issue{
+		ID:         "history-card",
+		Identifier: "digitaldrywood/detent#432",
+		ProjectID:  "detent",
+		Title:      "Completed history pending card",
+		State:      "Backlog",
+	}
+	server.kanbanMutations.noteCardState("project:detent", "detent", pendingIssue, "Backlog", "Todo")
+
+	got := server.kanbanSnapshotWithPendingStates("project:detent", "detent", telemetry.Snapshot{
+		Project: telemetry.Project{ID: "detent"},
+		Completed: []telemetry.Completed{{
+			Issue: telemetry.Issue{
+				ID:         "history-card",
+				Identifier: "digitaldrywood/detent#432",
+				ProjectID:  "detent",
+				Title:      "Completed history pending card",
+				State:      "Backlog",
+			},
+		}},
+	})
+	if len(got.BoardIssues) != 1 {
+		t.Fatalf("BoardIssues = %#v, want reinserted pending card", got.BoardIssues)
+	}
+	if got.BoardIssues[0].State != "Todo" {
+		t.Fatalf("pending state = %q, want Todo", got.BoardIssues[0].State)
+	}
+}
+
 func TestKanbanSnapshotWithPendingStatesClearsCompletedPendingMove(t *testing.T) {
 	t.Parallel()
 

@@ -176,7 +176,7 @@ func (l *kanbanMutationLocks) pendingMovedCards(key string, projectID string, sn
 	defer l.mu.Unlock()
 
 	present := map[string]struct{}{}
-	for _, issue := range snapshotKanbanPendingIssues(snapshot) {
+	for _, issue := range snapshotKanbanIssues(snapshot) {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" || !sameKanbanProject(issue, projectID, snapshot.Project.ID) {
 			continue
@@ -187,6 +187,29 @@ func (l *kanbanMutationLocks) pendingMovedCards(key string, projectID string, sn
 			continue
 		}
 		present[stateKey] = struct{}{}
+		snapshotState := strings.TrimSpace(issue.State)
+		switch {
+		case normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.snapshot):
+		case normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.current):
+			delete(l.states, stateKey)
+		default:
+			delete(l.states, stateKey)
+		}
+	}
+	for _, row := range snapshot.Completed {
+		issue := row.Issue
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" || !sameKanbanProject(issue, projectID, snapshot.Project.ID) {
+			continue
+		}
+		stateKey := kanbanMutationStateKey(key, issueID)
+		if _, ok := present[stateKey]; ok {
+			continue
+		}
+		pending, ok := l.states[stateKey]
+		if !ok {
+			continue
+		}
 		snapshotState := strings.TrimSpace(issue.State)
 		switch {
 		case normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.snapshot):
@@ -1473,14 +1496,6 @@ func snapshotKanbanIssues(snapshot telemetry.Snapshot) []telemetry.Issue {
 		issues = append(issues, row.Issue)
 	}
 	for _, row := range snapshot.Blocked {
-		issues = append(issues, row.Issue)
-	}
-	return issues
-}
-
-func snapshotKanbanPendingIssues(snapshot telemetry.Snapshot) []telemetry.Issue {
-	issues := snapshotKanbanIssues(snapshot)
-	for _, row := range snapshot.Completed {
 		issues = append(issues, row.Issue)
 	}
 	return issues
