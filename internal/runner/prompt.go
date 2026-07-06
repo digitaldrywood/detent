@@ -98,6 +98,7 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 	if promptDeliverableKind(workflow.Config.Deliverable) != config.DeliverablePullRequest {
 		return rendered, nil
 	}
+	rendered = appendSkillCreationBlock(rendered, workflow.Config.Agent.Skills)
 	return appendClosingReferenceInstruction(rendered, issue), nil
 }
 
@@ -385,6 +386,32 @@ func appendAvailableSkills(prompt string, skillsBlock string) string {
 	}
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + skillsBlock
+}
+
+func appendSkillCreationBlock(prompt string, cfg config.Skills) string {
+	if !cfg.Enabled || !cfg.Creation.Enabled || cfg.Creation.MaxDraftsPerRun <= 0 {
+		return prompt
+	}
+
+	path := strings.TrimSpace(cfg.Path)
+	if path == "" {
+		path = skills.DefaultPath
+	}
+	path = strings.TrimRight(path, `/\`) + "/"
+
+	var b strings.Builder
+	b.WriteString("## Skill creation loop\n\n")
+	b.WriteString("After this work item passes its required validation gate, consider whether the successful run exposed a repeated or novel method worth capturing as a reusable Detent skill.\n")
+	b.WriteString("- Draft at most ")
+	b.WriteString(pluralizeCount(cfg.Creation.MaxDraftsPerRun, "candidate skill file", "candidate skill files"))
+	b.WriteString(" under `")
+	b.WriteString(path)
+	b.WriteString("` when the method is broadly reusable.\n")
+	b.WriteString("- Do not draft a skill for routine edits, one-off project facts, secrets, or instructions that only restate the current issue.\n")
+	b.WriteString("- Use a Markdown file with YAML front matter fields `name`, `description`, and `when_to_use`, followed by concise implementation guidance.\n")
+	b.WriteString("- Let normal pull request review be the approval gate; the draft skill enters future prompts only after humans review and merge it.\n")
+
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + strings.TrimRight(b.String(), "\n")
 }
 
 func appendGateBlock(prompt string, cfg gate.Config) string {

@@ -288,9 +288,15 @@ type Lessons struct {
 }
 
 type Skills struct {
-	Enabled           bool   `yaml:"enabled"`
-	Path              string `yaml:"path"`
-	MaxSkillsInPrompt int    `yaml:"max_skills_in_prompt"`
+	Enabled           bool          `yaml:"enabled"`
+	Path              string        `yaml:"path"`
+	MaxSkillsInPrompt int           `yaml:"max_skills_in_prompt"`
+	Creation          SkillCreation `yaml:"creation"`
+}
+
+type SkillCreation struct {
+	Enabled         bool `yaml:"enabled"`
+	MaxDraftsPerRun int  `yaml:"max_drafts_per_run"`
 }
 
 type Budget struct {
@@ -1438,6 +1444,11 @@ func (l *Lessons) validate(prefix string, problems *[]string) {
 func (s *Skills) validate(prefix string, problems *[]string) {
 	validateWorkspaceRelativePath(prefix+".path", s.Path, problems)
 	validatePositive(prefix+".max_skills_in_prompt", s.MaxSkillsInPrompt, problems)
+	s.Creation.validate(prefix+".creation", problems)
+}
+
+func (s *SkillCreation) validate(prefix string, problems *[]string) {
+	validatePositive(prefix+".max_drafts_per_run", s.MaxDraftsPerRun, problems)
 }
 
 func (b *Budget) validate(prefix string, problems *[]string) {
@@ -1759,6 +1770,10 @@ func defaultSkills() Skills {
 		Enabled:           true,
 		Path:              ".detent/skills",
 		MaxSkillsInPrompt: 50,
+		Creation: SkillCreation{
+			Enabled:         true,
+			MaxDraftsPerRun: 1,
+		},
 	}
 }
 

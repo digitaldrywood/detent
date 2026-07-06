@@ -119,6 +119,9 @@ agent:
     enabled: true
     path: ".detent/skills"
     max_skills_in_prompt: 20
+    creation:
+      enabled: true
+      max_drafts_per_run: 3
 codex:
   command: codex app-server
   shell: bash
@@ -301,6 +304,12 @@ Ticket prompt {{ issue.title }}
 	}
 	if !cfg.Agent.ExperimentalThreadResume {
 		t.Fatal("Agent.ExperimentalThreadResume = false, want true")
+	}
+	if !cfg.Agent.Skills.Creation.Enabled {
+		t.Fatal("Agent.Skills.Creation.Enabled = false, want true")
+	}
+	if cfg.Agent.Skills.Creation.MaxDraftsPerRun != 3 {
+		t.Fatalf("Agent.Skills.Creation.MaxDraftsPerRun = %d, want 3", cfg.Agent.Skills.Creation.MaxDraftsPerRun)
 	}
 	if cfg.Agent.Shutdown.DrainTimeoutMS != 300000 {
 		t.Fatalf("Agent.Shutdown.DrainTimeoutMS = %d, want 300000", cfg.Agent.Shutdown.DrainTimeoutMS)
@@ -592,6 +601,12 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Agent.Skills.Path != ".detent/skills" {
 		t.Fatalf("Agent.Skills.Path = %q", cfg.Agent.Skills.Path)
+	}
+	if !cfg.Agent.Skills.Creation.Enabled {
+		t.Fatal("Agent.Skills.Creation.Enabled = false, want true default")
+	}
+	if cfg.Agent.Skills.Creation.MaxDraftsPerRun != 1 {
+		t.Fatalf("Agent.Skills.Creation.MaxDraftsPerRun = %d, want 1", cfg.Agent.Skills.Creation.MaxDraftsPerRun)
 	}
 	if cfg.Agent.AutoPromote.ReworkLimit != 0 {
 		t.Fatalf("Agent.AutoPromote.ReworkLimit = %d, want unlimited default", cfg.Agent.AutoPromote.ReworkLimit)
@@ -1813,6 +1828,8 @@ agent:
     path: ../lessons.md
   skills:
     path: /tmp/skills
+    creation:
+      max_drafts_per_run: 0
 ---
 Prompt
 `,
@@ -1821,6 +1838,7 @@ Prompt
 				"tracker.priority_map ranks must be integers 1 through 4 or null",
 				"agent.lessons.path must be a relative path inside the workspace",
 				"agent.skills.path must be a relative path inside the workspace",
+				"agent.skills.creation.max_drafts_per_run must be greater than 0",
 			},
 		},
 		{
