@@ -81,6 +81,14 @@ type IssueCommentReader interface {
 	FetchIssueComments(context.Context, Issue) ([]IssueComment, error)
 }
 
+type IssueCommentUpdater interface {
+	UpdateIssueComment(context.Context, string, string, string) error
+}
+
+type IssueCommentDeleter interface {
+	DeleteIssueComment(context.Context, string, string) error
+}
+
 type IssueDraft struct {
 	Title  string
 	Body   string

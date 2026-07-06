@@ -144,12 +144,124 @@ func TestConnectorFetchIssueCommentsReturnsEventMetadata(t *testing.T) {
 		comment.Backend != connector.BackendLocalSQLite.String() ||
 		comment.Body != "Ready for review." ||
 		comment.AuthorLogin != "detent" ||
+		comment.AuthorDisplayName != "Detent" ||
 		!comment.Local ||
+		!comment.CanEdit ||
+		!comment.CanDelete ||
 		comment.TargetType != connector.IssueCommentTargetIssue {
 		t.Fatalf("FetchIssueComments()[0] = %#v, want normalized local metadata", comment)
 	}
 	if comment.CreatedAt == nil || !comment.CreatedAt.Equal(now) {
 		t.Fatalf("CreatedAt = %v, want %v", comment.CreatedAt, now)
+	}
+}
+
+func TestConnectorUpdatesAndDeletesLocalIssueCommentsWithAuditEvents(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	timestamps := []time.Time{
+		time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
+		time.Date(2026, 7, 6, 12, 5, 0, 0, time.UTC),
+		time.Date(2026, 7, 6, 12, 10, 0, 0, time.UTC),
+	}
+	next := 0
+	store, err := New(Config{
+		Path:      filepath.Join(t.TempDir(), "comment-mutations.db"),
+		ProjectID: "video",
+		Now: func() time.Time {
+			if next >= len(timestamps) {
+				return timestamps[len(timestamps)-1]
+			}
+			value := timestamps[next]
+			next++
+			return value
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.CreateComment(ctx, "ad-1", "Draft body"); err != nil {
+		t.Fatalf("CreateComment() error = %v", err)
+	}
+	comments, err := store.FetchIssueComments(ctx, connector.Issue{ID: "ad-1"})
+	if err != nil {
+		t.Fatalf("FetchIssueComments() after create error = %v", err)
+	}
+	if len(comments) != 1 {
+		t.Fatalf("comments after create len = %d, want 1", len(comments))
+	}
+	commentID := comments[0].ID
+
+	if err := store.UpdateIssueComment(ctx, "ad-1", commentID, "Edited body"); err != nil {
+		t.Fatalf("UpdateIssueComment() error = %v", err)
+	}
+	comments, err = store.FetchIssueComments(ctx, connector.Issue{ID: "ad-1"})
+	if err != nil {
+		t.Fatalf("FetchIssueComments() after edit error = %v", err)
+	}
+	if len(comments) != 1 || comments[0].Body != "Edited body" {
+		t.Fatalf("comments after edit = %#v, want edited body", comments)
+	}
+	if comments[0].UpdatedAt == nil || !comments[0].UpdatedAt.Equal(timestamps[1]) {
+		t.Fatalf("UpdatedAt = %v, want %v", comments[0].UpdatedAt, timestamps[1])
+	}
+
+	if err := store.DeleteIssueComment(ctx, "ad-1", commentID); err != nil {
+		t.Fatalf("DeleteIssueComment() error = %v", err)
+	}
+	comments, err = store.FetchIssueComments(ctx, connector.Issue{ID: "ad-1"})
+	if err != nil {
+		t.Fatalf("FetchIssueComments() after delete error = %v", err)
+	}
+	if len(comments) != 0 {
+		t.Fatalf("comments after delete = %#v, want none", comments)
+	}
+
+	rows, err := store.db.QueryContext(ctx, `
+select event_kind, body, payload_json from detent_work_item_events
+where project_id = ? and item_id = ?
+order by id asc`, "video", "ad-1")
+	if err != nil {
+		t.Fatalf("query events error = %v", err)
+	}
+	defer rows.Close()
+
+	type eventRow struct {
+		kind    string
+		body    string
+		payload map[string]string
+	}
+	got := []eventRow{}
+	for rows.Next() {
+		var row eventRow
+		var payloadJSON string
+		if err := rows.Scan(&row.kind, &row.body, &payloadJSON); err != nil {
+			t.Fatalf("scan event error = %v", err)
+		}
+		row.payload = unmarshalStringMap(payloadJSON)
+		got = append(got, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows error = %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("event rows len = %d, want 3: %#v", len(got), got)
+	}
+	if got[0].kind != eventKindComment || got[0].body != "Draft body" {
+		t.Fatalf("create event = %#v, want comment draft", got[0])
+	}
+	if got[1].kind != eventKindCommentEdit || got[1].body != "Edited body" ||
+		got[1].payload[commentPayloadCommentID] != commentID ||
+		got[1].payload[commentPayloadPreviousBody] != "Draft body" {
+		t.Fatalf("edit event = %#v, want comment id and previous body", got[1])
+	}
+	if got[2].kind != eventKindCommentDelete ||
+		got[2].payload[commentPayloadCommentID] != commentID ||
+		got[2].payload[commentPayloadPreviousBody] != "Edited body" {
+		t.Fatalf("delete event = %#v, want comment id and previous body", got[2])
 	}
 }
 

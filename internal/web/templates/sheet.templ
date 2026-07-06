@@ -2,6 +2,7 @@ package templates
 
 import (
 	"github.com/digitaldrywood/detent/internal/web/ui/components/dialog"
+	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
 
@@ -107,6 +108,7 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 				if len(card.Assignees) > 0 {
 					@sheetTagRow("Assignees", card.Assignees)
 				}
+				@KanbanCommentThread(data, card, boardActions)
 			</div>
 			if sheetHasActions(data, card, boardActions) {
 				<footer class="flex flex-none items-center gap-2 border-t border-line px-5 py-3">
@@ -147,6 +149,68 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 				</footer>
 			}
 		</aside>
+	</div>
+}
+
+templ KanbanCommentThread(data DashboardData, card projectKanbanCard, boardActions bool) {
+	<div id="kanban-comment-thread">
+		if len(card.Comments) > 0 {
+			<div class="flex flex-col gap-2">
+				<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Comments</h3>
+				<div class="flex flex-col gap-2">
+					for _, comment := range card.Comments {
+						<article class="rounded-card border border-line bg-elev p-3 text-xs">
+							<div class="flex items-start gap-3">
+								<div class="min-w-0 flex-1">
+									<div class="flex min-w-0 items-center gap-2">
+										<span class="min-w-0 truncate font-medium text-text" title={ comment.Author }>{ comment.Author }</span>
+										<span class="min-w-0 truncate font-mono text-2xs text-sec" title={ comment.Meta }>{ comment.Meta }</span>
+									</div>
+									<p class="mt-2 whitespace-pre-wrap text-text">{ comment.Body }</p>
+									if comment.URL != "" {
+										<a href={ comment.URL } target="_blank" rel="noopener noreferrer" class="mt-2 inline-flex text-2xs font-medium text-accent hover:underline">Open comment</a>
+									}
+								</div>
+								if sheetCanMutateComment(data, card, boardActions, comment) {
+									<div class="flex flex-none items-center gap-1">
+										if comment.CanDelete {
+											<form class="inline-flex" hx-delete={ projectKanbanCommentDeletePath(data, card, comment) } hx-target="#kanban-comment-thread" hx-swap="outerHTML" hx-confirm="Delete this comment?">
+												<input type="hidden" name="project_id" value={ projectKanbanCardProjectID(data, card) }/>
+												<input type="hidden" name="issue_id" value={ card.IssueID }/>
+												<input type="hidden" name="comment_id" value={ comment.ID }/>
+												<button type="submit" class="rounded-chip p-1 text-sec hover:bg-err/15 hover:text-err" title="Delete comment" aria-label="Delete comment">
+													@icon.Trash2(icon.Props{Class: "size-3.5"})
+												</button>
+											</form>
+										}
+									</div>
+								}
+							</div>
+							if sheetCanEditComment(data, card, boardActions, comment) {
+								<details class="mt-3">
+									<summary class="inline-flex cursor-pointer list-none items-center gap-1.5 rounded-card border border-line px-2.5 py-1.5 text-xs font-medium text-sec hover:border-accent hover:text-accent">
+										@icon.PencilLine(icon.Props{Class: "size-3.5"})
+										Edit
+									</summary>
+									<form class="mt-2 grid gap-2" hx-post="/api/v1/kanban/comment/edit" hx-target="#kanban-comment-thread" hx-swap="outerHTML">
+										<input type="hidden" name="project_id" value={ projectKanbanCardProjectID(data, card) }/>
+										<input type="hidden" name="issue_id" value={ card.IssueID }/>
+										<input type="hidden" name="comment_id" value={ comment.ID }/>
+										<textarea name="body" rows="4" class="min-h-24 w-full resize-y rounded-md border border-line bg-page px-3 py-2 text-xs text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent">{ comment.Body }</textarea>
+										<div class="flex justify-end">
+											<button type="submit" class="inline-flex items-center gap-1.5 rounded-card border border-line px-2.5 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent">
+												@icon.Save(icon.Props{Class: "size-3.5"})
+												Save
+											</button>
+										</div>
+									</form>
+								</details>
+							}
+						</article>
+					}
+				</div>
+			</div>
+		}
 	</div>
 }
 

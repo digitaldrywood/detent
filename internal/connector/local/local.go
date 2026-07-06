@@ -21,10 +21,16 @@ const (
 	defaultProjectID = "default"
 
 	eventKindComment       = "comment"
+	eventKindCommentEdit   = "comment_edit"
+	eventKindCommentDelete = "comment_delete"
 	eventKindStateUpdate   = "state_update"
 	eventKindFieldUpdate   = "field_update"
 	eventKindProjectRemove = "project_remove"
 	eventKindClose         = "close"
+
+	commentPayloadActor        = "actor"
+	commentPayloadCommentID    = "comment_id"
+	commentPayloadPreviousBody = "previous_body"
 
 	MetadataGitHubNodeID        = "github_node_id"
 	MetadataGitHubRepositoryID  = "github_repository_id"
@@ -56,7 +62,9 @@ var _ connector.Connector = (*Connector)(nil)
 var _ connector.CandidateIssuesByStatesFetcher = (*Connector)(nil)
 var _ connector.IssuesByStatesLimiter = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
+var _ connector.IssueCommentDeleter = (*Connector)(nil)
 var _ connector.IssueCommentReader = (*Connector)(nil)
+var _ connector.IssueCommentUpdater = (*Connector)(nil)
 var _ connector.IssueFieldClearer = (*Connector)(nil)
 var _ connector.IssueFieldSetter = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
@@ -176,40 +184,119 @@ func (c *Connector) FetchIssueStatesByIdentifiers(ctx context.Context, identifie
 
 func (c *Connector) FetchIssueComments(ctx context.Context, issue connector.Issue) ([]connector.IssueComment, error) {
 	rows, err := c.db.QueryContext(ctx, `
-select id, body, created_at from detent_work_item_events
-where project_id = ? and item_id = ? and event_kind = ?
-order by id asc`, c.projectID, strings.TrimSpace(issue.ID), eventKindComment)
+select id, event_kind, body, payload_json, created_at from detent_work_item_events
+where project_id = ? and item_id = ? and event_kind in (?, ?, ?)
+order by id asc`, c.projectID, strings.TrimSpace(issue.ID), eventKindComment, eventKindCommentEdit, eventKindCommentDelete)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	comments := []connector.IssueComment{}
+	commentsByID := map[string]connector.IssueComment{}
+	order := []string{}
 	for rows.Next() {
 		var id int64
+		var kind string
 		var body string
+		var payloadJSON string
 		var createdAt string
-		if err := rows.Scan(&id, &body, &createdAt); err != nil {
+		if err := rows.Scan(&id, &kind, &body, &payloadJSON, &createdAt); err != nil {
 			return nil, err
 		}
-		comments = append(comments, connector.IssueComment{
-			ID:          strconv.FormatInt(id, 10),
-			Backend:     connector.BackendLocalSQLite.String(),
-			Body:        body,
-			AuthorLogin: "detent",
-			CreatedAt:   parseTimePointer(createdAt),
-			Local:       true,
-			TargetType:  connector.IssueCommentTargetIssue,
-		})
+		eventTime := parseTimePointer(createdAt)
+		switch kind {
+		case eventKindComment:
+			commentID := strconv.FormatInt(id, 10)
+			commentsByID[commentID] = connector.IssueComment{
+				ID:                commentID,
+				Backend:           connector.BackendLocalSQLite.String(),
+				Body:              body,
+				AuthorLogin:       "detent",
+				AuthorDisplayName: "Detent",
+				CreatedAt:         eventTime,
+				Local:             true,
+				CanEdit:           true,
+				CanDelete:         true,
+				TargetType:        connector.IssueCommentTargetIssue,
+			}
+			order = append(order, commentID)
+		case eventKindCommentEdit:
+			payload := unmarshalStringMap(payloadJSON)
+			commentID := strings.TrimSpace(payload[commentPayloadCommentID])
+			comment, ok := commentsByID[commentID]
+			if !ok {
+				continue
+			}
+			comment.Body = body
+			comment.UpdatedAt = eventTime
+			commentsByID[commentID] = comment
+		case eventKindCommentDelete:
+			payload := unmarshalStringMap(payloadJSON)
+			commentID := strings.TrimSpace(payload[commentPayloadCommentID])
+			delete(commentsByID, commentID)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	comments := []connector.IssueComment{}
+	for _, commentID := range order {
+		comment, ok := commentsByID[commentID]
+		if ok {
+			comments = append(comments, comment)
+		}
 	}
 	return comments, nil
 }
 
 func (c *Connector) CreateComment(ctx context.Context, issueID string, body string) error {
 	return c.recordEvent(ctx, strings.TrimSpace(issueID), eventKindComment, "", strings.TrimSpace(body), nil)
+}
+
+func (c *Connector) localIssueCommentByID(ctx context.Context, issueID string, commentID string) (connector.IssueComment, error) {
+	issueID = strings.TrimSpace(issueID)
+	commentID = strings.TrimSpace(commentID)
+	if issueID == "" || commentID == "" {
+		return connector.IssueComment{}, sql.ErrNoRows
+	}
+	comments, err := c.FetchIssueComments(ctx, connector.Issue{ID: issueID})
+	if err != nil {
+		return connector.IssueComment{}, err
+	}
+	for _, comment := range comments {
+		if strings.TrimSpace(comment.ID) == commentID {
+			return comment, nil
+		}
+	}
+	return connector.IssueComment{}, sql.ErrNoRows
+}
+
+func (c *Connector) UpdateIssueComment(ctx context.Context, issueID string, commentID string, body string) error {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return errors.New("local comment body is required")
+	}
+	comment, err := c.localIssueCommentByID(ctx, issueID, commentID)
+	if err != nil {
+		return err
+	}
+	return c.recordEvent(ctx, strings.TrimSpace(issueID), eventKindCommentEdit, "", body, map[string]string{
+		commentPayloadActor:        "detent",
+		commentPayloadCommentID:    comment.ID,
+		commentPayloadPreviousBody: comment.Body,
+	})
+}
+
+func (c *Connector) DeleteIssueComment(ctx context.Context, issueID string, commentID string) error {
+	comment, err := c.localIssueCommentByID(ctx, issueID, commentID)
+	if err != nil {
+		return err
+	}
+	return c.recordEvent(ctx, strings.TrimSpace(issueID), eventKindCommentDelete, "", "", map[string]string{
+		commentPayloadActor:        "detent",
+		commentPayloadCommentID:    comment.ID,
+		commentPayloadPreviousBody: comment.Body,
+	})
 }
 
 func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateName string) error {

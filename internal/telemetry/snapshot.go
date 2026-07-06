@@ -223,6 +223,8 @@ type IssueComment struct {
 	CreatedAt         *time.Time `json:"created_at,omitempty"`
 	UpdatedAt         *time.Time `json:"updated_at,omitempty"`
 	Local             bool       `json:"local,omitempty"`
+	CanEdit           bool       `json:"can_edit,omitempty"`
+	CanDelete         bool       `json:"can_delete,omitempty"`
 	TargetType        string     `json:"target_type,omitempty"`
 }
 

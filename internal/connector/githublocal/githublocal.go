@@ -54,7 +54,9 @@ var _ connector.GraphQLRateLimitUsageReporter = (*Connector)(nil)
 var _ connector.InstanceIdentifier = (*Connector)(nil)
 var _ connector.IssueChildrenResolver = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
+var _ connector.IssueCommentDeleter = (*Connector)(nil)
 var _ connector.IssueCommentReader = (*Connector)(nil)
+var _ connector.IssueCommentUpdater = (*Connector)(nil)
 var _ connector.IssueFieldClearer = (*Connector)(nil)
 var _ connector.IssueFieldSetter = (*Connector)(nil)
 var _ connector.IssueParentResolver = (*Connector)(nil)
@@ -269,6 +271,14 @@ func (c *Connector) FetchIssueComments(ctx context.Context, issue connector.Issu
 
 func (c *Connector) CreateComment(ctx context.Context, issueID string, body string) error {
 	return c.local.CreateComment(ctx, issueID, body)
+}
+
+func (c *Connector) UpdateIssueComment(ctx context.Context, issueID string, commentID string, body string) error {
+	return c.local.UpdateIssueComment(ctx, issueID, commentID, body)
+}
+
+func (c *Connector) DeleteIssueComment(ctx context.Context, issueID string, commentID string) error {
+	return c.local.DeleteIssueComment(ctx, issueID, commentID)
 }
 
 func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateName string) error {

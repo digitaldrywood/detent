@@ -288,6 +288,48 @@ func TestConnectorFetchIssueCommentsMergesRemoteAndLocalInCreatedOrder(t *testin
 	if got[1].Backend != connector.BackendLocalSQLite.String() || got[0].Backend != connector.BackendGitHub.String() {
 		t.Fatalf("comment backends = %#v, want GitHub and local SQLite metadata", got)
 	}
+	if got[0].CanEdit || got[0].CanDelete || !got[1].CanEdit || !got[1].CanDelete || got[2].CanEdit || got[2].CanDelete {
+		t.Fatalf("comment mutation flags = [%v/%v %v/%v %v/%v], want remote read-only and local mutable",
+			got[0].CanEdit, got[0].CanDelete, got[1].CanEdit, got[1].CanDelete, got[2].CanEdit, got[2].CanDelete)
+	}
+
+	localCommentID := got[1].ID
+	if err := conn.UpdateIssueComment(context.Background(), "github:123:779", localCommentID, "edited local note"); err != nil {
+		t.Fatalf("UpdateIssueComment() error = %v", err)
+	}
+	got, err = conn.FetchIssueComments(context.Background(), connector.Issue{
+		ID:         "github:123:779",
+		Identifier: "digitaldrywood/detent#779",
+	})
+	if err != nil {
+		t.Fatalf("FetchIssueComments() after edit error = %v", err)
+	}
+	wantBodies = []string{"remote earlier", "edited local note", "remote later"}
+	for index, want := range wantBodies {
+		if got[index].Body != want {
+			t.Fatalf("comment[%d].Body after edit = %q, want %q; comments = %#v", index, got[index].Body, want, got)
+		}
+	}
+
+	if err := conn.DeleteIssueComment(context.Background(), "github:123:779", localCommentID); err != nil {
+		t.Fatalf("DeleteIssueComment() error = %v", err)
+	}
+	got, err = conn.FetchIssueComments(context.Background(), connector.Issue{
+		ID:         "github:123:779",
+		Identifier: "digitaldrywood/detent#779",
+	})
+	if err != nil {
+		t.Fatalf("FetchIssueComments() after delete error = %v", err)
+	}
+	wantBodies = []string{"remote earlier", "remote later"}
+	if len(got) != len(wantBodies) {
+		t.Fatalf("FetchIssueComments() after delete len = %d, want %d: %#v", len(got), len(wantBodies), got)
+	}
+	for index, want := range wantBodies {
+		if got[index].Body != want {
+			t.Fatalf("comment[%d].Body after delete = %q, want %q; comments = %#v", index, got[index].Body, want, got)
+		}
+	}
 }
 
 type githubLocalTestRequest struct {
