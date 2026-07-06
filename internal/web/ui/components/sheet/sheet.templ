@@ -243,7 +243,7 @@ func getSideClasses(side Side) string {
 	// Base classes for all sheets - matching shadcn
 	// Duration varies: 300ms when closing, 500ms when opening
 	// Use !transition-transform to override Dialog's transition-all
-	baseClasses := "fixed z-50 flex flex-col bg-background shadow-lg !transition-transform ease-in-out " +
+	baseClasses := "fixed z-50 flex flex-col bg-page shadow-lg !transition-transform ease-in-out " +
 		"data-[tui-dialog-open=false]:duration-300 data-[tui-dialog-open=true]:duration-500 "
 
 	switch side {

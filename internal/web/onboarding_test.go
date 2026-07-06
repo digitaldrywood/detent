@@ -253,7 +253,7 @@ func TestOnboardingGitHubProjectStepIsModeSpecific(t *testing.T) {
 }
 
 func onboardingStepBadge(step string) string {
-	return `data-onboarding-step-badge="true"><span class="text-xs font-medium uppercase text-muted-foreground">Step</span> <span class="truncate font-mono text-xs font-semibold text-foreground">` + step + `</span>`
+	return `data-onboarding-step-badge="true"><span class="text-xs font-medium uppercase text-sec">Step</span> <span class="truncate font-mono text-xs font-semibold text-text">` + step + `</span>`
 }
 
 func TestOnboardingWriteGitHubWorkflows(t *testing.T) {

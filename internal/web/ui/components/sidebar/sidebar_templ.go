@@ -82,7 +82,7 @@ func Inset(props ...InsetProps) templ.Component {
 			p = props[0]
 		}
 		var templ_7745c5c3_Var2 = []any{utils.TwMerge(
-			"relative flex w-full flex-1 flex-col bg-background",
+			"relative flex w-full flex-1 flex-col bg-page",
 			// Add special styling when peer sidebar has variant="inset"
 			"md:peer-data-[tui-sidebar-variant=inset]:m-2",
 			"md:peer-data-[tui-sidebar-variant=inset]:ml-0",
@@ -272,8 +272,8 @@ func GroupLabel(props ...GroupLabelProps) templ.Component {
 			p = props[0]
 		}
 		var templ_7745c5c3_Var10 = []any{utils.TwMerge(
-			"flex h-8 shrink-0 items-center rounded-md px-2 text-xs font-medium text-sidebar-foreground/70",
-			"ring-sidebar-ring outline-none transition-[margin,opacity] duration-200 ease-linear",
+			"flex h-8 shrink-0 items-center rounded-md px-2 text-xs font-medium text-text/70",
+			"ring-accent outline-none transition-[margin,opacity] duration-200 ease-linear",
 			"focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0",
 			"group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:-mt-8 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:opacity-0",
 			p.Class,
@@ -369,7 +369,7 @@ func MenuBadge(props ...MenuBadgeProps) templ.Component {
 		}
 		var templ_7745c5c3_Var14 = []any{utils.TwMerge(
 			"ml-auto flex h-5 min-w-5 items-center justify-center rounded-md px-1 text-xs font-medium",
-			"bg-sidebar-accent text-sidebar-accent-foreground",
+			"bg-elev text-text",
 			"group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden",
 			p.Class,
 		)}
@@ -463,7 +463,7 @@ func Separator(props ...SeparatorProps) templ.Component {
 			p = props[0]
 		}
 		var templ_7745c5c3_Var18 = []any{utils.TwMerge(
-			"mx-2 my-2 border-t border-sidebar-border",
+			"mx-2 my-2 border-t border-line",
 			p.Class,
 		)}
 		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var18...)
@@ -683,7 +683,7 @@ func Layout(props ...LayoutProps) templ.Component {
 		}
 		var templ_7745c5c3_Var22 = []any{utils.TwMerge(
 			"flex min-h-svh relative",
-			"has-[[data-tui-sidebar-variant=inset]]:bg-sidebar",
+			"has-[[data-tui-sidebar-variant=inset]]:bg-page",
 			p.Class,
 		)}
 		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var22...)
@@ -834,7 +834,7 @@ func Sidebar(props ...Props) templ.Component {
 				return nil
 			})
 			templ_7745c5c3_Err = sheet.Content(sheet.ContentProps{
-				Class:           "md:hidden bg-sidebar text-sidebar-foreground !p-0 !gap-0 flex flex-col h-full",
+				Class:           "md:hidden bg-page text-text !p-0 !gap-0 flex flex-col h-full",
 				HideCloseButton: true,
 			}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var26), templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
@@ -1047,7 +1047,7 @@ func Sidebar(props ...Props) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var41 = []any{utils.TwMerge(
-			"bg-sidebar group-data-[tui-sidebar-variant=floating]:border-sidebar-border flex h-full w-full flex-col",
+			"bg-page group-data-[tui-sidebar-variant=floating]:border-line flex h-full w-full flex-col",
 			"group-data-[tui-sidebar-variant=floating]:rounded-lg group-data-[tui-sidebar-variant=floating]:border group-data-[tui-sidebar-variant=floating]:shadow-sm",
 		)}
 		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var41...)
@@ -1766,14 +1766,14 @@ func menuButtonContent(p MenuButtonProps, buttonID string) templ.Component {
 		if p.Href != "" {
 			var templ_7745c5c3_Var71 = []any{utils.TwMerge(
 				"flex w-full items-center gap-2 rounded-md p-2 text-left overflow-hidden",
-				"hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+				"hover:bg-elev hover:text-text",
 				"transition-[width,height,padding]",
 				// Size variants with data attributes
 				"data-[tui-sidebar-size=sm]:h-7 data-[tui-sidebar-size=sm]:text-xs",
 				"data-[tui-sidebar-size=lg]:h-12 data-[tui-sidebar-size=lg]:text-sm",
 				"data-[tui-sidebar-size=default]:h-8 data-[tui-sidebar-size=default]:text-sm",
 				// Active state with data attributes
-				"data-[tui-sidebar-active=true]:bg-sidebar-accent data-[tui-sidebar-active=true]:text-sidebar-accent-foreground data-[tui-sidebar-active=true]:font-medium",
+				"data-[tui-sidebar-active=true]:bg-elev data-[tui-sidebar-active=true]:text-text data-[tui-sidebar-active=true]:font-medium",
 				// Collapsed icon mode styles - matching shadcn exactly
 				"group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:!size-8",
 				"group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:!p-2",
@@ -1877,14 +1877,14 @@ func menuButtonContent(p MenuButtonProps, buttonID string) templ.Component {
 		} else {
 			var templ_7745c5c3_Var76 = []any{utils.TwMerge(
 				"flex w-full items-center gap-2 rounded-md p-2 text-left overflow-hidden",
-				"hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+				"hover:bg-elev hover:text-text",
 				"transition-[width,height,padding]",
 				// Size variants with data attributes
 				"data-[tui-sidebar-size=sm]:h-7 data-[tui-sidebar-size=sm]:text-xs",
 				"data-[tui-sidebar-size=lg]:h-12 data-[tui-sidebar-size=lg]:text-sm",
 				"data-[tui-sidebar-size=default]:h-8 data-[tui-sidebar-size=default]:text-sm",
 				// Active state with data attributes
-				"data-[tui-sidebar-active=true]:bg-sidebar-accent data-[tui-sidebar-active=true]:text-sidebar-accent-foreground data-[tui-sidebar-active=true]:font-medium",
+				"data-[tui-sidebar-active=true]:bg-elev data-[tui-sidebar-active=true]:text-text data-[tui-sidebar-active=true]:font-medium",
 				// Collapsed icon mode styles - matching shadcn exactly
 				"group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:!size-8",
 				"group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:!p-2",
@@ -2003,7 +2003,7 @@ func MenuSub(props ...MenuSubProps) templ.Component {
 			p = props[0]
 		}
 		var templ_7745c5c3_Var81 = []any{utils.TwMerge(
-			"mx-3.5 flex min-w-0 translate-x-px flex-col gap-1 border-l border-sidebar-border px-2.5 py-0.5",
+			"mx-3.5 flex min-w-0 translate-x-px flex-col gap-1 border-l border-line px-2.5 py-0.5",
 			"group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden",
 			p.Class,
 		)}
@@ -2189,9 +2189,9 @@ func MenuSubButton(props ...MenuSubButtonProps) templ.Component {
 		if p.Href != "" {
 			var templ_7745c5c3_Var89 = []any{utils.TwMerge(
 				"flex items-center gap-2 rounded-md px-2 py-1.5 text-sm",
-				"hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+				"hover:bg-elev hover:text-text",
 				"transition-colors",
-				"data-[tui-sidebar-active=true]:bg-sidebar-accent data-[tui-sidebar-active=true]:text-sidebar-accent-foreground data-[tui-sidebar-active=true]:font-medium",
+				"data-[tui-sidebar-active=true]:bg-elev data-[tui-sidebar-active=true]:text-text data-[tui-sidebar-active=true]:font-medium",
 				p.Class,
 			)}
 			templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var89...)
@@ -2276,9 +2276,9 @@ func MenuSubButton(props ...MenuSubButtonProps) templ.Component {
 		} else {
 			var templ_7745c5c3_Var93 = []any{utils.TwMerge(
 				"flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-left",
-				"hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+				"hover:bg-elev hover:text-text",
 				"transition-colors",
-				"data-[tui-sidebar-active=true]:bg-sidebar-accent data-[tui-sidebar-active=true]:text-sidebar-accent-foreground data-[tui-sidebar-active=true]:font-medium",
+				"data-[tui-sidebar-active=true]:bg-elev data-[tui-sidebar-active=true]:text-text data-[tui-sidebar-active=true]:font-medium",
 				p.Class,
 			)}
 			templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var93...)

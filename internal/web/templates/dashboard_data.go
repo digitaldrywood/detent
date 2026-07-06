@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	webchart "github.com/digitaldrywood/detent/internal/web/chart"
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
 
 const (
@@ -291,7 +292,7 @@ type diagnosticsSummaryFact struct {
 	Label  string
 	Value  string
 	Detail string
-	Class  string
+	Kind   primitives.Kind
 }
 
 type runtimeStoreTableRow struct {
@@ -727,7 +728,7 @@ func dashboardScopeLabel(data DashboardData) string {
 
 func dashboardScopeClass(data DashboardData) string {
 	if isProjectDashboard(data) {
-		return "border-accent-soft bg-accent-soft text-accent"
+		return "border-accent/15 bg-accent/15 text-accent"
 	}
 	return authorizationScopeClass(data.Snapshot)
 }
@@ -1028,10 +1029,10 @@ func projectSmallMultipleCards(data DashboardData) []projectSmallMultipleCard {
 			ThroughputChart: projectSmallMultipleChart(name+" throughput", samples, "tps", "text-accent", func(sample ProjectSmallMultipleSample) float64 {
 				return sample.ThroughputTokensPerSecond
 			}),
-			SpendChart: projectSmallMultipleChart(name+" spend", samples, "USD", "text-success", func(sample ProjectSmallMultipleSample) float64 {
+			SpendChart: projectSmallMultipleChart(name+" spend", samples, "USD", "text-ok", func(sample ProjectSmallMultipleSample) float64 {
 				return sample.SpendUSD
 			}),
-			QueueChart: projectSmallMultipleChart(name+" queue depth", samples, "queued", "text-warning", func(sample ProjectSmallMultipleSample) float64 {
+			QueueChart: projectSmallMultipleChart(name+" queue depth", samples, "queued", "text-warn", func(sample ProjectSmallMultipleSample) float64 {
 				return float64(sample.QueueDepth)
 			}),
 		})
@@ -1098,15 +1099,15 @@ func sortProjectSmallMultiples(projects []ProjectSmallMultiple) {
 func projectSmallMultipleStatus(project ProjectSmallMultiple) projectStatusView {
 	switch {
 	case project.Blocked > 0:
-		return projectStatusView{Rank: 0, Label: "blocked", DotClass: "bg-danger", BadgeClass: "bg-danger-soft text-danger"}
+		return projectStatusView{Rank: 0, Label: "blocked", DotClass: "bg-err", BadgeClass: "bg-err/15 text-err"}
 	case project.Paused:
-		return projectStatusView{Rank: 4, Label: "paused", DotClass: "bg-muted-foreground", BadgeClass: "bg-muted text-muted-foreground"}
+		return projectStatusView{Rank: 4, Label: "paused", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
 	case project.Running > 0:
-		return projectStatusView{Rank: 1, Label: "active", DotClass: "bg-success", BadgeClass: "bg-success-soft text-success"}
+		return projectStatusView{Rank: 1, Label: "active", DotClass: "bg-ok", BadgeClass: "bg-ok/15 text-ok"}
 	case project.QueueCount > 0:
-		return projectStatusView{Rank: 2, Label: "queued", DotClass: "bg-warning", BadgeClass: "bg-warning-soft text-warning"}
+		return projectStatusView{Rank: 2, Label: "queued", DotClass: "bg-warn", BadgeClass: "bg-warn/15 text-warn"}
 	default:
-		return projectStatusView{Rank: 3, Label: "idle", DotClass: "bg-muted-foreground", BadgeClass: "bg-muted text-muted-foreground"}
+		return projectStatusView{Rank: 3, Label: "idle", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
 	}
 }
 
@@ -1576,30 +1577,30 @@ func firstHTMLIndex(value string) int {
 
 func snapshotReadinessDotClass(snapshot telemetry.Snapshot) string {
 	if snapshotDegraded(snapshot) {
-		return "bg-danger"
+		return "bg-err"
 	}
-	return "bg-warning"
+	return "bg-warn"
 }
 
 func snapshotReadinessClass(snapshot telemetry.Snapshot) string {
 	base := "rounded-md border p-3 shadow-sm"
 	if snapshotDegraded(snapshot) && snapshotHasPriorTrackerSnapshot(snapshot) {
-		return base + " border-warning-soft bg-muted/40 text-foreground"
+		return base + " border-warn/15 bg-elev/40 text-text"
 	}
 	if snapshotDegraded(snapshot) {
-		return base + " border-danger-soft bg-danger-soft text-danger"
+		return base + " border-err/15 bg-err/15 text-err"
 	}
-	return base + " border-warning-soft bg-warning-soft text-warning"
+	return base + " border-warn/15 bg-warn/15 text-warn"
 }
 
 func snapshotReadinessDetailClass(snapshot telemetry.Snapshot) string {
 	if snapshotDegraded(snapshot) && snapshotHasPriorTrackerSnapshot(snapshot) {
-		return "text-muted-foreground"
+		return "text-sec"
 	}
 	if snapshotDegraded(snapshot) {
-		return "text-danger"
+		return "text-err"
 	}
-	return "text-warning"
+	return "text-warn"
 }
 
 func manualRefreshVisible(snapshot telemetry.Snapshot) bool {
@@ -1668,17 +1669,17 @@ func manualRefreshStatusDetail(attempt *telemetry.RefreshAttempt) string {
 func manualRefreshStatusClass(attempt *telemetry.RefreshAttempt) string {
 	base := "min-w-0 rounded-md border px-3 py-2 text-xs"
 	if attempt == nil {
-		return base + " border-border bg-muted text-muted-foreground"
+		return base + " border-line bg-elev text-sec"
 	}
 	switch attempt.Status {
 	case telemetry.RefreshAttemptStatusSucceeded:
-		return base + " border-success bg-success-soft text-success"
+		return base + " border-ok bg-ok/15 text-ok"
 	case telemetry.RefreshAttemptStatusFailed, telemetry.RefreshAttemptStatusRefused:
-		return base + " border-danger bg-danger-soft text-danger"
+		return base + " border-err bg-err/15 text-err"
 	case telemetry.RefreshAttemptStatusCoalesced:
-		return base + " border-accent bg-accent-soft text-accent"
+		return base + " border-accent bg-accent/15 text-accent"
 	default:
-		return base + " border-warning bg-warning-soft text-warning"
+		return base + " border-warn bg-warn/15 text-warn"
 	}
 }
 
@@ -1760,21 +1761,21 @@ func identityRepositoryClass(accent bool) string {
 	if accent {
 		return "text-accent"
 	}
-	return "text-foreground"
+	return "text-text"
 }
 
 func identityIssueBadgeClass(accent bool) string {
 	if accent {
-		return "border-accent-soft bg-accent-soft text-accent"
+		return "border-accent/15 bg-accent/15 text-accent"
 	}
-	return "border-border bg-muted text-foreground"
+	return "border-line bg-elev text-text"
 }
 
 func identityPullRequestBadgeClass(accent bool) string {
 	if accent {
-		return "border-accent-soft bg-accent-soft text-accent"
+		return "border-accent/15 bg-accent/15 text-accent"
 	}
-	return "border-accent-soft bg-card text-accent"
+	return "border-accent/15 bg-surface text-accent"
 }
 
 func issueDescriptionPreview(issue telemetry.Issue) string {
@@ -2016,7 +2017,7 @@ func projectOverviewCards(data DashboardData) []projectOverviewCard {
 			Href:     sidebarReportsPath(DashboardShellDataFromDashboard(data)),
 			Value:    budgetSpendTodayLabel(data.Snapshot.Budget),
 			Detail:   formatTokens(data.Snapshot.Tokens) + " tracked",
-			DotClass: "bg-success",
+			DotClass: "bg-ok",
 		},
 	}
 }
@@ -2037,15 +2038,15 @@ func projectOverviewRunsDetail(snapshot telemetry.Snapshot) string {
 
 func projectOverviewRunsDotClass(snapshot telemetry.Snapshot) string {
 	if blockedCount(snapshot) > 0 {
-		return "bg-danger"
+		return "bg-err"
 	}
 	if queueCount(snapshot) > 0 {
-		return "bg-warning"
+		return "bg-warn"
 	}
 	if runningCount(snapshot) > 0 {
 		return "bg-accent"
 	}
-	return "bg-muted-foreground"
+	return "bg-dim"
 }
 
 func projectOverviewDiagnosticsDetail(snapshot telemetry.Snapshot) string {
@@ -2053,13 +2054,13 @@ func projectOverviewDiagnosticsDetail(snapshot telemetry.Snapshot) string {
 }
 
 func projectOverviewDiagnosticsDotClass(snapshot telemetry.Snapshot) string {
-	if strings.Contains(runtimeStatusClass(snapshot), "danger") {
-		return "bg-danger"
+	if strings.Contains(runtimeStatusClass(snapshot), "err") {
+		return "bg-err"
 	}
-	if strings.Contains(runtimeStatusClass(snapshot), "warning") {
-		return "bg-warning"
+	if strings.Contains(runtimeStatusClass(snapshot), "warn") {
+		return "bg-warn"
 	}
-	return "bg-success"
+	return "bg-ok"
 }
 
 func projectKanbanCardsByState(data DashboardData) map[string][]projectKanbanCard {
@@ -2798,7 +2799,7 @@ func pullRequestOpenLabelForNumber(number int) string {
 }
 
 func issueActionClass(compact bool) string {
-	base := "issue-external inline-flex shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+	base := "issue-external inline-flex shrink-0 items-center justify-center rounded-md border border-line bg-surface text-sec hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
 	if compact {
 		return base + " h-8 w-8"
 	}
@@ -3080,7 +3081,7 @@ func mergeLaneActiveStatus(record mergeLaneIssueRecord) mergeLaneCardStatus {
 	return mergeLaneCardStatus{
 		Label:  "Merging now",
 		Detail: detail,
-		Class:  "border-accent-soft bg-accent-soft text-accent",
+		Class:  "border-accent/15 bg-accent/15 text-accent",
 	}
 }
 
@@ -3098,7 +3099,7 @@ func mergeLaneQueuedStatus(record mergeLaneIssueRecord, position int, activePRNu
 	return mergeLaneCardStatus{
 		Label:  "Queued #" + strconv.Itoa(position),
 		Detail: strings.Join(details, "; "),
-		Class:  "border-warning-soft bg-warning-soft text-warning",
+		Class:  "border-warn/15 bg-warn/15 text-warn",
 	}
 }
 
@@ -3160,7 +3161,7 @@ func prPipelineLanes(snapshot telemetry.Snapshot) []prPipelineLane {
 			ID:          "human-review",
 			Title:       "Human Review",
 			CountLabel:  formatCount(len(cardsByLane["human-review"])),
-			DotClass:    "bg-success",
+			DotClass:    "bg-ok",
 			EmptyTitle:  "No PRs waiting for review.",
 			EmptyDetail: "Ready pull requests will appear here after Detent hands them to reviewers.",
 			Cards:       cardsByLane["human-review"],
@@ -3178,7 +3179,7 @@ func prPipelineLanes(snapshot telemetry.Snapshot) []prPipelineLane {
 			ID:          "done-today",
 			Title:       "Done today",
 			CountLabel:  formatCount(len(cardsByLane["done-today"])),
-			DotClass:    "bg-muted-foreground",
+			DotClass:    "bg-dim",
 			EmptyTitle:  "No PRs finished today.",
 			EmptyDetail: "Merged pull requests land here for the current UTC day.",
 			Cards:       cardsByLane["done-today"],
@@ -3312,9 +3313,9 @@ func formatOptionalDuration(seconds int64) string {
 
 func prPipelineMergeSummaryClass(warning bool) string {
 	if warning {
-		return "border-warning-soft bg-warning-soft text-warning"
+		return "border-warn/15 bg-warn/15 text-warn"
 	}
-	return "border-border bg-card text-foreground"
+	return "border-line bg-surface text-text"
 }
 
 func appendPRPipelineCard(
@@ -3647,22 +3648,22 @@ func prPipelineCodexReviewState(issue telemetry.Issue) string {
 func prPipelineCIClass(status string) string {
 	switch status {
 	case "pass":
-		return "border-success-soft bg-success-soft text-success"
+		return "border-ok/15 bg-ok/15 text-ok"
 	case "fail":
-		return "border-danger-soft bg-danger-soft text-danger"
+		return "border-err/15 bg-err/15 text-err"
 	default:
-		return "border-warning-soft bg-warning-soft text-warning"
+		return "border-warn/15 bg-warn/15 text-warn"
 	}
 }
 
 func prPipelineCodexReviewClass(state string) string {
 	switch state {
 	case "P1":
-		return "border-danger-soft bg-danger-soft text-danger"
+		return "border-err/15 bg-err/15 text-err"
 	case "P2":
-		return "border-warning-soft bg-warning-soft text-warning"
+		return "border-warn/15 bg-warn/15 text-warn"
 	default:
-		return "border-success-soft bg-success-soft text-success"
+		return "border-ok/15 bg-ok/15 text-ok"
 	}
 }
 
@@ -3878,7 +3879,7 @@ func boardProgressChart(snapshot telemetry.Snapshot) SeriesChartData {
 		AriaLabel:   "Completed sessions over time",
 		Points:      chartPoints,
 		ValueSuffix: "sessions",
-		ColorClass:  "text-success",
+		ColorClass:  "text-ok",
 	}
 }
 
@@ -3903,7 +3904,7 @@ func cycleTimeHistogramChart(report telemetry.CycleTimeReport) BarChartData {
 		AriaLabel:   "Cycle time histogram",
 		Bars:        bars,
 		ValueSuffix: "issues",
-		ColorClass:  "text-success",
+		ColorClass:  "text-ok",
 		Class:       "h-28",
 		Height:      112,
 	}
@@ -4008,31 +4009,31 @@ func diagnosticsSummaryFacts(data DashboardData) []diagnosticsSummaryFact {
 			Label:  "Overall health",
 			Value:  diagnosticsHealthLabel(snapshot),
 			Detail: diagnosticsHealthDetail(snapshot),
-			Class:  diagnosticsHealthClass(snapshot),
+			Kind:   diagnosticsHealthKind(snapshot),
 		},
 		{
 			Label:  "Active bottleneck",
 			Value:  bottleneck.Label,
 			Detail: bottleneck.Detail,
-			Class:  "border-warning-soft bg-warning-soft text-warning",
+			Kind:   primitives.KindWarn,
 		},
 		{
 			Label:  "Forward progress",
 			Value:  diagnosticsForwardProgressValue(snapshot),
 			Detail: diagnosticsForwardProgressDetail(snapshot),
-			Class:  "border-accent-soft bg-accent-soft text-accent",
+			Kind:   primitives.KindInfo,
 		},
 		{
 			Label:  "Data freshness",
 			Value:  diagnosticsDataFreshnessValue(snapshot),
 			Detail: diagnosticsDataFreshnessDetail(snapshot),
-			Class:  runtimeStoreStatusClass(snapshot.WorkflowMetrics.RuntimeStore),
+			Kind:   runtimeStoreStatusKind(snapshot.WorkflowMetrics.RuntimeStore),
 		},
 		{
 			Label:  "API pressure",
 			Value:  gitHubAPIHealth(snapshot).Label,
 			Detail: gitHubAPIHealth(snapshot).Summary,
-			Class:  gitHubAPIHealthClass(snapshot),
+			Kind:   gitHubAPIHealthKind(snapshot),
 		},
 	}
 }
@@ -4069,16 +4070,16 @@ func diagnosticsHealthDetail(snapshot telemetry.Snapshot) string {
 	return "Tracker data and runtime telemetry are available."
 }
 
-func diagnosticsHealthClass(snapshot telemetry.Snapshot) string {
+func diagnosticsHealthKind(snapshot telemetry.Snapshot) primitives.Kind {
 	switch diagnosticsHealthLabel(snapshot) {
 	case "Running":
-		return "border-success-soft bg-success-soft text-success"
+		return primitives.KindOK
 	case "Draining", "Stalled":
-		return "border-warning-soft bg-warning-soft text-warning"
+		return primitives.KindWarn
 	case "Degraded":
-		return "border-danger-soft bg-danger-soft text-danger"
+		return primitives.KindErr
 	default:
-		return "border-border bg-muted text-muted-foreground"
+		return primitives.KindNeutral
 	}
 }
 
@@ -4192,14 +4193,14 @@ func runtimeStoreStatusLabel(store telemetry.RuntimeStoreEvidence) string {
 	}
 }
 
-func runtimeStoreStatusClass(store telemetry.RuntimeStoreEvidence) string {
+func runtimeStoreStatusKind(store telemetry.RuntimeStoreEvidence) primitives.Kind {
 	switch strings.TrimSpace(store.Status) {
 	case "healthy":
-		return "border-success-soft bg-success-soft text-success"
-	case "not_configured":
-		return "border-border bg-muted text-muted-foreground"
+		return primitives.KindOK
+	case "not_configured", "":
+		return primitives.KindNeutral
 	default:
-		return "border-danger-soft bg-danger-soft text-danger"
+		return primitives.KindErr
 	}
 }
 
@@ -4343,7 +4344,7 @@ func workflowLaneTrendCards(report telemetry.WorkflowMetrics) []workflowLaneTren
 				Points:      points,
 				ValueSuffix: "s",
 				ColorClass:  workflowLaneTrendColor(lane),
-				Class:       "h-24 border-border/70 bg-card/60",
+				Class:       "h-24 border-line/70 bg-surface/60",
 				Height:      120,
 			},
 		})
@@ -4444,11 +4445,11 @@ func workflowLaneTrendColor(lane string) string {
 	case "In Progress":
 		return "text-accent"
 	case "Human Review":
-		return "text-warning"
+		return "text-warn"
 	case "Merging":
-		return "text-success"
+		return "text-ok"
 	case "Rework":
-		return "text-danger"
+		return "text-err"
 	default:
 		return "text-accent"
 	}
@@ -4519,17 +4520,17 @@ func workflowMetricTrendLabel(comparison *telemetry.WorkflowMetricComparison) st
 func workflowMetricTrendClass(comparison *telemetry.WorkflowMetricComparison) string {
 	base := "inline-flex rounded-full px-2 py-1 text-xs font-semibold "
 	if comparison == nil {
-		return base + "bg-muted text-muted-foreground"
+		return base + "bg-elev text-sec"
 	}
 	switch strings.TrimSpace(comparison.Direction) {
 	case "faster":
-		return base + "bg-success-soft text-success"
+		return base + "bg-ok/15 text-ok"
 	case "slower":
-		return base + "bg-danger-soft text-danger"
+		return base + "bg-err/15 text-err"
 	case "unchanged":
-		return base + "bg-accent-soft text-accent"
+		return base + "bg-accent/15 text-accent"
 	default:
-		return base + "bg-muted text-muted-foreground"
+		return base + "bg-elev text-sec"
 	}
 }
 
@@ -4542,7 +4543,7 @@ func workflowMetricDeltaLabel(comparison *telemetry.WorkflowMetricComparison) st
 
 func workflowLaneMetricRowClass(metric telemetry.WorkflowPhaseMetric) string {
 	if metric.Bottleneck {
-		return "bg-warning-soft/40"
+		return "bg-warn/15"
 	}
 	return ""
 }
@@ -4973,13 +4974,13 @@ func workflowBottleneckLabel(key string) string {
 func boardStateDotClass(state string) string {
 	switch normalizeTimelineState(state) {
 	case "todo", "rework":
-		return "bg-warning"
+		return "bg-warn"
 	case "review", "done":
-		return "bg-success"
+		return "bg-ok"
 	case "blocked":
-		return "bg-danger"
+		return "bg-err"
 	case "backlog":
-		return "bg-muted-foreground"
+		return "bg-dim"
 	default:
 		return "bg-accent"
 	}
@@ -4988,13 +4989,13 @@ func boardStateDotClass(state string) string {
 func boardStateTextClass(state string) string {
 	switch normalizeTimelineState(state) {
 	case "todo", "rework":
-		return "text-warning"
+		return "text-warn"
 	case "review", "done":
-		return "text-success"
+		return "text-ok"
 	case "blocked":
-		return "text-danger"
+		return "text-err"
 	case "backlog":
-		return "text-muted-foreground"
+		return "text-sec"
 	default:
 		return "text-accent"
 	}
@@ -5219,11 +5220,11 @@ func percentLabel(value float64) string {
 func agentTimelineStateClass(state string) string {
 	switch normalizeTimelineState(state) {
 	case "completed", "complete", "done", "human review":
-		return "bg-success"
+		return "bg-ok"
 	case "blocked", "failed", "failure", "cancelled", "canceled":
-		return "bg-danger"
+		return "bg-err"
 	case "backlog", "queued", "queue", "retry", "retrying", "todo":
-		return "bg-warning"
+		return "bg-warn"
 	default:
 		return "bg-accent"
 	}
@@ -5282,9 +5283,9 @@ func budgetDisabled(budget telemetry.Budget) bool {
 
 func budgetCardClass(budget telemetry.Budget) string {
 	if budgetDisabled(budget) {
-		return "dashboard-panel min-w-0 rounded-md border border-border bg-card px-4 py-3 shadow-sm sm:px-5"
+		return "dashboard-panel min-w-0 rounded-md border border-line bg-surface px-4 py-3 shadow-sm sm:px-5"
 	}
-	return "dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5"
+	return "dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5"
 }
 
 func budgetSpendTodayLabel(budget telemetry.Budget) string {
@@ -5615,15 +5616,15 @@ func runtimeStatusLabel(snapshot telemetry.Snapshot) string {
 
 func runtimeStatusClass(snapshot telemetry.Snapshot) string {
 	if snapshotDegraded(snapshot) {
-		return "border-danger-soft bg-danger-soft text-danger"
+		return "border-err/15 bg-err/15 text-err"
 	}
 	if snapshotInitializing(snapshot) {
-		return "border-warning-soft bg-warning-soft text-warning"
+		return "border-warn/15 bg-warn/15 text-warn"
 	}
 	if snapshot.Shutdown.Draining {
-		return "border-warning-soft bg-warning-soft text-warning"
+		return "border-warn/15 bg-warn/15 text-warn"
 	}
-	return "border-success-soft bg-success-soft text-success"
+	return "border-ok/15 bg-ok/15 text-ok"
 }
 
 func statsStatusLabel(snapshot telemetry.Snapshot) string {
@@ -5638,15 +5639,15 @@ func statsStatusLabel(snapshot telemetry.Snapshot) string {
 
 func statsStatusClass(snapshot telemetry.Snapshot) string {
 	if snapshotDegraded(snapshot) {
-		return "border-danger-soft bg-danger-soft text-danger"
+		return "border-err/15 bg-err/15 text-err"
 	}
 	if snapshotInitializing(snapshot) {
-		return "border-warning-soft bg-warning-soft text-warning"
+		return "border-warn/15 bg-warn/15 text-warn"
 	}
 	if snapshot.LifetimeTotals.Available {
-		return "border-success-soft bg-success-soft text-success"
+		return "border-ok/15 bg-ok/15 text-ok"
 	}
-	return "border-danger-soft bg-danger-soft text-danger"
+	return "border-err/15 bg-err/15 text-err"
 }
 
 func statsStatusTitle(snapshot telemetry.Snapshot) string {
@@ -5684,9 +5685,9 @@ func authorizationScopeLabel(snapshot telemetry.Snapshot) string {
 
 func authorizationScopeClass(snapshot telemetry.Snapshot) string {
 	if snapshot.Instance.AuthorizationConfigured {
-		return "border-accent-soft bg-accent-soft text-accent"
+		return "border-accent/15 bg-accent/15 text-accent"
 	}
-	return "border-border bg-muted text-muted-foreground"
+	return "border-line bg-elev text-sec"
 }
 
 func rateLimitRows(limits *telemetry.RateLimits) []rateLimitRow {
@@ -6071,48 +6072,48 @@ func gitHubAPITrackerDegradedDetail(snapshot telemetry.Snapshot) string {
 	return "Tracker refresh failed. " + snapshotFirstRefreshFailureDetail(snapshot)
 }
 
-func gitHubAPIHealthClass(snapshot telemetry.Snapshot) string {
+func gitHubAPIHealthKind(snapshot telemetry.Snapshot) primitives.Kind {
 	switch gitHubAPIHealth(snapshot).State {
 	case gitHubAPIHealthStateHealthy:
-		return "border-success-soft bg-success-soft text-success"
+		return primitives.KindOK
 	case gitHubAPIHealthStateAtRest:
-		return "border-accent-soft bg-accent-soft text-accent"
+		return primitives.KindInfo
 	case gitHubAPIHealthStateWarning, gitHubAPIHealthStateBackoff:
-		return "border-warning-soft bg-warning-soft text-warning"
+		return primitives.KindWarn
 	case gitHubAPIHealthStateExhausted:
-		return "border-danger-soft bg-danger-soft text-danger"
+		return primitives.KindErr
 	default:
-		return "border-border bg-muted text-muted-foreground"
+		return primitives.KindNeutral
 	}
 }
 
 func gitHubAPIHealthDotClass(snapshot telemetry.Snapshot) string {
 	switch gitHubAPIHealth(snapshot).State {
 	case gitHubAPIHealthStateHealthy:
-		return "bg-success"
+		return "bg-ok"
 	case gitHubAPIHealthStateAtRest:
 		return "bg-accent"
 	case gitHubAPIHealthStateWarning, gitHubAPIHealthStateBackoff:
-		return "bg-warning"
+		return "bg-warn"
 	case gitHubAPIHealthStateExhausted:
-		return "bg-danger"
+		return "bg-err"
 	default:
-		return "bg-muted-foreground"
+		return "bg-dim"
 	}
 }
 
 func gitHubAPIHealthBadgeClass(snapshot telemetry.Snapshot) string {
 	switch gitHubAPIHealth(snapshot).State {
 	case gitHubAPIHealthStateHealthy:
-		return "border-success-soft bg-success-soft text-success"
+		return "border-ok/15 bg-ok/15 text-ok"
 	case gitHubAPIHealthStateAtRest:
-		return "border-accent-soft bg-accent-soft text-accent"
+		return "border-accent/15 bg-accent/15 text-accent"
 	case gitHubAPIHealthStateWarning, gitHubAPIHealthStateBackoff:
-		return "border-warning-soft bg-warning-soft text-warning"
+		return "border-warn/15 bg-warn/15 text-warn"
 	case gitHubAPIHealthStateExhausted:
-		return "border-danger-soft bg-danger-soft text-danger"
+		return "border-err/15 bg-err/15 text-err"
 	default:
-		return "border-sidebar-border bg-sidebar-accent text-sidebar-foreground/70"
+		return "border-line bg-elev text-text/70"
 	}
 }
 
@@ -6945,18 +6946,18 @@ func workAttemptWorkerLabel(row telemetry.WorkAttempt) string {
 func workAttemptStatusClass(row telemetry.WorkAttempt) string {
 	base := "shrink-0 rounded-full px-2 py-1 font-mono text-xs font-medium "
 	if row.Stale {
-		return base + "bg-danger-soft text-danger"
+		return base + "bg-err/15 text-err"
 	}
 	switch strings.TrimSpace(row.TerminalState) {
 	case "success":
-		return base + "bg-success-soft text-success"
+		return base + "bg-ok/15 text-ok"
 	case "failure", "timed_out", "abandoned", "cancelled":
-		return base + "bg-danger-soft text-danger"
+		return base + "bg-err/15 text-err"
 	}
 	if strings.TrimSpace(row.Status) == "active" {
-		return base + "bg-accent-soft text-accent"
+		return base + "bg-accent/15 text-accent"
 	}
-	return base + "bg-muted text-muted-foreground"
+	return base + "bg-elev text-sec"
 }
 
 func workAttemptStatusLabel(row telemetry.WorkAttempt) string {
@@ -7039,9 +7040,9 @@ func schedulerDecisionLaneLabel(row telemetry.SchedulerDecision) string {
 func schedulerDecisionStatusClass(row telemetry.SchedulerDecision) string {
 	base := "shrink-0 rounded-full px-2 py-1 font-mono text-xs font-medium "
 	if row.Selected || strings.TrimSpace(row.Result) == "selected" {
-		return base + "bg-success-soft text-success"
+		return base + "bg-ok/15 text-ok"
 	}
-	return base + "bg-warning-soft text-warning"
+	return base + "bg-warn/15 text-warn"
 }
 
 func schedulerDecisionStatusLabel(row telemetry.SchedulerDecision) string {

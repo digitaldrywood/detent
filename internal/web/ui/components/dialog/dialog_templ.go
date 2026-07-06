@@ -341,7 +341,7 @@ func Content(props ...ContentProps) templ.Component {
 			open = val.(bool)
 		}
 		var templ_7745c5c3_Var12 = []any{utils.TwMerge(
-			"fixed left-[50%] top-[50%] z-50 m-0 flex w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col gap-4 overflow-hidden border bg-background p-6 text-foreground shadow-lg outline-none sm:max-w-lg",
+			"fixed left-[50%] top-[50%] z-50 m-0 flex w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col gap-4 overflow-hidden border bg-page p-6 text-text shadow-lg outline-none sm:max-w-lg",
 			"[&:not([open]):not([data-tui-dialog-closing=true])]:hidden",
 			"rounded-lg",
 			"[&::backdrop]:transition-all [&::backdrop]:duration-200",
@@ -437,11 +437,11 @@ func Content(props ...ContentProps) templ.Component {
 				"transition-opacity hover:opacity-100",
 				// Focus states
 				"focus:outline-none focus:ring-2",
-				"focus:ring-ring focus:ring-offset-2",
-				"ring-offset-background",
+				"focus:ring-accent focus:ring-offset-2",
+				"ring-offset-page",
 				// Hover/Data states
 				"data-[tui-dialog-open=true]:bg-accent",
-				"data-[tui-dialog-open=true]:text-muted-foreground",
+				"data-[tui-dialog-open=true]:text-sec",
 				// Disabled state
 				"disabled:pointer-events-none",
 				// Icon styles
@@ -895,7 +895,7 @@ func Description(props ...DescriptionProps) templ.Component {
 		if len(props) > 0 {
 			p = props[0]
 		}
-		var templ_7745c5c3_Var37 = []any{utils.TwMerge("text-muted-foreground text-sm", p.Class)}
+		var templ_7745c5c3_Var37 = []any{utils.TwMerge("text-sec text-sm", p.Class)}
 		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var37...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err

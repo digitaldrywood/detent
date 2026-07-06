@@ -268,6 +268,61 @@ func TestProjectDiagnosticsPageRendersWorkflowDiagnosticPromptCopyControls(t *te
 	}
 }
 
+func TestProjectDiagnosticsPageRendersTrackerStatusDriftWarning(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 1, 15, 0, 0, 0, time.UTC)
+	html := renderProjectDiagnosticsPage(t, templates.DashboardData{
+		Title:         "Diagnostics",
+		ConnectorName: "github",
+		ProjectID:     "detent",
+		ProjectName:   "Detent",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			Refresh: telemetry.Refresh{
+				LastRefreshAt: &now,
+			},
+			TrackerDrift: telemetry.TrackerDrift{
+				UntrackedOpen: []telemetry.Issue{{
+					ID:         "I_771",
+					Identifier: "digitaldrywood/detent#771",
+					URL:        "https://github.com/digitaldrywood/detent/issues/771",
+					Title:      "Untracked issue",
+					Labels:     []string{"bug"},
+				}},
+				OpenTerminal: []telemetry.Issue{{
+					ID:         "I_583",
+					Identifier: "digitaldrywood/detent#583",
+					URL:        "https://github.com/digitaldrywood/detent/issues/583",
+					Title:      "Done but open",
+					State:      "Done",
+					Labels:     []string{"detent:done"},
+				}},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		`aria-label="Tracker status drift"`,
+		"Tracker status drift",
+		"2 cleanup issues",
+		"Untracked open issues",
+		"Open terminal issues",
+		`href="https://github.com/digitaldrywood/detent/issues/771"`,
+		"#771",
+		"Untracked issue",
+		`href="https://github.com/digitaldrywood/detent/issues/583"`,
+		"#583",
+		"Done but open",
+		"detent:done",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("project diagnostics page missing drift marker %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestDashboardShellRendersSharedAppChrome(t *testing.T) {
 	t.Parallel()
 
@@ -478,7 +533,7 @@ func renderProjectDiagnosticsPage(t *testing.T, data templates.DashboardData) st
 	t.Helper()
 
 	var buf bytes.Buffer
-	if err := templates.ProjectDiagnosticsPage(data).Render(context.Background(), &buf); err != nil {
+	if err := templates.ProjectDiagnosticsPageV2(data).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("Render() error = %v", err)
 	}
 	return buf.String()

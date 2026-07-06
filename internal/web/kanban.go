@@ -1418,9 +1418,9 @@ func kanbanFeedback(c echo.Context, status int, message string) error {
 		message = http.StatusText(status)
 	}
 	if c.Request().Header.Get("HX-Request") == "true" {
-		class := "border-success bg-success-soft text-success"
+		class := "border-ok bg-ok/15 text-ok"
 		if status >= http.StatusBadRequest {
-			class = "border-danger bg-danger-soft text-danger"
+			class = "border-err bg-err/15 text-err"
 		} else {
 			c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
 		}

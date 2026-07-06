@@ -58,35 +58,6 @@
   --radius-chip: 4px;
   --spacing: 4px; /* strict 4px grid */
 
-  /* compat aliases for templUI components and pages awaiting migration */
-  --color-background: var(--color-page);
-  --color-foreground: var(--color-text);
-  --color-card: var(--color-surface);
-  --color-muted: var(--color-elev);
-  --color-muted-foreground: var(--color-sec);
-  --color-border: var(--color-line);
-  --color-accent-soft: color-mix(in oklab, var(--color-accent) 15%, transparent);
-  --color-warning: var(--color-warn);
-  --color-warning-soft: color-mix(in oklab, var(--color-warn) 15%, transparent);
-  --color-danger: var(--color-err);
-  --color-danger-soft: color-mix(in oklab, var(--color-err) 15%, transparent);
-  --color-success: var(--color-ok);
-  --color-success-soft: color-mix(in oklab, var(--color-ok) 15%, transparent);
-  --color-primary: var(--color-accent);
-  --color-primary-foreground: var(--color-page);
-  --color-secondary: var(--color-elev);
-  --color-secondary-foreground: var(--color-text);
-  --color-destructive: var(--color-err);
-  --color-popover: var(--color-elev);
-  --color-popover-foreground: var(--color-text);
-  --color-input: var(--color-line);
-  --color-ring: var(--color-accent);
-  --color-sidebar: var(--color-page);
-  --color-sidebar-foreground: var(--color-text);
-  --color-sidebar-border: var(--color-line);
-  --color-sidebar-accent: var(--color-elev);
-  --color-sidebar-accent-foreground: var(--color-text);
-  --color-sidebar-ring: var(--color-accent);
 }
 
 /* Light theme. Several values are darkened from the brief's suggestions so
