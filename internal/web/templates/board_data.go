@@ -38,6 +38,7 @@ type boardLaneView struct {
 // title, and AT MOST one extra signal (chip, status line, or none).
 type boardCardView struct {
 	DomID     string
+	Identity  string
 	Number    string
 	Project   string
 	Scope     string
@@ -179,8 +180,9 @@ func boardExceptions(data DashboardData, boardActions bool) []primitives.Excepti
 		if projectID == "" {
 			projectID = fallbackProjectID
 		}
+		identity := boardCardIdentityToken(row.Identifier, row.ID, projectKanbanIssueNumber(row.Issue))
 		exception := primitives.Exception{
-			ID:    "exception-" + boardCardSlug(projectID, projectKanbanIssueNumber(row.Issue)),
+			ID:    "exception-" + boardCardScopedSlug(projectID, identity),
 			Kind:  primitives.KindErr,
 			Title: "Session blocked",
 			Repo:  projectID,
@@ -188,7 +190,7 @@ func boardExceptions(data DashboardData, boardActions bool) []primitives.Excepti
 			Rest:  boardExceptionDetail(row, now),
 		}
 		exception.ActionLabel = "Review"
-		exception.ActionAttrs = sheetOpenAttrs(projectID, projectKanbanIssueNumber(row.Issue), projectKanbanBoardScope(data), boardActions)
+		exception.ActionAttrs = sheetOpenAttrs(projectID, identity, projectKanbanBoardScope(data), boardActions)
 		exceptions = append(exceptions, exception)
 	}
 	return exceptions
@@ -213,12 +215,14 @@ func boardCardViewFromCard(lane projectKanbanLane, card projectKanbanCard, termi
 	if projectID == "" {
 		projectID = fallbackProjectID
 	}
+	identity := boardCardIdentityToken(card.Identifier, card.IssueID, card.IssueNumber)
 	view := boardCardView{
-		DomID:   "card-" + boardCardSlug(projectID, card.IssueNumber),
-		Number:  card.IssueNumber,
-		Project: projectID,
-		Scope:   scope,
-		Running: strings.EqualFold(lane.Title, "In Progress"),
+		DomID:    "card-" + boardCardScopedSlug(projectID, identity),
+		Identity: identity,
+		Number:   card.IssueNumber,
+		Project:  projectID,
+		Scope:    scope,
+		Running:  strings.EqualFold(lane.Title, "In Progress"),
 		// Done drives the green ✓; other terminal states (Cancelled, Closed)
 		// are terminal but not done, so they suppress meta without claiming
 		// success.
@@ -376,16 +380,61 @@ func boardLaneShowsAge(title string) bool {
 	return true
 }
 
-func boardCardSlug(projectID string, number string) string {
-	slug := strings.TrimSpace(projectID) + "-" + strings.TrimPrefix(strings.TrimSpace(number), "#")
-	slug = strings.Map(func(r rune) rune {
+func boardCardIdentityToken(identifier string, issueID string, number string) string {
+	identifier = strings.TrimSpace(identifier)
+	if issueIdentifierHasNumber(identifier) {
+		return identifier
+	}
+	if issueID = strings.TrimSpace(issueID); issueID != "" {
+		return issueID
+	}
+	return strings.TrimSpace(number)
+}
+
+func issueIdentifierHasNumber(identifier string) bool {
+	index := strings.LastIndex(identifier, "#")
+	return index > 0 && index < len(identifier)-1
+}
+
+func issueIdentifierHasRepositoryNumber(identifier string) bool {
+	index := strings.LastIndex(identifier, "#")
+	return index > 0 && index < len(identifier)-1 && strings.Contains(identifier[:index], "/")
+}
+
+func boardCardScopedIdentityToken(projectID string, identity string) string {
+	projectID = strings.TrimSpace(projectID)
+	identity = strings.TrimSpace(identity)
+	if identity == "" || projectID == "" || issueIdentifierHasRepositoryNumber(identity) {
+		return identity
+	}
+	return projectID + ":" + identity
+}
+
+func boardCardScopedSlug(projectID string, identity string) string {
+	return boardCardSlug(boardCardScopedIdentityToken(projectID, identity))
+}
+
+func boardCardSlug(identity string) string {
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range strings.TrimSpace(identity) {
 		switch {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
-			return r
+			builder.WriteRune(r)
+			lastDash = false
 		case r >= 'A' && r <= 'Z':
-			return r + ('a' - 'A')
+			builder.WriteRune(r + ('a' - 'A'))
+			lastDash = false
+		default:
+			if builder.Len() > 0 && !lastDash {
+				builder.WriteByte('-')
+				lastDash = true
+			}
 		}
-		return '-'
-	}, slug)
-	return strings.Trim(slug, "-")
+	}
+	slug := strings.Trim(builder.String(), "-")
+	if slug == "" {
+		return "unknown"
+	}
+	return slug
 }

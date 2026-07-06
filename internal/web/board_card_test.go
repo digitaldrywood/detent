@@ -37,7 +37,7 @@ func TestAPIBoardCardRendersDetailSheet(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=demo-project&issue=9510", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=demo-project&issue=digitaldrywood%2Fdetent%239510", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -52,6 +52,13 @@ func TestAPIBoardCardRendersDetailSheet(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("sheet missing %q:\n%s", want, rec.Body.String())
 		}
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=demo-project&issue=9510", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("legacy number status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 
 	rec = httptest.NewRecorder()
@@ -73,7 +80,7 @@ func TestAPIBoardCardScopesDemoProjectSheets(t *testing.T) {
 	// A card opened from an integration-mode demo project board must keep its
 	// project-scoped Move/Remove actions, not fall back to fleet-scoped data.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=dogfood&issue=5251&scope=project&actions=board", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=dogfood&issue=digitaldrywood%2Fdetent-core%235251&scope=project&actions=board", nil)
 	req.Header.Set(web.DemoScenarioHeader, "kanban-full-integration")
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -117,7 +124,7 @@ func TestAPIBoardCardPreservesProjectScope(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=42&scope=project&actions=board", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%2342&scope=project&actions=board", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -131,7 +138,7 @@ func TestAPIBoardCardPreservesProjectScope(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=42&actions=board", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%2342&actions=board", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("fleet status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -144,7 +151,7 @@ func TestAPIBoardCardPreservesProjectScope(t *testing.T) {
 	// must not offer inline kanban actions that would swap board lanes over
 	// the page the user is on.
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=42", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%2342", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("no-actions status = %d, want 200; body = %s", rec.Code, rec.Body.String())
