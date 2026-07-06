@@ -69,6 +69,9 @@ gate:
 server:
   kanban:
     mode: integration
+    # Set show_blocked_alerts: true only when red blocked states should appear
+    # as one compact top-of-board alert; dependency waits stay on cards.
+    # show_blocked_alerts: true
     allowed_transitions:
       Backlog:
         - Todo

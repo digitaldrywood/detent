@@ -1926,6 +1926,9 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    server:
      kanban:
        mode: integration
+       # Set show_blocked_alerts: true only when red blocked states should appear
+       # as one compact top-of-board alert; dependency waits stay on cards.
+       # show_blocked_alerts: true
        # Use mode: read_only for observer/shared dashboards, no-writes choices,
        # or failed post-authorization write probes.
        # Optional allowed_transitions expose broader manual status editing.
@@ -1940,7 +1943,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    ```sh
    KANBAN_MODE="${KANBAN_MODE:?set KANBAN_MODE to read_only or integration from answers.env}"
    perl -0pi -e "s#(?m)^    mode: (read_only|integration)$#    mode: ${KANBAN_MODE}#" <source-root>/WORKFLOW.md
-   rg -n "kanban:|mode: ${KANBAN_MODE}|allowed_transitions" <source-root>/WORKFLOW.md
+   rg -n "kanban:|mode: ${KANBAN_MODE}|show_blocked_alerts|allowed_transitions" <source-root>/WORKFLOW.md
    ```
 
 4. **Set the dashboard bind from the interview.** This writes the default
