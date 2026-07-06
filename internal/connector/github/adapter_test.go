@@ -2697,6 +2697,42 @@ func TestConnectorCreateCommentCallsAddComment(t *testing.T) {
 	}
 }
 
+func TestConnectorCreateIssueUsesREST(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodPost,
+		path:   "/repos/example/repo/issues",
+		body:   `{"node_id":"I_kw2","number":2,"title":"Governed proposal","body":"proposal body","state":"open","html_url":"https://github.com/example/repo/issues/2","labels":[{"name":"enhancement"}]}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{Repository: "example/repo"})
+
+	issue, err := c.CreateIssue(context.Background(), connector.IssueDraft{
+		Title:  " Governed proposal ",
+		Body:   " proposal body ",
+		Labels: []string{"enhancement", "Enhancement", ""},
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue() error = %v", err)
+	}
+	if issue.ID != "I_kw2" || issue.Identifier != "example/repo#2" || issue.URL != "https://github.com/example/repo/issues/2" {
+		t.Fatalf("CreateIssue() issue = %#v", issue)
+	}
+
+	requests := server.requests()
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(requests))
+	}
+	body := requests[0]["body"].(map[string]any)
+	if body["title"] != "Governed proposal" || body["body"] != "proposal body" {
+		t.Fatalf("request body = %#v", body)
+	}
+	labels, ok := body["labels"].([]any)
+	if !ok || len(labels) != 1 || labels[0] != "enhancement" {
+		t.Fatalf("labels = %#v, want trimmed non-empty labels", body["labels"])
+	}
+}
+
 func TestConnectorCreatePullRequestCommentUsesIssueCommentsEndpoint(t *testing.T) {
 	t.Parallel()
 

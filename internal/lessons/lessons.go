@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -26,6 +27,12 @@ type Entry struct {
 type AppendOptions struct {
 	Date       time.Time
 	MaxEntries int
+}
+
+type FailureKindPattern struct {
+	FailureKind string
+	Count       int
+	Examples    []string
 }
 
 func Append(path string, entry Entry, opts AppendOptions) error {
@@ -67,6 +74,59 @@ func Recent(path string, count int) ([]string, error) {
 	}
 
 	return entries, nil
+}
+
+func FailureKindPatterns(path string, threshold int) ([]FailureKindPattern, error) {
+	if threshold <= 0 {
+		threshold = 1
+	}
+
+	entries, err := ReadAll(path)
+	if err != nil {
+		return nil, err
+	}
+
+	patternsByKind := map[string]*FailureKindPattern{}
+	keys := []string{}
+	for _, entry := range entries {
+		failureKind := renderedEntryField(entry, "Failure kind")
+		if failureKind == "" || strings.HasPrefix(failureKind, "<") {
+			continue
+		}
+		key := strings.ToLower(failureKind)
+		pattern, ok := patternsByKind[key]
+		if !ok {
+			pattern = &FailureKindPattern{FailureKind: failureKind}
+			patternsByKind[key] = pattern
+			keys = append(keys, key)
+		}
+		pattern.Count++
+		if example := renderedEntryHeading(entry); example != "" && len(pattern.Examples) < 3 {
+			pattern.Examples = append(pattern.Examples, example)
+		}
+	}
+
+	sort.Slice(keys, func(i, j int) bool {
+		left := patternsByKind[keys[i]]
+		right := patternsByKind[keys[j]]
+		if left.Count != right.Count {
+			return left.Count > right.Count
+		}
+		return left.FailureKind < right.FailureKind
+	})
+
+	patterns := make([]FailureKindPattern, 0, len(keys))
+	for _, key := range keys {
+		pattern, ok := patternsByKind[key]
+		if !ok || pattern == nil {
+			continue
+		}
+		if pattern.Count < threshold {
+			continue
+		}
+		patterns = append(patterns, *pattern)
+	}
+	return patterns, nil
 }
 
 func ReadAll(path string) ([]string, error) {
@@ -138,6 +198,28 @@ func parseEntries(content string) []string {
 	}
 
 	return entries
+}
+
+func renderedEntryField(entry string, label string) string {
+	prefix := "- **" + label + ":** "
+	for _, line := range strings.Split(entry, "\n") {
+		line = strings.TrimSpace(line)
+		value, ok := strings.CutPrefix(line, prefix)
+		if ok {
+			return field(value, "")
+		}
+	}
+	return ""
+}
+
+func renderedEntryHeading(entry string) string {
+	for _, line := range strings.Split(entry, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "## ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "## "))
+		}
+	}
+	return ""
 }
 
 func writeEntries(path string, entries []string) error {

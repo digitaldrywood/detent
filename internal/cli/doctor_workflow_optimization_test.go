@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -35,7 +39,7 @@ func TestDoctorWorkflowOptimizationFindsFixtureRules(t *testing.T) {
 	global := doctorWorkflowOptimizationGlobal(paths)
 	deps := successfulDoctorDeps()
 	deps.loadWorkflow = workflowconfig.LoadWorkflow
-	report, err := doctorWorkflowOptimization(ctx, db, paths.db, global, deps, "", true)
+	report, err := doctorWorkflowOptimization(ctx, db, paths.db, global, deps, "", doctorWorkflowOptimizationOptions{IncludeDiff: true})
 	if err != nil {
 		t.Fatalf("doctorWorkflowOptimization() error = %v", err)
 	}
@@ -114,6 +118,148 @@ func TestDoctorWorkflowOptimizationFindsFixtureRules(t *testing.T) {
 	}
 	if metrics.BudgetEstimateDriftRatio != 0.8853 {
 		t.Fatalf("BudgetEstimateDriftRatio = %v, want 0.8853", metrics.BudgetEstimateDriftRatio)
+	}
+}
+
+func TestDoctorWorkflowOptimizationProposesGovernedSelfImprovement(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	paths := seedDoctorWorkflowOptimizationFixture(t)
+	seedDoctorWorkflowRepeatedValidatorFindings(t, paths.db)
+	seedDoctorWorkflowRepeatedLessons(t, paths.dir)
+
+	db, err := openDoctorSQLiteReadOnly(ctx, paths.db)
+	if err != nil {
+		t.Fatalf("openDoctorSQLiteReadOnly() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	global := doctorWorkflowOptimizationGlobal(paths)
+	deps := successfulDoctorDeps()
+	deps.loadWorkflow = workflowconfig.LoadWorkflow
+	report, err := doctorWorkflowOptimization(ctx, db, paths.db, global, deps, "", doctorWorkflowOptimizationOptions{ProposalThreshold: 2})
+	if err != nil {
+		t.Fatalf("doctorWorkflowOptimization() error = %v", err)
+	}
+
+	rework := doctorWorkflowProposalBySignal(t, report.Proposals, "doctor_finding", doctorWorkflowRuleReworkLaps)
+	if rework.TargetKind != "workflow" || rework.TargetPath != "agent.auto_promote.rework_limit" || rework.Count != 3 {
+		t.Fatalf("rework proposal = %#v", rework)
+	}
+	if !strings.Contains(rework.Governance, "must not self-apply") || !strings.Contains(rework.IssueBody, "status: pending") {
+		t.Fatalf("rework proposal missing governance/outcome:\n%#v\n%s", rework, rework.IssueBody)
+	}
+	if !strings.Contains(rework.IssueMarker, rework.ID) || !strings.Contains(rework.IssueBody, rework.IssueMarker) {
+		t.Fatalf("proposal marker not embedded: marker=%q body=\n%s", rework.IssueMarker, rework.IssueBody)
+	}
+	var pretty bytes.Buffer
+	if err := writeDoctorWorkflowOptimizationPretty(&pretty, doctorWorkflowOptimizationReport{
+		Proposals: []doctorWorkflowImprovementProposal{rework},
+	}); err != nil {
+		t.Fatalf("writeDoctorWorkflowOptimizationPretty() error = %v", err)
+	}
+	if !strings.Contains(pretty.String(), "Governed Self-Improvement Proposals") || !strings.Contains(pretty.String(), rework.ID) {
+		t.Fatalf("proposal-only pretty report missing proposal details:\n%s", pretty.String())
+	}
+
+	validator := doctorWorkflowProposalBySignal(t, report.Proposals, "validator_finding", "p1|internal/runner/prompt.go|missing rollback coverage.")
+	if validator.TargetKind != "gate" || validator.Count != 2 {
+		t.Fatalf("validator proposal = %#v", validator)
+	}
+
+	lesson := doctorWorkflowProposalBySignal(t, report.Proposals, "lesson_failure_kind", "token_ceiling_exceeded")
+	if lesson.TargetKind != "skill" || lesson.TargetPath != ".detent/skills" || lesson.Count != 2 {
+		t.Fatalf("lesson proposal = %#v", lesson)
+	}
+}
+
+func TestDoctorWorkflowOptimizationCreatesProposalIssuesWithMemoryTracker(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	paths := seedDoctorWorkflowOptimizationFixture(t)
+	db, err := openDoctorSQLiteReadOnly(ctx, paths.db)
+	if err != nil {
+		t.Fatalf("openDoctorSQLiteReadOnly() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	global := doctorWorkflowOptimizationGlobal(paths)
+	deps := successfulDoctorDeps()
+	deps.loadWorkflow = workflowconfig.LoadWorkflow
+	report, err := doctorWorkflowOptimization(ctx, db, paths.db, global, deps, "", doctorWorkflowOptimizationOptions{
+		ProposalThreshold: 2,
+		ProposeIssues:     true,
+	})
+	if err != nil {
+		t.Fatalf("doctorWorkflowOptimization() error = %v", err)
+	}
+	if len(report.Proposals) == 0 {
+		t.Fatal("proposals len = 0, want governed proposals")
+	}
+	if len(report.CreatedProposalIssues) != len(report.Proposals) {
+		t.Fatalf("created proposal issues len = %d, want %d", len(report.CreatedProposalIssues), len(report.Proposals))
+	}
+	for _, created := range report.CreatedProposalIssues {
+		if created.ProposalID == "" || created.ProjectID != "detent" || created.IssueID == "" || created.Reused {
+			t.Fatalf("created proposal issue = %#v", created)
+		}
+	}
+}
+
+func TestDoctorWorkflowOptimizationReusesProposalIssueOutsideBacklog(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	proposal := doctorWorkflowImprovementProposal{
+		ID:          "detent-self-improve-existing",
+		ProjectID:   "detent",
+		Title:       "Improve repeated finding handling",
+		IssueMarker: "<!-- detent:self-improvement proposal_id=detent-self-improve-existing -->",
+		IssueBody: "<!-- detent:self-improvement proposal_id=detent-self-improve-existing -->\n\n" +
+			"## Outcome\n\n- status: accepted\n",
+	}
+	existing := connector.Issue{
+		ID:          "issue-42",
+		Identifier:  "digitaldrywood/detent#42",
+		State:       "In Progress",
+		Description: proposal.IssueBody,
+	}
+	var events []memory.Event
+	deps := successfulDoctorDeps()
+	deps.proposalConnector = func(workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
+		return memory.New(memory.Config{
+			Issues:    []connector.Issue{existing},
+			Stateful:  true,
+			EventSink: func(event memory.Event) { events = append(events, event) },
+		}), nil
+	}
+
+	created, err := createDoctorWorkflowImprovementProposalIssues(ctx, "detent", cfg, deps, []doctorWorkflowImprovementProposal{proposal})
+	if err != nil {
+		t.Fatalf("createDoctorWorkflowImprovementProposalIssues() error = %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("created len = %d, want 1", len(created))
+	}
+	if !created[0].Reused || created[0].IssueID != existing.ID || created[0].OutcomeStatus != "accepted" {
+		t.Fatalf("created proposal issue = %#v", created[0])
+	}
+	for _, event := range events {
+		if event.Kind == memory.EventKindIssueCreate {
+			t.Fatalf("created duplicate proposal issue event: %#v", event)
+		}
 	}
 }
 
@@ -742,7 +888,7 @@ Prompt
 	}
 	deps := successfulDoctorDeps()
 	deps.loadWorkflow = workflowconfig.LoadWorkflow
-	report, err := doctorWorkflowOptimization(ctx, db, dbPath, global, deps, "runtime-token", false)
+	report, err := doctorWorkflowOptimization(ctx, db, dbPath, global, deps, "runtime-token", doctorWorkflowOptimizationOptions{})
 	if err != nil {
 		t.Fatalf("doctorWorkflowOptimization() error = %v", err)
 	}
@@ -1029,4 +1175,74 @@ func evidenceFloat64(t *testing.T, finding doctorWorkflowOptimizationFinding, ke
 		t.Fatalf("%s evidence %q = %#v (%T), want float", finding.RuleID, key, value, value)
 		return 0
 	}
+}
+
+func seedDoctorWorkflowRepeatedValidatorFindings(t *testing.T, dbPath string) {
+	t.Helper()
+
+	ctx := context.Background()
+	backend, err := store.Open(ctx, store.Config{
+		Backend: store.BackendSQLite,
+		Path:    dbPath,
+	})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	recordedAt := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	for index, headSHA := range []string{"head-a", "head-b"} {
+		if err := backend.RecordValidatorVerdict(ctx, store.ValidatorVerdict{
+			ProjectID:  "detent",
+			IssueID:    "issue-validator-" + headSHA,
+			HeadSHA:    headSHA,
+			Identifier: "digitaldrywood/detent#" + strconv.Itoa(800+index),
+			Submitted:  true,
+			Verdict:    "rework",
+			Findings: []store.ValidatorFinding{{
+				Severity: "p1",
+				Body:     "Missing rollback coverage.",
+				Path:     "internal/runner/prompt.go",
+				Line:     44,
+			}},
+			RecordedAt: recordedAt.Add(time.Duration(index) * time.Minute),
+			UpdatedAt:  recordedAt.Add(time.Duration(index) * time.Minute),
+		}); err != nil {
+			t.Fatalf("RecordValidatorVerdict() error = %v", err)
+		}
+	}
+}
+
+func seedDoctorWorkflowRepeatedLessons(t *testing.T, dir string) {
+	t.Helper()
+
+	path := filepath.Join(dir, ".detent", "lessons.md")
+	for index := range 2 {
+		if err := lessons.Append(path, lessons.Entry{
+			IssueNumber: strconv.Itoa(900 + index),
+			Title:       "Token ceiling " + strconv.Itoa(index+1),
+			FailureKind: "token_ceiling_exceeded",
+			Symptom:     "session hit the configured ceiling",
+			Hypothesis:  "task was too broad",
+			Hint:        "split the task before retry",
+		}, lessons.AppendOptions{Date: time.Date(2026, 7, 5+index, 0, 0, 0, 0, time.UTC)}); err != nil {
+			t.Fatalf("lessons.Append() error = %v", err)
+		}
+	}
+}
+
+func doctorWorkflowProposalBySignal(t *testing.T, proposals []doctorWorkflowImprovementProposal, signalKind string, pattern string) doctorWorkflowImprovementProposal {
+	t.Helper()
+
+	for _, proposal := range proposals {
+		if proposal.SignalKind == signalKind && proposal.Pattern == pattern {
+			return proposal
+		}
+	}
+	t.Fatalf("missing proposal signal=%q pattern=%q in %#v", signalKind, pattern, proposals)
+	return doctorWorkflowImprovementProposal{}
 }

@@ -177,15 +177,17 @@ func (p *doctorCheckProgress) Current() string {
 }
 
 type doctorConfig struct {
-	ConfigPath       string
-	Host             string
-	ProjectID        string
-	Flags            runtimeFlags
-	Output           io.Writer
-	CheckTimeout     time.Duration
-	Build            buildinfo.Info
-	AllowWriteProbes bool
-	WorkflowDiff     bool
+	ConfigPath                string
+	Host                      string
+	ProjectID                 string
+	Flags                     runtimeFlags
+	Output                    io.Writer
+	CheckTimeout              time.Duration
+	Build                     buildinfo.Info
+	AllowWriteProbes          bool
+	WorkflowDiff              bool
+	WorkflowProposalThreshold int
+	WorkflowProposeIssues     bool
 }
 
 type doctorStore interface {
@@ -227,6 +229,7 @@ type doctorDeps struct {
 	gitWorkTree          func(context.Context, string) error
 	gitRemoteURL         func(context.Context, string) (string, error)
 	autoPromoteConnector func(workflowconfig.Config) (doctorAutoPromoteConnector, error)
+	proposalConnector    func(workflowconfig.Config) (doctorWorkflowProposalConnector, error)
 	modelProbe           func(context.Context, doctorRouteModelProbeRequest) error
 	executable           func() (string, error)
 }
@@ -240,6 +243,8 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 	allowWriteProbes := false
 	workflowDiff := false
 	workflowWrite := false
+	workflowProposeIssues := false
+	workflowProposalThreshold := doctorWorkflowProposalDefaultThreshold
 	strict := false
 	projectID := ""
 	cmd := &cobra.Command{
@@ -258,14 +263,16 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 				progressOut = cmd.ErrOrStderr()
 			}
 			report := runDoctor(cmd.Context(), doctorConfig{
-				ConfigPath:       derefString(configPath),
-				Host:             derefString(host),
-				ProjectID:        projectID,
-				Output:           progressOut,
-				CheckTimeout:     timeout,
-				Build:            opts.build,
-				AllowWriteProbes: allowWriteProbes,
-				WorkflowDiff:     workflowDiff || workflowWrite,
+				ConfigPath:                derefString(configPath),
+				Host:                      derefString(host),
+				ProjectID:                 projectID,
+				Output:                    progressOut,
+				CheckTimeout:              timeout,
+				Build:                     opts.build,
+				AllowWriteProbes:          allowWriteProbes,
+				WorkflowDiff:              workflowDiff || workflowWrite,
+				WorkflowProposalThreshold: workflowProposalThreshold,
+				WorkflowProposeIssues:     workflowProposeIssues,
 				Flags: runtimeFlags{
 					Env:      runtimeStringFlag{Value: derefString(env), Set: flagChanged(cmd, "env")},
 					LogLevel: runtimeStringFlag{Value: derefString(logLevel), Set: flagChanged(cmd, "log-level")},
@@ -298,6 +305,8 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 	cmd.Flags().BoolVar(&allowWriteProbes, "allow-write-probes", false, "run configured GitHub write probes")
 	cmd.Flags().BoolVar(&workflowDiff, "diff", false, "print proposed WORKFLOW.md frontmatter changes for workflow optimization findings")
 	cmd.Flags().BoolVar(&workflowWrite, "write", false, "apply proposed WORKFLOW.md frontmatter changes after confirmation")
+	cmd.Flags().IntVar(&workflowProposalThreshold, "proposal-threshold", doctorWorkflowProposalDefaultThreshold, "minimum repeated signal count before emitting a governed self-improvement proposal")
+	cmd.Flags().BoolVar(&workflowProposeIssues, "propose-issues", false, "create governed backlog issue proposals for repeated workflow optimization signals")
 	cmd.Flags().BoolVar(&strict, "strict", false, "fail when checks warn or workflow optimization findings exist")
 	cmd.Flags().StringVar(&projectID, "project", "", "limit project checks to the selected project id")
 	cmd.SetContext(withCommandOutputOptions(context.Background(), commandOutputOptions{
@@ -410,7 +419,11 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		jobs = append(jobs, doctorCheckJob{
 			Name: "Workflow optimization",
 			Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorWorkflowOptimization(jobCtx, resolution, globalConfig, deps, githubToken, cfg.WorkflowDiff)}
+				return []doctorCheck{checkDoctorWorkflowOptimization(jobCtx, resolution, globalConfig, deps, githubToken, doctorWorkflowOptimizationOptions{
+					IncludeDiff:       cfg.WorkflowDiff,
+					ProposalThreshold: cfg.WorkflowProposalThreshold,
+					ProposeIssues:     cfg.WorkflowProposeIssues,
+				})}
 			},
 		})
 	}
@@ -3812,6 +3825,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.autoPromoteConnector == nil {
 		d.autoPromoteConnector = defaults.autoPromoteConnector
 	}
+	if d.proposalConnector == nil {
+		d.proposalConnector = defaults.proposalConnector
+	}
 	if d.modelProbe == nil {
 		d.modelProbe = defaults.modelProbe
 	}
@@ -3837,6 +3853,7 @@ func defaultDoctorDeps() doctorDeps {
 		gitWorkTree:          defaultGitWorkTree,
 		gitRemoteURL:         defaultGitRemoteURL,
 		autoPromoteConnector: defaultDoctorAutoPromoteConnector,
+		proposalConnector:    defaultDoctorProposalConnector,
 		modelProbe:           defaultDoctorRouteModelProbe,
 		executable:           os.Executable,
 	}

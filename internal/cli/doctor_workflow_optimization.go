@@ -56,11 +56,19 @@ const (
 var errDoctorTelemetryStoreUnavailable = errors.New("telemetry store unavailable")
 
 type doctorWorkflowOptimizationReport struct {
-	StorePath string                                    `json:"store_path,omitempty"`
-	Projects  []doctorWorkflowOptimizationProjectReport `json:"projects,omitempty"`
-	Findings  []doctorWorkflowOptimizationFinding       `json:"findings,omitempty"`
-	Diff      string                                    `json:"diff,omitempty"`
-	Written   []string                                  `json:"written,omitempty"`
+	StorePath             string                                    `json:"store_path,omitempty"`
+	Projects              []doctorWorkflowOptimizationProjectReport `json:"projects,omitempty"`
+	Findings              []doctorWorkflowOptimizationFinding       `json:"findings,omitempty"`
+	Proposals             []doctorWorkflowImprovementProposal       `json:"proposals,omitempty"`
+	CreatedProposalIssues []doctorWorkflowCreatedProposalIssue      `json:"created_proposal_issues,omitempty"`
+	Diff                  string                                    `json:"diff,omitempty"`
+	Written               []string                                  `json:"written,omitempty"`
+}
+
+type doctorWorkflowOptimizationOptions struct {
+	IncludeDiff       bool
+	ProposalThreshold int
+	ProposeIssues     bool
 }
 
 type doctorWorkflowOptimizationProjectReport struct {
@@ -162,6 +170,8 @@ func (r *doctorWorkflowOptimizationReport) Merge(next doctorWorkflowOptimization
 	}
 	r.Projects = append(r.Projects, next.Projects...)
 	r.Findings = append(r.Findings, next.Findings...)
+	r.Proposals = append(r.Proposals, next.Proposals...)
+	r.CreatedProposalIssues = append(r.CreatedProposalIssues, next.CreatedProposalIssues...)
 	if r.Diff == "" {
 		r.Diff = next.Diff
 	} else if strings.TrimSpace(next.Diff) != "" {
@@ -176,7 +186,7 @@ func checkDoctorWorkflowOptimization(
 	cfg globalconfig.Config,
 	deps doctorDeps,
 	githubToken RuntimeSecret,
-	includeDiff bool,
+	options doctorWorkflowOptimizationOptions,
 ) doctorCheck {
 	if strings.TrimSpace(resolution.Path) == "" {
 		return doctorCheck{
@@ -211,7 +221,7 @@ func checkDoctorWorkflowOptimization(
 			Hint:   "Run detent after current migrations are applied, then rerun detent doctor.",
 		}
 	}
-	report, err := doctorWorkflowOptimization(ctx, db, storePath, cfg, deps, runtimeGlobalGitHubToken(githubToken), includeDiff)
+	report, err := doctorWorkflowOptimization(ctx, db, storePath, cfg, deps, runtimeGlobalGitHubToken(githubToken), options)
 	closeErr := db.Close()
 	if err != nil {
 		return doctorCheck{
@@ -232,16 +242,16 @@ func checkDoctorWorkflowOptimization(
 	check := doctorCheck{
 		Name:                 doctorWorkflowOptimizationCheckName,
 		Status:               doctorOK,
-		Detail:               fmt.Sprintf("0 findings across %d project(s)", len(report.Projects)),
+		Detail:               fmt.Sprintf("0 findings and %d proposal(s) across %d project(s)", len(report.Proposals), len(report.Projects)),
 		WorkflowOptimization: report,
 	}
-	if len(report.Findings) == 0 {
+	if len(report.Findings) == 0 && len(report.Proposals) == 0 {
 		return check
 	}
 
 	check.Status = doctorWarn
-	check.Detail = fmt.Sprintf("%d finding(s) across %d project(s); estimated token impact %d", len(report.Findings), len(report.Projects), doctorWorkflowEstimatedImpact(report.Findings))
-	check.Hint = "Review detent doctor --diff, then rerun with --write and confirm to apply frontmatter patches."
+	check.Detail = fmt.Sprintf("%d finding(s) and %d proposal(s) across %d project(s); estimated token impact %d", len(report.Findings), len(report.Proposals), len(report.Projects), doctorWorkflowEstimatedImpact(report.Findings))
+	check.Hint = "Review detent doctor output; use --propose-issues to file governed backlog proposals, or --diff/--write for confirmed frontmatter patches."
 	return check
 }
 
@@ -252,8 +262,9 @@ func doctorWorkflowOptimization(
 	cfg globalconfig.Config,
 	deps doctorDeps,
 	runtimeGitHubToken string,
-	includeDiff bool,
+	options doctorWorkflowOptimizationOptions,
 ) (doctorWorkflowOptimizationReport, error) {
+	options = doctorWorkflowOptimizationOptionsWithDefaults(options)
 	report := doctorWorkflowOptimizationReport{StorePath: storePath}
 	for _, project := range cfg.Projects {
 		projectID := doctorProjectID(project)
@@ -289,7 +300,20 @@ func doctorWorkflowOptimization(
 			WorkflowPath: workflowPath,
 			Metrics:      metrics,
 		})
-		report.Findings = append(report.Findings, doctorWorkflowOptimizationFindings(projectID, workflowPath, workflow.Config, metrics)...)
+		findings := doctorWorkflowOptimizationFindings(projectID, workflowPath, workflow.Config, metrics)
+		report.Findings = append(report.Findings, findings...)
+		proposals, err := doctorWorkflowImprovementProposals(ctx, db, project, workflow.Config, findings, options.ProposalThreshold)
+		if err != nil {
+			return doctorWorkflowOptimizationReport{}, err
+		}
+		report.Proposals = append(report.Proposals, proposals...)
+		if options.ProposeIssues {
+			created, err := createDoctorWorkflowImprovementProposalIssues(ctx, projectID, workflow.Config, deps, proposals)
+			if err != nil {
+				return doctorWorkflowOptimizationReport{}, err
+			}
+			report.CreatedProposalIssues = append(report.CreatedProposalIssues, created...)
+		}
 	}
 
 	sort.SliceStable(report.Findings, func(i, j int) bool {
@@ -303,7 +327,18 @@ func doctorWorkflowOptimization(
 		}
 		return left.RuleID < right.RuleID
 	})
-	if includeDiff {
+	sort.SliceStable(report.Proposals, func(i, j int) bool {
+		left := report.Proposals[i]
+		right := report.Proposals[j]
+		if left.Count != right.Count {
+			return left.Count > right.Count
+		}
+		if left.ProjectID != right.ProjectID {
+			return left.ProjectID < right.ProjectID
+		}
+		return left.ID < right.ID
+	})
+	if options.IncludeDiff {
 		report.Diff = doctorWorkflowOptimizationDiff(report)
 	}
 	return report, nil
@@ -869,7 +904,7 @@ func doctorWorkflowEstimatedImpact(findings []doctorWorkflowOptimizationFinding)
 }
 
 func writeDoctorWorkflowOptimizationPretty(out io.Writer, report doctorWorkflowOptimizationReport) error {
-	if out == nil || len(report.Findings) == 0 && strings.TrimSpace(report.Diff) == "" && len(report.Written) == 0 {
+	if out == nil || len(report.Findings) == 0 && len(report.Proposals) == 0 && len(report.CreatedProposalIssues) == 0 && strings.TrimSpace(report.Diff) == "" && len(report.Written) == 0 {
 		return nil
 	}
 	if _, err := fmt.Fprintln(out); err != nil {
@@ -914,6 +949,63 @@ func writeDoctorWorkflowOptimizationPretty(out io.Writer, report doctorWorkflowO
 			}
 		}
 	}
+	if len(report.Proposals) > 0 {
+		if _, err := fmt.Fprintln(out); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(out, "Governed Self-Improvement Proposals"); err != nil {
+			return err
+		}
+		for index, proposal := range report.Proposals {
+			if _, err := fmt.Fprintf(out, "%d. [%s] %s\n", index+1, proposal.ID, proposal.Title); err != nil {
+				return err
+			}
+			if proposal.ProjectID != "" {
+				if _, err := fmt.Fprintf(out, "   Project: %s\n", proposal.ProjectID); err != nil {
+					return err
+				}
+			}
+			if _, err := fmt.Fprintf(out, "   Signal: %s count=%d pattern=%s\n", proposal.SignalKind, proposal.Count, proposal.Pattern); err != nil {
+				return err
+			}
+			target := proposal.TargetKind
+			if proposal.TargetPath != "" {
+				target += " " + proposal.TargetPath
+			}
+			if strings.TrimSpace(target) != "" {
+				if _, err := fmt.Fprintf(out, "   Target: %s\n", target); err != nil {
+					return err
+				}
+			}
+			if proposal.SuggestedChange != "" {
+				if _, err := fmt.Fprintf(out, "   Suggested change: %s\n", proposal.SuggestedChange); err != nil {
+					return err
+				}
+			}
+			if proposal.Governance != "" {
+				if _, err := fmt.Fprintf(out, "   Governance: %s\n", proposal.Governance); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if len(report.CreatedProposalIssues) > 0 {
+		if _, err := fmt.Fprintln(out); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(out, "Created Proposal Issues"); err != nil {
+			return err
+		}
+		for _, issue := range report.CreatedProposalIssues {
+			reused := ""
+			if issue.Reused {
+				reused = " reused"
+			}
+			if _, err := fmt.Fprintf(out, "- %s -> %s%s\n", issue.ProposalID, doctorFirstNonEmptyString(issue.URL, issue.Identifier, issue.IssueID), reused); err != nil {
+				return err
+			}
+		}
+	}
 	if diff := strings.TrimSpace(report.Diff); diff != "" {
 		if _, err := fmt.Fprintln(out); err != nil {
 			return err
@@ -950,6 +1042,16 @@ func doctorWorkflowEvidenceLine(evidence map[string]any) string {
 		parts = append(parts, fmt.Sprintf("%s=%v", key, evidence[key]))
 	}
 	return strings.Join(parts, ", ")
+}
+
+func doctorFirstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func doctorWorkflowPatchLine(patches []doctorWorkflowOptimizationPatch) string {

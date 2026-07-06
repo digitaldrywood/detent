@@ -81,6 +81,16 @@ type IssueCommentReader interface {
 	FetchIssueComments(context.Context, Issue) ([]IssueComment, error)
 }
 
+type IssueDraft struct {
+	Title  string
+	Body   string
+	Labels []string
+}
+
+type IssueCreator interface {
+	CreateIssue(context.Context, IssueDraft) (Issue, error)
+}
+
 type IssuesByStatesLimiter interface {
 	FetchIssuesByStatesLimit(context.Context, []string, int) ([]Issue, error)
 }
