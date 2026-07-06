@@ -15,6 +15,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/store"
 )
@@ -155,6 +157,15 @@ func TestDoctorWorkflowOptimizationProposesGovernedSelfImprovement(t *testing.T)
 	if !strings.Contains(rework.IssueMarker, rework.ID) || !strings.Contains(rework.IssueBody, rework.IssueMarker) {
 		t.Fatalf("proposal marker not embedded: marker=%q body=\n%s", rework.IssueMarker, rework.IssueBody)
 	}
+	var pretty bytes.Buffer
+	if err := writeDoctorWorkflowOptimizationPretty(&pretty, doctorWorkflowOptimizationReport{
+		Proposals: []doctorWorkflowImprovementProposal{rework},
+	}); err != nil {
+		t.Fatalf("writeDoctorWorkflowOptimizationPretty() error = %v", err)
+	}
+	if !strings.Contains(pretty.String(), "Governed Self-Improvement Proposals") || !strings.Contains(pretty.String(), rework.ID) {
+		t.Fatalf("proposal-only pretty report missing proposal details:\n%s", pretty.String())
+	}
 
 	validator := doctorWorkflowProposalBySignal(t, report.Proposals, "validator_finding", "p1|internal/runner/prompt.go|missing rollback coverage.")
 	if validator.TargetKind != "gate" || validator.Count != 2 {
@@ -201,6 +212,53 @@ func TestDoctorWorkflowOptimizationCreatesProposalIssuesWithMemoryTracker(t *tes
 	for _, created := range report.CreatedProposalIssues {
 		if created.ProposalID == "" || created.ProjectID != "detent" || created.IssueID == "" || created.Reused {
 			t.Fatalf("created proposal issue = %#v", created)
+		}
+	}
+}
+
+func TestDoctorWorkflowOptimizationReusesProposalIssueOutsideBacklog(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	proposal := doctorWorkflowImprovementProposal{
+		ID:          "detent-self-improve-existing",
+		ProjectID:   "detent",
+		Title:       "Improve repeated finding handling",
+		IssueMarker: "<!-- detent:self-improvement proposal_id=detent-self-improve-existing -->",
+		IssueBody: "<!-- detent:self-improvement proposal_id=detent-self-improve-existing -->\n\n" +
+			"## Outcome\n\n- status: accepted\n",
+	}
+	existing := connector.Issue{
+		ID:          "issue-42",
+		Identifier:  "digitaldrywood/detent#42",
+		State:       "In Progress",
+		Description: proposal.IssueBody,
+	}
+	var events []memory.Event
+	deps := successfulDoctorDeps()
+	deps.proposalConnector = func(workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
+		return memory.New(memory.Config{
+			Issues:    []connector.Issue{existing},
+			Stateful:  true,
+			EventSink: func(event memory.Event) { events = append(events, event) },
+		}), nil
+	}
+
+	created, err := createDoctorWorkflowImprovementProposalIssues(ctx, "detent", cfg, deps, []doctorWorkflowImprovementProposal{proposal})
+	if err != nil {
+		t.Fatalf("createDoctorWorkflowImprovementProposalIssues() error = %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("created len = %d, want 1", len(created))
+	}
+	if !created[0].Reused || created[0].IssueID != existing.ID || created[0].OutcomeStatus != "accepted" {
+		t.Fatalf("created proposal issue = %#v", created[0])
+	}
+	for _, event := range events {
+		if event.Kind == memory.EventKindIssueCreate {
+			t.Fatalf("created duplicate proposal issue event: %#v", event)
 		}
 	}
 }

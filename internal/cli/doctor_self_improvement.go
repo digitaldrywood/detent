@@ -372,9 +372,10 @@ func createDoctorWorkflowImprovementProposalIssues(
 		}
 	}()
 
+	existingIssueStates := doctorWorkflowProposalIssueSearchStates(cfg)
 	created = make([]doctorWorkflowCreatedProposalIssue, 0, len(proposals))
 	for _, proposal := range proposals {
-		issue, reused, err := doctorWorkflowExistingProposalIssue(ctx, projectConnector, proposal)
+		issue, reused, err := doctorWorkflowExistingProposalIssue(ctx, projectConnector, proposal, existingIssueStates)
 		if err != nil {
 			return nil, err
 		}
@@ -465,8 +466,36 @@ func defaultDoctorProposalConnector(cfg workflowconfig.Config) (doctorWorkflowPr
 	return proposalConnector, nil
 }
 
-func doctorWorkflowExistingProposalIssue(ctx context.Context, projectConnector doctorWorkflowProposalConnector, proposal doctorWorkflowImprovementProposal) (connector.Issue, bool, error) {
-	issues, err := projectConnector.FetchIssuesByStates(ctx, []string{doctorWorkflowProposalBacklogState})
+func doctorWorkflowProposalIssueSearchStates(cfg workflowconfig.Config) []string {
+	states := make([]string, 0, 1+len(cfg.Tracker.ObservedStates)+len(cfg.Tracker.ActiveStates)+len(cfg.Tracker.TerminalStates))
+	seen := make(map[string]struct{})
+	add := func(state string) {
+		state = strings.TrimSpace(state)
+		if state == "" {
+			return
+		}
+		key := strings.ToLower(state)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		states = append(states, state)
+	}
+	add(doctorWorkflowProposalBacklogState)
+	for _, state := range cfg.Tracker.ObservedStates {
+		add(state)
+	}
+	for _, state := range cfg.Tracker.ActiveStates {
+		add(state)
+	}
+	for _, state := range cfg.Tracker.TerminalStates {
+		add(state)
+	}
+	return states
+}
+
+func doctorWorkflowExistingProposalIssue(ctx context.Context, projectConnector doctorWorkflowProposalConnector, proposal doctorWorkflowImprovementProposal, states []string) (connector.Issue, bool, error) {
+	issues, err := projectConnector.FetchIssuesByStates(ctx, states)
 	if err != nil {
 		return connector.Issue{}, false, err
 	}

@@ -904,7 +904,7 @@ func doctorWorkflowEstimatedImpact(findings []doctorWorkflowOptimizationFinding)
 }
 
 func writeDoctorWorkflowOptimizationPretty(out io.Writer, report doctorWorkflowOptimizationReport) error {
-	if out == nil || len(report.Findings) == 0 && strings.TrimSpace(report.Diff) == "" && len(report.Written) == 0 {
+	if out == nil || len(report.Findings) == 0 && len(report.Proposals) == 0 && len(report.CreatedProposalIssues) == 0 && strings.TrimSpace(report.Diff) == "" && len(report.Written) == 0 {
 		return nil
 	}
 	if _, err := fmt.Fprintln(out); err != nil {
