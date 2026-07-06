@@ -659,6 +659,215 @@ func TestBoardSnapshotRenders(t *testing.T) {
 	}
 }
 
+func TestBoardSnapshotRendersKanbanDragAttributes(t *testing.T) {
+	now := time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC)
+	data := DashboardData{
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:         "I_kw1",
+					Identifier: "digitaldrywood/detent#1",
+					ProjectID:  "detent",
+					Title:      "Movable drag card",
+					State:      "Todo",
+				},
+				{
+					Identifier: "digitaldrywood/detent#2",
+					ProjectID:  "detent",
+					Title:      "PR only drag card",
+					State:      "Human Review",
+					PullRequest: &telemetry.PullRequest{
+						Number: 43,
+						URL:    "https://github.test/digitaldrywood/detent/pull/43",
+					},
+				},
+			},
+		},
+		Kanban: KanbanData{
+			Mode:   "integration",
+			States: []string{"Todo", "In Progress", "Blocked", "Human Review", "Rework", "Done"},
+			AllowedTransitions: map[string][]string{
+				"Todo":         {"In Progress", "Blocked"},
+				"Human Review": {"Rework"},
+			},
+		},
+	}
+
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	for _, want := range []string{
+		`data-kanban-drop-state="In Progress"`,
+		`data-kanban-drop-key="inprogress"`,
+		`id="board-feedback"`,
+		`hidden`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("board snapshot missing %q:\n%s", want, html)
+		}
+	}
+
+	card := boardCardSection(t, html, "Movable drag card")
+	for _, want := range []string{
+		`data-kanban-card`,
+		`data-kanban-current-state="Todo"`,
+		`data-kanban-issue-id="I_kw1"`,
+		`draggable="true"`,
+		`data-kanban-action="move"`,
+		`data-kanban-allowed-targets="inprogress blocked"`,
+		`hx-post="/api/v1/kanban/move"`,
+		`hx-target="#snapshot"`,
+		`hx-swap="morph:innerHTML"`,
+		`name="kanban_drag" value="true"`,
+		`name="kanban_board" value="project"`,
+		`name="project_id" value="detent"`,
+		`name="issue_id" value="I_kw1"`,
+		`name="current_state" value="Todo"`,
+		`name="target_state" value="" data-kanban-drag-target-state`,
+	} {
+		if !strings.Contains(card, want) {
+			t.Fatalf("movable card missing %q:\n%s", want, card)
+		}
+	}
+
+	prOnly := boardCardSection(t, html, "PR only drag card")
+	for _, want := range []string{
+		`data-kanban-card`,
+		`data-kanban-current-state="Human Review"`,
+		`aria-disabled="true"`,
+	} {
+		if !strings.Contains(prOnly, want) {
+			t.Fatalf("PR-only card missing %q:\n%s", want, prOnly)
+		}
+	}
+	for _, forbidden := range []string{
+		`draggable="true"`,
+		`data-kanban-action="move"`,
+		`data-kanban-drag-move-form`,
+		`data-kanban-issue-id=`,
+	} {
+		if strings.Contains(prOnly, forbidden) {
+			t.Fatalf("PR-only card rendered forbidden %q:\n%s", forbidden, prOnly)
+		}
+	}
+}
+
+func TestBoardSnapshotOmitsKanbanDragAttributesWhenDisabled(t *testing.T) {
+	now := time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC)
+	readySnapshot := telemetry.Snapshot{
+		GeneratedAt: now,
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:         "I_kw1",
+				Identifier: "digitaldrywood/detent#1",
+				ProjectID:  "detent",
+				Title:      "Non-draggable card",
+				State:      "Todo",
+			},
+		},
+	}
+	tests := []struct {
+		name string
+		data DashboardData
+	}{
+		{
+			name: "read only project board",
+			data: DashboardData{
+				ProjectID: "detent",
+				Snapshot:  readySnapshot,
+				Kanban:    KanbanData{Mode: "read_only", States: []string{"Todo", "In Progress"}},
+			},
+		},
+		{
+			name: "fleet board",
+			data: DashboardData{
+				Snapshot: readySnapshot,
+				Kanban:   KanbanData{Mode: "integration", States: []string{"Todo", "In Progress"}},
+			},
+		},
+		{
+			name: "degraded project board with prior data",
+			data: DashboardData{
+				ProjectID: "detent",
+				Snapshot: telemetry.Snapshot{
+					GeneratedAt: now,
+					Project:     readySnapshot.Project,
+					BoardIssues: readySnapshot.BoardIssues,
+					Refresh:     telemetry.Refresh{Status: telemetry.RefreshStatusDegraded, LastError: "tracker unavailable"},
+				},
+				Kanban: KanbanData{Mode: "integration", States: []string{"Todo", "In Progress"}},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			html := renderBoardComponent(t, BoardSnapshot(tt.data))
+			for _, forbidden := range []string{
+				`data-kanban-card`,
+				`data-kanban-drop-state`,
+				`data-kanban-drag-move-form`,
+				`draggable="true"`,
+			} {
+				if strings.Contains(html, forbidden) {
+					t.Fatalf("disabled board rendered %q:\n%s", forbidden, html)
+				}
+			}
+		})
+	}
+}
+
+func TestBoardKanbanDragScriptSubmitsAllowedDrop(t *testing.T) {
+	html := renderBoardComponent(t, boardKanbanDragScript())
+	for _, want := range []string{
+		`window.__detentBoardKanbanDragHandlersRegistered`,
+		`lane.dataset.laneHidden = "false";`,
+		`lane.dataset.kanbanDropAllowed = allowed ? "true" : "false";`,
+		`event.dataTransfer.dropEffect = allowed ? "move" : "none";`,
+		`feedback("Move blocked by transition policy.", "error");`,
+		`targetState.value = lane.dataset.kanbanDropState || "";`,
+		`form.requestSubmit();`,
+		`document.body.addEventListener("htmx:responseError"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("drag script missing %q:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, `target.innerHTML`) || strings.Contains(html, `snapshot.innerHTML`) {
+		t.Fatalf("drag script must not swap innerHTML inside snapshot:\n%s", html)
+	}
+}
+
+func TestProjectBoardPageIncludesKanbanDragScript(t *testing.T) {
+	data := boardTestData()
+	data.ProjectID = "detent"
+	data.ProjectName = "Detent"
+	data.Kanban.Mode = "integration"
+	html := renderBoardComponent(t, ProjectBoardPage(data))
+	if !strings.Contains(html, `window.__detentBoardKanbanDragHandlersRegistered`) {
+		t.Fatalf("project board page must include drag script:\n%s", html)
+	}
+}
+
+func boardCardSection(t *testing.T, html string, title string) string {
+	t.Helper()
+	titleIndex := strings.Index(html, title)
+	if titleIndex < 0 {
+		t.Fatalf("missing card title %q:\n%s", title, html)
+	}
+	start := strings.LastIndex(html[:titleIndex], "<article")
+	if start < 0 {
+		t.Fatalf("missing article for %q:\n%s", title, html)
+	}
+	end := strings.Index(html[titleIndex:], "</article>")
+	if end < 0 {
+		t.Fatalf("missing article close for %q:\n%s", title, html)
+	}
+	return html[start : titleIndex+end+len("</article>")]
+}
+
 func TestBoardEmptyBoardKeepsNonTerminalLanesVisible(t *testing.T) {
 	data := DashboardData{
 		ProjectID: "detent",
@@ -681,11 +890,11 @@ func TestBoardEmptyBoardKeepsNonTerminalLanesVisible(t *testing.T) {
 
 func TestBoardCardTerminalNotDone(t *testing.T) {
 	card := projectKanbanCard{IssueNumber: "#9", ProjectID: "detent", Title: "Cancelled work"}
-	done := boardCardViewFromCard(projectKanbanLane{Title: "Done"}, card, true, "fleet", "detent")
+	done := boardCardViewFromCard(DashboardData{}, projectKanbanLane{Title: "Done"}, card, true, "fleet", "detent")
 	if !done.Done || !done.Terminal {
 		t.Fatalf("Done lane card should be Done and Terminal: %+v", done)
 	}
-	cancelled := boardCardViewFromCard(projectKanbanLane{Title: "Cancelled"}, card, true, "fleet", "detent")
+	cancelled := boardCardViewFromCard(DashboardData{}, projectKanbanLane{Title: "Cancelled"}, card, true, "fleet", "detent")
 	if cancelled.Done {
 		t.Fatalf("Cancelled card must not be marked Done (no ✓): %+v", cancelled)
 	}

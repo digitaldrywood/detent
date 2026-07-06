@@ -27,6 +27,8 @@ type boardLaneView struct {
 	DomID          string
 	LaneID         string
 	Title          string
+	DropState      string
+	DropKey        string
 	Count          string
 	Live           bool
 	DefaultVisible bool
@@ -37,19 +39,26 @@ type boardLaneView struct {
 // boardCardView keeps cards uniform: an 11px mono meta row, a two-line
 // title, and AT MOST one extra signal (chip, status line, or none).
 type boardCardView struct {
-	DomID     string
-	Identity  string
-	Number    string
-	Project   string
-	Scope     string
-	Running   bool
-	Done      bool
-	Terminal  bool
-	MetaRight string
-	Title     string
-	ExtraKind primitives.Kind
-	ExtraText string
-	ExtraChip bool
+	DomID          string
+	Identity       string
+	IssueID        string
+	Number         string
+	Project        string
+	MoveProject    string
+	Scope          string
+	CurrentState   string
+	PRNumber       string
+	DragDrop       bool
+	CanDrag        bool
+	AllowedTargets string
+	Running        bool
+	Done           bool
+	Terminal       bool
+	MetaRight      string
+	Title          string
+	ExtraKind      primitives.Kind
+	ExtraText      string
+	ExtraChip      bool
 }
 
 func boardViewFromDashboard(data DashboardData) boardView {
@@ -73,6 +82,7 @@ func boardViewFromDashboard(data DashboardData) boardView {
 			break
 		}
 	}
+	dragDrop := projectKanbanDragDropEnabled(data)
 	for _, lane := range board.AllLanes {
 		// The fleet board mixes projects, so a lane's terminal-ness is
 		// resolved per card. A populated lane counts as terminal only when it
@@ -91,9 +101,13 @@ func boardViewFromDashboard(data DashboardData) boardView {
 			DefaultVisible: boardLaneDefaultVisible(lane, laneTerminal, boardHasCards),
 			EmptyMessage:   "No issues in " + lane.Title,
 		}
+		if dragDrop {
+			laneView.DropState = lane.Title
+			laneView.DropKey = projectKanbanStateKey(lane.Title)
+		}
 		for _, card := range lane.Cards {
 			cardTerminal := projectKanbanTerminalState(lane.Title, projectKanbanTerminalStateSetForProject(data, card.ProjectID))
-			laneView.Cards = append(laneView.Cards, boardCardViewFromCard(lane, card, cardTerminal, projectKanbanBoardScope(data), fallbackProjectID))
+			laneView.Cards = append(laneView.Cards, boardCardViewFromCard(data, lane, card, cardTerminal, projectKanbanBoardScope(data), fallbackProjectID))
 		}
 		view.Lanes = append(view.Lanes, laneView)
 		view.Total++
@@ -233,7 +247,7 @@ func boardExceptionDetail(row telemetry.Blocked, now time.Time) string {
 	return detail
 }
 
-func boardCardViewFromCard(lane projectKanbanLane, card projectKanbanCard, terminal bool, scope string, fallbackProjectID string) boardCardView {
+func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card projectKanbanCard, terminal bool, scope string, fallbackProjectID string) boardCardView {
 	// Legacy single-project snapshots can include issues without setting
 	// Issue.ProjectID, so fall back to the scoped dashboard project so the
 	// card slug and the sheet's project-scoped Move/Remove links resolve.
@@ -241,20 +255,37 @@ func boardCardViewFromCard(lane projectKanbanLane, card projectKanbanCard, termi
 	if projectID == "" {
 		projectID = fallbackProjectID
 	}
+	moveProjectID := strings.TrimSpace(projectKanbanCardProjectID(data, card))
+	if moveProjectID == "" {
+		moveProjectID = projectID
+	}
 	identity := boardCardIdentityToken(card.Identifier, card.IssueID, card.IssueNumber)
+	dragDrop := projectKanbanDragDropEnabled(data)
+	canDrag := dragDrop && projectKanbanCardCanMove(data, card)
 	view := boardCardView{
-		DomID:    "card-" + boardCardScopedSlug(projectID, identity),
-		Identity: identity,
-		Number:   card.IssueNumber,
-		Project:  projectID,
-		Scope:    scope,
-		Running:  strings.EqualFold(lane.Title, "In Progress"),
+		DomID:        "card-" + boardCardScopedSlug(projectID, identity),
+		Identity:     identity,
+		IssueID:      card.IssueID,
+		Number:       card.IssueNumber,
+		Project:      projectID,
+		MoveProject:  moveProjectID,
+		Scope:        scope,
+		CurrentState: card.Stage,
+		DragDrop:     dragDrop,
+		CanDrag:      canDrag,
+		Running:      strings.EqualFold(lane.Title, "In Progress"),
 		// Done drives the green ✓; other terminal states (Cancelled, Closed)
 		// are terminal but not done, so they suppress meta without claiming
 		// success.
 		Done:     strings.EqualFold(lane.Title, "Done"),
 		Terminal: terminal,
 		Title:    card.Title,
+	}
+	if canDrag {
+		view.AllowedTargets = projectKanbanMoveTargetKeys(data, card)
+	}
+	if card.PRNumber > 0 {
+		view.PRNumber = strconv.Itoa(card.PRNumber)
 	}
 	switch {
 	case view.Done || view.Terminal:
