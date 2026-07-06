@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -26,8 +27,9 @@ const uiAPICookieName = "detent_ui_api"
 type apiCredentialContextKey struct{}
 
 type apiAuthOptions struct {
-	mutating      bool
-	allowUICookie bool
+	mutating                bool
+	allowUICookie           bool
+	allowLocalDashboardHTMX bool
 }
 
 func (s *Server) apiAuth(mutating bool) echo.MiddlewareFunc {
@@ -87,6 +89,12 @@ func (s *Server) authorizeAPIRequest(c echo.Context, opts apiAuthOptions) (apike
 	}
 
 	if opts.allowUICookie && s.authorizeUIAPICookie(c) {
+		credential := apikey.StaticCredential()
+		s.setAPICredential(c, credential)
+		return credential, nil
+	}
+
+	if opts.allowLocalDashboardHTMX && token == "" && authorizeLocalDashboardHTMX(c) {
 		credential := apikey.StaticCredential()
 		s.setAPICredential(c, credential)
 		return credential, nil
@@ -230,6 +238,68 @@ func serverAddressLoopback(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func authorizeLocalDashboardHTMX(c echo.Context) bool {
+	if c == nil || c.Request() == nil || c.Request().Header.Get("HX-Request") != "true" {
+		return false
+	}
+	req := c.Request()
+	if !requestHostLoopback(req.Host) || !requestRemoteAddrLoopback(req.RemoteAddr) {
+		return false
+	}
+	return requestSameOriginDashboardSource(req)
+}
+
+func requestHostLoopback(host string) bool {
+	host = strings.TrimSpace(host)
+	return host != "" && serverAddressLoopback(host)
+}
+
+func requestRemoteAddrLoopback(remoteAddr string) bool {
+	remoteAddr = strings.TrimSpace(remoteAddr)
+	return remoteAddr != "" && serverAddressLoopback(remoteAddr)
+}
+
+func requestSameOriginDashboardSource(req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	for _, value := range []string{
+		req.Header.Get("HX-Current-URL"),
+		req.Header.Get("Origin"),
+		req.Header.Get("Referer"),
+	} {
+		if requestURLHostMatches(value, req.Host) {
+			return true
+		}
+	}
+	return false
+}
+
+func requestURLHostMatches(rawURL string, host string) bool {
+	rawURL = strings.TrimSpace(rawURL)
+	host = normalizeRequestHost(host)
+	if rawURL == "" || host == "" {
+		return false
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return normalizeRequestHost(parsed.Host) == host
+}
+
+func normalizeRequestHost(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	if parsedHost, port, err := net.SplitHostPort(host); err == nil {
+		parsedHost = strings.Trim(strings.TrimSpace(parsedHost), "[]")
+		return strings.ToLower(net.JoinHostPort(parsedHost, port))
+	}
+	return strings.ToLower(strings.Trim(host, "[]"))
 }
 
 func defaultLookupEnv(key string) string {
