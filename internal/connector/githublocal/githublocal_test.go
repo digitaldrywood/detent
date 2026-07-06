@@ -178,6 +178,49 @@ func TestConnectorIssueMutatorsStayLocalAndPRLifecycleWritesPassThrough(t *testi
 	}
 }
 
+func TestConnectorFetchIssueStatesByIdentifiersReturnsLocalOnlyIssues(t *testing.T) {
+	t.Parallel()
+
+	server := newGitHubLocalTestServer(t)
+	conn, err := New(Config{
+		GitHub: githubconnector.Config{
+			Endpoint: server.URL + "/graphql",
+			APIKey:   "ghp_test",
+		},
+		Local: local.Config{
+			Path: filepath.Join(t.TempDir(), "local-only-work-items.db"),
+			Issues: []connector.Issue{{
+				ID:         "external-123",
+				Identifier: "external-123",
+				Title:      "Runtime item",
+				State:      "Todo",
+				Fields:     map[string]string{},
+			}},
+		},
+		Repository:   "digitaldrywood/detent",
+		ActiveStates: []string{"Todo", "In Progress"},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	issues, err := conn.FetchIssueStatesByIdentifiers(context.Background(), []string{"external-123"})
+	if err != nil {
+		t.Fatalf("FetchIssueStatesByIdentifiers() error = %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("issues len = %d, want 1: %#v", len(issues), issues)
+	}
+	if issues[0].Identifier != "external-123" || issues[0].Title != "Runtime item" {
+		t.Fatalf("issue = %#v, want local-only runtime item", issues[0])
+	}
+}
+
 type githubLocalTestRequest struct {
 	Method string
 	Path   string

@@ -224,15 +224,26 @@ func (c *Connector) FetchIssueStatesByIdentifiers(ctx context.Context, identifie
 	if err != nil {
 		return nil, err
 	}
-	out := make([]connector.Issue, 0, len(upstream))
+	out := make([]connector.Issue, 0, len(upstream)+len(localIssues))
+	seen := map[string]struct{}{}
 	for _, issue := range upstream {
 		issue = c.withGitHubIdentity(issue, repoInfo)
+		key := identifierKey(issue.Identifier)
 		if localIssue, ok := localByIdentifier[identifierKey(issue.Identifier)]; ok {
 			merged := c.mergeLocalWithGitHub(localIssue, issue)
 			if err := c.local.UpsertIssues(ctx, []connector.Issue{merged}); err != nil {
 				return nil, err
 			}
+			seen[key] = struct{}{}
 			out = append(out, merged)
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, issue)
+	}
+	for _, issue := range localIssues {
+		key := identifierKey(issue.Identifier)
+		if _, ok := seen[key]; ok {
 			continue
 		}
 		out = append(out, issue)
@@ -261,6 +272,10 @@ func (c *Connector) CreateComment(ctx context.Context, issueID string, body stri
 
 func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateName string) error {
 	return c.local.UpdateIssueState(ctx, issueID, stateName)
+}
+
+func (c *Connector) UpsertIssues(ctx context.Context, issues []connector.Issue) error {
+	return c.local.UpsertIssues(ctx, issues)
 }
 
 func (c *Connector) SetAssignee(ctx context.Context, issueID string, login string) error {

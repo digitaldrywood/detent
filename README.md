@@ -1782,6 +1782,7 @@ kind: GlobalConfig
 env: prod
 log_level: info
 github_token: gh
+api_token: detent_replace_with_random_secret
 port: 4000
 instance_name: buildbox
 global:
@@ -2157,8 +2158,63 @@ Useful endpoints:
 | `/api/v1/timeseries?window=10m&bucket=1m` | Fleet chart samples for running agents, tokens/sec, and completions. |
 | `/api/v1/projects/<id>/state` | Project-scoped JSON telemetry snapshot. |
 | `/api/v1/projects/<id>/timeseries?window=10m&bucket=1m` | Project chart samples for running agents, token spend, and board flow. |
+| `/api/v1/projects/<id>/work-items` | Create a runtime work item with `POST` for `local_sqlite` and `github_local` trackers. |
 | `/api/v1/refresh` | Request an orchestrator refresh with `POST`. |
 | `/api/v1/<issue>` | JSON detail for a running, retrying, or blocked issue. |
+
+### API Authentication And Work-Item Submission
+
+Configure a top-level `api_token` in `global.yaml`, or set
+`DETENT_API_TOKEN` to override it at runtime. Use a high-entropy value; the
+recommended shape is a `detent_` prefix followed by a random secret. Mutating
+API routes require `Authorization: Bearer <token>` or `X-API-Key: <token>`.
+When a token is configured, read-only `GET /api/v1/*` routes require it too.
+`GET /health` stays unauthenticated, and the GitHub webhook keeps its HMAC
+signature check.
+
+If Detent binds a non-loopback host such as `0.0.0.0` without an `api_token`,
+API routes fail closed and mutating routes return `403` until a token is
+configured. With no token on loopback, read-only API routes remain open for
+local development.
+
+Create a runtime work item:
+
+```sh
+curl -fsS -X POST "http://127.0.0.1:4000/api/v1/projects/digitaldrywood-video/work-items" \
+  -H "Authorization: Bearer $DETENT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "title": "Author beat visuals",
+    "description": "Full markdown brief.",
+    "state": "Todo",
+    "labels": ["video-assets"],
+    "fields": {"render_status": "queued"},
+    "priority": 2,
+    "deliverable": {
+      "kind": "artifact",
+      "review_url": "http://127.0.0.1:8090/v/example/g/assets"
+    }
+  }'
+```
+
+The response is `201` with `{"id":"...","identifier":"...","url":"..."}`.
+Duplicate submitted identifiers return `409`, invalid states or missing title
+and description return `422`, unknown projects return `404`, and trackers other
+than `local_sqlite` or `github_local` return `501`.
+
+The CLI uses the same validation and writes through the configured tracker
+directly:
+
+```sh
+detent work-item add digitaldrywood-video \
+  --title "Author beat visuals" \
+  --body-file brief.md \
+  --label video-assets \
+  --field render_status=queued \
+  --priority 2 \
+  --deliverable-review-url "http://127.0.0.1:8090/v/example/g/assets" \
+  --format json
+```
 
 The terminal TUI renders the same telemetry snapshot model for terminal-first
 operator surfaces. The default binary path starts the web dashboard; embedding
@@ -2251,6 +2307,7 @@ Structured command objects:
 | `detent pause api` / `detent unpause api` | `{"status":"ok","project":"api","paused":true}` |
 | `detent promote api --priority 1` | `{"status":"ok","project":"api","priority":1}` |
 | `detent remove-project api` | `{"status":"ok","project":"api","removed":true}` |
+| `detent work-item add api --title "..." --body "..."` | `{"id":"wi-...","identifier":"wi-...","url":"/projects/api/kanban"}` |
 | `detent config path` | `{"path":"/path/global.yaml","rule":"--config"}` |
 | `detent doctor` | `{"checks":[{"name":"Config resolution","status":"OK","detail":"...","hint":"..."}],"summary":{"ok":8,"warn":0,"fail":0},"result":"PASS"}` |
 
@@ -2282,6 +2339,7 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | Log max size | | `LOG_MAX_SIZE_BYTES`, then `DETENT_LOG_MAX_SIZE_BYTES` | `log_max_size_bytes` | `52428800` |
 | Log backups | | `LOG_MAX_BACKUPS`, then `DETENT_LOG_MAX_BACKUPS` | `log_max_backups` | `5` |
 | GitHub token | | `GITHUB_TOKEN` | `github_token` | required for GitHub projects |
+| API token | | `DETENT_API_TOKEN` | `api_token` | open on loopback, fail closed on non-loopback |
 | Web port | `--port` | `PORT` | `port` | `4000` |
 | Instance name | | | `instance_name` | short hostname |
 

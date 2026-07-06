@@ -75,6 +75,7 @@ type Config struct {
 	Pricing               budget.PricingTable
 	GlobalConfig          globalconfig.Config
 	GlobalConfigSource    func() globalconfig.Config
+	LookupEnv             func(string) string
 	Hostname              func() (string, error)
 	ConfigPathRule        globalconfig.PathRule
 	Kanban                workflowconfig.Kanban
@@ -106,6 +107,7 @@ type Server struct {
 	pricing             budget.PricingTable
 	globalConfig        globalconfig.Config
 	globalConfigSource  func() globalconfig.Config
+	lookupEnv           func(string) string
 	hostname            func() (string, error)
 	configRule          globalconfig.PathRule
 	kanban              workflowconfig.Kanban
@@ -168,6 +170,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		pricing:             cfg.pricing(),
 		globalConfig:        cfg.GlobalConfig,
 		globalConfigSource:  cfg.globalConfigSource(),
+		lookupEnv:           cfg.lookupEnv(),
 		hostname:            cfg.hostname(),
 		configRule:          cfg.ConfigPathRule,
 		kanban:              kanban,
@@ -185,7 +188,9 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		demo:                newDemoScenarioSet(cfg.Demo),
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
+	e.Use(server.uiAPICookie)
 	server.registerRoutes()
+	server.warnIfAPITokenMissingOnNonLoopback()
 
 	return server, nil
 }
@@ -242,22 +247,27 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/onboarding/project", s.onboardingProject)
 	s.echo.POST("/onboarding/agent", s.onboardingAgent)
 	s.echo.POST("/onboarding/write", s.onboardingWrite)
-	s.echo.GET("/api/v1/state", s.apiState)
-	s.echo.GET("/api/v1/demo/scenarios", s.apiDemoScenarios)
-	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries)
-	s.echo.GET("/api/v1/projects/*", s.apiProject)
-	s.echo.POST("/api/v1/refresh", s.apiRefresh)
+	apiReadAuth := s.apiAuth(false)
+	apiMutateAuth := s.apiAuth(true)
+	apiUIReadAuth := s.apiAuthWithOptions(apiAuthOptions{allowUICookie: true})
+	apiUIMutateAuth := s.apiAuthWithOptions(apiAuthOptions{mutating: true, allowUICookie: true})
+	s.echo.GET("/api/v1/state", s.apiState, apiReadAuth)
+	s.echo.GET("/api/v1/demo/scenarios", s.apiDemoScenarios, apiReadAuth)
+	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries, apiReadAuth)
+	s.echo.POST("/api/v1/projects/:project_id/work-items", s.apiCreateWorkItem, apiMutateAuth)
+	s.echo.GET("/api/v1/projects/*", s.apiProject, apiReadAuth)
+	s.echo.POST("/api/v1/refresh", s.apiRefresh, apiUIMutateAuth)
 	s.echo.POST("/api/v1/webhooks/github", s.githubWebhook)
-	s.echo.GET("/api/v1/refresh", s.methodNotAllowed)
-	s.echo.GET("/api/v1/usage", s.apiUsage)
-	s.echo.GET("/api/v1/workflow/timeline", s.apiWorkflowTimeline)
-	s.echo.GET("/api/v1/board/card", s.apiBoardCard)
-	s.echo.GET("/api/v1/kanban/move", s.apiKanbanMoveDialog)
-	s.echo.POST("/api/v1/kanban/move", s.apiKanbanMove)
-	s.echo.POST("/api/v1/kanban/remove", s.apiKanbanRemove)
-	s.echo.GET("/api/v1/kanban/comment", s.apiKanbanCommentDialog)
-	s.echo.POST("/api/v1/kanban/comment", s.apiKanbanComment)
-	s.echo.GET("/api/v1/*", s.apiIssue)
+	s.echo.GET("/api/v1/refresh", s.methodNotAllowed, apiUIReadAuth)
+	s.echo.GET("/api/v1/usage", s.apiUsage, apiReadAuth)
+	s.echo.GET("/api/v1/workflow/timeline", s.apiWorkflowTimeline, apiReadAuth)
+	s.echo.GET("/api/v1/board/card", s.apiBoardCard, apiUIReadAuth)
+	s.echo.GET("/api/v1/kanban/move", s.apiKanbanMoveDialog, apiUIReadAuth)
+	s.echo.POST("/api/v1/kanban/move", s.apiKanbanMove, apiUIMutateAuth)
+	s.echo.POST("/api/v1/kanban/remove", s.apiKanbanRemove, apiUIMutateAuth)
+	s.echo.GET("/api/v1/kanban/comment", s.apiKanbanCommentDialog, apiUIReadAuth)
+	s.echo.POST("/api/v1/kanban/comment", s.apiKanbanComment, apiUIMutateAuth)
+	s.echo.GET("/api/v1/*", s.apiIssue, apiReadAuth)
 }
 
 func (s *Server) dashboard(c echo.Context) error {
@@ -750,6 +760,13 @@ func (cfg Config) dashboardURL() string {
 		return dashboardURL
 	}
 	return "http://localhost:4000"
+}
+
+func (cfg Config) lookupEnv() func(string) string {
+	if cfg.LookupEnv != nil {
+		return cfg.LookupEnv
+	}
+	return defaultLookupEnv
 }
 
 func (cfg Config) kanban() workflowconfig.Kanban {

@@ -63,6 +63,7 @@ type Config struct {
 	LogMaxSizeBytes *int      `yaml:"log_max_size_bytes,omitempty"`
 	LogMaxBackups   *int      `yaml:"log_max_backups,omitempty"`
 	GitHubToken     string    `yaml:"github_token,omitempty"`
+	APIToken        string    `yaml:"api_token,omitempty"`
 	Port            *int      `yaml:"port,omitempty"`
 	InstanceName    string    `yaml:"instance_name,omitempty"`
 	Global          Settings  `yaml:"global"`
@@ -408,6 +409,9 @@ func (c Config) Validate(opts ...Option) error {
 	if strings.ContainsAny(c.InstanceName, "\r\n") {
 		problems = append(problems, "instance_name: must be a single line")
 	}
+	if strings.ContainsAny(c.APIToken, "\r\n") {
+		problems = append(problems, "api_token: must be a single line")
+	}
 
 	if c.Global.MaxConcurrentAgents <= 0 {
 		problems = append(problems, "global.max_concurrent_agents: must be a positive integer")
@@ -652,6 +656,8 @@ func validateRaw(attrs map[string]any, opts options) []string {
 	problems = append(problems, optionalNonNegativeIntegerError(attrs["log_max_size_bytes"], "log_max_size_bytes")...)
 	problems = append(problems, optionalNonNegativeIntegerError(attrs["log_max_backups"], "log_max_backups")...)
 	problems = append(problems, optionalStringTypeError(attrs, "github_token")...)
+	problems = append(problems, optionalStringTypeError(attrs, "api_token")...)
+	problems = append(problems, optionalSingleLineStringError(attrs, "api_token")...)
 	problems = append(problems, optionalStringTypeError(attrs, "instance_name")...)
 	problems = append(problems, optionalSingleLineStringError(attrs, "instance_name")...)
 	problems = append(problems, optionalNonNegativeIntegerError(attrs["port"], "port")...)
@@ -1166,6 +1172,10 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
+	apiToken, err := optionalString(attrs["api_token"], "api_token")
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
 	instanceName, err := optionalString(attrs["instance_name"], "instance_name")
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
@@ -1192,6 +1202,7 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 		LogMaxSizeBytes: logMaxSizeBytes,
 		LogMaxBackups:   logMaxBackups,
 		GitHubToken:     githubToken,
+		APIToken:        apiToken,
 		Port:            port,
 		InstanceName:    instanceName,
 		Global:          settings,

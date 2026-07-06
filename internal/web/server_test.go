@@ -2,12 +2,14 @@ package web_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +29,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
@@ -194,6 +197,329 @@ func TestServerRoutes(t *testing.T) {
 				t.Fatalf("body missing %q:\n%s", tt.wantContent, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestAPITokenAuthProtectsAPIRoutes(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{
+		GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"},
+	}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusUnauthorized)
+	requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/state", http.StatusUnauthorized, map[string]string{
+		"Authorization": "Bearer wrong",
+	})
+	requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/state", http.StatusOK, map[string]string{
+		"X-API-Key": "detent_test_token",
+	})
+}
+
+func TestAPITokenEnvOverride(t *testing.T) {
+	t.Setenv("DETENT_API_TOKEN", "detent_env_token")
+
+	server, err := web.NewServer(web.Config{
+		GlobalConfig: globalconfig.Config{APIToken: "detent_config_token"},
+	}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/state", http.StatusUnauthorized, map[string]string{
+		"Authorization": "Bearer detent_config_token",
+	})
+	requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/state", http.StatusOK, map[string]string{
+		"Authorization": "Bearer detent_env_token",
+	})
+}
+
+func TestAPIFailsClosedWithoutTokenOnNonLoopbackBind(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	server, err := web.NewServer(web.Config{
+		Logger:        slog.New(slog.NewTextHandler(&logs, nil)),
+		ServerAddress: "0.0.0.0:4000",
+	}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusForbidden)
+	requestJSON(t, server, http.MethodPost, "/api/v1/refresh", http.StatusForbidden)
+	if !strings.Contains(logs.String(), "api_token") {
+		t.Fatalf("startup warning missing api_token detail:\n%s", logs.String())
+	}
+}
+
+func TestAPITokenDoesNotLeakToLogs(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	server, err := web.NewServer(web.Config{
+		Logger:       slog.New(slog.NewTextHandler(&logs, nil)),
+		GlobalConfig: globalconfig.Config{APIToken: "detent_real_token"},
+	}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	requestJSONWithHeaders(t, server, http.MethodPost, "/api/v1/refresh", http.StatusUnauthorized, map[string]string{
+		"Authorization": "Bearer detent_wrong_token",
+		"X-API-Key":     "detent_wrong_key",
+	})
+	for _, secret := range []string{"detent_wrong_token", "detent_wrong_key", "detent_real_token"} {
+		if strings.Contains(logs.String(), secret) {
+			t.Fatalf("logs leaked token %q:\n%s", secret, logs.String())
+		}
+	}
+}
+
+func TestAPITokenAllowsDashboardHTMXWithUICookie(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Pipeline: []telemetry.Issue{{
+			ID:         "I_kw1",
+			Identifier: "digitaldrywood/detent#1",
+			ProjectID:  "detent",
+			Title:      "Dialog card",
+			State:      "Todo",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{
+		GlobalConfig: globalconfig.Config{APIToken: "detent_real_token"},
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	dialogPath := "/api/v1/kanban/move?project_id=detent&issue_id=I_kw1&current_state=Todo&identifier=digitaldrywood%2Fdetent%231&title=Dialog+card"
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, dialogPath, nil)
+	req.Header.Set("HX-Request", "true")
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("dialog without cookie status = %d, want %d; body = %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "detent_real_token") {
+		t.Fatalf("dashboard body leaked API token")
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatalf("dashboard response did not set UI API cookie")
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/state", nil)
+	req.Header.Set("HX-Request", "true")
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("state with UI cookie status = %d, want %d; body = %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, dialogPath, nil)
+	req.Header.Set("HX-Request", "true")
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dialog with UI cookie status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	form := url.Values{
+		"kanban_dialog": {"true"},
+		"project_id":    {"detent"},
+		"issue_id":      {"I_kw1"},
+		"current_state": {"Todo"},
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/kanban/move", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("kanban post with UI cookie status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestWorkItemAPICreatesLocalSQLiteItem(t *testing.T) {
+	t.Parallel()
+
+	server, conn, refresher := newWorkItemAPITestServer(t, "detent_test_token")
+	rec := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/projects/video/work-items", `{
+		"title": " Author beat visuals ",
+		"description": " Render storyboard frames ",
+		"labels": ["video-assets"],
+		"fields": {"render_status": "queued"},
+		"priority": 2,
+		"deliverable": {"kind": "artifact", "review_url": "http://127.0.0.1:8090/v/slug/g/assets"}
+	}`, map[string]string{
+		"Authorization": "Bearer detent_test_token",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if payload["id"] == "" || payload["identifier"] == "" || payload["url"] == "" {
+		t.Fatalf("response missing id, identifier, or url: %#v", payload)
+	}
+	if refresher.calls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refresher.calls)
+	}
+	issues, err := conn.FetchIssuesByStates(context.Background(), []string{"Todo"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("issues len = %d, want 1", len(issues))
+	}
+	issue := issues[0]
+	if issue.Title != "Author beat visuals" || issue.Description != "Render storyboard frames" {
+		t.Fatalf("issue text = %#v", issue)
+	}
+	if issue.Fields["render_status"] != "queued" {
+		t.Fatalf("Fields = %#v", issue.Fields)
+	}
+	if issue.Priority == nil || *issue.Priority != 2 {
+		t.Fatalf("Priority = %v, want 2", issue.Priority)
+	}
+	if issue.Deliverable == nil || issue.Deliverable.ReviewURL != "http://127.0.0.1:8090/v/slug/g/assets" {
+		t.Fatalf("Deliverable = %#v", issue.Deliverable)
+	}
+}
+
+func TestWorkItemAPIErrors(t *testing.T) {
+	t.Parallel()
+
+	server, _, _ := newWorkItemAPITestServer(t, "detent_test_token")
+	tests := []struct {
+		name    string
+		path    string
+		body    string
+		headers map[string]string
+		want    int
+	}{
+		{
+			name: "missing token",
+			path: "/api/v1/projects/video/work-items",
+			body: `{"title":"title","description":"body"}`,
+			want: http.StatusUnauthorized,
+		},
+		{
+			name: "wrong token",
+			path: "/api/v1/projects/video/work-items",
+			body: `{"title":"title","description":"body"}`,
+			headers: map[string]string{
+				"Authorization": "Bearer wrong",
+			},
+			want: http.StatusUnauthorized,
+		},
+		{
+			name: "unknown project",
+			path: "/api/v1/projects/missing/work-items",
+			body: `{"title":"title","description":"body"}`,
+			headers: map[string]string{
+				"Authorization": "Bearer detent_test_token",
+			},
+			want: http.StatusNotFound,
+		},
+		{
+			name: "invalid state",
+			path: "/api/v1/projects/video/work-items",
+			body: `{"title":"title","description":"body","state":"Missing"}`,
+			headers: map[string]string{
+				"Authorization": "Bearer detent_test_token",
+			},
+			want: http.StatusUnprocessableEntity,
+		},
+		{
+			name: "invalid fields shape",
+			path: "/api/v1/projects/video/work-items",
+			body: `{"title":"title","description":"body","fields":{"render_status":42}}`,
+			headers: map[string]string{
+				"Authorization": "Bearer detent_test_token",
+			},
+			want: http.StatusUnprocessableEntity,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := performJSON(t, server.Handler(), http.MethodPost, tt.path, tt.body, tt.headers)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.want, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestWorkItemAPIRejectsDuplicateIdentifier(t *testing.T) {
+	t.Parallel()
+
+	server, _, _ := newWorkItemAPITestServer(t, "detent_test_token")
+	body := `{"title":"title","description":"body","identifier":"external-123"}`
+	headers := map[string]string{"Authorization": "Bearer detent_test_token"}
+	first := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/projects/video/work-items", body, headers)
+	if first.Code != http.StatusCreated {
+		t.Fatalf("first status = %d, want %d; body = %s", first.Code, http.StatusCreated, first.Body.String())
+	}
+	second := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/projects/video/work-items", body, headers)
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second status = %d, want %d; body = %s", second.Code, http.StatusConflict, second.Body.String())
+	}
+}
+
+func TestWorkItemAPIRejectsUnsupportedTracker(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	mustSetWebGitHubLabelProject(t, deps.Registry, "github", "digitaldrywood/detent")
+	server, err := web.NewServer(web.Config{
+		GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"},
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	rec := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/projects/github/work-items", `{"title":"title","description":"body"}`, map[string]string{
+		"Authorization": "Bearer detent_test_token",
+	})
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusNotImplemented, rec.Body.String())
 	}
 }
 
@@ -6817,6 +7143,63 @@ func testDeps(t *testing.T) web.Dependencies {
 	}
 }
 
+func newWorkItemAPITestServer(t *testing.T, apiToken string) (*web.Server, *local.Connector, *refreshProbe) {
+	t.Helper()
+
+	conn, err := local.New(local.Config{
+		Path:           filepath.Join(t.TempDir(), "work-items.db"),
+		ProjectID:      "video",
+		ActiveStates:   []string{"Todo", "In Progress"},
+		ObservedStates: []string{"Backlog", "Blocked"},
+		TerminalStates: []string{"Done"},
+	})
+	if err != nil {
+		t.Fatalf("local.New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	workflowCfg := workflowconfig.Default()
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerLocalSQLite
+	workflowCfg.Tracker.LocalSQLite.Path = filepath.Join(t.TempDir(), "unused.db")
+	workflowCfg.Tracker.ActiveStates = []string{"Todo", "In Progress"}
+	workflowCfg.Tracker.ObservedStates = []string{"Backlog", "Blocked"}
+	workflowCfg.Tracker.TerminalStates = []string{"Done"}
+	trackedProject, err := project.New(project.Config{
+		Project: globalconfig.Project{ID: "video"},
+		Workflow: workflowconfig.Workflow{
+			Config: workflowCfg,
+			Prompt: "Work the issue.",
+		},
+	}, project.Dependencies{
+		Connector: conn,
+	})
+	if err != nil {
+		t.Fatalf("project.New() error = %v", err)
+	}
+
+	refresher := &refreshProbe{}
+	deps := testDeps(t)
+	deps.Connector = conn
+	deps.Refresher = refresher
+	if err := deps.Registry.Set(trackedProject); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{
+		DashboardURL: "http://127.0.0.1:4000",
+		GlobalConfig: globalconfig.Config{
+			APIToken: apiToken,
+		},
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	return server, conn, refresher
+}
+
 func mustSetWebProject(t *testing.T, registry *project.Registry, id string, paused bool) {
 	t.Helper()
 
@@ -7145,6 +7528,19 @@ func requestJSONWithHeaders(t *testing.T, server *web.Server, method string, pat
 		t.Fatalf("Unmarshal(%s %s) error = %v; body = %s", method, path, err, rec.Body.String())
 	}
 	return payload
+}
+
+func performJSON(t *testing.T, handler http.Handler, method string, path string, body string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	handler.ServeHTTP(rec, req)
+	return rec
 }
 
 func requestHTML(t *testing.T, handler http.Handler, method string, path string, wantStatus int) string {
