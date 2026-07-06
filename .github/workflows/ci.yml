@@ -118,7 +118,7 @@ jobs:
             run_visual=false
             while IFS= read -r changed_file; do
               case "$changed_file" in
-                .github/workflows/ci.yml|.templui.json|go.mod|go.sum|package.json|package-lock.json|playwright.config.js|README.md|docs/ONBOARDING.md|static/*|tests/visual/*|internal/web/*|internal/cli/dev_runtime*.go|internal/devruntime/*)
+                .github/workflows/ci.yml|.github/workflows/release.yml|.templui.json|go.mod|go.sum|package.json|package-lock.json|playwright.config.js|README.md|docs/ONBOARDING.md|static/*|tests/visual/*|cmd/detent/*|internal/config/*|internal/web/*|internal/cli/*.go|internal/devruntime/*)
                   run_visual=true
                   break
                   ;;

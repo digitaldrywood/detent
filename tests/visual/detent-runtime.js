@@ -7,20 +7,21 @@ function detentBinary() {
   return process.env.DETENT_BINARY || path.join(process.cwd(), "tmp", "detent");
 }
 
-async function startDetentRuntime(name, args) {
+async function startDetentRuntime(name, args, options = {}) {
   const binary = detentBinary();
   if (!fs.existsSync(binary)) {
     throw new Error(`Detent binary not found at ${binary}. Run make build first.`);
   }
 
+  const host = options.host || "127.0.0.1";
   const home = fs.mkdtempSync(path.join(os.tmpdir(), `detent-${name}-`));
   const evidenceDir = path.join(process.cwd(), "tmp", "playwright-evidence", name);
   fs.mkdirSync(evidenceDir, { recursive: true });
   const logPath = path.join(evidenceDir, "runtime.log");
   fs.writeFileSync(logPath, "");
-  const child = spawn(binary, ["dev-runtime", "--home", home, "--host", "127.0.0.1", "--port", "0", ...args], {
+  const child = spawn(binary, ["dev-runtime", "--home", home, "--host", host, "--port", "0", ...args], {
     cwd: process.cwd(),
-    env: { ...process.env, NO_COLOR: "1" },
+    env: { ...process.env, ...options.env, NO_COLOR: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
