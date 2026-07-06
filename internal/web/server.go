@@ -13,6 +13,7 @@ import (
 	"github.com/a-h/templ"
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -123,6 +124,9 @@ type Server struct {
 	kanbanRefreshes     *kanbanRefreshFeedbackTracker
 	refreshes           *manualRefreshTracker
 	demo                *demoScenarioSet
+	apiKeys             *apikey.Service
+	ipLimiter           *apiRateLimiter
+	keyLimiter          *apiRateLimiter
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -186,6 +190,9 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		kanbanRefreshes:     newKanbanRefreshFeedbackTracker(),
 		refreshes:           newManualRefreshTracker(),
 		demo:                newDemoScenarioSet(cfg.Demo),
+		apiKeys:             apikey.NewService(deps.Store),
+		ipLimiter:           newAPIRateLimiter(300, 60),
+		keyLimiter:          newAPIRateLimiter(120, 30),
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
 	e.Use(server.uiAPICookie)
@@ -215,6 +222,12 @@ func (s *Server) StartListener(listener net.Listener) error {
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.logger.Info("stopping web server")
+	if s.ipLimiter != nil {
+		s.ipLimiter.Stop()
+	}
+	if s.keyLimiter != nil {
+		s.keyLimiter.Stop()
+	}
 	return s.echo.Shutdown(ctx)
 }
 
@@ -239,6 +252,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/analytics", s.analyticsDashboard)
 	s.echo.GET("/projects/*", s.projectDashboard)
 	s.echo.GET("/settings", s.settings)
+	s.echo.GET("/api-keys", s.apiKeysPage)
 	s.echo.GET("/reports", s.reports)
 	s.echo.GET("/events", s.events)
 	s.echo.GET("/onboarding", s.redirectToDashboard)
@@ -251,23 +265,32 @@ func (s *Server) registerRoutes() {
 	apiMutateAuth := s.apiAuth(true)
 	apiUIReadAuth := s.apiAuthWithOptions(apiAuthOptions{allowUICookie: true})
 	apiUIMutateAuth := s.apiAuthWithOptions(apiAuthOptions{mutating: true, allowUICookie: true})
-	s.echo.GET("/api/v1/state", s.apiState, apiReadAuth)
-	s.echo.GET("/api/v1/demo/scenarios", s.apiDemoScenarios, apiReadAuth)
-	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries, apiReadAuth)
-	s.echo.POST("/api/v1/projects/:project_id/work-items", s.apiCreateWorkItem, apiMutateAuth)
-	s.echo.GET("/api/v1/projects/*", s.apiProject, apiReadAuth)
-	s.echo.POST("/api/v1/refresh", s.apiRefresh, apiUIMutateAuth)
+	apiReadScope := s.requireScope(apikey.ScopeRead)
+	apiWriteScope := s.requireScope(apikey.ScopeWrite)
+	apiAdminScope := s.requireScope(apikey.ScopeAdmin)
+	apiProjectWriteScope := s.requireProjectScope(apikey.ScopeWrite, "project_id")
+	s.echo.GET("/api/v1/state", s.apiState, apiReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/demo/scenarios", s.apiDemoScenarios, apiReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries, apiReadAuth, apiReadScope)
+	s.echo.POST("/api/v1/projects/:project_id/work-items", s.apiCreateWorkItem, apiMutateAuth, apiProjectWriteScope)
+	s.echo.GET("/api/v1/projects/*", s.apiProject, apiReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/keys", s.apiKeysList, apiUIReadAuth, apiAdminScope)
+	s.echo.POST("/api/v1/keys", s.apiKeysCreate, apiUIMutateAuth, apiAdminScope)
+	s.echo.GET("/api/v1/keys/:id/rotate", s.apiKeysRotateDialog, apiUIReadAuth, apiAdminScope)
+	s.echo.POST("/api/v1/keys/:id/rotate", s.apiKeysRotate, apiUIMutateAuth, apiAdminScope)
+	s.echo.DELETE("/api/v1/keys/:id", s.apiKeysRevoke, apiUIMutateAuth, apiAdminScope)
+	s.echo.POST("/api/v1/refresh", s.apiRefresh, apiUIMutateAuth, apiWriteScope)
 	s.echo.POST("/api/v1/webhooks/github", s.githubWebhook)
-	s.echo.GET("/api/v1/refresh", s.methodNotAllowed, apiUIReadAuth)
-	s.echo.GET("/api/v1/usage", s.apiUsage, apiReadAuth)
-	s.echo.GET("/api/v1/workflow/timeline", s.apiWorkflowTimeline, apiReadAuth)
-	s.echo.GET("/api/v1/board/card", s.apiBoardCard, apiUIReadAuth)
-	s.echo.GET("/api/v1/kanban/move", s.apiKanbanMoveDialog, apiUIReadAuth)
-	s.echo.POST("/api/v1/kanban/move", s.apiKanbanMove, apiUIMutateAuth)
-	s.echo.POST("/api/v1/kanban/remove", s.apiKanbanRemove, apiUIMutateAuth)
-	s.echo.GET("/api/v1/kanban/comment", s.apiKanbanCommentDialog, apiUIReadAuth)
-	s.echo.POST("/api/v1/kanban/comment", s.apiKanbanComment, apiUIMutateAuth)
-	s.echo.GET("/api/v1/*", s.apiIssue, apiReadAuth)
+	s.echo.GET("/api/v1/refresh", s.methodNotAllowed, apiUIReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/usage", s.apiUsage, apiReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/workflow/timeline", s.apiWorkflowTimeline, apiReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/board/card", s.apiBoardCard, apiUIReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/kanban/move", s.apiKanbanMoveDialog, apiUIReadAuth, apiReadScope)
+	s.echo.POST("/api/v1/kanban/move", s.apiKanbanMove, apiUIMutateAuth, apiProjectWriteScope)
+	s.echo.POST("/api/v1/kanban/remove", s.apiKanbanRemove, apiUIMutateAuth, apiProjectWriteScope)
+	s.echo.GET("/api/v1/kanban/comment", s.apiKanbanCommentDialog, apiUIReadAuth, apiReadScope)
+	s.echo.POST("/api/v1/kanban/comment", s.apiKanbanComment, apiUIMutateAuth, apiProjectWriteScope)
+	s.echo.GET("/api/v1/*", s.apiIssue, apiReadAuth, apiReadScope)
 }
 
 func (s *Server) dashboard(c echo.Context) error {
@@ -444,6 +467,12 @@ func applySettingsPreferences(r *http.Request, data *templates.SettingsData) {
 }
 
 func applyReportsPreferences(r *http.Request, data *templates.ReportsData) {
+	data.SidebarCollapsed = dashboardSidebarCollapsed(r)
+	data.Theme = dashboardTheme(r)
+	data.Density = dashboardDensity(r)
+}
+
+func applyAPIKeysPreferences(r *http.Request, data *templates.APIKeysData) {
 	data.SidebarCollapsed = dashboardSidebarCollapsed(r)
 	data.Theme = dashboardTheme(r)
 	data.Density = dashboardDensity(r)

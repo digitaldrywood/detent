@@ -1,0 +1,483 @@
+package templates
+
+import "github.com/digitaldrywood/detent/internal/web/ui/components/icon"
+
+templ APIKeysPage(data APIKeysData) {
+	@AppShell(apiKeysShellData(data), nil) {
+		@apiKeysScript()
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div class="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-hidden px-5 py-5">
+				if data.ShowStaticOnlyBanner {
+					<div class="flex items-center justify-between gap-4 rounded-card border border-warn/40 bg-warn/10 px-4 py-3 text-sm text-warn" data-api-key-banner>
+						<span>Server is bound outside loopback and only the static token is configured. Create scoped keys for each client.</span>
+						<button type="button" class="rounded-chip p-1 hover:bg-warn/10" data-api-key-dismiss-banner aria-label="Dismiss API key banner">
+							@icon.X(icon.Props{Class: "size-4"})
+						</button>
+					</div>
+				}
+				<div class="flex flex-none flex-col gap-3 sm:flex-row sm:items-center">
+					<div class="relative max-w-sm flex-1">
+						<span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-dim">
+							@icon.Search(icon.Props{Class: "size-4"})
+						</span>
+						<input
+							id="api-key-search"
+							type="search"
+							name="q"
+							value={ data.Search }
+							placeholder="Search by name"
+							class="h-9 w-full rounded-card border border-line bg-surface pl-9 pr-3 text-sm text-text outline-none focus:border-accent"
+							hx-get="/api/v1/keys"
+							hx-trigger="input changed delay:300ms, search"
+							hx-target="#api-keys-table"
+							hx-include="#api-key-sort"
+							hx-swap="innerHTML"
+						/>
+						<input id="api-key-sort" type="hidden" name="sort" value={ data.Sort }/>
+					</div>
+					<button type="button" class="inline-flex h-9 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90" data-api-key-open-create>
+						@icon.Plus(icon.Props{Class: "size-4"})
+						Create key
+					</button>
+				</div>
+				<div
+					id="api-keys-table"
+					hx-get="/api/v1/keys"
+					hx-trigger="apiKeyChanged from:body, apiKeyCreated from:body"
+					hx-include="#api-key-search,#api-key-sort"
+					hx-swap="innerHTML"
+				>
+					@APIKeysTable(data)
+				</div>
+			</div>
+		</main>
+		@APIKeyModalHost(data)
+	}
+}
+
+templ APIKeysTable(data APIKeysData) {
+	if apiKeyTableEmpty(data) {
+		<section class="flex flex-none flex-col items-center justify-center gap-3 rounded-card border border-line bg-surface px-4 py-16 text-center">
+			@icon.KeyRound(icon.Props{Class: "size-8 text-dim"})
+			<p class="text-sm text-text">Create named API keys for external dispatchers and automation clients.</p>
+			<button type="button" class="inline-flex h-9 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90" data-api-key-open-create>
+				@icon.Plus(icon.Props{Class: "size-4"})
+				Create your first key
+			</button>
+			if data.StaticTokenConfigured {
+				<p class="text-xs text-sec"><code class="font-mono">api_token</code> still works as break-glass access.</p>
+			}
+		</section>
+	} else {
+		<section class="flex flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
+			<div class="grid grid-cols-[minmax(140px,1.1fr)_140px_90px_minmax(120px,1fr)_120px_120px_110px_130px] gap-3.5 border-b border-line px-4 py-2">
+				@apiKeySortableHeader("name", "Name", data)
+				<span class="text-2xs font-semibold uppercase text-dim">Key</span>
+				<span class="text-2xs font-semibold uppercase text-dim">Scope</span>
+				<span class="text-2xs font-semibold uppercase text-dim">Projects</span>
+				<span class="text-2xs font-semibold uppercase text-dim">Status</span>
+				@apiKeySortableHeader("last-used", "Last used", data)
+				@apiKeySortableHeader("created", "Created", data)
+				<span class="text-right text-2xs font-semibold uppercase text-dim">Actions</span>
+			</div>
+			for _, row := range data.ActiveRows {
+				@apiKeyTableRow(row)
+			}
+			if len(data.InactiveRows) > 0 {
+				<details class="border-t border-line" data-preserve-details="api-keys-inactive">
+					<summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium text-sec marker:hidden">
+						<span>Show inactive ({ len(data.InactiveRows) })</span>
+						@icon.ChevronDown(icon.Props{Class: "size-4 transition-transform open:rotate-180"})
+					</summary>
+					for _, row := range data.InactiveRows {
+						@apiKeyTableRow(row)
+					}
+				</details>
+			}
+		</section>
+	}
+}
+
+templ apiKeySortableHeader(sort string, label string, data APIKeysData) {
+	<a
+		href="#"
+		class="inline-flex items-center gap-1 text-2xs font-semibold uppercase text-dim hover:text-text"
+		hx-get={ "/api/v1/keys?sort=" + sort }
+		hx-target="#api-keys-table"
+		hx-include="#api-key-search"
+		hx-swap="innerHTML"
+	>
+		{ label }
+		if data.Sort == sort {
+			@icon.ArrowUp(icon.Props{Class: "size-3"})
+		}
+	</a>
+}
+
+templ apiKeyTableRow(row APIKeyRow) {
+	<div class="grid grid-cols-[minmax(140px,1.1fr)_140px_90px_minmax(120px,1fr)_120px_120px_110px_130px] items-center gap-3.5 border-b border-line px-4 py-3 last:border-b-0">
+		<span class="min-w-0 truncate text-sm font-medium text-text" title={ row.Name }>{ row.Name }</span>
+		<code class="min-w-0 truncate font-mono text-xs text-sec" title={ row.PrefixLast4 }>{ row.PrefixLast4 }</code>
+		<span class={ apiKeyScopeClass(row.Scope) }>{ row.Scope }</span>
+		<span class="flex min-w-0 flex-wrap gap-1">
+			if len(row.ProjectLabels) == 0 {
+				<span class="text-xs text-sec">All</span>
+			}
+			for _, project := range row.ProjectLabels {
+				<span class="rounded-chip bg-elev px-2 py-0.5 font-mono text-2xs text-sec">{ project }</span>
+			}
+		</span>
+		<span class={ "text-xs font-medium " + apiKeyStatusClass(row) }>{ row.Status }</span>
+		<span class={ "text-xs " + row.LastUsedClass }>
+			{ row.LastUsed }
+			if row.UnusedBadge {
+				<span class="ml-1 rounded-chip bg-elev px-1.5 py-0.5 text-2xs text-dim">unused</span>
+			}
+		</span>
+		<span class="font-mono text-xs text-sec">{ row.Created }</span>
+		<span class="flex justify-end gap-1.5">
+			<button
+				type="button"
+				class="rounded-chip border border-line p-1.5 text-sec hover:border-accent hover:text-accent"
+				hx-get={ "/api/v1/keys/" + row.ID + "/rotate" }
+				hx-target="#api-key-modal-body"
+				hx-swap="innerHTML"
+				aria-label={ "Rotate " + row.Name }
+				title="Rotate"
+			>
+				@icon.RotateCcwKey(icon.Props{Class: "size-4"})
+			</button>
+			<button
+				type="button"
+				class="rounded-chip border border-line p-1.5 text-sec hover:border-err hover:text-err"
+				hx-delete={ "/api/v1/keys/" + row.ID }
+				hx-target="#api-keys-table"
+				hx-include="#api-key-search,#api-key-sort"
+				hx-swap="innerHTML"
+				data-api-key-revoke
+				data-api-key-name={ row.Name }
+				data-api-key-admin={ boolString(row.AdminConfirmName) }
+				aria-label={ "Revoke " + row.Name }
+				title="Revoke"
+			>
+				@icon.Trash2(icon.Props{Class: "size-4"})
+			</button>
+		</span>
+	</div>
+}
+
+templ APIKeyModalHost(data APIKeysData) {
+	<template id="api-key-create-template">
+		@APIKeyCreateForm(data)
+	</template>
+	<dialog id="api-key-modal" class="w-full max-w-2xl rounded-card border border-line bg-page p-0 text-text shadow-lg backdrop:bg-black/50">
+		<div id="api-key-modal-body">
+			@APIKeyCreateForm(data)
+		</div>
+	</dialog>
+}
+
+templ APIKeyCreateForm(data APIKeysData) {
+	<form class="flex flex-col gap-5 p-5" hx-post="/api/v1/keys" hx-target="#api-key-modal-body" hx-swap="innerHTML">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<h2 class="text-base font-semibold">Create API key</h2>
+				<p class="mt-1 text-xs text-sec">The full token is shown once after creation.</p>
+			</div>
+			<button type="button" class="rounded-chip p-1.5 text-sec hover:bg-elev hover:text-text" data-api-modal-close aria-label="Close">
+				@icon.X(icon.Props{Class: "size-4"})
+			</button>
+		</div>
+		<label class="grid gap-1.5">
+			<span class="text-xs font-medium text-sec">Name</span>
+			<input id="api-key-name" name="name" required autofocus class="h-9 rounded-card border border-line bg-surface px-3 text-sm text-text outline-none focus:border-accent"/>
+		</label>
+		<div class="grid gap-2">
+			<span class="text-xs font-medium text-sec">Scope</span>
+			<div class="grid gap-2 sm:grid-cols-3">
+				@apiKeyScopeRadio("read", "Read", "Read state, projects, usage, and timeline.", false)
+				@apiKeyScopeRadio("write", "Write", "Create work items, move cards, comment, and refresh.", true)
+				@apiKeyScopeRadio("admin", "Admin", "Manage keys and configuration-touching routes.", false)
+			</div>
+		</div>
+		<div class="grid gap-2">
+			<label class="flex items-center gap-2 text-sm text-text">
+				<input type="checkbox" name="all_projects" value="true" class="accent-accent" checked data-api-key-all-projects/>
+				All projects
+			</label>
+			<div class="hidden grid max-h-36 gap-2 overflow-auto rounded-card border border-line bg-surface p-3" data-api-key-project-picker>
+				if len(data.ProjectOptions) == 0 {
+					<p class="text-xs text-sec">No configured projects available.</p>
+				}
+				for _, project := range data.ProjectOptions {
+					<label class="flex items-center gap-2 text-xs text-text">
+						<input type="checkbox" name="project_ids" value={ project.ID } class="accent-accent"/>
+						<span class="font-mono">{ project.ID }</span>
+					</label>
+				}
+			</div>
+		</div>
+		<label class="grid gap-1.5">
+			<span class="text-xs font-medium text-sec">Expiry</span>
+			<select name="expires_in" class="h-9 rounded-card border border-line bg-surface px-3 text-sm text-text outline-none focus:border-accent" data-api-key-expiry>
+				<option value="30d">30 days</option>
+				<option value="90d" selected>90 days</option>
+				<option value="365d">365 days</option>
+				<option value="never">Never</option>
+			</select>
+			<span class="hidden text-xs text-warn" data-api-key-never-note>This key never expires.</span>
+		</label>
+		<div class="flex justify-end gap-2">
+			<button type="button" class="h-9 rounded-card border border-line px-3 text-sm font-medium text-text hover:bg-elev" data-api-modal-close>Cancel</button>
+			<button type="submit" class="inline-flex h-9 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90">
+				@icon.KeyRound(icon.Props{Class: "size-4"})
+				Create
+			</button>
+		</div>
+	</form>
+}
+
+templ apiKeyScopeRadio(value string, label string, description string, checked bool) {
+	<label class="grid cursor-pointer gap-1 rounded-card border border-line bg-surface p-3 text-sm text-text has-[:checked]:border-accent">
+		<span class="flex items-center gap-2 font-medium">
+			<input type="radio" name="scopes" value={ value } checked?={ checked } class="accent-accent"/>
+			{ label }
+		</span>
+		<span class="text-xs text-sec">{ description }</span>
+	</label>
+}
+
+templ APIKeyRotateDialog(data APIKeysData, row APIKeyRow) {
+	<form class="flex flex-col gap-5 p-5" hx-post={ "/api/v1/keys/" + row.ID + "/rotate" } hx-target="#api-key-modal-body" hx-swap="innerHTML">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<h2 class="text-base font-semibold">Rotate API key</h2>
+				<p class="mt-1 text-xs text-sec">{ row.Name }</p>
+			</div>
+			<button type="button" class="rounded-chip p-1.5 text-sec hover:bg-elev hover:text-text" data-api-modal-close aria-label="Close">
+				@icon.X(icon.Props{Class: "size-4"})
+			</button>
+		</div>
+		<label class="grid gap-1.5">
+			<span class="text-xs font-medium text-sec">Grace period</span>
+			<select name="grace" class="h-9 rounded-card border border-line bg-surface px-3 text-sm text-text outline-none focus:border-accent">
+				<option value="1h">1 hour</option>
+				<option value="24h" selected>24 hours</option>
+				<option value="7d">7 days</option>
+			</select>
+		</label>
+		<div class="flex justify-end gap-2">
+			<button type="button" class="h-9 rounded-card border border-line px-3 text-sm font-medium text-text hover:bg-elev" data-api-modal-close>Cancel</button>
+			<button type="submit" class="inline-flex h-9 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90">
+				@icon.RotateCcwKey(icon.Props{Class: "size-4"})
+				Rotate
+			</button>
+		</div>
+	</form>
+}
+
+templ APIKeyReveal(data APIKeysData, token string) {
+	{{ curlSnippet := apiKeyCurlSnippet(data, token) }}
+	{{ promptSnippet := apiKeyPromptSnippet(data, token) }}
+	<div class="flex flex-col gap-5 p-5">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<h2 class="text-base font-semibold">API key created</h2>
+				<p class="mt-1 text-xs font-medium text-warn">Copy it now — you won't be able to see it again.</p>
+			</div>
+			<button type="button" class="rounded-chip p-1.5 text-sec hover:bg-elev hover:text-text" data-api-modal-close aria-label="Close">
+				@icon.X(icon.Props{Class: "size-4"})
+			</button>
+		</div>
+		<div class="grid gap-2">
+			<div class="flex min-w-0 items-center gap-2">
+				<code class="min-w-0 flex-1 overflow-x-auto rounded-card border border-line bg-surface px-3 py-2 font-mono text-xs blur-sm select-none" data-api-secret data-real-value={ token } data-masked-value={ token }>{ token }</code>
+				<button type="button" class="rounded-chip border border-line p-2 text-sec hover:border-accent hover:text-accent" data-api-toggle-secret aria-label="Show token">
+					@icon.Eye(icon.Props{Class: "size-4"})
+				</button>
+				<button type="button" class="inline-flex h-9 items-center gap-2 rounded-card border border-line px-3 text-sm font-medium text-text hover:bg-elev" data-api-copy data-real-value={ token }>
+					@icon.Copy(icon.Props{Class: "size-4"})
+					<span data-copy-label>Copy</span>
+				</button>
+			</div>
+		</div>
+		<div class="grid gap-3">
+			<div class="flex border-b border-line" role="tablist">
+				<button type="button" class="border-b-2 border-accent px-3 py-2 text-xs font-medium text-accent" data-api-snippet-tab="curl">curl</button>
+				<button type="button" class="border-b-2 border-transparent px-3 py-2 text-xs font-medium text-sec hover:text-text" data-api-snippet-tab="prompt">AI Prompt</button>
+			</div>
+			@apiKeySnippetPanel("curl", curlSnippet, token, false)
+			@apiKeySnippetPanel("prompt", promptSnippet, token, true)
+		</div>
+		<div class="flex justify-end">
+			<button type="button" class="h-9 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90" data-api-key-done>Done</button>
+		</div>
+	</div>
+}
+
+templ apiKeySnippetPanel(name string, snippet string, token string, hidden bool) {
+	<div
+		class={
+			"relative rounded-card border border-line bg-surface " +
+				ifThen(hidden, "hidden", "")
+		}
+		data-api-snippet-panel={ name }
+	>
+		<pre class="max-h-56 overflow-auto p-3 pr-20 text-xs"><code data-api-snippet-code data-real-value={ snippet } data-masked-value={ apiKeyMaskedSnippet(snippet, token) }>{ apiKeyMaskedSnippet(snippet, token) }</code></pre>
+		<div class="absolute right-2 top-2 flex gap-1">
+			<button type="button" class="rounded-chip border border-line bg-page p-1.5 text-sec hover:border-accent hover:text-accent" data-api-toggle-snippet aria-label="Show snippet">
+				@icon.Eye(icon.Props{Class: "size-3.5"})
+			</button>
+			<button type="button" class="rounded-chip border border-line bg-page p-1.5 text-sec hover:border-accent hover:text-accent" data-api-copy data-real-value={ snippet } aria-label="Copy snippet">
+				@icon.Copy(icon.Props{Class: "size-3.5"})
+				<span class="sr-only" data-copy-label>Copy</span>
+			</button>
+		</div>
+	</div>
+}
+
+templ apiKeysScript() {
+	<script>
+		(function () {
+			function modal() { return document.getElementById("api-key-modal"); }
+			function body() { return document.getElementById("api-key-modal-body"); }
+			function processHTMX(root) {
+				if (window.htmx && root) window.htmx.process(root);
+			}
+			function openModal() {
+				var dialog = modal();
+				if (!dialog) return;
+				if (!dialog.open) dialog.showModal();
+				var name = document.getElementById("api-key-name");
+				if (name) name.focus();
+			}
+			function closeModal() {
+				var dialog = modal();
+				if (dialog && dialog.open) dialog.close();
+			}
+			function restoreCreateForm() {
+				var template = document.getElementById("api-key-create-template");
+				var target = body();
+				if (!template || !target) return;
+				target.innerHTML = template.innerHTML;
+				processHTMX(target);
+			}
+			document.addEventListener("click", function (event) {
+				var openCreate = event.target.closest("[data-api-key-open-create]");
+				if (openCreate) {
+					restoreCreateForm();
+					openModal();
+					return;
+				}
+				if (event.target.closest("[data-api-modal-close]")) {
+					closeModal();
+					return;
+				}
+				if (event.target.closest("[data-api-key-done]")) {
+					closeModal();
+					if (window.htmx) window.htmx.trigger(document.body, "apiKeyChanged");
+					return;
+				}
+				var bannerClose = event.target.closest("[data-api-key-dismiss-banner]");
+				if (bannerClose) {
+					var banner = bannerClose.closest("[data-api-key-banner]");
+					if (banner) banner.remove();
+					window.localStorage && window.localStorage.setItem("detent-api-key-banner-dismissed", "true");
+					return;
+				}
+				var copy = event.target.closest("[data-api-copy]");
+				if (copy) {
+					if (copy.dataset.copyBusy === "true") return;
+					copy.dataset.copyBusy = "true";
+					var value = copy.getAttribute("data-real-value") || "";
+					var label = copy.querySelector("[data-copy-label]");
+					var original = label ? label.textContent : "";
+					var done = function () {
+						if (label) label.textContent = "Copied ✓";
+						window.setTimeout(function () {
+							if (label) label.textContent = original || "Copy";
+							delete copy.dataset.copyBusy;
+						}, 2000);
+					};
+					if (navigator.clipboard && navigator.clipboard.writeText) {
+						navigator.clipboard.writeText(value).then(done, done);
+					} else {
+						done();
+					}
+					return;
+				}
+				var tokenToggle = event.target.closest("[data-api-toggle-secret]");
+				if (tokenToggle) {
+					var code = tokenToggle.parentElement && tokenToggle.parentElement.querySelector("[data-api-secret]");
+					if (!code) return;
+					var hidden = code.classList.toggle("blur-sm");
+					code.classList.toggle("select-none", hidden);
+					tokenToggle.setAttribute("aria-label", hidden ? "Show token" : "Hide token");
+					return;
+				}
+				var snippetToggle = event.target.closest("[data-api-toggle-snippet]");
+				if (snippetToggle) {
+					var panel = snippetToggle.closest("[data-api-snippet-panel]");
+					var code = panel && panel.querySelector("[data-api-snippet-code]");
+					if (!code) return;
+					var real = code.getAttribute("data-real-value") || "";
+					var masked = code.getAttribute("data-masked-value") || "";
+					var showing = code.textContent === real;
+					code.textContent = showing ? masked : real;
+					snippetToggle.setAttribute("aria-label", showing ? "Show snippet" : "Hide snippet");
+					return;
+				}
+				var tab = event.target.closest("[data-api-snippet-tab]");
+				if (tab) {
+					var name = tab.getAttribute("data-api-snippet-tab");
+					document.querySelectorAll("[data-api-snippet-tab]").forEach(function (button) {
+						var active = button === tab;
+						button.classList.toggle("border-accent", active);
+						button.classList.toggle("text-accent", active);
+						button.classList.toggle("border-transparent", !active);
+						button.classList.toggle("text-sec", !active);
+					});
+					document.querySelectorAll("[data-api-snippet-panel]").forEach(function (panel) {
+						panel.classList.toggle("hidden", panel.getAttribute("data-api-snippet-panel") !== name);
+					});
+				}
+			});
+			document.addEventListener("change", function (event) {
+				var allProjects = event.target.closest("[data-api-key-all-projects]");
+				if (allProjects) {
+					var picker = document.querySelector("[data-api-key-project-picker]");
+					if (picker) picker.classList.toggle("hidden", allProjects.checked);
+					return;
+				}
+				var expiry = event.target.closest("[data-api-key-expiry]");
+				if (expiry) {
+					var note = document.querySelector("[data-api-key-never-note]");
+					if (note) note.classList.toggle("hidden", expiry.value !== "never");
+				}
+			});
+			document.addEventListener("htmx:afterSwap", function (event) {
+				if (event.detail && event.detail.target && event.detail.target.id === "api-key-modal-body") {
+					openModal();
+				}
+			});
+			document.addEventListener("htmx:beforeRequest", function (event) {
+				var button = event.detail && event.detail.elt;
+				if (!(button instanceof Element) || !button.matches("[data-api-key-revoke]")) return;
+				var name = button.getAttribute("data-api-key-name") || "";
+				var message = "Revoke " + name + "? Any client using it will immediately break.";
+				if (!window.confirm(message)) {
+					event.preventDefault();
+					return;
+				}
+				if (button.getAttribute("data-api-key-admin") === "true") {
+					var typed = window.prompt("Type the key name to revoke this admin key.");
+					if (typed !== name) event.preventDefault();
+				}
+			});
+			if (window.localStorage && window.localStorage.getItem("detent-api-key-banner-dismissed") === "true") {
+				var banner = document.querySelector("[data-api-key-banner]");
+				if (banner) banner.remove();
+			}
+		})();
+	</script>
+}

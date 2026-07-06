@@ -186,6 +186,132 @@ func (q *Queries) CompletedIssueCycleRows(ctx context.Context) ([]CompletedIssue
 	return items, nil
 }
 
+const countAPIUsageLogsByKey = `-- name: CountAPIUsageLogsByKey :one
+SELECT COUNT(*)
+FROM api_usage_logs
+WHERE api_key_id = ?
+`
+
+func (q *Queries) CountAPIUsageLogsByKey(ctx context.Context, apiKeyID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAPIUsageLogsByKey, apiKeyID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countActiveAPIKeys = `-- name: CountActiveAPIKeys :one
+SELECT COUNT(*)
+FROM api_keys
+WHERE revoked_at IS NULL
+  AND (
+    expires_at IS NULL
+    OR expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+  )
+`
+
+func (q *Queries) CountActiveAPIKeys(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countActiveAPIKeys)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const createAPIKey = `-- name: CreateAPIKey :one
+INSERT INTO api_keys (
+  id,
+  name,
+  prefix_last4,
+  key_hash,
+  scopes,
+  project_ids,
+  created_at,
+  expires_at,
+  last_used_at,
+  revoked_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, name, prefix_last4, key_hash, scopes, project_ids, created_at, expires_at, last_used_at, revoked_at
+`
+
+type CreateAPIKeyParams struct {
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	PrefixLast4 string         `json:"prefix_last4"`
+	KeyHash     string         `json:"key_hash"`
+	Scopes      string         `json:"scopes"`
+	ProjectIds  string         `json:"project_ids"`
+	CreatedAt   string         `json:"created_at"`
+	ExpiresAt   sql.NullString `json:"expires_at"`
+	LastUsedAt  sql.NullString `json:"last_used_at"`
+	RevokedAt   sql.NullString `json:"revoked_at"`
+}
+
+func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error) {
+	row := q.db.QueryRowContext(ctx, createAPIKey,
+		arg.ID,
+		arg.Name,
+		arg.PrefixLast4,
+		arg.KeyHash,
+		arg.Scopes,
+		arg.ProjectIds,
+		arg.CreatedAt,
+		arg.ExpiresAt,
+		arg.LastUsedAt,
+		arg.RevokedAt,
+	)
+	var i ApiKey
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.PrefixLast4,
+		&i.KeyHash,
+		&i.Scopes,
+		&i.ProjectIds,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const createAPIUsageLog = `-- name: CreateAPIUsageLog :exec
+INSERT INTO api_usage_logs (
+  api_key_id,
+  method,
+  path,
+  status_code,
+  latency_ms,
+  ip,
+  user_agent,
+  created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`
+
+type CreateAPIUsageLogParams struct {
+	ApiKeyID   string `json:"api_key_id"`
+	Method     string `json:"method"`
+	Path       string `json:"path"`
+	StatusCode int64  `json:"status_code"`
+	LatencyMs  int64  `json:"latency_ms"`
+	Ip         string `json:"ip"`
+	UserAgent  string `json:"user_agent"`
+	CreatedAt  string `json:"created_at"`
+}
+
+func (q *Queries) CreateAPIUsageLog(ctx context.Context, arg CreateAPIUsageLogParams) error {
+	_, err := q.db.ExecContext(ctx, createAPIUsageLog,
+		arg.ApiKeyID,
+		arg.Method,
+		arg.Path,
+		arg.StatusCode,
+		arg.LatencyMs,
+		arg.Ip,
+		arg.UserAgent,
+		arg.CreatedAt,
+	)
+	return err
+}
+
 const createCodexSession = `-- name: CreateCodexSession :one
 INSERT INTO codex_sessions (
   run_id,
@@ -917,6 +1043,54 @@ func (q *Queries) FinishCodexSession(ctx context.Context, arg FinishCodexSession
 	return result.RowsAffected()
 }
 
+const getAPIKey = `-- name: GetAPIKey :one
+SELECT id, name, prefix_last4, key_hash, scopes, project_ids, created_at, expires_at, last_used_at, revoked_at
+FROM api_keys
+WHERE id = ?
+`
+
+func (q *Queries) GetAPIKey(ctx context.Context, id string) (ApiKey, error) {
+	row := q.db.QueryRowContext(ctx, getAPIKey, id)
+	var i ApiKey
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.PrefixLast4,
+		&i.KeyHash,
+		&i.Scopes,
+		&i.ProjectIds,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const getAPIKeyByHash = `-- name: GetAPIKeyByHash :one
+SELECT id, name, prefix_last4, key_hash, scopes, project_ids, created_at, expires_at, last_used_at, revoked_at
+FROM api_keys
+WHERE key_hash = ?
+`
+
+func (q *Queries) GetAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, error) {
+	row := q.db.QueryRowContext(ctx, getAPIKeyByHash, keyHash)
+	var i ApiKey
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.PrefixLast4,
+		&i.KeyHash,
+		&i.Scopes,
+		&i.ProjectIds,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
 const getCodexSession = `-- name: GetCodexSession :one
 SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id
 FROM codex_sessions
@@ -1343,6 +1517,46 @@ func (q *Queries) LifetimeTotals(ctx context.Context) (LifetimeTotalsRow, error)
 	return i, err
 }
 
+const listAPIKeys = `-- name: ListAPIKeys :many
+SELECT id, name, prefix_last4, key_hash, scopes, project_ids, created_at, expires_at, last_used_at, revoked_at
+FROM api_keys
+ORDER BY created_at DESC, id DESC
+`
+
+func (q *Queries) ListAPIKeys(ctx context.Context) ([]ApiKey, error) {
+	rows, err := q.db.QueryContext(ctx, listAPIKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ApiKey{}
+	for rows.Next() {
+		var i ApiKey
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.PrefixLast4,
+			&i.KeyHash,
+			&i.Scopes,
+			&i.ProjectIds,
+			&i.CreatedAt,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listActiveWorkAttempts = `-- name: ListActiveWorkAttempts :many
 SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action
 FROM work_attempts
@@ -1765,6 +1979,45 @@ func (q *Queries) ReclaimActiveWorkAttempts(ctx context.Context, arg ReclaimActi
 	return items, nil
 }
 
+const revokeAPIKey = `-- name: RevokeAPIKey :execrows
+UPDATE api_keys
+SET revoked_at = ?1
+WHERE id = ?2
+  AND revoked_at IS NULL
+`
+
+type RevokeAPIKeyParams struct {
+	RevokedAt sql.NullString `json:"revoked_at"`
+	ID        string         `json:"id"`
+}
+
+func (q *Queries) RevokeAPIKey(ctx context.Context, arg RevokeAPIKeyParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, revokeAPIKey, arg.RevokedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setAPIKeyExpiresAt = `-- name: SetAPIKeyExpiresAt :execrows
+UPDATE api_keys
+SET expires_at = ?1
+WHERE id = ?2
+`
+
+type SetAPIKeyExpiresAtParams struct {
+	ExpiresAt sql.NullString `json:"expires_at"`
+	ID        string         `json:"id"`
+}
+
+func (q *Queries) SetAPIKeyExpiresAt(ctx context.Context, arg SetAPIKeyExpiresAtParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setAPIKeyExpiresAt, arg.ExpiresAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const timeoutExpiredWorkAttempts = `-- name: TimeoutExpiredWorkAttempts :many
 UPDATE work_attempts
 SET status = ?,
@@ -1860,6 +2113,30 @@ func (q *Queries) TimeoutExpiredWorkAttempts(ctx context.Context, arg TimeoutExp
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateAPIKeyLastUsed = `-- name: UpdateAPIKeyLastUsed :execrows
+UPDATE api_keys
+SET last_used_at = ?1
+WHERE id = ?2
+  AND (
+    last_used_at IS NULL
+    OR last_used_at <= ?3
+  )
+`
+
+type UpdateAPIKeyLastUsedParams struct {
+	LastUsedAt sql.NullString `json:"last_used_at"`
+	ID         string         `json:"id"`
+	Threshold  sql.NullString `json:"threshold"`
+}
+
+func (q *Queries) UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLastUsedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateAPIKeyLastUsed, arg.LastUsedAt, arg.ID, arg.Threshold)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const updateDetentRun = `-- name: UpdateDetentRun :execrows

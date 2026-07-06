@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -520,6 +521,146 @@ func TestWorkItemAPIRejectsUnsupportedTracker(t *testing.T) {
 	})
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusNotImplemented, rec.Body.String())
+	}
+}
+
+func TestAPIKeyManagementAndScopedWorkItemAccess(t *testing.T) {
+	t.Parallel()
+
+	server, backend, _, _ := newAPIKeyWorkItemTestServer(t)
+	create := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/keys", `{
+		"name": "Video Studio",
+		"scopes": ["write"],
+		"project_ids": ["digitaldrywood-video"],
+		"expires_in": "90d"
+	}`, map[string]string{
+		"Authorization": "Bearer detent_admin_token",
+	})
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create key status = %d, want %d; body = %s", create.Code, http.StatusCreated, create.Body.String())
+	}
+	token := apiKeyTokenFromResponse(t, create.Body.Bytes())
+	if token == "" {
+		t.Fatalf("create key response did not include token: %s", create.Body.String())
+	}
+
+	list := performJSON(t, server.Handler(), http.MethodGet, "/api/v1/keys", "", map[string]string{
+		"Authorization": "Bearer detent_admin_token",
+	})
+	if list.Code != http.StatusOK {
+		t.Fatalf("list keys status = %d, want %d; body = %s", list.Code, http.StatusOK, list.Body.String())
+	}
+	if strings.Contains(list.Body.String(), token) || strings.Contains(list.Body.String(), "key_hash") {
+		t.Fatalf("list response leaked token or key hash: %s", list.Body.String())
+	}
+
+	allowed := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/projects/digitaldrywood-video/work-items", `{
+		"title": "Render storyboard",
+		"description": "Queue work item"
+	}`, map[string]string{
+		"Authorization": "Bearer " + token,
+	})
+	if allowed.Code != http.StatusCreated {
+		t.Fatalf("allowed work item status = %d, want %d; body = %s", allowed.Code, http.StatusCreated, allowed.Body.String())
+	}
+	waitForAPIUsageLog(t, backend, apiKeyIDFromResponse(t, create.Body.Bytes()))
+
+	disallowedProject := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/projects/detent/work-items", `{
+		"title": "Wrong project",
+		"description": "Should fail"
+	}`, map[string]string{
+		"Authorization": "Bearer " + token,
+	})
+	if disallowedProject.Code != http.StatusForbidden {
+		t.Fatalf("disallowed project status = %d, want %d; body = %s", disallowedProject.Code, http.StatusForbidden, disallowedProject.Body.String())
+	}
+
+	adminRoute := performJSON(t, server.Handler(), http.MethodGet, "/api/v1/keys", "", map[string]string{
+		"Authorization": "Bearer " + token,
+	})
+	if adminRoute.Code != http.StatusForbidden {
+		t.Fatalf("write key management status = %d, want %d; body = %s", adminRoute.Code, http.StatusForbidden, adminRoute.Body.String())
+	}
+}
+
+func TestAPIKeyRevokeExpireRotateAndRateLimit(t *testing.T) {
+	t.Parallel()
+
+	server, backend, _, _ := newAPIKeyWorkItemTestServer(t)
+	createdToken, createdID := createAPIKeyThroughHTTP(t, server, `{
+		"name": "Client",
+		"scopes": ["read"],
+		"expires_in": "90d"
+	}`)
+	revoke := performJSON(t, server.Handler(), http.MethodDelete, "/api/v1/keys/"+createdID, "", map[string]string{
+		"Authorization": "Bearer detent_admin_token",
+	})
+	if revoke.Code != http.StatusNoContent {
+		t.Fatalf("revoke status = %d, want %d; body = %s", revoke.Code, http.StatusNoContent, revoke.Body.String())
+	}
+	revoked := requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/state", http.StatusUnauthorized, map[string]string{
+		"Authorization": "Bearer " + createdToken,
+	})
+	if nestedString(t, revoked, "error", "code") != "token_revoked" {
+		t.Fatalf("revoked response = %#v, want token_revoked", revoked)
+	}
+	revokedKey, err := backend.APIKey(context.Background(), createdID)
+	if err != nil {
+		t.Fatalf("APIKey() after revoke error = %v", err)
+	}
+	if revokedKey.RevokedAt == nil {
+		t.Fatalf("RevokedAt = nil, want timestamp")
+	}
+
+	expiredToken := createExpiredAPIKey(t, backend)
+	expired := requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/state", http.StatusUnauthorized, map[string]string{
+		"Authorization": "Bearer " + expiredToken,
+	})
+	if nestedString(t, expired, "error", "code") != "token_expired" {
+		t.Fatalf("expired response = %#v, want token_expired", expired)
+	}
+
+	rotateToken, rotateID := createAPIKeyThroughHTTP(t, server, `{
+		"name": "Rotating",
+		"scopes": ["read"],
+		"expires_in": "90d"
+	}`)
+	rotate := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/keys/"+rotateID+"/rotate", `{"grace":"1h"}`, map[string]string{
+		"Authorization": "Bearer detent_admin_token",
+	})
+	if rotate.Code != http.StatusCreated {
+		t.Fatalf("rotate status = %d, want %d; body = %s", rotate.Code, http.StatusCreated, rotate.Body.String())
+	}
+	replacementToken := apiKeyTokenFromResponse(t, rotate.Body.Bytes())
+	for name, token := range map[string]string{"old": rotateToken, "replacement": replacementToken} {
+		rec := performJSON(t, server.Handler(), http.MethodGet, "/api/v1/state", "", map[string]string{
+			"Authorization": "Bearer " + token,
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s rotated token status = %d, want %d; body = %s", name, rec.Code, http.StatusOK, rec.Body.String())
+		}
+	}
+
+	rateToken, _ := createAPIKeyThroughHTTP(t, server, `{
+		"name": "Rate limited",
+		"scopes": ["read"],
+		"expires_in": "90d"
+	}`)
+	var limited *httptest.ResponseRecorder
+	for range 40 {
+		rec := performJSON(t, server.Handler(), http.MethodGet, "/api/v1/state", "", map[string]string{
+			"Authorization": "Bearer " + rateToken,
+		})
+		if rec.Code == http.StatusTooManyRequests {
+			limited = rec
+			break
+		}
+	}
+	if limited == nil {
+		t.Fatalf("rate limit did not engage after repeated requests")
+	}
+	if limited.Header().Get("X-RateLimit-Limit") == "" || limited.Header().Get("X-RateLimit-Remaining") == "" || limited.Header().Get("Retry-After") == "" {
+		t.Fatalf("rate limit headers missing: %#v", limited.Header())
 	}
 }
 
@@ -7198,6 +7339,149 @@ func newWorkItemAPITestServer(t *testing.T, apiToken string) (*web.Server, *loca
 		t.Fatalf("NewServer() error = %v", err)
 	}
 	return server, conn, refresher
+}
+
+func newAPIKeyWorkItemTestServer(t *testing.T) (*web.Server, store.Store, *local.Connector, *refreshProbe) {
+	t.Helper()
+
+	backend := openWebTestStore(t)
+	conn, err := local.New(local.Config{
+		Path:           filepath.Join(t.TempDir(), "work-items.db"),
+		ProjectID:      "digitaldrywood-video",
+		ActiveStates:   []string{"Todo", "In Progress"},
+		ObservedStates: []string{"Backlog", "Blocked"},
+		TerminalStates: []string{"Done"},
+	})
+	if err != nil {
+		t.Fatalf("local.New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	workflowCfg := workflowconfig.Default()
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerLocalSQLite
+	workflowCfg.Tracker.LocalSQLite.Path = filepath.Join(t.TempDir(), "unused.db")
+	workflowCfg.Tracker.ActiveStates = []string{"Todo", "In Progress"}
+	workflowCfg.Tracker.ObservedStates = []string{"Backlog", "Blocked"}
+	workflowCfg.Tracker.TerminalStates = []string{"Done"}
+	trackedProject, err := project.New(project.Config{
+		Project: globalconfig.Project{ID: "digitaldrywood-video"},
+		Workflow: workflowconfig.Workflow{
+			Config: workflowCfg,
+			Prompt: "Work the issue.",
+		},
+	}, project.Dependencies{
+		Connector: conn,
+	})
+	if err != nil {
+		t.Fatalf("project.New() error = %v", err)
+	}
+
+	refresher := &refreshProbe{}
+	deps := testDeps(t)
+	deps.Store = backend
+	deps.Connector = conn
+	deps.Refresher = refresher
+	if err := deps.Registry.Set(trackedProject); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{
+		DashboardURL: "http://127.0.0.1:4000",
+		GlobalConfig: globalconfig.Config{
+			APIToken: "detent_admin_token",
+		},
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	return server, backend, conn, refresher
+}
+
+func createAPIKeyThroughHTTP(t *testing.T, server *web.Server, body string) (string, string) {
+	t.Helper()
+
+	rec := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/keys", body, map[string]string{
+		"Authorization": "Bearer detent_admin_token",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create api key status = %d, want %d; body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	return apiKeyTokenFromResponse(t, rec.Body.Bytes()), apiKeyIDFromResponse(t, rec.Body.Bytes())
+}
+
+func apiKeyTokenFromResponse(t *testing.T, body []byte) string {
+	t.Helper()
+
+	var payload struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal(api key response) error = %v; body = %s", err, string(body))
+	}
+	return payload.Token
+}
+
+func apiKeyIDFromResponse(t *testing.T, body []byte) string {
+	t.Helper()
+
+	var payload struct {
+		Key struct {
+			ID string `json:"id"`
+		} `json:"key"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal(api key response) error = %v; body = %s", err, string(body))
+	}
+	if payload.Key.ID == "" {
+		t.Fatalf("api key response missing key.id: %s", string(body))
+	}
+	return payload.Key.ID
+}
+
+func createExpiredAPIKey(t *testing.T, backend store.Store) string {
+	t.Helper()
+
+	token, err := apikey.GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken() error = %v", err)
+	}
+	createdAt := time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC)
+	expiresAt := createdAt.Add(time.Hour)
+	_, err = backend.CreateAPIKey(context.Background(), store.APIKeyCreate{
+		ID:          "expired-key",
+		Name:        "Expired",
+		PrefixLast4: apikey.PrefixLast4(token),
+		KeyHash:     apikey.HashToken(token),
+		Scopes:      []string{"read"},
+		CreatedAt:   createdAt,
+		ExpiresAt:   &expiresAt,
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey(expired) error = %v", err)
+	}
+	return token
+}
+
+func waitForAPIUsageLog(t *testing.T, backend store.Store, keyID string) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		count, err := backend.CountAPIUsageLogsByKey(context.Background(), keyID)
+		if err != nil {
+			t.Fatalf("CountAPIUsageLogsByKey() error = %v", err)
+		}
+		if count > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("usage log count for %s stayed 0", keyID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func mustSetWebProject(t *testing.T, registry *project.Registry, id string, paused bool) {

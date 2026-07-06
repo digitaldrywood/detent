@@ -27,12 +27,13 @@ func appShellNavItems(data DashboardShellData) []appNavItem {
 		{ID: "reports", Label: "Reports", Href: "/reports", Active: active == "reports"},
 		{ID: "analytics", Label: "Analytics", Href: "/analytics", Active: active == "analytics"},
 		{ID: "health", Label: "Health", Href: "/health/ui", Active: active == "health", HealthDot: true},
+		{ID: "api-keys", Label: "API Keys", Href: "/api-keys", Active: active == "api-keys"},
 		{ID: "settings", Label: "Settings", Href: "/settings", Active: active == "settings"},
 	}
 }
 
 // appShellActiveNav normalizes legacy ActiveNav values onto the redesign's
-// six top-level views. Project-scoped pages activate no top-level link;
+// top-level views. Project-scoped pages activate no top-level link;
 // the project row in the sidebar carries selection instead.
 func appShellActiveNav(data DashboardShellData) string {
 	nav := strings.TrimSpace(data.ActiveNav)
@@ -44,7 +45,7 @@ func appShellActiveNav(data DashboardShellData) string {
 		return "board"
 	case "fleet":
 		return "fleet"
-	case "reports", "analytics", "health", "settings":
+	case "reports", "analytics", "health", "api-keys", "settings":
 		return nav
 	}
 	return ""
