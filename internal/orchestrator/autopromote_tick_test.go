@@ -319,6 +319,65 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 	}
 }
 
+func TestTickAutoPromoteHydratesWorkpadBlockerBeforeTransition(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 6, 15, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	issue := autoPromoteTickIssue("issue-workpad-blocker", []string{"bug"}, &connector.PullRequest{
+		Number:                 185,
+		URL:                    "https://github.test/digitaldrywood/creswoodcorners-phone/pull/185",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "pass",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &autoPromoteTickConnector{
+		stateIssues: []connector.Issue{issue},
+		issueComments: map[string][]connector.IssueComment{
+			issue.ID: {{
+				Body: "## Codex Workpad\n\n### Blockers\n- no generated seasonal MP3s were copied into `assets/audio/`\n- Gate A/B/C owner listening approval is still required before approved audio assets are copied and committed",
+			}},
+		},
+	}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want no transition while Workpad blocker is present", tracker.updates)
+	}
+	if got, want := tracker.fetchComments, []string{issue.ID}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("FetchIssueComments issue IDs = %#v, want %#v", got, want)
+	}
+	for _, fragment := range []string{
+		"action=await_review",
+		"reason=workpad_blocker",
+		"workpad_blocker=\"no generated seasonal MP3s were copied into `assets/audio/`; Gate A/B/C owner listening approval is still required before approved audio assets are copied and committed\"",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+}
+
 func TestTickAutoPromoteBlocksWhenReworkLimitReached(t *testing.T) {
 	t.Parallel()
 
@@ -897,6 +956,80 @@ func TestTickReconcilesStaleTodoLinkedPullRequests(t *testing.T) {
 		"stale_todo_pr_reconciled",
 		"reason=ready",
 		"reason=merge_conflicts",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+}
+
+func TestTickReconcilesStaleTodoHydratesWorkpadBlockerBeforePromotion(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 6, 16, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	issue := autoPromoteTickIssue("issue-stale-todo-workpad-blocker", []string{"bug"}, &connector.PullRequest{
+		Number:                 180,
+		URL:                    "https://github.test/digitaldrywood/creswoodcorners-phone/pull/180",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "pass",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	issue.State = "Todo"
+	issue.Identifier = "digitaldrywood/creswoodcorners-phone#175"
+	tracker := &autoPromoteTickConnector{
+		stateIssues: []connector.Issue{issue},
+		issueComments: map[string][]connector.IssueComment{
+			issue.ID: {{
+				Body: "## Codex Workpad\n\n### Blockers\n- Gate A/B/C owner listening approval is still required before approved audio assets are copied and committed.",
+			}},
+		},
+	}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	}
+
+	state := newState(cfg)
+	orch.tick(context.Background(), &state, now)
+
+	wantUpdates := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Human Review"}}
+	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
+		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
+	}
+	if got, want := tracker.fetchComments, []string{issue.ID}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("FetchIssueComments issue IDs = %#v, want %#v", got, want)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one stale Todo reconciliation comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"Reconciled this issue from Todo to Human Review because it already has a linked PR.",
+		"reason: workpad_blocker",
+		"https://github.test/digitaldrywood/creswoodcorners-phone/pull/180",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+		}
+	}
+	for _, fragment := range []string{
+		"reason=workpad_blocker",
+		"target_state=\"Human Review\"",
+		"workpad_blocker=\"Gate A/B/C owner listening approval is still required before approved audio assets are copied and committed.\"",
 	} {
 		if !strings.Contains(logs.String(), fragment) {
 			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
@@ -3346,6 +3479,8 @@ type autoPromoteTickConnector struct {
 	candidateIssuesSet    bool
 	candidateByStates     [][]string
 	fetchByStatesRequests [][]string
+	fetchComments         []string
+	issueComments         map[string][]connector.IssueComment
 	updates               []autoPromoteTickUpdate
 	comments              []autoPromoteTickComment
 	prComments            []autoPromoteTickComment
@@ -3391,6 +3526,11 @@ func (c *autoPromoteTickConnector) FetchIssuesByStates(_ context.Context, states
 		}
 	}
 	return issues, nil
+}
+
+func (c *autoPromoteTickConnector) FetchIssueComments(_ context.Context, issue connector.Issue) ([]connector.IssueComment, error) {
+	c.fetchComments = append(c.fetchComments, strings.TrimSpace(issue.ID))
+	return cloneIssueComments(c.issueComments[strings.TrimSpace(issue.ID)]), nil
 }
 
 func (c *autoPromoteTickConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {

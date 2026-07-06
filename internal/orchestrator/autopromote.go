@@ -74,6 +74,8 @@ const (
 	AutoPromoteReasonArtifactStatusMissing           AutoPromoteReason = "artifact_status_missing"
 	AutoPromoteReasonArtifactStatusWait              AutoPromoteReason = "artifact_status_wait"
 	AutoPromoteReasonArtifactStatusRework            AutoPromoteReason = "artifact_status_rework"
+	AutoPromoteReasonWorkpadBlocker                  AutoPromoteReason = "workpad_blocker"
+	AutoPromoteReasonWorkpadHydrationUnavailable     AutoPromoteReason = "workpad_hydration_unavailable"
 )
 
 type AutoPromoteDecision struct {
@@ -82,6 +84,7 @@ type AutoPromoteDecision struct {
 	CIStatus       string
 	QuietRemaining time.Duration
 	Findings       []AutoPromoteFinding
+	WorkpadBlocker string
 }
 
 func EvaluateAutoPromote(
@@ -100,6 +103,11 @@ func EvaluateAutoPromote(
 	}
 	if !autoPromoteAllowedIssueLabel(issue, cfg) {
 		return autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonLabelNotAllowed)
+	}
+	if blocker := autoPromoteWorkpadBlockerReason(issue); blocker != "" {
+		decision := autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonWorkpadBlocker)
+		decision.WorkpadBlocker = blocker
+		return decision
 	}
 	if gateRequiresPullRequest(cfg.Gate) {
 		if autoPromoteMergeConflicts(summary.MergeableState) {
@@ -246,6 +254,179 @@ func artifactStatusFromIssue(issue connector.Issue, statusField string) string {
 		}
 	}
 	return ""
+}
+
+func autoPromoteWorkpadBlockerReason(issue connector.Issue) string {
+	if reason := autoPromoteNormalizeWorkpadBlockerText(issue.BlockerReason); reason != "" {
+		return reason
+	}
+	for index := len(issue.Comments) - 1; index >= 0; index-- {
+		body := issue.Comments[index].Body
+		if !strings.Contains(strings.ToLower(body), "codex workpad") {
+			continue
+		}
+		return autoPromoteWorkpadBlockerReasonFromBody(body)
+	}
+	return ""
+}
+
+func autoPromoteWorkpadBlockerReasonFromBody(body string) string {
+	sectionFound := false
+	for _, title := range []string{"Human Action Needed", "Blockers"} {
+		text, ok := autoPromoteMarkdownSectionText(body, title)
+		if !ok {
+			continue
+		}
+		sectionFound = true
+		if reason := autoPromoteNormalizeWorkpadBlockerText(text); reason != "" {
+			return reason
+		}
+	}
+	if sectionFound {
+		return ""
+	}
+	return autoPromoteWorkpadBlockerPhraseReason(body)
+}
+
+func autoPromoteWorkpadBlockerPhraseReason(body string) string {
+	for line := range strings.SplitSeq(body, "\n") {
+		if _, ok := autoPromoteMarkdownHeadingTitle(line); ok {
+			continue
+		}
+		line = autoPromoteNormalizeWorkpadLine(line)
+		if line == "" || autoPromoteWorkpadNonBlockerLine(line) {
+			continue
+		}
+		lower := strings.ToLower(line)
+		for _, phrase := range []string{
+			"human action needed",
+			"human approval",
+			"owner approval",
+			"owner listening approval",
+			"still required",
+			"still needed",
+			"still needs",
+			"required before",
+			"waiting for",
+			"blocked by:",
+			"depends on:",
+			"cannot proceed",
+			"cannot continue",
+		} {
+			if strings.Contains(lower, phrase) {
+				return line
+			}
+		}
+	}
+	return ""
+}
+
+func autoPromoteMarkdownSectionText(body string, title string) (string, bool) {
+	want := autoPromoteNormalizeSectionTitle(title)
+	inSection := false
+	found := false
+	lines := []string{}
+	for line := range strings.SplitSeq(body, "\n") {
+		heading, ok := autoPromoteMarkdownHeadingTitle(line)
+		if ok {
+			if inSection {
+				break
+			}
+			inSection = autoPromoteNormalizeSectionTitle(heading) == want
+			if inSection {
+				found = true
+			}
+			continue
+		}
+		if inSection {
+			lines = append(lines, line)
+		}
+	}
+	return strings.Join(lines, "\n"), found
+}
+
+func autoPromoteMarkdownHeadingTitle(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || line[0] != '#' {
+		return "", false
+	}
+	index := 0
+	for index < len(line) && line[index] == '#' {
+		index++
+	}
+	if index > 6 || index == len(line) {
+		return "", false
+	}
+	if line[index] != ' ' && line[index] != '\t' {
+		return "", false
+	}
+	return strings.Trim(strings.TrimSpace(line[index:]), "# \t"), true
+}
+
+func autoPromoteNormalizeSectionTitle(title string) string {
+	return strings.ToLower(strings.Join(strings.Fields(title), " "))
+}
+
+func autoPromoteNormalizeWorkpadBlockerText(text string) string {
+	parts := []string{}
+	for line := range strings.SplitSeq(text, "\n") {
+		line = autoPromoteNormalizeWorkpadLine(line)
+		if line == "" || autoPromoteWorkpadNonBlockerLine(line) {
+			continue
+		}
+		parts = append(parts, line)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func autoPromoteNormalizeWorkpadLine(line string) string {
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, ">")
+	line = strings.TrimSpace(line)
+	for _, marker := range []string{"- ", "* ", "+ "} {
+		if after, ok := strings.CutPrefix(line, marker); ok {
+			line = strings.TrimSpace(after)
+			break
+		}
+	}
+	for _, marker := range []string{"[ ] ", "[x] ", "[X] "} {
+		if after, ok := strings.CutPrefix(line, marker); ok {
+			line = strings.TrimSpace(after)
+			break
+		}
+	}
+	if index := autoPromoteNumberedListMarkerEnd(line); index > 0 {
+		line = strings.TrimSpace(line[index:])
+	}
+	return strings.Join(strings.Fields(line), " ")
+}
+
+func autoPromoteNumberedListMarkerEnd(line string) int {
+	index := 0
+	for index < len(line) && line[index] >= '0' && line[index] <= '9' {
+		index++
+	}
+	if index == 0 || index >= len(line) {
+		return 0
+	}
+	if line[index] != '.' && line[index] != ')' {
+		return 0
+	}
+	if index+1 < len(line) && line[index+1] != ' ' && line[index+1] != '\t' {
+		return 0
+	}
+	return index + 1
+}
+
+func autoPromoteWorkpadNonBlockerLine(line string) bool {
+	line = strings.Trim(strings.ToLower(strings.TrimSpace(line)), ".:; ")
+	switch line {
+	case "", "none", "none currently", "n/a", "na", "not applicable", "nothing", "nothing currently",
+		"no blockers", "no known blockers", "no unresolved blockers", "no human action needed":
+		return true
+	default:
+		return false
+	}
 }
 
 func gateFindings(findings []AutoPromoteFinding) []gate.Finding {

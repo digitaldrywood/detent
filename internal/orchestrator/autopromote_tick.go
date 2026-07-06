@@ -87,6 +87,9 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			o.logAutoPromoteDecision(issue, autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonCINotGreen), "")
 			continue
 		}
+		if decision.Action == AutoPromoteActionPromote {
+			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
+		}
 		targetState := autoPromoteTargetState(decision.Action, cfg)
 		if targetState == "" {
 			o.logAutoPromoteDecision(issue, decision, "")
@@ -111,6 +114,31 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 	return result
 }
 
+func (o *Orchestrator) hydrateAutoPromoteWorkpadDecision(
+	ctx context.Context,
+	issue connector.Issue,
+	summary AutoPromoteSummary,
+	cfg AutoPromoteConfig,
+	now time.Time,
+) (connector.Issue, AutoPromoteDecision) {
+	if len(issue.Comments) == 0 && strings.TrimSpace(issue.BlockerReason) == "" {
+		reader, ok := o.connector.(connector.IssueCommentReader)
+		if !ok {
+			return issue, EvaluateAutoPromote(issue, summary, cfg, now)
+		}
+		comments, err := reader.FetchIssueComments(ctx, issue)
+		if err != nil {
+			if o.logger != nil {
+				o.logger.Warn("fetch auto-promote workpad comments failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+			}
+			return issue, autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonWorkpadHydrationUnavailable)
+		}
+		issue = cloneIssue(issue)
+		issue.Comments = comments
+	}
+	return issue, EvaluateAutoPromote(issue, summary, cfg, now)
+}
+
 func (o *Orchestrator) reconcileStaleTodoPullRequestIssues(
 	ctx context.Context,
 	state *State,
@@ -132,6 +160,9 @@ func (o *Orchestrator) reconcileStaleTodoPullRequestIssues(
 			continue
 		}
 		decision := staleTodoPullRequestDecision(issue, summary, o.cfg.AutoPromote, now)
+		if decision.Action == AutoPromoteActionPromote {
+			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, o.cfg.AutoPromote, now)
+		}
 		targetState := staleTodoPullRequestTargetState(decision, o.cfg.AutoPromote)
 		if targetState == "" {
 			o.logAutoPromoteDecision(issue, decision, "")
@@ -829,6 +860,9 @@ func (o *Orchestrator) logStaleTodoPullRequestDecision(issue connector.Issue, de
 		if mergeableState := strings.TrimSpace(issue.PullRequest.MergeableState); mergeableState != "" {
 			attrs = append(attrs, "mergeable_state", strings.ToLower(mergeableState))
 		}
+	}
+	if decision.WorkpadBlocker != "" {
+		attrs = append(attrs, "workpad_blocker", decision.WorkpadBlocker)
 	}
 	o.logger.Info("stale_todo_pr_reconciled", attrs...)
 }
@@ -1588,6 +1622,9 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 	}
 	if decision.QuietRemaining > 0 {
 		attrs = append(attrs, "quiet_remaining", decision.QuietRemaining)
+	}
+	if decision.WorkpadBlocker != "" {
+		attrs = append(attrs, "workpad_blocker", decision.WorkpadBlocker)
 	}
 	if targetState != "" {
 		attrs = append(attrs, "target_state", targetState)
