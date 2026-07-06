@@ -205,8 +205,8 @@ func gitDiffOutputWithinLimit(ctx context.Context, workspacePath string, env []s
 		return "", false, fmt.Errorf("git diff read: %w", readErr)
 	}
 	if truncated {
-		if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
-			return "", false, fmt.Errorf("git diff stop after limit: %w", killErr)
+		if err := gitDiffStopError(killErr, waitErr); err != nil {
+			return "", false, err
 		}
 		return "", true, nil
 	}
@@ -230,6 +230,13 @@ func gitDiffOutputWithinLimit(ctx context.Context, workspacePath string, env []s
 		Output:   string(combined),
 		Err:      waitErr,
 	}
+}
+
+func gitDiffStopError(killErr error, waitErr error) error {
+	if killErr == nil || errors.Is(killErr, os.ErrProcessDone) || waitErr == nil {
+		return nil
+	}
+	return fmt.Errorf("git diff stop after limit: %w", killErr)
 }
 
 func ensureGitInfoExcludes(ctx context.Context, workspacePath string, patterns []string) error {
