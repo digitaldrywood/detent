@@ -310,6 +310,85 @@ func TestSQLiteValidatorVerdictRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSQLiteListValidatorVerdictsFiltersAndSorts(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend, err := Open(ctx, Config{
+		Backend: BackendSQLite,
+		Path:    filepath.Join(t.TempDir(), "detent.db"),
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	base := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	verdicts := []ValidatorVerdict{
+		{
+			ProjectID:  "detent",
+			IssueID:    "issue-1",
+			HeadSHA:    "aaa111",
+			Identifier: "digitaldrywood/detent#1",
+			PRNumber:   int64Pointer(11),
+			Verdict:    "pass",
+			RecordedAt: base,
+			UpdatedAt:  base,
+		},
+		{
+			ProjectID:  "detent",
+			IssueID:    "issue-2",
+			HeadSHA:    "bbb222",
+			Identifier: "digitaldrywood/detent#2",
+			PRNumber:   int64Pointer(12),
+			Verdict:    "rework",
+			RecordedAt: base.Add(time.Hour),
+			UpdatedAt:  base.Add(time.Hour),
+		},
+		{
+			ProjectID:  "video",
+			IssueID:    "render-1",
+			HeadSHA:    "ccc333",
+			Identifier: "video/render-1",
+			Verdict:    "pass",
+			RecordedAt: base.Add(2 * time.Hour),
+			UpdatedAt:  base.Add(2 * time.Hour),
+		},
+	}
+	for _, verdict := range verdicts {
+		if err := backend.RecordValidatorVerdict(ctx, verdict); err != nil {
+			t.Fatalf("RecordValidatorVerdict(%s) error = %v", verdict.IssueID, err)
+		}
+	}
+
+	got, err := backend.ListValidatorVerdicts(ctx, ValidatorVerdictQuery{})
+	if err != nil {
+		t.Fatalf("ListValidatorVerdicts() error = %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("ListValidatorVerdicts() len = %d, want 3", len(got))
+	}
+	if got[0].IssueID != "render-1" || got[1].IssueID != "issue-2" || got[2].IssueID != "issue-1" {
+		t.Fatalf("ListValidatorVerdicts() order = %#v", []string{got[0].IssueID, got[1].IssueID, got[2].IssueID})
+	}
+
+	filtered, err := backend.ListValidatorVerdicts(ctx, ValidatorVerdictQuery{
+		ProjectID: "detent",
+		From:      base.Add(30 * time.Minute),
+		To:        base.Add(90 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("ListValidatorVerdicts(filtered) error = %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].IssueID != "issue-2" {
+		t.Fatalf("filtered verdicts = %#v, want issue-2", filtered)
+	}
+}
+
 func TestSQLiteQueriesRoundTrip(t *testing.T) {
 	t.Parallel()
 

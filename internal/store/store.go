@@ -81,6 +81,7 @@ type WorkAttemptStore interface {
 type ValidatorMemoStore interface {
 	RecordValidatorVerdict(context.Context, ValidatorVerdict) error
 	ValidatorVerdict(context.Context, ValidatorVerdictKey) (ValidatorVerdict, error)
+	ListValidatorVerdicts(context.Context, ValidatorVerdictQuery) ([]ValidatorVerdict, error)
 	MarkValidatorVerdictCommented(context.Context, ValidatorVerdictKey, time.Time) error
 }
 
@@ -340,6 +341,12 @@ type ValidatorVerdictKey struct {
 	ProjectID string
 	IssueID   string
 	HeadSHA   string
+}
+
+type ValidatorVerdictQuery struct {
+	ProjectID string
+	From      time.Time
+	To        time.Time
 }
 
 type ValidatorFinding struct {

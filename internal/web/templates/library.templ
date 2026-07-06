@@ -1,0 +1,141 @@
+package templates
+
+import (
+	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
+)
+
+templ LibraryPage(data LibraryData) {
+	@AppShell(libraryShellData(data), nil) {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div id="snapshot" class="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-y-auto overflow-x-hidden px-5 py-5">
+				<div id="library-summary" class="flex flex-none flex-wrap gap-x-14 gap-y-4">
+					for _, kpi := range librarySummaryFigures(data) {
+						<div id={ kpi.ID } class="flex flex-col gap-1">
+							<span class="whitespace-nowrap text-xl font-semibold text-text tabular-nums">{ kpi.Value }</span>
+							<span class="text-xs text-sec">{ kpi.Label }</span>
+						</div>
+					}
+				</div>
+				<form method="get" action="/library" class="flex flex-none flex-wrap items-end gap-3 rounded-card border border-line bg-surface p-3">
+					<label class="grid gap-1.5">
+						<span class="text-2xs font-semibold uppercase text-dim">Project</span>
+						<select name="project" class="h-9 min-w-44 rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent">
+							for _, option := range data.ProjectOptions {
+								<option value={ option.Value } selected?={ option.Selected }>{ libraryOptionLabel(option) }</option>
+							}
+						</select>
+					</label>
+					<label class="grid gap-1.5">
+						<span class="text-2xs font-semibold uppercase text-dim">Kind</span>
+						<select name="kind" class="h-9 min-w-36 rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent">
+							for _, option := range data.KindOptions {
+								<option value={ option.Value } selected?={ option.Selected }>{ libraryOptionLabel(option) }</option>
+							}
+						</select>
+					</label>
+					<label class="grid gap-1.5">
+						<span class="text-2xs font-semibold uppercase text-dim">Status</span>
+						<select name="status" class="h-9 min-w-36 rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent">
+							for _, option := range data.StatusOptions {
+								<option value={ option.Value } selected?={ option.Selected }>{ libraryOptionLabel(option) }</option>
+							}
+						</select>
+					</label>
+					<label class="grid gap-1.5">
+						<span class="text-2xs font-semibold uppercase text-dim">From</span>
+						<input type="date" name="from" value={ libraryDateInputValue(data.Filters.FromValue, data.Filters.From) } class="h-9 rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent"/>
+					</label>
+					<label class="grid gap-1.5">
+						<span class="text-2xs font-semibold uppercase text-dim">To</span>
+						<input type="date" name="to" value={ libraryDateInputValue(data.Filters.ToValue, data.Filters.To) } class="h-9 rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent"/>
+					</label>
+					<button type="submit" class="inline-flex h-9 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90">
+						@icon.Search(icon.Props{Class: "size-4"})
+						Apply
+					</button>
+					if data.HasActiveFilters {
+						<a href="/library" class="inline-flex h-9 items-center justify-center rounded-card border border-line px-2.5 text-sec hover:border-accent hover:text-accent" aria-label="Reset filters" title="Reset filters">
+							@icon.RotateCcw(icon.Props{Class: "size-4"})
+						</a>
+					}
+					<span class="ml-auto font-mono text-xs text-sec">{ libraryResultsLabel(data) }</span>
+				</form>
+				if len(data.Warnings) > 0 {
+					<div class="grid flex-none gap-2">
+						for _, warning := range data.Warnings {
+							<div class="rounded-card border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">{ warning }</div>
+						}
+					</div>
+				}
+				<section id="library-table" class="flex min-w-0 flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
+					<div class="overflow-x-auto">
+						<div class="min-w-[980px]">
+							<div class="grid grid-cols-[130px_120px_minmax(220px,1.5fr)_130px_minmax(180px,1fr)_140px_120px] gap-3.5 border-b border-line px-4 py-2">
+								<span class="text-2xs font-semibold uppercase text-dim">Project</span>
+								<span class="text-2xs font-semibold uppercase text-dim">Kind</span>
+								<span class="text-2xs font-semibold uppercase text-dim">Path</span>
+								<span class="text-2xs font-semibold uppercase text-dim">Status</span>
+								<span class="text-2xs font-semibold uppercase text-dim">Source</span>
+								<span class="text-2xs font-semibold uppercase text-dim">Updated</span>
+								<span class="text-right text-2xs font-semibold uppercase text-dim">Links</span>
+							</div>
+							if len(data.Rows) == 0 {
+								@primitives.EmptyLine("No deliverables match the current filters")
+							}
+							for _, row := range data.Rows {
+								@libraryTableRow(row)
+							}
+						</div>
+					</div>
+				</section>
+			</div>
+		</main>
+	}
+}
+
+templ libraryTableRow(row LibraryRow) {
+	<div id={ row.ID } class="grid grid-cols-[130px_120px_minmax(220px,1.5fr)_130px_minmax(180px,1fr)_140px_120px] items-center gap-3.5 border-b border-line px-4 py-3 last:border-b-0">
+		<span class="min-w-0 truncate font-mono text-xs text-sec" title={ row.ProjectID }>{ row.ProjectName }</span>
+		<span class={ libraryKindClass(row.Kind) }>{ libraryKindLabel(row.Kind) }</span>
+		<div class="grid min-w-0 gap-1">
+			if row.PullRequestURL != "" && row.SourceKind == "pull_request" {
+				<a href={ templ.SafeURL(row.PullRequestURL) } target="_blank" rel="noopener noreferrer" class="min-w-0 truncate font-mono text-xs text-accent hover:underline" title={ libraryPathLabel(row) }>{ libraryPathLabel(row) }</a>
+			} else {
+				<code class="min-w-0 truncate font-mono text-xs text-text" title={ libraryPathLabel(row) }>{ libraryPathLabel(row) }</code>
+			}
+			if libraryRowDetail(row) != "" {
+				<span class="min-w-0 truncate text-2xs text-dim" title={ libraryRowDetail(row) }>{ libraryRowDetail(row) }</span>
+			}
+		</div>
+		<span class={ libraryStatusClass(row.ValidationStatus) }>{ libraryStatusLabel(row.ValidationStatus) }</span>
+		<div class="grid min-w-0 gap-1">
+			if row.SourceURL != "" {
+				<a href={ templ.SafeURL(row.SourceURL) } target="_blank" rel="noopener noreferrer" class="min-w-0 truncate text-sm text-text hover:text-accent hover:underline" title={ libraryRowTitle(row) }>{ librarySourceTitle(row) }</a>
+			} else {
+				<span class="min-w-0 truncate text-sm text-text" title={ libraryRowTitle(row) }>{ librarySourceTitle(row) }</span>
+			}
+			if libraryRowTitle(row) != librarySourceTitle(row) {
+				<span class="min-w-0 truncate text-2xs text-dim" title={ libraryRowTitle(row) }>{ libraryRowTitle(row) }</span>
+			}
+		</div>
+		<span class="font-mono text-xs text-sec tabular-nums" title={ libraryTimeLabel(row.UpdatedAt) }>{ libraryTimeLabel(row.UpdatedAt) }</span>
+		<span class="flex justify-end gap-1.5">
+			if row.ReviewURL != "" {
+				<a href={ templ.SafeURL(row.ReviewURL) } target="_blank" rel="noopener noreferrer" class="rounded-chip border border-line p-1.5 text-sec hover:border-accent hover:text-accent" aria-label={ "Open review for " + libraryPathLabel(row) } title="Open review">
+					@icon.ExternalLink(icon.Props{Class: "size-4"})
+				</a>
+			}
+			if row.SourceURL != "" {
+				<a href={ templ.SafeURL(row.SourceURL) } target="_blank" rel="noopener noreferrer" class="rounded-chip border border-line p-1.5 text-sec hover:border-accent hover:text-accent" aria-label={ "Open source " + row.SourceLabel } title="Open source">
+					@icon.FileText(icon.Props{Class: "size-4"})
+				</a>
+			}
+			if row.PullRequestURL != "" && row.PullRequestURL != row.ReviewURL {
+				<a href={ templ.SafeURL(row.PullRequestURL) } target="_blank" rel="noopener noreferrer" class="rounded-chip border border-line p-1.5 text-sec hover:border-accent hover:text-accent" aria-label={ "Open " + row.PullRequestLabel } title={ row.PullRequestLabel }>
+					@icon.GitPullRequest(icon.Props{Class: "size-4"})
+				</a>
+			}
+		</span>
+	</div>
+}

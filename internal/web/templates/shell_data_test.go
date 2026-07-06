@@ -18,6 +18,7 @@ func TestAppShellActiveNav(t *testing.T) {
 		{name: "legacy kanban maps to board", data: DashboardShellData{ActiveNav: "kanban"}, want: "board"},
 		{name: "board", data: DashboardShellData{ActiveNav: "board"}, want: "board"},
 		{name: "fleet", data: DashboardShellData{ActiveNav: "fleet"}, want: "fleet"},
+		{name: "library", data: DashboardShellData{ActiveNav: "library"}, want: "library"},
 		{name: "reports", data: DashboardShellData{ActiveNav: "reports"}, want: "reports"},
 		{name: "analytics", data: DashboardShellData{ActiveNav: "analytics"}, want: "analytics"},
 		{name: "health", data: DashboardShellData{ActiveNav: "health"}, want: "health"},
@@ -37,8 +38,8 @@ func TestAppShellActiveNav(t *testing.T) {
 
 func TestAppShellNavItemsMarksActive(t *testing.T) {
 	items := appShellNavItems(DashboardShellData{ActiveNav: "reports"})
-	if len(items) != 7 {
-		t.Fatalf("expected 7 nav items, got %d", len(items))
+	if len(items) != 8 {
+		t.Fatalf("expected 8 nav items, got %d", len(items))
 	}
 	healthDot := false
 	for _, item := range items {

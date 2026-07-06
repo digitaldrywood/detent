@@ -678,6 +678,14 @@ WHERE project_id = ?
   AND issue_id = ?
   AND head_sha = ?;
 
+-- name: ListValidatorVerdicts :many
+SELECT *
+FROM validator_verdicts
+WHERE (sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id))
+  AND (sqlc.narg(from_time) IS NULL OR updated_at >= sqlc.narg(from_time))
+  AND (sqlc.narg(to_time) IS NULL OR updated_at < sqlc.narg(to_time))
+ORDER BY updated_at DESC, id DESC;
+
 -- name: MarkValidatorVerdictCommented :execrows
 UPDATE validator_verdicts
 SET commented = 1,

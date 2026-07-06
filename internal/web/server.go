@@ -250,6 +250,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/kanban", s.redirectToBoard)
 	s.echo.GET("/health/ui", s.healthDashboard)
 	s.echo.GET("/analytics", s.analyticsDashboard)
+	s.echo.GET("/library", s.library)
 	s.echo.GET("/projects/*", s.projectDashboard)
 	s.echo.GET("/settings", s.settings)
 	s.echo.GET("/api-keys", s.apiKeysPage)
@@ -467,6 +468,12 @@ func applySettingsPreferences(r *http.Request, data *templates.SettingsData) {
 }
 
 func applyReportsPreferences(r *http.Request, data *templates.ReportsData) {
+	data.SidebarCollapsed = dashboardSidebarCollapsed(r)
+	data.Theme = dashboardTheme(r)
+	data.Density = dashboardDensity(r)
+}
+
+func applyLibraryPreferences(r *http.Request, data *templates.LibraryData) {
 	data.SidebarCollapsed = dashboardSidebarCollapsed(r)
 	data.Theme = dashboardTheme(r)
 	data.Density = dashboardDensity(r)
