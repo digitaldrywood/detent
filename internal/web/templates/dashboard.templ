@@ -10,18 +10,19 @@ import (
 	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
 	"github.com/digitaldrywood/detent/internal/web/ui/components/sheet"
 	"github.com/digitaldrywood/detent/internal/web/ui/components/sidebar"
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
 
 templ HealthPage(data DashboardData) {
 	@DashboardShell(HealthShellDataFromDashboard(data)) {
 		<div class="mx-auto grid w-full max-w-7xl content-start gap-4 sm:gap-5">
-			<header class="dashboard-topbar min-w-0 border-b border-border py-2">
+			<header class="dashboard-topbar min-w-0 border-b border-line py-2">
 				<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
 					@dashboardMobileSidebarTrigger()
 					<div class="min-w-0">
-						<h1 class="truncate text-sm font-semibold text-foreground">Health</h1>
+						<h1 class="truncate text-sm font-semibold text-text">Health</h1>
 					</div>
-					<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
+					<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-sec">
 						<span class="truncate font-mono">{ dashboardBuildVersionLabel(data) }</span>
 						@dashboardTopbarDivider()
 						<span class="truncate">{ connectorName(data) }</span>
@@ -40,13 +41,13 @@ templ HealthPage(data DashboardData) {
 templ AnalyticsPage(data DashboardData) {
 	@DashboardShell(AnalyticsShellDataFromDashboard(data)) {
 		<div class="mx-auto grid w-full max-w-7xl content-start gap-4 sm:gap-5">
-			<header class="dashboard-topbar min-w-0 border-b border-border py-2">
+			<header class="dashboard-topbar min-w-0 border-b border-line py-2">
 				<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
 					@dashboardMobileSidebarTrigger()
 					<div class="min-w-0">
-						<h1 class="truncate text-sm font-semibold text-foreground">Analytics</h1>
+						<h1 class="truncate text-sm font-semibold text-text">Analytics</h1>
 					</div>
-					<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
+					<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-sec">
 						<span class="truncate font-mono">{ dashboardBuildVersionLabel(data) }</span>
 						@dashboardTopbarDivider()
 						<span class="truncate">{ connectorName(data) }</span>
@@ -76,15 +77,15 @@ templ ProjectDiagnosticsPage(data DashboardData) {
 }
 
 templ projectDetailHeader(data DashboardData, title string) {
-	<header class="dashboard-topbar min-w-0 border-b border-border py-2">
+	<header class="dashboard-topbar min-w-0 border-b border-line py-2">
 		<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
 			@dashboardMobileSidebarTrigger()
 			<div class="min-w-0">
-				<h1 class="truncate text-sm font-semibold text-foreground">{ projectDisplayName(data) } / { title }</h1>
+				<h1 class="truncate text-sm font-semibold text-text">{ projectDisplayName(data) } / { title }</h1>
 			</div>
-			<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
+			<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-sec">
 				if projectExternalURL(data) != "" {
-					<a class="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ projectExternalURL(data) } target="_blank" rel="noopener noreferrer" title={ projectExternalLinkLabel(data) } aria-label={ projectExternalLinkLabel(data) }>
+					<a class="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-line bg-surface text-sec hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ projectExternalURL(data) } target="_blank" rel="noopener noreferrer" title={ projectExternalLinkLabel(data) } aria-label={ projectExternalLinkLabel(data) }>
 						@icon.ExternalLink(icon.Props{Class: "size-4"})
 					</a>
 				}
@@ -124,11 +125,11 @@ templ DashboardShell(data DashboardShellData) {
 			@sidebar.Script()
 			@dialog.Script()
 		</head>
-		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
+		<body class="min-h-screen overflow-x-hidden bg-page text-text antialiased">
 			@helpTooltipHost()
 			@kanbanDialogHost()
 			@sidebar.Layout(sidebar.LayoutProps{
-				Class: "dashboard-shell min-h-screen w-full bg-background",
+				Class: "dashboard-shell min-h-screen w-full bg-page",
 				Attributes: templ.Attributes{
 					"hx-ext":      "sse, morph",
 					"sse-connect": eventsPath(data),
@@ -145,13 +146,13 @@ templ DashboardShell(data DashboardShellData) {
 }
 
 templ dashboardLiveUpdateWarning() {
-	<div id="detent-sse-warning" class="mb-3 hidden rounded-md border border-warning-soft bg-warning-soft/70 px-3 py-2 text-sm text-warning shadow-sm" role="status" aria-live="polite" data-detent-sse-warning hidden>
+	<div id="detent-sse-warning" class="mb-3 hidden rounded-md border border-warn/15 bg-warn/15 px-3 py-2 text-sm text-warn shadow-sm" role="status" aria-live="polite" data-detent-sse-warning hidden>
 		<div class="flex min-w-0 items-start gap-3">
-			@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-warning"})
+			@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-warn"})
 			<div class="grid min-w-0 gap-1">
-				<p class="font-medium text-warning">Live updates delayed</p>
-				<p class="text-xs text-warning" data-detent-sse-warning-message>Snapshot events are queued but the page has not settled.</p>
-				<p class="break-words font-mono text-[11px] text-warning" data-detent-sse-warning-metrics></p>
+				<p class="font-medium text-warn">Live updates delayed</p>
+				<p class="text-xs text-warn" data-detent-sse-warning-message>Snapshot events are queued but the page has not settled.</p>
+				<p class="break-words font-mono text-[11px] text-warn" data-detent-sse-warning-metrics></p>
 			</div>
 		</div>
 	</div>
@@ -175,7 +176,7 @@ templ GitHubAPIHealthSidebarItem(data DashboardShellData) {
 			Attributes: gitHubAPIHealthSidebarLinkAttributes(data),
 		}) {
 			@icon.Activity(icon.Props{Class: "size-4 shrink-0"})
-			<span class={ "size-2.5 shrink-0 rounded-full group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:absolute group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:right-1 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:top-1 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:size-2 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:ring-2 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:ring-sidebar-border " + gitHubAPIHealthDotClass(data.Snapshot) } aria-hidden="true"></span>
+			<span class={ "size-2.5 shrink-0 rounded-full group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:absolute group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:right-1 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:top-1 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:size-2 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:ring-2 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:ring-line " + gitHubAPIHealthDotClass(data.Snapshot) } aria-hidden="true"></span>
 			<span class="min-w-0 flex-1 truncate group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden">Health</span>
 			@sidebar.MenuBadge(sidebar.MenuBadgeProps{
 				Class: "border " + gitHubAPIHealthBadgeClass(data.Snapshot),
@@ -209,13 +210,13 @@ templ AnalyticsSnapshot(data DashboardData) {
 
 templ GitHubAPIHealthDetails(snapshot telemetry.Snapshot) {
 	<section class="grid min-w-0 gap-4" aria-label="GitHub API health details">
-		<div class="flex flex-col gap-3 border-b border-border pb-3 sm:flex-row sm:items-start sm:justify-between">
+		<div class="flex flex-col gap-3 border-b border-line pb-3 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
 				<div class="flex min-w-0 items-center gap-2">
 					<span class={ "h-2.5 w-2.5 shrink-0 rounded-full " + gitHubAPIHealthDotClass(snapshot) } aria-hidden="true"></span>
-					<h2 class="truncate text-base font-semibold text-foreground">{ gitHubAPIHealth(snapshot).Label }</h2>
+					<h2 class="truncate text-base font-semibold text-text">{ gitHubAPIHealth(snapshot).Label }</h2>
 				</div>
-				<p class="mt-1 max-w-3xl text-sm text-muted-foreground">{ gitHubAPIHealth(snapshot).Detail }</p>
+				<p class="mt-1 max-w-3xl text-sm text-sec">{ gitHubAPIHealth(snapshot).Detail }</p>
 			</div>
 			<span class={ "inline-flex min-h-8 shrink-0 items-center rounded-md border px-2.5 py-1 text-xs font-medium " + gitHubAPIHealthBadgeClass(snapshot) }>
 				{ gitHubAPIHealthStateLabel(snapshot) }
@@ -225,29 +226,29 @@ templ GitHubAPIHealthDetails(snapshot telemetry.Snapshot) {
 			@healthFactCard("Aggregate status", gitHubAPIHealth(snapshot).Label, gitHubAPIHealth(snapshot).Summary, gitHubAPIHealthDotClass(snapshot))
 			@healthFactCard("Backoff state", gitHubAPIHealthBackoffLabel(snapshot), gitHubAPIHealthBackoffDetail(snapshot), gitHubAPIHealthDotClass(snapshot))
 			@healthFactCard("Primary quota", gitHubAPIHealthPrimaryQuotaLabel(snapshot), gitHubAPIHealthPrimaryQuotaDetail(snapshot), "bg-accent")
-			@healthFactCard("Retry timing", gitHubAPIHealthRetryLabel(snapshot), gitHubAPIHealthRetryDetail(snapshot), "bg-warning")
+			@healthFactCard("Retry timing", gitHubAPIHealthRetryLabel(snapshot), gitHubAPIHealthRetryDetail(snapshot), "bg-warn")
 		</div>
-		<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="GitHub primary quota details">
+		<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5" aria-label="GitHub primary quota details">
 			<div class="flex min-w-0 items-start justify-between gap-3">
 				<div class="min-w-0">
-					<h3 class="text-sm font-semibold text-foreground">Primary quota</h3>
-					<p class="text-sm text-muted-foreground">REST and GraphQL primary buckets, including quota usage and reset timing.</p>
+					<h3 class="text-sm font-semibold text-text">Primary quota</h3>
+					<p class="text-sm text-sec">REST and GraphQL primary buckets, including quota usage and reset timing.</p>
 				</div>
-				<span class="shrink-0 rounded-md bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">{ formatInt(int64(len(gitHubAPIHealth(snapshot).Buckets))) }</span>
+				<span class="shrink-0 rounded-md bg-elev px-2 py-1 font-mono text-xs text-sec">{ formatInt(int64(len(gitHubAPIHealth(snapshot).Buckets))) }</span>
 			</div>
 			if len(gitHubAPIHealth(snapshot).Buckets) == 0 {
 				<div class="mt-4">
-					@dashboardEmptyState("No GitHub primary budget snapshot.", "REST and GraphQL primary buckets will appear after the tracker reports them.", "bg-muted-foreground")
+					@dashboardEmptyState("No GitHub primary budget snapshot.", "REST and GraphQL primary buckets will appear after the tracker reports them.", "bg-dim")
 				</div>
 			} else {
 				<div class="mt-4 grid min-w-0 gap-3 md:grid-cols-2">
 					for _, bucket := range gitHubAPIHealth(snapshot).Buckets {
-						<div class="grid min-w-0 gap-3 rounded-md border border-border bg-muted/40 p-3">
+						<div class="grid min-w-0 gap-3 rounded-md border border-line bg-elev/40 p-3">
 							<div class="flex min-w-0 items-center justify-between gap-3">
-								<span class="truncate text-sm font-medium text-foreground">{ bucket.Name }</span>
-								<span class="shrink-0 font-mono text-xs text-muted-foreground">{ bucket.Reset }</span>
+								<span class="truncate text-sm font-medium text-text">{ bucket.Name }</span>
+								<span class="shrink-0 font-mono text-xs text-sec">{ bucket.Reset }</span>
 							</div>
-							<div class="grid min-w-0 gap-2 text-xs text-muted-foreground sm:grid-cols-3">
+							<div class="grid min-w-0 gap-2 text-xs text-sec sm:grid-cols-3">
 								<span class="min-w-0 truncate font-mono" title={ bucket.Remaining }>{ bucket.Remaining }</span>
 								<span class="min-w-0 truncate font-mono" title={ bucket.Used }>{ bucket.Used }</span>
 								<span class="min-w-0 truncate font-mono" title={ bucket.Limit }>{ bucket.Limit }</span>
@@ -257,23 +258,23 @@ templ GitHubAPIHealthDetails(snapshot telemetry.Snapshot) {
 				</div>
 			}
 		</section>
-		<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="GitHub endpoint backoff details">
+		<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5" aria-label="GitHub endpoint backoff details">
 			<div class="flex min-w-0 items-start justify-between gap-3">
 				<div class="min-w-0">
-					<h3 class="text-sm font-semibold text-foreground">Affected endpoints</h3>
-					<p class="text-sm text-muted-foreground">Endpoint families currently paused by secondary REST throttling.</p>
+					<h3 class="text-sm font-semibold text-text">Affected endpoints</h3>
+					<p class="text-sm text-sec">Endpoint families currently paused by secondary REST throttling.</p>
 				</div>
-				<span class="shrink-0 rounded-md bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">{ formatInt(int64(len(gitHubAPIHealth(snapshot).Endpoints))) }</span>
+				<span class="shrink-0 rounded-md bg-elev px-2 py-1 font-mono text-xs text-sec">{ formatInt(int64(len(gitHubAPIHealth(snapshot).Endpoints))) }</span>
 			</div>
 			if len(gitHubAPIHealth(snapshot).Endpoints) == 0 {
 				<div class="mt-4">
-					@dashboardEmptyState("No endpoint backoff active.", "Secondary REST throttling will list paused endpoint families here.", "bg-success")
+					@dashboardEmptyState("No endpoint backoff active.", "Secondary REST throttling will list paused endpoint families here.", "bg-ok")
 				</div>
 			} else {
 				<div class="mt-4 overflow-x-auto" data-preserve-scroll="github-api-endpoints">
 					<table class="dashboard-table w-full min-w-[46rem] table-fixed border-collapse text-sm">
-						<thead class="bg-muted/70">
-							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
+						<thead class="bg-elev/70">
+							<tr class="border-b border-line text-left text-xs font-medium uppercase text-sec">
 								<th class="w-[14rem] px-3 py-3 font-medium">Endpoint</th>
 								<th class="w-[7rem] px-3 py-3 font-medium">Status</th>
 								<th class="w-[9rem] px-3 py-3 font-medium">Count</th>
@@ -285,12 +286,12 @@ templ GitHubAPIHealthDetails(snapshot telemetry.Snapshot) {
 						<tbody class="divide-y divide-border">
 							for _, endpoint := range gitHubAPIHealth(snapshot).Endpoints {
 								<tr>
-									<td class="truncate px-3 py-3 font-medium text-foreground" title={ endpoint.EndpointFamily }>{ endpoint.EndpointFamily }</td>
-									<td class="px-3 py-3 font-mono text-muted-foreground">{ endpoint.Status }</td>
-									<td class="px-3 py-3 font-mono text-muted-foreground">{ endpoint.Count }</td>
-									<td class="px-3 py-3 font-mono text-muted-foreground">{ endpoint.Remaining }</td>
-									<td class="px-3 py-3 font-mono text-muted-foreground">{ endpoint.RetryAfter }</td>
-									<td class="px-3 py-3 font-mono text-muted-foreground">{ endpoint.Retry }</td>
+									<td class="truncate px-3 py-3 font-medium text-text" title={ endpoint.EndpointFamily }>{ endpoint.EndpointFamily }</td>
+									<td class="px-3 py-3 font-mono text-sec">{ endpoint.Status }</td>
+									<td class="px-3 py-3 font-mono text-sec">{ endpoint.Count }</td>
+									<td class="px-3 py-3 font-mono text-sec">{ endpoint.Remaining }</td>
+									<td class="px-3 py-3 font-mono text-sec">{ endpoint.RetryAfter }</td>
+									<td class="px-3 py-3 font-mono text-sec">{ endpoint.Retry }</td>
 								</tr>
 							}
 						</tbody>
@@ -298,11 +299,11 @@ templ GitHubAPIHealthDetails(snapshot telemetry.Snapshot) {
 				</div>
 			}
 		</section>
-		<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="GitHub refresh timing">
+		<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5" aria-label="GitHub refresh timing">
 			<div class="flex min-w-0 items-start justify-between gap-3">
 				<div class="min-w-0">
-					<h3 class="text-sm font-semibold text-foreground">Refresh timing</h3>
-					<p class="text-sm text-muted-foreground">Tracker refresh state and manual refresh feedback.</p>
+					<h3 class="text-sm font-semibold text-text">Refresh timing</h3>
+					<p class="text-sm text-sec">Tracker refresh state and manual refresh feedback.</p>
 				</div>
 				if manualRefreshVisible(snapshot) {
 					<form class="shrink-0" hx-post="/api/v1/refresh" hx-target="#github-api-manual-refresh-status" hx-swap="outerHTML">
@@ -311,7 +312,7 @@ templ GitHubAPIHealthDetails(snapshot telemetry.Snapshot) {
 							Type:    button.TypeSubmit,
 							Variant: button.VariantOutline,
 							Size:    button.SizeSm,
-							Class:   "border-warning bg-card text-warning hover:border-accent hover:text-accent",
+							Class:   "border-warn bg-surface text-warn hover:border-accent hover:text-accent",
 							Attributes: templ.Attributes{
 								"aria-label": "Force tracker refresh",
 							},
@@ -324,9 +325,9 @@ templ GitHubAPIHealthDetails(snapshot telemetry.Snapshot) {
 			</div>
 			<div class="mt-4 grid min-w-0 gap-3 md:grid-cols-2">
 				for _, row := range gitHubAPIHealth(snapshot).Refreshes {
-					<div class="grid min-w-0 gap-1 rounded-md border border-border bg-muted/40 p-3">
-						<span class="truncate text-xs font-medium uppercase text-muted-foreground">{ row.Label }</span>
-						<span class="min-w-0 break-words font-mono text-sm text-foreground">{ row.Value }</span>
+					<div class="grid min-w-0 gap-1 rounded-md border border-line bg-elev/40 p-3">
+						<span class="truncate text-xs font-medium uppercase text-sec">{ row.Label }</span>
+						<span class="min-w-0 break-words font-mono text-sm text-text">{ row.Value }</span>
 					</div>
 				}
 			</div>
@@ -340,13 +341,13 @@ templ GitHubAPIHealthDetails(snapshot telemetry.Snapshot) {
 }
 
 templ healthFactCard(label string, value string, detail string, dotClass string) {
-	<article class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm">
+	<article class="min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm">
 		<div class="flex min-w-0 items-center justify-between gap-3">
-			<span class="truncate text-xs font-medium uppercase text-muted-foreground">{ label }</span>
+			<span class="truncate text-xs font-medium uppercase text-sec">{ label }</span>
 			<span class={ "h-2.5 w-2.5 shrink-0 rounded-full " + dotClass } aria-hidden="true"></span>
 		</div>
-		<div class="mt-2 min-w-0 break-words text-sm font-semibold text-foreground">{ value }</div>
-		<p class="mt-1 line-clamp-3 text-xs text-muted-foreground">{ detail }</p>
+		<div class="mt-2 min-w-0 break-words text-sm font-semibold text-text">{ value }</div>
+		<p class="mt-1 line-clamp-3 text-xs text-sec">{ detail }</p>
 	</article>
 }
 templ kanbanDialogHost() {
@@ -364,7 +365,7 @@ templ dashboardMobileSidebarTrigger() {
 		@button.Button(button.Props{
 			Size:    button.SizeIcon,
 			Variant: button.VariantGhost,
-			Class:   "size-8 text-foreground hover:bg-muted focus-visible:ring-accent",
+			Class:   "size-8 text-text hover:bg-elev focus-visible:ring-accent",
 		}) {
 			@icon.PanelLeft(icon.Props{Class: "size-4"})
 			<span class="sr-only">Toggle Sidebar</span>
@@ -1575,19 +1576,19 @@ templ dashboardSidebar(data DashboardShellData) {
 		ID:          "dashboard-sidebar",
 		Collapsible: sidebar.CollapsibleIcon,
 		Collapsed:   data.SidebarCollapsed,
-		Class:       "dashboard-sidebar text-sidebar-foreground",
+		Class:       "dashboard-sidebar text-text",
 	}) {
-		@sidebar.Header(sidebar.HeaderProps{Class: "flex-row items-center justify-between border-b border-sidebar-border group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:justify-center"}) {
-			<a class="inline-flex min-h-8 min-w-0 shrink-0 items-center gap-2 text-sidebar-foreground hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden" href="/" aria-label="Detent dashboard">
-				<span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded bg-sidebar-accent font-semibold text-sidebar-accent-foreground">D</span>
+		@sidebar.Header(sidebar.HeaderProps{Class: "flex-row items-center justify-between border-b border-line group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:justify-center"}) {
+			<a class="inline-flex min-h-8 min-w-0 shrink-0 items-center gap-2 text-text hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden" href="/" aria-label="Detent dashboard">
+				<span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded bg-elev font-semibold text-text">D</span>
 				<span class="truncate text-sm font-semibold">Detent</span>
 				if data.InstanceName != "" {
-					<span class="max-w-[8rem] truncate rounded-full border border-sidebar-border bg-sidebar-accent px-2 py-0.5 font-mono text-xs font-medium text-sidebar-accent-foreground" aria-label="Instance name">{ data.InstanceName }</span>
+					<span class="max-w-[8rem] truncate rounded-full border border-line bg-elev px-2 py-0.5 font-mono text-xs font-medium text-text" aria-label="Instance name">{ data.InstanceName }</span>
 				}
 			</a>
 			@sidebar.Trigger(sidebar.TriggerProps{
 				Target: "dashboard-sidebar",
-				Class:  "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-sidebar-ring",
+				Class:  "text-text hover:bg-elev hover:text-text focus-visible:ring-accent",
 			})
 		}
 		@sidebar.Content(sidebar.ContentProps{
@@ -1608,12 +1609,12 @@ templ dashboardSidebar(data DashboardShellData) {
 }
 
 templ dashboardProjectOrderFooter() {
-	@sidebar.Footer(sidebar.FooterProps{Class: "border-t border-sidebar-border group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden"}) {
+	@sidebar.Footer(sidebar.FooterProps{Class: "border-t border-line group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden"}) {
 		@button.Button(button.Props{
 			Variant:   button.VariantGhost,
 			Size:      button.SizeSm,
 			FullWidth: true,
-			Class:     "justify-start px-2 text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-sidebar-ring",
+			Class:     "justify-start px-2 text-xs text-sec hover:bg-elev hover:text-text focus-visible:ring-accent",
 			Attributes: templ.Attributes{
 				"data-dashboard-project-order-reset": true,
 				"aria-label":                         "Reset project order",
@@ -1656,7 +1657,7 @@ templ DashboardSidebarContent(data DashboardShellData) {
 		if sidebarFilterVisible(data) {
 			<label class="grid gap-1 px-2 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden">
 				<span class="sr-only">{ sidebarProjectSearchLabel(data) }</span>
-				<input id="dashboard-project-filter" name="project_filter" type="search" class="min-h-9 rounded-md border border-sidebar-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-sidebar-ring focus:outline-none focus:ring-2 focus:ring-sidebar-ring" placeholder="Filter projects" data-dashboard-project-filter/>
+				<input id="dashboard-project-filter" name="project_filter" type="search" class="min-h-9 rounded-md border border-line bg-page px-3 py-2 text-sm text-text placeholder:text-sec focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent" placeholder="Filter projects" data-dashboard-project-filter/>
 			</label>
 		}
 		@sidebar.Menu(sidebar.MenuProps{
@@ -1682,7 +1683,7 @@ templ DashboardSidebarContent(data DashboardShellData) {
 								@icon.GripVertical(icon.Props{Class: "size-3.5"})
 							</span>
 						}
-						<span class="inline-flex h-4 w-1.5 shrink-0 rounded-full border border-sidebar-border" aria-label={ item.Name + " project color" } title={ "Project color: " + item.Name } { projectColorAttributes(item.ProjectColor)... }></span>
+						<span class="inline-flex h-4 w-1.5 shrink-0 rounded-full border border-line" aria-label={ item.Name + " project color" } title={ "Project color: " + item.Name } { projectColorAttributes(item.ProjectColor)... }></span>
 						<span class={ "inline-flex size-2.5 shrink-0 rounded-full " + item.DotClass }></span>
 						<span>{ item.Name }</span>
 						@sidebar.MenuBadge(sidebar.MenuBadgeProps{
@@ -1819,7 +1820,7 @@ templ dashboardProjectOrderControls(item sidebarProjectItem) {
 		@button.Button(button.Props{
 			Variant: button.VariantGhost,
 			Size:    button.SizeIcon,
-			Class:   "size-6 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-sidebar-ring",
+			Class:   "size-6 text-sec hover:bg-elev hover:text-text focus-visible:ring-accent",
 			Attributes: templ.Attributes{
 				"data-dashboard-project-move": "up",
 				"data-project-id":             item.ID,
@@ -1831,7 +1832,7 @@ templ dashboardProjectOrderControls(item sidebarProjectItem) {
 		@button.Button(button.Props{
 			Variant: button.VariantGhost,
 			Size:    button.SizeIcon,
-			Class:   "size-6 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-sidebar-ring",
+			Class:   "size-6 text-sec hover:bg-elev hover:text-text focus-visible:ring-accent",
 			Attributes: templ.Attributes{
 				"data-dashboard-project-move": "down",
 				"data-project-id":             item.ID,
@@ -1844,52 +1845,52 @@ templ dashboardProjectOrderControls(item sidebarProjectItem) {
 }
 
 templ dashboardCharts(data DashboardData) {
-	<section id="dashboard-charts" class="dashboard-chart-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label={ chartPanelTitle(data) } hx-preserve data-detent-charts data-chart-endpoint={ chartEndpoint(data) }>
+	<section id="dashboard-charts" class="dashboard-chart-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5" aria-label={ chartPanelTitle(data) } hx-preserve data-detent-charts data-chart-endpoint={ chartEndpoint(data) }>
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
-				<h2 class="text-base font-semibold text-foreground">{ chartPanelTitle(data) }</h2>
-				<p class="text-sm text-muted-foreground">{ chartPanelDescription(data) }</p>
+				<h2 class="text-base font-semibold text-text">{ chartPanelTitle(data) }</h2>
+				<p class="text-sm text-sec">{ chartPanelDescription(data) }</p>
 			</div>
-			<span class="shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">Chart.js</span>
+			<span class="shrink-0 rounded-full bg-elev px-2 py-1 font-mono text-xs text-sec">Chart.js</span>
 		</div>
 		<div class="mt-4 grid min-w-0 gap-3 lg:grid-cols-3">
-			<div class="min-w-0 rounded-md border border-border bg-muted/60 p-3">
+			<div class="min-w-0 rounded-md border border-line bg-elev/60 p-3">
 				<div class="mb-2 flex items-center justify-between gap-3">
-					<h3 class="truncate text-sm font-medium text-foreground">Running agents</h3>
+					<h3 class="truncate text-sm font-medium text-text">Running agents</h3>
 				</div>
 				<div class="h-56 min-w-0">
 					<canvas id="running-agents-chart" data-chart="running-agents" aria-label="Running agents over time"></canvas>
 				</div>
 			</div>
 			if isProjectDashboard(data) {
-				<div class="min-w-0 rounded-md border border-border bg-muted/60 p-3">
+				<div class="min-w-0 rounded-md border border-line bg-elev/60 p-3">
 					<div class="mb-2 flex items-center justify-between gap-3">
-						<h3 class="truncate text-sm font-medium text-foreground">Token spend</h3>
+						<h3 class="truncate text-sm font-medium text-text">Token spend</h3>
 					</div>
 					<div class="h-56 min-w-0">
 						<canvas id="token-spend-chart" data-chart="token-spend" aria-label="Token spend trend"></canvas>
 					</div>
 				</div>
-				<div class="min-w-0 rounded-md border border-border bg-muted/60 p-3">
+				<div class="min-w-0 rounded-md border border-line bg-elev/60 p-3">
 					<div class="mb-2 flex items-center justify-between gap-3">
-						<h3 class="truncate text-sm font-medium text-foreground">Board flow</h3>
+						<h3 class="truncate text-sm font-medium text-text">Board flow</h3>
 					</div>
 					<div class="h-56 min-w-0">
 						<canvas id="board-flow-chart" data-chart="board-flow" aria-label="Board state flow over time"></canvas>
 					</div>
 				</div>
 			} else {
-				<div class="min-w-0 rounded-md border border-border bg-muted/60 p-3">
+				<div class="min-w-0 rounded-md border border-line bg-elev/60 p-3">
 					<div class="mb-2 flex items-center justify-between gap-3">
-						<h3 class="truncate text-sm font-medium text-foreground">Tokens/sec</h3>
+						<h3 class="truncate text-sm font-medium text-text">Tokens/sec</h3>
 					</div>
 					<div class="h-56 min-w-0">
 						<canvas id="tokens-per-second-chart" data-chart="tokens-per-second" aria-label="Tokens per second trend"></canvas>
 					</div>
 				</div>
-				<div class="min-w-0 rounded-md border border-border bg-muted/60 p-3">
+				<div class="min-w-0 rounded-md border border-line bg-elev/60 p-3">
 					<div class="mb-2 flex items-center justify-between gap-3">
-						<h3 class="truncate text-sm font-medium text-foreground">Completions</h3>
+						<h3 class="truncate text-sm font-medium text-text">Completions</h3>
 					</div>
 					<div class="h-56 min-w-0">
 						<canvas id="completions-chart" data-chart="completions" aria-label="Completions per project"></canvas>
@@ -1912,12 +1913,12 @@ templ ProjectOverviewSnapshot(data DashboardData) {
 	@dashboardHealth(data)
 	@trackerDriftWarning(data.Snapshot)
 	if data.ProjectPaused {
-		<section class="rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm" aria-label="Paused project">
+		<section class="rounded-md border border-warn bg-warn/15 p-4 text-warn shadow-sm" aria-label="Paused project">
 			<div class="flex items-start gap-3">
-				<span class="mt-1 h-2.5 w-2.5 rounded-full bg-warning"></span>
+				<span class="mt-1 h-2.5 w-2.5 rounded-full bg-warn"></span>
 				<div class="min-w-0">
 					<h2 class="text-sm font-semibold">{ projectDisplayName(data) } is paused.</h2>
-					<p class="mt-1 text-sm text-warning">Detent will keep showing telemetry, but this project is not dispatching new work.</p>
+					<p class="mt-1 text-sm text-warn">Detent will keep showing telemetry, but this project is not dispatching new work.</p>
 				</div>
 			</div>
 		</section>
@@ -1931,27 +1932,26 @@ templ ProjectOverviewSnapshot(data DashboardData) {
 }
 
 templ ProjectDiagnosticsSnapshot(data DashboardData) {
-	@dashboardHealth(data)
-	@trackerDriftWarning(data.Snapshot)
 	if !snapshotReady(data.Snapshot) && !diagnosticsSnapshotHasLoadedData(data.Snapshot) {
 		@snapshotReadiness(data.Snapshot)
 	} else {
 		@diagnosticsOperationsSummary(data)
+		@trackerDriftWarning(data.Snapshot)
 		@diagnosticsTabbedView(data)
 	}
 }
 
 templ diagnosticsOperationsSummary(data DashboardData) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-3 shadow-sm sm:p-4" aria-label="Diagnostics operations summary">
+	<section id="diagnostics-summary" class="flex flex-none flex-col gap-3 rounded-card border border-line bg-surface p-3" aria-label="Diagnostics operations summary">
 		<div class="grid min-w-0 gap-2 md:grid-cols-5">
 			for _, fact := range diagnosticsSummaryFacts(data) {
-				<article class="min-w-0 rounded-md border border-border bg-muted/30 p-3">
-					<div class="flex min-w-0 items-center justify-between gap-2">
-						<span class="truncate text-xs font-medium uppercase text-muted-foreground">{ fact.Label }</span>
-						<span class={ "h-2.5 w-2.5 shrink-0 rounded-full border " + fact.Class }></span>
+				<article class="flex min-w-0 flex-col gap-1 rounded-card border border-line bg-elev px-3 py-2.5">
+					<div class="flex min-w-0 items-center gap-1.5">
+						@primitives.StatusDot(fact.Kind, false)
+						<span class="truncate text-2xs font-semibold uppercase text-dim">{ fact.Label }</span>
 					</div>
-					<div class="mt-1 truncate text-sm font-semibold text-foreground">{ fact.Value }</div>
-					<p class="mt-1 line-clamp-2 text-xs text-muted-foreground">{ fact.Detail }</p>
+					<div class="truncate text-sm font-semibold text-text">{ fact.Value }</div>
+					<p class="line-clamp-2 text-xs text-sec">{ fact.Detail }</p>
 				</article>
 			}
 		</div>
@@ -1959,8 +1959,8 @@ templ diagnosticsOperationsSummary(data DashboardData) {
 }
 
 templ diagnosticsTabbedView(data DashboardData) {
-	<section class="grid min-w-0 gap-4" aria-label="Diagnostics operations view" data-diagnostics-tabs data-diagnostics-storage-name={ diagnosticsStorageName(data) }>
-		<div class="overflow-x-auto rounded-md border border-border bg-card p-1" role="tablist" aria-label="Diagnostics sections">
+	<section class="flex flex-none flex-col gap-3" aria-label="Diagnostics operations view" data-diagnostics-tabs data-diagnostics-storage-name={ diagnosticsStorageName(data) }>
+		<div class="overflow-x-auto rounded-card border border-line bg-surface p-1" role="tablist" aria-label="Diagnostics sections">
 			<div class="flex min-w-max items-center gap-1">
 				@diagnosticsTabButton("overview", "Overview", true)
 				@diagnosticsTabButton("workflow-timing", "Workflow timing", false)
@@ -1998,13 +1998,13 @@ templ diagnosticsTabbedView(data DashboardData) {
 }
 
 templ diagnosticsTabButton(id string, label string, active bool) {
-	<button id={ "diagnostics-tab-" + id } class="inline-flex h-9 shrink-0 items-center rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent data-[diagnostics-active=true]:bg-accent-soft data-[diagnostics-active=true]:text-accent" type="button" role="tab" aria-selected={ diagnosticsBool(active) } aria-controls={ "diagnostics-panel-" + id } tabindex={ diagnosticsTabIndex(active) } data-diagnostics-tab={ id } data-diagnostics-active={ diagnosticsBool(active) }>
+	<button id={ "diagnostics-tab-" + id } class="inline-flex h-8 shrink-0 items-center rounded-chip px-2.5 text-xs font-medium text-sec transition-colors hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent data-[diagnostics-active=true]:bg-elev data-[diagnostics-active=true]:text-accent" type="button" role="tab" aria-selected={ diagnosticsBool(active) } aria-controls={ "diagnostics-panel-" + id } tabindex={ diagnosticsTabIndex(active) } data-diagnostics-tab={ id } data-diagnostics-active={ diagnosticsBool(active) }>
 		{ label }
 	</button>
 }
 
 templ diagnosticsTabPanel(id string, label string, active bool) {
-	<section id={ "diagnostics-panel-" + id } class="grid min-w-0 gap-4" role="tabpanel" aria-labelledby={ "diagnostics-tab-" + id } tabindex="0" data-diagnostics-panel={ id } hidden?={ !active }>
+	<section id={ "diagnostics-panel-" + id } class="grid min-w-0 gap-3" role="tabpanel" aria-labelledby={ "diagnostics-tab-" + id } tabindex="0" data-diagnostics-panel={ id } hidden?={ !active }>
 		{ children... }
 	</section>
 }
@@ -2023,33 +2023,31 @@ templ diagnosticsOverviewTab(data DashboardData) {
 }
 
 templ diagnosticsBottleneckCard(report telemetry.WorkflowMetrics, project telemetry.Project) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Active bottleneck">
-		<div class="flex items-start justify-between gap-3">
-			<div class="min-w-0">
-				<h2 class="text-base font-semibold text-foreground">Active bottleneck</h2>
-				<p class="text-sm text-muted-foreground">{ workflowBottleneck(report).Detail }</p>
+	{{ bottleneck := workflowBottleneck(report) }}
+	@primitives.Panel(primitives.PanelProps{ID: "diagnostics-bottleneck", Title: "Active bottleneck", Count: bottleneck.Value}) {
+		<div class="flex flex-col gap-3 p-4">
+			<div class="flex min-w-0 items-start gap-2">
+				@primitives.StatusDot(primitives.KindWarn, false)
+				<div class="min-w-0">
+					<div class="truncate text-sm font-semibold text-text">{ bottleneck.Label }</div>
+					<p class="mt-1 text-xs text-sec">{ bottleneck.Detail }</p>
+					if bottleneck.Count != "" {
+						<div class="mt-1 font-mono text-2xs text-dim">{ bottleneck.Count }</div>
+					}
+				</div>
 			</div>
-			<span class="rounded-full bg-warning-soft px-2 py-1 font-mono text-xs font-semibold text-warning">{ workflowBottleneck(report).Value }</span>
-		</div>
-		<div class="mt-3 rounded-md bg-muted/60 px-3 py-2">
-			<div class="truncate text-sm font-semibold text-foreground">{ workflowBottleneck(report).Label }</div>
-			if workflowBottleneck(report).Count != "" {
-				<div class="mt-1 font-mono text-xs text-muted-foreground">{ workflowBottleneck(report).Count }</div>
+			if workflowBottleneckDiagnosticPrompt(project, report) != "" {
+				@diagnosticPromptCopyButton(workflowBottleneckDiagnosticPrompt(project, report), "Copy diagnostic prompt", "Copy diagnostic prompt")
 			}
 		</div>
-		if workflowBottleneckDiagnosticPrompt(project, report) != "" {
-			<div class="mt-3">
-				@diagnosticPromptCopyButton(workflowBottleneckDiagnosticPrompt(project, report), "Copy diagnostic prompt", "Copy diagnostic prompt")
-			</div>
-		}
-	</section>
+	}
 }
 
 templ diagnosticsWorkflowTimingTab(data DashboardData) {
 	<div class="grid min-w-0 gap-4" data-preserve-scroll="diagnostics-workflow-timing">
-		<div class="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm">
-			<span class="font-medium text-foreground">Query windows</span>
-			<span class="font-mono text-muted-foreground">{ workflowMetricsWindowLabels(data.Snapshot.WorkflowMetrics) }</span>
+		<div class="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-md border border-line bg-surface px-3 py-2 text-sm">
+			<span class="font-medium text-text">Query windows</span>
+			<span class="font-mono text-sec">{ workflowMetricsWindowLabels(data.Snapshot.WorkflowMetrics) }</span>
 		</div>
 		@workflowMetricsSection(data.Snapshot.WorkflowMetrics, data.Snapshot.Project)
 		@cycleTimeSection(data.Snapshot.CycleTime)
@@ -2064,58 +2062,50 @@ templ diagnosticsActiveWorkTab(data DashboardData) {
 }
 
 templ diagnosticsRunningWorkersSection(snapshot telemetry.Snapshot) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Active workers">
-		<div class="flex items-start justify-between gap-3">
-			<div class="min-w-0">
-				<h2 class="text-base font-semibold text-foreground">Active workers</h2>
-				<p class="text-sm text-muted-foreground">Running worker identity, current step, heartbeat, and issue or PR context.</p>
-			</div>
-			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ formatCount(runningCount(snapshot)) }</span>
-		</div>
+	@primitives.Panel(primitives.PanelProps{ID: "diagnostics-active-workers", Title: "Active workers", Count: formatCount(runningCount(snapshot)), Live: runningCount(snapshot) > 0}) {
 		if len(snapshot.Running) == 0 {
-			<div class="mt-4">
-				@dashboardEmptyState("No active workers.", "Running worker rows will appear after Detent dispatches work.", "bg-accent")
-			</div>
+			@primitives.EmptyLine("No active workers")
 		} else {
-			<div class="mt-4 grid gap-2">
+			<div class="grid divide-y divide-line">
 				for _, row := range snapshot.Running {
-					<article class="rounded-md border border-border bg-muted/30 p-3">
-						<div class="flex min-w-0 items-start justify-between gap-3">
-							<div class="min-w-0">
-								<div class="truncate font-mono text-sm font-medium text-foreground">{ issueIdentifier(row.Issue) }</div>
-								<div class="mt-1 line-clamp-2 text-sm text-muted-foreground">{ issueTitle(row.Issue) }</div>
+					<article class="grid min-w-0 gap-2 px-4 py-3">
+						<div class="flex min-w-0 items-start gap-2">
+							@primitives.StatusDot(primitives.KindOK, true)
+							<div class="min-w-0 flex-1">
+								<div class="truncate font-mono text-xs font-medium text-text">{ issueIdentifier(row.Issue) }</div>
+								<div class="truncate text-sm text-text">{ issueTitle(row.Issue) }</div>
 							</div>
 							if row.URL != "" {
 								@issueOpenLink(row.URL, "Open issue "+issueIdentifier(row.Issue), true)
 							}
 						</div>
-						<div class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+						<div class="grid gap-2 pl-3.5 text-xs sm:grid-cols-2">
 							<div class="min-w-0">
-								<span class="block text-xs font-medium uppercase text-muted-foreground">Worker host</span>
-								<span class="block truncate font-mono text-foreground">{ chartText(row.WorkerHost, "n/a") }</span>
+								<span class="block text-2xs font-semibold uppercase text-dim">Worker host</span>
+								<span class="block truncate font-mono text-sec">{ chartText(row.WorkerHost, "n/a") }</span>
 							</div>
 							<div class="min-w-0">
-								<span class="block text-xs font-medium uppercase text-muted-foreground">Last event</span>
-								<span class="block truncate font-mono text-foreground">{ chartText(row.LastEvent, "n/a") }</span>
+								<span class="block text-2xs font-semibold uppercase text-dim">Last event</span>
+								<span class="block truncate font-mono text-sec">{ chartText(row.LastEvent, "n/a") }</span>
 							</div>
 							<div class="min-w-0">
-								<span class="block text-xs font-medium uppercase text-muted-foreground">Heartbeat</span>
+								<span class="block text-2xs font-semibold uppercase text-dim">Heartbeat</span>
 								if row.LastEventAt != nil {
-									<span class="block truncate font-mono text-foreground">{ timeLabel(*row.LastEventAt) }</span>
+									<span class="block truncate font-mono text-sec">{ timeLabel(*row.LastEventAt) }</span>
 								} else {
-									<span class="block truncate font-mono text-foreground">n/a</span>
+									<span class="block truncate font-mono text-sec">n/a</span>
 								}
 							</div>
 							<div class="min-w-0">
-								<span class="block text-xs font-medium uppercase text-muted-foreground">Runtime</span>
-								<span class="block truncate font-mono text-foreground">{ formatDuration(row.RuntimeSeconds) }</span>
+								<span class="block text-2xs font-semibold uppercase text-dim">Runtime</span>
+								<span class="block truncate font-mono text-sec">{ formatDuration(row.RuntimeSeconds) }</span>
 							</div>
 						</div>
 					</article>
 				}
 			</div>
 		}
-	</section>
+	}
 }
 
 templ diagnosticsQueuesBlockersTab(data DashboardData) {
@@ -2143,94 +2133,84 @@ templ diagnosticsRuntimeStoreTab(data DashboardData) {
 }
 
 templ diagnosticsRawDebugTab(data DashboardData) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Raw diagnostics">
-		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-			<div class="min-w-0">
-				<h2 class="text-base font-semibold text-foreground">Raw/Debug</h2>
-				<p class="text-sm text-muted-foreground">Low-level links and counters for deeper inspection.</p>
+	@primitives.Panel(primitives.PanelProps{ID: "diagnostics-raw-debug", Title: "Raw/Debug"}) {
+		<div class="grid gap-4 p-4">
+			<p class="text-xs text-sec">Low-level links and counters for deeper inspection.</p>
+			<div class="grid gap-2 sm:grid-cols-2">
+				<a class="rounded-card border border-line bg-elev px-3 py-2 text-sm font-medium text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href="/api/v1/state">Fleet state JSON</a>
+				if projectStateAPIPath(data) != "" {
+					<a class="rounded-card border border-line bg-elev px-3 py-2 text-sm font-medium text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ projectStateAPIPath(data) }>Project state JSON</a>
+				}
+			</div>
+			<div class="grid gap-2 text-sm sm:grid-cols-3">
+				@diagnosticsCounterTile("Recent events", formatCount(len(data.Snapshot.Events)))
+				@diagnosticsCounterTile("Work attempts", formatCount(len(data.Snapshot.WorkAttempts)))
+				@diagnosticsCounterTile("Scheduler decisions", formatCount(len(data.Snapshot.SchedulerDecisions)))
 			</div>
 		</div>
-		<div class="mt-4 grid gap-2 sm:grid-cols-2">
-			<a class="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm font-medium text-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href="/api/v1/state">Fleet state JSON</a>
-			if projectStateAPIPath(data) != "" {
-				<a class="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm font-medium text-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ projectStateAPIPath(data) }>Project state JSON</a>
-			}
-		</div>
-		<div class="mt-4 grid gap-2 text-sm sm:grid-cols-3">
-			<div class="rounded-md bg-muted/60 px-3 py-2">
-				<span class="block text-xs font-medium uppercase text-muted-foreground">Recent events</span>
-				<span class="font-mono text-foreground">{ formatCount(len(data.Snapshot.Events)) }</span>
-			</div>
-			<div class="rounded-md bg-muted/60 px-3 py-2">
-				<span class="block text-xs font-medium uppercase text-muted-foreground">Work attempts</span>
-				<span class="font-mono text-foreground">{ formatCount(len(data.Snapshot.WorkAttempts)) }</span>
-			</div>
-			<div class="rounded-md bg-muted/60 px-3 py-2">
-				<span class="block text-xs font-medium uppercase text-muted-foreground">Scheduler decisions</span>
-				<span class="font-mono text-foreground">{ formatCount(len(data.Snapshot.SchedulerDecisions)) }</span>
-			</div>
-		</div>
-	</section>
+	}
 }
 
 templ runtimeStoreEvidenceSection(report telemetry.WorkflowMetrics) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Runtime store">
-		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-			<div class="min-w-0">
-				<h2 class="text-base font-semibold text-foreground">Runtime store</h2>
-				<p class="text-sm text-muted-foreground">SQLite persistence evidence for workflow metrics and scheduler telemetry.</p>
+	@primitives.Panel(primitives.PanelProps{ID: "diagnostics-runtime-store", Title: "Runtime store", Count: runtimeStoreStatusLabel(report.RuntimeStore)}) {
+		<div class="grid gap-4 p-4">
+			<div class="flex min-w-0 items-start gap-2">
+				@primitives.StatusDot(runtimeStoreStatusKind(report.RuntimeStore), false)
+				<p class="text-xs text-sec">SQLite persistence evidence for workflow metrics and scheduler telemetry.</p>
 			</div>
-			<span class={ "inline-flex min-h-9 shrink-0 items-center rounded-full border px-3 py-1 text-sm font-medium " + runtimeStoreStatusClass(report.RuntimeStore) }>{ runtimeStoreStatusLabel(report.RuntimeStore) }</span>
-		</div>
-		<div class="mt-4 grid gap-3 lg:grid-cols-3">
-			<div class="rounded-md bg-muted/60 px-3 py-2">
-				<span class="block text-xs font-medium uppercase text-muted-foreground">Database path</span>
-				<span class="block truncate font-mono text-sm text-foreground">{ runtimeStorePathLabel(report.RuntimeStore) }</span>
+			<div class="grid gap-2 lg:grid-cols-3">
+				@diagnosticsKeyValueTile("Database path", runtimeStorePathLabel(report.RuntimeStore))
+				@diagnosticsKeyValueTile("Migration status", runtimeStoreMigrationLabel(report.RuntimeStore))
+				@diagnosticsKeyValueTile("Newest event", runtimeWorkflowEventNewestLabel(report.RuntimeStore))
 			</div>
-			<div class="rounded-md bg-muted/60 px-3 py-2">
-				<span class="block text-xs font-medium uppercase text-muted-foreground">Migration status</span>
-				<span class="block truncate font-mono text-sm text-foreground">{ runtimeStoreMigrationLabel(report.RuntimeStore) }</span>
+			<div class="rounded-card border border-line bg-elev px-3 py-2 text-sm text-sec">
+				<strong class="text-text">workflow_phase_events:</strong>
+				<span class="font-mono">{ runtimeWorkflowEventCountLabel(report.RuntimeStore) }</span>
+				<span>Oldest event { runtimeWorkflowEventOldestLabel(report.RuntimeStore) }. Newest event { runtimeWorkflowEventNewestLabel(report.RuntimeStore) }.</span>
 			</div>
-			<div class="rounded-md bg-muted/60 px-3 py-2">
-				<span class="block text-xs font-medium uppercase text-muted-foreground">Newest event</span>
-				<span class="block truncate font-mono text-sm text-foreground">{ runtimeWorkflowEventNewestLabel(report.RuntimeStore) }</span>
-			</div>
-		</div>
-		<div class="mt-4 rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
-			<strong class="text-foreground">workflow_phase_events:</strong>
-			<span class="font-mono">{ runtimeWorkflowEventCountLabel(report.RuntimeStore) }</span>
-			<span>Oldest event { runtimeWorkflowEventOldestLabel(report.RuntimeStore) }. Newest event { runtimeWorkflowEventNewestLabel(report.RuntimeStore) }.</span>
-		</div>
-		if report.RuntimeStore.Status == "healthy" && report.RuntimeStore.WorkflowPhaseEvents.RowCount == 0 {
-			<div class="mt-4">
-				@dashboardEmptyState("SQLite history is empty.", "Lane averages appear after Detent records lane exits. New state transitions will populate the current query windows.", "bg-accent")
-			</div>
-		}
-		if len(runtimeStoreTableRows(report.RuntimeStore)) > 0 {
-			<div class="mt-4 overflow-hidden rounded-md border border-border">
-				<div class="overflow-x-auto" data-preserve-scroll="runtime-store-tables">
-					<table class="dashboard-table w-full min-w-[38rem] table-fixed border-collapse text-sm">
-						<thead class="bg-muted/70">
-							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
-								<th class="w-[18rem] px-3 py-3 font-medium">Table</th>
-								<th class="w-[8rem] px-3 py-3 font-medium">Scope</th>
-								<th class="px-3 py-3 text-right font-medium">Rows</th>
-							</tr>
-						</thead>
-						<tbody>
-							for _, row := range runtimeStoreTableRows(report.RuntimeStore) {
-								<tr class="border-b border-border last:border-b-0">
-									<td class="px-3 py-3 font-mono text-foreground">{ row.Name }</td>
-									<td class="px-3 py-3 font-mono text-muted-foreground">{ row.Scope }</td>
-									<td class="px-3 py-3 text-right font-mono text-muted-foreground">{ row.RowCount }</td>
+			if report.RuntimeStore.Status == "healthy" && report.RuntimeStore.WorkflowPhaseEvents.RowCount == 0 {
+				@primitives.EmptyLine("SQLite history is empty")
+			}
+			if len(runtimeStoreTableRows(report.RuntimeStore)) > 0 {
+				<div class="overflow-hidden rounded-card border border-line">
+					<div class="overflow-x-auto" data-preserve-scroll="runtime-store-tables">
+						<table class="w-full min-w-[38rem] table-fixed border-collapse text-sm">
+							<thead class="bg-elev/70">
+								<tr class="border-b border-line text-left text-xs font-medium uppercase text-sec">
+									<th class="w-[18rem] px-3 py-3 font-medium">Table</th>
+									<th class="w-[8rem] px-3 py-3 font-medium">Scope</th>
+									<th class="px-3 py-3 text-right font-medium">Rows</th>
 								</tr>
-							}
-						</tbody>
-					</table>
-				</div>
+							</thead>
+							<tbody>
+								for _, row := range runtimeStoreTableRows(report.RuntimeStore) {
+									<tr class="border-b border-line last:border-b-0">
+										<td class="px-3 py-3 font-mono text-text">{ row.Name }</td>
+										<td class="px-3 py-3 font-mono text-sec">{ row.Scope }</td>
+										<td class="px-3 py-3 text-right font-mono text-sec">{ row.RowCount }</td>
+									</tr>
+								}
+							</tbody>
+							</table>
+						</div>
+					</div>
+				}
 			</div>
 		}
-	</section>
+	}
+
+templ diagnosticsCounterTile(label string, value string) {
+	<div class="rounded-card bg-elev px-3 py-2">
+		<span class="block text-2xs font-semibold uppercase text-dim">{ label }</span>
+		<span class="font-mono text-sm font-medium text-text">{ value }</span>
+	</div>
+}
+
+templ diagnosticsKeyValueTile(label string, value string) {
+	<div class="min-w-0 rounded-card bg-elev px-3 py-2">
+		<span class="block text-2xs font-semibold uppercase text-dim">{ label }</span>
+		<span class="block truncate font-mono text-sm text-text">{ value }</span>
+	</div>
 }
 
 templ FleetSnapshot(data DashboardData) {
@@ -2273,10 +2253,10 @@ templ projectOverviewSummarySection(data DashboardData) {
 }
 
 templ projectOverviewCardView(card projectOverviewCard) {
-	<a class="dashboard-card group grid min-w-0 gap-3 rounded-md border border-border bg-card p-4 shadow-sm transition-colors hover:border-accent hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.Href } aria-label={ card.Title }>
+	<a class="dashboard-card group grid min-w-0 gap-3 rounded-md border border-line bg-surface p-4 shadow-sm transition-colors hover:border-accent hover:bg-elev/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.Href } aria-label={ card.Title }>
 		<div class="flex min-w-0 items-start justify-between gap-3">
 			<div class="inline-flex min-w-0 items-center gap-2">
-				<span class="inline-flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground group-hover:text-accent">
+				<span class="inline-flex size-8 shrink-0 items-center justify-center rounded-md bg-elev text-sec group-hover:text-accent">
 					if card.ID == "kanban" {
 						@icon.Kanban(icon.Props{Class: "size-4"})
 					} else if card.ID == "runs" {
@@ -2287,21 +2267,21 @@ templ projectOverviewCardView(card projectOverviewCard) {
 						@icon.ChartNoAxesCombined(icon.Props{Class: "size-4"})
 					}
 				</span>
-				<span class="truncate text-sm font-semibold text-foreground">{ card.Title }</span>
+				<span class="truncate text-sm font-semibold text-text">{ card.Title }</span>
 			</div>
 			<span class={ "mt-3 h-2.5 w-2.5 shrink-0 rounded-full " + card.DotClass }></span>
 		</div>
 		<div class="min-w-0">
-			<div class="truncate font-mono text-2xl font-semibold text-foreground">{ card.Value }</div>
-			<div class="mt-1 truncate text-sm text-muted-foreground">{ card.Detail }</div>
+			<div class="truncate font-mono text-2xl font-semibold text-text">{ card.Value }</div>
+			<div class="mt-1 truncate text-sm text-sec">{ card.Detail }</div>
 		</div>
 	</a>
 }
 
 templ runningIssuesSection(data DashboardData) {
-	<section id="running-issues" class="dashboard-panel scroll-mt-3 min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" tabindex="-1">
+	<section id="running-issues" class="dashboard-panel scroll-mt-3 min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5" tabindex="-1">
 		@panelHeader(icon.Activity(icon.Props{Class: "size-4 shrink-0"}), "Running issues", helpRunning, "running-issues") {
-			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ formatCount(runningCount(data.Snapshot)) }</span>
+			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent/15 px-2 py-1 text-sm font-medium text-accent">{ formatCount(runningCount(data.Snapshot)) }</span>
 		}
 		if len(data.Snapshot.Running) == 0 {
 			<div class="mt-4">
@@ -2317,11 +2297,11 @@ templ runningIssuesSection(data DashboardData) {
 					@runningIssueMobileCard(row, i, data.Snapshot.GeneratedAt)
 				}
 			</div>
-			<div class="mt-4 hidden overflow-hidden rounded-md border border-border sm:block">
+			<div class="mt-4 hidden overflow-hidden rounded-md border border-line sm:block">
 				<div class="overflow-x-auto" data-preserve-scroll="running-issues">
 					<table class="dashboard-table w-full min-w-[92rem] table-fixed border-collapse text-sm">
-						<thead class="bg-muted/70">
-							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
+						<thead class="bg-elev/70">
+							<tr class="border-b border-line text-left text-xs font-medium uppercase text-sec">
 								<th class="w-[30rem] px-3 py-3 font-medium">Issue</th>
 								<th class="w-[9rem] px-3 py-3 font-medium">State</th>
 								<th class="w-[11rem] px-3 py-3 font-medium">
@@ -2343,22 +2323,22 @@ templ runningIssuesSection(data DashboardData) {
 						</thead>
 						<tbody>
 							for i, row := range data.Snapshot.Running {
-								<tr class="border-b border-border transition-colors last:border-b-0 hover:bg-muted/50">
+								<tr class="border-b border-line transition-colors last:border-b-0 hover:bg-elev/50">
 									<td class="px-3 py-4 align-top overflow-hidden" data-running-issue-cell>
 										@issueCell(row.Issue, "running", i, true)
 									</td>
 									<td class="px-3 py-4 align-top">
-										<span class="inline-flex rounded-full bg-accent-soft px-2 py-1 font-medium text-accent">{ issueState(row.Issue, "Running") }</span>
+										<span class="inline-flex rounded-full bg-accent/15 px-2 py-1 font-medium text-accent">{ issueState(row.Issue, "Running") }</span>
 									</td>
-									<td class="px-3 py-4 align-top font-mono text-muted-foreground whitespace-nowrap">{ runningRuntime(row, data.Snapshot.GeneratedAt) }</td>
+									<td class="px-3 py-4 align-top font-mono text-sec whitespace-nowrap">{ runningRuntime(row, data.Snapshot.GeneratedAt) }</td>
 									<td class="px-3 py-4 align-top overflow-hidden" data-running-activity-cell>
 										@runningActivityCell(row, "running")
 									</td>
-									<td class="px-3 py-4 align-top font-mono text-muted-foreground whitespace-nowrap" data-running-diff-cell>{ formatDiffStat(row) }</td>
+									<td class="px-3 py-4 align-top font-mono text-sec whitespace-nowrap" data-running-diff-cell>{ formatDiffStat(row) }</td>
 									<td class="px-3 py-4 align-top overflow-hidden" data-running-tokens-cell>
 										<div class="grid min-w-0 gap-1 font-mono">
-											<span class="font-medium text-foreground">{ formatTokens(row.Tokens) }</span>
-											<span class="truncate text-xs text-muted-foreground">{ formatTokenBreakdown(row.Tokens) }</span>
+											<span class="font-medium text-text">{ formatTokens(row.Tokens) }</span>
+											<span class="truncate text-xs text-sec">{ formatTokenBreakdown(row.Tokens) }</span>
 										</div>
 									</td>
 									<td class="px-3 py-4 align-top">
@@ -2378,7 +2358,7 @@ templ projectSmallMultiplesSection(data DashboardData) {
 	if len(projectSmallMultipleCards(data)) > 0 {
 		<section class="min-w-0" aria-label="Fleet grid">
 			@panelHeader(icon.LayoutGrid(icon.Props{Class: "size-4 shrink-0"}), "Fleet grid", helpProjectMultiples, "project-small-multiples") {
-				<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-muted px-2 py-1 text-sm font-medium text-muted-foreground">{ formatCount(len(projectSmallMultipleCards(data))) }</span>
+				<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-elev px-2 py-1 text-sm font-medium text-sec">{ formatCount(len(projectSmallMultipleCards(data))) }</span>
 			}
 			<div class={ projectSmallMultiplesGridClass(projectSmallMultipleCards(data)) }>
 				for _, card := range projectSmallMultipleCards(data) {
@@ -2390,57 +2370,57 @@ templ projectSmallMultiplesSection(data DashboardData) {
 }
 
 templ projectSmallMultipleCardView(card projectSmallMultipleCard) {
-	<article class="dashboard-card min-w-0 rounded-md border border-border bg-card p-3 shadow-sm transition-colors hover:border-accent" aria-label={ card.Name + " project" }>
+	<article class="dashboard-card min-w-0 rounded-md border border-line bg-surface p-3 shadow-sm transition-colors hover:border-accent" aria-label={ card.Name + " project" }>
 		<div class="flex min-w-0 items-start justify-between gap-3">
 			<div class="flex min-w-0 items-start gap-2">
-				<span class="mt-0.5 h-8 w-1.5 shrink-0 rounded-full border border-border" aria-label={ card.Name + " project color" } title={ "Project color: " + card.Name } { projectColorAttributes(card.ProjectColor)... }></span>
+				<span class="mt-0.5 h-8 w-1.5 shrink-0 rounded-full border border-line" aria-label={ card.Name + " project color" } title={ "Project color: " + card.Name } { projectColorAttributes(card.ProjectColor)... }></span>
 				<div class="min-w-0">
-					<a class="block truncate text-sm font-semibold text-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.Href }>{ card.Name }</a>
-					<p class="mt-1 truncate font-mono text-xs text-muted-foreground">{ card.ActivityLabel }</p>
+					<a class="block truncate text-sm font-semibold text-text hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.Href }>{ card.Name }</a>
+					<p class="mt-1 truncate font-mono text-xs text-sec">{ card.ActivityLabel }</p>
 				</div>
 			</div>
-			<span class="shrink-0 rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent">{ card.ThroughputLabel }</span>
+			<span class="shrink-0 rounded-full bg-accent/15 px-2 py-1 font-mono text-xs font-medium text-accent">{ card.ThroughputLabel }</span>
 		</div>
 		if card.ExternalURL != "" {
-			<a class="mt-2 block truncate text-xs text-muted-foreground underline-offset-4 hover:text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.ExternalURL } target="_blank" rel="noopener noreferrer">{ card.ExternalURL }</a>
+			<a class="mt-2 block truncate text-xs text-sec underline-offset-4 hover:text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.ExternalURL } target="_blank" rel="noopener noreferrer">{ card.ExternalURL }</a>
 		}
 		<div class="mt-3 grid grid-cols-4 gap-2 text-xs">
-			<span class="min-w-0 rounded-md bg-muted px-2 py-1.5">
-				<span class="block text-muted-foreground">Run</span>
-				<strong class="block truncate font-mono font-medium text-foreground">{ card.RunningLabel }</strong>
+			<span class="min-w-0 rounded-md bg-elev px-2 py-1.5">
+				<span class="block text-sec">Run</span>
+				<strong class="block truncate font-mono font-medium text-text">{ card.RunningLabel }</strong>
 			</span>
-			<span class="min-w-0 rounded-md bg-muted px-2 py-1.5">
-				<span class="block text-muted-foreground">Queue</span>
-				<strong class="block truncate font-mono font-medium text-foreground">{ card.QueueLabel }</strong>
+			<span class="min-w-0 rounded-md bg-elev px-2 py-1.5">
+				<span class="block text-sec">Queue</span>
+				<strong class="block truncate font-mono font-medium text-text">{ card.QueueLabel }</strong>
 			</span>
-			<span class="min-w-0 rounded-md bg-muted px-2 py-1.5">
-				<span class="block text-muted-foreground">Blocked</span>
-				<strong class="block truncate font-mono font-medium text-foreground">{ card.BlockedLabel }</strong>
+			<span class="min-w-0 rounded-md bg-elev px-2 py-1.5">
+				<span class="block text-sec">Blocked</span>
+				<strong class="block truncate font-mono font-medium text-text">{ card.BlockedLabel }</strong>
 			</span>
-			<span class="min-w-0 rounded-md bg-muted px-2 py-1.5">
-				<span class="block text-muted-foreground">Sessions</span>
-				<strong class="block truncate font-mono font-medium text-foreground">{ card.CompletedLabel }</strong>
+			<span class="min-w-0 rounded-md bg-elev px-2 py-1.5">
+				<span class="block text-sec">Sessions</span>
+				<strong class="block truncate font-mono font-medium text-text">{ card.CompletedLabel }</strong>
 			</span>
 		</div>
 		<div class="mt-3 grid min-w-0 gap-3 sm:grid-cols-3">
 			<div class="grid min-w-0 gap-1">
 				<div class="flex items-center justify-between gap-2 text-xs">
-					<span class="text-muted-foreground">Throughput</span>
-					<span class="font-mono text-muted-foreground">{ card.ThroughputLabel }</span>
+					<span class="text-sec">Throughput</span>
+					<span class="font-mono text-sec">{ card.ThroughputLabel }</span>
 				</div>
 				@SparklineChart(card.ThroughputChart)
 			</div>
 			<div class="grid min-w-0 gap-1">
 				<div class="flex items-center justify-between gap-2 text-xs">
-					<span class="text-muted-foreground">Spend</span>
-					<span class="font-mono text-muted-foreground">{ card.SpendLabel }</span>
+					<span class="text-sec">Spend</span>
+					<span class="font-mono text-sec">{ card.SpendLabel }</span>
 				</div>
 				@SparklineChart(card.SpendChart)
 			</div>
 			<div class="grid min-w-0 gap-1">
 				<div class="flex items-center justify-between gap-2 text-xs">
-					<span class="text-muted-foreground">Queue</span>
-					<span class="font-mono text-muted-foreground">{ card.QueueLabel }</span>
+					<span class="text-sec">Queue</span>
+					<span class="font-mono text-sec">{ card.QueueLabel }</span>
 				</div>
 				@SparklineChart(card.QueueChart)
 			</div>
@@ -2449,13 +2429,13 @@ templ projectSmallMultipleCardView(card projectSmallMultipleCard) {
 }
 
 templ throughputCard(data DashboardData) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+	<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5">
 		@panelHeader(icon.Zap(icon.Props{Class: "size-4 shrink-0"}), "Token throughput", helpThroughput, "throughput-card") {
-			<span class="shrink-0 rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent">{ throughputRate(data.Snapshot) }</span>
+			<span class="shrink-0 rounded-full bg-accent/15 px-2 py-1 font-mono text-xs font-medium text-accent">{ throughputRate(data.Snapshot) }</span>
 		}
 		<div class="mt-5 grid gap-2">
-			<div class="break-all font-mono text-2xl font-semibold text-foreground sm:text-3xl">{ throughputRate(data.Snapshot) }</div>
-			<div class="text-sm text-muted-foreground">{ throughputWindowLabel(data.Snapshot) }</div>
+			<div class="break-all font-mono text-2xl font-semibold text-text sm:text-3xl">{ throughputRate(data.Snapshot) }</div>
+			<div class="text-sm text-sec">{ throughputWindowLabel(data.Snapshot) }</div>
 		</div>
 		<div class="mt-5">
 			if len(throughputTrendPoints(data.Snapshot)) == 0 {
@@ -2468,35 +2448,35 @@ templ throughputCard(data DashboardData) {
 }
 
 templ lifetimeCard(totals telemetry.LifetimeTotals) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+	<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5">
 		@panelHeader(icon.History(icon.Props{Class: "size-4 shrink-0"}), "Lifetime totals", helpLifetimeTotals, "lifetime-card") {
-			<span class="shrink-0 rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ lifetimeStatus(totals) }</span>
+			<span class="shrink-0 rounded-full bg-elev px-2 py-1 text-xs font-medium text-sec">{ lifetimeStatus(totals) }</span>
 		}
 		if !totals.Available {
 			<div class="mt-4">
-				@dashboardEmptyState("Lifetime totals unavailable.", lifetimeDegradedReason(totals), "bg-muted-foreground")
+				@dashboardEmptyState("Lifetime totals unavailable.", lifetimeDegradedReason(totals), "bg-dim")
 			</div>
 		} else {
 			<div class="mt-5 grid gap-3 text-sm">
 				<div class="flex items-center justify-between gap-4">
-					<span class="text-muted-foreground">Tokens</span>
-					<strong class="font-mono font-medium text-foreground">{ formatInt(totals.TotalTokens) }</strong>
+					<span class="text-sec">Tokens</span>
+					<strong class="font-mono font-medium text-text">{ formatInt(totals.TotalTokens) }</strong>
 				</div>
 				<div class="flex items-center justify-between gap-4">
-					<span class="text-muted-foreground">Input / output</span>
-					<strong class="font-mono font-medium text-foreground">{ formatInt(totals.InputTokens) } / { formatInt(totals.OutputTokens) }</strong>
+					<span class="text-sec">Input / output</span>
+					<strong class="font-mono font-medium text-text">{ formatInt(totals.InputTokens) } / { formatInt(totals.OutputTokens) }</strong>
 				</div>
 				<div class="flex items-center justify-between gap-4">
-					<span class="text-muted-foreground">Sessions</span>
-					<strong class="font-mono font-medium text-foreground">{ lifetimeSessions(totals) }</strong>
+					<span class="text-sec">Sessions</span>
+					<strong class="font-mono font-medium text-text">{ lifetimeSessions(totals) }</strong>
 				</div>
 				<div class="flex items-center justify-between gap-4">
-					<span class="text-muted-foreground">Runtime</span>
-					<strong class="font-mono font-medium text-foreground">{ lifetimeRuntime(totals) }</strong>
+					<span class="text-sec">Runtime</span>
+					<strong class="font-mono font-medium text-text">{ lifetimeRuntime(totals) }</strong>
 				</div>
 				<div class="flex items-center justify-between gap-4">
-					<span class="text-muted-foreground">Runs</span>
-					<strong class="font-mono font-medium text-foreground">{ lifetimeRuns(totals) }</strong>
+					<span class="text-sec">Runs</span>
+					<strong class="font-mono font-medium text-text">{ lifetimeRuns(totals) }</strong>
 				</div>
 			</div>
 		}
@@ -2509,24 +2489,24 @@ templ LiveTick(timestamp time.Time) {
 
 templ trackerDriftWarning(snapshot telemetry.Snapshot) {
 	if trackerDriftVisible(snapshot) {
-		<section class="rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm" aria-label="Tracker status drift">
+		<section class="rounded-md border border-warn bg-warn/15 p-4 text-warn shadow-sm" aria-label="Tracker status drift">
 			<div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
 				<div class="min-w-0">
 					<div class="flex min-w-0 items-center gap-2">
 						@icon.CircleAlert(icon.Props{Class: "size-4 shrink-0"})
 						<h2 class="truncate text-sm font-semibold">Tracker status drift</h2>
-						<span class="shrink-0 rounded-full bg-card/70 px-2 py-0.5 font-mono text-xs font-medium text-warning">{ trackerDriftTotalLabel(snapshot) }</span>
+						<span class="shrink-0 rounded-full bg-surface/70 px-2 py-0.5 font-mono text-xs font-medium text-warn">{ trackerDriftTotalLabel(snapshot) }</span>
 					</div>
-					<p class="mt-1 text-sm text-warning">Open GitHub issues need status-label cleanup before the label-backed board is fully reconciled.</p>
+					<p class="mt-1 text-sm text-warn">Open GitHub issues need status-label cleanup before the label-backed board is fully reconciled.</p>
 				</div>
 				<div class="grid min-w-0 gap-3 lg:min-w-[26rem] lg:max-w-2xl lg:grid-cols-2">
 					for _, row := range trackerDriftRows(snapshot) {
-						<div class="min-w-0 rounded-md border border-warning-soft bg-card/70 p-3">
+						<div class="min-w-0 rounded-md border border-warn/15 bg-surface/70 p-3">
 							<div class="flex min-w-0 items-center justify-between gap-3">
-								<h3 class="truncate text-sm font-semibold text-foreground">{ row.Title }</h3>
-								<span class="shrink-0 rounded-full bg-warning-soft px-2 py-0.5 font-mono text-xs font-medium text-warning">{ row.CountLabel }</span>
+								<h3 class="truncate text-sm font-semibold text-text">{ row.Title }</h3>
+								<span class="shrink-0 rounded-full bg-warn/15 px-2 py-0.5 font-mono text-xs font-medium text-warn">{ row.CountLabel }</span>
 							</div>
-							<p class="mt-1 text-xs text-muted-foreground">{ row.Detail }</p>
+							<p class="mt-1 text-xs text-sec">{ row.Detail }</p>
 							<ul class="mt-3 grid gap-2">
 								for _, issue := range row.Issues {
 									<li class="min-w-0 text-xs">
@@ -2535,12 +2515,12 @@ templ trackerDriftWarning(snapshot telemetry.Snapshot) {
 											<span class="truncate">{ issue.Title }</span>
 										</a>
 										if issue.State != "" || issue.Labels != "" {
-											<div class="mt-1 flex min-w-0 flex-wrap gap-1.5 text-[0.7rem] text-muted-foreground">
+											<div class="mt-1 flex min-w-0 flex-wrap gap-1.5 text-[0.7rem] text-sec">
 												if issue.State != "" {
-													<span class="rounded-sm bg-muted px-1.5 py-0.5">State { issue.State }</span>
+													<span class="rounded-sm bg-elev px-1.5 py-0.5">State { issue.State }</span>
 												}
 												if issue.Labels != "" {
-													<span class="min-w-0 truncate rounded-sm bg-muted px-1.5 py-0.5" title={ issue.Labels }>{ issue.Labels }</span>
+													<span class="min-w-0 truncate rounded-sm bg-elev px-1.5 py-0.5" title={ issue.Labels }>{ issue.Labels }</span>
 												}
 											</div>
 										}
@@ -2556,7 +2536,7 @@ templ trackerDriftWarning(snapshot telemetry.Snapshot) {
 }
 
 templ dashboardHealth(data DashboardData) {
-	<section id="dashboard-diagnostics" class="scroll-mt-3 flex flex-wrap items-center gap-2 rounded-md border border-border bg-card p-3 shadow-sm" aria-label="Dashboard health" tabindex="-1">
+	<section id="dashboard-diagnostics" class="scroll-mt-3 flex flex-wrap items-center gap-2 rounded-md border border-line bg-surface p-3 shadow-sm" aria-label="Dashboard health" tabindex="-1">
 		<span class={ "inline-flex min-h-8 items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold " + runtimeStatusClass(data.Snapshot) } aria-label="Runtime status">
 			<span class="h-2 w-2 rounded-full bg-current"></span>
 			<span>{ runtimeStatusLabel(data.Snapshot) }</span>
@@ -2565,9 +2545,9 @@ templ dashboardHealth(data DashboardData) {
 			<span class="h-2 w-2 rounded-full bg-current"></span>
 			<span>{ statsStatusLabel(data.Snapshot) }</span>
 		</span>
-		<span class="inline-flex min-h-8 max-w-full items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-xs font-semibold text-muted-foreground sm:max-w-[24rem]" aria-label="Instance identity" title={ instanceLabel(data.Snapshot) }>
+		<span class="inline-flex min-h-8 max-w-full items-center gap-2 rounded-full border border-line bg-elev px-3 py-1 text-xs font-semibold text-sec sm:max-w-[24rem]" aria-label="Instance identity" title={ instanceLabel(data.Snapshot) }>
 			<span>Instance</span>
-			<span class="truncate font-medium text-foreground">{ instanceLabel(data.Snapshot) }</span>
+			<span class="truncate font-medium text-text">{ instanceLabel(data.Snapshot) }</span>
 		</span>
 		<span class={ "inline-flex min-h-8 max-w-full items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold sm:max-w-[32rem] " + dashboardScopeClass(data) } aria-label="Dashboard scope" title={ dashboardScopeLabel(data) }>
 			<span>Scope</span>
@@ -2601,7 +2581,7 @@ templ snapshotReadiness(snapshot telemetry.Snapshot) {
 							Type:    button.TypeSubmit,
 							Variant: button.VariantOutline,
 							Size:    button.SizeSm,
-							Class:   "border-warning bg-card text-warning hover:border-accent hover:text-accent",
+							Class:   "border-warn bg-surface text-warn hover:border-accent hover:text-accent",
 							Attributes: templ.Attributes{
 								"aria-label": "Force tracker refresh",
 							},
@@ -2635,48 +2615,48 @@ templ ManualRefreshFeedbackWithID(id string, attempt *telemetry.RefreshAttempt) 
 }
 
 templ metricCard(label string, value string, detail string, borderClass string, dotClass string) {
-	<article class={ "dashboard-metric-card min-w-0 rounded-md border border-border border-t-2 bg-card p-3 shadow-sm transition-colors hover:bg-muted/40 sm:p-4 " + borderClass }>
+	<article class={ "dashboard-metric-card min-w-0 rounded-md border border-line border-t-2 bg-surface p-3 shadow-sm transition-colors hover:bg-elev/40 sm:p-4 " + borderClass }>
 		<div class="flex items-start justify-between gap-3">
 			<div class="grid min-w-0 gap-1">
-				@plainInlineLabel(label, "text-sm font-medium text-muted-foreground")
-				<span class="text-xs text-muted-foreground">{ detail }</span>
+				@plainInlineLabel(label, "text-sm font-medium text-sec")
+				<span class="text-xs text-sec">{ detail }</span>
 			</div>
 			<span class={ "h-2.5 w-2.5 shrink-0 rounded-full " + dotClass }></span>
 		</div>
-		<div class="mt-4 break-all font-mono text-2xl font-semibold text-foreground sm:text-3xl">{ value }</div>
+		<div class="mt-4 break-all font-mono text-2xl font-semibold text-text sm:text-3xl">{ value }</div>
 	</article>
 }
 
 templ statStrip(snapshot telemetry.Snapshot) {
-	<section class="dashboard-stat-strip grid min-w-0 gap-2 rounded-md border border-border bg-card p-2 shadow-sm sm:grid-cols-2 lg:grid-cols-6" aria-label="Dashboard statistics">
+	<section class="dashboard-stat-strip grid min-w-0 gap-2 rounded-md border border-line bg-surface p-2 shadow-sm sm:grid-cols-2 lg:grid-cols-6" aria-label="Dashboard statistics">
 		@statStripItem("Running", formatCount(runningCount(snapshot)), "Active issue sessions", "bg-accent")
-		@statStripItem("Queue", formatCount(queueCount(snapshot)), "Waiting or retrying", "bg-warning")
-		@statStripItem("Blocked", formatCount(blockedCount(snapshot)), "Needs operator action", "bg-danger")
-		@statStripItem("Completed", formatCount(completedCount(snapshot)), "Finished sessions", "bg-success")
+		@statStripItem("Queue", formatCount(queueCount(snapshot)), "Waiting or retrying", "bg-warn")
+		@statStripItem("Blocked", formatCount(blockedCount(snapshot)), "Needs operator action", "bg-err")
+		@statStripItem("Completed", formatCount(completedCount(snapshot)), "Finished sessions", "bg-ok")
 		@statStripItem("tps", throughputRate(snapshot), "Rolling tokens/sec", "bg-accent")
-		@statStripItem("Uptime", runtimeLabel(snapshot), "Aggregate agent uptime", "bg-success")
+		@statStripItem("Uptime", runtimeLabel(snapshot), "Aggregate agent uptime", "bg-ok")
 	</section>
 }
 
 templ statStripItem(label string, value string, detail string, dotClass string) {
-	<div class="min-w-0 rounded-md bg-muted/60 px-3 py-2">
+	<div class="min-w-0 rounded-md bg-elev/60 px-3 py-2">
 		<div class="flex min-w-0 items-center justify-between gap-2">
-			@plainInlineLabel(label, "truncate text-xs font-medium uppercase text-muted-foreground")
+			@plainInlineLabel(label, "truncate text-xs font-medium uppercase text-sec")
 			<span class={ "h-2 w-2 shrink-0 rounded-full " + dotClass }></span>
 		</div>
-		<div class="mt-1 truncate font-mono text-lg font-semibold text-foreground">{ value }</div>
-		<div class="truncate text-xs text-muted-foreground">{ detail }</div>
+		<div class="mt-1 truncate font-mono text-lg font-semibold text-text">{ value }</div>
+		<div class="truncate text-xs text-sec">{ detail }</div>
 	</div>
 }
 
 templ dashboardEmptyState(title string, detail string, dotClass string) {
-	<div class="dashboard-empty-state min-w-0 max-w-full overflow-hidden rounded-md border border-dashed border-border bg-muted/60 px-3 py-3 text-left">
+	<div class="dashboard-empty-state min-w-0 max-w-full overflow-hidden rounded-md border border-dashed border-line bg-elev/60 px-3 py-3 text-left">
 		<div class="flex min-w-0 items-start gap-3">
 			<span class={ "mt-1.5 h-2 w-2 shrink-0 rounded-full " + dotClass }></span>
 			<div class="min-w-0 flex-1">
-				<p class="break-words text-sm font-medium text-foreground">{ title }</p>
+				<p class="break-words text-sm font-medium text-text">{ title }</p>
 				if detail != "" {
-					<p class="mt-1 break-words text-sm text-muted-foreground">{ detail }</p>
+					<p class="mt-1 break-words text-sm text-sec">{ detail }</p>
 				}
 			</div>
 		</div>
@@ -2684,9 +2664,9 @@ templ dashboardEmptyState(title string, detail string, dotClass string) {
 }
 
 templ prPipelineSection(snapshot telemetry.Snapshot) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Pull request pipeline">
+	<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5" aria-label="Pull request pipeline">
 		@panelHeader(icon.GitPullRequest(icon.Props{Class: "size-4 shrink-0"}), "PR pipeline", helpPRPipeline, "pr-pipeline") {
-			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ prPipelineTotalLabel(snapshot) }</span>
+			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent/15 px-2 py-1 text-sm font-medium text-accent">{ prPipelineTotalLabel(snapshot) }</span>
 		}
 		@prPipelineMergeSummaryView(prPipelineMergeSummary(snapshot))
 		<div class="dashboard-section-grid mt-4 grid min-w-0 gap-3 lg:grid-cols-3">
@@ -2708,24 +2688,24 @@ templ prPipelineMergeSummaryView(summary prPipelineMergeMetrics) {
 				<span class="block text-xs font-medium uppercase">Queued</span>
 				<span class="mt-1 block truncate font-mono text-sm font-semibold">{ summary.QueueWait }</span>
 			</div>
-			<div class="min-w-0 rounded-md border border-border bg-card px-3 py-2 text-foreground">
-				<span class="block text-xs font-medium uppercase text-muted-foreground">Recent</span>
+			<div class="min-w-0 rounded-md border border-line bg-surface px-3 py-2 text-text">
+				<span class="block text-xs font-medium uppercase text-sec">Recent</span>
 				<span class="mt-1 block truncate font-mono text-sm font-semibold">{ summary.RecentCount }</span>
 			</div>
-			<div class="min-w-0 rounded-md border border-border bg-card px-3 py-2 text-foreground">
-				<span class="block text-xs font-medium uppercase text-muted-foreground">Active p50</span>
+			<div class="min-w-0 rounded-md border border-line bg-surface px-3 py-2 text-text">
+				<span class="block text-xs font-medium uppercase text-sec">Active p50</span>
 				<span class="mt-1 block truncate font-mono text-sm font-semibold">{ summary.ActiveP50 }</span>
 			</div>
-			<div class="min-w-0 rounded-md border border-border bg-card px-3 py-2 text-foreground">
-				<span class="block text-xs font-medium uppercase text-muted-foreground">Active p90</span>
+			<div class="min-w-0 rounded-md border border-line bg-surface px-3 py-2 text-text">
+				<span class="block text-xs font-medium uppercase text-sec">Active p90</span>
 				<span class="mt-1 block truncate font-mono text-sm font-semibold">{ summary.ActiveP90 }</span>
 			</div>
-			<div class="min-w-0 rounded-md border border-border bg-card px-3 py-2 text-foreground">
-				<span class="block text-xs font-medium uppercase text-muted-foreground">Total p50</span>
+			<div class="min-w-0 rounded-md border border-line bg-surface px-3 py-2 text-text">
+				<span class="block text-xs font-medium uppercase text-sec">Total p50</span>
 				<span class="mt-1 block truncate font-mono text-sm font-semibold">{ summary.TotalP50 }</span>
 			</div>
-			<div class="min-w-0 rounded-md border border-border bg-card px-3 py-2 text-foreground">
-				<span class="block text-xs font-medium uppercase text-muted-foreground">Total p90</span>
+			<div class="min-w-0 rounded-md border border-line bg-surface px-3 py-2 text-text">
+				<span class="block text-xs font-medium uppercase text-sec">Total p90</span>
 				<span class="mt-1 block truncate font-mono text-sm font-semibold">{ summary.TotalP90 }</span>
 			</div>
 		</div>
@@ -2733,13 +2713,13 @@ templ prPipelineMergeSummaryView(summary prPipelineMergeMetrics) {
 }
 
 templ prPipelineLaneView(lane prPipelineLane) {
-	<section class="pr-pipeline-lane min-w-0 rounded-md border border-border bg-muted/60 p-3" aria-label={ lane.Title + " lane" }>
+	<section class="pr-pipeline-lane min-w-0 rounded-md border border-line bg-elev/60 p-3" aria-label={ lane.Title + " lane" }>
 		<div class="flex min-h-9 items-center justify-between gap-3">
 			<div class="inline-flex min-w-0 items-center gap-2">
 				<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
-				<h3 class="truncate text-sm font-semibold text-foreground">{ lane.Title }</h3>
+				<h3 class="truncate text-sm font-semibold text-text">{ lane.Title }</h3>
 			</div>
-			<span class="shrink-0 rounded-full bg-card px-2 py-1 font-mono text-xs font-medium text-muted-foreground">{ lane.CountLabel }</span>
+			<span class="shrink-0 rounded-full bg-surface px-2 py-1 font-mono text-xs font-medium text-sec">{ lane.CountLabel }</span>
 		</div>
 		if len(lane.Cards) == 0 {
 			<div class="mt-3">
@@ -2756,25 +2736,25 @@ templ prPipelineLaneView(lane prPipelineLane) {
 }
 
 templ prPipelineCardView(card prPipelineCard) {
-	<article class="pr-pipeline-card min-w-0 rounded-md border border-border bg-card p-3 shadow-sm" data-pr-pipeline-identity={ card.Identity.Label }>
+	<article class="pr-pipeline-card min-w-0 rounded-md border border-line bg-surface p-3 shadow-sm" data-pr-pipeline-identity={ card.Identity.Label }>
 		<div class="flex min-w-0 items-start justify-between gap-3">
 			<div class="min-w-0 flex-1 basis-0">
 				if card.URL != "" {
 					<a class="block min-w-0 max-w-full overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer" aria-label={ "Open " + card.Identity.Label }>
 						@issueIdentityLine(card.Identity, true)
-						<span class="mt-1 line-clamp-2 break-words text-sm font-medium text-foreground">{ card.Title }</span>
+						<span class="mt-1 line-clamp-2 break-words text-sm font-medium text-text">{ card.Title }</span>
 					</a>
 				} else {
 					@issueIdentityLine(card.Identity, true)
-					<span class="mt-1 line-clamp-2 break-words text-sm font-medium text-foreground">{ card.Title }</span>
+					<span class="mt-1 line-clamp-2 break-words text-sm font-medium text-text">{ card.Title }</span>
 				}
 				if card.ProjectID != "" {
-					<span class="mt-2 inline-flex max-w-full overflow-hidden rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground" title={ "Project " + card.ProjectID }>
+					<span class="mt-2 inline-flex max-w-full overflow-hidden rounded-full bg-elev px-2 py-1 font-mono text-xs text-sec" title={ "Project " + card.ProjectID }>
 						<span class="min-w-0 truncate">{ card.ProjectID }</span>
 					</span>
 				}
 			</div>
-			<span class="shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground" title={ card.Identifier }>{ card.Stage }</span>
+			<span class="shrink-0 rounded-full bg-elev px-2 py-1 font-mono text-xs text-sec" title={ card.Identifier }>{ card.Stage }</span>
 		</div>
 		<div class="mt-3 grid gap-2 text-xs">
 			<div class="flex flex-wrap gap-2">
@@ -2785,19 +2765,19 @@ templ prPipelineCardView(card prPipelineCard) {
 				<span class={ "inline-flex min-h-7 items-center rounded-full border px-2 py-1 font-medium " + card.CodexReviewClass }>Codex { card.CodexReviewState }</span>
 			</div>
 			if card.MergeLaneStatus != "" {
-				<div class="flex min-h-7 items-center justify-between gap-3 rounded-md bg-muted/60 px-2 py-1">
-					<span class="text-muted-foreground">Merge lane</span>
-					<span class="min-w-0 truncate font-mono font-medium text-foreground" title={ card.MergeLaneDetail }>{ card.MergeLaneDetail }</span>
+				<div class="flex min-h-7 items-center justify-between gap-3 rounded-md bg-elev/60 px-2 py-1">
+					<span class="text-sec">Merge lane</span>
+					<span class="min-w-0 truncate font-mono font-medium text-text" title={ card.MergeLaneDetail }>{ card.MergeLaneDetail }</span>
 				</div>
 			}
-			<div class="flex min-h-7 items-center justify-between gap-3 rounded-md bg-muted/60 px-2 py-1">
-				<span class="text-muted-foreground">Time in stage</span>
-				<span class="font-mono font-medium text-foreground" title={ card.TimeInStageTitle }>{ card.TimeInStage }</span>
+			<div class="flex min-h-7 items-center justify-between gap-3 rounded-md bg-elev/60 px-2 py-1">
+				<span class="text-sec">Time in stage</span>
+				<span class="font-mono font-medium text-text" title={ card.TimeInStageTitle }>{ card.TimeInStage }</span>
 			</div>
 			if card.WaitDetail != "" {
-				<div class="flex min-h-7 items-center justify-between gap-3 rounded-md bg-muted/60 px-2 py-1">
-					<span class="text-muted-foreground">Waits</span>
-					<span class="min-w-0 truncate font-mono font-medium text-foreground" title={ card.WaitDetail }>{ card.WaitDetail }</span>
+				<div class="flex min-h-7 items-center justify-between gap-3 rounded-md bg-elev/60 px-2 py-1">
+					<span class="text-sec">Waits</span>
+					<span class="min-w-0 truncate font-mono font-medium text-text" title={ card.WaitDetail }>{ card.WaitDetail }</span>
 				</div>
 			}
 		</div>
@@ -2826,8 +2806,8 @@ templ KanbanMoveDialogContent(data KanbanMoveDialogData) {
 			<input type="hidden" name="pr_number" value={ strconv.Itoa(data.PRNumber) }/>
 		}
 		<div class="grid gap-2">
-			<label class="text-sm font-medium text-foreground" for="kanban-dialog-target-state">Target state</label>
-			<select id="kanban-dialog-target-state" name="target_state" class="min-h-10 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent" data-kanban-status-menu>
+			<label class="text-sm font-medium text-text" for="kanban-dialog-target-state">Target state</label>
+			<select id="kanban-dialog-target-state" name="target_state" class="min-h-10 w-full rounded-md border border-line bg-page px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent" data-kanban-status-menu>
 				for _, state := range data.States {
 					<option value={ state } selected?={ normalizeDashboardState(state) == normalizeDashboardState(kanbanMoveDialogTargetState(data)) }>{ state }</option>
 				}
@@ -2874,8 +2854,8 @@ templ KanbanCommentDialogContent(data KanbanCommentDialogData) {
 			<input type="hidden" name="pr_number" value={ strconv.Itoa(data.PRNumber) }/>
 		}
 		<div class="grid gap-2">
-			<label class="text-sm font-medium text-foreground" for="kanban-dialog-comment-body">Comment</label>
-			<textarea id="kanban-dialog-comment-body" name="body" rows="5" class="min-h-32 w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent" placeholder={ kanbanCommentTargetLabel(data.Target) + " comment" }>{ data.Body }</textarea>
+			<label class="text-sm font-medium text-text" for="kanban-dialog-comment-body">Comment</label>
+			<textarea id="kanban-dialog-comment-body" name="body" rows="5" class="min-h-32 w-full resize-y rounded-md border border-line bg-page px-3 py-2 text-sm text-text placeholder:text-sec focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent" placeholder={ kanbanCommentTargetLabel(data.Target) + " comment" }>{ data.Body }</textarea>
 		</div>
 		@dialog.Footer() {
 			@dialog.Close() {
@@ -2912,29 +2892,29 @@ templ KanbanDialogErrorContent(message string) {
 
 templ kanbanDialogError(message string) {
 	if message != "" {
-		<div role="alert" class="rounded-md border border-danger bg-danger-soft px-3 py-2 text-sm text-danger">{ message }</div>
+		<div role="alert" class="rounded-md border border-err bg-err/15 px-3 py-2 text-sm text-err">{ message }</div>
 	}
 }
 
 templ runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt time.Time) {
-	<article class="dashboard-card min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-3 shadow-sm">
+	<article class="dashboard-card min-w-0 max-w-full overflow-hidden rounded-md border border-line bg-surface p-3 shadow-sm">
 		@issueCell(row.Issue, "running-mobile", rowIndex, true)
 		<div class="mt-3 grid gap-2 text-sm">
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				<span class="text-muted-foreground">State</span>
-				<span class="rounded-full bg-accent-soft px-2 py-1 font-medium text-accent">{ issueState(row.Issue, "Running") }</span>
+				<span class="text-sec">State</span>
+				<span class="rounded-full bg-accent/15 px-2 py-1 font-medium text-accent">{ issueState(row.Issue, "Running") }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				@plainInlineLabel("Runtime / turns", "text-muted-foreground")
-				<span class="font-mono text-foreground">{ runningRuntime(row, generatedAt) }</span>
+				@plainInlineLabel("Runtime / turns", "text-sec")
+				<span class="font-mono text-text">{ runningRuntime(row, generatedAt) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				@plainInlineLabel("Diff", "text-muted-foreground")
-				<span class="font-mono text-foreground">{ formatDiffStat(row) }</span>
+				@plainInlineLabel("Diff", "text-sec")
+				<span class="font-mono text-text">{ formatDiffStat(row) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				@plainInlineLabel("Tokens", "text-muted-foreground")
-				<span class="font-mono text-foreground">{ formatTokens(row.Tokens) }</span>
+				@plainInlineLabel("Tokens", "text-sec")
+				<span class="font-mono text-text">{ formatTokens(row.Tokens) }</span>
 			</div>
 		</div>
 		<div class="mt-3">
@@ -2958,10 +2938,10 @@ templ runningActivityCell(row telemetry.Running, prefix string) {
 			data-running-activity-trigger
 		>
 			<span class="grid min-w-0 flex-1 basis-0 gap-1 overflow-hidden">
-				<span class="line-clamp-2 break-words text-foreground">{ lastCodexUpdate(row) }</span>
-				<span class="truncate font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</span>
+				<span class="line-clamp-2 break-words text-text">{ lastCodexUpdate(row) }</span>
+				<span class="truncate font-mono text-xs text-sec">{ lastCodexMeta(row) }</span>
 			</span>
-			@icon.ChevronDown(icon.Props{Class: "running-activity-chevron mt-0.5 size-3.5 shrink-0 text-muted-foreground"})
+			@icon.ChevronDown(icon.Props{Class: "running-activity-chevron mt-0.5 size-3.5 shrink-0 text-sec"})
 		</summary>
 		@runningActivityDetails(row, prefix)
 	</details>
@@ -2973,24 +2953,24 @@ templ runningActivityDetails(row telemetry.Running, prefix string) {
 		class="running-activity-panel mt-3 grid min-w-0 max-w-full gap-2 overflow-hidden text-xs"
 		data-running-activity-details
 	>
-		<div class="grid min-w-0 max-w-full gap-1.5 overflow-hidden rounded-md bg-muted/40 p-2">
-			<span class="text-xs font-medium uppercase text-muted-foreground">Latest message</span>
-			<p class="whitespace-pre-wrap break-words text-sm text-foreground">{ lastCodexUpdate(row) }</p>
-			<p class="font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</p>
+		<div class="grid min-w-0 max-w-full gap-1.5 overflow-hidden rounded-md bg-elev/40 p-2">
+			<span class="text-xs font-medium uppercase text-sec">Latest message</span>
+			<p class="whitespace-pre-wrap break-words text-sm text-text">{ lastCodexUpdate(row) }</p>
+			<p class="font-mono text-xs text-sec">{ lastCodexMeta(row) }</p>
 		</div>
 		<div class="grid min-w-0 max-w-full gap-2 overflow-hidden">
-			<span class="text-xs font-medium uppercase text-muted-foreground">Recent activity</span>
+			<span class="text-xs font-medium uppercase text-sec">Recent activity</span>
 			if len(runningActivityRows(row)) == 0 {
-				<p class="rounded-md border border-dashed border-border bg-muted/40 px-3 py-3 text-sm text-muted-foreground">No activity recorded.</p>
+				<p class="rounded-md border border-dashed border-line bg-elev/40 px-3 py-3 text-sm text-sec">No activity recorded.</p>
 			} else {
 				<ol class="grid min-w-0 max-w-full gap-2 overflow-hidden">
 					for _, activity := range runningActivityRows(row) {
-						<li class="min-w-0 max-w-full overflow-hidden rounded-md bg-muted/40 px-3 py-2">
+						<li class="min-w-0 max-w-full overflow-hidden rounded-md bg-elev/40 px-3 py-2">
 							<div class="flex flex-wrap items-center justify-between gap-2">
-								<span class="font-mono text-xs text-muted-foreground">{ activity.At }</span>
+								<span class="font-mono text-xs text-sec">{ activity.At }</span>
 								<span class="font-mono text-xs font-medium text-accent">{ activity.Event }</span>
 							</div>
-							<p class="mt-1 whitespace-pre-wrap break-words text-sm text-foreground">{ activity.Message }</p>
+							<p class="mt-1 whitespace-pre-wrap break-words text-sm text-text">{ activity.Message }</p>
 						</li>
 					}
 				</ol>
@@ -3000,19 +2980,19 @@ templ runningActivityDetails(row telemetry.Running, prefix string) {
 }
 
 templ boardHealthSection(snapshot telemetry.Snapshot) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Board health">
+	<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5" aria-label="Board health">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
 				@helpHeading2("Board health", helpBoardHealth, "board-health")
-				<p class="text-sm text-muted-foreground">Current issue state distribution and completed session history from the latest snapshot.</p>
+				<p class="text-sm text-sec">Current issue state distribution and completed session history from the latest snapshot.</p>
 			</div>
-			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ boardStateTotalLabel(snapshot) }</span>
+			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent/15 px-2 py-1 text-sm font-medium text-accent">{ boardStateTotalLabel(snapshot) }</span>
 		</div>
 		<div class="mt-5 grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
 			<div class="min-w-0">
 				<div class="flex items-center justify-between gap-3">
 					@helpHeading3("Current issue states", helpStateDistribution, "board-health")
-					<span class="font-mono text-xs text-muted-foreground">{ boardStateTotalLabel(snapshot) } issues</span>
+					<span class="font-mono text-xs text-sec">{ boardStateTotalLabel(snapshot) } issues</span>
 				</div>
 				if len(boardStateRows(snapshot)) == 0 {
 					<div class="mt-3">
@@ -3024,12 +3004,12 @@ templ boardHealthSection(snapshot telemetry.Snapshot) {
 					</div>
 					<div class="mt-4 grid gap-2 sm:grid-cols-2">
 						for _, row := range boardStateRows(snapshot) {
-							<div class="flex min-w-0 items-center justify-between gap-3 rounded-md bg-muted/60 px-3 py-2">
+							<div class="flex min-w-0 items-center justify-between gap-3 rounded-md bg-elev/60 px-3 py-2">
 								<span class="inline-flex min-w-0 items-center gap-2">
 									<span class={ "h-2 w-2 shrink-0 rounded-full " + row.DotClass }></span>
-									<span class="truncate text-sm font-medium text-foreground">{ row.State }</span>
+									<span class="truncate text-sm font-medium text-text">{ row.State }</span>
 								</span>
-								<span class="shrink-0 font-mono text-sm text-muted-foreground">{ row.CountLabel } / { row.Percent }</span>
+								<span class="shrink-0 font-mono text-sm text-sec">{ row.CountLabel } / { row.Percent }</span>
 							</div>
 						}
 					</div>
@@ -3038,11 +3018,11 @@ templ boardHealthSection(snapshot telemetry.Snapshot) {
 			<div class="min-w-0">
 				<div class="flex items-center justify-between gap-3">
 					@helpHeading3("Session completions", helpCumulativeFlow, "board-health")
-					<span class="font-mono text-xs text-muted-foreground">{ boardProgressCount(snapshot) } sessions</span>
+					<span class="font-mono text-xs text-sec">{ boardProgressCount(snapshot) } sessions</span>
 				</div>
 				if len(telemetry.BoardProgressPoints(snapshot)) == 0 {
 					<div class="mt-3">
-						@dashboardEmptyState("No completed session history yet.", "Session completion progress appears after completed session samples arrive.", "bg-success")
+						@dashboardEmptyState("No completed session history yet.", "Session completion progress appears after completed session samples arrive.", "bg-ok")
 					</div>
 				} else {
 					<div class="mt-3">
@@ -3055,43 +3035,43 @@ templ boardHealthSection(snapshot telemetry.Snapshot) {
 }
 
 templ cycleTimeSection(report telemetry.CycleTimeReport) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Cycle time">
+	<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5" aria-label="Cycle time">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
 				@helpHeading2("Cycle time", helpCycleTime, "cycle-time")
-				<p class="text-sm text-muted-foreground">Completed issue durations from local run history.</p>
+				<p class="text-sm text-sec">Completed issue durations from local run history.</p>
 			</div>
-			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-success-soft px-2 py-1 text-sm font-medium text-success">{ cycleTimeCountLabel(report) }</span>
+			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-ok/15 px-2 py-1 text-sm font-medium text-ok">{ cycleTimeCountLabel(report) }</span>
 		</div>
 		if !report.Available && report.DegradedReason != "" {
 			<div class="mt-4">
-				@dashboardEmptyState("Cycle-time data unavailable.", cycleTimeUnavailableDetail(report), "bg-muted-foreground")
+				@dashboardEmptyState("Cycle-time data unavailable.", cycleTimeUnavailableDetail(report), "bg-dim")
 			</div>
 		} else if len(report.Buckets) == 0 {
 			<div class="mt-4">
-				@dashboardEmptyState("No completed issues yet.", "Cycle-time histogram appears after completed issue history is recorded.", "bg-success")
+				@dashboardEmptyState("No completed issues yet.", "Cycle-time histogram appears after completed issue history is recorded.", "bg-ok")
 			</div>
 		} else {
 			<div class="mt-5 grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
 				<div class="min-w-0">
 					<div class="flex items-center justify-between gap-3">
 						@helpHeading3("Histogram", helpCycleTime, "cycle-time")
-						<span class="font-mono text-xs text-muted-foreground">{ cycleTimeCountLabel(report) }</span>
+						<span class="font-mono text-xs text-sec">{ cycleTimeCountLabel(report) }</span>
 					</div>
 					<div class="mt-3">
 						@MiniBarChart(cycleTimeHistogramChart(report))
 					</div>
 				</div>
 				<div class="grid min-w-0 content-start gap-3">
-					<div class="rounded-md bg-muted/60 px-3 py-2">
-						<span class="block text-xs font-medium uppercase text-muted-foreground">Average</span>
-						<strong class="font-mono text-lg font-semibold text-foreground">{ cycleTimeAverageLabel(report) }</strong>
+					<div class="rounded-md bg-elev/60 px-3 py-2">
+						<span class="block text-xs font-medium uppercase text-sec">Average</span>
+						<strong class="font-mono text-lg font-semibold text-text">{ cycleTimeAverageLabel(report) }</strong>
 					</div>
 					<div class="grid gap-2">
 						for _, row := range cycleTimeBucketRows(report) {
-							<div class="flex min-w-0 items-center justify-between gap-3 rounded-md bg-muted/60 px-3 py-2 text-sm">
-								<span class="truncate font-medium text-foreground">{ row.Label }</span>
-								<span class="shrink-0 font-mono text-muted-foreground">{ row.Count }</span>
+							<div class="flex min-w-0 items-center justify-between gap-3 rounded-md bg-elev/60 px-3 py-2 text-sm">
+								<span class="truncate font-medium text-text">{ row.Label }</span>
+								<span class="shrink-0 font-mono text-sec">{ row.Count }</span>
 							</div>
 						}
 					</div>
@@ -3102,17 +3082,17 @@ templ cycleTimeSection(report telemetry.CycleTimeReport) {
 }
 
 templ workflowMetricsSection(report telemetry.WorkflowMetrics, project telemetry.Project) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Workflow metrics">
+	<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5" aria-label="Workflow metrics">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
 				@helpHeading2("Workflow metrics", helpWorkflowMetrics, "workflow-metrics")
-				<p class="text-sm text-muted-foreground">Lane timing, observable sub-phases, oldest cards, and the active bottleneck from local runtime telemetry.</p>
+				<p class="text-sm text-sec">Lane timing, observable sub-phases, oldest cards, and the active bottleneck from local runtime telemetry.</p>
 			</div>
-			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ workflowMetricsSummaryLabel(report) }</span>
+			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent/15 px-2 py-1 text-sm font-medium text-accent">{ workflowMetricsSummaryLabel(report) }</span>
 		</div>
 		if !workflowMetricsAvailable(report) {
 			<div class="mt-4">
-				@dashboardEmptyState("Workflow metrics unavailable.", workflowMetricsUnavailableDetail(report), "bg-muted-foreground")
+				@dashboardEmptyState("Workflow metrics unavailable.", workflowMetricsUnavailableDetail(report), "bg-dim")
 			</div>
 		} else if len(workflowLaneMetricRows(report, project)) == 0 && len(workflowOldestCardRows(report)) == 0 {
 			<div class="mt-4">
@@ -3126,7 +3106,7 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics, project telemetry
 							<div class="flex items-center justify-between gap-3">
 								@helpHeading3("Average lane trend", helpWorkflowMetrics, "workflow-metrics")
 								if len(workflowLaneTrendCards(report)) > 0 {
-									<span class="font-mono text-xs text-muted-foreground">{ workflowLaneTrendCards(report)[0].Window }</span>
+									<span class="font-mono text-xs text-sec">{ workflowLaneTrendCards(report)[0].Window }</span>
 								}
 							</div>
 							if len(workflowLaneTrendCards(report)) == 0 {
@@ -3136,15 +3116,15 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics, project telemetry
 							} else {
 								<div class="mt-3 grid gap-2 sm:grid-cols-2">
 									for _, card := range workflowLaneTrendCards(report) {
-										<div class="grid min-w-0 gap-2 rounded-md bg-muted/60 px-3 py-3">
+										<div class="grid min-w-0 gap-2 rounded-md bg-elev/60 px-3 py-3">
 											<div class="flex min-w-0 items-center justify-between gap-3">
-												<span class="truncate text-sm font-medium text-foreground">{ card.Lane }</span>
-												<span class="shrink-0 font-mono text-xs text-muted-foreground">{ card.Summary }</span>
+												<span class="truncate text-sm font-medium text-text">{ card.Lane }</span>
+												<span class="shrink-0 font-mono text-xs text-sec">{ card.Summary }</span>
 											</div>
 											if card.HasData {
 												@LineAreaChart(card.Chart)
 											} else {
-												<div class="flex h-24 items-center justify-center rounded-md border border-border bg-card/60 px-3 text-center text-xs text-muted-foreground">No samples</div>
+												<div class="flex h-24 items-center justify-center rounded-md border border-line bg-surface/60 px-3 text-center text-xs text-sec">No samples</div>
 											}
 										</div>
 									}
@@ -3155,7 +3135,7 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics, project telemetry
 							<div class="flex items-center justify-between gap-3">
 								@helpHeading3("Flow efficiency", helpWorkflowMetrics, "workflow-metrics")
 								if len(workflowLaneFlowRows(report)) > 0 {
-									<span class="font-mono text-xs text-muted-foreground">{ workflowLaneFlowRows(report)[0].Window }</span>
+									<span class="font-mono text-xs text-sec">{ workflowLaneFlowRows(report)[0].Window }</span>
 								}
 							</div>
 							if len(workflowLaneFlowRows(report)) == 0 {
@@ -3164,30 +3144,30 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics, project telemetry
 								</div>
 							} else {
 								<div class="mt-3 grid gap-2">
-									<div class="flex items-center justify-end gap-3 text-xs text-muted-foreground">
+									<div class="flex items-center justify-end gap-3 text-xs text-sec">
 										<span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-accent"></span>Active</span>
-										<span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-warning"></span>Wait</span>
+										<span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-warn"></span>Wait</span>
 									</div>
 									for _, row := range workflowLaneFlowRows(report) {
-										<div class="grid gap-2 rounded-md bg-muted/60 px-3 py-2 text-sm">
+										<div class="grid gap-2 rounded-md bg-elev/60 px-3 py-2 text-sm">
 											<div class="flex min-w-0 items-center justify-between gap-3">
-												<span class="truncate font-medium text-foreground">{ row.Lane }</span>
-												<span class="shrink-0 rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-semibold text-accent">{ row.ActivePercent }</span>
+												<span class="truncate font-medium text-text">{ row.Lane }</span>
+												<span class="shrink-0 rounded-full bg-accent/15 px-2 py-1 font-mono text-xs font-semibold text-accent">{ row.ActivePercent }</span>
 											</div>
 											if row.HasData {
 												<div class="h-2 overflow-hidden rounded-full bg-border" role="img" aria-label={ row.Lane + " active versus wait time" }>
 													<div class="flex h-full">
 														<span class="h-full bg-accent" style={ row.ActiveStyle } title={ row.ActiveSegmentTitle } aria-label={ row.ActiveSegmentTitle }></span>
-														<span class="h-full bg-warning" style={ row.WaitStyle } title={ row.WaitSegmentTitle } aria-label={ row.WaitSegmentTitle }></span>
+														<span class="h-full bg-warn" style={ row.WaitStyle } title={ row.WaitSegmentTitle } aria-label={ row.WaitSegmentTitle }></span>
 													</div>
 												</div>
-												<div class="grid grid-cols-3 gap-2 font-mono text-xs text-muted-foreground">
+												<div class="grid grid-cols-3 gap-2 font-mono text-xs text-sec">
 													<span>{ row.Active } active</span>
 													<span>{ row.Wait } wait</span>
 													<span class="text-right">{ row.Total } total</span>
 												</div>
 											} else {
-												<div class="flex h-10 items-center rounded-md border border-border bg-card/60 px-3 text-xs text-muted-foreground">No samples</div>
+												<div class="flex h-10 items-center rounded-md border border-line bg-surface/60 px-3 text-xs text-sec">No samples</div>
 											}
 										</div>
 									}
@@ -3198,17 +3178,17 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics, project telemetry
 					<div class="min-w-0">
 						<div class="flex items-center justify-between gap-3">
 							@helpHeading3("Lane trends", helpWorkflowMetrics, "workflow-metrics")
-							<span class="font-mono text-xs text-muted-foreground">24h / 7d / 30d</span>
+							<span class="font-mono text-xs text-sec">24h / 7d / 30d</span>
 						</div>
 						if len(workflowLaneMetricRows(report, project)) == 0 {
 							<div class="mt-3">
 								@dashboardEmptyState("No lane duration aggregates.", "Completed lane exits will populate p50 and p90 timing here.", "bg-accent")
 							</div>
 						} else {
-							<div class="mt-3 overflow-hidden rounded-md border border-border">
+							<div class="mt-3 overflow-hidden rounded-md border border-line">
 								<div class="max-h-72 overflow-auto" data-preserve-scroll="workflow-lanes">
 									<table class="min-w-full text-left text-sm">
-										<thead class="sticky top-0 bg-muted text-xs uppercase text-muted-foreground">
+										<thead class="sticky top-0 bg-elev text-xs uppercase text-sec">
 											<tr>
 												<th class="px-3 py-2 font-medium">Window</th>
 												<th class="px-3 py-2 font-medium">Lane</th>
@@ -3226,23 +3206,23 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics, project telemetry
 										<tbody class="divide-y divide-border">
 											for _, row := range workflowLaneMetricRows(report, project) {
 												<tr class={ row.RowClass }>
-													<td class="px-3 py-2 font-mono text-xs text-muted-foreground">{ row.Window }</td>
-													<td class="px-3 py-2 font-medium text-foreground">
+													<td class="px-3 py-2 font-mono text-xs text-sec">{ row.Window }</td>
+													<td class="px-3 py-2 font-medium text-text">
 														<div class="flex min-w-0 items-center gap-2">
 															<span class="truncate">{ row.Lane }</span>
 															if row.Bottleneck {
-																<span class="shrink-0 rounded-full bg-warning-soft px-2 py-1 text-xs font-semibold text-warning">Bottleneck</span>
+																<span class="shrink-0 rounded-full bg-warn/15 px-2 py-1 text-xs font-semibold text-warn">Bottleneck</span>
 															}
 														</div>
 													</td>
-													<td class="px-3 py-2 font-mono text-xs text-muted-foreground">{ row.Comparison }</td>
+													<td class="px-3 py-2 font-mono text-xs text-sec">{ row.Comparison }</td>
 													<td class="px-3 py-2"><span class={ row.TrendClass }>{ row.Trend }</span></td>
-													<td class="px-3 py-2 text-right font-mono text-muted-foreground">{ row.Delta }</td>
-													<td class="px-3 py-2 text-right font-mono text-muted-foreground">{ row.Count }</td>
-													<td class="px-3 py-2 text-right font-mono text-muted-foreground">{ row.Average }</td>
-													<td class="px-3 py-2 text-right font-mono text-foreground">{ row.P50 }</td>
-													<td class="px-3 py-2 text-right font-mono text-foreground">{ row.P90 }</td>
-													<td class="px-3 py-2 text-right font-mono text-muted-foreground">{ row.P95 }</td>
+													<td class="px-3 py-2 text-right font-mono text-sec">{ row.Delta }</td>
+													<td class="px-3 py-2 text-right font-mono text-sec">{ row.Count }</td>
+													<td class="px-3 py-2 text-right font-mono text-sec">{ row.Average }</td>
+													<td class="px-3 py-2 text-right font-mono text-text">{ row.P50 }</td>
+													<td class="px-3 py-2 text-right font-mono text-text">{ row.P90 }</td>
+													<td class="px-3 py-2 text-right font-mono text-sec">{ row.P95 }</td>
 													<td class="px-3 py-2 text-right">
 														if row.Prompt != "" {
 															@diagnosticPromptCopyButton(row.Prompt, "Copy prompt", "Copy diagnostic prompt for "+row.Lane)
@@ -3259,7 +3239,7 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics, project telemetry
 					<div class="min-w-0">
 						<div class="flex items-center justify-between gap-3">
 							@helpHeading3("Observable sub-phases", helpWorkflowMetrics, "workflow-metrics")
-							<span class="font-mono text-xs text-muted-foreground">AI / checks / CI / backoff</span>
+							<span class="font-mono text-xs text-sec">AI / checks / CI / backoff</span>
 						</div>
 						if len(workflowSubphaseMetricRows(report)) == 0 {
 							<div class="mt-3">
@@ -3268,17 +3248,17 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics, project telemetry
 						} else {
 							<div class="mt-3 grid gap-2 sm:grid-cols-2">
 								for _, row := range workflowSubphaseMetricRows(report) {
-									<div class="grid gap-1 rounded-md bg-muted/60 px-3 py-2 text-sm">
+									<div class="grid gap-1 rounded-md bg-elev/60 px-3 py-2 text-sm">
 										<div class="flex min-w-0 items-center justify-between gap-3">
-											<span class="truncate font-medium text-foreground">{ row.Phase }</span>
-											<span class="font-mono text-xs text-muted-foreground">{ row.Window }</span>
+											<span class="truncate font-medium text-text">{ row.Phase }</span>
+											<span class="font-mono text-xs text-sec">{ row.Window }</span>
 										</div>
-										<div class="grid grid-cols-3 gap-2 font-mono text-xs text-muted-foreground">
+										<div class="grid grid-cols-3 gap-2 font-mono text-xs text-sec">
 											<span>{ row.Count } runs</span>
 											<span>{ row.Total }</span>
 											<span>{ row.Mean } avg</span>
 										</div>
-										<span class="truncate text-xs text-muted-foreground">{ row.Detail }</span>
+										<span class="truncate text-xs text-sec">{ row.Detail }</span>
 									</div>
 								}
 							</div>
@@ -3286,13 +3266,13 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics, project telemetry
 					</div>
 				</div>
 				<aside class="grid min-w-0 content-start gap-4">
-					<div class="rounded-md bg-muted/60 px-3 py-3">
-						<span class="block text-xs font-medium uppercase text-muted-foreground">Active bottleneck</span>
-						<strong class="mt-1 block text-lg font-semibold text-foreground">{ workflowBottleneck(report).Label }</strong>
-						<span class="mt-1 block font-mono text-sm text-muted-foreground">{ workflowBottleneck(report).Value }</span>
-						<p class="mt-2 text-sm text-muted-foreground">{ workflowBottleneck(report).Detail }</p>
+					<div class="rounded-md bg-elev/60 px-3 py-3">
+						<span class="block text-xs font-medium uppercase text-sec">Active bottleneck</span>
+						<strong class="mt-1 block text-lg font-semibold text-text">{ workflowBottleneck(report).Label }</strong>
+						<span class="mt-1 block font-mono text-sm text-sec">{ workflowBottleneck(report).Value }</span>
+						<p class="mt-2 text-sm text-sec">{ workflowBottleneck(report).Detail }</p>
 						if workflowBottleneck(report).Count != "" {
-							<span class="mt-2 inline-block font-mono text-xs text-muted-foreground">{ workflowBottleneck(report).Count }</span>
+							<span class="mt-2 inline-block font-mono text-xs text-sec">{ workflowBottleneck(report).Count }</span>
 						}
 						if workflowBottleneckDiagnosticPrompt(project, report) != "" {
 							<div class="mt-3">
@@ -3303,7 +3283,7 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics, project telemetry
 					<div class="min-w-0">
 						<div class="flex items-center justify-between gap-3">
 							@helpHeading3("Oldest cards", helpWorkflowMetrics, "workflow-metrics")
-							<span class="font-mono text-xs text-muted-foreground">{ strconv.Itoa(len(workflowOldestCardRows(report))) }</span>
+							<span class="font-mono text-xs text-sec">{ strconv.Itoa(len(workflowOldestCardRows(report))) }</span>
 						</div>
 						if len(workflowOldestCardRows(report)) == 0 {
 							<div class="mt-3">
@@ -3312,17 +3292,17 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics, project telemetry
 						} else {
 							<div class="mt-3 grid gap-2">
 								for _, row := range workflowOldestCardRows(report) {
-									<div class="grid gap-1 rounded-md bg-muted/60 px-3 py-2 text-sm">
+									<div class="grid gap-1 rounded-md bg-elev/60 px-3 py-2 text-sm">
 										<div class="flex min-w-0 items-start gap-2">
 											<div class="min-w-0 flex-1">
-												<span class="block truncate font-medium text-foreground">{ row.Identifier }</span>
-												<span class="block truncate text-xs text-muted-foreground">{ row.Title }</span>
+												<span class="block truncate font-medium text-text">{ row.Identifier }</span>
+												<span class="block truncate text-xs text-sec">{ row.Title }</span>
 											</div>
 											if row.URL != "" {
 												@issueOpenLink(row.URL, "Open issue "+row.Identifier, true)
 											}
 										</div>
-										<div class="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-muted-foreground">
+										<div class="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-sec">
 											<span>{ row.State }</span>
 											if row.ProjectID != "" {
 												<span>{ row.ProjectID }</span>
@@ -3342,9 +3322,9 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics, project telemetry
 }
 
 templ agentActivityTimeline(snapshot telemetry.Snapshot) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Agent activity timeline">
+	<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5" aria-label="Agent activity timeline">
 		@panelHeader(icon.Activity(icon.Props{Class: "size-4 shrink-0"}), "Agent activity", helpAgentActivity, "agent-activity") {
-			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ formatCount(len(agentTimelineRows(snapshot))) }</span>
+			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent/15 px-2 py-1 text-sm font-medium text-accent">{ formatCount(len(agentTimelineRows(snapshot))) }</span>
 		}
 		if len(agentTimelineRows(snapshot)) == 0 {
 			if runningCount(snapshot)+completedCount(snapshot) > 0 {
@@ -3362,29 +3342,29 @@ templ agentActivityTimeline(snapshot telemetry.Snapshot) {
 					@agentActivityMobileCard(row)
 				}
 			</div>
-			<div class="mt-4 hidden overflow-hidden rounded-md border border-border sm:block">
+			<div class="mt-4 hidden overflow-hidden rounded-md border border-line sm:block">
 				<div class="dashboard-agent-scroll max-h-[32rem] overflow-x-auto overflow-y-auto" data-preserve-scroll="agent-activity">
 					<div class="min-w-[78rem]">
-						<div class="grid grid-cols-[25rem_minmax(0,1fr)_12rem] gap-3 border-b border-border bg-muted/70 px-3 py-3 text-xs font-medium uppercase text-muted-foreground">
+						<div class="grid grid-cols-[25rem_minmax(0,1fr)_12rem] gap-3 border-b border-line bg-elev/70 px-3 py-3 text-xs font-medium uppercase text-sec">
 							<span>Agent</span>
 							<span>Lifespan</span>
 							<span class="text-right">State / runtime</span>
 						</div>
 						for _, row := range agentTimelineRows(snapshot) {
-							<div class="agent-activity-table-row grid min-h-14 grid-cols-[25rem_minmax(0,1fr)_12rem] items-center gap-3 border-b border-border px-3 py-3 last:border-b-0" data-agent-identity={ row.Identity.Label }>
+							<div class="agent-activity-table-row grid min-h-14 grid-cols-[25rem_minmax(0,1fr)_12rem] items-center gap-3 border-b border-line px-3 py-3 last:border-b-0" data-agent-identity={ row.Identity.Label }>
 								<div class="flex min-w-0 items-start gap-2">
 									<div class="min-w-0 flex-1">
 										@issueIdentityLine(row.Identity, false)
-										<span class="line-clamp-2 break-words text-sm text-muted-foreground">{ row.Title }</span>
+										<span class="line-clamp-2 break-words text-sm text-sec">{ row.Title }</span>
 									</div>
 									@agentTimelineActions(row)
 								</div>
 								<div class="grid gap-1">
-									<div class="flex items-center justify-between gap-3 font-mono text-xs text-muted-foreground">
+									<div class="flex items-center justify-between gap-3 font-mono text-xs text-sec">
 										<span>{ row.StartedAt }</span>
 										<span>{ row.EndedAt }</span>
 									</div>
-									<div class="relative h-9 overflow-hidden rounded-md bg-muted" role="group" aria-label={ row.Identifier + " lifespan" }>
+									<div class="relative h-9 overflow-hidden rounded-md bg-elev" role="group" aria-label={ row.Identifier + " lifespan" }>
 										for _, segment := range row.Segments {
 											<span class={ "absolute bottom-1 top-1 min-w-1.5 rounded " + segment.Class } style={ segment.Style } title={ segment.Title } aria-label={ segment.Title }>
 												<span class="sr-only">{ segment.Title }</span>
@@ -3393,8 +3373,8 @@ templ agentActivityTimeline(snapshot telemetry.Snapshot) {
 									</div>
 								</div>
 								<div class="grid justify-items-end gap-1">
-									<span class="rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ row.State }</span>
-									<span class="font-mono text-xs text-muted-foreground">{ row.Duration }</span>
+									<span class="rounded-full bg-elev px-2 py-1 text-xs font-medium text-sec">{ row.State }</span>
+									<span class="font-mono text-xs text-sec">{ row.Duration }</span>
 								</div>
 							</div>
 						}
@@ -3406,23 +3386,23 @@ templ agentActivityTimeline(snapshot telemetry.Snapshot) {
 }
 
 templ agentActivityMobileCard(row agentTimelineRow) {
-	<article class="dashboard-card min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-3 shadow-sm" data-agent-identity={ row.Identity.Label }>
+	<article class="dashboard-card min-w-0 max-w-full overflow-hidden rounded-md border border-line bg-surface p-3 shadow-sm" data-agent-identity={ row.Identity.Label }>
 		<div class="flex items-start justify-between gap-3">
 			<div class="min-w-0 flex-1">
 				@issueIdentityLine(row.Identity, false)
-				<span class="line-clamp-2 break-words text-sm text-muted-foreground">{ row.Title }</span>
+				<span class="line-clamp-2 break-words text-sm text-sec">{ row.Title }</span>
 			</div>
 			<div class="flex shrink-0 items-start gap-1">
 				@agentTimelineActions(row)
-				<span class="rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ row.State }</span>
+				<span class="rounded-full bg-elev px-2 py-1 text-xs font-medium text-sec">{ row.State }</span>
 			</div>
 		</div>
 		<div class="mt-3 grid gap-1">
-			<div class="flex items-center justify-between gap-3 font-mono text-xs text-muted-foreground">
+			<div class="flex items-center justify-between gap-3 font-mono text-xs text-sec">
 				<span>{ row.StartedAt }</span>
 				<span>{ row.EndedAt }</span>
 			</div>
-			<div class="relative h-9 overflow-hidden rounded-md bg-muted" role="group" aria-label={ row.Identifier + " lifespan" }>
+			<div class="relative h-9 overflow-hidden rounded-md bg-elev" role="group" aria-label={ row.Identifier + " lifespan" }>
 				for _, segment := range row.Segments {
 					<span class={ "absolute bottom-1 top-1 min-w-1.5 rounded " + segment.Class } style={ segment.Style } title={ segment.Title } aria-label={ segment.Title }>
 						<span class="sr-only">{ segment.Title }</span>
@@ -3430,7 +3410,7 @@ templ agentActivityMobileCard(row agentTimelineRow) {
 				}
 			</div>
 		</div>
-		<div class="mt-3 font-mono text-xs text-muted-foreground">{ row.Duration }</div>
+		<div class="mt-3 font-mono text-xs text-sec">{ row.Duration }</div>
 	</article>
 }
 
@@ -3448,18 +3428,18 @@ templ agentTimelineActions(row agentTimelineRow) {
 }
 
 templ retryQueueSection(snapshot telemetry.Snapshot) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+	<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5">
 		@panelHeader(icon.ListRestart(icon.Props{Class: "size-4 shrink-0"}), "Retry queue", helpBackoffQueue, "retry-queue") {
-			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-warning-soft px-2 py-1 text-sm font-medium text-warning">{ formatCount(queueCount(snapshot)) }</span>
+			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-warn/15 px-2 py-1 text-sm font-medium text-warn">{ formatCount(queueCount(snapshot)) }</span>
 		}
 		if len(snapshot.Queue) == 0 {
 			if queueCount(snapshot) > 0 {
 				<div class="mt-4">
-					@dashboardEmptyState("Retry queue details are unavailable.", "The queue count is live, but retry rows have not arrived in this snapshot.", "bg-warning")
+					@dashboardEmptyState("Retry queue details are unavailable.", "The queue count is live, but retry rows have not arrived in this snapshot.", "bg-warn")
 				</div>
 			} else {
 				<div class="mt-4">
-					@dashboardEmptyState("No issues are currently backing off.", "Retrying work will appear here with its next due time.", "bg-warning")
+					@dashboardEmptyState("No issues are currently backing off.", "Retrying work will appear here with its next due time.", "bg-warn")
 				</div>
 			}
 		} else {
@@ -3468,11 +3448,11 @@ templ retryQueueSection(snapshot telemetry.Snapshot) {
 					@retryQueueMobileCard(row, i)
 				}
 			</div>
-			<div class="mt-4 hidden overflow-hidden rounded-md border border-border sm:block">
+			<div class="mt-4 hidden overflow-hidden rounded-md border border-line sm:block">
 				<div class="overflow-x-auto" data-preserve-scroll="retry-queue">
 					<table class="dashboard-table w-full min-w-[54rem] table-fixed border-collapse text-sm">
-						<thead class="bg-muted/70">
-							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
+						<thead class="bg-elev/70">
+							<tr class="border-b border-line text-left text-xs font-medium uppercase text-sec">
 								<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
 								<th class="w-[7rem] px-3 py-3 font-medium">Attempt</th>
 								<th class="w-[13rem] px-3 py-3 font-medium">Due time</th>
@@ -3483,13 +3463,13 @@ templ retryQueueSection(snapshot telemetry.Snapshot) {
 						</thead>
 						<tbody>
 							for i, row := range snapshot.Queue {
-								<tr class="border-b border-border transition-colors last:border-b-0 hover:bg-muted/50">
+								<tr class="border-b border-line transition-colors last:border-b-0 hover:bg-elev/50">
 									<td class="px-3 py-4 align-top">
 										@issueCell(row.Issue, "retry", i, true)
 									</td>
-									<td class="px-3 py-4 align-top font-mono text-foreground">{ formatInt(int64(row.Attempt)) }</td>
-									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ queuedDueLabel(row) }</td>
-									<td class="px-3 py-4 align-top text-muted-foreground">
+									<td class="px-3 py-4 align-top font-mono text-text">{ formatInt(int64(row.Attempt)) }</td>
+									<td class="px-3 py-4 align-top font-mono text-sec">{ queuedDueLabel(row) }</td>
+									<td class="px-3 py-4 align-top text-sec">
 										<span class="line-clamp-3">{ rowError(row.Error) }</span>
 									</td>
 								</tr>
@@ -3503,13 +3483,13 @@ templ retryQueueSection(snapshot telemetry.Snapshot) {
 }
 
 templ schedulerRuntimeSection(snapshot telemetry.Snapshot) {
-	<section id="scheduler-runtime" class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+	<section id="scheduler-runtime" class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
 				@helpHeading2("Scheduler runtime", helpWorkflowMetrics, "scheduler-runtime")
-				<p class="text-sm text-muted-foreground">Durable attempts, leases, and recent scheduling decisions.</p>
+				<p class="text-sm text-sec">Durable attempts, leases, and recent scheduling decisions.</p>
 			</div>
-			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ schedulerRuntimeCount(snapshot) }</span>
+			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent/15 px-2 py-1 text-sm font-medium text-accent">{ schedulerRuntimeCount(snapshot) }</span>
 		</div>
 		if len(schedulerWorkAttemptRows(snapshot)) == 0 && len(schedulerDecisionRows(snapshot)) == 0 {
 			<div class="mt-4">
@@ -3519,38 +3499,38 @@ templ schedulerRuntimeSection(snapshot telemetry.Snapshot) {
 			<div class="mt-4 grid gap-4 xl:grid-cols-2">
 				<div class="min-w-0">
 					<div class="mb-2 flex items-center justify-between gap-3">
-						<h3 class="text-sm font-medium text-foreground">Work attempts</h3>
-						<span class="font-mono text-xs text-muted-foreground">{ formatCount(len(schedulerWorkAttemptRows(snapshot))) }</span>
+						<h3 class="text-sm font-medium text-text">Work attempts</h3>
+						<span class="font-mono text-xs text-sec">{ formatCount(len(schedulerWorkAttemptRows(snapshot))) }</span>
 					</div>
 					if len(schedulerWorkAttemptRows(snapshot)) == 0 {
 						@dashboardEmptyState("No work attempts recorded.", "Active and recovered leases will appear here.", "bg-accent")
 					} else {
 						<div class="grid gap-2">
 							for _, row := range schedulerWorkAttemptRows(snapshot) {
-								<article class="rounded-md border border-border bg-muted/30 p-3">
+								<article class="rounded-md border border-line bg-elev/30 p-3">
 									<div class="flex min-w-0 items-start justify-between gap-3">
 										<div class="min-w-0">
-											<div class="truncate font-mono text-sm font-medium text-foreground">{ workAttemptIssueLabel(row) }</div>
-											<div class="mt-1 truncate text-xs text-muted-foreground">{ workAttemptWorkerLabel(row) }</div>
+											<div class="truncate font-mono text-sm font-medium text-text">{ workAttemptIssueLabel(row) }</div>
+											<div class="mt-1 truncate text-xs text-sec">{ workAttemptWorkerLabel(row) }</div>
 										</div>
 										<span class={ workAttemptStatusClass(row) }>{ workAttemptStatusLabel(row) }</span>
 									</div>
 									<div class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
 										<div class="min-w-0">
-											<span class="block text-xs font-medium uppercase text-muted-foreground">Phase</span>
-											<span class="block truncate font-mono text-foreground">{ workAttemptPhaseLabel(row) }</span>
+											<span class="block text-xs font-medium uppercase text-sec">Phase</span>
+											<span class="block truncate font-mono text-text">{ workAttemptPhaseLabel(row) }</span>
 										</div>
 										<div class="min-w-0">
-											<span class="block text-xs font-medium uppercase text-muted-foreground">Wait</span>
-											<span class="block truncate font-mono text-foreground">{ workAttemptWaitLabel(row) }</span>
+											<span class="block text-xs font-medium uppercase text-sec">Wait</span>
+											<span class="block truncate font-mono text-text">{ workAttemptWaitLabel(row) }</span>
 										</div>
 										<div class="min-w-0">
-											<span class="block text-xs font-medium uppercase text-muted-foreground">Lease</span>
-											<span class="block truncate font-mono text-foreground">{ workAttemptLeaseLabel(row, snapshot.GeneratedAt) }</span>
+											<span class="block text-xs font-medium uppercase text-sec">Lease</span>
+											<span class="block truncate font-mono text-text">{ workAttemptLeaseLabel(row, snapshot.GeneratedAt) }</span>
 										</div>
 										<div class="min-w-0">
-											<span class="block text-xs font-medium uppercase text-muted-foreground">Next</span>
-											<span class="block truncate font-mono text-foreground">{ workAttemptNextActionLabel(row) }</span>
+											<span class="block text-xs font-medium uppercase text-sec">Next</span>
+											<span class="block truncate font-mono text-text">{ workAttemptNextActionLabel(row) }</span>
 										</div>
 									</div>
 								</article>
@@ -3560,38 +3540,38 @@ templ schedulerRuntimeSection(snapshot telemetry.Snapshot) {
 				</div>
 				<div class="min-w-0">
 					<div class="mb-2 flex items-center justify-between gap-3">
-						<h3 class="text-sm font-medium text-foreground">Candidate decisions</h3>
-						<span class="font-mono text-xs text-muted-foreground">{ formatCount(len(schedulerDecisionRows(snapshot))) }</span>
+						<h3 class="text-sm font-medium text-text">Candidate decisions</h3>
+						<span class="font-mono text-xs text-sec">{ formatCount(len(schedulerDecisionRows(snapshot))) }</span>
 					</div>
 					if len(schedulerDecisionRows(snapshot)) == 0 {
-						@dashboardEmptyState("No candidate decisions recorded.", "Selected and skipped candidates will appear here.", "bg-warning")
+						@dashboardEmptyState("No candidate decisions recorded.", "Selected and skipped candidates will appear here.", "bg-warn")
 					} else {
 						<div class="grid gap-2">
 							for _, row := range schedulerDecisionRows(snapshot) {
-								<article class="rounded-md border border-border bg-muted/30 p-3">
+								<article class="rounded-md border border-line bg-elev/30 p-3">
 									<div class="flex min-w-0 items-start justify-between gap-3">
 										<div class="min-w-0">
-											<div class="truncate font-mono text-sm font-medium text-foreground">{ schedulerDecisionIssueLabel(row) }</div>
-											<div class="mt-1 truncate text-xs text-muted-foreground">{ schedulerDecisionLaneLabel(row) }</div>
+											<div class="truncate font-mono text-sm font-medium text-text">{ schedulerDecisionIssueLabel(row) }</div>
+											<div class="mt-1 truncate text-xs text-sec">{ schedulerDecisionLaneLabel(row) }</div>
 										</div>
 										<span class={ schedulerDecisionStatusClass(row) }>{ schedulerDecisionStatusLabel(row) }</span>
 									</div>
 									<div class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
 										<div class="min-w-0">
-											<span class="block text-xs font-medium uppercase text-muted-foreground">Reason</span>
-											<span class="block truncate font-mono text-foreground">{ schedulerDecisionReasonLabel(row) }</span>
+											<span class="block text-xs font-medium uppercase text-sec">Reason</span>
+											<span class="block truncate font-mono text-text">{ schedulerDecisionReasonLabel(row) }</span>
 										</div>
 										<div class="min-w-0">
-											<span class="block text-xs font-medium uppercase text-muted-foreground">Wait</span>
-											<span class="block truncate font-mono text-foreground">{ schedulerDecisionWaitLabel(row) }</span>
+											<span class="block text-xs font-medium uppercase text-sec">Wait</span>
+											<span class="block truncate font-mono text-text">{ schedulerDecisionWaitLabel(row) }</span>
 										</div>
 										<div class="min-w-0">
-											<span class="block text-xs font-medium uppercase text-muted-foreground">Queue</span>
-											<span class="block truncate font-mono text-foreground">{ schedulerDecisionQueueLabel(row) }</span>
+											<span class="block text-xs font-medium uppercase text-sec">Queue</span>
+											<span class="block truncate font-mono text-text">{ schedulerDecisionQueueLabel(row) }</span>
 										</div>
 										<div class="min-w-0">
-											<span class="block text-xs font-medium uppercase text-muted-foreground">At</span>
-											<span class="block truncate font-mono text-foreground">{ schedulerDecisionTimeLabel(row) }</span>
+											<span class="block text-xs font-medium uppercase text-sec">At</span>
+											<span class="block truncate font-mono text-text">{ schedulerDecisionTimeLabel(row) }</span>
 										</div>
 									</div>
 								</article>
@@ -3605,37 +3585,37 @@ templ schedulerRuntimeSection(snapshot telemetry.Snapshot) {
 }
 
 templ retryQueueMobileCard(row telemetry.Queued, rowIndex int) {
-	<article class="dashboard-card rounded-md border border-border bg-card p-3 shadow-sm">
+	<article class="dashboard-card rounded-md border border-line bg-surface p-3 shadow-sm">
 		@issueCell(row.Issue, "retry-mobile", rowIndex, true)
 		<div class="mt-3 grid gap-2 text-sm">
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				<span class="text-muted-foreground">Attempt</span>
-				<span class="font-mono text-foreground">{ formatInt(int64(row.Attempt)) }</span>
+				<span class="text-sec">Attempt</span>
+				<span class="font-mono text-text">{ formatInt(int64(row.Attempt)) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				<span class="text-muted-foreground">Due time</span>
-				<span class="font-mono text-foreground">{ queuedDueLabel(row) }</span>
+				<span class="text-sec">Due time</span>
+				<span class="font-mono text-text">{ queuedDueLabel(row) }</span>
 			</div>
 		</div>
-		<div class="mt-3 rounded-md bg-muted/60 p-3 text-sm text-muted-foreground">
+		<div class="mt-3 rounded-md bg-elev/60 p-3 text-sm text-sec">
 			<span class="line-clamp-4">{ rowError(row.Error) }</span>
 		</div>
 	</article>
 }
 
 templ blockedSessionsSection(snapshot telemetry.Snapshot) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+	<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5">
 		@panelHeader(icon.CircleAlert(icon.Props{Class: "size-4 shrink-0"}), "Blocked sessions", helpBlocked, "blocked-sessions") {
-			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-danger-soft px-2 py-1 text-sm font-medium text-danger">{ formatCount(blockedCount(snapshot)) }</span>
+			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-err/15 px-2 py-1 text-sm font-medium text-err">{ formatCount(blockedCount(snapshot)) }</span>
 		}
 		if len(snapshot.Blocked) == 0 {
 			if blockedCount(snapshot) > 0 {
 				<div class="mt-4">
-					@dashboardEmptyState("Blocked session details are unavailable.", "The blocked count is live, but detailed rows have not arrived in this snapshot.", "bg-danger")
+					@dashboardEmptyState("Blocked session details are unavailable.", "The blocked count is live, but detailed rows have not arrived in this snapshot.", "bg-err")
 				</div>
 			} else {
 				<div class="mt-4">
-					@dashboardEmptyState("No blocked sessions.", "Operator requests and approval waits will appear here.", "bg-danger")
+					@dashboardEmptyState("No blocked sessions.", "Operator requests and approval waits will appear here.", "bg-err")
 				</div>
 			}
 		} else {
@@ -3644,11 +3624,11 @@ templ blockedSessionsSection(snapshot telemetry.Snapshot) {
 					@blockedSessionMobileCard(row, i)
 				}
 			</div>
-			<div class="mt-4 hidden overflow-hidden rounded-md border border-border sm:block">
+			<div class="mt-4 hidden overflow-hidden rounded-md border border-line sm:block">
 				<div class="overflow-x-auto" data-preserve-scroll="blocked-sessions">
 					<table class="dashboard-table w-full min-w-[68rem] table-fixed border-collapse text-sm">
-						<thead class="bg-muted/70">
-							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
+						<thead class="bg-elev/70">
+							<tr class="border-b border-line text-left text-xs font-medium uppercase text-sec">
 								<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
 								<th class="w-[9rem] px-3 py-3 font-medium">State</th>
 								<th class="w-[11rem] px-3 py-3 font-medium">
@@ -3665,24 +3645,24 @@ templ blockedSessionsSection(snapshot telemetry.Snapshot) {
 						</thead>
 						<tbody>
 							for i, row := range snapshot.Blocked {
-								<tr class="border-b border-border transition-colors last:border-b-0 hover:bg-muted/50">
+								<tr class="border-b border-line transition-colors last:border-b-0 hover:bg-elev/50">
 									<td class="px-3 py-4 align-top">
 										@issueCell(row.Issue, "blocked", i, true)
 									</td>
 									<td class="px-3 py-4 align-top">
-										<span class="inline-flex rounded-full bg-danger-soft px-2 py-1 font-medium text-danger">{ issueState(row.Issue, "Blocked") }</span>
+										<span class="inline-flex rounded-full bg-err/15 px-2 py-1 font-medium text-err">{ issueState(row.Issue, "Blocked") }</span>
 									</td>
 									<td class="px-3 py-4 align-top">
 										@sessionCopyButton(row.SessionID)
 									</td>
-									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ blockedAtLabel(row) }</td>
+									<td class="px-3 py-4 align-top font-mono text-sec">{ blockedAtLabel(row) }</td>
 									<td class="px-3 py-4 align-top">
 										<div class="grid gap-1">
-											<span class="line-clamp-2 text-foreground">{ blockedLastUpdate(row) }</span>
-											<span class="font-mono text-xs text-muted-foreground">{ blockedLastUpdateMeta(row) }</span>
+											<span class="line-clamp-2 text-text">{ blockedLastUpdate(row) }</span>
+											<span class="font-mono text-xs text-sec">{ blockedLastUpdateMeta(row) }</span>
 										</div>
 									</td>
-									<td class="px-3 py-4 align-top text-muted-foreground">
+									<td class="px-3 py-4 align-top text-sec">
 										<span class="line-clamp-3">{ rowError(row.Error) }</span>
 									</td>
 								</tr>
@@ -3696,23 +3676,23 @@ templ blockedSessionsSection(snapshot telemetry.Snapshot) {
 }
 
 templ blockedSessionMobileCard(row telemetry.Blocked, rowIndex int) {
-	<article class="dashboard-card rounded-md border border-border bg-card p-3 shadow-sm">
+	<article class="dashboard-card rounded-md border border-line bg-surface p-3 shadow-sm">
 		@issueCell(row.Issue, "blocked-mobile", rowIndex, true)
 		<div class="mt-3 grid gap-2 text-sm">
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				<span class="text-muted-foreground">State</span>
-				<span class="rounded-full bg-danger-soft px-2 py-1 font-medium text-danger">{ issueState(row.Issue, "Blocked") }</span>
+				<span class="text-sec">State</span>
+				<span class="rounded-full bg-err/15 px-2 py-1 font-medium text-err">{ issueState(row.Issue, "Blocked") }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				<span class="text-muted-foreground">Blocked time</span>
-				<span class="font-mono text-foreground">{ blockedAtLabel(row) }</span>
+				<span class="text-sec">Blocked time</span>
+				<span class="font-mono text-text">{ blockedAtLabel(row) }</span>
 			</div>
 		</div>
-		<div class="mt-3 rounded-md bg-muted/60 p-3">
-			<span class="line-clamp-3 text-sm text-foreground">{ blockedLastUpdate(row) }</span>
-			<span class="mt-1 block font-mono text-xs text-muted-foreground">{ blockedLastUpdateMeta(row) }</span>
+		<div class="mt-3 rounded-md bg-elev/60 p-3">
+			<span class="line-clamp-3 text-sm text-text">{ blockedLastUpdate(row) }</span>
+			<span class="mt-1 block font-mono text-xs text-sec">{ blockedLastUpdateMeta(row) }</span>
 		</div>
-		<div class="mt-3 rounded-md bg-muted/60 p-3 text-sm text-muted-foreground">
+		<div class="mt-3 rounded-md bg-elev/60 p-3 text-sm text-sec">
 			<span class="line-clamp-4">{ rowError(row.Error) }</span>
 		</div>
 		<div class="mt-3">
@@ -3722,18 +3702,18 @@ templ blockedSessionMobileCard(row telemetry.Blocked, rowIndex int) {
 }
 
 templ recentSessionsSection(snapshot telemetry.Snapshot) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+	<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5">
 		@panelHeader(icon.ClockCheck(icon.Props{Class: "size-4 shrink-0"}), "Recent sessions", helpRecentSessions, "recent-sessions") {
-			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-success-soft px-2 py-1 text-sm font-medium text-success">{ formatCount(completedCount(snapshot)) }</span>
+			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-ok/15 px-2 py-1 text-sm font-medium text-ok">{ formatCount(completedCount(snapshot)) }</span>
 		}
 		if len(snapshot.Completed) == 0 {
 			if completedCount(snapshot) > 0 {
 				<div class="mt-4">
-					@dashboardEmptyState("Completed session details are unavailable.", "The completed count is live, but session rows have not arrived in this snapshot.", "bg-success")
+					@dashboardEmptyState("Completed session details are unavailable.", "The completed count is live, but session rows have not arrived in this snapshot.", "bg-ok")
 				</div>
 			} else {
 				<div class="mt-4">
-					@dashboardEmptyState("No completed sessions recorded.", "Finished Codex sessions will appear here after work completes.", "bg-success")
+					@dashboardEmptyState("No completed sessions recorded.", "Finished Codex sessions will appear here after work completes.", "bg-ok")
 				</div>
 			}
 		} else {
@@ -3742,11 +3722,11 @@ templ recentSessionsSection(snapshot telemetry.Snapshot) {
 					@recentSessionMobileCard(row, i)
 				}
 			</div>
-			<div class="mt-4 hidden overflow-hidden rounded-md border border-border sm:block">
+			<div class="mt-4 hidden overflow-hidden rounded-md border border-line sm:block">
 				<div class="overflow-x-auto" data-preserve-scroll="recent-sessions">
 					<table class="dashboard-table w-full min-w-[74rem] table-fixed border-collapse text-sm">
-						<thead class="bg-muted/70">
-							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
+						<thead class="bg-elev/70">
+							<tr class="border-b border-line text-left text-xs font-medium uppercase text-sec">
 								<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
 								<th class="w-[13rem] px-3 py-3 font-medium">Completed</th>
 								<th class="w-[11rem] px-3 py-3 font-medium">
@@ -3764,22 +3744,22 @@ templ recentSessionsSection(snapshot telemetry.Snapshot) {
 						</thead>
 						<tbody>
 							for i, row := range snapshot.Completed {
-								<tr class="border-b border-border transition-colors last:border-b-0 hover:bg-muted/50">
+								<tr class="border-b border-line transition-colors last:border-b-0 hover:bg-elev/50">
 									<td class="px-3 py-4 align-top">
 										@issueCell(row.Issue, "recent", i, false)
 									</td>
-									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ completedAtLabel(row) }</td>
-									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ completedRuntime(row) }</td>
+									<td class="px-3 py-4 align-top font-mono text-sec">{ completedAtLabel(row) }</td>
+									<td class="px-3 py-4 align-top font-mono text-sec">{ completedRuntime(row) }</td>
 									<td class="px-3 py-4 align-top">
 										<div class="grid gap-1 font-mono">
-											<span class="font-medium text-foreground">{ formatTokens(row.Tokens) }</span>
-											<span class="text-xs text-muted-foreground">{ formatTokenBreakdown(row.Tokens) }</span>
+											<span class="font-medium text-text">{ formatTokens(row.Tokens) }</span>
+											<span class="text-xs text-sec">{ formatTokenBreakdown(row.Tokens) }</span>
 										</div>
 									</td>
 									<td class="px-3 py-4 align-top">
-										<span class="inline-flex rounded-full bg-success-soft px-2 py-1 font-medium text-success">{ completedState(row) }</span>
+										<span class="inline-flex rounded-full bg-ok/15 px-2 py-1 font-medium text-ok">{ completedState(row) }</span>
 									</td>
-									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ completedModel(row) }</td>
+									<td class="px-3 py-4 align-top font-mono text-sec">{ completedModel(row) }</td>
 									<td class="px-3 py-4 align-top">
 										@sessionCopyButton(row.SessionID)
 									</td>
@@ -3794,28 +3774,28 @@ templ recentSessionsSection(snapshot telemetry.Snapshot) {
 }
 
 templ recentSessionMobileCard(row telemetry.Completed, rowIndex int) {
-	<article class="dashboard-card rounded-md border border-border bg-card p-3 shadow-sm">
+	<article class="dashboard-card rounded-md border border-line bg-surface p-3 shadow-sm">
 		@issueCell(row.Issue, "recent-mobile", rowIndex, false)
 		<div class="mt-3 grid gap-2 text-sm">
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				<span class="text-muted-foreground">Completed</span>
-				<span class="font-mono text-foreground">{ completedAtLabel(row) }</span>
+				<span class="text-sec">Completed</span>
+				<span class="font-mono text-text">{ completedAtLabel(row) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				@plainInlineLabel("Runtime / turns", "text-muted-foreground")
-				<span class="font-mono text-foreground">{ completedRuntime(row) }</span>
+				@plainInlineLabel("Runtime / turns", "text-sec")
+				<span class="font-mono text-text">{ completedRuntime(row) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				@plainInlineLabel("Tokens", "text-muted-foreground")
-				<span class="font-mono text-foreground">{ formatTokens(row.Tokens) }</span>
+				@plainInlineLabel("Tokens", "text-sec")
+				<span class="font-mono text-text">{ formatTokens(row.Tokens) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				<span class="text-muted-foreground">Final state</span>
-				<span class="rounded-full bg-success-soft px-2 py-1 font-medium text-success">{ completedState(row) }</span>
+				<span class="text-sec">Final state</span>
+				<span class="rounded-full bg-ok/15 px-2 py-1 font-medium text-ok">{ completedState(row) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				<span class="text-muted-foreground">Model</span>
-				<span class="font-mono text-foreground">{ completedModel(row) }</span>
+				<span class="text-sec">Model</span>
+				<span class="font-mono text-text">{ completedModel(row) }</span>
 			</div>
 		</div>
 		<div class="mt-3">
@@ -3843,11 +3823,11 @@ templ issueCell(issue telemetry.Issue, prefix string, rowIndex int, jsonDetails 
 		<div class="flex min-w-0 items-start gap-2">
 			<div class="min-w-0 flex-1 basis-0 overflow-hidden text-left">
 				@issueIdentityLine(issueIdentity(issue), false)
-				<span class="line-clamp-2 break-words text-muted-foreground">{ issueTitle(issue) }</span>
+				<span class="line-clamp-2 break-words text-sec">{ issueTitle(issue) }</span>
 			</div>
 			<div class="flex shrink-0 flex-wrap items-start justify-end gap-1.5">
 				if issueProjectLabel(issue) != "" {
-					<span class="inline-flex max-w-[9rem] overflow-hidden rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground" title={ "Project " + issueProjectLabel(issue) }>
+					<span class="inline-flex max-w-[9rem] overflow-hidden rounded-full bg-elev px-2 py-1 font-mono text-xs text-sec" title={ "Project " + issueProjectLabel(issue) }>
 						<span class="min-w-0 truncate">{ issueProjectLabel(issue) }</span>
 					</span>
 				}
@@ -3861,10 +3841,10 @@ templ issueCell(issue telemetry.Issue, prefix string, rowIndex int, jsonDetails 
 			</div>
 		</div>
 		if issueDescriptionPreview(issue) != "" {
-			<p class="line-clamp-2 text-xs text-muted-foreground">{ issueDescriptionPreview(issue) }</p>
+			<p class="line-clamp-2 text-xs text-sec">{ issueDescriptionPreview(issue) }</p>
 		}
 		if issueClaimSummary(issue) != "" {
-			<p class="line-clamp-2 font-mono text-xs text-muted-foreground">{ issueClaimSummary(issue) }</p>
+			<p class="line-clamp-2 font-mono text-xs text-sec">{ issueClaimSummary(issue) }</p>
 		}
 		if jsonDetails && issueDetailURL(issue) != "" {
 			<a class="w-fit text-xs font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ issueDetailURL(issue) }>JSON details</a>
@@ -3889,7 +3869,7 @@ templ pullRequestOpenLink(url string, label string, compact bool) {
 templ issueCopyButton(value string) {
 	<button
 		type="button"
-		class="issue-copy issue-external inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+		class="issue-copy issue-external inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-line bg-surface text-sec hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
 		data-label="Copy issue URL"
 		data-copy={ value }
 		title={ "Copy " + value }
@@ -3903,7 +3883,7 @@ templ issueCopyButton(value string) {
 templ diagnosticPromptCopyButton(value string, label string, title string) {
 	<button
 		type="button"
-		class="inline-flex min-h-9 max-w-full items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+		class="inline-flex min-h-9 max-w-full items-center gap-2 rounded-md border border-line bg-surface px-2.5 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
 		data-label={ label }
 		data-copy={ value }
 		title={ title }
@@ -3917,11 +3897,11 @@ templ diagnosticPromptCopyButton(value string, label string, title string) {
 
 templ sessionCopyButton(sessionID string) {
 	if sessionID == "" {
-		<span class="font-mono text-muted-foreground">n/a</span>
+		<span class="font-mono text-sec">n/a</span>
 	} else {
 		<button
 			type="button"
-			class="inline-flex min-h-10 max-w-full items-center gap-2 rounded-md border border-border bg-muted px-3 py-2 font-mono text-xs text-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+			class="inline-flex min-h-10 max-w-full items-center gap-2 rounded-md border border-line bg-elev px-3 py-2 font-mono text-xs text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
 			data-label={ sessionLabel(sessionID) }
 			data-copy={ sessionID }
 			title={ "Copy " + sessionID }
@@ -3943,15 +3923,15 @@ templ budgetCard(snapshot telemetry.Snapshot) {
 		}
 		if !budgetDisabled(snapshot.Budget) {
 			@panelHeader(icon.Wallet(icon.Props{Class: "size-4 shrink-0"}), "Budget", helpBudget, "budget-card") {
-				<span class="shrink-0 rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ budgetStatus(snapshot.Budget) }</span>
+				<span class="shrink-0 rounded-full bg-elev px-2 py-1 text-xs font-medium text-sec">{ budgetStatus(snapshot.Budget) }</span>
 			}
 			<div class="mt-5 grid gap-4 text-sm">
 				<div class="grid gap-2">
 					<div class="flex items-center justify-between gap-4">
-						@plainInlineLabel("Spend today", "text-muted-foreground")
-						<strong class="font-mono font-medium text-foreground">{ budgetSpendTodayLabel(snapshot.Budget) }</strong>
+						@plainInlineLabel("Spend today", "text-sec")
+						<strong class="font-mono font-medium text-text">{ budgetSpendTodayLabel(snapshot.Budget) }</strong>
 					</div>
-					<div class="h-2 overflow-hidden rounded-full bg-muted" aria-label="Daily budget usage">
+					<div class="h-2 overflow-hidden rounded-full bg-elev" aria-label="Daily budget usage">
 						<div class="h-full rounded-full bg-accent transition-all" style={ budgetDailyUsageStyle(snapshot.Budget) }></div>
 					</div>
 				</div>
@@ -3960,11 +3940,11 @@ templ budgetCard(snapshot telemetry.Snapshot) {
 				} else {
 					<div class="grid gap-3">
 						<div class="flex items-center justify-between gap-4">
-							@plainInlineLabel("Cost burn-down", "font-medium text-muted-foreground")
-							<span class="font-mono text-xs text-muted-foreground">{ budgetBurnDownView(snapshot).PeriodLabel }</span>
+							@plainInlineLabel("Cost burn-down", "font-medium text-sec")
+							<span class="font-mono text-xs text-sec">{ budgetBurnDownView(snapshot).PeriodLabel }</span>
 						</div>
 						@BudgetProjectionChart(budgetBurnDownView(snapshot).Chart)
-						<div class="grid grid-cols-3 gap-2 font-mono text-xs text-muted-foreground">
+						<div class="grid grid-cols-3 gap-2 font-mono text-xs text-sec">
 							<span>Spend { budgetBurnDownView(snapshot).CurrentLabel }</span>
 							<span>Cap { budgetBurnDownView(snapshot).CapLabel }</span>
 							<span>Projected { budgetBurnDownView(snapshot).ProjectionLabel }</span>
@@ -3976,10 +3956,10 @@ templ budgetCard(snapshot telemetry.Snapshot) {
 				} else {
 					<div class="grid gap-2">
 						<div class="flex items-center justify-between gap-4">
-							@plainInlineLabel("Budget history", "font-medium text-muted-foreground")
-							<span class="font-mono text-xs text-muted-foreground">{ budgetHistoryCount(snapshot.Budget) }</span>
+							@plainInlineLabel("Budget history", "font-medium text-sec")
+							<span class="font-mono text-xs text-sec">{ budgetHistoryCount(snapshot.Budget) }</span>
 						</div>
-						<div class="grid h-12 grid-cols-7 items-end gap-1 rounded-md border border-border bg-muted px-2 py-2" aria-label="Spend over the last seven days">
+						<div class="grid h-12 grid-cols-7 items-end gap-1 rounded-md border border-line bg-elev px-2 py-2" aria-label="Spend over the last seven days">
 							for _, bar := range budgetHistoryBars(snapshot.Budget) {
 								<span class="block min-h-1 rounded-t bg-accent opacity-80" style={ bar.Style } title={ bar.Title }>
 									<span class="sr-only">{ bar.Title }</span>
@@ -3988,18 +3968,18 @@ templ budgetCard(snapshot telemetry.Snapshot) {
 						</div>
 					</div>
 				}
-				<div class="grid gap-3 border-t border-border pt-3">
+				<div class="grid gap-3 border-t border-line pt-3">
 					<div class="flex items-center justify-between gap-4">
-						@plainInlineLabel("Projected", "text-muted-foreground")
-						<strong class="font-mono font-medium text-foreground">{ budgetBurnDownView(snapshot).ProjectionLabel }</strong>
+						@plainInlineLabel("Projected", "text-sec")
+						<strong class="font-mono font-medium text-text">{ budgetBurnDownView(snapshot).ProjectionLabel }</strong>
 					</div>
 					<div class="flex items-center justify-between gap-4">
-						@plainInlineLabel("Daily cap", "text-muted-foreground")
-						<strong class="font-mono font-medium text-foreground">{ optionalUSD(snapshot.Budget.PerDayMaxUSD) }</strong>
+						@plainInlineLabel("Daily cap", "text-sec")
+						<strong class="font-mono font-medium text-text">{ optionalUSD(snapshot.Budget.PerDayMaxUSD) }</strong>
 					</div>
 					<div class="flex items-center justify-between gap-4">
-						@plainInlineLabel("Issue cap", "text-muted-foreground")
-						<strong class="font-mono font-medium text-foreground">{ optionalUSD(snapshot.Budget.PerIssueMaxUSD) }</strong>
+						@plainInlineLabel("Issue cap", "text-sec")
+						<strong class="font-mono font-medium text-text">{ optionalUSD(snapshot.Budget.PerIssueMaxUSD) }</strong>
 					</div>
 				</div>
 			</div>
@@ -4008,13 +3988,13 @@ templ budgetCard(snapshot telemetry.Snapshot) {
 }
 
 templ budgetDisabledNote() {
-	<p class="truncate text-sm text-muted-foreground">Budget disabled - enable a daily cap in configuration.</p>
+	<p class="truncate text-sm text-sec">Budget disabled - enable a daily cap in configuration.</p>
 }
 
 templ rateLimitsCard(limits *RateLimits) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+	<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5">
 		@panelHeader(icon.Gauge(icon.Props{Class: "size-4 shrink-0"}), "Rate limits", helpRateLimits, "rate-limits-card") {
-			<span class="shrink-0 rounded-full bg-accent-soft px-2 py-1 text-xs font-medium text-accent">{ rateLimitName(limits) }</span>
+			<span class="shrink-0 rounded-full bg-accent/15 px-2 py-1 text-xs font-medium text-accent">{ rateLimitName(limits) }</span>
 		}
 		if len(rateLimitRows(limits)) == 0 {
 			<div class="mt-4">
@@ -4025,13 +4005,13 @@ templ rateLimitsCard(limits *RateLimits) {
 				for _, row := range rateLimitRows(limits) {
 					<div class="grid gap-2">
 						<div class="flex items-center justify-between gap-3">
-							@plainInlineLabel(row.Name, "font-medium text-foreground")
-							<span class="font-mono text-sm text-muted-foreground">{ row.Reset }</span>
+							@plainInlineLabel(row.Name, "font-medium text-text")
+							<span class="font-mono text-sm text-sec">{ row.Reset }</span>
 						</div>
-						<div class="h-2 overflow-hidden rounded-full bg-muted">
+						<div class="h-2 overflow-hidden rounded-full bg-elev">
 							<div class="h-full rounded-full bg-accent transition-all" style={ percentStyle(row.UsedPercent) }></div>
 						</div>
-						<div class="grid grid-cols-3 gap-2 font-mono text-xs text-muted-foreground">
+						<div class="grid grid-cols-3 gap-2 font-mono text-xs text-sec">
 							<span>{ row.Remaining }</span>
 							<span>{ row.Used }</span>
 							<span>{ row.Limit }</span>
@@ -4045,36 +4025,36 @@ templ rateLimitsCard(limits *RateLimits) {
 
 templ graphQLBudgetCard(data DashboardData) {
 	if hasGraphQLBudget(data.Snapshot.RateLimits) {
-		<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="GraphQL budget">
+		<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5" aria-label="GraphQL budget">
 			@panelHeader(icon.Github(icon.Props{Class: "size-4 shrink-0"}), "GraphQL budget", helpRateLimits, "graphql-budget-card") {
-				<span class="shrink-0 rounded-full bg-warning-soft px-2 py-1 font-mono text-xs font-medium text-warning">{ graphQLBudgetCycleCost(data.Snapshot.RateLimits) }</span>
+				<span class="shrink-0 rounded-full bg-warn/15 px-2 py-1 font-mono text-xs font-medium text-warn">{ graphQLBudgetCycleCost(data.Snapshot.RateLimits) }</span>
 			}
 			<div class="mt-5 grid gap-3">
 				<div class="grid grid-cols-2 gap-3 text-sm">
 					<div class="grid gap-1">
-						<span class="text-muted-foreground">Remaining</span>
-						<strong class="break-all font-mono text-base font-semibold text-foreground">{ graphQLBudgetRemaining(data.Snapshot.RateLimits) }</strong>
+						<span class="text-sec">Remaining</span>
+						<strong class="break-all font-mono text-base font-semibold text-text">{ graphQLBudgetRemaining(data.Snapshot.RateLimits) }</strong>
 					</div>
 					<div class="grid gap-1">
-						<span class="text-muted-foreground">Reset</span>
-						<strong class="font-mono text-base font-semibold text-foreground">{ graphQLBudgetReset(data.Snapshot.RateLimits, data.Snapshot.GeneratedAt) }</strong>
-						<span class="font-mono text-xs text-muted-foreground">{ graphQLBudgetResetAt(data.Snapshot.RateLimits) }</span>
+						<span class="text-sec">Reset</span>
+						<strong class="font-mono text-base font-semibold text-text">{ graphQLBudgetReset(data.Snapshot.RateLimits, data.Snapshot.GeneratedAt) }</strong>
+						<span class="font-mono text-xs text-sec">{ graphQLBudgetResetAt(data.Snapshot.RateLimits) }</span>
 					</div>
 				</div>
-				<div class="flex items-center justify-between gap-3 border-t border-border pt-3 text-sm">
-					<span class="text-muted-foreground">Cycle queries</span>
-					<strong class="font-mono font-medium text-foreground">{ graphQLBudgetQueryCount(data.Snapshot.RateLimits) }</strong>
+				<div class="flex items-center justify-between gap-3 border-t border-line pt-3 text-sm">
+					<span class="text-sec">Cycle queries</span>
+					<strong class="font-mono font-medium text-text">{ graphQLBudgetQueryCount(data.Snapshot.RateLimits) }</strong>
 				</div>
 				if len(graphQLBudgetContributorRows(data.Snapshot.RateLimits)) == 0 {
-					@dashboardEmptyState("No GraphQL query costs this cycle.", "Query contributors will appear after the GitHub connector reports rateLimit cost.", "bg-warning")
+					@dashboardEmptyState("No GraphQL query costs this cycle.", "Query contributors will appear after the GitHub connector reports rateLimit cost.", "bg-warn")
 				} else {
-					<div class="grid gap-2 border-t border-border pt-3">
+					<div class="grid gap-2 border-t border-line pt-3">
 						for _, row := range graphQLBudgetContributorRows(data.Snapshot.RateLimits) {
 							<div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 text-sm">
-								<span class="truncate font-mono font-medium text-foreground">{ row.QueryType }</span>
-								<span class="font-mono text-muted-foreground">{ row.Cost }</span>
-								<span class="font-mono text-xs text-muted-foreground">{ row.Count }</span>
-								<span class="text-right font-mono text-xs text-muted-foreground">{ row.Percent }</span>
+								<span class="truncate font-mono font-medium text-text">{ row.QueryType }</span>
+								<span class="font-mono text-sec">{ row.Cost }</span>
+								<span class="font-mono text-xs text-sec">{ row.Count }</span>
+								<span class="text-right font-mono text-xs text-sec">{ row.Percent }</span>
 							</div>
 						}
 					</div>
@@ -4086,40 +4066,40 @@ templ graphQLBudgetCard(data DashboardData) {
 
 templ restBudgetCard(data DashboardData) {
 	if hasRESTBudget(data.Snapshot.RateLimits) {
-		<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="REST budget">
+		<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5" aria-label="REST budget">
 			@panelHeader(icon.Server(icon.Props{Class: "size-4 shrink-0"}), "REST budget", helpRateLimits, "rest-budget-card") {
-				<span class="shrink-0 rounded-full bg-warning-soft px-2 py-1 font-mono text-xs font-medium text-warning">{ restBudgetRequestCount(data.Snapshot.RateLimits) }</span>
+				<span class="shrink-0 rounded-full bg-warn/15 px-2 py-1 font-mono text-xs font-medium text-warn">{ restBudgetRequestCount(data.Snapshot.RateLimits) }</span>
 			}
 			<div class="mt-5 grid gap-3">
 				<div class="grid grid-cols-2 gap-3 text-sm">
 					<div class="grid gap-1">
-						<span class="text-muted-foreground">Remaining</span>
-						<strong class="break-all font-mono text-base font-semibold text-foreground">{ restBudgetRemaining(data.Snapshot.RateLimits) }</strong>
+						<span class="text-sec">Remaining</span>
+						<strong class="break-all font-mono text-base font-semibold text-text">{ restBudgetRemaining(data.Snapshot.RateLimits) }</strong>
 					</div>
 					<div class="grid gap-1">
-						<span class="text-muted-foreground">Reset</span>
-						<strong class="font-mono text-base font-semibold text-foreground">{ restBudgetReset(data.Snapshot.RateLimits, data.Snapshot.GeneratedAt) }</strong>
-						<span class="font-mono text-xs text-muted-foreground">{ restBudgetResetAt(data.Snapshot.RateLimits) }</span>
+						<span class="text-sec">Reset</span>
+						<strong class="font-mono text-base font-semibold text-text">{ restBudgetReset(data.Snapshot.RateLimits, data.Snapshot.GeneratedAt) }</strong>
+						<span class="font-mono text-xs text-sec">{ restBudgetResetAt(data.Snapshot.RateLimits) }</span>
 					</div>
 				</div>
 				if len(restBudgetContributorRows(data.Snapshot.RateLimits)) == 0 {
-					@dashboardEmptyState("No REST requests this cycle.", "REST contributors will appear after GitHub REST endpoints are called.", "bg-warning")
+					@dashboardEmptyState("No REST requests this cycle.", "REST contributors will appear after GitHub REST endpoints are called.", "bg-warn")
 				} else {
-					<details class="group border-t border-border pt-3" data-preserve-details="rest-budget-contributors">
-						<summary class="flex cursor-pointer list-none items-center justify-between gap-3 text-sm text-muted-foreground marker:hidden">
-							<span class="font-medium text-foreground">Endpoint details</span>
+					<details class="group border-t border-line pt-3" data-preserve-details="rest-budget-contributors">
+						<summary class="flex cursor-pointer list-none items-center justify-between gap-3 text-sm text-sec marker:hidden">
+							<span class="font-medium text-text">Endpoint details</span>
 							<span class="inline-flex shrink-0 items-center gap-2">
-								<span class="rounded-md bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">{ formatInt(int64(len(restBudgetContributorRows(data.Snapshot.RateLimits)))) }</span>
+								<span class="rounded-md bg-elev px-2 py-1 font-mono text-xs text-sec">{ formatInt(int64(len(restBudgetContributorRows(data.Snapshot.RateLimits)))) }</span>
 								@icon.ChevronDown(icon.Props{Class: "size-3.5 shrink-0 transition-transform group-open:rotate-180"})
 							</span>
 						</summary>
 						<div class="mt-3 grid gap-2">
 							for _, row := range restBudgetContributorRows(data.Snapshot.RateLimits) {
 								<div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 text-sm">
-									<span class="truncate font-mono font-medium text-foreground">{ row.EndpointFamily }</span>
-									<span class="font-mono text-muted-foreground">{ row.Count }</span>
-									<span class="font-mono text-xs text-muted-foreground">{ row.Remaining }</span>
-									<span class="text-right font-mono text-xs text-muted-foreground">{ row.Status }</span>
+									<span class="truncate font-mono font-medium text-text">{ row.EndpointFamily }</span>
+									<span class="font-mono text-sec">{ row.Count }</span>
+									<span class="font-mono text-xs text-sec">{ row.Remaining }</span>
+									<span class="text-right font-mono text-xs text-sec">{ row.Status }</span>
 								</div>
 							}
 						</div>
@@ -4131,26 +4111,26 @@ templ restBudgetCard(data DashboardData) {
 }
 
 templ tokenCard(data DashboardData) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+	<section class="dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5">
 		@panelHeader(icon.Coins(icon.Props{Class: "size-4 shrink-0"}), "Tokens", helpTokens, "tokens-card") {
-			<span class="shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs font-medium text-muted-foreground">{ tokenRate(data.Snapshot) }</span>
+			<span class="shrink-0 rounded-full bg-elev px-2 py-1 font-mono text-xs font-medium text-sec">{ tokenRate(data.Snapshot) }</span>
 		}
 		<div class="mt-5 grid gap-2">
-			<div class="break-all font-mono text-2xl font-semibold text-foreground sm:text-3xl">{ formatTokens(data.Snapshot.Tokens) }</div>
-			<div class="font-mono text-sm text-muted-foreground">{ formatTokenBreakdown(data.Snapshot.Tokens) }</div>
+			<div class="break-all font-mono text-2xl font-semibold text-text sm:text-3xl">{ formatTokens(data.Snapshot.Tokens) }</div>
+			<div class="font-mono text-sm text-sec">{ formatTokenBreakdown(data.Snapshot.Tokens) }</div>
 		</div>
 		<div class="mt-5">
 			<div class="mb-2 flex items-center justify-between gap-3 text-sm">
-				@plainInlineLabel("Token trend", "font-medium text-muted-foreground")
-				<span class="font-mono text-xs text-muted-foreground">{ formatDuration(data.Snapshot.Tokens.RuntimeSeconds) }</span>
+				@plainInlineLabel("Token trend", "font-medium text-sec")
+				<span class="font-mono text-xs text-sec">{ formatDuration(data.Snapshot.Tokens.RuntimeSeconds) }</span>
 			</div>
 			if len(tokenTrendPoints(data.Snapshot)) == 0 {
 				@dashboardEmptyState("No token trend yet.", "Input and output token samples will appear after active sessions report usage.", "bg-accent")
 			} else {
 				@SplitSeriesChart(tokenTrendChart(data.Snapshot))
-				<div class="mt-3 flex flex-wrap items-center gap-4 text-xs font-medium text-muted-foreground">
+				<div class="mt-3 flex flex-wrap items-center gap-4 text-xs font-medium text-sec">
 					<span class="inline-flex items-center gap-2"><span class="h-2 w-2 rounded-full bg-accent"></span>Input</span>
-					<span class="inline-flex items-center gap-2"><span class="h-2 w-2 rounded-full bg-success"></span>Output</span>
+					<span class="inline-flex items-center gap-2"><span class="h-2 w-2 rounded-full bg-ok"></span>Output</span>
 				</div>
 			}
 		</div>

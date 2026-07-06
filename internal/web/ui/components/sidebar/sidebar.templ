@@ -56,7 +56,7 @@ templ Inset(props ...InsetProps) {
 			id={ p.ID }
 		}
 		class={ utils.TwMerge(
-			"relative flex w-full flex-1 flex-col bg-background",
+			"relative flex w-full flex-1 flex-col bg-page",
 			// Add special styling when peer sidebar has variant="inset"
 			"md:peer-data-[tui-sidebar-variant=inset]:m-2",
 			"md:peer-data-[tui-sidebar-variant=inset]:ml-0",
@@ -100,8 +100,8 @@ templ GroupLabel(props ...GroupLabelProps) {
 			id={ p.ID }
 		}
 		class={ utils.TwMerge(
-			"flex h-8 shrink-0 items-center rounded-md px-2 text-xs font-medium text-sidebar-foreground/70",
-			"ring-sidebar-ring outline-none transition-[margin,opacity] duration-200 ease-linear",
+			"flex h-8 shrink-0 items-center rounded-md px-2 text-xs font-medium text-text/70",
+			"ring-accent outline-none transition-[margin,opacity] duration-200 ease-linear",
 			"focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0",
 			"group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:-mt-8 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:opacity-0",
 			p.Class,
@@ -124,7 +124,7 @@ templ MenuBadge(props ...MenuBadgeProps) {
 		}
 		class={ utils.TwMerge(
 				"ml-auto flex h-5 min-w-5 items-center justify-center rounded-md px-1 text-xs font-medium",
-				"bg-sidebar-accent text-sidebar-accent-foreground",
+				"bg-elev text-text",
 				"group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden",
 				p.Class,
 			) }
@@ -145,7 +145,7 @@ templ Separator(props ...SeparatorProps) {
 			id={ p.ID }
 		}
 		class={ utils.TwMerge(
-			"mx-2 my-2 border-t border-sidebar-border",
+			"mx-2 my-2 border-t border-line",
 			p.Class,
 		) }
 		data-tui-sidebar="separator"
@@ -294,7 +294,7 @@ templ Layout(props ...LayoutProps) {
 	<div
 		class={ utils.TwMerge(
 			"flex min-h-svh relative",
-			"has-[[data-tui-sidebar-variant=inset]]:bg-sidebar",
+			"has-[[data-tui-sidebar-variant=inset]]:bg-page",
 			p.Class,
 		) }
 		data-tui-sidebar-layout
@@ -349,7 +349,7 @@ templ Sidebar(props ...Props) {
 		Open: false,
 	}) {
 		@sheet.Content(sheet.ContentProps{
-			Class:           "md:hidden bg-sidebar text-sidebar-foreground !p-0 !gap-0 flex flex-col h-full",
+			Class:           "md:hidden bg-page text-text !p-0 !gap-0 flex flex-col h-full",
 			HideCloseButton: true,
 		}) {
 			<!-- Mobile content wrapper: visible only on mobile via JS -->
@@ -409,7 +409,7 @@ templ Sidebar(props ...Props) {
 			<div
 				data-sidebar="sidebar"
 				class={ utils.TwMerge(
-						"bg-sidebar group-data-[tui-sidebar-variant=floating]:border-sidebar-border flex h-full w-full flex-col",
+						"bg-page group-data-[tui-sidebar-variant=floating]:border-line flex h-full w-full flex-col",
 						"group-data-[tui-sidebar-variant=floating]:rounded-lg group-data-[tui-sidebar-variant=floating]:border group-data-[tui-sidebar-variant=floating]:shadow-sm",
 					) }
 			>
@@ -582,14 +582,14 @@ templ menuButtonContent(p MenuButtonProps, buttonID string) {
 			href={ templ.SafeURL(p.Href) }
 			class={ utils.TwMerge(
 				"flex w-full items-center gap-2 rounded-md p-2 text-left overflow-hidden",
-				"hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+				"hover:bg-elev hover:text-text",
 				"transition-[width,height,padding]",
 				// Size variants with data attributes
 				"data-[tui-sidebar-size=sm]:h-7 data-[tui-sidebar-size=sm]:text-xs",
 				"data-[tui-sidebar-size=lg]:h-12 data-[tui-sidebar-size=lg]:text-sm",
 				"data-[tui-sidebar-size=default]:h-8 data-[tui-sidebar-size=default]:text-sm",
 				// Active state with data attributes
-				"data-[tui-sidebar-active=true]:bg-sidebar-accent data-[tui-sidebar-active=true]:text-sidebar-accent-foreground data-[tui-sidebar-active=true]:font-medium",
+				"data-[tui-sidebar-active=true]:bg-elev data-[tui-sidebar-active=true]:text-text data-[tui-sidebar-active=true]:font-medium",
 				// Collapsed icon mode styles - matching shadcn exactly
 				"group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:!size-8",
 				"group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:!p-2",
@@ -615,14 +615,14 @@ templ menuButtonContent(p MenuButtonProps, buttonID string) {
 			type="button"
 			class={ utils.TwMerge(
 				"flex w-full items-center gap-2 rounded-md p-2 text-left overflow-hidden",
-				"hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+				"hover:bg-elev hover:text-text",
 				"transition-[width,height,padding]",
 				// Size variants with data attributes
 				"data-[tui-sidebar-size=sm]:h-7 data-[tui-sidebar-size=sm]:text-xs",
 				"data-[tui-sidebar-size=lg]:h-12 data-[tui-sidebar-size=lg]:text-sm",
 				"data-[tui-sidebar-size=default]:h-8 data-[tui-sidebar-size=default]:text-sm",
 				// Active state with data attributes
-				"data-[tui-sidebar-active=true]:bg-sidebar-accent data-[tui-sidebar-active=true]:text-sidebar-accent-foreground data-[tui-sidebar-active=true]:font-medium",
+				"data-[tui-sidebar-active=true]:bg-elev data-[tui-sidebar-active=true]:text-text data-[tui-sidebar-active=true]:font-medium",
 				// Collapsed icon mode styles - matching shadcn exactly
 				"group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:!size-8",
 				"group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:!p-2",
@@ -653,7 +653,7 @@ templ MenuSub(props ...MenuSubProps) {
 			id={ p.ID }
 		}
 		class={ utils.TwMerge(
-			"mx-3.5 flex min-w-0 translate-x-px flex-col gap-1 border-l border-sidebar-border px-2.5 py-0.5",
+			"mx-3.5 flex min-w-0 translate-x-px flex-col gap-1 border-l border-line px-2.5 py-0.5",
 			"group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden",
 			p.Class,
 		) }
@@ -694,9 +694,9 @@ templ MenuSubButton(props ...MenuSubButtonProps) {
 			href={ templ.SafeURL(p.Href) }
 			class={ utils.TwMerge(
 				"flex items-center gap-2 rounded-md px-2 py-1.5 text-sm",
-				"hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+				"hover:bg-elev hover:text-text",
 				"transition-colors",
-				"data-[tui-sidebar-active=true]:bg-sidebar-accent data-[tui-sidebar-active=true]:text-sidebar-accent-foreground data-[tui-sidebar-active=true]:font-medium",
+				"data-[tui-sidebar-active=true]:bg-elev data-[tui-sidebar-active=true]:text-text data-[tui-sidebar-active=true]:font-medium",
 				p.Class,
 			) }
 			data-tui-sidebar="menu-sub-button"
@@ -715,9 +715,9 @@ templ MenuSubButton(props ...MenuSubButtonProps) {
 			type="button"
 			class={ utils.TwMerge(
 				"flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-left",
-				"hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+				"hover:bg-elev hover:text-text",
 				"transition-colors",
-				"data-[tui-sidebar-active=true]:bg-sidebar-accent data-[tui-sidebar-active=true]:text-sidebar-accent-foreground data-[tui-sidebar-active=true]:font-medium",
+				"data-[tui-sidebar-active=true]:bg-elev data-[tui-sidebar-active=true]:text-text data-[tui-sidebar-active=true]:font-medium",
 				p.Class,
 			) }
 			data-tui-sidebar="menu-sub-button"

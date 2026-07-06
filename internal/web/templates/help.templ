@@ -336,7 +336,7 @@ templ panelHeader(iconComponent templ.Component, title string, term helpTerm, sc
 					@iconComponent
 				</span>
 			}
-			<h2 class="inline-flex min-w-0 items-center gap-1.5 text-sm font-semibold text-foreground">
+			<h2 class="inline-flex min-w-0 items-center gap-1.5 text-sm font-semibold text-text">
 				<span class="truncate">{ title }</span>
 				@helpIcon(term, scope)
 			</h2>
@@ -354,14 +354,14 @@ templ plainInlineLabel(label string, class string) {
 }
 
 templ helpHeading2(label string, term helpTerm, scope string) {
-	<h2 class="inline-flex min-w-0 items-center gap-2 text-lg font-semibold text-foreground">
+	<h2 class="inline-flex min-w-0 items-center gap-2 text-lg font-semibold text-text">
 		<span>{ label }</span>
 		@helpIcon(term, scope)
 	</h2>
 }
 
 templ helpHeading3(label string, term helpTerm, scope string) {
-	<h3 class="inline-flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground">
+	<h3 class="inline-flex min-w-0 items-center gap-2 text-sm font-semibold text-text">
 		<span>{ label }</span>
 		@helpIcon(term, scope)
 	</h3>

@@ -153,14 +153,14 @@ func TestPlainInlineLabelRendersPlainLabel(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	if err := plainInlineLabel("Tokens", "text-muted-foreground").Render(context.Background(), &buf); err != nil {
+	if err := plainInlineLabel("Tokens", "text-sec").Render(context.Background(), &buf); err != nil {
 		t.Fatalf("Render() error = %v", err)
 	}
 	html := buf.String()
 
 	for _, want := range []string{
 		"Tokens",
-		"text-muted-foreground",
+		"text-sec",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("help inline label missing %q:\n%s", want, html)

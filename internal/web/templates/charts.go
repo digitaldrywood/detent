@@ -182,7 +182,7 @@ type timelineSegmentView struct {
 
 func newSparklineChartView(data SeriesChartData) seriesChartView {
 	data.Height = chartDimension(data.Height, 80)
-	return newSeriesChartView(data, false, "text-success")
+	return newSeriesChartView(data, false, "text-ok")
 }
 
 func newLineAreaChartView(data SeriesChartData) seriesChartView {
@@ -229,14 +229,14 @@ func newBudgetProjectionChartView(data BudgetProjectionChartData) budgetProjecti
 	return budgetProjectionChartView{
 		Title:              chartText(data.Title, "Cost burn-down"),
 		AriaLabel:          chartText(data.AriaLabel, chartText(data.Title, "Cost burn-down")),
-		Class:              chartClass("block h-36 w-full overflow-visible rounded-md border border-border bg-muted", data.Class),
+		Class:              chartClass("block h-36 w-full overflow-visible rounded-md border border-line bg-elev", data.Class),
 		ViewBox:            chartViewBox(width, height),
 		ActualAreaPath:     webchart.SmoothAreaPath(actualScaled, baseline),
 		ActualLinePath:     webchart.SmoothLinePath(actualScaled),
 		ProjectionLinePath: webchart.LinePath(projectionScaled),
 		ActualClass:        chartText(data.ActualClass, "text-accent"),
-		ProjectionClass:    chartText(data.ProjectionClass, "text-warning"),
-		CapClass:           chartText(data.CapClass, "text-danger"),
+		ProjectionClass:    chartText(data.ProjectionClass, "text-warn"),
+		CapClass:           chartText(data.CapClass, "text-err"),
 		CapLineX1:          webchart.FormatCoord(padding),
 		CapLineX2:          webchart.FormatCoord(width - padding),
 		CapLineY:           capLineY,
@@ -279,14 +279,14 @@ func newSplitSeriesChartView(data SplitSeriesChartData) splitSeriesChartView {
 	return splitSeriesChartView{
 		Title:          chartText(data.Title, "Split series chart"),
 		AriaLabel:      chartText(data.AriaLabel, chartText(data.Title, "Split series chart")),
-		Class:          chartClass("block h-28 w-full overflow-visible rounded-md border border-border bg-muted", data.Class),
+		Class:          chartClass("block h-28 w-full overflow-visible rounded-md border border-line bg-elev", data.Class),
 		ViewBox:        chartViewBox(width, height),
 		InputAreaPath:  webchart.SmoothAreaPath(inputScaled, baseline),
 		InputLinePath:  webchart.SmoothLinePath(inputScaled),
 		OutputAreaPath: webchart.SmoothAreaPath(outputScaled, baseline),
 		OutputLinePath: webchart.SmoothLinePath(outputScaled),
 		InputClass:     chartText(data.InputClass, "text-accent"),
-		OutputClass:    chartText(data.OutputClass, "text-success"),
+		OutputClass:    chartText(data.OutputClass, "text-ok"),
 		InputPoints:    splitSeriesPointViews(chartText(data.InputLabel, "Input"), inputScaled, data.ValueSuffix),
 		OutputPoints:   splitSeriesPointViews(chartText(data.OutputLabel, "Output"), outputScaled, data.ValueSuffix),
 	}
@@ -321,7 +321,7 @@ func newSeriesChartView(data SeriesChartData, withArea bool, defaultColor string
 		Title:     chartText(data.Title, "Chart"),
 		AriaLabel: chartText(data.AriaLabel, chartText(data.Title, "Chart")),
 		Class: chartClass(
-			"block h-20 w-full overflow-visible rounded-md border border-border bg-muted "+chartText(data.ColorClass, defaultColor),
+			"block h-20 w-full overflow-visible rounded-md border border-line bg-elev "+chartText(data.ColorClass, defaultColor),
 			data.Class,
 		),
 		ViewBox:  chartViewBox(width, height),
@@ -497,7 +497,7 @@ func newBarChartView(data BarChartData) barChartView {
 		Title:     chartText(data.Title, "Bar chart"),
 		AriaLabel: chartText(data.AriaLabel, chartText(data.Title, "Bar chart")),
 		Class: chartClass(
-			"block h-20 w-full overflow-visible rounded-md border border-border bg-muted "+chartText(data.ColorClass, "text-accent"),
+			"block h-20 w-full overflow-visible rounded-md border border-line bg-elev "+chartText(data.ColorClass, "text-accent"),
 			data.Class,
 		),
 		ViewBox: chartViewBox(width, height),
@@ -546,7 +546,7 @@ func newTimelineChartView(data TimelineChartData) timelineChartView {
 	return timelineChartView{
 		Title:     chartText(data.Title, "Timeline chart"),
 		AriaLabel: chartText(data.AriaLabel, chartText(data.Title, "Timeline chart")),
-		Class:     chartClass("block h-7 w-full overflow-hidden rounded-md border border-border bg-muted", data.Class),
+		Class:     chartClass("block h-7 w-full overflow-hidden rounded-md border border-line bg-elev", data.Class),
 		ViewBox:   chartViewBox(width, height),
 		Segments:  views,
 	}

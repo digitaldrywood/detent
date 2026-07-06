@@ -65,11 +65,11 @@ func progressClass(current string, step string) string {
 	if current == step {
 		return base + " border-accent bg-accent text-white"
 	}
-	return base + " border-border bg-card text-muted-foreground"
+	return base + " border-line bg-surface text-sec"
 }
 
 func fieldClass() string {
-	return "mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none focus:border-accent"
+	return "mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-text outline-none focus:border-accent"
 }
 
 func buttonClass() string {
@@ -77,7 +77,7 @@ func buttonClass() string {
 }
 
 func secondaryButtonClass() string {
-	return "inline-flex items-center justify-center rounded-md border border-border bg-card px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted"
+	return "inline-flex items-center justify-center rounded-md border border-line bg-surface px-4 py-2 text-sm font-semibold text-text hover:bg-elev"
 }
 
 func selectedTrackerChoice(form OnboardingForm) string {
@@ -174,9 +174,9 @@ templ OnboardingPage(data OnboardingData) {
 			<link rel="stylesheet" href={ stylesheetPath(data.Assets) }/>
 			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
 		</head>
-		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
+		<body class="min-h-screen overflow-x-hidden bg-page text-text antialiased">
 			<main class="dashboard-shell mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-4 px-3 py-3 sm:px-6 lg:px-8">
-				<header class="dashboard-topbar min-w-0 border-b border-border py-2">
+				<header class="dashboard-topbar min-w-0 border-b border-line py-2">
 					<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
 						@onboardingTopbarBrand(data.InstanceName)
 						@dashboardPageHeading("Onboarding")
@@ -190,11 +190,11 @@ templ OnboardingPage(data OnboardingData) {
 }
 
 templ onboardingTopbarBrand(instanceName string) {
-	<a class="inline-flex min-h-8 shrink-0 items-center gap-2 text-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href="/" aria-label="Detent dashboard">
-		<span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded bg-accent-soft font-semibold text-accent">D</span>
+	<a class="inline-flex min-h-8 shrink-0 items-center gap-2 text-text hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href="/" aria-label="Detent dashboard">
+		<span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded bg-accent/15 font-semibold text-accent">D</span>
 		<span class="text-sm font-semibold">Detent</span>
 		if instanceName != "" {
-			<span class="max-w-[12rem] truncate rounded-full border border-border bg-muted px-2 py-0.5 font-mono text-xs font-medium text-muted-foreground" aria-label="Instance name">{ instanceName }</span>
+			<span class="max-w-[12rem] truncate rounded-full border border-line bg-elev px-2 py-0.5 font-mono text-xs font-medium text-sec" aria-label="Instance name">{ instanceName }</span>
 		}
 	</a>
 }
@@ -210,7 +210,7 @@ templ onboardingNavItem(active string, id string, href string, label string) {
 	if active == id {
 		<a class="onboarding-nav-link inline-flex items-center py-1 text-sm font-medium text-accent underline decoration-2 underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href } aria-current="page">{ label }</a>
 	} else {
-		<a class="onboarding-nav-link inline-flex items-center py-1 text-sm font-medium text-muted-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href }>{ label }</a>
+		<a class="onboarding-nav-link inline-flex items-center py-1 text-sm font-medium text-sec hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href }>{ label }</a>
 	}
 }
 
@@ -225,7 +225,7 @@ templ OnboardingStep(data OnboardingData) {
 			@onboardingStepBadge(data.Step)
 		</div>
 		if len(data.Errors) > 0 {
-			<div class="rounded-md border border-danger bg-card p-4 text-sm text-danger">
+			<div class="rounded-md border border-err bg-surface p-4 text-sm text-err">
 				<p class="font-semibold">Fix these fields before continuing.</p>
 				<ul class="mt-2 list-disc space-y-1 pl-5">
 					for _, problem := range data.Errors {
@@ -249,14 +249,14 @@ templ OnboardingStep(data OnboardingData) {
 }
 
 templ onboardingStepBadge(step string) {
-	<span class="onboarding-step-badge inline-flex min-h-8 max-w-full items-center justify-between gap-2 rounded-md border border-border bg-muted px-2.5 py-1" data-onboarding-step-badge="true">
-		<span class="text-xs font-medium uppercase text-muted-foreground">Step</span>
-		<span class="truncate font-mono text-xs font-semibold text-foreground">{ step }</span>
+	<span class="onboarding-step-badge inline-flex min-h-8 max-w-full items-center justify-between gap-2 rounded-md border border-line bg-elev px-2.5 py-1" data-onboarding-step-badge="true">
+		<span class="text-xs font-medium uppercase text-sec">Step</span>
+		<span class="truncate font-mono text-xs font-semibold text-text">{ step }</span>
 	</span>
 }
 
 templ trackerStep(data OnboardingData) {
-	<div class="rounded-md border border-border bg-card p-5">
+	<div class="rounded-md border border-line bg-surface p-5">
 		<h2 class="text-xl font-semibold">Choose tracker</h2>
 		<form class="mt-5 space-y-3" hx-post="/onboarding/tracker" hx-target="#onboarding-step" hx-swap="outerHTML">
 			@trackerChoice(data, "github_project_v2", "ProjectV2 board", "GitHub ProjectV2-backed issue status")
@@ -271,22 +271,22 @@ templ trackerStep(data OnboardingData) {
 }
 
 templ trackerChoice(data OnboardingData, value string, label string, description string) {
-	<label class="flex cursor-pointer items-start gap-3 rounded-md border border-border p-3 hover:bg-muted">
+	<label class="flex cursor-pointer items-start gap-3 rounded-md border border-line p-3 hover:bg-elev">
 		<input class="mt-1" type="radio" name="tracker_choice" value={ value } checked?={ selectedTrackerChoice(data.Form) == value }/>
 		<span>
-			<span class="block text-sm font-semibold text-foreground">{ label }</span>
-			<span class="block text-sm text-muted-foreground">{ description }</span>
+			<span class="block text-sm font-semibold text-text">{ label }</span>
+			<span class="block text-sm text-sec">{ description }</span>
 		</span>
 	</label>
 }
 
 templ credentialsStep(data OnboardingData) {
-	<div class="rounded-md border border-border bg-card p-5">
+	<div class="rounded-md border border-line bg-surface p-5">
 		<h2 class="text-xl font-semibold">Credentials</h2>
 		<form class="mt-5 space-y-4" hx-post="/onboarding/credentials" hx-target="#onboarding-step" hx-swap="outerHTML">
 			@hiddenTracker(data.Form)
 			if data.Form.TrackerKind == "memory" {
-				<p class="text-sm text-muted-foreground">The memory tracker does not need external credentials.</p>
+				<p class="text-sm text-sec">The memory tracker does not need external credentials.</p>
 			} else {
 				<label class="block">
 					<span class="text-sm font-medium">Endpoint</span>
@@ -306,13 +306,13 @@ templ credentialsStep(data OnboardingData) {
 }
 
 templ projectStep(data OnboardingData) {
-	<div class="rounded-md border border-border bg-card p-5">
+	<div class="rounded-md border border-line bg-surface p-5">
 		<h2 class="text-xl font-semibold">{ projectStepTitle(data.Form) }</h2>
 		<form class="mt-5 space-y-4" hx-post="/onboarding/project" hx-target="#onboarding-step" hx-swap="outerHTML">
 			@hiddenCredentials(data.Form)
 			@hiddenAgentFields(data.Form)
 			if data.Form.TrackerKind == "memory" {
-				<p class="text-sm text-muted-foreground">Memory projects are created from the generated workflow.</p>
+				<p class="text-sm text-sec">Memory projects are created from the generated workflow.</p>
 			} else if githubStatusSource(data.Form) == "issue_field" {
 				<label class="block">
 					<span class="text-sm font-medium">Repository</span>
@@ -350,7 +350,7 @@ templ projectStep(data OnboardingData) {
 }
 
 templ agentStep(data OnboardingData) {
-	<div class="rounded-md border border-border bg-card p-5">
+	<div class="rounded-md border border-line bg-surface p-5">
 		<h2 class="text-xl font-semibold">Agent config</h2>
 		<form class="mt-5 grid gap-4 sm:grid-cols-2" hx-post="/onboarding/agent" hx-target="#onboarding-step" hx-swap="outerHTML">
 			@hiddenProject(data.Form)
@@ -388,20 +388,20 @@ templ agentStep(data OnboardingData) {
 				<span class="text-sm font-medium">Dispatch priority by label</span>
 				<textarea class={ fieldClass() + " min-h-24" } name="dispatch_priority_by_label">{ data.Form.DispatchPriorityLabel }</textarea>
 			</label>
-			<label class="flex items-start gap-3 rounded-md border border-border p-3 sm:col-span-2">
+			<label class="flex items-start gap-3 rounded-md border border-line p-3 sm:col-span-2">
 				<input class="mt-1" type="checkbox" name="dependency_auto_unblock_enabled" value="true" checked?={ data.Form.DependencyAutoUnblockEnabled == "true" }/>
 				<span>
-					<span class="block text-sm font-semibold text-foreground">Dependency auto-unblock</span>
-					<span class="block text-sm text-muted-foreground">Move dependency-waiting Blocked issues back to Todo when blockers clear.</span>
+					<span class="block text-sm font-semibold text-text">Dependency auto-unblock</span>
+					<span class="block text-sm text-sec">Move dependency-waiting Blocked issues back to Todo when blockers clear.</span>
 				</span>
 			</label>
-			<div class="rounded-md border border-border p-3 sm:col-span-2">
-				<span class="block text-sm font-semibold text-foreground">Project Kanban</span>
+			<div class="rounded-md border border-line p-3 sm:col-span-2">
+				<span class="block text-sm font-semibold text-text">Project Kanban</span>
 				<div class="mt-3 grid gap-2 sm:grid-cols-2">
 					@kanbanModeChoice(data.Form, "integration", "Interactive", "Recommended for operator-owned local/private installs after mutation authorization and write probes pass.")
 					@kanbanModeChoice(data.Form, "read_only", "Read-only", "Conservative option for observer/shared dashboards or until write probes pass.")
 				</div>
-				<p class="mt-3 text-sm text-muted-foreground">Integration requires <code>detent doctor --allow-write-probes</code> to prove status-label updates and issue/PR comment writes.</p>
+				<p class="mt-3 text-sm text-sec">Integration requires <code>detent doctor --allow-write-probes</code> to prove status-label updates and issue/PR comment writes.</p>
 			</div>
 			<div class="flex flex-wrap gap-2 pt-2 sm:col-span-2">
 				<button class={ buttonClass() } type="submit">Continue</button>
@@ -412,48 +412,48 @@ templ agentStep(data OnboardingData) {
 }
 
 templ deliveryProfileChoice(data OnboardingData, value string, label string, description string) {
-	<label class="flex cursor-pointer items-start gap-3 rounded-md border border-border p-3 hover:bg-muted">
+	<label class="flex cursor-pointer items-start gap-3 rounded-md border border-line p-3 hover:bg-elev">
 		<input class="mt-1" type="radio" name="delivery_profile" value={ value } checked?={ selectedDeliveryProfile(data.Form) == value }/>
 		<span>
-			<span class="block text-sm font-semibold text-foreground">{ label }</span>
-			<span class="block text-sm text-muted-foreground">{ description }</span>
+			<span class="block text-sm font-semibold text-text">{ label }</span>
+			<span class="block text-sm text-sec">{ description }</span>
 		</span>
 	</label>
 }
 
 templ kanbanModeChoice(form OnboardingForm, value string, label string, description string) {
-	<label class="flex cursor-pointer items-start gap-3 rounded-md border border-border p-3 hover:bg-muted">
+	<label class="flex cursor-pointer items-start gap-3 rounded-md border border-line p-3 hover:bg-elev">
 		<input class="mt-1" type="radio" name="kanban_mode" value={ value } checked?={ kanbanMode(form) == value }/>
 		<span>
-			<span class="block text-sm font-semibold text-foreground">{ label }</span>
-			<span class="block text-sm text-muted-foreground">{ description }</span>
+			<span class="block text-sm font-semibold text-text">{ label }</span>
+			<span class="block text-sm text-sec">{ description }</span>
 		</span>
 	</label>
 }
 
 templ writeStep(data OnboardingData) {
-	<div class="rounded-md border border-border bg-card p-5">
+	<div class="rounded-md border border-line bg-surface p-5">
 		<h2 class="text-xl font-semibold">Write WORKFLOW.md</h2>
-		<div class="mt-4 grid gap-3 text-sm text-muted-foreground sm:grid-cols-2">
-			<p><span class="font-medium text-foreground">Tracker:</span> { data.Form.TrackerKind }</p>
-			<p><span class="font-medium text-foreground">Delivery profile:</span> { deliveryProfileLabel(data.Form) }</p>
+		<div class="mt-4 grid gap-3 text-sm text-sec sm:grid-cols-2">
+			<p><span class="font-medium text-text">Tracker:</span> { data.Form.TrackerKind }</p>
+			<p><span class="font-medium text-text">Delivery profile:</span> { deliveryProfileLabel(data.Form) }</p>
 			if data.Form.ProjectSlug != "" && githubStatusSource(data.Form) == "project_v2" {
-				<p><span class="font-medium text-foreground">ProjectV2:</span> { data.Form.ProjectSlug }</p>
+				<p><span class="font-medium text-text">ProjectV2:</span> { data.Form.ProjectSlug }</p>
 			}
 			if data.Form.TrackerKind == "github" {
-				<p><span class="font-medium text-foreground">Status source:</span> { githubStatusSource(data.Form) }</p>
+				<p><span class="font-medium text-text">Status source:</span> { githubStatusSource(data.Form) }</p>
 			}
 			if data.Form.Repo != "" {
-				<p><span class="font-medium text-foreground">Repo:</span> { data.Form.Repo }</p>
+				<p><span class="font-medium text-text">Repo:</span> { data.Form.Repo }</p>
 			}
 			if data.Form.StatusField != "" && githubStatusSource(data.Form) == "issue_field" {
-				<p><span class="font-medium text-foreground">Status field:</span> { data.Form.StatusField }</p>
+				<p><span class="font-medium text-text">Status field:</span> { data.Form.StatusField }</p>
 			}
 			if data.Form.StatusLabelPrefix != "" && githubStatusSource(data.Form) == "label" {
-				<p><span class="font-medium text-foreground">Status label prefix:</span> { data.Form.StatusLabelPrefix }</p>
+				<p><span class="font-medium text-text">Status label prefix:</span> { data.Form.StatusLabelPrefix }</p>
 			}
-			<p><span class="font-medium text-foreground">Project Kanban:</span> { kanbanMode(data.Form) }</p>
-			<p><span class="font-medium text-foreground">Output:</span> { data.WorkflowPath }</p>
+			<p><span class="font-medium text-text">Project Kanban:</span> { kanbanMode(data.Form) }</p>
+			<p><span class="font-medium text-text">Output:</span> { data.WorkflowPath }</p>
 			<p class="sm:col-span-2">{ deliveryProfileExplanation(data.Form) }</p>
 		</div>
 		@resultPanel(data)
@@ -466,17 +466,17 @@ templ writeStep(data OnboardingData) {
 
 templ resultPanel(data OnboardingData) {
 	if data.Result.Kind == "success" {
-		<div class="mt-4 rounded-md border border-success bg-card p-4 text-sm text-success">
+		<div class="mt-4 rounded-md border border-ok bg-surface p-4 text-sm text-ok">
 			<strong>{ data.Result.Message }</strong>
 			@resultDetails(data.Result)
 		</div>
 	} else if data.Result.Kind == "warning" {
-		<div class="mt-4 rounded-md border border-warning bg-card p-4 text-sm text-warning">
+		<div class="mt-4 rounded-md border border-warn bg-surface p-4 text-sm text-warn">
 			<strong>{ data.Result.Message }</strong>
 			@resultDetails(data.Result)
 		</div>
 	} else if data.Result.Kind == "exists" {
-		<div class="mt-4 rounded-md border border-warning bg-card p-4 text-sm text-warning">
+		<div class="mt-4 rounded-md border border-warn bg-surface p-4 text-sm text-warn">
 			<p><strong>{ data.Result.Message }</strong></p>
 			<form class="mt-3" hx-post="/onboarding/write" hx-target="#onboarding-step" hx-swap="outerHTML">
 				@hiddenAgent(data.Form)
@@ -485,7 +485,7 @@ templ resultPanel(data OnboardingData) {
 			</form>
 		</div>
 	} else if data.Result.Kind == "error" {
-		<div class="mt-4 rounded-md border border-danger bg-card p-4 text-sm text-danger">
+		<div class="mt-4 rounded-md border border-err bg-surface p-4 text-sm text-err">
 			<strong>{ data.Result.Message }</strong>
 			@resultDetails(data.Result)
 		</div>

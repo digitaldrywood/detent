@@ -65,7 +65,7 @@ func TestRuntimeStatusReflectsDraining(t *testing.T) {
 	if got := runtimeStatusLabel(snapshot); got != "Draining" {
 		t.Fatalf("runtimeStatusLabel() = %q, want Draining", got)
 	}
-	if got := runtimeStatusClass(snapshot); got != "border-warning-soft bg-warning-soft text-warning" {
+	if got := runtimeStatusClass(snapshot); got != "border-warn/15 bg-warn/15 text-warn" {
 		t.Fatalf("runtimeStatusClass() = %q, want warning class", got)
 	}
 }
@@ -1281,7 +1281,7 @@ func TestAgentTimelineRows(t *testing.T) {
 			wantStart: "0.00%",
 			wantEnd:   "8.33%",
 			wantWidth: "8.33%",
-			wantClass: "bg-danger",
+			wantClass: "bg-err",
 		},
 		{
 			name:      "completed row",
@@ -1290,7 +1290,7 @@ func TestAgentTimelineRows(t *testing.T) {
 			wantStart: "16.67%",
 			wantEnd:   "83.33%",
 			wantWidth: "66.67%",
-			wantClass: "bg-success",
+			wantClass: "bg-ok",
 		},
 		{
 			name:      "running row",

@@ -86,7 +86,7 @@ func TestSplitSeriesChartRendersInputOutputTrend(t *testing.T) {
 		"<title>Token trend</title>",
 		`aria-label="Token trend"`,
 		`text-accent`,
-		`text-success`,
+		`text-ok`,
 		" C ",
 		"Input 15:00: 120 tokens",
 		"Output 15:02: 90 tokens",
@@ -123,9 +123,9 @@ func TestMiniBarAndTimelineChartsRenderTitles(t *testing.T) {
 		Title:     "Workflow timeline",
 		AriaLabel: "Workflow timeline",
 		Segments: []templates.TimelineSegment{
-			{Label: "Todo", Value: 2, Class: "text-warning"},
+			{Label: "Todo", Value: 2, Class: "text-warn"},
 			{Label: "In Progress", Value: 3, Class: "text-accent"},
-			{Label: "Done", Value: 5, Class: "text-success"},
+			{Label: "Done", Value: 5, Class: "text-ok"},
 		},
 	}))
 	for _, want := range []string{
