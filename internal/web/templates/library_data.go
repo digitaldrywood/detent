@@ -1,8 +1,11 @@
 package templates
 
 import (
+	"net/url"
 	"strings"
 	"time"
+
+	"github.com/a-h/templ"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -225,6 +228,34 @@ func libraryResultsLabel(data LibraryData) string {
 		return formatInt(int64(data.FilteredCount))
 	}
 	return formatInt(int64(data.FilteredCount)) + " of " + formatInt(int64(data.UnfilteredCount))
+}
+
+func libraryHasSafeURL(value string) bool {
+	return librarySafeURLValue(value) != ""
+}
+
+func librarySafeURL(value string) templ.SafeURL {
+	return templ.SafeURL(librarySafeURLValue(value))
+}
+
+func librarySafeURLValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//") {
+		return value
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		return value
+	default:
+		return ""
+	}
 }
 
 func libraryRowDetail(row LibraryRow) string {

@@ -403,6 +403,11 @@ func openLibrarySQLiteReadOnly(ctx context.Context, path string) (*sql.DB, bool,
 	if path == "" {
 		return nil, false, "", nil
 	}
+	expandedPath, err := libraryExpandHomePath(path)
+	if err != nil {
+		return nil, false, "", err
+	}
+	path = expandedPath
 	info, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -427,6 +432,25 @@ func openLibrarySQLiteReadOnly(ctx context.Context, path string) (*sql.DB, bool,
 		return nil, false, "", errors.Join(err, closeErr)
 	}
 	return db, true, "", nil
+}
+
+func libraryExpandHomePath(path string) (string, error) {
+	switch {
+	case path == "~":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		return home, nil
+	case strings.HasPrefix(path, "~/"):
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
+	default:
+		return path, nil
+	}
 }
 
 func librarySQLiteReadOnlyDSN(path string) string {

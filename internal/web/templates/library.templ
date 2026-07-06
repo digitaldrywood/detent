@@ -99,8 +99,8 @@ templ libraryTableRow(row LibraryRow) {
 		<span class="min-w-0 truncate font-mono text-xs text-sec" title={ row.ProjectID }>{ row.ProjectName }</span>
 		<span class={ libraryKindClass(row.Kind) }>{ libraryKindLabel(row.Kind) }</span>
 		<div class="grid min-w-0 gap-1">
-			if row.PullRequestURL != "" && row.SourceKind == "pull_request" {
-				<a href={ templ.SafeURL(row.PullRequestURL) } target="_blank" rel="noopener noreferrer" class="min-w-0 truncate font-mono text-xs text-accent hover:underline" title={ libraryPathLabel(row) }>{ libraryPathLabel(row) }</a>
+			if libraryHasSafeURL(row.PullRequestURL) && row.SourceKind == "pull_request" {
+				<a href={ librarySafeURL(row.PullRequestURL) } target="_blank" rel="noopener noreferrer" class="min-w-0 truncate font-mono text-xs text-accent hover:underline" title={ libraryPathLabel(row) }>{ libraryPathLabel(row) }</a>
 			} else {
 				<code class="min-w-0 truncate font-mono text-xs text-text" title={ libraryPathLabel(row) }>{ libraryPathLabel(row) }</code>
 			}
@@ -110,8 +110,8 @@ templ libraryTableRow(row LibraryRow) {
 		</div>
 		<span class={ libraryStatusClass(row.ValidationStatus) }>{ libraryStatusLabel(row.ValidationStatus) }</span>
 		<div class="grid min-w-0 gap-1">
-			if row.SourceURL != "" {
-				<a href={ templ.SafeURL(row.SourceURL) } target="_blank" rel="noopener noreferrer" class="min-w-0 truncate text-sm text-text hover:text-accent hover:underline" title={ libraryRowTitle(row) }>{ librarySourceTitle(row) }</a>
+			if libraryHasSafeURL(row.SourceURL) {
+				<a href={ librarySafeURL(row.SourceURL) } target="_blank" rel="noopener noreferrer" class="min-w-0 truncate text-sm text-text hover:text-accent hover:underline" title={ libraryRowTitle(row) }>{ librarySourceTitle(row) }</a>
 			} else {
 				<span class="min-w-0 truncate text-sm text-text" title={ libraryRowTitle(row) }>{ librarySourceTitle(row) }</span>
 			}
@@ -121,18 +121,18 @@ templ libraryTableRow(row LibraryRow) {
 		</div>
 		<span class="font-mono text-xs text-sec tabular-nums" title={ libraryTimeLabel(row.UpdatedAt) }>{ libraryTimeLabel(row.UpdatedAt) }</span>
 		<span class="flex justify-end gap-1.5">
-			if row.ReviewURL != "" {
-				<a href={ templ.SafeURL(row.ReviewURL) } target="_blank" rel="noopener noreferrer" class="rounded-chip border border-line p-1.5 text-sec hover:border-accent hover:text-accent" aria-label={ "Open review for " + libraryPathLabel(row) } title="Open review">
+			if libraryHasSafeURL(row.ReviewURL) {
+				<a href={ librarySafeURL(row.ReviewURL) } target="_blank" rel="noopener noreferrer" class="rounded-chip border border-line p-1.5 text-sec hover:border-accent hover:text-accent" aria-label={ "Open review for " + libraryPathLabel(row) } title="Open review">
 					@icon.ExternalLink(icon.Props{Class: "size-4"})
 				</a>
 			}
-			if row.SourceURL != "" {
-				<a href={ templ.SafeURL(row.SourceURL) } target="_blank" rel="noopener noreferrer" class="rounded-chip border border-line p-1.5 text-sec hover:border-accent hover:text-accent" aria-label={ "Open source " + row.SourceLabel } title="Open source">
+			if libraryHasSafeURL(row.SourceURL) {
+				<a href={ librarySafeURL(row.SourceURL) } target="_blank" rel="noopener noreferrer" class="rounded-chip border border-line p-1.5 text-sec hover:border-accent hover:text-accent" aria-label={ "Open source " + row.SourceLabel } title="Open source">
 					@icon.FileText(icon.Props{Class: "size-4"})
 				</a>
 			}
-			if row.PullRequestURL != "" && row.PullRequestURL != row.ReviewURL {
-				<a href={ templ.SafeURL(row.PullRequestURL) } target="_blank" rel="noopener noreferrer" class="rounded-chip border border-line p-1.5 text-sec hover:border-accent hover:text-accent" aria-label={ "Open " + row.PullRequestLabel } title={ row.PullRequestLabel }>
+			if libraryHasSafeURL(row.PullRequestURL) && librarySafeURLValue(row.PullRequestURL) != librarySafeURLValue(row.ReviewURL) {
+				<a href={ librarySafeURL(row.PullRequestURL) } target="_blank" rel="noopener noreferrer" class="rounded-chip border border-line p-1.5 text-sec hover:border-accent hover:text-accent" aria-label={ "Open " + row.PullRequestLabel } title={ row.PullRequestLabel }>
 					@icon.GitPullRequest(icon.Props{Class: "size-4"})
 				</a>
 			}

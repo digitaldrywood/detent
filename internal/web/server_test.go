@@ -224,6 +224,7 @@ func TestLibraryPageListsLocalArtifactsAndPullRequestRecords(t *testing.T) {
 	for _, want := range []string{
 		`id="library-table"`,
 		"outputs/ad-1/manifest.json",
+		"outputs/ad-unsafe/manifest.json",
 		"pending_review",
 		"review/ad-1",
 		"PR #934",
@@ -233,6 +234,9 @@ func TestLibraryPageListsLocalArtifactsAndPullRequestRecords(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("library page missing %q:\n%s", want, body)
 		}
+	}
+	if strings.Contains(body, "javascript:alert") {
+		t.Fatalf("library page rendered unsafe review URL:\n%s", body)
 	}
 }
 
@@ -7448,10 +7452,24 @@ func newLibraryTestServer(t *testing.T) *web.Server {
 		ReviewURL: "http://127.0.0.1:8080/review/ad-1",
 		Metadata:  map[string]string{"format": "mp4", "aspect": "9:16"},
 	}
+	unsafeIssue := connector.NewIssue()
+	unsafeIssue.ID = "ad-unsafe"
+	unsafeIssue.Identifier = "video/ad-unsafe"
+	unsafeIssue.Title = "Unsafe review URL"
+	unsafeIssue.State = "Review"
+	unsafeIssue.Fields = map[string]string{"render_status": "pending_review"}
+	unsafeIssue.CreatedAt = &createdAt
+	unsafeIssue.UpdatedAt = &updatedAt
+	unsafeIssue.StageUpdatedAt = &updatedAt
+	unsafeIssue.Deliverable = &connector.Deliverable{
+		Kind:      "video_ad",
+		Path:      "outputs/ad-unsafe/manifest.json",
+		ReviewURL: "javascript:alert(1)",
+	}
 	conn, err := local.New(local.Config{
 		Path:      localPath,
 		ProjectID: "video-local",
-		Issues:    []connector.Issue{issue},
+		Issues:    []connector.Issue{issue, unsafeIssue},
 	})
 	if err != nil {
 		t.Fatalf("local.New() error = %v", err)
