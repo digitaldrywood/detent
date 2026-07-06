@@ -45,8 +45,8 @@ func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
 	if got := queryInt(t, sqliteBackend.db, "PRAGMA busy_timeout"); got != 5000 {
 		t.Fatalf("busy_timeout = %d, want 5000", got)
 	}
-	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('detent_runs', 'codex_sessions', 'fair_share_usage', 'usage_events', 'workflow_phase_events', 'work_attempts', 'scheduler_decisions', 'validator_verdicts')"); got != 8 {
-		t.Fatalf("migrated table count = %d, want 8", got)
+	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('detent_runs', 'codex_sessions', 'fair_share_usage', 'usage_events', 'workflow_phase_events', 'work_attempts', 'scheduler_decisions', 'validator_verdicts', 'api_keys', 'api_usage_logs')"); got != 10 {
+		t.Fatalf("migrated table count = %d, want 10", got)
 	}
 }
 
@@ -219,6 +219,9 @@ func TestRuntimeEvidenceReportsSQLiteTelemetry(t *testing.T) {
 	}
 	if got := runtimeEvidenceTableCount(evidence.Tables, "workflow_phase_events"); got != 1 {
 		t.Fatalf("workflow_phase_events row count = %d, want 1", got)
+	}
+	if got := runtimeEvidenceTableCount(evidence.Tables, "api_keys"); got != 0 {
+		t.Fatalf("api_keys row count = %d, want 0", got)
 	}
 	if evidence.WorkflowPhaseEvents.RowCount != 1 {
 		t.Fatalf("WorkflowPhaseEvents.RowCount = %d, want 1", evidence.WorkflowPhaseEvents.RowCount)

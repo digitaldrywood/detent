@@ -252,6 +252,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}
 	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, runtimeStore, displayURL, defaultSnapshotInterval, time.Now)
 	go republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger)
+	//nolint:contextcheck // Echo middleware receives request contexts at serve time.
 	server, err := web.NewServer(web.Config{
 		Mode:               web.ModeRunning,
 		WorkflowPath:       firstWorkflowPath(cfg),
@@ -373,6 +374,7 @@ func startOnboarding(ctx context.Context, cfg BootConfig) error {
 		}
 	}()
 
+	//nolint:contextcheck // Echo middleware receives request contexts at serve time.
 	server, err := web.NewServer(web.Config{
 		Mode:         web.ModeOnboarding,
 		WorkflowPath: firstWorkflowPath(cfg),

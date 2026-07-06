@@ -32,6 +32,7 @@ type Store interface {
 	ValidatorMemoStore
 	RuntimeEvidenceStore
 	AgentResumeStore
+	APIKeyStore
 	Queries() *sqlc.Queries
 	Close() error
 }
@@ -89,6 +90,19 @@ type RuntimeEvidenceStore interface {
 
 type AgentResumeStore interface {
 	LatestCompletedAgentResumeState(context.Context, AgentResumeLookup) (AgentResumeState, error)
+}
+
+type APIKeyStore interface {
+	CreateAPIKey(context.Context, APIKeyCreate) (APIKey, error)
+	APIKey(context.Context, string) (APIKey, error)
+	APIKeyByHash(context.Context, string) (APIKey, error)
+	ListAPIKeys(context.Context) ([]APIKey, error)
+	CountActiveAPIKeys(context.Context) (int64, error)
+	SetAPIKeyExpiresAt(context.Context, string, time.Time) error
+	RevokeAPIKey(context.Context, string, time.Time) error
+	MarkAPIKeyLastUsed(context.Context, string, time.Time) error
+	RecordAPIUsageLog(context.Context, APIUsageLog) error
+	CountAPIUsageLogsByKey(context.Context, string) (int64, error)
 }
 
 type RuntimeEvidenceQuery struct {
@@ -234,6 +248,41 @@ type AgentResumeState struct {
 	AgentBackendKind  string
 	AgentRole         string
 	CompletedAt       time.Time
+}
+
+type APIKeyCreate struct {
+	ID          string
+	Name        string
+	PrefixLast4 string
+	KeyHash     string
+	Scopes      []string
+	ProjectIDs  []string
+	CreatedAt   time.Time
+	ExpiresAt   *time.Time
+}
+
+type APIKey struct {
+	ID          string
+	Name        string
+	PrefixLast4 string
+	KeyHash     string
+	Scopes      []string
+	ProjectIDs  []string
+	CreatedAt   time.Time
+	ExpiresAt   *time.Time
+	LastUsedAt  *time.Time
+	RevokedAt   *time.Time
+}
+
+type APIUsageLog struct {
+	APIKeyID   string
+	Method     string
+	Path       string
+	StatusCode int
+	LatencyMS  int
+	IP         string
+	UserAgent  string
+	CreatedAt  time.Time
 }
 
 type UsageEvent struct {

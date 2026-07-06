@@ -107,6 +107,88 @@ WHERE completed_at IS NOT NULL
 ORDER BY completed_at DESC, id DESC
 LIMIT 1;
 
+-- name: CreateAPIKey :one
+INSERT INTO api_keys (
+  id,
+  name,
+  prefix_last4,
+  key_hash,
+  scopes,
+  project_ids,
+  created_at,
+  expires_at,
+  last_used_at,
+  revoked_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: GetAPIKey :one
+SELECT *
+FROM api_keys
+WHERE id = ?;
+
+-- name: GetAPIKeyByHash :one
+SELECT *
+FROM api_keys
+WHERE key_hash = ?;
+
+-- name: ListAPIKeys :many
+SELECT *
+FROM api_keys
+ORDER BY created_at DESC, id DESC;
+
+-- name: CountActiveAPIKeys :one
+SELECT COUNT(*)
+FROM api_keys
+WHERE revoked_at IS NULL
+  AND (
+    expires_at IS NULL
+    OR expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+  );
+
+-- name: UpdateAPIKeyLastUsed :execrows
+UPDATE api_keys
+SET last_used_at = sqlc.arg(last_used_at)
+WHERE id = sqlc.arg(id)
+  AND (
+    last_used_at IS NULL
+    OR last_used_at <= sqlc.arg(threshold)
+  );
+
+-- name: SetAPIKeyExpiresAt :execrows
+UPDATE api_keys
+SET expires_at = sqlc.arg(expires_at)
+WHERE id = sqlc.arg(id);
+
+-- name: RevokeAPIKey :execrows
+UPDATE api_keys
+SET revoked_at = sqlc.arg(revoked_at)
+WHERE id = sqlc.arg(id)
+  AND revoked_at IS NULL;
+
+-- name: CreateAPIUsageLog :exec
+INSERT INTO api_usage_logs (
+  api_key_id,
+  method,
+  path,
+  status_code,
+  latency_ms,
+  ip,
+  user_agent,
+  created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: CountAPIUsageLogsByKey :one
+SELECT COUNT(*)
+FROM api_usage_logs
+WHERE api_key_id = ?;
+
+-- name: ListAPIUsageLogsByKey :many
+SELECT *
+FROM api_usage_logs
+WHERE api_key_id = ?
+ORDER BY created_at DESC, id DESC;
+
 -- name: ListRecentCodexSessions :many
 SELECT *
 FROM codex_sessions

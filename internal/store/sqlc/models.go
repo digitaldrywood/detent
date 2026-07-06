@@ -8,6 +8,31 @@ import (
 	"database/sql"
 )
 
+type ApiKey struct {
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	PrefixLast4 string         `json:"prefix_last4"`
+	KeyHash     string         `json:"key_hash"`
+	Scopes      string         `json:"scopes"`
+	ProjectIds  string         `json:"project_ids"`
+	CreatedAt   string         `json:"created_at"`
+	ExpiresAt   sql.NullString `json:"expires_at"`
+	LastUsedAt  sql.NullString `json:"last_used_at"`
+	RevokedAt   sql.NullString `json:"revoked_at"`
+}
+
+type ApiUsageLog struct {
+	ID         int64  `json:"id"`
+	ApiKeyID   string `json:"api_key_id"`
+	Method     string `json:"method"`
+	Path       string `json:"path"`
+	StatusCode int64  `json:"status_code"`
+	LatencyMs  int64  `json:"latency_ms"`
+	Ip         string `json:"ip"`
+	UserAgent  string `json:"user_agent"`
+	CreatedAt  string `json:"created_at"`
+}
+
 type CodexSession struct {
 	ID                    int64          `json:"id"`
 	RunID                 sql.NullInt64  `json:"run_id"`

@@ -86,6 +86,8 @@ func (s *sqliteStore) RuntimeEvidence(ctx context.Context, query RuntimeEvidence
 		{name: "work_attempts", projectScoped: true},
 		{name: "scheduler_decisions", projectScoped: true},
 		{name: "validator_verdicts", projectScoped: true},
+		{name: "api_keys"},
+		{name: "api_usage_logs"},
 	}
 	projectID := strings.TrimSpace(query.ProjectID)
 	for _, table := range tables {
@@ -807,6 +809,10 @@ func (s *sqliteStore) runtimeTableCount(ctx context.Context, tableName string, p
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM scheduler_decisions")
 		case "validator_verdicts":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM validator_verdicts")
+		case "api_keys":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM api_keys")
+		case "api_usage_logs":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM api_usage_logs")
 		default:
 			return 0, fmt.Errorf("unsupported runtime table %q", tableName)
 		}

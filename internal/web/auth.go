@@ -1,21 +1,29 @@
 package web
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 const apiTokenEnv = "DETENT_API_TOKEN"
 
 const uiAPICookieName = "detent_ui_api"
+
+type apiCredentialContextKey struct{}
 
 type apiAuthOptions struct {
 	mutating      bool
@@ -29,36 +37,144 @@ func (s *Server) apiAuth(mutating bool) echo.MiddlewareFunc {
 func (s *Server) apiAuthWithOptions(opts apiAuthOptions) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			authorized, err := s.authorizeAPIRequest(c, opts)
-			if !authorized || err != nil {
+			start := time.Now()
+			credential, err := s.authorizeAPIRequest(c, opts)
+			if err != nil {
 				return err
+			}
+			if err := s.applyAPIKeyRateLimit(c, credential); err != nil {
+				s.recordAPIUsage(c, credential, start, err)
+				return err
+			}
+			s.markAPIKeyLastUsed(credential)
+			err = next(c)
+			s.recordAPIUsage(c, credential, start, err)
+			return err
+		}
+	}
+}
+
+func (s *Server) authorizeAPIRequest(c echo.Context, opts apiAuthOptions) (apikey.Credential, error) {
+	if err := s.applyPreAuthIPRateLimit(c); err != nil {
+		return apikey.Credential{}, err
+	}
+
+	token := s.apiToken()
+	candidates := requestAPITokens(c.Request())
+	if len(candidates) > 0 {
+		var lastAuthErr *apikey.AuthError
+		for _, candidate := range candidates {
+			credential, err := s.authenticateCandidate(c.Request().Context(), candidate, token)
+			if err == nil {
+				s.setAPICredential(c, credential)
+				return credential, nil
+			}
+			var authErr *apikey.AuthError
+			if errors.As(err, &authErr) {
+				if authErr.Code == "token_expired" || authErr.Code == "token_revoked" {
+					return apikey.Credential{}, writeAPIAuthError(c, http.StatusUnauthorized, authErr.Code, authErr.Message)
+				}
+				lastAuthErr = authErr
+				continue
+			}
+			s.logger.Warn("api key lookup failed", "error", err)
+			return apikey.Credential{}, writeAPIAuthError(c, http.StatusServiceUnavailable, "service_unavailable", "API key authentication temporarily unavailable")
+		}
+		if lastAuthErr != nil {
+			return apikey.Credential{}, writeAPIAuthError(c, http.StatusUnauthorized, lastAuthErr.Code, lastAuthErr.Message)
+		}
+		return apikey.Credential{}, writeAPIAuthError(c, http.StatusUnauthorized, "unauthorized", "Valid API token is required")
+	}
+
+	if opts.allowUICookie && s.authorizeUIAPICookie(c) {
+		credential := apikey.StaticCredential()
+		s.setAPICredential(c, credential)
+		return credential, nil
+	}
+
+	if token != "" {
+		return apikey.Credential{}, writeAPIAuthError(c, http.StatusUnauthorized, "unauthorized", "Valid API token is required")
+	}
+	if serverAddressLoopback(s.serverAddr) {
+		credential := apikey.StaticCredential()
+		s.setAPICredential(c, credential)
+		return credential, nil
+	}
+	message := "configure api_token or use an API key to enable API access on non-loopback hosts"
+	if opts.mutating {
+		message = "configure api_token or use an API key to enable API mutations on non-loopback hosts"
+	}
+	return apikey.Credential{}, writeAPIAuthError(c, http.StatusForbidden, "api_token_required", message)
+}
+
+func (s *Server) authenticateCandidate(ctx context.Context, candidate string, staticToken string) (apikey.Credential, error) {
+	if s.apiKeys == nil {
+		if strings.TrimSpace(staticToken) == "" {
+			return apikey.Credential{}, &apikey.AuthError{Code: "unauthorized", Message: "Valid API token is required"}
+		}
+		if apiStaticTokenEqual(candidate, staticToken) {
+			return apikey.StaticCredential(), nil
+		}
+		return apikey.Credential{}, &apikey.AuthError{Code: "unauthorized", Message: "Valid API token is required"}
+	}
+	return s.apiKeys.Authenticate(ctx, candidate, staticToken)
+}
+
+func (s *Server) setAPICredential(c echo.Context, credential apikey.Credential) {
+	ctx := context.WithValue(c.Request().Context(), apiCredentialContextKey{}, credential)
+	c.SetRequest(c.Request().WithContext(ctx))
+}
+
+func apiCredentialFromContext(ctx context.Context) (apikey.Credential, bool) {
+	credential, ok := ctx.Value(apiCredentialContextKey{}).(apikey.Credential)
+	return credential, ok
+}
+
+func (s *Server) requireScope(scope apikey.Scope) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			credential, ok := apiCredentialFromContext(c.Request().Context())
+			if !ok {
+				return c.JSON(http.StatusForbidden, errorResponse("forbidden", "API key context missing"))
+			}
+			if !apikey.HasScope(credential.Scopes, scope) {
+				return c.JSON(http.StatusForbidden, errorResponse("forbidden", "insufficient scope: "+string(scope)))
 			}
 			return next(c)
 		}
 	}
 }
 
-func (s *Server) authorizeAPIRequest(c echo.Context, opts apiAuthOptions) (bool, error) {
-	token := s.apiToken()
-	if token != "" {
-		for _, candidate := range requestAPITokens(c.Request()) {
-			if constantTimeTokenEqual(candidate, token) {
-				return true, nil
+func (s *Server) requireProjectScope(scope apikey.Scope, projectParam string) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			credential, ok := apiCredentialFromContext(c.Request().Context())
+			if !ok {
+				return c.JSON(http.StatusForbidden, errorResponse("forbidden", "API key context missing"))
 			}
+			if !apikey.HasScope(credential.Scopes, scope) {
+				return c.JSON(http.StatusForbidden, errorResponse("forbidden", "insufficient scope: "+string(scope)))
+			}
+			projectID := requestProjectID(c, projectParam)
+			if scope == apikey.ScopeWrite && !apikey.AllowsProject(credential.ProjectIDs, projectID) {
+				return c.JSON(http.StatusForbidden, errorResponse("forbidden", "API key is not allowed for project "+projectID))
+			}
+			return next(c)
 		}
-		if opts.allowUICookie && s.authorizeUIAPICookie(c) {
-			return true, nil
-		}
-		return false, c.JSON(http.StatusUnauthorized, errorResponse("unauthorized", "Valid API token is required"))
 	}
-	if serverAddressLoopback(s.serverAddr) {
-		return true, nil
+}
+
+func requestProjectID(c echo.Context, param string) string {
+	if value := strings.TrimSpace(c.Param(param)); value != "" {
+		return value
 	}
-	message := "configure api_token or DETENT_API_TOKEN to enable API access on non-loopback hosts"
-	if opts.mutating {
-		message = "configure api_token or DETENT_API_TOKEN to enable API mutations on non-loopback hosts"
+	if value := strings.TrimSpace(c.FormValue(param)); value != "" {
+		return value
 	}
-	return false, c.JSON(http.StatusForbidden, errorResponse("api_token_required", message))
+	if value := strings.TrimSpace(c.QueryParam(param)); value != "" {
+		return value
+	}
+	return ""
 }
 
 func (s *Server) apiToken() string {
@@ -79,7 +195,7 @@ func (s *Server) warnIfAPITokenMissingOnNonLoopback() {
 	if s == nil || s.apiToken() != "" || serverAddressLoopback(s.serverAddr) {
 		return
 	}
-	s.logger.Warn("api_token is not configured; API routes will fail closed on non-loopback hosts", "addr", s.serverAddr)
+	s.logger.Warn("api_token is not configured; API routes without scoped API keys will fail closed on non-loopback hosts", "addr", s.serverAddr)
 }
 
 func requestAPITokens(req *http.Request) []string {
@@ -97,17 +213,6 @@ func requestAPITokens(req *http.Request) []string {
 		tokens = append(tokens, apiKey)
 	}
 	return tokens
-}
-
-func constantTimeTokenEqual(candidate string, token string) bool {
-	candidate = strings.TrimSpace(candidate)
-	token = strings.TrimSpace(token)
-	if candidate == "" || token == "" {
-		return false
-	}
-	candidateHash := sha256.Sum256([]byte(candidate))
-	tokenHash := sha256.Sum256([]byte(token))
-	return subtle.ConstantTimeCompare(candidateHash[:], tokenHash[:]) == 1
 }
 
 func serverAddressLoopback(addr string) bool {
@@ -163,7 +268,7 @@ func (s *Server) authorizeUIAPICookie(c echo.Context) bool {
 	if err != nil {
 		return false
 	}
-	return constantTimeTokenEqual(cookie.Value, s.uiAPIToken())
+	return apiStaticTokenEqual(cookie.Value, s.uiAPIToken())
 }
 
 func (s *Server) uiAPIToken() string {
@@ -174,4 +279,102 @@ func (s *Server) uiAPIToken() string {
 	mac := hmac.New(sha256.New, []byte(token))
 	_, _ = mac.Write([]byte("detent-ui-api-v1"))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func apiStaticTokenEqual(candidate string, token string) bool {
+	candidate = strings.TrimSpace(candidate)
+	token = strings.TrimSpace(token)
+	if candidate == "" || token == "" {
+		return false
+	}
+	candidateHash := sha256.Sum256([]byte(candidate))
+	tokenHash := sha256.Sum256([]byte(token))
+	return hmac.Equal(candidateHash[:], tokenHash[:])
+}
+
+func (s *Server) applyPreAuthIPRateLimit(c echo.Context) error {
+	if s.ipLimiter == nil {
+		return nil
+	}
+	allowed, remaining := s.ipLimiter.Allow(c.RealIP(), time.Now())
+	s.setRateLimitHeaders(c, s.ipLimiter.Limit(), remaining)
+	if allowed {
+		return nil
+	}
+	c.Response().Header().Set("Retry-After", "60")
+	return writeAPIAuthError(c, http.StatusTooManyRequests, "rate_limited", "rate limit exceeded, retry after 60 seconds")
+}
+
+func (s *Server) applyAPIKeyRateLimit(c echo.Context, credential apikey.Credential) error {
+	if s.keyLimiter == nil {
+		return nil
+	}
+	key := strings.TrimSpace(credential.ID)
+	if key == "" {
+		key = apikey.StaticKeyID
+	}
+	allowed, remaining := s.keyLimiter.Allow(key, time.Now())
+	s.setRateLimitHeaders(c, s.keyLimiter.Limit(), remaining)
+	if allowed {
+		return nil
+	}
+	c.Response().Header().Set("Retry-After", "60")
+	return writeAPIAuthError(c, http.StatusTooManyRequests, "rate_limited", "rate limit exceeded, retry after 60 seconds")
+}
+
+func writeAPIAuthError(c echo.Context, status int, code string, message string) error {
+	if err := c.JSON(status, errorResponse(code, message)); err != nil {
+		return err
+	}
+	return echo.NewHTTPError(status, message)
+}
+
+func (s *Server) setRateLimitHeaders(c echo.Context, limit int, remaining int) {
+	c.Response().Header().Set("X-RateLimit-Limit", strconv.Itoa(limit))
+	c.Response().Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+}
+
+func (s *Server) recordAPIUsage(c echo.Context, credential apikey.Credential, started time.Time, handlerErr error) {
+	if s == nil || s.store == nil || credential.Static || strings.TrimSpace(credential.ID) == "" {
+		return
+	}
+	status := c.Response().Status
+	var httpErr *echo.HTTPError
+	if errors.As(handlerErr, &httpErr) && httpErr.Code > 0 {
+		status = httpErr.Code
+	}
+	if status == 0 {
+		status = http.StatusOK
+	}
+	usage := store.APIUsageLog{
+		APIKeyID:   credential.ID,
+		Method:     c.Request().Method,
+		Path:       c.Request().URL.Path,
+		StatusCode: status,
+		LatencyMS:  int(time.Since(started).Milliseconds()),
+		IP:         c.RealIP(),
+		UserAgent:  c.Request().UserAgent(),
+		CreatedAt:  time.Now(),
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.store.RecordAPIUsageLog(ctx, usage); err != nil {
+			s.logger.Warn("failed to log api usage", "error", err, "api_key_id", credential.ID, "key", credential.PrefixLast4)
+		}
+	}()
+}
+
+func (s *Server) markAPIKeyLastUsed(credential apikey.Credential) {
+	if s == nil || s.store == nil || credential.Static || strings.TrimSpace(credential.ID) == "" {
+		return
+	}
+	id := credential.ID
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.store.MarkAPIKeyLastUsed(ctx, id, time.Now()); err != nil {
+			s.logger.Warn("failed to update api key last used", "error", err, "api_key_id", id, "key", credential.PrefixLast4)
+		}
+	}()
 }

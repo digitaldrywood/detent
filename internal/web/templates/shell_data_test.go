@@ -21,6 +21,7 @@ func TestAppShellActiveNav(t *testing.T) {
 		{name: "reports", data: DashboardShellData{ActiveNav: "reports"}, want: "reports"},
 		{name: "analytics", data: DashboardShellData{ActiveNav: "analytics"}, want: "analytics"},
 		{name: "health", data: DashboardShellData{ActiveNav: "health"}, want: "health"},
+		{name: "api keys", data: DashboardShellData{ActiveNav: "api-keys"}, want: "api-keys"},
 		{name: "settings", data: DashboardShellData{ActiveNav: "settings"}, want: "settings"},
 		{name: "project pages activate no top-level link", data: DashboardShellData{ActiveNav: "kanban", ProjectID: "gopher-ai"}, want: ""},
 		{name: "unknown nav activates nothing", data: DashboardShellData{ActiveNav: "runs"}, want: ""},
@@ -36,16 +37,20 @@ func TestAppShellActiveNav(t *testing.T) {
 
 func TestAppShellNavItemsMarksActive(t *testing.T) {
 	items := appShellNavItems(DashboardShellData{ActiveNav: "reports"})
-	if len(items) != 6 {
-		t.Fatalf("expected 6 nav items, got %d", len(items))
+	if len(items) != 7 {
+		t.Fatalf("expected 7 nav items, got %d", len(items))
 	}
+	healthDot := false
 	for _, item := range items {
 		want := item.ID == "reports"
 		if item.Active != want {
 			t.Fatalf("nav item %q active = %v, want %v", item.ID, item.Active, want)
 		}
+		if item.ID == "health" {
+			healthDot = item.HealthDot
+		}
 	}
-	if !items[4].HealthDot {
+	if !healthDot {
 		t.Fatalf("health nav item should carry the status dot")
 	}
 }
