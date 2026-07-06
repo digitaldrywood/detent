@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/knowledge"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/pathsafe"
@@ -85,6 +86,11 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		return "", err
 	}
 
+	rendered, err = appendKnowledgeBlock(rendered, workflow.Config.Agent.Knowledge)
+	if err != nil {
+		return "", err
+	}
+
 	rendered, err = appendNotesBlock(rendered, opts.WorkspacePath)
 	if err != nil {
 		return "", err
@@ -137,6 +143,10 @@ func BuildMergeFallbackPrompt(workflow config.Workflow, issue connector.Issue, o
 
 	prompt := prependWorkspaceIsolationBlock(b.String(), workflow.Config, opts.WorkspacePath, opts.Branch)
 	var err error
+	prompt, err = appendKnowledgeBlock(prompt, workflow.Config.Agent.Knowledge)
+	if err != nil {
+		return "", err
+	}
 	prompt, err = appendNotesBlock(prompt, opts.WorkspacePath)
 	if err != nil {
 		return "", err
@@ -486,6 +496,35 @@ func appendLessonsBlock(prompt string, cfg config.Lessons, workspacePath string)
 	}
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Lessons from prior runs\n\n" + strings.Join(entries, "\n\n"), nil
+}
+
+func appendKnowledgeBlock(prompt string, cfg config.Knowledge) (string, error) {
+	if !cfg.Enabled || len(cfg.Sources) == 0 {
+		return prompt, nil
+	}
+
+	sources := make([]knowledge.Source, 0, len(cfg.Sources))
+	for _, source := range cfg.Sources {
+		if strings.TrimSpace(source.Path) == "" {
+			continue
+		}
+		sources = append(sources, knowledge.Source{
+			Name: source.Name,
+			Path: source.Path,
+		})
+	}
+	if len(sources) == 0 {
+		return prompt, nil
+	}
+
+	block, err := knowledge.BuildBlock(sources, knowledge.Options{MaxBytes: cfg.MaxBytes})
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(block) == "" {
+		return prompt, nil
+	}
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + block, nil
 }
 
 func appendNotesBlock(prompt string, workspacePath string) (string, error) {

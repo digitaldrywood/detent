@@ -832,6 +832,15 @@ func workflowConfigWithProjectIdentity(
 	workflow workflowconfig.Config,
 ) workflowconfig.Config {
 	workflow = workflowConfigWithProjectPaths(project, workflow)
+	if workflow.Agent.Knowledge.Enabled {
+		workflow.Agent.Knowledge = workflowconfig.KnowledgeWithSources(
+			project.GlobalKnowledge,
+			project.Knowledge,
+			workflow.Agent.Knowledge,
+		)
+	} else {
+		workflow.Agent.Knowledge.Normalize()
+	}
 	if !project.Identity.Configured() {
 		return workflow
 	}
@@ -857,7 +866,15 @@ func workflowConfigWithProjectPaths(project globalconfig.Project, workflow workf
 	if workflow.Deliverable.Kind == workflowconfig.DeliverableArtifact {
 		workflow.Deliverable.OutputRoot = projectRelativePath(workdir, workflow.Deliverable.OutputRoot)
 	}
+	workflow.Agent.Knowledge = knowledgeWithProjectRelativePaths(workdir, workflow.Agent.Knowledge)
 	return workflow
+}
+
+func knowledgeWithProjectRelativePaths(base string, cfg workflowconfig.Knowledge) workflowconfig.Knowledge {
+	for index := range cfg.Sources {
+		cfg.Sources[index].Path = projectRelativePath(base, cfg.Sources[index].Path)
+	}
+	return cfg
 }
 
 func projectRelativePath(base string, path string) string {

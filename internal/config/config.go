@@ -41,9 +41,10 @@ const (
 	defaultLinearEndpoint = "https://api.linear.app/graphql"
 	defaultGitHubEndpoint = "https://api.github.com/graphql"
 
-	DefaultAgentBackendID  = "codex"
-	AgentBackendCodex      = "codex"
-	AgentBackendClaudeCode = "claude_code"
+	DefaultAgentBackendID    = "codex"
+	AgentBackendCodex        = "codex"
+	AgentBackendClaudeCode   = "claude_code"
+	DefaultKnowledgeMaxBytes = 64 * 1024
 
 	DefaultPollingIntervalMS      = 120000
 	MinPollingIntervalMS          = 60000
@@ -203,6 +204,7 @@ type Agent struct {
 	AutoPromote                  AutoPromote    `yaml:"auto_promote"`
 	Budget                       Budget         `yaml:"budget"`
 	Lessons                      Lessons        `yaml:"lessons"`
+	Knowledge                    Knowledge      `yaml:"knowledge"`
 	Skills                       Skills         `yaml:"skills"`
 }
 
@@ -285,6 +287,18 @@ type Lessons struct {
 	MaxEntries          int    `yaml:"max_entries"`
 	RecallN             int    `yaml:"recall_n"`
 	PostmortemMaxTokens int    `yaml:"postmortem_max_tokens"`
+}
+
+type Knowledge struct {
+	Enabled    bool              `yaml:"enabled"`
+	MaxBytes   int               `yaml:"max_bytes"`
+	Sources    []KnowledgeSource `yaml:"sources"`
+	Configured bool              `yaml:"-"`
+}
+
+type KnowledgeSource struct {
+	Name string `yaml:"name,omitempty"`
+	Path string `yaml:"path"`
 }
 
 type Skills struct {
@@ -686,10 +700,12 @@ func ParseWorkflow(raw []byte) (Workflow, error) {
 		}
 		normalizeTrackerIDFields(root)
 		gitHubStatusSourceSet := trackerFieldSet(root, "github_status_source")
+		knowledgeConfigured := nestedFieldSet(root, "agent", "knowledge")
 		if err := root.Decode(&cfg); err != nil {
 			return Workflow{}, fmt.Errorf("decode YAML frontmatter: %w", err)
 		}
 		cfg.Tracker.gitHubStatusSourceSet = gitHubStatusSourceSet
+		cfg.Agent.Knowledge.Configured = knowledgeConfigured
 	}
 
 	cfg.normalize()
@@ -764,9 +780,10 @@ func Default() Config {
 				PassState:          "Merging",
 				ReworkState:        "Rework",
 			},
-			Budget:  budget,
-			Lessons: defaultLessons(),
-			Skills:  defaultSkills(),
+			Budget:    budget,
+			Lessons:   defaultLessons(),
+			Knowledge: defaultKnowledge(),
+			Skills:    defaultSkills(),
 		},
 		Codex: Codex{
 			Command: "codex app-server",
@@ -980,6 +997,7 @@ func (c *Config) normalize() {
 	if c.Agent.AutoPromote.ReworkState == "" {
 		c.Agent.AutoPromote.ReworkState = "Rework"
 	}
+	c.Agent.Knowledge.Normalize()
 	c.Agents.normalize()
 	c.Codex.Shell = commandshell.Normalize(c.Codex.Shell)
 	c.Gate = gate.Effective(c.Gate)
@@ -1220,6 +1238,7 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	a.AutoPromote.validate(prefix+".auto_promote", problems)
 	a.Budget.validate(prefix+".budget", problems)
 	a.Lessons.validate(prefix+".lessons", problems)
+	a.Knowledge.validate(prefix+".knowledge", problems)
 	a.Skills.validate(prefix+".skills", problems)
 }
 
@@ -1441,6 +1460,55 @@ func (l *Lessons) validate(prefix string, problems *[]string) {
 	validatePositive(prefix+".postmortem_max_tokens", l.PostmortemMaxTokens, problems)
 }
 
+func (k *Knowledge) Normalize() {
+	if k == nil {
+		return
+	}
+	if (k.Enabled || len(k.Sources) > 0) && k.MaxBytes <= 0 {
+		k.MaxBytes = DefaultKnowledgeMaxBytes
+	}
+	for index := range k.Sources {
+		k.Sources[index].Name = strings.Join(strings.Fields(k.Sources[index].Name), " ")
+		k.Sources[index].Path = strings.TrimSpace(k.Sources[index].Path)
+	}
+}
+
+func (k Knowledge) validate(prefix string, problems *[]string) {
+	if k.Enabled || len(k.Sources) > 0 {
+		validatePositive(prefix+".max_bytes", k.MaxBytes, problems)
+	}
+	for index, source := range k.Sources {
+		sourcePrefix := prefix + ".sources[" + strconv.Itoa(index) + "]"
+		if strings.TrimSpace(source.Path) == "" {
+			*problems = append(*problems, sourcePrefix+".path must not be blank")
+		}
+		if strings.ContainsAny(source.Name, "\r\n") {
+			*problems = append(*problems, sourcePrefix+".name must be a single line")
+		}
+		if strings.ContainsAny(source.Path, "\r\n") {
+			*problems = append(*problems, sourcePrefix+".path must be a single line")
+		}
+	}
+}
+
+func KnowledgeWithSources(scopes ...Knowledge) Knowledge {
+	out := defaultKnowledge()
+	out.Sources = nil
+	for _, scope := range scopes {
+		if !scope.Enabled {
+			continue
+		}
+		scope.Normalize()
+		if len(scope.Sources) > 0 {
+			out.Sources = append(out.Sources, scope.Sources...)
+		}
+		if scope.Configured || len(scope.Sources) > 0 {
+			out.MaxBytes = scope.MaxBytes
+		}
+	}
+	return out
+}
+
 func (s *Skills) validate(prefix string, problems *[]string) {
 	validateWorkspaceRelativePath(prefix+".path", s.Path, problems)
 	validatePositive(prefix+".max_skills_in_prompt", s.MaxSkillsInPrompt, problems)
@@ -1645,6 +1713,17 @@ func trackerFieldSet(root *yaml.Node, key string) bool {
 	return mappingValue(tracker, key) != nil
 }
 
+func nestedFieldSet(root *yaml.Node, keys ...string) bool {
+	current := root
+	for _, key := range keys {
+		if current == nil || current.Kind != yaml.MappingNode {
+			return false
+		}
+		current = mappingValue(current, key)
+	}
+	return current != nil
+}
+
 func mappingValue(node *yaml.Node, key string) *yaml.Node {
 	if node.Kind != yaml.MappingNode {
 		return nil
@@ -1762,6 +1841,13 @@ func defaultLessons() Lessons {
 		MaxEntries:          50,
 		RecallN:             10,
 		PostmortemMaxTokens: 1024,
+	}
+}
+
+func defaultKnowledge() Knowledge {
+	return Knowledge{
+		Enabled:  true,
+		MaxBytes: DefaultKnowledgeMaxBytes,
 	}
 }
 

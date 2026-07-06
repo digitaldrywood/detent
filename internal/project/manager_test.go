@@ -1421,6 +1421,13 @@ func TestManagerConfigFromGlobal(t *testing.T) {
 				Name:        "release-captain",
 				GitHubLogin: "detent-bot",
 			},
+			Knowledge: workflowconfig.Knowledge{
+				Enabled: true,
+				Sources: []workflowconfig.KnowledgeSource{{
+					Name: "Global",
+					Path: "/shared/global.md",
+				}},
+			},
 			Startup: map[string]any{
 				"jitter_seconds":        3,
 				"max_spawn_per_second":  4,
@@ -1448,6 +1455,9 @@ func TestManagerConfigFromGlobal(t *testing.T) {
 	}
 	if got.Projects[0].Identity.GitHubLogin != "detent-bot" {
 		t.Fatalf("Projects[0].Identity.GitHubLogin = %q, want detent-bot", got.Projects[0].Identity.GitHubLogin)
+	}
+	if len(got.Projects[0].GlobalKnowledge.Sources) != 1 || got.Projects[0].GlobalKnowledge.Sources[0].Name != "Global" {
+		t.Fatalf("Projects[0].GlobalKnowledge = %#v, want global source", got.Projects[0].GlobalKnowledge)
 	}
 }
 

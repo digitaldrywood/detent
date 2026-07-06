@@ -661,6 +661,53 @@ projects:
 	}
 }
 
+func TestReadParsesKnowledgeWithoutRequiringFiles(t *testing.T) {
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+	writeFile(t, configPath, `apiVersion: detent/v1
+kind: GlobalConfig
+global:
+  max_concurrent_agents: 8
+  scheduling: weighted
+  knowledge:
+    max_bytes: 1024
+    sources:
+      - name: Global standards
+        path: ~/detent-knowledge/global.md
+projects:
+  - id: detent
+    workflow: `+paths.workflow+`
+    workdir: `+paths.workdir+`
+    weight: 5
+    priority: 50
+    knowledge:
+      sources:
+        - name: Project standards
+          path: ~/detent-knowledge/project.md
+`)
+
+	cfg, err := Read(configPath, WithHome(paths.home))
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+
+	if cfg.Global.Knowledge.MaxBytes != 1024 {
+		t.Fatalf("Global.Knowledge.MaxBytes = %d, want 1024", cfg.Global.Knowledge.MaxBytes)
+	}
+	if len(cfg.Global.Knowledge.Sources) != 1 {
+		t.Fatalf("Global.Knowledge.Sources len = %d, want 1", len(cfg.Global.Knowledge.Sources))
+	}
+	if source := cfg.Global.Knowledge.Sources[0]; source.Name != "Global standards" || source.Path != filepath.Join(paths.home, "detent-knowledge", "global.md") {
+		t.Fatalf("Global.Knowledge.Sources[0] = %#v", source)
+	}
+	if len(cfg.Projects[0].Knowledge.Sources) != 1 {
+		t.Fatalf("Project.Knowledge.Sources len = %d, want 1", len(cfg.Projects[0].Knowledge.Sources))
+	}
+	if source := cfg.Projects[0].Knowledge.Sources[0]; source.Name != "Project standards" || source.Path != filepath.Join(paths.home, "detent-knowledge", "project.md") {
+		t.Fatalf("Project.Knowledge.Sources[0] = %#v", source)
+	}
+}
+
 func TestReadWithProjectPathLiteralsPreservesYAMLLiterals(t *testing.T) {
 	paths := createProjectFiles(t)
 	configPath := filepath.Join(paths.root, "global.yaml")
@@ -907,6 +954,38 @@ projects:
 				"global.identity.name must not be blank",
 				"global.identity.owner_field is required when global.identity.ownership_mode is field",
 				"projects[0].authorization.fields[0].name must not be blank",
+			},
+		},
+		{
+			name: "invalid knowledge",
+			raw: `apiVersion: detent/v1
+kind: GlobalConfig
+global:
+  max_concurrent_agents: 8
+  scheduling: weighted
+  knowledge:
+    enabled: yes
+    max_bytes: 0
+    sources:
+      - name: |-
+          global
+          source
+        path: ""
+projects:
+  - id: detent
+    workflow: ` + paths.workflow + `
+    workdir: ` + paths.workdir + `
+    weight: 5
+    priority: 50
+    knowledge:
+      sources: {}
+`,
+			want: []string{
+				"global.knowledge.enabled: must be a boolean",
+				"global.knowledge.max_bytes: must be a positive integer",
+				"global.knowledge.sources[0].name: must be a single line",
+				"global.knowledge.sources[0].path: must not be blank",
+				"projects[0].knowledge.sources: must be a list",
 			},
 		},
 		{

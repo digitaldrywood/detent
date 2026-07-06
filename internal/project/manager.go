@@ -80,9 +80,14 @@ type Manager struct {
 }
 
 func ManagerConfigFromGlobal(cfg globalconfig.Config) ManagerConfig {
+	projects := append([]globalconfig.Project(nil), cfg.Projects...)
+	for index := range projects {
+		projects[index].GlobalKnowledge = cfg.Global.Knowledge
+	}
+
 	return normalizeManagerConfig(ManagerConfig{
 		Identity: cfg.Global.Identity,
-		Projects: cfg.Projects,
+		Projects: projects,
 		Startup: StartupConfig{
 			Jitter:              time.Duration(startupInt(cfg.Global.Startup, "jitter_seconds")) * time.Second,
 			MaxSpawnPerSecond:   startupInt(cfg.Global.Startup, "max_spawn_per_second"),
@@ -748,6 +753,8 @@ func startupInt(values map[string]any, key string) int {
 func normalizeManagerProjectConfig(cfg globalconfig.Project) globalconfig.Project {
 	cfg.ID = string(normalizeProjectID(ID(cfg.ID)))
 	cfg.Identity.Normalize()
+	cfg.GlobalKnowledge.Normalize()
+	cfg.Knowledge.Normalize()
 	return cfg
 }
 

@@ -206,6 +206,97 @@ func TestBuildPromptSkillCreationInstructionsAreConfigurable(t *testing.T) {
 	}
 }
 
+func TestBuildPromptAppendsTeamKnowledge(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	globalPath := filepath.Join(root, "global.md")
+	projectPath := filepath.Join(root, "project.md")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll(workspace) error = %v", err)
+	}
+	if err := os.WriteFile(globalPath, []byte("Use allowlist terminology.\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(global) error = %v", err)
+	}
+	if err := os.WriteFile(projectPath, []byte("Run project smoke tests.\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(project) error = %v", err)
+	}
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Config: config.Config{
+			Agent: config.Agent{
+				Knowledge: config.Knowledge{
+					Enabled:  true,
+					MaxBytes: 4096,
+					Sources: []config.KnowledgeSource{
+						{Name: "Global", Path: globalPath},
+						{Name: "Missing", Path: filepath.Join(root, "missing.md")},
+						{Name: "Project", Path: projectPath},
+					},
+				},
+			},
+		},
+		Prompt: "Base prompt",
+	}, connector.Issue{
+		Identifier: "digitaldrywood/detent#930",
+		Title:      "Knowledge",
+	}, PromptOptions{
+		WorkspacePath: workspace,
+	})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"## Team knowledge",
+		"Shared context supplied by Detent configuration.",
+		"### Global",
+		"Use allowlist terminology.",
+		"### Project",
+		"Run project smoke tests.",
+		"## Handoff notes",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "### Missing") {
+		t.Fatalf("prompt includes missing knowledge source:\n%s", prompt)
+	}
+	if strings.Index(prompt, "Use allowlist terminology.") > strings.Index(prompt, "Run project smoke tests.") {
+		t.Fatalf("prompt knowledge order = %q, want global before project", prompt)
+	}
+	if strings.Index(prompt, "## Team knowledge") > strings.Index(prompt, "## Handoff notes") {
+		t.Fatalf("prompt places handoff notes before team knowledge:\n%s", prompt)
+	}
+}
+
+func TestBuildPromptReturnsKnowledgeReadError(t *testing.T) {
+	t.Parallel()
+
+	_, err := BuildPrompt(config.Workflow{
+		Config: config.Config{
+			Agent: config.Agent{
+				Knowledge: config.Knowledge{
+					Enabled: true,
+					Sources: []config.KnowledgeSource{{
+						Name: "Directory",
+						Path: t.TempDir(),
+					}},
+				},
+			},
+		},
+		Prompt: "Base prompt",
+	}, connector.Issue{Identifier: "digitaldrywood/detent#930"}, PromptOptions{})
+	if err == nil {
+		t.Fatal("BuildPrompt() error = nil, want knowledge read error")
+	}
+	if !strings.Contains(err.Error(), "read shared knowledge") {
+		t.Fatalf("BuildPrompt() error = %v, want knowledge context", err)
+	}
+}
+
 func TestBuildPromptAppendsNotesAndPriorAttempt(t *testing.T) {
 	t.Parallel()
 
