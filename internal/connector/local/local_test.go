@@ -106,6 +106,101 @@ func TestConnectorPersistsWorkItemStateAndEvents(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchIssueCommentsReturnsEventMetadata(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	issue := connector.NewIssue()
+	issue.ID = "ad-1"
+	issue.Identifier = "store/ad-1"
+	issue.State = "Todo"
+
+	store, err := New(Config{
+		Path:      filepath.Join(t.TempDir(), "comments.db"),
+		ProjectID: "video",
+		Issues:    []connector.Issue{issue},
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.CreateComment(ctx, "ad-1", "Ready for review."); err != nil {
+		t.Fatalf("CreateComment() error = %v", err)
+	}
+	got, err := store.FetchIssueComments(ctx, issue)
+	if err != nil {
+		t.Fatalf("FetchIssueComments() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssueComments() len = %d, want 1", len(got))
+	}
+	comment := got[0]
+	if comment.ID != "1" ||
+		comment.Backend != connector.BackendLocalSQLite.String() ||
+		comment.Body != "Ready for review." ||
+		comment.AuthorLogin != "detent" ||
+		!comment.Local ||
+		comment.TargetType != connector.IssueCommentTargetIssue {
+		t.Fatalf("FetchIssueComments()[0] = %#v, want normalized local metadata", comment)
+	}
+	if comment.CreatedAt == nil || !comment.CreatedAt.Equal(now) {
+		t.Fatalf("CreatedAt = %v, want %v", comment.CreatedAt, now)
+	}
+}
+
+func TestConnectorFetchIssueCommentsPreservesEventOrder(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	timestamps := []time.Time{
+		time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
+		time.Date(2026, 7, 6, 12, 0, 0, 100_000_000, time.UTC),
+	}
+	next := 0
+	store, err := New(Config{
+		Path:      filepath.Join(t.TempDir(), "comment-order.db"),
+		ProjectID: "video",
+		Now: func() time.Time {
+			if next >= len(timestamps) {
+				return timestamps[len(timestamps)-1]
+			}
+			value := timestamps[next]
+			next++
+			return value
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.CreateComment(ctx, "ad-1", "first exact-second comment"); err != nil {
+		t.Fatalf("CreateComment() first error = %v", err)
+	}
+	if err := store.CreateComment(ctx, "ad-1", "second fractional comment"); err != nil {
+		t.Fatalf("CreateComment() second error = %v", err)
+	}
+
+	got, err := store.FetchIssueComments(ctx, connector.Issue{ID: "ad-1"})
+	if err != nil {
+		t.Fatalf("FetchIssueComments() error = %v", err)
+	}
+	wantBodies := []string{"first exact-second comment", "second fractional comment"}
+	if len(got) != len(wantBodies) {
+		t.Fatalf("FetchIssueComments() len = %d, want %d", len(got), len(wantBodies))
+	}
+	for index, want := range wantBodies {
+		if got[index].Body != want {
+			t.Fatalf("comment[%d].Body = %q, want %q; comments = %#v", index, got[index].Body, want, got)
+		}
+	}
+}
+
 func TestConnectorFetchIssuesByStatesLimit(t *testing.T) {
 	t.Parallel()
 

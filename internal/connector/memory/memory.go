@@ -168,10 +168,10 @@ func (c *Connector) FetchIssueComments(_ context.Context, issue connector.Issue)
 	wantIdentifier := normalizeState(issue.Identifier)
 	for _, candidate := range c.issues {
 		if wantID != "" && strings.TrimSpace(candidate.ID) == wantID {
-			return cloneIssueComments(candidate.Comments), nil
+			return cloneIssueComments(candidate, candidate.Comments), nil
 		}
 		if wantIdentifier != "" && normalizeState(candidate.Identifier) == wantIdentifier {
-			return cloneIssueComments(candidate.Comments), nil
+			return cloneIssueComments(candidate, candidate.Comments), nil
 		}
 	}
 	return []connector.IssueComment{}, nil
@@ -231,7 +231,16 @@ func (c *Connector) FetchIssueChildren(_ context.Context, issueID string) ([]con
 
 func (c *Connector) CreateComment(_ context.Context, issueID string, body string) error {
 	c.applyIssue(issueID, func(issue *connector.Issue, now time.Time) {
-		issue.Comments = append(issue.Comments, connector.IssueComment{Body: body})
+		createdAt := now.UTC()
+		issue.Comments = append(issue.Comments, connector.IssueComment{
+			ID:          memoryCommentID(*issue, len(issue.Comments)+1),
+			Backend:     connector.BackendMemory.String(),
+			Body:        body,
+			AuthorLogin: "memory",
+			CreatedAt:   &createdAt,
+			Local:       true,
+			TargetType:  connector.IssueCommentTargetIssue,
+		})
 		issue.UpdatedAt = &now
 	})
 	c.send(Event{Kind: EventKindComment, IssueID: issueID, Body: body})
@@ -535,7 +544,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		issue.Labels = append([]string(nil), issue.Labels...)
 	}
 	if issue.Comments != nil {
-		issue.Comments = cloneIssueComments(issue.Comments)
+		issue.Comments = cloneIssueComments(issue, issue.Comments)
 	}
 	if issue.Assignees != nil {
 		issue.Assignees = cloneStringSlice(issue.Assignees)
@@ -553,8 +562,39 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	return issue
 }
 
-func cloneIssueComments(comments []connector.IssueComment) []connector.IssueComment {
-	return append([]connector.IssueComment(nil), comments...)
+func cloneIssueComments(issue connector.Issue, comments []connector.IssueComment) []connector.IssueComment {
+	out := make([]connector.IssueComment, len(comments))
+	for index, comment := range comments {
+		out[index] = normalizeIssueComment(issue, comment, index+1)
+	}
+	return out
+}
+
+func normalizeIssueComment(issue connector.Issue, comment connector.IssueComment, index int) connector.IssueComment {
+	if strings.TrimSpace(comment.ID) == "" {
+		comment.ID = memoryCommentID(issue, index)
+	}
+	if strings.TrimSpace(comment.Backend) == "" {
+		comment.Backend = connector.BackendMemory.String()
+	}
+	if strings.TrimSpace(comment.AuthorLogin) == "" {
+		comment.AuthorLogin = "memory"
+	}
+	if strings.TrimSpace(comment.TargetType) == "" {
+		comment.TargetType = connector.IssueCommentTargetIssue
+	}
+	comment.Local = true
+	comment.CreatedAt = cloneTime(comment.CreatedAt)
+	comment.UpdatedAt = cloneTime(comment.UpdatedAt)
+	return comment
+}
+
+func memoryCommentID(issue connector.Issue, index int) string {
+	key := memoryIssueKey(issue)
+	if key == "" {
+		key = "issue"
+	}
+	return "memory:" + key + ":" + strconv.Itoa(index)
 }
 
 func cloneStringSlice(values []string) []string {

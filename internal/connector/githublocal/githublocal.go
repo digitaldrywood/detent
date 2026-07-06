@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -263,7 +264,7 @@ func (c *Connector) FetchIssueComments(ctx context.Context, issue connector.Issu
 		}
 		return nil, err
 	}
-	return append(githubComments, localComments...), nil
+	return mergeIssueComments(githubComments, localComments), nil
 }
 
 func (c *Connector) CreateComment(ctx context.Context, issueID string, body string) error {
@@ -467,7 +468,7 @@ func (c *Connector) mergeLocalWithGitHub(localIssue connector.Issue, upstream co
 	merged.State = localIssue.State
 	merged.Priority = localIssue.Priority
 	merged.Fields = cloneMetadata(localIssue.Fields)
-	merged.Comments = cloneComments(localIssue.Comments)
+	merged.Comments = mergeIssueComments(upstream.Comments, localIssue.Comments)
 	merged.Deliverable = cloneDeliverable(localIssue.Deliverable)
 	merged.AssignedToWorker = localIssue.AssignedToWorker
 	merged.StageUpdatedAt = localIssue.StageUpdatedAt
@@ -682,7 +683,56 @@ func mergeMetadata(primary map[string]string, secondary map[string]string) map[s
 }
 
 func cloneComments(values []connector.IssueComment) []connector.IssueComment {
-	return append([]connector.IssueComment(nil), values...)
+	out := make([]connector.IssueComment, len(values))
+	for index, value := range values {
+		out[index] = value
+		out[index].CreatedAt = cloneCommentTime(value.CreatedAt)
+		out[index].UpdatedAt = cloneCommentTime(value.UpdatedAt)
+	}
+	return out
+}
+
+func mergeIssueComments(primary []connector.IssueComment, secondary []connector.IssueComment) []connector.IssueComment {
+	out := make([]connector.IssueComment, 0, len(primary)+len(secondary))
+	out = append(out, cloneComments(primary)...)
+	out = append(out, cloneComments(secondary)...)
+	sort.SliceStable(out, func(i int, j int) bool {
+		return issueCommentLess(out[i], out[j])
+	})
+	return out
+}
+
+func issueCommentLess(left connector.IssueComment, right connector.IssueComment) bool {
+	if left.CreatedAt != nil && right.CreatedAt != nil && !left.CreatedAt.Equal(*right.CreatedAt) {
+		return left.CreatedAt.Before(*right.CreatedAt)
+	}
+	if (left.CreatedAt != nil) != (right.CreatedAt != nil) {
+		return left.CreatedAt != nil
+	}
+	if left.Local != right.Local {
+		return !left.Local
+	}
+	for _, pair := range [][2]string{
+		{left.Backend, right.Backend},
+		{left.ID, right.ID},
+		{left.URL, right.URL},
+		{left.Body, right.Body},
+	} {
+		leftValue := strings.TrimSpace(pair[0])
+		rightValue := strings.TrimSpace(pair[1])
+		if leftValue != rightValue {
+			return leftValue < rightValue
+		}
+	}
+	return false
+}
+
+func cloneCommentTime(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func cloneDeliverable(value *connector.Deliverable) *connector.Deliverable {

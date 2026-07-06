@@ -100,9 +100,22 @@ type PullRequestFinding struct {
 	Line int    `json:"line,omitempty" yaml:"line,omitempty"`
 }
 
+const (
+	IssueCommentTargetIssue       = "issue"
+	IssueCommentTargetPullRequest = "pull_request"
+)
+
 type IssueComment struct {
-	Body string `json:"body,omitempty" yaml:"body,omitempty"`
-	URL  string `json:"url,omitempty" yaml:"url,omitempty"`
+	ID                string     `json:"id,omitempty" yaml:"id,omitempty"`
+	Backend           string     `json:"backend,omitempty" yaml:"backend,omitempty"`
+	Body              string     `json:"body,omitempty" yaml:"body,omitempty"`
+	URL               string     `json:"url,omitempty" yaml:"url,omitempty"`
+	AuthorLogin       string     `json:"author_login,omitempty" yaml:"author_login,omitempty"`
+	AuthorDisplayName string     `json:"author_display_name,omitempty" yaml:"author_display_name,omitempty"`
+	CreatedAt         *time.Time `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	UpdatedAt         *time.Time `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+	Local             bool       `json:"local,omitempty" yaml:"local,omitempty"`
+	TargetType        string     `json:"target_type,omitempty" yaml:"target_type,omitempty"`
 }
 
 type Deliverable struct {
