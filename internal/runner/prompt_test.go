@@ -49,6 +49,14 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 					Path:    ".detent/lessons.md",
 					RecallN: 1,
 				},
+				Skills: config.Skills{
+					Enabled: true,
+					Path:    ".detent/skills",
+					Creation: config.SkillCreation{
+						Enabled:         true,
+						MaxDraftsPerRun: 1,
+					},
+				},
 			},
 		},
 		Prompt: "Prompt for {{ issue.identifier }} via {{ tracker.kind }} attempt={{ attempt }} auto={{ workspace.auto_branch }} metadata={{ issue.author_id }} {{ issue.assignees }} {{ issue.fields }}",
@@ -85,6 +93,11 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"In Merging, run a focused rebase/smoke gate after a clean rebase when the PR already passed current-head validation",
 		"## Available skills",
 		"- migrate — Issue mentions schema changes.",
+		"## Skill creation loop",
+		"Before final handoff, consider whether the successful run exposed",
+		"Draft at most 1 candidate skill file under `.detent/skills/`",
+		"rerun the required validation gate after the draft",
+		"the draft skill enters future prompts only after humans review and merge it",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -92,6 +105,104 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Add migrations.") {
 		t.Fatalf("prompt included skill description, want only when_to_use:\n%s", prompt)
+	}
+}
+
+func TestBuildPromptSkillCreationInstructionsAreConfigurable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		workflow  config.Workflow
+		planOnly  bool
+		want      []string
+		forbidden []string
+	}{
+		{
+			name: "enabled pull request workflow",
+			workflow: config.Workflow{Config: config.Config{
+				Agent: config.Agent{Skills: config.Skills{
+					Enabled: true,
+					Path:    ".detent/team-skills",
+					Creation: config.SkillCreation{
+						Enabled:         true,
+						MaxDraftsPerRun: 2,
+					},
+				}},
+			}},
+			want: []string{
+				"## Skill creation loop",
+				"Draft at most 2 candidate skill files under `.detent/team-skills/`",
+			},
+		},
+		{
+			name: "disabled creation",
+			workflow: config.Workflow{Config: config.Config{
+				Agent: config.Agent{Skills: config.Skills{
+					Enabled: true,
+					Creation: config.SkillCreation{
+						Enabled:         false,
+						MaxDraftsPerRun: 1,
+					},
+				}},
+			}},
+			forbidden: []string{"## Skill creation loop"},
+		},
+		{
+			name: "artifact workflow",
+			workflow: config.Workflow{Config: config.Config{
+				Deliverable: config.Deliverable{Kind: config.DeliverableArtifact},
+				Agent: config.Agent{Skills: config.Skills{
+					Enabled: true,
+					Creation: config.SkillCreation{
+						Enabled:         true,
+						MaxDraftsPerRun: 1,
+					},
+				}},
+			}},
+			forbidden: []string{"## Skill creation loop"},
+		},
+		{
+			name:     "plan only workflow",
+			planOnly: true,
+			workflow: config.Workflow{Config: config.Config{
+				Agent: config.Agent{Skills: config.Skills{
+					Enabled: true,
+					Creation: config.SkillCreation{
+						Enabled:         true,
+						MaxDraftsPerRun: 1,
+					},
+				}},
+			}},
+			forbidden: []string{"## Skill creation loop"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(tt.workflow, connector.Issue{
+				Identifier: "digitaldrywood/detent#931",
+				Title:      "Skill creation loop",
+			}, PromptOptions{
+				PlanOnly: tt.planOnly,
+			})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+
+			for _, want := range tt.want {
+				if !strings.Contains(prompt, want) {
+					t.Fatalf("prompt missing %q:\n%s", want, prompt)
+				}
+			}
+			for _, forbidden := range tt.forbidden {
+				if strings.Contains(prompt, forbidden) {
+					t.Fatalf("prompt contains %q:\n%s", forbidden, prompt)
+				}
+			}
+		})
 	}
 }
 

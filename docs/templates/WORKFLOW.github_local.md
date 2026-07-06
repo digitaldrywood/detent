@@ -80,6 +80,9 @@ agent:
     enabled: true
     path: .detent/skills
     max_skills_in_prompt: 50
+    creation:
+      enabled: true
+      max_drafts_per_run: 1
 codex:
   command: codex app-server
   approval_policy: never
