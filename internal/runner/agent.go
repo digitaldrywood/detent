@@ -637,7 +637,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	turnResult := execution.turnResult
 	turnErr := execution.err
 	result := execution.result
-	r.logWorkerEvent(req.Issue, "worker_command_finished",
+	commandFinishedAttrs := []any{
 		"workspace_path", info.Path,
 		"backend_id", selection.BackendID,
 		"route", selection.RouteName,
@@ -645,7 +645,13 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		"model", effectiveModel(result.Model, sessionModel),
 		"outcome", workerRunOutcome(turnErr, result.FinalState),
 		"error", errorString(turnErr),
-	)
+	}
+	commandFinishedAttrs = append(commandFinishedAttrs, backendErrorAttrs(turnErr)...)
+	if turnErr != nil {
+		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_command_finished", commandFinishedAttrs...)
+	} else {
+		r.logWorkerEvent(req.Issue, "worker_command_finished", commandFinishedAttrs...)
+	}
 	failureNoteRecorded := false
 	if strings.EqualFold(strings.TrimSpace(result.FinalState), FinalStateFailed) {
 		r.recordFailedRunNote(info.Path, req.Issue, result, turnErr, r.now().UTC())
@@ -856,7 +862,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		}
 		return nil
 	})
-	r.logWorkerEvent(req.Issue, "worker_check_finished",
+	checkFinishedAttrs := []any{
 		"workspace_path", info.Path,
 		"backend_id", selection.BackendID,
 		"route", selection.RouteName,
@@ -864,7 +870,13 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		"model", effectiveModel(runResult.Model, sessionModel),
 		"outcome", workerRunOutcome(turnErr, runResult.FinalState),
 		"error", errorString(turnErr),
-	)
+	}
+	checkFinishedAttrs = append(checkFinishedAttrs, backendErrorAttrs(turnErr)...)
+	if turnErr != nil {
+		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_check_finished", checkFinishedAttrs...)
+	} else {
+		r.logWorkerEvent(req.Issue, "worker_check_finished", checkFinishedAttrs...)
+	}
 
 	r.afterRun(info, workspaceIssue)
 	afterRunPending = false
@@ -1710,6 +1722,10 @@ func diffStatsFromWorkspace(stat workspace.DiffStat) DiffStats {
 }
 
 func (r *Runner) logWorkerEvent(issue connector.Issue, event string, attrs ...any) {
+	r.logWorkerEventLevel(slog.LevelDebug, issue, event, attrs...)
+}
+
+func (r *Runner) logWorkerEventLevel(level slog.Level, issue connector.Issue, event string, attrs ...any) {
 	if r == nil || r.logger == nil {
 		return
 	}
@@ -1721,7 +1737,17 @@ func (r *Runner) logWorkerEvent(issue connector.Issue, event string, attrs ...an
 		"issue_state", strings.TrimSpace(issue.State),
 	}
 	all = append(all, attrs...)
-	r.logger.Debug(strings.TrimSpace(event), all...)
+	message := strings.TrimSpace(event)
+	switch {
+	case level >= slog.LevelError:
+		r.logger.Error(message, all...)
+	case level >= slog.LevelWarn:
+		r.logger.Warn(message, all...)
+	case level >= slog.LevelInfo:
+		r.logger.Info(message, all...)
+	default:
+		r.logger.Debug(message, all...)
+	}
 }
 
 func (r *Runner) logAgentUpdate(issue connector.Issue, update AgentUpdate) {
@@ -1740,11 +1766,17 @@ func (r *Runner) logAgentUpdate(issue connector.Issue, update AgentUpdate) {
 			"turn_id", strings.TrimSpace(update.TurnID),
 		)
 	case AgentUpdateTurnCompleted:
-		r.logWorkerEvent(issue, "worker_turn_finished",
+		attrs := []any{
 			"thread_id", strings.TrimSpace(update.ThreadID),
 			"turn_id", strings.TrimSpace(update.TurnID),
 			"status", strings.TrimSpace(update.Status),
-		)
+		}
+		attrs = append(attrs, agentUpdateBackendErrorAttrs(update)...)
+		if failedAgentTurnStatus(update.Status) {
+			r.logWorkerEventLevel(slog.LevelWarn, issue, "worker_turn_finished", attrs...)
+		} else {
+			r.logWorkerEvent(issue, "worker_turn_finished", attrs...)
+		}
 	case AgentUpdateTokenUsage:
 		r.logWorkerEvent(issue, "worker_usage_updated",
 			"thread_id", strings.TrimSpace(update.ThreadID),
@@ -1767,6 +1799,42 @@ func (r *Runner) logAgentUpdate(issue connector.Issue, update AgentUpdate) {
 			)
 		}
 	}
+}
+
+type backendErrorCarrier interface {
+	BackendErrorBody() string
+	BackendErrorMessage() string
+}
+
+func backendErrorAttrs(err error) []any {
+	if err == nil {
+		return nil
+	}
+	var carrier backendErrorCarrier
+	if !errors.As(err, &carrier) {
+		return nil
+	}
+	return backendErrorStringsAttrs(carrier.BackendErrorBody(), carrier.BackendErrorMessage())
+}
+
+func agentUpdateBackendErrorAttrs(update AgentUpdate) []any {
+	return backendErrorStringsAttrs(update.BackendErrorBody, update.BackendErrorMessage)
+}
+
+func backendErrorStringsAttrs(body string, message string) []any {
+	attrs := []any{}
+	if body = strings.TrimSpace(body); body != "" {
+		attrs = append(attrs, "backend_error_body", body)
+	}
+	if message = strings.TrimSpace(message); message != "" {
+		attrs = append(attrs, "backend_error_message", message)
+	}
+	return attrs
+}
+
+func failedAgentTurnStatus(status string) bool {
+	status = strings.TrimSpace(status)
+	return status != "" && !strings.EqualFold(status, "completed")
 }
 
 func workerRunOutcome(err error, finalState string) string {

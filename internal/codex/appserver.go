@@ -32,6 +32,85 @@ var (
 	ErrTurnFailed      = errors.New("codex turn failed")
 )
 
+type ResponseError struct {
+	Request string
+	Code    int
+	Message string
+	Body    string
+}
+
+func (e *ResponseError) Error() string {
+	request := strings.TrimSpace(e.Request)
+	if request == "" {
+		request = "response"
+	}
+	message := strings.TrimSpace(e.Message)
+	if message == "" {
+		message = "unknown error"
+	}
+	out := ErrResponseError.Error() + ": " + request + ": " + message
+	if body := strings.TrimSpace(e.Body); body != "" {
+		out += ": " + body
+	}
+	return out
+}
+
+func (e *ResponseError) Unwrap() error {
+	return ErrResponseError
+}
+
+func (e *ResponseError) BackendErrorBody() string {
+	if e == nil {
+		return ""
+	}
+	return strings.TrimSpace(e.Body)
+}
+
+func (e *ResponseError) BackendErrorMessage() string {
+	if e == nil {
+		return ""
+	}
+	return strings.TrimSpace(e.Message)
+}
+
+type TurnFailedError struct {
+	Status  string
+	Message string
+	Body    string
+}
+
+func (e *TurnFailedError) Error() string {
+	status := strings.TrimSpace(e.Status)
+	if status == "" {
+		status = "failed"
+	}
+	out := ErrTurnFailed.Error() + ": status " + status
+	if body := strings.TrimSpace(e.Body); body != "" {
+		out += ": " + body
+	} else if message := strings.TrimSpace(e.Message); message != "" {
+		out += ": " + message
+	}
+	return out
+}
+
+func (e *TurnFailedError) Unwrap() error {
+	return ErrTurnFailed
+}
+
+func (e *TurnFailedError) BackendErrorBody() string {
+	if e == nil {
+		return ""
+	}
+	return strings.TrimSpace(e.Body)
+}
+
+func (e *TurnFailedError) BackendErrorMessage() string {
+	if e == nil {
+		return ""
+	}
+	return strings.TrimSpace(e.Message)
+}
+
 type AppServer struct {
 	transportFactory TransportFactory
 	clientInfo       ClientInfo
@@ -80,18 +159,20 @@ const (
 )
 
 type Update struct {
-	Type            UpdateType
-	Method          string
-	ProcessIdentity string
-	ThreadID        string
-	TurnID          string
-	ItemID          string
-	Delta           string
-	Status          string
-	Model           string
-	Tokens          TokenUsage
-	RateLimits      *RateLimitSnapshot
-	Payload         json.RawMessage
+	Type                UpdateType
+	Method              string
+	ProcessIdentity     string
+	ThreadID            string
+	TurnID              string
+	ItemID              string
+	Delta               string
+	Status              string
+	Model               string
+	BackendErrorBody    string
+	BackendErrorMessage string
+	Tokens              TokenUsage
+	RateLimits          *RateLimitSnapshot
+	Payload             json.RawMessage
 }
 
 type TokenUsage struct {
@@ -460,7 +541,12 @@ func (s *AppServer) awaitResponse(
 
 		if requestIDMatches(msg.ID, requestID) {
 			if msg.Error != nil {
-				return nil, fmt.Errorf("%w: %s: %s", ErrResponseError, requestName(requestID), msg.Error.Message)
+				return nil, &ResponseError{
+					Request: requestName(requestID),
+					Code:    msg.Error.Code,
+					Message: msg.Error.Message,
+					Body:    string(rawPayload(msg)),
+				}
 			}
 			if len(msg.Result) == 0 {
 				return nil, fmt.Errorf("%w: %s response missing result", ErrInvalidResponse, requestName(requestID))
@@ -519,7 +605,11 @@ func (s *AppServer) streamTurn(ctx context.Context, transport Transport, turnTim
 		if update.Status == "" || update.Status == "completed" {
 			return nil
 		}
-		return fmt.Errorf("%w: status %s", ErrTurnFailed, update.Status)
+		return &TurnFailedError{
+			Status:  update.Status,
+			Message: update.BackendErrorMessage,
+			Body:    update.BackendErrorBody,
+		}
 	}
 }
 
@@ -681,26 +771,130 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 		var params struct {
 			ThreadID string `json:"threadId"`
 			Turn     struct {
-				ID     string `json:"id"`
-				Status string `json:"status"`
+				ID      string          `json:"id"`
+				Status  string          `json:"status"`
+				Error   json.RawMessage `json:"error"`
+				Message string          `json:"message"`
 			} `json:"turn"`
+			Type    string          `json:"type"`
+			Status  any             `json:"status"`
+			Error   json.RawMessage `json:"error"`
+			Message string          `json:"message"`
 		}
 		if len(msg.Params) > 0 {
 			if err := json.Unmarshal(msg.Params, &params); err != nil {
 				return Update{}, false, fmt.Errorf("%w: decode turn completed: %w", ErrInvalidResponse, err)
 			}
 		}
+		status := strings.TrimSpace(params.Turn.Status)
+		if status == "" {
+			status = turnCompletedTopLevelStatus(params.Status, params.Error, params.Type)
+		}
+		errorBody, errorMessage := turnCompletedBackendError(params.Error, params.Turn.Error, params.Message, params.Turn.Message, msg.Params)
 		return Update{
-			Type:     UpdateTurnCompleted,
-			Method:   msg.Method,
-			ThreadID: params.ThreadID,
-			TurnID:   params.Turn.ID,
-			Status:   params.Turn.Status,
-			Payload:  rawPayload(msg),
+			Type:                UpdateTurnCompleted,
+			Method:              msg.Method,
+			ThreadID:            params.ThreadID,
+			TurnID:              params.Turn.ID,
+			Status:              status,
+			BackendErrorBody:    errorBody,
+			BackendErrorMessage: errorMessage,
+			Payload:             rawPayload(msg),
 		}, true, nil
 	default:
 		return Update{}, false, nil
 	}
+}
+
+func turnCompletedTopLevelStatus(status any, errorBody json.RawMessage, eventType string) string {
+	switch value := status.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case float64:
+		if value >= 400 || len(bytes.TrimSpace(errorBody)) > 0 {
+			return "failed"
+		}
+	}
+	if len(bytes.TrimSpace(errorBody)) > 0 || strings.EqualFold(strings.TrimSpace(eventType), "error") {
+		return "failed"
+	}
+	return ""
+}
+
+func turnCompletedBackendError(
+	topLevelError json.RawMessage,
+	turnError json.RawMessage,
+	topLevelMessage string,
+	turnMessage string,
+	params json.RawMessage,
+) (string, string) {
+	if looksLikeErrorEvent(params) {
+		body := compactJSON(params)
+		message := firstNonBlank(errorMessageFromJSON(params), errorMessageFromJSON(topLevelError), errorMessageFromJSON(turnError), topLevelMessage, turnMessage)
+		return body, message
+	}
+	body := compactJSON(firstRawJSON(topLevelError, turnError))
+	message := firstNonBlank(errorMessageFromJSON(topLevelError), errorMessageFromJSON(turnError), topLevelMessage, turnMessage)
+	if body != "" {
+		if message != "" {
+			return body, message
+		}
+		return body, body
+	}
+	if strings.TrimSpace(message) != "" {
+		return compactJSON(params), message
+	}
+	return "", ""
+}
+
+func firstRawJSON(values ...json.RawMessage) json.RawMessage {
+	for _, value := range values {
+		if len(bytes.TrimSpace(value)) > 0 {
+			return value
+		}
+	}
+	return nil
+}
+
+func compactJSON(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return string(raw)
+	}
+	return buf.String()
+}
+
+func errorMessageFromJSON(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return ""
+	}
+	var decoded struct {
+		Message string `json:"message"`
+		Error   struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return ""
+	}
+	return firstNonBlank(decoded.Message, decoded.Error.Message)
+}
+
+func looksLikeErrorEvent(raw json.RawMessage) bool {
+	var decoded struct {
+		Type   string          `json:"type"`
+		Status any             `json:"status"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(decoded.Type), "error") || len(bytes.TrimSpace(decoded.Error)) > 0
 }
 
 type tokenUsageBreakdown struct {

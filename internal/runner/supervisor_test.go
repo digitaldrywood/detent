@@ -77,6 +77,40 @@ func TestSupervisorAppliesCappedBackoffForRunnerErrors(t *testing.T) {
 	}
 }
 
+func TestSupervisorLogsBackendErrorBodyForRunnerErrors(t *testing.T) {
+	t.Parallel()
+
+	var logs strings.Builder
+	supervisor, err := NewSupervisor(backendErrorRunner{}, SupervisorConfig{
+		FailureRetryBaseDelay: time.Second,
+		MaxRetryBackoff:       time.Second,
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+	})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	completion := supervisor.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{ID: "issue-927", Identifier: "digitaldrywood/detent#927"},
+	})
+	if completion.Err == nil {
+		t.Fatal("Completion.Err = nil, want backend error")
+	}
+	logText := logs.String()
+	for _, want := range []string{
+		"level=WARN",
+		"worker_attempt_finished",
+		"backend_error_body",
+		`"{\"type\":\"error\",\"status\":400}"`,
+	} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("logs missing %q:\n%s", want, logText)
+		}
+	}
+}
+
 func TestSupervisorRetryDelayNeverOverflows(t *testing.T) {
 	t.Parallel()
 
@@ -325,6 +359,28 @@ type errorBackend struct{}
 
 func (errorBackend) Run(context.Context, RunRequest) (RunResult, error) {
 	return RunResult{}, errors.New("runner failed")
+}
+
+type backendErrorRunner struct{}
+
+func (backendErrorRunner) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, backendError{body: `{"type":"error","status":400}`}
+}
+
+type backendError struct {
+	body string
+}
+
+func (e backendError) Error() string {
+	return "codex turn failed: status failed: " + e.body
+}
+
+func (e backendError) BackendErrorBody() string {
+	return e.body
+}
+
+func (e backendError) BackendErrorMessage() string {
+	return "model rejected"
 }
 
 type staticBackend struct {

@@ -70,10 +70,10 @@ func (c *Codec) ReadMessage() (Message, error) {
 
 	var msg Message
 	if err := json.Unmarshal([]byte(line), &msg); err != nil {
-		return Message{}, fmt.Errorf("%w: decode: %w", ErrInvalidFrame, err)
+		return Message{}, fmt.Errorf("%w: decode: %w: frame %s", ErrInvalidFrame, err, line)
 	}
 	if err := validateMessage(msg); err != nil {
-		return Message{}, err
+		return Message{}, fmt.Errorf("%w: frame %s", err, line)
 	}
 
 	return msg, nil

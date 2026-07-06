@@ -29,12 +29,13 @@ import (
 const (
 	doctorWorkflowOptimizationCheckName = "Workflow optimization"
 
-	doctorWorkflowRuleRunawaySessionTokens = "runaway_session_tokens"
-	doctorWorkflowRuleReworkLaps           = "rework_laps"
-	doctorWorkflowRuleValidatorModel       = "validator_model"
-	doctorWorkflowRuleEmptyModelTelemetry  = "empty_model_telemetry"
-	doctorWorkflowRuleBudgetEstimateDrift  = "budget_estimate_drift"
-	doctorWorkflowRuleSchedulerSkipRate    = "scheduler_skip_rate"
+	doctorWorkflowRuleRunawaySessionTokens     = "runaway_session_tokens"
+	doctorWorkflowRuleReworkLaps               = "rework_laps"
+	doctorWorkflowRuleValidatorModel           = "validator_model"
+	doctorWorkflowRuleEmptyModelTelemetry      = "empty_model_telemetry"
+	doctorWorkflowRulePinnedRouteModelRejected = "pinned_route_model_rejected"
+	doctorWorkflowRuleBudgetEstimateDrift      = "budget_estimate_drift"
+	doctorWorkflowRuleSchedulerSkipRate        = "scheduler_skip_rate"
 
 	doctorWorkflowRunawayMedianMultiplier = 4.0
 	doctorWorkflowReworkLapThreshold      = 1
@@ -1383,12 +1384,16 @@ func doctorWorkflowFrontmatterRoot(frontmatter []byte) (*yaml.Node, error) {
 }
 
 func doctorApplyWorkflowOptimizationPatch(root *yaml.Node, patch doctorWorkflowOptimizationPatch) error {
-	switch strings.TrimSpace(patch.Path) {
+	path := strings.TrimSpace(patch.Path)
+	switch path {
 	case "agent.max_session_tokens", "agent.auto_promote.rework_limit", "gate.validator.model", "polling.interval_ms", "budget.per_issue_max_usd":
 		return doctorSetSimpleYAMLPath(root, strings.Split(patch.Path, "."), patch.Value)
 	case "agents.routes.default.model":
 		return doctorSetDefaultRouteModel(root, fmt.Sprint(patch.Value))
 	default:
+		if index, ok := doctorWorkflowRouteModelPatchIndex(path); ok {
+			return doctorSetRouteModel(root, index, fmt.Sprint(patch.Value))
+		}
 		return fmt.Errorf("unsupported workflow optimization patch path %q", patch.Path)
 	}
 }
@@ -1431,6 +1436,41 @@ func doctorSetDefaultRouteModel(root *yaml.Node, model string) error {
 		"default": true,
 		"model":   model,
 	}))
+	return nil
+}
+
+func doctorWorkflowRouteModelPatchIndex(path string) (int, bool) {
+	path = strings.TrimSpace(path)
+	const prefix = "agents.routes["
+	const suffix = "].model"
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
+		return 0, false
+	}
+	value := strings.TrimSuffix(strings.TrimPrefix(path, prefix), suffix)
+	index, err := strconv.Atoi(value)
+	if err != nil || index < 0 {
+		return 0, false
+	}
+	return index, true
+}
+
+func doctorSetRouteModel(root *yaml.Node, index int, model string) error {
+	agents := doctorYAMLMappingValue(root, "agents")
+	if agents == nil || agents.Kind != yaml.MappingNode {
+		return errors.New("agents routes are not configured")
+	}
+	routes := doctorYAMLMappingValue(agents, "routes")
+	if routes == nil || routes.Kind != yaml.SequenceNode {
+		return errors.New("agents.routes are not configured")
+	}
+	if index < 0 || index >= len(routes.Content) {
+		return fmt.Errorf("agents.routes[%d] does not exist", index)
+	}
+	route := routes.Content[index]
+	if route.Kind != yaml.MappingNode {
+		return fmt.Errorf("agents.routes[%d] is not a mapping", index)
+	}
+	doctorSetYAMLMappingValue(route, "model", doctorYAMLScalar(strings.TrimSpace(model)))
 	return nil
 }
 

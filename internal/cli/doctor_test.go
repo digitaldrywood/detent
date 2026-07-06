@@ -233,6 +233,95 @@ func TestRunDoctorAgentBinaryChecksFollowWorkflowBackends(t *testing.T) {
 	}
 }
 
+func TestRunDoctorFailsRejectedPinnedRouteModelAndDiffClearsPin(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	if err := os.WriteFile(workflowPath, []byte(`---
+tracker:
+  kind: memory
+workspace:
+  source_root: `+dir+`
+agents:
+  backends:
+    - id: codex-main
+      kind: codex
+      command: codex app-server
+  routes:
+    - name: default
+      backend: codex-main
+      default: true
+      model: gpt-5-codex
+---
+Prompt
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile(WORKFLOW.md) error = %v", err)
+	}
+	configPath := filepath.Join(dir, "global.yaml")
+	global := globalconfig.Config{
+		Path:       configPath,
+		APIVersion: globalconfig.APIVersion,
+		Kind:       globalconfig.Kind,
+		Global: globalconfig.Settings{
+			MaxConcurrentAgents: 1,
+			Scheduling:          globalconfig.SchedulingWeighted,
+		},
+		Projects: []globalconfig.Project{{
+			ID:       "pyroapex",
+			Workflow: workflowPath,
+			Workdir:  dir,
+			Weight:   1,
+		}},
+	}
+	deps := successfulDoctorDeps()
+	deps.loadWorkflow = workflowconfig.LoadWorkflow
+	deps.modelProbe = func(_ context.Context, req doctorRouteModelProbeRequest) error {
+		if req.ProjectID != "pyroapex" || req.RouteName != "default" || req.Model != "gpt-5-codex" {
+			t.Fatalf("probe request = %#v, want pyroapex default gpt-5-codex", req)
+		}
+		return errors.New(`{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"model rejected"}}`)
+	}
+
+	report := runDoctor(context.Background(), doctorConfig{
+		ConfigPath:       configPath,
+		Output:           io.Discard,
+		CheckTimeout:     time.Second,
+		WorkflowDiff:     true,
+		AllowWriteProbes: false,
+		Flags: runtimeFlags{
+			Port: runtimeIntFlag{Value: 0, Set: true},
+		},
+	}, successfulDoctorOptionsWithConfig(configPath, global), deps)
+
+	assertDoctorCheck(t, report, "Project pyroapex pinned route models", doctorFail, "gpt-5-codex")
+	check := doctorCheckByName(t, report, "Project pyroapex pinned route models")
+	for _, want := range []string{"pyroapex", "default", "gpt-5-codex", "model rejected"} {
+		if !strings.Contains(check.Detail, want) {
+			t.Fatalf("route model detail missing %q:\n%s", want, check.Detail)
+		}
+	}
+	if !strings.Contains(report.WorkflowOptimization.Diff, "-      model: gpt-5-codex") ||
+		!strings.Contains(report.WorkflowOptimization.Diff, `model: ""`) {
+		t.Fatalf("diff did not clear model pin:\n%s", report.WorkflowOptimization.Diff)
+	}
+
+	written, err := writeDoctorWorkflowOptimizationPatches(report.WorkflowOptimization)
+	if err != nil {
+		t.Fatalf("writeDoctorWorkflowOptimizationPatches() error = %v", err)
+	}
+	if !slices.Equal(written, []string{workflowPath}) {
+		t.Fatalf("written = %#v, want workflow path", written)
+	}
+	workflow, err := workflowconfig.LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow() error = %v", err)
+	}
+	if got := workflow.Config.AgentRouteConfigs()[0].Model; got != "" {
+		t.Fatalf("route model after write = %q, want empty", got)
+	}
+}
+
 func TestCheckDoctorProjects(t *testing.T) {
 	t.Parallel()
 
@@ -275,8 +364,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
 			gitErr:     errors.New("not a git worktree"),
-			wantStatus: []doctorStatus{doctorOK, doctorFail},
-			wantDetail: []string{"is valid", "not a git worktree"},
+			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorFail},
+			wantDetail: []string{"is valid", "validated 0 pinned Codex route model(s)", "not a git worktree"},
 		},
 		{
 			name: "workflow and source repo valid",
@@ -284,8 +373,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
-			wantStatus: []doctorStatus{doctorOK, doctorOK},
-			wantDetail: []string{"is valid", "is a git worktree"},
+			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK},
+			wantDetail: []string{"is valid", "validated 0 pinned Codex route model(s)", "is a git worktree"},
 		},
 	}
 
@@ -1164,7 +1253,7 @@ func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
 	if gotPath != wantPath {
 		t.Fatalf("git path = %q, want %q", gotPath, wantPath)
 	}
-	if len(checks) != 2 || checks[1].Status != doctorOK {
+	if len(checks) != 3 || checks[2].Status != doctorOK {
 		t.Fatalf("checks = %#v, want source repo OK", checks)
 	}
 }
@@ -3263,6 +3352,18 @@ func assertDoctorCheck(t *testing.T, report doctorReport, name string, status do
 		return
 	}
 	t.Fatalf("missing doctor check %q in %#v", name, report.Checks)
+}
+
+func doctorCheckByName(t *testing.T, report doctorReport, name string) doctorCheck {
+	t.Helper()
+
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	t.Fatalf("missing doctor check %q in %#v", name, report.Checks)
+	return doctorCheck{}
 }
 
 func assertDoctorMissingCheck(t *testing.T, report doctorReport, name string) {
