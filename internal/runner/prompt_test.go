@@ -94,8 +94,9 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"## Available skills",
 		"- migrate — Issue mentions schema changes.",
 		"## Skill creation loop",
-		"After this work item passes its required validation gate",
+		"Before final handoff, consider whether the successful run exposed",
 		"Draft at most 1 candidate skill file under `.detent/skills/`",
+		"rerun the required validation gate after the draft",
 		"the draft skill enters future prompts only after humans review and merge it",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -113,6 +114,7 @@ func TestBuildPromptSkillCreationInstructionsAreConfigurable(t *testing.T) {
 	tests := []struct {
 		name      string
 		workflow  config.Workflow
+		planOnly  bool
 		want      []string
 		forbidden []string
 	}{
@@ -160,6 +162,20 @@ func TestBuildPromptSkillCreationInstructionsAreConfigurable(t *testing.T) {
 			}},
 			forbidden: []string{"## Skill creation loop"},
 		},
+		{
+			name:     "plan only workflow",
+			planOnly: true,
+			workflow: config.Workflow{Config: config.Config{
+				Agent: config.Agent{Skills: config.Skills{
+					Enabled: true,
+					Creation: config.SkillCreation{
+						Enabled:         true,
+						MaxDraftsPerRun: 1,
+					},
+				}},
+			}},
+			forbidden: []string{"## Skill creation loop"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -169,7 +185,9 @@ func TestBuildPromptSkillCreationInstructionsAreConfigurable(t *testing.T) {
 			prompt, err := BuildPrompt(tt.workflow, connector.Issue{
 				Identifier: "digitaldrywood/detent#931",
 				Title:      "Skill creation loop",
-			}, PromptOptions{})
+			}, PromptOptions{
+				PlanOnly: tt.planOnly,
+			})
 			if err != nil {
 				t.Fatalf("BuildPrompt() error = %v", err)
 			}
