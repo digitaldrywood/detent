@@ -156,6 +156,81 @@ func TestEvaluateAutoPromote(t *testing.T) {
 			},
 		},
 		{
+			name: "workpad blocker awaits review",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-workpad-blocker", nil)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Blockers\n- Gate A/B/C owner listening approval is still required before approved audio assets are copied and committed.",
+				}}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				OptoutLabel:   "requires-human-review",
+				Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionAwaitReview,
+				Reason: AutoPromoteReasonWorkpadBlocker,
+			},
+		},
+		{
+			name: "workpad no blocker promotes",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-workpad-no-blocker", nil)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Blockers\n- None currently.\n\n### Validation\n- make check passed.",
+				}}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				OptoutLabel:   "requires-human-review",
+				Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name: "workpad blocker phrase awaits review",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-workpad-blocker-phrase", nil)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Notes\n- Owner listening approval is still required before approved audio assets are copied and committed.",
+				}}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				OptoutLabel:   "requires-human-review",
+				Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionAwaitReview,
+				Reason: AutoPromoteReasonWorkpadBlocker,
+			},
+		},
+		{
 			name:  "P1 findings move to rework",
 			issue: autoPromoteTestIssue("issue-p1", nil),
 			cfg:   enabled,
