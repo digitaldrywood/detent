@@ -1347,12 +1347,27 @@ func (o *Orchestrator) trackBlockedStatusIssues(state *State, issues []connector
 	}
 }
 
-func (o *Orchestrator) upsertBlockedStatusIssues(state *State, issues []connector.Issue, now time.Time) {
+func (o *Orchestrator) trackCandidateBlockedStatusIssues(state *State, issues []connector.Issue, now time.Time) {
+	blockedState := normalizeState(blockedStatusState)
 	for _, issue := range issues {
 		if issue.ID == "" {
 			continue
 		}
+		issueState := normalizeState(issue.State)
+		if issueState == "" {
+			continue
+		}
+		if issueState != blockedState {
+			clearBlockedStatusIssue(state, issue.ID)
+			continue
+		}
 		o.setBlockedStatusIssue(state, issue, now)
+	}
+}
+
+func clearBlockedStatusIssue(state *State, issueID string) {
+	if blocked, ok := state.Blocked[issueID]; ok && blocked.Source == BlockedSourceProjectStatus {
+		delete(state.Blocked, issueID)
 	}
 }
 

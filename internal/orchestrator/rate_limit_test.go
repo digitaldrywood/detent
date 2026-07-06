@@ -513,6 +513,67 @@ func TestTickSkipsNonessentialGitHubWorkBelowRESTReserve(t *testing.T) {
 	}
 }
 
+func TestTickClearsStaleBlockedStatusWhenCandidateResumesBelowGitHubReserve(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	issue := connector.Issue{
+		ID:         "I_98",
+		Identifier: "digitaldrywood/detent#98",
+		Title:      "Clear stale blocked status",
+		State:      "In Progress",
+	}
+	blockedIssue := issue
+	blockedIssue.State = "Blocked"
+	blockedIssue.BlockerReason = "waiting on human input"
+	cfg := normalizeConfig(Config{
+		PollInterval:            30 * time.Second,
+		MaxConcurrentAgents:     1,
+		ActiveStates:            []string{"Todo", "In Progress"},
+		ObservedStates:          []string{"Human Review", "Blocked"},
+		TerminalStates:          []string{"Done", "Cancelled"},
+		GitHubRESTMinReserve:    1000,
+		GitHubGraphQLMinReserve: 1000,
+	})
+	state := newState(cfg)
+	state.RateLimits = &telemetry.RateLimits{
+		GitHubREST: &telemetry.RateLimitBucket{
+			Remaining: 900,
+			Limit:     5000,
+			Used:      4100,
+			ResetAt:   &resetAt,
+		},
+	}
+	state.Running[issue.ID] = Running{Issue: issue, StartedAt: now.Add(-time.Minute)}
+	state.Blocked[issue.ID] = Blocked{
+		Issue:     blockedIssue,
+		Reason:    blockedStatusReason(blockedIssue),
+		BlockedAt: now.Add(-time.Hour),
+		Source:    BlockedSourceProjectStatus,
+	}
+	tracker := &rateLimitConnector{candidates: []connector.Issue{issue}}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 1 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want minimal active candidate fetch", tracker.fetchCandidateCalls)
+	}
+	if tracker.fetchByStatesCalls != 0 {
+		t.Fatalf("FetchIssuesByStates() calls = %d, want observed polling skipped", tracker.fetchByStatesCalls)
+	}
+	if tracker.fetchByStatesLimitCalls != 0 {
+		t.Fatalf("FetchIssuesByStatesLimit() calls = %d, want observed probe skipped", tracker.fetchByStatesLimitCalls)
+	}
+	if len(state.BoardIssues) != 1 || state.BoardIssues[0].ID != issue.ID || state.BoardIssues[0].State != "In Progress" {
+		t.Fatalf("BoardIssues = %#v, want resumed In Progress candidate", state.BoardIssues)
+	}
+	if _, ok := state.Blocked[issue.ID]; ok {
+		t.Fatalf("Blocked[%q] still tracked after candidate resumed In Progress during budget reserve", issue.ID)
+	}
+}
+
 func TestTickSkipsObservedPollingBelowGraphQLReserve(t *testing.T) {
 	t.Parallel()
 

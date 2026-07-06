@@ -740,7 +740,7 @@ func (o *Orchestrator) dispatchTickIssues(
 		}
 		o.trackBlockedStatusIssues(state, currentBlockedStatusIssues, now)
 	} else {
-		o.upsertBlockedStatusIssues(state, candidateBlockedStatusIssues, now)
+		o.trackCandidateBlockedStatusIssues(state, fetched.candidates, now)
 	}
 	o.dispatchReadyIssues(ctx, state, issues, now)
 }
