@@ -87,8 +87,6 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	for _, forbidden := range []string{
 		`data-kanban-action="move"`,
 		`hx-post="/api/v1/kanban/move"`,
-		`draggable="true"`,
-		`data-kanban-drag-move-form>`,
 	} {
 		if strings.Contains(fleetBody, forbidden) {
 			t.Fatalf("fleet board demo rendered forbidden affordance %q:\n%s", forbidden, fleetBody)
@@ -113,7 +111,7 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 			strings.Contains(body, `data-detail-sheet`)
 	})
 
-	dragDialogValues := url.Values{
+	moveDialogValues := url.Values{
 		"project_id":    {projectID},
 		"issue_id":      {"kanban-demo-backlog"},
 		"current_state": {"Backlog"},
@@ -121,8 +119,8 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 		"identifier":    {"digitaldrywood/detent#9510"},
 		"title":         {"Kanban demo backlog intake"},
 	}
-	dragDialogURL := dashboardURL + "/api/v1/kanban/move?" + dragDialogValues.Encode()
-	waitForDashboardCondition(t, dragDialogURL, done, "kanban drag move dialog target", func(body string) bool {
+	moveDialogURL := dashboardURL + "/api/v1/kanban/move?" + moveDialogValues.Encode()
+	waitForDashboardCondition(t, moveDialogURL, done, "kanban move dialog target", func(body string) bool {
 		return strings.Contains(body, `hx-post="/api/v1/kanban/move"`) &&
 			strings.Contains(body, `name="current_state" value="Backlog"`) &&
 			strings.Contains(body, `<option value="Todo" selected>`)

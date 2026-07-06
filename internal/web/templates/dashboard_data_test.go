@@ -1,7 +1,6 @@
 package templates
 
 import (
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -1477,97 +1476,6 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 	}
 }
 
-func TestProjectKanbanCompactChipsSummarizeSecondaryMetadata(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		card projectKanbanCard
-		want []string
-	}{
-		{
-			name: "issue-only",
-			card: projectKanbanCard{
-				TimeInStage: "5m 0s",
-			},
-			want: []string{"5m 0s"},
-		},
-		{
-			name: "pr-linked",
-			card: projectKanbanCard{
-				HasPullRequest:   true,
-				CIStatus:         "pass",
-				CodexReviewState: "clean",
-				TimeInStage:      "4m 0s",
-			},
-			want: []string{"4m 0s", "CI pass", "Codex clean"},
-		},
-		{
-			name: "conflicting-pr",
-			card: projectKanbanCard{
-				HasPullRequest: true,
-				MergeableState: "dirty",
-				ConflictReason: "PR #38 mergeStateStatus DIRTY",
-				TimeInStage:    "4m 0s",
-			},
-			want: []string{"4m 0s", "CI n/a", "Codex n/a", "Conflict"},
-		},
-		{
-			name: "blocked",
-			card: projectKanbanCard{
-				TimeInStage: "3m 0s",
-				Blockers:    []string{"digitaldrywood/detent#415 Todo"},
-			},
-			want: []string{"3m 0s", "1 blocker"},
-		},
-		{
-			name: "upstream-divergence",
-			card: projectKanbanCard{
-				TimeInStage:     "3m 0s",
-				AttentionLabel:  "Upstream closed",
-				AttentionDetail: "closed upstream while locally active",
-			},
-			want: []string{"3m 0s", "Upstream closed"},
-		},
-		{
-			name: "review",
-			card: projectKanbanCard{
-				HasPullRequest:   true,
-				CIStatus:         "pass",
-				CodexReviewState: "P2",
-				TimeInStage:      "2m 0s",
-				Labels:           []string{"enhancement", "ui"},
-				Assignees:        []string{"release-captain"},
-			},
-			want: []string{"2m 0s", "CI pass", "Codex P2"},
-		},
-		{
-			name: "merge-lane-active",
-			card: projectKanbanCard{
-				TimeInStage:     "1m 0s",
-				MergeLaneStatus: "Merging now",
-				MergeLaneDetail: "Active merge worker for PR #143; running checks",
-				MergeLaneClass:  "border-accent-soft bg-accent-soft text-accent",
-			},
-			want: []string{"1m 0s", "Merging now"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := projectKanbanCompactChipLabels(projectKanbanCompactChips(tt.card))
-			if len(got) != len(tt.want) {
-				t.Fatalf("compact chips len = %d, want %d; got %#v", len(got), len(tt.want), got)
-			}
-			for i := range tt.want {
-				if got[i] != tt.want[i] {
-					t.Fatalf("compact chip %d = %q, want %q; got %#v", i, got[i], tt.want[i], got)
-				}
-			}
-		})
-	}
-}
-
 func TestProjectKanbanBoardShowsMergeLaneStatus(t *testing.T) {
 	t.Parallel()
 
@@ -1755,15 +1663,6 @@ func TestProjectKanbanCardForIssueShowsPullRequestConflictReason(t *testing.T) {
 	}
 	if card.ConflictReason != "PR #38 mergeStateStatus DIRTY" {
 		t.Fatalf("ConflictReason = %q, want PR #38 mergeStateStatus DIRTY", card.ConflictReason)
-	}
-	chips := projectKanbanCompactChips(card)
-	if got := projectKanbanCompactChipLabels(chips); !slices.Contains(got, "Conflict") {
-		t.Fatalf("compact chips = %#v, want Conflict", got)
-	}
-	for _, chip := range chips {
-		if chip.Label == "Conflict" && chip.Title != "PR #38 mergeStateStatus DIRTY" {
-			t.Fatalf("Conflict chip title = %q, want PR #38 mergeStateStatus DIRTY", chip.Title)
-		}
 	}
 }
 
@@ -2182,17 +2081,8 @@ func TestProjectKanbanBoardAccountsForHiddenPopulatedLanes(t *testing.T) {
 	if board.TotalCardCount != 8 || board.VisibleCardCount != 3 || board.HiddenCardCount != 5 {
 		t.Fatalf("card counts = total %d visible %d hidden %d, want 8/3/5", board.TotalCardCount, board.VisibleCardCount, board.HiddenCardCount)
 	}
-	if got := projectKanbanCardCountSummary(board); got != "3 visible / 8 total cards" {
-		t.Fatalf("projectKanbanCardCountSummary() = %q", got)
-	}
-	if got := projectKanbanHiddenPopulatedSummary(board); got != "5 hidden cards in Done." {
-		t.Fatalf("projectKanbanHiddenPopulatedSummary() = %q", got)
-	}
 	if len(board.HiddenPopulatedLanes) != 1 || board.HiddenPopulatedLanes[0].Title != "Done" {
 		t.Fatalf("HiddenPopulatedLanes = %#v, want Done", board.HiddenPopulatedLanes)
-	}
-	if got := projectKanbanVisibilityCountLabel(board); got != "1/2" {
-		t.Fatalf("projectKanbanVisibilityCountLabel() = %q, want 1/2", got)
 	}
 }
 
@@ -2909,14 +2799,6 @@ func collectKanbanCards(lanes []projectKanbanLane) []kanbanCardSnapshot {
 				MergeLaneDetail:  card.MergeLaneDetail,
 			})
 		}
-	}
-	return out
-}
-
-func projectKanbanCompactChipLabels(chips []projectKanbanCompactChip) []string {
-	out := make([]string, 0, len(chips))
-	for _, chip := range chips {
-		out = append(out, chip.Label)
 	}
 	return out
 }

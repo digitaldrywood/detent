@@ -263,15 +263,9 @@
   }
 
   .dashboard-agent-scroll,
-  .pr-pipeline-lane-scroll,
-  .project-kanban-lanes,
-  .project-kanban-lane-scroll {
+  .pr-pipeline-lane-scroll {
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
-  }
-
-  .project-kanban-lanes {
-    --project-kanban-lane-width: 18rem;
   }
 
   .help-tip-button {
@@ -340,21 +334,4 @@
     margin-top: 0.25rem;
   }
 
-  .project-kanban-lane[data-kanban-drop-allowed="true"] {
-    border-color: var(--color-ok);
-    background: color-mix(in oklab, var(--color-ok) 12%, transparent);
-    cursor: move;
-  }
-
-  .project-kanban-lane[data-kanban-drop-allowed="false"] {
-    border-color: var(--color-err);
-    background: color-mix(in oklab, var(--color-err) 10%, transparent);
-    cursor: not-allowed;
-  }
-}
-
-@layer utilities {
-  .project-kanban-lane[data-project-kanban-lane-visible="false"] {
-    display: none;
-  }
 }

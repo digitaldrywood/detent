@@ -27,7 +27,6 @@ const (
 	prPipelineQueueWaitTarget    = 10 * time.Minute
 	kanbanActionDialogID         = "kanban-action-dialog"
 	kanbanDialogContentID        = "kanban-dialog-content"
-	projectKanbanLaneWidthClass  = "w-[var(--project-kanban-lane-width,18rem)] min-w-[var(--project-kanban-lane-width,18rem)] max-w-[var(--project-kanban-lane-width,18rem)] basis-[var(--project-kanban-lane-width,18rem)] shrink-0"
 )
 
 const (
@@ -544,12 +543,6 @@ type projectOverviewCard struct {
 	DotClass string
 }
 
-type projectKanbanCompactChip struct {
-	Label string
-	Title string
-	Class string
-}
-
 type projectKanbanIssueCard struct {
 	issue   telemetry.Issue
 	state   string
@@ -643,13 +636,6 @@ func dashboardBuildVersionLabel(data DashboardData) string {
 		return build
 	}
 	return versionLabel(data)
-}
-
-func dashboardHeading(data DashboardData) string {
-	if strings.TrimSpace(data.ProjectID) != "" {
-		return projectDisplayName(data)
-	}
-	return "Fleet"
 }
 
 func projectDisplayName(data DashboardData) string {
@@ -2043,20 +2029,6 @@ func projectOverviewKanbanDetail(board projectKanbanBoard) string {
 	return formatCount(len(board.Lanes)) + " active / " + formatCount(len(board.AllLanes)) + " lanes"
 }
 
-func projectKanbanSectionID(data DashboardData) string {
-	if isProjectDashboard(data) {
-		return "project-kanban"
-	}
-	return "fleet-kanban"
-}
-
-func projectKanbanSectionLabel(data DashboardData) string {
-	if isProjectDashboard(data) {
-		return "Project Kanban"
-	}
-	return "Fleet Kanban"
-}
-
 func projectOverviewRunsDetail(snapshot telemetry.Snapshot) string {
 	return formatCount(queueCount(snapshot)) + " queued / " + formatCount(blockedCount(snapshot)) + " blocked"
 }
@@ -2203,18 +2175,6 @@ func kanbanIntegrationEnabled(data DashboardData) bool {
 	return strings.EqualFold(strings.TrimSpace(data.Kanban.Mode), "integration")
 }
 
-func projectKanbanActionsEnabled(data DashboardData) bool {
-	if isProjectDashboard(data) {
-		return kanbanIntegrationEnabled(data)
-	}
-	for _, projectData := range data.Kanban.Projects {
-		if strings.EqualFold(strings.TrimSpace(projectData.Mode), "integration") {
-			return true
-		}
-	}
-	return false
-}
-
 func projectKanbanBoardLoaded(data DashboardData) bool {
 	return snapshotCarriesData(data)
 }
@@ -2226,10 +2186,6 @@ func projectKanbanBoardLoaded(data DashboardData) bool {
 func snapshotCarriesData(data DashboardData) bool {
 	return snapshotReady(data.Snapshot) ||
 		(snapshotDegraded(data.Snapshot) && snapshotHasPriorTrackerSnapshot(data.Snapshot))
-}
-
-func projectKanbanDragDropEnabled(data DashboardData) bool {
-	return isProjectDashboard(data) && kanbanIntegrationEnabled(data) && snapshotReady(data.Snapshot)
 }
 
 func projectKanbanCardKanbanData(data DashboardData, card projectKanbanCard) KanbanData {
@@ -2258,40 +2214,6 @@ func projectKanbanCardKanbanData(data DashboardData, card projectKanbanCard) Kan
 
 func projectKanbanCardIntegrationEnabled(data DashboardData, card projectKanbanCard) bool {
 	return strings.EqualFold(strings.TrimSpace(projectKanbanCardKanbanData(data, card).Mode), "integration")
-}
-
-func projectKanbanReadOnlySetupNotice(data DashboardData) bool {
-	return isProjectDashboard(data) && !kanbanIntegrationEnabled(data)
-}
-
-func projectKanbanIntegrationSnippet() string {
-	return "kanban:\n  mode: integration"
-}
-
-func projectKanbanStatesConfigured(data DashboardData) bool {
-	return len(data.Kanban.States) > 0
-}
-
-func kanbanFeedbackText(data KanbanData) string {
-	return strings.TrimSpace(data.Feedback)
-}
-
-func kanbanFeedbackVisible(data KanbanData) bool {
-	return strings.TrimSpace(data.Feedback) != ""
-}
-
-func kanbanFeedbackClass(data KanbanData) string {
-	class := "mt-3 rounded-md border px-3 py-2 text-sm "
-	switch strings.TrimSpace(data.FeedbackKind) {
-	case "success":
-		return class + "border-success bg-success-soft text-success"
-	case "warning":
-		return class + "border-warning bg-warning-soft text-warning"
-	case "danger", "error":
-		return class + "border-danger bg-danger-soft text-danger"
-	default:
-		return class + "border-border bg-muted/60 text-muted-foreground"
-	}
 }
 
 func kanbanProjectID(data DashboardData) string {
@@ -2605,21 +2527,6 @@ func projectKanbanLaneID(state string) string {
 	return id
 }
 
-func projectKanbanControlID(prefix string, card projectKanbanCard) string {
-	parts := []string{projectKanbanLaneID(prefix)}
-	for _, value := range []string{card.Identifier, card.IssueID, card.IssueNumber} {
-		part := projectKanbanLaneID(value)
-		if part != "unknown" {
-			parts = append(parts, part)
-			break
-		}
-	}
-	if len(parts) == 1 {
-		parts = append(parts, "card")
-	}
-	return strings.Join(parts, "-")
-}
-
 func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state string, stageAt time.Time, now time.Time) projectKanbanCard {
 	blockers, clearedBlockers := projectKanbanBlockerLabels(issue.BlockedBy, projectKanbanTerminalStateSetForIssue(data, issue))
 	card := projectKanbanCard{
@@ -2674,38 +2581,6 @@ func projectKanbanIssueNumber(issue telemetry.Issue) string {
 	return identifier
 }
 
-func projectKanbanCompactChips(card projectKanbanCard) []projectKanbanCompactChip {
-	chips := []projectKanbanCompactChip{
-		{
-			Label: chartText(card.TimeInStage, "n/a"),
-			Title: strings.TrimSpace(card.TimeInStageTitle),
-			Class: "border-border bg-muted text-muted-foreground",
-		},
-	}
-	if strings.TrimSpace(card.MergeLaneStatus) != "" {
-		chips = append(chips, newProjectKanbanCompactChip(card.MergeLaneStatus, card.MergeLaneDetail, card.MergeLaneClass))
-	}
-	if card.HasPullRequest {
-		chips = append(chips,
-			newProjectKanbanCompactChip("CI "+chartText(card.CIStatus, "n/a"), "Continuous integration status", card.CIClass),
-			newProjectKanbanCompactChip("Codex "+chartText(card.CodexReviewState, "n/a"), "Codex review state", card.CodexReviewClass),
-		)
-	}
-	if strings.TrimSpace(card.ConflictReason) != "" {
-		chips = append(chips, newProjectKanbanCompactChip("Conflict", card.ConflictReason, "border-danger-soft bg-danger-soft text-danger"))
-	}
-	if strings.TrimSpace(card.AttentionLabel) != "" {
-		chips = append(chips, newProjectKanbanCompactChip(card.AttentionLabel, card.AttentionDetail, "border-warning-soft bg-warning-soft text-warning"))
-	}
-	if len(card.Blockers) > 0 {
-		chips = append(chips, newProjectKanbanCompactChip(projectKanbanCountLabel(len(card.Blockers), "blocker", "blockers"), strings.Join(card.Blockers, ", "), "border-danger-soft bg-danger-soft text-danger"))
-	}
-	if strings.TrimSpace(card.WaitDetail) != "" {
-		chips = append(chips, newProjectKanbanCompactChip("Waits", card.WaitDetail, "border-warning-soft bg-warning-soft text-warning"))
-	}
-	return chips
-}
-
 func projectKanbanAttentionLabel(issue telemetry.Issue) string {
 	switch strings.TrimSpace(issue.Metadata[githubLocalDivergenceMetadataKey]) {
 	case githubLocalClosedUpstreamDivergence:
@@ -2724,14 +2599,6 @@ func projectKanbanAttentionDetail(issue telemetry.Issue) string {
 		return "closed upstream while locally active"
 	default:
 		return ""
-	}
-}
-
-func newProjectKanbanCompactChip(label string, title string, class string) projectKanbanCompactChip {
-	return projectKanbanCompactChip{
-		Label: strings.TrimSpace(label),
-		Title: strings.TrimSpace(title),
-		Class: strings.TrimSpace(class),
 	}
 }
 
@@ -2821,155 +2688,8 @@ func projectKanbanTerminalStateSetForProject(data DashboardData, projectID strin
 	return projectKanbanTerminalStateSet(states)
 }
 
-func projectKanbanLaneClass(lane projectKanbanLane) string {
-	class := "project-kanban-lane grid min-h-[12rem] " + projectKanbanLaneWidthClass + " content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2"
-	if lane.Empty {
-		class += " project-kanban-empty-lane"
-	}
-	return class
-}
-
-func projectKanbanLaneAttributesForData(data DashboardData, lane projectKanbanLane) templ.Attributes {
-	attrs := templ.Attributes{
-		"data-project-kanban-lane-empty":            projectKanbanBool(lane.Empty),
-		"data-project-kanban-lane-default-visible":  projectKanbanBool(lane.DefaultVisible),
-		"data-project-kanban-lane-card-count":       strconv.Itoa(len(lane.Cards)),
-		"data-project-kanban-lane-pinned":           "false",
-		"data-project-kanban-lane-visible":          projectKanbanBool(lane.DefaultVisible),
-		"data-project-kanban-lane-visibility-state": "default",
-	}
-	if lane.Empty {
-		attrs["data-project-kanban-empty-lane"] = true
-	}
-	if projectKanbanDragDropEnabled(data) {
-		attrs["data-kanban-drop-state"] = lane.Title
-		attrs["data-kanban-drop-key"] = projectKanbanStateKey(lane.Title)
-	}
-	return attrs
-}
-
-func projectKanbanVisibilityKey(data DashboardData, _ projectKanbanBoard) string {
-	scope := kanbanProjectID(data)
-	if scope == "" {
-		scope = "fleet"
-		return scope
-	}
-	return "project:" + url.QueryEscape(scope)
-}
-
-func projectKanbanVisibilityDetailsID(visibilityKey string) string {
-	key := projectKanbanLaneID(visibilityKey)
-	if key == "unknown" {
-		key = "default"
-	}
-	return "project-kanban-visibility-" + key
-}
-
-func projectKanbanBool(value bool) string {
-	if value {
-		return "true"
-	}
-	return "false"
-}
-
-func projectKanbanCardAttributes(data DashboardData, card projectKanbanCard) templ.Attributes {
-	attrs := templ.Attributes{
-		"data-project-kanban-card": card.Identifier,
-		"data-help-trigger":        true,
-		"data-help-term":           projectKanbanControlID("project-kanban-card-preview", card),
-		"data-help-title":          card.Title,
-		"data-help-description":    card.Description,
-	}
-	if !projectKanbanDragDropEnabled(data) {
-		return attrs
-	}
-	attrs["data-kanban-card"] = true
-	attrs["data-kanban-current-state"] = card.Stage
-	if card.IssueID != "" {
-		attrs["data-kanban-issue-id"] = card.IssueID
-	}
-	if projectKanbanCardCanMove(data, card) {
-		attrs["draggable"] = "true"
-		attrs["data-kanban-action"] = "move"
-		attrs["data-kanban-allowed-targets"] = projectKanbanMoveTargetKeys(data, card)
-	} else {
-		attrs["aria-disabled"] = "true"
-	}
-	return attrs
-}
-
-func projectKanbanVisibilityCountLabel(board projectKanbanBoard) string {
-	return formatCount(len(board.Lanes)) + "/" + formatCount(len(board.AllLanes))
-}
-
-func projectKanbanDefaultVisibilityLabel(lane projectKanbanLane) string {
-	if lane.DefaultVisible {
-		return "Default visible"
-	}
-	return "Default hidden"
-}
-
-func projectKanbanCardCountSummary(board projectKanbanBoard) string {
-	if board.HiddenCardCount > 0 {
-		return board.VisibleCountLabel + " visible / " + board.TotalLabel + " total cards"
-	}
-	return board.TotalLabel + " cards"
-}
-
-func projectKanbanHiddenPopulatedSummary(board projectKanbanBoard) string {
-	return projectKanbanHiddenPopulatedLaneSummary(board.HiddenPopulatedLanes)
-}
-
-func projectKanbanHiddenPopulatedLaneSummary(lanes []projectKanbanLane) string {
-	filtered := make([]projectKanbanLane, 0, len(lanes))
-	total := 0
-	for _, lane := range lanes {
-		if len(lane.Cards) == 0 {
-			continue
-		}
-		filtered = append(filtered, lane)
-		total += len(lane.Cards)
-	}
-	if len(filtered) == 0 {
-		return "All populated lanes are visible."
-	}
-	if len(filtered) == 1 {
-		lane := filtered[0]
-		return projectKanbanCountLabel(len(lane.Cards), "hidden card", "hidden cards") + " in " + lane.Title + "."
-	}
-	parts := make([]string, 0, len(filtered))
-	for _, lane := range filtered {
-		parts = append(parts, lane.Title+" ("+formatCount(len(lane.Cards))+")")
-	}
-	return projectKanbanCountLabel(total, "hidden card", "hidden cards") + " across " + projectKanbanCountLabel(len(filtered), "lane", "lanes") + ": " + strings.Join(parts, ", ") + "."
-}
-
-func projectKanbanLaneHiddenPopulated(lane projectKanbanLane) bool {
-	return len(lane.Cards) > 0 && !lane.DefaultVisible
-}
-
-func projectKanbanVisibilityRowClass(lane projectKanbanLane) string {
-	class := "grid gap-1 rounded-md border px-2 py-1 text-xs text-foreground hover:bg-muted"
-	if projectKanbanLaneHiddenPopulated(lane) {
-		return class + " border-warning-soft bg-warning-soft/40"
-	}
-	return class + " border-transparent"
-}
-
-func projectKanbanVisibilityStatusLabel(lane projectKanbanLane) string {
-	label := projectKanbanDefaultVisibilityLabel(lane)
-	if !projectKanbanLaneHiddenPopulated(lane) {
-		return label
-	}
-	return label + " with " + projectKanbanCountLabel(len(lane.Cards), "hidden card", "hidden cards")
-}
-
 func projectKanbanCardCanMove(data DashboardData, card projectKanbanCard) bool {
 	return snapshotReady(data.Snapshot) && projectKanbanCardIntegrationEnabled(data, card) && card.Movable && len(projectKanbanMoveTargetStates(data, card)) > 0
-}
-
-func projectKanbanCardActionsVisible(data DashboardData, card projectKanbanCard) bool {
-	return projectKanbanCardCanMove(data, card) || projectKanbanCardCanRemove(data, card) || projectKanbanCardCanComment(data, card)
 }
 
 func projectKanbanCardCanRemove(data DashboardData, card projectKanbanCard) bool {
@@ -2983,22 +2703,8 @@ func projectKanbanCardCanComment(data DashboardData, card projectKanbanCard) boo
 	return strings.TrimSpace(card.IssueID) != "" || (card.PRNumber > 0 && strings.TrimSpace(card.PRRepository) != "")
 }
 
-func projectKanbanMoveDisabledText(data DashboardData, card projectKanbanCard) string {
-	if card.DisabledText != "" {
-		return card.DisabledText
-	}
-	if projectKanbanCardIntegrationEnabled(data, card) && card.Movable && len(projectKanbanMoveTargetStates(data, card)) == 0 {
-		return "No allowed moves from " + card.Stage
-	}
-	return ""
-}
-
 func projectKanbanMoveTargetStates(data DashboardData, card projectKanbanCard) []string {
 	return kanbanMoveTargets(projectKanbanCardKanbanData(data, card), card.Stage)
-}
-
-func projectKanbanMoveTargetKeys(data DashboardData, card projectKanbanCard) string {
-	return kanbanMoveTargetKeyList(projectKanbanCardKanbanData(data, card), card.Stage)
 }
 
 func kanbanMoveTargets(data KanbanData, source string) []string {
@@ -3035,19 +2741,6 @@ func kanbanMoveTargetsFromStates(states []string, source string) []string {
 		targets = append(targets, state)
 	}
 	return targets
-}
-
-func kanbanMoveTargetKeyList(data KanbanData, source string) string {
-	targets := kanbanMoveTargets(data, source)
-	keys := make([]string, 0, len(targets))
-	for _, target := range targets {
-		key := projectKanbanStateKey(target)
-		if key == "" {
-			continue
-		}
-		keys = append(keys, key)
-	}
-	return strings.Join(keys, " ")
 }
 
 func issueRepository(identifier string) string {

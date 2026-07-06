@@ -3365,8 +3365,6 @@ func TestBoardRouteRendersFleetBoard(t *testing.T) {
 	}
 	for _, forbidden := range []string{
 		`hx-get="/api/v1/kanban/move?`,
-		`draggable="true"`,
-		`data-kanban-drop-state=`,
 		`aria-label="Dashboard health"`,
 		`data-detent-charts`,
 	} {
