@@ -2199,6 +2199,10 @@ func projectKanbanBoardLoaded(data DashboardData) bool {
 	return snapshotCarriesData(data)
 }
 
+func projectKanbanDragDropEnabled(data DashboardData) bool {
+	return isProjectDashboard(data) && kanbanIntegrationEnabled(data) && snapshotReady(data.Snapshot)
+}
+
 // snapshotCarriesData reports whether the snapshot has data worth rendering:
 // a ready refresh, or a degraded one that still carries prior tracker data.
 // The redesigned snapshot views use it so a transient tracker/API failure
@@ -2729,6 +2733,27 @@ func projectKanbanCardCanComment(data DashboardData, card projectKanbanCard) boo
 
 func projectKanbanMoveTargetStates(data DashboardData, card projectKanbanCard) []string {
 	return kanbanMoveTargets(projectKanbanCardKanbanData(data, card), card.Stage)
+}
+
+func projectKanbanMoveTargetKeys(data DashboardData, card projectKanbanCard) string {
+	targets := projectKanbanMoveTargetStates(data, card)
+	if len(targets) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(targets))
+	seen := map[string]struct{}{}
+	for _, target := range targets {
+		key := projectKanbanStateKey(target)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return strings.Join(keys, " ")
 }
 
 func kanbanMoveTargets(data KanbanData, source string) []string {

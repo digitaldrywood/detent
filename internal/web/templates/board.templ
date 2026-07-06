@@ -17,6 +17,7 @@ templ BoardPage(data DashboardData) {
 			</div>
 		</main>
 		@boardLaneScript()
+		@boardKanbanDragScript()
 	}
 }
 
@@ -50,12 +51,12 @@ templ boardSnapshotBody(data DashboardData) {
 			@primitives.ExceptionStrip(view.Exceptions)
 		</div>
 	}
-	if data.Kanban.Feedback != "" {
-		<p id="board-feedback" class={ "flex flex-none items-center gap-2 px-5 pt-3.5 text-xs " + boardFeedbackClass(data.Kanban.FeedbackKind) } role="status">
+	<p id="board-feedback" class={ "flex flex-none items-center gap-2 px-5 pt-3.5 text-xs " + boardFeedbackClass(data.Kanban.FeedbackKind) } role="status" aria-live="polite" hidden?={ data.Kanban.Feedback == "" }>
+		if data.Kanban.Feedback != "" {
 			<span aria-hidden="true">{ boardFeedbackGlyph(data.Kanban.FeedbackKind) }</span>
 			{ data.Kanban.Feedback }
-		</p>
-	}
+		}
+	</p>
 	<div id="board-figures" class="flex-none px-5 pb-3 pt-4">
 		@primitives.FigureRow(view.Figures) {
 			@primitives.MonoFigure("fig-tps", view.TPS)
@@ -79,11 +80,15 @@ templ boardSnapshotBody(data DashboardData) {
 templ boardLaneView2(lane boardLaneView) {
 	<section
 		id={ lane.DomID }
-		class="flex min-w-44 max-w-80 flex-1 flex-col overflow-hidden rounded-card border border-line bg-surface data-[lane-hidden=true]:hidden"
+		class="flex min-w-44 max-w-80 flex-1 flex-col overflow-hidden rounded-card border border-line bg-surface data-[kanban-drop-allowed=false]:border-err/45 data-[kanban-drop-allowed=false]:opacity-70 data-[kanban-drop-allowed=true]:border-accent data-[lane-hidden=true]:hidden"
 		data-board-lane={ lane.LaneID }
 		data-board-lane-title={ lane.Title }
 		data-board-lane-default={ boardBoolAttr(lane.DefaultVisible) }
 		data-lane-hidden={ boardBoolAttr(!lane.DefaultVisible) }
+		if lane.DropState != "" {
+			data-kanban-drop-state={ lane.DropState }
+			data-kanban-drop-key={ lane.DropKey }
+		}
 	>
 		<header class="flex flex-none items-center gap-1.5 border-b border-line px-3 py-2">
 			if lane.Live {
@@ -106,10 +111,24 @@ templ boardLaneView2(lane boardLaneView) {
 templ boardCardView2(card boardCardView) {
 	<article
 		id={ card.DomID }
-		class={ boardCardClass(card) + " cursor-pointer hover:border-accent/50" }
+		class={ boardCardClass(card) + " cursor-pointer hover:border-accent/50 data-[kanban-dragging=true]:opacity-60" }
 		role="button"
 		tabindex="0"
 		{ sheetOpenAttrs(card.Project, card.Identity, card.Scope, true)... }
+		if card.DragDrop {
+			data-kanban-card
+			data-kanban-current-state={ card.CurrentState }
+			if card.IssueID != "" {
+				data-kanban-issue-id={ card.IssueID }
+			}
+			if card.CanDrag {
+				draggable="true"
+				data-kanban-action="move"
+				data-kanban-allowed-targets={ card.AllowedTargets }
+			} else {
+				aria-disabled="true"
+			}
+		}
 	>
 		<div class="flex items-center gap-1.5 font-mono text-2xs font-medium text-sec">
 			if card.Running {
@@ -137,7 +156,24 @@ templ boardCardView2(card boardCardView) {
 				</div>
 			}
 		}
+		if card.CanDrag {
+			@boardKanbanDragMoveForm(card)
+		}
 	</article>
+}
+
+templ boardKanbanDragMoveForm(card boardCardView) {
+	<form class="hidden" hx-post="/api/v1/kanban/move" hx-target="#snapshot" hx-swap="morph:innerHTML" data-kanban-drag-move-form>
+		<input type="hidden" name="kanban_drag" value="true"/>
+		<input type="hidden" name="kanban_board" value={ card.Scope }/>
+		<input type="hidden" name="project_id" value={ card.MoveProject }/>
+		<input type="hidden" name="issue_id" value={ card.IssueID }/>
+		<input type="hidden" name="current_state" value={ card.CurrentState }/>
+		<input type="hidden" name="target_state" value="" data-kanban-drag-target-state/>
+		if card.PRNumber != "" {
+			<input type="hidden" name="pr_number" value={ card.PRNumber }/>
+		}
+	</form>
 }
 
 // boardLanePicker renders inside the figure row but is driven by the
@@ -232,6 +268,166 @@ templ boardLaneScript() {
 			document.addEventListener("htmx:afterSettle", apply);
 			document.addEventListener("DOMContentLoaded", apply);
 			apply();
+		})();
+	</script>
+}
+
+templ boardKanbanDragScript() {
+	<script>
+		(function () {
+			if (window.__detentBoardKanbanDragHandlersRegistered) return;
+			window.__detentBoardKanbanDragHandlersRegistered = true;
+			var draggedIssueID = "";
+			var dropped = false;
+			var blockedDrop = false;
+			function feedback(message, kind) {
+				var target = document.getElementById("board-feedback");
+				if (!target) return;
+				var text = String(message || "").trim();
+				target.className = "flex flex-none items-center gap-2 px-5 pt-3.5 text-xs " + (kind === "error" ? "text-err" : "text-sec");
+				target.textContent = text;
+				target.hidden = text === "";
+			}
+			function markedDraggedCard() {
+				return document.querySelector("[data-kanban-card][data-kanban-dragging='true']");
+			}
+			function draggedCard() {
+				if (!draggedIssueID || !window.CSS || typeof CSS.escape !== "function") return null;
+				return document.querySelector("[data-kanban-card][data-kanban-issue-id='" + CSS.escape(draggedIssueID) + "']");
+			}
+			function activeDragIssueID(event) {
+				if (draggedIssueID) return draggedIssueID;
+				var marked = markedDraggedCard();
+				if (marked instanceof HTMLElement && marked.dataset.kanbanIssueId) return marked.dataset.kanbanIssueId;
+				if (!event.dataTransfer || typeof event.dataTransfer.getData !== "function") return "";
+				return event.dataTransfer.getData("text/plain") || "";
+			}
+			function allowedTargetKeys(card) {
+				if (!(card instanceof HTMLElement)) return [];
+				return (card.dataset.kanbanAllowedTargets || "").split(/\s+/).filter(Boolean);
+			}
+			function laneAllowed(card, lane) {
+				if (!(lane instanceof HTMLElement)) return false;
+				var key = lane.dataset.kanbanDropKey || "";
+				return key !== "" && allowedTargetKeys(card).includes(key);
+			}
+			function dragImageOffset(position, start, size) {
+				if (position <= 0 || size <= 0) return Math.max(0, size / 2);
+				return Math.min(Math.max(position - start, 0), size);
+			}
+			function setCardDragImage(event, card) {
+				if (!event.dataTransfer) return;
+				var rect = card.getBoundingClientRect();
+				event.dataTransfer.setDragImage(
+					card,
+					Math.round(dragImageOffset(event.clientX, rect.left, rect.width)),
+					Math.round(dragImageOffset(event.clientY, rect.top, rect.height))
+				);
+			}
+			function setDropTargetState(card) {
+				document.querySelectorAll("[data-kanban-drop-state]").forEach(function (lane) {
+					if (!(lane instanceof HTMLElement)) return;
+					if (lane.dataset.kanbanDropWasHidden === undefined) {
+						lane.dataset.kanbanDropWasHidden = lane.dataset.laneHidden || "false";
+					}
+					var allowed = laneAllowed(card, lane);
+					lane.dataset.laneHidden = "false";
+					lane.dataset.kanbanDropAllowed = allowed ? "true" : "false";
+					lane.setAttribute("aria-disabled", allowed ? "false" : "true");
+				});
+			}
+			function clearDropTargetState() {
+				document.querySelectorAll("[data-kanban-drop-state]").forEach(function (lane) {
+					if (!(lane instanceof HTMLElement)) return;
+					if (lane.dataset.kanbanDropWasHidden !== undefined) {
+						lane.dataset.laneHidden = lane.dataset.kanbanDropWasHidden;
+						delete lane.dataset.kanbanDropWasHidden;
+					}
+					delete lane.dataset.kanbanDropAllowed;
+					lane.removeAttribute("aria-disabled");
+				});
+				document.querySelectorAll("[data-kanban-card][data-kanban-dragging='true']").forEach(function (card) {
+					if (card instanceof HTMLElement) delete card.dataset.kanbanDragging;
+				});
+			}
+			function responseMessage(response) {
+				if (!response) return "";
+				var doc = new DOMParser().parseFromString(response, "text/html");
+				return (doc.body.textContent || "").trim();
+			}
+			document.addEventListener("dragstart", function (event) {
+				var card = event.target instanceof Element ? event.target.closest("[data-kanban-card]") : null;
+				if (!card || card.getAttribute("draggable") !== "true") return;
+				draggedIssueID = card.dataset.kanbanIssueId || "";
+				dropped = false;
+				blockedDrop = false;
+				if (!draggedIssueID) {
+					event.preventDefault();
+					return;
+				}
+				card.dataset.kanbanDragging = "true";
+				if (event.dataTransfer) {
+					event.dataTransfer.effectAllowed = "move";
+					event.dataTransfer.setData("text/plain", draggedIssueID);
+				}
+				setCardDragImage(event, card);
+				setDropTargetState(card);
+				feedback("Moving " + (card.dataset.kanbanCurrentState || "card") + ".");
+			});
+			document.addEventListener("dragover", function (event) {
+				var issueID = activeDragIssueID(event);
+				if (!issueID) return;
+				draggedIssueID = issueID;
+				var lane = event.target instanceof Element ? event.target.closest("[data-kanban-drop-state]") : null;
+				if (!lane) return;
+				var allowed = laneAllowed(draggedCard(), lane);
+				if (event.dataTransfer) event.dataTransfer.dropEffect = allowed ? "move" : "none";
+				if (allowed) {
+					event.preventDefault();
+					blockedDrop = false;
+					return;
+				}
+				blockedDrop = true;
+				feedback("Move blocked by transition policy.", "error");
+			});
+			document.addEventListener("drop", function (event) {
+				var issueID = activeDragIssueID(event);
+				if (!issueID) return;
+				draggedIssueID = issueID;
+				var lane = event.target instanceof Element ? event.target.closest("[data-kanban-drop-state]") : null;
+				if (!lane) return;
+				event.preventDefault();
+				var card = draggedCard();
+				if (!laneAllowed(card, lane)) {
+					feedback("Move blocked by transition policy.", "error");
+					dropped = true;
+					return;
+				}
+				var form = card ? card.querySelector("[data-kanban-drag-move-form]") : null;
+				var targetState = form ? form.querySelector("[data-kanban-drag-target-state]") : null;
+				if (!(form instanceof HTMLFormElement) || !(targetState instanceof HTMLInputElement)) {
+					feedback("Move cancelled.", "error");
+					return;
+				}
+				targetState.value = lane.dataset.kanbanDropState || "";
+				dropped = true;
+				form.requestSubmit();
+			});
+			document.addEventListener("dragend", function () {
+				if (draggedIssueID && !dropped && !blockedDrop) {
+					feedback("Move cancelled.", "error");
+				}
+				draggedIssueID = "";
+				dropped = false;
+				blockedDrop = false;
+				clearDropTargetState();
+			});
+			document.body.addEventListener("htmx:responseError", function (event) {
+				var form = event.detail && event.detail.elt;
+				if (!(form instanceof HTMLFormElement) || !form.matches("[data-kanban-drag-move-form]")) return;
+				var response = event.detail.xhr ? event.detail.xhr.responseText : "";
+				feedback(responseMessage(response) || "Move failed.", "error");
+			});
 		})();
 	</script>
 }

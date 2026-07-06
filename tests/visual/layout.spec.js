@@ -13,10 +13,17 @@ let kanbanRuntime;
 let screenshotManifest;
 
 test.beforeAll(async () => {
-  screenshotsRuntime = await startDetentRuntime("screenshots", ["--demo", "screenshots"]);
-  const manifestResponse = await fetch(`${screenshotsRuntime.url}/api/v1/demo/scenarios`);
+  screenshotsRuntime = await startDetentRuntime("screenshots", [
+    "--demo",
+    "screenshots",
+  ]);
+  const manifestResponse = await fetch(
+    `${screenshotsRuntime.url}/api/v1/demo/scenarios`,
+  );
   if (!manifestResponse.ok) {
-    throw new Error(`Failed to load screenshots manifest: ${manifestResponse.status}`);
+    throw new Error(
+      `Failed to load screenshots manifest: ${manifestResponse.status}`,
+    );
   }
   screenshotManifest = await manifestResponse.json();
   kanbanRuntime = await startDetentRuntime("kanban", [
@@ -38,8 +45,12 @@ test.afterEach(async ({ page }, testInfo) => {
   await attachFailureEvidence(page, testInfo);
 });
 
-test("screenshots manifest includes visual gate scenarios", async ({ request }) => {
-  const response = await request.get(`${screenshotsRuntime.url}/api/v1/demo/scenarios`);
+test("screenshots manifest includes visual gate scenarios", async ({
+  request,
+}) => {
+  const response = await request.get(
+    `${screenshotsRuntime.url}/api/v1/demo/scenarios`,
+  );
   expect(response.ok()).toBeTruthy();
   const payload = await response.json();
   expect(payload).toEqual(screenshotManifest);
@@ -63,7 +74,9 @@ test("screenshots manifest includes visual gate scenarios", async ({ request }) 
   );
 });
 
-test("board home renders lanes without page overflow", async ({ page }, testInfo) => {
+test("board home renders lanes without page overflow", async ({
+  page,
+}, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
     scenario: "fleet-healthy-parallel-work",
@@ -79,7 +92,9 @@ test("board home renders lanes without page overflow", async ({ page }, testInfo
   await capturePageAndAttach(page, "board-home.png", testInfo);
 });
 
-test("board exception strip only appears when sessions block", async ({ page }, testInfo) => {
+test("board exception strip only appears when sessions block", async ({
+  page,
+}, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
     scenario: "fleet-kanban-multiproject",
@@ -94,9 +109,13 @@ test("board exception strip only appears when sessions block", async ({ page }, 
   const blockedText = await blockedFigure.textContent();
   const blockedCount = parseInt(blockedText.trim(), 10) || 0;
   if (blockedCount > 0) {
-    const dependencyWaiting = exceptions.locator("[id^='exception-']", { hasText: "Dependency waiting" }).first();
+    const dependencyWaiting = exceptions
+      .locator("[id^='exception-']", { hasText: "Dependency waiting" })
+      .first();
     await expect(dependencyWaiting).toBeVisible();
-    await expect(dependencyWaiting.getByRole("button", { name: "Review" })).toHaveCount(0);
+    await expect(
+      dependencyWaiting.getByRole("button", { name: "Review" }),
+    ).toHaveCount(0);
   } else {
     await expect(exceptions).toHaveCount(0);
   }
@@ -142,7 +161,9 @@ test("board card opens the detail sheet", async ({ page }, testInfo) => {
   await expect(sheet).toHaveCount(0);
 });
 
-test("fleet page shows agent hero, PR lanes, and metric cards", async ({ page }, testInfo) => {
+test("fleet page shows agent hero, PR lanes, and metric cards", async ({
+  page,
+}, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
     scenario: "fleet-healthy-parallel-work",
@@ -182,9 +203,13 @@ test("health page covers key rate-limit states", async ({ page }, testInfo) => {
   }
 });
 
-test("project overview renders tabs, hero, and recent runs", async ({ page }, testInfo) => {
+test("project overview renders tabs, hero, and recent runs", async ({
+  page,
+}, testInfo) => {
   await page.setViewportSize(desktopViewport);
-  await page.goto(`${kanbanRuntime.url}/projects/demo-project`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${kanbanRuntime.url}/projects/demo-project`, {
+    waitUntil: "domcontentloaded",
+  });
   await page.locator("#agent-activity").waitFor({ state: "visible" });
 
   await expect(page.locator("nav[aria-label='Project views']")).toBeVisible();
@@ -193,18 +218,115 @@ test("project overview renders tabs, hero, and recent runs", async ({ page }, te
   await capturePageAndAttach(page, "project-overview.png", testInfo);
 });
 
-test("project kanban board scopes cards to the project", async ({ page }, testInfo) => {
+test("project kanban board scopes cards to the project", async ({
+  page,
+}, testInfo) => {
   await page.setViewportSize(desktopViewport);
-  await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, {
+    waitUntil: "domcontentloaded",
+  });
   await page.locator("#board-lanes").waitFor({ state: "visible" });
 
-  await expect(page.locator('[data-board-key="project.demo-project"]')).toBeVisible();
-  const foreign = await page.locator("#board-lanes article[id^='card-']").evaluateAll((cards) =>
-    cards.filter((card) => !card.textContent.includes("demo-project")).length
-  );
+  await expect(
+    page.locator('[data-board-key="project.demo-project"]'),
+  ).toBeVisible();
+  const foreign = await page
+    .locator("#board-lanes article[id^='card-']")
+    .evaluateAll(
+      (cards) =>
+        cards.filter((card) => !card.textContent.includes("demo-project"))
+          .length,
+    );
   expect(foreign).toBe(0);
   await assertNoDocumentOverflow(page);
   await capturePageAndAttach(page, "project-kanban.png", testInfo);
+});
+
+test("project kanban board supports drag status moves", async ({ page }) => {
+  await page.setViewportSize(desktopViewport);
+  await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+  const card = page.locator(
+    '[data-kanban-card][data-kanban-current-state="Backlog"]',
+    {
+      hasText: "Kanban demo backlog intake",
+    },
+  );
+  const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
+  await expect(card).toHaveAttribute("draggable", "true");
+  await page.locator("#board-lane-picker summary").click();
+  await page.locator('[data-board-lane-toggle="todo"]').check();
+  await expect(targetLane).toBeVisible();
+
+  const moveRequest = page.waitForRequest((request) => {
+    if (
+      request.method() !== "POST" ||
+      !request.url().endsWith("/api/v1/kanban/move")
+    ) {
+      return false;
+    }
+    return (
+      new URLSearchParams(request.postData() || "").get("kanban_drag") ===
+      "true"
+    );
+  });
+
+  await page.evaluate(() => {
+    const source = Array.from(
+      document.querySelectorAll(
+        '[data-kanban-card][data-kanban-current-state="Backlog"]',
+      ),
+    ).find((element) =>
+      element.textContent.includes("Kanban demo backlog intake"),
+    );
+    const target = document.querySelector('[data-kanban-drop-state="Todo"]');
+    if (!(source instanceof HTMLElement) || !(target instanceof HTMLElement)) {
+      throw new Error("Drag source or target lane not found");
+    }
+    const dataTransfer = new DataTransfer();
+    source.dispatchEvent(
+      new DragEvent("dragstart", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer,
+      }),
+    );
+    target.dispatchEvent(
+      new DragEvent("dragover", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer,
+      }),
+    );
+    target.dispatchEvent(
+      new DragEvent("drop", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer,
+      }),
+    );
+    source.dispatchEvent(
+      new DragEvent("dragend", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer,
+      }),
+    );
+  });
+  const request = await moveRequest;
+  const form = new URLSearchParams(request.postData() || "");
+  expect(form.get("kanban_drag")).toBe("true");
+  expect(form.get("target_state")).toBe("Todo");
+
+  await expect(
+    targetLane.locator("[data-kanban-card]", {
+      hasText: "Kanban demo backlog intake",
+    }),
+  ).toBeVisible();
+  await expect(page.locator("#board-feedback")).toBeHidden();
 });
 
 test("board applies snapshot updates without reload", async ({ page }) => {
@@ -218,15 +340,21 @@ test("board applies snapshot updates without reload", async ({ page }) => {
   });
   expect(marker).toBe(true);
 
-  const refresh = await fetch(`${kanbanRuntime.url}/api/v1/refresh`, { method: "POST" });
+  const refresh = await fetch(`${kanbanRuntime.url}/api/v1/refresh`, {
+    method: "POST",
+  });
   expect(refresh.ok).toBeTruthy();
 
   await expect(page.locator("#board-lanes")).toBeVisible();
-  const preserved = await page.evaluate(() => window.__detentReloadMarker === true);
+  const preserved = await page.evaluate(
+    () => window.__detentReloadMarker === true,
+  );
   expect(preserved).toBe(true);
 });
 
-test("reports page renders KPI figures and charts", async ({ page }, testInfo) => {
+test("reports page renders KPI figures and charts", async ({
+  page,
+}, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
     scenario: "reports-normal-window",
@@ -257,7 +385,9 @@ test("analytics page renders the scheduler log", async ({ page }, testInfo) => {
   await capturePageAndAttach(page, "analytics.png", testInfo);
 });
 
-test("settings page renders definition lists and preferences", async ({ page }, testInfo) => {
+test("settings page renders definition lists and preferences", async ({
+  page,
+}, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
     scenario: "settings-project-context",
@@ -282,19 +412,25 @@ test("density toggle changes rhythm across the shell", async ({ page }) => {
   });
 
   const compactSpacing = await page.evaluate(() =>
-    getComputedStyle(document.documentElement).getPropertyValue("--spacing").trim(),
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--spacing")
+      .trim(),
   );
   await page.locator('[data-density-choice="cozy"]').click();
   await expect(page.locator("html")).toHaveAttribute("data-density", "cozy");
   const cozySpacing = await page.evaluate(() =>
-    getComputedStyle(document.documentElement).getPropertyValue("--spacing").trim(),
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--spacing")
+      .trim(),
   );
   expect(compactSpacing).toBe("4px");
   expect(cozySpacing).toBe("5px");
   await page.locator('[data-density-choice="compact"]').click();
 });
 
-test("light theme applies through the token cascade", async ({ page }, testInfo) => {
+test("light theme applies through the token cascade", async ({
+  page,
+}, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
     scenario: "fleet-healthy-parallel-work",
@@ -303,13 +439,19 @@ test("light theme applies through the token cascade", async ({ page }, testInfo)
     viewport: desktopViewport,
   });
 
-  await page.evaluate(() => document.documentElement.setAttribute("data-theme", "light"));
-  const background = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  await page.evaluate(() =>
+    document.documentElement.setAttribute("data-theme", "light"),
+  );
+  const background = await page.evaluate(
+    () => getComputedStyle(document.body).backgroundColor,
+  );
   expect(background).toBe("rgb(247, 248, 250)");
   await capturePageAndAttach(page, "board-light.png", testInfo);
 });
 
-test("onboarding project selection remains readable on narrow screens", async ({ page }, testInfo) => {
+test("onboarding project selection remains readable on narrow screens", async ({
+  page,
+}, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
     scenario: "onboarding-project-selection",
@@ -317,19 +459,29 @@ test("onboarding project selection remains readable on narrow screens", async ({
   });
 
   await assertNoDocumentOverflow(page);
-  await capturePageAndAttach(page, "onboarding-project-selection.png", testInfo);
+  await capturePageAndAttach(
+    page,
+    "onboarding-project-selection.png",
+    testInfo,
+  );
 });
 
 async function openScenario(page, options) {
-  const scenario = screenshotManifest.scenarios.find((item) => item.id === options.scenario);
+  const scenario = screenshotManifest.scenarios.find(
+    (item) => item.id === options.scenario,
+  );
   if (!scenario) {
     throw new Error(`Unknown screenshots scenario: ${options.scenario}`);
   }
   const route = options.route || scenario.route;
   const waitSelector = options.waitSelector || scenario.wait_selector;
   await page.setViewportSize(options.viewport);
-  await page.setExtraHTTPHeaders({ "X-Detent-Demo-Scenario": options.scenario });
-  await page.goto(`${options.runtime.url}${route}`, { waitUntil: "domcontentloaded" });
+  await page.setExtraHTTPHeaders({
+    "X-Detent-Demo-Scenario": options.scenario,
+  });
+  await page.goto(`${options.runtime.url}${route}`, {
+    waitUntil: "domcontentloaded",
+  });
   await page.locator(waitSelector).waitFor({ state: "visible" });
   await page.evaluate(() => document.fonts?.ready);
 }
@@ -340,15 +492,29 @@ async function capturePageAndAttach(page, name, testInfo) {
   // Linux-rendered (see playwright.config.js: comparison is enabled on Linux
   // or under DETENT_VISUAL_STRICT); on other platforms this is a no-op.
   await expect(page).toHaveScreenshot(name);
-  const evidenceDir = path.join(process.cwd(), "tmp", "playwright-evidence", testInfo.project.name);
+  const evidenceDir = path.join(
+    process.cwd(),
+    "tmp",
+    "playwright-evidence",
+    testInfo.project.name,
+  );
   fs.mkdirSync(evidenceDir, { recursive: true });
   const evidencePath = path.join(evidenceDir, name);
-  await page.screenshot({ path: evidencePath, animations: "disabled", caret: "hide" });
+  await page.screenshot({
+    path: evidencePath,
+    animations: "disabled",
+    caret: "hide",
+  });
   await testInfo.attach(name, { path: evidencePath, contentType: "image/png" });
 }
 
 async function attachFailureEvidence(page, testInfo) {
-  const evidenceDir = path.join(process.cwd(), "tmp", "playwright-evidence", testInfo.project.name);
+  const evidenceDir = path.join(
+    process.cwd(),
+    "tmp",
+    "playwright-evidence",
+    testInfo.project.name,
+  );
   fs.mkdirSync(evidenceDir, { recursive: true });
   const baseName = artifactName(testInfo.title);
   const htmlPath = path.join(evidenceDir, `${baseName}.html`);
@@ -356,21 +522,42 @@ async function attachFailureEvidence(page, testInfo) {
 
   try {
     fs.writeFileSync(htmlPath, await page.content());
-    await testInfo.attach(`${baseName}.html`, { path: htmlPath, contentType: "text/html" });
+    await testInfo.attach(`${baseName}.html`, {
+      path: htmlPath,
+      contentType: "text/html",
+    });
   } catch (error) {
-    await testInfo.attach(`${baseName}-html-error.txt`, { body: String(error), contentType: "text/plain" });
+    await testInfo.attach(`${baseName}-html-error.txt`, {
+      body: String(error),
+      contentType: "text/plain",
+    });
   }
 
   try {
-    await page.screenshot({ path: screenshotPath, animations: "disabled", caret: "hide" });
-    await testInfo.attach(`${baseName}.png`, { path: screenshotPath, contentType: "image/png" });
+    await page.screenshot({
+      path: screenshotPath,
+      animations: "disabled",
+      caret: "hide",
+    });
+    await testInfo.attach(`${baseName}.png`, {
+      path: screenshotPath,
+      contentType: "image/png",
+    });
   } catch (error) {
-    await testInfo.attach(`${baseName}-screenshot-error.txt`, { body: String(error), contentType: "text/plain" });
+    await testInfo.attach(`${baseName}-screenshot-error.txt`, {
+      body: String(error),
+      contentType: "text/plain",
+    });
   }
 }
 
 function artifactName(title) {
-  return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "failure";
+  return (
+    title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "failure"
+  );
 }
 
 async function assertNoDocumentOverflow(page) {
