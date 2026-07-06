@@ -204,6 +204,193 @@ func TestBoardExceptions(t *testing.T) {
 	}
 }
 
+func TestBoardExceptionsDistinguishWaitingBlocks(t *testing.T) {
+	blockedAt := time.Date(2026, 7, 4, 16, 30, 0, 0, time.UTC)
+	tests := []struct {
+		name             string
+		blocked          telemetry.Blocked
+		wantKind         primitives.Kind
+		wantTitle        string
+		wantDetail       string
+		wantReviewAction bool
+	}{
+		{
+			name: "dependency source waits without review",
+			blocked: telemetry.Blocked{
+				Issue: telemetry.Issue{
+					ID:         "issue-176",
+					Identifier: "digitaldrywood/detent#176",
+					ProjectID:  "detent",
+					State:      "Todo",
+					BlockedBy:  []telemetry.BlockedRef{{Identifier: "digitaldrywood/detent#170", State: "In Progress"}},
+				},
+				Error:     "blocked by non-terminal dependency",
+				Source:    telemetry.BlockedSourceDependency,
+				BlockedAt: &blockedAt,
+			},
+			wantKind:   primitives.KindWarn,
+			wantTitle:  "Dependency waiting",
+			wantDetail: "dependency not ready",
+		},
+		{
+			name: "project status waits without review",
+			blocked: telemetry.Blocked{
+				Issue: telemetry.Issue{
+					ID:         "issue-177",
+					Identifier: "digitaldrywood/detent#177",
+					ProjectID:  "detent",
+					State:      "Blocked",
+				},
+				Error:     "blocked by project status",
+				Source:    telemetry.BlockedSourceProjectStatus,
+				BlockedAt: &blockedAt,
+			},
+			wantKind:   primitives.KindWarn,
+			wantTitle:  "Blocked status waiting",
+			wantDetail: "paused by project status",
+		},
+		{
+			name: "human project block keeps review",
+			blocked: telemetry.Blocked{
+				Issue: telemetry.Issue{
+					ID:         "issue-178",
+					Identifier: "digitaldrywood/detent#178",
+					ProjectID:  "detent",
+					State:      "Blocked",
+				},
+				Error:          "needs operator approval",
+				Source:         telemetry.BlockedSourceProjectStatus,
+				RecoveryReason: "human_blocker",
+				BlockedAt:      &blockedAt,
+			},
+			wantKind:         primitives.KindErr,
+			wantTitle:        "Needs review",
+			wantDetail:       "needs operator approval",
+			wantReviewAction: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := boardTestData()
+			data.Snapshot.GeneratedAt = blockedAt.Add(12 * time.Minute)
+			data.Snapshot.Blocked = []telemetry.Blocked{tt.blocked}
+
+			exceptions := boardExceptions(data, true)
+			if len(exceptions) != 1 {
+				t.Fatalf("expected one exception, got %d", len(exceptions))
+			}
+			exception := exceptions[0]
+			if exception.Kind != tt.wantKind {
+				t.Fatalf("Kind = %q, want %q", exception.Kind, tt.wantKind)
+			}
+			if exception.Title != tt.wantTitle {
+				t.Fatalf("Title = %q, want %q", exception.Title, tt.wantTitle)
+			}
+			if !strings.Contains(exception.Rest, tt.wantDetail) {
+				t.Fatalf("Rest = %q, want detail containing %q", exception.Rest, tt.wantDetail)
+			}
+			if got := exception.ActionLabel == "Review"; got != tt.wantReviewAction {
+				t.Fatalf("Review action present = %t, want %t; exception = %+v", got, tt.wantReviewAction, exception)
+			}
+		})
+	}
+}
+
+func TestBoardBlockedWaitingCardsUseWarningTreatment(t *testing.T) {
+	data := boardTestData()
+	blockedAt := data.Snapshot.GeneratedAt.Add(-15 * time.Minute)
+	data.Snapshot.Blocked = []telemetry.Blocked{
+		{
+			Issue: telemetry.Issue{
+				ID:         "issue-176",
+				Identifier: "digitaldrywood/detent#176",
+				ProjectID:  "detent",
+				Title:      "Wait for parent issue",
+				State:      "Blocked",
+				BlockedBy:  []telemetry.BlockedRef{{Identifier: "digitaldrywood/detent#170", State: "In Progress"}},
+			},
+			Error:     "blocked by non-terminal dependency",
+			Source:    telemetry.BlockedSourceDependency,
+			BlockedAt: &blockedAt,
+		},
+	}
+
+	view := boardViewFromDashboard(data)
+	var card boardCardView
+	for _, lane := range view.Lanes {
+		if lane.Title != "Blocked" {
+			continue
+		}
+		for _, candidate := range lane.Cards {
+			if candidate.Number == "#176" {
+				card = candidate
+			}
+		}
+	}
+
+	if card.Number != "#176" {
+		t.Fatalf("missing blocked waiting card in view: %+v", view.Lanes)
+	}
+	if card.ExtraKind != primitives.KindWarn || !card.ExtraChip {
+		t.Fatalf("card extra = %q chip %t, want warn chip; card = %+v", card.ExtraKind, card.ExtraChip, card)
+	}
+	if !strings.Contains(card.ExtraText, "waiting - digitaldrywood/detent#170 In Progress") {
+		t.Fatalf("card extra text = %q", card.ExtraText)
+	}
+	cardClass := boardCardClass(card)
+	if !strings.Contains(cardClass, "border-warn/45") || strings.Contains(cardClass, "border-err/45") {
+		t.Fatalf("card class = %q, want warning border without error border", cardClass)
+	}
+}
+
+func TestBoardHumanBlockedCardsUseErrorTreatment(t *testing.T) {
+	data := boardTestData()
+	blockedAt := data.Snapshot.GeneratedAt.Add(-15 * time.Minute)
+	data.Snapshot.Blocked = []telemetry.Blocked{
+		{
+			Issue: telemetry.Issue{
+				ID:         "issue-178",
+				Identifier: "digitaldrywood/detent#178",
+				ProjectID:  "detent",
+				Title:      "Needs operator input",
+				State:      "Blocked",
+			},
+			Error:          "needs operator approval",
+			Source:         telemetry.BlockedSourceProjectStatus,
+			RecoveryReason: "human_blocker",
+			BlockedAt:      &blockedAt,
+		},
+	}
+
+	view := boardViewFromDashboard(data)
+	var card boardCardView
+	for _, lane := range view.Lanes {
+		if lane.Title != "Blocked" {
+			continue
+		}
+		for _, candidate := range lane.Cards {
+			if candidate.Number == "#178" {
+				card = candidate
+			}
+		}
+	}
+
+	if card.Number != "#178" {
+		t.Fatalf("missing human blocked card in view: %+v", view.Lanes)
+	}
+	if card.ExtraKind != primitives.KindErr || !card.ExtraChip {
+		t.Fatalf("card extra = %q chip %t, want err chip; card = %+v", card.ExtraKind, card.ExtraChip, card)
+	}
+	if !strings.Contains(card.ExtraText, "needs review - needs operator approval") {
+		t.Fatalf("card extra text = %q", card.ExtraText)
+	}
+	cardClass := boardCardClass(card)
+	if !strings.Contains(cardClass, "border-err/45") {
+		t.Fatalf("card class = %q, want error border", cardClass)
+	}
+}
+
 func TestBoardCardIdentityToken(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -459,7 +646,7 @@ func TestBoardSnapshotRenders(t *testing.T) {
 		`id="card-gopherguides-gopher-ai-185"`,
 		`id="fig-running"`,
 		`id="fig-blocked"`,
-		"Session blocked",
+		"Needs review",
 		"needs operator approval",
 		"data-board-lane-picker",
 	} {

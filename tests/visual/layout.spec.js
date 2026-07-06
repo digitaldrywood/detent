@@ -94,7 +94,9 @@ test("board exception strip only appears when sessions block", async ({ page }, 
   const blockedText = await blockedFigure.textContent();
   const blockedCount = parseInt(blockedText.trim(), 10) || 0;
   if (blockedCount > 0) {
-    await expect(exceptions.locator("text=Session blocked").first()).toBeVisible();
+    const dependencyWaiting = exceptions.locator("[id^='exception-']", { hasText: "Dependency waiting" }).first();
+    await expect(dependencyWaiting).toBeVisible();
+    await expect(dependencyWaiting.getByRole("button", { name: "Review" })).toHaveCount(0);
   } else {
     await expect(exceptions).toHaveCount(0);
   }

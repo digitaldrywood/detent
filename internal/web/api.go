@@ -657,6 +657,7 @@ func blockedEntries(entries []telemetry.Blocked) []blockedAPIResponse {
 			BudgetAlert:           false,
 			State:                 entry.State,
 			Error:                 optionalString(entry.Error),
+			Source:                string(entry.Source),
 			RecoveryReason:        optionalString(entry.RecoveryReason),
 			RecoveryTarget:        optionalString(entry.RecoveryTarget),
 			WorkerHost:            optionalString(entry.WorkerHost),
@@ -734,6 +735,7 @@ func blockedIssueResponse(entry telemetry.Blocked) *blockedIssueAPIResponse {
 		SessionID:      optionalString(entry.SessionID),
 		State:          entry.State,
 		Error:          optionalString(entry.Error),
+		Source:         string(entry.Source),
 		RecoveryReason: optionalString(entry.RecoveryReason),
 		RecoveryTarget: optionalString(entry.RecoveryTarget),
 		BlockedAt:      timestampStringPtr(entry.BlockedAt),
@@ -1409,6 +1411,7 @@ type blockedAPIResponse struct {
 	BudgetAlert           bool    `json:"budget_alert?"`
 	State                 string  `json:"state"`
 	Error                 *string `json:"error"`
+	Source                string  `json:"source,omitempty"`
 	RecoveryReason        *string `json:"recovery_reason"`
 	RecoveryTarget        *string `json:"recovery_target"`
 	WorkerHost            *string `json:"worker_host"`
@@ -1642,6 +1645,7 @@ type blockedIssueAPIResponse struct {
 	SessionID      *string `json:"session_id"`
 	State          string  `json:"state"`
 	Error          *string `json:"error"`
+	Source         string  `json:"source,omitempty"`
 	RecoveryReason *string `json:"recovery_reason"`
 	RecoveryTarget *string `json:"recovery_target"`
 	BlockedAt      *string `json:"blocked_at"`

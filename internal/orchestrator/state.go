@@ -83,11 +83,11 @@ type Claimed struct {
 	LeaseExpiresAt time.Time
 }
 
-type BlockedSource string
+type BlockedSource = telemetry.BlockedSource
 
 const (
-	BlockedSourceDependency    BlockedSource = "dependency"
-	BlockedSourceProjectStatus BlockedSource = "project_status"
+	BlockedSourceDependency    = telemetry.BlockedSourceDependency
+	BlockedSourceProjectStatus = telemetry.BlockedSourceProjectStatus
 )
 
 type Blocked struct {

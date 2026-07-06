@@ -820,7 +820,7 @@ func demoHealthySnapshot() telemetry.Snapshot {
 			demoQueued("mobile-client", "demo-queued-mobile", "digitaldrywood/mobile-client#5272", "Exercise compact lane overflow on mobile", 3, now.Add(28*time.Minute), "project paused until release train clears"),
 		},
 		Blocked: []telemetry.Blocked{
-			demoBlocked("billing-api", "demo-blocked-billing", "digitaldrywood/billing-api#5280", "Dependency issue waiting on ledger migration", "Depends on digitaldrywood/billing-api#5200", "Todo", 10),
+			demoBlocked("billing-api", "demo-blocked-billing", "digitaldrywood/billing-api#5280", "Dependency issue waiting on ledger migration", "Depends on digitaldrywood/billing-api#5200", "Todo", 10, telemetry.BlockedSourceDependency),
 			demoBlocked(demoPrimaryProjectID, "demo-blocked-hook", "digitaldrywood/detent-core#5281", "Workspace hook error needs operator input", "after_create hook exited 2", "operator", 5),
 		},
 		Completed: []telemetry.Completed{
@@ -1137,15 +1137,20 @@ func demoQueued(projectID string, id string, identifier string, title string, at
 	}
 }
 
-func demoBlocked(projectID string, id string, identifier string, title string, err string, target string, hoursAgo int) telemetry.Blocked {
+func demoBlocked(projectID string, id string, identifier string, title string, err string, target string, hoursAgo int, source ...telemetry.BlockedSource) telemetry.Blocked {
 	blockedAt := demoBaseTime.Add(-time.Duration(hoursAgo) * time.Hour)
 	lastAt := blockedAt.Add(20 * time.Minute)
+	var blockedSource telemetry.BlockedSource
+	if len(source) > 0 {
+		blockedSource = source[0]
+	}
 	return telemetry.Blocked{
 		Issue:          demoIssue(projectID, id, identifier, title, "Blocked", hoursAgo),
 		WorkerHost:     "demo-worker-blocked",
 		WorkspacePath:  "/tmp/detent-screenshots/workspaces/" + projectID + "/" + id,
 		SessionID:      "thread-" + id,
 		Error:          err,
+		Source:         blockedSource,
 		RecoveryReason: err,
 		RecoveryTarget: target,
 		BlockedAt:      &blockedAt,

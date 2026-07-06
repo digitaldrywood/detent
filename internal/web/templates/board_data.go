@@ -183,21 +183,47 @@ func boardExceptions(data DashboardData, boardActions bool) []primitives.Excepti
 		identity := boardCardIdentityToken(row.Identifier, row.ID, projectKanbanIssueNumber(row.Issue))
 		exception := primitives.Exception{
 			ID:    "exception-" + boardCardScopedSlug(projectID, identity),
-			Kind:  primitives.KindErr,
-			Title: "Session blocked",
+			Kind:  boardExceptionKind(row),
+			Title: boardExceptionTitle(row),
 			Repo:  projectID,
 			Ref:   projectKanbanIssueNumber(row.Issue),
 			Rest:  boardExceptionDetail(row, now),
 		}
-		exception.ActionLabel = "Review"
-		exception.ActionAttrs = sheetOpenAttrs(projectID, identity, projectKanbanBoardScope(data), boardActions)
+		if !boardBlockedWaiting(row.Source, row.RecoveryReason, row.Error) {
+			exception.ActionLabel = "Review"
+			exception.ActionAttrs = sheetOpenAttrs(projectID, identity, projectKanbanBoardScope(data), boardActions)
+		}
 		exceptions = append(exceptions, exception)
 	}
 	return exceptions
 }
 
+func boardExceptionKind(row telemetry.Blocked) primitives.Kind {
+	if boardBlockedWaiting(row.Source, row.RecoveryReason, row.Error) {
+		return primitives.KindWarn
+	}
+	return primitives.KindErr
+}
+
+func boardExceptionTitle(row telemetry.Blocked) string {
+	if !boardBlockedWaiting(row.Source, row.RecoveryReason, row.Error) {
+		return "Needs review"
+	}
+	if boardBlockedDependencyWaiting(row.Source, row.RecoveryReason, row.Error, row.BlockedBy) {
+		return "Dependency waiting"
+	}
+	return "Blocked status waiting"
+}
+
 func boardExceptionDetail(row telemetry.Blocked, now time.Time) string {
-	detail := strings.TrimSpace(row.Error)
+	detail := boardBlockedDetail(row.Source, row.RecoveryReason, row.Error)
+	if detail == "" && boardBlockedWaiting(row.Source, row.RecoveryReason, row.Error) {
+		if boardBlockedDependencyWaiting(row.Source, row.RecoveryReason, row.Error, row.BlockedBy) {
+			detail = "dependency not ready"
+		} else {
+			detail = "paused by project status"
+		}
+	}
 	if detail == "" {
 		detail = "needs operator attention"
 	}
@@ -248,6 +274,12 @@ func boardCardExtra(card projectKanbanCard, view boardCardView) (primitives.Kind
 	if view.Done || view.Terminal {
 		return primitives.KindNeutral, "", false
 	}
+	if boardBlockedWaiting(card.BlockedSource, card.BlockedRecoveryReason, card.BlockedReason) {
+		return primitives.KindWarn, boardCardBlockedWaitingText(card), true
+	}
+	if reason := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryReason, card.BlockedReason); reason != "" {
+		return primitives.KindErr, "needs review - " + reason, true
+	}
 	if label := strings.TrimSpace(card.AttentionLabel); label != "" {
 		return primitives.KindErr, "blocked — " + label, true
 	}
@@ -267,6 +299,77 @@ func boardCardExtra(card projectKanbanCard, view boardCardView) (primitives.Kind
 		return primitives.KindOK, "agent working", false
 	}
 	return primitives.KindNeutral, "", false
+}
+
+func boardCardBlockedWaitingText(card projectKanbanCard) string {
+	if len(card.Blockers) > 0 {
+		return "waiting - " + card.Blockers[0]
+	}
+	if detail := boardBlockedDetail(card.BlockedSource, card.BlockedRecoveryReason, card.BlockedReason); detail != "" {
+		return "waiting - " + detail
+	}
+	if boardBlockedDependencyWaiting(card.BlockedSource, card.BlockedRecoveryReason, card.BlockedReason, nil) {
+		return "waiting - dependency"
+	}
+	return "waiting - project status"
+}
+
+func boardBlockedWaiting(source telemetry.BlockedSource, recoveryReason string, reason string) bool {
+	if strings.EqualFold(strings.TrimSpace(recoveryReason), "human_blocker") {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(recoveryReason), "dependency_blocker") {
+		return true
+	}
+	switch telemetry.BlockedSource(strings.TrimSpace(string(source))) {
+	case telemetry.BlockedSourceDependency, telemetry.BlockedSourceProjectStatus:
+		return true
+	default:
+		return boardBlockedLegacyWaitingReason(reason)
+	}
+}
+
+func boardBlockedDependencyWaiting(source telemetry.BlockedSource, recoveryReason string, reason string, blockers []telemetry.BlockedRef) bool {
+	if telemetry.BlockedSource(strings.TrimSpace(string(source))) == telemetry.BlockedSourceDependency {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(recoveryReason), "dependency_blocker") {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(reason), "blocked by non-terminal dependency") {
+		return true
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(reason)), "depends on ") {
+		return true
+	}
+	return len(blockers) > 0
+}
+
+func boardBlockedLegacyWaitingReason(reason string) bool {
+	reason = strings.TrimSpace(reason)
+	if strings.EqualFold(reason, "blocked by non-terminal dependency") {
+		return true
+	}
+	if strings.EqualFold(reason, "blocked by project status") {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(reason), "depends on ")
+}
+
+func boardBlockedDetail(source telemetry.BlockedSource, recoveryReason string, reason string) string {
+	reason = strings.TrimSpace(reason)
+	switch reason {
+	case "blocked by non-terminal dependency":
+		return "dependency not ready"
+	case "blocked by project status":
+		if strings.EqualFold(strings.TrimSpace(recoveryReason), "dependency_blocker") ||
+			telemetry.BlockedSource(strings.TrimSpace(string(source))) == telemetry.BlockedSourceDependency {
+			return "dependency not ready"
+		}
+		return "paused by project status"
+	default:
+		return reason
+	}
 }
 
 // boardFirstRun is true only when nothing is configured at all: no
@@ -321,6 +424,9 @@ func boardFeedbackGlyph(kind string) string {
 func boardCardClass(card boardCardView) string {
 	if card.Done {
 		return "flex flex-none flex-col gap-1.5 rounded-card border border-line bg-surface p-3 opacity-75"
+	}
+	if card.ExtraChip && card.ExtraKind == primitives.KindWarn {
+		return "flex flex-none flex-col gap-1.5 rounded-card border border-warn/45 bg-elev p-3"
 	}
 	if card.ExtraChip && card.ExtraKind == primitives.KindErr {
 		return "flex flex-none flex-col gap-1.5 rounded-card border border-err/45 bg-elev p-3"
