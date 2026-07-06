@@ -244,6 +244,7 @@ log_level: debug
 log_max_size_bytes: 4096
 log_max_backups: 3
 github_token: gh
+api_token: detent_test_api_token
 port: 4100
 instance_name: " buildbox "
 global:
@@ -278,6 +279,9 @@ projects:
 	}
 	if cfg.GitHubToken != "gh" {
 		t.Fatalf("GitHubToken = %q, want gh", cfg.GitHubToken)
+	}
+	if cfg.APIToken != "detent_test_api_token" {
+		t.Fatalf("APIToken = %q, want detent_test_api_token", cfg.APIToken)
 	}
 	if cfg.Port == nil || *cfg.Port != 4100 {
 		t.Fatalf("Port = %v, want 4100", cfg.Port)
@@ -393,6 +397,7 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 		LogMaxSizeBytes: &logMaxSizeBytes,
 		LogMaxBackups:   &logMaxBackups,
 		GitHubToken:     "gh",
+		APIToken:        "detent_test_api_token",
 		Port:            &port,
 		Global: Settings{
 			MaxConcurrentAgents: 3,
@@ -450,6 +455,9 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 	}
 	if got.GitHubToken != cfg.GitHubToken {
 		t.Fatalf("GitHubToken = %q, want %q", got.GitHubToken, cfg.GitHubToken)
+	}
+	if got.APIToken != cfg.APIToken {
+		t.Fatalf("APIToken = %q, want %q", got.APIToken, cfg.APIToken)
 	}
 	if got.Port == nil || *got.Port != *cfg.Port {
 		t.Fatalf("Port = %v, want %d", got.Port, *cfg.Port)

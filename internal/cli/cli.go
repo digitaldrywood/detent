@@ -415,6 +415,7 @@ detent --format json config path`),
 			return nil
 		}),
 		newGitHubLocalCommand(&configPath, opts),
+		newWorkItemCommand(&configPath, opts),
 		newConfigCommand(&configPath, opts),
 		newOnboardingCommand(&configPath, opts),
 		newPromoteCommand(&configPath, opts),

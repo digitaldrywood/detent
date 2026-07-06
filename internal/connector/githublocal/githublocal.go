@@ -263,6 +263,10 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 	return c.local.UpdateIssueState(ctx, issueID, stateName)
 }
 
+func (c *Connector) UpsertIssues(ctx context.Context, issues []connector.Issue) error {
+	return c.local.UpsertIssues(ctx, issues)
+}
+
 func (c *Connector) SetAssignee(ctx context.Context, issueID string, login string) error {
 	return c.local.SetAssignee(ctx, issueID, login)
 }

@@ -101,6 +101,10 @@ type IssueReferenceResolver interface {
 	FetchIssueStatesByIdentifiers(context.Context, []string) ([]Issue, error)
 }
 
+type IssueUpserter interface {
+	UpsertIssues(context.Context, []Issue) error
+}
+
 type IssueParentResolver interface {
 	FetchIssueParents(context.Context, string) ([]Issue, error)
 }
