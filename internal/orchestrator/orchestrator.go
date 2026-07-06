@@ -2263,14 +2263,7 @@ func (o *Orchestrator) parkInstantFailure(
 }
 
 func (o *Orchestrator) instantFailureParkState() string {
-	if stateIn(blockedStatusState, o.cfg.ObservedStates) || stateIn(blockedStatusState, o.cfg.ActiveStates) || stateIn(blockedStatusState, o.cfg.TerminalStates) {
-		return blockedStatusState
-	}
-	reworkState := strings.TrimSpace(normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState)
-	if reworkState != "" && (stateIn(reworkState, o.cfg.ActiveStates) || stateIn(reworkState, o.cfg.ObservedStates)) {
-		return reworkState
-	}
-	return ""
+	return blockedStatusState
 }
 
 func instantFailureComment(issue connector.Issue, err error, failure InstantFailure, attempt int, targetState string) string {
