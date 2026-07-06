@@ -28,7 +28,9 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -857,6 +859,245 @@ func TestKanbanMoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 	}
 	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_kw559", state: "Todo"}}; !equalStateUpdates(got, want) {
 		t.Fatalf("state updates = %#v, want %#v", got, want)
+	}
+}
+
+func TestKanbanPendingMoveSurvivesMissingProjectRefresh(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+		AllowedTransitions: map[string][]string{
+			"Backlog": {"Todo"},
+		},
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_kw922",
+			Identifier: "digitaldrywood/detent#922",
+			ProjectID:  "detent",
+			Title:      "Pending refresh card",
+			State:      "Backlog",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"kanban_dialog": {"true"},
+		"project_id":    {"detent"},
+		"issue_id":      {"I_kw922"},
+		"current_state": {"Backlog"},
+		"target_state":  {"Todo"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !regexp.MustCompile(`data-board-lane="todo"[\s\S]*Pending refresh card`).MatchString(rec.Body.String()) {
+		t.Fatalf("Todo lane missing moved card:\n%s", rec.Body.String())
+	}
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 1, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
+	if got := strings.Count(body, "Pending refresh card"); got != 1 {
+		t.Fatalf("pending card render count = %d, want 1:\n%s", got, body)
+	}
+	if !regexp.MustCompile(`data-board-lane="todo"[\s\S]*Pending refresh card`).MatchString(body) {
+		t.Fatalf("Todo lane missing pending card after refresh:\n%s", body)
+	}
+
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 2, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_kw922",
+			Identifier: "digitaldrywood/detent#922",
+			ProjectID:  "detent",
+			Title:      "Tracker confirmed card",
+			State:      "Todo",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	body = requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
+	if !regexp.MustCompile(`data-board-lane="todo"[\s\S]*Tracker confirmed card`).MatchString(body) {
+		t.Fatalf("Todo lane missing tracker-confirmed card:\n%s", body)
+	}
+
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 3, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_kw922",
+			Identifier: "digitaldrywood/detent#922",
+			ProjectID:  "detent",
+			Title:      "Tracker source card",
+			State:      "Backlog",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	body = requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
+	if !regexp.MustCompile(`data-board-lane="backlog"[\s\S]*Tracker source card`).MatchString(body) {
+		t.Fatalf("pending overlay did not clear after tracker target state:\n%s", body)
+	}
+}
+
+func TestKanbanPendingMoveSurvivesAuthorizationFilteredSnapshot(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+		AllowedTransitions: map[string][]string{
+			"Backlog": {"Todo"},
+		},
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_auth922",
+			Identifier: "digitaldrywood/detent#923",
+			ProjectID:  "detent",
+			Title:      "Authorization filtered card",
+			State:      "Backlog",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"kanban_dialog": {"true"},
+		"project_id":    {"detent"},
+		"issue_id":      {"I_auth922"},
+		"current_state": {"Backlog"},
+		"target_state":  {"Todo"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	filtered := orchestrator.State{
+		PollInterval:  time.Minute,
+		LastRefreshAt: time.Date(2026, 6, 15, 12, 1, 0, 0, time.UTC),
+		Authorization: selector.Selector{
+			Labels: selector.Labels{Include: []string{"authorized"}},
+		},
+		BoardIssues: []connector.Issue{{
+			ID:         "I_auth922",
+			Identifier: "digitaldrywood/detent#923",
+			Title:      "Authorization filtered card",
+			State:      "Todo",
+			Labels:     []string{"detent:todo"},
+		}},
+	}
+	if err := deps.Hub.Publish(filtered.Snapshot(time.Date(2026, 6, 15, 12, 1, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
+	if got := strings.Count(body, "Authorization filtered card"); got != 1 {
+		t.Fatalf("pending card render count = %d, want 1:\n%s", got, body)
+	}
+	if !regexp.MustCompile(`data-board-lane="todo"[\s\S]*Authorization filtered card`).MatchString(body) {
+		t.Fatalf("Todo lane missing authorization-filtered pending card:\n%s", body)
+	}
+}
+
+func TestKanbanMoveFailureDoesNotInsertPendingCard(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+		AllowedTransitions: map[string][]string{
+			"Backlog": {"Todo"},
+		},
+	}, connectorProbe{name: "github"})
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_fail922",
+			Identifier: "digitaldrywood/detent#924",
+			ProjectID:  "detent",
+			Title:      "Failed move card",
+			State:      "Backlog",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"kanban_dialog": {"true"},
+		"project_id":    {"detent"},
+		"issue_id":      {"I_fail922"},
+		"current_state": {"Backlog"},
+		"target_state":  {"Todo"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Move failed: "+connector.ErrNotImplemented.Error()) {
+		t.Fatalf("body missing visible move error: %s", rec.Body.String())
+	}
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 1, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
+	if strings.Contains(body, "Failed move card") {
+		t.Fatalf("failed move inserted pending card:\n%s", body)
 	}
 }
 

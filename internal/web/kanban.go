@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"maps"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +33,8 @@ type kanbanMutationLocks struct {
 type kanbanPendingState struct {
 	snapshot string
 	current  string
+	project  string
+	issue    telemetry.Issue
 }
 
 type kanbanPendingRemoval struct {
@@ -136,10 +140,15 @@ func (l *kanbanMutationLocks) cardState(key string, issueID string, snapshotStat
 	}
 }
 
-func (l *kanbanMutationLocks) noteCardState(key string, issueID string, snapshotState string, currentState string) {
-	stateKey := kanbanMutationStateKey(key, issueID)
+func (l *kanbanMutationLocks) noteCardState(key string, projectID string, issue telemetry.Issue, snapshotState string, currentState string) {
+	issue.ID = strings.TrimSpace(issue.ID)
+	stateKey := kanbanMutationStateKey(key, issue.ID)
 	if stateKey == "" || strings.TrimSpace(currentState) == "" {
 		return
+	}
+	projectID = strings.TrimSpace(projectID)
+	if strings.TrimSpace(issue.ProjectID) == "" {
+		issue.ProjectID = projectID
 	}
 
 	l.mu.Lock()
@@ -148,10 +157,78 @@ func (l *kanbanMutationLocks) noteCardState(key string, issueID string, snapshot
 	if pending, ok := l.states[stateKey]; ok && normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.snapshot) {
 		snapshotState = pending.snapshot
 	}
+	delete(l.removed, stateKey)
 	l.states[stateKey] = kanbanPendingState{
 		snapshot: strings.TrimSpace(snapshotState),
 		current:  strings.TrimSpace(currentState),
+		project:  projectID,
+		issue:    cloneKanbanIssue(issue),
 	}
+}
+
+func (l *kanbanMutationLocks) pendingMovedCards(key string, projectID string, snapshot telemetry.Snapshot) []telemetry.Issue {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	present := map[string]struct{}{}
+	for _, issue := range snapshotKanbanPendingIssues(snapshot) {
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" || !sameKanbanProject(issue, projectID, snapshot.Project.ID) {
+			continue
+		}
+		stateKey := kanbanMutationStateKey(key, issueID)
+		pending, ok := l.states[stateKey]
+		if !ok {
+			continue
+		}
+		present[stateKey] = struct{}{}
+		snapshotState := strings.TrimSpace(issue.State)
+		switch {
+		case normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.snapshot):
+		case normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.current):
+			delete(l.states, stateKey)
+		default:
+			delete(l.states, stateKey)
+		}
+	}
+
+	projectID = strings.TrimSpace(projectID)
+	out := []telemetry.Issue{}
+	for stateKey, pending := range l.states {
+		if _, ok := present[stateKey]; ok {
+			continue
+		}
+		issueID := strings.TrimSpace(pending.issue.ID)
+		if issueID == "" || kanbanMutationStateKey(key, issueID) != stateKey {
+			continue
+		}
+		if projectID != "" && pending.project != "" && pending.project != projectID {
+			continue
+		}
+		if !sameKanbanProject(pending.issue, projectID, snapshot.Project.ID) {
+			continue
+		}
+		issue := cloneKanbanIssue(pending.issue)
+		if strings.TrimSpace(issue.ProjectID) == "" {
+			issue.ProjectID = projectID
+		}
+		issue.State = strings.TrimSpace(pending.current)
+		out = append(out, issue)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		left := strings.TrimSpace(out[i].Identifier)
+		right := strings.TrimSpace(out[j].Identifier)
+		if left != right {
+			return left < right
+		}
+		return strings.TrimSpace(out[i].ID) < strings.TrimSpace(out[j].ID)
+	})
+	return out
 }
 
 func (l *kanbanMutationLocks) cardRemoved(key string, issueID string, snapshotState string) bool {
@@ -185,6 +262,7 @@ func (l *kanbanMutationLocks) noteCardRemoved(key string, issueID string, snapsh
 	}
 
 	l.mu.Lock()
+	delete(l.states, stateKey)
 	l.removed[stateKey] = kanbanPendingRemoval{
 		snapshot:  strings.TrimSpace(snapshotState),
 		removedAt: time.Now(),
@@ -314,14 +392,14 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 				return err
 			}
 			s.recordKanbanLaneTransition(c.Request().Context(), req.projectID, snapshotIssue, currentState, req.targetState, "kanban_move_field")
-			s.kanbanMutations.noteCardState(target.key, req.issueID, snapshotState, req.targetState)
+			s.kanbanMutations.noteCardState(target.key, req.projectID, snapshotIssue, snapshotState, req.targetState)
 			return nil
 		}
 		if err := target.connector.UpdateIssueState(c.Request().Context(), req.issueID, req.targetState); err != nil {
 			return err
 		}
 		s.recordKanbanLaneTransition(c.Request().Context(), req.projectID, snapshotIssue, currentState, req.targetState, "kanban_move")
-		s.kanbanMutations.noteCardState(target.key, req.issueID, snapshotState, req.targetState)
+		s.kanbanMutations.noteCardState(target.key, req.projectID, snapshotIssue, snapshotState, req.targetState)
 		return nil
 	})
 	if feedback != "" {
@@ -473,6 +551,7 @@ func (s *Server) kanbanSnapshotWithPendingStates(lockKey string, projectID strin
 		}
 		return !s.kanbanMutations.cardRemoved(lockKey, issue.ID, issue.State)
 	})
+	pendingMovedCards := s.kanbanMutations.pendingMovedCards(lockKey, projectID, snapshot)
 	applySnapshotKanbanIssues(&snapshot, func(issue *telemetry.Issue) {
 		if issue == nil || strings.TrimSpace(issue.ID) == "" || !sameKanbanProject(*issue, projectID, snapshot.Project.ID) {
 			return
@@ -482,6 +561,9 @@ func (s *Server) kanbanSnapshotWithPendingStates(lockKey string, projectID strin
 			issue.State = state
 		}
 	})
+	if len(pendingMovedCards) > 0 {
+		snapshot.BoardIssues = append(snapshot.BoardIssues, pendingMovedCards...)
+	}
 	states := kanbanIssueStateIndex(snapshot)
 	applySnapshotKanbanIssues(&snapshot, func(issue *telemetry.Issue) {
 		if issue == nil || len(issue.BlockedBy) == 0 || !sameKanbanProject(*issue, projectID, snapshot.Project.ID) {
@@ -551,6 +633,71 @@ func cloneKanbanIssueSlices(snapshot telemetry.Snapshot) telemetry.Snapshot {
 	snapshot.Blocked = append([]telemetry.Blocked(nil), snapshot.Blocked...)
 	snapshot.Completed = append([]telemetry.Completed(nil), snapshot.Completed...)
 	return snapshot
+}
+
+func cloneKanbanIssue(issue telemetry.Issue) telemetry.Issue {
+	out := issue
+	out.Labels = append([]string(nil), issue.Labels...)
+	out.Assignees = append([]string(nil), issue.Assignees...)
+	out.Comments = append([]telemetry.IssueComment(nil), issue.Comments...)
+	out.BlockedBy = append([]telemetry.BlockedRef(nil), issue.BlockedBy...)
+	out.Metadata = maps.Clone(issue.Metadata)
+	out.PullRequest = cloneKanbanPullRequest(issue.PullRequest)
+	out.Deliverable = cloneKanbanDeliverable(issue.Deliverable)
+	out.MergeTiming = cloneKanbanMergeTiming(issue.MergeTiming)
+	out.LeaseRenewedAt = cloneKanbanTimePointer(issue.LeaseRenewedAt)
+	out.LeaseExpiresAt = cloneKanbanTimePointer(issue.LeaseExpiresAt)
+	out.CreatedAt = cloneKanbanTimePointer(issue.CreatedAt)
+	out.UpdatedAt = cloneKanbanTimePointer(issue.UpdatedAt)
+	out.StageUpdatedAt = cloneKanbanTimePointer(issue.StageUpdatedAt)
+	out.CurrentLaneEnteredAt = cloneKanbanTimePointer(issue.CurrentLaneEnteredAt)
+	return out
+}
+
+func cloneKanbanPullRequest(pr *telemetry.PullRequest) *telemetry.PullRequest {
+	if pr == nil {
+		return nil
+	}
+	out := *pr
+	out.HydrationNextRetryAt = cloneKanbanTimePointer(pr.HydrationNextRetryAt)
+	out.SlowChecks = append([]telemetry.PullRequestCheck(nil), pr.SlowChecks...)
+	out.RunningChecks = append([]string(nil), pr.RunningChecks...)
+	out.RequiredCheckFailures = append([]telemetry.PullRequestCheck(nil), pr.RequiredCheckFailures...)
+	return &out
+}
+
+func cloneKanbanDeliverable(deliverable *telemetry.Deliverable) *telemetry.Deliverable {
+	if deliverable == nil {
+		return nil
+	}
+	out := *deliverable
+	out.Metadata = maps.Clone(deliverable.Metadata)
+	return &out
+}
+
+func cloneKanbanMergeTiming(timing *telemetry.MergeTiming) *telemetry.MergeTiming {
+	if timing == nil {
+		return nil
+	}
+	out := *timing
+	out.EnteredMergingAt = cloneKanbanTimePointer(timing.EnteredMergingAt)
+	out.MergeWorkerSlotAcquiredAt = cloneKanbanTimePointer(timing.MergeWorkerSlotAcquiredAt)
+	out.MergeStartedAt = cloneKanbanTimePointer(timing.MergeStartedAt)
+	out.BaseRefreshStartedAt = cloneKanbanTimePointer(timing.BaseRefreshStartedAt)
+	out.BaseRefreshFinishedAt = cloneKanbanTimePointer(timing.BaseRefreshFinishedAt)
+	out.CIWaitStartedAt = cloneKanbanTimePointer(timing.CIWaitStartedAt)
+	out.CIWaitFinishedAt = cloneKanbanTimePointer(timing.CIWaitFinishedAt)
+	out.MergedAt = cloneKanbanTimePointer(timing.MergedAt)
+	out.MergeFailedAt = cloneKanbanTimePointer(timing.MergeFailedAt)
+	return &out
+}
+
+func cloneKanbanTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	out := *value
+	return &out
 }
 
 func applySnapshotKanbanIssues(snapshot *telemetry.Snapshot, apply func(*telemetry.Issue)) {
@@ -1326,6 +1473,14 @@ func snapshotKanbanIssues(snapshot telemetry.Snapshot) []telemetry.Issue {
 		issues = append(issues, row.Issue)
 	}
 	for _, row := range snapshot.Blocked {
+		issues = append(issues, row.Issue)
+	}
+	return issues
+}
+
+func snapshotKanbanPendingIssues(snapshot telemetry.Snapshot) []telemetry.Issue {
+	issues := snapshotKanbanIssues(snapshot)
+	for _, row := range snapshot.Completed {
 		issues = append(issues, row.Issue)
 	}
 	return issues
