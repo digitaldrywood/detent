@@ -183,6 +183,12 @@ SELECT COUNT(*)
 FROM api_usage_logs
 WHERE api_key_id = ?;
 
+-- name: ListAPIUsageLogsByKey :many
+SELECT *
+FROM api_usage_logs
+WHERE api_key_id = ?
+ORDER BY created_at DESC, id DESC;
+
 -- name: ListRecentCodexSessions :many
 SELECT *
 FROM codex_sessions

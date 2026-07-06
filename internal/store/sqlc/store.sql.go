@@ -1557,6 +1557,46 @@ func (q *Queries) ListAPIKeys(ctx context.Context) ([]ApiKey, error) {
 	return items, nil
 }
 
+const listAPIUsageLogsByKey = `-- name: ListAPIUsageLogsByKey :many
+SELECT id, api_key_id, method, path, status_code, latency_ms, ip, user_agent, created_at
+FROM api_usage_logs
+WHERE api_key_id = ?
+ORDER BY created_at DESC, id DESC
+`
+
+func (q *Queries) ListAPIUsageLogsByKey(ctx context.Context, apiKeyID string) ([]ApiUsageLog, error) {
+	rows, err := q.db.QueryContext(ctx, listAPIUsageLogsByKey, apiKeyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ApiUsageLog{}
+	for rows.Next() {
+		var i ApiUsageLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.ApiKeyID,
+			&i.Method,
+			&i.Path,
+			&i.StatusCode,
+			&i.LatencyMs,
+			&i.Ip,
+			&i.UserAgent,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listActiveWorkAttempts = `-- name: ListActiveWorkAttempts :many
 SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action
 FROM work_attempts

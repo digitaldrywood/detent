@@ -86,19 +86,7 @@ func TestRotateKeepsOldKeyValidUntilGraceExpires(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	backend, err := store.Open(ctx, store.Config{
-		Backend: store.BackendSQLite,
-		Path:    filepath.Join(t.TempDir(), "detent.db"),
-	})
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
-	}
-	t.Cleanup(func() {
-		if err := backend.Close(); err != nil {
-			t.Fatalf("Close() error = %v", err)
-		}
-	})
-
+	backend := openAPIKeyTestStore(t)
 	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	service := NewService(backend, WithNow(func() time.Time { return now }))
 	created, err := service.Create(ctx, CreateRequest{
@@ -129,6 +117,77 @@ func TestRotateKeepsOldKeyValidUntilGraceExpires(t *testing.T) {
 	if !errors.As(err, &authErr) || authErr.Code != "token_expired" {
 		t.Fatalf("old key after grace Authenticate() error = %v, want token_expired", err)
 	}
+}
+
+func TestRotateDoesNotExtendOldKeyBeyondOriginalExpiry(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openAPIKeyTestStore(t)
+	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	service := NewService(backend, WithNow(func() time.Time { return now }))
+	created, err := service.Create(ctx, CreateRequest{
+		Name:      "Near expiry",
+		Scopes:    []string{"read"},
+		ExpiresIn: "30d",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	originalExpiresAt := *created.Key.ExpiresAt
+
+	now = originalExpiresAt.Add(-30 * time.Minute)
+	if _, err := service.Rotate(ctx, created.Key.ID, "1h"); err != nil {
+		t.Fatalf("Rotate() error = %v", err)
+	}
+	key, err := backend.APIKey(ctx, created.Key.ID)
+	if err != nil {
+		t.Fatalf("APIKey() error = %v", err)
+	}
+	if key.ExpiresAt == nil || !key.ExpiresAt.Equal(originalExpiresAt) {
+		t.Fatalf("old key expires_at = %v, want %v", key.ExpiresAt, originalExpiresAt)
+	}
+}
+
+func TestRotateRejectsExpiredKey(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openAPIKeyTestStore(t)
+	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	service := NewService(backend, WithNow(func() time.Time { return now }))
+	created, err := service.Create(ctx, CreateRequest{
+		Name:      "Expired",
+		Scopes:    []string{"read"},
+		ExpiresIn: "30d",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	now = created.Key.ExpiresAt.Add(time.Second)
+	_, err = service.Rotate(ctx, created.Key.ID, "1h")
+	if !errors.Is(err, ErrKeyExpired) {
+		t.Fatalf("Rotate() error = %v, want ErrKeyExpired", err)
+	}
+}
+
+func openAPIKeyTestStore(t *testing.T) store.Store {
+	t.Helper()
+
+	backend, err := store.Open(context.Background(), store.Config{
+		Backend: store.BackendSQLite,
+		Path:    filepath.Join(t.TempDir(), "detent.db"),
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	return backend
 }
 
 type countingAPIKeyStore struct {

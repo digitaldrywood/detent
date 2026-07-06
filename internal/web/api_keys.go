@@ -17,6 +17,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
+var errAPIKeyProjectRequired = errors.New("select at least one project or all projects")
+
 type apiKeyCreatePayload struct {
 	Name       string   `json:"name" form:"name"`
 	Scopes     []string `json:"scopes" form:"scopes"`
@@ -85,6 +87,9 @@ func (s *Server) apiKeysList(c echo.Context) error {
 func (s *Server) apiKeysCreate(c echo.Context) error {
 	payload, err := apiKeyCreateRequest(c)
 	if err != nil {
+		if errors.Is(err, errAPIKeyProjectRequired) {
+			return apiKeyManagementError(c, err)
+		}
 		return c.JSON(http.StatusUnprocessableEntity, errorResponse("invalid_request", "Request body must be valid JSON or form data"))
 	}
 	created, err := s.apiKeys.Create(c.Request().Context(), apikey.CreateRequest{
@@ -214,6 +219,9 @@ func apiKeyCreateRequest(c echo.Context) (apiKeyCreatePayload, error) {
 	payload.ExpiresIn = form.Get("expires_in")
 	if form.Get("all_projects") != "true" {
 		payload.ProjectIDs = form["project_ids"]
+		if len(payload.ProjectIDs) == 0 {
+			return payload, errAPIKeyProjectRequired
+		}
 	}
 	return payload, nil
 }
@@ -258,6 +266,12 @@ func apiKeyManagementError(c echo.Context, err error) error {
 	case errors.Is(err, apikey.ErrKeyRevoked):
 		code = "token_revoked"
 		message = "API key has been revoked"
+	case errors.Is(err, apikey.ErrKeyExpired):
+		code = "token_expired"
+		message = "API key has expired"
+	case errors.Is(err, errAPIKeyProjectRequired):
+		code = "project_required"
+		message = "Select at least one project or all projects"
 	}
 	return c.JSON(status, errorResponse(code, message))
 }

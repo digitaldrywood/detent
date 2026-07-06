@@ -26,6 +26,7 @@ var (
 	ErrInvalidGrace     = errors.New("invalid grace")
 	ErrKeyLimitExceeded = errors.New("api key limit exceeded")
 	ErrKeyRevoked       = errors.New("api key is revoked")
+	ErrKeyExpired       = errors.New("api key is expired")
 )
 
 type Store interface {
@@ -128,6 +129,10 @@ func (s *Service) Rotate(ctx context.Context, id string, grace string) (CreatedK
 	if key.RevokedAt != nil {
 		return CreatedKey{}, ErrKeyRevoked
 	}
+	now := s.currentTime()
+	if key.ExpiresAt != nil && !key.ExpiresAt.After(now) {
+		return CreatedKey{}, ErrKeyExpired
+	}
 	graceDuration, err := GraceDuration(grace)
 	if err != nil {
 		return CreatedKey{}, err
@@ -136,7 +141,11 @@ func (s *Service) Rotate(ctx context.Context, id string, grace string) (CreatedK
 	if err != nil {
 		return CreatedKey{}, err
 	}
-	if err := s.store.SetAPIKeyExpiresAt(ctx, key.ID, s.currentTime().Add(graceDuration)); err != nil {
+	graceExpiresAt := now.Add(graceDuration)
+	if key.ExpiresAt != nil && key.ExpiresAt.Before(graceExpiresAt) {
+		graceExpiresAt = *key.ExpiresAt
+	}
+	if err := s.store.SetAPIKeyExpiresAt(ctx, key.ID, graceExpiresAt); err != nil {
 		return CreatedKey{}, err
 	}
 	return created, nil

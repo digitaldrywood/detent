@@ -583,6 +583,39 @@ func TestAPIKeyManagementAndScopedWorkItemAccess(t *testing.T) {
 	}
 }
 
+func TestAPIKeyCreateFormRejectsEmptyProjectSelection(t *testing.T) {
+	t.Parallel()
+
+	server, backend, _, _ := newAPIKeyWorkItemTestServer(t)
+	form := url.Values{}
+	form.Set("name", "Video Studio")
+	form.Add("scopes", "write")
+	form.Set("expires_in", "90d")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/keys", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer detent_admin_token")
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("create key status = %d, want %d; body = %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal(create key error) error = %v; body = %s", err, rec.Body.String())
+	}
+	if nestedString(t, payload, "error", "code") != "project_required" {
+		t.Fatalf("create key error = %#v, want project_required", payload)
+	}
+	keys, err := backend.ListAPIKeys(context.Background())
+	if err != nil {
+		t.Fatalf("ListAPIKeys() error = %v", err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("keys created = %d, want 0", len(keys))
+	}
+}
+
 func TestAPIKeyRevokeExpireRotateAndRateLimit(t *testing.T) {
 	t.Parallel()
 
@@ -661,6 +694,27 @@ func TestAPIKeyRevokeExpireRotateAndRateLimit(t *testing.T) {
 	}
 	if limited.Header().Get("X-RateLimit-Limit") == "" || limited.Header().Get("X-RateLimit-Remaining") == "" || limited.Header().Get("Retry-After") == "" {
 		t.Fatalf("rate limit headers missing: %#v", limited.Header())
+	}
+}
+
+func TestAPIUsageLogRecordsReturnedHTTPErrorStatus(t *testing.T) {
+	t.Parallel()
+
+	server, backend, _, _ := newAPIKeyWorkItemTestServer(t)
+	token, keyID := createAPIKeyThroughHTTP(t, server, `{
+		"name": "Read client",
+		"scopes": ["read"],
+		"expires_in": "90d"
+	}`)
+	rec := performJSON(t, server.Handler(), http.MethodGet, "/api/v1/board/card?project=digitaldrywood-video&issue=missing", "", map[string]string{
+		"Authorization": "Bearer " + token,
+	})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("board card status = %d, want %d; body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	logs := waitForAPIUsageLogs(t, backend, keyID)
+	if logs[0].StatusCode != int64(http.StatusNotFound) {
+		t.Fatalf("usage log status = %d, want %d; log = %#v", logs[0].StatusCode, http.StatusNotFound, logs[0])
 	}
 }
 
@@ -7468,14 +7522,24 @@ func createExpiredAPIKey(t *testing.T, backend store.Store) string {
 func waitForAPIUsageLog(t *testing.T, backend store.Store, keyID string) {
 	t.Helper()
 
+	_ = waitForAPIUsageLogs(t, backend, keyID)
+}
+
+func waitForAPIUsageLogs(t *testing.T, backend store.Store, keyID string) []sqlc.ApiUsageLog {
+	t.Helper()
+
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		count, err := backend.CountAPIUsageLogsByKey(context.Background(), keyID)
-		if err != nil {
-			t.Fatalf("CountAPIUsageLogsByKey() error = %v", err)
+		queries := backend.Queries()
+		if queries == nil {
+			t.Fatalf("store Queries() = nil")
 		}
-		if count > 0 {
-			return
+		logs, err := queries.ListAPIUsageLogsByKey(context.Background(), keyID)
+		if err != nil {
+			t.Fatalf("ListAPIUsageLogsByKey() error = %v", err)
+		}
+		if len(logs) > 0 {
+			return logs
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("usage log count for %s stayed 0", keyID)

@@ -43,12 +43,12 @@ func (s *Server) apiAuthWithOptions(opts apiAuthOptions) echo.MiddlewareFunc {
 				return err
 			}
 			if err := s.applyAPIKeyRateLimit(c, credential); err != nil {
-				s.recordAPIUsage(c, credential, start)
+				s.recordAPIUsage(c, credential, start, err)
 				return err
 			}
 			s.markAPIKeyLastUsed(credential)
 			err = next(c)
-			s.recordAPIUsage(c, credential, start)
+			s.recordAPIUsage(c, credential, start, err)
 			return err
 		}
 	}
@@ -334,11 +334,15 @@ func (s *Server) setRateLimitHeaders(c echo.Context, limit int, remaining int) {
 	c.Response().Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
 }
 
-func (s *Server) recordAPIUsage(c echo.Context, credential apikey.Credential, started time.Time) {
+func (s *Server) recordAPIUsage(c echo.Context, credential apikey.Credential, started time.Time, handlerErr error) {
 	if s == nil || s.store == nil || credential.Static || strings.TrimSpace(credential.ID) == "" {
 		return
 	}
 	status := c.Response().Status
+	var httpErr *echo.HTTPError
+	if errors.As(handlerErr, &httpErr) && httpErr.Code > 0 {
+		status = httpErr.Code
+	}
 	if status == 0 {
 		status = http.StatusOK
 	}

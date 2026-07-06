@@ -341,6 +341,7 @@ func cliAPIKeyError(err error) error {
 		errors.Is(err, apikey.ErrInvalidExpiry),
 		errors.Is(err, apikey.ErrInvalidGrace),
 		errors.Is(err, apikey.ErrInvalidScope),
+		errors.Is(err, apikey.ErrKeyExpired),
 		errors.Is(err, apikey.ErrKeyLimitExceeded):
 		return WrapValidation(err)
 	default:
