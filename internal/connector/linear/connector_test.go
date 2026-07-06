@@ -165,6 +165,52 @@ func TestConnectorDoesNotExposePullRequestCommenter(t *testing.T) {
 	}
 }
 
+func TestClientGraphQLReadsLargeSuccessfulResponse(t *testing.T) {
+	t.Parallel()
+
+	body := strings.Repeat("large response ", maxErrorBodyBytes)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		if got := r.Header.Get("Authorization"); got != "lin_api_test" {
+			t.Fatalf("Authorization = %q, want lin_api_test", got)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"payload": map[string]any{
+					"body": body,
+				},
+			},
+		}); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint: server.URL,
+		APIKey:   "lin_api_test",
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	var got struct {
+		Payload struct {
+			Body string `json:"body"`
+		} `json:"payload"`
+	}
+	if err := client.GraphQL(context.Background(), "query Test { payload { body } }", nil, &got); err != nil {
+		t.Fatalf("GraphQL() error = %v", err)
+	}
+	if got.Payload.Body != body {
+		t.Fatalf("body length = %d, want %d", len(got.Payload.Body), len(body))
+	}
+}
+
 type linearGraphQLRequest struct {
 	Query     string         `json:"query"`
 	Variables map[string]any `json:"variables"`

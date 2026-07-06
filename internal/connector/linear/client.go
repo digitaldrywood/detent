@@ -95,16 +95,21 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes+1))
-	if err != nil {
-		return fmt.Errorf("%w: read response: %w", ErrTransient, err)
-	}
 	if resp.StatusCode != http.StatusOK {
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes+1))
+		if err != nil {
+			return fmt.Errorf("%w: read response: %w", ErrTransient, err)
+		}
 		return &StatusError{
 			StatusCode: resp.StatusCode,
 			Body:       strings.TrimSpace(string(raw)),
 			Err:        ErrUnexpectedStatus,
 		}
+	}
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
 
 	var envelope struct {
