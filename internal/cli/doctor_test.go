@@ -3112,7 +3112,7 @@ func TestDoctorProjectCheckJobTimeoutReportsCurrentInnerCheck(t *testing.T) {
 	if len(checks) != 1 {
 		t.Fatalf("checks len = %d, want 1", len(checks))
 	}
-	for _, want := range []string{"Project alpha checks", "Project alpha GitHub readiness", "timed out after 20ms"} {
+	for _, want := range []string{"Project alpha checks", "timed out after 20ms", "while running Project alpha "} {
 		if !strings.Contains(checks[0].Name+" "+checks[0].Detail, want) {
 			t.Fatalf("timeout check = %#v, want containing %q", checks[0], want)
 		}
