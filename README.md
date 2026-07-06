@@ -1038,8 +1038,8 @@ colors with deterministic automatic colors. The fleet `/kanban` board is
 read-only and shows cards across those projects; project-specific pages such as
 `/projects/demo-project/kanban` enable integration mode for the generated demo
 workflow. The demo includes explicit `server.kanban.allowed_transitions` such
-as `Backlog -> Todo` so drag/drop moves can be exercised without weakening
-production defaults. Demo cards cover Backlog, Todo, In Progress, Blocked,
+as `Backlog -> Todo` so sheet-based Move actions can be exercised without
+weakening production defaults. Demo cards cover Backlog, Todo, In Progress, Blocked,
 Human Review, Rework, Merging, Done, and Cancelled states, including
 issue-only cards, linked PR cards, CI pass, pending, and failure states, Codex
 review clean and finding states, labels, assignees, blockers, and wait

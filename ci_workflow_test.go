@@ -199,20 +199,8 @@ func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
 	}
 }
 
-func TestKanbanBrowserDragDropRunsInVisualGate(t *testing.T) {
+func TestBrowserVisualGateCoversBoardInteractions(t *testing.T) {
 	t.Parallel()
-
-	browserTestRaw, err := os.ReadFile("internal/cli/dev_runtime_browser_e2e_test.go")
-	if err != nil {
-		t.Fatalf("ReadFile(internal/cli/dev_runtime_browser_e2e_test.go) error = %v", err)
-	}
-	browserTest := strings.ReplaceAll(string(browserTestRaw), "\r\n", "\n")
-	if !strings.HasPrefix(browserTest, "//go:build browser_e2e\n\n") {
-		t.Fatal("Kanban browser drag/drop Go CDP test must be behind the browser_e2e build tag")
-	}
-	if !strings.Contains(browserTest, "CI exercises Kanban drag/drop in the Playwright browser visual gate") {
-		t.Fatal("Kanban browser drag/drop Go CDP test must document why CI uses the visual gate")
-	}
 
 	workflowRaw, err := os.ReadFile(".github/workflows/ci.yml")
 	if err != nil {
