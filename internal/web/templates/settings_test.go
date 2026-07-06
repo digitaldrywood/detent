@@ -36,6 +36,7 @@ func TestSettingsIncludesSharedSidebarShell(t *testing.T) {
 		`id="app-sidebar"`,
 		`data-rail="true"`,
 		`href="/"`,
+		`href="/library"`,
 		`href="/reports"`,
 		`href="/settings"`,
 		`href="/projects/detent"`,

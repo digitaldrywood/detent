@@ -31,6 +31,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/local"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
@@ -163,6 +164,12 @@ func TestServerRoutes(t *testing.T) {
 			wantContent: "Analytics",
 		},
 		{
+			name:        "library",
+			path:        "/library",
+			wantStatus:  http.StatusOK,
+			wantContent: `id="library-table"`,
+		},
+		{
 			name:        "reports",
 			path:        "/reports",
 			wantStatus:  http.StatusOK,
@@ -196,6 +203,88 @@ func TestServerRoutes(t *testing.T) {
 			}
 			if !strings.Contains(rec.Body.String(), tt.wantContent) {
 				t.Fatalf("body missing %q:\n%s", tt.wantContent, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestLibraryPageListsLocalArtifactsAndPullRequestRecords(t *testing.T) {
+	t.Parallel()
+
+	server := newLibraryTestServer(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/library", nil)
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="library-table"`,
+		"outputs/ad-1/manifest.json",
+		"outputs/ad-unsafe/manifest.json",
+		"pending_review",
+		"review/ad-1",
+		"PR #934",
+		"https://github.com/digitaldrywood/detent/pull/934",
+		"validator clean",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("library page missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "javascript:alert") {
+		t.Fatalf("library page rendered unsafe review URL:\n%s", body)
+	}
+}
+
+func TestLibraryPageFiltersRows(t *testing.T) {
+	t.Parallel()
+
+	server := newLibraryTestServer(t)
+	tests := []struct {
+		name      string
+		path      string
+		want      string
+		forbidden string
+	}{
+		{
+			name:      "pull request kind",
+			path:      "/library?kind=pull_request",
+			want:      "PR #934",
+			forbidden: "outputs/ad-1/manifest.json",
+		},
+		{
+			name:      "artifact status",
+			path:      "/library?status=pending_review",
+			want:      "outputs/ad-1/manifest.json",
+			forbidden: "PR #934",
+		},
+		{
+			name:      "project",
+			path:      "/library?project=video",
+			want:      "outputs/ad-1/manifest.json",
+			forbidden: "PR #934",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+
+			server.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, tt.want) {
+				t.Fatalf("filtered library page missing %q:\n%s", tt.want, body)
+			}
+			if strings.Contains(body, tt.forbidden) {
+				t.Fatalf("filtered library page contains %q:\n%s", tt.forbidden, body)
 			}
 		})
 	}
@@ -7338,6 +7427,110 @@ func testDeps(t *testing.T) web.Dependencies {
 	}
 }
 
+func newLibraryTestServer(t *testing.T) *web.Server {
+	t.Helper()
+
+	ctx := context.Background()
+	backend := openWebTestStore(t)
+	registry := project.NewRegistry()
+
+	localPath := filepath.Join(t.TempDir(), "work-items.db")
+	createdAt := time.Date(2026, 7, 2, 9, 0, 0, 0, time.UTC)
+	updatedAt := time.Date(2026, 7, 2, 10, 30, 0, 0, time.UTC)
+	issue := connector.NewIssue()
+	issue.ID = "ad-1"
+	issue.Identifier = "video/ad-1"
+	issue.Title = "Produce summer sale ad"
+	issue.State = "Review"
+	issue.Fields = map[string]string{"render_status": "pending_review"}
+	issue.CreatedAt = &createdAt
+	issue.UpdatedAt = &updatedAt
+	issue.StageUpdatedAt = &updatedAt
+	issue.Deliverable = &connector.Deliverable{
+		Kind:      "video_ad",
+		Path:      "outputs/ad-1/manifest.json",
+		ReviewURL: "http://127.0.0.1:8080/review/ad-1",
+		Metadata:  map[string]string{"format": "mp4", "aspect": "9:16"},
+	}
+	unsafeIssue := connector.NewIssue()
+	unsafeIssue.ID = "ad-unsafe"
+	unsafeIssue.Identifier = "video/ad-unsafe"
+	unsafeIssue.Title = "Unsafe review URL"
+	unsafeIssue.State = "Review"
+	unsafeIssue.Fields = map[string]string{"render_status": "pending_review"}
+	unsafeIssue.CreatedAt = &createdAt
+	unsafeIssue.UpdatedAt = &updatedAt
+	unsafeIssue.StageUpdatedAt = &updatedAt
+	unsafeIssue.Deliverable = &connector.Deliverable{
+		Kind:      "video_ad",
+		Path:      "outputs/ad-unsafe/manifest.json",
+		ReviewURL: "javascript:alert(1)",
+	}
+	conn, err := local.New(local.Config{
+		Path:      localPath,
+		ProjectID: "video-local",
+		Issues:    []connector.Issue{issue, unsafeIssue},
+	})
+	if err != nil {
+		t.Fatalf("local.New() error = %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	workflowCfg := workflowconfig.Default()
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerLocalSQLite
+	workflowCfg.Tracker.LocalSQLite.Path = localPath
+	workflowCfg.Tracker.LocalSQLite.ProjectID = "video-local"
+	workflowCfg.Deliverable.Kind = workflowconfig.DeliverableArtifact
+	workflowCfg.Gate.Kind = gate.KindArtifact
+	workflowCfg.Gate.Artifact.StatusField = "render_status"
+	trackedProject, err := project.New(project.Config{
+		Project: globalconfig.Project{ID: "video", Workdir: t.TempDir()},
+		Workflow: workflowconfig.Workflow{
+			Config: workflowCfg,
+			Prompt: "Work the issue.",
+		},
+	}, project.Dependencies{
+		Connector: connectorProbe{name: "local_sqlite"},
+	})
+	if err != nil {
+		t.Fatalf("project.New(video) error = %v", err)
+	}
+	if err := registry.Set(trackedProject); err != nil {
+		t.Fatalf("Registry.Set(video) error = %v", err)
+	}
+	mustSetWebGitHubLabelProject(t, registry, "detent", "digitaldrywood/detent")
+
+	prUpdatedAt := time.Date(2026, 7, 3, 15, 0, 0, 0, time.UTC)
+	if err := backend.RecordValidatorVerdict(ctx, store.ValidatorVerdict{
+		ProjectID:  "detent",
+		IssueID:    "issue-933",
+		HeadSHA:    "1234567890abcdef",
+		Identifier: "digitaldrywood/detent#933",
+		IssueURL:   "https://github.com/digitaldrywood/detent/issues/933",
+		PRNumber:   int64Pointer(934),
+		Submitted:  true,
+		Verdict:    "pass",
+		Score:      0.94,
+		Summary:    "validator clean",
+		RecordedAt: prUpdatedAt.Add(-time.Minute),
+		UpdatedAt:  prUpdatedAt,
+	}); err != nil {
+		t.Fatalf("RecordValidatorVerdict() error = %v", err)
+	}
+
+	deps := testDeps(t)
+	deps.Store = backend
+	deps.Registry = registry
+	deps.Connector = connectorProbe{name: "mixed"}
+	server, err := web.NewServer(web.Config{DashboardURL: "http://127.0.0.1:4000"}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	return server
+}
+
 func newWorkItemAPITestServer(t *testing.T, apiToken string) (*web.Server, *local.Connector, *refreshProbe) {
 	t.Helper()
 
@@ -8124,9 +8317,10 @@ func boardStateCountOK(t *testing.T, payload map[string]any, stateName string) (
 type storeProbe struct {
 	store.Store
 
-	cycleTimeReport  func(context.Context) (store.CycleTimeReport, error)
-	budgetCostEvents func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error)
-	runtimeEvidence  func(context.Context, store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error)
+	cycleTimeReport   func(context.Context) (store.CycleTimeReport, error)
+	budgetCostEvents  func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error)
+	runtimeEvidence   func(context.Context, store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error)
+	validatorVerdicts func(context.Context, store.ValidatorVerdictQuery) ([]store.ValidatorVerdict, error)
 }
 
 func (storeProbe) LifetimeTotals(context.Context) (store.LifetimeTotals, error) {
@@ -8161,6 +8355,13 @@ func (storeProbe) WorkflowMetricsReport(context.Context, store.WorkflowMetricsQu
 
 func (storeProbe) IssueWorkflowTimeline(context.Context, store.IssueIdentity) (store.WorkflowTimeline, error) {
 	return store.WorkflowTimeline{}, nil
+}
+
+func (p storeProbe) ListValidatorVerdicts(ctx context.Context, query store.ValidatorVerdictQuery) ([]store.ValidatorVerdict, error) {
+	if p.validatorVerdicts != nil {
+		return p.validatorVerdicts(ctx, query)
+	}
+	return nil, nil
 }
 
 func (p storeProbe) RuntimeEvidence(ctx context.Context, query store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error) {
@@ -8757,4 +8958,8 @@ func (p *refreshProbe) RequestRefresh(context.Context) (web.RefreshResponse, err
 		return web.RefreshResponse{}, p.err
 	}
 	return p.response, nil
+}
+
+func int64Pointer(value int64) *int64 {
+	return &value
 }

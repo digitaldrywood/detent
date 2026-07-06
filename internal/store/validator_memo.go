@@ -91,6 +91,39 @@ func (s *sqliteStore) ValidatorVerdict(ctx context.Context, key ValidatorVerdict
 	return validatorVerdictFromRow(row)
 }
 
+func (s *sqliteStore) ListValidatorVerdicts(ctx context.Context, query ValidatorVerdictQuery) ([]ValidatorVerdict, error) {
+	from, err := optionalTimestamp("from", query.From)
+	if err != nil {
+		return nil, err
+	}
+	to, err := optionalTimestamp("to", query.To)
+	if err != nil {
+		return nil, err
+	}
+	if from.Valid && to.Valid && from.String >= to.String {
+		return nil, errors.New("from must be before to")
+	}
+
+	rows, err := s.queries.ListValidatorVerdicts(ctx, sqlc.ListValidatorVerdictsParams{
+		FilterProjectID: strings.TrimSpace(query.ProjectID),
+		FromTime:        from,
+		ToTime:          to,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing validator verdicts: %w", err)
+	}
+
+	verdicts := make([]ValidatorVerdict, 0, len(rows))
+	for _, row := range rows {
+		verdict, err := validatorVerdictFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+		verdicts = append(verdicts, verdict)
+	}
+	return verdicts, nil
+}
+
 func (s *sqliteStore) MarkValidatorVerdictCommented(ctx context.Context, key ValidatorVerdictKey, at time.Time) error {
 	projectID := strings.TrimSpace(key.ProjectID)
 	if projectID == "" {

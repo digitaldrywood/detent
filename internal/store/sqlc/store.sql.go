@@ -1813,6 +1813,60 @@ func (q *Queries) ListRecentSchedulerDecisions(ctx context.Context, arg ListRece
 	return items, nil
 }
 
+const listValidatorVerdicts = `-- name: ListValidatorVerdicts :many
+SELECT id, project_id, issue_id, head_sha, identifier, issue_url, pr_number, submitted, verdict, score, summary, findings_json, commented, recorded_at, updated_at
+FROM validator_verdicts
+WHERE (?1 = '' OR project_id = ?1)
+  AND (?2 IS NULL OR updated_at >= ?2)
+  AND (?3 IS NULL OR updated_at < ?3)
+ORDER BY updated_at DESC, id DESC
+`
+
+type ListValidatorVerdictsParams struct {
+	FilterProjectID interface{} `json:"filter_project_id"`
+	FromTime        interface{} `json:"from_time"`
+	ToTime          interface{} `json:"to_time"`
+}
+
+func (q *Queries) ListValidatorVerdicts(ctx context.Context, arg ListValidatorVerdictsParams) ([]ValidatorVerdict, error) {
+	rows, err := q.db.QueryContext(ctx, listValidatorVerdicts, arg.FilterProjectID, arg.FromTime, arg.ToTime)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ValidatorVerdict{}
+	for rows.Next() {
+		var i ValidatorVerdict
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.IssueID,
+			&i.HeadSha,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.PrNumber,
+			&i.Submitted,
+			&i.Verdict,
+			&i.Score,
+			&i.Summary,
+			&i.FindingsJson,
+			&i.Commented,
+			&i.RecordedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markValidatorVerdictCommented = `-- name: MarkValidatorVerdictCommented :execrows
 UPDATE validator_verdicts
 SET commented = 1,

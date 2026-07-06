@@ -24,6 +24,7 @@ func appShellNavItems(data DashboardShellData) []appNavItem {
 	return []appNavItem{
 		{ID: "board", Label: "Board", Href: "/", Active: active == "board"},
 		{ID: "fleet", Label: "Fleet", Href: "/fleet", Active: active == "fleet"},
+		{ID: "library", Label: "Library", Href: "/library", Active: active == "library"},
 		{ID: "reports", Label: "Reports", Href: "/reports", Active: active == "reports"},
 		{ID: "analytics", Label: "Analytics", Href: "/analytics", Active: active == "analytics"},
 		{ID: "health", Label: "Health", Href: "/health/ui", Active: active == "health", HealthDot: true},
@@ -45,7 +46,7 @@ func appShellActiveNav(data DashboardShellData) string {
 		return "board"
 	case "fleet":
 		return "fleet"
-	case "reports", "analytics", "health", "api-keys", "settings":
+	case "library", "reports", "analytics", "health", "api-keys", "settings":
 		return nav
 	}
 	return ""
