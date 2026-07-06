@@ -410,7 +410,13 @@ func cloneIssueComments(comments []connector.IssueComment) []connector.IssueComm
 	if comments == nil {
 		return nil
 	}
-	return append([]connector.IssueComment{}, comments...)
+	out := make([]connector.IssueComment, len(comments))
+	for index, comment := range comments {
+		out[index] = comment
+		out[index].CreatedAt = timePointerValue(comment.CreatedAt)
+		out[index].UpdatedAt = timePointerValue(comment.UpdatedAt)
+	}
+	return out
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

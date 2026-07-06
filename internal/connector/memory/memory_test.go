@@ -304,6 +304,42 @@ func TestConnectorCapturesIssueAndPullRequestComments(t *testing.T) {
 	}
 }
 
+func TestConnectorStatefulCommentUsesSyntheticMetadata(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 6, 12, 30, 0, 0, time.UTC)
+	c := New(Config{
+		Issues:   []connector.Issue{{ID: "issue-1", State: "Todo"}},
+		Stateful: true,
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	if err := c.CreateComment(context.Background(), "issue-1", "issue comment"); err != nil {
+		t.Fatalf("CreateComment() error = %v", err)
+	}
+	got, err := c.FetchIssueComments(context.Background(), connector.Issue{ID: "issue-1"})
+	if err != nil {
+		t.Fatalf("FetchIssueComments() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssueComments() len = %d, want 1", len(got))
+	}
+	comment := got[0]
+	if comment.ID != "memory:id:issue-1:1" ||
+		comment.Backend != connector.BackendMemory.String() ||
+		comment.Body != "issue comment" ||
+		comment.AuthorLogin != "memory" ||
+		!comment.Local ||
+		comment.TargetType != connector.IssueCommentTargetIssue {
+		t.Fatalf("FetchIssueComments()[0] = %#v, want synthetic memory metadata", comment)
+	}
+	if comment.CreatedAt == nil || !comment.CreatedAt.Equal(now) {
+		t.Fatalf("CreatedAt = %v, want %v", comment.CreatedAt, now)
+	}
+}
+
 func TestConnectorMergePullRequestUpdatesStatefulFixture(t *testing.T) {
 	t.Parallel()
 

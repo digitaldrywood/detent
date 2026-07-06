@@ -253,6 +253,8 @@ func TestStateSnapshotCarriesIssueComments(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
+	commentCreatedAt := now.Add(-30 * time.Second)
+	commentUpdatedAt := now.Add(-15 * time.Second)
 	state := newState(normalizeConfig(Config{}))
 	state.Running["issue-1"] = Running{
 		Issue: connector.Issue{
@@ -260,8 +262,14 @@ func TestStateSnapshotCarriesIssueComments(t *testing.T) {
 			Identifier: "digitaldrywood/detent#1",
 			State:      "In Progress",
 			Comments: []connector.IssueComment{{
-				Body: "## Codex Workpad\n\n### Status\nIn Progress",
-				URL:  "https://github.test/comment/1",
+				ID:          "IC_1",
+				Backend:     connector.BackendGitHub.String(),
+				Body:        "## Codex Workpad\n\n### Status\nIn Progress",
+				URL:         "https://github.test/comment/1",
+				AuthorLogin: "detent-bot",
+				CreatedAt:   &commentCreatedAt,
+				UpdatedAt:   &commentUpdatedAt,
+				TargetType:  connector.IssueCommentTargetIssue,
 			}},
 		},
 		StartedAt: now.Add(-time.Minute),
@@ -276,8 +284,19 @@ func TestStateSnapshotCarriesIssueComments(t *testing.T) {
 	if len(comments) != 1 {
 		t.Fatalf("Running comments = %#v, want one comment", comments)
 	}
-	if comments[0].Body != "## Codex Workpad\n\n### Status\nIn Progress" || comments[0].URL != "https://github.test/comment/1" {
-		t.Fatalf("Running comment = %#v, want Workpad body and URL", comments[0])
+	if comments[0].ID != "IC_1" ||
+		comments[0].Backend != connector.BackendGitHub.String() ||
+		comments[0].Body != "## Codex Workpad\n\n### Status\nIn Progress" ||
+		comments[0].URL != "https://github.test/comment/1" ||
+		comments[0].AuthorLogin != "detent-bot" ||
+		comments[0].TargetType != connector.IssueCommentTargetIssue {
+		t.Fatalf("Running comment = %#v, want normalized Workpad metadata", comments[0])
+	}
+	if comments[0].CreatedAt == nil || !comments[0].CreatedAt.Equal(commentCreatedAt) {
+		t.Fatalf("Running comment CreatedAt = %v, want %v", comments[0].CreatedAt, commentCreatedAt)
+	}
+	if comments[0].UpdatedAt == nil || !comments[0].UpdatedAt.Equal(commentUpdatedAt) {
+		t.Fatalf("Running comment UpdatedAt = %v, want %v", comments[0].UpdatedAt, commentUpdatedAt)
 	}
 }
 

@@ -662,7 +662,7 @@ func cloneKanbanIssue(issue telemetry.Issue) telemetry.Issue {
 	out := issue
 	out.Labels = append([]string(nil), issue.Labels...)
 	out.Assignees = append([]string(nil), issue.Assignees...)
-	out.Comments = append([]telemetry.IssueComment(nil), issue.Comments...)
+	out.Comments = cloneKanbanIssueComments(issue.Comments)
 	out.BlockedBy = append([]telemetry.BlockedRef(nil), issue.BlockedBy...)
 	out.Metadata = maps.Clone(issue.Metadata)
 	out.PullRequest = cloneKanbanPullRequest(issue.PullRequest)
@@ -674,6 +674,19 @@ func cloneKanbanIssue(issue telemetry.Issue) telemetry.Issue {
 	out.UpdatedAt = cloneKanbanTimePointer(issue.UpdatedAt)
 	out.StageUpdatedAt = cloneKanbanTimePointer(issue.StageUpdatedAt)
 	out.CurrentLaneEnteredAt = cloneKanbanTimePointer(issue.CurrentLaneEnteredAt)
+	return out
+}
+
+func cloneKanbanIssueComments(comments []telemetry.IssueComment) []telemetry.IssueComment {
+	if comments == nil {
+		return nil
+	}
+	out := make([]telemetry.IssueComment, len(comments))
+	for index, comment := range comments {
+		out[index] = comment
+		out[index].CreatedAt = cloneKanbanTimePointer(comment.CreatedAt)
+		out[index].UpdatedAt = cloneKanbanTimePointer(comment.UpdatedAt)
+	}
 	return out
 }
 

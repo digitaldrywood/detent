@@ -176,7 +176,7 @@ func (c *Connector) FetchIssueStatesByIdentifiers(ctx context.Context, identifie
 
 func (c *Connector) FetchIssueComments(ctx context.Context, issue connector.Issue) ([]connector.IssueComment, error) {
 	rows, err := c.db.QueryContext(ctx, `
-select body from detent_work_item_events
+select id, body, created_at from detent_work_item_events
 where project_id = ? and item_id = ? and event_kind = ?
 order by id asc`, c.projectID, strings.TrimSpace(issue.ID), eventKindComment)
 	if err != nil {
@@ -186,11 +186,21 @@ order by id asc`, c.projectID, strings.TrimSpace(issue.ID), eventKindComment)
 
 	comments := []connector.IssueComment{}
 	for rows.Next() {
+		var id int64
 		var body string
-		if err := rows.Scan(&body); err != nil {
+		var createdAt string
+		if err := rows.Scan(&id, &body, &createdAt); err != nil {
 			return nil, err
 		}
-		comments = append(comments, connector.IssueComment{Body: body})
+		comments = append(comments, connector.IssueComment{
+			ID:          strconv.FormatInt(id, 10),
+			Backend:     connector.BackendLocalSQLite.String(),
+			Body:        body,
+			AuthorLogin: "detent",
+			CreatedAt:   parseTimePointer(createdAt),
+			Local:       true,
+			TargetType:  connector.IssueCommentTargetIssue,
+		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

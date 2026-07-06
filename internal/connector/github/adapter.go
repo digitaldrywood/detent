@@ -708,8 +708,12 @@ type label struct {
 }
 
 type issueComment struct {
-	Body string `json:"body"`
-	URL  string `json:"url"`
+	ID        string  `json:"id"`
+	Body      string  `json:"body"`
+	URL       string  `json:"url"`
+	Author    *actor  `json:"author"`
+	CreatedAt *string `json:"createdAt"`
+	UpdatedAt *string `json:"updatedAt"`
 }
 
 type pullRequest struct {
@@ -888,8 +892,13 @@ type checkRunTelemetrySummary struct {
 }
 
 type restComment struct {
-	Body    string `json:"body"`
-	HTMLURL string `json:"html_url"`
+	ID        int64      `json:"id"`
+	NodeID    string     `json:"node_id"`
+	Body      string     `json:"body"`
+	HTMLURL   string     `json:"html_url"`
+	User      *actor     `json:"user"`
+	CreatedAt *time.Time `json:"created_at"`
+	UpdatedAt *time.Time `json:"updated_at"`
 }
 
 type repository struct {
@@ -1701,8 +1710,12 @@ func (c *Connector) fetchIssueComments(ctx context.Context, ref issueRef) ([]iss
 	comments := make([]issueComment, 0, len(response))
 	for _, comment := range response {
 		comments = append(comments, issueComment{
-			Body: comment.Body,
-			URL:  comment.HTMLURL,
+			ID:        restCommentID(comment),
+			Body:      comment.Body,
+			URL:       comment.HTMLURL,
+			Author:    comment.User,
+			CreatedAt: restTimeString(comment.CreatedAt),
+			UpdatedAt: restTimeString(comment.UpdatedAt),
 		})
 	}
 	return comments, nil
@@ -1723,10 +1736,7 @@ func (c *Connector) FetchIssueComments(ctx context.Context, issue connector.Issu
 	}
 	out := make([]connector.IssueComment, 0, len(comments))
 	for _, comment := range comments {
-		out = append(out, connector.IssueComment{
-			Body: comment.Body,
-			URL:  comment.URL,
-		})
+		out = append(out, connectorIssueComment(comment))
 	}
 	return out, nil
 }
@@ -3375,12 +3385,22 @@ func connectorIssueComments(comments []issueComment) []connector.IssueComment {
 	}
 	out := make([]connector.IssueComment, 0, len(comments))
 	for _, comment := range comments {
-		out = append(out, connector.IssueComment{
-			Body: comment.Body,
-			URL:  comment.URL,
-		})
+		out = append(out, connectorIssueComment(comment))
 	}
 	return out
+}
+
+func connectorIssueComment(comment issueComment) connector.IssueComment {
+	return connector.IssueComment{
+		ID:          strings.TrimSpace(comment.ID),
+		Backend:     connector.BackendGitHub.String(),
+		Body:        comment.Body,
+		URL:         comment.URL,
+		AuthorLogin: actorLogin(comment.Author),
+		CreatedAt:   parseGitHubTime(comment.CreatedAt),
+		UpdatedAt:   parseGitHubTime(comment.UpdatedAt),
+		TargetType:  connector.IssueCommentTargetIssue,
+	}
 }
 
 func (c *Connector) linkedChildIssues(issue githubIssueNode, fallbackRepo string) []connector.BlockedRef {
@@ -4247,6 +4267,16 @@ func restTimeString(value *time.Time) *string {
 	}
 	formatted := value.UTC().Format(time.RFC3339)
 	return &formatted
+}
+
+func restCommentID(comment restComment) string {
+	if id := strings.TrimSpace(comment.NodeID); id != "" {
+		return id
+	}
+	if comment.ID > 0 {
+		return strconv.FormatInt(comment.ID, 10)
+	}
+	return ""
 }
 
 func restAssigneesConnection(values []restAssignee) nodeConnection[assignee] {

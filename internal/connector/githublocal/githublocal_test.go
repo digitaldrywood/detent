@@ -221,6 +221,75 @@ func TestConnectorFetchIssueStatesByIdentifiersReturnsLocalOnlyIssues(t *testing
 	}
 }
 
+func TestConnectorFetchIssueCommentsMergesRemoteAndLocalInCreatedOrder(t *testing.T) {
+	t.Parallel()
+
+	server := newGitHubLocalTestServer(t)
+	localCreatedAt := time.Date(2026, 7, 2, 12, 3, 0, 0, time.UTC)
+	conn, err := New(Config{
+		GitHub: githubconnector.Config{
+			Endpoint: server.URL + "/graphql",
+			APIKey:   "ghp_test",
+		},
+		Local: local.Config{
+			Path: filepath.Join(t.TempDir(), "comments.db"),
+			Issues: []connector.Issue{{
+				ID:         "github:123:779",
+				Identifier: "digitaldrywood/detent#779",
+				Title:      "Local issue",
+				State:      "Todo",
+				Metadata: map[string]string{
+					local.MetadataGitHubNodeID:       "I_kwDOtest779",
+					local.MetadataGitHubRepositoryID: "123",
+					local.MetadataGitHubIssueNumber:  "779",
+				},
+				AssignedToWorker: true,
+			}},
+			Now: func() time.Time {
+				return localCreatedAt
+			},
+		},
+		Repository:     "digitaldrywood/detent",
+		ActiveStates:   []string{"Todo", "In Progress"},
+		TerminalStates: []string{"Done"},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	if err := conn.CreateComment(context.Background(), "github:123:779", "local note"); err != nil {
+		t.Fatalf("CreateComment() error = %v", err)
+	}
+	got, err := conn.FetchIssueComments(context.Background(), connector.Issue{
+		ID:         "github:123:779",
+		Identifier: "digitaldrywood/detent#779",
+	})
+	if err != nil {
+		t.Fatalf("FetchIssueComments() error = %v", err)
+	}
+
+	wantBodies := []string{"remote earlier", "local note", "remote later"}
+	if len(got) != len(wantBodies) {
+		t.Fatalf("FetchIssueComments() len = %d, want %d: %#v", len(got), len(wantBodies), got)
+	}
+	for index, want := range wantBodies {
+		if got[index].Body != want {
+			t.Fatalf("comment[%d].Body = %q, want %q; comments = %#v", index, got[index].Body, want, got)
+		}
+	}
+	if got[0].Local || !got[1].Local || got[2].Local {
+		t.Fatalf("comment locality = [%v %v %v], want remote/local/remote", got[0].Local, got[1].Local, got[2].Local)
+	}
+	if got[1].Backend != connector.BackendLocalSQLite.String() || got[0].Backend != connector.BackendGitHub.String() {
+		t.Fatalf("comment backends = %#v, want GitHub and local SQLite metadata", got)
+	}
+}
+
 type githubLocalTestRequest struct {
 	Method string
 	Path   string
@@ -271,6 +340,27 @@ func (s *githubLocalTestServer) handle(w http.ResponseWriter, r *http.Request) {
 			"user":         map[string]any{"login": "octocat"},
 			"assignees":    []map[string]any{{"node_id": "U_1", "login": "detent-bot"}},
 			"labels":       []map[string]string{{"name": "enhancement"}},
+		})
+	case r.Method == http.MethodGet && r.URL.Path == "/repos/digitaldrywood/detent/issues/779/comments":
+		writeGitHubLocalJSON(s.t, w, []map[string]any{
+			{
+				"id":         1001,
+				"node_id":    "IC_remote_early",
+				"body":       "remote earlier",
+				"html_url":   "https://github.com/digitaldrywood/detent/issues/779#issuecomment-1001",
+				"created_at": "2026-07-02T12:00:00Z",
+				"updated_at": "2026-07-02T12:00:00Z",
+				"user":       map[string]any{"login": "octocat"},
+			},
+			{
+				"id":         1002,
+				"node_id":    "IC_remote_late",
+				"body":       "remote later",
+				"html_url":   "https://github.com/digitaldrywood/detent/issues/779#issuecomment-1002",
+				"created_at": "2026-07-02T12:05:00Z",
+				"updated_at": "2026-07-02T12:05:00Z",
+				"user":       map[string]any{"login": "octocat"},
+			},
 		})
 	case r.Method == http.MethodGet && r.URL.Path == "/repos/digitaldrywood/detent/pulls":
 		writeGitHubLocalJSON(s.t, w, []map[string]any{})

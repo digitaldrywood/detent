@@ -214,8 +214,16 @@ type Issue struct {
 }
 
 type IssueComment struct {
-	Body string `json:"body,omitempty"`
-	URL  string `json:"url,omitempty"`
+	ID                string     `json:"id,omitempty"`
+	Backend           string     `json:"backend,omitempty"`
+	Body              string     `json:"body,omitempty"`
+	URL               string     `json:"url,omitempty"`
+	AuthorLogin       string     `json:"author_login,omitempty"`
+	AuthorDisplayName string     `json:"author_display_name,omitempty"`
+	CreatedAt         *time.Time `json:"created_at,omitempty"`
+	UpdatedAt         *time.Time `json:"updated_at,omitempty"`
+	Local             bool       `json:"local,omitempty"`
+	TargetType        string     `json:"target_type,omitempty"`
 }
 
 type Deliverable struct {

@@ -413,8 +413,16 @@ func telemetryIssueComments(comments []connector.IssueComment) []telemetry.Issue
 	out := make([]telemetry.IssueComment, 0, len(comments))
 	for _, comment := range comments {
 		out = append(out, telemetry.IssueComment{
-			Body: comment.Body,
-			URL:  comment.URL,
+			ID:                comment.ID,
+			Backend:           comment.Backend,
+			Body:              comment.Body,
+			URL:               comment.URL,
+			AuthorLogin:       comment.AuthorLogin,
+			AuthorDisplayName: comment.AuthorDisplayName,
+			CreatedAt:         cloneTime(comment.CreatedAt),
+			UpdatedAt:         cloneTime(comment.UpdatedAt),
+			Local:             comment.Local,
+			TargetType:        comment.TargetType,
 		})
 	}
 	return out
