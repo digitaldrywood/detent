@@ -280,6 +280,98 @@ func TestAPITokenDoesNotLeakToLogs(t *testing.T) {
 	}
 }
 
+func TestAPITokenAllowsDashboardHTMXWithUICookie(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Pipeline: []telemetry.Issue{{
+			ID:         "I_kw1",
+			Identifier: "digitaldrywood/detent#1",
+			ProjectID:  "detent",
+			Title:      "Dialog card",
+			State:      "Todo",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{
+		GlobalConfig: globalconfig.Config{APIToken: "detent_real_token"},
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	dialogPath := "/api/v1/kanban/move?project_id=detent&issue_id=I_kw1&current_state=Todo&identifier=digitaldrywood%2Fdetent%231&title=Dialog+card"
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, dialogPath, nil)
+	req.Header.Set("HX-Request", "true")
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("dialog without cookie status = %d, want %d; body = %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "detent_real_token") {
+		t.Fatalf("dashboard body leaked API token")
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatalf("dashboard response did not set UI API cookie")
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/state", nil)
+	req.Header.Set("HX-Request", "true")
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("state with UI cookie status = %d, want %d; body = %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, dialogPath, nil)
+	req.Header.Set("HX-Request", "true")
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dialog with UI cookie status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	form := url.Values{
+		"kanban_dialog": {"true"},
+		"project_id":    {"detent"},
+		"issue_id":      {"I_kw1"},
+		"current_state": {"Todo"},
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/kanban/move", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("kanban post with UI cookie status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
 func TestWorkItemAPICreatesLocalSQLiteItem(t *testing.T) {
 	t.Parallel()
 

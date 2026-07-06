@@ -188,6 +188,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		demo:                newDemoScenarioSet(cfg.Demo),
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
+	e.Use(server.uiAPICookie)
 	server.registerRoutes()
 	server.warnIfAPITokenMissingOnNonLoopback()
 
@@ -248,22 +249,24 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/onboarding/write", s.onboardingWrite)
 	apiReadAuth := s.apiAuth(false)
 	apiMutateAuth := s.apiAuth(true)
+	apiUIReadAuth := s.apiAuthWithOptions(apiAuthOptions{allowUICookie: true})
+	apiUIMutateAuth := s.apiAuthWithOptions(apiAuthOptions{mutating: true, allowUICookie: true})
 	s.echo.GET("/api/v1/state", s.apiState, apiReadAuth)
 	s.echo.GET("/api/v1/demo/scenarios", s.apiDemoScenarios, apiReadAuth)
 	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries, apiReadAuth)
 	s.echo.POST("/api/v1/projects/:project_id/work-items", s.apiCreateWorkItem, apiMutateAuth)
 	s.echo.GET("/api/v1/projects/*", s.apiProject, apiReadAuth)
-	s.echo.POST("/api/v1/refresh", s.apiRefresh, apiMutateAuth)
+	s.echo.POST("/api/v1/refresh", s.apiRefresh, apiUIMutateAuth)
 	s.echo.POST("/api/v1/webhooks/github", s.githubWebhook)
-	s.echo.GET("/api/v1/refresh", s.methodNotAllowed, apiReadAuth)
+	s.echo.GET("/api/v1/refresh", s.methodNotAllowed, apiUIReadAuth)
 	s.echo.GET("/api/v1/usage", s.apiUsage, apiReadAuth)
 	s.echo.GET("/api/v1/workflow/timeline", s.apiWorkflowTimeline, apiReadAuth)
-	s.echo.GET("/api/v1/board/card", s.apiBoardCard, apiReadAuth)
-	s.echo.GET("/api/v1/kanban/move", s.apiKanbanMoveDialog, apiReadAuth)
-	s.echo.POST("/api/v1/kanban/move", s.apiKanbanMove, apiMutateAuth)
-	s.echo.POST("/api/v1/kanban/remove", s.apiKanbanRemove, apiMutateAuth)
-	s.echo.GET("/api/v1/kanban/comment", s.apiKanbanCommentDialog, apiReadAuth)
-	s.echo.POST("/api/v1/kanban/comment", s.apiKanbanComment, apiMutateAuth)
+	s.echo.GET("/api/v1/board/card", s.apiBoardCard, apiUIReadAuth)
+	s.echo.GET("/api/v1/kanban/move", s.apiKanbanMoveDialog, apiUIReadAuth)
+	s.echo.POST("/api/v1/kanban/move", s.apiKanbanMove, apiUIMutateAuth)
+	s.echo.POST("/api/v1/kanban/remove", s.apiKanbanRemove, apiUIMutateAuth)
+	s.echo.GET("/api/v1/kanban/comment", s.apiKanbanCommentDialog, apiUIReadAuth)
+	s.echo.POST("/api/v1/kanban/comment", s.apiKanbanComment, apiUIMutateAuth)
 	s.echo.GET("/api/v1/*", s.apiIssue, apiReadAuth)
 }
 
