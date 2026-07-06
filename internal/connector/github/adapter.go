@@ -1753,6 +1753,43 @@ func (c *Connector) CreateComment(ctx context.Context, issueID string, body stri
 	return nil
 }
 
+func (c *Connector) CreateIssue(ctx context.Context, draft connector.IssueDraft) (connector.Issue, error) {
+	if !validPullRequestRepo(c.repository) {
+		return connector.Issue{}, ErrMissingRepository
+	}
+	title := strings.TrimSpace(draft.Title)
+	if title == "" {
+		return connector.Issue{}, ErrStatusUpdateFailed
+	}
+
+	body := strings.TrimSpace(draft.Body)
+	labels := normalizedIssueDraftLabels(draft.Labels)
+	payload := map[string]any{
+		"title": title,
+		"body":  body,
+	}
+	if len(labels) > 0 {
+		payload["labels"] = labels
+	}
+
+	var response restIssue
+	if err := c.client.REST(ctx, http.MethodPost, restRepositoryIssueCreatePath(c.repository), payload, &response); err != nil {
+		return connector.Issue{}, fmt.Errorf("create github issue: %w", err)
+	}
+	if strings.TrimSpace(response.NodeID) == "" || response.Number <= 0 {
+		return connector.Issue{}, ErrStatusUpdateFailed
+	}
+
+	ref := issueRef{Owner: c.repository.Owner, Name: c.repository.Name, Number: response.Number}
+	node := githubIssueNodeFromREST(ref, response)
+	c.cacheIssueRef(node)
+	status := c.labelStatusFromLabels(node.Labels)
+	if status == "" {
+		status = c.githubIssueStateToDetentState(node.State)
+	}
+	return c.buildLabelIssue(node, status), nil
+}
+
 func (c *Connector) CreatePullRequestComment(ctx context.Context, repository string, number int, body string) error {
 	owner, name, ok := splitRepositoryName(repository)
 	if !ok || number <= 0 {
@@ -1771,6 +1808,24 @@ func (c *Connector) CreatePullRequestComment(ctx context.Context, repository str
 	}
 
 	return nil
+}
+
+func normalizedIssueDraftLabels(labels []string) []string {
+	out := make([]string, 0, len(labels))
+	seen := map[string]struct{}{}
+	for _, label := range labels {
+		label = strings.TrimSpace(label)
+		if label == "" {
+			continue
+		}
+		key := strings.ToLower(label)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, label)
+	}
+	return out
 }
 
 func (c *Connector) SetIssueField(ctx context.Context, issueID string, fieldID int, value string) error {

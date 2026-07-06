@@ -75,6 +75,37 @@ func TestAppendStoresNewestFirstAndCapsEntries(t *testing.T) {
 	}
 }
 
+func TestFailureKindPatternsGroupsRepeatedKinds(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), ".detent", "lessons.md")
+	entries := []Entry{
+		{IssueNumber: "1", Title: "First ceiling", FailureKind: "token_ceiling_exceeded", Symptom: "hit ceiling"},
+		{IssueNumber: "2", Title: "Transient CI", FailureKind: "transient_ci", Symptom: "flake"},
+		{IssueNumber: "3", Title: "Second ceiling", FailureKind: "token_ceiling_exceeded", Symptom: "hit ceiling again"},
+	}
+	for index, entry := range entries {
+		if err := Append(path, entry, AppendOptions{Date: time.Date(2026, 6, 1+index, 0, 0, 0, 0, time.UTC)}); err != nil {
+			t.Fatalf("Append(%d) error = %v", index, err)
+		}
+	}
+
+	patterns, err := FailureKindPatterns(path, 2)
+	if err != nil {
+		t.Fatalf("FailureKindPatterns() error = %v", err)
+	}
+	if len(patterns) != 1 {
+		t.Fatalf("patterns len = %d, want 1: %#v", len(patterns), patterns)
+	}
+	pattern := patterns[0]
+	if pattern.FailureKind != "token_ceiling_exceeded" || pattern.Count != 2 {
+		t.Fatalf("pattern = %#v, want token ceiling count 2", pattern)
+	}
+	if len(pattern.Examples) != 2 || !strings.Contains(pattern.Examples[0], "Second ceiling") || !strings.Contains(pattern.Examples[1], "First ceiling") {
+		t.Fatalf("examples = %#v, want newest token-ceiling lessons", pattern.Examples)
+	}
+}
+
 func TestAppendRendersFallbacksAndEscapesTitleQuotes(t *testing.T) {
 	t.Parallel()
 

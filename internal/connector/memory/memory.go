@@ -4,6 +4,7 @@ import (
 	"context"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 const (
 	EventKindComment            EventKind = "memory_tracker_comment"
+	EventKindIssueCreate        EventKind = "memory_tracker_issue_create"
 	EventKindPullRequestComment EventKind = "memory_tracker_pull_request_comment"
 	EventKindStateUpdate        EventKind = "memory_tracker_state_update"
 	EventKindAssigneeUpdate     EventKind = "memory_tracker_assignee_update"
@@ -61,6 +63,7 @@ var _ connector.InstanceIdentifier = (*Connector)(nil)
 var _ connector.IssueChildrenResolver = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
 var _ connector.IssueCommentReader = (*Connector)(nil)
+var _ connector.IssueCreator = (*Connector)(nil)
 var _ connector.IssueParentResolver = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
 var _ connector.ProjectRemover = (*Connector)(nil)
@@ -233,6 +236,27 @@ func (c *Connector) CreateComment(_ context.Context, issueID string, body string
 	})
 	c.send(Event{Kind: EventKindComment, IssueID: issueID, Body: body})
 	return nil
+}
+
+func (c *Connector) CreateIssue(_ context.Context, draft connector.IssueDraft) (connector.Issue, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := c.now().UTC()
+	issueID := "issue-" + strconv.Itoa(len(c.issues)+1)
+	issue := connector.NewIssue()
+	issue.ID = issueID
+	issue.Identifier = issueID
+	issue.Title = strings.TrimSpace(draft.Title)
+	issue.Description = strings.TrimSpace(draft.Body)
+	issue.State = "Backlog"
+	issue.Labels = append([]string(nil), draft.Labels...)
+	issue.CreatedAt = &now
+	issue.UpdatedAt = &now
+	issue.StageUpdatedAt = &now
+	c.issues = append(c.issues, issue)
+	c.send(Event{Kind: EventKindIssueCreate, IssueID: issueID, Body: issue.Description})
+	return cloneIssue(issue), nil
 }
 
 func (c *Connector) CreatePullRequestComment(_ context.Context, repository string, number int, body string) error {
