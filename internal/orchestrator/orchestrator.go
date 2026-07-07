@@ -3061,12 +3061,22 @@ func duplicatePullRequestWork(issue connector.Issue) bool {
 	}
 	switch normalizePullRequestState(issue.PullRequest.State) {
 	case "merged":
-		return true
+		return !staleMergedPullRequestHasFailedCIEvidence(issue.PullRequest, staleMergedPullRequestSummaryFromIssue(issue))
 	case "open":
 		return normalizeState(issue.State) == "todo"
 	default:
 		return false
 	}
+}
+
+func mergedPullRequestReconciliationPending(issue connector.Issue, cfg Config) bool {
+	if issue.PullRequest == nil || normalizePullRequestState(issue.PullRequest.State) != "merged" {
+		return false
+	}
+	summary := staleMergedPullRequestSummaryFromIssue(issue)
+	decision := staleMergedPullRequestDecision(issue, summary)
+	targetState := staleMergedPullRequestTargetState(decision, cfg.AutoPromote, cfg.TerminalStates)
+	return targetState != "" && normalizeState(targetState) != normalizeState(issue.State)
 }
 
 func continuationDispatch(issue connector.Issue) bool {

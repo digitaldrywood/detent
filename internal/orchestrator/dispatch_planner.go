@@ -397,6 +397,7 @@ const (
 	dispatchSkipInactiveState            = "inactive_state"
 	dispatchSkipTerminalState            = "terminal_state"
 	dispatchSkipPullRequestHydration     = "pull_request_hydration_unavailable"
+	dispatchSkipMergedPullRequest        = "merged_pull_request_reconciliation_pending"
 	dispatchSkipDuplicatePullRequest     = "duplicate_pull_request_work"
 	dispatchSkipUnauthorized             = "unauthorized"
 	dispatchSkipBlockedByDependency      = "blocked_by_dependency"
@@ -429,6 +430,9 @@ func (p dispatchPlanner) dispatchableIssueDecision(
 	}
 	if pullRequestHydrationBlocksDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipPullRequestHydration}
+	}
+	if mergedPullRequestReconciliationPending(issue, p.cfg) {
+		return dispatchableDecision{reason: dispatchSkipMergedPullRequest}
 	}
 	if duplicatePullRequestWork(issue) {
 		return dispatchableDecision{reason: dispatchSkipDuplicatePullRequest}
