@@ -284,6 +284,9 @@ func formatRunningRowsWithLayout(running []telemetry.Running, layout runningTabl
 	lines := make([]string, 0, len(rows))
 	for _, row := range rows {
 		event := row.LastMessage
+		if row.LastMessageTruncation != nil && row.LastMessageTruncation.Truncated && strings.TrimSpace(event) != "" {
+			event += " [truncated]"
+		}
 		if strings.TrimSpace(event) == "" {
 			event = row.LastEvent
 		}

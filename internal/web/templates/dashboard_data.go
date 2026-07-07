@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	webchart "github.com/digitaldrywood/detent/internal/web/chart"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
@@ -1859,7 +1860,7 @@ func runningRuntimeSeconds(row telemetry.Running, generatedAt time.Time) float64
 
 func lastCodexUpdate(row telemetry.Running) string {
 	if row.LastMessage != "" {
-		return row.LastMessage
+		return displayOutputText(row.LastMessage, row.LastMessageTruncation)
 	}
 	if row.LastEvent != "" {
 		return row.LastEvent
@@ -1924,10 +1925,17 @@ func runningActivityRows(row telemetry.Running) []runningActivityRow {
 		rows = append(rows, runningActivityRow{
 			At:      activityTimeLabel(event.At),
 			Event:   activityValue(event.Event, "event"),
-			Message: activityValue(event.Message, "No message recorded."),
+			Message: displayOutputText(activityValue(event.Message, "No message recorded."), event.Truncation),
 		})
 	}
 	return rows
+}
+
+func displayOutputText(value string, truncation *runtimeoutput.Truncation) string {
+	if strings.TrimSpace(value) == "" || truncation == nil || !truncation.Truncated {
+		return value
+	}
+	return value + " [truncated]"
 }
 
 func activityTimeLabel(at time.Time) string {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -177,23 +178,24 @@ func runningSnapshots(running map[string]Running, claims map[string]Claimed, mer
 		applyMergeTimingSnapshot(&issue, entry.Issue, timing, now)
 		applyClaimSnapshot(&issue, claims[id], now)
 		out = append(out, telemetry.Running{
-			Issue:           issue,
-			WorkerHost:      entry.WorkerHost,
-			ProcessIdentity: entry.ProcessIdentity,
-			WorkspacePath:   entry.WorkspacePath,
-			SessionID:       entry.SessionID,
-			StartedAt:       entry.StartedAt,
-			LastEventAt:     lastEventAt,
-			LastEvent:       entry.LastEvent,
-			LastMessage:     entry.LastMessage,
-			RecentEvents:    cloneActivityEvents(entry.RecentEvents),
-			TurnCount:       entry.TurnCount,
-			RuntimeSeconds:  entry.Tokens.RuntimeSeconds,
-			DiffAdded:       entry.DiffStats.AddedLines,
-			DiffRemoved:     entry.DiffStats.RemovedLines,
-			DiffFiles:       entry.DiffStats.FilesChanged,
-			DiffStatus:      entry.DiffStats.Status,
-			Tokens:          tokensFromTokenTotals(entry.Tokens),
+			Issue:                 issue,
+			WorkerHost:            entry.WorkerHost,
+			ProcessIdentity:       entry.ProcessIdentity,
+			WorkspacePath:         entry.WorkspacePath,
+			SessionID:             entry.SessionID,
+			StartedAt:             entry.StartedAt,
+			LastEventAt:           lastEventAt,
+			LastEvent:             entry.LastEvent,
+			LastMessage:           entry.LastMessage,
+			LastMessageTruncation: runtimeoutput.CloneTruncation(entry.LastMessageTruncation),
+			RecentEvents:          cloneActivityEvents(entry.RecentEvents),
+			TurnCount:             entry.TurnCount,
+			RuntimeSeconds:        entry.Tokens.RuntimeSeconds,
+			DiffAdded:             entry.DiffStats.AddedLines,
+			DiffRemoved:           entry.DiffStats.RemovedLines,
+			DiffFiles:             entry.DiffStats.FilesChanged,
+			DiffStatus:            entry.DiffStats.Status,
+			Tokens:                tokensFromTokenTotals(entry.Tokens),
 		})
 	}
 	return out

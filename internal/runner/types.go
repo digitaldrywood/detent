@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -199,17 +200,18 @@ type RunResult struct {
 type UsageUpdateHandler func(UsageUpdate) error
 
 type UsageUpdate struct {
-	SessionID       string
-	ProcessIdentity string
-	WorkspacePath   string
-	TurnCount       int
-	LastEventAt     time.Time
-	LastEvent       string
-	LastMessage     string
-	RecentEvents    []telemetry.ActivityEvent
-	Tokens          TokenTotals
-	DiffStats       DiffStats
-	RateLimits      *telemetry.RateLimits
+	SessionID             string
+	ProcessIdentity       string
+	WorkspacePath         string
+	TurnCount             int
+	LastEventAt           time.Time
+	LastEvent             string
+	LastMessage           string
+	LastMessageTruncation *runtimeoutput.Truncation
+	RecentEvents          []telemetry.ActivityEvent
+	Tokens                TokenTotals
+	DiffStats             DiffStats
+	RateLimits            *telemetry.RateLimits
 }
 
 type BudgetRefusal struct {

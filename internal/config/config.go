@@ -188,24 +188,25 @@ type Worker struct {
 }
 
 type Agent struct {
-	MaxConcurrentAgents          int            `yaml:"max_concurrent_agents"`
-	MaxTurns                     int            `yaml:"max_turns"`
-	MaxRetryBackoffMS            int            `yaml:"max_retry_backoff_ms"`
-	MaxSessionTokens             int64          `yaml:"max_session_tokens"`
-	MaxSessionContextMultiplier  float64        `yaml:"max_session_context_multiplier"`
-	MaxSessionTokenOverrideLabel string         `yaml:"max_session_token_override_label"`
-	MaxSessionTokenOverrideField string         `yaml:"max_session_token_override_field"`
-	ExperimentalThreadResume     bool           `yaml:"experimental_thread_resume"`
-	Shutdown                     Shutdown       `yaml:"shutdown"`
-	MaxConcurrentAgentsByState   map[string]int `yaml:"max_concurrent_agents_by_state"`
-	DispatchPriorityByState      []string       `yaml:"dispatch_priority_by_state"`
-	DispatchPriorityByLabel      []string       `yaml:"dispatch_priority_by_label"`
-	MergeFastPath                MergeFastPath  `yaml:"merge_fast_path"`
-	AutoPromote                  AutoPromote    `yaml:"auto_promote"`
-	Budget                       Budget         `yaml:"budget"`
-	Lessons                      Lessons        `yaml:"lessons"`
-	Knowledge                    Knowledge      `yaml:"knowledge"`
-	Skills                       Skills         `yaml:"skills"`
+	MaxConcurrentAgents          int              `yaml:"max_concurrent_agents"`
+	MaxTurns                     int              `yaml:"max_turns"`
+	MaxRetryBackoffMS            int              `yaml:"max_retry_backoff_ms"`
+	MaxSessionTokens             int64            `yaml:"max_session_tokens"`
+	MaxSessionContextMultiplier  float64          `yaml:"max_session_context_multiplier"`
+	MaxSessionTokenOverrideLabel string           `yaml:"max_session_token_override_label"`
+	MaxSessionTokenOverrideField string           `yaml:"max_session_token_override_field"`
+	ExperimentalThreadResume     bool             `yaml:"experimental_thread_resume"`
+	Shutdown                     Shutdown         `yaml:"shutdown"`
+	MaxConcurrentAgentsByState   map[string]int   `yaml:"max_concurrent_agents_by_state"`
+	DispatchPriorityByState      []string         `yaml:"dispatch_priority_by_state"`
+	DispatchPriorityByLabel      []string         `yaml:"dispatch_priority_by_label"`
+	MergeFastPath                MergeFastPath    `yaml:"merge_fast_path"`
+	AutoPromote                  AutoPromote      `yaml:"auto_promote"`
+	OutputTruncation             OutputTruncation `yaml:"output_truncation"`
+	Budget                       Budget           `yaml:"budget"`
+	Lessons                      Lessons          `yaml:"lessons"`
+	Knowledge                    Knowledge        `yaml:"knowledge"`
+	Skills                       Skills           `yaml:"skills"`
 }
 
 type Shutdown struct {
@@ -279,6 +280,10 @@ type AutoPromote struct {
 	PassState          string   `yaml:"pass_state,omitempty"`
 	ReworkState        string   `yaml:"rework_state,omitempty"`
 	ReworkLimit        int      `yaml:"rework_limit,omitempty"`
+}
+
+type OutputTruncation struct {
+	MaxBytes int `yaml:"max_bytes"`
 }
 
 type Lessons struct {
@@ -1237,6 +1242,7 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	validateStateList(prefix+".dispatch_priority_by_state", a.DispatchPriorityByState, problems)
 	validateLabelList(prefix+".dispatch_priority_by_label", a.DispatchPriorityByLabel, problems)
 	a.AutoPromote.validate(prefix+".auto_promote", problems)
+	a.OutputTruncation.validate(prefix+".output_truncation", problems)
 	a.Budget.validate(prefix+".budget", problems)
 	a.Lessons.validate(prefix+".lessons", problems)
 	a.Knowledge.validate(prefix+".knowledge", problems)
@@ -1449,6 +1455,12 @@ func (a *AutoPromote) validate(prefix string, problems *[]string) {
 	}
 	if a.ReworkLimit < 0 {
 		*problems = append(*problems, prefix+".rework_limit must be greater than or equal to 0")
+	}
+}
+
+func (o OutputTruncation) validate(prefix string, problems *[]string) {
+	if o.MaxBytes < 0 {
+		*problems = append(*problems, prefix+".max_bytes must be greater than or equal to 0")
 	}
 }
 

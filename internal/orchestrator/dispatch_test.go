@@ -35,6 +35,7 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Agent.AutoPromote.AllowedIssueLabels = []string{" Docs ", "docs", "Chore"}
 	cfg.Agent.AutoPromote.ReworkLimit = 2
 	cfg.Agent.MergeFastPath.Enabled = true
+	cfg.Agent.OutputTruncation.MaxBytes = 4096
 	cfg.Identity.Name = "release-captain"
 	cfg.Identity.GitHubLogin = "detent-bot"
 	cfg.Tracker.Authorization = selector.Selector{
@@ -82,6 +83,9 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if !got.MergeFastPathEnabled {
 		t.Fatal("MergeFastPathEnabled = false, want true")
+	}
+	if got.OutputTruncationMaxBytes != 4096 {
+		t.Fatalf("OutputTruncationMaxBytes = %d, want 4096", got.OutputTruncationMaxBytes)
 	}
 	if got.SelectorContext.InstanceLogin != "detent-bot" {
 		t.Fatalf("SelectorContext.InstanceLogin = %q, want detent-bot", got.SelectorContext.InstanceLogin)
