@@ -6881,6 +6881,9 @@ func TestServerAPIRoutes(t *testing.T) {
 	dueAt := generatedAt.Add(time.Minute)
 	completedAt := generatedAt.Add(-30 * time.Second)
 	perDay := 50.0
+	runningContextWindow := int64(40)
+	completedContextWindow := int64(600)
+	totalContextWindow := int64(100)
 
 	events := hub.New[telemetry.Snapshot]()
 	if err := events.Publish(telemetry.Snapshot{
@@ -6924,9 +6927,11 @@ func TestServerAPIRoutes(t *testing.T) {
 				DiffFiles:      3,
 				DiffStatus:     "ok",
 				Tokens: telemetry.Tokens{
-					Input:  10,
-					Output: 20,
-					Total:  30,
+					Input:              10,
+					CachedInput:        5,
+					Output:             20,
+					Total:              30,
+					ModelContextWindow: &runningContextWindow,
 				},
 			},
 		},
@@ -6981,9 +6986,11 @@ func TestServerAPIRoutes(t *testing.T) {
 				FinalState:     "Done",
 				Model:          "gpt-5",
 				Tokens: telemetry.Tokens{
-					Input:  100,
-					Output: 200,
-					Total:  300,
+					Input:              100,
+					CachedInput:        25,
+					Output:             200,
+					Total:              300,
+					ModelContextWindow: &completedContextWindow,
 				},
 			},
 		},
@@ -6991,10 +6998,12 @@ func TestServerAPIRoutes(t *testing.T) {
 			Primary: &telemetry.RateLimitBucket{Remaining: 11},
 		},
 		Tokens: telemetry.Tokens{
-			Input:          11,
-			Output:         22,
-			Total:          33,
-			RuntimeSeconds: 44.5,
+			Input:              11,
+			CachedInput:        1,
+			Output:             22,
+			Total:              33,
+			ModelContextWindow: &totalContextWindow,
+			RuntimeSeconds:     44.5,
 		},
 		Throughput: telemetry.TokenThroughput{
 			TokensPerSecond: 7.5,
@@ -7108,6 +7117,13 @@ func TestServerAPIRoutes(t *testing.T) {
 	if runningTokens["input_tokens"] != float64(10) || runningTokens["output_tokens"] != float64(20) || runningTokens["total_tokens"] != float64(30) {
 		t.Fatalf("running.tokens = %#v, want live token counts", runningTokens)
 	}
+	if runningTokens["model_context_window"] != float64(40) || runningTokens["cache_read_fraction"] != 0.5 {
+		t.Fatalf("running.tokens context/cache = %#v", runningTokens)
+	}
+	runningPressure := runningTokens["context_pressure"].(map[string]any)
+	if runningPressure["percent_used"] != 75.0 || runningPressure["threshold_state"] != string(telemetry.ContextPressureWatch) {
+		t.Fatalf("running.tokens.context_pressure = %#v", runningPressure)
+	}
 	runningEvents := running["recent_events"].([]any)
 	if len(runningEvents) != 2 || runningEvents[1].(map[string]any)["message"] != "rendered" {
 		t.Fatalf("running.recent_events = %#v", runningEvents)
@@ -7120,6 +7136,10 @@ func TestServerAPIRoutes(t *testing.T) {
 
 	if got := nestedString(t, state, "codex_totals", "seconds_running"); got != "44.5" {
 		t.Fatalf("codex_totals.seconds_running = %s, want 44.5", got)
+	}
+	codexTotals := state["codex_totals"].(map[string]any)
+	if _, ok := codexTotals["context_pressure"]; ok {
+		t.Fatalf("codex_totals.context_pressure present for aggregate totals: %#v", codexTotals["context_pressure"])
 	}
 	if got := nestedString(t, state, "throughput", "tokens_per_second"); got != "7.5" {
 		t.Fatalf("throughput.tokens_per_second = %s, want 7.5", got)
@@ -7139,6 +7159,10 @@ func TestServerAPIRoutes(t *testing.T) {
 	recentSession := state["recent_sessions"].([]any)[0].(map[string]any)
 	if recentSession["pull_request_url"] != "https://github.com/digitaldrywood/detent/pull/140" || recentSession["pull_request_number"] != float64(140) {
 		t.Fatalf("recent session PR metadata = %#v/%#v; row = %#v", recentSession["pull_request_url"], recentSession["pull_request_number"], recentSession)
+	}
+	recentPressure := recentSession["context_pressure"].(map[string]any)
+	if recentSession["model_context_window"] != float64(600) || recentSession["cache_read_fraction"] != 0.25 || recentPressure["percent_used"] != 50.0 {
+		t.Fatalf("recent session context/cache = %#v", recentSession)
 	}
 	if got := nestedString(t, state, "budget", "today_spend_usd"); got != "1.25" {
 		t.Fatalf("budget.today_spend_usd = %s, want 1.25", got)
@@ -7172,6 +7196,10 @@ func TestServerAPIRoutes(t *testing.T) {
 	issueTokens := runningIssue["tokens"].(map[string]any)
 	if issueTokens["input_tokens"] != float64(10) || issueTokens["output_tokens"] != float64(20) || issueTokens["total_tokens"] != float64(30) {
 		t.Fatalf("issue.running.tokens = %#v, want live token counts", issueTokens)
+	}
+	issuePressure := issueTokens["context_pressure"].(map[string]any)
+	if issueTokens["model_context_window"] != float64(40) || issuePressure["threshold_state"] != string(telemetry.ContextPressureWatch) {
+		t.Fatalf("issue.running.tokens context = %#v", issueTokens)
 	}
 	issueEvents := issue["recent_events"].([]any)
 	if len(issueEvents) != 2 || issueEvents[1].(map[string]any)["event"] != "notification" {

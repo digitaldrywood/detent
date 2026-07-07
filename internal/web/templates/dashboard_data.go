@@ -5372,7 +5372,76 @@ func formatTokens(tokens telemetry.Tokens) string {
 }
 
 func formatTokenBreakdown(tokens telemetry.Tokens) string {
-	return "In " + formatInt(tokens.Input) + " / Out " + formatInt(tokens.Output)
+	parts := []string{"In " + formatInt(tokens.Input), "Out " + formatInt(tokens.Output)}
+	if fraction, ok := tokens.CacheReadFraction(); ok {
+		parts = append(parts, "Cache "+formatContextPercent(fraction*100))
+	}
+	return strings.Join(parts, " / ")
+}
+
+func contextPressureLabel(tokens telemetry.Tokens) string {
+	pressure, ok := tokens.ContextPressure()
+	if !ok {
+		return "—"
+	}
+	return formatContextPercent(pressure.PercentUsed)
+}
+
+func contextPressureText(tokens telemetry.Tokens) string {
+	pressure, ok := tokens.ContextPressure()
+	if !ok {
+		return ""
+	}
+	return formatContextPercent(pressure.PercentUsed) + " context"
+}
+
+func contextPressureTitle(tokens telemetry.Tokens) string {
+	pressure, ok := tokens.ContextPressure()
+	if !ok {
+		return ""
+	}
+	return formatInt(pressure.TotalTokens) + " of " + formatInt(pressure.ContextLimitTokens) + " context tokens · " + string(pressure.ThresholdState)
+}
+
+func contextPressureKind(tokens telemetry.Tokens) primitives.Kind {
+	pressure, ok := tokens.ContextPressure()
+	if !ok {
+		return primitives.KindNeutral
+	}
+	return contextPressureStateKind(pressure.ThresholdState)
+}
+
+func contextPressureStateKind(state telemetry.ContextPressureState) primitives.Kind {
+	switch state {
+	case telemetry.ContextPressureCritical:
+		return primitives.KindErr
+	case telemetry.ContextPressureWarning, telemetry.ContextPressureWatch:
+		return primitives.KindWarn
+	case telemetry.ContextPressureNormal:
+		return primitives.KindOK
+	default:
+		return primitives.KindNeutral
+	}
+}
+
+func contextPressureMeterClass(kind primitives.Kind) string {
+	switch kind {
+	case primitives.KindErr:
+		return "h-full bg-err"
+	case primitives.KindWarn:
+		return "h-full bg-warn"
+	case primitives.KindOK:
+		return "h-full bg-ok"
+	default:
+		return "h-full bg-sec"
+	}
+}
+
+func formatContextPercent(percent float64) string {
+	if math.IsNaN(percent) || math.IsInf(percent, 0) || percent < 0 {
+		percent = 0
+	}
+	return formatInt(int64(math.Round(percent))) + "%"
 }
 
 func formatUSD(value float64) string {

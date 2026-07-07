@@ -2145,6 +2145,26 @@ endpoint families such as pull requests or check runs. Open the indicator to see
 remaining primary quota, reset times, backed-off endpoint families, last status
 codes, retry timing, and tracker refresh timing.
 
+When an agent backend reports `model_context_window`, Detent also surfaces
+context pressure for running and recent sessions. Context pressure is the
+session's `total_tokens` divided by the model context window. The JSON snapshot
+includes `context_pressure.total_tokens`, `context_limit_tokens`,
+`percent_used`, and `threshold_state`; the web dashboard and TUI render the
+same value as a compact percent. Thresholds are `normal` below 70%, `watch` at
+70%, `warning` at 85%, and `critical` at 95%. Unknown context windows omit the
+derived fields instead of reporting a misleading zero.
+
+Context pressure is a model-window signal, not a Detent stop threshold.
+`agent.max_session_tokens` is an absolute configured ceiling for a session.
+`agent.max_session_context_multiplier` derives a ceiling from the reported
+context window when that window is known. A session can show high context
+pressure before either ceiling is exceeded, and a low-pressure session can
+still hit a lower absolute `agent.max_session_tokens` value. Token rows also
+show cache-read efficiency when cached input is reported: cached input divided
+by input tokens. Use that value with context pressure to evaluate whether
+thread-resume behavior is preserving useful context without repeatedly filling
+the window.
+
 Useful endpoints:
 
 | Route | Purpose |

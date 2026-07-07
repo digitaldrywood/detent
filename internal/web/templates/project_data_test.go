@@ -64,6 +64,7 @@ func TestProjectTabs(t *testing.T) {
 
 func TestProjectRunRows(t *testing.T) {
 	now := time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC)
+	runningContextWindow := int64(84_000)
 	snapshot := telemetry.Snapshot{
 		GeneratedAt: now,
 		Running: []telemetry.Running{
@@ -71,7 +72,7 @@ func TestProjectRunRows(t *testing.T) {
 				Issue:          telemetry.Issue{Identifier: "digitaldrywood/detent#502", ProjectID: "detent", Title: "Running issue"},
 				TurnCount:      2,
 				RuntimeSeconds: 120,
-				Tokens:         telemetry.Tokens{Total: 42_000},
+				Tokens:         telemetry.Tokens{Total: 42_000, ModelContextWindow: &runningContextWindow},
 			},
 		},
 		Completed: []telemetry.Completed{
@@ -104,6 +105,9 @@ func TestProjectRunRows(t *testing.T) {
 	if rows[0].DomID != "run-digitaldrywood-detent-502" {
 		t.Fatalf("running row id = %q, want full identifier slug", rows[0].DomID)
 	}
+	if rows[0].Context != "50%" || rows[0].ContextKind != primitives.KindOK {
+		t.Fatalf("running context = %q %q, want 50%% ok", rows[0].Context, rows[0].ContextKind)
+	}
 	if rows[1].Ref != "#501" {
 		t.Fatalf("completed rows should be newest first, got %q", rows[1].Ref)
 	}
@@ -115,6 +119,9 @@ func TestProjectRunRows(t *testing.T) {
 	}
 	if rows[2].StateKind != primitives.KindOK || rows[2].StateText != "Completed" {
 		t.Fatalf("done run state = %q %q", rows[2].StateKind, rows[2].StateText)
+	}
+	if rows[1].Context != "—" {
+		t.Fatalf("unknown completed context = %q, want em dash", rows[1].Context)
 	}
 	if rows[1].Finished == "—" || rows[0].Finished != "—" {
 		t.Fatalf("finished labels wrong: live=%q done=%q", rows[0].Finished, rows[1].Finished)
