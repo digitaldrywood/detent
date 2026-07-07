@@ -336,9 +336,11 @@ func (s *Server) apiBoardCard(c echo.Context) error {
 	projectID := strings.TrimSpace(c.QueryParam("project"))
 	projectScope := c.QueryParam("scope") == "project" && projectID != ""
 	data := s.boardData(ctx, s.latestSnapshot(ctx))
+	demo := false
 	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
 		return err
 	} else if ok {
+		demo = true
 		data = s.demoDashboardData(ctx, scenario)
 		if projectScope {
 			projectScenario := scenario
@@ -357,7 +359,12 @@ func (s *Server) apiBoardCard(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusNotFound, "Card not found")
 	}
 	boardActions := c.QueryParam("actions") == "board"
-	return render(c, templates.BoardCardSheet(data, card, boardActions))
+	expanded := c.QueryParam("expanded") == "1"
+	conversation := templates.BoardCardConversationData(data, card, boardActions, expanded)
+	if !demo {
+		conversation = s.hydrateKanbanConversation(ctx, conversation)
+	}
+	return render(c, templates.BoardCardSheet(data, card, boardActions, expanded, conversation))
 }
 
 func (s *Server) healthDashboard(c echo.Context) error {

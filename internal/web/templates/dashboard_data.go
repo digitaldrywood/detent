@@ -532,7 +532,7 @@ type projectKanbanCard struct {
 	StageAt               time.Time
 	Labels                []string
 	Assignees             []string
-	Comments              []projectKanbanComment
+	Comments              []telemetry.IssueComment
 	Blockers              []string
 	ClearedBlockers       []string
 	HasPullRequest        bool
@@ -542,16 +542,6 @@ type projectKanbanCard struct {
 	PRURL                 string
 	Movable               bool
 	DisabledText          string
-}
-
-type projectKanbanComment struct {
-	ID        string
-	Body      string
-	URL       string
-	Author    string
-	Meta      string
-	CanEdit   bool
-	CanDelete bool
 }
 
 const (
@@ -2290,11 +2280,6 @@ func projectKanbanCommentDialogPath(data DashboardData, card projectKanbanCard, 
 	return "/api/v1/kanban/comment?" + values.Encode()
 }
 
-func projectKanbanCommentDeletePath(data DashboardData, card projectKanbanCard, comment projectKanbanComment) string {
-	values := kanbanCommentMutationValues(projectKanbanCardProjectID(data, card), card.IssueID, comment.ID)
-	return "/api/v1/kanban/comment?" + values.Encode()
-}
-
 func kanbanMoveDialogValues(projectID string, issueID string, identifier string, title string, currentState string, targetState string, prNumber int, board string) url.Values {
 	values := url.Values{}
 	addQueryValue(values, "project_id", projectID)
@@ -2325,14 +2310,6 @@ func kanbanCommentDialogValues(projectID string, target string, issueID string, 
 			values.Set("pr_number", strconv.Itoa(prNumber))
 		}
 	}
-	return values
-}
-
-func kanbanCommentMutationValues(projectID string, issueID string, commentID string) url.Values {
-	values := url.Values{}
-	addQueryValue(values, "project_id", projectID)
-	addQueryValue(values, "issue_id", issueID)
-	addQueryValue(values, "comment_id", commentID)
 	return values
 }
 
@@ -2604,7 +2581,7 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		StageAt:               stageAt.UTC(),
 		Labels:                uniqueStrings(issue.Labels),
 		Assignees:             uniqueStrings(issue.Assignees),
-		Comments:              projectKanbanComments(issue.Comments),
+		Comments:              append([]telemetry.IssueComment(nil), issue.Comments...),
 		Blockers:              blockers,
 		ClearedBlockers:       clearedBlockers,
 		HasPullRequest:        issue.PullRequest != nil,
@@ -2629,67 +2606,9 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 	return card
 }
 
-func projectKanbanComments(comments []telemetry.IssueComment) []projectKanbanComment {
-	out := make([]projectKanbanComment, 0, len(comments))
-	for _, comment := range comments {
-		if targetType := strings.TrimSpace(comment.TargetType); targetType != "" && targetType != "issue" {
-			continue
-		}
-		id := strings.TrimSpace(comment.ID)
-		if id == "" && strings.TrimSpace(comment.Body) == "" {
-			continue
-		}
-		out = append(out, projectKanbanComment{
-			ID:        id,
-			Body:      comment.Body,
-			URL:       strings.TrimSpace(comment.URL),
-			Author:    projectKanbanCommentAuthor(comment),
-			Meta:      projectKanbanCommentMeta(comment),
-			CanEdit:   comment.Local && comment.CanEdit && id != "",
-			CanDelete: comment.Local && comment.CanDelete && id != "",
-		})
-	}
-	return out
-}
-
 func WithKanbanCardComments(card projectKanbanCard, comments []telemetry.IssueComment) projectKanbanCard {
-	card.Comments = projectKanbanComments(comments)
+	card.Comments = append([]telemetry.IssueComment(nil), comments...)
 	return card
-}
-
-func projectKanbanCommentAuthor(comment telemetry.IssueComment) string {
-	for _, candidate := range []string{comment.AuthorDisplayName, comment.AuthorLogin, comment.Backend} {
-		if candidate = strings.TrimSpace(candidate); candidate != "" {
-			return candidate
-		}
-	}
-	if comment.Local {
-		return "local"
-	}
-	return "comment"
-}
-
-func projectKanbanCommentMeta(comment telemetry.IssueComment) string {
-	parts := []string{projectKanbanCommentAuthor(comment)}
-	if source := strings.TrimSpace(comment.Backend); source != "" {
-		parts = append(parts, source)
-	} else if comment.Local {
-		parts = append(parts, "local")
-	}
-	if comment.CreatedAt != nil && !comment.CreatedAt.IsZero() {
-		parts = append(parts, timeLabel(*comment.CreatedAt))
-	}
-	if comment.UpdatedAt != nil && !comment.UpdatedAt.IsZero() && !sameCommentTime(comment.CreatedAt, comment.UpdatedAt) {
-		parts = append(parts, "edited "+timeLabel(*comment.UpdatedAt))
-	}
-	return strings.Join(parts, " · ")
-}
-
-func sameCommentTime(left *time.Time, right *time.Time) bool {
-	if left == nil || right == nil {
-		return false
-	}
-	return left.Equal(*right)
 }
 
 func projectKanbanIssueNumber(issue telemetry.Issue) string {

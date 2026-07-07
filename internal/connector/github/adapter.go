@@ -1736,7 +1736,24 @@ func (c *Connector) FetchIssueComments(ctx context.Context, issue connector.Issu
 	}
 	out := make([]connector.IssueComment, 0, len(comments))
 	for _, comment := range comments {
-		out = append(out, connectorIssueComment(comment))
+		out = append(out, connectorIssueComment(comment, connector.IssueCommentTargetIssue))
+	}
+	return out, nil
+}
+
+func (c *Connector) FetchPullRequestComments(ctx context.Context, repository string, number int) ([]connector.IssueComment, error) {
+	owner, name, ok := splitRepositoryName(repository)
+	if !ok || number <= 0 {
+		return []connector.IssueComment{}, nil
+	}
+
+	comments, err := c.fetchIssueComments(ctx, issueRef{Owner: owner, Name: name, Number: number})
+	if err != nil {
+		return nil, fmt.Errorf("fetch github pull request comments: %w", err)
+	}
+	out := make([]connector.IssueComment, 0, len(comments))
+	for _, comment := range comments {
+		out = append(out, connectorIssueComment(comment, connector.IssueCommentTargetPullRequest))
 	}
 	return out, nil
 }
@@ -3385,12 +3402,12 @@ func connectorIssueComments(comments []issueComment) []connector.IssueComment {
 	}
 	out := make([]connector.IssueComment, 0, len(comments))
 	for _, comment := range comments {
-		out = append(out, connectorIssueComment(comment))
+		out = append(out, connectorIssueComment(comment, connector.IssueCommentTargetIssue))
 	}
 	return out
 }
 
-func connectorIssueComment(comment issueComment) connector.IssueComment {
+func connectorIssueComment(comment issueComment, targetType string) connector.IssueComment {
 	return connector.IssueComment{
 		ID:          strings.TrimSpace(comment.ID),
 		Backend:     connector.BackendGitHub.String(),
@@ -3399,7 +3416,7 @@ func connectorIssueComment(comment issueComment) connector.IssueComment {
 		AuthorLogin: actorLogin(comment.Author),
 		CreatedAt:   parseGitHubTime(comment.CreatedAt),
 		UpdatedAt:   parseGitHubTime(comment.UpdatedAt),
-		TargetType:  connector.IssueCommentTargetIssue,
+		TargetType:  targetType,
 	}
 }
 

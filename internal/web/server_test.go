@@ -1042,11 +1042,28 @@ func TestAPIKeyRevokeExpireRotateAndRateLimit(t *testing.T) {
 		"scopes": ["read"],
 		"expires_in": "90d"
 	}`)
+	results := make(chan *httptest.ResponseRecorder, 80)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 80 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/state", nil)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+rateToken)
+			server.Handler().ServeHTTP(rec, req)
+			results <- rec
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
 	var limited *httptest.ResponseRecorder
-	for range 40 {
-		rec := performJSON(t, server.Handler(), http.MethodGet, "/api/v1/state", "", map[string]string{
-			"Authorization": "Bearer " + rateToken,
-		})
+	for rec := range results {
 		if rec.Code == http.StatusTooManyRequests {
 			limited = rec
 			break
@@ -2659,26 +2676,94 @@ func TestKanbanCommentEditAndDeleteLocalComments(t *testing.T) {
 	}
 }
 
-func TestBoardCardSheetShowsLocalCommentControlsOnly(t *testing.T) {
+func TestKanbanThreadCommentRefreshesIssueComments(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
-	actionConnector := &kanbanActionConnector{name: "local_sqlite"}
+	actionConnector := &kanbanActionConnector{name: "github"}
 	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
 		Mode: workflowconfig.KanbanModeIntegration,
 	}, actionConnector)
-	createdAt := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	if err := deps.Hub.Publish(telemetry.Snapshot{
-		GeneratedAt: time.Date(2026, 7, 6, 12, 1, 0, 0, time.UTC),
-		Project:     telemetry.Project{ID: "detent"},
-		Refresh:     telemetry.Refresh{Status: telemetry.RefreshStatusReady},
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
 		Pipeline: []telemetry.Issue{{
 			ID:         "I_kw1",
 			Identifier: "digitaldrywood/detent#1",
 			ProjectID:  "detent",
-			Title:      "Comment controls issue",
+			Title:      "Commentable issue",
 			State:      "Todo",
-			Comments: []telemetry.IssueComment{
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"kanban_thread":  {"true"},
+		"project_id":     {"detent"},
+		"kanban_board":   {"project"},
+		"board_actions":  {"true"},
+		"target":         {"issue"},
+		"issue_id":       {"I_kw1"},
+		"identifier":     {"digitaldrywood/detent#1"},
+		"issue_identity": {"digitaldrywood/detent#1"},
+		"title":          {"Commentable issue"},
+		"body":           {"Fresh issue note"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/comment", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got, want := actionConnector.comments(), []kanbanComment{{issueID: "I_kw1", body: "Fresh issue note"}}; !equalComments(got, want) {
+		t.Fatalf("comments = %#v, want %#v", got, want)
+	}
+	for _, want := range []string{
+		`id="kanban-issue-comments-panel"`,
+		"Fresh issue note",
+		"Comment submitted.",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("thread response missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+}
+
+func TestBoardCardSheetShowsLocalCommentControlsOnly(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	createdAt := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	comments := []telemetry.IssueComment{
+		{
+			ID:          "remote-1",
+			Backend:     connector.BackendGitHub.String(),
+			Body:        "Remote note",
+			AuthorLogin: "octocat",
+			CreatedAt:   &createdAt,
+			TargetType:  connector.IssueCommentTargetIssue,
+		},
+		{
+			ID:          "local-1",
+			Backend:     connector.BackendLocalSQLite.String(),
+			Body:        "Local note",
+			AuthorLogin: "detent",
+			CreatedAt:   &createdAt,
+			Local:       true,
+			CanEdit:     true,
+			CanDelete:   true,
+			TargetType:  connector.IssueCommentTargetIssue,
+		},
+	}
+	actionConnector := &kanbanActionConnector{
+		name: "local_sqlite",
+		issueComments: map[string][]connector.IssueComment{
+			"I_kw1": {
 				{
 					ID:          "remote-1",
 					Backend:     connector.BackendGitHub.String(),
@@ -2699,6 +2784,22 @@ func TestBoardCardSheetShowsLocalCommentControlsOnly(t *testing.T) {
 					TargetType:  connector.IssueCommentTargetIssue,
 				},
 			},
+		},
+	}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 6, 12, 1, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Refresh:     telemetry.Refresh{Status: telemetry.RefreshStatusReady},
+		Pipeline: []telemetry.Issue{{
+			ID:         "I_kw1",
+			Identifier: "digitaldrywood/detent#1",
+			ProjectID:  "detent",
+			Title:      "Comment controls issue",
+			State:      "Todo",
+			Comments:   comments,
 		}},
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
@@ -9020,6 +9121,7 @@ type kanbanActionConnector struct {
 	commentDeletes []kanbanCommentDelete
 	prCommentLog   []kanbanPRComment
 	issueComments  map[string][]connector.IssueComment
+	prThreads      map[string][]connector.IssueComment
 	activeMoves    int
 	maxMoves       int
 	moveStarted    chan<- struct{}
@@ -9047,6 +9149,16 @@ func (c *kanbanActionConnector) CreateComment(_ context.Context, issueID string,
 	defer c.mu.Unlock()
 
 	c.commentLog = append(c.commentLog, kanbanComment{issueID: issueID, body: body})
+	if c.issueComments == nil {
+		c.issueComments = map[string][]connector.IssueComment{}
+	}
+	c.issueComments[strings.TrimSpace(issueID)] = append(c.issueComments[strings.TrimSpace(issueID)], connector.IssueComment{
+		ID:          strconv.Itoa(len(c.issueComments[strings.TrimSpace(issueID)]) + 1),
+		Backend:     connector.BackendGitHub.String(),
+		Body:        body,
+		AuthorLogin: "detent",
+		TargetType:  connector.IssueCommentTargetIssue,
+	})
 	return nil
 }
 
@@ -9210,6 +9322,25 @@ func (c *kanbanActionConnector) prComments() []kanbanPRComment {
 	defer c.mu.Unlock()
 
 	return append([]kanbanPRComment(nil), c.prCommentLog...)
+}
+
+type kanbanPRCommentReaderConnector struct {
+	*kanbanActionConnector
+}
+
+func (c *kanbanPRCommentReaderConnector) FetchPullRequestComments(_ context.Context, repository string, number int) ([]connector.IssueComment, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.prThreads == nil {
+		return []connector.IssueComment{}, nil
+	}
+	comments := c.prThreads[kanbanPRThreadKey(repository, number)]
+	return append([]connector.IssueComment(nil), comments...), nil
+}
+
+func kanbanPRThreadKey(repository string, number int) string {
+	return strings.TrimSpace(repository) + "#" + strconv.Itoa(number)
 }
 
 func (c *kanbanActionConnector) maxActiveMoves() int {

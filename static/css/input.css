@@ -190,6 +190,15 @@
     scrollbar-gutter: stable;
   }
 
+  .htmx-indicator {
+    display: none;
+  }
+
+  .htmx-request .htmx-indicator,
+  .htmx-request.htmx-indicator {
+    display: inline-flex;
+  }
+
   /* legacy styles for pages awaiting migration */
   .sse-surface {
     transition: opacity 160ms ease, transform 160ms ease;
