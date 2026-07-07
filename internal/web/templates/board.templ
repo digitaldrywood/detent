@@ -227,9 +227,14 @@ templ boardLaneScript() {
 				} catch (err) {}
 			}
 			var pickerOpen = false;
-			function apply() {
-				var root = document.querySelector("[data-board-lanes]");
-				if (!root) return;
+			function boardLanesRoot(scope) {
+				if (scope instanceof Element && scope.matches("[data-board-lanes]")) return scope;
+				if (scope && typeof scope.querySelector === "function") return scope.querySelector("[data-board-lanes]");
+				return null;
+			}
+			function applyTo(scope) {
+				var root = boardLanesRoot(scope);
+				if (!root) return false;
 				var prefs = readPrefs(root);
 				var total = 0;
 				var visible = 0;
@@ -240,13 +245,55 @@ templ boardLaneScript() {
 					var show = Object.prototype.hasOwnProperty.call(prefs, id) ? Boolean(prefs[id]) : byDefault;
 					lane.setAttribute("data-lane-hidden", show ? "false" : "true");
 					if (show) visible += 1;
-					var toggle = document.querySelector('[data-board-lane-toggle="' + id + '"]');
-					if (toggle) toggle.checked = show;
+					var toggle = scope.querySelector('[data-board-lane-toggle="' + id + '"]');
+					if (toggle) {
+						toggle.checked = show;
+						if (show) {
+							toggle.setAttribute("checked", "");
+						} else {
+							toggle.removeAttribute("checked");
+						}
+					}
 				});
-				var count = document.querySelector("[data-board-lane-count]");
+				var count = scope.querySelector("[data-board-lane-count]");
 				if (count) count.textContent = visible + "/" + total;
-				var picker = document.querySelector("[data-board-lane-picker]");
+				var picker = scope.querySelector("[data-board-lane-picker]");
 				if (picker && pickerOpen) picker.setAttribute("open", "");
+				return true;
+			}
+			function apply() {
+				applyTo(document);
+			}
+			function adjustedBoardHTML(html) {
+				if (typeof html !== "string" || html.indexOf("data-board-lanes") < 0) return "";
+				var template = document.createElement("template");
+				template.innerHTML = html;
+				if (!applyTo(template.content)) return "";
+				return template.innerHTML;
+			}
+			function snapshotSwapTarget(event) {
+				var target = event.detail && event.detail.target;
+				if (!(target instanceof Element)) target = event.target;
+				if (!(target instanceof Element)) return false;
+				return target.id === "snapshot" || Boolean(target.closest("#snapshot"));
+			}
+			function applyBeforeSwap(event) {
+				var detail = event.detail || {};
+				if (!snapshotSwapTarget(event) || typeof detail.serverResponse !== "string") return;
+				var adjusted = adjustedBoardHTML(detail.serverResponse);
+				if (!adjusted) return;
+				detail.serverResponse = adjusted;
+			}
+			function applyBeforeSSEMessage(event) {
+				var detail = event.detail || {};
+				var target = detail.elt;
+				if (!(target instanceof Element)) target = event.target;
+				if (!(target instanceof Element) || target.id !== "snapshot") return;
+				if (!window.htmx || typeof window.htmx.swap !== "function") return;
+				var adjusted = adjustedBoardHTML(detail.data);
+				if (!adjusted) return;
+				event.preventDefault();
+				window.htmx.swap(target, adjusted, { swapStyle: target.getAttribute("hx-swap") || "innerHTML" }, { contextElement: target });
 			}
 			document.addEventListener("change", function (event) {
 				var toggle = event.target.closest("[data-board-lane-toggle]");
@@ -271,6 +318,8 @@ templ boardLaneScript() {
 					pickerOpen = false;
 				}
 			});
+			document.addEventListener("htmx:beforeSwap", applyBeforeSwap);
+			document.addEventListener("htmx:sseBeforeMessage", applyBeforeSSEMessage);
 			document.addEventListener("htmx:afterSettle", apply);
 			document.addEventListener("DOMContentLoaded", apply);
 			apply();
