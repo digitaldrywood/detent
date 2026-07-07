@@ -89,6 +89,9 @@ test("board home renders lanes without page overflow", async ({
   await expect(page.locator("#board-lanes")).toBeVisible();
   await expect(page.locator("#board-figures")).toBeVisible();
   await expect(page.locator("[data-board-lane]").first()).toBeVisible();
+  const ageFooter = page.locator("[data-board-card-age-footer]").first();
+  await expect(ageFooter).toBeVisible();
+  await expect(ageFooter).toContainText("In lane");
   await assertNoDocumentOverflow(page);
   await capturePageAndAttach(page, "board-home.png", testInfo);
 });
