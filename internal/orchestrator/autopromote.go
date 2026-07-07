@@ -59,6 +59,7 @@ const (
 	AutoPromoteReasonOptoutLabel                     AutoPromoteReason = "optout_label"
 	AutoPromoteReasonLabelNotAllowed                 AutoPromoteReason = "label_not_allowed"
 	AutoPromoteReasonMissingPullRequest              AutoPromoteReason = "missing_pull_request"
+	AutoPromoteReasonPullRequestMerged               AutoPromoteReason = "pull_request_merged"
 	AutoPromoteReasonPullRequestHydrationUnavailable AutoPromoteReason = "pull_request_hydration_unavailable"
 	AutoPromoteReasonMergeConflicts                  AutoPromoteReason = "merge_conflicts"
 	AutoPromoteReasonCINotGreen                      AutoPromoteReason = "ci_not_green"

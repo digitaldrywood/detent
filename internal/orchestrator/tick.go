@@ -144,7 +144,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	fetched = filterReconciledTickIssues(
 		state,
 		fetched,
-		o.reconcileStaleTodoPullRequestIssues(ctx, state, fetched.candidates, now),
+		o.reconcileStaleLinkedPullRequestIssues(ctx, state, fetched.candidates, now),
 	)
 	completedTransitions := o.transitionCompletedActiveIssuesToReview(ctx, state, fetched.candidates, now)
 	fetched = filterReconciledTickIssues(
