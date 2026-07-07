@@ -1383,6 +1383,19 @@ func autoPromoteFailedChecksFromPullRequest(pullRequest *connector.PullRequest) 
 	return uniqueStrings(checks)
 }
 
+func autoPromoteStaleSuccessfulChecks(pullRequest *connector.PullRequest) []string {
+	if pullRequest == nil {
+		return nil
+	}
+	checks := make([]string, 0, len(pullRequest.StaleSuccessfulChecks))
+	for _, check := range pullRequest.StaleSuccessfulChecks {
+		if name := strings.TrimSpace(check.Name); name != "" {
+			checks = append(checks, name)
+		}
+	}
+	return uniqueStrings(checks)
+}
+
 func autoPromoteCheckFailed(check connector.PullRequestCheck) bool {
 	switch strings.ToLower(strings.TrimSpace(check.Conclusion)) {
 	case "failure", "failed", "error", "timed_out", "startup_failure", "action_required", "cancelled", "canceled", "missing", "skipped", "neutral":
@@ -1618,6 +1631,13 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 		}
 		if failedChecks := strings.Join(autoPromoteFailedChecksFromPullRequest(issue.PullRequest), ", "); failedChecks != "" {
 			attrs = append(attrs, "failed_checks", failedChecks)
+		}
+		if staleSuccessfulChecks := strings.Join(autoPromoteStaleSuccessfulChecks(issue.PullRequest), ", "); staleSuccessfulChecks != "" {
+			attrs = append(attrs,
+				"ci_anomaly", "stale_successful_check_run",
+				"stale_successful_checks", staleSuccessfulChecks,
+				"ci_anomaly_action", "treated_completed_successful_check_runs_as_passed",
+			)
 		}
 	}
 	if decision.QuietRemaining > 0 {

@@ -1602,6 +1602,32 @@ func TestCheckRunTelemetryReportsQueueAndCompletedSpan(t *testing.T) {
 	}
 }
 
+func TestCheckRunsStateTreatsStaleSuccessfulCheckRunAsSuccess(t *testing.T) {
+	t.Parallel()
+
+	started := time.Date(2026, 7, 7, 0, 45, 0, 0, time.UTC)
+	completed := time.Date(2026, 7, 7, 0, 49, 24, 0, time.UTC)
+
+	checkRuns := []restCheckRun{{
+		Name:        "Installer Smoke (ubuntu-latest)",
+		Status:      "in_progress",
+		Conclusion:  "success",
+		StartedAt:   &started,
+		CompletedAt: &completed,
+	}}
+
+	if got := checkRunsState(checkRuns); got != "success" {
+		t.Fatalf("checkRunsState() = %q, want success", got)
+	}
+	telemetry := checkRunTelemetry(checkRuns, nil)
+	if len(telemetry.RunningChecks) != 0 {
+		t.Fatalf("RunningChecks = %#v, want none", telemetry.RunningChecks)
+	}
+	if telemetry.DurationSeconds != 264 {
+		t.Fatalf("DurationSeconds = %d, want 264", telemetry.DurationSeconds)
+	}
+}
+
 func TestCheckRunTelemetryUsesWorkflowRunTimingForQueue(t *testing.T) {
 	t.Parallel()
 
@@ -1627,6 +1653,7 @@ func TestCheckRunTelemetryUsesWorkflowRunTimingForQueue(t *testing.T) {
 func TestRequiredStatusCheckFailures(t *testing.T) {
 	t.Parallel()
 
+	staleCompleted := time.Date(2026, 7, 7, 0, 49, 24, 0, time.UTC)
 	tests := []struct {
 		name       string
 		checkRuns  []restCheckRun
@@ -1639,6 +1666,16 @@ func TestRequiredStatusCheckFailures(t *testing.T) {
 			name:      "all required check runs succeeded",
 			checkRuns: []restCheckRun{{Name: "Lint", Status: "completed", Conclusion: "success"}},
 			required:  []string{"Lint"},
+		},
+		{
+			name: "stale successful required check run succeeded",
+			checkRuns: []restCheckRun{{
+				Name:        "Installer Smoke (ubuntu-latest)",
+				Status:      "in_progress",
+				Conclusion:  "success",
+				CompletedAt: &staleCompleted,
+			}},
+			required: []string{"Installer Smoke (ubuntu-latest)"},
 		},
 		{
 			name:      "missing required check blocks as pending",
@@ -3042,6 +3079,76 @@ func TestConnectorHydratePullRequestRefreshesCurrentStatus(t *testing.T) {
 	}
 	if got.PRRepository != "example/repo" {
 		t.Fatalf("PRRepository = %q, want example/repo", got.PRRepository)
+	}
+}
+
+func TestConnectorHydratePullRequestNormalizesStaleSuccessfulWorkflowCheckRun(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/pulls/970",
+			body:   `{"number":970,"html_url":"https://github.com/example/repo/pull/970","state":"open","mergeable_state":"clean","draft":false,"head":{"ref":"detent/example_repo_970","sha":"head-sha"},"base":{"sha":"base-sha"},"updated_at":"2026-07-07T00:50:00Z"}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/commits/head-sha/check-runs?per_page=100",
+			body:   `{"check_runs":[{"id":97001,"name":"Installer Smoke (ubuntu-latest)","status":"in_progress","conclusion":"success","details_url":"https://github.com/example/repo/actions/runs/28833549023/job/97001","started_at":"2026-07-07T00:45:00Z","completed_at":"2026-07-07T00:49:24Z"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/actions/runs/28833549023",
+			body:   `{"id":28833549023,"status":"completed","conclusion":"success","created_at":"2026-07-07T00:44:00Z","run_started_at":"2026-07-07T00:45:00Z","updated_at":"2026-07-07T00:49:24Z"}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/commits/head-sha/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/pulls/970/reviews?per_page=100",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	})
+	prNumber := 970
+	issue := connector.Issue{
+		ID:         "I_kw970",
+		Identifier: "example/repo#970",
+		PRNumber:   &prNumber,
+	}
+
+	got, err := c.HydratePullRequest(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("HydratePullRequest() error = %v", err)
+	}
+
+	pr := got.PullRequest
+	if pr == nil {
+		t.Fatalf("PullRequest = nil, want hydrated pull request")
+	}
+	if pr.CIStatus != "pass" {
+		t.Fatalf("CIStatus = %q, want pass", pr.CIStatus)
+	}
+	if len(pr.RunningChecks) != 0 {
+		t.Fatalf("RunningChecks = %#v, want none", pr.RunningChecks)
+	}
+	if len(pr.StaleSuccessfulChecks) != 1 || pr.StaleSuccessfulChecks[0].Name != "Installer Smoke (ubuntu-latest)" {
+		t.Fatalf("StaleSuccessfulChecks = %#v, want Installer Smoke anomaly", pr.StaleSuccessfulChecks)
+	}
+	for _, fragment := range []string{
+		"stale_successful_check_run",
+		"Installer Smoke (ubuntu-latest)",
+		"action=normalize_success",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
 	}
 }
 

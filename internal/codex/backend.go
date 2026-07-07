@@ -48,6 +48,13 @@ func (b *AgentBackend) RunTurn(
 		return onUpdate(agentUpdateFromCodex(update))
 	})
 	if err != nil {
+		if errors.Is(err, ErrTransportClose) && result.ThreadID != "" && result.TurnID != "" {
+			return runner.AgentTurnResult{
+				ThreadID:  result.ThreadID,
+				TurnID:    result.TurnID,
+				SessionID: result.SessionID,
+			}, runner.NewAgentTurnCleanupError(err)
+		}
 		return runner.AgentTurnResult{}, err
 	}
 	return runner.AgentTurnResult{

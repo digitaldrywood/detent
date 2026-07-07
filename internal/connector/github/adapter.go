@@ -873,15 +873,16 @@ type restCommitStatus struct {
 }
 
 type pullRequestCI struct {
-	State              string
-	CheckRunCount      int
-	StatusContextCount int
-	CIQueueSeconds     int64
-	CIDurationSeconds  int64
-	SlowChecks         []connector.PullRequestCheck
-	RunningChecks      []string
-	RequiredFailures   []connector.PullRequestCheck
-	TransientFailures  []connector.PullRequestCheck
+	State                 string
+	CheckRunCount         int
+	StatusContextCount    int
+	CIQueueSeconds        int64
+	CIDurationSeconds     int64
+	SlowChecks            []connector.PullRequestCheck
+	RunningChecks         []string
+	StaleSuccessfulChecks []connector.PullRequestCheck
+	RequiredFailures      []connector.PullRequestCheck
+	TransientFailures     []connector.PullRequestCheck
 }
 
 type checkRunTelemetrySummary struct {
@@ -2622,6 +2623,7 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		CIDurationSeconds:            pullRequest.CI.CIDurationSeconds,
 		SlowChecks:                   append([]connector.PullRequestCheck(nil), pullRequest.CI.SlowChecks...),
 		RunningChecks:                append([]string(nil), pullRequest.CI.RunningChecks...),
+		StaleSuccessfulChecks:        append([]connector.PullRequestCheck(nil), pullRequest.CI.StaleSuccessfulChecks...),
 		RequiredCheckFailures:        append([]connector.PullRequestCheck(nil), pullRequest.CI.RequiredFailures...),
 		TransientFailedChecks:        append([]connector.PullRequestCheck(nil), pullRequest.CI.TransientFailures...),
 		CodexReviewState:             pullRequestCodexReviewState(pullRequest),
@@ -2867,21 +2869,24 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 		return pullRequestCI{}, fmt.Errorf("fetch github commit statuses: %w", err)
 	}
 	telemetry := checkRunTelemetry(checkRuns, workflowRuns)
+	staleSuccessfulChecks := staleSuccessfulCheckRuns(checkRuns)
+	c.logStaleSuccessfulCheckRuns(ctx, repo, sha, staleSuccessfulChecks)
 	requiredFailures := requiredStatusCheckFailures(checkRuns, statuses, c.requiredChecks)
 	state := combinedCIState(checkRunsState(checkRuns), commitStatusesState(statuses))
 	if requiredState := requiredStatusCheckState(requiredFailures); requiredState != "" {
 		state = combinedCIState(requiredState, state)
 	}
 	return pullRequestCI{
-		State:              state,
-		CheckRunCount:      len(checkRuns),
-		StatusContextCount: len(statuses),
-		CIQueueSeconds:     telemetry.QueueSeconds,
-		CIDurationSeconds:  telemetry.DurationSeconds,
-		SlowChecks:         telemetry.SlowChecks,
-		RunningChecks:      telemetry.RunningChecks,
-		RequiredFailures:   requiredFailures,
-		TransientFailures:  c.transientCheckRunFailures(ctx, repo, checkRuns),
+		State:                 state,
+		CheckRunCount:         len(checkRuns),
+		StatusContextCount:    len(statuses),
+		CIQueueSeconds:        telemetry.QueueSeconds,
+		CIDurationSeconds:     telemetry.DurationSeconds,
+		SlowChecks:            telemetry.SlowChecks,
+		RunningChecks:         telemetry.RunningChecks,
+		StaleSuccessfulChecks: staleSuccessfulChecks,
+		RequiredFailures:      requiredFailures,
+		TransientFailures:     c.transientCheckRunFailures(ctx, repo, checkRuns),
 	}, nil
 }
 
@@ -2917,8 +2922,21 @@ func (c *Connector) transientCheckRunFailures(ctx context.Context, repo pullRequ
 	return failures
 }
 
+func (c *Connector) logStaleSuccessfulCheckRuns(ctx context.Context, repo pullRequestRepo, sha string, checks []connector.PullRequestCheck) {
+	if c == nil || c.logger == nil || len(checks) == 0 {
+		return
+	}
+	c.logger.WarnContext(ctx, "github check runs reported stale successful status; treating completed successful check-runs as passed",
+		"repository", pullRequestRepoName(repo),
+		"head_sha", strings.TrimSpace(sha),
+		"reason", "stale_successful_check_run",
+		"checks", strings.Join(pullRequestCheckNames(checks), ", "),
+		"action", "normalize_success",
+	)
+}
+
 func completedFailedCheckRun(checkRun restCheckRun) bool {
-	if strings.ToLower(strings.TrimSpace(checkRun.Status)) != "completed" {
+	if normalizedCheckRunStatus(checkRun) != "completed" {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(checkRun.Conclusion)) {
@@ -2927,6 +2945,41 @@ func completedFailedCheckRun(checkRun restCheckRun) bool {
 	default:
 		return true
 	}
+}
+
+func staleSuccessfulCheckRuns(checkRuns []restCheckRun) []connector.PullRequestCheck {
+	checks := make([]connector.PullRequestCheck, 0)
+	for _, checkRun := range checkRuns {
+		if !staleSuccessfulCheckRun(checkRun) {
+			continue
+		}
+		checks = append(checks, connector.PullRequestCheck{
+			ID:            checkRun.ID,
+			WorkflowRunID: checkRunWorkflowRunID(checkRun),
+			Name:          strings.TrimSpace(checkRun.Name),
+			Status:        strings.ToLower(strings.TrimSpace(checkRun.Status)),
+			Conclusion:    strings.ToLower(strings.TrimSpace(checkRun.Conclusion)),
+			DetailsURL:    firstNonBlank(checkRun.DetailsURL, checkRun.HTMLURL),
+		})
+	}
+	return checks
+}
+
+func staleSuccessfulCheckRun(checkRun restCheckRun) bool {
+	status := strings.ToLower(strings.TrimSpace(checkRun.Status))
+	return status != "" &&
+		status != "completed" &&
+		strings.ToLower(strings.TrimSpace(checkRun.Conclusion)) == "success" &&
+		checkRun.CompletedAt != nil
+}
+
+func normalizedCheckRunStatus(checkRun restCheckRun) string {
+	status := strings.ToLower(strings.TrimSpace(checkRun.Status))
+	conclusion := strings.ToLower(strings.TrimSpace(checkRun.Conclusion))
+	if status != "" && status != "completed" && conclusion != "" && checkRun.CompletedAt != nil {
+		return "completed"
+	}
+	return status
 }
 
 func checkRunTransientText(checkRun restCheckRun) string {
@@ -4649,7 +4702,7 @@ func checkRunsState(checkRuns []restCheckRun) string {
 	}
 	pending := false
 	for _, checkRun := range checkRuns {
-		status := strings.ToLower(strings.TrimSpace(checkRun.Status))
+		status := normalizedCheckRunStatus(checkRun)
 		conclusion := strings.ToLower(strings.TrimSpace(checkRun.Conclusion))
 		if status != "" && status != "completed" {
 			pending = true
@@ -4714,7 +4767,7 @@ func requiredStatusCheckFailures(checkRuns []restCheckRun, statuses []restCommit
 }
 
 func requiredCheckRunFailure(name string, checkRun restCheckRun) (connector.PullRequestCheck, bool) {
-	status := strings.ToLower(strings.TrimSpace(checkRun.Status))
+	status := normalizedCheckRunStatus(checkRun)
 	conclusion := strings.ToLower(strings.TrimSpace(checkRun.Conclusion))
 	if status != "" && status != "completed" {
 		return connector.PullRequestCheck{
@@ -4812,7 +4865,7 @@ func checkRunTelemetry(checkRuns []restCheckRun, workflowRuns []restWorkflowRun)
 		completedAt = latestGitHubTime(completedAt, checkRun.CompletedAt)
 
 		name := strings.TrimSpace(checkRun.Name)
-		status := strings.ToLower(strings.TrimSpace(checkRun.Status))
+		status := normalizedCheckRunStatus(checkRun)
 		conclusion := strings.ToLower(strings.TrimSpace(checkRun.Conclusion))
 		if status != "completed" || conclusion == "" {
 			hasRunning = true
@@ -5386,6 +5439,14 @@ func uniqueNonBlank(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func pullRequestCheckNames(checks []connector.PullRequestCheck) []string {
+	names := make([]string, 0, len(checks))
+	for _, check := range checks {
+		names = append(names, check.Name)
+	}
+	return uniqueNonBlank(names)
 }
 
 func sortIssuesByRequestedIDs(issues []connector.Issue, ids []string) {

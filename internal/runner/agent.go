@@ -396,6 +396,7 @@ type agentTurnExecution struct {
 	turnResult  AgentTurnResult
 	result      RunResult
 	err         error
+	cleanupErr  error
 	turnStarted bool
 }
 
@@ -429,6 +430,10 @@ func (r *Runner) runAgentTurn(
 		return nil
 	})
 	result.Output = progress.outputText()
+	cleanupErr := agentTurnCleanupError(turnErr, turnResult)
+	if cleanupErr != nil {
+		turnErr = nil
+	}
 	if turnErr != nil {
 		result.FinalState = finalStateForTurnError(turnErr)
 	}
@@ -436,6 +441,7 @@ func (r *Runner) runAgentTurn(
 		turnResult:  turnResult,
 		result:      result,
 		err:         turnErr,
+		cleanupErr:  cleanupErr,
 		turnStarted: turnStarted,
 	}
 }
@@ -636,6 +642,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	turnResult := execution.turnResult
 	turnErr := execution.err
+	cleanupErr := execution.cleanupErr
 	result := execution.result
 	commandFinishedAttrs := []any{
 		"workspace_path", info.Path,
@@ -647,7 +654,13 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		"error", errorString(turnErr),
 	}
 	commandFinishedAttrs = append(commandFinishedAttrs, backendErrorAttrs(turnErr)...)
-	if turnErr != nil {
+	if cleanupErr != nil {
+		commandFinishedAttrs = append(commandFinishedAttrs,
+			"cleanup_error", errorString(cleanupErr),
+			"cleanup_class", "agent_turn_cleanup",
+		)
+	}
+	if turnErr != nil || cleanupErr != nil {
 		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_command_finished", commandFinishedAttrs...)
 	} else {
 		r.logWorkerEvent(req.Issue, "worker_command_finished", commandFinishedAttrs...)
@@ -1405,6 +1418,16 @@ func finalStateForTurnError(err error) string {
 		return FinalStateTokenCeilingExceeded
 	}
 	return FinalStateFailed
+}
+
+func agentTurnCleanupError(err error, result AgentTurnResult) error {
+	if err == nil || !errors.Is(err, ErrAgentTurnCleanup) {
+		return nil
+	}
+	if strings.TrimSpace(result.ThreadID) == "" || strings.TrimSpace(result.TurnID) == "" {
+		return nil
+	}
+	return err
 }
 
 func durationFromMillis(ms int) time.Duration {

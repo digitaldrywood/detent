@@ -30,6 +30,7 @@ var (
 	ErrResponseError   = errors.New("codex response error")
 	ErrInvalidResponse = errors.New("invalid codex response")
 	ErrTurnFailed      = errors.New("codex turn failed")
+	ErrTransportClose  = errors.New("close codex app-server transport")
 )
 
 type ResponseError struct {
@@ -57,6 +58,28 @@ func (e *ResponseError) Error() string {
 
 func (e *ResponseError) Unwrap() error {
 	return ErrResponseError
+}
+
+type TransportCloseError struct {
+	Err error
+}
+
+func (e *TransportCloseError) Error() string {
+	if e == nil || e.Err == nil {
+		return ErrTransportClose.Error()
+	}
+	return ErrTransportClose.Error() + ": " + e.Err.Error()
+}
+
+func (e *TransportCloseError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func (e *TransportCloseError) Is(target error) bool {
+	return target == ErrTransportClose
 }
 
 func (e *ResponseError) BackendErrorBody() string {
@@ -1029,7 +1052,7 @@ func closeTransport(ctx context.Context, transport Transport, timeout time.Durat
 		defer cancel()
 	}
 	if err := transport.Close(ctx); err != nil {
-		return fmt.Errorf("close codex app-server transport: %w", err)
+		return &TransportCloseError{Err: err}
 	}
 	return nil
 }

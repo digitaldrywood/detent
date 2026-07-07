@@ -26,7 +26,10 @@ const (
 	RunOutputMergeFastPathClean = "merge_fast_path_clean"
 )
 
-var ErrSessionTokenCeilingExceeded = errors.New("session token ceiling exceeded")
+var (
+	ErrSessionTokenCeilingExceeded = errors.New("session token ceiling exceeded")
+	ErrAgentTurnCleanup            = errors.New("agent turn cleanup failed")
+)
 
 type Backend interface {
 	Run(context.Context, RunRequest) (RunResult, error)
@@ -68,6 +71,35 @@ type AgentTurnResult struct {
 	ThreadID  string
 	TurnID    string
 	SessionID string
+}
+
+type AgentTurnCleanupError struct {
+	Err error
+}
+
+func NewAgentTurnCleanupError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &AgentTurnCleanupError{Err: err}
+}
+
+func (e *AgentTurnCleanupError) Error() string {
+	if e == nil || e.Err == nil {
+		return ErrAgentTurnCleanup.Error()
+	}
+	return fmt.Sprintf("%s: %v", ErrAgentTurnCleanup, e.Err)
+}
+
+func (e *AgentTurnCleanupError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func (e *AgentTurnCleanupError) Is(target error) bool {
+	return target == ErrAgentTurnCleanup
 }
 
 type AgentUpdateHandler func(AgentUpdate) error

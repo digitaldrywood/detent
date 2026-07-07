@@ -225,15 +225,16 @@ func clonePullRequestStatus(status pullRequestStatus) pullRequestStatus {
 
 func clonePullRequestCI(ci pullRequestCI) pullRequestCI {
 	return pullRequestCI{
-		State:              ci.State,
-		CheckRunCount:      ci.CheckRunCount,
-		StatusContextCount: ci.StatusContextCount,
-		CIQueueSeconds:     ci.CIQueueSeconds,
-		CIDurationSeconds:  ci.CIDurationSeconds,
-		SlowChecks:         append([]connector.PullRequestCheck(nil), ci.SlowChecks...),
-		RunningChecks:      append([]string(nil), ci.RunningChecks...),
-		RequiredFailures:   append([]connector.PullRequestCheck(nil), ci.RequiredFailures...),
-		TransientFailures:  append([]connector.PullRequestCheck(nil), ci.TransientFailures...),
+		State:                 ci.State,
+		CheckRunCount:         ci.CheckRunCount,
+		StatusContextCount:    ci.StatusContextCount,
+		CIQueueSeconds:        ci.CIQueueSeconds,
+		CIDurationSeconds:     ci.CIDurationSeconds,
+		SlowChecks:            append([]connector.PullRequestCheck(nil), ci.SlowChecks...),
+		RunningChecks:         append([]string(nil), ci.RunningChecks...),
+		StaleSuccessfulChecks: append([]connector.PullRequestCheck(nil), ci.StaleSuccessfulChecks...),
+		RequiredFailures:      append([]connector.PullRequestCheck(nil), ci.RequiredFailures...),
+		TransientFailures:     append([]connector.PullRequestCheck(nil), ci.TransientFailures...),
 	}
 }
 
