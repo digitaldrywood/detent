@@ -1041,6 +1041,67 @@ func TestTickReconcilesStaleTodoMergedPullRequestToDone(t *testing.T) {
 	}
 }
 
+func TestTickParksStaleTodoMergedPullRequestWhenHydrationUnavailable(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 7, 15, 5, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	issue := autoPromoteTickIssue("issue-pyroapex-merged-stale", []string{"bug"}, &connector.PullRequest{
+		Number:                  1472,
+		URL:                     "https://github.test/digitaldrywood/pyroapex/pull/1472",
+		State:                   "MERGED",
+		CIStatus:                "success",
+		HydrationDegradedReason: connector.PullRequestHydrationReasonStaleCachedPullData,
+	})
+	issue.State = "Todo"
+	issue.Identifier = "digitaldrywood/pyroapex#1464"
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+
+	state := newState(cfg)
+	orch.tick(context.Background(), &state, now)
+
+	wantUpdates := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Human Review"}}
+	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
+		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one hydration reconciliation comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"Reconciled this issue from Todo to Human Review because linked PR status hydration is unavailable.",
+		"reason: pull_request_hydration_unavailable",
+		"pull_request_hydration_degraded_reason: stale_cached_pull_request",
+		"https://github.test/digitaldrywood/pyroapex/pull/1472",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+		}
+	}
+	for _, fragment := range []string{
+		"reason=pull_request_hydration_unavailable",
+		"pull_request_hydration_degraded_reason=stale_cached_pull_request",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+}
+
 func TestTickReconcilesStaleTodoMergedPullRequestWithFailedChecksToRework(t *testing.T) {
 	t.Parallel()
 

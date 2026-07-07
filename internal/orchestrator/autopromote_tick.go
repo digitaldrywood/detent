@@ -847,6 +847,10 @@ func staleMergedPullRequestSummaryFromIssue(issue connector.Issue) AutoPromoteSu
 }
 
 func staleMergedPullRequestDecision(issue connector.Issue, summary AutoPromoteSummary) AutoPromoteDecision {
+	if strings.TrimSpace(summary.PullRequestHydrationUnavailableReason) != "" ||
+		strings.TrimSpace(summary.PullRequestHydrationDegradedReason) != "" {
+		return autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonPullRequestHydrationUnavailable)
+	}
 	if staleMergedPullRequestHasFailedCIEvidence(issue.PullRequest, summary) {
 		decision := autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonCINotGreen)
 		decision.CIStatus = strings.TrimSpace(summary.CIStatus)
@@ -862,6 +866,8 @@ func staleMergedPullRequestTargetState(decision AutoPromoteDecision, cfg AutoPro
 		return cfg.ReworkState
 	case AutoPromoteReasonPullRequestMerged:
 		return doneStateName(terminalStates)
+	case AutoPromoteReasonPullRequestHydrationUnavailable:
+		return cfg.SourceState
 	default:
 		return ""
 	}
@@ -942,6 +948,12 @@ func staleMergedPullRequestComment(
 		b.WriteString(" to ")
 		b.WriteString(targetState)
 		b.WriteString(" because its merged linked PR has failing CI evidence.")
+	case AutoPromoteReasonPullRequestHydrationUnavailable:
+		b.WriteString("Reconciled this issue from ")
+		b.WriteString(sourceState)
+		b.WriteString(" to ")
+		b.WriteString(targetState)
+		b.WriteString(" because linked PR status hydration is unavailable.")
 	case AutoPromoteReasonPullRequestMerged:
 		b.WriteString("Reconciled this issue from ")
 		b.WriteString(sourceState)
@@ -970,6 +982,14 @@ func staleMergedPullRequestComment(
 	if failedChecks := strings.Join(summary.FailedChecks, ", "); failedChecks != "" {
 		b.WriteString("\n- failed_checks: ")
 		b.WriteString(failedChecks)
+	}
+	if summary.PullRequestHydrationUnavailableReason != "" {
+		b.WriteString("\n- pull_request_hydration_unavailable_reason: ")
+		b.WriteString(summary.PullRequestHydrationUnavailableReason)
+	}
+	if summary.PullRequestHydrationDegradedReason != "" {
+		b.WriteString("\n- pull_request_hydration_degraded_reason: ")
+		b.WriteString(summary.PullRequestHydrationDegradedReason)
 	}
 	return b.String()
 }
@@ -1043,6 +1063,12 @@ func (o *Orchestrator) logStaleTodoPullRequestDecision(issue connector.Issue, de
 		}
 		if failedChecks := strings.Join(autoPromoteFailedChecksFromPullRequest(issue.PullRequest), ", "); failedChecks != "" {
 			attrs = append(attrs, "failed_checks", failedChecks)
+		}
+		if reason := pullRequestHydrationUnavailableReason(issue.PullRequest); reason != "" {
+			attrs = append(attrs, "pull_request_hydration_unavailable_reason", reason)
+		}
+		if reason := pullRequestHydrationDegradedReason(issue.PullRequest); reason != "" {
+			attrs = append(attrs, "pull_request_hydration_degraded_reason", reason)
 		}
 	}
 	if decision.WorkpadBlocker != "" {
