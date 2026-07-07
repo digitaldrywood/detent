@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -10,6 +11,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
+
+type workspaceCleanupDiagnostic interface {
+	WorkspacePath() string
+	Remediation() string
+}
 
 func (o *Orchestrator) reapWorkspacesIfDue(ctx context.Context, state *State, now time.Time) {
 	if o.reaper == nil {
@@ -254,13 +260,22 @@ func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue co
 	}
 	result, err := o.reaper.ReapWorkspace(ctx, issue)
 	if err != nil {
-		o.logger.Warn(
-			"workspace reap failed",
+		args := []any{
 			slog.String("issue_id", issue.ID),
 			slog.String("issue_identifier", issue.Identifier),
 			slog.String("reason", reason),
 			slog.Any("error", err),
-		)
+		}
+		var diagnostic workspaceCleanupDiagnostic
+		if errors.As(err, &diagnostic) {
+			if path := strings.TrimSpace(diagnostic.WorkspacePath()); path != "" {
+				args = append(args, slog.String("workspace_path", path))
+			}
+			if remediation := strings.TrimSpace(diagnostic.Remediation()); remediation != "" {
+				args = append(args, slog.String("remediation", remediation))
+			}
+		}
+		o.logger.Warn("workspace reap failed", args...)
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      cleanupEventAt(now),
 			Event:   "workspace_reap_failed",

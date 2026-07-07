@@ -396,12 +396,19 @@ func TestTickWorkspaceCleanupFailureRecordsDiagnosticEvent(t *testing.T) {
 	})
 	state := newState(cfg)
 	tracker := &runningStateConnector{issuesByState: []connector.Issue{cancelled}}
-	reaper := &cleanupSweepReaper{err: errors.New("remove worktree: permission denied")}
+	workspacePath := "/tmp/detent-workspaces/digitaldrywood_detent_588"
+	remediation := "chmod workspace cache directories and rerun cleanup"
+	reaper := &cleanupSweepReaper{err: cleanupDiagnosticError{
+		message:     "remove worktree: permission denied",
+		path:        workspacePath,
+		remediation: remediation,
+	}}
+	var logs strings.Builder
 	orch := &Orchestrator{
 		cfg:       cfg,
 		connector: tracker,
 		reaper:    reaper,
-		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
 	}
 
 	orch.tick(context.Background(), &state, now)
@@ -416,6 +423,11 @@ func TestTickWorkspaceCleanupFailureRecordsDiagnosticEvent(t *testing.T) {
 	for _, want := range []string{"digitaldrywood/detent#588", "reason=cancelled", "permission denied"} {
 		if !strings.Contains(event.Message, want) {
 			t.Fatalf("cleanup failure event message = %q, want %q", event.Message, want)
+		}
+	}
+	for _, want := range []string{workspacePath, remediation} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("cleanup failure logs = %q, want %q", logs.String(), want)
 		}
 	}
 }
@@ -759,6 +771,24 @@ type cleanupSweepReaper struct {
 func (r *cleanupSweepReaper) ReapWorkspace(_ context.Context, issue connector.Issue) (WorkspaceReapResult, error) {
 	r.issues = append(r.issues, cloneIssue(issue))
 	return r.result, r.err
+}
+
+type cleanupDiagnosticError struct {
+	message     string
+	path        string
+	remediation string
+}
+
+func (e cleanupDiagnosticError) Error() string {
+	return e.message
+}
+
+func (e cleanupDiagnosticError) WorkspacePath() string {
+	return e.path
+}
+
+func (e cleanupDiagnosticError) Remediation() string {
+	return e.remediation
 }
 
 func recentStateEvent(state State, event string) (telemetryEvent, bool) {
