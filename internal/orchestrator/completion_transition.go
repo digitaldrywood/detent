@@ -42,8 +42,8 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			continue
 		}
 
+		result.transitioned[issueID] = struct{}{}
 		if direct, promoted := o.tryDirectCompletedActiveAutoPromote(ctx, state, issue, targetState, cfg, now); direct {
-			result.transitioned[issueID] = struct{}{}
 			if mergeWorkerIssue(promoted) {
 				o.recordMergeQueueEntered(state, promoted, now, "completed_active_auto_promote")
 				result.dispatchCandidates = append(result.dispatchCandidates, promoted)
@@ -67,7 +67,6 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			continue
 		}
 
-		result.transitioned[issueID] = struct{}{}
 		o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, targetState)
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now,

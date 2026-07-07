@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -195,6 +196,46 @@ func TestTransitionCompletedActiveIssuesKeepsHumanReviewForNonZeroQuietReview(t 
 	}
 	if got := state.Completed[issue.ID].Issue.State; got != "Human Review" {
 		t.Fatalf("Completed issue state = %q, want Human Review", got)
+	}
+}
+
+func TestTransitionCompletedActiveIssuesHandlesFailedReviewUpdate(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 7, 14, 0, 0, 0, time.UTC)
+	issue := completionTransitionIssue("In Progress", "OPEN")
+	trackerErr := errors.New("tracker unavailable")
+	tracker := &autoPromoteTickConnector{
+		stateIssues: []connector.Issue{issue},
+		updateErr:   trackerErr,
+	}
+	cfg := normalizeConfig(Config{
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:      issue,
+		FinalState: FinalStateCompleted,
+	}
+
+	result := orch.transitionCompletedActiveIssuesToReview(context.Background(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing after failed update", issue.ID)
+	}
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Human Review"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want attempted update %#v", got, want)
+	}
+	if got := state.Completed[issue.ID].Issue.State; got != "In Progress" {
+		t.Fatalf("Completed issue state = %q, want original In Progress after failed update", got)
+	}
+	if len(result.dispatchCandidates) != 0 {
+		t.Fatalf("dispatchCandidates = %#v, want none after failed update", result.dispatchCandidates)
+	}
+	if len(state.RecentEvents) != 0 {
+		t.Fatalf("RecentEvents = %#v, want no transition event after failed update", state.RecentEvents)
 	}
 }
 
