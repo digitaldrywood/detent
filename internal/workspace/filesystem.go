@@ -116,7 +116,7 @@ func (f *Filesystem) Create(ctx context.Context, issue Issue) (Info, error) {
 	info.Created = created
 	if created {
 		if err := f.runHook(ctx, "after_create", f.hooks.AfterCreate, info, issue); err != nil {
-			if cleanupErr := root.RemoveAll(info.Key); cleanupErr != nil {
+			if cleanupErr := removeWorkspacePath(f.root, info.Path); cleanupErr != nil {
 				f.logger.Warn("failed to clean filesystem workspace after after_create hook error", slog.String("path", info.Path), slog.Any("error", cleanupErr))
 			}
 			return Info{}, err
@@ -135,11 +135,6 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 	if err != nil {
 		return CleanupResult{}, err
 	}
-	root, err := os.OpenRoot(f.root)
-	if err != nil {
-		return CleanupResult{}, fmt.Errorf("open filesystem workspace root: %w", err)
-	}
-	defer f.closeRoot("workspace", root)
 	result := CleanupResult{}
 	exists, _, err := pathExists(info.Path)
 	if err != nil {
@@ -152,7 +147,7 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 	if err := f.runHook(ctx, "before_remove", f.hooks.BeforeRemove, info, issue); err != nil {
 		f.logger.Warn("filesystem workspace before_remove hook failed", slog.String("path", info.Path), slog.Any("error", err))
 	}
-	if err := root.RemoveAll(info.Key); err != nil {
+	if err := removeWorkspacePath(f.root, info.Path); err != nil {
 		return CleanupResult{}, fmt.Errorf("remove filesystem workspace: %w", err)
 	}
 	result.Worktrees = 1

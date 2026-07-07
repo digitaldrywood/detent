@@ -1063,6 +1063,56 @@ func TestLocalGitCleanupRemovesOnlyTargetWorktree(t *testing.T) {
 	}
 }
 
+func TestLocalGitCleanupRemediatesGeneratedCachePermissions(t *testing.T) {
+	t.Parallel()
+	skipWindows(t)
+
+	source := initSourceRepo(t)
+	root := filepath.Join(t.TempDir(), "workspaces")
+
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+
+	info, err := backend.Create(context.Background(), Issue{Identifier: "DD-CACHE-PERM"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	t.Cleanup(func() {
+		restoreWritableTree(t, info.Path)
+	})
+
+	cacheDir := filepath.Join(info.Path, "tmp", "_validation-cache", "go-mod", "modernc.org", "libc@v1.73.4")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatalf("mkdir cache dir: %v", err)
+	}
+	cacheFile := filepath.Join(cacheDir, "libc_amd64.go")
+	if err := os.WriteFile(cacheFile, []byte("package libc\n"), 0o600); err != nil {
+		t.Fatalf("write cache file: %v", err)
+	}
+	if err := os.Chmod(cacheFile, 0o444); err != nil {
+		t.Fatalf("chmod cache file: %v", err)
+	}
+	if err := os.Chmod(cacheDir, 0o555); err != nil {
+		t.Fatalf("chmod cache dir: %v", err)
+	}
+
+	if err := backend.Cleanup(context.Background(), "DD-CACHE-PERM"); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if _, err := os.Stat(info.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("workspace exists after cleanup, stat error = %v", err)
+	}
+	if branchExists(t, source, "detent/dd-cache-perm") {
+		t.Fatal("detent/dd-cache-perm branch still exists after cleanup")
+	}
+}
+
 func TestLocalGitCleanupRejectsForeignGitRepoWithoutBeforeRemove(t *testing.T) {
 	t.Parallel()
 
@@ -1237,6 +1287,29 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(raw)
+}
+
+func restoreWritableTree(t *testing.T, path string) {
+	t.Helper()
+
+	err := filepath.WalkDir(path, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if errors.Is(walkErr, os.ErrNotExist) {
+				return nil
+			}
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if entry.IsDir() {
+			return os.Chmod(path, 0o700)
+		}
+		return os.Chmod(path, 0o600)
+	})
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("restore writable tree: %v", err)
+	}
 }
 
 func mustCanonicalExistingPath(t *testing.T, path string) string {

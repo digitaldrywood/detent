@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -193,6 +194,28 @@ type CommandError struct {
 	ExitCode int
 	Output   string
 	Err      error
+}
+
+type workspaceRemovalError struct {
+	path        string
+	remediation string
+	err         error
+}
+
+func (e *workspaceRemovalError) Error() string {
+	return fmt.Sprintf("remove workspace path %q: %v; remediation: %s", e.path, e.err, e.remediation)
+}
+
+func (e *workspaceRemovalError) Unwrap() error {
+	return e.err
+}
+
+func (e *workspaceRemovalError) WorkspacePath() string {
+	return e.path
+}
+
+func (e *workspaceRemovalError) Remediation() string {
+	return e.remediation
 }
 
 func (e *CommandError) Error() string {
@@ -482,7 +505,7 @@ func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch strin
 			}
 		}
 		if exists {
-			if err := os.RemoveAll(path); err != nil {
+			if err := removeWorkspacePath(l.root, path); err != nil {
 				return false, fmt.Errorf("remove stale workspace path: %w", err)
 			}
 		}
@@ -695,16 +718,100 @@ func (l *LocalGit) removePath(ctx context.Context, path string) error {
 
 	if _, err := l.runGit(ctx, "worktree", "remove", "--force", path); err != nil {
 		if l.isSourceWorktree(ctx, path) {
-			return err
+			return l.retrySourceWorktreeRemoveAfterPermissionRemediation(ctx, path, err)
 		}
 		if l.isGitWorkspace(ctx, path) {
 			return fmt.Errorf("refusing to remove git workspace not managed by source: %s", path)
 		}
-		if err := os.RemoveAll(path); err != nil {
-			return fmt.Errorf("remove workspace path: %w", err)
+		if err := removeWorkspacePath(l.root, path); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+const workspaceRemovalRemediation = "ensure the Detent user owns the workspace, chmod writable directories inside it, then remove it or rerun Detent cleanup"
+
+func (l *LocalGit) retrySourceWorktreeRemoveAfterPermissionRemediation(ctx context.Context, path string, removeErr error) error {
+	path, chmodErr := remediateWorkspacePathPermissions(l.root, path)
+	if chmodErr != nil {
+		return &workspaceRemovalError{
+			path:        path,
+			remediation: workspaceRemovalRemediation,
+			err:         errors.Join(removeErr, fmt.Errorf("remediate workspace permissions: %w", chmodErr)),
+		}
+	}
+	if _, retryErr := l.runGit(ctx, "worktree", "remove", "--force", path); retryErr != nil {
+		return &workspaceRemovalError{
+			path:        path,
+			remediation: workspaceRemovalRemediation,
+			err:         retryErr,
+		}
+	}
+	return nil
+}
+
+func removeWorkspacePath(root string, path string) error {
+	path, err := validateWorkspacePath(root, path)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(path); err != nil {
+		if !errors.Is(err, fs.ErrPermission) {
+			return err
+		}
+		if chmodErr := makeWorkspaceTreeRemovable(path); chmodErr != nil {
+			return &workspaceRemovalError{
+				path:        path,
+				remediation: workspaceRemovalRemediation,
+				err:         errors.Join(err, fmt.Errorf("remediate workspace permissions: %w", chmodErr)),
+			}
+		}
+		if retryErr := os.RemoveAll(path); retryErr != nil {
+			return &workspaceRemovalError{
+				path:        path,
+				remediation: workspaceRemovalRemediation,
+				err:         retryErr,
+			}
+		}
+	}
+	return nil
+}
+
+func remediateWorkspacePathPermissions(root string, path string) (string, error) {
+	validated, err := validateWorkspacePath(root, path)
+	if err != nil {
+		return path, err
+	}
+	return validated, makeWorkspaceTreeRemovable(validated)
+}
+
+func makeWorkspaceTreeRemovable(path string) error {
+	return filepath.WalkDir(path, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("inspect %s: %w", path, err)
+		}
+		mode := info.Mode().Perm()
+		switch {
+		case entry.IsDir():
+			mode |= 0o700
+		case runtime.GOOS == "windows":
+			mode |= 0o600
+		default:
+			return nil
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			return fmt.Errorf("chmod %s: %w", path, err)
+		}
+		return nil
+	})
 }
 
 func (l *LocalGit) runHook(ctx context.Context, name string, command string, info Info, issue Issue) error {
