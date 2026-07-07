@@ -678,22 +678,27 @@ func recentSessionEntries(entries []telemetry.Completed) []recentSessionAPIRespo
 	payload := make([]recentSessionAPIResponse, 0, len(entries))
 	for _, entry := range entries {
 		payload = append(payload, recentSessionAPIResponse{
-			IssueID:           entry.ID,
-			Identifier:        entry.Identifier,
-			ProjectID:         entry.ProjectID,
-			IssueURL:          optionalString(entry.URL),
-			PullRequestURL:    optionalString(pullRequestURL(entry.Issue)),
-			PullRequestNumber: pullRequestNumber(entry.Issue),
-			StartedAt:         timestampString(entry.StartedAt),
-			CompletedAt:       timestampString(entry.CompletedAt),
-			Turns:             entry.Turns,
-			InputTokens:       entry.Tokens.Input,
-			OutputTokens:      entry.Tokens.Output,
-			TotalTokens:       entry.Tokens.Total,
-			RuntimeSeconds:    entry.RuntimeSeconds,
-			FinalState:        optionalString(entry.FinalState),
-			Model:             optionalString(entry.Model),
-			BudgetAlert:       false,
+			IssueID:            entry.ID,
+			Identifier:         entry.Identifier,
+			ProjectID:          entry.ProjectID,
+			IssueURL:           optionalString(entry.URL),
+			PullRequestURL:     optionalString(pullRequestURL(entry.Issue)),
+			PullRequestNumber:  pullRequestNumber(entry.Issue),
+			StartedAt:          timestampString(entry.StartedAt),
+			CompletedAt:        timestampString(entry.CompletedAt),
+			Turns:              entry.Turns,
+			InputTokens:        entry.Tokens.Input,
+			CachedInputTokens:  entry.Tokens.CachedInput,
+			OutputTokens:       entry.Tokens.Output,
+			ReasoningOutput:    entry.Tokens.ReasoningOutput,
+			TotalTokens:        entry.Tokens.Total,
+			ModelContextWindow: entry.Tokens.ModelContextWindow,
+			ContextPressure:    contextPressureResponse(entry.Tokens),
+			CacheReadFraction:  cacheReadFractionResponse(entry.Tokens),
+			RuntimeSeconds:     entry.RuntimeSeconds,
+			FinalState:         optionalString(entry.FinalState),
+			Model:              optionalString(entry.Model),
+			BudgetAlert:        false,
 		})
 	}
 	return payload
@@ -825,18 +830,36 @@ func totalsResponse(tokens telemetry.Tokens) tokenTotalsAPIResponse {
 		ReasoningOutput:    tokens.ReasoningOutput,
 		Total:              tokens.Total,
 		ModelContextWindow: tokens.ModelContextWindow,
+		ContextPressure:    contextPressureResponse(tokens),
+		CacheReadFraction:  cacheReadFractionResponse(tokens),
 		RuntimeSeconds:     tokens.RuntimeSeconds,
 	}
 }
 
 func tokenCountsResponse(tokens telemetry.Tokens) tokenCountsAPIResponse {
 	return tokenCountsAPIResponse{
-		Input:           tokens.Input,
-		CachedInput:     tokens.CachedInput,
-		Output:          tokens.Output,
-		ReasoningOutput: tokens.ReasoningOutput,
-		Total:           tokens.Total,
+		Input:              tokens.Input,
+		CachedInput:        tokens.CachedInput,
+		Output:             tokens.Output,
+		ReasoningOutput:    tokens.ReasoningOutput,
+		Total:              tokens.Total,
+		ModelContextWindow: tokens.ModelContextWindow,
+		ContextPressure:    contextPressureResponse(tokens),
+		CacheReadFraction:  cacheReadFractionResponse(tokens),
 	}
+}
+
+func contextPressureResponse(tokens telemetry.Tokens) *telemetry.ContextPressure {
+	value, ok := tokens.ContextPressure()
+	if !ok {
+		return nil
+	}
+	return &value
+}
+
+func cacheReadFractionResponse(tokens telemetry.Tokens) float64 {
+	value, _ := tokens.CacheReadFraction()
+	return value
 }
 
 func throughputResponse(throughput telemetry.TokenThroughput) throughputAPIResponse {
@@ -1431,21 +1454,26 @@ type statsAPIResponse struct {
 }
 
 type tokenCountsAPIResponse struct {
-	Input           int64 `json:"input_tokens"`
-	CachedInput     int64 `json:"cached_input_tokens,omitempty"`
-	Output          int64 `json:"output_tokens"`
-	ReasoningOutput int64 `json:"reasoning_output_tokens,omitempty"`
-	Total           int64 `json:"total_tokens"`
+	Input              int64                      `json:"input_tokens"`
+	CachedInput        int64                      `json:"cached_input_tokens,omitempty"`
+	Output             int64                      `json:"output_tokens"`
+	ReasoningOutput    int64                      `json:"reasoning_output_tokens,omitempty"`
+	Total              int64                      `json:"total_tokens"`
+	ModelContextWindow *int64                     `json:"model_context_window,omitempty"`
+	ContextPressure    *telemetry.ContextPressure `json:"context_pressure,omitempty"`
+	CacheReadFraction  float64                    `json:"cache_read_fraction,omitempty"`
 }
 
 type tokenTotalsAPIResponse struct {
-	Input              int64   `json:"input_tokens"`
-	CachedInput        int64   `json:"cached_input_tokens,omitempty"`
-	Output             int64   `json:"output_tokens"`
-	ReasoningOutput    int64   `json:"reasoning_output_tokens,omitempty"`
-	Total              int64   `json:"total_tokens"`
-	ModelContextWindow *int64  `json:"model_context_window,omitempty"`
-	RuntimeSeconds     float64 `json:"seconds_running"`
+	Input              int64                      `json:"input_tokens"`
+	CachedInput        int64                      `json:"cached_input_tokens,omitempty"`
+	Output             int64                      `json:"output_tokens"`
+	ReasoningOutput    int64                      `json:"reasoning_output_tokens,omitempty"`
+	Total              int64                      `json:"total_tokens"`
+	ModelContextWindow *int64                     `json:"model_context_window,omitempty"`
+	ContextPressure    *telemetry.ContextPressure `json:"context_pressure,omitempty"`
+	CacheReadFraction  float64                    `json:"cache_read_fraction,omitempty"`
+	RuntimeSeconds     float64                    `json:"seconds_running"`
 }
 
 type throughputAPIResponse struct {
@@ -1468,22 +1496,27 @@ type lifetimeTotalsResponse struct {
 }
 
 type recentSessionAPIResponse struct {
-	IssueID           string  `json:"issue_id"`
-	Identifier        string  `json:"identifier"`
-	ProjectID         string  `json:"project_id,omitempty"`
-	IssueURL          *string `json:"issue_url"`
-	PullRequestURL    *string `json:"pull_request_url"`
-	PullRequestNumber *int    `json:"pull_request_number"`
-	StartedAt         *string `json:"started_at"`
-	CompletedAt       *string `json:"completed_at"`
-	Turns             int     `json:"turns"`
-	InputTokens       int64   `json:"input_tokens"`
-	OutputTokens      int64   `json:"output_tokens"`
-	TotalTokens       int64   `json:"total_tokens"`
-	RuntimeSeconds    float64 `json:"runtime_seconds"`
-	FinalState        *string `json:"final_state"`
-	Model             *string `json:"model"`
-	BudgetAlert       bool    `json:"budget_alert?"`
+	IssueID            string                     `json:"issue_id"`
+	Identifier         string                     `json:"identifier"`
+	ProjectID          string                     `json:"project_id,omitempty"`
+	IssueURL           *string                    `json:"issue_url"`
+	PullRequestURL     *string                    `json:"pull_request_url"`
+	PullRequestNumber  *int                       `json:"pull_request_number"`
+	StartedAt          *string                    `json:"started_at"`
+	CompletedAt        *string                    `json:"completed_at"`
+	Turns              int                        `json:"turns"`
+	InputTokens        int64                      `json:"input_tokens"`
+	CachedInputTokens  int64                      `json:"cached_input_tokens,omitempty"`
+	OutputTokens       int64                      `json:"output_tokens"`
+	ReasoningOutput    int64                      `json:"reasoning_output_tokens,omitempty"`
+	TotalTokens        int64                      `json:"total_tokens"`
+	ModelContextWindow *int64                     `json:"model_context_window,omitempty"`
+	ContextPressure    *telemetry.ContextPressure `json:"context_pressure,omitempty"`
+	CacheReadFraction  float64                    `json:"cache_read_fraction,omitempty"`
+	RuntimeSeconds     float64                    `json:"runtime_seconds"`
+	FinalState         *string                    `json:"final_state"`
+	Model              *string                    `json:"model"`
+	BudgetAlert        bool                       `json:"budget_alert?"`
 }
 
 type budgetAPIResponse struct {

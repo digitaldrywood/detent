@@ -778,7 +778,7 @@ func demoHealthySnapshot() telemetry.Snapshot {
 				DiffRemoved:    96,
 				DiffFiles:      9,
 				DiffStatus:     "ok",
-				Tokens:         telemetry.Tokens{Input: 38240, Output: 12840, Total: 51080, RuntimeSeconds: 2040},
+				Tokens:         telemetry.Tokens{Input: 38240, CachedInput: 24700, Output: 12840, ReasoningOutput: 3100, Total: 51080, RuntimeSeconds: 2040, ModelContextWindow: demoInt64Ptr(64000)},
 			},
 			{
 				Issue:           demoIssue("docs-site", "demo-running-docs", "digitaldrywood/docs-site#5261", "Write direct loading documentation examples", "In Progress", 2),
@@ -796,7 +796,7 @@ func demoHealthySnapshot() telemetry.Snapshot {
 				DiffRemoved:     18,
 				DiffFiles:       3,
 				DiffStatus:      "ok",
-				Tokens:          telemetry.Tokens{Input: 15200, Output: 6250, Total: 21450, RuntimeSeconds: 1080},
+				Tokens:          telemetry.Tokens{Input: 15200, CachedInput: 9100, Output: 6250, ReasoningOutput: 1500, Total: 21450, RuntimeSeconds: 1080, ModelContextWindow: demoInt64Ptr(32000)},
 			},
 			{
 				Issue:           demoIssue("infra-platform", "demo-running-infra", "digitaldrywood/infra-platform#5262", "Verify isolated runtime paths on ephemeral ports", "In Progress", 3),
@@ -814,7 +814,7 @@ func demoHealthySnapshot() telemetry.Snapshot {
 				DiffRemoved:     22,
 				DiffFiles:       5,
 				DiffStatus:      "ok",
-				Tokens:          telemetry.Tokens{Input: 21100, Output: 8100, Total: 29200, RuntimeSeconds: 1260},
+				Tokens:          telemetry.Tokens{Input: 21100, CachedInput: 14300, Output: 8100, ReasoningOutput: 2100, Total: 29200, RuntimeSeconds: 1260, ModelContextWindow: demoInt64Ptr(32768)},
 			},
 		},
 		Queue: []telemetry.Queued{
@@ -1177,7 +1177,7 @@ func demoCompleted(projectID string, id string, identifier string, title string,
 		RuntimeSeconds: completedAt.Sub(startedAt).Seconds(),
 		FinalState:     state,
 		Model:          model,
-		Tokens:         telemetry.Tokens{Input: input, Output: output, Total: totalTokens, RuntimeSeconds: completedAt.Sub(startedAt).Seconds()},
+		Tokens:         telemetry.Tokens{Input: input, CachedInput: input / 3, Output: output, ReasoningOutput: output / 4, Total: totalTokens, RuntimeSeconds: completedAt.Sub(startedAt).Seconds(), ModelContextWindow: demoInt64Ptr(128000)},
 	}
 }
 
@@ -1198,6 +1198,10 @@ func demoPRURL(identifier string, number int) string {
 }
 
 func demoTimePtr(value time.Time) *time.Time {
+	return &value
+}
+
+func demoInt64Ptr(value int64) *int64 {
 	return &value
 }
 

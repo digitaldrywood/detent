@@ -175,13 +175,13 @@ templ projectRunsSnapshotBody(data DashboardData) {
 // is a dot plus text, never color alone.
 templ projectRunsTable(id string, rows []projectRunRow) {
 	<section id={ id } class="flex flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
-		<div class="grid grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_70px_110px] items-center gap-3.5 border-b border-line px-4 py-2">
+		<div class="grid grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_110px] items-center gap-3.5 border-b border-line px-4 py-2">
 			<span class="text-2xs font-semibold uppercase text-dim">Issue</span>
 			<span class="text-2xs font-semibold uppercase text-dim">Title</span>
 			<span class="text-2xs font-semibold uppercase text-dim">State</span>
 			<span class="text-2xs font-semibold uppercase text-dim">Runtime · Turns</span>
 			<span class="text-2xs font-semibold uppercase text-dim text-right">Tokens</span>
-			<span class="text-2xs font-semibold uppercase text-dim text-right">Cost</span>
+			<span class="text-2xs font-semibold uppercase text-dim text-right">Context</span>
 			<span class="text-2xs font-semibold uppercase text-dim text-right">Finished</span>
 		</div>
 		if len(rows) == 0 {
@@ -197,7 +197,12 @@ templ projectRunsTable(id string, rows []projectRunRow) {
 				</span>
 				<span class="whitespace-nowrap font-mono text-xs text-sec tabular-nums">{ row.Runtime }</span>
 				<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Tokens }</span>
-				<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Cost }</span>
+				<span
+					class={ "whitespace-nowrap text-right font-mono text-xs tabular-nums " + boardExtraTextClass(row.ContextKind) }
+					if row.ContextTitle != "" {
+						title={ row.ContextTitle }
+					}
+				>{ row.Context }</span>
 				<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Finished }</span>
 			</div>
 		}

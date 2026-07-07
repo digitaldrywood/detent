@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -528,6 +529,97 @@ type Tokens struct {
 	Total              int64   `json:"total_tokens"`
 	ModelContextWindow *int64  `json:"model_context_window,omitempty"`
 	RuntimeSeconds     float64 `json:"seconds_running,omitempty"`
+}
+
+type ContextPressureState string
+
+const (
+	ContextPressureNormal   ContextPressureState = "normal"
+	ContextPressureWatch    ContextPressureState = "watch"
+	ContextPressureWarning  ContextPressureState = "warning"
+	ContextPressureCritical ContextPressureState = "critical"
+)
+
+type ContextPressure struct {
+	TotalTokens        int64                `json:"total_tokens"`
+	ContextLimitTokens int64                `json:"context_limit_tokens"`
+	PercentUsed        float64              `json:"percent_used"`
+	ThresholdState     ContextPressureState `json:"threshold_state"`
+}
+
+func (t Tokens) MarshalJSON() ([]byte, error) {
+	type tokensJSON struct {
+		Input              int64            `json:"input_tokens"`
+		CachedInput        int64            `json:"cached_input_tokens,omitempty"`
+		Output             int64            `json:"output_tokens"`
+		ReasoningOutput    int64            `json:"reasoning_output_tokens,omitempty"`
+		Total              int64            `json:"total_tokens"`
+		ModelContextWindow *int64           `json:"model_context_window,omitempty"`
+		ContextPressure    *ContextPressure `json:"context_pressure,omitempty"`
+		CacheReadFraction  float64          `json:"cache_read_fraction,omitempty"`
+		RuntimeSeconds     float64          `json:"seconds_running,omitempty"`
+	}
+
+	var pressure *ContextPressure
+	if value, ok := t.ContextPressure(); ok {
+		pressure = &value
+	}
+	cacheReadFraction, _ := t.CacheReadFraction()
+
+	return json.Marshal(tokensJSON{
+		Input:              t.Input,
+		CachedInput:        t.CachedInput,
+		Output:             t.Output,
+		ReasoningOutput:    t.ReasoningOutput,
+		Total:              t.Total,
+		ModelContextWindow: t.ModelContextWindow,
+		ContextPressure:    pressure,
+		CacheReadFraction:  cacheReadFraction,
+		RuntimeSeconds:     t.RuntimeSeconds,
+	})
+}
+
+func (t Tokens) ContextPressure() (ContextPressure, bool) {
+	if t.ModelContextWindow == nil || *t.ModelContextWindow <= 0 {
+		return ContextPressure{}, false
+	}
+	limit := *t.ModelContextWindow
+	total := t.Total
+	if total < 0 {
+		total = 0
+	}
+	percent := float64(total) / float64(limit) * 100
+	return ContextPressure{
+		TotalTokens:        total,
+		ContextLimitTokens: limit,
+		PercentUsed:        percent,
+		ThresholdState:     ContextPressureStateForPercent(percent),
+	}, true
+}
+
+func (t Tokens) CacheReadFraction() (float64, bool) {
+	input := t.Input
+	cached := t.CachedInput
+	if input <= 0 || cached <= 0 {
+		return 0, false
+	}
+	if cached > input {
+		cached = input
+	}
+	return float64(cached) / float64(input), true
+}
+
+func ContextPressureStateForPercent(percent float64) ContextPressureState {
+	switch {
+	case percent >= 95:
+		return ContextPressureCritical
+	case percent >= 85:
+		return ContextPressureWarning
+	case percent >= 70:
+		return ContextPressureWatch
+	default:
+		return ContextPressureNormal
+	}
 }
 
 type TokenThroughput struct {

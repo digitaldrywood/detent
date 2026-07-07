@@ -225,7 +225,8 @@ func (m Model) renderSnapshot() string {
 			m.styles.muted.Render(" | ") +
 			m.styles.warn.Render("out "+formatCount(snapshot.Tokens.Output)) +
 			m.styles.muted.Render(" | ") +
-			m.styles.warn.Render("total "+formatCount(snapshot.Tokens.Total)),
+			m.styles.warn.Render("total "+formatCount(snapshot.Tokens.Total)) +
+			formatCacheReadSummary(snapshot.Tokens, m.styles),
 		"│ Budget: " + formatBudget(snapshot.Budget, m.styles),
 		"│ Rate Limits: " + formatRateLimits(snapshot.RateLimits, m.now, m.styles),
 		"│ Project: " + formatOptionalInfo(formatProject(snapshot.Project), m.styles),
@@ -296,17 +297,18 @@ func formatRunningRowsWithLayout(running []telemetry.Running, layout runningTabl
 			formatCell(defaultString(row.State, "unknown"), runningStageWidth, alignLeft),
 			formatCell(defaultString(row.ProcessIdentity, "n/a"), runningProcessWidth, alignLeft),
 			formatCell(formatRuntimeAndTurns(row.RuntimeSeconds, row.TurnCount), runningAgeWidth, alignLeft),
-			formatCell(formatCount(row.Tokens.Total), runningTokensWidth, alignRight),
+			formatCell(formatRunningTokenPressure(row.Tokens), runningTokensWidth, alignRight),
 			formatCell(compactSessionID(row.SessionID), runningSessionWidth, alignLeft),
 			formatCell(cleanInline(event), layout.eventWidth, alignLeft),
 		}
+		tokenStyle := runningTokenStyle(row.Tokens, s)
 
 		lines = append(lines, "│ "+s.ok.Render("●")+" "+
 			s.info.Render(cells[0])+" "+
 			statusStyle.Render(cells[1])+" "+
 			s.warn.Render(cells[2])+" "+
 			s.accent.Render(cells[3])+" "+
-			s.warn.Render(cells[4])+" "+
+			tokenStyle.Render(cells[4])+" "+
 			s.info.Render(cells[5])+" "+
 			statusStyle.Render(cells[6]))
 	}
@@ -543,7 +545,7 @@ func runningTableHeaderWithLayout(layout runningTableLayout, s styles) string {
 		formatCell("STAGE", runningStageWidth, alignLeft),
 		formatCell("PID", runningProcessWidth, alignLeft),
 		formatCell("AGE / TURN", runningAgeWidth, alignLeft),
-		formatCell("TOKENS", runningTokensWidth, alignLeft),
+		formatCell("TOKENS/CTX", runningTokensWidth, alignLeft),
 		formatCell("SESSION", runningSessionWidth, alignLeft),
 		formatCell("EVENT", layout.eventWidth, alignLeft),
 	}
@@ -732,6 +734,47 @@ func formatTokenThroughput(throughput telemetry.TokenThroughput) string {
 	return formatCount(int64(math.Round(throughput.TokensPerSecond))) + " tps"
 }
 
+func formatCacheReadSummary(tokens telemetry.Tokens, s styles) string {
+	fraction, ok := tokens.CacheReadFraction()
+	if !ok {
+		return ""
+	}
+	return s.muted.Render(" | ") + s.info.Render("cache "+formatContextPercent(fraction*100))
+}
+
+func formatRunningTokenPressure(tokens telemetry.Tokens) string {
+	label := formatCount(tokens.Total)
+	pressure, ok := tokens.ContextPressure()
+	if !ok {
+		return label
+	}
+	return label + "/" + formatContextPercent(pressure.PercentUsed)
+}
+
+func runningTokenStyle(tokens telemetry.Tokens, s styles) lipgloss.Style {
+	pressure, ok := tokens.ContextPressure()
+	if !ok {
+		return s.warn
+	}
+	switch pressure.ThresholdState {
+	case telemetry.ContextPressureCritical:
+		return s.error
+	case telemetry.ContextPressureWarning, telemetry.ContextPressureWatch:
+		return s.warn
+	case telemetry.ContextPressureNormal:
+		return s.ok
+	default:
+		return s.warn
+	}
+}
+
+func formatContextPercent(percent float64) string {
+	if percent < 0 || math.IsNaN(percent) || math.IsInf(percent, 0) {
+		percent = 0
+	}
+	return formatCount(int64(math.Round(percent))) + "%"
+}
+
 func formatRuntimeSeconds(seconds float64) string {
 	if seconds < 0 {
 		seconds = 0
@@ -873,7 +916,7 @@ const (
 	runningStageWidth          = 14
 	runningProcessWidth        = 12
 	runningAgeWidth            = 12
-	runningTokensWidth         = 10
+	runningTokensWidth         = 13
 	runningSessionWidth        = 18
 	runningEventMinWidth       = 12
 	runningRowChromeWidth      = 10
