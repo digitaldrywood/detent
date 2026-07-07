@@ -851,6 +851,23 @@ func TestLogAutoPromoteDecisionIncludesHydrationReasons(t *testing.T) {
 				"pull_request_hydration_next_retry_at=2026-06-25T12:05:00Z",
 			},
 		},
+		{
+			name: "stale successful check run",
+			pullRequest: &connector.PullRequest{
+				Number:   77,
+				CIStatus: "pass",
+				StaleSuccessfulChecks: []connector.PullRequestCheck{{
+					Name:       "Installer Smoke (ubuntu-latest)",
+					Status:     "in_progress",
+					Conclusion: "success",
+				}},
+			},
+			want: []string{
+				"ci_anomaly=stale_successful_check_run",
+				"stale_successful_checks=\"Installer Smoke (ubuntu-latest)\"",
+				"ci_anomaly_action=treated_completed_successful_check_runs_as_passed",
+			},
+		},
 	}
 
 	for _, tt := range tests {

@@ -1209,6 +1209,62 @@ func TestRunnerRunLogsLifecycleWithoutPromptOrMessageBody(t *testing.T) {
 	}
 }
 
+func TestRunnerRunCompletesSuccessfulTurnWithCleanupError(t *testing.T) {
+	t.Parallel()
+
+	workspacePath := t.TempDir()
+	var logs bytes.Buffer
+	sessionStore := &fakeSessionStore{sessionID: 970}
+	codexClient := &fakeCodexClient{
+		updates: []AgentUpdate{
+			{Type: AgentUpdateTurnStarted, ThreadID: "thread-970", TurnID: "turn-1"},
+			{Type: AgentUpdateTurnCompleted, ThreadID: "thread-970", TurnID: "turn-1", Status: "completed"},
+		},
+		result: AgentTurnResult{ThreadID: "thread-970", TurnID: "turn-1", SessionID: "thread-970-turn-1"},
+		err:    NewAgentTurnCleanupError(errors.New("close codex app-server transport: operation not permitted")),
+	}
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{Config: config.Config{}},
+		Workspace: &fakeWorkspaceBackend{
+			info: workspace.Info{Path: workspacePath, Key: "issue-970", Branch: "detent/issue-970"},
+		},
+		AgentBackend: codexClient,
+		Store:        sessionStore,
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-970",
+			Identifier: "digitaldrywood/detent#970",
+			Title:      "Handle stale successful CI checks",
+			State:      "Todo",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.FinalState != FinalStateCompleted {
+		t.Fatalf("FinalState = %q, want completed", result.FinalState)
+	}
+	if sessionStore.finished.FinalState != FinalStateCompleted {
+		t.Fatalf("SessionFinish.FinalState = %q, want completed", sessionStore.finished.FinalState)
+	}
+
+	logText := logs.String()
+	if !strings.Contains(logText, "cleanup_error") || !strings.Contains(logText, "operation not permitted") {
+		t.Fatalf("logs missing cleanup warning:\n%s", logText)
+	}
+	if strings.Contains(logText, "outcome=failed") {
+		t.Fatalf("logs reported failed outcome for cleanup-only error:\n%s", logText)
+	}
+}
+
 func TestRunnerPlanModeCapturesOutputAndConstrainsPrompt(t *testing.T) {
 	t.Parallel()
 
