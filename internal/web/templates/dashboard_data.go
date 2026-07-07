@@ -2754,7 +2754,7 @@ func projectKanbanCardCanCommentOnPullRequest(data DashboardData, card projectKa
 }
 
 func projectKanbanCardCanUseComments(data DashboardData, card projectKanbanCard) bool {
-	return snapshotReady(data.Snapshot) && isProjectDashboard(data) && projectKanbanCardIntegrationEnabled(data, card)
+	return snapshotReady(data.Snapshot) && projectKanbanCardIntegrationEnabled(data, card)
 }
 
 func projectKanbanMoveTargetStates(data DashboardData, card projectKanbanCard) []string {

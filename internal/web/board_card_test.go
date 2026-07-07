@@ -210,6 +210,24 @@ func TestAPIBoardCardRendersPullRequestCommentsWhenSupported(t *testing.T) {
 			t.Fatalf("sheet missing %q:\n%s", want, rec.Body.String())
 		}
 	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%2342&actions=board", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fleet status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{
+		`data-kanban-comment-tab="pr"`,
+		"PR comments",
+		"Reviewed implementation details",
+		"Comment · PR",
+		`name="kanban_board" value="fleet"`,
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("fleet sheet missing %q:\n%s", want, rec.Body.String())
+		}
+	}
 }
 
 func TestAPIBoardCardHidesPullRequestCommentsWhenUnsupported(t *testing.T) {
@@ -256,6 +274,22 @@ func TestAPIBoardCardHidesPullRequestCommentsWhenUnsupported(t *testing.T) {
 	} {
 		if strings.Contains(rec.Body.String(), unwanted) {
 			t.Fatalf("unsupported PR comments sheet contains %q:\n%s", unwanted, rec.Body.String())
+		}
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%2342&actions=board", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fleet status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	for _, unwanted := range []string{
+		`data-kanban-comment-tab="pr"`,
+		"PR comments",
+		"Comment · PR",
+	} {
+		if strings.Contains(rec.Body.String(), unwanted) {
+			t.Fatalf("unsupported fleet PR comments sheet contains %q:\n%s", unwanted, rec.Body.String())
 		}
 	}
 }
@@ -352,5 +386,123 @@ func TestAPIBoardCardPreservesProjectScope(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "kanban_board=") {
 		t.Fatalf("sheet opened without board actions must omit kanban actions:\n%s", rec.Body.String())
+	}
+}
+
+func TestAPIBoardCardFleetSheetShowsIssueCommentControls(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, &kanbanActionConnector{name: "github"})
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_fleet_comment",
+			Identifier: "digitaldrywood/detent#953",
+			ProjectID:  "detent",
+			Title:      "Fleet comment card",
+			State:      "Todo",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%23953&actions=board", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{
+		"Fleet comment card",
+		"Comment on issue",
+		`name="kanban_board" value="fleet"`,
+		`name="kanban_thread" value="true"`,
+		`hx-post="/api/v1/kanban/comment"`,
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("fleet sheet missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+}
+
+func TestAPIBoardCardFleetReadOnlyShowsCommentsWithoutWriteControls(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{
+		name: "github",
+		issueComments: map[string][]connector.IssueComment{
+			"I_read_only_comment": {{
+				ID:          "IC_read_only",
+				Backend:     connector.BackendGitHub.String(),
+				Body:        "Existing read-only discussion",
+				AuthorLogin: "alice",
+				TargetType:  connector.IssueCommentTargetIssue,
+			}},
+		},
+	}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeReadOnly,
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_read_only_comment",
+			Identifier: "digitaldrywood/detent#954",
+			ProjectID:  "detent",
+			Title:      "Read-only fleet comment card",
+			State:      "Todo",
+			Comments: []telemetry.IssueComment{{
+				ID:          "IC_read_only",
+				Backend:     connector.BackendGitHub.String(),
+				Body:        "Existing read-only discussion",
+				AuthorLogin: "alice",
+				TargetType:  connector.IssueCommentTargetIssue,
+			}},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%23954&actions=board", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{
+		"Read-only fleet comment card",
+		"Existing read-only discussion",
+		"alice",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("read-only fleet sheet missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+	for _, unwanted := range []string{
+		"Comment on issue",
+		`name="kanban_thread" value="true"`,
+		`hx-post="/api/v1/kanban/comment"`,
+	} {
+		if strings.Contains(rec.Body.String(), unwanted) {
+			t.Fatalf("read-only fleet sheet contains %q:\n%s", unwanted, rec.Body.String())
+		}
 	}
 }
