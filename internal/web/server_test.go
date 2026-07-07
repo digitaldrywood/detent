@@ -2734,6 +2734,93 @@ func TestKanbanThreadCommentRefreshesIssueComments(t *testing.T) {
 	}
 }
 
+func TestKanbanFleetThreadCommentRoutesToOwningProject(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	fleetConnector := &kanbanActionConnector{name: "fleet"}
+	projectConnector := &kanbanActionConnector{name: "github"}
+	deps.Connector = fleetConnector
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, projectConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_fleet_comment",
+			Identifier: "digitaldrywood/detent#953",
+			ProjectID:  "detent",
+			Title:      "Fleet commentable issue",
+			State:      "Todo",
+			PullRequest: &telemetry.PullRequest{
+				Number: 42,
+				URL:    "https://github.com/digitaldrywood/frontend/pull/42",
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"kanban_thread":  {"true"},
+		"project_id":     {"detent"},
+		"kanban_board":   {"fleet"},
+		"board_actions":  {"true"},
+		"target":         {"issue"},
+		"issue_id":       {"I_fleet_comment"},
+		"identifier":     {"digitaldrywood/detent#953"},
+		"issue_identity": {"digitaldrywood/detent#953"},
+		"title":          {"Fleet commentable issue"},
+		"body":           {"Fleet issue note"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/comment", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got, want := projectConnector.comments(), []kanbanComment{{issueID: "I_fleet_comment", body: "Fleet issue note"}}; !equalComments(got, want) {
+		t.Fatalf("project comments = %#v, want %#v", got, want)
+	}
+	if got := fleetConnector.comments(); len(got) != 0 {
+		t.Fatalf("fleet connector comments = %#v, want none", got)
+	}
+	for _, want := range []string{
+		`id="kanban-issue-comments-panel"`,
+		"Fleet issue note",
+		"Comment submitted.",
+		`name="kanban_board" value="fleet"`,
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("thread response missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+
+	prForm := url.Values{
+		"project_id":    {"detent"},
+		"kanban_board":  {"fleet"},
+		"target":        {"pr"},
+		"pr_repository": {"digitaldrywood/frontend"},
+		"pr_number":     {"42"},
+		"body":          {"Fleet PR note"},
+	}
+	rec = performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/comment", prForm)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pr status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got, want := projectConnector.prComments(), []kanbanPRComment{{repository: "digitaldrywood/frontend", number: 42, body: "Fleet PR note"}}; !equalPRComments(got, want) {
+		t.Fatalf("project PR comments = %#v, want %#v", got, want)
+	}
+	if got := fleetConnector.prComments(); len(got) != 0 {
+		t.Fatalf("fleet connector PR comments = %#v, want none", got)
+	}
+}
+
 func TestBoardCardSheetShowsLocalCommentControlsOnly(t *testing.T) {
 	t.Parallel()
 
