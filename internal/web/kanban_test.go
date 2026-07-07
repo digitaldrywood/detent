@@ -76,6 +76,64 @@ func TestKanbanStateNamesIgnoreCompletedSessionStates(t *testing.T) {
 	}
 }
 
+func TestKanbanStateNamesIgnoreRawGitHubRuntimeStates(t *testing.T) {
+	t.Parallel()
+
+	cfg := workflowconfig.Config{
+		Tracker: workflowconfig.Tracker{
+			ObservedStates: []string{"Backlog", "Human Review"},
+			ActiveStates:   []string{"Todo", "In Progress", "Merging"},
+			TerminalStates: []string{"Done"},
+		},
+	}
+	snapshot := telemetry.Snapshot{
+		BoardIssues: []telemetry.Issue{
+			{ID: "custom", State: "Needs Triage"},
+		},
+		Pipeline: []telemetry.Issue{
+			{ID: "pipeline-open", State: "Open"},
+		},
+		Running: []telemetry.Running{
+			{Issue: telemetry.Issue{ID: "running-open", State: "OPEN"}},
+		},
+		Queue: []telemetry.Queued{
+			{Issue: telemetry.Issue{ID: "queue-closed", State: "Closed"}},
+		},
+		Blocked: []telemetry.Blocked{
+			{Issue: telemetry.Issue{ID: "blocked-closed", State: "CLOSED"}},
+		},
+	}
+
+	got := kanbanStateNames(cfg, snapshot)
+	want := []string{"Backlog", "Human Review", "Todo", "In Progress", "Merging", "Done", "Needs Triage"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("kanbanStateNames() = %#v, want %#v", got, want)
+	}
+}
+
+func TestKanbanStateNamesAllowConfiguredOpenState(t *testing.T) {
+	t.Parallel()
+
+	cfg := workflowconfig.Config{
+		Tracker: workflowconfig.Tracker{
+			ObservedStates: []string{"Open"},
+			ActiveStates:   []string{"In Progress"},
+			TerminalStates: []string{"Done"},
+		},
+	}
+	snapshot := telemetry.Snapshot{
+		Running: []telemetry.Running{
+			{Issue: telemetry.Issue{ID: "running-open", State: "OPEN"}},
+		},
+	}
+
+	got := kanbanStateNames(cfg, snapshot)
+	want := []string{"Open", "In Progress", "Done"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("kanbanStateNames() = %#v, want %#v", got, want)
+	}
+}
+
 func TestKanbanSnapshotWithPendingStatesUpdatesBlockedRefs(t *testing.T) {
 	t.Parallel()
 

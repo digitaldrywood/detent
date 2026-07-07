@@ -1476,6 +1476,122 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 	}
 }
 
+func TestProjectKanbanBoardPrefersConfiguredStateOverRawGitHubRuntimeState(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 7, 13, 23, 54, 0, time.UTC)
+	reviewAt := now.Add(-9 * time.Minute)
+	board := projectKanbanBoardView(DashboardData{
+		Kanban: KanbanData{
+			States: []string{"Backlog", "Todo", "In Progress", "Human Review", "Merging", "Done"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:             "issue-987",
+					Identifier:     "digitaldrywood/detent#987",
+					ProjectID:      "detent",
+					Title:          "Recover workspace reaping when cached files return permission denied",
+					State:          "Human Review",
+					Labels:         []string{"detent:human-review"},
+					StageUpdatedAt: &reviewAt,
+				},
+			},
+			Pipeline: []telemetry.Issue{
+				{
+					ID:         "issue-987",
+					Identifier: "digitaldrywood/detent#987",
+					ProjectID:  "detent",
+					Title:      "Recover workspace reaping when cached files return permission denied",
+					State:      "Open",
+				},
+			},
+			Running: []telemetry.Running{
+				{
+					Issue: telemetry.Issue{
+						ID:         "issue-987",
+						Identifier: "digitaldrywood/detent#987",
+						ProjectID:  "detent",
+						Title:      "Recover workspace reaping when cached files return permission denied",
+						State:      "OPEN",
+					},
+					StartedAt: now.Add(-2 * time.Minute),
+				},
+			},
+			Queue: []telemetry.Queued{
+				{
+					Issue: telemetry.Issue{
+						ID:         "issue-987",
+						Identifier: "digitaldrywood/detent#987",
+						ProjectID:  "detent",
+						Title:      "Recover workspace reaping when cached files return permission denied",
+						State:      "OPEN",
+					},
+					Attempt: 1,
+				},
+			},
+		},
+	})
+
+	if got := collectKanbanLaneTitles(board.AllLanes); containsString(got, "Open") {
+		t.Fatalf("all lanes = %#v, want no raw Open lane", got)
+	}
+	got := collectKanbanCards(board.AllLanes)
+	want := []kanbanCardSnapshot{
+		{Lane: "Human Review", IssueNumber: "#987", Title: "Recover workspace reaping when cached files return permission denied", TimeInStage: "9m 0s", WaitDetail: "waiting for linked PR", Labels: "detent:human-review", Metadata: "No linked PR"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("kanban cards len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("kanban card %d = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestProjectKanbanBoardMapsRawClosedBoardIssueToConfiguredDoneLane(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 7, 14, 5, 0, 0, time.UTC)
+	closedAt := now.Add(-3 * time.Minute)
+	board := projectKanbanBoardView(DashboardData{
+		Kanban: KanbanData{
+			States: []string{"Todo", "In Progress", "Done"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:             "issue-991",
+					Identifier:     "digitaldrywood/detent#991",
+					ProjectID:      "detent",
+					Title:          "Closed board issue",
+					State:          "CLOSED",
+					StageUpdatedAt: &closedAt,
+				},
+			},
+		},
+	})
+
+	if got := collectKanbanLaneTitles(board.AllLanes); containsString(got, "Closed") {
+		t.Fatalf("all lanes = %#v, want no raw Closed lane", got)
+	}
+	got := collectKanbanCards(board.AllLanes)
+	want := []kanbanCardSnapshot{
+		{Lane: "Done", IssueNumber: "#991", Title: "Closed board issue", TimeInStage: "3m 0s", Metadata: "No linked PR"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("kanban cards len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("kanban card %d = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestProjectKanbanBoardShowsMergeLaneStatus(t *testing.T) {
 	t.Parallel()
 
@@ -1983,7 +2099,7 @@ func TestCompletedOpenPRSessionDoesNotCreateWorkflowCards(t *testing.T) {
 		},
 	}
 
-	if got := projectKanbanIssues(snapshot); len(got) != 0 {
+	if got := projectKanbanIssues(snapshot, nil); len(got) != 0 {
 		t.Fatalf("projectKanbanIssues() len = %d, want 0; got %#v", len(got), got)
 	}
 	if got := collectPipelineCards(prPipelineLanes(snapshot)); len(got) != 0 {
