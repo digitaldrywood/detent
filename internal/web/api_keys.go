@@ -59,6 +59,7 @@ func (s *Server) apiKeysPage(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, errorResponse("api_keys_failed", "API keys page failed"))
 	}
 	applyAPIKeysPreferences(c.Request(), &data)
+	s.setAPIKeyDashboardCookie(c, data.DashboardManagementToken)
 	return render(c, templates.APIKeysPage(data))
 }
 
@@ -181,25 +182,33 @@ func (s *Server) apiKeysData(ctx context.Context, c echo.Context) (templates.API
 	activeRows, inactiveRows := apiKeyRows(keys, apiNow(), search, sortKey)
 	exampleProject := apiKeyExampleProject(s.registry)
 	return templates.APIKeysData{
-		Title:                   instancePageTitle(instanceName, "Detent API Keys"),
-		ApplicationName:         applicationName(instanceName),
-		InstanceName:            instanceName,
-		Version:                 s.version,
-		Build:                   s.build,
-		Snapshot:                snapshot,
-		Assets:                  s.assets.templatePaths(),
-		SidebarProjects:         sidebarProjects,
-		ActiveNav:               "api-keys",
-		Search:                  search,
-		Sort:                    sortKey,
-		ActiveRows:              activeRows,
-		InactiveRows:            inactiveRows,
-		ProjectOptions:          apiKeyProjectOptions(s.registry),
-		ShowStaticOnlyBanner:    !serverAddressLoopback(s.serverAddr) && s.apiToken() != "" && len(keys) == 0,
-		StaticTokenConfigured:   s.apiToken() != "",
-		WorkItemExampleProject:  exampleProject,
-		WorkItemExampleEndpoint: apiKeyExampleEndpoint(s.dashboardURL, exampleProject),
+		Title:                    instancePageTitle(instanceName, "Detent API Keys"),
+		ApplicationName:          applicationName(instanceName),
+		InstanceName:             instanceName,
+		Version:                  s.version,
+		Build:                    s.build,
+		Snapshot:                 snapshot,
+		Assets:                   s.assets.templatePaths(),
+		SidebarProjects:          sidebarProjects,
+		ActiveNav:                "api-keys",
+		Search:                   search,
+		Sort:                     sortKey,
+		ActiveRows:               activeRows,
+		InactiveRows:             inactiveRows,
+		ProjectOptions:           apiKeyProjectOptions(s.registry),
+		ShowStaticOnlyBanner:     !serverAddressLoopback(s.serverAddr) && s.apiToken() != "" && len(keys) == 0,
+		StaticTokenConfigured:    s.apiToken() != "",
+		DashboardManagementToken: s.apiKeyDashboardManagementToken(),
+		WorkItemExampleProject:   exampleProject,
+		WorkItemExampleEndpoint:  apiKeyExampleEndpoint(s.dashboardURL, exampleProject),
 	}, nil
+}
+
+func (s *Server) apiKeyDashboardManagementToken() string {
+	if s == nil || s.apiToken() != "" {
+		return ""
+	}
+	return s.apiKeyDashboardToken()
 }
 
 func apiKeyCreateRequest(c echo.Context) (apiKeyCreatePayload, error) {

@@ -4,34 +4,37 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/a-h/templ"
+
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 type APIKeysData struct {
-	Title                   string
-	ApplicationName         string
-	InstanceName            string
-	Version                 string
-	Build                   buildinfo.Info
-	Snapshot                telemetry.Snapshot
-	Assets                  AssetPaths
-	SidebarProjects         []ProjectSmallMultiple
-	ActiveNav               string
-	ProjectID               string
-	ProjectName             string
-	SidebarCollapsed        bool
-	Theme                   string
-	Density                 string
-	Search                  string
-	Sort                    string
-	ActiveRows              []APIKeyRow
-	InactiveRows            []APIKeyRow
-	ProjectOptions          []APIKeyProjectOption
-	ShowStaticOnlyBanner    bool
-	StaticTokenConfigured   bool
-	WorkItemExampleProject  string
-	WorkItemExampleEndpoint string
+	Title                    string
+	ApplicationName          string
+	InstanceName             string
+	Version                  string
+	Build                    buildinfo.Info
+	Snapshot                 telemetry.Snapshot
+	Assets                   AssetPaths
+	SidebarProjects          []ProjectSmallMultiple
+	ActiveNav                string
+	ProjectID                string
+	ProjectName              string
+	SidebarCollapsed         bool
+	Theme                    string
+	Density                  string
+	Search                   string
+	Sort                     string
+	ActiveRows               []APIKeyRow
+	InactiveRows             []APIKeyRow
+	ProjectOptions           []APIKeyProjectOption
+	ShowStaticOnlyBanner     bool
+	StaticTokenConfigured    bool
+	DashboardManagementToken string
+	WorkItemExampleProject   string
+	WorkItemExampleEndpoint  string
 }
 
 type APIKeyRow struct {
@@ -102,6 +105,16 @@ func apiKeyStatusClass(row APIKeyRow) string {
 		return row.StatusClass
 	}
 	return "text-sec"
+}
+
+func apiKeyDashboardRequestAttributes(data APIKeysData) templ.Attributes {
+	token := strings.TrimSpace(data.DashboardManagementToken)
+	if token == "" {
+		return templ.Attributes{}
+	}
+	return templ.Attributes{
+		"hx-headers": fmt.Sprintf(`{"X-Detent-API-Key-Dashboard":%q}`, token),
+	}
 }
 
 func apiKeyTableEmpty(data APIKeysData) bool {

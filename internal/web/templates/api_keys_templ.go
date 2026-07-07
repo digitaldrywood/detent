@@ -86,20 +86,28 @@ func APIKeysPage(data APIKeysData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "\" placeholder=\"Search by name\" class=\"h-9 w-full rounded-card border border-line bg-surface pl-9 pr-3 text-sm text-text outline-none focus:border-accent\" hx-get=\"/api/v1/keys\" hx-trigger=\"input changed delay:300ms, search\" hx-target=\"#api-keys-table\" hx-include=\"#api-key-sort\" hx-swap=\"innerHTML\"> <input id=\"api-key-sort\" type=\"hidden\" name=\"sort\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "\" placeholder=\"Search by name\" class=\"h-9 w-full rounded-card border border-line bg-surface pl-9 pr-3 text-sm text-text outline-none focus:border-accent\" hx-get=\"/api/v1/keys\" hx-trigger=\"input changed delay:300ms, search\" hx-target=\"#api-keys-table\" hx-include=\"#api-key-sort\" hx-swap=\"innerHTML\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templ.RenderAttributes(ctx, templ_7745c5c3_Buffer, apiKeyDashboardRequestAttributes(data))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "> <input id=\"api-key-sort\" type=\"hidden\" name=\"sort\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var4 string
 			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(data.Sort)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 36, Col: 74}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 37, Col: 74}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "\"></div><button type=\"button\" class=\"inline-flex h-9 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90\" data-api-key-open-create>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "\"></div><button type=\"button\" class=\"inline-flex h-9 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90\" data-api-key-open-create>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -107,7 +115,15 @@ func APIKeysPage(data APIKeysData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "Create key</button></div><div id=\"api-keys-table\" hx-get=\"/api/v1/keys\" hx-trigger=\"apiKeyChanged from:body, apiKeyCreated from:body\" hx-include=\"#api-key-search,#api-key-sort\" hx-swap=\"innerHTML\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "Create key</button></div><div id=\"api-keys-table\" hx-get=\"/api/v1/keys\" hx-trigger=\"apiKeyChanged from:body, apiKeyCreated from:body\" hx-include=\"#api-key-search,#api-key-sort\" hx-swap=\"innerHTML\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templ.RenderAttributes(ctx, templ_7745c5c3_Buffer, apiKeyDashboardRequestAttributes(data))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, ">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -115,7 +131,7 @@ func APIKeysPage(data APIKeysData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "</div></div></main>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "</div></div></main>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -155,7 +171,7 @@ func APIKeysTable(data APIKeysData) templ.Component {
 		}
 		ctx = templ.ClearChildren(ctx)
 		if apiKeyTableEmpty(data) {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "<section class=\"flex flex-none flex-col items-center justify-center gap-3 rounded-card border border-line bg-surface px-4 py-16 text-center\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "<section class=\"flex flex-none flex-col items-center justify-center gap-3 rounded-card border border-line bg-surface px-4 py-16 text-center\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -163,7 +179,7 @@ func APIKeysTable(data APIKeysData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "<p class=\"text-sm text-text\">Create named API keys for external dispatchers and automation clients.</p><button type=\"button\" class=\"inline-flex h-9 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90\" data-api-key-open-create>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "<p class=\"text-sm text-text\">Create named API keys for external dispatchers and automation clients.</p><button type=\"button\" class=\"inline-flex h-9 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90\" data-api-key-open-create>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -171,22 +187,22 @@ func APIKeysTable(data APIKeysData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "Create your first key</button> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "Create your first key</button> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			if data.StaticTokenConfigured {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "<p class=\"text-xs text-sec\"><code class=\"font-mono\">api_token</code> still works as break-glass access.</p>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "<p class=\"text-xs text-sec\"><code class=\"font-mono\">api_token</code> still works as break-glass access.</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "</section>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "</section>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "<section class=\"flex flex-none flex-col overflow-hidden rounded-card border border-line bg-surface\"><div class=\"grid grid-cols-[minmax(140px,1.1fr)_140px_90px_minmax(120px,1fr)_120px_120px_110px_130px] gap-3.5 border-b border-line px-4 py-2\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "<section class=\"flex flex-none flex-col overflow-hidden rounded-card border border-line bg-surface\"><div class=\"grid grid-cols-[minmax(140px,1.1fr)_140px_90px_minmax(120px,1fr)_120px_120px_110px_130px] gap-3.5 border-b border-line px-4 py-2\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -194,7 +210,7 @@ func APIKeysTable(data APIKeysData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "<span class=\"text-2xs font-semibold uppercase text-dim\">Key</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Scope</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Projects</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Status</span>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "<span class=\"text-2xs font-semibold uppercase text-dim\">Key</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Scope</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Projects</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Status</span>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -206,31 +222,31 @@ func APIKeysTable(data APIKeysData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "<span class=\"text-right text-2xs font-semibold uppercase text-dim\">Actions</span></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "<span class=\"text-right text-2xs font-semibold uppercase text-dim\">Actions</span></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for _, row := range data.ActiveRows {
-				templ_7745c5c3_Err = apiKeyTableRow(row).Render(ctx, templ_7745c5c3_Buffer)
+				templ_7745c5c3_Err = apiKeyTableRow(row, data).Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
 			if len(data.InactiveRows) > 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "<details class=\"border-t border-line\" data-preserve-details=\"api-keys-inactive\"><summary class=\"flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium text-sec marker:hidden\"><span>Show inactive (")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "<details class=\"border-t border-line\" data-preserve-details=\"api-keys-inactive\"><summary class=\"flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium text-sec marker:hidden\"><span>Show inactive (")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var6 string
 				templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(len(data.InactiveRows))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 89, Col: 51}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 91, Col: 51}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, ")</span>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, ")</span>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -238,22 +254,22 @@ func APIKeysTable(data APIKeysData) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "</summary> ")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 22, "</summary> ")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				for _, row := range data.InactiveRows {
-					templ_7745c5c3_Err = apiKeyTableRow(row).Render(ctx, templ_7745c5c3_Buffer)
+					templ_7745c5c3_Err = apiKeyTableRow(row, data).Render(ctx, templ_7745c5c3_Buffer)
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, "</details>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 23, "</details>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 22, "</section>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, "</section>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -283,33 +299,41 @@ func apiKeySortableHeader(sort string, label string, data APIKeysData) templ.Com
 			templ_7745c5c3_Var7 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 23, "<a href=\"#\" class=\"inline-flex items-center gap-1 text-2xs font-semibold uppercase text-dim hover:text-text\" hx-get=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "<a href=\"#\" class=\"inline-flex items-center gap-1 text-2xs font-semibold uppercase text-dim hover:text-text\" hx-get=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs("/api/v1/keys?sort=" + sort)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 105, Col: 38}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 107, Col: 38}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, "\" hx-target=\"#api-keys-table\" hx-include=\"#api-key-search\" hx-swap=\"innerHTML\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 26, "\" hx-target=\"#api-keys-table\" hx-include=\"#api-key-search\" hx-swap=\"innerHTML\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templ.RenderAttributes(ctx, templ_7745c5c3_Buffer, apiKeyDashboardRequestAttributes(data))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 27, ">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var9 string
 		templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 110, Col: 9}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 113, Col: 9}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, " ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, " ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -319,7 +343,7 @@ func apiKeySortableHeader(sort string, label string, data APIKeysData) templ.Com
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 26, "</a>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 29, "</a>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -327,7 +351,7 @@ func apiKeySortableHeader(sort string, label string, data APIKeysData) templ.Com
 	})
 }
 
-func apiKeyTableRow(row APIKeyRow) templ.Component {
+func apiKeyTableRow(row APIKeyRow, data APIKeysData) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -348,59 +372,59 @@ func apiKeyTableRow(row APIKeyRow) templ.Component {
 			templ_7745c5c3_Var10 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 27, "<div class=\"grid grid-cols-[minmax(140px,1.1fr)_140px_90px_minmax(120px,1fr)_120px_120px_110px_130px] items-center gap-3.5 border-b border-line px-4 py-3 last:border-b-0\"><span class=\"min-w-0 truncate text-sm font-medium text-text\" title=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 30, "<div class=\"grid grid-cols-[minmax(140px,1.1fr)_140px_90px_minmax(120px,1fr)_120px_120px_110px_130px] items-center gap-3.5 border-b border-line px-4 py-3 last:border-b-0\"><span class=\"min-w-0 truncate text-sm font-medium text-text\" title=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var11 string
 		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(row.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 119, Col: 79}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 122, Col: 79}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, "\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 31, "\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var12 string
 		templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(row.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 119, Col: 92}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 122, Col: 92}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 29, "</span> <code class=\"min-w-0 truncate font-mono text-xs text-sec\" title=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 32, "</span> <code class=\"min-w-0 truncate font-mono text-xs text-sec\" title=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var13 string
 		templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(row.PrefixLast4)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 120, Col: 83}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 123, Col: 83}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 30, "\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 33, "\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var14 string
 		templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(row.PrefixLast4)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 120, Col: 103}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 123, Col: 103}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 31, "</code> ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 34, "</code> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -409,7 +433,7 @@ func apiKeyTableRow(row APIKeyRow) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 32, "<span class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 35, "<span class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -422,49 +446,49 @@ func apiKeyTableRow(row APIKeyRow) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 33, "\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 36, "\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var17 string
 		templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(row.Scope)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 121, Col: 57}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 124, Col: 57}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 34, "</span> <span class=\"flex min-w-0 flex-wrap gap-1\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 37, "</span> <span class=\"flex min-w-0 flex-wrap gap-1\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if len(row.ProjectLabels) == 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 35, "<span class=\"text-xs text-sec\">All</span> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 38, "<span class=\"text-xs text-sec\">All</span> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
 		for _, project := range row.ProjectLabels {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 36, "<span class=\"rounded-chip bg-elev px-2 py-0.5 font-mono text-2xs text-sec\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 39, "<span class=\"rounded-chip bg-elev px-2 py-0.5 font-mono text-2xs text-sec\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var18 string
 			templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(project)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 127, Col: 88}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 130, Col: 88}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 37, "</span>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 40, "</span>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 38, "</span> ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 41, "</span> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -473,7 +497,7 @@ func apiKeyTableRow(row APIKeyRow) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 39, "<span class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 42, "<span class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -486,20 +510,20 @@ func apiKeyTableRow(row APIKeyRow) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 40, "\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 43, "\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var21 string
 		templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(row.Status)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 130, Col: 78}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 133, Col: 78}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 41, "</span> ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "</span> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -508,7 +532,7 @@ func apiKeyTableRow(row APIKeyRow) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 42, "<span class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 45, "<span class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -521,69 +545,77 @@ func apiKeyTableRow(row APIKeyRow) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 43, "\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 46, "\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var24 string
 		templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(row.LastUsed)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 132, Col: 17}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 135, Col: 17}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, " ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 47, " ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if row.UnusedBadge {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 45, "<span class=\"ml-1 rounded-chip bg-elev px-1.5 py-0.5 text-2xs text-dim\">unused</span>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 48, "<span class=\"ml-1 rounded-chip bg-elev px-1.5 py-0.5 text-2xs text-dim\">unused</span>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 46, "</span> <span class=\"font-mono text-xs text-sec\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, "</span> <span class=\"font-mono text-xs text-sec\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var25 string
 		templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(row.Created)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 137, Col: 56}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 140, Col: 56}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 47, "</span> <span class=\"flex justify-end gap-1.5\"><button type=\"button\" class=\"rounded-chip border border-line p-1.5 text-sec hover:border-accent hover:text-accent\" hx-get=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 50, "</span> <span class=\"flex justify-end gap-1.5\"><button type=\"button\" class=\"rounded-chip border border-line p-1.5 text-sec hover:border-accent hover:text-accent\" hx-get=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var26 string
 		templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs("/api/v1/keys/" + row.ID + "/rotate")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 142, Col: 49}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 145, Col: 49}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 48, "\" hx-target=\"#api-key-modal-body\" hx-swap=\"innerHTML\" aria-label=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 51, "\" hx-target=\"#api-key-modal-body\" hx-swap=\"innerHTML\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templ.RenderAttributes(ctx, templ_7745c5c3_Buffer, apiKeyDashboardRequestAttributes(data))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 52, " aria-label=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var27 string
 		templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs("Rotate " + row.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 145, Col: 37}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 149, Col: 37}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, "\" title=\"Rotate\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 53, "\" title=\"Rotate\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -591,59 +623,67 @@ func apiKeyTableRow(row APIKeyRow) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 50, "</button> <button type=\"button\" class=\"rounded-chip border border-line p-1.5 text-sec hover:border-err hover:text-err\" hx-delete=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 54, "</button> <button type=\"button\" class=\"rounded-chip border border-line p-1.5 text-sec hover:border-err hover:text-err\" hx-delete=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var28 string
 		templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs("/api/v1/keys/" + row.ID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 153, Col: 40}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 157, Col: 40}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 51, "\" hx-target=\"#api-keys-table\" hx-include=\"#api-key-search,#api-key-sort\" hx-swap=\"innerHTML\" data-api-key-revoke data-api-key-name=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 55, "\" hx-target=\"#api-keys-table\" hx-include=\"#api-key-search,#api-key-sort\" hx-swap=\"innerHTML\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templ.RenderAttributes(ctx, templ_7745c5c3_Buffer, apiKeyDashboardRequestAttributes(data))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 56, " data-api-key-revoke data-api-key-name=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var29 string
 		templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(row.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 158, Col: 32}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 163, Col: 32}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 52, "\" data-api-key-admin=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 57, "\" data-api-key-admin=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var30 string
 		templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(boolString(row.AdminConfirmName))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 159, Col: 57}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 164, Col: 57}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 53, "\" aria-label=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 58, "\" aria-label=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var31 string
 		templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs("Revoke " + row.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 160, Col: 37}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 165, Col: 37}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 54, "\" title=\"Revoke\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 59, "\" title=\"Revoke\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -651,7 +691,7 @@ func apiKeyTableRow(row APIKeyRow) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 55, "</button></span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 60, "</button></span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -680,7 +720,7 @@ func APIKeyModalHost(data APIKeysData) templ.Component {
 			templ_7745c5c3_Var32 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 56, "<template id=\"api-key-create-template\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 61, "<template id=\"api-key-create-template\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -688,7 +728,7 @@ func APIKeyModalHost(data APIKeysData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 57, "</template><dialog id=\"api-key-modal\" class=\"w-full max-w-2xl rounded-card border border-line bg-page p-0 text-text shadow-lg backdrop:bg-black/50\"><div id=\"api-key-modal-body\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 62, "</template><dialog id=\"api-key-modal\" class=\"w-full max-w-2xl rounded-card border border-line bg-page p-0 text-text shadow-lg backdrop:bg-black/50\"><div id=\"api-key-modal-body\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -696,7 +736,7 @@ func APIKeyModalHost(data APIKeysData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 58, "</div></dialog>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 63, "</div></dialog>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -725,7 +765,15 @@ func APIKeyCreateForm(data APIKeysData) templ.Component {
 			templ_7745c5c3_Var33 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 59, "<form class=\"flex flex-col gap-5 p-5\" hx-post=\"/api/v1/keys\" hx-target=\"#api-key-modal-body\" hx-swap=\"innerHTML\"><div class=\"flex items-start justify-between gap-4\"><div><h2 class=\"text-base font-semibold\">Create API key</h2><p class=\"mt-1 text-xs text-sec\">The full token is shown once after creation.</p></div><button type=\"button\" class=\"rounded-chip p-1.5 text-sec hover:bg-elev hover:text-text\" data-api-modal-close aria-label=\"Close\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 64, "<form class=\"flex flex-col gap-5 p-5\" hx-post=\"/api/v1/keys\" hx-target=\"#api-key-modal-body\" hx-swap=\"innerHTML\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templ.RenderAttributes(ctx, templ_7745c5c3_Buffer, apiKeyDashboardRequestAttributes(data))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 65, "><div class=\"flex items-start justify-between gap-4\"><div><h2 class=\"text-base font-semibold\">Create API key</h2><p class=\"mt-1 text-xs text-sec\">The full token is shown once after creation.</p></div><button type=\"button\" class=\"rounded-chip p-1.5 text-sec hover:bg-elev hover:text-text\" data-api-modal-close aria-label=\"Close\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -733,7 +781,7 @@ func APIKeyCreateForm(data APIKeysData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 60, "</button></div><label class=\"grid gap-1.5\"><span class=\"text-xs font-medium text-sec\">Name</span> <input id=\"api-key-name\" name=\"name\" required autofocus class=\"h-9 rounded-card border border-line bg-surface px-3 text-sm text-text outline-none focus:border-accent\"></label><div class=\"grid gap-2\"><span class=\"text-xs font-medium text-sec\">Scope</span><div class=\"grid gap-2 sm:grid-cols-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 66, "</button></div><label class=\"grid gap-1.5\"><span class=\"text-xs font-medium text-sec\">Name</span> <input id=\"api-key-name\" name=\"name\" required autofocus class=\"h-9 rounded-card border border-line bg-surface px-3 text-sm text-text outline-none focus:border-accent\"></label><div class=\"grid gap-2\"><span class=\"text-xs font-medium text-sec\">Scope</span><div class=\"grid gap-2 sm:grid-cols-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -749,49 +797,49 @@ func APIKeyCreateForm(data APIKeysData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 61, "</div></div><div class=\"grid gap-2\"><label class=\"flex items-center gap-2 text-sm text-text\"><input type=\"checkbox\" name=\"all_projects\" value=\"true\" class=\"accent-accent\" checked data-api-key-all-projects> All projects</label><div class=\"hidden grid max-h-36 gap-2 overflow-auto rounded-card border border-line bg-surface p-3\" data-api-key-project-picker>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 67, "</div></div><div class=\"grid gap-2\"><label class=\"flex items-center gap-2 text-sm text-text\"><input type=\"checkbox\" name=\"all_projects\" value=\"true\" class=\"accent-accent\" checked data-api-key-all-projects> All projects</label><div class=\"hidden grid max-h-36 gap-2 overflow-auto rounded-card border border-line bg-surface p-3\" data-api-key-project-picker>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if len(data.ProjectOptions) == 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 62, "<p class=\"text-xs text-sec\">No configured projects available.</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 68, "<p class=\"text-xs text-sec\">No configured projects available.</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
 		for _, project := range data.ProjectOptions {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 63, "<label class=\"flex items-center gap-2 text-xs text-text\"><input type=\"checkbox\" name=\"project_ids\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 69, "<label class=\"flex items-center gap-2 text-xs text-text\"><input type=\"checkbox\" name=\"project_ids\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var34 string
 			templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.JoinStringErrs(project.ID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 214, Col: 66}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 219, Col: 66}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var34))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 64, "\" class=\"accent-accent\"> <span class=\"font-mono\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 70, "\" class=\"accent-accent\"> <span class=\"font-mono\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var35 string
 			templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(project.ID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 215, Col: 42}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 220, Col: 42}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 65, "</span></label>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 71, "</span></label>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 66, "</div></div><label class=\"grid gap-1.5\"><span class=\"text-xs font-medium text-sec\">Expiry</span> <select name=\"expires_in\" class=\"h-9 rounded-card border border-line bg-surface px-3 text-sm text-text outline-none focus:border-accent\" data-api-key-expiry><option value=\"30d\">30 days</option> <option value=\"90d\" selected>90 days</option> <option value=\"365d\">365 days</option> <option value=\"never\">Never</option></select> <span class=\"hidden text-xs text-warn\" data-api-key-never-note>This key never expires.</span></label><div class=\"flex justify-end gap-2\"><button type=\"button\" class=\"h-9 rounded-card border border-line px-3 text-sm font-medium text-text hover:bg-elev\" data-api-modal-close>Cancel</button> <button type=\"submit\" class=\"inline-flex h-9 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 72, "</div></div><label class=\"grid gap-1.5\"><span class=\"text-xs font-medium text-sec\">Expiry</span> <select name=\"expires_in\" class=\"h-9 rounded-card border border-line bg-surface px-3 text-sm text-text outline-none focus:border-accent\" data-api-key-expiry><option value=\"30d\">30 days</option> <option value=\"90d\" selected>90 days</option> <option value=\"365d\">365 days</option> <option value=\"never\">Never</option></select> <span class=\"hidden text-xs text-warn\" data-api-key-never-note>This key never expires.</span></label><div class=\"flex justify-end gap-2\"><button type=\"button\" class=\"h-9 rounded-card border border-line px-3 text-sm font-medium text-text hover:bg-elev\" data-api-modal-close>Cancel</button> <button type=\"submit\" class=\"inline-flex h-9 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -799,7 +847,7 @@ func APIKeyCreateForm(data APIKeysData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 67, "Create</button></div></form>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 73, "Create</button></div></form>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -828,56 +876,56 @@ func apiKeyScopeRadio(value string, label string, description string, checked bo
 			templ_7745c5c3_Var36 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 68, "<label class=\"grid cursor-pointer gap-1 rounded-card border border-line bg-surface p-3 text-sm text-text has-[:checked]:border-accent\"><span class=\"flex items-center gap-2 font-medium\"><input type=\"radio\" name=\"scopes\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 74, "<label class=\"grid cursor-pointer gap-1 rounded-card border border-line bg-surface p-3 text-sm text-text has-[:checked]:border-accent\"><span class=\"flex items-center gap-2 font-medium\"><input type=\"radio\" name=\"scopes\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var37 string
 		templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(value)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 243, Col: 50}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 248, Col: 50}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 69, "\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 75, "\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if checked {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 70, " checked")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 76, " checked")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 71, " class=\"accent-accent\"> ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 77, " class=\"accent-accent\"> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var38 string
 		templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 244, Col: 10}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 249, Col: 10}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 72, "</span> <span class=\"text-xs text-sec\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 78, "</span> <span class=\"text-xs text-sec\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var39 string
 		templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(description)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 246, Col: 46}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 251, Col: 46}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 73, "</span></label>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 79, "</span></label>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -906,33 +954,41 @@ func APIKeyRotateDialog(data APIKeysData, row APIKeyRow) templ.Component {
 			templ_7745c5c3_Var40 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 74, "<form class=\"flex flex-col gap-5 p-5\" hx-post=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 80, "<form class=\"flex flex-col gap-5 p-5\" hx-post=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var41 string
 		templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinStringErrs("/api/v1/keys/" + row.ID + "/rotate")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 251, Col: 85}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 256, Col: 85}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 75, "\" hx-target=\"#api-key-modal-body\" hx-swap=\"innerHTML\"><div class=\"flex items-start justify-between gap-4\"><div><h2 class=\"text-base font-semibold\">Rotate API key</h2><p class=\"mt-1 text-xs text-sec\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 81, "\" hx-target=\"#api-key-modal-body\" hx-swap=\"innerHTML\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templ.RenderAttributes(ctx, templ_7745c5c3_Buffer, apiKeyDashboardRequestAttributes(data))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 82, "><div class=\"flex items-start justify-between gap-4\"><div><h2 class=\"text-base font-semibold\">Rotate API key</h2><p class=\"mt-1 text-xs text-sec\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var42 string
 		templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.JoinStringErrs(row.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 255, Col: 47}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 260, Col: 47}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var42))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 76, "</p></div><button type=\"button\" class=\"rounded-chip p-1.5 text-sec hover:bg-elev hover:text-text\" data-api-modal-close aria-label=\"Close\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 83, "</p></div><button type=\"button\" class=\"rounded-chip p-1.5 text-sec hover:bg-elev hover:text-text\" data-api-modal-close aria-label=\"Close\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -940,7 +996,7 @@ func APIKeyRotateDialog(data APIKeysData, row APIKeyRow) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 77, "</button></div><label class=\"grid gap-1.5\"><span class=\"text-xs font-medium text-sec\">Grace period</span> <select name=\"grace\" class=\"h-9 rounded-card border border-line bg-surface px-3 text-sm text-text outline-none focus:border-accent\"><option value=\"1h\">1 hour</option> <option value=\"24h\" selected>24 hours</option> <option value=\"7d\">7 days</option></select></label><div class=\"flex justify-end gap-2\"><button type=\"button\" class=\"h-9 rounded-card border border-line px-3 text-sm font-medium text-text hover:bg-elev\" data-api-modal-close>Cancel</button> <button type=\"submit\" class=\"inline-flex h-9 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 84, "</button></div><label class=\"grid gap-1.5\"><span class=\"text-xs font-medium text-sec\">Grace period</span> <select name=\"grace\" class=\"h-9 rounded-card border border-line bg-surface px-3 text-sm text-text outline-none focus:border-accent\"><option value=\"1h\">1 hour</option> <option value=\"24h\" selected>24 hours</option> <option value=\"7d\">7 days</option></select></label><div class=\"flex justify-end gap-2\"><button type=\"button\" class=\"h-9 rounded-card border border-line px-3 text-sm font-medium text-text hover:bg-elev\" data-api-modal-close>Cancel</button> <button type=\"submit\" class=\"inline-flex h-9 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -948,7 +1004,7 @@ func APIKeyRotateDialog(data APIKeysData, row APIKeyRow) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 78, "Rotate</button></div></form>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 85, "Rotate</button></div></form>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -979,7 +1035,7 @@ func APIKeyReveal(data APIKeysData, token string) templ.Component {
 		ctx = templ.ClearChildren(ctx)
 		curlSnippet := apiKeyCurlSnippet(data, token)
 		promptSnippet := apiKeyPromptSnippet(data, token)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 79, "<div class=\"flex flex-col gap-5 p-5\"><div class=\"flex items-start justify-between gap-4\"><div><h2 class=\"text-base font-semibold\">API key created</h2><p class=\"mt-1 text-xs font-medium text-warn\">Copy it now — you won't be able to see it again.</p></div><button type=\"button\" class=\"rounded-chip p-1.5 text-sec hover:bg-elev hover:text-text\" data-api-modal-close aria-label=\"Close\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 86, "<div class=\"flex flex-col gap-5 p-5\"><div class=\"flex items-start justify-between gap-4\"><div><h2 class=\"text-base font-semibold\">API key created</h2><p class=\"mt-1 text-xs font-medium text-warn\">Copy it now — you won't be able to see it again.</p></div><button type=\"button\" class=\"rounded-chip p-1.5 text-sec hover:bg-elev hover:text-text\" data-api-modal-close aria-label=\"Close\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -987,46 +1043,46 @@ func APIKeyReveal(data APIKeysData, token string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 80, "</button></div><div class=\"grid gap-2\"><div class=\"flex min-w-0 items-center gap-2\"><code class=\"min-w-0 flex-1 overflow-x-auto rounded-card border border-line bg-surface px-3 py-2 font-mono text-xs blur-sm select-none\" data-api-secret data-real-value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 87, "</button></div><div class=\"grid gap-2\"><div class=\"flex min-w-0 items-center gap-2\"><code class=\"min-w-0 flex-1 overflow-x-auto rounded-card border border-line bg-surface px-3 py-2 font-mono text-xs blur-sm select-none\" data-api-secret data-real-value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var44 string
 		templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.JoinStringErrs(token)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 294, Col: 179}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 299, Col: 179}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var44))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 81, "\" data-masked-value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 88, "\" data-masked-value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var45 string
 		templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinStringErrs(token)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 294, Col: 207}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 299, Col: 207}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var45))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 82, "\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 89, "\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var46 string
 		templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinStringErrs(token)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 294, Col: 217}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 299, Col: 217}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 83, "</code> <button type=\"button\" class=\"rounded-chip border border-line p-2 text-sec hover:border-accent hover:text-accent\" data-api-toggle-secret aria-label=\"Show token\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 90, "</code> <button type=\"button\" class=\"rounded-chip border border-line p-2 text-sec hover:border-accent hover:text-accent\" data-api-toggle-secret aria-label=\"Show token\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1034,20 +1090,20 @@ func APIKeyReveal(data APIKeysData, token string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 84, "</button> <button type=\"button\" class=\"inline-flex h-9 items-center gap-2 rounded-card border border-line px-3 text-sm font-medium text-text hover:bg-elev\" data-api-copy data-real-value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 91, "</button> <button type=\"button\" class=\"inline-flex h-9 items-center gap-2 rounded-card border border-line px-3 text-sm font-medium text-text hover:bg-elev\" data-api-copy data-real-value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var47 string
 		templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinStringErrs(token)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 298, Col: 187}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 303, Col: 187}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 85, "\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 92, "\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1055,7 +1111,7 @@ func APIKeyReveal(data APIKeysData, token string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 86, "<span data-copy-label>Copy</span></button></div></div><div class=\"grid gap-3\"><div class=\"flex border-b border-line\" role=\"tablist\"><button type=\"button\" class=\"border-b-2 border-accent px-3 py-2 text-xs font-medium text-accent\" data-api-snippet-tab=\"curl\">curl</button> <button type=\"button\" class=\"border-b-2 border-transparent px-3 py-2 text-xs font-medium text-sec hover:text-text\" data-api-snippet-tab=\"prompt\">AI Prompt</button></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 93, "<span data-copy-label>Copy</span></button></div></div><div class=\"grid gap-3\"><div class=\"flex border-b border-line\" role=\"tablist\"><button type=\"button\" class=\"border-b-2 border-accent px-3 py-2 text-xs font-medium text-accent\" data-api-snippet-tab=\"curl\">curl</button> <button type=\"button\" class=\"border-b-2 border-transparent px-3 py-2 text-xs font-medium text-sec hover:text-text\" data-api-snippet-tab=\"prompt\">AI Prompt</button></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1067,7 +1123,7 @@ func APIKeyReveal(data APIKeysData, token string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 87, "</div><div class=\"flex justify-end\"><button type=\"button\" class=\"h-9 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90\" data-api-key-done>Done</button></div></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 94, "</div><div class=\"flex justify-end\"><button type=\"button\" class=\"h-9 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90\" data-api-key-done>Done</button></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1102,7 +1158,7 @@ func apiKeySnippetPanel(name string, snippet string, token string, hidden bool) 
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 88, "<div class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 95, "<div class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1115,59 +1171,59 @@ func apiKeySnippetPanel(name string, snippet string, token string, hidden bool) 
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 89, "\" data-api-snippet-panel=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 96, "\" data-api-snippet-panel=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var51 string
 		templ_7745c5c3_Var51, templ_7745c5c3_Err = templ.JoinStringErrs(name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 324, Col: 31}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 329, Col: 31}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var51))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 90, "\"><pre class=\"max-h-56 overflow-auto p-3 pr-20 text-xs\"><code data-api-snippet-code data-real-value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 97, "\"><pre class=\"max-h-56 overflow-auto p-3 pr-20 text-xs\"><code data-api-snippet-code data-real-value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var52 string
 		templ_7745c5c3_Var52, templ_7745c5c3_Err = templ.JoinStringErrs(snippet)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 326, Col: 109}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 331, Col: 109}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var52))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 91, "\" data-masked-value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 98, "\" data-masked-value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var53 string
 		templ_7745c5c3_Var53, templ_7745c5c3_Err = templ.JoinStringErrs(apiKeyMaskedSnippet(snippet, token))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 326, Col: 167}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 331, Col: 167}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var53))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 92, "\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 99, "\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var54 string
 		templ_7745c5c3_Var54, templ_7745c5c3_Err = templ.JoinStringErrs(apiKeyMaskedSnippet(snippet, token))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 326, Col: 207}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 331, Col: 207}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var54))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 93, "</code></pre><div class=\"absolute right-2 top-2 flex gap-1\"><button type=\"button\" class=\"rounded-chip border border-line bg-page p-1.5 text-sec hover:border-accent hover:text-accent\" data-api-toggle-snippet aria-label=\"Show snippet\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 100, "</code></pre><div class=\"absolute right-2 top-2 flex gap-1\"><button type=\"button\" class=\"rounded-chip border border-line bg-page p-1.5 text-sec hover:border-accent hover:text-accent\" data-api-toggle-snippet aria-label=\"Show snippet\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1175,20 +1231,20 @@ func apiKeySnippetPanel(name string, snippet string, token string, hidden bool) 
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 94, "</button> <button type=\"button\" class=\"rounded-chip border border-line bg-page p-1.5 text-sec hover:border-accent hover:text-accent\" data-api-copy data-real-value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 101, "</button> <button type=\"button\" class=\"rounded-chip border border-line bg-page p-1.5 text-sec hover:border-accent hover:text-accent\" data-api-copy data-real-value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var55 string
 		templ_7745c5c3_Var55, templ_7745c5c3_Err = templ.JoinStringErrs(snippet)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 331, Col: 165}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/api_keys.templ`, Line: 336, Col: 165}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var55))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 95, "\" aria-label=\"Copy snippet\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 102, "\" aria-label=\"Copy snippet\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1196,7 +1252,7 @@ func apiKeySnippetPanel(name string, snippet string, token string, hidden bool) 
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 96, "<span class=\"sr-only\" data-copy-label>Copy</span></button></div></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 103, "<span class=\"sr-only\" data-copy-label>Copy</span></button></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1225,7 +1281,7 @@ func apiKeysScript() templ.Component {
 			templ_7745c5c3_Var56 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 97, "<script>\n\t\t(function () {\n\t\t\tfunction modal() { return document.getElementById(\"api-key-modal\"); }\n\t\t\tfunction body() { return document.getElementById(\"api-key-modal-body\"); }\n\t\t\tfunction processHTMX(root) {\n\t\t\t\tif (window.htmx && root) window.htmx.process(root);\n\t\t\t}\n\t\t\tfunction openModal() {\n\t\t\t\tvar dialog = modal();\n\t\t\t\tif (!dialog) return;\n\t\t\t\tif (!dialog.open) dialog.showModal();\n\t\t\t\tvar name = document.getElementById(\"api-key-name\");\n\t\t\t\tif (name) name.focus();\n\t\t\t}\n\t\t\tfunction closeModal() {\n\t\t\t\tvar dialog = modal();\n\t\t\t\tif (dialog && dialog.open) dialog.close();\n\t\t\t}\n\t\t\tfunction restoreCreateForm() {\n\t\t\t\tvar template = document.getElementById(\"api-key-create-template\");\n\t\t\t\tvar target = body();\n\t\t\t\tif (!template || !target) return;\n\t\t\t\ttarget.innerHTML = template.innerHTML;\n\t\t\t\tprocessHTMX(target);\n\t\t\t}\n\t\t\tdocument.addEventListener(\"click\", function (event) {\n\t\t\t\tvar openCreate = event.target.closest(\"[data-api-key-open-create]\");\n\t\t\t\tif (openCreate) {\n\t\t\t\t\trestoreCreateForm();\n\t\t\t\t\topenModal();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-api-modal-close]\")) {\n\t\t\t\t\tcloseModal();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-api-key-done]\")) {\n\t\t\t\t\tcloseModal();\n\t\t\t\t\tif (window.htmx) window.htmx.trigger(document.body, \"apiKeyChanged\");\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar bannerClose = event.target.closest(\"[data-api-key-dismiss-banner]\");\n\t\t\t\tif (bannerClose) {\n\t\t\t\t\tvar banner = bannerClose.closest(\"[data-api-key-banner]\");\n\t\t\t\t\tif (banner) banner.remove();\n\t\t\t\t\twindow.localStorage && window.localStorage.setItem(\"detent-api-key-banner-dismissed\", \"true\");\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar copy = event.target.closest(\"[data-api-copy]\");\n\t\t\t\tif (copy) {\n\t\t\t\t\tif (copy.dataset.copyBusy === \"true\") return;\n\t\t\t\t\tcopy.dataset.copyBusy = \"true\";\n\t\t\t\t\tvar value = copy.getAttribute(\"data-real-value\") || \"\";\n\t\t\t\t\tvar label = copy.querySelector(\"[data-copy-label]\");\n\t\t\t\t\tvar original = label ? label.textContent : \"\";\n\t\t\t\t\tvar done = function () {\n\t\t\t\t\t\tif (label) label.textContent = \"Copied ✓\";\n\t\t\t\t\t\twindow.setTimeout(function () {\n\t\t\t\t\t\t\tif (label) label.textContent = original || \"Copy\";\n\t\t\t\t\t\t\tdelete copy.dataset.copyBusy;\n\t\t\t\t\t\t}, 2000);\n\t\t\t\t\t};\n\t\t\t\t\tif (navigator.clipboard && navigator.clipboard.writeText) {\n\t\t\t\t\t\tnavigator.clipboard.writeText(value).then(done, done);\n\t\t\t\t\t} else {\n\t\t\t\t\t\tdone();\n\t\t\t\t\t}\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar tokenToggle = event.target.closest(\"[data-api-toggle-secret]\");\n\t\t\t\tif (tokenToggle) {\n\t\t\t\t\tvar code = tokenToggle.parentElement && tokenToggle.parentElement.querySelector(\"[data-api-secret]\");\n\t\t\t\t\tif (!code) return;\n\t\t\t\t\tvar hidden = code.classList.toggle(\"blur-sm\");\n\t\t\t\t\tcode.classList.toggle(\"select-none\", hidden);\n\t\t\t\t\ttokenToggle.setAttribute(\"aria-label\", hidden ? \"Show token\" : \"Hide token\");\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar snippetToggle = event.target.closest(\"[data-api-toggle-snippet]\");\n\t\t\t\tif (snippetToggle) {\n\t\t\t\t\tvar panel = snippetToggle.closest(\"[data-api-snippet-panel]\");\n\t\t\t\t\tvar code = panel && panel.querySelector(\"[data-api-snippet-code]\");\n\t\t\t\t\tif (!code) return;\n\t\t\t\t\tvar real = code.getAttribute(\"data-real-value\") || \"\";\n\t\t\t\t\tvar masked = code.getAttribute(\"data-masked-value\") || \"\";\n\t\t\t\t\tvar showing = code.textContent === real;\n\t\t\t\t\tcode.textContent = showing ? masked : real;\n\t\t\t\t\tsnippetToggle.setAttribute(\"aria-label\", showing ? \"Show snippet\" : \"Hide snippet\");\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar tab = event.target.closest(\"[data-api-snippet-tab]\");\n\t\t\t\tif (tab) {\n\t\t\t\t\tvar name = tab.getAttribute(\"data-api-snippet-tab\");\n\t\t\t\t\tdocument.querySelectorAll(\"[data-api-snippet-tab]\").forEach(function (button) {\n\t\t\t\t\t\tvar active = button === tab;\n\t\t\t\t\t\tbutton.classList.toggle(\"border-accent\", active);\n\t\t\t\t\t\tbutton.classList.toggle(\"text-accent\", active);\n\t\t\t\t\t\tbutton.classList.toggle(\"border-transparent\", !active);\n\t\t\t\t\t\tbutton.classList.toggle(\"text-sec\", !active);\n\t\t\t\t\t});\n\t\t\t\t\tdocument.querySelectorAll(\"[data-api-snippet-panel]\").forEach(function (panel) {\n\t\t\t\t\t\tpanel.classList.toggle(\"hidden\", panel.getAttribute(\"data-api-snippet-panel\") !== name);\n\t\t\t\t\t});\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"change\", function (event) {\n\t\t\t\tvar allProjects = event.target.closest(\"[data-api-key-all-projects]\");\n\t\t\t\tif (allProjects) {\n\t\t\t\t\tvar picker = document.querySelector(\"[data-api-key-project-picker]\");\n\t\t\t\t\tif (picker) picker.classList.toggle(\"hidden\", allProjects.checked);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar expiry = event.target.closest(\"[data-api-key-expiry]\");\n\t\t\t\tif (expiry) {\n\t\t\t\t\tvar note = document.querySelector(\"[data-api-key-never-note]\");\n\t\t\t\t\tif (note) note.classList.toggle(\"hidden\", expiry.value !== \"never\");\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"htmx:afterSwap\", function (event) {\n\t\t\t\tif (event.detail && event.detail.target && event.detail.target.id === \"api-key-modal-body\") {\n\t\t\t\t\topenModal();\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"htmx:beforeRequest\", function (event) {\n\t\t\t\tvar button = event.detail && event.detail.elt;\n\t\t\t\tif (!(button instanceof Element) || !button.matches(\"[data-api-key-revoke]\")) return;\n\t\t\t\tvar name = button.getAttribute(\"data-api-key-name\") || \"\";\n\t\t\t\tvar message = \"Revoke \" + name + \"? Any client using it will immediately break.\";\n\t\t\t\tif (!window.confirm(message)) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (button.getAttribute(\"data-api-key-admin\") === \"true\") {\n\t\t\t\t\tvar typed = window.prompt(\"Type the key name to revoke this admin key.\");\n\t\t\t\t\tif (typed !== name) event.preventDefault();\n\t\t\t\t}\n\t\t\t});\n\t\t\tif (window.localStorage && window.localStorage.getItem(\"detent-api-key-banner-dismissed\") === \"true\") {\n\t\t\t\tvar banner = document.querySelector(\"[data-api-key-banner]\");\n\t\t\t\tif (banner) banner.remove();\n\t\t\t}\n\t\t})();\n\t</script>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 104, "<script>\n\t\t(function () {\n\t\t\tfunction modal() { return document.getElementById(\"api-key-modal\"); }\n\t\t\tfunction body() { return document.getElementById(\"api-key-modal-body\"); }\n\t\t\tfunction processHTMX(root) {\n\t\t\t\tif (window.htmx && root) window.htmx.process(root);\n\t\t\t}\n\t\t\tfunction openModal() {\n\t\t\t\tvar dialog = modal();\n\t\t\t\tif (!dialog) return;\n\t\t\t\tif (!dialog.open) dialog.showModal();\n\t\t\t\tvar name = document.getElementById(\"api-key-name\");\n\t\t\t\tif (name) name.focus();\n\t\t\t}\n\t\t\tfunction closeModal() {\n\t\t\t\tvar dialog = modal();\n\t\t\t\tif (dialog && dialog.open) dialog.close();\n\t\t\t}\n\t\t\tfunction restoreCreateForm() {\n\t\t\t\tvar template = document.getElementById(\"api-key-create-template\");\n\t\t\t\tvar target = body();\n\t\t\t\tif (!template || !target) return;\n\t\t\t\ttarget.innerHTML = template.innerHTML;\n\t\t\t\tprocessHTMX(target);\n\t\t\t}\n\t\t\tdocument.addEventListener(\"click\", function (event) {\n\t\t\t\tvar openCreate = event.target.closest(\"[data-api-key-open-create]\");\n\t\t\t\tif (openCreate) {\n\t\t\t\t\trestoreCreateForm();\n\t\t\t\t\topenModal();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-api-modal-close]\")) {\n\t\t\t\t\tcloseModal();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-api-key-done]\")) {\n\t\t\t\t\tcloseModal();\n\t\t\t\t\tif (window.htmx) window.htmx.trigger(document.body, \"apiKeyChanged\");\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar bannerClose = event.target.closest(\"[data-api-key-dismiss-banner]\");\n\t\t\t\tif (bannerClose) {\n\t\t\t\t\tvar banner = bannerClose.closest(\"[data-api-key-banner]\");\n\t\t\t\t\tif (banner) banner.remove();\n\t\t\t\t\twindow.localStorage && window.localStorage.setItem(\"detent-api-key-banner-dismissed\", \"true\");\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar copy = event.target.closest(\"[data-api-copy]\");\n\t\t\t\tif (copy) {\n\t\t\t\t\tif (copy.dataset.copyBusy === \"true\") return;\n\t\t\t\t\tcopy.dataset.copyBusy = \"true\";\n\t\t\t\t\tvar value = copy.getAttribute(\"data-real-value\") || \"\";\n\t\t\t\t\tvar label = copy.querySelector(\"[data-copy-label]\");\n\t\t\t\t\tvar original = label ? label.textContent : \"\";\n\t\t\t\t\tvar done = function () {\n\t\t\t\t\t\tif (label) label.textContent = \"Copied ✓\";\n\t\t\t\t\t\twindow.setTimeout(function () {\n\t\t\t\t\t\t\tif (label) label.textContent = original || \"Copy\";\n\t\t\t\t\t\t\tdelete copy.dataset.copyBusy;\n\t\t\t\t\t\t}, 2000);\n\t\t\t\t\t};\n\t\t\t\t\tif (navigator.clipboard && navigator.clipboard.writeText) {\n\t\t\t\t\t\tnavigator.clipboard.writeText(value).then(done, done);\n\t\t\t\t\t} else {\n\t\t\t\t\t\tdone();\n\t\t\t\t\t}\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar tokenToggle = event.target.closest(\"[data-api-toggle-secret]\");\n\t\t\t\tif (tokenToggle) {\n\t\t\t\t\tvar code = tokenToggle.parentElement && tokenToggle.parentElement.querySelector(\"[data-api-secret]\");\n\t\t\t\t\tif (!code) return;\n\t\t\t\t\tvar hidden = code.classList.toggle(\"blur-sm\");\n\t\t\t\t\tcode.classList.toggle(\"select-none\", hidden);\n\t\t\t\t\ttokenToggle.setAttribute(\"aria-label\", hidden ? \"Show token\" : \"Hide token\");\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar snippetToggle = event.target.closest(\"[data-api-toggle-snippet]\");\n\t\t\t\tif (snippetToggle) {\n\t\t\t\t\tvar panel = snippetToggle.closest(\"[data-api-snippet-panel]\");\n\t\t\t\t\tvar code = panel && panel.querySelector(\"[data-api-snippet-code]\");\n\t\t\t\t\tif (!code) return;\n\t\t\t\t\tvar real = code.getAttribute(\"data-real-value\") || \"\";\n\t\t\t\t\tvar masked = code.getAttribute(\"data-masked-value\") || \"\";\n\t\t\t\t\tvar showing = code.textContent === real;\n\t\t\t\t\tcode.textContent = showing ? masked : real;\n\t\t\t\t\tsnippetToggle.setAttribute(\"aria-label\", showing ? \"Show snippet\" : \"Hide snippet\");\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar tab = event.target.closest(\"[data-api-snippet-tab]\");\n\t\t\t\tif (tab) {\n\t\t\t\t\tvar name = tab.getAttribute(\"data-api-snippet-tab\");\n\t\t\t\t\tdocument.querySelectorAll(\"[data-api-snippet-tab]\").forEach(function (button) {\n\t\t\t\t\t\tvar active = button === tab;\n\t\t\t\t\t\tbutton.classList.toggle(\"border-accent\", active);\n\t\t\t\t\t\tbutton.classList.toggle(\"text-accent\", active);\n\t\t\t\t\t\tbutton.classList.toggle(\"border-transparent\", !active);\n\t\t\t\t\t\tbutton.classList.toggle(\"text-sec\", !active);\n\t\t\t\t\t});\n\t\t\t\t\tdocument.querySelectorAll(\"[data-api-snippet-panel]\").forEach(function (panel) {\n\t\t\t\t\t\tpanel.classList.toggle(\"hidden\", panel.getAttribute(\"data-api-snippet-panel\") !== name);\n\t\t\t\t\t});\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"change\", function (event) {\n\t\t\t\tvar allProjects = event.target.closest(\"[data-api-key-all-projects]\");\n\t\t\t\tif (allProjects) {\n\t\t\t\t\tvar picker = document.querySelector(\"[data-api-key-project-picker]\");\n\t\t\t\t\tif (picker) picker.classList.toggle(\"hidden\", allProjects.checked);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar expiry = event.target.closest(\"[data-api-key-expiry]\");\n\t\t\t\tif (expiry) {\n\t\t\t\t\tvar note = document.querySelector(\"[data-api-key-never-note]\");\n\t\t\t\t\tif (note) note.classList.toggle(\"hidden\", expiry.value !== \"never\");\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"htmx:afterSwap\", function (event) {\n\t\t\t\tif (event.detail && event.detail.target && event.detail.target.id === \"api-key-modal-body\") {\n\t\t\t\t\topenModal();\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"htmx:beforeRequest\", function (event) {\n\t\t\t\tvar button = event.detail && event.detail.elt;\n\t\t\t\tif (!(button instanceof Element) || !button.matches(\"[data-api-key-revoke]\")) return;\n\t\t\t\tvar name = button.getAttribute(\"data-api-key-name\") || \"\";\n\t\t\t\tvar message = \"Revoke \" + name + \"? Any client using it will immediately break.\";\n\t\t\t\tif (!window.confirm(message)) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (button.getAttribute(\"data-api-key-admin\") === \"true\") {\n\t\t\t\t\tvar typed = window.prompt(\"Type the key name to revoke this admin key.\");\n\t\t\t\t\tif (typed !== name) event.preventDefault();\n\t\t\t\t}\n\t\t\t});\n\t\t\tif (window.localStorage && window.localStorage.getItem(\"detent-api-key-banner-dismissed\") === \"true\") {\n\t\t\t\tvar banner = document.querySelector(\"[data-api-key-banner]\");\n\t\t\t\tif (banner) banner.remove();\n\t\t\t}\n\t\t})();\n\t</script>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

@@ -3,7 +3,9 @@ package web
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"net"
@@ -23,13 +25,17 @@ import (
 const apiTokenEnv = "DETENT_API_TOKEN"
 
 const uiAPICookieName = "detent_ui_api"
+const apiKeyDashboardCookieName = "detent_api_key_dashboard"
+const apiKeyDashboardHeader = "X-Detent-API-Key-Dashboard"
+const apiKeyDashboardTokenPayload = "detent-api-key-dashboard-v1"
 
 type apiCredentialContextKey struct{}
 
 type apiAuthOptions struct {
-	mutating           bool
-	allowUICookie      bool
-	allowDashboardHTMX bool
+	mutating                        bool
+	allowUICookie                   bool
+	allowDashboardHTMX              bool
+	requireDashboardManagementToken bool
 }
 
 func (s *Server) apiAuth(mutating bool) echo.MiddlewareFunc {
@@ -95,6 +101,9 @@ func (s *Server) authorizeAPIRequest(c echo.Context, opts apiAuthOptions) (apike
 	}
 
 	if opts.allowDashboardHTMX && token == "" && authorizeDashboardHTMX(c) {
+		if opts.requireDashboardManagementToken && !s.authorizeAPIKeyDashboardToken(c) {
+			return apikey.Credential{}, writeAPIAuthError(c, http.StatusForbidden, "dashboard_token_required", "open the API Keys page from the dashboard before managing API keys")
+		}
 		credential := apikey.StaticCredential()
 		s.setAPICredential(c, credential)
 		return credential, nil
@@ -359,6 +368,50 @@ func (s *Server) uiAPIToken() string {
 	mac := hmac.New(sha256.New, []byte(token))
 	_, _ = mac.Write([]byte("detent-ui-api-v1"))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func newDashboardAuthSecret() ([32]byte, error) {
+	var secret [32]byte
+	_, err := rand.Read(secret[:])
+	return secret, err
+}
+
+func (s *Server) apiKeyDashboardToken() string {
+	if s == nil {
+		return ""
+	}
+	mac := hmac.New(sha256.New, s.dashboardAuthSecret[:])
+	_, _ = mac.Write([]byte(apiKeyDashboardTokenPayload))
+	return apiKeyDashboardTokenPayload + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func (s *Server) setAPIKeyDashboardCookie(c echo.Context, token string) {
+	if c == nil || c.Request() == nil || strings.TrimSpace(token) == "" {
+		return
+	}
+	c.SetCookie(&http.Cookie{
+		Name:     apiKeyDashboardCookieName,
+		Value:    token,
+		Path:     "/api/v1/keys",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   c.Request().TLS != nil,
+	})
+}
+
+func (s *Server) authorizeAPIKeyDashboardToken(c echo.Context) bool {
+	if c == nil || c.Request() == nil {
+		return false
+	}
+	candidate := strings.TrimSpace(c.Request().Header.Get(apiKeyDashboardHeader))
+	if candidate == "" || !apiStaticTokenEqual(candidate, s.apiKeyDashboardToken()) {
+		return false
+	}
+	cookie, err := c.Cookie(apiKeyDashboardCookieName)
+	if err != nil {
+		return false
+	}
+	return apiStaticTokenEqual(candidate, cookie.Value)
 }
 
 func apiStaticTokenEqual(candidate string, token string) bool {

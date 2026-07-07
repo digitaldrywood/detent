@@ -100,6 +100,39 @@ for (const mode of authModes) {
   });
 }
 
+test("api keys page creates first key on wildcard bind without token", async ({ page }) => {
+  const runtime = await startDetentRuntime("dashboard-api-keys-no-token", [
+    "--demo",
+    "kanban",
+    "--demo-project",
+    "demo-project",
+  ], {
+    host: "0.0.0.0",
+    env: { DETENT_API_TOKEN: "" },
+  });
+  const unexpectedAPIResponses = collectUnexpectedAPIResponses(page);
+
+  try {
+    const dashboardURL = nonLoopbackDashboardURL(runtime.url);
+
+    await page.goto(`${dashboardURL}/api-keys`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("button", { name: "Create your first key" })).toBeVisible();
+    await page.getByRole("button", { name: "Create your first key" }).click();
+
+    const dialog = page.getByRole("dialog").first();
+    await expect(dialog.getByRole("heading", { name: "Create API key" })).toBeVisible();
+    await dialog.getByLabel("Name").fill("Playwright first key");
+    await dialog.getByRole("button", { name: /^Create$/ }).click();
+    await expect(dialog.getByRole("heading", { name: "API key created" })).toBeVisible();
+    await dialog.getByRole("button", { name: "Done" }).click();
+    await expect(page.locator("#api-keys-table")).toContainText("Playwright first key");
+
+    expect(unexpectedAPIResponses).toEqual([]);
+  } finally {
+    await runtime.stop();
+  }
+});
+
 test("wildcard dashboard denies non-local API access without token", async () => {
   const runtime = await startDetentRuntime("dashboard-auth-negative", [
     "--demo",
@@ -143,6 +176,20 @@ test("wildcard dashboard denies non-local API access without token", async () =>
       },
     });
     expect(deniedSpoofedSource).toBe(403);
+
+    const deniedRawKeyCreate = await rawHTTPStatus(runtime.url, {
+      method: "POST",
+      path: "/api/v1/keys",
+      headers: {
+        Host: dashboardURLHost,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "HX-Request": "true",
+        "HX-Current-URL": `${dashboardURL}/api-keys`,
+        "HX-Target": "api-key-modal-body",
+      },
+      body: "name=Spoofed&scopes=read&all_projects=true&expires_in=90d",
+    });
+    expect(deniedRawKeyCreate).toBe(403);
 
     const deniedState = await rawHTTPStatus(runtime.url, {
       path: "/api/v1/state",
