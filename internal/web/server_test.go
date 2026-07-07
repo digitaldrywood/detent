@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"html"
 	"io"
 	"log/slog"
 	"net"
@@ -594,6 +595,227 @@ func TestDashboardHTMXAuthAllowsSameOriginDashboardOnWildcardBindWithoutToken(t 
 	}
 }
 
+func TestAPIKeyDashboardHTMXAuthAllowsSameOriginManagementWithoutToken(t *testing.T) {
+	t.Parallel()
+
+	origins := []struct {
+		name       string
+		host       string
+		remote     string
+		htmxTarget string
+	}{
+		{
+			name:       "localhost",
+			host:       "localhost:4000",
+			remote:     "127.0.0.1:49152",
+			htmxTarget: "api-keys-table",
+		},
+		{
+			name:       "private same-origin host",
+			host:       "100.95.107.50:4000",
+			remote:     "100.95.107.51:49152",
+			htmxTarget: "api-keys-table",
+		},
+	}
+
+	for _, origin := range origins {
+		origin := origin
+		t.Run(origin.name, func(t *testing.T) {
+			t.Parallel()
+
+			server, backend := newAPIKeyDashboardHTMXTestServer(t, "")
+			session := newAPIKeyDashboardSession(t, server.Handler(), origin.host, origin.remote)
+			baseRequest := dashboardHTMXRequest{
+				host:       origin.host,
+				remote:     origin.remote,
+				currentURL: "http://" + origin.host + "/api-keys",
+				htmxTarget: origin.htmxTarget,
+				headers:    session.headers,
+				cookies:    session.cookies,
+			}
+
+			list := performDashboardHTMXRequest(t, server.Handler(), dashboardHTMXRequest{
+				method:     http.MethodGet,
+				path:       "/api/v1/keys",
+				host:       baseRequest.host,
+				remote:     baseRequest.remote,
+				currentURL: baseRequest.currentURL,
+				htmxTarget: baseRequest.htmxTarget,
+				headers:    baseRequest.headers,
+				cookies:    baseRequest.cookies,
+			})
+			if list.Code != http.StatusOK {
+				t.Fatalf("list status = %d, want %d; body = %s", list.Code, http.StatusOK, list.Body.String())
+			}
+			if !strings.Contains(list.Body.String(), "Create your first key") {
+				t.Fatalf("list body missing empty state:\n%s", list.Body.String())
+			}
+
+			create := performDashboardHTMXRequest(t, server.Handler(), dashboardHTMXRequest{
+				method:     http.MethodPost,
+				path:       "/api/v1/keys",
+				host:       baseRequest.host,
+				remote:     baseRequest.remote,
+				currentURL: baseRequest.currentURL,
+				htmxTarget: "api-key-modal-body",
+				headers:    baseRequest.headers,
+				cookies:    baseRequest.cookies,
+				form: url.Values{
+					"name":         {"Dashboard client"},
+					"scopes":       {"write"},
+					"all_projects": {"true"},
+					"expires_in":   {"90d"},
+				},
+			})
+			if create.Code != http.StatusOK {
+				t.Fatalf("create status = %d, want %d; body = %s", create.Code, http.StatusOK, create.Body.String())
+			}
+			if create.Header().Get("HX-Trigger") != "apiKeyCreated" {
+				t.Fatalf("create HX-Trigger = %q, want apiKeyCreated", create.Header().Get("HX-Trigger"))
+			}
+			if body := create.Body.String(); !strings.Contains(body, "API key created") || !strings.Contains(body, apikey.TokenPrefix) {
+				t.Fatalf("create body missing reveal:\n%s", body)
+			}
+
+			keys, err := backend.ListAPIKeys(context.Background())
+			if err != nil {
+				t.Fatalf("ListAPIKeys() error = %v", err)
+			}
+			if len(keys) != 1 {
+				t.Fatalf("keys len = %d, want 1", len(keys))
+			}
+			keyID := keys[0].ID
+
+			rotateDialog := performDashboardHTMXRequest(t, server.Handler(), dashboardHTMXRequest{
+				method:     http.MethodGet,
+				path:       "/api/v1/keys/" + keyID + "/rotate",
+				host:       baseRequest.host,
+				remote:     baseRequest.remote,
+				currentURL: baseRequest.currentURL,
+				htmxTarget: "api-key-modal-body",
+				headers:    baseRequest.headers,
+				cookies:    baseRequest.cookies,
+			})
+			if rotateDialog.Code != http.StatusOK {
+				t.Fatalf("rotate dialog status = %d, want %d; body = %s", rotateDialog.Code, http.StatusOK, rotateDialog.Body.String())
+			}
+			if !strings.Contains(rotateDialog.Body.String(), "Rotate API key") {
+				t.Fatalf("rotate dialog body missing title:\n%s", rotateDialog.Body.String())
+			}
+
+			rotate := performDashboardHTMXRequest(t, server.Handler(), dashboardHTMXRequest{
+				method:     http.MethodPost,
+				path:       "/api/v1/keys/" + keyID + "/rotate",
+				host:       baseRequest.host,
+				remote:     baseRequest.remote,
+				currentURL: baseRequest.currentURL,
+				htmxTarget: "api-key-modal-body",
+				headers:    baseRequest.headers,
+				cookies:    baseRequest.cookies,
+				form: url.Values{
+					"grace": {"1h"},
+				},
+			})
+			if rotate.Code != http.StatusOK {
+				t.Fatalf("rotate status = %d, want %d; body = %s", rotate.Code, http.StatusOK, rotate.Body.String())
+			}
+			if rotate.Header().Get("HX-Trigger") != "apiKeyChanged" {
+				t.Fatalf("rotate HX-Trigger = %q, want apiKeyChanged", rotate.Header().Get("HX-Trigger"))
+			}
+			if body := rotate.Body.String(); !strings.Contains(body, "API key created") || !strings.Contains(body, apikey.TokenPrefix) {
+				t.Fatalf("rotate body missing reveal:\n%s", body)
+			}
+
+			revoke := performDashboardHTMXRequest(t, server.Handler(), dashboardHTMXRequest{
+				method:     http.MethodDelete,
+				path:       "/api/v1/keys/" + keyID,
+				host:       baseRequest.host,
+				remote:     baseRequest.remote,
+				currentURL: baseRequest.currentURL,
+				htmxTarget: "api-keys-table",
+				headers:    baseRequest.headers,
+				cookies:    baseRequest.cookies,
+			})
+			if revoke.Code != http.StatusOK {
+				t.Fatalf("revoke status = %d, want %d; body = %s", revoke.Code, http.StatusOK, revoke.Body.String())
+			}
+			if revoke.Header().Get("HX-Trigger") != "apiKeyChanged" {
+				t.Fatalf("revoke HX-Trigger = %q, want apiKeyChanged", revoke.Header().Get("HX-Trigger"))
+			}
+			revoked, err := backend.APIKey(context.Background(), keyID)
+			if err != nil {
+				t.Fatalf("APIKey() after revoke error = %v", err)
+			}
+			if revoked.RevokedAt == nil {
+				t.Fatalf("RevokedAt = nil, want timestamp")
+			}
+		})
+	}
+}
+
+func TestAPIKeyDashboardHTMXAuthAllowsConfiguredTokenUICookie(t *testing.T) {
+	t.Parallel()
+
+	server, backend := newAPIKeyDashboardHTMXTestServer(t, "detent_cookie_token")
+	request := dashboardHTMXRequest{
+		method:     http.MethodGet,
+		path:       "/api/v1/keys",
+		host:       "100.95.107.50:4000",
+		remote:     "100.95.107.51:49152",
+		currentURL: "http://100.95.107.50:4000/api-keys",
+		htmxTarget: "api-keys-table",
+	}
+
+	withoutCookie := performDashboardHTMXRequest(t, server.Handler(), request)
+	if withoutCookie.Code != http.StatusUnauthorized {
+		t.Fatalf("list without UI cookie status = %d, want %d; body = %s", withoutCookie.Code, http.StatusUnauthorized, withoutCookie.Body.String())
+	}
+
+	page := httptest.NewRecorder()
+	pageReq := httptest.NewRequest(http.MethodGet, "http://100.95.107.50:4000/api-keys", nil)
+	pageReq.Host = "100.95.107.50:4000"
+	server.Handler().ServeHTTP(page, pageReq)
+	if page.Code != http.StatusOK {
+		t.Fatalf("api keys page status = %d, want %d; body = %s", page.Code, http.StatusOK, page.Body.String())
+	}
+	cookies := page.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("api keys page did not set UI API cookie")
+	}
+
+	request.cookies = cookies
+	withCookie := performDashboardHTMXRequest(t, server.Handler(), request)
+	if withCookie.Code != http.StatusOK {
+		t.Fatalf("list with UI cookie status = %d, want %d; body = %s", withCookie.Code, http.StatusOK, withCookie.Body.String())
+	}
+
+	create := performDashboardHTMXRequest(t, server.Handler(), dashboardHTMXRequest{
+		method:     http.MethodPost,
+		path:       "/api/v1/keys",
+		host:       "100.95.107.50:4000",
+		remote:     "100.95.107.51:49152",
+		currentURL: "http://100.95.107.50:4000/api-keys",
+		htmxTarget: "api-key-modal-body",
+		cookies:    cookies,
+		form: url.Values{
+			"name":         {"Cookie client"},
+			"scopes":       {"read"},
+			"all_projects": {"true"},
+			"expires_in":   {"90d"},
+		},
+	})
+	if create.Code != http.StatusOK {
+		t.Fatalf("create with UI cookie status = %d, want %d; body = %s", create.Code, http.StatusOK, create.Body.String())
+	}
+	keys, err := backend.ListAPIKeys(context.Background())
+	if err != nil {
+		t.Fatalf("ListAPIKeys() error = %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("keys len = %d, want 1", len(keys))
+	}
+}
+
 func TestDashboardHTMXAuthRejectsUntrustedRequestsOnWildcardBindWithoutToken(t *testing.T) {
 	t.Parallel()
 
@@ -707,6 +929,115 @@ func TestDashboardHTMXAuthRejectsUntrustedRequestsOnWildcardBindWithoutToken(t *
 	}
 }
 
+func TestAPIKeyDashboardHTMXAuthRejectsUntrustedManagementWithoutToken(t *testing.T) {
+	t.Parallel()
+
+	server, backend := newAPIKeyDashboardHTMXTestServer(t, "")
+	createForm := url.Values{
+		"name":         {"Blocked client"},
+		"scopes":       {"read"},
+		"all_projects": {"true"},
+		"expires_in":   {"90d"},
+	}
+	tests := []struct {
+		name string
+		req  dashboardHTMXRequest
+	}{
+		{
+			name: "raw private host list denied",
+			req: dashboardHTMXRequest{
+				method: http.MethodGet,
+				path:   "/api/v1/keys",
+				host:   "100.95.107.50:4000",
+				remote: "100.95.107.51:49152",
+				noHX:   true,
+			},
+		},
+		{
+			name: "private host list without htmx target denied",
+			req: dashboardHTMXRequest{
+				method:     http.MethodGet,
+				path:       "/api/v1/keys",
+				host:       "100.95.107.50:4000",
+				remote:     "100.95.107.51:49152",
+				currentURL: "http://100.95.107.50:4000/api-keys",
+			},
+		},
+		{
+			name: "private host create with forged same origin htmx denied",
+			req: dashboardHTMXRequest{
+				method:     http.MethodPost,
+				path:       "/api/v1/keys",
+				host:       "100.95.107.50:4000",
+				remote:     "100.95.107.51:49152",
+				currentURL: "http://100.95.107.50:4000/api-keys",
+				htmxTarget: "api-key-modal-body",
+				form:       createForm,
+			},
+		},
+		{
+			name: "private host create with self minted dashboard token denied",
+			req: dashboardHTMXRequest{
+				method:     http.MethodPost,
+				path:       "/api/v1/keys",
+				host:       "100.95.107.50:4000",
+				remote:     "100.95.107.51:49152",
+				currentURL: "http://100.95.107.50:4000/api-keys",
+				htmxTarget: "api-key-modal-body",
+				headers: map[string]string{
+					"X-Detent-API-Key-Dashboard": "forged",
+				},
+				cookies: []*http.Cookie{{
+					Name:  "detent_api_key_dashboard",
+					Value: "forged",
+				}},
+				form: createForm,
+			},
+		},
+		{
+			name: "private host create with cross origin htmx source denied",
+			req: dashboardHTMXRequest{
+				method:     http.MethodPost,
+				path:       "/api/v1/keys",
+				host:       "100.95.107.50:4000",
+				remote:     "100.95.107.51:49152",
+				currentURL: "http://dashboard.example.test:4000/api-keys",
+				htmxTarget: "api-key-modal-body",
+				form:       createForm,
+			},
+		},
+		{
+			name: "spoofed localhost create from external peer denied",
+			req: dashboardHTMXRequest{
+				method:     http.MethodPost,
+				path:       "/api/v1/keys",
+				host:       "localhost:4000",
+				remote:     "203.0.113.10:49152",
+				currentURL: "http://localhost:4000/api-keys",
+				htmxTarget: "api-key-modal-body",
+				form:       createForm,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			rec := performDashboardHTMXRequest(t, server.Handler(), tt.req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+		})
+	}
+	keys, err := backend.ListAPIKeys(context.Background())
+	if err != nil {
+		t.Fatalf("ListAPIKeys() error = %v", err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("keys len = %d, want 0", len(keys))
+	}
+}
+
 type dashboardHTMXAuthFixture struct {
 	server          *web.Server
 	actionConnector *kanbanActionConnector
@@ -777,6 +1108,58 @@ func newDashboardHTMXAuthFixture(t *testing.T) dashboardHTMXAuthFixture {
 		server:          server,
 		actionConnector: actionConnector,
 		refresher:       refresher,
+	}
+}
+
+func newAPIKeyDashboardHTMXTestServer(t *testing.T, apiToken string) (*web.Server, store.Store) {
+	t.Helper()
+
+	backend := openWebTestStore(t)
+	deps := testDeps(t)
+	deps.Store = backend
+	cfg := web.Config{
+		ServerAddress: "0.0.0.0:4000",
+	}
+	if apiToken != "" {
+		cfg.GlobalConfig = globalconfig.Config{APIToken: apiToken}
+	}
+	server, err := web.NewServer(cfg, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	return server, backend
+}
+
+type apiKeyDashboardSession struct {
+	headers map[string]string
+	cookies []*http.Cookie
+}
+
+func newAPIKeyDashboardSession(t *testing.T, handler http.Handler, host string, remote string) apiKeyDashboardSession {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, "http://"+host+"/api-keys", nil)
+	req.Host = host
+	req.RemoteAddr = remote
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("api keys page status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := html.UnescapeString(rec.Body.String())
+	match := regexp.MustCompile(`"X-Detent-API-Key-Dashboard":"([^"]+)"`).FindStringSubmatch(body)
+	if len(match) != 2 {
+		t.Fatalf("api keys page missing dashboard header token:\n%s", rec.Body.String())
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("api keys page did not set dashboard management cookie")
+	}
+	return apiKeyDashboardSession{
+		headers: map[string]string{
+			"X-Detent-API-Key-Dashboard": match[1],
+		},
+		cookies: cookies,
 	}
 }
 
@@ -8851,6 +9234,8 @@ type dashboardHTMXRequest struct {
 	form       url.Values
 	currentURL string
 	htmxTarget string
+	headers    map[string]string
+	cookies    []*http.Cookie
 	noHX       bool
 }
 
@@ -8890,6 +9275,12 @@ func performDashboardHTMXRequest(t *testing.T, handler http.Handler, input dashb
 		if htmxTarget := strings.TrimSpace(input.htmxTarget); htmxTarget != "" {
 			req.Header.Set("HX-Target", htmxTarget)
 		}
+	}
+	for _, cookie := range input.cookies {
+		req.AddCookie(cookie)
+	}
+	for key, value := range input.headers {
+		req.Header.Set(key, value)
 	}
 
 	rec := httptest.NewRecorder()

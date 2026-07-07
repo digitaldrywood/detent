@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -127,6 +128,7 @@ type Server struct {
 	apiKeys             *apikey.Service
 	ipLimiter           *apiRateLimiter
 	keyLimiter          *apiRateLimiter
+	dashboardAuthSecret [32]byte
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -153,6 +155,10 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	e.Server.IdleTimeout = cfg.httpIdleTimeout()
 	kanban := cfg.kanban()
 	kanbanWorkflow := cfg.kanbanWorkflow(kanban)
+	dashboardAuthSecret, err := newDashboardAuthSecret()
+	if err != nil {
+		return nil, fmt.Errorf("dashboard auth secret: %w", err)
+	}
 
 	server := &Server{
 		echo:                e,
@@ -193,6 +199,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		apiKeys:             apikey.NewService(deps.Store),
 		ipLimiter:           newAPIRateLimiter(300, 60),
 		keyLimiter:          newAPIRateLimiter(120, 30),
+		dashboardAuthSecret: dashboardAuthSecret,
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
 	e.Use(server.uiAPICookie)
@@ -264,10 +271,10 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/onboarding/write", s.onboardingWrite)
 	apiReadAuth := s.apiAuth(false)
 	apiMutateAuth := s.apiAuth(true)
-	apiUIReadAuth := s.apiAuthWithOptions(apiAuthOptions{allowUICookie: true})
-	apiUIMutateAuth := s.apiAuthWithOptions(apiAuthOptions{mutating: true, allowUICookie: true})
 	apiDashboardReadAuth := s.apiAuthWithOptions(apiAuthOptions{allowUICookie: true, allowDashboardHTMX: true})
 	apiDashboardMutateAuth := s.apiAuthWithOptions(apiAuthOptions{mutating: true, allowUICookie: true, allowDashboardHTMX: true})
+	apiKeyDashboardReadAuth := s.apiAuthWithOptions(apiAuthOptions{allowUICookie: true, allowDashboardHTMX: true, requireDashboardManagementToken: true})
+	apiKeyDashboardMutateAuth := s.apiAuthWithOptions(apiAuthOptions{mutating: true, allowUICookie: true, allowDashboardHTMX: true, requireDashboardManagementToken: true})
 	apiReadScope := s.requireScope(apikey.ScopeRead)
 	apiWriteScope := s.requireScope(apikey.ScopeWrite)
 	apiAdminScope := s.requireScope(apikey.ScopeAdmin)
@@ -277,11 +284,11 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries, apiReadAuth, apiReadScope)
 	s.echo.POST("/api/v1/projects/:project_id/work-items", s.apiCreateWorkItem, apiMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/projects/*", s.apiProject, apiReadAuth, apiReadScope)
-	s.echo.GET("/api/v1/keys", s.apiKeysList, apiUIReadAuth, apiAdminScope)
-	s.echo.POST("/api/v1/keys", s.apiKeysCreate, apiUIMutateAuth, apiAdminScope)
-	s.echo.GET("/api/v1/keys/:id/rotate", s.apiKeysRotateDialog, apiUIReadAuth, apiAdminScope)
-	s.echo.POST("/api/v1/keys/:id/rotate", s.apiKeysRotate, apiUIMutateAuth, apiAdminScope)
-	s.echo.DELETE("/api/v1/keys/:id", s.apiKeysRevoke, apiUIMutateAuth, apiAdminScope)
+	s.echo.GET("/api/v1/keys", s.apiKeysList, apiKeyDashboardReadAuth, apiAdminScope)
+	s.echo.POST("/api/v1/keys", s.apiKeysCreate, apiKeyDashboardMutateAuth, apiAdminScope)
+	s.echo.GET("/api/v1/keys/:id/rotate", s.apiKeysRotateDialog, apiKeyDashboardReadAuth, apiAdminScope)
+	s.echo.POST("/api/v1/keys/:id/rotate", s.apiKeysRotate, apiKeyDashboardMutateAuth, apiAdminScope)
+	s.echo.DELETE("/api/v1/keys/:id", s.apiKeysRevoke, apiKeyDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/refresh", s.apiRefresh, apiDashboardMutateAuth, apiWriteScope)
 	s.echo.POST("/api/v1/webhooks/github", s.githubWebhook)
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed, apiDashboardReadAuth, apiReadScope)
