@@ -1838,9 +1838,23 @@ func kanbanStateNames(cfg workflowconfig.Config, snapshot telemetry.Snapshot) []
 	}
 	add(cfg.KanbanStateNames()...)
 	for _, issue := range snapshotKanbanIssues(snapshot) {
+		if kanbanRawGitHubIssueState(issue.State) {
+			if _, ok := seen[normalizeKanbanState(issue.State)]; !ok {
+				continue
+			}
+		}
 		add(issue.State)
 	}
 	return states
+}
+
+func kanbanRawGitHubIssueState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "open", "closed":
+		return true
+	default:
+		return false
+	}
 }
 
 func kanbanAllowedTransitions(cfg workflowconfig.Config, states []string) map[string][]string {

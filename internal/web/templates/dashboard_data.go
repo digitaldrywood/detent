@@ -2077,7 +2077,7 @@ func projectOverviewDiagnosticsDotClass(snapshot telemetry.Snapshot) string {
 }
 
 func projectKanbanCardsByState(data DashboardData) map[string][]projectKanbanCard {
-	issues := projectKanbanIssues(data.Snapshot)
+	issues := projectKanbanIssues(data.Snapshot, data.Kanban.States)
 	mergeStatuses := mergeLaneStatuses(data.Snapshot)
 	configured := projectKanbanConfiguredStateMap(data.Kanban.States)
 	cardsByState := map[string][]projectKanbanCard{}
@@ -2109,10 +2109,11 @@ func projectKanbanCardsByState(data DashboardData) map[string][]projectKanbanCar
 	return cardsByState
 }
 
-func projectKanbanIssues(snapshot telemetry.Snapshot) []projectKanbanIssueCard {
+func projectKanbanIssues(snapshot telemetry.Snapshot, configuredStates []string) []projectKanbanIssueCard {
 	byIssue := map[string]projectKanbanIssueCard{}
+	configured := projectKanbanConfiguredStateMap(configuredStates)
 	nextIndex := 0
-	appendIssue := func(issue telemetry.Issue, state string, stageAt time.Time, rank int) {
+	appendIssue := func(issue telemetry.Issue, state string, stageAt time.Time, rank int, rawRuntimeState bool) {
 		state = strings.TrimSpace(state)
 		if state == "" {
 			return
@@ -2122,6 +2123,9 @@ func projectKanbanIssues(snapshot telemetry.Snapshot) []projectKanbanIssueCard {
 			key = "anonymous:" + strconv.Itoa(nextIndex)
 		}
 		current, ok := byIssue[key]
+		if ok && rawRuntimeState {
+			return
+		}
 		if ok && rank < current.rank {
 			return
 		}
@@ -2134,18 +2138,22 @@ func projectKanbanIssues(snapshot telemetry.Snapshot) []projectKanbanIssueCard {
 		}
 		nextIndex++
 	}
+	appendSnapshotIssue := func(issue telemetry.Issue, fallback string, stageAt time.Time, rank int) {
+		state, rawRuntimeState := projectKanbanSnapshotState(issue, fallback, configured)
+		appendIssue(issue, state, stageAt, rank, rawRuntimeState)
+	}
 
 	for _, issue := range snapshot.BoardIssues {
-		appendIssue(issue, issueState(issue, ""), projectKanbanIssueStageTime(issue, time.Time{}), 5)
+		appendSnapshotIssue(issue, "", projectKanbanIssueStageTime(issue, time.Time{}), 5)
 	}
 	for _, issue := range snapshot.Pipeline {
-		appendIssue(issue, issueState(issue, ""), pipelineIssueStageTime(issue), 10)
+		appendSnapshotIssue(issue, "", pipelineIssueStageTime(issue), 10)
 	}
 	for _, row := range snapshot.Queue {
-		appendIssue(row.Issue, issueState(row.Issue, "Todo"), projectKanbanIssueStageTime(row.Issue, time.Time{}), 20)
+		appendSnapshotIssue(row.Issue, "Todo", projectKanbanIssueStageTime(row.Issue, time.Time{}), 20)
 	}
 	for _, row := range snapshot.Running {
-		appendIssue(row.Issue, issueState(row.Issue, "In Progress"), projectKanbanIssueStageTime(row.Issue, row.StartedAt), 30)
+		appendSnapshotIssue(row.Issue, "In Progress", projectKanbanIssueStageTime(row.Issue, row.StartedAt), 30)
 	}
 	for _, row := range snapshot.Blocked {
 		stageAt := projectKanbanIssueStageTime(row.Issue, time.Time{})
@@ -2160,7 +2168,7 @@ func projectKanbanIssues(snapshot telemetry.Snapshot) []projectKanbanIssueCard {
 		issue.Metadata[projectKanbanBlockedSourceMetadataKey] = string(row.Source)
 		issue.Metadata[projectKanbanBlockedReasonMetadataKey] = row.Error
 		issue.Metadata[projectKanbanBlockedRecoveryReasonMetadataKey] = row.RecoveryReason
-		appendIssue(issue, issueState(issue, "Blocked"), stageAt, 40)
+		appendSnapshotIssue(issue, "Blocked", stageAt, 40)
 	}
 
 	issues := make([]projectKanbanIssueCard, 0, len(byIssue))
@@ -2171,6 +2179,21 @@ func projectKanbanIssues(snapshot telemetry.Snapshot) []projectKanbanIssueCard {
 		return issues[i].index < issues[j].index
 	})
 	return issues
+}
+
+func projectKanbanSnapshotState(issue telemetry.Issue, fallback string, configured map[string]string) (string, bool) {
+	state := strings.TrimSpace(issueState(issue, fallback))
+	if !projectKanbanRawGitHubIssueState(state) {
+		return state, false
+	}
+	if _, ok := configured[projectKanbanStateKey(state)]; ok {
+		return state, false
+	}
+	fallback = strings.TrimSpace(fallback)
+	if fallback != "" {
+		return fallback, true
+	}
+	return "", true
 }
 
 func projectKanbanIssueStageTime(issue telemetry.Issue, fallback time.Time) time.Time {
@@ -2390,6 +2413,9 @@ func projectKanbanStateOrder(configuredStates []string, cardsByState map[string]
 		if _, ok := seen[key]; ok {
 			continue
 		}
+		if projectKanbanRawGitHubIssueState(cards[0].Stage) {
+			continue
+		}
 		extras = append(extras, cards[0].Stage)
 	}
 	sort.SliceStable(extras, func(i, j int) bool {
@@ -2503,6 +2529,15 @@ func projectKanbanDisplayState(state string, configured map[string]string) strin
 		return "Cancelled"
 	default:
 		return display
+	}
+}
+
+func projectKanbanRawGitHubIssueState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "open", "closed":
+		return true
+	default:
+		return false
 	}
 }
 
