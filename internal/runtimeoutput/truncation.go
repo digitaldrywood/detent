@@ -35,6 +35,7 @@ type Buffer struct {
 	originalBytes int
 	truncated     bool
 	head          string
+	headSealed    bool
 	tail          string
 }
 
@@ -76,14 +77,19 @@ func (b *Buffer) Append(value string) {
 	if !b.truncated {
 		current := b.full.String()
 		b.head = validPrefix(current, headMax)
+		b.headSealed = len(b.head) < len(current) && len(b.head) < headMax
 		b.tail = validSuffix(current, tailMax)
 		b.full.Reset()
 		b.truncated = true
 	}
 
 	b.originalBytes = nextBytes
-	if missing := headMax - len(b.head); missing > 0 {
-		b.head += validPrefix(value, missing)
+	if missing := headMax - len(b.head); missing > 0 && !b.headSealed {
+		prefix := validPrefix(value, missing)
+		b.head += prefix
+		if len(prefix) < len(value) && len(b.head) < headMax {
+			b.headSealed = true
+		}
 	}
 	b.tail = appendSuffix(b.tail, value, tailMax)
 }

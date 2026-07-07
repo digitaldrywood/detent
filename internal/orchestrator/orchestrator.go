@@ -2156,15 +2156,21 @@ func (o *Orchestrator) tripInstantFailureCircuitBreaker(
 	if state.InstantFailures == nil {
 		state.InstantFailures = map[string]InstantFailure{}
 	}
-	key := o.operatorText(instantFailureErrorKey(event.Err))
-	if key == "" {
-		key = o.operatorText(event.Err.Error())
+	key := instantFailureErrorKey(event.Err)
+	displayError := o.operatorText(key)
+	if displayError == "" {
+		displayError = o.operatorText(event.Err.Error())
 	}
 	failure := state.InstantFailures[event.IssueID]
-	if failure.Error != key {
+	failureKey := failure.errorKey
+	if failureKey == "" {
+		failureKey = failure.Error
+	}
+	if failureKey != key {
 		failure = InstantFailure{
 			Issue:          cloneIssue(running.Issue),
-			Error:          key,
+			Error:          displayError,
+			errorKey:       key,
 			FirstFailureAt: event.CompletedAt,
 		}
 	}

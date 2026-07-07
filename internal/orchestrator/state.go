@@ -138,6 +138,7 @@ type Retry struct {
 type InstantFailure struct {
 	Issue          connector.Issue
 	Error          string
+	errorKey       string
 	Count          int
 	FirstFailureAt time.Time
 	LastFailureAt  time.Time

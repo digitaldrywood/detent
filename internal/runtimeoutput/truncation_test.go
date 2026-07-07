@@ -120,3 +120,27 @@ func TestBufferTruncatesIncrementalOutput(t *testing.T) {
 		t.Fatalf("OriginalBytes = %d, want full input length", got.Truncation.OriginalBytes)
 	}
 }
+
+func TestBufferDoesNotBackfillHeadAfterMultibyteBoundary(t *testing.T) {
+	t.Parallel()
+
+	buffer := NewBuffer(Policy{MaxBytes: len(Marker) + 10})
+	buffer.Append("abcd")
+	buffer.Append("界" + strings.Repeat("x", 30))
+	buffer.Append("tail!")
+
+	got := buffer.Text()
+	want := "abcd" + Marker + "tail!"
+	if got.Value != want {
+		t.Fatalf("Value = %q, want %q", got.Value, want)
+	}
+	if !utf8.ValidString(got.Value) {
+		t.Fatalf("Value is not valid UTF-8: %q", got.Value)
+	}
+	if got.Truncation == nil {
+		t.Fatal("Truncation = nil, want metadata")
+	}
+	if got.Truncation.StoredBytes > got.Truncation.LimitBytes {
+		t.Fatalf("StoredBytes = %d, want at most %d", got.Truncation.StoredBytes, got.Truncation.LimitBytes)
+	}
+}

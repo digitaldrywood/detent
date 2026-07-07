@@ -1243,6 +1243,59 @@ func TestRunParksIssueAfterRepeatedInstantBackendFailuresTruncatesConfiguredOutp
 	}
 }
 
+func TestRunInstantFailureCircuitBreakerComparesFullBackendErrorKey(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-instant-fail-key", "digitaldrywood/detent#979", "Todo")
+	tracker := newFakeConnector(issue)
+	backendBodies := []string{
+		"01234" + strings.Repeat("a", 20) + "vwxyz",
+		"01234" + strings.Repeat("b", 20) + "vwxyz",
+	}
+	runner := &staticRunner{}
+	runner.onRun = func(orchestrator.RunRequest) {
+		call := runner.calls.Load()
+		runner.err = instantBackendError{body: backendBodies[int(call-1)%len(backendBodies)]}
+	}
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:             time.Millisecond,
+		MaxConcurrentAgents:      1,
+		MaxRetryBackoff:          time.Millisecond,
+		FailureRetryBaseDelay:    time.Millisecond,
+		ActiveStates:             []string{"Todo", "In Progress"},
+		ObservedStates:           []string{"Blocked"},
+		TerminalStates:           []string{"Done", "Cancelled", "Canceled", "Closed"},
+		ContinuationRetryDelay:   time.Second,
+		OutputTruncationMaxBytes: len(runtimeoutput.Marker) + 10,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		if _, ok := state.Blocked[issue.ID]; ok {
+			return true
+		}
+		return runner.calls.Load() >= 8
+	})
+
+	if _, ok := state.Blocked[issue.ID]; ok {
+		t.Fatalf("Blocked[%q] present after alternating backend errors with matching truncated text", issue.ID)
+	}
+	if got := runner.calls.Load(); got < 8 {
+		t.Fatalf("runner calls = %d, want at least 8", got)
+	}
+	if comments := tracker.commentCalls(); len(comments) != 0 {
+		t.Fatalf("comments = %#v, want none", comments)
+	}
+}
+
 func TestRunParksInstantBackendFailuresInBlockedWithDefaultStates(t *testing.T) {
 	t.Parallel()
 
