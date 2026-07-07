@@ -1,6 +1,8 @@
 package web
 
 import (
+	"bytes"
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -117,6 +119,97 @@ func TestKanbanSnapshotWithPendingStatesUpdatesBlockedRefs(t *testing.T) {
 	}
 	if snapshot.BoardIssues[1].BlockedBy[0].State != "In Progress" {
 		t.Fatalf("source blocked ref state = %q, want original In Progress", snapshot.BoardIssues[1].BlockedBy[0].State)
+	}
+}
+
+func TestKanbanSnapshotWithPendingStatesUpdatesBlockedRefsFromCompletedRows(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{kanbanMutations: newKanbanMutationLocks()}
+	completedAt := time.Date(2026, 7, 7, 0, 37, 10, 0, time.UTC)
+	snapshot := telemetry.Snapshot{
+		Project: telemetry.Project{ID: "detent"},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:         "dependent",
+				Identifier: "digitaldrywood/detent#953",
+				ProjectID:  "detent",
+				Title:      "Dependent card",
+				State:      "Merging",
+				BlockedBy: []telemetry.BlockedRef{
+					{ID: "blocker", Identifier: "digitaldrywood/detent#950"},
+				},
+			},
+		},
+		Completed: []telemetry.Completed{{
+			Issue: telemetry.Issue{
+				ID:         "blocker",
+				Identifier: "digitaldrywood/detent#950",
+				ProjectID:  "detent",
+				Title:      "Dependency blocker",
+				State:      "Done",
+			},
+			CompletedAt: completedAt,
+			FinalState:  "Done",
+		}},
+	}
+
+	got := server.kanbanSnapshotWithPendingStates("project:detent", "detent", snapshot)
+	if got.BoardIssues[0].BlockedBy[0].State != "Done" {
+		t.Fatalf("blocked ref state = %q, want Done", got.BoardIssues[0].BlockedBy[0].State)
+	}
+	var html bytes.Buffer
+	data := templates.DashboardData{
+		Snapshot: got,
+		Kanban: templates.KanbanData{
+			States:         []string{"Todo", "Merging", "Done"},
+			TerminalStates: []string{"Done"},
+		},
+	}
+	if err := templates.BoardSnapshot(data).Render(context.Background(), &html); err != nil {
+		t.Fatalf("render board snapshot: %v", err)
+	}
+	if strings.Contains(html.String(), "blocked — digitaldrywood/detent#950") {
+		t.Fatalf("completed dependency rendered as active blocker:\n%s", html.String())
+	}
+	if snapshot.BoardIssues[0].BlockedBy[0].State != "" {
+		t.Fatalf("source blocked ref state = %q, want original empty state", snapshot.BoardIssues[0].BlockedBy[0].State)
+	}
+}
+
+func TestKanbanSnapshotWithPendingStatesPrefersCompletedRowTrackerState(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{kanbanMutations: newKanbanMutationLocks()}
+	snapshot := telemetry.Snapshot{
+		Project: telemetry.Project{ID: "detent"},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:         "dependent",
+				Identifier: "digitaldrywood/detent#953",
+				ProjectID:  "detent",
+				Title:      "Dependent card",
+				State:      "Merging",
+				BlockedBy: []telemetry.BlockedRef{
+					{ID: "blocker", Identifier: "digitaldrywood/detent#950"},
+				},
+			},
+		},
+		Completed: []telemetry.Completed{{
+			Issue: telemetry.Issue{
+				ID:         "blocker",
+				Identifier: "digitaldrywood/detent#950",
+				ProjectID:  "detent",
+				Title:      "Dependency blocker",
+				State:      "Human Review",
+			},
+			FinalState: "completed",
+		}},
+	}
+
+	got := server.kanbanSnapshotWithPendingStates("project:detent", "detent", snapshot)
+	if got.BoardIssues[0].BlockedBy[0].State != "Human Review" {
+		t.Fatalf("blocked ref state = %q, want Human Review", got.BoardIssues[0].BlockedBy[0].State)
 	}
 }
 

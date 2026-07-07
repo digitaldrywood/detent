@@ -2557,7 +2557,7 @@ func projectKanbanLaneID(state string) string {
 }
 
 func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state string, stageAt time.Time, now time.Time) projectKanbanCard {
-	blockers, clearedBlockers := projectKanbanBlockerLabels(issue.BlockedBy, projectKanbanTerminalStateSetForIssue(data, issue))
+	blockers, clearedBlockers := projectKanbanBlockerLabels(issue.BlockedBy, projectKanbanTerminalStateSetForIssue(data, issue), state)
 	card := projectKanbanCard{
 		IssueNumber:           projectKanbanIssueNumber(issue),
 		Identity:              boardCardIdentityToken(issue.Identifier, issue.ID, projectKanbanIssueNumber(issue)),
@@ -2671,7 +2671,7 @@ func projectKanbanPullRequestConflictReason(issue telemetry.Issue) string {
 	return projectKanbanPullRequestLabel(issue) + " mergeStateStatus " + strings.ToUpper(mergeableState)
 }
 
-func projectKanbanBlockerLabels(refs []telemetry.BlockedRef, terminalStates map[string]struct{}) ([]string, []string) {
+func projectKanbanBlockerLabels(refs []telemetry.BlockedRef, terminalStates map[string]struct{}, issueState string) ([]string, []string) {
 	active := make([]string, 0, len(refs))
 	cleared := make([]string, 0, len(refs))
 	for _, ref := range refs {
@@ -2689,6 +2689,9 @@ func projectKanbanBlockerLabels(refs []telemetry.BlockedRef, terminalStates map[
 			cleared = append(cleared, label)
 			continue
 		}
+		if strings.TrimSpace(ref.State) == "" && !projectKanbanUnknownBlockerActive(issueState) {
+			continue
+		}
 		active = append(active, label)
 	}
 	return uniqueStrings(active), uniqueStrings(cleared)
@@ -2696,6 +2699,10 @@ func projectKanbanBlockerLabels(refs []telemetry.BlockedRef, terminalStates map[
 
 func projectKanbanBlockedRefCleared(ref telemetry.BlockedRef, terminalStates map[string]struct{}) bool {
 	return projectKanbanTerminalState(ref.State, terminalStates)
+}
+
+func projectKanbanUnknownBlockerActive(issueState string) bool {
+	return projectKanbanStateKey(issueState) == "blocked"
 }
 
 func projectKanbanTerminalStateSetForIssue(data DashboardData, issue telemetry.Issue) map[string]struct{} {
