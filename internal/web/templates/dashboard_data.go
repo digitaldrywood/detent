@@ -2186,12 +2186,18 @@ func projectKanbanSnapshotState(issue telemetry.Issue, fallback string, configur
 	if !projectKanbanRawGitHubIssueState(state) {
 		return state, false
 	}
-	if _, ok := configured[projectKanbanStateKey(state)]; ok {
-		return state, false
+	key := projectKanbanStateKey(state)
+	if configuredDisplay, ok := configured[key]; ok {
+		return configuredDisplay, false
 	}
 	fallback = strings.TrimSpace(fallback)
 	if fallback != "" {
 		return fallback, true
+	}
+	for _, alias := range projectKanbanStateAliases(key) {
+		if configuredDisplay, ok := configured[alias]; ok {
+			return configuredDisplay, false
+		}
 	}
 	return "", true
 }

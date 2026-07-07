@@ -1551,6 +1551,47 @@ func TestProjectKanbanBoardPrefersConfiguredStateOverRawGitHubRuntimeState(t *te
 	}
 }
 
+func TestProjectKanbanBoardMapsRawClosedBoardIssueToConfiguredDoneLane(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 7, 14, 5, 0, 0, time.UTC)
+	closedAt := now.Add(-3 * time.Minute)
+	board := projectKanbanBoardView(DashboardData{
+		Kanban: KanbanData{
+			States: []string{"Todo", "In Progress", "Done"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:             "issue-991",
+					Identifier:     "digitaldrywood/detent#991",
+					ProjectID:      "detent",
+					Title:          "Closed board issue",
+					State:          "CLOSED",
+					StageUpdatedAt: &closedAt,
+				},
+			},
+		},
+	})
+
+	if got := collectKanbanLaneTitles(board.AllLanes); containsString(got, "Closed") {
+		t.Fatalf("all lanes = %#v, want no raw Closed lane", got)
+	}
+	got := collectKanbanCards(board.AllLanes)
+	want := []kanbanCardSnapshot{
+		{Lane: "Done", IssueNumber: "#991", Title: "Closed board issue", TimeInStage: "3m 0s", Metadata: "No linked PR"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("kanban cards len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("kanban card %d = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestProjectKanbanBoardShowsMergeLaneStatus(t *testing.T) {
 	t.Parallel()
 
