@@ -146,10 +146,15 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		fetched,
 		o.reconcileStaleTodoPullRequestIssues(ctx, state, fetched.candidates, now),
 	)
+	completedTransitions := o.transitionCompletedActiveIssuesToReview(ctx, state, fetched.candidates, now)
 	fetched = filterReconciledTickIssues(
 		state,
 		fetched,
-		o.transitionCompletedActiveIssuesToReview(ctx, state, fetched.candidates, now),
+		completedTransitions.transitioned,
+	)
+	fetched.candidates = mergeIssueSlices(
+		fetched.candidates,
+		completedTransitions.dispatchCandidates,
 	)
 	o.dispatchTickIssues(ctx, state, fetched, transitions, previous, completedEpics, now)
 	if refreshSucceeded(state) {

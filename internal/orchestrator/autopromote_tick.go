@@ -1490,10 +1490,14 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 	}
 
 	o.logAutoPromoteDecision(issue, decision, targetState)
+	sourceState := displayStateName(issue.State)
+	if sourceState == "" {
+		sourceState = autoPromoteSourceState
+	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      now,
 		Event:   "auto_promote_transition",
-		Message: "auto-promoted " + issueLabel(issue) + " from " + autoPromoteSourceState + " to " + targetState,
+		Message: "auto-promoted " + issueLabel(issue) + " from " + sourceState + " to " + targetState,
 	})
 	return true
 }

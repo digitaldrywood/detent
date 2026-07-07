@@ -14,12 +14,13 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 	state *State,
 	issues []connector.Issue,
 	now time.Time,
-) map[string]struct{} {
+) autoPromoteTickResult {
 	if len(state.Completed) == 0 || len(issues) == 0 {
-		return nil
+		return autoPromoteTickResult{}
 	}
 
-	handled := map[string]struct{}{}
+	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+	result := autoPromoteTickResult{transitioned: map[string]struct{}{}}
 	for _, issue := range issues {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
@@ -34,14 +35,24 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			completed.FinalState,
 			o.cfg.ActiveStates,
 			o.cfg.TerminalStates,
-			normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState,
-			gateRequiresPullRequest(o.cfg.AutoPromote.Gate),
+			cfg.SourceState,
+			gateRequiresPullRequest(cfg.Gate),
 		)
 		if targetState == "" {
 			continue
 		}
 
-		handled[issueID] = struct{}{}
+		if direct, promoted := o.tryDirectCompletedActiveAutoPromote(ctx, state, issue, targetState, cfg, now); direct {
+			result.transitioned[issueID] = struct{}{}
+			if mergeWorkerIssue(promoted) {
+				o.recordMergeQueueEntered(state, promoted, now, "completed_active_auto_promote")
+				result.dispatchCandidates = append(result.dispatchCandidates, promoted)
+				o.logMergeWorkerPickup(promoted, "completed_active_auto_promote")
+			}
+			o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, promoted.State)
+			continue
+		}
+
 		if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "completed_active_review_transition"); err != nil {
 			if o.logger != nil {
 				o.logger.Warn(
@@ -56,27 +67,72 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			continue
 		}
 
-		if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
-			o.logger.Warn("abandon completed review claim failed", "issue_id", issueID, "error", err)
-		}
-		updated := mergeIssueTrackerFields(completed.Issue, issue)
-		updated.State = targetState
-		completed.Issue = updated
-		state.Completed[issueID] = completed
-		delete(state.Claimed, issueID)
-		delete(state.Retry, issueID)
-		delete(state.BudgetRefusals, issueID)
-		delete(state.PriorAttempts, issueID)
+		result.transitioned[issueID] = struct{}{}
+		o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, targetState)
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now,
 			Event:   "completed_issue_review_transition",
 			Message: "moved " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + targetState + " after successful completion",
 		})
 	}
-	if len(handled) == 0 {
-		return nil
+	if len(result.transitioned) == 0 {
+		return autoPromoteTickResult{}
 	}
-	return handled
+	return result
+}
+
+func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	reviewState string,
+	cfg AutoPromoteConfig,
+	now time.Time,
+) (bool, connector.Issue) {
+	if !cfg.Enabled || cfg.QuietDuration != 0 || normalizeState(reviewState) != normalizeState(cfg.SourceState) {
+		return false, connector.Issue{}
+	}
+
+	summary := AutoPromoteSummaryFromIssue(issue)
+	decision := EvaluateAutoPromote(issue, summary, cfg, now)
+	if decision.Action == AutoPromoteActionPromote {
+		issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
+	}
+	if decision.Action != AutoPromoteActionPromote {
+		o.logAutoPromoteDecision(issue, decision, "")
+		return false, connector.Issue{}
+	}
+	targetState := autoPromoteTargetState(decision.Action, cfg)
+	if targetState == "" {
+		o.logAutoPromoteDecision(issue, decision, "")
+		return false, connector.Issue{}
+	}
+	if !o.applyAutoPromoteDecision(ctx, state, issue, summary, decision, targetState, now) {
+		return false, connector.Issue{}
+	}
+	promoted := promotedIssue(issue, targetState, now)
+	return true, promoted
+}
+
+func (o *Orchestrator) finishCompletedActiveReviewTransition(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	completed Completed,
+	targetState string,
+) {
+	issueID := strings.TrimSpace(issue.ID)
+	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
+		o.logger.Warn("abandon completed review claim failed", "issue_id", issueID, "error", err)
+	}
+	updated := mergeIssueTrackerFields(completed.Issue, issue)
+	updated.State = targetState
+	completed.Issue = updated
+	state.Completed[issueID] = completed
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
 }
 
 func completedActiveReviewTargetState(
