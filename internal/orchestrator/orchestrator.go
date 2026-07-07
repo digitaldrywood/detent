@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -84,6 +85,7 @@ type Config struct {
 	GitHubGraphQLWarnRemaining    int64
 	GitHubGraphQLMinReserve       int64
 	GitHubRESTMinReserve          int64
+	OutputTruncationMaxBytes      int
 }
 
 type ClaimingConfig struct {
@@ -242,6 +244,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		GitHubGraphQLWarnRemaining:    int64(cfg.Tracker.GitHubGraphQLWarnRemaining),
 		GitHubGraphQLMinReserve:       int64(cfg.Tracker.GitHubGraphQLMinReserve),
 		GitHubRESTMinReserve:          int64(cfg.Tracker.GitHubRESTMinReserve),
+		OutputTruncationMaxBytes:      cfg.Agent.OutputTruncation.MaxBytes,
 	}
 }
 
@@ -1932,6 +1935,7 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	}
 	if event.usage.LastMessage != "" {
 		running.LastMessage = event.usage.LastMessage
+		running.LastMessageTruncation = runtimeoutput.CloneTruncation(event.usage.LastMessageTruncation)
 	}
 	if len(event.usage.RecentEvents) > 0 {
 		running.RecentEvents = cloneActivityEvents(event.usage.RecentEvents)
@@ -1961,7 +1965,7 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 				o.logger.Warn("work attempt usage heartbeat failed", "attempt_id", running.WorkAttemptID, "issue_id", event.issueID, "error", err)
 			}
 		} else {
-			o.applyWorkAttemptHeartbeatSnapshot(state, running.WorkAttemptID, heartbeat)
+			o.applyWorkAttemptHeartbeatSnapshot(state, running.WorkAttemptID, heartbeat, event.usage.LastMessageTruncation)
 		}
 	}
 }
@@ -2152,9 +2156,9 @@ func (o *Orchestrator) tripInstantFailureCircuitBreaker(
 	if state.InstantFailures == nil {
 		state.InstantFailures = map[string]InstantFailure{}
 	}
-	key := instantFailureErrorKey(event.Err)
+	key := o.operatorText(instantFailureErrorKey(event.Err))
 	if key == "" {
-		key = event.Err.Error()
+		key = o.operatorText(event.Err.Error())
 	}
 	failure := state.InstantFailures[event.IssueID]
 	if failure.Error != key {
@@ -2225,7 +2229,7 @@ func (o *Orchestrator) parkInstantFailure(
 		}
 	}
 	if o.connector != nil {
-		if err := o.connector.CreateComment(ctx, issue.ID, instantFailureComment(issue, event.Err, failure, attempt, targetState)); err != nil && o.logger != nil {
+		if err := o.connector.CreateComment(ctx, issue.ID, instantFailureComment(issue, event.Err, failure, attempt, targetState, o.cfg.OutputTruncationMaxBytes)); err != nil && o.logger != nil {
 			o.logger.Error("instant fail circuit breaker comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
 		}
 	}
@@ -2262,14 +2266,14 @@ func (o *Orchestrator) parkInstantFailure(
 			"target_state", targetState,
 			"error", event.Err,
 		}
-		if body := instantFailureErrorKey(event.Err); body != "" {
+		if body := o.operatorText(instantFailureErrorKey(event.Err)); body != "" {
 			attrs = append(attrs, "backend_error_body", body)
 		}
 		var carrier interface {
 			BackendErrorMessage() string
 		}
 		if errors.As(event.Err, &carrier) {
-			if message := strings.TrimSpace(carrier.BackendErrorMessage()); message != "" {
+			if message := o.operatorText(carrier.BackendErrorMessage()); message != "" {
 				attrs = append(attrs, "backend_error_message", message)
 			}
 		}
@@ -2281,7 +2285,7 @@ func (o *Orchestrator) instantFailureParkState() string {
 	return blockedStatusState
 }
 
-func instantFailureComment(issue connector.Issue, err error, failure InstantFailure, attempt int, targetState string) string {
+func instantFailureComment(issue connector.Issue, err error, failure InstantFailure, attempt int, targetState string, maxBytes int) string {
 	var b strings.Builder
 	b.WriteString("Detent stopped retrying this worker after ")
 	b.WriteString(strconv.Itoa(failure.Count))
@@ -2298,15 +2302,20 @@ func instantFailureComment(issue connector.Issue, err error, failure InstantFail
 	b.WriteString("\n- failure_window_seconds: ")
 	b.WriteString(strconv.FormatInt(int64(instantFailureMaxDuration/time.Second), 10))
 	b.WriteString("\n- error:\n\n```text\n")
-	b.WriteString(strings.TrimSpace(err.Error()))
+	errorText := runtimeoutput.Truncate(strings.TrimSpace(err.Error()), maxBytes).Value
+	b.WriteString(errorText)
 	b.WriteString("\n```")
-	if body := instantFailureErrorKey(err); body != "" && body != strings.TrimSpace(err.Error()) {
+	if body := runtimeoutput.Truncate(instantFailureErrorKey(err), maxBytes).Value; body != "" && body != errorText {
 		b.WriteString("\n\n- backend_error_body:\n\n```json\n")
 		b.WriteString(body)
 		b.WriteString("\n```")
 	}
 	b.WriteString("\n\nFix the pinned agent model or backend configuration, then move the issue back to Todo or Rework.")
 	return b.String()
+}
+
+func (o *Orchestrator) operatorText(value string) string {
+	return runtimeoutput.Truncate(strings.TrimSpace(value), o.cfg.OutputTruncationMaxBytes).Value
 }
 
 func (o *Orchestrator) cleanupDrainedRun(ctx context.Context, state *State, issueID string) {
@@ -2966,6 +2975,9 @@ func normalizeConfig(cfg Config) Config {
 	cfg.SelectorPersona = strings.TrimSpace(cfg.SelectorPersona)
 	if cfg.MaxConcurrentAgentsPerHost < 0 {
 		cfg.MaxConcurrentAgentsPerHost = 0
+	}
+	if cfg.OutputTruncationMaxBytes < 0 {
+		cfg.OutputTruncationMaxBytes = 0
 	}
 
 	return cfg

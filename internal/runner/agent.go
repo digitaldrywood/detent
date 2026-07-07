@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/notes"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -411,7 +412,7 @@ func (r *Runner) runAgentTurn(
 	runStartedAt time.Time,
 ) agentTurnExecution {
 	result := RunResult{FinalState: FinalStateCompleted}
-	progress := newAgentRunProgress()
+	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: agentConfig.OutputTruncation.MaxBytes})
 	turnStarted := false
 	turnResult, turnErr := backend.RunTurn(ctx, turnRequest, func(update AgentUpdate) error {
 		if update.Type == AgentUpdateTurnStarted || strings.TrimSpace(update.TurnID) != "" {
@@ -851,7 +852,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		OnUsageUpdate:   req.OnUsageUpdate,
 	}
 	runResult := RunResult{FinalState: FinalStateCompleted}
-	progress := newAgentRunProgress()
+	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: workflow.Config.Agent.OutputTruncation.MaxBytes})
 	var output strings.Builder
 	turnResult, turnErr := backend.RunTurn(ctx, AgentTurnRequest{
 		Workspace:          info.Path,
@@ -1479,24 +1480,29 @@ func applyAgentUpdate(result *RunResult, update AgentUpdate) {
 }
 
 type agentRunProgress struct {
-	sessionID          string
-	processIdentity    string
-	turnIDs            map[string]struct{}
-	messages           map[string]string
-	messageOrder       []string
-	lastEventAt        time.Time
-	lastEvent          string
-	lastMessage        string
-	recentEvents       []telemetry.ActivityEvent
-	diffStats          DiffStats
-	diffStatsCollected bool
-	diffStatsCheckedAt time.Time
+	sessionID             string
+	processIdentity       string
+	turnIDs               map[string]struct{}
+	messages              map[string]*runtimeoutput.Buffer
+	messageOrder          []string
+	outputPolicy          runtimeoutput.Policy
+	output                *runtimeoutput.Buffer
+	lastEventAt           time.Time
+	lastEvent             string
+	lastMessage           string
+	lastMessageTruncation *runtimeoutput.Truncation
+	recentEvents          []telemetry.ActivityEvent
+	diffStats             DiffStats
+	diffStatsCollected    bool
+	diffStatsCheckedAt    time.Time
 }
 
-func newAgentRunProgress() *agentRunProgress {
+func newAgentRunProgress(outputPolicy runtimeoutput.Policy) *agentRunProgress {
 	return &agentRunProgress{
-		turnIDs:  map[string]struct{}{},
-		messages: map[string]string{},
+		turnIDs:      map[string]struct{}{},
+		messages:     map[string]*runtimeoutput.Buffer{},
+		outputPolicy: outputPolicy,
+		output:       runtimeoutput.NewBuffer(outputPolicy),
 	}
 }
 
@@ -1516,22 +1522,34 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 	p.lastEventAt = eventAt.UTC()
 
 	eventMessage := ""
+	eventTruncation := (*runtimeoutput.Truncation)(nil)
 	switch update.Type {
 	case AgentUpdateMessageDelta:
 		key := update.ItemID
 		if key == "" {
 			key = update.TurnID
 		}
-		if _, ok := p.messages[key]; !ok {
+		message, ok := p.messages[key]
+		if !ok {
 			p.messageOrder = append(p.messageOrder, key)
+			message = runtimeoutput.NewBuffer(p.outputPolicy)
+			p.messages[key] = message
 		}
-		p.messages[key] += update.Delta
-		p.lastMessage = strings.TrimSpace(p.messages[key])
+		message.Append(update.Delta)
+		if p.output != nil {
+			p.output.Append(update.Delta)
+		}
+		text := message.Text()
+		p.lastMessage = strings.TrimSpace(text.Value)
+		p.lastMessageTruncation = runtimeoutput.CloneTruncation(text.Truncation)
 		eventMessage = p.lastMessage
+		eventTruncation = runtimeoutput.CloneTruncation(text.Truncation)
 	case AgentUpdateTurnStarted:
+		p.lastMessageTruncation = nil
 		p.lastMessage = "turn started"
 		eventMessage = p.lastMessage
 	case AgentUpdateTurnCompleted:
+		p.lastMessageTruncation = nil
 		status := update.Status
 		if status == "" {
 			status = "completed"
@@ -1551,9 +1569,10 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 	}
 
 	p.addRecentEvent(telemetry.ActivityEvent{
-		At:      p.lastEventAt,
-		Event:   p.lastEvent,
-		Message: eventMessage,
+		At:         p.lastEventAt,
+		Event:      p.lastEvent,
+		Message:    eventMessage,
+		Truncation: eventTruncation,
 	})
 }
 
@@ -1601,13 +1620,21 @@ func (p *agentRunProgress) recentActivity() []telemetry.ActivityEvent {
 	}
 	out := make([]telemetry.ActivityEvent, len(p.recentEvents))
 	copy(out, p.recentEvents)
+	for index := range out {
+		out[index].Truncation = runtimeoutput.CloneTruncation(out[index].Truncation)
+	}
 	return out
 }
 
 func (p *agentRunProgress) outputText() string {
+	if p.output != nil {
+		return p.output.String()
+	}
 	var out strings.Builder
 	for _, key := range p.messageOrder {
-		out.WriteString(p.messages[key])
+		if message := p.messages[key]; message != nil {
+			out.WriteString(message.String())
+		}
 	}
 	return out.String()
 }
@@ -1628,16 +1655,17 @@ func (r *Runner) publishRunUpdate(
 
 	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, eventAt)
 	usage := UsageUpdate{
-		SessionID:       progress.sessionID,
-		ProcessIdentity: progress.processIdentity,
-		WorkspacePath:   info.Path,
-		TurnCount:       progress.turnCount(),
-		LastEventAt:     progress.lastEventAt,
-		LastEvent:       progress.lastEvent,
-		LastMessage:     progress.lastMessage,
-		RecentEvents:    progress.recentActivity(),
-		Tokens:          result.Tokens,
-		RateLimits:      result.RateLimits,
+		SessionID:             progress.sessionID,
+		ProcessIdentity:       progress.processIdentity,
+		WorkspacePath:         info.Path,
+		TurnCount:             progress.turnCount(),
+		LastEventAt:           progress.lastEventAt,
+		LastEvent:             progress.lastEvent,
+		LastMessage:           progress.lastMessage,
+		LastMessageTruncation: runtimeoutput.CloneTruncation(progress.lastMessageTruncation),
+		RecentEvents:          progress.recentActivity(),
+		Tokens:                result.Tokens,
+		RateLimits:            result.RateLimits,
 	}
 	diffStats, ok := r.liveDiffStats(ctx, info, issue, progress, eventAt)
 	if ok {

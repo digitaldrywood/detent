@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 )
 
 type Snapshot struct {
@@ -297,61 +299,64 @@ type MergeTiming struct {
 }
 
 type ActivityEvent struct {
-	At      time.Time `json:"at"`
-	Event   string    `json:"event,omitempty"`
-	Message string    `json:"message,omitempty"`
+	At         time.Time                 `json:"at"`
+	Event      string                    `json:"event,omitempty"`
+	Message    string                    `json:"message,omitempty"`
+	Truncation *runtimeoutput.Truncation `json:"truncation,omitempty"`
 }
 
 type Running struct {
 	Issue
-	WorkerHost      string          `json:"worker_host,omitempty"`
-	ProcessIdentity string          `json:"process_identity,omitempty"`
-	WorkspacePath   string          `json:"workspace_path,omitempty"`
-	SessionID       string          `json:"session_id,omitempty"`
-	TurnCount       int             `json:"turn_count"`
-	StartedAt       time.Time       `json:"started_at"`
-	LastEventAt     *time.Time      `json:"last_event_at,omitempty"`
-	LastEvent       string          `json:"last_event,omitempty"`
-	LastMessage     string          `json:"last_message,omitempty"`
-	RecentEvents    []ActivityEvent `json:"recent_events,omitempty"`
-	RuntimeSeconds  float64         `json:"runtime_seconds"`
-	DiffAdded       int             `json:"diff_added"`
-	DiffRemoved     int             `json:"diff_removed"`
-	DiffFiles       int             `json:"diff_files"`
-	DiffStatus      string          `json:"diff_status,omitempty"`
-	Tokens          Tokens          `json:"tokens"`
+	WorkerHost            string                    `json:"worker_host,omitempty"`
+	ProcessIdentity       string                    `json:"process_identity,omitempty"`
+	WorkspacePath         string                    `json:"workspace_path,omitempty"`
+	SessionID             string                    `json:"session_id,omitempty"`
+	TurnCount             int                       `json:"turn_count"`
+	StartedAt             time.Time                 `json:"started_at"`
+	LastEventAt           *time.Time                `json:"last_event_at,omitempty"`
+	LastEvent             string                    `json:"last_event,omitempty"`
+	LastMessage           string                    `json:"last_message,omitempty"`
+	LastMessageTruncation *runtimeoutput.Truncation `json:"last_message_truncation,omitempty"`
+	RecentEvents          []ActivityEvent           `json:"recent_events,omitempty"`
+	RuntimeSeconds        float64                   `json:"runtime_seconds"`
+	DiffAdded             int                       `json:"diff_added"`
+	DiffRemoved           int                       `json:"diff_removed"`
+	DiffFiles             int                       `json:"diff_files"`
+	DiffStatus            string                    `json:"diff_status,omitempty"`
+	Tokens                Tokens                    `json:"tokens"`
 }
 
 type WorkAttempt struct {
-	AttemptID              int64      `json:"attempt_id"`
-	ProjectID              string     `json:"project_id,omitempty"`
-	IssueID                string     `json:"issue_id,omitempty"`
-	Identifier             string     `json:"identifier,omitempty"`
-	IssueURL               string     `json:"issue_url,omitempty"`
-	PRNumber               *int64     `json:"pr_number,omitempty"`
-	Repo                   string     `json:"repo,omitempty"`
-	WorkerType             string     `json:"worker_type,omitempty"`
-	WorkerHost             string     `json:"worker_host,omitempty"`
-	Lane                   string     `json:"lane,omitempty"`
-	AttemptNumber          int        `json:"attempt_number,omitempty"`
-	Status                 string     `json:"status,omitempty"`
-	StartedAt              time.Time  `json:"started_at,omitzero"`
-	LeaseExpiresAt         *time.Time `json:"lease_expires_at,omitempty"`
-	HeartbeatAt            *time.Time `json:"heartbeat_at,omitempty"`
-	CompletedAt            *time.Time `json:"completed_at,omitempty"`
-	TerminalState          string     `json:"terminal_state,omitempty"`
-	ErrorClass             string     `json:"error_class,omitempty"`
-	ErrorMessage           string     `json:"error_message,omitempty"`
-	Phase                  string     `json:"phase,omitempty"`
-	StatusMessage          string     `json:"status_message,omitempty"`
-	CurrentCommand         string     `json:"current_command,omitempty"`
-	WaitReason             string     `json:"wait_reason,omitempty"`
-	GitHubRateSnapshotJSON string     `json:"github_rate_snapshot_json,omitempty"`
-	CIState                string     `json:"ci_state,omitempty"`
-	CapacitySnapshotJSON   string     `json:"capacity_snapshot_json,omitempty"`
-	MetricsJSON            string     `json:"metrics_json,omitempty"`
-	NextAction             string     `json:"next_action,omitempty"`
-	Stale                  bool       `json:"stale,omitempty"`
+	AttemptID               int64                     `json:"attempt_id"`
+	ProjectID               string                    `json:"project_id,omitempty"`
+	IssueID                 string                    `json:"issue_id,omitempty"`
+	Identifier              string                    `json:"identifier,omitempty"`
+	IssueURL                string                    `json:"issue_url,omitempty"`
+	PRNumber                *int64                    `json:"pr_number,omitempty"`
+	Repo                    string                    `json:"repo,omitempty"`
+	WorkerType              string                    `json:"worker_type,omitempty"`
+	WorkerHost              string                    `json:"worker_host,omitempty"`
+	Lane                    string                    `json:"lane,omitempty"`
+	AttemptNumber           int                       `json:"attempt_number,omitempty"`
+	Status                  string                    `json:"status,omitempty"`
+	StartedAt               time.Time                 `json:"started_at,omitzero"`
+	LeaseExpiresAt          *time.Time                `json:"lease_expires_at,omitempty"`
+	HeartbeatAt             *time.Time                `json:"heartbeat_at,omitempty"`
+	CompletedAt             *time.Time                `json:"completed_at,omitempty"`
+	TerminalState           string                    `json:"terminal_state,omitempty"`
+	ErrorClass              string                    `json:"error_class,omitempty"`
+	ErrorMessage            string                    `json:"error_message,omitempty"`
+	Phase                   string                    `json:"phase,omitempty"`
+	StatusMessage           string                    `json:"status_message,omitempty"`
+	StatusMessageTruncation *runtimeoutput.Truncation `json:"status_message_truncation,omitempty"`
+	CurrentCommand          string                    `json:"current_command,omitempty"`
+	WaitReason              string                    `json:"wait_reason,omitempty"`
+	GitHubRateSnapshotJSON  string                    `json:"github_rate_snapshot_json,omitempty"`
+	CIState                 string                    `json:"ci_state,omitempty"`
+	CapacitySnapshotJSON    string                    `json:"capacity_snapshot_json,omitempty"`
+	MetricsJSON             string                    `json:"metrics_json,omitempty"`
+	NextAction              string                    `json:"next_action,omitempty"`
+	Stale                   bool                      `json:"stale,omitempty"`
 }
 
 type SchedulerDecision struct {
