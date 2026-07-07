@@ -3503,6 +3503,7 @@ type autoPromoteTickConnector struct {
 	prComments            []autoPromoteTickComment
 	setFields             []autoPromoteTickSetField
 	reruns                []autoPromoteTickRerun
+	updateErr             error
 }
 
 type autoPromoteTickMergeConnector struct {
@@ -3844,6 +3845,9 @@ func waitForGlobalDispatchSlot(t *testing.T, globalGate scheduler.ProjectDispatc
 
 func (c *autoPromoteTickConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {
 	c.updates = append(c.updates, autoPromoteTickUpdate{issueID: issueID, state: state})
+	if c.updateErr != nil {
+		return c.updateErr
+	}
 	for index := range c.stateIssues {
 		if c.stateIssues[index].ID == issueID {
 			c.stateIssues[index].State = state
