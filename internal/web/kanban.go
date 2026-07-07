@@ -772,14 +772,23 @@ func applySnapshotKanbanIssues(snapshot *telemetry.Snapshot, apply func(*telemet
 
 func kanbanIssueStateIndex(snapshot telemetry.Snapshot) map[string]string {
 	states := map[string]string{}
-	for _, issue := range snapshotKanbanIssues(snapshot) {
-		state := strings.TrimSpace(issue.State)
+	addIssue := func(issue telemetry.Issue, state string) {
+		state = strings.TrimSpace(state)
 		if state == "" {
-			continue
+			state = strings.TrimSpace(issue.State)
+		}
+		if state == "" {
+			return
 		}
 		for _, key := range kanbanIssueStateKeys(issue.ID, issue.Identifier) {
 			states[key] = state
 		}
+	}
+	for _, row := range snapshot.Completed {
+		addIssue(row.Issue, row.State)
+	}
+	for _, issue := range snapshotKanbanIssues(snapshot) {
+		addIssue(issue, issue.State)
 	}
 	return states
 }

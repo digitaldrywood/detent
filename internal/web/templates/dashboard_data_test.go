@@ -1720,6 +1720,13 @@ func TestProjectKanbanCardForIssueOnlyKeepsActiveBlockers(t *testing.T) {
 			},
 			wantBlockers: []string{"digitaldrywood/detent#431"},
 		},
+		{
+			name:  "unresolved dependency is not elevated outside blocked lane",
+			state: "Merging",
+			blockedBy: []telemetry.BlockedRef{
+				{Identifier: "digitaldrywood/detent#432"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
