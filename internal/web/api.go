@@ -830,7 +830,6 @@ func totalsResponse(tokens telemetry.Tokens) tokenTotalsAPIResponse {
 		ReasoningOutput:    tokens.ReasoningOutput,
 		Total:              tokens.Total,
 		ModelContextWindow: tokens.ModelContextWindow,
-		ContextPressure:    contextPressureResponse(tokens),
 		CacheReadFraction:  cacheReadFractionResponse(tokens),
 		RuntimeSeconds:     tokens.RuntimeSeconds,
 	}

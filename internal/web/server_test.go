@@ -7137,8 +7137,9 @@ func TestServerAPIRoutes(t *testing.T) {
 	if got := nestedString(t, state, "codex_totals", "seconds_running"); got != "44.5" {
 		t.Fatalf("codex_totals.seconds_running = %s, want 44.5", got)
 	}
-	if got := nestedString(t, state, "codex_totals", "context_pressure", "percent_used"); got != "33" {
-		t.Fatalf("codex_totals.context_pressure.percent_used = %s, want 33", got)
+	codexTotals := state["codex_totals"].(map[string]any)
+	if _, ok := codexTotals["context_pressure"]; ok {
+		t.Fatalf("codex_totals.context_pressure present for aggregate totals: %#v", codexTotals["context_pressure"])
 	}
 	if got := nestedString(t, state, "throughput", "tokens_per_second"); got != "7.5" {
 		t.Fatalf("throughput.tokens_per_second = %s, want 7.5", got)
