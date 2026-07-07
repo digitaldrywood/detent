@@ -55,6 +55,8 @@ type boardCardView struct {
 	Done           bool
 	Terminal       bool
 	MetaRight      string
+	AgeFooter      string
+	AgeFooterTitle string
 	Title          string
 	ExtraKind      primitives.Kind
 	ExtraText      string
@@ -295,8 +297,10 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		view.MetaRight = ""
 	case card.PRNumber > 0 && !view.Running:
 		view.MetaRight = "PR #" + strconv.Itoa(card.PRNumber)
-	case boardLaneShowsAge(lane.Title):
-		view.MetaRight = boardCompactAge(card.TimeInStage)
+	}
+	if boardLaneShowsAge(lane.Title, view.Terminal) {
+		view.AgeFooter = boardCompactAge(card.TimeInStage)
+		view.AgeFooterTitle = strings.TrimSpace(card.TimeInStageTitle)
 	}
 	view.ExtraKind, view.ExtraText, view.ExtraChip = boardCardExtra(card, view)
 	return view
@@ -510,11 +514,14 @@ func boardCompactAge(age string) string {
 	return age
 }
 
-// boardLaneShowsAge keeps intake lanes quiet: time-in-stage only matters
-// once work is moving.
-func boardLaneShowsAge(title string) bool {
+// boardLaneShowsAge keeps intake and terminal lanes quiet: time-in-stage only
+// matters once work is moving and before it has finished.
+func boardLaneShowsAge(title string, terminal bool) bool {
+	if terminal {
+		return false
+	}
 	switch strings.ToLower(strings.TrimSpace(title)) {
-	case "backlog", "todo":
+	case "backlog", "todo", "done", "cancelled", "canceled", "closed", "duplicate":
 		return false
 	}
 	return true

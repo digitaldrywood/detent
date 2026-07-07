@@ -99,8 +99,11 @@ func TestBoardViewLanes(t *testing.T) {
 	if card.Number != "#185" {
 		t.Fatalf("card number = %q, want #185", card.Number)
 	}
-	if card.MetaRight == "" {
-		t.Fatalf("running card should show elapsed time")
+	if card.AgeFooter != "3m" {
+		t.Fatalf("running card age footer = %q, want 3m", card.AgeFooter)
+	}
+	if card.MetaRight != "" {
+		t.Fatalf("running card age should not consume top-right metadata, got %q", card.MetaRight)
 	}
 	if card.Identity != "gopherguides/gopher-ai#185" {
 		t.Fatalf("card identity = %q, want full identifier", card.Identity)
@@ -127,6 +130,59 @@ func TestBoardViewLanes(t *testing.T) {
 
 	if human, ok := lanes["Human Review"]; ok && human.DefaultVisible {
 		t.Fatalf("empty lane should be hidden by default")
+	}
+}
+
+func TestBoardCardAgeFooterVisibility(t *testing.T) {
+	card := projectKanbanCard{
+		IssueNumber:      "#982",
+		ProjectID:        "detent",
+		Title:            "Restore active-lane aging on Kanban cards",
+		TimeInStage:      "12m 4s",
+		TimeInStageTitle: "In Progress since 12:30 UTC (12m 4s)",
+	}
+	tests := []struct {
+		name         string
+		lane         string
+		terminal     bool
+		prNumber     int
+		wantAge      string
+		wantMeta     string
+		wantDone     bool
+		wantTerminal bool
+	}{
+		{name: "in progress", lane: "In Progress", wantAge: "12m"},
+		{name: "blocked", lane: "Blocked", wantAge: "12m"},
+		{name: "review pr keeps metadata", lane: "Human Review", prNumber: 314, wantAge: "12m", wantMeta: "PR #314"},
+		{name: "merging", lane: "Merging", prNumber: 315, wantAge: "12m", wantMeta: "PR #315"},
+		{name: "backlog suppressed", lane: "Backlog"},
+		{name: "todo suppressed", lane: "Todo"},
+		{name: "done suppressed", lane: "Done", terminal: true, wantDone: true, wantTerminal: true},
+		{name: "cancelled suppressed by terminal flag", lane: "Cancelled", terminal: true, wantTerminal: true},
+		{name: "closed suppressed by lane name", lane: "Closed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			candidate := card
+			candidate.PRNumber = tt.prNumber
+			got := boardCardViewFromCard(DashboardData{}, projectKanbanLane{Title: tt.lane}, candidate, tt.terminal, "fleet", "detent")
+			if got.AgeFooter != tt.wantAge {
+				t.Fatalf("AgeFooter = %q, want %q; card = %+v", got.AgeFooter, tt.wantAge, got)
+			}
+			if got.AgeFooterTitle != "" && got.AgeFooterTitle != candidate.TimeInStageTitle {
+				t.Fatalf("AgeFooterTitle = %q, want %q", got.AgeFooterTitle, candidate.TimeInStageTitle)
+			}
+			if got.MetaRight != tt.wantMeta {
+				t.Fatalf("MetaRight = %q, want %q; card = %+v", got.MetaRight, tt.wantMeta, got)
+			}
+			if got.Done != tt.wantDone {
+				t.Fatalf("Done = %t, want %t; card = %+v", got.Done, tt.wantDone, got)
+			}
+			if got.Terminal != tt.wantTerminal {
+				t.Fatalf("Terminal = %t, want %t; card = %+v", got.Terminal, tt.wantTerminal, got)
+			}
+		})
 	}
 }
 
@@ -678,6 +734,40 @@ func TestBoardSnapshotRenders(t *testing.T) {
 	}
 	if strings.Contains(html, "#0B0D10") || strings.Contains(html, "#14171C") {
 		t.Fatalf("board snapshot must not contain raw hex colors")
+	}
+}
+
+func TestBoardSnapshotRendersActiveLaneAgeFooter(t *testing.T) {
+	data := boardTestData()
+	html := renderBoardComponent(t, BoardSnapshot(data))
+
+	activeCard := boardCardSection(t, html, "refactor(tmux-start): extract inline bash to scripts")
+	for _, want := range []string{
+		`data-board-card-age-footer`,
+		`title="In Progress since`,
+		"In lane",
+		"3m",
+	} {
+		if !strings.Contains(activeCard, want) {
+			t.Fatalf("active card missing age footer marker %q:\n%s", want, activeCard)
+		}
+	}
+
+	for _, title := range []string{
+		"docs: agent session lifecycle diagram",
+		"fix(worktree): stale lock cleanup on crash",
+	} {
+		card := boardCardSection(t, html, title)
+		if strings.Contains(card, `data-board-card-age-footer`) {
+			t.Fatalf("%q card should not render an age footer:\n%s", title, card)
+		}
+	}
+
+	data.Snapshot.GeneratedAt = data.Snapshot.GeneratedAt.Add(time.Hour)
+	updated := renderBoardComponent(t, BoardSnapshot(data))
+	updatedCard := boardCardSection(t, updated, "refactor(tmux-start): extract inline bash to scripts")
+	if !strings.Contains(updatedCard, "1h") {
+		t.Fatalf("active card should update age from refreshed snapshot time:\n%s", updatedCard)
 	}
 }
 

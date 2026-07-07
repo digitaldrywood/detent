@@ -805,13 +805,45 @@ func boardCardView2(card boardCardView) templ.Component {
 				}
 			}
 		}
+		if card.AgeFooter != "" {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 62, "<div class=\"mt-0.5 flex items-center justify-between gap-2 border-t border-line/70 pt-1.5 font-mono text-2xs text-sec\" title=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var40 string
+			templ_7745c5c3_Var40, templ_7745c5c3_Err = templ.JoinStringErrs(card.AgeFooterTitle)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 160, Col: 149}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var40))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 63, "\" data-board-card-age-footer><span class=\"min-w-0 truncate\">In lane</span> <span class=\"flex-none whitespace-nowrap tabular-nums\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var41 string
+			templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinStringErrs(card.AgeFooter)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 162, Col: 75}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 64, "</span></div>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
 		if card.CanDrag {
 			templ_7745c5c3_Err = boardKanbanDragMoveForm(card).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 62, "</article>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 65, "</article>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -835,87 +867,87 @@ func boardKanbanDragMoveForm(card boardCardView) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var40 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var40 == nil {
-			templ_7745c5c3_Var40 = templ.NopComponent
+		templ_7745c5c3_Var42 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var42 == nil {
+			templ_7745c5c3_Var42 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 63, "<form class=\"hidden\" hx-post=\"/api/v1/kanban/move\" hx-target=\"#snapshot\" hx-swap=\"morph:innerHTML\" data-kanban-drag-move-form><input type=\"hidden\" name=\"kanban_drag\" value=\"true\"> <input type=\"hidden\" name=\"kanban_board\" value=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var41 string
-		templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinStringErrs(card.Scope)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 168, Col: 61}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 64, "\"> <input type=\"hidden\" name=\"project_id\" value=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var42 string
-		templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.JoinStringErrs(card.MoveProject)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 169, Col: 65}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var42))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 65, "\"> <input type=\"hidden\" name=\"issue_id\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 66, "<form class=\"hidden\" hx-post=\"/api/v1/kanban/move\" hx-target=\"#snapshot\" hx-swap=\"morph:innerHTML\" data-kanban-drag-move-form><input type=\"hidden\" name=\"kanban_drag\" value=\"true\"> <input type=\"hidden\" name=\"kanban_board\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var43 string
-		templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.JoinStringErrs(card.IssueID)
+		templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.JoinStringErrs(card.Scope)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 170, Col: 59}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 174, Col: 61}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var43))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 66, "\"> <input type=\"hidden\" name=\"current_state\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 67, "\"> <input type=\"hidden\" name=\"project_id\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var44 string
-		templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.JoinStringErrs(card.CurrentState)
+		templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.JoinStringErrs(card.MoveProject)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 171, Col: 69}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 175, Col: 65}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var44))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 67, "\"> <input type=\"hidden\" name=\"target_state\" value=\"\" data-kanban-drag-target-state> ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 68, "\"> <input type=\"hidden\" name=\"issue_id\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var45 string
+		templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinStringErrs(card.IssueID)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 176, Col: 59}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var45))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 69, "\"> <input type=\"hidden\" name=\"current_state\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var46 string
+		templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinStringErrs(card.CurrentState)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 177, Col: 69}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 70, "\"> <input type=\"hidden\" name=\"target_state\" value=\"\" data-kanban-drag-target-state> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if card.PRNumber != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 68, "<input type=\"hidden\" name=\"pr_number\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 71, "<input type=\"hidden\" name=\"pr_number\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var45 string
-			templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinStringErrs(card.PRNumber)
+			var templ_7745c5c3_Var47 string
+			templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinStringErrs(card.PRNumber)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 174, Col: 62}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 180, Col: 62}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var45))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 69, "\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 72, "\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 70, "</form>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 73, "</form>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -942,84 +974,84 @@ func boardLanePicker(view boardView) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var46 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var46 == nil {
-			templ_7745c5c3_Var46 = templ.NopComponent
+		templ_7745c5c3_Var48 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var48 == nil {
+			templ_7745c5c3_Var48 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 71, "<details id=\"board-lane-picker\" class=\"relative\" data-board-lane-picker data-preserve-details=\"board-lane-picker\"><summary class=\"flex cursor-pointer list-none items-center gap-1.5 rounded-chip border border-line px-2.5 py-1 text-2xs text-sec hover:text-text [&::-webkit-details-marker]:hidden\">Lanes <span data-board-lane-count class=\"tabular-nums\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 74, "<details id=\"board-lane-picker\" class=\"relative\" data-board-lane-picker data-preserve-details=\"board-lane-picker\"><summary class=\"flex cursor-pointer list-none items-center gap-1.5 rounded-chip border border-line px-2.5 py-1 text-2xs text-sec hover:text-text [&::-webkit-details-marker]:hidden\">Lanes <span data-board-lane-count class=\"tabular-nums\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var47 string
-		templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinStringErrs(boardLaneCountLabel(view))
+		var templ_7745c5c3_Var49 string
+		templ_7745c5c3_Var49, templ_7745c5c3_Err = templ.JoinStringErrs(boardLaneCountLabel(view))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 185, Col: 85}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 191, Col: 85}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var49))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 72, "</span> <span aria-hidden=\"true\">▾</span></summary><div class=\"absolute right-0 top-full z-40 mt-1 flex w-56 flex-col gap-0.5 rounded-card border border-line bg-elev p-1.5\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 75, "</span> <span aria-hidden=\"true\">▾</span></summary><div class=\"absolute right-0 top-full z-40 mt-1 flex w-56 flex-col gap-0.5 rounded-card border border-line bg-elev p-1.5\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		for _, lane := range view.Lanes {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 73, "<label class=\"flex cursor-pointer items-center gap-2 rounded-chip px-2 py-1 text-xs text-text hover:bg-surface\"><input type=\"checkbox\" class=\"accent-accent\" data-board-lane-toggle=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var48 string
-			templ_7745c5c3_Var48, templ_7745c5c3_Err = templ.JoinStringErrs(lane.LaneID)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 194, Col: 42}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var48))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 74, "\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			if lane.DefaultVisible {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 75, " checked")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 76, "> <span class=\"flex-1\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var49 string
-			templ_7745c5c3_Var49, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 197, Col: 38}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var49))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 77, "</span> <span class=\"font-mono text-2xs text-sec tabular-nums\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 76, "<label class=\"flex cursor-pointer items-center gap-2 rounded-chip px-2 py-1 text-xs text-text hover:bg-surface\"><input type=\"checkbox\" class=\"accent-accent\" data-board-lane-toggle=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var50 string
-			templ_7745c5c3_Var50, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Count)
+			templ_7745c5c3_Var50, templ_7745c5c3_Err = templ.JoinStringErrs(lane.LaneID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 198, Col: 72}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 200, Col: 42}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var50))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 78, "</span></label>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 77, "\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			if lane.DefaultVisible {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 78, " checked")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 79, "> <span class=\"flex-1\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var51 string
+			templ_7745c5c3_Var51, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 203, Col: 38}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var51))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 80, "</span> <span class=\"font-mono text-2xs text-sec tabular-nums\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var52 string
+			templ_7745c5c3_Var52, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Count)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 204, Col: 72}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var52))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 81, "</span></label>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 79, "</div></details>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 82, "</div></details>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1043,12 +1075,12 @@ func boardLaneScript() templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var51 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var51 == nil {
-			templ_7745c5c3_Var51 = templ.NopComponent
+		templ_7745c5c3_Var53 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var53 == nil {
+			templ_7745c5c3_Var53 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 80, "<script>\n\t\t(function () {\n\t\t\tfunction storageKey(root) {\n\t\t\t\treturn \"detent.ui.board.lanes.\" + (root.getAttribute(\"data-board-key\") || \"fleet\");\n\t\t\t}\n\t\t\tfunction readPrefs(root) {\n\t\t\t\ttry {\n\t\t\t\t\treturn JSON.parse(localStorage.getItem(storageKey(root)) || \"{}\");\n\t\t\t\t} catch (err) {\n\t\t\t\t\treturn {};\n\t\t\t\t}\n\t\t\t}\n\t\t\tfunction writePrefs(root, prefs) {\n\t\t\t\ttry {\n\t\t\t\t\tlocalStorage.setItem(storageKey(root), JSON.stringify(prefs));\n\t\t\t\t} catch (err) {}\n\t\t\t}\n\t\t\tvar pickerOpen = false;\n\t\t\tfunction apply() {\n\t\t\t\tvar root = document.querySelector(\"[data-board-lanes]\");\n\t\t\t\tif (!root) return;\n\t\t\t\tvar prefs = readPrefs(root);\n\t\t\t\tvar total = 0;\n\t\t\t\tvar visible = 0;\n\t\t\t\troot.querySelectorAll(\"[data-board-lane]\").forEach(function (lane) {\n\t\t\t\t\ttotal += 1;\n\t\t\t\t\tvar id = lane.getAttribute(\"data-board-lane\");\n\t\t\t\t\tvar byDefault = lane.getAttribute(\"data-board-lane-default\") === \"true\";\n\t\t\t\t\tvar show = Object.prototype.hasOwnProperty.call(prefs, id) ? Boolean(prefs[id]) : byDefault;\n\t\t\t\t\tlane.setAttribute(\"data-lane-hidden\", show ? \"false\" : \"true\");\n\t\t\t\t\tif (show) visible += 1;\n\t\t\t\t\tvar toggle = document.querySelector('[data-board-lane-toggle=\"' + id + '\"]');\n\t\t\t\t\tif (toggle) toggle.checked = show;\n\t\t\t\t});\n\t\t\t\tvar count = document.querySelector(\"[data-board-lane-count]\");\n\t\t\t\tif (count) count.textContent = visible + \"/\" + total;\n\t\t\t\tvar picker = document.querySelector(\"[data-board-lane-picker]\");\n\t\t\t\tif (picker && pickerOpen) picker.setAttribute(\"open\", \"\");\n\t\t\t}\n\t\t\tdocument.addEventListener(\"change\", function (event) {\n\t\t\t\tvar toggle = event.target.closest(\"[data-board-lane-toggle]\");\n\t\t\t\tif (!toggle) return;\n\t\t\t\tvar root = document.querySelector(\"[data-board-lanes]\");\n\t\t\t\tif (!root) return;\n\t\t\t\tvar prefs = readPrefs(root);\n\t\t\t\tprefs[toggle.getAttribute(\"data-board-lane-toggle\")] = toggle.checked;\n\t\t\t\twritePrefs(root, prefs);\n\t\t\t\tapply();\n\t\t\t});\n\t\t\tdocument.addEventListener(\"toggle\", function (event) {\n\t\t\t\tvar picker = event.target;\n\t\t\t\tif (picker instanceof Element && picker.hasAttribute(\"data-board-lane-picker\")) {\n\t\t\t\t\tpickerOpen = picker.open;\n\t\t\t\t}\n\t\t\t}, true);\n\t\t\tdocument.addEventListener(\"click\", function (event) {\n\t\t\t\tvar picker = document.querySelector(\"[data-board-lane-picker]\");\n\t\t\t\tif (picker && picker.open && !picker.contains(event.target)) {\n\t\t\t\t\tpicker.removeAttribute(\"open\");\n\t\t\t\t\tpickerOpen = false;\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"htmx:afterSettle\", apply);\n\t\t\tdocument.addEventListener(\"DOMContentLoaded\", apply);\n\t\t\tapply();\n\t\t})();\n\t</script>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 83, "<script>\n\t\t(function () {\n\t\t\tfunction storageKey(root) {\n\t\t\t\treturn \"detent.ui.board.lanes.\" + (root.getAttribute(\"data-board-key\") || \"fleet\");\n\t\t\t}\n\t\t\tfunction readPrefs(root) {\n\t\t\t\ttry {\n\t\t\t\t\treturn JSON.parse(localStorage.getItem(storageKey(root)) || \"{}\");\n\t\t\t\t} catch (err) {\n\t\t\t\t\treturn {};\n\t\t\t\t}\n\t\t\t}\n\t\t\tfunction writePrefs(root, prefs) {\n\t\t\t\ttry {\n\t\t\t\t\tlocalStorage.setItem(storageKey(root), JSON.stringify(prefs));\n\t\t\t\t} catch (err) {}\n\t\t\t}\n\t\t\tvar pickerOpen = false;\n\t\t\tfunction apply() {\n\t\t\t\tvar root = document.querySelector(\"[data-board-lanes]\");\n\t\t\t\tif (!root) return;\n\t\t\t\tvar prefs = readPrefs(root);\n\t\t\t\tvar total = 0;\n\t\t\t\tvar visible = 0;\n\t\t\t\troot.querySelectorAll(\"[data-board-lane]\").forEach(function (lane) {\n\t\t\t\t\ttotal += 1;\n\t\t\t\t\tvar id = lane.getAttribute(\"data-board-lane\");\n\t\t\t\t\tvar byDefault = lane.getAttribute(\"data-board-lane-default\") === \"true\";\n\t\t\t\t\tvar show = Object.prototype.hasOwnProperty.call(prefs, id) ? Boolean(prefs[id]) : byDefault;\n\t\t\t\t\tlane.setAttribute(\"data-lane-hidden\", show ? \"false\" : \"true\");\n\t\t\t\t\tif (show) visible += 1;\n\t\t\t\t\tvar toggle = document.querySelector('[data-board-lane-toggle=\"' + id + '\"]');\n\t\t\t\t\tif (toggle) toggle.checked = show;\n\t\t\t\t});\n\t\t\t\tvar count = document.querySelector(\"[data-board-lane-count]\");\n\t\t\t\tif (count) count.textContent = visible + \"/\" + total;\n\t\t\t\tvar picker = document.querySelector(\"[data-board-lane-picker]\");\n\t\t\t\tif (picker && pickerOpen) picker.setAttribute(\"open\", \"\");\n\t\t\t}\n\t\t\tdocument.addEventListener(\"change\", function (event) {\n\t\t\t\tvar toggle = event.target.closest(\"[data-board-lane-toggle]\");\n\t\t\t\tif (!toggle) return;\n\t\t\t\tvar root = document.querySelector(\"[data-board-lanes]\");\n\t\t\t\tif (!root) return;\n\t\t\t\tvar prefs = readPrefs(root);\n\t\t\t\tprefs[toggle.getAttribute(\"data-board-lane-toggle\")] = toggle.checked;\n\t\t\t\twritePrefs(root, prefs);\n\t\t\t\tapply();\n\t\t\t});\n\t\t\tdocument.addEventListener(\"toggle\", function (event) {\n\t\t\t\tvar picker = event.target;\n\t\t\t\tif (picker instanceof Element && picker.hasAttribute(\"data-board-lane-picker\")) {\n\t\t\t\t\tpickerOpen = picker.open;\n\t\t\t\t}\n\t\t\t}, true);\n\t\t\tdocument.addEventListener(\"click\", function (event) {\n\t\t\t\tvar picker = document.querySelector(\"[data-board-lane-picker]\");\n\t\t\t\tif (picker && picker.open && !picker.contains(event.target)) {\n\t\t\t\t\tpicker.removeAttribute(\"open\");\n\t\t\t\t\tpickerOpen = false;\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"htmx:afterSettle\", apply);\n\t\t\tdocument.addEventListener(\"DOMContentLoaded\", apply);\n\t\t\tapply();\n\t\t})();\n\t</script>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1072,12 +1104,12 @@ func boardKanbanDragScript() templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var52 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var52 == nil {
-			templ_7745c5c3_Var52 = templ.NopComponent
+		templ_7745c5c3_Var54 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var54 == nil {
+			templ_7745c5c3_Var54 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 81, "<script>\n\t\t(function () {\n\t\t\tif (window.__detentBoardKanbanDragHandlersRegistered) return;\n\t\t\twindow.__detentBoardKanbanDragHandlersRegistered = true;\n\t\t\tvar draggedIssueID = \"\";\n\t\t\tvar dropped = false;\n\t\t\tvar blockedDrop = false;\n\t\t\tfunction feedback(message, kind) {\n\t\t\t\tvar target = document.getElementById(\"board-feedback\");\n\t\t\t\tif (!target) return;\n\t\t\t\tvar text = String(message || \"\").trim();\n\t\t\t\ttarget.className = \"flex flex-none items-center gap-2 px-5 pt-3.5 text-xs \" + (kind === \"error\" ? \"text-err\" : \"text-sec\");\n\t\t\t\ttarget.textContent = text;\n\t\t\t\ttarget.hidden = text === \"\";\n\t\t\t}\n\t\t\tfunction markedDraggedCard() {\n\t\t\t\treturn document.querySelector(\"[data-kanban-card][data-kanban-dragging='true']\");\n\t\t\t}\n\t\t\tfunction draggedCard() {\n\t\t\t\tif (!draggedIssueID || !window.CSS || typeof CSS.escape !== \"function\") return null;\n\t\t\t\treturn document.querySelector(\"[data-kanban-card][data-kanban-issue-id='\" + CSS.escape(draggedIssueID) + \"']\");\n\t\t\t}\n\t\t\tfunction activeDragIssueID(event) {\n\t\t\t\tif (draggedIssueID) return draggedIssueID;\n\t\t\t\tvar marked = markedDraggedCard();\n\t\t\t\tif (marked instanceof HTMLElement && marked.dataset.kanbanIssueId) return marked.dataset.kanbanIssueId;\n\t\t\t\tif (!event.dataTransfer || typeof event.dataTransfer.getData !== \"function\") return \"\";\n\t\t\t\treturn event.dataTransfer.getData(\"text/plain\") || \"\";\n\t\t\t}\n\t\t\tfunction allowedTargetKeys(card) {\n\t\t\t\tif (!(card instanceof HTMLElement)) return [];\n\t\t\t\treturn (card.dataset.kanbanAllowedTargets || \"\").split(/\\s+/).filter(Boolean);\n\t\t\t}\n\t\t\tfunction laneAllowed(card, lane) {\n\t\t\t\tif (!(lane instanceof HTMLElement)) return false;\n\t\t\t\tvar key = lane.dataset.kanbanDropKey || \"\";\n\t\t\t\treturn key !== \"\" && allowedTargetKeys(card).includes(key);\n\t\t\t}\n\t\t\tfunction dragImageOffset(position, start, size) {\n\t\t\t\tif (position <= 0 || size <= 0) return Math.max(0, size / 2);\n\t\t\t\treturn Math.min(Math.max(position - start, 0), size);\n\t\t\t}\n\t\t\tfunction setCardDragImage(event, card) {\n\t\t\t\tif (!event.dataTransfer) return;\n\t\t\t\tvar rect = card.getBoundingClientRect();\n\t\t\t\tevent.dataTransfer.setDragImage(\n\t\t\t\t\tcard,\n\t\t\t\t\tMath.round(dragImageOffset(event.clientX, rect.left, rect.width)),\n\t\t\t\t\tMath.round(dragImageOffset(event.clientY, rect.top, rect.height))\n\t\t\t\t);\n\t\t\t}\n\t\t\tfunction setDropTargetState(card) {\n\t\t\t\tdocument.querySelectorAll(\"[data-kanban-drop-state]\").forEach(function (lane) {\n\t\t\t\t\tif (!(lane instanceof HTMLElement)) return;\n\t\t\t\t\tif (lane.dataset.kanbanDropWasHidden === undefined) {\n\t\t\t\t\t\tlane.dataset.kanbanDropWasHidden = lane.dataset.laneHidden || \"false\";\n\t\t\t\t\t}\n\t\t\t\t\tvar allowed = laneAllowed(card, lane);\n\t\t\t\t\tlane.dataset.laneHidden = \"false\";\n\t\t\t\t\tlane.dataset.kanbanDropAllowed = allowed ? \"true\" : \"false\";\n\t\t\t\t\tlane.setAttribute(\"aria-disabled\", allowed ? \"false\" : \"true\");\n\t\t\t\t});\n\t\t\t}\n\t\t\tfunction clearDropTargetState() {\n\t\t\t\tdocument.querySelectorAll(\"[data-kanban-drop-state]\").forEach(function (lane) {\n\t\t\t\t\tif (!(lane instanceof HTMLElement)) return;\n\t\t\t\t\tif (lane.dataset.kanbanDropWasHidden !== undefined) {\n\t\t\t\t\t\tlane.dataset.laneHidden = lane.dataset.kanbanDropWasHidden;\n\t\t\t\t\t\tdelete lane.dataset.kanbanDropWasHidden;\n\t\t\t\t\t}\n\t\t\t\t\tdelete lane.dataset.kanbanDropAllowed;\n\t\t\t\t\tlane.removeAttribute(\"aria-disabled\");\n\t\t\t\t});\n\t\t\t\tdocument.querySelectorAll(\"[data-kanban-card][data-kanban-dragging='true']\").forEach(function (card) {\n\t\t\t\t\tif (card instanceof HTMLElement) delete card.dataset.kanbanDragging;\n\t\t\t\t});\n\t\t\t}\n\t\t\tfunction responseMessage(response) {\n\t\t\t\tif (!response) return \"\";\n\t\t\t\tvar doc = new DOMParser().parseFromString(response, \"text/html\");\n\t\t\t\treturn (doc.body.textContent || \"\").trim();\n\t\t\t}\n\t\t\tdocument.addEventListener(\"dragstart\", function (event) {\n\t\t\t\tvar card = event.target instanceof Element ? event.target.closest(\"[data-kanban-card]\") : null;\n\t\t\t\tif (!card || card.getAttribute(\"draggable\") !== \"true\") return;\n\t\t\t\tdraggedIssueID = card.dataset.kanbanIssueId || \"\";\n\t\t\t\tdropped = false;\n\t\t\t\tblockedDrop = false;\n\t\t\t\tif (!draggedIssueID) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tcard.dataset.kanbanDragging = \"true\";\n\t\t\t\tif (event.dataTransfer) {\n\t\t\t\t\tevent.dataTransfer.effectAllowed = \"move\";\n\t\t\t\t\tevent.dataTransfer.setData(\"text/plain\", draggedIssueID);\n\t\t\t\t}\n\t\t\t\tsetCardDragImage(event, card);\n\t\t\t\tsetDropTargetState(card);\n\t\t\t\tfeedback(\"Moving \" + (card.dataset.kanbanCurrentState || \"card\") + \".\");\n\t\t\t});\n\t\t\tdocument.addEventListener(\"dragover\", function (event) {\n\t\t\t\tvar issueID = activeDragIssueID(event);\n\t\t\t\tif (!issueID) return;\n\t\t\t\tdraggedIssueID = issueID;\n\t\t\t\tvar lane = event.target instanceof Element ? event.target.closest(\"[data-kanban-drop-state]\") : null;\n\t\t\t\tif (!lane) return;\n\t\t\t\tvar allowed = laneAllowed(draggedCard(), lane);\n\t\t\t\tif (event.dataTransfer) event.dataTransfer.dropEffect = allowed ? \"move\" : \"none\";\n\t\t\t\tif (allowed) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\tblockedDrop = false;\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tblockedDrop = true;\n\t\t\t\tfeedback(\"Move blocked by transition policy.\", \"error\");\n\t\t\t});\n\t\t\tdocument.addEventListener(\"drop\", function (event) {\n\t\t\t\tvar issueID = activeDragIssueID(event);\n\t\t\t\tif (!issueID) return;\n\t\t\t\tdraggedIssueID = issueID;\n\t\t\t\tvar lane = event.target instanceof Element ? event.target.closest(\"[data-kanban-drop-state]\") : null;\n\t\t\t\tif (!lane) return;\n\t\t\t\tevent.preventDefault();\n\t\t\t\tvar card = draggedCard();\n\t\t\t\tif (!laneAllowed(card, lane)) {\n\t\t\t\t\tfeedback(\"Move blocked by transition policy.\", \"error\");\n\t\t\t\t\tdropped = true;\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar form = card ? card.querySelector(\"[data-kanban-drag-move-form]\") : null;\n\t\t\t\tvar targetState = form ? form.querySelector(\"[data-kanban-drag-target-state]\") : null;\n\t\t\t\tif (!(form instanceof HTMLFormElement) || !(targetState instanceof HTMLInputElement)) {\n\t\t\t\t\tfeedback(\"Move cancelled.\", \"error\");\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\ttargetState.value = lane.dataset.kanbanDropState || \"\";\n\t\t\t\tdropped = true;\n\t\t\t\tform.requestSubmit();\n\t\t\t});\n\t\t\tdocument.addEventListener(\"dragend\", function () {\n\t\t\t\tif (draggedIssueID && !dropped && !blockedDrop) {\n\t\t\t\t\tfeedback(\"Move cancelled.\", \"error\");\n\t\t\t\t}\n\t\t\t\tdraggedIssueID = \"\";\n\t\t\t\tdropped = false;\n\t\t\t\tblockedDrop = false;\n\t\t\t\tclearDropTargetState();\n\t\t\t});\n\t\t\tdocument.body.addEventListener(\"htmx:responseError\", function (event) {\n\t\t\t\tvar form = event.detail && event.detail.elt;\n\t\t\t\tif (!(form instanceof HTMLFormElement) || !form.matches(\"[data-kanban-drag-move-form]\")) return;\n\t\t\t\tvar response = event.detail.xhr ? event.detail.xhr.responseText : \"\";\n\t\t\t\tfeedback(responseMessage(response) || \"Move failed.\", \"error\");\n\t\t\t});\n\t\t})();\n\t</script>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 84, "<script>\n\t\t(function () {\n\t\t\tif (window.__detentBoardKanbanDragHandlersRegistered) return;\n\t\t\twindow.__detentBoardKanbanDragHandlersRegistered = true;\n\t\t\tvar draggedIssueID = \"\";\n\t\t\tvar dropped = false;\n\t\t\tvar blockedDrop = false;\n\t\t\tfunction feedback(message, kind) {\n\t\t\t\tvar target = document.getElementById(\"board-feedback\");\n\t\t\t\tif (!target) return;\n\t\t\t\tvar text = String(message || \"\").trim();\n\t\t\t\ttarget.className = \"flex flex-none items-center gap-2 px-5 pt-3.5 text-xs \" + (kind === \"error\" ? \"text-err\" : \"text-sec\");\n\t\t\t\ttarget.textContent = text;\n\t\t\t\ttarget.hidden = text === \"\";\n\t\t\t}\n\t\t\tfunction markedDraggedCard() {\n\t\t\t\treturn document.querySelector(\"[data-kanban-card][data-kanban-dragging='true']\");\n\t\t\t}\n\t\t\tfunction draggedCard() {\n\t\t\t\tif (!draggedIssueID || !window.CSS || typeof CSS.escape !== \"function\") return null;\n\t\t\t\treturn document.querySelector(\"[data-kanban-card][data-kanban-issue-id='\" + CSS.escape(draggedIssueID) + \"']\");\n\t\t\t}\n\t\t\tfunction activeDragIssueID(event) {\n\t\t\t\tif (draggedIssueID) return draggedIssueID;\n\t\t\t\tvar marked = markedDraggedCard();\n\t\t\t\tif (marked instanceof HTMLElement && marked.dataset.kanbanIssueId) return marked.dataset.kanbanIssueId;\n\t\t\t\tif (!event.dataTransfer || typeof event.dataTransfer.getData !== \"function\") return \"\";\n\t\t\t\treturn event.dataTransfer.getData(\"text/plain\") || \"\";\n\t\t\t}\n\t\t\tfunction allowedTargetKeys(card) {\n\t\t\t\tif (!(card instanceof HTMLElement)) return [];\n\t\t\t\treturn (card.dataset.kanbanAllowedTargets || \"\").split(/\\s+/).filter(Boolean);\n\t\t\t}\n\t\t\tfunction laneAllowed(card, lane) {\n\t\t\t\tif (!(lane instanceof HTMLElement)) return false;\n\t\t\t\tvar key = lane.dataset.kanbanDropKey || \"\";\n\t\t\t\treturn key !== \"\" && allowedTargetKeys(card).includes(key);\n\t\t\t}\n\t\t\tfunction dragImageOffset(position, start, size) {\n\t\t\t\tif (position <= 0 || size <= 0) return Math.max(0, size / 2);\n\t\t\t\treturn Math.min(Math.max(position - start, 0), size);\n\t\t\t}\n\t\t\tfunction setCardDragImage(event, card) {\n\t\t\t\tif (!event.dataTransfer) return;\n\t\t\t\tvar rect = card.getBoundingClientRect();\n\t\t\t\tevent.dataTransfer.setDragImage(\n\t\t\t\t\tcard,\n\t\t\t\t\tMath.round(dragImageOffset(event.clientX, rect.left, rect.width)),\n\t\t\t\t\tMath.round(dragImageOffset(event.clientY, rect.top, rect.height))\n\t\t\t\t);\n\t\t\t}\n\t\t\tfunction setDropTargetState(card) {\n\t\t\t\tdocument.querySelectorAll(\"[data-kanban-drop-state]\").forEach(function (lane) {\n\t\t\t\t\tif (!(lane instanceof HTMLElement)) return;\n\t\t\t\t\tif (lane.dataset.kanbanDropWasHidden === undefined) {\n\t\t\t\t\t\tlane.dataset.kanbanDropWasHidden = lane.dataset.laneHidden || \"false\";\n\t\t\t\t\t}\n\t\t\t\t\tvar allowed = laneAllowed(card, lane);\n\t\t\t\t\tlane.dataset.laneHidden = \"false\";\n\t\t\t\t\tlane.dataset.kanbanDropAllowed = allowed ? \"true\" : \"false\";\n\t\t\t\t\tlane.setAttribute(\"aria-disabled\", allowed ? \"false\" : \"true\");\n\t\t\t\t});\n\t\t\t}\n\t\t\tfunction clearDropTargetState() {\n\t\t\t\tdocument.querySelectorAll(\"[data-kanban-drop-state]\").forEach(function (lane) {\n\t\t\t\t\tif (!(lane instanceof HTMLElement)) return;\n\t\t\t\t\tif (lane.dataset.kanbanDropWasHidden !== undefined) {\n\t\t\t\t\t\tlane.dataset.laneHidden = lane.dataset.kanbanDropWasHidden;\n\t\t\t\t\t\tdelete lane.dataset.kanbanDropWasHidden;\n\t\t\t\t\t}\n\t\t\t\t\tdelete lane.dataset.kanbanDropAllowed;\n\t\t\t\t\tlane.removeAttribute(\"aria-disabled\");\n\t\t\t\t});\n\t\t\t\tdocument.querySelectorAll(\"[data-kanban-card][data-kanban-dragging='true']\").forEach(function (card) {\n\t\t\t\t\tif (card instanceof HTMLElement) delete card.dataset.kanbanDragging;\n\t\t\t\t});\n\t\t\t}\n\t\t\tfunction responseMessage(response) {\n\t\t\t\tif (!response) return \"\";\n\t\t\t\tvar doc = new DOMParser().parseFromString(response, \"text/html\");\n\t\t\t\treturn (doc.body.textContent || \"\").trim();\n\t\t\t}\n\t\t\tdocument.addEventListener(\"dragstart\", function (event) {\n\t\t\t\tvar card = event.target instanceof Element ? event.target.closest(\"[data-kanban-card]\") : null;\n\t\t\t\tif (!card || card.getAttribute(\"draggable\") !== \"true\") return;\n\t\t\t\tdraggedIssueID = card.dataset.kanbanIssueId || \"\";\n\t\t\t\tdropped = false;\n\t\t\t\tblockedDrop = false;\n\t\t\t\tif (!draggedIssueID) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tcard.dataset.kanbanDragging = \"true\";\n\t\t\t\tif (event.dataTransfer) {\n\t\t\t\t\tevent.dataTransfer.effectAllowed = \"move\";\n\t\t\t\t\tevent.dataTransfer.setData(\"text/plain\", draggedIssueID);\n\t\t\t\t}\n\t\t\t\tsetCardDragImage(event, card);\n\t\t\t\tsetDropTargetState(card);\n\t\t\t\tfeedback(\"Moving \" + (card.dataset.kanbanCurrentState || \"card\") + \".\");\n\t\t\t});\n\t\t\tdocument.addEventListener(\"dragover\", function (event) {\n\t\t\t\tvar issueID = activeDragIssueID(event);\n\t\t\t\tif (!issueID) return;\n\t\t\t\tdraggedIssueID = issueID;\n\t\t\t\tvar lane = event.target instanceof Element ? event.target.closest(\"[data-kanban-drop-state]\") : null;\n\t\t\t\tif (!lane) return;\n\t\t\t\tvar allowed = laneAllowed(draggedCard(), lane);\n\t\t\t\tif (event.dataTransfer) event.dataTransfer.dropEffect = allowed ? \"move\" : \"none\";\n\t\t\t\tif (allowed) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\tblockedDrop = false;\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tblockedDrop = true;\n\t\t\t\tfeedback(\"Move blocked by transition policy.\", \"error\");\n\t\t\t});\n\t\t\tdocument.addEventListener(\"drop\", function (event) {\n\t\t\t\tvar issueID = activeDragIssueID(event);\n\t\t\t\tif (!issueID) return;\n\t\t\t\tdraggedIssueID = issueID;\n\t\t\t\tvar lane = event.target instanceof Element ? event.target.closest(\"[data-kanban-drop-state]\") : null;\n\t\t\t\tif (!lane) return;\n\t\t\t\tevent.preventDefault();\n\t\t\t\tvar card = draggedCard();\n\t\t\t\tif (!laneAllowed(card, lane)) {\n\t\t\t\t\tfeedback(\"Move blocked by transition policy.\", \"error\");\n\t\t\t\t\tdropped = true;\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar form = card ? card.querySelector(\"[data-kanban-drag-move-form]\") : null;\n\t\t\t\tvar targetState = form ? form.querySelector(\"[data-kanban-drag-target-state]\") : null;\n\t\t\t\tif (!(form instanceof HTMLFormElement) || !(targetState instanceof HTMLInputElement)) {\n\t\t\t\t\tfeedback(\"Move cancelled.\", \"error\");\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\ttargetState.value = lane.dataset.kanbanDropState || \"\";\n\t\t\t\tdropped = true;\n\t\t\t\tform.requestSubmit();\n\t\t\t});\n\t\t\tdocument.addEventListener(\"dragend\", function () {\n\t\t\t\tif (draggedIssueID && !dropped && !blockedDrop) {\n\t\t\t\t\tfeedback(\"Move cancelled.\", \"error\");\n\t\t\t\t}\n\t\t\t\tdraggedIssueID = \"\";\n\t\t\t\tdropped = false;\n\t\t\t\tblockedDrop = false;\n\t\t\t\tclearDropTargetState();\n\t\t\t});\n\t\t\tdocument.body.addEventListener(\"htmx:responseError\", function (event) {\n\t\t\t\tvar form = event.detail && event.detail.elt;\n\t\t\t\tif (!(form instanceof HTMLFormElement) || !form.matches(\"[data-kanban-drag-move-form]\")) return;\n\t\t\t\tvar response = event.detail.xhr ? event.detail.xhr.responseText : \"\";\n\t\t\t\tfeedback(responseMessage(response) || \"Move failed.\", \"error\");\n\t\t\t});\n\t\t})();\n\t</script>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1103,61 +1135,61 @@ func boardScopeSelect(data DashboardData) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var53 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var53 == nil {
-			templ_7745c5c3_Var53 = templ.NopComponent
+		templ_7745c5c3_Var55 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var55 == nil {
+			templ_7745c5c3_Var55 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 82, "<details class=\"group/scope relative\"><summary class=\"flex cursor-pointer list-none items-center gap-1.5 rounded-card border border-line px-2.5 py-1 text-xs text-sec hover:text-text [&::-webkit-details-marker]:hidden\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 85, "<details class=\"group/scope relative\"><summary class=\"flex cursor-pointer list-none items-center gap-1.5 rounded-card border border-line px-2.5 py-1 text-xs text-sec hover:text-text [&::-webkit-details-marker]:hidden\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var54 string
-		templ_7745c5c3_Var54, templ_7745c5c3_Err = templ.JoinStringErrs(boardScopeLabel(data))
+		var templ_7745c5c3_Var56 string
+		templ_7745c5c3_Var56, templ_7745c5c3_Err = templ.JoinStringErrs(boardScopeLabel(data))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 440, Col: 26}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 446, Col: 26}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var54))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var56))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 83, " <span aria-hidden=\"true\">▾</span></summary><div class=\"absolute left-0 top-full z-40 mt-1 flex w-52 flex-col gap-0.5 rounded-card border border-line bg-elev p-1.5\"><a href=\"/\" class=\"rounded-chip px-2 py-1 text-xs text-text hover:bg-surface\">All projects</a> ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 86, " <span aria-hidden=\"true\">▾</span></summary><div class=\"absolute left-0 top-full z-40 mt-1 flex w-52 flex-col gap-0.5 rounded-card border border-line bg-elev p-1.5\"><a href=\"/\" class=\"rounded-chip px-2 py-1 text-xs text-text hover:bg-surface\">All projects</a> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		for _, project := range appShellProjects(DashboardShellDataFromDashboard(data)) {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 84, "<a href=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 87, "<a href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var55 templ.SafeURL
-			templ_7745c5c3_Var55, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(project.Href + "/kanban"))
+			var templ_7745c5c3_Var57 templ.SafeURL
+			templ_7745c5c3_Var57, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(project.Href + "/kanban"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 446, Col: 53}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 452, Col: 53}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var55))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 85, "\" class=\"truncate rounded-chip px-2 py-1 text-xs text-text hover:bg-surface\">")
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var57))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var56 string
-			templ_7745c5c3_Var56, templ_7745c5c3_Err = templ.JoinStringErrs(project.Name)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 446, Col: 145}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var56))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 88, "\" class=\"truncate rounded-chip px-2 py-1 text-xs text-text hover:bg-surface\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 86, "</a>")
+			var templ_7745c5c3_Var58 string
+			templ_7745c5c3_Var58, templ_7745c5c3_Err = templ.JoinStringErrs(project.Name)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/board.templ`, Line: 452, Col: 145}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var58))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 89, "</a>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 87, "</div></details>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 90, "</div></details>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

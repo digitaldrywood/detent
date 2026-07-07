@@ -156,6 +156,12 @@ templ boardCardView2(card boardCardView) {
 				</div>
 			}
 		}
+		if card.AgeFooter != "" {
+			<div class="mt-0.5 flex items-center justify-between gap-2 border-t border-line/70 pt-1.5 font-mono text-2xs text-sec" title={ card.AgeFooterTitle } data-board-card-age-footer>
+				<span class="min-w-0 truncate">In lane</span>
+				<span class="flex-none whitespace-nowrap tabular-nums">{ card.AgeFooter }</span>
+			</div>
+		}
 		if card.CanDrag {
 			@boardKanbanDragMoveForm(card)
 		}
