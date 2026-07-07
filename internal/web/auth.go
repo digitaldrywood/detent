@@ -27,9 +27,9 @@ const uiAPICookieName = "detent_ui_api"
 type apiCredentialContextKey struct{}
 
 type apiAuthOptions struct {
-	mutating                bool
-	allowUICookie           bool
-	allowLocalDashboardHTMX bool
+	mutating           bool
+	allowUICookie      bool
+	allowDashboardHTMX bool
 }
 
 func (s *Server) apiAuth(mutating bool) echo.MiddlewareFunc {
@@ -94,7 +94,7 @@ func (s *Server) authorizeAPIRequest(c echo.Context, opts apiAuthOptions) (apike
 		return credential, nil
 	}
 
-	if opts.allowLocalDashboardHTMX && token == "" && authorizeLocalDashboardHTMX(c) {
+	if opts.allowDashboardHTMX && token == "" && authorizeDashboardHTMX(c) {
 		credential := apikey.StaticCredential()
 		s.setAPICredential(c, credential)
 		return credential, nil
@@ -240,15 +240,18 @@ func serverAddressLoopback(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func authorizeLocalDashboardHTMX(c echo.Context) bool {
+func authorizeDashboardHTMX(c echo.Context) bool {
 	if c == nil || c.Request() == nil || c.Request().Header.Get("HX-Request") != "true" {
 		return false
 	}
 	req := c.Request()
-	if !requestHostLoopback(req.Host) || !requestRemoteAddrLoopback(req.RemoteAddr) {
+	if !requestSameOriginDashboardSource(req) {
 		return false
 	}
-	return requestSameOriginDashboardSource(req)
+	if requestHostLoopback(req.Host) {
+		return requestRemoteAddrLoopback(req.RemoteAddr)
+	}
+	return requestDashboardHTMXTarget(req)
 }
 
 func requestHostLoopback(host string) bool {
@@ -259,6 +262,13 @@ func requestHostLoopback(host string) bool {
 func requestRemoteAddrLoopback(remoteAddr string) bool {
 	remoteAddr = strings.TrimSpace(remoteAddr)
 	return remoteAddr != "" && serverAddressLoopback(remoteAddr)
+}
+
+func requestDashboardHTMXTarget(req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	return strings.TrimSpace(req.Header.Get("HX-Target")) != ""
 }
 
 func requestSameOriginDashboardSource(req *http.Request) bool {

@@ -463,194 +463,141 @@ func TestAPITokenAllowsDashboardHTMXWithUICookie(t *testing.T) {
 	}
 }
 
-func TestDashboardHTMXAuthAllowsLocalhostOnWildcardBindWithoutToken(t *testing.T) {
+func TestDashboardHTMXAuthAllowsSameOriginDashboardOnWildcardBindWithoutToken(t *testing.T) {
 	t.Parallel()
 
-	deps := testDeps(t)
-	actionConnector := &kanbanActionConnector{name: "github"}
-	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
-		Mode: workflowconfig.KanbanModeIntegration,
-		AllowedTransitions: map[string][]string{
-			"Backlog": {"Todo"},
-		},
-	}, actionConnector)
-	refresher := &refreshProbe{response: web.RefreshResponse{Queued: true}}
-	deps.Refresher = refresher
-	if err := deps.Hub.Publish(telemetry.Snapshot{
-		GeneratedAt: time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
-		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
-		Projects: []telemetry.ProjectSnapshot{
-			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
-		},
-		BoardIssues: []telemetry.Issue{
-			{
-				ID:         "I_sheet",
-				Identifier: "digitaldrywood/detent#9511",
-				ProjectID:  "detent",
-				Title:      "Localhost sheet card",
-				State:      "Backlog",
-				URL:        "https://github.com/digitaldrywood/detent/issues/9511",
-			},
-			{
-				ID:         "I_move",
-				Identifier: "digitaldrywood/detent#9512",
-				ProjectID:  "detent",
-				Title:      "Localhost move card",
-				State:      "Backlog",
-			},
-			{
-				ID:         "I_remove",
-				Identifier: "digitaldrywood/detent#9513",
-				ProjectID:  "detent",
-				Title:      "Localhost remove card",
-				State:      "Todo",
-			},
-			{
-				ID:         "I_comment",
-				Identifier: "digitaldrywood/detent#9514",
-				ProjectID:  "detent",
-				Title:      "Localhost comment card",
-				State:      "Todo",
-			},
-		},
-	}); err != nil {
-		t.Fatalf("Publish() error = %v", err)
-	}
-	server, err := web.NewServer(web.Config{
-		ServerAddress: "0.0.0.0:4000",
-	}, deps)
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
-
-	tests := []struct {
-		name string
-		req  dashboardHTMXRequest
-		want string
+	origins := []struct {
+		name       string
+		host       string
+		remote     string
+		htmxTarget string
 	}{
 		{
-			name: "card sheet",
-			req: dashboardHTMXRequest{
-				method: http.MethodGet,
-				path:   "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%239511&actions=board",
-			},
-			want: "Localhost sheet card",
+			name:   "localhost",
+			host:   "localhost:4000",
+			remote: "127.0.0.1:49152",
 		},
 		{
-			name: "move dialog",
-			req: dashboardHTMXRequest{
-				method: http.MethodGet,
-				path:   "/api/v1/kanban/move?project_id=detent&issue_id=I_move&current_state=Backlog&target_state=Todo&identifier=digitaldrywood%2Fdetent%239512&title=Localhost+move+card",
-			},
-			want: `hx-post="/api/v1/kanban/move"`,
-		},
-		{
-			name: "move submit",
-			req: dashboardHTMXRequest{
-				method: http.MethodPost,
-				path:   "/api/v1/kanban/move",
-				form: url.Values{
-					"project_id":    {"detent"},
-					"issue_id":      {"I_move"},
-					"current_state": {"Backlog"},
-					"target_state":  {"Todo"},
-				},
-			},
-			want: "Moved card to Todo.",
-		},
-		{
-			name: "remove submit",
-			req: dashboardHTMXRequest{
-				method: http.MethodPost,
-				path:   "/api/v1/kanban/remove",
-				form: url.Values{
-					"project_id":    {"detent"},
-					"issue_id":      {"I_remove"},
-					"current_state": {"Todo"},
-				},
-			},
-			want: "Removed card from project.",
-		},
-		{
-			name: "comment dialog",
-			req: dashboardHTMXRequest{
-				method: http.MethodGet,
-				path:   "/api/v1/kanban/comment?project_id=detent&target=issue&issue_id=I_comment&identifier=digitaldrywood%2Fdetent%239514&title=Localhost+comment+card",
-			},
-			want: `hx-post="/api/v1/kanban/comment"`,
-		},
-		{
-			name: "comment submit",
-			req: dashboardHTMXRequest{
-				method: http.MethodPost,
-				path:   "/api/v1/kanban/comment",
-				form: url.Values{
-					"project_id": {"detent"},
-					"target":     {"issue"},
-					"issue_id":   {"I_comment"},
-					"body":       {"Localhost dashboard comment"},
-				},
-			},
-			want: "Comment submitted.",
-		},
-		{
-			name: "refresh submit",
-			req: dashboardHTMXRequest{
-				method: http.MethodPost,
-				path:   "/api/v1/refresh",
-			},
-			want: `id="manual-refresh-status"`,
+			name:       "private same-origin host",
+			host:       "100.95.107.50:4000",
+			remote:     "100.95.107.51:49152",
+			htmxTarget: "detail-sheet-host",
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rec := performDashboardHTMXRequest(t, server.Handler(), tt.req)
-			if rec.Code != http.StatusOK {
-				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	for _, origin := range origins {
+		origin := origin
+		t.Run(origin.name, func(t *testing.T) {
+			t.Parallel()
+
+			fixture := newDashboardHTMXAuthFixture(t)
+			tests := []struct {
+				name string
+				req  dashboardHTMXRequest
+				want string
+			}{
+				{
+					name: "card sheet",
+					req: dashboardHTMXRequest{
+						method: http.MethodGet,
+						path:   "/api/v1/board/card?actions=board&issue=digitaldrywood%2Fdetent%23523&project=detent",
+					},
+					want: "Screenshot sheet card",
+				},
+				{
+					name: "move dialog",
+					req: dashboardHTMXRequest{
+						method: http.MethodGet,
+						path:   "/api/v1/kanban/move?project_id=detent&issue_id=I_move&current_state=Backlog&target_state=Todo&identifier=digitaldrywood%2Fdetent%239512&title=Same-origin+move+card",
+					},
+					want: `hx-post="/api/v1/kanban/move"`,
+				},
+				{
+					name: "move submit",
+					req: dashboardHTMXRequest{
+						method: http.MethodPost,
+						path:   "/api/v1/kanban/move",
+						form: url.Values{
+							"project_id":    {"detent"},
+							"issue_id":      {"I_move"},
+							"current_state": {"Backlog"},
+							"target_state":  {"Todo"},
+						},
+					},
+					want: "Moved card to Todo.",
+				},
+				{
+					name: "remove submit",
+					req: dashboardHTMXRequest{
+						method: http.MethodPost,
+						path:   "/api/v1/kanban/remove",
+						form: url.Values{
+							"project_id":    {"detent"},
+							"issue_id":      {"I_remove"},
+							"current_state": {"Todo"},
+						},
+					},
+					want: "Removed card from project.",
+				},
+				{
+					name: "comment dialog",
+					req: dashboardHTMXRequest{
+						method: http.MethodGet,
+						path:   "/api/v1/kanban/comment?project_id=detent&target=issue&issue_id=I_comment&identifier=digitaldrywood%2Fdetent%239514&title=Same-origin+comment+card",
+					},
+					want: `hx-post="/api/v1/kanban/comment"`,
+				},
+				{
+					name: "comment submit",
+					req: dashboardHTMXRequest{
+						method: http.MethodPost,
+						path:   "/api/v1/kanban/comment",
+						form: url.Values{
+							"project_id": {"detent"},
+							"target":     {"issue"},
+							"issue_id":   {"I_comment"},
+							"body":       {"Same-origin dashboard comment"},
+						},
+					},
+					want: "Comment submitted.",
+				},
+				{
+					name: "refresh submit",
+					req: dashboardHTMXRequest{
+						method: http.MethodPost,
+						path:   "/api/v1/refresh",
+					},
+					want: `id="manual-refresh-status"`,
+				},
 			}
-			if !strings.Contains(rec.Body.String(), tt.want) {
-				t.Fatalf("body missing %q:\n%s", tt.want, rec.Body.String())
+
+			for _, tt := range tests {
+				tt := tt
+				t.Run(tt.name, func(t *testing.T) {
+					tt.req.host = origin.host
+					tt.req.remote = origin.remote
+					tt.req.htmxTarget = origin.htmxTarget
+					rec := performDashboardHTMXRequest(t, fixture.server.Handler(), tt.req)
+					if rec.Code != http.StatusOK {
+						t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+					}
+					if !strings.Contains(rec.Body.String(), tt.want) {
+						t.Fatalf("body missing %q:\n%s", tt.want, rec.Body.String())
+					}
+				})
+			}
+
+			if fixture.refresher.calls == 0 {
+				t.Fatal("refresh calls = 0, want dashboard refresh to reach refresher")
 			}
 		})
 	}
-
-	if refresher.calls == 0 {
-		t.Fatal("refresh calls = 0, want dashboard refresh to reach refresher")
-	}
 }
 
-func TestDashboardHTMXAuthRejectsNonLocalRequestsOnWildcardBindWithoutToken(t *testing.T) {
+func TestDashboardHTMXAuthRejectsUntrustedRequestsOnWildcardBindWithoutToken(t *testing.T) {
 	t.Parallel()
 
-	deps := testDeps(t)
-	actionConnector := &kanbanActionConnector{name: "github"}
-	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
-		Mode: workflowconfig.KanbanModeIntegration,
-	}, actionConnector)
-	deps.Refresher = &refreshProbe{response: web.RefreshResponse{Queued: true}}
-	if err := deps.Hub.Publish(telemetry.Snapshot{
-		GeneratedAt: time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
-		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
-		Projects: []telemetry.ProjectSnapshot{
-			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
-		},
-		BoardIssues: []telemetry.Issue{{
-			ID:         "I_external",
-			Identifier: "digitaldrywood/detent#9520",
-			ProjectID:  "detent",
-			Title:      "External denied card",
-			State:      "Todo",
-		}},
-	}); err != nil {
-		t.Fatalf("Publish() error = %v", err)
-	}
-	server, err := web.NewServer(web.Config{
-		ServerAddress: "0.0.0.0:4000",
-	}, deps)
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
+	fixture := newDashboardHTMXAuthFixture(t)
 
 	tests := []struct {
 		name string
@@ -664,75 +611,172 @@ func TestDashboardHTMXAuthRejectsNonLocalRequestsOnWildcardBindWithoutToken(t *t
 			},
 		},
 		{
-			name: "external host card sheet denied",
+			name: "private host card sheet without htmx denied",
 			req: dashboardHTMXRequest{
 				method: http.MethodGet,
-				path:   "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%239520&actions=board",
-				host:   "dashboard.example.test:4000",
-				remote: "203.0.113.10:49152",
+				path:   "/api/v1/board/card?actions=board&issue=digitaldrywood%2Fdetent%23523&project=detent",
+				host:   "100.95.107.50:4000",
+				remote: "100.95.107.51:49152",
+				noHX:   true,
+			},
+		},
+		{
+			name: "private host card sheet without htmx target denied",
+			req: dashboardHTMXRequest{
+				method: http.MethodGet,
+				path:   "/api/v1/board/card?actions=board&issue=digitaldrywood%2Fdetent%23523&project=detent",
+				host:   "100.95.107.50:4000",
+				remote: "100.95.107.51:49152",
+			},
+		},
+		{
+			name: "private host card sheet with cross origin htmx source denied",
+			req: dashboardHTMXRequest{
+				method:     http.MethodGet,
+				path:       "/api/v1/board/card?actions=board&issue=digitaldrywood%2Fdetent%23523&project=detent",
+				host:       "100.95.107.50:4000",
+				remote:     "100.95.107.51:49152",
+				htmxTarget: "detail-sheet-host",
+				currentURL: "http://dashboard.example.test:4000/",
 			},
 		},
 		{
 			name: "spoofed localhost host from external peer denied",
 			req: dashboardHTMXRequest{
-				method: http.MethodGet,
-				path:   "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%239520&actions=board",
-				host:   "localhost:4000",
-				remote: "203.0.113.10:49152",
+				method:     http.MethodGet,
+				path:       "/api/v1/board/card?actions=board&issue=digitaldrywood%2Fdetent%23523&project=detent",
+				host:       "localhost:4000",
+				remote:     "203.0.113.10:49152",
+				htmxTarget: "detail-sheet-host",
 			},
 		},
 		{
 			name: "localhost host without htmx denied",
 			req: dashboardHTMXRequest{
 				method: http.MethodGet,
-				path:   "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%239520&actions=board",
+				path:   "/api/v1/board/card?actions=board&issue=digitaldrywood%2Fdetent%23523&project=detent",
 				noHX:   true,
 			},
 		},
 		{
-			name: "localhost host with cross origin htmx source denied",
-			req: dashboardHTMXRequest{
-				method:     http.MethodGet,
-				path:       "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%239520&actions=board",
-				currentURL: "http://dashboard.example.test:4000/",
-			},
-		},
-		{
-			name: "external host move denied",
+			name: "private host move without htmx target denied",
 			req: dashboardHTMXRequest{
 				method: http.MethodPost,
 				path:   "/api/v1/kanban/move",
-				host:   "dashboard.example.test:4000",
-				remote: "203.0.113.10:49152",
+				host:   "100.95.107.50:4000",
+				remote: "100.95.107.51:49152",
 				form: url.Values{
 					"project_id":    {"detent"},
-					"issue_id":      {"I_external"},
+					"issue_id":      {"I_move"},
 					"current_state": {"Todo"},
 					"target_state":  {"In Progress"},
 				},
 			},
 		},
 		{
-			name: "external host refresh denied",
+			name: "private host refresh without htmx target denied",
 			req: dashboardHTMXRequest{
 				method: http.MethodPost,
 				path:   "/api/v1/refresh",
-				host:   "dashboard.example.test:4000",
-				remote: "203.0.113.10:49152",
+				host:   "100.95.107.50:4000",
+				remote: "100.95.107.51:49152",
 			},
 		},
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			rec := performDashboardHTMXRequest(t, server.Handler(), tt.req)
+			rec := performDashboardHTMXRequest(t, fixture.server.Handler(), tt.req)
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
 			}
 		})
 	}
-	if got := actionConnector.stateUpdates(); len(got) != 0 {
+	if got := fixture.actionConnector.stateUpdates(); len(got) != 0 {
 		t.Fatalf("state updates = %#v, want none", got)
+	}
+	if got := fixture.actionConnector.comments(); len(got) != 0 {
+		t.Fatalf("comments = %#v, want none", got)
+	}
+	if got := fixture.actionConnector.removals(); len(got) != 0 {
+		t.Fatalf("removals = %#v, want none", got)
+	}
+	if fixture.refresher.calls != 0 {
+		t.Fatalf("refresh calls = %d, want none", fixture.refresher.calls)
+	}
+}
+
+type dashboardHTMXAuthFixture struct {
+	server          *web.Server
+	actionConnector *kanbanActionConnector
+	refresher       *refreshProbe
+}
+
+func newDashboardHTMXAuthFixture(t *testing.T) dashboardHTMXAuthFixture {
+	t.Helper()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+		AllowedTransitions: map[string][]string{
+			"Backlog": {"Todo"},
+			"Todo":    {"In Progress"},
+		},
+	}, actionConnector)
+	refresher := &refreshProbe{response: web.RefreshResponse{Queued: true}}
+	deps.Refresher = refresher
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:         "I_sheet",
+				Identifier: "digitaldrywood/detent#523",
+				ProjectID:  "detent",
+				Title:      "Screenshot sheet card",
+				State:      "Backlog",
+				URL:        "https://github.com/digitaldrywood/detent/issues/523",
+			},
+			{
+				ID:         "I_move",
+				Identifier: "digitaldrywood/detent#9512",
+				ProjectID:  "detent",
+				Title:      "Same-origin move card",
+				State:      "Backlog",
+			},
+			{
+				ID:         "I_remove",
+				Identifier: "digitaldrywood/detent#9513",
+				ProjectID:  "detent",
+				Title:      "Same-origin remove card",
+				State:      "Todo",
+			},
+			{
+				ID:         "I_comment",
+				Identifier: "digitaldrywood/detent#9514",
+				ProjectID:  "detent",
+				Title:      "Same-origin comment card",
+				State:      "Todo",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{
+		ServerAddress: "0.0.0.0:4000",
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	return dashboardHTMXAuthFixture{
+		server:          server,
+		actionConnector: actionConnector,
+		refresher:       refresher,
 	}
 }
 
@@ -8806,6 +8850,7 @@ type dashboardHTMXRequest struct {
 	remote     string
 	form       url.Values
 	currentURL string
+	htmxTarget string
 	noHX       bool
 }
 
@@ -8842,6 +8887,9 @@ func performDashboardHTMXRequest(t *testing.T, handler http.Handler, input dashb
 			currentURL = "http://" + host + "/"
 		}
 		req.Header.Set("HX-Current-URL", currentURL)
+		if htmxTarget := strings.TrimSpace(input.htmxTarget); htmxTarget != "" {
+			req.Header.Set("HX-Target", htmxTarget)
+		}
 	}
 
 	rec := httptest.NewRecorder()

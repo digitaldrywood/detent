@@ -2,6 +2,14 @@ const http = require("node:http");
 const { test, expect } = require("@playwright/test");
 const { startDetentRuntime } = require("./detent-runtime");
 
+const dashboardHost = "dashboard.detent.test";
+
+test.use({
+  launchOptions: {
+    args: [`--host-resolver-rules=MAP ${dashboardHost} 127.0.0.1`],
+  },
+});
+
 const authModes = [
   {
     name: "no-token",
@@ -27,10 +35,12 @@ for (const mode of authModes) {
     const unexpectedAPIResponses = collectUnexpectedAPIResponses(page);
 
     try {
-      await page.goto(`${runtime.url}/`, { waitUntil: "domcontentloaded" });
+      const dashboardURL = nonLoopbackDashboardURL(runtime.url);
+
+      await page.goto(`${dashboardURL}/`, { waitUntil: "domcontentloaded" });
       await expect(page.getByRole("button", { name: /Kanban demo backlog intake/ })).toBeVisible();
 
-      await page.goto(`${runtime.url}/projects/demo-project/kanban`, { waitUntil: "domcontentloaded" });
+      await page.goto(`${dashboardURL}/projects/demo-project/kanban`, { waitUntil: "domcontentloaded" });
       await expect(page.getByRole("button", { name: /Kanban demo backlog intake/ })).toBeVisible();
 
       await page.getByRole("button", { name: /Kanban demo backlog intake/ }).click();
@@ -74,6 +84,7 @@ for (const mode of authModes) {
             "Content-Type": "application/x-www-form-urlencoded",
             "HX-Request": "true",
             "HX-Current-URL": window.location.href,
+            "HX-Target": "manual-refresh-status",
           },
           body: "",
         });
@@ -102,20 +113,41 @@ test("wildcard dashboard denies non-local API access without token", async () =>
 
   try {
     const port = new URL(runtime.url).port;
-    const deniedCard = await rawHTTPStatus(runtime.url, {
+    const dashboardURL = nonLoopbackDashboardURL(runtime.url);
+    const dashboardURLHost = new URL(dashboardURL).host;
+    const deniedRawCard = await rawHTTPStatus(runtime.url, {
       path: "/api/v1/board/card?project=demo-project&issue=digitaldrywood%2Fdetent%239511&actions=board&scope=project",
       headers: {
-        Host: `dashboard.example.test:${port}`,
-        "HX-Request": "true",
-        "HX-Current-URL": `http://dashboard.example.test:${port}/projects/demo-project/kanban`,
+        Host: dashboardURLHost,
       },
     });
-    expect(deniedCard).toBe(403);
+    expect(deniedRawCard).toBe(403);
+
+    const deniedMissingHTMXTarget = await rawHTTPStatus(runtime.url, {
+      path: "/api/v1/board/card?project=demo-project&issue=digitaldrywood%2Fdetent%239511&actions=board&scope=project",
+      headers: {
+        Host: dashboardURLHost,
+        "HX-Request": "true",
+        "HX-Current-URL": `${dashboardURL}/projects/demo-project/kanban`,
+      },
+    });
+    expect(deniedMissingHTMXTarget).toBe(403);
+
+    const deniedSpoofedSource = await rawHTTPStatus(runtime.url, {
+      path: "/api/v1/board/card?project=demo-project&issue=digitaldrywood%2Fdetent%239511&actions=board&scope=project",
+      headers: {
+        Host: dashboardURLHost,
+        "HX-Request": "true",
+        "HX-Current-URL": `http://dashboard.example.test:${port}/projects/demo-project/kanban`,
+        "HX-Target": "detail-sheet-host",
+      },
+    });
+    expect(deniedSpoofedSource).toBe(403);
 
     const deniedState = await rawHTTPStatus(runtime.url, {
       path: "/api/v1/state",
       headers: {
-        Host: `dashboard.example.test:${port}`,
+        Host: dashboardURLHost,
       },
     });
     expect(deniedState).toBe(403);
@@ -137,6 +169,11 @@ function collectUnexpectedAPIResponses(page) {
 
 function actionDialog(page, title) {
   return page.getByRole("dialog").filter({ hasText: title }).first();
+}
+
+function nonLoopbackDashboardURL(runtimeURL) {
+  const url = new URL(runtimeURL);
+  return `http://${dashboardHost}:${url.port}`;
 }
 
 async function rawHTTPStatus(baseURL, options) {
