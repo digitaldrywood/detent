@@ -160,7 +160,7 @@ test("board lane picker hides and restores lanes", async ({ page }) => {
   await expect(firstLane).toBeVisible();
 });
 
-test("board applies persisted todo visibility before snapshot morph", async ({
+test("board applies persisted todo visibility before snapshot morphs", async ({
   page,
 }) => {
   await openScenario(page, {
@@ -233,49 +233,7 @@ test("board applies persisted todo visibility before snapshot morph", async ({
     });
   });
 
-  await page.evaluate((laneID) => {
-    window.__detentLaneHiddenValues = [];
-    const snapshot = document.querySelector("#snapshot");
-    const record = (lane) => {
-      if (!lane) {
-        return;
-      }
-      window.__detentLaneHiddenValues.push(
-        lane.getAttribute("data-lane-hidden"),
-      );
-    };
-    record(document.querySelector(`[data-board-lane="${laneID}"]`));
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        if (mutation.type === "attributes") {
-          const lane =
-            mutation.target instanceof Element
-              ? mutation.target.closest(`[data-board-lane="${laneID}"]`)
-              : null;
-          record(lane);
-        }
-        if (mutation.type === "childList") {
-          for (const node of mutation.addedNodes) {
-            if (!(node instanceof Element)) {
-              continue;
-            }
-            const lane = node.matches(`[data-board-lane="${laneID}"]`)
-              ? node
-              : node.querySelector(`[data-board-lane="${laneID}"]`);
-            record(lane);
-          }
-        }
-      }
-    });
-    observer.observe(snapshot, {
-      subtree: true,
-      childList: true,
-      attributes: true,
-      attributeFilter: ["data-lane-hidden"],
-    });
-    window.__detentLaneHiddenObserver = observer;
-  }, laneID);
-
+  await startLaneHiddenRecorder(page, laneID);
   await page.evaluate(
     () =>
       new Promise((resolve) => {
@@ -287,10 +245,38 @@ test("board applies persisted todo visibility before snapshot morph", async ({
       }),
   );
 
-  const hiddenValues = await page.evaluate(
-    () => window.__detentLaneHiddenValues,
-  );
+  const hiddenValues = await laneHiddenValues(page);
   expect(hiddenValues).not.toContain("true");
+  await expect(lane).toBeVisible();
+  await expect(toggle).toBeChecked();
+  await expect(count).toHaveText("8/9");
+
+  await startLaneHiddenRecorder(page, laneID);
+  await page.evaluate(
+    (incomingSnapshot) =>
+      new Promise((resolve) => {
+        document.addEventListener("htmx:afterSettle", resolve, { once: true });
+        const target = document.querySelector("#snapshot");
+        const event = new CustomEvent("htmx:sseBeforeMessage", {
+          bubbles: true,
+          cancelable: true,
+          detail: { elt: target, data: incomingSnapshot },
+        });
+        target.dispatchEvent(event);
+        if (!event.defaultPrevented) {
+          window.htmx.swap(
+            target,
+            incomingSnapshot,
+            { swapStyle: target.getAttribute("hx-swap") || "innerHTML" },
+            { contextElement: target },
+          );
+        }
+      }),
+    incomingSnapshot,
+  );
+
+  const sseHiddenValues = await laneHiddenValues(page);
+  expect(sseHiddenValues).not.toContain("true");
   await expect(lane).toBeVisible();
   await expect(toggle).toBeChecked();
   await expect(count).toHaveText("8/9");
@@ -638,6 +624,58 @@ async function openScenario(page, options) {
   });
   await page.locator(waitSelector).waitFor({ state: "visible" });
   await page.evaluate(() => document.fonts?.ready);
+}
+
+async function startLaneHiddenRecorder(page, laneID) {
+  await page.evaluate((laneID) => {
+    if (window.__detentLaneHiddenObserver) {
+      window.__detentLaneHiddenObserver.disconnect();
+    }
+    window.__detentLaneHiddenValues = [];
+    const snapshot = document.querySelector("#snapshot");
+    const record = (lane) => {
+      if (!lane) {
+        return;
+      }
+      window.__detentLaneHiddenValues.push(
+        lane.getAttribute("data-lane-hidden"),
+      );
+    };
+    record(document.querySelector(`[data-board-lane="${laneID}"]`));
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === "attributes") {
+          const lane =
+            mutation.target instanceof Element
+              ? mutation.target.closest(`[data-board-lane="${laneID}"]`)
+              : null;
+          record(lane);
+        }
+        if (mutation.type === "childList") {
+          for (const node of mutation.addedNodes) {
+            if (!(node instanceof Element)) {
+              continue;
+            }
+            const lane = node.matches(`[data-board-lane="${laneID}"]`)
+              ? node
+              : node.querySelector(`[data-board-lane="${laneID}"]`);
+            record(lane);
+          }
+        }
+      }
+    });
+    observer.observe(snapshot, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["data-lane-hidden"],
+    });
+    window.__detentLaneHiddenObserver = observer;
+  }, laneID);
+}
+
+async function laneHiddenValues(page) {
+  return page.evaluate(() => window.__detentLaneHiddenValues || []);
 }
 
 async function capturePageAndAttach(page, name, testInfo) {
