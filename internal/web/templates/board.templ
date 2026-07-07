@@ -227,8 +227,13 @@ templ boardLaneScript() {
 				} catch (err) {}
 			}
 			var pickerOpen = false;
-			function apply() {
-				var root = document.querySelector("[data-board-lanes]");
+			function boardLanesRoot(scope) {
+				if (scope instanceof Element && scope.matches("[data-board-lanes]")) return scope;
+				if (scope && typeof scope.querySelector === "function") return scope.querySelector("[data-board-lanes]");
+				return null;
+			}
+			function applyTo(scope) {
+				var root = boardLanesRoot(scope);
 				if (!root) return;
 				var prefs = readPrefs(root);
 				var total = 0;
@@ -240,13 +245,39 @@ templ boardLaneScript() {
 					var show = Object.prototype.hasOwnProperty.call(prefs, id) ? Boolean(prefs[id]) : byDefault;
 					lane.setAttribute("data-lane-hidden", show ? "false" : "true");
 					if (show) visible += 1;
-					var toggle = document.querySelector('[data-board-lane-toggle="' + id + '"]');
-					if (toggle) toggle.checked = show;
+					var toggle = scope.querySelector('[data-board-lane-toggle="' + id + '"]');
+					if (toggle) {
+						toggle.checked = show;
+						if (show) {
+							toggle.setAttribute("checked", "");
+						} else {
+							toggle.removeAttribute("checked");
+						}
+					}
 				});
-				var count = document.querySelector("[data-board-lane-count]");
+				var count = scope.querySelector("[data-board-lane-count]");
 				if (count) count.textContent = visible + "/" + total;
-				var picker = document.querySelector("[data-board-lane-picker]");
+				var picker = scope.querySelector("[data-board-lane-picker]");
 				if (picker && pickerOpen) picker.setAttribute("open", "");
+			}
+			function apply() {
+				applyTo(document);
+			}
+			function snapshotSwapTarget(event) {
+				var target = event.detail && event.detail.target;
+				if (!(target instanceof Element)) target = event.target;
+				if (!(target instanceof Element)) return false;
+				return target.id === "snapshot" || Boolean(target.closest("#snapshot"));
+			}
+			function applyBeforeSwap(event) {
+				var detail = event.detail || {};
+				if (!snapshotSwapTarget(event) || typeof detail.serverResponse !== "string") return;
+				if (detail.serverResponse.indexOf("data-board-lanes") < 0) return;
+				var template = document.createElement("template");
+				template.innerHTML = detail.serverResponse;
+				if (!boardLanesRoot(template.content)) return;
+				applyTo(template.content);
+				detail.serverResponse = template.innerHTML;
 			}
 			document.addEventListener("change", function (event) {
 				var toggle = event.target.closest("[data-board-lane-toggle]");
@@ -271,6 +302,7 @@ templ boardLaneScript() {
 					pickerOpen = false;
 				}
 			});
+			document.addEventListener("htmx:beforeSwap", applyBeforeSwap);
 			document.addEventListener("htmx:afterSettle", apply);
 			document.addEventListener("DOMContentLoaded", apply);
 			apply();
