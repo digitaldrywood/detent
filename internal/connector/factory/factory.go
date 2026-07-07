@@ -1,7 +1,6 @@
 package factory
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/connector/githublocal"
+	linearconnector "github.com/digitaldrywood/detent/internal/connector/linear"
 	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 )
@@ -60,7 +60,11 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 	case connector.BackendLocalSQLite:
 		return local.New(cfg.LocalSQLite)
 	case connector.BackendLinear:
-		return unimplementedConnector{name: kind}, nil
+		return linearconnector.NewConnector(linearconnector.Config{
+			Endpoint: cfg.Endpoint,
+			APIKey:   cfg.APIKey,
+			Logger:   cfg.Logger,
+		})
 	case connector.BackendGitHub:
 		var tokenSource githubconnector.TokenSource
 		if strings.TrimSpace(cfg.APIKey) != "" && cfg.GitHubTokenRefresh != nil && !cfg.hasGitHubAppCredentials() {
@@ -156,44 +160,6 @@ func (cfg Config) hasGitHubAppCredentials() bool {
 		strings.TrimSpace(cfg.GitHubAppInstallationID) != "" &&
 		(strings.TrimSpace(cfg.GitHubAppPrivateKey) != "" ||
 			strings.TrimSpace(cfg.GitHubAppPrivateKeyPath) != "")
-}
-
-type unimplementedConnector struct {
-	name string
-}
-
-var _ connector.Connector = unimplementedConnector{}
-
-func (c unimplementedConnector) Name() string {
-	return c.name
-}
-
-func (unimplementedConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
-	return nil, connector.ErrNotImplemented
-}
-
-func (unimplementedConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
-	return nil, connector.ErrNotImplemented
-}
-
-func (unimplementedConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
-	return nil, connector.ErrNotImplemented
-}
-
-func (unimplementedConnector) CreateComment(context.Context, string, string) error {
-	return connector.ErrNotImplemented
-}
-
-func (unimplementedConnector) UpdateIssueState(context.Context, string, string) error {
-	return connector.ErrNotImplemented
-}
-
-func (unimplementedConnector) SetAssignee(context.Context, string, string) error {
-	return connector.ErrNotImplemented
-}
-
-func (unimplementedConnector) SetField(context.Context, string, string, string) error {
-	return connector.ErrNotImplemented
 }
 
 func normalizeKind(kind string) string {

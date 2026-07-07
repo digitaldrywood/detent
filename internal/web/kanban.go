@@ -880,6 +880,12 @@ func (s *Server) apiKanbanComment(c echo.Context) error {
 		}
 		return kanbanFeedback(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
 	}
+	if req.target == "pr" && !kanbanSupportsPullRequestComments(target.connector) {
+		if kanbanDialogForm(c) {
+			return s.kanbanCommentDialogValidation(c, "Comment target is not available on the current board.")
+		}
+		return kanbanFeedback(c, http.StatusNotFound, "Comment target is not available on the current board.")
+	}
 	if !s.kanbanCommentTargetKnown(req) {
 		if kanbanDialogForm(c) {
 			return s.kanbanCommentDialogValidation(c, "Comment target is not available on the current board.")
@@ -1145,6 +1151,9 @@ func (s *Server) kanbanCommentDialogData(c echo.Context, message string) (templa
 	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
 		return data, "Kanban integration mode is not enabled."
 	}
+	if data.Target == "pr" && !kanbanSupportsPullRequestComments(target.connector) {
+		return data, "Comment target is not available on the current board."
+	}
 	return data, ""
 }
 
@@ -1317,13 +1326,14 @@ func (s *Server) dashboardKanbanData(ctx context.Context, projectID string, snap
 	}
 	states := kanbanStateNames(target.workflow, snapshot)
 	data := templates.KanbanData{
-		Mode:                    mode,
-		ProjectID:               strings.TrimSpace(projectID),
-		States:                  states,
-		TerminalStates:          target.workflow.Tracker.TerminalStates,
-		TerminalStatesByProject: s.kanbanTerminalStatesByProject(projectID),
-		AllowedTransitions:      kanbanAllowedTransitions(target.workflow, states),
-		ShowBlockedAlerts:       target.kanban.ShowBlockedAlerts,
+		Mode:                        mode,
+		ProjectID:                   strings.TrimSpace(projectID),
+		States:                      states,
+		TerminalStates:              target.workflow.Tracker.TerminalStates,
+		TerminalStatesByProject:     s.kanbanTerminalStatesByProject(projectID),
+		AllowedTransitions:          kanbanAllowedTransitions(target.workflow, states),
+		ShowBlockedAlerts:           target.kanban.ShowBlockedAlerts,
+		SupportsPullRequestComments: kanbanSupportsPullRequestComments(target.connector),
 	}
 	if strings.TrimSpace(projectID) == "" {
 		data.Projects = s.kanbanProjectsData(snapshot)
@@ -1354,17 +1364,26 @@ func (s *Server) kanbanProjectsData(snapshot telemetry.Snapshot) map[string]temp
 		}
 		states := kanbanStateNames(target.workflow, snapshot)
 		out[projectID] = templates.KanbanProjectData{
-			Mode:               target.kanban.Mode,
-			ProjectID:          projectID,
-			States:             states,
-			TerminalStates:     target.workflow.Tracker.TerminalStates,
-			AllowedTransitions: kanbanAllowedTransitions(target.workflow, states),
+			Mode:                        target.kanban.Mode,
+			ProjectID:                   projectID,
+			States:                      states,
+			TerminalStates:              target.workflow.Tracker.TerminalStates,
+			AllowedTransitions:          kanbanAllowedTransitions(target.workflow, states),
+			SupportsPullRequestComments: kanbanSupportsPullRequestComments(target.connector),
 		}
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+func kanbanSupportsPullRequestComments(c connector.Connector) bool {
+	if c == nil {
+		return false
+	}
+	_, ok := c.(connector.PullRequestCommenter)
+	return ok
 }
 
 func (s *Server) fleetKanbanSnapshotWithPendingStates(snapshot telemetry.Snapshot) telemetry.Snapshot {

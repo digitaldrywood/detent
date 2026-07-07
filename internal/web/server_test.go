@@ -2722,6 +2722,64 @@ func TestBoardCardSheetShowsLocalCommentControlsOnly(t *testing.T) {
 	}
 }
 
+func TestKanbanActionsHidePullRequestCommentsWhenUnsupported(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, connectorProbe{name: "linear"})
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "LIN-123",
+			Identifier: "LIN-123",
+			ProjectID:  "detent",
+			Title:      "Linear commentable issue",
+			State:      "Todo",
+			PullRequest: &telemetry.PullRequest{
+				Number: 42,
+				URL:    "https://github.com/digitaldrywood/frontend/pull/42",
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/api/v1/board/card?project=detent&issue=LIN-123&scope=project&actions=board", http.StatusOK, map[string]string{
+		"HX-Request": "true",
+	})
+	if !strings.Contains(body, "Comment on issue") {
+		t.Fatalf("card sheet missing issue comment action:\n%s", body)
+	}
+	if strings.Contains(body, "Comment on PR") {
+		t.Fatalf("card sheet rendered unsupported PR comment action:\n%s", body)
+	}
+
+	prForm := url.Values{
+		"project_id":    {"detent"},
+		"target":        {"pr"},
+		"pr_repository": {"digitaldrywood/frontend"},
+		"pr_number":     {"42"},
+		"body":          {"Unsupported PR note"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/comment", prForm)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Comment target is not available on the current board.") {
+		t.Fatalf("body missing unsupported target message: %s", rec.Body.String())
+	}
+}
+
 func TestKanbanCommentRejectsTargetsOutsideCurrentBoard(t *testing.T) {
 	t.Parallel()
 
