@@ -228,8 +228,8 @@ func TestProjectStatusQueryFormatsMappedStatuses(t *testing.T) {
 		}
 	}
 
-	if got := c.projectStatusQuery([]string{"Backlog"}); got != "" {
-		t.Fatalf("projectStatusQuery(Backlog) = %q, want empty query", got)
+	if got := c.projectStatusQuery([]string{"Backlog"}); got != "status:Backlog" {
+		t.Fatalf("projectStatusQuery(Backlog) = %q, want status:Backlog", got)
 	}
 }
 
@@ -335,7 +335,10 @@ func TestConnectorFetchIssuesByStatesDefaultsBlankProjectStatusesToBacklog(t *te
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{
-			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_blank","content":{"__typename":"Issue","id":"I_blank","number":30,"title":"Blank status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/30","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":null,"priorityValue":null},{"id":"PVTI_todo","content":{"__typename":"Issue","id":"I_todo","number":31,"title":"Ready status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/31","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":{"name":"Todo"},"priorityValue":null}]}}}}`,
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+		},
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":true,"endCursor":"next"},"nodes":[{"id":"PVTI_blank","content":{"__typename":"Issue","id":"I_blank","number":30,"title":"Blank status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/30","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":null,"priorityValue":null},{"id":"PVTI_todo","content":{"__typename":"Issue","id":"I_todo","number":31,"title":"Ready status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/31","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":{"name":"Todo"},"priorityValue":null}]}}}}`,
 		},
 		{
 			body: `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_backlog","name":"Backlog"},{"id":"OPT_todo","name":"Todo"}]}}}}`,
@@ -361,16 +364,142 @@ func TestConnectorFetchIssuesByStatesDefaultsBlankProjectStatusesToBacklog(t *te
 		t.Fatalf("defaulted issue = %#v, want blank issue in Backlog", got[0])
 	}
 
-	requests := waitForGraphQLRequests(t, server, 3)
-	if len(requests) != 3 {
-		t.Fatalf("request count = %d, want 3", len(requests))
+	requests := waitForGraphQLRequests(t, server, 4)
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want explicit Backlog query, bounded blank scan, and default write", len(requests))
 	}
-	updateVariables := requestVariables(t, requests[2])
+	variables := requestVariables(t, requests[0])
+	if variables["query"] != "status:Backlog" {
+		t.Fatalf("query = %v, want status:Backlog", variables["query"])
+	}
+	variables = requestVariables(t, requests[1])
+	if variables["query"] != nil || variables["after"] != nil {
+		t.Fatalf("blank repair variables = %#v, want first unfiltered page", variables)
+	}
+	if query := requests[1]["query"].(string); strings.Contains(query, "closedByPullRequestsReferences") {
+		t.Fatalf("blank repair query includes linked pull request refs:\n%s", query)
+	}
+	updateVariables := requestVariables(t, requests[3])
 	if updateVariables["projectId"] != "PVT_1" ||
 		updateVariables["itemId"] != "PVTI_blank" ||
 		updateVariables["fieldId"] != "PVTSSF_status" ||
 		updateVariables["optionId"] != "OPT_backlog" {
 		t.Fatalf("update variables = %#v, want blank item moved to Backlog", updateVariables)
+	}
+}
+
+func TestConnectorFetchIssuesByStatesQueriesExplicitBacklogStatusSeparately(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_backlog","content":{"__typename":"Issue","id":"I_backlog","number":40,"title":"Explicit backlog","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/40","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Backlog"},"priorityValue":null}]}}}}`,
+		},
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+		},
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug:    "PVT_1",
+		ObservedStates: []string{"Backlog", "Human Review"},
+	})
+
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Backlog", "Human Review"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+	if got[0].ID != "I_backlog" || got[0].State != "Backlog" {
+		t.Fatalf("explicit backlog issue = %#v, want explicit Backlog issue", got[0])
+	}
+
+	requests := server.requests()
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want explicit Backlog query, bounded blank scan, and remaining observed-state query", len(requests))
+	}
+	variables := requestVariables(t, requests[0])
+	if variables["query"] != "status:Backlog" {
+		t.Fatalf("query = %v, want status:Backlog", variables["query"])
+	}
+	query := requests[0]["query"].(string)
+	if strings.Contains(query, "closedByPullRequestsReferences") {
+		t.Fatalf("project query includes linked pull request refs:\n%s", query)
+	}
+	variables = requestVariables(t, requests[1])
+	if variables["query"] != nil || variables["after"] != nil {
+		t.Fatalf("blank repair variables = %#v, want first unfiltered page", variables)
+	}
+	if query := requests[1]["query"].(string); strings.Contains(query, "closedByPullRequestsReferences") {
+		t.Fatalf("blank repair query includes linked pull request refs:\n%s", query)
+	}
+	variables = requestVariables(t, requests[2])
+	if variables["query"] != `status:"Human Review"` {
+		t.Fatalf("remaining query = %v, want status:\"Human Review\"", variables["query"])
+	}
+	if query := requests[2]["query"].(string); !strings.Contains(query, "closedByPullRequestsReferences") {
+		t.Fatalf("remaining observed query missing linked pull request refs:\n%s", query)
+	}
+}
+
+func TestConnectorBoundedBacklogFetchesUseExplicitLightweightQuery(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		fetch func(context.Context, *Connector) ([]connector.Issue, error)
+	}{
+		{
+			name: "FetchIssuesByStatesLimit",
+			fetch: func(ctx context.Context, c *Connector) ([]connector.Issue, error) {
+				return c.FetchIssuesByStatesLimit(ctx, []string{"Backlog", "Human Review"}, 1)
+			},
+		},
+		{
+			name: "FetchIssueStateProbe",
+			fetch: func(ctx context.Context, c *Connector) ([]connector.Issue, error) {
+				return c.FetchIssueStateProbe(ctx, []string{"Backlog", "Human Review"}, 1)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := newGraphQLTestServer(t, []graphqlTestResponse{{
+				body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_backlog","content":{"__typename":"Issue","id":"I_backlog","number":40,"title":"Explicit backlog","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/40","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Backlog"},"priorityValue":null}]}}}}`,
+			}})
+			c := newGitHubTestConnector(t, server, Config{
+				ProjectSlug:    "PVT_1",
+				ObservedStates: []string{"Backlog", "Human Review"},
+			})
+
+			got, err := tt.fetch(context.Background(), c)
+			if err != nil {
+				t.Fatalf("%s() error = %v", tt.name, err)
+			}
+			if len(got) != 1 || got[0].ID != "I_backlog" || got[0].State != "Backlog" {
+				t.Fatalf("%s() = %#v, want explicit Backlog issue", tt.name, got)
+			}
+
+			requests := server.requests()
+			if len(requests) != 1 {
+				t.Fatalf("request count = %d, want one bounded Backlog query", len(requests))
+			}
+			variables := requestVariables(t, requests[0])
+			if variables["query"] != "status:Backlog" {
+				t.Fatalf("query = %v, want status:Backlog", variables["query"])
+			}
+			query := requests[0]["query"].(string)
+			if strings.Contains(query, "closedByPullRequestsReferences") {
+				t.Fatalf("project query includes linked pull request refs:\n%s", query)
+			}
+		})
 	}
 }
 
@@ -513,6 +642,9 @@ func TestConnectorFetchIssuesByStatesIgnoresBlankStatusDefaultWriteFailure(t *te
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+		},
+		{
 			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_blank","content":{"__typename":"Issue","id":"I_blank","number":30,"title":"Blank status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/30","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":null,"priorityValue":null}]}}}}`,
 		},
 		{
@@ -535,9 +667,9 @@ func TestConnectorFetchIssuesByStatesIgnoresBlankStatusDefaultWriteFailure(t *te
 		t.Fatalf("defaulted issue = %#v, want blank issue in Backlog", got[0])
 	}
 
-	requests := waitForGraphQLRequests(t, server, 2)
-	if len(requests) != 2 {
-		t.Fatalf("request count = %d, want 2", len(requests))
+	requests := waitForGraphQLRequests(t, server, 3)
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want explicit Backlog query, bounded blank scan, and failed default lookup", len(requests))
 	}
 }
 

@@ -1028,7 +1028,21 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 		return nil, ErrMissingProject
 	}
 
-	issues, err := c.fetchProjectItems(ctx, graphQLQueryObservedStatus, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
+	issues := []connector.Issue{}
+	if stateSetContains(wantedStates, defaultProjectItemStatusState) {
+		backlogIssues, err := c.fetchProjectBacklogIssues(ctx, 0)
+		if err != nil {
+			return nil, err
+		}
+		issues = appendUniqueIssues(issues, backlogIssues, 0)
+		stateNames = stateListWithout(stateNames, defaultProjectItemStatusState)
+		wantedStates = normalizedStateSet(stateNames)
+		if len(wantedStates) == 0 {
+			return issues, nil
+		}
+	}
+
+	statusIssues, err := c.fetchProjectItems(ctx, graphQLQueryObservedStatus, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
 		_, ok := wantedStates[normalizeStateName(issue.State)]
 		return ok
 	})
@@ -1036,19 +1050,19 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 		return nil, err
 	}
 	if _, ok := wantedStates[normalizeStateName("Blocked")]; ok {
-		if err := c.populateBlockerReasons(ctx, issues); err != nil {
+		if err := c.populateBlockerReasons(ctx, statusIssues); err != nil {
 			return nil, err
 		}
-		if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+		if err := c.resolveBlockedByProjectState(ctx, statusIssues); err != nil {
 			return nil, err
 		}
 	}
 	if attachPullRequestsForStates(wantedStates) {
-		if err := c.attachFreshPullRequests(ctx, issues); err != nil {
+		if err := c.attachFreshPullRequests(ctx, statusIssues); err != nil {
 			return nil, err
 		}
 	}
-	return issues, nil
+	return appendUniqueIssues(issues, statusIssues, 0), nil
 }
 
 func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []string, limit int) ([]connector.Issue, error) {
@@ -1103,27 +1117,44 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 		return nil, ErrMissingProject
 	}
 
-	issues, err := c.fetchProjectItemsWithPullRequestRefsLimit(ctx, graphQLQueryObservedStatus, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
+	issues := []connector.Issue{}
+	if stateSetContains(wantedStates, defaultProjectItemStatusState) {
+		backlogIssues, err := c.fetchProjectBacklogIssues(ctx, limit)
+		if err != nil {
+			return nil, err
+		}
+		issues = appendUniqueIssues(issues, backlogIssues, limit)
+		if len(issues) >= limit {
+			return issues, nil
+		}
+		stateNames = stateListWithout(stateNames, defaultProjectItemStatusState)
+		wantedStates = normalizedStateSet(stateNames)
+		if len(wantedStates) == 0 {
+			return issues, nil
+		}
+	}
+
+	statusIssues, err := c.fetchProjectItemsWithPullRequestRefsLimit(ctx, graphQLQueryObservedStatus, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
 		_, ok := wantedStates[normalizeStateName(issue.State)]
 		return ok
-	}, limit)
+	}, limit-len(issues))
 	if err != nil {
 		return nil, err
 	}
 	if _, ok := wantedStates[normalizeStateName("Blocked")]; ok {
-		if err := c.populateBlockerReasons(ctx, issues); err != nil {
+		if err := c.populateBlockerReasons(ctx, statusIssues); err != nil {
 			return nil, err
 		}
-		if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
+		if err := c.resolveBlockedByProjectState(ctx, statusIssues); err != nil {
 			return nil, err
 		}
 	}
 	if attachPullRequestsForStates(wantedStates) {
-		if err := c.attachFreshPullRequests(ctx, issues); err != nil {
+		if err := c.attachFreshPullRequests(ctx, statusIssues); err != nil {
 			return nil, err
 		}
 	}
-	return issues, nil
+	return appendUniqueIssues(issues, statusIssues, limit), nil
 }
 
 func (c *Connector) FetchIssueStateProbe(ctx context.Context, stateNames []string, limit int) ([]connector.Issue, error) {
@@ -1144,10 +1175,31 @@ func (c *Connector) FetchIssueStateProbe(ctx context.Context, stateNames []strin
 		return nil, ErrMissingProject
 	}
 
-	return c.fetchProjectItemsWithPullRequestRefsLimit(ctx, graphQLQueryObservedStatus, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
+	issues := []connector.Issue{}
+	if stateSetContains(wantedStates, defaultProjectItemStatusState) {
+		backlogIssues, err := c.fetchProjectBacklogIssues(ctx, limit)
+		if err != nil {
+			return nil, err
+		}
+		issues = appendUniqueIssues(issues, backlogIssues, limit)
+		if len(issues) >= limit {
+			return issues, nil
+		}
+		stateNames = stateListWithout(stateNames, defaultProjectItemStatusState)
+		wantedStates = normalizedStateSet(stateNames)
+		if len(wantedStates) == 0 {
+			return issues, nil
+		}
+	}
+
+	statusIssues, err := c.fetchProjectItemsWithPullRequestRefsLimit(ctx, graphQLQueryObservedStatus, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
 		_, ok := wantedStates[normalizeStateName(issue.State)]
 		return ok
-	}, limit)
+	}, limit-len(issues))
+	if err != nil {
+		return nil, err
+	}
+	return appendUniqueIssues(issues, statusIssues, limit), nil
 }
 
 func (c *Connector) VerifyStatusOptions(ctx context.Context, stateNames []string) error {
@@ -2958,6 +3010,67 @@ func (c *Connector) fetchProjectItems(ctx context.Context, queryType string, que
 	return c.fetchProjectItemsLimit(ctx, queryType, query, keepIssue, 0)
 }
 
+func (c *Connector) fetchProjectBacklogIssues(ctx context.Context, limit int) ([]connector.Issue, error) {
+	backlogStates := []string{defaultProjectItemStatusState}
+	issues, err := c.fetchProjectItemsLimit(ctx, graphQLQueryCandidateIssues, c.projectStatusQuery(backlogStates), func(issue connector.Issue) bool {
+		return stateInList(issue.State, backlogStates)
+	}, limit)
+	if err != nil {
+		return nil, err
+	}
+	if limit > 0 && len(issues) >= limit {
+		return issues, nil
+	}
+
+	blankLimit := 0
+	if limit > 0 {
+		blankLimit = limit - len(issues)
+	}
+	blankIssues, err := c.fetchBlankProjectBacklogIssuesPage(ctx, blankLimit)
+	if err != nil {
+		return nil, err
+	}
+	return appendUniqueIssues(issues, blankIssues, limit), nil
+}
+
+func (c *Connector) fetchBlankProjectBacklogIssuesPage(ctx context.Context, limit int) ([]connector.Issue, error) {
+	var response struct {
+		Node *struct {
+			Items projectItemsConnection `json:"items"`
+		} `json:"node"`
+	}
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryCandidateIssues, projectItemsQuery, map[string]any{
+		"projectId": c.projectID,
+		"first":     projectItemsPageSize,
+		"after":     nil,
+		"query":     nil,
+	}, &response); err != nil {
+		return nil, fmt.Errorf("fetch github project items: %w", err)
+	}
+	if response.Node == nil {
+		return nil, ErrProjectNotFound
+	}
+
+	issues := []connector.Issue{}
+	blankStatusItemIDs := []string{}
+	for _, item := range response.Node.Items.Nodes {
+		issue, ok, blankStatusItemID, err := c.normalizeProjectItem(item)
+		if err != nil {
+			return nil, err
+		}
+		if !ok || blankStatusItemID == "" {
+			continue
+		}
+		issues = append(issues, issue)
+		blankStatusItemIDs = append(blankStatusItemIDs, blankStatusItemID)
+		if limit > 0 && len(issues) >= limit {
+			break
+		}
+	}
+	c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
+	return issues, nil
+}
+
 func (c *Connector) fetchProjectItemsLimit(
 	ctx context.Context,
 	queryType string,
@@ -3827,9 +3940,6 @@ func (c *Connector) detentToGitHubStates(stateNames []string) []string {
 }
 
 func (c *Connector) projectStatusQuery(stateNames []string) string {
-	if stateInList(defaultProjectItemStatusState, stateNames) {
-		return ""
-	}
 	states := c.detentToGitHubStates(stateNames)
 	if len(states) == 0 {
 		return ""
@@ -5328,6 +5438,33 @@ func normalizedStateSet(states []string) map[string]struct{} {
 	return out
 }
 
+func stateSetContains(states map[string]struct{}, state string) bool {
+	_, ok := states[normalizeStateName(state)]
+	return ok
+}
+
+func stateListWithout(states []string, excluded string) []string {
+	excluded = normalizeStateName(excluded)
+	if excluded == "" {
+		return normalizeStateList(states, nil)
+	}
+	out := make([]string, 0, len(states))
+	seen := map[string]struct{}{}
+	for _, state := range states {
+		state = strings.TrimSpace(state)
+		key := normalizeStateName(state)
+		if key == "" || key == excluded {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, state)
+	}
+	return out
+}
+
 func stateInList(state string, states []string) bool {
 	normalized := normalizeStateName(state)
 	if normalized == "" {
@@ -5339,6 +5476,38 @@ func stateInList(state string, states []string) bool {
 		}
 	}
 	return false
+}
+
+func appendUniqueIssues(issues []connector.Issue, additions []connector.Issue, limit int) []connector.Issue {
+	seen := make(map[string]struct{}, len(issues)+len(additions))
+	for _, issue := range issues {
+		key := issueKey(issue)
+		if key == "" {
+			continue
+		}
+		seen[key] = struct{}{}
+	}
+	for _, issue := range additions {
+		if limit > 0 && len(issues) >= limit {
+			return issues
+		}
+		key := issueKey(issue)
+		if key != "" {
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		issues = append(issues, issue)
+	}
+	return issues
+}
+
+func issueKey(issue connector.Issue) string {
+	if key := strings.TrimSpace(issue.ID); key != "" {
+		return key
+	}
+	return strings.TrimSpace(issue.Identifier)
 }
 
 func attachPullRequestsForStates(states map[string]struct{}) bool {
