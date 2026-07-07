@@ -168,6 +168,17 @@ func sheetHasActions(data DashboardData, card projectKanbanCard, boardActions bo
 		projectKanbanCardCanComment(data, card))
 }
 
+func sheetCanMutateComment(data DashboardData, card projectKanbanCard, boardActions bool, comment projectKanbanComment) bool {
+	return boardActions &&
+		projectKanbanCardCanComment(data, card) &&
+		strings.TrimSpace(card.IssueID) != "" &&
+		(comment.CanEdit || comment.CanDelete)
+}
+
+func sheetCanEditComment(data DashboardData, card projectKanbanCard, boardActions bool, comment projectKanbanComment) bool {
+	return sheetCanMutateComment(data, card, boardActions, comment) && comment.CanEdit
+}
+
 func sheetAttentionLabel(card projectKanbanCard) string {
 	label := strings.TrimSpace(card.AttentionLabel)
 	if detail := strings.TrimSpace(card.AttentionDetail); detail != "" {

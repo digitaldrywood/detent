@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -2567,6 +2568,157 @@ func TestKanbanActionsRouteCommentsToIssuesAndPullRequests(t *testing.T) {
 	}
 	if got, want := actionConnector.prComments(), []kanbanPRComment{{repository: "digitaldrywood/frontend", number: 42, body: "PR note"}}; !equalPRComments(got, want) {
 		t.Fatalf("pr comments = %#v, want %#v", got, want)
+	}
+}
+
+func TestKanbanCommentEditAndDeleteLocalComments(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	createdAt := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	actionConnector := &kanbanActionConnector{
+		name: "local_sqlite",
+		issueComments: map[string][]connector.IssueComment{
+			"I_kw1": {{
+				ID:          "1",
+				Backend:     connector.BackendLocalSQLite.String(),
+				Body:        "Original local note",
+				AuthorLogin: "detent",
+				CreatedAt:   &createdAt,
+				Local:       true,
+				CanEdit:     true,
+				CanDelete:   true,
+				TargetType:  connector.IssueCommentTargetIssue,
+			}},
+		},
+	}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 6, 12, 1, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Refresh:     telemetry.Refresh{Status: telemetry.RefreshStatusReady},
+		Pipeline: []telemetry.Issue{{
+			ID:         "I_kw1",
+			Identifier: "digitaldrywood/detent#1",
+			ProjectID:  "detent",
+			Title:      "Editable comment issue",
+			State:      "Todo",
+			Comments: []telemetry.IssueComment{{
+				ID:          "1",
+				Backend:     connector.BackendLocalSQLite.String(),
+				Body:        "Original local note",
+				AuthorLogin: "detent",
+				CreatedAt:   &createdAt,
+				Local:       true,
+				CanEdit:     true,
+				CanDelete:   true,
+				TargetType:  connector.IssueCommentTargetIssue,
+			}},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	editForm := url.Values{
+		"project_id": {"detent"},
+		"issue_id":   {"I_kw1"},
+		"comment_id": {"1"},
+		"body":       {"Updated local note"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/comment/edit", editForm)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("edit status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "Updated local note") || strings.Contains(body, "Original local note") {
+		t.Fatalf("edit response did not render updated thread: %s", body)
+	}
+	if got, want := actionConnector.commentUpdates(), []kanbanCommentEdit{{issueID: "I_kw1", commentID: "1", body: "Updated local note"}}; !equalCommentUpdates(got, want) {
+		t.Fatalf("comment updates = %#v, want %#v", got, want)
+	}
+
+	deleteForm := url.Values{
+		"project_id": {"detent"},
+		"issue_id":   {"I_kw1"},
+		"comment_id": {"1"},
+	}
+	rec = performForm(t, server.Handler(), http.MethodDelete, "/api/v1/kanban/comment?project_id=detent&issue_id=I_kw1&comment_id=1", deleteForm)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "Updated local note") {
+		t.Fatalf("delete response still rendered deleted comment: %s", rec.Body.String())
+	}
+	if got, want := actionConnector.commentRemovals(), []kanbanCommentDelete{{issueID: "I_kw1", commentID: "1"}}; !equalCommentDeletes(got, want) {
+		t.Fatalf("comment removals = %#v, want %#v", got, want)
+	}
+}
+
+func TestBoardCardSheetShowsLocalCommentControlsOnly(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "local_sqlite"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, actionConnector)
+	createdAt := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 6, 12, 1, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Refresh:     telemetry.Refresh{Status: telemetry.RefreshStatusReady},
+		Pipeline: []telemetry.Issue{{
+			ID:         "I_kw1",
+			Identifier: "digitaldrywood/detent#1",
+			ProjectID:  "detent",
+			Title:      "Comment controls issue",
+			State:      "Todo",
+			Comments: []telemetry.IssueComment{
+				{
+					ID:          "remote-1",
+					Backend:     connector.BackendGitHub.String(),
+					Body:        "Remote note",
+					AuthorLogin: "octocat",
+					CreatedAt:   &createdAt,
+					TargetType:  connector.IssueCommentTargetIssue,
+				},
+				{
+					ID:          "local-1",
+					Backend:     connector.BackendLocalSQLite.String(),
+					Body:        "Local note",
+					AuthorLogin: "detent",
+					CreatedAt:   &createdAt,
+					Local:       true,
+					CanEdit:     true,
+					CanDelete:   true,
+					TargetType:  connector.IssueCommentTargetIssue,
+				},
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/card?project=detent&issue=I_kw1&scope=project&actions=board", http.StatusOK)
+	for _, want := range []string{"Remote note", "Local note"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q: %s", want, body)
+		}
+	}
+	if got := strings.Count(body, `hx-post="/api/v1/kanban/comment/edit"`); got != 1 {
+		t.Fatalf("edit controls = %d, want 1 in body: %s", got, body)
+	}
+	if got := strings.Count(body, `hx-delete="/api/v1/kanban/comment?`); got != 1 {
+		t.Fatalf("delete controls = %d, want 1 in body: %s", got, body)
 	}
 }
 
@@ -8780,6 +8932,17 @@ type kanbanComment struct {
 	body    string
 }
 
+type kanbanCommentEdit struct {
+	issueID   string
+	commentID string
+	body      string
+}
+
+type kanbanCommentDelete struct {
+	issueID   string
+	commentID string
+}
+
 type kanbanPRComment struct {
 	repository string
 	number     int
@@ -8789,17 +8952,20 @@ type kanbanPRComment struct {
 type kanbanActionConnector struct {
 	name string
 
-	mu           sync.Mutex
-	states       []kanbanStateUpdate
-	fields       []kanbanIssueFieldUpdate
-	fieldClears  []kanbanIssueFieldUpdate
-	removes      []kanbanRemoval
-	commentLog   []kanbanComment
-	prCommentLog []kanbanPRComment
-	activeMoves  int
-	maxMoves     int
-	moveStarted  chan<- struct{}
-	releaseMove  <-chan struct{}
+	mu             sync.Mutex
+	states         []kanbanStateUpdate
+	fields         []kanbanIssueFieldUpdate
+	fieldClears    []kanbanIssueFieldUpdate
+	removes        []kanbanRemoval
+	commentLog     []kanbanComment
+	commentEdits   []kanbanCommentEdit
+	commentDeletes []kanbanCommentDelete
+	prCommentLog   []kanbanPRComment
+	issueComments  map[string][]connector.IssueComment
+	activeMoves    int
+	maxMoves       int
+	moveStarted    chan<- struct{}
+	releaseMove    <-chan struct{}
 }
 
 func (c *kanbanActionConnector) Name() string {
@@ -8824,6 +8990,48 @@ func (c *kanbanActionConnector) CreateComment(_ context.Context, issueID string,
 
 	c.commentLog = append(c.commentLog, kanbanComment{issueID: issueID, body: body})
 	return nil
+}
+
+func (c *kanbanActionConnector) FetchIssueComments(_ context.Context, issue connector.Issue) ([]connector.IssueComment, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return cloneTestIssueComments(c.issueComments[strings.TrimSpace(issue.ID)]), nil
+}
+
+func (c *kanbanActionConnector) UpdateIssueComment(_ context.Context, issueID string, commentID string, body string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	issueID = strings.TrimSpace(issueID)
+	commentID = strings.TrimSpace(commentID)
+	c.commentEdits = append(c.commentEdits, kanbanCommentEdit{issueID: issueID, commentID: commentID, body: body})
+	comments := c.issueComments[issueID]
+	for index := range comments {
+		if strings.TrimSpace(comments[index].ID) == commentID {
+			comments[index].Body = body
+			c.issueComments[issueID] = comments
+			return nil
+		}
+	}
+	return sql.ErrNoRows
+}
+
+func (c *kanbanActionConnector) DeleteIssueComment(_ context.Context, issueID string, commentID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	issueID = strings.TrimSpace(issueID)
+	commentID = strings.TrimSpace(commentID)
+	c.commentDeletes = append(c.commentDeletes, kanbanCommentDelete{issueID: issueID, commentID: commentID})
+	comments := c.issueComments[issueID]
+	for index := range comments {
+		if strings.TrimSpace(comments[index].ID) == commentID {
+			c.issueComments[issueID] = append(comments[:index], comments[index+1:]...)
+			return nil
+		}
+	}
+	return sql.ErrNoRows
 }
 
 func (c *kanbanActionConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {
@@ -8923,6 +9131,20 @@ func (c *kanbanActionConnector) comments() []kanbanComment {
 	defer c.mu.Unlock()
 
 	return append([]kanbanComment(nil), c.commentLog...)
+}
+
+func (c *kanbanActionConnector) commentUpdates() []kanbanCommentEdit {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]kanbanCommentEdit(nil), c.commentEdits...)
+}
+
+func (c *kanbanActionConnector) commentRemovals() []kanbanCommentDelete {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]kanbanCommentDelete(nil), c.commentDeletes...)
 }
 
 func (c *kanbanActionConnector) prComments() []kanbanPRComment {
@@ -9057,6 +9279,30 @@ func equalComments(left, right []kanbanComment) bool {
 	return true
 }
 
+func equalCommentUpdates(left, right []kanbanCommentEdit) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalCommentDeletes(left, right []kanbanCommentDelete) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func equalPRComments(left, right []kanbanPRComment) bool {
 	if len(left) != len(right) {
 		return false
@@ -9067,6 +9313,25 @@ func equalPRComments(left, right []kanbanPRComment) bool {
 		}
 	}
 	return true
+}
+
+func cloneTestIssueComments(comments []connector.IssueComment) []connector.IssueComment {
+	if comments == nil {
+		return nil
+	}
+	out := make([]connector.IssueComment, len(comments))
+	for index, comment := range comments {
+		out[index] = comment
+		if comment.CreatedAt != nil {
+			createdAt := *comment.CreatedAt
+			out[index].CreatedAt = &createdAt
+		}
+		if comment.UpdatedAt != nil {
+			updatedAt := *comment.UpdatedAt
+			out[index].UpdatedAt = &updatedAt
+		}
+	}
+	return out
 }
 
 type sseEvent struct {

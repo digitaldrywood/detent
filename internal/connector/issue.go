@@ -115,6 +115,8 @@ type IssueComment struct {
 	CreatedAt         *time.Time `json:"created_at,omitempty" yaml:"created_at,omitempty"`
 	UpdatedAt         *time.Time `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
 	Local             bool       `json:"local,omitempty" yaml:"local,omitempty"`
+	CanEdit           bool       `json:"can_edit,omitempty" yaml:"can_edit,omitempty"`
+	CanDelete         bool       `json:"can_delete,omitempty" yaml:"can_delete,omitempty"`
 	TargetType        string     `json:"target_type,omitempty" yaml:"target_type,omitempty"`
 }
 

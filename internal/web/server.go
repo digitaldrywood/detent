@@ -293,6 +293,8 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/api/v1/kanban/remove", s.apiKanbanRemove, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/kanban/comment", s.apiKanbanCommentDialog, apiDashboardReadAuth, apiReadScope)
 	s.echo.POST("/api/v1/kanban/comment", s.apiKanbanComment, apiDashboardMutateAuth, apiProjectWriteScope)
+	s.echo.POST("/api/v1/kanban/comment/edit", s.apiKanbanCommentEdit, apiDashboardMutateAuth, apiProjectWriteScope)
+	s.echo.DELETE("/api/v1/kanban/comment", s.apiKanbanCommentDelete, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/*", s.apiIssue, apiReadAuth, apiReadScope)
 }
 

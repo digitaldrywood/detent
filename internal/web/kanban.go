@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"html"
 	"maps"
@@ -73,6 +75,14 @@ type kanbanCommentRequest struct {
 	prRepository string
 	prNumber     int
 	body         string
+}
+
+type kanbanCommentMutationRequest struct {
+	projectID  string
+	issueID    string
+	commentID  string
+	body       string
+	mutateVerb string
 }
 
 const (
@@ -899,6 +909,119 @@ func (s *Server) apiKanbanComment(c echo.Context) error {
 	return kanbanFeedback(c, http.StatusOK, "Comment submitted.")
 }
 
+func (s *Server) apiKanbanCommentEdit(c echo.Context) error {
+	req, response, status := parseKanbanCommentMutationRequest(c, true)
+	if response != "" {
+		return kanbanFeedback(c, status, response)
+	}
+	req.mutateVerb = "edit"
+
+	target, response, status := s.kanbanActionTarget(req.projectID)
+	if response != "" {
+		return kanbanFeedback(c, status, response)
+	}
+	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
+		return kanbanFeedback(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
+	}
+	if !s.kanbanCommentCanMutate(req, true) {
+		return kanbanFeedback(c, http.StatusForbidden, "Only local Detent comments can be edited.")
+	}
+
+	err := s.kanbanMutations.withLock(target.key, func() error {
+		editor, ok := target.connector.(connector.IssueCommentUpdater)
+		if !ok {
+			return connector.ErrNotImplemented
+		}
+		return editor.UpdateIssueComment(c.Request().Context(), req.issueID, req.commentID, req.body)
+	})
+	if err != nil {
+		return s.kanbanCommentMutationError(c, req, err)
+	}
+	s.requestKanbanRefresh(c.Request().Context())
+	return s.kanbanCommentThreadResponse(c, target, req)
+}
+
+func (s *Server) apiKanbanCommentDelete(c echo.Context) error {
+	req, response, status := parseKanbanCommentMutationRequest(c, false)
+	if response != "" {
+		return kanbanFeedback(c, status, response)
+	}
+	req.mutateVerb = "delete"
+
+	target, response, status := s.kanbanActionTarget(req.projectID)
+	if response != "" {
+		return kanbanFeedback(c, status, response)
+	}
+	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
+		return kanbanFeedback(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
+	}
+	if !s.kanbanCommentCanMutate(req, false) {
+		return kanbanFeedback(c, http.StatusForbidden, "Only local Detent comments can be deleted.")
+	}
+
+	err := s.kanbanMutations.withLock(target.key, func() error {
+		deleter, ok := target.connector.(connector.IssueCommentDeleter)
+		if !ok {
+			return connector.ErrNotImplemented
+		}
+		return deleter.DeleteIssueComment(c.Request().Context(), req.issueID, req.commentID)
+	})
+	if err != nil {
+		return s.kanbanCommentMutationError(c, req, err)
+	}
+	s.requestKanbanRefresh(c.Request().Context())
+	return s.kanbanCommentThreadResponse(c, target, req)
+}
+
+func (s *Server) kanbanCommentMutationError(c echo.Context, req kanbanCommentMutationRequest, err error) error {
+	s.logger.WarnContext(c.Request().Context(), "kanban comment mutation failed", "project", req.projectID, "issue_id", req.issueID, "comment_id", req.commentID, "verb", req.mutateVerb, "error", err)
+	if errors.Is(err, sql.ErrNoRows) {
+		return kanbanFeedback(c, http.StatusNotFound, "Local comment is not available on the current board.")
+	}
+	if errors.Is(err, connector.ErrNotImplemented) {
+		return kanbanFeedback(c, http.StatusNotImplemented, "Local comment "+req.mutateVerb+" is not supported for this connector.")
+	}
+	return kanbanFeedback(c, http.StatusBadGateway, "Comment "+req.mutateVerb+" failed: "+err.Error())
+}
+
+func (s *Server) kanbanCommentThreadResponse(c echo.Context, target kanbanActionTarget, req kanbanCommentMutationRequest) error {
+	if c.Request().Header.Get("HX-Request") != "true" {
+		return c.JSON(http.StatusOK, map[string]any{"ok": true, "message": "Comment " + kanbanCommentMutationPastTense(req.mutateVerb) + "."})
+	}
+	ctx := c.Request().Context()
+	data, ok := s.projectDashboardData(ctx, req.projectID, s.latestSnapshot(ctx))
+	if !ok {
+		return kanbanFeedback(c, http.StatusNotFound, "Project is not available on the current board.")
+	}
+	card, ok := templates.FindBoardCard(data, req.projectID, req.issueID)
+	if !ok {
+		return kanbanFeedback(c, http.StatusNotFound, "Comment target is not available on the current board.")
+	}
+	reader, ok := target.connector.(connector.IssueCommentReader)
+	if ok {
+		comments, err := reader.FetchIssueComments(ctx, connector.Issue{
+			ID:         req.issueID,
+			Identifier: card.Identifier,
+		})
+		if err != nil {
+			return kanbanFeedback(c, http.StatusBadGateway, "Comment refresh failed: "+err.Error())
+		}
+		card = templates.WithKanbanCardComments(card, telemetryIssueComments(comments))
+	}
+	return render(c, templates.KanbanCommentThread(data, card, true))
+}
+
+func kanbanCommentMutationPastTense(verb string) string {
+	switch verb {
+	case "edit":
+		return "edited"
+	case "delete":
+		return "deleted"
+	default:
+		return strings.TrimSpace(verb)
+	}
+}
+
 func (s *Server) kanbanMoveDialogValidation(c echo.Context, message string) error {
 	c.Response().Header().Set("HX-Retarget", kanbanDialogContentTarget)
 	c.Response().Header().Set("HX-Reswap", "innerHTML")
@@ -1094,6 +1217,32 @@ func parseKanbanCommentRequest(c echo.Context) (kanbanCommentRequest, string, in
 		return kanbanCommentRequest{}, "Comment target must be issue or pr.", http.StatusBadRequest
 	}
 	return req, "", 0
+}
+
+func parseKanbanCommentMutationRequest(c echo.Context, requireBody bool) (kanbanCommentMutationRequest, string, int) {
+	req := kanbanCommentMutationRequest{
+		projectID: kanbanFormOrQueryValue(c, "project_id"),
+		issueID:   kanbanFormOrQueryValue(c, "issue_id"),
+		commentID: kanbanFormOrQueryValue(c, "comment_id"),
+		body:      strings.TrimSpace(c.FormValue("body")),
+	}
+	if req.issueID == "" {
+		return kanbanCommentMutationRequest{}, "Issue id is required.", http.StatusBadRequest
+	}
+	if req.commentID == "" {
+		return kanbanCommentMutationRequest{}, "Comment id is required.", http.StatusBadRequest
+	}
+	if requireBody && req.body == "" {
+		return kanbanCommentMutationRequest{}, "Comment body is required.", http.StatusBadRequest
+	}
+	return req, "", 0
+}
+
+func kanbanFormOrQueryValue(c echo.Context, key string) string {
+	if value := strings.TrimSpace(c.FormValue(key)); value != "" {
+		return value
+	}
+	return strings.TrimSpace(c.QueryParam(key))
 }
 
 func kanbanDialogForm(c echo.Context) bool {
@@ -1417,6 +1566,28 @@ func (s *Server) kanbanCommentTargetKnown(req kanbanCommentRequest) bool {
 	return false
 }
 
+func (s *Server) kanbanCommentCanMutate(req kanbanCommentMutationRequest, edit bool) bool {
+	snapshot, ok := s.hub.Latest()
+	if !ok {
+		return false
+	}
+	for _, issue := range snapshotKanbanIssues(snapshot) {
+		if !sameKanbanIssue(issue, req.projectID, req.issueID, snapshot.Project.ID) {
+			continue
+		}
+		for _, comment := range issue.Comments {
+			if strings.TrimSpace(comment.ID) != req.commentID || !comment.Local {
+				continue
+			}
+			if edit {
+				return comment.CanEdit
+			}
+			return comment.CanDelete
+		}
+	}
+	return false
+}
+
 func (s *Server) requestKanbanRefresh(ctx context.Context) {
 	if s.refresher == nil {
 		return
@@ -1424,6 +1595,27 @@ func (s *Server) requestKanbanRefresh(ctx context.Context) {
 	if _, err := s.refresher.RequestRefresh(ctx); err != nil {
 		s.logger.DebugContext(ctx, "kanban refresh request failed", "error", err)
 	}
+}
+
+func telemetryIssueComments(comments []connector.IssueComment) []telemetry.IssueComment {
+	out := make([]telemetry.IssueComment, 0, len(comments))
+	for _, comment := range comments {
+		out = append(out, telemetry.IssueComment{
+			ID:                comment.ID,
+			Backend:           comment.Backend,
+			Body:              comment.Body,
+			URL:               comment.URL,
+			AuthorLogin:       comment.AuthorLogin,
+			AuthorDisplayName: comment.AuthorDisplayName,
+			CreatedAt:         cloneKanbanTimePointer(comment.CreatedAt),
+			UpdatedAt:         cloneKanbanTimePointer(comment.UpdatedAt),
+			Local:             comment.Local,
+			CanEdit:           comment.CanEdit,
+			CanDelete:         comment.CanDelete,
+			TargetType:        comment.TargetType,
+		})
+	}
+	return out
 }
 
 func kanbanFeedback(c echo.Context, status int, message string) error {

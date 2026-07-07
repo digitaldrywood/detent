@@ -422,6 +422,8 @@ func telemetryIssueComments(comments []connector.IssueComment) []telemetry.Issue
 			CreatedAt:         cloneTime(comment.CreatedAt),
 			UpdatedAt:         cloneTime(comment.UpdatedAt),
 			Local:             comment.Local,
+			CanEdit:           comment.CanEdit,
+			CanDelete:         comment.CanDelete,
 			TargetType:        comment.TargetType,
 		})
 	}
