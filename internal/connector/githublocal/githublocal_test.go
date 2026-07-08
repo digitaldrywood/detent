@@ -3,9 +3,13 @@ package githublocal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -93,7 +97,7 @@ func TestConnectorImportPersistsAndDetectsClosedUpstreamDivergence(t *testing.T)
 	}
 }
 
-func TestConnectorIssueMutatorsStayLocalAndPRLifecycleWritesPassThrough(t *testing.T) {
+func TestConnectorLocalAnnotationsStayLocalAndPRLifecycleWritesPassThrough(t *testing.T) {
 	t.Parallel()
 
 	server := newGitHubLocalTestServer(t)
@@ -135,26 +139,8 @@ func TestConnectorIssueMutatorsStayLocalAndPRLifecycleWritesPassThrough(t *testi
 	if err := conn.CreateComment(context.Background(), "github:123:779", "local audit"); err != nil {
 		t.Fatalf("CreateComment() error = %v", err)
 	}
-	if err := conn.UpdateIssueState(context.Background(), "github:123:779", "In Progress"); err != nil {
-		t.Fatalf("UpdateIssueState() error = %v", err)
-	}
-	if err := conn.SetAssignee(context.Background(), "github:123:779", "detent-bot"); err != nil {
-		t.Fatalf("SetAssignee() error = %v", err)
-	}
-	if err := conn.SetField(context.Background(), "github:123:779", "lease", "agent-1"); err != nil {
-		t.Fatalf("SetField() error = %v", err)
-	}
-	if err := conn.SetIssueField(context.Background(), "github:123:779", 100, "claimed"); err != nil {
-		t.Fatalf("SetIssueField() error = %v", err)
-	}
-	if err := conn.ClearIssueField(context.Background(), "github:123:779", 100); err != nil {
-		t.Fatalf("ClearIssueField() error = %v", err)
-	}
-	if err := conn.CloseIssue(context.Background(), "github:123:779"); err != nil {
-		t.Fatalf("CloseIssue() error = %v", err)
-	}
 	if got := server.writeRequests(); len(got) != 0 {
-		t.Fatalf("issue mutators wrote to GitHub: %#v", got)
+		t.Fatalf("local annotation wrote to GitHub: %#v", got)
 	}
 
 	if err := conn.CreatePullRequestComment(context.Background(), "digitaldrywood/detent", 12, "ship it"); err != nil {
@@ -175,6 +161,126 @@ func TestConnectorIssueMutatorsStayLocalAndPRLifecycleWritesPassThrough(t *testi
 		if got[index].Method != want[index].Method || got[index].Path != want[index].Path {
 			t.Fatalf("write request[%d] = %#v, want %#v", index, got[index], want[index])
 		}
+	}
+}
+
+func TestConnectorWriteThroughGitHubAuthoritativeMutations(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range writeThroughOperations() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			conn, calls := newRecordingWriteThroughConnector(t, nil, nil)
+			if err := tt.run(context.Background(), conn); err != nil {
+				t.Fatalf("%s error = %v", tt.name, err)
+			}
+
+			want := []string{localLookupCall(), tt.githubCall, tt.localCall}
+			if got := calls.snapshot(); !slices.Equal(got, want) {
+				t.Fatalf("calls = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestConnectorWriteThroughSkipsLocalMutationOnGitHubError(t *testing.T) {
+	t.Parallel()
+
+	githubErr := errors.New("github write failed")
+	for _, tt := range writeThroughOperations() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			conn, calls := newRecordingWriteThroughConnector(t, map[string]error{tt.githubMethod: githubErr}, nil)
+			err := tt.run(context.Background(), conn)
+			if !errors.Is(err, githubErr) || err.Error() != githubErr.Error() {
+				t.Fatalf("%s error = %v, want unchanged GitHub error", tt.name, err)
+			}
+
+			want := []string{localLookupCall(), tt.githubCall}
+			if got := calls.snapshot(); !slices.Equal(got, want) {
+				t.Fatalf("calls = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestConnectorWriteThroughPropagatesBlockedStateError(t *testing.T) {
+	t.Parallel()
+
+	blocked := &connector.StateUpdateBlockedError{
+		IssueID:      githubWriteThroughIssueID,
+		CurrentState: "Done",
+		TargetState:  "In Progress",
+	}
+	conn, calls := newRecordingWriteThroughConnector(t, map[string]error{"UpdateIssueState": blocked}, nil)
+
+	err := conn.UpdateIssueState(context.Background(), localWriteThroughIssueID, "In Progress")
+	if !errors.Is(err, connector.ErrStateUpdateBlocked) {
+		t.Fatalf("UpdateIssueState() error = %v, want ErrStateUpdateBlocked", err)
+	}
+	var blockedErr *connector.StateUpdateBlockedError
+	if !errors.As(err, &blockedErr) {
+		t.Fatalf("UpdateIssueState() error = %T, want StateUpdateBlockedError", err)
+	}
+	if blockedErr.IssueID != githubWriteThroughIssueID || blockedErr.CurrentState != "Done" || blockedErr.TargetState != "In Progress" {
+		t.Fatalf("blocked error = %#v", blockedErr)
+	}
+
+	want := []string{
+		localLookupCall(),
+		call("github.UpdateIssueState", githubWriteThroughIssueID, "In Progress"),
+	}
+	if got := calls.snapshot(); !slices.Equal(got, want) {
+		t.Fatalf("calls = %#v, want %#v", got, want)
+	}
+}
+
+func TestConnectorWriteThroughFallsBackToLocalWhenGitHubNotImplemented(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range writeThroughOperations() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			conn, calls := newRecordingWriteThroughConnector(t, map[string]error{tt.githubMethod: connector.ErrNotImplemented}, nil)
+			if err := tt.run(context.Background(), conn); err != nil {
+				t.Fatalf("%s error = %v", tt.name, err)
+			}
+
+			want := []string{localLookupCall(), tt.githubCall, tt.localCall}
+			if got := calls.snapshot(); !slices.Equal(got, want) {
+				t.Fatalf("calls = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestConnectorWriteThroughWrapsLocalMirrorFailureAfterGitHubSuccess(t *testing.T) {
+	t.Parallel()
+
+	localErr := errors.New("local sqlite write failed")
+	conn, calls := newRecordingWriteThroughConnector(t, nil, map[string]error{"UpdateIssueState": localErr})
+
+	err := conn.UpdateIssueState(context.Background(), localWriteThroughIssueID, "In Progress")
+	if err == nil {
+		t.Fatal("UpdateIssueState() error = nil, want local mirror error")
+	}
+	if !errors.Is(err, localErr) {
+		t.Fatalf("UpdateIssueState() error = %v, want local error in chain", err)
+	}
+	if !strings.Contains(err.Error(), "github state applied; local mirror update failed") {
+		t.Fatalf("UpdateIssueState() error = %q, want GitHub/local mirror context", err.Error())
+	}
+
+	want := []string{
+		localLookupCall(),
+		call("github.UpdateIssueState", githubWriteThroughIssueID, "In Progress"),
+		call("local.UpdateIssueState", localWriteThroughIssueID, "In Progress"),
+	}
+	if got := calls.snapshot(); !slices.Equal(got, want) {
+		t.Fatalf("calls = %#v, want %#v", got, want)
 	}
 }
 
@@ -330,6 +436,355 @@ func TestConnectorFetchIssueCommentsMergesRemoteAndLocalInCreatedOrder(t *testin
 			t.Fatalf("comment[%d].Body after delete = %q, want %q; comments = %#v", index, got[index].Body, want, got)
 		}
 	}
+}
+
+const (
+	localWriteThroughIssueID  = "github:123:779"
+	githubWriteThroughIssueID = "I_kwDOtest779"
+)
+
+type writeThroughOperation struct {
+	name         string
+	githubMethod string
+	githubCall   string
+	localCall    string
+	run          func(context.Context, *Connector) error
+}
+
+func writeThroughOperations() []writeThroughOperation {
+	return []writeThroughOperation{
+		{
+			name:         "UpdateIssueState",
+			githubMethod: "UpdateIssueState",
+			githubCall:   call("github.UpdateIssueState", githubWriteThroughIssueID, "In Progress"),
+			localCall:    call("local.UpdateIssueState", localWriteThroughIssueID, "In Progress"),
+			run: func(ctx context.Context, conn *Connector) error {
+				return conn.UpdateIssueState(ctx, localWriteThroughIssueID, "In Progress")
+			},
+		},
+		{
+			name:         "SetAssignee",
+			githubMethod: "SetAssignee",
+			githubCall:   call("github.SetAssignee", githubWriteThroughIssueID, "detent-bot"),
+			localCall:    call("local.SetAssignee", localWriteThroughIssueID, "detent-bot"),
+			run: func(ctx context.Context, conn *Connector) error {
+				return conn.SetAssignee(ctx, localWriteThroughIssueID, "detent-bot")
+			},
+		},
+		{
+			name:         "SetField",
+			githubMethod: "SetField",
+			githubCall:   call("github.SetField", githubWriteThroughIssueID, "lease", "agent-1"),
+			localCall:    call("local.SetField", localWriteThroughIssueID, "lease", "agent-1"),
+			run: func(ctx context.Context, conn *Connector) error {
+				return conn.SetField(ctx, localWriteThroughIssueID, "lease", "agent-1")
+			},
+		},
+		{
+			name:         "SetIssueField",
+			githubMethod: "SetIssueField",
+			githubCall:   call("github.SetIssueField", githubWriteThroughIssueID, "77", "claimed"),
+			localCall:    call("local.SetIssueField", localWriteThroughIssueID, "77", "claimed"),
+			run: func(ctx context.Context, conn *Connector) error {
+				return conn.SetIssueField(ctx, localWriteThroughIssueID, 77, "claimed")
+			},
+		},
+		{
+			name:         "ClearIssueField",
+			githubMethod: "ClearIssueField",
+			githubCall:   call("github.ClearIssueField", githubWriteThroughIssueID, "77"),
+			localCall:    call("local.ClearIssueField", localWriteThroughIssueID, "77"),
+			run: func(ctx context.Context, conn *Connector) error {
+				return conn.ClearIssueField(ctx, localWriteThroughIssueID, 77)
+			},
+		},
+		{
+			name:         "CloseIssue",
+			githubMethod: "CloseIssue",
+			githubCall:   call("github.CloseIssue", githubWriteThroughIssueID),
+			localCall:    call("local.CloseIssue", localWriteThroughIssueID),
+			run: func(ctx context.Context, conn *Connector) error {
+				return conn.CloseIssue(ctx, localWriteThroughIssueID)
+			},
+		},
+		{
+			name:         "RemoveIssueFromProject",
+			githubMethod: "RemoveIssueFromProject",
+			githubCall:   call("github.RemoveIssueFromProject", githubWriteThroughIssueID),
+			localCall:    call("local.RemoveIssueFromProject", localWriteThroughIssueID),
+			run: func(ctx context.Context, conn *Connector) error {
+				return conn.RemoveIssueFromProject(ctx, localWriteThroughIssueID)
+			},
+		},
+	}
+}
+
+func newRecordingWriteThroughConnector(t *testing.T, githubErrs map[string]error, localErrs map[string]error) (*Connector, *recordingCallLog) {
+	t.Helper()
+	calls := &recordingCallLog{}
+	return &Connector{
+		github: &recordingGitHubBackend{calls: calls, errs: githubErrs},
+		local: &recordingLocalBackend{
+			calls: calls,
+			errs:  localErrs,
+			issues: map[string]connector.Issue{
+				localWriteThroughIssueID: {
+					ID:         localWriteThroughIssueID,
+					Identifier: "digitaldrywood/detent#779",
+					Metadata: map[string]string{
+						local.MetadataGitHubNodeID: githubWriteThroughIssueID,
+					},
+				},
+			},
+		},
+	}, calls
+}
+
+func localLookupCall() string {
+	return call("local.FetchIssueStatesByIDs", localWriteThroughIssueID)
+}
+
+func call(method string, args ...string) string {
+	return method + "(" + strings.Join(args, ",") + ")"
+}
+
+type recordingCallLog struct {
+	calls []string
+}
+
+func (l *recordingCallLog) add(method string, args ...string) {
+	l.calls = append(l.calls, call(method, args...))
+}
+
+func (l *recordingCallLog) snapshot() []string {
+	return append([]string(nil), l.calls...)
+}
+
+type recordingGitHubBackend struct {
+	calls *recordingCallLog
+	errs  map[string]error
+}
+
+func (b *recordingGitHubBackend) Close() error {
+	return nil
+}
+
+func (b *recordingGitHubBackend) Authenticate(context.Context) error {
+	return nil
+}
+
+func (b *recordingGitHubBackend) InstanceLogin() string {
+	return ""
+}
+
+func (b *recordingGitHubBackend) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {
+	return connector.GraphQLRateLimit{}, false
+}
+
+func (b *recordingGitHubBackend) AuthHealth() (connector.AuthHealth, bool) {
+	return connector.AuthHealth{}, false
+}
+
+func (b *recordingGitHubBackend) ResetGraphQLRateLimitUsage() {}
+
+func (b *recordingGitHubBackend) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage {
+	return connector.GraphQLRateLimitUsage{}
+}
+
+func (b *recordingGitHubBackend) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
+	return connector.RESTRateLimitUsage{}
+}
+
+func (b *recordingGitHubBackend) FetchIssueStatesByIdentifiers(context.Context, []string) ([]connector.Issue, error) {
+	panic("unexpected github FetchIssueStatesByIdentifiers")
+}
+
+func (b *recordingGitHubBackend) FetchRepositoryInfo(context.Context, string) (githubconnector.RepositoryInfo, error) {
+	panic("unexpected github FetchRepositoryInfo")
+}
+
+func (b *recordingGitHubBackend) FetchIssueComments(context.Context, connector.Issue) ([]connector.IssueComment, error) {
+	panic("unexpected github FetchIssueComments")
+}
+
+func (b *recordingGitHubBackend) CreatePullRequestComment(context.Context, string, int, string) error {
+	panic("unexpected github CreatePullRequestComment")
+}
+
+func (b *recordingGitHubBackend) FetchPullRequestComments(context.Context, string, int) ([]connector.IssueComment, error) {
+	panic("unexpected github FetchPullRequestComments")
+}
+
+func (b *recordingGitHubBackend) MergePullRequest(context.Context, string, int, string) error {
+	panic("unexpected github MergePullRequest")
+}
+
+func (b *recordingGitHubBackend) HydratePullRequest(context.Context, connector.Issue) (connector.Issue, error) {
+	panic("unexpected github HydratePullRequest")
+}
+
+func (b *recordingGitHubBackend) FetchIssueParents(context.Context, string) ([]connector.Issue, error) {
+	panic("unexpected github FetchIssueParents")
+}
+
+func (b *recordingGitHubBackend) FetchIssueChildren(context.Context, string) ([]connector.BlockedRef, error) {
+	panic("unexpected github FetchIssueChildren")
+}
+
+func (b *recordingGitHubBackend) UpdateIssueState(_ context.Context, issueID string, stateName string) error {
+	b.calls.add("github.UpdateIssueState", issueID, stateName)
+	return b.err("UpdateIssueState")
+}
+
+func (b *recordingGitHubBackend) SetAssignee(_ context.Context, issueID string, login string) error {
+	b.calls.add("github.SetAssignee", issueID, login)
+	return b.err("SetAssignee")
+}
+
+func (b *recordingGitHubBackend) SetField(_ context.Context, issueID string, fieldName string, value string) error {
+	b.calls.add("github.SetField", issueID, fieldName, value)
+	return b.err("SetField")
+}
+
+func (b *recordingGitHubBackend) SetIssueField(_ context.Context, issueID string, fieldID int, value string) error {
+	b.calls.add("github.SetIssueField", issueID, strconv.Itoa(fieldID), value)
+	return b.err("SetIssueField")
+}
+
+func (b *recordingGitHubBackend) ClearIssueField(_ context.Context, issueID string, fieldID int) error {
+	b.calls.add("github.ClearIssueField", issueID, strconv.Itoa(fieldID))
+	return b.err("ClearIssueField")
+}
+
+func (b *recordingGitHubBackend) CloseIssue(_ context.Context, issueID string) error {
+	b.calls.add("github.CloseIssue", issueID)
+	return b.err("CloseIssue")
+}
+
+func (b *recordingGitHubBackend) RemoveIssueFromProject(_ context.Context, issueID string) error {
+	b.calls.add("github.RemoveIssueFromProject", issueID)
+	return b.err("RemoveIssueFromProject")
+}
+
+func (b *recordingGitHubBackend) err(method string) error {
+	if b.errs == nil {
+		return nil
+	}
+	return b.errs[method]
+}
+
+type recordingLocalBackend struct {
+	calls  *recordingCallLog
+	errs   map[string]error
+	issues map[string]connector.Issue
+}
+
+func (b *recordingLocalBackend) Name() string {
+	return connector.BackendLocalSQLite.String()
+}
+
+func (b *recordingLocalBackend) Close() error {
+	return nil
+}
+
+func (b *recordingLocalBackend) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	panic("unexpected local FetchCandidateIssues")
+}
+
+func (b *recordingLocalBackend) FetchCandidateIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	panic("unexpected local FetchCandidateIssuesByStates")
+}
+
+func (b *recordingLocalBackend) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	panic("unexpected local FetchIssuesByStates")
+}
+
+func (b *recordingLocalBackend) FetchIssuesByStatesLimit(context.Context, []string, int) ([]connector.Issue, error) {
+	panic("unexpected local FetchIssuesByStatesLimit")
+}
+
+func (b *recordingLocalBackend) FetchIssueStateProbe(context.Context, []string, int) ([]connector.Issue, error) {
+	panic("unexpected local FetchIssueStateProbe")
+}
+
+func (b *recordingLocalBackend) FetchIssueStatesByIDs(_ context.Context, issueIDs []string) ([]connector.Issue, error) {
+	b.calls.add("local.FetchIssueStatesByIDs", issueIDs...)
+	if err := b.err("FetchIssueStatesByIDs"); err != nil {
+		return nil, err
+	}
+	out := make([]connector.Issue, 0, len(issueIDs))
+	for _, issueID := range issueIDs {
+		if issue, ok := b.issues[strings.TrimSpace(issueID)]; ok {
+			out = append(out, issue)
+		}
+	}
+	return out, nil
+}
+
+func (b *recordingLocalBackend) FetchIssueStatesByIdentifiers(context.Context, []string) ([]connector.Issue, error) {
+	panic("unexpected local FetchIssueStatesByIdentifiers")
+}
+
+func (b *recordingLocalBackend) FetchIssueComments(context.Context, connector.Issue) ([]connector.IssueComment, error) {
+	panic("unexpected local FetchIssueComments")
+}
+
+func (b *recordingLocalBackend) CreateComment(context.Context, string, string) error {
+	panic("unexpected local CreateComment")
+}
+
+func (b *recordingLocalBackend) UpdateIssueComment(context.Context, string, string, string) error {
+	panic("unexpected local UpdateIssueComment")
+}
+
+func (b *recordingLocalBackend) DeleteIssueComment(context.Context, string, string) error {
+	panic("unexpected local DeleteIssueComment")
+}
+
+func (b *recordingLocalBackend) UpsertIssues(context.Context, []connector.Issue) error {
+	panic("unexpected local UpsertIssues")
+}
+
+func (b *recordingLocalBackend) UpdateIssueState(_ context.Context, issueID string, stateName string) error {
+	b.calls.add("local.UpdateIssueState", issueID, stateName)
+	return b.err("UpdateIssueState")
+}
+
+func (b *recordingLocalBackend) SetAssignee(_ context.Context, issueID string, login string) error {
+	b.calls.add("local.SetAssignee", issueID, login)
+	return b.err("SetAssignee")
+}
+
+func (b *recordingLocalBackend) SetField(_ context.Context, issueID string, fieldName string, value string) error {
+	b.calls.add("local.SetField", issueID, fieldName, value)
+	return b.err("SetField")
+}
+
+func (b *recordingLocalBackend) SetIssueField(_ context.Context, issueID string, fieldID int, value string) error {
+	b.calls.add("local.SetIssueField", issueID, strconv.Itoa(fieldID), value)
+	return b.err("SetIssueField")
+}
+
+func (b *recordingLocalBackend) ClearIssueField(_ context.Context, issueID string, fieldID int) error {
+	b.calls.add("local.ClearIssueField", issueID, strconv.Itoa(fieldID))
+	return b.err("ClearIssueField")
+}
+
+func (b *recordingLocalBackend) CloseIssue(_ context.Context, issueID string) error {
+	b.calls.add("local.CloseIssue", issueID)
+	return b.err("CloseIssue")
+}
+
+func (b *recordingLocalBackend) RemoveIssueFromProject(_ context.Context, issueID string) error {
+	b.calls.add("local.RemoveIssueFromProject", issueID)
+	return b.err("RemoveIssueFromProject")
+}
+
+func (b *recordingLocalBackend) err(method string) error {
+	if b.errs == nil {
+		return nil
+	}
+	return b.errs[method]
 }
 
 type githubLocalTestRequest struct {

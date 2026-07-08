@@ -35,15 +35,60 @@ type Config struct {
 	Now            func() time.Time
 }
 
+type githubBackend interface {
+	connector.Closer
+	connector.Authenticator
+	connector.AuthHealthReporter
+	connector.GraphQLRateLimitUsageReporter
+	connector.InstanceIdentifier
+	connector.IssueChildrenResolver
+	connector.IssueCloser
+	connector.IssueCommentReader
+	connector.IssueFieldClearer
+	connector.IssueFieldSetter
+	connector.IssueParentResolver
+	connector.IssueReferenceResolver
+	connector.ProjectRemover
+	connector.PullRequestCommenter
+	connector.PullRequestCommentReader
+	connector.PullRequestHydrator
+	connector.PullRequestMerger
+	connector.RateLimitReporter
+	connector.RESTRateLimitUsageReporter
+	FetchRepositoryInfo(context.Context, string) (githubconnector.RepositoryInfo, error)
+	SetAssignee(context.Context, string, string) error
+	SetField(context.Context, string, string, string) error
+	UpdateIssueState(context.Context, string, string) error
+}
+
+type localBackend interface {
+	connector.Closer
+	connector.Connector
+	connector.CandidateIssuesByStatesFetcher
+	connector.IssueCloser
+	connector.IssueCommentDeleter
+	connector.IssueCommentReader
+	connector.IssueCommentUpdater
+	connector.IssueFieldClearer
+	connector.IssueFieldSetter
+	connector.IssueReferenceResolver
+	connector.IssuesByStatesLimiter
+	connector.IssueStateProber
+	connector.IssueUpserter
+	connector.ProjectRemover
+}
+
 type Connector struct {
-	github        *githubconnector.Connector
-	local         *local.Connector
+	github        githubBackend
+	local         localBackend
 	repository    string
 	initialState  string
 	terminalState map[string]struct{}
 	now           func() time.Time
 }
 
+var _ githubBackend = (*githubconnector.Connector)(nil)
+var _ localBackend = (*local.Connector)(nil)
 var _ connector.Connector = (*Connector)(nil)
 var _ connector.Authenticator = (*Connector)(nil)
 var _ connector.AuthHealthReporter = (*Connector)(nil)
@@ -283,7 +328,13 @@ func (c *Connector) DeleteIssueComment(ctx context.Context, issueID string, comm
 }
 
 func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateName string) error {
-	return c.local.UpdateIssueState(ctx, issueID, stateName)
+	return c.writeThroughIssue(ctx, issueID, "github state applied; local mirror update failed",
+		func(githubID string) error {
+			return c.github.UpdateIssueState(ctx, githubID, stateName)
+		},
+		func() error {
+			return c.local.UpdateIssueState(ctx, issueID, stateName)
+		})
 }
 
 func (c *Connector) UpsertIssues(ctx context.Context, issues []connector.Issue) error {
@@ -291,27 +342,63 @@ func (c *Connector) UpsertIssues(ctx context.Context, issues []connector.Issue) 
 }
 
 func (c *Connector) SetAssignee(ctx context.Context, issueID string, login string) error {
-	return c.local.SetAssignee(ctx, issueID, login)
+	return c.writeThroughIssue(ctx, issueID, "github assignee applied; local mirror update failed",
+		func(githubID string) error {
+			return c.github.SetAssignee(ctx, githubID, login)
+		},
+		func() error {
+			return c.local.SetAssignee(ctx, issueID, login)
+		})
 }
 
 func (c *Connector) SetField(ctx context.Context, issueID string, fieldName string, value string) error {
-	return c.local.SetField(ctx, issueID, fieldName, value)
+	return c.writeThroughIssue(ctx, issueID, "github field applied; local mirror update failed",
+		func(githubID string) error {
+			return c.github.SetField(ctx, githubID, fieldName, value)
+		},
+		func() error {
+			return c.local.SetField(ctx, issueID, fieldName, value)
+		})
 }
 
 func (c *Connector) SetIssueField(ctx context.Context, issueID string, fieldID int, value string) error {
-	return c.local.SetIssueField(ctx, issueID, fieldID, value)
+	return c.writeThroughIssue(ctx, issueID, "github issue field applied; local mirror update failed",
+		func(githubID string) error {
+			return c.github.SetIssueField(ctx, githubID, fieldID, value)
+		},
+		func() error {
+			return c.local.SetIssueField(ctx, issueID, fieldID, value)
+		})
 }
 
 func (c *Connector) ClearIssueField(ctx context.Context, issueID string, fieldID int) error {
-	return c.local.ClearIssueField(ctx, issueID, fieldID)
+	return c.writeThroughIssue(ctx, issueID, "github issue field clear applied; local mirror update failed",
+		func(githubID string) error {
+			return c.github.ClearIssueField(ctx, githubID, fieldID)
+		},
+		func() error {
+			return c.local.ClearIssueField(ctx, issueID, fieldID)
+		})
 }
 
 func (c *Connector) CloseIssue(ctx context.Context, issueID string) error {
-	return c.local.CloseIssue(ctx, issueID)
+	return c.writeThroughIssue(ctx, issueID, "github close applied; local mirror update failed",
+		func(githubID string) error {
+			return c.github.CloseIssue(ctx, githubID)
+		},
+		func() error {
+			return c.local.CloseIssue(ctx, issueID)
+		})
 }
 
 func (c *Connector) RemoveIssueFromProject(ctx context.Context, issueID string) error {
-	return c.local.RemoveIssueFromProject(ctx, issueID)
+	return c.writeThroughIssue(ctx, issueID, "github project removal applied; local mirror update failed",
+		func(githubID string) error {
+			return c.github.RemoveIssueFromProject(ctx, githubID)
+		},
+		func() error {
+			return c.local.RemoveIssueFromProject(ctx, issueID)
+		})
 }
 
 func (c *Connector) CreatePullRequestComment(ctx context.Context, repository string, number int, body string) error {
@@ -570,6 +657,29 @@ func (c *Connector) githubIssueID(ctx context.Context, issueID string) (string, 
 		return issueID, nil
 	}
 	return nodeID, nil
+}
+
+func (c *Connector) writeThroughIssue(
+	ctx context.Context,
+	issueID string,
+	mirrorFailure string,
+	githubWrite func(string) error,
+	localWrite func() error,
+) error {
+	githubID, err := c.githubIssueID(ctx, issueID)
+	if err != nil {
+		return err
+	}
+	if err := githubWrite(githubID); err != nil {
+		if errors.Is(err, connector.ErrNotImplemented) {
+			return localWrite()
+		}
+		return err
+	}
+	if err := localWrite(); err != nil {
+		return fmt.Errorf("%s: %w", mirrorFailure, err)
+	}
+	return nil
 }
 
 func (c *Connector) isTerminalState(state string) bool {
