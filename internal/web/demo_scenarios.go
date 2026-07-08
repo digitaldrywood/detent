@@ -440,6 +440,8 @@ func demoKanbanData(scenario demoScenario, projectID string) templates.KanbanDat
 		TerminalStates:     []string{"Done", "Cancelled"},
 		AllowedTransitions: demoKanbanTransitions(states),
 		ShowBlockedAlerts:  scenario.ShowBlockedAlerts,
+		CanMoveCards:       mode == workflowconfig.KanbanModeIntegration,
+		CanRemoveCards:     mode == workflowconfig.KanbanModeIntegration,
 	}
 }
 

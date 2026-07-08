@@ -495,7 +495,7 @@ func boardMoveDisabledLabel(reason string) string {
 	switch {
 	case reason == "":
 		return ""
-	case strings.Contains(reason, "all-project"), strings.Contains(reason, "read-only"):
+	case strings.Contains(reason, "all-project"), strings.Contains(reason, "read-only"), strings.Contains(reason, "tracker does not support"):
 		return "Read-only"
 	case strings.Contains(reason, "snapshot"), strings.Contains(reason, "refresh"):
 		return "Stale"

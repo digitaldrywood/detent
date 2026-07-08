@@ -674,6 +674,31 @@ func TestBoardScopeLabel(t *testing.T) {
 	}
 }
 
+func TestBoardMoveDisabledLabel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		reason string
+		want   string
+	}{
+		{reason: "This project's tracker does not support moving cards.", want: "Read-only"},
+		{reason: "This project board is read-only.", want: "Read-only"},
+		{reason: "Tracker snapshot is not ready; moves are disabled until data is current.", want: "Stale"},
+		{reason: "No linked issue is available for this card.", want: "No issue"},
+		{reason: "No allowed transition is configured from Done.", want: "No move"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			t.Parallel()
+
+			if got := boardMoveDisabledLabel(tt.reason); got != tt.want {
+				t.Fatalf("boardMoveDisabledLabel(%q) = %q, want %q", tt.reason, got, tt.want)
+			}
+		})
+	}
+}
+
 func renderBoardComponent(t *testing.T, component templ.Component) string {
 	t.Helper()
 	var buf bytes.Buffer
@@ -855,8 +880,9 @@ func TestBoardSnapshotRendersKanbanDragAttributes(t *testing.T) {
 			},
 		},
 		Kanban: KanbanData{
-			Mode:   "integration",
-			States: []string{"Todo", "In Progress", "Blocked", "Human Review", "Rework", "Done"},
+			Mode:         "integration",
+			States:       []string{"Todo", "In Progress", "Blocked", "Human Review", "Rework", "Done"},
+			CanMoveCards: true,
 			AllowedTransitions: map[string][]string{
 				"Todo":         {"In Progress", "Blocked"},
 				"Human Review": {"Rework"},
@@ -972,7 +998,7 @@ func TestBoardSnapshotOmitsKanbanDragAttributesWhenDisabled(t *testing.T) {
 					BoardIssues: readySnapshot.BoardIssues,
 					Refresh:     telemetry.Refresh{Status: telemetry.RefreshStatusDegraded, LastError: "tracker unavailable"},
 				},
-				Kanban: KanbanData{Mode: "integration", States: []string{"Todo", "In Progress"}},
+				Kanban: KanbanData{Mode: "integration", States: []string{"Todo", "In Progress"}, CanMoveCards: true},
 			},
 			wantReason: "Tracker refresh is degraded; moves are disabled until a fresh snapshot is ready.",
 			wantLabel:  "Stale",
@@ -1039,9 +1065,10 @@ func TestBoardSnapshotFleetBoardRendersDragAttributes(t *testing.T) {
 			States: []string{"Todo", "In Progress"},
 			Projects: map[string]KanbanProjectData{
 				"detent": {
-					Mode:      "integration",
-					ProjectID: "detent",
-					States:    []string{"Todo", "In Progress"},
+					Mode:         "integration",
+					ProjectID:    "detent",
+					States:       []string{"Todo", "In Progress"},
+					CanMoveCards: true,
 					AllowedTransitions: map[string][]string{
 						"Todo": {"In Progress"},
 					},
@@ -1117,6 +1144,7 @@ func TestBoardSnapshotExplainsCardLevelMoveDisabledReasons(t *testing.T) {
 		Kanban: KanbanData{
 			Mode:               "integration",
 			States:             []string{"Human Review", "Rework", "Done"},
+			CanMoveCards:       true,
 			AllowedTransitions: map[string][]string{"Human Review": {"Rework"}},
 		},
 	}

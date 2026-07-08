@@ -112,6 +112,8 @@ const (
 	kanbanOverlayContradictionLimit = 2
 	kanbanRemovalPendingTTL         = 5 * time.Minute
 	kanbanRefreshRetryDelay         = 2 * time.Second
+	kanbanMoveUnsupportedMessage    = "This project's tracker does not support moving cards."
+	kanbanRemoveUnsupportedMessage  = "This project's tracker does not support removing cards."
 )
 
 func newKanbanMutationLocks() *kanbanMutationLocks {
@@ -476,6 +478,9 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
 		return s.kanbanMoveValidationResponse(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
 	}
+	if !kanbanCanMoveCards(target) {
+		return s.kanbanMoveValidationResponse(c, http.StatusForbidden, kanbanMoveUnsupportedMessage)
+	}
 	if req.issueID == "" {
 		if req.prNumber > 0 {
 			return s.kanbanMoveValidationResponse(c, http.StatusUnprocessableEntity, "Cannot move PR-only card without a linked issue.")
@@ -536,6 +541,9 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		if errors.As(err, &blocked) {
 			return s.kanbanMoveValidationResponse(c, http.StatusUnprocessableEntity, kanbanBlockedMoveMessage(blocked, req.targetState, moveIssueIdentifier))
 		}
+		if errors.Is(err, connector.ErrNotImplemented) {
+			return s.kanbanMoveValidationResponse(c, http.StatusNotImplemented, kanbanMoveUnsupportedMessage)
+		}
 		s.logger.WarnContext(c.Request().Context(), "kanban move failed", "project", req.projectID, "issue_id", req.issueID, "target_state", req.targetState, "error", err)
 		return kanbanFeedback(c, http.StatusBadGateway, "Move failed: "+err.Error())
 	}
@@ -586,6 +594,9 @@ func (s *Server) apiKanbanRemove(c echo.Context) error {
 	}
 	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
 		return kanbanFeedback(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
+	}
+	if !kanbanCanRemoveCards(target) {
+		return kanbanFeedback(c, http.StatusForbidden, kanbanRemoveUnsupportedMessage)
 	}
 	if req.issueID == "" {
 		if req.prNumber > 0 {
@@ -646,6 +657,9 @@ func (s *Server) apiKanbanRemove(c echo.Context) error {
 		var blocked *connector.StateUpdateBlockedError
 		if errors.As(err, &blocked) {
 			return kanbanFeedback(c, http.StatusUnprocessableEntity, kanbanBlockedMoveMessage(blocked, "", removeIssueIdentifier))
+		}
+		if errors.Is(err, connector.ErrNotImplemented) {
+			return kanbanFeedback(c, http.StatusNotImplemented, kanbanRemoveUnsupportedMessage)
 		}
 		s.logger.WarnContext(c.Request().Context(), "kanban remove failed", "project", req.projectID, "issue_id", req.issueID, "error", err)
 		return kanbanFeedback(c, http.StatusBadGateway, "Remove failed: "+err.Error())
@@ -1240,6 +1254,9 @@ func (s *Server) kanbanMoveDialogData(c echo.Context, message string) (templates
 	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
 		return data, "Kanban integration mode is not enabled."
 	}
+	if !kanbanCanMoveCards(target) {
+		return data, kanbanMoveUnsupportedMessage
+	}
 	data.States = target.workflow.KanbanAllowedTransitionTargets(data.CurrentState)
 	if len(data.States) == 0 && data.CurrentState == "" {
 		data.States = kanbanStateNames(target.workflow, s.latestSnapshot(c.Request().Context()))
@@ -1607,6 +1624,7 @@ func (s *Server) dashboardKanbanData(ctx context.Context, projectID string, snap
 		mode = workflowconfig.KanbanModeReadOnly
 	}
 	states := kanbanStateNames(target.workflow, snapshot)
+	canMove, canRemove := kanbanCardCapabilities(target)
 	data := templates.KanbanData{
 		Mode:                        mode,
 		ProjectID:                   strings.TrimSpace(projectID),
@@ -1616,6 +1634,8 @@ func (s *Server) dashboardKanbanData(ctx context.Context, projectID string, snap
 		AllowedTransitions:          kanbanAllowedTransitions(target.workflow, states),
 		ShowBlockedAlerts:           target.kanban.ShowBlockedAlerts,
 		SupportsPullRequestComments: kanbanSupportsPullRequestComments(target.connector),
+		CanMoveCards:                canMove,
+		CanRemoveCards:              canRemove,
 	}
 	if strings.TrimSpace(projectID) == "" {
 		data.Projects = s.kanbanProjectsData(snapshot)
@@ -1645,6 +1665,7 @@ func (s *Server) kanbanProjectsData(snapshot telemetry.Snapshot) map[string]temp
 			continue
 		}
 		states := kanbanStateNames(target.workflow, snapshot)
+		canMove, canRemove := kanbanCardCapabilities(target)
 		out[projectID] = templates.KanbanProjectData{
 			Mode:                        target.kanban.Mode,
 			ProjectID:                   projectID,
@@ -1652,6 +1673,8 @@ func (s *Server) kanbanProjectsData(snapshot telemetry.Snapshot) map[string]temp
 			TerminalStates:              target.workflow.Tracker.TerminalStates,
 			AllowedTransitions:          kanbanAllowedTransitions(target.workflow, states),
 			SupportsPullRequestComments: kanbanSupportsPullRequestComments(target.connector),
+			CanMoveCards:                canMove,
+			CanRemoveCards:              canRemove,
 		}
 	}
 	if len(out) == 0 {
@@ -1666,6 +1689,27 @@ func kanbanSupportsPullRequestComments(c connector.Connector) bool {
 	}
 	_, ok := c.(connector.PullRequestCommenter)
 	return ok
+}
+
+func kanbanCardCapabilities(target kanbanActionTarget) (bool, bool) {
+	caps := connector.DetectCapabilities(target.connector)
+	canMove := caps.UpdateIssueState
+	canRemove := caps.RemoveFromProject
+	if target.kanban.IssueStateFieldID > 0 {
+		canMove = caps.SetIssueFields
+		canRemove = caps.ClearIssueFields
+	}
+	return canMove, canRemove
+}
+
+func kanbanCanMoveCards(target kanbanActionTarget) bool {
+	canMove, _ := kanbanCardCapabilities(target)
+	return canMove
+}
+
+func kanbanCanRemoveCards(target kanbanActionTarget) bool {
+	_, canRemove := kanbanCardCapabilities(target)
+	return canRemove
 }
 
 func (s *Server) fleetKanbanSnapshotWithPendingStates(snapshot telemetry.Snapshot) telemetry.Snapshot {
