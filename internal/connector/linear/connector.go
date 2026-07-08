@@ -68,6 +68,7 @@ type Connector struct {
 }
 
 var _ connector.Connector = (*Connector)(nil)
+var _ connector.CapabilityReporter = (*Connector)(nil)
 var _ connector.IssueCommentReader = (*Connector)(nil)
 
 func NewConnector(cfg Config) (*Connector, error) {
@@ -80,6 +81,10 @@ func NewConnector(cfg Config) (*Connector, error) {
 
 func (c *Connector) Name() string {
 	return connector.BackendLinear.String()
+}
+
+func (*Connector) Capabilities() connector.Capabilities {
+	return connector.Capabilities{CreateComment: true}
 }
 
 func (c *Connector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {

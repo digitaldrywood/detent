@@ -165,6 +165,62 @@ func TestConnectorDoesNotExposePullRequestCommenter(t *testing.T) {
 	}
 }
 
+func TestConnectorCapabilities(t *testing.T) {
+	t.Parallel()
+
+	c := newLinearTestConnector(t, "https://api.linear.app/graphql")
+	want := connector.Capabilities{CreateComment: true}
+
+	t.Run("reported capabilities are authoritative", func(t *testing.T) {
+		t.Parallel()
+
+		got := connector.DetectCapabilities(c)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("DetectCapabilities() = %#v, want %#v", got, want)
+		}
+		if reported := c.Capabilities(); !reflect.DeepEqual(reported, want) {
+			t.Fatalf("Capabilities() = %#v, want %#v", reported, want)
+		}
+	})
+
+	t.Run("optional interface probes match reported fields", func(t *testing.T) {
+		t.Parallel()
+
+		reported := c.Capabilities()
+		_, canCreateWorkItems := any(c).(connector.IssueUpserter)
+		_, canCloseIssues := any(c).(connector.IssueCloser)
+		_, canRemoveFromProject := any(c).(connector.ProjectRemover)
+		_, canSetIssueFields := any(c).(connector.IssueFieldSetter)
+		_, canClearIssueFields := any(c).(connector.IssueFieldClearer)
+		_, canCommentOnPullRequests := any(c).(connector.PullRequestCommenter)
+		_, canUpdateComments := any(c).(connector.IssueCommentUpdater)
+		_, canDeleteComments := any(c).(connector.IssueCommentDeleter)
+		probed := connector.Capabilities{
+			CreateWorkItems:       canCreateWorkItems,
+			CloseIssues:           canCloseIssues,
+			RemoveFromProject:     canRemoveFromProject,
+			SetIssueFields:        canSetIssueFields,
+			ClearIssueFields:      canClearIssueFields,
+			CommentOnPullRequests: canCommentOnPullRequests,
+			UpdateComments:        canUpdateComments,
+			DeleteComments:        canDeleteComments,
+		}
+		want := connector.Capabilities{
+			CreateWorkItems:       reported.CreateWorkItems,
+			CloseIssues:           reported.CloseIssues,
+			RemoveFromProject:     reported.RemoveFromProject,
+			SetIssueFields:        reported.SetIssueFields,
+			ClearIssueFields:      reported.ClearIssueFields,
+			CommentOnPullRequests: reported.CommentOnPullRequests,
+			UpdateComments:        reported.UpdateComments,
+			DeleteComments:        reported.DeleteComments,
+		}
+		if !reflect.DeepEqual(probed, want) {
+			t.Fatalf("optional interface probes = %#v, want %#v", probed, want)
+		}
+	})
+}
+
 func TestClientGraphQLReadsLargeSuccessfulResponse(t *testing.T) {
 	t.Parallel()
 
