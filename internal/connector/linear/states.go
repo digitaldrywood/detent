@@ -61,6 +61,22 @@ func (c *Connector) cachedStateID(issueID string, stateKey string) (string, bool
 	return states[stateKey], true
 }
 
+func (c *Connector) cachedStateIDForState(issueID string, state string) (string, bool) {
+	stateKey := normalizeStateName(c.detentToLinearState(state))
+	if stateKey == "" {
+		return "", false
+	}
+	stateID, ok := c.cachedStateID(issueID, stateKey)
+	return stateID, ok && stateID != ""
+}
+
+func (c *Connector) invalidateIssueStateCache(issueID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	delete(c.teamIDByIssue, issueID)
+}
+
 func (c *Connector) cacheIssueWorkflowStateIDs(issueID string, teamID string, stateIDs map[string]string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

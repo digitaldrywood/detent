@@ -178,6 +178,7 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, state 
 		return ErrMissingIssue
 	}
 
+	_, usedCachedState := c.cachedStateIDForState(issueID, state)
 	stateID, err := c.resolveStateID(ctx, issueID, state)
 	if err != nil {
 		if errors.Is(err, ErrIssueNotFound) || errors.Is(err, ErrStateNotFound) {
@@ -186,6 +187,36 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, state 
 		return fmt.Errorf("update linear issue state: %w", err)
 	}
 
+	success, err := c.updateIssueStateID(ctx, issueID, stateID)
+	if err != nil {
+		return fmt.Errorf("update linear issue state: %w", err)
+	}
+	if success {
+		return nil
+	}
+
+	if usedCachedState {
+		c.invalidateIssueStateCache(issueID)
+		stateID, err = c.resolveStateID(ctx, issueID, state)
+		if err != nil {
+			if errors.Is(err, ErrIssueNotFound) || errors.Is(err, ErrStateNotFound) {
+				return err
+			}
+			return fmt.Errorf("update linear issue state: %w", err)
+		}
+		success, err = c.updateIssueStateID(ctx, issueID, stateID)
+		if err != nil {
+			return fmt.Errorf("update linear issue state: %w", err)
+		}
+		if success {
+			return nil
+		}
+	}
+
+	return ErrIssueUpdateFailed
+}
+
+func (c *Connector) updateIssueStateID(ctx context.Context, issueID string, stateID string) (bool, error) {
 	var response struct {
 		IssueUpdate *struct {
 			Success bool `json:"success"`
@@ -195,13 +226,9 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, state 
 		"issueId": issueID,
 		"stateId": stateID,
 	}, &response); err != nil {
-		return fmt.Errorf("update linear issue state: %w", err)
+		return false, err
 	}
-	if response.IssueUpdate == nil || !response.IssueUpdate.Success {
-		return ErrIssueUpdateFailed
-	}
-
-	return nil
+	return response.IssueUpdate != nil && response.IssueUpdate.Success, nil
 }
 
 func (c *Connector) SetAssignee(context.Context, string, string) error {

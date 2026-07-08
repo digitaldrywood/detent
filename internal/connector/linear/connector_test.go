@@ -456,6 +456,63 @@ func TestConnectorUpdateIssueStateCachesWorkflowStatesByTeam(t *testing.T) {
 	}
 }
 
+func TestConnectorUpdateIssueStateRefreshesStaleCachedTeam(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	stateQueries := 0
+	mutationStateIDs := []string{}
+	server := linearTestServer(t, func(t *testing.T, request linearGraphQLRequest) any {
+		mu.Lock()
+		defer mu.Unlock()
+
+		if strings.Contains(request.Query, "DetentLinearIssueWorkflowStates") {
+			stateQueries++
+			switch stateQueries {
+			case 1:
+				return linearWorkflowStatesResponse("team-1", []map[string]any{
+					linearWorkflowStateFixture("state-todo-old", "Todo"),
+				})
+			case 2:
+				return linearWorkflowStatesResponse("team-2", []map[string]any{
+					linearWorkflowStateFixture("state-todo-new", "Todo"),
+				})
+			default:
+				t.Fatalf("state query count = %d, want 2", stateQueries)
+				return nil
+			}
+		}
+		if strings.Contains(request.Query, "DetentLinearIssueUpdateState") {
+			stateID, _ := request.Variables["stateId"].(string)
+			mutationStateIDs = append(mutationStateIDs, stateID)
+			return linearIssueUpdateResponse(len(mutationStateIDs) != 2)
+		}
+
+		t.Fatalf("query = %q, want workflow states query or issue update mutation", request.Query)
+		return nil
+	})
+
+	c := newLinearTestConnector(t, server.URL)
+	if err := c.UpdateIssueState(context.Background(), "LIN-123", "Todo"); err != nil {
+		t.Fatalf("UpdateIssueState() first error = %v", err)
+	}
+	if err := c.UpdateIssueState(context.Background(), "LIN-123", "Todo"); err != nil {
+		t.Fatalf("UpdateIssueState() second error = %v", err)
+	}
+
+	mu.Lock()
+	gotStateQueries := stateQueries
+	gotMutationStateIDs := append([]string(nil), mutationStateIDs...)
+	mu.Unlock()
+	if gotStateQueries != 2 {
+		t.Fatalf("state query count = %d, want 2", gotStateQueries)
+	}
+	wantMutationStateIDs := []string{"state-todo-old", "state-todo-old", "state-todo-new"}
+	if !reflect.DeepEqual(gotMutationStateIDs, wantMutationStateIDs) {
+		t.Fatalf("mutation state IDs = %#v, want %#v", gotMutationStateIDs, wantMutationStateIDs)
+	}
+}
+
 func TestConnectorDoesNotExposePullRequestCommenter(t *testing.T) {
 	t.Parallel()
 
