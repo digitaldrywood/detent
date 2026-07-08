@@ -432,6 +432,72 @@ test("all-project board cards stay read-only on drag attempt", async ({
   expect(moveRequests).toBe(0);
 });
 
+test("dragstart defers DOM mutations so Chrome keeps the native drag", async ({
+  page,
+}) => {
+  await page.setViewportSize(desktopViewport);
+  await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+  const card = page.locator(
+    '[data-kanban-card][data-kanban-current-state="Backlog"]',
+    {
+      hasText: "Kanban demo backlog intake",
+    },
+  );
+  await expect(card).toHaveAttribute("draggable", "true");
+
+  // Chrome cancels a native drag when the dragstart handler mutates the DOM
+  // synchronously (the reflow moves the source card mid-capture). Assert the
+  // handler leaves the DOM untouched in the dispatching tick and applies the
+  // drag affordances one macrotask later.
+  const observed = await card.evaluate((element) => {
+    const readState = () => ({
+      feedbackHidden: document.getElementById("board-feedback").hidden,
+      cardDragging: element.dataset.kanbanDragging === "true",
+      hiddenLanes: document.querySelectorAll(
+        '[data-kanban-drop-state][data-lane-hidden="true"]',
+      ).length,
+      highlightedLanes: document.querySelectorAll(
+        "[data-kanban-drop-allowed]",
+      ).length,
+    });
+    element.dispatchEvent(
+      new DragEvent("dragstart", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: new DataTransfer(),
+      }),
+    );
+    const duringDispatchTick = readState();
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        const afterMacrotask = readState();
+        element.dispatchEvent(new DragEvent("dragend", { bubbles: true }));
+        resolve({ duringDispatchTick, afterMacrotask });
+      }, 0);
+    });
+  });
+
+  expect(observed.duringDispatchTick.feedbackHidden).toBe(true);
+  expect(observed.duringDispatchTick.cardDragging).toBe(false);
+  expect(observed.duringDispatchTick.hiddenLanes).toBeGreaterThan(0);
+  expect(observed.duringDispatchTick.highlightedLanes).toBe(0);
+
+  expect(observed.afterMacrotask.feedbackHidden).toBe(false);
+  expect(observed.afterMacrotask.cardDragging).toBe(true);
+  expect(observed.afterMacrotask.hiddenLanes).toBe(0);
+  expect(observed.afterMacrotask.highlightedLanes).toBeGreaterThan(0);
+
+  // dragend restores the hidden lanes and reports the abandoned move.
+  await expect(page.locator("#board-feedback")).toHaveText(/Move cancelled/);
+  await expect(
+    page.locator('[data-kanban-drop-state][data-lane-hidden="true"]'),
+  ).not.toHaveCount(0);
+});
+
 test("project kanban board supports drag status moves", async ({ page }) => {
   await page.setViewportSize(desktopViewport);
   await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, {
