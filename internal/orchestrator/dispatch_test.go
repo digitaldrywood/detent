@@ -33,6 +33,8 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Agent.AutoPromote.QuietSeconds = 30
 	cfg.Agent.AutoPromote.OptoutLabel = " Requires-Human-Review "
 	cfg.Agent.AutoPromote.AllowedIssueLabels = []string{" Docs ", "docs", "Chore"}
+	cfg.Agent.AutoPromote.GateWaitState = " Review "
+	cfg.Agent.AutoPromote.GateWaitTimeoutSeconds = 900
 	cfg.Agent.AutoPromote.ReworkLimit = 2
 	cfg.Agent.MergeFastPath.Enabled = true
 	cfg.Agent.OutputTruncation.MaxBytes = 4096
@@ -77,6 +79,12 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 		got.AutoPromote.AllowedIssueLabels[0] != "docs" ||
 		got.AutoPromote.AllowedIssueLabels[1] != "chore" {
 		t.Fatalf("AutoPromote.AllowedIssueLabels = %#v, want docs and chore", got.AutoPromote.AllowedIssueLabels)
+	}
+	if got.AutoPromote.GateWaitState != autoPromoteGateWaitReview {
+		t.Fatalf("AutoPromote.GateWaitState = %q, want review", got.AutoPromote.GateWaitState)
+	}
+	if got.AutoPromote.GateWaitTimeout != 15*time.Minute {
+		t.Fatalf("AutoPromote.GateWaitTimeout = %s, want 15m0s", got.AutoPromote.GateWaitTimeout)
 	}
 	if got.AutoPromote.ReworkLimit != 2 {
 		t.Fatalf("AutoPromote.ReworkLimit = %d, want 2", got.AutoPromote.ReworkLimit)
@@ -261,7 +269,7 @@ func TestDispatchableSkipsAutoPromoteGatePendingActiveIssue(t *testing.T) {
 		MaxConcurrentAgents: 1,
 		AutoPromote: AutoPromoteConfig{
 			Enabled:       true,
-			QuietDuration: 10 * time.Minute,
+			QuietDuration: 0,
 			Gate:          gate.Config{Kind: gate.KindCommand},
 		},
 		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
@@ -275,6 +283,34 @@ func TestDispatchableSkipsAutoPromoteGatePendingActiveIssue(t *testing.T) {
 	decision := orch.dispatchPlanner().dispatchableIssueDecision(issue, &state, false, now, "")
 	if decision.dispatchable {
 		t.Fatal("dispatchable gate-pending active issue = true, want false")
+	}
+	if decision.reason != dispatchSkipAutoPromoteGatePending {
+		t.Fatalf("dispatchable reason = %q, want %q", decision.reason, dispatchSkipAutoPromoteGatePending)
+	}
+}
+
+func TestDispatchableSkipsQuietWindowActiveIssueWithOpenPullRequest(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 8, 13, 5, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate:          gate.Config{Kind: gate.KindCommand},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	issue := dispatchTestIssueWithPullRequest("issue-quiet-gate-pending", "In Progress", "OPEN")
+	issue.PullRequest.CIStatus = "pending"
+	state := newState(cfg)
+	orch := Orchestrator{cfg: cfg}
+
+	decision := orch.dispatchPlanner().dispatchableIssueDecision(issue, &state, false, now, "")
+	if decision.dispatchable {
+		t.Fatal("dispatchable quiet-window active issue with open PR = true, want false")
 	}
 	if decision.reason != dispatchSkipAutoPromoteGatePending {
 		t.Fatalf("dispatchable reason = %q, want %q", decision.reason, dispatchSkipAutoPromoteGatePending)

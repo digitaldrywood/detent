@@ -39,6 +39,8 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			QuietDuration:      durationFromSeconds(cfg.Agent.AutoPromote.QuietSeconds),
 			OptoutLabel:        cfg.Agent.AutoPromote.OptoutLabel,
 			AllowedIssueLabels: append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),
+			GateWaitState:      cfg.Agent.AutoPromote.GateWaitState,
+			GateWaitTimeout:    durationFromSeconds(cfg.Agent.AutoPromote.GateWaitTimeoutSeconds),
 			SourceState:        cfg.Agent.AutoPromote.SourceState,
 			PassState:          cfg.Agent.AutoPromote.PassState,
 			ReworkState:        cfg.Agent.AutoPromote.ReworkState,

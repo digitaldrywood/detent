@@ -684,6 +684,8 @@ agent:
     quiet_seconds: 600
     optout_label: requires-human-review
     allowed_issue_labels: []
+    gate_wait_state: source
+    gate_wait_timeout_seconds: 3600
     rework_limit: 3
   skills:
     enabled: true
@@ -1553,6 +1555,11 @@ of that state is controlled by the workflow:
   opt-out that leaves the loop unlimited. Positive limits require `Blocked` in a
   configured tracker state list and route the next over-limit rework decision
   there with repeated reasons summarized for handoff.
+- `agent.auto_promote.gate_wait_state: source` keeps zero-quiet completed
+  active issues in their current lane while CI/check gates are still pending;
+  `review` restores the legacy behavior of parking those pending issues in the
+  configured review source state. `gate_wait_timeout_seconds` bounds that active
+  wait and moves overdue items to review with an audit comment.
 - `gate.kind: human_review` requires a linked open PR plus the configured
   `approval_label` on the issue.
 

@@ -38,6 +38,9 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			cfg,
 		)
 		if targetState == "" {
+			if o.transitionTimedOutCompletedActiveGateWait(ctx, state, issue, completed, cfg, now) {
+				result.transitioned[issueID] = struct{}{}
+			}
 			continue
 		}
 
@@ -152,13 +155,23 @@ func completedActiveReviewTargetState(
 	if !completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(cfg.Gate)) {
 		return ""
 	}
-	if !autoPromoteHumanReviewRequired(issue, cfg, cfg.Gate) {
+	if !completedActiveShouldEnterReview(issue, cfg) {
 		return ""
 	}
 	if completedActiveFinalStateReviewEligible(finalState, reviewState) {
 		return reviewState
 	}
 	return ""
+}
+
+func completedActiveShouldEnterReview(issue connector.Issue, cfg AutoPromoteConfig) bool {
+	if autoPromoteHumanReviewRequired(issue, cfg, cfg.Gate) {
+		return true
+	}
+	if cfg.QuietDuration > 0 {
+		return true
+	}
+	return cfg.GateWaitState == autoPromoteGateWaitReview
 }
 
 func completedActiveFinalStateReviewEligible(finalState string, reviewState string) bool {
@@ -178,4 +191,88 @@ func completedActiveIssueReadyForReview(issue connector.Issue, requirePullReques
 		return false
 	}
 	return normalizePullRequestState(issue.PullRequest.State) == "open"
+}
+
+func (o *Orchestrator) transitionTimedOutCompletedActiveGateWait(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	completed Completed,
+	cfg AutoPromoteConfig,
+	now time.Time,
+) bool {
+	issueID := strings.TrimSpace(issue.ID)
+	if issueID == "" || completed.CompletedAt.IsZero() {
+		return false
+	}
+	if now.Before(completed.CompletedAt.Add(cfg.GateWaitTimeout)) {
+		return false
+	}
+	if !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg) {
+		return false
+	}
+	targetState := cfg.SourceState
+	if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "auto_promote_gate_wait_timeout"); err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"completed issue gate wait timeout transition failed",
+				"issue_id", issueID,
+				"identifier", issue.Identifier,
+				"from_state", issue.State,
+				"target_state", targetState,
+				"error", err,
+			)
+		}
+		return false
+	}
+	if err := o.connector.CreateComment(ctx, issueID, completedActiveGateWaitTimeoutComment(issue, completed, cfg, now)); err != nil && o.logger != nil {
+		o.logger.Warn(
+			"completed issue gate wait timeout comment failed",
+			"issue_id", issueID,
+			"identifier", issue.Identifier,
+			"error", err,
+		)
+	}
+	o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, targetState)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "completed_active_gate_wait_timeout",
+		Message: "moved " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + targetState + " after auto-promote gate wait timeout",
+	})
+	return true
+}
+
+func completedActiveGateWaitTimeoutComment(
+	issue connector.Issue,
+	completed Completed,
+	cfg AutoPromoteConfig,
+	now time.Time,
+) string {
+	waited := now.Sub(completed.CompletedAt)
+	var b strings.Builder
+	b.WriteString("Auto-promote gate wait timed out; moved this issue from ")
+	b.WriteString(strings.TrimSpace(issue.State))
+	b.WriteString(" to ")
+	b.WriteString(cfg.SourceState)
+	b.WriteString(".")
+	b.WriteString("\n\n- reason: auto_promote_gate_wait_timeout")
+	b.WriteString("\n- waited: ")
+	b.WriteString(waited.Round(time.Second).String())
+	b.WriteString("\n- timeout: ")
+	b.WriteString(cfg.GateWaitTimeout.Round(time.Second).String())
+	if issue.PullRequest != nil {
+		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
+			b.WriteString("\n- pull_request: ")
+			b.WriteString(url)
+		}
+		if ciStatus := strings.TrimSpace(issue.PullRequest.CIStatus); ciStatus != "" {
+			b.WriteString("\n- ci_status: ")
+			b.WriteString(ciStatus)
+		}
+		if mergeableState := strings.TrimSpace(issue.PullRequest.MergeableState); mergeableState != "" {
+			b.WriteString("\n- mergeable_state: ")
+			b.WriteString(strings.ToLower(mergeableState))
+		}
+	}
+	return b.String()
 }
