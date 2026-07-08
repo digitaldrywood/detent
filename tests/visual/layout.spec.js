@@ -456,6 +456,127 @@ test("project kanban board supports drag status moves", async ({ page }) => {
   await expect(page.locator("#board-feedback")).toBeHidden();
 });
 
+test("project kanban drag survives snapshot refresh during drag", async ({
+  page,
+}) => {
+  const runtime = await startDetentRuntime("kanban-drag-refresh", [
+    "--demo",
+    "kanban",
+    "--demo-project",
+    "demo-project",
+  ]);
+  try {
+    await page.setViewportSize(desktopViewport);
+    await page.goto(`${runtime.url}/projects/demo-project/kanban`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+    const card = page.locator(
+      '[data-kanban-card][data-kanban-current-state="Backlog"]',
+      {
+        hasText: "Kanban demo backlog intake",
+      },
+    );
+    const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
+    const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
+    await expect(card).toHaveAttribute("draggable", "true");
+    await expect(targetLane).toBeHidden();
+
+    const incomingSnapshot = await page.evaluate(() => {
+      const snapshot = document.querySelector("#snapshot");
+      if (!snapshot) {
+        throw new Error("Snapshot target not found");
+      }
+      return snapshot.innerHTML;
+    });
+
+    const moveRequest = page.waitForRequest(
+      (request) => {
+        if (
+          request.method() !== "POST" ||
+          !request.url().endsWith("/api/v1/kanban/move")
+        ) {
+          return false;
+        }
+        return (
+          new URLSearchParams(request.postData() || "").get("kanban_drag") ===
+          "true"
+        );
+      },
+      { timeout: 5_000 },
+    );
+
+    const sourceBox = await card.boundingBox();
+    if (!sourceBox) {
+      throw new Error("Drag source has no bounding box");
+    }
+    await page.mouse.move(
+      sourceBox.x + sourceBox.width / 2,
+      sourceBox.y + sourceBox.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      sourceBox.x + sourceBox.width / 2 + 16,
+      sourceBox.y + sourceBox.height / 2 + 16,
+      { steps: 5 },
+    );
+    await expect(targetLane).toBeVisible();
+
+    await page.evaluate(
+      (incomingSnapshot) =>
+        new Promise((resolve) => {
+          document.addEventListener("htmx:afterSettle", resolve, { once: true });
+          const target = document.querySelector("#snapshot");
+          const event = new CustomEvent("htmx:sseBeforeMessage", {
+            bubbles: true,
+            cancelable: true,
+            detail: { elt: target, data: incomingSnapshot },
+          });
+          target.dispatchEvent(event);
+          if (!event.defaultPrevented) {
+            window.htmx.swap(
+              target,
+              incomingSnapshot,
+              { swapStyle: target.getAttribute("hx-swap") || "innerHTML" },
+              { contextElement: target },
+            );
+          }
+        }),
+      incomingSnapshot,
+    );
+    await expect(targetLane).toHaveAttribute("data-lane-hidden", "false");
+
+    const targetBox = await targetLane.boundingBox();
+    if (!targetBox) {
+      throw new Error("Drag target lane has no bounding box");
+    }
+    await page.mouse.move(
+      targetBox.x + targetBox.width / 2,
+      targetBox.y + Math.min(80, targetBox.height / 2),
+      { steps: 20 },
+    );
+    await page.mouse.up();
+
+    const request = await moveRequest;
+    const form = new URLSearchParams(request.postData() || "");
+    expect(form.get("kanban_drag")).toBe("true");
+    expect(form.get("target_state")).toBe("Todo");
+    await expect(
+      targetLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+    await expect(
+      sourceLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toHaveCount(0);
+  } finally {
+    await runtime.stop();
+  }
+});
+
 test("board applies snapshot updates without reload", async ({ page }) => {
   await page.setViewportSize(desktopViewport);
   await page.goto(`${kanbanRuntime.url}/`, { waitUntil: "domcontentloaded" });
