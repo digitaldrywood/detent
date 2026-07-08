@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -38,6 +39,85 @@ func TestStateSnapshotEmpty(t *testing.T) {
 	}
 	if len(snapshot.BoardIssues) != 0 {
 		t.Fatalf("BoardIssues = %#v, want empty", snapshot.BoardIssues)
+	}
+}
+
+func TestStateSnapshotMarksGatePendingBoardIssues(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled: true,
+			Gate:    gate.Config{Kind: gate.KindCommand},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	gatePending := snapshotGatePendingIssue("gate-pending", "In Progress")
+	running := snapshotGatePendingIssue("running", "In Progress")
+	queued := snapshotGatePendingIssue("queued", "Todo")
+	rework := snapshotGatePendingIssue("rework", "Rework")
+	plain := connector.Issue{
+		ID:         "plain",
+		Identifier: "digitaldrywood/detent#104",
+		State:      "In Progress",
+	}
+	state.BoardIssues = []connector.Issue{gatePending, running, queued, rework, plain}
+	for _, issue := range []connector.Issue{gatePending, running, queued, rework} {
+		state.Completed[issue.ID] = Completed{
+			Issue:       issue,
+			CompletedAt: now.Add(-time.Minute),
+			FinalState:  FinalStateCompleted,
+		}
+	}
+	state.Running[running.ID] = Running{Issue: running}
+	state.Retry[queued.ID] = Retry{Issue: queued}
+
+	snapshot := state.Snapshot(now)
+	byID := map[string]telemetry.Issue{}
+	for _, issue := range snapshot.BoardIssues {
+		byID[issue.ID] = issue
+	}
+
+	tests := []struct {
+		id   string
+		want bool
+	}{
+		{id: "gate-pending", want: true},
+		{id: "running"},
+		{id: "queued"},
+		{id: "rework"},
+		{id: "plain"},
+	}
+	for _, tt := range tests {
+		got, ok := byID[tt.id]
+		if !ok {
+			t.Fatalf("snapshot BoardIssues missing %q: %#v", tt.id, snapshot.BoardIssues)
+		}
+		if got.GatePending != tt.want {
+			t.Fatalf("BoardIssues[%q].GatePending = %t, want %t", tt.id, got.GatePending, tt.want)
+		}
+	}
+	if snapshot.Running[0].GatePending {
+		t.Fatal("running issue GatePending = true, want false")
+	}
+	if snapshot.Queue[0].GatePending {
+		t.Fatal("queued issue GatePending = true, want false")
+	}
+}
+
+func snapshotGatePendingIssue(id string, state string) connector.Issue {
+	return connector.Issue{
+		ID:         id,
+		Identifier: "digitaldrywood/detent#" + id,
+		State:      state,
+		PullRequest: &connector.PullRequest{
+			Number:   100,
+			State:    "open",
+			CIStatus: "pending",
+		},
 	}
 }
 

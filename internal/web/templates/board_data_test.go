@@ -133,6 +133,45 @@ func TestBoardViewLanes(t *testing.T) {
 	}
 }
 
+func TestBoardSnapshotRendersAwaitingChecksOnlyForGatePendingCards(t *testing.T) {
+	data := DashboardData{
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC),
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:          "gate-pending",
+					Identifier:  "digitaldrywood/detent#1030",
+					ProjectID:   "detent",
+					Title:       "Completed work waiting on checks",
+					State:       "In Progress",
+					GatePending: true,
+				},
+				{
+					ID:         "active-work",
+					Identifier: "digitaldrywood/detent#1031",
+					ProjectID:  "detent",
+					Title:      "Active work still running",
+					State:      "In Progress",
+				},
+			},
+		},
+		Kanban: KanbanData{States: []string{"In Progress"}},
+	}
+
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	flagged := boardCardSection(t, html, "Completed work waiting on checks")
+	if !strings.Contains(flagged, "Awaiting checks") {
+		t.Fatalf("gate-pending card missing awaiting checks badge:\n%s", flagged)
+	}
+	plain := boardCardSection(t, html, "Active work still running")
+	if strings.Contains(plain, "Awaiting checks") {
+		t.Fatalf("plain active card rendered awaiting checks badge:\n%s", plain)
+	}
+	if got := strings.Count(html, ">Awaiting checks<"); got != 1 {
+		t.Fatalf("visible Awaiting checks label rendered %d times, want 1:\n%s", got, html)
+	}
+}
+
 func TestBoardCardAgeFooterVisibility(t *testing.T) {
 	card := projectKanbanCard{
 		IssueNumber:      "#982",

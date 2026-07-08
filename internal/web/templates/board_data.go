@@ -331,6 +331,9 @@ func boardCardExtra(card projectKanbanCard, view boardCardView) (primitives.Kind
 	if reason := strings.TrimSpace(card.ConflictReason); reason != "" {
 		return primitives.KindWarn, reason, true
 	}
+	if card.GatePending {
+		return primitives.KindInfo, "Awaiting checks", true
+	}
 	if status := strings.TrimSpace(card.CIStatus); status != "" {
 		return primitives.KindInfo, status, false
 	}
