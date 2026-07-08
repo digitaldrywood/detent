@@ -487,6 +487,7 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 	}
 	var feedback string
 	var feedbackStatus int
+	var moveIssueIdentifier string
 	err := s.kanbanMutations.withLock(target.key, func() error {
 		currentState := req.currentState
 		ok, current, snapshotState, snapshotIssue, dataSeqAtWrite := s.kanbanCardFresh(target.key, req.projectID, req.issueID, req.currentState)
@@ -501,6 +502,7 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		if strings.TrimSpace(current) != "" {
 			currentState = current
 		}
+		moveIssueIdentifier = kanbanBlockedMoveIssueIdentifier(snapshotIssue, req.issueID)
 		if !target.workflow.KanbanTransitionAllowed(currentState, req.targetState) {
 			feedback = fmt.Sprintf("Move from %s to %s is not allowed by the Kanban transition policy.", currentState, req.targetState)
 			feedbackStatus = http.StatusUnprocessableEntity
@@ -530,6 +532,10 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		return s.kanbanMoveValidationResponse(c, feedbackStatus, feedback)
 	}
 	if err != nil {
+		var blocked *connector.StateUpdateBlockedError
+		if errors.As(err, &blocked) {
+			return s.kanbanMoveValidationResponse(c, http.StatusUnprocessableEntity, kanbanBlockedMoveMessage(blocked, req.targetState, moveIssueIdentifier))
+		}
 		s.logger.WarnContext(c.Request().Context(), "kanban move failed", "project", req.projectID, "issue_id", req.issueID, "target_state", req.targetState, "error", err)
 		return kanbanFeedback(c, http.StatusBadGateway, "Move failed: "+err.Error())
 	}
@@ -590,9 +596,10 @@ func (s *Server) apiKanbanRemove(c echo.Context) error {
 
 	var feedback string
 	var feedbackStatus int
+	var removeIssueIdentifier string
 	err := s.kanbanMutations.withLock(target.key, func() error {
 		currentState := req.currentState
-		ok, current, snapshotState, _, dataSeqAtWrite := s.kanbanCardFresh(target.key, req.projectID, req.issueID, req.currentState)
+		ok, current, snapshotState, snapshotIssue, dataSeqAtWrite := s.kanbanCardFresh(target.key, req.projectID, req.issueID, req.currentState)
 		if !ok {
 			feedback = "Card is stale; refresh and retry."
 			if current != "" {
@@ -604,6 +611,7 @@ func (s *Server) apiKanbanRemove(c echo.Context) error {
 		if strings.TrimSpace(current) != "" {
 			currentState = current
 		}
+		removeIssueIdentifier = kanbanBlockedMoveIssueIdentifier(snapshotIssue, req.issueID)
 		if target.kanban.IssueStateFieldID > 0 {
 			clearer, ok := target.connector.(connector.IssueFieldClearer)
 			if !ok {
@@ -635,6 +643,10 @@ func (s *Server) apiKanbanRemove(c echo.Context) error {
 		return kanbanFeedback(c, feedbackStatus, feedback)
 	}
 	if err != nil {
+		var blocked *connector.StateUpdateBlockedError
+		if errors.As(err, &blocked) {
+			return kanbanFeedback(c, http.StatusUnprocessableEntity, kanbanBlockedMoveMessage(blocked, "", removeIssueIdentifier))
+		}
 		s.logger.WarnContext(c.Request().Context(), "kanban remove failed", "project", req.projectID, "issue_id", req.issueID, "error", err)
 		return kanbanFeedback(c, http.StatusBadGateway, "Remove failed: "+err.Error())
 	}
@@ -1147,6 +1159,41 @@ func (s *Server) kanbanMoveValidationResponse(c echo.Context, status int, messag
 		return s.kanbanMoveDialogValidation(c, message)
 	}
 	return kanbanFeedback(c, status, message)
+}
+
+func kanbanBlockedMoveIssueIdentifier(issue telemetry.Issue, fallback string) string {
+	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" {
+		return identifier
+	}
+	if id := strings.TrimSpace(issue.ID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func kanbanBlockedMoveMessage(blocked *connector.StateUpdateBlockedError, targetState string, identifier string) string {
+	target := strings.TrimSpace(targetState)
+	identifier = strings.TrimSpace(identifier)
+	current := ""
+	if blocked != nil {
+		if target == "" {
+			target = strings.TrimSpace(blocked.TargetState)
+		}
+		current = strings.TrimSpace(blocked.CurrentState)
+		if identifier == "" {
+			identifier = strings.TrimSpace(blocked.IssueID)
+		}
+	}
+	if target == "" {
+		target = "requested state"
+	}
+	if identifier == "" {
+		identifier = "issue"
+	}
+	if current == "" {
+		current = "unknown"
+	}
+	return fmt.Sprintf("Move to %s was refused: %s is in terminal state %s.", target, identifier, current)
 }
 
 func (s *Server) kanbanCommentDialogValidation(c echo.Context, message string) error {
