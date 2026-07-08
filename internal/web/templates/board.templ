@@ -635,7 +635,7 @@ templ boardScopeSelect(data DashboardData) {
 		<div class="absolute left-0 top-full z-40 mt-1 flex w-52 flex-col gap-0.5 rounded-card border border-line bg-elev p-1.5">
 			<a href="/" class="rounded-chip px-2 py-1 text-xs text-text hover:bg-surface">All projects</a>
 			for _, project := range appShellProjects(DashboardShellDataFromDashboard(data)) {
-				<a href={ templ.SafeURL(project.Href + "/kanban") } class="truncate rounded-chip px-2 py-1 text-xs text-text hover:bg-surface">{ project.Name }</a>
+				<a href={ templ.SafeURL(project.Href) } class="truncate rounded-chip px-2 py-1 text-xs text-text hover:bg-surface">{ project.Name }</a>
 			}
 		</div>
 	</details>
