@@ -75,7 +75,7 @@ agent:
     quiet_seconds: 600
     optout_label: requires-human-review
     allowed_issue_labels: []
-    rework_limit: 0
+    rework_limit: 3
   skills:
     enabled: true
     path: .detent/skills

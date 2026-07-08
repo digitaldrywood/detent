@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestTickAutoUnblocksDependencyWaitingIssue(t *testing.T) {
@@ -55,6 +56,97 @@ func TestTickAutoUnblocksDependencyWaitingIssue(t *testing.T) {
 	}
 	if len(state.RecentEvents) != 1 || state.RecentEvents[0].Event != "dependency_auto_unblock_transition" {
 		t.Fatalf("RecentEvents = %#v, want dependency auto-unblock event", state.RecentEvents)
+	}
+}
+
+func TestTickAutoUnblocksDependencyOnlyOnceForSameResolvedBlockerSet(t *testing.T) {
+	t.Parallel()
+
+	waiting := dependencyAutoUnblockIssue("issue-repeat-blocked", "Blocked")
+	prNumber := 418
+	waiting.PRNumber = &prNumber
+	waiting.PullRequest = &connector.PullRequest{
+		Number: prNumber,
+		State:  "OPEN",
+		URL:    "https://github.test/digitaldrywood/detent/pull/418",
+	}
+	waiting.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415"}}
+	blocker := dependencyAutoUnblockIssue("issue-done", "Done")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	orch.workflowMetrics = metrics
+	state := newState(orch.cfg)
+	now := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+
+	orch.tick(context.Background(), &state, now)
+	orch.tick(context.Background(), &state, now.Add(time.Minute))
+
+	if got, want := tracker.updates, []dependencyAutoUnblockUpdate{{issueID: waiting.ID, state: "Rework"}}; !slices.Equal(got, want) {
+		t.Fatalf("updates = %#v, want one Blocked to Rework transition", got)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one audit comment", tracker.comments)
+	}
+	events := metrics.snapshot()
+	rework := events[len(events)-1]
+	metadata, ok := workflowLaneMetadataFromJSON(rework.MetadataJSON)
+	if !ok || metadata.DependencyAutoUnblock == nil || metadata.DependencyAutoUnblock.BlockerSet == "" {
+		t.Fatalf("latest Rework metadata = %q, want dependency_auto_unblock blocker_set", rework.MetadataJSON)
+	}
+}
+
+func TestTickAutoUnblockSkipsPersistedReworkLimitBlockedIssue(t *testing.T) {
+	t.Parallel()
+
+	waiting := dependencyAutoUnblockIssue("issue-rework-limit-blocked", "Blocked")
+	waiting.Description = "Blocked by #415"
+	blocker := dependencyAutoUnblockIssue("issue-done", "Done")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	orch.workflowMetrics = metrics
+	if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), store.WorkflowPhaseEvent{
+		ProjectID:    defaultWorkflowMetricsProjectID,
+		IssueID:      waiting.ID,
+		Identifier:   waiting.Identifier,
+		IssueURL:     waiting.URL,
+		PhaseType:    store.WorkflowPhaseTypeLane,
+		PhaseName:    "Blocked",
+		Reason:       "rework_limit",
+		Status:       "entered",
+		StartedAt:    time.Date(2026, 7, 8, 14, 59, 0, 0, time.UTC),
+		MetadataJSON: "{}",
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+	state := newState(orch.cfg)
+
+	orch.tick(context.Background(), &state, time.Date(2026, 7, 8, 15, 1, 0, 0, time.UTC))
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want no auto-unblock for rework_limit Blocked issue", tracker.updates)
+	}
+	if len(tracker.comments) != 0 {
+		t.Fatalf("comments = %#v, want no auto-unblock comment", tracker.comments)
 	}
 }
 

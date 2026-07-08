@@ -2089,7 +2089,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
        quiet_seconds: 600
        optout_label: requires-human-review
        allowed_issue_labels: []
-       rework_limit: 0
+       rework_limit: 3
    ```
 
    Criteria-based auto-promote example:
@@ -2102,7 +2102,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
        optout_label: <optout-label>
        allowed_issue_labels:
          - <allowed-label>
-       rework_limit: <0-or-max-rework-laps>
+       rework_limit: <0-to-disable-or-max-rework-laps>
    ```
 
    For a command gate, auto-promote requires a linked open PR, green CI, no P1
@@ -2116,10 +2116,10 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    checks as non-green on the current PR head. Failed or cancelled current-head
    CI also routes the item to `Rework` by default; set `ci_failure_action: skip`
    only when red CI should stay parked in `Human Review`.
-   `agent.auto_promote.rework_limit: 0` leaves
-   repeated rework unlimited; a positive value requires `Blocked` in a configured
-   tracker state list and blocks the next lap after that many persisted Rework
-   entries. Pending CI stays parked. The quiet
+   `agent.auto_promote.rework_limit` defaults to `3`; set it to `0` only when
+   repeated rework should remain unlimited. A positive value requires `Blocked`
+   in a configured tracker state list and blocks the next lap after that many
+   persisted Rework entries. Pending CI stays parked. The quiet
    period resets on observed issue updates, Project
    status updates, automated PR review submission, and linked PR activity such
    as a fresh push to the PR head. With `gate.validator.enabled: true`, a

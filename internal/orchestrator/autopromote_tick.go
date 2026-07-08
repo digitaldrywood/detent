@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -38,11 +39,18 @@ type autoPromoteReworkLimitSummary struct {
 	Limit        int
 	Count        int
 	ReasonCounts []autoPromoteReworkReasonCount
+	Signature    autoPromoteReworkSignature
 }
 
 type autoPromoteReworkReasonCount struct {
 	Reason string
 	Count  int
+}
+
+type autoPromoteReworkSignature struct {
+	PRNumber     int64
+	HeadSHA      string
+	FailedChecks []string
 }
 
 func (o *Orchestrator) autoPromoteHumanReviewIssues(
@@ -1751,7 +1759,7 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 	transitionReason := string(decision.Reason)
 	body := autoPromoteComment(summary, decision, displayStateName(issue.State), targetState)
 	if decision.Action == AutoPromoteActionRework {
-		limit, err := o.autoPromoteReworkLimit(ctx, issue)
+		limit, err := o.autoPromoteReworkLimit(ctx, issue, summary)
 		if err != nil {
 			if o.logger != nil {
 				o.logger.Warn(
@@ -1822,18 +1830,22 @@ func (s autoPromoteReworkLimitSummary) Exceeded() bool {
 func (o *Orchestrator) autoPromoteReworkLimit(
 	ctx context.Context,
 	issue connector.Issue,
+	summary AutoPromoteSummary,
 ) (autoPromoteReworkLimitSummary, error) {
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
-	summary := autoPromoteReworkLimitSummary{Limit: cfg.ReworkLimit}
+	limitSummary := autoPromoteReworkLimitSummary{
+		Limit:     cfg.ReworkLimit,
+		Signature: autoPromoteReworkSignatureFromIssue(issue, summary),
+	}
 	if cfg.ReworkLimit <= 0 {
-		return summary, nil
+		return limitSummary, nil
 	}
 	if normalizeState(issue.State) == normalizeState(cfg.ReworkState) {
-		return summary, nil
+		return limitSummary, nil
 	}
 	reader, ok := o.workflowMetrics.(WorkflowMetricsTimelineReader)
 	if !ok || reader == nil {
-		return summary, errors.New("workflow metrics timeline reader unavailable")
+		return limitSummary, errors.New("workflow metrics timeline reader unavailable")
 	}
 
 	timeline, err := reader.IssueWorkflowTimeline(ctx, store.IssueIdentity{
@@ -1842,12 +1854,13 @@ func (o *Orchestrator) autoPromoteReworkLimit(
 		IssueURL:   issue.URL,
 	})
 	if err != nil {
-		return summary, err
+		return limitSummary, err
 	}
 	entries := autoPromoteReworkLaneEntries(timeline.Events, cfg.ReworkState)
-	summary.Count = len(entries)
-	summary.ReasonCounts = autoPromoteReworkReasonCounts(entries)
-	return summary, nil
+	entries = autoPromoteReworkLaneEntriesForSignature(entries, limitSummary.Signature)
+	limitSummary.Count = len(entries)
+	limitSummary.ReasonCounts = autoPromoteReworkReasonCounts(entries)
+	return limitSummary, nil
 }
 
 func autoPromoteReworkLaneEntries(events []store.WorkflowPhaseEvent, reworkState string) []store.WorkflowPhaseEvent {
@@ -1887,6 +1900,89 @@ func autoPromoteReworkReasonCounts(events []store.WorkflowPhaseEvent) []autoProm
 		out = append(out, autoPromoteReworkReasonCount{Reason: reason, Count: counts[reason]})
 	}
 	return out
+}
+
+func autoPromoteReworkLaneEntriesForSignature(
+	events []store.WorkflowPhaseEvent,
+	signature autoPromoteReworkSignature,
+) []store.WorkflowPhaseEvent {
+	if signature.empty() {
+		return events
+	}
+	matching := make([]store.WorkflowPhaseEvent, 0, len(events))
+	for _, event := range events {
+		if autoPromoteReworkSignatureMatches(signature, autoPromoteReworkSignatureFromEvent(event)) {
+			matching = append(matching, event)
+		}
+	}
+	return matching
+}
+
+func autoPromoteReworkSignatureFromIssue(issue connector.Issue, summary AutoPromoteSummary) autoPromoteReworkSignature {
+	signature := autoPromoteReworkSignature{}
+	if issue.PRNumber != nil && *issue.PRNumber > 0 {
+		signature.PRNumber = int64(*issue.PRNumber)
+	}
+	if issue.PullRequest != nil {
+		if issue.PullRequest.Number > 0 {
+			signature.PRNumber = int64(issue.PullRequest.Number)
+		}
+		signature.HeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
+	}
+	signature.FailedChecks = autoPromoteCanonicalChecks(summary.FailedChecks)
+	if len(signature.FailedChecks) == 0 && issue.PullRequest != nil {
+		signature.FailedChecks = autoPromoteCanonicalChecks(autoPromoteFailedChecksFromPullRequest(issue.PullRequest))
+	}
+	return signature
+}
+
+func autoPromoteReworkSignatureFromEvent(event store.WorkflowPhaseEvent) autoPromoteReworkSignature {
+	signature := autoPromoteReworkSignature{}
+	if event.PRNumber != nil && *event.PRNumber > 0 {
+		signature.PRNumber = *event.PRNumber
+	}
+	if metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON); ok {
+		if metadata.PullRequest != nil {
+			if metadata.PullRequest.Number > 0 {
+				signature.PRNumber = metadata.PullRequest.Number
+			}
+			signature.HeadSHA = strings.TrimSpace(metadata.PullRequest.HeadSHA)
+			signature.FailedChecks = autoPromoteCanonicalChecks(metadata.PullRequest.FailedChecks)
+		}
+	}
+	return signature
+}
+
+func autoPromoteReworkSignatureMatches(current autoPromoteReworkSignature, event autoPromoteReworkSignature) bool {
+	if current.empty() {
+		return true
+	}
+	if current.PRNumber > 0 && event.PRNumber > 0 && current.PRNumber != event.PRNumber {
+		return false
+	}
+	if current.HeadSHA != "" && event.HeadSHA != current.HeadSHA {
+		return false
+	}
+	if len(current.FailedChecks) > 0 && !slices.Equal(current.FailedChecks, event.FailedChecks) {
+		return false
+	}
+	if current.HeadSHA != "" || len(current.FailedChecks) > 0 {
+		return true
+	}
+	return current.PRNumber <= 0 || event.PRNumber <= 0 || current.PRNumber == event.PRNumber
+}
+
+func (s autoPromoteReworkSignature) empty() bool {
+	return s.PRNumber <= 0 && s.HeadSHA == "" && len(s.FailedChecks) == 0
+}
+
+func autoPromoteCanonicalChecks(checks []string) []string {
+	checks = uniqueStrings(checks)
+	if len(checks) == 0 {
+		return nil
+	}
+	slices.Sort(checks)
+	return checks
 }
 
 func (o *Orchestrator) recordAutoPromoteReworkHandoff(

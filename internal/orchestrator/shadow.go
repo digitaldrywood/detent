@@ -69,6 +69,9 @@ func (s *State) ensureInitialized(cfg Config) {
 	if s.Retry == nil {
 		s.Retry = map[string]Retry{}
 	}
+	if s.DependencyAutoUnblocks == nil {
+		s.DependencyAutoUnblocks = map[string]DependencyAutoUnblockRecord{}
+	}
 	if s.BudgetRefusals == nil {
 		s.BudgetRefusals = map[string]BudgetRefusal{}
 	}

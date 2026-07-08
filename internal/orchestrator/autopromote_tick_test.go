@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -654,6 +655,157 @@ func TestTickAutoPromoteBlocksWhenReworkLimitReached(t *testing.T) {
 	blocked := events[2]
 	if blocked.PhaseName != "Blocked" || blocked.Status != "entered" || blocked.Reason != "rework_limit" {
 		t.Fatalf("blocked metric = %#v, want Blocked entered with rework_limit reason", blocked)
+	}
+}
+
+func TestTickAutoPromoteBlocksRepeatedCINotGreenSignature(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 8, 14, 30, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("issue-red-ci-loop", []string{"bug"}, &connector.PullRequest{
+		Number:   1046,
+		URL:      "https://github.test/digitaldrywood/detent/pull/1046",
+		State:    "OPEN",
+		HeadSHA:  "same-head",
+		CIStatus: "fail",
+		RequiredCheckFailures: []connector.PullRequestCheck{
+			{Name: "Test", Status: "completed", Conclusion: "failure"},
+			{Name: "Tier-1 Race Tests", Status: "completed", Conclusion: "failure"},
+		},
+	})
+	issue.Identifier = "digitaldrywood/detent#1046"
+	issue.URL = "https://github.test/digitaldrywood/detent/issues/1046"
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			ReworkLimit:   1,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	prNumber := int64(1046)
+	if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), store.WorkflowPhaseEvent{
+		ProjectID:    defaultWorkflowMetricsProjectID,
+		IssueID:      issue.ID,
+		Identifier:   issue.Identifier,
+		IssueURL:     issue.URL,
+		PRNumber:     &prNumber,
+		PhaseType:    store.WorkflowPhaseTypeLane,
+		PhaseName:    "Rework",
+		Reason:       string(AutoPromoteReasonCINotGreen),
+		Status:       "entered",
+		StartedAt:    now.Add(-time.Hour),
+		MetadataJSON: autoPromoteReworkEventMetadata(1046, "same-head", "Test", "Tier-1 Race Tests"),
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+	orch := &Orchestrator{
+		cfg:             cfg,
+		connector:       tracker,
+		workflowMetrics: metrics,
+		logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Blocked"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one Blocked handoff comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"Rework limit was reached",
+		"prior_rework_transitions: 1",
+		"current_rework_reason: ci_not_green",
+		"repeated_rework_reasons: ci_not_green x1",
+		"failed_checks: Test, Tier-1 Race Tests",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+		}
+	}
+	events := metrics.snapshot()
+	blocked := events[len(events)-1]
+	if blocked.PhaseName != "Blocked" || blocked.Reason != "rework_limit" {
+		t.Fatalf("latest workflow event = %#v, want Blocked rework_limit entry", blocked)
+	}
+}
+
+func TestTickAutoPromoteResetsReworkLimitAfterHeadSHAChange(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 8, 14, 45, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("issue-red-ci-new-head", []string{"bug"}, &connector.PullRequest{
+		Number:   1047,
+		URL:      "https://github.test/digitaldrywood/detent/pull/1047",
+		State:    "OPEN",
+		HeadSHA:  "new-head",
+		CIStatus: "fail",
+		RequiredCheckFailures: []connector.PullRequestCheck{{
+			Name:       "Test",
+			Status:     "completed",
+			Conclusion: "failure",
+		}},
+	})
+	issue.Identifier = "digitaldrywood/detent#1047"
+	issue.URL = "https://github.test/digitaldrywood/detent/issues/1047"
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			ReworkLimit:   1,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	prNumber := int64(1047)
+	if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), store.WorkflowPhaseEvent{
+		ProjectID:    defaultWorkflowMetricsProjectID,
+		IssueID:      issue.ID,
+		Identifier:   issue.Identifier,
+		IssueURL:     issue.URL,
+		PRNumber:     &prNumber,
+		PhaseType:    store.WorkflowPhaseTypeLane,
+		PhaseName:    "Rework",
+		Reason:       string(AutoPromoteReasonCINotGreen),
+		Status:       "entered",
+		StartedAt:    now.Add(-time.Hour),
+		MetadataJSON: autoPromoteReworkEventMetadata(1047, "old-head", "Test"),
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+	orch := &Orchestrator{
+		cfg:             cfg,
+		connector:       tracker,
+		workflowMetrics: metrics,
+		logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Rework"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if len(tracker.comments) != 1 || strings.Contains(tracker.comments[0].body, "Rework limit was reached") {
+		t.Fatalf("comments = %#v, want ordinary Rework handoff", tracker.comments)
+	}
+	events := metrics.snapshot()
+	rework := events[len(events)-1]
+	signature := autoPromoteReworkSignatureFromEvent(rework)
+	if rework.PhaseName != "Rework" || signature.HeadSHA != "new-head" || !slices.Equal(signature.FailedChecks, []string{"Test"}) {
+		t.Fatalf("latest Rework event = %#v signature = %#v, want new-head Test signature", rework, signature)
 	}
 }
 
@@ -3831,6 +3983,23 @@ type autoPromoteTickHydration struct {
 	issueID    string
 	repository string
 	number     int
+}
+
+func autoPromoteReworkEventMetadata(prNumber int, headSHA string, failedChecks ...string) string {
+	issue := connector.Issue{
+		PullRequest: &connector.PullRequest{
+			Number:  prNumber,
+			HeadSHA: headSHA,
+		},
+	}
+	for _, check := range failedChecks {
+		issue.PullRequest.RequiredCheckFailures = append(issue.PullRequest.RequiredCheckFailures, connector.PullRequestCheck{
+			Name:       check,
+			Status:     "completed",
+			Conclusion: "failure",
+		})
+	}
+	return workflowLaneMetadataJSON(issue, workflowLaneMetadata{})
 }
 
 type autoPromoteWorkflowMetricsRecorder struct {

@@ -639,8 +639,8 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if cfg.Agent.Skills.Creation.MaxDraftsPerRun != 1 {
 		t.Fatalf("Agent.Skills.Creation.MaxDraftsPerRun = %d, want 1", cfg.Agent.Skills.Creation.MaxDraftsPerRun)
 	}
-	if cfg.Agent.AutoPromote.ReworkLimit != 0 {
-		t.Fatalf("Agent.AutoPromote.ReworkLimit = %d, want unlimited default", cfg.Agent.AutoPromote.ReworkLimit)
+	if cfg.Agent.AutoPromote.ReworkLimit != DefaultReworkLimit {
+		t.Fatalf("Agent.AutoPromote.ReworkLimit = %d, want %d", cfg.Agent.AutoPromote.ReworkLimit, DefaultReworkLimit)
 	}
 	if cfg.Agent.OutputTruncation.MaxBytes != 0 {
 		t.Fatalf("Agent.OutputTruncation.MaxBytes = %d, want disabled default", cfg.Agent.OutputTruncation.MaxBytes)
@@ -1477,6 +1477,7 @@ tracker:
     - Production
   observed_states:
     - Review
+    - Blocked
   terminal_states:
     - Done
 workspace:
@@ -1916,6 +1917,7 @@ tracker:
     - Done
 agent:
   auto_promote:
+    enabled: true
     rework_limit: 1
 ---
 Prompt

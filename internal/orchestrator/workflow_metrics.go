@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -18,6 +19,22 @@ type WorkflowMetricsRecorder interface {
 
 type WorkflowMetricsTimelineReader interface {
 	IssueWorkflowTimeline(context.Context, store.IssueIdentity) (store.WorkflowTimeline, error)
+}
+
+type workflowLaneMetadata struct {
+	PullRequest           *workflowLanePullRequestMetadata           `json:"pull_request,omitempty"`
+	DependencyAutoUnblock *workflowLaneDependencyAutoUnblockMetadata `json:"dependency_auto_unblock,omitempty"`
+}
+
+type workflowLanePullRequestMetadata struct {
+	Number       int64    `json:"number,omitempty"`
+	HeadSHA      string   `json:"head_sha,omitempty"`
+	FailedChecks []string `json:"failed_checks,omitempty"`
+}
+
+type workflowLaneDependencyAutoUnblockMetadata struct {
+	BlockerSet string   `json:"blocker_set,omitempty"`
+	Blockers   []string `json:"blockers,omitempty"`
 }
 
 func (o *Orchestrator) updateIssueState(
@@ -38,6 +55,18 @@ func (o *Orchestrator) updateIssueStateByID(
 	at time.Time,
 	reason string,
 ) error {
+	return o.updateIssueStateByIDWithMetadata(ctx, issueID, issue, targetState, at, reason, workflowLaneMetadata{})
+}
+
+func (o *Orchestrator) updateIssueStateByIDWithMetadata(
+	ctx context.Context,
+	issueID string,
+	issue connector.Issue,
+	targetState string,
+	at time.Time,
+	reason string,
+	metadata workflowLaneMetadata,
+) error {
 	if err := o.connector.UpdateIssueState(ctx, issueID, targetState); err != nil {
 		if errors.Is(err, connector.ErrStateUpdateBlocked) {
 			if o.logger != nil {
@@ -50,7 +79,7 @@ func (o *Orchestrator) updateIssueStateByID(
 	if strings.TrimSpace(issue.ID) == "" {
 		issue.ID = issueID
 	}
-	o.recordLaneTransition(ctx, issue, targetState, at, reason)
+	o.recordLaneTransition(ctx, issue, targetState, at, reason, metadata)
 	return nil
 }
 
@@ -60,6 +89,7 @@ func (o *Orchestrator) recordLaneTransition(
 	targetState string,
 	at time.Time,
 	reason string,
+	metadata workflowLaneMetadata,
 ) {
 	recorder := o.workflowMetrics
 	if recorder == nil {
@@ -88,7 +118,7 @@ func (o *Orchestrator) recordLaneTransition(
 		PhaseType:      store.WorkflowPhaseTypeLane,
 		Reason:         reason,
 		StartedAt:      at,
-		MetadataJSON:   "{}",
+		MetadataJSON:   workflowLaneMetadataJSON(issue, metadata),
 		EndpointFamily: "tracker",
 	}
 	if sourceState != "" {
@@ -149,4 +179,45 @@ func workflowMetricsPRNumber(issue connector.Issue) *int64 {
 	default:
 		return nil
 	}
+}
+
+func workflowLaneMetadataJSON(issue connector.Issue, metadata workflowLaneMetadata) string {
+	if metadata.PullRequest == nil {
+		metadata.PullRequest = workflowLanePullRequestMetadataFromIssue(issue)
+	}
+	if metadata.PullRequest == nil && metadata.DependencyAutoUnblock == nil {
+		return "{}"
+	}
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
+}
+
+func workflowLaneMetadataFromJSON(raw string) (workflowLaneMetadata, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "{}" {
+		return workflowLaneMetadata{}, false
+	}
+	var metadata workflowLaneMetadata
+	if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+		return workflowLaneMetadata{}, false
+	}
+	return metadata, true
+}
+
+func workflowLanePullRequestMetadataFromIssue(issue connector.Issue) *workflowLanePullRequestMetadata {
+	var metadata workflowLanePullRequestMetadata
+	if number := workflowMetricsPRNumber(issue); number != nil && *number > 0 {
+		metadata.Number = *number
+	}
+	if issue.PullRequest != nil {
+		metadata.HeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
+		metadata.FailedChecks = autoPromoteCanonicalChecks(autoPromoteFailedChecksFromPullRequest(issue.PullRequest))
+	}
+	if metadata.Number <= 0 && metadata.HeadSHA == "" && len(metadata.FailedChecks) == 0 {
+		return nil
+	}
+	return &metadata
 }
