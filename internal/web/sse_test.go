@@ -11,6 +11,7 @@ import (
 
 	"github.com/a-h/templ"
 
+	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
@@ -400,7 +401,7 @@ func newTestSSEStream(now *time.Time) *sseStream {
 
 func newSSESnapshotTestServer() *Server {
 	return &Server{
-		kanbanMutations: newKanbanMutationLocks(),
+		kanbanMutations: kanbanstate.NewMutationTracker(),
 		kanbanRefreshes: newKanbanRefreshFeedbackTracker(),
 	}
 }
