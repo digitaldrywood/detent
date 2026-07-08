@@ -130,6 +130,7 @@ type Server struct {
 	apiKeys             *apikey.Service
 	ipLimiter           *apiRateLimiter
 	keyLimiter          *apiRateLimiter
+	asyncWrites         *asyncStoreWriter
 	dashboardAuthSecret [32]byte
 	afterFunc           func(time.Duration, func()) *time.Timer
 }
@@ -158,6 +159,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	e.Server.IdleTimeout = cfg.httpIdleTimeout()
 	kanban := cfg.kanban()
 	kanbanWorkflow := cfg.kanbanWorkflow(kanban)
+	logger := cfg.logger()
 	dashboardAuthSecret, err := newDashboardAuthSecret()
 	if err != nil {
 		return nil, fmt.Errorf("dashboard auth secret: %w", err)
@@ -170,7 +172,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		registry:            deps.Registry,
 		connector:           deps.Connector,
 		refresher:           deps.Refresher,
-		logger:              cfg.logger(),
+		logger:              logger,
 		mode:                mode,
 		tickEvery:           cfg.sseTickInterval(),
 		sseFragmentInterval: cfg.sseFragmentInterval(),
@@ -202,6 +204,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		apiKeys:             apikey.NewService(deps.Store),
 		ipLimiter:           newAPIRateLimiter(300, 60),
 		keyLimiter:          newAPIRateLimiter(120, 30),
+		asyncWrites:         newAsyncStoreWriter(256, logger),
 		dashboardAuthSecret: dashboardAuthSecret,
 		afterFunc:           time.AfterFunc,
 	}
@@ -239,7 +242,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.keyLimiter != nil {
 		s.keyLimiter.Stop()
 	}
-	return s.echo.Shutdown(ctx)
+	err := s.echo.Shutdown(ctx)
+	if s.asyncWrites != nil {
+		if closeErr := s.asyncWrites.Close(ctx); closeErr != nil {
+			return errors.Join(err, closeErr)
+		}
+	}
+	return err
 }
 
 func (s *Server) registerRoutes() {
