@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,13 +60,35 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 			finalState: FinalStateCompleted,
 		},
 		{
-			name:       "command gate with auto promote enabled skips human review target",
+			name:       "zero quiet command gate with source wait skips human review target",
 			issue:      completionTransitionIssue("In Progress", "OPEN"),
 			finalState: FinalStateCompleted,
 			cfg: AutoPromoteConfig{
 				Enabled: true,
 				Gate:    gate.Config{Kind: gate.KindCommand},
 			},
+		},
+		{
+			name:       "command gate with quiet window advances to human review",
+			issue:      completionTransitionIssue("In Progress", "OPEN"),
+			finalState: FinalStateCompleted,
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				Gate:          gate.Config{Kind: gate.KindCommand},
+			},
+			want: autoPromoteSourceState,
+		},
+		{
+			name:       "zero quiet command gate with review wait advances to human review",
+			issue:      completionTransitionIssue("In Progress", "OPEN"),
+			finalState: FinalStateCompleted,
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				GateWaitState: autoPromoteGateWaitReview,
+				Gate:          gate.Config{Kind: gate.KindCommand},
+			},
+			want: autoPromoteSourceState,
 		},
 		{
 			name:       "human review gate keeps human review target",
@@ -147,21 +170,20 @@ func TestTransitionCompletedActiveIssuesLeavesAutoPromoteIssueActive(t *testing.
 	t.Parallel()
 
 	now := time.Date(2026, 7, 7, 14, 0, 0, 0, time.UTC)
-	reviewedAt := now.Add(-time.Minute)
 	issue := completionTransitionIssue("In Progress", "OPEN")
 	issue.PullRequest = &connector.PullRequest{
-		Number:                 17,
-		URL:                    "https://github.test/digitaldrywood/detent/pull/17",
-		State:                  "OPEN",
-		CIStatus:               "success",
-		CodexReviewState:       "COMMENTED",
-		CodexReviewSubmittedAt: &reviewedAt,
+		Number:           17,
+		URL:              "https://github.test/digitaldrywood/detent/pull/17",
+		State:            "OPEN",
+		MergeableState:   "unknown",
+		CIStatus:         "pending",
+		CodexReviewState: "COMMENTED",
 	}
 	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
 	cfg := normalizeConfig(Config{
 		AutoPromote: AutoPromoteConfig{
 			Enabled:       true,
-			QuietDuration: 10 * time.Minute,
+			QuietDuration: 0,
 			Gate:          gate.Config{Kind: gate.KindCommand},
 		},
 		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
@@ -170,8 +192,9 @@ func TestTransitionCompletedActiveIssuesLeavesAutoPromoteIssueActive(t *testing.
 	orch := &Orchestrator{cfg: cfg, connector: tracker}
 	state := newState(cfg)
 	state.Completed[issue.ID] = Completed{
-		Issue:      issue,
-		FinalState: FinalStateCompleted,
+		Issue:       issue,
+		CompletedAt: now.Add(-time.Minute),
+		FinalState:  FinalStateCompleted,
 	}
 
 	result := orch.transitionCompletedActiveIssuesToReview(context.Background(), &state, []connector.Issue{issue}, now)
@@ -193,6 +216,71 @@ func TestTransitionCompletedActiveIssuesLeavesAutoPromoteIssueActive(t *testing.
 	}
 	if len(state.RecentEvents) != 0 {
 		t.Fatalf("RecentEvents = %#v, want none", state.RecentEvents)
+	}
+}
+
+func TestTransitionCompletedActiveIssuesEscalatesGateWaitTimeout(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 7, 15, 0, 0, 0, time.UTC)
+	issue := completionTransitionIssue("In Progress", "OPEN")
+	issue.PullRequest = &connector.PullRequest{
+		Number:         19,
+		URL:            "https://github.test/digitaldrywood/detent/pull/19",
+		State:          "OPEN",
+		MergeableState: "unknown",
+		CIStatus:       "pending",
+	}
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled:         true,
+			QuietDuration:   0,
+			GateWaitTimeout: 15 * time.Minute,
+			Gate:            gate.Config{Kind: gate.KindCommand},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:       issue,
+		CompletedAt: now.Add(-16 * time.Minute),
+		FinalState:  FinalStateCompleted,
+	}
+
+	result := orch.transitionCompletedActiveIssuesToReview(context.Background(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing", issue.ID)
+	}
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Human Review"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one timeout comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"Auto-promote gate wait timed out",
+		"reason: auto_promote_gate_wait_timeout",
+		"waited: 16m0s",
+		"timeout: 15m0s",
+		"https://github.test/digitaldrywood/detent/pull/19",
+		"ci_status: pending",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+		}
+	}
+	if got := state.Completed[issue.ID].Issue.State; got != "Human Review" {
+		t.Fatalf("Completed issue state = %q, want Human Review", got)
+	}
+	if len(result.dispatchCandidates) != 0 {
+		t.Fatalf("dispatchCandidates = %#v, want none", result.dispatchCandidates)
+	}
+	if len(state.RecentEvents) != 1 || state.RecentEvents[0].Event != "completed_active_gate_wait_timeout" {
+		t.Fatalf("RecentEvents = %#v, want timeout event", state.RecentEvents)
 	}
 }
 

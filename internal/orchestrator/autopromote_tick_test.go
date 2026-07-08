@@ -406,7 +406,7 @@ func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
 				MaxConcurrentAgents: 1,
 				AutoPromote: AutoPromoteConfig{
 					Enabled:       true,
-					QuietDuration: 10 * time.Minute,
+					QuietDuration: 0,
 					Gate:          gate.Config{Kind: gate.KindCommand},
 				},
 				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
@@ -465,7 +465,7 @@ func TestTickAutoPromoteRecoversActiveIssueAfterRestart(t *testing.T) {
 		MaxConcurrentAgents: 1,
 		AutoPromote: AutoPromoteConfig{
 			Enabled:       true,
-			QuietDuration: 10 * time.Minute,
+			QuietDuration: 0,
 			Gate:          gate.Config{Kind: gate.KindCommand},
 		},
 		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},

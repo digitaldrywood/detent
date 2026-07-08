@@ -41,11 +41,12 @@ const (
 	defaultLinearEndpoint = "https://api.linear.app/graphql"
 	defaultGitHubEndpoint = "https://api.github.com/graphql"
 
-	DefaultAgentBackendID    = "codex"
-	AgentBackendCodex        = "codex"
-	AgentBackendClaudeCode   = "claude_code"
-	DefaultKnowledgeMaxBytes = 64 * 1024
-	DefaultReworkLimit       = 3
+	DefaultAgentBackendID                    = "codex"
+	AgentBackendCodex                        = "codex"
+	AgentBackendClaudeCode                   = "claude_code"
+	DefaultKnowledgeMaxBytes                 = 64 * 1024
+	DefaultReworkLimit                       = 3
+	DefaultAutoPromoteGateWaitTimeoutSeconds = 3600
 
 	DefaultPollingIntervalMS      = 120000
 	MinPollingIntervalMS          = 60000
@@ -65,6 +66,9 @@ const (
 
 	KanbanModeReadOnly    = "read_only"
 	KanbanModeIntegration = "integration"
+
+	AutoPromoteGateWaitStateSource = "source"
+	AutoPromoteGateWaitStateReview = "review"
 )
 
 type Workflow struct {
@@ -273,14 +277,16 @@ type AgentRoute struct {
 }
 
 type AutoPromote struct {
-	Enabled            bool     `yaml:"enabled"`
-	QuietSeconds       int      `yaml:"quiet_seconds"`
-	OptoutLabel        string   `yaml:"optout_label"`
-	AllowedIssueLabels []string `yaml:"allowed_issue_labels"`
-	SourceState        string   `yaml:"source_state,omitempty"`
-	PassState          string   `yaml:"pass_state,omitempty"`
-	ReworkState        string   `yaml:"rework_state,omitempty"`
-	ReworkLimit        int      `yaml:"rework_limit,omitempty"`
+	Enabled                bool     `yaml:"enabled"`
+	QuietSeconds           int      `yaml:"quiet_seconds"`
+	OptoutLabel            string   `yaml:"optout_label"`
+	AllowedIssueLabels     []string `yaml:"allowed_issue_labels"`
+	GateWaitState          string   `yaml:"gate_wait_state,omitempty"`
+	GateWaitTimeoutSeconds int      `yaml:"gate_wait_timeout_seconds,omitempty"`
+	SourceState            string   `yaml:"source_state,omitempty"`
+	PassState              string   `yaml:"pass_state,omitempty"`
+	ReworkState            string   `yaml:"rework_state,omitempty"`
+	ReworkLimit            int      `yaml:"rework_limit,omitempty"`
 }
 
 type OutputTruncation struct {
@@ -780,13 +786,15 @@ func Default() Config {
 			DispatchPriorityByState:    []string{},
 			DispatchPriorityByLabel:    []string{},
 			AutoPromote: AutoPromote{
-				QuietSeconds:       600,
-				OptoutLabel:        "requires-human-review",
-				AllowedIssueLabels: []string{},
-				SourceState:        "Human Review",
-				PassState:          "Merging",
-				ReworkState:        "Rework",
-				ReworkLimit:        DefaultReworkLimit,
+				QuietSeconds:           600,
+				OptoutLabel:            "requires-human-review",
+				AllowedIssueLabels:     []string{},
+				GateWaitState:          AutoPromoteGateWaitStateSource,
+				GateWaitTimeoutSeconds: DefaultAutoPromoteGateWaitTimeoutSeconds,
+				SourceState:            "Human Review",
+				PassState:              "Merging",
+				ReworkState:            "Rework",
+				ReworkLimit:            DefaultReworkLimit,
 			},
 			Budget:    budget,
 			Lessons:   defaultLessons(),
@@ -993,6 +1001,10 @@ func (c *Config) normalize() {
 	c.Agent.MaxSessionTokenOverrideField = strings.TrimSpace(c.Agent.MaxSessionTokenOverrideField)
 	c.Agent.AutoPromote.OptoutLabel = normalizeLabel(c.Agent.AutoPromote.OptoutLabel)
 	c.Agent.AutoPromote.AllowedIssueLabels = normalizeLabels(c.Agent.AutoPromote.AllowedIssueLabels)
+	c.Agent.AutoPromote.GateWaitState = normalizeAutoPromoteGateWaitState(c.Agent.AutoPromote.GateWaitState)
+	if c.Agent.AutoPromote.GateWaitTimeoutSeconds == 0 {
+		c.Agent.AutoPromote.GateWaitTimeoutSeconds = DefaultAutoPromoteGateWaitTimeoutSeconds
+	}
 	c.Agent.AutoPromote.SourceState = strings.TrimSpace(c.Agent.AutoPromote.SourceState)
 	if c.Agent.AutoPromote.SourceState == "" {
 		c.Agent.AutoPromote.SourceState = "Human Review"
@@ -1446,6 +1458,14 @@ func (a *AutoPromote) validate(prefix string, problems *[]string) {
 			return
 		}
 	}
+	switch normalizeAutoPromoteGateWaitState(a.GateWaitState) {
+	case AutoPromoteGateWaitStateSource, AutoPromoteGateWaitStateReview:
+	default:
+		*problems = append(*problems, prefix+".gate_wait_state must be one of source, review")
+	}
+	if a.GateWaitTimeoutSeconds <= 0 {
+		*problems = append(*problems, prefix+".gate_wait_timeout_seconds must be greater than 0")
+	}
 	if strings.TrimSpace(a.SourceState) == "" {
 		*problems = append(*problems, prefix+".source_state must not be blank")
 	}
@@ -1457,6 +1477,17 @@ func (a *AutoPromote) validate(prefix string, problems *[]string) {
 	}
 	if a.ReworkLimit < 0 {
 		*problems = append(*problems, prefix+".rework_limit must be greater than or equal to 0")
+	}
+}
+
+func normalizeAutoPromoteGateWaitState(state string) string {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "", AutoPromoteGateWaitStateSource:
+		return AutoPromoteGateWaitStateSource
+	case AutoPromoteGateWaitStateReview:
+		return AutoPromoteGateWaitStateReview
+	default:
+		return strings.ToLower(strings.TrimSpace(state))
 	}
 }
 

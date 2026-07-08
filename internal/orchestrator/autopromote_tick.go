@@ -18,11 +18,14 @@ import (
 )
 
 const (
-	autoPromoteSourceState           = "Human Review"
-	autoPromoteMergingState          = "Merging"
-	autoPromoteReworkState           = "Rework"
-	defaultMergeWorkerStartupTimeout = 2 * time.Minute
-	mergeWorkerProjectStateFull      = "project_state_capacity_full"
+	autoPromoteSourceState            = "Human Review"
+	autoPromoteMergingState           = "Merging"
+	autoPromoteReworkState            = "Rework"
+	autoPromoteGateWaitSource         = "source"
+	autoPromoteGateWaitReview         = "review"
+	defaultAutoPromoteGateWaitTimeout = time.Hour
+	defaultMergeWorkerStartupTimeout  = 2 * time.Minute
+	mergeWorkerProjectStateFull       = "project_state_capacity_full"
 )
 
 type autoPromoteTickResult struct {
@@ -146,6 +149,9 @@ func (o *Orchestrator) autoPromoteEvaluationIssues(
 		if _, ok := seen[issueID]; ok {
 			continue
 		}
+		if !autoPromoteSourceGateWaitEnabled(cfg) {
+			continue
+		}
 		if !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg) {
 			continue
 		}
@@ -177,6 +183,9 @@ func autoPromoteActiveGatePendingIssue(
 	if !stateIn(issue.State, cfg.ActiveStates) || stateIn(issue.State, cfg.TerminalStates) {
 		return false
 	}
+	if !autoPromoteActiveGateTrackingEnabled(autoCfg) {
+		return false
+	}
 	switch normalizeState(issue.State) {
 	case normalizeState(autoCfg.SourceState), normalizeState(autoCfg.PassState), normalizeState(autoCfg.ReworkState):
 		return false
@@ -194,6 +203,16 @@ func autoPromoteActiveGatePendingIssue(
 		}
 	}
 	return issueHasOpenPullRequest(issue)
+}
+
+func autoPromoteSourceGateWaitEnabled(cfg AutoPromoteConfig) bool {
+	cfg = normalizeAutoPromoteConfig(cfg)
+	return cfg.Enabled && cfg.QuietDuration == 0 && cfg.GateWaitState == autoPromoteGateWaitSource
+}
+
+func autoPromoteActiveGateTrackingEnabled(cfg AutoPromoteConfig) bool {
+	cfg = normalizeAutoPromoteConfig(cfg)
+	return cfg.Enabled && (cfg.QuietDuration > 0 || cfg.GateWaitState == autoPromoteGateWaitSource)
 }
 
 func autoPromoteActiveDispatchInProgress(state *State, issueID string) bool {

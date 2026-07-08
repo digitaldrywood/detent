@@ -1252,14 +1252,17 @@ probes.
    fully supported, and this is the human's call.
 
    For criteria-based auto-promote, use `agent.auto_promote.enabled`,
-   `quiet_seconds`, `optout_label`, `allowed_issue_labels`, and the top-level
-   command gate's `require_automated_review` setting. `quiet_seconds` is the
-   quiet period after observed issue/status/review activity and linked PR
-   activity such as a fresh push to the PR head, `optout_label` is the
-   per-issue escape hatch, and `allowed_issue_labels` is an allowlist such as
-   `documentation` for low-risk issue classes. When automated review is
-   required, a Codex/ChatGPT/Claude review on an older commit does not clear
-   this gate. Verify:
+   `quiet_seconds`, `optout_label`, `allowed_issue_labels`, `gate_wait_state`,
+   `gate_wait_timeout_seconds`, and the top-level command gate's
+   `require_automated_review` setting. `quiet_seconds` is the quiet period after
+   observed issue/status/review activity and linked PR activity such as a fresh
+   push to the PR head, `optout_label` is the per-issue escape hatch,
+   `allowed_issue_labels` is an allowlist such as `documentation` for low-risk
+   issue classes, and `gate_wait_state: source` keeps zero-quiet completed work
+   in its active lane while checks are pending until
+   `gate_wait_timeout_seconds` expires. When automated review is required, a
+   Codex/ChatGPT/Claude review on an older commit does not clear this gate.
+   Verify:
 
    ```sh
    printf '%s\n' \
@@ -2060,7 +2063,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    policy, and dependency policy selected by the human. Verify:
 
    ```sh
-   rg -n 'max_concurrent_agents: <max>|Merging: 1|dispatch_priority_by_label:|auto_promote:|dependency_auto_unblock:|enabled: <true|false>|quiet_seconds: <seconds>|optout_label: <label>|allowed_issue_labels:|rework_limit:|source_states:|target_state:|readiness:' \
+   rg -n 'max_concurrent_agents: <max>|Merging: 1|dispatch_priority_by_label:|auto_promote:|dependency_auto_unblock:|enabled: <true|false>|quiet_seconds: <seconds>|optout_label: <label>|allowed_issue_labels:|gate_wait_state:|gate_wait_timeout_seconds:|rework_limit:|source_states:|target_state:|readiness:' \
      <source-root>/WORKFLOW.md
    ```
 
@@ -2089,6 +2092,8 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
        quiet_seconds: 600
        optout_label: requires-human-review
        allowed_issue_labels: []
+       gate_wait_state: source
+       gate_wait_timeout_seconds: 3600
        rework_limit: 3
    ```
 
@@ -2102,6 +2107,8 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
        optout_label: <optout-label>
        allowed_issue_labels:
          - <allowed-label>
+       gate_wait_state: <source-or-review>
+       gate_wait_timeout_seconds: <positive-seconds>
        rework_limit: <0-to-disable-or-max-rework-laps>
    ```
 

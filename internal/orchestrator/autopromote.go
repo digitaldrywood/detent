@@ -13,6 +13,8 @@ type AutoPromoteConfig struct {
 	QuietDuration      time.Duration
 	OptoutLabel        string
 	AllowedIssueLabels []string
+	GateWaitState      string
+	GateWaitTimeout    time.Duration
 	SourceState        string
 	PassState          string
 	ReworkState        string
@@ -159,6 +161,10 @@ func normalizeAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {
 	}
 	cfg.OptoutLabel = normalizeLabel(cfg.OptoutLabel)
 	cfg.AllowedIssueLabels = normalizeLabels(cfg.AllowedIssueLabels)
+	cfg.GateWaitState = normalizeAutoPromoteGateWaitState(cfg.GateWaitState)
+	if cfg.GateWaitTimeout <= 0 {
+		cfg.GateWaitTimeout = defaultAutoPromoteGateWaitTimeout
+	}
 	cfg.SourceState = strings.TrimSpace(cfg.SourceState)
 	if cfg.SourceState == "" {
 		cfg.SourceState = autoPromoteSourceState
@@ -176,6 +182,17 @@ func normalizeAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {
 	}
 	cfg.Gate = gate.Effective(cfg.Gate)
 	return cfg
+}
+
+func normalizeAutoPromoteGateWaitState(state string) string {
+	switch normalizeState(state) {
+	case "", autoPromoteGateWaitSource:
+		return autoPromoteGateWaitSource
+	case autoPromoteGateWaitReview:
+		return autoPromoteGateWaitReview
+	default:
+		return normalizeState(state)
+	}
 }
 
 func autoPromoteOptoutLabel(issue connector.Issue, cfg AutoPromoteConfig) bool {

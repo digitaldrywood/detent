@@ -106,6 +106,8 @@ agent:
     enabled: true
     quiet_seconds: 0
     optout_label: Requires-Human-Review
+    gate_wait_state: review
+    gate_wait_timeout_seconds: 900
     rework_limit: 3
     allowed_issue_labels:
       - enhancement
@@ -344,6 +346,12 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Agent.AutoPromote.ReworkLimit != 3 {
 		t.Fatalf("Agent.AutoPromote.ReworkLimit = %d, want 3", cfg.Agent.AutoPromote.ReworkLimit)
+	}
+	if cfg.Agent.AutoPromote.GateWaitState != AutoPromoteGateWaitStateReview {
+		t.Fatalf("Agent.AutoPromote.GateWaitState = %q, want review", cfg.Agent.AutoPromote.GateWaitState)
+	}
+	if cfg.Agent.AutoPromote.GateWaitTimeoutSeconds != 900 {
+		t.Fatalf("Agent.AutoPromote.GateWaitTimeoutSeconds = %d, want 900", cfg.Agent.AutoPromote.GateWaitTimeoutSeconds)
 	}
 	if !cfg.Codex.ApprovalPolicy.IsString || cfg.Codex.ApprovalPolicy.String != "never" {
 		t.Fatalf("Codex.ApprovalPolicy = %#v, want string never", cfg.Codex.ApprovalPolicy)
@@ -641,6 +649,12 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Agent.AutoPromote.ReworkLimit != DefaultReworkLimit {
 		t.Fatalf("Agent.AutoPromote.ReworkLimit = %d, want %d", cfg.Agent.AutoPromote.ReworkLimit, DefaultReworkLimit)
+	}
+	if cfg.Agent.AutoPromote.GateWaitState != AutoPromoteGateWaitStateSource {
+		t.Fatalf("Agent.AutoPromote.GateWaitState = %q, want source", cfg.Agent.AutoPromote.GateWaitState)
+	}
+	if cfg.Agent.AutoPromote.GateWaitTimeoutSeconds != DefaultAutoPromoteGateWaitTimeoutSeconds {
+		t.Fatalf("Agent.AutoPromote.GateWaitTimeoutSeconds = %d, want %d", cfg.Agent.AutoPromote.GateWaitTimeoutSeconds, DefaultAutoPromoteGateWaitTimeoutSeconds)
 	}
 	if cfg.Agent.OutputTruncation.MaxBytes != 0 {
 		t.Fatalf("Agent.OutputTruncation.MaxBytes = %d, want disabled default", cfg.Agent.OutputTruncation.MaxBytes)
@@ -1899,6 +1913,23 @@ Prompt
 `,
 			want: []string{
 				"agent.auto_promote.rework_limit must be greater than or equal to 0",
+			},
+		},
+		{
+			name: "invalid auto promote gate wait settings",
+			raw: `---
+tracker:
+  kind: memory
+agent:
+  auto_promote:
+    gate_wait_state: backlog
+    gate_wait_timeout_seconds: -1
+---
+Prompt
+`,
+			want: []string{
+				"agent.auto_promote.gate_wait_state must be one of source, review",
+				"agent.auto_promote.gate_wait_timeout_seconds must be greater than 0",
 			},
 		},
 		{
