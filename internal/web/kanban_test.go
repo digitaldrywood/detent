@@ -144,7 +144,7 @@ func TestKanbanSnapshotWithPendingStatesUpdatesBlockedRefs(t *testing.T) {
 		ProjectID:  "detent",
 		Title:      "Dependency blocker",
 		State:      "In Progress",
-	}, "In Progress", "Done")
+	}, "In Progress", "Done", time.Time{})
 	snapshot := telemetry.Snapshot{
 		Project: telemetry.Project{ID: "detent"},
 		BoardIssues: []telemetry.Issue{
@@ -282,7 +282,7 @@ func TestKanbanSnapshotWithPendingStatesIgnoresCompletedHistoryForMissingPending
 		Title:      "Completed history pending card",
 		State:      "Backlog",
 	}
-	server.kanbanMutations.noteCardState("project:detent", "detent", pendingIssue, "Backlog", "Todo")
+	server.kanbanMutations.noteCardState("project:detent", "detent", pendingIssue, "Backlog", "Todo", time.Time{})
 
 	got := server.kanbanSnapshotWithPendingStates("project:detent", "detent", telemetry.Snapshot{
 		Project: telemetry.Project{ID: "detent"},
@@ -315,7 +315,7 @@ func TestKanbanSnapshotWithPendingStatesClearsCompletedPendingMove(t *testing.T)
 		Title:      "Completed pending card",
 		State:      "Backlog",
 	}
-	server.kanbanMutations.noteCardState("project:detent", "detent", pendingIssue, "Backlog", "Todo")
+	server.kanbanMutations.noteCardState("project:detent", "detent", pendingIssue, "Backlog", "Todo", time.Time{})
 
 	got := server.kanbanSnapshotWithPendingStates("project:detent", "detent", telemetry.Snapshot{
 		Project: telemetry.Project{ID: "detent"},
@@ -339,6 +339,67 @@ func TestKanbanSnapshotWithPendingStatesClearsCompletedPendingMove(t *testing.T)
 	})
 	if got.BoardIssues[0].State != "Backlog" {
 		t.Fatalf("pending state = %q, want cleared Backlog", got.BoardIssues[0].State)
+	}
+}
+
+func TestKanbanSnapshotWithPendingStatesKeepsConfirmedMoveOverOlderSnapshots(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{kanbanMutations: newKanbanMutationLocks()}
+	pendingIssue := telemetry.Issue{
+		ID:         "confirmed-card",
+		Identifier: "digitaldrywood/detent#433",
+		ProjectID:  "detent",
+		Title:      "Confirmed pending card",
+		State:      "Backlog",
+	}
+	mutationSnapshotAt := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
+	confirmedAt := mutationSnapshotAt.Add(time.Minute)
+	server.kanbanMutations.noteCardState("project:detent", "detent", pendingIssue, "Backlog", "Todo", mutationSnapshotAt)
+
+	got := server.kanbanSnapshotWithPendingStates("project:detent", "detent", telemetry.Snapshot{
+		GeneratedAt: confirmedAt,
+		Project:     telemetry.Project{ID: "detent"},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "confirmed-card",
+			Identifier: "digitaldrywood/detent#433",
+			ProjectID:  "detent",
+			Title:      "Confirmed pending card",
+			State:      "Todo",
+		}},
+	})
+	if got.BoardIssues[0].State != "Todo" {
+		t.Fatalf("confirmed state = %q, want Todo", got.BoardIssues[0].State)
+	}
+
+	got = server.kanbanSnapshotWithPendingStates("project:detent", "detent", telemetry.Snapshot{
+		GeneratedAt: confirmedAt.Add(-30 * time.Second),
+		Project:     telemetry.Project{ID: "detent"},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "confirmed-card",
+			Identifier: "digitaldrywood/detent#433",
+			ProjectID:  "detent",
+			Title:      "Confirmed pending card",
+			State:      "Backlog",
+		}},
+	})
+	if got.BoardIssues[0].State != "Todo" {
+		t.Fatalf("older stale state = %q, want Todo", got.BoardIssues[0].State)
+	}
+
+	got = server.kanbanSnapshotWithPendingStates("project:detent", "detent", telemetry.Snapshot{
+		GeneratedAt: confirmedAt.Add(time.Minute),
+		Project:     telemetry.Project{ID: "detent"},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "confirmed-card",
+			Identifier: "digitaldrywood/detent#433",
+			ProjectID:  "detent",
+			Title:      "Confirmed pending card",
+			State:      "Backlog",
+		}},
+	})
+	if got.BoardIssues[0].State != "Backlog" {
+		t.Fatalf("newer tracker state = %q, want Backlog", got.BoardIssues[0].State)
 	}
 }
 

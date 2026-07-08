@@ -395,11 +395,9 @@ test("project kanban board supports drag status moves", async ({ page }) => {
       hasText: "Kanban demo backlog intake",
     },
   );
+  const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
   const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
   await expect(card).toHaveAttribute("draggable", "true");
-  await page.locator("#board-lane-picker summary").click();
-  await page.locator('[data-board-lane-toggle="todo"]').check();
-  await expect(targetLane).toBeVisible();
 
   const moveRequest = page.waitForRequest((request) => {
     if (
@@ -414,48 +412,32 @@ test("project kanban board supports drag status moves", async ({ page }) => {
     );
   });
 
-  await page.evaluate(() => {
-    const source = Array.from(
-      document.querySelectorAll(
-        '[data-kanban-card][data-kanban-current-state="Backlog"]',
-      ),
-    ).find((element) =>
-      element.textContent.includes("Kanban demo backlog intake"),
-    );
-    const target = document.querySelector('[data-kanban-drop-state="Todo"]');
-    if (!(source instanceof HTMLElement) || !(target instanceof HTMLElement)) {
-      throw new Error("Drag source or target lane not found");
-    }
-    const dataTransfer = new DataTransfer();
-    source.dispatchEvent(
-      new DragEvent("dragstart", {
-        bubbles: true,
-        cancelable: true,
-        dataTransfer,
-      }),
-    );
-    target.dispatchEvent(
-      new DragEvent("dragover", {
-        bubbles: true,
-        cancelable: true,
-        dataTransfer,
-      }),
-    );
-    target.dispatchEvent(
-      new DragEvent("drop", {
-        bubbles: true,
-        cancelable: true,
-        dataTransfer,
-      }),
-    );
-    source.dispatchEvent(
-      new DragEvent("dragend", {
-        bubbles: true,
-        cancelable: true,
-        dataTransfer,
-      }),
-    );
-  });
+  const sourceBox = await card.boundingBox();
+  if (!sourceBox) {
+    throw new Error("Drag source has no bounding box");
+  }
+  await page.mouse.move(
+    sourceBox.x + sourceBox.width / 2,
+    sourceBox.y + sourceBox.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    sourceBox.x + sourceBox.width / 2 + 16,
+    sourceBox.y + sourceBox.height / 2 + 16,
+    { steps: 5 },
+  );
+  await expect(targetLane).toBeVisible();
+  const targetBox = await targetLane.boundingBox();
+  if (!targetBox) {
+    throw new Error("Drag target lane has no bounding box");
+  }
+  await page.mouse.move(
+    targetBox.x + targetBox.width / 2,
+    targetBox.y + Math.min(80, targetBox.height / 2),
+    { steps: 20 },
+  );
+  await page.mouse.up();
+
   const request = await moveRequest;
   const form = new URLSearchParams(request.postData() || "");
   expect(form.get("kanban_drag")).toBe("true");
@@ -466,6 +448,11 @@ test("project kanban board supports drag status moves", async ({ page }) => {
       hasText: "Kanban demo backlog intake",
     }),
   ).toBeVisible();
+  await expect(
+    sourceLane.locator("[data-kanban-card]", {
+      hasText: "Kanban demo backlog intake",
+    }),
+  ).toHaveCount(0);
   await expect(page.locator("#board-feedback")).toBeHidden();
 });
 
