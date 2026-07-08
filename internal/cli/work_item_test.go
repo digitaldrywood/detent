@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cli"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector/local"
+	"github.com/digitaldrywood/detent/internal/workitem"
 )
 
 func TestWorkItemAddCreatesLocalSQLiteItem(t *testing.T) {
@@ -97,6 +99,49 @@ func TestWorkItemAddCreatesLocalSQLiteItem(t *testing.T) {
 	}
 }
 
+func TestWorkItemAddRejectsMemoryTrackerAsUnsupported(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	workdir := filepath.Join(root, "video")
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	workflowPath := filepath.Join(workdir, "WORKFLOW.md")
+	if err := os.WriteFile(workflowPath, []byte(memoryWorkItemWorkflow()), 0o600); err != nil {
+		t.Fatalf("WriteFile(WORKFLOW.md) error = %v", err)
+	}
+	configPath := filepath.Join(root, "global.yaml")
+	writeGlobalConfig(t, configPath, []globalconfig.Project{{
+		ID:       "video",
+		Workflow: workflowPath,
+		Workdir:  workdir,
+		Weight:   1,
+		Priority: 0,
+	}})
+
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--config", configPath,
+		"work-item", "add", "video",
+		"--title", "Author beat visuals",
+		"--body", "Render storyboard frames",
+	})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want unsupported tracker")
+	}
+	var itemErr *workitem.Error
+	if !errors.As(err, &itemErr) {
+		t.Fatalf("Execute() error = %v, want workitem.Error", err)
+	}
+	if itemErr.Code != workitem.CodeUnsupportedTracker {
+		t.Fatalf("error code = %q, want %q", itemErr.Code, workitem.CodeUnsupportedTracker)
+	}
+}
+
 func localSQLiteWorkItemWorkflow() string {
 	return `---
 tracker:
@@ -104,6 +149,26 @@ tracker:
   local_sqlite:
     path: .detent/work-items.db
     project_id: video
+  active_states:
+    - Todo
+    - In Progress
+  observed_states:
+    - Backlog
+    - Blocked
+  terminal_states:
+    - Done
+workspace:
+  root: .detent/workspaces
+  source_root: .
+---
+Prompt
+`
+}
+
+func memoryWorkItemWorkflow() string {
+	return `---
+tracker:
+  kind: memory
   active_states:
     - Todo
     - In Progress

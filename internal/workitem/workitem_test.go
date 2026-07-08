@@ -131,23 +131,59 @@ func TestCreateRejectsDuplicateIdentifier(t *testing.T) {
 	}
 }
 
-func TestCreateRejectsUnsupportedTracker(t *testing.T) {
+func TestCreateConnectorCapabilityGate(t *testing.T) {
 	t.Parallel()
 
-	cfg := localSQLiteWorkflow()
-	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
-	_, err := workitem.Create(context.Background(), workitem.Target{
-		Workflow: cfg,
-	}, workitem.Request{
-		Title:       "title",
-		Description: "body",
-	})
-	var itemErr *workitem.Error
-	if !errors.As(err, &itemErr) {
-		t.Fatalf("Create() error = %v, want workitem.Error", err)
+	tests := []struct {
+		name string
+		conn connector.Connector
+		want workitem.ErrorCode
+	}{
+		{
+			name: "upserter succeeds",
+			conn: &creatorConnector{},
+		},
+		{
+			name: "connector without upserter is unsupported",
+			conn: readonlyConnector{},
+			want: workitem.CodeUnsupportedTracker,
+		},
+		{
+			name: "nil connector is unavailable",
+			want: workitem.CodeConnectorUnavailable,
+		},
 	}
-	if itemErr.Code != workitem.CodeUnsupportedTracker {
-		t.Fatalf("error code = %q, want %q", itemErr.Code, workitem.CodeUnsupportedTracker)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := workitem.Create(context.Background(), workitem.Target{
+				Workflow:            localSQLiteWorkflow(),
+				Connector:           tt.conn,
+				IdentifierGenerator: func() (string, error) { return "wi-gate", nil },
+			}, workitem.Request{
+				Title:       "title",
+				Description: "body",
+			})
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("Create() error = %v", err)
+				}
+				if got.Identifier != "wi-gate" {
+					t.Fatalf("Identifier = %q, want wi-gate", got.Identifier)
+				}
+				return
+			}
+
+			var itemErr *workitem.Error
+			if !errors.As(err, &itemErr) {
+				t.Fatalf("Create() error = %v, want workitem.Error", err)
+			}
+			if itemErr.Code != tt.want {
+				t.Fatalf("error code = %q, want %q", itemErr.Code, tt.want)
+			}
+		})
 	}
 }
 
@@ -204,4 +240,38 @@ func (c *creatorConnector) SetField(context.Context, string, string, string) err
 func (c *creatorConnector) UpsertIssues(_ context.Context, issues []connector.Issue) error {
 	c.upserts = append(c.upserts, issues...)
 	return nil
+}
+
+type readonlyConnector struct{}
+
+func (readonlyConnector) Name() string {
+	return connector.BackendMemory.String()
+}
+
+func (readonlyConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	return nil, connector.ErrNotImplemented
+}
+
+func (readonlyConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	return nil, connector.ErrNotImplemented
+}
+
+func (readonlyConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	return nil, connector.ErrNotImplemented
+}
+
+func (readonlyConnector) CreateComment(context.Context, string, string) error {
+	return connector.ErrNotImplemented
+}
+
+func (readonlyConnector) UpdateIssueState(context.Context, string, string) error {
+	return connector.ErrNotImplemented
+}
+
+func (readonlyConnector) SetAssignee(context.Context, string, string) error {
+	return connector.ErrNotImplemented
+}
+
+func (readonlyConnector) SetField(context.Context, string, string, string) error {
+	return connector.ErrNotImplemented
 }

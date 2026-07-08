@@ -120,13 +120,6 @@ func runWorkItemAdd(ctx context.Context, configPath string, projectID string, re
 	if err := workflow.Config.Validate(); err != nil {
 		return result, err
 	}
-	if !workitem.SupportsTracker(workflow.Config.Tracker.Kind) {
-		return workitem.Create(ctx, workitem.Target{
-			ProjectID: projectConfig.ID,
-			Workflow:  workflow.Config,
-		}, req)
-	}
-
 	conn, err := workItemConnectorFromWorkflow(ctx, workflow.Config)
 	if err != nil {
 		return result, err
