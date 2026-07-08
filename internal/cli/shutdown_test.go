@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -672,6 +673,44 @@ func TestRunningShutdownConfigComputesDrainTimeoutFromCurrentRegistry(t *testing
 
 	if got := shutdownDrainTimeoutForConfig(cfg); got != wantDefault {
 		t.Fatalf("shutdownDrainTimeoutForConfig() after registry update = %v, want %v", got, wantDefault)
+	}
+}
+
+func TestPublishShutdownSnapshotSharesSnapshotSeq(t *testing.T) {
+	t.Parallel()
+
+	registry := projectpkg.NewRegistry()
+	project := startRefreshProject(t, "alpha")
+	waitForProjectDataSeq(t, project, 1)
+	mustSetProject(t, registry, project)
+
+	snapshotHub := hub.New[telemetry.Snapshot]()
+	var seq atomic.Uint64
+	seq.Store(4)
+	now := time.Date(2026, 7, 8, 12, 30, 0, 0, time.UTC)
+	publishShutdownSnapshot(context.Background(), runningShutdownConfig{
+		Registry:    registry,
+		SnapshotHub: snapshotHub,
+		SnapshotSeq: &seq,
+	}, now)
+
+	shutdownSnapshot, ok := snapshotHub.Latest()
+	if !ok {
+		t.Fatal("SnapshotHub.Latest() ok = false, want shutdown snapshot")
+	}
+	if shutdownSnapshot.Seq != 5 {
+		t.Fatalf("shutdown snapshot Seq = %d, want 5", shutdownSnapshot.Seq)
+	}
+
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, now.Add(time.Second), nil, nil, ""); err != nil {
+		t.Fatalf("publishSnapshotOnce() error = %v", err)
+	}
+	nextSnapshot, ok := snapshotHub.Latest()
+	if !ok {
+		t.Fatal("SnapshotHub.Latest() ok = false, want next snapshot")
+	}
+	if nextSnapshot.Seq != 6 {
+		t.Fatalf("next snapshot Seq = %d, want 6", nextSnapshot.Seq)
 	}
 }
 

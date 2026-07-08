@@ -9,6 +9,7 @@ import (
 )
 
 type Snapshot struct {
+	Seq                uint64              `json:"seq,omitempty"`
 	GeneratedAt        time.Time           `json:"generated_at"`
 	Project            Project             `json:"project"`
 	Instance           Instance            `json:"instance"`
@@ -111,6 +112,7 @@ const (
 
 type Refresh struct {
 	PollIntervalSeconds int64           `json:"poll_interval_seconds,omitempty"`
+	DataSeq             uint64          `json:"data_seq,omitempty"`
 	Status              RefreshStatus   `json:"status,omitempty"`
 	LastRefreshAt       *time.Time      `json:"last_refresh_at,omitempty"`
 	NextRefreshAt       *time.Time      `json:"next_refresh_at,omitempty"`

@@ -134,6 +134,43 @@ func TestKanbanStateNamesAllowConfiguredOpenState(t *testing.T) {
 	}
 }
 
+func TestSnapshotProjectDataSeq(t *testing.T) {
+	t.Parallel()
+
+	snapshot := telemetry.Snapshot{
+		Refresh: telemetry.Refresh{DataSeq: 3},
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: "alpha"},
+				Refresh: telemetry.Refresh{DataSeq: 7},
+			},
+			{
+				Project: telemetry.Project{ID: "bravo"},
+				Refresh: telemetry.Refresh{DataSeq: 9},
+			},
+		},
+	}
+
+	tests := []struct {
+		name      string
+		projectID string
+		want      uint64
+	}{
+		{name: "project match", projectID: "bravo", want: 9},
+		{name: "fallback", projectID: "charlie", want: 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := snapshotProjectDataSeq(snapshot, tt.projectID); got != tt.want {
+				t.Fatalf("snapshotProjectDataSeq() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestKanbanSnapshotWithPendingStatesUpdatesBlockedRefs(t *testing.T) {
 	t.Parallel()
 

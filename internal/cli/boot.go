@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -243,6 +244,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}()
 
 	snapshotHub := hub.New[telemetry.Snapshot]()
+	snapshotSeq := &atomic.Uint64{}
 	if err := publishStartupSnapshotOnce(runCtx, cfg.Global, snapshotHub, runtimeStore, displayURL, time.Now()); err != nil {
 		return err
 	}
@@ -250,7 +252,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	if err != nil {
 		return err
 	}
-	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, runtimeStore, displayURL, defaultSnapshotInterval, time.Now)
+	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, snapshotSeq, runtimeStore, displayURL, defaultSnapshotInterval, time.Now)
 	go republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger)
 	//nolint:contextcheck // Echo middleware receives request contexts at serve time.
 	server, err := web.NewServer(web.Config{
@@ -313,6 +315,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 				Controller:        cfg.Shutdown,
 				Registry:          manager.Registry(),
 				SnapshotHub:       snapshotHub,
+				SnapshotSeq:       snapshotSeq,
 				LifetimeSource:    runtimeStore,
 				DashboardURL:      displayURL,
 				Output:            cfg.Output,
@@ -344,6 +347,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 			Controller:     cfg.Shutdown,
 			Registry:       manager.Registry(),
 			SnapshotHub:    snapshotHub,
+			SnapshotSeq:    snapshotSeq,
 			LifetimeSource: runtimeStore,
 			DashboardURL:   displayURL,
 			Output:         cfg.Output,

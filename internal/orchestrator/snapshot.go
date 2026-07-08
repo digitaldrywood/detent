@@ -17,6 +17,7 @@ import (
 func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	refresh := telemetry.Refresh{
 		PollIntervalSeconds: int64(s.PollInterval / time.Second),
+		DataSeq:             s.DataSeq,
 		LastRefreshAt:       timePointer(s.LastRefreshAt),
 		NextRefreshAt:       timePointer(s.NextRefreshAt),
 		LastError:           s.LastRefreshError,

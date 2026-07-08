@@ -883,6 +883,7 @@ func (o *Orchestrator) markRefresh(state *State, now time.Time) {
 }
 
 func (o *Orchestrator) markRefreshSucceeded(state *State, now time.Time) {
+	state.DataSeq++
 	state.LastRefreshAt = now.UTC()
 }
 

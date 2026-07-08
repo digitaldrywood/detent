@@ -18,6 +18,7 @@ func TestSnapshotJSONShape(t *testing.T) {
 	perIssue := 5.0
 
 	snapshot := telemetry.Snapshot{
+		Seq:         42,
 		GeneratedAt: generatedAt,
 		Project: telemetry.Project{
 			DisplayName: "Detent",
@@ -36,6 +37,7 @@ func TestSnapshotJSONShape(t *testing.T) {
 		},
 		Refresh: telemetry.Refresh{
 			PollIntervalSeconds: 30,
+			DataSeq:             7,
 			NextRefreshAt:       new(generatedAt.Add(30 * time.Second)),
 		},
 		Counts: telemetry.Counts{
@@ -194,6 +196,7 @@ func TestSnapshotJSONShape(t *testing.T) {
 	}
 
 	for _, key := range []string{
+		"seq",
 		"generated_at",
 		"project",
 		"instance",
@@ -235,6 +238,9 @@ func TestSnapshotJSONShape(t *testing.T) {
 	if got["dashboard_url"] != "http://localhost:4101" {
 		t.Fatalf("dashboard_url = %#v", got["dashboard_url"])
 	}
+	if got["seq"] != float64(42) {
+		t.Fatalf("seq = %#v", got["seq"])
+	}
 	auth := got["auth"].(map[string]any)
 	if auth["status"] != string(telemetry.AuthStatusRecovered) || auth["last_error"] != "github authentication failed: status 401" {
 		t.Fatalf("auth = %#v", auth)
@@ -242,6 +248,9 @@ func TestSnapshotJSONShape(t *testing.T) {
 	refresh := got["refresh"].(map[string]any)
 	if refresh["poll_interval_seconds"] != float64(30) || refresh["next_refresh_at"] != "2026-05-30T22:15:30Z" {
 		t.Fatalf("refresh = %#v", refresh)
+	}
+	if refresh["data_seq"] != float64(7) {
+		t.Fatalf("refresh.data_seq = %#v", refresh["data_seq"])
 	}
 
 	counts := got["counts"].(map[string]any)

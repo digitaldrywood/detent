@@ -1688,6 +1688,15 @@ func kanbanCardFreshEntry(snapshot telemetry.Snapshot, projectID string, issueID
 	return selected, selected.issue.ID != ""
 }
 
+func snapshotProjectDataSeq(snapshot telemetry.Snapshot, projectID string) uint64 {
+	for _, project := range snapshot.Projects {
+		if project.Project.ID == projectID {
+			return project.Refresh.DataSeq
+		}
+	}
+	return snapshot.Refresh.DataSeq
+}
+
 func (s *Server) recordKanbanLaneTransition(
 	ctx context.Context,
 	projectID string,

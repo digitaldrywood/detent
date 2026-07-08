@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -378,9 +379,10 @@ func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 	defer cancel()
 
 	done := make(chan struct{})
+	var seq atomic.Uint64
 	go func() {
 		defer close(done)
-		publishSnapshots(ctx, registry, snapshotHub, nil, "http://localhost:4101", 5*time.Millisecond, func() time.Time { return now })
+		publishSnapshots(ctx, registry, snapshotHub, &seq, nil, "http://localhost:4101", 5*time.Millisecond, func() time.Time { return now })
 	}()
 
 	var (
@@ -419,6 +421,71 @@ func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 	}
 }
 
+func TestPublishSnapshotOnceAssignsMonotonicSeq(t *testing.T) {
+	t.Parallel()
+
+	registry := projectpkg.NewRegistry()
+	mustSetProject(t, registry, startRefreshProject(t, "alpha"))
+
+	snapshotHub := hub.New[telemetry.Snapshot]()
+	var seq atomic.Uint64
+	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+
+	for index := range 3 {
+		if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, now.Add(time.Duration(index)*time.Second), nil, nil, "http://localhost:4101"); err != nil {
+			t.Fatalf("publishSnapshotOnce(%d) error = %v", index, err)
+		}
+		snapshot, ok := snapshotHub.Latest()
+		if !ok {
+			t.Fatal("snapshotHub.Latest() ok = false, want published snapshot")
+		}
+		want := uint64(index + 1)
+		if snapshot.Seq != want {
+			t.Fatalf("publish %d Seq = %d, want %d", index, snapshot.Seq, want)
+		}
+	}
+}
+
+func TestPublishSnapshotOncePreservesProjectDataSeq(t *testing.T) {
+	t.Parallel()
+
+	registry := projectpkg.NewRegistry()
+	alpha := startRefreshProject(t, "alpha")
+	bravo := startRefreshProject(t, "bravo")
+	mustSetProject(t, registry, alpha)
+	mustSetProject(t, registry, bravo)
+
+	alphaSeq := waitForProjectDataSeq(t, alpha, 1)
+	if _, err := alpha.Orchestrator().RequestRefresh(context.Background()); err != nil {
+		t.Fatalf("RequestRefresh() error = %v", err)
+	}
+	alphaSeq = waitForProjectDataSeq(t, alpha, alphaSeq+1)
+	bravoSeq := waitForProjectDataSeq(t, bravo, 1)
+
+	snapshotHub := hub.New[telemetry.Snapshot]()
+	var seq atomic.Uint64
+	now := time.Date(2026, 7, 8, 12, 15, 0, 0, time.UTC)
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, now, nil, nil, "http://localhost:4101"); err != nil {
+		t.Fatalf("publishSnapshotOnce() error = %v", err)
+	}
+
+	snapshot, ok := snapshotHub.Latest()
+	if !ok {
+		t.Fatal("snapshotHub.Latest() ok = false, want published snapshot")
+	}
+
+	got := map[string]uint64{}
+	for _, projectSnapshot := range snapshot.Projects {
+		got[projectSnapshot.Project.ID] = projectSnapshot.Refresh.DataSeq
+	}
+	if got["alpha"] != alphaSeq {
+		t.Fatalf("alpha DataSeq = %d, want %d; projects = %#v", got["alpha"], alphaSeq, snapshot.Projects)
+	}
+	if got["bravo"] != bravoSeq {
+		t.Fatalf("bravo DataSeq = %d, want %d; projects = %#v", got["bravo"], bravoSeq, snapshot.Projects)
+	}
+}
+
 func TestPublishSnapshotOnceDoesNotLetPausedProjectsHoldFleetReadiness(t *testing.T) {
 	t.Parallel()
 
@@ -443,7 +510,8 @@ func TestPublishSnapshotOnceDoesNotLetPausedProjectsHoldFleetReadiness(t *testin
 
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	now := time.Date(2026, 6, 22, 14, 0, 0, 0, time.UTC)
-	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, now, nil, nil, "http://localhost:4101"); err != nil {
+	var seq atomic.Uint64
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, now, nil, nil, "http://localhost:4101"); err != nil {
 		t.Fatalf("publishSnapshotOnce() error = %v", err)
 	}
 
@@ -503,7 +571,8 @@ func TestPublishSnapshotOnceSurfacesProjectStartupError(t *testing.T) {
 	mustSetProject(t, registry, failedProject)
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	now := time.Date(2026, 6, 23, 14, 0, 0, 0, time.UTC)
-	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, now, nil, nil, "http://localhost:4101"); err != nil {
+	var seq atomic.Uint64
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, now, nil, nil, "http://localhost:4101"); err != nil {
 		t.Fatalf("publishSnapshotOnce() error = %v", err)
 	}
 
@@ -560,7 +629,8 @@ func TestPublishSnapshotOncePausedProjectSuppressesStartupError(t *testing.T) {
 	mustSetProject(t, registry, failedProject)
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	now := time.Date(2026, 6, 23, 14, 30, 0, 0, time.UTC)
-	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, now, nil, nil, "http://localhost:4101"); err != nil {
+	var seq atomic.Uint64
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, now, nil, nil, "http://localhost:4101"); err != nil {
 		t.Fatalf("publishSnapshotOnce() error = %v", err)
 	}
 
@@ -672,7 +742,8 @@ func TestPublishSnapshotOncePreservesPipeline(t *testing.T) {
 	mustSetProject(t, registry, project)
 
 	snapshotHub := hub.New[telemetry.Snapshot]()
-	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, now, nil, nil, "http://localhost:4101"); err != nil {
+	var seq atomic.Uint64
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, now, nil, nil, "http://localhost:4101"); err != nil {
 		t.Fatalf("publishSnapshotOnce() error = %v", err)
 	}
 
@@ -1143,4 +1214,27 @@ func receiveSnapshot(t *testing.T, ch <-chan telemetry.Snapshot) telemetry.Snaps
 	}
 
 	return telemetry.Snapshot{}
+}
+
+func waitForProjectDataSeq(t *testing.T, project *projectpkg.Project, wantAtLeast uint64) uint64 {
+	t.Helper()
+
+	orch := project.Orchestrator()
+	if orch == nil {
+		t.Fatal("Project.Orchestrator() = nil")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		state, err := orch.State(ctx)
+		cancel()
+		if err == nil && state.DataSeq >= wantAtLeast {
+			return state.DataSeq
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for DataSeq >= %d", wantAtLeast)
+	return 0
 }

@@ -23,6 +23,7 @@ type State struct {
 	SelectorContext          selector.Context
 	Draining                 bool
 	DrainStartedAt           time.Time
+	DataSeq                  uint64
 	LastRefreshAt            time.Time
 	NextRefreshAt            time.Time
 	LastRefreshError         string
@@ -189,6 +190,7 @@ func (s State) clone() State {
 		SelectorContext:          s.SelectorContext,
 		Draining:                 s.Draining,
 		DrainStartedAt:           s.DrainStartedAt,
+		DataSeq:                  s.DataSeq,
 		LastRefreshAt:            s.LastRefreshAt,
 		NextRefreshAt:            s.NextRefreshAt,
 		LastRefreshError:         s.LastRefreshError,
