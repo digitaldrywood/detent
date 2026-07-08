@@ -1178,7 +1178,7 @@ func (c *Connector) FetchIssueStateProbe(ctx context.Context, stateNames []strin
 
 	issues := []connector.Issue{}
 	if stateSetContains(wantedStates, defaultProjectItemStatusState) {
-		backlogIssues, err := c.fetchProjectBacklogIssues(ctx, limit)
+		backlogIssues, err := c.fetchExplicitProjectBacklogIssues(ctx, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -1189,8 +1189,30 @@ func (c *Connector) FetchIssueStateProbe(ctx context.Context, stateNames []strin
 		stateNames = stateListWithout(stateNames, defaultProjectItemStatusState)
 		wantedStates = normalizedStateSet(stateNames)
 		if len(wantedStates) == 0 {
+			blankIssues, err := c.fetchBlankProjectBacklogIssues(ctx, limit-len(issues))
+			if err != nil {
+				return nil, err
+			}
+			return appendUniqueIssues(issues, blankIssues, limit), nil
+		}
+
+		statusIssues, err := c.fetchProjectItemsWithPullRequestRefsLimit(ctx, graphQLQueryObservedStatus, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
+			_, ok := wantedStates[normalizeStateName(issue.State)]
+			return ok
+		}, limit-len(issues))
+		if err != nil {
+			return nil, err
+		}
+		issues = appendUniqueIssues(issues, statusIssues, limit)
+		if len(issues) >= limit {
 			return issues, nil
 		}
+
+		blankIssues, err := c.fetchBlankProjectBacklogIssues(ctx, limit-len(issues))
+		if err != nil {
+			return nil, err
+		}
+		return appendUniqueIssues(issues, blankIssues, limit), nil
 	}
 
 	statusIssues, err := c.fetchProjectItemsWithPullRequestRefsLimit(ctx, graphQLQueryObservedStatus, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
@@ -3064,10 +3086,7 @@ func (c *Connector) fetchProjectItems(ctx context.Context, queryType string, que
 }
 
 func (c *Connector) fetchProjectBacklogIssues(ctx context.Context, limit int) ([]connector.Issue, error) {
-	backlogStates := []string{defaultProjectItemStatusState}
-	issues, err := c.fetchProjectItemsLimit(ctx, graphQLQueryCandidateIssues, c.projectStatusQuery(backlogStates), func(issue connector.Issue) bool {
-		return stateInList(issue.State, backlogStates)
-	}, limit)
+	issues, err := c.fetchExplicitProjectBacklogIssues(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -3079,49 +3098,69 @@ func (c *Connector) fetchProjectBacklogIssues(ctx context.Context, limit int) ([
 	if limit > 0 {
 		blankLimit = limit - len(issues)
 	}
-	blankIssues, err := c.fetchBlankProjectBacklogIssuesPage(ctx, blankLimit)
+	blankIssues, err := c.fetchBlankProjectBacklogIssues(ctx, blankLimit)
 	if err != nil {
 		return nil, err
 	}
 	return appendUniqueIssues(issues, blankIssues, limit), nil
 }
 
-func (c *Connector) fetchBlankProjectBacklogIssuesPage(ctx context.Context, limit int) ([]connector.Issue, error) {
-	var response struct {
-		Node *struct {
-			Items projectItemsConnection `json:"items"`
-		} `json:"node"`
-	}
-	if err := c.client.GraphQLWithType(ctx, graphQLQueryCandidateIssues, projectItemsQuery, map[string]any{
-		"projectId": c.projectID,
-		"first":     projectItemsPageSize,
-		"after":     nil,
-		"query":     nil,
-	}, &response); err != nil {
-		return nil, fmt.Errorf("fetch github project items: %w", err)
-	}
-	if response.Node == nil {
-		return nil, ErrProjectNotFound
-	}
+func (c *Connector) fetchExplicitProjectBacklogIssues(ctx context.Context, limit int) ([]connector.Issue, error) {
+	backlogStates := []string{defaultProjectItemStatusState}
+	return c.fetchProjectItemsLimit(ctx, graphQLQueryCandidateIssues, c.projectStatusQuery(backlogStates), func(issue connector.Issue) bool {
+		return stateInList(issue.State, backlogStates)
+	}, limit)
+}
 
+func (c *Connector) fetchBlankProjectBacklogIssues(ctx context.Context, limit int) ([]connector.Issue, error) {
+	var after *string
 	issues := []connector.Issue{}
 	blankStatusItemIDs := []string{}
-	for _, item := range response.Node.Items.Nodes {
-		issue, ok, blankStatusItemID, err := c.normalizeProjectItem(item)
-		if err != nil {
-			return nil, err
+
+	for {
+		var response struct {
+			Node *struct {
+				Items projectItemsConnection `json:"items"`
+			} `json:"node"`
 		}
-		if !ok || blankStatusItemID == "" {
-			continue
+		if err := c.client.GraphQLWithType(ctx, graphQLQueryCandidateIssues, projectItemsQuery, map[string]any{
+			"projectId": c.projectID,
+			"first":     projectItemsPageSize,
+			"after":     after,
+			"query":     nil,
+		}, &response); err != nil {
+			return nil, fmt.Errorf("fetch github project items: %w", err)
 		}
-		issues = append(issues, issue)
-		blankStatusItemIDs = append(blankStatusItemIDs, blankStatusItemID)
-		if limit > 0 && len(issues) >= limit {
-			break
+		if response.Node == nil {
+			return nil, ErrProjectNotFound
 		}
+
+		for _, item := range response.Node.Items.Nodes {
+			issue, ok, blankStatusItemID, err := c.normalizeProjectItem(item)
+			if err != nil {
+				return nil, err
+			}
+			if !ok || blankStatusItemID == "" {
+				continue
+			}
+			issues = append(issues, issue)
+			blankStatusItemIDs = append(blankStatusItemIDs, blankStatusItemID)
+			if limit > 0 && len(issues) >= limit {
+				c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
+				return issues, nil
+			}
+		}
+
+		if !response.Node.Items.PageInfo.HasNextPage {
+			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
+			return issues, nil
+		}
+		cursor := strings.TrimSpace(response.Node.Items.PageInfo.EndCursor)
+		if cursor == "" {
+			return nil, ErrInvalidResponse
+		}
+		after = &cursor
 	}
-	c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-	return issues, nil
 }
 
 func (c *Connector) fetchProjectItemsLimit(
