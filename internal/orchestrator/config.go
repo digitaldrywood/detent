@@ -1,0 +1,237 @@
+package orchestrator
+
+import (
+	"slices"
+	"strings"
+	"time"
+
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/selector"
+)
+
+func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
+	identity := cfg.Identity
+	identity.Normalize()
+
+	return Config{
+		PollInterval:               durationFromMillis(cfg.Polling.IntervalMS),
+		MaxConcurrentAgents:        cfg.Agent.MaxConcurrentAgents,
+		MaxConcurrentAgentsByState: cloneStateLimits(cfg.Agent.MaxConcurrentAgentsByState),
+		DispatchPriorityByState:    append([]string(nil), cfg.Agent.DispatchPriorityByState...),
+		DispatchPriorityByLabel:    append([]string(nil), cfg.Agent.DispatchPriorityByLabel...),
+		MergeFastPathEnabled:       cfg.Agent.MergeFastPath.Enabled,
+		MaxConcurrentAgentsPerHost: positiveIntValue(cfg.Worker.MaxConcurrentAgentsPerHost),
+		MaxRetryBackoff:            durationFromMillis(cfg.Agent.MaxRetryBackoffMS),
+		Claiming: ClaimingConfig{
+			Enabled:           cfg.Tracker.Claims.Enabled,
+			OwnershipMode:     identity.OwnershipMode,
+			Owner:             identity.Name,
+			AssigneeLogin:     identity.GitHubLogin,
+			OwnerField:        identity.OwnerField,
+			LeaseField:        cfg.Tracker.Claims.LeaseField,
+			LeaseTTL:          durationFromSeconds(cfg.Tracker.Claims.TTLSeconds),
+			HeartbeatInterval: durationFromSeconds(cfg.Tracker.Claims.HeartbeatSeconds),
+		},
+		AutoPromote: normalizeAutoPromoteConfig(AutoPromoteConfig{
+			Enabled:            cfg.Agent.AutoPromote.Enabled,
+			QuietDuration:      durationFromSeconds(cfg.Agent.AutoPromote.QuietSeconds),
+			OptoutLabel:        cfg.Agent.AutoPromote.OptoutLabel,
+			AllowedIssueLabels: append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),
+			SourceState:        cfg.Agent.AutoPromote.SourceState,
+			PassState:          cfg.Agent.AutoPromote.PassState,
+			ReworkState:        cfg.Agent.AutoPromote.ReworkState,
+			ReworkLimit:        cfg.Agent.AutoPromote.ReworkLimit,
+			Gate:               gate.Effective(cfg.Gate),
+		}),
+		Plan: gate.EffectivePlan(cfg.Plan),
+		DependencyAutoUnblock: normalizeDependencyAutoUnblockConfig(DependencyAutoUnblockConfig{
+			Enabled:      cfg.Tracker.DependencyAutoUnblock.Enabled,
+			SourceStates: append([]string(nil), cfg.Tracker.DependencyAutoUnblock.SourceStates...),
+			TargetState:  cfg.Tracker.DependencyAutoUnblock.TargetState,
+			Readiness:    cfg.Tracker.DependencyAutoUnblock.Readiness,
+		}),
+		BlockerAutoPromote: BlockerAutoPromoteConfig{
+			Enabled:       cfg.Tracker.BlockerAutoPromote.Enabled,
+			SourceStates:  append([]string(nil), cfg.Tracker.BlockerAutoPromote.SourceStates...),
+			BlockerStates: append([]string(nil), cfg.Tracker.BlockerAutoPromote.BlockerStates...),
+			TargetState:   cfg.Tracker.BlockerAutoPromote.TargetState,
+		},
+		ActiveStates:                  append([]string(nil), cfg.Tracker.ActiveStates...),
+		ObservedStates:                append([]string(nil), cfg.Tracker.ObservedStates...),
+		TerminalStates:                append([]string(nil), cfg.Tracker.TerminalStates...),
+		Authorization:                 cfg.Tracker.Authorization,
+		SelectorContext:               selector.Context{InstanceLogin: identity.GitHubLogin, Persona: identity.Name},
+		WorkerHosts:                   append([]string(nil), cfg.Worker.SSHHosts...),
+		BudgetRefusalCooldown:         durationFromSeconds(cfg.Budget.RefusalCooldownSeconds),
+		WorkspaceCleanupIdleTTL:       durationFromMillis(cfg.Workspace.CleanupIdleTTLMS),
+		WorkspaceCleanupSweepInterval: durationFromMillis(cfg.Workspace.CleanupSweepIntervalMS),
+		SelectorPersona:               cfg.Tracker.Assignee,
+		GitHubGraphQLWarnRemaining:    int64(cfg.Tracker.GitHubGraphQLWarnRemaining),
+		GitHubGraphQLMinReserve:       int64(cfg.Tracker.GitHubGraphQLMinReserve),
+		GitHubRESTMinReserve:          int64(cfg.Tracker.GitHubRESTMinReserve),
+		OutputTruncationMaxBytes:      cfg.Agent.OutputTruncation.MaxBytes,
+	}
+}
+
+func normalizeConfig(cfg Config) Config {
+	if cfg.PollInterval <= 0 {
+		cfg.PollInterval = defaultPollInterval
+	}
+	if cfg.MaxConcurrentAgents <= 0 {
+		cfg.MaxConcurrentAgents = defaultMaxConcurrentAgents
+	}
+	if cfg.MaxRetryBackoff <= 0 {
+		cfg.MaxRetryBackoff = defaultMaxRetryBackoff
+	}
+	if cfg.ContinuationRetryDelay < 0 {
+		cfg.ContinuationRetryDelay = 0
+	}
+	if cfg.ContinuationRetryDelay == 0 {
+		cfg.ContinuationRetryDelay = defaultContinuationRetry
+	}
+	if cfg.FailureRetryBaseDelay <= 0 {
+		cfg.FailureRetryBaseDelay = defaultFailureRetryBaseDelay
+	}
+	if cfg.GitHubGraphQLWarnRemaining <= 0 {
+		cfg.GitHubGraphQLWarnRemaining = defaultGitHubGraphQLWarnRemaining
+	}
+	if cfg.GitHubGraphQLMinReserve <= 0 {
+		cfg.GitHubGraphQLMinReserve = defaultGitHubGraphQLMinReserve
+	}
+	if cfg.GitHubRESTMinReserve <= 0 {
+		cfg.GitHubRESTMinReserve = defaultGitHubRESTMinReserve
+	}
+	if len(cfg.ActiveStates) == 0 {
+		cfg.ActiveStates = []string{"Todo", "In Progress"}
+	}
+	if len(cfg.TerminalStates) == 0 {
+		cfg.TerminalStates = []string{"Done", "Cancelled", "Canceled", "Closed"}
+	}
+	if cfg.WorkspaceCleanupIdleTTL <= 0 {
+		cfg.WorkspaceCleanupIdleTTL = defaultWorkspaceCleanupIdleTTL
+	}
+	if cfg.WorkspaceCleanupSweepInterval <= 0 {
+		cfg.WorkspaceCleanupSweepInterval = defaultWorkspaceCleanupSweep
+	}
+
+	cfg.ActiveStates = normalizedStates(cfg.ActiveStates)
+	cfg.ObservedStates = normalizedStates(cfg.ObservedStates)
+	cfg.TerminalStates = normalizedStates(cfg.TerminalStates)
+	cfg.MaxConcurrentAgentsByState = cloneStateLimits(cfg.MaxConcurrentAgentsByState)
+	cfg.DispatchPriorityByState = normalizedStates(cfg.DispatchPriorityByState)
+	cfg.DispatchPriorityByLabel = normalizeLabels(cfg.DispatchPriorityByLabel)
+	cfg.Claiming = normalizeClaimingConfig(cfg.Claiming)
+	cfg.AutoPromote = normalizeAutoPromoteConfig(cfg.AutoPromote)
+	cfg.Plan = gate.EffectivePlan(cfg.Plan)
+	cfg.DependencyAutoUnblock = normalizeDependencyAutoUnblockConfig(cfg.DependencyAutoUnblock)
+	cfg.BlockerAutoPromote = normalizeBlockerAutoPromoteConfig(cfg.BlockerAutoPromote, cfg.ActiveStates, cfg.DependencyAutoUnblock)
+	cfg.Authorization.Normalize()
+	cfg.SelectorContext.InstanceLogin = strings.TrimSpace(cfg.SelectorContext.InstanceLogin)
+	cfg.SelectorContext.Persona = strings.TrimSpace(cfg.SelectorContext.Persona)
+	cfg.WorkerHosts = normalizeWorkerHosts(cfg.WorkerHosts)
+	cfg.SelectorPersona = strings.TrimSpace(cfg.SelectorPersona)
+	if cfg.MaxConcurrentAgentsPerHost < 0 {
+		cfg.MaxConcurrentAgentsPerHost = 0
+	}
+	if cfg.OutputTruncationMaxBytes < 0 {
+		cfg.OutputTruncationMaxBytes = 0
+	}
+
+	return cfg
+}
+
+func normalizeClaimingConfig(cfg ClaimingConfig) ClaimingConfig {
+	cfg.OwnershipMode = strings.ToLower(strings.TrimSpace(cfg.OwnershipMode))
+	if cfg.OwnershipMode == "" {
+		cfg.OwnershipMode = workflowconfig.IdentityOwnershipAssignee
+	}
+	cfg.Owner = strings.TrimSpace(cfg.Owner)
+	cfg.AssigneeLogin = strings.TrimSpace(cfg.AssigneeLogin)
+	cfg.OwnerField = strings.TrimSpace(cfg.OwnerField)
+	cfg.LeaseField = strings.TrimSpace(cfg.LeaseField)
+	if cfg.LeaseTTL < 0 {
+		cfg.LeaseTTL = 0
+	}
+	if cfg.HeartbeatInterval < 0 {
+		cfg.HeartbeatInterval = 0
+	}
+	return cfg
+}
+
+func durationFromMillis(ms int) time.Duration {
+	if ms <= 0 {
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+func durationFromSeconds(seconds int) time.Duration {
+	if seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func positiveIntValue(value *int) int {
+	if value == nil || *value <= 0 {
+		return 0
+	}
+	return *value
+}
+
+func cloneStateLimits(limits map[string]int) map[string]int {
+	cloned := make(map[string]int, len(limits))
+	for state, limit := range limits {
+		if limit > 0 {
+			cloned[normalizeState(state)] = limit
+		}
+	}
+	return cloned
+}
+
+func cloneIssues(issues []connector.Issue) []connector.Issue {
+	cloned := make([]connector.Issue, len(issues))
+	for i, issue := range issues {
+		cloned[i] = cloneIssue(issue)
+	}
+	return cloned
+}
+
+func normalizePullRequestState(state string) string {
+	return strings.ToLower(strings.TrimSpace(state))
+}
+
+func nextAttempt(attempt int) int {
+	if attempt < 1 {
+		return 1
+	}
+	return attempt + 1
+}
+
+func stateIn(state string, states []string) bool {
+	normalized := normalizeState(state)
+	return slices.Contains(states, normalized)
+}
+
+func normalizedStates(states []string) []string {
+	normalized := make([]string, 0, len(states))
+	seen := make(map[string]struct{}, len(states))
+	for _, state := range states {
+		state = normalizeState(state)
+		if state == "" {
+			continue
+		}
+		if _, ok := seen[state]; ok {
+			continue
+		}
+		seen[state] = struct{}{}
+		normalized = append(normalized, state)
+	}
+	return normalized
+}
+
+func normalizeState(state string) string {
+	return strings.ToLower(strings.TrimSpace(state))
+}
