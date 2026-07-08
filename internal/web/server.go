@@ -628,11 +628,56 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 }
 
 func (s *Server) withKanbanRefreshFeedback(data templates.DashboardData) templates.DashboardData {
+	data = s.withKanbanRevertFeedback(data)
 	if s == nil || s.kanbanRefreshes == nil {
 		return data
 	}
 	data.Kanban = s.kanbanRefreshes.apply(kanbanRefreshFeedbackKey(data), data.Kanban, data.Snapshot)
 	return data
+}
+
+func (s *Server) withKanbanRevertFeedback(data templates.DashboardData) templates.DashboardData {
+	if s == nil || s.kanbanMutations == nil || strings.TrimSpace(data.Kanban.Feedback) != "" {
+		return data
+	}
+	notices := s.kanbanRevertNotices(data)
+	if len(notices) == 0 {
+		return data
+	}
+	data.Kanban.Feedback = kanbanRevertFeedback(notices)
+	data.Kanban.FeedbackKind = "error"
+	return data
+}
+
+func (s *Server) kanbanRevertNotices(data templates.DashboardData) []kanbanRevertNotice {
+	if s == nil || s.kanbanMutations == nil {
+		return nil
+	}
+	projectID := strings.TrimSpace(data.ProjectID)
+	if projectID != "" {
+		return s.kanbanMutations.consumeRevertNotices("project:"+projectID, projectID)
+	}
+	return s.kanbanMutations.consumeRevertNotices("", "")
+}
+
+func kanbanRevertFeedback(notices []kanbanRevertNotice) string {
+	messages := make([]string, 0, len(notices))
+	for _, notice := range notices {
+		identifier := strings.TrimSpace(notice.identifier)
+		if identifier == "" {
+			identifier = "card"
+		}
+		from := strings.TrimSpace(notice.from)
+		if from == "" {
+			from = "the requested state"
+		}
+		to := strings.TrimSpace(notice.to)
+		if to == "" {
+			to = "the tracker state"
+		}
+		messages = append(messages, fmt.Sprintf("Move of %s to %s was not confirmed by the tracker; reverted to %s.", identifier, from, to))
+	}
+	return strings.Join(messages, " ")
 }
 
 func kanbanRefreshFeedbackKey(data templates.DashboardData) string {
