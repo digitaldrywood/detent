@@ -2,6 +2,7 @@ package kanban
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +37,24 @@ func TestMutationTrackerCardStateByDataSeq(t *testing.T) {
 				{snapshotState: "Todo", dataSeq: 8, want: "Todo"},
 				{snapshotState: "Backlog", dataSeq: 9, want: "Backlog"},
 			},
+		},
+		{
+			name: "same newer contradicting seq holds optimistic state",
+			observations: []observation{
+				{snapshotState: "Backlog", dataSeq: 8, want: "Todo"},
+				{snapshotState: "Backlog", dataSeq: 8, want: "Todo"},
+				{snapshotState: "Backlog", dataSeq: 8, want: "Todo"},
+			},
+			wantPending: true,
+		},
+		{
+			name: "older contradiction after counted seq does not increment",
+			observations: []observation{
+				{snapshotState: "Backlog", dataSeq: 9, want: "Todo"},
+				{snapshotState: "Backlog", dataSeq: 8, want: "Todo"},
+				{snapshotState: "Backlog", dataSeq: 10, want: "Backlog"},
+			},
+			wantNotice: RevertNotice{Identifier: "DDW-433", From: "Todo", To: "Backlog"},
 		},
 		{
 			name: "contradicting polls revert at limit with notice",
@@ -93,6 +112,53 @@ func TestMutationTrackerCardStateByDataSeq(t *testing.T) {
 				t.Fatalf("second ConsumeRevertNotices() = %#v, want drained", got)
 			}
 		})
+	}
+}
+
+func TestMutationTrackerCardStateConcurrentSameContradictingSeq(t *testing.T) {
+	t.Parallel()
+
+	tracker := NewMutationTracker()
+	issue := telemetry.Issue{
+		ID:         "race-card",
+		Identifier: "DDW-436",
+		ProjectID:  "detent",
+		Title:      "Race pending card",
+		State:      "Backlog",
+	}
+	tracker.NoteCardState("project:detent", "detent", issue, "Backlog", "Todo", 7)
+
+	start := make(chan struct{})
+	errs := make(chan string, 8)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range 100 {
+				if got := tracker.CardState("project:detent", issue.ID, "Backlog", 8); got != "Todo" {
+					select {
+					case errs <- got:
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for got := range errs {
+		t.Fatalf("CardState() = %q, want Todo", got)
+	}
+	if got := pendingStateExists(tracker, "project:detent", issue.ID); !got {
+		t.Fatalf("pending state exists = %t, want true", got)
+	}
+	if got := tracker.ConsumeRevertNotices("project:detent", "detent"); len(got) != 0 {
+		t.Fatalf("ConsumeRevertNotices() = %#v, want none", got)
 	}
 }
 

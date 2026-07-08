@@ -325,17 +325,19 @@ func TestKanbanSnapshotWithPendingStatesRevertFeedback(t *testing.T) {
 		State:      "Backlog",
 	}
 	server.kanbanMutations.NoteCardState("project:detent", "detent", issue, "Backlog", "Done", 1)
-	snapshot := telemetry.Snapshot{
+	firstSnapshot := telemetry.Snapshot{
 		Project:     telemetry.Project{ID: "detent"},
 		Refresh:     telemetry.Refresh{DataSeq: 2},
 		BoardIssues: []telemetry.Issue{issue},
 	}
+	secondSnapshot := firstSnapshot
+	secondSnapshot.Refresh.DataSeq = 3
 
-	first := server.kanbanSnapshotWithPendingStates("project:detent", "detent", snapshot)
+	first := server.kanbanSnapshotWithPendingStates("project:detent", "detent", firstSnapshot)
 	if first.BoardIssues[0].State != "Done" {
 		t.Fatalf("first contradiction state = %q, want Done", first.BoardIssues[0].State)
 	}
-	second := server.kanbanSnapshotWithPendingStates("project:detent", "detent", snapshot)
+	second := server.kanbanSnapshotWithPendingStates("project:detent", "detent", secondSnapshot)
 	if second.BoardIssues[0].State != "Backlog" {
 		t.Fatalf("second contradiction state = %q, want Backlog", second.BoardIssues[0].State)
 	}

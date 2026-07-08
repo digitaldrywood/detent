@@ -23,12 +23,13 @@ type MutationTracker struct {
 }
 
 type pendingState struct {
-	snapshot       string
-	current        string
-	project        string
-	issue          telemetry.Issue
-	dataSeqAtWrite uint64
-	contradictions int
+	snapshot             string
+	current              string
+	project              string
+	issue                telemetry.Issue
+	dataSeqAtWrite       uint64
+	contradictions       int
+	lastContradictionSeq uint64
 }
 
 type pendingRemoval struct {
@@ -103,7 +104,10 @@ func (t *MutationTracker) cardStateLocked(stateKey string, snapshotState string,
 		delete(t.states, stateKey)
 		return snapshotState
 	case NormalizeState(snapshotState) == NormalizeState(pending.snapshot):
-		pending.contradictions++
+		if dataSeq > pending.lastContradictionSeq {
+			pending.contradictions++
+			pending.lastContradictionSeq = dataSeq
+		}
 		if pending.contradictions < overlayContradictionLimit {
 			t.states[stateKey] = pending
 			return pending.current
