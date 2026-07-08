@@ -14,10 +14,13 @@ var (
 	ErrIssueNotFound       = errors.New("linear issue not found")
 	ErrIssueUpdateFailed   = errors.New("linear issue update failed")
 	ErrMissingIssue        = errors.New("linear issue is required")
+	ErrMissingUser         = errors.New("linear user is required")
 	ErrMissingToken        = errors.New("linear token is required")
 	ErrStateNotFound       = errors.New("linear state not found")
 	ErrTransient           = errors.New("linear transient error")
 	ErrUnexpectedStatus    = errors.New("linear unexpected status")
+	ErrUserAmbiguous       = errors.New("linear user ambiguous")
+	ErrUserNotFound        = errors.New("linear user not found")
 )
 
 type GraphQLError struct {

@@ -513,6 +513,277 @@ func TestConnectorUpdateIssueStateRefreshesStaleCachedTeam(t *testing.T) {
 	}
 }
 
+func TestConnectorSetAssigneeResolvesUserAndUpdatesIssue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		login          string
+		users          []map[string]any
+		wantAssigneeID string
+	}{
+		{
+			name:  "email match",
+			login: "worker@example.com",
+			users: []map[string]any{
+				linearUserFixture("user-email", "Worker Email", "worker", "worker@example.com"),
+			},
+			wantAssigneeID: "user-email",
+		},
+		{
+			name:  "display name case insensitive match",
+			login: "WORKER ONE",
+			users: []map[string]any{
+				linearUserFixture("user-display", "Worker Name", "worker one", "worker-name@example.com"),
+			},
+			wantAssigneeID: "user-display",
+		},
+		{
+			name:  "name case insensitive match",
+			login: "WORKER NAME",
+			users: []map[string]any{
+				linearUserFixture("user-name", "worker name", "worker", "worker-name@example.com"),
+			},
+			wantAssigneeID: "user-name",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var mu sync.Mutex
+			requests := []linearGraphQLRequest{}
+			server := linearTestServer(t, func(t *testing.T, request linearGraphQLRequest) any {
+				mu.Lock()
+				requests = append(requests, request)
+				requestNumber := len(requests)
+				mu.Unlock()
+
+				switch requestNumber {
+				case 1:
+					if !strings.Contains(request.Query, "DetentLinearUserByLogin") {
+						t.Fatalf("query = %q, want user lookup query", request.Query)
+					}
+					assertLinearUserFilter(t, request.Variables["filter"], tt.login)
+					return linearUsersResponse(tt.users)
+				case 2:
+					if !strings.Contains(request.Query, "DetentLinearIssueUpdateAssignee") || !strings.Contains(request.Query, "issueUpdate") {
+						t.Fatalf("query = %q, want issue update assignee mutation", request.Query)
+					}
+					if request.Variables["issueId"] != "LIN-123" {
+						t.Fatalf("issueId variable = %#v, want LIN-123", request.Variables["issueId"])
+					}
+					if request.Variables["assigneeId"] != tt.wantAssigneeID {
+						t.Fatalf("assigneeId variable = %#v, want %s", request.Variables["assigneeId"], tt.wantAssigneeID)
+					}
+					return linearIssueUpdateResponse(true)
+				default:
+					t.Fatalf("request count = %d, want 2", requestNumber)
+					return nil
+				}
+			})
+
+			c := newLinearTestConnector(t, server.URL)
+			if err := c.SetAssignee(context.Background(), " LIN-123 ", " "+tt.login+" "); err != nil {
+				t.Fatalf("SetAssignee() error = %v", err)
+			}
+
+			mu.Lock()
+			gotRequests := len(requests)
+			mu.Unlock()
+			if gotRequests != 2 {
+				t.Fatalf("request count = %d, want 2", gotRequests)
+			}
+		})
+	}
+}
+
+func TestConnectorSetAssigneeErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		issueID       string
+		login         string
+		respond       func(*testing.T, int, linearGraphQLRequest) any
+		wantErr       error
+		wantRequests  int
+		wantMutations int
+	}{
+		{
+			name:    "blank issue id",
+			issueID: " \t",
+			login:   "worker",
+			respond: func(t *testing.T, _ int, _ linearGraphQLRequest) any {
+				t.Fatalf("server received request for blank issue id")
+				return nil
+			},
+			wantErr: ErrMissingIssue,
+		},
+		{
+			name:    "blank assignee",
+			issueID: "LIN-123",
+			login:   " \t",
+			respond: func(t *testing.T, _ int, _ linearGraphQLRequest) any {
+				t.Fatalf("server received request for blank assignee")
+				return nil
+			},
+			wantErr: ErrMissingUser,
+		},
+		{
+			name:    "user not found",
+			issueID: "LIN-123",
+			login:   "unknown",
+			respond: func(t *testing.T, requestNumber int, request linearGraphQLRequest) any {
+				if requestNumber != 1 {
+					t.Fatalf("request count = %d, want 1", requestNumber)
+				}
+				if !strings.Contains(request.Query, "DetentLinearUserByLogin") {
+					t.Fatalf("query = %q, want user lookup query", request.Query)
+				}
+				return linearUsersResponse(nil)
+			},
+			wantErr:      ErrUserNotFound,
+			wantRequests: 1,
+		},
+		{
+			name:    "ambiguous user",
+			issueID: "LIN-123",
+			login:   "worker",
+			respond: func(t *testing.T, requestNumber int, request linearGraphQLRequest) any {
+				if requestNumber != 1 {
+					t.Fatalf("request count = %d, want 1", requestNumber)
+				}
+				if !strings.Contains(request.Query, "DetentLinearUserByLogin") {
+					t.Fatalf("query = %q, want user lookup query", request.Query)
+				}
+				return linearUsersResponse([]map[string]any{
+					linearUserFixture("user-1", "Worker One", "worker", "worker1@example.com"),
+					linearUserFixture("user-2", "Worker Two", "WORKER", "worker2@example.com"),
+				})
+			},
+			wantErr:      ErrUserAmbiguous,
+			wantRequests: 1,
+		},
+		{
+			name:    "failed mutation",
+			issueID: "LIN-123",
+			login:   "worker",
+			respond: func(t *testing.T, requestNumber int, request linearGraphQLRequest) any {
+				switch requestNumber {
+				case 1:
+					if !strings.Contains(request.Query, "DetentLinearUserByLogin") {
+						t.Fatalf("query = %q, want user lookup query", request.Query)
+					}
+					return linearUsersResponse([]map[string]any{
+						linearUserFixture("user-1", "Worker One", "worker", "worker@example.com"),
+					})
+				case 2:
+					if !strings.Contains(request.Query, "DetentLinearIssueUpdateAssignee") {
+						t.Fatalf("query = %q, want issue update assignee mutation", request.Query)
+					}
+					return linearIssueUpdateResponse(false)
+				default:
+					t.Fatalf("request count = %d, want 2", requestNumber)
+					return nil
+				}
+			},
+			wantErr:       ErrIssueUpdateFailed,
+			wantRequests:  2,
+			wantMutations: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var mu sync.Mutex
+			requests := 0
+			mutations := 0
+			server := linearTestServer(t, func(t *testing.T, request linearGraphQLRequest) any {
+				mu.Lock()
+				requests++
+				requestNumber := requests
+				if strings.Contains(request.Query, "DetentLinearIssueUpdateAssignee") {
+					mutations++
+				}
+				mu.Unlock()
+
+				return tt.respond(t, requestNumber, request)
+			})
+
+			c := newLinearTestConnector(t, server.URL)
+			err := c.SetAssignee(context.Background(), tt.issueID, tt.login)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("SetAssignee() error = %v, want %v", err, tt.wantErr)
+			}
+
+			mu.Lock()
+			gotRequests := requests
+			gotMutations := mutations
+			mu.Unlock()
+			if gotRequests != tt.wantRequests {
+				t.Fatalf("request count = %d, want %d", gotRequests, tt.wantRequests)
+			}
+			if gotMutations != tt.wantMutations {
+				t.Fatalf("mutation count = %d, want %d", gotMutations, tt.wantMutations)
+			}
+		})
+	}
+}
+
+func TestConnectorSetAssigneeCachesResolvedUser(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	userQueries := 0
+	mutationAssigneeIDs := []string{}
+	server := linearTestServer(t, func(t *testing.T, request linearGraphQLRequest) any {
+		mu.Lock()
+		defer mu.Unlock()
+
+		if strings.Contains(request.Query, "DetentLinearUserByLogin") {
+			userQueries++
+			assertLinearUserFilter(t, request.Variables["filter"], "Worker")
+			return linearUsersResponse([]map[string]any{
+				linearUserFixture("user-worker", "Worker Name", "Worker", "worker@example.com"),
+			})
+		}
+		if strings.Contains(request.Query, "DetentLinearIssueUpdateAssignee") {
+			assigneeID, _ := request.Variables["assigneeId"].(string)
+			mutationAssigneeIDs = append(mutationAssigneeIDs, assigneeID)
+			return linearIssueUpdateResponse(true)
+		}
+
+		t.Fatalf("query = %q, want user lookup query or issue update assignee mutation", request.Query)
+		return nil
+	})
+
+	c := newLinearTestConnector(t, server.URL)
+	if err := c.SetAssignee(context.Background(), "LIN-123", "Worker"); err != nil {
+		t.Fatalf("SetAssignee() first error = %v", err)
+	}
+	if err := c.SetAssignee(context.Background(), "LIN-124", "worker"); err != nil {
+		t.Fatalf("SetAssignee() second error = %v", err)
+	}
+
+	mu.Lock()
+	gotUserQueries := userQueries
+	gotMutationAssigneeIDs := append([]string(nil), mutationAssigneeIDs...)
+	mu.Unlock()
+	if gotUserQueries != 1 {
+		t.Fatalf("user query count = %d, want 1", gotUserQueries)
+	}
+	wantMutationAssigneeIDs := []string{"user-worker", "user-worker"}
+	if !reflect.DeepEqual(gotMutationAssigneeIDs, wantMutationAssigneeIDs) {
+		t.Fatalf("mutation assignee IDs = %#v, want %#v", gotMutationAssigneeIDs, wantMutationAssigneeIDs)
+	}
+}
+
 func TestConnectorDoesNotExposePullRequestCommenter(t *testing.T) {
 	t.Parallel()
 
@@ -526,7 +797,7 @@ func TestConnectorCapabilities(t *testing.T) {
 	t.Parallel()
 
 	c := newLinearTestConnector(t, "https://api.linear.app/graphql")
-	want := connector.Capabilities{UpdateIssueState: true, CreateComment: true}
+	want := connector.Capabilities{UpdateIssueState: true, SetAssignee: true, CreateComment: true}
 
 	t.Run("reported capabilities are authoritative", func(t *testing.T) {
 		t.Parallel()
@@ -727,6 +998,40 @@ func linearWorkflowStateFixture(id string, name string) map[string]any {
 		"id":   id,
 		"name": name,
 		"type": "started",
+	}
+}
+
+func linearUsersResponse(users []map[string]any) map[string]any {
+	return map[string]any{
+		"data": map[string]any{
+			"users": map[string]any{
+				"nodes": users,
+			},
+		},
+	}
+}
+
+func linearUserFixture(id string, name string, displayName string, email string) map[string]any {
+	return map[string]any{
+		"id":          id,
+		"name":        name,
+		"displayName": displayName,
+		"email":       email,
+	}
+}
+
+func assertLinearUserFilter(t *testing.T, got any, login string) {
+	t.Helper()
+
+	want := map[string]any{
+		"or": []any{
+			map[string]any{"email": map[string]any{"eq": login}},
+			map[string]any{"displayName": map[string]any{"eqIgnoreCase": login}},
+			map[string]any{"name": map[string]any{"eqIgnoreCase": login}},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("filter variable = %#v, want %#v", got, want)
 	}
 }
 
