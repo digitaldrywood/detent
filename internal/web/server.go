@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/a-h/templ"
@@ -123,12 +124,14 @@ type Server struct {
 	snapshots           *snapshotEnrichmentCache
 	kanbanMutations     *kanbanMutationLocks
 	kanbanRefreshes     *kanbanRefreshFeedbackTracker
+	kanbanRetryInFlight atomic.Bool
 	refreshes           *manualRefreshTracker
 	demo                *demoScenarioSet
 	apiKeys             *apikey.Service
 	ipLimiter           *apiRateLimiter
 	keyLimiter          *apiRateLimiter
 	dashboardAuthSecret [32]byte
+	afterFunc           func(time.Duration, func()) *time.Timer
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -200,6 +203,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		ipLimiter:           newAPIRateLimiter(300, 60),
 		keyLimiter:          newAPIRateLimiter(120, 30),
 		dashboardAuthSecret: dashboardAuthSecret,
+		afterFunc:           time.AfterFunc,
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
 	e.Use(server.uiAPICookie)

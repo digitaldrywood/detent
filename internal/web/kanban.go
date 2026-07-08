@@ -111,6 +111,7 @@ const (
 	kanbanDialogSucceeded           = "kanbanActionSucceeded"
 	kanbanOverlayContradictionLimit = 2
 	kanbanRemovalPendingTTL         = 5 * time.Minute
+	kanbanRefreshRetryDelay         = 2 * time.Second
 )
 
 func newKanbanMutationLocks() *kanbanMutationLocks {
@@ -1864,12 +1865,42 @@ func (s *Server) kanbanCommentCanMutate(req kanbanCommentMutationRequest, edit b
 }
 
 func (s *Server) requestKanbanRefresh(ctx context.Context) {
+	s.requestKanbanRefreshWithRetry(ctx, true)
+}
+
+func (s *Server) requestKanbanRefreshWithRetry(ctx context.Context, retryOnError bool) {
 	if s.refresher == nil {
 		return
 	}
-	if _, err := s.refresher.RequestRefresh(ctx); err != nil {
-		s.logger.DebugContext(ctx, "kanban refresh request failed", "error", err)
+	if ctx == nil {
+		ctx = context.Background()
 	}
+	response, err := s.refresher.RequestRefresh(ctx)
+	if err != nil {
+		s.logger.WarnContext(ctx, "kanban refresh request failed", "error", err)
+		if retryOnError {
+			s.scheduleKanbanRefreshRetry(ctx)
+		}
+		return
+	}
+	if response.Refused {
+		s.logger.WarnContext(ctx, "kanban refresh request refused", "retry_at", response.RetryAt)
+	}
+}
+
+func (s *Server) scheduleKanbanRefreshRetry(ctx context.Context) {
+	if !s.kanbanRetryInFlight.CompareAndSwap(false, true) {
+		return
+	}
+	afterFunc := s.afterFunc
+	if afterFunc == nil {
+		afterFunc = time.AfterFunc
+	}
+	retryCtx := context.WithoutCancel(ctx)
+	afterFunc(kanbanRefreshRetryDelay, func() {
+		defer s.kanbanRetryInFlight.Store(false)
+		s.requestKanbanRefreshWithRetry(retryCtx, false)
+	})
 }
 
 func telemetryIssueComments(comments []connector.IssueComment) []telemetry.IssueComment {
