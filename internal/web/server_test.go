@@ -1525,6 +1525,48 @@ func TestAPIUsageLogRecordsReturnedHTTPErrorStatus(t *testing.T) {
 	}
 }
 
+func TestAPIUsageWritesDrainOnShutdown(t *testing.T) {
+	t.Parallel()
+
+	server, backend, _, _ := newAPIKeyWorkItemTestServer(t)
+	token, keyID := createAPIKeyThroughHTTP(t, server, `{
+		"name": "Shutdown drain",
+		"scopes": ["read"],
+		"expires_in": "90d"
+	}`)
+	rec := performJSON(t, server.Handler(), http.MethodGet, "/api/v1/state", "", map[string]string{
+		"Authorization": "Bearer " + token,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("state status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	queries := backend.Queries()
+	if queries == nil {
+		t.Fatal("store Queries() = nil")
+	}
+	logs, err := queries.ListAPIUsageLogsByKey(context.Background(), keyID)
+	if err != nil {
+		t.Fatalf("ListAPIUsageLogsByKey() error = %v", err)
+	}
+	if len(logs) == 0 {
+		t.Fatalf("usage log count for %s = 0, want at least 1", keyID)
+	}
+	key, err := backend.APIKey(context.Background(), keyID)
+	if err != nil {
+		t.Fatalf("APIKey() error = %v", err)
+	}
+	if key.LastUsedAt == nil {
+		t.Fatal("LastUsedAt = nil, want shutdown to drain last-used write")
+	}
+}
+
 func TestDemoScenarioHeadersAreGatedToScreenshotsMode(t *testing.T) {
 	t.Parallel()
 

@@ -489,13 +489,11 @@ func (s *Server) recordAPIUsage(c echo.Context, credential apikey.Credential, st
 		UserAgent:  c.Request().UserAgent(),
 		CreatedAt:  time.Now(),
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+	s.asyncWrites.Enqueue(func(ctx context.Context) {
 		if err := s.store.RecordAPIUsageLog(ctx, usage); err != nil {
 			s.logger.Warn("failed to log api usage", "error", err, "api_key_id", credential.ID, "key", credential.PrefixLast4)
 		}
-	}()
+	})
 }
 
 func (s *Server) markAPIKeyLastUsed(credential apikey.Credential) {
@@ -503,11 +501,9 @@ func (s *Server) markAPIKeyLastUsed(credential apikey.Credential) {
 		return
 	}
 	id := credential.ID
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+	s.asyncWrites.Enqueue(func(ctx context.Context) {
 		if err := s.store.MarkAPIKeyLastUsed(ctx, id, time.Now()); err != nil {
 			s.logger.Warn("failed to update api key last used", "error", err, "api_key_id", id, "key", credential.PrefixLast4)
 		}
-	}()
+	})
 }
