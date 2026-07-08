@@ -34,6 +34,51 @@ const (
 	sseViewConfiguration = "configuration"
 )
 
+type sseSnapshotView struct {
+	nav            string
+	requireProject bool
+	requireGlobal  bool
+	kanbanFeedback bool
+	component      func(templates.DashboardData) templ.Component
+}
+
+var sseSnapshotViews = map[string]sseSnapshotView{
+	sseViewBoard: {
+		nav:            "board",
+		kanbanFeedback: true,
+		component:      templates.BoardSnapshot,
+	},
+	sseViewFleet: {
+		nav:           "fleet",
+		requireGlobal: true,
+		component:     templates.FleetSnapshotV2,
+	},
+	sseViewKanban: {
+		nav:            "kanban",
+		kanbanFeedback: true,
+		component:      templates.BoardSnapshot,
+	},
+	sseViewOverview: {
+		nav:            "overview",
+		requireProject: true,
+		component:      templates.ProjectOverviewSnapshotV2,
+	},
+	sseViewRuns: {
+		nav:            "runs",
+		requireProject: true,
+		component:      templates.ProjectRunsSnapshotV2,
+	},
+	sseViewDiagnostics: {
+		nav:            "diagnostics",
+		requireProject: true,
+		component:      templates.ProjectDiagnosticsSnapshot,
+	},
+	sseViewConfiguration: {
+		nav:            "configuration",
+		requireProject: true,
+	},
+}
+
 func staticSidebarNav(value string) string {
 	switch strings.TrimSpace(value) {
 	case "health":
@@ -64,6 +109,7 @@ func (s *Server) events(c echo.Context) error {
 	selectedProjectID := strings.TrimSpace(c.QueryParam("project"))
 	selectedNav := staticSidebarNav(c.QueryParam("nav"))
 	selectedView := strings.ToLower(strings.TrimSpace(c.QueryParam("view")))
+	analyticsKind := c.QueryParam("kind")
 	sub, err := s.hub.Subscribe(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -100,38 +146,7 @@ func (s *Server) events(c echo.Context) error {
 					data = scopedData
 				}
 			}
-			if selectedNav != "" {
-				data.ActiveNav = selectedNav
-			}
-			snapshotComponent := templates.SnapshotView(data)
-			if selectedNav == sseViewHealth {
-				snapshotComponent = templates.HealthSnapshotV2(data)
-			} else if selectedNav == sseViewAnalytics {
-				data.AnalyticsKind = strings.TrimSpace(c.QueryParam("kind"))
-				snapshotComponent = templates.AnalyticsSnapshotV2(data)
-			} else if selectedView == sseViewBoard && (selectedProjectID == "" || data.ProjectID != "") {
-				data.ActiveNav = "board"
-				data = s.withKanbanRefreshFeedback(data)
-				snapshotComponent = templates.BoardSnapshot(data)
-			} else if selectedView == sseViewFleet && selectedProjectID == "" {
-				data.ActiveNav = "fleet"
-				snapshotComponent = templates.FleetSnapshotV2(data)
-			} else if selectedView == sseViewKanban && (selectedProjectID == "" || data.ProjectID != "") {
-				data.ActiveNav = "kanban"
-				data = s.withKanbanRefreshFeedback(data)
-				snapshotComponent = templates.BoardSnapshot(data)
-			} else if selectedView == sseViewOverview && selectedProjectID != "" {
-				data.ActiveNav = "overview"
-				snapshotComponent = templates.ProjectOverviewSnapshotV2(data)
-			} else if selectedView == sseViewRuns && selectedProjectID != "" {
-				data.ActiveNav = "runs"
-				snapshotComponent = templates.ProjectRunsSnapshotV2(data)
-			} else if selectedView == sseViewDiagnostics && selectedProjectID != "" {
-				data.ActiveNav = "diagnostics"
-				snapshotComponent = templates.ProjectDiagnosticsSnapshot(data)
-			} else if selectedView == sseViewConfiguration && selectedProjectID != "" {
-				data.ActiveNav = "configuration"
-			}
+			data, snapshotComponent := s.sseSnapshotComponent(analyticsKind, selectedNav, selectedView, selectedProjectID, data)
 			sent, err := stream.sendComponent(ctx, res.Writer, sseEventSnapshot, snapshotComponent, s.sseFragmentInterval)
 			if err != nil {
 				return err
@@ -168,6 +183,53 @@ func (s *Server) events(c echo.Context) error {
 				flusher.Flush()
 			}
 		}
+	}
+}
+
+func (s *Server) sseSnapshotComponent(
+	analyticsKind string,
+	selectedNav string,
+	selectedView string,
+	selectedProjectID string,
+	data templates.DashboardData,
+) (templates.DashboardData, templ.Component) {
+	if selectedNav != "" {
+		data.ActiveNav = selectedNav
+	}
+	switch selectedNav {
+	case sseViewHealth:
+		return data, templates.HealthSnapshotV2(data)
+	case sseViewAnalytics:
+		data.AnalyticsKind = strings.TrimSpace(analyticsKind)
+		return data, templates.AnalyticsSnapshotV2(data)
+	}
+
+	view, ok := sseSnapshotViews[selectedView]
+	if !ok || !view.available(selectedProjectID, data) {
+		return data, templates.SnapshotView(data)
+	}
+	if view.nav != "" {
+		data.ActiveNav = view.nav
+	}
+	if view.kanbanFeedback {
+		data = s.withKanbanRefreshFeedback(data)
+	}
+	if view.component == nil {
+		return data, templates.SnapshotView(data)
+	}
+	return data, view.component(data)
+}
+
+func (view sseSnapshotView) available(selectedProjectID string, data templates.DashboardData) bool {
+	switch {
+	case view.requireGlobal && selectedProjectID != "":
+		return false
+	case view.requireProject && selectedProjectID == "":
+		return false
+	case view.kanbanFeedback && selectedProjectID != "" && data.ProjectID == "":
+		return false
+	default:
+		return true
 	}
 }
 

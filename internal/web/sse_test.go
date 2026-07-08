@@ -8,7 +8,244 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/a-h/templ"
+
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web/templates"
 )
+
+func TestSSESnapshotComponent(t *testing.T) {
+	t.Parallel()
+
+	type snapshotCase struct {
+		name              string
+		analyticsKind     string
+		selectedNav       string
+		selectedView      string
+		selectedProjectID string
+		dataProjectID     string
+		wantActiveNav     string
+		wantAnalyticsKind string
+		wantData          func(*Server, templates.DashboardData) templates.DashboardData
+		wantComponent     func(templates.DashboardData) templ.Component
+	}
+
+	cases := []snapshotCase{
+		{
+			name:              "health nav wins before selected view",
+			selectedNav:       sseViewHealth,
+			selectedView:      sseViewBoard,
+			selectedProjectID: "detent",
+			dataProjectID:     "detent",
+			wantActiveNav:     sseViewHealth,
+			wantData: func(_ *Server, data templates.DashboardData) templates.DashboardData {
+				data.ActiveNav = sseViewHealth
+				return data
+			},
+			wantComponent: templates.HealthSnapshotV2,
+		},
+		{
+			name:              "analytics nav trims kind and wins before selected view",
+			analyticsKind:     " attempts ",
+			selectedNav:       sseViewAnalytics,
+			selectedView:      sseViewFleet,
+			wantActiveNav:     sseViewAnalytics,
+			wantAnalyticsKind: "attempts",
+			wantData: func(_ *Server, data templates.DashboardData) templates.DashboardData {
+				data.ActiveNav = sseViewAnalytics
+				data.AnalyticsKind = "attempts"
+				return data
+			},
+			wantComponent: templates.AnalyticsSnapshotV2,
+		},
+		{
+			name:          "other nav keeps default snapshot",
+			selectedNav:   "reports",
+			wantActiveNav: "reports",
+			wantData: func(_ *Server, data templates.DashboardData) templates.DashboardData {
+				data.ActiveNav = "reports"
+				return data
+			},
+			wantComponent: templates.SnapshotView,
+		},
+		{
+			name:          "board global view uses board snapshot",
+			selectedView:  sseViewBoard,
+			wantActiveNav: sseViewBoard,
+			wantData: func(server *Server, data templates.DashboardData) templates.DashboardData {
+				data.ActiveNav = sseViewBoard
+				return server.withKanbanRefreshFeedback(data)
+			},
+			wantComponent: templates.BoardSnapshot,
+		},
+		{
+			name:              "board project view uses board snapshot with scoped data",
+			selectedView:      sseViewBoard,
+			selectedProjectID: "detent",
+			dataProjectID:     "detent",
+			wantActiveNav:     sseViewBoard,
+			wantData: func(server *Server, data templates.DashboardData) templates.DashboardData {
+				data.ActiveNav = sseViewBoard
+				return server.withKanbanRefreshFeedback(data)
+			},
+			wantComponent: templates.BoardSnapshot,
+		},
+		{
+			name:              "board project view falls through without scoped data",
+			selectedView:      sseViewBoard,
+			selectedProjectID: "missing",
+			wantActiveNav:     "initial",
+			wantComponent:     templates.SnapshotView,
+		},
+		{
+			name:          "fleet global view uses fleet snapshot",
+			selectedView:  sseViewFleet,
+			wantActiveNav: sseViewFleet,
+			wantData: func(_ *Server, data templates.DashboardData) templates.DashboardData {
+				data.ActiveNav = sseViewFleet
+				return data
+			},
+			wantComponent: templates.FleetSnapshotV2,
+		},
+		{
+			name:              "fleet project view falls through",
+			selectedView:      sseViewFleet,
+			selectedProjectID: "detent",
+			dataProjectID:     "detent",
+			wantActiveNav:     "initial",
+			wantComponent:     templates.SnapshotView,
+		},
+		{
+			name:          "kanban global view uses board snapshot",
+			selectedView:  sseViewKanban,
+			wantActiveNav: sseViewKanban,
+			wantData: func(server *Server, data templates.DashboardData) templates.DashboardData {
+				data.ActiveNav = sseViewKanban
+				return server.withKanbanRefreshFeedback(data)
+			},
+			wantComponent: templates.BoardSnapshot,
+		},
+		{
+			name:              "kanban project view uses board snapshot with scoped data",
+			selectedView:      sseViewKanban,
+			selectedProjectID: "detent",
+			dataProjectID:     "detent",
+			wantActiveNav:     sseViewKanban,
+			wantData: func(server *Server, data templates.DashboardData) templates.DashboardData {
+				data.ActiveNav = sseViewKanban
+				return server.withKanbanRefreshFeedback(data)
+			},
+			wantComponent: templates.BoardSnapshot,
+		},
+		{
+			name:              "kanban project view falls through without scoped data",
+			selectedView:      sseViewKanban,
+			selectedProjectID: "missing",
+			wantActiveNav:     "initial",
+			wantComponent:     templates.SnapshotView,
+		},
+		{
+			name:              "overview project view uses overview snapshot",
+			selectedView:      sseViewOverview,
+			selectedProjectID: "detent",
+			wantActiveNav:     sseViewOverview,
+			wantData: func(_ *Server, data templates.DashboardData) templates.DashboardData {
+				data.ActiveNav = sseViewOverview
+				return data
+			},
+			wantComponent: templates.ProjectOverviewSnapshotV2,
+		},
+		{
+			name:          "overview global view falls through",
+			selectedView:  sseViewOverview,
+			wantActiveNav: "initial",
+			wantComponent: templates.SnapshotView,
+		},
+		{
+			name:              "runs project view uses runs snapshot",
+			selectedView:      sseViewRuns,
+			selectedProjectID: "detent",
+			dataProjectID:     "detent",
+			wantActiveNav:     sseViewRuns,
+			wantData: func(_ *Server, data templates.DashboardData) templates.DashboardData {
+				data.ActiveNav = sseViewRuns
+				return data
+			},
+			wantComponent: templates.ProjectRunsSnapshotV2,
+		},
+		{
+			name:          "runs global view falls through",
+			selectedView:  sseViewRuns,
+			wantActiveNav: "initial",
+			wantComponent: templates.SnapshotView,
+		},
+		{
+			name:              "diagnostics project view uses diagnostics snapshot",
+			selectedView:      sseViewDiagnostics,
+			selectedProjectID: "detent",
+			dataProjectID:     "detent",
+			wantActiveNav:     sseViewDiagnostics,
+			wantData: func(_ *Server, data templates.DashboardData) templates.DashboardData {
+				data.ActiveNav = sseViewDiagnostics
+				return data
+			},
+			wantComponent: templates.ProjectDiagnosticsSnapshot,
+		},
+		{
+			name:          "diagnostics global view falls through",
+			selectedView:  sseViewDiagnostics,
+			wantActiveNav: "initial",
+			wantComponent: templates.SnapshotView,
+		},
+		{
+			name:              "configuration project view keeps default snapshot",
+			selectedView:      sseViewConfiguration,
+			selectedProjectID: "detent",
+			dataProjectID:     "detent",
+			wantActiveNav:     sseViewConfiguration,
+			wantData: func(_ *Server, data templates.DashboardData) templates.DashboardData {
+				data.ActiveNav = sseViewConfiguration
+				return data
+			},
+			wantComponent: templates.SnapshotView,
+		},
+		{
+			name:          "configuration global view falls through",
+			selectedView:  sseViewConfiguration,
+			wantActiveNav: "initial",
+			wantComponent: templates.SnapshotView,
+		},
+	}
+
+	for _, tt := range cases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data := testSSESnapshotData(tt.dataProjectID)
+			server := newSSESnapshotTestServer()
+			gotData, gotComponent := server.sseSnapshotComponent(tt.analyticsKind, tt.selectedNav, tt.selectedView, tt.selectedProjectID, data)
+
+			wantData := testSSESnapshotData(tt.dataProjectID)
+			if tt.wantData != nil {
+				wantData = tt.wantData(newSSESnapshotTestServer(), wantData)
+			}
+			gotHTML := renderSnapshotComponent(t, gotComponent)
+			wantHTML := renderSnapshotComponent(t, tt.wantComponent(wantData))
+
+			if gotData.ActiveNav != tt.wantActiveNav {
+				t.Fatalf("ActiveNav = %q, want %q", gotData.ActiveNav, tt.wantActiveNav)
+			}
+			if gotData.AnalyticsKind != tt.wantAnalyticsKind {
+				t.Fatalf("AnalyticsKind = %q, want %q", gotData.AnalyticsKind, tt.wantAnalyticsKind)
+			}
+			if gotHTML != wantHTML {
+				t.Fatalf("rendered component mismatch\n got:\n%s\nwant:\n%s", gotHTML, wantHTML)
+			}
+		})
+	}
+}
 
 func TestSSEStreamSkipsUnchangedFragments(t *testing.T) {
 	t.Parallel()
@@ -159,4 +396,92 @@ func newTestSSEStream(now *time.Time) *sseStream {
 	stream.nextMetricsAt = now.Add(time.Hour)
 	stream.now = func() time.Time { return now.UTC() }
 	return stream
+}
+
+func newSSESnapshotTestServer() *Server {
+	return &Server{
+		kanbanMutations: newKanbanMutationLocks(),
+		kanbanRefreshes: newKanbanRefreshFeedbackTracker(),
+	}
+}
+
+func testSSESnapshotData(projectID string) templates.DashboardData {
+	generatedAt := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	lastRefreshAt := generatedAt.Add(-time.Minute)
+	data := templates.DashboardData{
+		Title:           "Detent",
+		ApplicationName: "Detent",
+		InstanceName:    "dogfood",
+		ConnectorName:   "github",
+		DashboardURL:    "http://127.0.0.1:0",
+		ActiveNav:       "initial",
+		ProjectID:       strings.TrimSpace(projectID),
+		ProjectName:     "Detent",
+		Kanban: templates.KanbanData{
+			ProjectID: projectID,
+			States:    []string{"Todo", "In Progress", "Done"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: generatedAt,
+			Project: telemetry.Project{
+				ID:          projectID,
+				DisplayName: "Detent",
+				URL:         "https://github.com/digitaldrywood/detent/issues",
+			},
+			Instance: telemetry.Instance{
+				Name:                    "dogfood",
+				GitHubLogin:             "detent-bot",
+				AuthorizationScope:      "repo",
+				AuthorizationConfigured: true,
+			},
+			Refresh: telemetry.Refresh{
+				Status:        telemetry.RefreshStatusReady,
+				LastRefreshAt: &lastRefreshAt,
+				DataSeq:       1,
+			},
+			Counts: telemetry.Counts{
+				Running:   1,
+				Queue:     2,
+				Blocked:   0,
+				Completed: 3,
+			},
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:         "issue-1018",
+					Identifier: "DDW-1018",
+					ProjectID:  projectID,
+					Title:      "Refactor SSE snapshot dispatch",
+					State:      "In Progress",
+				},
+			},
+		},
+	}
+	if projectID != "" {
+		data.Snapshot.Projects = []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{
+					ID:          projectID,
+					DisplayName: "Detent",
+					URL:         "https://github.com/digitaldrywood/detent/issues",
+				},
+				Counts: data.Snapshot.Counts,
+				Refresh: telemetry.Refresh{
+					Status:        telemetry.RefreshStatusReady,
+					LastRefreshAt: &lastRefreshAt,
+					DataSeq:       1,
+				},
+			},
+		}
+	}
+	return data
+}
+
+func renderSnapshotComponent(t *testing.T, component templ.Component) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	if err := component.Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	return buf.String()
 }
