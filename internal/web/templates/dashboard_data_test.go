@@ -1938,6 +1938,101 @@ func TestProjectKanbanCardForIssueUsesProjectTerminalStates(t *testing.T) {
 	}
 }
 
+func TestProjectKanbanCardMoveDisabledTextCapabilities(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	card := projectKanbanCard{
+		IssueID:   "I_kw1024",
+		ProjectID: "detent",
+		Stage:     "Todo",
+		Movable:   true,
+	}
+	projectKanban := KanbanData{
+		Mode:               "integration",
+		States:             []string{"Todo", "In Progress"},
+		AllowedTransitions: map[string][]string{"Todo": {"In Progress"}},
+		CanMoveCards:       true,
+	}
+	fleetKanban := KanbanData{
+		Projects: map[string]KanbanProjectData{
+			"detent": {
+				Mode:               "integration",
+				ProjectID:          "detent",
+				States:             []string{"Todo", "In Progress"},
+				AllowedTransitions: map[string][]string{"Todo": {"In Progress"}},
+			},
+		},
+	}
+	tests := []struct {
+		name string
+		data DashboardData
+		want string
+	}{
+		{
+			name: "integration with move capability",
+			data: DashboardData{
+				ProjectID: "detent",
+				Snapshot:  telemetry.Snapshot{GeneratedAt: now},
+				Kanban:    projectKanban,
+			},
+		},
+		{
+			name: "integration without move capability",
+			data: DashboardData{
+				ProjectID: "detent",
+				Snapshot:  telemetry.Snapshot{GeneratedAt: now},
+				Kanban: func() KanbanData {
+					kanban := projectKanban
+					kanban.CanMoveCards = false
+					return kanban
+				}(),
+			},
+			want: "This project's tracker does not support moving cards.",
+		},
+		{
+			name: "fleet project without move capability",
+			data: DashboardData{
+				Snapshot: telemetry.Snapshot{GeneratedAt: now},
+				Kanban:   fleetKanban,
+			},
+			want: "This project's tracker does not support moving cards.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := projectKanbanCardMoveDisabledText(tt.data, card); got != tt.want {
+				t.Fatalf("projectKanbanCardMoveDisabledText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProjectKanbanCardCanRemoveRespectsCapability(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	card := projectKanbanCard{IssueID: "I_kw1024"}
+	data := DashboardData{
+		ProjectID: "detent",
+		Snapshot:  telemetry.Snapshot{GeneratedAt: now},
+		Kanban: KanbanData{
+			Mode: "integration",
+		},
+	}
+
+	if projectKanbanCardCanRemove(data, card) {
+		t.Fatalf("projectKanbanCardCanRemove() = true without capability, want false")
+	}
+	data.Kanban.CanRemoveCards = true
+	if !projectKanbanCardCanRemove(data, card) {
+		t.Fatalf("projectKanbanCardCanRemove() = false with capability, want true")
+	}
+}
+
 func TestProjectKanbanBoardDoesNotTreatCompletedSessionsAsCurrentDone(t *testing.T) {
 	t.Parallel()
 

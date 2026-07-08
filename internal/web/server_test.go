@@ -2179,6 +2179,134 @@ func TestKanbanMoveRoutesProjectV2AndIssueFieldUpdates(t *testing.T) {
 	}
 }
 
+func TestKanbanMoveRejectsMissingConnectorCapability(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		form       url.Values
+		wantStatus int
+		wantBody   []string
+	}{
+		{
+			name: "feedback",
+			form: url.Values{
+				"project_id":    {"detent"},
+				"issue_id":      {"I_linear1024"},
+				"current_state": {"Todo"},
+				"target_state":  {"In Progress"},
+			},
+			wantStatus: http.StatusForbidden,
+			wantBody: []string{
+				`id="kanban-feedback"`,
+				"This project's tracker does not support moving cards.",
+			},
+		},
+		{
+			name: "dialog",
+			form: url.Values{
+				"kanban_dialog": {"true"},
+				"project_id":    {"detent"},
+				"issue_id":      {"I_linear1024"},
+				"current_state": {"Todo"},
+				"target_state":  {"In Progress"},
+			},
+			wantStatus: http.StatusOK,
+			wantBody: []string{
+				"This project's tracker does not support moving cards.",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testDeps(t)
+			actionConnector := &kanbanActionConnector{name: "linear"}
+			reporter := &kanbanCapabilityConnector{
+				kanbanActionConnector: actionConnector,
+				capabilities:          connector.Capabilities{CreateComment: true},
+			}
+			mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+				Mode: workflowconfig.KanbanModeIntegration,
+				AllowedTransitions: map[string][]string{
+					"Todo": {"In Progress"},
+				},
+			}, reporter)
+			if err := deps.Hub.Publish(telemetry.Snapshot{
+				GeneratedAt: time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC),
+				Project:     telemetry.Project{ID: "detent"},
+				BoardIssues: []telemetry.Issue{{
+					ID:         "I_linear1024",
+					Identifier: "digitaldrywood/detent#1024",
+					ProjectID:  "detent",
+					Title:      "Linear move card",
+					State:      "Todo",
+				}},
+			}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", tt.form)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			body := html.UnescapeString(rec.Body.String())
+			for _, want := range tt.wantBody {
+				if !strings.Contains(body, want) {
+					t.Fatalf("body missing %q: %s", want, rec.Body.String())
+				}
+			}
+			if got := actionConnector.stateUpdates(); len(got) != 0 {
+				t.Fatalf("state updates = %#v, want none", got)
+			}
+		})
+	}
+}
+
+func TestKanbanMoveDialogRejectsMissingConnectorCapability(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "linear"}
+	reporter := &kanbanCapabilityConnector{
+		kanbanActionConnector: actionConnector,
+		capabilities:          connector.Capabilities{CreateComment: true},
+	}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+		AllowedTransitions: map[string][]string{
+			"Todo": {"In Progress"},
+		},
+	}, reporter)
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	values := url.Values{
+		"project_id":    {"detent"},
+		"issue_id":      {"I_linear1024"},
+		"current_state": {"Todo"},
+		"target_state":  {"In Progress"},
+	}
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/kanban/move?"+values.Encode(), http.StatusOK)
+	if !strings.Contains(html.UnescapeString(body), "This project's tracker does not support moving cards.") {
+		t.Fatalf("body missing capability message:\n%s", body)
+	}
+	if strings.Contains(body, `hx-post="/api/v1/kanban/move"`) {
+		t.Fatalf("move dialog rendered a move form despite missing capability:\n%s", body)
+	}
+	if got := actionConnector.stateUpdates(); len(got) != 0 {
+		t.Fatalf("state updates = %#v, want none", got)
+	}
+}
+
 func TestKanbanMoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 	t.Parallel()
 
@@ -2459,17 +2587,16 @@ func TestKanbanMoveFailureDoesNotInsertPendingCard(t *testing.T) {
 	}
 
 	form := url.Values{
-		"kanban_dialog": {"true"},
 		"project_id":    {"detent"},
 		"issue_id":      {"I_fail922"},
 		"current_state": {"Backlog"},
 		"target_state":  {"Todo"},
 	}
 	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusNotImplemented, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "Move failed: "+connector.ErrNotImplemented.Error()) {
+	if !strings.Contains(html.UnescapeString(rec.Body.String()), "This project's tracker does not support moving cards.") {
 		t.Fatalf("body missing visible move error: %s", rec.Body.String())
 	}
 	if err := deps.Hub.Publish(telemetry.Snapshot{
@@ -2848,13 +2975,64 @@ func TestKanbanRemoveClearsConfiguredIssueField(t *testing.T) {
 	}
 }
 
+func TestKanbanRemoveRejectsMissingConnectorCapability(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "linear"}
+	reporter := &kanbanCapabilityConnector{
+		kanbanActionConnector: actionConnector,
+		capabilities: connector.Capabilities{
+			UpdateIssueState: true,
+			CreateComment:    true,
+		},
+	}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, reporter)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_linear1024",
+			Identifier: "digitaldrywood/detent#1024",
+			ProjectID:  "detent",
+			Title:      "Linear remove card",
+			State:      "Todo",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"project_id":    {"detent"},
+		"issue_id":      {"I_linear1024"},
+		"current_state": {"Todo"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/remove", form)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if !strings.Contains(html.UnescapeString(rec.Body.String()), "This project's tracker does not support removing cards.") {
+		t.Fatalf("body missing capability message: %s", rec.Body.String())
+	}
+	if got := actionConnector.removals(); len(got) != 0 {
+		t.Fatalf("removals = %#v, want none", got)
+	}
+}
+
 func TestKanbanRemoveReturnsVisibleErrorWhenUnsupported(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github", removeErr: connector.ErrNotImplemented}
 	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
 		Mode: workflowconfig.KanbanModeIntegration,
-	}, connectorProbe{name: "github"})
+	}, actionConnector)
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
 		Project:     telemetry.Project{ID: "detent"},
@@ -2879,10 +3057,10 @@ func TestKanbanRemoveReturnsVisibleErrorWhenUnsupported(t *testing.T) {
 		"current_state": {"Todo"},
 	}
 	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/remove", form)
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusNotImplemented, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "Remove failed: "+connector.ErrNotImplemented.Error()) {
+	if !strings.Contains(html.UnescapeString(rec.Body.String()), "This project's tracker does not support removing cards.") {
 		t.Fatalf("body missing visible unsupported error: %s", rec.Body.String())
 	}
 }
@@ -10043,6 +10221,15 @@ type kanbanActionConnector struct {
 	maxMoves       int
 	moveStarted    chan<- struct{}
 	releaseMove    <-chan struct{}
+}
+
+type kanbanCapabilityConnector struct {
+	*kanbanActionConnector
+	capabilities connector.Capabilities
+}
+
+func (c *kanbanCapabilityConnector) Capabilities() connector.Capabilities {
+	return c.capabilities
 }
 
 func (c *kanbanActionConnector) Name() string {

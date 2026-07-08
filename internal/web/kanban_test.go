@@ -10,6 +10,7 @@ import (
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
@@ -72,6 +73,60 @@ func TestKanbanStateNamesIgnoreCompletedSessionStates(t *testing.T) {
 			got := kanbanStateNames(tt.cfg, snapshot)
 			if !slices.Equal(got, tt.want) {
 				t.Fatalf("kanbanStateNames() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestKanbanCardCapabilitiesDeriveFromStatePath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		target     kanbanActionTarget
+		wantMove   bool
+		wantRemove bool
+	}{
+		{
+			name:       "nil connector",
+			target:     kanbanActionTarget{},
+			wantMove:   false,
+			wantRemove: false,
+		},
+		{
+			name: "project status uses state update and project removal",
+			target: kanbanActionTarget{
+				connector: kanbanCapabilityProbe{caps: connector.Capabilities{
+					UpdateIssueState:  true,
+					RemoveFromProject: true,
+				}},
+			},
+			wantMove:   true,
+			wantRemove: true,
+		},
+		{
+			name: "issue field status uses field set and clear",
+			target: kanbanActionTarget{
+				connector: kanbanCapabilityProbe{caps: connector.Capabilities{
+					UpdateIssueState:  true,
+					RemoveFromProject: true,
+					SetIssueFields:    false,
+					ClearIssueFields:  true,
+				}},
+				kanban: workflowconfig.Kanban{IssueStateFieldID: 123},
+			},
+			wantMove:   false,
+			wantRemove: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotMove, gotRemove := kanbanCardCapabilities(tt.target)
+			if gotMove != tt.wantMove || gotRemove != tt.wantRemove {
+				t.Fatalf("kanbanCardCapabilities() = (%t, %t), want (%t, %t)", gotMove, gotRemove, tt.wantMove, tt.wantRemove)
 			}
 		})
 	}
@@ -694,4 +749,44 @@ func TestKanbanRefreshFeedbackTransitionsOnce(t *testing.T) {
 	if got := tracker.apply("project:detent", templates.KanbanData{}, ready); got.Feedback != "" {
 		t.Fatalf("second ready feedback = %q, want one-time recovery", got.Feedback)
 	}
+}
+
+type kanbanCapabilityProbe struct {
+	caps connector.Capabilities
+}
+
+func (p kanbanCapabilityProbe) Name() string {
+	return "capability-probe"
+}
+
+func (p kanbanCapabilityProbe) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	return nil, connector.ErrNotImplemented
+}
+
+func (p kanbanCapabilityProbe) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	return nil, connector.ErrNotImplemented
+}
+
+func (p kanbanCapabilityProbe) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	return nil, connector.ErrNotImplemented
+}
+
+func (p kanbanCapabilityProbe) CreateComment(context.Context, string, string) error {
+	return connector.ErrNotImplemented
+}
+
+func (p kanbanCapabilityProbe) UpdateIssueState(context.Context, string, string) error {
+	return connector.ErrNotImplemented
+}
+
+func (p kanbanCapabilityProbe) SetAssignee(context.Context, string, string) error {
+	return connector.ErrNotImplemented
+}
+
+func (p kanbanCapabilityProbe) SetField(context.Context, string, string, string) error {
+	return connector.ErrNotImplemented
+}
+
+func (p kanbanCapabilityProbe) Capabilities() connector.Capabilities {
+	return p.caps
 }

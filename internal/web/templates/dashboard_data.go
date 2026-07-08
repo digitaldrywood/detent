@@ -99,6 +99,8 @@ type KanbanData struct {
 	AllowedTransitions          map[string][]string
 	ShowBlockedAlerts           bool
 	SupportsPullRequestComments bool
+	CanMoveCards                bool
+	CanRemoveCards              bool
 	Projects                    map[string]KanbanProjectData
 	Feedback                    string
 	FeedbackKind                string
@@ -111,6 +113,8 @@ type KanbanProjectData struct {
 	TerminalStates              []string
 	AllowedTransitions          map[string][]string
 	SupportsPullRequestComments bool
+	CanMoveCards                bool
+	CanRemoveCards              bool
 }
 
 type KanbanMoveDialogData struct {
@@ -2292,6 +2296,8 @@ func projectKanbanCardKanbanData(data DashboardData, card projectKanbanCard) Kan
 		TerminalStates:              projectData.TerminalStates,
 		AllowedTransitions:          projectData.AllowedTransitions,
 		SupportsPullRequestComments: projectData.SupportsPullRequestComments,
+		CanMoveCards:                projectData.CanMoveCards,
+		CanRemoveCards:              projectData.CanRemoveCards,
 	}
 }
 
@@ -2816,8 +2822,12 @@ func projectKanbanCardMoveDisabledText(data DashboardData, card projectKanbanCar
 		}
 		return "Tracker snapshot is not ready; moves are disabled until data is current."
 	}
-	if !projectKanbanCardIntegrationEnabled(data, card) {
+	kanban := projectKanbanCardKanbanData(data, card)
+	if !strings.EqualFold(strings.TrimSpace(kanban.Mode), "integration") {
 		return "This project board is read-only."
+	}
+	if !kanban.CanMoveCards {
+		return "This project's tracker does not support moving cards."
 	}
 	if !card.Movable || strings.TrimSpace(card.IssueID) == "" {
 		if card.PRNumber > 0 {
@@ -2836,7 +2846,7 @@ func projectKanbanCardMoveDisabledText(data DashboardData, card projectKanbanCar
 }
 
 func projectKanbanCardCanRemove(data DashboardData, card projectKanbanCard) bool {
-	return snapshotReady(data.Snapshot) && isProjectDashboard(data) && kanbanIntegrationEnabled(data) && strings.TrimSpace(card.IssueID) != ""
+	return snapshotReady(data.Snapshot) && isProjectDashboard(data) && kanbanIntegrationEnabled(data) && data.Kanban.CanRemoveCards && strings.TrimSpace(card.IssueID) != ""
 }
 
 func projectKanbanCardCanComment(data DashboardData, card projectKanbanCard) bool {
