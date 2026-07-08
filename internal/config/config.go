@@ -45,6 +45,7 @@ const (
 	AgentBackendCodex        = "codex"
 	AgentBackendClaudeCode   = "claude_code"
 	DefaultKnowledgeMaxBytes = 64 * 1024
+	DefaultReworkLimit       = 3
 
 	DefaultPollingIntervalMS      = 120000
 	MinPollingIntervalMS          = 60000
@@ -785,6 +786,7 @@ func Default() Config {
 				SourceState:        "Human Review",
 				PassState:          "Merging",
 				ReworkState:        "Rework",
+				ReworkLimit:        DefaultReworkLimit,
 			},
 			Budget:    budget,
 			Lessons:   defaultLessons(),
@@ -1056,7 +1058,7 @@ func (c *Config) validateTracker(problems *[]string) {
 }
 
 func (c *Config) validateAutoPromoteReworkLimit(problems *[]string) {
-	if c.Agent.AutoPromote.ReworkLimit <= 0 {
+	if !c.Agent.AutoPromote.Enabled || c.Agent.AutoPromote.ReworkLimit <= 0 {
 		return
 	}
 	if stateListContains(c.Tracker.ActiveStates, "Blocked") ||

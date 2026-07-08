@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/dependencyline"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -96,6 +98,9 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		if issueID == "" {
 			continue
 		}
+		if o.dependencyAutoUnblockStickyBlocked(ctx, state, issue) {
+			continue
+		}
 		hydrated, ok := o.hydrateDependencyAutoUnblockIssue(ctx, issue, cfg.SourceStates)
 		if !ok || len(hydrated.BlockedBy) == 0 {
 			continue
@@ -104,8 +109,12 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		if !dependencyBlockersReady(blockers, cfg, o.cfg.TerminalStates) {
 			continue
 		}
+		blockerSet := dependencyAutoUnblockBlockerSet(blockers)
+		if o.dependencyAutoUnblockAlreadyConsumed(ctx, state, hydrated, blockerSet) {
+			continue
+		}
 		targetState := dependencyAutoUnblockTargetState(state, hydrated, cfg.TargetState)
-		if !o.applyDependencyAutoUnblock(ctx, state, hydrated, blockers, targetState, now) {
+		if !o.applyDependencyAutoUnblock(ctx, state, hydrated, blockers, blockerSet, targetState, now) {
 			continue
 		}
 		transitioned[issueID] = struct{}{}
@@ -698,11 +707,18 @@ func (o *Orchestrator) applyDependencyAutoUnblock(
 	state *State,
 	issue connector.Issue,
 	blockers []dependencyBlocker,
+	blockerSet string,
 	targetState string,
 	now time.Time,
 ) bool {
 	issueID := strings.TrimSpace(issue.ID)
-	if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "dependency_auto_unblock"); err != nil {
+	metadata := workflowLaneMetadata{
+		DependencyAutoUnblock: &workflowLaneDependencyAutoUnblockMetadata{
+			BlockerSet: strings.TrimSpace(blockerSet),
+			Blockers:   dependencyAutoUnblockBlockerLabels(blockers),
+		},
+	}
+	if err := o.updateIssueStateByIDWithMetadata(ctx, issueID, issue, targetState, now, "dependency_auto_unblock", metadata); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("dependency auto-unblock transition failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
 		}
@@ -715,6 +731,13 @@ func (o *Orchestrator) applyDependencyAutoUnblock(
 	}
 
 	delete(state.Blocked, issueID)
+	if state.DependencyAutoUnblocks == nil {
+		state.DependencyAutoUnblocks = map[string]DependencyAutoUnblockRecord{}
+	}
+	state.DependencyAutoUnblocks[issueID] = DependencyAutoUnblockRecord{
+		BlockerSet:  strings.TrimSpace(blockerSet),
+		UnblockedAt: now,
+	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      now,
 		Event:   "dependency_auto_unblock_transition",
@@ -724,6 +747,149 @@ func (o *Orchestrator) applyDependencyAutoUnblock(
 		o.logger.Info("dependency auto-unblock transition", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState)
 	}
 	return true
+}
+
+func (o *Orchestrator) dependencyAutoUnblockStickyBlocked(ctx context.Context, state *State, issue connector.Issue) bool {
+	issueID := strings.TrimSpace(issue.ID)
+	if state != nil && issueID != "" {
+		if blocked, ok := state.Blocked[issueID]; ok && dependencyAutoUnblockStickyReason(blocked.Reason) {
+			return true
+		}
+	}
+	if dependencyAutoUnblockStickyReason(issue.BlockerReason) {
+		return true
+	}
+	reason, ok := o.latestWorkflowLaneReason(ctx, issue, blockedStatusState)
+	return ok && dependencyAutoUnblockStickyReason(reason)
+}
+
+func dependencyAutoUnblockStickyReason(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "rework_limit", "circuit_breaker":
+		return true
+	default:
+		return false
+	}
+}
+
+func (o *Orchestrator) dependencyAutoUnblockAlreadyConsumed(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	blockerSet string,
+) bool {
+	blockerSet = strings.TrimSpace(blockerSet)
+	if blockerSet == "" {
+		return false
+	}
+	issueID := strings.TrimSpace(issue.ID)
+	if state != nil && issueID != "" {
+		if record, ok := state.DependencyAutoUnblocks[issueID]; ok && record.BlockerSet == blockerSet {
+			return true
+		}
+	}
+	return o.workflowTimelineHasDependencyAutoUnblock(ctx, issue, blockerSet)
+}
+
+func (o *Orchestrator) workflowTimelineHasDependencyAutoUnblock(
+	ctx context.Context,
+	issue connector.Issue,
+	blockerSet string,
+) bool {
+	timeline, ok := o.issueWorkflowTimeline(ctx, issue)
+	if !ok {
+		return false
+	}
+	for _, event := range timeline.Events {
+		if event.PhaseType != store.WorkflowPhaseTypeLane {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(event.Status), "entered") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(event.Reason), "dependency_auto_unblock") {
+			continue
+		}
+		metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON)
+		if !ok || metadata.DependencyAutoUnblock == nil {
+			continue
+		}
+		if strings.TrimSpace(metadata.DependencyAutoUnblock.BlockerSet) == blockerSet {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *Orchestrator) latestWorkflowLaneReason(ctx context.Context, issue connector.Issue, stateName string) (string, bool) {
+	timeline, ok := o.issueWorkflowTimeline(ctx, issue)
+	if !ok {
+		return "", false
+	}
+	stateName = normalizeState(stateName)
+	for index := len(timeline.Events) - 1; index >= 0; index-- {
+		event := timeline.Events[index]
+		if event.PhaseType != store.WorkflowPhaseTypeLane {
+			continue
+		}
+		if normalizeState(event.PhaseName) != stateName {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(event.Status), "entered") {
+			continue
+		}
+		return strings.TrimSpace(event.Reason), true
+	}
+	return "", false
+}
+
+func (o *Orchestrator) issueWorkflowTimeline(ctx context.Context, issue connector.Issue) (store.WorkflowTimeline, bool) {
+	reader, ok := o.workflowMetrics.(WorkflowMetricsTimelineReader)
+	if !ok || reader == nil {
+		return store.WorkflowTimeline{}, false
+	}
+	timeline, err := reader.IssueWorkflowTimeline(ctx, store.IssueIdentity{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		IssueURL:   issue.URL,
+	})
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("dependency auto-unblock workflow timeline read failed", "issue_id", strings.TrimSpace(issue.ID), "identifier", issue.Identifier, "error", err)
+		}
+		return store.WorkflowTimeline{}, false
+	}
+	return timeline, true
+}
+
+func dependencyAutoUnblockBlockerSet(blockers []dependencyBlocker) string {
+	keys := make([]string, 0, len(blockers))
+	for _, blocker := range blockers {
+		key := dependencyAutoUnblockBlockerKey(blocker)
+		if key != "" {
+			keys = append(keys, key)
+		}
+	}
+	keys = uniqueStrings(keys)
+	slices.Sort(keys)
+	return strings.Join(keys, "\n")
+}
+
+func dependencyAutoUnblockBlockerKey(blocker dependencyBlocker) string {
+	key := firstNonBlank(blocker.Ref.Identifier, blocker.Ref.ID, blocker.Issue.Identifier, blocker.Issue.ID)
+	return strings.ToLower(strings.TrimSpace(key))
+}
+
+func dependencyAutoUnblockBlockerLabels(blockers []dependencyBlocker) []string {
+	labels := make([]string, 0, len(blockers))
+	for _, blocker := range blockers {
+		if label := dependencyBlockerLabel(blocker); label != "" {
+			labels = append(labels, label)
+		}
+	}
+	labels = uniqueStrings(labels)
+	slices.Sort(labels)
+	return labels
 }
 
 func dependencyAutoUnblockComment(sourceState string, targetState string, blockers []dependencyBlocker) string {

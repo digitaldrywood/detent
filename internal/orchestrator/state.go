@@ -48,6 +48,7 @@ type State struct {
 	Retry                    map[string]Retry
 	MergeTimings             map[string]MergeTiming
 	TransientCheckRetries    map[string]TransientCheckRetry
+	DependencyAutoUnblocks   map[string]DependencyAutoUnblockRecord
 	BudgetRefusals           map[string]BudgetRefusal
 	PriorAttempts            map[string]runpkg.PriorAttempt
 	InstantFailures          map[string]InstantFailure
@@ -158,6 +159,11 @@ type TransientCheckRetry struct {
 	RetriedAt     time.Time
 }
 
+type DependencyAutoUnblockRecord struct {
+	BlockerSet  string
+	UnblockedAt time.Time
+}
+
 func newState(cfg Config) State {
 	return State{
 		PollInterval:             cfg.PollInterval,
@@ -176,6 +182,7 @@ func newState(cfg Config) State {
 		Retry:                    map[string]Retry{},
 		MergeTimings:             map[string]MergeTiming{},
 		TransientCheckRetries:    map[string]TransientCheckRetry{},
+		DependencyAutoUnblocks:   map[string]DependencyAutoUnblockRecord{},
 		BudgetRefusals:           map[string]BudgetRefusal{},
 		PriorAttempts:            map[string]runpkg.PriorAttempt{},
 		InstantFailures:          map[string]InstantFailure{},
@@ -221,6 +228,7 @@ func (s State) clone() State {
 		Retry:                    make(map[string]Retry, len(s.Retry)),
 		MergeTimings:             maps.Clone(s.MergeTimings),
 		TransientCheckRetries:    maps.Clone(s.TransientCheckRetries),
+		DependencyAutoUnblocks:   maps.Clone(s.DependencyAutoUnblocks),
 		BudgetRefusals:           make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
 		PriorAttempts:            clonePriorAttempts(s.PriorAttempts),
 		InstantFailures:          make(map[string]InstantFailure, len(s.InstantFailures)),
