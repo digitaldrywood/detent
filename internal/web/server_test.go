@@ -2812,6 +2812,71 @@ func TestKanbanMoveUsesVisibleRuntimeStateForFreshness(t *testing.T) {
 	}
 }
 
+func TestKanbanMoveUsesConfiguredBoardStateOverRawRuntimeFreshness(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+		AllowedTransitions: map[string][]string{
+			"Human Review": {"Blocked"},
+		},
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_runtime580",
+			Identifier: "digitaldrywood/detent#581",
+			ProjectID:  "detent",
+			Title:      "Configured freshness card",
+			State:      "Human Review",
+		}},
+		Running: []telemetry.Running{{
+			Issue: telemetry.Issue{
+				ID:         "I_runtime580",
+				Identifier: "digitaldrywood/detent#581",
+				ProjectID:  "detent",
+				Title:      "Configured freshness card",
+				State:      "OPEN",
+			},
+			StartedAt: time.Date(2026, 6, 15, 11, 50, 0, 0, time.UTC),
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"kanban_drag":   {"true"},
+		"project_id":    {"detent"},
+		"issue_id":      {"I_runtime580"},
+		"current_state": {"Human Review"},
+		"target_state":  {"Blocked"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if got := strings.Count(body, "Configured freshness card"); got != 1 {
+		t.Fatalf("card render count = %d, want 1:\n%s", got, body)
+	}
+	if !regexp.MustCompile(`data-board-lane="blocked"[\s\S]*Configured freshness card`).MatchString(body) {
+		t.Fatalf("Blocked lane missing moved configured card:\n%s", body)
+	}
+	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_runtime580", state: "Blocked"}}; !equalStateUpdates(got, want) {
+		t.Fatalf("state updates = %#v, want %#v", got, want)
+	}
+}
+
 func TestKanbanPendingOverlayDoesNotMutateLatestSnapshot(t *testing.T) {
 	t.Parallel()
 

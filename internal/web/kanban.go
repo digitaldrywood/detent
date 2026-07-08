@@ -55,10 +55,11 @@ const (
 )
 
 type kanbanSnapshotIssueEntry struct {
-	issue telemetry.Issue
-	state string
-	rank  int
-	index int
+	issue           telemetry.Issue
+	state           string
+	rank            int
+	index           int
+	rawRuntimeState bool
 }
 
 type kanbanActionTarget struct {
@@ -1959,14 +1960,21 @@ func snapshotKanbanIssueEntries(snapshot telemetry.Snapshot) []kanbanSnapshotIss
 	index := 0
 	appendIssue := func(issue telemetry.Issue, fallback string, rank int) {
 		state := strings.TrimSpace(issue.State)
+		fallback = strings.TrimSpace(fallback)
+		rawRuntimeState := false
+		if fallback != "" && kanbanRawGitHubIssueState(state) {
+			state = fallback
+			rawRuntimeState = true
+		}
 		if state == "" {
-			state = strings.TrimSpace(fallback)
+			state = fallback
 		}
 		entries = append(entries, kanbanSnapshotIssueEntry{
-			issue: issue,
-			state: state,
-			rank:  rank,
-			index: index,
+			issue:           issue,
+			state:           state,
+			rank:            rank,
+			index:           index,
+			rawRuntimeState: rawRuntimeState,
 		})
 		index++
 	}
@@ -1997,6 +2005,9 @@ func visibleSnapshotKanbanIssueEntries(snapshot telemetry.Snapshot) []kanbanSnap
 			continue
 		}
 		current, ok := byKey[key]
+		if ok && entry.rawRuntimeState {
+			continue
+		}
 		if ok && entry.rank < current.rank {
 			continue
 		}
