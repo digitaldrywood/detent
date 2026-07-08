@@ -319,6 +319,179 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 	}
 }
 
+func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+
+	tests := []struct {
+		name                 string
+		issue                connector.Issue
+		wantUpdates          []autoPromoteTickUpdate
+		wantCommentFragments []string
+	}{
+		{
+			name: "promotes active completed issue directly to merging",
+			issue: func() connector.Issue {
+				issue := autoPromoteTickIssue("issue-active-ready", []string{"bug"}, &connector.PullRequest{
+					Number:                 142,
+					URL:                    "https://github.test/digitaldrywood/detent/pull/142",
+					State:                  "OPEN",
+					CIStatus:               "success",
+					CodexReviewState:       "COMMENTED",
+					CodexReviewSubmittedAt: &oldReview,
+				})
+				issue.State = "In Progress"
+				return issue
+			}(),
+			wantUpdates: []autoPromoteTickUpdate{{issueID: "issue-active-ready", state: "Merging"}},
+			wantCommentFragments: []string{
+				"Auto-promoted this issue from In Progress to Merging.",
+				"reason: ready",
+				"https://github.test/digitaldrywood/detent/pull/142",
+			},
+		},
+		{
+			name: "routes active completed issue directly to rework",
+			issue: func() connector.Issue {
+				issue := autoPromoteTickIssue("issue-active-rework", []string{"bug"}, &connector.PullRequest{
+					Number:                 143,
+					URL:                    "https://github.test/digitaldrywood/detent/pull/143",
+					State:                  "OPEN",
+					CIStatus:               "failure",
+					CodexReviewState:       "COMMENTED",
+					CodexReviewSubmittedAt: &oldReview,
+				})
+				issue.State = "In Progress"
+				return issue
+			}(),
+			wantUpdates: []autoPromoteTickUpdate{{issueID: "issue-active-rework", state: "Rework"}},
+			wantCommentFragments: []string{
+				"Auto-promote routed this issue from In Progress to Rework: current-head CI is failing.",
+				"reason: ci_not_green",
+				"https://github.test/digitaldrywood/detent/pull/143",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{
+				PollInterval:        time.Minute,
+				MaxConcurrentAgents: 1,
+				AutoPromote: AutoPromoteConfig{
+					Enabled:       true,
+					QuietDuration: 10 * time.Minute,
+					Gate:          gate.Config{Kind: gate.KindCommand},
+				},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			})
+			state := newState(cfg)
+			state.Completed[tt.issue.ID] = Completed{
+				Issue:      tt.issue,
+				FinalState: FinalStateCompleted,
+			}
+			mergingSlot := dispatchTestIssue(tt.issue.ID+"-merging-slot", "Merging")
+			state.Running[mergingSlot.ID] = Running{Issue: mergingSlot}
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{tt.issue}}
+			orch := &Orchestrator{
+				cfg:       cfg,
+				connector: tracker,
+				logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+
+			orch.tick(context.Background(), &state, now)
+
+			if !reflect.DeepEqual(tracker.updates, tt.wantUpdates) {
+				t.Fatalf("updates = %#v, want %#v", tracker.updates, tt.wantUpdates)
+			}
+			if len(tracker.comments) != 1 {
+				t.Fatalf("comments = %#v, want one auto-promote audit comment", tracker.comments)
+			}
+			for _, fragment := range tt.wantCommentFragments {
+				if !strings.Contains(tracker.comments[0].body, fragment) {
+					t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+				}
+			}
+			if _, ok := state.Completed[tt.issue.ID]; ok {
+				t.Fatalf("Completed[%q] present after auto-promote transition", tt.issue.ID)
+			}
+		})
+	}
+}
+
+func TestTickAutoPromoteRecoversActiveIssueAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 8, 12, 30, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	issue := autoPromoteTickIssue("issue-restart-gate-pending", []string{"bug"}, &connector.PullRequest{
+		Number:                 144,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/144",
+		State:                  "OPEN",
+		CIStatus:               "pending",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	issue.State = "In Progress"
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate:          gate.Config{Kind: gate.KindCommand},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	mergingSlot := dispatchTestIssue("issue-restart-merging-slot", "Merging")
+	state.Running[mergingSlot.ID] = Running{Issue: mergingSlot}
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates with pending CI = %#v, want none", tracker.updates)
+	}
+	if len(tracker.comments) != 0 {
+		t.Fatalf("comments with pending CI = %#v, want none", tracker.comments)
+	}
+	if _, ok := state.Running[issue.ID]; ok {
+		t.Fatalf("Running[%q] present after pending restart recovery tick", issue.ID)
+	}
+
+	tracker.stateIssues[0].PullRequest.CIStatus = "success"
+	orch.tick(context.Background(), &state, now.Add(time.Minute))
+
+	wantUpdates := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}
+	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
+		t.Fatalf("updates after CI pass = %#v, want %#v", tracker.updates, wantUpdates)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments after CI pass = %#v, want one auto-promote audit comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"Auto-promoted this issue from In Progress to Merging.",
+		"reason: ready",
+		"https://github.test/digitaldrywood/detent/pull/144",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+		}
+	}
+}
+
 func TestTickAutoPromoteHydratesWorkpadBlockerBeforeTransition(t *testing.T) {
 	t.Parallel()
 

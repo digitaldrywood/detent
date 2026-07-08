@@ -397,6 +397,7 @@ const (
 	dispatchSkipInactiveState            = "inactive_state"
 	dispatchSkipTerminalState            = "terminal_state"
 	dispatchSkipPullRequestHydration     = "pull_request_hydration_unavailable"
+	dispatchSkipAutoPromoteGatePending   = "auto_promote_gate_pending"
 	dispatchSkipMergedPullRequest        = "merged_pull_request_reconciliation_pending"
 	dispatchSkipDuplicatePullRequest     = "duplicate_pull_request_work"
 	dispatchSkipUnauthorized             = "unauthorized"
@@ -430,6 +431,9 @@ func (p dispatchPlanner) dispatchableIssueDecision(
 	}
 	if pullRequestHydrationBlocksDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipPullRequestHydration}
+	}
+	if autoPromoteActiveGatePendingIssue(issue, state, p.cfg, p.cfg.AutoPromote) {
+		return dispatchableDecision{reason: dispatchSkipAutoPromoteGatePending}
 	}
 	if mergedPullRequestReconciliationPending(issue, p.cfg) {
 		return dispatchableDecision{reason: dispatchSkipMergedPullRequest}

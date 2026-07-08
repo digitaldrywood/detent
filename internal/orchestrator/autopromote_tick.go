@@ -60,7 +60,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 	}
 
 	result := autoPromoteTickResult{transitioned: map[string]struct{}{}}
-	for _, issue := range issuesInStates(issues, []string{cfg.SourceState}) {
+	for _, issue := range o.autoPromoteEvaluationIssues(state, issues, cfg) {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
 			continue
@@ -112,6 +112,92 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		return autoPromoteTickResult{}
 	}
 	return result
+}
+
+func (o *Orchestrator) autoPromoteEvaluationIssues(
+	state *State,
+	issues []connector.Issue,
+	cfg AutoPromoteConfig,
+) []connector.Issue {
+	out := issuesInStates(issues, []string{cfg.SourceState})
+	seen := make(map[string]struct{}, len(out))
+	for _, issue := range out {
+		if issueID := strings.TrimSpace(issue.ID); issueID != "" {
+			seen[issueID] = struct{}{}
+		}
+	}
+
+	for _, issue := range issuesInStates(issues, o.cfg.ActiveStates) {
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" {
+			continue
+		}
+		if normalizeState(issue.State) == "todo" {
+			continue
+		}
+		if _, ok := seen[issueID]; ok {
+			continue
+		}
+		if !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg) {
+			continue
+		}
+		out = append(out, cloneIssue(issue))
+		seen[issueID] = struct{}{}
+	}
+	return out
+}
+
+func autoPromoteActiveGatePendingIssue(
+	issue connector.Issue,
+	state *State,
+	cfg Config,
+	autoCfg AutoPromoteConfig,
+) bool {
+	autoCfg = normalizeAutoPromoteConfig(autoCfg)
+	issueID := strings.TrimSpace(issue.ID)
+	if issueID == "" {
+		return false
+	}
+	if !stateIn(issue.State, cfg.ActiveStates) || stateIn(issue.State, cfg.TerminalStates) {
+		return false
+	}
+	switch normalizeState(issue.State) {
+	case normalizeState(autoCfg.SourceState), normalizeState(autoCfg.PassState), normalizeState(autoCfg.ReworkState):
+		return false
+	}
+	if autoPromoteHumanReviewRequired(issue, autoCfg, autoCfg.Gate) {
+		return false
+	}
+	if autoPromoteActiveDispatchInProgress(state, issueID) {
+		return false
+	}
+	if state != nil {
+		if completed, ok := state.Completed[issueID]; ok {
+			return completedActiveFinalStateReviewEligible(completed.FinalState, autoCfg.SourceState) &&
+				completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(autoCfg.Gate))
+		}
+	}
+	return issueHasOpenPullRequest(issue)
+}
+
+func autoPromoteActiveDispatchInProgress(state *State, issueID string) bool {
+	if state == nil {
+		return false
+	}
+	if _, ok := state.Running[issueID]; ok {
+		return true
+	}
+	if _, ok := state.Claimed[issueID]; ok {
+		return true
+	}
+	if _, ok := state.Retry[issueID]; ok {
+		return true
+	}
+	return false
+}
+
+func issueHasOpenPullRequest(issue connector.Issue) bool {
+	return issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "open"
 }
 
 func (o *Orchestrator) hydrateAutoPromoteWorkpadDecision(
@@ -193,6 +279,11 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, o.cfg.AutoPromote, now)
 		}
 		targetState := staleTodoPullRequestTargetState(decision, o.cfg.AutoPromote)
+		if autoPromoteActiveGatePendingIssue(issue, state, o.cfg, o.cfg.AutoPromote) &&
+			normalizeState(targetState) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState) &&
+			staleTodoPullRequestShouldStayActive(decision) {
+			continue
+		}
 		if targetState == "" {
 			o.logAutoPromoteDecision(issue, decision, "")
 			continue
@@ -810,6 +901,10 @@ func staleTodoPullRequestDecision(
 		return autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonDisabled)
 	}
 	return EvaluateAutoPromote(issue, summary, cfg, now)
+}
+
+func staleTodoPullRequestShouldStayActive(decision AutoPromoteDecision) bool {
+	return decision.Reason != AutoPromoteReasonWorkpadBlocker
 }
 
 func staleTodoPullRequestTargetState(decision AutoPromoteDecision, cfg AutoPromoteConfig) string {

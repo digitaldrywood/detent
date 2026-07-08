@@ -121,7 +121,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			fetched,
 			o.reviewPlanIssues(ctx, state, fetched.status, now),
 		)
-		autoPromoted := o.autoPromoteHumanReviewIssues(ctx, state, fetched.status, now)
+		autoPromoted := o.autoPromoteHumanReviewIssues(ctx, state, mergeIssueSlices(fetched.status, fetched.candidates), now)
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,

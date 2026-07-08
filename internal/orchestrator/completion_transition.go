@@ -35,8 +35,7 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			completed.FinalState,
 			o.cfg.ActiveStates,
 			o.cfg.TerminalStates,
-			cfg.SourceState,
-			gateRequiresPullRequest(cfg.Gate),
+			cfg,
 		)
 		if targetState == "" {
 			continue
@@ -139,28 +138,35 @@ func completedActiveReviewTargetState(
 	finalState string,
 	activeStates []string,
 	terminalStates []string,
-	reviewState string,
-	requirePullRequest bool,
+	cfg AutoPromoteConfig,
 ) string {
+	cfg = normalizeAutoPromoteConfig(cfg)
 	if !stateIn(issue.State, activeStates) || stateIn(issue.State, terminalStates) {
 		return ""
 	}
-	reviewState = strings.TrimSpace(reviewState)
-	if reviewState == "" {
-		reviewState = autoPromoteSourceState
-	}
+	reviewState := cfg.SourceState
 	switch normalizeState(issue.State) {
 	case normalizeState(reviewState), normalizeState(autoPromoteReworkState), normalizeState(autoPromoteMergingState):
 		return ""
 	}
-	if !completedActiveIssueReadyForReview(issue, requirePullRequest) {
+	if !completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(cfg.Gate)) {
 		return ""
 	}
+	if !autoPromoteHumanReviewRequired(issue, cfg, cfg.Gate) {
+		return ""
+	}
+	if completedActiveFinalStateReviewEligible(finalState, reviewState) {
+		return reviewState
+	}
+	return ""
+}
+
+func completedActiveFinalStateReviewEligible(finalState string, reviewState string) bool {
 	switch normalizeState(finalState) {
 	case "", normalizeState(FinalStateCompleted), normalizeState(reviewState):
-		return reviewState
+		return true
 	default:
-		return ""
+		return false
 	}
 }
 
