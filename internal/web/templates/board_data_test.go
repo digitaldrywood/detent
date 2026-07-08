@@ -172,6 +172,85 @@ func TestBoardSnapshotRendersAwaitingChecksOnlyForGatePendingCards(t *testing.T)
 	}
 }
 
+func TestLongLocalWorkItemIdentifiersUseDefensiveTruncationClasses(t *testing.T) {
+	localID := "wi-011cd179bc7ecf36b7197e4b"
+	projectID := "digitaldrywood-video"
+	title := "Local SQLite work item"
+	data := DashboardData{
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC),
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:         localID,
+					Identifier: localID,
+					ProjectID:  projectID,
+					Title:      title,
+					State:      "Todo",
+				},
+			},
+			Pipeline: []telemetry.Issue{
+				{
+					ID:         localID,
+					Identifier: localID,
+					ProjectID:  projectID,
+					Title:      title,
+					State:      "Human Review",
+				},
+			},
+		},
+		Kanban: KanbanData{States: []string{"Todo"}},
+	}
+
+	boardHTML := renderBoardComponent(t, BoardSnapshot(data))
+	boardCard := boardCardSection(t, boardHTML, title)
+	for _, want := range []string{
+		`class="flex-none max-w-24 truncate text-text">` + localID,
+		`class="min-w-16 truncate">` + projectID,
+	} {
+		if !strings.Contains(boardCard, want) {
+			t.Fatalf("board card missing %q:\n%s", want, boardCard)
+		}
+	}
+
+	sheetHTML := renderBoardComponent(t, BoardCardSheet(
+		DashboardData{},
+		projectKanbanCard{Identifier: localID, IssueNumber: localID, ProjectID: projectID, Title: title, Stage: "Todo"},
+		true,
+		false,
+		KanbanConversationData{},
+	))
+	for _, want := range []string{
+		`class="min-w-20 truncate">` + projectID,
+		`class="flex-none max-w-48 truncate text-text">` + localID,
+	} {
+		if !strings.Contains(sheetHTML, want) {
+			t.Fatalf("sheet header missing %q:\n%s", want, sheetHTML)
+		}
+	}
+
+	fleetHTML := renderBoardComponent(t, FleetSnapshotV2(data))
+	for _, want := range []string{
+		`class="flex-none max-w-24 truncate text-text">` + localID,
+		`class="min-w-16 truncate">` + projectID,
+	} {
+		if !strings.Contains(fleetHTML, want) {
+			t.Fatalf("fleet PR card missing %q:\n%s", want, fleetHTML)
+		}
+	}
+
+	runsHTML := renderBoardComponent(t, projectRunsTable("project-runs", []projectRunRow{{DomID: "run-local", Ref: localID, Title: title}}))
+	if want := `class="min-w-0 truncate font-mono text-xs font-medium text-text tabular-nums">` + localID; !strings.Contains(runsHTML, want) {
+		t.Fatalf("project runs row missing %q:\n%s", want, runsHTML)
+	}
+
+	exceptionHTML := renderBoardComponent(t, primitives.ExceptionStrip([]primitives.Exception{
+		{ID: "exception-local", Kind: primitives.KindErr, Title: "Needs review", Repo: projectID, Ref: localID, Rest: "needs operator approval"},
+	}))
+	if want := `class="flex-none max-w-24 truncate font-mono text-xs font-medium text-text">` + localID; !strings.Contains(exceptionHTML, want) {
+		t.Fatalf("exception strip missing %q:\n%s", want, exceptionHTML)
+	}
+}
+
 func TestBoardCardAgeFooterVisibility(t *testing.T) {
 	card := projectKanbanCard{
 		IssueNumber:      "#982",

@@ -23,9 +23,9 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 		<aside class={ boardCardSheetClass(expanded) } role="dialog" aria-modal="true" aria-label={ "Details for " + card.IssueNumber }>
 			<header class="flex flex-none items-start gap-3 border-b border-line px-5 py-4">
 				<div class="flex min-w-0 flex-1 flex-col gap-1">
-					<div class="flex items-center gap-2 font-mono text-xs font-medium text-sec">
-						<span class="truncate">{ projectKanbanCardProjectID(data, card) }</span>
-						<span class="flex-none text-text">{ card.IssueNumber }</span>
+					<div class="flex min-w-0 items-center gap-2 font-mono text-xs font-medium text-sec">
+						<span class="min-w-20 truncate">{ projectKanbanCardProjectID(data, card) }</span>
+						<span class="flex-none max-w-48 truncate text-text">{ card.IssueNumber }</span>
 					</div>
 					<h2 class="text-sm font-medium leading-snug text-text">{ card.Title }</h2>
 				</div>

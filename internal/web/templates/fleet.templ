@@ -73,9 +73,9 @@ templ fleetSnapshotBody(data DashboardData) {
 						}
 						for _, card := range lane.Cards {
 							<article id={ card.DomID } class="flex flex-none flex-col gap-1 rounded-card border border-line bg-elev px-3 py-2.5">
-								<div class="flex items-center gap-2 font-mono text-2xs font-medium text-sec">
-									<span class="flex-none text-text">{ card.Ref }</span>
-									<span class="truncate">{ card.Project }</span>
+								<div class="flex min-w-0 items-center gap-2 font-mono text-2xs font-medium text-sec">
+									<span class="flex-none max-w-24 truncate text-text">{ card.Ref }</span>
+									<span class="min-w-16 truncate">{ card.Project }</span>
 									<span class="flex-1"></span>
 									if card.Meta != "" {
 										<span class="flex-none whitespace-nowrap tabular-nums">{ card.Meta }</span>
@@ -105,10 +105,10 @@ templ AgentActivityPanel(agents []fleetAgentRow, count string) {
 				class={ fleetAgentRowClass(i == len(agents)-1) }
 			>
 				<div class="flex min-w-0 flex-col gap-1">
-					<div class="flex items-center gap-2 font-mono text-xs font-medium text-sec">
+					<div class="flex min-w-0 items-center gap-2 font-mono text-xs font-medium text-sec">
 						@primitives.StatusDot(primitives.KindOK, true)
-						<span class="truncate">{ agent.Repo }</span>
-						<span class="flex-none text-text">{ agent.Number }</span>
+						<span class="min-w-20 truncate">{ agent.Repo }</span>
+						<span class="flex-none max-w-32 truncate text-text">{ agent.Number }</span>
 					</div>
 					<div class="truncate text-sm font-medium text-text">{ agent.Title }</div>
 				</div>
