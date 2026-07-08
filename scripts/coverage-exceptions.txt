@@ -1,0 +1,4 @@
+# Per-package coverage ratchet exceptions. Floors only move up.
+github.com/digitaldrywood/detent/internal/web/ui/components/icon 0 # TemplUI icon glue has no direct behavior tests yet; raise or remove after component tests cover it.
+github.com/digitaldrywood/detent/internal/web/ui/primitives 0 # UI primitive wrappers are currently untested glue; raise or remove after behavior-focused tests cover them.
+github.com/digitaldrywood/detent/internal/web/ui/utils 0 # UI class utility helpers are below the package floor; raise or remove after helper tests cover them.
