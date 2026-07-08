@@ -2071,6 +2071,7 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 				"ci_anomaly_action", "treated_completed_successful_check_runs_as_passed",
 			)
 		}
+		attrs = appendPullRequestReviewDisagreementAttrs(attrs, issue.PullRequest)
 	}
 	if decision.QuietRemaining > 0 {
 		attrs = append(attrs, "quiet_remaining", decision.QuietRemaining)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/reviewseverity"
 )
 
 type issuePullRequestCandidate struct {
@@ -486,6 +487,8 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		RequiredCheckFailures:        append([]connector.PullRequestCheck(nil), pullRequest.CI.RequiredFailures...),
 		TransientFailedChecks:        append([]connector.PullRequestCheck(nil), pullRequest.CI.TransientFailures...),
 		CodexReviewState:             pullRequestCodexReviewState(pullRequest),
+		CodexReviewAPIState:          pullRequestCodexReviewAPIState(pullRequest),
+		CodexReviewBodySeverity:      pullRequestCodexReviewBodySeverity(pullRequest),
 		CodexReviewSubmittedAt:       pullRequestCodexReviewSubmittedAt(pullRequest),
 		CodexReviewFindings:          pullRequestCodexReviewFindings(pullRequest),
 		LatestCodexReviewState:       pullRequestLatestCodexReviewState(pullRequest),
@@ -825,23 +828,48 @@ func pullRequestLatestCodexReviewState(pullRequest pullRequestNode) string {
 }
 
 func pullRequestCodexReviewStateFromReviews(reviews []pullRequestReview) string {
-	hasP2 := false
+	reviewState, bodySeverity := pullRequestCodexReviewStateInputsFromReviews(reviews)
+	if bodySeverity != "" {
+		return bodySeverity
+	}
+	return reviewState
+}
+
+func pullRequestCodexReviewAPIState(pullRequest pullRequestNode) string {
+	return pullRequestCodexReviewAPIStateFromReviews(pullRequest.LatestReviews.Nodes)
+}
+
+func pullRequestCodexReviewBodySeverity(pullRequest pullRequestNode) string {
+	return pullRequestCodexReviewBodySeverityFromReviews(pullRequest.LatestReviews.Nodes)
+}
+
+func pullRequestCodexReviewAPIStateFromReviews(reviews []pullRequestReview) string {
+	reviewState, _ := pullRequestCodexReviewStateInputsFromReviews(reviews)
+	return reviewState
+}
+
+func pullRequestCodexReviewBodySeverityFromReviews(reviews []pullRequestReview) string {
+	_, bodySeverity := pullRequestCodexReviewStateInputsFromReviews(reviews)
+	return bodySeverity
+}
+
+func pullRequestCodexReviewStateInputsFromReviews(reviews []pullRequestReview) (string, string) {
+	bodySeverity := ""
 	reviewState := ""
 	for _, review := range reviews {
-		if containsReviewSeverity(review.Body, "P1") {
-			return "P1"
-		}
-		if containsReviewSeverity(review.Body, "P2") {
-			hasP2 = true
+		switch reviewBodySeverity(review.Body) {
+		case "P1":
+			bodySeverity = "P1"
+		case "P2":
+			if bodySeverity == "" {
+				bodySeverity = "P2"
+			}
 		}
 		if state := strings.ToUpper(strings.TrimSpace(review.State)); state != "" {
 			reviewState = state
 		}
 	}
-	if hasP2 {
-		return "P2"
-	}
-	return reviewState
+	return reviewState, bodySeverity
 }
 
 func pullRequestCodexReviewSubmittedAt(pullRequest pullRequestNode) *time.Time {
@@ -890,15 +918,11 @@ func pullRequestCodexReviewFindings(pullRequest pullRequestNode) []connector.Pul
 }
 
 func containsReviewSeverity(body string, severity string) bool {
-	body = strings.ToUpper(body)
-	severity = strings.ToUpper(strings.TrimSpace(severity))
-	if body == "" || severity == "" {
-		return false
-	}
-	return strings.Contains(body, "["+severity+"]") ||
-		strings.Contains(body, severity+" BADGE") ||
-		strings.Contains(body, severity+":") ||
-		strings.Contains(body, severity+" ")
+	return reviewseverity.Contains(body, severity)
+}
+
+func reviewBodySeverity(body string) string {
+	return reviewseverity.BodySeverity(body)
 }
 
 func pullRequestCheckNames(checks []connector.PullRequestCheck) []string {

@@ -19,6 +19,90 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 )
 
+func TestPullRequestCodexReviewStateFromReviewsUsesExplicitBodySeverity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		api  string
+		want string
+	}{
+		{
+			name: "approved narrative p1 remains approved",
+			body: "No P1 issues found — approved.",
+			api:  "APPROVED",
+			want: "APPROVED",
+		},
+		{
+			name: "approved bracket p1 escalates",
+			body: "[P1] Missing acceptance coverage.",
+			api:  "APPROVED",
+			want: "P1",
+		},
+		{
+			name: "commented line anchored p2 escalates",
+			body: "P2: Minor follow-up.",
+			api:  "COMMENTED",
+			want: "P2",
+		},
+		{
+			name: "mid sentence p1 remains api state",
+			body: "The P1 fix from last week is already present.",
+			api:  "APPROVED",
+			want: "APPROVED",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := pullRequestCodexReviewStateFromReviews([]pullRequestReview{{
+				Body:  tt.body,
+				State: tt.api,
+			}})
+			if got != tt.want {
+				t.Fatalf("pullRequestCodexReviewStateFromReviews() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPullRequestCodexReviewStateInputsFromReviews(t *testing.T) {
+	t.Parallel()
+
+	apiState, bodySeverity := pullRequestCodexReviewStateInputsFromReviews([]pullRequestReview{{
+		Body:  "[P1] Missing acceptance coverage.",
+		State: "APPROVED",
+	}})
+	if apiState != "APPROVED" || bodySeverity != "P1" {
+		t.Fatalf("state inputs = API %q body %q, want APPROVED/P1", apiState, bodySeverity)
+	}
+}
+
+func TestPullRequestCodexReviewFindingsUseExplicitBodySeverity(t *testing.T) {
+	t.Parallel()
+
+	pullRequest := pullRequestNode{
+		LatestReviews: nodeConnection[pullRequestReview]{Nodes: []pullRequestReview{
+			{
+				Body: "No P1 issues found — approved.",
+				URL:  "https://github.test/review/narrative",
+			},
+			{
+				Body: "[P1] Missing acceptance coverage.",
+				URL:  "https://github.test/review/finding",
+			},
+		}},
+	}
+
+	got := pullRequestCodexReviewFindings(pullRequest)
+	if len(got) != 1 || got[0].Body != "[P1] Missing acceptance coverage." || got[0].URL != "https://github.test/review/finding" {
+		t.Fatalf("pullRequestCodexReviewFindings() = %#v, want only explicit P1 finding", got)
+	}
+}
+
 func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	t.Parallel()
 

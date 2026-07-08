@@ -68,6 +68,8 @@ type PullRequest struct {
 	RequiredCheckFailures        []PullRequestCheck   `json:"required_check_failures,omitempty" yaml:"required_check_failures,omitempty"`
 	TransientFailedChecks        []PullRequestCheck   `json:"transient_failed_checks,omitempty" yaml:"transient_failed_checks,omitempty"`
 	CodexReviewState             string               `json:"codex_review_state,omitempty" yaml:"codex_review_state,omitempty"`
+	CodexReviewAPIState          string               `json:"codex_review_api_state,omitempty" yaml:"codex_review_api_state,omitempty"`
+	CodexReviewBodySeverity      string               `json:"codex_review_body_severity,omitempty" yaml:"codex_review_body_severity,omitempty"`
 	CodexReviewSubmittedAt       *time.Time           `json:"codex_review_submitted_at,omitempty" yaml:"codex_review_submitted_at,omitempty"`
 	CodexReviewFindings          []PullRequestFinding `json:"codex_review_findings,omitempty" yaml:"codex_review_findings,omitempty"`
 	LatestCodexReviewState       string               `json:"latest_codex_review_state,omitempty" yaml:"latest_codex_review_state,omitempty"`

@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/reviewseverity"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -296,15 +297,7 @@ func planReviewMarkdownHeadingTitle(line string) (string, bool) {
 }
 
 func containsReviewSeverity(body string, severity string) bool {
-	body = strings.ToUpper(body)
-	severity = strings.ToUpper(strings.TrimSpace(severity))
-	if severity == "" {
-		return false
-	}
-	return strings.Contains(body, "["+severity+"]") ||
-		strings.Contains(body, severity+" BADGE") ||
-		strings.Contains(body, severity+" FINDING") ||
-		strings.Contains(body, " "+severity+" ")
+	return reviewseverity.Contains(body, severity)
 }
 
 func (o *Orchestrator) applyPlanReviewDecision(
@@ -367,12 +360,28 @@ func (o *Orchestrator) logPlanReviewDecision(issue connector.Issue, decision gat
 		"action", decision.Action,
 		"reason", decision.Reason,
 	}
+	attrs = appendPullRequestReviewDisagreementAttrs(attrs, issue.PullRequest)
 	if targetState != "" {
 		attrs = append(attrs, "target_state", targetState)
 		o.logger.Info("plan review decision", attrs...)
 		return
 	}
 	o.logger.Debug("plan review decision", attrs...)
+}
+
+func appendPullRequestReviewDisagreementAttrs(attrs []any, pullRequest *connector.PullRequest) []any {
+	if pullRequest == nil {
+		return attrs
+	}
+	apiState := strings.ToUpper(strings.TrimSpace(pullRequest.CodexReviewAPIState))
+	bodySeverity := strings.ToUpper(strings.TrimSpace(pullRequest.CodexReviewBodySeverity))
+	if apiState == "" || bodySeverity == "" || apiState == bodySeverity {
+		return attrs
+	}
+	return append(attrs,
+		"review_api_state", apiState,
+		"review_body_severity", bodySeverity,
+	)
 }
 
 func planReviewComment(stop string, summary gate.Summary, decision gate.Decision, targetState string) string {
