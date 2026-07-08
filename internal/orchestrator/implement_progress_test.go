@@ -127,6 +127,19 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantLogContains: "implement worker progress check failed open",
 		},
 		{
+			name:            "degraded hydration fails open to success",
+			runningIssue:    implementProgressIssue("same-head", "Test"),
+			hydratedIssue:   implementProgressIssueWithHydrationDegraded("same-head", connector.PullRequestHydrationReasonStaleCachedPullData, "Test"),
+			history:         []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
+			diffStats:       DiffStats{Status: "clean"},
+			noProgressLimit: 3,
+			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantReason:      "pull_request_hydration_unavailable",
+			wantHydrations:  1,
+			wantRetry:       true,
+			wantLogContains: "implement worker progress check failed open",
+		},
+		{
 			name:              "failed check delta is recorded",
 			runningIssue:      implementProgressIssue("new-head", "Test", "Lint"),
 			hydratedIssue:     implementProgressIssue("new-head", "Test", "Lint"),
@@ -268,6 +281,12 @@ func implementProgressIssue(headSHA string, failedChecks ...string) connector.Is
 			Conclusion: "failure",
 		})
 	}
+	return issue
+}
+
+func implementProgressIssueWithHydrationDegraded(headSHA string, reason string, failedChecks ...string) connector.Issue {
+	issue := implementProgressIssue(headSHA, failedChecks...)
+	issue.PullRequest.HydrationDegradedReason = reason
 	return issue
 }
 

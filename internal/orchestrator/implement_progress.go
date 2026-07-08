@@ -100,6 +100,12 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		return decision
 	}
 	decision.Issue = issue
+	if reason := implementProgressHydrationUnavailableReason(issue.PullRequest); reason != "" {
+		decision.Reason = "pull_request_hydration_unavailable"
+		decision.Warning = reason
+		o.warnImplementProgressHydration(issue, reason, nil)
+		return decision
+	}
 	signature := autoPromoteReworkSignatureFromIssue(issue, AutoPromoteSummaryFromIssue(issue))
 	decision.CurrentSignature = signature
 	if !implementProgressSignatureUsable(signature) {
@@ -286,6 +292,17 @@ func implementProgressDiffStatsClean(diffStats DiffStats) bool {
 
 func implementProgressLinkedPullRequest(issue connector.Issue) bool {
 	return workAttemptPRNumber(issue) != nil
+}
+
+func implementProgressHydrationUnavailableReason(pullRequest *connector.PullRequest) string {
+	reasons := make([]string, 0, 2)
+	if reason := pullRequestHydrationUnavailableReason(pullRequest); reason != "" {
+		reasons = append(reasons, reason)
+	}
+	if reason := pullRequestHydrationDegradedReason(pullRequest); reason != "" {
+		reasons = append(reasons, reason)
+	}
+	return strings.Join(reasons, "; ")
 }
 
 func implementProgressFailedCheckDelta(previous []string, current []string) ([]string, []string) {

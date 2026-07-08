@@ -1300,6 +1300,7 @@ func TestRunDoctorSkipsWriteProbesByDefaultForExistingConfiguredProject(t *testi
 	workflow.Tracker.ObservedStates = []string{"Human Review"}
 	workflow.Tracker.TerminalStates = []string{"Done"}
 	workflow.Tracker.WriteProbeIssue = "digitaldrywood/detent#1"
+	workflow.Agent.AutoPromote.NoProgressLimit = 0
 	workflow.Server.Kanban.Mode = workflowconfig.KanbanModeIntegration
 
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
