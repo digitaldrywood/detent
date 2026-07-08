@@ -109,6 +109,7 @@ agent:
     gate_wait_state: review
     gate_wait_timeout_seconds: 900
     rework_limit: 3
+    no_progress_limit: 4
     allowed_issue_labels:
       - enhancement
   lessons:
@@ -352,6 +353,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Agent.AutoPromote.GateWaitTimeoutSeconds != 900 {
 		t.Fatalf("Agent.AutoPromote.GateWaitTimeoutSeconds = %d, want 900", cfg.Agent.AutoPromote.GateWaitTimeoutSeconds)
+	}
+	if cfg.Agent.AutoPromote.NoProgressLimit != 4 {
+		t.Fatalf("Agent.AutoPromote.NoProgressLimit = %d, want 4", cfg.Agent.AutoPromote.NoProgressLimit)
 	}
 	if !cfg.Codex.ApprovalPolicy.IsString || cfg.Codex.ApprovalPolicy.String != "never" {
 		t.Fatalf("Codex.ApprovalPolicy = %#v, want string never", cfg.Codex.ApprovalPolicy)
@@ -655,6 +659,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Agent.AutoPromote.GateWaitTimeoutSeconds != DefaultAutoPromoteGateWaitTimeoutSeconds {
 		t.Fatalf("Agent.AutoPromote.GateWaitTimeoutSeconds = %d, want %d", cfg.Agent.AutoPromote.GateWaitTimeoutSeconds, DefaultAutoPromoteGateWaitTimeoutSeconds)
+	}
+	if cfg.Agent.AutoPromote.NoProgressLimit != DefaultNoProgressLimit {
+		t.Fatalf("Agent.AutoPromote.NoProgressLimit = %d, want %d", cfg.Agent.AutoPromote.NoProgressLimit, DefaultNoProgressLimit)
 	}
 	if cfg.Agent.OutputTruncation.MaxBytes != 0 {
 		t.Fatalf("Agent.OutputTruncation.MaxBytes = %d, want disabled default", cfg.Agent.OutputTruncation.MaxBytes)
@@ -1933,6 +1940,21 @@ Prompt
 			},
 		},
 		{
+			name: "invalid auto promote no progress limit",
+			raw: `---
+tracker:
+  kind: memory
+agent:
+  auto_promote:
+    no_progress_limit: -1
+---
+Prompt
+`,
+			want: []string{
+				"agent.auto_promote.no_progress_limit must be greater than or equal to 0",
+			},
+		},
+		{
 			name: "auto promote rework limit requires blocked state",
 			raw: `---
 tracker:
@@ -1955,6 +1977,30 @@ Prompt
 `,
 			want: []string{
 				"tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.rework_limit is greater than 0",
+			},
+		},
+		{
+			name: "auto promote no progress limit requires blocked state",
+			raw: `---
+tracker:
+  kind: memory
+  active_states:
+    - Todo
+    - In Progress
+    - Rework
+    - Merging
+  observed_states:
+    - Human Review
+  terminal_states:
+    - Done
+agent:
+  auto_promote:
+    no_progress_limit: 1
+---
+Prompt
+`,
+			want: []string{
+				"tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.no_progress_limit is greater than 0",
 			},
 		},
 		{

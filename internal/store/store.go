@@ -72,6 +72,7 @@ type WorkAttemptStore interface {
 	RecordWorkAttemptHeartbeat(context.Context, WorkAttemptHeartbeat) error
 	CompleteWorkAttempt(context.Context, WorkAttemptCompletion) error
 	ListActiveWorkAttempts(context.Context, WorkAttemptQuery) ([]WorkAttempt, error)
+	ListRecentTerminalWorkAttempts(context.Context, WorkAttemptHistoryQuery) ([]WorkAttempt, error)
 	TimeoutExpiredWorkAttempts(context.Context, WorkAttemptTimeout) ([]WorkAttempt, error)
 	ReclaimActiveWorkAttempts(context.Context, WorkAttemptReclaim) ([]WorkAttempt, error)
 	RecordSchedulerDecision(context.Context, SchedulerDecision) (int64, error)
@@ -160,6 +161,7 @@ const (
 	WorkAttemptTerminalTimedOut   WorkAttemptTerminalState = "timed_out"
 	WorkAttemptTerminalSuperseded WorkAttemptTerminalState = "superseded"
 	WorkAttemptTerminalAbandoned  WorkAttemptTerminalState = "abandoned"
+	WorkAttemptTerminalNoProgress WorkAttemptTerminalState = "no_progress"
 )
 
 type SchedulerDecisionResult string
@@ -470,12 +472,22 @@ type WorkAttemptCompletion struct {
 	GitHubRateSnapshotJSON string
 	CIState                string
 	CapacitySnapshotJSON   string
+	WorkerMetadataJSON     string
 	MetricsJSON            string
 	NextAction             string
 }
 
 type WorkAttemptQuery struct {
 	ProjectID string
+}
+
+type WorkAttemptHistoryQuery struct {
+	ProjectID  string
+	IssueID    string
+	Identifier string
+	IssueURL   string
+	WorkerType string
+	Limit      int
 }
 
 type WorkAttemptTimeout struct {

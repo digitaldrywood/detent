@@ -70,6 +70,7 @@ SET status = ?,
     github_rate_snapshot_json = ?,
     ci_state = ?,
     capacity_snapshot_json = ?,
+    worker_metadata_json = ?,
     metrics_json = ?,
     next_action = ?
 WHERE id = ?
@@ -90,6 +91,7 @@ type CompleteWorkAttemptParams struct {
 	GithubRateSnapshotJson string         `json:"github_rate_snapshot_json"`
 	CiState                sql.NullString `json:"ci_state"`
 	CapacitySnapshotJson   string         `json:"capacity_snapshot_json"`
+	WorkerMetadataJson     string         `json:"worker_metadata_json"`
 	MetricsJson            string         `json:"metrics_json"`
 	NextAction             sql.NullString `json:"next_action"`
 	ID                     int64          `json:"id"`
@@ -110,6 +112,7 @@ func (q *Queries) CompleteWorkAttempt(ctx context.Context, arg CompleteWorkAttem
 		arg.GithubRateSnapshotJson,
 		arg.CiState,
 		arg.CapacitySnapshotJson,
+		arg.WorkerMetadataJson,
 		arg.MetricsJson,
 		arg.NextAction,
 		arg.ID,
@@ -1799,6 +1802,94 @@ func (q *Queries) ListRecentSchedulerDecisions(ctx context.Context, arg ListRece
 			&i.CapacitySnapshotJson,
 			&i.GithubRateSnapshotJson,
 			&i.MetadataJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecentTerminalWorkAttempts = `-- name: ListRecentTerminalWorkAttempts :many
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action
+FROM work_attempts
+WHERE completed_at IS NOT NULL
+  AND status = 'terminal'
+  AND (?1 = '' OR project_id = ?1)
+  AND (?2 = '' OR worker_type = ?2)
+  AND (
+    (?3 != '' AND issue_id = ?3)
+    OR (?4 != '' AND identifier = ?4)
+    OR (?5 != '' AND issue_url = ?5)
+  )
+ORDER BY completed_at DESC, id DESC
+LIMIT ?6
+`
+
+type ListRecentTerminalWorkAttemptsParams struct {
+	FilterProjectID  interface{} `json:"filter_project_id"`
+	FilterWorkerType interface{} `json:"filter_worker_type"`
+	IssueID          interface{} `json:"issue_id"`
+	Identifier       interface{} `json:"identifier"`
+	IssueURL         interface{} `json:"issue_url"`
+	ResultLimit      int64       `json:"result_limit"`
+}
+
+func (q *Queries) ListRecentTerminalWorkAttempts(ctx context.Context, arg ListRecentTerminalWorkAttemptsParams) ([]WorkAttempt, error) {
+	rows, err := q.db.QueryContext(ctx, listRecentTerminalWorkAttempts,
+		arg.FilterProjectID,
+		arg.FilterWorkerType,
+		arg.IssueID,
+		arg.Identifier,
+		arg.IssueURL,
+		arg.ResultLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkAttempt{}
+	for rows.Next() {
+		var i WorkAttempt
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.IssueID,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.PrNumber,
+			&i.Repo,
+			&i.WorkerType,
+			&i.WorkerHost,
+			&i.Lane,
+			&i.AttemptNumber,
+			&i.Status,
+			&i.StartedAt,
+			&i.LeaseExpiresAt,
+			&i.HeartbeatAt,
+			&i.CompletedAt,
+			&i.TerminalState,
+			&i.ErrorClass,
+			&i.ErrorMessage,
+			&i.Phase,
+			&i.StatusMessage,
+			&i.CurrentStep,
+			&i.TotalSteps,
+			&i.ProgressPercent,
+			&i.CurrentCommand,
+			&i.WaitReason,
+			&i.GithubRateSnapshotJson,
+			&i.CiState,
+			&i.CapacitySnapshotJson,
+			&i.WorkerMetadataJson,
+			&i.MetricsJson,
+			&i.NextAction,
 		); err != nil {
 			return nil, err
 		}

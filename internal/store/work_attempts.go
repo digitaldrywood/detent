@@ -142,6 +142,7 @@ func (s *sqliteStore) CompleteWorkAttempt(ctx context.Context, attrs WorkAttempt
 		GithubRateSnapshotJson: jsonObjectOrDefault(attrs.GitHubRateSnapshotJSON),
 		CiState:                nullString(attrs.CIState),
 		CapacitySnapshotJson:   jsonObjectOrDefault(attrs.CapacitySnapshotJSON),
+		WorkerMetadataJson:     completionMetadataJSON(attrs.WorkerMetadataJSON),
 		MetricsJson:            jsonObjectOrDefault(attrs.MetricsJSON),
 		NextAction:             nullString(attrs.NextAction),
 		ID:                     attrs.AttemptID,
@@ -166,6 +167,25 @@ func (s *sqliteStore) ListActiveWorkAttempts(ctx context.Context, query WorkAtte
 		attempts = append(attempts, attempt)
 	}
 	return attempts, nil
+}
+
+func (s *sqliteStore) ListRecentTerminalWorkAttempts(ctx context.Context, query WorkAttemptHistoryQuery) ([]WorkAttempt, error) {
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.queries.ListRecentTerminalWorkAttempts(ctx, sqlc.ListRecentTerminalWorkAttemptsParams{
+		FilterProjectID:  strings.TrimSpace(query.ProjectID),
+		FilterWorkerType: strings.TrimSpace(query.WorkerType),
+		IssueID:          strings.TrimSpace(query.IssueID),
+		Identifier:       strings.TrimSpace(query.Identifier),
+		IssueURL:         strings.TrimSpace(query.IssueURL),
+		ResultLimit:      int64(limit),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing recent terminal work attempts: %w", err)
+	}
+	return workAttemptsFromRows(rows)
 }
 
 func (s *sqliteStore) TimeoutExpiredWorkAttempts(ctx context.Context, attrs WorkAttemptTimeout) ([]WorkAttempt, error) {
@@ -427,6 +447,10 @@ func jsonObjectOrDefault(value string) string {
 		return "{}"
 	}
 	return trimmed
+}
+
+func completionMetadataJSON(value string) string {
+	return jsonObjectOrDefault(value)
 }
 
 func boolInt64(value bool) int64 {

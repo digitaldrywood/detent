@@ -357,6 +357,7 @@ type WorkAttempt struct {
 	GitHubRateSnapshotJSON  string                    `json:"github_rate_snapshot_json,omitempty"`
 	CIState                 string                    `json:"ci_state,omitempty"`
 	CapacitySnapshotJSON    string                    `json:"capacity_snapshot_json,omitempty"`
+	WorkerMetadataJSON      string                    `json:"worker_metadata_json,omitempty"`
 	MetricsJSON             string                    `json:"metrics_json,omitempty"`
 	NextAction              string                    `json:"next_action,omitempty"`
 	Stale                   bool                      `json:"stale,omitempty"`
