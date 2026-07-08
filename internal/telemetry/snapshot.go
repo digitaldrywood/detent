@@ -211,6 +211,7 @@ type Issue struct {
 	LeaseRenewedAt        *time.Time        `json:"lease_renewed_at,omitempty"`
 	LeaseExpiresAt        *time.Time        `json:"lease_expires_at,omitempty"`
 	LeaseStale            bool              `json:"lease_stale,omitempty"`
+	GatePending           bool              `json:"gate_pending,omitempty"`
 	CreatedAt             *time.Time        `json:"created_at,omitempty"`
 	UpdatedAt             *time.Time        `json:"updated_at,omitempty"`
 	StageUpdatedAt        *time.Time        `json:"stage_updated_at,omitempty"`

@@ -521,6 +521,7 @@ type projectKanbanCard struct {
 	TimeInStage           string
 	TimeInStageTitle      string
 	WaitDetail            string
+	GatePending           bool
 	BlockedSource         telemetry.BlockedSource
 	BlockedReason         string
 	BlockedRecoveryReason string
@@ -2637,6 +2638,7 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		TimeInStage:           prPipelineAge(stageAt, now),
 		TimeInStageTitle:      prPipelineAgeTitle(state, stageAt, now),
 		WaitDetail:            prPipelineWaitDetail(issue),
+		GatePending:           issue.GatePending,
 		BlockedSource:         telemetry.BlockedSource(strings.TrimSpace(issue.Metadata[projectKanbanBlockedSourceMetadataKey])),
 		BlockedReason:         strings.TrimSpace(issue.Metadata[projectKanbanBlockedReasonMetadataKey]),
 		BlockedRecoveryReason: strings.TrimSpace(issue.Metadata[projectKanbanBlockedRecoveryReasonMetadataKey]),

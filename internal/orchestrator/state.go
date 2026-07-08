@@ -18,6 +18,9 @@ type State struct {
 	PollInterval             time.Duration
 	MaxConcurrentAgents      int
 	AutoPromoteQuietDuration time.Duration
+	AutoPromote              AutoPromoteConfig
+	ActiveStates             []string
+	TerminalStates           []string
 	Instance                 telemetry.Instance
 	Authorization            selector.Selector
 	SelectorContext          selector.Context
@@ -160,6 +163,9 @@ func newState(cfg Config) State {
 		PollInterval:             cfg.PollInterval,
 		MaxConcurrentAgents:      cfg.MaxConcurrentAgents,
 		AutoPromoteQuietDuration: cfg.AutoPromote.QuietDuration,
+		AutoPromote:              cloneAutoPromoteConfig(cfg.AutoPromote),
+		ActiveStates:             append([]string(nil), cfg.ActiveStates...),
+		TerminalStates:           append([]string(nil), cfg.TerminalStates...),
 		Instance:                 instanceSnapshot(cfg),
 		Authorization:            cloneSelector(cfg.Authorization),
 		SelectorContext:          cfg.SelectorContext,
@@ -185,6 +191,9 @@ func (s State) clone() State {
 		PollInterval:             s.PollInterval,
 		MaxConcurrentAgents:      s.MaxConcurrentAgents,
 		AutoPromoteQuietDuration: s.AutoPromoteQuietDuration,
+		AutoPromote:              cloneAutoPromoteConfig(s.AutoPromote),
+		ActiveStates:             append([]string(nil), s.ActiveStates...),
+		TerminalStates:           append([]string(nil), s.TerminalStates...),
 		Instance:                 s.Instance,
 		Authorization:            cloneSelector(s.Authorization),
 		SelectorContext:          s.SelectorContext,
@@ -269,6 +278,40 @@ func (s State) clone() State {
 	maps.Copy(cloned.planRework, s.planRework)
 
 	return cloned
+}
+
+func cloneAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {
+	cfg.AllowedIssueLabels = append([]string(nil), cfg.AllowedIssueLabels...)
+	cfg.Gate = cloneGateConfig(cfg.Gate)
+	return cfg
+}
+
+func cloneGateConfig(cfg gate.Config) gate.Config {
+	cfg.RequiredStatusChecks = append([]string(nil), cfg.RequiredStatusChecks...)
+	cfg.RequireAutomatedReview = cloneBoolPointer(cfg.RequireAutomatedReview)
+	cfg.TransientCIRetryLimit = cloneIntPointer(cfg.TransientCIRetryLimit)
+	cfg.Validator.BlockOn = append([]string(nil), cfg.Validator.BlockOn...)
+	cfg.Validator.MaxInlineDiffBytes = cloneIntPointer(cfg.Validator.MaxInlineDiffBytes)
+	cfg.Artifact.PassStatuses = append([]string(nil), cfg.Artifact.PassStatuses...)
+	cfg.Artifact.WaitStatuses = append([]string(nil), cfg.Artifact.WaitStatuses...)
+	cfg.Artifact.ReworkStatuses = append([]string(nil), cfg.Artifact.ReworkStatuses...)
+	return cfg
+}
+
+func cloneBoolPointer(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneIntPointer(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func cloneSelector(in selector.Selector) selector.Selector {

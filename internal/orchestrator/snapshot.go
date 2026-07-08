@@ -37,6 +37,8 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	boardIssues := authorizedSnapshotIssues(s.BoardIssues, s.Authorization, s.SelectorContext)
 	pipeline := authorizedSnapshotIssues(s.Pipeline, s.Authorization, s.SelectorContext)
 	statusDrift := authorizedStatusDrift(s.StatusDrift, s.Authorization, s.SelectorContext)
+	boardIssueSnapshots := issueSnapshots(boardIssues, s.AutoPromoteQuietDuration, s.PollInterval, now)
+	s.applyGatePendingSnapshots(boardIssueSnapshots, boardIssues)
 	snapshot := telemetry.Snapshot{
 		GeneratedAt:        now,
 		Instance:           s.Instance,
@@ -45,7 +47,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Events:             cloneActivityEvents(s.RecentEvents),
 		Refresh:            refresh,
 		TrackerDrift:       statusDriftSnapshot(statusDrift, s.AutoPromoteQuietDuration, s.PollInterval, now),
-		BoardIssues:        issueSnapshots(boardIssues, s.AutoPromoteQuietDuration, s.PollInterval, now),
+		BoardIssues:        boardIssueSnapshots,
 		Pipeline:           pipelineSnapshots(pipeline, s.AutoPromoteQuietDuration, s.PollInterval, s.MergeTimings, now),
 		Running:            runningSnapshots(s.Running, s.Claimed, s.MergeTimings, now),
 		WorkAttempts:       cloneTelemetryWorkAttempts(s.WorkAttempts),
@@ -66,6 +68,25 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Completed: len(snapshot.Completed),
 	}
 	return snapshot
+}
+
+func (s State) applyGatePendingSnapshots(snapshots []telemetry.Issue, issues []connector.Issue) {
+	if len(snapshots) == 0 || len(issues) == 0 {
+		return
+	}
+	cfg := Config{
+		AutoPromote:    s.AutoPromote,
+		ActiveStates:   append([]string(nil), s.ActiveStates...),
+		TerminalStates: append([]string(nil), s.TerminalStates...),
+	}
+	for i := range snapshots {
+		if i >= len(issues) {
+			return
+		}
+		if autoPromoteActiveGatePendingIssue(issues[i], &s, cfg, s.AutoPromote) {
+			snapshots[i].GatePending = true
+		}
+	}
 }
 
 func authorizedSnapshotIssues(issues []connector.Issue, authorization selector.Selector, ctx selector.Context) []connector.Issue {

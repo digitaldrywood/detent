@@ -1318,6 +1318,10 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	})
 	state.PollInterval = cfg.PollInterval
 	state.MaxConcurrentAgents = cfg.MaxConcurrentAgents
+	state.AutoPromoteQuietDuration = cfg.AutoPromote.QuietDuration
+	state.AutoPromote = cloneAutoPromoteConfig(cfg.AutoPromote)
+	state.ActiveStates = append([]string(nil), cfg.ActiveStates...)
+	state.TerminalStates = append([]string(nil), cfg.TerminalStates...)
 	state.Instance = instanceSnapshot(cfg)
 	state.Authorization = cloneSelector(cfg.Authorization)
 	state.SelectorContext = cfg.SelectorContext
