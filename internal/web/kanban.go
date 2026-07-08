@@ -466,41 +466,23 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 	}
 	req, response, status := parseKanbanMoveRequest(c)
 	if response != "" {
-		if kanbanDialogForm(c) {
-			return s.kanbanMoveDialogValidation(c, response)
-		}
-		return kanbanFeedback(c, status, response)
+		return s.kanbanMoveValidationResponse(c, status, response)
 	}
 	target, response, status := s.kanbanActionTarget(req.projectID)
 	if response != "" {
-		if kanbanDialogForm(c) {
-			return s.kanbanMoveDialogValidation(c, response)
-		}
-		return kanbanFeedback(c, status, response)
+		return s.kanbanMoveValidationResponse(c, status, response)
 	}
 	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
-		if kanbanDialogForm(c) {
-			return s.kanbanMoveDialogValidation(c, "Kanban integration mode is not enabled.")
-		}
-		return kanbanFeedback(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
+		return s.kanbanMoveValidationResponse(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
 	}
 	if req.issueID == "" {
 		if req.prNumber > 0 {
-			if kanbanDialogForm(c) {
-				return s.kanbanMoveDialogValidation(c, "Cannot move PR-only card without a linked issue.")
-			}
-			return kanbanFeedback(c, http.StatusUnprocessableEntity, "Cannot move PR-only card without a linked issue.")
+			return s.kanbanMoveValidationResponse(c, http.StatusUnprocessableEntity, "Cannot move PR-only card without a linked issue.")
 		}
-		if kanbanDialogForm(c) {
-			return s.kanbanMoveDialogValidation(c, "Issue id is required.")
-		}
-		return kanbanFeedback(c, http.StatusBadRequest, "Issue id is required.")
+		return s.kanbanMoveValidationResponse(c, http.StatusBadRequest, "Issue id is required.")
 	}
 	if !kanbanStateAllowed(target.workflow, req.targetState) {
-		if kanbanDialogForm(c) {
-			return s.kanbanMoveDialogValidation(c, "Target state is not configured for this board.")
-		}
-		return kanbanFeedback(c, http.StatusBadRequest, "Target state is not configured for this board.")
+		return s.kanbanMoveValidationResponse(c, http.StatusBadRequest, "Target state is not configured for this board.")
 	}
 	var feedback string
 	var feedbackStatus int
@@ -544,10 +526,7 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		return nil
 	})
 	if feedback != "" {
-		if kanbanDialogForm(c) {
-			return s.kanbanMoveDialogValidation(c, feedback)
-		}
-		return kanbanFeedback(c, feedbackStatus, feedback)
+		return s.kanbanMoveValidationResponse(c, feedbackStatus, feedback)
 	}
 	if err != nil {
 		s.logger.WarnContext(c.Request().Context(), "kanban move failed", "project", req.projectID, "issue_id", req.issueID, "target_state", req.targetState, "error", err)
@@ -984,10 +963,7 @@ func (s *Server) apiKanbanComment(c echo.Context) error {
 		if kanbanThreadForm(c) {
 			return s.kanbanIssueCommentThread(c, response, kanbanRequestValue(c, "body"), "")
 		}
-		if kanbanDialogForm(c) {
-			return s.kanbanCommentDialogValidation(c, response)
-		}
-		return kanbanFeedback(c, status, response)
+		return s.kanbanCommentValidationResponse(c, status, response)
 	}
 
 	target, response, status := s.kanbanActionTarget(req.projectID)
@@ -995,34 +971,22 @@ func (s *Server) apiKanbanComment(c echo.Context) error {
 		if kanbanThreadForm(c) {
 			return s.kanbanIssueCommentThread(c, response, req.body, "")
 		}
-		if kanbanDialogForm(c) {
-			return s.kanbanCommentDialogValidation(c, response)
-		}
-		return kanbanFeedback(c, status, response)
+		return s.kanbanCommentValidationResponse(c, status, response)
 	}
 	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
 		if kanbanThreadForm(c) {
 			return s.kanbanIssueCommentThread(c, "Kanban integration mode is not enabled.", req.body, "")
 		}
-		if kanbanDialogForm(c) {
-			return s.kanbanCommentDialogValidation(c, "Kanban integration mode is not enabled.")
-		}
-		return kanbanFeedback(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
+		return s.kanbanCommentValidationResponse(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
 	}
 	if req.target == "pr" && !kanbanSupportsPullRequestComments(target.connector) {
-		if kanbanDialogForm(c) {
-			return s.kanbanCommentDialogValidation(c, "Comment target is not available on the current board.")
-		}
-		return kanbanFeedback(c, http.StatusNotFound, "Comment target is not available on the current board.")
+		return s.kanbanCommentValidationResponse(c, http.StatusNotFound, "Comment target is not available on the current board.")
 	}
 	if !s.kanbanCommentTargetKnown(req) {
 		if kanbanThreadForm(c) {
 			return s.kanbanIssueCommentThread(c, "Comment target is not available on the current board.", req.body, "")
 		}
-		if kanbanDialogForm(c) {
-			return s.kanbanCommentDialogValidation(c, "Comment target is not available on the current board.")
-		}
-		return kanbanFeedback(c, http.StatusNotFound, "Comment target is not available on the current board.")
+		return s.kanbanCommentValidationResponse(c, http.StatusNotFound, "Comment target is not available on the current board.")
 	}
 
 	err := s.kanbanMutations.withLock(target.key, func() error {
@@ -1177,6 +1141,13 @@ func (s *Server) kanbanMoveDialogValidation(c echo.Context, message string) erro
 	return render(c, templates.KanbanMoveDialogContent(data))
 }
 
+func (s *Server) kanbanMoveValidationResponse(c echo.Context, status int, message string) error {
+	if kanbanDialogForm(c) {
+		return s.kanbanMoveDialogValidation(c, message)
+	}
+	return kanbanFeedback(c, status, message)
+}
+
 func (s *Server) kanbanCommentDialogValidation(c echo.Context, message string) error {
 	c.Response().Header().Set("HX-Retarget", kanbanDialogContentTarget)
 	c.Response().Header().Set("HX-Reswap", "innerHTML")
@@ -1185,6 +1156,13 @@ func (s *Server) kanbanCommentDialogValidation(c echo.Context, message string) e
 		return render(c, templates.KanbanDialogErrorContent(response))
 	}
 	return render(c, templates.KanbanCommentDialogContent(data))
+}
+
+func (s *Server) kanbanCommentValidationResponse(c echo.Context, status int, message string) error {
+	if kanbanDialogForm(c) {
+		return s.kanbanCommentDialogValidation(c, message)
+	}
+	return kanbanFeedback(c, status, message)
 }
 
 func (s *Server) kanbanMoveDialogData(c echo.Context, message string) (templates.KanbanMoveDialogData, string) {
