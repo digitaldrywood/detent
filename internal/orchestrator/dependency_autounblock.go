@@ -847,19 +847,14 @@ func (o *Orchestrator) workflowTimelineActionSignature(
 func (o *Orchestrator) latestWorkflowLaneEntry(
 	ctx context.Context,
 	issue connector.Issue,
-	stateName string,
 ) (workflowTimelineMetadataMatch, bool) {
 	timeline, ok := o.issueWorkflowTimeline(ctx, issue)
 	if !ok {
 		return workflowTimelineMetadataMatch{}, false
 	}
-	stateName = normalizeState(stateName)
 	for index := len(timeline.Events) - 1; index >= 0; index-- {
 		event := timeline.Events[index]
 		if event.PhaseType != store.WorkflowPhaseTypeLane {
-			continue
-		}
-		if normalizeState(event.PhaseName) != stateName {
 			continue
 		}
 		if !strings.EqualFold(strings.TrimSpace(event.Status), "entered") {

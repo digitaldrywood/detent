@@ -106,6 +106,24 @@ func TestDispatchModeUsesPlanReviewTimelineProvenance(t *testing.T) {
 	if got := orch.dispatchMode(context.Background(), &freshState, issue); got != runpkg.RunModePlan {
 		t.Fatalf("dispatchMode() with timeline provenance = %q, want plan", got)
 	}
+
+	if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), store.WorkflowPhaseEvent{
+		ProjectID:    defaultWorkflowMetricsProjectID,
+		IssueID:      issue.ID,
+		Identifier:   issue.Identifier,
+		IssueURL:     issue.URL,
+		PhaseType:    store.WorkflowPhaseTypeLane,
+		PhaseName:    gate.DefaultPlanStop,
+		Reason:       "plan_worker_completed",
+		Status:       "entered",
+		StartedAt:    time.Date(2026, 7, 8, 15, 2, 0, 0, time.UTC),
+		MetadataJSON: "{}",
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+	if got := orch.dispatchMode(context.Background(), &freshState, issue); got != runpkg.RunModeImplement {
+		t.Fatalf("dispatchMode() with stale plan provenance = %q, want implement", got)
+	}
 }
 
 func TestPlanReviewContainsReviewSeverityUsesExplicitBadges(t *testing.T) {

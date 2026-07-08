@@ -362,8 +362,9 @@ func (o *Orchestrator) dispatchMode(ctx context.Context, state *State, issue con
 	case "todo":
 		return runpkg.RunModePlan
 	case normalizeState(autoPromoteReworkState):
-		if match, ok := o.latestWorkflowLaneEntry(ctx, issue, autoPromoteReworkState); ok {
-			if workflowLaneMetadataHasAction(match.Metadata, workflowActionPlanReviewRework) {
+		if match, ok := o.latestWorkflowLaneEntry(ctx, issue); ok {
+			if normalizeState(match.Event.PhaseName) == normalizeState(autoPromoteReworkState) &&
+				workflowLaneMetadataHasAction(match.Metadata, workflowActionPlanReviewRework) {
 				return runpkg.RunModePlan
 			}
 			return runpkg.RunModeImplement
