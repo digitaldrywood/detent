@@ -353,6 +353,27 @@ func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
 			},
 		},
 		{
+			name: "promotes completed todo issue directly to merging",
+			issue: func() connector.Issue {
+				issue := autoPromoteTickIssue("issue-todo-ready", []string{"bug"}, &connector.PullRequest{
+					Number:                 145,
+					URL:                    "https://github.test/digitaldrywood/detent/pull/145",
+					State:                  "OPEN",
+					CIStatus:               "success",
+					CodexReviewState:       "COMMENTED",
+					CodexReviewSubmittedAt: &oldReview,
+				})
+				issue.State = "Todo"
+				return issue
+			}(),
+			wantUpdates: []autoPromoteTickUpdate{{issueID: "issue-todo-ready", state: "Merging"}},
+			wantCommentFragments: []string{
+				"Auto-promoted this issue from Todo to Merging.",
+				"reason: ready",
+				"https://github.test/digitaldrywood/detent/pull/145",
+			},
+		},
+		{
 			name: "routes active completed issue directly to rework",
 			issue: func() connector.Issue {
 				issue := autoPromoteTickIssue("issue-active-rework", []string{"bug"}, &connector.PullRequest{

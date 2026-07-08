@@ -132,7 +132,7 @@ func (o *Orchestrator) autoPromoteEvaluationIssues(
 		if issueID == "" {
 			continue
 		}
-		if normalizeState(issue.State) == "todo" {
+		if normalizeState(issue.State) == "todo" && !autoPromoteIssueCompleted(state, issueID) {
 			continue
 		}
 		if _, ok := seen[issueID]; ok {
@@ -145,6 +145,14 @@ func (o *Orchestrator) autoPromoteEvaluationIssues(
 		seen[issueID] = struct{}{}
 	}
 	return out
+}
+
+func autoPromoteIssueCompleted(state *State, issueID string) bool {
+	if state == nil {
+		return false
+	}
+	_, ok := state.Completed[issueID]
+	return ok
 }
 
 func autoPromoteActiveGatePendingIssue(
