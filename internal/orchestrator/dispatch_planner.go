@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
@@ -396,6 +397,7 @@ const (
 	dispatchSkipInactiveState            = "inactive_state"
 	dispatchSkipTerminalState            = "terminal_state"
 	dispatchSkipPullRequestHydration     = "pull_request_hydration_unavailable"
+	dispatchSkipMergedPullRequest        = "merged_pull_request_reconciliation_pending"
 	dispatchSkipDuplicatePullRequest     = "duplicate_pull_request_work"
 	dispatchSkipUnauthorized             = "unauthorized"
 	dispatchSkipBlockedByDependency      = "blocked_by_dependency"
@@ -428,6 +430,9 @@ func (p dispatchPlanner) dispatchableIssueDecision(
 	}
 	if pullRequestHydrationBlocksDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipPullRequestHydration}
+	}
+	if mergedPullRequestReconciliationPending(issue, p.cfg) {
+		return dispatchableDecision{reason: dispatchSkipMergedPullRequest}
 	}
 	if duplicatePullRequestWork(issue) {
 		return dispatchableDecision{reason: dispatchSkipDuplicatePullRequest}
@@ -575,7 +580,7 @@ func (p dispatchPlanner) scheduleRetryAfter(
 		Issue:      issue,
 		Attempt:    attempt,
 		DueAt:      now.Add(delay),
-		Error:      err,
+		Error:      p.operatorText(err),
 		WorkerHost: workerHost,
 	}
 	if _, ok := state.Claimed[issue.ID]; !ok {
@@ -584,6 +589,10 @@ func (p dispatchPlanner) scheduleRetryAfter(
 			ClaimedAt: now,
 		}
 	}
+}
+
+func (p dispatchPlanner) operatorText(value string) string {
+	return runtimeoutput.Truncate(strings.TrimSpace(value), p.cfg.OutputTruncationMaxBytes).Value
 }
 
 func (p dispatchPlanner) retryDelay(attempt int, continuation bool) time.Duration {

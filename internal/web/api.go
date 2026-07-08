@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
@@ -602,6 +603,7 @@ func runningEntries(entries []telemetry.Running) []runningAPIResponse {
 			TurnCount:             entry.TurnCount,
 			LastEvent:             optionalString(entry.LastEvent),
 			LastMessage:           optionalString(entry.LastMessage),
+			LastMessageTruncation: runtimeoutput.CloneTruncation(entry.LastMessageTruncation),
 			StartedAt:             timestampString(entry.StartedAt),
 			LastEventAt:           timestampStringPtr(entry.LastEventAt),
 			CurrentLaneEnteredAt:  timestampStringPtr(entry.CurrentLaneEnteredAt),
@@ -678,22 +680,27 @@ func recentSessionEntries(entries []telemetry.Completed) []recentSessionAPIRespo
 	payload := make([]recentSessionAPIResponse, 0, len(entries))
 	for _, entry := range entries {
 		payload = append(payload, recentSessionAPIResponse{
-			IssueID:           entry.ID,
-			Identifier:        entry.Identifier,
-			ProjectID:         entry.ProjectID,
-			IssueURL:          optionalString(entry.URL),
-			PullRequestURL:    optionalString(pullRequestURL(entry.Issue)),
-			PullRequestNumber: pullRequestNumber(entry.Issue),
-			StartedAt:         timestampString(entry.StartedAt),
-			CompletedAt:       timestampString(entry.CompletedAt),
-			Turns:             entry.Turns,
-			InputTokens:       entry.Tokens.Input,
-			OutputTokens:      entry.Tokens.Output,
-			TotalTokens:       entry.Tokens.Total,
-			RuntimeSeconds:    entry.RuntimeSeconds,
-			FinalState:        optionalString(entry.FinalState),
-			Model:             optionalString(entry.Model),
-			BudgetAlert:       false,
+			IssueID:            entry.ID,
+			Identifier:         entry.Identifier,
+			ProjectID:          entry.ProjectID,
+			IssueURL:           optionalString(entry.URL),
+			PullRequestURL:     optionalString(pullRequestURL(entry.Issue)),
+			PullRequestNumber:  pullRequestNumber(entry.Issue),
+			StartedAt:          timestampString(entry.StartedAt),
+			CompletedAt:        timestampString(entry.CompletedAt),
+			Turns:              entry.Turns,
+			InputTokens:        entry.Tokens.Input,
+			CachedInputTokens:  entry.Tokens.CachedInput,
+			OutputTokens:       entry.Tokens.Output,
+			ReasoningOutput:    entry.Tokens.ReasoningOutput,
+			TotalTokens:        entry.Tokens.Total,
+			ModelContextWindow: entry.Tokens.ModelContextWindow,
+			ContextPressure:    contextPressureResponse(entry.Tokens),
+			CacheReadFraction:  cacheReadFractionResponse(entry.Tokens),
+			RuntimeSeconds:     entry.RuntimeSeconds,
+			FinalState:         optionalString(entry.FinalState),
+			Model:              optionalString(entry.Model),
+			BudgetAlert:        false,
 		})
 	}
 	return payload
@@ -701,20 +708,21 @@ func recentSessionEntries(entries []telemetry.Completed) []recentSessionAPIRespo
 
 func runningIssueResponse(entry telemetry.Running) *runningIssueAPIResponse {
 	return &runningIssueAPIResponse{
-		WorkerHost:    optionalString(entry.WorkerHost),
-		WorkspacePath: optionalString(entry.WorkspacePath),
-		SessionID:     optionalString(entry.SessionID),
-		TurnCount:     entry.TurnCount,
-		State:         entry.State,
-		StartedAt:     timestampString(entry.StartedAt),
-		LastEvent:     optionalString(entry.LastEvent),
-		LastMessage:   optionalString(entry.LastMessage),
-		LastEventAt:   timestampStringPtr(entry.LastEventAt),
-		DiffAdded:     entry.DiffAdded,
-		DiffRemoved:   entry.DiffRemoved,
-		DiffFiles:     entry.DiffFiles,
-		DiffStatus:    diffStatus(entry.DiffStatus),
-		Tokens:        tokenCountsResponse(entry.Tokens),
+		WorkerHost:            optionalString(entry.WorkerHost),
+		WorkspacePath:         optionalString(entry.WorkspacePath),
+		SessionID:             optionalString(entry.SessionID),
+		TurnCount:             entry.TurnCount,
+		State:                 entry.State,
+		StartedAt:             timestampString(entry.StartedAt),
+		LastEvent:             optionalString(entry.LastEvent),
+		LastMessage:           optionalString(entry.LastMessage),
+		LastMessageTruncation: runtimeoutput.CloneTruncation(entry.LastMessageTruncation),
+		LastEventAt:           timestampStringPtr(entry.LastEventAt),
+		DiffAdded:             entry.DiffAdded,
+		DiffRemoved:           entry.DiffRemoved,
+		DiffFiles:             entry.DiffFiles,
+		DiffStatus:            diffStatus(entry.DiffStatus),
+		Tokens:                tokenCountsResponse(entry.Tokens),
 	}
 }
 
@@ -771,9 +779,10 @@ func recentEventsFromTelemetry(events []telemetry.ActivityEvent, fallbackAt *tim
 			continue
 		}
 		payload = append(payload, recentEventAPIResponse{
-			At:      *timestamp,
-			Event:   optionalString(event.Event),
-			Message: optionalString(event.Message),
+			At:         *timestamp,
+			Event:      optionalString(event.Event),
+			Message:    optionalString(event.Message),
+			Truncation: runtimeoutput.CloneTruncation(event.Truncation),
 		})
 	}
 	return payload
@@ -825,18 +834,35 @@ func totalsResponse(tokens telemetry.Tokens) tokenTotalsAPIResponse {
 		ReasoningOutput:    tokens.ReasoningOutput,
 		Total:              tokens.Total,
 		ModelContextWindow: tokens.ModelContextWindow,
+		CacheReadFraction:  cacheReadFractionResponse(tokens),
 		RuntimeSeconds:     tokens.RuntimeSeconds,
 	}
 }
 
 func tokenCountsResponse(tokens telemetry.Tokens) tokenCountsAPIResponse {
 	return tokenCountsAPIResponse{
-		Input:           tokens.Input,
-		CachedInput:     tokens.CachedInput,
-		Output:          tokens.Output,
-		ReasoningOutput: tokens.ReasoningOutput,
-		Total:           tokens.Total,
+		Input:              tokens.Input,
+		CachedInput:        tokens.CachedInput,
+		Output:             tokens.Output,
+		ReasoningOutput:    tokens.ReasoningOutput,
+		Total:              tokens.Total,
+		ModelContextWindow: tokens.ModelContextWindow,
+		ContextPressure:    contextPressureResponse(tokens),
+		CacheReadFraction:  cacheReadFractionResponse(tokens),
 	}
+}
+
+func contextPressureResponse(tokens telemetry.Tokens) *telemetry.ContextPressure {
+	value, ok := tokens.ContextPressure()
+	if !ok {
+		return nil
+	}
+	return &value
+}
+
+func cacheReadFractionResponse(tokens telemetry.Tokens) float64 {
+	value, _ := tokens.CacheReadFraction()
+	return value
 }
 
 func throughputResponse(throughput telemetry.TokenThroughput) throughputAPIResponse {
@@ -1352,32 +1378,33 @@ type countsAPIResponse struct {
 }
 
 type runningAPIResponse struct {
-	IssueID               string                   `json:"issue_id"`
-	IssueIdentifier       string                   `json:"issue_identifier"`
-	ProjectID             string                   `json:"project_id,omitempty"`
-	IssueURL              *string                  `json:"issue_url"`
-	IssueTitle            *string                  `json:"issue_title"`
-	IssueDescription      *string                  `json:"issue_description"`
-	PullRequestURL        *string                  `json:"pull_request_url"`
-	PullRequestNumber     *int                     `json:"pull_request_number"`
-	BudgetAlert           bool                     `json:"budget_alert?"`
-	State                 string                   `json:"state"`
-	WorkerHost            *string                  `json:"worker_host"`
-	WorkspacePath         *string                  `json:"workspace_path"`
-	SessionID             *string                  `json:"session_id"`
-	TurnCount             int                      `json:"turn_count"`
-	LastEvent             *string                  `json:"last_event"`
-	LastMessage           *string                  `json:"last_message"`
-	StartedAt             *string                  `json:"started_at"`
-	LastEventAt           *string                  `json:"last_event_at"`
-	CurrentLaneEnteredAt  *string                  `json:"current_lane_entered_at"`
-	CurrentLaneAgeSeconds int64                    `json:"current_lane_age_seconds"`
-	RecentEvents          []recentEventAPIResponse `json:"recent_events"`
-	DiffAdded             int                      `json:"diff_added"`
-	DiffRemoved           int                      `json:"diff_removed"`
-	DiffFiles             int                      `json:"diff_files"`
-	DiffStatus            string                   `json:"diff_status"`
-	Tokens                tokenCountsAPIResponse   `json:"tokens"`
+	IssueID               string                    `json:"issue_id"`
+	IssueIdentifier       string                    `json:"issue_identifier"`
+	ProjectID             string                    `json:"project_id,omitempty"`
+	IssueURL              *string                   `json:"issue_url"`
+	IssueTitle            *string                   `json:"issue_title"`
+	IssueDescription      *string                   `json:"issue_description"`
+	PullRequestURL        *string                   `json:"pull_request_url"`
+	PullRequestNumber     *int                      `json:"pull_request_number"`
+	BudgetAlert           bool                      `json:"budget_alert?"`
+	State                 string                    `json:"state"`
+	WorkerHost            *string                   `json:"worker_host"`
+	WorkspacePath         *string                   `json:"workspace_path"`
+	SessionID             *string                   `json:"session_id"`
+	TurnCount             int                       `json:"turn_count"`
+	LastEvent             *string                   `json:"last_event"`
+	LastMessage           *string                   `json:"last_message"`
+	LastMessageTruncation *runtimeoutput.Truncation `json:"last_message_truncation,omitempty"`
+	StartedAt             *string                   `json:"started_at"`
+	LastEventAt           *string                   `json:"last_event_at"`
+	CurrentLaneEnteredAt  *string                   `json:"current_lane_entered_at"`
+	CurrentLaneAgeSeconds int64                     `json:"current_lane_age_seconds"`
+	RecentEvents          []recentEventAPIResponse  `json:"recent_events"`
+	DiffAdded             int                       `json:"diff_added"`
+	DiffRemoved           int                       `json:"diff_removed"`
+	DiffFiles             int                       `json:"diff_files"`
+	DiffStatus            string                    `json:"diff_status"`
+	Tokens                tokenCountsAPIResponse    `json:"tokens"`
 }
 
 type retryAPIResponse struct {
@@ -1431,21 +1458,26 @@ type statsAPIResponse struct {
 }
 
 type tokenCountsAPIResponse struct {
-	Input           int64 `json:"input_tokens"`
-	CachedInput     int64 `json:"cached_input_tokens,omitempty"`
-	Output          int64 `json:"output_tokens"`
-	ReasoningOutput int64 `json:"reasoning_output_tokens,omitempty"`
-	Total           int64 `json:"total_tokens"`
+	Input              int64                      `json:"input_tokens"`
+	CachedInput        int64                      `json:"cached_input_tokens,omitempty"`
+	Output             int64                      `json:"output_tokens"`
+	ReasoningOutput    int64                      `json:"reasoning_output_tokens,omitempty"`
+	Total              int64                      `json:"total_tokens"`
+	ModelContextWindow *int64                     `json:"model_context_window,omitempty"`
+	ContextPressure    *telemetry.ContextPressure `json:"context_pressure,omitempty"`
+	CacheReadFraction  float64                    `json:"cache_read_fraction,omitempty"`
 }
 
 type tokenTotalsAPIResponse struct {
-	Input              int64   `json:"input_tokens"`
-	CachedInput        int64   `json:"cached_input_tokens,omitempty"`
-	Output             int64   `json:"output_tokens"`
-	ReasoningOutput    int64   `json:"reasoning_output_tokens,omitempty"`
-	Total              int64   `json:"total_tokens"`
-	ModelContextWindow *int64  `json:"model_context_window,omitempty"`
-	RuntimeSeconds     float64 `json:"seconds_running"`
+	Input              int64                      `json:"input_tokens"`
+	CachedInput        int64                      `json:"cached_input_tokens,omitempty"`
+	Output             int64                      `json:"output_tokens"`
+	ReasoningOutput    int64                      `json:"reasoning_output_tokens,omitempty"`
+	Total              int64                      `json:"total_tokens"`
+	ModelContextWindow *int64                     `json:"model_context_window,omitempty"`
+	ContextPressure    *telemetry.ContextPressure `json:"context_pressure,omitempty"`
+	CacheReadFraction  float64                    `json:"cache_read_fraction,omitempty"`
+	RuntimeSeconds     float64                    `json:"seconds_running"`
 }
 
 type throughputAPIResponse struct {
@@ -1468,22 +1500,27 @@ type lifetimeTotalsResponse struct {
 }
 
 type recentSessionAPIResponse struct {
-	IssueID           string  `json:"issue_id"`
-	Identifier        string  `json:"identifier"`
-	ProjectID         string  `json:"project_id,omitempty"`
-	IssueURL          *string `json:"issue_url"`
-	PullRequestURL    *string `json:"pull_request_url"`
-	PullRequestNumber *int    `json:"pull_request_number"`
-	StartedAt         *string `json:"started_at"`
-	CompletedAt       *string `json:"completed_at"`
-	Turns             int     `json:"turns"`
-	InputTokens       int64   `json:"input_tokens"`
-	OutputTokens      int64   `json:"output_tokens"`
-	TotalTokens       int64   `json:"total_tokens"`
-	RuntimeSeconds    float64 `json:"runtime_seconds"`
-	FinalState        *string `json:"final_state"`
-	Model             *string `json:"model"`
-	BudgetAlert       bool    `json:"budget_alert?"`
+	IssueID            string                     `json:"issue_id"`
+	Identifier         string                     `json:"identifier"`
+	ProjectID          string                     `json:"project_id,omitempty"`
+	IssueURL           *string                    `json:"issue_url"`
+	PullRequestURL     *string                    `json:"pull_request_url"`
+	PullRequestNumber  *int                       `json:"pull_request_number"`
+	StartedAt          *string                    `json:"started_at"`
+	CompletedAt        *string                    `json:"completed_at"`
+	Turns              int                        `json:"turns"`
+	InputTokens        int64                      `json:"input_tokens"`
+	CachedInputTokens  int64                      `json:"cached_input_tokens,omitempty"`
+	OutputTokens       int64                      `json:"output_tokens"`
+	ReasoningOutput    int64                      `json:"reasoning_output_tokens,omitempty"`
+	TotalTokens        int64                      `json:"total_tokens"`
+	ModelContextWindow *int64                     `json:"model_context_window,omitempty"`
+	ContextPressure    *telemetry.ContextPressure `json:"context_pressure,omitempty"`
+	CacheReadFraction  float64                    `json:"cache_read_fraction,omitempty"`
+	RuntimeSeconds     float64                    `json:"runtime_seconds"`
+	FinalState         *string                    `json:"final_state"`
+	Model              *string                    `json:"model"`
+	BudgetAlert        bool                       `json:"budget_alert?"`
 }
 
 type budgetAPIResponse struct {
@@ -1615,20 +1652,21 @@ type attemptsAPIResponse struct {
 }
 
 type runningIssueAPIResponse struct {
-	WorkerHost    *string                `json:"worker_host"`
-	WorkspacePath *string                `json:"workspace_path"`
-	SessionID     *string                `json:"session_id"`
-	TurnCount     int                    `json:"turn_count"`
-	State         string                 `json:"state"`
-	StartedAt     *string                `json:"started_at"`
-	LastEvent     *string                `json:"last_event"`
-	LastMessage   *string                `json:"last_message"`
-	LastEventAt   *string                `json:"last_event_at"`
-	DiffAdded     int                    `json:"diff_added"`
-	DiffRemoved   int                    `json:"diff_removed"`
-	DiffFiles     int                    `json:"diff_files"`
-	DiffStatus    string                 `json:"diff_status"`
-	Tokens        tokenCountsAPIResponse `json:"tokens"`
+	WorkerHost            *string                   `json:"worker_host"`
+	WorkspacePath         *string                   `json:"workspace_path"`
+	SessionID             *string                   `json:"session_id"`
+	TurnCount             int                       `json:"turn_count"`
+	State                 string                    `json:"state"`
+	StartedAt             *string                   `json:"started_at"`
+	LastEvent             *string                   `json:"last_event"`
+	LastMessage           *string                   `json:"last_message"`
+	LastMessageTruncation *runtimeoutput.Truncation `json:"last_message_truncation,omitempty"`
+	LastEventAt           *string                   `json:"last_event_at"`
+	DiffAdded             int                       `json:"diff_added"`
+	DiffRemoved           int                       `json:"diff_removed"`
+	DiffFiles             int                       `json:"diff_files"`
+	DiffStatus            string                    `json:"diff_status"`
+	Tokens                tokenCountsAPIResponse    `json:"tokens"`
 }
 
 type retryIssueAPIResponse struct {
@@ -1665,9 +1703,10 @@ type logAPIResponse struct {
 }
 
 type recentEventAPIResponse struct {
-	At      string  `json:"at"`
-	Event   *string `json:"event"`
-	Message *string `json:"message"`
+	At         string                    `json:"at"`
+	Event      *string                   `json:"event"`
+	Message    *string                   `json:"message"`
+	Truncation *runtimeoutput.Truncation `json:"truncation,omitempty"`
 }
 
 type apiErrorResponse struct {

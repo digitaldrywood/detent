@@ -2339,6 +2339,9 @@ templ runningIssuesSection(data DashboardData) {
 										<div class="grid min-w-0 gap-1 font-mono">
 											<span class="font-medium text-text">{ formatTokens(row.Tokens) }</span>
 											<span class="truncate text-xs text-sec">{ formatTokenBreakdown(row.Tokens) }</span>
+											if contextPressureText(row.Tokens) != "" {
+												<span class={ "truncate text-xs " + boardExtraTextClass(contextPressureKind(row.Tokens)) } title={ contextPressureTitle(row.Tokens) }>{ contextPressureText(row.Tokens) }</span>
+											}
 										</div>
 									</td>
 									<td class="px-3 py-4 align-top">
@@ -2914,7 +2917,12 @@ templ runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt ti
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
 				@plainInlineLabel("Tokens", "text-sec")
-				<span class="font-mono text-text">{ formatTokens(row.Tokens) }</span>
+				<div class="grid min-w-0 justify-items-end gap-1 font-mono">
+					<span class="text-text">{ formatTokens(row.Tokens) }</span>
+					if contextPressureText(row.Tokens) != "" {
+						<span class={ "text-xs " + boardExtraTextClass(contextPressureKind(row.Tokens)) } title={ contextPressureTitle(row.Tokens) }>{ contextPressureText(row.Tokens) }</span>
+					}
+				</div>
 			</div>
 		</div>
 		<div class="mt-3">
@@ -3754,6 +3762,9 @@ templ recentSessionsSection(snapshot telemetry.Snapshot) {
 										<div class="grid gap-1 font-mono">
 											<span class="font-medium text-text">{ formatTokens(row.Tokens) }</span>
 											<span class="text-xs text-sec">{ formatTokenBreakdown(row.Tokens) }</span>
+											if contextPressureText(row.Tokens) != "" {
+												<span class={ "text-xs " + boardExtraTextClass(contextPressureKind(row.Tokens)) } title={ contextPressureTitle(row.Tokens) }>{ contextPressureText(row.Tokens) }</span>
+											}
 										</div>
 									</td>
 									<td class="px-3 py-4 align-top">
@@ -3787,7 +3798,12 @@ templ recentSessionMobileCard(row telemetry.Completed, rowIndex int) {
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
 				@plainInlineLabel("Tokens", "text-sec")
-				<span class="font-mono text-text">{ formatTokens(row.Tokens) }</span>
+				<div class="grid min-w-0 justify-items-end gap-1 font-mono">
+					<span class="text-text">{ formatTokens(row.Tokens) }</span>
+					if contextPressureText(row.Tokens) != "" {
+						<span class={ "text-xs " + boardExtraTextClass(contextPressureKind(row.Tokens)) } title={ contextPressureTitle(row.Tokens) }>{ contextPressureText(row.Tokens) }</span>
+					}
+				</div>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
 				<span class="text-sec">Final state</span>

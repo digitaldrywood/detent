@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -143,7 +144,7 @@ func (o *Orchestrator) heartbeatRunningWorkAttempts(ctx context.Context, state *
 			}
 			continue
 		}
-		o.applyWorkAttemptHeartbeatSnapshot(state, running.WorkAttemptID, heartbeat)
+		o.applyWorkAttemptHeartbeatSnapshot(state, running.WorkAttemptID, heartbeat, running.LastMessageTruncation)
 	}
 }
 
@@ -179,9 +180,9 @@ func (o *Orchestrator) completeDurableWorkAttempt(
 		Status:                 store.WorkAttemptStatusTerminal,
 		TerminalState:          terminalState,
 		ErrorClass:             strings.TrimSpace(errorClass),
-		ErrorMessage:           strings.TrimSpace(errorMessage),
+		ErrorMessage:           o.operatorText(errorMessage),
 		Phase:                  phase,
-		StatusMessage:          statusMessage,
+		StatusMessage:          o.operatorText(statusMessage),
 		GitHubRateSnapshotJSON: o.githubRateSnapshotJSON(state),
 		CIState:                workAttemptCIState(running.Issue),
 		CapacitySnapshotJSON:   o.capacitySnapshotJSON(state, running.Issue),
@@ -211,7 +212,7 @@ func (o *Orchestrator) runningWorkAttemptHeartbeat(state *State, running Running
 		HeartbeatAt:            now,
 		LeaseExpiresAt:         o.workAttemptLeaseExpiresAt(now),
 		Phase:                  phase,
-		StatusMessage:          message,
+		StatusMessage:          o.operatorText(message),
 		WaitReason:             runningWorkAttemptWaitReason(running, state),
 		GitHubRateSnapshotJSON: o.githubRateSnapshotJSON(state),
 		CIState:                workAttemptCIState(running.Issue),
@@ -312,7 +313,12 @@ func upsertWorkAttemptSnapshot(state *State, item telemetry.WorkAttempt) {
 	}
 }
 
-func (o *Orchestrator) applyWorkAttemptHeartbeatSnapshot(state *State, attemptID int64, heartbeat store.WorkAttemptHeartbeat) {
+func (o *Orchestrator) applyWorkAttemptHeartbeatSnapshot(
+	state *State,
+	attemptID int64,
+	heartbeat store.WorkAttemptHeartbeat,
+	truncation *runtimeoutput.Truncation,
+) {
 	if state == nil || attemptID <= 0 {
 		return
 	}
@@ -325,6 +331,7 @@ func (o *Orchestrator) applyWorkAttemptHeartbeatSnapshot(state *State, attemptID
 		item.LeaseExpiresAt = timePointer(heartbeat.LeaseExpiresAt)
 		item.Phase = heartbeat.Phase
 		item.StatusMessage = heartbeat.StatusMessage
+		item.StatusMessageTruncation = runtimeoutput.CloneTruncation(truncation)
 		item.CurrentCommand = heartbeat.CurrentCommand
 		item.WaitReason = heartbeat.WaitReason
 		item.GitHubRateSnapshotJSON = heartbeat.GitHubRateSnapshotJSON

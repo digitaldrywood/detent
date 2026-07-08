@@ -160,6 +160,128 @@ test("board lane picker hides and restores lanes", async ({ page }) => {
   await expect(firstLane).toBeVisible();
 });
 
+test("board applies persisted todo visibility before snapshot morphs", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-kanban-multiproject",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const laneID = "todo";
+  const lane = page.locator(`[data-board-lane="${laneID}"]`);
+  const toggle = page.locator(`[data-board-lane-toggle="${laneID}"]`);
+  const count = page.locator("[data-board-lane-count]");
+  const boardKey = await page
+    .locator("[data-board-lanes]")
+    .getAttribute("data-board-key");
+
+  await page.evaluate(
+    ({ boardKey, laneID }) => {
+      localStorage.setItem(
+        `detent.ui.board.lanes.${boardKey}`,
+        JSON.stringify({ [laneID]: true }),
+      );
+      document.dispatchEvent(new Event("htmx:afterSettle"));
+    },
+    { boardKey, laneID },
+  );
+
+  await expect(lane).toBeVisible();
+  await expect(toggle).toBeChecked();
+  await expect(count).toHaveText("8/9");
+
+  const incomingSnapshot = await page.evaluate((laneID) => {
+    const template = document.createElement("template");
+    const snapshot = document.querySelector("#snapshot");
+    template.innerHTML = snapshot ? snapshot.innerHTML : "";
+    const lane = template.content.querySelector(
+      `[data-board-lane="${laneID}"]`,
+    );
+    if (lane) {
+      lane.setAttribute("data-board-lane-default", "false");
+      lane.setAttribute("data-lane-hidden", "true");
+    }
+    const toggle = template.content.querySelector(
+      `[data-board-lane-toggle="${laneID}"]`,
+    );
+    if (toggle) {
+      toggle.checked = false;
+      toggle.removeAttribute("checked");
+    }
+    const lanes = Array.from(
+      template.content.querySelectorAll("[data-board-lane]"),
+    );
+    const visible = lanes.filter(
+      (lane) => lane.getAttribute("data-lane-hidden") !== "true",
+    ).length;
+    const count = template.content.querySelector("[data-board-lane-count]");
+    if (count) {
+      count.textContent = `${visible}/${lanes.length}`;
+    }
+    return template.innerHTML;
+  }, laneID);
+
+  await page.route("**/__detent-test-board-refresh", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body: incomingSnapshot,
+    });
+  });
+
+  await startLaneHiddenRecorder(page, laneID);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        document.addEventListener("htmx:afterSettle", resolve, { once: true });
+        window.htmx.ajax("GET", "/__detent-test-board-refresh", {
+          target: "#snapshot",
+          swap: "morph:innerHTML",
+        });
+      }),
+  );
+
+  const hiddenValues = await laneHiddenValues(page);
+  expect(hiddenValues).not.toContain("true");
+  await expect(lane).toBeVisible();
+  await expect(toggle).toBeChecked();
+  await expect(count).toHaveText("8/9");
+
+  await startLaneHiddenRecorder(page, laneID);
+  await page.evaluate(
+    (incomingSnapshot) =>
+      new Promise((resolve) => {
+        document.addEventListener("htmx:afterSettle", resolve, { once: true });
+        const target = document.querySelector("#snapshot");
+        const event = new CustomEvent("htmx:sseBeforeMessage", {
+          bubbles: true,
+          cancelable: true,
+          detail: { elt: target, data: incomingSnapshot },
+        });
+        target.dispatchEvent(event);
+        if (!event.defaultPrevented) {
+          window.htmx.swap(
+            target,
+            incomingSnapshot,
+            { swapStyle: target.getAttribute("hx-swap") || "innerHTML" },
+            { contextElement: target },
+          );
+        }
+      }),
+    incomingSnapshot,
+  );
+
+  const sseHiddenValues = await laneHiddenValues(page);
+  expect(sseHiddenValues).not.toContain("true");
+  await expect(lane).toBeVisible();
+  await expect(toggle).toBeChecked();
+  await expect(count).toHaveText("8/9");
+});
+
 test("board card opens the detail sheet", async ({ page }, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
@@ -489,6 +611,58 @@ async function openScenario(page, options) {
   });
   await page.locator(waitSelector).waitFor({ state: "visible" });
   await page.evaluate(() => document.fonts?.ready);
+}
+
+async function startLaneHiddenRecorder(page, laneID) {
+  await page.evaluate((laneID) => {
+    if (window.__detentLaneHiddenObserver) {
+      window.__detentLaneHiddenObserver.disconnect();
+    }
+    window.__detentLaneHiddenValues = [];
+    const snapshot = document.querySelector("#snapshot");
+    const record = (lane) => {
+      if (!lane) {
+        return;
+      }
+      window.__detentLaneHiddenValues.push(
+        lane.getAttribute("data-lane-hidden"),
+      );
+    };
+    record(document.querySelector(`[data-board-lane="${laneID}"]`));
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === "attributes") {
+          const lane =
+            mutation.target instanceof Element
+              ? mutation.target.closest(`[data-board-lane="${laneID}"]`)
+              : null;
+          record(lane);
+        }
+        if (mutation.type === "childList") {
+          for (const node of mutation.addedNodes) {
+            if (!(node instanceof Element)) {
+              continue;
+            }
+            const lane = node.matches(`[data-board-lane="${laneID}"]`)
+              ? node
+              : node.querySelector(`[data-board-lane="${laneID}"]`);
+            record(lane);
+          }
+        }
+      }
+    });
+    observer.observe(snapshot, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["data-lane-hidden"],
+    });
+    window.__detentLaneHiddenObserver = observer;
+  }, laneID);
+}
+
+async function laneHiddenValues(page) {
+  return page.evaluate(() => window.__detentLaneHiddenValues || []);
 }
 
 async function capturePageAndAttach(page, name, testInfo) {

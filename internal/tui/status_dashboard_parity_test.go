@@ -512,7 +512,7 @@ const elixirBackoffQueueStatusSnapshot = `\e[1m╭─ DETENT STATUS\e[0m
 │
 │   \e[90mID       STAGE          PID      AGE / TURN   TOKENS     SESSION        EVENT                                  \e[0m
 │   \e[90m───────────────────────────────────────────────────────────────────────────────────────────────────────────────\e[0m
-│ \e[34m●\e[0m \e[36m{{mt638}}  \e[0m \e[34mretrying      \e[0m \e[33m4242    \e[0m \e[35m20m 25s / 7 \e[0m \e[33m    14,200\e[0m \e[36mthre...567890 \e[0m \e[34magent message streaming: waiting on ...\e[0m
+│ \e[34m●\e[0m \e[36m{{mt638}}  \e[0m \e[34mretrying      \e[0m \e[33m4242    \e[0m \e[35m20m 25s / 7 \e[0m \e[33m    14,200\e[0m \e[36mthre...567890 \e[0m \e[34magent message streaming: waiting ...\e[0m
 │
 \e[1m├─ Backoff queue\e[0m
 │
@@ -536,7 +536,7 @@ const elixirCreditsUnlimitedStatusSnapshot = `\e[1m╭─ DETENT STATUS\e[0m
 │
 │   \e[90mID       STAGE          PID      AGE / TURN   TOKENS     SESSION        EVENT                                  \e[0m
 │   \e[90m───────────────────────────────────────────────────────────────────────────────────────────────────────────────\e[0m
-│ \e[33m●\e[0m \e[36m{{mt777}}  \e[0m \e[33mrunning       \e[0m \e[33m4242    \e[0m \e[35m1m 15s / 7  \e[0m \e[33m     3,200\e[0m \e[36mthre...567890 \e[0m \e[33mthread token usage updated (in 90, o...\e[0m
+│ \e[33m●\e[0m \e[36m{{mt777}}  \e[0m \e[33mrunning       \e[0m \e[33m4242    \e[0m \e[35m1m 15s / 7  \e[0m \e[33m     3,200\e[0m \e[36mthre...567890 \e[0m \e[33mthread token usage updated (in 90...\e[0m
 │
 \e[1m├─ Backoff queue\e[0m
 │

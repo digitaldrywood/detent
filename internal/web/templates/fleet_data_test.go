@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
 
 func fleetTestData() DashboardData {
@@ -60,12 +61,32 @@ func TestFleetAgentRows(t *testing.T) {
 	if row.Stage != "Implementing" {
 		t.Fatalf("stage = %q, want Implementing", row.Stage)
 	}
-	if row.TPS == "" || !strings.HasSuffix(row.TPS, "tps") {
-		t.Fatalf("tps = %q", row.TPS)
+	if row.Telemetry == "" || !strings.HasSuffix(row.Telemetry, "tps") {
+		t.Fatalf("telemetry = %q", row.Telemetry)
 	}
 	// typical runtime = 500s, elapsed 219s → 43%.
 	if row.Progress != 43 {
 		t.Fatalf("progress = %d, want 43", row.Progress)
+	}
+}
+
+func TestFleetAgentRowsUseContextPressureWhenKnown(t *testing.T) {
+	data := fleetTestData()
+	contextWindow := int64(300_000)
+	data.Snapshot.Running[0].Tokens.ModelContextWindow = &contextWindow
+	data.Snapshot.Running[0].Tokens.CachedInput = 66_000
+	data.Snapshot.Running[0].Tokens.Input = 220_000
+
+	rows := fleetAgentRows(data.Snapshot)
+	if len(rows) != 1 {
+		t.Fatalf("expected one agent row, got %d", len(rows))
+	}
+	row := rows[0]
+	if row.Progress != 88 || row.ProgressKind != primitives.KindWarn {
+		t.Fatalf("progress = %d %q, want 88 warn", row.Progress, row.ProgressKind)
+	}
+	if row.Telemetry != "ctx 88% · cache 30%" {
+		t.Fatalf("telemetry = %q", row.Telemetry)
 	}
 }
 
@@ -176,11 +197,30 @@ func TestFleetAgentProgressBounds(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, _ := fleetAgentProgress(telemetry.Running{RuntimeSeconds: tt.runtime}, tt.typical)
+			got, _, _ := fleetAgentProgress(telemetry.Running{RuntimeSeconds: tt.runtime}, tt.typical)
 			if got != tt.want {
 				t.Fatalf("progress = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFleetMetricsIncludesHighestActiveContext(t *testing.T) {
+	data := fleetTestData()
+	lowerWindow := int64(400_000)
+	higherWindow := int64(300_000)
+	data.Snapshot.Running = append(data.Snapshot.Running, telemetry.Running{
+		Issue:  telemetry.Issue{Identifier: "digitaldrywood/detent#977"},
+		Tokens: telemetry.Tokens{Total: 270_000, ModelContextWindow: &higherWindow},
+	})
+	data.Snapshot.Running[0].Tokens.ModelContextWindow = &lowerWindow
+
+	metrics := fleetMetricsFromSnapshot(data)
+	if !metrics.HasContext {
+		t.Fatalf("expected context rollup: %+v", metrics)
+	}
+	if metrics.ContextValue != "90% #977" || metrics.ContextPct != 90 || metrics.ContextKind != primitives.KindWarn {
+		t.Fatalf("context rollup = %q pct=%d kind=%q", metrics.ContextValue, metrics.ContextPct, metrics.ContextKind)
 	}
 }
 
@@ -205,7 +245,7 @@ func TestFleetMetrics(t *testing.T) {
 
 func TestFleetMetricsWithoutData(t *testing.T) {
 	metrics := fleetMetricsFromSnapshot(DashboardData{})
-	if metrics.HasSpend || metrics.HasQuota || metrics.HasTokens {
+	if metrics.HasSpend || metrics.HasQuota || metrics.HasTokens || metrics.HasContext {
 		t.Fatalf("empty snapshot should produce no meters: %+v", metrics)
 	}
 }

@@ -95,7 +95,7 @@ func sheetSessionFor(snapshot telemetry.Snapshot, card projectKanbanCard) sheetS
 				Runtime:   formatDuration(running.RuntimeSeconds),
 				Turns:     formatCount(running.TurnCount),
 				LastEvent: strings.TrimSpace(running.LastEvent),
-				Message:   strings.TrimSpace(running.LastMessage),
+				Message:   strings.TrimSpace(displayOutputText(running.LastMessage, running.LastMessageTruncation)),
 			}
 			return session
 		}

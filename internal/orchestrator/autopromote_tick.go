@@ -139,22 +139,51 @@ func (o *Orchestrator) hydrateAutoPromoteWorkpadDecision(
 	return issue, EvaluateAutoPromote(issue, summary, cfg, now)
 }
 
-func (o *Orchestrator) reconcileStaleTodoPullRequestIssues(
+func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 	ctx context.Context,
 	state *State,
 	issues []connector.Issue,
 	now time.Time,
 ) map[string]struct{} {
 	transitioned := map[string]struct{}{}
-	for _, issue := range issuesInStates(issues, []string{"Todo"}) {
+	for _, issue := range issuesInStates(issues, o.cfg.ActiveStates) {
 		issueID := strings.TrimSpace(issue.ID)
-		if issueID == "" || issue.PullRequest == nil || normalizePullRequestState(issue.PullRequest.State) != "open" {
+		if issueID == "" || issue.PullRequest == nil {
+			continue
+		}
+		pullRequestState := normalizePullRequestState(issue.PullRequest.State)
+		if pullRequestState != "open" && pullRequestState != "merged" {
+			continue
+		}
+		if stateIn(issue.State, o.cfg.TerminalStates) {
 			continue
 		}
 		if staleTodoPullRequestAlreadyActive(state, issueID) {
 			continue
 		}
 
+		if pullRequestState == "merged" {
+			summary := staleMergedPullRequestSummaryFromIssue(issue)
+			decision := staleMergedPullRequestDecision(issue, summary)
+			targetState := staleMergedPullRequestTargetState(decision, o.cfg.AutoPromote, o.cfg.TerminalStates)
+			if targetState == "" {
+				o.logAutoPromoteDecision(issue, decision, "")
+				continue
+			}
+			if normalizeState(targetState) == normalizeState(issue.State) {
+				continue
+			}
+			if !o.applyStaleMergedPullRequestDecision(ctx, state, issue, summary, decision, targetState, now) {
+				continue
+			}
+			transitioned[issueID] = struct{}{}
+			o.clearAutoPromotedIssueDispatchMemory(state, issueID)
+			continue
+		}
+
+		if normalizeState(issue.State) != "todo" {
+			continue
+		}
 		summary := AutoPromoteSummaryFromIssue(issue)
 		if !summary.PullRequestPresent {
 			continue
@@ -796,6 +825,175 @@ func staleTodoPullRequestTargetState(decision AutoPromoteDecision, cfg AutoPromo
 	}
 }
 
+func staleMergedPullRequestSummaryFromIssue(issue connector.Issue) AutoPromoteSummary {
+	summary := AutoPromoteSummary{
+		LastActivityAt: autoPromoteLastActivityAt(issue),
+		ArtifactStatus: artifactStatusFromIssue(issue, gate.DefaultArtifactStatusField),
+	}
+	if issue.PullRequest == nil {
+		return summary
+	}
+	pullRequest := issue.PullRequest
+	summary.PullRequestPresent = true
+	summary.PullRequestURL = strings.TrimSpace(pullRequest.URL)
+	summary.PullRequestHydrationUnavailableReason = pullRequestHydrationUnavailableReason(pullRequest)
+	summary.PullRequestHydrationDegradedReason = pullRequestHydrationDegradedReason(pullRequest)
+	summary.MergeableState = strings.ToLower(strings.TrimSpace(pullRequest.MergeableState))
+	summary.CIStatus = strings.TrimSpace(pullRequest.CIStatus)
+	summary.ReviewState = pullRequest.CodexReviewState
+	summary.FailedChecks = autoPromoteFailedChecksFromPullRequest(pullRequest)
+	summary.P1Findings = autoPromoteFindingsFromPullRequest(pullRequest)
+	return summary
+}
+
+func staleMergedPullRequestDecision(issue connector.Issue, summary AutoPromoteSummary) AutoPromoteDecision {
+	if strings.TrimSpace(summary.PullRequestHydrationUnavailableReason) != "" ||
+		strings.TrimSpace(summary.PullRequestHydrationDegradedReason) != "" {
+		return autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonPullRequestHydrationUnavailable)
+	}
+	if staleMergedPullRequestHasFailedCIEvidence(issue.PullRequest, summary) {
+		decision := autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonCINotGreen)
+		decision.CIStatus = strings.TrimSpace(summary.CIStatus)
+		return decision
+	}
+	return autoPromoteDecision(AutoPromoteActionPromote, AutoPromoteReasonPullRequestMerged)
+}
+
+func staleMergedPullRequestTargetState(decision AutoPromoteDecision, cfg AutoPromoteConfig, terminalStates []string) string {
+	cfg = normalizeAutoPromoteConfig(cfg)
+	switch decision.Reason {
+	case AutoPromoteReasonCINotGreen:
+		return cfg.ReworkState
+	case AutoPromoteReasonPullRequestMerged:
+		return doneStateName(terminalStates)
+	case AutoPromoteReasonPullRequestHydrationUnavailable:
+		return cfg.SourceState
+	default:
+		return ""
+	}
+}
+
+func staleMergedPullRequestHasFailedCIEvidence(pullRequest *connector.PullRequest, summary AutoPromoteSummary) bool {
+	if pullRequest == nil {
+		return false
+	}
+	if staleMergingCIRed(pullRequest.CIStatus) {
+		return true
+	}
+	return len(summary.FailedChecks) > 0
+}
+
+func (o *Orchestrator) applyStaleMergedPullRequestDecision(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	summary AutoPromoteSummary,
+	decision AutoPromoteDecision,
+	targetState string,
+	now time.Time,
+) bool {
+	issueID := strings.TrimSpace(issue.ID)
+	if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, string(decision.Reason)); err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"stale_merged_pr_reconciliation_failed",
+				"issue_id", issueID,
+				"identifier", issue.Identifier,
+				"reason", decision.Reason,
+				"target_state", targetState,
+				"error", err,
+			)
+		}
+		return false
+	}
+
+	body := staleMergedPullRequestComment(summary, decision, displayStateName(issue.State), targetState)
+	if strings.TrimSpace(body) != "" {
+		if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
+			o.logger.Warn(
+				"stale_merged_pr_reconciliation_comment_failed",
+				"issue_id", issueID,
+				"identifier", issue.Identifier,
+				"reason", decision.Reason,
+				"target_state", targetState,
+				"error", err,
+			)
+		}
+	}
+
+	o.logStaleTodoPullRequestDecision(issue, decision, targetState)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "stale_merged_pr_reconciled",
+		Message: "reconciled merged linked PR for " + issueLabel(issue) + " from " + displayStateName(issue.State) + " to " + targetState + ": " + string(decision.Reason),
+	})
+	return true
+}
+
+func staleMergedPullRequestComment(
+	summary AutoPromoteSummary,
+	decision AutoPromoteDecision,
+	sourceState string,
+	targetState string,
+) string {
+	var b strings.Builder
+	sourceState = displayStateName(sourceState)
+	if sourceState == "" {
+		sourceState = "active"
+	}
+	switch decision.Reason {
+	case AutoPromoteReasonCINotGreen:
+		b.WriteString("Reconciled this issue from ")
+		b.WriteString(sourceState)
+		b.WriteString(" to ")
+		b.WriteString(targetState)
+		b.WriteString(" because its merged linked PR has failing CI evidence.")
+	case AutoPromoteReasonPullRequestHydrationUnavailable:
+		b.WriteString("Reconciled this issue from ")
+		b.WriteString(sourceState)
+		b.WriteString(" to ")
+		b.WriteString(targetState)
+		b.WriteString(" because linked PR status hydration is unavailable.")
+	case AutoPromoteReasonPullRequestMerged:
+		b.WriteString("Reconciled this issue from ")
+		b.WriteString(sourceState)
+		b.WriteString(" to ")
+		b.WriteString(targetState)
+		b.WriteString(" because its linked PR is already merged.")
+	default:
+		return ""
+	}
+
+	b.WriteString("\n\n")
+	b.WriteString("- reason: ")
+	b.WriteString(string(decision.Reason))
+	if summary.PullRequestURL != "" {
+		b.WriteString("\n- pull request: ")
+		b.WriteString(summary.PullRequestURL)
+	}
+	if summary.MergeableState != "" {
+		b.WriteString("\n- mergeable_state: ")
+		b.WriteString(summary.MergeableState)
+	}
+	if decision.CIStatus != "" {
+		b.WriteString("\n- ci_status: ")
+		b.WriteString(decision.CIStatus)
+	}
+	if failedChecks := strings.Join(summary.FailedChecks, ", "); failedChecks != "" {
+		b.WriteString("\n- failed_checks: ")
+		b.WriteString(failedChecks)
+	}
+	if summary.PullRequestHydrationUnavailableReason != "" {
+		b.WriteString("\n- pull_request_hydration_unavailable_reason: ")
+		b.WriteString(summary.PullRequestHydrationUnavailableReason)
+	}
+	if summary.PullRequestHydrationDegradedReason != "" {
+		b.WriteString("\n- pull_request_hydration_degraded_reason: ")
+		b.WriteString(summary.PullRequestHydrationDegradedReason)
+	}
+	return b.String()
+}
+
 func (o *Orchestrator) applyStaleTodoPullRequestDecision(
 	ctx context.Context,
 	state *State,
@@ -859,6 +1057,18 @@ func (o *Orchestrator) logStaleTodoPullRequestDecision(issue connector.Issue, de
 		}
 		if mergeableState := strings.TrimSpace(issue.PullRequest.MergeableState); mergeableState != "" {
 			attrs = append(attrs, "mergeable_state", strings.ToLower(mergeableState))
+		}
+		if ciStatus := strings.TrimSpace(issue.PullRequest.CIStatus); ciStatus != "" {
+			attrs = append(attrs, "ci_status", ciStatus)
+		}
+		if failedChecks := strings.Join(autoPromoteFailedChecksFromPullRequest(issue.PullRequest), ", "); failedChecks != "" {
+			attrs = append(attrs, "failed_checks", failedChecks)
+		}
+		if reason := pullRequestHydrationUnavailableReason(issue.PullRequest); reason != "" {
+			attrs = append(attrs, "pull_request_hydration_unavailable_reason", reason)
+		}
+		if reason := pullRequestHydrationDegradedReason(issue.PullRequest); reason != "" {
+			attrs = append(attrs, "pull_request_hydration_degraded_reason", reason)
 		}
 	}
 	if decision.WorkpadBlocker != "" {
@@ -1490,10 +1700,14 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 	}
 
 	o.logAutoPromoteDecision(issue, decision, targetState)
+	sourceState := displayStateName(issue.State)
+	if sourceState == "" {
+		sourceState = autoPromoteSourceState
+	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      now,
 		Event:   "auto_promote_transition",
-		Message: "auto-promoted " + issueLabel(issue) + " from " + autoPromoteSourceState + " to " + targetState,
+		Message: "auto-promoted " + issueLabel(issue) + " from " + sourceState + " to " + targetState,
 	})
 	return true
 }

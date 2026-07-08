@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/projectcolor"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -1112,6 +1113,36 @@ func TestRunningActivityRowsFallBackToLatestEvent(t *testing.T) {
 	}
 	if rows[0].At != "15:03:04 UTC" || rows[0].Event != "agent_message_delta" || rows[0].Message != "working through review feedback" {
 		t.Fatalf("runningActivityRows()[0] = %#v", rows[0])
+	}
+}
+
+func TestRunningActivityRowsMarkTruncatedOutput(t *testing.T) {
+	t.Parallel()
+
+	at := time.Date(2026, 5, 31, 15, 3, 4, 0, time.UTC)
+	truncation := &runtimeoutput.Truncation{Truncated: true}
+	row := telemetry.Running{
+		LastEventAt:           &at,
+		LastEvent:             "agent_message_delta",
+		LastMessage:           "01234" + runtimeoutput.Marker + "vwxyz",
+		LastMessageTruncation: truncation,
+		RecentEvents: []telemetry.ActivityEvent{{
+			At:         at,
+			Event:      "agent_message_delta",
+			Message:    "01234" + runtimeoutput.Marker + "vwxyz",
+			Truncation: truncation,
+		}},
+	}
+
+	if got, want := lastCodexUpdate(row), "01234"+runtimeoutput.Marker+"vwxyz [truncated]"; got != want {
+		t.Fatalf("lastCodexUpdate() = %q, want %q", got, want)
+	}
+	rows := runningActivityRows(row)
+	if len(rows) != 1 {
+		t.Fatalf("runningActivityRows() len = %d, want 1", len(rows))
+	}
+	if got, want := rows[0].Message, "01234"+runtimeoutput.Marker+"vwxyz [truncated]"; got != want {
+		t.Fatalf("runningActivityRows()[0].Message = %q, want %q", got, want)
 	}
 }
 

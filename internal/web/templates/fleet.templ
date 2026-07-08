@@ -124,10 +124,10 @@ templ AgentActivityPanel(agents []fleetAgentRow, count string) {
 					}
 				>
 					if agent.Progress > 0 {
-						<div class="h-full bg-ok" style={ fleetProgressStyle(agent.Progress) }></div>
+						<div class={ contextPressureMeterClass(agent.ProgressKind) } style={ fleetProgressStyle(agent.Progress) }></div>
 					}
 				</div>
-				<div class="text-right font-mono text-xs text-sec tabular-nums">{ agent.TPS }</div>
+				<div class="text-right font-mono text-xs text-sec tabular-nums">{ agent.Telemetry }</div>
 			</div>
 		}
 	}
@@ -159,6 +159,15 @@ templ fleetMetricCards(metrics fleetMetrics) {
 				@SparklineChart(metrics.TokenChart)
 			} else {
 				<p class="text-2xs text-dim">No throughput trend yet</p>
+			}
+			if metrics.HasContext {
+				<div class="mt-1 flex items-center justify-between gap-2 text-2xs">
+					<span class="text-dim">Max context</span>
+					<span class={ "whitespace-nowrap font-mono font-medium tabular-nums " + boardExtraTextClass(metrics.ContextKind) } title={ metrics.ContextTitle }>{ metrics.ContextValue }</span>
+				</div>
+				<div class="h-1 overflow-hidden rounded-xs bg-line" title={ metrics.ContextTitle }>
+					<div class={ contextPressureMeterClass(metrics.ContextKind) } style={ fleetProgressStyle(metrics.ContextPct) }></div>
+				</div>
 			}
 		</section>
 		<section id="metric-quota" class="flex flex-col gap-2 rounded-card border border-line bg-surface px-3.5 py-3">

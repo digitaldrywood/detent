@@ -1,8 +1,11 @@
 package telemetry
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 )
 
 type Snapshot struct {
@@ -296,61 +299,64 @@ type MergeTiming struct {
 }
 
 type ActivityEvent struct {
-	At      time.Time `json:"at"`
-	Event   string    `json:"event,omitempty"`
-	Message string    `json:"message,omitempty"`
+	At         time.Time                 `json:"at"`
+	Event      string                    `json:"event,omitempty"`
+	Message    string                    `json:"message,omitempty"`
+	Truncation *runtimeoutput.Truncation `json:"truncation,omitempty"`
 }
 
 type Running struct {
 	Issue
-	WorkerHost      string          `json:"worker_host,omitempty"`
-	ProcessIdentity string          `json:"process_identity,omitempty"`
-	WorkspacePath   string          `json:"workspace_path,omitempty"`
-	SessionID       string          `json:"session_id,omitempty"`
-	TurnCount       int             `json:"turn_count"`
-	StartedAt       time.Time       `json:"started_at"`
-	LastEventAt     *time.Time      `json:"last_event_at,omitempty"`
-	LastEvent       string          `json:"last_event,omitempty"`
-	LastMessage     string          `json:"last_message,omitempty"`
-	RecentEvents    []ActivityEvent `json:"recent_events,omitempty"`
-	RuntimeSeconds  float64         `json:"runtime_seconds"`
-	DiffAdded       int             `json:"diff_added"`
-	DiffRemoved     int             `json:"diff_removed"`
-	DiffFiles       int             `json:"diff_files"`
-	DiffStatus      string          `json:"diff_status,omitempty"`
-	Tokens          Tokens          `json:"tokens"`
+	WorkerHost            string                    `json:"worker_host,omitempty"`
+	ProcessIdentity       string                    `json:"process_identity,omitempty"`
+	WorkspacePath         string                    `json:"workspace_path,omitempty"`
+	SessionID             string                    `json:"session_id,omitempty"`
+	TurnCount             int                       `json:"turn_count"`
+	StartedAt             time.Time                 `json:"started_at"`
+	LastEventAt           *time.Time                `json:"last_event_at,omitempty"`
+	LastEvent             string                    `json:"last_event,omitempty"`
+	LastMessage           string                    `json:"last_message,omitempty"`
+	LastMessageTruncation *runtimeoutput.Truncation `json:"last_message_truncation,omitempty"`
+	RecentEvents          []ActivityEvent           `json:"recent_events,omitempty"`
+	RuntimeSeconds        float64                   `json:"runtime_seconds"`
+	DiffAdded             int                       `json:"diff_added"`
+	DiffRemoved           int                       `json:"diff_removed"`
+	DiffFiles             int                       `json:"diff_files"`
+	DiffStatus            string                    `json:"diff_status,omitempty"`
+	Tokens                Tokens                    `json:"tokens"`
 }
 
 type WorkAttempt struct {
-	AttemptID              int64      `json:"attempt_id"`
-	ProjectID              string     `json:"project_id,omitempty"`
-	IssueID                string     `json:"issue_id,omitempty"`
-	Identifier             string     `json:"identifier,omitempty"`
-	IssueURL               string     `json:"issue_url,omitempty"`
-	PRNumber               *int64     `json:"pr_number,omitempty"`
-	Repo                   string     `json:"repo,omitempty"`
-	WorkerType             string     `json:"worker_type,omitempty"`
-	WorkerHost             string     `json:"worker_host,omitempty"`
-	Lane                   string     `json:"lane,omitempty"`
-	AttemptNumber          int        `json:"attempt_number,omitempty"`
-	Status                 string     `json:"status,omitempty"`
-	StartedAt              time.Time  `json:"started_at,omitzero"`
-	LeaseExpiresAt         *time.Time `json:"lease_expires_at,omitempty"`
-	HeartbeatAt            *time.Time `json:"heartbeat_at,omitempty"`
-	CompletedAt            *time.Time `json:"completed_at,omitempty"`
-	TerminalState          string     `json:"terminal_state,omitempty"`
-	ErrorClass             string     `json:"error_class,omitempty"`
-	ErrorMessage           string     `json:"error_message,omitempty"`
-	Phase                  string     `json:"phase,omitempty"`
-	StatusMessage          string     `json:"status_message,omitempty"`
-	CurrentCommand         string     `json:"current_command,omitempty"`
-	WaitReason             string     `json:"wait_reason,omitempty"`
-	GitHubRateSnapshotJSON string     `json:"github_rate_snapshot_json,omitempty"`
-	CIState                string     `json:"ci_state,omitempty"`
-	CapacitySnapshotJSON   string     `json:"capacity_snapshot_json,omitempty"`
-	MetricsJSON            string     `json:"metrics_json,omitempty"`
-	NextAction             string     `json:"next_action,omitempty"`
-	Stale                  bool       `json:"stale,omitempty"`
+	AttemptID               int64                     `json:"attempt_id"`
+	ProjectID               string                    `json:"project_id,omitempty"`
+	IssueID                 string                    `json:"issue_id,omitempty"`
+	Identifier              string                    `json:"identifier,omitempty"`
+	IssueURL                string                    `json:"issue_url,omitempty"`
+	PRNumber                *int64                    `json:"pr_number,omitempty"`
+	Repo                    string                    `json:"repo,omitempty"`
+	WorkerType              string                    `json:"worker_type,omitempty"`
+	WorkerHost              string                    `json:"worker_host,omitempty"`
+	Lane                    string                    `json:"lane,omitempty"`
+	AttemptNumber           int                       `json:"attempt_number,omitempty"`
+	Status                  string                    `json:"status,omitempty"`
+	StartedAt               time.Time                 `json:"started_at,omitzero"`
+	LeaseExpiresAt          *time.Time                `json:"lease_expires_at,omitempty"`
+	HeartbeatAt             *time.Time                `json:"heartbeat_at,omitempty"`
+	CompletedAt             *time.Time                `json:"completed_at,omitempty"`
+	TerminalState           string                    `json:"terminal_state,omitempty"`
+	ErrorClass              string                    `json:"error_class,omitempty"`
+	ErrorMessage            string                    `json:"error_message,omitempty"`
+	Phase                   string                    `json:"phase,omitempty"`
+	StatusMessage           string                    `json:"status_message,omitempty"`
+	StatusMessageTruncation *runtimeoutput.Truncation `json:"status_message_truncation,omitempty"`
+	CurrentCommand          string                    `json:"current_command,omitempty"`
+	WaitReason              string                    `json:"wait_reason,omitempty"`
+	GitHubRateSnapshotJSON  string                    `json:"github_rate_snapshot_json,omitempty"`
+	CIState                 string                    `json:"ci_state,omitempty"`
+	CapacitySnapshotJSON    string                    `json:"capacity_snapshot_json,omitempty"`
+	MetricsJSON             string                    `json:"metrics_json,omitempty"`
+	NextAction              string                    `json:"next_action,omitempty"`
+	Stale                   bool                      `json:"stale,omitempty"`
 }
 
 type SchedulerDecision struct {
@@ -528,6 +534,97 @@ type Tokens struct {
 	Total              int64   `json:"total_tokens"`
 	ModelContextWindow *int64  `json:"model_context_window,omitempty"`
 	RuntimeSeconds     float64 `json:"seconds_running,omitempty"`
+}
+
+type ContextPressureState string
+
+const (
+	ContextPressureNormal   ContextPressureState = "normal"
+	ContextPressureWatch    ContextPressureState = "watch"
+	ContextPressureWarning  ContextPressureState = "warning"
+	ContextPressureCritical ContextPressureState = "critical"
+)
+
+type ContextPressure struct {
+	TotalTokens        int64                `json:"total_tokens"`
+	ContextLimitTokens int64                `json:"context_limit_tokens"`
+	PercentUsed        float64              `json:"percent_used"`
+	ThresholdState     ContextPressureState `json:"threshold_state"`
+}
+
+func (t Tokens) MarshalJSON() ([]byte, error) {
+	type tokensJSON struct {
+		Input              int64            `json:"input_tokens"`
+		CachedInput        int64            `json:"cached_input_tokens,omitempty"`
+		Output             int64            `json:"output_tokens"`
+		ReasoningOutput    int64            `json:"reasoning_output_tokens,omitempty"`
+		Total              int64            `json:"total_tokens"`
+		ModelContextWindow *int64           `json:"model_context_window,omitempty"`
+		ContextPressure    *ContextPressure `json:"context_pressure,omitempty"`
+		CacheReadFraction  float64          `json:"cache_read_fraction,omitempty"`
+		RuntimeSeconds     float64          `json:"seconds_running,omitempty"`
+	}
+
+	var pressure *ContextPressure
+	if value, ok := t.ContextPressure(); ok {
+		pressure = &value
+	}
+	cacheReadFraction, _ := t.CacheReadFraction()
+
+	return json.Marshal(tokensJSON{
+		Input:              t.Input,
+		CachedInput:        t.CachedInput,
+		Output:             t.Output,
+		ReasoningOutput:    t.ReasoningOutput,
+		Total:              t.Total,
+		ModelContextWindow: t.ModelContextWindow,
+		ContextPressure:    pressure,
+		CacheReadFraction:  cacheReadFraction,
+		RuntimeSeconds:     t.RuntimeSeconds,
+	})
+}
+
+func (t Tokens) ContextPressure() (ContextPressure, bool) {
+	if t.ModelContextWindow == nil || *t.ModelContextWindow <= 0 {
+		return ContextPressure{}, false
+	}
+	limit := *t.ModelContextWindow
+	total := t.Total
+	if total < 0 {
+		total = 0
+	}
+	percent := float64(total) / float64(limit) * 100
+	return ContextPressure{
+		TotalTokens:        total,
+		ContextLimitTokens: limit,
+		PercentUsed:        percent,
+		ThresholdState:     ContextPressureStateForPercent(percent),
+	}, true
+}
+
+func (t Tokens) CacheReadFraction() (float64, bool) {
+	input := t.Input
+	cached := t.CachedInput
+	if input <= 0 || cached <= 0 {
+		return 0, false
+	}
+	if cached > input {
+		cached = input
+	}
+	return float64(cached) / float64(input), true
+}
+
+func ContextPressureStateForPercent(percent float64) ContextPressureState {
+	switch {
+	case percent >= 95:
+		return ContextPressureCritical
+	case percent >= 85:
+		return ContextPressureWarning
+	case percent >= 70:
+		return ContextPressureWatch
+	default:
+		return ContextPressureNormal
+	}
 }
 
 type TokenThroughput struct {

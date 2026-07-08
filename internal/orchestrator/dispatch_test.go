@@ -35,6 +35,7 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Agent.AutoPromote.AllowedIssueLabels = []string{" Docs ", "docs", "Chore"}
 	cfg.Agent.AutoPromote.ReworkLimit = 2
 	cfg.Agent.MergeFastPath.Enabled = true
+	cfg.Agent.OutputTruncation.MaxBytes = 4096
 	cfg.Identity.Name = "release-captain"
 	cfg.Identity.GitHubLogin = "detent-bot"
 	cfg.Tracker.Authorization = selector.Selector{
@@ -82,6 +83,9 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if !got.MergeFastPathEnabled {
 		t.Fatal("MergeFastPathEnabled = false, want true")
+	}
+	if got.OutputTruncationMaxBytes != 4096 {
+		t.Fatalf("OutputTruncationMaxBytes = %d, want 4096", got.OutputTruncationMaxBytes)
 	}
 	if got.SelectorContext.InstanceLogin != "detent-bot" {
 		t.Fatalf("SelectorContext.InstanceLogin = %q, want detent-bot", got.SelectorContext.InstanceLogin)
@@ -799,6 +803,20 @@ func TestDispatchableSkipsDuplicatePullRequestWork(t *testing.T) {
 			want:  false,
 		},
 		{
+			name: "rework with failed merged pull request dispatches",
+			issue: func() connector.Issue {
+				issue := dispatchTestIssueWithPullRequest("issue-rework-merged-pr-failed", "Rework", "MERGED")
+				issue.PullRequest.CIStatus = "fail"
+				issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{
+					Name:       "Test",
+					Status:     "completed",
+					Conclusion: "failure",
+				}}
+				return issue
+			}(),
+			want: true,
+		},
+		{
 			name:  "todo with closed unmerged pull request dispatches",
 			issue: dispatchTestIssueWithPullRequest("issue-todo-closed-pr", "Todo", "CLOSED"),
 			want:  true,
@@ -815,6 +833,51 @@ func TestDispatchableSkipsDuplicatePullRequestWork(t *testing.T) {
 				t.Fatalf("dispatchable() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDispatchPlanReportsMergedPullRequestReconciliationPending(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 7, 15, 30, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 3,
+		ActiveStates:        []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates:      []string{"Done"},
+	})
+	issues := []connector.Issue{
+		dispatchTestIssueWithPullRequest("issue-todo-merged-pr", "Todo", "MERGED"),
+		func() connector.Issue {
+			issue := dispatchTestIssueWithPullRequest("issue-todo-merged-pr-failed", "Todo", "MERGED")
+			issue.PullRequest.CIStatus = "fail"
+			issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{
+				Name:       "Tier-1 Race Tests",
+				Status:     "completed",
+				Conclusion: "failure",
+			}}
+			return issue
+		}(),
+	}
+	state := newState(cfg)
+	decisions := make(map[string]dispatchPlanDecision)
+
+	newDispatchPlanner(cfg).plan(&state, issues, now, dispatchPlanHooks{
+		decision: func(decision dispatchPlanDecision) {
+			decisions[decision.Issue.ID] = decision
+		},
+	})
+
+	for _, issue := range issues {
+		decision, ok := decisions[issue.ID]
+		if !ok {
+			t.Fatalf("decision for %s missing", issue.ID)
+		}
+		if decision.Selected {
+			t.Fatalf("decision for %s selected = true, want reconciliation skip", issue.ID)
+		}
+		if decision.SkipReason != dispatchSkipMergedPullRequest {
+			t.Fatalf("decision for %s skip reason = %q, want %q", issue.ID, decision.SkipReason, dispatchSkipMergedPullRequest)
+		}
 	}
 }
 

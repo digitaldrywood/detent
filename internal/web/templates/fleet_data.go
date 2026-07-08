@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"math"
 	"strconv"
 	"strings"
 
@@ -33,8 +34,9 @@ type fleetAgentRow struct {
 	Elapsed       string
 	Stage         string
 	Progress      int
+	ProgressKind  primitives.Kind
 	ProgressTitle string
-	TPS           string
+	Telemetry     string
 }
 
 type fleetPRLane struct {
@@ -61,9 +63,14 @@ type fleetMetrics struct {
 	SpendWarn  bool
 	HasSpend   bool
 
-	TokensValue string
-	TokenChart  SeriesChartData
-	HasTokens   bool
+	TokensValue  string
+	TokenChart   SeriesChartData
+	HasTokens    bool
+	ContextValue string
+	ContextTitle string
+	ContextPct   int
+	ContextKind  primitives.Kind
+	HasContext   bool
 
 	QuotaValue string
 	QuotaPct   int
@@ -116,15 +123,15 @@ func fleetAgentRows(snapshot telemetry.Snapshot) []fleetAgentRow {
 		repo, number := splitIssueIdentifier(issueIdentifier(running.Issue))
 		identity := boardCardIdentityToken(running.Identifier, running.ID, projectKanbanIssueNumber(running.Issue))
 		row := fleetAgentRow{
-			ID:      "agent-" + boardCardScopedSlug(running.ProjectID, identity),
-			Repo:    repo,
-			Number:  number,
-			Title:   issueTitle(running.Issue),
-			Elapsed: fleetAgentElapsed(running),
-			Stage:   fleetAgentStage(running),
-			TPS:     fleetAgentTPS(running),
+			ID:        "agent-" + boardCardScopedSlug(running.ProjectID, identity),
+			Repo:      repo,
+			Number:    number,
+			Title:     issueTitle(running.Issue),
+			Elapsed:   fleetAgentElapsed(running),
+			Stage:     fleetAgentStage(running),
+			Telemetry: fleetAgentTelemetry(running),
 		}
-		row.Progress, row.ProgressTitle = fleetAgentProgress(running, typical)
+		row.Progress, row.ProgressTitle, row.ProgressKind = fleetAgentProgress(running, typical)
 		rows = append(rows, row)
 	}
 	return rows
@@ -160,6 +167,20 @@ func fleetAgentTPS(running telemetry.Running) string {
 	return formatDecimal(float64(running.Tokens.Total)/running.Tokens.RuntimeSeconds) + " tps"
 }
 
+func fleetAgentTelemetry(running telemetry.Running) string {
+	parts := make([]string, 0, 2)
+	if pressure, ok := running.Tokens.ContextPressure(); ok {
+		parts = append(parts, "ctx "+formatContextPercent(pressure.PercentUsed))
+	}
+	if fraction, ok := running.Tokens.CacheReadFraction(); ok {
+		parts = append(parts, "cache "+formatContextPercent(fraction*100))
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, " · ")
+	}
+	return fleetAgentTPS(running)
+}
+
 // fleetTypicalRuntimeSeconds is the mean completed-session runtime, used
 // as the honest denominator for the hero progress bar: how far along this
 // session is versus a typical one, capped below 100%.
@@ -181,9 +202,19 @@ func fleetTypicalRuntimeSeconds(snapshot telemetry.Snapshot) float64 {
 	return 0
 }
 
-func fleetAgentProgress(running telemetry.Running, typical float64) (int, string) {
+func fleetAgentProgress(running telemetry.Running, typical float64) (int, string, primitives.Kind) {
+	if pressure, ok := running.Tokens.ContextPressure(); ok {
+		percent := int(math.Round(pressure.PercentUsed))
+		if percent > 100 {
+			percent = 100
+		}
+		if percent < 1 && pressure.PercentUsed > 0 {
+			percent = 1
+		}
+		return percent, contextPressureTitle(running.Tokens), contextPressureStateKind(pressure.ThresholdState)
+	}
 	if typical <= 0 || running.RuntimeSeconds <= 0 {
-		return 0, ""
+		return 0, "", primitives.KindOK
 	}
 	percent := int(running.RuntimeSeconds / typical * 100)
 	if percent > 95 {
@@ -192,7 +223,13 @@ func fleetAgentProgress(running telemetry.Running, typical float64) (int, string
 	if percent < 2 {
 		percent = 2
 	}
-	return percent, "Elapsed vs typical session runtime (" + formatDuration(typical) + ")"
+	return percent, "Elapsed vs typical session runtime (" + formatDuration(typical) + ")", primitives.KindOK
+}
+
+type fleetContextPressure struct {
+	Issue    telemetry.Issue
+	Pressure telemetry.ContextPressure
+	Tokens   telemetry.Tokens
 }
 
 func fleetPRLanes(snapshot telemetry.Snapshot) []fleetPRLane {
@@ -282,6 +319,19 @@ func fleetMetricsFromSnapshot(data DashboardData) fleetMetrics {
 		}
 	}
 	metrics.TokensValue = fleetCompactTokens(snapshot.Tokens.Total)
+	if pressure, ok := fleetHighestContextPressure(snapshot); ok {
+		metrics.HasContext = true
+		metrics.ContextValue = formatContextPercent(pressure.Pressure.PercentUsed) + " " + contextPressureIssueLabel(pressure.Issue)
+		metrics.ContextTitle = contextPressureTitle(pressure.Tokens)
+		metrics.ContextPct = int(math.Round(pressure.Pressure.PercentUsed))
+		if metrics.ContextPct > 100 {
+			metrics.ContextPct = 100
+		}
+		if metrics.ContextPct < 1 && pressure.Pressure.PercentUsed > 0 {
+			metrics.ContextPct = 1
+		}
+		metrics.ContextKind = contextPressureStateKind(pressure.Pressure.ThresholdState)
+	}
 
 	if snapshot.RateLimits == nil {
 		return metrics
@@ -301,6 +351,32 @@ func fleetMetricsFromSnapshot(data DashboardData) fleetMetrics {
 		metrics.QuotaValue = formatInt(used) + " / " + formatInt(bucket.Limit)
 	}
 	return metrics
+}
+
+func fleetHighestContextPressure(snapshot telemetry.Snapshot) (fleetContextPressure, bool) {
+	var out fleetContextPressure
+	found := false
+	for _, running := range snapshot.Running {
+		pressure, ok := running.Tokens.ContextPressure()
+		if !ok {
+			continue
+		}
+		if !found || pressure.PercentUsed > out.Pressure.PercentUsed {
+			out = fleetContextPressure{Issue: running.Issue, Pressure: pressure, Tokens: running.Tokens}
+			found = true
+		}
+	}
+	return out, found
+}
+
+func contextPressureIssueLabel(issue telemetry.Issue) string {
+	if number := strings.TrimSpace(projectKanbanIssueNumber(issue)); number != "" {
+		return number
+	}
+	if identifier := strings.TrimSpace(issueIdentifier(issue)); identifier != "" {
+		return identifier
+	}
+	return "active"
 }
 
 // fleetCompactTokens abbreviates large token counts (4,828,240,151 → 4.83B)

@@ -642,6 +642,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if cfg.Agent.AutoPromote.ReworkLimit != 0 {
 		t.Fatalf("Agent.AutoPromote.ReworkLimit = %d, want unlimited default", cfg.Agent.AutoPromote.ReworkLimit)
 	}
+	if cfg.Agent.OutputTruncation.MaxBytes != 0 {
+		t.Fatalf("Agent.OutputTruncation.MaxBytes = %d, want disabled default", cfg.Agent.OutputTruncation.MaxBytes)
+	}
 	if !cfg.Codex.ApprovalPolicy.IsMap {
 		t.Fatalf("Codex.ApprovalPolicy = %#v, want map default", cfg.Codex.ApprovalPolicy)
 	}
@@ -765,6 +768,24 @@ Body
 	}
 	if !workflow.Config.Agent.MergeFastPath.Enabled {
 		t.Fatal("Agent.MergeFastPath.Enabled = false, want true")
+	}
+}
+
+func TestParseWorkflowAgentOutputTruncation(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+agent:
+  output_truncation:
+    max_bytes: 4096
+---
+Body
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if got := workflow.Config.Agent.OutputTruncation.MaxBytes; got != 4096 {
+		t.Fatalf("Agent.OutputTruncation.MaxBytes = %d, want 4096", got)
 	}
 }
 
@@ -1727,6 +1748,8 @@ agent:
   max_concurrent_agents: 0
   max_session_tokens: -1
   max_session_context_multiplier: -0.5
+  output_truncation:
+    max_bytes: -1
   max_concurrent_agents_by_state:
     Todo: 0
   dispatch_priority_by_state: ["Todo", "Todo"]
@@ -1763,6 +1786,7 @@ Prompt
 				"agent.max_concurrent_agents must be greater than 0",
 				"agent.max_session_tokens must be greater than or equal to 0",
 				"agent.max_session_context_multiplier must be greater than or equal to 0",
+				"agent.output_truncation.max_bytes must be greater than or equal to 0",
 				"agent.max_concurrent_agents_by_state limits must be positive integers",
 				"agent.dispatch_priority_by_state state names must be unique",
 				"agent.dispatch_priority_by_label labels must not be blank",

@@ -326,6 +326,94 @@ func TestSnapshotJSONShape(t *testing.T) {
 	}
 }
 
+func TestTokensJSONIncludesContextPressureWhenWindowKnown(t *testing.T) {
+	t.Parallel()
+
+	contextWindow := int64(200)
+	tokens := telemetry.Tokens{
+		Input:              100,
+		CachedInput:        25,
+		Output:             40,
+		Total:              170,
+		ModelContextWindow: &contextWindow,
+	}
+
+	data, err := json.Marshal(tokens)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	pressure := got["context_pressure"].(map[string]any)
+	if pressure["total_tokens"] != float64(170) || pressure["context_limit_tokens"] != float64(200) {
+		t.Fatalf("context_pressure token fields = %#v", pressure)
+	}
+	if pressure["percent_used"] != 85.0 || pressure["threshold_state"] != string(telemetry.ContextPressureWarning) {
+		t.Fatalf("context_pressure threshold fields = %#v", pressure)
+	}
+	if got["cache_read_fraction"] != 0.25 {
+		t.Fatalf("cache_read_fraction = %#v, want 0.25", got["cache_read_fraction"])
+	}
+}
+
+func TestTokensJSONOmitsContextPressureWhenWindowUnknown(t *testing.T) {
+	t.Parallel()
+
+	tokens := telemetry.Tokens{
+		Input:       100,
+		CachedInput: 25,
+		Output:      40,
+		Total:       170,
+	}
+
+	data, err := json.Marshal(tokens)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if _, ok := got["context_pressure"]; ok {
+		t.Fatalf("context_pressure present for unknown window: %s", string(data))
+	}
+	if _, ok := got["model_context_window"]; ok {
+		t.Fatalf("model_context_window present for unknown window: %s", string(data))
+	}
+	if got["cache_read_fraction"] != 0.25 {
+		t.Fatalf("cache_read_fraction = %#v, want 0.25", got["cache_read_fraction"])
+	}
+}
+
+func TestContextPressureStateForPercent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		percent float64
+		want    telemetry.ContextPressureState
+	}{
+		{name: "normal below watch", percent: 69.9, want: telemetry.ContextPressureNormal},
+		{name: "watch at seventy", percent: 70, want: telemetry.ContextPressureWatch},
+		{name: "warning at eighty five", percent: 85, want: telemetry.ContextPressureWarning},
+		{name: "critical at ninety five", percent: 95, want: telemetry.ContextPressureCritical},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := telemetry.ContextPressureStateForPercent(tt.percent); got != tt.want {
+				t.Fatalf("ContextPressureStateForPercent(%v) = %q, want %q", tt.percent, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProjectSnapshotJSONIncludesAuthHealth(t *testing.T) {
 	t.Parallel()
 

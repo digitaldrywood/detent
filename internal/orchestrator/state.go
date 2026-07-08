@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -56,24 +57,25 @@ type State struct {
 }
 
 type Running struct {
-	Issue           connector.Issue
-	Attempt         int
-	WorkAttemptID   int64
-	Mode            string
-	StartedAt       time.Time
-	WorkerHost      string
-	ProcessIdentity string
-	WorkspacePath   string
-	SessionID       string
-	TurnCount       int
-	LastEventAt     time.Time
-	LastEvent       string
-	LastMessage     string
-	RecentEvents    []telemetry.ActivityEvent
-	DiffStats       DiffStats
-	Tokens          TokenTotals
-	globalSlot      scheduler.Slot
-	cancel          context.CancelFunc
+	Issue                 connector.Issue
+	Attempt               int
+	WorkAttemptID         int64
+	Mode                  string
+	StartedAt             time.Time
+	WorkerHost            string
+	ProcessIdentity       string
+	WorkspacePath         string
+	SessionID             string
+	TurnCount             int
+	LastEventAt           time.Time
+	LastEvent             string
+	LastMessage           string
+	LastMessageTruncation *runtimeoutput.Truncation
+	RecentEvents          []telemetry.ActivityEvent
+	DiffStats             DiffStats
+	Tokens                TokenTotals
+	globalSlot            scheduler.Slot
+	cancel                context.CancelFunc
 }
 
 type Claimed struct {
@@ -136,6 +138,7 @@ type Retry struct {
 type InstantFailure struct {
 	Issue          connector.Issue
 	Error          string
+	errorKey       string
 	Count          int
 	FirstFailureAt time.Time
 	LastFailureAt  time.Time
@@ -221,6 +224,7 @@ func (s State) clone() State {
 
 	for id, running := range s.Running {
 		running.Issue = cloneIssue(running.Issue)
+		running.LastMessageTruncation = runtimeoutput.CloneTruncation(running.LastMessageTruncation)
 		running.RecentEvents = cloneActivityEvents(running.RecentEvents)
 		running.globalSlot = scheduler.Slot{}
 		running.cancel = nil
@@ -435,6 +439,9 @@ func cloneActivityEvents(events []telemetry.ActivityEvent) []telemetry.ActivityE
 	}
 	out := make([]telemetry.ActivityEvent, len(events))
 	copy(out, events)
+	for index := range out {
+		out[index].Truncation = runtimeoutput.CloneTruncation(out[index].Truncation)
+	}
 	return out
 }
 

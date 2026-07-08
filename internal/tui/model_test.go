@@ -187,6 +187,31 @@ func TestFormatRunningRowsUsesUsefulIssueKey(t *testing.T) {
 	}
 }
 
+func TestFormatRunningRowsShowsContextPressure(t *testing.T) {
+	t.Parallel()
+
+	contextWindow := int64(100)
+	rows := formatRunningRows([]telemetry.Running{
+		{
+			Issue:           telemetry.Issue{Identifier: "DD-977", State: "In Progress"},
+			ProcessIdentity: "4242",
+			SessionID:       "session-1234567890",
+			LastEvent:       "turn_completed",
+			LastMessage:     "latest event",
+			RuntimeSeconds:  12,
+			Tokens: telemetry.Tokens{
+				Total:              90,
+				ModelContextWindow: &contextWindow,
+			},
+		},
+	}, 32, newStyles())
+
+	got := stripANSI(strings.Join(rows, "\n"))
+	if !strings.Contains(got, "90/90%") {
+		t.Fatalf("formatRunningRows() missing compact context pressure:\n%s", got)
+	}
+}
+
 func TestModelNarrowSnapshotKeepsIssueKeyAndEventReadable(t *testing.T) {
 	t.Parallel()
 

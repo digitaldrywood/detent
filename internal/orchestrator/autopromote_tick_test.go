@@ -980,6 +980,196 @@ func TestTickReconcilesStaleTodoLinkedPullRequests(t *testing.T) {
 	}
 }
 
+func TestTickReconcilesStaleTodoMergedPullRequestToDone(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 7, 15, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	issue := autoPromoteTickIssue("issue-pyroapex-1462", []string{"bug"}, &connector.PullRequest{
+		Number:   1471,
+		URL:      "https://github.test/digitaldrywood/pyroapex/pull/1471",
+		State:    "MERGED",
+		CIStatus: "success",
+	})
+	issue.State = "Todo"
+	issue.Identifier = "digitaldrywood/pyroapex#1462"
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	attempts := &recordingWorkAttemptStore{}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:          cfg,
+		connector:    tracker,
+		workAttempts: attempts,
+		logger:       slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+
+	state := newState(cfg)
+	orch.tick(context.Background(), &state, now)
+
+	wantUpdates := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Done"}}
+	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
+		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one merged PR reconciliation comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"Reconciled this issue from Todo to Done because its linked PR is already merged.",
+		"reason: pull_request_merged",
+		"https://github.test/digitaldrywood/pyroapex/pull/1471",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+		}
+	}
+	if strings.Contains(logs.String(), "skip_reason=duplicate_pull_request_work") {
+		t.Fatalf("logs %q contain duplicate_pull_request_work skip", logs.String())
+	}
+	for _, decision := range attempts.decisions {
+		if decision.IssueID == issue.ID && decision.Reason == dispatchSkipDuplicatePullRequest {
+			t.Fatalf("scheduler decision = %#v, want merged PR reconciliation instead of duplicate skip", decision)
+		}
+	}
+}
+
+func TestTickParksStaleTodoMergedPullRequestWhenHydrationUnavailable(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 7, 15, 5, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	issue := autoPromoteTickIssue("issue-pyroapex-merged-stale", []string{"bug"}, &connector.PullRequest{
+		Number:                  1472,
+		URL:                     "https://github.test/digitaldrywood/pyroapex/pull/1472",
+		State:                   "MERGED",
+		CIStatus:                "success",
+		HydrationDegradedReason: connector.PullRequestHydrationReasonStaleCachedPullData,
+	})
+	issue.State = "Todo"
+	issue.Identifier = "digitaldrywood/pyroapex#1464"
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+
+	state := newState(cfg)
+	orch.tick(context.Background(), &state, now)
+
+	wantUpdates := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Human Review"}}
+	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
+		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one hydration reconciliation comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"Reconciled this issue from Todo to Human Review because linked PR status hydration is unavailable.",
+		"reason: pull_request_hydration_unavailable",
+		"pull_request_hydration_degraded_reason: stale_cached_pull_request",
+		"https://github.test/digitaldrywood/pyroapex/pull/1472",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+		}
+	}
+	for _, fragment := range []string{
+		"reason=pull_request_hydration_unavailable",
+		"pull_request_hydration_degraded_reason=stale_cached_pull_request",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+}
+
+func TestTickReconcilesStaleTodoMergedPullRequestWithFailedChecksToRework(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 7, 15, 10, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	issue := autoPromoteTickIssue("issue-pyroapex-1463", []string{"bug"}, &connector.PullRequest{
+		Number:   1470,
+		URL:      "https://github.test/digitaldrywood/pyroapex/pull/1470",
+		State:    "MERGED",
+		CIStatus: "fail",
+		RequiredCheckFailures: []connector.PullRequestCheck{{
+			Name:       "Tier-1 Race Tests",
+			Status:     "completed",
+			Conclusion: "failure",
+		}},
+	})
+	issue.State = "Todo"
+	issue.Identifier = "digitaldrywood/pyroapex#1463"
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	attempts := &recordingWorkAttemptStore{}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:          cfg,
+		connector:    tracker,
+		workAttempts: attempts,
+		logger:       slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+
+	state := newState(cfg)
+	orch.tick(context.Background(), &state, now)
+
+	wantUpdates := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Rework"}}
+	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
+		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one failed merged PR reconciliation comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"Reconciled this issue from Todo to Rework because its merged linked PR has failing CI evidence.",
+		"reason: ci_not_green",
+		"ci_status: fail",
+		"failed_checks: Tier-1 Race Tests",
+		"https://github.test/digitaldrywood/pyroapex/pull/1470",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+		}
+	}
+	if strings.Contains(logs.String(), "skip_reason=duplicate_pull_request_work") {
+		t.Fatalf("logs %q contain duplicate_pull_request_work skip", logs.String())
+	}
+	for _, decision := range attempts.decisions {
+		if decision.IssueID == issue.ID && decision.Reason == dispatchSkipDuplicatePullRequest {
+			t.Fatalf("scheduler decision = %#v, want failed merged PR reconciliation instead of duplicate skip", decision)
+		}
+	}
+}
+
 func TestTickReconcilesStaleTodoHydratesWorkpadBlockerBeforePromotion(t *testing.T) {
 	t.Parallel()
 
@@ -3503,6 +3693,7 @@ type autoPromoteTickConnector struct {
 	prComments            []autoPromoteTickComment
 	setFields             []autoPromoteTickSetField
 	reruns                []autoPromoteTickRerun
+	updateErr             error
 }
 
 type autoPromoteTickMergeConnector struct {
@@ -3844,6 +4035,9 @@ func waitForGlobalDispatchSlot(t *testing.T, globalGate scheduler.ProjectDispatc
 
 func (c *autoPromoteTickConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {
 	c.updates = append(c.updates, autoPromoteTickUpdate{issueID: issueID, state: state})
+	if c.updateErr != nil {
+		return c.updateErr
+	}
 	for index := range c.stateIssues {
 		if c.stateIssues[index].ID == issueID {
 			c.stateIssues[index].State = state

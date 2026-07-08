@@ -46,37 +46,40 @@ func projectTabClass(tab projectTab) string {
 // projectRunRow is one row in the runs table. TITLE is the only flexible
 // column; every other column is fixed so nothing ever clips or wraps.
 type projectRunRow struct {
-	DomID     string
-	Ref       string
-	Title     string
-	StateKind primitives.Kind
-	StateText string
-	StateLive bool
-	Runtime   string
-	Tokens    string
-	Cost      string
-	Finished  string
+	DomID        string
+	Ref          string
+	Title        string
+	StateKind    primitives.Kind
+	StateText    string
+	StateLive    bool
+	Runtime      string
+	Tokens       string
+	Context      string
+	ContextKind  primitives.Kind
+	ContextTitle string
+	Finished     string
 }
 
 // projectRunRows lists live sessions first, then completed sessions newest
-// first. Per-run dollar cost is not part of the telemetry snapshot; the
-// column renders an em dash until usage data carries it (Reports has the
-// authoritative per-issue spend).
+// first. Context pressure renders only when the backend reports a model
+// context window; otherwise the column stays quiet.
 func projectRunRows(snapshot telemetry.Snapshot, limit int) []projectRunRow {
 	rows := make([]projectRunRow, 0, len(snapshot.Running)+len(snapshot.Completed))
 	for _, running := range snapshot.Running {
 		identity := boardCardIdentityToken(running.Identifier, running.ID, projectKanbanIssueNumber(running.Issue))
 		rows = append(rows, projectRunRow{
-			DomID:     "run-" + boardCardScopedSlug(running.ProjectID, identity),
-			Ref:       projectKanbanIssueNumber(running.Issue),
-			Title:     issueTitle(running.Issue),
-			StateKind: primitives.KindOK,
-			StateText: "In progress",
-			StateLive: true,
-			Runtime:   formatDuration(running.RuntimeSeconds) + " · " + strconv.Itoa(running.TurnCount),
-			Tokens:    fleetCompactTokens(running.Tokens.Total),
-			Cost:      "—",
-			Finished:  "—",
+			DomID:        "run-" + boardCardScopedSlug(running.ProjectID, identity),
+			Ref:          projectKanbanIssueNumber(running.Issue),
+			Title:        issueTitle(running.Issue),
+			StateKind:    primitives.KindOK,
+			StateText:    "In progress",
+			StateLive:    true,
+			Runtime:      formatDuration(running.RuntimeSeconds) + " · " + strconv.Itoa(running.TurnCount),
+			Tokens:       fleetCompactTokens(running.Tokens.Total),
+			Context:      contextPressureLabel(running.Tokens),
+			ContextKind:  contextPressureKind(running.Tokens),
+			ContextTitle: contextPressureTitle(running.Tokens),
+			Finished:     "—",
 		})
 	}
 
@@ -88,15 +91,17 @@ func projectRunRows(snapshot telemetry.Snapshot, limit int) []projectRunRow {
 		identity := boardCardIdentityToken(session.Identifier, session.ID, projectKanbanIssueNumber(session.Issue))
 		kind, text := projectRunFinalState(session.FinalState)
 		rows = append(rows, projectRunRow{
-			DomID:     "run-" + boardCardScopedSlug(session.ProjectID, identity) + "-" + strings.TrimSpace(session.SessionID),
-			Ref:       projectKanbanIssueNumber(session.Issue),
-			Title:     issueTitle(session.Issue),
-			StateKind: kind,
-			StateText: text,
-			Runtime:   formatDuration(session.RuntimeSeconds) + " · " + strconv.Itoa(session.Turns),
-			Tokens:    fleetCompactTokens(session.Tokens.Total),
-			Cost:      "—",
-			Finished:  projectRunFinishedLabel(session.CompletedAt),
+			DomID:        "run-" + boardCardScopedSlug(session.ProjectID, identity) + "-" + strings.TrimSpace(session.SessionID),
+			Ref:          projectKanbanIssueNumber(session.Issue),
+			Title:        issueTitle(session.Issue),
+			StateKind:    kind,
+			StateText:    text,
+			Runtime:      formatDuration(session.RuntimeSeconds) + " · " + strconv.Itoa(session.Turns),
+			Tokens:       fleetCompactTokens(session.Tokens.Total),
+			Context:      contextPressureLabel(session.Tokens),
+			ContextKind:  contextPressureKind(session.Tokens),
+			ContextTitle: contextPressureTitle(session.Tokens),
+			Finished:     projectRunFinishedLabel(session.CompletedAt),
 		})
 	}
 
@@ -164,7 +169,7 @@ func projectAllClearLabel(data DashboardData) string {
 }
 
 func projectRunRowClass(last bool) string {
-	base := "grid grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_70px_110px] items-center gap-3.5 px-4 py-2"
+	base := "grid grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_110px] items-center gap-3.5 px-4 py-2"
 	if !last {
 		return base + " border-b border-line"
 	}

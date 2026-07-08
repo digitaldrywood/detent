@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/notes"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -2365,6 +2366,80 @@ func TestRunnerRunRecordsFailedOutputTailNote(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "useful failure tail") {
 		t.Fatalf("retry prompt missing failure tail:\n%s", prompt)
+	}
+}
+
+func TestRunnerRunTruncatesConfiguredAgentOutputTelemetry(t *testing.T) {
+	t.Parallel()
+
+	workspacePath := t.TempDir()
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: workspacePath, Key: "issue-output", Branch: "detent/issue-output"},
+	}
+	largeOutput := "0123456789abcdefghijklmnopqrstuvwxyz"
+	codexClient := &fakeCodexClient{
+		updates: []AgentUpdate{{
+			Type:     AgentUpdateMessageDelta,
+			ThreadID: "thread-1",
+			TurnID:   "turn-1",
+			ItemID:   "msg-1",
+			Delta:    largeOutput,
+		}},
+		result: AgentTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "thread-1-turn-1"},
+	}
+	workflowConfig := config.Default()
+	workflowConfig.Agent.OutputTruncation.MaxBytes = len(runtimeoutput.Marker) + 10
+
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: workflowConfig, Prompt: "Prompt"},
+		Workspace:    workspaceBackend,
+		AgentBackend: codexClient,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	var usageUpdates []UsageUpdate
+	result, err := runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-output",
+			Identifier: "digitaldrywood/detent#978",
+			Title:      "Truncate runtime output",
+		},
+		OnUsageUpdate: func(update UsageUpdate) error {
+			usageUpdates = append(usageUpdates, update)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	wantOutput := "01234" + runtimeoutput.Marker + "vwxyz"
+	if result.Output != wantOutput {
+		t.Fatalf("RunResult.Output = %q, want %q", result.Output, wantOutput)
+	}
+	if len(usageUpdates) == 0 {
+		t.Fatal("OnUsageUpdate was not called")
+	}
+	last := usageUpdates[len(usageUpdates)-1]
+	if last.LastMessage != wantOutput {
+		t.Fatalf("UsageUpdate.LastMessage = %q, want %q", last.LastMessage, wantOutput)
+	}
+	if last.LastMessageTruncation == nil || !last.LastMessageTruncation.Truncated {
+		t.Fatalf("UsageUpdate.LastMessageTruncation = %#v, want truncated metadata", last.LastMessageTruncation)
+	}
+	if last.LastMessageTruncation.OriginalBytes != len(largeOutput) {
+		t.Fatalf("OriginalBytes = %d, want %d", last.LastMessageTruncation.OriginalBytes, len(largeOutput))
+	}
+	if len(last.RecentEvents) != 1 {
+		t.Fatalf("RecentEvents length = %d, want 1", len(last.RecentEvents))
+	}
+	if last.RecentEvents[0].Message != wantOutput {
+		t.Fatalf("RecentEvents[0].Message = %q, want %q", last.RecentEvents[0].Message, wantOutput)
+	}
+	if last.RecentEvents[0].Truncation == nil || !last.RecentEvents[0].Truncation.Truncated {
+		t.Fatalf("RecentEvents[0].Truncation = %#v, want truncated metadata", last.RecentEvents[0].Truncation)
 	}
 }
 

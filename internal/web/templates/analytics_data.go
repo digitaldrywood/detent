@@ -124,7 +124,7 @@ func analyticsAttemptDetail(attempt telemetry.WorkAttempt) string {
 	if phase := strings.TrimSpace(attempt.Phase); phase != "" {
 		parts = append(parts, "phase "+phase)
 	}
-	if message := strings.TrimSpace(attempt.StatusMessage); message != "" {
+	if message := strings.TrimSpace(displayOutputText(attempt.StatusMessage, attempt.StatusMessageTruncation)); message != "" {
 		parts = append(parts, message)
 	}
 	if reason := strings.TrimSpace(attempt.WaitReason); reason != "" {
