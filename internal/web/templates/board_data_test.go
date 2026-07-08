@@ -959,7 +959,7 @@ func TestBoardSnapshotOmitsKanbanDragAttributesWhenDisabled(t *testing.T) {
 			for _, forbidden := range []string{
 				`data-kanban-drop-state`,
 				`data-kanban-drag-move-form`,
-						`data-kanban-action="move"`,
+				`data-kanban-action="move"`,
 			} {
 				if strings.Contains(html, forbidden) {
 					t.Fatalf("disabled board rendered %q:\n%s", forbidden, html)
@@ -1035,7 +1035,7 @@ func TestBoardSnapshotExplainsCardLevelMoveDisabledReasons(t *testing.T) {
 				}
 			}
 			for _, forbidden := range []string{
-						`data-kanban-action="move"`,
+				`data-kanban-action="move"`,
 				`data-kanban-drag-move-form`,
 			} {
 				if strings.Contains(card, forbidden) {
