@@ -625,7 +625,7 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 			wantFirst: projectSmallMultipleCard{
 				ID:              "busy",
 				Name:            "Busy",
-				Href:            "/projects/busy",
+				Href:            "/projects/busy/kanban",
 				ExternalURL:     "https://github.com/digitaldrywood/detent",
 				ProjectColor:    "#a63f7a",
 				ActivityLabel:   "2 running / 3 queued / 1 blocked",
@@ -651,7 +651,7 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 			wantFirst: projectSmallMultipleCard{
 				ID:              "detent",
 				Name:            "detent",
-				Href:            "/projects/detent",
+				Href:            "/projects/detent/kanban",
 				ProjectColor:    projectcolor.ColorForID("detent"),
 				ActivityLabel:   "1 running / 0 queued / 0 blocked",
 				ThroughputLabel: "0 tps",
@@ -774,6 +774,9 @@ func TestSidebarProjectItemsUseAttentionFirstDefaultOrder(t *testing.T) {
 		}
 		if got[i].DefaultIndex != i {
 			t.Fatalf("sidebarProjectItems()[%d].DefaultIndex = %d, want %d; got %#v", i, got[i].DefaultIndex, i, got)
+		}
+		if got[i].Href != "/projects/"+wantID+"/kanban" {
+			t.Fatalf("sidebarProjectItems()[%d].Href = %q, want kanban project opener; got %#v", i, got[i].Href, got)
 		}
 	}
 }

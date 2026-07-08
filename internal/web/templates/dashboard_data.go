@@ -1035,7 +1035,7 @@ func projectSmallMultipleCards(data DashboardData) []projectSmallMultipleCard {
 		cards = append(cards, projectSmallMultipleCard{
 			ID:              strings.TrimSpace(project.ID),
 			Name:            name,
-			Href:            projectDashboardPath(project.ID),
+			Href:            projectOpenPath(project.ID),
 			ExternalURL:     strings.TrimSpace(project.URL),
 			ProjectColor:    projectColorForProject(project),
 			ActivityLabel:   projectSmallMultipleActivityLabel(project),
@@ -1077,7 +1077,7 @@ func sidebarProjectItems(data DashboardShellData) []sidebarProjectItem {
 		items = append(items, sidebarProjectItem{
 			ID:           id,
 			Name:         projectSmallMultipleName(project),
-			Href:         projectDashboardPath(id),
+			Href:         projectOpenPath(id),
 			StatusLabel:  status.Label,
 			DotClass:     status.DotClass,
 			ProjectColor: projectColorForProject(project),
@@ -1172,6 +1172,10 @@ func projectDashboardPath(projectID string) string {
 		return "/"
 	}
 	return "/projects/" + url.PathEscape(projectID)
+}
+
+func projectOpenPath(projectID string) string {
+	return projectKanbanPath(projectID)
 }
 
 func projectKanbanPath(projectID string) string {

@@ -90,7 +90,7 @@ func appShellProjects(data DashboardShellData) []appShellProject {
 		item := appShellProject{
 			ID:     id,
 			Name:   projectSmallMultipleName(project),
-			Href:   projectDashboardPath(id),
+			Href:   projectOpenPath(id),
 			Kind:   primitives.KindNeutral,
 			Active: strings.TrimSpace(data.ProjectID) == id,
 		}

@@ -111,6 +111,9 @@ func TestAppShellProjects(t *testing.T) {
 			if item.CountErr != tt.wantErr {
 				t.Fatalf("countErr = %v, want %v", item.CountErr, tt.wantErr)
 			}
+			if item.Href != projectKanbanPath(tt.project.ID) {
+				t.Fatalf("href = %q, want kanban project opener", item.Href)
+			}
 		})
 	}
 }

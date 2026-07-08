@@ -355,7 +355,7 @@ func TestDashboardShellRendersSharedAppChrome(t *testing.T) {
 		`/static/js/templui/dialog.min.js`,
 		`data-tui-sheet`,
 		`data-tui-sidebar-target="dashboard-sidebar"`,
-		`href="/projects/detent"`,
+		`href="/projects/detent/kanban"`,
 		`href="/settings"`,
 		`function applyProjectSidebarActiveState()`,
 		`window.addEventListener("hashchange", applyProjectSidebarActiveState)`,
