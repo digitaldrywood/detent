@@ -231,6 +231,117 @@ func TestEvaluateAutoPromote(t *testing.T) {
 			},
 		},
 		{
+			name: "workpad removed blocked by prose promotes",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-workpad-removed-blocked-by", nil)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Blockers\n- The previous dependency blocker regressions now pass locally on the rebased head,\n  so stale `Blocked by: #1462` / `Blocked by: #1463` lines were removed from the issue body.\n\n### Validation\n- make check passed.",
+				}}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				OptoutLabel:   "requires-human-review",
+				Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name: "workpad resolved dependency prose promotes",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-workpad-resolved-dependency-prose", nil)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Blockers\n- Dependency blocker #1462 merged via PR #1482 and issue #1462 is closed/Done; #1463 was already closed. Removed the stale `Blocked by: #1462` line from #1476.\n\n### Validation\n- make check passed.",
+				}}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				OptoutLabel:   "requires-human-review",
+				Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name: "workpad closed blocked by line promotes",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-workpad-closed-blocked-by", nil)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Blockers\n- Blocked by: #1462\n\n### Validation\n- make check passed.",
+				}}
+				issue.BlockedBy = []connector.BlockedRef{{
+					Identifier: "digitaldrywood/detent#1462",
+					State:      "Done",
+				}}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled:        true,
+				QuietDuration:  10 * time.Minute,
+				OptoutLabel:    "requires-human-review",
+				TerminalStates: []string{"Done", "Cancelled"},
+				Gate:           gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action:                  AutoPromoteActionPromote,
+				Reason:                  AutoPromoteReasonReady,
+				ResolvedWorkpadBlockers: []string{"digitaldrywood/detent#1462"},
+			},
+		},
+		{
+			name: "workpad open blocked by line awaits review",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-workpad-open-blocked-by", nil)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Blockers\n- Blocked by: #1462\n\n### Validation\n- make check passed.",
+				}}
+				issue.BlockedBy = []connector.BlockedRef{{
+					Identifier: "digitaldrywood/detent#1462",
+					State:      "In Progress",
+				}}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled:        true,
+				QuietDuration:  10 * time.Minute,
+				OptoutLabel:    "requires-human-review",
+				TerminalStates: []string{"Done", "Cancelled"},
+				Gate:           gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionAwaitReview,
+				Reason: AutoPromoteReasonWorkpadBlocker,
+			},
+		},
+		{
 			name: "workpad blocker phrase awaits review",
 			issue: func() connector.Issue {
 				issue := autoPromoteTestIssue("issue-workpad-blocker-phrase", nil)
@@ -473,6 +584,14 @@ func TestEvaluateAutoPromote(t *testing.T) {
 			if len(got.Findings) != len(tt.want.Findings) {
 				t.Fatalf("Findings len = %d, want %d", len(got.Findings), len(tt.want.Findings))
 			}
+			if len(got.ResolvedWorkpadBlockers) != len(tt.want.ResolvedWorkpadBlockers) {
+				t.Fatalf("ResolvedWorkpadBlockers len = %d, want %d", len(got.ResolvedWorkpadBlockers), len(tt.want.ResolvedWorkpadBlockers))
+			}
+			for i := range tt.want.ResolvedWorkpadBlockers {
+				if got.ResolvedWorkpadBlockers[i] != tt.want.ResolvedWorkpadBlockers[i] {
+					t.Fatalf("ResolvedWorkpadBlockers[%d] = %q, want %q", i, got.ResolvedWorkpadBlockers[i], tt.want.ResolvedWorkpadBlockers[i])
+				}
+			}
 			for i := range tt.want.Findings {
 				if got.Findings[i] != tt.want.Findings[i] {
 					t.Fatalf("Findings[%d] = %#v, want %#v", i, got.Findings[i], tt.want.Findings[i])
@@ -527,6 +646,19 @@ func TestAutoPromoteNormalizeWorkpadBlockerText(t *testing.T) {
 			name: "blocked first clause remains blocking",
 			text: "- Blocked: needs schema decision.",
 			want: "Blocked: needs schema decision.",
+		},
+		{
+			name: "must be resolved remains blocking",
+			text: "- Blocked by: #123 must be resolved before merge.",
+			want: "Blocked by: #123 must be resolved before merge.",
+		},
+		{
+			name: "removed stale blocked by prose is non-blocking",
+			text: "- The previous dependency blocker regressions now pass locally on the rebased head,\n  so stale `Blocked by: #1462` / `Blocked by: #1463` lines were removed from the issue body.",
+		},
+		{
+			name: "resolved dependency prose is non-blocking",
+			text: "- Dependency blocker #1462 merged via PR #1482 and issue #1462 is closed/Done; #1463 was already closed. Removed the stale `Blocked by: #1462` line from #1476.",
 		},
 	}
 

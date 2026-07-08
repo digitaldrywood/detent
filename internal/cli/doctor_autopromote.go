@@ -29,6 +29,7 @@ type doctorAutoPromoteCandidateDiagnostic struct {
 	LatestCodexReviewCommitSHA   string     `json:"latest_codex_review_commit_sha,omitempty"`
 	LatestCodexReviewSubmittedAt *time.Time `json:"latest_codex_review_submitted_at,omitempty"`
 	QuietRemainingSeconds        int64      `json:"quiet_remaining_seconds,omitempty"`
+	WorkpadBlocker               string     `json:"workpad_blocker,omitempty"`
 	Reason                       string     `json:"reason"`
 }
 
@@ -385,6 +386,7 @@ func doctorAutoPromoteConfig(cfg workflowconfig.Config) orchestrator.AutoPromote
 		PassState:          cfg.Agent.AutoPromote.PassState,
 		ReworkState:        cfg.Agent.AutoPromote.ReworkState,
 		ReworkLimit:        cfg.Agent.AutoPromote.ReworkLimit,
+		TerminalStates:     append([]string(nil), cfg.Tracker.TerminalStates...),
 		Gate:               cfg.Gate,
 	}
 }
@@ -402,6 +404,7 @@ func doctorAutoPromoteCandidateDiagnosticFromIssue(
 	if decision.QuietRemaining > 0 {
 		diagnostic.QuietRemainingSeconds = int64(decision.QuietRemaining.Truncate(time.Second) / time.Second)
 	}
+	diagnostic.WorkpadBlocker = strings.TrimSpace(decision.WorkpadBlocker)
 	if prNumber, ok := doctorLinkedPullRequestNumber(issue); ok {
 		diagnostic.PRNumber = prNumber
 	}
@@ -504,6 +507,9 @@ func doctorAutoPromoteCandidateSummary(candidate doctorAutoPromoteCandidateDiagn
 	}
 	if candidate.QuietRemainingSeconds > 0 {
 		parts = append(parts, "quiet_remaining="+(time.Duration(candidate.QuietRemainingSeconds)*time.Second).String())
+	}
+	if candidate.WorkpadBlocker != "" {
+		parts = append(parts, "workpad_blocker="+candidate.WorkpadBlocker)
 	}
 	parts = append(parts, "reason="+candidate.Reason)
 	return strings.Join(parts, " ")

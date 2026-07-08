@@ -19,6 +19,7 @@ type AutoPromoteConfig struct {
 	PassState          string
 	ReworkState        string
 	ReworkLimit        int
+	TerminalStates     []string
 	Gate               gate.Config
 }
 
@@ -82,12 +83,13 @@ const (
 )
 
 type AutoPromoteDecision struct {
-	Action         AutoPromoteAction
-	Reason         AutoPromoteReason
-	CIStatus       string
-	QuietRemaining time.Duration
-	Findings       []AutoPromoteFinding
-	WorkpadBlocker string
+	Action                  AutoPromoteAction
+	Reason                  AutoPromoteReason
+	CIStatus                string
+	QuietRemaining          time.Duration
+	Findings                []AutoPromoteFinding
+	WorkpadBlocker          string
+	ResolvedWorkpadBlockers []string
 }
 
 func EvaluateAutoPromote(
@@ -107,9 +109,10 @@ func EvaluateAutoPromote(
 	if !autoPromoteAllowedIssueLabel(issue, cfg) {
 		return autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonLabelNotAllowed)
 	}
-	if blocker := autoPromoteWorkpadBlockerReason(issue); blocker != "" {
+	workpad := autoPromoteWorkpadBlocker(issue, cfg.TerminalStates)
+	if workpad.Reason != "" {
 		decision := autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonWorkpadBlocker)
-		decision.WorkpadBlocker = blocker
+		decision.WorkpadBlocker = workpad.Reason
 		return decision
 	}
 	if gateRequiresPullRequest(cfg.Gate) {
@@ -131,6 +134,7 @@ func EvaluateAutoPromote(
 	decision.CIStatus = gateDecision.CIStatus
 	decision.QuietRemaining = gateDecision.QuietRemaining
 	decision.Findings = autoPromoteFindingsFromGate(gateDecision.Findings)
+	decision.ResolvedWorkpadBlockers = append([]string(nil), workpad.Resolved...)
 	return decision
 }
 
@@ -180,6 +184,7 @@ func normalizeAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {
 	if cfg.ReworkLimit < 0 {
 		cfg.ReworkLimit = 0
 	}
+	cfg.TerminalStates = normalizedStates(cfg.TerminalStates)
 	cfg.Gate = gate.Effective(cfg.Gate)
 	return cfg
 }
@@ -286,6 +291,64 @@ func artifactStatusFromIssue(issue connector.Issue, statusField string) string {
 		}
 	}
 	return ""
+}
+
+type autoPromoteWorkpadBlockerCheck struct {
+	Reason   string
+	Resolved []string
+}
+
+func autoPromoteWorkpadBlocker(issue connector.Issue, terminalStates []string) autoPromoteWorkpadBlockerCheck {
+	reason := autoPromoteWorkpadBlockerReason(issue)
+	if reason == "" {
+		return autoPromoteWorkpadBlockerCheck{}
+	}
+	if resolved, ok := autoPromoteResolvedWorkpadBlockers(reason, issue, terminalStates); ok {
+		return autoPromoteWorkpadBlockerCheck{Resolved: resolved}
+	}
+	return autoPromoteWorkpadBlockerCheck{Reason: reason}
+}
+
+func autoPromoteResolvedWorkpadBlockers(reason string, issue connector.Issue, terminalStates []string) ([]string, bool) {
+	refs := dependencyRefsInText(reason, dependencyIssueRepo(issue.Identifier))
+	if len(refs) == 0 {
+		return nil, false
+	}
+
+	byIdentifier := make(map[string]connector.BlockedRef, len(issue.BlockedBy))
+	for _, ref := range issue.BlockedBy {
+		key := strings.ToLower(strings.TrimSpace(ref.Identifier))
+		if key != "" {
+			byIdentifier[key] = ref
+		}
+	}
+
+	resolved := make([]string, 0, len(refs))
+	self := strings.ToLower(strings.TrimSpace(issue.Identifier))
+	for _, ref := range refs {
+		identifier := strings.TrimSpace(ref.Identifier)
+		key := strings.ToLower(identifier)
+		if key == "" || key == self {
+			continue
+		}
+		blocker, ok := byIdentifier[key]
+		if !ok || !autoPromoteBlockedRefResolved(blocker, terminalStates) {
+			return nil, false
+		}
+		if blocker.Identifier != "" {
+			identifier = strings.TrimSpace(blocker.Identifier)
+		}
+		resolved = append(resolved, identifier)
+	}
+	if len(resolved) == 0 {
+		return nil, false
+	}
+	return resolved, true
+}
+
+func autoPromoteBlockedRefResolved(ref connector.BlockedRef, terminalStates []string) bool {
+	state := strings.TrimSpace(ref.State)
+	return state != "" && stateIn(state, terminalStates)
 }
 
 func autoPromoteWorkpadBlockerReason(issue connector.Issue) string {
@@ -452,6 +515,9 @@ func autoPromoteNumberedListMarkerEnd(line string) int {
 
 func autoPromoteWorkpadNonBlockerLine(line string) bool {
 	line = strings.ToLower(strings.TrimSpace(line))
+	if autoPromoteResolvedWorkpadLine(line) {
+		return true
+	}
 	if autoPromoteWorkpadNonBlockerSentinel(strings.Trim(line, ".:; ")) {
 		return true
 	}
@@ -461,6 +527,46 @@ func autoPromoteWorkpadNonBlockerLine(line string) bool {
 	}
 	firstClause := strings.Trim(line[:index], ".:; ")
 	return firstClause != "" && autoPromoteWorkpadNonBlockerSentinel(firstClause)
+}
+
+func autoPromoteResolvedWorkpadLine(line string) bool {
+	line = strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(line)), " "))
+	if line == "" {
+		return false
+	}
+	if strings.Contains(line, "now pass") && (strings.Contains(line, "blocker") || strings.Contains(line, "regression")) {
+		return true
+	}
+	if strings.Contains(line, "removed") && strings.Contains(line, "stale") && strings.Contains(line, "blocked by") {
+		return true
+	}
+	if strings.Contains(line, "blockers are gone") || strings.Contains(line, "blocker is gone") {
+		return true
+	}
+	hasIssueRef := strings.Contains(line, "#") || strings.Contains(line, "/issues/")
+	if !hasIssueRef {
+		return false
+	}
+	for _, phrase := range []string{
+		"closed/done",
+		"already closed",
+		"is closed",
+		"was closed",
+		"merged via",
+		"already merged",
+		"is merged",
+		"was merged",
+		"is resolved",
+		"was resolved",
+		"has been resolved",
+		"resolved by",
+		"resolved via",
+	} {
+		if strings.Contains(line, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func autoPromoteWorkpadNonBlockerSentinel(line string) bool {

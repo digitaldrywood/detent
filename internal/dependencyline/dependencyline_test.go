@@ -16,6 +16,8 @@ func TestMatch(t *testing.T) {
 		{name: "depends on colon", line: "Depends on: #1443", wantText: "#1443", wantOK: true},
 		{name: "depends on colon no space", line: "Depends on:#1443", wantText: "#1443", wantOK: true},
 		{name: "depends hyphen owner repo", line: "depends-on digitaldrywood/detent#1443", wantText: "digitaldrywood/detent#1443", wantOK: true},
+		{name: "backticked declaration", line: "`Blocked by: #1447`", wantOK: false},
+		{name: "quoted declaration", line: "> Blocked by: #1447", wantOK: false},
 		{name: "mention only", line: "Mention only #1443", wantOK: false},
 	}
 
