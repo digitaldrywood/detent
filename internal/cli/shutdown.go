@@ -520,7 +520,11 @@ func publishShutdownSnapshot(ctx context.Context, cfg runningShutdownConfig, now
 		logShutdownBoundaryEndResult(shutdownLogger(cfg), "shutdown_snapshot_publish", started, "skipped", nil)
 		return
 	}
-	if err := publishSnapshotOnce(ctx, cfg.Registry, cfg.SnapshotHub, now, nil, cfg.LifetimeSource, cfg.DashboardURL); err != nil {
+	var seq atomic.Uint64
+	if latest, ok := cfg.SnapshotHub.Latest(); ok {
+		seq.Store(latest.Seq)
+	}
+	if err := publishSnapshotOnce(ctx, cfg.Registry, cfg.SnapshotHub, &seq, now, nil, cfg.LifetimeSource, cfg.DashboardURL); err != nil {
 		logShutdownBoundaryEnd(shutdownLogger(cfg), "shutdown_snapshot_publish", started, err)
 		shutdownLogger(cfg).Warn("publish shutdown telemetry snapshot failed", "error", err)
 		return

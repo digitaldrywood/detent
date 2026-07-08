@@ -1,13 +1,16 @@
 package hub_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestHubPublishFansOut(t *testing.T) {
@@ -108,6 +111,43 @@ func TestHubRepublishFansOutLastEvent(t *testing.T) {
 	}
 	if got := receive(t, sub.C()); got != "ready" {
 		t.Fatalf("republished event = %q, want ready", got)
+	}
+}
+
+func TestHubRepublishPreservesSnapshotSeq(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[telemetry.Snapshot](hub.WithBuffer(2))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	snapshot := telemetry.Snapshot{
+		Seq:         7,
+		GeneratedAt: time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC),
+		Counts:      telemetry.Counts{Running: 2},
+	}
+	if err := events.Publish(snapshot); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	published := receive(t, sub.C())
+
+	if err := events.Republish(); err != nil {
+		t.Fatalf("Republish() error = %v", err)
+	}
+	republished := receive(t, sub.C())
+
+	publishedJSON, err := json.Marshal(published)
+	if err != nil {
+		t.Fatalf("Marshal(published) error = %v", err)
+	}
+	republishedJSON, err := json.Marshal(republished)
+	if err != nil {
+		t.Fatalf("Marshal(republished) error = %v", err)
+	}
+	if !bytes.Equal(republishedJSON, publishedJSON) {
+		t.Fatalf("republished JSON = %s, want %s", republishedJSON, publishedJSON)
 	}
 }
 

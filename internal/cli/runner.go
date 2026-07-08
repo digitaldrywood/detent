@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/budget"
@@ -294,11 +295,12 @@ func publishSnapshots(
 	}
 
 	trend := newTokenTrendRecorder(defaultTokenTrendWindowSize)
+	var seq atomic.Uint64
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
-		if err := publishSnapshotOnce(ctx, registry, snapshotHub, now(), trend, lifetimeSource, dashboardURL); err != nil {
+		if err := publishSnapshotOnce(ctx, registry, snapshotHub, &seq, now(), trend, lifetimeSource, dashboardURL); err != nil {
 			slog.Default().Warn("publish telemetry snapshot failed", "error", err)
 		}
 		select {
@@ -436,6 +438,7 @@ func publishSnapshotOnce(
 	ctx context.Context,
 	registry *project.Registry,
 	snapshotHub *hub.Hub[telemetry.Snapshot],
+	seq *atomic.Uint64,
 	now time.Time,
 	trend *tokenTrendRecorder,
 	lifetimeSource lifetimeTotalsSource,
@@ -514,6 +517,7 @@ func publishSnapshotOnce(
 		merged = trend.apply(merged)
 	}
 	merged.LifetimeTotals = lifetimeTotals(ctx, lifetimeSource)
+	merged.Seq = seq.Add(1)
 	if err := snapshotHub.Publish(merged); err != nil {
 		return fmt.Errorf("publish snapshot: %w", err)
 	}
