@@ -379,9 +379,10 @@ func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 	defer cancel()
 
 	done := make(chan struct{})
+	var seq atomic.Uint64
 	go func() {
 		defer close(done)
-		publishSnapshots(ctx, registry, snapshotHub, nil, "http://localhost:4101", 5*time.Millisecond, func() time.Time { return now })
+		publishSnapshots(ctx, registry, snapshotHub, &seq, nil, "http://localhost:4101", 5*time.Millisecond, func() time.Time { return now })
 	}()
 
 	var (

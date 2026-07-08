@@ -279,6 +279,7 @@ func publishSnapshots(
 	ctx context.Context,
 	registry *project.Registry,
 	snapshotHub *hub.Hub[telemetry.Snapshot],
+	seq *atomic.Uint64,
 	lifetimeSource lifetimeTotalsSource,
 	dashboardURL string,
 	interval time.Duration,
@@ -293,14 +294,16 @@ func publishSnapshots(
 	if now == nil {
 		now = time.Now
 	}
+	if seq == nil {
+		seq = &atomic.Uint64{}
+	}
 
 	trend := newTokenTrendRecorder(defaultTokenTrendWindowSize)
-	var seq atomic.Uint64
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
-		if err := publishSnapshotOnce(ctx, registry, snapshotHub, &seq, now(), trend, lifetimeSource, dashboardURL); err != nil {
+		if err := publishSnapshotOnce(ctx, registry, snapshotHub, seq, now(), trend, lifetimeSource, dashboardURL); err != nil {
 			slog.Default().Warn("publish telemetry snapshot failed", "error", err)
 		}
 		select {

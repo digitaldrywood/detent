@@ -134,6 +134,7 @@ type runningShutdownConfig struct {
 	Controller         *ShutdownController
 	Registry           *project.Registry
 	SnapshotHub        *hub.Hub[telemetry.Snapshot]
+	SnapshotSeq        *atomic.Uint64
 	LifetimeSource     lifetimeTotalsSource
 	DashboardURL       string
 	Output             io.Writer
@@ -520,11 +521,14 @@ func publishShutdownSnapshot(ctx context.Context, cfg runningShutdownConfig, now
 		logShutdownBoundaryEndResult(shutdownLogger(cfg), "shutdown_snapshot_publish", started, "skipped", nil)
 		return
 	}
-	var seq atomic.Uint64
-	if latest, ok := cfg.SnapshotHub.Latest(); ok {
-		seq.Store(latest.Seq)
+	seq := cfg.SnapshotSeq
+	if seq == nil {
+		seq = &atomic.Uint64{}
+		if latest, ok := cfg.SnapshotHub.Latest(); ok {
+			seq.Store(latest.Seq)
+		}
 	}
-	if err := publishSnapshotOnce(ctx, cfg.Registry, cfg.SnapshotHub, &seq, now, nil, cfg.LifetimeSource, cfg.DashboardURL); err != nil {
+	if err := publishSnapshotOnce(ctx, cfg.Registry, cfg.SnapshotHub, seq, now, nil, cfg.LifetimeSource, cfg.DashboardURL); err != nil {
 		logShutdownBoundaryEnd(shutdownLogger(cfg), "shutdown_snapshot_publish", started, err)
 		shutdownLogger(cfg).Warn("publish shutdown telemetry snapshot failed", "error", err)
 		return
