@@ -206,6 +206,31 @@ func TestEvaluateAutoPromote(t *testing.T) {
 			},
 		},
 		{
+			name: "workpad none first clause promotes",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-workpad-none-first-clause", nil)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Blockers\n- None. Dependency #1013 is closed with detent:done; branch rebased onto current origin/main before implementation.\n\n### Validation\n- make check passed.",
+				}}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				OptoutLabel:   "requires-human-review",
+				Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
 			name: "workpad blocker phrase awaits review",
 			issue: func() connector.Issue {
 				issue := autoPromoteTestIssue("issue-workpad-blocker-phrase", nil)
@@ -452,6 +477,66 @@ func TestEvaluateAutoPromote(t *testing.T) {
 				if got.Findings[i] != tt.want.Findings[i] {
 					t.Fatalf("Findings[%d] = %#v, want %#v", i, got.Findings[i], tt.want.Findings[i])
 				}
+			}
+		})
+	}
+}
+
+func TestAutoPromoteNormalizeWorkpadBlockerText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "none sentinel remains non-blocking",
+			text: "- None",
+		},
+		{
+			name: "none currently sentinel remains non-blocking",
+			text: "- None currently.",
+		},
+		{
+			name: "n/a sentinel remains non-blocking",
+			text: "- N/A",
+		},
+		{
+			name: "no blockers sentinel remains non-blocking",
+			text: "- No blockers;",
+		},
+		{
+			name: "none first clause is non-blocking",
+			text: "- None. Dependency #123 is closed; rebased onto main.",
+		},
+		{
+			name: "none currently first clause is non-blocking",
+			text: "- None currently. Waiting on nothing.",
+		},
+		{
+			name: "n/a first clause is non-blocking",
+			text: "- N/A: covered by #456.",
+		},
+		{
+			name: "none starting a real sentence is blocking",
+			text: "- None of the tests pass.",
+			want: "None of the tests pass.",
+		},
+		{
+			name: "blocked first clause remains blocking",
+			text: "- Blocked: needs schema decision.",
+			want: "Blocked: needs schema decision.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := autoPromoteNormalizeWorkpadBlockerText(tt.text)
+			if got != tt.want {
+				t.Fatalf("autoPromoteNormalizeWorkpadBlockerText() = %q, want %q", got, tt.want)
 			}
 		})
 	}
