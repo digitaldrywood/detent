@@ -39,28 +39,30 @@ type boardLaneView struct {
 // boardCardView keeps cards uniform: an 11px mono meta row, a two-line
 // title, and AT MOST one extra signal (chip, status line, or none).
 type boardCardView struct {
-	DomID          string
-	Identity       string
-	IssueID        string
-	Number         string
-	Project        string
-	MoveProject    string
-	Scope          string
-	CurrentState   string
-	PRNumber       string
-	DragDrop       bool
-	CanDrag        bool
-	AllowedTargets string
-	Running        bool
-	Done           bool
-	Terminal       bool
-	MetaRight      string
-	AgeFooter      string
-	AgeFooterTitle string
-	Title          string
-	ExtraKind      primitives.Kind
-	ExtraText      string
-	ExtraChip      bool
+	DomID             string
+	Identity          string
+	IssueID           string
+	Number            string
+	Project           string
+	MoveProject       string
+	Scope             string
+	CurrentState      string
+	PRNumber          string
+	DragDrop          bool
+	CanDrag           bool
+	AllowedTargets    string
+	MoveDisabledText  string
+	MoveDisabledLabel string
+	Running           bool
+	Done              bool
+	Terminal          bool
+	MetaRight         string
+	AgeFooter         string
+	AgeFooterTitle    string
+	Title             string
+	ExtraKind         primitives.Kind
+	ExtraText         string
+	ExtraChip         bool
 }
 
 func boardViewFromDashboard(data DashboardData) boardView {
@@ -265,20 +267,22 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		moveProjectID = projectID
 	}
 	identity := boardCardIdentityToken(card.Identifier, card.IssueID, card.IssueNumber)
-	dragDrop := projectKanbanDragDropEnabled(data)
-	canDrag := dragDrop && projectKanbanCardCanMove(data, card)
+	moveDisabledText := projectKanbanCardMoveDisabledText(data, card)
+	canDrag := moveDisabledText == ""
 	view := boardCardView{
-		DomID:        "card-" + boardCardScopedSlug(projectID, identity),
-		Identity:     identity,
-		IssueID:      card.IssueID,
-		Number:       card.IssueNumber,
-		Project:      projectID,
-		MoveProject:  moveProjectID,
-		Scope:        scope,
-		CurrentState: card.Stage,
-		DragDrop:     dragDrop,
-		CanDrag:      canDrag,
-		Running:      strings.EqualFold(lane.Title, "In Progress"),
+		DomID:             "card-" + boardCardScopedSlug(projectID, identity),
+		Identity:          identity,
+		IssueID:           card.IssueID,
+		Number:            card.IssueNumber,
+		Project:           projectID,
+		MoveProject:       moveProjectID,
+		Scope:             scope,
+		CurrentState:      card.Stage,
+		DragDrop:          canDrag || moveDisabledText != "",
+		CanDrag:           canDrag,
+		MoveDisabledText:  moveDisabledText,
+		MoveDisabledLabel: boardMoveDisabledLabel(moveDisabledText),
+		Running:           strings.EqualFold(lane.Title, "In Progress"),
 		// Done drives the green ✓; other terminal states (Cancelled, Closed)
 		// are terminal but not done, so they suppress meta without claiming
 		// success.
@@ -470,6 +474,33 @@ func boardCardClass(card boardCardView) string {
 		return "flex flex-none flex-col gap-1.5 rounded-card border border-err/45 bg-elev p-3"
 	}
 	return "flex flex-none flex-col gap-1.5 rounded-card border border-line bg-elev p-3"
+}
+
+func boardCardInteractionClass(card boardCardView) string {
+	base := " select-none data-[kanban-dragging=true]:opacity-60"
+	if card.CanDrag {
+		return base + " cursor-grab hover:border-accent/50 active:cursor-grabbing"
+	}
+	if card.MoveDisabledText != "" {
+		return base + " cursor-pointer hover:border-line"
+	}
+	return " cursor-pointer hover:border-accent/50"
+}
+
+func boardMoveDisabledLabel(reason string) string {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	switch {
+	case reason == "":
+		return ""
+	case strings.Contains(reason, "all-project"), strings.Contains(reason, "read-only"):
+		return "Read-only"
+	case strings.Contains(reason, "snapshot"), strings.Contains(reason, "refresh"):
+		return "Stale"
+	case strings.Contains(reason, "linked issue"):
+		return "No issue"
+	default:
+		return "No move"
+	}
 }
 
 func boardCardNumberClass(card boardCardView) string {

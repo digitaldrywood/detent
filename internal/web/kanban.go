@@ -54,6 +54,8 @@ const (
 	kanbanPendingStateConfirmed       kanbanPendingStateStatus = "confirmed"
 )
 
+const kanbanFleetBoardReadOnlyMessage = "All-project board is read-only. Open the project board to move this card."
+
 type kanbanSnapshotIssueEntry struct {
 	issue           telemetry.Issue
 	state           string
@@ -417,6 +419,9 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 			return s.kanbanMoveDialogValidation(c, response)
 		}
 		return kanbanFeedback(c, status, response)
+	}
+	if strings.EqualFold(req.board, "fleet") {
+		return kanbanFeedback(c, http.StatusForbidden, kanbanFleetBoardReadOnlyMessage)
 	}
 
 	target, response, status := s.kanbanActionTarget(req.projectID)

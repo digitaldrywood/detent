@@ -2784,7 +2784,36 @@ func projectKanbanTerminalStateSetForProject(data DashboardData, projectID strin
 }
 
 func projectKanbanCardCanMove(data DashboardData, card projectKanbanCard) bool {
-	return snapshotReady(data.Snapshot) && projectKanbanCardIntegrationEnabled(data, card) && card.Movable && len(projectKanbanMoveTargetStates(data, card)) > 0
+	return projectKanbanCardMoveDisabledText(data, card) == ""
+}
+
+func projectKanbanCardMoveDisabledText(data DashboardData, card projectKanbanCard) string {
+	if !isProjectDashboard(data) {
+		return "All-project board is read-only. Open the project board to move this card."
+	}
+	if !snapshotReady(data.Snapshot) {
+		if snapshotDegraded(data.Snapshot) {
+			return "Tracker refresh is degraded; moves are disabled until a fresh snapshot is ready."
+		}
+		return "Tracker snapshot is not ready; moves are disabled until data is current."
+	}
+	if !projectKanbanCardIntegrationEnabled(data, card) {
+		return "This project board is read-only."
+	}
+	if !card.Movable || strings.TrimSpace(card.IssueID) == "" {
+		if card.PRNumber > 0 {
+			return "No linked issue is available for this PR-only card."
+		}
+		return "No linked issue is available for this card."
+	}
+	if len(projectKanbanMoveTargetStates(data, card)) == 0 {
+		state := strings.TrimSpace(card.Stage)
+		if state == "" || state == "n/a" {
+			return "No allowed transition is configured for this card."
+		}
+		return "No allowed transition is configured from " + state + "."
+	}
+	return ""
 }
 
 func projectKanbanCardCanRemove(data DashboardData, card projectKanbanCard) bool {

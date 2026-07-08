@@ -111,10 +111,13 @@ templ boardLaneView2(lane boardLaneView) {
 templ boardCardView2(card boardCardView) {
 	<article
 		id={ card.DomID }
-		class={ boardCardClass(card) + " cursor-pointer hover:border-accent/50 data-[kanban-dragging=true]:opacity-60" }
+		class={ boardCardClass(card) + boardCardInteractionClass(card) }
 		role="button"
 		tabindex="0"
 		{ sheetOpenAttrs(card.Project, card.Identity, card.Scope, true)... }
+		if card.MoveDisabledText != "" {
+			title={ card.MoveDisabledText }
+		}
 		if card.DragDrop {
 			data-kanban-card
 			data-kanban-current-state={ card.CurrentState }
@@ -125,8 +128,9 @@ templ boardCardView2(card boardCardView) {
 				draggable="true"
 				data-kanban-action="move"
 				data-kanban-allowed-targets={ card.AllowedTargets }
-			} else {
-				aria-disabled="true"
+			} else if card.MoveDisabledText != "" {
+				data-kanban-move-disabled="true"
+				data-kanban-move-disabled-reason={ card.MoveDisabledText }
 			}
 		}
 	>
@@ -137,7 +141,9 @@ templ boardCardView2(card boardCardView) {
 			<span class={ boardCardNumberClass(card) }>{ card.Number }</span>
 			<span class="truncate">{ card.Project }</span>
 			<span class="flex-1"></span>
-			if card.Done {
+			if card.MoveDisabledText != "" {
+				<span class="flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
+			} else if card.Done {
 				<span class="text-ok" role="img" aria-label="done">✓</span>
 			} else if card.MetaRight != "" {
 				<span class="flex-none whitespace-nowrap tabular-nums">{ card.MetaRight }</span>

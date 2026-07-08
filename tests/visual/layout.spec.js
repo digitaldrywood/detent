@@ -382,6 +382,56 @@ test("project kanban board scopes cards to the project", async ({
   await capturePageAndAttach(page, "project-kanban.png", testInfo);
 });
 
+test("all-project board cards stay read-only on drag attempt", async ({
+  page,
+}) => {
+  await page.setViewportSize(desktopViewport);
+  await page.goto(`${kanbanRuntime.url}/`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+  const card = page.locator("[data-kanban-card]", {
+    hasText: "Kanban demo backlog intake",
+  });
+  await expect(card).toHaveAttribute("data-kanban-move-disabled", "true");
+  await expect(card).toHaveAttribute(
+    "data-kanban-move-disabled-reason",
+    /All-project board is read-only/,
+  );
+  await expect(card).not.toHaveAttribute("draggable", "true");
+  await expect(page.locator("[data-kanban-drop-state]")).toHaveCount(0);
+
+  let moveRequests = 0;
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/kanban/move")
+    ) {
+      moveRequests += 1;
+    }
+  });
+
+  const box = await card.boundingBox();
+  if (!box) {
+    throw new Error("Read-only card has no bounding box");
+  }
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    box.x + box.width / 2 + 24,
+    box.y + box.height / 2 + 24,
+    { steps: 8 },
+  );
+  await page.mouse.up();
+
+  const selectedText = await page.evaluate(
+    () => window.getSelection()?.toString() || "",
+  );
+  expect(selectedText.trim()).toBe("");
+  expect(moveRequests).toBe(0);
+});
+
 test("project kanban board supports drag status moves", async ({ page }) => {
   await page.setViewportSize(desktopViewport);
   await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, {
@@ -437,6 +487,11 @@ test("project kanban board supports drag status moves", async ({ page }) => {
     { steps: 20 },
   );
   await page.mouse.up();
+
+  const selectedText = await page.evaluate(
+    () => window.getSelection()?.toString() || "",
+  );
+  expect(selectedText.trim()).toBe("");
 
   const request = await moveRequest;
   const form = new URLSearchParams(request.postData() || "");

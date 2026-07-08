@@ -2444,7 +2444,7 @@ func TestKanbanMoveFailureDoesNotInsertPendingCard(t *testing.T) {
 	}
 }
 
-func TestKanbanMoveSuccessResponseRefreshesFleetBoard(t *testing.T) {
+func TestKanbanMoveRejectsFleetBoardMovePosts(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
@@ -2495,37 +2495,15 @@ func TestKanbanMoveSuccessResponseRefreshesFleetBoard(t *testing.T) {
 		"target_state":  {"Todo"},
 	}
 	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if rec.Header().Get("HX-Retarget") != "#snapshot" {
-		t.Fatalf("HX-Retarget = %q, want #snapshot", rec.Header().Get("HX-Retarget"))
-	}
-	if rec.Header().Get("HX-Reswap") != "morph:innerHTML" {
-		t.Fatalf("HX-Reswap = %q, want morph:innerHTML", rec.Header().Get("HX-Reswap"))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{
-		`id="board-lanes"`,
-		"Moved card to Todo.",
-		`data-board-key="fleet"`,
-		`data-board-lane="backlog"`,
-		`data-board-lane="todo"`,
-		"Move fleet board card",
-		"Keep read-only fleet card",
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("response missing %q:\n%s", want, body)
-		}
+	if !strings.Contains(body, "All-project board is read-only. Open the project board to move this card.") {
+		t.Fatalf("body missing fleet read-only feedback:\n%s", body)
 	}
-	if strings.Contains(body, `id="project-kanban"`) {
-		t.Fatalf("fleet move response rendered project board:\n%s", body)
-	}
-	if got := strings.Count(body, `id="card-digitaldrywood-detent-764"`); got != 1 {
-		t.Fatalf("card render count = %d, want 1:\n%s", got, body)
-	}
-	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_kw764", state: "Todo"}}; !equalStateUpdates(got, want) {
-		t.Fatalf("state updates = %#v, want %#v", got, want)
+	if got := actionConnector.stateUpdates(); len(got) != 0 {
+		t.Fatalf("state updates = %#v, want none", got)
 	}
 }
 

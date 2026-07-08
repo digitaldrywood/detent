@@ -864,7 +864,10 @@ func TestBoardSnapshotRendersKanbanDragAttributes(t *testing.T) {
 	for _, want := range []string{
 		`data-kanban-card`,
 		`data-kanban-current-state="Human Review"`,
-		`aria-disabled="true"`,
+		`data-kanban-move-disabled="true"`,
+		`data-kanban-move-disabled-reason="No linked issue is available for this PR-only card."`,
+		`data-kanban-move-disabled-label`,
+		`No issue`,
 	} {
 		if !strings.Contains(prOnly, want) {
 			t.Fatalf("PR-only card missing %q:\n%s", want, prOnly)
@@ -898,16 +901,20 @@ func TestBoardSnapshotOmitsKanbanDragAttributesWhenDisabled(t *testing.T) {
 		},
 	}
 	tests := []struct {
-		name string
-		data DashboardData
+		name       string
+		data       DashboardData
+		wantReason string
+		wantLabel  string
 	}{
 		{
-			name: "read only project board",
+			name: "read-only project board",
 			data: DashboardData{
 				ProjectID: "detent",
 				Snapshot:  readySnapshot,
 				Kanban:    KanbanData{Mode: "read_only", States: []string{"Todo", "In Progress"}},
 			},
+			wantReason: "This project board is read-only.",
+			wantLabel:  "Read-only",
 		},
 		{
 			name: "fleet board",
@@ -915,6 +922,8 @@ func TestBoardSnapshotOmitsKanbanDragAttributesWhenDisabled(t *testing.T) {
 				Snapshot: readySnapshot,
 				Kanban:   KanbanData{Mode: "integration", States: []string{"Todo", "In Progress"}},
 			},
+			wantReason: "All-project board is read-only. Open the project board to move this card.",
+			wantLabel:  "Read-only",
 		},
 		{
 			name: "degraded project board with prior data",
@@ -928,19 +937,113 @@ func TestBoardSnapshotOmitsKanbanDragAttributesWhenDisabled(t *testing.T) {
 				},
 				Kanban: KanbanData{Mode: "integration", States: []string{"Todo", "In Progress"}},
 			},
+			wantReason: "Tracker refresh is degraded; moves are disabled until a fresh snapshot is ready.",
+			wantLabel:  "Stale",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			html := renderBoardComponent(t, BoardSnapshot(tt.data))
-			for _, forbidden := range []string{
+			card := boardCardSection(t, html, "Non-draggable card")
+			for _, want := range []string{
 				`data-kanban-card`,
+				`data-kanban-current-state="Todo"`,
+				`data-kanban-move-disabled="true"`,
+				`data-kanban-move-disabled-reason="` + tt.wantReason + `"`,
+				`title="` + tt.wantReason + `"`,
+				`data-kanban-move-disabled-label`,
+				tt.wantLabel,
+			} {
+				if !strings.Contains(card, want) {
+					t.Fatalf("disabled card missing %q:\n%s", want, card)
+				}
+			}
+			for _, forbidden := range []string{
 				`data-kanban-drop-state`,
 				`data-kanban-drag-move-form`,
 				`draggable="true"`,
+				`data-kanban-action="move"`,
 			} {
 				if strings.Contains(html, forbidden) {
 					t.Fatalf("disabled board rendered %q:\n%s", forbidden, html)
+				}
+			}
+		})
+	}
+}
+
+func TestBoardSnapshotExplainsCardLevelMoveDisabledReasons(t *testing.T) {
+	now := time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC)
+	data := DashboardData{
+		ProjectID: "detent",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			BoardIssues: []telemetry.Issue{
+				{
+					Identifier: "digitaldrywood/detent#2",
+					ProjectID:  "detent",
+					Title:      "No linked issue card",
+					State:      "Human Review",
+					PullRequest: &telemetry.PullRequest{
+						Number: 43,
+						URL:    "https://github.test/digitaldrywood/detent/pull/43",
+					},
+				},
+				{
+					ID:         "I_done",
+					Identifier: "digitaldrywood/detent#3",
+					ProjectID:  "detent",
+					Title:      "No transition card",
+					State:      "Done",
+				},
+			},
+		},
+		Kanban: KanbanData{
+			Mode:               "integration",
+			States:             []string{"Human Review", "Rework", "Done"},
+			AllowedTransitions: map[string][]string{"Human Review": {"Rework"}},
+		},
+	}
+
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	tests := []struct {
+		title      string
+		wantReason string
+		wantLabel  string
+	}{
+		{
+			title:      "No linked issue card",
+			wantReason: "No linked issue is available for this PR-only card.",
+			wantLabel:  "No issue",
+		},
+		{
+			title:      "No transition card",
+			wantReason: "No allowed transition is configured from Done.",
+			wantLabel:  "No move",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			card := boardCardSection(t, html, tt.title)
+			for _, want := range []string{
+				`data-kanban-move-disabled="true"`,
+				`data-kanban-move-disabled-reason="` + tt.wantReason + `"`,
+				`title="` + tt.wantReason + `"`,
+				`data-kanban-move-disabled-label`,
+				tt.wantLabel,
+			} {
+				if !strings.Contains(card, want) {
+					t.Fatalf("disabled card missing %q:\n%s", want, card)
+				}
+			}
+			for _, forbidden := range []string{
+				`draggable="true"`,
+				`data-kanban-action="move"`,
+				`data-kanban-drag-move-form`,
+			} {
+				if strings.Contains(card, forbidden) {
+					t.Fatalf("disabled card rendered forbidden %q:\n%s", forbidden, card)
 				}
 			}
 		})
