@@ -1,0 +1,1014 @@
+package orchestrator
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+)
+
+func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
+	running, ok := state.Running[event.issueID]
+	if !ok {
+		return
+	}
+
+	if event.usage.SessionID != "" {
+		running.SessionID = event.usage.SessionID
+	}
+	if event.usage.TurnCount > 0 {
+		running.TurnCount = event.usage.TurnCount
+	}
+	if !event.usage.LastEventAt.IsZero() {
+		running.LastEventAt = event.usage.LastEventAt
+	}
+	if event.usage.LastEvent != "" {
+		running.LastEvent = event.usage.LastEvent
+	}
+	if event.usage.LastMessage != "" {
+		running.LastMessage = event.usage.LastMessage
+		running.LastMessageTruncation = runtimeoutput.CloneTruncation(event.usage.LastMessageTruncation)
+	}
+	if len(event.usage.RecentEvents) > 0 {
+		running.RecentEvents = cloneActivityEvents(event.usage.RecentEvents)
+	}
+	if event.usage.ProcessIdentity != "" {
+		running.ProcessIdentity = event.usage.ProcessIdentity
+	}
+	if event.usage.WorkspacePath != "" {
+		running.WorkspacePath = event.usage.WorkspacePath
+	}
+	if diffStatsPresent(event.usage.DiffStats) {
+		running.DiffStats = event.usage.DiffStats
+	}
+	running.Tokens = event.usage.Tokens
+	state.Running[event.issueID] = running
+	if event.usage.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.usage.RateLimits)
+	}
+	if o.workAttempts != nil && running.WorkAttemptID > 0 {
+		now := event.usage.LastEventAt
+		if now.IsZero() {
+			now = time.Now()
+		}
+		heartbeat := o.runningWorkAttemptHeartbeat(state, running, now)
+		if err := o.workAttempts.RecordWorkAttemptHeartbeat(context.Background(), heartbeat); err != nil {
+			if o.logger != nil {
+				o.logger.Warn("work attempt usage heartbeat failed", "attempt_id", running.WorkAttemptID, "issue_id", event.issueID, "error", err)
+			}
+		} else {
+			o.applyWorkAttemptHeartbeatSnapshot(state, running.WorkAttemptID, heartbeat, event.usage.LastMessageTruncation)
+		}
+	}
+}
+
+func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event runpkg.Completion) {
+	running, ok := state.Running[event.IssueID]
+	if !ok {
+		return
+	}
+	o.releaseGlobalDispatchSlot(running.globalSlot)
+	o.logWorkerLifecycle(running.Issue, "worker_capacity_released",
+		"attempt", running.Attempt,
+		"worker_host", strings.TrimSpace(running.WorkerHost),
+		"reason", "run_completed",
+	)
+	running.globalSlot = scheduler.Slot{}
+	if running.cancel != nil {
+		running.cancel()
+	}
+	delete(state.Running, event.IssueID)
+
+	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
+		tokens := event.Result.Tokens
+		if tokens == (TokenTotals{}) {
+			tokens = running.Tokens
+		}
+		if diffStatsPresent(event.Result.DiffStats) {
+			running.DiffStats = event.Result.DiffStats
+		}
+		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
+			"attempt", running.Attempt,
+			"worker_host", strings.TrimSpace(running.WorkerHost),
+			"final_state", strings.TrimSpace(running.Issue.State),
+		)
+		o.completeTerminalRunning(context.Background(), state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens)
+		if event.Result.RateLimits != nil {
+			state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+		}
+		return
+	}
+
+	if event.Err != nil {
+		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
+			"attempt", running.Attempt,
+			"worker_host", strings.TrimSpace(running.WorkerHost),
+			"retry_attempt", event.RetryAttempt,
+			"retry_delay_seconds", int64(event.RetryDelay/time.Second),
+			"error", event.Err,
+		)
+		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, terminalStateForRun(event.Err, event.Result.FinalState), workAttemptErrorRunner, event.Err.Error(), "failed", "worker failed")
+		if mergeWorkerIssue(running.Issue) {
+			o.logMergeWorkerFailure(running.Issue, "runner_failed", event.Err)
+			o.recordMergeFailed(state, running.Issue, event.CompletedAt, "runner_failed", event.Err)
+		}
+		attempt := event.RetryAttempt
+		if attempt < 1 {
+			attempt = nextAttempt(running.Attempt)
+		}
+		if mergeWorkerIssue(running.Issue) && attempt > maxMergeWorkerRunnerFailures {
+			if o.reworkExhaustedMergeWorker(ctx, state, running, event.CompletedAt, attempt, event.Err) {
+				return
+			}
+		}
+		if o.tripInstantFailureCircuitBreaker(ctx, state, event, running, attempt) {
+			return
+		}
+		delay := event.RetryDelay
+		if delay <= 0 {
+			delay = o.retryDelay(attempt, false)
+		}
+		o.scheduleRetryAfter(
+			state,
+			running.Issue,
+			attempt,
+			event.CompletedAt,
+			delay,
+			event.Err.Error(),
+			running.WorkerHost,
+		)
+		return
+	}
+
+	if event.Request.Mode == runpkg.RunModePlan {
+		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
+			"attempt", running.Attempt,
+			"worker_host", strings.TrimSpace(running.WorkerHost),
+			"mode", strings.TrimSpace(event.Request.Mode),
+			"final_state", strings.TrimSpace(event.Result.FinalState),
+		)
+		o.completePlanRunning(ctx, state, event, running)
+		return
+	}
+
+	if mergeWorkerIssue(running.Issue) {
+		if o.completeLatestTerminalMergeWorkerResult(ctx, state, event, running) {
+			return
+		}
+		if state.Draining {
+			o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalCancelled, "draining", "worker stopped during drain", "cancelled", "worker stopped during drain")
+			o.cleanupDrainedRun(ctx, state, event.IssueID)
+			return
+		}
+		o.handleIncompleteMergeWorkerResult(ctx, state, event, running)
+		return
+	}
+
+	finalState := event.Result.FinalState
+	if finalState == "" {
+		finalState = FinalStateCompleted
+	}
+	o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(nil, finalState),
+		"attempt", running.Attempt,
+		"worker_host", strings.TrimSpace(running.WorkerHost),
+		"mode", strings.TrimSpace(event.Request.Mode),
+		"final_state", strings.TrimSpace(finalState),
+	)
+	terminalState := terminalStateForRun(nil, finalState)
+	errorClass := ""
+	errorMessage := ""
+	if terminalState == store.WorkAttemptTerminalFailure {
+		errorClass = "runner_final_state"
+		errorMessage = finalState
+	}
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, "completed", "worker completed")
+	delete(state.InstantFailures, event.IssueID)
+
+	state.Completed[event.IssueID] = Completed{
+		Issue:       cloneIssue(running.Issue),
+		StartedAt:   running.StartedAt,
+		CompletedAt: event.CompletedAt,
+		FinalState:  finalState,
+		Tokens:      event.Result.Tokens,
+	}
+	state.TokenTotals = addTokenTotals(state.TokenTotals, event.Result.Tokens)
+	if event.Result.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+	}
+	if diffStatsPresent(event.Result.DiffStats) {
+		state.DiffStats[event.IssueID] = event.Result.DiffStats
+	}
+	if event.Result.BudgetRefusal != nil {
+		refusal := *event.Result.BudgetRefusal
+		refusal.Issue = cloneIssue(running.Issue)
+		state.BudgetRefusals[event.IssueID] = refusal
+		o.commentBudgetRefusal(ctx, event.IssueID, refusal)
+	}
+
+	if state.Draining {
+		o.cleanupDrainedRun(ctx, state, event.IssueID)
+		return
+	}
+	o.scheduleRetry(state, running.Issue, 1, event.CompletedAt, "", true, running.WorkerHost)
+}
+
+func (o *Orchestrator) commentBudgetRefusal(ctx context.Context, issueID string, refusal BudgetRefusal) {
+	if o.connector == nil {
+		return
+	}
+	body := strings.TrimSpace(refusal.Comment)
+	if body == "" {
+		body = strings.TrimSpace(refusal.Message)
+	}
+	if body == "" {
+		return
+	}
+	if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
+		o.logger.Warn(
+			"budget refusal comment failed",
+			"issue_id", issueID,
+			"identifier", refusal.Issue.Identifier,
+			"code", refusal.Code,
+			"error", err,
+		)
+	}
+}
+
+func (o *Orchestrator) tripInstantFailureCircuitBreaker(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	attempt int,
+) bool {
+	if state == nil || event.Err == nil || !instantFailureDuration(running, event) {
+		delete(state.InstantFailures, event.IssueID)
+		return false
+	}
+	if state.InstantFailures == nil {
+		state.InstantFailures = map[string]InstantFailure{}
+	}
+	key := instantFailureErrorKey(event.Err)
+	displayError := o.operatorText(key)
+	if displayError == "" {
+		displayError = o.operatorText(event.Err.Error())
+	}
+	failure := state.InstantFailures[event.IssueID]
+	failureKey := failure.errorKey
+	if failureKey == "" {
+		failureKey = failure.Error
+	}
+	if failureKey != key {
+		failure = InstantFailure{
+			Issue:          cloneIssue(running.Issue),
+			Error:          displayError,
+			errorKey:       key,
+			FirstFailureAt: event.CompletedAt,
+		}
+	}
+	failure.Count++
+	failure.Issue = cloneIssue(running.Issue)
+	failure.LastFailureAt = event.CompletedAt
+	state.InstantFailures[event.IssueID] = failure
+	if failure.Count < instantFailureThreshold {
+		return false
+	}
+
+	o.parkInstantFailure(ctx, state, event, running, failure, attempt)
+	return true
+}
+
+func instantFailureDuration(running Running, event runpkg.Completion) bool {
+	if !running.StartedAt.IsZero() && !event.CompletedAt.IsZero() {
+		duration := event.CompletedAt.Sub(running.StartedAt)
+		return duration >= 0 && duration < instantFailureMaxDuration
+	}
+	if event.Result.Tokens.RuntimeSeconds > 0 {
+		return event.Result.Tokens.RuntimeSeconds < instantFailureMaxDuration.Seconds()
+	}
+	return false
+}
+
+func instantFailureErrorKey(err error) string {
+	var carrier interface {
+		BackendErrorBody() string
+	}
+	if errors.As(err, &carrier) {
+		if body := strings.TrimSpace(carrier.BackendErrorBody()); body != "" {
+			return body
+		}
+	}
+	return strings.TrimSpace(err.Error())
+}
+
+func (o *Orchestrator) parkInstantFailure(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	failure InstantFailure,
+	attempt int,
+) {
+	targetState := o.instantFailureParkState()
+	issue := cloneIssue(running.Issue)
+	if targetState != "" {
+		if err := o.updateIssueState(ctx, issue, targetState, event.CompletedAt, "instant_fail_circuit_breaker"); err != nil {
+			if o.logger != nil {
+				o.logger.Error(
+					"instant fail circuit breaker state transition failed",
+					"issue_id", issue.ID,
+					"identifier", issue.Identifier,
+					"target_state", targetState,
+					"error", err,
+				)
+			}
+		} else {
+			issue.State = targetState
+		}
+	}
+	if o.connector != nil {
+		if err := o.connector.CreateComment(ctx, issue.ID, instantFailureComment(issue, event.Err, failure, attempt, targetState, o.cfg.OutputTruncationMaxBytes)); err != nil && o.logger != nil {
+			o.logger.Error("instant fail circuit breaker comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+	}
+	if err := o.abandonClaim(ctx, issue.ID); err != nil && o.logger != nil {
+		o.logger.Error("instant fail circuit breaker claim release failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+	}
+	delete(state.Claimed, issue.ID)
+	delete(state.Retry, issue.ID)
+	delete(state.BudgetRefusals, issue.ID)
+	delete(state.PriorAttempts, issue.ID)
+	if state.Blocked == nil {
+		state.Blocked = map[string]Blocked{}
+	}
+	state.Blocked[issue.ID] = Blocked{
+		Issue:          issue,
+		Reason:         instantFailureBlockedReasonPrefix + failure.Error,
+		RecoveryReason: "fix the pinned agent model or backend configuration, then move the issue back to Todo or Rework",
+		RecoveryTarget: "Todo",
+		BlockedAt:      event.CompletedAt,
+		Source:         BlockedSourceProjectStatus,
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "worker_instant_fail_circuit_breaker_tripped",
+		Message: "parked " + issueLabel(issue) + " after repeated instant worker failures: " + failure.Error,
+	})
+	if o.logger != nil {
+		attrs := []any{
+			"event", "worker_instant_fail_circuit_breaker_tripped",
+			"issue_id", issue.ID,
+			"issue_identifier", issue.Identifier,
+			"attempt", attempt,
+			"instant_failures", failure.Count,
+			"target_state", targetState,
+			"error", event.Err,
+		}
+		if body := o.operatorText(instantFailureErrorKey(event.Err)); body != "" {
+			attrs = append(attrs, "backend_error_body", body)
+		}
+		var carrier interface {
+			BackendErrorMessage() string
+		}
+		if errors.As(event.Err, &carrier) {
+			if message := o.operatorText(carrier.BackendErrorMessage()); message != "" {
+				attrs = append(attrs, "backend_error_message", message)
+			}
+		}
+		o.logger.Error("worker instant fail circuit breaker tripped", attrs...)
+	}
+}
+
+func (o *Orchestrator) instantFailureParkState() string {
+	return blockedStatusState
+}
+
+func instantFailureComment(issue connector.Issue, err error, failure InstantFailure, attempt int, targetState string, maxBytes int) string {
+	var b strings.Builder
+	b.WriteString("Detent stopped retrying this worker after ")
+	b.WriteString(strconv.Itoa(failure.Count))
+	b.WriteString(" consecutive instant failures with the same backend error.")
+	if targetState = strings.TrimSpace(targetState); targetState != "" {
+		b.WriteString("\n\nIssue parked in `")
+		b.WriteString(targetState)
+		b.WriteString("`.")
+	}
+	b.WriteString("\n\n- issue: ")
+	b.WriteString(issueLabel(issue))
+	b.WriteString("\n- latest_attempt: ")
+	b.WriteString(strconv.Itoa(attempt))
+	b.WriteString("\n- failure_window_seconds: ")
+	b.WriteString(strconv.FormatInt(int64(instantFailureMaxDuration/time.Second), 10))
+	b.WriteString("\n- error:\n\n```text\n")
+	errorText := runtimeoutput.Truncate(strings.TrimSpace(err.Error()), maxBytes).Value
+	b.WriteString(errorText)
+	b.WriteString("\n```")
+	if body := runtimeoutput.Truncate(instantFailureErrorKey(err), maxBytes).Value; body != "" && body != errorText {
+		b.WriteString("\n\n- backend_error_body:\n\n```json\n")
+		b.WriteString(body)
+		b.WriteString("\n```")
+	}
+	b.WriteString("\n\nFix the pinned agent model or backend configuration, then move the issue back to Todo or Rework.")
+	return b.String()
+}
+
+func (o *Orchestrator) operatorText(value string) string {
+	return runtimeoutput.Truncate(strings.TrimSpace(value), o.cfg.OutputTruncationMaxBytes).Value
+}
+
+func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+) bool {
+	issueID := strings.TrimSpace(event.IssueID)
+	if issueID == "" || o.connector == nil {
+		return false
+	}
+	issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issueID})
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"merge_worker_terminal_state_refresh_failed",
+				"issue_id", issueID,
+				"identifier", running.Issue.Identifier,
+				"error", err,
+			)
+		}
+		return false
+	}
+	for _, issue := range issues {
+		if strings.TrimSpace(issue.ID) != issueID {
+			continue
+		}
+		issue = mergeIssueTrackerFields(running.Issue, issue)
+		if !workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
+			return o.completeProgrammaticMergeWorkerResult(ctx, state, event, running, issue)
+		}
+		tokens := event.Result.Tokens
+		if tokens == (TokenTotals{}) {
+			tokens = running.Tokens
+		}
+		if diffStatsPresent(event.Result.DiffStats) {
+			running.DiffStats = event.Result.DiffStats
+		}
+		running.Issue = issue
+		o.completeTerminalRunning(ctx, state, issueID, running, terminalCompletedAt(issue, o.cfg.TerminalStates, event.CompletedAt), tokens)
+		if event.Result.RateLimits != nil {
+			state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+		}
+		return true
+	}
+	return false
+}
+
+func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+) bool {
+	if state != nil && state.Draining {
+		return false
+	}
+	if !mergeWorkerTurnSucceeded(event) {
+		return false
+	}
+	hydrator, ok := o.connector.(connector.PullRequestHydrator)
+	if !ok {
+		return false
+	}
+	refreshedIssue, err := hydrator.HydratePullRequest(ctx, issue)
+	if err != nil {
+		running.Issue = issue
+		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_pr_refresh_failed", err)
+		return true
+	}
+	issue = refreshedIssue
+	if !mergeWorkerProgrammaticMergeReady(issue) {
+		if mergeFastPathCleanResult(event) && mergeWorkerProgrammaticMergeWaiting(issue) {
+			o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
+			return true
+		}
+		return false
+	}
+	merger, ok := o.connector.(connector.PullRequestMerger)
+	if !ok {
+		return false
+	}
+	issueID := strings.TrimSpace(event.IssueID)
+	repository := pullRequestRepository(issue)
+	number := pullRequestNumber(issue)
+	headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA)
+	if err := merger.MergePullRequest(ctx, repository, number, headSHA); err != nil {
+		running.Issue = issue
+		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_failed", err)
+		return true
+	}
+
+	targetState := doneStateName(o.cfg.TerminalStates)
+	mergedIssue := cloneIssue(issue)
+	if mergedIssue.PullRequest != nil {
+		mergedIssue.PullRequest.State = "MERGED"
+		activityAt := event.CompletedAt.UTC()
+		mergedIssue.PullRequest.ActivityAt = &activityAt
+	}
+	if err := o.updateIssueStateByID(ctx, issueID, mergedIssue, targetState, event.CompletedAt, "merge_worker_programmatic_merge"); err != nil {
+		running.Issue = mergedIssue
+		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_state_update_failed", err)
+		return true
+	}
+
+	updatedAt := event.CompletedAt.UTC()
+	mergedIssue.State = targetState
+	mergedIssue.UpdatedAt = &updatedAt
+	mergedIssue.StageUpdatedAt = &updatedAt
+	mergeTimingIssue := running.Issue
+	running.Issue = mergedIssue
+	tokens := event.Result.Tokens
+	if tokens == (TokenTotals{}) {
+		tokens = running.Tokens
+	}
+	if diffStatsPresent(event.Result.DiffStats) {
+		running.DiffStats = event.Result.DiffStats
+	}
+	if o.logger != nil {
+		o.logger.Info("merge_worker_programmatic_merge", mergeWorkerLogAttrs(mergedIssue, "target_state", targetState)...)
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "merge_worker_programmatic_merge",
+		Message: "programmatically merged " + issueLabel(mergedIssue) + " and moved it to " + targetState,
+	})
+	o.completeTerminalRunning(ctx, state, issueID, running, terminalCompletedAt(mergedIssue, o.cfg.TerminalStates, event.CompletedAt), tokens)
+	mergeTiming := o.recordMergeCompleted(state, mergeTimingIssue, event.CompletedAt, targetState)
+	if completed, ok := state.Completed[issueID]; ok {
+		completed.MergeTiming = mergeTiming
+		state.Completed[issueID] = completed
+	}
+	o.logMergeWorkerSuccess(mergeTimingIssue, targetState)
+	if event.Result.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+	}
+	return true
+}
+
+func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+) {
+	running.Issue = issue
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", "merge fast-path waiting for current-head CI")
+	attempt := running.Attempt
+	if attempt < 1 {
+		attempt = 1
+	}
+	o.scheduleRetry(state, issue, attempt, event.CompletedAt, "waiting for current-head CI", true, running.WorkerHost)
+	if o.logger != nil {
+		o.logger.Info("merge_worker_waiting_current_head_ci", mergeWorkerLogAttrs(issue, "attempt", attempt)...)
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "merge_worker_waiting_current_head_ci",
+		Message: "merge worker is waiting for current-head CI for " + issueLabel(issue),
+	})
+}
+
+func (o *Orchestrator) failProgrammaticMergeWorkerResult(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	reason string,
+	err error,
+) {
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, reason, errorString(err), "merging", "programmatic merge failed")
+	o.logMergeWorkerFailure(running.Issue, reason, err)
+	o.recordMergeFailed(state, running.Issue, event.CompletedAt, reason, err)
+	attempt := nextAttempt(running.Attempt)
+	if attempt > maxMergeWorkerRunnerFailures {
+		if o.reworkExhaustedMergeWorker(ctx, state, running, event.CompletedAt, attempt, err) {
+			return
+		}
+	}
+	o.scheduleRetry(
+		state,
+		running.Issue,
+		attempt,
+		event.CompletedAt,
+		errorString(err),
+		false,
+		running.WorkerHost,
+	)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "merge_worker_programmatic_merge_failed",
+		Message: "programmatic merge failed for " + issueLabel(running.Issue) + ": " + errorString(err),
+	})
+}
+
+func mergeWorkerTurnSucceeded(event runpkg.Completion) bool {
+	return event.Err == nil && !strings.EqualFold(strings.TrimSpace(event.Result.FinalState), runpkg.FinalStateFailed)
+}
+
+func mergeFastPathCleanResult(event runpkg.Completion) bool {
+	return event.Request.Mode == runpkg.RunModeMerge &&
+		strings.TrimSpace(event.Result.Output) == runpkg.RunOutputMergeFastPathClean
+}
+
+func mergeWorkerProgrammaticMergeReady(issue connector.Issue) bool {
+	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
+		return false
+	}
+	pullRequest := issue.PullRequest
+	if pullRequestHydrationBlocksProgress(pullRequest) {
+		return false
+	}
+	if normalizePullRequestState(pullRequest.State) != "open" || pullRequest.Draft {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(pullRequest.MergeableState)) != "clean" {
+		return false
+	}
+	if !mergeWorkerCIGreen(pullRequest.CIStatus) {
+		return false
+	}
+	return pullRequestRepository(issue) != "" &&
+		pullRequestNumber(issue) > 0 &&
+		strings.TrimSpace(pullRequest.HeadSHA) != ""
+}
+
+func mergeWorkerProgrammaticMergeWaiting(issue connector.Issue) bool {
+	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
+		return false
+	}
+	pullRequest := issue.PullRequest
+	if pullRequestHydrationBlocksProgress(pullRequest) {
+		return false
+	}
+	if normalizePullRequestState(pullRequest.State) != "open" || pullRequest.Draft {
+		return false
+	}
+	if mergeable := strings.ToLower(strings.TrimSpace(pullRequest.MergeableState)); mergeable != "" && mergeable != "clean" && mergeable != "unknown" {
+		return false
+	}
+	if pullRequestRepository(issue) == "" || pullRequestNumber(issue) <= 0 || strings.TrimSpace(pullRequest.HeadSHA) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(pullRequest.CIStatus)) {
+	case "", "pending", "running", "queued", "in_progress", "waiting":
+		return true
+	default:
+		return false
+	}
+}
+
+func mergeWorkerCIGreen(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "success", "green", "pass", "passed":
+		return true
+	default:
+		return false
+	}
+}
+
+func (o *Orchestrator) handleIncompleteMergeWorkerResult(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+) {
+	err := errors.New(mergeWorkerTerminalStateMissing)
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, workAttemptErrorMergeIncomplete, err.Error(), "merging", "merge worker completed without terminal state")
+	o.logMergeWorkerFailure(running.Issue, "terminal_state_missing", err)
+	attempt := nextAttempt(running.Attempt)
+	if attempt > maxMergeWorkerRunnerFailures {
+		if o.reworkExhaustedMergeWorker(ctx, state, running, event.CompletedAt, attempt, err) {
+			return
+		}
+	}
+	o.scheduleRetry(
+		state,
+		running.Issue,
+		attempt,
+		event.CompletedAt,
+		err.Error(),
+		false,
+		running.WorkerHost,
+	)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "merge_worker_terminal_state_missing",
+		Message: "merge worker completed without terminal state for " + issueLabel(running.Issue),
+	})
+}
+
+func (o *Orchestrator) reworkExhaustedMergeWorker(
+	ctx context.Context,
+	state *State,
+	running Running,
+	completedAt time.Time,
+	attempt int,
+	err error,
+) bool {
+	issueID := strings.TrimSpace(running.Issue.ID)
+	if issueID == "" || o.connector == nil {
+		return false
+	}
+	if err := o.updateIssueStateByID(ctx, issueID, running.Issue, autoPromoteReworkState, completedAt, "merge_worker_retry_exhausted"); err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"merge_worker_rework_failed",
+				"issue_id", issueID,
+				"identifier", running.Issue.Identifier,
+				"reason", "runner_failed_retry_exhausted",
+				"target_state", autoPromoteReworkState,
+				"error", err,
+			)
+		}
+		return false
+	}
+	if comment := mergeWorkerRetryExhaustedComment(running.Issue, attempt, err); strings.TrimSpace(comment) != "" {
+		if err := o.connector.CreateComment(ctx, issueID, comment); err != nil && o.logger != nil {
+			o.logger.Warn(
+				"merge_worker_rework_comment_failed",
+				"issue_id", issueID,
+				"identifier", running.Issue.Identifier,
+				"reason", "runner_failed_retry_exhausted",
+				"error", err,
+			)
+		}
+	}
+	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
+		o.logger.Warn("abandon exhausted merge worker claim failed", "issue_id", issueID, "error", err)
+	}
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
+	delete(state.Completed, issueID)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      completedAt,
+		Event:   "merge_worker_retry_exhausted",
+		Message: "merge worker retries exhausted for " + issueLabel(running.Issue) + ": " + errorString(err),
+	})
+	return true
+}
+
+func mergeWorkerRetryExhaustedComment(issue connector.Issue, attempt int, err error) string {
+	var b strings.Builder
+	b.WriteString("Merge worker retries were exhausted; routed this issue from Merging to Rework.")
+	b.WriteString("\n\n- reason: runner_failed_retry_exhausted")
+	if attempt > 0 {
+		b.WriteString("\n- attempt: ")
+		b.WriteString(strconv.Itoa(attempt))
+	}
+	if errText := errorString(err); errText != "" {
+		b.WriteString("\n- error: ")
+		b.WriteString(errText)
+	}
+	if issue.PullRequest != nil {
+		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
+			b.WriteString("\n- pull request: ")
+			b.WriteString(url)
+		}
+		if mergeableState := strings.ToLower(strings.TrimSpace(issue.PullRequest.MergeableState)); mergeableState != "" {
+			b.WriteString("\n- mergeable_state: ")
+			b.WriteString(mergeableState)
+		}
+		if ciStatus := strings.TrimSpace(issue.PullRequest.CIStatus); ciStatus != "" {
+			b.WriteString("\n- ci_status: ")
+			b.WriteString(ciStatus)
+		}
+	}
+	return b.String()
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return strings.TrimSpace(err.Error())
+}
+
+func (o *Orchestrator) completePlanRunning(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+) {
+	cfg := gate.EffectivePlan(o.cfg.Plan)
+	issueID := strings.TrimSpace(event.IssueID)
+	issue := cloneIssue(running.Issue)
+	body := planArtifactComment(issue, event.Result.Output)
+	if err := o.connector.CreateComment(ctx, issueID, body); err != nil {
+		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, "plan_comment_failed", err.Error(), "reviewing", "plan comment failed")
+		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan comment failed: "+err.Error(), false, running.WorkerHost)
+		return
+	}
+	if err := o.updateIssueStateByID(ctx, issueID, issue, cfg.Stop, event.CompletedAt, "plan_artifact_created"); err != nil {
+		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, "plan_transition_failed", err.Error(), "reviewing", "plan review transition failed")
+		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan review transition failed: "+err.Error(), false, running.WorkerHost)
+		return
+	}
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "plan review created")
+	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
+		o.logger.Warn("abandon completed plan claim failed", "issue_id", issueID, "error", err)
+	}
+	delete(state.planRework, issueID)
+	issue.State = cfg.Stop
+	state.Completed[issueID] = Completed{
+		Issue:       issue,
+		StartedAt:   running.StartedAt,
+		CompletedAt: event.CompletedAt,
+		FinalState:  cfg.Stop,
+		Tokens:      event.Result.Tokens,
+	}
+	state.TokenTotals = addTokenTotals(state.TokenTotals, event.Result.Tokens)
+	if event.Result.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+	}
+	if diffStatsPresent(event.Result.DiffStats) {
+		state.DiffStats[issueID] = event.Result.DiffStats
+	}
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "plan_review_created",
+		Message: "created plan artifact for " + issueLabel(issue) + " and moved to " + cfg.Stop,
+	})
+}
+
+func (o *Orchestrator) scheduleRetry(
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	err string,
+	continuation bool,
+	workerHost string,
+) {
+	o.dispatchPlanner().scheduleRetry(state, issue, attempt, now, err, continuation, workerHost)
+}
+
+func (o *Orchestrator) scheduleRetryAfter(
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	delay time.Duration,
+	err string,
+	workerHost string,
+) {
+	o.dispatchPlanner().scheduleRetryAfter(state, issue, attempt, now, delay, err, workerHost)
+}
+
+func (o *Orchestrator) retryDelay(attempt int, continuation bool) time.Duration {
+	return o.dispatchPlanner().retryDelay(attempt, continuation)
+}
+
+func (o *Orchestrator) releaseClaim(state *State, issueID string) {
+	o.cancelRunning(state, issueID)
+	delete(state.Running, issueID)
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
+}
+
+func (o *Orchestrator) completeTerminalRunning(
+	ctx context.Context,
+	state *State,
+	issueID string,
+	running Running,
+	completedAt time.Time,
+	tokens TokenTotals,
+) {
+	o.completeDurableWorkAttempt(ctx, state, running, completedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker reached terminal state")
+	o.releaseGlobalDispatchSlot(running.globalSlot)
+	if running.cancel != nil {
+		running.cancel()
+	}
+	delete(state.Running, issueID)
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
+	delete(state.InstantFailures, issueID)
+	if err := o.abandonClaim(ctx, issueID); err != nil {
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      cleanupEventAt(completedAt),
+			Event:   "claim_release_failed",
+			Message: fmt.Sprintf("claim lease release failed for %s: %v", issueLabel(running.Issue), err),
+		})
+	}
+	issue := o.ensureClosedCompletedRunningIssueDone(ctx, issueID, running.Issue, completedAt)
+	finalState := strings.TrimSpace(issue.State)
+	if finalState == "" {
+		finalState = FinalStateCompleted
+	}
+	mergeTiming := MergeTiming{}
+	if mergeWorkerIssue(running.Issue) {
+		mergeTiming = o.recordMergeCompleted(state, running.Issue, completedAt, finalState)
+	}
+	state.Completed[issueID] = Completed{
+		Issue:       cloneIssue(issue),
+		StartedAt:   running.StartedAt,
+		CompletedAt: completedAt,
+		FinalState:  finalState,
+		Tokens:      tokens,
+		MergeTiming: mergeTiming,
+	}
+	state.TokenTotals = addTokenTotals(state.TokenTotals, tokens)
+	if diffStatsPresent(running.DiffStats) {
+		state.DiffStats[issueID] = running.DiffStats
+	}
+	if mergeWorkerIssue(running.Issue) {
+		o.logMergeWorkerSuccess(running.Issue, finalState)
+	}
+	o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), completedAt)
+}
+
+func (o *Orchestrator) ensureClosedCompletedRunningIssueDone(ctx context.Context, issueID string, issue connector.Issue, now time.Time) connector.Issue {
+	if !issue.Closed || !closedReasonCompleted(issue.ClosedReason) {
+		return issue
+	}
+	targetState := doneStateName(o.cfg.TerminalStates)
+	if strings.TrimSpace(targetState) == "" {
+		return issue
+	}
+	if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "closed_completed_running_done"); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("mark closed completed running issue done failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
+		}
+		return issue
+	}
+	if o.logger != nil {
+		o.logger.Info("marked closed completed running issue done", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState)
+	}
+	issue.State = targetState
+	return issue
+}
+
+func terminalCompletedAt(issue connector.Issue, terminalStates []string, fallback time.Time) time.Time {
+	if stateIn(issue.State, terminalStates) && issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
+		return *issue.StageUpdatedAt
+	}
+	if issue.UpdatedAt != nil && !issue.UpdatedAt.IsZero() {
+		return *issue.UpdatedAt
+	}
+	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
+		return *issue.StageUpdatedAt
+	}
+	if !fallback.IsZero() {
+		return fallback
+	}
+	return time.Now().UTC()
+}
+
+func (o *Orchestrator) cancelRunning(state *State, issueID string) {
+	running, ok := state.Running[issueID]
+	if !ok {
+		return
+	}
+	o.releaseGlobalDispatchSlot(running.globalSlot)
+	running.globalSlot = scheduler.Slot{}
+	state.Running[issueID] = running
+	cancelRunning(state, issueID)
+}
+
+func cancelRunning(state *State, issueID string) {
+	running, ok := state.Running[issueID]
+	if !ok || running.cancel == nil {
+		return
+	}
+	running.cancel()
+	running.cancel = nil
+	state.Running[issueID] = running
+}
+
+func (o *Orchestrator) releaseRunningSlots(state *State) {
+	for issueID, running := range state.Running {
+		o.releaseGlobalDispatchSlot(running.globalSlot)
+		running.globalSlot = scheduler.Slot{}
+		state.Running[issueID] = running
+	}
+}
