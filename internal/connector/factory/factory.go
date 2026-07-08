@@ -63,6 +63,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 		return linearconnector.NewConnector(linearconnector.Config{
 			Endpoint: cfg.Endpoint,
 			APIKey:   cfg.APIKey,
+			StateMap: cfg.StateMap,
 			Logger:   cfg.Logger,
 		})
 	case connector.BackendGitHub:

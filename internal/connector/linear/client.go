@@ -24,6 +24,7 @@ type HTTPClient interface {
 type ClientConfig struct {
 	Endpoint   string
 	APIKey     string
+	StateMap   map[string]string
 	HTTPClient HTTPClient
 	Logger     *slog.Logger
 }

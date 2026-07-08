@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -156,6 +157,305 @@ func TestConnectorCreateCommentReportsFailedMutation(t *testing.T) {
 	}
 }
 
+func TestConnectorUpdateIssueStateResolvesWorkflowState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		targetState string
+		stateMap    map[string]string
+		states      []map[string]any
+		wantStateID string
+	}{
+		{
+			name:        "happy path",
+			targetState: "Started",
+			states: []map[string]any{
+				linearWorkflowStateFixture("state-started", "Started"),
+			},
+			wantStateID: "state-started",
+		},
+		{
+			name:        "case insensitive match",
+			targetState: "started",
+			states: []map[string]any{
+				linearWorkflowStateFixture("state-started", "Started"),
+			},
+			wantStateID: "state-started",
+		},
+		{
+			name:        "state map translation",
+			targetState: "IN PROGRESS",
+			stateMap: map[string]string{
+				"In Progress": "Started",
+			},
+			states: []map[string]any{
+				linearWorkflowStateFixture("state-started", "Started"),
+			},
+			wantStateID: "state-started",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var mu sync.Mutex
+			requests := []linearGraphQLRequest{}
+			server := linearTestServer(t, func(t *testing.T, request linearGraphQLRequest) any {
+				mu.Lock()
+				requests = append(requests, request)
+				requestNumber := len(requests)
+				mu.Unlock()
+
+				switch requestNumber {
+				case 1:
+					if !strings.Contains(request.Query, "DetentLinearIssueWorkflowStates") {
+						t.Fatalf("query = %q, want issue workflow states query", request.Query)
+					}
+					if request.Variables["issueId"] != "LIN-123" {
+						t.Fatalf("issueId variable = %#v, want LIN-123", request.Variables["issueId"])
+					}
+					return linearWorkflowStatesResponse("team-1", tt.states)
+				case 2:
+					if !strings.Contains(request.Query, "DetentLinearIssueUpdateState") || !strings.Contains(request.Query, "issueUpdate") {
+						t.Fatalf("query = %q, want issue update mutation", request.Query)
+					}
+					if request.Variables["issueId"] != "LIN-123" {
+						t.Fatalf("issueId variable = %#v, want LIN-123", request.Variables["issueId"])
+					}
+					if request.Variables["stateId"] != tt.wantStateID {
+						t.Fatalf("stateId variable = %#v, want %s", request.Variables["stateId"], tt.wantStateID)
+					}
+					return linearIssueUpdateResponse(true)
+				default:
+					t.Fatalf("request count = %d, want 2", requestNumber)
+					return nil
+				}
+			})
+
+			c := newLinearTestConnectorWithStateMap(t, server.URL, tt.stateMap)
+			if err := c.UpdateIssueState(context.Background(), " LIN-123 ", tt.targetState); err != nil {
+				t.Fatalf("UpdateIssueState() error = %v", err)
+			}
+
+			mu.Lock()
+			gotRequests := len(requests)
+			mu.Unlock()
+			if gotRequests != 2 {
+				t.Fatalf("request count = %d, want 2", gotRequests)
+			}
+		})
+	}
+}
+
+func TestConnectorUpdateIssueStateErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		issueID      string
+		respond      func(*testing.T, int, linearGraphQLRequest) any
+		wantErr      error
+		wantRequests int
+	}{
+		{
+			name:    "blank issue id",
+			issueID: " \t",
+			respond: func(t *testing.T, _ int, _ linearGraphQLRequest) any {
+				t.Fatalf("server received request for blank issue id")
+				return nil
+			},
+			wantErr:      ErrMissingIssue,
+			wantRequests: 0,
+		},
+		{
+			name:    "null issue",
+			issueID: "LIN-123",
+			respond: func(t *testing.T, requestNumber int, request linearGraphQLRequest) any {
+				if requestNumber != 1 {
+					t.Fatalf("request count = %d, want 1", requestNumber)
+				}
+				if !strings.Contains(request.Query, "DetentLinearIssueWorkflowStates") {
+					t.Fatalf("query = %q, want issue workflow states query", request.Query)
+				}
+				return map[string]any{
+					"data": map[string]any{
+						"issue": nil,
+					},
+				}
+			},
+			wantErr:      ErrIssueNotFound,
+			wantRequests: 1,
+		},
+		{
+			name:    "failed mutation",
+			issueID: "LIN-123",
+			respond: func(t *testing.T, requestNumber int, request linearGraphQLRequest) any {
+				switch requestNumber {
+				case 1:
+					return linearWorkflowStatesResponse("team-1", []map[string]any{
+						linearWorkflowStateFixture("state-started", "Started"),
+					})
+				case 2:
+					if !strings.Contains(request.Query, "DetentLinearIssueUpdateState") {
+						t.Fatalf("query = %q, want issue update mutation", request.Query)
+					}
+					return linearIssueUpdateResponse(false)
+				default:
+					t.Fatalf("request count = %d, want 2", requestNumber)
+					return nil
+				}
+			},
+			wantErr:      ErrIssueUpdateFailed,
+			wantRequests: 2,
+		},
+		{
+			name:    "graphql errors envelope",
+			issueID: "LIN-123",
+			respond: func(t *testing.T, requestNumber int, _ linearGraphQLRequest) any {
+				if requestNumber != 1 {
+					t.Fatalf("request count = %d, want 1", requestNumber)
+				}
+				return map[string]any{
+					"errors": []map[string]any{{
+						"message": "linear unavailable",
+					}},
+				}
+			},
+			wantErr:      ErrGraphQLErrors,
+			wantRequests: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var mu sync.Mutex
+			requests := 0
+			server := linearTestServer(t, func(t *testing.T, request linearGraphQLRequest) any {
+				mu.Lock()
+				requests++
+				requestNumber := requests
+				mu.Unlock()
+
+				return tt.respond(t, requestNumber, request)
+			})
+
+			c := newLinearTestConnector(t, server.URL)
+			err := c.UpdateIssueState(context.Background(), tt.issueID, "Started")
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("UpdateIssueState() error = %v, want %v", err, tt.wantErr)
+			}
+
+			mu.Lock()
+			gotRequests := requests
+			mu.Unlock()
+			if gotRequests != tt.wantRequests {
+				t.Fatalf("request count = %d, want %d", gotRequests, tt.wantRequests)
+			}
+		})
+	}
+}
+
+func TestConnectorUpdateIssueStateRefetchesBeforeStateNotFound(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	stateQueries := 0
+	mutations := 0
+	server := linearTestServer(t, func(t *testing.T, request linearGraphQLRequest) any {
+		mu.Lock()
+		defer mu.Unlock()
+
+		if strings.Contains(request.Query, "DetentLinearIssueWorkflowStates") {
+			stateQueries++
+			return linearWorkflowStatesResponse("team-1", []map[string]any{
+				linearWorkflowStateFixture("state-todo", "Todo"),
+			})
+		}
+		if strings.Contains(request.Query, "DetentLinearIssueUpdateState") {
+			mutations++
+			return linearIssueUpdateResponse(true)
+		}
+
+		t.Fatalf("query = %q, want workflow states query or issue update mutation", request.Query)
+		return nil
+	})
+
+	c := newLinearTestConnector(t, server.URL)
+	if err := c.UpdateIssueState(context.Background(), "LIN-123", "Todo"); err != nil {
+		t.Fatalf("UpdateIssueState() first error = %v", err)
+	}
+	err := c.UpdateIssueState(context.Background(), "LIN-123", "Done")
+	if err == nil || !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("UpdateIssueState() second error = %v, want ErrStateNotFound", err)
+	}
+	if !strings.Contains(err.Error(), "Done") {
+		t.Fatalf("UpdateIssueState() second error = %v, want state name", err)
+	}
+
+	mu.Lock()
+	gotStateQueries := stateQueries
+	gotMutations := mutations
+	mu.Unlock()
+	if gotStateQueries != 2 {
+		t.Fatalf("state query count = %d, want 2", gotStateQueries)
+	}
+	if gotMutations != 1 {
+		t.Fatalf("mutation count = %d, want 1", gotMutations)
+	}
+}
+
+func TestConnectorUpdateIssueStateCachesWorkflowStatesByTeam(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	stateQueries := 0
+	mutations := 0
+	server := linearTestServer(t, func(t *testing.T, request linearGraphQLRequest) any {
+		mu.Lock()
+		defer mu.Unlock()
+
+		if strings.Contains(request.Query, "DetentLinearIssueWorkflowStates") {
+			stateQueries++
+			return linearWorkflowStatesResponse("team-1", []map[string]any{
+				linearWorkflowStateFixture("state-todo", "Todo"),
+				linearWorkflowStateFixture("state-started", "Started"),
+			})
+		}
+		if strings.Contains(request.Query, "DetentLinearIssueUpdateState") {
+			mutations++
+			return linearIssueUpdateResponse(true)
+		}
+
+		t.Fatalf("query = %q, want workflow states query or issue update mutation", request.Query)
+		return nil
+	})
+
+	c := newLinearTestConnector(t, server.URL)
+	if err := c.UpdateIssueState(context.Background(), "LIN-123", "Todo"); err != nil {
+		t.Fatalf("UpdateIssueState() first error = %v", err)
+	}
+	if err := c.UpdateIssueState(context.Background(), "LIN-123", "Started"); err != nil {
+		t.Fatalf("UpdateIssueState() second error = %v", err)
+	}
+
+	mu.Lock()
+	gotStateQueries := stateQueries
+	gotMutations := mutations
+	mu.Unlock()
+	if gotStateQueries != 1 {
+		t.Fatalf("state query count = %d, want 1", gotStateQueries)
+	}
+	if gotMutations != 2 {
+		t.Fatalf("mutation count = %d, want 2", gotMutations)
+	}
+}
+
 func TestConnectorDoesNotExposePullRequestCommenter(t *testing.T) {
 	t.Parallel()
 
@@ -169,7 +469,7 @@ func TestConnectorCapabilities(t *testing.T) {
 	t.Parallel()
 
 	c := newLinearTestConnector(t, "https://api.linear.app/graphql")
-	want := connector.Capabilities{CreateComment: true}
+	want := connector.Capabilities{UpdateIssueState: true, CreateComment: true}
 
 	t.Run("reported capabilities are authoritative", func(t *testing.T) {
 		t.Parallel()
@@ -300,9 +600,16 @@ func linearTestServer(t *testing.T, handler func(*testing.T, linearGraphQLReques
 func newLinearTestConnector(t *testing.T, endpoint string) *Connector {
 	t.Helper()
 
+	return newLinearTestConnectorWithStateMap(t, endpoint, nil)
+}
+
+func newLinearTestConnectorWithStateMap(t *testing.T, endpoint string, stateMap map[string]string) *Connector {
+	t.Helper()
+
 	c, err := NewConnector(Config{
 		Endpoint: endpoint,
 		APIKey:   "lin_api_test",
+		StateMap: stateMap,
 	})
 	if err != nil {
 		t.Fatalf("NewConnector() error = %v", err)
@@ -338,6 +645,40 @@ func linearCommentFixture(id string, body string) map[string]any {
 			"id":              "bot-1",
 			"name":            "Detent",
 			"userDisplayName": "Detent Bot",
+		},
+	}
+}
+
+func linearWorkflowStatesResponse(teamID string, states []map[string]any) map[string]any {
+	return map[string]any{
+		"data": map[string]any{
+			"issue": map[string]any{
+				"id": "LIN-123",
+				"team": map[string]any{
+					"id": teamID,
+					"states": map[string]any{
+						"nodes": states,
+					},
+				},
+			},
+		},
+	}
+}
+
+func linearWorkflowStateFixture(id string, name string) map[string]any {
+	return map[string]any{
+		"id":   id,
+		"name": name,
+		"type": "started",
+	}
+}
+
+func linearIssueUpdateResponse(success bool) map[string]any {
+	return map[string]any{
+		"data": map[string]any{
+			"issueUpdate": map[string]any{
+				"success": success,
+			},
 		},
 	}
 }
