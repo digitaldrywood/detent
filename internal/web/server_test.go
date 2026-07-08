@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -2483,6 +2484,175 @@ func TestKanbanMoveFailureDoesNotInsertPendingCard(t *testing.T) {
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
 	if strings.Contains(body, "Failed move card") {
 		t.Fatalf("failed move inserted pending card:\n%s", body)
+	}
+}
+
+func TestKanbanMoveBlockedStateUpdateReturnsValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		fieldID   int
+		dialog    bool
+		configure func(*kanbanActionConnector, error)
+	}{
+		{
+			name: "project v2 status",
+			configure: func(c *kanbanActionConnector, err error) {
+				c.updateErr = err
+			},
+		},
+		{
+			name:    "issue field status",
+			fieldID: 123,
+			configure: func(c *kanbanActionConnector, err error) {
+				c.setFieldErr = err
+			},
+		},
+		{
+			name:   "project v2 status dialog",
+			dialog: true,
+			configure: func(c *kanbanActionConnector, err error) {
+				c.updateErr = err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testDeps(t)
+			metrics := &workflowPhaseEventStoreProbe{}
+			deps.Store = metrics
+			blocked := &connector.StateUpdateBlockedError{
+				IssueID:      "I_done1021",
+				CurrentState: "Done",
+				TargetState:  "Todo",
+			}
+			actionConnector := &kanbanActionConnector{name: "github"}
+			tt.configure(actionConnector, blocked)
+			mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+				Mode:              workflowconfig.KanbanModeIntegration,
+				IssueStateFieldID: tt.fieldID,
+				AllowedTransitions: map[string][]string{
+					"Done": {"Todo"},
+				},
+			}, actionConnector)
+			if err := deps.Hub.Publish(telemetry.Snapshot{
+				GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+				Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Projects: []telemetry.ProjectSnapshot{
+					{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+				},
+				BoardIssues: []telemetry.Issue{{
+					ID:         "I_done1021",
+					Identifier: "digitaldrywood/detent#1021",
+					ProjectID:  "detent",
+					Title:      "Blocked terminal card",
+					State:      "Done",
+				}},
+			}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			form := url.Values{
+				"project_id":    {"detent"},
+				"issue_id":      {"I_done1021"},
+				"current_state": {"Done"},
+				"target_state":  {"Todo"},
+			}
+			if tt.dialog {
+				form.Set("kanban_dialog", "true")
+			}
+			rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+			wantStatus := http.StatusUnprocessableEntity
+			if tt.dialog {
+				wantStatus = http.StatusOK
+			}
+			if rec.Code != wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, wantStatus, rec.Body.String())
+			}
+			if tt.dialog && rec.Header().Get("HX-Retarget") != "#kanban-dialog-content" {
+				t.Fatalf("HX-Retarget = %q, want #kanban-dialog-content", rec.Header().Get("HX-Retarget"))
+			}
+			for _, want := range []string{
+				"Move to Todo was refused",
+				"digitaldrywood/detent#1021",
+				"terminal state Done",
+			} {
+				if !strings.Contains(rec.Body.String(), want) {
+					t.Fatalf("body missing %q: %s", want, rec.Body.String())
+				}
+			}
+			if got := kanbanPendingStateCount(t, server); got != 0 {
+				t.Fatalf("pending kanban states = %d, want 0", got)
+			}
+			if got := metrics.workflowPhaseEventCount(); got != 0 {
+				t.Fatalf("workflow phase events = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestKanbanRemoveBlockedStateUpdateReturnsValidation(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	blocked := &connector.StateUpdateBlockedError{
+		IssueID:      "I_remove1021",
+		CurrentState: "Done",
+		TargetState:  "Todo",
+	}
+	actionConnector := &kanbanActionConnector{name: "github", removeErr: blocked}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_remove1021",
+			Identifier: "digitaldrywood/detent#1021",
+			ProjectID:  "detent",
+			Title:      "Blocked remove card",
+			State:      "Done",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"project_id":    {"detent"},
+		"issue_id":      {"I_remove1021"},
+		"current_state": {"Done"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/remove", form)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+	for _, want := range []string{
+		"Move to Todo was refused",
+		"digitaldrywood/detent#1021",
+		"terminal state Done",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("body missing %q: %s", want, rec.Body.String())
+		}
+	}
+	if got := kanbanPendingRemovalCount(t, server); got != 0 {
+		t.Fatalf("pending kanban removals = %d, want 0", got)
 	}
 }
 
@@ -9718,6 +9888,28 @@ func (storeProbe) RecordWorkflowPhaseEvent(context.Context, store.WorkflowPhaseE
 	return 0, nil
 }
 
+type workflowPhaseEventStoreProbe struct {
+	storeProbe
+
+	mu     sync.Mutex
+	events []store.WorkflowPhaseEvent
+}
+
+func (p *workflowPhaseEventStoreProbe) RecordWorkflowPhaseEvent(_ context.Context, event store.WorkflowPhaseEvent) (int64, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.events = append(p.events, event)
+	return int64(len(p.events)), nil
+}
+
+func (p *workflowPhaseEventStoreProbe) workflowPhaseEventCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return len(p.events)
+}
+
 func (storeProbe) WorkflowMetricsReport(context.Context, store.WorkflowMetricsQuery) (store.WorkflowMetricsReport, error) {
 	return store.WorkflowMetricsReport{}, nil
 }
@@ -9832,6 +10024,10 @@ type kanbanActionConnector struct {
 	name string
 
 	mu             sync.Mutex
+	updateErr      error
+	setFieldErr    error
+	clearFieldErr  error
+	removeErr      error
 	states         []kanbanStateUpdate
 	fields         []kanbanIssueFieldUpdate
 	fieldClears    []kanbanIssueFieldUpdate
@@ -9944,8 +10140,9 @@ func (c *kanbanActionConnector) UpdateIssueState(_ context.Context, issueID stri
 
 	c.mu.Lock()
 	c.activeMoves--
+	err := c.updateErr
 	c.mu.Unlock()
-	return nil
+	return err
 }
 
 func (c *kanbanActionConnector) SetAssignee(context.Context, string, string) error {
@@ -9961,7 +10158,7 @@ func (c *kanbanActionConnector) SetIssueField(_ context.Context, issueID string,
 	defer c.mu.Unlock()
 
 	c.fields = append(c.fields, kanbanIssueFieldUpdate{issueID: issueID, fieldID: fieldID, value: value})
-	return nil
+	return c.setFieldErr
 }
 
 func (c *kanbanActionConnector) ClearIssueField(_ context.Context, issueID string, fieldID int) error {
@@ -9969,7 +10166,7 @@ func (c *kanbanActionConnector) ClearIssueField(_ context.Context, issueID strin
 	defer c.mu.Unlock()
 
 	c.fieldClears = append(c.fieldClears, kanbanIssueFieldUpdate{issueID: issueID, fieldID: fieldID})
-	return nil
+	return c.clearFieldErr
 }
 
 func (c *kanbanActionConnector) RemoveIssueFromProject(_ context.Context, issueID string) error {
@@ -9977,7 +10174,7 @@ func (c *kanbanActionConnector) RemoveIssueFromProject(_ context.Context, issueI
 	defer c.mu.Unlock()
 
 	c.removes = append(c.removes, kanbanRemoval{issueID: issueID})
-	return nil
+	return c.removeErr
 }
 
 func (c *kanbanActionConnector) CreatePullRequestComment(_ context.Context, repository string, number int, body string) error {
@@ -10109,6 +10306,36 @@ func performForm(t *testing.T, handler http.Handler, method string, path string,
 	req.Header.Set("HX-Request", "true")
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+func kanbanPendingStateCount(t *testing.T, server *web.Server) int {
+	t.Helper()
+
+	return kanbanPendingMutationCount(t, server, "states")
+}
+
+func kanbanPendingRemovalCount(t *testing.T, server *web.Server) int {
+	t.Helper()
+
+	return kanbanPendingMutationCount(t, server, "removed")
+}
+
+func kanbanPendingMutationCount(t *testing.T, server *web.Server, field string) int {
+	t.Helper()
+
+	serverValue := reflect.ValueOf(server)
+	if serverValue.Kind() != reflect.Ptr || serverValue.IsNil() {
+		t.Fatalf("server value = %v, want non-nil pointer", serverValue.Kind())
+	}
+	mutations := serverValue.Elem().FieldByName("kanbanMutations")
+	if !mutations.IsValid() || mutations.IsNil() {
+		return 0
+	}
+	values := mutations.Elem().FieldByName(field)
+	if !values.IsValid() {
+		t.Fatalf("kanbanMutations.%s is not available", field)
+	}
+	return values.Len()
 }
 
 func assertKanbanDialogSelectedTarget(t *testing.T, body string, target string) {
