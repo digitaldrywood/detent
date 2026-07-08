@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strconv"
@@ -387,7 +388,9 @@ func createDoctorWorkflowImprovementProposalIssues(
 			if err != nil {
 				return nil, err
 			}
-			if err := projectConnector.UpdateIssueState(ctx, issue.ID, doctorWorkflowProposalBacklogState); err != nil {
+			if err := projectConnector.UpdateIssueState(ctx, issue.ID, doctorWorkflowProposalBacklogState); errors.Is(err, connector.ErrStateUpdateBlocked) {
+				slog.Default().Debug("skip blocked self-improvement proposal state update", "issue_id", issue.ID, "target_state", doctorWorkflowProposalBacklogState, "error", err)
+			} else if err != nil {
 				return nil, err
 			}
 		}

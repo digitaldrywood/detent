@@ -2019,7 +2019,7 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 			currentStatus = c.githubIssueStateToDetentState(issue.State)
 		}
 		if c.terminalStatusUpdateBlocked(currentStatus, stateName) {
-			return nil
+			return c.stateUpdateBlockedError(issueID, currentStatus, stateName)
 		}
 		return c.updateIssueStatusLabel(ctx, ref, issue, stateName)
 	}
@@ -2036,7 +2036,7 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 			return err
 		}
 		if c.terminalStatusUpdateBlocked(currentStatus, stateName) {
-			return nil
+			return c.stateUpdateBlockedError(issueID, currentStatus, stateName)
 		}
 		githubState := c.detentToGitHubState(stateName)
 		return c.setIssueStatusField(ctx, ref, githubState)
@@ -2050,7 +2050,7 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 		return err
 	}
 	if c.terminalStatusUpdateBlocked(item.StatusName, stateName) {
-		return nil
+		return c.stateUpdateBlockedError(issueID, item.StatusName, stateName)
 	}
 
 	githubState := c.detentToGitHubState(stateName)
@@ -3910,6 +3910,22 @@ func (c *Connector) terminalStatusUpdateBlocked(currentStatus string, targetStat
 		return false
 	}
 	return !stateInList(targetState, c.terminalStates)
+}
+
+func (c *Connector) stateUpdateBlockedError(issueID string, currentStatus string, targetState string) error {
+	currentState := c.githubToDetentState(currentStatus)
+	if strings.TrimSpace(currentState) == "" {
+		currentState = strings.TrimSpace(currentStatus)
+	}
+	targetDetentState := c.githubToDetentState(targetState)
+	if strings.TrimSpace(targetDetentState) == "" {
+		targetDetentState = strings.TrimSpace(targetState)
+	}
+	return &connector.StateUpdateBlockedError{
+		IssueID:      strings.TrimSpace(issueID),
+		CurrentState: strings.TrimSpace(currentState),
+		TargetState:  strings.TrimSpace(targetDetentState),
+	}
 }
 
 func (c *Connector) updateStatusFieldValue(ctx context.Context, itemID string, fieldID string, optionID string) error {

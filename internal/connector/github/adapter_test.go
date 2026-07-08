@@ -3729,27 +3729,272 @@ func TestConnectorVerifyStatusOptionsChecksMappedStatusOptions(t *testing.T) {
 	}
 }
 
-func TestConnectorUpdateIssueStateSkipsTerminalToActiveTransition(t *testing.T) {
+func TestConnectorUpdateIssueStateTerminalTransitionRules(t *testing.T) {
 	t.Parallel()
 
-	server := newGraphQLTestServer(t, []graphqlTestResponse{
-		{body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Done"}}]}}}}`},
-	})
-	c := newGitHubTestConnector(t, server, Config{
-		ProjectSlug:    "PVT_1",
-		TerminalStates: []string{"Done", "Cancelled"},
-	})
-
-	if err := c.UpdateIssueState(context.Background(), "I_kw1", "In Progress"); err != nil {
-		t.Fatalf("UpdateIssueState() error = %v", err)
+	type transitionScenario struct {
+		name          string
+		currentStatus string
+		targetState   string
+		wantBlocked   bool
 	}
 
-	requests := server.requests()
-	if len(requests) != 1 {
-		t.Fatalf("request count = %d, want 1", len(requests))
+	scenarios := []transitionScenario{
+		{
+			name:          "terminal to non-terminal",
+			currentStatus: "Closed",
+			targetState:   "In Progress",
+			wantBlocked:   true,
+		},
+		{
+			name:          "terminal to terminal",
+			currentStatus: "Closed",
+			targetState:   "Cancelled",
+		},
+		{
+			name:          "non-terminal to terminal",
+			currentStatus: "Working",
+			targetState:   "Done",
+		},
 	}
-	if strings.Contains(requests[0]["query"].(string), "updateProjectV2ItemFieldValue") {
-		t.Fatalf("terminal guard issued update mutation: %q", requests[0]["query"])
+
+	modes := []struct {
+		name           string
+		issueID        string
+		newConnector   func(*testing.T, *graphqlTestServer, transitionScenario) *Connector
+		responses      func(transitionScenario) []graphqlTestResponse
+		mutationIssued func([]map[string]any) bool
+	}{
+		{
+			name:    GitHubStatusSourceLabel,
+			issueID: "I_1",
+			newConnector: func(t *testing.T, server *graphqlTestServer, _ transitionScenario) *Connector {
+				t.Helper()
+				c := newGitHubTestConnector(t, server, Config{
+					GitHubStatusSource: GitHubStatusSourceLabel,
+					Repository:         "digitaldrywood/detent",
+					ActiveStates:       []string{"In Progress"},
+					TerminalStates:     []string{"Done", "Cancelled"},
+					StateMap:           githubTransitionStateMap(),
+				})
+				c.projectCache.SetIssueRef("I_1", issueRef{Owner: "digitaldrywood", Name: "detent", Number: 1})
+				return c
+			},
+			responses: func(scenario transitionScenario) []graphqlTestResponse {
+				current := githubTransitionLabelIssueResponse("I_1", scenario.currentStatus)
+				if scenario.wantBlocked {
+					return []graphqlTestResponse{current}
+				}
+				target := githubTransitionLabelIssueResponse("I_1", scenario.currentStatus)
+				return []graphqlTestResponse{
+					current,
+					target,
+					{
+						method: http.MethodPut,
+						path:   "/repos/digitaldrywood/detent/issues/1/labels",
+						body:   githubTransitionLabelUpdateResponse(scenario.targetState),
+					},
+				}
+			},
+			mutationIssued: func(requests []map[string]any) bool {
+				for _, request := range requests {
+					if request["method"] == http.MethodPut && request["path"] == "/repos/digitaldrywood/detent/issues/1/labels" {
+						return true
+					}
+				}
+				return false
+			},
+		},
+		{
+			name:    GitHubStatusSourceIssueField,
+			issueID: "I_1",
+			newConnector: func(t *testing.T, server *graphqlTestServer, _ transitionScenario) *Connector {
+				t.Helper()
+				c := newGitHubTestConnector(t, server, Config{
+					GitHubStatusSource: GitHubStatusSourceIssueField,
+					Repository:         "digitaldrywood/detent",
+					StatusField:        "Status",
+					ActiveStates:       []string{"In Progress"},
+					TerminalStates:     []string{"Done", "Cancelled"},
+					StateMap:           githubTransitionStateMap(),
+				})
+				c.projectCache.SetIssueRef("I_1", issueRef{Owner: "digitaldrywood", Name: "detent", Number: 1})
+				return c
+			},
+			responses: func(scenario transitionScenario) []graphqlTestResponse {
+				responses := []graphqlTestResponse{
+					githubTransitionIssueFieldValuesResponse(scenario.currentStatus),
+					githubTransitionIssueFieldMetadataResponse(),
+				}
+				if scenario.wantBlocked {
+					return responses
+				}
+				return append(responses, githubTransitionIssueFieldUpdateResponse(scenario.targetState))
+			},
+			mutationIssued: func(requests []map[string]any) bool {
+				for _, request := range requests {
+					if request["method"] == http.MethodPost && request["path"] == "/repos/digitaldrywood/detent/issues/1/issue-field-values" {
+						return true
+					}
+				}
+				return false
+			},
+		},
+		{
+			name:    GitHubStatusSourceProjectV2,
+			issueID: "I_kw1",
+			newConnector: func(t *testing.T, server *graphqlTestServer, _ transitionScenario) *Connector {
+				t.Helper()
+				return newGitHubTestConnector(t, server, Config{
+					ProjectSlug:    "PVT_1",
+					ActiveStates:   []string{"In Progress"},
+					TerminalStates: []string{"Done", "Cancelled"},
+					StateMap:       githubTransitionStateMap(),
+				})
+			},
+			responses: func(scenario transitionScenario) []graphqlTestResponse {
+				responses := []graphqlTestResponse{githubTransitionProjectItemResponse(scenario.currentStatus)}
+				if scenario.wantBlocked {
+					return responses
+				}
+				return append(responses,
+					githubTransitionProjectMetadataResponse(),
+					graphqlTestResponse{body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_1"}}}}`},
+				)
+			},
+			mutationIssued: func(requests []map[string]any) bool {
+				for _, request := range requests {
+					query, ok := request["query"].(string)
+					if ok && strings.Contains(query, "updateProjectV2ItemFieldValue") {
+						return true
+					}
+				}
+				return false
+			},
+		},
+	}
+
+	for _, mode := range modes {
+		mode := mode
+		for _, scenario := range scenarios {
+			scenario := scenario
+			t.Run(mode.name+"/"+scenario.name, func(t *testing.T) {
+				t.Parallel()
+
+				server := newGraphQLTestServer(t, mode.responses(scenario))
+				c := mode.newConnector(t, server, scenario)
+
+				err := c.UpdateIssueState(context.Background(), mode.issueID, scenario.targetState)
+				if scenario.wantBlocked {
+					assertStateUpdateBlocked(t, err, mode.issueID, "Done", scenario.targetState)
+				} else if err != nil {
+					t.Fatalf("UpdateIssueState() error = %v", err)
+				}
+
+				requests := server.requests()
+				if len(requests) != len(mode.responses(scenario)) {
+					t.Fatalf("request count = %d, want %d", len(requests), len(mode.responses(scenario)))
+				}
+				mutationIssued := mode.mutationIssued(requests)
+				if scenario.wantBlocked && mutationIssued {
+					t.Fatalf("blocked transition issued mutation: %#v", requests)
+				}
+				if !scenario.wantBlocked && !mutationIssued {
+					t.Fatalf("allowed transition did not issue mutation: %#v", requests)
+				}
+			})
+		}
+	}
+}
+
+func assertStateUpdateBlocked(t *testing.T, err error, issueID string, currentState string, targetState string) {
+	t.Helper()
+
+	if !errors.Is(err, connector.ErrStateUpdateBlocked) {
+		t.Fatalf("UpdateIssueState() error = %v, want ErrStateUpdateBlocked", err)
+	}
+	var blocked *connector.StateUpdateBlockedError
+	if !errors.As(err, &blocked) {
+		t.Fatalf("UpdateIssueState() error = %T, want StateUpdateBlockedError", err)
+	}
+	if blocked.IssueID != issueID || blocked.CurrentState != currentState || blocked.TargetState != targetState {
+		t.Fatalf("StateUpdateBlockedError = %#v, want issue_id=%q current_state=%q target_state=%q", blocked, issueID, currentState, targetState)
+	}
+}
+
+func githubTransitionStateMap() map[string]string {
+	return map[string]string{
+		"Done":        "Closed",
+		"Cancelled":   "Archived",
+		"In Progress": "Working",
+	}
+}
+
+func githubTransitionExternalState(stateName string) string {
+	if mapped, ok := githubTransitionStateMap()[stateName]; ok {
+		return mapped
+	}
+	return stateName
+}
+
+func githubTransitionLabelIssueResponse(issueID string, status string) graphqlTestResponse {
+	return graphqlTestResponse{
+		method: http.MethodGet,
+		path:   "/repos/digitaldrywood/detent/issues/1",
+		body: fmt.Sprintf(
+			`{"node_id":%q,"number":1,"title":"Transition issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1","assignees":[],"labels":[{"name":%q},{"name":"bug"}]}`,
+			issueID,
+			"detent:"+statusLabelSlug(status),
+		),
+	}
+}
+
+func githubTransitionLabelUpdateResponse(targetState string) string {
+	return fmt.Sprintf(`[{"name":"bug"},{"name":%q}]`, "detent:"+statusLabelSlug(githubTransitionExternalState(targetState)))
+}
+
+func githubTransitionIssueFieldValuesResponse(status string) graphqlTestResponse {
+	return graphqlTestResponse{
+		method: http.MethodGet,
+		path:   "/repos/digitaldrywood/detent/issues/1/issue-field-values?per_page=100",
+		body: fmt.Sprintf(
+			`[{"issue_field_id":10,"node_id":"IFV_1","data_type":"single_select","single_select_option":{"id":1,"name":%q,"color":"gray"}}]`,
+			status,
+		),
+	}
+}
+
+func githubTransitionIssueFieldMetadataResponse() graphqlTestResponse {
+	return graphqlTestResponse{
+		method: http.MethodGet,
+		path:   "/orgs/digitaldrywood/issue-fields?per_page=100",
+		body:   `[{"id":10,"node_id":"IFSS_status","name":"Status","data_type":"single_select","options":[{"id":1,"name":"Closed","color":"purple"},{"id":2,"name":"Archived","color":"gray"},{"id":3,"name":"Working","color":"yellow"}]}]`,
+	}
+}
+
+func githubTransitionIssueFieldUpdateResponse(targetState string) graphqlTestResponse {
+	return graphqlTestResponse{
+		method: http.MethodPost,
+		path:   "/repos/digitaldrywood/detent/issues/1/issue-field-values",
+		body: fmt.Sprintf(
+			`[{"issue_field_id":10,"node_id":"IFV_1","data_type":"single_select","single_select_option":{"id":2,"name":%q,"color":"gray"}}]`,
+			githubTransitionExternalState(targetState),
+		),
+	}
+}
+
+func githubTransitionProjectItemResponse(status string) graphqlTestResponse {
+	return graphqlTestResponse{
+		body: fmt.Sprintf(
+			`{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":%q}}]}}}}`,
+			status,
+		),
+	}
+}
+
+func githubTransitionProjectMetadataResponse() graphqlTestResponse {
+	return graphqlTestResponse{
+		body: `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_closed","name":"Closed"},{"id":"OPT_archived","name":"Archived"},{"id":"OPT_working","name":"Working"}]}}}}`,
 	}
 }
 
