@@ -2,9 +2,11 @@ package linear
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -56,15 +58,27 @@ mutation DetentLinearCreateComment($issueId: String!, $body: String!) {
   }
 }`
 
+const issueUpdateStateMutation = `
+mutation DetentLinearIssueUpdateState($issueId: String!, $stateId: String!) {
+  issueUpdate(id: $issueId, input: { stateId: $stateId }) {
+    success
+  }
+}`
+
 type Config struct {
 	Endpoint   string
 	APIKey     string
+	StateMap   map[string]string
 	HTTPClient HTTPClient
 	Logger     *slog.Logger
 }
 
 type Connector struct {
-	client *Client
+	client        *Client
+	stateMap      map[string]string
+	mu            sync.Mutex
+	stateIDByTeam map[string]map[string]string
+	teamIDByIssue map[string]string
 }
 
 var _ connector.Connector = (*Connector)(nil)
@@ -76,7 +90,12 @@ func NewConnector(cfg Config) (*Connector, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Connector{client: client}, nil
+	return &Connector{
+		client:        client,
+		stateMap:      cloneStateMap(cfg.StateMap),
+		stateIDByTeam: make(map[string]map[string]string),
+		teamIDByIssue: make(map[string]string),
+	}, nil
 }
 
 func (c *Connector) Name() string {
@@ -84,7 +103,7 @@ func (c *Connector) Name() string {
 }
 
 func (*Connector) Capabilities() connector.Capabilities {
-	return connector.Capabilities{CreateComment: true}
+	return connector.Capabilities{UpdateIssueState: true, CreateComment: true}
 }
 
 func (c *Connector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
@@ -153,8 +172,63 @@ func (c *Connector) CreateComment(ctx context.Context, issueID string, body stri
 	return nil
 }
 
-func (c *Connector) UpdateIssueState(context.Context, string, string) error {
-	return connector.ErrNotImplemented
+func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, state string) error {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return ErrMissingIssue
+	}
+
+	_, usedCachedState := c.cachedStateIDForState(issueID, state)
+	stateID, err := c.resolveStateID(ctx, issueID, state)
+	if err != nil {
+		if errors.Is(err, ErrIssueNotFound) || errors.Is(err, ErrStateNotFound) {
+			return err
+		}
+		return fmt.Errorf("update linear issue state: %w", err)
+	}
+
+	success, err := c.updateIssueStateID(ctx, issueID, stateID)
+	if err != nil {
+		return fmt.Errorf("update linear issue state: %w", err)
+	}
+	if success {
+		return nil
+	}
+
+	if usedCachedState {
+		c.invalidateIssueStateCache(issueID)
+		stateID, err = c.resolveStateID(ctx, issueID, state)
+		if err != nil {
+			if errors.Is(err, ErrIssueNotFound) || errors.Is(err, ErrStateNotFound) {
+				return err
+			}
+			return fmt.Errorf("update linear issue state: %w", err)
+		}
+		success, err = c.updateIssueStateID(ctx, issueID, stateID)
+		if err != nil {
+			return fmt.Errorf("update linear issue state: %w", err)
+		}
+		if success {
+			return nil
+		}
+	}
+
+	return ErrIssueUpdateFailed
+}
+
+func (c *Connector) updateIssueStateID(ctx context.Context, issueID string, stateID string) (bool, error) {
+	var response struct {
+		IssueUpdate *struct {
+			Success bool `json:"success"`
+		} `json:"issueUpdate"`
+	}
+	if err := c.client.GraphQL(ctx, issueUpdateStateMutation, map[string]any{
+		"issueId": issueID,
+		"stateId": stateID,
+	}, &response); err != nil {
+		return false, err
+	}
+	return response.IssueUpdate != nil && response.IssueUpdate.Success, nil
 }
 
 func (c *Connector) SetAssignee(context.Context, string, string) error {
