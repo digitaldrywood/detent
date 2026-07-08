@@ -100,6 +100,9 @@ func (o *Orchestrator) recoverBlockedIssues(
 		if issueID == "" {
 			continue
 		}
+		if o.issueHasStickyBlockReason(ctx, state, issue) {
+			continue
+		}
 		decision := EvaluateBlockedRecovery(issue)
 		if decision.Action != BlockedRecoveryActionRework {
 			continue

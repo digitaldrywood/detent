@@ -98,7 +98,7 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		if issueID == "" {
 			continue
 		}
-		if o.dependencyAutoUnblockStickyBlocked(ctx, state, issue) {
+		if o.issueHasStickyBlockReason(ctx, state, issue) {
 			continue
 		}
 		hydrated, ok := o.hydrateDependencyAutoUnblockIssue(ctx, issue, cfg.SourceStates)
@@ -749,21 +749,21 @@ func (o *Orchestrator) applyDependencyAutoUnblock(
 	return true
 }
 
-func (o *Orchestrator) dependencyAutoUnblockStickyBlocked(ctx context.Context, state *State, issue connector.Issue) bool {
+func (o *Orchestrator) issueHasStickyBlockReason(ctx context.Context, state *State, issue connector.Issue) bool {
 	issueID := strings.TrimSpace(issue.ID)
 	if state != nil && issueID != "" {
-		if blocked, ok := state.Blocked[issueID]; ok && dependencyAutoUnblockStickyReason(blocked.Reason) {
+		if blocked, ok := state.Blocked[issueID]; ok && stickyBlockReason(blocked.Reason) {
 			return true
 		}
 	}
-	if dependencyAutoUnblockStickyReason(issue.BlockerReason) {
+	if stickyBlockReason(issue.BlockerReason) {
 		return true
 	}
 	reason, ok := o.latestWorkflowLaneReason(ctx, issue, blockedStatusState)
-	return ok && dependencyAutoUnblockStickyReason(reason)
+	return ok && stickyBlockReason(reason)
 }
 
-func dependencyAutoUnblockStickyReason(reason string) bool {
+func stickyBlockReason(reason string) bool {
 	switch strings.ToLower(strings.TrimSpace(reason)) {
 	case "rework_limit", "circuit_breaker":
 		return true
