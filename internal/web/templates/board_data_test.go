@@ -842,7 +842,6 @@ func TestBoardSnapshotRendersKanbanDragAttributes(t *testing.T) {
 		`data-kanban-card`,
 		`data-kanban-current-state="Todo"`,
 		`data-kanban-issue-id="I_kw1"`,
-		`draggable="true"`,
 		`data-kanban-action="move"`,
 		`data-kanban-allowed-targets="inprogress blocked"`,
 		`hx-post="/api/v1/kanban/move"`,
@@ -874,7 +873,6 @@ func TestBoardSnapshotRendersKanbanDragAttributes(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
-		`draggable="true"`,
 		`data-kanban-action="move"`,
 		`data-kanban-drag-move-form`,
 		`data-kanban-issue-id=`,
@@ -961,8 +959,7 @@ func TestBoardSnapshotOmitsKanbanDragAttributesWhenDisabled(t *testing.T) {
 			for _, forbidden := range []string{
 				`data-kanban-drop-state`,
 				`data-kanban-drag-move-form`,
-				`draggable="true"`,
-				`data-kanban-action="move"`,
+						`data-kanban-action="move"`,
 			} {
 				if strings.Contains(html, forbidden) {
 					t.Fatalf("disabled board rendered %q:\n%s", forbidden, html)
@@ -1038,8 +1035,7 @@ func TestBoardSnapshotExplainsCardLevelMoveDisabledReasons(t *testing.T) {
 				}
 			}
 			for _, forbidden := range []string{
-				`draggable="true"`,
-				`data-kanban-action="move"`,
+						`data-kanban-action="move"`,
 				`data-kanban-drag-move-form`,
 			} {
 				if strings.Contains(card, forbidden) {
@@ -1056,7 +1052,9 @@ func TestBoardKanbanDragScriptSubmitsAllowedDrop(t *testing.T) {
 		`window.__detentBoardKanbanDragHandlersRegistered`,
 		`lane.dataset.laneHidden = "false";`,
 		`lane.dataset.kanbanDropAllowed = allowed ? "true" : "false";`,
-		`event.dataTransfer.dropEffect = allowed ? "move" : "none";`,
+		`document.addEventListener("pointerdown"`,
+		`document.addEventListener("pointermove"`,
+		`document.addEventListener("pointerup"`,
 		`feedback("Move blocked by transition policy.", "error");`,
 		`targetState.value = lane.dataset.kanbanDropState || "";`,
 		`form.requestSubmit();`,

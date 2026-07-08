@@ -399,7 +399,7 @@ test("all-project board cards stay read-only on drag attempt", async ({
     "data-kanban-move-disabled-reason",
     /All-project board is read-only/,
   );
-  await expect(card).not.toHaveAttribute("draggable", "true");
+  await expect(card).not.toHaveAttribute("data-kanban-action", "move");
   await expect(page.locator("[data-kanban-drop-state]")).toHaveCount(0);
 
   let moveRequests = 0;
@@ -432,7 +432,7 @@ test("all-project board cards stay read-only on drag attempt", async ({
   expect(moveRequests).toBe(0);
 });
 
-test("dragstart defers DOM mutations so Chrome keeps the native drag", async ({
+test("pointer drag shows affordances past the threshold and cancels cleanly", async ({
   page,
 }) => {
   await page.setViewportSize(desktopViewport);
@@ -447,55 +447,66 @@ test("dragstart defers DOM mutations so Chrome keeps the native drag", async ({
       hasText: "Kanban demo backlog intake",
     },
   );
-  await expect(card).toHaveAttribute("draggable", "true");
+  await expect(card).toHaveAttribute("data-kanban-action", "move");
 
-  // Chrome cancels a native drag when the dragstart handler mutates the DOM
-  // synchronously (the reflow moves the source card mid-capture). Assert the
-  // handler leaves the DOM untouched in the dispatching tick and applies the
-  // drag affordances one macrotask later.
-  const observed = await card.evaluate((element) => {
-    const readState = () => ({
-      feedbackHidden: document.getElementById("board-feedback").hidden,
-      cardDragging: element.dataset.kanbanDragging === "true",
-      hiddenLanes: document.querySelectorAll(
-        '[data-kanban-drop-state][data-lane-hidden="true"]',
-      ).length,
-      highlightedLanes: document.querySelectorAll(
-        "[data-kanban-drop-allowed]",
-      ).length,
-    });
-    element.dispatchEvent(
-      new DragEvent("dragstart", {
-        bubbles: true,
-        cancelable: true,
-        dataTransfer: new DataTransfer(),
-      }),
-    );
-    const duringDispatchTick = readState();
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        const afterMacrotask = readState();
-        element.dispatchEvent(new DragEvent("dragend", { bubbles: true }));
-        resolve({ duringDispatchTick, afterMacrotask });
-      }, 0);
-    });
-  });
+  const feedback = page.locator("#board-feedback");
+  const hiddenLanes = page.locator(
+    '[data-kanban-drop-state][data-lane-hidden="true"]',
+  );
+  const ghost = page.locator("body > [data-kanban-card][aria-hidden='true']");
+  const hiddenBefore = await hiddenLanes.count();
+  expect(hiddenBefore).toBeGreaterThan(0);
 
-  expect(observed.duringDispatchTick.feedbackHidden).toBe(true);
-  expect(observed.duringDispatchTick.cardDragging).toBe(false);
-  expect(observed.duringDispatchTick.hiddenLanes).toBeGreaterThan(0);
-  expect(observed.duringDispatchTick.highlightedLanes).toBe(0);
+  const box = await card.boundingBox();
+  if (!box) {
+    throw new Error("Drag source has no bounding box");
+  }
+  const centerX = box.x + box.width / 2;
+  const centerY = box.y + box.height / 2;
 
-  expect(observed.afterMacrotask.feedbackHidden).toBe(false);
-  expect(observed.afterMacrotask.cardDragging).toBe(true);
-  expect(observed.afterMacrotask.hiddenLanes).toBe(0);
-  expect(observed.afterMacrotask.highlightedLanes).toBeGreaterThan(0);
+  // Below the 6px threshold nothing happens: no ghost, no lane changes.
+  await page.mouse.move(centerX, centerY);
+  await page.mouse.down();
+  await page.mouse.move(centerX + 3, centerY + 3);
+  await expect(ghost).toHaveCount(0);
+  await expect(feedback).toBeHidden();
+  expect(await hiddenLanes.count()).toBe(hiddenBefore);
 
-  // dragend restores the hidden lanes and reports the abandoned move.
-  await expect(page.locator("#board-feedback")).toHaveText(/Move cancelled/);
+  // Past the threshold the drag activates: ghost follows the pointer, all
+  // lanes unhide with allowed/blocked states, and the feedback line reports
+  // the move in flight.
+  await page.mouse.move(centerX + 24, centerY + 24, { steps: 4 });
+  await expect(ghost).toHaveCount(1);
+  await expect(feedback).toHaveText(/Moving Backlog/);
+  await expect(hiddenLanes).toHaveCount(0);
   await expect(
-    page.locator('[data-kanban-drop-state][data-lane-hidden="true"]'),
+    page.locator('[data-kanban-drop-state][data-kanban-drop-allowed="true"]'),
   ).not.toHaveCount(0);
+
+  // Escape cancels: ghost removed, hidden lanes restored, move reported as
+  // cancelled, and no request was posted.
+  let moveRequests = 0;
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().endsWith("/api/v1/kanban/move")
+    ) {
+      moveRequests += 1;
+    }
+  });
+  await page.keyboard.press("Escape");
+  await expect(ghost).toHaveCount(0);
+  await expect(feedback).toHaveText(/Move cancelled/);
+  expect(await hiddenLanes.count()).toBe(hiddenBefore);
+  await page.mouse.up();
+  expect(moveRequests).toBe(0);
+
+  // The card is still where it started and did not open the detail sheet.
+  await expect(
+    page.locator('[data-kanban-drop-state="Backlog"] [data-kanban-card]', {
+      hasText: "Kanban demo backlog intake",
+    }),
+  ).toBeVisible();
 });
 
 test("project kanban board supports drag status moves", async ({ page }) => {
@@ -513,7 +524,7 @@ test("project kanban board supports drag status moves", async ({ page }) => {
   );
   const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
   const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
-  await expect(card).toHaveAttribute("draggable", "true");
+  await expect(card).toHaveAttribute("data-kanban-action", "move");
 
   const moveRequest = page.waitForRequest((request) => {
     if (
@@ -601,7 +612,7 @@ test("project kanban drag survives snapshot refresh during drag", async ({
     );
     const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
     const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
-    await expect(card).toHaveAttribute("draggable", "true");
+    await expect(card).toHaveAttribute("data-kanban-action", "move");
     await expect(targetLane).toBeHidden();
 
     const incomingSnapshot = await page.evaluate(() => {

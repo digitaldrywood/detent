@@ -1773,7 +1773,7 @@ func TestKanbanActionsRejectReadOnlyMode(t *testing.T) {
 	}
 
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent", http.StatusOK)
-	if strings.Contains(body, "/api/v1/kanban/") || strings.Contains(body, "data-kanban-action") {
+	if strings.Contains(body, "/api/v1/kanban/") || strings.Contains(body, `data-kanban-action="`) {
 		t.Fatalf("read-only dashboard exposed Kanban mutation UI:\n%s", body)
 	}
 
@@ -5099,7 +5099,7 @@ func TestProjectKanbanRouteHidesMutationControlsInReadOnlyMode(t *testing.T) {
 	}
 	for _, forbidden := range []string{
 		"/api/v1/kanban/",
-		"data-kanban-action",
+		`data-kanban-action="`,
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("read-only Kanban page rendered mutation UI %q:\n%s", forbidden, body)
@@ -5399,7 +5399,7 @@ func TestFleetKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 		`aria-label="Dashboard health"`,
 		`aria-label="Pull request pipeline"`,
 		"Running issues",
-		`data-kanban-action`,
+		`data-kanban-action="`,
 	} {
 		if strings.Contains(event.data, forbidden) {
 			t.Fatalf("fleet Kanban snapshot event rendered forbidden %q:\n%s", forbidden, event.data)
