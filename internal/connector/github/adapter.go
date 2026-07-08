@@ -1178,7 +1178,7 @@ func (c *Connector) FetchIssueStateProbe(ctx context.Context, stateNames []strin
 
 	issues := []connector.Issue{}
 	if stateSetContains(wantedStates, defaultProjectItemStatusState) {
-		backlogIssues, err := c.fetchProjectBacklogIssues(ctx, limit)
+		backlogIssues, err := c.fetchExplicitProjectBacklogIssues(ctx, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -1189,8 +1189,30 @@ func (c *Connector) FetchIssueStateProbe(ctx context.Context, stateNames []strin
 		stateNames = stateListWithout(stateNames, defaultProjectItemStatusState)
 		wantedStates = normalizedStateSet(stateNames)
 		if len(wantedStates) == 0 {
+			blankIssues, err := c.fetchBlankProjectBacklogIssues(ctx, limit-len(issues))
+			if err != nil {
+				return nil, err
+			}
+			return appendUniqueIssues(issues, blankIssues, limit), nil
+		}
+
+		statusIssues, err := c.fetchProjectItemsWithPullRequestRefsLimit(ctx, graphQLQueryObservedStatus, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
+			_, ok := wantedStates[normalizeStateName(issue.State)]
+			return ok
+		}, limit-len(issues))
+		if err != nil {
+			return nil, err
+		}
+		issues = appendUniqueIssues(issues, statusIssues, limit)
+		if len(issues) >= limit {
 			return issues, nil
 		}
+
+		blankIssues, err := c.fetchBlankProjectBacklogIssues(ctx, limit-len(issues))
+		if err != nil {
+			return nil, err
+		}
+		return appendUniqueIssues(issues, blankIssues, limit), nil
 	}
 
 	statusIssues, err := c.fetchProjectItemsWithPullRequestRefsLimit(ctx, graphQLQueryObservedStatus, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
@@ -3064,10 +3086,7 @@ func (c *Connector) fetchProjectItems(ctx context.Context, queryType string, que
 }
 
 func (c *Connector) fetchProjectBacklogIssues(ctx context.Context, limit int) ([]connector.Issue, error) {
-	backlogStates := []string{defaultProjectItemStatusState}
-	issues, err := c.fetchProjectItemsLimit(ctx, graphQLQueryCandidateIssues, c.projectStatusQuery(backlogStates), func(issue connector.Issue) bool {
-		return stateInList(issue.State, backlogStates)
-	}, limit)
+	issues, err := c.fetchExplicitProjectBacklogIssues(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -3084,6 +3103,13 @@ func (c *Connector) fetchProjectBacklogIssues(ctx context.Context, limit int) ([
 		return nil, err
 	}
 	return appendUniqueIssues(issues, blankIssues, limit), nil
+}
+
+func (c *Connector) fetchExplicitProjectBacklogIssues(ctx context.Context, limit int) ([]connector.Issue, error) {
+	backlogStates := []string{defaultProjectItemStatusState}
+	return c.fetchProjectItemsLimit(ctx, graphQLQueryCandidateIssues, c.projectStatusQuery(backlogStates), func(issue connector.Issue) bool {
+		return stateInList(issue.State, backlogStates)
+	}, limit)
 }
 
 func (c *Connector) fetchBlankProjectBacklogIssues(ctx context.Context, limit int) ([]connector.Issue, error) {

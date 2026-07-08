@@ -446,6 +446,49 @@ func TestConnectorFetchIssueStateProbeFindsBlankBacklogAfterFirstProjectPage(t *
 	}
 }
 
+func TestConnectorFetchIssueStateProbeChecksOtherStatesBeforeBlankBacklogScan(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: projectItemsPageResponse(false, "", nil),
+		},
+		{
+			body: projectItemsPageResponse(false, "", []string{
+				projectIssueNode("PVTI_review", "I_review", 82, "Review issue", "Human Review"),
+			}),
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug:    "PVT_1",
+		ObservedStates: []string{"Backlog", "Human Review"},
+	})
+
+	got, err := c.FetchIssueStateProbe(context.Background(), []string{"Backlog", "Human Review"}, 1)
+	if err != nil {
+		t.Fatalf("FetchIssueStateProbe() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssueStateProbe() len = %d, want 1", len(got))
+	}
+	if got[0].ID != "I_review" || got[0].State != "Human Review" {
+		t.Fatalf("probe issue = %#v, want Human Review issue", got[0])
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want explicit Backlog query and remaining observed-state query", len(requests))
+	}
+	variables := requestVariables(t, requests[0])
+	if variables["query"] != "status:Backlog" {
+		t.Fatalf("query = %v, want status:Backlog", variables["query"])
+	}
+	variables = requestVariables(t, requests[1])
+	if variables["query"] != `status:"Human Review"` {
+		t.Fatalf("remaining query = %v, want status:\"Human Review\"", variables["query"])
+	}
+}
+
 func TestConnectorFetchIssuesByStatesReturnsBlankBacklogAfterFirstProjectPage(t *testing.T) {
 	t.Parallel()
 
