@@ -253,6 +253,34 @@ func TestDispatchableFiltersIneligibleCandidates(t *testing.T) {
 	}
 }
 
+func TestDispatchableSkipsAutoPromoteGatePendingActiveIssue(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 8, 13, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate:          gate.Config{Kind: gate.KindCommand},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	issue := dispatchTestIssueWithPullRequest("issue-gate-pending", "In Progress", "OPEN")
+	issue.PullRequest.CIStatus = "pending"
+	state := newState(cfg)
+	orch := Orchestrator{cfg: cfg}
+
+	decision := orch.dispatchPlanner().dispatchableIssueDecision(issue, &state, false, now, "")
+	if decision.dispatchable {
+		t.Fatal("dispatchable gate-pending active issue = true, want false")
+	}
+	if decision.reason != dispatchSkipAutoPromoteGatePending {
+		t.Fatalf("dispatchable reason = %q, want %q", decision.reason, dispatchSkipAutoPromoteGatePending)
+	}
+}
+
 func TestHandleRunResultRecordsBudgetRefusalAndComment(t *testing.T) {
 	t.Parallel()
 

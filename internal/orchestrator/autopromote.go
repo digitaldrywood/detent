@@ -132,6 +132,20 @@ func EvaluateAutoPromote(
 	return decision
 }
 
+func autoPromoteHumanReviewRequired(issue connector.Issue, cfg AutoPromoteConfig, gateCfg gate.Config) bool {
+	cfg = normalizeAutoPromoteConfig(cfg)
+	if !cfg.Enabled {
+		return true
+	}
+	if autoPromoteOptoutLabel(issue, cfg) {
+		return true
+	}
+	if !autoPromoteAllowedIssueLabel(issue, cfg) {
+		return true
+	}
+	return gate.Effective(gateCfg).Kind == gate.KindHumanReview
+}
+
 func autoPromoteDecision(action AutoPromoteAction, reason AutoPromoteReason) AutoPromoteDecision {
 	return AutoPromoteDecision{
 		Action: action,

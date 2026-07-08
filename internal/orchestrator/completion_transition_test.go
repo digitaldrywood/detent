@@ -4,63 +4,122 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 )
 
 func TestCompletedActiveReviewTargetState(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name               string
-		issue              connector.Issue
-		finalState         string
-		reviewState        string
-		requirePullRequest bool
-		want               string
+		name       string
+		issue      connector.Issue
+		finalState string
+		cfg        AutoPromoteConfig
+		want       string
 	}{
 		{
-			name:               "todo completed with open pull request advances to human review",
-			issue:              completionTransitionIssue("Todo", "OPEN"),
-			finalState:         FinalStateCompleted,
-			requirePullRequest: true,
-			want:               autoPromoteSourceState,
+			name:       "todo completed with open pull request advances to human review when disabled",
+			issue:      completionTransitionIssue("Todo", "OPEN"),
+			finalState: FinalStateCompleted,
+			want:       autoPromoteSourceState,
 		},
 		{
-			name:               "in progress completed with open pull request advances to human review",
-			issue:              completionTransitionIssue("In Progress", "OPEN"),
-			finalState:         FinalStateCompleted,
-			requirePullRequest: true,
-			want:               autoPromoteSourceState,
+			name:       "in progress completed with open pull request advances to human review when disabled",
+			issue:      completionTransitionIssue("In Progress", "OPEN"),
+			finalState: FinalStateCompleted,
+			want:       autoPromoteSourceState,
 		},
 		{
-			name:               "artifact todo completed without pull request advances to configured review",
-			issue:              completionTransitionIssue("Todo", ""),
-			finalState:         FinalStateCompleted,
-			reviewState:        "Review",
-			requirePullRequest: false,
-			want:               "Review",
+			name:       "artifact todo completed without pull request advances to configured review",
+			issue:      completionTransitionIssue("Todo", ""),
+			finalState: FinalStateCompleted,
+			cfg: AutoPromoteConfig{
+				SourceState: "Review",
+				Gate:        gate.Config{Kind: gate.KindArtifact},
+			},
+			want: "Review",
 		},
 		{
-			name:               "rework completed with open pull request waits for dispatch",
-			issue:              completionTransitionIssue("Rework", "OPEN"),
-			finalState:         FinalStateCompleted,
-			requirePullRequest: true,
+			name:       "rework completed with open pull request waits for dispatch",
+			issue:      completionTransitionIssue("Rework", "OPEN"),
+			finalState: FinalStateCompleted,
 		},
 		{
-			name:               "merging completed with open pull request waits for merge lifecycle",
-			issue:              completionTransitionIssue("Merging", "OPEN"),
-			finalState:         FinalStateCompleted,
-			requirePullRequest: true,
+			name:       "merging completed with open pull request waits for merge lifecycle",
+			issue:      completionTransitionIssue("Merging", "OPEN"),
+			finalState: FinalStateCompleted,
 		},
 		{
-			name:               "todo completed without pull request waits when pull request required",
-			issue:              completionTransitionIssue("Todo", ""),
-			finalState:         FinalStateCompleted,
-			requirePullRequest: true,
+			name:       "todo completed without pull request waits when pull request required",
+			issue:      completionTransitionIssue("Todo", ""),
+			finalState: FinalStateCompleted,
+		},
+		{
+			name:       "command gate with auto promote enabled skips human review target",
+			issue:      completionTransitionIssue("In Progress", "OPEN"),
+			finalState: FinalStateCompleted,
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate:    gate.Config{Kind: gate.KindCommand},
+			},
+		},
+		{
+			name:       "human review gate keeps human review target",
+			issue:      completionTransitionIssue("In Progress", "OPEN"),
+			finalState: FinalStateCompleted,
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate:    gate.Config{Kind: gate.KindHumanReview},
+			},
+			want: autoPromoteSourceState,
+		},
+		{
+			name: "opt out label keeps human review target",
+			issue: func() connector.Issue {
+				issue := completionTransitionIssue("In Progress", "OPEN")
+				issue.Labels = []string{"requires-human-review"}
+				return issue
+			}(),
+			finalState: FinalStateCompleted,
+			cfg: AutoPromoteConfig{
+				Enabled:     true,
+				OptoutLabel: "requires-human-review",
+				Gate:        gate.Config{Kind: gate.KindCommand},
+			},
+			want: autoPromoteSourceState,
+		},
+		{
+			name: "allowlist miss keeps human review target",
+			issue: func() connector.Issue {
+				issue := completionTransitionIssue("In Progress", "OPEN")
+				issue.Labels = []string{"bug"}
+				return issue
+			}(),
+			finalState: FinalStateCompleted,
+			cfg: AutoPromoteConfig{
+				Enabled:            true,
+				AllowedIssueLabels: []string{"release"},
+				Gate:               gate.Config{Kind: gate.KindCommand},
+			},
+			want: autoPromoteSourceState,
+		},
+		{
+			name: "allowlist hit skips human review target",
+			issue: func() connector.Issue {
+				issue := completionTransitionIssue("In Progress", "OPEN")
+				issue.Labels = []string{"release"}
+				return issue
+			}(),
+			finalState: FinalStateCompleted,
+			cfg: AutoPromoteConfig{
+				Enabled:            true,
+				AllowedIssueLabels: []string{"release"},
+				Gate:               gate.Config{Kind: gate.KindCommand},
+			},
 		},
 	}
 
@@ -70,17 +129,12 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			reviewState := tt.reviewState
-			if reviewState == "" {
-				reviewState = autoPromoteSourceState
-			}
 			got := completedActiveReviewTargetState(
 				tt.issue,
 				tt.finalState,
 				activeStates,
 				terminalStates,
-				reviewState,
-				tt.requirePullRequest,
+				tt.cfg,
 			)
 			if got != tt.want {
 				t.Fatalf("completedActiveReviewTargetState() = %q, want %q", got, tt.want)
@@ -89,7 +143,7 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 	}
 }
 
-func TestTransitionCompletedActiveIssuesDirectlyPromotesZeroQuietReview(t *testing.T) {
+func TestTransitionCompletedActiveIssuesLeavesAutoPromoteIssueActive(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 7, 14, 0, 0, 0, time.UTC)
@@ -107,7 +161,8 @@ func TestTransitionCompletedActiveIssuesDirectlyPromotesZeroQuietReview(t *testi
 	cfg := normalizeConfig(Config{
 		AutoPromote: AutoPromoteConfig{
 			Enabled:       true,
-			QuietDuration: 0,
+			QuietDuration: 10 * time.Minute,
+			Gate:          gate.Config{Kind: gate.KindCommand},
 		},
 		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
 		TerminalStates: []string{"Done", "Cancelled"},
@@ -121,36 +176,27 @@ func TestTransitionCompletedActiveIssuesDirectlyPromotesZeroQuietReview(t *testi
 
 	result := orch.transitionCompletedActiveIssuesToReview(context.Background(), &state, []connector.Issue{issue}, now)
 
-	if _, ok := result.transitioned[issue.ID]; !ok {
-		t.Fatalf("transitioned[%q] missing", issue.ID)
+	if len(result.transitioned) != 0 {
+		t.Fatalf("transitioned = %#v, want none", result.transitioned)
 	}
-	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("updates = %#v, want %#v", got, want)
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want no backend write", tracker.updates)
 	}
-	if len(result.dispatchCandidates) != 1 || result.dispatchCandidates[0].State != "Merging" {
-		t.Fatalf("dispatchCandidates = %#v, want one Merging issue", result.dispatchCandidates)
+	if len(result.dispatchCandidates) != 0 {
+		t.Fatalf("dispatchCandidates = %#v, want none", result.dispatchCandidates)
 	}
-	if len(tracker.comments) != 1 {
-		t.Fatalf("comments = %#v, want one auto-promote audit comment", tracker.comments)
+	if len(tracker.comments) != 0 {
+		t.Fatalf("comments = %#v, want none", tracker.comments)
 	}
-	for _, fragment := range []string{
-		"Auto-promoted this issue from In Progress to Merging.",
-		"reason: ready",
-		"https://github.test/digitaldrywood/detent/pull/17",
-	} {
-		if !strings.Contains(tracker.comments[0].body, fragment) {
-			t.Fatalf("comment %q missing %q", tracker.comments[0].body, fragment)
-		}
+	if got := state.Completed[issue.ID].Issue.State; got != "In Progress" {
+		t.Fatalf("Completed issue state = %q, want In Progress", got)
 	}
-	if got := state.Completed[issue.ID].Issue.State; got != "Merging" {
-		t.Fatalf("Completed issue state = %q, want Merging", got)
-	}
-	if len(state.RecentEvents) == 0 || !strings.Contains(state.RecentEvents[len(state.RecentEvents)-1].Message, "from In Progress to Merging") {
-		t.Fatalf("RecentEvents = %#v, want direct auto-promote audit event", state.RecentEvents)
+	if len(state.RecentEvents) != 0 {
+		t.Fatalf("RecentEvents = %#v, want none", state.RecentEvents)
 	}
 }
 
-func TestTransitionCompletedActiveIssuesKeepsHumanReviewForNonZeroQuietReview(t *testing.T) {
+func TestTransitionCompletedActiveIssuesKeepsHumanReviewWhenRequired(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 7, 14, 0, 0, 0, time.UTC)
@@ -169,6 +215,7 @@ func TestTransitionCompletedActiveIssuesKeepsHumanReviewForNonZeroQuietReview(t 
 		AutoPromote: AutoPromoteConfig{
 			Enabled:       true,
 			QuietDuration: 10 * time.Minute,
+			Gate:          gate.Config{Kind: gate.KindHumanReview},
 		},
 		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
 		TerminalStates: []string{"Done", "Cancelled"},
