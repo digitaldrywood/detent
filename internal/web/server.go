@@ -22,6 +22,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hub"
+	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -122,7 +123,7 @@ type Server struct {
 	assets              staticAssets
 	projects            *projectSmallMultipleRecorder
 	snapshots           *snapshotEnrichmentCache
-	kanbanMutations     *kanbanMutationLocks
+	kanbanMutations     *kanbanstate.MutationTracker
 	kanbanRefreshes     *kanbanRefreshFeedbackTracker
 	kanbanRetryInFlight atomic.Bool
 	refreshes           *manualRefreshTracker
@@ -197,7 +198,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		assets:              newStaticAssets(cfg.staticDir()),
 		projects:            newProjectSmallMultipleRecorder(),
 		snapshots:           newSnapshotEnrichmentCache(),
-		kanbanMutations:     newKanbanMutationLocks(),
+		kanbanMutations:     kanbanstate.NewMutationTracker(),
 		kanbanRefreshes:     newKanbanRefreshFeedbackTracker(),
 		refreshes:           newManualRefreshTracker(),
 		demo:                newDemoScenarioSet(cfg.Demo),
@@ -662,29 +663,29 @@ func (s *Server) withKanbanRevertFeedback(data templates.DashboardData) template
 	return data
 }
 
-func (s *Server) kanbanRevertNotices(data templates.DashboardData) []kanbanRevertNotice {
+func (s *Server) kanbanRevertNotices(data templates.DashboardData) []kanbanstate.RevertNotice {
 	if s == nil || s.kanbanMutations == nil {
 		return nil
 	}
 	projectID := strings.TrimSpace(data.ProjectID)
 	if projectID != "" {
-		return s.kanbanMutations.consumeRevertNotices("project:"+projectID, projectID)
+		return s.kanbanMutations.ConsumeRevertNotices("project:"+projectID, projectID)
 	}
-	return s.kanbanMutations.consumeRevertNotices("", "")
+	return s.kanbanMutations.ConsumeRevertNotices("", "")
 }
 
-func kanbanRevertFeedback(notices []kanbanRevertNotice) string {
+func kanbanRevertFeedback(notices []kanbanstate.RevertNotice) string {
 	messages := make([]string, 0, len(notices))
 	for _, notice := range notices {
-		identifier := strings.TrimSpace(notice.identifier)
+		identifier := strings.TrimSpace(notice.Identifier)
 		if identifier == "" {
 			identifier = "card"
 		}
-		from := strings.TrimSpace(notice.from)
+		from := strings.TrimSpace(notice.From)
 		if from == "" {
 			from = "the requested state"
 		}
-		to := strings.TrimSpace(notice.to)
+		to := strings.TrimSpace(notice.To)
 		if to == "" {
 			to = "the tracker state"
 		}

@@ -6,62 +6,22 @@ import (
 	"errors"
 	"fmt"
 	"html"
-	"maps"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
-
-type kanbanMutationLocks struct {
-	mu       sync.Mutex
-	locks    map[string]*sync.Mutex
-	states   map[string]kanbanPendingState
-	removed  map[string]kanbanPendingRemoval
-	reverted map[string]kanbanRevertNotice
-}
-
-type kanbanPendingState struct {
-	snapshot       string
-	current        string
-	project        string
-	issue          telemetry.Issue
-	dataSeqAtWrite uint64
-	contradictions int
-}
-
-type kanbanPendingRemoval struct {
-	snapshot       string
-	removedAt      time.Time
-	dataSeqAtWrite uint64
-}
-
-type kanbanRevertNotice struct {
-	identifier string
-	from       string
-	to         string
-	at         time.Time
-}
-
-type kanbanSnapshotIssueEntry struct {
-	issue           telemetry.Issue
-	state           string
-	rank            int
-	index           int
-	rawRuntimeState bool
-}
 
 type kanbanActionTarget struct {
 	key       string
@@ -105,324 +65,14 @@ type kanbanCommentMutationRequest struct {
 }
 
 const (
-	kanbanDialogContentTarget       = "#kanban-dialog-content"
-	kanbanProjectBoardTarget        = "#snapshot"
-	kanbanFleetBoardTarget          = "#snapshot"
-	kanbanDialogSucceeded           = "kanbanActionSucceeded"
-	kanbanOverlayContradictionLimit = 2
-	kanbanRemovalPendingTTL         = 5 * time.Minute
-	kanbanRefreshRetryDelay         = 2 * time.Second
-	kanbanMoveUnsupportedMessage    = "This project's tracker does not support moving cards."
-	kanbanRemoveUnsupportedMessage  = "This project's tracker does not support removing cards."
+	kanbanDialogContentTarget      = "#kanban-dialog-content"
+	kanbanProjectBoardTarget       = "#snapshot"
+	kanbanFleetBoardTarget         = "#snapshot"
+	kanbanDialogSucceeded          = "kanbanActionSucceeded"
+	kanbanRefreshRetryDelay        = 2 * time.Second
+	kanbanMoveUnsupportedMessage   = "This project's tracker does not support moving cards."
+	kanbanRemoveUnsupportedMessage = "This project's tracker does not support removing cards."
 )
-
-func newKanbanMutationLocks() *kanbanMutationLocks {
-	return &kanbanMutationLocks{
-		locks:    map[string]*sync.Mutex{},
-		states:   map[string]kanbanPendingState{},
-		removed:  map[string]kanbanPendingRemoval{},
-		reverted: map[string]kanbanRevertNotice{},
-	}
-}
-
-func (l *kanbanMutationLocks) withLock(key string, fn func() error) error {
-	lock := l.lockFor(key)
-	lock.Lock()
-	defer lock.Unlock()
-	return fn()
-}
-
-func (l *kanbanMutationLocks) lockFor(key string) *sync.Mutex {
-	key = strings.TrimSpace(key)
-	if key == "" {
-		key = "default"
-	}
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	lock, ok := l.locks[key]
-	if !ok {
-		lock = &sync.Mutex{}
-		l.locks[key] = lock
-	}
-	return lock
-}
-
-func (l *kanbanMutationLocks) cardState(key string, issueID string, snapshotState string, dataSeq uint64) string {
-	stateKey := kanbanMutationStateKey(key, issueID)
-	if stateKey == "" {
-		return snapshotState
-	}
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	return l.cardStateLocked(stateKey, snapshotState, dataSeq)
-}
-
-func (l *kanbanMutationLocks) cardStateLocked(stateKey string, snapshotState string, dataSeq uint64) string {
-	pending, ok := l.states[stateKey]
-	if !ok {
-		return snapshotState
-	}
-	if dataSeq <= pending.dataSeqAtWrite {
-		return pending.current
-	}
-
-	switch {
-	case normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.current):
-		delete(l.states, stateKey)
-		return snapshotState
-	case normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.snapshot):
-		pending.contradictions++
-		if pending.contradictions < kanbanOverlayContradictionLimit {
-			l.states[stateKey] = pending
-			return pending.current
-		}
-		delete(l.states, stateKey)
-		l.noteRevertLocked(stateKey, pending, snapshotState)
-		return snapshotState
-	default:
-		delete(l.states, stateKey)
-		l.noteRevertLocked(stateKey, pending, snapshotState)
-		return snapshotState
-	}
-}
-
-func (l *kanbanMutationLocks) noteCardState(key string, projectID string, issue telemetry.Issue, snapshotState string, currentState string, dataSeqAtWrite uint64) {
-	issue.ID = strings.TrimSpace(issue.ID)
-	stateKey := kanbanMutationStateKey(key, issue.ID)
-	if stateKey == "" || strings.TrimSpace(currentState) == "" {
-		return
-	}
-	projectID = strings.TrimSpace(projectID)
-	if strings.TrimSpace(issue.ProjectID) == "" {
-		issue.ProjectID = projectID
-	}
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if pending, ok := l.states[stateKey]; ok && normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.snapshot) {
-		snapshotState = pending.snapshot
-	}
-	delete(l.removed, stateKey)
-	delete(l.reverted, stateKey)
-	l.states[stateKey] = kanbanPendingState{
-		snapshot:       strings.TrimSpace(snapshotState),
-		current:        strings.TrimSpace(currentState),
-		project:        projectID,
-		issue:          cloneKanbanIssue(issue),
-		dataSeqAtWrite: dataSeqAtWrite,
-	}
-}
-
-func (l *kanbanMutationLocks) pendingMovedCards(key string, projectID string, snapshot telemetry.Snapshot) []telemetry.Issue {
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return nil
-	}
-	projectID = strings.TrimSpace(projectID)
-	dataSeq := snapshotProjectDataSeq(snapshot, projectID)
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	present := map[string]struct{}{}
-	for _, entry := range visibleSnapshotKanbanIssueEntries(snapshot) {
-		issueID := strings.TrimSpace(entry.issue.ID)
-		if issueID == "" || !sameKanbanProject(entry.issue, projectID, snapshot.Project.ID) {
-			continue
-		}
-		stateKey := kanbanMutationStateKey(key, issueID)
-		if _, ok := l.states[stateKey]; !ok {
-			continue
-		}
-		present[stateKey] = struct{}{}
-	}
-	for _, row := range snapshot.Completed {
-		issue := row.Issue
-		issueID := strings.TrimSpace(issue.ID)
-		if issueID == "" || !sameKanbanProject(issue, projectID, snapshot.Project.ID) {
-			continue
-		}
-		stateKey := kanbanMutationStateKey(key, issueID)
-		if _, ok := present[stateKey]; ok {
-			continue
-		}
-		if _, ok := l.states[stateKey]; !ok {
-			continue
-		}
-		snapshotState := strings.TrimSpace(issue.State)
-		l.cardStateLocked(stateKey, snapshotState, dataSeq)
-	}
-
-	out := []telemetry.Issue{}
-	for stateKey, pending := range l.states {
-		if _, ok := present[stateKey]; ok {
-			continue
-		}
-		issueID := strings.TrimSpace(pending.issue.ID)
-		if issueID == "" || kanbanMutationStateKey(key, issueID) != stateKey {
-			continue
-		}
-		if projectID != "" && pending.project != "" && pending.project != projectID {
-			continue
-		}
-		if !sameKanbanProject(pending.issue, projectID, snapshot.Project.ID) {
-			continue
-		}
-		issue := cloneKanbanIssue(pending.issue)
-		if strings.TrimSpace(issue.ProjectID) == "" {
-			issue.ProjectID = projectID
-		}
-		issue.State = strings.TrimSpace(pending.current)
-		out = append(out, issue)
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		left := strings.TrimSpace(out[i].Identifier)
-		right := strings.TrimSpace(out[j].Identifier)
-		if left != right {
-			return left < right
-		}
-		return strings.TrimSpace(out[i].ID) < strings.TrimSpace(out[j].ID)
-	})
-	return out
-}
-
-func (l *kanbanMutationLocks) snapshotCardStates(key string, projectID string, snapshot telemetry.Snapshot) map[string]string {
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return nil
-	}
-	projectID = strings.TrimSpace(projectID)
-	dataSeq := snapshotProjectDataSeq(snapshot, projectID)
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	out := map[string]string{}
-	for _, entry := range visibleSnapshotKanbanIssueEntries(snapshot) {
-		issueID := strings.TrimSpace(entry.issue.ID)
-		if issueID == "" || !sameKanbanProject(entry.issue, projectID, snapshot.Project.ID) {
-			continue
-		}
-		stateKey := kanbanMutationStateKey(key, issueID)
-		if _, ok := l.states[stateKey]; !ok {
-			continue
-		}
-		state := l.cardStateLocked(stateKey, entry.state, dataSeq)
-		if strings.TrimSpace(state) != "" {
-			out[stateKey] = state
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func (l *kanbanMutationLocks) cardRemoved(key string, issueID string, snapshotState string, dataSeq uint64) bool {
-	stateKey := kanbanMutationStateKey(key, issueID)
-	if stateKey == "" {
-		return false
-	}
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	removed, ok := l.removed[stateKey]
-	if !ok {
-		return false
-	}
-	if time.Since(removed.removedAt) > kanbanRemovalPendingTTL {
-		delete(l.removed, stateKey)
-		return false
-	}
-	if dataSeq <= removed.dataSeqAtWrite {
-		return true
-	}
-	if normalizeKanbanState(snapshotState) == normalizeKanbanState(removed.snapshot) {
-		return true
-	}
-	delete(l.removed, stateKey)
-	return false
-}
-
-func (l *kanbanMutationLocks) noteCardRemoved(key string, issueID string, snapshotState string, dataSeqAtWrite uint64) {
-	stateKey := kanbanMutationStateKey(key, issueID)
-	if stateKey == "" {
-		return
-	}
-
-	l.mu.Lock()
-	delete(l.states, stateKey)
-	delete(l.reverted, stateKey)
-	l.removed[stateKey] = kanbanPendingRemoval{
-		snapshot:       strings.TrimSpace(snapshotState),
-		removedAt:      time.Now(),
-		dataSeqAtWrite: dataSeqAtWrite,
-	}
-	l.mu.Unlock()
-}
-
-func (l *kanbanMutationLocks) noteRevertLocked(stateKey string, pending kanbanPendingState, snapshotState string) {
-	identifier := strings.TrimSpace(pending.issue.Identifier)
-	if identifier == "" {
-		identifier = strings.TrimSpace(pending.issue.ID)
-	}
-	to := strings.TrimSpace(snapshotState)
-	if to == "" {
-		to = strings.TrimSpace(pending.snapshot)
-	}
-	l.reverted[stateKey] = kanbanRevertNotice{
-		identifier: identifier,
-		from:       strings.TrimSpace(pending.current),
-		to:         to,
-		at:         time.Now(),
-	}
-}
-
-func (l *kanbanMutationLocks) consumeRevertNotices(key string, projectID string) []kanbanRevertNotice {
-	key = strings.TrimSpace(key)
-	projectID = strings.TrimSpace(projectID)
-	if key == "" && projectID != "" {
-		key = "project:" + projectID
-	}
-	prefix := ""
-	if key != "" {
-		prefix = key + "\x00"
-	}
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	notices := []kanbanRevertNotice{}
-	for stateKey, notice := range l.reverted {
-		if prefix != "" && !strings.HasPrefix(stateKey, prefix) {
-			continue
-		}
-		notices = append(notices, notice)
-		delete(l.reverted, stateKey)
-	}
-	sort.SliceStable(notices, func(i, j int) bool {
-		if !notices[i].at.Equal(notices[j].at) {
-			return notices[i].at.Before(notices[j].at)
-		}
-		return notices[i].identifier < notices[j].identifier
-	})
-	return notices
-}
-
-func kanbanMutationStateKey(key string, issueID string) string {
-	key = strings.TrimSpace(key)
-	issueID = strings.TrimSpace(issueID)
-	if key == "" || issueID == "" {
-		return ""
-	}
-	return key + "\x00" + issueID
-}
 
 func (s *Server) apiKanbanMoveDialog(c echo.Context) error {
 	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
@@ -487,13 +137,13 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		}
 		return s.kanbanMoveValidationResponse(c, http.StatusBadRequest, "Issue id is required.")
 	}
-	if !kanbanStateAllowed(target.workflow, req.targetState) {
+	if !kanbanstate.StateAllowed(target.workflow, req.targetState) {
 		return s.kanbanMoveValidationResponse(c, http.StatusBadRequest, "Target state is not configured for this board.")
 	}
 	var feedback string
 	var feedbackStatus int
 	var moveIssueIdentifier string
-	err := s.kanbanMutations.withLock(target.key, func() error {
+	err := s.kanbanMutations.WithLock(target.key, func() error {
 		currentState := req.currentState
 		ok, current, snapshotState, snapshotIssue, dataSeqAtWrite := s.kanbanCardFresh(target.key, req.projectID, req.issueID, req.currentState)
 		if !ok {
@@ -519,18 +169,18 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 			if !ok {
 				return connector.ErrNotImplemented
 			}
-			if err := setter.SetIssueField(c.Request().Context(), req.issueID, target.kanban.IssueStateFieldID, mappedKanbanState(target.workflow, req.targetState)); err != nil {
+			if err := setter.SetIssueField(c.Request().Context(), req.issueID, target.kanban.IssueStateFieldID, kanbanstate.MappedState(target.workflow, req.targetState)); err != nil {
 				return err
 			}
 			s.recordKanbanLaneTransition(c.Request().Context(), req.projectID, snapshotIssue, currentState, req.targetState, "kanban_move_field")
-			s.kanbanMutations.noteCardState(target.key, req.projectID, snapshotIssue, snapshotState, req.targetState, dataSeqAtWrite)
+			s.kanbanMutations.NoteCardState(target.key, req.projectID, snapshotIssue, snapshotState, req.targetState, dataSeqAtWrite)
 			return nil
 		}
 		if err := target.connector.UpdateIssueState(c.Request().Context(), req.issueID, req.targetState); err != nil {
 			return err
 		}
 		s.recordKanbanLaneTransition(c.Request().Context(), req.projectID, snapshotIssue, currentState, req.targetState, "kanban_move")
-		s.kanbanMutations.noteCardState(target.key, req.projectID, snapshotIssue, snapshotState, req.targetState, dataSeqAtWrite)
+		s.kanbanMutations.NoteCardState(target.key, req.projectID, snapshotIssue, snapshotState, req.targetState, dataSeqAtWrite)
 		return nil
 	})
 	if feedback != "" {
@@ -608,7 +258,7 @@ func (s *Server) apiKanbanRemove(c echo.Context) error {
 	var feedback string
 	var feedbackStatus int
 	var removeIssueIdentifier string
-	err := s.kanbanMutations.withLock(target.key, func() error {
+	err := s.kanbanMutations.WithLock(target.key, func() error {
 		currentState := req.currentState
 		ok, current, snapshotState, snapshotIssue, dataSeqAtWrite := s.kanbanCardFresh(target.key, req.projectID, req.issueID, req.currentState)
 		if !ok {
@@ -634,7 +284,7 @@ func (s *Server) apiKanbanRemove(c echo.Context) error {
 			if strings.TrimSpace(snapshotState) == "" {
 				snapshotState = currentState
 			}
-			s.kanbanMutations.noteCardRemoved(target.key, req.issueID, snapshotState, dataSeqAtWrite)
+			s.kanbanMutations.NoteCardRemoved(target.key, req.issueID, snapshotState, dataSeqAtWrite)
 			return nil
 		}
 		remover, ok := target.connector.(connector.ProjectRemover)
@@ -647,7 +297,7 @@ func (s *Server) apiKanbanRemove(c echo.Context) error {
 		if strings.TrimSpace(snapshotState) == "" {
 			snapshotState = currentState
 		}
-		s.kanbanMutations.noteCardRemoved(target.key, req.issueID, snapshotState, dataSeqAtWrite)
+		s.kanbanMutations.NoteCardRemoved(target.key, req.issueID, snapshotState, dataSeqAtWrite)
 		return nil
 	})
 	if feedback != "" {
@@ -691,21 +341,21 @@ func (s *Server) kanbanSnapshotWithPendingStates(lockKey string, projectID strin
 	if s.kanbanMutations == nil {
 		return snapshot
 	}
-	snapshot = cloneKanbanIssueSlices(snapshot)
-	dataSeq := snapshotProjectDataSeq(snapshot, projectID)
-	filterSnapshotKanbanIssues(&snapshot, func(issue telemetry.Issue) bool {
-		if strings.TrimSpace(issue.ID) == "" || !sameKanbanProject(issue, projectID, snapshot.Project.ID) {
+	snapshot = kanbanstate.CloneIssueSlices(snapshot)
+	dataSeq := kanbanstate.SnapshotProjectDataSeq(snapshot, projectID)
+	kanbanstate.FilterSnapshotIssues(&snapshot, func(issue telemetry.Issue) bool {
+		if strings.TrimSpace(issue.ID) == "" || !kanbanstate.SameProject(issue, projectID, snapshot.Project.ID) {
 			return true
 		}
-		return !s.kanbanMutations.cardRemoved(lockKey, issue.ID, issue.State, dataSeq)
+		return !s.kanbanMutations.CardRemoved(lockKey, issue.ID, issue.State, dataSeq)
 	})
-	pendingMovedCards := s.kanbanMutations.pendingMovedCards(lockKey, projectID, snapshot)
-	pendingStates := s.kanbanMutations.snapshotCardStates(lockKey, projectID, snapshot)
-	applySnapshotKanbanIssues(&snapshot, func(issue *telemetry.Issue) {
-		if issue == nil || strings.TrimSpace(issue.ID) == "" || !sameKanbanProject(*issue, projectID, snapshot.Project.ID) {
+	pendingMovedCards := s.kanbanMutations.PendingMovedCards(lockKey, projectID, snapshot)
+	pendingStates := s.kanbanMutations.SnapshotCardStates(lockKey, projectID, snapshot)
+	kanbanstate.ApplySnapshotIssues(&snapshot, func(issue *telemetry.Issue) {
+		if issue == nil || strings.TrimSpace(issue.ID) == "" || !kanbanstate.SameProject(*issue, projectID, snapshot.Project.ID) {
 			return
 		}
-		stateKey := kanbanMutationStateKey(lockKey, issue.ID)
+		stateKey := kanbanstate.MutationStateKey(lockKey, issue.ID)
 		state := strings.TrimSpace(pendingStates[stateKey])
 		if state != "" {
 			issue.State = state
@@ -714,227 +364,14 @@ func (s *Server) kanbanSnapshotWithPendingStates(lockKey string, projectID strin
 	if len(pendingMovedCards) > 0 {
 		snapshot.BoardIssues = append(snapshot.BoardIssues, pendingMovedCards...)
 	}
-	states := kanbanIssueStateIndex(snapshot)
-	applySnapshotKanbanIssues(&snapshot, func(issue *telemetry.Issue) {
-		if issue == nil || len(issue.BlockedBy) == 0 || !sameKanbanProject(*issue, projectID, snapshot.Project.ID) {
+	states := kanbanstate.IssueStateIndex(snapshot)
+	kanbanstate.ApplySnapshotIssues(&snapshot, func(issue *telemetry.Issue) {
+		if issue == nil || len(issue.BlockedBy) == 0 || !kanbanstate.SameProject(*issue, projectID, snapshot.Project.ID) {
 			return
 		}
-		issue.BlockedBy = kanbanBlockedRefsWithCurrentStates(issue.BlockedBy, states)
+		issue.BlockedBy = kanbanstate.BlockedRefsWithCurrentStates(issue.BlockedBy, states)
 	})
 	return snapshot
-}
-
-func filterSnapshotKanbanIssues(snapshot *telemetry.Snapshot, keep func(telemetry.Issue) bool) {
-	if snapshot == nil || keep == nil {
-		return
-	}
-	snapshot.BoardIssues = filterTelemetryIssues(snapshot.BoardIssues, keep)
-	snapshot.Pipeline = filterTelemetryIssues(snapshot.Pipeline, keep)
-	snapshot.Running = filterTelemetryRunning(snapshot.Running, keep)
-	snapshot.Queue = filterTelemetryQueued(snapshot.Queue, keep)
-	snapshot.Blocked = filterTelemetryBlocked(snapshot.Blocked, keep)
-}
-
-func filterTelemetryIssues(issues []telemetry.Issue, keep func(telemetry.Issue) bool) []telemetry.Issue {
-	out := issues[:0]
-	for _, issue := range issues {
-		if keep(issue) {
-			out = append(out, issue)
-		}
-	}
-	return out
-}
-
-func filterTelemetryRunning(rows []telemetry.Running, keep func(telemetry.Issue) bool) []telemetry.Running {
-	out := rows[:0]
-	for _, row := range rows {
-		if keep(row.Issue) {
-			out = append(out, row)
-		}
-	}
-	return out
-}
-
-func filterTelemetryQueued(rows []telemetry.Queued, keep func(telemetry.Issue) bool) []telemetry.Queued {
-	out := rows[:0]
-	for _, row := range rows {
-		if keep(row.Issue) {
-			out = append(out, row)
-		}
-	}
-	return out
-}
-
-func filterTelemetryBlocked(rows []telemetry.Blocked, keep func(telemetry.Issue) bool) []telemetry.Blocked {
-	out := rows[:0]
-	for _, row := range rows {
-		if keep(row.Issue) {
-			out = append(out, row)
-		}
-	}
-	return out
-}
-
-func cloneKanbanIssueSlices(snapshot telemetry.Snapshot) telemetry.Snapshot {
-	snapshot.BoardIssues = append([]telemetry.Issue(nil), snapshot.BoardIssues...)
-	snapshot.Pipeline = append([]telemetry.Issue(nil), snapshot.Pipeline...)
-	snapshot.Running = append([]telemetry.Running(nil), snapshot.Running...)
-	snapshot.Queue = append([]telemetry.Queued(nil), snapshot.Queue...)
-	snapshot.Blocked = append([]telemetry.Blocked(nil), snapshot.Blocked...)
-	snapshot.Completed = append([]telemetry.Completed(nil), snapshot.Completed...)
-	return snapshot
-}
-
-func cloneKanbanIssue(issue telemetry.Issue) telemetry.Issue {
-	out := issue
-	out.Labels = append([]string(nil), issue.Labels...)
-	out.Assignees = append([]string(nil), issue.Assignees...)
-	out.Comments = cloneKanbanIssueComments(issue.Comments)
-	out.BlockedBy = append([]telemetry.BlockedRef(nil), issue.BlockedBy...)
-	out.Metadata = maps.Clone(issue.Metadata)
-	out.PullRequest = cloneKanbanPullRequest(issue.PullRequest)
-	out.Deliverable = cloneKanbanDeliverable(issue.Deliverable)
-	out.MergeTiming = cloneKanbanMergeTiming(issue.MergeTiming)
-	out.LeaseRenewedAt = cloneKanbanTimePointer(issue.LeaseRenewedAt)
-	out.LeaseExpiresAt = cloneKanbanTimePointer(issue.LeaseExpiresAt)
-	out.CreatedAt = cloneKanbanTimePointer(issue.CreatedAt)
-	out.UpdatedAt = cloneKanbanTimePointer(issue.UpdatedAt)
-	out.StageUpdatedAt = cloneKanbanTimePointer(issue.StageUpdatedAt)
-	out.CurrentLaneEnteredAt = cloneKanbanTimePointer(issue.CurrentLaneEnteredAt)
-	return out
-}
-
-func cloneKanbanIssueComments(comments []telemetry.IssueComment) []telemetry.IssueComment {
-	if comments == nil {
-		return nil
-	}
-	out := make([]telemetry.IssueComment, len(comments))
-	for index, comment := range comments {
-		out[index] = comment
-		out[index].CreatedAt = cloneKanbanTimePointer(comment.CreatedAt)
-		out[index].UpdatedAt = cloneKanbanTimePointer(comment.UpdatedAt)
-	}
-	return out
-}
-
-func cloneKanbanPullRequest(pr *telemetry.PullRequest) *telemetry.PullRequest {
-	if pr == nil {
-		return nil
-	}
-	out := *pr
-	out.HydrationNextRetryAt = cloneKanbanTimePointer(pr.HydrationNextRetryAt)
-	out.SlowChecks = append([]telemetry.PullRequestCheck(nil), pr.SlowChecks...)
-	out.RunningChecks = append([]string(nil), pr.RunningChecks...)
-	out.RequiredCheckFailures = append([]telemetry.PullRequestCheck(nil), pr.RequiredCheckFailures...)
-	return &out
-}
-
-func cloneKanbanDeliverable(deliverable *telemetry.Deliverable) *telemetry.Deliverable {
-	if deliverable == nil {
-		return nil
-	}
-	out := *deliverable
-	out.Metadata = maps.Clone(deliverable.Metadata)
-	return &out
-}
-
-func cloneKanbanMergeTiming(timing *telemetry.MergeTiming) *telemetry.MergeTiming {
-	if timing == nil {
-		return nil
-	}
-	out := *timing
-	out.EnteredMergingAt = cloneKanbanTimePointer(timing.EnteredMergingAt)
-	out.MergeWorkerSlotAcquiredAt = cloneKanbanTimePointer(timing.MergeWorkerSlotAcquiredAt)
-	out.MergeStartedAt = cloneKanbanTimePointer(timing.MergeStartedAt)
-	out.BaseRefreshStartedAt = cloneKanbanTimePointer(timing.BaseRefreshStartedAt)
-	out.BaseRefreshFinishedAt = cloneKanbanTimePointer(timing.BaseRefreshFinishedAt)
-	out.CIWaitStartedAt = cloneKanbanTimePointer(timing.CIWaitStartedAt)
-	out.CIWaitFinishedAt = cloneKanbanTimePointer(timing.CIWaitFinishedAt)
-	out.MergedAt = cloneKanbanTimePointer(timing.MergedAt)
-	out.MergeFailedAt = cloneKanbanTimePointer(timing.MergeFailedAt)
-	return &out
-}
-
-func cloneKanbanTimePointer(value *time.Time) *time.Time {
-	if value == nil {
-		return nil
-	}
-	out := *value
-	return &out
-}
-
-func applySnapshotKanbanIssues(snapshot *telemetry.Snapshot, apply func(*telemetry.Issue)) {
-	if snapshot == nil || apply == nil {
-		return
-	}
-	for i := range snapshot.BoardIssues {
-		apply(&snapshot.BoardIssues[i])
-	}
-	for i := range snapshot.Pipeline {
-		apply(&snapshot.Pipeline[i])
-	}
-	for i := range snapshot.Running {
-		apply(&snapshot.Running[i].Issue)
-	}
-	for i := range snapshot.Queue {
-		apply(&snapshot.Queue[i].Issue)
-	}
-	for i := range snapshot.Blocked {
-		apply(&snapshot.Blocked[i].Issue)
-	}
-	for i := range snapshot.Completed {
-		apply(&snapshot.Completed[i].Issue)
-	}
-}
-
-func kanbanIssueStateIndex(snapshot telemetry.Snapshot) map[string]string {
-	states := map[string]string{}
-	addIssue := func(issue telemetry.Issue, state string) {
-		state = strings.TrimSpace(state)
-		if state == "" {
-			state = strings.TrimSpace(issue.State)
-		}
-		if state == "" {
-			return
-		}
-		for _, key := range kanbanIssueStateKeys(issue.ID, issue.Identifier) {
-			states[key] = state
-		}
-	}
-	for _, row := range snapshot.Completed {
-		addIssue(row.Issue, row.State)
-	}
-	for _, issue := range snapshotKanbanIssues(snapshot) {
-		addIssue(issue, issue.State)
-	}
-	return states
-}
-
-func kanbanBlockedRefsWithCurrentStates(refs []telemetry.BlockedRef, states map[string]string) []telemetry.BlockedRef {
-	if len(refs) == 0 {
-		return refs
-	}
-	out := append([]telemetry.BlockedRef(nil), refs...)
-	for i := range out {
-		for _, key := range kanbanIssueStateKeys(out[i].ID, out[i].Identifier) {
-			if state := strings.TrimSpace(states[key]); state != "" {
-				out[i].State = state
-				break
-			}
-		}
-	}
-	return out
-}
-
-func kanbanIssueStateKeys(id string, identifier string) []string {
-	keys := []string{}
-	if id = strings.TrimSpace(id); id != "" {
-		keys = append(keys, "id:"+id)
-	}
-	if identifier = strings.ToLower(strings.TrimSpace(identifier)); identifier != "" {
-		keys = append(keys, "identifier:"+identifier)
-	}
-	return keys
 }
 
 func (s *Server) apiKanbanCommentDialog(c echo.Context) error {
@@ -1016,7 +453,7 @@ func (s *Server) apiKanbanComment(c echo.Context) error {
 		return s.kanbanCommentValidationResponse(c, http.StatusNotFound, "Comment target is not available on the current board.")
 	}
 
-	err := s.kanbanMutations.withLock(target.key, func() error {
+	err := s.kanbanMutations.WithLock(target.key, func() error {
 		switch req.target {
 		case "issue":
 			return target.connector.CreateComment(c.Request().Context(), req.issueID, req.body)
@@ -1062,7 +499,7 @@ func (s *Server) apiKanbanCommentEdit(c echo.Context) error {
 		return kanbanFeedback(c, http.StatusForbidden, "Only local Detent comments can be edited.")
 	}
 
-	err := s.kanbanMutations.withLock(target.key, func() error {
+	err := s.kanbanMutations.WithLock(target.key, func() error {
 		editor, ok := target.connector.(connector.IssueCommentUpdater)
 		if !ok {
 			return connector.ErrNotImplemented
@@ -1094,7 +531,7 @@ func (s *Server) apiKanbanCommentDelete(c echo.Context) error {
 		return kanbanFeedback(c, http.StatusForbidden, "Only local Detent comments can be deleted.")
 	}
 
-	err := s.kanbanMutations.withLock(target.key, func() error {
+	err := s.kanbanMutations.WithLock(target.key, func() error {
 		deleter, ok := target.connector.(connector.IssueCommentDeleter)
 		if !ok {
 			return connector.ErrNotImplemented
@@ -1259,7 +696,7 @@ func (s *Server) kanbanMoveDialogData(c echo.Context, message string) (templates
 	}
 	data.States = target.workflow.KanbanAllowedTransitionTargets(data.CurrentState)
 	if len(data.States) == 0 && data.CurrentState == "" {
-		data.States = kanbanStateNames(target.workflow, s.latestSnapshot(c.Request().Context()))
+		data.States = kanbanstate.StateNames(target.workflow, s.latestSnapshot(c.Request().Context()))
 	}
 	if data.TargetState == "" {
 		data.TargetState = kanbanMoveDialogDefaultTarget(data.CurrentState, data.States)
@@ -1275,7 +712,7 @@ func kanbanMoveDialogDefaultTarget(source string, allowedTargets []string) strin
 	if preferred != "" {
 		for _, target := range allowedTargets {
 			target = strings.TrimSpace(target)
-			if normalizeKanbanState(target) == normalizeKanbanState(preferred) {
+			if kanbanstate.NormalizeState(target) == kanbanstate.NormalizeState(preferred) {
 				return target
 			}
 		}
@@ -1289,7 +726,7 @@ func kanbanMoveDialogDefaultTarget(source string, allowedTargets []string) strin
 }
 
 func kanbanMoveDialogPreferredTarget(source string) string {
-	switch normalizeKanbanState(source) {
+	switch kanbanstate.NormalizeState(source) {
 	case "backlog", "blocked":
 		return "Todo"
 	case "todo", "rework":
@@ -1623,7 +1060,7 @@ func (s *Server) dashboardKanbanData(ctx context.Context, projectID string, snap
 	if strings.TrimSpace(projectID) == "" {
 		mode = workflowconfig.KanbanModeReadOnly
 	}
-	states := kanbanStateNames(target.workflow, snapshot)
+	states := kanbanstate.StateNames(target.workflow, snapshot)
 	canMove, canRemove := kanbanCardCapabilities(target)
 	data := templates.KanbanData{
 		Mode:                        mode,
@@ -1631,7 +1068,7 @@ func (s *Server) dashboardKanbanData(ctx context.Context, projectID string, snap
 		States:                      states,
 		TerminalStates:              target.workflow.Tracker.TerminalStates,
 		TerminalStatesByProject:     s.kanbanTerminalStatesByProject(projectID),
-		AllowedTransitions:          kanbanAllowedTransitions(target.workflow, states),
+		AllowedTransitions:          kanbanstate.AllowedTransitions(target.workflow, states),
 		ShowBlockedAlerts:           target.kanban.ShowBlockedAlerts,
 		SupportsPullRequestComments: kanbanSupportsPullRequestComments(target.connector),
 		CanMoveCards:                canMove,
@@ -1664,14 +1101,14 @@ func (s *Server) kanbanProjectsData(snapshot telemetry.Snapshot) map[string]temp
 		if target.connector == nil {
 			continue
 		}
-		states := kanbanStateNames(target.workflow, snapshot)
+		states := kanbanstate.StateNames(target.workflow, snapshot)
 		canMove, canRemove := kanbanCardCapabilities(target)
 		out[projectID] = templates.KanbanProjectData{
 			Mode:                        target.kanban.Mode,
 			ProjectID:                   projectID,
 			States:                      states,
 			TerminalStates:              target.workflow.Tracker.TerminalStates,
-			AllowedTransitions:          kanbanAllowedTransitions(target.workflow, states),
+			AllowedTransitions:          kanbanstate.AllowedTransitions(target.workflow, states),
 			SupportsPullRequestComments: kanbanSupportsPullRequestComments(target.connector),
 			CanMoveCards:                canMove,
 			CanRemoveCards:              canRemove,
@@ -1783,43 +1220,20 @@ func (s *Server) kanbanCardFresh(lockKey string, projectID string, issueID strin
 	if !ok {
 		return false, "", "", telemetry.Issue{}, 0
 	}
-	dataSeq := snapshotProjectDataSeq(snapshot, projectID)
-	entry, ok := kanbanCardFreshEntry(snapshot, projectID, issueID)
+	dataSeq := kanbanstate.SnapshotProjectDataSeq(snapshot, projectID)
+	entry, ok := kanbanstate.CardFreshEntry(snapshot, projectID, issueID)
 	if !ok {
 		return false, "", "", telemetry.Issue{}, dataSeq
 	}
-	snapshotState := strings.TrimSpace(entry.state)
+	snapshotState := strings.TrimSpace(entry.State)
 	state := snapshotState
 	if s.kanbanMutations != nil {
-		state = s.kanbanMutations.cardState(lockKey, issueID, snapshotState, dataSeq)
+		state = s.kanbanMutations.CardState(lockKey, issueID, snapshotState, dataSeq)
 	}
-	if currentState == "" || normalizeKanbanState(state) == normalizeKanbanState(currentState) {
-		return true, state, snapshotState, entry.issue, dataSeq
+	if currentState == "" || kanbanstate.NormalizeState(state) == kanbanstate.NormalizeState(currentState) {
+		return true, state, snapshotState, entry.Issue, dataSeq
 	}
-	return false, state, snapshotState, entry.issue, dataSeq
-}
-
-func kanbanCardFreshEntry(snapshot telemetry.Snapshot, projectID string, issueID string) (kanbanSnapshotIssueEntry, bool) {
-	var selected kanbanSnapshotIssueEntry
-	for _, entry := range visibleSnapshotKanbanIssueEntries(snapshot) {
-		if !sameKanbanIssue(entry.issue, projectID, issueID, snapshot.Project.ID) {
-			continue
-		}
-		if selected.issue.ID != "" && entry.rank < selected.rank {
-			continue
-		}
-		selected = entry
-	}
-	return selected, selected.issue.ID != ""
-}
-
-func snapshotProjectDataSeq(snapshot telemetry.Snapshot, projectID string) uint64 {
-	for _, project := range snapshot.Projects {
-		if project.Project.ID == projectID {
-			return project.Refresh.DataSeq
-		}
-	}
-	return snapshot.Refresh.DataSeq
+	return false, state, snapshotState, entry.Issue, dataSeq
 }
 
 func (s *Server) recordKanbanLaneTransition(
@@ -1835,7 +1249,7 @@ func (s *Server) recordKanbanLaneTransition(
 	}
 	currentState = strings.TrimSpace(currentState)
 	targetState = strings.TrimSpace(targetState)
-	if targetState == "" || normalizeKanbanState(currentState) == normalizeKanbanState(targetState) {
+	if targetState == "" || kanbanstate.NormalizeState(currentState) == kanbanstate.NormalizeState(targetState) {
 		return
 	}
 	now := time.Now()
@@ -1912,8 +1326,8 @@ func (s *Server) kanbanCommentTargetKnown(req kanbanCommentRequest) bool {
 	if !ok {
 		return false
 	}
-	for _, issue := range snapshotKanbanIssues(snapshot) {
-		if !sameKanbanProject(issue, req.projectID, snapshot.Project.ID) {
+	for _, issue := range kanbanstate.SnapshotIssues(snapshot) {
+		if !kanbanstate.SameProject(issue, req.projectID, snapshot.Project.ID) {
 			continue
 		}
 		switch req.target {
@@ -1938,8 +1352,8 @@ func (s *Server) kanbanCommentCanMutate(req kanbanCommentMutationRequest, edit b
 	if !ok {
 		return false
 	}
-	for _, issue := range snapshotKanbanIssues(snapshot) {
-		if !sameKanbanIssue(issue, req.projectID, req.issueID, snapshot.Project.ID) {
+	for _, issue := range kanbanstate.SnapshotIssues(snapshot) {
+		if !kanbanstate.SameIssue(issue, req.projectID, req.issueID, snapshot.Project.ID) {
 			continue
 		}
 		for _, comment := range issue.Comments {
@@ -2004,8 +1418,8 @@ func telemetryIssueComments(comments []connector.IssueComment) []telemetry.Issue
 			URL:               comment.URL,
 			AuthorLogin:       comment.AuthorLogin,
 			AuthorDisplayName: comment.AuthorDisplayName,
-			CreatedAt:         cloneKanbanTimePointer(comment.CreatedAt),
-			UpdatedAt:         cloneKanbanTimePointer(comment.UpdatedAt),
+			CreatedAt:         kanbanstate.CloneTimePointer(comment.CreatedAt),
+			UpdatedAt:         kanbanstate.CloneTimePointer(comment.UpdatedAt),
 			Local:             comment.Local,
 			CanEdit:           comment.CanEdit,
 			CanDelete:         comment.CanDelete,
@@ -2035,209 +1449,13 @@ func kanbanFeedback(c echo.Context, status int, message string) error {
 	return c.JSON(status, map[string]any{"ok": true, "message": message})
 }
 
-func kanbanStateAllowed(cfg workflowconfig.Config, state string) bool {
-	state = strings.TrimSpace(state)
-	if state == "" {
-		return false
-	}
-	states := kanbanStateNames(cfg, telemetry.Snapshot{})
-	if len(states) == 0 {
-		return true
-	}
-	for _, configured := range states {
-		if normalizeKanbanState(configured) == normalizeKanbanState(state) {
-			return true
-		}
-	}
-	return false
-}
-
-func kanbanStateNames(cfg workflowconfig.Config, snapshot telemetry.Snapshot) []string {
-	states := make([]string, 0, len(cfg.Tracker.ActiveStates)+len(cfg.Tracker.ObservedStates)+len(cfg.Tracker.TerminalStates))
-	seen := map[string]struct{}{}
-	add := func(values ...string) {
-		for _, value := range values {
-			value = strings.TrimSpace(value)
-			if value == "" {
-				continue
-			}
-			key := normalizeKanbanState(value)
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			states = append(states, value)
-		}
-	}
-	add(cfg.KanbanStateNames()...)
-	for _, issue := range snapshotKanbanIssues(snapshot) {
-		if kanbanRawGitHubIssueState(issue.State) {
-			if _, ok := seen[normalizeKanbanState(issue.State)]; !ok {
-				continue
-			}
-		}
-		add(issue.State)
-	}
-	return states
-}
-
-func kanbanRawGitHubIssueState(state string) bool {
-	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "open", "closed":
-		return true
-	default:
-		return false
-	}
-}
-
-func kanbanAllowedTransitions(cfg workflowconfig.Config, states []string) map[string][]string {
-	out := make(map[string][]string, len(states))
-	for _, state := range states {
-		state = strings.TrimSpace(state)
-		if state == "" {
-			continue
-		}
-		out[state] = cfg.KanbanAllowedTransitionTargets(state)
-	}
-	return out
-}
-
-func snapshotKanbanIssues(snapshot telemetry.Snapshot) []telemetry.Issue {
-	issues := make([]telemetry.Issue, 0, len(snapshot.BoardIssues)+len(snapshot.Pipeline)+len(snapshot.Running)+len(snapshot.Queue)+len(snapshot.Blocked))
-	issues = append(issues, snapshot.BoardIssues...)
-	issues = append(issues, snapshot.Pipeline...)
-	for _, row := range snapshot.Running {
-		issues = append(issues, row.Issue)
-	}
-	for _, row := range snapshot.Queue {
-		issues = append(issues, row.Issue)
-	}
-	for _, row := range snapshot.Blocked {
-		issues = append(issues, row.Issue)
-	}
-	return issues
-}
-
-func snapshotKanbanIssueEntries(snapshot telemetry.Snapshot) []kanbanSnapshotIssueEntry {
-	entries := make([]kanbanSnapshotIssueEntry, 0, len(snapshot.BoardIssues)+len(snapshot.Pipeline)+len(snapshot.Running)+len(snapshot.Queue)+len(snapshot.Blocked))
-	index := 0
-	appendIssue := func(issue telemetry.Issue, fallback string, rank int) {
-		state := strings.TrimSpace(issue.State)
-		fallback = strings.TrimSpace(fallback)
-		rawRuntimeState := false
-		if fallback != "" && kanbanRawGitHubIssueState(state) {
-			state = fallback
-			rawRuntimeState = true
-		}
-		if state == "" {
-			state = fallback
-		}
-		entries = append(entries, kanbanSnapshotIssueEntry{
-			issue:           issue,
-			state:           state,
-			rank:            rank,
-			index:           index,
-			rawRuntimeState: rawRuntimeState,
-		})
-		index++
-	}
-	for _, issue := range snapshot.BoardIssues {
-		appendIssue(issue, "", 5)
-	}
-	for _, issue := range snapshot.Pipeline {
-		appendIssue(issue, "", 10)
-	}
-	for _, row := range snapshot.Queue {
-		appendIssue(row.Issue, "Todo", 20)
-	}
-	for _, row := range snapshot.Running {
-		appendIssue(row.Issue, "In Progress", 30)
-	}
-	for _, row := range snapshot.Blocked {
-		appendIssue(row.Issue, "Blocked", 40)
-	}
-	return entries
-}
-
-func visibleSnapshotKanbanIssueEntries(snapshot telemetry.Snapshot) []kanbanSnapshotIssueEntry {
-	entries := snapshotKanbanIssueEntries(snapshot)
-	byKey := make(map[string]kanbanSnapshotIssueEntry, len(entries))
-	for _, entry := range entries {
-		key := snapshotKanbanIssueEntryKey(entry.issue, snapshot.Project.ID)
-		if key == "" {
-			continue
-		}
-		current, ok := byKey[key]
-		if ok && entry.rawRuntimeState {
-			continue
-		}
-		if ok && entry.rank < current.rank {
-			continue
-		}
-		byKey[key] = entry
-	}
-	visible := make([]kanbanSnapshotIssueEntry, 0, len(byKey))
-	for _, entry := range byKey {
-		visible = append(visible, entry)
-	}
-	sort.SliceStable(visible, func(i, j int) bool {
-		return visible[i].index < visible[j].index
-	})
-	return visible
-}
-
-func snapshotKanbanIssueEntryKey(issue telemetry.Issue, snapshotProjectID string) string {
-	projectID := strings.TrimSpace(issue.ProjectID)
-	if projectID == "" {
-		projectID = strings.TrimSpace(snapshotProjectID)
-	}
-	prefix := ""
-	if projectID != "" {
-		prefix = "project:" + projectID + ":"
-	}
-	if issueID := strings.TrimSpace(issue.ID); issueID != "" {
-		return prefix + "id:" + issueID
-	}
-	if identifier := strings.ToLower(strings.TrimSpace(issue.Identifier)); identifier != "" {
-		return prefix + "identifier:" + identifier
-	}
-	return ""
-}
-
-func sameKanbanIssue(issue telemetry.Issue, projectID string, issueID string, snapshotProjectID string) bool {
-	if strings.TrimSpace(issue.ID) != strings.TrimSpace(issueID) {
-		return false
-	}
-	return sameKanbanProject(issue, projectID, snapshotProjectID)
-}
-
-func sameKanbanProject(issue telemetry.Issue, projectID string, snapshotProjectID string) bool {
-	projectID = strings.TrimSpace(projectID)
-	if projectID == "" {
-		return true
-	}
-	issueProjectID := strings.TrimSpace(issue.ProjectID)
-	if issueProjectID != "" {
-		return issueProjectID == projectID
-	}
-	return strings.TrimSpace(snapshotProjectID) == "" || strings.TrimSpace(snapshotProjectID) == projectID
-}
-
-func kanbanIssueRepository(identifier string) string {
-	repo, _, ok := strings.Cut(strings.TrimSpace(identifier), "#")
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(repo)
-}
-
 func kanbanPullRequestRepository(issue telemetry.Issue) string {
 	if issue.PullRequest != nil {
 		if repository := kanbanRepositoryFromPullRequestURL(issue.PullRequest.URL); repository != "" {
 			return repository
 		}
 	}
-	return kanbanIssueRepository(issue.Identifier)
+	return kanbanstate.IssueRepository(issue.Identifier)
 }
 
 func kanbanRepositoryFromPullRequestURL(rawURL string) string {
@@ -2255,30 +1473,4 @@ func kanbanRepositoryFromPullRequestURL(rawURL string) string {
 		return ""
 	}
 	return owner + "/" + repo
-}
-
-func mappedKanbanState(cfg workflowconfig.Config, state string) string {
-	state = strings.TrimSpace(state)
-	if !cfg.Tracker.StateMap.IsMap {
-		return state
-	}
-	if mapped, ok := cfg.Tracker.StateMap.Map[state]; ok {
-		if value, ok := mapped.(string); ok && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	normalized := normalizeKanbanState(state)
-	for detentState, mapped := range cfg.Tracker.StateMap.Map {
-		if normalizeKanbanState(detentState) != normalized {
-			continue
-		}
-		if value, ok := mapped.(string); ok && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return state
-}
-
-func normalizeKanbanState(value string) string {
-	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
 }

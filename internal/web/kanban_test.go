@@ -3,7 +3,6 @@ package web
 import (
 	"bytes"
 	"context"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -11,72 +10,10 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
-
-func TestKanbanStateNamesIgnoreCompletedSessionStates(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		cfg  workflowconfig.Config
-		want []string
-	}{
-		{
-			name: "unconfigured completed handoff ignored",
-			cfg: workflowconfig.Config{
-				Tracker: workflowconfig.Tracker{
-					ObservedStates: []string{"Backlog", "Blocked", "Human Review"},
-					ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
-					TerminalStates: []string{"Done", "Cancelled"},
-				},
-			},
-			want: []string{"Backlog", "Blocked", "Human Review", "Todo", "In Progress", "Rework", "Merging", "Done", "Cancelled", "Needs Triage"},
-		},
-		{
-			name: "configured handoff preserved",
-			cfg: workflowconfig.Config{
-				Tracker: workflowconfig.Tracker{
-					ObservedStates: []string{"Backlog", "Handoff"},
-					ActiveStates:   []string{"Todo"},
-					TerminalStates: []string{"Done"},
-				},
-			},
-			want: []string{"Backlog", "Handoff", "Todo", "Done", "Needs Triage"},
-		},
-	}
-
-	snapshot := telemetry.Snapshot{
-		BoardIssues: []telemetry.Issue{
-			{ID: "tracker-extra", State: "Needs Triage"},
-		},
-		Completed: []telemetry.Completed{
-			{
-				Issue: telemetry.Issue{
-					ID:    "completed-open-pr",
-					State: "Handoff",
-					PullRequest: &telemetry.PullRequest{
-						Number: 554,
-						State:  "OPEN",
-					},
-				},
-				FinalState: "completed",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := kanbanStateNames(tt.cfg, snapshot)
-			if !slices.Equal(got, tt.want) {
-				t.Fatalf("kanbanStateNames() = %#v, want %#v", got, tt.want)
-			}
-		})
-	}
-}
 
 func TestKanbanCardCapabilitiesDeriveFromStatePath(t *testing.T) {
 	t.Parallel()
@@ -132,106 +69,11 @@ func TestKanbanCardCapabilitiesDeriveFromStatePath(t *testing.T) {
 	}
 }
 
-func TestKanbanStateNamesIgnoreRawGitHubRuntimeStates(t *testing.T) {
-	t.Parallel()
-
-	cfg := workflowconfig.Config{
-		Tracker: workflowconfig.Tracker{
-			ObservedStates: []string{"Backlog", "Human Review"},
-			ActiveStates:   []string{"Todo", "In Progress", "Merging"},
-			TerminalStates: []string{"Done"},
-		},
-	}
-	snapshot := telemetry.Snapshot{
-		BoardIssues: []telemetry.Issue{
-			{ID: "custom", State: "Needs Triage"},
-		},
-		Pipeline: []telemetry.Issue{
-			{ID: "pipeline-open", State: "Open"},
-		},
-		Running: []telemetry.Running{
-			{Issue: telemetry.Issue{ID: "running-open", State: "OPEN"}},
-		},
-		Queue: []telemetry.Queued{
-			{Issue: telemetry.Issue{ID: "queue-closed", State: "Closed"}},
-		},
-		Blocked: []telemetry.Blocked{
-			{Issue: telemetry.Issue{ID: "blocked-closed", State: "CLOSED"}},
-		},
-	}
-
-	got := kanbanStateNames(cfg, snapshot)
-	want := []string{"Backlog", "Human Review", "Todo", "In Progress", "Merging", "Done", "Needs Triage"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("kanbanStateNames() = %#v, want %#v", got, want)
-	}
-}
-
-func TestKanbanStateNamesAllowConfiguredOpenState(t *testing.T) {
-	t.Parallel()
-
-	cfg := workflowconfig.Config{
-		Tracker: workflowconfig.Tracker{
-			ObservedStates: []string{"Open"},
-			ActiveStates:   []string{"In Progress"},
-			TerminalStates: []string{"Done"},
-		},
-	}
-	snapshot := telemetry.Snapshot{
-		Running: []telemetry.Running{
-			{Issue: telemetry.Issue{ID: "running-open", State: "OPEN"}},
-		},
-	}
-
-	got := kanbanStateNames(cfg, snapshot)
-	want := []string{"Open", "In Progress", "Done"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("kanbanStateNames() = %#v, want %#v", got, want)
-	}
-}
-
-func TestSnapshotProjectDataSeq(t *testing.T) {
-	t.Parallel()
-
-	snapshot := telemetry.Snapshot{
-		Refresh: telemetry.Refresh{DataSeq: 3},
-		Projects: []telemetry.ProjectSnapshot{
-			{
-				Project: telemetry.Project{ID: "alpha"},
-				Refresh: telemetry.Refresh{DataSeq: 7},
-			},
-			{
-				Project: telemetry.Project{ID: "bravo"},
-				Refresh: telemetry.Refresh{DataSeq: 9},
-			},
-		},
-	}
-
-	tests := []struct {
-		name      string
-		projectID string
-		want      uint64
-	}{
-		{name: "project match", projectID: "bravo", want: 9},
-		{name: "fallback", projectID: "charlie", want: 3},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			if got := snapshotProjectDataSeq(snapshot, tt.projectID); got != tt.want {
-				t.Fatalf("snapshotProjectDataSeq() = %d, want %d", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestKanbanSnapshotWithPendingStatesUpdatesBlockedRefs(t *testing.T) {
 	t.Parallel()
 
-	server := &Server{kanbanMutations: newKanbanMutationLocks()}
-	server.kanbanMutations.noteCardState("project:detent", "detent", telemetry.Issue{
+	server := &Server{kanbanMutations: kanbanstate.NewMutationTracker()}
+	server.kanbanMutations.NoteCardState("project:detent", "detent", telemetry.Issue{
 		ID:         "blocker",
 		Identifier: "digitaldrywood/detent#429",
 		ProjectID:  "detent",
@@ -276,7 +118,7 @@ func TestKanbanSnapshotWithPendingStatesUpdatesBlockedRefs(t *testing.T) {
 func TestKanbanSnapshotWithPendingStatesUpdatesBlockedRefsFromCompletedRows(t *testing.T) {
 	t.Parallel()
 
-	server := &Server{kanbanMutations: newKanbanMutationLocks()}
+	server := &Server{kanbanMutations: kanbanstate.NewMutationTracker()}
 	completedAt := time.Date(2026, 7, 7, 0, 37, 10, 0, time.UTC)
 	snapshot := telemetry.Snapshot{
 		Project: telemetry.Project{ID: "detent"},
@@ -331,7 +173,7 @@ func TestKanbanSnapshotWithPendingStatesUpdatesBlockedRefsFromCompletedRows(t *t
 func TestKanbanSnapshotWithPendingStatesPrefersCompletedRowTrackerState(t *testing.T) {
 	t.Parallel()
 
-	server := &Server{kanbanMutations: newKanbanMutationLocks()}
+	server := &Server{kanbanMutations: kanbanstate.NewMutationTracker()}
 	snapshot := telemetry.Snapshot{
 		Project: telemetry.Project{ID: "detent"},
 		BoardIssues: []telemetry.Issue{
@@ -367,7 +209,7 @@ func TestKanbanSnapshotWithPendingStatesPrefersCompletedRowTrackerState(t *testi
 func TestKanbanSnapshotWithPendingStatesIgnoresCompletedHistoryForMissingPendingMove(t *testing.T) {
 	t.Parallel()
 
-	server := &Server{kanbanMutations: newKanbanMutationLocks()}
+	server := &Server{kanbanMutations: kanbanstate.NewMutationTracker()}
 	pendingIssue := telemetry.Issue{
 		ID:         "history-card",
 		Identifier: "digitaldrywood/detent#432",
@@ -375,7 +217,7 @@ func TestKanbanSnapshotWithPendingStatesIgnoresCompletedHistoryForMissingPending
 		Title:      "Completed history pending card",
 		State:      "Backlog",
 	}
-	server.kanbanMutations.noteCardState("project:detent", "detent", pendingIssue, "Backlog", "Todo", 1)
+	server.kanbanMutations.NoteCardState("project:detent", "detent", pendingIssue, "Backlog", "Todo", 1)
 
 	got := server.kanbanSnapshotWithPendingStates("project:detent", "detent", telemetry.Snapshot{
 		Project: telemetry.Project{ID: "detent"},
@@ -400,7 +242,7 @@ func TestKanbanSnapshotWithPendingStatesIgnoresCompletedHistoryForMissingPending
 func TestKanbanSnapshotWithPendingStatesClearsCompletedPendingMove(t *testing.T) {
 	t.Parallel()
 
-	server := &Server{kanbanMutations: newKanbanMutationLocks()}
+	server := &Server{kanbanMutations: kanbanstate.NewMutationTracker()}
 	pendingIssue := telemetry.Issue{
 		ID:         "completed-card",
 		Identifier: "digitaldrywood/detent#431",
@@ -408,7 +250,7 @@ func TestKanbanSnapshotWithPendingStatesClearsCompletedPendingMove(t *testing.T)
 		Title:      "Completed pending card",
 		State:      "Backlog",
 	}
-	server.kanbanMutations.noteCardState("project:detent", "detent", pendingIssue, "Backlog", "Todo", 1)
+	server.kanbanMutations.NoteCardState("project:detent", "detent", pendingIssue, "Backlog", "Todo", 1)
 
 	got := server.kanbanSnapshotWithPendingStates("project:detent", "detent", telemetry.Snapshot{
 		Project: telemetry.Project{ID: "detent"},
@@ -436,90 +278,10 @@ func TestKanbanSnapshotWithPendingStatesClearsCompletedPendingMove(t *testing.T)
 	}
 }
 
-func TestKanbanMutationLocksCardStateByDataSeq(t *testing.T) {
-	t.Parallel()
-
-	type observation struct {
-		snapshotState string
-		dataSeq       uint64
-		want          string
-	}
-	tests := []struct {
-		name         string
-		observations []observation
-		wantPending  bool
-		wantFeedback string
-	}{
-		{
-			name: "same-seq republish holds optimistic state",
-			observations: []observation{
-				{snapshotState: "Backlog", dataSeq: 7, want: "Todo"},
-				{snapshotState: "Blocked", dataSeq: 7, want: "Todo"},
-			},
-			wantPending: true,
-		},
-		{
-			name: "newer-seq match confirms and drops entry",
-			observations: []observation{
-				{snapshotState: "Todo", dataSeq: 8, want: "Todo"},
-				{snapshotState: "Backlog", dataSeq: 9, want: "Backlog"},
-			},
-		},
-		{
-			name: "contradicting polls revert at limit with notice",
-			observations: []observation{
-				{snapshotState: "Backlog", dataSeq: 8, want: "Todo"},
-				{snapshotState: "Backlog", dataSeq: 9, want: "Backlog"},
-			},
-			wantFeedback: "Move of DDW-433 to Todo was not confirmed by the tracker; reverted to Backlog.",
-		},
-		{
-			name: "third state reverts immediately with notice",
-			observations: []observation{
-				{snapshotState: "Blocked", dataSeq: 8, want: "Blocked"},
-			},
-			wantFeedback: "Move of DDW-433 to Todo was not confirmed by the tracker; reverted to Blocked.",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			locks := newKanbanMutationLocks()
-			issue := telemetry.Issue{
-				ID:         "confirmed-card",
-				Identifier: "DDW-433",
-				ProjectID:  "detent",
-				Title:      "Confirmed pending card",
-				State:      "Backlog",
-			}
-			locks.noteCardState("project:detent", "detent", issue, "Backlog", "Todo", 7)
-
-			for _, observation := range tt.observations {
-				got := locks.cardState("project:detent", issue.ID, observation.snapshotState, observation.dataSeq)
-				if got != observation.want {
-					t.Fatalf("cardState(%q, %d) = %q, want %q", observation.snapshotState, observation.dataSeq, got, observation.want)
-				}
-			}
-			if got := kanbanPendingStateExists(locks, "project:detent", issue.ID); got != tt.wantPending {
-				t.Fatalf("pending state exists = %t, want %t", got, tt.wantPending)
-			}
-			feedback := kanbanRevertFeedback(locks.consumeRevertNotices("project:detent", "detent"))
-			if feedback != tt.wantFeedback {
-				t.Fatalf("revert feedback = %q, want %q", feedback, tt.wantFeedback)
-			}
-			if got := locks.consumeRevertNotices("project:detent", "detent"); len(got) != 0 {
-				t.Fatalf("second consumeRevertNotices() = %#v, want drained", got)
-			}
-		})
-	}
-}
-
 func TestKanbanSnapshotWithPendingStatesUsesProjectDataSeq(t *testing.T) {
 	t.Parallel()
 
-	server := &Server{kanbanMutations: newKanbanMutationLocks()}
+	server := &Server{kanbanMutations: kanbanstate.NewMutationTracker()}
 	issue := telemetry.Issue{
 		ID:         "alpha-card",
 		Identifier: "DDW-434",
@@ -527,7 +289,7 @@ func TestKanbanSnapshotWithPendingStatesUsesProjectDataSeq(t *testing.T) {
 		Title:      "Alpha pending card",
 		State:      "Backlog",
 	}
-	server.kanbanMutations.noteCardState("project:alpha", "alpha", issue, "Backlog", "Todo", 5)
+	server.kanbanMutations.NoteCardState("project:alpha", "alpha", issue, "Backlog", "Todo", 5)
 	snapshot := telemetry.Snapshot{
 		Refresh: telemetry.Refresh{DataSeq: 99},
 		Projects: []telemetry.ProjectSnapshot{
@@ -543,7 +305,7 @@ func TestKanbanSnapshotWithPendingStatesUsesProjectDataSeq(t *testing.T) {
 			t.Fatalf("alpha card state = %q, want Todo", got.BoardIssues[0].State)
 		}
 	}
-	if feedback := kanbanRevertFeedback(server.kanbanMutations.consumeRevertNotices("project:alpha", "alpha")); feedback != "" {
+	if feedback := kanbanRevertFeedback(server.kanbanMutations.ConsumeRevertNotices("project:alpha", "alpha")); feedback != "" {
 		t.Fatalf("revert feedback = %q, want none", feedback)
 	}
 }
@@ -552,7 +314,7 @@ func TestKanbanSnapshotWithPendingStatesRevertFeedback(t *testing.T) {
 	t.Parallel()
 
 	server := &Server{
-		kanbanMutations: newKanbanMutationLocks(),
+		kanbanMutations: kanbanstate.NewMutationTracker(),
 		kanbanRefreshes: newKanbanRefreshFeedbackTracker(),
 	}
 	issue := telemetry.Issue{
@@ -562,7 +324,7 @@ func TestKanbanSnapshotWithPendingStatesRevertFeedback(t *testing.T) {
 		Title:      "Rejected pending card",
 		State:      "Backlog",
 	}
-	server.kanbanMutations.noteCardState("project:detent", "detent", issue, "Backlog", "Done", 1)
+	server.kanbanMutations.NoteCardState("project:detent", "detent", issue, "Backlog", "Done", 1)
 	snapshot := telemetry.Snapshot{
 		Project:     telemetry.Project{ID: "detent"},
 		Refresh:     telemetry.Refresh{DataSeq: 2},
@@ -597,53 +359,10 @@ func TestKanbanSnapshotWithPendingStatesRevertFeedback(t *testing.T) {
 	}
 }
 
-func TestKanbanPendingRemovalByDataSeq(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
-		snapshotState string
-		dataSeq       uint64
-		expired       bool
-		want          bool
-	}{
-		{name: "same seq hides recorded state", snapshotState: "Backlog", dataSeq: 5, want: true},
-		{name: "same seq hides changed state", snapshotState: "Done", dataSeq: 5, want: true},
-		{name: "newer seq hides recorded state", snapshotState: "Backlog", dataSeq: 6, want: true},
-		{name: "newer seq releases changed state", snapshotState: "Done", dataSeq: 6},
-		{name: "ttl expires as backstop", snapshotState: "Backlog", dataSeq: 5, expired: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			locks := newKanbanMutationLocks()
-			locks.noteCardRemoved("project:detent", "removed-card", "Backlog", 5)
-			if tt.expired {
-				stateKey := kanbanMutationStateKey("project:detent", "removed-card")
-				locks.mu.Lock()
-				removed := locks.removed[stateKey]
-				removed.removedAt = time.Now().Add(-kanbanRemovalPendingTTL - time.Minute)
-				locks.removed[stateKey] = removed
-				locks.mu.Unlock()
-			}
-
-			got := locks.cardRemoved("project:detent", "removed-card", tt.snapshotState, tt.dataSeq)
-			if got != tt.want {
-				t.Fatalf("cardRemoved(%q, %d) = %t, want %t", tt.snapshotState, tt.dataSeq, got, tt.want)
-			}
-			if !tt.want && kanbanPendingRemovalExists(locks, "project:detent", "removed-card") {
-				t.Fatalf("pending removal still exists after release")
-			}
-		})
-	}
-}
-
 func TestKanbanSnapshotWithPendingStatesConcurrentRenderMove(t *testing.T) {
 	t.Parallel()
 
-	server := &Server{kanbanMutations: newKanbanMutationLocks()}
+	server := &Server{kanbanMutations: kanbanstate.NewMutationTracker()}
 	issue := telemetry.Issue{
 		ID:         "race-card",
 		Identifier: "DDW-436",
@@ -681,7 +400,7 @@ func TestKanbanSnapshotWithPendingStatesConcurrentRenderMove(t *testing.T) {
 		defer wg.Done()
 		<-start
 		for range 100 {
-			server.kanbanMutations.noteCardState("project:detent", "detent", issue, "Backlog", "Todo", 1)
+			server.kanbanMutations.NoteCardState("project:detent", "detent", issue, "Backlog", "Todo", 1)
 		}
 	}()
 	close(start)
@@ -690,22 +409,6 @@ func TestKanbanSnapshotWithPendingStatesConcurrentRenderMove(t *testing.T) {
 	for err := range errs {
 		t.Fatal(err)
 	}
-}
-
-func kanbanPendingStateExists(locks *kanbanMutationLocks, key string, issueID string) bool {
-	stateKey := kanbanMutationStateKey(key, issueID)
-	locks.mu.Lock()
-	defer locks.mu.Unlock()
-	_, ok := locks.states[stateKey]
-	return ok
-}
-
-func kanbanPendingRemovalExists(locks *kanbanMutationLocks, key string, issueID string) bool {
-	stateKey := kanbanMutationStateKey(key, issueID)
-	locks.mu.Lock()
-	defer locks.mu.Unlock()
-	_, ok := locks.removed[stateKey]
-	return ok
 }
 
 func TestKanbanRefreshFeedbackTransitionsOnce(t *testing.T) {

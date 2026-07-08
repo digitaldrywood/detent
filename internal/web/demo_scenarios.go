@@ -11,6 +11,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
@@ -485,8 +486,8 @@ func (s *Server) demoKanbanMoveSuccess(c echo.Context, scenario demoScenario) er
 }
 
 func applyDemoKanbanMove(snapshot *telemetry.Snapshot, projectID string, issueID string, targetState string) {
-	applySnapshotKanbanIssues(snapshot, func(issue *telemetry.Issue) {
-		if issue == nil || !sameKanbanIssue(*issue, projectID, issueID, snapshot.Project.ID) {
+	kanbanstate.ApplySnapshotIssues(snapshot, func(issue *telemetry.Issue) {
+		if issue == nil || !kanbanstate.SameIssue(*issue, projectID, issueID, snapshot.Project.ID) {
 			return
 		}
 		issue.State = targetState
