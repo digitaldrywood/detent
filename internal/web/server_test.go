@@ -43,6 +43,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web"
+	"github.com/digitaldrywood/detent/internal/web/demofixtures"
 )
 
 const sseTestReadTimeout = 5 * time.Second
@@ -1599,8 +1600,8 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 	t.Parallel()
 
 	backend := openWebTestStore(t)
-	if err := web.SeedDemoUsageEvents(context.Background(), backend); err != nil {
-		t.Fatalf("SeedDemoUsageEvents() error = %v", err)
+	if err := demofixtures.SeedUsageEvents(context.Background(), backend); err != nil {
+		t.Fatalf("SeedUsageEvents() error = %v", err)
 	}
 	deps := testDeps(t)
 	deps.Store = backend
@@ -1767,13 +1768,13 @@ func TestDemoScenarioKanbanFragments(t *testing.T) {
 	}
 }
 
-func TestSeedDemoUsageEventsPopulatesUsageReports(t *testing.T) {
+func TestSeedUsageEventsPopulatesUsageReports(t *testing.T) {
 	t.Parallel()
 
 	backend := openWebTestStore(t)
 	ctx := context.Background()
-	if err := web.SeedDemoUsageEvents(ctx, backend); err != nil {
-		t.Fatalf("SeedDemoUsageEvents() error = %v", err)
+	if err := demofixtures.SeedUsageEvents(ctx, backend); err != nil {
+		t.Fatalf("SeedUsageEvents() error = %v", err)
 	}
 	report, err := backend.UsageReport(ctx, store.UsageReportQuery{By: store.UsageReportByProject})
 	if err != nil {

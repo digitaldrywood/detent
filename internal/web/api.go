@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web/demofixtures"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -55,7 +56,7 @@ func (s *Server) apiState(c echo.Context) error {
 		if scenario.ID == "api-state-no-snapshot" {
 			return c.JSON(http.StatusOK, snapshotErrorResponse(demoBaseTime, "snapshot_unavailable", "Snapshot unavailable"))
 		}
-		snapshot := demoSnapshotForScenario(scenario)
+		snapshot := demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant)
 		return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, demoBaseTime), s.instanceName()))
 	}
 	now := apiNow()
@@ -93,9 +94,9 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
 		return err
 	} else if ok {
-		snapshot := demoSnapshotForScenario(scenario)
-		projects := demoProjectsForVariant(scenario.Variant)
-		project, ok := demoProjectByID(projects, projectID)
+		snapshot := demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant)
+		projects := demofixtures.ProjectsForVariant(scenario.Variant)
+		project, ok := demofixtures.ProjectByID(projects, projectID)
 		if !ok {
 			return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
 		}
@@ -135,7 +136,7 @@ func (s *Server) apiTimeSeries(c echo.Context) error {
 		if scenario.Variant == "invalid-query" {
 			return c.JSON(http.StatusBadRequest, errorResponse("invalid_duration", "window must be a duration such as 10m or 30s"))
 		}
-		projects := demoProjectsForVariant(scenario.Variant)
+		projects := demofixtures.ProjectsForVariant(scenario.Variant)
 		return c.JSON(http.StatusOK, projectTimeSeriesResponse(projects, "", demoBaseTime, window, bucket))
 	}
 
@@ -152,8 +153,8 @@ func (s *Server) apiProjectTimeSeries(c echo.Context, projectID string) error {
 	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
 		return err
 	} else if ok {
-		projects := demoProjectsForVariant(scenario.Variant)
-		if _, ok := demoProjectByID(projects, projectID); !ok {
+		projects := demofixtures.ProjectsForVariant(scenario.Variant)
+		if _, ok := demofixtures.ProjectByID(projects, projectID); !ok {
 			return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
 		}
 		return c.JSON(http.StatusOK, projectTimeSeriesResponse(projects, projectID, demoBaseTime, window, bucket))
@@ -172,7 +173,7 @@ func (s *Server) apiIssue(c echo.Context) error {
 	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
 		return err
 	} else if ok {
-		payload, found := issueResponse(issueIdentifier(c), demoSnapshotForScenario(scenario))
+		payload, found := issueResponse(issueIdentifier(c), demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant))
 		if !found {
 			return c.JSON(http.StatusNotFound, errorResponse("issue_not_found", "Issue not found"))
 		}

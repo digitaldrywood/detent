@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tui"
 	"github.com/digitaldrywood/detent/internal/web"
+	"github.com/digitaldrywood/detent/internal/web/demofixtures"
 )
 
 const (
@@ -174,7 +175,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		return err
 	}
 	if cfg.Isolated != nil && cfg.Isolated.Demo == "screenshots" {
-		if err := web.SeedDemoUsageEvents(runCtx, runtimeStore); err != nil {
+		if err := demofixtures.SeedUsageEvents(runCtx, runtimeStore); err != nil {
 			return err
 		}
 	}
