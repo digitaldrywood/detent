@@ -125,7 +125,6 @@ templ boardCardView2(card boardCardView) {
 				data-kanban-issue-id={ card.IssueID }
 			}
 			if card.CanDrag {
-				draggable="true"
 				data-kanban-action="move"
 				data-kanban-allowed-targets={ card.AllowedTargets }
 			} else if card.MoveDisabledText != "" {
@@ -336,15 +335,23 @@ templ boardLaneScript() {
 	</script>
 }
 
+// boardKanbanDragScript implements card dragging with pointer events instead
+// of the native HTML5 drag-and-drop API. Chromium on Wayland starts a
+// compositor-level drag session even for in-page HTML5 drags, and several
+// compositors (COSMIC, Plasma, Hyprland) cancel or break that session, so a
+// real mouse drag dies before it starts while synthesized test drags pass.
+// Pointer tracking with elementFromPoint hit-testing never leaves the page,
+// works on every platform, and lets Playwright exercise the real code path.
 templ boardKanbanDragScript() {
 	<script>
 		(function () {
 			if (window.__detentBoardKanbanDragHandlersRegistered) return;
 			window.__detentBoardKanbanDragHandlersRegistered = true;
+			var DRAG_THRESHOLD_PX = 6;
 			var draggedIssueID = "";
 			var draggedAllowedTargetKeys = [];
-			var dropped = false;
-			var blockedDrop = false;
+			var pending = null;
+			var active = null;
 			function feedback(message, kind) {
 				var target = document.getElementById("board-feedback");
 				if (!target) return;
@@ -357,19 +364,9 @@ templ boardKanbanDragScript() {
 				if (scope && typeof scope.querySelector === "function" && typeof scope.querySelectorAll === "function") return scope;
 				return document;
 			}
-			function markedDraggedCard(scope) {
-				return queryRoot(scope).querySelector("[data-kanban-card][data-kanban-dragging='true']");
-			}
 			function draggedCard(scope) {
 				if (!draggedIssueID || !window.CSS || typeof CSS.escape !== "function") return null;
 				return queryRoot(scope).querySelector("[data-kanban-card][data-kanban-issue-id='" + CSS.escape(draggedIssueID) + "']");
-			}
-			function activeDragIssueID(event) {
-				if (draggedIssueID) return draggedIssueID;
-				var marked = markedDraggedCard();
-				if (marked instanceof HTMLElement && marked.dataset.kanbanIssueId) return marked.dataset.kanbanIssueId;
-				if (!event.dataTransfer || typeof event.dataTransfer.getData !== "function") return "";
-				return event.dataTransfer.getData("text/plain") || "";
 			}
 			function targetKeysFromValue(value) {
 				return String(value || "").split(/\s+/).filter(Boolean);
@@ -385,19 +382,6 @@ templ boardKanbanDragScript() {
 				if (!(lane instanceof HTMLElement)) return false;
 				var key = lane.dataset.kanbanDropKey || "";
 				return key !== "" && allowedTargetKeys(card).includes(key);
-			}
-			function dragImageOffset(position, start, size) {
-				if (position <= 0 || size <= 0) return Math.max(0, size / 2);
-				return Math.min(Math.max(position - start, 0), size);
-			}
-			function setCardDragImage(event, card) {
-				if (!event.dataTransfer) return;
-				var rect = card.getBoundingClientRect();
-				event.dataTransfer.setDragImage(
-					card,
-					Math.round(dragImageOffset(event.clientX, rect.left, rect.width)),
-					Math.round(dragImageOffset(event.clientY, rect.top, rect.height))
-				);
 			}
 			function setDropTargetState(card, scope) {
 				queryRoot(scope).querySelectorAll("[data-kanban-drop-state]").forEach(function (lane) {
@@ -439,85 +423,177 @@ templ boardKanbanDragScript() {
 				var doc = new DOMParser().parseFromString(response, "text/html");
 				return (doc.body.textContent || "").trim();
 			}
-			document.addEventListener("dragstart", function (event) {
-				var card = event.target instanceof Element ? event.target.closest("[data-kanban-card]") : null;
-				if (!card || card.getAttribute("draggable") !== "true") return;
-				draggedIssueID = card.dataset.kanbanIssueId || "";
-				draggedAllowedTargetKeys = targetKeysFromValue(card.dataset.kanbanAllowedTargets || "");
-				dropped = false;
-				blockedDrop = false;
-				if (!draggedIssueID) {
-					draggedAllowedTargetKeys = [];
+			function buildGhost(card, rect) {
+				var ghost = card.cloneNode(true);
+				ghost.removeAttribute("id");
+				ghost.querySelectorAll("[id]").forEach(function (node) {
+					node.removeAttribute("id");
+				});
+				var form = ghost.querySelector("[data-kanban-drag-move-form]");
+				if (form) form.remove();
+				delete ghost.dataset.kanbanDragging;
+				ghost.setAttribute("aria-hidden", "true");
+				ghost.style.position = "fixed";
+				ghost.style.left = "0";
+				ghost.style.top = "0";
+				ghost.style.margin = "0";
+				ghost.style.width = rect.width + "px";
+				ghost.style.height = rect.height + "px";
+				ghost.style.pointerEvents = "none";
+				ghost.style.zIndex = "1000";
+				ghost.style.opacity = "0.9";
+				ghost.style.boxShadow = "0 12px 32px rgba(0, 0, 0, 0.35)";
+				ghost.style.willChange = "transform";
+				document.body.appendChild(ghost);
+				return ghost;
+			}
+			function moveGhost(ghost, x, y, offsetX, offsetY) {
+				ghost.style.transform = "translate(" + Math.round(x - offsetX) + "px, " + Math.round(y - offsetY) + "px)";
+			}
+			function laneFromPoint(x, y) {
+				var hit = document.elementFromPoint(x, y);
+				return hit instanceof Element ? hit.closest("[data-kanban-drop-state]") : null;
+			}
+			// Native drags auto-scrolled the lane strip at the viewport edges;
+			// pointer drags must do it themselves. Scrolls only while the
+			// pointer moves, which is enough to reach off-screen lanes.
+			function autoScrollLanes(x) {
+				var lanes = document.getElementById("board-lanes");
+				if (!lanes) return;
+				var rect = lanes.getBoundingClientRect();
+				if (x < rect.left + 48) {
+					lanes.scrollLeft -= 16;
+				} else if (x > rect.right - 48) {
+					lanes.scrollLeft += 16;
+				}
+			}
+			function suppressNextClick() {
+				var until = Date.now() + 400;
+				document.addEventListener("click", function suppress(event) {
+					document.removeEventListener("click", suppress, true);
+					if (Date.now() > until) return;
 					event.preventDefault();
+					event.stopImmediatePropagation();
+				}, true);
+			}
+			function beginDrag(event) {
+				draggedIssueID = pending.issueID;
+				draggedAllowedTargetKeys = pending.targets;
+				var card = draggedCard(document) || pending.card;
+				active = {
+					pointerId: pending.pointerId,
+					offsetX: pending.startX - pending.rect.left,
+					offsetY: pending.startY - pending.rect.top,
+					ghost: buildGhost(card, pending.rect),
+					lastLaneBlocked: false
+				};
+				pending = null;
+				card.dataset.kanbanDragging = "true";
+				setDropTargetState(card, document);
+				feedback("Moving " + (card.dataset.kanbanCurrentState || "card") + ".");
+				moveGhost(active.ghost, event.clientX, event.clientY, active.offsetX, active.offsetY);
+			}
+			function finishDrag() {
+				if (active && active.ghost) active.ghost.remove();
+				pending = null;
+				active = null;
+				draggedIssueID = "";
+				draggedAllowedTargetKeys = [];
+				clearDropTargetState();
+				// A drag ends with the pointer still over a card, so the release
+				// also fires a click; swallow it or the detail sheet opens.
+				suppressNextClick();
+			}
+			function cancelDrag() {
+				if (!active) {
+					pending = null;
 					return;
 				}
-				if (event.dataTransfer) {
-					event.dataTransfer.effectAllowed = "move";
-					event.dataTransfer.setData("text/plain", draggedIssueID);
-				}
-				setCardDragImage(event, card);
-				// Chrome aborts a native drag when the DOM mutates inside the
-				// dragstart handler: unhiding the feedback line and the hidden
-				// drop lanes reflows the source card while the browser is still
-				// capturing the drag image, so the gesture dies before it starts.
-				// Only dataTransfer setup may run synchronously; every DOM
-				// mutation is deferred until the drag session is established.
-				var startedIssueID = draggedIssueID;
-				window.setTimeout(function () {
-					if (draggedIssueID !== startedIssueID) return;
-					card.dataset.kanbanDragging = "true";
-					setDropTargetState(card, document);
-					feedback("Moving " + (card.dataset.kanbanCurrentState || "card") + ".");
-				}, 0);
-			});
-			document.addEventListener("dragover", function (event) {
-				var issueID = activeDragIssueID(event);
+				finishDrag();
+				feedback("Move cancelled.", "error");
+			}
+			document.addEventListener("pointerdown", function (event) {
+				if (active || event.button !== 0 || event.pointerType === "touch") return;
+				var card = event.target instanceof Element ? event.target.closest("[data-kanban-card][data-kanban-action='move']") : null;
+				if (!card) return;
+				var issueID = card.dataset.kanbanIssueId || "";
 				if (!issueID) return;
-				draggedIssueID = issueID;
-				var lane = event.target instanceof Element ? event.target.closest("[data-kanban-drop-state]") : null;
-				if (!lane) return;
-				var allowed = laneAllowed(draggedCard(document), lane);
-				if (event.dataTransfer) event.dataTransfer.dropEffect = allowed ? "move" : "none";
-				if (allowed) {
-					event.preventDefault();
-					blockedDrop = false;
+				pending = {
+					pointerId: event.pointerId,
+					card: card,
+					issueID: issueID,
+					targets: targetKeysFromValue(card.dataset.kanbanAllowedTargets || ""),
+					rect: card.getBoundingClientRect(),
+					startX: event.clientX,
+					startY: event.clientY
+				};
+			});
+			document.addEventListener("pointermove", function (event) {
+				if (pending && event.pointerId === pending.pointerId) {
+					if (Math.hypot(event.clientX - pending.startX, event.clientY - pending.startY) < DRAG_THRESHOLD_PX) return;
+					beginDrag(event);
 					return;
 				}
-				blockedDrop = true;
-				feedback("Move blocked by transition policy.", "error");
-			});
-			document.addEventListener("drop", function (event) {
-				var issueID = activeDragIssueID(event);
-				if (!issueID) return;
-				draggedIssueID = issueID;
-				var lane = event.target instanceof Element ? event.target.closest("[data-kanban-drop-state]") : null;
-				if (!lane) return;
+				if (!active || event.pointerId !== active.pointerId) return;
 				event.preventDefault();
+				moveGhost(active.ghost, event.clientX, event.clientY, active.offsetX, active.offsetY);
+				autoScrollLanes(event.clientX);
+				var lane = laneFromPoint(event.clientX, event.clientY);
 				var card = draggedCard(document);
-				if (!laneAllowed(card, lane)) {
+				var blocked = lane instanceof HTMLElement && !laneAllowed(card, lane);
+				if (blocked && !active.lastLaneBlocked) {
 					feedback("Move blocked by transition policy.", "error");
-					dropped = true;
+				} else if (!blocked && active.lastLaneBlocked) {
+					feedback("Moving " + ((card && card.dataset.kanbanCurrentState) || "card") + ".");
+				}
+				active.lastLaneBlocked = blocked;
+			});
+			document.addEventListener("pointerup", function (event) {
+				if (pending && event.pointerId === pending.pointerId) {
+					pending = null;
+					return;
+				}
+				if (!active || event.pointerId !== active.pointerId) return;
+				var lane = laneFromPoint(event.clientX, event.clientY);
+				var card = draggedCard(document);
+				if (!(lane instanceof HTMLElement)) {
+					cancelDrag();
+					return;
+				}
+				if (!laneAllowed(card, lane)) {
+					finishDrag();
+					feedback("Move blocked by transition policy.", "error");
 					return;
 				}
 				var form = card ? card.querySelector("[data-kanban-drag-move-form]") : null;
 				var targetState = form ? form.querySelector("[data-kanban-drag-target-state]") : null;
 				if (!(form instanceof HTMLFormElement) || !(targetState instanceof HTMLInputElement)) {
-					feedback("Move cancelled.", "error");
+					cancelDrag();
 					return;
 				}
 				targetState.value = lane.dataset.kanbanDropState || "";
-				dropped = true;
+				finishDrag();
 				form.requestSubmit();
 			});
-			document.addEventListener("dragend", function () {
-				if (draggedIssueID && !dropped && !blockedDrop) {
-					feedback("Move cancelled.", "error");
+			document.addEventListener("pointercancel", function (event) {
+				if (pending && event.pointerId === pending.pointerId) {
+					pending = null;
+					return;
 				}
-				draggedIssueID = "";
-				draggedAllowedTargetKeys = [];
-				dropped = false;
-				blockedDrop = false;
-				clearDropTargetState();
+				if (active && event.pointerId === active.pointerId) cancelDrag();
+			});
+			document.addEventListener("keydown", function (event) {
+				if (event.key === "Escape" && active) cancelDrag();
+			});
+			window.addEventListener("blur", function () {
+				if (active) cancelDrag();
+			});
+			// Native HTML5 drags stay disabled inside cards (links, images):
+			// they would start a compositor drag session that steals the pointer.
+			document.addEventListener("dragstart", function (event) {
+				if (event.target instanceof Element && event.target.closest("[data-kanban-card]")) {
+					event.preventDefault();
+				}
 			});
 			document.addEventListener("htmx:afterSettle", function () {
 				applyActiveDragState(document);
