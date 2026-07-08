@@ -2240,8 +2240,24 @@ func projectKanbanBoardLoaded(data DashboardData) bool {
 	return snapshotCarriesData(data)
 }
 
+// projectKanbanDragDropEnabled reports whether board lanes should render as
+// drop targets. A project board needs its own integration mode; the
+// all-project board is draggable when any configured project runs in
+// integration mode — per-card allowed targets still gate each move by the
+// owning project's transition policy.
 func projectKanbanDragDropEnabled(data DashboardData) bool {
-	return isProjectDashboard(data) && kanbanIntegrationEnabled(data) && snapshotReady(data.Snapshot)
+	if !snapshotReady(data.Snapshot) {
+		return false
+	}
+	if isProjectDashboard(data) {
+		return kanbanIntegrationEnabled(data)
+	}
+	for _, project := range data.Kanban.Projects {
+		if strings.EqualFold(strings.TrimSpace(project.Mode), "integration") {
+			return true
+		}
+	}
+	return false
 }
 
 // snapshotCarriesData reports whether the snapshot has data worth rendering:
@@ -2787,10 +2803,11 @@ func projectKanbanCardCanMove(data DashboardData, card projectKanbanCard) bool {
 	return projectKanbanCardMoveDisabledText(data, card) == ""
 }
 
+// projectKanbanCardMoveDisabledText resolves per card, so the all-project
+// board is draggable too: each card's own project supplies the integration
+// mode and transition policy (projectKanbanCardKanbanData), and cards from
+// read-only or unresolvable projects stay inert with a reason chip.
 func projectKanbanCardMoveDisabledText(data DashboardData, card projectKanbanCard) string {
-	if !isProjectDashboard(data) {
-		return "All-project board is read-only. Open the project board to move this card."
-	}
 	if !snapshotReady(data.Snapshot) {
 		if snapshotDegraded(data.Snapshot) {
 			return "Tracker refresh is degraded; moves are disabled until a fresh snapshot is ready."

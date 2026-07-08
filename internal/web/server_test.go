@@ -2444,7 +2444,7 @@ func TestKanbanMoveFailureDoesNotInsertPendingCard(t *testing.T) {
 	}
 }
 
-func TestKanbanMoveRejectsFleetBoardMovePosts(t *testing.T) {
+func TestKanbanMoveAllowsFleetBoardMovePosts(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
@@ -2495,15 +2495,31 @@ func TestKanbanMoveRejectsFleetBoardMovePosts(t *testing.T) {
 		"target_state":  {"Todo"},
 	}
 	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "All-project board is read-only. Open the project board to move this card.") {
-		t.Fatalf("body missing fleet read-only feedback:\n%s", body)
+	if got := actionConnector.stateUpdates(); len(got) != 1 {
+		t.Fatalf("state updates = %#v, want exactly one", got)
 	}
-	if got := actionConnector.stateUpdates(); len(got) != 0 {
-		t.Fatalf("state updates = %#v, want none", got)
+
+	// A fleet move against a project without Kanban integration stays blocked
+	// by the per-project gate.
+	blocked := url.Values{
+		"kanban_board":  {"fleet"},
+		"project_id":    {"docs-site"},
+		"issue_id":      {"I_docs12"},
+		"current_state": {"Todo"},
+		"target_state":  {"Backlog"},
+	}
+	blockedRec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", blocked)
+	if blockedRec.Code != http.StatusForbidden {
+		t.Fatalf("read-only project status = %d, want %d; body = %s", blockedRec.Code, http.StatusForbidden, blockedRec.Body.String())
+	}
+	if !strings.Contains(blockedRec.Body.String(), "Kanban integration mode is not enabled.") {
+		t.Fatalf("read-only project body missing integration feedback:\n%s", blockedRec.Body.String())
+	}
+	if got := actionConnector.stateUpdates(); len(got) != 1 {
+		t.Fatalf("state updates after blocked move = %#v, want still one", got)
 	}
 }
 
