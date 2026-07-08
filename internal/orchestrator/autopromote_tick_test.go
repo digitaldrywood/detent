@@ -1879,6 +1879,7 @@ func TestTickAutoPromoteValidatorVerdictHeadSHAInvalidatesMemo(t *testing.T) {
 	if requests[0].Issue.PullRequest == nil || requests[0].Issue.PullRequest.HeadSHA != "head-validator-new" {
 		t.Fatalf("validator request head SHA = %#v, want new head", requests[0].Issue.PullRequest)
 	}
+	waitForValidatorResult(t, orch, fresh)
 }
 
 func TestTickAutoPromoteValidatorFailureBackoff(t *testing.T) {
