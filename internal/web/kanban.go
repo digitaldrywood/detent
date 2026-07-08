@@ -26,33 +26,34 @@ import (
 )
 
 type kanbanMutationLocks struct {
-	mu      sync.Mutex
-	locks   map[string]*sync.Mutex
-	states  map[string]kanbanPendingState
-	removed map[string]kanbanPendingRemoval
+	mu       sync.Mutex
+	locks    map[string]*sync.Mutex
+	states   map[string]kanbanPendingState
+	removed  map[string]kanbanPendingRemoval
+	reverted map[string]kanbanRevertNotice
 }
 
 type kanbanPendingState struct {
-	snapshot    string
-	current     string
-	project     string
-	issue       telemetry.Issue
-	status      kanbanPendingStateStatus
-	snapshotAt  time.Time
-	confirmedAt time.Time
+	snapshot       string
+	current        string
+	project        string
+	issue          telemetry.Issue
+	dataSeqAtWrite uint64
+	contradictions int
 }
 
 type kanbanPendingRemoval struct {
-	snapshot  string
-	removedAt time.Time
+	snapshot       string
+	removedAt      time.Time
+	dataSeqAtWrite uint64
 }
 
-type kanbanPendingStateStatus string
-
-const (
-	kanbanPendingStateAwaitingCatchup kanbanPendingStateStatus = "awaiting_catchup"
-	kanbanPendingStateConfirmed       kanbanPendingStateStatus = "confirmed"
-)
+type kanbanRevertNotice struct {
+	identifier string
+	from       string
+	to         string
+	at         time.Time
+}
 
 type kanbanSnapshotIssueEntry struct {
 	issue           telemetry.Issue
@@ -104,18 +105,20 @@ type kanbanCommentMutationRequest struct {
 }
 
 const (
-	kanbanDialogContentTarget = "#kanban-dialog-content"
-	kanbanProjectBoardTarget  = "#snapshot"
-	kanbanFleetBoardTarget    = "#snapshot"
-	kanbanDialogSucceeded     = "kanbanActionSucceeded"
-	kanbanRemovalPendingTTL   = 5 * time.Minute
+	kanbanDialogContentTarget       = "#kanban-dialog-content"
+	kanbanProjectBoardTarget        = "#snapshot"
+	kanbanFleetBoardTarget          = "#snapshot"
+	kanbanDialogSucceeded           = "kanbanActionSucceeded"
+	kanbanOverlayContradictionLimit = 2
+	kanbanRemovalPendingTTL         = 5 * time.Minute
 )
 
 func newKanbanMutationLocks() *kanbanMutationLocks {
 	return &kanbanMutationLocks{
-		locks:   map[string]*sync.Mutex{},
-		states:  map[string]kanbanPendingState{},
-		removed: map[string]kanbanPendingRemoval{},
+		locks:    map[string]*sync.Mutex{},
+		states:   map[string]kanbanPendingState{},
+		removed:  map[string]kanbanPendingRemoval{},
+		reverted: map[string]kanbanRevertNotice{},
 	}
 }
 
@@ -143,7 +146,7 @@ func (l *kanbanMutationLocks) lockFor(key string) *sync.Mutex {
 	return lock
 }
 
-func (l *kanbanMutationLocks) cardState(key string, issueID string, snapshotState string, snapshotAt time.Time) string {
+func (l *kanbanMutationLocks) cardState(key string, issueID string, snapshotState string, dataSeq uint64) string {
 	stateKey := kanbanMutationStateKey(key, issueID)
 	if stateKey == "" {
 		return snapshotState
@@ -152,44 +155,39 @@ func (l *kanbanMutationLocks) cardState(key string, issueID string, snapshotStat
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	return l.cardStateLocked(stateKey, snapshotState, snapshotAt)
+	return l.cardStateLocked(stateKey, snapshotState, dataSeq)
 }
 
-func (l *kanbanMutationLocks) cardStateLocked(stateKey string, snapshotState string, snapshotAt time.Time) string {
+func (l *kanbanMutationLocks) cardStateLocked(stateKey string, snapshotState string, dataSeq uint64) string {
 	pending, ok := l.states[stateKey]
 	if !ok {
 		return snapshotState
 	}
-	switch pending.status {
-	case kanbanPendingStateConfirmed:
-		if !pending.confirmedAt.IsZero() && !snapshotAt.IsZero() && !snapshotAt.After(pending.confirmedAt) {
-			return pending.current
-		}
-		if normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.current) {
-			return snapshotState
-		}
+	if dataSeq <= pending.dataSeqAtWrite {
+		return pending.current
+	}
+
+	switch {
+	case normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.current):
 		delete(l.states, stateKey)
 		return snapshotState
-	default:
-		if !pending.snapshotAt.IsZero() && !snapshotAt.IsZero() && snapshotAt.Before(pending.snapshotAt) {
-			return pending.current
-		}
-		switch {
-		case normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.snapshot):
-			return pending.current
-		case normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.current):
-			pending.status = kanbanPendingStateConfirmed
-			pending.confirmedAt = snapshotAt
+	case normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.snapshot):
+		pending.contradictions++
+		if pending.contradictions < kanbanOverlayContradictionLimit {
 			l.states[stateKey] = pending
-			return snapshotState
-		default:
-			delete(l.states, stateKey)
-			return snapshotState
+			return pending.current
 		}
+		delete(l.states, stateKey)
+		l.noteRevertLocked(stateKey, pending, snapshotState)
+		return snapshotState
+	default:
+		delete(l.states, stateKey)
+		l.noteRevertLocked(stateKey, pending, snapshotState)
+		return snapshotState
 	}
 }
 
-func (l *kanbanMutationLocks) noteCardState(key string, projectID string, issue telemetry.Issue, snapshotState string, currentState string, snapshotAt time.Time) {
+func (l *kanbanMutationLocks) noteCardState(key string, projectID string, issue telemetry.Issue, snapshotState string, currentState string, dataSeqAtWrite uint64) {
 	issue.ID = strings.TrimSpace(issue.ID)
 	stateKey := kanbanMutationStateKey(key, issue.ID)
 	if stateKey == "" || strings.TrimSpace(currentState) == "" {
@@ -207,13 +205,13 @@ func (l *kanbanMutationLocks) noteCardState(key string, projectID string, issue 
 		snapshotState = pending.snapshot
 	}
 	delete(l.removed, stateKey)
+	delete(l.reverted, stateKey)
 	l.states[stateKey] = kanbanPendingState{
-		snapshot:   strings.TrimSpace(snapshotState),
-		current:    strings.TrimSpace(currentState),
-		project:    projectID,
-		issue:      cloneKanbanIssue(issue),
-		status:     kanbanPendingStateAwaitingCatchup,
-		snapshotAt: snapshotAt,
+		snapshot:       strings.TrimSpace(snapshotState),
+		current:        strings.TrimSpace(currentState),
+		project:        projectID,
+		issue:          cloneKanbanIssue(issue),
+		dataSeqAtWrite: dataSeqAtWrite,
 	}
 }
 
@@ -222,6 +220,8 @@ func (l *kanbanMutationLocks) pendingMovedCards(key string, projectID string, sn
 	if key == "" {
 		return nil
 	}
+	projectID = strings.TrimSpace(projectID)
+	dataSeq := snapshotProjectDataSeq(snapshot, projectID)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -237,7 +237,6 @@ func (l *kanbanMutationLocks) pendingMovedCards(key string, projectID string, sn
 			continue
 		}
 		present[stateKey] = struct{}{}
-		l.cardStateLocked(stateKey, entry.state, snapshot.GeneratedAt)
 	}
 	for _, row := range snapshot.Completed {
 		issue := row.Issue
@@ -253,10 +252,9 @@ func (l *kanbanMutationLocks) pendingMovedCards(key string, projectID string, sn
 			continue
 		}
 		snapshotState := strings.TrimSpace(issue.State)
-		l.cardStateLocked(stateKey, snapshotState, snapshot.GeneratedAt)
+		l.cardStateLocked(stateKey, snapshotState, dataSeq)
 	}
 
-	projectID = strings.TrimSpace(projectID)
 	out := []telemetry.Issue{}
 	for stateKey, pending := range l.states {
 		if _, ok := present[stateKey]; ok {
@@ -295,6 +293,8 @@ func (l *kanbanMutationLocks) snapshotCardStates(key string, projectID string, s
 	if key == "" {
 		return nil
 	}
+	projectID = strings.TrimSpace(projectID)
+	dataSeq := snapshotProjectDataSeq(snapshot, projectID)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -309,7 +309,7 @@ func (l *kanbanMutationLocks) snapshotCardStates(key string, projectID string, s
 		if _, ok := l.states[stateKey]; !ok {
 			continue
 		}
-		state := l.cardStateLocked(stateKey, entry.state, snapshot.GeneratedAt)
+		state := l.cardStateLocked(stateKey, entry.state, dataSeq)
 		if strings.TrimSpace(state) != "" {
 			out[stateKey] = state
 		}
@@ -320,7 +320,7 @@ func (l *kanbanMutationLocks) snapshotCardStates(key string, projectID string, s
 	return out
 }
 
-func (l *kanbanMutationLocks) cardRemoved(key string, issueID string, snapshotState string) bool {
+func (l *kanbanMutationLocks) cardRemoved(key string, issueID string, snapshotState string, dataSeq uint64) bool {
 	stateKey := kanbanMutationStateKey(key, issueID)
 	if stateKey == "" {
 		return false
@@ -337,6 +337,9 @@ func (l *kanbanMutationLocks) cardRemoved(key string, issueID string, snapshotSt
 		delete(l.removed, stateKey)
 		return false
 	}
+	if dataSeq <= removed.dataSeqAtWrite {
+		return true
+	}
 	if normalizeKanbanState(snapshotState) == normalizeKanbanState(removed.snapshot) {
 		return true
 	}
@@ -344,7 +347,7 @@ func (l *kanbanMutationLocks) cardRemoved(key string, issueID string, snapshotSt
 	return false
 }
 
-func (l *kanbanMutationLocks) noteCardRemoved(key string, issueID string, snapshotState string) {
+func (l *kanbanMutationLocks) noteCardRemoved(key string, issueID string, snapshotState string, dataSeqAtWrite uint64) {
 	stateKey := kanbanMutationStateKey(key, issueID)
 	if stateKey == "" {
 		return
@@ -352,11 +355,61 @@ func (l *kanbanMutationLocks) noteCardRemoved(key string, issueID string, snapsh
 
 	l.mu.Lock()
 	delete(l.states, stateKey)
+	delete(l.reverted, stateKey)
 	l.removed[stateKey] = kanbanPendingRemoval{
-		snapshot:  strings.TrimSpace(snapshotState),
-		removedAt: time.Now(),
+		snapshot:       strings.TrimSpace(snapshotState),
+		removedAt:      time.Now(),
+		dataSeqAtWrite: dataSeqAtWrite,
 	}
 	l.mu.Unlock()
+}
+
+func (l *kanbanMutationLocks) noteRevertLocked(stateKey string, pending kanbanPendingState, snapshotState string) {
+	identifier := strings.TrimSpace(pending.issue.Identifier)
+	if identifier == "" {
+		identifier = strings.TrimSpace(pending.issue.ID)
+	}
+	to := strings.TrimSpace(snapshotState)
+	if to == "" {
+		to = strings.TrimSpace(pending.snapshot)
+	}
+	l.reverted[stateKey] = kanbanRevertNotice{
+		identifier: identifier,
+		from:       strings.TrimSpace(pending.current),
+		to:         to,
+		at:         time.Now(),
+	}
+}
+
+func (l *kanbanMutationLocks) consumeRevertNotices(key string, projectID string) []kanbanRevertNotice {
+	key = strings.TrimSpace(key)
+	projectID = strings.TrimSpace(projectID)
+	if key == "" && projectID != "" {
+		key = "project:" + projectID
+	}
+	prefix := ""
+	if key != "" {
+		prefix = key + "\x00"
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	notices := []kanbanRevertNotice{}
+	for stateKey, notice := range l.reverted {
+		if prefix != "" && !strings.HasPrefix(stateKey, prefix) {
+			continue
+		}
+		notices = append(notices, notice)
+		delete(l.reverted, stateKey)
+	}
+	sort.SliceStable(notices, func(i, j int) bool {
+		if !notices[i].at.Equal(notices[j].at) {
+			return notices[i].at.Before(notices[j].at)
+		}
+		return notices[i].identifier < notices[j].identifier
+	})
+	return notices
 }
 
 func kanbanMutationStateKey(key string, issueID string) string {
@@ -453,7 +506,7 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 	var feedbackStatus int
 	err := s.kanbanMutations.withLock(target.key, func() error {
 		currentState := req.currentState
-		ok, current, snapshotState, snapshotIssue, snapshotAt := s.kanbanCardFresh(target.key, req.projectID, req.issueID, req.currentState)
+		ok, current, snapshotState, snapshotIssue, dataSeqAtWrite := s.kanbanCardFresh(target.key, req.projectID, req.issueID, req.currentState)
 		if !ok {
 			feedback = "Card is stale; refresh and retry."
 			if current != "" {
@@ -480,14 +533,14 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 				return err
 			}
 			s.recordKanbanLaneTransition(c.Request().Context(), req.projectID, snapshotIssue, currentState, req.targetState, "kanban_move_field")
-			s.kanbanMutations.noteCardState(target.key, req.projectID, snapshotIssue, snapshotState, req.targetState, snapshotAt)
+			s.kanbanMutations.noteCardState(target.key, req.projectID, snapshotIssue, snapshotState, req.targetState, dataSeqAtWrite)
 			return nil
 		}
 		if err := target.connector.UpdateIssueState(c.Request().Context(), req.issueID, req.targetState); err != nil {
 			return err
 		}
 		s.recordKanbanLaneTransition(c.Request().Context(), req.projectID, snapshotIssue, currentState, req.targetState, "kanban_move")
-		s.kanbanMutations.noteCardState(target.key, req.projectID, snapshotIssue, snapshotState, req.targetState, snapshotAt)
+		s.kanbanMutations.noteCardState(target.key, req.projectID, snapshotIssue, snapshotState, req.targetState, dataSeqAtWrite)
 		return nil
 	})
 	if feedback != "" {
@@ -559,7 +612,7 @@ func (s *Server) apiKanbanRemove(c echo.Context) error {
 	var feedbackStatus int
 	err := s.kanbanMutations.withLock(target.key, func() error {
 		currentState := req.currentState
-		ok, current, snapshotState, _, _ := s.kanbanCardFresh(target.key, req.projectID, req.issueID, req.currentState)
+		ok, current, snapshotState, _, dataSeqAtWrite := s.kanbanCardFresh(target.key, req.projectID, req.issueID, req.currentState)
 		if !ok {
 			feedback = "Card is stale; refresh and retry."
 			if current != "" {
@@ -582,7 +635,7 @@ func (s *Server) apiKanbanRemove(c echo.Context) error {
 			if strings.TrimSpace(snapshotState) == "" {
 				snapshotState = currentState
 			}
-			s.kanbanMutations.noteCardRemoved(target.key, req.issueID, snapshotState)
+			s.kanbanMutations.noteCardRemoved(target.key, req.issueID, snapshotState, dataSeqAtWrite)
 			return nil
 		}
 		remover, ok := target.connector.(connector.ProjectRemover)
@@ -595,7 +648,7 @@ func (s *Server) apiKanbanRemove(c echo.Context) error {
 		if strings.TrimSpace(snapshotState) == "" {
 			snapshotState = currentState
 		}
-		s.kanbanMutations.noteCardRemoved(target.key, req.issueID, snapshotState)
+		s.kanbanMutations.noteCardRemoved(target.key, req.issueID, snapshotState, dataSeqAtWrite)
 		return nil
 	})
 	if feedback != "" {
@@ -633,11 +686,12 @@ func (s *Server) kanbanSnapshotWithPendingStates(lockKey string, projectID strin
 		return snapshot
 	}
 	snapshot = cloneKanbanIssueSlices(snapshot)
+	dataSeq := snapshotProjectDataSeq(snapshot, projectID)
 	filterSnapshotKanbanIssues(&snapshot, func(issue telemetry.Issue) bool {
 		if strings.TrimSpace(issue.ID) == "" || !sameKanbanProject(issue, projectID, snapshot.Project.ID) {
 			return true
 		}
-		return !s.kanbanMutations.cardRemoved(lockKey, issue.ID, issue.State)
+		return !s.kanbanMutations.cardRemoved(lockKey, issue.ID, issue.State, dataSeq)
 	})
 	pendingMovedCards := s.kanbanMutations.pendingMovedCards(lockKey, projectID, snapshot)
 	pendingStates := s.kanbanMutations.snapshotCardStates(lockKey, projectID, snapshot)
@@ -1653,25 +1707,26 @@ func (s *Server) kanbanTerminalStatesByProject(projectID string) map[string][]st
 	return out
 }
 
-func (s *Server) kanbanCardFresh(lockKey string, projectID string, issueID string, currentState string) (bool, string, string, telemetry.Issue, time.Time) {
+func (s *Server) kanbanCardFresh(lockKey string, projectID string, issueID string, currentState string) (bool, string, string, telemetry.Issue, uint64) {
 	currentState = strings.TrimSpace(currentState)
 	snapshot, ok := s.hub.Latest()
 	if !ok {
-		return false, "", "", telemetry.Issue{}, time.Time{}
+		return false, "", "", telemetry.Issue{}, 0
 	}
+	dataSeq := snapshotProjectDataSeq(snapshot, projectID)
 	entry, ok := kanbanCardFreshEntry(snapshot, projectID, issueID)
 	if !ok {
-		return false, "", "", telemetry.Issue{}, snapshot.GeneratedAt
+		return false, "", "", telemetry.Issue{}, dataSeq
 	}
 	snapshotState := strings.TrimSpace(entry.state)
 	state := snapshotState
 	if s.kanbanMutations != nil {
-		state = s.kanbanMutations.cardState(lockKey, issueID, snapshotState, snapshot.GeneratedAt)
+		state = s.kanbanMutations.cardState(lockKey, issueID, snapshotState, dataSeq)
 	}
 	if currentState == "" || normalizeKanbanState(state) == normalizeKanbanState(currentState) {
-		return true, state, snapshotState, entry.issue, snapshot.GeneratedAt
+		return true, state, snapshotState, entry.issue, dataSeq
 	}
-	return false, state, snapshotState, entry.issue, snapshot.GeneratedAt
+	return false, state, snapshotState, entry.issue, dataSeq
 }
 
 func kanbanCardFreshEntry(snapshot telemetry.Snapshot, projectID string, issueID string) (kanbanSnapshotIssueEntry, bool) {
