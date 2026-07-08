@@ -504,11 +504,19 @@ test("pointer drag shows affordances past the threshold and cancels cleanly", as
   // the move in flight.
   await page.mouse.move(centerX + 24, centerY + 24, { steps: 4 });
   await expect(ghost).toHaveCount(1);
+  await expect(ghost).toContainText("From Backlog");
   await expect(feedback).toHaveText(/Moving Backlog/);
   await expect(hiddenLanes).toHaveCount(0);
   await expect(
     page.locator('[data-kanban-drop-state][data-kanban-drop-allowed="true"]'),
   ).not.toHaveCount(0);
+  // The origin lane is marked as the source, not styled as a blocked target.
+  const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
+  await expect(sourceLane).toHaveAttribute("data-kanban-drop-source", "true");
+  await expect(sourceLane).not.toHaveAttribute(
+    "data-kanban-drop-allowed",
+    "false",
+  );
 
   // Escape cancels: ghost removed, hidden lanes restored, move reported as
   // cancelled, and no request was posted.
@@ -524,6 +532,10 @@ test("pointer drag shows affordances past the threshold and cancels cleanly", as
   await page.keyboard.press("Escape");
   await expect(ghost).toHaveCount(0);
   await expect(feedback).toHaveText(/Move cancelled/);
+  await expect(sourceLane).not.toHaveAttribute(
+    "data-kanban-drop-source",
+    "true",
+  );
   expect(await hiddenLanes.count()).toBe(hiddenBefore);
   await page.mouse.up();
   expect(moveRequests).toBe(0);
