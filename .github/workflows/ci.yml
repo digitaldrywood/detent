@@ -92,7 +92,7 @@ jobs:
           cache: true
 
       - name: Check coverage
-        run: make test-cover
+        run: make test-cover-packages
 
   browser-visual:
     name: Browser Visual

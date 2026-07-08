@@ -34,7 +34,7 @@ var requiredPRStatusChecks = []requiredStatusCheck{
 		budget:   "4m",
 		jobStart: "  test-cover:",
 		jobEnd:   "  browser-visual:",
-		markers:  []string{"name: Test Coverage"},
+		markers:  []string{"name: Test Coverage", "make test-cover-packages"},
 	},
 	{
 		name:     "Browser Visual",
