@@ -1214,6 +1214,18 @@ func TestLogAutoPromoteDecisionIncludesHydrationReasons(t *testing.T) {
 				"ci_anomaly_action=treated_completed_successful_check_runs_as_passed",
 			},
 		},
+		{
+			name: "review state disagreement",
+			pullRequest: &connector.PullRequest{
+				Number:                  77,
+				CodexReviewAPIState:     "APPROVED",
+				CodexReviewBodySeverity: "P1",
+			},
+			want: []string{
+				"review_api_state=APPROVED",
+				"review_body_severity=P1",
+			},
+		},
 	}
 
 	for _, tt := range tests {
