@@ -80,7 +80,7 @@ templ boardSnapshotBody(data DashboardData) {
 templ boardLaneView2(lane boardLaneView) {
 	<section
 		id={ lane.DomID }
-		class="flex min-w-44 max-w-80 flex-1 flex-col overflow-hidden rounded-card border border-line bg-surface data-[kanban-drop-allowed=false]:border-err/45 data-[kanban-drop-allowed=false]:opacity-70 data-[kanban-drop-allowed=true]:border-accent data-[lane-hidden=true]:hidden"
+		class="flex min-w-44 max-w-80 flex-1 flex-col overflow-hidden rounded-card border border-line bg-surface data-[kanban-drop-allowed=false]:border-err/45 data-[kanban-drop-allowed=false]:opacity-70 data-[kanban-drop-allowed=true]:border-accent data-[kanban-drop-source=true]:border-dashed data-[kanban-drop-source=true]:border-accent/50 data-[lane-hidden=true]:hidden"
 		data-board-lane={ lane.LaneID }
 		data-board-lane-title={ lane.Title }
 		data-board-lane-default={ boardBoolAttr(lane.DefaultVisible) }
@@ -384,13 +384,24 @@ templ boardKanbanDragScript() {
 				return key !== "" && allowedTargetKeys(card).includes(key);
 			}
 			function setDropTargetState(card, scope) {
+				var sourceLane = card instanceof HTMLElement ? card.closest("[data-kanban-drop-state]") : null;
 				queryRoot(scope).querySelectorAll("[data-kanban-drop-state]").forEach(function (lane) {
 					if (!(lane instanceof HTMLElement)) return;
 					if (lane.dataset.kanbanDropWasHidden === undefined) {
 						lane.dataset.kanbanDropWasHidden = lane.dataset.laneHidden || "false";
 					}
-					var allowed = laneAllowed(card, lane);
 					lane.dataset.laneHidden = "false";
+					if (lane === sourceLane) {
+						// The origin lane is not a transition target, but styling
+						// it blocked reads as an error; mark it as the source so
+						// the operator can see where the card came from.
+						lane.dataset.kanbanDropSource = "true";
+						delete lane.dataset.kanbanDropAllowed;
+						lane.removeAttribute("aria-disabled");
+						return;
+					}
+					delete lane.dataset.kanbanDropSource;
+					var allowed = laneAllowed(card, lane);
 					lane.dataset.kanbanDropAllowed = allowed ? "true" : "false";
 					lane.setAttribute("aria-disabled", allowed ? "false" : "true");
 				});
@@ -412,6 +423,7 @@ templ boardKanbanDragScript() {
 						delete lane.dataset.kanbanDropWasHidden;
 					}
 					delete lane.dataset.kanbanDropAllowed;
+					delete lane.dataset.kanbanDropSource;
 					lane.removeAttribute("aria-disabled");
 				});
 				document.querySelectorAll("[data-kanban-card][data-kanban-dragging='true']").forEach(function (card) {
@@ -432,6 +444,10 @@ templ boardKanbanDragScript() {
 				var form = ghost.querySelector("[data-kanban-drag-move-form]");
 				if (form) form.remove();
 				delete ghost.dataset.kanbanDragging;
+				var origin = document.createElement("div");
+				origin.className = "mb-1.5 flex items-center gap-1.5 border-b border-line pb-1.5 font-mono text-2xs font-medium text-accent";
+				origin.textContent = "From " + (card.dataset.kanbanCurrentState || "current lane");
+				ghost.insertBefore(origin, ghost.firstChild);
 				ghost.setAttribute("aria-hidden", "true");
 				ghost.style.position = "fixed";
 				ghost.style.left = "0";
@@ -540,7 +556,7 @@ templ boardKanbanDragScript() {
 				autoScrollLanes(event.clientX);
 				var lane = laneFromPoint(event.clientX, event.clientY);
 				var card = draggedCard(document);
-				var blocked = lane instanceof HTMLElement && !laneAllowed(card, lane);
+				var blocked = lane instanceof HTMLElement && lane.dataset.kanbanDropSource !== "true" && !laneAllowed(card, lane);
 				if (blocked && !active.lastLaneBlocked) {
 					feedback("Move blocked by transition policy.", "error");
 				} else if (!blocked && active.lastLaneBlocked) {
@@ -556,7 +572,7 @@ templ boardKanbanDragScript() {
 				if (!active || event.pointerId !== active.pointerId) return;
 				var lane = laneFromPoint(event.clientX, event.clientY);
 				var card = draggedCard(document);
-				if (!(lane instanceof HTMLElement)) {
+				if (!(lane instanceof HTMLElement) || lane.dataset.kanbanDropSource === "true") {
 					cancelDrag();
 					return;
 				}

@@ -915,12 +915,12 @@ func TestBoardSnapshotOmitsKanbanDragAttributesWhenDisabled(t *testing.T) {
 			wantLabel:  "Read-only",
 		},
 		{
-			name: "fleet board",
+			name: "fleet board without per-project kanban data",
 			data: DashboardData{
 				Snapshot: readySnapshot,
 				Kanban:   KanbanData{Mode: "integration", States: []string{"Todo", "In Progress"}},
 			},
-			wantReason: "All-project board is read-only. Open the project board to move this card.",
+			wantReason: "This project board is read-only.",
 			wantLabel:  "Read-only",
 		},
 		{
@@ -966,6 +966,85 @@ func TestBoardSnapshotOmitsKanbanDragAttributesWhenDisabled(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBoardSnapshotFleetBoardRendersDragAttributes(t *testing.T) {
+	now := time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC)
+	data := DashboardData{
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Projects: []telemetry.ProjectSnapshot{
+				{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+				{Project: telemetry.Project{ID: "docs-site", DisplayName: "Docs Site"}},
+			},
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:         "I_kw1",
+					Identifier: "digitaldrywood/detent#1",
+					ProjectID:  "detent",
+					Title:      "Fleet draggable card",
+					State:      "Todo",
+				},
+				{
+					ID:         "I_docs1",
+					Identifier: "digitaldrywood/docs-site#1",
+					ProjectID:  "docs-site",
+					Title:      "Fleet read-only project card",
+					State:      "Todo",
+				},
+			},
+		},
+		Kanban: KanbanData{
+			Mode:   "read_only",
+			States: []string{"Todo", "In Progress"},
+			Projects: map[string]KanbanProjectData{
+				"detent": {
+					Mode:      "integration",
+					ProjectID: "detent",
+					States:    []string{"Todo", "In Progress"},
+					AllowedTransitions: map[string][]string{
+						"Todo": {"In Progress"},
+					},
+				},
+				"docs-site": {
+					Mode:      "read_only",
+					ProjectID: "docs-site",
+					States:    []string{"Todo", "In Progress"},
+				},
+			},
+		},
+	}
+	html := renderBoardComponent(t, BoardSnapshot(data))
+
+	draggable := boardCardSection(t, html, "Fleet draggable card")
+	for _, want := range []string{
+		`data-kanban-action="move"`,
+		`data-kanban-allowed-targets="inprogress"`,
+		`data-kanban-drag-move-form`,
+		`name="kanban_board" value="fleet"`,
+		`name="project_id" value="detent"`,
+	} {
+		if !strings.Contains(draggable, want) {
+			t.Fatalf("fleet card missing %q:\n%s", want, draggable)
+		}
+	}
+
+	readOnly := boardCardSection(t, html, "Fleet read-only project card")
+	for _, want := range []string{
+		`data-kanban-move-disabled="true"`,
+		`data-kanban-move-disabled-reason="This project board is read-only."`,
+	} {
+		if !strings.Contains(readOnly, want) {
+			t.Fatalf("read-only project card missing %q:\n%s", want, readOnly)
+		}
+	}
+	if strings.Contains(readOnly, `data-kanban-action="move"`) {
+		t.Fatalf("read-only project card must not be draggable:\n%s", readOnly)
+	}
+
+	if !strings.Contains(html, `data-kanban-drop-state="Todo"`) || !strings.Contains(html, `data-kanban-drop-key="todo"`) {
+		t.Fatalf("fleet lanes missing drop targets:\n%s", html)
 	}
 }
 

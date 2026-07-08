@@ -84,12 +84,13 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 			strings.Contains(body, "Kanban demo backlog intake") &&
 			strings.Contains(body, "Kanban demo todo ready card")
 	})
-	for _, forbidden := range []string{
+	for _, want := range []string{
 		`data-kanban-action="move"`,
 		`hx-post="/api/v1/kanban/move"`,
+		`name="kanban_board" value="fleet"`,
 	} {
-		if strings.Contains(fleetBody, forbidden) {
-			t.Fatalf("fleet board demo rendered forbidden affordance %q:\n%s", forbidden, fleetBody)
+		if !strings.Contains(fleetBody, want) {
+			t.Fatalf("fleet board demo missing drag affordance %q:\n%s", want, fleetBody)
 		}
 	}
 

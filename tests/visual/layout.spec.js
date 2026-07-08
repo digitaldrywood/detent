@@ -382,54 +382,81 @@ test("project kanban board scopes cards to the project", async ({
   await capturePageAndAttach(page, "project-kanban.png", testInfo);
 });
 
-test("all-project board cards stay read-only on drag attempt", async ({
-  page,
-}) => {
-  await page.setViewportSize(desktopViewport);
-  await page.goto(`${kanbanRuntime.url}/`, {
-    waitUntil: "domcontentloaded",
-  });
-  await page.locator("#board-lanes").waitFor({ state: "visible" });
+test("all-project board supports drag status moves", async ({ page }) => {
+  const runtime = await startDetentRuntime("kanban-fleet-drag", [
+    "--demo",
+    "kanban",
+    "--demo-project",
+    "demo-project",
+  ]);
+  try {
+    await page.setViewportSize(desktopViewport);
+    await page.goto(`${runtime.url}/`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.locator("#board-lanes").waitFor({ state: "visible" });
 
-  const card = page.locator("[data-kanban-card]", {
-    hasText: "Kanban demo backlog intake",
-  });
-  await expect(card).toHaveAttribute("data-kanban-move-disabled", "true");
-  await expect(card).toHaveAttribute(
-    "data-kanban-move-disabled-reason",
-    /All-project board is read-only/,
-  );
-  await expect(card).not.toHaveAttribute("data-kanban-action", "move");
-  await expect(page.locator("[data-kanban-drop-state]")).toHaveCount(0);
+    const card = page.locator("[data-kanban-card]", {
+      hasText: "Kanban demo backlog intake",
+    });
+    await expect(card).toHaveAttribute("data-kanban-action", "move");
+    await expect(card).not.toHaveAttribute("data-kanban-move-disabled", "true");
 
-  let moveRequests = 0;
-  page.on("request", (request) => {
-    if (
-      request.method() === "POST" &&
-      request.url().endsWith("/api/v1/kanban/move")
-    ) {
-      moveRequests += 1;
+    const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
+    const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
+
+    const moveRequest = page.waitForRequest((request) => {
+      if (
+        request.method() !== "POST" ||
+        !request.url().endsWith("/api/v1/kanban/move")
+      ) {
+        return false;
+      }
+      const form = new URLSearchParams(request.postData() || "");
+      return form.get("kanban_drag") === "true";
+    });
+
+    const box = await card.boundingBox();
+    if (!box) {
+      throw new Error("Fleet drag source has no bounding box");
     }
-  });
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(
+      box.x + box.width / 2 + 16,
+      box.y + box.height / 2 + 16,
+      { steps: 5 },
+    );
+    await expect(targetLane).toBeVisible();
+    const targetBox = await targetLane.boundingBox();
+    if (!targetBox) {
+      throw new Error("Fleet drag target lane has no bounding box");
+    }
+    await page.mouse.move(
+      targetBox.x + targetBox.width / 2,
+      targetBox.y + Math.min(80, targetBox.height / 2),
+      { steps: 20 },
+    );
+    await page.mouse.up();
 
-  const box = await card.boundingBox();
-  if (!box) {
-    throw new Error("Read-only card has no bounding box");
+    const request = await moveRequest;
+    const form = new URLSearchParams(request.postData() || "");
+    expect(form.get("kanban_board")).toBe("fleet");
+    expect(form.get("target_state")).toBe("Todo");
+
+    await expect(
+      targetLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+    await expect(
+      sourceLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toHaveCount(0);
+  } finally {
+    await runtime.stop();
   }
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(
-    box.x + box.width / 2 + 24,
-    box.y + box.height / 2 + 24,
-    { steps: 8 },
-  );
-  await page.mouse.up();
-
-  const selectedText = await page.evaluate(
-    () => window.getSelection()?.toString() || "",
-  );
-  expect(selectedText.trim()).toBe("");
-  expect(moveRequests).toBe(0);
 });
 
 test("pointer drag shows affordances past the threshold and cancels cleanly", async ({
@@ -477,11 +504,19 @@ test("pointer drag shows affordances past the threshold and cancels cleanly", as
   // the move in flight.
   await page.mouse.move(centerX + 24, centerY + 24, { steps: 4 });
   await expect(ghost).toHaveCount(1);
+  await expect(ghost).toContainText("From Backlog");
   await expect(feedback).toHaveText(/Moving Backlog/);
   await expect(hiddenLanes).toHaveCount(0);
   await expect(
     page.locator('[data-kanban-drop-state][data-kanban-drop-allowed="true"]'),
   ).not.toHaveCount(0);
+  // The origin lane is marked as the source, not styled as a blocked target.
+  const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
+  await expect(sourceLane).toHaveAttribute("data-kanban-drop-source", "true");
+  await expect(sourceLane).not.toHaveAttribute(
+    "data-kanban-drop-allowed",
+    "false",
+  );
 
   // Escape cancels: ghost removed, hidden lanes restored, move reported as
   // cancelled, and no request was posted.
@@ -497,6 +532,10 @@ test("pointer drag shows affordances past the threshold and cancels cleanly", as
   await page.keyboard.press("Escape");
   await expect(ghost).toHaveCount(0);
   await expect(feedback).toHaveText(/Move cancelled/);
+  await expect(sourceLane).not.toHaveAttribute(
+    "data-kanban-drop-source",
+    "true",
+  );
   expect(await hiddenLanes.count()).toBe(hiddenBefore);
   await page.mouse.up();
   expect(moveRequests).toBe(0);

@@ -374,8 +374,10 @@ func TestAPIBoardCardPreservesProjectScope(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `name="kanban_board" value="fleet"`) {
 		t.Fatalf("fleet sheet should preserve fleet scope for inline actions:\n%s", rec.Body.String())
 	}
-	if strings.Contains(rec.Body.String(), "/api/v1/kanban/move") {
-		t.Fatalf("fleet sheet must not offer move actions:\n%s", rec.Body.String())
+	// The all-project board is draggable, so its sheet offers the same
+	// inline move action as a project board sheet.
+	if !strings.Contains(rec.Body.String(), "/api/v1/kanban/move") {
+		t.Fatalf("fleet sheet should offer move actions:\n%s", rec.Body.String())
 	}
 
 	// Without the board-actions flag (opened from Fleet/Overview) the sheet
