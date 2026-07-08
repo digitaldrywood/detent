@@ -434,7 +434,19 @@ func autoPromoteNumberedListMarkerEnd(line string) int {
 }
 
 func autoPromoteWorkpadNonBlockerLine(line string) bool {
-	line = strings.Trim(strings.ToLower(strings.TrimSpace(line)), ".:; ")
+	line = strings.ToLower(strings.TrimSpace(line))
+	if autoPromoteWorkpadNonBlockerSentinel(strings.Trim(line, ".:; ")) {
+		return true
+	}
+	index := strings.IndexAny(line, ".;:")
+	if index < 0 {
+		return false
+	}
+	firstClause := strings.Trim(line[:index], ".:; ")
+	return firstClause != "" && autoPromoteWorkpadNonBlockerSentinel(firstClause)
+}
+
+func autoPromoteWorkpadNonBlockerSentinel(line string) bool {
 	switch line {
 	case "", "none", "none currently", "n/a", "na", "not applicable", "nothing", "nothing currently",
 		"no blockers", "no known blockers", "no unresolved blockers", "no human action needed":
