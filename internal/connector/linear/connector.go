@@ -65,6 +65,13 @@ mutation DetentLinearIssueUpdateState($issueId: String!, $stateId: String!) {
   }
 }`
 
+const issueUpdateAssigneeMutation = `
+mutation DetentLinearIssueUpdateAssignee($issueId: String!, $assigneeId: String) {
+  issueUpdate(id: $issueId, input: { assigneeId: $assigneeId }) {
+    success
+  }
+}`
+
 type Config struct {
 	Endpoint   string
 	APIKey     string
@@ -79,6 +86,7 @@ type Connector struct {
 	mu            sync.Mutex
 	stateIDByTeam map[string]map[string]string
 	teamIDByIssue map[string]string
+	userIDByLogin map[string]string
 }
 
 var _ connector.Connector = (*Connector)(nil)
@@ -95,6 +103,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 		stateMap:      cloneStateMap(cfg.StateMap),
 		stateIDByTeam: make(map[string]map[string]string),
 		teamIDByIssue: make(map[string]string),
+		userIDByLogin: make(map[string]string),
 	}, nil
 }
 
@@ -103,7 +112,7 @@ func (c *Connector) Name() string {
 }
 
 func (*Connector) Capabilities() connector.Capabilities {
-	return connector.Capabilities{UpdateIssueState: true, CreateComment: true}
+	return connector.Capabilities{UpdateIssueState: true, SetAssignee: true, CreateComment: true}
 }
 
 func (c *Connector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
@@ -231,8 +240,47 @@ func (c *Connector) updateIssueStateID(ctx context.Context, issueID string, stat
 	return response.IssueUpdate != nil && response.IssueUpdate.Success, nil
 }
 
-func (c *Connector) SetAssignee(context.Context, string, string) error {
-	return connector.ErrNotImplemented
+func (c *Connector) SetAssignee(ctx context.Context, issueID string, login string) error {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return ErrMissingIssue
+	}
+	login = strings.TrimSpace(login)
+	if login == "" {
+		return ErrMissingUser
+	}
+
+	userID, err := c.resolveUserID(ctx, login)
+	if err != nil {
+		if errors.Is(err, ErrMissingUser) || errors.Is(err, ErrUserNotFound) || errors.Is(err, ErrUserAmbiguous) {
+			return err
+		}
+		return fmt.Errorf("set linear assignee: %w", err)
+	}
+
+	success, err := c.updateIssueAssigneeID(ctx, issueID, userID)
+	if err != nil {
+		return fmt.Errorf("set linear assignee: %w", err)
+	}
+	if !success {
+		return ErrIssueUpdateFailed
+	}
+	return nil
+}
+
+func (c *Connector) updateIssueAssigneeID(ctx context.Context, issueID string, assigneeID string) (bool, error) {
+	var response struct {
+		IssueUpdate *struct {
+			Success bool `json:"success"`
+		} `json:"issueUpdate"`
+	}
+	if err := c.client.GraphQL(ctx, issueUpdateAssigneeMutation, map[string]any{
+		"issueId":    issueID,
+		"assigneeId": assigneeID,
+	}, &response); err != nil {
+		return false, err
+	}
+	return response.IssueUpdate != nil && response.IssueUpdate.Success, nil
 }
 
 func (c *Connector) SetField(context.Context, string, string, string) error {
