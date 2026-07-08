@@ -216,6 +216,42 @@ func TestDoctorWorkflowOptimizationCreatesProposalIssuesWithMemoryTracker(t *tes
 	}
 }
 
+func TestDoctorWorkflowOptimizationContinuesWhenProposalStateUpdateBlocked(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	proposal := doctorWorkflowFinalizeProposal(doctorWorkflowImprovementProposal{
+		ProjectID:       "detent",
+		SignalKind:      "doctor_finding",
+		Pattern:         "blocked-state-update",
+		Count:           2,
+		Title:           "Improve blocked state update handling",
+		Detail:          "blocked update proposal",
+		TargetKind:      "workflow",
+		SuggestedChange: "Review blocked update handling.",
+	})
+	projectConnector := &blockedDoctorProposalConnector{
+		Connector: memory.New(memory.Config{Stateful: true}),
+	}
+	deps := successfulDoctorDeps()
+	deps.proposalConnector = func(workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
+		return projectConnector, nil
+	}
+
+	created, err := createDoctorWorkflowImprovementProposalIssues(ctx, "detent", cfg, deps, []doctorWorkflowImprovementProposal{proposal})
+	if err != nil {
+		t.Fatalf("createDoctorWorkflowImprovementProposalIssues() error = %v", err)
+	}
+	if len(created) != 1 || created[0].ProposalID != proposal.ID || created[0].IssueID == "" {
+		t.Fatalf("created proposal issue = %#v, want one created issue for %q", created, proposal.ID)
+	}
+	if projectConnector.updateCalls != 1 {
+		t.Fatalf("UpdateIssueState calls = %d, want 1", projectConnector.updateCalls)
+	}
+}
+
 func TestDoctorWorkflowOptimizationReusesProposalIssueOutsideBacklog(t *testing.T) {
 	t.Parallel()
 
@@ -1245,4 +1281,18 @@ func doctorWorkflowProposalBySignal(t *testing.T, proposals []doctorWorkflowImpr
 	}
 	t.Fatalf("missing proposal signal=%q pattern=%q in %#v", signalKind, pattern, proposals)
 	return doctorWorkflowImprovementProposal{}
+}
+
+type blockedDoctorProposalConnector struct {
+	*memory.Connector
+	updateCalls int
+}
+
+func (c *blockedDoctorProposalConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {
+	c.updateCalls++
+	return &connector.StateUpdateBlockedError{
+		IssueID:      issueID,
+		CurrentState: "Done",
+		TargetState:  state,
+	}
 }

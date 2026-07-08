@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -38,6 +39,12 @@ func (o *Orchestrator) updateIssueStateByID(
 	reason string,
 ) error {
 	if err := o.connector.UpdateIssueState(ctx, issueID, targetState); err != nil {
+		if errors.Is(err, connector.ErrStateUpdateBlocked) {
+			if o.logger != nil {
+				o.logger.Debug("skip blocked issue state update", "issue_id", issueID, "target_state", targetState, "error", err)
+			}
+			return nil
+		}
 		return err
 	}
 	if strings.TrimSpace(issue.ID) == "" {

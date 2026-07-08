@@ -5,7 +5,27 @@ import (
 	"errors"
 )
 
-var ErrNotImplemented = errors.New("connector operation not implemented")
+var (
+	ErrNotImplemented     = errors.New("connector operation not implemented")
+	ErrStateUpdateBlocked = errors.New("issue state update blocked")
+)
+
+type StateUpdateBlockedError struct {
+	IssueID      string
+	CurrentState string
+	TargetState  string
+}
+
+func (e *StateUpdateBlockedError) Error() string {
+	if e == nil {
+		return ErrStateUpdateBlocked.Error()
+	}
+	return ErrStateUpdateBlocked.Error() + ": " + e.IssueID + " is in terminal state " + e.CurrentState + "; refusing move to non-terminal " + e.TargetState
+}
+
+func (e *StateUpdateBlockedError) Is(target error) bool {
+	return target == ErrStateUpdateBlocked
+}
 
 type Connector interface {
 	Name() string
