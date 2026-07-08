@@ -257,6 +257,37 @@ func TestConnectorWriteThroughFallsBackToLocalWhenGitHubNotImplemented(t *testin
 	}
 }
 
+func TestConnectorSetFieldFallsBackToLocalWhenGitHubFieldCapabilityMissing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "missing project", err: githubconnector.ErrMissingProject},
+		{name: "missing field", err: githubconnector.ErrProjectFieldNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			conn, calls := newRecordingWriteThroughConnector(t, map[string]error{"SetField": tt.err}, nil)
+			if err := conn.SetField(context.Background(), localWriteThroughIssueID, "lease", "agent-1"); err != nil {
+				t.Fatalf("SetField() error = %v", err)
+			}
+
+			want := []string{
+				localLookupCall(),
+				call("github.SetField", githubWriteThroughIssueID, "lease", "agent-1"),
+				call("local.SetField", localWriteThroughIssueID, "lease", "agent-1"),
+			}
+			if got := calls.snapshot(); !slices.Equal(got, want) {
+				t.Fatalf("calls = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
 func TestConnectorWriteThroughWrapsLocalMirrorFailureAfterGitHubSuccess(t *testing.T) {
 	t.Parallel()
 

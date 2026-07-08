@@ -354,7 +354,11 @@ func (c *Connector) SetAssignee(ctx context.Context, issueID string, login strin
 func (c *Connector) SetField(ctx context.Context, issueID string, fieldName string, value string) error {
 	return c.writeThroughIssue(ctx, issueID, "github field applied; local mirror update failed",
 		func(githubID string) error {
-			return c.github.SetField(ctx, githubID, fieldName, value)
+			err := c.github.SetField(ctx, githubID, fieldName, value)
+			if githubLocalSetFieldFallback(err) {
+				return connector.ErrNotImplemented
+			}
+			return err
 		},
 		func() error {
 			return c.local.SetField(ctx, issueID, fieldName, value)
@@ -680,6 +684,12 @@ func (c *Connector) writeThroughIssue(
 		return fmt.Errorf("%s: %w", mirrorFailure, err)
 	}
 	return nil
+}
+
+func githubLocalSetFieldFallback(err error) bool {
+	return errors.Is(err, connector.ErrNotImplemented) ||
+		errors.Is(err, githubconnector.ErrMissingProject) ||
+		errors.Is(err, githubconnector.ErrProjectFieldNotFound)
 }
 
 func (c *Connector) isTerminalState(state string) bool {
