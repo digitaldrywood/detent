@@ -29,11 +29,7 @@ func (c *Connector) resolveUserID(ctx context.Context, login string) (string, er
 		return userID, nil
 	}
 
-	users, err := c.fetchUsersByLogin(ctx, login)
-	if err != nil {
-		return "", fmt.Errorf("resolve linear user: %w", err)
-	}
-	userID, err := selectLinearUserID(login, users)
+	userID, err := c.resolveUncachedUserID(ctx, login)
 	if err != nil {
 		return "", err
 	}
@@ -60,59 +56,86 @@ func (c *Connector) cacheUserID(loginKey string, userID string) {
 	c.userIDByLogin[loginKey] = userID
 }
 
-func (c *Connector) fetchUsersByLogin(ctx context.Context, login string) ([]linearResolvedUser, error) {
+func (c *Connector) resolveUncachedUserID(ctx context.Context, login string) (string, error) {
+	for _, lookup := range linearUserLookups(login) {
+		users, err := c.fetchUsersByFilter(ctx, lookup.filter)
+		if err != nil {
+			return "", fmt.Errorf("resolve linear user: %w", err)
+		}
+		userID, ok, err := selectLinearUserID(login, users, lookup.matches)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return userID, nil
+		}
+	}
+
+	return "", fmt.Errorf("%w: %s", ErrUserNotFound, login)
+}
+
+func (c *Connector) fetchUsersByFilter(ctx context.Context, filter map[string]any) ([]linearResolvedUser, error) {
 	var response struct {
 		Users struct {
 			Nodes []linearResolvedUser `json:"nodes"`
 		} `json:"users"`
 	}
 	if err := c.client.GraphQL(ctx, usersByLoginQuery, map[string]any{
-		"filter": linearUserLoginFilter(login),
+		"filter": filter,
 	}, &response); err != nil {
 		return nil, err
 	}
 	return response.Users.Nodes, nil
 }
 
-func linearUserLoginFilter(login string) map[string]any {
-	return map[string]any{
-		"or": []map[string]any{
-			{"email": map[string]any{"eq": login}},
-			{"displayName": map[string]any{"eqIgnoreCase": login}},
-			{"name": map[string]any{"eqIgnoreCase": login}},
+func linearUserLookups(login string) []linearUserLookup {
+	return []linearUserLookup{
+		{
+			filter: linearUserEmailFilter(login),
+			matches: func(user linearResolvedUser) bool {
+				return strings.TrimSpace(user.Email) == login
+			},
+		},
+		{
+			filter: linearUserDisplayNameFilter(login),
+			matches: func(user linearResolvedUser) bool {
+				return strings.EqualFold(strings.TrimSpace(user.DisplayName), login)
+			},
+		},
+		{
+			filter: linearUserNameFilter(login),
+			matches: func(user linearResolvedUser) bool {
+				return strings.EqualFold(strings.TrimSpace(user.Name), login)
+			},
 		},
 	}
 }
 
-func selectLinearUserID(login string, users []linearResolvedUser) (string, error) {
-	matchers := []func(linearResolvedUser) bool{
-		func(user linearResolvedUser) bool {
-			return strings.TrimSpace(user.Email) == login
-		},
-		func(user linearResolvedUser) bool {
-			return strings.EqualFold(strings.TrimSpace(user.DisplayName), login)
-		},
-		func(user linearResolvedUser) bool {
-			return strings.EqualFold(strings.TrimSpace(user.Name), login)
-		},
-	}
+func linearUserEmailFilter(login string) map[string]any {
+	return map[string]any{"email": map[string]any{"eq": login}}
+}
 
-	for _, matches := range matchers {
-		userIDs, err := matchingUserIDs(users, matches)
-		if err != nil {
-			return "", err
-		}
-		switch len(userIDs) {
-		case 0:
-			continue
-		case 1:
-			return userIDs[0], nil
-		default:
-			return "", fmt.Errorf("%w: %s", ErrUserAmbiguous, login)
-		}
-	}
+func linearUserDisplayNameFilter(login string) map[string]any {
+	return map[string]any{"displayName": map[string]any{"eqIgnoreCase": login}}
+}
 
-	return "", fmt.Errorf("%w: %s", ErrUserNotFound, login)
+func linearUserNameFilter(login string) map[string]any {
+	return map[string]any{"name": map[string]any{"eqIgnoreCase": login}}
+}
+
+func selectLinearUserID(login string, users []linearResolvedUser, matches func(linearResolvedUser) bool) (string, bool, error) {
+	userIDs, err := matchingUserIDs(users, matches)
+	if err != nil {
+		return "", false, err
+	}
+	switch len(userIDs) {
+	case 0:
+		return "", false, nil
+	case 1:
+		return userIDs[0], true, nil
+	default:
+		return "", false, fmt.Errorf("%w: %s", ErrUserAmbiguous, login)
+	}
 }
 
 func matchingUserIDs(users []linearResolvedUser, matches func(linearResolvedUser) bool) ([]string, error) {
@@ -144,4 +167,9 @@ type linearResolvedUser struct {
 	Name        string `json:"name"`
 	DisplayName string `json:"displayName"`
 	Email       string `json:"email"`
+}
+
+type linearUserLookup struct {
+	filter  map[string]any
+	matches func(linearResolvedUser) bool
 }
