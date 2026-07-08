@@ -13,6 +13,12 @@ import (
 
 const defaultWorkflowMetricsProjectID = "default"
 
+const (
+	workflowActionBlockedRecovery          = "blocked_recovery"
+	workflowActionBlockedRecoveryExhausted = "blocked_recovery_exhausted"
+	workflowActionPlanReviewRework         = "plan_review_rework"
+)
+
 type WorkflowMetricsRecorder interface {
 	RecordWorkflowPhaseEvent(context.Context, store.WorkflowPhaseEvent) (int64, error)
 }
@@ -24,6 +30,7 @@ type WorkflowMetricsTimelineReader interface {
 type workflowLaneMetadata struct {
 	PullRequest           *workflowLanePullRequestMetadata           `json:"pull_request,omitempty"`
 	DependencyAutoUnblock *workflowLaneDependencyAutoUnblockMetadata `json:"dependency_auto_unblock,omitempty"`
+	ActionSignatures      []workflowLaneActionSignatureMetadata      `json:"action_signatures,omitempty"`
 }
 
 type workflowLanePullRequestMetadata struct {
@@ -35,6 +42,11 @@ type workflowLanePullRequestMetadata struct {
 type workflowLaneDependencyAutoUnblockMetadata struct {
 	BlockerSet string   `json:"blocker_set,omitempty"`
 	Blockers   []string `json:"blockers,omitempty"`
+}
+
+type workflowLaneActionSignatureMetadata struct {
+	Action    string `json:"action,omitempty"`
+	Signature string `json:"signature,omitempty"`
 }
 
 func (o *Orchestrator) updateIssueState(
@@ -143,6 +155,48 @@ func (o *Orchestrator) recordLaneTransition(
 	}
 }
 
+func (o *Orchestrator) recordWorkflowReviewAction(
+	ctx context.Context,
+	issue connector.Issue,
+	phaseName string,
+	reason string,
+	at time.Time,
+	metadata workflowLaneMetadata,
+) {
+	recorder := o.workflowMetrics
+	if recorder == nil {
+		return
+	}
+	phaseName = strings.TrimSpace(phaseName)
+	if phaseName == "" {
+		return
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = phaseName
+	}
+	if _, err := recorder.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
+		ProjectID:      o.workflowMetricsProjectID(),
+		IssueID:        issue.ID,
+		Identifier:     issue.Identifier,
+		IssueURL:       issue.URL,
+		PRNumber:       workflowMetricsPRNumber(issue),
+		PhaseType:      store.WorkflowPhaseTypeReview,
+		PhaseName:      phaseName,
+		Reason:         reason,
+		Status:         "completed",
+		StartedAt:      at,
+		FinishedAt:     at,
+		MetadataJSON:   workflowLaneMetadataJSON(issue, metadata),
+		EndpointFamily: "tracker",
+	}); err != nil && o.logger != nil {
+		o.logger.Warn("record workflow review action metric failed", "issue_id", issue.ID, "identifier", issue.Identifier, "phase_name", phaseName, "reason", reason, "error", err)
+	}
+}
+
 func (o *Orchestrator) workflowMetricsProjectID() string {
 	projectID := strings.TrimSpace(o.cfg.Project.ID)
 	if projectID == "" {
@@ -185,7 +239,7 @@ func workflowLaneMetadataJSON(issue connector.Issue, metadata workflowLaneMetada
 	if metadata.PullRequest == nil {
 		metadata.PullRequest = workflowLanePullRequestMetadataFromIssue(issue)
 	}
-	if metadata.PullRequest == nil && metadata.DependencyAutoUnblock == nil {
+	if metadata.PullRequest == nil && metadata.DependencyAutoUnblock == nil && len(metadata.ActionSignatures) == 0 {
 		return "{}"
 	}
 	data, err := json.Marshal(metadata)
@@ -205,6 +259,50 @@ func workflowLaneMetadataFromJSON(raw string) (workflowLaneMetadata, bool) {
 		return workflowLaneMetadata{}, false
 	}
 	return metadata, true
+}
+
+func workflowLaneMetadataWithActionSignature(metadata workflowLaneMetadata, action string, signature string) workflowLaneMetadata {
+	action = strings.TrimSpace(action)
+	signature = strings.TrimSpace(signature)
+	if action == "" || signature == "" {
+		return metadata
+	}
+	if workflowLaneMetadataHasActionSignature(metadata, action, signature) {
+		return metadata
+	}
+	metadata.ActionSignatures = append(metadata.ActionSignatures, workflowLaneActionSignatureMetadata{
+		Action:    action,
+		Signature: signature,
+	})
+	return metadata
+}
+
+func workflowLaneMetadataHasActionSignature(metadata workflowLaneMetadata, action string, signature string) bool {
+	action = strings.TrimSpace(action)
+	signature = strings.TrimSpace(signature)
+	if action == "" || signature == "" {
+		return false
+	}
+	for _, candidate := range metadata.ActionSignatures {
+		if strings.EqualFold(strings.TrimSpace(candidate.Action), action) &&
+			strings.TrimSpace(candidate.Signature) == signature {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowLaneMetadataHasAction(metadata workflowLaneMetadata, action string) bool {
+	action = strings.TrimSpace(action)
+	if action == "" {
+		return false
+	}
+	for _, candidate := range metadata.ActionSignatures {
+		if strings.EqualFold(strings.TrimSpace(candidate.Action), action) {
+			return true
+		}
+	}
+	return false
 }
 
 func workflowLanePullRequestMetadataFromIssue(issue connector.Issue) *workflowLanePullRequestMetadata {

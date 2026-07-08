@@ -1,13 +1,112 @@
 package orchestrator
 
 import (
+	"context"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/store"
 )
+
+func TestReviewPlanIssuesUsesPersistedReworkSignature(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		issue            connector.Issue
+		persistedIssue   connector.Issue
+		wantUpdates      int
+		wantComments     int
+		wantTransitioned bool
+	}{
+		{
+			name:             "first review routes to rework",
+			issue:            planReviewPullRequestIssue("issue-plan-first", "review-head"),
+			wantUpdates:      1,
+			wantComments:     1,
+			wantTransitioned: true,
+		},
+		{
+			name:           "same review commit skips after restart",
+			issue:          planReviewPullRequestIssue("issue-plan-same", "review-head"),
+			persistedIssue: planReviewPullRequestIssue("issue-plan-same", "review-head"),
+		},
+		{
+			name:             "changed review commit re-arms rework",
+			issue:            planReviewPullRequestIssue("issue-plan-reset", "review-new"),
+			persistedIssue:   planReviewPullRequestIssue("issue-plan-reset", "review-old"),
+			wantUpdates:      1,
+			wantComments:     1,
+			wantTransitioned: true,
+		},
+		{
+			name:           "same comment artifact skips after restart",
+			issue:          planReviewCommentIssue("issue-plan-comment", "comment-1"),
+			persistedIssue: planReviewCommentIssue("issue-plan-comment", "comment-1"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{tt.issue}}
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			orch := planReviewTestOrchestrator(tracker, metrics)
+			if tt.persistedIssue.ID != "" {
+				recordPlanReviewReworkSignatureEvent(t, metrics, tt.persistedIssue, time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC))
+			}
+			state := newState(orch.cfg)
+
+			transitioned := orch.reviewPlanIssues(context.Background(), &state, []connector.Issue{tt.issue}, time.Date(2026, 7, 8, 15, 1, 0, 0, time.UTC))
+
+			if got := len(tracker.updates); got != tt.wantUpdates {
+				t.Fatalf("updates = %#v, want %d update(s)", tracker.updates, tt.wantUpdates)
+			}
+			if got := len(tracker.comments); got != tt.wantComments {
+				t.Fatalf("comments = %#v, want %d comment(s)", tracker.comments, tt.wantComments)
+			}
+			_, didTransition := transitioned[tt.issue.ID]
+			if didTransition != tt.wantTransitioned {
+				t.Fatalf("transitioned[%q] = %v, want %v", tt.issue.ID, didTransition, tt.wantTransitioned)
+			}
+			if tt.wantUpdates > 0 {
+				assertWorkflowActionSignature(t, metrics, tt.issue, workflowActionPlanReviewRework, planReviewEvaluationFromIssue(tt.issue).Signature)
+			}
+		})
+	}
+}
+
+func TestDispatchModeUsesPlanReviewTimelineProvenance(t *testing.T) {
+	t.Parallel()
+
+	issue := planReviewCommentIssue("issue-plan-dispatch", "comment-1")
+	issue.State = autoPromoteReworkState
+	issue.Comments = append(issue.Comments, connector.IssueComment{
+		Body: "Plan review routed this issue from Plan Review to Rework.",
+	})
+
+	tracker := &dependencyAutoUnblockConnector{}
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	orch := planReviewTestOrchestrator(tracker, metrics)
+	state := newState(orch.cfg)
+
+	if got := orch.dispatchMode(context.Background(), &state, issue); got != runpkg.RunModeImplement {
+		t.Fatalf("dispatchMode() with only old prose comment = %q, want implement", got)
+	}
+
+	recordPlanReviewReworkSignatureEvent(t, metrics, issue, time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC))
+	freshState := newState(orch.cfg)
+	if got := orch.dispatchMode(context.Background(), &freshState, issue); got != runpkg.RunModePlan {
+		t.Fatalf("dispatchMode() with timeline provenance = %q, want plan", got)
+	}
+}
 
 func TestPlanReviewContainsReviewSeverityUsesExplicitBadges(t *testing.T) {
 	t.Parallel()
@@ -38,7 +137,7 @@ func TestPlanReviewContainsReviewSeverityUsesExplicitBadges(t *testing.T) {
 		},
 		{
 			name:     "narrative p1 negative",
-			body:     "No P1 issues found — approved.",
+			body:     "No P1 issues found - approved.",
 			severity: "P1",
 			want:     false,
 		},
@@ -93,5 +192,86 @@ func TestPlanReviewDecisionLogsReviewStateDisagreement(t *testing.T) {
 		if !strings.Contains(logs.String(), fragment) {
 			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
 		}
+	}
+}
+
+func planReviewTestOrchestrator(
+	tracker *dependencyAutoUnblockConnector,
+	metrics *autoPromoteWorkflowMetricsRecorder,
+) *Orchestrator {
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		Plan: gate.PlanConfig{
+			Enabled: true,
+			Review:  gate.PlanReviewAutomated,
+			Stop:    gate.DefaultPlanStop,
+		},
+		ActiveStates:               []string{"Todo", "In Progress", "Rework"},
+		TerminalStates:             []string{"Done", "Cancelled"},
+		ContinuationRetryDelay:     time.Second,
+		FailureRetryBaseDelay:      time.Second,
+		GitHubGraphQLWarnRemaining: 500,
+	})
+	return &Orchestrator{
+		cfg:             cfg,
+		connector:       tracker,
+		logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workflowMetrics: metrics,
+	}
+}
+
+func planReviewPullRequestIssue(id string, reviewCommit string) connector.Issue {
+	issue := dependencyAutoUnblockIssue(id, gate.DefaultPlanStop)
+	prNumber := 524
+	issue.PRNumber = &prNumber
+	issue.PullRequest = &connector.PullRequest{
+		Number:                     prNumber,
+		State:                      "OPEN",
+		URL:                        "https://github.test/digitaldrywood/detent/pull/524",
+		HeadSHA:                    "head-sha",
+		CodexReviewState:           "P1",
+		LatestCodexReviewCommitSHA: reviewCommit,
+		CodexReviewFindings: []connector.PullRequestFinding{{
+			Body: "Plan omits acceptance criteria.",
+			URL:  "https://github.test/comment/plan-review",
+		}},
+	}
+	return issue
+}
+
+func planReviewCommentIssue(id string, commentID string) connector.Issue {
+	issue := dependencyAutoUnblockIssue(id, gate.DefaultPlanStop)
+	issue.Comments = []connector.IssueComment{{
+		ID:   commentID,
+		Body: "## Detent Plan Review\n\n- state: P1\n\n### Findings\n\n- Plan omits acceptance criteria.",
+		URL:  "https://github.test/comment/" + commentID,
+	}}
+	return issue
+}
+
+func recordPlanReviewReworkSignatureEvent(
+	t *testing.T,
+	metrics *autoPromoteWorkflowMetricsRecorder,
+	issue connector.Issue,
+	at time.Time,
+) {
+	t.Helper()
+
+	signature := planReviewEvaluationFromIssue(issue).Signature
+	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionPlanReviewRework, signature)
+	if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), store.WorkflowPhaseEvent{
+		ProjectID:    defaultWorkflowMetricsProjectID,
+		IssueID:      issue.ID,
+		Identifier:   issue.Identifier,
+		IssueURL:     issue.URL,
+		PhaseType:    store.WorkflowPhaseTypeLane,
+		PhaseName:    autoPromoteReworkState,
+		Reason:       "plan_review_decision",
+		Status:       "entered",
+		StartedAt:    at,
+		MetadataJSON: workflowLaneMetadataJSON(issue, metadata),
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
 	}
 }

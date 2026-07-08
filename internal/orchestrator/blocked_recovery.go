@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -32,9 +33,19 @@ const (
 	BlockedRecoveryReasonPullRequestMaintenance BlockedRecoveryReason = "pull_request_maintenance"
 )
 
+type BlockedRecoveryKind string
+
+const (
+	BlockedRecoveryKindConflict    BlockedRecoveryKind = "conflict"
+	BlockedRecoveryKindNoCI        BlockedRecoveryKind = "no-ci"
+	BlockedRecoveryKindRerun       BlockedRecoveryKind = "rerun"
+	BlockedRecoveryKindPriorSignal BlockedRecoveryKind = "prior-signal"
+)
+
 type BlockedRecoveryDecision struct {
 	Action      BlockedRecoveryAction
 	Reason      BlockedRecoveryReason
+	Kind        BlockedRecoveryKind
 	TargetState string
 	Detail      string
 }
@@ -67,19 +78,30 @@ func EvaluateBlockedRecovery(issue connector.Issue) BlockedRecoveryDecision {
 	}
 
 	text := blockedRecoveryText(issue)
-	if blockedRecoveryNoCurrentHeadCI(pr) && (blockedRecoveryAgentText(text) || blockedRecoveryHasPriorSignal(pr)) {
-		return blockedRecoveryDecision(BlockedRecoveryActionRework, BlockedRecoveryReasonMissingCurrentHeadCI, "latest PR head has no CI signal")
+	agentText := blockedRecoveryAgentText(text)
+	priorSignal := blockedRecoveryHasPriorSignal(pr)
+	if blockedRecoveryNoCurrentHeadCI(pr) && (agentText || priorSignal) {
+		kind := BlockedRecoveryKindNoCI
+		if !agentText && priorSignal {
+			kind = BlockedRecoveryKindPriorSignal
+		}
+		return blockedRecoveryDecisionWithKind(BlockedRecoveryActionRework, BlockedRecoveryReasonMissingCurrentHeadCI, kind, "latest PR head has no CI signal")
 	}
-	if blockedRecoveryAgentText(text) {
-		return blockedRecoveryDecision(BlockedRecoveryActionRework, BlockedRecoveryReasonPullRequestMaintenance, "blocked reason describes agent-recoverable PR maintenance")
+	if agentText {
+		return blockedRecoveryDecisionWithKind(BlockedRecoveryActionRework, BlockedRecoveryReasonPullRequestMaintenance, BlockedRecoveryKindRerun, "blocked reason describes agent-recoverable PR maintenance")
 	}
 	return blockedRecoveryDecision(BlockedRecoveryActionNone, BlockedRecoveryReasonNoRecoverableSignal, "")
 }
 
 func blockedRecoveryDecision(action BlockedRecoveryAction, reason BlockedRecoveryReason, detail string) BlockedRecoveryDecision {
+	return blockedRecoveryDecisionWithKind(action, reason, blockedRecoveryKindForReason(reason), detail)
+}
+
+func blockedRecoveryDecisionWithKind(action BlockedRecoveryAction, reason BlockedRecoveryReason, kind BlockedRecoveryKind, detail string) BlockedRecoveryDecision {
 	decision := BlockedRecoveryDecision{
 		Action: action,
 		Reason: reason,
+		Kind:   kind,
 		Detail: strings.TrimSpace(detail),
 	}
 	if action == BlockedRecoveryActionRework {
@@ -107,7 +129,12 @@ func (o *Orchestrator) recoverBlockedIssues(
 		if decision.Action != BlockedRecoveryActionRework {
 			continue
 		}
-		if !o.applyBlockedRecovery(ctx, state, issue, decision, now) {
+		signature := blockedRecoverySignature(issue, decision)
+		if match, ok := o.workflowTimelineLaneActionSignature(ctx, issue, "blocked_recovery", workflowActionBlockedRecovery, signature); ok {
+			o.handleBlockedRecoveryExhausted(ctx, state, issue, decision, signature, match, now)
+			continue
+		}
+		if !o.applyBlockedRecovery(ctx, state, issue, decision, signature, now) {
 			continue
 		}
 		transitioned[issueID] = struct{}{}
@@ -123,6 +150,7 @@ func (o *Orchestrator) applyBlockedRecovery(
 	state *State,
 	issue connector.Issue,
 	decision BlockedRecoveryDecision,
+	signature string,
 	now time.Time,
 ) bool {
 	issueID := strings.TrimSpace(issue.ID)
@@ -130,9 +158,10 @@ func (o *Orchestrator) applyBlockedRecovery(
 	if targetState == "" {
 		targetState = autoPromoteReworkState
 	}
-	if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "blocked_recovery"); err != nil {
+	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionBlockedRecovery, signature)
+	if err := o.updateIssueStateByIDWithMetadata(ctx, issueID, issue, targetState, now, "blocked_recovery", metadata); err != nil {
 		if o.logger != nil {
-			o.logger.Warn("blocked recovery transition failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "reason", decision.Reason, "error", err)
+			o.logger.Warn("blocked recovery transition failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "reason", decision.Reason, "signature", signature, "error", err)
 		}
 		return false
 	}
@@ -149,9 +178,55 @@ func (o *Orchestrator) applyBlockedRecovery(
 		Message: "recovered " + issueLabel(issue) + " from " + issue.State + " to " + targetState + ": " + string(decision.Reason),
 	})
 	if o.logger != nil {
-		o.logger.Info("blocked recovery transition", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "reason", decision.Reason)
+		o.logger.Info("blocked recovery transition", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "reason", decision.Reason, "signature", signature)
 	}
 	return true
+}
+
+func (o *Orchestrator) handleBlockedRecoveryExhausted(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	decision BlockedRecoveryDecision,
+	signature string,
+	match workflowTimelineMetadataMatch,
+	now time.Time,
+) {
+	issueID := strings.TrimSpace(issue.ID)
+	targetState := strings.TrimSpace(decision.TargetState)
+	if targetState == "" {
+		targetState = autoPromoteReworkState
+	}
+	if o.logger != nil {
+		o.logger.Info(
+			"blocked recovery exhausted",
+			"issue_id", issueID,
+			"identifier", issue.Identifier,
+			"signature", signature,
+			"matched_event_id", match.Event.ID,
+			"matched_event_reason", match.Event.Reason,
+			"matched_event_phase", match.Event.PhaseName,
+			"would_target_state", targetState,
+			"would_reason", decision.Reason,
+		)
+	}
+	if _, ok := o.workflowTimelineActionSignature(ctx, issue, workflowActionBlockedRecoveryExhausted, signature); ok {
+		return
+	}
+	body := blockedRecoveryExhaustedComment(issue, targetState, decision, signature, match)
+	if err := o.connector.CreateComment(ctx, issueID, body); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("blocked recovery exhausted comment failed", "issue_id", issueID, "identifier", issue.Identifier, "signature", signature, "error", err)
+		}
+		return
+	}
+	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionBlockedRecoveryExhausted, signature)
+	o.recordWorkflowReviewAction(ctx, issue, "blocked_recovery_exhausted", "blocked_recovery_exhausted", now, metadata)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "blocked_recovery_exhausted",
+		Message: "blocked recovery exhausted for " + issueLabel(issue) + ": " + signature,
+	})
 }
 
 func blockedRecoveryComment(issue connector.Issue, targetState string, decision BlockedRecoveryDecision) string {
@@ -181,6 +256,58 @@ func blockedRecoveryComment(issue connector.Issue, targetState string, decision 
 	return b.String()
 }
 
+func blockedRecoveryExhaustedComment(
+	issue connector.Issue,
+	targetState string,
+	decision BlockedRecoveryDecision,
+	signature string,
+	match workflowTimelineMetadataMatch,
+) string {
+	var b strings.Builder
+	b.WriteString("Blocked recovery already moved this issue to ")
+	b.WriteString(strings.TrimSpace(targetState))
+	b.WriteString(" for the same PR maintenance signature. It is back in Blocked without a new recovery signal, so a human needs to review it before Detent tries again.")
+	b.WriteString("\n\nReason: ")
+	b.WriteString(blockedRecoveryReasonLabel(decision.Reason))
+	if decision.Detail != "" {
+		b.WriteString(" (")
+		b.WriteString(decision.Detail)
+		b.WriteString(")")
+	}
+	b.WriteString("\nSignature: ")
+	b.WriteString(signature)
+	b.WriteString("\nMatched recovery event: ")
+	b.WriteString(workflowTimelineEventLabel(match.Event))
+	if pr := issue.PullRequest; pr != nil && pr.Number > 0 {
+		b.WriteString(fmt.Sprintf("\nLinked PR: #%d", pr.Number))
+		if url := strings.TrimSpace(pr.URL); url != "" {
+			b.WriteString(" ")
+			b.WriteString(url)
+		}
+	}
+	return b.String()
+}
+
+func workflowTimelineEventLabel(event store.WorkflowPhaseEvent) string {
+	parts := []string{}
+	if event.ID > 0 {
+		parts = append(parts, fmt.Sprintf("id=%d", event.ID))
+	}
+	if phase := strings.TrimSpace(event.PhaseName); phase != "" {
+		parts = append(parts, "phase="+phase)
+	}
+	if reason := strings.TrimSpace(event.Reason); reason != "" {
+		parts = append(parts, "reason="+reason)
+	}
+	if status := strings.TrimSpace(event.Status); status != "" {
+		parts = append(parts, "status="+status)
+	}
+	if len(parts) == 0 {
+		return "unknown"
+	}
+	return strings.Join(parts, " ")
+}
+
 func blockedRecoveryReasonLabel(reason BlockedRecoveryReason) string {
 	switch reason {
 	case BlockedRecoveryReasonMergeConflicts:
@@ -194,6 +321,38 @@ func blockedRecoveryReasonLabel(reason BlockedRecoveryReason) string {
 	default:
 		return strings.ReplaceAll(string(reason), "_", " ")
 	}
+}
+
+func blockedRecoveryKindForReason(reason BlockedRecoveryReason) BlockedRecoveryKind {
+	switch reason {
+	case BlockedRecoveryReasonMergeConflicts, BlockedRecoveryReasonStaleBase:
+		return BlockedRecoveryKindConflict
+	case BlockedRecoveryReasonMissingCurrentHeadCI:
+		return BlockedRecoveryKindNoCI
+	case BlockedRecoveryReasonPullRequestMaintenance:
+		return BlockedRecoveryKindRerun
+	default:
+		return ""
+	}
+}
+
+func blockedRecoverySignature(issue connector.Issue, decision BlockedRecoveryDecision) string {
+	kind := decision.Kind
+	if kind == "" {
+		kind = blockedRecoveryKindForReason(decision.Reason)
+	}
+	prNumber := 0
+	headSHA := ""
+	if issue.PRNumber != nil {
+		prNumber = *issue.PRNumber
+	}
+	if pr := issue.PullRequest; pr != nil {
+		if pr.Number > 0 {
+			prNumber = pr.Number
+		}
+		headSHA = strings.TrimSpace(pr.HeadSHA)
+	}
+	return fmt.Sprintf("kind=%s;pr=%d;head=%s", strings.TrimSpace(string(kind)), prNumber, headSHA)
 }
 
 func blockedRecoveryHumanOnly(issue connector.Issue) bool {
