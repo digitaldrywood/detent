@@ -451,14 +451,24 @@ templ boardKanbanDragScript() {
 					event.preventDefault();
 					return;
 				}
-				card.dataset.kanbanDragging = "true";
 				if (event.dataTransfer) {
 					event.dataTransfer.effectAllowed = "move";
 					event.dataTransfer.setData("text/plain", draggedIssueID);
 				}
 				setCardDragImage(event, card);
-				setDropTargetState(card, document);
-				feedback("Moving " + (card.dataset.kanbanCurrentState || "card") + ".");
+				// Chrome aborts a native drag when the DOM mutates inside the
+				// dragstart handler: unhiding the feedback line and the hidden
+				// drop lanes reflows the source card while the browser is still
+				// capturing the drag image, so the gesture dies before it starts.
+				// Only dataTransfer setup may run synchronously; every DOM
+				// mutation is deferred until the drag session is established.
+				var startedIssueID = draggedIssueID;
+				window.setTimeout(function () {
+					if (draggedIssueID !== startedIssueID) return;
+					card.dataset.kanbanDragging = "true";
+					setDropTargetState(card, document);
+					feedback("Moving " + (card.dataset.kanbanCurrentState || "card") + ".");
+				}, 0);
 			});
 			document.addEventListener("dragover", function (event) {
 				var issueID = activeDragIssueID(event);
