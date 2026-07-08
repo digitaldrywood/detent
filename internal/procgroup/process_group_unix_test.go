@@ -9,6 +9,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestConfigure(t *testing.T) {
@@ -108,24 +109,26 @@ func TestGroupID(t *testing.T) {
 func TestTerminateTree(t *testing.T) {
 	tests := []struct {
 		name string
-		cmd  func(t *testing.T) (*exec.Cmd, int, func() error)
+		cmd  func(t *testing.T) (*exec.Cmd, int, func(t *testing.T))
 	}{
 		{
 			name: "nil command and zero group",
-			cmd: func(*testing.T) (*exec.Cmd, int, func() error) {
+			cmd: func(*testing.T) (*exec.Cmd, int, func(t *testing.T)) {
 				return nil, 0, nil
 			},
 		},
 		{
 			name: "live process group",
-			cmd: func(t *testing.T) (*exec.Cmd, int, func() error) {
-				proc := startSleep(t)
-				return proc.cmd, GroupID(proc.cmd), proc.Wait
+			cmd: func(t *testing.T) (*exec.Cmd, int, func(t *testing.T)) {
+				proc := startSleepGroup(t)
+				return proc.cmd, GroupID(proc.cmd), func(t *testing.T) {
+					assertProcessGroupKilled(t, proc)
+				}
 			},
 		},
 		{
 			name: "already exited process group",
-			cmd: func(t *testing.T) (*exec.Cmd, int, func() error) {
+			cmd: func(t *testing.T) (*exec.Cmd, int, func(t *testing.T)) {
 				cmd, pgid := startExitedCommand(t)
 				return cmd, pgid, nil
 			},
@@ -140,7 +143,7 @@ func TestTerminateTree(t *testing.T) {
 				t.Fatalf("TerminateTree() error = %v, want nil", err)
 			}
 			if wait != nil {
-				assertKilled(t, wait())
+				wait(t)
 			}
 		})
 	}
@@ -149,31 +152,33 @@ func TestTerminateTree(t *testing.T) {
 func TestCleanup(t *testing.T) {
 	tests := []struct {
 		name string
-		pgid func(t *testing.T) (int, func() error)
+		pgid func(t *testing.T) (int, func(t *testing.T))
 	}{
 		{
 			name: "zero group",
-			pgid: func(*testing.T) (int, func() error) {
+			pgid: func(*testing.T) (int, func(t *testing.T)) {
 				return 0, nil
 			},
 		},
 		{
 			name: "negative group",
-			pgid: func(*testing.T) (int, func() error) {
+			pgid: func(*testing.T) (int, func(t *testing.T)) {
 				return -1, nil
 			},
 		},
 		{
 			name: "nonexistent group",
-			pgid: func(*testing.T) (int, func() error) {
+			pgid: func(*testing.T) (int, func(t *testing.T)) {
 				return 1 << 30, nil
 			},
 		},
 		{
 			name: "live group",
-			pgid: func(t *testing.T) (int, func() error) {
-				proc := startSleep(t)
-				return GroupID(proc.cmd), proc.Wait
+			pgid: func(t *testing.T) (int, func(t *testing.T)) {
+				proc := startSleepGroup(t)
+				return GroupID(proc.cmd), func(t *testing.T) {
+					assertProcessGroupKilled(t, proc)
+				}
 			},
 		},
 	}
@@ -186,16 +191,19 @@ func TestCleanup(t *testing.T) {
 				t.Fatalf("Cleanup() error = %v, want nil", err)
 			}
 			if wait != nil {
-				assertKilled(t, wait())
+				wait(t)
 			}
 		})
 	}
 }
 
 type startedProcess struct {
-	cmd     *exec.Cmd
-	wait    sync.Once
-	waitErr error
+	cmd           *exec.Cmd
+	wait          sync.Once
+	waitErr       error
+	groupMember   *exec.Cmd
+	memberWait    sync.Once
+	memberWaitErr error
 }
 
 func startSleep(t *testing.T) *startedProcess {
@@ -209,14 +217,51 @@ func startSleep(t *testing.T) *startedProcess {
 
 	proc := &startedProcess{cmd: cmd}
 	t.Cleanup(func() {
-		if cmd.ProcessState != nil {
-			return
-		}
-		if err := TerminateTree(cmd, GroupID(cmd)); err != nil {
-			t.Fatalf("TerminateTree() cleanup error = %v, want nil", err)
+		if cmd.ProcessState == nil || (proc.groupMember != nil && proc.groupMember.ProcessState == nil) {
+			if err := TerminateTree(cmd, GroupID(cmd)); err != nil {
+				t.Fatalf("TerminateTree() cleanup error = %v, want nil", err)
+			}
+			if proc.groupMember != nil && proc.groupMember.ProcessState == nil {
+				_ = proc.groupMember.Process.Kill()
+			}
 		}
 		_ = proc.Wait()
+		if proc.groupMember != nil {
+			_ = proc.WaitGroupMember()
+		}
 	})
+
+	return proc
+}
+
+func startSleepGroup(t *testing.T) *startedProcess {
+	t.Helper()
+
+	proc := startSleep(t)
+	pgid := GroupID(proc.cmd)
+
+	member := exec.CommandContext(context.Background(), "sleep", "30")
+	member.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+		Pgid:    pgid,
+	}
+	if err := member.Start(); err != nil {
+		if killErr := TerminateTree(proc.cmd, pgid); killErr != nil {
+			t.Fatalf("TerminateTree() cleanup error = %v, want nil", killErr)
+		}
+		_ = proc.Wait()
+		t.Fatalf("Start() group member error = %v, want nil", err)
+	}
+
+	proc.groupMember = member
+	if got := GroupID(member); got != pgid {
+		if killErr := TerminateTree(proc.cmd, pgid); killErr != nil {
+			t.Fatalf("TerminateTree() cleanup error = %v, want nil", killErr)
+		}
+		_ = proc.Wait()
+		_ = proc.WaitGroupMember()
+		t.Fatalf("group member pgid = %d, want %d", got, pgid)
+	}
 
 	return proc
 }
@@ -226,6 +271,13 @@ func (p *startedProcess) Wait() error {
 		p.waitErr = p.cmd.Wait()
 	})
 	return p.waitErr
+}
+
+func (p *startedProcess) WaitGroupMember() error {
+	p.memberWait.Do(func() {
+		p.memberWaitErr = p.groupMember.Wait()
+	})
+	return p.memberWaitErr
 }
 
 func startExitedCommand(t *testing.T) (*exec.Cmd, int) {
@@ -243,6 +295,30 @@ func startExitedCommand(t *testing.T) (*exec.Cmd, int) {
 	}
 
 	return cmd, pgid
+}
+
+func assertProcessGroupKilled(t *testing.T, proc *startedProcess) {
+	t.Helper()
+
+	assertKilled(t, waitForExit(t, proc.Wait))
+	assertKilled(t, waitForExit(t, proc.WaitGroupMember))
+}
+
+func waitForExit(t *testing.T, wait func() error) error {
+	t.Helper()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- wait()
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait() timed out, want process exit")
+		return nil
+	}
 }
 
 func assertKilled(t *testing.T, err error) {
