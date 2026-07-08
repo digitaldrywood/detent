@@ -98,9 +98,6 @@ func Create(ctx context.Context, target Target, req Request) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
-	if !SupportsTracker(target.Workflow.Tracker.Kind) {
-		return Response{}, &Error{Code: CodeUnsupportedTracker, Message: "tracker kind does not support runtime work-item creation"}
-	}
 	if target.Connector == nil {
 		return Response{}, &Error{Code: CodeConnectorUnavailable, Message: "connector is unavailable"}
 	}
@@ -135,15 +132,6 @@ func Create(ctx context.Context, target Target, req Request) (Response, error) {
 		return Response{}, &Error{Code: CodeSubmissionFailed, Message: "create work item failed", Err: err}
 	}
 	return Response{ID: issue.ID, Identifier: issue.Identifier, URL: issue.URL}, nil
-}
-
-func SupportsTracker(kind string) bool {
-	switch strings.TrimSpace(kind) {
-	case workflowconfig.TrackerLocalSQLite, workflowconfig.TrackerGitHubLocal:
-		return true
-	default:
-		return false
-	}
 }
 
 func WorkItemURL(base string, projectID string) string {
