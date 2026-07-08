@@ -259,6 +259,9 @@ templ boardLaneScript() {
 				if (count) count.textContent = visible + "/" + total;
 				var picker = scope.querySelector("[data-board-lane-picker]");
 				if (picker && pickerOpen) picker.setAttribute("open", "");
+				if (typeof window.__detentBoardKanbanDragAdjustSnapshot === "function") {
+					window.__detentBoardKanbanDragAdjustSnapshot(scope);
+				}
 				return true;
 			}
 			function apply() {
@@ -333,6 +336,7 @@ templ boardKanbanDragScript() {
 			if (window.__detentBoardKanbanDragHandlersRegistered) return;
 			window.__detentBoardKanbanDragHandlersRegistered = true;
 			var draggedIssueID = "";
+			var draggedAllowedTargetKeys = [];
 			var dropped = false;
 			var blockedDrop = false;
 			function feedback(message, kind) {
@@ -343,12 +347,16 @@ templ boardKanbanDragScript() {
 				target.textContent = text;
 				target.hidden = text === "";
 			}
-			function markedDraggedCard() {
-				return document.querySelector("[data-kanban-card][data-kanban-dragging='true']");
+			function queryRoot(scope) {
+				if (scope && typeof scope.querySelector === "function" && typeof scope.querySelectorAll === "function") return scope;
+				return document;
 			}
-			function draggedCard() {
+			function markedDraggedCard(scope) {
+				return queryRoot(scope).querySelector("[data-kanban-card][data-kanban-dragging='true']");
+			}
+			function draggedCard(scope) {
 				if (!draggedIssueID || !window.CSS || typeof CSS.escape !== "function") return null;
-				return document.querySelector("[data-kanban-card][data-kanban-issue-id='" + CSS.escape(draggedIssueID) + "']");
+				return queryRoot(scope).querySelector("[data-kanban-card][data-kanban-issue-id='" + CSS.escape(draggedIssueID) + "']");
 			}
 			function activeDragIssueID(event) {
 				if (draggedIssueID) return draggedIssueID;
@@ -357,9 +365,15 @@ templ boardKanbanDragScript() {
 				if (!event.dataTransfer || typeof event.dataTransfer.getData !== "function") return "";
 				return event.dataTransfer.getData("text/plain") || "";
 			}
+			function targetKeysFromValue(value) {
+				return String(value || "").split(/\s+/).filter(Boolean);
+			}
 			function allowedTargetKeys(card) {
-				if (!(card instanceof HTMLElement)) return [];
-				return (card.dataset.kanbanAllowedTargets || "").split(/\s+/).filter(Boolean);
+				if (card instanceof HTMLElement) {
+					var keys = targetKeysFromValue(card.dataset.kanbanAllowedTargets || "");
+					if (keys.length > 0) return keys;
+				}
+				return draggedAllowedTargetKeys.slice();
 			}
 			function laneAllowed(card, lane) {
 				if (!(lane instanceof HTMLElement)) return false;
@@ -379,8 +393,8 @@ templ boardKanbanDragScript() {
 					Math.round(dragImageOffset(event.clientY, rect.top, rect.height))
 				);
 			}
-			function setDropTargetState(card) {
-				document.querySelectorAll("[data-kanban-drop-state]").forEach(function (lane) {
+			function setDropTargetState(card, scope) {
+				queryRoot(scope).querySelectorAll("[data-kanban-drop-state]").forEach(function (lane) {
 					if (!(lane instanceof HTMLElement)) return;
 					if (lane.dataset.kanbanDropWasHidden === undefined) {
 						lane.dataset.kanbanDropWasHidden = lane.dataset.laneHidden || "false";
@@ -391,6 +405,15 @@ templ boardKanbanDragScript() {
 					lane.setAttribute("aria-disabled", allowed ? "false" : "true");
 				});
 			}
+			function applyActiveDragState(scope) {
+				if (!draggedIssueID || draggedAllowedTargetKeys.length === 0) return false;
+				var root = queryRoot(scope);
+				var card = draggedCard(root);
+				if (card instanceof HTMLElement) card.dataset.kanbanDragging = "true";
+				setDropTargetState(card, root);
+				return true;
+			}
+			window.__detentBoardKanbanDragAdjustSnapshot = applyActiveDragState;
 			function clearDropTargetState() {
 				document.querySelectorAll("[data-kanban-drop-state]").forEach(function (lane) {
 					if (!(lane instanceof HTMLElement)) return;
@@ -414,9 +437,11 @@ templ boardKanbanDragScript() {
 				var card = event.target instanceof Element ? event.target.closest("[data-kanban-card]") : null;
 				if (!card || card.getAttribute("draggable") !== "true") return;
 				draggedIssueID = card.dataset.kanbanIssueId || "";
+				draggedAllowedTargetKeys = targetKeysFromValue(card.dataset.kanbanAllowedTargets || "");
 				dropped = false;
 				blockedDrop = false;
 				if (!draggedIssueID) {
+					draggedAllowedTargetKeys = [];
 					event.preventDefault();
 					return;
 				}
@@ -426,7 +451,7 @@ templ boardKanbanDragScript() {
 					event.dataTransfer.setData("text/plain", draggedIssueID);
 				}
 				setCardDragImage(event, card);
-				setDropTargetState(card);
+				setDropTargetState(card, document);
 				feedback("Moving " + (card.dataset.kanbanCurrentState || "card") + ".");
 			});
 			document.addEventListener("dragover", function (event) {
@@ -435,7 +460,7 @@ templ boardKanbanDragScript() {
 				draggedIssueID = issueID;
 				var lane = event.target instanceof Element ? event.target.closest("[data-kanban-drop-state]") : null;
 				if (!lane) return;
-				var allowed = laneAllowed(draggedCard(), lane);
+				var allowed = laneAllowed(draggedCard(document), lane);
 				if (event.dataTransfer) event.dataTransfer.dropEffect = allowed ? "move" : "none";
 				if (allowed) {
 					event.preventDefault();
@@ -452,7 +477,7 @@ templ boardKanbanDragScript() {
 				var lane = event.target instanceof Element ? event.target.closest("[data-kanban-drop-state]") : null;
 				if (!lane) return;
 				event.preventDefault();
-				var card = draggedCard();
+				var card = draggedCard(document);
 				if (!laneAllowed(card, lane)) {
 					feedback("Move blocked by transition policy.", "error");
 					dropped = true;
@@ -473,9 +498,13 @@ templ boardKanbanDragScript() {
 					feedback("Move cancelled.", "error");
 				}
 				draggedIssueID = "";
+				draggedAllowedTargetKeys = [];
 				dropped = false;
 				blockedDrop = false;
 				clearDropTargetState();
+			});
+			document.addEventListener("htmx:afterSettle", function () {
+				applyActiveDragState(document);
 			});
 			document.body.addEventListener("htmx:responseError", function (event) {
 				var form = event.detail && event.detail.elt;
