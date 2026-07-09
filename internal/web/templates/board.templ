@@ -1,6 +1,11 @@
 package templates
 
-import "github.com/digitaldrywood/detent/internal/web/ui/primitives"
+import (
+	"strconv"
+
+	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
+)
 
 // BoardPage is the app's home: exception strip → figure row → fixed-height,
 // independently-scrollable lanes. The page itself never scrolls.
@@ -84,6 +89,9 @@ templ boardLaneView2(lane boardLaneView) {
 		data-board-lane={ lane.LaneID }
 		data-board-lane-title={ lane.Title }
 		data-board-lane-default={ boardBoolAttr(lane.DefaultVisible) }
+		data-board-lane-card-count={ strconv.Itoa(lane.CardCount) }
+		data-board-lane-visibility-state={ string(boardLaneVisibilityAuto) }
+		data-board-lane-pinned="false"
 		data-lane-hidden={ boardBoolAttr(!lane.DefaultVisible) }
 		if lane.DropState != "" {
 			data-kanban-drop-state={ lane.DropState }
@@ -194,20 +202,65 @@ templ boardLanePicker(view boardView) {
 	<details id="board-lane-picker" class="relative" data-board-lane-picker data-preserve-details="board-lane-picker">
 		<summary class="flex cursor-pointer list-none items-center gap-1.5 rounded-chip border border-line px-2.5 py-1 text-2xs text-sec hover:text-text [&::-webkit-details-marker]:hidden">
 			Lanes <span data-board-lane-count class="tabular-nums">{ boardLaneCountLabel(view) }</span>
-			<span aria-hidden="true">▾</span>
+			<span
+				class="rounded-chip bg-warn/15 px-1.5 py-0.5 font-mono text-warn"
+				data-board-hidden-card-count
+				title={ boardLaneHiddenCardSummary(view) }
+				aria-label={ boardLaneHiddenCardSummary(view) }
+				hidden?={ view.HiddenCards == 0 }
+			>{ boardLaneHiddenCardBadgeLabel(view) }</span>
+			@icon.ChevronDown(icon.Props{Class: "size-3"})
 		</summary>
-		<div class="absolute right-0 top-full z-40 mt-1 flex w-56 flex-col gap-0.5 rounded-card border border-line bg-elev p-1.5">
+		<div class="absolute right-0 top-full z-40 mt-1 flex w-80 flex-col gap-1 rounded-card border border-line bg-elev p-1.5">
+			<div class="flex items-center justify-between gap-2 border-b border-line px-1 pb-1.5">
+				<span class="text-2xs font-medium uppercase text-sec">Visibility</span>
+				<button
+					type="button"
+					class="inline-flex min-h-7 items-center gap-1.5 rounded-chip border border-line px-2 text-2xs font-medium text-sec hover:border-accent hover:text-accent disabled:pointer-events-none disabled:opacity-40"
+					data-board-lane-reset-all
+					aria-label="Reset all lanes to Auto"
+					title="Reset all lanes to Auto"
+					disabled
+					aria-disabled="true"
+				>
+					@icon.RotateCcw(icon.Props{Class: "size-3"})
+					<span>Reset all</span>
+				</button>
+			</div>
 			for _, lane := range view.Lanes {
-				<label class="flex cursor-pointer items-center gap-2 rounded-chip px-2 py-1 text-xs text-text hover:bg-surface">
-					<input
-						type="checkbox"
-						class="accent-accent"
-						data-board-lane-toggle={ lane.LaneID }
-						checked?={ lane.DefaultVisible }
-					/>
-					<span class="flex-1">{ lane.Title }</span>
-					<span class="font-mono text-2xs text-sec tabular-nums">{ lane.Count }</span>
-				</label>
+				<div class={ boardLaneVisibilityRowClass(lane) } data-board-lane-row={ lane.LaneID } data-board-lane-card-count={ strconv.Itoa(lane.CardCount) } data-board-lane-hidden-populated={ boardBoolAttr(boardLaneHiddenPopulated(lane)) }>
+					<div class="flex min-w-0 items-center gap-2">
+						<span class="min-w-0 flex-1 truncate font-medium">{ lane.Title }</span>
+						<span class="rounded-chip bg-surface px-1.5 py-0.5 font-mono text-2xs text-sec tabular-nums">{ lane.Count }</span>
+					</div>
+					<div class="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1.5">
+						<span class="min-w-0 truncate text-2xs text-sec" title={ boardLaneVisibilityStatusTitle(lane) } data-board-lane-visibility-status>{ boardLaneVisibilityStatusLabel(lane) }</span>
+						<select
+							class="h-7 rounded-chip border border-line bg-surface px-2 text-2xs text-text outline-none focus:border-accent"
+							data-board-lane-visibility={ lane.LaneID }
+							data-board-lane-visibility-state={ string(boardLaneVisibilityAuto) }
+							data-board-lane-visibility-effective={ boardBoolAttr(lane.DefaultVisible) }
+							aria-label={ "Visibility for " + lane.Title + " lane" }
+							title={ boardLaneVisibilityStatusTitle(lane) }
+						>
+							<option value={ string(boardLaneVisibilityAuto) } selected>Auto</option>
+							<option value={ string(boardLaneVisibilityShow) }>Show</option>
+							<option value={ string(boardLaneVisibilityHide) }>Hide</option>
+						</select>
+						<button
+							type="button"
+							class="inline-flex size-7 items-center justify-center rounded-chip border border-line text-sec hover:border-accent hover:text-accent disabled:pointer-events-none disabled:opacity-40"
+							data-board-lane-reset={ lane.LaneID }
+							value={ lane.LaneID }
+							aria-label={ "Reset " + lane.Title + " lane to Auto" }
+							title="Reset lane to Auto"
+							disabled
+							aria-disabled="true"
+						>
+							@icon.RotateCcw(icon.Props{Class: "size-3"})
+						</button>
+					</div>
+				</div>
 			}
 		</div>
 	</details>
@@ -216,26 +269,236 @@ templ boardLanePicker(view boardView) {
 templ boardLaneScript() {
 	<script>
 		(function () {
+			var storagePrefix = "detent.ui.board.lanes.v2.";
+			var legacyStoragePrefix = "detent.ui.board.lanes.";
+			var storageVersion = 1;
+			var stateAuto = "auto";
+			var stateShow = "show";
+			var stateHide = "hide";
+			var pickerOpen = false;
+
+			function visibilityStorage() {
+				try {
+					return window.localStorage;
+				} catch (err) {
+					return null;
+				}
+			}
 			function storageKey(root) {
-				return "detent.ui.board.lanes." + (root.getAttribute("data-board-key") || "fleet");
+				return storagePrefix + (root.getAttribute("data-board-key") || "fleet");
+			}
+			function legacyStorageKey(root) {
+				return legacyStoragePrefix + (root.getAttribute("data-board-key") || "fleet");
+			}
+			function emptyPrefs() {
+				return { show: new Set(), hide: new Set() };
+			}
+			function laneIDSet(ids) {
+				var out = new Set();
+				if (!Array.isArray(ids)) return out;
+				ids.forEach(function (id) {
+					if (typeof id === "string" && id.trim() !== "") out.add(id);
+				});
+				return out;
+			}
+			function normalizedPrefs(showIDs, hideIDs) {
+				var prefs = emptyPrefs();
+				laneIDSet(showIDs).forEach(function (id) {
+					prefs.show.add(id);
+				});
+				laneIDSet(hideIDs).forEach(function (id) {
+					if (!prefs.show.has(id)) prefs.hide.add(id);
+				});
+				return prefs;
+			}
+			function discardLegacyPrefs(root, store) {
+				var legacy = legacyStorageKey(root);
+				try {
+					if (legacy !== storageKey(root)) store.removeItem(legacy);
+				} catch (err) {}
 			}
 			function readPrefs(root) {
+				var store = visibilityStorage();
+				if (!store) return emptyPrefs();
+				discardLegacyPrefs(root, store);
+				var raw = "";
 				try {
-					return JSON.parse(localStorage.getItem(storageKey(root)) || "{}");
+					raw = store.getItem(storageKey(root));
 				} catch (err) {
-					return {};
+					return emptyPrefs();
+				}
+				if (!raw) return emptyPrefs();
+				try {
+					var parsed = JSON.parse(raw);
+					if (!parsed || parsed.v !== storageVersion) {
+						try {
+							store.removeItem(storageKey(root));
+						} catch (err) {}
+						return emptyPrefs();
+					}
+					return normalizedPrefs(parsed.show, parsed.hide);
+				} catch (err) {
+					try {
+						store.removeItem(storageKey(root));
+					} catch (err) {}
+					return emptyPrefs();
 				}
 			}
 			function writePrefs(root, prefs) {
+				var store = visibilityStorage();
+				if (!store) return;
+				var show = Array.from(prefs.show).filter(Boolean).sort();
+				var hide = Array.from(prefs.hide).filter(function (id) {
+					return Boolean(id) && !prefs.show.has(id);
+				}).sort();
+				if (show.length === 0 && hide.length === 0) {
+					try {
+						store.removeItem(storageKey(root));
+					} catch (err) {}
+					return;
+				}
 				try {
-					localStorage.setItem(storageKey(root), JSON.stringify(prefs));
+					store.setItem(storageKey(root), JSON.stringify({ v: storageVersion, show: show, hide: hide }));
 				} catch (err) {}
 			}
-			var pickerOpen = false;
+			function prefsHaveOverrides(prefs) {
+				return prefs.show.size > 0 || prefs.hide.size > 0;
+			}
+			function queryRoot(scope) {
+				if (scope && typeof scope.querySelector === "function" && typeof scope.querySelectorAll === "function") return scope;
+				return document;
+			}
 			function boardLanesRoot(scope) {
 				if (scope instanceof Element && scope.matches("[data-board-lanes]")) return scope;
 				if (scope && typeof scope.querySelector === "function") return scope.querySelector("[data-board-lanes]");
 				return null;
+			}
+			function findByData(scope, attr, value) {
+				var root = queryRoot(scope);
+				var nodes = root.querySelectorAll("[" + attr + "]");
+				for (var i = 0; i < nodes.length; i += 1) {
+					if (nodes[i].getAttribute(attr) === value) return nodes[i];
+				}
+				return null;
+			}
+			function laneID(lane) {
+				return lane.getAttribute("data-board-lane") || "";
+			}
+			function laneDefaultVisible(lane) {
+				return lane.getAttribute("data-board-lane-default") === "true";
+			}
+			function laneCardCount(lane) {
+				var parsed = Number.parseInt(lane.getAttribute("data-board-lane-card-count") || "0", 10);
+				if (!Number.isFinite(parsed) || parsed < 0) return 0;
+				return parsed;
+			}
+			function laneTitle(lane) {
+				return lane.getAttribute("data-board-lane-title") || "lane";
+			}
+			function formatNumber(value) {
+				return new Intl.NumberFormat("en-US").format(value);
+			}
+			function cardCountLabel(count, singular, plural) {
+				return formatNumber(count) + " " + (count === 1 ? singular : plural);
+			}
+			function laneOverrideState(lane, prefs) {
+				var id = laneID(lane);
+				if (prefs.show.has(id)) return stateShow;
+				if (prefs.hide.has(id)) return stateHide;
+				return stateAuto;
+			}
+			function laneVisible(lane, state) {
+				if (state === stateShow) return true;
+				if (state === stateHide) return false;
+				return laneDefaultVisible(lane);
+			}
+			function stateLabel(lane, state, visible) {
+				var label = "";
+				if (state === stateShow) {
+					label = "Always shown";
+				} else if (state === stateHide) {
+					label = "Always hidden";
+				} else {
+					label = visible ? "Auto shown" : "Auto hidden";
+				}
+				if (!visible && laneCardCount(lane) > 0) {
+					return label + " - " + cardCountLabel(laneCardCount(lane), "hidden card", "hidden cards");
+				}
+				return label;
+			}
+			function stateTitle(lane, state, visible) {
+				var title = "";
+				if (state === stateShow) {
+					title = "Always show is saved for this lane.";
+				} else if (state === stateHide) {
+					title = "Always hide is saved for this lane.";
+				} else {
+					title = "Auto follows the board default.";
+				}
+				if (!visible && laneCardCount(lane) > 0) {
+					return title + " " + cardCountLabel(laneCardCount(lane), "card is", "cards are") + " hidden while this lane is off.";
+				}
+				return title;
+			}
+			function hiddenLaneSummary(lanes) {
+				if (lanes.length === 0) return "All populated lanes are visible.";
+				if (lanes.length === 1) {
+					var lane = lanes[0];
+					return cardCountLabel(lane.count, "hidden card", "hidden cards") + " in " + lane.title + ".";
+				}
+				var total = lanes.reduce(function (sum, lane) {
+					return sum + lane.count;
+				}, 0);
+				var labels = lanes.map(function (lane) {
+					return lane.title + " (" + formatNumber(lane.count) + ")";
+				}).join(", ");
+				return cardCountLabel(total, "hidden card", "hidden cards") + " across " + cardCountLabel(lanes.length, "lane", "lanes") + ": " + labels + ".";
+			}
+			function setResetDisabled(button, disabled) {
+				if (!(button instanceof HTMLButtonElement)) return;
+				button.disabled = disabled;
+				button.setAttribute("aria-disabled", disabled ? "true" : "false");
+			}
+			function updateLaneControls(scope, lane, state, visible) {
+				var id = laneID(lane);
+				var row = findByData(scope, "data-board-lane-row", id);
+				var hiddenPopulated = !visible && laneCardCount(lane) > 0;
+				if (row instanceof HTMLElement) {
+					row.dataset.boardLaneVisibilityState = state;
+					row.dataset.boardLaneVisibilityEffective = visible ? "visible" : "hidden";
+					row.dataset.boardLaneHiddenPopulated = hiddenPopulated ? "true" : "false";
+					row.classList.toggle("border-warn/45", hiddenPopulated);
+					row.classList.toggle("bg-warn/10", hiddenPopulated);
+					row.classList.toggle("border-transparent", !hiddenPopulated);
+					var status = row.querySelector("[data-board-lane-visibility-status]");
+					if (status) {
+						status.textContent = stateLabel(lane, state, visible);
+						status.setAttribute("title", stateTitle(lane, state, visible));
+					}
+				}
+				var select = findByData(scope, "data-board-lane-visibility", id);
+				if (select instanceof HTMLSelectElement) {
+					select.value = state;
+					select.dataset.boardLaneVisibilityState = state;
+					select.dataset.boardLaneVisibilityEffective = visible ? "visible" : "hidden";
+					select.setAttribute("title", stateTitle(lane, state, visible));
+				}
+				setResetDisabled(findByData(scope, "data-board-lane-reset", id), state === stateAuto);
+			}
+			function updateHiddenCardBadge(scope, hiddenCards, hiddenLanes) {
+				var root = queryRoot(scope);
+				var badge = root.querySelector("[data-board-hidden-card-count]");
+				if (!badge) return;
+				var summary = hiddenLaneSummary(hiddenLanes);
+				badge.hidden = hiddenCards === 0;
+				badge.textContent = hiddenCards > 0 ? formatNumber(hiddenCards) + " hidden" : "";
+				badge.setAttribute("title", summary);
+				badge.setAttribute("aria-label", summary);
+			}
+			function updateResetAll(scope, prefs) {
+				queryRoot(scope).querySelectorAll("[data-board-lane-reset-all]").forEach(function (button) {
+					setResetDisabled(button, !prefsHaveOverrides(prefs));
+				});
 			}
 			function applyTo(scope) {
 				var root = boardLanesRoot(scope);
@@ -243,26 +506,29 @@ templ boardLaneScript() {
 				var prefs = readPrefs(root);
 				var total = 0;
 				var visible = 0;
+				var hiddenCards = 0;
+				var hiddenLanes = [];
 				root.querySelectorAll("[data-board-lane]").forEach(function (lane) {
 					total += 1;
-					var id = lane.getAttribute("data-board-lane");
-					var byDefault = lane.getAttribute("data-board-lane-default") === "true";
-					var show = Object.prototype.hasOwnProperty.call(prefs, id) ? Boolean(prefs[id]) : byDefault;
+					var state = laneOverrideState(lane, prefs);
+					var show = laneVisible(lane, state);
+					var cards = laneCardCount(lane);
 					lane.setAttribute("data-lane-hidden", show ? "false" : "true");
-					if (show) visible += 1;
-					var toggle = scope.querySelector('[data-board-lane-toggle="' + id + '"]');
-					if (toggle) {
-						toggle.checked = show;
-						if (show) {
-							toggle.setAttribute("checked", "");
-						} else {
-							toggle.removeAttribute("checked");
-						}
+					lane.setAttribute("data-board-lane-visibility-state", state);
+					lane.setAttribute("data-board-lane-pinned", state === stateAuto ? "false" : "true");
+					if (show) {
+						visible += 1;
+					} else if (cards > 0) {
+						hiddenCards += cards;
+						hiddenLanes.push({ title: laneTitle(lane), count: cards });
 					}
+					updateLaneControls(scope, lane, state, show);
 				});
-				var count = scope.querySelector("[data-board-lane-count]");
+				var count = queryRoot(scope).querySelector("[data-board-lane-count]");
 				if (count) count.textContent = visible + "/" + total;
-				var picker = scope.querySelector("[data-board-lane-picker]");
+				updateHiddenCardBadge(scope, hiddenCards, hiddenLanes);
+				updateResetAll(scope, prefs);
+				var picker = queryRoot(scope).querySelector("[data-board-lane-picker]");
 				if (picker && pickerOpen) picker.setAttribute("open", "");
 				if (typeof window.__detentBoardKanbanDragAdjustSnapshot === "function") {
 					window.__detentBoardKanbanDragAdjustSnapshot(scope);
@@ -303,15 +569,24 @@ templ boardLaneScript() {
 				event.preventDefault();
 				window.htmx.swap(target, adjusted, { swapStyle: target.getAttribute("hx-swap") || "innerHTML" }, { contextElement: target });
 			}
-			document.addEventListener("change", function (event) {
-				var toggle = event.target.closest("[data-board-lane-toggle]");
-				if (!toggle) return;
-				var root = document.querySelector("[data-board-lanes]");
-				if (!root) return;
+			function setLaneState(root, id, state) {
 				var prefs = readPrefs(root);
-				prefs[toggle.getAttribute("data-board-lane-toggle")] = toggle.checked;
+				prefs.show.delete(id);
+				prefs.hide.delete(id);
+				if (state === stateShow) prefs.show.add(id);
+				if (state === stateHide) prefs.hide.add(id);
 				writePrefs(root, prefs);
 				apply();
+			}
+			document.addEventListener("change", function (event) {
+				var target = event.target instanceof Element ? event.target : null;
+				var select = target ? target.closest("[data-board-lane-visibility]") : null;
+				if (!(select instanceof HTMLSelectElement)) return;
+				var root = document.querySelector("[data-board-lanes]");
+				if (!root) return;
+				var state = select.value;
+				if (state !== stateShow && state !== stateHide) state = stateAuto;
+				setLaneState(root, select.getAttribute("data-board-lane-visibility") || "", state);
 			});
 			document.addEventListener("toggle", function (event) {
 				var picker = event.target;
@@ -320,8 +595,31 @@ templ boardLaneScript() {
 				}
 			}, true);
 			document.addEventListener("click", function (event) {
+				var target = event.target instanceof Element ? event.target : null;
+				var root = document.querySelector("[data-board-lanes]");
+				var reset = target ? target.closest("[data-board-lane-reset]") : null;
+				if (reset instanceof HTMLButtonElement && root) {
+					event.preventDefault();
+					setLaneState(root, reset.value || reset.getAttribute("data-board-lane-reset") || "", stateAuto);
+					return;
+				}
+				var resetAll = target ? target.closest("[data-board-lane-reset-all]") : null;
+				if (resetAll instanceof HTMLButtonElement && root) {
+					event.preventDefault();
+					writePrefs(root, emptyPrefs());
+					apply();
+					return;
+				}
 				var picker = document.querySelector("[data-board-lane-picker]");
 				if (picker && picker.open && !picker.contains(event.target)) {
+					picker.removeAttribute("open");
+					pickerOpen = false;
+				}
+			});
+			document.addEventListener("keydown", function (event) {
+				if (event.key !== "Escape") return;
+				var picker = document.querySelector("[data-board-lane-picker]");
+				if (picker && picker.open) {
 					picker.removeAttribute("open");
 					pickerOpen = false;
 				}
@@ -330,6 +628,9 @@ templ boardLaneScript() {
 			document.addEventListener("htmx:sseBeforeMessage", applyBeforeSSEMessage);
 			document.addEventListener("htmx:afterSettle", apply);
 			document.addEventListener("DOMContentLoaded", apply);
+			window.addEventListener("storage", function (event) {
+				if (event.key && event.key.indexOf(storagePrefix) === 0) apply();
+			});
 			apply();
 		})();
 	</script>

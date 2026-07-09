@@ -133,6 +133,69 @@ func TestBoardViewLanes(t *testing.T) {
 	}
 }
 
+func TestBoardLaneVisibilityResolve(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		defaultVisible bool
+		state          boardLaneVisibilityState
+		want           bool
+	}{
+		{name: "auto follows shown default", defaultVisible: true, state: boardLaneVisibilityAuto, want: true},
+		{name: "auto follows hidden default", defaultVisible: false, state: boardLaneVisibilityAuto, want: false},
+		{name: "show overrides hidden default", defaultVisible: false, state: boardLaneVisibilityShow, want: true},
+		{name: "hide overrides shown default", defaultVisible: true, state: boardLaneVisibilityHide, want: false},
+		{name: "unknown state falls back to default", defaultVisible: true, state: boardLaneVisibilityState("unknown"), want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := boardLaneVisibilityResolve(tt.defaultVisible, tt.state); got != tt.want {
+				t.Fatalf("boardLaneVisibilityResolve(%t, %q) = %t, want %t", tt.defaultVisible, tt.state, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBoardLaneVisibilityPrefsFromStorage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		raw       string
+		lane      string
+		wantState boardLaneVisibilityState
+		wantClear bool
+	}{
+		{name: "empty is auto", lane: "todo", wantState: boardLaneVisibilityAuto},
+		{name: "current show state", raw: `{"v":1,"show":["todo"]}`, lane: "todo", wantState: boardLaneVisibilityShow},
+		{name: "current hide state", raw: `{"v":1,"hide":["done"]}`, lane: "done", wantState: boardLaneVisibilityHide},
+		{name: "show wins conflicting state", raw: `{"v":1,"show":["todo"],"hide":["todo"]}`, lane: "todo", wantState: boardLaneVisibilityShow},
+		{name: "blank ids are discarded", raw: `{"v":1,"show":[" ","todo"],"hide":[""]}`, lane: "todo", wantState: boardLaneVisibilityShow},
+		{name: "legacy boolean prefs clear to auto", raw: `{"todo":false}`, lane: "todo", wantState: boardLaneVisibilityAuto, wantClear: true},
+		{name: "legacy visible lane list clears to auto", raw: `{"lanes":["todo"]}`, lane: "todo", wantState: boardLaneVisibilityAuto, wantClear: true},
+		{name: "unknown version clears to auto", raw: `{"v":99,"show":["todo"]}`, lane: "todo", wantState: boardLaneVisibilityAuto, wantClear: true},
+		{name: "invalid json clears to auto", raw: `{`, lane: "todo", wantState: boardLaneVisibilityAuto, wantClear: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prefs, clear := boardLaneVisibilityPrefsFromStorage(tt.raw)
+			if clear != tt.wantClear {
+				t.Fatalf("clear = %t, want %t", clear, tt.wantClear)
+			}
+			if got := boardLaneVisibilityStateForLane(prefs, tt.lane); got != tt.wantState {
+				t.Fatalf("state for %q = %q, want %q; prefs = %+v", tt.lane, got, tt.wantState, prefs)
+			}
+		})
+	}
+}
+
 func TestBoardSnapshotRendersAwaitingChecksOnlyForGatePendingCards(t *testing.T) {
 	data := DashboardData{
 		Snapshot: telemetry.Snapshot{
@@ -882,16 +945,54 @@ func TestBoardSnapshotRenders(t *testing.T) {
 		`id="fig-running"`,
 		`id="fig-blocked"`,
 		"data-board-lane-picker",
+		"data-board-lane-visibility",
+		"data-board-lane-reset-all",
+		"data-board-lane-reset",
+		`value="auto"`,
+		`value="show"`,
+		`value="hide"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("board snapshot missing %q", want)
 		}
+	}
+	if strings.Contains(html, "data-board-lane-toggle") || strings.Contains(html, `type="checkbox"`) {
+		t.Fatalf("board lane picker must not render legacy checkbox toggles:\n%s", html)
 	}
 	if strings.Contains(html, `id="board-exceptions"`) {
 		t.Fatalf("default board snapshot should not render elevated blocked alerts:\n%s", html)
 	}
 	if strings.Contains(html, "#0B0D10") || strings.Contains(html, "#14171C") {
 		t.Fatalf("board snapshot must not contain raw hex colors")
+	}
+}
+
+func TestBoardSnapshotSurfacesHiddenPopulatedLanes(t *testing.T) {
+	data := DashboardData{
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
+			BoardIssues: []telemetry.Issue{
+				{ID: "todo-1", Identifier: "digitaldrywood/detent#1", ProjectID: "detent", Title: "Visible todo", State: "Todo"},
+				{ID: "cancelled-1", Identifier: "digitaldrywood/detent#2", ProjectID: "detent", Title: "Hidden cancelled", State: "Cancelled"},
+			},
+		},
+		Kanban: KanbanData{
+			States:         []string{"Todo", "Cancelled"},
+			TerminalStates: []string{"Cancelled"},
+		},
+	}
+
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	for _, want := range []string{
+		`data-board-hidden-card-count`,
+		"1 hidden",
+		"1 hidden card in Cancelled.",
+		`data-board-lane-hidden-populated="true"`,
+		"Auto hidden - 1 hidden card",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("hidden populated lane signal missing %q:\n%s", want, html)
+		}
 	}
 }
 
