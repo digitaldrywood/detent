@@ -16,6 +16,10 @@ import (
 )
 
 const doctorAutoPromoteSampleLimit = 5
+const (
+	doctorReviewFlowAutopilot  = "autopilot"
+	doctorReviewFlowReviewGate = "review-gate"
+)
 
 type doctorAutoPromoteCandidateDiagnostic struct {
 	IssueID                      string     `json:"issue_id,omitempty"`
@@ -60,11 +64,12 @@ type doctorStatusOptionVerifier interface {
 
 func checkDoctorAutoPromote(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps, now time.Time) doctorCheck {
 	name := "Project " + id + " auto-promote"
+	flowDetail := doctorReviewFlowConfigDetail(cfg)
 	if !cfg.Agent.AutoPromote.Enabled {
 		return doctorCheck{
 			Name:   name,
 			Status: doctorOK,
-			Detail: "agent.auto_promote.enabled=false; live candidate diagnostics disabled",
+			Detail: flowDetail + "; live candidate diagnostics disabled",
 		}
 	}
 	passState := strings.TrimSpace(cfg.Agent.AutoPromote.PassState)
@@ -106,7 +111,7 @@ func checkDoctorAutoPromote(ctx context.Context, id string, cfg workflowconfig.C
 		return doctorCheck{
 			Name:   name,
 			Status: doctorOK,
-			Detail: "agent.auto_promote.enabled=true; live GitHub diagnostics skipped for " + cfg.Tracker.Kind + " tracker",
+			Detail: flowDetail + "; live GitHub diagnostics skipped for " + cfg.Tracker.Kind + " tracker",
 		}
 	}
 
@@ -220,7 +225,8 @@ func checkDoctorAutoPromoteLive(
 	}
 
 	detail := fmt.Sprintf(
-		"agent.auto_promote.enabled=true; status options resolved; sampled %d %s candidate(s)",
+		"%s; status options resolved; sampled %d %s candidate(s)",
+		doctorReviewFlowConfigDetail(cfg),
 		len(issues),
 		sourceState,
 	)
@@ -233,12 +239,58 @@ func checkDoctorAutoPromoteLive(
 	if len(candidates) > 0 {
 		detail += "; candidates: " + doctorAutoPromoteCandidateSummaries(candidates)
 	}
+	if invalid := doctorAutoPromoteInvalidWorkpadStatusCandidates(candidates); len(invalid) > 0 {
+		return doctorCheck{
+			Name:                  name,
+			Status:                doctorWarn,
+			Detail:                detail + "; invalid workpad status candidate(s): " + doctorAutoPromoteCandidateSummaries(invalid),
+			Hint:                  "Update the Workpad detent-status block to one of in_progress, blocked, or complete; if this repeats, align WORKFLOW.md handoff prose with the configured review flow.",
+			AutoPromoteCandidates: candidates,
+		}
+	}
 	return doctorCheck{
 		Name:                  name,
 		Status:                doctorOK,
 		Detail:                detail,
 		AutoPromoteCandidates: candidates,
 	}
+}
+
+func doctorReviewFlowChoice(cfg workflowconfig.Config) string {
+	if cfg.Agent.AutoPromote.Enabled &&
+		cfg.Agent.AutoPromote.QuietSeconds == 0 &&
+		doctorReviewFlowGateWaitState(cfg) == workflowconfig.AutoPromoteGateWaitStateSource {
+		return doctorReviewFlowAutopilot
+	}
+	return doctorReviewFlowReviewGate
+}
+
+func doctorReviewFlowConfigDetail(cfg workflowconfig.Config) string {
+	return fmt.Sprintf(
+		"review-flow=%s (auto_promote.enabled=%t, quiet_seconds=%d, gate_wait_state=%s)",
+		doctorReviewFlowChoice(cfg),
+		cfg.Agent.AutoPromote.Enabled,
+		cfg.Agent.AutoPromote.QuietSeconds,
+		doctorReviewFlowGateWaitState(cfg),
+	)
+}
+
+func doctorReviewFlowGateWaitState(cfg workflowconfig.Config) string {
+	state := strings.ToLower(strings.TrimSpace(cfg.Agent.AutoPromote.GateWaitState))
+	if state == "" {
+		return workflowconfig.AutoPromoteGateWaitStateSource
+	}
+	return state
+}
+
+func doctorAutoPromoteInvalidWorkpadStatusCandidates(candidates []doctorAutoPromoteCandidateDiagnostic) []doctorAutoPromoteCandidateDiagnostic {
+	out := []doctorAutoPromoteCandidateDiagnostic{}
+	for _, candidate := range candidates {
+		if candidate.Reason == string(orchestrator.AutoPromoteReasonWorkpadStatusInvalid) {
+			out = append(out, candidate)
+		}
+	}
+	return out
 }
 
 func doctorHydrateAutoPromoteWorkpad(
@@ -553,6 +605,9 @@ func doctorAutoPromoteCandidateSummary(candidate doctorAutoPromoteCandidateDiagn
 	}
 	if candidate.WorkpadSignalSource != "" {
 		parts = append(parts, "workpad_signal_source="+candidate.WorkpadSignalSource)
+	}
+	if candidate.WorkpadCommentURL != "" {
+		parts = append(parts, "workpad_comment_url="+candidate.WorkpadCommentURL)
 	}
 	if candidate.WorkpadStatusInvalid != "" {
 		parts = append(parts, "workpad_status_invalid="+candidate.WorkpadStatusInvalid)

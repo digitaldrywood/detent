@@ -127,6 +127,19 @@ func doctorWorkflowImprovementProposals(
 	return out, nil
 }
 
+func doctorWorkflowProposalsForFindings(projectID string, findings []doctorWorkflowOptimizationFinding, threshold int) []doctorWorkflowImprovementProposal {
+	proposals := doctorWorkflowImprovementProposalsFromFindings(projectID, findings, threshold)
+	out := make([]doctorWorkflowImprovementProposal, 0, len(proposals))
+	for _, proposal := range proposals {
+		proposal = doctorWorkflowFinalizeProposal(proposal)
+		if proposal.ID == "" {
+			continue
+		}
+		out = append(out, proposal)
+	}
+	return out
+}
+
 func doctorWorkflowImprovementProposalsFromFindings(projectID string, findings []doctorWorkflowOptimizationFinding, threshold int) []doctorWorkflowImprovementProposal {
 	proposals := []doctorWorkflowImprovementProposal{}
 	for _, finding := range findings {
@@ -223,6 +236,12 @@ func doctorWorkflowFindingSignalCount(finding doctorWorkflowOptimizationFinding)
 		return int(anyInt64(finding.Evidence["empty_model_recent_sessions"]))
 	case doctorWorkflowRuleSchedulerSkipRate:
 		return int(anyInt64(finding.Evidence["scheduler_skipped_decisions"]))
+	case doctorWorkflowRuleInvalidWorkpadStatusRecurrence:
+		return int(anyInt64(finding.Evidence["invalid_workpad_status_decisions"]))
+	case doctorWorkflowRuleReviewFlowBehaviorMismatch:
+		return int(anyInt64(finding.Evidence["review_entry_count"]))
+	case doctorWorkflowRuleReviewFlowProseMismatch:
+		return int(anyInt64(finding.Evidence["matching_phrase_count"]))
 	case doctorWorkflowRuleRunawaySessionTokens:
 		return int(anyInt64(finding.Evidence["session_count"]))
 	default:
@@ -245,8 +264,26 @@ func doctorWorkflowFindingProposalTarget(finding doctorWorkflowOptimizationFindi
 		return "prompt", "", "Tighten the agent prompt or telemetry capture path so every session records the effective model."
 	case doctorWorkflowRuleBudgetEstimateDrift:
 		return "workflow", "budget", "Review budget estimates against observed p90 billable session tokens and update workflow budget guidance if humans approve."
+	case doctorWorkflowRuleInvalidWorkpadStatusRecurrence:
+		return "workflow", "detent-status", "Update WORKFLOW.md Workpad status instructions so agents use only `in_progress`, `blocked`, or `complete` in the `detent-status` block."
+	case doctorWorkflowRuleReviewFlowBehaviorMismatch:
+		return doctorWorkflowReviewFlowProposalTarget(finding)
+	case doctorWorkflowRuleReviewFlowProseMismatch:
+		return doctorWorkflowReviewFlowProposalTarget(finding)
 	default:
 		return "workflow", "", "Review this repeated doctor finding and propose a WORKFLOW.md, prompt, skill, or gate update for human approval."
+	}
+}
+
+func doctorWorkflowReviewFlowProposalTarget(finding doctorWorkflowOptimizationFinding) (string, string, string) {
+	choice := strings.TrimSpace(fmt.Sprint(finding.Evidence["review_flow"]))
+	switch choice {
+	case doctorReviewFlowAutopilot:
+		return "workflow", "WORKFLOW.md", "Align WORKFLOW.md with configured autopilot: keep completed work in the active state, set `detent-status` to `complete`, and let Detent promote on the configured gate."
+	case doctorReviewFlowReviewGate:
+		return "workflow", "WORKFLOW.md", "Align WORKFLOW.md with configured review-gate: route completed work through the configured review state and remove prose that promises direct review-state skipping."
+	default:
+		return "workflow", "WORKFLOW.md", "Align WORKFLOW.md handoff prose with the configured review-flow frontmatter after human review."
 	}
 }
 
