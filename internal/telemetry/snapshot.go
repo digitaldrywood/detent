@@ -194,6 +194,7 @@ func (d TrackerDrift) IsZero() bool {
 type Issue struct {
 	ID                    string            `json:"issue_id"`
 	Identifier            string            `json:"identifier,omitempty"`
+	Number                int               `json:"number,omitempty"`
 	ProjectID             string            `json:"project_id,omitempty"`
 	URL                   string            `json:"url,omitempty"`
 	Title                 string            `json:"title,omitempty"`

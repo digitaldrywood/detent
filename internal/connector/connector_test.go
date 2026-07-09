@@ -103,6 +103,7 @@ func TestIssueJSONUsesElixirFieldNames(t *testing.T) {
 	issue := Issue{
 		ID:               "issue-1",
 		Identifier:       "DIG-1",
+		Number:           7,
 		Title:            "Port connector",
 		Description:      "Build the connector seam",
 		Priority:         &priority,
@@ -134,6 +135,7 @@ func TestIssueJSONUsesElixirFieldNames(t *testing.T) {
 	for _, key := range []string{
 		"id",
 		"identifier",
+		"number",
 		"title",
 		"description",
 		"priority",

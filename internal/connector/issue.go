@@ -11,6 +11,7 @@ import (
 type Issue struct {
 	ID               string            `json:"id,omitempty" yaml:"id,omitempty"`
 	Identifier       string            `json:"identifier,omitempty" yaml:"identifier,omitempty"`
+	Number           int               `json:"number,omitempty" yaml:"number,omitempty"`
 	Title            string            `json:"title,omitempty" yaml:"title,omitempty"`
 	Description      string            `json:"description,omitempty" yaml:"description,omitempty"`
 	Priority         *int              `json:"priority,omitempty" yaml:"priority,omitempty"`

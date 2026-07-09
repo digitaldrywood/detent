@@ -554,6 +554,7 @@ const (
 	githubLocalDivergenceMetadataKey       = "github_local_divergence"
 	githubLocalDivergenceDetailMetadataKey = "github_local_divergence_detail"
 	githubLocalClosedUpstreamDivergence    = "closed_upstream_local_active"
+	githubIssueNumberMetadataKey           = "github_issue_number"
 )
 
 type projectOverviewCard struct {
@@ -1763,11 +1764,36 @@ func issueIdentity(issue telemetry.Issue) issueIdentityView {
 }
 
 func issueReference(issue telemetry.Issue) string {
+	if reference := issueDisplayReference(issue); reference != "" {
+		return reference
+	}
+	return issueIdentifier(issue)
+}
+
+func issueDisplayReference(issue telemetry.Issue) string {
 	identifier := issueIdentifier(issue)
 	if index := strings.LastIndex(identifier, "#"); index >= 0 && index < len(identifier)-1 {
 		return identifier[index:]
 	}
-	return identifier
+	if number := issueMetadataInt(issue.Metadata, githubIssueNumberMetadataKey); number > 0 {
+		return "#" + strconv.Itoa(number)
+	}
+	if issue.Number > 0 {
+		return "#" + strconv.Itoa(issue.Number)
+	}
+	return ""
+}
+
+func issueMetadataInt(metadata map[string]string, key string) int {
+	value := strings.TrimSpace(metadata[key])
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0
+	}
+	return parsed
 }
 
 func issueRepositoryLabel(issue telemetry.Issue) string {
@@ -2689,12 +2715,10 @@ func WithKanbanCardComments(card projectKanbanCard, comments []telemetry.IssueCo
 }
 
 func projectKanbanIssueNumber(issue telemetry.Issue) string {
-	identifier := issueIdentifier(issue)
-	index := strings.LastIndex(identifier, "#")
-	if index >= 0 && index < len(identifier)-1 {
-		return identifier[index:]
+	if reference := issueDisplayReference(issue); reference != "" {
+		return reference
 	}
-	return identifier
+	return issueIdentifier(issue)
 }
 
 func projectKanbanAttentionLabel(issue telemetry.Issue) string {
@@ -3877,12 +3901,10 @@ func issueNumber(issue telemetry.Issue) string {
 	if issue.PullRequest != nil && issue.PullRequest.Number > 0 {
 		return "#" + strconv.Itoa(issue.PullRequest.Number)
 	}
-	identifier := issueIdentifier(issue)
-	index := strings.LastIndex(identifier, "#")
-	if index >= 0 && index < len(identifier)-1 {
-		return identifier[index:]
+	if reference := issueDisplayReference(issue); reference != "" {
+		return reference
 	}
-	return identifier
+	return issueIdentifier(issue)
 }
 
 func trackerDriftVisible(snapshot telemetry.Snapshot) bool {

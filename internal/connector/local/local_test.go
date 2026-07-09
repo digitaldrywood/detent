@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,6 +59,9 @@ func TestConnectorPersistsWorkItemStateAndEvents(t *testing.T) {
 	if got.ID != "ad-1" || got.State != "Todo" || got.Fields["validation_status"] != "pending" || got.Metadata["store"] != "creswood" {
 		t.Fatalf("candidate = %#v", got)
 	}
+	if got.Number != 1 {
+		t.Fatalf("Number = %d, want 1", got.Number)
+	}
 	if got.Deliverable == nil || got.Deliverable.ExternalID != "creative-101" || got.Deliverable.Metadata["aspect_ratio"] != "9:16" {
 		t.Fatalf("candidate deliverable = %#v", got.Deliverable)
 	}
@@ -93,6 +98,9 @@ func TestConnectorPersistsWorkItemStateAndEvents(t *testing.T) {
 	got = issues[0]
 	if got.State != "Review" || got.Fields["validation_status"] != "valid" {
 		t.Fatalf("persisted issue = %#v", got)
+	}
+	if got.Number != 1 {
+		t.Fatalf("persisted Number = %d, want 1", got.Number)
 	}
 	if len(got.Comments) != 1 || got.Comments[0].Body != "Manifest is ready for external pickup." {
 		t.Fatalf("persisted comments = %#v", got.Comments)
@@ -400,5 +408,177 @@ func TestConnectorUpsertGitHubIdentityAndLocalIssueFields(t *testing.T) {
 	}
 	if value, ok := got.Fields[issueFieldKey(42)]; ok || value != "" {
 		t.Fatalf("issue field persisted = %q, ok=%v; want cleared", value, ok)
+	}
+}
+
+func TestConnectorBackfillsWorkItemNumbersByProjectCreationOrder(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "backfill.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	_, err = db.ExecContext(ctx, `
+create table detent_work_items (
+project_id text not null,
+id text not null,
+identifier text not null,
+title text not null default '',
+description text not null default '',
+priority integer,
+state text not null default '',
+url text not null default '',
+author_id text not null default '',
+assignee_id text not null default '',
+assignees_json text not null default '[]',
+labels_json text not null default '[]',
+fields_json text not null default '{}',
+metadata_json text not null default '{}',
+deliverable_kind text not null default '',
+deliverable_path text not null default '',
+deliverable_review_url text not null default '',
+deliverable_validation_status text not null default '',
+deliverable_external_id text not null default '',
+deliverable_metadata_json text not null default '{}',
+assigned_to_worker integer not null default 1,
+created_at text not null default '',
+updated_at text not null default '',
+stage_updated_at text not null default '',
+model_override text not null default '',
+github_node_id text not null default '',
+github_repository_id integer not null default 0,
+github_issue_number integer not null default 0,
+github_upstream_state text not null default '',
+github_orphaned integer not null default 0,
+primary key (project_id, id)
+)`)
+	if err != nil {
+		t.Fatalf("create legacy table error = %v", err)
+	}
+	created := []struct {
+		projectID  string
+		id         string
+		identifier string
+		createdAt  time.Time
+	}{
+		{"video", "ad-2", "wi-video-2", time.Date(2026, 7, 1, 12, 2, 0, 0, time.UTC)},
+		{"video", "ad-1", "wi-video-1", time.Date(2026, 7, 1, 12, 1, 0, 0, time.UTC)},
+		{"audio", "mix-1", "wi-audio-1", time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)},
+	}
+	for _, row := range created {
+		if _, err := db.ExecContext(ctx, `
+insert into detent_work_items(project_id, id, identifier, title, state, created_at, updated_at, stage_updated_at)
+values (?, ?, ?, ?, ?, ?, ?, ?)`,
+			row.projectID, row.id, row.identifier, row.identifier, "Todo", formatTime(row.createdAt), formatTime(row.createdAt), formatTime(row.createdAt)); err != nil {
+			t.Fatalf("insert legacy row error = %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("legacy Close() error = %v", err)
+	}
+
+	store, err := New(Config{Path: path, ProjectID: "video"})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer store.Close()
+
+	issues, err := store.FetchIssuesByStates(ctx, []string{"Todo"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates(video) error = %v", err)
+	}
+	numbers := map[string]int{}
+	for _, issue := range issues {
+		numbers[issue.ID] = issue.Number
+	}
+	if numbers["ad-1"] != 1 || numbers["ad-2"] != 2 {
+		t.Fatalf("video numbers = %#v, want ad-1=1 ad-2=2", numbers)
+	}
+
+	next := connector.NewIssue()
+	next.ID = "ad-3"
+	next.Identifier = "wi-video-3"
+	next.State = "Todo"
+	if err := store.UpsertIssues(ctx, []connector.Issue{next}); err != nil {
+		t.Fatalf("UpsertIssues(next) error = %v", err)
+	}
+	createdIssue, err := store.FetchIssueStatesByIdentifiers(ctx, []string{"#3"})
+	if err != nil {
+		t.Fatalf("FetchIssueStatesByIdentifiers(#3) error = %v", err)
+	}
+	if len(createdIssue) != 1 || createdIssue[0].ID != "ad-3" || createdIssue[0].Number != 3 {
+		t.Fatalf("created issue by #3 = %#v, want ad-3 number 3", createdIssue)
+	}
+	literal := connector.NewIssue()
+	literal.ID = "literal-3"
+	literal.Identifier = "3"
+	literal.State = "Todo"
+	if err := store.UpsertIssues(ctx, []connector.Issue{literal}); err != nil {
+		t.Fatalf("UpsertIssues(literal) error = %v", err)
+	}
+	literalMatch, err := store.FetchIssueStatesByIdentifiers(ctx, []string{"3"})
+	if err != nil {
+		t.Fatalf("FetchIssueStatesByIdentifiers(3) error = %v", err)
+	}
+	if len(literalMatch) != 1 || literalMatch[0].ID != "literal-3" {
+		t.Fatalf("literal numeric identifier match = %#v, want literal-3 only", literalMatch)
+	}
+}
+
+func TestConnectorAssignsUniqueConcurrentWorkItemNumbers(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(Config{
+		Path:      filepath.Join(t.TempDir(), "concurrent.db"),
+		ProjectID: "video",
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer store.Close()
+
+	const count = 24
+	errs := make(chan error, count)
+	var wg sync.WaitGroup
+	for i := range count {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			suffix := strconv.Itoa(i)
+			issue := connector.NewIssue()
+			issue.ID = "ad-" + suffix
+			issue.Identifier = "wi-concurrent-" + suffix
+			issue.State = "Todo"
+			errs <- store.UpsertIssues(ctx, []connector.Issue{issue})
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("UpsertIssues() error = %v", err)
+		}
+	}
+
+	issues, err := store.FetchIssuesByStates(ctx, []string{"Todo"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(issues) != count {
+		t.Fatalf("issues len = %d, want %d", len(issues), count)
+	}
+	seen := map[int]struct{}{}
+	for _, issue := range issues {
+		if issue.Number < 1 || issue.Number > count {
+			t.Fatalf("issue %s number = %d, want 1..%d", issue.ID, issue.Number, count)
+		}
+		if _, ok := seen[issue.Number]; ok {
+			t.Fatalf("duplicate number %d in %#v", issue.Number, issues)
+		}
+		seen[issue.Number] = struct{}{}
 	}
 }

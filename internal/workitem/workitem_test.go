@@ -14,7 +14,7 @@ import (
 func TestCreateBuildsWorkItemWithDefaults(t *testing.T) {
 	t.Parallel()
 
-	conn := &creatorConnector{}
+	conn := &creatorConnector{number: 7}
 	now := time.Date(2026, 7, 6, 16, 0, 0, 0, time.UTC)
 	got, err := workitem.Create(context.Background(), workitem.Target{
 		ProjectID:           "video",
@@ -34,6 +34,9 @@ func TestCreateBuildsWorkItemWithDefaults(t *testing.T) {
 	}
 	if got.ID != "wi-test" || got.Identifier != "wi-test" {
 		t.Fatalf("Create() response = %#v, want generated identifier", got)
+	}
+	if got.Number != 7 {
+		t.Fatalf("Number = %d, want 7", got.Number)
 	}
 	if got.URL != "http://127.0.0.1:4000/projects/video/kanban" {
 		t.Fatalf("URL = %q", got.URL)
@@ -199,6 +202,7 @@ func localSQLiteWorkflow() workflowconfig.Config {
 type creatorConnector struct {
 	upserts  []connector.Issue
 	existing []connector.Issue
+	number   int
 }
 
 func (c *creatorConnector) Name() string {
@@ -217,8 +221,20 @@ func (c *creatorConnector) FetchIssueStatesByIDs(context.Context, []string) ([]c
 	return nil, connector.ErrNotImplemented
 }
 
-func (c *creatorConnector) FetchIssueStatesByIdentifiers(context.Context, []string) ([]connector.Issue, error) {
-	return append([]connector.Issue(nil), c.existing...), nil
+func (c *creatorConnector) FetchIssueStatesByIdentifiers(_ context.Context, identifiers []string) ([]connector.Issue, error) {
+	wanted := map[string]struct{}{}
+	for _, identifier := range identifiers {
+		wanted[identifier] = struct{}{}
+	}
+	issues := append([]connector.Issue(nil), c.existing...)
+	issues = append(issues, c.upserts...)
+	out := []connector.Issue{}
+	for _, issue := range issues {
+		if _, ok := wanted[issue.Identifier]; ok {
+			out = append(out, issue)
+		}
+	}
+	return out, nil
 }
 
 func (c *creatorConnector) CreateComment(context.Context, string, string) error {
@@ -238,7 +254,13 @@ func (c *creatorConnector) SetField(context.Context, string, string, string) err
 }
 
 func (c *creatorConnector) UpsertIssues(_ context.Context, issues []connector.Issue) error {
-	c.upserts = append(c.upserts, issues...)
+	copied := append([]connector.Issue(nil), issues...)
+	if c.number > 0 {
+		for i := range copied {
+			copied[i].Number = c.number
+		}
+	}
+	c.upserts = append(c.upserts, copied...)
 	return nil
 }
 

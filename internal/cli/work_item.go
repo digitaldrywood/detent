@@ -79,6 +79,10 @@ func newWorkItemAddCommand(configPath *string, opts options) *cobra.Command {
 				return cliWorkItemError(err)
 			}
 			return out.Write(func(out io.Writer) error {
+				if result.Number > 0 {
+					_, err := fmt.Fprintf(out, "created work item #%d (%s)\n", result.Number, result.Identifier)
+					return err
+				}
 				_, err := fmt.Fprintf(out, "created work item %s\n", result.Identifier)
 				return err
 			}, result)

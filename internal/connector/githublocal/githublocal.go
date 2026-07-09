@@ -568,6 +568,7 @@ func (c *Connector) hydrateLocalIssues(ctx context.Context, issues []connector.I
 func (c *Connector) mergeLocalWithGitHub(localIssue connector.Issue, upstream connector.Issue) connector.Issue {
 	merged := upstream
 	merged.ID = localIssue.ID
+	merged.Number = localIssue.Number
 	if strings.TrimSpace(localIssue.Identifier) != "" {
 		merged.Identifier = localIssue.Identifier
 	}

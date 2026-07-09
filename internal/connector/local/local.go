@@ -18,7 +18,8 @@ import (
 )
 
 const (
-	defaultProjectID = "default"
+	defaultProjectID        = "default"
+	sqliteBusyTimeoutMillis = 5000
 
 	eventKindComment       = "comment"
 	eventKindCommentEdit   = "comment_edit"
@@ -89,6 +90,11 @@ func New(cfg Config) (*Connector, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open local sqlite: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(context.Background(), fmt.Sprintf("PRAGMA busy_timeout = %d", sqliteBusyTimeoutMillis)); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configure local sqlite busy timeout: %w", err)
 	}
 	conn := &Connector{
 		db:             db,
@@ -166,7 +172,7 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 
 func (c *Connector) FetchIssueStatesByIdentifiers(ctx context.Context, identifiers []string) ([]connector.Issue, error) {
 	wanted := normalizedIdentifierSet(identifiers)
-	if len(wanted) == 0 {
+	if len(wanted) == 0 && len(normalizedNumberSet(identifiers, nil)) == 0 {
 		return []connector.Issue{}, nil
 	}
 	issues, err := c.fetchIssues(ctx, nil, 0)
@@ -174,10 +180,34 @@ func (c *Connector) FetchIssueStatesByIdentifiers(ctx context.Context, identifie
 		return nil, err
 	}
 	out := make([]connector.Issue, 0, len(identifiers))
+	seen := map[string]struct{}{}
+	matchedIdentifiers := map[string]struct{}{}
 	for _, issue := range issues {
-		if _, ok := wanted[strings.ToLower(strings.TrimSpace(issue.Identifier))]; ok {
+		key := strings.TrimSpace(issue.ID)
+		identifier := strings.ToLower(strings.TrimSpace(issue.Identifier))
+		if _, ok := wanted[identifier]; ok {
 			out = append(out, issue)
+			seen[key] = struct{}{}
+			matchedIdentifiers[identifier] = struct{}{}
 		}
+	}
+	wantedNumbers := normalizedNumberSet(identifiers, matchedIdentifiers)
+	if len(wantedNumbers) == 0 {
+		return out, nil
+	}
+	for _, issue := range issues {
+		key := strings.TrimSpace(issue.ID)
+		if issue.Number <= 0 {
+			continue
+		}
+		if _, ok := wantedNumbers[issue.Number]; !ok {
+			continue
+		}
+		if _, ok := seen[key]; ok && key != "" {
+			continue
+		}
+		out = append(out, issue)
+		seen[key] = struct{}{}
 	}
 	return out, nil
 }
@@ -423,7 +453,12 @@ github_repository_id integer not null default 0,
 github_issue_number integer not null default 0,
 github_upstream_state text not null default '',
 github_orphaned integer not null default 0,
+number integer not null default 0,
 primary key (project_id, id)
+)`,
+		`create table if not exists detent_work_item_counters (
+project_id text primary key,
+next_number integer not null
 )`,
 		`create table if not exists detent_work_item_events (
 id integer primary key autoincrement,
@@ -444,6 +479,15 @@ created_at text not null
 		}
 	}
 	if err := c.addMissingWorkItemColumns(ctx); err != nil {
+		return fmt.Errorf("migrate local sqlite connector: %w", err)
+	}
+	if err := c.backfillWorkItemNumbers(ctx); err != nil {
+		return fmt.Errorf("migrate local sqlite connector: %w", err)
+	}
+	if _, err := c.db.ExecContext(ctx, `create unique index if not exists idx_detent_work_items_project_number on detent_work_items(project_id, number) where number > 0`); err != nil {
+		return fmt.Errorf("migrate local sqlite connector: %w", err)
+	}
+	if err := c.syncWorkItemCounters(ctx); err != nil {
 		return fmt.Errorf("migrate local sqlite connector: %w", err)
 	}
 	return nil
@@ -476,6 +520,7 @@ func (c *Connector) addMissingWorkItemColumns(ctx context.Context) error {
 		name       string
 		definition string
 	}{
+		{name: "number", definition: "integer not null default 0"},
 		{name: "github_node_id", definition: "text not null default ''"},
 		{name: "github_repository_id", definition: "integer not null default 0"},
 		{name: "github_issue_number", definition: "integer not null default 0"},
@@ -491,6 +536,136 @@ func (c *Connector) addMissingWorkItemColumns(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+type workItemNumberBackfillRow struct {
+	projectID string
+	id        string
+}
+
+func (c *Connector) backfillWorkItemNumbers(ctx context.Context) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	rows, err := tx.QueryContext(ctx, `
+select project_id, id
+from detent_work_items
+where number <= 0
+order by project_id asc, case when created_at = '' then 1 else 0 end asc, created_at asc, id asc`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	pending := []workItemNumberBackfillRow{}
+	for rows.Next() {
+		var row workItemNumberBackfillRow
+		if err := rows.Scan(&row.projectID, &row.id); err != nil {
+			closeErr := rows.Close()
+			return errors.Join(err, closeErr)
+		}
+		pending = append(pending, row)
+	}
+	if err := rows.Err(); err != nil {
+		closeErr := rows.Close()
+		return errors.Join(err, closeErr)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	nextByProject := map[string]int64{}
+	for _, row := range pending {
+		next, ok := nextByProject[row.projectID]
+		if !ok {
+			if err := tx.QueryRowContext(ctx, `
+select coalesce(max(number), 0) + 1
+from detent_work_items
+where project_id = ? and number > 0`, row.projectID).Scan(&next); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+update detent_work_items
+set number = ?
+where project_id = ? and id = ?`, next, row.projectID, row.id); err != nil {
+			return err
+		}
+		nextByProject[row.projectID] = next + 1
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func (c *Connector) syncWorkItemCounters(ctx context.Context) error {
+	_, err := c.db.ExecContext(ctx, `
+insert into detent_work_item_counters(project_id, next_number)
+select project_id, coalesce(max(number), 0) + 1
+from detent_work_items
+group by project_id
+on conflict(project_id) do update set
+next_number = max(detent_work_item_counters.next_number, excluded.next_number)`)
+	return err
+}
+
+func (c *Connector) workItemNumberForUpsert(ctx context.Context, tx *sql.Tx, id string, requested int) (int64, error) {
+	var existing int64
+	err := tx.QueryRowContext(ctx, `
+select number
+from detent_work_items
+where project_id = ? and id = ?`, c.projectID, id).Scan(&existing)
+	if err == nil && existing > 0 {
+		return existing, nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	if requested > 0 {
+		number := int64(requested)
+		if err := c.ensureWorkItemCounterAtLeast(ctx, tx, number+1); err != nil {
+			return 0, err
+		}
+		return number, nil
+	}
+	return c.nextWorkItemNumber(ctx, tx)
+}
+
+func (c *Connector) nextWorkItemNumber(ctx context.Context, tx *sql.Tx) (int64, error) {
+	if _, err := tx.ExecContext(ctx, `
+insert into detent_work_item_counters(project_id, next_number)
+values (?, 1)
+on conflict(project_id) do nothing`, c.projectID); err != nil {
+		return 0, err
+	}
+	var number int64
+	if err := tx.QueryRowContext(ctx, `
+update detent_work_item_counters
+set next_number = next_number + 1
+where project_id = ?
+returning next_number - 1`, c.projectID).Scan(&number); err != nil {
+		return 0, err
+	}
+	return number, nil
+}
+
+func (c *Connector) ensureWorkItemCounterAtLeast(ctx context.Context, tx *sql.Tx, next int64) error {
+	_, err := tx.ExecContext(ctx, `
+insert into detent_work_item_counters(project_id, next_number)
+values (?, ?)
+on conflict(project_id) do update set
+next_number = max(detent_work_item_counters.next_number, excluded.next_number)`, c.projectID, next)
+	return err
 }
 
 func (c *Connector) seed(ctx context.Context, issues []connector.Issue) error {
@@ -557,17 +732,32 @@ func (c *Connector) upsertIssue(ctx context.Context, issue connector.Issue) erro
 	if issue.AssignedToWorker {
 		assigned = 1
 	}
-	_, err = c.db.ExecContext(ctx, `
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	number, err := c.workItemNumberForUpsert(ctx, tx, id, issue.Number)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
 insert into detent_work_items (
-project_id, id, identifier, title, description, priority, state, url,
+project_id, id, identifier, number, title, description, priority, state, url,
 author_id, assignee_id, assignees_json, labels_json, fields_json, metadata_json,
 deliverable_kind, deliverable_path, deliverable_review_url, deliverable_validation_status,
 deliverable_external_id, deliverable_metadata_json, assigned_to_worker,
 created_at, updated_at, stage_updated_at, model_override,
 github_node_id, github_repository_id, github_issue_number, github_upstream_state, github_orphaned
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 on conflict(project_id, id) do update set
 identifier = excluded.identifier,
+number = case when detent_work_items.number > 0 then detent_work_items.number else excluded.number end,
 title = excluded.title,
 description = excluded.description,
 state = case when excluded.state <> '' then excluded.state else detent_work_items.state end,
@@ -586,13 +776,20 @@ github_repository_id = excluded.github_repository_id,
 github_issue_number = excluded.github_issue_number,
 github_upstream_state = excluded.github_upstream_state,
 github_orphaned = excluded.github_orphaned`,
-		c.projectID, id, identifier, issue.Title, issue.Description, nullableInt(issue.Priority), issue.State, issue.URL,
+		c.projectID, id, identifier, number, issue.Title, issue.Description, nullableInt(issue.Priority), issue.State, issue.URL,
 		issue.AuthorID, issue.AssigneeID, assigneesJSON, labelsJSON, fieldsJSON, metadataJSON,
 		deliverable.Kind, deliverable.Path, deliverable.ReviewURL, deliverable.ValidationStatus,
 		deliverable.ExternalID, deliverableMetadataJSON, assigned,
 		formatTime(createdAt), formatTime(updatedAt), formatTime(stageUpdatedAt), issue.ModelOverride,
 		githubIdentity.NodeID, githubIdentity.RepositoryID, githubIdentity.IssueNumber, githubIdentity.UpstreamState, boolInt(githubIdentity.Orphaned))
-	return err
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func (c *Connector) insertSeedIssue(ctx context.Context, issue connector.Issue) error {
@@ -641,27 +838,48 @@ func (c *Connector) insertSeedIssue(ctx context.Context, issue connector.Issue) 
 	if issue.AssignedToWorker {
 		assigned = 1
 	}
-	_, err = c.db.ExecContext(ctx, `
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	number, err := c.workItemNumberForUpsert(ctx, tx, id, issue.Number)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
 insert into detent_work_items (
-project_id, id, identifier, title, description, priority, state, url,
+project_id, id, identifier, number, title, description, priority, state, url,
 author_id, assignee_id, assignees_json, labels_json, fields_json, metadata_json,
 deliverable_kind, deliverable_path, deliverable_review_url, deliverable_validation_status,
 deliverable_external_id, deliverable_metadata_json, assigned_to_worker,
 created_at, updated_at, stage_updated_at, model_override,
 github_node_id, github_repository_id, github_issue_number, github_upstream_state, github_orphaned
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 on conflict(project_id, id) do nothing`,
-		c.projectID, id, identifier, issue.Title, issue.Description, nullableInt(issue.Priority), issue.State, issue.URL,
+		c.projectID, id, identifier, number, issue.Title, issue.Description, nullableInt(issue.Priority), issue.State, issue.URL,
 		issue.AuthorID, issue.AssigneeID, assigneesJSON, labelsJSON, fieldsJSON, metadataJSON,
 		deliverable.Kind, deliverable.Path, deliverable.ReviewURL, deliverable.ValidationStatus,
 		deliverable.ExternalID, deliverableMetadataJSON, assigned,
 		formatTime(createdAt), formatTime(updatedAt), formatTime(stageUpdatedAt), issue.ModelOverride,
 		githubIdentity.NodeID, githubIdentity.RepositoryID, githubIdentity.IssueNumber, githubIdentity.UpstreamState, boolInt(githubIdentity.Orphaned))
-	return err
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func (c *Connector) fetchIssues(ctx context.Context, states []string, limit int) ([]connector.Issue, error) {
-	query := `select project_id, id, identifier, title, description, priority, state, url,
+	query := `select project_id, id, identifier, number, title, description, priority, state, url,
 author_id, assignee_id, assignees_json, labels_json, fields_json, metadata_json,
 deliverable_kind, deliverable_path, deliverable_review_url, deliverable_validation_status,
 deliverable_external_id, deliverable_metadata_json, assigned_to_worker,
@@ -697,17 +915,24 @@ where project_id = ?`
 	for rows.Next() {
 		issue, err := scanIssue(rows)
 		if err != nil {
-			return nil, err
+			closeErr := rows.Close()
+			return nil, errors.Join(err, closeErr)
 		}
-		comments, err := c.FetchIssueComments(ctx, issue)
-		if err != nil {
-			return nil, err
-		}
-		issue.Comments = comments
 		issues = append(issues, issue)
 	}
 	if err := rows.Err(); err != nil {
+		closeErr := rows.Close()
+		return nil, errors.Join(err, closeErr)
+	}
+	if err := rows.Close(); err != nil {
 		return nil, err
+	}
+	for i := range issues {
+		comments, err := c.FetchIssueComments(ctx, issues[i])
+		if err != nil {
+			return nil, err
+		}
+		issues[i].Comments = comments
 	}
 	return issues, nil
 }
@@ -791,7 +1016,7 @@ func scanIssue(scanner issueScanner) (connector.Issue, error) {
 	var githubRepositoryID, githubIssueNumber int64
 	var githubOrphaned int
 	err := scanner.Scan(
-		&projectID, &issue.ID, &issue.Identifier, &issue.Title, &issue.Description, &priority, &issue.State, &issue.URL,
+		&projectID, &issue.ID, &issue.Identifier, &issue.Number, &issue.Title, &issue.Description, &priority, &issue.State, &issue.URL,
 		&issue.AuthorID, &issue.AssigneeID, &assigneesJSON, &labelsJSON, &fieldsJSON, &metadataJSON,
 		&deliverable.Kind, &deliverable.Path, &deliverable.ReviewURL, &deliverable.ValidationStatus,
 		&deliverable.ExternalID, &deliverableMetadataJSON, &assigned,
@@ -864,6 +1089,33 @@ func normalizedIdentifierSet(values []string) map[string]struct{} {
 		}
 	}
 	return out
+}
+
+func normalizedNumberSet(values []string, skip map[string]struct{}) map[int]struct{} {
+	out := map[int]struct{}{}
+	for _, value := range values {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if _, ok := skip[normalized]; ok {
+			continue
+		}
+		number, ok := parseLocalIssueNumber(value)
+		if ok {
+			out[number] = struct{}{}
+		}
+	}
+	return out
+}
+
+func parseLocalIssueNumber(value string) (int, bool) {
+	value = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(value), "#"))
+	if value == "" {
+		return 0, false
+	}
+	number, err := strconv.Atoi(value)
+	if err != nil || number <= 0 {
+		return 0, false
+	}
+	return number, true
 }
 
 func issueFieldKey(fieldID int) string {
