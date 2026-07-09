@@ -369,6 +369,48 @@ Prompt
 	}
 }
 
+func TestCheckDoctorRouteModelsProbesRoleBackendCommandPins(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: codex-code
+      kind: codex
+      command: codex app-server
+    - id: codex-plan
+      kind: codex
+      command: codex --config 'model="gpt-retired-plan"' app-server
+  routes:
+    - name: code-default
+      backend: codex-code
+      default: true
+    - name: plan-default
+      role: plan
+      backend: codex-plan
+      default: true
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	dir := t.TempDir()
+	check := checkDoctorRouteModels(context.Background(), "detent", globalconfig.Project{ID: "detent", Workflow: filepath.Join(dir, "WORKFLOW.md"), Workdir: dir}, workflow.Config, doctorDeps{
+		modelProbe: func(_ context.Context, req doctorRouteModelProbeRequest) error {
+			if req.Model != "gpt-retired-plan" || req.RouteName != "plan-default" || req.RouteRole != "plan" || req.Backend.ID != "codex-plan" {
+				t.Fatalf("probe request = %#v, want plan backend command pin", req)
+			}
+			return errors.New("model retired")
+		},
+	})
+	if check.Status != doctorFail || !strings.Contains(check.Detail, "plan-default") || !strings.Contains(check.Detail, "gpt-retired-plan") {
+		t.Fatalf("check = %#v, want rejected role backend command pin", check)
+	}
+}
+
 func TestCheckDoctorProjects(t *testing.T) {
 	t.Parallel()
 

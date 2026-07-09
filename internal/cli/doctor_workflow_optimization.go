@@ -1403,10 +1403,8 @@ func doctorWorkflowHasDefaultRouteModel(cfg workflowconfig.Config) bool {
 }
 
 type doctorWorkflowModelConfig struct {
-	Model      string
-	Source     string
-	RouteIndex int
-	BackendID  string
+	Model  string
+	Source string
 }
 
 func doctorWorkflowWorkerModelChoice(cfg workflowconfig.Config) doctorWorkflowModelChoice {
@@ -1523,7 +1521,7 @@ func doctorWorkflowModelGeneration(model string) (int, int, bool) {
 
 func doctorWorkflowDefaultRouteModelConfig(cfg workflowconfig.Config) (doctorWorkflowModelConfig, bool) {
 	backends := doctorWorkflowBackendConfigsByID(cfg)
-	for index, route := range cfg.AgentRouteConfigs() {
+	for _, route := range cfg.AgentRouteConfigs() {
 		role := strings.ToLower(strings.TrimSpace(route.Role))
 		if role != "" && role != "code" {
 			continue
@@ -1533,28 +1531,22 @@ func doctorWorkflowDefaultRouteModelConfig(cfg workflowconfig.Config) (doctorWor
 		}
 		if model := strings.TrimSpace(route.Model); model != "" {
 			return doctorWorkflowModelConfig{
-				Model:      model,
-				Source:     "agents.routes.model",
-				RouteIndex: index,
-				BackendID:  strings.TrimSpace(route.Backend),
+				Model:  model,
+				Source: "agents.routes.model",
 			}, true
 		}
 		backend, ok := backends[strings.TrimSpace(route.Backend)]
 		if ok {
 			if model := doctorWorkflowBackendCommandModel(backend); model != "" {
 				return doctorWorkflowModelConfig{
-					Model:      model,
-					Source:     "agents.backends.command",
-					RouteIndex: index,
-					BackendID:  strings.TrimSpace(route.Backend),
+					Model:  model,
+					Source: "agents.backends.command",
 				}, true
 			}
 		}
 		if strings.TrimSpace(route.ModelField) != "" {
 			return doctorWorkflowModelConfig{
-				Source:     "agents.routes.model_field",
-				RouteIndex: index,
-				BackendID:  strings.TrimSpace(route.Backend),
+				Source: "agents.routes.model_field",
 			}, true
 		}
 	}

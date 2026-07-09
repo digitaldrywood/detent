@@ -280,12 +280,22 @@ func checkDoctorRouteModels(ctx context.Context, id string, project globalconfig
 		}
 		probeModel(index, route, backend, model, "agents.routes.model")
 	}
-	if modelConfig, ok := doctorWorkflowDefaultRouteModelConfig(cfg); ok && modelConfig.Source == "agents.backends.command" {
-		routes := cfg.AgentRouteConfigs()
-		backend, backendOK := backends[modelConfig.BackendID]
-		if modelConfig.RouteIndex >= 0 && modelConfig.RouteIndex < len(routes) && backendOK {
-			probeModel(modelConfig.RouteIndex, routes[modelConfig.RouteIndex], backend, modelConfig.Model, modelConfig.Source)
+	probedCommandBackends := map[string]struct{}{}
+	for index, route := range cfg.AgentRouteConfigs() {
+		backendID := strings.TrimSpace(route.Backend)
+		if _, ok := probedCommandBackends[backendID]; ok {
+			continue
 		}
+		backend, ok := backends[backendID]
+		if !ok || strings.TrimSpace(backend.Kind) != workflowconfig.AgentBackendCodex {
+			continue
+		}
+		model := doctorWorkflowBackendCommandModel(backend)
+		if model == "" {
+			continue
+		}
+		probedCommandBackends[backendID] = struct{}{}
+		probeModel(index, route, backend, model, "agents.backends.command")
 	}
 
 	if len(failures) == 0 {
