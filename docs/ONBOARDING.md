@@ -1209,7 +1209,45 @@ probes.
    rg '^GATE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-14. **Concurrency.** Ask: "How many agents may this project run at once?"
+   When the validator is enabled, also ask whether it should inherit its
+   route/provider default or deliberately pin a model with `VALIDATOR_MODEL`.
+   Recommend inheritance by default. A validator pin may provide reproducible
+   behavior or cost control, but it must be reviewed and updated before the
+   provider retires that model generation.
+
+14. **Worker model.** Ask: "Should Codex workers follow the provider default,
+   or pin a specific model for this project?" Recommend provider default. It
+   follows generation upgrades automatically, survives model retirements, and
+   still produces accurate model telemetry from the Codex session. A pin is a
+   first-class option for reproducibility or cost control, but it can break
+   dispatch when the provider retires the model and must be reviewed each
+   generation. Record the explicit choice and require the model only for a
+   pin:
+
+   For the recommended provider default, omit `WORKER_MODEL`:
+
+   ```sh
+   printf '%s\n' \
+     'WORKER_MODEL_MODE=provider_default' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^WORKER_MODEL' "$ONBOARDING_DIR/answers.env"
+   ```
+
+   For an explicit pin, record both fields:
+
+   ```sh
+   printf '%s\n' \
+     'WORKER_MODEL_MODE=pinned' \
+     'WORKER_MODEL=<model-if-pinned>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^WORKER_MODEL' "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Leave `model_reasoning_effort` unset by default because not every model
+   accepts it. Treat it as an optional per-project Codex config override only
+   after confirming the selected model supports the requested effort.
+
+15. **Concurrency.** Ask: "How many agents may this project run at once?"
    Recommendation source: host capacity, existing `global.yaml` projects, and
    the repo's gate cost. Default if silent: `agent.max_concurrent_agents: 5`
    for an active code repo, lower for expensive gates. State that
@@ -1243,7 +1281,14 @@ probes.
    repository. For multiple instances sharing one board/repo, serialization
    comes from `tracker.claims`, not the per-state cap.
 
-15. **Review policy.** Ask this only for Custom/advanced. If the operator wants
+   Use `MAX_SESSION_TOKENS` as the per-session runaway brake. Codex re-counts
+   cached context on every turn, so do not emit
+   `MAX_SESSION_CONTEXT_MULTIPLIER` by default and do not recommend small
+   values such as `4`. The multiplier is a coarse, advanced opt-in that caps
+   roughly how many full-context turns fit; record it only when the operator
+   explicitly requests that additional ceiling.
+
+16. **Review policy.** Ask this only for Custom/advanced. If the operator wants
    to override a selected profile's `AUTO_PROMOTE_*`, switch to Custom/advanced
    and remove or omit `DELIVERY_PROFILE` before recording the mixed policy:
    "Should Detent hard-stop at `Human Review`, or may it auto-promote to
@@ -1280,7 +1325,7 @@ probes.
    rg '^AUTO_PROMOTE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-16. **Dependency waiting policy.** Ask this only for Custom/advanced. If the
+17. **Dependency waiting policy.** Ask this only for Custom/advanced. If the
    operator wants to override a selected profile's
    `DEPENDENCY_AUTO_UNBLOCK_ENABLED`, switch to Custom/advanced and remove or
    omit `DELIVERY_PROFILE` before recording the mixed policy: "Should
@@ -1307,7 +1352,7 @@ probes.
    rg '^DEPENDENCY_AUTO_UNBLOCK_' "$ONBOARDING_DIR/answers.env"
    ```
 
-17. **Prompt body.** Ask: "Use the template prompt or add repo-specific
+18. **Prompt body.** Ask: "Use the template prompt or add repo-specific
    instructions?" Recommendation source: `CLAUDE.md`, `AGENTS.md`,
    `CONTRIBUTING.md`, README development commands, manifests, and CI workflows
    in `<source-root>`. Default if silent: template prompt plus any repo
@@ -1333,7 +1378,7 @@ probes.
    rg '^PROMPT_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-18. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
+19. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
    initial `Status` be `Backlog` or `Todo`, and should the human enable the
    auto-add workflow?" Recommendation source: `$ONBOARDING_DIR/issue-counts.json`
    and the authorization answer. Default if silent: bulk-add the narrowest safe
@@ -1973,7 +2018,28 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    rg -n '^server:|host: <dashboard-host>|port:' <source-root>/WORKFLOW.md
    ```
 
-5. **Set the gate from the interview.** For command gates, include the command,
+5. **Set the worker model from the interview.** Render the explicit answer in
+   `codex.command` and keep the trade-off next to the command. Do not inherit a
+   stale pin from the template:
+
+   ```yaml
+   # WORKER_MODEL_MODE=provider_default
+   codex:
+     # Optional model_reasoning_effort is unset because not every model accepts it.
+     command: codex app-server # Provider default: upgrades automatically and avoids retirement breakage.
+   ```
+
+   ```yaml
+   # WORKER_MODEL_MODE=pinned and WORKER_MODEL=<model>
+   codex:
+     # Optional model_reasoning_effort is unset because not every model accepts it.
+     command: codex app-server --config 'model="<model>"' # Pinned for reproducibility or cost control; update before retirement.
+   ```
+
+   Add a `model_reasoning_effort` config override only when the operator
+   explicitly requests it and the selected model accepts that setting.
+
+6. **Set the gate from the interview.** For command gates, include the command,
    whether an automated GitHub PR review is required for auto-promotion,
    whether failed current-head CI parks in `Human Review` or routes to
    `Rework`, and whether the validator-agent review is enabled. For human
@@ -1994,8 +2060,8 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      ci_failure_action: <skip|rework>
      validator:
        enabled: <true|false>
-       # Recommended cheap override when enabled: gpt-5.4-mini.
-       # Watch rework-rate per validator model once cache/model telemetry lands.
+       # Optional deliberate pin; leave empty to inherit the route/provider default.
+       # Pinned models require manual updates before provider retirement.
        model: ""
        min_score: 0.8
        max_inline_diff_bytes: 65536
@@ -2072,7 +2138,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    [Local Models With Codex And Ollama](local-models-ollama.md) for model and
    context-window guidance.
 
-6. **Set dispatch ordering, review policy, dependency waiting policy, and
+7. **Set dispatch ordering, review policy, dependency waiting policy, and
    concurrency.** Keep `Merging: 1`. Use the dispatch label ordering, review
    policy, and dependency policy selected by the human. Verify:
 
@@ -2150,6 +2216,12 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    `Human Review` candidates and reasons such as `automated_review_missing`
    when that gate is not met.
 
+   Keep `agent.max_session_context_multiplier` absent unless the operator
+   explicitly requested the coarse ceiling. Use `agent.max_session_tokens` as
+   the default runaway brake because cached context is counted again on every
+   Codex turn; a small multiplier can terminate otherwise healthy sessions
+   after only a few full-context turns.
+
    Dependency auto-unblock default:
 
    ```yaml
@@ -2167,7 +2239,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    `Blocked` is an observed/display state and dependency completion will not
    move issues back to `Todo`.
 
-7. **Write the prompt body.** Keep the `## Codex Workpad` instruction, include
+8. **Write the prompt body.** Keep the `## Codex Workpad` instruction, include
    the `detent-status` schema examples, include the native `blocked_by`
    dependency command with the labeled legacy fallback note, include repo
    authority files discovered in Phase 2, state the validation gate, and keep
@@ -2185,7 +2257,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      | rg 'Current Detent status|Codex Workpad|detent-status|dependencies/blocked_by|Required Execution Flow|For Todo|For In Progress|For Rework|For Merging|go-workflow:ship|CLAUDE.md|AGENTS.md|CONTRIBUTING.md|<gate-command>|<repo-owner>/<repo-name>'
    ```
 
-8. **Check the workflow contract before registration.** This is a structural
+9. **Check the workflow contract before registration.** This is a structural
    check; `detent doctor --allow-write-probes` in Phase 5 is the full
    preflight. Verify:
 
@@ -2863,6 +2935,9 @@ the card instead of auto-resolving it.
 | Dispatch label ordering | `agent.dispatch_priority_by_label` in `WORKFLOW.md`. |
 | Authorization filters | `tracker.authorization` in `WORKFLOW.md`; optionally `projects[].authorization` in `global.yaml` for host-level scoping. |
 | Dashboard bind | `server.host` in `WORKFLOW.md`, or `--host` in the startup command or service `ExecStart`. |
+| Worker model provider default | `codex.command: codex app-server`; follows provider upgrades and avoids retirement breakage. |
+| Worker model pin | `codex.command` with `--config 'model="<model>"'`; provides reproducibility or cost control but requires generation maintenance. |
+| Worker reasoning effort | Optional `model_reasoning_effort` Codex config override; unset by default because not every model accepts it. |
 | Validation command | `gate.kind: command` and `gate.run` in `WORKFLOW.md`. |
 | Automated PR review requirement | `gate.kind: command` and `gate.require_automated_review` in `WORKFLOW.md`. |
 | Release-blocking CI names | `gate.required_status_checks` in `WORKFLOW.md`; keep it aligned with branch protection or rulesets. |
@@ -2871,6 +2946,7 @@ the card instead of auto-resolving it.
 | Human validation label | `gate.kind: human_review` and `gate.approval_label` in `WORKFLOW.md`. |
 | Per-project concurrency | `agent.max_concurrent_agents` in `WORKFLOW.md`. |
 | Merge serialization | `agent.max_concurrent_agents_by_state.Merging: 1` in `WORKFLOW.md`. |
+| Session runaway brake | `agent.max_session_tokens`; `agent.max_session_context_multiplier` remains absent unless explicitly requested as a coarse ceiling. |
 | Hard-stop review policy | `agent.auto_promote.enabled: false` in `WORKFLOW.md`. |
 | Criteria-based auto-promote | `agent.auto_promote.enabled`, `quiet_seconds`, `optout_label`, and `allowed_issue_labels` in `WORKFLOW.md`. |
 | Prompt body | Markdown body after the closing frontmatter `---` in `WORKFLOW.md`. |
