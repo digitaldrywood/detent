@@ -163,6 +163,40 @@ func TestTickReconcilesHumanReviewIssueWithMergedLinkedPullRequestToDone(t *test
 	}
 }
 
+func TestTickKeepsObservedBlockedIssueWhenMergedPullRequestHydrationUnavailable(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 12, 15, 0, 0, time.UTC)
+	issue := statusReconcileIssue("issue-blocked-stale-pr", "Blocked", false, "")
+	issue.PullRequest = &connector.PullRequest{
+		Number:                  192,
+		URL:                     "https://github.com/digitaldrywood/creswoodcorners-phone/pull/192",
+		State:                   "MERGED",
+		CIStatus:                "pass",
+		HydrationDegradedReason: connector.PullRequestHydrationReasonStaleCachedPullData,
+	}
+	tracker := &statusReconcileConnector{
+		stateIssues: []connector.Issue{issue},
+	}
+	orch := newStatusReconcileOrchestrator(tracker)
+	orch.cfg.ActiveStates = []string{"Todo", "In Progress", "Rework", "Merging"}
+	orch.cfg.ObservedStates = []string{"Blocked"}
+	orch.cfg.AutoPromote = AutoPromoteConfig{
+		Enabled:       true,
+		QuietDuration: 10 * time.Minute,
+	}
+	state := newState(orch.cfg)
+
+	orch.tick(context.Background(), &state, now)
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none for observed Blocked issue with stale merged PR hydration", tracker.updates)
+	}
+	if len(tracker.comments) != 0 {
+		t.Fatalf("comments = %#v, want none", tracker.comments)
+	}
+}
+
 func newStatusReconcileOrchestrator(tracker *statusReconcileConnector) *Orchestrator {
 	cfg := normalizeConfig(Config{
 		TerminalStates: []string{"Done", "Cancelled"},

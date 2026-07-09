@@ -477,6 +477,10 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 		if pullRequestState == "merged" {
 			summary := staleMergedPullRequestSummaryFromIssue(issue)
 			decision := staleMergedPullRequestDecision(issue, summary)
+			if !stateIn(issue.State, o.cfg.ActiveStates) && decision.Reason == AutoPromoteReasonPullRequestHydrationUnavailable {
+				o.logAutoPromoteDecision(issue, decision, "")
+				continue
+			}
 			targetState := staleMergedPullRequestTargetState(decision, o.cfg.AutoPromote, o.cfg.TerminalStates)
 			if targetState == "" {
 				o.logAutoPromoteDecision(issue, decision, "")
