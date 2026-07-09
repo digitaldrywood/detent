@@ -170,6 +170,10 @@ func TestStateSnapshotComputesDisabledAutoPromoteReason(t *testing.T) {
 		ID:         "auto-promote-disabled",
 		Identifier: "digitaldrywood/detent#1108",
 		State:      "Human Review",
+	}, {
+		ID:         "merging-disabled",
+		Identifier: "digitaldrywood/detent#1109",
+		State:      "Merging",
 	}}
 
 	snapshot := state.Snapshot(now)
@@ -179,6 +183,9 @@ func TestStateSnapshotComputesDisabledAutoPromoteReason(t *testing.T) {
 	}
 	if got := snapshot.BoardIssues[0].Metadata[autoPromoteReasonMetadataKey]; got != string(AutoPromoteReasonDisabled) {
 		t.Fatalf("auto promote reason = %q, want disabled", got)
+	}
+	if got := snapshot.BoardIssues[1].Metadata[autoPromoteReasonMetadataKey]; got != "" {
+		t.Fatalf("merging auto promote reason = %q, want empty", got)
 	}
 }
 

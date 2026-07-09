@@ -108,6 +108,9 @@ func (s State) applyAutoPromoteDecisionSnapshots(snapshots []telemetry.Issue, is
 		issueID := strings.TrimSpace(issues[i].ID)
 		decision, ok := s.AutoPromoteDecisions[issueID]
 		if !ok {
+			if !s.shouldComputeAutoPromoteSnapshotDecision(issues[i]) {
+				continue
+			}
 			summary := AutoPromoteSummaryFromIssue(issues[i])
 			summary.CompletedFinalState = autoPromoteCompletedFinalState(&s, issueID)
 			decision = EvaluateAutoPromote(issues[i], summary, s.AutoPromote, now)
@@ -121,6 +124,18 @@ func (s State) applyAutoPromoteDecisionSnapshots(snapshots []telemetry.Issue, is
 		snapshots[i].Metadata[autoPromoteActionMetadataKey] = string(decision.Action)
 		snapshots[i].Metadata[autoPromoteReasonMetadataKey] = string(decision.Reason)
 	}
+}
+
+func (s State) shouldComputeAutoPromoteSnapshotDecision(issue connector.Issue) bool {
+	cfg := normalizeAutoPromoteConfig(s.AutoPromote)
+	if normalizeState(issue.State) == normalizeState(cfg.SourceState) {
+		return true
+	}
+	return autoPromoteActiveGatePendingIssue(issue, &s, Config{
+		AutoPromote:    cfg,
+		ActiveStates:   append([]string(nil), s.ActiveStates...),
+		TerminalStates: append([]string(nil), s.TerminalStates...),
+	}, cfg)
 }
 
 func autoPromoteDecisionVisibleOnCard(decision AutoPromoteDecision) bool {
