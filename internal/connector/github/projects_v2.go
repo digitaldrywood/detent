@@ -34,6 +34,8 @@ query DetentGitHubProjectItems(
               state
               stateReason
               url
+              author { login }
+              assignees(first: 10) { nodes { login } }
               repository { nameWithOwner }
               labels(first: 20) { nodes { name } }
             }
@@ -73,7 +75,10 @@ query DetentGitHubObservedStatusProjectItems(
               state
               stateReason
               url
+              author { login }
+              assignees(first: 10) { nodes { login } }
               repository { nameWithOwner }
+              labels(first: 20) { nodes { name } }
               closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt repository { nameWithOwner } } }
             }
           }
