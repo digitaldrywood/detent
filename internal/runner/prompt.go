@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -45,6 +46,8 @@ type PromptOptions struct {
 	MergePrecheckMessage string
 	WorkspacePath        string
 	Branch               string
+	DispatchSourceState  string
+	DispatchTargetState  string
 	AutoBranch           *bool
 	AvailableSkills      []skills.Skill
 	PriorAttempt         PriorAttempt
@@ -97,6 +100,7 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 	}
 
 	rendered = appendPriorAttemptBlock(rendered, opts.PriorAttempt)
+	rendered = appendWorkflowInstructionsBlock(rendered, workflow.Config.Agent, issue, opts)
 	rendered = appendDeliverableBlock(rendered, workflow.Config, issue, opts.WorkspacePath)
 	rendered = appendBlockedHandoffBlock(rendered)
 	rendered = appendGateBlock(rendered, workflow.Config.Gate)
@@ -151,6 +155,7 @@ func BuildMergeFallbackPrompt(workflow config.Workflow, issue connector.Issue, o
 	if err != nil {
 		return "", err
 	}
+	prompt = appendWorkflowInstructionsBlock(prompt, workflow.Config.Agent, issue, opts)
 	prompt = appendBlockedHandoffBlock(prompt)
 	prompt = appendGateBlock(prompt, workflow.Config.Gate)
 	prompt = appendAvailableSkills(prompt, AvailableSkillsBlock(opts.AvailableSkills))
@@ -304,6 +309,92 @@ func prependWorkspaceIsolationBlock(prompt string, cfg config.Config, workspaceP
 		workspacePath, branch)
 
 	return block + "\n\n" + strings.TrimLeft(prompt, " \t\r\n")
+}
+
+func appendWorkflowInstructionsBlock(prompt string, cfg config.Agent, issue connector.Issue, opts PromptOptions) string {
+	blocks := workflowInstructionBlocks(cfg, issue.State, opts.DispatchSourceState, opts.DispatchTargetState)
+	if len(blocks) == 0 {
+		return prompt
+	}
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Workflow instructions\n\n" + strings.Join(blocks, "\n\n")
+}
+
+func workflowInstructionBlocks(cfg config.Agent, state string, sourceState string, targetState string) []string {
+	var blocks []string
+	if display, body, ok := matchingStateInstruction(cfg.InstructionsByState, state); ok {
+		blocks = append(blocks, "### State: "+display+"\n\n"+body)
+	}
+	if source, target, body, ok := matchingTransitionInstruction(cfg.InstructionsByTransition, sourceState, targetState); ok {
+		blocks = append(blocks, "### Transition: "+source+" -> "+target+"\n\n"+body)
+	}
+	return blocks
+}
+
+func matchingStateInstruction(instructions map[string]string, state string) (string, string, bool) {
+	key := workflowInstructionStateKey(state)
+	if key == "" {
+		return "", "", false
+	}
+	for _, candidate := range sortedMapKeys(instructions) {
+		if workflowInstructionStateKey(candidate) != key {
+			continue
+		}
+		body := strings.TrimSpace(instructions[candidate])
+		if body == "" {
+			return "", "", false
+		}
+		return strings.TrimSpace(candidate), body, true
+	}
+	return "", "", false
+}
+
+func matchingTransitionInstruction(
+	instructions map[string]map[string]string,
+	sourceState string,
+	targetState string,
+) (string, string, string, bool) {
+	sourceKey := workflowInstructionStateKey(sourceState)
+	targetKey := workflowInstructionStateKey(targetState)
+	if sourceKey == "" || targetKey == "" {
+		return "", "", "", false
+	}
+	for _, source := range sortedNestedMapKeys(instructions) {
+		if workflowInstructionStateKey(source) != sourceKey {
+			continue
+		}
+		targets := instructions[source]
+		for _, target := range sortedMapKeys(targets) {
+			if workflowInstructionStateKey(target) != targetKey {
+				continue
+			}
+			body := strings.TrimSpace(targets[target])
+			if body == "" {
+				return "", "", "", false
+			}
+			return strings.TrimSpace(source), strings.TrimSpace(target), body, true
+		}
+	}
+	return "", "", "", false
+}
+
+func workflowInstructionStateKey(state string) string {
+	return strings.ToLower(strings.TrimSpace(state))
+}
+
+func sortedMapKeys[V any](values map[string]V) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedNestedMapKeys(values map[string]map[string]string) []string {
+	return sortedMapKeys(values)
 }
 
 func appendDeliverableBlock(prompt string, cfg config.Config, issue connector.Issue, workspacePath string) string {

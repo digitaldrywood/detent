@@ -396,6 +396,153 @@ func TestBuildPromptRendersGateAssignsAndInstructions(t *testing.T) {
 	}
 }
 
+func TestBuildPromptAppendsWorkflowInstructionsByState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		state     string
+		want      string
+		forbidden []string
+	}{
+		{
+			name:      "todo",
+			state:     "Todo",
+			want:      "Prepare the research brief.",
+			forbidden: []string{"Address review feedback.", "Run the merge checklist."},
+		},
+		{
+			name:      "rework",
+			state:     "Rework",
+			want:      "Address review feedback.",
+			forbidden: []string{"Prepare the research brief.", "Run the merge checklist."},
+		},
+		{
+			name:      "merging",
+			state:     "Merging",
+			want:      "Run the merge checklist.",
+			forbidden: []string{"Prepare the research brief.", "Address review feedback."},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(config.Workflow{
+				Config: config.Config{
+					Agent: config.Agent{
+						InstructionsByState: map[string]string{
+							"Todo":    "Prepare the research brief.",
+							"Rework":  "Address review feedback.",
+							"Merging": "Run the merge checklist.",
+						},
+					},
+				},
+				Prompt: "Base workflow prompt.",
+			}, connector.Issue{
+				Identifier: "digitaldrywood/detent#980",
+				Title:      "Workflow instructions",
+				State:      tt.state,
+			}, PromptOptions{})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+
+			for _, want := range []string{"## Workflow instructions", "### State: " + tt.state, tt.want} {
+				if !strings.Contains(prompt, want) {
+					t.Fatalf("prompt missing %q:\n%s", want, prompt)
+				}
+			}
+			for _, forbidden := range tt.forbidden {
+				if strings.Contains(prompt, forbidden) {
+					t.Fatalf("prompt contains %q:\n%s", forbidden, prompt)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildPromptAppendsWorkflowInstructionsByTransitionBeforeDeliverableAndGate(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Config: config.Config{
+			Deliverable: config.Deliverable{Kind: config.DeliverableArtifact},
+			Agent: config.Agent{
+				InstructionsByState: map[string]string{
+					"In Progress": "Work from the implementation checklist.",
+				},
+				InstructionsByTransition: map[string]map[string]string{
+					"Todo": {
+						"In Progress": "Confirm dependencies before coding.",
+					},
+				},
+			},
+			Gate: gate.Config{Kind: gate.KindArtifact},
+		},
+		Prompt: "Base workflow prompt.",
+	}, connector.Issue{
+		Identifier: "digitaldrywood/detent#980",
+		Title:      "Workflow instructions",
+		State:      "In Progress",
+	}, PromptOptions{
+		DispatchSourceState: "Todo",
+		DispatchTargetState: "In Progress",
+	})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"## Workflow instructions",
+		"### State: In Progress",
+		"Work from the implementation checklist.",
+		"### Transition: Todo -> In Progress",
+		"Confirm dependencies before coding.",
+		"## Deliverable",
+		"## Validation gate",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+
+	workflowInstructionsIndex := strings.Index(prompt, "## Workflow instructions")
+	deliverableIndex := strings.Index(prompt, "## Deliverable")
+	gateIndex := strings.Index(prompt, "## Validation gate")
+	if workflowInstructionsIndex == -1 || deliverableIndex == -1 || gateIndex == -1 {
+		t.Fatalf("prompt missing block markers:\n%s", prompt)
+	}
+	if workflowInstructionsIndex > deliverableIndex {
+		t.Fatalf("workflow instructions appear after deliverable block:\n%s", prompt)
+	}
+	if workflowInstructionsIndex > gateIndex {
+		t.Fatalf("workflow instructions appear after validation gate block:\n%s", prompt)
+	}
+}
+
+func TestBuildPromptOmitsWorkflowInstructionsWhenUnconfigured(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Prompt: "Base workflow prompt.",
+	}, connector.Issue{
+		Identifier: "digitaldrywood/detent#980",
+		Title:      "Workflow instructions",
+		State:      "Todo",
+	}, PromptOptions{})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+	if strings.Contains(prompt, "## Workflow instructions") {
+		t.Fatalf("prompt contains workflow instructions when unconfigured:\n%s", prompt)
+	}
+	if !strings.HasPrefix(prompt, "Base workflow prompt.") {
+		t.Fatalf("prompt prefix = %q, want base workflow prompt", prompt[:len("Base workflow prompt.")])
+	}
+}
+
 func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 	t.Parallel()
 

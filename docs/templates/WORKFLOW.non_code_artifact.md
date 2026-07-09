@@ -38,6 +38,22 @@ agent:
   max_session_tokens: 25000000
   max_session_context_multiplier: 4
   max_session_token_override_label: allow-large-session
+  # For a non-code workflow such as Research -> Draft -> Review -> Package ->
+  # Publish, add stage-specific prompt additions here instead of turning the
+  # main prompt into a conditional block:
+  # instructions_by_state:
+  #   Research: |
+  #     Gather source notes, links, and open questions before drafting.
+  #   Draft: |
+  #     Write the artifact body and keep unresolved facts clearly marked.
+  #   Review: |
+  #     Address feedback and leave a concise change summary.
+  #   Package: |
+  #     Prepare final assets, metadata, and publication handoff notes.
+  # instructions_by_transition:
+  #   Review:
+  #     Package: |
+  #       Confirm all review comments are resolved before packaging.
   auto_promote:
     enabled: true
     quiet_seconds: 0

@@ -863,6 +863,36 @@ defaults for manual moves from execution states: active work such as
 states such as `Blocked` or `Cancelled`. Add source-specific entries to allow a
 project workflow to expose extra manual moves without changing Detent's UI code.
 
+Use `agent.instructions_by_state` and `agent.instructions_by_transition` when a
+workflow stage needs prompt text that should stay out of the main
+`WORKFLOW.md` body. The runner appends matching workflow instructions after the
+base prompt and before Detent's deliverable and validation-gate blocks. State
+keys and transition source/target keys must reference configured workflow
+states.
+
+For a non-code editorial workflow such as `Research -> Draft -> Review ->
+Package -> Publish`, the stage-specific instructions can live in frontmatter:
+
+```yaml
+tracker:
+  active_states: [Research, Draft, Review, Package]
+  terminal_states: [Publish, Cancelled]
+agent:
+  instructions_by_state:
+    Research: |
+      Gather source notes, links, and open questions before drafting.
+    Draft: |
+      Write the article body and keep unresolved facts clearly marked.
+    Review: |
+      Address editorial feedback and leave a concise change summary.
+    Package: |
+      Prepare final assets, metadata, and publication handoff notes.
+  instructions_by_transition:
+    Review:
+      Package: |
+        Confirm all review comments are resolved before packaging.
+```
+
 `workspace.source_root` is the checked-out repository Detent uses for
 `git worktree add`; `workspace.root` is where per-issue worktrees are created.
 If `workspace.source_root` is omitted, Detent falls back to the project

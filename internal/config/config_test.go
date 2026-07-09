@@ -116,6 +116,13 @@ agent:
     no_progress_limit: 4
     allowed_issue_labels:
       - enhancement
+  instructions_by_state:
+    Rework: |
+      Address review comments before moving back to Human Review.
+  instructions_by_transition:
+    Todo:
+      In Progress: |
+        Confirm prerequisites before implementation.
   lessons:
     enabled: true
     path: ".detent/lessons.md"
@@ -351,6 +358,12 @@ Ticket prompt {{ issue.title }}
 	}
 	if got := cfg.Agent.DispatchPriorityByLabel; !reflect.DeepEqual(got, []string{"bug", "regression", "enhancement"}) {
 		t.Fatalf("Agent.DispatchPriorityByLabel = %#v, want bug/regression/enhancement", got)
+	}
+	if got := cfg.Agent.InstructionsByState["Rework"]; !strings.Contains(got, "Address review comments") {
+		t.Fatalf("Agent.InstructionsByState[Rework] = %q, want review instructions", got)
+	}
+	if got := cfg.Agent.InstructionsByTransition["Todo"]["In Progress"]; !strings.Contains(got, "Confirm prerequisites") {
+		t.Fatalf("Agent.InstructionsByTransition[Todo][In Progress] = %q, want transition instructions", got)
 	}
 	if cfg.Agent.AutoPromote.OptoutLabel != "requires-human-review" {
 		t.Fatalf("Agent.AutoPromote.OptoutLabel = %q", cfg.Agent.AutoPromote.OptoutLabel)
@@ -1840,6 +1853,52 @@ Prompt
 				"server.port must be greater than or equal to 0",
 				"server.kanban.mode must be one of read_only, integration",
 				"server.kanban.issue_state_field_id must be greater than 0 when set",
+			},
+		},
+		{
+			name: "invalid agent workflow instructions",
+			raw: `---
+tracker:
+  kind: memory
+  active_states:
+    - Todo
+    - In Progress
+    - Rework
+  observed_states:
+    - Blocked
+  terminal_states:
+    - Done
+agent:
+  instructions_by_state:
+    "": blank
+    Todo: first
+    " todo ": duplicate
+    QA: unknown
+  instructions_by_transition:
+    "":
+      Done: blank source
+    Todo:
+      "": blank target
+      Done: first
+      " done ": duplicate
+      Archive: unknown target
+    Review:
+      Done: unknown source
+    " todo ":
+      Done: duplicate source
+---
+Prompt
+`,
+			want: []string{
+				"agent.instructions_by_state state names must not be blank",
+				"agent.instructions_by_state state names must be unique",
+				"agent.instructions_by_state state \"QA\" must reference a configured workflow state",
+				"agent.instructions_by_transition source states must not be blank",
+				"agent.instructions_by_transition source states must be unique",
+				"agent.instructions_by_transition source state \"Review\" must reference a configured workflow state",
+				"agent.instructions_by_transition target states must not be blank",
+				"agent.instructions_by_transition target states must be unique per source",
+				"agent.instructions_by_transition target state \"Archive\" must reference a configured workflow state",
 			},
 		},
 		{

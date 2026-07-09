@@ -1048,6 +1048,44 @@ func TestDispatchReadyIssuesPassesPriorAttemptToRunner(t *testing.T) {
 	}
 }
 
+func TestDispatchReadyIssuesUsesLatestLaneTransitionContext(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Research", "Draft", "Review", "Package"},
+		TerminalStates:      []string{"Publish"},
+	})
+	runner := newWorkerHostRunner()
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	orch := Orchestrator{
+		cfg:             cfg,
+		supervisor:      newTestSupervisor(t, runner, cfg),
+		runResults:      make(chan runpkg.Completion),
+		workflowMetrics: metrics,
+	}
+	state := newState(cfg)
+	now := time.Date(2026, 7, 9, 15, 0, 0, 0, time.UTC)
+	issue := dispatchTestIssue("issue-package", "Package")
+	if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+		IssueID:           issue.ID,
+		Identifier:        issue.Identifier,
+		PhaseType:         store.WorkflowPhaseTypeLane,
+		PhaseName:         "Package",
+		PreviousPhaseName: "Review",
+		Status:            "entered",
+		StartedAt:         now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+
+	orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.DispatchSourceState != "Review" || request.DispatchTargetState != "Package" {
+		t.Fatalf("RunRequest dispatch transition = %q -> %q, want Review -> Package", request.DispatchSourceState, request.DispatchTargetState)
+	}
+}
+
 func TestDispatchReadyIssuesRechecksStartTransitionStateCapacity(t *testing.T) {
 	t.Parallel()
 
