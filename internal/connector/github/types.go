@@ -203,6 +203,12 @@ type restIssueSearchResponse struct {
 	Items      []restIssue `json:"items"`
 }
 
+type restRepository struct {
+	FullName      string          `json:"full_name"`
+	DefaultBranch string          `json:"default_branch"`
+	Permissions   map[string]bool `json:"permissions"`
+}
+
 type restIssueDependency struct {
 	ID            int        `json:"id"`
 	NodeID        string     `json:"node_id"`

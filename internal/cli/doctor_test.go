@@ -1296,7 +1296,7 @@ func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
 	}
 }
 
-func TestRunDoctorSkipsWriteProbesByDefaultForExistingConfiguredProject(t *testing.T) {
+func TestRunDoctorUsesReadOnlyWriteChecksByDefaultForExistingConfiguredProject(t *testing.T) {
 	t.Parallel()
 
 	workflow := validDoctorWorkflow("/repo")
@@ -1341,9 +1341,9 @@ func TestRunDoctorSkipsWriteProbesByDefaultForExistingConfiguredProject(t *testi
 	deps.githubReadiness = func(_ context.Context, _ ghconnector.Config, readiness ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
 		gotReadiness = readiness
 		return []ghconnector.ReadinessCheck{{
-			Name:   "GitHub status label issue read",
+			Name:   "GitHub issue write permission digitaldrywood/detent",
 			Status: ghconnector.ReadinessOK,
-			Detail: "read-only checks completed",
+			Detail: "repository permission push permits issue writes",
 		}}, nil
 	}
 
@@ -1356,10 +1356,18 @@ func TestRunDoctorSkipsWriteProbesByDefaultForExistingConfiguredProject(t *testi
 		},
 	}, successfulDoctorOptionsWithConfig(configPath, global), deps)
 
-	if doctorGitHubReadinessRequiresWrites(gotReadiness) {
-		t.Fatalf("readiness write requirements = %#v, want default doctor to skip write probes", gotReadiness)
+	if !doctorGitHubReadinessRequiresWrites(gotReadiness) {
+		t.Fatalf("readiness write requirements = %#v, want default doctor to retain read-only write checks", gotReadiness)
 	}
-	assertDoctorCheck(t, report, "Project existing GitHub write probes", doctorWarn, "rerun detent doctor with --allow-write-probes after mutation authorization")
+	if gotReadiness.AllowWriteProbes {
+		t.Fatalf("AllowWriteProbes = true, want default doctor to avoid mutation probes")
+	}
+	assertDoctorCheck(t, report, "Project existing GitHub issue write permission digitaldrywood/detent", doctorOK, "repository permission push")
+	for _, check := range report.Checks {
+		if check.Name == "Project existing GitHub write probes" {
+			t.Fatalf("checks include legacy write-probe warning: %#v", check)
+		}
+	}
 }
 
 func TestRunDoctorWithProjectScopeSkipsUnrelatedProjectFailures(t *testing.T) {
@@ -1754,6 +1762,9 @@ func TestDoctorCommandAllowWriteProbesFlagEnablesWriteReadiness(t *testing.T) {
 	}
 	if !gotReadiness.RequireLabelStatusWrite || !gotReadiness.RequireIssueComments {
 		t.Fatalf("readiness write requirements = %#v, want write probes enabled by flag", gotReadiness)
+	}
+	if !gotReadiness.AllowWriteProbes {
+		t.Fatalf("AllowWriteProbes = false, want write probes enabled by flag")
 	}
 }
 

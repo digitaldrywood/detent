@@ -34,7 +34,7 @@ func checkDoctorGitHubReadiness(
 	allowWriteProbes bool,
 ) []doctorCheck {
 	readiness := doctorGitHubReadinessConfig(ctx, project, cfg, deps, githubToken, sourceRoot)
-	readiness, writeProbeCheck := doctorGitHubReadinessWithWriteProbeAuthorization(id, readiness, allowWriteProbes)
+	readiness.AllowWriteProbes = allowWriteProbes
 	checks, err := deps.githubReadiness(ctx, doctorGitHubConnectorConfig(cfg), readiness)
 	if err != nil {
 		return []doctorCheck{{
@@ -53,35 +53,7 @@ func checkDoctorGitHubReadiness(
 			Hint:   check.Hint,
 		})
 	}
-	if writeProbeCheck != nil {
-		out = append(out, *writeProbeCheck)
-	}
 	return out
-}
-
-func doctorGitHubReadinessWithWriteProbeAuthorization(id string, cfg ghconnector.ReadinessConfig, allowWriteProbes bool) (ghconnector.ReadinessConfig, *doctorCheck) {
-	if allowWriteProbes || !doctorGitHubReadinessRequiresWrites(cfg) {
-		return cfg, nil
-	}
-
-	detail := "skipped; rerun detent doctor with --allow-write-probes after mutation authorization"
-	if probe := strings.TrimSpace(cfg.WriteProbeIssue); probe != "" {
-		detail = "skipped for tracker.write_probe_issue " + probe + "; rerun detent doctor with --allow-write-probes after mutation authorization"
-	}
-	check := doctorCheck{
-		Name:   "Project " + id + " GitHub write probes",
-		Status: doctorWarn,
-		Detail: detail,
-		Hint:   `Run detent onboarding validate-answers --phase mutation and get operator confirmation before enabling write probes.`,
-	}
-	cfg.RequireProjectStatusWrite = false
-	cfg.RequireIssueFieldStatusWrite = false
-	cfg.RequireLabelStatusWrite = false
-	cfg.RequireIssueComments = false
-	cfg.RequireAssigneeWrite = false
-	cfg.RequireIssueClose = false
-	cfg.ProjectFieldWrites = nil
-	return cfg, &check
 }
 
 func doctorGitHubReadinessRequiresWrites(cfg ghconnector.ReadinessConfig) bool {

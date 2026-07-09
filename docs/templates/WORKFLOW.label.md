@@ -143,7 +143,7 @@ server:
     # Set show_blocked_alerts: true only when red blocked states should appear
     # as one compact top-of-board alert; dependency waits stay on cards.
     # show_blocked_alerts: true
-    # Use mode: read_only for observer/shared dashboards or until write probes pass.
+    # Use mode: read_only for observer/shared dashboards or when write permissions are unavailable.
     # Optional allowed_transitions expose broader manual status editing.
     # allowed_transitions:
     #   In Progress: [Blocked, Cancelled]
