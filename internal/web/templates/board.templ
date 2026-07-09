@@ -123,6 +123,13 @@ templ boardCardView2(card boardCardView) {
 		role="button"
 		tabindex="0"
 		{ sheetOpenAttrs(card.Project, card.Identity, card.Scope, true)... }
+		if card.RuntimeSummary != "" {
+			data-help-trigger
+			data-help-scope="runtime-identity"
+			data-help-term={ card.DomID + "-runtime-identity" }
+			data-help-title="Agent runtime"
+			data-help-description={ card.RuntimeSummary }
+		}
 		if card.MoveDisabledText != "" {
 			title={ card.MoveDisabledText }
 		}

@@ -282,10 +282,31 @@ templ liveBehaviorScript() {
 templ appShellScript() {
 	<script>
 		(function () {
+			var detailSheetRefreshing = false;
 			function closeDetailSheet() {
 				var host = document.getElementById("detail-sheet-host");
-				if (host) host.innerHTML = "";
+				if (host) {
+					host.innerHTML = "";
+					delete host.dataset.detailSheetURL;
+				}
 			}
+			document.addEventListener("htmx:afterRequest", function (event) {
+				var host = document.getElementById("detail-sheet-host");
+				var target = event.detail && event.detail.target;
+				if (!host || target !== host) return;
+				var requestConfig = event.detail && event.detail.requestConfig;
+				var path = requestConfig && requestConfig.path;
+				if (path) host.dataset.detailSheetURL = path;
+				detailSheetRefreshing = false;
+			});
+			document.addEventListener("htmx:afterSettle", function (event) {
+				var target = event.detail && event.detail.target;
+				if (!(target instanceof Element) || (target.id !== "snapshot" && !target.closest("#snapshot"))) return;
+				var host = document.getElementById("detail-sheet-host");
+				if (!host || !host.querySelector("[data-detail-sheet]") || !host.dataset.detailSheetURL || detailSheetRefreshing) return;
+				detailSheetRefreshing = true;
+				htmx.ajax("GET", host.dataset.detailSheetURL, { target: host, swap: "morph:innerHTML" });
+			});
 			document.addEventListener("kanbanActionSucceeded", function () {
 				if (window.tui && window.tui.dialog) {
 					window.tui.dialog.close("kanban-action-dialog");

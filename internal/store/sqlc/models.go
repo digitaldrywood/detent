@@ -34,30 +34,41 @@ type ApiUsageLog struct {
 }
 
 type CodexSession struct {
-	ID                    int64          `json:"id"`
-	RunID                 sql.NullInt64  `json:"run_id"`
-	IssueID               sql.NullString `json:"issue_id"`
-	Identifier            sql.NullString `json:"identifier"`
-	IssueURL              sql.NullString `json:"issue_url"`
-	StartedAt             sql.NullString `json:"started_at"`
-	CompletedAt           sql.NullString `json:"completed_at"`
-	Turns                 int64          `json:"turns"`
-	InputTokens           int64          `json:"input_tokens"`
-	OutputTokens          int64          `json:"output_tokens"`
-	TotalTokens           int64          `json:"total_tokens"`
-	RuntimeSeconds        int64          `json:"runtime_seconds"`
-	FinalState            sql.NullString `json:"final_state"`
-	Model                 sql.NullString `json:"model"`
-	CachedInputTokens     sql.NullInt64  `json:"cached_input_tokens"`
-	ReasoningOutputTokens sql.NullInt64  `json:"reasoning_output_tokens"`
-	ModelContextWindow    sql.NullInt64  `json:"model_context_window"`
-	RequestedModel        sql.NullString `json:"requested_model"`
-	AgentBackendID        sql.NullString `json:"agent_backend_id"`
-	AgentBackendKind      sql.NullString `json:"agent_backend_kind"`
-	AgentRole             sql.NullString `json:"agent_role"`
-	ProviderThreadID      sql.NullString `json:"provider_thread_id"`
-	ProviderSessionID     sql.NullString `json:"provider_session_id"`
-	ResumedFromSessionID  sql.NullInt64  `json:"resumed_from_session_id"`
+	ID                        int64          `json:"id"`
+	RunID                     sql.NullInt64  `json:"run_id"`
+	IssueID                   sql.NullString `json:"issue_id"`
+	Identifier                sql.NullString `json:"identifier"`
+	IssueURL                  sql.NullString `json:"issue_url"`
+	StartedAt                 sql.NullString `json:"started_at"`
+	CompletedAt               sql.NullString `json:"completed_at"`
+	Turns                     int64          `json:"turns"`
+	InputTokens               int64          `json:"input_tokens"`
+	OutputTokens              int64          `json:"output_tokens"`
+	TotalTokens               int64          `json:"total_tokens"`
+	RuntimeSeconds            int64          `json:"runtime_seconds"`
+	FinalState                sql.NullString `json:"final_state"`
+	Model                     sql.NullString `json:"model"`
+	CachedInputTokens         sql.NullInt64  `json:"cached_input_tokens"`
+	ReasoningOutputTokens     sql.NullInt64  `json:"reasoning_output_tokens"`
+	ModelContextWindow        sql.NullInt64  `json:"model_context_window"`
+	RequestedModel            sql.NullString `json:"requested_model"`
+	AgentBackendID            sql.NullString `json:"agent_backend_id"`
+	AgentBackendKind          sql.NullString `json:"agent_backend_kind"`
+	AgentRole                 sql.NullString `json:"agent_role"`
+	ProviderThreadID          sql.NullString `json:"provider_thread_id"`
+	ProviderSessionID         sql.NullString `json:"provider_session_id"`
+	ResumedFromSessionID      sql.NullInt64  `json:"resumed_from_session_id"`
+	WorkAttemptID             sql.NullInt64  `json:"work_attempt_id"`
+	AgentRoute                sql.NullString `json:"agent_route"`
+	Provider                  sql.NullString `json:"provider"`
+	ProviderProvenance        sql.NullString `json:"provider_provenance"`
+	RequestedModelProvenance  sql.NullString `json:"requested_model_provenance"`
+	ModelProvenance           sql.NullString `json:"model_provenance"`
+	ReasoningEffort           sql.NullString `json:"reasoning_effort"`
+	ReasoningEffortProvenance sql.NullString `json:"reasoning_effort_provenance"`
+	ServiceTier               sql.NullString `json:"service_tier"`
+	ServiceTierProvenance     sql.NullString `json:"service_tier_provenance"`
+	IdentityObservedAt        sql.NullString `json:"identity_observed_at"`
 }
 
 type DetentRun struct {
@@ -178,6 +189,9 @@ type WorkAttempt struct {
 	WorkerMetadataJson     string         `json:"worker_metadata_json"`
 	MetricsJson            string         `json:"metrics_json"`
 	NextAction             sql.NullString `json:"next_action"`
+	DetentSessionID        sql.NullInt64  `json:"detent_session_id"`
+	ProviderSessionID      sql.NullString `json:"provider_session_id"`
+	RuntimeIdentityJson    string         `json:"runtime_identity_json"`
 }
 
 type WorkflowPhaseEvent struct {

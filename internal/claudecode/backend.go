@@ -30,6 +30,7 @@ type Options struct {
 	CommandFactory         CommandFactory
 	CommandFactoryWithArgs CommandFactoryWithArgs
 	PermissionMode         string
+	Effort                 string
 	AllowedTools           []string
 	DisallowedTools        []string
 	IncludePartialMessages bool

@@ -1,12 +1,37 @@
 package templates
 
 import (
+	"bytes"
+	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
+
+func TestAppShellScriptRefreshesOpenDetailSheetAfterSnapshotSettle(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	if err := appShellScript().Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	html := buf.String()
+	for _, want := range []string{
+		`document.addEventListener("htmx:afterSettle"`,
+		`target.id !== "snapshot"`,
+		`host.dataset.detailSheetURL`,
+		`detailSheetRefreshing`,
+		`htmx.ajax("GET", host.dataset.detailSheetURL`,
+		`swap: "morph:innerHTML"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("app shell script missing %q:\n%s", want, html)
+		}
+	}
+}
 
 func TestAppShellActiveNav(t *testing.T) {
 	tests := []struct {

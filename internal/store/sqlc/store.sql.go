@@ -72,8 +72,11 @@ SET status = ?,
     capacity_snapshot_json = ?,
     worker_metadata_json = ?,
     metrics_json = ?,
-    next_action = ?
-WHERE id = ?
+    next_action = ?,
+    detent_session_id = COALESCE(?17, detent_session_id),
+    provider_session_id = COALESCE(?18, provider_session_id),
+    runtime_identity_json = COALESCE(NULLIF(?19, '{}'), runtime_identity_json)
+WHERE id = ?20
   AND completed_at IS NULL
 `
 
@@ -94,7 +97,10 @@ type CompleteWorkAttemptParams struct {
 	WorkerMetadataJson     string         `json:"worker_metadata_json"`
 	MetricsJson            string         `json:"metrics_json"`
 	NextAction             sql.NullString `json:"next_action"`
-	ID                     int64          `json:"id"`
+	DetentSessionID        sql.NullInt64  `json:"detent_session_id"`
+	ProviderSessionID      sql.NullString `json:"provider_session_id"`
+	RuntimeIdentityJson    interface{}    `json:"runtime_identity_json"`
+	WorkAttemptID          int64          `json:"work_attempt_id"`
 }
 
 func (q *Queries) CompleteWorkAttempt(ctx context.Context, arg CompleteWorkAttemptParams) (int64, error) {
@@ -115,7 +121,10 @@ func (q *Queries) CompleteWorkAttempt(ctx context.Context, arg CompleteWorkAttem
 		arg.WorkerMetadataJson,
 		arg.MetricsJson,
 		arg.NextAction,
-		arg.ID,
+		arg.DetentSessionID,
+		arg.ProviderSessionID,
+		arg.RuntimeIdentityJson,
+		arg.WorkAttemptID,
 	)
 	if err != nil {
 		return 0, err
@@ -326,6 +335,17 @@ INSERT INTO codex_sessions (
   agent_backend_id,
   agent_backend_kind,
   agent_role,
+  work_attempt_id,
+  agent_route,
+  provider,
+  provider_provenance,
+  requested_model_provenance,
+  model_provenance,
+  reasoning_effort,
+  reasoning_effort_provenance,
+  service_tier,
+  service_tier_provenance,
+  identity_observed_at,
   completed_at,
   turns,
   input_tokens,
@@ -340,34 +360,45 @@ INSERT INTO codex_sessions (
   provider_thread_id,
   provider_session_id,
   resumed_from_session_id
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at
 `
 
 type CreateCodexSessionParams struct {
-	RunID                 sql.NullInt64  `json:"run_id"`
-	IssueID               sql.NullString `json:"issue_id"`
-	Identifier            sql.NullString `json:"identifier"`
-	IssueURL              sql.NullString `json:"issue_url"`
-	StartedAt             sql.NullString `json:"started_at"`
-	RequestedModel        sql.NullString `json:"requested_model"`
-	AgentBackendID        sql.NullString `json:"agent_backend_id"`
-	AgentBackendKind      sql.NullString `json:"agent_backend_kind"`
-	AgentRole             sql.NullString `json:"agent_role"`
-	CompletedAt           sql.NullString `json:"completed_at"`
-	Turns                 int64          `json:"turns"`
-	InputTokens           int64          `json:"input_tokens"`
-	CachedInputTokens     sql.NullInt64  `json:"cached_input_tokens"`
-	OutputTokens          int64          `json:"output_tokens"`
-	ReasoningOutputTokens sql.NullInt64  `json:"reasoning_output_tokens"`
-	TotalTokens           int64          `json:"total_tokens"`
-	ModelContextWindow    sql.NullInt64  `json:"model_context_window"`
-	RuntimeSeconds        int64          `json:"runtime_seconds"`
-	FinalState            sql.NullString `json:"final_state"`
-	Model                 sql.NullString `json:"model"`
-	ProviderThreadID      sql.NullString `json:"provider_thread_id"`
-	ProviderSessionID     sql.NullString `json:"provider_session_id"`
-	ResumedFromSessionID  sql.NullInt64  `json:"resumed_from_session_id"`
+	RunID                     sql.NullInt64  `json:"run_id"`
+	IssueID                   sql.NullString `json:"issue_id"`
+	Identifier                sql.NullString `json:"identifier"`
+	IssueURL                  sql.NullString `json:"issue_url"`
+	StartedAt                 sql.NullString `json:"started_at"`
+	RequestedModel            sql.NullString `json:"requested_model"`
+	AgentBackendID            sql.NullString `json:"agent_backend_id"`
+	AgentBackendKind          sql.NullString `json:"agent_backend_kind"`
+	AgentRole                 sql.NullString `json:"agent_role"`
+	WorkAttemptID             sql.NullInt64  `json:"work_attempt_id"`
+	AgentRoute                sql.NullString `json:"agent_route"`
+	Provider                  sql.NullString `json:"provider"`
+	ProviderProvenance        sql.NullString `json:"provider_provenance"`
+	RequestedModelProvenance  sql.NullString `json:"requested_model_provenance"`
+	ModelProvenance           sql.NullString `json:"model_provenance"`
+	ReasoningEffort           sql.NullString `json:"reasoning_effort"`
+	ReasoningEffortProvenance sql.NullString `json:"reasoning_effort_provenance"`
+	ServiceTier               sql.NullString `json:"service_tier"`
+	ServiceTierProvenance     sql.NullString `json:"service_tier_provenance"`
+	IdentityObservedAt        sql.NullString `json:"identity_observed_at"`
+	CompletedAt               sql.NullString `json:"completed_at"`
+	Turns                     int64          `json:"turns"`
+	InputTokens               int64          `json:"input_tokens"`
+	CachedInputTokens         sql.NullInt64  `json:"cached_input_tokens"`
+	OutputTokens              int64          `json:"output_tokens"`
+	ReasoningOutputTokens     sql.NullInt64  `json:"reasoning_output_tokens"`
+	TotalTokens               int64          `json:"total_tokens"`
+	ModelContextWindow        sql.NullInt64  `json:"model_context_window"`
+	RuntimeSeconds            int64          `json:"runtime_seconds"`
+	FinalState                sql.NullString `json:"final_state"`
+	Model                     sql.NullString `json:"model"`
+	ProviderThreadID          sql.NullString `json:"provider_thread_id"`
+	ProviderSessionID         sql.NullString `json:"provider_session_id"`
+	ResumedFromSessionID      sql.NullInt64  `json:"resumed_from_session_id"`
 }
 
 func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSessionParams) (CodexSession, error) {
@@ -381,6 +412,17 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		arg.AgentBackendID,
 		arg.AgentBackendKind,
 		arg.AgentRole,
+		arg.WorkAttemptID,
+		arg.AgentRoute,
+		arg.Provider,
+		arg.ProviderProvenance,
+		arg.RequestedModelProvenance,
+		arg.ModelProvenance,
+		arg.ReasoningEffort,
+		arg.ReasoningEffortProvenance,
+		arg.ServiceTier,
+		arg.ServiceTierProvenance,
+		arg.IdentityObservedAt,
 		arg.CompletedAt,
 		arg.Turns,
 		arg.InputTokens,
@@ -422,6 +464,17 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		&i.ProviderThreadID,
 		&i.ProviderSessionID,
 		&i.ResumedFromSessionID,
+		&i.WorkAttemptID,
+		&i.AgentRoute,
+		&i.Provider,
+		&i.ProviderProvenance,
+		&i.RequestedModelProvenance,
+		&i.ModelProvenance,
+		&i.ReasoningEffort,
+		&i.ReasoningEffortProvenance,
+		&i.ServiceTier,
+		&i.ServiceTierProvenance,
+		&i.IdentityObservedAt,
 	)
 	return i, err
 }
@@ -699,9 +752,12 @@ INSERT INTO work_attempts (
   capacity_snapshot_json,
   worker_metadata_json,
   metrics_json,
-  next_action
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action
+  next_action,
+  detent_session_id,
+  provider_session_id,
+  runtime_identity_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
 `
 
 type CreateWorkAttemptParams struct {
@@ -732,6 +788,9 @@ type CreateWorkAttemptParams struct {
 	WorkerMetadataJson     string         `json:"worker_metadata_json"`
 	MetricsJson            string         `json:"metrics_json"`
 	NextAction             sql.NullString `json:"next_action"`
+	DetentSessionID        sql.NullInt64  `json:"detent_session_id"`
+	ProviderSessionID      sql.NullString `json:"provider_session_id"`
+	RuntimeIdentityJson    string         `json:"runtime_identity_json"`
 }
 
 func (q *Queries) CreateWorkAttempt(ctx context.Context, arg CreateWorkAttemptParams) (WorkAttempt, error) {
@@ -763,6 +822,9 @@ func (q *Queries) CreateWorkAttempt(ctx context.Context, arg CreateWorkAttemptPa
 		arg.WorkerMetadataJson,
 		arg.MetricsJson,
 		arg.NextAction,
+		arg.DetentSessionID,
+		arg.ProviderSessionID,
+		arg.RuntimeIdentityJson,
 	)
 	var i WorkAttempt
 	err := row.Scan(
@@ -798,6 +860,9 @@ func (q *Queries) CreateWorkAttempt(ctx context.Context, arg CreateWorkAttemptPa
 		&i.WorkerMetadataJson,
 		&i.MetricsJson,
 		&i.NextAction,
+		&i.DetentSessionID,
+		&i.ProviderSessionID,
+		&i.RuntimeIdentityJson,
 	)
 	return i, err
 }
@@ -931,7 +996,7 @@ func (q *Queries) CreateWorkflowPhaseEvent(ctx context.Context, arg CreateWorkfl
 
 const dailyTokenSpend = `-- name: DailyTokenSpend :many
 SELECT
-  CAST(COALESCE(model, '') AS TEXT) AS model,
+  CAST(COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '') AS TEXT) AS model,
   CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
   CAST(COALESCE(SUM(cached_input_tokens), 0) AS INTEGER) AS cached_input_tokens,
   CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
@@ -940,8 +1005,8 @@ SELECT
   CAST(COUNT(*) AS INTEGER) AS sessions
 FROM codex_sessions
 WHERE substr(completed_at, 1, 10) = ?
-GROUP BY COALESCE(model, '')
-ORDER BY COALESCE(model, '')
+GROUP BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
+ORDER BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
 `
 
 type DailyTokenSpendRow struct {
@@ -1095,7 +1160,7 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, 
 }
 
 const getCodexSession = `-- name: GetCodexSession :one
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at
 FROM codex_sessions
 WHERE id = ?
 `
@@ -1128,6 +1193,17 @@ func (q *Queries) GetCodexSession(ctx context.Context, id int64) (CodexSession, 
 		&i.ProviderThreadID,
 		&i.ProviderSessionID,
 		&i.ResumedFromSessionID,
+		&i.WorkAttemptID,
+		&i.AgentRoute,
+		&i.Provider,
+		&i.ProviderProvenance,
+		&i.RequestedModelProvenance,
+		&i.ModelProvenance,
+		&i.ReasoningEffort,
+		&i.ReasoningEffortProvenance,
+		&i.ServiceTier,
+		&i.ServiceTierProvenance,
+		&i.IdentityObservedAt,
 	)
 	return i, err
 }
@@ -1362,7 +1438,7 @@ func (q *Queries) GetValidatorVerdict(ctx context.Context, arg GetValidatorVerdi
 }
 
 const getWorkAttempt = `-- name: GetWorkAttempt :one
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
 FROM work_attempts
 WHERE id = ?
 `
@@ -1403,13 +1479,16 @@ func (q *Queries) GetWorkAttempt(ctx context.Context, id int64) (WorkAttempt, er
 		&i.WorkerMetadataJson,
 		&i.MetricsJson,
 		&i.NextAction,
+		&i.DetentSessionID,
+		&i.ProviderSessionID,
+		&i.RuntimeIdentityJson,
 	)
 	return i, err
 }
 
 const issueTokenSpend = `-- name: IssueTokenSpend :many
 SELECT
-  CAST(COALESCE(model, '') AS TEXT) AS model,
+  CAST(COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '') AS TEXT) AS model,
   CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
   CAST(COALESCE(SUM(cached_input_tokens), 0) AS INTEGER) AS cached_input_tokens,
   CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
@@ -1420,8 +1499,8 @@ FROM codex_sessions
 WHERE issue_id = ?1
    OR identifier = ?2
    OR issue_url = ?3
-GROUP BY COALESCE(model, '')
-ORDER BY COALESCE(model, '')
+GROUP BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
+ORDER BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
 `
 
 type IssueTokenSpendParams struct {
@@ -1660,7 +1739,7 @@ func (q *Queries) ListAPIUsageLogsByKey(ctx context.Context, apiKeyID string) ([
 }
 
 const listActiveWorkAttempts = `-- name: ListActiveWorkAttempts :many
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
 FROM work_attempts
 WHERE completed_at IS NULL
   AND (?1 = '' OR project_id = ?1)
@@ -1709,6 +1788,9 @@ func (q *Queries) ListActiveWorkAttempts(ctx context.Context, filterProjectID in
 			&i.WorkerMetadataJson,
 			&i.MetricsJson,
 			&i.NextAction,
+			&i.DetentSessionID,
+			&i.ProviderSessionID,
+			&i.RuntimeIdentityJson,
 		); err != nil {
 			return nil, err
 		}
@@ -1764,7 +1846,7 @@ func (q *Queries) ListFairShareUsage(ctx context.Context) ([]FairShareUsage, err
 }
 
 const listRecentCodexSessions = `-- name: ListRecentCodexSessions :many
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at
 FROM codex_sessions
 ORDER BY completed_at DESC, id DESC
 LIMIT ?
@@ -1804,6 +1886,17 @@ func (q *Queries) ListRecentCodexSessions(ctx context.Context, limit int64) ([]C
 			&i.ProviderThreadID,
 			&i.ProviderSessionID,
 			&i.ResumedFromSessionID,
+			&i.WorkAttemptID,
+			&i.AgentRoute,
+			&i.Provider,
+			&i.ProviderProvenance,
+			&i.RequestedModelProvenance,
+			&i.ModelProvenance,
+			&i.ReasoningEffort,
+			&i.ReasoningEffortProvenance,
+			&i.ServiceTier,
+			&i.ServiceTierProvenance,
+			&i.IdentityObservedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1876,13 +1969,15 @@ func (q *Queries) ListRecentSchedulerDecisions(ctx context.Context, arg ListRece
 }
 
 const listRecentTerminalWorkAttempts = `-- name: ListRecentTerminalWorkAttempts :many
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
 FROM work_attempts
 WHERE completed_at IS NOT NULL
   AND status = 'terminal'
   AND (?1 = '' OR project_id = ?1)
   AND (?2 = '' OR worker_type = ?2)
   AND (
+    (?3 = '' AND ?4 = '' AND ?5 = '')
+    OR
     (?3 != '' AND issue_id = ?3)
     OR (?4 != '' AND identifier = ?4)
     OR (?5 != '' AND issue_url = ?5)
@@ -1949,6 +2044,9 @@ func (q *Queries) ListRecentTerminalWorkAttempts(ctx context.Context, arg ListRe
 			&i.WorkerMetadataJson,
 			&i.MetricsJson,
 			&i.NextAction,
+			&i.DetentSessionID,
+			&i.ProviderSessionID,
+			&i.RuntimeIdentityJson,
 		); err != nil {
 			return nil, err
 		}
@@ -2055,7 +2153,7 @@ WITH recent AS (
     total_tokens
   FROM codex_sessions
   WHERE completed_at IS NOT NULL
-    AND lower(trim(COALESCE(model, ''))) = lower(trim(?1))
+    AND lower(trim(COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), ''))) = lower(trim(?1))
   ORDER BY completed_at DESC, id DESC
   LIMIT ?2
 ),
@@ -2142,7 +2240,7 @@ SET status = ?,
     status_message = ?
 WHERE completed_at IS NULL
   AND project_id = ?
-RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action
+RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
 `
 
 type ReclaimActiveWorkAttemptsParams struct {
@@ -2209,6 +2307,9 @@ func (q *Queries) ReclaimActiveWorkAttempts(ctx context.Context, arg ReclaimActi
 			&i.WorkerMetadataJson,
 			&i.MetricsJson,
 			&i.NextAction,
+			&i.DetentSessionID,
+			&i.ProviderSessionID,
+			&i.RuntimeIdentityJson,
 		); err != nil {
 			return nil, err
 		}
@@ -2276,7 +2377,7 @@ WHERE completed_at IS NULL
   AND (?9 = '' OR project_id = ?9)
   AND lease_expires_at IS NOT NULL
   AND lease_expires_at <= ?10
-RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action
+RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
 `
 
 type TimeoutExpiredWorkAttemptsParams struct {
@@ -2345,6 +2446,9 @@ func (q *Queries) TimeoutExpiredWorkAttempts(ctx context.Context, arg TimeoutExp
 			&i.WorkerMetadataJson,
 			&i.MetricsJson,
 			&i.NextAction,
+			&i.DetentSessionID,
+			&i.ProviderSessionID,
+			&i.RuntimeIdentityJson,
 		); err != nil {
 			return nil, err
 		}
@@ -2377,6 +2481,70 @@ type UpdateAPIKeyLastUsedParams struct {
 
 func (q *Queries) UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLastUsedParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, updateAPIKeyLastUsed, arg.LastUsedAt, arg.ID, arg.Threshold)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateCodexSessionIdentity = `-- name: UpdateCodexSessionIdentity :execrows
+UPDATE codex_sessions
+SET agent_backend_id = COALESCE(?1, agent_backend_id),
+    agent_backend_kind = COALESCE(?2, agent_backend_kind),
+    agent_role = COALESCE(?3, agent_role),
+    agent_route = COALESCE(?4, agent_route),
+    provider = ?5,
+    provider_provenance = ?6,
+    requested_model = COALESCE(?7, requested_model),
+    requested_model_provenance = ?8,
+    model = COALESCE(?9, model),
+    model_provenance = ?10,
+    reasoning_effort = ?11,
+    reasoning_effort_provenance = ?12,
+    service_tier = ?13,
+    service_tier_provenance = ?14,
+    identity_observed_at = ?15
+WHERE id = ?16
+`
+
+type UpdateCodexSessionIdentityParams struct {
+	AgentBackendID            sql.NullString `json:"agent_backend_id"`
+	AgentBackendKind          sql.NullString `json:"agent_backend_kind"`
+	AgentRole                 sql.NullString `json:"agent_role"`
+	AgentRoute                sql.NullString `json:"agent_route"`
+	Provider                  sql.NullString `json:"provider"`
+	ProviderProvenance        sql.NullString `json:"provider_provenance"`
+	RequestedModel            sql.NullString `json:"requested_model"`
+	RequestedModelProvenance  sql.NullString `json:"requested_model_provenance"`
+	Model                     sql.NullString `json:"model"`
+	ModelProvenance           sql.NullString `json:"model_provenance"`
+	ReasoningEffort           sql.NullString `json:"reasoning_effort"`
+	ReasoningEffortProvenance sql.NullString `json:"reasoning_effort_provenance"`
+	ServiceTier               sql.NullString `json:"service_tier"`
+	ServiceTierProvenance     sql.NullString `json:"service_tier_provenance"`
+	IdentityObservedAt        sql.NullString `json:"identity_observed_at"`
+	ID                        int64          `json:"id"`
+}
+
+func (q *Queries) UpdateCodexSessionIdentity(ctx context.Context, arg UpdateCodexSessionIdentityParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateCodexSessionIdentity,
+		arg.AgentBackendID,
+		arg.AgentBackendKind,
+		arg.AgentRole,
+		arg.AgentRoute,
+		arg.Provider,
+		arg.ProviderProvenance,
+		arg.RequestedModel,
+		arg.RequestedModelProvenance,
+		arg.Model,
+		arg.ModelProvenance,
+		arg.ReasoningEffort,
+		arg.ReasoningEffortProvenance,
+		arg.ServiceTier,
+		arg.ServiceTierProvenance,
+		arg.IdentityObservedAt,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -2443,8 +2611,11 @@ SET heartbeat_at = ?,
     metrics_json = ?,
     next_action = ?,
     error_class = ?,
-    error_message = ?
-WHERE id = ?
+    error_message = ?,
+    detent_session_id = COALESCE(?17, detent_session_id),
+    provider_session_id = COALESCE(?18, provider_session_id),
+    runtime_identity_json = COALESCE(NULLIF(?19, '{}'), runtime_identity_json)
+WHERE id = ?20
   AND completed_at IS NULL
 `
 
@@ -2465,7 +2636,10 @@ type UpdateWorkAttemptHeartbeatParams struct {
 	NextAction             sql.NullString `json:"next_action"`
 	ErrorClass             sql.NullString `json:"error_class"`
 	ErrorMessage           sql.NullString `json:"error_message"`
-	ID                     int64          `json:"id"`
+	DetentSessionID        sql.NullInt64  `json:"detent_session_id"`
+	ProviderSessionID      sql.NullString `json:"provider_session_id"`
+	RuntimeIdentityJson    interface{}    `json:"runtime_identity_json"`
+	WorkAttemptID          int64          `json:"work_attempt_id"`
 }
 
 func (q *Queries) UpdateWorkAttemptHeartbeat(ctx context.Context, arg UpdateWorkAttemptHeartbeatParams) (int64, error) {
@@ -2486,7 +2660,10 @@ func (q *Queries) UpdateWorkAttemptHeartbeat(ctx context.Context, arg UpdateWork
 		arg.NextAction,
 		arg.ErrorClass,
 		arg.ErrorMessage,
-		arg.ID,
+		arg.DetentSessionID,
+		arg.ProviderSessionID,
+		arg.RuntimeIdentityJson,
+		arg.WorkAttemptID,
 	)
 	if err != nil {
 		return 0, err

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -44,6 +45,10 @@ type SessionStore interface {
 	StartSession(context.Context, store.SessionStart) (int64, error)
 	FinishSession(context.Context, int64, store.SessionFinish) error
 	RecordUsageEvent(context.Context, store.UsageEvent) (int64, error)
+}
+
+type sessionIdentityStore interface {
+	UpdateSessionIdentity(context.Context, int64, agentidentity.Identity) error
 }
 
 type BudgetChecker interface {
@@ -194,9 +199,9 @@ func (r *Runner) UpdateWorkflow(workflow config.Workflow) {
 }
 
 type agentRuntime struct {
-	backends     map[string]AgentBackend
-	backendKinds map[string]string
-	router       *Router
+	backends       map[string]AgentBackend
+	backendConfigs map[string]config.AgentBackend
+	router         *Router
 }
 
 func newAgentRuntime(
@@ -206,12 +211,12 @@ func newAgentRuntime(
 ) (agentRuntime, error) {
 	backendConfigs := workflow.Config.AgentBackendConfigs()
 	backends := make(map[string]AgentBackend, len(backendConfigs))
-	backendKinds := make(map[string]string, len(backendConfigs))
+	configsByID := make(map[string]config.AgentBackend, len(backendConfigs))
 	for _, backendConfig := range backendConfigs {
 		if strings.TrimSpace(backendConfig.ID) == "" {
 			continue
 		}
-		backendKinds[backendConfig.ID] = backendConfig.Kind
+		configsByID[backendConfig.ID] = backendConfig
 		if factory != nil {
 			backend, err := factory.NewAgentBackend(backendConfig)
 			if err != nil {
@@ -241,9 +246,9 @@ func newAgentRuntime(
 	}
 
 	return agentRuntime{
-		backends:     backends,
-		backendKinds: backendKinds,
-		router:       router,
+		backends:       backends,
+		backendConfigs: configsByID,
+		router:         router,
 	}, nil
 }
 
@@ -263,20 +268,20 @@ func routesFromConfig(routes []config.AgentRoute) []Route {
 	return out
 }
 
-func (r agentRuntime) selectBackendForRole(issue connector.Issue, ctx selector.Context, role string) (RouteSelection, AgentBackend, string, error) {
+func (r agentRuntime) selectBackendForRole(issue connector.Issue, ctx selector.Context, role string) (RouteSelection, AgentBackend, config.AgentBackend, error) {
 	selection, err := r.router.RouteForRole(issue, ctx, role)
 	if err != nil {
-		return RouteSelection{}, nil, "", err
+		return RouteSelection{}, nil, config.AgentBackend{}, err
 	}
 	backend, ok := r.backends[selection.BackendID]
 	if !ok {
-		return RouteSelection{}, nil, "", fmt.Errorf("%w: %s", ErrMissingAgentBackend, selection.BackendID)
+		return RouteSelection{}, nil, config.AgentBackend{}, fmt.Errorf("%w: %s", ErrMissingAgentBackend, selection.BackendID)
 	}
-	backendKind, ok := r.backendKinds[selection.BackendID]
+	backendConfig, ok := r.backendConfigs[selection.BackendID]
 	if !ok {
-		return RouteSelection{}, nil, "", fmt.Errorf("agent backend kind not found: %s", selection.BackendID)
+		return RouteSelection{}, nil, config.AgentBackend{}, fmt.Errorf("agent backend config not found: %s", selection.BackendID)
 	}
-	return selection, backend, backendKind, nil
+	return selection, backend, backendConfig, nil
 }
 
 func (r agentRuntime) defaultModelForRole(role string) string {
@@ -300,6 +305,45 @@ func (r agentRuntime) effectiveRunRole(role string) string {
 		return role
 	}
 	return RoleCode
+}
+
+func configuredRuntimeIdentity(selection RouteSelection, backend config.AgentBackend, role string, requestedModel string, observedAt time.Time) agentidentity.Identity {
+	provider := strings.TrimSpace(backend.Provider)
+	effort := ""
+	serviceTier := ""
+	switch backend.Kind {
+	case config.AgentBackendCodex:
+		options := backend.CodexOptions()
+		if provider == "" {
+			provider = options.ModelProvider
+		}
+		serviceTier = options.ServiceTier
+	case config.AgentBackendClaudeCode:
+		effort = backend.ClaudeCodeOptions().Effort
+	}
+	return agentidentity.Configured(
+		selection.BackendID,
+		backend.Kind,
+		selection.RouteName,
+		role,
+		requestedModel,
+		provider,
+		effort,
+		serviceTier,
+		observedAt,
+	)
+}
+
+func agentTurnIdentityOptions(backend config.AgentBackend) (modelProvider string, serviceTier string, effort string) {
+	switch backend.Kind {
+	case config.AgentBackendCodex:
+		options := backend.CodexOptions()
+		return options.ModelProvider, options.ServiceTier, ""
+	case config.AgentBackendClaudeCode:
+		return "", "", backend.ClaudeCodeOptions().Effort
+	default:
+		return "", "", ""
+	}
 }
 
 func cloneAgentBackends(in map[string]AgentBackend) map[string]AgentBackend {
@@ -410,19 +454,43 @@ func (r *Runner) runAgentTurn(
 	workspaceIssue workspace.Issue,
 	agentConfig config.Agent,
 	runStartedAt time.Time,
+	detentSessionID int64,
+	initialIdentity agentidentity.Identity,
 ) agentTurnExecution {
-	result := RunResult{FinalState: FinalStateCompleted}
+	result := RunResult{
+		FinalState:      FinalStateCompleted,
+		RuntimeIdentity: initialIdentity.Normalize(),
+	}
 	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: agentConfig.OutputTruncation.MaxBytes})
+	if !result.RuntimeIdentity.IsZero() {
+		eventAt := r.now()
+		progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: result.RuntimeIdentity}, eventAt)
+		if err := r.publishRunUpdate(ctx, runRequest, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID); err != nil {
+			return agentTurnExecution{result: result, err: err}
+		}
+	}
 	turnStarted := false
 	turnResult, turnErr := backend.RunTurn(ctx, turnRequest, func(update AgentUpdate) error {
+		eventAt := r.now()
+		if !update.RuntimeIdentity.IsZero() {
+			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
+		}
 		if update.Type == AgentUpdateTurnStarted || strings.TrimSpace(update.TurnID) != "" {
 			turnStarted = true
 		}
 		r.logAgentUpdate(runRequest.Issue, update)
+		previousIdentity := result.RuntimeIdentity
 		applyAgentUpdate(&result, update)
-		eventAt := r.now()
+		if !previousIdentity.MateriallyEqual(result.RuntimeIdentity) {
+			if err := r.persistSessionIdentity(ctx, detentSessionID, result.RuntimeIdentity); err != nil {
+				return err
+			}
+			if result.RuntimeIdentity.HasRuntimeValues() {
+				r.logRuntimeIdentity(runRequest, detentSessionID, update, previousIdentity, result.RuntimeIdentity)
+			}
+		}
 		progress.apply(update, eventAt)
-		if err := r.publishRunUpdate(ctx, runRequest, info, workspaceIssue, progress, result, eventAt, runStartedAt); err != nil {
+		if err := r.publishRunUpdate(ctx, runRequest, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID); err != nil {
 			return err
 		}
 		if err := r.enforceSessionTokenCeiling(agentConfig, runRequest.Issue, info.Path, update, eventAt); err != nil {
@@ -608,7 +676,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	role := runRole(req.Mode, req.Issue)
 	routeRole := agentRuntime.effectiveRunRole(role)
-	selection, backend, backendKind, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), routeRole)
+	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), routeRole)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -620,6 +688,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	runStartedAt := r.now()
 	selectedModel := selection.Model
 	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(role))
+	runtimeIdentity := configuredRuntimeIdentity(selection, backendConfig, role, sessionModel, startedAt)
 	if result, refused, err := r.checkDispatchBudget(ctx, budgetChecker, dispatchEstimator, req.Issue, sessionModel, startedAt); err != nil {
 		return RunResult{}, err
 	} else if refused {
@@ -633,31 +702,35 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		)
 		return result, nil
 	}
-	resumeState, err := r.runRequestResumeState(ctx, workflow.Config.Agent, req, sessionModel, selection.BackendID, backendKind, role)
+	resumeState, err := r.runRequestResumeState(ctx, workflow.Config.Agent, req, sessionModel, selection.BackendID, backendConfig.Kind, role)
 	if err != nil {
 		return RunResult{}, err
 	}
-	sessionID, sessionStarted, err := r.startSession(ctx, req.Issue, startedAt, sessionModel, selection.BackendID, backendKind, role)
+	sessionID, sessionStarted, err := r.startSession(ctx, req, startedAt, runtimeIdentity)
 	if err != nil {
 		return RunResult{}, err
 	}
 
-	r.logWorkerEvent(req.Issue, "worker_command_started",
+	commandStartedAttrs := []any{
 		"workspace_path", info.Path,
-		"backend_id", selection.BackendID,
-		"route", selection.RouteName,
-		"role", role,
-		"model", sessionModel,
+		"work_attempt_id", req.WorkAttemptID,
+		"detent_session_id", sessionID,
 		"mode", mode,
-	)
+	}
+	commandStartedAttrs = append(commandStartedAttrs, runtimeIdentityLogAttrs(runtimeIdentity)...)
+	r.logWorkerEvent(req.Issue, "worker_command_started", commandStartedAttrs...)
+	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
 	turnRequest := AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             prompt,
 		Model:              selectedModel,
+		ModelProvider:      modelProvider,
+		ServiceTier:        serviceTier,
+		ReasoningEffort:    effort,
 		Resume:             agentResumeFromState(resumeState),
 		ExtraWritableRoots: extraWritableRootsForWorkspace(ctx, info.Path, r.logger),
 	}
-	execution := r.runAgentTurn(ctx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, runStartedAt)
+	execution := r.runAgentTurn(ctx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, runStartedAt, sessionID, runtimeIdentity)
 	if execution.err != nil && !agentResumeEmpty(turnRequest.Resume) && !execution.turnStarted {
 		r.logWorkerEvent(req.Issue, "worker_resume_failed_fallback",
 			"workspace_path", info.Path,
@@ -670,7 +743,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		)
 		turnRequest.Resume = AgentResume{}
 		resumeState = store.AgentResumeState{}
-		execution = r.runAgentTurn(ctx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, runStartedAt)
+		execution = r.runAgentTurn(ctx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, runStartedAt, sessionID, runtimeIdentity)
 	}
 	turnResult := execution.turnResult
 	turnErr := execution.err
@@ -678,13 +751,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	result := execution.result
 	commandFinishedAttrs := []any{
 		"workspace_path", info.Path,
-		"backend_id", selection.BackendID,
-		"route", selection.RouteName,
-		"role", role,
-		"model", effectiveModel(result.Model, sessionModel),
+		"work_attempt_id", req.WorkAttemptID,
+		"detent_session_id", sessionID,
+		"provider_thread_id", turnResult.ThreadID,
+		"provider_session_id", turnResult.SessionID,
 		"outcome", workerRunOutcome(turnErr, result.FinalState),
 		"error", errorString(turnErr),
 	}
+	commandFinishedAttrs = append(commandFinishedAttrs, runtimeIdentityLogAttrs(result.RuntimeIdentity)...)
 	commandFinishedAttrs = append(commandFinishedAttrs, backendErrorAttrs(turnErr)...)
 	if cleanupErr != nil {
 		commandFinishedAttrs = append(commandFinishedAttrs,
@@ -714,7 +788,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
 			fmt.Errorf("run agent turn: %w", turnErr),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendKind, 1, turnResult, resumeState.DetentSessionID),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID),
 		)
 	}
 
@@ -731,7 +805,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			)
 			finishedAt := r.now().UTC()
 			result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-			if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendKind, 1, turnResult, resumeState.DetentSessionID); err != nil {
+			if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID); err != nil {
 				return result, err
 			}
 			return result, nil
@@ -744,14 +818,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
 			fmt.Errorf("workspace diff stat: %w", err),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendKind, 1, turnResult, resumeState.DetentSessionID),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID),
 		)
 	}
 
 	result.DiffStats = diffStatsFromWorkspace(diffStat)
 	finishedAt := r.now().UTC()
 	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendKind, 1, turnResult, resumeState.DetentSessionID); err != nil {
+	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -848,7 +922,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	validator := gate.Effective(workflow.Config.Gate).Validator
 	promptOptions := r.validatorPromptOptions(ctx, info, workspaceIssue, validatorMaxInlineDiffBytes(validator))
 	prompt := BuildValidatorPrompt(workflow, req.Issue, promptOptions)
-	selection, backend, backendKind, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
+	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
 	if err != nil {
 		return gate.ValidatorResult{}, err
 	}
@@ -864,42 +938,63 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		startedAt = r.now().UTC()
 	}
 	runStartedAt := r.now()
-	sessionID, sessionStarted, err := r.startSession(ctx, req.Issue, startedAt, sessionModel, selection.BackendID, backendKind, RoleValidator)
-	if err != nil {
-		return gate.ValidatorResult{}, err
-	}
-
-	r.logWorkerEvent(req.Issue, "worker_check_started",
-		"workspace_path", info.Path,
-		"backend_id", selection.BackendID,
-		"route", selection.RouteName,
-		"role", RoleValidator,
-		"model", sessionModel,
-	)
+	runtimeIdentity := configuredRuntimeIdentity(selection, backendConfig, RoleValidator, sessionModel, startedAt)
 	runReq := RunRequest{
 		Issue:           req.Issue,
 		StartedAt:       req.StartedAt,
 		SelectorContext: req.SelectorContext,
 		OnUsageUpdate:   req.OnUsageUpdate,
 	}
-	runResult := RunResult{FinalState: FinalStateCompleted}
+	sessionID, sessionStarted, err := r.startSession(ctx, runReq, startedAt, runtimeIdentity)
+	if err != nil {
+		return gate.ValidatorResult{}, err
+	}
+
+	checkStartedAttrs := []any{
+		"workspace_path", info.Path,
+		"detent_session_id", sessionID,
+	}
+	checkStartedAttrs = append(checkStartedAttrs, runtimeIdentityLogAttrs(runtimeIdentity)...)
+	r.logWorkerEvent(req.Issue, "worker_check_started", checkStartedAttrs...)
+	runResult := RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}
 	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: workflow.Config.Agent.OutputTruncation.MaxBytes})
+	eventAt := r.now()
+	progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: runtimeIdentity}, eventAt)
+	if err := r.publishRunUpdate(ctx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID); err != nil {
+		return gate.ValidatorResult{}, err
+	}
 	var output strings.Builder
+	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
 	turnResult, turnErr := backend.RunTurn(ctx, AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             prompt,
 		Model:              selectedModel,
+		ModelProvider:      modelProvider,
+		ServiceTier:        serviceTier,
+		ReasoningEffort:    effort,
 		TurnTimeout:        durationFromMillis(validator.TurnTimeoutMS),
 		ExtraWritableRoots: extraWritableRootsForWorkspace(ctx, info.Path, r.logger),
 	}, func(update AgentUpdate) error {
+		eventAt := r.now()
+		if !update.RuntimeIdentity.IsZero() {
+			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
+		}
 		r.logAgentUpdate(req.Issue, update)
 		if update.Type == AgentUpdateMessageDelta {
 			output.WriteString(update.Delta)
 		}
+		previousIdentity := runResult.RuntimeIdentity
 		applyAgentUpdate(&runResult, update)
-		eventAt := r.now()
+		if !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
+			if err := r.persistSessionIdentity(ctx, sessionID, runResult.RuntimeIdentity); err != nil {
+				return err
+			}
+			if runResult.RuntimeIdentity.HasRuntimeValues() {
+				r.logRuntimeIdentity(runReq, sessionID, update, previousIdentity, runResult.RuntimeIdentity)
+			}
+		}
 		progress.apply(update, eventAt)
-		if err := r.publishRunUpdate(ctx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt); err != nil {
+		if err := r.publishRunUpdate(ctx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID); err != nil {
 			return err
 		}
 		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, info.Path, update, eventAt); err != nil {
@@ -909,13 +1004,13 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	})
 	checkFinishedAttrs := []any{
 		"workspace_path", info.Path,
-		"backend_id", selection.BackendID,
-		"route", selection.RouteName,
-		"role", RoleValidator,
-		"model", effectiveModel(runResult.Model, sessionModel),
+		"detent_session_id", sessionID,
+		"provider_thread_id", turnResult.ThreadID,
+		"provider_session_id", turnResult.SessionID,
 		"outcome", workerRunOutcome(turnErr, runResult.FinalState),
 		"error", errorString(turnErr),
 	}
+	checkFinishedAttrs = append(checkFinishedAttrs, runtimeIdentityLogAttrs(runResult.RuntimeIdentity)...)
 	checkFinishedAttrs = append(checkFinishedAttrs, backendErrorAttrs(turnErr)...)
 	if turnErr != nil {
 		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_check_finished", checkFinishedAttrs...)
@@ -935,7 +1030,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runResult.FinalState = finalStateForTurnError(turnErr)
 		return gate.ValidatorResult{}, errors.Join(
 			fmt.Errorf("run validator turn: %w", turnErr),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendKind, 1, turnResult, 0),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
 		)
 	}
 
@@ -944,10 +1039,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runResult.FinalState = FinalStateFailed
 		return gate.ValidatorResult{}, errors.Join(
 			fmt.Errorf("parse validator result: %w", err),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendKind, 1, turnResult, 0),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
 		)
 	}
-	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendKind, 1, turnResult, 0); err != nil {
+	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0); err != nil {
 		return gate.ValidatorResult{}, err
 	}
 	return validation, nil
@@ -1174,36 +1269,48 @@ func failedRunNoteBody(result RunResult, runErr error) string {
 
 func (r *Runner) startSession(
 	ctx context.Context,
-	issue connector.Issue,
+	req RunRequest,
 	startedAt time.Time,
-	model string,
-	backendID string,
-	backendKind string,
-	agentRole string,
+	identity agentidentity.Identity,
 ) (int64, bool, error) {
 	if r.store == nil {
 		return 0, false, nil
 	}
 
 	sessionID, err := r.store.StartSession(ctx, store.SessionStart{
-		IssueID:          issue.ID,
-		Identifier:       issue.Identifier,
-		IssueURL:         issue.URL,
+		IssueID:          req.Issue.ID,
+		Identifier:       req.Issue.Identifier,
+		IssueURL:         req.Issue.URL,
+		WorkAttemptID:    req.WorkAttemptID,
 		StartedAt:        startedAt,
-		Model:            model,
-		RequestedModel:   model,
-		AgentBackendID:   backendID,
-		AgentBackendKind: backendKind,
-		AgentRole:        agentRole,
+		Model:            identity.ResolvedModel.Value,
+		RequestedModel:   identity.RequestedModel.Value,
+		AgentBackendID:   identity.BackendID,
+		AgentBackendKind: identity.BackendKind,
+		AgentRole:        identity.Role,
+		RuntimeIdentity:  identity,
 	})
 	if err != nil {
 		return 0, false, fmt.Errorf("start agent session: %w", err)
 	}
-	r.logWorkerEvent(issue, "worker_session_started",
-		"session_id", sessionID,
-		"model", model,
-	)
+	attrs := []any{"detent_session_id", sessionID, "work_attempt_id", req.WorkAttemptID}
+	attrs = append(attrs, runtimeIdentityLogAttrs(identity)...)
+	r.logWorkerEvent(req.Issue, "worker_session_started", attrs...)
 	return sessionID, true, nil
+}
+
+func (r *Runner) persistSessionIdentity(ctx context.Context, sessionID int64, identity agentidentity.Identity) error {
+	if sessionID <= 0 || identity.IsZero() {
+		return nil
+	}
+	identityStore, ok := r.store.(sessionIdentityStore)
+	if !ok {
+		return nil
+	}
+	if err := identityStore.UpdateSessionIdentity(ctx, sessionID, identity); err != nil {
+		return fmt.Errorf("update agent session identity: %w", err)
+	}
+	return nil
 }
 
 func (r *Runner) finishSession(
@@ -1226,7 +1333,9 @@ func (r *Runner) finishSession(
 	if result.FinalState == "" {
 		result.FinalState = FinalStateCompleted
 	}
-	model = effectiveModel(result.Model, model)
+	requestedModel := strings.TrimSpace(model)
+	resolvedModel := effectiveModel(result.RuntimeIdentity.ResolvedModel.Value, result.Model)
+	usageModel := effectiveModel(resolvedModel, requestedModel)
 
 	if err := r.store.FinishSession(ctx, sessionID, store.SessionFinish{
 		CompletedAt:           finishedAt,
@@ -1239,33 +1348,37 @@ func (r *Runner) finishSession(
 		ModelContextWindow:    result.Tokens.ModelContextWindow,
 		RuntimeSeconds:        int64(math.Round(result.Tokens.RuntimeSeconds)),
 		FinalState:            result.FinalState,
-		Model:                 model,
+		Model:                 resolvedModel,
 		ProviderThreadID:      turnResult.ThreadID,
 		ProviderSessionID:     turnResult.SessionID,
 		ResumedFromSessionID:  resumedFromSessionID,
+		RuntimeIdentity:       result.RuntimeIdentity,
 	}); err != nil {
 		return fmt.Errorf("finish agent session: %w", err)
 	}
-	r.logWorkerEvent(issue, "worker_session_finished",
-		"session_id", sessionID,
-		"model", model,
+	attrs := []any{
+		"detent_session_id", sessionID,
+		"provider_thread_id", turnResult.ThreadID,
+		"provider_session_id", turnResult.SessionID,
 		"final_state", result.FinalState,
 		"turns", turns,
-	)
+	}
+	attrs = append(attrs, runtimeIdentityLogAttrs(result.RuntimeIdentity)...)
+	r.logWorkerEvent(issue, "worker_session_finished", attrs...)
 	if _, err := r.store.RecordUsageEvent(ctx, store.UsageEvent{
 		ProjectID:             r.projectID,
 		SessionID:             sessionID,
 		IssueID:               issue.ID,
 		Identifier:            issue.Identifier,
 		PRNumber:              pullRequestNumber(issue),
-		Model:                 model,
+		Model:                 usageModel,
 		InputTokens:           result.Tokens.InputTokens,
 		CachedInputTokens:     result.Tokens.CachedInputTokens,
 		OutputTokens:          result.Tokens.OutputTokens,
 		ReasoningOutputTokens: result.Tokens.ReasoningOutputTokens,
 		TotalTokens:           result.Tokens.TotalTokens,
 		ModelContextWindow:    result.Tokens.ModelContextWindow,
-		CostUSD:               r.usageCostUSD(model, result.Tokens.InputTokens, result.Tokens.CachedInputTokens, result.Tokens.OutputTokens, backendKind),
+		CostUSD:               r.usageCostUSD(usageModel, result.Tokens.InputTokens, result.Tokens.CachedInputTokens, result.Tokens.OutputTokens, backendKind),
 		RuntimeSeconds:        int64(math.Round(result.Tokens.RuntimeSeconds)),
 		StartedAt:             startedAt,
 		FinishedAt:            finishedAt,
@@ -1493,8 +1606,14 @@ func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 }
 
 func applyAgentUpdate(result *RunResult, update AgentUpdate) {
+	if !update.RuntimeIdentity.IsZero() {
+		result.RuntimeIdentity = result.RuntimeIdentity.Merge(update.RuntimeIdentity)
+	}
 	if model := strings.TrimSpace(update.Model); model != "" {
 		result.Model = model
+		if result.RuntimeIdentity.ResolvedModel.Value == "" {
+			result.RuntimeIdentity = result.RuntimeIdentity.Merge(agentidentity.RuntimeUpdate(model, "", "", "", time.Time{}))
+		}
 	}
 	switch update.Type {
 	case AgentUpdateTokenUsage:
@@ -1598,6 +1717,8 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 		}
 	case AgentUpdateModelUpdated:
 		eventMessage = modelUpdatedActivityMessage(update.Model)
+	case AgentUpdateRuntimeIdentity:
+		eventMessage = "agent route selected"
 	}
 
 	p.addRecentEvent(telemetry.ActivityEvent{
@@ -1688,6 +1809,7 @@ func (r *Runner) publishRunUpdate(
 	result RunResult,
 	eventAt time.Time,
 	runStartedAt time.Time,
+	detentSessionID int64,
 ) error {
 	if req.OnUsageUpdate == nil {
 		return nil
@@ -1695,6 +1817,7 @@ func (r *Runner) publishRunUpdate(
 
 	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, eventAt)
 	usage := UsageUpdate{
+		DetentSessionID:       detentSessionID,
 		SessionID:             progress.sessionID,
 		ProcessIdentity:       progress.processIdentity,
 		WorkspacePath:         info.Path,
@@ -1704,6 +1827,7 @@ func (r *Runner) publishRunUpdate(
 		LastMessage:           progress.lastMessage,
 		LastMessageTruncation: runtimeoutput.CloneTruncation(progress.lastMessageTruncation),
 		RecentEvents:          progress.recentActivity(),
+		RuntimeIdentity:       result.RuntimeIdentity,
 		Tokens:                result.Tokens,
 		RateLimits:            result.RateLimits,
 	}
@@ -1887,6 +2011,8 @@ func (r *Runner) logAgentUpdate(issue connector.Issue, update AgentUpdate) {
 			"turn_id", strings.TrimSpace(update.TurnID),
 			"model", strings.TrimSpace(update.Model),
 		)
+	case AgentUpdateRuntimeIdentity:
+		return
 	default:
 		if event != "" && update.Type != AgentUpdateMessageDelta {
 			r.logWorkerEvent(issue, "worker_agent_update",
@@ -1896,6 +2022,79 @@ func (r *Runner) logAgentUpdate(issue connector.Issue, update AgentUpdate) {
 			)
 		}
 	}
+}
+
+func (r *Runner) logRuntimeIdentity(req RunRequest, detentSessionID int64, update AgentUpdate, previous agentidentity.Identity, current agentidentity.Identity) {
+	event := "worker_runtime_identity_changed"
+	if !previous.HasRuntimeValues() {
+		event = "worker_runtime_identity_resolved"
+	}
+	attrs := []any{
+		"work_attempt_id", req.WorkAttemptID,
+		"detent_session_id", detentSessionID,
+		"provider_thread_id", strings.TrimSpace(update.ThreadID),
+		"provider_session_id", runtimeIdentityProviderSessionID(current.BackendKind, update.ThreadID, update.TurnID),
+		"provider_turn_id", strings.TrimSpace(update.TurnID),
+		"identity_source_event", strings.TrimSpace(update.Method),
+	}
+	attrs = append(attrs, runtimeIdentityLogAttrs(current)...)
+	if event == "worker_runtime_identity_changed" {
+		attrs = append(attrs,
+			"old_provider", previous.Provider.Value,
+			"new_provider", current.Provider.Value,
+			"old_provider_provenance", previous.Provider.Provenance,
+			"new_provider_provenance", current.Provider.Provenance,
+			"old_resolved_model", previous.ResolvedModel.Value,
+			"new_resolved_model", current.ResolvedModel.Value,
+			"old_resolved_model_provenance", previous.ResolvedModel.Provenance,
+			"new_resolved_model_provenance", current.ResolvedModel.Provenance,
+			"old_reasoning_effort", previous.ReasoningEffort.Value,
+			"new_reasoning_effort", current.ReasoningEffort.Value,
+			"old_reasoning_effort_provenance", previous.ReasoningEffort.Provenance,
+			"new_reasoning_effort_provenance", current.ReasoningEffort.Provenance,
+			"old_service_tier", previous.ServiceTier.Value,
+			"new_service_tier", current.ServiceTier.Value,
+			"old_service_tier_provenance", previous.ServiceTier.Provenance,
+			"new_service_tier_provenance", current.ServiceTier.Provenance,
+		)
+	}
+	r.logWorkerEvent(req.Issue, event, attrs...)
+}
+
+func runtimeIdentityProviderSessionID(backendKind string, threadID string, turnID string) string {
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	if strings.EqualFold(strings.TrimSpace(backendKind), config.AgentBackendClaudeCode) {
+		return threadID
+	}
+	if threadID == "" || turnID == "" {
+		return ""
+	}
+	return threadID + "-" + turnID
+}
+
+func runtimeIdentityLogAttrs(identity agentidentity.Identity) []any {
+	identity = identity.Normalize()
+	attrs := []any{
+		"backend_id", identity.BackendID,
+		"backend_kind", identity.BackendKind,
+		"route", identity.Route,
+		"role", identity.Role,
+		"provider", identity.Provider.Value,
+		"provider_provenance", identity.Provider.Provenance,
+		"requested_model", identity.RequestedModel.Value,
+		"requested_model_provenance", identity.RequestedModel.Provenance,
+		"resolved_model", identity.ResolvedModel.Value,
+		"resolved_model_provenance", identity.ResolvedModel.Provenance,
+		"reasoning_effort", identity.ReasoningEffort.Value,
+		"reasoning_effort_provenance", identity.ReasoningEffort.Provenance,
+		"service_tier", identity.ServiceTier.Value,
+		"service_tier_provenance", identity.ServiceTier.Provenance,
+	}
+	if identity.ObservedAt != nil {
+		attrs = append(attrs, "identity_observed_at", *identity.ObservedAt)
+	}
+	return attrs
 }
 
 type backendErrorCarrier interface {

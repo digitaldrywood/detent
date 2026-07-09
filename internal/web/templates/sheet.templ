@@ -83,6 +83,20 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 									{ session.State }
 								</span>
 							}
+							@sheetRowValue("Agent system", runtimeIdentityString(runtimeIdentitySystemName(session.RuntimeIdentity.BackendKind)), "")
+							@sheetRowValue("Backend profile", runtimeIdentityString(session.RuntimeIdentity.BackendID), "")
+							if session.RuntimeIdentity.Role != "" {
+								@sheetRowValue("Agent role", session.RuntimeIdentity.Role, "")
+							}
+							@sheetRowValue("Provider", runtimeIdentityDetailValue(session.RuntimeIdentity.Provider), "")
+							@sheetRowValue("Model", runtimeIdentityDetailValue(runtimeIdentityModelValue(session.RuntimeIdentity)), "")
+							if session.RuntimeIdentity.RequestedDiffers() {
+								@sheetRowValue("Requested model", runtimeIdentityDetailValue(session.RuntimeIdentity.RequestedModel), "")
+							}
+							@sheetRowValue("Effort", runtimeIdentityDetailValue(session.RuntimeIdentity.ReasoningEffort), "")
+							if !session.RuntimeIdentity.ServiceTier.IsZero() {
+								@sheetRowValue("Service tier", runtimeIdentityDetailValue(session.RuntimeIdentity.ServiceTier), "")
+							}
 							if session.Runtime != "" {
 								@sheetRowValue("Runtime", session.Runtime+" · "+session.Turns+" turns", "")
 							}

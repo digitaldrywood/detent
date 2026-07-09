@@ -26,6 +26,12 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	if event.usage.SessionID != "" {
 		running.SessionID = event.usage.SessionID
 	}
+	if event.usage.DetentSessionID > 0 {
+		running.DetentSessionID = event.usage.DetentSessionID
+	}
+	if !event.usage.RuntimeIdentity.IsZero() {
+		running.RuntimeIdentity = running.RuntimeIdentity.Merge(event.usage.RuntimeIdentity)
+	}
 	if event.usage.TurnCount > 0 {
 		running.TurnCount = event.usage.TurnCount
 	}
@@ -84,6 +90,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		"reason", "run_completed",
 	)
 	running.globalSlot = scheduler.Slot{}
+	if !event.Result.RuntimeIdentity.IsZero() {
+		running.RuntimeIdentity = running.RuntimeIdentity.Merge(event.Result.RuntimeIdentity)
+	}
 	if running.cancel != nil {
 		running.cancel()
 	}
@@ -218,11 +227,13 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, implementCompletionProgressMetadata(progress))
 
 	state.Completed[event.IssueID] = Completed{
-		Issue:       cloneIssue(running.Issue),
-		StartedAt:   running.StartedAt,
-		CompletedAt: event.CompletedAt,
-		FinalState:  finalState,
-		Tokens:      event.Result.Tokens,
+		Issue:           cloneIssue(running.Issue),
+		SessionID:       running.SessionID,
+		StartedAt:       running.StartedAt,
+		CompletedAt:     event.CompletedAt,
+		FinalState:      finalState,
+		Tokens:          event.Result.Tokens,
+		RuntimeIdentity: running.RuntimeIdentity,
 	}
 	state.TokenTotals = addTokenTotals(state.TokenTotals, event.Result.Tokens)
 	if event.Result.RateLimits != nil {
@@ -990,11 +1001,13 @@ func (o *Orchestrator) completePlanRunning(
 	delete(state.planRework, issueID)
 	issue.State = cfg.Stop
 	state.Completed[issueID] = Completed{
-		Issue:       issue,
-		StartedAt:   running.StartedAt,
-		CompletedAt: event.CompletedAt,
-		FinalState:  cfg.Stop,
-		Tokens:      event.Result.Tokens,
+		Issue:           issue,
+		SessionID:       running.SessionID,
+		StartedAt:       running.StartedAt,
+		CompletedAt:     event.CompletedAt,
+		FinalState:      cfg.Stop,
+		Tokens:          event.Result.Tokens,
+		RuntimeIdentity: running.RuntimeIdentity,
 	}
 	state.TokenTotals = addTokenTotals(state.TokenTotals, event.Result.Tokens)
 	if event.Result.RateLimits != nil {
@@ -1088,12 +1101,14 @@ func (o *Orchestrator) completeTerminalRunning(
 		mergeTiming = o.recordMergeCompleted(state, running.Issue, completedAt, finalState)
 	}
 	state.Completed[issueID] = Completed{
-		Issue:       cloneIssue(issue),
-		StartedAt:   running.StartedAt,
-		CompletedAt: completedAt,
-		FinalState:  finalState,
-		Tokens:      tokens,
-		MergeTiming: mergeTiming,
+		Issue:           cloneIssue(issue),
+		SessionID:       running.SessionID,
+		StartedAt:       running.StartedAt,
+		CompletedAt:     completedAt,
+		FinalState:      finalState,
+		Tokens:          tokens,
+		MergeTiming:     mergeTiming,
+		RuntimeIdentity: running.RuntimeIdentity,
 	}
 	state.TokenTotals = addTokenTotals(state.TokenTotals, tokens)
 	if diffStatsPresent(running.DiffStats) {

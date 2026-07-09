@@ -67,7 +67,9 @@ agents:
     - id: claude-worker
       kind: claude_code
       command: ` + strconv.Quote(runnerShellQuote(claudeCommand)) + `
+      provider: custom
       options:
+        effort: high
         permission_mode: acceptEdits
         allowed_tools:
           - Bash
@@ -124,8 +126,14 @@ Prompt {{ issue.identifier }}
 	if result.Tokens.InputTokens != 11 || result.Tokens.OutputTokens != 5 || result.Tokens.TotalTokens != 16 {
 		t.Fatalf("Run() tokens = %#v, want final claude usage", result.Tokens)
 	}
-	if sessionStore.started.Model != "fable" || sessionStore.usage.Model != "fable" {
-		t.Fatalf("recorded models = start %q usage %q, want fable", sessionStore.started.Model, sessionStore.usage.Model)
+	if sessionStore.started.Model != "" || sessionStore.started.RequestedModel != "fable" || sessionStore.usage.Model != "fable" {
+		t.Fatalf("recorded models = start resolved %q requested %q usage %q, want unresolved/fable/fable", sessionStore.started.Model, sessionStore.started.RequestedModel, sessionStore.usage.Model)
+	}
+	if sessionStore.started.RuntimeIdentity.Provider.Value != "custom" || sessionStore.started.RuntimeIdentity.ReasoningEffort.Value != "high" {
+		t.Fatalf("configured runtime identity = %#v, want custom provider and high effort", sessionStore.started.RuntimeIdentity)
+	}
+	if result.RuntimeIdentity.ResolvedModel.Value != "fable" || result.RuntimeIdentity.ReasoningEffort.Value != "high" {
+		t.Fatalf("resolved runtime identity = %#v, want runtime fable and configured high effort", result.RuntimeIdentity)
 	}
 	if sessionStore.phase.EndpointFamily != workflowconfig.AgentBackendClaudeCode {
 		t.Fatalf("WorkflowPhaseEvent EndpointFamily = %q, want claude_code", sessionStore.phase.EndpointFamily)
@@ -138,6 +146,7 @@ Prompt {{ issue.identifier }}
 	wantPrefix := []string{
 		"-p", "--output-format", "stream-json", "--verbose",
 		"--model", "fable",
+		"--effort", "high",
 		"--permission-mode", "acceptEdits",
 		"--allowedTools", "Bash", "Edit",
 		"--disallowedTools", "WebFetch",

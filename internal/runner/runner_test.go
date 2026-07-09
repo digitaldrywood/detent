@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -166,50 +167,56 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if result.Tokens.ModelContextWindow == nil || *result.Tokens.ModelContextWindow != modelContextWindow {
 		t.Fatalf("RunResult ModelContextWindow = %#v, want %d", result.Tokens.ModelContextWindow, modelContextWindow)
 	}
-	if len(usageUpdates) != 3 {
-		t.Fatalf("usage updates len = %d, want 3", len(usageUpdates))
+	if len(usageUpdates) != 4 {
+		t.Fatalf("usage updates len = %d, want 4", len(usageUpdates))
 	}
-	if usageUpdates[0].SessionID != "thread-1-turn-1" || usageUpdates[0].TurnCount != 1 {
-		t.Fatalf("first usage update = %#v, want live session and one turn", usageUpdates[0])
+	if usageUpdates[0].DetentSessionID != 42 || usageUpdates[0].LastEvent != string(AgentUpdateRuntimeIdentity) {
+		t.Fatalf("initial usage update = %#v, want configured route identity", usageUpdates[0])
 	}
-	if usageUpdates[0].ProcessIdentity != "4242" {
-		t.Fatalf("first usage update ProcessIdentity = %q, want 4242", usageUpdates[0].ProcessIdentity)
+	if usageUpdates[0].RuntimeIdentity.RequestedModel != (agentidentity.Value{Value: "gpt-5-codex-high", Provenance: agentidentity.ProvenanceConfigured}) {
+		t.Fatalf("initial RuntimeIdentity = %#v, want configured requested model", usageUpdates[0].RuntimeIdentity)
 	}
-	if usageUpdates[0].WorkspacePath != workspacePath {
-		t.Fatalf("first usage update WorkspacePath = %q, want %q", usageUpdates[0].WorkspacePath, workspacePath)
+	if usageUpdates[1].SessionID != "thread-1-turn-1" || usageUpdates[1].TurnCount != 1 {
+		t.Fatalf("second usage update = %#v, want live session and one turn", usageUpdates[1])
 	}
-	if usageUpdates[0].LastEvent != "agent_message_delta" || usageUpdates[0].LastMessage != "hello" {
-		t.Fatalf("first usage update activity = %#v, want agent message", usageUpdates[0])
+	if usageUpdates[1].ProcessIdentity != "4242" {
+		t.Fatalf("second usage update ProcessIdentity = %q, want 4242", usageUpdates[1].ProcessIdentity)
 	}
-	if len(usageUpdates[0].RecentEvents) != 1 || usageUpdates[0].RecentEvents[0].Message != "hello" {
-		t.Fatalf("first usage update RecentEvents = %#v, want latest agent message", usageUpdates[0].RecentEvents)
+	if usageUpdates[1].WorkspacePath != workspacePath {
+		t.Fatalf("second usage update WorkspacePath = %q, want %q", usageUpdates[1].WorkspacePath, workspacePath)
 	}
-	if usageUpdates[0].LastEventAt.IsZero() {
-		t.Fatal("first usage update LastEventAt is zero")
+	if usageUpdates[1].LastEvent != "agent_message_delta" || usageUpdates[1].LastMessage != "hello" {
+		t.Fatalf("second usage update activity = %#v, want agent message", usageUpdates[1])
 	}
-	if usageUpdates[0].DiffStats.FilesChanged != 1 || usageUpdates[0].DiffStats.AddedLines != 2 || usageUpdates[0].DiffStats.Status != "ok" {
-		t.Fatalf("first usage update DiffStats = %#v, want live diff", usageUpdates[0].DiffStats)
+	if len(usageUpdates[1].RecentEvents) != 2 || usageUpdates[1].RecentEvents[1].Message != "hello" {
+		t.Fatalf("second usage update RecentEvents = %#v, want route and agent message", usageUpdates[1].RecentEvents)
 	}
-	if usageUpdates[1].TurnCount != 1 || usageUpdates[1].Tokens.TotalTokens != 125 {
-		t.Fatalf("second usage update = %#v, want 1 turn and 125 tokens", usageUpdates[1])
+	if usageUpdates[1].LastEventAt.IsZero() {
+		t.Fatal("second usage update LastEventAt is zero")
 	}
-	if usageUpdates[1].Tokens.RuntimeSeconds != 2 {
-		t.Fatalf("second usage update runtime = %v, want 2", usageUpdates[1].Tokens.RuntimeSeconds)
+	if usageUpdates[1].DiffStats.FilesChanged != 1 || usageUpdates[1].DiffStats.AddedLines != 2 || usageUpdates[1].DiffStats.Status != "ok" {
+		t.Fatalf("second usage update DiffStats = %#v, want live diff", usageUpdates[1].DiffStats)
 	}
-	if len(usageUpdates[1].RecentEvents) != 2 || usageUpdates[1].RecentEvents[1].Event != "token_usage" || usageUpdates[1].RecentEvents[1].Message != "125 total tokens (100 in, 25 out)" {
-		t.Fatalf("second usage update RecentEvents = %#v, want token-specific activity", usageUpdates[1].RecentEvents)
+	if usageUpdates[2].TurnCount != 1 || usageUpdates[2].Tokens.TotalTokens != 125 {
+		t.Fatalf("third usage update = %#v, want 1 turn and 125 tokens", usageUpdates[2])
 	}
-	if usageUpdates[1].DiffStats.FilesChanged != 1 || usageUpdates[1].DiffStats.AddedLines != 2 || usageUpdates[1].DiffStats.RemovedLines != 0 {
-		t.Fatalf("second usage update DiffStats = %#v, want cached diff", usageUpdates[1].DiffStats)
+	if usageUpdates[2].Tokens.RuntimeSeconds != 3 {
+		t.Fatalf("third usage update runtime = %v, want 3", usageUpdates[2].Tokens.RuntimeSeconds)
 	}
-	if usageUpdates[2].RateLimits == nil || usageUpdates[2].RateLimits.LimitID != "codex-primary" {
-		t.Fatalf("third usage update RateLimits = %#v, want codex-primary", usageUpdates[2].RateLimits)
-	}
-	if len(usageUpdates[2].RecentEvents) != 3 || usageUpdates[2].RecentEvents[2].Event != "rate_limits" || usageUpdates[2].RecentEvents[2].Message != "Codex primary rate limits updated" {
-		t.Fatalf("third usage update RecentEvents = %#v, want rate-limit-specific activity", usageUpdates[2].RecentEvents)
+	if len(usageUpdates[2].RecentEvents) != 3 || usageUpdates[2].RecentEvents[2].Event != "token_usage" || usageUpdates[2].RecentEvents[2].Message != "125 total tokens (100 in, 25 out)" {
+		t.Fatalf("third usage update RecentEvents = %#v, want token-specific activity", usageUpdates[2].RecentEvents)
 	}
 	if usageUpdates[2].DiffStats.FilesChanged != 2 || usageUpdates[2].DiffStats.AddedLines != 5 || usageUpdates[2].DiffStats.RemovedLines != 1 {
 		t.Fatalf("third usage update DiffStats = %#v, want refreshed diff", usageUpdates[2].DiffStats)
+	}
+	if usageUpdates[3].RateLimits == nil || usageUpdates[3].RateLimits.LimitID != "codex-primary" {
+		t.Fatalf("fourth usage update RateLimits = %#v, want codex-primary", usageUpdates[3].RateLimits)
+	}
+	if len(usageUpdates[3].RecentEvents) != 4 || usageUpdates[3].RecentEvents[3].Event != "rate_limits" || usageUpdates[3].RecentEvents[3].Message != "Codex primary rate limits updated" {
+		t.Fatalf("fourth usage update RecentEvents = %#v, want rate-limit-specific activity", usageUpdates[3].RecentEvents)
+	}
+	if usageUpdates[3].DiffStats.FilesChanged != 2 || usageUpdates[3].DiffStats.AddedLines != 5 || usageUpdates[3].DiffStats.RemovedLines != 1 {
+		t.Fatalf("fourth usage update DiffStats = %#v, want refreshed diff", usageUpdates[3].DiffStats)
 	}
 	if result.DiffStats.FilesChanged != 2 || result.DiffStats.AddedLines != 5 || result.DiffStats.RemovedLines != 1 {
 		t.Fatalf("DiffStats = %#v, want 2 files, 5 added, 1 removed", result.DiffStats)
@@ -247,14 +254,17 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			t.Fatalf("codex prompt missing %q:\n%s", want, codexClient.request.Prompt)
 		}
 	}
-	if sessionStore.started.Identifier != "digitaldrywood/detent#22" || sessionStore.started.Model != "gpt-5-codex-high" || sessionStore.started.AgentRole != RoleCode {
-		t.Fatalf("SessionStart = %#v, want issue identity, model, and code role", sessionStore.started)
+	if sessionStore.started.Identifier != "digitaldrywood/detent#22" || sessionStore.started.Model != "" || sessionStore.started.RequestedModel != "gpt-5-codex-high" || sessionStore.started.AgentRole != RoleCode {
+		t.Fatalf("SessionStart = %#v, want requested model distinct from unresolved model and code role", sessionStore.started)
 	}
 	if sessionStore.finished.FinalState != FinalStateCompleted || sessionStore.finished.TotalTokens != 125 || sessionStore.finished.Turns != 1 || sessionStore.finished.Model != "gpt-5-codex-resolved" {
 		t.Fatalf("SessionFinish = %#v, want completed session with tokens", sessionStore.finished)
 	}
 	if sessionStore.finished.ProviderThreadID != "thread-1" || sessionStore.finished.ProviderSessionID != "thread-1-turn-1" {
 		t.Fatalf("SessionFinish provider IDs = %#v, want thread-1/thread-1-turn-1", sessionStore.finished)
+	}
+	if len(sessionStore.identityUpdates) != 1 || sessionStore.identityUpdates[0].ResolvedModel != (agentidentity.Value{Value: "gpt-5-codex-resolved", Provenance: agentidentity.ProvenanceRuntime}) {
+		t.Fatalf("identity updates = %#v, want immediate runtime model persistence", sessionStore.identityUpdates)
 	}
 	if sessionStore.finished.CachedInputTokens != 40 || sessionStore.finished.ReasoningOutputTokens != 7 {
 		t.Fatalf("SessionFinish cached/reasoning = %#v, want 40/7", sessionStore.finished)
@@ -303,6 +313,47 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if sessionStore.phase.ModelContextWindow == nil || *sessionStore.phase.ModelContextWindow != modelContextWindow {
 		t.Fatalf("WorkflowPhaseEvent ModelContextWindow = %#v, want %d", sessionStore.phase.ModelContextWindow, modelContextWindow)
+	}
+}
+
+func TestConfiguredRuntimeIdentityKeepsClaudeIntentDistinct(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := config.ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: claude-local
+      kind: claude_code
+      provider: ollama
+      options:
+        effort: high
+  routes:
+    - name: local
+      backend: claude-local
+      model: fable
+      default: true
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	backend := workflow.Config.AgentBackendConfigs()[0]
+	identity := configuredRuntimeIdentity(RouteSelection{BackendID: "claude-local", RouteName: "local"}, backend, RoleCode, "fable", time.Time{})
+	if identity.Provider != (agentidentity.Value{Value: "ollama", Provenance: agentidentity.ProvenanceConfigured}) {
+		t.Fatalf("Provider = %#v, want configured ollama", identity.Provider)
+	}
+	if identity.RequestedModel != (agentidentity.Value{Value: "fable", Provenance: agentidentity.ProvenanceConfigured}) || identity.ResolvedModel.Known() {
+		t.Fatalf("model identity = %#v, want configured request and unresolved runtime model", identity)
+	}
+	if identity.ReasoningEffort != (agentidentity.Value{Value: "high", Provenance: agentidentity.ProvenanceConfigured}) {
+		t.Fatalf("ReasoningEffort = %#v, want configured high", identity.ReasoningEffort)
+	}
+	_, _, effort := agentTurnIdentityOptions(backend)
+	if effort != "high" {
+		t.Fatalf("turn effort = %q, want high", effort)
 	}
 }
 
@@ -949,8 +1000,8 @@ func TestRunnerRunKillsSessionAtTokenCeilingAndRecordsLesson(t *testing.T) {
 	if sessionStore.phase.Status != FinalStateTokenCeilingExceeded || sessionStore.phase.TotalTokens != 120 {
 		t.Fatalf("WorkflowPhaseEvent = %#v, want token ceiling status and 120 tokens", sessionStore.phase)
 	}
-	if len(usageUpdates) != 2 {
-		t.Fatalf("usage update count = %d, want 2", len(usageUpdates))
+	if len(usageUpdates) != 3 {
+		t.Fatalf("usage update count = %d, want configured identity plus 2 token updates", len(usageUpdates))
 	}
 	if got := usageUpdates[len(usageUpdates)-1].Tokens.TotalTokens; got != 120 {
 		t.Fatalf("last live usage total tokens = %d, want ceiling-crossing 120", got)
@@ -1339,7 +1390,13 @@ func TestRunnerRunLogsLifecycleWithoutPromptOrMessageBody(t *testing.T) {
 	codexClient := &fakeCodexClient{
 		updates: []AgentUpdate{
 			{Type: AgentUpdateProcessStarted, ProcessIdentity: "pid-123"},
-			{Type: AgentUpdateTurnStarted, ThreadID: "thread-1", TurnID: "turn-1"},
+			{
+				Type:            AgentUpdateTurnStarted,
+				ThreadID:        "thread-1",
+				TurnID:          "turn-1",
+				Model:           "gpt-5.6-sol",
+				RuntimeIdentity: agentidentity.RuntimeUpdate("gpt-5.6-sol", "openai", "xhigh", "priority", time.Time{}),
+			},
 			{Type: AgentUpdateMessageDelta, Delta: "do not log this message body"},
 			{Type: AgentUpdateTokenUsage, ThreadID: "thread-1", TurnID: "turn-1", Tokens: AgentTokenUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}},
 			{Type: AgentUpdateTurnCompleted, ThreadID: "thread-1", TurnID: "turn-1", Status: "completed"},
@@ -1369,6 +1426,7 @@ func TestRunnerRunLogsLifecycleWithoutPromptOrMessageBody(t *testing.T) {
 			Description: "do not log this prompt body",
 			State:       "Todo",
 		},
+		WorkAttemptID: 88,
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -1381,6 +1439,7 @@ func TestRunnerRunLogsLifecycleWithoutPromptOrMessageBody(t *testing.T) {
 		"worker_before_run_finished",
 		"worker_session_started",
 		"worker_command_started",
+		"worker_runtime_identity_resolved",
 		"worker_process_started",
 		"worker_turn_started",
 		"worker_usage_updated",
@@ -1389,6 +1448,16 @@ func TestRunnerRunLogsLifecycleWithoutPromptOrMessageBody(t *testing.T) {
 		"worker_after_run_finished",
 		"worker_session_finished",
 		"issue_id=issue-726",
+		"work_attempt_id=88",
+		"provider_thread_id=thread-1",
+		"provider_session_id=thread-1-turn-1",
+		"backend_kind=codex",
+		"provider=openai",
+		"provider_provenance=runtime",
+		"resolved_model=gpt-5.6-sol",
+		"resolved_model_provenance=runtime",
+		"reasoning_effort=xhigh",
+		"service_tier=priority",
 	} {
 		if !strings.Contains(logText, fragment) {
 			t.Fatalf("logs missing %q:\n%s", fragment, logText)
@@ -1397,6 +1466,61 @@ func TestRunnerRunLogsLifecycleWithoutPromptOrMessageBody(t *testing.T) {
 	for _, leaked := range []string{"do not log this message body", "do not log this prompt body"} {
 		if strings.Contains(logText, leaked) {
 			t.Fatalf("logs leaked %q:\n%s", leaked, logText)
+		}
+	}
+}
+
+func TestLogRuntimeIdentityChangeUsesCanonicalFieldsWithoutPayloadSecrets(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	r := &Runner{
+		projectID: "detent",
+		logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+	}
+	previous := agentidentity.Configured("codex-high", "codex", "high", "code", "gpt-5.5", "", "", "", time.Time{}).
+		Merge(agentidentity.RuntimeUpdate("gpt-5.6-sol", "openai", "high", "priority", time.Time{}))
+	current := previous.Merge(agentidentity.RuntimeUpdate("gpt-5.6-terra", "openai", "xhigh", "priority", time.Time{}))
+	r.logRuntimeIdentity(
+		RunRequest{
+			Issue:         connector.Issue{ID: "issue-1118", Identifier: "digitaldrywood/detent#1118"},
+			WorkAttemptID: 73,
+		},
+		1118,
+		AgentUpdate{
+			Method:           "model/rerouted",
+			ThreadID:         "thread-1118",
+			TurnID:           "turn-2",
+			BackendErrorBody: `{"base_url":"https://secret.example","authorization":"Bearer secret"}`,
+		},
+		previous,
+		current,
+	)
+
+	got := logs.String()
+	for _, want := range []string{
+		"worker_runtime_identity_changed",
+		"project_id=detent",
+		"issue_id=issue-1118",
+		"work_attempt_id=73",
+		"detent_session_id=1118",
+		"provider_thread_id=thread-1118",
+		"provider_session_id=thread-1118-turn-2",
+		"old_resolved_model=gpt-5.6-sol",
+		"new_resolved_model=gpt-5.6-terra",
+		"old_reasoning_effort=high",
+		"new_reasoning_effort=xhigh",
+		"new_reasoning_effort_provenance=runtime",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("runtime identity log missing %q:\n%s", want, got)
+		}
+	}
+	for _, secret := range []string{"secret.example", "Bearer secret", "authorization", "base_url"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("runtime identity log leaked %q:\n%s", secret, got)
 		}
 	}
 }
@@ -1632,8 +1756,8 @@ func TestRunnerRunRoutesPerStageRoles(t *testing.T) {
 			if sessionStore.started.AgentRole != tt.wantRole {
 				t.Fatalf("SessionStart.AgentRole = %q, want %q", sessionStore.started.AgentRole, tt.wantRole)
 			}
-			if sessionStore.started.Model != tt.wantModel {
-				t.Fatalf("SessionStart.Model = %q, want %q", sessionStore.started.Model, tt.wantModel)
+			if sessionStore.started.Model != "" || sessionStore.started.RequestedModel != tt.wantModel {
+				t.Fatalf("SessionStart = %#v, want unresolved model and requested %q", sessionStore.started, tt.wantModel)
 			}
 			if sessionStore.usage.SessionID != 861 {
 				t.Fatalf("UsageEvent.SessionID = %d, want role-bearing session 861", sessionStore.usage.SessionID)
@@ -1714,8 +1838,8 @@ func TestRunnerRunThreadResumeUsesDerivedRoleKey(t *testing.T) {
 	if sessionStore.started.AgentRole != RoleMerge {
 		t.Fatalf("SessionStart.AgentRole = %q, want %q", sessionStore.started.AgentRole, RoleMerge)
 	}
-	if sessionStore.started.Model != "gpt-5-code" {
-		t.Fatalf("SessionStart.Model = %q, want fallback code model", sessionStore.started.Model)
+	if sessionStore.started.Model != "" || sessionStore.started.RequestedModel != "gpt-5-code" {
+		t.Fatalf("SessionStart = %#v, want unresolved model and fallback code request", sessionStore.started)
 	}
 }
 
@@ -1782,8 +1906,8 @@ func TestRunnerRunUsesStageDefaultModelForReworkFallback(t *testing.T) {
 	if checker.model != "gpt-5-rework-default" {
 		t.Fatalf("budget check model = %q, want rework default", checker.model)
 	}
-	if sessionStore.started.Model != "gpt-5-rework-default" {
-		t.Fatalf("SessionStart.Model = %q, want rework default", sessionStore.started.Model)
+	if sessionStore.started.Model != "" || sessionStore.started.RequestedModel != "gpt-5-rework-default" {
+		t.Fatalf("SessionStart = %#v, want unresolved model and rework default request", sessionStore.started)
 	}
 	if sessionStore.started.AgentRole != RoleRework {
 		t.Fatalf("SessionStart.AgentRole = %q, want %q", sessionStore.started.AgentRole, RoleRework)
@@ -1865,8 +1989,8 @@ func TestRunnerRunUnroutedStageRolesUseCodeDefaultRoute(t *testing.T) {
 			if sessionStore.started.AgentRole != tt.wantRole {
 				t.Fatalf("SessionStart.AgentRole = %q, want %q", sessionStore.started.AgentRole, tt.wantRole)
 			}
-			if sessionStore.started.Model != "gpt-5-code" {
-				t.Fatalf("SessionStart.Model = %q, want fallback code model", sessionStore.started.Model)
+			if sessionStore.started.Model != "" || sessionStore.started.RequestedModel != "gpt-5-code" {
+				t.Fatalf("SessionStart = %#v, want unresolved model and fallback code request", sessionStore.started)
 			}
 		})
 	}
@@ -2623,14 +2747,14 @@ func TestRunnerRunTruncatesConfiguredAgentOutputTelemetry(t *testing.T) {
 	if last.LastMessageTruncation.OriginalBytes != len(largeOutput) {
 		t.Fatalf("OriginalBytes = %d, want %d", last.LastMessageTruncation.OriginalBytes, len(largeOutput))
 	}
-	if len(last.RecentEvents) != 1 {
-		t.Fatalf("RecentEvents length = %d, want 1", len(last.RecentEvents))
+	if len(last.RecentEvents) != 2 {
+		t.Fatalf("RecentEvents length = %d, want route selection and message", len(last.RecentEvents))
 	}
-	if last.RecentEvents[0].Message != wantOutput {
-		t.Fatalf("RecentEvents[0].Message = %q, want %q", last.RecentEvents[0].Message, wantOutput)
+	if last.RecentEvents[1].Message != wantOutput {
+		t.Fatalf("RecentEvents[1].Message = %q, want %q", last.RecentEvents[1].Message, wantOutput)
 	}
-	if last.RecentEvents[0].Truncation == nil || !last.RecentEvents[0].Truncation.Truncated {
-		t.Fatalf("RecentEvents[0].Truncation = %#v, want truncated metadata", last.RecentEvents[0].Truncation)
+	if last.RecentEvents[1].Truncation == nil || !last.RecentEvents[1].Truncation.Truncated {
+		t.Fatalf("RecentEvents[1].Truncation = %#v, want truncated metadata", last.RecentEvents[1].Truncation)
 	}
 }
 
@@ -2995,19 +3119,20 @@ func (c *cancelingCodexClient) RunTurn(context.Context, AgentTurnRequest, AgentU
 }
 
 type fakeSessionStore struct {
-	sessionID     int64
-	started       store.SessionStart
-	finished      store.SessionFinish
-	usage         store.UsageEvent
-	phase         store.WorkflowPhaseEvent
-	startCalls    int
-	finishCalls   int
-	usageCalls    int
-	resumeState   store.AgentResumeState
-	resumeStates  map[string]store.AgentResumeState
-	resumeErr     error
-	resumeLookups int
-	resumeLookup  store.AgentResumeLookup
+	sessionID       int64
+	started         store.SessionStart
+	finished        store.SessionFinish
+	usage           store.UsageEvent
+	phase           store.WorkflowPhaseEvent
+	identityUpdates []agentidentity.Identity
+	startCalls      int
+	finishCalls     int
+	usageCalls      int
+	resumeState     store.AgentResumeState
+	resumeStates    map[string]store.AgentResumeState
+	resumeErr       error
+	resumeLookups   int
+	resumeLookup    store.AgentResumeLookup
 }
 
 func (s *fakeSessionStore) StartSession(_ context.Context, attrs store.SessionStart) (int64, error) {
@@ -3019,6 +3144,11 @@ func (s *fakeSessionStore) StartSession(_ context.Context, attrs store.SessionSt
 func (s *fakeSessionStore) FinishSession(_ context.Context, _ int64, attrs store.SessionFinish) error {
 	s.finishCalls++
 	s.finished = attrs
+	return nil
+}
+
+func (s *fakeSessionStore) UpdateSessionIdentity(_ context.Context, _ int64, identity agentidentity.Identity) error {
+	s.identityUpdates = append(s.identityUpdates, identity)
 	return nil
 }
 

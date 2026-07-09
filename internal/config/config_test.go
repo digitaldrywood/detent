@@ -1089,7 +1089,9 @@ agents:
   backends:
     - id: claude-worker
       kind: claude_code
+      provider: local_ollama
       options:
+        effort: HIGH
         allowed_tools:
           - Bash
           - Edit
@@ -1126,10 +1128,16 @@ Prompt
 	if backend.Command != "claude" {
 		t.Fatalf("backend Command = %q, want default claude", backend.Command)
 	}
+	if backend.Provider != "local_ollama" {
+		t.Fatalf("backend Provider = %q, want local_ollama", backend.Provider)
+	}
 
 	options := backend.ClaudeCodeOptions()
 	if options.PermissionMode != "bypassPermissions" {
 		t.Fatalf("permission mode = %q, want bypassPermissions", options.PermissionMode)
+	}
+	if options.Effort != "high" {
+		t.Fatalf("effort = %q, want normalized high", options.Effort)
 	}
 	if !reflect.DeepEqual(options.AllowedTools, []string{"Bash", "Edit"}) {
 		t.Fatalf("allowed tools = %#v, want Bash/Edit", options.AllowedTools)
@@ -2204,6 +2212,29 @@ Prompt
 `,
 			want: []string{
 				"agents.backends.options.permission_mode must be one of default, acceptEdits, bypassPermissions",
+			},
+		},
+		{
+			name: "invalid runtime identity labels and effort",
+			raw: `---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: claude
+      kind: claude_code
+      provider: https://provider.example
+      options:
+        effort: extreme
+  routes:
+    - backend: claude
+      default: true
+---
+Prompt
+`,
+			want: []string{
+				"agents.backends.provider must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens",
+				"agents.backends.options.effort must be one of low, medium, high, xhigh, max",
 			},
 		},
 		{

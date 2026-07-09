@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
@@ -17,7 +18,72 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
+
+func TestHandleRunUpdatePersistsRuntimeIdentityHeartbeat(t *testing.T) {
+	t.Parallel()
+
+	attempts := &recordingWorkAttemptStore{}
+	o := &Orchestrator{cfg: normalizeConfig(Config{}), workAttempts: attempts}
+	state := newState(normalizeConfig(Config{}))
+	issue := connector.Issue{ID: "issue-1118", Identifier: "digitaldrywood/detent#1118", State: "In Progress"}
+	state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: 42}
+	state.WorkAttempts = []telemetry.WorkAttempt{{AttemptID: 42}}
+	identity := agentidentity.Configured("codex-high", "codex", "high", "code", "gpt-5.5", "", "", "", time.Time{}).
+		Merge(agentidentity.RuntimeUpdate("gpt-5.6-sol", "openai", "xhigh", "priority", time.Time{}))
+	at := time.Date(2026, 7, 9, 20, 0, 0, 0, time.UTC)
+
+	o.handleRunUpdate(&state, runUpdate{
+		issueID: issue.ID,
+		usage: runpkg.UsageUpdate{
+			DetentSessionID: 1118,
+			SessionID:       "thread-1118-turn-1",
+			LastEventAt:     at,
+			LastEvent:       "runtime_identity",
+			RuntimeIdentity: identity,
+		},
+	})
+
+	if len(attempts.heartbeats) != 1 {
+		t.Fatalf("heartbeats = %#v, want immediate durable identity heartbeat", attempts.heartbeats)
+	}
+	heartbeat := attempts.heartbeats[0]
+	if heartbeat.DetentSessionID != 1118 || heartbeat.ProviderSessionID != "thread-1118-turn-1" || !heartbeat.RuntimeIdentity.MateriallyEqual(identity) {
+		t.Fatalf("heartbeat = %#v, want correlated runtime identity", heartbeat)
+	}
+	if !state.WorkAttempts[0].RuntimeIdentity.MateriallyEqual(identity) {
+		t.Fatalf("snapshot work attempt identity = %#v, want runtime identity", state.WorkAttempts[0].RuntimeIdentity)
+	}
+}
+
+func TestRecoverDurableWorkAttemptsRestoresMostRecentRuntimeIdentity(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 22, 0, 0, 0, time.UTC)
+	issue := connector.Issue{ID: "issue-1118", Identifier: "digitaldrywood/detent#1118", State: "Human Review"}
+	newest := agentidentity.Configured("claude-local", "claude_code", "local", "validator", "fable", "ollama", "high", "", now.Add(-time.Hour)).
+		Merge(agentidentity.RuntimeUpdate("qwen3-coder", "", "", "", now.Add(-time.Hour)))
+	older := agentidentity.Configured("codex-old", "codex", "default", "code", "gpt-5.5", "", "", "", now.Add(-2*time.Hour))
+	attempts := &recordingWorkAttemptStore{recent: []store.WorkAttempt{
+		{ID: 2, ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, Status: store.WorkAttemptStatusTerminal, RuntimeIdentity: newest},
+		{ID: 1, ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, Status: store.WorkAttemptStatusTerminal, RuntimeIdentity: older},
+	}}
+	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}})
+	o := &Orchestrator{cfg: cfg, workAttempts: attempts}
+	state := newState(cfg)
+	state.BoardIssues = []connector.Issue{issue}
+
+	o.recoverDurableWorkAttempts(context.Background(), &state, now)
+
+	if len(state.WorkAttempts) != 2 || state.WorkAttempts[0].AttemptID != 2 || state.WorkAttempts[1].AttemptID != 1 {
+		t.Fatalf("recovered attempts = %#v, want newest first", state.WorkAttempts)
+	}
+	snapshot := state.Snapshot(now)
+	if len(snapshot.BoardIssues) != 1 || !snapshot.BoardIssues[0].RuntimeIdentity.MateriallyEqual(newest) {
+		t.Fatalf("recovered board identity = %#v, want newest persisted identity", snapshot.BoardIssues)
+	}
+}
 
 func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	t.Parallel()
@@ -2190,6 +2256,7 @@ type recordingWorkAttemptStore struct {
 	completions []store.WorkAttemptCompletion
 	decisions   []store.SchedulerDecision
 	reclaimed   []store.WorkAttempt
+	recent      []store.WorkAttempt
 }
 
 func (s *recordingWorkAttemptStore) StartWorkAttempt(_ context.Context, attrs store.WorkAttemptStart) (int64, error) {
@@ -2229,7 +2296,7 @@ func (s *recordingWorkAttemptStore) ListActiveWorkAttempts(context.Context, stor
 }
 
 func (s *recordingWorkAttemptStore) ListRecentTerminalWorkAttempts(context.Context, store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
-	return nil, nil
+	return append([]store.WorkAttempt(nil), s.recent...), nil
 }
 
 func (s *recordingWorkAttemptStore) RecordSchedulerDecision(_ context.Context, attrs store.SchedulerDecision) (int64, error) {

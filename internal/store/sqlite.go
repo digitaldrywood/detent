@@ -12,6 +12,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
 )
 
@@ -192,24 +193,42 @@ func (s *sqliteStore) StartSession(ctx context.Context, attrs SessionStart) (int
 	if requestedModel == "" {
 		requestedModel = strings.TrimSpace(attrs.Model)
 	}
+	identity := attrs.RuntimeIdentity.Normalize()
+	identity = identity.Merge(agentidentity.Identity{
+		BackendID:      attrs.AgentBackendID,
+		BackendKind:    attrs.AgentBackendKind,
+		Role:           attrs.AgentRole,
+		RequestedModel: agentidentity.NewValue(requestedModel, agentidentity.ProvenanceConfigured),
+	})
 
 	session, err := s.queries.CreateCodexSession(ctx, sqlc.CreateCodexSessionParams{
-		RunID:                nullPositiveInt64(attrs.RunID),
-		IssueID:              nullString(attrs.IssueID),
-		Identifier:           nullString(attrs.Identifier),
-		IssueURL:             nullString(attrs.IssueURL),
-		StartedAt:            sql.NullString{String: startedAt, Valid: true},
-		RequestedModel:       nullString(requestedModel),
-		AgentBackendID:       nullString(attrs.AgentBackendID),
-		AgentBackendKind:     nullString(attrs.AgentBackendKind),
-		AgentRole:            nullString(attrs.AgentRole),
-		CompletedAt:          sql.NullString{},
-		ModelContextWindow:   sql.NullInt64{},
-		FinalState:           sql.NullString{},
-		Model:                nullString(attrs.Model),
-		ProviderThreadID:     sql.NullString{},
-		ProviderSessionID:    sql.NullString{},
-		ResumedFromSessionID: sql.NullInt64{},
+		RunID:                     nullPositiveInt64(attrs.RunID),
+		WorkAttemptID:             nullPositiveInt64(attrs.WorkAttemptID),
+		IssueID:                   nullString(attrs.IssueID),
+		Identifier:                nullString(attrs.Identifier),
+		IssueURL:                  nullString(attrs.IssueURL),
+		StartedAt:                 sql.NullString{String: startedAt, Valid: true},
+		RequestedModel:            nullString(requestedModel),
+		AgentBackendID:            nullString(attrs.AgentBackendID),
+		AgentBackendKind:          nullString(attrs.AgentBackendKind),
+		AgentRole:                 nullString(attrs.AgentRole),
+		AgentRoute:                nullString(identity.Route),
+		Provider:                  nullIdentityValue(identity.Provider),
+		ProviderProvenance:        nullIdentityProvenance(identity.Provider),
+		RequestedModelProvenance:  nullIdentityProvenance(identity.RequestedModel),
+		ModelProvenance:           nullIdentityProvenance(identity.ResolvedModel),
+		ReasoningEffort:           nullIdentityValue(identity.ReasoningEffort),
+		ReasoningEffortProvenance: nullIdentityProvenance(identity.ReasoningEffort),
+		ServiceTier:               nullIdentityValue(identity.ServiceTier),
+		ServiceTierProvenance:     nullIdentityProvenance(identity.ServiceTier),
+		IdentityObservedAt:        nullIdentityObservedAt(identity.ObservedAt),
+		CompletedAt:               sql.NullString{},
+		ModelContextWindow:        sql.NullInt64{},
+		FinalState:                sql.NullString{},
+		Model:                     nullString(attrs.Model),
+		ProviderThreadID:          sql.NullString{},
+		ProviderSessionID:         sql.NullString{},
+		ResumedFromSessionID:      sql.NullInt64{},
 	})
 	if err != nil {
 		return 0, fmt.Errorf("starting codex session: %w", err)
@@ -217,10 +236,44 @@ func (s *sqliteStore) StartSession(ctx context.Context, attrs SessionStart) (int
 	return session.ID, nil
 }
 
+func (s *sqliteStore) UpdateSessionIdentity(ctx context.Context, sessionID int64, identity agentidentity.Identity) error {
+	if sessionID <= 0 {
+		return ErrNotFound
+	}
+	identity = identity.Normalize()
+	rows, err := s.queries.UpdateCodexSessionIdentity(ctx, sqlc.UpdateCodexSessionIdentityParams{
+		AgentBackendID:            nullString(identity.BackendID),
+		AgentBackendKind:          nullString(identity.BackendKind),
+		AgentRole:                 nullString(identity.Role),
+		AgentRoute:                nullString(identity.Route),
+		Provider:                  nullIdentityValue(identity.Provider),
+		ProviderProvenance:        nullIdentityProvenance(identity.Provider),
+		RequestedModel:            nullIdentityValue(identity.RequestedModel),
+		RequestedModelProvenance:  nullIdentityProvenance(identity.RequestedModel),
+		Model:                     nullIdentityValue(identity.ResolvedModel),
+		ModelProvenance:           nullIdentityProvenance(identity.ResolvedModel),
+		ReasoningEffort:           nullIdentityValue(identity.ReasoningEffort),
+		ReasoningEffortProvenance: nullIdentityProvenance(identity.ReasoningEffort),
+		ServiceTier:               nullIdentityValue(identity.ServiceTier),
+		ServiceTierProvenance:     nullIdentityProvenance(identity.ServiceTier),
+		IdentityObservedAt:        nullIdentityObservedAt(identity.ObservedAt),
+		ID:                        sessionID,
+	})
+	if err != nil {
+		return fmt.Errorf("updating codex session identity: %w", err)
+	}
+	return requireAffected(rows, "codex session", sessionID)
+}
+
 func (s *sqliteStore) FinishSession(ctx context.Context, sessionID int64, attrs SessionFinish) error {
 	completedAt, err := requiredTimestamp("completed_at", attrs.CompletedAt)
 	if err != nil {
 		return err
+	}
+	if !attrs.RuntimeIdentity.IsZero() {
+		if err := s.UpdateSessionIdentity(ctx, sessionID, attrs.RuntimeIdentity); err != nil {
+			return err
+		}
 	}
 
 	rows, err := s.queries.FinishCodexSession(ctx, sqlc.FinishCodexSessionParams{
@@ -930,6 +983,21 @@ func nullString(value string) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: trimmed, Valid: true}
+}
+
+func nullIdentityValue(value agentidentity.Value) sql.NullString {
+	return nullString(value.Normalize().Value)
+}
+
+func nullIdentityProvenance(value agentidentity.Value) sql.NullString {
+	return nullString(string(value.Normalize().Provenance))
+}
+
+func nullIdentityObservedAt(value *time.Time) sql.NullString {
+	if value == nil || value.IsZero() {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: value.UTC().Format(time.RFC3339Nano), Valid: true}
 }
 
 func nullPositiveInt64(value int64) sql.NullInt64 {

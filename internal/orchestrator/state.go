@@ -5,6 +5,7 @@ import (
 	"maps"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -75,6 +76,8 @@ type Running struct {
 	ProcessIdentity       string
 	WorkspacePath         string
 	SessionID             string
+	DetentSessionID       int64
+	RuntimeIdentity       agentidentity.Identity
 	TurnCount             int
 	LastEventAt           time.Time
 	LastEvent             string
@@ -112,12 +115,14 @@ type Blocked struct {
 }
 
 type Completed struct {
-	Issue       connector.Issue
-	StartedAt   time.Time
-	CompletedAt time.Time
-	FinalState  string
-	Tokens      TokenTotals
-	MergeTiming MergeTiming
+	Issue           connector.Issue
+	SessionID       string
+	StartedAt       time.Time
+	CompletedAt     time.Time
+	FinalState      string
+	Tokens          TokenTotals
+	MergeTiming     MergeTiming
+	RuntimeIdentity agentidentity.Identity
 }
 
 type MergeTiming struct {

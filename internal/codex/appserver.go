@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 )
 
 const (
@@ -181,6 +183,7 @@ const (
 	UpdateTurnStarted       UpdateType = "turn_started"
 	UpdateTurnCompleted     UpdateType = "turn_completed"
 	UpdateModelUpdated      UpdateType = "model_updated"
+	UpdateRuntimeIdentity   UpdateType = "runtime_identity"
 )
 
 type Update struct {
@@ -193,6 +196,7 @@ type Update struct {
 	Delta               string
 	Status              string
 	Model               string
+	RuntimeIdentity     agentidentity.Identity
 	BackendErrorBody    string
 	BackendErrorMessage string
 	Tokens              TokenUsage
@@ -312,22 +316,39 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 	}
 
 	threadID := strings.TrimSpace(req.ResumeThreadID)
-	var model string
+	var runtimeIdentity agentidentity.Identity
 	if threadID != "" {
-		threadID, model, err = s.resumeThread(ctx, transport, req, threadID, onUpdate)
+		threadID, runtimeIdentity, err = s.resumeThread(ctx, transport, req, threadID, onUpdate)
 		if err != nil {
 			return RunTurnResult{}, err
 		}
 	} else {
-		threadID, model, err = s.startThread(ctx, transport, req, onUpdate)
+		threadID, runtimeIdentity, err = s.startThread(ctx, transport, req, onUpdate)
 		if err != nil {
 			return RunTurnResult{}, err
 		}
 	}
+	model := runtimeIdentity.Model()
 	if model == "" && strings.TrimSpace(req.Model) == "" {
 		model, err = s.resolveDefaultModel(ctx, transport, req.Workspace, onUpdate)
 		if err != nil {
 			return RunTurnResult{}, err
+		}
+		if model != "" {
+			runtimeIdentity = runtimeIdentity.Merge(agentidentity.Identity{
+				ResolvedModel: agentidentity.NewValue(model, agentidentity.ProvenanceConfigured),
+			})
+			if err := emitUpdate(Update{
+				Type:     UpdateRuntimeIdentity,
+				Method:   "config/read",
+				ThreadID: threadID,
+				Model:    model,
+				RuntimeIdentity: agentidentity.Identity{
+					ResolvedModel: agentidentity.NewValue(model, agentidentity.ProvenanceConfigured),
+				},
+			}, onUpdate); err != nil {
+				return RunTurnResult{}, err
+			}
 		}
 	}
 
@@ -343,13 +364,24 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		SessionID: threadID + "-" + turnID,
 	}
 	if !turn.StartedEmitted {
+		startedIdentity := runtimeIdentity
+		if turn.Model != "" {
+			startedIdentity = startedIdentity.Merge(agentidentity.RuntimeUpdate(
+				turn.Model,
+				"",
+				"",
+				"",
+				time.Time{},
+			))
+		}
 		if err := emitUpdate(Update{
-			Type:     UpdateTurnStarted,
-			Method:   "turn/start",
-			ThreadID: threadID,
-			TurnID:   turnID,
-			Status:   "started",
-			Model:    firstNonBlank(turn.Model, model),
+			Type:            UpdateTurnStarted,
+			Method:          "turn/start",
+			ThreadID:        threadID,
+			TurnID:          turnID,
+			Status:          "started",
+			Model:           firstNonBlank(turn.Model, model),
+			RuntimeIdentity: startedIdentity,
 		}, onUpdate); err != nil {
 			return RunTurnResult{}, err
 		}
@@ -383,12 +415,56 @@ func (s *AppServer) initialize(ctx context.Context, transport Transport, onUpdat
 	})
 }
 
+type threadRuntimeResponse struct {
+	Thread struct {
+		ID            string `json:"id"`
+		Model         string `json:"model"`
+		ModelID       string `json:"model_id"`
+		ModelIDCamel  string `json:"modelId"`
+		ResolvedModel string `json:"resolvedModel"`
+		ResolvedSnake string `json:"resolved_model"`
+		ModelProvider string `json:"modelProvider"`
+		ProviderSnake string `json:"model_provider"`
+	} `json:"thread"`
+	Model            string `json:"model"`
+	ModelID          string `json:"model_id"`
+	ModelIDCamel     string `json:"modelId"`
+	ResolvedModel    string `json:"resolvedModel"`
+	ResolvedSnake    string `json:"resolved_model"`
+	ModelProvider    string `json:"modelProvider"`
+	ProviderSnake    string `json:"model_provider"`
+	ReasoningEffort  string `json:"reasoningEffort"`
+	EffortSnake      string `json:"reasoning_effort"`
+	ServiceTier      string `json:"serviceTier"`
+	ServiceTierSnake string `json:"service_tier"`
+}
+
+func (r threadRuntimeResponse) runtimeIdentity() agentidentity.Identity {
+	return agentidentity.RuntimeUpdate(
+		firstNonBlank(r.Model, r.ResolvedModel, r.ResolvedSnake, r.ModelID, r.ModelIDCamel, r.Thread.Model, r.Thread.ResolvedModel, r.Thread.ResolvedSnake, r.Thread.ModelID, r.Thread.ModelIDCamel),
+		firstNonBlank(r.ModelProvider, r.ProviderSnake, r.Thread.ModelProvider, r.Thread.ProviderSnake),
+		firstNonBlank(r.ReasoningEffort, r.EffortSnake),
+		firstNonBlank(r.ServiceTier, r.ServiceTierSnake),
+		time.Time{},
+	)
+}
+
+func runtimeIdentityUpdate(method string, threadID string, identity agentidentity.Identity) Update {
+	return Update{
+		Type:            UpdateRuntimeIdentity,
+		Method:          method,
+		ThreadID:        threadID,
+		Model:           identity.Model(),
+		RuntimeIdentity: identity,
+	}
+}
+
 func (s *AppServer) startThread(
 	ctx context.Context,
 	transport Transport,
 	req RunTurnRequest,
 	onUpdate UpdateHandler,
-) (string, string, error) {
+) (string, agentidentity.Identity, error) {
 	params := map[string]any{
 		"cwd": req.Workspace,
 	}
@@ -407,50 +483,28 @@ func (s *AppServer) startThread(
 	}
 
 	if err := sendRequest(ctx, transport, threadStartRequestID, "thread/start", params); err != nil {
-		return "", "", err
+		return "", agentidentity.Identity{}, err
 	}
 
 	result, err := s.awaitResponse(ctx, transport, threadStartRequestID, onUpdate)
 	if err != nil {
-		return "", "", err
+		return "", agentidentity.Identity{}, err
 	}
 
-	var response struct {
-		Thread struct {
-			ID            string `json:"id"`
-			Model         string `json:"model"`
-			ModelID       string `json:"model_id"`
-			ModelIDCamel  string `json:"modelId"`
-			ResolvedModel string `json:"resolvedModel"`
-			ResolvedSnake string `json:"resolved_model"`
-		} `json:"thread"`
-		Model         string `json:"model"`
-		ModelID       string `json:"model_id"`
-		ModelIDCamel  string `json:"modelId"`
-		ResolvedModel string `json:"resolvedModel"`
-		ResolvedSnake string `json:"resolved_model"`
-	}
+	var response threadRuntimeResponse
 	if err := json.Unmarshal(result, &response); err != nil {
-		return "", "", fmt.Errorf("%w: decode thread/start result: %w", ErrInvalidResponse, err)
+		return "", agentidentity.Identity{}, fmt.Errorf("%w: decode thread/start result: %w", ErrInvalidResponse, err)
 	}
 	if response.Thread.ID == "" {
-		return "", "", fmt.Errorf("%w: thread/start result missing thread id", ErrInvalidResponse)
+		return "", agentidentity.Identity{}, fmt.Errorf("%w: thread/start result missing thread id", ErrInvalidResponse)
 	}
-
-	model := firstNonBlank(
-		response.Thread.Model,
-		response.Thread.ResolvedModel,
-		response.Thread.ResolvedSnake,
-		response.Thread.ModelID,
-		response.Thread.ModelIDCamel,
-		response.Model,
-		response.ResolvedModel,
-		response.ResolvedSnake,
-		response.ModelID,
-		response.ModelIDCamel,
-	)
-
-	return response.Thread.ID, model, nil
+	identity := response.runtimeIdentity()
+	if !identity.IsZero() {
+		if err := emitUpdate(runtimeIdentityUpdate("thread/start", response.Thread.ID, identity), onUpdate); err != nil {
+			return "", agentidentity.Identity{}, err
+		}
+	}
+	return response.Thread.ID, identity, nil
 }
 
 func (s *AppServer) resumeThread(
@@ -459,7 +513,7 @@ func (s *AppServer) resumeThread(
 	req RunTurnRequest,
 	threadID string,
 	onUpdate UpdateHandler,
-) (string, string, error) {
+) (string, agentidentity.Identity, error) {
 	params := map[string]any{
 		"threadId": threadID,
 		"cwd":      req.Workspace,
@@ -479,51 +533,31 @@ func (s *AppServer) resumeThread(
 	}
 
 	if err := sendRequest(ctx, transport, threadResumeRequestID, "thread/resume", params); err != nil {
-		return "", "", err
+		return "", agentidentity.Identity{}, err
 	}
 
 	result, err := s.awaitResponse(ctx, transport, threadResumeRequestID, onUpdate)
 	if err != nil {
-		return "", "", err
+		return "", agentidentity.Identity{}, err
 	}
 
-	var response struct {
-		Thread struct {
-			ID            string `json:"id"`
-			Model         string `json:"model"`
-			ModelID       string `json:"model_id"`
-			ModelIDCamel  string `json:"modelId"`
-			ResolvedModel string `json:"resolvedModel"`
-			ResolvedSnake string `json:"resolved_model"`
-		} `json:"thread"`
-		Model         string `json:"model"`
-		ModelID       string `json:"model_id"`
-		ModelIDCamel  string `json:"modelId"`
-		ResolvedModel string `json:"resolvedModel"`
-		ResolvedSnake string `json:"resolved_model"`
-	}
+	var response threadRuntimeResponse
 	if err := json.Unmarshal(result, &response); err != nil {
-		return "", "", fmt.Errorf("%w: decode thread/resume result: %w", ErrInvalidResponse, err)
+		return "", agentidentity.Identity{}, fmt.Errorf("%w: decode thread/resume result: %w", ErrInvalidResponse, err)
 	}
 	if response.Thread.ID == "" {
-		return "", "", fmt.Errorf("%w: thread/resume result missing thread id", ErrInvalidResponse)
+		return "", agentidentity.Identity{}, fmt.Errorf("%w: thread/resume result missing thread id", ErrInvalidResponse)
 	}
-
-	model := firstNonBlank(
-		response.Thread.Model,
-		response.Thread.ResolvedModel,
-		response.Thread.ResolvedSnake,
-		response.Thread.ModelID,
-		response.Thread.ModelIDCamel,
-		response.Model,
-		response.ResolvedModel,
-		response.ResolvedSnake,
-		response.ModelID,
-		response.ModelIDCamel,
-		req.Model,
-	)
-
-	return response.Thread.ID, model, nil
+	identity := response.runtimeIdentity()
+	if identity.Model() == "" && req.Model != "" {
+		identity.ResolvedModel = agentidentity.NewValue(req.Model, agentidentity.ProvenanceConfigured)
+	}
+	if !identity.IsZero() {
+		if err := emitUpdate(runtimeIdentityUpdate("thread/resume", response.Thread.ID, identity), onUpdate); err != nil {
+			return "", agentidentity.Identity{}, err
+		}
+	}
+	return response.Thread.ID, identity, nil
 }
 
 type startTurnResult struct {
@@ -922,25 +956,61 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 		if err := json.Unmarshal(msg.Params, &params); err != nil {
 			return Update{}, false, fmt.Errorf("%w: decode turn started: %w", ErrInvalidResponse, err)
 		}
+		model := firstNonBlank(
+			params.Turn.Model,
+			params.Turn.Resolved,
+			params.Turn.ResolvedAlt,
+			params.Turn.ModelID,
+			params.Turn.ModelIDAlt,
+			params.Model,
+			params.Resolved,
+			params.ResolvedAlt,
+			params.ModelID,
+			params.ModelIDAlt,
+		)
 		return Update{
-			Type:     UpdateTurnStarted,
-			Method:   msg.Method,
-			ThreadID: params.ThreadID,
-			TurnID:   params.Turn.ID,
-			Status:   "started",
-			Model: firstNonBlank(
-				params.Turn.Model,
-				params.Turn.Resolved,
-				params.Turn.ResolvedAlt,
-				params.Turn.ModelID,
-				params.Turn.ModelIDAlt,
-				params.Model,
-				params.Resolved,
-				params.ResolvedAlt,
-				params.ModelID,
-				params.ModelIDAlt,
-			),
-			Payload: rawPayload(msg),
+			Type:            UpdateTurnStarted,
+			Method:          msg.Method,
+			ThreadID:        params.ThreadID,
+			TurnID:          params.Turn.ID,
+			Status:          "started",
+			Model:           model,
+			RuntimeIdentity: agentidentity.RuntimeUpdate(model, "", "", "", time.Time{}),
+			Payload:         rawPayload(msg),
+		}, true, nil
+	case "thread/settings/updated":
+		var params struct {
+			ThreadID       string `json:"threadId"`
+			ThreadSettings struct {
+				Model         string `json:"model"`
+				ModelProvider string `json:"modelProvider"`
+				ServiceTier   string `json:"serviceTier"`
+				Effort        string `json:"effort"`
+			} `json:"threadSettings"`
+		}
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			return Update{}, false, fmt.Errorf("%w: decode thread settings update: %w", ErrInvalidResponse, err)
+		}
+		identity := agentidentity.RuntimeUpdate(
+			params.ThreadSettings.Model,
+			params.ThreadSettings.ModelProvider,
+			params.ThreadSettings.Effort,
+			params.ThreadSettings.ServiceTier,
+			time.Time{},
+		)
+		if strings.TrimSpace(params.ThreadSettings.Effort) == "" {
+			identity.ReasoningEffort = agentidentity.UnknownValue()
+		}
+		if strings.TrimSpace(params.ThreadSettings.ServiceTier) == "" {
+			identity.ServiceTier = agentidentity.UnknownValue()
+		}
+		return Update{
+			Type:            UpdateRuntimeIdentity,
+			Method:          msg.Method,
+			ThreadID:        params.ThreadID,
+			Model:           identity.Model(),
+			RuntimeIdentity: identity,
+			Payload:         rawPayload(msg),
 		}, true, nil
 	case "model/rerouted":
 		var params struct {
@@ -952,13 +1022,15 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 		if err := json.Unmarshal(msg.Params, &params); err != nil {
 			return Update{}, false, fmt.Errorf("%w: decode model rerouted: %w", ErrInvalidResponse, err)
 		}
+		model := firstNonBlank(params.ToModel, params.Model)
 		return Update{
-			Type:     UpdateModelUpdated,
-			Method:   msg.Method,
-			ThreadID: params.ThreadID,
-			TurnID:   params.TurnID,
-			Model:    firstNonBlank(params.ToModel, params.Model),
-			Payload:  rawPayload(msg),
+			Type:            UpdateModelUpdated,
+			Method:          msg.Method,
+			ThreadID:        params.ThreadID,
+			TurnID:          params.TurnID,
+			Model:           model,
+			RuntimeIdentity: agentidentity.RuntimeUpdate(model, "", "", "", time.Time{}),
+			Payload:         rawPayload(msg),
 		}, true, nil
 	case "model/safetyBuffering/updated":
 		var params struct {
@@ -970,12 +1042,13 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 			return Update{}, false, fmt.Errorf("%w: decode model safety buffering: %w", ErrInvalidResponse, err)
 		}
 		return Update{
-			Type:     UpdateModelUpdated,
-			Method:   msg.Method,
-			ThreadID: params.ThreadID,
-			TurnID:   params.TurnID,
-			Model:    params.Model,
-			Payload:  rawPayload(msg),
+			Type:            UpdateModelUpdated,
+			Method:          msg.Method,
+			ThreadID:        params.ThreadID,
+			TurnID:          params.TurnID,
+			Model:           params.Model,
+			RuntimeIdentity: agentidentity.RuntimeUpdate(params.Model, "", "", "", time.Time{}),
+			Payload:         rawPayload(msg),
 		}, true, nil
 	case "turn/completed":
 		var params struct {

@@ -63,6 +63,11 @@ const (
 	claudeCodePermissionModeAcceptEdits       = "acceptEdits"
 	claudeCodePermissionModeBypassPermissions = "bypassPermissions"
 	claudeCodePermissionModePlan              = "plan"
+	claudeCodeEffortLow                       = "low"
+	claudeCodeEffortMedium                    = "medium"
+	claudeCodeEffortHigh                      = "high"
+	claudeCodeEffortXHigh                     = "xhigh"
+	claudeCodeEffortMax                       = "max"
 
 	IdentityOwnershipAssignee = "assignee"
 	IdentityOwnershipField    = "field"
@@ -247,6 +252,7 @@ type AgentBackend struct {
 	Kind     string         `yaml:"kind"`
 	Protocol string         `yaml:"protocol"`
 	Command  string         `yaml:"command"`
+	Provider string         `yaml:"provider"`
 	Options  BackendOptions `yaml:"options"`
 
 	codexOptions         CodexOptions
@@ -262,6 +268,8 @@ type BackendOptions struct {
 
 type CodexOptions struct {
 	Shell             string         `yaml:"shell"`
+	ModelProvider     string         `yaml:"model_provider"`
+	ServiceTier       string         `yaml:"service_tier"`
 	ApprovalPolicy    StringOrMap    `yaml:"approval_policy"`
 	ThreadSandbox     string         `yaml:"thread_sandbox"`
 	TurnSandboxPolicy map[string]any `yaml:"turn_sandbox_policy"`
@@ -272,6 +280,7 @@ type CodexOptions struct {
 
 type ClaudeCodeOptions struct {
 	PermissionMode         string   `yaml:"permission_mode"`
+	Effort                 string   `yaml:"effort"`
 	AllowedTools           []string `yaml:"allowed_tools"`
 	DisallowedTools        []string `yaml:"disallowed_tools"`
 	IncludePartialMessages bool     `yaml:"include_partial_messages"`
@@ -352,6 +361,8 @@ type Budget struct {
 type Codex struct {
 	Command           string         `yaml:"command"`
 	Shell             string         `yaml:"shell"`
+	ModelProvider     string         `yaml:"model_provider"`
+	ServiceTier       string         `yaml:"service_tier"`
 	ApprovalPolicy    StringOrMap    `yaml:"approval_policy"`
 	ThreadSandbox     string         `yaml:"thread_sandbox"`
 	TurnSandboxPolicy map[string]any `yaml:"turn_sandbox_policy"`
@@ -395,6 +406,8 @@ func (c Config) AgentRouteConfigs() []AgentRoute {
 func CodexAgentBackend(codex Codex) AgentBackend {
 	options := CodexOptions{
 		Shell:             codex.Shell,
+		ModelProvider:     codex.ModelProvider,
+		ServiceTier:       codex.ServiceTier,
 		ApprovalPolicy:    codex.ApprovalPolicy,
 		ThreadSandbox:     codex.ThreadSandbox,
 		TurnSandboxPolicy: codex.TurnSandboxPolicy,
@@ -408,6 +421,7 @@ func CodexAgentBackend(codex Codex) AgentBackend {
 		Kind:     AgentBackendCodex,
 		Protocol: defaultCodexProtocol,
 		Command:  strings.TrimSpace(codex.Command),
+		Provider: strings.TrimSpace(codex.ModelProvider),
 		Options:  backendOptionsFrom(options),
 
 		codexOptions:    options,
@@ -423,6 +437,12 @@ func mergedCodexAgentBackend(fallback Codex, backend AgentBackend) AgentBackend 
 	options := backend.CodexOptions()
 	if strings.TrimSpace(options.Shell) != "" {
 		cfg.Shell = options.Shell
+	}
+	if strings.TrimSpace(options.ModelProvider) != "" {
+		cfg.ModelProvider = options.ModelProvider
+	}
+	if strings.TrimSpace(options.ServiceTier) != "" {
+		cfg.ServiceTier = options.ServiceTier
 	}
 	if options.ApprovalPolicy.IsString || options.ApprovalPolicy.IsMap {
 		cfg.ApprovalPolicy = options.ApprovalPolicy
@@ -446,6 +466,7 @@ func mergedCodexAgentBackend(fallback Codex, backend AgentBackend) AgentBackend 
 	effective.ID = backend.ID
 	effective.Kind = backend.Kind
 	effective.Protocol = backend.Protocol
+	effective.Provider = backend.Provider
 	return effective
 }
 
@@ -1063,6 +1084,8 @@ func (c *Config) normalize() {
 	c.Agent.Knowledge.Normalize()
 	c.Agents.normalize()
 	c.Codex.Shell = commandshell.Normalize(c.Codex.Shell)
+	c.Codex.ModelProvider = strings.TrimSpace(c.Codex.ModelProvider)
+	c.Codex.ServiceTier = strings.TrimSpace(c.Codex.ServiceTier)
 	c.Gate = gate.Effective(c.Gate)
 	c.Plan = gate.EffectivePlan(c.Plan)
 	if c.Plan.Enabled {
@@ -1359,6 +1382,7 @@ func (a *Agents) normalize() {
 			backend.Protocol = defaultCodexProtocol
 		}
 		backend.Command = strings.TrimSpace(backend.Command)
+		backend.Provider = strings.TrimSpace(backend.Provider)
 		if backend.Protocol == "" && backend.Kind == AgentBackendClaudeCode {
 			backend.Protocol = defaultClaudeCodeProtocol
 		}
@@ -1419,6 +1443,9 @@ func (a *Agents) validate(problems *[]string) {
 			}
 		}
 		validateRequired("agents.backends.command", backend.Command, "", problems)
+		if backend.Provider != "" && !validAgentIdentityLabel(backend.Provider) {
+			*problems = append(*problems, "agents.backends.provider must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens")
+		}
 		backend.validateOptions("agents.backends.options", problems)
 	}
 
@@ -1471,6 +1498,8 @@ func (b AgentBackend) validateOptions(prefix string, problems *[]string) {
 
 func (o *CodexOptions) normalize() {
 	o.Shell = strings.TrimSpace(o.Shell)
+	o.ModelProvider = strings.TrimSpace(o.ModelProvider)
+	o.ServiceTier = strings.TrimSpace(o.ServiceTier)
 	if o.Shell != "" {
 		o.Shell = commandshell.Normalize(o.Shell)
 	}
@@ -1478,6 +1507,9 @@ func (o *CodexOptions) normalize() {
 }
 
 func (o CodexOptions) validate(prefix string, problems *[]string) {
+	if o.ModelProvider != "" && !validAgentIdentityLabel(o.ModelProvider) {
+		*problems = append(*problems, prefix+".model_provider must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens")
+	}
 	if o.TurnTimeoutMS < 0 {
 		*problems = append(*problems, prefix+".turn_timeout_ms must be greater than or equal to 0")
 	}
@@ -1491,6 +1523,7 @@ func (o CodexOptions) validate(prefix string, problems *[]string) {
 
 func (o *ClaudeCodeOptions) normalize() {
 	o.PermissionMode = strings.TrimSpace(o.PermissionMode)
+	o.Effort = strings.ToLower(strings.TrimSpace(o.Effort))
 	if o.PermissionMode == "" {
 		o.PermissionMode = defaultClaudeCodePermissionMode
 	}
@@ -1508,12 +1541,34 @@ func (o ClaudeCodeOptions) validate(prefix string, problems *[]string) {
 	default:
 		*problems = append(*problems, prefix+".permission_mode must be one of default, acceptEdits, bypassPermissions")
 	}
+	switch o.Effort {
+	case "", claudeCodeEffortLow, claudeCodeEffortMedium, claudeCodeEffortHigh, claudeCodeEffortXHigh, claudeCodeEffortMax:
+	default:
+		*problems = append(*problems, prefix+".effort must be one of low, medium, high, xhigh, max")
+	}
 	if o.TurnTimeoutMS < 0 {
 		*problems = append(*problems, prefix+".turn_timeout_ms must be greater than or equal to 0")
 	}
 	if o.StallTimeoutMS < 0 {
 		*problems = append(*problems, prefix+".stall_timeout_ms must be greater than or equal to 0")
 	}
+}
+
+func validAgentIdentityLabel(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for index, char := range value {
+		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' {
+			continue
+		}
+		if index > 0 && (char == '.' || char == '_' || char == '-') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validatePriorityValues(field string, priorities []int, problems *[]string) {
@@ -1667,6 +1722,9 @@ func (c *Codex) validate(problems *[]string) {
 	validatePositive("codex.read_timeout_ms", c.ReadTimeoutMS, problems)
 	if c.StallTimeoutMS < 0 {
 		*problems = append(*problems, "codex.stall_timeout_ms must be greater than or equal to 0")
+	}
+	if c.ModelProvider != "" && !validAgentIdentityLabel(c.ModelProvider) {
+		*problems = append(*problems, "codex.model_provider must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens")
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/a-h/templ"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
@@ -558,6 +559,7 @@ type projectKanbanCard struct {
 	PRURL                 string
 	Movable               bool
 	DisabledText          string
+	RuntimeIdentity       agentidentity.Identity
 }
 
 const (
@@ -2699,6 +2701,7 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		ClearedBlockers:       clearedBlockers,
 		HasPullRequest:        issue.PullRequest != nil,
 		Movable:               strings.TrimSpace(issue.ID) != "",
+		RuntimeIdentity:       issue.RuntimeIdentity,
 	}
 	if issue.PullRequest != nil {
 		ciStatus := prPipelineCIStatus(issue, projectKanbanLaneID(state))

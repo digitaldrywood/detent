@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
@@ -82,11 +83,12 @@ func (b *AgentBackend) RunTurn(
 	}
 
 	if err := emitUpdate(onUpdate, runner.AgentUpdate{
-		Type:     runner.AgentUpdateTurnCompleted,
-		ThreadID: state.sessionID,
-		TurnID:   state.sessionID,
-		Status:   status,
-		Model:    state.model,
+		Type:            runner.AgentUpdateTurnCompleted,
+		ThreadID:        state.sessionID,
+		TurnID:          state.sessionID,
+		Status:          status,
+		Model:           state.model,
+		RuntimeIdentity: agentidentity.RuntimeUpdate(state.model, "", "", "", time.Time{}),
 	}); err != nil {
 		return result, err
 	}
@@ -119,6 +121,13 @@ func (b *AgentBackend) argv(req runner.AgentTurnRequest) []string {
 	args := []string{"-p", "--output-format", "stream-json", "--verbose"}
 	if model := strings.TrimSpace(req.Model); model != "" {
 		args = append(args, "--model", model)
+	}
+	effort := strings.TrimSpace(req.ReasoningEffort)
+	if effort == "" {
+		effort = strings.TrimSpace(b.options.Effort)
+	}
+	if effort != "" {
+		args = append(args, "--effort", effort)
 	}
 	if sessionID := strings.TrimSpace(req.Resume.SessionID); sessionID != "" {
 		args = append(args, "--resume", sessionID)

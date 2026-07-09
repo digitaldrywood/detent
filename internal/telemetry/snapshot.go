@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 )
 
@@ -192,32 +193,33 @@ func (d TrackerDrift) IsZero() bool {
 }
 
 type Issue struct {
-	ID                    string            `json:"issue_id"`
-	Identifier            string            `json:"identifier,omitempty"`
-	Number                int               `json:"number,omitempty"`
-	ProjectID             string            `json:"project_id,omitempty"`
-	URL                   string            `json:"url,omitempty"`
-	Title                 string            `json:"title,omitempty"`
-	Description           string            `json:"description,omitempty"`
-	State                 string            `json:"state,omitempty"`
-	Labels                []string          `json:"labels,omitempty"`
-	Assignees             []string          `json:"assignees,omitempty"`
-	Comments              []IssueComment    `json:"comments,omitempty"`
-	BlockedBy             []BlockedRef      `json:"blocked_by,omitempty"`
-	PullRequest           *PullRequest      `json:"pull_request,omitempty"`
-	Deliverable           *Deliverable      `json:"deliverable,omitempty"`
-	Metadata              map[string]string `json:"metadata,omitempty"`
-	MergeTiming           *MergeTiming      `json:"merge_timing,omitempty"`
-	Owner                 string            `json:"owner,omitempty"`
-	LeaseRenewedAt        *time.Time        `json:"lease_renewed_at,omitempty"`
-	LeaseExpiresAt        *time.Time        `json:"lease_expires_at,omitempty"`
-	LeaseStale            bool              `json:"lease_stale,omitempty"`
-	GatePending           bool              `json:"gate_pending,omitempty"`
-	CreatedAt             *time.Time        `json:"created_at,omitempty"`
-	UpdatedAt             *time.Time        `json:"updated_at,omitempty"`
-	StageUpdatedAt        *time.Time        `json:"stage_updated_at,omitempty"`
-	CurrentLaneEnteredAt  *time.Time        `json:"current_lane_entered_at,omitempty"`
-	CurrentLaneAgeSeconds int64             `json:"current_lane_age_seconds,omitempty"`
+	ID                    string                 `json:"issue_id"`
+	Identifier            string                 `json:"identifier,omitempty"`
+	Number                int                    `json:"number,omitempty"`
+	ProjectID             string                 `json:"project_id,omitempty"`
+	URL                   string                 `json:"url,omitempty"`
+	Title                 string                 `json:"title,omitempty"`
+	Description           string                 `json:"description,omitempty"`
+	State                 string                 `json:"state,omitempty"`
+	Labels                []string               `json:"labels,omitempty"`
+	Assignees             []string               `json:"assignees,omitempty"`
+	Comments              []IssueComment         `json:"comments,omitempty"`
+	BlockedBy             []BlockedRef           `json:"blocked_by,omitempty"`
+	PullRequest           *PullRequest           `json:"pull_request,omitempty"`
+	Deliverable           *Deliverable           `json:"deliverable,omitempty"`
+	Metadata              map[string]string      `json:"metadata,omitempty"`
+	MergeTiming           *MergeTiming           `json:"merge_timing,omitempty"`
+	Owner                 string                 `json:"owner,omitempty"`
+	LeaseRenewedAt        *time.Time             `json:"lease_renewed_at,omitempty"`
+	LeaseExpiresAt        *time.Time             `json:"lease_expires_at,omitempty"`
+	LeaseStale            bool                   `json:"lease_stale,omitempty"`
+	GatePending           bool                   `json:"gate_pending,omitempty"`
+	CreatedAt             *time.Time             `json:"created_at,omitempty"`
+	UpdatedAt             *time.Time             `json:"updated_at,omitempty"`
+	StageUpdatedAt        *time.Time             `json:"stage_updated_at,omitempty"`
+	CurrentLaneEnteredAt  *time.Time             `json:"current_lane_entered_at,omitempty"`
+	CurrentLaneAgeSeconds int64                  `json:"current_lane_age_seconds,omitempty"`
+	RuntimeIdentity       agentidentity.Identity `json:"runtime_identity,omitzero"`
 }
 
 type IssueComment struct {
@@ -312,6 +314,7 @@ type ActivityEvent struct {
 
 type Running struct {
 	Issue
+	DetentSessionID       int64                     `json:"detent_session_id,omitempty"`
 	WorkerHost            string                    `json:"worker_host,omitempty"`
 	ProcessIdentity       string                    `json:"process_identity,omitempty"`
 	WorkspacePath         string                    `json:"workspace_path,omitempty"`
@@ -362,6 +365,9 @@ type WorkAttempt struct {
 	WorkerMetadataJSON      string                    `json:"worker_metadata_json,omitempty"`
 	MetricsJSON             string                    `json:"metrics_json,omitempty"`
 	NextAction              string                    `json:"next_action,omitempty"`
+	DetentSessionID         int64                     `json:"detent_session_id,omitempty"`
+	ProviderSessionID       string                    `json:"provider_session_id,omitempty"`
+	RuntimeIdentity         agentidentity.Identity    `json:"runtime_identity,omitzero"`
 	Stale                   bool                      `json:"stale,omitempty"`
 }
 
