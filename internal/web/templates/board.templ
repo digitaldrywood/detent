@@ -589,9 +589,14 @@ templ boardKanbanDragScript() {
 				if (!active || event.pointerId !== active.pointerId) return;
 				var lane = laneFromPoint(event.clientX, event.clientY);
 				var card = draggedCard(document);
-				if (!(lane instanceof HTMLElement) || lane.dataset.kanbanDropSource === "true") {
+				if (!(lane instanceof HTMLElement)) {
+					cancelDrag();
+					return;
+				}
+				if (lane.dataset.kanbanDropSource === "true") {
 					if (Date.now() - active.startedAt < CLICK_GESTURE_MS) {
 						finishDrag(true);
+						feedback("");
 						return;
 					}
 					cancelDrag();
