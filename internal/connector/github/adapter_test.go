@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/selector"
 )
 
 func TestPullRequestCodexReviewStateFromReviewsUsesExplicitBodySeverity(t *testing.T) {
@@ -165,8 +166,6 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	}
 	query := requests[0]["query"].(string)
 	for _, forbidden := range []string{
-		"author { login }",
-		"assignees(",
 		"body",
 		"closedByPullRequestsReferences",
 		"subIssues(",
@@ -222,6 +221,98 @@ func TestConnectorFetchCandidateIssuesWithFilterIgnoresProjectV2(t *testing.T) {
 	variables := requests[0]["variables"].(map[string]any)
 	if variables["query"] != "status:Ready" {
 		t.Fatalf("query = %v, want status-only ProjectV2 query", variables["query"])
+	}
+}
+
+func TestConnectorProjectV2FetchesHydrateAuthorizationFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		status    string
+		responses []graphqlTestResponse
+		fetch     func(context.Context, *Connector) ([]connector.Issue, error)
+	}{
+		{
+			name:   "candidate issues",
+			status: "Todo",
+			responses: []graphqlTestResponse{{}, {
+				method: http.MethodGet,
+				path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
+				body:   `[]`,
+			}},
+			fetch: func(ctx context.Context, c *Connector) ([]connector.Issue, error) {
+				return c.FetchCandidateIssues(ctx)
+			},
+		},
+		{
+			name:      "observed issues",
+			status:    "In Progress",
+			responses: []graphqlTestResponse{{}},
+			fetch: func(ctx context.Context, c *Connector) ([]connector.Issue, error) {
+				return c.FetchIssuesByStates(ctx, []string{"In Progress"})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			responses := append([]graphqlTestResponse(nil), tt.responses...)
+			responses[0].body = projectAuthorizationItemsResponse(tt.status)
+			server := newGraphQLTestServer(t, responses)
+			c := newGitHubTestConnector(t, server, Config{
+				ProjectSlug:    "PVT_1",
+				ActiveStates:   []string{"Todo"},
+				ObservedStates: []string{"In Progress"},
+			})
+
+			issues, err := tt.fetch(context.Background(), c)
+			if err != nil {
+				t.Fatalf("fetch ProjectV2 issues: %v", err)
+			}
+			if len(issues) != 2 {
+				t.Fatalf("fetched issues = %d, want 2", len(issues))
+			}
+
+			selectors := []struct {
+				name          string
+				authorization selector.Selector
+				wantIDs       []string
+			}{
+				{name: "author", authorization: selector.Selector{AuthorIn: []string{"alice"}}, wantIDs: []string{"I_authorized"}},
+				{name: "assignee", authorization: selector.Selector{AssigneeIn: []string{"worker-1"}}, wantIDs: []string{"I_authorized"}},
+				{name: "label", authorization: selector.Selector{Labels: selector.Labels{Include: []string{"ready"}}}, wantIDs: []string{"I_authorized"}},
+				{name: "unconfigured", authorization: selector.Selector{}, wantIDs: []string{"I_authorized", "I_foreign"}},
+			}
+			for _, selectorTest := range selectors {
+				t.Run(selectorTest.name, func(t *testing.T) {
+					t.Parallel()
+
+					matchedIDs := []string{}
+					for _, issue := range issues {
+						if selector.Match(issue, selectorTest.authorization, selector.Context{}) {
+							matchedIDs = append(matchedIDs, issue.ID)
+						}
+					}
+					if !reflect.DeepEqual(matchedIDs, selectorTest.wantIDs) {
+						t.Fatalf("matched issue IDs = %#v, want %#v", matchedIDs, selectorTest.wantIDs)
+					}
+				})
+			}
+
+			query := server.requests()[0]["query"].(string)
+			for _, selection := range []string{
+				"author { login }",
+				"assignees(first: 10) { nodes { login } }",
+				"labels(first: 20) { nodes { name } }",
+			} {
+				if !strings.Contains(query, selection) {
+					t.Fatalf("ProjectV2 query missing %q:\n%s", selection, query)
+				}
+			}
+		})
 	}
 }
 
@@ -4833,6 +4924,14 @@ func projectItemsPageResponse(hasNextPage bool, endCursor string, nodes []string
 		hasNextPage,
 		cursor,
 		strings.Join(nodes, ","),
+	)
+}
+
+func projectAuthorizationItemsResponse(status string) string {
+	return fmt.Sprintf(
+		`{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_authorized","content":{"__typename":"Issue","id":"I_authorized","number":1121,"title":"Authorized issue","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/1121","author":{"login":"alice"},"assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[{"name":"ready"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":%q}},{"id":"PVTI_foreign","content":{"__typename":"Issue","id":"I_foreign","number":1122,"title":"Foreign issue","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/1122","author":{"login":"bob"},"assignees":{"nodes":[{"login":"worker-2"}]},"labels":{"nodes":[{"name":"blocked"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":%q}}]}}}}`,
+		status,
+		status,
 	)
 }
 
