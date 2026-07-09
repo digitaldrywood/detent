@@ -31,12 +31,10 @@ deliverable:
 agent:
   # Per-session ceiling on total_tokens. total_tokens counts input + output +
   # cache-created + cache-read tokens, accumulated across every turn of the
-  # session, so a healthy Claude session re-counts its cached context each turn
-  # and accrues millions of tokens within minutes. Set this as a runaway-session
-  # guard, not a context limit; max_session_context_multiplier bounds context
-  # growth separately.
+  # session, so cached context is re-counted each turn. Use max_session_tokens
+  # as the runaway brake. max_session_context_multiplier is an opt-in, coarse
+  # cap on roughly how many full-context turns fit; leave it unset by default.
   max_session_tokens: 25000000
-  max_session_context_multiplier: 4
   max_session_token_override_label: allow-large-session
   # For a non-code workflow such as Research -> Draft -> Review -> Package ->
   # Publish, add stage-specific prompt additions here instead of turning the
@@ -65,13 +63,19 @@ agent:
     rework_state: Rework
     rework_limit: 3
 
+codex:
+  # Optional model_reasoning_effort is unset because not every model accepts it.
+  command: codex app-server # Provider default: upgrades automatically and avoids retirement breakage.
+
 gate:
   kind: artifact
   ci_failure_action: rework
   transient_ci_retry_limit: 2
   validator:
     enabled: false
-    model: gpt-5.4-mini
+    # Optional deliberate pin; leave empty to inherit the route/provider default.
+    # Pinned models require manual updates before provider retirement.
+    model: ""
     min_score: 0.8
     max_inline_diff_bytes: 65536
     block_on:

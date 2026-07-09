@@ -178,6 +178,176 @@ func TestBuildOnboardingWorkflowPreservesArtifactPresetGate(t *testing.T) {
 	assertOnboardingWorkflowDecision(t, result.Decisions, "budget.per_issue_max_usd", "preset")
 }
 
+func TestBuildOnboardingWorkflowWorkerModelFixtures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		answers     []string
+		wantCommand string
+		wantComment string
+		wantModel   string
+	}{
+		{
+			name:        "provider default",
+			answers:     []string{"WORKER_MODEL_MODE=provider_default"},
+			wantCommand: "codex app-server",
+			wantComment: "Provider default: upgrades automatically and avoids retirement breakage.",
+		},
+		{
+			name: "pinned",
+			answers: []string{
+				"WORKER_MODEL_MODE=pinned",
+				"WORKER_MODEL=gpt-5.6-sol",
+			},
+			wantCommand: `codex app-server --config 'model="gpt-5.6-sol"'`,
+			wantComment: "Pinned for reproducibility or cost control; update before retirement.",
+			wantModel:   "gpt-5.6-sol",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := initOnboardingWorkflowBuilderGitRepository(t, "https://github.com/acme/api.git")
+			answersPath := writeOnboardingWorkflowBuilderAnswers(t, onboardingWorkflowBuilderVariantAnswers(root, "github_local", "review_gate", tt.answers...))
+
+			result, err := buildOnboardingWorkflow(context.Background(), onboardingBuildWorkflowConfig{
+				AnswersPath: answersPath,
+				Write:       false,
+			})
+			if err != nil {
+				t.Fatalf("buildOnboardingWorkflow() error = %v", err)
+			}
+			workflow, err := workflowconfig.ParseWorkflow([]byte(result.Workflow))
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v\n%s", err, result.Workflow)
+			}
+			if workflow.Config.Codex.Command != tt.wantCommand {
+				t.Fatalf("Codex.Command = %q, want %q", workflow.Config.Codex.Command, tt.wantCommand)
+			}
+			assertOnboardingWorkflowContains(t, result.Workflow, tt.wantComment)
+			assertOnboardingWorkflowContains(t, result.Workflow, "Optional model_reasoning_effort is unset because not every model accepts it.")
+			assertOnboardingWorkflowDecision(t, result.Decisions, "answers.worker_model_mode", "answer")
+			assertOnboardingWorkflowDecision(t, result.Decisions, "codex.command", "answer")
+			if tt.wantModel != "" {
+				assertOnboardingWorkflowDecision(t, result.Decisions, "answers.worker_model", "answer")
+			}
+		})
+	}
+}
+
+func TestBuildOnboardingWorkflowRejectsInvalidWorkerModelAnswers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		answers   []string
+		wantError string
+	}{
+		{
+			name:      "unknown mode",
+			answers:   []string{"WORKER_MODEL_MODE=automatic"},
+			wantError: "WORKER_MODEL_MODE must be provider_default or pinned",
+		},
+		{
+			name:      "pinned without model",
+			answers:   []string{"WORKER_MODEL_MODE=pinned"},
+			wantError: "WORKER_MODEL is required when WORKER_MODEL_MODE=pinned",
+		},
+		{
+			name: "provider default with model",
+			answers: []string{
+				"WORKER_MODEL_MODE=provider_default",
+				"WORKER_MODEL=gpt-5.6-sol",
+			},
+			wantError: "WORKER_MODEL must be omitted when WORKER_MODEL_MODE=provider_default",
+		},
+		{
+			name: "unsafe pinned model",
+			answers: []string{
+				"WORKER_MODEL_MODE=pinned",
+				"WORKER_MODEL=gpt-5.6-sol';echo",
+			},
+			wantError: "WORKER_MODEL contains unsupported characters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := initOnboardingWorkflowBuilderGitRepository(t, "https://github.com/acme/api.git")
+			answersPath := writeOnboardingWorkflowBuilderAnswers(t, onboardingWorkflowBuilderVariantAnswers(root, "github_local", "review_gate", tt.answers...))
+
+			_, err := buildOnboardingWorkflow(context.Background(), onboardingBuildWorkflowConfig{
+				AnswersPath: answersPath,
+				Write:       false,
+			})
+			if err == nil {
+				t.Fatal("buildOnboardingWorkflow() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("buildOnboardingWorkflow() error = %v, want %q", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestBuildOnboardingWorkflowSessionContextMultiplierIsOptIn(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		answers        []string
+		wantMultiplier float64
+		wantPresent    bool
+		wantProvenance string
+	}{
+		{
+			name:           "omitted by default",
+			wantProvenance: "preset",
+		},
+		{
+			name:           "explicit coarse ceiling",
+			answers:        []string{"MAX_SESSION_CONTEXT_MULTIPLIER=12"},
+			wantMultiplier: 12,
+			wantPresent:    true,
+			wantProvenance: "answer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := initOnboardingWorkflowBuilderGitRepository(t, "https://github.com/acme/api.git")
+			answersPath := writeOnboardingWorkflowBuilderAnswers(t, onboardingWorkflowBuilderVariantAnswers(root, "github_local", "review_gate", tt.answers...))
+
+			result, err := buildOnboardingWorkflow(context.Background(), onboardingBuildWorkflowConfig{
+				AnswersPath: answersPath,
+				Write:       false,
+			})
+			if err != nil {
+				t.Fatalf("buildOnboardingWorkflow() error = %v", err)
+			}
+			workflow, err := workflowconfig.ParseWorkflow([]byte(result.Workflow))
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v\n%s", err, result.Workflow)
+			}
+			if workflow.Config.Agent.MaxSessionContextMultiplier != tt.wantMultiplier {
+				t.Fatalf("MaxSessionContextMultiplier = %v, want %v", workflow.Config.Agent.MaxSessionContextMultiplier, tt.wantMultiplier)
+			}
+			gotPresent := strings.Contains(result.Workflow, "max_session_context_multiplier:")
+			if gotPresent != tt.wantPresent {
+				t.Fatalf("max_session_context_multiplier presence = %t, want %t\n%s", gotPresent, tt.wantPresent, result.Workflow)
+			}
+			assertOnboardingWorkflowDecision(t, result.Decisions, "agent.max_session_context_multiplier", tt.wantProvenance)
+		})
+	}
+}
+
 func TestBuildOnboardingWorkflowRendersReviewFlowVariants(t *testing.T) {
 	t.Parallel()
 
@@ -394,8 +564,11 @@ func TestBuildOnboardingWorkflowGeneratesParseablePausedProject(t *testing.T) {
 	if !workflow.Config.Budget.Enabled || workflow.Config.Budget.PerDayMaxUSD != 50 || workflow.Config.Budget.PerIssueMaxUSD != 5 {
 		t.Fatalf("Budget = %#v, want enabled 50/day 5/issue", workflow.Config.Budget)
 	}
-	if workflow.Config.Gate.Validator.Model != onboardingWorkflowDefaultValidatorModel {
-		t.Fatalf("Gate.Validator.Model = %q, want %q", workflow.Config.Gate.Validator.Model, onboardingWorkflowDefaultValidatorModel)
+	if workflow.Config.Gate.Validator.Model != "" {
+		t.Fatalf("Gate.Validator.Model = %q, want provider or route default", workflow.Config.Gate.Validator.Model)
+	}
+	if strings.Contains(string(raw), "max_session_context_multiplier:") {
+		t.Fatalf("WORKFLOW.md includes opt-in max_session_context_multiplier:\n%s", string(raw))
 	}
 
 	got, err := project.New(project.Config{
@@ -424,6 +597,9 @@ func TestBuildOnboardingWorkflowGeneratesParseablePausedProject(t *testing.T) {
 	assertOnboardingWorkflowDecision(t, result.Decisions, "gate.run", "probe")
 	assertOnboardingWorkflowDecision(t, result.Decisions, "gate.validator.model", "preset")
 	assertOnboardingWorkflowDecision(t, result.Decisions, "agent.max_session_tokens", "preset")
+	assertOnboardingWorkflowDecision(t, result.Decisions, "agent.max_session_context_multiplier", "preset")
+	assertOnboardingWorkflowDecision(t, result.Decisions, "answers.worker_model_mode", "preset")
+	assertOnboardingWorkflowDecision(t, result.Decisions, "codex.command", "preset")
 	for _, decision := range result.Decisions {
 		switch decision.Provenance {
 		case "answer", "probe", "preset":
@@ -466,7 +642,7 @@ func assertOnboardingWorkflowContainsWords(t *testing.T, text string, want strin
 	}
 }
 
-func onboardingWorkflowBuilderVariantAnswers(root string, preset string, profile string) string {
+func onboardingWorkflowBuilderVariantAnswers(root string, preset string, profile string, extra ...string) string {
 	lines := []string{
 		"CUSTOMER_ID=acme",
 		"DETENT_PROJECT_ID=api",
@@ -481,6 +657,7 @@ func onboardingWorkflowBuilderVariantAnswers(root string, preset string, profile
 	if preset == "project_v2" {
 		lines = append(lines, "PROJECT_SLUG=PVT_test")
 	}
+	lines = append(lines, extra...)
 	return strings.Join(append(lines, ""), "\n")
 }
 

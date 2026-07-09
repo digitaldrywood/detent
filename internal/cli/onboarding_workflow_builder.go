@@ -22,9 +22,9 @@ import (
 )
 
 const (
-	onboardingWorkflowDefaultValidatorModel       = "gpt-5.4-mini"
+	onboardingWorkflowWorkerModelProviderDefault  = "provider_default"
+	onboardingWorkflowWorkerModelPinned           = "pinned"
 	onboardingWorkflowDefaultSessionTokens        = int64(2000000)
-	onboardingWorkflowDefaultSessionMultiplier    = 4.0
 	onboardingWorkflowDefaultSessionOverrideLabel = "allow-large-session"
 )
 
@@ -58,6 +58,15 @@ type onboardingWorkflowPreset struct {
 	Raw        []byte
 	Provenance string
 	Why        string
+}
+
+type onboardingWorkflowWorkerModel struct {
+	Mode       string
+	Model      string
+	Command    string
+	Provenance string
+	Why        string
+	Comment    string
 }
 
 type onboardingWorkflowReviewFlow string
@@ -457,19 +466,27 @@ func applyOnboardingWorkflowDecisions(
 	if err != nil {
 		return "", err
 	}
-	validatorModel, validatorModelProvenance, validatorModelWhy := onboardingWorkflowStringDecision(answers, nil, "VALIDATOR_MODEL", onboardingWorkflowDefaultValidatorModel, "preset", "recommended validator model override")
+	validatorModel, validatorModelProvenance, validatorModelWhy := onboardingWorkflowStringDecision(answers, nil, "VALIDATOR_MODEL", "", "preset", "inherits the validator route or provider default unless explicitly pinned")
 	validatorMinScore, validatorScoreProvenance, validatorScoreWhy, err := onboardingWorkflowFloatDecision(answers, "VALIDATOR_MIN_SCORE", 0.8, "preset", "recommended validator confidence threshold")
 	if err != nil {
 		return "", err
 	}
 	validatorBlockOn, validatorBlockProvenance, validatorBlockWhy := onboardingWorkflowListDecision(answers, "VALIDATOR_BLOCK_ON", []string{"p1"}, "preset", "block promotion on P1 validator findings")
+	workerModel, err := onboardingWorkflowWorkerModelDecision(answers)
+	if err != nil {
+		return "", err
+	}
 	sessionTokens, sessionTokensProvenance, sessionTokensWhy, err := onboardingWorkflowInt64Decision(answers, "MAX_SESSION_TOKENS", onboardingWorkflowDefaultSessionTokens, "preset", "recommended per-session token ceiling")
 	if err != nil {
 		return "", err
 	}
-	sessionMultiplier, sessionMultiplierProvenance, sessionMultiplierWhy, err := onboardingWorkflowFloatDecision(answers, "MAX_SESSION_CONTEXT_MULTIPLIER", onboardingWorkflowDefaultSessionMultiplier, "preset", "recommended context-window token ceiling")
-	if err != nil {
-		return "", err
+	sessionMultiplierRaw, sessionMultiplierSet := onboardingWorkflowAnswer(answers, "MAX_SESSION_CONTEXT_MULTIPLIER")
+	var sessionMultiplier float64
+	if sessionMultiplierSet {
+		sessionMultiplier, err = strconv.ParseFloat(sessionMultiplierRaw, 64)
+		if err != nil {
+			return "", NewValidationError("MAX_SESSION_CONTEXT_MULTIPLIER must be a number", "Use a numeric value only when explicitly opting into the coarse context multiplier.", nil)
+		}
 	}
 	sessionOverride, sessionOverrideProvenance, sessionOverrideWhy := onboardingWorkflowStringDecision(answers, nil, "MAX_SESSION_TOKEN_OVERRIDE_LABEL", onboardingWorkflowDefaultSessionOverrideLabel, "preset", "explicit per-issue escape hatch for large sessions")
 
@@ -480,7 +497,12 @@ func applyOnboardingWorkflowDecisions(
 	decisions.set(root, "agent.max_turns", maxTurns, maxTurnsProvenance, maxTurnsWhy)
 	decisions.set(root, "agent.max_retry_backoff_ms", 300000, "preset", "recommended retry backoff ceiling")
 	decisions.set(root, "agent.max_session_tokens", sessionTokens, sessionTokensProvenance, sessionTokensWhy)
-	decisions.set(root, "agent.max_session_context_multiplier", sessionMultiplier, sessionMultiplierProvenance, sessionMultiplierWhy)
+	if sessionMultiplierSet {
+		decisions.set(root, "agent.max_session_context_multiplier", sessionMultiplier, "answer", "MAX_SESSION_CONTEXT_MULTIPLIER explicitly opts into a coarse context ceiling")
+	} else {
+		deleteOnboardingYAMLPath(root, []string{"agent", "max_session_context_multiplier"})
+		decisions.add("agent.max_session_context_multiplier", "omitted", "preset", "max_session_tokens is the default runaway brake; the coarse context multiplier is opt-in")
+	}
 	decisions.set(root, "agent.max_session_token_override_label", sessionOverride, sessionOverrideProvenance, sessionOverrideWhy)
 	decisions.set(root, "agent.max_concurrent_agents_by_state.Merging", mergingConcurrency, mergingProvenance, mergingWhy)
 	decisions.set(root, "agent.auto_promote.enabled", autoPromote, autoPromoteProvenance, autoPromoteWhy)
@@ -501,6 +523,19 @@ func applyOnboardingWorkflowDecisions(
 	decisions.set(root, "gate.validator.model", validatorModel, validatorModelProvenance, validatorModelWhy)
 	decisions.set(root, "gate.validator.min_score", validatorMinScore, validatorScoreProvenance, validatorScoreWhy)
 	decisions.set(root, "gate.validator.block_on", validatorBlockOn, validatorBlockProvenance, validatorBlockWhy)
+	decisions.add("answers.worker_model_mode", workerModel.Mode, workerModel.Provenance, workerModel.Why)
+	if workerModel.Model != "" {
+		decisions.add("answers.worker_model", workerModel.Model, "answer", "WORKER_MODEL")
+	}
+	decisions.setWithComments(
+		root,
+		"codex.command",
+		workerModel.Command,
+		workerModel.Provenance,
+		workerModel.Why,
+		"Optional model_reasoning_effort is unset because not every model accepts it.",
+		workerModel.Comment,
+	)
 	decisions.set(root, "plan.enabled", false, "preset", "direct implementation dispatch by default")
 	decisions.set(root, "plan.review", "human", "preset", "human plan approval if plan mode is enabled later")
 	decisions.set(root, "server.kanban.mode", kanbanMode, kanbanProvenance, kanbanWhy)
@@ -560,6 +595,92 @@ func onboardingWorkflowDeliveryProfile(answers onboardingAnswers) (string, strin
 		)
 	}
 	return profile, "answer", "DELIVERY_PROFILE", nil
+}
+
+func onboardingWorkflowWorkerModelDecision(answers onboardingAnswers) (onboardingWorkflowWorkerModel, error) {
+	rawMode, provenance, why := onboardingWorkflowStringDecision(
+		answers,
+		nil,
+		"WORKER_MODEL_MODE",
+		onboardingWorkflowWorkerModelProviderDefault,
+		"preset",
+		"provider default follows upgrades and avoids retirement breakage",
+	)
+	mode, ok := normalizeOnboardingWorkflowWorkerModelMode(rawMode)
+	if !ok {
+		return onboardingWorkflowWorkerModel{}, NewValidationError(
+			"WORKER_MODEL_MODE must be provider_default or pinned",
+			"Use provider_default to follow provider upgrades, or pinned with WORKER_MODEL for reproducibility or cost control.",
+			nil,
+		)
+	}
+	model, hasModel := onboardingWorkflowAnswer(answers, "WORKER_MODEL")
+	switch mode {
+	case onboardingWorkflowWorkerModelProviderDefault:
+		if hasModel {
+			return onboardingWorkflowWorkerModel{}, NewValidationError(
+				"WORKER_MODEL must be omitted when WORKER_MODEL_MODE=provider_default",
+				"Remove WORKER_MODEL to inherit the provider default, or set WORKER_MODEL_MODE=pinned.",
+				nil,
+			)
+		}
+		return onboardingWorkflowWorkerModel{
+			Mode:       mode,
+			Command:    "codex app-server",
+			Provenance: provenance,
+			Why:        why,
+			Comment:    "Provider default: upgrades automatically and avoids retirement breakage.",
+		}, nil
+	case onboardingWorkflowWorkerModelPinned:
+		if !hasModel {
+			return onboardingWorkflowWorkerModel{}, NewValidationError(
+				"WORKER_MODEL is required when WORKER_MODEL_MODE=pinned",
+				"Record the exact provider-supported model identifier, and plan to update it before retirement.",
+				nil,
+			)
+		}
+		if !validOnboardingWorkflowModel(model) {
+			return onboardingWorkflowWorkerModel{}, NewValidationError(
+				"WORKER_MODEL contains unsupported characters",
+				"Use a model identifier containing only letters, digits, dot, underscore, colon, slash, or hyphen.",
+				nil,
+			)
+		}
+		return onboardingWorkflowWorkerModel{
+			Mode:       mode,
+			Model:      model,
+			Command:    fmt.Sprintf(`codex app-server --config 'model="%s"'`, model),
+			Provenance: provenance,
+			Why:        why,
+			Comment:    "Pinned for reproducibility or cost control; update before retirement.",
+		}, nil
+	default:
+		return onboardingWorkflowWorkerModel{}, errors.New("unreachable worker model mode")
+	}
+}
+
+func normalizeOnboardingWorkflowWorkerModelMode(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case onboardingWorkflowWorkerModelProviderDefault, "provider-default", "default", "unpinned":
+		return onboardingWorkflowWorkerModelProviderDefault, true
+	case onboardingWorkflowWorkerModelPinned, "pin":
+		return onboardingWorkflowWorkerModelPinned, true
+	default:
+		return "", false
+	}
+}
+
+func validOnboardingWorkflowModel(model string) bool {
+	if model == "" {
+		return false
+	}
+	for _, char := range model {
+		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || strings.ContainsRune("._:/-", char) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func onboardingWorkflowAnswer(answers onboardingAnswers, keys ...string) (string, bool) {
@@ -924,6 +1045,13 @@ func (r *onboardingWorkflowDecisionRecorder) set(root *yaml.Node, path string, v
 	r.add(path, value, provenance, why)
 }
 
+func (r *onboardingWorkflowDecisionRecorder) setWithComments(root *yaml.Node, path string, value any, provenance string, why string, headComment string, lineComment string) {
+	parts := strings.Split(path, ".")
+	setOnboardingYAMLPath(root, parts, value)
+	setOnboardingYAMLPathComments(root, parts, headComment, lineComment)
+	r.add(path, value, provenance, why)
+}
+
 func (r *onboardingWorkflowDecisionRecorder) add(path string, value any, provenance string, why string) {
 	r.decisions = append(r.decisions, onboardingWorkflowDecision{
 		Path:       path,
@@ -966,6 +1094,27 @@ func setOnboardingYAMLPath(root *yaml.Node, path []string, value any) {
 		current = next
 	}
 	setOnboardingYAMLMappingValue(current, path[len(path)-1], onboardingYAMLNode(value))
+}
+
+func setOnboardingYAMLPathComments(root *yaml.Node, path []string, headComment string, lineComment string) {
+	if len(path) == 0 {
+		return
+	}
+	current := root
+	for _, key := range path[:len(path)-1] {
+		current = onboardingYAMLMappingValue(current, key)
+		if current == nil || current.Kind != yaml.MappingNode {
+			return
+		}
+	}
+	key := path[len(path)-1]
+	for i := 0; i < len(current.Content); i += 2 {
+		if current.Content[i].Value == key {
+			current.Content[i].HeadComment = strings.TrimSpace(headComment)
+			current.Content[i+1].LineComment = strings.TrimSpace(lineComment)
+			return
+		}
+	}
 }
 
 func deleteOnboardingYAMLPath(root *yaml.Node, path []string) {

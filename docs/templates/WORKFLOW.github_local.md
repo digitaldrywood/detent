@@ -61,12 +61,10 @@ agent:
   max_retry_backoff_ms: 300000
   # Per-session ceiling on total_tokens. total_tokens counts input + output +
   # cache-created + cache-read tokens, accumulated across every turn of the
-  # session, so a healthy Claude session re-counts its cached context each turn
-  # and accrues millions of tokens within minutes. Set this as a runaway-session
-  # guard, not a context limit; max_session_context_multiplier bounds context
-  # growth separately.
+  # session, so cached context is re-counted each turn. Use max_session_tokens
+  # as the runaway brake. max_session_context_multiplier is an opt-in, coarse
+  # cap on roughly how many full-context turns fit; leave it unset by default.
   max_session_tokens: 25000000
-  max_session_context_multiplier: 4
   max_session_token_override_label: allow-large-session
   max_concurrent_agents_by_state:
     Merging: 1
@@ -95,7 +93,8 @@ agent:
       enabled: true
       max_drafts_per_run: 1
 codex:
-  command: codex app-server
+  # Optional model_reasoning_effort is unset because not every model accepts it.
+  command: codex app-server # Provider default: upgrades automatically and avoids retirement breakage.
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
@@ -129,9 +128,9 @@ gate:
   transient_ci_retry_limit: 2
   validator:
     enabled: false
-    # Recommended cheap override when enabled: gpt-5.4-mini.
-    # Watch rework-rate per validator model once cache/model telemetry lands.
-    model: gpt-5.4-mini
+    # Optional deliberate pin; leave empty to inherit the route/provider default.
+    # Pinned models require manual updates before provider retirement.
+    model: ""
     min_score: 0.8
     max_inline_diff_bytes: 65536
     block_on:

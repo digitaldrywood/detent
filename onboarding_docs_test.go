@@ -555,6 +555,64 @@ func TestWorkflowTemplatesDocumentStatusEnumAndReviewFlow(t *testing.T) {
 	}
 }
 
+func TestOnboardingDocumentsWorkerModelAndSessionGuardChoices(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+	for _, want := range []string{
+		"WORKER_MODEL_MODE=<provider_default|pinned>",
+		"WORKER_MODEL=<model-if-pinned>",
+		"Provider default: upgrades automatically and avoids retirement breakage.",
+		"Pinned for reproducibility or cost control; update before retirement.",
+		"model_reasoning_effort",
+		"do not emit `MAX_SESSION_CONTEXT_MULTIPLIER` by default",
+	} {
+		assertContainsWords(t, onboarding, want)
+	}
+
+	builder := readRepositoryTextFile(t, "internal/cli/onboarding_workflow_builder.go")
+	if strings.Contains(builder, "gpt-5.") {
+		t.Fatalf("onboarding workflow builder contains a hardcoded model generation:\n%s", builder)
+	}
+
+	for _, path := range []string{
+		"docs/templates/WORKFLOW.project_v2.md",
+		"docs/templates/WORKFLOW.issue_field.md",
+		"docs/templates/WORKFLOW.label.md",
+		"docs/templates/WORKFLOW.github_local.md",
+		"docs/templates/WORKFLOW.non_code_artifact.md",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			content := readRepositoryTextFile(t, path)
+			for _, want := range []string{
+				"max_session_tokens:",
+				"max_session_context_multiplier is an opt-in, coarse",
+				"Optional model_reasoning_effort is unset because not every model accepts it.",
+				"command: codex app-server # Provider default: upgrades automatically and avoids retirement breakage.",
+				"model: \"\"",
+			} {
+				assertContainsWords(t, content, want)
+			}
+			if strings.Contains(content, "max_session_context_multiplier:") {
+				t.Fatalf("%s emits opt-in max_session_context_multiplier:\n%s", path, content)
+			}
+
+			workflow, err := workflowconfig.ParseWorkflow([]byte(content))
+			if err != nil {
+				t.Fatalf("ParseWorkflow(%s) error = %v", path, err)
+			}
+			if workflow.Config.Codex.Command != "codex app-server" {
+				t.Fatalf("Codex.Command = %q, want provider default", workflow.Config.Codex.Command)
+			}
+			if workflow.Config.Gate.Validator.Model != "" {
+				t.Fatalf("Gate.Validator.Model = %q, want route/provider default", workflow.Config.Gate.Validator.Model)
+			}
+		})
+	}
+}
+
 func TestWorkflowTemplatesRecommendRequiredExecutionFlow(t *testing.T) {
 	t.Parallel()
 
