@@ -1,0 +1,21 @@
+{
+  "work_item": {
+    "id": "content-demo-004",
+    "identifier": "content-demo-004",
+    "title": "Package approved newsletter"
+  },
+  "source_assets": [
+    "output/draft-article-narrative/manifest.json"
+  ],
+  "artifact": {
+    "kind": "newsletter_package",
+    "path": "output/package-approved-newsletter/newsletter-package.md",
+    "review_url": "http://127.0.0.1:4101/review/content-demo-004"
+  },
+  "validation": {
+    "status_field": "render_status",
+    "status": "approved",
+    "notes": "Ready for package handoff."
+  },
+  "next_external_action": "Package the newsletter artifact and move the card to Publish after release."
+}
