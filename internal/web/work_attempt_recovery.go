@@ -65,6 +65,9 @@ func (s *Server) apiWorkAttemptReceipt(c echo.Context) error {
 	if err != nil {
 		return workAttemptRecoveryAPIError(c, err)
 	}
+	if htmxRequest(c) {
+		return c.HTML(http.StatusOK, workAttemptReceiptHTML(response))
+	}
 	return c.JSON(http.StatusOK, response)
 }
 
@@ -229,6 +232,55 @@ func workAttemptRecoveryHTML(response orchestrator.WorkAttemptRecoveryResponse, 
 		message = "Recovery action completed"
 	}
 	return `<span class="font-mono text-xs ` + kindClass + `">` + html.EscapeString(message) + `</span>`
+}
+
+func workAttemptReceiptHTML(response orchestrator.WorkAttemptRecoveryResponse) string {
+	attempt := response.Attempt
+	fields := []struct {
+		label string
+		value string
+	}{
+		{label: "Worker", value: attempt.WorkerHost},
+		{label: "Phase", value: attempt.Phase},
+		{label: "Command", value: attempt.CurrentCommand},
+		{label: "Wait", value: attempt.WaitReason},
+		{label: "Error class", value: attempt.ErrorClass},
+		{label: "Error", value: attempt.ErrorMessage},
+		{label: "Status", value: attempt.Status},
+		{label: "Next", value: attempt.NextAction},
+	}
+	var b strings.Builder
+	b.WriteString(`<div class="rounded-md border border-line bg-surface px-3 py-2 text-xs text-sec">`)
+	b.WriteString(`<div class="font-mono text-text">attempt #`)
+	b.WriteString(html.EscapeString(strconv.FormatInt(attempt.AttemptID, 10)))
+	if attempt.Identifier != "" {
+		b.WriteString(` - `)
+		b.WriteString(html.EscapeString(attempt.Identifier))
+	}
+	b.WriteString(`</div><dl class="mt-2 grid gap-1 sm:grid-cols-2">`)
+	for _, field := range fields {
+		value := strings.TrimSpace(field.value)
+		if value == "" {
+			value = "n/a"
+		}
+		b.WriteString(`<div class="min-w-0"><dt class="text-2xs font-semibold uppercase text-dim">`)
+		b.WriteString(html.EscapeString(field.label))
+		b.WriteString(`</dt><dd class="truncate font-mono text-text">`)
+		b.WriteString(html.EscapeString(value))
+		b.WriteString(`</dd></div>`)
+	}
+	b.WriteString(`</dl>`)
+	if response.ResumeEligible && response.ResumeState != nil {
+		sessionID := strings.TrimSpace(response.ResumeState.ProviderSessionID)
+		if sessionID == "" {
+			sessionID = strconv.FormatInt(response.ResumeState.DetentSessionID, 10)
+		}
+		b.WriteString(`<p class="mt-2 font-mono text-ok">resume eligible: `)
+		b.WriteString(html.EscapeString(sessionID))
+		b.WriteString(`</p>`)
+	}
+	b.WriteString(`</div>`)
+	return b.String()
 }
 
 func workAttemptReceiptURL(entry telemetry.WorkAttempt) string {

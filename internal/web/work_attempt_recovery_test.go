@@ -53,6 +53,57 @@ func TestWorkAttemptReceiptAPI(t *testing.T) {
 	}
 }
 
+func TestWorkAttemptReceiptHTMXAllowsDashboardUICookie(t *testing.T) {
+	t.Parallel()
+
+	recovery := &fakeWorkAttemptRecovery{
+		receipt: orchestrator.WorkAttemptRecoveryResponse{
+			Attempt: telemetry.WorkAttempt{
+				AttemptID:      42,
+				ProjectID:      "detent",
+				IssueID:        "issue-979",
+				Identifier:     "digitaldrywood/detent#979",
+				Status:         "active",
+				WorkerHost:     "worker-a",
+				Phase:          "running",
+				CurrentCommand: "make check",
+			},
+		},
+	}
+	server := newWorkAttemptRecoveryAPIServer(t, recovery)
+
+	dashboard := httptest.NewRecorder()
+	dashboardReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	server.Handler().ServeHTTP(dashboard, dashboardReq)
+	if dashboard.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d, want %d; body = %s", dashboard.Code, http.StatusOK, dashboard.Body.String())
+	}
+	cookies := dashboard.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("dashboard response did not set UI API cookie")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/detent/work-attempts/42", nil)
+	req.Header.Set("HX-Request", "true")
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("receipt status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"attempt #42", "worker-a", "make check"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("HTMX receipt missing %q: %s", want, body)
+		}
+	}
+	if recovery.receiptProjectID != "detent" || recovery.receiptAttemptID != 42 {
+		t.Fatalf("receipt call project=%q attempt=%d, want detent/42", recovery.receiptProjectID, recovery.receiptAttemptID)
+	}
+}
+
 func TestWorkAttemptRecoveryAPIRequiresConfirmation(t *testing.T) {
 	t.Parallel()
 

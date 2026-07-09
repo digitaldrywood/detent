@@ -3542,7 +3542,7 @@ templ schedulerRuntimeSection(snapshot telemetry.Snapshot) {
 										</div>
 									</div>
 									<div class="mt-3 flex flex-wrap items-center gap-2">
-										<a class="inline-flex min-h-8 items-center rounded-md border border-line bg-surface px-2.5 py-1 text-xs font-medium text-text transition-colors hover:bg-elev" href={ workAttemptReceiptPath(row) } target="_blank" rel="noreferrer">Receipt</a>
+										<button class="inline-flex min-h-8 items-center rounded-md border border-line bg-surface px-2.5 py-1 text-xs font-medium text-text transition-colors hover:bg-elev" type="button" hx-get={ workAttemptReceiptPath(row) } hx-target={ workAttemptRecoveryTarget(row) } hx-swap="innerHTML">Receipt</button>
 										for _, control := range workAttemptRecoveryControls(row) {
 											<form class="inline-flex" hx-post={ workAttemptRecoveryPath(row) } hx-target={ workAttemptRecoveryTarget(row) } hx-swap="innerHTML" { workAttemptRecoveryConfirmAttributes(control)... }>
 												<input type="hidden" name="action" value={ control.Action }/>
@@ -3552,8 +3552,8 @@ templ schedulerRuntimeSection(snapshot telemetry.Snapshot) {
 												<button class={ workAttemptRecoveryButtonClass(control) } type="submit" title={ control.Title }>{ control.Label }</button>
 											</form>
 										}
-										<span id={ workAttemptRecoveryFeedbackID(row) } class="min-h-5 text-xs text-sec" aria-live="polite"></span>
 									</div>
+									<div id={ workAttemptRecoveryFeedbackID(row) } class="mt-2 min-h-5 text-xs text-sec" aria-live="polite"></div>
 								</article>
 							}
 						</div>

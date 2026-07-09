@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -135,11 +136,13 @@ type MergeTiming struct {
 }
 
 type Retry struct {
-	Issue      connector.Issue
-	Attempt    int
-	DueAt      time.Time
-	Error      string
-	WorkerHost string
+	Issue       connector.Issue
+	Attempt     int
+	DueAt       time.Time
+	Error       string
+	WorkerHost  string
+	RetryMode   runpkg.RetryMode
+	ResumeState store.AgentResumeState
 }
 
 type InstantFailure struct {

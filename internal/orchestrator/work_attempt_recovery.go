@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -264,6 +265,13 @@ func (o *Orchestrator) abandonWorkAttempt(
 		}
 		return receipt, fmt.Errorf("abandon work attempt: %w", err)
 	}
+	issueID := strings.TrimSpace(receipt.Attempt.IssueID)
+	if issueID == "" {
+		if issue, ok := o.recoveryIssue(state, receipt.Attempt); ok {
+			issueID = issue.ID
+		}
+	}
+	releaseClaimErr := o.abandonClaim(ctx, issueID)
 	o.clearLiveWorkAttemptState(state, receipt.Attempt)
 	updated, err := o.workAttemptRecoveryReceipt(ctx, request.ProjectID, request.AttemptID, now)
 	if err != nil {
@@ -273,6 +281,9 @@ func (o *Orchestrator) abandonWorkAttempt(
 	updated.Action = request.Action
 	updated.Status = "succeeded"
 	updated.Message = "work attempt abandoned"
+	if releaseClaimErr != nil {
+		updated.Message = "work attempt abandoned; tracker lease release failed"
+	}
 	return updated, nil
 }
 
@@ -301,15 +312,23 @@ func (o *Orchestrator) retryWorkAttempt(
 	if request.Action == WorkAttemptRecoveryRetryResume {
 		reason = "operator requested work attempt retry with resume"
 	}
+	retryMode := runpkg.RetryModeFresh
+	resumeState := store.AgentResumeState{}
+	if request.Action == WorkAttemptRecoveryRetryResume {
+		retryMode = runpkg.RetryModeResume
+		resumeState = storeAgentResumeState(receipt.ResumeState)
+	}
 	issue = cloneIssue(issue)
 	delete(state.Blocked, issue.ID)
 	delete(state.Completed, issue.ID)
 	delete(state.BudgetRefusals, issue.ID)
 	state.Retry[issue.ID] = Retry{
-		Issue:   issue,
-		Attempt: attempt,
-		DueAt:   now,
-		Error:   o.operatorText(reason),
+		Issue:       issue,
+		Attempt:     attempt,
+		DueAt:       now,
+		Error:       o.operatorText(reason),
+		RetryMode:   retryMode,
+		ResumeState: resumeState,
 	}
 	state.Claimed[issue.ID] = Claimed{
 		Issue:     issue,
@@ -636,6 +655,23 @@ func recoveryNonEmptyEqual(left string, right string) bool {
 
 func workAttemptResumeState(state store.AgentResumeState) *WorkAttemptResumeState {
 	return &WorkAttemptResumeState{
+		DetentSessionID:   state.DetentSessionID,
+		ProviderThreadID:  state.ProviderThreadID,
+		ProviderSessionID: state.ProviderSessionID,
+		RequestedModel:    state.RequestedModel,
+		Model:             state.Model,
+		AgentBackendID:    state.AgentBackendID,
+		AgentBackendKind:  state.AgentBackendKind,
+		AgentRole:         state.AgentRole,
+		CompletedAt:       state.CompletedAt,
+	}
+}
+
+func storeAgentResumeState(state *WorkAttemptResumeState) store.AgentResumeState {
+	if state == nil {
+		return store.AgentResumeState{}
+	}
+	return store.AgentResumeState{
 		DetentSessionID:   state.DetentSessionID,
 		ProviderThreadID:  state.ProviderThreadID,
 		ProviderSessionID: state.ProviderSessionID,

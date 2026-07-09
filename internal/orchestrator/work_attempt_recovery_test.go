@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 )
@@ -21,7 +22,8 @@ func TestHandleWorkAttemptRecoveryAbandonsActiveAttemptAndAudits(t *testing.T) {
 	now := time.Date(2026, 7, 9, 14, 0, 0, 0, time.UTC)
 	issue := recoveryTestIssue()
 	attemptID := startRecoveryWorkAttempt(t, ctx, runtimeStore, issue, store.WorkAttemptStatusActive, "", now.Add(-10*time.Minute))
-	orch := newWorkAttemptRecoveryOrchestrator(t, runtimeStore, nil)
+	tracker := &recoveryTestConnector{}
+	orch := newWorkAttemptRecoveryOrchestratorWithConnector(t, runtimeStore, nil, tracker)
 	state := newState(orch.cfg)
 	state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: attemptID}
 	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-10 * time.Minute)}
@@ -45,6 +47,9 @@ func TestHandleWorkAttemptRecoveryAbandonsActiveAttemptAndAudits(t *testing.T) {
 	}
 	if _, ok := state.Claimed[issue.ID]; ok {
 		t.Fatalf("state.Claimed still contains %q after abandon", issue.ID)
+	}
+	if tracker.fieldIssueID != issue.ID || tracker.fieldName != "Detent Lease" || tracker.fieldValue != "" {
+		t.Fatalf("SetField call = %q %q %q, want lease release", tracker.fieldIssueID, tracker.fieldName, tracker.fieldValue)
 	}
 	receipt, err := runtimeStore.WorkAttempt(ctx, attemptID)
 	if err != nil {
@@ -144,6 +149,12 @@ func TestHandleWorkAttemptRecoveryQueuesResumeRetryWhenEligible(t *testing.T) {
 	if retry.Attempt != 2 || !retry.DueAt.Equal(now) {
 		t.Fatalf("retry = %#v, want attempt 2 due now", retry)
 	}
+	if retry.RetryMode != runpkg.RetryModeResume {
+		t.Fatalf("retry mode = %q, want %q", retry.RetryMode, runpkg.RetryModeResume)
+	}
+	if retry.ResumeState.DetentSessionID != sessionID || retry.ResumeState.ProviderSessionID != "session-979" {
+		t.Fatalf("retry resume state = %#v, want selected session", retry.ResumeState)
+	}
 	event := recoveryTimelineEvent(t, ctx, runtimeStore, issue.ID, WorkAttemptRecoveryRetryResume)
 	if event.Status != "succeeded" || !strings.Contains(event.MetadataJSON, `"resume_eligible":true`) {
 		t.Fatalf("audit event = %#v, want succeeded resume audit", event)
@@ -171,6 +182,17 @@ func openWorkAttemptRecoveryStore(t *testing.T, ctx context.Context) store.Store
 func newWorkAttemptRecoveryOrchestrator(t *testing.T, runtimeStore store.Store, reaper WorkspaceReaper) *Orchestrator {
 	t.Helper()
 
+	return newWorkAttemptRecoveryOrchestratorWithConnector(t, runtimeStore, reaper, &recoveryTestConnector{})
+}
+
+func newWorkAttemptRecoveryOrchestratorWithConnector(
+	t *testing.T,
+	runtimeStore store.Store,
+	reaper WorkspaceReaper,
+	tracker connector.Connector,
+) *Orchestrator {
+	t.Helper()
+
 	orch, err := New(Config{
 		PollInterval:                  time.Hour,
 		MaxConcurrentAgents:           1,
@@ -181,8 +203,12 @@ func newWorkAttemptRecoveryOrchestrator(t *testing.T, runtimeStore store.Store, 
 		FailureRetryBaseDelay:         time.Second,
 		MaxRetryBackoff:               time.Minute,
 		WorkspaceCleanupSweepInterval: time.Hour,
+		Claiming: ClaimingConfig{
+			Enabled:    true,
+			LeaseField: "Detent Lease",
+		},
 	}, Dependencies{
-		Connector:       recoveryTestConnector{},
+		Connector:       tracker,
 		WorkAttempts:    runtimeStore,
 		WorkflowMetrics: runtimeStore,
 		AgentResume:     runtimeStore,
@@ -271,36 +297,43 @@ func recoveryTestIssue() connector.Issue {
 	}
 }
 
-type recoveryTestConnector struct{}
+type recoveryTestConnector struct {
+	fieldIssueID string
+	fieldName    string
+	fieldValue   string
+}
 
-func (recoveryTestConnector) Name() string {
+func (*recoveryTestConnector) Name() string {
 	return "recovery-test"
 }
 
-func (recoveryTestConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+func (*recoveryTestConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
 	return nil, nil
 }
 
-func (recoveryTestConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+func (*recoveryTestConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
 	return nil, nil
 }
 
-func (recoveryTestConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+func (*recoveryTestConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
 	return nil, nil
 }
 
-func (recoveryTestConnector) CreateComment(context.Context, string, string) error {
+func (*recoveryTestConnector) CreateComment(context.Context, string, string) error {
 	return nil
 }
 
-func (recoveryTestConnector) UpdateIssueState(context.Context, string, string) error {
+func (*recoveryTestConnector) UpdateIssueState(context.Context, string, string) error {
 	return nil
 }
 
-func (recoveryTestConnector) SetAssignee(context.Context, string, string) error {
+func (*recoveryTestConnector) SetAssignee(context.Context, string, string) error {
 	return nil
 }
 
-func (recoveryTestConnector) SetField(context.Context, string, string, string) error {
+func (c *recoveryTestConnector) SetField(_ context.Context, issueID string, fieldName string, value string) error {
+	c.fieldIssueID = issueID
+	c.fieldName = fieldName
+	c.fieldValue = value
 	return nil
 }

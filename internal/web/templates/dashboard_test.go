@@ -212,7 +212,7 @@ func TestProjectDiagnosticsPageRendersTabbedOperationsView(t *testing.T) {
 		"tmp/detent.db",
 		"workflow_phase_events",
 		"applied through 6",
-		`href="/api/v1/projects/detent/work-attempts/42"`,
+		`hx-get="/api/v1/projects/detent/work-attempts/42"`,
 		`hx-post="/api/v1/projects/detent/work-attempts/42/recovery"`,
 		`name="action" value="retry_fresh"`,
 		`name="action" value="retry_resume"`,
