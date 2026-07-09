@@ -96,7 +96,7 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 
 	summary := AutoPromoteSummaryFromIssue(issue)
 	decision := EvaluateAutoPromote(issue, summary, cfg, now)
-	if decision.Action == AutoPromoteActionPromote {
+	if autoPromoteDecisionNeedsWorkpadHydration(decision) {
 		issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
 	}
 	if decision.Action != AutoPromoteActionPromote {

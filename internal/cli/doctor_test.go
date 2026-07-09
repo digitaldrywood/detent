@@ -757,14 +757,15 @@ func TestCheckDoctorAutoPromoteCandidateDiagnostics(t *testing.T) {
 				return issue
 			}(),
 			want: doctorAutoPromoteCandidateDiagnostic{
-				IssueID:          "issue-workpad-blocker",
-				IssueIdentifier:  "digitaldrywood/detent#399",
-				PRNumber:         1480,
-				PRURL:            "https://github.test/pull/1480",
-				PRHeadSHA:        "head-workpad",
-				PRMergeableState: "clean",
-				Reason:           "workpad_blocker",
-				WorkpadBlocker:   "Owner approval is still required.",
+				IssueID:             "issue-workpad-blocker",
+				IssueIdentifier:     "digitaldrywood/detent#399",
+				PRNumber:            1480,
+				PRURL:               "https://github.test/pull/1480",
+				PRHeadSHA:           "head-workpad",
+				PRMergeableState:    "clean",
+				Reason:              "workpad_blocker",
+				WorkpadBlocker:      "Owner approval is still required.",
+				WorkpadSignalSource: "prose_section",
 			},
 		},
 	}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const issueIdentitiesByIDQuery = `
@@ -1203,6 +1204,8 @@ func (c *Connector) populateBlockerReasons(ctx context.Context, issues []connect
 		if len(issues[index].BlockedBy) == 0 {
 			issues[index].BlockedBy = parseBlockedByFromIssueText(node, issueRepo(issues[index].Identifier))
 		}
+		issues[index].Comments = connectorIssueComments(comments)
+		issues[index].WorkpadSignal = parseWorkpadSignal(node)
 		if reason := parseBlockerReason(node); reason != "" {
 			issues[index].BlockerReason = reason
 		}
@@ -1296,6 +1299,7 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 			pullRequestRepository = repo
 		}
 	}
+	workpadSignal := parseWorkpadSignal(issue)
 	return connector.Issue{
 		ID:               issue.ID,
 		Identifier:       buildIdentifier(repo, issue.Number),
@@ -1313,7 +1317,8 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		Assignees:        allAssigneeLogins(issue.Assignees),
 		BlockedBy:        parseBlockedBy(issue.Body, repo),
 		ChildIssues:      c.linkedChildIssues(issue, repo),
-		BlockerReason:    parseBlockerReason(issue),
+		BlockerReason:    workpad.Reason(workpadSignal),
+		WorkpadSignal:    workpadSignal,
 		Labels:           labelNames(issue.Labels),
 		Comments:         connectorIssueComments(issue.Comments.Nodes),
 		Fields:           cloneStringMap(fields),

@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/dependencyline"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func (c *Connector) resolveBlockedByProjectState(ctx context.Context, issues []connector.Issue) error {
@@ -133,16 +134,46 @@ func parseModelOverride(body string) string {
 }
 
 func parseBlockerReason(issue githubIssueNode) string {
+	return workpad.Reason(parseWorkpadSignal(issue))
+}
+
+func parseWorkpadSignal(issue githubIssueNode) *workpad.Signal {
+	repo := strings.TrimSpace(issue.Repository.NameWithOwner)
 	for index := len(issue.Comments.Nodes) - 1; index >= 0; index-- {
-		body := issue.Comments.Nodes[index].Body
-		if !strings.Contains(strings.ToLower(body), "codex workpad") {
+		comment := issue.Comments.Nodes[index]
+		body := comment.Body
+		if !workpadCommentBody(body) {
 			continue
 		}
+		if signal, ok := workpad.SignalFromComment(body, comment.URL, repo); ok {
+			return signal
+		}
 		if reason := markdownSectionText(body, "Human Action Needed"); reason != "" {
-			return reason
+			return &workpad.Signal{
+				Source:      workpad.SourceProseSection,
+				CommentURL:  strings.TrimSpace(comment.URL),
+				HumanAction: reason,
+			}
+		}
+		return nil
+	}
+	if reason := markdownSectionText(issue.Body, "Human Action Needed"); reason != "" {
+		return &workpad.Signal{
+			Source:      workpad.SourceProseSection,
+			HumanAction: reason,
 		}
 	}
-	return markdownSectionText(issue.Body, "Human Action Needed")
+	return nil
+}
+
+func workpadCommentBody(body string) bool {
+	for line := range strings.SplitSeq(body, "\n") {
+		heading, ok := markdownHeadingTitle(line)
+		if ok && normalizeSectionTitle(heading) == "codex workpad" {
+			return true
+		}
+	}
+	return false
 }
 
 func parseBlockedByFromIssueText(issue githubIssueNode, repo string) []connector.BlockedRef {

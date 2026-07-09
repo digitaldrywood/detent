@@ -84,6 +84,7 @@ type Config struct {
 	Tracker       Tracker         `yaml:"tracker"`
 	Polling       Polling         `yaml:"polling"`
 	Workspace     Workspace       `yaml:"workspace"`
+	Workpad       Workpad         `yaml:"workpad,omitempty"`
 	Deliverable   Deliverable     `yaml:"deliverable,omitempty"`
 	Dependencies  Dependencies    `yaml:"dependencies,omitempty"`
 	Worker        Worker          `yaml:"worker"`
@@ -187,6 +188,10 @@ type Workspace struct {
 	AutoBranch             bool   `yaml:"auto_branch"`
 	CleanupIdleTTLMS       int    `yaml:"cleanup_idle_ttl_ms"`
 	CleanupSweepIntervalMS int    `yaml:"cleanup_sweep_interval_ms"`
+}
+
+type Workpad struct {
+	StructuredOnly bool `yaml:"structured_only"`
 }
 
 type Deliverable struct {

@@ -134,6 +134,7 @@ func TestConfigFromWorkflowIncludesDispatchPriorityByState(t *testing.T) {
 	workflow := workflowconfig.Default()
 	workflow.Agent.DispatchPriorityByState = []string{"Merging", "Rework"}
 	workflow.Agent.DispatchPriorityByLabel = []string{"bug", "enhancement"}
+	workflow.Workpad.StructuredOnly = true
 
 	cfg := ConfigFromWorkflow(workflow)
 	workflow.Agent.DispatchPriorityByState[0] = "Todo"
@@ -146,6 +147,9 @@ func TestConfigFromWorkflowIncludesDispatchPriorityByState(t *testing.T) {
 	wantLabels := []string{"bug", "enhancement"}
 	if !equalStrings(cfg.DispatchPriorityByLabel, wantLabels) {
 		t.Fatalf("ConfigFromWorkflow().DispatchPriorityByLabel = %#v, want %#v", cfg.DispatchPriorityByLabel, wantLabels)
+	}
+	if !cfg.AutoPromote.WorkpadStructuredOnly {
+		t.Fatal("ConfigFromWorkflow().AutoPromote.WorkpadStructuredOnly = false, want true")
 	}
 }
 
