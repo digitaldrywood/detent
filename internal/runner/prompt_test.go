@@ -87,9 +87,12 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"## Lessons from prior runs",
 		"Check generator aliases before editing.",
 		"## Blocked handoff",
+		"`status` must be exactly one of `in_progress`, `blocked`, or `complete`; no other value is valid.",
+		"The block signals the current work state only. The project's configured flow decides any later review, gate-wait, or merge lane placement.",
 		"dependencies/blocked_by",
 		"```detent-status",
 		"status: blocked",
+		"status: complete",
 		"Blocked by: #123",
 		"Narrative Workpad sentences are never read as blockers",
 		"## Validation gate",
@@ -110,6 +113,47 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Add migrations.") {
 		t.Fatalf("prompt included skill description, want only when_to_use:\n%s", prompt)
+	}
+}
+
+func TestBuildPromptDocumentsWorkpadStatusContract(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Prompt: "Base prompt",
+	}, connector.Issue{
+		Identifier: "digitaldrywood/detent#1106",
+		Title:      "Document workpad status",
+	}, PromptOptions{})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"`status` must be exactly one of `in_progress`, `blocked`, or `complete`; no other value is valid.",
+		"The block signals the current work state only. The project's configured flow decides any later review, gate-wait, or merge lane placement.",
+		"```detent-status\n" +
+			"schema: 1\n" +
+			"status: blocked\n" +
+			"blockers:\n" +
+			"  - ref: \"owner/repo#123\"\n" +
+			"    reason: \"waiting for the dependency to merge\"\n" +
+			"human_action: null\n" +
+			"```",
+		"```detent-status\n" +
+			"schema: 1\n" +
+			"status: complete\n" +
+			"blockers: []\n" +
+			"human_action: null\n" +
+			"```",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+
+	if strings.Contains(prompt, "never use Human Review") {
+		t.Fatalf("prompt contains project-specific review policy:\n%s", prompt)
 	}
 }
 

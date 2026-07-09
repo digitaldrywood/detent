@@ -528,6 +528,8 @@ func appendGateBlock(prompt string, cfg gate.Config) string {
 
 func appendBlockedHandoffBlock(prompt string) string {
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Blocked handoff\n\n" +
+		"When writing a Workpad `detent-status` block, `status` must be exactly one of `in_progress`, `blocked`, or `complete`; no other value is valid. " +
+		"The block signals the current work state only. The project's configured flow decides any later review, gate-wait, or merge lane placement.\n\n" +
 		"Before moving an issue to Blocked because it is waiting on another tracked GitHub issue or pull request, prefer GitHub's native dependency relation. " +
 		"Resolve the blocker REST id, then create the relation:\n\n" +
 		"```sh\n" +
@@ -543,6 +545,13 @@ func appendBlockedHandoffBlock(prompt string) string {
 		"blockers:\n" +
 		"  - ref: \"owner/repo#123\"\n" +
 		"    reason: \"waiting for the dependency to merge\"\n" +
+		"human_action: null\n" +
+		"```\n\n" +
+		"On successful completion, declare completion with the same structured block:\n\n" +
+		"```detent-status\n" +
+		"schema: 1\n" +
+		"status: complete\n" +
+		"blockers: []\n" +
 		"human_action: null\n" +
 		"```\n\n" +
 		"Narrative Workpad sentences are never read as blockers. Legacy fallback during the deprecation window: keep a machine-readable issue-body line such as `Blocked by: #123` or `Depends on: owner/repo#123` only when native dependencies are unavailable and the project has not migrated."
