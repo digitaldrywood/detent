@@ -153,6 +153,12 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 
+	// Every path below is a completion without a worker error: reset both
+	// failure circuit breakers here so plan and merge-worker completions do
+	// not carry stale counts into the next attempt cycle.
+	delete(state.InstantFailures, event.IssueID)
+	delete(state.RepeatedFailures, event.IssueID)
+
 	if event.Request.Mode == runpkg.RunModePlan {
 		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
 			"attempt", running.Attempt,
@@ -210,8 +216,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		statusMessage = "worker completed without PR progress"
 	}
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, implementCompletionProgressMetadata(progress))
-	delete(state.InstantFailures, event.IssueID)
-	delete(state.RepeatedFailures, event.IssueID)
 
 	state.Completed[event.IssueID] = Completed{
 		Issue:       cloneIssue(running.Issue),
