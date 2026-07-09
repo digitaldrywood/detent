@@ -42,7 +42,7 @@ func TestCheckerCheckDispatch(t *testing.T) {
 			wantAllow: true,
 		},
 		{
-			name: "missing model pricing allows without spend lookup",
+			name: "unknown model uses fallback pricing",
 			cfg: Config{
 				Enabled:      true,
 				PerDayMaxUSD: 0.01,
@@ -50,6 +50,7 @@ func TestCheckerCheckDispatch(t *testing.T) {
 			spend:     &fakeSpendStore{},
 			req:       DispatchRequest{Model: "missing-model", Now: now, Estimate: TokenEstimate{InputTokens: 10}},
 			wantAllow: true,
+			wantDaily: 1,
 		},
 		{
 			name: "daily cap refuses when projection exceeds limit",

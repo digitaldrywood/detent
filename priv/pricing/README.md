@@ -22,4 +22,7 @@ models:
     output_usd_per_1m_tokens: 30.00
 ```
 
+Use the reserved `default` row to override the fallback rate Detent uses when
+runtime telemetry reports an unrecognized or empty model ID.
+
 `cached_input_usd_per_1m_tokens` and `usd_per_cached_input_token` are cache-read prices, not cache-write prices. Verify all three columns against the provider's published pricing when adding or changing a model. If an override row omits the cached-input rate, Detent logs a warning and falls back to the input rate so the model does not silently price cache reads at zero.

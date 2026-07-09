@@ -16,6 +16,7 @@ const (
 	threadStartRequestID  = 2
 	turnStartRequestID    = 3
 	threadResumeRequestID = 4
+	configReadRequestID   = 5
 	methodNotFoundCode    = -32601
 
 	defaultClientName    = "detent-orchestrator"
@@ -179,6 +180,7 @@ const (
 	UpdateRateLimits        UpdateType = "rate_limits"
 	UpdateTurnStarted       UpdateType = "turn_started"
 	UpdateTurnCompleted     UpdateType = "turn_completed"
+	UpdateModelUpdated      UpdateType = "model_updated"
 )
 
 type Update struct {
@@ -322,26 +324,35 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 			return RunTurnResult{}, err
 		}
 	}
+	if model == "" && strings.TrimSpace(req.Model) == "" {
+		model, err = s.resolveDefaultModel(ctx, transport, req.Workspace, onUpdate)
+		if err != nil {
+			return RunTurnResult{}, err
+		}
+	}
 
-	turnID, err := s.startTurn(ctx, transport, req, threadID, onUpdate)
+	turn, err := s.startTurn(ctx, transport, req, threadID, onUpdate)
 	if err != nil {
 		return RunTurnResult{}, err
 	}
+	turnID := turn.ID
 
 	result = RunTurnResult{
 		ThreadID:  threadID,
 		TurnID:    turnID,
 		SessionID: threadID + "-" + turnID,
 	}
-	if err := emitUpdate(Update{
-		Type:     UpdateTurnStarted,
-		Method:   "turn/start",
-		ThreadID: threadID,
-		TurnID:   turnID,
-		Status:   "started",
-		Model:    model,
-	}, onUpdate); err != nil {
-		return RunTurnResult{}, err
+	if !turn.StartedEmitted {
+		if err := emitUpdate(Update{
+			Type:     UpdateTurnStarted,
+			Method:   "turn/start",
+			ThreadID: threadID,
+			TurnID:   turnID,
+			Status:   "started",
+			Model:    firstNonBlank(turn.Model, model),
+		}, onUpdate); err != nil {
+			return RunTurnResult{}, err
+		}
 	}
 
 	if err := s.streamTurn(ctx, transport, req.turnTimeout(s.turnTimeout), onUpdate); err != nil {
@@ -409,11 +420,15 @@ func (s *AppServer) startThread(
 			ID            string `json:"id"`
 			Model         string `json:"model"`
 			ModelID       string `json:"model_id"`
+			ModelIDCamel  string `json:"modelId"`
 			ResolvedModel string `json:"resolvedModel"`
+			ResolvedSnake string `json:"resolved_model"`
 		} `json:"thread"`
 		Model         string `json:"model"`
 		ModelID       string `json:"model_id"`
+		ModelIDCamel  string `json:"modelId"`
 		ResolvedModel string `json:"resolvedModel"`
+		ResolvedSnake string `json:"resolved_model"`
 	}
 	if err := json.Unmarshal(result, &response); err != nil {
 		return "", "", fmt.Errorf("%w: decode thread/start result: %w", ErrInvalidResponse, err)
@@ -425,10 +440,14 @@ func (s *AppServer) startThread(
 	model := firstNonBlank(
 		response.Thread.Model,
 		response.Thread.ResolvedModel,
+		response.Thread.ResolvedSnake,
 		response.Thread.ModelID,
+		response.Thread.ModelIDCamel,
 		response.Model,
 		response.ResolvedModel,
+		response.ResolvedSnake,
 		response.ModelID,
+		response.ModelIDCamel,
 	)
 
 	return response.Thread.ID, model, nil
@@ -473,11 +492,15 @@ func (s *AppServer) resumeThread(
 			ID            string `json:"id"`
 			Model         string `json:"model"`
 			ModelID       string `json:"model_id"`
+			ModelIDCamel  string `json:"modelId"`
 			ResolvedModel string `json:"resolvedModel"`
+			ResolvedSnake string `json:"resolved_model"`
 		} `json:"thread"`
 		Model         string `json:"model"`
 		ModelID       string `json:"model_id"`
+		ModelIDCamel  string `json:"modelId"`
 		ResolvedModel string `json:"resolvedModel"`
+		ResolvedSnake string `json:"resolved_model"`
 	}
 	if err := json.Unmarshal(result, &response); err != nil {
 		return "", "", fmt.Errorf("%w: decode thread/resume result: %w", ErrInvalidResponse, err)
@@ -489,14 +512,24 @@ func (s *AppServer) resumeThread(
 	model := firstNonBlank(
 		response.Thread.Model,
 		response.Thread.ResolvedModel,
+		response.Thread.ResolvedSnake,
 		response.Thread.ModelID,
+		response.Thread.ModelIDCamel,
 		response.Model,
 		response.ResolvedModel,
+		response.ResolvedSnake,
 		response.ModelID,
+		response.ModelIDCamel,
 		req.Model,
 	)
 
 	return response.Thread.ID, model, nil
+}
+
+type startTurnResult struct {
+	ID             string
+	Model          string
+	StartedEmitted bool
 }
 
 func (s *AppServer) startTurn(
@@ -505,7 +538,7 @@ func (s *AppServer) startTurn(
 	req RunTurnRequest,
 	threadID string,
 	onUpdate UpdateHandler,
-) (string, error) {
+) (startTurnResult, error) {
 	params := map[string]any{
 		"threadId": threadID,
 		"input": []map[string]any{
@@ -527,27 +560,100 @@ func (s *AppServer) startTurn(
 	}
 
 	if err := sendRequest(ctx, transport, turnStartRequestID, "turn/start", params); err != nil {
-		return "", err
+		return startTurnResult{}, err
 	}
 
-	result, err := s.awaitResponse(ctx, transport, turnStartRequestID, onUpdate)
+	turn := startTurnResult{}
+	trackTurnStarted := func(update Update) error {
+		if update.Type == UpdateTurnStarted {
+			turn.StartedEmitted = true
+			if update.Model != "" {
+				turn.Model = update.Model
+			}
+		}
+		if onUpdate == nil {
+			return nil
+		}
+		return onUpdate(update)
+	}
+
+	result, err := s.awaitResponse(ctx, transport, turnStartRequestID, trackTurnStarted)
 	if err != nil {
-		return "", err
+		return startTurnResult{}, err
 	}
 
 	var response struct {
 		Turn struct {
-			ID string `json:"id"`
+			ID            string `json:"id"`
+			Model         string `json:"model"`
+			ModelID       string `json:"model_id"`
+			ModelIDCamel  string `json:"modelId"`
+			ResolvedModel string `json:"resolvedModel"`
+			ResolvedSnake string `json:"resolved_model"`
 		} `json:"turn"`
+		Model         string `json:"model"`
+		ModelID       string `json:"model_id"`
+		ModelIDCamel  string `json:"modelId"`
+		ResolvedModel string `json:"resolvedModel"`
+		ResolvedSnake string `json:"resolved_model"`
 	}
 	if err := json.Unmarshal(result, &response); err != nil {
-		return "", fmt.Errorf("%w: decode turn/start result: %w", ErrInvalidResponse, err)
+		return startTurnResult{}, fmt.Errorf("%w: decode turn/start result: %w", ErrInvalidResponse, err)
 	}
 	if response.Turn.ID == "" {
-		return "", fmt.Errorf("%w: turn/start result missing turn id", ErrInvalidResponse)
+		return startTurnResult{}, fmt.Errorf("%w: turn/start result missing turn id", ErrInvalidResponse)
 	}
 
-	return response.Turn.ID, nil
+	turn.ID = response.Turn.ID
+	turn.Model = firstNonBlank(
+		turn.Model,
+		response.Turn.Model,
+		response.Turn.ResolvedModel,
+		response.Turn.ResolvedSnake,
+		response.Turn.ModelID,
+		response.Turn.ModelIDCamel,
+		response.Model,
+		response.ResolvedModel,
+		response.ResolvedSnake,
+		response.ModelID,
+		response.ModelIDCamel,
+	)
+	return turn, nil
+}
+
+func (s *AppServer) resolveDefaultModel(
+	ctx context.Context,
+	transport Transport,
+	workspace string,
+	onUpdate UpdateHandler,
+) (string, error) {
+	params := map[string]any{
+		"includeLayers": false,
+	}
+	if strings.TrimSpace(workspace) != "" {
+		params["cwd"] = workspace
+	}
+	if err := sendRequest(ctx, transport, configReadRequestID, "config/read", params); err != nil {
+		return "", err
+	}
+	result, err := s.awaitResponse(ctx, transport, configReadRequestID, onUpdate)
+	if err != nil {
+		var responseErr *ResponseError
+		if errors.As(err, &responseErr) {
+			return "", nil
+		}
+		return "", err
+	}
+	var response struct {
+		Config struct {
+			Model string `json:"model"`
+		} `json:"config"`
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(result, &response); err != nil {
+		return "", fmt.Errorf("%w: decode config/read result: %w", ErrInvalidResponse, err)
+	}
+	return firstNonBlank(response.Config.Model, response.Model), nil
 }
 
 func (s *AppServer) awaitResponse(
@@ -752,9 +858,14 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 		}, true, nil
 	case "thread/tokenUsage/updated":
 		var params struct {
-			ThreadID   string `json:"threadId"`
-			TurnID     string `json:"turnId"`
-			TokenUsage struct {
+			ThreadID    string `json:"threadId"`
+			TurnID      string `json:"turnId"`
+			Model       string `json:"model"`
+			ModelID     string `json:"model_id"`
+			ModelIDAlt  string `json:"modelId"`
+			Resolved    string `json:"resolvedModel"`
+			ResolvedAlt string `json:"resolved_model"`
+			TokenUsage  struct {
 				Total              tokenUsageBreakdown `json:"total"`
 				ModelContextWindow *int64              `json:"modelContextWindow"`
 			} `json:"tokenUsage"`
@@ -767,6 +878,7 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 			Method:   msg.Method,
 			ThreadID: params.ThreadID,
 			TurnID:   params.TurnID,
+			Model:    firstNonBlank(params.Model, params.Resolved, params.ResolvedAlt, params.ModelID, params.ModelIDAlt),
 			Tokens: TokenUsage{
 				InputTokens:           params.TokenUsage.Total.InputTokens,
 				CachedInputTokens:     params.TokenUsage.Total.CachedInputTokens,
@@ -790,6 +902,81 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 			RateLimits: params.RateLimits.snapshot(),
 			Payload:    rawPayload(msg),
 		}, true, nil
+	case "turn/started":
+		var params struct {
+			ThreadID    string `json:"threadId"`
+			Model       string `json:"model"`
+			ModelID     string `json:"model_id"`
+			ModelIDAlt  string `json:"modelId"`
+			Resolved    string `json:"resolvedModel"`
+			ResolvedAlt string `json:"resolved_model"`
+			Turn        struct {
+				ID          string `json:"id"`
+				Model       string `json:"model"`
+				ModelID     string `json:"model_id"`
+				ModelIDAlt  string `json:"modelId"`
+				Resolved    string `json:"resolvedModel"`
+				ResolvedAlt string `json:"resolved_model"`
+			} `json:"turn"`
+		}
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			return Update{}, false, fmt.Errorf("%w: decode turn started: %w", ErrInvalidResponse, err)
+		}
+		return Update{
+			Type:     UpdateTurnStarted,
+			Method:   msg.Method,
+			ThreadID: params.ThreadID,
+			TurnID:   params.Turn.ID,
+			Status:   "started",
+			Model: firstNonBlank(
+				params.Turn.Model,
+				params.Turn.Resolved,
+				params.Turn.ResolvedAlt,
+				params.Turn.ModelID,
+				params.Turn.ModelIDAlt,
+				params.Model,
+				params.Resolved,
+				params.ResolvedAlt,
+				params.ModelID,
+				params.ModelIDAlt,
+			),
+			Payload: rawPayload(msg),
+		}, true, nil
+	case "model/rerouted":
+		var params struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+			ToModel  string `json:"toModel"`
+			Model    string `json:"model"`
+		}
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			return Update{}, false, fmt.Errorf("%w: decode model rerouted: %w", ErrInvalidResponse, err)
+		}
+		return Update{
+			Type:     UpdateModelUpdated,
+			Method:   msg.Method,
+			ThreadID: params.ThreadID,
+			TurnID:   params.TurnID,
+			Model:    firstNonBlank(params.ToModel, params.Model),
+			Payload:  rawPayload(msg),
+		}, true, nil
+	case "model/safetyBuffering/updated":
+		var params struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+			Model    string `json:"model"`
+		}
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			return Update{}, false, fmt.Errorf("%w: decode model safety buffering: %w", ErrInvalidResponse, err)
+		}
+		return Update{
+			Type:     UpdateModelUpdated,
+			Method:   msg.Method,
+			ThreadID: params.ThreadID,
+			TurnID:   params.TurnID,
+			Model:    params.Model,
+			Payload:  rawPayload(msg),
+		}, true, nil
 	case "turn/completed":
 		var params struct {
 			ThreadID string `json:"threadId"`
@@ -798,11 +985,13 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 				Status  string          `json:"status"`
 				Error   json.RawMessage `json:"error"`
 				Message string          `json:"message"`
+				Model   string          `json:"model"`
 			} `json:"turn"`
 			Type    string          `json:"type"`
 			Status  any             `json:"status"`
 			Error   json.RawMessage `json:"error"`
 			Message string          `json:"message"`
+			Model   string          `json:"model"`
 		}
 		if len(msg.Params) > 0 {
 			if err := json.Unmarshal(msg.Params, &params); err != nil {
@@ -820,6 +1009,7 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 			ThreadID:            params.ThreadID,
 			TurnID:              params.Turn.ID,
 			Status:              status,
+			Model:               firstNonBlank(params.Turn.Model, params.Model),
 			BackendErrorBody:    errorBody,
 			BackendErrorMessage: errorMessage,
 			Payload:             rawPayload(msg),
@@ -1021,6 +1211,8 @@ func requestName(id int) string {
 		return "turn/start"
 	case threadResumeRequestID:
 		return "thread/resume"
+	case configReadRequestID:
+		return "config/read"
 	default:
 		return strconv.Itoa(id)
 	}

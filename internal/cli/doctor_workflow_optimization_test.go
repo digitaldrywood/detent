@@ -113,11 +113,11 @@ func TestDoctorWorkflowOptimizationFindsFixtureRules(t *testing.T) {
 	if metrics.MaxSessionTokens != 300000 {
 		t.Fatalf("MaxSessionTokens = %d, want 300000", metrics.MaxSessionTokens)
 	}
-	if metrics.P90SessionBillableTokens != 150500 {
-		t.Fatalf("P90SessionBillableTokens = %d, want 150500", metrics.P90SessionBillableTokens)
+	if metrics.P90SessionBillableTokens != 107320 {
+		t.Fatalf("P90SessionBillableTokens = %d, want 107320", metrics.P90SessionBillableTokens)
 	}
-	if metrics.BudgetEstimateDriftRatio != 0.8853 {
-		t.Fatalf("BudgetEstimateDriftRatio = %v, want 0.8853", metrics.BudgetEstimateDriftRatio)
+	if metrics.BudgetEstimateDriftRatio != 0.6313 {
+		t.Fatalf("BudgetEstimateDriftRatio = %v, want 0.6313", metrics.BudgetEstimateDriftRatio)
 	}
 }
 
