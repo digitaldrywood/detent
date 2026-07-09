@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -13,14 +14,15 @@ import (
 // fixed-height lanes that scroll independently. Everything is pre-formatted
 // so the template stays declarative.
 type boardView struct {
-	Key        string
-	Exceptions []primitives.Exception
-	Figures    []primitives.Figure
-	TPS        string
-	Spend      string
-	Lanes      []boardLaneView
-	Visible    int
-	Total      int
+	Key         string
+	Exceptions  []primitives.Exception
+	Figures     []primitives.Figure
+	TPS         string
+	Spend       string
+	Lanes       []boardLaneView
+	Visible     int
+	Total       int
+	HiddenCards int
 }
 
 type boardLaneView struct {
@@ -30,10 +32,36 @@ type boardLaneView struct {
 	DropState      string
 	DropKey        string
 	Count          string
+	CardCount      int
 	Live           bool
 	DefaultVisible bool
 	EmptyMessage   string
 	Cards          []boardCardView
+}
+
+const (
+	boardLaneVisibilityStoragePrefix       = "detent.ui.board.lanes.v2."
+	boardLaneVisibilityLegacyStoragePrefix = "detent.ui.board.lanes."
+	boardLaneVisibilityStorageVersion      = 1
+)
+
+type boardLaneVisibilityState string
+
+const (
+	boardLaneVisibilityAuto boardLaneVisibilityState = "auto"
+	boardLaneVisibilityShow boardLaneVisibilityState = "show"
+	boardLaneVisibilityHide boardLaneVisibilityState = "hide"
+)
+
+type boardLaneVisibilityPrefs struct {
+	Show map[string]struct{}
+	Hide map[string]struct{}
+}
+
+type boardLaneVisibilityPayload struct {
+	Version int      `json:"v"`
+	Show    []string `json:"show,omitempty"`
+	Hide    []string `json:"hide,omitempty"`
 }
 
 // boardCardView keeps cards uniform: an 11px mono meta row, a two-line
@@ -94,11 +122,12 @@ func boardViewFromDashboard(data DashboardData) boardView {
 		// to the global set.
 		laneTerminal := boardLaneTerminal(data, lane, globalTerminalStates)
 		laneView := boardLaneView{
-			DomID:  "lane-" + lane.ID,
-			LaneID: lane.ID,
-			Title:  lane.Title,
-			Count:  formatCount(len(lane.Cards)),
-			Live:   strings.EqualFold(lane.Title, "In Progress") && len(lane.Cards) > 0,
+			DomID:     "lane-" + lane.ID,
+			LaneID:    lane.ID,
+			Title:     lane.Title,
+			Count:     formatCount(len(lane.Cards)),
+			CardCount: len(lane.Cards),
+			Live:      strings.EqualFold(lane.Title, "In Progress") && len(lane.Cards) > 0,
 			// Populated lanes show by default, except terminal graveyards
 			// (Cancelled, Closed, …). Done stays visible so finished work
 			// reads at a glance; everything is reachable via the picker.
@@ -117,9 +146,72 @@ func boardViewFromDashboard(data DashboardData) boardView {
 		view.Total++
 		if laneView.DefaultVisible {
 			view.Visible++
+		} else if laneView.CardCount > 0 {
+			view.HiddenCards += laneView.CardCount
 		}
 	}
 	return view
+}
+
+func boardLaneVisibilityPrefsFromStorage(raw string) (boardLaneVisibilityPrefs, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return boardLaneVisibilityPrefs{}, false
+	}
+	var payload boardLaneVisibilityPayload
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return boardLaneVisibilityPrefs{}, true
+	}
+	if payload.Version != boardLaneVisibilityStorageVersion {
+		return boardLaneVisibilityPrefs{}, true
+	}
+	return boardLaneVisibilityPrefsFromLists(payload.Show, payload.Hide), false
+}
+
+func boardLaneVisibilityPrefsFromLists(show []string, hide []string) boardLaneVisibilityPrefs {
+	prefs := boardLaneVisibilityPrefs{
+		Show: map[string]struct{}{},
+		Hide: map[string]struct{}{},
+	}
+	for _, id := range show {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		prefs.Show[id] = struct{}{}
+	}
+	for _, id := range hide {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := prefs.Show[id]; ok {
+			continue
+		}
+		prefs.Hide[id] = struct{}{}
+	}
+	return prefs
+}
+
+func boardLaneVisibilityStateForLane(prefs boardLaneVisibilityPrefs, laneID string) boardLaneVisibilityState {
+	if _, ok := prefs.Show[laneID]; ok {
+		return boardLaneVisibilityShow
+	}
+	if _, ok := prefs.Hide[laneID]; ok {
+		return boardLaneVisibilityHide
+	}
+	return boardLaneVisibilityAuto
+}
+
+func boardLaneVisibilityResolve(defaultVisible bool, state boardLaneVisibilityState) bool {
+	switch state {
+	case boardLaneVisibilityShow:
+		return true
+	case boardLaneVisibilityHide:
+		return false
+	default:
+		return defaultVisible
+	}
 }
 
 // boardFallbackProjectID resolves the project a card belongs to when its
@@ -440,6 +532,79 @@ func boardBoolAttr(value bool) string {
 
 func boardLaneCountLabel(view boardView) string {
 	return formatCount(view.Visible) + "/" + formatCount(view.Total)
+}
+
+func boardLaneHiddenCardBadgeLabel(view boardView) string {
+	if view.HiddenCards <= 0 {
+		return ""
+	}
+	return formatCount(view.HiddenCards) + " hidden"
+}
+
+func boardLaneHiddenCardSummary(view boardView) string {
+	hidden := make([]boardLaneView, 0)
+	for _, lane := range view.Lanes {
+		if boardLaneHiddenPopulated(lane) {
+			hidden = append(hidden, lane)
+		}
+	}
+	return boardLaneHiddenLaneSummary(hidden)
+}
+
+func boardLaneHiddenLaneSummary(lanes []boardLaneView) string {
+	if len(lanes) == 0 {
+		return "All populated lanes are visible."
+	}
+	if len(lanes) == 1 {
+		lane := lanes[0]
+		return boardCountLabel(lane.CardCount, "hidden card", "hidden cards") + " in " + lane.Title + "."
+	}
+	total := 0
+	parts := make([]string, 0, len(lanes))
+	for _, lane := range lanes {
+		total += lane.CardCount
+		parts = append(parts, lane.Title+" ("+formatCount(lane.CardCount)+")")
+	}
+	return boardCountLabel(total, "hidden card", "hidden cards") + " across " + boardCountLabel(len(lanes), "lane", "lanes") + ": " + strings.Join(parts, ", ") + "."
+}
+
+func boardLaneHiddenPopulated(lane boardLaneView) bool {
+	return lane.CardCount > 0 && !lane.DefaultVisible
+}
+
+func boardLaneVisibilityStatusLabel(lane boardLaneView) string {
+	if lane.DefaultVisible {
+		return "Auto shown"
+	}
+	if lane.CardCount > 0 {
+		return "Auto hidden - " + boardCountLabel(lane.CardCount, "hidden card", "hidden cards")
+	}
+	return "Auto hidden"
+}
+
+func boardLaneVisibilityStatusTitle(lane boardLaneView) string {
+	if lane.DefaultVisible {
+		return "Auto follows the board default; this lane is currently shown."
+	}
+	if lane.CardCount > 0 {
+		return "Auto follows the board default; " + boardCountLabel(lane.CardCount, "card is", "cards are") + " currently hidden."
+	}
+	return "Auto follows the board default; this lane is currently hidden."
+}
+
+func boardLaneVisibilityRowClass(lane boardLaneView) string {
+	class := "grid gap-1 rounded-card border px-2 py-1.5 text-xs text-text hover:bg-surface"
+	if boardLaneHiddenPopulated(lane) {
+		return class + " border-warn/45 bg-warn/10"
+	}
+	return class + " border-transparent"
+}
+
+func boardCountLabel(count int, singular string, plural string) string {
+	if count == 1 {
+		return "1 " + singular
+	}
+	return formatCount(count) + " " + plural
 }
 
 func boardScopeLabel(data DashboardData) string {

@@ -149,15 +149,26 @@ test("board lane picker hides and restores lanes", async ({ page }) => {
     viewport: desktopViewport,
   });
 
-  const firstLane = page.locator("[data-board-lane]").first();
+  const firstLane = page
+    .locator(
+      '[data-board-lane][data-lane-hidden="false"][data-board-lane-card-count]:not([data-board-lane-card-count="0"])',
+    )
+    .first();
   const laneID = await firstLane.getAttribute("data-board-lane");
-  const toggle = page.locator(`[data-board-lane-toggle="${laneID}"]`);
+  const lane = page.locator(`[data-board-lane="${laneID}"]`);
+  const visibility = page.locator(`[data-board-lane-visibility="${laneID}"]`);
+  const reset = page.locator(`[data-board-lane-reset="${laneID}"]`);
+  const hiddenBadge = page.locator("[data-board-hidden-card-count]");
 
   await page.locator("#board-lane-picker summary").click();
-  await toggle.uncheck();
-  await expect(firstLane).toBeHidden();
-  await toggle.check();
-  await expect(firstLane).toBeVisible();
+  await visibility.selectOption("hide");
+  await expect(lane).toBeHidden();
+  await expect(visibility).toHaveValue("hide");
+  await expect(hiddenBadge).toBeVisible();
+  await expect(hiddenBadge).toContainText("hidden");
+  await reset.click();
+  await expect(lane).toBeVisible();
+  await expect(visibility).toHaveValue("auto");
 });
 
 test("board applies persisted todo visibility before snapshot morphs", async ({
@@ -173,7 +184,7 @@ test("board applies persisted todo visibility before snapshot morphs", async ({
 
   const laneID = "todo";
   const lane = page.locator(`[data-board-lane="${laneID}"]`);
-  const toggle = page.locator(`[data-board-lane-toggle="${laneID}"]`);
+  const visibility = page.locator(`[data-board-lane-visibility="${laneID}"]`);
   const count = page.locator("[data-board-lane-count]");
   const boardKey = await page
     .locator("[data-board-lanes]")
@@ -182,8 +193,8 @@ test("board applies persisted todo visibility before snapshot morphs", async ({
   await page.evaluate(
     ({ boardKey, laneID }) => {
       localStorage.setItem(
-        `detent.ui.board.lanes.${boardKey}`,
-        JSON.stringify({ [laneID]: true }),
+        `detent.ui.board.lanes.v2.${boardKey}`,
+        JSON.stringify({ v: 1, show: [laneID] }),
       );
       document.dispatchEvent(new Event("htmx:afterSettle"));
     },
@@ -191,7 +202,7 @@ test("board applies persisted todo visibility before snapshot morphs", async ({
   );
 
   await expect(lane).toBeVisible();
-  await expect(toggle).toBeChecked();
+  await expect(visibility).toHaveValue("show");
   await expect(count).toHaveText("8/9");
 
   const incomingSnapshot = await page.evaluate((laneID) => {
@@ -205,12 +216,13 @@ test("board applies persisted todo visibility before snapshot morphs", async ({
       lane.setAttribute("data-board-lane-default", "false");
       lane.setAttribute("data-lane-hidden", "true");
     }
-    const toggle = template.content.querySelector(
-      `[data-board-lane-toggle="${laneID}"]`,
+    const visibility = template.content.querySelector(
+      `[data-board-lane-visibility="${laneID}"]`,
     );
-    if (toggle) {
-      toggle.checked = false;
-      toggle.removeAttribute("checked");
+    if (visibility) {
+      visibility.value = "auto";
+      visibility.setAttribute("data-board-lane-visibility-state", "auto");
+      visibility.setAttribute("data-board-lane-visibility-effective", "false");
     }
     const lanes = Array.from(
       template.content.querySelectorAll("[data-board-lane]"),
@@ -248,7 +260,7 @@ test("board applies persisted todo visibility before snapshot morphs", async ({
   const hiddenValues = await laneHiddenValues(page);
   expect(hiddenValues).not.toContain("true");
   await expect(lane).toBeVisible();
-  await expect(toggle).toBeChecked();
+  await expect(visibility).toHaveValue("show");
   await expect(count).toHaveText("8/9");
 
   await startLaneHiddenRecorder(page, laneID);
@@ -278,7 +290,7 @@ test("board applies persisted todo visibility before snapshot morphs", async ({
   const sseHiddenValues = await laneHiddenValues(page);
   expect(sseHiddenValues).not.toContain("true");
   await expect(lane).toBeVisible();
-  await expect(toggle).toBeChecked();
+  await expect(visibility).toHaveValue("show");
   await expect(count).toHaveText("8/9");
 });
 
