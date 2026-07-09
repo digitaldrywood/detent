@@ -1347,6 +1347,9 @@ repo is a real, working instance of this setup to copy from.
    [`WORKFLOW.github_local.md`](docs/templates/WORKFLOW.github_local.md).
    Non-code artifact workflows can start from
    [`WORKFLOW.non_code_artifact.md`](docs/templates/WORKFLOW.non_code_artifact.md).
+   A runnable local example with seeded work items, artifact metadata, API
+   payloads, and artifact-gate transitions lives in
+   [`docs/examples/non-code-artifact`](docs/examples/non-code-artifact).
    They set `server.kanban.mode: integration` for trusted project boards;
    change that to `read_only` only for an observer or shared dashboard,
    explicit no-writes choice, or failed post-authorization write probes. They

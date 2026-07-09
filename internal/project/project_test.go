@@ -798,7 +798,7 @@ func TestProjectWaitersReceiveRunError(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	runCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := got.Start(runCtx); err != nil {
 		t.Fatalf("Start() error = %v", err)
