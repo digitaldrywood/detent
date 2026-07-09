@@ -765,7 +765,7 @@ func (o *Orchestrator) issueHasStickyBlockReason(ctx context.Context, state *Sta
 
 func stickyBlockReason(reason string) bool {
 	switch strings.ToLower(strings.TrimSpace(reason)) {
-	case "rework_limit", "circuit_breaker":
+	case "rework_limit", "no_progress_limit", "circuit_breaker":
 		return true
 	default:
 		return false

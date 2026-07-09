@@ -553,11 +553,12 @@ func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {
 	}
 
 	if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{
-		AttemptID:     attemptID,
-		CompletedAt:   base.Add(3 * time.Minute),
-		Status:        WorkAttemptStatusTerminal,
-		TerminalState: WorkAttemptTerminalSuccess,
-		Phase:         "completed",
+		AttemptID:          attemptID,
+		CompletedAt:        base.Add(3 * time.Minute),
+		Status:             WorkAttemptStatusTerminal,
+		TerminalState:      WorkAttemptTerminalNoProgress,
+		Phase:              "completed",
+		WorkerMetadataJSON: `{"completion_progress":{"outcome":"no_progress","current_head_sha":"abc123"}}`,
 	}); err != nil {
 		t.Fatalf("CompleteWorkAttempt() error = %v", err)
 	}
@@ -567,6 +568,21 @@ func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {
 	}
 	if len(active) != 0 {
 		t.Fatalf("active attempts after complete = %#v, want none", active)
+	}
+	history, err := backend.ListRecentTerminalWorkAttempts(ctx, WorkAttemptHistoryQuery{
+		ProjectID:  "detent",
+		IssueID:    "issue-737",
+		WorkerType: "agent",
+		Limit:      5,
+	})
+	if err != nil {
+		t.Fatalf("ListRecentTerminalWorkAttempts() error = %v", err)
+	}
+	if len(history) != 1 || history[0].ID != attemptID || history[0].TerminalState != WorkAttemptTerminalNoProgress {
+		t.Fatalf("history = %#v, want completed no_progress attempt %d", history, attemptID)
+	}
+	if history[0].WorkerMetadataJSON != `{"completion_progress":{"outcome":"no_progress","current_head_sha":"abc123"}}` {
+		t.Fatalf("history WorkerMetadataJSON = %q", history[0].WorkerMetadataJSON)
 	}
 
 	staleID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{

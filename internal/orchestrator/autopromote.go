@@ -20,6 +20,7 @@ type AutoPromoteConfig struct {
 	ReworkState        string
 	ReworkLimit        int
 	TerminalStates     []string
+	NoProgressLimit    int
 	Gate               gate.Config
 }
 
@@ -185,6 +186,9 @@ func normalizeAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {
 		cfg.ReworkLimit = 0
 	}
 	cfg.TerminalStates = normalizedStates(cfg.TerminalStates)
+	if cfg.NoProgressLimit < 0 {
+		cfg.NoProgressLimit = 0
+	}
 	cfg.Gate = gate.Effective(cfg.Gate)
 	return cfg
 }

@@ -2137,6 +2137,10 @@ func (s *recordingWorkAttemptStore) ListActiveWorkAttempts(context.Context, stor
 	return nil, nil
 }
 
+func (s *recordingWorkAttemptStore) ListRecentTerminalWorkAttempts(context.Context, store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
+	return nil, nil
+}
+
 func (s *recordingWorkAttemptStore) RecordSchedulerDecision(_ context.Context, attrs store.SchedulerDecision) (int64, error) {
 	s.decisions = append(s.decisions, attrs)
 	return int64(len(s.decisions)), nil

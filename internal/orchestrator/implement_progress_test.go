@@ -1,0 +1,459 @@
+package orchestrator
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"log/slog"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
+)
+
+func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 7, 8, 16, 0, 0, 0, time.UTC)
+	signature := autoPromoteReworkSignature{
+		PRNumber:     1070,
+		HeadSHA:      "same-head",
+		FailedChecks: []string{"Test"},
+	}
+
+	tests := []struct {
+		name              string
+		runningIssue      connector.Issue
+		hydratedIssue     connector.Issue
+		hydrateErr        error
+		history           []store.WorkAttempt
+		diffStats         DiffStats
+		noProgressLimit   int
+		wantTerminal      store.WorkAttemptTerminalState
+		wantReason        string
+		wantPreviousHead  string
+		wantCurrentHead   string
+		wantHydrations    int
+		wantBlocked       bool
+		wantComment       string
+		wantRetry         bool
+		wantLogContains   string
+		wantFailedAdded   []string
+		wantFailedRemoved []string
+	}{
+		{
+			name:            "first attempt succeeds with linked PR",
+			runningIssue:    implementProgressIssue("same-head", "Test"),
+			hydratedIssue:   implementProgressIssue("same-head", "Test"),
+			diffStats:       DiffStats{Status: "clean"},
+			noProgressLimit: 3,
+			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantReason:      "first_completed_attempt",
+			wantCurrentHead: "same-head",
+			wantHydrations:  1,
+			wantRetry:       true,
+		},
+		{
+			name:             "new head SHA succeeds",
+			runningIssue:     implementProgressIssue("same-head", "Test"),
+			hydratedIssue:    implementProgressIssue("new-head", "Test"),
+			history:          []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
+			diffStats:        DiffStats{Status: "clean"},
+			noProgressLimit:  3,
+			wantTerminal:     store.WorkAttemptTerminalSuccess,
+			wantReason:       "signature_changed",
+			wantPreviousHead: "same-head",
+			wantCurrentHead:  "new-head",
+			wantHydrations:   1,
+			wantRetry:        true,
+		},
+		{
+			name:             "unchanged signature and clean diff records no progress",
+			runningIssue:     implementProgressIssue("same-head", "Test"),
+			hydratedIssue:    implementProgressIssue("same-head", "Test"),
+			history:          []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
+			diffStats:        DiffStats{Status: "clean"},
+			noProgressLimit:  3,
+			wantTerminal:     store.WorkAttemptTerminalNoProgress,
+			wantReason:       "unchanged_signature_clean_diff",
+			wantPreviousHead: "same-head",
+			wantCurrentHead:  "same-head",
+			wantHydrations:   1,
+			wantRetry:        true,
+		},
+		{
+			name:          "limit trip blocks with comment",
+			runningIssue:  implementProgressIssue("same-head", "Test"),
+			hydratedIssue: implementProgressIssue("same-head", "Test"),
+			history: []store.WorkAttempt{
+				implementProgressHistoryAttempt(2, signature, store.WorkAttemptTerminalNoProgress),
+				implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalNoProgress),
+			},
+			diffStats:        DiffStats{Status: "clean"},
+			noProgressLimit:  3,
+			wantTerminal:     store.WorkAttemptTerminalNoProgress,
+			wantReason:       "unchanged_signature_clean_diff",
+			wantPreviousHead: "same-head",
+			wantCurrentHead:  "same-head",
+			wantHydrations:   1,
+			wantBlocked:      true,
+			wantComment:      "no_progress_limit",
+		},
+		{
+			name:            "issue without linked PR is exempt",
+			runningIssue:    implementProgressIssueWithoutPR(),
+			diffStats:       DiffStats{Status: "clean"},
+			noProgressLimit: 3,
+			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantReason:      "no_linked_pull_request",
+			wantRetry:       true,
+		},
+		{
+			name:            "hydration failure fails open to success",
+			runningIssue:    implementProgressIssue("same-head", "Test"),
+			hydratedIssue:   implementProgressIssue("same-head", "Test"),
+			hydrateErr:      errors.New("github hiccup"),
+			history:         []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
+			diffStats:       DiffStats{Status: "clean"},
+			noProgressLimit: 3,
+			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantReason:      "pull_request_hydration_failed",
+			wantHydrations:  1,
+			wantRetry:       true,
+			wantLogContains: "implement worker progress check failed open",
+		},
+		{
+			name:            "degraded hydration fails open to success",
+			runningIssue:    implementProgressIssue("same-head", "Test"),
+			hydratedIssue:   implementProgressIssueWithHydrationDegraded("same-head", connector.PullRequestHydrationReasonStaleCachedPullData, "Test"),
+			history:         []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
+			diffStats:       DiffStats{Status: "clean"},
+			noProgressLimit: 3,
+			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantReason:      "pull_request_hydration_unavailable",
+			wantHydrations:  1,
+			wantRetry:       true,
+			wantLogContains: "implement worker progress check failed open",
+		},
+		{
+			name:              "failed check delta is recorded",
+			runningIssue:      implementProgressIssue("new-head", "Test", "Lint"),
+			hydratedIssue:     implementProgressIssue("new-head", "Test", "Lint"),
+			history:           []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
+			diffStats:         DiffStats{Status: "clean"},
+			noProgressLimit:   3,
+			wantTerminal:      store.WorkAttemptTerminalSuccess,
+			wantReason:        "signature_changed",
+			wantPreviousHead:  "same-head",
+			wantCurrentHead:   "new-head",
+			wantHydrations:    1,
+			wantRetry:         true,
+			wantFailedAdded:   []string{"Lint"},
+			wantFailedRemoved: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var logs bytes.Buffer
+			tracker := &implementProgressConnector{hydrated: tt.hydratedIssue, hydrateErr: tt.hydrateErr}
+			attempts := &implementProgressAttemptStore{history: tt.history}
+			cfg := normalizeConfig(Config{
+				Project:                scheduler.ProjectCandidate{ID: "detent"},
+				AutoPromote:            AutoPromoteConfig{NoProgressLimit: tt.noProgressLimit},
+				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+				ObservedStates:         []string{"Human Review", "Blocked"},
+				TerminalStates:         []string{"Done", "Cancelled"},
+				ContinuationRetryDelay: time.Minute,
+			})
+			orch := &Orchestrator{
+				cfg:          cfg,
+				connector:    tracker,
+				workAttempts: attempts,
+				logger:       slog.New(slog.NewTextHandler(&logs, nil)),
+			}
+			state := newState(cfg)
+			running := Running{
+				Issue:         tt.runningIssue,
+				Attempt:       1,
+				WorkAttemptID: 42,
+				Mode:          runpkg.RunModeImplement,
+				StartedAt:     base.Add(-time.Minute),
+				DiffStats:     tt.diffStats,
+			}
+			state.Running[tt.runningIssue.ID] = running
+			state.Claimed[tt.runningIssue.ID] = Claimed{Issue: tt.runningIssue, ClaimedAt: running.StartedAt}
+
+			orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+				IssueID:     tt.runningIssue.ID,
+				CompletedAt: base,
+				Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+				Result: runpkg.RunResult{
+					FinalState: FinalStateCompleted,
+					DiffStats:  tt.diffStats,
+				},
+			})
+
+			if len(attempts.completions) != 1 {
+				t.Fatalf("completions len = %d, want 1", len(attempts.completions))
+			}
+			completion := attempts.completions[0]
+			if completion.TerminalState != tt.wantTerminal {
+				t.Fatalf("TerminalState = %q, want %q", completion.TerminalState, tt.wantTerminal)
+			}
+			record := implementProgressRecordFromCompletion(t, completion)
+			if record.Reason != tt.wantReason {
+				t.Fatalf("metadata reason = %q, want %q", record.Reason, tt.wantReason)
+			}
+			if record.PreviousHeadSHA != tt.wantPreviousHead {
+				t.Fatalf("previous head = %q, want %q", record.PreviousHeadSHA, tt.wantPreviousHead)
+			}
+			if record.CurrentHeadSHA != tt.wantCurrentHead {
+				t.Fatalf("current head = %q, want %q", record.CurrentHeadSHA, tt.wantCurrentHead)
+			}
+			if !slicesEqual(record.FailedChecksAdded, tt.wantFailedAdded) {
+				t.Fatalf("failed checks added = %#v, want %#v", record.FailedChecksAdded, tt.wantFailedAdded)
+			}
+			if !slicesEqual(record.FailedChecksRemoved, tt.wantFailedRemoved) {
+				t.Fatalf("failed checks removed = %#v, want %#v", record.FailedChecksRemoved, tt.wantFailedRemoved)
+			}
+			if tracker.hydrations != tt.wantHydrations {
+				t.Fatalf("hydrations = %d, want %d", tracker.hydrations, tt.wantHydrations)
+			}
+			if _, ok := state.Blocked[tt.runningIssue.ID]; ok != tt.wantBlocked {
+				t.Fatalf("blocked present = %v, want %v", ok, tt.wantBlocked)
+			}
+			if tt.wantBlocked {
+				if len(tracker.updates) != 1 || tracker.updates[0].state != blockedStatusState {
+					t.Fatalf("updates = %#v, want one Blocked update", tracker.updates)
+				}
+				if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, tt.wantComment) {
+					t.Fatalf("comments = %#v, want comment containing %q", tracker.comments, tt.wantComment)
+				}
+				if _, ok := state.Retry[tt.runningIssue.ID]; ok {
+					t.Fatalf("Retry[%q] present after block", tt.runningIssue.ID)
+				}
+			} else if _, ok := state.Retry[tt.runningIssue.ID]; ok != tt.wantRetry {
+				t.Fatalf("retry present = %v, want %v", ok, tt.wantRetry)
+			}
+			if tt.wantLogContains != "" && !strings.Contains(logs.String(), tt.wantLogContains) {
+				t.Fatalf("logs did not contain %q:\n%s", tt.wantLogContains, logs.String())
+			}
+		})
+	}
+}
+
+func TestStickyBlockReasonIncludesNoProgressLimit(t *testing.T) {
+	t.Parallel()
+
+	if !stickyBlockReason(noProgressLimitReason) {
+		t.Fatalf("stickyBlockReason(%q) = false, want true", noProgressLimitReason)
+	}
+}
+
+func implementProgressIssue(headSHA string, failedChecks ...string) connector.Issue {
+	prNumber := 1070
+	issue := connector.Issue{
+		ID:           "issue-1070",
+		Identifier:   "digitaldrywood/detent#1070",
+		Title:        "No progress",
+		State:        "In Progress",
+		URL:          "https://github.test/digitaldrywood/detent/issues/1070",
+		PRNumber:     &prNumber,
+		PRRepository: "digitaldrywood/detent",
+		PullRequest: &connector.PullRequest{
+			Number:  prNumber,
+			URL:     "https://github.test/digitaldrywood/detent/pull/1070",
+			State:   "OPEN",
+			HeadSHA: headSHA,
+		},
+	}
+	for _, check := range failedChecks {
+		issue.PullRequest.RequiredCheckFailures = append(issue.PullRequest.RequiredCheckFailures, connector.PullRequestCheck{
+			Name:       check,
+			Status:     "completed",
+			Conclusion: "failure",
+		})
+	}
+	return issue
+}
+
+func implementProgressIssueWithHydrationDegraded(headSHA string, reason string, failedChecks ...string) connector.Issue {
+	issue := implementProgressIssue(headSHA, failedChecks...)
+	issue.PullRequest.HydrationDegradedReason = reason
+	return issue
+}
+
+func implementProgressIssueWithoutPR() connector.Issue {
+	return connector.Issue{
+		ID:         "issue-plan",
+		Identifier: "digitaldrywood/detent#1200",
+		Title:      "Plan only",
+		State:      "In Progress",
+		URL:        "https://github.test/digitaldrywood/detent/issues/1200",
+	}
+}
+
+func implementProgressHistoryAttempt(id int64, signature autoPromoteReworkSignature, terminal store.WorkAttemptTerminalState) store.WorkAttempt {
+	return store.WorkAttempt{
+		ID:                 id,
+		ProjectID:          "detent",
+		IssueID:            "issue-1070",
+		Identifier:         "digitaldrywood/detent#1070",
+		IssueURL:           "https://github.test/digitaldrywood/detent/issues/1070",
+		WorkerType:         "agent",
+		Status:             store.WorkAttemptStatusTerminal,
+		TerminalState:      terminal,
+		CompletedAt:        time.Date(2026, 7, 8, 15, int(id), 0, 0, time.UTC),
+		WorkerMetadataJSON: implementProgressMetadataJSON(signature, terminal),
+	}
+}
+
+func implementProgressMetadataJSON(signature autoPromoteReworkSignature, terminal store.WorkAttemptTerminalState) string {
+	return marshalWorkAttemptJSON(map[string]any{
+		"run_mode": runpkg.RunModeImplement,
+		implementProgressMetadataKey: implementProgressRecord{
+			Outcome:          string(terminal),
+			Reason:           "test_history",
+			CurrentSignature: implementProgressSignatureRecordFromSignature(signature),
+			CurrentHeadSHA:   signature.HeadSHA,
+		},
+	})
+}
+
+func implementProgressRecordFromCompletion(t *testing.T, completion store.WorkAttemptCompletion) implementProgressRecord {
+	t.Helper()
+
+	attempt := store.WorkAttempt{
+		TerminalState:      completion.TerminalState,
+		WorkerMetadataJSON: completion.WorkerMetadataJSON,
+	}
+	record, ok := implementProgressRecordFromAttempt(attempt)
+	if !ok {
+		t.Fatalf("completion metadata did not include progress record: %s", completion.WorkerMetadataJSON)
+	}
+	return record
+}
+
+type implementProgressConnector struct {
+	hydrated   connector.Issue
+	hydrateErr error
+	hydrations int
+	updates    []implementProgressUpdate
+	comments   []implementProgressComment
+}
+
+type implementProgressUpdate struct {
+	issueID string
+	state   string
+}
+
+type implementProgressComment struct {
+	issueID string
+	body    string
+}
+
+func (c *implementProgressConnector) Name() string {
+	return "implement-progress"
+}
+
+func (c *implementProgressConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (c *implementProgressConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (c *implementProgressConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (c *implementProgressConnector) CreateComment(_ context.Context, issueID string, body string) error {
+	c.comments = append(c.comments, implementProgressComment{issueID: issueID, body: body})
+	return nil
+}
+
+func (c *implementProgressConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {
+	c.updates = append(c.updates, implementProgressUpdate{issueID: issueID, state: state})
+	return nil
+}
+
+func (c *implementProgressConnector) SetAssignee(context.Context, string, string) error {
+	return nil
+}
+
+func (c *implementProgressConnector) SetField(context.Context, string, string, string) error {
+	return nil
+}
+
+func (c *implementProgressConnector) HydratePullRequest(context.Context, connector.Issue) (connector.Issue, error) {
+	c.hydrations++
+	if c.hydrateErr != nil {
+		return connector.Issue{}, c.hydrateErr
+	}
+	return cloneIssue(c.hydrated), nil
+}
+
+type implementProgressAttemptStore struct {
+	history     []store.WorkAttempt
+	completions []store.WorkAttemptCompletion
+}
+
+func (s *implementProgressAttemptStore) StartWorkAttempt(context.Context, store.WorkAttemptStart) (int64, error) {
+	return 1, nil
+}
+
+func (s *implementProgressAttemptStore) RecordWorkAttemptHeartbeat(context.Context, store.WorkAttemptHeartbeat) error {
+	return nil
+}
+
+func (s *implementProgressAttemptStore) CompleteWorkAttempt(_ context.Context, attrs store.WorkAttemptCompletion) error {
+	s.completions = append(s.completions, attrs)
+	return nil
+}
+
+func (s *implementProgressAttemptStore) ListActiveWorkAttempts(context.Context, store.WorkAttemptQuery) ([]store.WorkAttempt, error) {
+	return nil, nil
+}
+
+func (s *implementProgressAttemptStore) ListRecentTerminalWorkAttempts(context.Context, store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
+	return append([]store.WorkAttempt(nil), s.history...), nil
+}
+
+func (s *implementProgressAttemptStore) TimeoutExpiredWorkAttempts(context.Context, store.WorkAttemptTimeout) ([]store.WorkAttempt, error) {
+	return nil, nil
+}
+
+func (s *implementProgressAttemptStore) ReclaimActiveWorkAttempts(context.Context, store.WorkAttemptReclaim) ([]store.WorkAttempt, error) {
+	return nil, nil
+}
+
+func (s *implementProgressAttemptStore) RecordSchedulerDecision(context.Context, store.SchedulerDecision) (int64, error) {
+	return 0, nil
+}
+
+func (s *implementProgressAttemptStore) ListRecentSchedulerDecisions(context.Context, store.SchedulerDecisionQuery) ([]store.SchedulerDecision, error) {
+	return nil, nil
+}
+
+func slicesEqual(left []string, right []string) bool {
+	if len(left) == 0 && len(right) == 0 {
+		return true
+	}
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}

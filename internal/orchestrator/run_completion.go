@@ -191,7 +191,22 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		errorClass = "runner_final_state"
 		errorMessage = finalState
 	}
-	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, "completed", "worker completed")
+	if diffStatsPresent(event.Result.DiffStats) {
+		running.DiffStats = event.Result.DiffStats
+	}
+	progress := o.evaluateImplementCompletionProgress(ctx, running, finalState)
+	if terminalState != store.WorkAttemptTerminalSuccess {
+		progress.Outcome = terminalState
+	}
+	running.Issue = progress.Issue
+	phase := "completed"
+	statusMessage := "worker completed"
+	if terminalState == store.WorkAttemptTerminalSuccess && progress.Outcome == store.WorkAttemptTerminalNoProgress {
+		terminalState = store.WorkAttemptTerminalNoProgress
+		phase = "no_progress"
+		statusMessage = "worker completed without PR progress"
+	}
+	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, implementCompletionProgressMetadata(progress))
 	delete(state.InstantFailures, event.IssueID)
 
 	state.Completed[event.IssueID] = Completed{
@@ -218,6 +233,11 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if state.Draining {
 		o.cleanupDrainedRun(ctx, state, event.IssueID)
 		return
+	}
+	if terminalState == store.WorkAttemptTerminalNoProgress && progress.Block {
+		if o.blockNoProgressLimit(ctx, state, progress, event.CompletedAt) {
+			return
+		}
 	}
 	o.scheduleRetry(state, running.Issue, 1, event.CompletedAt, "", true, running.WorkerHost)
 }

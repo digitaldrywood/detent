@@ -567,6 +567,7 @@ SET status = ?,
     github_rate_snapshot_json = ?,
     ci_state = ?,
     capacity_snapshot_json = ?,
+    worker_metadata_json = ?,
     metrics_json = ?,
     next_action = ?
 WHERE id = ?
@@ -578,6 +579,21 @@ FROM work_attempts
 WHERE completed_at IS NULL
   AND (sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id))
 ORDER BY started_at, id;
+
+-- name: ListRecentTerminalWorkAttempts :many
+SELECT *
+FROM work_attempts
+WHERE completed_at IS NOT NULL
+  AND status = 'terminal'
+  AND (sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id))
+  AND (sqlc.arg(filter_worker_type) = '' OR worker_type = sqlc.arg(filter_worker_type))
+  AND (
+    (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
+    OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
+    OR (sqlc.arg(issue_url) != '' AND issue_url = sqlc.arg(issue_url))
+  )
+ORDER BY completed_at DESC, id DESC
+LIMIT sqlc.arg(result_limit);
 
 -- name: TimeoutExpiredWorkAttempts :many
 UPDATE work_attempts

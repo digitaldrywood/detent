@@ -46,6 +46,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			ReworkState:        cfg.Agent.AutoPromote.ReworkState,
 			ReworkLimit:        cfg.Agent.AutoPromote.ReworkLimit,
 			TerminalStates:     append([]string(nil), cfg.Tracker.TerminalStates...),
+			NoProgressLimit:    cfg.Agent.AutoPromote.NoProgressLimit,
 			Gate:               gate.Effective(cfg.Gate),
 		}),
 		Plan: gate.EffectivePlan(cfg.Plan),

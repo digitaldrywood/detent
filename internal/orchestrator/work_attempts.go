@@ -122,6 +122,7 @@ func (o *Orchestrator) startDurableWorkAttempt(
 		StatusMessage:          start.StatusMessage,
 		GitHubRateSnapshotJSON: start.GitHubRateSnapshotJSON,
 		CapacitySnapshotJSON:   start.CapacitySnapshotJSON,
+		WorkerMetadataJSON:     start.WorkerMetadataJSON,
 		MetricsJSON:            start.MetricsJSON,
 		NextAction:             start.NextAction,
 	})
@@ -159,6 +160,21 @@ func (o *Orchestrator) completeDurableWorkAttempt(
 	phase string,
 	statusMessage string,
 ) {
+	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, completedAt, terminalState, errorClass, errorMessage, phase, statusMessage, nil)
+}
+
+func (o *Orchestrator) completeDurableWorkAttemptWithMetadata(
+	ctx context.Context,
+	state *State,
+	running Running,
+	completedAt time.Time,
+	terminalState store.WorkAttemptTerminalState,
+	errorClass string,
+	errorMessage string,
+	phase string,
+	statusMessage string,
+	metadata map[string]any,
+) {
 	if o == nil || o.workAttempts == nil || running.WorkAttemptID <= 0 {
 		return
 	}
@@ -186,6 +202,7 @@ func (o *Orchestrator) completeDurableWorkAttempt(
 		GitHubRateSnapshotJSON: o.githubRateSnapshotJSON(state),
 		CIState:                workAttemptCIState(running.Issue),
 		CapacitySnapshotJSON:   o.capacitySnapshotJSON(state, running.Issue),
+		WorkerMetadataJSON:     runningWorkAttemptMetadataJSON(running, metadata),
 		MetricsJSON:            runningWorkAttemptMetricsJSON(running),
 		NextAction:             "release capacity",
 	}
@@ -366,6 +383,9 @@ func (o *Orchestrator) applyWorkAttemptCompletionSnapshot(state *State, running 
 		item.GitHubRateSnapshotJSON = completion.GitHubRateSnapshotJSON
 		item.CIState = completion.CIState
 		item.CapacitySnapshotJSON = completion.CapacitySnapshotJSON
+		if strings.TrimSpace(completion.WorkerMetadataJSON) != "" {
+			item.WorkerMetadataJSON = completion.WorkerMetadataJSON
+		}
 		item.MetricsJSON = completion.MetricsJSON
 		item.NextAction = completion.NextAction
 		state.WorkAttempts[index] = item
@@ -396,6 +416,7 @@ func (o *Orchestrator) applyWorkAttemptCompletionSnapshot(state *State, running 
 		GitHubRateSnapshotJSON: completion.GitHubRateSnapshotJSON,
 		CIState:                completion.CIState,
 		CapacitySnapshotJSON:   completion.CapacitySnapshotJSON,
+		WorkerMetadataJSON:     completion.WorkerMetadataJSON,
 		MetricsJSON:            completion.MetricsJSON,
 		NextAction:             completion.NextAction,
 	}
@@ -440,6 +461,7 @@ func telemetryWorkAttempt(attempt store.WorkAttempt, now time.Time) telemetry.Wo
 		GitHubRateSnapshotJSON: attempt.GitHubRateSnapshotJSON,
 		CIState:                attempt.CIState,
 		CapacitySnapshotJSON:   attempt.CapacitySnapshotJSON,
+		WorkerMetadataJSON:     attempt.WorkerMetadataJSON,
 		MetricsJSON:            attempt.MetricsJSON,
 		NextAction:             attempt.NextAction,
 	}
@@ -647,6 +669,20 @@ func runningWorkAttemptMetricsJSON(running Running) string {
 		"total_tokens":    running.Tokens.TotalTokens,
 		"runtime_seconds": running.Tokens.RuntimeSeconds,
 	})
+}
+
+func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) string {
+	out := map[string]any{
+		"run_mode": strings.TrimSpace(running.Mode),
+	}
+	for key, value := range metadata {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = value
+	}
+	return marshalWorkAttemptJSON(out)
 }
 
 func schedulerDecisionWaitReason(reason string) string {
