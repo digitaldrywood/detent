@@ -69,6 +69,7 @@ type WorkflowMetricsStore interface {
 
 type WorkAttemptStore interface {
 	StartWorkAttempt(context.Context, WorkAttemptStart) (int64, error)
+	WorkAttempt(context.Context, int64) (WorkAttempt, error)
 	RecordWorkAttemptHeartbeat(context.Context, WorkAttemptHeartbeat) error
 	CompleteWorkAttempt(context.Context, WorkAttemptCompletion) error
 	ListActiveWorkAttempts(context.Context, WorkAttemptQuery) ([]WorkAttempt, error)
@@ -92,6 +93,7 @@ type RuntimeEvidenceStore interface {
 
 type AgentResumeStore interface {
 	LatestCompletedAgentResumeState(context.Context, AgentResumeLookup) (AgentResumeState, error)
+	LatestIssueAgentResumeState(context.Context, IssueIdentity) (AgentResumeState, error)
 }
 
 type APIKeyStore interface {
@@ -143,6 +145,7 @@ const (
 	WorkflowPhaseTypeGitHubBackoff WorkflowPhaseType = "github_backoff"
 	WorkflowPhaseTypeReview        WorkflowPhaseType = "review"
 	WorkflowPhaseTypeMergeQueue    WorkflowPhaseType = "merge_queue"
+	WorkflowPhaseTypeRecovery      WorkflowPhaseType = "recovery"
 )
 
 type WorkAttemptStatus string

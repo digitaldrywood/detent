@@ -120,6 +120,32 @@ func TestProjectDiagnosticsPageRendersTabbedOperationsView(t *testing.T) {
 				Status:        telemetry.RefreshStatusReady,
 				LastRefreshAt: &now,
 			},
+			WorkAttempts: []telemetry.WorkAttempt{
+				{
+					AttemptID:     42,
+					ProjectID:     "detent",
+					IssueID:       "issue-979",
+					Identifier:    "digitaldrywood/detent#979",
+					WorkerType:    "agent",
+					WorkerHost:    "worker-a",
+					Status:        "terminal",
+					TerminalState: "failure",
+					Phase:         "failed",
+					WaitReason:    "none",
+					NextAction:    "retry",
+				},
+				{
+					AttemptID:  43,
+					ProjectID:  "detent",
+					IssueID:    "issue-980",
+					Identifier: "digitaldrywood/detent#980",
+					WorkerType: "agent",
+					WorkerHost: "worker-b",
+					Status:     "active",
+					Phase:      "running",
+					Stale:      true,
+				},
+			},
 			WorkflowMetrics: telemetry.WorkflowMetrics{
 				Available: true,
 				RuntimeStore: telemetry.RuntimeStoreEvidence{
@@ -186,6 +212,16 @@ func TestProjectDiagnosticsPageRendersTabbedOperationsView(t *testing.T) {
 		"tmp/detent.db",
 		"workflow_phase_events",
 		"applied through 6",
+		`href="/api/v1/projects/detent/work-attempts/42"`,
+		`hx-post="/api/v1/projects/detent/work-attempts/42/recovery"`,
+		`name="action" value="retry_fresh"`,
+		`name="action" value="retry_resume"`,
+		`name="action" value="cleanup_workspace"`,
+		`hx-confirm="Rerun workspace cleanup? This can delete worktrees, branches, or processes."`,
+		`id="work-attempt-recovery-42"`,
+		`hx-post="/api/v1/projects/detent/work-attempts/43/recovery"`,
+		`name="action" value="abandon"`,
+		`name="confirm" value="true"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("project diagnostics page missing %q:\n%s", want, html)

@@ -142,6 +142,14 @@ type KanbanCommentDialogData struct {
 	Error        string
 }
 
+type workAttemptRecoveryControl struct {
+	Action         string
+	Label          string
+	Title          string
+	Confirm        string
+	ConfirmPayload bool
+}
+
 type rateLimitRow struct {
 	Name        string
 	Remaining   string
@@ -7288,6 +7296,89 @@ func workAttemptNextActionLabel(row telemetry.WorkAttempt) string {
 		return value
 	}
 	return "none"
+}
+
+func workAttemptReceiptPath(row telemetry.WorkAttempt) string {
+	projectID := strings.Trim(strings.TrimSpace(row.ProjectID), "/")
+	if projectID == "" {
+		projectID = "default"
+	}
+	return "/api/v1/projects/" + url.PathEscape(projectID) + "/work-attempts/" + strconv.FormatInt(row.AttemptID, 10)
+}
+
+func workAttemptRecoveryPath(row telemetry.WorkAttempt) string {
+	return workAttemptReceiptPath(row) + "/recovery"
+}
+
+func workAttemptRecoveryFeedbackID(row telemetry.WorkAttempt) string {
+	return "work-attempt-recovery-" + strconv.FormatInt(row.AttemptID, 10)
+}
+
+func workAttemptRecoveryTarget(row telemetry.WorkAttempt) string {
+	return "#" + workAttemptRecoveryFeedbackID(row)
+}
+
+func workAttemptRecoveryControls(row telemetry.WorkAttempt) []workAttemptRecoveryControl {
+	controls := []workAttemptRecoveryControl{}
+	if strings.TrimSpace(row.Status) == "active" {
+		return append(controls, workAttemptRecoveryControl{
+			Action:         "abandon",
+			Label:          "Abandon",
+			Title:          "Mark this active attempt abandoned",
+			Confirm:        "Mark this active attempt abandoned and clear live worker state?",
+			ConfirmPayload: true,
+		})
+	}
+	if strings.TrimSpace(row.Status) != "terminal" {
+		return controls
+	}
+	if workAttemptRetryable(row) {
+		controls = append(controls,
+			workAttemptRecoveryControl{
+				Action: "retry_fresh",
+				Label:  "Retry",
+				Title:  "Queue a fresh retry for this attempt",
+			},
+			workAttemptRecoveryControl{
+				Action: "retry_resume",
+				Label:  "Resume",
+				Title:  "Queue a retry with resume when an eligible completed session exists",
+			},
+		)
+	}
+	return append(controls, workAttemptRecoveryControl{
+		Action:         "cleanup_workspace",
+		Label:          "Clean",
+		Title:          "Rerun workspace cleanup for this attempt",
+		Confirm:        "Rerun workspace cleanup? This can delete worktrees, branches, or processes.",
+		ConfirmPayload: true,
+	})
+}
+
+func workAttemptRetryable(row telemetry.WorkAttempt) bool {
+	switch strings.TrimSpace(row.TerminalState) {
+	case "failure", "cancelled", "timed_out", "abandoned", "no_progress":
+		return true
+	default:
+		return false
+	}
+}
+
+func workAttemptRecoveryConfirmAttributes(control workAttemptRecoveryControl) templ.Attributes {
+	if strings.TrimSpace(control.Confirm) == "" {
+		return templ.Attributes{}
+	}
+	return templ.Attributes{"hx-confirm": control.Confirm}
+}
+
+func workAttemptRecoveryButtonClass(control workAttemptRecoveryControl) string {
+	base := "inline-flex min-h-8 items-center rounded-md border px-2.5 py-1 text-xs font-medium transition-colors "
+	switch control.Action {
+	case "abandon", "cleanup_workspace":
+		return base + "border-err/30 bg-err/10 text-err hover:bg-err/15"
+	default:
+		return base + "border-line bg-surface text-text hover:bg-elev"
+	}
 }
 
 func schedulerDecisionIssueLabel(row telemetry.SchedulerDecision) string {

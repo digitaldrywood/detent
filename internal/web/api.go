@@ -49,6 +49,11 @@ type RefreshTarget struct {
 
 type RefreshResponse = orchestrator.RefreshResponse
 
+type WorkAttemptRecovery interface {
+	WorkAttemptReceipt(context.Context, string, int64) (orchestrator.WorkAttemptRecoveryResponse, error)
+	RecoverWorkAttempt(context.Context, orchestrator.WorkAttemptRecoveryRequest) (orchestrator.WorkAttemptRecoveryResponse, error)
+}
+
 func (s *Server) apiState(c echo.Context) error {
 	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
 		return err
@@ -447,6 +452,7 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, instanceN
 		Counts:          countsResponse(snapshot),
 		TrackerDrift:    snapshot.TrackerDrift,
 		Running:         runningEntries(snapshot.Running),
+		WorkAttempts:    workAttemptEntries(snapshot.WorkAttempts),
 		Retrying:        retryEntries(snapshot.Queue),
 		Blocked:         blockedEntries(snapshot.Blocked),
 		Stats:           statsAPIResponse{Status: "enabled"},
@@ -1337,6 +1343,7 @@ type stateAPIResponse struct {
 	Counts          countsAPIResponse           `json:"counts"`
 	TrackerDrift    telemetry.TrackerDrift      `json:"tracker_drift"`
 	Running         []runningAPIResponse        `json:"running"`
+	WorkAttempts    []workAttemptAPIResponse    `json:"work_attempts,omitempty"`
 	Retrying        []retryAPIResponse          `json:"retrying"`
 	Blocked         []blockedAPIResponse        `json:"blocked"`
 	Stats           statsAPIResponse            `json:"stats"`

@@ -2905,6 +2905,10 @@ func (s *fakeSessionStore) LatestCompletedAgentResumeState(_ context.Context, at
 	return s.resumeState, nil
 }
 
+func (s *fakeSessionStore) LatestIssueAgentResumeState(context.Context, store.IssueIdentity) (store.AgentResumeState, error) {
+	return store.AgentResumeState{}, store.ErrNotFound
+}
+
 type fakeClock struct {
 	values []time.Time
 }

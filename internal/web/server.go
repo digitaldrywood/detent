@@ -42,6 +42,7 @@ type Dependencies struct {
 	Registry  *project.Registry
 	Connector connector.Connector
 	Refresher Refresher
+	Recovery  WorkAttemptRecovery
 }
 
 type Mode string
@@ -98,6 +99,7 @@ type Server struct {
 	registry            *project.Registry
 	connector           connector.Connector
 	refresher           Refresher
+	recovery            WorkAttemptRecovery
 	logger              *slog.Logger
 	mode                Mode
 	tickEvery           time.Duration
@@ -173,6 +175,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		registry:            deps.Registry,
 		connector:           deps.Connector,
 		refresher:           deps.Refresher,
+		recovery:            deps.Recovery,
 		logger:              logger,
 		mode:                mode,
 		tickEvery:           cfg.sseTickInterval(),
@@ -297,6 +300,8 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/demo/scenarios", s.apiDemoScenarios, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries, apiReadAuth, apiReadScope)
 	s.echo.POST("/api/v1/projects/:project_id/work-items", s.apiCreateWorkItem, apiMutateAuth, apiProjectWriteScope)
+	s.echo.GET("/api/v1/projects/:project_id/work-attempts/:attempt_id", s.apiWorkAttemptReceipt, apiReadAuth, apiReadScope)
+	s.echo.POST("/api/v1/projects/:project_id/work-attempts/:attempt_id/recovery", s.apiWorkAttemptRecovery, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/projects/*", s.apiProject, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/keys", s.apiKeysList, apiKeyDashboardReadAuth, apiAdminScope)
 	s.echo.POST("/api/v1/keys", s.apiKeysCreate, apiKeyDashboardMutateAuth, apiAdminScope)

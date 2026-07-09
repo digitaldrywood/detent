@@ -89,6 +89,7 @@ type Dependencies struct {
 	GlobalDispatchGate     scheduler.ProjectDispatchGate
 	WorkflowMetrics        orchestrator.WorkflowMetricsRecorder
 	WorkAttempts           store.WorkAttemptStore
+	AgentResume            store.AgentResumeStore
 	ValidatorMemo          store.ValidatorMemoStore
 	Events                 *hub.Hub[Event]
 	Logger                 *slog.Logger
@@ -180,6 +181,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		GlobalDispatchGate: deps.GlobalDispatchGate,
 		WorkflowMetrics:    deps.WorkflowMetrics,
 		WorkAttempts:       deps.WorkAttempts,
+		AgentResume:        deps.AgentResume,
 		ValidatorMemo:      deps.ValidatorMemo,
 		Logger:             logger,
 	}
