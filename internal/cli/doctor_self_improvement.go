@@ -244,6 +244,16 @@ func doctorWorkflowFindingSignalCount(finding doctorWorkflowOptimizationFinding)
 		return int(anyInt64(finding.Evidence["matching_phrase_count"]))
 	case doctorWorkflowRuleRunawaySessionTokens:
 		return int(anyInt64(finding.Evidence["session_count"]))
+	case doctorWorkflowRulePinnedWorkerModelStale:
+		return int(anyInt64(finding.Evidence["observed_default_sessions"]))
+	case doctorWorkflowRuleSessionMultiplierKills:
+		return int(anyInt64(finding.Evidence["session_multiplier_kill_count"]))
+	case doctorWorkflowRuleNoSessionTokenBrake:
+		count := int(anyInt64(finding.Evidence["unbraked_session_count"]))
+		if count > 0 {
+			return count
+		}
+		return 1
 	default:
 		return 1
 	}
@@ -261,7 +271,15 @@ func doctorWorkflowFindingProposalTarget(finding doctorWorkflowOptimizationFindi
 	}
 	switch finding.RuleID {
 	case doctorWorkflowRuleEmptyModelTelemetry:
-		return "prompt", "", "Tighten the agent prompt or telemetry capture path so every session records the effective model."
+		return "telemetry", "codex_sessions.model", "Repair effective-model resolution for completed sessions while leaving the project's pin/default policy unchanged."
+	case doctorWorkflowRulePinnedRouteModelRejected:
+		return "workflow", doctorWorkflowModelFindingTargetPath(finding), "Replace the rejected model with a backend-supported pin or remove the pin to inherit the provider default, according to the project's intended model policy."
+	case doctorWorkflowRulePinnedWorkerModelStale:
+		return "workflow", doctorWorkflowModelFindingTargetPath(finding), "Review the configured pin against the observed provider-default generation, then explicitly keep, update, or remove it according to the project's intended model policy."
+	case doctorWorkflowRuleSessionMultiplierKills:
+		return "workflow", "agent.max_session_context_multiplier", "Remove or recalibrate the context multiplier and configure an intentional `agent.max_session_tokens` ceiling after human review."
+	case doctorWorkflowRuleNoSessionTokenBrake:
+		return "workflow", "agent.max_session_tokens", "Configure an intentional absolute session-token brake after human review."
 	case doctorWorkflowRuleBudgetEstimateDrift:
 		return "workflow", "budget", "Review budget estimates against observed p90 billable session tokens and update workflow budget guidance if humans approve."
 	case doctorWorkflowRuleInvalidWorkpadStatusRecurrence:
@@ -273,6 +291,13 @@ func doctorWorkflowFindingProposalTarget(finding doctorWorkflowOptimizationFindi
 	default:
 		return "workflow", "", "Review this repeated doctor finding and propose a WORKFLOW.md, prompt, skill, or gate update for human approval."
 	}
+}
+
+func doctorWorkflowModelFindingTargetPath(finding doctorWorkflowOptimizationFinding) string {
+	if strings.TrimSpace(fmt.Sprint(finding.Evidence["configured_model_source"])) == "agents.backends.command" {
+		return "agents.backends.command"
+	}
+	return "agents.routes.model"
 }
 
 func doctorWorkflowReviewFlowProposalTarget(finding doctorWorkflowOptimizationFinding) (string, string, string) {
