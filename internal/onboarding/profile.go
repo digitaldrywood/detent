@@ -21,6 +21,7 @@ type DeliveryProfileSettings struct {
 	KanbanMode                   string
 	AutoPromoteEnabled           bool
 	AutoPromoteQuietSeconds      int
+	AutoPromoteGateWaitState     string
 	GateRequireAutomatedReview   bool
 	DependencyAutoUnblockEnabled bool
 	MergingConcurrency           int
@@ -67,6 +68,7 @@ func DeliveryProfile(value string) (DeliveryProfileSettings, bool) {
 			KanbanMode:                   "integration",
 			AutoPromoteEnabled:           true,
 			AutoPromoteQuietSeconds:      0,
+			AutoPromoteGateWaitState:     "source",
 			GateRequireAutomatedReview:   false,
 			DependencyAutoUnblockEnabled: true,
 			MergingConcurrency:           1,
@@ -78,6 +80,7 @@ func DeliveryProfile(value string) (DeliveryProfileSettings, bool) {
 			KanbanMode:                   "integration",
 			AutoPromoteEnabled:           false,
 			AutoPromoteQuietSeconds:      600,
+			AutoPromoteGateWaitState:     "review",
 			GateRequireAutomatedReview:   false,
 			DependencyAutoUnblockEnabled: false,
 			MergingConcurrency:           1,
@@ -89,6 +92,7 @@ func DeliveryProfile(value string) (DeliveryProfileSettings, bool) {
 			KanbanMode:                   "read_only",
 			AutoPromoteEnabled:           false,
 			AutoPromoteQuietSeconds:      600,
+			AutoPromoteGateWaitState:     "review",
 			GateRequireAutomatedReview:   true,
 			DependencyAutoUnblockEnabled: false,
 			MergingConcurrency:           1,
@@ -139,6 +143,7 @@ func DeliveryProfileAnswerExpansion(value string) (map[string]string, bool) {
 		"KANBAN_MODE":                           settings.KanbanMode,
 		"AUTO_PROMOTE_ENABLED":                  strconv.FormatBool(settings.AutoPromoteEnabled),
 		"AUTO_PROMOTE_QUIET_SECONDS":            strconv.Itoa(settings.AutoPromoteQuietSeconds),
+		"AUTO_PROMOTE_GATE_WAIT_STATE":          settings.AutoPromoteGateWaitState,
 		"GATE_REQUIRE_AUTOMATED_REVIEW":         strconv.FormatBool(settings.GateRequireAutomatedReview),
 		"AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW": strconv.FormatBool(settings.GateRequireAutomatedReview),
 		"DEPENDENCY_AUTO_UNBLOCK_ENABLED":       strconv.FormatBool(settings.DependencyAutoUnblockEnabled),
@@ -174,6 +179,9 @@ func gateBehavior(settings DeliveryProfileSettings) string {
 }
 
 func autoPromotionBehavior(settings DeliveryProfileSettings) string {
+	if settings.AutoPromoteEnabled && settings.AutoPromoteQuietSeconds == 0 && settings.AutoPromoteGateWaitState == "source" {
+		return "Detent keeps completed work in the active state and promotes it to `Merging` when the linked PR, local gate, CI, and guardrails pass."
+	}
 	if settings.AutoPromoteEnabled {
 		return "Detent automatically promotes eligible work from `Human Review` to `Merging` when the linked PR, local gate, CI, and guardrails pass."
 	}

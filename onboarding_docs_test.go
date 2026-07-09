@@ -361,7 +361,7 @@ func TestOnboardingDocsPresentDeliveryProfilesBeforeAnswersEnvFields(t *testing.
 	for _, want := range []string{
 		"Present the operator's plain-English operating model first, then show the canonical `answers.env` fields.",
 		"How should Detent handle completed work after the validation gate passes?",
-		"Full autopilot: promote through `Human Review` to `Merging` when linked PRs, gates, CI, mergeability, dependency checks, and guardrails pass",
+		"Full autopilot: keep completed work in its active lane and promote it to `Merging` when linked PRs, gates, CI, mergeability, dependency checks, and guardrails pass",
 		"Review gate: stop at `Human Review` until a human explicitly approves promotion to `Merging`",
 		"Conservative/manual: require explicit approval before promotion or mutation",
 		"Custom/advanced: expose the underlying fields for teams that need a mixed policy.",
@@ -377,7 +377,9 @@ func TestOnboardingDocsPresentDeliveryProfilesBeforeAnswersEnvFields(t *testing.
 	assertOrder(t, onboarding, "Review gate:", "DELIVERY_PROFILE=<full_autopilot|review_gate|conservative_manual>")
 	assertOrder(t, onboarding, "Conservative/manual:", "DELIVERY_PROFILE=<full_autopilot|review_gate|conservative_manual>")
 	assertOrder(t, onboarding, "Full autopilot expands to:", "AUTO_PROMOTE_ENABLED=true")
+	assertOrder(t, onboarding, "AUTO_PROMOTE_ENABLED=true", "AUTO_PROMOTE_GATE_WAIT_STATE=source")
 	assertOrder(t, onboarding, "Review gate expands to:", "Conservative/manual expands to:")
+	assertOrder(t, onboarding, "Review gate expands to:", "AUTO_PROMOTE_GATE_WAIT_STATE=review")
 	assertOrder(t, onboarding, "Conservative/manual expands to:", "GATE_REQUIRE_AUTOMATED_REVIEW=true")
 }
 
@@ -502,6 +504,53 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 			if !tt.wantWriteProbe && strings.TrimSpace(cfg.Tracker.WriteProbeIssue) != "" {
 				t.Fatalf("WriteProbeIssue = %q, want blank", cfg.Tracker.WriteProbeIssue)
 			}
+		})
+	}
+}
+
+func TestWorkflowTemplatesDocumentStatusEnumAndReviewFlow(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		"docs/templates/WORKFLOW.project_v2.md",
+		"docs/templates/WORKFLOW.issue_field.md",
+		"docs/templates/WORKFLOW.label.md",
+		"docs/templates/WORKFLOW.github_local.md",
+		"docs/templates/WORKFLOW.non_code_artifact.md",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			content := readRepositoryTextFile(t, path)
+			assertContainsWords(t, content, "`status` must be one of `in_progress`, `blocked`, or `complete`")
+			for _, want := range []string{
+				"status: in_progress",
+				"status: blocked",
+				"status: complete",
+				"gate_wait_state:",
+				"gate_wait_timeout_seconds:",
+			} {
+				assertContains(t, content, want)
+			}
+
+			workflow, err := workflowconfig.ParseWorkflow([]byte(content))
+			if err != nil {
+				t.Fatalf("ParseWorkflow(%s) error = %v", path, err)
+			}
+			autoPromote := workflow.Config.Agent.AutoPromote
+			autopilot := autoPromote.Enabled &&
+				autoPromote.QuietSeconds == 0 &&
+				autoPromote.GateWaitState == workflowconfig.AutoPromoteGateWaitStateSource
+			if autopilot {
+				assertContainsWords(t, content, "leave the work item in `Production`")
+				assertContainsWords(t, content, "Do not self-move work items to `Review`")
+				return
+			}
+
+			if autoPromote.GateWaitState != workflowconfig.AutoPromoteGateWaitStateReview {
+				t.Fatalf("GateWaitState = %q, want review for review-gate template", autoPromote.GateWaitState)
+			}
+			assertContainsWords(t, content, "Move the issue to `Human Review` only after")
 		})
 	}
 }

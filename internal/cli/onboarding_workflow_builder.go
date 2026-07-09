@@ -60,6 +60,13 @@ type onboardingWorkflowPreset struct {
 	Why        string
 }
 
+type onboardingWorkflowReviewFlow string
+
+const (
+	onboardingWorkflowReviewGateFlow onboardingWorkflowReviewFlow = "review_gate"
+	onboardingWorkflowAutopilotFlow  onboardingWorkflowReviewFlow = "autopilot"
+)
+
 type onboardingWorkflowDecisionRecorder struct {
 	decisions []onboardingWorkflowDecision
 }
@@ -279,15 +286,17 @@ func renderOnboardingWorkflow(
 	decisions := &onboardingWorkflowDecisionRecorder{}
 	decisions.add("workflow.preset", preset.Name, preset.Provenance, preset.Why)
 
-	if err := applyOnboardingWorkflowDecisions(root, preset.Name, answers, validation, probe, decisions); err != nil {
+	reviewFlow, err := applyOnboardingWorkflowDecisions(root, preset.Name, answers, validation, probe, decisions)
+	if err != nil {
 		return "", nil, err
 	}
+	renderedPrompt := renderOnboardingWorkflowPrompt(preset.Name, prompt, reviewFlow)
 
 	rawFrontmatter, err := yaml.Marshal(root)
 	if err != nil {
 		return "", nil, fmt.Errorf("marshal workflow frontmatter: %w", err)
 	}
-	workflow := "---\n" + strings.TrimSpace(string(rawFrontmatter)) + "\n---\n" + strings.TrimLeft(string(prompt), "\n")
+	workflow := "---\n" + strings.TrimSpace(string(rawFrontmatter)) + "\n---\n" + strings.TrimLeft(renderedPrompt, "\n")
 	if !strings.HasSuffix(workflow, "\n") {
 		workflow += "\n"
 	}
@@ -342,10 +351,10 @@ func applyOnboardingWorkflowDecisions(
 	validation onboardingAnswersValidationResult,
 	probe onboardingRepoProbe,
 	decisions *onboardingWorkflowDecisionRecorder,
-) error {
+) (onboardingWorkflowReviewFlow, error) {
 	profile, profileProvenance, profileWhy, err := onboardingWorkflowDeliveryProfile(answers)
 	if err != nil {
-		return err
+		return "", err
 	}
 	profileAnswers, _ := onboardingprofile.DeliveryProfileAnswerExpansion(profile)
 	decisions.add("answers.delivery_profile", profile, profileProvenance, profileWhy)
@@ -377,57 +386,90 @@ func applyOnboardingWorkflowDecisions(
 	kanbanMode, kanbanProvenance, kanbanWhy := onboardingWorkflowStringDecision(answers, profileAnswers, "KANBAN_MODE", "integration", "preset", "recommended interactive Kanban mode")
 	autoPromote, autoPromoteProvenance, autoPromoteWhy, err := onboardingWorkflowBoolDecision(answers, profileAnswers, "AUTO_PROMOTE_ENABLED", false, "preset", "review gate preset stops in Human Review")
 	if err != nil {
-		return err
+		return "", err
 	}
 	quietSeconds, quietProvenance, quietWhy, err := onboardingWorkflowIntDecision(answers, profileAnswers, "AUTO_PROMOTE_QUIET_SECONDS", 600, "preset", "recommended quiet window before automated promotion")
 	if err != nil {
-		return err
+		return "", err
+	}
+	gateWaitFallback := workflowconfig.AutoPromoteGateWaitStateReview
+	gateWaitFallbackWhy := "review-gate handoff parks completed work in the review state"
+	if autoPromote && quietSeconds == 0 {
+		gateWaitFallback = workflowconfig.AutoPromoteGateWaitStateSource
+		gateWaitFallbackWhy = "zero-quiet auto-promote keeps completed work in the active state while gates finish"
+	}
+	gateWaitState, gateWaitProvenance, gateWaitWhy := onboardingWorkflowStringDecision(
+		answers,
+		profileAnswers,
+		"AUTO_PROMOTE_GATE_WAIT_STATE",
+		gateWaitFallback,
+		"preset",
+		gateWaitFallbackWhy,
+	)
+	gateWaitState, ok := normalizeOnboardingWorkflowGateWaitState(gateWaitState)
+	if !ok {
+		return "", NewValidationError(
+			"AUTO_PROMOTE_GATE_WAIT_STATE must be source or review",
+			"Use source for zero-quiet autopilot or review for review-state handoff.",
+			nil,
+		)
+	}
+	gateWaitTimeout, gateWaitTimeoutProvenance, gateWaitTimeoutWhy, err := onboardingWorkflowIntDecision(
+		answers,
+		profileAnswers,
+		"AUTO_PROMOTE_GATE_WAIT_TIMEOUT_SECONDS",
+		workflowconfig.DefaultAutoPromoteGateWaitTimeoutSeconds,
+		"preset",
+		"bounds active-lane gate waits before moving to the review state",
+	)
+	if err != nil {
+		return "", err
 	}
 	requireAutomatedReview, reviewProvenance, reviewWhy, err := onboardingWorkflowBoolDecision(answers, profileAnswers, "GATE_REQUIRE_AUTOMATED_REVIEW", true, "preset", "requires automated review unless profile says otherwise")
 	if err != nil {
-		return err
+		return "", err
 	}
 	dependencyAutoUnblock, dependencyProvenance, dependencyWhy, err := onboardingWorkflowBoolDecision(answers, profileAnswers, "DEPENDENCY_AUTO_UNBLOCK_ENABLED", false, "preset", "dependency waits remain human-controlled by default")
 	if err != nil {
-		return err
+		return "", err
 	}
 	mergingConcurrency, mergingProvenance, mergingWhy, err := onboardingWorkflowIntDecision(answers, profileAnswers, "MERGING_CONCURRENCY", 1, "preset", "Merging is serialized")
 	if err != nil {
-		return err
+		return "", err
 	}
 	maxConcurrentAgents, maxConcurrentProvenance, maxConcurrentWhy, err := onboardingWorkflowIntDecision(answers, nil, "MAX_CONCURRENT_AGENTS", 5, "preset", "balanced default project concurrency")
 	if err != nil {
-		return err
+		return "", err
 	}
 	maxTurns, maxTurnsProvenance, maxTurnsWhy, err := onboardingWorkflowIntDecision(answers, nil, "MAX_TURNS", 20, "preset", "session turn ceiling guardrail")
 	if err != nil {
-		return err
+		return "", err
 	}
 	dayBudget, dayBudgetProvenance, dayBudgetWhy, err := onboardingWorkflowFloatDecision(answers, "BUDGET_PER_DAY_MAX_USD", 50.0, "preset", "recommended daily spend cap")
 	if err != nil {
-		return err
+		return "", err
 	}
 	issueBudget, issueBudgetProvenance, issueBudgetWhy, err := onboardingWorkflowFloatDecision(answers, "BUDGET_PER_ISSUE_MAX_USD", 5.0, "preset", "recommended per-issue spend cap")
 	if err != nil {
-		return err
+		return "", err
 	}
 	validatorEnabled, validatorEnabledProvenance, validatorEnabledWhy, err := onboardingWorkflowBoolDecision(answers, nil, "VALIDATOR_ENABLED", false, "preset", "validator is explicit opt-in")
 	if err != nil {
-		return err
+		return "", err
 	}
 	validatorModel, validatorModelProvenance, validatorModelWhy := onboardingWorkflowStringDecision(answers, nil, "VALIDATOR_MODEL", onboardingWorkflowDefaultValidatorModel, "preset", "recommended validator model override")
 	validatorMinScore, validatorScoreProvenance, validatorScoreWhy, err := onboardingWorkflowFloatDecision(answers, "VALIDATOR_MIN_SCORE", 0.8, "preset", "recommended validator confidence threshold")
 	if err != nil {
-		return err
+		return "", err
 	}
 	validatorBlockOn, validatorBlockProvenance, validatorBlockWhy := onboardingWorkflowListDecision(answers, "VALIDATOR_BLOCK_ON", []string{"p1"}, "preset", "block promotion on P1 validator findings")
 	sessionTokens, sessionTokensProvenance, sessionTokensWhy, err := onboardingWorkflowInt64Decision(answers, "MAX_SESSION_TOKENS", onboardingWorkflowDefaultSessionTokens, "preset", "recommended per-session token ceiling")
 	if err != nil {
-		return err
+		return "", err
 	}
 	sessionMultiplier, sessionMultiplierProvenance, sessionMultiplierWhy, err := onboardingWorkflowFloatDecision(answers, "MAX_SESSION_CONTEXT_MULTIPLIER", onboardingWorkflowDefaultSessionMultiplier, "preset", "recommended context-window token ceiling")
 	if err != nil {
-		return err
+		return "", err
 	}
 	sessionOverride, sessionOverrideProvenance, sessionOverrideWhy := onboardingWorkflowStringDecision(answers, nil, "MAX_SESSION_TOKEN_OVERRIDE_LABEL", onboardingWorkflowDefaultSessionOverrideLabel, "preset", "explicit per-issue escape hatch for large sessions")
 
@@ -443,6 +485,8 @@ func applyOnboardingWorkflowDecisions(
 	decisions.set(root, "agent.max_concurrent_agents_by_state.Merging", mergingConcurrency, mergingProvenance, mergingWhy)
 	decisions.set(root, "agent.auto_promote.enabled", autoPromote, autoPromoteProvenance, autoPromoteWhy)
 	decisions.set(root, "agent.auto_promote.quiet_seconds", quietSeconds, quietProvenance, quietWhy)
+	decisions.set(root, "agent.auto_promote.gate_wait_state", gateWaitState, gateWaitProvenance, gateWaitWhy)
+	decisions.set(root, "agent.auto_promote.gate_wait_timeout_seconds", gateWaitTimeout, gateWaitTimeoutProvenance, gateWaitTimeoutWhy)
 	decisions.set(root, "tracker.dependency_auto_unblock.enabled", dependencyAutoUnblock, dependencyProvenance, dependencyWhy)
 	if templateGateKind == gate.KindArtifact {
 		decisions.add("gate.kind", gate.KindArtifact, "preset", "artifact validation gate from selected preset")
@@ -470,7 +514,7 @@ func applyOnboardingWorkflowDecisions(
 	case "project_v2":
 		projectSlug, ok := onboardingWorkflowAnswer(answers, "PROJECT_SLUG", "PROJECT_NODE_ID")
 		if !ok {
-			return NewValidationError(
+			return "", NewValidationError(
 				"PROJECT_SLUG is required for WORKFLOW_PRESET=project_v2",
 				"Record the GitHub ProjectV2 node id as PROJECT_SLUG in answers.env or choose a boardless preset.",
 				nil,
@@ -499,7 +543,7 @@ func applyOnboardingWorkflowDecisions(
 		deleteOnboardingYAMLPath(root, []string{"tracker", "write_probe_issue"})
 		decisions.add("tracker.write_probe_issue", "omitted", "preset", "legacy/deep issue-object probes require an explicit issue answer")
 	}
-	return nil
+	return onboardingWorkflowReviewFlowFor(autoPromote, quietSeconds, gateWaitState), nil
 }
 
 func onboardingWorkflowDeliveryProfile(answers onboardingAnswers) (string, string, string, error) {
@@ -591,6 +635,288 @@ func splitOnboardingWorkflowList(raw string) []string {
 	}
 	sort.Strings(values)
 	return values
+}
+
+func normalizeOnboardingWorkflowGateWaitState(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case workflowconfig.AutoPromoteGateWaitStateSource:
+		return workflowconfig.AutoPromoteGateWaitStateSource, true
+	case workflowconfig.AutoPromoteGateWaitStateReview:
+		return workflowconfig.AutoPromoteGateWaitStateReview, true
+	default:
+		return "", false
+	}
+}
+
+func onboardingWorkflowReviewFlowFor(autoPromote bool, quietSeconds int, gateWaitState string) onboardingWorkflowReviewFlow {
+	if autoPromote && quietSeconds == 0 && gateWaitState == workflowconfig.AutoPromoteGateWaitStateSource {
+		return onboardingWorkflowAutopilotFlow
+	}
+	return onboardingWorkflowReviewGateFlow
+}
+
+func renderOnboardingWorkflowPrompt(preset string, prompt []byte, flow onboardingWorkflowReviewFlow) string {
+	text := strings.TrimLeft(string(prompt), "\n")
+	section := onboardingWorkflowExecutionFlow(preset, flow)
+	if section == "" {
+		return text
+	}
+	return replaceOnboardingWorkflowSection(text, "## Required Execution Flow", section)
+}
+
+func replaceOnboardingWorkflowSection(text string, heading string, replacement string) string {
+	if strings.HasPrefix(text, heading+"\n") {
+		return replacement
+	}
+	marker := "\n" + heading + "\n"
+	index := strings.Index(text, marker)
+	if index < 0 {
+		return strings.TrimRight(text, "\n") + "\n\n" + replacement
+	}
+	return strings.TrimRight(text[:index], "\n") + "\n\n" + replacement
+}
+
+func onboardingWorkflowExecutionFlow(preset string, flow onboardingWorkflowReviewFlow) string {
+	switch preset {
+	case "github_local":
+		return onboardingWorkflowGitHubLocalExecutionFlow(flow)
+	case "non_code_artifact":
+		return onboardingWorkflowArtifactExecutionFlow(flow)
+	default:
+		return onboardingWorkflowGitHubExecutionFlow(flow)
+	}
+}
+
+func onboardingWorkflowGitHubExecutionFlow(flow onboardingWorkflowReviewFlow) string {
+	if flow == onboardingWorkflowAutopilotFlow {
+		return markdownLines(
+			"## Required Execution Flow",
+			"",
+			"This workflow uses the autopilot handoff: `agent.auto_promote.enabled: true`,",
+			"`quiet_seconds: 0`, and `gate_wait_state: source`. Completed agents leave",
+			"issues in the active lane, set the Workpad `detent-status` block to",
+			"`status: complete`, and let Detent promote eligible issues to `Merging`",
+			"when the PR gate is green. Do not self-move issues to `Human Review`.",
+			"",
+			"Use the current Detent state as the source of truth for which section applies.",
+			"",
+			"### For Todo",
+			"",
+			"1. Move the issue to `In Progress`.",
+			"2. Create or update the persistent `## Codex Workpad` comment with the plan,",
+			"   acceptance criteria, validation plan, and the `in_progress`",
+			"   `detent-status` block shown above.",
+			"3. Fetch current `origin/main`, confirm this worktree is based on it, and",
+			"   confirm every native dependency relation, `detent-status` blocker, and",
+			"   issue-body `Depends on:` reference is merged or otherwise terminal before",
+			"   coding.",
+			"4. Reproduce or confirm the reported behavior before changing code when the",
+			"   issue is a bug.",
+			"5. Implement the smallest complete change that satisfies the issue.",
+			"6. Run focused tests for touched packages, then run the configured validation",
+			"   gate.",
+			"7. Commit and push the branch.",
+			"8. Open or update a pull request that references the issue.",
+			"9. Re-check pull request comments, inline review comments, and CI after the",
+			"   latest push.",
+			"10. If the PR is open, not a draft, references the issue, validation is green,",
+			"    and no actionable review comments remain, leave the issue in `In Progress`,",
+			"    update the Workpad block to `status: complete` with `blockers: []` and",
+			"    `human_action: null`, and do not move the issue to `Human Review`.",
+			"",
+			"### For In Progress",
+			"",
+			"1. Re-read the issue, pull request, comments, and `## Codex Workpad`, including",
+			"   the `detent-status` block.",
+			"2. Continue from the current repository and tracker state.",
+			"3. If implementation is complete, run the full pre-review gate, update the",
+			"   Workpad block to `status: complete` with `blockers: []` and",
+			"   `human_action: null`, leave the issue in `In Progress`, and do not move the",
+			"   issue to `Human Review`.",
+			"",
+			"### For Rework",
+			"",
+			"1. Re-read all human and bot feedback.",
+			"2. Move the issue to `In Progress`.",
+			"3. Fix the requested changes.",
+			"4. Push updates to the pull request.",
+			"5. Run the full pre-review gate again.",
+			"6. When the gate passes, leave the issue in `In Progress`, update the Workpad",
+			"   block to `status: complete`, and do not move the issue to `Human Review`.",
+			"",
+			"### For Merging",
+			"",
+			"1. Confirm `$go-workflow:ship` is available in the Codex environment. If it is",
+			"   unavailable, keep the issue in `Merging` and record the missing ship workflow",
+			"   as `human_action` in the `detent-status` block.",
+			"2. Invoke and follow `$go-workflow:ship`.",
+			"3. Do not call `gh pr merge` directly outside the ship workflow.",
+			"4. End with exactly one terminal outcome:",
+			"   - pull request merged and issue moved to `Done`;",
+			"   - issue moved to `Rework` with an actionable defect;",
+			"   - issue remains in `Merging` with a concrete external blocker recorded in",
+			"     the `detent-status` block and described in the `## Codex Workpad`.",
+			"5. Move the issue to `Done` only after the pull request is merged.",
+		)
+	}
+
+	return markdownLines(
+		"## Required Execution Flow",
+		"",
+		"This workflow uses the review-gate handoff: completed agents move issues to",
+		"`Human Review` after the PR gate is ready, and a human or quiet-period",
+		"auto-promote advances eligible issues to `Merging`.",
+		"",
+		"Use the current Detent state as the source of truth for which section applies.",
+		"",
+		"### For Todo",
+		"",
+		"1. Move the issue to `In Progress`.",
+		"2. Create or update the persistent `## Codex Workpad` comment with the plan,",
+		"   acceptance criteria, validation plan, and the `in_progress`",
+		"   `detent-status` block shown above.",
+		"3. Fetch current `origin/main`, confirm this worktree is based on it, and",
+		"   confirm every native dependency relation, `detent-status` blocker, and",
+		"   issue-body `Depends on:` reference is merged or otherwise terminal before",
+		"   coding.",
+		"4. Reproduce or confirm the reported behavior before changing code when the",
+		"   issue is a bug.",
+		"5. Implement the smallest complete change that satisfies the issue.",
+		"6. Run focused tests for touched packages, then run the configured validation",
+		"   gate.",
+		"7. Commit and push the branch.",
+		"8. Open or update a pull request that references the issue.",
+		"9. Re-check pull request comments, inline review comments, and CI after the",
+		"   latest push.",
+		"10. Move the issue to `Human Review` only after the pull request is open, not a",
+		"    draft, references the issue, validation is green, and no actionable review",
+		"    comments remain.",
+		"",
+		"### For In Progress",
+		"",
+		"1. Re-read the issue, pull request, comments, and `## Codex Workpad`, including",
+		"   the `detent-status` block.",
+		"2. Continue from the current repository and tracker state.",
+		"3. If implementation is complete, run the full pre-review gate, update the",
+		"   Workpad block to `status: complete` with `blockers: []` and",
+		"   `human_action: null`, and move the issue to `Human Review` only when the",
+		"   gate passes.",
+		"",
+		"### For Rework",
+		"",
+		"1. Re-read all human and bot feedback.",
+		"2. Move the issue to `In Progress`.",
+		"3. Fix the requested changes.",
+		"4. Push updates to the pull request.",
+		"5. Run the full pre-review gate again.",
+		"6. Move the issue back to `Human Review` only when the gate passes.",
+		"",
+		"### For Merging",
+		"",
+		"1. Confirm `$go-workflow:ship` is available in the Codex environment. If it is",
+		"   unavailable, keep the issue in `Merging` and record the missing ship workflow",
+		"   as `human_action` in the `detent-status` block.",
+		"2. Invoke and follow `$go-workflow:ship`.",
+		"3. Do not call `gh pr merge` directly outside the ship workflow.",
+		"4. End with exactly one terminal outcome:",
+		"   - pull request merged and issue moved to `Done`;",
+		"   - issue moved to `Rework` with an actionable defect;",
+		"   - issue remains in `Merging` with a concrete external blocker recorded in",
+		"     the `detent-status` block and described in the `## Codex Workpad`.",
+		"5. Move the issue to `Done` only after the pull request is merged.",
+	)
+}
+
+func onboardingWorkflowGitHubLocalExecutionFlow(flow onboardingWorkflowReviewFlow) string {
+	return strings.NewReplacer(
+		"issues", "local issues",
+		"issue", "local issue",
+		"pull request", "pull request",
+	).Replace(onboardingWorkflowGitHubExecutionFlow(flow))
+}
+
+func onboardingWorkflowArtifactExecutionFlow(flow onboardingWorkflowReviewFlow) string {
+	if flow == onboardingWorkflowAutopilotFlow {
+		return markdownLines(
+			"## Required Execution Flow",
+			"",
+			"This workflow uses the artifact autopilot handoff: `agent.auto_promote.enabled:",
+			"true`, `quiet_seconds: 0`, and `gate_wait_state: source`. Completed agents keep",
+			"the work item in `Production`, set the Workpad `detent-status` block to",
+			"`status: complete`, set `render_status` to `valid` when the artifact gate is",
+			"satisfied, and let Detent promote the item to `Ready for Pickup`. Do not",
+			"self-move work items to `Review`.",
+			"",
+			"### For Todo",
+			"",
+			"1. Move the work item to `Production`.",
+			"2. Read the work item title, description, fields, metadata, and deliverable",
+			"   data.",
+			"3. Produce the artifact manifest under the configured output directory.",
+			"4. When the artifact is ready and local validation passes, set `render_status`",
+			"   to `valid`, update the Workpad block to `status: complete` with",
+			"   `blockers: []` and `human_action: null`, leave the work item in",
+			"   `Production`, and do not move it to `Review`.",
+			"",
+			"### For Production",
+			"",
+			"Continue production from the current filesystem state. When the artifact is",
+			"ready and local validation passes, set `render_status` to `valid`, set the",
+			"Workpad block to `status: complete`, and leave the work item in `Production`.",
+			"",
+			"### For Rework",
+			"",
+			"Move the work item to `Production`, address the requested changes, rerun the",
+			"artifact validation gate, set `render_status` to `valid`, set the Workpad block",
+			"to `status: complete`, and do not move the work item to `Review`.",
+			"",
+			"### For Review",
+			"",
+			"Review is reserved for explicit human opt-out or gate-wait timeout. Re-read the",
+			"feedback, update the artifact, then follow the Rework flow.",
+		)
+	}
+
+	return markdownLines(
+		"## Required Execution Flow",
+		"",
+		"This workflow uses the review-gate handoff: completed artifact work moves to",
+		"`Review`, and a human or external renderer marks the artifact `approved` or",
+		"`valid` before Detent promotes it to `Ready for Pickup`.",
+		"",
+		"### For Todo",
+		"",
+		"1. Move the work item to `Production`.",
+		"2. Read the work item title, description, fields, metadata, and deliverable",
+		"   data.",
+		"3. Produce the artifact manifest under the configured output directory.",
+		"4. When the artifact is ready for review, set `render_status` to",
+		"   `pending_review`, update the Workpad block to `status: complete` with",
+		"   `blockers: []` and `human_action: null`, and move the work item to",
+		"   `Review`.",
+		"",
+		"### For Production",
+		"",
+		"Continue production from the current filesystem state. When the artifact is",
+		"ready for review, set `render_status` to `pending_review`, set the Workpad",
+		"block to `status: complete`, and move the work item to `Review`.",
+		"",
+		"### For Rework",
+		"",
+		"Move the work item to `Production`, address the requested changes, rerun the",
+		"artifact validation gate, set `render_status` to `pending_review`, set the",
+		"Workpad block to `status: complete`, and move the work item back to `Review`.",
+		"",
+		"### For Review",
+		"",
+		"Do not continue production unless feedback asks for changes. When a human or",
+		"external renderer marks `render_status` as `approved` or `valid`, Detent can",
+		"promote the item to `Ready for Pickup`.",
+	)
+}
+
+func markdownLines(lines ...string) string {
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func (r *onboardingWorkflowDecisionRecorder) set(root *yaml.Node, path string, value any, provenance string, why string) {
