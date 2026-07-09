@@ -575,6 +575,73 @@ func TestTickAutoPromoteHydratesWorkpadBlockerBeforeTransition(t *testing.T) {
 	}
 }
 
+func TestTickAutoPromoteFetchesStructuredWorkpadOverStaleBlockerReason(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 19, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	issue := autoPromoteTickIssue("issue-stale-blocker-reason", []string{"bug"}, &connector.PullRequest{
+		Number:                 1494,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/1494",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "pass",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	issue.BlockerReason = "Blocked by: #1462 stale issue-body prose"
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &autoPromoteTickConnector{
+		stateIssues: []connector.Issue{issue},
+		issueComments: map[string][]connector.IssueComment{
+			issue.ID: {{
+				Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
+				URL:  "https://github.test/comment/structured-complete",
+			}},
+		},
+	}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	}
+
+	result := orch.autoPromoteHumanReviewIssues(context.Background(), &state, []connector.Issue{issue}, now)
+
+	if got, want := tracker.fetchComments, []string{issue.ID}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("FetchIssueComments issue IDs = %#v, want %#v", got, want)
+	}
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned = %#v, want %s", result.transitioned, issue.ID)
+	}
+	for _, fragment := range []string{
+		"reason=ready",
+		"workpad_signal_source=structured",
+		"workpad_comment_url=https://github.test/comment/structured-complete",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+	if strings.Contains(logs.String(), "reason=workpad_blocker") {
+		t.Fatalf("logs %q contain stale workpad_blocker decision", logs.String())
+	}
+}
+
 func TestTickAutoPromoteResolvesClosedWorkpadBlockerBeforeTransition(t *testing.T) {
 	t.Parallel()
 
@@ -707,6 +774,85 @@ func TestTickAutoPromoteResolvesMergedWorkpadBlockerBeforeTransition(t *testing.
 	}
 	if !strings.Contains(logs.String(), "resolved_workpad_blockers=digitaldrywood/detent#1462") {
 		t.Fatalf("logs %q missing resolved_workpad_blockers", logs.String())
+	}
+}
+
+func TestTickAutoPromoteCommentsOnceForInvalidStructuredWorkpad(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 13, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	issue := autoPromoteTickIssue("issue-invalid-workpad-status", []string{"bug"}, &connector.PullRequest{
+		Number:                 1490,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/1490",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "pass",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	invalidWorkpad := connector.IssueComment{
+		Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```",
+		URL:  "https://github.test/comment/invalid-workpad",
+	}
+	tracker := &autoPromoteTickConnector{
+		stateIssues: []connector.Issue{issue},
+		issueComments: map[string][]connector.IssueComment{
+			issue.ID: {invalidWorkpad},
+		},
+	}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	}
+
+	result := orch.autoPromoteHumanReviewIssues(context.Background(), &State{}, []connector.Issue{issue}, now)
+
+	if len(result.transitioned) != 0 {
+		t.Fatalf("transitioned = %#v, want no transition", result.transitioned)
+	}
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none", tracker.updates)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one invalid Workpad comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"<!-- detent-workpad-status-invalid:",
+		"status blocked requires at least one blocker ref or human_action",
+		"https://github.test/comment/invalid-workpad",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("invalid comment %q missing %q", tracker.comments[0].body, fragment)
+		}
+	}
+	for _, fragment := range []string{
+		"reason=workpad_status_invalid",
+		"workpad_signal_source=structured",
+		"workpad_comment_url=https://github.test/comment/invalid-workpad",
+		"workpad_status_hash=",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+
+	tracker.issueComments[issue.ID] = append(tracker.issueComments[issue.ID], connector.IssueComment{Body: tracker.comments[0].body})
+	orch.autoPromoteHumanReviewIssues(context.Background(), &State{}, []connector.Issue{issue}, now)
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments after dedupe = %#v, want still one invalid Workpad comment", tracker.comments)
 	}
 }
 

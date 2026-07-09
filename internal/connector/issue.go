@@ -4,6 +4,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 type Issue struct {
@@ -26,6 +28,7 @@ type Issue struct {
 	BlockedBy        []BlockedRef      `json:"blocked_by" yaml:"blocked_by"`
 	ChildIssues      []BlockedRef      `json:"child_issues,omitempty" yaml:"child_issues,omitempty"`
 	BlockerReason    string            `json:"blocker_reason,omitempty" yaml:"blocker_reason,omitempty"`
+	WorkpadSignal    *workpad.Signal   `json:"workpad_signal,omitempty" yaml:"workpad_signal,omitempty"`
 	Labels           []string          `json:"labels" yaml:"labels"`
 	Comments         []IssueComment    `json:"comments,omitempty" yaml:"comments,omitempty"`
 	Fields           map[string]string `json:"fields,omitempty" yaml:"fields,omitempty"`

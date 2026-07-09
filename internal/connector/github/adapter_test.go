@@ -2623,6 +2623,77 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadHumanActionNeeded(t *testing
 	}
 }
 
+func TestParseBlockerReasonUsesStructuredWorkpadFirst(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		body        string
+		wantReason  string
+		wantSource  string
+		wantInvalid string
+	}{
+		{
+			name:       "valid structured block suppresses prose",
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: \"#1462\"\n    reason: \"needs migration\"\nhuman_action: null\n```\n\n### Human Action Needed\n- Blocked by: #999",
+			wantReason: "digitaldrywood/detent#1462: needs migration",
+			wantSource: "structured",
+		},
+		{
+			name:        "invalid structured block suppresses prose",
+			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```\n\n### Human Action Needed\n- Blocked by: #999",
+			wantSource:  "structured",
+			wantInvalid: "status blocked requires",
+		},
+		{
+			name:       "no structured block preserves prose",
+			body:       "## Codex Workpad\n\n### Human Action Needed\n- Need owner approval.",
+			wantReason: "Need owner approval.",
+			wantSource: "prose_section",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := githubIssueNode{
+				Number:     1069,
+				Repository: repository{NameWithOwner: "digitaldrywood/detent"},
+				Comments: nodeConnection[issueComment]{Nodes: []issueComment{{
+					Body: tt.body,
+					URL:  "https://github.test/comment/workpad",
+				}}},
+			}
+			signal := parseWorkpadSignal(issue)
+			if signal == nil {
+				t.Fatal("parseWorkpadSignal() = nil, want signal")
+			}
+			if signal.Source != tt.wantSource {
+				t.Fatalf("Signal.Source = %q, want %q", signal.Source, tt.wantSource)
+			}
+			if signal.CommentURL != "https://github.test/comment/workpad" {
+				t.Fatalf("Signal.CommentURL = %q, want comment URL", signal.CommentURL)
+			}
+			if tt.wantInvalid != "" {
+				if signal.Invalid == nil || !strings.Contains(signal.Invalid.Message, tt.wantInvalid) {
+					t.Fatalf("Signal.Invalid = %#v, want message containing %q", signal.Invalid, tt.wantInvalid)
+				}
+				if reason := parseBlockerReason(issue); reason != "" {
+					t.Fatalf("parseBlockerReason() = %q, want empty for invalid structured block", reason)
+				}
+				return
+			}
+			if signal.Invalid != nil {
+				t.Fatalf("Signal.Invalid = %#v, want nil", signal.Invalid)
+			}
+			if reason := parseBlockerReason(issue); reason != tt.wantReason {
+				t.Fatalf("parseBlockerReason() = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestConnectorFetchIssuesByStatesExtractsWorkpadBlockedByRefs(t *testing.T) {
 	t.Parallel()
 

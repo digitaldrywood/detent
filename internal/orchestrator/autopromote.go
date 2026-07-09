@@ -6,22 +6,24 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 type AutoPromoteConfig struct {
-	Enabled            bool
-	QuietDuration      time.Duration
-	OptoutLabel        string
-	AllowedIssueLabels []string
-	GateWaitState      string
-	GateWaitTimeout    time.Duration
-	SourceState        string
-	PassState          string
-	ReworkState        string
-	ReworkLimit        int
-	TerminalStates     []string
-	NoProgressLimit    int
-	Gate               gate.Config
+	Enabled               bool
+	QuietDuration         time.Duration
+	OptoutLabel           string
+	AllowedIssueLabels    []string
+	GateWaitState         string
+	GateWaitTimeout       time.Duration
+	SourceState           string
+	PassState             string
+	ReworkState           string
+	ReworkLimit           int
+	TerminalStates        []string
+	NoProgressLimit       int
+	WorkpadStructuredOnly bool
+	Gate                  gate.Config
 }
 
 type AutoPromoteSummary struct {
@@ -80,17 +82,32 @@ const (
 	AutoPromoteReasonArtifactStatusWait              AutoPromoteReason = "artifact_status_wait"
 	AutoPromoteReasonArtifactStatusRework            AutoPromoteReason = "artifact_status_rework"
 	AutoPromoteReasonWorkpadBlocker                  AutoPromoteReason = "workpad_blocker"
+	AutoPromoteReasonWorkpadStatusInvalid            AutoPromoteReason = "workpad_status_invalid"
 	AutoPromoteReasonWorkpadHydrationUnavailable     AutoPromoteReason = "workpad_hydration_unavailable"
 )
 
 type AutoPromoteDecision struct {
-	Action                  AutoPromoteAction
-	Reason                  AutoPromoteReason
-	CIStatus                string
-	QuietRemaining          time.Duration
-	Findings                []AutoPromoteFinding
-	WorkpadBlocker          string
-	ResolvedWorkpadBlockers []string
+	Action                       AutoPromoteAction
+	Reason                       AutoPromoteReason
+	CIStatus                     string
+	QuietRemaining               time.Duration
+	Findings                     []AutoPromoteFinding
+	WorkpadBlocker               string
+	ResolvedWorkpadBlockers      []string
+	WorkpadCommentURL            string
+	WorkpadSignalSource          string
+	WorkpadStatusInvalid         string
+	WorkpadStatusInvalidHash     string
+	WorkpadStatusInvalidContent  string
+	WorkpadBlockerVerifications  []AutoPromoteWorkpadBlockerVerification
+	WorkpadProseFallbackDisabled bool
+}
+
+type AutoPromoteWorkpadBlockerVerification struct {
+	Identifier string
+	State      string
+	Status     string
+	Reason     string
 }
 
 func EvaluateAutoPromote(
@@ -110,10 +127,16 @@ func EvaluateAutoPromote(
 	if !autoPromoteAllowedIssueLabel(issue, cfg) {
 		return autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonLabelNotAllowed)
 	}
-	workpad := autoPromoteWorkpadBlocker(issue, cfg.TerminalStates)
+	workpad := autoPromoteWorkpadBlocker(issue, cfg)
+	if workpad.Invalid != nil {
+		decision := autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonWorkpadStatusInvalid)
+		autoPromoteApplyWorkpadDecisionFields(&decision, workpad)
+		return decision
+	}
 	if workpad.Reason != "" {
 		decision := autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonWorkpadBlocker)
 		decision.WorkpadBlocker = workpad.Reason
+		autoPromoteApplyWorkpadDecisionFields(&decision, workpad)
 		return decision
 	}
 	if gateRequiresPullRequest(cfg.Gate) {
@@ -135,7 +158,7 @@ func EvaluateAutoPromote(
 	decision.CIStatus = gateDecision.CIStatus
 	decision.QuietRemaining = gateDecision.QuietRemaining
 	decision.Findings = autoPromoteFindingsFromGate(gateDecision.Findings)
-	decision.ResolvedWorkpadBlockers = append([]string(nil), workpad.Resolved...)
+	autoPromoteApplyWorkpadDecisionFields(&decision, workpad)
 	return decision
 }
 
@@ -298,19 +321,139 @@ func artifactStatusFromIssue(issue connector.Issue, statusField string) string {
 }
 
 type autoPromoteWorkpadBlockerCheck struct {
-	Reason   string
-	Resolved []string
+	Reason                string
+	Resolved              []string
+	Source                string
+	CommentURL            string
+	Invalid               *workpad.Invalid
+	Verifications         []AutoPromoteWorkpadBlockerVerification
+	ProseFallbackDisabled bool
 }
 
-func autoPromoteWorkpadBlocker(issue connector.Issue, terminalStates []string) autoPromoteWorkpadBlockerCheck {
-	reason := autoPromoteWorkpadBlockerReason(issue)
-	if reason == "" {
+func autoPromoteWorkpadBlocker(issue connector.Issue, cfg AutoPromoteConfig) autoPromoteWorkpadBlockerCheck {
+	signal, ok := autoPromoteIssueWorkpadSignal(issue)
+	if !ok || signal == nil {
 		return autoPromoteWorkpadBlockerCheck{}
 	}
-	if resolved, ok := autoPromoteResolvedWorkpadBlockers(reason, issue, terminalStates); ok {
-		return autoPromoteWorkpadBlockerCheck{Resolved: resolved}
+	check := autoPromoteWorkpadBlockerCheck{
+		Source:     strings.TrimSpace(signal.Source),
+		CommentURL: strings.TrimSpace(signal.CommentURL),
 	}
-	return autoPromoteWorkpadBlockerCheck{Reason: reason}
+	if signal.Invalid != nil {
+		check.Invalid = signal.Invalid
+		return check
+	}
+	if cfg.WorkpadStructuredOnly && signal.Source != workpad.SourceStructured {
+		check.ProseFallbackDisabled = true
+		return check
+	}
+	if signal.Source == workpad.SourceStructured {
+		return autoPromoteStructuredWorkpadBlockerCheck(issue, signal, cfg.TerminalStates, check)
+	}
+	reason := workpad.Reason(signal)
+	if reason == "" {
+		return check
+	}
+	check.Verifications = autoPromoteTextWorkpadBlockerVerifications(reason, issue, cfg.TerminalStates)
+	if resolved, ok := autoPromoteResolvedWorkpadBlockers(reason, issue, cfg.TerminalStates); ok {
+		check.Resolved = resolved
+		return check
+	}
+	check.Reason = reason
+	return check
+}
+
+func autoPromoteTextWorkpadBlockerVerifications(
+	reason string,
+	issue connector.Issue,
+	terminalStates []string,
+) []AutoPromoteWorkpadBlockerVerification {
+	refs := dependencyRefsInText(reason, dependencyIssueRepo(issue.Identifier))
+	if len(refs) == 0 {
+		return nil
+	}
+	blockers := make([]workpad.Blocker, 0, len(refs))
+	for _, ref := range refs {
+		if identifier := strings.TrimSpace(ref.Identifier); identifier != "" {
+			blockers = append(blockers, workpad.Blocker{Identifier: identifier})
+		}
+	}
+	return autoPromoteWorkpadBlockerVerifications(issue, blockers, terminalStates)
+}
+
+func autoPromoteStructuredWorkpadBlockerCheck(
+	issue connector.Issue,
+	signal *workpad.Signal,
+	terminalStates []string,
+	check autoPromoteWorkpadBlockerCheck,
+) autoPromoteWorkpadBlockerCheck {
+	check.Verifications = autoPromoteWorkpadBlockerVerifications(issue, signal.Blockers, terminalStates)
+	active := false
+	for _, verification := range check.Verifications {
+		if verification.Status == "resolved" {
+			check.Resolved = append(check.Resolved, verification.Identifier)
+			continue
+		}
+		active = true
+	}
+	if active || strings.TrimSpace(signal.HumanAction) != "" {
+		check.Reason = workpad.Reason(signal)
+	}
+	if active {
+		return check
+	}
+	if strings.TrimSpace(signal.HumanAction) != "" {
+		check.Resolved = nil
+		return check
+	}
+	return check
+}
+
+func autoPromoteWorkpadBlockerVerifications(
+	issue connector.Issue,
+	blockers []workpad.Blocker,
+	terminalStates []string,
+) []AutoPromoteWorkpadBlockerVerification {
+	if len(blockers) == 0 {
+		return nil
+	}
+	byIdentifier := make(map[string]connector.BlockedRef, len(issue.BlockedBy))
+	for _, ref := range issue.BlockedBy {
+		key := strings.ToLower(strings.TrimSpace(ref.Identifier))
+		if key != "" {
+			byIdentifier[key] = ref
+		}
+	}
+	out := make([]AutoPromoteWorkpadBlockerVerification, 0, len(blockers))
+	for _, blocker := range blockers {
+		identifier := strings.TrimSpace(blocker.Identifier)
+		verification := AutoPromoteWorkpadBlockerVerification{
+			Identifier: identifier,
+			Status:     "active",
+			Reason:     strings.TrimSpace(blocker.Reason),
+		}
+		if resolved, ok := byIdentifier[strings.ToLower(identifier)]; ok {
+			verification.State = strings.TrimSpace(resolved.State)
+			if autoPromoteBlockedRefResolved(resolved, terminalStates) {
+				verification.Status = "resolved"
+			}
+		}
+		out = append(out, verification)
+	}
+	return out
+}
+
+func autoPromoteApplyWorkpadDecisionFields(decision *AutoPromoteDecision, check autoPromoteWorkpadBlockerCheck) {
+	decision.ResolvedWorkpadBlockers = append([]string(nil), check.Resolved...)
+	decision.WorkpadCommentURL = strings.TrimSpace(check.CommentURL)
+	decision.WorkpadSignalSource = strings.TrimSpace(check.Source)
+	decision.WorkpadBlockerVerifications = append([]AutoPromoteWorkpadBlockerVerification(nil), check.Verifications...)
+	decision.WorkpadProseFallbackDisabled = check.ProseFallbackDisabled
+	if check.Invalid != nil {
+		decision.WorkpadStatusInvalid = strings.TrimSpace(check.Invalid.Message)
+		decision.WorkpadStatusInvalidHash = strings.TrimSpace(check.Invalid.Hash)
+		decision.WorkpadStatusInvalidContent = check.Invalid.Content
+	}
 }
 
 func autoPromoteResolvedWorkpadBlockers(reason string, issue connector.Issue, terminalStates []string) ([]string, bool) {
@@ -355,21 +498,44 @@ func autoPromoteBlockedRefResolved(ref connector.BlockedRef, terminalStates []st
 	return state != "" && stateIn(state, terminalStates)
 }
 
-func autoPromoteWorkpadBlockerReason(issue connector.Issue) string {
-	if reason := autoPromoteNormalizeWorkpadBlockerText(issue.BlockerReason); reason != "" {
-		return reason
-	}
+func autoPromoteIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool) {
 	for index := len(issue.Comments) - 1; index >= 0; index-- {
-		body := issue.Comments[index].Body
-		if !strings.Contains(strings.ToLower(body), "codex workpad") {
+		comment := issue.Comments[index]
+		body := comment.Body
+		if !autoPromoteIsWorkpadComment(body) {
 			continue
 		}
-		return autoPromoteWorkpadBlockerReasonFromBody(body)
+		if signal, ok := workpad.SignalFromComment(body, comment.URL, dependencyIssueRepo(issue.Identifier)); ok {
+			return signal, true
+		}
+		if signal := autoPromoteWorkpadProseSignalFromBody(body, comment.URL); signal != nil {
+			return signal, true
+		}
+		return nil, false
 	}
-	return ""
+	if issue.WorkpadSignal != nil {
+		return workpad.CloneSignal(issue.WorkpadSignal), true
+	}
+	if reason := autoPromoteNormalizeWorkpadBlockerText(issue.BlockerReason); reason != "" {
+		return &workpad.Signal{
+			Source:      workpad.SourceProse,
+			HumanAction: reason,
+		}, true
+	}
+	return nil, false
 }
 
-func autoPromoteWorkpadBlockerReasonFromBody(body string) string {
+func autoPromoteIsWorkpadComment(body string) bool {
+	for line := range strings.SplitSeq(body, "\n") {
+		heading, ok := autoPromoteMarkdownHeadingTitle(line)
+		if ok && autoPromoteNormalizeSectionTitle(heading) == "codex workpad" {
+			return true
+		}
+	}
+	return false
+}
+
+func autoPromoteWorkpadProseSignalFromBody(body string, commentURL string) *workpad.Signal {
 	sectionFound := false
 	for _, title := range []string{"Human Action Needed", "Blockers"} {
 		text, ok := autoPromoteMarkdownSectionText(body, title)
@@ -378,13 +544,24 @@ func autoPromoteWorkpadBlockerReasonFromBody(body string) string {
 		}
 		sectionFound = true
 		if reason := autoPromoteNormalizeWorkpadBlockerText(text); reason != "" {
-			return reason
+			return &workpad.Signal{
+				Source:      workpad.SourceProseSection,
+				CommentURL:  strings.TrimSpace(commentURL),
+				HumanAction: reason,
+			}
 		}
 	}
 	if sectionFound {
-		return ""
+		return nil
 	}
-	return autoPromoteWorkpadBlockerPhraseReason(body)
+	if reason := autoPromoteWorkpadBlockerPhraseReason(body); reason != "" {
+		return &workpad.Signal{
+			Source:      workpad.SourceProsePhrase,
+			CommentURL:  strings.TrimSpace(commentURL),
+			HumanAction: reason,
+		}
+	}
+	return nil
 }
 
 func autoPromoteWorkpadBlockerPhraseReason(body string) string {

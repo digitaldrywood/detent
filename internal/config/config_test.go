@@ -82,6 +82,8 @@ workspace:
   cleanup_sweep_interval_ms: 120000
 dependencies:
   source: native_only
+workpad:
+  structured_only: true
 worker:
   ssh_hosts:
     - worker-1
@@ -340,6 +342,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Agent.Shutdown.DrainTimeoutMS != 300000 {
 		t.Fatalf("Agent.Shutdown.DrainTimeoutMS = %d, want 300000", cfg.Agent.Shutdown.DrainTimeoutMS)
+	}
+	if !cfg.Workpad.StructuredOnly {
+		t.Fatal("Workpad.StructuredOnly = false, want true")
 	}
 	if got := cfg.Agent.DispatchPriorityByState; len(got) != 2 || got[0] != "merging" || got[1] != "rework" {
 		t.Fatalf("Agent.DispatchPriorityByState = %#v", got)
@@ -658,6 +663,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Agent.Skills.Creation.MaxDraftsPerRun != 1 {
 		t.Fatalf("Agent.Skills.Creation.MaxDraftsPerRun = %d, want 1", cfg.Agent.Skills.Creation.MaxDraftsPerRun)
+	}
+	if cfg.Workpad.StructuredOnly {
+		t.Fatal("Workpad.StructuredOnly = true, want false default")
 	}
 	if cfg.Agent.AutoPromote.ReworkLimit != DefaultReworkLimit {
 		t.Fatalf("Agent.AutoPromote.ReworkLimit = %d, want %d", cfg.Agent.AutoPromote.ReworkLimit, DefaultReworkLimit)

@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 type State struct {
@@ -421,6 +422,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	}
 	cloned.BlockedBy = append([]connector.BlockedRef(nil), issue.BlockedBy...)
 	cloned.ChildIssues = append([]connector.BlockedRef(nil), issue.ChildIssues...)
+	cloned.WorkpadSignal = workpad.CloneSignal(issue.WorkpadSignal)
 	cloned.Labels = cloneStringSlice(issue.Labels)
 	cloned.Comments = cloneIssueComments(issue.Comments)
 	cloned.Assignees = cloneStringSlice(issue.Assignees)

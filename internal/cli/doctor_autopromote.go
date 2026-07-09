@@ -30,6 +30,11 @@ type doctorAutoPromoteCandidateDiagnostic struct {
 	LatestCodexReviewSubmittedAt *time.Time `json:"latest_codex_review_submitted_at,omitempty"`
 	QuietRemainingSeconds        int64      `json:"quiet_remaining_seconds,omitempty"`
 	WorkpadBlocker               string     `json:"workpad_blocker,omitempty"`
+	WorkpadCommentURL            string     `json:"workpad_comment_url,omitempty"`
+	WorkpadSignalSource          string     `json:"workpad_signal_source,omitempty"`
+	WorkpadStatusInvalid         string     `json:"workpad_status_invalid,omitempty"`
+	WorkpadStatusInvalidHash     string     `json:"workpad_status_invalid_hash,omitempty"`
+	WorkpadProseFallbackDisabled bool       `json:"workpad_prose_fallback_disabled,omitempty"`
 	Reason                       string     `json:"reason"`
 }
 
@@ -184,6 +189,15 @@ func checkDoctorAutoPromoteLive(
 	candidates := make([]doctorAutoPromoteCandidateDiagnostic, 0, len(issues))
 	var quietRemaining time.Duration
 	for _, issue := range issues {
+		issue, err = doctorHydrateAutoPromoteWorkpad(ctx, projectConnector, issue)
+		if err != nil {
+			return doctorCheck{
+				Name:   name,
+				Status: doctorFail,
+				Detail: fmt.Sprintf("fetch Workpad comments for %s diagnostics: %v", sourceState, err),
+				Hint:   "Check GitHub issue comments read access and repository rate limits.",
+			}
+		}
 		summary := orchestrator.AutoPromoteSummaryFromIssue(issue)
 		decision := orchestrator.EvaluateAutoPromote(issue, summary, autoPromoteCfg, now)
 		candidate := doctorAutoPromoteCandidateDiagnosticFromIssue(issue, decision)
@@ -225,6 +239,26 @@ func checkDoctorAutoPromoteLive(
 		Detail:                detail,
 		AutoPromoteCandidates: candidates,
 	}
+}
+
+func doctorHydrateAutoPromoteWorkpad(
+	ctx context.Context,
+	projectConnector doctorAutoPromoteConnector,
+	issue connector.Issue,
+) (connector.Issue, error) {
+	if len(issue.Comments) > 0 {
+		return issue, nil
+	}
+	reader, ok := projectConnector.(connector.IssueCommentReader)
+	if !ok {
+		return issue, nil
+	}
+	comments, err := reader.FetchIssueComments(ctx, issue)
+	if err != nil {
+		return issue, err
+	}
+	issue.Comments = comments
+	return issue, nil
 }
 
 func fetchDoctorAutoPromoteIssues(
@@ -378,16 +412,17 @@ func doctorStatusDriftIssueSummary(issue doctorStatusDriftIssueDiagnostic) strin
 
 func doctorAutoPromoteConfig(cfg workflowconfig.Config) orchestrator.AutoPromoteConfig {
 	return orchestrator.AutoPromoteConfig{
-		Enabled:            cfg.Agent.AutoPromote.Enabled,
-		QuietDuration:      time.Duration(cfg.Agent.AutoPromote.QuietSeconds) * time.Second,
-		OptoutLabel:        cfg.Agent.AutoPromote.OptoutLabel,
-		AllowedIssueLabels: append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),
-		SourceState:        cfg.Agent.AutoPromote.SourceState,
-		PassState:          cfg.Agent.AutoPromote.PassState,
-		ReworkState:        cfg.Agent.AutoPromote.ReworkState,
-		ReworkLimit:        cfg.Agent.AutoPromote.ReworkLimit,
-		TerminalStates:     append([]string(nil), cfg.Tracker.TerminalStates...),
-		Gate:               cfg.Gate,
+		Enabled:               cfg.Agent.AutoPromote.Enabled,
+		QuietDuration:         time.Duration(cfg.Agent.AutoPromote.QuietSeconds) * time.Second,
+		OptoutLabel:           cfg.Agent.AutoPromote.OptoutLabel,
+		AllowedIssueLabels:    append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),
+		SourceState:           cfg.Agent.AutoPromote.SourceState,
+		PassState:             cfg.Agent.AutoPromote.PassState,
+		ReworkState:           cfg.Agent.AutoPromote.ReworkState,
+		ReworkLimit:           cfg.Agent.AutoPromote.ReworkLimit,
+		TerminalStates:        append([]string(nil), cfg.Tracker.TerminalStates...),
+		WorkpadStructuredOnly: cfg.Workpad.StructuredOnly,
+		Gate:                  cfg.Gate,
 	}
 }
 
@@ -405,6 +440,11 @@ func doctorAutoPromoteCandidateDiagnosticFromIssue(
 		diagnostic.QuietRemainingSeconds = int64(decision.QuietRemaining.Truncate(time.Second) / time.Second)
 	}
 	diagnostic.WorkpadBlocker = strings.TrimSpace(decision.WorkpadBlocker)
+	diagnostic.WorkpadCommentURL = strings.TrimSpace(decision.WorkpadCommentURL)
+	diagnostic.WorkpadSignalSource = strings.TrimSpace(decision.WorkpadSignalSource)
+	diagnostic.WorkpadStatusInvalid = strings.TrimSpace(decision.WorkpadStatusInvalid)
+	diagnostic.WorkpadStatusInvalidHash = strings.TrimSpace(decision.WorkpadStatusInvalidHash)
+	diagnostic.WorkpadProseFallbackDisabled = decision.WorkpadProseFallbackDisabled
 	if prNumber, ok := doctorLinkedPullRequestNumber(issue); ok {
 		diagnostic.PRNumber = prNumber
 	}
@@ -510,6 +550,15 @@ func doctorAutoPromoteCandidateSummary(candidate doctorAutoPromoteCandidateDiagn
 	}
 	if candidate.WorkpadBlocker != "" {
 		parts = append(parts, "workpad_blocker="+candidate.WorkpadBlocker)
+	}
+	if candidate.WorkpadSignalSource != "" {
+		parts = append(parts, "workpad_signal_source="+candidate.WorkpadSignalSource)
+	}
+	if candidate.WorkpadStatusInvalid != "" {
+		parts = append(parts, "workpad_status_invalid="+candidate.WorkpadStatusInvalid)
+	}
+	if candidate.WorkpadProseFallbackDisabled {
+		parts = append(parts, "workpad_prose_fallback_disabled=true")
 	}
 	parts = append(parts, "reason="+candidate.Reason)
 	return strings.Join(parts, " ")

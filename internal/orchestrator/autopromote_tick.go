@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const (
@@ -98,7 +99,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			o.logAutoPromoteDecision(issue, autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonCINotGreen), "")
 			continue
 		}
-		if decision.Action == AutoPromoteActionPromote || decision.Reason == AutoPromoteReasonWorkpadBlocker {
+		if autoPromoteDecisionNeedsWorkpadHydration(decision) {
 			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
 		}
 		targetState := autoPromoteTargetState(decision.Action, cfg)
@@ -242,7 +243,7 @@ func (o *Orchestrator) hydrateAutoPromoteWorkpadDecision(
 	cfg AutoPromoteConfig,
 	now time.Time,
 ) (connector.Issue, AutoPromoteDecision) {
-	if len(issue.Comments) == 0 && strings.TrimSpace(issue.BlockerReason) == "" {
+	if len(issue.Comments) == 0 {
 		reader, ok := o.connector.(connector.IssueCommentReader)
 		if !ok {
 			return issue, EvaluateAutoPromote(issue, summary, cfg, now)
@@ -257,16 +258,29 @@ func (o *Orchestrator) hydrateAutoPromoteWorkpadDecision(
 		issue = cloneIssue(issue)
 		issue.Comments = comments
 	}
-	issue = o.hydrateAutoPromoteWorkpadBlockerRefs(ctx, issue, cfg.TerminalStates)
-	return issue, EvaluateAutoPromote(issue, summary, cfg, now)
+	issue = o.hydrateAutoPromoteWorkpadBlockerRefs(ctx, issue, cfg)
+	decision := EvaluateAutoPromote(issue, summary, cfg, now)
+	if decision.Reason == AutoPromoteReasonWorkpadStatusInvalid {
+		o.commentInvalidWorkpadStatus(ctx, issue, decision)
+	}
+	if decision.WorkpadProseFallbackDisabled && o.logger != nil {
+		o.logger.Warn(
+			"workpad prose fallback disabled",
+			"issue_id", strings.TrimSpace(issue.ID),
+			"identifier", issue.Identifier,
+			"workpad_comment_url", decision.WorkpadCommentURL,
+			"workpad_signal_source", decision.WorkpadSignalSource,
+		)
+	}
+	return issue, decision
 }
 
 func (o *Orchestrator) hydrateAutoPromoteWorkpadBlockerRefs(
 	ctx context.Context,
 	issue connector.Issue,
-	terminalStates []string,
+	cfg AutoPromoteConfig,
 ) connector.Issue {
-	refs := autoPromoteWorkpadBlockerRefs(issue)
+	refs := autoPromoteWorkpadBlockerRefs(issue, cfg.WorkpadStructuredOnly)
 	if len(refs) == 0 {
 		return issue
 	}
@@ -292,7 +306,7 @@ func (o *Orchestrator) hydrateAutoPromoteWorkpadBlockerRefs(
 	}
 	blockedBy := make([]connector.BlockedRef, 0, len(resolved))
 	for _, resolvedIssue := range resolved {
-		ref := autoPromoteBlockedRefFromIssue(resolvedIssue, terminalStates)
+		ref := autoPromoteBlockedRefFromIssue(resolvedIssue, cfg.TerminalStates)
 		if strings.TrimSpace(ref.Identifier) != "" {
 			blockedBy = append(blockedBy, ref)
 		}
@@ -305,8 +319,30 @@ func (o *Orchestrator) hydrateAutoPromoteWorkpadBlockerRefs(
 	return issue
 }
 
-func autoPromoteWorkpadBlockerRefs(issue connector.Issue) []connector.BlockedRef {
-	reason := autoPromoteWorkpadBlockerReason(issue)
+func autoPromoteDecisionNeedsWorkpadHydration(decision AutoPromoteDecision) bool {
+	return decision.Action == AutoPromoteActionPromote ||
+		decision.Reason == AutoPromoteReasonWorkpadBlocker ||
+		decision.Reason == AutoPromoteReasonWorkpadStatusInvalid
+}
+
+func autoPromoteWorkpadBlockerRefs(issue connector.Issue, structuredOnly bool) []connector.BlockedRef {
+	signal, ok := autoPromoteIssueWorkpadSignal(issue)
+	if !ok || signal == nil || signal.Invalid != nil {
+		return nil
+	}
+	if structuredOnly && signal.Source != workpad.SourceStructured {
+		return nil
+	}
+	if signal.Source == workpad.SourceStructured {
+		refs := make([]connector.BlockedRef, 0, len(signal.Blockers))
+		for _, blocker := range signal.Blockers {
+			if identifier := strings.TrimSpace(blocker.Identifier); identifier != "" {
+				refs = append(refs, connector.BlockedRef{Identifier: identifier})
+			}
+		}
+		return refs
+	}
+	reason := workpad.Reason(signal)
 	if reason == "" {
 		return nil
 	}
@@ -327,6 +363,52 @@ func autoPromoteBlockedRefFromIssue(issue connector.Issue, terminalStates []stri
 
 func autoPromotePullRequestMerged(pullRequest *connector.PullRequest) bool {
 	return pullRequest != nil && normalizePullRequestState(pullRequest.State) == "merged"
+}
+
+func (o *Orchestrator) commentInvalidWorkpadStatus(ctx context.Context, issue connector.Issue, decision AutoPromoteDecision) {
+	hash := strings.TrimSpace(decision.WorkpadStatusInvalidHash)
+	message := strings.TrimSpace(decision.WorkpadStatusInvalid)
+	issueID := strings.TrimSpace(issue.ID)
+	if issueID == "" || hash == "" || message == "" {
+		return
+	}
+	marker := invalidWorkpadStatusCommentMarker(hash)
+	for _, comment := range issue.Comments {
+		if strings.Contains(comment.Body, marker) {
+			return
+		}
+	}
+	if err := o.connector.CreateComment(ctx, issueID, invalidWorkpadStatusComment(decision)); err != nil && o.logger != nil {
+		o.logger.Warn(
+			"workpad status invalid comment failed",
+			"issue_id", issueID,
+			"identifier", issue.Identifier,
+			"workpad_status_hash", hash,
+			"error", err,
+		)
+	}
+}
+
+func invalidWorkpadStatusCommentMarker(hash string) string {
+	return "<!-- detent-workpad-status-invalid:" + strings.TrimSpace(hash) + " -->"
+}
+
+func invalidWorkpadStatusComment(decision AutoPromoteDecision) string {
+	hash := strings.TrimSpace(decision.WorkpadStatusInvalidHash)
+	var b strings.Builder
+	b.WriteString(invalidWorkpadStatusCommentMarker(hash))
+	b.WriteString("\nDetent could not parse the `detent-status` block in the latest `## Codex Workpad` comment.")
+	b.WriteString("\n\n- reason: ")
+	b.WriteString(strings.TrimSpace(decision.WorkpadStatusInvalid))
+	if url := strings.TrimSpace(decision.WorkpadCommentURL); url != "" {
+		b.WriteString("\n- workpad_comment: ")
+		b.WriteString(url)
+	}
+	b.WriteString("\n- block_hash: ")
+	b.WriteString(hash)
+	b.WriteString("\n\nUse this schema:")
+	b.WriteString("\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```")
+	return b.String()
 }
 
 func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
@@ -379,7 +461,7 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 			continue
 		}
 		decision := staleTodoPullRequestDecision(issue, summary, o.cfg.AutoPromote, now)
-		if decision.Action == AutoPromoteActionPromote || decision.Reason == AutoPromoteReasonWorkpadBlocker {
+		if autoPromoteDecisionNeedsWorkpadHydration(decision) {
 			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, o.cfg.AutoPromote, now)
 		}
 		targetState := staleTodoPullRequestTargetState(decision, o.cfg.AutoPromote)
@@ -1276,6 +1358,7 @@ func (o *Orchestrator) logStaleTodoPullRequestDecision(issue connector.Issue, de
 	if len(decision.ResolvedWorkpadBlockers) > 0 {
 		attrs = append(attrs, "resolved_workpad_blockers", strings.Join(decision.ResolvedWorkpadBlockers, ","))
 	}
+	attrs = appendAutoPromoteWorkpadAttrs(attrs, decision)
 	o.logger.Info("stale_todo_pr_reconciled", attrs...)
 }
 
@@ -2154,12 +2237,53 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 	if len(decision.ResolvedWorkpadBlockers) > 0 {
 		attrs = append(attrs, "resolved_workpad_blockers", strings.Join(decision.ResolvedWorkpadBlockers, ","))
 	}
+	attrs = appendAutoPromoteWorkpadAttrs(attrs, decision)
 	if targetState != "" {
 		attrs = append(attrs, "target_state", targetState)
 		o.logger.Info("auto promote decision", attrs...)
 		return
 	}
 	o.logger.Info("auto promote decision", attrs...)
+}
+
+func appendAutoPromoteWorkpadAttrs(attrs []any, decision AutoPromoteDecision) []any {
+	if url := strings.TrimSpace(decision.WorkpadCommentURL); url != "" {
+		attrs = append(attrs, "workpad_comment_url", url)
+	}
+	if source := strings.TrimSpace(decision.WorkpadSignalSource); source != "" {
+		attrs = append(attrs, "workpad_signal_source", source)
+	}
+	if invalid := strings.TrimSpace(decision.WorkpadStatusInvalid); invalid != "" {
+		attrs = append(attrs, "workpad_status_invalid", invalid)
+	}
+	if hash := strings.TrimSpace(decision.WorkpadStatusInvalidHash); hash != "" {
+		attrs = append(attrs, "workpad_status_hash", hash)
+	}
+	if len(decision.WorkpadBlockerVerifications) > 0 {
+		attrs = append(attrs, "workpad_blocker_verifications", strings.Join(autoPromoteWorkpadBlockerVerificationStrings(decision.WorkpadBlockerVerifications), "; "))
+	}
+	if decision.WorkpadProseFallbackDisabled {
+		attrs = append(attrs, "workpad_prose_fallback_disabled", true)
+	}
+	return attrs
+}
+
+func autoPromoteWorkpadBlockerVerificationStrings(verifications []AutoPromoteWorkpadBlockerVerification) []string {
+	out := make([]string, 0, len(verifications))
+	for _, verification := range verifications {
+		parts := []string{
+			"ref=" + strings.TrimSpace(verification.Identifier),
+			"status=" + strings.TrimSpace(verification.Status),
+		}
+		if state := strings.TrimSpace(verification.State); state != "" {
+			parts = append(parts, "state="+state)
+		}
+		if reason := strings.TrimSpace(verification.Reason); reason != "" {
+			parts = append(parts, "reason="+reason)
+		}
+		out = append(out, strings.Join(parts, " "))
+	}
+	return out
 }
 
 func autoPromoteComment(

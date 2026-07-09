@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -669,6 +670,166 @@ func TestAutoPromoteNormalizeWorkpadBlockerText(t *testing.T) {
 			got := autoPromoteNormalizeWorkpadBlockerText(tt.text)
 			if got != tt.want {
 				t.Fatalf("autoPromoteNormalizeWorkpadBlockerText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEvaluateAutoPromoteStructuredWorkpad(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	oldActivity := now.Add(-20 * time.Minute)
+	ready := AutoPromoteSummary{
+		PullRequestURL: "https://github.test/pull/42",
+		CIStatus:       "green",
+		LastActivityAt: &oldActivity,
+	}
+	cfg := AutoPromoteConfig{
+		Enabled:        true,
+		QuietDuration:  10 * time.Minute,
+		OptoutLabel:    "requires-human-review",
+		TerminalStates: []string{"Done", "Cancelled"},
+		Gate:           gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+	}
+
+	tests := []struct {
+		name                  string
+		body                  string
+		cfg                   AutoPromoteConfig
+		blockedBy             []connector.BlockedRef
+		wantAction            AutoPromoteAction
+		wantReason            AutoPromoteReason
+		wantBlocker           string
+		wantResolved          []string
+		wantSource            string
+		wantInvalid           string
+		wantProseDisabled     bool
+		wantVerificationParts []string
+	}{
+		{
+			name: "open structured blocker holds",
+			body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: \"#1462\"\n    reason: \"needs migration\"\nhuman_action: null\n```",
+			blockedBy: []connector.BlockedRef{{
+				Identifier: "digitaldrywood/detent#1462",
+				State:      "In Progress",
+			}},
+			wantAction:  AutoPromoteActionAwaitReview,
+			wantReason:  AutoPromoteReasonWorkpadBlocker,
+			wantBlocker: "digitaldrywood/detent#1462: needs migration",
+			wantSource:  "structured",
+			wantVerificationParts: []string{
+				"digitaldrywood/detent#1462",
+				"In Progress",
+				"active",
+			},
+		},
+		{
+			name: "resolved structured blocker releases",
+			body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: \"#1462\"\n    reason: \"needs migration\"\nhuman_action: null\n```",
+			blockedBy: []connector.BlockedRef{{
+				Identifier: "digitaldrywood/detent#1462",
+				State:      "Done",
+			}},
+			wantAction:   AutoPromoteActionPromote,
+			wantReason:   AutoPromoteReasonReady,
+			wantResolved: []string{"digitaldrywood/detent#1462"},
+			wantSource:   "structured",
+			wantVerificationParts: []string{
+				"digitaldrywood/detent#1462",
+				"Done",
+				"resolved",
+			},
+		},
+		{
+			name:       "structured block suppresses prose",
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```\n\n### Blockers\n- Blocked by: #999",
+			wantAction: AutoPromoteActionPromote,
+			wantReason: AutoPromoteReasonReady,
+			wantSource: "structured",
+		},
+		{
+			name:        "malformed structured block awaits review",
+			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```",
+			wantAction:  AutoPromoteActionAwaitReview,
+			wantReason:  AutoPromoteReasonWorkpadStatusInvalid,
+			wantSource:  "structured",
+			wantInvalid: "status blocked requires",
+		},
+		{
+			name:        "prose fallback preserved",
+			body:        "## Codex Workpad\n\n### Blockers\n- Owner approval is still required before merge.",
+			wantAction:  AutoPromoteActionAwaitReview,
+			wantReason:  AutoPromoteReasonWorkpadBlocker,
+			wantBlocker: "Owner approval is still required before merge.",
+			wantSource:  "prose_section",
+		},
+		{
+			name: "structured only disables prose fallback",
+			body: "## Codex Workpad\n\n### Blockers\n- Owner approval is still required before merge.",
+			cfg: func() AutoPromoteConfig {
+				cfg := cfg
+				cfg.WorkpadStructuredOnly = true
+				return cfg
+			}(),
+			wantAction:        AutoPromoteActionPromote,
+			wantReason:        AutoPromoteReasonReady,
+			wantSource:        "prose_section",
+			wantProseDisabled: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := autoPromoteTestIssue("issue-structured-workpad", nil)
+			issue.Identifier = "digitaldrywood/detent#1069"
+			issue.Comments = []connector.IssueComment{{
+				Body: tt.body,
+				URL:  "https://github.test/comment/structured",
+			}}
+			issue.BlockedBy = append([]connector.BlockedRef(nil), tt.blockedBy...)
+			testCfg := cfg
+			if tt.cfg.Enabled {
+				testCfg = tt.cfg
+			}
+
+			got := EvaluateAutoPromote(issue, ready, testCfg, now)
+			if got.Action != tt.wantAction {
+				t.Fatalf("Action = %q, want %q", got.Action, tt.wantAction)
+			}
+			if got.Reason != tt.wantReason {
+				t.Fatalf("Reason = %q, want %q", got.Reason, tt.wantReason)
+			}
+			if got.WorkpadBlocker != tt.wantBlocker {
+				t.Fatalf("WorkpadBlocker = %q, want %q", got.WorkpadBlocker, tt.wantBlocker)
+			}
+			if got.WorkpadSignalSource != tt.wantSource {
+				t.Fatalf("WorkpadSignalSource = %q, want %q", got.WorkpadSignalSource, tt.wantSource)
+			}
+			if got.WorkpadCommentURL != "https://github.test/comment/structured" {
+				t.Fatalf("WorkpadCommentURL = %q, want structured comment URL", got.WorkpadCommentURL)
+			}
+			if tt.wantInvalid != "" && !strings.Contains(got.WorkpadStatusInvalid, tt.wantInvalid) {
+				t.Fatalf("WorkpadStatusInvalid = %q, want containing %q", got.WorkpadStatusInvalid, tt.wantInvalid)
+			}
+			if got.WorkpadProseFallbackDisabled != tt.wantProseDisabled {
+				t.Fatalf("WorkpadProseFallbackDisabled = %v, want %v", got.WorkpadProseFallbackDisabled, tt.wantProseDisabled)
+			}
+			if len(got.ResolvedWorkpadBlockers) != len(tt.wantResolved) {
+				t.Fatalf("ResolvedWorkpadBlockers = %#v, want %#v", got.ResolvedWorkpadBlockers, tt.wantResolved)
+			}
+			for index, want := range tt.wantResolved {
+				if got.ResolvedWorkpadBlockers[index] != want {
+					t.Fatalf("ResolvedWorkpadBlockers[%d] = %q, want %q", index, got.ResolvedWorkpadBlockers[index], want)
+				}
+			}
+			verificationText := strings.Join(autoPromoteWorkpadBlockerVerificationStrings(got.WorkpadBlockerVerifications), " ")
+			for _, want := range tt.wantVerificationParts {
+				if !strings.Contains(verificationText, want) {
+					t.Fatalf("verification text %q missing %q", verificationText, want)
+				}
 			}
 		})
 	}
