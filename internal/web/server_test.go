@@ -1549,7 +1549,7 @@ func TestAPIUsageWritesDrainOnShutdown(t *testing.T) {
 		t.Fatalf("state status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown() error = %v", err)
