@@ -81,6 +81,11 @@ agent:
     quiet_seconds: 600
     optout_label: requires-human-review
     allowed_issue_labels: []
+    gate_wait_state: review
+    gate_wait_timeout_seconds: 3600
+    source_state: Human Review
+    pass_state: Merging
+    rework_state: Rework
     rework_limit: 3
   skills:
     enabled: true
@@ -175,7 +180,10 @@ update must include one `detent-status` fenced block. Detent reads blocker and
 human-action declarations from that block; narrative sentences are never read as
 blockers. GitHub issue comments, labels, Projects, issue fields, and issue close
 state must remain untouched. Pull request comments and merges created by Detent
-are allowed for Detent-owned PR lifecycle work.
+are allowed for Detent-owned PR lifecycle work. `status` must be one of
+`in_progress`, `blocked`, or `complete`.
+
+Use `in_progress` while implementation or validation is still active:
 
 ```detent-status
 schema: 1
@@ -184,8 +192,18 @@ blockers: []
 human_action: null
 ```
 
+Use `complete` only when the pull request is open, references the issue,
+validation is green, and no actionable review comments remain:
+
+```detent-status
+schema: 1
+status: complete
+blockers: []
+human_action: null
+```
+
 For dependency blockers in this local-status workflow, declare the blocker in
-the Workpad status block:
+the Workpad status block with `status: blocked`:
 
 ```detent-status
 schema: 1

@@ -661,7 +661,7 @@ func TestOnboardingWriteWorkflowAppliesFullAutopilotProfile(t *testing.T) {
 	for _, want := range []string{
 		"dependency_auto_unblock:\n    enabled: true",
 		"max_concurrent_agents_by_state:\n    Merging: 1",
-		"auto_promote:\n    enabled: true\n    quiet_seconds: 0",
+		"auto_promote:\n    enabled: true\n    quiet_seconds: 0\n    gate_wait_state: source",
 		"gate:\n  kind: command\n  run: make check\n  required_status_checks: []\n  require_automated_review: false",
 		"server:\n  host: 127.0.0.1\n  kanban:\n    mode: integration",
 		"Full autopilot still requires linked PRs, green CI, clear gates, and no blocking P1 automated findings.",
@@ -679,6 +679,9 @@ func TestOnboardingWriteWorkflowAppliesFullAutopilotProfile(t *testing.T) {
 	cfg := workflow.Config
 	if !cfg.Agent.AutoPromote.Enabled || cfg.Agent.AutoPromote.QuietSeconds != 0 {
 		t.Fatalf("AutoPromote = %#v, want enabled with no quiet wait", cfg.Agent.AutoPromote)
+	}
+	if cfg.Agent.AutoPromote.GateWaitState != workflowconfig.AutoPromoteGateWaitStateSource {
+		t.Fatalf("GateWaitState = %q, want source", cfg.Agent.AutoPromote.GateWaitState)
 	}
 	if !cfg.Tracker.DependencyAutoUnblock.Enabled {
 		t.Fatal("DependencyAutoUnblock.Enabled = false, want true")

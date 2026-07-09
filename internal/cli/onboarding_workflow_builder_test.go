@@ -178,6 +178,142 @@ func TestBuildOnboardingWorkflowPreservesArtifactPresetGate(t *testing.T) {
 	assertOnboardingWorkflowDecision(t, result.Decisions, "budget.per_issue_max_usd", "preset")
 }
 
+func TestBuildOnboardingWorkflowRendersReviewFlowVariants(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		preset              string
+		profile             string
+		wantAutopilot       bool
+		wantReviewPhrase    string
+		wantAutopilotPhrase string
+	}{
+		{
+			preset:              "project_v2",
+			profile:             "review_gate",
+			wantReviewPhrase:    "Move the issue to `Human Review` only after",
+			wantAutopilotPhrase: "do not move the issue to `Human Review`",
+		},
+		{
+			preset:              "project_v2",
+			profile:             "full_autopilot",
+			wantAutopilot:       true,
+			wantReviewPhrase:    "Move the issue to `Human Review` only after",
+			wantAutopilotPhrase: "do not move the issue to `Human Review`",
+		},
+		{
+			preset:              "issue_field",
+			profile:             "review_gate",
+			wantReviewPhrase:    "Move the issue to `Human Review` only after",
+			wantAutopilotPhrase: "do not move the issue to `Human Review`",
+		},
+		{
+			preset:              "issue_field",
+			profile:             "full_autopilot",
+			wantAutopilot:       true,
+			wantReviewPhrase:    "Move the issue to `Human Review` only after",
+			wantAutopilotPhrase: "do not move the issue to `Human Review`",
+		},
+		{
+			preset:              "label",
+			profile:             "review_gate",
+			wantReviewPhrase:    "Move the issue to `Human Review` only after",
+			wantAutopilotPhrase: "do not move the issue to `Human Review`",
+		},
+		{
+			preset:              "label",
+			profile:             "full_autopilot",
+			wantAutopilot:       true,
+			wantReviewPhrase:    "Move the issue to `Human Review` only after",
+			wantAutopilotPhrase: "do not move the issue to `Human Review`",
+		},
+		{
+			preset:              "github_local",
+			profile:             "review_gate",
+			wantReviewPhrase:    "Move the local issue to `Human Review` only after",
+			wantAutopilotPhrase: "do not move the local issue to `Human Review`",
+		},
+		{
+			preset:              "github_local",
+			profile:             "full_autopilot",
+			wantAutopilot:       true,
+			wantReviewPhrase:    "Move the local issue to `Human Review` only after",
+			wantAutopilotPhrase: "do not move the local issue to `Human Review`",
+		},
+		{
+			preset:              "non_code_artifact",
+			profile:             "review_gate",
+			wantReviewPhrase:    "move the work item to\n   `Review`",
+			wantAutopilotPhrase: "do not move it to `Review`",
+		},
+		{
+			preset:              "non_code_artifact",
+			profile:             "full_autopilot",
+			wantAutopilot:       true,
+			wantReviewPhrase:    "move the work item to\n   `Review`",
+			wantAutopilotPhrase: "do not move it to `Review`",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.preset+"/"+tt.profile, func(t *testing.T) {
+			t.Parallel()
+
+			root := initOnboardingWorkflowBuilderGitRepository(t, "https://github.com/acme/api.git")
+			answersPath := writeOnboardingWorkflowBuilderAnswers(t, onboardingWorkflowBuilderVariantAnswers(root, tt.preset, tt.profile))
+
+			result, err := buildOnboardingWorkflow(context.Background(), onboardingBuildWorkflowConfig{
+				AnswersPath: answersPath,
+				Write:       false,
+			})
+			if err != nil {
+				t.Fatalf("buildOnboardingWorkflow() error = %v", err)
+			}
+			workflow, err := workflowconfig.ParseWorkflow([]byte(result.Workflow))
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v\n%s", err, result.Workflow)
+			}
+
+			cfg := workflow.Config
+			if cfg.Agent.AutoPromote.Enabled != tt.wantAutopilot {
+				t.Fatalf("AutoPromote.Enabled = %t, want %t\n%s", cfg.Agent.AutoPromote.Enabled, tt.wantAutopilot, result.Workflow)
+			}
+			if tt.wantAutopilot {
+				if cfg.Agent.AutoPromote.QuietSeconds != 0 {
+					t.Fatalf("QuietSeconds = %d, want 0", cfg.Agent.AutoPromote.QuietSeconds)
+				}
+				if cfg.Agent.AutoPromote.GateWaitState != workflowconfig.AutoPromoteGateWaitStateSource {
+					t.Fatalf("GateWaitState = %q, want source", cfg.Agent.AutoPromote.GateWaitState)
+				}
+				assertOnboardingWorkflowContains(t, result.Workflow, tt.wantAutopilotPhrase)
+				if strings.Contains(result.Workflow, tt.wantReviewPhrase) {
+					t.Fatalf("autopilot workflow contains review handoff phrase %q:\n%s", tt.wantReviewPhrase, result.Workflow)
+				}
+			} else {
+				if cfg.Agent.AutoPromote.QuietSeconds != 600 {
+					t.Fatalf("QuietSeconds = %d, want 600", cfg.Agent.AutoPromote.QuietSeconds)
+				}
+				if cfg.Agent.AutoPromote.GateWaitState != workflowconfig.AutoPromoteGateWaitStateReview {
+					t.Fatalf("GateWaitState = %q, want review", cfg.Agent.AutoPromote.GateWaitState)
+				}
+				assertOnboardingWorkflowContains(t, result.Workflow, tt.wantReviewPhrase)
+				if strings.Contains(result.Workflow, tt.wantAutopilotPhrase) {
+					t.Fatalf("review-gate workflow contains autopilot phrase %q:\n%s", tt.wantAutopilotPhrase, result.Workflow)
+				}
+			}
+
+			assertOnboardingWorkflowContainsWords(t, result.Workflow, "`status` must be one of `in_progress`, `blocked`, or `complete`")
+			for _, want := range []string{
+				"status: in_progress",
+				"status: blocked",
+				"status: complete",
+			} {
+				assertOnboardingWorkflowContains(t, result.Workflow, want)
+			}
+		})
+	}
+}
+
 func TestBuildOnboardingWorkflowRejectsMalformedAnswers(t *testing.T) {
 	t.Parallel()
 
@@ -312,6 +448,40 @@ func assertOnboardingWorkflowDecision(t *testing.T, decisions []onboardingWorkfl
 		}
 	}
 	t.Fatalf("decision %s not found in %#v", path, decisions)
+}
+
+func assertOnboardingWorkflowContains(t *testing.T, text string, want string) {
+	t.Helper()
+
+	if !strings.Contains(text, want) {
+		t.Fatalf("workflow missing %q:\n%s", want, text)
+	}
+}
+
+func assertOnboardingWorkflowContainsWords(t *testing.T, text string, want string) {
+	t.Helper()
+
+	if !strings.Contains(strings.Join(strings.Fields(text), " "), strings.Join(strings.Fields(want), " ")) {
+		t.Fatalf("workflow missing %q:\n%s", want, text)
+	}
+}
+
+func onboardingWorkflowBuilderVariantAnswers(root string, preset string, profile string) string {
+	lines := []string{
+		"CUSTOMER_ID=acme",
+		"DETENT_PROJECT_ID=api",
+		"TARGET_REPOSITORY=acme/api",
+		"TARGET_SOURCE_ROOT=" + root,
+		"REFERENCE_REPOSITORIES=digitaldrywood/detent",
+		"DETENT_ONBOARDING_MODE=add-project",
+		"IDENTITY_CONFIRMED=true",
+		"WORKFLOW_PRESET=" + preset,
+		"DELIVERY_PROFILE=" + profile,
+	}
+	if preset == "project_v2" {
+		lines = append(lines, "PROJECT_SLUG=PVT_test")
+	}
+	return strings.Join(append(lines, ""), "\n")
 }
 
 func initOnboardingWorkflowBuilderGitRepository(t *testing.T, remote string) string {

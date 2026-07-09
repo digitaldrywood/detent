@@ -923,7 +923,7 @@ probes.
    ```text
    How should Detent handle completed work after the validation gate passes?
 
-   1. Full autopilot: automatically promote work through Human Review and into Merging when gates pass.
+   1. Full autopilot: keep completed work in its active lane and automatically promote it into Merging when gates pass.
    2. Review gate: stop in Human Review until I approve, then continue merging.
    3. Conservative/manual: stop before mutations or merging unless I explicitly approve each step.
    ```
@@ -943,9 +943,10 @@ probes.
    Present the operator's plain-English operating model first, then show the
    canonical `answers.env` fields as a secondary implementation mapping:
 
-   - Full autopilot: promote through `Human Review` to `Merging` when linked
-     PRs, gates, CI, mergeability, dependency checks, and guardrails pass; also
-     auto-unblock dependency-waiting work when declared blockers clear.
+   - Full autopilot: keep completed work in its active lane and promote it to
+     `Merging` when linked PRs, gates, CI, mergeability, dependency checks, and
+     guardrails pass; also auto-unblock dependency-waiting work when declared
+     blockers clear.
    - Review gate: stop at `Human Review` until a human explicitly approves
      promotion to `Merging`; GitHub/config writes still require the separate
      mutation confirmation.
@@ -997,6 +998,7 @@ probes.
      'KANBAN_MODE=integration' \
      'AUTO_PROMOTE_ENABLED=true' \
      'AUTO_PROMOTE_QUIET_SECONDS=0' \
+     'AUTO_PROMOTE_GATE_WAIT_STATE=source' \
      'GATE_REQUIRE_AUTOMATED_REVIEW=false' \
      'AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW=false' \
      'DEPENDENCY_AUTO_UNBLOCK_ENABLED=true' \
@@ -1011,6 +1013,7 @@ probes.
      'KANBAN_MODE=integration' \
      'AUTO_PROMOTE_ENABLED=false' \
      'AUTO_PROMOTE_QUIET_SECONDS=600' \
+     'AUTO_PROMOTE_GATE_WAIT_STATE=review' \
      'GATE_REQUIRE_AUTOMATED_REVIEW=false' \
      'AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW=false' \
      'DEPENDENCY_AUTO_UNBLOCK_ENABLED=false' \
@@ -1025,6 +1028,7 @@ probes.
      'KANBAN_MODE=read_only' \
      'AUTO_PROMOTE_ENABLED=false' \
      'AUTO_PROMOTE_QUIET_SECONDS=600' \
+     'AUTO_PROMOTE_GATE_WAIT_STATE=review' \
      'GATE_REQUIRE_AUTOMATED_REVIEW=true' \
      'AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW=true' \
      'DEPENDENCY_AUTO_UNBLOCK_ENABLED=false' \
@@ -1268,6 +1272,7 @@ probes.
    printf '%s\n' \
      'AUTO_PROMOTE_ENABLED=<true|false>' \
      'AUTO_PROMOTE_QUIET_SECONDS=<seconds>' \
+     'AUTO_PROMOTE_GATE_WAIT_STATE=<source|review>' \
      'AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW=<true|false-if-command>' \
      'AUTO_PROMOTE_OPTOUT_LABEL=<label>' \
      'AUTO_PROMOTE_ALLOWED_LABELS=<comma-separated-labels-or-empty>' \

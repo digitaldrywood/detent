@@ -527,12 +527,16 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	if hasDeliveryProfile {
 		writeScalar(&b, "    ", "enabled", onboardingBool(settings.AutoPromoteEnabled))
 		writeScalar(&b, "    ", "quiet_seconds", strconv.Itoa(settings.AutoPromoteQuietSeconds))
+		writeScalar(&b, "    ", "gate_wait_state", settings.AutoPromoteGateWaitState)
 	} else {
 		b.WriteString("    enabled: false\n")
 		b.WriteString("    quiet_seconds: 600\n")
+		b.WriteString("    gate_wait_state: review\n")
 	}
 	b.WriteString("    optout_label: requires-human-review\n")
 	b.WriteString("    allowed_issue_labels: []\n")
+	b.WriteString("    gate_wait_timeout_seconds: 3600\n")
+	b.WriteString("    rework_limit: 3\n")
 	b.WriteString("  skills:\n")
 	b.WriteString("    enabled: true\n")
 	b.WriteString("    path: .detent/skills\n")

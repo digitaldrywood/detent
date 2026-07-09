@@ -172,11 +172,12 @@ boardless issue field, or repository status labels drive everything.
    worktree from your source checkout, and dispatches a Codex agent with the
    contract — moving the issue to `In Progress`.
 3. **The agent works** in its own branch, runs your validation gate, and opens
-   or updates a PR, then moves the issue to `Human Review`.
-4. **Gates decide.** `Human Review` is the holding state. The workflow decides
-   whether promotion to `Merging` waits for a human label, a current-head
-   automated PR review, or only linked PR + green CI + quiet time. Unresolved
-   feedback sends it to `Rework` for another pass.
+   or updates a PR. Review-gate workflows move the issue to `Human Review`;
+   autopilot workflows leave it active with `status: complete` in the Workpad.
+4. **Gates decide.** The workflow decides whether promotion to `Merging` waits
+   in `Human Review`, waits in the active lane, requires a current-head
+   automated PR review, or only needs linked PR + green CI + quiet time.
+   Unresolved feedback sends it to `Rework` for another pass.
 5. **The merge train is serialized** — one rebase, CI-watch, and merge at a
    time, so concurrent candidates never invalidate each other's CI — then the
    issue is `Done`.
@@ -684,7 +685,7 @@ agent:
     quiet_seconds: 600
     optout_label: requires-human-review
     allowed_issue_labels: []
-    gate_wait_state: source
+    gate_wait_state: review
     gate_wait_timeout_seconds: 3600
     rework_limit: 3
   skills:

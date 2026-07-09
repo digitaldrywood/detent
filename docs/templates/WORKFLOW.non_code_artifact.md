@@ -58,6 +58,8 @@ agent:
     enabled: true
     quiet_seconds: 0
     optout_label: requires-human-review
+    gate_wait_state: source
+    gate_wait_timeout_seconds: 3600
     source_state: Review
     pass_state: Ready for Pickup
     rework_state: Rework
@@ -131,6 +133,41 @@ Use the filesystem workspace and configured output directory. Do not require a
 git branch, pull request, CI run, or merge train unless the work item explicitly
 asks for one.
 
+Maintain the local `## Codex Workpad` record through Detent events. Every
+Workpad update must include one `detent-status` fenced block. Detent reads
+blocker and human-action declarations from that block; narrative sentences are
+never read as blockers. `status` must be one of `in_progress`, `blocked`, or
+`complete`.
+
+Use `in_progress` while production or validation is still active:
+
+```detent-status
+schema: 1
+status: in_progress
+blockers: []
+human_action: null
+```
+
+Use `complete` only when the artifact manifest is written, local validation is
+green, and no actionable review feedback remains:
+
+```detent-status
+schema: 1
+status: complete
+blockers: []
+human_action: null
+```
+
+Use `blocked` when required source assets, credentials, or human-only decisions
+are missing:
+
+```detent-status
+schema: 1
+status: blocked
+blockers: []
+human_action: "Provide the missing source assets."
+```
+
 Read the work item title, description, fields, metadata, and deliverable data.
 Use the project source folder for instructions, scripts, media assets, product
 copy, and production constraints. If required source assets are missing, record
@@ -148,8 +185,40 @@ directory. For video ad production, include:
 - validation status and validation notes
 - next external-system action
 
-When the artifact is ready for review, update or emit data so the local SQLite
-work item field `render_status` becomes `pending_review`. When a human or
-external renderer marks it `approved` or `valid`, Detent can auto-promote the
-item to `Ready for Pickup`. Use `recut`, `invalid`, or `missing_assets` when the
-item needs rework.
+## Required Execution Flow
+
+This workflow uses the artifact autopilot handoff: `agent.auto_promote.enabled:
+true`, `quiet_seconds: 0`, and `gate_wait_state: source`. Completed agents keep
+the work item in `Production`, set the Workpad `detent-status` block to
+`status: complete`, set `render_status` to `valid` when the artifact gate is
+satisfied, and let Detent promote the item to `Ready for Pickup`. Do not
+self-move work items to `Review`.
+
+### For Todo
+
+1. Move the work item to `Production`.
+2. Read the work item title, description, fields, metadata, and deliverable
+   data.
+3. Produce the artifact manifest under the configured output directory.
+4. When the artifact is ready and local validation passes, set `render_status`
+   to `valid`, update the Workpad block to `status: complete` with
+   `blockers: []` and `human_action: null`, leave the work item in
+   `Production`, and do not move it to `Review`.
+
+### For Production
+
+Continue production from the current filesystem state. When the artifact is
+ready and local validation passes, set `render_status` to `valid`, set the
+Workpad block to `status: complete`, and leave the work item in `Production`.
+
+### For Rework
+
+Move the work item to `Production`, address the requested changes, rerun the
+artifact validation gate, set `render_status` to `valid`, set the Workpad block
+to `status: complete`, and do not move the work item to `Review`.
+
+### For Review
+
+Review is reserved for explicit human opt-out or gate-wait timeout. Re-read the
+feedback, update the artifact, then follow the Rework flow. Use `recut`,
+`invalid`, or `missing_assets` when the item needs rework.

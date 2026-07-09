@@ -279,6 +279,7 @@ func TestOnboardingValidateAnswersCommandExpandsFullAutopilotProfile(t *testing.
 		"KANBAN_MODE=" + profileAnswers["KANBAN_MODE"],
 		"AUTO_PROMOTE_ENABLED=" + profileAnswers["AUTO_PROMOTE_ENABLED"],
 		"AUTO_PROMOTE_QUIET_SECONDS=" + profileAnswers["AUTO_PROMOTE_QUIET_SECONDS"],
+		"AUTO_PROMOTE_GATE_WAIT_STATE=" + profileAnswers["AUTO_PROMOTE_GATE_WAIT_STATE"],
 		"GATE_REQUIRE_AUTOMATED_REVIEW=" + profileAnswers["GATE_REQUIRE_AUTOMATED_REVIEW"],
 		"AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW=" + profileAnswers["AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW"],
 		"DEPENDENCY_AUTO_UNBLOCK_ENABLED=" + profileAnswers["DEPENDENCY_AUTO_UNBLOCK_ENABLED"],
@@ -337,7 +338,7 @@ func TestOnboardingValidateAnswersCommandExpandsFullAutopilotProfile(t *testing.
 	}
 	for _, want := range []string{
 		"No automated GitHub PR review is required when the command gate is passing and the workflow says so.",
-		"Detent automatically promotes eligible work from `Human Review` to `Merging` when the linked PR, local gate, CI, and guardrails pass.",
+		"Detent keeps completed work in the active state and promotes it to `Merging` when the linked PR, local gate, CI, and guardrails pass.",
 		"There is no quiet-window delay before promotion.",
 		"Dependency-waiting `Blocked` issues can move back to `Todo` when declared blockers are terminal or merged.",
 		"`Merging` remains serialized for this project.",
@@ -381,13 +382,14 @@ func TestOnboardingExplainAnswersCommandSummarizesFullAutopilot(t *testing.T) {
 	for _, want := range []string{
 		"Effective delivery profile: Full autopilot (`full_autopilot`).",
 		"No automated GitHub PR review is required when the command gate is passing and the workflow says so.",
-		"Detent automatically promotes eligible work from `Human Review` to `Merging` when the linked PR, local gate, CI, and guardrails pass.",
+		"Detent keeps completed work in the active state and promotes it to `Merging` when the linked PR, local gate, CI, and guardrails pass.",
 		"There is no quiet-window delay before promotion.",
 		"Dependency-waiting `Blocked` issues can move back to `Todo` when declared blockers are terminal or merged.",
 		"`Merging` remains serialized for this project.",
 		"Existing validation, CI, unresolved review feedback, dependency blockers, mergeability, and gate failures still stop progress.",
 		"DELIVERY_PROFILE=full_autopilot",
 		"AUTO_PROMOTE_QUIET_SECONDS=0",
+		"AUTO_PROMOTE_GATE_WAIT_STATE=source",
 		"GATE_REQUIRE_AUTOMATED_REVIEW=false",
 		"MERGING_CONCURRENCY=1",
 	} {
@@ -570,6 +572,7 @@ func TestOnboardingNormalizeAnswersCommandPreservesFinalMutationConfirmationWhen
 		"KANBAN_MODE=" + profileAnswers["KANBAN_MODE"],
 		"AUTO_PROMOTE_ENABLED=" + profileAnswers["AUTO_PROMOTE_ENABLED"],
 		"AUTO_PROMOTE_QUIET_SECONDS=" + profileAnswers["AUTO_PROMOTE_QUIET_SECONDS"],
+		"AUTO_PROMOTE_GATE_WAIT_STATE=" + profileAnswers["AUTO_PROMOTE_GATE_WAIT_STATE"],
 		"GATE_REQUIRE_AUTOMATED_REVIEW=" + profileAnswers["GATE_REQUIRE_AUTOMATED_REVIEW"],
 		"AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW=" + profileAnswers["AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW"],
 		"DEPENDENCY_AUTO_UNBLOCK_ENABLED=" + profileAnswers["DEPENDENCY_AUTO_UNBLOCK_ENABLED"],
@@ -1617,6 +1620,7 @@ func fullAutopilotProfileAnswers() map[string]string {
 		"KANBAN_MODE":                           "integration",
 		"AUTO_PROMOTE_ENABLED":                  "true",
 		"AUTO_PROMOTE_QUIET_SECONDS":            "0",
+		"AUTO_PROMOTE_GATE_WAIT_STATE":          "source",
 		"GATE_REQUIRE_AUTOMATED_REVIEW":         "false",
 		"AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW": "false",
 		"DEPENDENCY_AUTO_UNBLOCK_ENABLED":       "true",
