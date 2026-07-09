@@ -746,8 +746,10 @@ human_action: null
 
 1. Create GitHub's native blocked_by dependency relation.
 
-` + "```sh\n" + `BLOCKER_ID="$(gh api repos/<owner>/<repo>/issues/<blocker-number> --jq '.id')"
-gh api --method POST repos/<owner>/<repo>/issues/<blocked-number>/dependencies/blocked_by -F issue_id="$BLOCKER_ID"
+` + "```sh\n" + `BLOCKED_NUMBER=<blocked-issue-number>
+BLOCKER_NUMBER=<blocker-issue-number>
+BLOCKER_ID="$(gh api repos/{owner}/{repo}/issues/$BLOCKER_NUMBER --jq '.id')"
+gh api --method POST "repos/{owner}/{repo}/issues/$BLOCKED_NUMBER/dependencies/blocked_by" -F issue_id="$BLOCKER_ID"
 ` + "```\n\n" + `2. Declare the blocker in the Workpad status block.
 
 ` + "```detent-status\n" + `schema: 1

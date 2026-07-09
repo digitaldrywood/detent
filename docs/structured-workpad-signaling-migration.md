@@ -34,8 +34,10 @@ Apply this prompt-body diff to existing `WORKFLOW.md` files:
 +1. Create GitHub's native `blocked_by` dependency relation.
 +
 +```sh
-+BLOCKER_ID="$(gh api repos/<owner>/<repo>/issues/<blocker-number> --jq '.id')"
-+gh api --method POST repos/<owner>/<repo>/issues/<blocked-number>/dependencies/blocked_by -F issue_id="$BLOCKER_ID"
++BLOCKED_NUMBER=<blocked-issue-number>
++BLOCKER_NUMBER=<blocker-issue-number>
++BLOCKER_ID="$(gh api repos/{owner}/{repo}/issues/$BLOCKER_NUMBER --jq '.id')"
++gh api --method POST "repos/{owner}/{repo}/issues/$BLOCKED_NUMBER/dependencies/blocked_by" -F issue_id="$BLOCKER_ID"
 +```
 +
 +2. Declare the blocker in the Workpad status block.

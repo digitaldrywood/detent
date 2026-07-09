@@ -440,8 +440,10 @@ func appendBlockedHandoffBlock(prompt string) string {
 		"Before moving an issue to Blocked because it is waiting on another tracked GitHub issue or pull request, prefer GitHub's native dependency relation. " +
 		"Resolve the blocker REST id, then create the relation:\n\n" +
 		"```sh\n" +
-		"BLOCKER_ID=\"$(gh api repos/{owner}/{repo}/issues/{blocker-number} --jq '.id')\"\n" +
-		"gh api --method POST repos/{owner}/{repo}/issues/{blocked-number}/dependencies/blocked_by -F issue_id=\"$BLOCKER_ID\"\n" +
+		"BLOCKED_NUMBER=<blocked-issue-number>\n" +
+		"BLOCKER_NUMBER=<blocker-issue-number>\n" +
+		"BLOCKER_ID=\"$(gh api repos/{owner}/{repo}/issues/$BLOCKER_NUMBER --jq '.id')\"\n" +
+		"gh api --method POST \"repos/{owner}/{repo}/issues/$BLOCKED_NUMBER/dependencies/blocked_by\" -F issue_id=\"$BLOCKER_ID\"\n" +
 		"```\n\n" +
 		"If the native relation is unavailable, declare the blocker in the Workpad's structured status block:\n\n" +
 		"```detent-status\n" +
