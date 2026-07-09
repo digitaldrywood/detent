@@ -458,7 +458,7 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 	now time.Time,
 ) map[string]struct{} {
 	transitioned := map[string]struct{}{}
-	for _, issue := range issuesInStates(issues, o.cfg.ActiveStates) {
+	for _, issue := range issuesInStates(issues, staleLinkedPullRequestReconciliationStates(o.cfg)) {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" || issue.PullRequest == nil {
 			continue
@@ -477,6 +477,10 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 		if pullRequestState == "merged" {
 			summary := staleMergedPullRequestSummaryFromIssue(issue)
 			decision := staleMergedPullRequestDecision(issue, summary)
+			if !stateIn(issue.State, o.cfg.ActiveStates) && decision.Reason == AutoPromoteReasonPullRequestHydrationUnavailable {
+				o.logAutoPromoteDecision(issue, decision, "")
+				continue
+			}
 			targetState := staleMergedPullRequestTargetState(decision, o.cfg.AutoPromote, o.cfg.TerminalStates)
 			if targetState == "" {
 				o.logAutoPromoteDecision(issue, decision, "")
@@ -524,6 +528,11 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 		return nil
 	}
 	return transitioned
+}
+
+func staleLinkedPullRequestReconciliationStates(cfg Config) []string {
+	autoCfg := normalizeAutoPromoteConfig(cfg.AutoPromote)
+	return appendUniqueStates(cfg.ActiveStates, cfg.ObservedStates, []string{autoCfg.SourceState})
 }
 
 func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(

@@ -224,7 +224,7 @@ fragment DetentGitHubIssueParent on Issue {
   assignees(first: 100) { nodes { id login } }
   labels(first: 20) { nodes { name } }
   repository { nameWithOwner }
-  closedByPullRequestsReferences(first: 5) { nodes { number url state repository { nameWithOwner } } }
+  closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt repository { nameWithOwner } } }
   subIssues(first: $linkedIssuesFirst) {
     pageInfo { hasNextPage endCursor }
     nodes {
@@ -379,7 +379,7 @@ fragment DetentGitHubIssueParentLabel on Issue {
   assignees(first: 100) { nodes { id login } }
   labels(first: 20) { nodes { name } }
   repository { nameWithOwner }
-  closedByPullRequestsReferences(first: 5) { nodes { number url state repository { nameWithOwner } } }
+  closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt repository { nameWithOwner } } }
   subIssues(first: $linkedIssuesFirst) {
     pageInfo { hasNextPage endCursor }
     nodes {
