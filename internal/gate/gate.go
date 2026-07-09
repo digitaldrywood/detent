@@ -333,7 +333,8 @@ func Instructions(cfg Config) string {
 			requiredStatusCheckInstructions(cfg.RequiredStatusChecks) +
 			"In Merging, run a focused rebase/smoke gate after a clean rebase when the PR already passed current-head validation and no source files changed during rebase. " +
 			"Run full `" + cfg.Run + "` in Merging when code changes, conflicts are resolved, or validation state is stale or unknown. " +
-			"Watch current-head CI with REST check-runs polling/backoff, report slow checks, and record merge wait telemetry in the Workpad: quiet-window wait, local merge-gate duration, PR CI duration, slow check names, and whether post-merge main CI is still running."
+			"Watch current-head CI with REST check-runs polling/backoff, report slow checks, and record merge wait telemetry in the Workpad prose: quiet-window wait, local merge-gate duration, PR CI duration, slow check names, and whether post-merge main CI is still running. " +
+			"Keep blocker and human-action declarations in the structured detent-status block; narrative Workpad sentences are telemetry only."
 		if automatedReviewRequired(cfg) {
 			instructions += " Automated review is required on the current pull request head before promotion."
 		} else {
