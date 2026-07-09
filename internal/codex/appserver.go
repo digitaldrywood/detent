@@ -331,25 +331,28 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		}
 	}
 
-	turnID, err := s.startTurn(ctx, transport, req, threadID, onUpdate)
+	turn, err := s.startTurn(ctx, transport, req, threadID, onUpdate)
 	if err != nil {
 		return RunTurnResult{}, err
 	}
+	turnID := turn.ID
 
 	result = RunTurnResult{
 		ThreadID:  threadID,
 		TurnID:    turnID,
 		SessionID: threadID + "-" + turnID,
 	}
-	if err := emitUpdate(Update{
-		Type:     UpdateTurnStarted,
-		Method:   "turn/start",
-		ThreadID: threadID,
-		TurnID:   turnID,
-		Status:   "started",
-		Model:    model,
-	}, onUpdate); err != nil {
-		return RunTurnResult{}, err
+	if !turn.StartedEmitted {
+		if err := emitUpdate(Update{
+			Type:     UpdateTurnStarted,
+			Method:   "turn/start",
+			ThreadID: threadID,
+			TurnID:   turnID,
+			Status:   "started",
+			Model:    firstNonBlank(turn.Model, model),
+		}, onUpdate); err != nil {
+			return RunTurnResult{}, err
+		}
 	}
 
 	if err := s.streamTurn(ctx, transport, req.turnTimeout(s.turnTimeout), onUpdate); err != nil {
@@ -523,13 +526,19 @@ func (s *AppServer) resumeThread(
 	return response.Thread.ID, model, nil
 }
 
+type startTurnResult struct {
+	ID             string
+	Model          string
+	StartedEmitted bool
+}
+
 func (s *AppServer) startTurn(
 	ctx context.Context,
 	transport Transport,
 	req RunTurnRequest,
 	threadID string,
 	onUpdate UpdateHandler,
-) (string, error) {
+) (startTurnResult, error) {
 	params := map[string]any{
 		"threadId": threadID,
 		"input": []map[string]any{
@@ -551,27 +560,65 @@ func (s *AppServer) startTurn(
 	}
 
 	if err := sendRequest(ctx, transport, turnStartRequestID, "turn/start", params); err != nil {
-		return "", err
+		return startTurnResult{}, err
 	}
 
-	result, err := s.awaitResponse(ctx, transport, turnStartRequestID, onUpdate)
+	turn := startTurnResult{}
+	trackTurnStarted := func(update Update) error {
+		if update.Type == UpdateTurnStarted {
+			turn.StartedEmitted = true
+			if update.Model != "" {
+				turn.Model = update.Model
+			}
+		}
+		if onUpdate == nil {
+			return nil
+		}
+		return onUpdate(update)
+	}
+
+	result, err := s.awaitResponse(ctx, transport, turnStartRequestID, trackTurnStarted)
 	if err != nil {
-		return "", err
+		return startTurnResult{}, err
 	}
 
 	var response struct {
 		Turn struct {
-			ID string `json:"id"`
+			ID            string `json:"id"`
+			Model         string `json:"model"`
+			ModelID       string `json:"model_id"`
+			ModelIDCamel  string `json:"modelId"`
+			ResolvedModel string `json:"resolvedModel"`
+			ResolvedSnake string `json:"resolved_model"`
 		} `json:"turn"`
+		Model         string `json:"model"`
+		ModelID       string `json:"model_id"`
+		ModelIDCamel  string `json:"modelId"`
+		ResolvedModel string `json:"resolvedModel"`
+		ResolvedSnake string `json:"resolved_model"`
 	}
 	if err := json.Unmarshal(result, &response); err != nil {
-		return "", fmt.Errorf("%w: decode turn/start result: %w", ErrInvalidResponse, err)
+		return startTurnResult{}, fmt.Errorf("%w: decode turn/start result: %w", ErrInvalidResponse, err)
 	}
 	if response.Turn.ID == "" {
-		return "", fmt.Errorf("%w: turn/start result missing turn id", ErrInvalidResponse)
+		return startTurnResult{}, fmt.Errorf("%w: turn/start result missing turn id", ErrInvalidResponse)
 	}
 
-	return response.Turn.ID, nil
+	turn.ID = response.Turn.ID
+	turn.Model = firstNonBlank(
+		turn.Model,
+		response.Turn.Model,
+		response.Turn.ResolvedModel,
+		response.Turn.ResolvedSnake,
+		response.Turn.ModelID,
+		response.Turn.ModelIDCamel,
+		response.Model,
+		response.ResolvedModel,
+		response.ResolvedSnake,
+		response.ModelID,
+		response.ModelIDCamel,
+	)
+	return turn, nil
 }
 
 func (s *AppServer) resolveDefaultModel(
@@ -592,7 +639,7 @@ func (s *AppServer) resolveDefaultModel(
 	result, err := s.awaitResponse(ctx, transport, configReadRequestID, onUpdate)
 	if err != nil {
 		var responseErr *ResponseError
-		if errors.As(err, &responseErr) && responseErr.Code == methodNotFoundCode {
+		if errors.As(err, &responseErr) {
 			return "", nil
 		}
 		return "", err

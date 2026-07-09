@@ -266,6 +266,88 @@ func TestAppServerRunTurnUsesConfigReadModelWhenThreadResponseOmitsModel(t *test
 	}
 }
 
+func TestAppServerRunTurnContinuesWhenConfigReadFails(t *testing.T) {
+	t.Parallel()
+
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.143.0"}`),
+		responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
+		errorResponseMessage(t, 5, -32602, "invalid config/read params"),
+		responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+		notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport},
+		WithReadTimeout(time.Second),
+		WithTurnTimeout(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	var updates []Update
+	_, err = server.RunTurn(context.Background(), RunTurnRequest{
+		Workspace: "/tmp/detent-workspace",
+		Prompt:    "Ship issue #1103",
+	}, func(update Update) error {
+		updates = append(updates, update)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v, want config/read failure to be non-fatal", err)
+	}
+
+	if len(updates) != 2 {
+		t.Fatalf("updates = %d, want turn started and completed: %#v", len(updates), updates)
+	}
+	if updates[0].Type != UpdateTurnStarted || updates[0].Model != "" {
+		t.Fatalf("updates[0] = %#v, want unpriced fallback turn started", updates[0])
+	}
+}
+
+func TestAppServerRunTurnPreservesTurnStartedRuntimeModel(t *testing.T) {
+	t.Parallel()
+
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.143.0"}`),
+		responseMessage(t, 2, `{"thread":{"id":"thread-1","model":"gpt-5.5"}}`),
+		notificationMessage(t, "turn/started", `{"threadId":"thread-1","turn":{"id":"turn-1","model":"gpt-5.6"}}`),
+		responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+		notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport},
+		WithReadTimeout(time.Second),
+		WithTurnTimeout(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	var updates []Update
+	_, err = server.RunTurn(context.Background(), RunTurnRequest{
+		Workspace: "/tmp/detent-workspace",
+		Prompt:    "Ship issue #1103",
+	}, func(update Update) error {
+		updates = append(updates, update)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+
+	var started []Update
+	for _, update := range updates {
+		if update.Type == UpdateTurnStarted {
+			started = append(started, update)
+		}
+	}
+	if len(started) != 1 {
+		t.Fatalf("started updates = %d, want only app-server turn/started event: %#v", len(started), started)
+	}
+	if started[0].Model != "gpt-5.6" {
+		t.Fatalf("started[0].Model = %q, want runtime model", started[0].Model)
+	}
+}
+
 func TestUpdateFromMessageCapturesModelReroute(t *testing.T) {
 	t.Parallel()
 
