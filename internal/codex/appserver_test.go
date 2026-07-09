@@ -219,12 +219,81 @@ func TestAppServerRunTurnResumesThreadBeforeStartingTurn(t *testing.T) {
 	}
 }
 
+func TestAppServerRunTurnUsesConfigReadModelWhenThreadResponseOmitsModel(t *testing.T) {
+	t.Parallel()
+
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.143.0"}`),
+		responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
+		responseMessage(t, 5, `{"config":{"model":"gpt-5.6"}}`),
+		responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+		notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport},
+		WithReadTimeout(time.Second),
+		WithTurnTimeout(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	var updates []Update
+	_, err = server.RunTurn(context.Background(), RunTurnRequest{
+		Workspace: "/tmp/detent-workspace",
+		Prompt:    "Ship issue #1103",
+	}, func(update Update) error {
+		updates = append(updates, update)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+
+	sent := transport.sentMessages()
+	if len(sent) != 5 {
+		t.Fatalf("sent messages = %d, want 5", len(sent))
+	}
+	assertRequest(t, sent[2], 2, "thread/start")
+	assertRequest(t, sent[3], 5, "config/read")
+	assertJSONContains(t, sent[3].Params, "cwd", "/tmp/detent-workspace")
+	assertRequest(t, sent[4], 3, "turn/start")
+
+	if len(updates) != 2 {
+		t.Fatalf("updates = %d, want turn started and completed: %#v", len(updates), updates)
+	}
+	if updates[0].Type != UpdateTurnStarted || updates[0].Model != "gpt-5.6" {
+		t.Fatalf("updates[0] = %#v, want config-read fallback model", updates[0])
+	}
+}
+
+func TestUpdateFromMessageCapturesModelReroute(t *testing.T) {
+	t.Parallel()
+
+	update, ok, err := updateFromMessage(notificationMessage(t, "model/rerouted", `{
+		"threadId":"thread-1",
+		"turnId":"turn-1",
+		"fromModel":"gpt-5.5",
+		"toModel":"gpt-5.6",
+		"reason":"highRiskCyberActivity"
+	}`))
+	if err != nil {
+		t.Fatalf("updateFromMessage() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("updateFromMessage() ok = false, want true")
+	}
+	if update.Type != UpdateModelUpdated || update.ThreadID != "thread-1" || update.TurnID != "turn-1" || update.Model != "gpt-5.6" {
+		t.Fatalf("update = %#v, want model reroute update", update)
+	}
+}
+
 func TestAppServerRunTurnRequestTurnTimeoutOverridesDefault(t *testing.T) {
 	t.Parallel()
 
 	transport := newBlockingAppServerTransport([]Message{
 		responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
 		responseMessage(t, 2, `{"thread":{"id":"thread-timeout"}}`),
+		responseMessage(t, 5, `{"config":{"model":"gpt-5.6"}}`),
 		responseMessage(t, 3, `{"turn":{"id":"turn-timeout"}}`),
 	})
 	server, err := NewAppServer(staticTransportFactory{transport: transport},
@@ -258,6 +327,7 @@ func TestAppServerRunTurnRespondsToServerRequests(t *testing.T) {
 	transport := newFakeAppServerTransport([]Message{
 		responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
 		responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
+		responseMessage(t, 5, `{"config":{"model":"gpt-5.6"}}`),
 		serverRequestMessage(t, 40, "item/tool/requestUserInput", `{"threadId":"thread-1","turnId":"turn-1"}`),
 		responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
 		serverRequestMessage(t, 41, "item/commandExecution/requestApproval", `{"threadId":"thread-1","turnId":"turn-1"}`),
@@ -284,17 +354,18 @@ func TestAppServerRunTurnRespondsToServerRequests(t *testing.T) {
 	}
 
 	sent := transport.sentMessages()
-	if len(sent) != 10 {
-		t.Fatalf("sent messages = %d, want 10: %#v", len(sent), sent)
+	if len(sent) != 11 {
+		t.Fatalf("sent messages = %d, want 11: %#v", len(sent), sent)
 	}
 
-	assertResponseResultContains(t, sent[4], 40, "answers", map[string]any{})
-	assertResponseResultContains(t, sent[5], 41, "decision", "decline")
-	assertResponseResultContains(t, sent[6], 42, "decision", "decline")
-	assertResponseResultContains(t, sent[7], 43, "permissions", map[string]any{})
-	assertResponseResultContains(t, sent[8], 44, "action", "decline")
-	assertResponseResultContains(t, sent[8], 44, "content", nil)
-	assertErrorResponse(t, sent[9], 45, methodNotFoundCode, "unsupported server request: custom/request")
+	assertRequest(t, sent[3], 5, "config/read")
+	assertResponseResultContains(t, sent[5], 40, "answers", map[string]any{})
+	assertResponseResultContains(t, sent[6], 41, "decision", "decline")
+	assertResponseResultContains(t, sent[7], 42, "decision", "decline")
+	assertResponseResultContains(t, sent[8], 43, "permissions", map[string]any{})
+	assertResponseResultContains(t, sent[9], 44, "action", "decline")
+	assertResponseResultContains(t, sent[9], 44, "content", nil)
+	assertErrorResponse(t, sent[10], 45, methodNotFoundCode, "unsupported server request: custom/request")
 }
 
 func TestAppServerRunTurnReportsResponseErrors(t *testing.T) {

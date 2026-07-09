@@ -115,6 +115,7 @@ const (
 	AgentUpdateRateLimits     AgentUpdateType = "rate_limits"
 	AgentUpdateTurnStarted    AgentUpdateType = "turn_started"
 	AgentUpdateTurnCompleted  AgentUpdateType = "turn_completed"
+	AgentUpdateModelUpdated   AgentUpdateType = "model_updated"
 )
 
 type AgentUpdate struct {

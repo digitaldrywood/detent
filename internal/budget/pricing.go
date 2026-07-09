@@ -10,7 +10,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const DefaultPricingPath = "priv/pricing/models.yaml"
+const (
+	DefaultPricingPath          = "priv/pricing/models.yaml"
+	defaultPricingFallbackModel = "default"
+)
 
 type ModelPricing struct {
 	USDPerInputToken float64
@@ -27,6 +30,11 @@ type PricingTable map[string]ModelPricing
 // when models are added or updated. Under subscription auth, computed USD is
 // notional but still used for budget pacing.
 func DefaultPricingTable() PricingTable {
+	gpt55 := ModelPricing{
+		USDPerInputToken:       0.000005,
+		USDPerCachedInputToken: 0.0000005,
+		USDPerOutputToken:      0.000030,
+	}
 	claudeFable5 := ModelPricing{
 		USDPerInputToken:       0.000010,
 		USDPerCachedInputToken: 0.000001,
@@ -49,11 +57,8 @@ func DefaultPricingTable() PricingTable {
 	}
 
 	return PricingTable{
-		"gpt-5.5": {
-			USDPerInputToken:       0.000005,
-			USDPerCachedInputToken: 0.0000005,
-			USDPerOutputToken:      0.000030,
-		},
+		defaultPricingFallbackModel: gpt55,
+		"gpt-5.5":                   gpt55,
 		"gpt-5.4": {
 			USDPerInputToken:       0.0000025,
 			USDPerCachedInputToken: 0.00000025,
@@ -136,7 +141,13 @@ func (p PricingTable) Lookup(model string) (ModelPricing, bool) {
 		p = DefaultPricingTable()
 	}
 
-	row, ok := p[normalizeModel(model)]
+	if row, ok := p[normalizeModel(model)]; ok {
+		return row, true
+	}
+	if row, ok := p[defaultPricingFallbackModel]; ok {
+		return row, true
+	}
+	row, ok := DefaultPricingTable()[defaultPricingFallbackModel]
 	return row, ok
 }
 

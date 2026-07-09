@@ -27,6 +27,12 @@ func TestDefaultPricingTable(t *testing.T) {
 			wantOutput: 0.000030,
 		},
 		{
+			model:      "default",
+			wantInput:  0.000005,
+			wantCached: 0.0000005,
+			wantOutput: 0.000030,
+		},
+		{
 			model:      "gpt-5.4",
 			wantInput:  0.0000025,
 			wantCached: 0.00000025,
@@ -135,6 +141,10 @@ models:
   gpt-fallback:
     usd_per_input_token: 0.04
     usd_per_output_token: 0.05
+  default:
+    input_usd_per_1m_tokens: 6000
+    cached_input_usd_per_1m_tokens: 600
+    output_usd_per_1m_tokens: 36000
   invalid-row: bad
   missing-output:
     usd_per_input_token: 0.01
@@ -172,9 +182,17 @@ models:
 	assertInDelta(t, fallback.USDPerCachedInputToken, 0.04)
 	assertInDelta(t, fallback.USDPerOutputToken, 0.05)
 
+	unknown, ok := pricing.Lookup("gpt-future")
+	if !ok {
+		t.Fatal("pricing.Lookup(gpt-future) ok = false, want configurable default")
+	}
+	assertInDelta(t, unknown.USDPerInputToken, 0.006)
+	assertInDelta(t, unknown.USDPerCachedInputToken, 0.0006)
+	assertInDelta(t, unknown.USDPerOutputToken, 0.036)
+
 	for _, model := range []string{"invalid-row", "missing-output", "negative"} {
-		if _, ok := pricing.Lookup(model); ok {
-			t.Fatalf("pricing.Lookup(%q) ok = true, want false", model)
+		if _, ok := pricing[normalizeModel(model)]; ok {
+			t.Fatalf("pricing[%q] exists, want invalid row skipped", model)
 		}
 	}
 }
@@ -265,6 +283,11 @@ func TestUsageCostUSD(t *testing.T) {
 			USDPerCachedInputToken: 0.001,
 			USDPerOutputToken:      0.02,
 		},
+		"default": {
+			USDPerInputToken:       0.03,
+			USDPerCachedInputToken: 0.003,
+			USDPerOutputToken:      0.04,
+		},
 	}
 
 	tests := []struct {
@@ -318,8 +341,17 @@ func TestUsageCostUSD(t *testing.T) {
 			inputTokens:       10,
 			cachedInputTokens: 4,
 			outputTokens:      5,
-			want:              0,
-			wantOK:            false,
+			want:              0.392,
+			wantOK:            true,
+		},
+		{
+			name:              "empty model",
+			model:             "",
+			inputTokens:       10,
+			cachedInputTokens: 4,
+			outputTokens:      5,
+			want:              0.392,
+			wantOK:            true,
 		},
 		{
 			name:              "negative tokens are ignored",

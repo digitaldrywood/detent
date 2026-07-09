@@ -403,6 +403,80 @@ func TestRunnerRunRefusesDispatchWhenBudgetExceeded(t *testing.T) {
 	}
 }
 
+func TestRunnerRunRecordsRuntimeModelUpdate(t *testing.T) {
+	t.Parallel()
+
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-1103", Branch: "detent/issue-1103"},
+		diffStats: []workspace.DiffStat{
+			{Files: 1, Added: 3},
+		},
+	}
+	agentBackend := &fakeCodexClient{
+		updates: []AgentUpdate{
+			{Type: AgentUpdateTurnStarted, ThreadID: "thread-1103", TurnID: "turn-1"},
+			{Type: AgentUpdateModelUpdated, ThreadID: "thread-1103", TurnID: "turn-1", Model: "gpt-5.6"},
+			{
+				Type:     AgentUpdateTokenUsage,
+				ThreadID: "thread-1103",
+				TurnID:   "turn-1",
+				Tokens: AgentTokenUsage{
+					InputTokens:  100,
+					OutputTokens: 10,
+					TotalTokens:  110,
+				},
+			},
+		},
+		result: AgentTurnResult{ThreadID: "thread-1103", TurnID: "turn-1", SessionID: "thread-1103-turn-1"},
+	}
+	sessionStore := &fakeSessionStore{sessionID: 1103}
+	startedAt := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Prompt: "Work"},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		Store:        sessionStore,
+		Pricing: budget.PricingTable{
+			"gpt-5.6": {
+				USDPerInputToken:       0.000006,
+				USDPerCachedInputToken: 0.0000006,
+				USDPerOutputToken:      0.000036,
+			},
+		},
+		Now: newFakeClock(startedAt, startedAt.Add(time.Second), startedAt.Add(2*time.Second), startedAt.Add(3*time.Second)).Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-1103",
+			Identifier: "digitaldrywood/detent#1103",
+			Title:      "Resolve runtime model",
+		},
+		StartedAt: startedAt,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Model != "gpt-5.6" {
+		t.Fatalf("RunResult.Model = %q, want runtime model", result.Model)
+	}
+	if sessionStore.started.Model != "" {
+		t.Fatalf("SessionStart.Model = %q, want bare route to start without a pinned model", sessionStore.started.Model)
+	}
+	if sessionStore.finished.Model != "gpt-5.6" {
+		t.Fatalf("SessionFinish.Model = %q, want runtime model", sessionStore.finished.Model)
+	}
+	if sessionStore.usage.Model != "gpt-5.6" {
+		t.Fatalf("UsageEvent.Model = %q, want runtime model", sessionStore.usage.Model)
+	}
+	if sessionStore.usage.CostUSD == 0 {
+		t.Fatal("UsageEvent.CostUSD = 0, want priced runtime model")
+	}
+}
+
 func TestRunnerRunLogsBudgetRefusalWithDerivedRole(t *testing.T) {
 	t.Parallel()
 
@@ -1953,7 +2027,7 @@ func TestRunnerRunUnroutedStageRolesUseCodeModelFieldRouteWithoutDefault(t *test
 	}
 }
 
-func TestRunnerUsageCostWarnsForUnknownModel(t *testing.T) {
+func TestRunnerUsageCostUsesFallbackForUnknownModel(t *testing.T) {
 	t.Parallel()
 
 	var logs bytes.Buffer
@@ -1963,11 +2037,11 @@ func TestRunnerUsageCostWarnsForUnknownModel(t *testing.T) {
 	}
 
 	cost := runner.usageCostUSD(" missing-model ", 10, 2, 5, "codex")
-	if cost != 0 {
-		t.Fatalf("usageCostUSD() = %.12f, want 0", cost)
+	if cost == 0 {
+		t.Fatal("usageCostUSD() = 0, want fallback pricing")
 	}
-	if got := logs.String(); !strings.Contains(got, "usage event model pricing not found") || !strings.Contains(got, "missing-model") || !strings.Contains(got, "backend_kind=codex") {
-		t.Fatalf("log output = %q, want unknown pricing warning", got)
+	if got := logs.String(); strings.Contains(got, "usage event model pricing not found") {
+		t.Fatalf("log output = %q, want no unknown pricing warning", got)
 	}
 }
 
@@ -1983,14 +2057,14 @@ func TestRunnerUsageCostSkipsPricingWarningForEmptyModel(t *testing.T) {
 	}
 
 	cost := runner.usageCostUSD(" \t", 10, 2, 5, "claude_code")
-	if cost != 0 {
-		t.Fatalf("usageCostUSD() = %.12f, want 0", cost)
+	if cost == 0 {
+		t.Fatal("usageCostUSD() = 0, want fallback pricing")
 	}
 	got := logs.String()
 	if strings.Contains(got, "level=WARN") || strings.Contains(got, "usage event model pricing not found") {
 		t.Fatalf("log output = %q, want no empty-model pricing warning", got)
 	}
-	if !strings.Contains(got, "usage event model unavailable; skipping cost pricing") {
+	if !strings.Contains(got, "usage event model unavailable; using fallback pricing") {
 		t.Fatalf("log output = %q, want empty-model diagnostic", got)
 	}
 	if !strings.Contains(got, "backend_kind=claude_code") {

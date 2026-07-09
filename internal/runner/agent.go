@@ -1326,8 +1326,7 @@ func (r *Runner) recordAgentSessionPhase(
 func (r *Runner) usageCostUSD(model string, inputTokens int64, cachedInputTokens int64, outputTokens int64, backendKind string) float64 {
 	model = strings.TrimSpace(model)
 	if model == "" {
-		r.logger.Debug("usage event model unavailable; skipping cost pricing", "backend_kind", strings.TrimSpace(backendKind))
-		return 0
+		r.logger.Debug("usage event model unavailable; using fallback pricing", "backend_kind", strings.TrimSpace(backendKind))
 	}
 	cost, ok := budget.UsageCostUSD(r.pricing, model, inputTokens, cachedInputTokens, outputTokens)
 	if !ok {
@@ -1597,6 +1596,8 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 		} else {
 			eventMessage = "process started"
 		}
+	case AgentUpdateModelUpdated:
+		eventMessage = modelUpdatedActivityMessage(update.Model)
 	}
 
 	p.addRecentEvent(telemetry.ActivityEvent{
@@ -1629,6 +1630,14 @@ func rateLimitsActivityMessage(snapshot *telemetry.RateLimits) string {
 		return "rate limits updated"
 	}
 	return name + " rate limits updated"
+}
+
+func modelUpdatedActivityMessage(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "model updated"
+	}
+	return "model updated to " + model
 }
 
 func (p *agentRunProgress) turnCount() int {
@@ -1871,6 +1880,12 @@ func (r *Runner) logAgentUpdate(issue connector.Issue, update AgentUpdate) {
 		r.logWorkerEvent(issue, "worker_rate_limits_updated",
 			"thread_id", strings.TrimSpace(update.ThreadID),
 			"turn_id", strings.TrimSpace(update.TurnID),
+		)
+	case AgentUpdateModelUpdated:
+		r.logWorkerEvent(issue, "worker_model_updated",
+			"thread_id", strings.TrimSpace(update.ThreadID),
+			"turn_id", strings.TrimSpace(update.TurnID),
+			"model", strings.TrimSpace(update.Model),
 		)
 	default:
 		if event != "" && update.Type != AgentUpdateMessageDelta {

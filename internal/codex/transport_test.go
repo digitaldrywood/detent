@@ -421,6 +421,11 @@ func helperTurnBackpressure(completedParams json.RawMessage, blockAfterFlood boo
 		},
 		{
 			JSONRPC: JSONRPCVersion,
+			ID:      json.RawMessage(`5`),
+			Result:  json.RawMessage(`{"config":{"model":"gpt-5.6"}}`),
+		},
+		{
+			JSONRPC: JSONRPCVersion,
 			ID:      json.RawMessage(`3`),
 			Result:  json.RawMessage(`{"turn":{"id":"turn-1"}}`),
 		},
