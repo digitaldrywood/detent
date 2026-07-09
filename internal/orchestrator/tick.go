@@ -156,6 +156,12 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		fetched.candidates,
 		completedTransitions.dispatchCandidates,
 	)
+	artifactWaitTransitions := o.transitionActiveArtifactGateWaitIssuesToReview(ctx, state, fetched.candidates, now)
+	fetched = filterReconciledTickIssues(
+		state,
+		fetched,
+		artifactWaitTransitions.transitioned,
+	)
 	o.dispatchTickIssues(ctx, state, fetched, transitions, previous, completedEpics, now)
 	if refreshSucceeded(state) {
 		state.BoardIssues = boardIssuesFromFetched(fetched)
