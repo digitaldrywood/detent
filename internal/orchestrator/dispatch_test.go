@@ -317,6 +317,55 @@ func TestDispatchableSkipsQuietWindowActiveIssueWithOpenPullRequest(t *testing.T
 	}
 }
 
+func TestDispatchableSkipsArtifactGateWaitStatus(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 15, 40, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:     true,
+			SourceState: "Review",
+			PassState:   "Ready for Pickup",
+			ReworkState: "Rework",
+			Gate: gate.Config{
+				Kind: gate.KindArtifact,
+				Artifact: gate.ArtifactConfig{
+					StatusField:    "render_status",
+					PassStatuses:   []string{"approved", "valid"},
+					WaitStatuses:   []string{"queued", "rendering", "pending_review"},
+					ReworkStatuses: []string{"recut", "invalid", "missing_assets"},
+				},
+			},
+		},
+		ActiveStates:   []string{"Todo", "Production", "Rework"},
+		ObservedStates: []string{"Backlog", "Review", "Blocked"},
+		TerminalStates: []string{"Ready for Pickup", "Done", "Cancelled"},
+	})
+	issue := dispatchTestIssue("issue-artifact-pending-review", "Production")
+	issue.Fields = map[string]string{"render_status": "pending_review"}
+	state := newState(cfg)
+	orch := Orchestrator{cfg: cfg}
+
+	decision := orch.dispatchPlanner().dispatchableIssueDecision(issue, &state, false, now, "")
+	if decision.dispatchable {
+		t.Fatal("dispatchable artifact wait status issue = true, want false")
+	}
+	if decision.reason != dispatchSkipArtifactGateWaitStatus {
+		t.Fatalf("dispatchable reason = %q, want %q", decision.reason, dispatchSkipArtifactGateWaitStatus)
+	}
+
+	attempts := &recordingWorkAttemptStore{}
+	orch.workAttempts = attempts
+	orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+	if len(attempts.decisions) != 1 {
+		t.Fatalf("scheduler decisions len = %d, want 1", len(attempts.decisions))
+	}
+	if got := attempts.decisions[0].Reason; got != dispatchSkipArtifactGateWaitStatus {
+		t.Fatalf("scheduler decision reason = %q, want %q", got, dispatchSkipArtifactGateWaitStatus)
+	}
+}
+
 func TestHandleRunResultRecordsBudgetRefusalAndComment(t *testing.T) {
 	t.Parallel()
 

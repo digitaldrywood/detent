@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
@@ -398,6 +399,7 @@ const (
 	dispatchSkipTerminalState            = "terminal_state"
 	dispatchSkipPullRequestHydration     = "pull_request_hydration_unavailable"
 	dispatchSkipAutoPromoteGatePending   = "auto_promote_gate_pending"
+	dispatchSkipArtifactGateWaitStatus   = "artifact_gate_wait_status"
 	dispatchSkipMergedPullRequest        = "merged_pull_request_reconciliation_pending"
 	dispatchSkipDuplicatePullRequest     = "duplicate_pull_request_work"
 	dispatchSkipUnauthorized             = "unauthorized"
@@ -431,6 +433,9 @@ func (p dispatchPlanner) dispatchableIssueDecision(
 	}
 	if pullRequestHydrationBlocksDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipPullRequestHydration}
+	}
+	if artifactGateWaitStatusBlocksDispatch(issue, p.cfg.AutoPromote.Gate) {
+		return dispatchableDecision{reason: dispatchSkipArtifactGateWaitStatus}
 	}
 	if autoPromoteActiveGatePendingIssue(issue, state, p.cfg, p.cfg.AutoPromote) {
 		return dispatchableDecision{reason: dispatchSkipAutoPromoteGatePending}
@@ -477,6 +482,27 @@ func pullRequestHydrationBlocksDispatch(issue connector.Issue) bool {
 		strings.TrimSpace(pullRequest.URL) != "" ||
 		strings.TrimSpace(pullRequest.BranchName) != "" ||
 		normalizePullRequestState(pullRequest.State) != ""
+}
+
+func artifactGateWaitStatusBlocksDispatch(issue connector.Issue, cfg gate.Config) bool {
+	cfg = gate.Effective(cfg)
+	if cfg.Kind != gate.KindArtifact {
+		return false
+	}
+	status := normalizeArtifactGateStatus(artifactStatusFromIssue(issue, cfg.Artifact.StatusField))
+	if status == "" {
+		return false
+	}
+	for _, waitStatus := range cfg.Artifact.WaitStatuses {
+		if status == normalizeArtifactGateStatus(waitStatus) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeArtifactGateStatus(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func (p dispatchPlanner) authorized(issue connector.Issue) bool {

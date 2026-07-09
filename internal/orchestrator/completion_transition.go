@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -75,6 +76,15 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			Event:   "completed_issue_review_transition",
 			Message: "moved " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + targetState + " after successful completion",
 		})
+		if o.logger != nil {
+			o.logger.Info(
+				"completed issue review transition",
+				"issue_id", issueID,
+				"identifier", issue.Identifier,
+				"from_state", issue.State,
+				"target_state", targetState,
+			)
+		}
 	}
 	if len(result.transitioned) == 0 {
 		return autoPromoteTickResult{}
@@ -166,6 +176,9 @@ func completedActiveReviewTargetState(
 
 func completedActiveShouldEnterReview(issue connector.Issue, cfg AutoPromoteConfig) bool {
 	if autoPromoteHumanReviewRequired(issue, cfg, cfg.Gate) {
+		return true
+	}
+	if gate.Effective(cfg.Gate).Kind == gate.KindArtifact {
 		return true
 	}
 	if cfg.QuietDuration > 0 {

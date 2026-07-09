@@ -929,6 +929,42 @@ func TestBoardSnapshotRendersActiveLaneAgeFooter(t *testing.T) {
 	}
 }
 
+func TestBoardSnapshotRendersLocalSQLiteProductionLaneAgeFooter(t *testing.T) {
+	now := time.Date(2026, 7, 9, 15, 0, 0, 0, time.UTC)
+	stageUpdatedAt := time.Date(2026, 7, 9, 14, 17, 33, 936728130, time.UTC)
+	data := DashboardData{
+		Kanban: KanbanData{
+			States: []string{"Backlog", "Todo", "Production", "Review", "Ready for Pickup"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:             "wi-011cd179bc7ecf36b7197e4b",
+					Identifier:     "wi-011cd179bc7ecf36b7197e4b",
+					ProjectID:      "video-production",
+					Title:          "Render local artifact",
+					State:          "Production",
+					StageUpdatedAt: &stageUpdatedAt,
+				},
+			},
+		},
+	}
+
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	card := boardCardSection(t, html, "Render local artifact")
+	for _, want := range []string{
+		`data-board-card-age-footer`,
+		`title="Production since`,
+		"In lane",
+		"42m",
+	} {
+		if !strings.Contains(card, want) {
+			t.Fatalf("local_sqlite Production card missing age footer marker %q:\n%s", want, card)
+		}
+	}
+}
+
 func TestBoardSnapshotRendersOptInBlockedAlert(t *testing.T) {
 	data := boardTestData()
 	data.Kanban.ShowBlockedAlerts = true

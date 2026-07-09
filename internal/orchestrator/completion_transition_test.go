@@ -45,6 +45,27 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 			want: "Review",
 		},
 		{
+			name:       "artifact production completed with source gate wait advances to configured review",
+			issue:      completionTransitionIssue("Production", ""),
+			finalState: FinalStateCompleted,
+			cfg: AutoPromoteConfig{
+				Enabled:     true,
+				SourceState: "Review",
+				PassState:   "Ready for Pickup",
+				ReworkState: "Rework",
+				Gate: gate.Config{
+					Kind: gate.KindArtifact,
+					Artifact: gate.ArtifactConfig{
+						StatusField:    "render_status",
+						PassStatuses:   []string{"approved", "valid"},
+						WaitStatuses:   []string{"queued", "rendering", "pending_review"},
+						ReworkStatuses: []string{"recut", "invalid", "missing_assets"},
+					},
+				},
+			},
+			want: "Review",
+		},
+		{
 			name:       "rework completed with open pull request waits for dispatch",
 			issue:      completionTransitionIssue("Rework", "OPEN"),
 			finalState: FinalStateCompleted,
@@ -146,8 +167,8 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 		},
 	}
 
-	activeStates := normalizedStates([]string{"Todo", "In Progress", "Rework", "Merging"})
-	terminalStates := normalizedStates([]string{"Done", "Cancelled"})
+	activeStates := normalizedStates([]string{"Todo", "In Progress", "Production", "Rework", "Merging"})
+	terminalStates := normalizedStates([]string{"Ready for Pickup", "Done", "Cancelled"})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
