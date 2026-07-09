@@ -38,6 +38,7 @@ type Config struct {
 	GitHubAppPrivateKeyPath     string
 	GitHubAppInstallationID     string
 	GitHubStatusSource          string
+	DependencySource            string
 	ProjectSlug                 string
 	Repository                  string
 	StatusField                 string
@@ -88,6 +89,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 			GitHubAppPrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
 			GitHubAppInstallationID: cfg.GitHubAppInstallationID,
 			GitHubStatusSource:      cfg.GitHubStatusSource,
+			DependencySource:        cfg.DependencySource,
 			ProjectSlug:             cfg.ProjectSlug,
 			Repository:              cfg.Repository,
 			StatusField:             cfg.StatusField,
@@ -132,6 +134,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 				GitHubAppPrivateKey:     cfg.GitHubAppPrivateKey,
 				GitHubAppPrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
 				GitHubAppInstallationID: cfg.GitHubAppInstallationID,
+				DependencySource:        cfg.DependencySource,
 				Repository:              cfg.Repository,
 				StatusField:             cfg.StatusField,
 				StatusLabelPrefix:       cfg.StatusLabelPrefix,

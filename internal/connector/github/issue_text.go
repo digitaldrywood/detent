@@ -262,7 +262,10 @@ func parseBlockedBy(body string, repo string) []connector.BlockedRef {
 				continue
 			}
 			seen[key] = struct{}{}
-			blockers = append(blockers, connector.BlockedRef{Identifier: identifier})
+			blockers = append(blockers, connector.BlockedRef{
+				Identifier: identifier,
+				Source:     connector.BlockedRefSourceProse,
+			})
 		}
 	}
 	return blockers

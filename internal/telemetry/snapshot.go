@@ -247,6 +247,7 @@ type BlockedRef struct {
 	ID         string `json:"id,omitempty"`
 	Identifier string `json:"identifier"`
 	State      string `json:"state,omitempty"`
+	Source     string `json:"source,omitempty"`
 }
 
 type PullRequest struct {

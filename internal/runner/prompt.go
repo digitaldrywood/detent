@@ -438,6 +438,7 @@ func appendGateBlock(prompt string, cfg gate.Config) string {
 func appendBlockedHandoffBlock(prompt string) string {
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Blocked handoff\n\n" +
 		"Before moving an issue to Blocked because it is waiting on another tracked GitHub issue or pull request, ensure the issue body contains a machine-readable dependency line such as `Blocked by: #123` or `Depends on: owner/repo#123`. " +
+		"When GitHub native issue dependencies are available, prefer the native blocked_by relation and keep prose lines only as fallback metadata. " +
 		"Do not rely only on an issue mention in a Workpad comment. Use Blocked without dependency metadata only for blockers that require human action."
 }
 

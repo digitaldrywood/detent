@@ -577,6 +577,7 @@ func defaultDoctorAutoPromoteConnector(cfg workflowconfig.Config) (doctorAutoPro
 		GitHubAppPrivateKeyPath:     cfg.Tracker.GitHubAppPrivateKeyPath,
 		GitHubAppInstallationID:     cfg.Tracker.GitHubAppInstallationID,
 		GitHubStatusSource:          cfg.Tracker.GitHubStatusSource,
+		DependencySource:            cfg.Dependencies.Source,
 		ProjectSlug:                 cfg.Tracker.ProjectSlug,
 		Repository:                  cfg.Tracker.Repository,
 		StatusField:                 cfg.Tracker.StatusField,

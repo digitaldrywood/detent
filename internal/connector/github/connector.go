@@ -58,6 +58,7 @@ type Config struct {
 	GitHubAppPrivateKeyPath string
 	GitHubAppInstallationID string
 	GitHubStatusSource      string
+	DependencySource        string
 	ProjectSlug             string
 	Repository              string
 	StatusField             string
@@ -93,6 +94,8 @@ type Connector struct {
 	stateMap          map[string]string
 	priorityMap       map[string]*int
 	requiredChecks    []string
+	dependencySource  string
+	dependencyCaps    map[string]nativeDependencyCapability
 	statusCache       *statusCache
 	issueFields       *issueFieldCache
 	projectCache      *projectCache
@@ -169,6 +172,8 @@ func NewConnector(cfg Config) (*Connector, error) {
 		stateMap:          cloneStateMap(cfg.StateMap),
 		priorityMap:       clonePriorityMapWithDefault(cfg.PriorityMap),
 		requiredChecks:    normalizeRequiredStatusChecks(cfg.RequiredStatusChecks),
+		dependencySource:  normalizeDependencySource(cfg.DependencySource),
+		dependencyCaps:    map[string]nativeDependencyCapability{},
 		statusCache:       newStatusCache(githubCacheTTL, cfg.Now),
 		issueFields:       newIssueFieldCache(githubCacheTTL, cfg.Now),
 		projectCache:      newProjectCache(githubCacheTTL, cfg.Now),

@@ -1505,6 +1505,8 @@ func restEndpointFamily(method string, path string) string {
 		return "issue comments"
 	case len(segments) == 6 && segments[3] == "issues" && segments[5] == "comments":
 		return "issue comments"
+	case len(segments) >= 7 && segments[3] == "issues" && segments[5] == "dependencies":
+		return "issue dependencies"
 	case len(segments) == 5 && segments[3] == "issues":
 		return "issue reads"
 	case len(segments) == 4 && segments[3] == "pulls":
@@ -1535,6 +1537,8 @@ func restRequestPurpose(method string, path string) string {
 		return "hydrate_issue"
 	case "issue comments":
 		return "hydrate_issue_comments"
+	case "issue dependencies":
+		return "hydrate_issue_dependencies"
 	case "pull requests":
 		return "hydrate_pull_request"
 	case "reviews":

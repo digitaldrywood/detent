@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -733,6 +734,85 @@ func TestDependencyAutoUnblockDoesNotChangeTodoDependencyGate(t *testing.T) {
 	}
 	if blocked.Source != BlockedSourceDependency {
 		t.Fatalf("Blocked source = %q, want dependency", blocked.Source)
+	}
+}
+
+func TestDependencyAutoUnblockBlockerSetIgnoresRefSource(t *testing.T) {
+	t.Parallel()
+
+	nativeSet := dependencyAutoUnblockBlockerSet([]dependencyBlocker{{
+		Ref: connector.BlockedRef{
+			Identifier: "digitaldrywood/detent#415",
+			Source:     connector.BlockedRefSourceNative,
+		},
+	}})
+	proseSet := dependencyAutoUnblockBlockerSet([]dependencyBlocker{{
+		Ref: connector.BlockedRef{
+			Identifier: "digitaldrywood/detent#415",
+			Source:     connector.BlockedRefSourceProse,
+		},
+	}})
+
+	if nativeSet != proseSet {
+		t.Fatalf("blocker set differs by source: native=%q prose=%q", nativeSet, proseSet)
+	}
+	if nativeSet != "digitaldrywood/detent#415" {
+		t.Fatalf("blocker set = %q, want identifier only", nativeSet)
+	}
+}
+
+func TestDependencyAutoUnblockDecisionLogIncludesBlockerSources(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	orch := &Orchestrator{
+		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	issue := dependencyAutoUnblockIssue("issue-blocked", "Blocked")
+	blockers := []dependencyBlocker{{
+		Ref: connector.BlockedRef{
+			Identifier: "digitaldrywood/detent#414",
+			Source:     connector.BlockedRefSourceNative,
+		},
+	}, {
+		Ref: connector.BlockedRef{
+			Identifier: "digitaldrywood/detent#415",
+		},
+	}}
+
+	orch.logDependencyAutoUnblockDecision(issue, "skip", "blockers_not_ready", blockers, "")
+
+	got := logs.String()
+	for _, want := range []string{
+		"dependency auto-unblock decision",
+		"blocker_sources=",
+		"source=native",
+		"source=prose",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("log missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestIssueWithDependencyRefsNativeOnlyIgnoresProseLines(t *testing.T) {
+	t.Parallel()
+
+	orch := &Orchestrator{cfg: normalizeConfig(Config{DependencySource: "native_only"})}
+	issue := dependencyAutoUnblockIssue("issue-blocked", "Blocked")
+	issue.Description = "Depends on: #415"
+	issue.BlockedBy = []connector.BlockedRef{{
+		Identifier: "digitaldrywood/detent#414",
+		Source:     connector.BlockedRefSourceNative,
+	}}
+
+	got := orch.issueWithDependencyRefs(issue)
+	want := []connector.BlockedRef{{
+		Identifier: "digitaldrywood/detent#414",
+		Source:     connector.BlockedRefSourceNative,
+	}}
+	if !slices.Equal(got.BlockedBy, want) {
+		t.Fatalf("BlockedBy = %#v, want native refs only", got.BlockedBy)
 	}
 }
 

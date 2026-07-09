@@ -182,6 +182,7 @@ type actor struct {
 }
 
 type restIssue struct {
+	ID          int            `json:"id"`
 	NodeID      string         `json:"node_id"`
 	Number      int            `json:"number"`
 	Title       string         `json:"title"`
@@ -200,6 +201,24 @@ type restIssue struct {
 type restIssueSearchResponse struct {
 	TotalCount int         `json:"total_count"`
 	Items      []restIssue `json:"items"`
+}
+
+type restIssueDependency struct {
+	ID            int        `json:"id"`
+	NodeID        string     `json:"node_id"`
+	Number        int        `json:"number"`
+	Title         string     `json:"title"`
+	State         string     `json:"state"`
+	StateReason   string     `json:"state_reason"`
+	HTMLURL       string     `json:"html_url"`
+	URL           string     `json:"url"`
+	RepositoryURL string     `json:"repository_url"`
+	UpdatedAt     *time.Time `json:"updated_at"`
+}
+
+type nativeDependencyCapability struct {
+	Status string
+	Detail string
 }
 
 type restAssignee struct {

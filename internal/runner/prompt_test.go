@@ -88,6 +88,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"Check generator aliases before editing.",
 		"## Blocked handoff",
 		"Blocked by: #123",
+		"prefer the native blocked_by relation",
 		"## Validation gate",
 		"Run `make check` from the workspace root",
 		"In Merging, run a focused rebase/smoke gate after a clean rebase when the PR already passed current-head validation",

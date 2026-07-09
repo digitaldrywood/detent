@@ -80,6 +80,8 @@ workspace:
   auto_branch: false
   cleanup_idle_ttl_ms: 7200000
   cleanup_sweep_interval_ms: 120000
+dependencies:
+  source: native_only
 worker:
   ssh_hosts:
     - worker-1
@@ -231,6 +233,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Workspace.CleanupSweepIntervalMS != 120000 {
 		t.Fatalf("Workspace.CleanupSweepIntervalMS = %d, want 120000", cfg.Workspace.CleanupSweepIntervalMS)
+	}
+	if cfg.Dependencies.Source != DependencySourceNativeOnly {
+		t.Fatalf("Dependencies.Source = %q, want %q", cfg.Dependencies.Source, DependencySourceNativeOnly)
 	}
 	if cfg.Tracker.GitHubGraphQLWarnRemaining != 750 {
 		t.Fatalf("Tracker.GitHubGraphQLWarnRemaining = %d, want 750", cfg.Tracker.GitHubGraphQLWarnRemaining)
@@ -578,6 +583,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Tracker.BlockerAutoPromote.TargetState != "Todo" {
 		t.Fatalf("Tracker.BlockerAutoPromote.TargetState = %q, want Todo", cfg.Tracker.BlockerAutoPromote.TargetState)
+	}
+	if cfg.Dependencies.Source != DependencySourceMerged {
+		t.Fatalf("Dependencies.Source = %q, want %q", cfg.Dependencies.Source, DependencySourceMerged)
 	}
 	if cfg.Polling.IntervalMS != 120000 {
 		t.Fatalf("Polling.IntervalMS = %d", cfg.Polling.IntervalMS)
@@ -1730,6 +1738,11 @@ func TestConfigValidateReportsInvalidSettings(t *testing.T) {
 			name: "github credentials",
 			raw:  "---\ntracker:\n  kind: github\n---\nPrompt\n",
 			want: []string{"tracker.api_key or GitHub App credentials are required for github", "tracker.project_slug is required for github"},
+		},
+		{
+			name: "dependency source",
+			raw:  "---\ntracker:\n  kind: memory\ndependencies:\n  source: prose\n---\nPrompt\n",
+			want: []string{"dependencies.source must be one of merged, native_only"},
 		},
 		{
 			name: "partial github app credentials",

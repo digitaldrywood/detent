@@ -178,6 +178,7 @@ func workItemConnectorFromWorkflow(ctx context.Context, cfg workflowconfig.Confi
 		GitHubAppPrivateKeyPath:     cfg.Tracker.GitHubAppPrivateKeyPath,
 		GitHubAppInstallationID:     cfg.Tracker.GitHubAppInstallationID,
 		GitHubStatusSource:          cfg.Tracker.GitHubStatusSource,
+		DependencySource:            cfg.Dependencies.Source,
 		Repository:                  cfg.Tracker.Repository,
 		StatusField:                 cfg.Tracker.StatusField,
 		StatusLabelPrefix:           cfg.Tracker.StatusLabelPrefix,
