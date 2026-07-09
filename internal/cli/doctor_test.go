@@ -740,6 +740,33 @@ func TestCheckDoctorAutoPromoteCandidateDiagnostics(t *testing.T) {
 				Reason:           "merge_conflicts",
 			},
 		},
+		{
+			name: "clean green workpad blocker",
+			issue: func() connector.Issue {
+				issue := doctorAutoPromoteIssue("issue-workpad-blocker", &connector.PullRequest{
+					Number:         1480,
+					URL:            "https://github.test/pull/1480",
+					State:          "OPEN",
+					HeadSHA:        "head-workpad",
+					MergeableState: "clean",
+					CIStatus:       "success",
+				})
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Blockers\n- Owner approval is still required.",
+				}}
+				return issue
+			}(),
+			want: doctorAutoPromoteCandidateDiagnostic{
+				IssueID:          "issue-workpad-blocker",
+				IssueIdentifier:  "digitaldrywood/detent#399",
+				PRNumber:         1480,
+				PRURL:            "https://github.test/pull/1480",
+				PRHeadSHA:        "head-workpad",
+				PRMergeableState: "clean",
+				Reason:           "workpad_blocker",
+				WorkpadBlocker:   "Owner approval is still required.",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -764,6 +791,9 @@ func TestCheckDoctorAutoPromoteCandidateDiagnostics(t *testing.T) {
 				if !strings.Contains(got.Detail, want) {
 					t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
 				}
+			}
+			if tt.want.WorkpadBlocker != "" && !strings.Contains(got.Detail, tt.want.WorkpadBlocker) {
+				t.Fatalf("Detail = %q, want containing WorkpadBlocker %q", got.Detail, tt.want.WorkpadBlocker)
 			}
 		})
 	}

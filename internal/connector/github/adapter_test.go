@@ -2374,20 +2374,12 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadBlockedByRefs(t *testing.T) 
 		{
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/issues/416/comments?per_page=100",
-			body:   `[{"body":"## Codex Workpad\n\n### Blockers\n- Blocked by: #415\n- Waiting for digitaldrywood/agent-runtime#25\n- Human action needed: merge #415, then move #416 back to Todo.\n\n### Validation\n- Pending."}]`,
+			body:   `[{"body":"## Codex Workpad\n\n### Blockers\n- Blocked by: #415\n- Human action needed: merge #415, then move #416 back to Todo.\n\n### Validation\n- Pending."}]`,
 		},
 		{
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/issues/415",
 			body:   `{"node_id":"I_kw415","number":415,"title":"Closed dependency","body":"","state":"CLOSED","html_url":"https://github.com/digitaldrywood/detent/issues/415","labels":[]}`,
-		},
-		{
-			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
-		},
-		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/agent-runtime/issues/25",
-			body:   `{"node_id":"I_runtime25","number":25,"title":"Open dependency","body":"","state":"OPEN","html_url":"https://github.com/digitaldrywood/agent-runtime/issues/25","labels":[]}`,
 		},
 		{
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
@@ -2406,10 +2398,25 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadBlockedByRefs(t *testing.T) 
 
 	want := []connector.BlockedRef{
 		{ID: "I_kw415", Identifier: "digitaldrywood/detent#415", State: "Done"},
-		{ID: "I_runtime25", Identifier: "digitaldrywood/agent-runtime#25", State: "Open"},
 	}
 	if !reflect.DeepEqual(got[0].BlockedBy, want) {
 		t.Fatalf("BlockedBy = %#v, want %#v", got[0].BlockedBy, want)
+	}
+}
+
+func TestParseBlockedByFromIssueTextIgnoresRemovedWorkpadBlockedByProse(t *testing.T) {
+	t.Parallel()
+
+	issue := githubIssueNode{
+		Number:     1476,
+		Repository: repository{NameWithOwner: "digitaldrywood/pyroapex"},
+		Comments: nodeConnection[issueComment]{Nodes: []issueComment{{
+			Body: "## Codex Workpad\n\n### Blockers\n- Dependency blocker #1462 merged via PR #1482 and issue #1462 is closed/Done; #1463 was already closed. Removed the stale `Blocked by: #1462` line from #1476.\n\n### Validation\n- make check passed.",
+		}}},
+	}
+
+	if got := parseBlockedByFromIssueText(issue, "digitaldrywood/pyroapex"); len(got) != 0 {
+		t.Fatalf("parseBlockedByFromIssueText() = %#v, want no active dependency refs", got)
 	}
 }
 

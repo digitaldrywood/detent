@@ -45,6 +45,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			PassState:          cfg.Agent.AutoPromote.PassState,
 			ReworkState:        cfg.Agent.AutoPromote.ReworkState,
 			ReworkLimit:        cfg.Agent.AutoPromote.ReworkLimit,
+			TerminalStates:     append([]string(nil), cfg.Tracker.TerminalStates...),
 			Gate:               gate.Effective(cfg.Gate),
 		}),
 		Plan: gate.EffectivePlan(cfg.Plan),
@@ -121,6 +122,9 @@ func normalizeConfig(cfg Config) Config {
 	cfg.ActiveStates = normalizedStates(cfg.ActiveStates)
 	cfg.ObservedStates = normalizedStates(cfg.ObservedStates)
 	cfg.TerminalStates = normalizedStates(cfg.TerminalStates)
+	if len(cfg.AutoPromote.TerminalStates) == 0 {
+		cfg.AutoPromote.TerminalStates = append([]string(nil), cfg.TerminalStates...)
+	}
 	cfg.MaxConcurrentAgentsByState = cloneStateLimits(cfg.MaxConcurrentAgentsByState)
 	cfg.DispatchPriorityByState = normalizedStates(cfg.DispatchPriorityByState)
 	cfg.DispatchPriorityByLabel = normalizeLabels(cfg.DispatchPriorityByLabel)

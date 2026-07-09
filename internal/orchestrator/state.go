@@ -290,6 +290,7 @@ func (s State) clone() State {
 
 func cloneAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {
 	cfg.AllowedIssueLabels = append([]string(nil), cfg.AllowedIssueLabels...)
+	cfg.TerminalStates = append([]string(nil), cfg.TerminalStates...)
 	cfg.Gate = cloneGateConfig(cfg.Gate)
 	return cfg
 }

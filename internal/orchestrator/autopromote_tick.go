@@ -98,7 +98,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			o.logAutoPromoteDecision(issue, autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonCINotGreen), "")
 			continue
 		}
-		if decision.Action == AutoPromoteActionPromote {
+		if decision.Action == AutoPromoteActionPromote || decision.Reason == AutoPromoteReasonWorkpadBlocker {
 			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
 		}
 		targetState := autoPromoteTargetState(decision.Action, cfg)
@@ -257,7 +257,76 @@ func (o *Orchestrator) hydrateAutoPromoteWorkpadDecision(
 		issue = cloneIssue(issue)
 		issue.Comments = comments
 	}
+	issue = o.hydrateAutoPromoteWorkpadBlockerRefs(ctx, issue, cfg.TerminalStates)
 	return issue, EvaluateAutoPromote(issue, summary, cfg, now)
+}
+
+func (o *Orchestrator) hydrateAutoPromoteWorkpadBlockerRefs(
+	ctx context.Context,
+	issue connector.Issue,
+	terminalStates []string,
+) connector.Issue {
+	refs := autoPromoteWorkpadBlockerRefs(issue)
+	if len(refs) == 0 {
+		return issue
+	}
+	resolver, ok := o.connector.(connector.IssueReferenceResolver)
+	if !ok {
+		return issue
+	}
+	identifiers := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if identifier := strings.TrimSpace(ref.Identifier); identifier != "" {
+			identifiers = append(identifiers, identifier)
+		}
+	}
+	if len(identifiers) == 0 {
+		return issue
+	}
+	resolved, err := resolver.FetchIssueStatesByIdentifiers(ctx, identifiers)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("hydrate auto-promote workpad blockers failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+		return issue
+	}
+	blockedBy := make([]connector.BlockedRef, 0, len(resolved))
+	for _, resolvedIssue := range resolved {
+		ref := autoPromoteBlockedRefFromIssue(resolvedIssue, terminalStates)
+		if strings.TrimSpace(ref.Identifier) != "" {
+			blockedBy = append(blockedBy, ref)
+		}
+	}
+	if len(blockedBy) == 0 {
+		return issue
+	}
+	issue = cloneIssue(issue)
+	issue.BlockedBy = mergeDependencyBlockedRefs(blockedBy, issue.BlockedBy)
+	return issue
+}
+
+func autoPromoteWorkpadBlockerRefs(issue connector.Issue) []connector.BlockedRef {
+	reason := autoPromoteWorkpadBlockerReason(issue)
+	if reason == "" {
+		return nil
+	}
+	return dependencyRefsInText(reason, dependencyIssueRepo(issue.Identifier))
+}
+
+func autoPromoteBlockedRefFromIssue(issue connector.Issue, terminalStates []string) connector.BlockedRef {
+	state := strings.TrimSpace(issue.State)
+	if issue.Closed || autoPromotePullRequestMerged(issue.PullRequest) {
+		state = doneStateName(terminalStates)
+	}
+	return connector.BlockedRef{
+		ID:         strings.TrimSpace(issue.ID),
+		Identifier: strings.TrimSpace(issue.Identifier),
+		State:      state,
+	}
+}
+
+func autoPromotePullRequestMerged(pullRequest *connector.PullRequest) bool {
+	return pullRequest != nil && normalizePullRequestState(pullRequest.State) == "merged"
 }
 
 func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
@@ -310,7 +379,7 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 			continue
 		}
 		decision := staleTodoPullRequestDecision(issue, summary, o.cfg.AutoPromote, now)
-		if decision.Action == AutoPromoteActionPromote {
+		if decision.Action == AutoPromoteActionPromote || decision.Reason == AutoPromoteReasonWorkpadBlocker {
 			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, o.cfg.AutoPromote, now)
 		}
 		targetState := staleTodoPullRequestTargetState(decision, o.cfg.AutoPromote)
@@ -1204,6 +1273,9 @@ func (o *Orchestrator) logStaleTodoPullRequestDecision(issue connector.Issue, de
 	if decision.WorkpadBlocker != "" {
 		attrs = append(attrs, "workpad_blocker", decision.WorkpadBlocker)
 	}
+	if len(decision.ResolvedWorkpadBlockers) > 0 {
+		attrs = append(attrs, "resolved_workpad_blockers", strings.Join(decision.ResolvedWorkpadBlockers, ","))
+	}
 	o.logger.Info("stale_todo_pr_reconciled", attrs...)
 }
 
@@ -2078,6 +2150,9 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 	}
 	if decision.WorkpadBlocker != "" {
 		attrs = append(attrs, "workpad_blocker", decision.WorkpadBlocker)
+	}
+	if len(decision.ResolvedWorkpadBlockers) > 0 {
+		attrs = append(attrs, "resolved_workpad_blockers", strings.Join(decision.ResolvedWorkpadBlockers, ","))
 	}
 	if targetState != "" {
 		attrs = append(attrs, "target_state", targetState)

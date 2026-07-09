@@ -539,6 +539,8 @@ func TestTickAutoPromoteHydratesWorkpadBlockerBeforeTransition(t *testing.T) {
 		TerminalStates: []string{"Done", "Cancelled"},
 	})
 	state := newState(cfg)
+	mergingSlot := dispatchTestIssue("issue-merging-slot", "Merging")
+	state.Running[mergingSlot.ID] = Running{Issue: mergingSlot}
 	tracker := &autoPromoteTickConnector{
 		stateIssues: []connector.Issue{issue},
 		issueComments: map[string][]connector.IssueComment{
@@ -570,6 +572,141 @@ func TestTickAutoPromoteHydratesWorkpadBlockerBeforeTransition(t *testing.T) {
 		if !strings.Contains(logs.String(), fragment) {
 			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
 		}
+	}
+}
+
+func TestTickAutoPromoteResolvesClosedWorkpadBlockerBeforeTransition(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 8, 22, 30, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	issue := autoPromoteTickIssue("issue-resolved-workpad-blocker", []string{"bug"}, &connector.PullRequest{
+		Number:                 1480,
+		URL:                    "https://github.test/digitaldrywood/pyroapex/pull/1480",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "pass",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#1462"}}
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	mergingSlot := dispatchTestIssue("issue-merging-slot", "Merging")
+	state.Running[mergingSlot.ID] = Running{Issue: mergingSlot}
+	tracker := &autoPromoteTickConnector{
+		stateIssues: []connector.Issue{issue},
+		issueComments: map[string][]connector.IssueComment{
+			issue.ID: {{
+				Body: "## Codex Workpad\n\n### Blockers\n- Blocked by: #1462\n\n### Validation\n- make check passed.",
+			}},
+		},
+		resolvedIssues: []connector.Issue{{
+			ID:         "issue-1462",
+			Identifier: "digitaldrywood/detent#1462",
+			State:      "Done",
+		}},
+	}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	}
+
+	result := orch.autoPromoteHumanReviewIssues(context.Background(), &state, []connector.Issue{issue}, now)
+
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned = %#v, want %s", result.transitioned, issue.ID)
+	}
+	if got, want := tracker.fetchIdentifiers, [][]string{{"digitaldrywood/detent#1462"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("FetchIssueStatesByIdentifiers = %#v, want %#v", got, want)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one auto-promote audit comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"action=promote",
+		"reason=ready",
+		"resolved_workpad_blockers=digitaldrywood/detent#1462",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+	if strings.Contains(logs.String(), "reason=workpad_blocker") {
+		t.Fatalf("logs %q contain workpad_blocker after resolved dependency hydration", logs.String())
+	}
+}
+
+func TestTickAutoPromoteResolvesMergedWorkpadBlockerBeforeTransition(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 8, 22, 35, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	issue := autoPromoteTickIssue("issue-merged-workpad-blocker", []string{"bug"}, &connector.PullRequest{
+		Number:                 1481,
+		URL:                    "https://github.test/digitaldrywood/pyroapex/pull/1481",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "pass",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &autoPromoteTickConnector{
+		stateIssues: []connector.Issue{issue},
+		issueComments: map[string][]connector.IssueComment{
+			issue.ID: {{
+				Body: "## Codex Workpad\n\n### Blockers\n- Blocked by: #1462\n\n### Validation\n- make check passed.",
+			}},
+		},
+		resolvedIssues: []connector.Issue{{
+			ID:          "issue-1462",
+			Identifier:  "digitaldrywood/detent#1462",
+			State:       "In Progress",
+			PullRequest: &connector.PullRequest{Number: 1482, State: "MERGED"},
+		}},
+	}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	}
+
+	result := orch.autoPromoteHumanReviewIssues(context.Background(), &state, []connector.Issue{issue}, now)
+
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned = %#v, want %s", result.transitioned, issue.ID)
+	}
+	if !strings.Contains(logs.String(), "resolved_workpad_blockers=digitaldrywood/detent#1462") {
+		t.Fatalf("logs %q missing resolved_workpad_blockers", logs.String())
 	}
 }
 
@@ -4063,7 +4200,9 @@ type autoPromoteTickConnector struct {
 	candidateByStates     [][]string
 	fetchByStatesRequests [][]string
 	fetchComments         []string
+	fetchIdentifiers      [][]string
 	issueComments         map[string][]connector.IssueComment
+	resolvedIssues        []connector.Issue
 	updates               []autoPromoteTickUpdate
 	comments              []autoPromoteTickComment
 	prComments            []autoPromoteTickComment
@@ -4125,6 +4264,21 @@ func (c *autoPromoteTickConnector) FetchIssueStatesByIDs(_ context.Context, ids 
 	issues := make([]connector.Issue, 0, len(c.stateIssues))
 	for _, issue := range c.stateIssues {
 		if _, ok := wanted[issue.ID]; ok {
+			issues = append(issues, cloneIssue(issue))
+		}
+	}
+	return issues, nil
+}
+
+func (c *autoPromoteTickConnector) FetchIssueStatesByIdentifiers(_ context.Context, identifiers []string) ([]connector.Issue, error) {
+	c.fetchIdentifiers = append(c.fetchIdentifiers, append([]string(nil), identifiers...))
+	wanted := make(map[string]struct{}, len(identifiers))
+	for _, identifier := range identifiers {
+		wanted[strings.ToLower(strings.TrimSpace(identifier))] = struct{}{}
+	}
+	issues := make([]connector.Issue, 0, len(c.resolvedIssues))
+	for _, issue := range c.resolvedIssues {
+		if _, ok := wanted[strings.ToLower(strings.TrimSpace(issue.Identifier))]; ok {
 			issues = append(issues, cloneIssue(issue))
 		}
 	}
