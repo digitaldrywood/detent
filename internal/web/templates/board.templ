@@ -348,6 +348,11 @@ templ boardKanbanDragScript() {
 			if (window.__detentBoardKanbanDragHandlersRegistered) return;
 			window.__detentBoardKanbanDragHandlersRegistered = true;
 			var DRAG_THRESHOLD_PX = 6;
+			// Real mouse clicks travel a few pixels between press and release,
+			// so distance alone cannot separate a click from a drag. A short
+			// gesture released back over the source lane is a click: finish the
+			// drag without swallowing the click so the detail sheet still opens.
+			var CLICK_GESTURE_MS = 250;
 			var draggedIssueID = "";
 			var draggedAllowedTargetKeys = [];
 			var pending = null;
@@ -501,7 +506,8 @@ templ boardKanbanDragScript() {
 					offsetX: pending.startX - pending.rect.left,
 					offsetY: pending.startY - pending.rect.top,
 					ghost: buildGhost(card, pending.rect),
-					lastLaneBlocked: false
+					lastLaneBlocked: false,
+					startedAt: pending.startedAt
 				};
 				pending = null;
 				card.dataset.kanbanDragging = "true";
@@ -509,7 +515,7 @@ templ boardKanbanDragScript() {
 				feedback("Moving " + (card.dataset.kanbanCurrentState || "card") + ".");
 				moveGhost(active.ghost, event.clientX, event.clientY, active.offsetX, active.offsetY);
 			}
-			function finishDrag() {
+			function finishDrag(keepClick) {
 				if (active && active.ghost) active.ghost.remove();
 				pending = null;
 				active = null;
@@ -518,14 +524,14 @@ templ boardKanbanDragScript() {
 				clearDropTargetState();
 				// A drag ends with the pointer still over a card, so the release
 				// also fires a click; swallow it or the detail sheet opens.
-				suppressNextClick();
+				if (!keepClick) suppressNextClick();
 			}
-			function cancelDrag() {
+			function cancelDrag(keepClick) {
 				if (!active) {
 					pending = null;
 					return;
 				}
-				finishDrag();
+				finishDrag(keepClick);
 				feedback("Move cancelled.", "error");
 			}
 			document.addEventListener("pointerdown", function (event) {
@@ -541,16 +547,30 @@ templ boardKanbanDragScript() {
 					targets: targetKeysFromValue(card.dataset.kanbanAllowedTargets || ""),
 					rect: card.getBoundingClientRect(),
 					startX: event.clientX,
-					startY: event.clientY
+					startY: event.clientY,
+					startedAt: Date.now()
 				};
 			});
 			document.addEventListener("pointermove", function (event) {
 				if (pending && event.pointerId === pending.pointerId) {
+					// A missed pointerup (released outside the window) must not
+					// leave a stale press that turns a later hover into a drag.
+					if (event.buttons === 0) {
+						pending = null;
+						return;
+					}
 					if (Math.hypot(event.clientX - pending.startX, event.clientY - pending.startY) < DRAG_THRESHOLD_PX) return;
 					beginDrag(event);
 					return;
 				}
 				if (!active || event.pointerId !== active.pointerId) return;
+				if (event.buttons === 0) {
+					// The release happened outside the window, so no click is
+					// coming — cancelling must not arm the click suppressor or
+					// it would eat the next real click after recovery.
+					cancelDrag(true);
+					return;
+				}
 				event.preventDefault();
 				moveGhost(active.ghost, event.clientX, event.clientY, active.offsetX, active.offsetY);
 				autoScrollLanes(event.clientX);
@@ -572,7 +592,16 @@ templ boardKanbanDragScript() {
 				if (!active || event.pointerId !== active.pointerId) return;
 				var lane = laneFromPoint(event.clientX, event.clientY);
 				var card = draggedCard(document);
-				if (!(lane instanceof HTMLElement) || lane.dataset.kanbanDropSource === "true") {
+				if (!(lane instanceof HTMLElement)) {
+					cancelDrag();
+					return;
+				}
+				if (lane.dataset.kanbanDropSource === "true") {
+					if (Date.now() - active.startedAt < CLICK_GESTURE_MS) {
+						finishDrag(true);
+						feedback("");
+						return;
+					}
 					cancelDrag();
 					return;
 				}

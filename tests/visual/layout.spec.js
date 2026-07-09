@@ -301,6 +301,51 @@ test("board card opens the detail sheet", async ({ page }, testInfo) => {
   await expect(sheet).toHaveCount(0);
 });
 
+test("board card opens the detail sheet on a glide click", async ({
+  page,
+}) => {
+  await page.setViewportSize(desktopViewport);
+  await page.goto(`${kanbanRuntime.url}/`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+  const card = page.locator("[data-kanban-card][data-kanban-action='move']", {
+    hasText: "Kanban demo backlog intake",
+  });
+  await expect(card).toBeVisible();
+  const box = await card.boundingBox();
+  if (!box) {
+    throw new Error("Draggable card has no bounding box");
+  }
+
+  // Real mouse clicks travel a few pixels between press and release —
+  // often past the drag threshold. That gesture must still read as a
+  // click and open the sheet, not become a cancelled drag that swallows
+  // the click.
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX + 8, startY + 6, { steps: 2 });
+  await page.mouse.up();
+
+  const sheet = page.locator("[data-detail-sheet]");
+  await expect(sheet).toBeVisible();
+  await expect(
+    page.locator("[data-kanban-drop-allowed]"),
+  ).toHaveCount(0);
+
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
+
+  // A plain zero-travel click must keep working too.
+  await card.click();
+  await expect(sheet).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
+});
+
 test("fleet page shows agent hero, PR lanes, and metric cards", async ({
   page,
 }, testInfo) => {
