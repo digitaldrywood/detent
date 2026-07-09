@@ -1283,11 +1283,14 @@ probes.
    they sit in `Blocked` and be
    auto-unblocked when dependencies clear?" Default if silent:
    `tracker.dependency_auto_unblock.enabled: false`. Use the `Blocked`
-   auto-unblock mode only when the team writes explicit `Depends on:` or
-   `Blocked by:` lines for dependency blockers; Detent will not clear unrelated
-   human blockers. If dependency-waiting issues are placed in `Blocked` while
-   this setting stays disabled, Detent will only display them as blocked and
-   will not move them back to `Todo`. Verify:
+   auto-unblock mode only when the team declares dependency blockers through
+   native GitHub `blocked_by` relations or the structured `detent-status`
+   Workpad block. During the deprecation window, existing machine-readable
+   issue-body `Depends on:` or `Blocked by:` lines remain a fallback, but
+   prose-only dependency blockers should be migrated. Detent will not clear
+   unrelated human blockers. If dependency-waiting issues are placed in
+   `Blocked` while this setting stays disabled, Detent will only display them
+   as blocked and will not move them back to `Todo`. Verify:
 
    ```sh
    printf '%s\n' \
@@ -1823,17 +1826,23 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    ```
 
    When adding Detent to a repository that already has a `WORKFLOW.md`, audit
-   the existing prompt body instead of replacing it blindly. Add or tighten a
+   the existing prompt body instead of replacing it blindly. Add or tighten the
+   `## Codex Workpad` contract so every update includes a fenced
+   `detent-status` block, blockers are declared in that block, and narrative
+   Workpad sentences are treated as prose only. Dependency blockers should
+   prefer GitHub's native `blocked_by` relation, then the structured Workpad
+   block, with issue-body `Blocked by:` or `Depends on:` lines kept only as a
+   labeled legacy fallback during the deprecation window. Add or tighten a
    `## Required Execution Flow` section when it is missing, with explicit `For
    Todo`, `For In Progress`, `For Rework`, and `For Merging` instructions. The
    `For Merging` section should invoke `$go-workflow:ship`, should not call
    `gh pr merge` directly outside ship, and should require exactly one terminal
    outcome: pull request merged and issue moved to `Done`, issue moved to
    `Rework` with an actionable defect, or issue remaining in `Merging` with a
-   concrete external blocker recorded. Before dispatching `Merging`, confirm
-   the Detent host's Codex environment exposes `$go-workflow:ship`; otherwise
-   install or enable that workflow, or replace the `For Merging` section with
-   equivalent project-local merge instructions.
+   concrete external blocker recorded in the `detent-status` block. Before
+   dispatching `Merging`, confirm the Detent host's Codex environment exposes
+   `$go-workflow:ship`; otherwise install or enable that workflow, or replace
+   the `For Merging` section with equivalent project-local merge instructions.
 
 2. **Substitute the tracker and workspace answers.** In ProjectV2 mode, use the
    ProjectV2 node id as `tracker.project_slug`. In boardless issue-field mode,
@@ -2154,18 +2163,21 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    move issues back to `Todo`.
 
 7. **Write the prompt body.** Keep the `## Codex Workpad` instruction, include
-   repo authority files discovered in Phase 2, state the validation gate, and
-   keep the maintained template's `## Required Execution Flow` unless the human
+   the `detent-status` schema examples, include the native `blocked_by`
+   dependency command with the labeled legacy fallback note, include repo
+   authority files discovered in Phase 2, state the validation gate, and keep
+   the maintained template's `## Required Execution Flow` unless the human
    explicitly chooses stronger project-specific instructions. The flow should
    tell agents what to do in `Todo`, `In Progress`, `Rework`, and `Merging`,
-   including the `For Merging` requirement to use `$go-workflow:ship` and move
-   the issue to `Done` only after the pull request is merged. Include the
-   current state with `Current Detent status: {{ issue.state }}` so resumed
-   agents choose the right section. Verify:
+   including the `For Merging` requirement to use `$go-workflow:ship`, record
+   external blockers in the structured status block, and move the issue to
+   `Done` only after the pull request is merged. Include the current state with
+   `Current Detent status: {{ issue.state }}` so resumed agents choose the
+   right section. Verify:
 
    ```sh
    awk 'seen {print} /^---$/ {count++; if (count == 2) seen=1}' <source-root>/WORKFLOW.md \
-     | rg 'Current Detent status|Codex Workpad|Required Execution Flow|For Todo|For In Progress|For Rework|For Merging|go-workflow:ship|CLAUDE.md|AGENTS.md|CONTRIBUTING.md|<gate-command>|<repo-owner>/<repo-name>'
+     | rg 'Current Detent status|Codex Workpad|detent-status|dependencies/blocked_by|Required Execution Flow|For Todo|For In Progress|For Rework|For Merging|go-workflow:ship|CLAUDE.md|AGENTS.md|CONTRIBUTING.md|<gate-command>|<repo-owner>/<repo-name>'
    ```
 
 8. **Check the workflow contract before registration.** This is a structural
@@ -2662,11 +2674,11 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    ```
 
 5. **Verify Detent posted the workpad.** The issue must have a persistent
-   `## Codex Workpad` comment. Verify:
+   `## Codex Workpad` comment with a `detent-status` fenced block. Verify:
 
    ```sh
    gh api repos/<repo-owner>/<repo-name>/issues/<issue-number>/comments --paginate \
-     --jq '.[] | select(.body | startswith("## Codex Workpad")) | .html_url' | rg .
+     --jq '.[] | select(.body | startswith("## Codex Workpad") and (.body | contains("detent-status"))) | .html_url' | rg .
    ```
 
 6. **Verify cancellation cleanup when testing terminal moves.** Moving an item
@@ -2895,17 +2907,19 @@ State whether the dependency must be merged into `origin/main` before this
 issue starts. If there is no dependency, omit the line.
 ```
 
-Keep dependency order explicit. If issue B relies on issue A, issue B should
-carry `Depends on: #A` and stay out of `Todo` until A has merged. Same-repo
-`#A`, cross-repo `owner/repo#A`, and full
-`https://github.com/owner/repo/issues/A` issue URLs are supported inside
-`Depends on:` and `Blocked by:` lines.
+Keep dependency order explicit. If issue B relies on issue A, prefer GitHub's
+native `blocked_by` relation for issue B, then declare the same dependency in
+the Workpad `detent-status` block when the issue is actively blocked. During the
+deprecation window, issue-body `Depends on:` and `Blocked by:` lines remain a
+fallback for projects that have not migrated; same-repo `#A`, cross-repo
+`owner/repo#A`, and full `https://github.com/owner/repo/issues/A` issue URLs are
+supported there.
 
-Alternatively, if the project has opted into
-`tracker.dependency_auto_unblock.enabled`, issue B can sit in a configured
-waiting state such as `Blocked` with the same `Depends on:` or `Blocked by:`
-line. Detent will move it to the configured ready state after every blocker is
-terminal, closed, or merged according to the workflow readiness rule. Do not use
-that mode for free-form human blockers without explicit dependency references.
-If auto-unblock is disabled, a dependency-waiting issue in `Blocked` will remain
-there even after the dependency clears.
+If the project has opted into `tracker.dependency_auto_unblock.enabled`, issue B
+can sit in a configured waiting state such as `Blocked` with native dependency
+metadata or the legacy fallback line. Detent will move it to the configured
+ready state after every blocker is terminal, closed, or merged according to the
+workflow readiness rule. Do not use that mode for free-form human blockers
+without explicit dependency references. If auto-unblock is disabled, a
+dependency-waiting issue in `Blocked` will remain there even after the
+dependency clears.

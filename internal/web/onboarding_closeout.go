@@ -12,6 +12,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const onboardingCloseoutWait = 1500 * time.Millisecond
@@ -530,11 +531,16 @@ func onboardingDispatchDetails(
 		} else {
 			details = append(details, "worktree: present for "+label)
 		}
-		if onboardingIssueHasWorkpad(entry.Issue) {
-			details = append(details, "Workpad: present for "+label)
-		} else {
+		hasWorkpad, hasStatusBlock := onboardingIssueWorkpadStatus(entry.Issue)
+		switch {
+		case hasWorkpad && hasStatusBlock:
+			details = append(details, "Workpad: present, status block: present for "+label)
+		case hasWorkpad:
 			ok = false
-			details = append(details, "Workpad: missing for "+label)
+			details = append(details, "Workpad: present, status block: missing for "+label)
+		default:
+			ok = false
+			details = append(details, "Workpad: missing, status block: missing for "+label)
 		}
 	}
 	return details, ok
@@ -556,13 +562,18 @@ func onboardingDispatchStallReason(before telemetry.Snapshot, after telemetry.Sn
 	return "dispatch: no new running issue observed"
 }
 
-func onboardingIssueHasWorkpad(issue telemetry.Issue) bool {
+func onboardingIssueWorkpadStatus(issue telemetry.Issue) (bool, bool) {
+	hasWorkpad := false
 	for _, comment := range issue.Comments {
-		if strings.Contains(comment.Body, "## Codex Workpad") {
-			return true
+		if !strings.Contains(comment.Body, "## Codex Workpad") {
+			continue
+		}
+		hasWorkpad = true
+		if signal, ok := workpad.SignalFromComment(comment.Body, "", ""); ok && signal.Invalid == nil {
+			return true, true
 		}
 	}
-	return false
+	return hasWorkpad, false
 }
 
 func onboardingIssueLabel(issue telemetry.Issue) string {

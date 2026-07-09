@@ -386,6 +386,10 @@ func TestOnboardingWriteGitHubWorkflows(t *testing.T) {
 				"dispatch_priority_by_label:\n    - bug\n    - regression\n    - enhancement",
 				"You are working on GitHub issue `{{ issue.identifier }}`",
 				"Current Detent status: {{ issue.state }}",
+				"```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```",
+				"dependencies/blocked_by",
+				"narrative sentences are never read as blockers",
+				"Legacy fallback during the deprecation window",
 				"## Required Execution Flow",
 				"### For Todo",
 				"### For In Progress",
@@ -819,7 +823,7 @@ func TestOnboardingWriteRunsCloseoutVerifierAfterMutation(t *testing.T) {
 					State:      "In Progress",
 					Labels:     []string{"detent:in-progress"},
 					Comments: []telemetry.IssueComment{{
-						Body: "## Codex Workpad\n\n### Status\nIn Progress",
+						Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```",
 					}},
 				},
 				WorkspacePath:   filepath.Join(t.TempDir(), "detent-647"),
@@ -858,7 +862,7 @@ func TestOnboardingWriteRunsCloseoutVerifierAfterMutation(t *testing.T) {
 		"candidate counts: expected status labels matched",
 		"dispatch: started digitaldrywood/detent#647",
 		"worktree: present",
-		"Workpad: present",
+		"Workpad: present, status block: present",
 		"/api/v1/refresh: reflected in project state",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {

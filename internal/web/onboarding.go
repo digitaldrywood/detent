@@ -734,7 +734,33 @@ No description provided.
 {% endif %}
 
 Use a single persistent tracker comment headed ## Codex Workpad for the plan,
-validation evidence, blockers, and handoff notes.
+validation evidence, and handoff notes. Every Workpad update must include one
+detent-status fenced block. Detent reads blocker and human-action declarations
+from that block; narrative sentences are never read as blockers.
+
+` + "```detent-status\n" + `schema: 1
+status: in_progress
+blockers: []
+human_action: null
+` + "```\n\n" + `For dependency blockers, use this order:
+
+1. Create GitHub's native blocked_by dependency relation.
+
+` + "```sh\n" + `BLOCKED_NUMBER=<blocked-issue-number>
+BLOCKER_NUMBER=<blocker-issue-number>
+BLOCKER_ID="$(gh api repos/{owner}/{repo}/issues/$BLOCKER_NUMBER --jq '.id')"
+gh api --method POST "repos/{owner}/{repo}/issues/$BLOCKED_NUMBER/dependencies/blocked_by" -F issue_id="$BLOCKER_ID"
+` + "```\n\n" + `2. Declare the blocker in the Workpad status block.
+
+` + "```detent-status\n" + `schema: 1
+status: blocked
+blockers:
+  - ref: "owner/repo#123"
+    reason: "waiting for the dependency to merge"
+human_action: null
+` + "```\n\n" + `3. Legacy fallback during the deprecation window: if native dependencies are
+   unavailable and the project has not migrated, keep a machine-readable
+   issue-body line such as Blocked by: #123 or Depends on: owner/repo#123.
 
 ## Required Execution Flow
 
@@ -745,10 +771,11 @@ applies.
 
 1. Move the issue to In Progress.
 2. Create or update the persistent ## Codex Workpad comment with the plan,
-   acceptance criteria, validation plan, and blockers.
+   acceptance criteria, validation plan, and the in_progress detent-status
+   block shown above.
 3. Fetch current origin/main, confirm this worktree is based on it, and confirm
-   every Depends on: or Blocked by: issue or pull request is merged or otherwise
-   terminal before coding.
+   every native dependency relation, detent-status blocker, and issue-body
+   Depends on: reference is merged or otherwise terminal before coding.
 4. Reproduce or confirm the reported behavior before changing code when the
    issue is a bug.
 5. Implement the smallest complete change that satisfies the issue.
@@ -764,10 +791,12 @@ applies.
 
 ### For In Progress
 
-1. Re-read the issue, pull request, comments, and ## Codex Workpad.
+1. Re-read the issue, pull request, comments, and ## Codex Workpad, including
+   the detent-status block.
 2. Continue from the current repository and tracker state.
-3. If implementation is complete, run the full pre-review gate and move the
-   issue to Human Review only when the gate passes.
+3. If implementation is complete, run the full pre-review gate, update the
+   Workpad block to status: complete with blockers: [] and human_action: null,
+   and move the issue to Human Review only when the gate passes.
 
 ### For Rework
 
@@ -782,14 +811,14 @@ applies.
 
 1. Confirm $go-workflow:ship is available in the Codex environment. If it is
    unavailable, keep the issue in Merging and record the missing ship workflow
-   as an external blocker in the ## Codex Workpad.
+   as human_action in the detent-status block.
 2. Invoke and follow $go-workflow:ship.
 3. Do not call gh pr merge directly outside the ship workflow.
 4. End with exactly one terminal outcome:
    - pull request merged and issue moved to Done;
    - issue moved to Rework with an actionable defect;
    - issue remains in Merging with a concrete external blocker recorded in the
-     ## Codex Workpad.
+     detent-status block and described in the ## Codex Workpad.
 5. Move the issue to Done only after the pull request is merged.`
 }
 
