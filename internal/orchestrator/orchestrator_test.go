@@ -198,6 +198,12 @@ func TestRunStartsLabelModeTodoIssueInProgress(t *testing.T) {
 	if request.Issue.ID != issue.ID {
 		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, issue.ID)
 	}
+	if request.Issue.State != "In Progress" {
+		t.Fatalf("RunRequest.Issue.State = %q, want In Progress", request.Issue.State)
+	}
+	if request.DispatchSourceState != "Todo" || request.DispatchTargetState != "In Progress" {
+		t.Fatalf("RunRequest dispatch transition = %q -> %q, want Todo -> In Progress", request.DispatchSourceState, request.DispatchTargetState)
+	}
 
 	waitForStateUpdate(t, tracker, stateUpdateCall{issueID: issue.ID, state: "In Progress"})
 

@@ -267,7 +267,10 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		o.recordMergeFailed(state, issue, now, "work_attempt_start_failed", nil)
 		return dispatchIssueOutcome{reason: dispatchIssueFailureWorkAttemptStart}
 	}
+	dispatchSourceState := ""
+	dispatchTargetState := ""
 	if targetState != "" {
+		sourceState := issue.State
 		if err := o.updateIssueState(ctx, issue, targetState, now, "dispatch_start"); err != nil {
 			o.releaseGlobalDispatchSlot(globalSlot)
 			o.completeDurableWorkAttempt(ctx, state, Running{
@@ -294,6 +297,11 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 			return dispatchIssueOutcome{reason: dispatchIssueFailureStartStateTransition}
 		}
 		issue.State = targetState
+		dispatchSourceState = sourceState
+		dispatchTargetState = targetState
+	}
+	if dispatchSourceState == "" || dispatchTargetState == "" {
+		dispatchSourceState, dispatchTargetState = o.dispatchTimelineTransitionContext(ctx, issue)
 	}
 	o.markMergeStarted(state, issue, now)
 	claim.Issue = issue
@@ -317,15 +325,17 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	delete(state.Completed, issue.ID)
 
 	request := RunRequest{
-		Issue:           issue,
-		Attempt:         attempt,
-		WorkAttemptID:   workAttemptID,
-		Mode:            runMode,
-		PriorAttempt:    state.PriorAttempts[issue.ID],
-		StartedAt:       now,
-		WorkerHost:      workerHost,
-		SelectorContext: o.selectorContext(),
-		OnUsageUpdate:   o.usageUpdateHandler(runCtx, issue.ID),
+		Issue:               issue,
+		Attempt:             attempt,
+		WorkAttemptID:       workAttemptID,
+		Mode:                runMode,
+		DispatchSourceState: dispatchSourceState,
+		DispatchTargetState: dispatchTargetState,
+		PriorAttempt:        state.PriorAttempts[issue.ID],
+		StartedAt:           now,
+		WorkerHost:          workerHost,
+		SelectorContext:     o.selectorContext(),
+		OnUsageUpdate:       o.usageUpdateHandler(runCtx, issue.ID),
 	}
 	o.logMergeWorkerAttempt(issue, attempt, workerHost)
 	o.logWorkerLifecycle(issue, "worker_attempt_started",
@@ -335,6 +345,22 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	)
 	o.supervisor.Dispatch(runCtx, request, o.runResults)
 	return dispatchIssueOutcome{dispatched: true}
+}
+
+func (o *Orchestrator) dispatchTimelineTransitionContext(ctx context.Context, issue connector.Issue) (string, string) {
+	match, ok := o.latestWorkflowLaneEntry(ctx, issue)
+	if !ok {
+		return "", ""
+	}
+	sourceState := strings.TrimSpace(match.Event.PreviousPhaseName)
+	targetState := strings.TrimSpace(match.Event.PhaseName)
+	if sourceState == "" || targetState == "" {
+		return "", ""
+	}
+	if normalizeState(targetState) != normalizeState(issue.State) {
+		return "", ""
+	}
+	return sourceState, targetState
 }
 
 // dispatchWorkingStates lists the active-state names recognized as the

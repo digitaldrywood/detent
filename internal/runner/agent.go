@@ -572,6 +572,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		MergePrecheckMessage: mergePrecheck.Message,
 		WorkspacePath:        info.Path,
 		Branch:               info.Branch,
+		DispatchSourceState:  req.DispatchSourceState,
+		DispatchTargetState:  req.DispatchTargetState,
 		AvailableSkills:      availableSkills,
 		PriorAttempt:         req.PriorAttempt,
 	})

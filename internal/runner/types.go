@@ -169,15 +169,17 @@ func (e *SessionTokenCeilingError) Unwrap() error {
 }
 
 type RunRequest struct {
-	Issue           connector.Issue
-	Attempt         int
-	WorkAttemptID   int64
-	Mode            string
-	PriorAttempt    PriorAttempt
-	StartedAt       time.Time
-	WorkerHost      string
-	SelectorContext selector.Context
-	OnUsageUpdate   UsageUpdateHandler
+	Issue               connector.Issue
+	Attempt             int
+	WorkAttemptID       int64
+	Mode                string
+	DispatchSourceState string
+	DispatchTargetState string
+	PriorAttempt        PriorAttempt
+	StartedAt           time.Time
+	WorkerHost          string
+	SelectorContext     selector.Context
+	OnUsageUpdate       UsageUpdateHandler
 }
 
 type ValidatorRequest struct {

@@ -206,25 +206,27 @@ type Worker struct {
 }
 
 type Agent struct {
-	MaxConcurrentAgents          int              `yaml:"max_concurrent_agents"`
-	MaxTurns                     int              `yaml:"max_turns"`
-	MaxRetryBackoffMS            int              `yaml:"max_retry_backoff_ms"`
-	MaxSessionTokens             int64            `yaml:"max_session_tokens"`
-	MaxSessionContextMultiplier  float64          `yaml:"max_session_context_multiplier"`
-	MaxSessionTokenOverrideLabel string           `yaml:"max_session_token_override_label"`
-	MaxSessionTokenOverrideField string           `yaml:"max_session_token_override_field"`
-	ExperimentalThreadResume     bool             `yaml:"experimental_thread_resume"`
-	Shutdown                     Shutdown         `yaml:"shutdown"`
-	MaxConcurrentAgentsByState   map[string]int   `yaml:"max_concurrent_agents_by_state"`
-	DispatchPriorityByState      []string         `yaml:"dispatch_priority_by_state"`
-	DispatchPriorityByLabel      []string         `yaml:"dispatch_priority_by_label"`
-	MergeFastPath                MergeFastPath    `yaml:"merge_fast_path"`
-	AutoPromote                  AutoPromote      `yaml:"auto_promote"`
-	OutputTruncation             OutputTruncation `yaml:"output_truncation"`
-	Budget                       Budget           `yaml:"budget"`
-	Lessons                      Lessons          `yaml:"lessons"`
-	Knowledge                    Knowledge        `yaml:"knowledge"`
-	Skills                       Skills           `yaml:"skills"`
+	MaxConcurrentAgents          int                          `yaml:"max_concurrent_agents"`
+	MaxTurns                     int                          `yaml:"max_turns"`
+	MaxRetryBackoffMS            int                          `yaml:"max_retry_backoff_ms"`
+	MaxSessionTokens             int64                        `yaml:"max_session_tokens"`
+	MaxSessionContextMultiplier  float64                      `yaml:"max_session_context_multiplier"`
+	MaxSessionTokenOverrideLabel string                       `yaml:"max_session_token_override_label"`
+	MaxSessionTokenOverrideField string                       `yaml:"max_session_token_override_field"`
+	ExperimentalThreadResume     bool                         `yaml:"experimental_thread_resume"`
+	Shutdown                     Shutdown                     `yaml:"shutdown"`
+	MaxConcurrentAgentsByState   map[string]int               `yaml:"max_concurrent_agents_by_state"`
+	DispatchPriorityByState      []string                     `yaml:"dispatch_priority_by_state"`
+	DispatchPriorityByLabel      []string                     `yaml:"dispatch_priority_by_label"`
+	MergeFastPath                MergeFastPath                `yaml:"merge_fast_path"`
+	AutoPromote                  AutoPromote                  `yaml:"auto_promote"`
+	OutputTruncation             OutputTruncation             `yaml:"output_truncation"`
+	InstructionsByState          map[string]string            `yaml:"instructions_by_state,omitempty"`
+	InstructionsByTransition     map[string]map[string]string `yaml:"instructions_by_transition,omitempty"`
+	Budget                       Budget                       `yaml:"budget"`
+	Lessons                      Lessons                      `yaml:"lessons"`
+	Knowledge                    Knowledge                    `yaml:"knowledge"`
+	Skills                       Skills                       `yaml:"skills"`
 }
 
 type Shutdown struct {
@@ -898,6 +900,7 @@ func (c *Config) Validate() error {
 		validatePositive("worker.max_concurrent_agents_per_host", *c.Worker.MaxConcurrentAgentsPerHost, &problems)
 	}
 	c.Agent.validate("agent", &problems)
+	c.validateAgentInstructions(&problems)
 	c.validateAutoPromoteReworkLimit(&problems)
 	c.validateAutoPromoteNoProgressLimit(&problems)
 	c.Agents.validate(&problems)
@@ -1107,6 +1110,31 @@ func (c *Config) validateTracker(problems *[]string) {
 	validatePositive("tracker.github_rest_fanout_max_requests", c.Tracker.GitHubRESTFanoutMaxRequests, problems)
 	*problems = append(*problems, c.Tracker.Claims.Validate("tracker.claims")...)
 	*problems = append(*problems, c.Tracker.Authorization.Validate("tracker.authorization")...)
+}
+
+func (c *Config) validateAgentInstructions(problems *[]string) {
+	configuredStates := c.configuredWorkflowStates()
+	validateInstructionsByState("agent.instructions_by_state", c.Agent.InstructionsByState, configuredStates, problems)
+	validateInstructionsByTransition("agent.instructions_by_transition", c.Agent.InstructionsByTransition, configuredStates, problems)
+}
+
+func (c Config) configuredWorkflowStates() map[string]string {
+	states := make(map[string]string, len(c.Tracker.ActiveStates)+len(c.Tracker.ObservedStates)+len(c.Tracker.TerminalStates))
+	add := func(values []string) {
+		for _, state := range values {
+			normalized := normalizeIssueState(state)
+			if normalized == "" {
+				continue
+			}
+			if _, ok := states[normalized]; !ok {
+				states[normalized] = strings.TrimSpace(state)
+			}
+		}
+	}
+	add(c.Tracker.ActiveStates)
+	add(c.Tracker.ObservedStates)
+	add(c.Tracker.TerminalStates)
+	return states
 }
 
 func (c *Config) validateAutoPromoteReworkLimit(problems *[]string) {
@@ -2077,11 +2105,96 @@ func validateStateList(field string, states []string, problems *[]string) {
 			*problems = append(*problems, field+" state names must not be blank")
 			return
 		}
-		if _, ok := seen[state]; ok {
+		normalized := normalizeIssueState(state)
+		if _, ok := seen[normalized]; ok {
 			*problems = append(*problems, field+" state names must be unique")
 			return
 		}
-		seen[state] = struct{}{}
+		seen[normalized] = struct{}{}
+	}
+}
+
+func validateInstructionsByState(field string, instructions map[string]string, configuredStates map[string]string, problems *[]string) {
+	blank := false
+	duplicate := false
+	seen := make(map[string]struct{}, len(instructions))
+	for state := range instructions {
+		normalized := normalizeIssueState(state)
+		if normalized == "" {
+			if !blank {
+				*problems = append(*problems, field+" state names must not be blank")
+				blank = true
+			}
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			if !duplicate {
+				*problems = append(*problems, field+" state names must be unique")
+				duplicate = true
+			}
+			continue
+		}
+		seen[normalized] = struct{}{}
+		if _, ok := configuredStates[normalized]; !ok {
+			*problems = append(*problems, field+" state "+strconv.Quote(strings.TrimSpace(state))+" must reference a configured workflow state")
+		}
+	}
+}
+
+func validateInstructionsByTransition(
+	field string,
+	instructions map[string]map[string]string,
+	configuredStates map[string]string,
+	problems *[]string,
+) {
+	sourceBlank := false
+	sourceDuplicate := false
+	targetBlank := false
+	targetDuplicate := false
+	seenSources := make(map[string]struct{}, len(instructions))
+	for source, targets := range instructions {
+		normalizedSource := normalizeIssueState(source)
+		if normalizedSource == "" {
+			if !sourceBlank {
+				*problems = append(*problems, field+" source states must not be blank")
+				sourceBlank = true
+			}
+			continue
+		}
+		if _, ok := seenSources[normalizedSource]; ok {
+			if !sourceDuplicate {
+				*problems = append(*problems, field+" source states must be unique")
+				sourceDuplicate = true
+			}
+		} else {
+			seenSources[normalizedSource] = struct{}{}
+		}
+		if _, ok := configuredStates[normalizedSource]; !ok {
+			*problems = append(*problems, field+" source state "+strconv.Quote(strings.TrimSpace(source))+" must reference a configured workflow state")
+		}
+
+		seenTargets := make(map[string]struct{}, len(targets))
+		for target := range targets {
+			normalizedTarget := normalizeIssueState(target)
+			if normalizedTarget == "" {
+				if !targetBlank {
+					*problems = append(*problems, field+" target states must not be blank")
+					targetBlank = true
+				}
+				continue
+			}
+			if _, ok := seenTargets[normalizedTarget]; ok {
+				if !targetDuplicate {
+					*problems = append(*problems, field+" target states must be unique per source")
+					targetDuplicate = true
+				}
+				continue
+			}
+			seenTargets[normalizedTarget] = struct{}{}
+			if _, ok := configuredStates[normalizedTarget]; !ok {
+				*problems = append(*problems, field+" target state "+strconv.Quote(strings.TrimSpace(target))+" must reference a configured workflow state")
+			}
+		}
 	}
 }
 
