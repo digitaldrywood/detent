@@ -491,6 +491,7 @@ func TestProjectHotReloadsWorkflowFileWithoutRestart(t *testing.T) {
 	}
 
 	runner := newProjectBlockingRunner()
+	watcherReady := make(chan struct{})
 	var orchestratorCreates atomic.Int32
 	got, err := project.New(project.Config{
 		Project: globalconfig.Project{
@@ -505,6 +506,16 @@ func TestProjectHotReloadsWorkflowFileWithoutRestart(t *testing.T) {
 		OrchestratorFactory: func(cfg orchestrator.Config, deps orchestrator.Dependencies) (*orchestrator.Orchestrator, error) {
 			orchestratorCreates.Add(1)
 			return orchestrator.New(cfg, deps)
+		},
+		WorkflowWatcherFactory: func(path string) (project.WorkflowWatcher, error) {
+			if path != workflowPath {
+				t.Fatalf("watch path = %q, want %q", path, workflowPath)
+			}
+			watcher, err := configwatcher.New(path, configwatcher.WithDebounce(10*time.Millisecond))
+			if err != nil {
+				return nil, err
+			}
+			return &readyWorkflowWatcher{watcher: watcher, ready: watcherReady}, nil
 		},
 	})
 	if err != nil {
@@ -521,6 +532,7 @@ func TestProjectHotReloadsWorkflowFileWithoutRestart(t *testing.T) {
 	if started.Kind != project.EventStarted {
 		t.Fatalf("started event = %#v, want project started", started)
 	}
+	waitForWorkflowWatcher(t, watcherReady)
 
 	select {
 	case request := <-runner.started:
@@ -1144,6 +1156,32 @@ type fakeWorkflowWatcher struct {
 
 func (w fakeWorkflowWatcher) Watch(context.Context) (<-chan configwatcher.Update, error) {
 	return w.updates, nil
+}
+
+type readyWorkflowWatcher struct {
+	watcher project.WorkflowWatcher
+	ready   chan<- struct{}
+	once    sync.Once
+}
+
+func (w *readyWorkflowWatcher) Watch(ctx context.Context) (<-chan configwatcher.Update, error) {
+	updates, err := w.watcher.Watch(ctx)
+	if err == nil {
+		w.once.Do(func() {
+			close(w.ready)
+		})
+	}
+	return updates, err
+}
+
+func waitForWorkflowWatcher(t *testing.T, ready <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-ready:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for workflow watcher")
+	}
 }
 
 func waitForWorkflowPrompt(t *testing.T, got *project.Project, want string) {

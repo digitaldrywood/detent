@@ -133,12 +133,12 @@ templ boardCardView2(card boardCardView) {
 			}
 		}
 	>
-		<div class="flex items-center gap-1.5 font-mono text-2xs font-medium text-sec">
+		<div class="flex min-w-0 items-center gap-1.5 font-mono text-2xs font-medium text-sec">
 			if card.Running {
 				@primitives.StatusDot(primitives.KindOK, true)
 			}
 			<span class={ boardCardNumberClass(card) }>{ card.Number }</span>
-			<span class="truncate">{ card.Project }</span>
+			<span class="min-w-8 truncate">{ card.Project }</span>
 			<span class="flex-1"></span>
 			if card.MoveDisabledText != "" {
 				<span class="flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>
