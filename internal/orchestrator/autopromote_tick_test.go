@@ -856,6 +856,74 @@ func TestTickAutoPromoteCommentsOnceForInvalidStructuredWorkpad(t *testing.T) {
 	}
 }
 
+func TestTickAutoPromoteRoutesSuccessfulInvalidStructuredWorkpadToRework(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 13, 30, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	issue := autoPromoteTickIssue("issue-invalid-workpad-success", []string{"bug"}, &connector.PullRequest{
+		Number:                 1491,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/1491",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "pass",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:      issue,
+		FinalState: FinalStateCompleted,
+	}
+	tracker := &autoPromoteTickConnector{
+		stateIssues: []connector.Issue{issue},
+		issueComments: map[string][]connector.IssueComment{
+			issue.ID: {{
+				Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: human-review\nblockers: []\nhuman_action: null\n```",
+				URL:  "https://github.test/comment/invalid-status-value",
+			}},
+		},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	result := orch.autoPromoteHumanReviewIssues(context.Background(), &state, []connector.Issue{issue}, now)
+
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Rework"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned = %#v, want %s", result.transitioned, issue.ID)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one rework comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"Auto-promote routed this issue from Human Review to Rework",
+		"reason: workpad_status_invalid",
+		"human-review",
+		"in_progress, blocked, complete",
+		"https://github.test/comment/invalid-status-value",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+		}
+	}
+}
+
 func TestTickAutoPromoteBlocksWhenReworkLimitReached(t *testing.T) {
 	t.Parallel()
 

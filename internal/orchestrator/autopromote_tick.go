@@ -79,11 +79,13 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		}
 
 		summary := AutoPromoteSummaryFromIssue(issue)
+		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issueID)
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
 		if decision.Reason == AutoPromoteReasonValidatorMissing {
 			validation, shouldComment, ok := o.validatorStageResult(ctx, issue)
 			if !ok {
 				o.startValidatorStage(ctx, issue, now)
+				recordAutoPromoteSnapshotDecision(state, issueID, decision)
 				o.logAutoPromoteDecision(issue, decision, "")
 				continue
 			}
@@ -96,7 +98,9 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		}
 		if decision.Reason == AutoPromoteReasonCINotGreen &&
 			o.retryTransientPullRequestChecks(ctx, state, issue, now, string(AutoPromoteReasonCINotGreen)) {
-			o.logAutoPromoteDecision(issue, autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonCINotGreen), "")
+			decision := autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonCINotGreen)
+			recordAutoPromoteSnapshotDecision(state, issueID, decision)
+			o.logAutoPromoteDecision(issue, decision, "")
 			continue
 		}
 		if autoPromoteDecisionNeedsWorkpadHydration(decision) {
@@ -104,6 +108,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		}
 		targetState := autoPromoteTargetState(decision.Action, cfg)
 		if targetState == "" {
+			recordAutoPromoteSnapshotDecision(state, issueID, decision)
 			o.logAutoPromoteDecision(issue, decision, "")
 			continue
 		}
@@ -124,6 +129,35 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		return autoPromoteTickResult{}
 	}
 	return result
+}
+
+func autoPromoteCompletedFinalState(state *State, issueID string) string {
+	if state == nil {
+		return ""
+	}
+	completed, ok := state.Completed[strings.TrimSpace(issueID)]
+	if !ok {
+		return ""
+	}
+	return completed.FinalState
+}
+
+func recordAutoPromoteSnapshotDecision(state *State, issueID string, decision AutoPromoteDecision) {
+	if state == nil {
+		return
+	}
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return
+	}
+	if decision.Action != AutoPromoteActionAwaitReview && decision.Action != AutoPromoteActionSkip {
+		delete(state.AutoPromoteDecisions, issueID)
+		return
+	}
+	if state.AutoPromoteDecisions == nil {
+		state.AutoPromoteDecisions = map[string]AutoPromoteDecision{}
+	}
+	state.AutoPromoteDecisions[issueID] = cloneAutoPromoteDecision(decision)
 }
 
 func (o *Orchestrator) autoPromoteEvaluationIssues(
@@ -260,7 +294,7 @@ func (o *Orchestrator) hydrateAutoPromoteWorkpadDecision(
 	}
 	issue = o.hydrateAutoPromoteWorkpadBlockerRefs(ctx, issue, cfg)
 	decision := EvaluateAutoPromote(issue, summary, cfg, now)
-	if decision.Reason == AutoPromoteReasonWorkpadStatusInvalid {
+	if decision.Reason == AutoPromoteReasonWorkpadStatusInvalid && decision.Action != AutoPromoteActionRework {
 		o.commentInvalidWorkpadStatus(ctx, issue, decision)
 	}
 	if decision.WorkpadProseFallbackDisabled && o.logger != nil {
@@ -400,6 +434,8 @@ func invalidWorkpadStatusComment(decision AutoPromoteDecision) string {
 	b.WriteString("\nDetent could not parse the `detent-status` block in the latest `## Codex Workpad` comment.")
 	b.WriteString("\n\n- reason: ")
 	b.WriteString(strings.TrimSpace(decision.WorkpadStatusInvalid))
+	b.WriteString("\n- allowed_statuses: ")
+	b.WriteString(autoPromoteAllowedWorkpadStatuses())
 	if url := strings.TrimSpace(decision.WorkpadCommentURL); url != "" {
 		b.WriteString("\n- workpad_comment: ")
 		b.WriteString(url)
@@ -409,6 +445,10 @@ func invalidWorkpadStatusComment(decision AutoPromoteDecision) string {
 	b.WriteString("\n\nUse this schema:")
 	b.WriteString("\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```")
 	return b.String()
+}
+
+func autoPromoteAllowedWorkpadStatuses() string {
+	return strings.Join([]string{workpad.StatusInProgress, workpad.StatusBlocked, workpad.StatusComplete}, ", ")
 }
 
 func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
@@ -1370,6 +1410,7 @@ func (o *Orchestrator) clearAutoPromotedIssueDispatchMemory(state *State, issueI
 	delete(state.Retry, issueID)
 	delete(state.Blocked, issueID)
 	delete(state.Completed, issueID)
+	delete(state.AutoPromoteDecisions, issueID)
 }
 
 func (o *Orchestrator) startValidatorStage(ctx context.Context, issue connector.Issue, now time.Time) {
@@ -2297,26 +2338,37 @@ func autoPromoteComment(
 	if sourceState == "" {
 		sourceState = autoPromoteSourceState
 	}
-	switch targetState {
-	case autoPromoteMergingState:
+	targetState = displayStateName(targetState)
+	if targetState == "" {
+		return ""
+	}
+	switch {
+	case decision.Action == AutoPromoteActionPromote:
 		b.WriteString("Auto-promoted this issue from ")
 		b.WriteString(sourceState)
-		b.WriteString(" to Merging.")
-	case autoPromoteReworkState:
+		b.WriteString(" to ")
+		b.WriteString(targetState)
+		b.WriteString(".")
+	case decision.Action == AutoPromoteActionRework:
 		b.WriteString("Auto-promote routed this issue from ")
 		b.WriteString(sourceState)
-		b.WriteString(" to Rework")
+		b.WriteString(" to ")
+		b.WriteString(targetState)
 		switch decision.Reason {
 		case AutoPromoteReasonCINotGreen:
 			b.WriteString(": current-head CI is failing")
 		case AutoPromoteReasonMergeConflicts:
 			b.WriteString(": linked PR has merge conflicts")
+		case AutoPromoteReasonWorkpadStatusInvalid:
+			b.WriteString(": workpad status is invalid")
 		}
 		b.WriteString(".")
-	case autoPromoteSourceState:
+	case normalizeState(targetState) == normalizeState(autoPromoteSourceState):
 		b.WriteString("Reconciled this issue from ")
 		b.WriteString(sourceState)
-		b.WriteString(" to Human Review because it already has a linked PR.")
+		b.WriteString(" to ")
+		b.WriteString(targetState)
+		b.WriteString(" because it already has a linked PR.")
 	default:
 		return ""
 	}
@@ -2340,6 +2392,7 @@ func autoPromoteComment(
 		b.WriteString("\n- failed_checks: ")
 		b.WriteString(failedChecks)
 	}
+	appendAutoPromoteWorkpadCommentFields(&b, decision)
 
 	if len(decision.Findings) > 0 {
 		b.WriteString("\n\nFindings:")
@@ -2350,6 +2403,23 @@ func autoPromoteComment(
 	}
 
 	return b.String()
+}
+
+func appendAutoPromoteWorkpadCommentFields(b *strings.Builder, decision AutoPromoteDecision) {
+	if invalid := strings.TrimSpace(decision.WorkpadStatusInvalid); invalid != "" {
+		b.WriteString("\n- workpad_status_invalid: ")
+		b.WriteString(invalid)
+		b.WriteString("\n- allowed_statuses: ")
+		b.WriteString(autoPromoteAllowedWorkpadStatuses())
+	}
+	if url := strings.TrimSpace(decision.WorkpadCommentURL); url != "" {
+		b.WriteString("\n- workpad_comment: ")
+		b.WriteString(url)
+	}
+	if hash := strings.TrimSpace(decision.WorkpadStatusInvalidHash); hash != "" {
+		b.WriteString("\n- workpad_status_hash: ")
+		b.WriteString(hash)
+	}
 }
 
 func autoPromoteReworkLimitComment(

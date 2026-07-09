@@ -46,7 +46,7 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 		}
 
 		result.transitioned[issueID] = struct{}{}
-		if direct, promoted := o.tryDirectCompletedActiveAutoPromote(ctx, state, issue, targetState, cfg, now); direct {
+		if direct, promoted := o.tryDirectCompletedActiveAutoPromote(ctx, state, issue, targetState, completed.FinalState, cfg, now); direct {
 			if mergeWorkerIssue(promoted) {
 				o.recordMergeQueueEntered(state, promoted, now, "completed_active_auto_promote")
 				result.dispatchCandidates = append(result.dispatchCandidates, promoted)
@@ -169,6 +169,7 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 	state *State,
 	issue connector.Issue,
 	reviewState string,
+	completedFinalState string,
 	cfg AutoPromoteConfig,
 	now time.Time,
 ) (bool, connector.Issue) {
@@ -177,13 +178,10 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 	}
 
 	summary := AutoPromoteSummaryFromIssue(issue)
+	summary.CompletedFinalState = completedFinalState
 	decision := EvaluateAutoPromote(issue, summary, cfg, now)
 	if autoPromoteDecisionNeedsWorkpadHydration(decision) {
 		issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
-	}
-	if decision.Action != AutoPromoteActionPromote {
-		o.logAutoPromoteDecision(issue, decision, "")
-		return false, connector.Issue{}
 	}
 	targetState := autoPromoteTargetState(decision.Action, cfg)
 	if targetState == "" {

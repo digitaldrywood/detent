@@ -42,6 +42,12 @@ func TestSignalFromComment(t *testing.T) {
 			wantInvalid: "field extra not found",
 		},
 		{
+			name:        "invalid status value",
+			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: human-review\nblockers: []\nhuman_action: null\n```",
+			wantOK:      true,
+			wantInvalid: `status "human-review" must be one of in_progress, blocked, complete`,
+		},
+		{
 			name:        "bad ref",
 			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: \"not-a-ref\"\nhuman_action: null\n```",
 			wantOK:      true,

@@ -835,6 +835,117 @@ func TestEvaluateAutoPromoteStructuredWorkpad(t *testing.T) {
 	}
 }
 
+func TestEvaluateAutoPromoteStructuredWorkpadStatusPolicy(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 13, 45, 0, 0, time.UTC)
+	oldActivity := now.Add(-20 * time.Minute)
+	ready := AutoPromoteSummary{
+		PullRequestURL: "https://github.test/pull/42",
+		CIStatus:       "green",
+		LastActivityAt: &oldActivity,
+	}
+	cfg := AutoPromoteConfig{
+		Enabled:        true,
+		QuietDuration:  10 * time.Minute,
+		TerminalStates: []string{"Done", "Cancelled"},
+		Gate:           gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+	}
+
+	tests := []struct {
+		name                string
+		body                string
+		completedFinalState string
+		structuredOnly      bool
+		wantAction          AutoPromoteAction
+		wantReason          AutoPromoteReason
+		wantBlocker         string
+		wantSource          string
+		wantInvalid         string
+		wantProseDisabled   bool
+	}{
+		{
+			name:       "valid complete promotes",
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
+			wantAction: AutoPromoteActionPromote,
+			wantReason: AutoPromoteReasonReady,
+			wantSource: "structured",
+		},
+		{
+			name:                "invalid status after success routes to rework",
+			body:                "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: human-review\nblockers: []\nhuman_action: null\n```",
+			completedFinalState: FinalStateCompleted,
+			wantAction:          AutoPromoteActionRework,
+			wantReason:          AutoPromoteReasonWorkpadStatusInvalid,
+			wantSource:          "structured",
+			wantInvalid:         `status "human-review"`,
+		},
+		{
+			name:                "invalid status after failure awaits review",
+			body:                "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: human_review\nblockers: []\nhuman_action: null\n```",
+			completedFinalState: "failed",
+			wantAction:          AutoPromoteActionAwaitReview,
+			wantReason:          AutoPromoteReasonWorkpadStatusInvalid,
+			wantSource:          "structured",
+			wantInvalid:         `status "human_review"`,
+		},
+		{
+			name:        "missing structured block uses prose fallback",
+			body:        "## Codex Workpad\n\n### Blockers\n- Owner approval is still required before merge.",
+			wantAction:  AutoPromoteActionAwaitReview,
+			wantReason:  AutoPromoteReasonWorkpadBlocker,
+			wantBlocker: "Owner approval is still required before merge.",
+			wantSource:  "prose_section",
+		},
+		{
+			name:              "missing structured block with structured only ignores prose",
+			body:              "## Codex Workpad\n\n### Blockers\n- Owner approval is still required before merge.",
+			structuredOnly:    true,
+			wantAction:        AutoPromoteActionPromote,
+			wantReason:        AutoPromoteReasonReady,
+			wantSource:        "prose_section",
+			wantProseDisabled: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := autoPromoteTestIssue("issue-workpad-status-policy", nil)
+			issue.Identifier = "digitaldrywood/detent#1107"
+			issue.Comments = []connector.IssueComment{{
+				Body: tt.body,
+				URL:  "https://github.test/comment/workpad-status-policy",
+			}}
+			testCfg := cfg
+			testCfg.WorkpadStructuredOnly = tt.structuredOnly
+			summary := ready
+			summary.CompletedFinalState = tt.completedFinalState
+
+			got := EvaluateAutoPromote(issue, summary, testCfg, now)
+			if got.Action != tt.wantAction {
+				t.Fatalf("Action = %q, want %q", got.Action, tt.wantAction)
+			}
+			if got.Reason != tt.wantReason {
+				t.Fatalf("Reason = %q, want %q", got.Reason, tt.wantReason)
+			}
+			if got.WorkpadBlocker != tt.wantBlocker {
+				t.Fatalf("WorkpadBlocker = %q, want %q", got.WorkpadBlocker, tt.wantBlocker)
+			}
+			if got.WorkpadSignalSource != tt.wantSource {
+				t.Fatalf("WorkpadSignalSource = %q, want %q", got.WorkpadSignalSource, tt.wantSource)
+			}
+			if tt.wantInvalid != "" && !strings.Contains(got.WorkpadStatusInvalid, tt.wantInvalid) {
+				t.Fatalf("WorkpadStatusInvalid = %q, want containing %q", got.WorkpadStatusInvalid, tt.wantInvalid)
+			}
+			if got.WorkpadProseFallbackDisabled != tt.wantProseDisabled {
+				t.Fatalf("WorkpadProseFallbackDisabled = %v, want %v", got.WorkpadProseFallbackDisabled, tt.wantProseDisabled)
+			}
+		})
+	}
+}
+
 func TestAutoPromoteWaitsForFreshPullRequestActivityWithoutAutomatedReview(t *testing.T) {
 	t.Parallel()
 

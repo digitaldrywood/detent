@@ -41,6 +41,7 @@ type State struct {
 	StatusDrift              connector.StatusDrift
 	BoardIssues              []connector.Issue
 	Pipeline                 []connector.Issue
+	AutoPromoteDecisions     map[string]AutoPromoteDecision
 	Running                  map[string]Running
 	WorkAttempts             []telemetry.WorkAttempt
 	SchedulerDecisions       []telemetry.SchedulerDecision
@@ -192,6 +193,7 @@ func newState(cfg Config) State {
 		Instance:                 instanceSnapshot(cfg),
 		Authorization:            cloneSelector(cfg.Authorization),
 		SelectorContext:          cfg.SelectorContext,
+		AutoPromoteDecisions:     map[string]AutoPromoteDecision{},
 		Running:                  map[string]Running{},
 		Claimed:                  map[string]Claimed{},
 		Blocked:                  map[string]Blocked{},
@@ -237,6 +239,7 @@ func (s State) clone() State {
 		StatusDrift:              cloneStatusDrift(s.StatusDrift),
 		BoardIssues:              cloneIssues(s.BoardIssues),
 		Pipeline:                 cloneIssues(s.Pipeline),
+		AutoPromoteDecisions:     cloneAutoPromoteDecisions(s.AutoPromoteDecisions),
 		WorkAttempts:             cloneTelemetryWorkAttempts(s.WorkAttempts),
 		SchedulerDecisions:       cloneTelemetrySchedulerDecisions(s.SchedulerDecisions),
 		Running:                  make(map[string]Running, len(s.Running)),

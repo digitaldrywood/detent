@@ -11,6 +11,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
+const (
+	autoPromoteActionMetadataKey = "detent.auto_promote_action"
+	autoPromoteReasonMetadataKey = "detent.auto_promote_reason"
+)
+
 // Snapshot converts the orchestrator State into a telemetry.Snapshot suitable
 // for publishing to the web dashboard. Slices are sorted by issue id so the
 // output is deterministic.
@@ -39,6 +44,9 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	statusDrift := authorizedStatusDrift(s.StatusDrift, s.Authorization, s.SelectorContext)
 	boardIssueSnapshots := issueSnapshots(boardIssues, s.AutoPromoteQuietDuration, s.PollInterval, now)
 	s.applyGatePendingSnapshots(boardIssueSnapshots, boardIssues)
+	s.applyAutoPromoteDecisionSnapshots(boardIssueSnapshots, boardIssues, now)
+	pipelineIssueSnapshots := pipelineSnapshots(pipeline, s.AutoPromoteQuietDuration, s.PollInterval, s.MergeTimings, now)
+	s.applyAutoPromoteDecisionSnapshots(pipelineIssueSnapshots, pipeline, now)
 	snapshot := telemetry.Snapshot{
 		GeneratedAt:        now,
 		Instance:           s.Instance,
@@ -48,7 +56,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Refresh:            refresh,
 		TrackerDrift:       statusDriftSnapshot(statusDrift, s.AutoPromoteQuietDuration, s.PollInterval, now),
 		BoardIssues:        boardIssueSnapshots,
-		Pipeline:           pipelineSnapshots(pipeline, s.AutoPromoteQuietDuration, s.PollInterval, s.MergeTimings, now),
+		Pipeline:           pipelineIssueSnapshots,
 		Running:            runningSnapshots(s.Running, s.Claimed, s.MergeTimings, now),
 		WorkAttempts:       cloneTelemetryWorkAttempts(s.WorkAttempts),
 		SchedulerDecisions: cloneTelemetrySchedulerDecisions(s.SchedulerDecisions),
@@ -87,6 +95,51 @@ func (s State) applyGatePendingSnapshots(snapshots []telemetry.Issue, issues []c
 			snapshots[i].GatePending = true
 		}
 	}
+}
+
+func (s State) applyAutoPromoteDecisionSnapshots(snapshots []telemetry.Issue, issues []connector.Issue, now time.Time) {
+	if len(snapshots) == 0 || len(issues) == 0 {
+		return
+	}
+	for i := range snapshots {
+		if i >= len(issues) {
+			return
+		}
+		issueID := strings.TrimSpace(issues[i].ID)
+		decision, ok := s.AutoPromoteDecisions[issueID]
+		if !ok {
+			if !s.shouldComputeAutoPromoteSnapshotDecision(issues[i]) {
+				continue
+			}
+			summary := AutoPromoteSummaryFromIssue(issues[i])
+			summary.CompletedFinalState = autoPromoteCompletedFinalState(&s, issueID)
+			decision = EvaluateAutoPromote(issues[i], summary, s.AutoPromote, now)
+		}
+		if !autoPromoteDecisionVisibleOnCard(decision) {
+			continue
+		}
+		if snapshots[i].Metadata == nil {
+			snapshots[i].Metadata = map[string]string{}
+		}
+		snapshots[i].Metadata[autoPromoteActionMetadataKey] = string(decision.Action)
+		snapshots[i].Metadata[autoPromoteReasonMetadataKey] = string(decision.Reason)
+	}
+}
+
+func (s State) shouldComputeAutoPromoteSnapshotDecision(issue connector.Issue) bool {
+	cfg := normalizeAutoPromoteConfig(s.AutoPromote)
+	if normalizeState(issue.State) == normalizeState(cfg.SourceState) {
+		return true
+	}
+	return autoPromoteActiveGatePendingIssue(issue, &s, Config{
+		AutoPromote:    cfg,
+		ActiveStates:   append([]string(nil), s.ActiveStates...),
+		TerminalStates: append([]string(nil), s.TerminalStates...),
+	}, cfg)
+}
+
+func autoPromoteDecisionVisibleOnCard(decision AutoPromoteDecision) bool {
+	return decision.Action == AutoPromoteActionAwaitReview || decision.Action == AutoPromoteActionSkip
 }
 
 func authorizedSnapshotIssues(issues []connector.Issue, authorization selector.Selector, ctx selector.Context) []connector.Issue {

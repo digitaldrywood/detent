@@ -342,6 +342,69 @@ func TestTransitionCompletedActiveIssuesLeavesAutoPromoteIssueActive(t *testing.
 	}
 }
 
+func TestTransitionCompletedActiveIssuesRoutesInvalidWorkpadStatusToRework(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 14, 10, 0, 0, time.UTC)
+	issue := completionTransitionIssue("In Progress", "OPEN")
+	issue.PullRequest = &connector.PullRequest{
+		Number:                 20,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/20",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: timePointer(now.Add(-20 * time.Minute)),
+	}
+	issue.Comments = []connector.IssueComment{{
+		Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: human-review\nblockers: []\nhuman_action: null\n```",
+		URL:  "https://github.test/comment/completed-invalid-workpad",
+	}}
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 0,
+			GateWaitState: autoPromoteGateWaitReview,
+			Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:       issue,
+		CompletedAt: now.Add(-time.Minute),
+		FinalState:  FinalStateCompleted,
+	}
+
+	result := orch.transitionCompletedActiveIssuesToReview(context.Background(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing", issue.ID)
+	}
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Rework"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if got := state.Completed[issue.ID].Issue.State; got != "Rework" {
+		t.Fatalf("Completed issue state = %q, want Rework", got)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one rework comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"Auto-promote routed this issue from In Progress to Rework",
+		"reason: workpad_status_invalid",
+		`status "human-review"`,
+		"in_progress, blocked, complete",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+		}
+	}
+}
+
 func TestTransitionCompletedActiveIssuesEscalatesGateWaitTimeout(t *testing.T) {
 	t.Parallel()
 
