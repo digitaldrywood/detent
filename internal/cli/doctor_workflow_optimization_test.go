@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -340,6 +341,201 @@ func TestDoctorWorkflowOptimizationFindingsTokenImpactIsAvoidable(t *testing.T) 
 			}
 		})
 	}
+}
+
+func TestDoctorWorkflowOptimizationReviewFlowFindings(t *testing.T) {
+	t.Parallel()
+
+	autopilot := workflowconfig.Default()
+	autopilot.Agent.AutoPromote.Enabled = true
+	autopilot.Agent.AutoPromote.QuietSeconds = 0
+	autopilot.Agent.AutoPromote.GateWaitState = workflowconfig.AutoPromoteGateWaitStateSource
+
+	reviewGate := workflowconfig.Default()
+	reviewGate.Agent.AutoPromote.Enabled = true
+	reviewGate.Agent.AutoPromote.QuietSeconds = 600
+	reviewGate.Agent.AutoPromote.GateWaitState = workflowconfig.AutoPromoteGateWaitStateReview
+
+	tests := []struct {
+		name      string
+		cfg       workflowconfig.Config
+		metrics   doctorWorkflowOptimizationMetrics
+		wantRules []string
+	}{
+		{
+			name: "autopilot clean",
+			cfg:  autopilot,
+			metrics: doctorWorkflowOptimizationMetrics{
+				ReviewEntryCount: 1,
+			},
+		},
+		{
+			name: "autopilot repeated review entry mismatch",
+			cfg:  autopilot,
+			metrics: doctorWorkflowOptimizationMetrics{
+				ReviewEntryCount:      2,
+				ReviewEntryIssue:      "digitaldrywood/detent#981",
+				ReviewEntryIssueCount: 2,
+			},
+			wantRules: []string{doctorWorkflowRuleReviewFlowBehaviorMismatch},
+		},
+		{
+			name: "review gate review entries are normal",
+			cfg:  reviewGate,
+			metrics: doctorWorkflowOptimizationMetrics{
+				ReviewEntryCount:      3,
+				ReviewEntryIssue:      "digitaldrywood/detent#415",
+				ReviewEntryIssueCount: 3,
+			},
+		},
+		{
+			name: "invalid workpad status recurrence",
+			cfg:  autopilot,
+			metrics: doctorWorkflowOptimizationMetrics{
+				InvalidWorkpadStatusDecisions:  2,
+				InvalidWorkpadStatusIssue:      "digitaldrywood/detent#981",
+				InvalidWorkpadStatusIssueCount: 2,
+			},
+			wantRules: []string{doctorWorkflowRuleInvalidWorkpadStatusRecurrence},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", tt.cfg, tt.metrics)
+			for _, rule := range tt.wantRules {
+				finding := doctorWorkflowFindingByRule(t, findings, rule)
+				if got := finding.Evidence["review_flow"]; got != doctorReviewFlowChoice(tt.cfg) {
+					t.Fatalf("%s review_flow evidence = %#v, want %s", rule, got, doctorReviewFlowChoice(tt.cfg))
+				}
+			}
+			for _, finding := range findings {
+				if finding.RuleID != doctorWorkflowRuleReviewFlowBehaviorMismatch &&
+					finding.RuleID != doctorWorkflowRuleInvalidWorkpadStatusRecurrence {
+					continue
+				}
+				if !slices.Contains(tt.wantRules, finding.RuleID) {
+					t.Fatalf("unexpected review-flow finding %s in %#v", finding.RuleID, findings)
+				}
+			}
+		})
+	}
+}
+
+func TestDoctorWorkflowReviewFlowTelemetryCountsImmediateReviewEntries(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "detent.db")
+	backend, err := store.Open(ctx, store.Config{
+		Backend: store.BackendSQLite,
+		Path:    dbPath,
+	})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+
+	base := time.Date(2026, 7, 9, 16, 0, 0, 0, time.UTC)
+	issue := "digitaldrywood/detent#981"
+	for index := range 2 {
+		startedAt := base.Add(time.Duration(index) * time.Hour)
+		completedAt := startedAt.Add(5 * time.Minute)
+		sessionID, err := backend.StartSession(ctx, store.SessionStart{
+			Identifier: issue,
+			StartedAt:  startedAt,
+			Model:      "gpt-5-codex",
+		})
+		if err != nil {
+			t.Fatalf("StartSession() error = %v", err)
+		}
+		if err := backend.FinishSession(ctx, sessionID, store.SessionFinish{
+			CompletedAt:       completedAt,
+			Turns:             1,
+			InputTokens:       900,
+			CachedInputTokens: 450,
+			OutputTokens:      100,
+			TotalTokens:       1000,
+			RuntimeSeconds:    300,
+			FinalState:        "completed",
+			Model:             "gpt-5-codex",
+		}); err != nil {
+			t.Fatalf("FinishSession() error = %v", err)
+		}
+		if _, err := backend.RecordUsageEvent(ctx, store.UsageEvent{
+			ProjectID:         "detent",
+			SessionID:         sessionID,
+			Identifier:        issue,
+			Model:             "gpt-5-codex",
+			InputTokens:       900,
+			CachedInputTokens: 450,
+			OutputTokens:      100,
+			TotalTokens:       1000,
+			RuntimeSeconds:    300,
+			StartedAt:         startedAt,
+			FinishedAt:        completedAt,
+			Outcome:           "completed",
+		}); err != nil {
+			t.Fatalf("RecordUsageEvent() error = %v", err)
+		}
+		if _, err := backend.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
+			ProjectID:         "detent",
+			Identifier:        issue,
+			PhaseType:         store.WorkflowPhaseTypeLane,
+			PhaseName:         "Human Review",
+			PreviousPhaseName: "In Progress",
+			Status:            "entered",
+			StartedAt:         completedAt.Add(2 * time.Minute),
+			Reason:            "completed_active_review_transition",
+		}); err != nil {
+			t.Fatalf("RecordWorkflowPhaseEvent(review) error = %v", err)
+		}
+		if _, err := backend.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
+			ProjectID:         "detent",
+			Identifier:        issue,
+			PhaseType:         store.WorkflowPhaseTypeLane,
+			PhaseName:         "Rework",
+			PreviousPhaseName: "Human Review",
+			Status:            "entered",
+			StartedAt:         completedAt.Add(4 * time.Minute),
+			Reason:            "workpad_status_invalid",
+		}); err != nil {
+			t.Fatalf("RecordWorkflowPhaseEvent(invalid) error = %v", err)
+		}
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	db, err := openDoctorSQLiteReadOnly(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("openDoctorSQLiteReadOnly() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	cfg := workflowconfig.Default()
+	cfg.Agent.AutoPromote.Enabled = true
+	cfg.Agent.AutoPromote.QuietSeconds = 0
+	cfg.Agent.AutoPromote.GateWaitState = workflowconfig.AutoPromoteGateWaitStateSource
+	metrics, err := doctorWorkflowOptimizationMetricsForProject(ctx, db, "detent", cfg)
+	if err != nil {
+		t.Fatalf("doctorWorkflowOptimizationMetricsForProject() error = %v", err)
+	}
+	if metrics.ReviewEntryCount != 2 || metrics.ReviewEntryIssue != issue {
+		t.Fatalf("review entry metrics = count %d issue %q, want 2/%s", metrics.ReviewEntryCount, metrics.ReviewEntryIssue, issue)
+	}
+	if metrics.InvalidWorkpadStatusDecisions != 2 || metrics.InvalidWorkpadStatusIssue != issue {
+		t.Fatalf("invalid status metrics = count %d issue %q, want 2/%s", metrics.InvalidWorkpadStatusDecisions, metrics.InvalidWorkpadStatusIssue, issue)
+	}
+	findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", cfg, metrics)
+	doctorWorkflowFindingByRule(t, findings, doctorWorkflowRuleReviewFlowBehaviorMismatch)
+	doctorWorkflowFindingByRule(t, findings, doctorWorkflowRuleInvalidWorkpadStatusRecurrence)
 }
 
 func TestDoctorWorkflowOptimizationRunawaySessionTokensRespectsConfiguredCap(t *testing.T) {

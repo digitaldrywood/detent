@@ -29,28 +29,33 @@ import (
 const (
 	doctorWorkflowOptimizationCheckName = "Workflow optimization"
 
-	doctorWorkflowRuleRunawaySessionTokens     = "runaway_session_tokens"
-	doctorWorkflowRuleReworkLaps               = "rework_laps"
-	doctorWorkflowRuleValidatorModel           = "validator_model"
-	doctorWorkflowRuleEmptyModelTelemetry      = "empty_model_telemetry"
-	doctorWorkflowRulePinnedRouteModelRejected = "pinned_route_model_rejected"
-	doctorWorkflowRuleBudgetEstimateDrift      = "budget_estimate_drift"
-	doctorWorkflowRuleSchedulerSkipRate        = "scheduler_skip_rate"
+	doctorWorkflowRuleRunawaySessionTokens           = "runaway_session_tokens"
+	doctorWorkflowRuleReworkLaps                     = "rework_laps"
+	doctorWorkflowRuleValidatorModel                 = "validator_model"
+	doctorWorkflowRuleEmptyModelTelemetry            = "empty_model_telemetry"
+	doctorWorkflowRulePinnedRouteModelRejected       = "pinned_route_model_rejected"
+	doctorWorkflowRuleBudgetEstimateDrift            = "budget_estimate_drift"
+	doctorWorkflowRuleSchedulerSkipRate              = "scheduler_skip_rate"
+	doctorWorkflowRuleInvalidWorkpadStatusRecurrence = "invalid_workpad_status_recurrence"
+	doctorWorkflowRuleReviewFlowBehaviorMismatch     = "review_flow_behavior_mismatch"
+	doctorWorkflowRuleReviewFlowProseMismatch        = "review_flow_prose_mismatch"
 
-	doctorWorkflowRunawayMedianMultiplier = 4.0
-	doctorWorkflowReworkLapThreshold      = 1
-	doctorWorkflowRecentSessionLimit      = 50
-	doctorWorkflowRecentSessionWindow     = 24 * time.Hour
-	doctorWorkflowEmptyModelMinFraction   = 0.20
-	doctorWorkflowBudgetEstimateInput     = int64(150_000)
-	doctorWorkflowBudgetEstimateOutput    = int64(20_000)
-	doctorWorkflowBudgetEstimateTotal     = doctorWorkflowBudgetEstimateInput + doctorWorkflowBudgetEstimateOutput
-	doctorWorkflowBudgetEstimateBillable  = doctorWorkflowBudgetEstimateInput + doctorWorkflowBudgetEstimateOutput
-	doctorWorkflowBudgetDriftRatio        = 1.50
-	doctorWorkflowSchedulerMinDecisions   = int64(5)
-	doctorWorkflowSchedulerHighSkipRate   = 0.50
-	doctorWorkflowValidatorModel          = "gpt-5.4-mini"
-	doctorWorkflowRunawayCapTolerance     = 1.25
+	doctorWorkflowRunawayMedianMultiplier      = 4.0
+	doctorWorkflowReworkLapThreshold           = 1
+	doctorWorkflowRecentSessionLimit           = 50
+	doctorWorkflowRecentSessionWindow          = 24 * time.Hour
+	doctorWorkflowEmptyModelMinFraction        = 0.20
+	doctorWorkflowBudgetEstimateInput          = int64(150_000)
+	doctorWorkflowBudgetEstimateOutput         = int64(20_000)
+	doctorWorkflowBudgetEstimateTotal          = doctorWorkflowBudgetEstimateInput + doctorWorkflowBudgetEstimateOutput
+	doctorWorkflowBudgetEstimateBillable       = doctorWorkflowBudgetEstimateInput + doctorWorkflowBudgetEstimateOutput
+	doctorWorkflowBudgetDriftRatio             = 1.50
+	doctorWorkflowSchedulerMinDecisions        = int64(5)
+	doctorWorkflowSchedulerHighSkipRate        = 0.50
+	doctorWorkflowReviewFlowMismatchMinEntries = int64(2)
+	doctorWorkflowInvalidWorkpadStatusMinCount = int64(2)
+	doctorWorkflowValidatorModel               = "gpt-5.4-mini"
+	doctorWorkflowRunawayCapTolerance          = 1.25
 )
 
 var errDoctorTelemetryStoreUnavailable = errors.New("telemetry store unavailable")
@@ -110,6 +115,12 @@ type doctorWorkflowOptimizationMetrics struct {
 	P90SessionBillableTokens         int64   `json:"p90_session_billable_tokens"`
 	BudgetEstimateBillableDriftRatio float64 `json:"budget_estimate_billable_drift_ratio"`
 	BudgetEstimateDriftRatio         float64 `json:"budget_estimate_drift_ratio"`
+	ReviewEntryCount                 int64   `json:"review_entry_count"`
+	ReviewEntryIssue                 string  `json:"review_entry_issue,omitempty"`
+	ReviewEntryIssueCount            int64   `json:"review_entry_issue_count"`
+	InvalidWorkpadStatusDecisions    int64   `json:"invalid_workpad_status_decisions"`
+	InvalidWorkpadStatusIssue        string  `json:"invalid_workpad_status_issue,omitempty"`
+	InvalidWorkpadStatusIssueCount   int64   `json:"invalid_workpad_status_issue_count"`
 }
 
 type doctorWorkflowOptimizationFinding struct {
@@ -162,6 +173,25 @@ type doctorWorkflowLaneMetrics struct {
 type doctorWorkflowSchedulerMetrics struct {
 	count   int64
 	skipped int64
+}
+
+type doctorWorkflowReviewFlowMetrics struct {
+	reviewEntryCount               int64
+	reviewEntryIssue               string
+	reviewEntryIssueCount          int64
+	invalidWorkpadStatusDecisions  int64
+	invalidWorkpadStatusIssue      string
+	invalidWorkpadStatusIssueCount int64
+}
+
+type doctorWorkflowCompletedSession struct {
+	issueKey    string
+	completedAt time.Time
+}
+
+type doctorWorkflowReviewEntryEvent struct {
+	issueKey  string
+	startedAt time.Time
 }
 
 func (r *doctorWorkflowOptimizationReport) Merge(next doctorWorkflowOptimizationReport) {
@@ -370,31 +400,41 @@ func doctorWorkflowOptimizationMetricsForProject(
 	if err != nil {
 		return doctorWorkflowOptimizationMetrics{}, err
 	}
+	reviewFlow, err := doctorWorkflowReviewFlowTelemetry(ctx, db, projectID, cfg.Agent.AutoPromote.SourceState)
+	if err != nil {
+		return doctorWorkflowOptimizationMetrics{}, err
+	}
 
 	metrics := doctorWorkflowOptimizationMetrics{
-		SessionCount:                 sessions.count,
-		UsageEventCount:              usage.count,
-		InputTokens:                  sessions.inputTokens,
-		CachedInputTokens:            sessions.cachedInputTokens,
-		OutputTokens:                 sessions.outputTokens,
-		TotalTokens:                  sessions.totalTokens,
-		MedianSessionTokens:          doctorPercentileInt64(sessions.totalTokensBySession, 0.50),
-		P90SessionTokens:             doctorPercentileInt64(sessions.totalTokensBySession, 0.90),
-		P90SessionBillableTokens:     doctorPercentileInt64(sessions.billableTokensBySession, 0.90),
-		MaxSessionTokens:             doctorMaxInt64(sessions.totalTokensBySession),
-		RecentSessionCount:           sessions.recentSessionCount,
-		EmptyModelRecentSessions:     sessions.emptyModelRecentSessions,
-		MaxSessionsPerIssue:          doctorMaxMapValue(sessions.issueSessionCounts),
-		MaxSessionsIssue:             doctorMaxMapKey(sessions.issueSessionCounts),
-		FailureTokens:                sessions.failureTokens,
-		SchedulerDecisionCount:       scheduler.count,
-		SchedulerSkippedDecisions:    scheduler.skipped,
-		LaneEventCount:               lanes.count,
-		LaneDwellP90Seconds:          doctorPercentileInt64(lanes.durations, 0.90),
-		MaxReworkLapsPerIssue:        doctorMaxMapValue(lanes.reworkLaps),
-		MaxReworkLapsIssue:           doctorMaxMapKey(lanes.reworkLaps),
-		BudgetEstimateTokens:         doctorWorkflowBudgetEstimateTotal,
-		BudgetEstimateBillableTokens: doctorWorkflowBudgetEstimateBillable,
+		SessionCount:                   sessions.count,
+		UsageEventCount:                usage.count,
+		InputTokens:                    sessions.inputTokens,
+		CachedInputTokens:              sessions.cachedInputTokens,
+		OutputTokens:                   sessions.outputTokens,
+		TotalTokens:                    sessions.totalTokens,
+		MedianSessionTokens:            doctorPercentileInt64(sessions.totalTokensBySession, 0.50),
+		P90SessionTokens:               doctorPercentileInt64(sessions.totalTokensBySession, 0.90),
+		P90SessionBillableTokens:       doctorPercentileInt64(sessions.billableTokensBySession, 0.90),
+		MaxSessionTokens:               doctorMaxInt64(sessions.totalTokensBySession),
+		RecentSessionCount:             sessions.recentSessionCount,
+		EmptyModelRecentSessions:       sessions.emptyModelRecentSessions,
+		MaxSessionsPerIssue:            doctorMaxMapValue(sessions.issueSessionCounts),
+		MaxSessionsIssue:               doctorMaxMapKey(sessions.issueSessionCounts),
+		FailureTokens:                  sessions.failureTokens,
+		SchedulerDecisionCount:         scheduler.count,
+		SchedulerSkippedDecisions:      scheduler.skipped,
+		LaneEventCount:                 lanes.count,
+		LaneDwellP90Seconds:            doctorPercentileInt64(lanes.durations, 0.90),
+		MaxReworkLapsPerIssue:          doctorMaxMapValue(lanes.reworkLaps),
+		MaxReworkLapsIssue:             doctorMaxMapKey(lanes.reworkLaps),
+		BudgetEstimateTokens:           doctorWorkflowBudgetEstimateTotal,
+		BudgetEstimateBillableTokens:   doctorWorkflowBudgetEstimateBillable,
+		ReviewEntryCount:               reviewFlow.reviewEntryCount,
+		ReviewEntryIssue:               reviewFlow.reviewEntryIssue,
+		ReviewEntryIssueCount:          reviewFlow.reviewEntryIssueCount,
+		InvalidWorkpadStatusDecisions:  reviewFlow.invalidWorkpadStatusDecisions,
+		InvalidWorkpadStatusIssue:      reviewFlow.invalidWorkpadStatusIssue,
+		InvalidWorkpadStatusIssueCount: reviewFlow.invalidWorkpadStatusIssueCount,
 	}
 	if usage.count > 0 {
 		metrics.InputTokens = usage.inputTokens
@@ -413,6 +453,176 @@ func doctorWorkflowOptimizationMetricsForProject(
 		metrics.BudgetEstimateDriftRatio = metrics.BudgetEstimateBillableDriftRatio
 	}
 	return metrics, nil
+}
+
+func doctorWorkflowReviewFlowTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string, reviewState string) (doctorWorkflowReviewFlowMetrics, error) {
+	sessions, err := doctorWorkflowCompletedSessionTelemetry(ctx, db, projectID, reviewState)
+	if err != nil {
+		return doctorWorkflowReviewFlowMetrics{}, err
+	}
+	entries, err := doctorWorkflowReviewEntryTelemetry(ctx, db, projectID, reviewState)
+	if err != nil {
+		return doctorWorkflowReviewFlowMetrics{}, err
+	}
+	metrics := doctorWorkflowReviewFlowMetrics{}
+	reviewEntryCounts := map[string]int64{}
+	for _, entry := range entries {
+		if !doctorWorkflowReviewEntryFollowsCompletedSession(entry, sessions[entry.issueKey]) {
+			continue
+		}
+		reviewEntryCounts[entry.issueKey]++
+		metrics.reviewEntryCount++
+	}
+	metrics.reviewEntryIssue = doctorMaxMapKey(reviewEntryCounts)
+	metrics.reviewEntryIssueCount = doctorMaxMapValue(reviewEntryCounts)
+
+	invalidCounts, err := doctorWorkflowInvalidWorkpadStatusTelemetry(ctx, db, projectID)
+	if err != nil {
+		return doctorWorkflowReviewFlowMetrics{}, err
+	}
+	for _, count := range invalidCounts {
+		metrics.invalidWorkpadStatusDecisions += count
+	}
+	metrics.invalidWorkpadStatusIssue = doctorMaxMapKey(invalidCounts)
+	metrics.invalidWorkpadStatusIssueCount = doctorMaxMapValue(invalidCounts)
+	return metrics, nil
+}
+
+func doctorWorkflowCompletedSessionTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string, reviewState string) (map[string][]doctorWorkflowCompletedSession, error) {
+	reviewState = strings.ToLower(strings.TrimSpace(reviewState))
+	rows, err := db.QueryContext(ctx, `
+SELECT
+  COALESCE(NULLIF(s.identifier, ''), NULLIF(s.issue_id, ''), NULLIF(s.issue_url, ''), 'unassigned'),
+  COALESCE(s.completed_at, '')
+FROM codex_sessions s
+WHERE s.completed_at IS NOT NULL
+  AND lower(trim(COALESCE(s.final_state, ''))) IN ('completed', ?)
+  AND (
+    ? = ''
+    OR s.id IN (
+      SELECT DISTINCT session_id
+      FROM usage_events
+      WHERE session_id IS NOT NULL
+        AND project_id = ?
+    )
+  )
+ORDER BY s.completed_at DESC, s.id DESC
+LIMIT 500`, reviewState, projectID, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("read completed session review-flow telemetry: %w", err)
+	}
+	defer rows.Close()
+
+	sessions := map[string][]doctorWorkflowCompletedSession{}
+	for rows.Next() {
+		var issueKey string
+		var completedAtRaw string
+		if err := rows.Scan(&issueKey, &completedAtRaw); err != nil {
+			return nil, err
+		}
+		completedAt, err := doctorWorkflowSessionTimestamp(completedAtRaw)
+		if err != nil {
+			return nil, err
+		}
+		issueKey = strings.TrimSpace(issueKey)
+		sessions[issueKey] = append(sessions[issueKey], doctorWorkflowCompletedSession{
+			issueKey:    issueKey,
+			completedAt: completedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return sessions, nil
+}
+
+func doctorWorkflowReviewEntryTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string, reviewState string) ([]doctorWorkflowReviewEntryEvent, error) {
+	reviewState = strings.ToLower(strings.TrimSpace(reviewState))
+	if reviewState == "" {
+		reviewState = "human review"
+	}
+	rows, err := db.QueryContext(ctx, `
+SELECT
+  COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned'),
+  COALESCE(started_at, '')
+FROM workflow_phase_events
+WHERE phase_type = 'lane'
+  AND lower(trim(COALESCE(status, ''))) = 'entered'
+  AND lower(trim(phase_name)) = ?
+  AND (? = '' OR project_id = ?)
+ORDER BY started_at DESC, id DESC
+LIMIT 500`, reviewState, projectID, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("read review-state entry telemetry: %w", err)
+	}
+	defer rows.Close()
+
+	entries := []doctorWorkflowReviewEntryEvent{}
+	for rows.Next() {
+		var issueKey string
+		var startedAtRaw string
+		if err := rows.Scan(&issueKey, &startedAtRaw); err != nil {
+			return nil, err
+		}
+		startedAt, err := doctorWorkflowSessionTimestamp(startedAtRaw)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, doctorWorkflowReviewEntryEvent{
+			issueKey:  strings.TrimSpace(issueKey),
+			startedAt: startedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func doctorWorkflowReviewEntryFollowsCompletedSession(entry doctorWorkflowReviewEntryEvent, sessions []doctorWorkflowCompletedSession) bool {
+	for _, session := range sessions {
+		if session.completedAt.IsZero() || entry.startedAt.IsZero() {
+			continue
+		}
+		if entry.startedAt.Before(session.completedAt) {
+			continue
+		}
+		if entry.startedAt.Sub(session.completedAt) <= 10*time.Minute {
+			return true
+		}
+	}
+	return false
+}
+
+func doctorWorkflowInvalidWorkpadStatusTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT
+  COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned'),
+  COUNT(*)
+FROM workflow_phase_events
+WHERE phase_type = 'lane'
+  AND lower(trim(COALESCE(status, ''))) = 'entered'
+  AND lower(trim(COALESCE(reason, ''))) = 'workpad_status_invalid'
+  AND (? = '' OR project_id = ?)
+GROUP BY COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned')`, projectID, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("read invalid workpad status telemetry: %w", err)
+	}
+	defer rows.Close()
+
+	counts := map[string]int64{}
+	for rows.Next() {
+		var issueKey string
+		var count int64
+		if err := rows.Scan(&issueKey, &count); err != nil {
+			return nil, err
+		}
+		counts[strings.TrimSpace(issueKey)] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return counts, nil
 }
 
 func doctorWorkflowSessionTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string, pricing budget.PricingTable) (doctorWorkflowSessionMetrics, error) {
@@ -727,7 +937,193 @@ func doctorWorkflowOptimizationFindings(
 			doctorWorkflowOptimizationPatch{Path: "polling.interval_ms", Value: value},
 		))
 	}
+	if doctorReviewFlowChoice(cfg) == doctorReviewFlowAutopilot && metrics.ReviewEntryCount >= doctorWorkflowReviewFlowMismatchMinEntries {
+		findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleReviewFlowBehaviorMismatch,
+			"Review-flow behavior mismatch",
+			fmt.Sprintf("autopilot is configured but completed work entered %s %d times", cfg.Agent.AutoPromote.SourceState, metrics.ReviewEntryCount),
+			0,
+			map[string]any{
+				"review_flow":              doctorReviewFlowAutopilot,
+				"review_state":             cfg.Agent.AutoPromote.SourceState,
+				"review_entry_count":       metrics.ReviewEntryCount,
+				"review_entry_issue":       metrics.ReviewEntryIssue,
+				"review_entry_issue_count": metrics.ReviewEntryIssueCount,
+				"auto_promote_enabled":     cfg.Agent.AutoPromote.Enabled,
+				"quiet_seconds":            cfg.Agent.AutoPromote.QuietSeconds,
+				"gate_wait_state":          doctorReviewFlowGateWaitState(cfg),
+			},
+		))
+	}
+	if metrics.InvalidWorkpadStatusDecisions >= doctorWorkflowInvalidWorkpadStatusMinCount {
+		findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleInvalidWorkpadStatusRecurrence,
+			"Invalid Workpad status recurrence",
+			fmt.Sprintf("auto-promote recorded %d workpad_status_invalid decision(s)", metrics.InvalidWorkpadStatusDecisions),
+			0,
+			map[string]any{
+				"invalid_workpad_status_decisions":   metrics.InvalidWorkpadStatusDecisions,
+				"invalid_workpad_status_issue":       metrics.InvalidWorkpadStatusIssue,
+				"invalid_workpad_status_issue_count": metrics.InvalidWorkpadStatusIssueCount,
+				"review_flow":                        doctorReviewFlowChoice(cfg),
+			},
+		))
+	}
 	return findings
+}
+
+func doctorReviewFlowWorkflowFindings(projectID string, workflowPath string, cfg workflowconfig.Config, prompt string) []doctorWorkflowOptimizationFinding {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return nil
+	}
+	choice := doctorReviewFlowChoice(cfg)
+	reviewState := doctorReviewFlowConfiguredState(cfg.Agent.AutoPromote.SourceState, "Human Review")
+	passState := doctorReviewFlowConfiguredState(cfg.Agent.AutoPromote.PassState, "Merging")
+	switch choice {
+	case doctorReviewFlowAutopilot:
+		phrases := doctorReviewFlowPhraseMatches(prompt, doctorReviewFlowEnterReviewPhrases(reviewState))
+		if phrases == 0 {
+			return nil
+		}
+		return []doctorWorkflowOptimizationFinding{doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleReviewFlowProseMismatch,
+			"Review-flow prose contradicts autopilot",
+			"autopilot is configured but WORKFLOW.md instructs agents to enter the review state",
+			0,
+			map[string]any{
+				"review_flow":           choice,
+				"review_state":          reviewState,
+				"matching_phrase_count": int64(phrases),
+				"auto_promote_enabled":  cfg.Agent.AutoPromote.Enabled,
+				"quiet_seconds":         cfg.Agent.AutoPromote.QuietSeconds,
+				"gate_wait_state":       doctorReviewFlowGateWaitState(cfg),
+			},
+		)}
+	case doctorReviewFlowReviewGate:
+		phrases := doctorReviewFlowPhraseMatches(prompt, append(
+			doctorReviewFlowSkipReviewPhrases(reviewState),
+			doctorReviewFlowDirectPromotePhrases(passState)...,
+		))
+		if phrases == 0 {
+			return nil
+		}
+		return []doctorWorkflowOptimizationFinding{doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleReviewFlowProseMismatch,
+			"Review-flow prose contradicts review-gate",
+			"review-gate is configured but WORKFLOW.md promises direct review-state skipping",
+			0,
+			map[string]any{
+				"review_flow":           choice,
+				"review_state":          reviewState,
+				"pass_state":            passState,
+				"matching_phrase_count": int64(phrases),
+				"auto_promote_enabled":  cfg.Agent.AutoPromote.Enabled,
+				"quiet_seconds":         cfg.Agent.AutoPromote.QuietSeconds,
+				"gate_wait_state":       doctorReviewFlowGateWaitState(cfg),
+			},
+		)}
+	default:
+		return nil
+	}
+}
+
+func doctorReviewFlowConfiguredState(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func doctorReviewFlowEnterReviewPhrases(reviewState string) []string {
+	phrases := []string{}
+	for _, state := range doctorReviewFlowStatePhraseVariants(reviewState) {
+		phrases = append(phrases,
+			"move the issue to "+state,
+			"move this issue to "+state,
+			"move it to "+state,
+			"move the card to "+state,
+			"move the work item to "+state,
+			"move back to "+state,
+		)
+	}
+	if label := doctorReviewFlowStateLabel(reviewState); label != "" {
+		phrases = append(phrases, "detent:"+label)
+	}
+	return phrases
+}
+
+func doctorReviewFlowSkipReviewPhrases(reviewState string) []string {
+	phrases := []string{
+		"leave the issue in `in progress`",
+		"leave the issue in in progress",
+	}
+	for _, state := range doctorReviewFlowStatePhraseVariants(reviewState) {
+		phrases = append(phrases,
+			"do not move it to "+state,
+			"do not move the issue to "+state,
+			"do not move the work item to "+state,
+			"never move the issue to "+state,
+			"never move the work item to "+state,
+			"skips "+state,
+			"skip "+state,
+		)
+	}
+	return phrases
+}
+
+func doctorReviewFlowDirectPromotePhrases(passState string) []string {
+	phrases := []string{}
+	for _, state := range doctorReviewFlowStatePhraseVariants(passState) {
+		phrases = append(phrases,
+			"promotes the issue directly to "+state,
+			"promote the issue directly to "+state,
+			"promotes the work item directly to "+state,
+			"promote the work item directly to "+state,
+			"promote directly to "+state,
+		)
+	}
+	return phrases
+}
+
+func doctorReviewFlowStatePhraseVariants(state string) []string {
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return nil
+	}
+	return []string{"`" + state + "`", state}
+}
+
+func doctorReviewFlowStateLabel(state string) string {
+	state = strings.ToLower(strings.Join(strings.Fields(state), "-"))
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return ""
+	}
+	var b strings.Builder
+	lastHyphen := false
+	for _, r := range state {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			lastHyphen = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastHyphen = false
+		case r == '-' && !lastHyphen:
+			b.WriteRune(r)
+			lastHyphen = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func doctorReviewFlowPhraseMatches(text string, phrases []string) int {
+	text = strings.ToLower(strings.Join(strings.Fields(text), " "))
+	count := 0
+	for _, phrase := range phrases {
+		if strings.Contains(text, strings.ToLower(strings.Join(strings.Fields(phrase), " "))) {
+			count++
+		}
+	}
+	return count
 }
 
 func doctorWorkflowFinding(

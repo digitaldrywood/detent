@@ -405,6 +405,119 @@ func TestCheckDoctorProjects(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorProjectWorkflowReportsReviewFlowChoiceAndProseMismatch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		cfg        workflowconfig.Config
+		prompt     string
+		wantStatus doctorStatus
+		wantDetail []string
+	}{
+		{
+			name: "autopilot clean",
+			cfg: func() workflowconfig.Config {
+				cfg := validDoctorWorkflow("/repo")
+				cfg.Agent.AutoPromote.Enabled = true
+				cfg.Agent.AutoPromote.QuietSeconds = 0
+				cfg.Agent.AutoPromote.GateWaitState = workflowconfig.AutoPromoteGateWaitStateSource
+				return cfg
+			}(),
+			prompt:     "When complete, keep the issue in In Progress and set `detent-status` to `complete`.",
+			wantStatus: doctorOK,
+			wantDetail: []string{"review-flow=autopilot"},
+		},
+		{
+			name: "autopilot contradicted by review prose",
+			cfg: func() workflowconfig.Config {
+				cfg := validDoctorWorkflow("/repo")
+				cfg.Agent.AutoPromote.Enabled = true
+				cfg.Agent.AutoPromote.QuietSeconds = 0
+				cfg.Agent.AutoPromote.GateWaitState = workflowconfig.AutoPromoteGateWaitStateSource
+				return cfg
+			}(),
+			prompt:     "When complete, move the issue to `Human Review`.",
+			wantStatus: doctorWarn,
+			wantDetail: []string{"review-flow=autopilot", "review-flow prose mismatch", "instructs agents to enter the review state"},
+		},
+		{
+			name: "autopilot contradicted by custom review state prose",
+			cfg: func() workflowconfig.Config {
+				cfg := validDoctorWorkflow("/repo")
+				cfg.Agent.AutoPromote.Enabled = true
+				cfg.Agent.AutoPromote.QuietSeconds = 0
+				cfg.Agent.AutoPromote.GateWaitState = workflowconfig.AutoPromoteGateWaitStateSource
+				cfg.Agent.AutoPromote.SourceState = "Review"
+				return cfg
+			}(),
+			prompt:     "When complete, move the work item to `Review`.",
+			wantStatus: doctorWarn,
+			wantDetail: []string{"review-flow=autopilot", "review-flow prose mismatch", "instructs agents to enter the review state"},
+		},
+		{
+			name:       "review gate clean",
+			cfg:        validDoctorWorkflow("/repo"),
+			prompt:     "When complete, move the issue to `Human Review` for approval.",
+			wantStatus: doctorOK,
+			wantDetail: []string{"review-flow=review-gate"},
+		},
+		{
+			name:       "review gate contradicted by direct promotion prose",
+			cfg:        validDoctorWorkflow("/repo"),
+			prompt:     "Do not move the issue to Human Review; Detent promotes the issue directly to `Merging`.",
+			wantStatus: doctorWarn,
+			wantDetail: []string{"review-flow=review-gate", "review-flow prose mismatch", "promises direct review-state skipping"},
+		},
+		{
+			name: "review gate contradicted by custom direct promotion prose",
+			cfg: func() workflowconfig.Config {
+				cfg := validDoctorWorkflow("/repo")
+				cfg.Agent.AutoPromote.SourceState = "Review"
+				cfg.Agent.AutoPromote.PassState = "Done"
+				return cfg
+			}(),
+			prompt:     "Never move the issue to Review; promote directly to `Done`.",
+			wantStatus: doctorWarn,
+			wantDetail: []string{"review-flow=review-gate", "review-flow prose mismatch", "promises direct review-state skipping"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			checks := checkDoctorProject(context.Background(), globalconfig.Project{
+				ID:       "alpha",
+				Workflow: "WORKFLOW.md",
+				Workdir:  "/repo",
+			}, doctorDeps{
+				loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+					return workflowconfig.Workflow{Config: tt.cfg, Prompt: tt.prompt}, nil
+				},
+				gitWorkTree: func(context.Context, string) error {
+					return nil
+				},
+			}, RuntimeSecret{}, false)
+			if len(checks) == 0 {
+				t.Fatal("checks len = 0, want workflow check")
+			}
+			got := checks[0]
+			if got.Status != tt.wantStatus {
+				t.Fatalf("Status = %s, want %s: %#v", got.Status, tt.wantStatus, got)
+			}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(got.Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+				}
+			}
+			if tt.wantStatus == doctorWarn && len(got.WorkflowOptimization.Proposals) == 0 {
+				t.Fatalf("WorkflowOptimization.Proposals len = 0, want governed proposal: %#v", got.WorkflowOptimization)
+			}
+		})
+	}
+}
+
 func TestCheckDoctorConfigReload(t *testing.T) {
 	t.Parallel()
 
@@ -516,7 +629,7 @@ func TestCheckDoctorAutoPromote(t *testing.T) {
 			name:        "disabled",
 			cfg:         validDoctorWorkflow("/repo"),
 			want:        doctorOK,
-			wantDetails: []string{"disabled"},
+			wantDetails: []string{"review-flow=review-gate", "auto_promote.enabled=false"},
 		},
 		{
 			name: "human review observed state is not required",
@@ -617,6 +730,46 @@ func TestCheckDoctorAutoPromote(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCheckDoctorAutoPromoteWarnsOnInvalidWorkpadStatus(t *testing.T) {
+	t.Parallel()
+
+	cfg := validDoctorAutoPromoteWorkflow()
+	issue := doctorAutoPromoteIssue("issue-invalid-status", &connector.PullRequest{
+		Number:         981,
+		URL:            "https://github.test/pull/981",
+		State:          "OPEN",
+		HeadSHA:        "head-invalid",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	issue.Comments = []connector.IssueComment{{
+		URL:  "https://github.test/digitaldrywood/detent/issues/981#issuecomment-1",
+		Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: human-review\nblockers: []\nhuman_action: null\n```",
+	}}
+
+	got := checkDoctorAutoPromote(context.Background(), "alpha", cfg, doctorDeps{
+		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+			return &fakeDoctorAutoPromoteConnector{issues: []connector.Issue{issue}}, nil
+		},
+	}, time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC))
+
+	if got.Status != doctorWarn {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, doctorWarn, got)
+	}
+	for _, want := range []string{
+		`workpad_status_invalid=status "human-review"`,
+		"workpad_comment_url=https://github.test/digitaldrywood/detent/issues/981#issuecomment-1",
+		"one of in_progress, blocked, or complete",
+	} {
+		if !strings.Contains(got.Detail, want) && !strings.Contains(got.Hint, want) {
+			t.Fatalf("check missing %q:\nDetail: %s\nHint: %s", want, got.Detail, got.Hint)
+		}
+	}
+	if len(got.AutoPromoteCandidates) != 1 || !strings.Contains(got.AutoPromoteCandidates[0].WorkpadStatusInvalid, `"human-review"`) {
+		t.Fatalf("AutoPromoteCandidates = %#v, want invalid status diagnostic", got.AutoPromoteCandidates)
 	}
 }
 

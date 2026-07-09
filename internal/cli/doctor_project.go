@@ -119,13 +119,24 @@ func checkDoctorProjectWithProgress(
 		}
 	}
 
-	checks := []doctorCheck{
-		{
-			Name:   workflowCheckName,
-			Status: doctorOK,
-			Detail: doctorWorkflowDetail(project.Workflow, project, workflow.Config),
-		},
+	workflowCheck := doctorCheck{
+		Name:   workflowCheckName,
+		Status: doctorOK,
+		Detail: doctorWorkflowDetail(project.Workflow, project, workflow.Config),
 	}
+	if workflowPath, err := doctorWorkflowOptimizationWorkflowPath(project); err == nil {
+		findings := doctorReviewFlowWorkflowFindings(id, workflowPath, workflow.Config, workflow.Prompt)
+		if len(findings) > 0 {
+			workflowCheck.Status = doctorWarn
+			workflowCheck.Detail += "; review-flow prose mismatch: " + doctorWorkflowFindingDetails(findings)
+			workflowCheck.Hint = "Align WORKFLOW.md handoff prose with the configured review-flow choice, or adjust the frontmatter if the configured choice is not intended."
+			workflowCheck.WorkflowOptimization = doctorWorkflowOptimizationReport{
+				Findings:  findings,
+				Proposals: doctorWorkflowProposalsForFindings(id, findings, 1),
+			}
+		}
+	}
+	checks := []doctorCheck{workflowCheck}
 	setDoctorCurrentCheck("Project " + id + " pinned route models")
 	checks = append(checks, checkDoctorRouteModels(ctx, id, project, workflow.Config, deps))
 	if workflow.Config.Agent.AutoPromote.Enabled {
@@ -323,8 +334,19 @@ func doctorWorkflowDetail(path string, project globalconfig.Project, cfg workflo
 	if cfg.Identity.Configured() {
 		details = append(details, "identity "+doctorIdentityDetail(cfg.Identity))
 	}
+	details = append(details, doctorReviewFlowConfigDetail(cfg))
 	details = append(details, doctorAuthorizationDetail(project, cfg))
 	return strings.Join(details, "; ")
+}
+
+func doctorWorkflowFindingDetails(findings []doctorWorkflowOptimizationFinding) string {
+	parts := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		if strings.TrimSpace(finding.Detail) != "" {
+			parts = append(parts, finding.Detail)
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 func doctorIdentityDetail(identity workflowconfig.Identity) string {
