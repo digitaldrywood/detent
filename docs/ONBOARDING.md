@@ -1224,9 +1224,20 @@ probes.
    generation. Record the explicit choice and require the model only for a
    pin:
 
+   For the recommended provider default, omit `WORKER_MODEL`:
+
    ```sh
    printf '%s\n' \
-     'WORKER_MODEL_MODE=<provider_default|pinned>' \
+     'WORKER_MODEL_MODE=provider_default' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^WORKER_MODEL' "$ONBOARDING_DIR/answers.env"
+   ```
+
+   For an explicit pin, record both fields:
+
+   ```sh
+   printf '%s\n' \
+     'WORKER_MODEL_MODE=pinned' \
      'WORKER_MODEL=<model-if-pinned>' \
      >> "$ONBOARDING_DIR/answers.env"
    rg '^WORKER_MODEL' "$ONBOARDING_DIR/answers.env"

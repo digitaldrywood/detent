@@ -560,7 +560,8 @@ func TestOnboardingDocumentsWorkerModelAndSessionGuardChoices(t *testing.T) {
 
 	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
 	for _, want := range []string{
-		"WORKER_MODEL_MODE=<provider_default|pinned>",
+		"WORKER_MODEL_MODE=provider_default",
+		"WORKER_MODEL_MODE=pinned",
 		"WORKER_MODEL=<model-if-pinned>",
 		"Provider default: upgrades automatically and avoids retirement breakage.",
 		"Pinned for reproducibility or cost control; update before retirement.",
