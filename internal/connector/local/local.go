@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -87,7 +88,7 @@ func New(cfg Config) (*Connector, error) {
 			return nil, fmt.Errorf("create local sqlite parent: %w", err)
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open local sqlite: %w", err)
 	}
@@ -116,6 +117,45 @@ func New(cfg Config) (*Connector, error) {
 		return nil, err
 	}
 	return conn, nil
+}
+
+// sqliteDSN opens the tracker database with a busy timeout and WAL enabled on
+// every pooled connection. The database is shared with a running detent
+// server and with operators editing it via the sqlite3 shell, so writes must
+// wait for the lock instead of failing immediately with SQLITE_BUSY. The
+// pragmas ride the DSN because ExecContext PRAGMAs would only configure the
+// single pool connection that happened to run them.
+func sqliteDSN(path string) string {
+	if path == ":memory:" {
+		return path
+	}
+	return "file:" + escapeSQLiteURIPath(sqliteURIPath(path)) +
+		"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+}
+
+func sqliteURIPath(path string) string {
+	cleaned := filepath.Clean(path)
+	uriPath := filepath.ToSlash(cleaned)
+	if windowsDrivePath(uriPath) {
+		uriPath = strings.ReplaceAll(cleaned, `\`, "/")
+		if !strings.HasPrefix(uriPath, "/") {
+			uriPath = "/" + uriPath
+		}
+	}
+	return uriPath
+}
+
+func windowsDrivePath(path string) bool {
+	return len(path) >= 2 && path[1] == ':' &&
+		(path[0] >= 'A' && path[0] <= 'Z' || path[0] >= 'a' && path[0] <= 'z')
+}
+
+func escapeSQLiteURIPath(path string) string {
+	parts := strings.Split(path, "/")
+	for index, part := range parts {
+		parts[index] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
 }
 
 func (c *Connector) Name() string {
@@ -331,7 +371,7 @@ func (c *Connector) DeleteIssueComment(ctx context.Context, issueID string, comm
 
 func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateName string) error {
 	issueID = strings.TrimSpace(issueID)
-	stateName = strings.TrimSpace(stateName)
+	stateName = c.canonicalState(stateName)
 	now := c.now().UTC()
 	result, err := c.db.ExecContext(ctx, `
 update detent_work_items
@@ -429,7 +469,7 @@ identifier text not null,
 title text not null default '',
 description text not null default '',
 priority integer,
-state text not null default '',
+state text not null default '' collate nocase,
 url text not null default '',
 author_id text not null default '',
 assignee_id text not null default '',
@@ -698,6 +738,7 @@ func (c *Connector) upsertIssue(ctx context.Context, issue connector.Issue) erro
 	if identifier == "" {
 		identifier = id
 	}
+	issue.State = c.canonicalState(issue.State)
 	now := c.now().UTC()
 	createdAt := timeOrDefault(issue.CreatedAt, now)
 	updatedAt := timeOrDefault(issue.UpdatedAt, createdAt)
@@ -804,6 +845,7 @@ func (c *Connector) insertSeedIssue(ctx context.Context, issue connector.Issue) 
 	if identifier == "" {
 		identifier = id
 	}
+	issue.State = c.canonicalState(issue.State)
 	now := c.now().UTC()
 	createdAt := timeOrDefault(issue.CreatedAt, now)
 	updatedAt := timeOrDefault(issue.UpdatedAt, createdAt)
@@ -898,7 +940,10 @@ where project_id = ?`
 			placeholders = append(placeholders, "?")
 			args = append(args, state)
 		}
-		query += " and state in (" + strings.Join(placeholders, ",") + ")"
+		// Callers such as the orchestrator lowercase configured states while
+		// rows may hold the template's capitalized spellings; compare
+		// case-insensitively so items stay visible either way.
+		query += " and state collate nocase in (" + strings.Join(placeholders, ",") + ")"
 	}
 	query += " order by updated_at desc, id asc"
 	if limit > 0 {
@@ -983,6 +1028,25 @@ where project_id = ? and id = ?`, fieldsJSON, formatTime(now), c.projectID, stri
 		return err
 	}
 	return c.recordEvent(ctx, strings.TrimSpace(issueID), eventKindFieldUpdate, "", "", map[string]string{fieldName: ""})
+}
+
+// canonicalState maps a state name to its configured spelling. The
+// orchestrator lowercases configured states before writing them back while
+// templates and humans use capitalized spellings; without this the state
+// column accumulates both cases.
+func (c *Connector) canonicalState(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return name
+	}
+	for _, states := range [][]string{c.activeStates, c.observedStates, c.terminalStates} {
+		for _, state := range states {
+			if state = strings.TrimSpace(state); strings.EqualFold(state, name) {
+				return state
+			}
+		}
+	}
+	return name
 }
 
 func (c *Connector) closedState() string {
@@ -1233,16 +1297,28 @@ func formatTime(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
+// parseTimeLayouts tolerates the timestamp shapes external producers write
+// into the tracker database (the sqlite shell's CURRENT_TIMESTAMP and
+// datetime() emit space-separated UTC values), not just detent's own
+// RFC3339Nano output.
+var parseTimeLayouts = []string{
+	time.RFC3339Nano,
+	"2006-01-02 15:04:05.999999999Z07:00",
+	"2006-01-02 15:04:05",
+	"2006-01-02",
+}
+
 func parseTimePointer(value string) *time.Time {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return nil
 	}
-	parsed, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil {
-		return nil
+	for _, layout := range parseTimeLayouts {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return &parsed
+		}
 	}
-	return &parsed
+	return nil
 }
 
 func marshalStringSlice(values []string) (string, error) {

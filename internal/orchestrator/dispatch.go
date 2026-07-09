@@ -337,6 +337,13 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	return dispatchIssueOutcome{dispatched: true}
 }
 
+// dispatchWorkingStates lists the active-state names recognized as the
+// "agent is working" lane, in preference order: "In Progress" is the GitHub
+// Projects convention, "Production" the non-code artifact template's. Without
+// this resolution, projects using the template vocabulary never leave Todo
+// while an agent works them and the board shows nothing running.
+var dispatchWorkingStates = []string{planImplementationState, "Production"}
+
 func dispatchStartTransitionState(issue connector.Issue, mode string, activeStates []string) string {
 	if mode != runpkg.RunModeImplement {
 		return ""
@@ -344,10 +351,12 @@ func dispatchStartTransitionState(issue connector.Issue, mode string, activeStat
 	if normalizeState(issue.State) != "todo" {
 		return ""
 	}
-	if !stateIn(planImplementationState, activeStates) {
-		return ""
+	for _, working := range dispatchWorkingStates {
+		if stateIn(working, activeStates) {
+			return working
+		}
 	}
-	return planImplementationState
+	return ""
 }
 
 func (o *Orchestrator) dispatchMode(ctx context.Context, state *State, issue connector.Issue) string {

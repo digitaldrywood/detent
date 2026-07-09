@@ -53,6 +53,7 @@ type State struct {
 	BudgetRefusals           map[string]BudgetRefusal
 	PriorAttempts            map[string]runpkg.PriorAttempt
 	InstantFailures          map[string]InstantFailure
+	RepeatedFailures         map[string]RepeatedFailure
 	DiffStats                map[string]DiffStats
 	ReapedWorkspaces         map[string]time.Time
 	TokenTotals              TokenTotals
@@ -150,6 +151,18 @@ type InstantFailure struct {
 	LastFailureAt  time.Time
 }
 
+// RepeatedFailure tracks consecutive worker failures of any duration for one
+// issue. Unlike InstantFailure it does not require matching error text: token
+// counts and other attempt-specific details vary between otherwise identical
+// failures, and each retry of a long-running failure spends real money.
+type RepeatedFailure struct {
+	Issue          connector.Issue
+	Error          string
+	Count          int
+	FirstFailureAt time.Time
+	LastFailureAt  time.Time
+}
+
 type TransientCheckRetry struct {
 	IssueID       string
 	HeadSHA       string
@@ -187,6 +200,7 @@ func newState(cfg Config) State {
 		BudgetRefusals:           map[string]BudgetRefusal{},
 		PriorAttempts:            map[string]runpkg.PriorAttempt{},
 		InstantFailures:          map[string]InstantFailure{},
+		RepeatedFailures:         map[string]RepeatedFailure{},
 		DiffStats:                map[string]DiffStats{},
 		ReapedWorkspaces:         map[string]time.Time{},
 		planRework:               map[string]struct{}{},
@@ -233,6 +247,7 @@ func (s State) clone() State {
 		BudgetRefusals:           make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
 		PriorAttempts:            clonePriorAttempts(s.PriorAttempts),
 		InstantFailures:          make(map[string]InstantFailure, len(s.InstantFailures)),
+		RepeatedFailures:         make(map[string]RepeatedFailure, len(s.RepeatedFailures)),
 		DiffStats:                make(map[string]DiffStats, len(s.DiffStats)),
 		ReapedWorkspaces:         make(map[string]time.Time, len(s.ReapedWorkspaces)),
 		TokenTotals:              s.TokenTotals,
@@ -269,6 +284,10 @@ func (s State) clone() State {
 	for id, failure := range s.InstantFailures {
 		failure.Issue = cloneIssue(failure.Issue)
 		cloned.InstantFailures[id] = failure
+	}
+	for id, failure := range s.RepeatedFailures {
+		failure.Issue = cloneIssue(failure.Issue)
+		cloned.RepeatedFailures[id] = failure
 	}
 	for id, refusal := range s.BudgetRefusals {
 		refusal.Issue = cloneIssue(refusal.Issue)
