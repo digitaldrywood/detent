@@ -442,6 +442,20 @@ func TestCheckDoctorProjectWorkflowReportsReviewFlowChoiceAndProseMismatch(t *te
 			wantDetail: []string{"review-flow=autopilot", "review-flow prose mismatch", "instructs agents to enter the review state"},
 		},
 		{
+			name: "autopilot contradicted by custom review state prose",
+			cfg: func() workflowconfig.Config {
+				cfg := validDoctorWorkflow("/repo")
+				cfg.Agent.AutoPromote.Enabled = true
+				cfg.Agent.AutoPromote.QuietSeconds = 0
+				cfg.Agent.AutoPromote.GateWaitState = workflowconfig.AutoPromoteGateWaitStateSource
+				cfg.Agent.AutoPromote.SourceState = "Review"
+				return cfg
+			}(),
+			prompt:     "When complete, move the work item to `Review`.",
+			wantStatus: doctorWarn,
+			wantDetail: []string{"review-flow=autopilot", "review-flow prose mismatch", "instructs agents to enter the review state"},
+		},
+		{
 			name:       "review gate clean",
 			cfg:        validDoctorWorkflow("/repo"),
 			prompt:     "When complete, move the issue to `Human Review` for approval.",
@@ -452,6 +466,18 @@ func TestCheckDoctorProjectWorkflowReportsReviewFlowChoiceAndProseMismatch(t *te
 			name:       "review gate contradicted by direct promotion prose",
 			cfg:        validDoctorWorkflow("/repo"),
 			prompt:     "Do not move the issue to Human Review; Detent promotes the issue directly to `Merging`.",
+			wantStatus: doctorWarn,
+			wantDetail: []string{"review-flow=review-gate", "review-flow prose mismatch", "promises direct review-state skipping"},
+		},
+		{
+			name: "review gate contradicted by custom direct promotion prose",
+			cfg: func() workflowconfig.Config {
+				cfg := validDoctorWorkflow("/repo")
+				cfg.Agent.AutoPromote.SourceState = "Review"
+				cfg.Agent.AutoPromote.PassState = "Done"
+				return cfg
+			}(),
+			prompt:     "Never move the issue to Review; promote directly to `Done`.",
 			wantStatus: doctorWarn,
 			wantDetail: []string{"review-flow=review-gate", "review-flow prose mismatch", "promises direct review-state skipping"},
 		},

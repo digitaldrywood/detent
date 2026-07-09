@@ -976,19 +976,11 @@ func doctorReviewFlowWorkflowFindings(projectID string, workflowPath string, cfg
 		return nil
 	}
 	choice := doctorReviewFlowChoice(cfg)
+	reviewState := doctorReviewFlowConfiguredState(cfg.Agent.AutoPromote.SourceState, "Human Review")
+	passState := doctorReviewFlowConfiguredState(cfg.Agent.AutoPromote.PassState, "Merging")
 	switch choice {
 	case doctorReviewFlowAutopilot:
-		phrases := doctorReviewFlowPhraseMatches(prompt, []string{
-			"move the issue to `human review`",
-			"move the issue to human review",
-			"move it to `human review`",
-			"move it to human review",
-			"move the card to `human review`",
-			"move the card to human review",
-			"move back to `human review`",
-			"move back to human review",
-			"detent:human-review",
-		})
+		phrases := doctorReviewFlowPhraseMatches(prompt, doctorReviewFlowEnterReviewPhrases(reviewState))
 		if phrases == 0 {
 			return nil
 		}
@@ -998,7 +990,7 @@ func doctorReviewFlowWorkflowFindings(projectID string, workflowPath string, cfg
 			0,
 			map[string]any{
 				"review_flow":           choice,
-				"review_state":          cfg.Agent.AutoPromote.SourceState,
+				"review_state":          reviewState,
 				"matching_phrase_count": int64(phrases),
 				"auto_promote_enabled":  cfg.Agent.AutoPromote.Enabled,
 				"quiet_seconds":         cfg.Agent.AutoPromote.QuietSeconds,
@@ -1006,22 +998,10 @@ func doctorReviewFlowWorkflowFindings(projectID string, workflowPath string, cfg
 			},
 		)}
 	case doctorReviewFlowReviewGate:
-		phrases := doctorReviewFlowPhraseMatches(prompt, []string{
-			"do not move it to `human review`",
-			"do not move it to human review",
-			"do not move the issue to `human review`",
-			"do not move the issue to human review",
-			"never move the issue to `human review`",
-			"never move the issue to human review",
-			"leave the issue in `in progress`",
-			"leave the issue in in progress",
-			"promotes the issue directly to `merging`",
-			"promotes the issue directly to merging",
-			"promote directly to `merging`",
-			"promote directly to merging",
-			"skips `human review`",
-			"skips human review",
-		})
+		phrases := doctorReviewFlowPhraseMatches(prompt, append(
+			doctorReviewFlowSkipReviewPhrases(reviewState),
+			doctorReviewFlowDirectPromotePhrases(passState)...,
+		))
 		if phrases == 0 {
 			return nil
 		}
@@ -1031,7 +1011,8 @@ func doctorReviewFlowWorkflowFindings(projectID string, workflowPath string, cfg
 			0,
 			map[string]any{
 				"review_flow":           choice,
-				"review_state":          cfg.Agent.AutoPromote.SourceState,
+				"review_state":          reviewState,
+				"pass_state":            passState,
 				"matching_phrase_count": int64(phrases),
 				"auto_promote_enabled":  cfg.Agent.AutoPromote.Enabled,
 				"quiet_seconds":         cfg.Agent.AutoPromote.QuietSeconds,
@@ -1041,6 +1022,97 @@ func doctorReviewFlowWorkflowFindings(projectID string, workflowPath string, cfg
 	default:
 		return nil
 	}
+}
+
+func doctorReviewFlowConfiguredState(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func doctorReviewFlowEnterReviewPhrases(reviewState string) []string {
+	phrases := []string{}
+	for _, state := range doctorReviewFlowStatePhraseVariants(reviewState) {
+		phrases = append(phrases,
+			"move the issue to "+state,
+			"move this issue to "+state,
+			"move it to "+state,
+			"move the card to "+state,
+			"move the work item to "+state,
+			"move back to "+state,
+		)
+	}
+	if label := doctorReviewFlowStateLabel(reviewState); label != "" {
+		phrases = append(phrases, "detent:"+label)
+	}
+	return phrases
+}
+
+func doctorReviewFlowSkipReviewPhrases(reviewState string) []string {
+	phrases := []string{
+		"leave the issue in `in progress`",
+		"leave the issue in in progress",
+	}
+	for _, state := range doctorReviewFlowStatePhraseVariants(reviewState) {
+		phrases = append(phrases,
+			"do not move it to "+state,
+			"do not move the issue to "+state,
+			"do not move the work item to "+state,
+			"never move the issue to "+state,
+			"never move the work item to "+state,
+			"skips "+state,
+			"skip "+state,
+		)
+	}
+	return phrases
+}
+
+func doctorReviewFlowDirectPromotePhrases(passState string) []string {
+	phrases := []string{}
+	for _, state := range doctorReviewFlowStatePhraseVariants(passState) {
+		phrases = append(phrases,
+			"promotes the issue directly to "+state,
+			"promote the issue directly to "+state,
+			"promotes the work item directly to "+state,
+			"promote the work item directly to "+state,
+			"promote directly to "+state,
+		)
+	}
+	return phrases
+}
+
+func doctorReviewFlowStatePhraseVariants(state string) []string {
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return nil
+	}
+	return []string{"`" + state + "`", state}
+}
+
+func doctorReviewFlowStateLabel(state string) string {
+	state = strings.ToLower(strings.Join(strings.Fields(state), "-"))
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return ""
+	}
+	var b strings.Builder
+	lastHyphen := false
+	for _, r := range state {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			lastHyphen = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastHyphen = false
+		case r == '-' && !lastHyphen:
+			b.WriteRune(r)
+			lastHyphen = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func doctorReviewFlowPhraseMatches(text string, phrases []string) int {
