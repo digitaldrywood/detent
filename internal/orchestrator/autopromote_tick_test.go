@@ -220,7 +220,7 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 			issue: autoPromoteTickIssue("issue-closed-pr", []string{"bug"}, &connector.PullRequest{
 				Number:                 47,
 				URL:                    "https://github.test/digitaldrywood/detent/pull/47",
-				State:                  "MERGED",
+				State:                  "CLOSED",
 				CIStatus:               "pass",
 				CodexReviewState:       "COMMENTED",
 				CodexReviewSubmittedAt: &oldReview,

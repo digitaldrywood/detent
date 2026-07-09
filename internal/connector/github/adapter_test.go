@@ -1411,13 +1411,74 @@ func TestConnectorFetchIssuesByStatesAttachesLinkedPullRequestBeforeBranchPrefix
 	if !strings.Contains(query, "closedByPullRequestsReferences") {
 		t.Fatalf("observed status query does not request linked pull requests:\n%s", query)
 	}
-	if !strings.Contains(query, "nodes { number url state repository { nameWithOwner } }") {
+	if !strings.Contains(query, "nodes { number url state updatedAt repository { nameWithOwner } }") {
 		t.Fatalf("observed status query does not request linked pull request states:\n%s", query)
 	}
 	for _, request := range requests {
 		path, _ := request["path"].(string)
 		if strings.Contains(path, "/pulls?") {
 			t.Fatalf("request path = %q, want linked PR path without repository-wide pull list", path)
+		}
+	}
+}
+
+func TestConnectorFetchIssuesByStatesPrefersMergedLinkedPullRequestOverClosedUnmerged(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_179","content":{"__typename":"Issue","id":"I_179","number":179,"title":"Issue closed by external PR","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/creswoodcorners-phone/issues/179","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"bug"}]},"repository":{"nameWithOwner":"digitaldrywood/creswoodcorners-phone"},"closedByPullRequestsReferences":{"nodes":[{"number":185,"url":"https://github.com/digitaldrywood/creswoodcorners-phone/pull/185","state":"CLOSED","updatedAt":"2026-07-06T18:57:20Z","repository":{"nameWithOwner":"digitaldrywood/creswoodcorners-phone"}},{"number":186,"url":"https://github.com/digitaldrywood/creswoodcorners-phone/pull/186","state":"MERGED","updatedAt":"2026-07-07T12:00:00Z","repository":{"nameWithOwner":"digitaldrywood/creswoodcorners-phone"}},{"number":191,"url":"https://github.com/digitaldrywood/creswoodcorners-phone/pull/191","state":"MERGED","updatedAt":"2026-07-08T12:00:00Z","repository":{"nameWithOwner":"digitaldrywood/creswoodcorners-phone"}}]}},"statusValue":{"name":"Human Review"},"priorityValue":null}]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/creswoodcorners-phone/pulls/191",
+			body:   `{"number":191,"html_url":"https://github.com/digitaldrywood/creswoodcorners-phone/pull/191","state":"closed","merged_at":"2026-07-08T12:00:00Z","mergeable_state":"clean","updated_at":"2026-07-08T12:00:00Z","head":{"ref":"issue-179-human-fix","sha":"sha-191"}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/creswoodcorners-phone/commits/sha-191/check-runs?per_page=100",
+			body:   `{"check_runs":[{"status":"completed","conclusion":"success"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/creswoodcorners-phone/commits/sha-191/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/creswoodcorners-phone/pulls/191/reviews?per_page=100",
+			body:   `[]`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Human Review"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+
+	if got[0].PRNumber == nil || *got[0].PRNumber != 191 {
+		t.Fatalf("PRNumber = %v, want merged linked PR 191", got[0].PRNumber)
+	}
+	if got[0].PRRepository != "digitaldrywood/creswoodcorners-phone" {
+		t.Fatalf("PRRepository = %q, want digitaldrywood/creswoodcorners-phone", got[0].PRRepository)
+	}
+	pr := got[0].PullRequest
+	if pr == nil {
+		t.Fatal("PullRequest = nil, want merged linked PR")
+		return
+	}
+	if pr.Number != 191 || pr.State != "MERGED" || pr.BranchName != "issue-179-human-fix" || pr.CIStatus != "pass" {
+		t.Fatalf("PullRequest = %#v, want hydrated merged PR 191", pr)
+	}
+
+	for _, request := range server.requests() {
+		path, _ := request["path"].(string)
+		if strings.Contains(path, "/pulls/185") {
+			t.Fatalf("request path = %q, want no hydration of closed unmerged PR 185", path)
 		}
 	}
 }

@@ -129,6 +129,7 @@ type pullRequest struct {
 	Number     int        `json:"number"`
 	URL        string     `json:"url"`
 	State      string     `json:"state"`
+	UpdatedAt  *string    `json:"updatedAt"`
 	Repository repository `json:"repository"`
 }
 

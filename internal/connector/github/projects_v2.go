@@ -74,7 +74,7 @@ query DetentGitHubObservedStatusProjectItems(
               stateReason
               url
               repository { nameWithOwner }
-              closedByPullRequestsReferences(first: 5) { nodes { number url state repository { nameWithOwner } } }
+              closedByPullRequestsReferences(first: 5) { nodes { number url state updatedAt repository { nameWithOwner } } }
             }
           }
           statusValue: fieldValueByName(name: "Status") {

@@ -735,28 +735,66 @@ func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullReques
 type pullRequestReference struct {
 	Number     int
 	Repository string
+	UpdatedAt  *time.Time
 }
 
 func firstPullRequestReference(pullRequests nodeConnection[pullRequest]) (pullRequestReference, bool) {
 	var fallback pullRequestReference
 	fallbackOK := false
+	var open pullRequestReference
+	openOK := false
+	var merged pullRequestReference
+	mergedOK := false
 	for _, pullRequest := range pullRequests.Nodes {
 		if pullRequest.Number <= 0 {
 			continue
 		}
-		ref := pullRequestReference{
-			Number:     pullRequest.Number,
-			Repository: strings.TrimSpace(pullRequest.Repository.NameWithOwner),
-		}
+		ref := pullRequestReferenceFromNode(pullRequest)
 		if !fallbackOK {
 			fallback = ref
 			fallbackOK = true
 		}
-		if normalizeStateName(pullRequest.State) == "open" {
-			return ref, true
+		switch normalizeStateName(pullRequest.State) {
+		case "open":
+			if !openOK || pullRequestReferenceAfter(ref, open) {
+				open = ref
+				openOK = true
+			}
+		case "merged":
+			if !mergedOK || pullRequestReferenceAfter(ref, merged) {
+				merged = ref
+				mergedOK = true
+			}
 		}
 	}
+	if openOK {
+		return open, true
+	}
+	if mergedOK {
+		return merged, true
+	}
 	return fallback, fallbackOK
+}
+
+func pullRequestReferenceFromNode(pullRequest pullRequest) pullRequestReference {
+	return pullRequestReference{
+		Number:     pullRequest.Number,
+		Repository: strings.TrimSpace(pullRequest.Repository.NameWithOwner),
+		UpdatedAt:  parseGitHubTime(pullRequest.UpdatedAt),
+	}
+}
+
+func pullRequestReferenceAfter(left, right pullRequestReference) bool {
+	if left.UpdatedAt != nil && right.UpdatedAt != nil && !left.UpdatedAt.Equal(*right.UpdatedAt) {
+		return left.UpdatedAt.After(*right.UpdatedAt)
+	}
+	if left.UpdatedAt != nil && right.UpdatedAt == nil {
+		return true
+	}
+	if left.UpdatedAt == nil && right.UpdatedAt != nil {
+		return false
+	}
+	return left.Number > right.Number
 }
 
 func pullRequestCIState(pullRequest pullRequestNode) string {
