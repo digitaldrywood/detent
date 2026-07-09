@@ -708,6 +708,19 @@ func renderBoardComponent(t *testing.T, component templ.Component) string {
 	return buf.String()
 }
 
+func TestBoardScopeSelectLinksProjectKanbanOnce(t *testing.T) {
+	data := boardTestData()
+	data.Projects = []ProjectSmallMultiple{{ID: "detent", Name: "Detent"}}
+
+	html := renderBoardComponent(t, boardScopeSelect(data))
+	if !strings.Contains(html, `href="/projects/detent/kanban"`) {
+		t.Fatalf("scope select missing kanban project href:\n%s", html)
+	}
+	if strings.Contains(html, "/kanban/kanban") {
+		t.Fatalf("scope select appended kanban twice:\n%s", html)
+	}
+}
+
 func TestBoardSnapshotKeepsLanesDuringDegradedRefresh(t *testing.T) {
 	// A degraded refresh that still carries prior tracker data must keep the
 	// last-known lanes visible, not flash skeletons.

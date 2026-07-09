@@ -6786,7 +6786,7 @@ func TestServerEventsStreamsSidebarUpdates(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Detent",
-		`href="/projects/detent"`,
+		`href="/projects/detent/kanban"`,
 		"Detent - active, 7 running",
 		`data-dashboard-project-entry`,
 		`data-tui-sidebar="menu-badge"`,
@@ -8194,8 +8194,8 @@ func TestDashboardRendersProjectSmallMultiplesFromSnapshots(t *testing.T) {
 	for _, want := range []string{
 		">Detent</span>",
 		">Pyro Apex</span>",
-		`href="/projects/detent"`,
-		`href="/projects/pyroapex"`,
+		`href="/projects/detent/kanban"`,
+		`href="/projects/pyroapex/kanban"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard sidebar missing project row %q:\n%s", want, html)

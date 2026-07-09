@@ -39,7 +39,7 @@ func TestSettingsIncludesSharedSidebarShell(t *testing.T) {
 		`href="/library"`,
 		`href="/reports"`,
 		`href="/settings"`,
-		`href="/projects/detent"`,
+		`href="/projects/detent/kanban"`,
 		`href="/health/ui"`,
 		"Health",
 		">Detent</span>",

@@ -80,7 +80,7 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	fleetBody := waitForDashboardCondition(t, dashboardURL+"/", done, "fleet board demo", func(body string) bool {
 		return strings.Contains(body, `id="board-lanes"`) &&
 			strings.Contains(body, `data-board-key="fleet"`) &&
-			strings.Contains(body, `href="/projects/`+projectID+`"`) &&
+			strings.Contains(body, `href="/projects/`+projectID+`/kanban"`) &&
 			strings.Contains(body, "Kanban demo backlog intake") &&
 			strings.Contains(body, "Kanban demo todo ready card")
 	})
