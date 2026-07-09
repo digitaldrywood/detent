@@ -200,7 +200,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	now time.Time,
 	preferredWorkerHost string,
 ) dispatchIssueOutcome {
-	runMode := o.dispatchMode(state, issue)
+	runMode := o.dispatchMode(ctx, state, issue)
 	targetState := dispatchStartTransitionState(issue, runMode, o.cfg.ActiveStates)
 	slotIssue := issue
 	if targetState != "" {
@@ -350,7 +350,7 @@ func dispatchStartTransitionState(issue connector.Issue, mode string, activeStat
 	return planImplementationState
 }
 
-func (o *Orchestrator) dispatchMode(state *State, issue connector.Issue) string {
+func (o *Orchestrator) dispatchMode(ctx context.Context, state *State, issue connector.Issue) string {
 	if normalizeState(issue.State) == normalizeState(autoPromoteMergingState) && o.cfg.MergeFastPathEnabled {
 		return runpkg.RunModeMerge
 	}
@@ -362,14 +362,18 @@ func (o *Orchestrator) dispatchMode(state *State, issue connector.Issue) string 
 	case "todo":
 		return runpkg.RunModePlan
 	case normalizeState(autoPromoteReworkState):
+		if match, ok := o.latestWorkflowLaneEntry(ctx, issue); ok {
+			if normalizeState(match.Event.PhaseName) == normalizeState(autoPromoteReworkState) &&
+				workflowLaneMetadataHasAction(match.Metadata, workflowActionPlanReviewRework) {
+				return runpkg.RunModePlan
+			}
+			return runpkg.RunModeImplement
+		}
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID != "" {
 			if _, ok := state.planRework[issueID]; ok {
 				return runpkg.RunModePlan
 			}
-		}
-		if planReviewReworkRequested(issue) {
-			return runpkg.RunModePlan
 		}
 	}
 	return runpkg.RunModeImplement

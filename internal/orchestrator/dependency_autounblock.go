@@ -796,10 +796,87 @@ func (o *Orchestrator) workflowTimelineHasDependencyAutoUnblock(
 	issue connector.Issue,
 	blockerSet string,
 ) bool {
+	_, ok := o.workflowTimelineLaneMetadataMatch(ctx, issue, "dependency_auto_unblock", func(metadata workflowLaneMetadata) bool {
+		if metadata.DependencyAutoUnblock == nil {
+			return false
+		}
+		return strings.TrimSpace(metadata.DependencyAutoUnblock.BlockerSet) == blockerSet
+	})
+	return ok
+}
+
+type workflowTimelineMetadataMatch struct {
+	Event    store.WorkflowPhaseEvent
+	Metadata workflowLaneMetadata
+}
+
+func (o *Orchestrator) workflowTimelineLaneActionSignature(
+	ctx context.Context,
+	issue connector.Issue,
+	reason string,
+	action string,
+	signature string,
+) (workflowTimelineMetadataMatch, bool) {
+	return o.workflowTimelineLaneMetadataMatch(ctx, issue, reason, func(metadata workflowLaneMetadata) bool {
+		return workflowLaneMetadataHasActionSignature(metadata, action, signature)
+	})
+}
+
+func (o *Orchestrator) workflowTimelineActionSignature(
+	ctx context.Context,
+	issue connector.Issue,
+	action string,
+	signature string,
+) (workflowTimelineMetadataMatch, bool) {
 	timeline, ok := o.issueWorkflowTimeline(ctx, issue)
 	if !ok {
-		return false
+		return workflowTimelineMetadataMatch{}, false
 	}
+	for _, event := range timeline.Events {
+		metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON)
+		if !ok {
+			continue
+		}
+		if workflowLaneMetadataHasActionSignature(metadata, action, signature) {
+			return workflowTimelineMetadataMatch{Event: event, Metadata: metadata}, true
+		}
+	}
+	return workflowTimelineMetadataMatch{}, false
+}
+
+func (o *Orchestrator) latestWorkflowLaneEntry(
+	ctx context.Context,
+	issue connector.Issue,
+) (workflowTimelineMetadataMatch, bool) {
+	timeline, ok := o.issueWorkflowTimeline(ctx, issue)
+	if !ok {
+		return workflowTimelineMetadataMatch{}, false
+	}
+	for index := len(timeline.Events) - 1; index >= 0; index-- {
+		event := timeline.Events[index]
+		if event.PhaseType != store.WorkflowPhaseTypeLane {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(event.Status), "entered") {
+			continue
+		}
+		metadata, _ := workflowLaneMetadataFromJSON(event.MetadataJSON)
+		return workflowTimelineMetadataMatch{Event: event, Metadata: metadata}, true
+	}
+	return workflowTimelineMetadataMatch{}, false
+}
+
+func (o *Orchestrator) workflowTimelineLaneMetadataMatch(
+	ctx context.Context,
+	issue connector.Issue,
+	reason string,
+	matches func(workflowLaneMetadata) bool,
+) (workflowTimelineMetadataMatch, bool) {
+	timeline, ok := o.issueWorkflowTimeline(ctx, issue)
+	if !ok {
+		return workflowTimelineMetadataMatch{}, false
+	}
+	reason = strings.TrimSpace(reason)
 	for _, event := range timeline.Events {
 		if event.PhaseType != store.WorkflowPhaseTypeLane {
 			continue
@@ -807,18 +884,18 @@ func (o *Orchestrator) workflowTimelineHasDependencyAutoUnblock(
 		if !strings.EqualFold(strings.TrimSpace(event.Status), "entered") {
 			continue
 		}
-		if !strings.EqualFold(strings.TrimSpace(event.Reason), "dependency_auto_unblock") {
+		if reason != "" && !strings.EqualFold(strings.TrimSpace(event.Reason), reason) {
 			continue
 		}
 		metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON)
-		if !ok || metadata.DependencyAutoUnblock == nil {
+		if !ok {
 			continue
 		}
-		if strings.TrimSpace(metadata.DependencyAutoUnblock.BlockerSet) == blockerSet {
-			return true
+		if matches(metadata) {
+			return workflowTimelineMetadataMatch{Event: event, Metadata: metadata}, true
 		}
 	}
-	return false
+	return workflowTimelineMetadataMatch{}, false
 }
 
 func (o *Orchestrator) latestWorkflowLaneReason(ctx context.Context, issue connector.Issue, stateName string) (string, bool) {
@@ -855,7 +932,7 @@ func (o *Orchestrator) issueWorkflowTimeline(ctx context.Context, issue connecto
 	})
 	if err != nil {
 		if o.logger != nil {
-			o.logger.Warn("dependency auto-unblock workflow timeline read failed", "issue_id", strings.TrimSpace(issue.ID), "identifier", issue.Identifier, "error", err)
+			o.logger.Warn("workflow timeline read failed", "issue_id", strings.TrimSpace(issue.ID), "identifier", issue.Identifier, "error", err)
 		}
 		return store.WorkflowTimeline{}, false
 	}

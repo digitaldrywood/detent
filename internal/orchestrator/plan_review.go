@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"time"
@@ -33,14 +34,22 @@ func (o *Orchestrator) reviewPlanIssues(
 			continue
 		}
 
-		summary := planReviewSummaryFromIssue(issue)
-		decision := gate.EvaluatePlan(cfg, issue.Labels, summary)
+		evaluation := planReviewEvaluationFromIssue(issue)
+		decision := gate.EvaluatePlan(cfg, issue.Labels, evaluation.Summary)
 		targetState := planReviewTargetState(decision.Action)
 		if targetState == "" {
 			o.logPlanReviewDecision(issue, decision, "")
 			continue
 		}
-		if !o.applyPlanReviewDecision(ctx, state, issue, summary, decision, targetState, now) {
+		reworkSignature := ""
+		if normalizeState(targetState) == normalizeState(autoPromoteReworkState) {
+			reworkSignature = evaluation.Signature
+			if match, ok := o.workflowTimelineLaneActionSignature(ctx, issue, "plan_review_decision", workflowActionPlanReviewRework, reworkSignature); ok {
+				o.logPlanReviewReworkSkip(issue, decision, targetState, reworkSignature, match)
+				continue
+			}
+		}
+		if !o.applyPlanReviewDecision(ctx, state, issue, evaluation.Summary, decision, targetState, reworkSignature, now) {
 			continue
 		}
 		o.trackPlanReviewTransition(state, issueID, targetState)
@@ -52,27 +61,35 @@ func (o *Orchestrator) reviewPlanIssues(
 	return transitioned
 }
 
-func planReviewSummaryFromIssue(issue connector.Issue) gate.Summary {
-	summary := planReviewSummaryFromComments(issue.Comments)
+type planReviewEvaluation struct {
+	Summary   gate.Summary
+	Signature string
+}
+
+func planReviewEvaluationFromIssue(issue connector.Issue) planReviewEvaluation {
+	evaluation := planReviewEvaluationFromComments(issue.Comments)
 	if issue.PullRequest == nil || normalizePullRequestState(issue.PullRequest.State) != "open" {
-		return summary
+		return evaluation
 	}
-	return mergePlanReviewSummaries(summary, gate.Summary{
-		ReviewState: issue.PullRequest.CodexReviewState,
-		P1Findings:  planReviewFindingsFromPullRequest(issue.PullRequest),
-	})
+	prEvaluation := planReviewEvaluation{
+		Summary: gate.Summary{
+			ReviewState: issue.PullRequest.CodexReviewState,
+			P1Findings:  planReviewFindingsFromPullRequest(issue.PullRequest),
+		},
+		Signature: planReviewPullRequestSignature(issue.PullRequest),
+	}
+	if planReviewStateSeverity(prEvaluation.Summary.ReviewState) > planReviewStateSeverity(evaluation.Summary.ReviewState) {
+		prEvaluation.Summary.P1Findings = append(evaluation.Summary.P1Findings, prEvaluation.Summary.P1Findings...)
+		return prEvaluation
+	}
+	evaluation.Summary.P1Findings = append(evaluation.Summary.P1Findings, prEvaluation.Summary.P1Findings...)
+	if evaluation.Signature == "" {
+		evaluation.Signature = prEvaluation.Signature
+	}
+	return evaluation
 }
 
-func mergePlanReviewSummaries(left gate.Summary, right gate.Summary) gate.Summary {
-	out := left
-	if planReviewStateSeverity(right.ReviewState) > planReviewStateSeverity(out.ReviewState) {
-		out.ReviewState = right.ReviewState
-	}
-	out.P1Findings = append(out.P1Findings, right.P1Findings...)
-	return out
-}
-
-func planReviewSummaryFromComments(comments []connector.IssueComment) gate.Summary {
+func planReviewEvaluationFromComments(comments []connector.IssueComment) planReviewEvaluation {
 	for index := len(comments) - 1; index >= 0; index-- {
 		comment := comments[index]
 		body := strings.TrimSpace(comment.Body)
@@ -88,9 +105,12 @@ func planReviewSummaryFromComments(comments []connector.IssueComment) gate.Summa
 				URL:  strings.TrimSpace(comment.URL),
 			}}
 		}
-		return summary
+		return planReviewEvaluation{
+			Summary:   summary,
+			Signature: planReviewCommentSignature(comment),
+		}
 	}
-	return gate.Summary{}
+	return planReviewEvaluation{}
 }
 
 func planReviewArtifact(body string) bool {
@@ -189,6 +209,40 @@ func planReviewFindingsFromPullRequest(pullRequest *connector.PullRequest) []gat
 	return findings
 }
 
+func planReviewPullRequestSignature(pullRequest *connector.PullRequest) string {
+	if pullRequest == nil {
+		return ""
+	}
+	reviewKey := strings.TrimSpace(pullRequest.LatestCodexReviewCommitSHA)
+	if reviewKey == "" {
+		reviewKey = strings.TrimSpace(pullRequest.HeadSHA)
+	}
+	if reviewKey == "" && pullRequest.CodexReviewSubmittedAt != nil {
+		reviewKey = pullRequest.CodexReviewSubmittedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if reviewKey == "" && pullRequest.LatestCodexReviewSubmittedAt != nil {
+		reviewKey = pullRequest.LatestCodexReviewSubmittedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if reviewKey == "" {
+		reviewKey = strings.TrimSpace(pullRequest.CodexReviewState)
+	}
+	if reviewKey == "" {
+		return ""
+	}
+	return fmt.Sprintf("pr=%d;review=%s", pullRequest.Number, reviewKey)
+}
+
+func planReviewCommentSignature(comment connector.IssueComment) string {
+	if id := strings.TrimSpace(comment.ID); id != "" {
+		return "comment_id=" + id
+	}
+	if url := strings.TrimSpace(comment.URL); url != "" {
+		return "comment_url=" + url
+	}
+	bodyHash := sha256.Sum256([]byte(strings.TrimSpace(comment.Body)))
+	return fmt.Sprintf("comment_sha256=%x", bodyHash)
+}
+
 func planReviewTargetState(action gate.Action) string {
 	switch action {
 	case gate.ActionPass:
@@ -251,16 +305,6 @@ func (o *Orchestrator) trackPlanReviewTransition(state *State, issueID string, t
 	delete(state.planRework, issueID)
 }
 
-func planReviewReworkRequested(issue connector.Issue) bool {
-	for _, comment := range issue.Comments {
-		body := strings.ToLower(comment.Body)
-		if strings.Contains(body, "plan review routed this issue") && strings.Contains(body, " to rework") {
-			return true
-		}
-	}
-	return false
-}
-
 func planReviewMarkdownSectionText(body string, title string) string {
 	want := normalizeState(title)
 	inSection := false
@@ -307,10 +351,15 @@ func (o *Orchestrator) applyPlanReviewDecision(
 	summary gate.Summary,
 	decision gate.Decision,
 	targetState string,
+	reworkSignature string,
 	now time.Time,
 ) bool {
 	issueID := strings.TrimSpace(issue.ID)
-	if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "plan_review_decision"); err != nil {
+	metadata := workflowLaneMetadata{}
+	if normalizeState(targetState) == normalizeState(autoPromoteReworkState) {
+		metadata = workflowLaneMetadataWithActionSignature(metadata, workflowActionPlanReviewRework, reworkSignature)
+	}
+	if err := o.updateIssueStateByIDWithMetadata(ctx, issueID, issue, targetState, now, "plan_review_decision", metadata); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"plan review transition failed",
@@ -319,6 +368,7 @@ func (o *Orchestrator) applyPlanReviewDecision(
 				"action", decision.Action,
 				"reason", decision.Reason,
 				"target_state", targetState,
+				"signature", reworkSignature,
 				"error", err,
 			)
 		}
@@ -381,6 +431,30 @@ func appendPullRequestReviewDisagreementAttrs(attrs []any, pullRequest *connecto
 	return append(attrs,
 		"review_api_state", apiState,
 		"review_body_severity", bodySeverity,
+	)
+}
+
+func (o *Orchestrator) logPlanReviewReworkSkip(
+	issue connector.Issue,
+	decision gate.Decision,
+	targetState string,
+	signature string,
+	match workflowTimelineMetadataMatch,
+) {
+	if o.logger == nil {
+		return
+	}
+	o.logger.Info(
+		"plan review rework already routed",
+		"issue_id", strings.TrimSpace(issue.ID),
+		"identifier", issue.Identifier,
+		"action", decision.Action,
+		"reason", decision.Reason,
+		"target_state", targetState,
+		"signature", signature,
+		"matched_event_id", match.Event.ID,
+		"matched_event_reason", match.Event.Reason,
+		"matched_event_phase", match.Event.PhaseName,
 	)
 }
 

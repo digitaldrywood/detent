@@ -957,13 +957,13 @@ func TestDispatchModeMergingFastPathFlag(t *testing.T) {
 	issue := dispatchTestIssueWithPullRequest("issue-merging", "Merging", "OPEN")
 
 	off := Orchestrator{cfg: cfg}
-	if got := off.dispatchMode(&state, issue); got != runpkg.RunModeImplement {
+	if got := off.dispatchMode(context.Background(), &state, issue); got != runpkg.RunModeImplement {
 		t.Fatalf("flag off dispatchMode = %q, want implement", got)
 	}
 
 	cfg.MergeFastPathEnabled = true
 	on := Orchestrator{cfg: cfg}
-	if got := on.dispatchMode(&state, issue); got != runpkg.RunModeMerge {
+	if got := on.dispatchMode(context.Background(), &state, issue); got != runpkg.RunModeMerge {
 		t.Fatalf("flag on dispatchMode = %q, want merge", got)
 	}
 }
