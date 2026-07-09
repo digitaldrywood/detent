@@ -204,8 +204,8 @@ func TestLongLocalWorkItemIdentifiersUseDefensiveTruncationClasses(t *testing.T)
 	boardHTML := renderBoardComponent(t, BoardSnapshot(data))
 	boardCard := boardCardSection(t, boardHTML, title)
 	for _, want := range []string{
-		`class="flex-none max-w-24 truncate text-text">` + localID,
-		`class="min-w-16 truncate">` + projectID,
+		`class="flex-none max-w-16 truncate text-text">` + localID,
+		`class="min-w-8 truncate">` + projectID,
 	} {
 		if !strings.Contains(boardCard, want) {
 			t.Fatalf("board card missing %q:\n%s", want, boardCard)
