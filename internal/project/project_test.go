@@ -798,18 +798,23 @@ func TestProjectWaitersReceiveRunError(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	runCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	runCtx := newManualDeadlineContext()
 	if err := got.Start(runCtx); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 
 	errs := make(chan error, 2)
+	waitersReady := make(chan struct{}, 2)
 	for range 2 {
+		waitCtx := newObservedDoneContext(waitersReady)
 		go func() {
-			errs <- got.Wait(context.Background())
+			errs <- got.Wait(waitCtx)
 		}()
 	}
+	for range 2 {
+		<-waitersReady
+	}
+	runCtx.expire()
 
 	for range 2 {
 		if err := <-errs; !errors.Is(err, context.DeadlineExceeded) {
@@ -1058,6 +1063,70 @@ type releaseBlockingRunner struct {
 func (r releaseBlockingRunner) Run(ctx context.Context, _ orchestrator.RunRequest) (orchestrator.RunResult, error) {
 	<-r.release
 	return orchestrator.RunResult{}, ctx.Err()
+}
+
+type manualDeadlineContext struct {
+	done chan struct{}
+	once sync.Once
+}
+
+func newManualDeadlineContext() *manualDeadlineContext {
+	return &manualDeadlineContext{done: make(chan struct{})}
+}
+
+func (c *manualDeadlineContext) Deadline() (time.Time, bool) {
+	return time.Time{}, false
+}
+
+func (c *manualDeadlineContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *manualDeadlineContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func (c *manualDeadlineContext) Value(any) any {
+	return nil
+}
+
+func (c *manualDeadlineContext) expire() {
+	c.once.Do(func() {
+		close(c.done)
+	})
+}
+
+type observedDoneContext struct {
+	ready chan<- struct{}
+	once  sync.Once
+}
+
+func newObservedDoneContext(ready chan<- struct{}) *observedDoneContext {
+	return &observedDoneContext{ready: ready}
+}
+
+func (c *observedDoneContext) Deadline() (time.Time, bool) {
+	return time.Time{}, false
+}
+
+func (c *observedDoneContext) Done() <-chan struct{} {
+	c.once.Do(func() {
+		c.ready <- struct{}{}
+	})
+	return nil
+}
+
+func (c *observedDoneContext) Err() error {
+	return nil
+}
+
+func (c *observedDoneContext) Value(any) any {
+	return nil
 }
 
 type pauseBlockingConnector struct {
