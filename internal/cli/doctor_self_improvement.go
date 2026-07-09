@@ -445,6 +445,7 @@ func defaultDoctorProposalConnector(cfg workflowconfig.Config) (doctorWorkflowPr
 		GitHubAppPrivateKeyPath:     cfg.Tracker.GitHubAppPrivateKeyPath,
 		GitHubAppInstallationID:     cfg.Tracker.GitHubAppInstallationID,
 		GitHubStatusSource:          cfg.Tracker.GitHubStatusSource,
+		DependencySource:            cfg.Dependencies.Source,
 		ProjectSlug:                 cfg.Tracker.ProjectSlug,
 		Repository:                  cfg.Tracker.Repository,
 		StatusField:                 cfg.Tracker.StatusField,

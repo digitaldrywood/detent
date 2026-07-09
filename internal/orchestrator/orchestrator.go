@@ -63,6 +63,7 @@ type Config struct {
 	Claiming                      ClaimingConfig
 	AutoPromote                   AutoPromoteConfig
 	Plan                          gate.PlanConfig
+	DependencySource              string
 	DependencyAutoUnblock         DependencyAutoUnblockConfig
 	BlockerAutoPromote            BlockerAutoPromoteConfig
 	ActiveStates                  []string

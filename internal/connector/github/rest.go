@@ -26,6 +26,18 @@ func restIssueCommentsPath(ref issueRef) string {
 	return restIssuePath(ref) + "/comments"
 }
 
+func restIssueBlockedByDependenciesPath(ref issueRef) string {
+	return restIssuePath(ref) + "/dependencies/blocked_by"
+}
+
+func restIssueBlockedByDependenciesListPath(ref issueRef) string {
+	return restIssueBlockedByDependenciesPath(ref) + "?per_page=100"
+}
+
+func restIssueBlockedByDependencyPath(ref issueRef, dependencyID int) string {
+	return restIssueBlockedByDependenciesPath(ref) + "/" + strconv.Itoa(dependencyID)
+}
+
 func restIssueCommentsListPath(ref issueRef) string {
 	return restIssueCommentsPath(ref) + "?per_page=100"
 }

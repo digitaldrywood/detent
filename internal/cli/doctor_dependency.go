@@ -36,6 +36,7 @@ type doctorBlockedRecoveryCandidateDiagnostic struct {
 
 type doctorDependencyAutoUnblockSettings struct {
 	Enabled      bool
+	Source       string
 	SourceStates []string
 	TargetState  string
 	Readiness    string
@@ -311,19 +312,22 @@ func checkDoctorDependencyAutoUnblockLive(
 		}
 	}
 
-	detail := doctorDependencyAutoUnblockDetail(dependencyCfg, len(issues), diagnostics)
+	capabilities := doctorDependencyCapabilities(projectConnector)
+	detail := doctorDependencyAutoUnblockDetail(dependencyCfg, len(issues), diagnostics, capabilities)
 	if len(diagnostics) == 0 {
 		return doctorCheck{
-			Name:   name,
-			Status: doctorOK,
-			Detail: detail,
+			Name:                   name,
+			Status:                 doctorOK,
+			Detail:                 detail,
+			DependencyCapabilities: capabilities,
 		}
 	}
 	return doctorCheck{
-		Name:   name,
-		Status: doctorWarn,
-		Detail: detail,
-		Hint:   doctorDependencyAutoUnblockHint(diagnostics),
+		Name:                   name,
+		Status:                 doctorWarn,
+		Detail:                 detail,
+		Hint:                   doctorDependencyAutoUnblockHint(diagnostics),
+		DependencyCapabilities: capabilities,
 	}
 }
 
@@ -341,9 +345,19 @@ func doctorDependencyAutoUnblockConfig(cfg workflowconfig.Config) doctorDependen
 	}
 	return doctorDependencyAutoUnblockSettings{
 		Enabled:      dependencyCfg.Enabled,
+		Source:       doctorDependencySource(cfg.Dependencies.Source),
 		SourceStates: sourceStates,
 		TargetState:  targetState,
 		Readiness:    readiness,
+	}
+}
+
+func doctorDependencySource(source string) string {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case workflowconfig.DependencySourceNativeOnly:
+		return workflowconfig.DependencySourceNativeOnly
+	default:
+		return workflowconfig.DependencySourceMerged
 	}
 }
 
@@ -415,7 +429,7 @@ func doctorDependencyDiagnostics(
 ) ([]doctorDependencyDiagnostic, error) {
 	diagnostics := []doctorDependencyDiagnostic{}
 	for _, issue := range issues {
-		hydrated, ok, err := hydrateDoctorDependencyIssue(ctx, projectConnector, issue, cfg.SourceStates)
+		hydrated, ok, err := hydrateDoctorDependencyIssue(ctx, projectConnector, issue, cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -435,13 +449,12 @@ func doctorDependencyDiagnostics(
 			})
 			continue
 		}
-		if len(hydrated.BlockedBy) > 0 && len(doctorDependencyTextBlockedRefs(hydrated)) == 0 {
+		if doctorDependencyRefsProseOnly(hydrated.BlockedBy) {
 			diagnostics = append(diagnostics, doctorDependencyDiagnostic{
-				Code:       "dependency_metadata_missing",
+				Code:       "dependency_prose_only",
 				Issue:      hydrated,
 				References: references,
 			})
-			continue
 		}
 		if len(hydrated.BlockedBy) == 0 {
 			diagnostics = append(diagnostics, doctorDependencyDiagnostic{
@@ -479,15 +492,15 @@ func hydrateDoctorDependencyIssue(
 	ctx context.Context,
 	projectConnector doctorAutoPromoteConnector,
 	issue connector.Issue,
-	sourceStates []string,
+	cfg doctorDependencyAutoUnblockSettings,
 ) (connector.Issue, bool, error) {
-	issue = doctorIssueWithTextDependencyRefs(issue)
+	issue = doctorIssueWithDependencyRefs(issue, cfg.Source)
 	if strings.TrimSpace(issue.Identifier) == "" {
-		return issue, doctorStateInList(issue.State, sourceStates), nil
+		return issue, doctorStateInList(issue.State, cfg.SourceStates), nil
 	}
 	resolver, ok := projectConnector.(connector.IssueReferenceResolver)
 	if !ok {
-		return issue, doctorStateInList(issue.State, sourceStates), nil
+		return issue, doctorStateInList(issue.State, cfg.SourceStates), nil
 	}
 	issues, err := resolver.FetchIssueStatesByIdentifiers(ctx, []string{issue.Identifier})
 	if err != nil {
@@ -497,12 +510,12 @@ func hydrateDoctorDependencyIssue(
 		if sameDoctorIssueIdentity(issue, hydrated) {
 			previousBlockedBy := append([]connector.BlockedRef(nil), issue.BlockedBy...)
 			merged := mergeDoctorDependencyIssue(issue, hydrated)
-			merged.BlockedBy = mergeDoctorDependencyBlockedRefs(previousBlockedBy, merged.BlockedBy)
-			merged = doctorIssueWithTextDependencyRefs(merged)
-			return merged, doctorStateInList(merged.State, sourceStates), nil
+			merged.BlockedBy = mergeDoctorDependencyBlockedRefs(merged.BlockedBy, previousBlockedBy)
+			merged = doctorIssueWithDependencyRefs(merged, cfg.Source)
+			return merged, doctorStateInList(merged.State, cfg.SourceStates), nil
 		}
 	}
-	return issue, doctorStateInList(issue.State, sourceStates), nil
+	return issue, doctorStateInList(issue.State, cfg.SourceStates), nil
 }
 
 func resolveDoctorDependencyBlockers(
@@ -617,17 +630,22 @@ func doctorDependencyAutoUnblockDetail(
 	cfg doctorDependencyAutoUnblockSettings,
 	sampled int,
 	diagnostics []doctorDependencyDiagnostic,
+	capabilities []connector.DependencyCapability,
 ) string {
 	status := "tracker.dependency_auto_unblock.enabled=false"
 	if cfg.Enabled {
 		status = "tracker.dependency_auto_unblock.enabled=true"
 	}
 	detail := fmt.Sprintf(
-		"%s; sampled %d dependency waiting candidate(s) from source_states=%s",
+		"%s; dependencies.source=%s; sampled %d dependency waiting candidate(s) from source_states=%s",
 		status,
+		cfg.Source,
 		sampled,
 		strings.Join(cfg.SourceStates, ","),
 	)
+	if capabilityDetail := doctorDependencyCapabilityDetail(capabilities); capabilityDetail != "" {
+		detail += "; " + capabilityDetail
+	}
 	if len(diagnostics) == 0 {
 		return detail + "; no stalled dependency candidates found"
 	}
@@ -659,13 +677,49 @@ func doctorDependencyAutoUnblockHint(diagnostics []doctorDependencyDiagnostic) s
 	if _, ok := codes["dependency_reference_unresolved"]; ok {
 		hints = append(hints, "Fix issue content so Depends on: or Blocked by: references point to existing GitHub issues.")
 	}
-	if _, ok := codes["dependency_metadata_missing"]; ok {
-		hints = append(hints, "Add canonical Depends on: or Blocked by: lines to the blocked issue body before leaving dependency-blocked work in Blocked.")
+	if _, ok := codes["dependency_prose_only"]; ok {
+		hints = append(hints, "Create native GitHub issue dependencies for prose-only blockers; keep Depends on: or Blocked by: body lines only as a compatibility fallback during migration.")
 	}
 	if _, ok := codes["dependency_ready_but_still_blocked"]; ok {
 		hints = append(hints, "Check tracker.dependency_auto_unblock source_states, target_state, readiness, and GitHub Project Status mappings.")
 	}
 	return strings.Join(hints, " ")
+}
+
+func doctorDependencyCapabilities(projectConnector doctorAutoPromoteConnector) []connector.DependencyCapability {
+	reporter, ok := projectConnector.(connector.DependencyCapabilityReporter)
+	if !ok {
+		return nil
+	}
+	capabilities := reporter.DependencyCapabilities()
+	if len(capabilities) == 0 {
+		return nil
+	}
+	return append([]connector.DependencyCapability(nil), capabilities...)
+}
+
+func doctorDependencyCapabilityDetail(capabilities []connector.DependencyCapability) string {
+	if len(capabilities) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		part := "dependency_capability"
+		if repository := strings.TrimSpace(capability.Repository); repository != "" {
+			part += " repository=" + repository
+		}
+		if status := strings.TrimSpace(capability.NativeBlockedBy); status != "" {
+			part += " native_blocked_by=" + status
+		}
+		if source := strings.TrimSpace(capability.Source); source != "" {
+			part += " source=" + source
+		}
+		if detail := strings.TrimSpace(capability.Detail); detail != "" {
+			part += " detail=" + detail
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, "; ")
 }
 
 func doctorDependencyReferenceLabels(issue connector.Issue) []string {
@@ -714,6 +768,14 @@ func doctorDependencyLineReferences(body string) []string {
 	return refs
 }
 
+func doctorIssueWithDependencyRefs(issue connector.Issue, source string) connector.Issue {
+	if doctorDependencySource(source) == workflowconfig.DependencySourceNativeOnly {
+		issue.BlockedBy = doctorDependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
+		return issue
+	}
+	return doctorIssueWithTextDependencyRefs(issue)
+}
+
 func doctorIssueWithTextDependencyRefs(issue connector.Issue) connector.Issue {
 	issue.BlockedBy = mergeDoctorDependencyBlockedRefs(issue.BlockedBy, doctorDependencyTextBlockedRefs(issue))
 	issue.BlockedBy = doctorDependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
@@ -734,7 +796,7 @@ func doctorDependencyTextBlockedRefs(issue connector.Issue) []connector.BlockedR
 			return
 		}
 		seen[key] = struct{}{}
-		refs = append(refs, connector.BlockedRef{Identifier: identifier})
+		refs = append(refs, connector.BlockedRef{Identifier: identifier, Source: connector.BlockedRefSourceProse})
 	}
 	for _, lineRef := range doctorDependencyLineReferences(issue.Description) {
 		identifiers := doctorDependencyIssueIdentifiersInText(lineRef, repo)
@@ -767,6 +829,9 @@ func mergeDoctorDependencyBlockedRefs(existing []connector.BlockedRef, incoming 
 			if _, ok := seen[key]; ok {
 				continue
 			}
+			if strings.TrimSpace(ref.Source) == "" {
+				ref.Source = connector.BlockedRefSourceProse
+			}
 			seen[key] = struct{}{}
 			merged = append(merged, ref)
 		}
@@ -792,6 +857,18 @@ func doctorDependencyBlockedRefsWithoutSelf(refs []connector.BlockedRef, identif
 		return nil
 	}
 	return filtered
+}
+
+func doctorDependencyRefsProseOnly(refs []connector.BlockedRef) bool {
+	if len(refs) == 0 {
+		return false
+	}
+	for _, ref := range refs {
+		if doctorDependencyRefSource(ref) != connector.BlockedRefSourceProse {
+			return false
+		}
+	}
+	return true
 }
 
 func doctorDependencyIssueIdentifiersInText(text string, repo string) []string {
@@ -852,13 +929,14 @@ func doctorDependencyLineReference(line string) (string, bool) {
 func doctorDependencyBlockerLabels(blockers []doctorDependencyBlocker) []string {
 	labels := make([]string, 0, len(blockers))
 	for _, blocker := range blockers {
+		source := doctorDependencyRefSource(blocker.Ref)
 		if blocker.Resolved {
 			if identifier := strings.TrimSpace(blocker.Issue.Identifier); identifier != "" {
-				labels = append(labels, identifier)
+				labels = append(labels, identifier+" source="+source)
 				continue
 			}
 			if id := strings.TrimSpace(blocker.Issue.ID); id != "" {
-				labels = append(labels, id)
+				labels = append(labels, id+" source="+source)
 				continue
 			}
 		}
@@ -870,10 +948,29 @@ func doctorDependencyBlockerLabels(blockers []doctorDependencyBlocker) []string 
 }
 
 func doctorDependencyRefLabel(ref connector.BlockedRef) string {
+	label := doctorDependencyRefBaseLabel(ref)
+	if label == "" {
+		return ""
+	}
+	return label + " source=" + doctorDependencyRefSource(ref)
+}
+
+func doctorDependencyRefBaseLabel(ref connector.BlockedRef) string {
 	if identifier := strings.TrimSpace(ref.Identifier); identifier != "" {
 		return identifier
 	}
 	return strings.TrimSpace(ref.ID)
+}
+
+func doctorDependencyRefSource(ref connector.BlockedRef) string {
+	switch strings.TrimSpace(ref.Source) {
+	case connector.BlockedRefSourceNative:
+		return connector.BlockedRefSourceNative
+	case connector.BlockedRefSourceProse:
+		return connector.BlockedRefSourceProse
+	default:
+		return connector.BlockedRefSourceProse
+	}
 }
 
 func sameDoctorIssueIdentity(left connector.Issue, right connector.Issue) bool {

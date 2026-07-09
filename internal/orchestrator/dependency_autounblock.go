@@ -45,6 +45,15 @@ var (
 	dependencyIssueURLPattern = regexp.MustCompile(`https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d+)`)
 )
 
+func normalizeDependencySource(source string) string {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case workflowconfig.DependencySourceNativeOnly:
+		return workflowconfig.DependencySourceNativeOnly
+	default:
+		return workflowconfig.DependencySourceMerged
+	}
+}
+
 func normalizeDependencyAutoUnblockConfig(cfg DependencyAutoUnblockConfig) DependencyAutoUnblockConfig {
 	cfg.SourceStates = normalizedStates(defaultStringSlice(cfg.SourceStates, []string{blockedStatusState}))
 	cfg.TargetState = strings.TrimSpace(defaultString(cfg.TargetState, "Todo"))
@@ -105,18 +114,23 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		if !ok || len(hydrated.BlockedBy) == 0 {
 			continue
 		}
+		o.logDependencyProseOnly(hydrated)
 		blockers := o.resolveDependencyBlockers(ctx, hydrated)
 		if !dependencyBlockersReady(blockers, cfg, o.cfg.TerminalStates) {
+			o.logDependencyAutoUnblockDecision(hydrated, "skip", "blockers_not_ready", blockers, "")
 			continue
 		}
 		blockerSet := dependencyAutoUnblockBlockerSet(blockers)
 		if o.dependencyAutoUnblockAlreadyConsumed(ctx, state, hydrated, blockerSet) {
+			o.logDependencyAutoUnblockDecision(hydrated, "skip", "blocker_set_already_consumed", blockers, "")
 			continue
 		}
 		targetState := dependencyAutoUnblockTargetState(state, hydrated, cfg.TargetState)
 		if !o.applyDependencyAutoUnblock(ctx, state, hydrated, blockers, blockerSet, targetState, now) {
+			o.logDependencyAutoUnblockDecision(hydrated, "skip", "transition_failed", blockers, targetState)
 			continue
 		}
+		o.logDependencyAutoUnblockDecision(hydrated, "transition", "blockers_ready", blockers, targetState)
 		transitioned[issueID] = struct{}{}
 	}
 	if len(transitioned) == 0 {
@@ -147,7 +161,7 @@ func (o *Orchestrator) autoPromoteBlockerIssues(
 		if remaining <= 0 {
 			break
 		}
-		dependent = issueWithTextDependencyRefs(dependent)
+		dependent = o.issueWithDependencyRefs(dependent)
 		if len(dependent.BlockedBy) == 0 {
 			continue
 		}
@@ -304,7 +318,7 @@ func (o *Orchestrator) hydrateDependencyAutoUnblockIssue(
 	issue connector.Issue,
 	sourceStates []string,
 ) (connector.Issue, bool) {
-	issue = issueWithTextDependencyRefs(issue)
+	issue = o.issueWithDependencyRefs(issue)
 	if strings.TrimSpace(issue.Identifier) == "" {
 		return issue, stateIn(issue.State, sourceStates)
 	}
@@ -325,11 +339,19 @@ func (o *Orchestrator) hydrateDependencyAutoUnblockIssue(
 		}
 		previousBlockedBy := append([]connector.BlockedRef(nil), issue.BlockedBy...)
 		merged := mergeIssueTrackerFields(issue, hydrated)
-		merged.BlockedBy = mergeDependencyBlockedRefs(previousBlockedBy, merged.BlockedBy)
-		merged = issueWithTextDependencyRefs(merged)
+		merged.BlockedBy = mergeDependencyBlockedRefs(merged.BlockedBy, previousBlockedBy)
+		merged = o.issueWithDependencyRefs(merged)
 		return merged, stateIn(merged.State, sourceStates)
 	}
 	return issue, stateIn(issue.State, sourceStates)
+}
+
+func (o *Orchestrator) issueWithDependencyRefs(issue connector.Issue) connector.Issue {
+	if normalizeDependencySource(o.cfg.DependencySource) == workflowconfig.DependencySourceNativeOnly {
+		issue.BlockedBy = dependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
+		return issue
+	}
+	return issueWithTextDependencyRefs(issue)
 }
 
 func issueWithTextDependencyRefs(issue connector.Issue) connector.Issue {
@@ -355,6 +377,9 @@ func mergeDependencyBlockedRefs(existing []connector.BlockedRef, incoming []conn
 			}
 			if _, ok := seen[key]; ok {
 				continue
+			}
+			if strings.TrimSpace(ref.Source) == "" {
+				ref.Source = connector.BlockedRefSourceProse
 			}
 			seen[key] = struct{}{}
 			merged = append(merged, ref)
@@ -423,7 +448,7 @@ func dependencyLineRefs(body string, repo string) []connector.BlockedRef {
 func dependencyRefsInText(text string, repo string) []connector.BlockedRef {
 	refs := []connector.BlockedRef{}
 	for _, identifier := range dependencyIssueIdentifiersInText(text, repo) {
-		refs = append(refs, connector.BlockedRef{Identifier: identifier})
+		refs = append(refs, connector.BlockedRef{Identifier: identifier, Source: connector.BlockedRefSourceProse})
 	}
 	return refs
 }
@@ -749,6 +774,67 @@ func (o *Orchestrator) applyDependencyAutoUnblock(
 	return true
 }
 
+func (o *Orchestrator) logDependencyAutoUnblockDecision(
+	issue connector.Issue,
+	action string,
+	reason string,
+	blockers []dependencyBlocker,
+	targetState string,
+) {
+	if o.logger == nil {
+		return
+	}
+	attrs := []any{
+		"issue_id", strings.TrimSpace(issue.ID),
+		"identifier", issue.Identifier,
+		"action", action,
+		"reason", reason,
+		"blockers", dependencyAutoUnblockBlockerLabels(blockers),
+		"blocker_sources", dependencyAutoUnblockBlockerSourceLabels(blockers),
+	}
+	if targetState != "" {
+		attrs = append(attrs, "target_state", targetState)
+	}
+	o.logger.Info("dependency auto-unblock decision", attrs...)
+}
+
+func (o *Orchestrator) logDependencyProseOnly(issue connector.Issue) {
+	if o.logger == nil || !dependencyRefsProseOnly(issue.BlockedBy) {
+		return
+	}
+	o.logger.Warn(
+		"dependency_prose_only",
+		"issue_id", strings.TrimSpace(issue.ID),
+		"identifier", issue.Identifier,
+		"blockers", dependencyRefLabels(issue.BlockedBy),
+	)
+}
+
+func dependencyRefsProseOnly(refs []connector.BlockedRef) bool {
+	if len(refs) == 0 {
+		return false
+	}
+	for _, ref := range refs {
+		if dependencyBlockedRefSource(ref) != connector.BlockedRefSourceProse {
+			return false
+		}
+	}
+	return true
+}
+
+func dependencyRefLabels(refs []connector.BlockedRef) []string {
+	labels := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		label := firstNonBlank(ref.Identifier, ref.ID)
+		if label != "" {
+			labels = append(labels, label)
+		}
+	}
+	labels = uniqueStrings(labels)
+	slices.Sort(labels)
+	return labels
+}
+
 func (o *Orchestrator) issueHasStickyBlockReason(ctx context.Context, state *State, issue connector.Issue) bool {
 	issueID := strings.TrimSpace(issue.ID)
 	if state != nil && issueID != "" {
@@ -967,6 +1053,31 @@ func dependencyAutoUnblockBlockerLabels(blockers []dependencyBlocker) []string {
 	labels = uniqueStrings(labels)
 	slices.Sort(labels)
 	return labels
+}
+
+func dependencyAutoUnblockBlockerSourceLabels(blockers []dependencyBlocker) []string {
+	labels := make([]string, 0, len(blockers))
+	for _, blocker := range blockers {
+		label := dependencyBlockerLabel(blocker)
+		if label == "" {
+			continue
+		}
+		labels = append(labels, label+" source="+dependencyBlockedRefSource(blocker.Ref))
+	}
+	labels = uniqueStrings(labels)
+	slices.Sort(labels)
+	return labels
+}
+
+func dependencyBlockedRefSource(ref connector.BlockedRef) string {
+	switch strings.ToLower(strings.TrimSpace(ref.Source)) {
+	case connector.BlockedRefSourceNative:
+		return connector.BlockedRefSourceNative
+	case "", connector.BlockedRefSourceProse:
+		return connector.BlockedRefSourceProse
+	default:
+		return "unknown"
+	}
 }
 
 func dependencyAutoUnblockComment(sourceState string, targetState string, blockers []dependencyBlocker) string {

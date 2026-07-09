@@ -49,7 +49,8 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			NoProgressLimit:    cfg.Agent.AutoPromote.NoProgressLimit,
 			Gate:               gate.Effective(cfg.Gate),
 		}),
-		Plan: gate.EffectivePlan(cfg.Plan),
+		Plan:             gate.EffectivePlan(cfg.Plan),
+		DependencySource: normalizeDependencySource(cfg.Dependencies.Source),
 		DependencyAutoUnblock: normalizeDependencyAutoUnblockConfig(DependencyAutoUnblockConfig{
 			Enabled:      cfg.Tracker.DependencyAutoUnblock.Enabled,
 			SourceStates: append([]string(nil), cfg.Tracker.DependencyAutoUnblock.SourceStates...),
@@ -132,6 +133,7 @@ func normalizeConfig(cfg Config) Config {
 	cfg.Claiming = normalizeClaimingConfig(cfg.Claiming)
 	cfg.AutoPromote = normalizeAutoPromoteConfig(cfg.AutoPromote)
 	cfg.Plan = gate.EffectivePlan(cfg.Plan)
+	cfg.DependencySource = normalizeDependencySource(cfg.DependencySource)
 	cfg.DependencyAutoUnblock = normalizeDependencyAutoUnblockConfig(cfg.DependencyAutoUnblock)
 	cfg.BlockerAutoPromote = normalizeBlockerAutoPromoteConfig(cfg.BlockerAutoPromote, cfg.ActiveStates, cfg.DependencyAutoUnblock)
 	cfg.Authorization.Normalize()

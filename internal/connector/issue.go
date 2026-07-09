@@ -42,6 +42,23 @@ type BlockedRef struct {
 	ID         string `json:"id,omitempty" yaml:"id,omitempty"`
 	Identifier string `json:"identifier" yaml:"identifier"`
 	State      string `json:"state,omitempty" yaml:"state,omitempty"`
+	Source     string `json:"source,omitempty" yaml:"source,omitempty"`
+}
+
+const (
+	BlockedRefSourceNative = "native"
+	BlockedRefSourceProse  = "prose"
+)
+
+type DependencyCapability struct {
+	Repository      string `json:"repository,omitempty" yaml:"repository,omitempty"`
+	NativeBlockedBy string `json:"native_blocked_by,omitempty" yaml:"native_blocked_by,omitempty"`
+	Source          string `json:"source,omitempty" yaml:"source,omitempty"`
+	Detail          string `json:"detail,omitempty" yaml:"detail,omitempty"`
+}
+
+type DependencyCapabilityReporter interface {
+	DependencyCapabilities() []DependencyCapability
 }
 
 type PullRequest struct {

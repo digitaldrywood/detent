@@ -272,6 +272,12 @@ func TestConnectorFetchLabelIssueStateByIDMapsClosedCompletedToDone(t *testing.T
 			path:   "/repos/digitaldrywood/detent/issues/487",
 			body:   `{"node_id":"I_487","number":487,"title":"Windows packages","body":"","state":"closed","state_reason":"completed","html_url":"https://github.com/digitaldrywood/detent/issues/487","assignees":[],"labels":[{"name":"release"}]}`,
 		},
+		{
+			status: http.StatusNotFound,
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/487/dependencies/blocked_by?per_page=100",
+			body:   `{"message":"not found"}`,
+		},
 	})
 	c := newGitHubTestConnector(t, server, Config{
 		GitHubStatusSource: GitHubStatusSourceLabel,

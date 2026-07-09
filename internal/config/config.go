@@ -37,6 +37,8 @@ const (
 
 	DependencyReadinessTerminal         = "terminal"
 	DependencyReadinessTerminalOrMerged = "terminal_or_merged"
+	DependencySourceMerged              = "merged"
+	DependencySourceNativeOnly          = "native_only"
 
 	defaultLinearEndpoint = "https://api.linear.app/graphql"
 	defaultGitHubEndpoint = "https://api.github.com/graphql"
@@ -83,6 +85,7 @@ type Config struct {
 	Polling       Polling         `yaml:"polling"`
 	Workspace     Workspace       `yaml:"workspace"`
 	Deliverable   Deliverable     `yaml:"deliverable,omitempty"`
+	Dependencies  Dependencies    `yaml:"dependencies,omitempty"`
 	Worker        Worker          `yaml:"worker"`
 	Agent         Agent           `yaml:"agent"`
 	Agents        Agents          `yaml:"agents"`
@@ -145,6 +148,10 @@ type DependencyAutoUnblock struct {
 	SourceStates []string `yaml:"source_states"`
 	TargetState  string   `yaml:"target_state"`
 	Readiness    string   `yaml:"readiness"`
+}
+
+type Dependencies struct {
+	Source string `yaml:"source"`
 }
 
 type BlockerAutoPromote struct {
@@ -629,6 +636,25 @@ func (d *DependencyAutoUnblock) Normalize() {
 	}
 }
 
+func (d *Dependencies) Normalize() {
+	if d == nil {
+		return
+	}
+	d.Source = strings.ToLower(strings.TrimSpace(d.Source))
+	if d.Source == "" {
+		d.Source = DependencySourceMerged
+	}
+}
+
+func (d Dependencies) Validate(prefix string) []string {
+	switch strings.ToLower(strings.TrimSpace(d.Source)) {
+	case "", DependencySourceMerged, DependencySourceNativeOnly:
+		return nil
+	default:
+		return []string{prefix + ".source must be one of merged, native_only"}
+	}
+}
+
 func (d DependencyAutoUnblock) Validate(prefix string) []string {
 	d.Normalize()
 
@@ -776,6 +802,9 @@ func Default() Config {
 		Deliverable: Deliverable{
 			Kind: DeliverablePullRequest,
 		},
+		Dependencies: Dependencies{
+			Source: DependencySourceMerged,
+		},
 		Worker: Worker{
 			SSHHosts: []string{},
 		},
@@ -857,6 +886,7 @@ func (c *Config) Validate() error {
 
 	problems = append(problems, c.Identity.Validate("identity")...)
 	c.validateTracker(&problems)
+	problems = append(problems, c.Dependencies.Validate("dependencies")...)
 	validatePollingInterval(c.Polling.IntervalMS, &problems)
 	c.Workspace.validate(&problems)
 	if c.Worker.MaxConcurrentAgentsPerHost != nil {
@@ -995,6 +1025,7 @@ func (c *Config) normalize() {
 	c.Tracker.DependencyAutoUnblock.Normalize()
 	c.Tracker.BlockerAutoPromote.Normalize()
 	c.Tracker.Authorization.Normalize()
+	c.Dependencies.Normalize()
 	c.Workspace.Normalize()
 	c.Deliverable.Normalize()
 

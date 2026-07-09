@@ -892,7 +892,7 @@ func TestCheckDoctorDependencyAutoUnblock(t *testing.T) {
 			},
 		},
 		{
-			name: "dependency refs without body metadata warn with issue body fix",
+			name: "prose only dependency refs warn with native dependency fix",
 			cfg:  validDoctorDependencyWorkflow(true),
 			connector: &fakeDoctorAutoPromoteConnector{
 				issues: []connector.Issue{
@@ -901,14 +901,21 @@ func TestCheckDoctorDependencyAutoUnblock(t *testing.T) {
 						{Identifier: "digitaldrywood/detent#416"},
 					}),
 				},
+				capabilities: []connector.DependencyCapability{{
+					Repository:      "digitaldrywood/detent",
+					NativeBlockedBy: "unavailable",
+					Source:          workflowconfig.DependencySourceMerged,
+					Detail:          "status 404",
+				}},
 			},
 			want: doctorWarn,
 			wantDetails: []string{
-				"dependency_metadata_missing",
+				"dependency_prose_only",
 				"issue-416",
 				"digitaldrywood/detent#415",
-				"Depends on:",
-				"Blocked by:",
+				"source=prose",
+				"native GitHub issue dependencies",
+				"dependency_capability repository=digitaldrywood/detent native_blocked_by=unavailable source=merged detail=status 404",
 			},
 		},
 		{
@@ -1023,22 +1030,22 @@ func TestDoctorDependencyTextBlockedRefsAcceptsSharedDependencyLines(t *testing.
 		{
 			name: "depends on no colon",
 			body: "Depends on #414",
-			want: []string{"digitaldrywood/detent#414"},
+			want: []string{"digitaldrywood/detent#414 source=prose"},
 		},
 		{
 			name: "blocked by no colon",
 			body: "Blocked by #415",
-			want: []string{"digitaldrywood/detent#415"},
+			want: []string{"digitaldrywood/detent#415 source=prose"},
 		},
 		{
 			name: "depends on colon",
 			body: "Depends on: #416",
-			want: []string{"digitaldrywood/detent#416"},
+			want: []string{"digitaldrywood/detent#416 source=prose"},
 		},
 		{
 			name: "depends hyphen owner repo",
 			body: "depends-on digitaldrywood/agent-runtime#27",
-			want: []string{"digitaldrywood/agent-runtime#27"},
+			want: []string{"digitaldrywood/agent-runtime#27 source=prose"},
 		},
 	}
 
@@ -3293,6 +3300,7 @@ type fakeDoctorAutoPromoteConnector struct {
 	issues         []connector.Issue
 	hydratedIssues []connector.Issue
 	resolvedIssues []connector.Issue
+	capabilities   []connector.DependencyCapability
 	drift          connector.StatusDrift
 	driftErr       error
 	verifyErr      error
@@ -3330,6 +3338,10 @@ func (c *fakeDoctorAutoPromoteConnector) VerifyStatusOptions(_ context.Context, 
 
 func (c *fakeDoctorAutoPromoteConnector) FetchStatusDrift(context.Context) (connector.StatusDrift, error) {
 	return c.drift, c.driftErr
+}
+
+func (c *fakeDoctorAutoPromoteConnector) DependencyCapabilities() []connector.DependencyCapability {
+	return append([]connector.DependencyCapability(nil), c.capabilities...)
 }
 
 func stringSliceContains(values []string, want string) bool {

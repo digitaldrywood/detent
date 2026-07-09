@@ -461,6 +461,7 @@ func telemetryBlockedRefs(refs []connector.BlockedRef) []telemetry.BlockedRef {
 			ID:         ref.ID,
 			Identifier: ref.Identifier,
 			State:      ref.State,
+			Source:     ref.Source,
 		})
 	}
 	return out

@@ -77,7 +77,7 @@ func TestConnectorIssueFieldFetchIssuesByStates(t *testing.T) {
 	if got[0].AuthorID != "author-1" || got[0].AssigneeID != "worker-1" {
 		t.Fatalf("identity fields = author %q assignee %q", got[0].AuthorID, got[0].AssigneeID)
 	}
-	if !reflect.DeepEqual(got[0].BlockedBy, []connector.BlockedRef{{ID: "I_42", Identifier: "digitaldrywood/detent#42", State: "Open"}}) {
+	if !reflect.DeepEqual(got[0].BlockedBy, []connector.BlockedRef{{ID: "I_42", Identifier: "digitaldrywood/detent#42", State: "Open", Source: connector.BlockedRefSourceProse}}) {
 		t.Fatalf("BlockedBy = %#v", got[0].BlockedBy)
 	}
 
@@ -268,6 +268,12 @@ func TestConnectorIssueFieldFetchIssueStatesByIDsCapturesClosedIssue(t *testing.
 			method: http.MethodGet,
 			path:   "/orgs/digitaldrywood/issue-fields?per_page=100",
 			body:   `[{"id":10,"node_id":"IFSS_status","name":"Status","data_type":"single_select","options":[{"id":2,"name":"Working","color":"yellow"}]}]`,
+		},
+		{
+			status: http.StatusNotFound,
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/1/dependencies/blocked_by?per_page=100",
+			body:   `{"message":"not found"}`,
 		},
 	})
 	c := newGitHubTestConnector(t, server, Config{

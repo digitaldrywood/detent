@@ -968,14 +968,267 @@ func TestParseBlockedByRecognizesIssueReferences(t *testing.T) {
 
 	got := parseBlockedBy(body, "digitaldrywood/detent")
 	want := []connector.BlockedRef{
-		{Identifier: "digitaldrywood/detent#24"},
-		{Identifier: "digitaldrywood/detent#25"},
-		{Identifier: "digitaldrywood/detent#26"},
-		{Identifier: "digitaldrywood/agent-runtime#27"},
-		{Identifier: "digitaldrywood/detent#28"},
+		{Identifier: "digitaldrywood/detent#24", Source: connector.BlockedRefSourceProse},
+		{Identifier: "digitaldrywood/detent#25", Source: connector.BlockedRefSourceProse},
+		{Identifier: "digitaldrywood/detent#26", Source: connector.BlockedRefSourceProse},
+		{Identifier: "digitaldrywood/agent-runtime#27", Source: connector.BlockedRefSourceProse},
+		{Identifier: "digitaldrywood/detent#28", Source: connector.BlockedRefSourceProse},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseBlockedBy() = %#v, want %#v", got, want)
+	}
+}
+
+func TestConnectorHydrateIssueBlockedByRefsUsesNativeDependencies(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		dependencySource string
+		initial          []connector.BlockedRef
+		status           int
+		body             string
+		want             []connector.BlockedRef
+		wantCapability   connector.DependencyCapability
+	}{
+		{
+			name:   "native only",
+			status: http.StatusOK,
+			body:   `[{"id":100,"node_id":"I_100","number":100,"state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/100","repository_url":"https://api.github.com/repos/digitaldrywood/detent"}]`,
+			want: []connector.BlockedRef{{
+				ID:         "I_100",
+				Identifier: "digitaldrywood/detent#100",
+				State:      "Open",
+				Source:     connector.BlockedRefSourceNative,
+			}},
+			wantCapability: connector.DependencyCapability{
+				Repository:      "digitaldrywood/detent",
+				NativeBlockedBy: nativeDependencyStatusAvailable,
+				Source:          dependencySourceMerged,
+			},
+		},
+		{
+			name:    "prose only when native list is empty",
+			initial: []connector.BlockedRef{{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
+			status:  http.StatusOK,
+			body:    `[]`,
+			want: []connector.BlockedRef{{
+				Identifier: "digitaldrywood/detent#101",
+				Source:     connector.BlockedRefSourceProse,
+			}},
+			wantCapability: connector.DependencyCapability{
+				Repository:      "digitaldrywood/detent",
+				NativeBlockedBy: nativeDependencyStatusAvailable,
+				Source:          dependencySourceMerged,
+			},
+		},
+		{
+			name: "merged deduplicates with native winning",
+			initial: []connector.BlockedRef{
+				{Identifier: "digitaldrywood/detent#100", Source: connector.BlockedRefSourceProse},
+				{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse},
+			},
+			status: http.StatusOK,
+			body:   `[{"id":100,"node_id":"I_100","number":100,"state":"closed","html_url":"https://github.com/digitaldrywood/detent/issues/100","repository_url":"https://api.github.com/repos/digitaldrywood/detent"}]`,
+			want: []connector.BlockedRef{{
+				ID:         "I_100",
+				Identifier: "digitaldrywood/detent#100",
+				State:      "Done",
+				Source:     connector.BlockedRefSourceNative,
+			}, {
+				Identifier: "digitaldrywood/detent#101",
+				Source:     connector.BlockedRefSourceProse,
+			}},
+			wantCapability: connector.DependencyCapability{
+				Repository:      "digitaldrywood/detent",
+				NativeBlockedBy: nativeDependencyStatusAvailable,
+				Source:          dependencySourceMerged,
+			},
+		},
+		{
+			name:    "probe not found falls back to prose",
+			initial: []connector.BlockedRef{{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
+			status:  http.StatusNotFound,
+			body:    `{"message":"not found"}`,
+			want: []connector.BlockedRef{{
+				Identifier: "digitaldrywood/detent#101",
+				Source:     connector.BlockedRefSourceProse,
+			}},
+			wantCapability: connector.DependencyCapability{
+				Repository:      "digitaldrywood/detent",
+				NativeBlockedBy: nativeDependencyStatusUnavailable,
+				Source:          dependencySourceMerged,
+				Detail:          "status 404",
+			},
+		},
+		{
+			name:             "native only ignores prose on capable repo",
+			dependencySource: dependencySourceNativeOnly,
+			initial:          []connector.BlockedRef{{Identifier: "digitaldrywood/detent#101", Source: connector.BlockedRefSourceProse}},
+			status:           http.StatusOK,
+			body:             `[{"id":100,"node_id":"I_100","number":100,"state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/100","repository_url":"https://api.github.com/repos/digitaldrywood/detent"}]`,
+			want: []connector.BlockedRef{{
+				ID:         "I_100",
+				Identifier: "digitaldrywood/detent#100",
+				State:      "Open",
+				Source:     connector.BlockedRefSourceNative,
+			}},
+			wantCapability: connector.DependencyCapability{
+				Repository:      "digitaldrywood/detent",
+				NativeBlockedBy: nativeDependencyStatusAvailable,
+				Source:          dependencySourceNativeOnly,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := newGraphQLTestServer(t, []graphqlTestResponse{{
+				method: http.MethodGet,
+				path:   "/repos/digitaldrywood/detent/issues/1073/dependencies/blocked_by?per_page=100",
+				status: tt.status,
+				body:   tt.body,
+			}})
+			c := newGitHubTestConnector(t, server, Config{DependencySource: tt.dependencySource})
+			issue := connector.NewIssue()
+			issue.ID = "I_1073"
+			issue.Identifier = "digitaldrywood/detent#1073"
+			issue.BlockedBy = append([]connector.BlockedRef(nil), tt.initial...)
+
+			c.hydrateIssueBlockedByRefs(context.Background(), &issue)
+
+			if !reflect.DeepEqual(issue.BlockedBy, tt.want) {
+				t.Fatalf("BlockedBy = %#v, want %#v", issue.BlockedBy, tt.want)
+			}
+			capabilities := c.DependencyCapabilities()
+			if len(capabilities) != 1 || capabilities[0] != tt.wantCapability {
+				t.Fatalf("DependencyCapabilities() = %#v, want %#v", capabilities, []connector.DependencyCapability{tt.wantCapability})
+			}
+		})
+	}
+}
+
+func TestConnectorHydrateIssueBlockedByRefsPaginatesNativeDependencies(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method:  http.MethodGet,
+			path:    "/repos/digitaldrywood/detent/issues/1073/dependencies/blocked_by?per_page=100",
+			headers: map[string]string{"Link": `</repos/digitaldrywood/detent/issues/1073/dependencies/blocked_by?per_page=100&page=2>; rel="next"`},
+			body:    `[{"id":100,"node_id":"I_100","number":100,"state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/100","repository_url":"https://api.github.com/repos/digitaldrywood/detent"}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/1073/dependencies/blocked_by?per_page=100&page=2",
+			body:   `[{"id":101,"node_id":"I_101","number":101,"state":"closed","html_url":"https://github.com/digitaldrywood/detent/issues/101","repository_url":"https://api.github.com/repos/digitaldrywood/detent"}]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	issue := connector.NewIssue()
+	issue.ID = "I_1073"
+	issue.Identifier = "digitaldrywood/detent#1073"
+
+	c.hydrateIssueBlockedByRefs(context.Background(), &issue)
+
+	want := []connector.BlockedRef{
+		{
+			ID:         "I_100",
+			Identifier: "digitaldrywood/detent#100",
+			State:      "Open",
+			Source:     connector.BlockedRefSourceNative,
+		},
+		{
+			ID:         "I_101",
+			Identifier: "digitaldrywood/detent#101",
+			State:      "Done",
+			Source:     connector.BlockedRefSourceNative,
+		},
+	}
+	if !reflect.DeepEqual(issue.BlockedBy, want) {
+		t.Fatalf("BlockedBy = %#v, want paginated native refs %#v", issue.BlockedBy, want)
+	}
+}
+
+func TestConnectorHydrateIssueBlockedByRefsDoesNotCacheRateLimitAsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodGet,
+		path:   "/repos/digitaldrywood/detent/issues/1073/dependencies/blocked_by?per_page=100",
+		status: http.StatusForbidden,
+		headers: map[string]string{
+			"Retry-After":           "120",
+			"X-RateLimit-Limit":     "5000",
+			"X-RateLimit-Remaining": "4999",
+			"X-RateLimit-Used":      "1",
+			"X-RateLimit-Resource":  "core",
+		},
+		body: `{"message":"secondary rate limit"}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{})
+	issue := connector.NewIssue()
+	issue.ID = "I_1073"
+	issue.Identifier = "digitaldrywood/detent#1073"
+	issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#101"}}
+
+	c.hydrateIssueBlockedByRefs(context.Background(), &issue)
+
+	want := []connector.BlockedRef{{
+		Identifier: "digitaldrywood/detent#101",
+		Source:     connector.BlockedRefSourceProse,
+	}}
+	if !reflect.DeepEqual(issue.BlockedBy, want) {
+		t.Fatalf("BlockedBy = %#v, want prose fallback %#v", issue.BlockedBy, want)
+	}
+	if capabilities := c.DependencyCapabilities(); len(capabilities) != 0 {
+		t.Fatalf("DependencyCapabilities() = %#v, want no cached capability for retryable rate limit", capabilities)
+	}
+}
+
+func TestConnectorIssueDependencyWriterUsesNativeRESTEndpoints(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/100",
+			body:   `{"id":1000,"node_id":"I_100","number":100,"title":"Blocker","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/100","labels":[]}`,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/repos/digitaldrywood/detent/issues/1073/dependencies/blocked_by",
+			body:   `{"id":1073,"node_id":"I_1073","number":1073,"title":"Blocked","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1073","labels":[]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/100",
+			body:   `{"id":1000,"node_id":"I_100","number":100,"title":"Blocker","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/100","labels":[]}`,
+		},
+		{
+			method: http.MethodDelete,
+			path:   "/repos/digitaldrywood/detent/issues/1073/dependencies/blocked_by/1000",
+			body:   `{"id":1073,"node_id":"I_1073","number":1073,"title":"Blocked","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1073","labels":[]}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	if err := c.AddIssueBlockedByDependency(context.Background(), "digitaldrywood/detent#1073", "digitaldrywood/detent#100"); err != nil {
+		t.Fatalf("AddIssueBlockedByDependency() error = %v", err)
+	}
+	if err := c.RemoveIssueBlockedByDependency(context.Background(), "digitaldrywood/detent#1073", "digitaldrywood/detent#100"); err != nil {
+		t.Fatalf("RemoveIssueBlockedByDependency() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want 4", len(requests))
+	}
+	body, ok := requests[1]["body"].(map[string]any)
+	if !ok || body["issue_id"] != float64(1000) {
+		t.Fatalf("POST body = %#v, want issue_id 1000", requests[1]["body"])
 	}
 }
 
@@ -2333,6 +2586,12 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadHumanActionNeeded(t *testing
 			path:   "/repos/digitaldrywood/detent/issues/98/comments?per_page=100&page=2",
 			body:   `[{"body":"## Codex Workpad\n\n### Plan\n- Check prerequisites.\n\n### Human Action Needed\n- Create public repository ` + "`" + `digitaldrywood/homebrew-tap` + "`" + `.\n- Add repository Actions secret ` + "`" + `HOMEBREW_TAP_GITHUB_TOKEN` + "`" + `.\n\n### Validation Evidence\n- Not run."}]`,
 		},
+		{
+			status: http.StatusNotFound,
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/98/dependencies/blocked_by?per_page=100",
+			body:   `{"message":"not found"}`,
+		},
 	})
 
 	c := newGitHubTestConnector(t, server, Config{
@@ -2353,8 +2612,8 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadHumanActionNeeded(t *testing
 	}
 
 	requests := server.requests()
-	if len(requests) != 3 {
-		t.Fatalf("request count = %d, want 3", len(requests))
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want 4", len(requests))
 	}
 	if strings.Contains(requests[0]["query"].(string), "comments") {
 		t.Fatalf("project query = %q, want no comments", requests[0]["query"])
@@ -2377,6 +2636,12 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadBlockedByRefs(t *testing.T) 
 			body:   `[{"body":"## Codex Workpad\n\n### Blockers\n- Blocked by: #415\n- Human action needed: merge #415, then move #416 back to Todo.\n\n### Validation\n- Pending."}]`,
 		},
 		{
+			status: http.StatusNotFound,
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/416/dependencies/blocked_by?per_page=100",
+			body:   `{"message":"not found"}`,
+		},
+		{
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/issues/415",
 			body:   `{"node_id":"I_kw415","number":415,"title":"Closed dependency","body":"","state":"CLOSED","html_url":"https://github.com/digitaldrywood/detent/issues/415","labels":[]}`,
@@ -2397,7 +2662,7 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadBlockedByRefs(t *testing.T) 
 	}
 
 	want := []connector.BlockedRef{
-		{ID: "I_kw415", Identifier: "digitaldrywood/detent#415", State: "Done"},
+		{ID: "I_kw415", Identifier: "digitaldrywood/detent#415", State: "Done", Source: connector.BlockedRefSourceProse},
 	}
 	if !reflect.DeepEqual(got[0].BlockedBy, want) {
 		t.Fatalf("BlockedBy = %#v, want %#v", got[0].BlockedBy, want)
@@ -2466,6 +2731,7 @@ func TestConnectorFetchIssuesByStatesResolvesBodyDependencyMissingFromSnapshot(t
 				ID:         "I_162",
 				Identifier: "digitaldrywood/creswoodcorners-phone#162",
 				State:      tt.wantState,
+				Source:     connector.BlockedRefSourceProse,
 			}
 			if got[0].BlockedBy[0] != want {
 				t.Fatalf("BlockedBy[0] = %#v, want %#v", got[0].BlockedBy[0], want)
@@ -2498,7 +2764,7 @@ func TestConnectorFetchIssuesByStatesKeepsBodyDependencyWhenHydrationFails(t *te
 		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
 	}
 
-	want := []connector.BlockedRef{{Identifier: "digitaldrywood/creswoodcorners-phone#162"}}
+	want := []connector.BlockedRef{{Identifier: "digitaldrywood/creswoodcorners-phone#162", Source: connector.BlockedRefSourceProse}}
 	if !reflect.DeepEqual(got[0].BlockedBy, want) {
 		t.Fatalf("BlockedBy = %#v, want %#v", got[0].BlockedBy, want)
 	}
@@ -2515,6 +2781,12 @@ func TestConnectorFetchIssuesByStatesIgnoresHumanActionIssueMentions(t *testing.
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/issues/417/comments?per_page=100",
 			body:   `[{"body":"## Codex Workpad\n\n### Human Action Needed\n- Need product approval based on #123 before continuing.\n\n### Validation\n- Pending."}]`,
+		},
+		{
+			status: http.StatusNotFound,
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/417/dependencies/blocked_by?per_page=100",
+			body:   `{"message":"not found"}`,
 		},
 	})
 
@@ -2543,6 +2815,12 @@ func TestConnectorFetchIssuesByStatesAttachesBlockedPullRequest(t *testing.T) {
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/issues/396/comments?per_page=100",
 			body:   `[{"body":"## Codex Workpad\n\n### Human Action Needed\n- PR #426 latest head has no check-runs and conflicts with main."}]`,
+		},
+		{
+			status: http.StatusNotFound,
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/396/dependencies/blocked_by?per_page=100",
+			body:   `{"message":"not found"}`,
 		},
 		{
 			method: http.MethodGet,
@@ -2601,6 +2879,12 @@ func TestConnectorFetchIssueStatesByIDsUsesProjectStatusAndRequestOrder(t *testi
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_2","project":{"id":"PVT_1"},"statusValue":{"name":"Reviewing"},"priorityValue":{"name":"No priority"},"fieldValues":{"nodes":[]}}]}}}}`,
 		},
 		{
+			status: http.StatusNotFound,
+			method: http.MethodGet,
+			path:   "/repos/example/repo/issues/2/dependencies/blocked_by?per_page=100",
+			body:   `{"message":"not found"}`,
+		},
+		{
 			method: http.MethodGet,
 			path:   "/repos/example/repo/issues/1",
 			body:   `{"node_id":"I_kw1","number":1,"title":"First","body":"","state":"open","html_url":"https://github.com/example/repo/issues/1","assignees":[],"labels":[]}`,
@@ -2648,6 +2932,12 @@ func TestConnectorFetchIssueStatesByIDsCapturesIssueMetadata(t *testing.T) {
 		},
 		{
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P1"},"fieldValues":{"nodes":[{"__typename":"ProjectV2ItemFieldSingleSelectValue","name":"Ready","field":{"name":"Status"}},{"__typename":"ProjectV2ItemFieldTextValue","text":"team-a","field":{"name":"Owner"}},{"__typename":"ProjectV2ItemFieldNumberValue","number":3,"field":{"name":"Weight"}}]}}]}}}}`,
+		},
+		{
+			status: http.StatusNotFound,
+			method: http.MethodGet,
+			path:   "/repos/example/repo/issues/1/dependencies/blocked_by?per_page=100",
+			body:   `{"message":"not found"}`,
 		},
 	})
 
@@ -2701,6 +2991,12 @@ func TestConnectorFetchIssueStatesByIDsPaginatesProjectItems(t *testing.T) {
 		{
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Reviewing"},"priorityValue":{"name":"P2"}}]}}}}`,
 		},
+		{
+			status: http.StatusNotFound,
+			method: http.MethodGet,
+			path:   "/repos/example/repo/issues/1/dependencies/blocked_by?per_page=100",
+			body:   `{"message":"not found"}`,
+		},
 	})
 
 	c := newGitHubTestConnector(t, server, Config{
@@ -2726,8 +3022,8 @@ func TestConnectorFetchIssueStatesByIDsPaginatesProjectItems(t *testing.T) {
 	}
 
 	requests := server.requests()
-	if len(requests) != 4 {
-		t.Fatalf("request count = %d, want identity, REST issue, and 2 project item pages", len(requests))
+	if len(requests) != 5 {
+		t.Fatalf("request count = %d, want identity, REST issue, 2 project item pages, and dependency probe", len(requests))
 	}
 	variables := requests[3]["variables"].(map[string]any)
 	if variables["after"] != "cursor-1" {
@@ -2749,6 +3045,12 @@ func TestConnectorFetchIssueStatesByIdentifiersResolvesDependencyReadinessSignal
 		},
 		{
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}`,
+		},
+		{
+			status: http.StatusNotFound,
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/251/dependencies/blocked_by?per_page=100",
+			body:   `{"message":"not found"}`,
 		},
 		{
 			method: http.MethodGet,
@@ -2796,14 +3098,14 @@ func TestConnectorFetchIssueStatesByIdentifiersResolvesDependencyReadinessSignal
 	}
 
 	requests := server.requests()
-	if len(requests) != 7 {
-		t.Fatalf("request count = %d, want REST issue and project field reads for each identifier plus PR list", len(requests))
+	if len(requests) != 8 {
+		t.Fatalf("request count = %d, want REST issue and project field reads, dependency probe, and PR list", len(requests))
 	}
 	if requests[0]["method"] != http.MethodGet || requests[0]["path"] != "/repos/digitaldrywood/detent/issues/251" {
 		t.Fatalf("first request = %#v, want REST issue lookup", requests[0])
 	}
-	if requests[6]["method"] != http.MethodGet || requests[6]["path"] != "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all" {
-		t.Fatalf("PR request = %#v, want REST pull request list", requests[6])
+	if requests[7]["method"] != http.MethodGet || requests[7]["path"] != "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all" {
+		t.Fatalf("PR request = %#v, want REST pull request list", requests[7])
 	}
 }
 

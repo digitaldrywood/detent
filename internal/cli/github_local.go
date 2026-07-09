@@ -185,6 +185,7 @@ func githubLocalConnectorFromWorkflow(ctx context.Context, cfg workflowconfig.Co
 		GitHubAppPrivateKey:         cfg.Tracker.GitHubAppPrivateKey,
 		GitHubAppPrivateKeyPath:     cfg.Tracker.GitHubAppPrivateKeyPath,
 		GitHubAppInstallationID:     cfg.Tracker.GitHubAppInstallationID,
+		DependencySource:            cfg.Dependencies.Source,
 		Repository:                  cfg.Tracker.Repository,
 		StatusField:                 cfg.Tracker.StatusField,
 		StatusLabelPrefix:           cfg.Tracker.StatusLabelPrefix,

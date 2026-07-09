@@ -143,6 +143,11 @@ type IssueReferenceResolver interface {
 	FetchIssueStatesByIdentifiers(context.Context, []string) ([]Issue, error)
 }
 
+type IssueDependencyWriter interface {
+	AddIssueBlockedByDependency(context.Context, string, string) error
+	RemoveIssueBlockedByDependency(context.Context, string, string) error
+}
+
 type IssueUpserter interface {
 	UpsertIssues(context.Context, []Issue) error
 }
