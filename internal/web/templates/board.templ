@@ -526,12 +526,12 @@ templ boardKanbanDragScript() {
 				// also fires a click; swallow it or the detail sheet opens.
 				if (!keepClick) suppressNextClick();
 			}
-			function cancelDrag() {
+			function cancelDrag(keepClick) {
 				if (!active) {
 					pending = null;
 					return;
 				}
-				finishDrag();
+				finishDrag(keepClick);
 				feedback("Move cancelled.", "error");
 			}
 			document.addEventListener("pointerdown", function (event) {
@@ -565,7 +565,10 @@ templ boardKanbanDragScript() {
 				}
 				if (!active || event.pointerId !== active.pointerId) return;
 				if (event.buttons === 0) {
-					cancelDrag();
+					// The release happened outside the window, so no click is
+					// coming — cancelling must not arm the click suppressor or
+					// it would eat the next real click after recovery.
+					cancelDrag(true);
 					return;
 				}
 				event.preventDefault();
