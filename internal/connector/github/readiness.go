@@ -33,6 +33,7 @@ type ReadinessConfig struct {
 	AuthPath                      string
 	LocalStatusMode               bool
 	WriteProbeIssue               string
+	AllowWriteProbes              bool
 	Repositories                  []string
 	StatusStates                  []string
 	ReadStates                    []string
@@ -57,6 +58,18 @@ type ReadinessConfig struct {
 type ReadinessProjectFieldWrite struct {
 	Name string
 }
+
+const projectWritePermissionQuery = `
+query DetentGitHubProjectWritePermission($projectId: ID!) {
+  node(id: $projectId) {
+    __typename
+    ... on ProjectV2 {
+      id
+      viewerCanUpdate
+    }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}`
 
 type readinessProbeIssue struct {
 	ID    string
@@ -107,7 +120,12 @@ func (c githubReadinessChecker) Check(ctx context.Context, cfg ReadinessConfig) 
 		if probeCheck != nil {
 			checks = append(checks, *probeCheck)
 		}
-		checks = append(checks, c.probeReadChecks(ctx, cfg, probe, hasProbe)...)
+		readTarget, hasReadTarget, readTargetCheck := c.resolveIssueRelationshipReadTarget(ctx, cfg, probe, hasProbe)
+		if readTargetCheck != nil {
+			checks = append(checks, *readTargetCheck)
+		} else {
+			checks = append(checks, c.probeReadChecks(ctx, cfg, readTarget, hasReadTarget)...)
+		}
 		checks = append(checks, c.localWriteAllowlistCheck())
 		checks = append(checks, c.rateLimitCheck(ctx))
 		return checks
@@ -136,7 +154,12 @@ func (c githubReadinessChecker) Check(ctx context.Context, cfg ReadinessConfig) 
 	if probeCheck != nil {
 		checks = append(checks, *probeCheck)
 	}
-	checks = append(checks, c.probeReadChecks(ctx, cfg, probe, hasProbe)...)
+	readTarget, hasReadTarget, readTargetCheck := c.resolveIssueRelationshipReadTarget(ctx, cfg, probe, hasProbe)
+	if readTargetCheck != nil {
+		checks = append(checks, *readTargetCheck)
+	} else {
+		checks = append(checks, c.probeReadChecks(ctx, cfg, readTarget, hasReadTarget)...)
+	}
 	checks = append(checks, c.writeChecks(ctx, cfg, probe, hasProbe)...)
 	checks = append(checks, c.rateLimitCheck(ctx))
 	return checks
@@ -502,10 +525,7 @@ func (c githubReadinessChecker) repositoryChecks(ctx context.Context, repositori
 }
 
 func (c githubReadinessChecker) repositoryReadCheck(ctx context.Context, repo string) ReadinessCheck {
-	var out struct {
-		FullName string `json:"full_name"`
-	}
-	if err := c.connector.client.REST(ctx, http.MethodGet, restRepositoryPath(repo), nil, &out); err != nil {
+	if _, err := c.repositoryMetadata(ctx, repo); err != nil {
 		return ReadinessCheck{
 			Name:   "GitHub repository " + repo + " access",
 			Status: ReadinessFail,
@@ -696,13 +716,19 @@ func (c githubReadinessChecker) repositoryPullRequestSample(ctx context.Context,
 }
 
 func (c githubReadinessChecker) repositoryDefaultBranch(ctx context.Context, repo string) (string, error) {
-	var out struct {
-		DefaultBranch string `json:"default_branch"`
-	}
-	if err := c.connector.client.REST(ctx, http.MethodGet, restRepositoryPath(repo), nil, &out); err != nil {
+	out, err := c.repositoryMetadata(ctx, repo)
+	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(out.DefaultBranch), nil
+}
+
+func (c githubReadinessChecker) repositoryMetadata(ctx context.Context, repo string) (restRepository, error) {
+	var out restRepository
+	if err := c.connector.client.REST(ctx, http.MethodGet, restRepositoryPath(repo), nil, &out); err != nil {
+		return restRepository{}, err
+	}
+	return out, nil
 }
 
 func (c githubReadinessChecker) restReadCheck(ctx context.Context, name string, path string, okDetail string, hint string) ReadinessCheck {
@@ -792,9 +818,7 @@ func writeProbeTargetCheck(probeID string, probe readinessProbeIssue) ReadinessC
 }
 
 func (cfg ReadinessConfig) requiresProbeIssue() bool {
-	return cfg.requiresWriteProbe() ||
-		cfg.RequireIssueChildrenRead ||
-		cfg.RequireIssueParentsRead
+	return cfg.AllowWriteProbes && cfg.requiresWriteProbe()
 }
 
 func (cfg ReadinessConfig) requiresWriteProbe() bool {
@@ -811,6 +835,11 @@ func (cfg ReadinessConfig) requiresIssueObjectWriteProbe() bool {
 	return cfg.RequireIssueComments ||
 		cfg.RequireAssigneeWrite ||
 		cfg.RequireIssueClose
+}
+
+func (cfg ReadinessConfig) requiresIssueRelationshipRead() bool {
+	return cfg.RequireIssueChildrenRead ||
+		cfg.RequireIssueParentsRead
 }
 
 func (c githubReadinessChecker) resolveProbeIssue(ctx context.Context, value string) (readinessProbeIssue, error) {
@@ -842,6 +871,85 @@ func (c githubReadinessChecker) resolveProbeIssue(ctx context.Context, value str
 	return readinessProbeIssue{ID: strings.TrimSpace(issue.ID), Ref: ref, State: issue.State}, nil
 }
 
+func (c githubReadinessChecker) resolveIssueRelationshipReadTarget(
+	ctx context.Context,
+	cfg ReadinessConfig,
+	probe readinessProbeIssue,
+	hasProbe bool,
+) (readinessProbeIssue, bool, *ReadinessCheck) {
+	if !cfg.requiresIssueRelationshipRead() {
+		return readinessProbeIssue{}, false, nil
+	}
+	if hasProbe {
+		return probe, true, nil
+	}
+	return c.resolveRepositoryIssueSample(ctx, cfg.Repositories)
+}
+
+func (c githubReadinessChecker) resolveRepositoryIssueSample(ctx context.Context, repositories []string) (readinessProbeIssue, bool, *ReadinessCheck) {
+	repositories = normalizedRepositories(repositories)
+	if len(repositories) == 0 {
+		check := ReadinessCheck{
+			Name:   "GitHub issue relationship metadata sample",
+			Status: ReadinessWarn,
+			Detail: "no source or target repository could be inferred; issue relationship read capability not proven",
+			Hint:   "Configure tracker.repository or ensure the project source checkout has a GitHub origin remote.",
+		}
+		return readinessProbeIssue{}, false, &check
+	}
+	for _, repo := range repositories {
+		sample, ok, check := c.repositoryIssueSample(ctx, repo)
+		if check != nil {
+			return readinessProbeIssue{}, false, check
+		}
+		if ok {
+			return sample, true, nil
+		}
+	}
+	check := ReadinessCheck{
+		Name:   "GitHub issue relationship metadata sample",
+		Status: ReadinessWarn,
+		Detail: "no issue was available to prove issue children/parent metadata access",
+		Hint:   "Keep at least one issue in the configured repository if strict issue relationship readiness proof is required.",
+	}
+	return readinessProbeIssue{}, false, &check
+}
+
+func (c githubReadinessChecker) repositoryIssueSample(ctx context.Context, repo string) (readinessProbeIssue, bool, *ReadinessCheck) {
+	var response restIssueSearchResponse
+	if err := c.connector.client.REST(ctx, http.MethodGet, restRepositoryIssueSearchPath(repo), nil, &response); err != nil {
+		check := ReadinessCheck{
+			Name:   "GitHub issue relationship metadata sample",
+			Status: ReadinessFail,
+			Detail: "cannot search repository issues for relationship read sample: " + err.Error(),
+			Hint:   "Grant repository issue search access for " + repo + ".",
+		}
+		return readinessProbeIssue{}, false, &check
+	}
+	owner, name, ok := splitRepositoryName(repo)
+	if !ok {
+		check := ReadinessCheck{
+			Name:   "GitHub issue relationship metadata sample",
+			Status: ReadinessFail,
+			Detail: "repository name is invalid",
+			Hint:   "Use owner/name repository identifiers.",
+		}
+		return readinessProbeIssue{}, false, &check
+	}
+	fallback := issueRef{Owner: owner, Name: name}
+	for _, item := range response.Items {
+		if item.PullRequest != nil || strings.TrimSpace(item.NodeID) == "" {
+			continue
+		}
+		ref, ok := issueRefFromRESTSearchItem(item, fallback)
+		if !ok {
+			continue
+		}
+		return readinessProbeIssue{ID: strings.TrimSpace(item.NodeID), Ref: ref, State: item.State}, true, nil
+	}
+	return readinessProbeIssue{}, false, nil
+}
+
 func (c githubReadinessChecker) probeReadChecks(ctx context.Context, cfg ReadinessConfig, probe readinessProbeIssue, hasProbe bool) []ReadinessCheck {
 	checks := []ReadinessCheck{}
 	if cfg.RequireIssueChildrenRead {
@@ -855,7 +963,7 @@ func (c githubReadinessChecker) probeReadChecks(ctx context.Context, cfg Readine
 
 func (c githubReadinessChecker) issueChildrenReadCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool) ReadinessCheck {
 	if !hasProbe {
-		return unprovenProbeIssueCheck("GitHub issue children metadata")
+		return unprovenIssueSampleCheck("GitHub issue children metadata")
 	}
 	children, err := c.connector.FetchIssueChildren(ctx, probe.ID)
 	if err != nil {
@@ -869,13 +977,13 @@ func (c githubReadinessChecker) issueChildrenReadCheck(ctx context.Context, prob
 	return ReadinessCheck{
 		Name:   "GitHub issue children metadata",
 		Status: ReadinessOK,
-		Detail: fmt.Sprintf("queried sub-issue and tracked-issue metadata for probe issue; found %d child link(s)", len(children)),
+		Detail: fmt.Sprintf("queried sub-issue and tracked-issue metadata for sample issue %s#%d; found %d child link(s)", probe.Ref.Owner+"/"+probe.Ref.Name, probe.Ref.Number, len(children)),
 	}
 }
 
 func (c githubReadinessChecker) issueParentsReadCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool) ReadinessCheck {
 	if !hasProbe {
-		return unprovenProbeIssueCheck("GitHub issue parent metadata")
+		return unprovenIssueSampleCheck("GitHub issue parent metadata")
 	}
 	parents, err := c.connector.FetchIssueParents(ctx, probe.ID)
 	if err != nil {
@@ -889,11 +997,210 @@ func (c githubReadinessChecker) issueParentsReadCheck(ctx context.Context, probe
 	return ReadinessCheck{
 		Name:   "GitHub issue parent metadata",
 		Status: ReadinessOK,
-		Detail: fmt.Sprintf("queried parent and tracked-in metadata for probe issue; found %d parent link(s)", len(parents)),
+		Detail: fmt.Sprintf("queried parent and tracked-in metadata for sample issue %s#%d; found %d parent link(s)", probe.Ref.Owner+"/"+probe.Ref.Name, probe.Ref.Number, len(parents)),
 	}
 }
 
 func (c githubReadinessChecker) writeChecks(ctx context.Context, cfg ReadinessConfig, probe readinessProbeIssue, hasProbe bool) []ReadinessCheck {
+	if !cfg.AllowWriteProbes {
+		if hasGitHubAppCredentials(c.cfg, c.cfg.LookupEnv) {
+			return nil
+		}
+		return c.readOnlyWriteChecks(ctx, cfg)
+	}
+	return c.mutationWriteChecks(ctx, cfg, probe, hasProbe)
+}
+
+func (c githubReadinessChecker) readOnlyWriteChecks(ctx context.Context, cfg ReadinessConfig) []ReadinessCheck {
+	checks := []ReadinessCheck{}
+	if cfg.RequireProjectStatusWrite || len(cfg.ProjectFieldWrites) > 0 {
+		checks = append(checks, c.projectWritePermissionCheck(ctx))
+	}
+	if cfg.requiresIssueWritePermission() {
+		repositories := normalizedRepositories(cfg.Repositories)
+		if len(repositories) == 0 {
+			checks = append(checks, ReadinessCheck{
+				Name:   "GitHub issue write permission",
+				Status: ReadinessFail,
+				Detail: "cannot introspect Issues: write; no source or target repository could be inferred",
+				Hint:   "Configure tracker.repository or ensure the project source checkout has a GitHub origin remote.",
+			})
+		}
+		for _, repo := range repositories {
+			checks = append(checks, c.repositoryIssueWritePermissionCheck(ctx, repo, cfg))
+		}
+	}
+	return checks
+}
+
+func (cfg ReadinessConfig) requiresIssueWritePermission() bool {
+	return cfg.RequireIssueFieldStatusWrite ||
+		cfg.RequireLabelStatusWrite ||
+		cfg.RequireIssueComments ||
+		cfg.RequireAssigneeWrite ||
+		cfg.RequireIssueClose
+}
+
+func (c githubReadinessChecker) projectWritePermissionCheck(ctx context.Context) ReadinessCheck {
+	if c.connector == nil || c.connector.client == nil {
+		return ReadinessCheck{
+			Name:   "GitHub project write permission",
+			Status: ReadinessFail,
+			Detail: "cannot introspect Projects: write; GitHub connector is not configured",
+			Hint:   "Check GitHub tracker configuration and credentials.",
+		}
+	}
+	projectID := strings.TrimSpace(c.connector.projectID)
+	if projectID == "" {
+		return ReadinessCheck{
+			Name:   "GitHub project write permission",
+			Status: ReadinessFail,
+			Detail: "cannot introspect Projects: write; tracker.project_slug is blank",
+			Hint:   "Set tracker.project_slug or use a boardless GitHub status source.",
+		}
+	}
+	var response struct {
+		Node *struct {
+			TypeName        string `json:"__typename"`
+			ID              string `json:"id"`
+			ViewerCanUpdate bool   `json:"viewerCanUpdate"`
+		} `json:"node"`
+	}
+	if err := c.connector.client.GraphQLWithType(ctx, graphQLQueryProjectMetadata, projectWritePermissionQuery, map[string]any{
+		"projectId": projectID,
+	}, &response); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub project write permission",
+			Status: ReadinessFail,
+			Detail: "cannot read ProjectV2 update permission: " + err.Error(),
+			Hint:   "Grant Projects read access so Detent can introspect the token's project permissions.",
+		}
+	}
+	if response.Node == nil || response.Node.TypeName != "ProjectV2" || strings.TrimSpace(response.Node.ID) == "" {
+		return ReadinessCheck{
+			Name:   "GitHub project write permission",
+			Status: ReadinessFail,
+			Detail: "cannot resolve ProjectV2 " + projectID,
+			Hint:   "Fix tracker.project_slug and grant the token access to the configured project.",
+		}
+	}
+	if !response.Node.ViewerCanUpdate {
+		return ReadinessCheck{
+			Name:   "GitHub project write permission",
+			Status: ReadinessFail,
+			Detail: "token lacks Projects: write for ProjectV2 " + projectID + "; viewerCanUpdate=false",
+			Hint:   "Grant project write access to the token or rerun with --allow-write-probes against a dedicated scratch issue for deep verification.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub project write permission",
+		Status: ReadinessOK,
+		Detail: "viewer can update ProjectV2 " + projectID + "; covers status and project field writes",
+	}
+}
+
+func (c githubReadinessChecker) repositoryIssueWritePermissionCheck(ctx context.Context, repo string, cfg ReadinessConfig) ReadinessCheck {
+	if c.connector == nil || c.connector.client == nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue write permission " + repo,
+			Status: ReadinessFail,
+			Detail: "cannot introspect Issues: write; GitHub connector is not configured",
+			Hint:   "Check GitHub tracker configuration and credentials.",
+		}
+	}
+	metadata, err := c.repositoryMetadata(ctx, repo)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue write permission " + repo,
+			Status: ReadinessFail,
+			Detail: "cannot read repository permissions: " + err.Error(),
+			Hint:   "Grant the token access to " + repo + ".",
+		}
+	}
+	level, ok := repositoryIssueWritePermissionLevel(metadata.Permissions, cfg)
+	capabilities := strings.Join(requiredIssueWriteCapabilities(cfg), ", ")
+	if !ok {
+		return ReadinessCheck{
+			Name:   "GitHub issue write permission " + repo,
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("token lacks %s for %s; repository permissions: %s; required for %s", repositoryIssueWritePermissionName(cfg), repo, repositoryPermissionsDetail(metadata.Permissions), capabilities),
+			Hint:   repositoryIssueWritePermissionHint(cfg),
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub issue write permission " + repo,
+		Status: ReadinessOK,
+		Detail: fmt.Sprintf("repository permission %s permits issue writes for %s", level, capabilities),
+	}
+}
+
+func requiredIssueWriteCapabilities(cfg ReadinessConfig) []string {
+	capabilities := []string{}
+	if cfg.RequireIssueFieldStatusWrite {
+		capabilities = append(capabilities, "issue field Status updates")
+	}
+	if cfg.RequireLabelStatusWrite {
+		capabilities = append(capabilities, "status label updates")
+	}
+	if cfg.RequireIssueComments {
+		capabilities = append(capabilities, "issue comments")
+	}
+	if cfg.RequireAssigneeWrite {
+		capabilities = append(capabilities, "assignee updates")
+	}
+	if cfg.RequireIssueClose {
+		capabilities = append(capabilities, "issue close")
+	}
+	return capabilities
+}
+
+func repositoryIssueWritePermissionLevel(permissions map[string]bool, cfg ReadinessConfig) (string, bool) {
+	for _, level := range repositoryIssueWritePermissionLevels(cfg) {
+		if permissions[level] {
+			return level, true
+		}
+	}
+	return repositoryPermissionsDetail(permissions), false
+}
+
+func repositoryIssueWritePermissionLevels(cfg ReadinessConfig) []string {
+	if cfg.RequireIssueFieldStatusWrite {
+		return []string{"admin", "maintain", "push"}
+	}
+	return []string{"admin", "maintain", "push", "triage"}
+}
+
+func repositoryIssueWritePermissionName(cfg ReadinessConfig) string {
+	if cfg.RequireIssueFieldStatusWrite {
+		return "repository push permission"
+	}
+	return "Issues: write"
+}
+
+func repositoryIssueWritePermissionHint(cfg ReadinessConfig) string {
+	if cfg.RequireIssueFieldStatusWrite {
+		return "Grant the token push, maintain, or admin access to the repository."
+	}
+	return "Grant the token triage, push, maintain, or admin access to the repository."
+}
+
+func repositoryPermissionsDetail(permissions map[string]bool) string {
+	if len(permissions) == 0 {
+		return "not reported"
+	}
+	enabled := []string{}
+	for _, level := range []string{"admin", "maintain", "push", "triage", "pull"} {
+		if permissions[level] {
+			enabled = append(enabled, level)
+		}
+	}
+	if len(enabled) == 0 {
+		return "none"
+	}
+	return strings.Join(enabled, ", ")
+}
+
+func (c githubReadinessChecker) mutationWriteChecks(ctx context.Context, cfg ReadinessConfig, probe readinessProbeIssue, hasProbe bool) []ReadinessCheck {
 	checks := []ReadinessCheck{}
 	if cfg.RequireProjectStatusWrite {
 		checks = append(checks, c.projectStatusWriteCheck(ctx, probe, hasProbe))
@@ -905,7 +1212,7 @@ func (c githubReadinessChecker) writeChecks(ctx context.Context, cfg ReadinessCo
 		checks = append(checks, c.labelStatusWriteCheck(ctx, probe, hasProbe))
 	}
 	if cfg.requiresIssueObjectWriteProbe() && !hasProbe && c.canUseRepositoryIssueWriteProbe() {
-		checks = append(checks, c.repositoryIssueWritePermissionCheck(ctx))
+		checks = append(checks, c.repositoryIssueWriteMutationProbeCheck(ctx))
 	} else {
 		if cfg.RequireIssueComments {
 			checks = append(checks, c.issueCommentWriteCheck(ctx, probe, hasProbe))
@@ -1128,7 +1435,7 @@ func (c githubReadinessChecker) repositoryLabelWritePermissionCheck(ctx context.
 	}, "write repository labels")
 }
 
-func (c githubReadinessChecker) repositoryIssueWritePermissionCheck(ctx context.Context) ReadinessCheck {
+func (c githubReadinessChecker) repositoryIssueWriteMutationProbeCheck(ctx context.Context) ReadinessCheck {
 	return c.invalidNoPersistentWriteProbe(ctx, "GitHub issue write permission", http.MethodPost, restRepositoryIssueCreatePath(c.connector.repository), map[string]any{
 		"title": "",
 	}, "write issues")
@@ -1414,12 +1721,12 @@ func (c githubReadinessChecker) projectFieldWriteCheck(ctx context.Context, prob
 	}
 }
 
-func unprovenProbeIssueCheck(name string) ReadinessCheck {
+func unprovenIssueSampleCheck(name string) ReadinessCheck {
 	return ReadinessCheck{
 		Name:   name,
 		Status: ReadinessWarn,
-		Detail: "no tracker.write_probe_issue configured; issue-specific read capability not proven",
-		Hint:   "Configure tracker.write_probe_issue with a scratch issue on the configured project to prove this capability.",
+		Detail: "no repository issue sample was available; issue relationship read capability not proven",
+		Hint:   "Keep at least one issue in the configured repository if strict issue relationship readiness proof is required.",
 	}
 }
 

@@ -498,8 +498,8 @@ func TestOnboardingWriteLabelWorkflowKanbanMode(t *testing.T) {
 			if !strings.Contains(content, wantContent) {
 				t.Fatalf("workflow missing %q:\n%s", wantContent, content)
 			}
-			if !strings.Contains(content, "detent doctor --allow-write-probes") {
-				t.Fatalf("workflow missing write-probe guidance:\n%s", content)
+			if !strings.Contains(content, "plain detent doctor proves required write permissions") {
+				t.Fatalf("workflow missing read-only permission guidance:\n%s", content)
 			}
 
 			workflow, err := workflowconfig.ParseWorkflow(raw)
@@ -513,7 +513,7 @@ func TestOnboardingWriteLabelWorkflowKanbanMode(t *testing.T) {
 	}
 }
 
-func TestOnboardingAgentStepExplainsKanbanWriteProbeRequirement(t *testing.T) {
+func TestOnboardingAgentStepExplainsKanbanPermissionChecks(t *testing.T) {
 	t.Parallel()
 
 	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
@@ -540,7 +540,8 @@ func TestOnboardingAgentStepExplainsKanbanWriteProbeRequirement(t *testing.T) {
 	for _, want := range []string{
 		"name=\"kanban_mode\" value=\"integration\" checked",
 		"operator-owned local/private installs",
-		"detent doctor --allow-write-probes",
+		"Plain <code>detent doctor</code> uses read-only GitHub permission checks",
+		"--allow-write-probes</code> is optional deep verification",
 		"name=\"kanban_mode\" value=\"read_only\"",
 		"observer/shared dashboards",
 	} {

@@ -398,10 +398,10 @@ templ agentStep(data OnboardingData) {
 			<div class="rounded-md border border-line p-3 sm:col-span-2">
 				<span class="block text-sm font-semibold text-text">Project Kanban</span>
 				<div class="mt-3 grid gap-2 sm:grid-cols-2">
-					@kanbanModeChoice(data.Form, "integration", "Interactive", "Recommended for operator-owned local/private installs after mutation authorization and write probes pass.")
-					@kanbanModeChoice(data.Form, "read_only", "Read-only", "Conservative option for observer/shared dashboards or until write probes pass.")
+					@kanbanModeChoice(data.Form, "integration", "Interactive", "Recommended for operator-owned local/private installs when doctor proves required write permissions.")
+					@kanbanModeChoice(data.Form, "read_only", "Read-only", "Conservative option for observer/shared dashboards or when write permissions are unavailable.")
 				</div>
-				<p class="mt-3 text-sm text-sec">Integration requires <code>detent doctor --allow-write-probes</code> to prove status-label updates and issue/PR comment writes.</p>
+				<p class="mt-3 text-sm text-sec">Plain <code>detent doctor</code> uses read-only GitHub permission checks; <code>--allow-write-probes</code> is optional deep verification for scratch-issue workflows.</p>
 			</div>
 			<div class="flex flex-wrap gap-2 pt-2 sm:col-span-2">
 				<button class={ buttonClass() } type="submit">Continue</button>

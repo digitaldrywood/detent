@@ -609,8 +609,8 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	}
 	b.WriteString("  kanban:\n")
 	writeScalar(&b, "    ", "mode", onboardingKanbanMode(form))
-	b.WriteString("    # Integration is recommended for operator-owned local/private installs after mutation authorization and detent doctor --allow-write-probes passes.\n")
-	b.WriteString("    # Use read_only for observer/shared dashboards or until write probes pass.\n")
+	b.WriteString("    # Integration is recommended for operator-owned local/private installs when plain detent doctor proves required write permissions.\n")
+	b.WriteString("    # Use read_only for observer/shared dashboards or when write permissions are unavailable.\n")
 	b.WriteString("hooks:\n")
 	b.WriteString("  timeout_ms: 60000\n")
 	b.WriteString("---\n\n")

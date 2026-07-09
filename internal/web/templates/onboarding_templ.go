@@ -1592,15 +1592,15 @@ func agentStep(data OnboardingData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = kanbanModeChoice(data.Form, "integration", "Interactive", "Recommended for operator-owned local/private installs after mutation authorization and write probes pass.").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = kanbanModeChoice(data.Form, "integration", "Interactive", "Recommended for operator-owned local/private installs when doctor proves required write permissions.").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = kanbanModeChoice(data.Form, "read_only", "Read-only", "Conservative option for observer/shared dashboards or until write probes pass.").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = kanbanModeChoice(data.Form, "read_only", "Read-only", "Conservative option for observer/shared dashboards or when write permissions are unavailable.").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 113, "</div><p class=\"mt-3 text-sm text-sec\">Integration requires <code>detent doctor --allow-write-probes</code> to prove status-label updates and issue/PR comment writes.</p></div><div class=\"flex flex-wrap gap-2 pt-2 sm:col-span-2\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 113, "</div><p class=\"mt-3 text-sm text-sec\">Plain <code>detent doctor</code> uses read-only GitHub permission checks; <code>--allow-write-probes</code> is optional deep verification for scratch-issue workflows.</p></div><div class=\"flex flex-wrap gap-2 pt-2 sm:col-span-2\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

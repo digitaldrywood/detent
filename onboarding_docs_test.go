@@ -428,19 +428,17 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 		{
 			path:            "docs/templates/WORKFLOW.project_v2.md",
 			source:          workflowconfig.GitHubStatusSourceProjectV2,
-			want:            []string{"github_status_source: project_v2", "project_slug: <project-node-id>", "write_probe_issue:"},
-			unwanted:        []string{"repository: <repo-owner>/<repo-name>"},
+			want:            []string{"github_status_source: project_v2", "project_slug: <project-node-id>"},
+			unwanted:        []string{"repository: <repo-owner>/<repo-name>", "write_probe_issue:"},
 			wantProjectSlug: true,
-			wantWriteProbe:  true,
 		},
 		{
 			path:            "docs/templates/WORKFLOW.issue_field.md",
 			source:          workflowconfig.GitHubStatusSourceIssueField,
-			want:            []string{"github_status_source: issue_field", "repository: <repo-owner>/<repo-name>", "status_field: Status", "write_probe_issue:"},
-			unwanted:        []string{"project_slug:"},
+			want:            []string{"github_status_source: issue_field", "repository: <repo-owner>/<repo-name>", "status_field: Status"},
+			unwanted:        []string{"project_slug:", "write_probe_issue:"},
 			wantRepository:  true,
 			wantStatusField: "Status",
-			wantWriteProbe:  true,
 		},
 		{
 			path:             "docs/templates/WORKFLOW.label.md",
