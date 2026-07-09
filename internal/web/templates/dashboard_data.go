@@ -41,6 +41,8 @@ const (
 	projectKanbanBlockedSourceMetadataKey         = "detent.blocked_source"
 	projectKanbanBlockedReasonMetadataKey         = "detent.blocked_reason"
 	projectKanbanBlockedRecoveryReasonMetadataKey = "detent.blocked_recovery_reason"
+	projectKanbanAutoPromoteActionMetadataKey     = "detent.auto_promote_action"
+	projectKanbanAutoPromoteReasonMetadataKey     = "detent.auto_promote_reason"
 )
 
 type DashboardData struct {
@@ -3627,7 +3629,9 @@ func prPipelineCardForIssue(issue telemetry.Issue, state string, laneID string, 
 
 func prPipelineWaitDetail(issue telemetry.Issue) string {
 	parts := []string{}
-	if reason := prPipelineHumanReviewWaitReason(issue); reason != "" {
+	if reason := prPipelineAutoPromoteWaitReason(issue); reason != "" {
+		parts = append(parts, reason)
+	} else if reason := prPipelineHumanReviewWaitReason(issue); reason != "" {
 		parts = append(parts, reason)
 	}
 	if issue.PullRequest == nil && issue.MergeTiming == nil {
@@ -3661,6 +3665,18 @@ func prPipelineWaitDetail(issue telemetry.Issue) string {
 		parts = append(parts, merge)
 	}
 	return strings.Join(parts, " / ")
+}
+
+func prPipelineAutoPromoteWaitReason(issue telemetry.Issue) string {
+	action := strings.TrimSpace(issue.Metadata[projectKanbanAutoPromoteActionMetadataKey])
+	if action != "await_review" && action != "skip" {
+		return ""
+	}
+	reason := strings.TrimSpace(issue.Metadata[projectKanbanAutoPromoteReasonMetadataKey])
+	if reason == "" {
+		return ""
+	}
+	return "auto-promote " + action + ": " + reason
 }
 
 func prPipelineHumanReviewWaitReason(issue telemetry.Issue) string {

@@ -121,6 +121,67 @@ func snapshotGatePendingIssue(id string, state string) connector.Issue {
 	}
 }
 
+func TestStateSnapshotIncludesAutoPromoteDecisionReason(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 14, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled: true,
+			Gate:    gate.Config{Kind: gate.KindCommand},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	issue := connector.Issue{
+		ID:         "auto-promote-await",
+		Identifier: "digitaldrywood/detent#1107",
+		State:      "Human Review",
+		PullRequest: &connector.PullRequest{
+			Number:   1108,
+			State:    "open",
+			CIStatus: "success",
+		},
+	}
+	state.BoardIssues = []connector.Issue{issue}
+	state.Pipeline = []connector.Issue{issue}
+	state.AutoPromoteDecisions[issue.ID] = autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonWorkpadStatusInvalid)
+
+	snapshot := state.Snapshot(now)
+
+	if got := snapshot.BoardIssues[0].Metadata[autoPromoteActionMetadataKey]; got != string(AutoPromoteActionAwaitReview) {
+		t.Fatalf("BoardIssues auto promote action = %q, want await_review", got)
+	}
+	if got := snapshot.BoardIssues[0].Metadata[autoPromoteReasonMetadataKey]; got != string(AutoPromoteReasonWorkpadStatusInvalid) {
+		t.Fatalf("BoardIssues auto promote reason = %q, want workpad_status_invalid", got)
+	}
+	if got := snapshot.Pipeline[0].Metadata[autoPromoteReasonMetadataKey]; got != string(AutoPromoteReasonWorkpadStatusInvalid) {
+		t.Fatalf("Pipeline auto promote reason = %q, want workpad_status_invalid", got)
+	}
+}
+
+func TestStateSnapshotComputesDisabledAutoPromoteReason(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 14, 5, 0, 0, time.UTC)
+	state := newState(normalizeConfig(Config{}))
+	state.BoardIssues = []connector.Issue{{
+		ID:         "auto-promote-disabled",
+		Identifier: "digitaldrywood/detent#1108",
+		State:      "Human Review",
+	}}
+
+	snapshot := state.Snapshot(now)
+
+	if got := snapshot.BoardIssues[0].Metadata[autoPromoteActionMetadataKey]; got != string(AutoPromoteActionSkip) {
+		t.Fatalf("auto promote action = %q, want skip", got)
+	}
+	if got := snapshot.BoardIssues[0].Metadata[autoPromoteReasonMetadataKey]; got != string(AutoPromoteReasonDisabled) {
+		t.Fatalf("auto promote reason = %q, want disabled", got)
+	}
+}
+
 func TestStateSnapshotIncludesStatusDrift(t *testing.T) {
 	t.Parallel()
 

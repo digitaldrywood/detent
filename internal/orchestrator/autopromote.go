@@ -39,6 +39,7 @@ type AutoPromoteSummary struct {
 	Validator                             gate.ValidatorResult
 	ArtifactStatus                        string
 	LastActivityAt                        *time.Time
+	CompletedFinalState                   string
 }
 
 type AutoPromoteFinding struct {
@@ -129,7 +130,7 @@ func EvaluateAutoPromote(
 	}
 	workpad := autoPromoteWorkpadBlocker(issue, cfg)
 	if workpad.Invalid != nil {
-		decision := autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonWorkpadStatusInvalid)
+		decision := autoPromoteDecision(autoPromoteInvalidWorkpadAction(summary.CompletedFinalState), AutoPromoteReasonWorkpadStatusInvalid)
 		autoPromoteApplyWorkpadDecisionFields(&decision, workpad)
 		return decision
 	}
@@ -181,6 +182,31 @@ func autoPromoteDecision(action AutoPromoteAction, reason AutoPromoteReason) Aut
 		Action: action,
 		Reason: reason,
 	}
+}
+
+func cloneAutoPromoteDecisions(decisions map[string]AutoPromoteDecision) map[string]AutoPromoteDecision {
+	if decisions == nil {
+		return nil
+	}
+	cloned := make(map[string]AutoPromoteDecision, len(decisions))
+	for issueID, decision := range decisions {
+		cloned[issueID] = cloneAutoPromoteDecision(decision)
+	}
+	return cloned
+}
+
+func cloneAutoPromoteDecision(decision AutoPromoteDecision) AutoPromoteDecision {
+	decision.Findings = append([]AutoPromoteFinding(nil), decision.Findings...)
+	decision.ResolvedWorkpadBlockers = append([]string(nil), decision.ResolvedWorkpadBlockers...)
+	decision.WorkpadBlockerVerifications = append([]AutoPromoteWorkpadBlockerVerification(nil), decision.WorkpadBlockerVerifications...)
+	return decision
+}
+
+func autoPromoteInvalidWorkpadAction(completedFinalState string) AutoPromoteAction {
+	if normalizeState(completedFinalState) == normalizeState(FinalStateCompleted) {
+		return AutoPromoteActionRework
+	}
+	return AutoPromoteActionAwaitReview
 }
 
 func normalizeAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {

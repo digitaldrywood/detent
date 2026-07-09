@@ -135,7 +135,11 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	switch raw.Status {
 	case StatusInProgress, StatusBlocked, StatusComplete:
 	default:
-		problems = append(problems, "status must be one of in_progress, blocked, complete")
+		if raw.Status == "" {
+			problems = append(problems, "status must be one of in_progress, blocked, complete")
+		} else {
+			problems = append(problems, fmt.Sprintf("status %q must be one of in_progress, blocked, complete", raw.Status))
+		}
 	}
 
 	humanAction := ""

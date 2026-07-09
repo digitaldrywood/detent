@@ -2639,6 +2639,21 @@ func TestPRPipelineWaitDetailExplainsHumanReviewReasons(t *testing.T) {
 			want: "waiting for auto-promote",
 		},
 		{
+			name: "auto promote decision reason",
+			issue: telemetry.Issue{
+				State: "Human Review",
+				Metadata: map[string]string{
+					projectKanbanAutoPromoteActionMetadataKey: "await_review",
+					projectKanbanAutoPromoteReasonMetadataKey: "workpad_status_invalid",
+				},
+				PullRequest: &telemetry.PullRequest{
+					CIStatus:         "success",
+					CodexReviewState: "COMMENTED",
+				},
+			},
+			want: "auto-promote await_review: workpad_status_invalid",
+		},
+		{
 			name: "hydration explains stale data instead",
 			issue: telemetry.Issue{
 				State: "Human Review",
