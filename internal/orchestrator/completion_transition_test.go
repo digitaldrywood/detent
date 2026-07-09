@@ -45,9 +45,43 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 			want: "Review",
 		},
 		{
+			name:       "artifact production completed with source gate wait advances to configured review",
+			issue:      completionTransitionIssue("Production", ""),
+			finalState: FinalStateCompleted,
+			cfg: AutoPromoteConfig{
+				Enabled:     true,
+				SourceState: "Review",
+				PassState:   "Ready for Pickup",
+				ReworkState: "Rework",
+				Gate: gate.Config{
+					Kind: gate.KindArtifact,
+					Artifact: gate.ArtifactConfig{
+						StatusField:    "render_status",
+						PassStatuses:   []string{"approved", "valid"},
+						WaitStatuses:   []string{"queued", "rendering", "pending_review"},
+						ReworkStatuses: []string{"recut", "invalid", "missing_assets"},
+					},
+				},
+			},
+			want: "Review",
+		},
+		{
 			name:       "rework completed with open pull request waits for dispatch",
 			issue:      completionTransitionIssue("Rework", "OPEN"),
 			finalState: FinalStateCompleted,
+		},
+		{
+			name:       "artifact rework completed without pull request advances to configured review",
+			issue:      completionTransitionIssue("Rework", ""),
+			finalState: FinalStateCompleted,
+			cfg: AutoPromoteConfig{
+				Enabled:     true,
+				SourceState: "Review",
+				PassState:   "Ready for Pickup",
+				ReworkState: "Rework",
+				Gate:        artifactCompletionTestGate(),
+			},
+			want: "Review",
 		},
 		{
 			name:       "merging completed with open pull request waits for merge lifecycle",
@@ -146,8 +180,8 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 		},
 	}
 
-	activeStates := normalizedStates([]string{"Todo", "In Progress", "Rework", "Merging"})
-	terminalStates := normalizedStates([]string{"Done", "Cancelled"})
+	activeStates := normalizedStates([]string{"Todo", "In Progress", "Production", "Rework", "Merging"})
+	terminalStates := normalizedStates([]string{"Ready for Pickup", "Done", "Cancelled"})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -163,6 +197,95 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 				t.Fatalf("completedActiveReviewTargetState() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestActiveArtifactGateWaitReviewTargetState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		issue connector.Issue
+		want  string
+	}{
+		{
+			name:  "production pending review moves to review",
+			issue: artifactCompletionTransitionIssue("Production", "pending_review"),
+			want:  "Review",
+		},
+		{
+			name:  "rework rendering moves to review",
+			issue: artifactCompletionTransitionIssue("Rework", "rendering"),
+			want:  "Review",
+		},
+		{
+			name:  "todo queued does not move to review",
+			issue: artifactCompletionTransitionIssue("Todo", "queued"),
+		},
+		{
+			name:  "production pass status does not move to review",
+			issue: artifactCompletionTransitionIssue("Production", "approved"),
+		},
+	}
+
+	activeStates := normalizedStates([]string{"Todo", "Production", "Rework"})
+	terminalStates := normalizedStates([]string{"Ready for Pickup", "Done", "Cancelled"})
+	cfg := AutoPromoteConfig{
+		Enabled:     true,
+		SourceState: "Review",
+		PassState:   "Ready for Pickup",
+		ReworkState: "Rework",
+		Gate:        artifactCompletionTestGate(),
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := activeArtifactGateWaitReviewTargetState(tt.issue, activeStates, terminalStates, cfg)
+			if got != tt.want {
+				t.Fatalf("activeArtifactGateWaitReviewTargetState() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTransitionActiveArtifactGateWaitIssuesReconcilesToReviewAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 15, 35, 0, 0, time.UTC)
+	issue := artifactCompletionTransitionIssue("Production", "pending_review")
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	cfg := normalizeConfig(Config{
+		ActiveStates:   []string{"Todo", "Production", "Rework"},
+		ObservedStates: []string{"Backlog", "Review", "Blocked"},
+		TerminalStates: []string{"Ready for Pickup", "Done", "Cancelled"},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:     true,
+			SourceState: "Review",
+			PassState:   "Ready for Pickup",
+			ReworkState: "Rework",
+			Gate:        artifactCompletionTestGate(),
+		},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+
+	result := orch.transitionActiveArtifactGateWaitIssuesToReview(context.Background(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing", issue.ID)
+	}
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Review"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if _, ok := state.Completed[issue.ID]; ok {
+		t.Fatalf("Completed[%q] present after restart reconciliation", issue.ID)
+	}
+	if len(result.dispatchCandidates) != 0 {
+		t.Fatalf("dispatchCandidates = %#v, want none", result.dispatchCandidates)
+	}
+	if len(state.RecentEvents) != 1 || state.RecentEvents[0].Event != "artifact_gate_wait_review_reconciliation" {
+		t.Fatalf("RecentEvents = %#v, want artifact gate wait reconciliation event", state.RecentEvents)
 	}
 }
 
@@ -384,4 +507,23 @@ func completionTransitionIssue(state string, pullRequestState string) connector.
 		issue.PullRequest = &connector.PullRequest{State: pullRequestState}
 	}
 	return issue
+}
+
+func artifactCompletionTransitionIssue(state string, status string) connector.Issue {
+	issue := completionTransitionIssue(state, "")
+	issue.Deliverable = &connector.Deliverable{Kind: "artifact"}
+	issue.Fields = map[string]string{"render_status": status}
+	return issue
+}
+
+func artifactCompletionTestGate() gate.Config {
+	return gate.Config{
+		Kind: gate.KindArtifact,
+		Artifact: gate.ArtifactConfig{
+			StatusField:    "render_status",
+			PassStatuses:   []string{"approved", "valid"},
+			WaitStatuses:   []string{"queued", "rendering", "pending_review"},
+			ReworkStatuses: []string{"recut", "invalid", "missing_assets"},
+		},
+	}
 }

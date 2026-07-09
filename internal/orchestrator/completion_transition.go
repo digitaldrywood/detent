@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -75,6 +76,87 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			Event:   "completed_issue_review_transition",
 			Message: "moved " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + targetState + " after successful completion",
 		})
+		if o.logger != nil {
+			o.logger.Info(
+				"completed issue review transition",
+				"issue_id", issueID,
+				"identifier", issue.Identifier,
+				"from_state", issue.State,
+				"target_state", targetState,
+			)
+		}
+	}
+	if len(result.transitioned) == 0 {
+		return autoPromoteTickResult{}
+	}
+	return result
+}
+
+func (o *Orchestrator) transitionActiveArtifactGateWaitIssuesToReview(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+	now time.Time,
+) autoPromoteTickResult {
+	if len(issues) == 0 {
+		return autoPromoteTickResult{}
+	}
+
+	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+	result := autoPromoteTickResult{transitioned: map[string]struct{}{}}
+	for _, issue := range issues {
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" {
+			continue
+		}
+		if _, running := state.Running[issueID]; running {
+			continue
+		}
+		targetState := activeArtifactGateWaitReviewTargetState(
+			issue,
+			o.cfg.ActiveStates,
+			o.cfg.TerminalStates,
+			cfg,
+		)
+		if targetState == "" {
+			continue
+		}
+
+		if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "artifact_gate_wait_review_reconciliation"); err != nil {
+			if o.logger != nil {
+				o.logger.Warn(
+					"artifact gate wait review reconciliation failed",
+					"issue_id", issueID,
+					"identifier", issue.Identifier,
+					"from_state", issue.State,
+					"target_state", targetState,
+					"error", err,
+				)
+			}
+			continue
+		}
+		if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
+			o.logger.Warn("abandon artifact gate wait claim failed", "issue_id", issueID, "error", err)
+		}
+		delete(state.Claimed, issueID)
+		delete(state.Retry, issueID)
+		delete(state.BudgetRefusals, issueID)
+		delete(state.PriorAttempts, issueID)
+		result.transitioned[issueID] = struct{}{}
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      now,
+			Event:   "artifact_gate_wait_review_reconciliation",
+			Message: "moved " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + targetState + " after artifact gate wait status",
+		})
+		if o.logger != nil {
+			o.logger.Info(
+				"artifact gate wait review reconciliation",
+				"issue_id", issueID,
+				"identifier", issue.Identifier,
+				"from_state", issue.State,
+				"target_state", targetState,
+			)
+		}
 	}
 	if len(result.transitioned) == 0 {
 		return autoPromoteTickResult{}
@@ -149,8 +231,12 @@ func completedActiveReviewTargetState(
 	}
 	reviewState := cfg.SourceState
 	switch normalizeState(issue.State) {
-	case normalizeState(reviewState), normalizeState(autoPromoteReworkState), normalizeState(autoPromoteMergingState):
+	case normalizeState(reviewState), normalizeState(autoPromoteMergingState):
 		return ""
+	case normalizeState(autoPromoteReworkState):
+		if gate.Effective(cfg.Gate).Kind != gate.KindArtifact {
+			return ""
+		}
 	}
 	if !completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(cfg.Gate)) {
 		return ""
@@ -168,10 +254,36 @@ func completedActiveShouldEnterReview(issue connector.Issue, cfg AutoPromoteConf
 	if autoPromoteHumanReviewRequired(issue, cfg, cfg.Gate) {
 		return true
 	}
+	if gate.Effective(cfg.Gate).Kind == gate.KindArtifact {
+		return true
+	}
 	if cfg.QuietDuration > 0 {
 		return true
 	}
 	return cfg.GateWaitState == autoPromoteGateWaitReview
+}
+
+func activeArtifactGateWaitReviewTargetState(
+	issue connector.Issue,
+	activeStates []string,
+	terminalStates []string,
+	cfg AutoPromoteConfig,
+) string {
+	cfg = normalizeAutoPromoteConfig(cfg)
+	if gate.Effective(cfg.Gate).Kind != gate.KindArtifact {
+		return ""
+	}
+	if !stateIn(issue.State, activeStates) || stateIn(issue.State, terminalStates) {
+		return ""
+	}
+	switch normalizeState(issue.State) {
+	case "todo", normalizeState(cfg.SourceState), normalizeState(autoPromoteMergingState):
+		return ""
+	}
+	if !artifactGateWaitStatusBlocksDispatch(issue, cfg.Gate) {
+		return ""
+	}
+	return cfg.SourceState
 }
 
 func completedActiveFinalStateReviewEligible(finalState string, reviewState string) bool {

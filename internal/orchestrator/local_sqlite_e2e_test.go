@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	local "github.com/digitaldrywood/detent/internal/connector/local"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 )
 
@@ -126,4 +128,175 @@ func TestLocalSQLiteLifecycleEndToEnd(t *testing.T) {
 	if issues[0].StageUpdatedAt == nil {
 		t.Fatal("fetched issue StageUpdatedAt = nil, want parsed timestamp")
 	}
+}
+
+func TestLocalSQLiteArtifactLifecycleEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "artifact-work-items.db")
+	seed := connector.NewIssue()
+	seed.ID = "wi-artifact-1"
+	seed.Identifier = "wi-artifact-1"
+	seed.Title = "Render launch video"
+	seed.State = "Todo"
+	seed.Deliverable = &connector.Deliverable{Kind: "artifact"}
+
+	tracker, err := local.New(local.Config{
+		Path:           dbPath,
+		ProjectID:      "digitaldrywood-video",
+		Issues:         []connector.Issue{seed},
+		ActiveStates:   []string{"Todo", "Production", "Rework"},
+		ObservedStates: []string{"Backlog", "Review", "Blocked"},
+		TerminalStates: []string{"Ready for Pickup", "Done", "Cancelled"},
+	})
+	if err != nil {
+		t.Fatalf("local.New() error = %v", err)
+	}
+	defer tracker.Close()
+
+	runner := &staticRunner{
+		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted},
+		onRun: func(request orchestrator.RunRequest) {
+			if err := tracker.SetField(context.Background(), request.Issue.ID, "render_status", "pending_review"); err != nil {
+				t.Errorf("SetField(pending_review) error = %v", err)
+			}
+		},
+	}
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:        time.Millisecond,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "Production", "Rework"},
+		ObservedStates:      []string{"Backlog", "Review", "Blocked"},
+		TerminalStates:      []string{"Ready for Pickup", "Done", "Cancelled"},
+		AutoPromote: orchestrator.AutoPromoteConfig{
+			Enabled:     true,
+			SourceState: "Review",
+			PassState:   "Ready for Pickup",
+			ReworkState: "Rework",
+			Gate: gate.Config{
+				Kind: gate.KindArtifact,
+				Artifact: gate.ArtifactConfig{
+					StatusField:    "render_status",
+					PassStatuses:   []string{"approved", "valid"},
+					WaitStatuses:   []string{"queued", "rendering", "pending_review"},
+					ReworkStatuses: []string{"recut", "invalid", "missing_assets"},
+				},
+			},
+		},
+		MaxRetryBackoff:        time.Millisecond,
+		FailureRetryBaseDelay:  time.Millisecond,
+		ContinuationRetryDelay: time.Millisecond,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open tracker db: %v", err)
+	}
+	defer db.Close()
+
+	waitForLocalStoredState(t, db, seed.ID, "Review")
+	if got := runner.calls.Load(); got != 1 {
+		t.Fatalf("runner calls after Review = %d, want 1", got)
+	}
+
+	refreshAfterReview := time.Now().UTC()
+	waitForState(t, orch, func(state orchestrator.State) bool {
+		return state.LastRefreshAt.After(refreshAfterReview) && len(state.Running) == 0 && len(state.Retry) == 0
+	})
+	if got := runner.calls.Load(); got != 1 {
+		t.Fatalf("runner calls after wait-status refresh = %d, want 1", got)
+	}
+
+	if err := tracker.SetField(context.Background(), seed.ID, "render_status", "approved"); err != nil {
+		t.Fatalf("SetField(approved) error = %v", err)
+	}
+	wantEvents := []string{"Production", "Review", "Ready for Pickup"}
+	waitForLocalStateUpdateEvents(t, db, seed.ID, wantEvents)
+	if got := localStoredState(t, db, seed.ID); got != "Ready for Pickup" {
+		t.Fatalf("stored state after approval = %q, want Ready for Pickup", got)
+	}
+	if got := runner.calls.Load(); got != 1 {
+		t.Fatalf("runner calls after approval = %d, want 1", got)
+	}
+}
+
+func waitForLocalStoredState(t *testing.T, db *sql.DB, issueID string, want string) {
+	t.Helper()
+
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if got := localStoredState(t, db, issueID); got == want {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for stored state %q; got %q", want, localStoredState(t, db, issueID))
+		case <-ticker.C:
+		}
+	}
+}
+
+func localStoredState(t *testing.T, db *sql.DB, issueID string) string {
+	t.Helper()
+
+	var state string
+	if err := db.QueryRowContext(context.Background(), "select state from detent_work_items where id = ?", issueID).Scan(&state); err != nil {
+		t.Fatalf("read stored state: %v", err)
+	}
+	return state
+}
+
+func waitForLocalStateUpdateEvents(t *testing.T, db *sql.DB, issueID string, want []string) {
+	t.Helper()
+
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if got := localStateUpdateEvents(t, db, issueID); slices.Equal(got, want) {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for state_update events %#v; got %#v", want, localStateUpdateEvents(t, db, issueID))
+		case <-ticker.C:
+		}
+	}
+}
+
+func localStateUpdateEvents(t *testing.T, db *sql.DB, issueID string) []string {
+	t.Helper()
+
+	rows, err := db.QueryContext(context.Background(), `
+select state from detent_work_item_events
+where item_id = ? and event_kind = 'state_update'
+order by id`, issueID)
+	if err != nil {
+		t.Fatalf("read state_update events: %v", err)
+	}
+	defer rows.Close()
+
+	var events []string
+	for rows.Next() {
+		var state string
+		if err := rows.Scan(&state); err != nil {
+			t.Fatalf("scan state_update event: %v", err)
+		}
+		events = append(events, state)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate state_update events: %v", err)
+	}
+	return events
 }
