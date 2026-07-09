@@ -1279,20 +1279,30 @@ func TestRunInstantFailureCircuitBreakerComparesFullBackendErrorKey(t *testing.T
 	defer stop()
 
 	state := waitForState(t, orch, func(state orchestrator.State) bool {
-		if _, ok := state.Blocked[issue.ID]; ok {
-			return true
-		}
-		return runner.calls.Load() >= 8
+		_, ok := state.Blocked[issue.ID]
+		return ok
 	})
 
-	if _, ok := state.Blocked[issue.ID]; ok {
-		t.Fatalf("Blocked[%q] present after alternating backend errors with matching truncated text", issue.ID)
+	// Alternating backend errors must not trip the instant-failure breaker
+	// (the full error key differs each attempt even though the truncated
+	// operator text matches); the repeated-failure breaker still parks the
+	// issue after five consecutive failures regardless of error text.
+	reason := state.Blocked[issue.ID].Reason
+	if strings.HasPrefix(reason, "instant fail circuit breaker: ") {
+		t.Fatalf("Blocked[%q].Reason = %q, instant breaker tripped on alternating backend errors", issue.ID, reason)
 	}
-	if got := runner.calls.Load(); got < 8 {
-		t.Fatalf("runner calls = %d, want at least 8", got)
+	if !strings.HasPrefix(reason, "repeated failure circuit breaker: ") {
+		t.Fatalf("Blocked[%q].Reason = %q, want repeated failure circuit breaker prefix", issue.ID, reason)
 	}
-	if comments := tracker.commentCalls(); len(comments) != 0 {
-		t.Fatalf("comments = %#v, want none", comments)
+	if got := runner.calls.Load(); got != 5 {
+		t.Fatalf("runner calls = %d, want 5", got)
+	}
+	comments := tracker.commentCalls()
+	if len(comments) != 1 {
+		t.Fatalf("comments = %#v, want one repeated failure comment", comments)
+	}
+	if !strings.Contains(comments[0].body, "consecutive failed attempts") {
+		t.Fatalf("comment body missing repeated failure text:\n%s", comments[0].body)
 	}
 }
 

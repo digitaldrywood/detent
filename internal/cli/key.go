@@ -87,7 +87,7 @@ func newKeyListCommand(configPath *string, opts options) *cobra.Command {
 			}
 			result, err := runKeyList(cmd.Context(), *configPath, opts)
 			if err != nil {
-				return err
+				return cliAPIKeyError(err)
 			}
 			return out.Write(func(out io.Writer) error {
 				for _, key := range result.Keys {
@@ -153,7 +153,7 @@ func newKeyRevokeCommand(configPath *string, opts options) *cobra.Command {
 			}
 			result, err := runKeyRevoke(cmd.Context(), *configPath, opts, args[0])
 			if err != nil {
-				return err
+				return cliAPIKeyError(err)
 			}
 			return out.Write(func(out io.Writer) error {
 				_, err := fmt.Fprintf(out, "revoked api key %s\n", result.ID)
@@ -278,6 +278,11 @@ func runKeyRevoke(ctx context.Context, configPath string, opts options, id strin
 	return keyRevokedResult{ID: id, Revoked: true}, nil
 }
 
+// keyStoreBusyTimeout is deliberately much longer than the store default:
+// key commands are short-lived one-shot writers that contend with a running
+// detent server, so waiting beats failing with SQLITE_BUSY.
+const keyStoreBusyTimeout = 30 * time.Second
+
 func openKeyStore(ctx context.Context, configPath string, opts options) (storepkg.Store, error) {
 	resolution, err := resolveConfigPathResolution(configPath, opts)
 	if err != nil {
@@ -292,6 +297,7 @@ func openKeyStore(ctx context.Context, configPath string, opts options) (storepk
 		Path: runtimeStorePath(BootConfig{
 			Global: cfg,
 		}),
+		BusyTimeout: keyStoreBusyTimeout,
 	})
 }
 
@@ -344,6 +350,8 @@ func cliAPIKeyError(err error) error {
 		errors.Is(err, apikey.ErrKeyExpired),
 		errors.Is(err, apikey.ErrKeyLimitExceeded):
 		return WrapValidation(err)
+	case storepkg.IsBusy(err):
+		return fmt.Errorf("%w: a running detent server is holding the runtime database write lock; retry in a moment", err)
 	default:
 		return err
 	}

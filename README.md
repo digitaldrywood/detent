@@ -2164,6 +2164,11 @@ derived fields instead of reporting a misleading zero.
 
 Context pressure is a model-window signal, not a Detent stop threshold.
 `agent.max_session_tokens` is an absolute configured ceiling for a session.
+`total_tokens` counts input, output, cache-created, and cache-read tokens,
+accumulated across every turn of the session — cached context is re-counted on
+each turn, so a healthy session accrues millions of tokens within minutes.
+Size `max_session_tokens` as a runaway-session guard; a value near one turn's
+worth of context terminates every session at its ceiling.
 `agent.max_session_context_multiplier` derives a ceiling from the reported
 context window when that window is known. A session can show high context
 pressure before either ceiling is exceeded, and a low-pressure session can

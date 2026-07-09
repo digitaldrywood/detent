@@ -19,30 +19,32 @@ import (
 )
 
 const (
-	defaultPollInterval               = 30 * time.Second
-	defaultRunningReconcileInterval   = 2 * time.Minute
-	defaultWorkspaceCleanupIdleTTL    = 24 * time.Hour
-	defaultWorkspaceCleanupSweep      = 10 * time.Minute
-	gitHubGraphQLPauseRemaining       = 100
-	gitHubGraphQLBackoffRemaining     = 500
-	defaultGitHubGraphQLWarnRemaining = 500
-	defaultGitHubGraphQLMinReserve    = 1000
-	defaultGitHubRESTMinReserve       = 1000
-	defaultMaxConcurrentAgents        = 1
-	defaultMaxRetryBackoff            = 5 * time.Minute
-	defaultContinuationRetry          = time.Second
-	defaultFailureRetryBaseDelay      = 10 * time.Second
-	maxMergeWorkerRunnerFailures      = 3
-	instantFailureThreshold           = 5
-	instantFailureMaxDuration         = 10 * time.Second
-	instantFailureBlockedReasonPrefix = "instant fail circuit breaker: "
-	continuationDispatchBackoff       = 100 * time.Millisecond
-	runUpdateBufferSize               = 128
-	maxRecentEvents                   = 50
-	blockedStatusState                = "Blocked"
-	blockedReasonDependency           = "blocked by non-terminal dependency"
-	blockedReasonProjectStatus        = "blocked by project status"
-	mergeWorkerTerminalStateMissing   = "merge worker completed without reaching a terminal issue or pull request state"
+	defaultPollInterval                = 30 * time.Second
+	defaultRunningReconcileInterval    = 2 * time.Minute
+	defaultWorkspaceCleanupIdleTTL     = 24 * time.Hour
+	defaultWorkspaceCleanupSweep       = 10 * time.Minute
+	gitHubGraphQLPauseRemaining        = 100
+	gitHubGraphQLBackoffRemaining      = 500
+	defaultGitHubGraphQLWarnRemaining  = 500
+	defaultGitHubGraphQLMinReserve     = 1000
+	defaultGitHubRESTMinReserve        = 1000
+	defaultMaxConcurrentAgents         = 1
+	defaultMaxRetryBackoff             = 5 * time.Minute
+	defaultContinuationRetry           = time.Second
+	defaultFailureRetryBaseDelay       = 10 * time.Second
+	maxMergeWorkerRunnerFailures       = 3
+	instantFailureThreshold            = 5
+	instantFailureMaxDuration          = 10 * time.Second
+	instantFailureBlockedReasonPrefix  = "instant fail circuit breaker: "
+	repeatedFailureThreshold           = 5
+	repeatedFailureBlockedReasonPrefix = "repeated failure circuit breaker: "
+	continuationDispatchBackoff        = 100 * time.Millisecond
+	runUpdateBufferSize                = 128
+	maxRecentEvents                    = 50
+	blockedStatusState                 = "Blocked"
+	blockedReasonDependency            = "blocked by non-terminal dependency"
+	blockedReasonProjectStatus         = "blocked by project status"
+	mergeWorkerTerminalStateMissing    = "merge worker completed without reaching a terminal issue or pull request state"
 )
 
 var (
@@ -516,4 +518,5 @@ func (o *Orchestrator) cleanupDrainedRun(ctx context.Context, state *State, issu
 	delete(state.BudgetRefusals, issueID)
 	delete(state.PriorAttempts, issueID)
 	delete(state.InstantFailures, issueID)
+	delete(state.RepeatedFailures, issueID)
 }

@@ -134,6 +134,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		if o.tripInstantFailureCircuitBreaker(ctx, state, event, running, attempt) {
 			return
 		}
+		if o.tripRepeatedFailureCircuitBreaker(ctx, state, event, running, attempt) {
+			return
+		}
 		delay := event.RetryDelay
 		if delay <= 0 {
 			delay = o.retryDelay(attempt, false)
@@ -149,6 +152,12 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		)
 		return
 	}
+
+	// Every path below is a completion without a worker error: reset both
+	// failure circuit breakers here so plan and merge-worker completions do
+	// not carry stale counts into the next attempt cycle.
+	delete(state.InstantFailures, event.IssueID)
+	delete(state.RepeatedFailures, event.IssueID)
 
 	if event.Request.Mode == runpkg.RunModePlan {
 		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
@@ -207,7 +216,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		statusMessage = "worker completed without PR progress"
 	}
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, implementCompletionProgressMetadata(progress))
-	delete(state.InstantFailures, event.IssueID)
 
 	state.Completed[event.IssueID] = Completed{
 		Issue:       cloneIssue(running.Issue),
@@ -368,6 +376,7 @@ func (o *Orchestrator) parkInstantFailure(
 	delete(state.Retry, issue.ID)
 	delete(state.BudgetRefusals, issue.ID)
 	delete(state.PriorAttempts, issue.ID)
+	delete(state.RepeatedFailures, issue.ID)
 	if state.Blocked == nil {
 		state.Blocked = map[string]Blocked{}
 	}
@@ -411,6 +420,134 @@ func (o *Orchestrator) parkInstantFailure(
 
 func (o *Orchestrator) instantFailureParkState() string {
 	return blockedStatusState
+}
+
+// tripRepeatedFailureCircuitBreaker parks an issue after too many consecutive
+// worker failures of any duration. The instant-failure breaker only counts
+// sub-instantFailureMaxDuration failures with identical error text, which lets
+// a long-running failure — one that spends minutes of paid agent time per
+// attempt, like a session token ceiling hit — retry forever. This breaker
+// counts every worker failure and resets only on a successful completion.
+func (o *Orchestrator) tripRepeatedFailureCircuitBreaker(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	attempt int,
+) bool {
+	if state == nil || event.Err == nil {
+		return false
+	}
+	if state.RepeatedFailures == nil {
+		state.RepeatedFailures = map[string]RepeatedFailure{}
+	}
+	failure := state.RepeatedFailures[event.IssueID]
+	if failure.Count == 0 {
+		failure.FirstFailureAt = event.CompletedAt
+	}
+	failure.Count++
+	failure.Issue = cloneIssue(running.Issue)
+	failure.Error = o.operatorText(event.Err.Error())
+	failure.LastFailureAt = event.CompletedAt
+	state.RepeatedFailures[event.IssueID] = failure
+	if failure.Count < repeatedFailureThreshold {
+		return false
+	}
+
+	o.parkRepeatedFailure(ctx, state, event, running, failure, attempt)
+	return true
+}
+
+func (o *Orchestrator) parkRepeatedFailure(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	failure RepeatedFailure,
+	attempt int,
+) {
+	targetState := o.instantFailureParkState()
+	issue := cloneIssue(running.Issue)
+	if targetState != "" {
+		if err := o.updateIssueState(ctx, issue, targetState, event.CompletedAt, "repeated_failure_circuit_breaker"); err != nil {
+			if o.logger != nil {
+				o.logger.Error(
+					"repeated failure circuit breaker state transition failed",
+					"issue_id", issue.ID,
+					"identifier", issue.Identifier,
+					"target_state", targetState,
+					"error", err,
+				)
+			}
+		} else {
+			issue.State = targetState
+		}
+	}
+	if o.connector != nil {
+		if err := o.connector.CreateComment(ctx, issue.ID, repeatedFailureComment(issue, event.Err, failure, attempt, targetState, o.cfg.OutputTruncationMaxBytes)); err != nil && o.logger != nil {
+			o.logger.Error("repeated failure circuit breaker comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+	}
+	if err := o.abandonClaim(ctx, issue.ID); err != nil && o.logger != nil {
+		o.logger.Error("repeated failure circuit breaker claim release failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+	}
+	delete(state.Claimed, issue.ID)
+	delete(state.Retry, issue.ID)
+	delete(state.BudgetRefusals, issue.ID)
+	delete(state.PriorAttempts, issue.ID)
+	delete(state.InstantFailures, issue.ID)
+	delete(state.RepeatedFailures, issue.ID)
+	if state.Blocked == nil {
+		state.Blocked = map[string]Blocked{}
+	}
+	state.Blocked[issue.ID] = Blocked{
+		Issue:          issue,
+		Reason:         repeatedFailureBlockedReasonPrefix + failure.Error,
+		RecoveryReason: "fix the workflow or agent configuration causing every attempt to fail, then move the issue back to Todo or Rework",
+		RecoveryTarget: "Todo",
+		BlockedAt:      event.CompletedAt,
+		Source:         BlockedSourceProjectStatus,
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "worker_repeated_failure_circuit_breaker_tripped",
+		Message: "parked " + issueLabel(issue) + " after repeated worker failures: " + failure.Error,
+	})
+	if o.logger != nil {
+		o.logger.Error("worker repeated failure circuit breaker tripped",
+			"event", "worker_repeated_failure_circuit_breaker_tripped",
+			"issue_id", issue.ID,
+			"issue_identifier", issue.Identifier,
+			"attempt", attempt,
+			"repeated_failures", failure.Count,
+			"first_failure_at", failure.FirstFailureAt,
+			"target_state", targetState,
+			"error", event.Err,
+		)
+	}
+}
+
+func repeatedFailureComment(issue connector.Issue, err error, failure RepeatedFailure, attempt int, targetState string, maxBytes int) string {
+	var b strings.Builder
+	b.WriteString("Detent stopped retrying this worker after ")
+	b.WriteString(strconv.Itoa(failure.Count))
+	b.WriteString(" consecutive failed attempts. Each attempt ran to failure and spent real agent time, so retrying without a change is waste.")
+	if targetState = strings.TrimSpace(targetState); targetState != "" {
+		b.WriteString("\n\nIssue parked in `")
+		b.WriteString(targetState)
+		b.WriteString("`.")
+	}
+	b.WriteString("\n\n- issue: ")
+	b.WriteString(issueLabel(issue))
+	b.WriteString("\n- latest_attempt: ")
+	b.WriteString(strconv.Itoa(attempt))
+	b.WriteString("\n- first_failure_at: ")
+	b.WriteString(failure.FirstFailureAt.UTC().Format(time.RFC3339))
+	b.WriteString("\n- last error:\n\n```text\n")
+	b.WriteString(runtimeoutput.Truncate(strings.TrimSpace(err.Error()), maxBytes).Value)
+	b.WriteString("\n```")
+	b.WriteString("\n\nFix the workflow or agent configuration causing every attempt to fail, then move the issue back to Todo or Rework.")
+	return b.String()
 }
 
 func instantFailureComment(issue connector.Issue, err error, failure InstantFailure, attempt int, targetState string, maxBytes int) string {
@@ -933,6 +1070,7 @@ func (o *Orchestrator) completeTerminalRunning(
 	delete(state.BudgetRefusals, issueID)
 	delete(state.PriorAttempts, issueID)
 	delete(state.InstantFailures, issueID)
+	delete(state.RepeatedFailures, issueID)
 	if err := o.abandonClaim(ctx, issueID); err != nil {
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      cleanupEventAt(completedAt),

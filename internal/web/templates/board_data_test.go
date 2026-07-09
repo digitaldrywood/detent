@@ -270,6 +270,8 @@ func TestBoardCardAgeFooterVisibility(t *testing.T) {
 		wantTerminal bool
 	}{
 		{name: "in progress", lane: "In Progress", wantAge: "12m"},
+		{name: "production working lane", lane: "Production", wantAge: "12m"},
+		{name: "rework", lane: "Rework", wantAge: "12m"},
 		{name: "blocked", lane: "Blocked", wantAge: "12m"},
 		{name: "review pr keeps metadata", lane: "Human Review", prNumber: 314, wantAge: "12m", wantMeta: "PR #314"},
 		{name: "merging", lane: "Merging", prNumber: 315, wantAge: "12m", wantMeta: "PR #315"},

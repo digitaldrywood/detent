@@ -58,7 +58,13 @@ agent:
   max_concurrent_agents: 5
   max_turns: 20
   max_retry_backoff_ms: 300000
-  max_session_tokens: 2000000
+  # Per-session ceiling on total_tokens. total_tokens counts input + output +
+  # cache-created + cache-read tokens, accumulated across every turn of the
+  # session, so a healthy Claude session re-counts its cached context each turn
+  # and accrues millions of tokens within minutes. Set this as a runaway-session
+  # guard, not a context limit; max_session_context_multiplier bounds context
+  # growth separately.
+  max_session_tokens: 25000000
   max_session_context_multiplier: 4
   max_session_token_override_label: allow-large-session
   max_concurrent_agents_by_state:
