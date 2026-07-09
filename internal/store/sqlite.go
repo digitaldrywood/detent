@@ -287,6 +287,40 @@ func (s *sqliteStore) LatestCompletedAgentResumeState(ctx context.Context, attrs
 	}, nil
 }
 
+func (s *sqliteStore) LatestIssueAgentResumeState(ctx context.Context, identity IssueIdentity) (AgentResumeState, error) {
+	identity = normalizeIssueIdentity(identity)
+	if identity.IssueID == "" && identity.Identifier == "" && identity.IssueURL == "" {
+		return AgentResumeState{}, ErrNotFound
+	}
+
+	row, err := s.queries.GetLatestIssueAgentResumeState(ctx, sqlc.GetLatestIssueAgentResumeStateParams{
+		IssueID:    identity.IssueID,
+		Identifier: identity.Identifier,
+		IssueURL:   identity.IssueURL,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return AgentResumeState{}, ErrNotFound
+		}
+		return AgentResumeState{}, fmt.Errorf("reading latest issue agent resume state: %w", err)
+	}
+	completedAt, err := parseTimestamp("completed_at", row.CompletedAt)
+	if err != nil {
+		return AgentResumeState{}, err
+	}
+	return AgentResumeState{
+		DetentSessionID:   row.ID,
+		ProviderThreadID:  strings.TrimSpace(row.ProviderThreadID),
+		ProviderSessionID: strings.TrimSpace(row.ProviderSessionID),
+		RequestedModel:    strings.TrimSpace(row.RequestedModel),
+		Model:             strings.TrimSpace(row.Model),
+		AgentBackendID:    strings.TrimSpace(row.AgentBackendID),
+		AgentBackendKind:  strings.TrimSpace(row.AgentBackendKind),
+		AgentRole:         strings.TrimSpace(row.AgentRole),
+		CompletedAt:       completedAt,
+	}, nil
+}
+
 func normalizeAgentResumeLookup(attrs AgentResumeLookup) AgentResumeLookup {
 	return AgentResumeLookup{
 		IssueID:          strings.TrimSpace(attrs.IssueID),

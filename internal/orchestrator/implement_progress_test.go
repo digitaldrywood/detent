@@ -410,6 +410,10 @@ func (s *implementProgressAttemptStore) StartWorkAttempt(context.Context, store.
 	return 1, nil
 }
 
+func (s *implementProgressAttemptStore) WorkAttempt(context.Context, int64) (store.WorkAttempt, error) {
+	return store.WorkAttempt{}, store.ErrNotFound
+}
+
 func (s *implementProgressAttemptStore) RecordWorkAttemptHeartbeat(context.Context, store.WorkAttemptHeartbeat) error {
 	return nil
 }

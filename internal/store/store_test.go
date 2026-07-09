@@ -540,6 +540,13 @@ func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {
 	if got.Status != WorkAttemptStatusActive {
 		t.Fatalf("active status = %q, want %q", got.Status, WorkAttemptStatusActive)
 	}
+	receipt, err := backend.WorkAttempt(ctx, attemptID)
+	if err != nil {
+		t.Fatalf("WorkAttempt() error = %v", err)
+	}
+	if receipt.ID != attemptID || receipt.WorkerHost != "worker-a" || receipt.WaitReason != "github_checks" {
+		t.Fatalf("WorkAttempt() = %#v, want receipt fields for attempt %d", receipt, attemptID)
+	}
 
 	decisions, err := backend.ListRecentSchedulerDecisions(ctx, SchedulerDecisionQuery{ProjectID: "detent", Limit: 5})
 	if err != nil {
@@ -906,6 +913,15 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 	}
 	if got.RequestedModel != "gpt-5-codex" || got.Model != "gpt-5-codex-resolved" || got.AgentRole != "code" {
 		t.Fatalf("resume models = %#v, want requested and resolved model", got)
+	}
+	latestForIssue, err := backend.LatestIssueAgentResumeState(ctx, IssueIdentity{
+		Identifier: "digitaldrywood/detent#859",
+	})
+	if err != nil {
+		t.Fatalf("LatestIssueAgentResumeState() error = %v", err)
+	}
+	if latestForIssue.DetentSessionID != validatorID || latestForIssue.AgentRole != "validator" {
+		t.Fatalf("LatestIssueAgentResumeState() = %#v, want newest completed validator session", latestForIssue)
 	}
 
 	_, err = backend.LatestCompletedAgentResumeState(ctx, AgentResumeLookup{

@@ -103,6 +103,7 @@ type Dependencies struct {
 	WorkspaceReaper    WorkspaceReaper
 	WorkflowMetrics    WorkflowMetricsRecorder
 	WorkAttempts       store.WorkAttemptStore
+	AgentResume        store.AgentResumeStore
 	ValidatorMemo      store.ValidatorMemoStore
 	GlobalDispatchGate scheduler.ProjectDispatchGate
 	Now                func() time.Time
@@ -123,6 +124,7 @@ type Orchestrator struct {
 	connector          connector.Connector
 	workflowMetrics    WorkflowMetricsRecorder
 	workAttempts       store.WorkAttemptStore
+	agentResume        store.AgentResumeStore
 	supervisor         *runpkg.Supervisor
 	validator          Validator
 	reaper             WorkspaceReaper
@@ -138,6 +140,7 @@ type Orchestrator struct {
 	stateRequests      chan stateRequest
 	drainRequests      chan drainRequest
 	forceRequests      chan forceRequest
+	recoveryRequests   chan workAttemptRecoveryRequest
 	configUpdates      chan configUpdateRequest
 	refreshes          chan manualRefreshRequest
 	runResults         chan runpkg.Completion
@@ -217,6 +220,17 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 			validatorMemo = candidate
 		}
 	}
+	agentResume := deps.AgentResume
+	if agentResume == nil {
+		if candidate, ok := deps.WorkAttempts.(store.AgentResumeStore); ok {
+			agentResume = candidate
+		}
+	}
+	if agentResume == nil {
+		if candidate, ok := deps.WorkflowMetrics.(store.AgentResumeStore); ok {
+			agentResume = candidate
+		}
+	}
 
 	supervisor, err := runpkg.NewSupervisor(runner, runpkg.SupervisorConfig{
 		MaxRetryBackoff:       cfg.MaxRetryBackoff,
@@ -233,6 +247,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		connector:          deps.Connector,
 		workflowMetrics:    deps.WorkflowMetrics,
 		workAttempts:       deps.WorkAttempts,
+		agentResume:        agentResume,
 		supervisor:         supervisor,
 		validator:          validator,
 		reaper:             reaper,
@@ -246,6 +261,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		stateRequests:      make(chan stateRequest),
 		drainRequests:      make(chan drainRequest),
 		forceRequests:      make(chan forceRequest),
+		recoveryRequests:   make(chan workAttemptRecoveryRequest),
 		configUpdates:      make(chan configUpdateRequest),
 		refreshes:          make(chan manualRefreshRequest, 1),
 		runResults:         make(chan runpkg.Completion, max(cfg.MaxConcurrentAgents, 1)),
@@ -289,6 +305,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			request.reply <- struct{}{}
 		case request := <-o.forceRequests:
 			request.reply <- o.forceQuit(request.ctx, &state, request.at)
+		case request := <-o.recoveryRequests:
+			response, err := o.handleWorkAttemptRecovery(ctx, &state, request.request, request.at)
+			request.reply <- workAttemptRecoveryReply{response: response, err: err}
 		case update := <-o.configUpdates:
 			o.applyRuntimeUpdate(&state, update.update, ticker)
 			update.reply <- struct{}{}

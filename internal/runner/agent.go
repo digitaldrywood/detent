@@ -497,11 +497,37 @@ func (r *Runner) agentResumeState(
 	return state
 }
 
+func (r *Runner) runRequestResumeState(
+	ctx context.Context,
+	cfg config.Agent,
+	req RunRequest,
+	model string,
+	backendID string,
+	backendKind string,
+	agentRole string,
+) (store.AgentResumeState, error) {
+	switch req.RetryMode {
+	case RetryModeFresh:
+		return store.AgentResumeState{}, nil
+	case RetryModeResume:
+		if agentResumeStateEmpty(req.ResumeState) {
+			return store.AgentResumeState{}, errors.New("resume retry requested without resume state")
+		}
+		return req.ResumeState, nil
+	default:
+		return r.agentResumeState(ctx, cfg, req.Issue, model, backendID, backendKind, agentRole), nil
+	}
+}
+
 func agentResumeFromState(state store.AgentResumeState) AgentResume {
 	return AgentResume{
 		ThreadID:  strings.TrimSpace(state.ProviderThreadID),
 		SessionID: strings.TrimSpace(state.ProviderSessionID),
 	}
+}
+
+func agentResumeStateEmpty(state store.AgentResumeState) bool {
+	return strings.TrimSpace(state.ProviderThreadID) == "" && strings.TrimSpace(state.ProviderSessionID) == ""
 }
 
 func agentResumeEmpty(resume AgentResume) bool {
@@ -607,7 +633,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		)
 		return result, nil
 	}
-	resumeState := r.agentResumeState(ctx, workflow.Config.Agent, req.Issue, sessionModel, selection.BackendID, backendKind, role)
+	resumeState, err := r.runRequestResumeState(ctx, workflow.Config.Agent, req, sessionModel, selection.BackendID, backendKind, role)
+	if err != nil {
+		return RunResult{}, err
+	}
 	sessionID, sessionStarted, err := r.startSession(ctx, req.Issue, startedAt, sessionModel, selection.BackendID, backendKind, role)
 	if err != nil {
 		return RunResult{}, err

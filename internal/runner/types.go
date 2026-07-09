@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -178,9 +179,18 @@ type RunRequest struct {
 	PriorAttempt        PriorAttempt
 	StartedAt           time.Time
 	WorkerHost          string
+	RetryMode           RetryMode
+	ResumeState         store.AgentResumeState
 	SelectorContext     selector.Context
 	OnUsageUpdate       UsageUpdateHandler
 }
+
+type RetryMode string
+
+const (
+	RetryModeFresh  RetryMode = "fresh"
+	RetryModeResume RetryMode = "resume"
+)
 
 type ValidatorRequest struct {
 	Issue           connector.Issue

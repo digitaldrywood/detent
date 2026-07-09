@@ -2153,6 +2153,10 @@ func (s *recordingWorkAttemptStore) StartWorkAttempt(_ context.Context, attrs st
 	return id, nil
 }
 
+func (s *recordingWorkAttemptStore) WorkAttempt(context.Context, int64) (store.WorkAttempt, error) {
+	return store.WorkAttempt{}, store.ErrNotFound
+}
+
 func (s *recordingWorkAttemptStore) RecordWorkAttemptHeartbeat(_ context.Context, attrs store.WorkAttemptHeartbeat) error {
 	s.heartbeats = append(s.heartbeats, attrs)
 	return nil

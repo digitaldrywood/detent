@@ -153,6 +153,20 @@ func (s *sqliteStore) CompleteWorkAttempt(ctx context.Context, attrs WorkAttempt
 	return requireAffected(rows, "work attempt", attrs.AttemptID)
 }
 
+func (s *sqliteStore) WorkAttempt(ctx context.Context, id int64) (WorkAttempt, error) {
+	if id <= 0 {
+		return WorkAttempt{}, ErrNotFound
+	}
+	row, err := s.queries.GetWorkAttempt(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return WorkAttempt{}, ErrNotFound
+		}
+		return WorkAttempt{}, fmt.Errorf("reading work attempt: %w", err)
+	}
+	return workAttemptFromRow(row)
+}
+
 func (s *sqliteStore) ListActiveWorkAttempts(ctx context.Context, query WorkAttemptQuery) ([]WorkAttempt, error) {
 	rows, err := s.queries.ListActiveWorkAttempts(ctx, strings.TrimSpace(query.ProjectID))
 	if err != nil {

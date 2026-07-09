@@ -528,6 +528,123 @@ func TestRunnerRunLeavesThreadResumeDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestRunnerRunRetryFreshSuppressesThreadResume(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 7, 2, 16, 10, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-979", Branch: "detent/issue-979"},
+	}
+	agentBackend := &fakeCodexClient{
+		result: AgentTurnResult{ThreadID: "thread-fresh", TurnID: "turn-1", SessionID: "thread-fresh-turn-1"},
+	}
+	sessionStore := &fakeSessionStore{
+		sessionID: 979,
+		resumeState: store.AgentResumeState{
+			DetentSessionID:   100,
+			ProviderThreadID:  "thread-old",
+			ProviderSessionID: "session-old",
+		},
+	}
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{
+				Agent: config.Agent{ExperimentalThreadResume: true},
+			},
+			Prompt: "Work",
+		},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		Store:        sessionStore,
+		Now:          newFakeClock(startedAt, startedAt.Add(time.Second)).Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:            "issue-979",
+			Identifier:    "digitaldrywood/detent#979",
+			Title:         "Recovery retry fresh",
+			ModelOverride: "gpt-5-codex",
+		},
+		StartedAt: startedAt,
+		RetryMode: RetryModeFresh,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if sessionStore.resumeLookups != 0 {
+		t.Fatalf("resume lookups = %d, want 0 for retry fresh", sessionStore.resumeLookups)
+	}
+	if !agentResumeEmpty(agentBackend.request.Resume) {
+		t.Fatalf("AgentTurnRequest.Resume = %#v, want empty for retry fresh", agentBackend.request.Resume)
+	}
+	if sessionStore.finished.ResumedFromSessionID != 0 {
+		t.Fatalf("SessionFinish.ResumedFromSessionID = %d, want 0 for retry fresh", sessionStore.finished.ResumedFromSessionID)
+	}
+}
+
+func TestRunnerRunRetryResumeUsesRequestedState(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 7, 2, 16, 20, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-979", Branch: "detent/issue-979"},
+	}
+	agentBackend := &fakeCodexClient{
+		result: AgentTurnResult{ThreadID: "thread-resumed", TurnID: "turn-1", SessionID: "thread-resumed-turn-1"},
+	}
+	sessionStore := &fakeSessionStore{
+		sessionID: 980,
+		resumeState: store.AgentResumeState{
+			DetentSessionID:   101,
+			ProviderThreadID:  "thread-unselected",
+			ProviderSessionID: "session-unselected",
+		},
+	}
+	selectedResume := store.AgentResumeState{
+		DetentSessionID:   979,
+		ProviderThreadID:  "thread-979",
+		ProviderSessionID: "session-979",
+	}
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Work"},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		Store:        sessionStore,
+		Now:          newFakeClock(startedAt, startedAt.Add(time.Second)).Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:            "issue-979",
+			Identifier:    "digitaldrywood/detent#979",
+			Title:         "Recovery retry resume",
+			ModelOverride: "gpt-5-codex",
+		},
+		StartedAt:   startedAt,
+		RetryMode:   RetryModeResume,
+		ResumeState: selectedResume,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if sessionStore.resumeLookups != 0 {
+		t.Fatalf("resume lookups = %d, want 0 for selected retry resume", sessionStore.resumeLookups)
+	}
+	if agentBackend.request.Resume.ThreadID != "thread-979" || agentBackend.request.Resume.SessionID != "session-979" {
+		t.Fatalf("AgentTurnRequest.Resume = %#v, want selected resume state", agentBackend.request.Resume)
+	}
+	if sessionStore.finished.ResumedFromSessionID != 979 {
+		t.Fatalf("SessionFinish.ResumedFromSessionID = %d, want selected session", sessionStore.finished.ResumedFromSessionID)
+	}
+}
+
 func TestRunnerRunFallsBackFreshWhenResumeFails(t *testing.T) {
 	t.Parallel()
 
@@ -2903,6 +3020,10 @@ func (s *fakeSessionStore) LatestCompletedAgentResumeState(_ context.Context, at
 		return store.AgentResumeState{}, store.ErrNotFound
 	}
 	return s.resumeState, nil
+}
+
+func (s *fakeSessionStore) LatestIssueAgentResumeState(context.Context, store.IssueIdentity) (store.AgentResumeState, error) {
+	return store.AgentResumeState{}, store.ErrNotFound
 }
 
 type fakeClock struct {

@@ -96,6 +96,10 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		},
 		retryDispatchFailed: func(issue connector.Issue, retry Retry) {
 			planner.scheduleRetry(state, issue, retry.Attempt, now, "claim verification failed", false, retry.WorkerHost)
+			rescheduled := state.Retry[issue.ID]
+			rescheduled.RetryMode = retry.RetryMode
+			rescheduled.ResumeState = retry.ResumeState
+			state.Retry[issue.ID] = rescheduled
 		},
 		preserveMissingDueRetry: func(retry Retry) bool {
 			return o.preserveMissingDueRetry(state, retry)
@@ -200,6 +204,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	now time.Time,
 	preferredWorkerHost string,
 ) dispatchIssueOutcome {
+	queuedRetry, retryQueued := state.Retry[issue.ID]
 	runMode := o.dispatchMode(ctx, state, issue)
 	targetState := dispatchStartTransitionState(issue, runMode, o.cfg.ActiveStates)
 	slotIssue := issue
@@ -336,6 +341,10 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		WorkerHost:          workerHost,
 		SelectorContext:     o.selectorContext(),
 		OnUsageUpdate:       o.usageUpdateHandler(runCtx, issue.ID),
+	}
+	if retryQueued {
+		request.RetryMode = queuedRetry.RetryMode
+		request.ResumeState = queuedRetry.ResumeState
 	}
 	o.logMergeWorkerAttempt(issue, attempt, workerHost)
 	o.logWorkerLifecycle(issue, "worker_attempt_started",

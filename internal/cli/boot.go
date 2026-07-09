@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -218,6 +219,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		GlobalDispatchGate: globalDispatchGate,
 		WorkflowMetrics:    runtimeStore,
 		WorkAttempts:       runtimeStore,
+		AgentResume:        runtimeStore,
 		ValidatorMemo:      runtimeStore,
 		GitHubToken:        runtimeGitHubToken.get(),
 		RefreshGitHubToken: refreshGitHubToken,
@@ -280,6 +282,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		Registry:  manager.Registry(),
 		Connector: firstConnector(manager),
 		Refresher: refresherForRegistry(manager.Registry()),
+		Recovery:  recoveryForRegistry(manager.Registry()),
 	})
 	if err != nil {
 		return err
@@ -989,6 +992,13 @@ func refresherForRegistry(registry *project.Registry) web.Refresher {
 	return registryRefresher{registry: registry}
 }
 
+func recoveryForRegistry(registry *project.Registry) web.WorkAttemptRecovery {
+	if registry == nil {
+		return nil
+	}
+	return registryRefresher{registry: registry}
+}
+
 type registryRefresher struct {
 	registry *project.Registry
 }
@@ -1064,6 +1074,41 @@ func (r registryRefresher) RequestTargetedRefresh(ctx context.Context, target we
 		return fallback, nil
 	}
 	return response, nil
+}
+
+func (r registryRefresher) WorkAttemptReceipt(ctx context.Context, projectID string, attemptID int64) (orchestrator.WorkAttemptRecoveryResponse, error) {
+	orch, err := r.projectOrchestrator(projectID)
+	if err != nil {
+		return orchestrator.WorkAttemptRecoveryResponse{}, err
+	}
+	return orch.WorkAttemptReceipt(ctx, projectID, attemptID)
+}
+
+func (r registryRefresher) RecoverWorkAttempt(ctx context.Context, request orchestrator.WorkAttemptRecoveryRequest) (orchestrator.WorkAttemptRecoveryResponse, error) {
+	orch, err := r.projectOrchestrator(request.ProjectID)
+	if err != nil {
+		return orchestrator.WorkAttemptRecoveryResponse{}, err
+	}
+	return orch.RecoverWorkAttempt(ctx, request)
+}
+
+func (r registryRefresher) projectOrchestrator(projectID string) (*orchestrator.Orchestrator, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return nil, project.ErrMissingProjectID
+	}
+	trackedProject, ok := r.registry.Get(project.ID(projectID))
+	if !ok {
+		return nil, project.ErrProjectStopped
+	}
+	if !trackedProject.Running() {
+		return nil, project.ErrNotRunning
+	}
+	orch := trackedProject.Orchestrator()
+	if orch == nil {
+		return nil, project.ErrMissingOrchestrator
+	}
+	return orch, nil
 }
 
 func mergeRefreshResponse(current web.RefreshResponse, next web.RefreshResponse) web.RefreshResponse {
