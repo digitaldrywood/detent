@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -218,20 +219,13 @@ func TestLocalSQLiteArtifactLifecycleEndToEnd(t *testing.T) {
 	if err := tracker.SetField(context.Background(), seed.ID, "render_status", "approved"); err != nil {
 		t.Fatalf("SetField(approved) error = %v", err)
 	}
-	waitForLocalStoredState(t, db, seed.ID, "Ready for Pickup")
+	wantEvents := []string{"Production", "Review", "Ready for Pickup"}
+	waitForLocalStateUpdateEvents(t, db, seed.ID, wantEvents)
+	if got := localStoredState(t, db, seed.ID); got != "Ready for Pickup" {
+		t.Fatalf("stored state after approval = %q, want Ready for Pickup", got)
+	}
 	if got := runner.calls.Load(); got != 1 {
 		t.Fatalf("runner calls after approval = %d, want 1", got)
-	}
-
-	events := localStateUpdateEvents(t, db, seed.ID)
-	wantEvents := []string{"Production", "Review", "Ready for Pickup"}
-	if len(events) != len(wantEvents) {
-		t.Fatalf("state_update events = %#v, want %#v", events, wantEvents)
-	}
-	for i := range wantEvents {
-		if events[i] != wantEvents[i] {
-			t.Fatalf("state_update events = %#v, want %#v", events, wantEvents)
-		}
 	}
 }
 
@@ -261,6 +255,24 @@ func localStoredState(t *testing.T, db *sql.DB, issueID string) string {
 		t.Fatalf("read stored state: %v", err)
 	}
 	return state
+}
+
+func waitForLocalStateUpdateEvents(t *testing.T, db *sql.DB, issueID string, want []string) {
+	t.Helper()
+
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if got := localStateUpdateEvents(t, db, issueID); slices.Equal(got, want) {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for state_update events %#v; got %#v", want, localStateUpdateEvents(t, db, issueID))
+		case <-ticker.C:
+		}
+	}
 }
 
 func localStateUpdateEvents(t *testing.T, db *sql.DB, issueID string) []string {
