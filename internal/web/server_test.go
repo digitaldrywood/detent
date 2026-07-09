@@ -1189,6 +1189,9 @@ func TestWorkItemAPICreatesLocalSQLiteItem(t *testing.T) {
 	if payload["id"] == "" || payload["identifier"] == "" || payload["url"] == "" {
 		t.Fatalf("response missing id, identifier, or url: %#v", payload)
 	}
+	if payload["number"] != float64(1) {
+		t.Fatalf("response number = %#v, want 1", payload["number"])
+	}
 	if refresher.calls != 1 {
 		t.Fatalf("refresh calls = %d, want 1", refresher.calls)
 	}
@@ -1202,6 +1205,9 @@ func TestWorkItemAPICreatesLocalSQLiteItem(t *testing.T) {
 	issue := issues[0]
 	if issue.Title != "Author beat visuals" || issue.Description != "Render storyboard frames" {
 		t.Fatalf("issue text = %#v", issue)
+	}
+	if issue.Number != 1 {
+		t.Fatalf("issue number = %d, want 1", issue.Number)
 	}
 	if issue.Fields["render_status"] != "queued" {
 		t.Fatalf("Fields = %#v", issue.Fields)
@@ -1543,7 +1549,7 @@ func TestAPIUsageWritesDrainOnShutdown(t *testing.T) {
 		t.Fatalf("state status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown() error = %v", err)

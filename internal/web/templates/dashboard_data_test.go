@@ -1210,6 +1210,87 @@ func TestIssueIdentityKeepsRepositoryIssueAndPullRequest(t *testing.T) {
 	}
 }
 
+func TestIssueReferenceUsesLocalNumberWithGitHubPrecedence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		issue              telemetry.Issue
+		wantIssueReference string
+		wantKanbanNumber   string
+		wantIssueNumber    string
+	}{
+		{
+			name: "local number",
+			issue: telemetry.Issue{
+				Identifier: "wi-011cd179bc7ecf36b7197e4b",
+				Number:     7,
+			},
+			wantIssueReference: "#7",
+			wantKanbanNumber:   "#7",
+			wantIssueNumber:    "#7",
+		},
+		{
+			name: "github identifier",
+			issue: telemetry.Issue{
+				Identifier: "digitaldrywood/detent#779",
+				Number:     7,
+				Metadata:   map[string]string{githubIssueNumberMetadataKey: "881"},
+			},
+			wantIssueReference: "#779",
+			wantKanbanNumber:   "#779",
+			wantIssueNumber:    "#779",
+		},
+		{
+			name: "github metadata",
+			issue: telemetry.Issue{
+				Identifier: "wi-linked",
+				Number:     7,
+				Metadata:   map[string]string{githubIssueNumberMetadataKey: "881"},
+			},
+			wantIssueReference: "#881",
+			wantKanbanNumber:   "#881",
+			wantIssueNumber:    "#881",
+		},
+		{
+			name: "pull request issue number",
+			issue: telemetry.Issue{
+				Identifier:  "wi-review",
+				Number:      7,
+				PullRequest: &telemetry.PullRequest{Number: 32},
+			},
+			wantIssueReference: "#7",
+			wantKanbanNumber:   "#7",
+			wantIssueNumber:    "#32",
+		},
+		{
+			name: "fallback identifier",
+			issue: telemetry.Issue{
+				Identifier: "wi-without-number",
+			},
+			wantIssueReference: "wi-without-number",
+			wantKanbanNumber:   "wi-without-number",
+			wantIssueNumber:    "wi-without-number",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := issueReference(tt.issue); got != tt.wantIssueReference {
+				t.Fatalf("issueReference() = %q, want %q", got, tt.wantIssueReference)
+			}
+			if got := projectKanbanIssueNumber(tt.issue); got != tt.wantKanbanNumber {
+				t.Fatalf("projectKanbanIssueNumber() = %q, want %q", got, tt.wantKanbanNumber)
+			}
+			if got := issueNumber(tt.issue); got != tt.wantIssueNumber {
+				t.Fatalf("issueNumber() = %q, want %q", got, tt.wantIssueNumber)
+			}
+		})
+	}
+}
+
 func TestAgentTimelineRows(t *testing.T) {
 	t.Parallel()
 

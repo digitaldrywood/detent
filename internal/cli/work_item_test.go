@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/cli"
@@ -56,6 +57,7 @@ func TestWorkItemAddCreatesLocalSQLiteItem(t *testing.T) {
 	var result struct {
 		ID         string `json:"id"`
 		Identifier string `json:"identifier"`
+		Number     int    `json:"number"`
 		URL        string `json:"url"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
@@ -63,6 +65,9 @@ func TestWorkItemAddCreatesLocalSQLiteItem(t *testing.T) {
 	}
 	if result.ID == "" || result.Identifier == "" || result.URL == "" {
 		t.Fatalf("result missing id, identifier, or url: %#v", result)
+	}
+	if result.Number != 1 {
+		t.Fatalf("result Number = %d, want 1", result.Number)
 	}
 
 	conn, err := local.New(local.Config{
@@ -96,6 +101,50 @@ func TestWorkItemAddCreatesLocalSQLiteItem(t *testing.T) {
 	}
 	if issue.Priority == nil || *issue.Priority != 2 {
 		t.Fatalf("Priority = %v, want 2", issue.Priority)
+	}
+	if issue.Number != 1 {
+		t.Fatalf("Number = %d, want 1", issue.Number)
+	}
+}
+
+func TestWorkItemAddPrettyPrintsLocalNumber(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	workdir := filepath.Join(root, "video")
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	workflowPath := filepath.Join(workdir, "WORKFLOW.md")
+	if err := os.WriteFile(workflowPath, []byte(localSQLiteWorkItemWorkflow()), 0o600); err != nil {
+		t.Fatalf("WriteFile(WORKFLOW.md) error = %v", err)
+	}
+	configPath := filepath.Join(root, "global.yaml")
+	writeGlobalConfig(t, configPath, []globalconfig.Project{{
+		ID:       "video",
+		Workflow: workflowPath,
+		Workdir:  workdir,
+		Weight:   1,
+		Priority: 0,
+	}})
+
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return true }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--config", configPath,
+		"--format", "pretty",
+		"work-item", "add", "video",
+		"--title", "Author beat visuals",
+		"--body", "Render storyboard frames",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "created work item #1 (wi-") || !strings.HasSuffix(strings.TrimSpace(output), ")") {
+		t.Fatalf("stdout = %q, want numbered work item creation", output)
 	}
 }
 

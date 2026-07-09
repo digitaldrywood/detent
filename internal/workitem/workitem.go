@@ -68,6 +68,7 @@ type Request struct {
 type Response struct {
 	ID         string `json:"id"`
 	Identifier string `json:"identifier"`
+	Number     int    `json:"number,omitempty"`
 	URL        string `json:"url"`
 }
 
@@ -131,7 +132,29 @@ func Create(ctx context.Context, target Target, req Request) (Response, error) {
 	if err := upserter.UpsertIssues(ctx, []connector.Issue{issue}); err != nil {
 		return Response{}, &Error{Code: CodeSubmissionFailed, Message: "create work item failed", Err: err}
 	}
-	return Response{ID: issue.ID, Identifier: issue.Identifier, URL: issue.URL}, nil
+	if created, ok, err := createdIssue(ctx, target.Connector, issue.Identifier); err != nil {
+		return Response{}, &Error{Code: CodeSubmissionFailed, Message: "read created work item failed", Err: err}
+	} else if ok {
+		issue = created
+	}
+	return Response{ID: issue.ID, Identifier: issue.Identifier, Number: issue.Number, URL: issue.URL}, nil
+}
+
+func createdIssue(ctx context.Context, projectConnector connector.Connector, identifier string) (connector.Issue, bool, error) {
+	resolver, ok := projectConnector.(connector.IssueReferenceResolver)
+	if !ok {
+		return connector.Issue{}, false, nil
+	}
+	issues, err := resolver.FetchIssueStatesByIdentifiers(ctx, []string{identifier})
+	if err != nil {
+		return connector.Issue{}, false, err
+	}
+	for _, issue := range issues {
+		if strings.EqualFold(strings.TrimSpace(issue.Identifier), strings.TrimSpace(identifier)) {
+			return issue, true, nil
+		}
+	}
+	return connector.Issue{}, false, nil
 }
 
 func WorkItemURL(base string, projectID string) string {

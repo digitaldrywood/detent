@@ -388,6 +388,7 @@ func TestStateSnapshotCarriesArtifactDeliverableMetadata(t *testing.T) {
 	state.Pipeline = []connector.Issue{{
 		ID:         "ad-1",
 		Identifier: "store/ad-1",
+		Number:     8,
 		Title:      "Summer sale video ad",
 		State:      "Review",
 		Metadata:   map[string]string{"store": "creswood"},
@@ -408,6 +409,9 @@ func TestStateSnapshotCarriesArtifactDeliverableMetadata(t *testing.T) {
 	got := snapshot.Pipeline[0]
 	if got.Metadata["store"] != "creswood" {
 		t.Fatalf("Metadata = %#v", got.Metadata)
+	}
+	if got.Number != 8 {
+		t.Fatalf("Number = %d, want 8", got.Number)
 	}
 	if got.Deliverable == nil {
 		t.Fatal("Deliverable = nil, want artifact deliverable")

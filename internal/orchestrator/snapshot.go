@@ -382,6 +382,7 @@ func telemetryIssue(issue connector.Issue, quietDuration time.Duration, pollInte
 	return telemetry.Issue{
 		ID:                    issue.ID,
 		Identifier:            issue.Identifier,
+		Number:                issue.Number,
 		URL:                   issue.URL,
 		Title:                 issue.Title,
 		Description:           issue.Description,
