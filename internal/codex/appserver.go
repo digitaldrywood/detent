@@ -196,6 +196,9 @@ const (
 	UpdateTurnCompleted     UpdateType = "turn_completed"
 	UpdateModelUpdated      UpdateType = "model_updated"
 	UpdateRuntimeIdentity   UpdateType = "runtime_identity"
+	UpdateToolStarted       UpdateType = "tool_started"
+	UpdateToolOutput        UpdateType = "tool_output"
+	UpdateToolCompleted     UpdateType = "tool_completed"
 )
 
 type Update struct {
@@ -205,6 +208,7 @@ type Update struct {
 	ThreadID            string
 	TurnID              string
 	ItemID              string
+	Tool                string
 	Delta               string
 	Status              string
 	Model               string
@@ -1048,6 +1052,52 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 			Delta:    params.Delta,
 			Payload:  rawPayload(msg),
 		}, true, nil
+	case "item/commandExecution/outputDelta", "item/fileChange/outputDelta":
+		var params struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+			ItemID   string `json:"itemId"`
+			Delta    string `json:"delta"`
+		}
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			return Update{}, false, fmt.Errorf("%w: decode tool output delta: %w", ErrInvalidResponse, err)
+		}
+		tool := "command"
+		if msg.Method == "item/fileChange/outputDelta" {
+			tool = "apply_patch"
+		}
+		return Update{
+			Type:     UpdateToolOutput,
+			Method:   msg.Method,
+			ThreadID: params.ThreadID,
+			TurnID:   params.TurnID,
+			ItemID:   params.ItemID,
+			Tool:     tool,
+			Delta:    params.Delta,
+			Payload:  rawPayload(msg),
+		}, true, nil
+	case "item/mcpToolCall/progress":
+		var params struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+			ItemID   string `json:"itemId"`
+			Message  string `json:"message"`
+		}
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			return Update{}, false, fmt.Errorf("%w: decode tool progress: %w", ErrInvalidResponse, err)
+		}
+		return Update{
+			Type:     UpdateToolOutput,
+			Method:   msg.Method,
+			ThreadID: params.ThreadID,
+			TurnID:   params.TurnID,
+			ItemID:   params.ItemID,
+			Tool:     "mcp",
+			Delta:    params.Message,
+			Payload:  rawPayload(msg),
+		}, true, nil
+	case "item/started", "item/completed":
+		return toolLifecycleUpdate(msg)
 	case "thread/tokenUsage/updated":
 		var params struct {
 			ThreadID    string `json:"threadId"`
@@ -1247,6 +1297,67 @@ func updateFromMessage(msg Message) (Update, bool, error) {
 		}, true, nil
 	default:
 		return Update{}, false, nil
+	}
+}
+
+func toolLifecycleUpdate(msg Message) (Update, bool, error) {
+	var params struct {
+		ThreadID string `json:"threadId"`
+		TurnID   string `json:"turnId"`
+		Item     struct {
+			ID               string          `json:"id"`
+			Type             string          `json:"type"`
+			Command          string          `json:"command"`
+			Status           string          `json:"status"`
+			AggregatedOutput string          `json:"aggregatedOutput"`
+			Server           string          `json:"server"`
+			Tool             string          `json:"tool"`
+			Result           json.RawMessage `json:"result"`
+			Changes          json.RawMessage `json:"changes"`
+			ContentItems     json.RawMessage `json:"contentItems"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		return Update{}, false, fmt.Errorf("%w: decode tool lifecycle: %w", ErrInvalidResponse, err)
+	}
+	if !toolItemType(params.Item.Type) {
+		return Update{}, false, nil
+	}
+	tool := firstNonBlank(params.Item.Tool, params.Item.Type)
+	if params.Item.Server != "" && params.Item.Tool != "" {
+		tool = params.Item.Server + "/" + params.Item.Tool
+	}
+	content := strings.TrimSpace(params.Item.Command)
+	updateType := UpdateToolStarted
+	if msg.Method == "item/completed" {
+		updateType = UpdateToolCompleted
+		content = firstNonBlank(
+			params.Item.AggregatedOutput,
+			compactJSON(params.Item.Result),
+			compactJSON(params.Item.ContentItems),
+			compactJSON(params.Item.Changes),
+			params.Item.Command,
+		)
+	}
+	return Update{
+		Type:     updateType,
+		Method:   msg.Method,
+		ThreadID: params.ThreadID,
+		TurnID:   params.TurnID,
+		ItemID:   params.Item.ID,
+		Tool:     tool,
+		Delta:    content,
+		Status:   params.Item.Status,
+		Payload:  rawPayload(msg),
+	}, true, nil
+}
+
+func toolItemType(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch", "imageGeneration":
+		return true
+	default:
+		return false
 	}
 }
 

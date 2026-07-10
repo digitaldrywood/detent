@@ -143,6 +143,9 @@ const (
 	AgentUpdateTurnCompleted    AgentUpdateType = "turn_completed"
 	AgentUpdateModelUpdated     AgentUpdateType = "model_updated"
 	AgentUpdateRuntimeIdentity  AgentUpdateType = "runtime_identity"
+	AgentUpdateToolStarted      AgentUpdateType = "tool_started"
+	AgentUpdateToolOutput       AgentUpdateType = "tool_output"
+	AgentUpdateToolCompleted    AgentUpdateType = "tool_completed"
 )
 
 type AgentUpdate struct {
@@ -153,6 +156,7 @@ type AgentUpdate struct {
 	TurnID              string
 	ProviderSessionID   string
 	ItemID              string
+	Tool                string
 	Delta               string
 	Status              string
 	Model               string
@@ -213,6 +217,7 @@ type RunRequest struct {
 	ResumeState         store.AgentResumeState
 	SelectorContext     selector.Context
 	OnUsageUpdate       UsageUpdateHandler
+	OnActivityUpdate    AgentActivityUpdateHandler
 	OnOverrideRejected  AgentOverrideRejectionHandler
 }
 
@@ -232,10 +237,11 @@ const (
 )
 
 type ValidatorRequest struct {
-	Issue           connector.Issue
-	StartedAt       time.Time
-	SelectorContext selector.Context
-	OnUsageUpdate   UsageUpdateHandler
+	Issue            connector.Issue
+	StartedAt        time.Time
+	SelectorContext  selector.Context
+	OnUsageUpdate    UsageUpdateHandler
+	OnActivityUpdate AgentActivityUpdateHandler
 }
 
 type RunResult struct {
@@ -251,6 +257,22 @@ type RunResult struct {
 }
 
 type UsageUpdateHandler func(UsageUpdate) error
+
+type AgentActivityUpdateHandler func(AgentActivityUpdate) error
+
+type AgentActivityUpdate struct {
+	At                time.Time
+	DetentSessionID   int64
+	ProviderSessionID string
+	TurnID            string
+	ItemID            string
+	Type              AgentUpdateType
+	Tool              string
+	Content           string
+	Status            string
+	Model             string
+	TotalTokens       int64
+}
 
 type UsageUpdate struct {
 	DetentSessionID       int64
