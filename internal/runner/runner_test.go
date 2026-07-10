@@ -2021,17 +2021,48 @@ func TestRunnerRunRoutesPerStageRoles(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		mode        string
-		state       string
-		wantBackend string
-		wantModel   string
-		wantRole    string
+		name          string
+		mode          string
+		state         string
+		description   string
+		projectEffort config.AgentRoleEffort
+		wantBackend   string
+		wantModel     string
+		wantRole      string
+		wantEffort    string
 	}{
-		{name: "code default", state: "Todo", wantBackend: "codex-code", wantModel: "gpt-5-code", wantRole: RoleCode},
+		{
+			name:        "code uses issue-wide effort before merge override",
+			state:       "Todo",
+			description: "```detent-agent\nschema: 1\neffort: xhigh\nmerge:\n  effort: high\n```",
+			wantBackend: "codex-code",
+			wantModel:   "gpt-5-code",
+			wantRole:    RoleCode,
+			wantEffort:  "xhigh",
+		},
 		{name: "plan mode", mode: RunModePlan, state: "Todo", wantBackend: "codex-plan", wantModel: "gpt-5-plan", wantRole: RolePlan},
 		{name: "rework state", mode: RunModeImplement, state: "Rework", wantBackend: "codex-rework", wantModel: "gpt-5-rework", wantRole: RoleRework},
-		{name: "merge mode", mode: RunModeMerge, state: "Merging", wantBackend: "codex-merge", wantModel: "gpt-5-merge", wantRole: RoleMerge},
+		{
+			name:          "merge uses issue role effort",
+			mode:          RunModeMerge,
+			state:         "Merging",
+			description:   "```detent-agent\nschema: 1\neffort: xhigh\nmerge:\n  effort: high\n```",
+			projectEffort: config.AgentRoleEffort{Merge: "low"},
+			wantBackend:   "codex-merge",
+			wantModel:     "gpt-5-merge",
+			wantRole:      RoleMerge,
+			wantEffort:    "high",
+		},
+		{
+			name:          "merge uses project role effort without issue block",
+			mode:          RunModeMerge,
+			state:         "Merging",
+			projectEffort: config.AgentRoleEffort{Merge: "high"},
+			wantBackend:   "codex-merge",
+			wantModel:     "gpt-5-merge",
+			wantRole:      RoleMerge,
+			wantEffort:    "high",
+		},
 	}
 
 	for _, tt := range tests {
@@ -2042,15 +2073,16 @@ func TestRunnerRunRoutesPerStageRoles(t *testing.T) {
 				info: workspace.Info{Path: t.TempDir(), Key: "issue-stage", Branch: "detent/issue-stage"},
 			}
 			clients := map[string]*fakeCodexClient{
-				"codex-code":   {},
-				"codex-plan":   {},
-				"codex-rework": {},
-				"codex-merge":  {},
+				"codex-code":   {models: []AgentModel{{ID: "gpt-5-code", Model: "gpt-5-code", SupportedReasoningEfforts: []string{"high", "xhigh"}}}},
+				"codex-plan":   {models: []AgentModel{{ID: "gpt-5-plan", Model: "gpt-5-plan", SupportedReasoningEfforts: []string{"high", "xhigh"}}}},
+				"codex-rework": {models: []AgentModel{{ID: "gpt-5-rework", Model: "gpt-5-rework", SupportedReasoningEfforts: []string{"high", "xhigh"}}}},
+				"codex-merge":  {models: []AgentModel{{ID: "gpt-5-merge", Model: "gpt-5-merge", SupportedReasoningEfforts: []string{"low", "high", "xhigh"}}}},
 			}
 			sessionStore := &fakeSessionStore{sessionID: 861}
 			runner, err := NewRunner(Dependencies{
 				Workflow: config.Workflow{
 					Config: config.Config{
+						Agent: config.Agent{Effort: tt.projectEffort},
 						Agents: config.Agents{
 							Backends: []config.AgentBackend{
 								{ID: "codex-code", Kind: "codex", Protocol: "app-server", Command: "codex app-server"},
@@ -2083,10 +2115,11 @@ func TestRunnerRunRoutesPerStageRoles(t *testing.T) {
 
 			_, err = runner.Run(context.Background(), RunRequest{
 				Issue: connector.Issue{
-					ID:         "issue-stage",
-					Identifier: "digitaldrywood/detent#861",
-					Title:      "Per-stage roles",
-					State:      tt.state,
+					ID:          "issue-stage",
+					Identifier:  "digitaldrywood/detent#861",
+					Title:       "Per-stage roles",
+					State:       tt.state,
+					Description: tt.description,
 				},
 				Mode: tt.mode,
 			})
@@ -2106,11 +2139,18 @@ func TestRunnerRunRoutesPerStageRoles(t *testing.T) {
 			if clients[tt.wantBackend].request.Model != tt.wantModel {
 				t.Fatalf("Model = %q, want %q", clients[tt.wantBackend].request.Model, tt.wantModel)
 			}
+			if clients[tt.wantBackend].request.ReasoningEffort != tt.wantEffort {
+				t.Fatalf("ReasoningEffort = %q, want %q", clients[tt.wantBackend].request.ReasoningEffort, tt.wantEffort)
+			}
 			if sessionStore.started.AgentRole != tt.wantRole {
 				t.Fatalf("SessionStart.AgentRole = %q, want %q", sessionStore.started.AgentRole, tt.wantRole)
 			}
 			if sessionStore.started.Model != "" || sessionStore.started.RequestedModel != tt.wantModel {
 				t.Fatalf("SessionStart = %#v, want unresolved model and requested %q", sessionStore.started, tt.wantModel)
+			}
+			wantIdentityEffort := agentidentity.NewValue(tt.wantEffort, agentidentity.ProvenanceConfigured)
+			if sessionStore.started.RuntimeIdentity.ReasoningEffort != wantIdentityEffort {
+				t.Fatalf("SessionStart effort = %#v, want %#v", sessionStore.started.RuntimeIdentity.ReasoningEffort, wantIdentityEffort)
 			}
 			if sessionStore.usage.SessionID != 861 {
 				t.Fatalf("UsageEvent.SessionID = %d, want role-bearing session 861", sessionStore.usage.SessionID)

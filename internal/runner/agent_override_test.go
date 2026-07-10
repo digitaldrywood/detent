@@ -19,6 +19,8 @@ func TestResolveAgentOverride(t *testing.T) {
 		defaultModel      string
 		defaultModelErr   error
 		baseModel         string
+		role              string
+		projectEffort     agentEffortCandidate
 		wantModel         string
 		wantEffort        string
 		wantRejectedField string
@@ -54,6 +56,46 @@ func TestResolveAgentOverride(t *testing.T) {
 			wantModel:        "gpt-5.5",
 			wantEffort:       "medium",
 			wantCatalogCalls: 1,
+		},
+		{
+			name:             "issue role effort wins",
+			issue:            connector.Issue{Description: "```detent-agent\nschema: 1\neffort: high\nmerge:\n  effort: low\n```"},
+			baseModel:        "gpt-default",
+			role:             RoleMerge,
+			projectEffort:    agentEffortCandidate{Field: "agent.effort.merge", Effort: "high"},
+			wantModel:        "gpt-default",
+			wantEffort:       "low",
+			wantCatalogCalls: 1,
+		},
+		{
+			name:             "issue effort wins over project role effort",
+			issue:            connector.Issue{Description: "```detent-agent\nschema: 1\neffort: high\n```"},
+			baseModel:        "gpt-default",
+			role:             RoleMerge,
+			projectEffort:    agentEffortCandidate{Field: "agent.effort.merge", Effort: "low"},
+			wantModel:        "gpt-default",
+			wantEffort:       "high",
+			wantCatalogCalls: 1,
+		},
+		{
+			name:             "project role effort wins over backend default",
+			issue:            connector.Issue{Description: "Ship it."},
+			baseModel:        "gpt-default",
+			role:             RoleMerge,
+			projectEffort:    agentEffortCandidate{Field: "agent.effort.merge", Effort: "low"},
+			wantModel:        "gpt-default",
+			wantEffort:       "low",
+			wantCatalogCalls: 1,
+		},
+		{
+			name:              "invalid role effort falls back to issue effort",
+			issue:             connector.Issue{Description: "```detent-agent\nschema: 1\neffort: high\nmerge:\n  effort: impossible\n```"},
+			baseModel:         "gpt-default",
+			role:              RoleMerge,
+			wantModel:         "gpt-default",
+			wantEffort:        "high",
+			wantRejectedField: "merge.effort",
+			wantCatalogCalls:  1,
 		},
 		{
 			name:              "invalid model",
@@ -128,7 +170,11 @@ func TestResolveAgentOverride(t *testing.T) {
 				defaultModel:    tt.defaultModel,
 				defaultModelErr: tt.defaultModelErr,
 			}
-			got := resolveAgentOverride(context.Background(), tt.issue, "/tmp/workspace", tt.baseModel, backend)
+			role := tt.role
+			if role == "" {
+				role = RoleCode
+			}
+			got := resolveAgentOverride(context.Background(), tt.issue, "/tmp/workspace", tt.baseModel, role, tt.projectEffort, backend)
 			if got.Model != tt.wantModel || got.Effort != tt.wantEffort {
 				t.Fatalf("resolved override = %#v, want model %q effort %q", got, tt.wantModel, tt.wantEffort)
 			}
@@ -152,6 +198,59 @@ func TestResolveAgentOverride(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveAgentOverrideAppliesProjectEffortWithoutCatalog(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		issue             connector.Issue
+		projectEffort     string
+		wantEffort        string
+		wantRejectedField string
+	}{
+		{name: "project effort applies", projectEffort: "HIGH", wantEffort: "high"},
+		{
+			name:              "rejected issue effort falls through to project effort",
+			issue:             connector.Issue{Description: "```detent-agent\nschema: 1\nmerge:\n  effort: xhigh\n```"},
+			projectEffort:     "high",
+			wantEffort:        "high",
+			wantRejectedField: "merge.effort",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := resolveAgentOverride(
+				context.Background(),
+				tt.issue,
+				"/tmp/workspace",
+				"",
+				RoleMerge,
+				agentEffortCandidate{Field: "agent.effort.merge", Effort: tt.projectEffort},
+				nonCatalogAgentBackend{},
+			)
+			if got.Effort != tt.wantEffort {
+				t.Fatalf("Effort = %q, want %q", got.Effort, tt.wantEffort)
+			}
+			if tt.wantRejectedField == "" {
+				if len(got.Rejections) != 0 {
+					t.Fatalf("Rejections = %#v, want none", got.Rejections)
+				}
+				return
+			}
+			if len(got.Rejections) != 1 || got.Rejections[0].Field != tt.wantRejectedField {
+				t.Fatalf("Rejections = %#v, want field %q", got.Rejections, tt.wantRejectedField)
+			}
+		})
+	}
+}
+
+type nonCatalogAgentBackend struct{}
+
+func (nonCatalogAgentBackend) RunTurn(context.Context, AgentTurnRequest, AgentUpdateHandler) (AgentTurnResult, error) {
+	return AgentTurnResult{}, nil
 }
 
 type catalogAgentBackend struct {

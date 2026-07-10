@@ -59,6 +59,9 @@ workspace:
   cleanup_sweep_interval_ms: 600000
 agent:
   max_concurrent_agents: 5
+  # Optional per-role reasoning defaults. Unset roles retain backend behavior.
+  # effort:
+  #   merge: high
   max_turns: 20
   max_retry_backoff_ms: 300000
   resume_orphaned_sessions: true
@@ -240,6 +243,13 @@ If meaningful out-of-scope work is discovered, file a separate tracker issue in 
 ## Required Execution Flow
 
 Use the current Detent state as the source of truth for which section applies.
+
+Before any rebase, capture the branch's effective diff against its merge base
+or preserve the pre-rebase ref. After the rebase, compare with `git range-diff`
+or an equivalent diff-stat and confirm the same files and hunks remain. If
+changes are missing without explanation or conflict resolution dropped hunks,
+stop before pushing and move the issue to the configured blocked or exception
+state.
 
 ### For Todo
 

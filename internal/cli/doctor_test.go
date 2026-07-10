@@ -511,6 +511,17 @@ func TestCheckDoctorIssueAgentModels(t *testing.T) {
 			wantProbes:   1,
 		},
 		{
+			name:         "unsupported merge effort names role field",
+			issue:        connector.Issue{ID: "issue-merge", Identifier: "digitaldrywood/detent#9", Description: "```detent-agent\nschema: 1\nmerge:\n  effort: bogus\n```"},
+			defaultModel: "gpt-default",
+			wantStatus:   doctorFail,
+			wantDetail:   []string{"digitaldrywood/detent#9 detent-agent merge.effort bogus", `effort "bogus" is not supported by model "gpt-default"`, "supported efforts: low, high"},
+			wantHint:     "remove the effort key",
+			wantModel:    "gpt-default",
+			wantEffort:   "bogus",
+			wantProbes:   1,
+		},
+		{
 			name:       "retired model",
 			issue:      connector.Issue{ID: "issue-6", Identifier: "digitaldrywood/detent#6", Description: "```detent-agent\nschema: 1\nmodel: gpt-retired\n```"},
 			wantStatus: doctorFail,
@@ -584,6 +595,53 @@ func TestCheckDoctorIssueAgentModels(t *testing.T) {
 				t.Fatalf("probes = %d, want %d", probes, tt.wantProbes)
 			}
 		})
+	}
+}
+
+func TestCheckDoctorIssueAgentModelsProbesInheritedReworkEffort(t *testing.T) {
+	t.Parallel()
+
+	cfg := validDoctorWorkflow(t.TempDir())
+	cfg.Agents.Backends = []workflowconfig.AgentBackend{
+		doctorCodexAgentBackend("codex-code"),
+		doctorCodexAgentBackend("codex-rework"),
+	}
+	cfg.Agents.Routes = []workflowconfig.AgentRoute{
+		{Name: "rework", Role: runnerpkg.RoleRework, Backend: "codex-rework", Model: "gpt-rework", Default: true},
+		{Name: "default", Backend: "codex-code", Model: "gpt-code", Default: true},
+	}
+	issue := connector.Issue{
+		ID:          "issue-inherited-rework",
+		Identifier:  "digitaldrywood/detent#10",
+		Description: "```detent-agent\nschema: 1\ncode:\n  effort: high\n```",
+	}
+	probedRoles := []string{}
+	check := checkDoctorIssueAgentModels(context.Background(), "detent", globalconfig.Project{ID: "detent", Workdir: t.TempDir()}, cfg, doctorDeps{
+		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+			return &fakeDoctorAutoPromoteConnector{issues: []connector.Issue{issue}}, nil
+		},
+		modelProbe: func(_ context.Context, req doctorRouteModelProbeRequest) error {
+			probedRoles = append(probedRoles, req.RouteName)
+			if req.Effort != "high" {
+				t.Fatalf("probe effort = %q, want high", req.Effort)
+			}
+			if strings.HasSuffix(req.RouteName, ":rework") {
+				if req.Model != "gpt-rework" || req.Backend.ID != "codex-rework" {
+					t.Fatalf("rework probe = %#v, want routed rework model/backend", req)
+				}
+				return errors.New("effort high is not supported by rework model")
+			}
+			if req.Model != "gpt-code" || req.Backend.ID != "codex-code" {
+				t.Fatalf("code probe = %#v, want routed code model/backend", req)
+			}
+			return nil
+		},
+	})
+	if check.Status != doctorFail || !strings.Contains(check.Detail, "code.effort high") || !strings.Contains(check.Detail, "not supported by rework model") {
+		t.Fatalf("check = %#v, want inherited rework rejection", check)
+	}
+	if len(probedRoles) != 2 || !strings.HasSuffix(probedRoles[0], ":code") || !strings.HasSuffix(probedRoles[1], ":rework") {
+		t.Fatalf("probed roles = %#v, want code then rework", probedRoles)
 	}
 }
 

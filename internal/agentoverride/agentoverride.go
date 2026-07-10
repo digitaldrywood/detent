@@ -12,12 +12,29 @@ import (
 type Override struct {
 	Model  string
 	Effort string
+	Code   RoleOverride
+	Rework RoleOverride
+	Merge  RoleOverride
+}
+
+type RoleOverride struct {
+	Effort string `yaml:"effort"`
+}
+
+type RoleEffort struct {
+	Role      string
+	Field     string
+	Effort    string
+	Inherited bool
 }
 
 type blockYAML struct {
-	Schema int    `yaml:"schema"`
-	Model  string `yaml:"model"`
-	Effort string `yaml:"effort"`
+	Schema int          `yaml:"schema"`
+	Model  string       `yaml:"model"`
+	Effort string       `yaml:"effort"`
+	Code   RoleOverride `yaml:"code"`
+	Rework RoleOverride `yaml:"rework"`
+	Merge  RoleOverride `yaml:"merge"`
 }
 
 func FromIssueBody(body string) (Override, bool, error) {
@@ -45,7 +62,45 @@ func FromIssueBody(body string) (Override, bool, error) {
 	return Override{
 		Model:  strings.TrimSpace(raw.Model),
 		Effort: strings.TrimSpace(raw.Effort),
+		Code:   normalizeRoleOverride(raw.Code),
+		Rework: normalizeRoleOverride(raw.Rework),
+		Merge:  normalizeRoleOverride(raw.Merge),
 	}, true, nil
+}
+
+func normalizeRoleOverride(override RoleOverride) RoleOverride {
+	override.Effort = strings.TrimSpace(override.Effort)
+	return override
+}
+
+func (o Override) EffortForRole(role string) (string, string) {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "code":
+		return o.Code.Effort, "code.effort"
+	case "rework":
+		if o.Rework.Effort != "" {
+			return o.Rework.Effort, "rework.effort"
+		}
+		return o.Code.Effort, "code.effort"
+	case "merge":
+		return o.Merge.Effort, "merge.effort"
+	default:
+		return "", ""
+	}
+}
+
+func (o Override) RoleEfforts() []RoleEffort {
+	rework := RoleEffort{Role: "rework", Field: "rework.effort", Effort: o.Rework.Effort}
+	if rework.Effort == "" && o.Code.Effort != "" {
+		rework.Field = "code.effort"
+		rework.Effort = o.Code.Effort
+		rework.Inherited = true
+	}
+	return []RoleEffort{
+		{Role: "code", Field: "code.effort", Effort: o.Code.Effort},
+		rework,
+		{Role: "merge", Field: "merge.effort", Effort: o.Merge.Effort},
+	}
 }
 
 func lastBlock(body string) (string, bool) {

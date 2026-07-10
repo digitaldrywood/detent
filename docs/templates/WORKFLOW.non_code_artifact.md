@@ -30,6 +30,9 @@ deliverable:
 
 agent:
   resume_orphaned_sessions: true
+  # Optional per-role reasoning defaults. Unset roles retain backend behavior.
+  # effort:
+  #   merge: high
   # Per-session ceiling on total_tokens. total_tokens counts input + output +
   # cache-created + cache-read tokens, accumulated across every turn of the
   # session, so cached context is re-counted each turn. Use max_session_tokens
@@ -210,6 +213,13 @@ the work item in `Production`, set the Workpad `detent-status` block to
 `status: complete`, set `render_status` to `valid` when the artifact gate is
 satisfied, and let Detent promote the item to `Ready for Pickup`. Do not
 self-move work items to `Review`.
+
+If a delivery flow uses a rebase, capture the branch's effective diff against
+its merge base or preserve the pre-rebase ref first. After the rebase, compare
+with `git range-diff` or an equivalent diff-stat and confirm the same files and
+hunks remain. If changes are missing without explanation or conflict resolution
+dropped hunks, stop before pushing and move the work item to the configured
+blocked or exception state.
 
 ### For Todo
 
