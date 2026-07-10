@@ -459,6 +459,76 @@ for (const board of [
     await expectNoHorizontalScroll(page);
   });
 }
+test("fleet content stays readable and morph-safe", async ({ page }) => {
+  await page.setExtraHTTPHeaders({
+    "X-Detent-Demo-Scenario": "fleet-healthy-parallel-work",
+  });
+  await page.goto(`${runtime.url}/fleet`, { waitUntil: "domcontentloaded" });
+
+  const snapshot = page.locator("#snapshot");
+  await expect(snapshot).toHaveAttribute("hx-swap", "morph:innerHTML");
+
+  const agents = page.locator("[data-fleet-agent-row]");
+  expect(await agents.count()).toBeGreaterThan(0);
+  for (const agent of await agents.all()) {
+    await expect(agent.locator("[data-agent-repo]")).toBeVisible();
+    await expect(agent.locator("[data-agent-issue]")).toBeVisible();
+    await expect(agent.locator("[data-agent-issue]")).toContainText(/^#\d+$/);
+    await expect(agent.locator("[data-agent-stage]")).toBeVisible();
+    await expect(agent.locator("[data-agent-elapsed]")).toBeVisible();
+    await expect(agent.locator("[data-agent-telemetry]")).toBeVisible();
+    await expectContentToFit(agent.locator("[data-agent-repo]"));
+    await expectContentToFit(agent.locator("[data-agent-issue]"));
+    await expectContentToFit(agent.locator("[data-agent-stage]"));
+  }
+
+  const lanes = page.locator("#fleet-pr-pipeline > div > section");
+  await expect(lanes).toHaveCount(3);
+  const laneBoxes = await lanes.evaluateAll((elements) =>
+    elements.map((element) => {
+      const box = element.getBoundingClientRect();
+      return { left: box.left, top: box.top, width: box.width };
+    }),
+  );
+  expect(laneBoxes.every((box) => box.width >= 300)).toBeTruthy();
+  expect(laneBoxes[1].top).toBeGreaterThan(laneBoxes[0].top);
+  expect(laneBoxes[2].top).toBeGreaterThan(laneBoxes[1].top);
+  expect(laneBoxes.every((box) => box.left === laneBoxes[0].left)).toBeTruthy();
+
+  const originalSnapshot = await snapshot.elementHandle();
+  const incoming = await snapshot.evaluate((element) => element.innerHTML);
+  await page.route("**/__detent-test-fleet-refresh", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body: incoming,
+    });
+  });
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        document.addEventListener("htmx:afterSettle", resolve, { once: true });
+        window.htmx.ajax("GET", "/__detent-test-fleet-refresh", {
+          target: "#snapshot",
+          swap: "morph:innerHTML",
+        });
+      }),
+  );
+  expect(await originalSnapshot?.evaluate((element) => element.isConnected)).toBe(
+    true,
+  );
+  await expectNoHorizontalScroll(page);
+});
+
+async function expectContentToFit(locator) {
+  const fits = await locator.evaluate(
+    (element) =>
+      element.scrollWidth <= element.clientWidth + 1 &&
+      element.scrollHeight <= element.clientHeight + 1,
+  );
+  expect(fits).toBeTruthy();
+}
+
 async function expectNoHorizontalScroll(page) {
   const dimensions = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
