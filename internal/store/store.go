@@ -105,6 +105,7 @@ type RuntimeEvidenceStore interface {
 
 type ActivityStore interface {
 	ListIssueActivity(context.Context, IssueActivityQuery) ([]IssueActivityEvent, error)
+	LatestIssueAgentSession(context.Context, IssueIdentity) (IssueAgentSession, error)
 }
 
 type AgentResumeStore interface {
@@ -777,6 +778,14 @@ type IssueActivityEvent struct {
 	Turns         int64
 	TotalTokens   int64
 	Verbose       bool
+}
+
+type IssueAgentSession struct {
+	DetentSessionID   int64
+	ProviderThreadID  string
+	ProviderSessionID string
+	AgentBackendKind  string
+	CompletedAt       time.Time
 }
 
 type TokenSpend struct {

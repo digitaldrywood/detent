@@ -1371,6 +1371,52 @@ func (q *Queries) GetLatestIssueAgentResumeState(ctx context.Context, arg GetLat
 	return i, err
 }
 
+const getLatestIssueAgentSession = `-- name: GetLatestIssueAgentSession :one
+SELECT
+  id,
+  CAST(COALESCE(provider_thread_id, '') AS TEXT) AS provider_thread_id,
+  CAST(COALESCE(provider_session_id, '') AS TEXT) AS provider_session_id,
+  CAST(COALESCE(agent_backend_kind, '') AS TEXT) AS agent_backend_kind,
+  CAST(completed_at AS TEXT) AS completed_at
+FROM codex_sessions
+WHERE completed_at IS NOT NULL
+  AND (COALESCE(provider_thread_id, '') != '' OR COALESCE(provider_session_id, '') != '')
+  AND (
+    (?1 != '' AND COALESCE(issue_id, '') = ?1)
+    OR (?2 != '' AND COALESCE(identifier, '') = ?2)
+    OR (?3 != '' AND COALESCE(issue_url, '') = ?3)
+  )
+ORDER BY completed_at DESC, id DESC
+LIMIT 1
+`
+
+type GetLatestIssueAgentSessionParams struct {
+	IssueID    interface{} `json:"issue_id"`
+	Identifier interface{} `json:"identifier"`
+	IssueURL   interface{} `json:"issue_url"`
+}
+
+type GetLatestIssueAgentSessionRow struct {
+	ID                int64  `json:"id"`
+	ProviderThreadID  string `json:"provider_thread_id"`
+	ProviderSessionID string `json:"provider_session_id"`
+	AgentBackendKind  string `json:"agent_backend_kind"`
+	CompletedAt       string `json:"completed_at"`
+}
+
+func (q *Queries) GetLatestIssueAgentSession(ctx context.Context, arg GetLatestIssueAgentSessionParams) (GetLatestIssueAgentSessionRow, error) {
+	row := q.db.QueryRowContext(ctx, getLatestIssueAgentSession, arg.IssueID, arg.Identifier, arg.IssueURL)
+	var i GetLatestIssueAgentSessionRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProviderThreadID,
+		&i.ProviderSessionID,
+		&i.AgentBackendKind,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
 const getUsageEvent = `-- name: GetUsageEvent :one
 SELECT id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd, cached_input_tokens, reasoning_output_tokens, model_context_window
 FROM usage_events

@@ -127,3 +127,48 @@ func TestListIssueActivityIncludesCurrentAndPreviousAttempts(t *testing.T) {
 		t.Fatalf("attempt events = %#v, want current and previous attempts in %#v", attempts, events)
 	}
 }
+
+func TestLatestIssueAgentSessionIncludesTerminalFailures(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	base := time.Date(2026, 7, 10, 14, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		finalState string
+	}{
+		{name: "completed", finalState: "completed"},
+		{name: "failed", finalState: "failed"},
+		{name: "cancelled", finalState: "cancelled"},
+	}
+	for index, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issueID := "issue-history-" + tt.name
+			sessionID, err := backend.StartSession(ctx, SessionStart{
+				IssueID:          issueID,
+				Identifier:       "digitaldrywood/detent#" + tt.name,
+				StartedAt:        base.Add(time.Duration(index) * time.Minute),
+				AgentBackendKind: "codex",
+			})
+			if err != nil {
+				t.Fatalf("StartSession() error = %v", err)
+			}
+			if err := backend.FinishSession(ctx, sessionID, SessionFinish{
+				CompletedAt:      base.Add(time.Duration(index+1) * time.Minute),
+				FinalState:       tt.finalState,
+				ProviderThreadID: "thread-" + tt.name,
+			}); err != nil {
+				t.Fatalf("FinishSession() error = %v", err)
+			}
+
+			got, err := backend.(ActivityStore).LatestIssueAgentSession(ctx, IssueIdentity{IssueID: issueID})
+			if err != nil {
+				t.Fatalf("LatestIssueAgentSession() error = %v", err)
+			}
+			if got.DetentSessionID != sessionID || got.ProviderThreadID != "thread-"+tt.name || got.AgentBackendKind != "codex" {
+				t.Fatalf("LatestIssueAgentSession() = %#v, want %s session %d", got, tt.finalState, sessionID)
+			}
+		})
+	}
+}

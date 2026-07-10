@@ -1,6 +1,8 @@
 package templates
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/url"
 	"strconv"
 	"strings"
@@ -36,11 +38,13 @@ type BoardActivityEvent struct {
 }
 
 type BoardSessionData struct {
-	ProjectID        string
-	IssueID          string
-	Identifier       string
-	Active           bool
-	HistoryAvailable bool
+	ProjectID         string
+	IssueID           string
+	Identifier        string
+	DetentSessionID   int64
+	ProviderSessionID string
+	Active            bool
+	HistoryAvailable  bool
 }
 
 type BoardSessionEvent struct {
@@ -112,6 +116,23 @@ func boardSessionHistoryPath(data BoardSessionData, offset int, limit int) strin
 		values.Set("limit", strconv.Itoa(limit))
 	}
 	return "/api/v1/board/session/history?" + values.Encode()
+}
+
+func boardLiveSessionID(data BoardSessionData) string {
+	key := strings.Join([]string{
+		strings.TrimSpace(data.ProjectID),
+		strings.TrimSpace(data.IssueID),
+		strings.TrimSpace(data.Identifier),
+		strconv.FormatBool(data.Active),
+		strconv.FormatInt(data.DetentSessionID, 10),
+		strings.TrimSpace(data.ProviderSessionID),
+	}, "\x00")
+	digest := sha256.Sum256([]byte(key))
+	return "board-live-session-" + hex.EncodeToString(digest[:8])
+}
+
+func boardLiveSessionTarget(data BoardSessionData) string {
+	return "#" + boardLiveSessionID(data)
 }
 
 func boardActivityEventID(event BoardActivityEvent) string {

@@ -212,6 +212,24 @@ WHERE completed_at IS NOT NULL
 ORDER BY completed_at DESC, id DESC
 LIMIT 1;
 
+-- name: GetLatestIssueAgentSession :one
+SELECT
+  id,
+  CAST(COALESCE(provider_thread_id, '') AS TEXT) AS provider_thread_id,
+  CAST(COALESCE(provider_session_id, '') AS TEXT) AS provider_session_id,
+  CAST(COALESCE(agent_backend_kind, '') AS TEXT) AS agent_backend_kind,
+  CAST(completed_at AS TEXT) AS completed_at
+FROM codex_sessions
+WHERE completed_at IS NOT NULL
+  AND (COALESCE(provider_thread_id, '') != '' OR COALESCE(provider_session_id, '') != '')
+  AND (
+    (sqlc.arg(issue_id) != '' AND COALESCE(issue_id, '') = sqlc.arg(issue_id))
+    OR (sqlc.arg(identifier) != '' AND COALESCE(identifier, '') = sqlc.arg(identifier))
+    OR (sqlc.arg(issue_url) != '' AND COALESCE(issue_url, '') = sqlc.arg(issue_url))
+  )
+ORDER BY completed_at DESC, id DESC
+LIMIT 1;
+
 -- name: CreateAPIKey :one
 INSERT INTO api_keys (
   id,

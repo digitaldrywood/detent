@@ -50,3 +50,35 @@ func TestTurnStateEmitsToolContent(t *testing.T) {
 		t.Fatalf("tool output = %#v", updates[1])
 	}
 }
+
+func TestTurnStateDoesNotRepeatPartialToolStart(t *testing.T) {
+	t.Parallel()
+
+	block := contentBlock{ID: "tool-1", Type: "tool_use", Name: "Bash", Input: json.RawMessage(`{"command":"go test ./..."}`)}
+	state := turnState{sessionID: "session-1", model: "claude-sonnet-4-5"}
+	events := []claudeEvent{
+		{Type: "stream_event", StreamEvent: &streamEvent{ContentBlock: &block}},
+		{Type: "assistant", Message: &claudeMessage{ID: "message-1", Content: []contentBlock{block}}},
+		{
+			Type: "user",
+			Message: &claudeMessage{ID: "message-2", Content: []contentBlock{{
+				Type:      "tool_result",
+				ToolUseID: "tool-1",
+				Content:   json.RawMessage(`"ok package"`),
+			}}},
+		},
+	}
+
+	var updates []runner.AgentUpdate
+	for _, event := range events {
+		if err := state.apply(event, true, func(update runner.AgentUpdate) error {
+			updates = append(updates, update)
+			return nil
+		}); err != nil {
+			t.Fatalf("apply() error = %v", err)
+		}
+	}
+	if len(updates) != 2 || updates[0].Type != runner.AgentUpdateToolStarted || updates[1].Type != runner.AgentUpdateToolOutput {
+		t.Fatalf("updates = %#v, want one tool start and one result", updates)
+	}
+}

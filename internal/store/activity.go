@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -64,4 +66,34 @@ func (s *sqliteStore) ListIssueActivity(ctx context.Context, query IssueActivity
 		})
 	}
 	return events, nil
+}
+
+func (s *sqliteStore) LatestIssueAgentSession(ctx context.Context, identity IssueIdentity) (IssueAgentSession, error) {
+	identity = normalizeIssueIdentity(identity)
+	if identity.IssueID == "" && identity.Identifier == "" && identity.IssueURL == "" {
+		return IssueAgentSession{}, ErrNotFound
+	}
+
+	row, err := s.queries.GetLatestIssueAgentSession(ctx, sqlc.GetLatestIssueAgentSessionParams{
+		IssueID:    identity.IssueID,
+		Identifier: identity.Identifier,
+		IssueURL:   identity.IssueURL,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return IssueAgentSession{}, ErrNotFound
+		}
+		return IssueAgentSession{}, fmt.Errorf("reading latest issue agent session: %w", err)
+	}
+	completedAt, err := parseTimestamp("completed_at", row.CompletedAt)
+	if err != nil {
+		return IssueAgentSession{}, err
+	}
+	return IssueAgentSession{
+		DetentSessionID:   row.ID,
+		ProviderThreadID:  strings.TrimSpace(row.ProviderThreadID),
+		ProviderSessionID: strings.TrimSpace(row.ProviderSessionID),
+		AgentBackendKind:  strings.TrimSpace(row.AgentBackendKind),
+		CompletedAt:       completedAt,
+	}, nil
 }

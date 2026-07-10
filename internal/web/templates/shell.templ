@@ -492,7 +492,7 @@ templ appShellScript() {
 						sheetHost.dataset.detailSheetTab = selectedTab;
 						applyDetailSheetTab(sheetHost);
 						if (selectedTab !== "session") {
-							var liveSession = sheetHost.querySelector("#board-live-session");
+							var liveSession = sheetHost.querySelector("[data-board-live-session]");
 							if (liveSession) {
 								Array.from(liveSession.children).forEach(function (child) {
 									if (window.htmx) window.htmx.remove(child);

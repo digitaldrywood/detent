@@ -137,7 +137,7 @@ func (s *turnState) apply(event claudeEvent, includePartialMessages bool, onUpda
 		}
 		return s.applyAssistant(event, includePartialMessages, onUpdate)
 	case "user":
-		return s.applyAssistant(event, includePartialMessages, onUpdate)
+		return s.applyUser(event, onUpdate)
 	case "stream_event":
 		if err := s.emitModelChange(previousModel, onUpdate); err != nil {
 			return err
@@ -202,19 +202,25 @@ func (s *turnState) applyAssistant(
 				return err
 			}
 		}
-	} else {
-		for _, block := range event.Message.Content {
-			if block.Type == "text" {
-				continue
-			}
-			if err := s.emitContentBlock(block, event.Message.ID, onUpdate); err != nil {
-				return err
-			}
-		}
 	}
 	if event.Message.Usage != nil && !event.Message.Usage.empty() {
 		addUsage(&s.usage, *event.Message.Usage)
 		return s.emitUsage(onUpdate)
+	}
+	return nil
+}
+
+func (s *turnState) applyUser(event claudeEvent, onUpdate runner.AgentUpdateHandler) error {
+	if event.Message == nil {
+		return nil
+	}
+	for _, block := range event.Message.Content {
+		if block.Type != "tool_result" {
+			continue
+		}
+		if err := s.emitContentBlock(block, event.Message.ID, onUpdate); err != nil {
+			return err
+		}
 	}
 	return nil
 }

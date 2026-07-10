@@ -428,7 +428,7 @@ test("detail sheet activity tabs survive morphs across display modes", async ({
   await expect(sessionTab).toHaveAttribute("aria-selected", "true");
   await expect(sheet.getByText("No active worker session")).toBeVisible();
 
-  const sessionHost = sheet.locator("#board-live-session");
+  const sessionHost = sheet.locator("[data-board-live-session]");
   await sessionHost.evaluate((host) => {
     const probe = document.createElement("span");
     probe.dataset.sessionPreserveProbe = "true";

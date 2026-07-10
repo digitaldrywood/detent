@@ -16,7 +16,7 @@ templ BoardActivityTabs(activity BoardActivityData, session BoardSessionData) {
 				role="tab"
 				aria-selected="false"
 				hx-get={ boardSessionPath(session, false) }
-				hx-target="#board-live-session"
+				hx-target={ boardLiveSessionTarget(session) }
 				hx-swap="innerHTML"
 			>Live session</button>
 		</div>
@@ -24,7 +24,7 @@ templ BoardActivityTabs(activity BoardActivityData, session BoardSessionData) {
 			@BoardActivityPanel(activity)
 		</div>
 		<div class="hidden min-h-0 flex-1" data-sheet-panel="session" role="tabpanel">
-			<div id="board-live-session" class="flex min-h-72 items-center justify-center p-4 text-center text-xs text-sec" hx-preserve>
+			<div id={ boardLiveSessionID(session) } class="flex min-h-72 items-center justify-center p-4 text-center text-xs text-sec" data-board-live-session hx-preserve>
 				Select Live session to attach to the active worker.
 			</div>
 		</div>
@@ -117,7 +117,7 @@ templ BoardLiveSession(data BoardSessionData) {
 					type="button"
 					class="rounded-card border border-line px-3 py-1.5 text-xs font-medium text-sec hover:border-accent hover:text-text"
 					hx-get={ boardSessionHistoryPath(data, 0, 50) }
-					hx-target="#board-live-session"
+					hx-target={ boardLiveSessionTarget(data) }
 					hx-swap="innerHTML"
 				>View rollout history</button>
 			} else {
@@ -147,7 +147,7 @@ templ BoardLiveSessionHistory(data BoardSessionHistoryData) {
 				<p class="text-xs font-medium text-text">Provider rollout history</p>
 				<p class="text-2xs text-dim">Read-only · loaded on demand</p>
 			</div>
-			<button type="button" class="rounded-chip border border-line px-2 py-1 text-2xs text-sec" hx-get={ boardSessionPath(data.Session, false) } hx-target="#board-live-session" hx-swap="innerHTML">Back</button>
+			<button type="button" class="rounded-chip border border-line px-2 py-1 text-2xs text-sec" hx-get={ boardSessionPath(data.Session, false) } hx-target={ boardLiveSessionTarget(data.Session) } hx-swap="innerHTML">Back</button>
 		</div>
 		<div class="max-h-112 min-h-64 flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed text-text" data-session-history-log>
 			if data.Error != "" {

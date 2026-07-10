@@ -128,7 +128,7 @@ func (s *Server) apiBoardSessionHistory(c echo.Context) error {
 	issue := boardActivityIssue(snapshot, request)
 	session := s.boardSessionData(ctx, snapshot, issue, request.ProjectID)
 	data := templates.BoardSessionHistoryData{Session: session, Offset: offset, Limit: limit}
-	state, err := s.store.LatestIssueAgentResumeState(ctx, store.IssueIdentity{IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL})
+	state, err := s.latestIssueAgentSession(ctx, issue)
 	if err != nil {
 		data.Error = "Rollout history is unavailable for this session."
 	} else {
@@ -502,14 +502,26 @@ func (s *Server) boardSessionData(ctx context.Context, snapshot telemetry.Snapsh
 	for _, running := range snapshot.Running {
 		if snapshotActivityMatches(running.ProjectID, running.ID, running.Identifier, issue) {
 			data.Active = true
+			data.DetentSessionID = running.DetentSessionID
+			data.ProviderSessionID = running.SessionID
 			return data
 		}
 	}
-	state, err := s.store.LatestIssueAgentResumeState(ctx, store.IssueIdentity{IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL})
+	state, err := s.latestIssueAgentSession(ctx, issue)
 	if err == nil && firstActivityValue(state.ProviderThreadID, state.ProviderSessionID) != "" {
+		data.DetentSessionID = state.DetentSessionID
+		data.ProviderSessionID = firstActivityValue(state.ProviderThreadID, state.ProviderSessionID)
 		data.HistoryAvailable = true
 	}
 	return data
+}
+
+func (s *Server) latestIssueAgentSession(ctx context.Context, issue telemetry.Issue) (store.IssueAgentSession, error) {
+	activityStore, ok := s.store.(store.ActivityStore)
+	if !ok {
+		return store.IssueAgentSession{}, store.ErrNotFound
+	}
+	return activityStore.LatestIssueAgentSession(ctx, store.IssueIdentity{IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL})
 }
 
 func boardSessionEvent(event activity.Event) templates.BoardSessionEvent {
