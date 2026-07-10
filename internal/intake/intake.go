@@ -90,7 +90,15 @@ type Result struct {
 type runtimeSource struct {
 	config   Source
 	adapter  WebhookAdapter
+	scanner  Scanner
 	schedule cron.Schedule
+}
+
+type Prepared struct {
+	config  Config
+	sources map[string]runtimeSource
+	store   IssueStore
+	root    string
 }
 
 type Manager struct {
@@ -152,40 +160,64 @@ func (m *Manager) Enabled() bool {
 }
 
 func (m *Manager) Update(cfg Config, store IssueStore, root string) error {
+	prepared, err := m.Prepare(cfg, store, root)
+	if err != nil {
+		return err
+	}
+	m.Apply(prepared)
+	return nil
+}
+
+func (m *Manager) Prepare(cfg Config, store IssueStore, root string) (*Prepared, error) {
 	if m == nil {
-		return ErrMissingStore
+		return nil, ErrMissingStore
 	}
 	cfg.Normalize()
 	if problems := cfg.Validate("intake", nil); len(problems) > 0 {
-		return errors.New(strings.Join(problems, "; "))
+		return nil, errors.New(strings.Join(problems, "; "))
 	}
 	if cfg.Enabled() && store == nil {
-		return ErrMissingStore
+		return nil, ErrMissingStore
 	}
 
+	root = strings.TrimSpace(root)
 	sources := make(map[string]runtimeSource, len(cfg.Sources))
 	for _, source := range cfg.Sources {
 		runtime := runtimeSource{config: source}
 		var err error
 		if source.Kind == KindSchedule {
 			runtime.schedule, err = cron.ParseStandard(source.Cron)
+			if err == nil {
+				runtime.scanner, err = m.scannerFactory.New(source.Scan, root)
+			}
 		} else {
 			runtime.adapter, err = m.webhookFactory.New(source.Kind)
 		}
 		if err != nil {
-			return fmt.Errorf("configure intake source %s: %w", source.Name, err)
+			return nil, fmt.Errorf("configure intake source %s: %w", source.Name, err)
 		}
 		sources[source.Name] = runtime
 	}
 
+	return &Prepared{
+		config:  cloneConfig(cfg),
+		sources: sources,
+		store:   store,
+		root:    root,
+	}, nil
+}
+
+func (m *Manager) Apply(prepared *Prepared) {
+	if m == nil || prepared == nil {
+		return
+	}
 	m.mu.Lock()
-	m.config = cloneConfig(cfg)
-	m.sources = sources
-	m.store = store
-	m.root = strings.TrimSpace(root)
+	m.config = prepared.config
+	m.sources = prepared.sources
+	m.store = prepared.store
+	m.root = prepared.root
 	m.mu.Unlock()
 	m.signalUpdate()
-	return nil
 }
 
 func (m *Manager) Source(name string) (Source, bool) {
@@ -221,14 +253,10 @@ func (m *Manager) RunScheduled(ctx context.Context, name string) ([]Result, erro
 	if runtime.config.Kind != KindSchedule {
 		return nil, ErrSourceNotScheduled
 	}
-	m.mu.RLock()
-	root := m.root
-	m.mu.RUnlock()
-	scanner, err := m.scannerFactory.New(runtime.config.Scan, root)
-	if err != nil {
-		return nil, fmt.Errorf("create intake scanner %s: %w", runtime.config.Scan, err)
+	if runtime.scanner == nil {
+		return nil, fmt.Errorf("create intake scanner %s: %w", runtime.config.Scan, ErrUnknownScanner)
 	}
-	events, err := scanner.Scan(ctx)
+	events, err := runtime.scanner.Scan(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("scan intake source %s: %w", runtime.config.Name, err)
 	}

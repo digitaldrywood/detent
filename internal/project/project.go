@@ -824,8 +824,21 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		return
 	}
 
-	if updater, ok := runner.(workflowUpdater); ok {
-		updater.UpdateWorkflow(workflow)
+	var preparedIntake *intake.Prepared
+	if projectIntake != nil {
+		preparedIntake, err = projectIntake.Prepare(
+			workflow.Config.Intake,
+			intakeStore(projectConnector),
+			intakeRoot(projectConfig, workflow.Config),
+		)
+		if err != nil {
+			p.logger.Warn("prepare workflow intake reload failed",
+				"project_id", p.id,
+				"path", update.Path,
+				"error", err,
+			)
+			return
+		}
 	}
 
 	runtimeConfig := projectOrchestratorConfig(projectConfig, workflow.Config)
@@ -843,15 +856,11 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		)
 		return
 	}
+	if updater, ok := runner.(workflowUpdater); ok {
+		updater.UpdateWorkflow(workflow)
+	}
 	if projectIntake != nil {
-		if err := projectIntake.Update(workflow.Config.Intake, intakeStore(projectConnector), intakeRoot(projectConfig, workflow.Config)); err != nil {
-			p.logger.Warn("apply workflow intake reload failed",
-				"project_id", p.id,
-				"path", update.Path,
-				"error", err,
-			)
-			return
-		}
+		projectIntake.Apply(preparedIntake)
 	}
 
 	p.mu.Lock()

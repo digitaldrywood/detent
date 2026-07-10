@@ -105,7 +105,11 @@ func (c *Connector) SetIntakeIssueState(ctx context.Context, issueID string, sta
 	if !c.usesLabelStatus() && !c.usesIssueFieldStatus() {
 		itemID, ok := c.projectCache.GetItemID(c.projectID, issueID)
 		if !ok {
-			return ErrProjectItemNotFound
+			item, err := c.resolveProjectItem(ctx, issueID)
+			if err != nil {
+				return err
+			}
+			itemID = item.ID
 		}
 		return c.setProjectItemStatus(ctx, itemID, c.detentToGitHubState(state))
 	}

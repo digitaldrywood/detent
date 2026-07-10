@@ -118,3 +118,47 @@ func TestConnectorCreateIntakeIssueAddsProjectV2Item(t *testing.T) {
 		t.Fatalf("variables = %#v", variables)
 	}
 }
+
+func TestConnectorSetIntakeIssueStateResolvesUncachedProjectItem(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodPost,
+			path:   "/",
+			body:   `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_2","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"}}]}}}}`,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/",
+			body:   `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_2"}}}}`,
+		},
+	})
+	connector := newGitHubTestConnector(t, server, Config{
+		Repository:  "example/repo",
+		ProjectSlug: "PVT_1",
+	})
+	connector.statusCache.Set("PVT_1", statusMetadata{
+		FieldID:         "PVTSSF_1",
+		OptionIDsByName: map[string]string{"Backlog": "backlog-option"},
+	})
+
+	if err := connector.SetIntakeIssueState(context.Background(), "I_2", "Backlog"); err != nil {
+		t.Fatalf("SetIntakeIssueState() error = %v", err)
+	}
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if !strings.Contains(requests[0]["query"].(string), "projectItems") {
+		t.Fatalf("project item query = %q", requests[0]["query"])
+	}
+	resolveVariables := requests[0]["variables"].(map[string]any)
+	if resolveVariables["issueId"] != "I_2" {
+		t.Fatalf("resolve variables = %#v", resolveVariables)
+	}
+	updateVariables := requests[1]["variables"].(map[string]any)
+	if updateVariables["itemId"] != "PVTI_2" || updateVariables["fieldId"] != "PVTSSF_1" || updateVariables["optionId"] != "backlog-option" {
+		t.Fatalf("update variables = %#v", updateVariables)
+	}
+}

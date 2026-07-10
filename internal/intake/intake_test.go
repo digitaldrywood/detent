@@ -163,6 +163,55 @@ func TestManagerRunsScheduledScannerThroughFactory(t *testing.T) {
 	}
 }
 
+func TestManagerPrepareRejectsUnknownSourceWithoutChangingRuntime(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source Source
+		want   error
+	}{
+		{
+			name: "webhook adapter",
+			source: Source{
+				Name:   "new-alerts",
+				Kind:   "pagerduty",
+				Secret: "secret",
+			},
+			want: ErrUnknownAdapter,
+		},
+		{
+			name: "scheduled scanner",
+			source: Source{
+				Name: "new-scan",
+				Kind: KindSchedule,
+				Cron: "0 6 * * 1",
+				Scan: "custom",
+			},
+			want: ErrUnknownScanner,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := &fakeIssueStore{}
+			manager := newWebhookManager(t, store, "")
+			_, err := manager.Prepare(Config{Sources: []Source{tt.source}}, store, t.TempDir())
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("Prepare() error = %v, want %v", err, tt.want)
+			}
+			if _, ok := manager.Source("alerts"); !ok {
+				t.Fatal("Prepare() removed the active source")
+			}
+			if _, ok := manager.Source(tt.source.Name); ok {
+				t.Fatalf("Prepare() applied invalid source %q", tt.source.Name)
+			}
+		})
+	}
+}
+
 func newWebhookManager(t *testing.T, store IssueStore, match string) *Manager {
 	t.Helper()
 	manager, err := New(Config{Sources: []Source{{
