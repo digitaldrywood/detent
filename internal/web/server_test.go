@@ -6514,6 +6514,35 @@ func TestServerEventsReplaysLatestSnapshot(t *testing.T) {
 	}
 }
 
+func TestServerEventsStartsWithBuildVersion(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{
+		Version:         "v9.8.7",
+		SSETickInterval: time.Hour,
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := openEventStream(t, server)
+	defer body.Close()
+
+	event := readSSEFrame(t, body)
+	if event.name != "build" {
+		t.Fatalf("event name = %q, want build", event.name)
+	}
+	for _, want := range []string{`id="detent-build-version"`, `data-detent-build-version="v9.8.7"`, "v9.8.7"} {
+		if !strings.Contains(event.data, want) {
+			t.Fatalf("build event missing %q:\n%s", want, event.data)
+		}
+	}
+}
+
 func TestServerEventsStreamsPublishedSnapshots(t *testing.T) {
 	t.Parallel()
 
@@ -10858,6 +10887,17 @@ func openRawEventStreamWithHeaders(t *testing.T, addr string, path string, heade
 func readRawSSEEvent(t *testing.T, conn net.Conn, reader *bufio.Reader) sseEvent {
 	t.Helper()
 
+	for {
+		event := readRawSSEFrame(t, conn, reader)
+		if event.name != "build" {
+			return event
+		}
+	}
+}
+
+func readRawSSEFrame(t *testing.T, conn net.Conn, reader *bufio.Reader) sseEvent {
+	t.Helper()
+
 	var event sseEvent
 	deadline := time.Now().Add(sseTestReadTimeout)
 	for {
@@ -10892,6 +10932,16 @@ func readRawSSEEvent(t *testing.T, conn net.Conn, reader *bufio.Reader) sseEvent
 
 func readSSEEvent(t *testing.T, r io.Reader) sseEvent {
 	t.Helper()
+	return readSSEFrameMatching(t, r, false)
+}
+
+func readSSEFrame(t *testing.T, r io.Reader) sseEvent {
+	t.Helper()
+	return readSSEFrameMatching(t, r, true)
+}
+
+func readSSEFrameMatching(t *testing.T, r io.Reader, includeBuild bool) sseEvent {
+	t.Helper()
 
 	lines := make(chan string)
 	errs := make(chan error, 1)
@@ -10919,6 +10969,10 @@ func readSSEEvent(t *testing.T, r io.Reader) sseEvent {
 			if line == "" {
 				if event.name == "" {
 					t.Fatal("SSE event missing name")
+				}
+				if event.name == "build" && !includeBuild {
+					event = sseEvent{}
+					continue
 				}
 				return event
 			}

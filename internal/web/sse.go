@@ -18,6 +18,7 @@ import (
 )
 
 const (
+	sseEventBuild        = "build"
 	sseEventSnapshot     = "snapshot"
 	sseEventSidebar      = "sidebar"
 	sseEventGitHubAPI    = "github-api-health"
@@ -126,6 +127,9 @@ func (s *Server) events(c echo.Context) error {
 	res.Header().Set("Connection", "keep-alive")
 	res.Header().Set("X-Accel-Buffering", "no")
 	res.WriteHeader(http.StatusOK)
+	if err := writeSSEComponent(ctx, res.Writer, sseEventBuild, templates.LiveBuildVersion(s.version)); err != nil {
+		return err
+	}
 	flusher.Flush()
 
 	ticker := time.NewTicker(s.tickEvery)

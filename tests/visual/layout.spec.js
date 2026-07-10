@@ -1105,6 +1105,57 @@ test("board applies snapshot updates without reload", async ({ page }) => {
   expect(preserved).toBe(true);
 });
 
+test("dashboard prompts reload only when the serving build changes", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/fleet",
+    waitSelector: "#agent-activity",
+    viewport: desktopViewport,
+  });
+
+  const servedVersion = await page
+    .locator("html")
+    .getAttribute("data-detent-served-version");
+  expect(servedVersion).toBeTruthy();
+
+  const notice = page.locator("[data-detent-build-update]");
+  const footer = page.locator("#detent-build-version");
+  await dispatchBuildVersion(page, servedVersion);
+  await expect(notice).toBeHidden();
+  await expect(footer).toHaveText(servedVersion);
+
+  await dispatchBuildVersion(page, "v99.0.0");
+  await expect(footer).toHaveText("v99.0.0");
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("Detent updated to v99.0.0 —");
+  await expect(notice.locator("[data-detent-build-reload]")).toHaveText(
+    "Reload",
+  );
+});
+
+async function dispatchBuildVersion(page, version) {
+  await page.evaluate((liveVersion) => {
+    const source = document.querySelector("[sse-connect]");
+    const footer = document.getElementById("detent-build-version");
+    if (!source || !footer) {
+      throw new Error("Build version SSE elements not found");
+    }
+    const incoming = footer.cloneNode(true);
+    incoming.textContent = liveVersion;
+    incoming.setAttribute("title", liveVersion);
+    incoming.setAttribute("data-detent-build-version", liveVersion);
+    source.dispatchEvent(
+      new CustomEvent("htmx:sseBeforeMessage", {
+        bubbles: true,
+        detail: { elt: footer, data: incoming.outerHTML },
+      }),
+    );
+  }, version);
+}
+
 test("reports page renders KPI figures and charts", async ({
   page,
 }, testInfo) => {
