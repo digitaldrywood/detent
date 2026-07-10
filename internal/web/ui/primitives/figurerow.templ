@@ -21,12 +21,13 @@ func (f Figure) valueClass() string {
 	return "text-base font-semibold text-text tabular-nums"
 }
 
-// FigureRow lays figures out on one baseline with 28px gaps. Right-aligned
-// extras (mono tps, spend, controls) render via children after the spacer.
+// FigureRow uses a compact three-column mobile grid and one baseline with
+// 28px gaps on desktop. Extras render via children after the desktop spacer.
 templ FigureRow(figures []Figure) {
-	<div class="flex min-w-0 flex-wrap items-baseline gap-x-7 gap-y-2 text-xs text-sec">
+	<div class="grid min-w-0 grid-cols-3 items-baseline gap-x-3 gap-y-2 text-xs text-sec md:flex md:flex-wrap md:gap-x-7">
 		for _, f := range figures {
 			<span
+				class="min-w-0 whitespace-nowrap"
 				if f.ID != "" {
 					id={ f.ID }
 				}
@@ -39,7 +40,7 @@ templ FigureRow(figures []Figure) {
 				{ f.Label }
 			</span>
 		}
-		<span class="flex-1"></span>
+		<span class="hidden flex-1 md:block"></span>
 		{ children... }
 	</div>
 }
@@ -51,6 +52,6 @@ templ MonoFigure(id string, value string) {
 		if id != "" {
 			id={ id }
 		}
-		class="font-mono text-xs text-sec tabular-nums"
+		class="min-w-0 truncate font-mono text-xs text-sec tabular-nums"
 	>{ value }</span>
 }

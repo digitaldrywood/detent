@@ -48,6 +48,13 @@ templ AppShell(data DashboardShellData, scope templ.Component) {
 				class="flex h-full"
 				sse-connect={ eventsPath(data) }
 			>
+				<button
+					type="button"
+					class="invisible fixed inset-0 z-40 bg-text/35 opacity-0 transition-opacity duration-200 data-[mobile-open=true]:visible data-[mobile-open=true]:opacity-100 md:hidden"
+					data-mobile-sidebar-scrim
+					data-mobile-open="false"
+					aria-label="Close navigation"
+				></button>
 				@appSidebar(data)
 				<div class="flex min-w-0 flex-1 flex-col">
 					@appTopbar(data, scope)
@@ -61,8 +68,9 @@ templ AppShell(data DashboardShellData, scope templ.Component) {
 templ appSidebar(data DashboardShellData) {
 	<aside
 		id="app-sidebar"
-		class="group/rail flex h-full w-52 flex-none flex-col gap-0.5 overflow-y-auto border-r border-line px-2.5 py-3.5 data-[rail=true]:w-13 data-[rail=true]:items-center data-[rail=true]:px-1.5"
+		class="group/rail invisible fixed inset-y-0 left-0 z-50 flex h-full w-52 -translate-x-full flex-none flex-col gap-0.5 overflow-y-auto border-r border-line bg-page px-2.5 py-3.5 shadow-lg transition-[transform,visibility] duration-200 data-[mobile-open=true]:visible data-[mobile-open=true]:translate-x-0 data-[rail=true]:w-13 data-[rail=true]:items-center data-[rail=true]:px-1.5 md:visible md:static md:z-auto md:translate-x-0 md:shadow-none md:transition-none"
 		data-rail={ appShellRailValue(data) }
+		data-mobile-open="false"
 	>
 		<a href="/" class="flex items-center gap-2 rounded-card px-2.5 pb-4 pt-1 group-data-[rail=true]/rail:justify-center group-data-[rail=true]/rail:px-0" aria-label="Detent board">
 			<span class="grid size-5 flex-none place-items-center rounded-card bg-accent font-mono text-2xs font-semibold text-page">D</span>
@@ -157,20 +165,49 @@ templ appSidebarNavItem(data DashboardShellData, item appNavItem) {
 }
 
 templ appTopbar(data DashboardShellData, scope templ.Component) {
-	<header class="flex h-12 flex-none items-center gap-4 border-b border-line px-5">
-		<h1 class="text-base font-semibold">{ appShellTopbarTitle(data) }</h1>
-		if scope != nil {
-			@scope
-		}
-		<div class="flex-1"></div>
-		<div id="live-indicator" class="flex items-center gap-2 text-xs text-sec" data-live-indicator>
-			@primitives.StatusDot(primitives.KindOK, true)
-			<span data-live-label>Live ·</span>
-			<span id="live-clock" class="font-mono tabular-nums" sse-swap="tick" hx-swap="innerHTML">{ appShellSnapshotClock(data) }</span>
-		</div>
-		<div class="flex overflow-hidden rounded-card border border-line" role="group" aria-label="Density">
-			<button type="button" class={ appDensityButtonClass(data, "compact") } data-density-choice="compact" aria-pressed={ appDensityPressed(data, "compact") }>Compact</button>
-			<button type="button" class={ appDensityButtonClass(data, "cozy") } data-density-choice="cozy" aria-pressed={ appDensityPressed(data, "cozy") }>Cozy</button>
+	<header class="relative flex h-12 flex-none items-center gap-1 border-b border-line px-1 md:gap-4 md:px-5">
+		<button
+			type="button"
+			class="grid size-11 flex-none place-items-center rounded-card text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent md:hidden"
+			data-mobile-sidebar-toggle
+			aria-label="Open navigation"
+			aria-controls="app-sidebar"
+			aria-expanded="false"
+		>
+			@icon.Menu(icon.Props{Class: "size-5"})
+		</button>
+		<h1 class="min-w-0 flex-1 truncate text-sm font-semibold md:flex-none md:text-base">{ appShellTopbarTitle(data) }</h1>
+		<button
+			type="button"
+			class="grid size-11 flex-none place-items-center rounded-card text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent md:hidden"
+			data-mobile-topbar-toggle
+			aria-label="More topbar controls"
+			aria-controls="mobile-topbar-controls"
+			aria-expanded="false"
+		>
+			@icon.Ellipsis(icon.Props{Class: "size-5"})
+		</button>
+		<div
+			id="mobile-topbar-controls"
+			class="invisible absolute right-1 top-11 z-30 flex w-56 flex-col gap-3 rounded-card border border-line bg-page p-3 opacity-0 shadow-lg transition-[opacity,visibility] duration-150 data-[mobile-open=true]:visible data-[mobile-open=true]:opacity-100 md:visible md:static md:flex md:w-auto md:flex-1 md:flex-row md:items-center md:gap-4 md:border-0 md:bg-transparent md:p-0 md:opacity-100 md:shadow-none md:transition-none"
+			data-mobile-topbar-controls
+			data-mobile-open="false"
+		>
+			if scope != nil {
+				<div class="min-w-0 flex-none">
+					@scope
+				</div>
+			}
+			<div class="hidden flex-1 md:block"></div>
+			<div id="live-indicator" class="flex flex-none items-center gap-2 text-xs text-sec" data-live-indicator>
+				@primitives.StatusDot(primitives.KindOK, true)
+				<span data-live-label>Live ·</span>
+				<span id="live-clock" class="font-mono tabular-nums" sse-swap="tick" hx-swap="innerHTML">{ appShellSnapshotClock(data) }</span>
+			</div>
+			<div class="flex w-fit overflow-hidden rounded-card border border-line" role="group" aria-label="Density">
+				<button type="button" class={ appDensityButtonClass(data, "compact") } data-density-choice="compact" aria-pressed={ appDensityPressed(data, "compact") }>Compact</button>
+				<button type="button" class={ appDensityButtonClass(data, "cozy") } data-density-choice="cozy" aria-pressed={ appDensityPressed(data, "cozy") }>Cozy</button>
+			</div>
 		</div>
 	</header>
 }
@@ -347,6 +384,38 @@ templ appShellScript() {
 	<script>
 		(function () {
 			var detailSheetRefreshing = false;
+			function setMobileTopbar(open) {
+				var controls = document.querySelector("[data-mobile-topbar-controls]");
+				var toggle = document.querySelector("[data-mobile-topbar-toggle]");
+				if (!controls || !toggle) return;
+				var value = open ? "true" : "false";
+				controls.setAttribute("data-mobile-open", value);
+				toggle.setAttribute("aria-expanded", value);
+			}
+			function setMobileSidebar(open, restoreFocus) {
+				var sidebar = document.getElementById("app-sidebar");
+				var scrim = document.querySelector("[data-mobile-sidebar-scrim]");
+				var toggle = document.querySelector("[data-mobile-sidebar-toggle]");
+				if (!sidebar || !scrim || !toggle) return;
+				var wasOpen = sidebar.getAttribute("data-mobile-open") === "true";
+				var value = open ? "true" : "false";
+				if (open && sidebar.dataset.desktopRail === undefined) {
+					sidebar.dataset.desktopRail = sidebar.getAttribute("data-rail") || "false";
+					sidebar.setAttribute("data-rail", "false");
+				} else if (!open && sidebar.dataset.desktopRail !== undefined) {
+					sidebar.setAttribute("data-rail", sidebar.dataset.desktopRail);
+					delete sidebar.dataset.desktopRail;
+				}
+				sidebar.setAttribute("data-mobile-open", value);
+				scrim.setAttribute("data-mobile-open", value);
+				toggle.setAttribute("aria-expanded", value);
+				if (open) {
+					var firstLink = sidebar.querySelector("a");
+					if (firstLink) firstLink.focus();
+				} else if (restoreFocus && wasOpen) {
+					toggle.focus();
+				}
+			}
 			function closeDetailSheet() {
 				var host = document.getElementById("detail-sheet-host");
 				if (host) {
@@ -381,6 +450,8 @@ templ appShellScript() {
 			});
 			document.addEventListener("keydown", function (event) {
 				if (event.key === "Escape") {
+					setMobileTopbar(false);
+					setMobileSidebar(false, true);
 					closeDetailSheet();
 					return;
 				}
@@ -396,6 +467,29 @@ templ appShellScript() {
 					closeDetailSheet();
 					return;
 				}
+				var mobileToggle = event.target.closest("[data-mobile-sidebar-toggle]");
+				if (mobileToggle) {
+					setMobileTopbar(false);
+					setMobileSidebar(true, false);
+					return;
+				}
+				if (event.target.closest("[data-mobile-sidebar-scrim]")) {
+					setMobileSidebar(false, true);
+					return;
+				}
+				if (event.target.closest("#app-sidebar a") && window.matchMedia("(max-width: 767px)").matches) {
+					setMobileSidebar(false, false);
+					return;
+				}
+				var topbarToggle = event.target.closest("[data-mobile-topbar-toggle]");
+				if (topbarToggle) {
+					var controls = document.querySelector("[data-mobile-topbar-controls]");
+					setMobileSidebar(false, false);
+					setMobileTopbar(controls && controls.getAttribute("data-mobile-open") !== "true");
+					return;
+				}
+				var topbarControls = event.target.closest("[data-mobile-topbar-controls]");
+				if (!topbarControls) setMobileTopbar(false);
 				var toggle = event.target.closest("[data-sidebar-toggle]");
 				if (toggle) {
 					var sidebar = document.getElementById("app-sidebar");

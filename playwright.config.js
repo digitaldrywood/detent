@@ -45,5 +45,14 @@ module.exports = defineConfig({
     {
       name: "chromium",
     },
+    {
+      name: "mobile-chromium",
+      testMatch: /mobile\.spec\.js/,
+      use: {
+        viewport: { width: 390, height: 844 },
+        isMobile: true,
+        hasTouch: true,
+      },
+    },
   ],
 });
