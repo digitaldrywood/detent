@@ -153,8 +153,8 @@ func TestRunningBoardCardAndDetailSheetRenderRuntimeIdentity(t *testing.T) {
 	if running.RuntimeSummary != "Codex · openai · gpt-5.6-sol · xhigh" {
 		t.Fatalf("RuntimeSummary = %q", running.RuntimeSummary)
 	}
-	if running.MetaRight != "gpt-5.6-sol · xhigh" {
-		t.Fatalf("MetaRight = %q", running.MetaRight)
+	if running.RuntimeCardSummary != "gpt-5.6-sol · xhigh" {
+		t.Fatalf("RuntimeCardSummary = %q", running.RuntimeCardSummary)
 	}
 
 	cardHTML := renderBoardComponent(t, boardCardView2(running))
