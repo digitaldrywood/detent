@@ -445,6 +445,18 @@ func TestDoctorReviewFlowPhraseMatches(t *testing.T) {
 			want:    1,
 		},
 		{
+			name:    "affirmative enter review instruction wrapped across lines",
+			text:    "When done, move the issue to\nHuman Review.",
+			phrases: doctorReviewFlowEnterReviewPhrases("Human Review"),
+			want:    1,
+		},
+		{
+			name:    "conditional enter review instruction",
+			text:    "Do not move the issue to Human Review until validation passes.",
+			phrases: doctorReviewFlowEnterReviewPhrases("Human Review"),
+			want:    1,
+		},
+		{
 			name:    "do not enter review instruction",
 			text:    "Do NOT move the issue to Human Review.",
 			phrases: doctorReviewFlowEnterReviewPhrases("Human Review"),
