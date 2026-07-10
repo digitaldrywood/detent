@@ -211,7 +211,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	if err != nil {
 		return err
 	}
-	globalDispatchGate := scheduler.NewGlobalDispatchGate(globalScheduler)
+	globalDispatchGate := scheduler.NewGlobalDispatchGate(globalScheduler, globalProjectCandidates(cfg.Global.Projects)...)
 	runtimeGitHubToken := newRuntimeGitHubTokenState(runtimeGlobalGitHubToken(cfg.Runtime.GitHubToken))
 	globalConfigState := newGlobalConfigState(cfg.Global)
 	refreshGitHubToken := runtimeGitHubTokenRefresher(globalConfigState, runtimeGitHubToken)
@@ -293,6 +293,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}
 
 	onGlobalReload := func(reloaded globalconfig.Config) {
+		globalDispatchGate.SetProjects(globalProjectCandidates(reloaded.Projects))
 		globalConfigState.set(reloaded)
 		republishLatestSnapshot(snapshotHub, logger)
 	}
@@ -369,6 +370,19 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 			return serve(ctx, server, listener)
 		})
 	})
+}
+
+func globalProjectCandidates(projects []globalconfig.Project) []scheduler.ProjectCandidate {
+	candidates := make([]scheduler.ProjectCandidate, 0, len(projects))
+	for _, project := range projects {
+		candidates = append(candidates, scheduler.ProjectCandidate{
+			ID:       project.ID,
+			Weight:   project.Weight,
+			Priority: project.Priority,
+			Paused:   project.Paused,
+		})
+	}
+	return candidates
 }
 
 func startOnboarding(ctx context.Context, cfg BootConfig) error {

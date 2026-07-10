@@ -49,6 +49,8 @@ func (o *Orchestrator) tickManual(ctx context.Context, state *State, request man
 }
 
 func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now time.Time, manual *manualRefreshRequest) {
+	o.beginGlobalProjectCycle()
+	defer o.endGlobalProjectCycle()
 	state.tickTransitions = &issueStateSnapshotTransitions{}
 	defer func() {
 		state.tickTransitions = nil

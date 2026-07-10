@@ -68,7 +68,8 @@ func normalizeWorkerHosts(hosts []string) []string {
 }
 
 func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
-	o.markGlobalProjectIdle()
+	o.beginGlobalProjectCycle()
+	defer o.endGlobalProjectCycle()
 	if state.Draining {
 		return
 	}
@@ -139,7 +140,8 @@ func (o *Orchestrator) hydrateDispatchIssue(ctx context.Context, issue connector
 }
 
 func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
-	o.markGlobalProjectIdle()
+	o.beginGlobalProjectCycle()
+	defer o.endGlobalProjectCycle()
 	if state.Draining {
 		return
 	}
@@ -447,6 +449,25 @@ func (o *Orchestrator) markGlobalProjectIdle() {
 		return
 	}
 	o.globalDispatchGate.MarkIdle(o.cfg.Project.ID)
+}
+
+type projectCycleDispatchGate interface {
+	BeginProjectCycle(scheduler.ProjectCandidate)
+	EndProjectCycle(string)
+}
+
+func (o *Orchestrator) beginGlobalProjectCycle() {
+	if gate, ok := o.globalDispatchGate.(projectCycleDispatchGate); ok {
+		gate.BeginProjectCycle(o.cfg.Project)
+		return
+	}
+	o.markGlobalProjectIdle()
+}
+
+func (o *Orchestrator) endGlobalProjectCycle() {
+	if gate, ok := o.globalDispatchGate.(projectCycleDispatchGate); ok {
+		gate.EndProjectCycle(o.cfg.Project.ID)
+	}
 }
 
 type projectStateSlotStats struct {

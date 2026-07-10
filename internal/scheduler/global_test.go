@@ -78,7 +78,7 @@ func TestStrictPriorityReportsPreemption(t *testing.T) {
 	global := newGlobalScheduler(t, scheduler.Config{Kind: "strict", Capacity: 1})
 	request := scheduler.ProjectSelectionRequest{
 		Projects: []scheduler.ProjectCandidate{
-			{ID: "urgent", Priority: 1},
+			{ID: "urgent", Priority: 0},
 		},
 		Running: []scheduler.RunningProject{
 			{ProjectID: "background", Priority: 4},

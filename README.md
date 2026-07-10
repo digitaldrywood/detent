@@ -1972,8 +1972,7 @@ projects:
 
 Project weights are relative scheduling weights. Higher weights receive a
 larger dispatch share in weighted and fair-share scheduling modes. Project
-priority is a rank: `1` is highest, `4` is lowest, and `0` or an omitted value
-means no explicit priority.
+priority is a rank: `0` is highest and `4` is lowest.
 
 Set optional `projects[].color` to an opaque CSS hex color in `#RGB` or
 `#RRGGBB` form when a project needs a fixed visual marker. The sidebar,
