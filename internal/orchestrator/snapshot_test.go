@@ -43,6 +43,37 @@ func TestStateSnapshotEmpty(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotPreservesMappedTrackerPriority(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 22, 0, 0, 0, time.UTC)
+	priority := 1
+	state := newState(normalizeConfig(Config{}))
+	state.BoardIssues = []connector.Issue{
+		{
+			ID:           "mapped-priority",
+			Identifier:   "digitaldrywood/detent#1128",
+			State:        "Todo",
+			Priority:     &priority,
+			PriorityName: "P0",
+		},
+		{
+			ID:           "unmapped-priority",
+			Identifier:   "digitaldrywood/detent#1129",
+			State:        "Todo",
+			PriorityName: "No priority",
+		},
+	}
+
+	snapshot := state.Snapshot(now)
+	if got := snapshot.BoardIssues[0]; got.Priority == nil || *got.Priority != 1 || got.PriorityName != "P0" {
+		t.Fatalf("mapped priority = %#v/%q, want 1/P0", got.Priority, got.PriorityName)
+	}
+	if got := snapshot.BoardIssues[1]; got.Priority != nil || got.PriorityName != "" {
+		t.Fatalf("unmapped priority = %#v/%q, want nil/empty", got.Priority, got.PriorityName)
+	}
+}
+
 func TestStateSnapshotUsesActiveThenMostRecentPersistedRuntimeIdentity(t *testing.T) {
 	t.Parallel()
 

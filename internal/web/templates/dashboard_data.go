@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -99,6 +100,7 @@ type KanbanData struct {
 	States                      []string
 	TerminalStates              []string
 	TerminalStatesByProject     map[string][]string
+	DispatchPriorityByLabel     []string
 	AllowedTransitions          map[string][]string
 	ShowBlockedAlerts           bool
 	SupportsPullRequestComments bool
@@ -114,6 +116,7 @@ type KanbanProjectData struct {
 	ProjectID                   string
 	States                      []string
 	TerminalStates              []string
+	DispatchPriorityByLabel     []string
 	AllowedTransitions          map[string][]string
 	SupportsPullRequestComments bool
 	CanMoveCards                bool
@@ -547,6 +550,10 @@ type projectKanbanCard struct {
 	MergeLaneClass        string
 	Stage                 string
 	StageAt               time.Time
+	PriorityRank          int
+	PriorityName          string
+	DispatchPriorityLabel string
+	DispatchPriorityRank  int
 	Labels                []string
 	Assignees             []string
 	Comments              []telemetry.IssueComment
@@ -2149,6 +2156,15 @@ func projectKanbanCardsByState(data DashboardData) map[string][]projectKanbanCar
 	for key := range cardsByState {
 		cards := cardsByState[key]
 		sort.SliceStable(cards, func(i, j int) bool {
+			if leftRank, rightRank := projectKanbanCardPriorityRank(cards[i]), projectKanbanCardPriorityRank(cards[j]); leftRank != rightRank {
+				return leftRank < rightRank
+			}
+			if leftMatched, rightMatched := cards[i].DispatchPriorityRank > 0, cards[j].DispatchPriorityRank > 0; leftMatched != rightMatched {
+				return leftMatched
+			}
+			if cards[i].DispatchPriorityRank != cards[j].DispatchPriorityRank {
+				return cards[i].DispatchPriorityRank < cards[j].DispatchPriorityRank
+			}
 			left := cards[i].StageAt
 			right := cards[j].StageAt
 			if left.IsZero() || right.IsZero() {
@@ -2162,6 +2178,57 @@ func projectKanbanCardsByState(data DashboardData) map[string][]projectKanbanCar
 		cardsByState[key] = cards
 	}
 	return cardsByState
+}
+
+func projectKanbanCardPriorityRank(card projectKanbanCard) int {
+	if card.PriorityRank < 1 || card.PriorityRank >= dispatchpriority.UnmappedPriorityRank {
+		return dispatchpriority.UnmappedPriorityRank
+	}
+	return card.PriorityRank
+}
+
+func projectKanbanPriorityRank(priority *int) int {
+	rank := dispatchpriority.Priority(priority)
+	if rank == dispatchpriority.UnmappedPriorityRank {
+		return 0
+	}
+	return rank
+}
+
+func projectKanbanDispatchPriority(data DashboardData, projectID string, labels []string) (string, int) {
+	ranker := dispatchpriority.New(nil, projectKanbanDispatchPriorityLabels(data, projectID))
+	match, ok := ranker.MatchLabel(labels)
+	if !ok {
+		return "", 0
+	}
+	return match.Label, match.Rank + 1
+}
+
+func projectKanbanDispatchPriorityLabels(data DashboardData, projectID string) []string {
+	if isProjectDashboard(data) {
+		return data.Kanban.DispatchPriorityByLabel
+	}
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(data.Snapshot.Project.ID)
+	}
+	if projectID != "" {
+		if projectData, ok := data.Kanban.Projects[projectID]; ok {
+			return projectData.DispatchPriorityByLabel
+		}
+		for configuredProjectID, projectData := range data.Kanban.Projects {
+			if strings.EqualFold(strings.TrimSpace(configuredProjectID), projectID) {
+				return projectData.DispatchPriorityByLabel
+			}
+		}
+		return data.Kanban.DispatchPriorityByLabel
+	}
+	if len(data.Kanban.Projects) == 1 {
+		for _, projectData := range data.Kanban.Projects {
+			return projectData.DispatchPriorityByLabel
+		}
+	}
+	return data.Kanban.DispatchPriorityByLabel
 }
 
 func projectKanbanIssues(snapshot telemetry.Snapshot, configuredStates []string) []projectKanbanIssueCard {
@@ -2336,6 +2403,7 @@ func projectKanbanCardKanbanData(data DashboardData, card projectKanbanCard) Kan
 		ProjectID:                   projectID,
 		States:                      projectData.States,
 		TerminalStates:              projectData.TerminalStates,
+		DispatchPriorityByLabel:     projectData.DispatchPriorityByLabel,
 		AllowedTransitions:          projectData.AllowedTransitions,
 		SupportsPullRequestComments: projectData.SupportsPullRequestComments,
 		CanMoveCards:                projectData.CanMoveCards,
@@ -2694,6 +2762,8 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		AttentionDetail:       projectKanbanAttentionDetail(issue),
 		Stage:                 chartText(state, "n/a"),
 		StageAt:               stageAt.UTC(),
+		PriorityRank:          projectKanbanPriorityRank(issue.Priority),
+		PriorityName:          strings.TrimSpace(issue.PriorityName),
 		Labels:                uniqueStrings(issue.Labels),
 		Assignees:             uniqueStrings(issue.Assignees),
 		Comments:              append([]telemetry.IssueComment(nil), issue.Comments...),
@@ -2719,6 +2789,7 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 	if !card.Movable && card.PRNumber > 0 {
 		card.DisabledText = "Cannot move PR-only card"
 	}
+	card.DispatchPriorityLabel, card.DispatchPriorityRank = projectKanbanDispatchPriority(data, card.ProjectID, card.Labels)
 	return card
 }
 

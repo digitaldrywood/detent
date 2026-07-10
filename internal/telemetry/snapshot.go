@@ -200,6 +200,8 @@ type Issue struct {
 	URL                   string                 `json:"url,omitempty"`
 	Title                 string                 `json:"title,omitempty"`
 	Description           string                 `json:"description,omitempty"`
+	Priority              *int                   `json:"priority,omitempty"`
+	PriorityName          string                 `json:"priority_name,omitempty"`
 	State                 string                 `json:"state,omitempty"`
 	Labels                []string               `json:"labels,omitempty"`
 	Assignees             []string               `json:"assignees,omitempty"`

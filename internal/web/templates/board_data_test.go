@@ -134,6 +134,172 @@ func TestBoardViewLanes(t *testing.T) {
 	}
 }
 
+func TestBoardViewSortsCardsBySchedulerPriorityInputs(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 20, 0, 0, 0, time.UTC)
+	oldest := now.Add(-5 * time.Hour)
+	older := now.Add(-4 * time.Hour)
+	middle := now.Add(-3 * time.Hour)
+	newer := now.Add(-2 * time.Hour)
+	newest := now.Add(-time.Hour)
+	data := DashboardData{
+		ProjectID: "detent",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			BoardIssues: []telemetry.Issue{
+				{ID: "plain", Identifier: "digitaldrywood/detent#1", ProjectID: "detent", Title: "Old unprioritized", State: "Todo", StageUpdatedAt: &oldest},
+				{ID: "bug", Identifier: "digitaldrywood/detent#2", ProjectID: "detent", Title: "Bug label", State: "Todo", Labels: []string{"bug"}, StageUpdatedAt: &older},
+				{ID: "hotfix", Identifier: "digitaldrywood/detent#3", ProjectID: "detent", Title: "Hotfix label", State: "Todo", Labels: []string{"hotfix"}, StageUpdatedAt: &middle},
+				{ID: "rank-three", Identifier: "digitaldrywood/detent#4", ProjectID: "detent", Title: "Mapped rank three", State: "Todo", Priority: boardPriorityPointer(3), PriorityName: "P2", StageUpdatedAt: &newer},
+				{ID: "rank-one", Identifier: "digitaldrywood/detent#5", ProjectID: "detent", Title: "Mapped rank one", State: "Todo", Priority: boardPriorityPointer(1), PriorityName: "P0", StageUpdatedAt: &newest},
+			},
+		},
+		Kanban: KanbanData{
+			ProjectID:               "detent",
+			States:                  []string{"Todo"},
+			DispatchPriorityByLabel: []string{"hotfix", "bug"},
+		},
+	}
+
+	view := boardViewFromDashboard(data)
+	if len(view.Lanes) != 1 {
+		t.Fatalf("lanes = %d, want 1", len(view.Lanes))
+	}
+	got := make([]string, 0, len(view.Lanes[0].Cards))
+	for _, card := range view.Lanes[0].Cards {
+		got = append(got, card.IssueID)
+	}
+	want := []string{"rank-one", "rank-three", "hotfix", "bug", "plain"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("card order = %#v, want %#v", got, want)
+	}
+}
+
+func TestBoardCardPriority(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		card       projectKanbanCard
+		wantBadge  string
+		wantDetail string
+		wantTop    bool
+	}{
+		{
+			name:       "top tracker priority",
+			card:       projectKanbanCard{PriorityRank: 1, PriorityName: "P0"},
+			wantBadge:  "P0",
+			wantDetail: "Tracker priority P0 maps to dispatch rank 1.",
+			wantTop:    true,
+		},
+		{
+			name:       "top dispatch label",
+			card:       projectKanbanCard{DispatchPriorityLabel: "hotfix", DispatchPriorityRank: 1},
+			wantBadge:  "hotfix",
+			wantDetail: "Label hotfix is configured at dispatch label rank 1.",
+			wantTop:    true,
+		},
+		{
+			name:       "tracker priority precedes top label",
+			card:       projectKanbanCard{PriorityRank: 4, PriorityName: "P3", DispatchPriorityLabel: "hotfix", DispatchPriorityRank: 1},
+			wantBadge:  "P3",
+			wantDetail: "Tracker priority P3 maps to dispatch rank 4. Label hotfix is configured at dispatch label rank 1.",
+		},
+		{
+			name: "unprioritized",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			badge, title, detail, top := boardCardPriority(tt.card)
+			if badge != tt.wantBadge || detail != tt.wantDetail || top != tt.wantTop {
+				t.Fatalf("boardCardPriority() = %q/%q/%t, want %q/%q/%t", badge, detail, top, tt.wantBadge, tt.wantDetail, tt.wantTop)
+			}
+			if badge == "" && title != "" {
+				t.Fatalf("title = %q without priority badge", title)
+			}
+			if badge != "" && title != "Dispatch priority" {
+				t.Fatalf("title = %q, want Dispatch priority", title)
+			}
+		})
+	}
+}
+
+func TestBoardViewUsesPerProjectDispatchLabelConfig(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 20, 0, 0, 0, time.UTC)
+	older := now.Add(-2 * time.Hour)
+	newer := now.Add(-time.Hour)
+	data := DashboardData{
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			BoardIssues: []telemetry.Issue{
+				{ID: "docs-hotfix", Identifier: "digitaldrywood/docs#1", ProjectID: "docs", Title: "Unconfigured label", State: "Todo", Labels: []string{"hotfix"}, StageUpdatedAt: &older},
+				{ID: "detent-hotfix", Identifier: "digitaldrywood/detent#2", ProjectID: "detent", Title: "Configured label", State: "Todo", Labels: []string{"hotfix"}, StageUpdatedAt: &newer},
+			},
+		},
+		Kanban: KanbanData{
+			States: []string{"Todo"},
+			Projects: map[string]KanbanProjectData{
+				"detent": {ProjectID: "detent", DispatchPriorityByLabel: []string{"hotfix"}},
+				"docs":   {ProjectID: "docs"},
+			},
+		},
+	}
+
+	view := boardViewFromDashboard(data)
+	cards := view.Lanes[0].Cards
+	if len(cards) != 2 {
+		t.Fatalf("cards = %d, want 2", len(cards))
+	}
+	if cards[0].IssueID != "detent-hotfix" || cards[0].PriorityBadge != "hotfix" {
+		t.Fatalf("first card = %#v, want configured detent hotfix", cards[0])
+	}
+	if cards[1].IssueID != "docs-hotfix" || cards[1].PriorityBadge != "" {
+		t.Fatalf("second card = %#v, want unprioritized docs card", cards[1])
+	}
+}
+
+func TestBoardViewUsesTopLevelDispatchLabelConfigForLegacyHomeBoard(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 20, 0, 0, 0, time.UTC)
+	older := now.Add(-2 * time.Hour)
+	newer := now.Add(-time.Hour)
+	data := DashboardData{
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Project:     telemetry.Project{ID: "detent"},
+			BoardIssues: []telemetry.Issue{
+				{ID: "plain", Identifier: "digitaldrywood/detent#1", ProjectID: "detent", Title: "Older plain issue", State: "Todo", StageUpdatedAt: &older},
+				{ID: "hotfix", Identifier: "digitaldrywood/detent#2", ProjectID: "detent", Title: "Newer hotfix", State: "Todo", Labels: []string{"hotfix"}, StageUpdatedAt: &newer},
+			},
+		},
+		Kanban: KanbanData{
+			States:                  []string{"Todo"},
+			DispatchPriorityByLabel: []string{"hotfix"},
+		},
+	}
+
+	view := boardViewFromDashboard(data)
+	cards := view.Lanes[0].Cards
+	if len(cards) != 2 {
+		t.Fatalf("cards = %d, want 2", len(cards))
+	}
+	if cards[0].IssueID != "hotfix" || cards[0].PriorityBadge != "hotfix" {
+		t.Fatalf("first card = %#v, want prioritized legacy home-board hotfix", cards[0])
+	}
+}
+
+func boardPriorityPointer(value int) *int {
+	return &value
+}
+
 func TestRunningBoardCardAndDetailSheetRenderRuntimeIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -1065,6 +1231,65 @@ func TestBoardSnapshotRenders(t *testing.T) {
 	}
 	if strings.Contains(html, "#0B0D10") || strings.Contains(html, "#14171C") {
 		t.Fatalf("board snapshot must not contain raw hex colors")
+	}
+}
+
+func TestBoardSnapshotRendersMorphSafePriorityBadge(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	data.ProjectID = "detent"
+	data.Kanban.ProjectID = "detent"
+	data.Snapshot.BoardIssues[0].ProjectID = "detent"
+	data.Snapshot.BoardIssues[0].Priority = boardPriorityPointer(1)
+	data.Snapshot.BoardIssues[0].PriorityName = "P0"
+	html := renderBoardComponent(t, BoardSnapshot(data))
+
+	for _, want := range []string{
+		`id="card-gopherguides-gopher-ai-176-priority"`,
+		`data-board-priority`,
+		`data-board-priority-top="true"`,
+		`data-help-scope="dispatch-priority"`,
+		`data-help-title="Dispatch priority"`,
+		`data-help-description="Tracker priority P0 maps to dispatch rank 1."`,
+		`border-l-4`,
+		`P0`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("priority board snapshot missing %q:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, `id="help-tooltip"`) {
+		t.Fatalf("priority tooltip host rendered inside morph target:\n%s", html)
+	}
+
+	page := renderBoardComponent(t, BoardPage(data))
+	if strings.Count(page, `id="help-tooltip"`) != 1 {
+		t.Fatalf("board page tooltip hosts = %d, want 1", strings.Count(page, `id="help-tooltip"`))
+	}
+	if !strings.Contains(page, `document.addEventListener("htmx:afterSettle"`) {
+		t.Fatalf("board page missing help tooltip settle reassertion")
+	}
+	if !strings.Contains(page, `hx-swap="morph:innerHTML"`) {
+		t.Fatalf("board page missing morph snapshot swap")
+	}
+}
+
+func TestBoardSnapshotWithoutPriorityConfigKeepsCardRendering(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	view := boardViewFromDashboard(data)
+	card := view.Lanes[1].Cards[0]
+	if card.PriorityBadge != "" || card.PriorityDetail != "" || card.PriorityTop {
+		t.Fatalf("unconfigured priority = %#v, want empty", card)
+	}
+	if got := boardCardClass(card); got != "flex flex-none flex-col gap-1.5 rounded-card border border-line bg-elev p-3" {
+		t.Fatalf("boardCardClass() = %q, want unchanged default", got)
+	}
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	if strings.Contains(html, `data-board-priority`) {
+		t.Fatalf("unconfigured board rendered priority metadata:\n%s", html)
 	}
 }
 

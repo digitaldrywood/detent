@@ -331,8 +331,9 @@ func mergeIssueTrackerFields(current, refreshed connector.Issue) connector.Issue
 	if refreshed.Description != "" {
 		merged.Description = refreshed.Description
 	}
-	if refreshed.Priority != nil {
+	if refreshed.Priority != nil || strings.TrimSpace(refreshed.PriorityName) != "" {
 		merged.Priority = refreshed.Priority
+		merged.PriorityName = strings.TrimSpace(refreshed.PriorityName)
 	}
 	if refreshed.State != "" {
 		merged.State = refreshed.State

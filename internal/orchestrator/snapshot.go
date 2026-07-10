@@ -476,6 +476,8 @@ func telemetryIssue(issue connector.Issue, quietDuration time.Duration, pollInte
 		URL:                   issue.URL,
 		Title:                 issue.Title,
 		Description:           issue.Description,
+		Priority:              cloneIntPointer(issue.Priority),
+		PriorityName:          telemetryIssuePriorityName(issue),
 		State:                 issue.State,
 		Labels:                append([]string(nil), issue.Labels...),
 		Assignees:             append([]string(nil), issue.Assignees...),
@@ -490,6 +492,13 @@ func telemetryIssue(issue connector.Issue, quietDuration time.Duration, pollInte
 		CurrentLaneEnteredAt:  timePointerFromPtr(laneEnteredAt),
 		CurrentLaneAgeSeconds: telemetryIssueLaneAgeSeconds(laneEnteredAt, now),
 	}
+}
+
+func telemetryIssuePriorityName(issue connector.Issue) string {
+	if issue.Priority == nil {
+		return ""
+	}
+	return strings.TrimSpace(issue.PriorityName)
 }
 
 func telemetryDeliverable(deliverable *connector.Deliverable) *telemetry.Deliverable {

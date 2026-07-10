@@ -15,6 +15,7 @@ type Issue struct {
 	Title            string            `json:"title,omitempty" yaml:"title,omitempty"`
 	Description      string            `json:"description,omitempty" yaml:"description,omitempty"`
 	Priority         *int              `json:"priority,omitempty" yaml:"priority,omitempty"`
+	PriorityName     string            `json:"priority_name,omitempty" yaml:"priority_name,omitempty"`
 	State            string            `json:"state,omitempty" yaml:"state,omitempty"`
 	BranchName       string            `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
 	URL              string            `json:"url,omitempty" yaml:"url,omitempty"`

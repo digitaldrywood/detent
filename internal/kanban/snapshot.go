@@ -100,6 +100,10 @@ func CloneIssueSlices(snapshot telemetry.Snapshot) telemetry.Snapshot {
 
 func CloneIssue(issue telemetry.Issue) telemetry.Issue {
 	out := issue
+	if issue.Priority != nil {
+		priority := *issue.Priority
+		out.Priority = &priority
+	}
 	out.Labels = append([]string(nil), issue.Labels...)
 	out.Assignees = append([]string(nil), issue.Assignees...)
 	out.Comments = cloneIssueComments(issue.Comments)

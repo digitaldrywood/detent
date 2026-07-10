@@ -136,6 +136,7 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 		Identifier:       "digitaldrywood/detent#26",
 		Title:            "GitHub adapter",
 		Priority:         &priority,
+		PriorityName:     "P0",
 		State:            "Todo",
 		URL:              "https://github.com/digitaldrywood/detent/issues/26",
 		Closed:           true,
@@ -3138,6 +3139,9 @@ func TestConnectorFetchIssueStatesByIDsUsesProjectStatusAndRequestOrder(t *testi
 	}
 	if got[1].Priority == nil || *got[1].Priority != 2 {
 		t.Fatalf("second Priority = %v, want 2", got[1].Priority)
+	}
+	if got[1].PriorityName != "P1" {
+		t.Fatalf("second PriorityName = %q, want P1", got[1].PriorityName)
 	}
 }
 

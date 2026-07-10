@@ -6664,6 +6664,50 @@ func TestServerEventsPreserveProjectKanbanVisibilityMetadata(t *testing.T) {
 	}
 }
 
+func TestProjectKanbanRendersConfiguredDispatchPriorityLabel(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeReadOnly,
+	}, deps.Connector, "hotfix", "bug")
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 9, 20, 0, 0, 0, time.UTC),
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:         "hotfix",
+				Identifier: "digitaldrywood/detent#1128",
+				ProjectID:  "detent",
+				Title:      "Prioritized incident fix",
+				State:      "Todo",
+				Labels:     []string{"hotfix"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
+	for _, want := range []string{
+		`id="card-digitaldrywood-detent-1128-priority"`,
+		`data-board-priority`,
+		`data-board-priority-top="true"`,
+		`data-help-description="Label hotfix is configured at dispatch label rank 1."`,
+		`>hotfix</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("project Kanban missing configured priority marker %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -10461,7 +10505,7 @@ func (c *kanbanActionConnector) maxActiveMoves() int {
 	return c.maxMoves
 }
 
-func mustSetKanbanProject(t *testing.T, registry *project.Registry, id string, kanban workflowconfig.Kanban, actionConnector connector.Connector) {
+func mustSetKanbanProject(t *testing.T, registry *project.Registry, id string, kanban workflowconfig.Kanban, actionConnector connector.Connector, dispatchPriorityByLabel ...string) {
 	t.Helper()
 
 	workflowCfg := workflowconfig.Default()
@@ -10472,6 +10516,7 @@ func mustSetKanbanProject(t *testing.T, registry *project.Registry, id string, k
 	workflowCfg.Tracker.StateMap = workflowconfig.MapValue(map[string]any{
 		"Human Review": "In Review",
 	})
+	workflowCfg.Agent.DispatchPriorityByLabel = append([]string(nil), dispatchPriorityByLabel...)
 	workflowCfg.Server.Kanban = kanban
 
 	trackedProject, err := project.New(project.Config{
