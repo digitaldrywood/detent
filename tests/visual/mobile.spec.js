@@ -23,10 +23,7 @@ const routes = [
 let runtime;
 
 test.beforeAll(async () => {
-  runtime = await startDetentRuntime("mobile-shell", [
-    "--demo",
-    "screenshots",
-  ]);
+  runtime = await startDetentRuntime("mobile-shell", ["--demo", "screenshots"]);
 });
 
 test.afterAll(async () => {
@@ -82,9 +79,9 @@ for (const route of routes) {
 }
 
 test("drawer closes with Escape and a navigation tap", async ({ page }) => {
-  await page.context().addCookies([
-    { name: "sidebar_state", value: "false", url: runtime.url },
-  ]);
+  await page
+    .context()
+    .addCookies([{ name: "sidebar_state", value: "false", url: runtime.url }]);
   await page.setExtraHTTPHeaders({
     "X-Detent-Demo-Scenario": "fleet-kanban-multiproject",
   });
@@ -95,7 +92,9 @@ test("drawer closes with Escape and a navigation tap", async ({ page }) => {
   await toggle.click();
   const sidebarBox = await sidebar.boundingBox();
   expect(sidebarBox?.width).toBe(208);
-  await expect(sidebar.locator("[data-sidebar-nav-label]").first()).toBeVisible();
+  await expect(
+    sidebar.locator("[data-sidebar-nav-label]").first(),
+  ).toBeVisible();
   await expect(
     sidebar.getByRole("button", { name: "Toggle sidebar" }),
   ).toBeHidden();
@@ -103,11 +102,14 @@ test("drawer closes with Escape and a navigation tap", async ({ page }) => {
   await expect(sidebar).toBeHidden();
 
   await toggle.click();
-  await page.locator("#app-sidebar a").first().evaluate((link) => {
-    link.addEventListener("click", (event) => event.preventDefault(), {
-      once: true,
+  await page
+    .locator("#app-sidebar a")
+    .first()
+    .evaluate((link) => {
+      link.addEventListener("click", (event) => event.preventDefault(), {
+        once: true,
+      });
     });
-  });
   await page.locator("#app-sidebar a").first().click();
   await expect(sidebar).toBeHidden();
 });
@@ -122,7 +124,8 @@ test("shared figures use a compact mobile grid", async ({ page }) => {
   await expect(figures).toBeVisible();
   await expect(figures).toHaveCSS("display", "grid");
   const columns = await figures.evaluate(
-    (element) => getComputedStyle(element).gridTemplateColumns.split(" ").length,
+    (element) =>
+      getComputedStyle(element).gridTemplateColumns.split(" ").length,
   );
   expect(columns).toBe(3);
 });
@@ -190,7 +193,177 @@ test("reports charts and analytics log stay usable on mobile", async ({
   ).toHaveCSS("white-space", "normal");
   await expectNoHorizontalScroll(page);
 });
+for (const board of [
+  { name: "global board", path: "/", scenario: "fleet-kanban-multiproject" },
+  {
+    name: "project kanban",
+    path: "/projects/detent/kanban",
+    scenario: "kanban-full-integration",
+  },
+]) {
+  test(`${board.name} uses full-width swipe lanes`, async ({ page }) => {
+    await page.setExtraHTTPHeaders({
+      "X-Detent-Demo-Scenario": board.scenario,
+    });
+    await page.goto(`${runtime.url}${board.path}`, {
+      waitUntil: "domcontentloaded",
+    });
 
+    const lanes = page.locator("#board-lanes");
+    const visibleLanes = lanes.locator(
+      '[data-board-lane][data-lane-hidden="false"]',
+    );
+    const indicator = page.locator("[data-board-lane-position]");
+    await expect(lanes).toBeVisible();
+    await expect(indicator).toBeVisible();
+
+    const layout = await lanes.evaluate((root) => {
+      const style = getComputedStyle(root);
+      const visible = Array.from(
+        root.querySelectorAll('[data-board-lane][data-lane-hidden="false"]'),
+      );
+      const first = visible[0];
+      const second = visible[1];
+      const card = first?.querySelector("article");
+      const rootRect = root.getBoundingClientRect();
+      return {
+        snapType: style.scrollSnapType,
+        contentWidth:
+          root.clientWidth -
+          Number.parseFloat(style.paddingLeft) -
+          Number.parseFloat(style.paddingRight),
+        laneWidth: first?.getBoundingClientRect().width || 0,
+        cardFits:
+          !card ||
+          card.getBoundingClientRect().right <=
+            first.getBoundingClientRect().right + 1,
+        nextLaneOutsideViewport:
+          !second || second.getBoundingClientRect().left >= rootRect.right - 1,
+        visibleCount: visible.length,
+      };
+    });
+    expect(layout.snapType).toContain("x mandatory");
+    expect(layout.visibleCount).toBeGreaterThan(1);
+    expect(
+      Math.abs(layout.laneWidth - layout.contentWidth),
+    ).toBeLessThanOrEqual(1);
+    expect(layout.cardFits).toBe(true);
+    expect(layout.nextLaneOutsideViewport).toBe(true);
+    await expectNoHorizontalScroll(page);
+
+    const firstPosition = await indicator.getAttribute("aria-label");
+    expect(firstPosition).toBe(`Lane 1 of ${layout.visibleCount}`);
+    const secondLane = visibleLanes.nth(1);
+    const secondLaneID = await secondLane.getAttribute("data-board-lane");
+    await secondLane.evaluate((lane) =>
+      lane.scrollIntoView({
+        behavior: "instant",
+        block: "nearest",
+        inline: "start",
+      }),
+    );
+    await expect(indicator).toHaveAttribute(
+      "aria-label",
+      `Lane 2 of ${layout.visibleCount}`,
+    );
+    expect(await lanes.evaluate((root) => root.scrollLeft)).toBeGreaterThan(0);
+
+    const picker = page.locator("#board-lane-picker");
+    const pickerSummary = picker.locator("summary");
+    const summaryBox = await pickerSummary.boundingBox();
+    expect(summaryBox?.height).toBeGreaterThanOrEqual(44);
+    await pickerSummary.click();
+    await expect(picker).toHaveAttribute("open", "");
+    const pickerPanel = picker.locator(":scope > div");
+    const panelBox = await pickerPanel.boundingBox();
+    expect(panelBox?.x).toBeGreaterThanOrEqual(0);
+    expect((panelBox?.x || 0) + (panelBox?.width || 0)).toBeLessThanOrEqual(
+      390,
+    );
+
+    const hideLaneID = await visibleLanes.evaluateAll(
+      (laneNodes, activeID) =>
+        laneNodes
+          .map((lane) => lane.getAttribute("data-board-lane"))
+          .reverse()
+          .find((laneID) => laneID && laneID !== activeID),
+      secondLaneID,
+    );
+    const visibility = page.locator(
+      `[data-board-lane-visibility="${hideLaneID}"]`,
+    );
+    const visibilityBox = await visibility.boundingBox();
+    expect(visibilityBox?.height).toBeGreaterThanOrEqual(44);
+    await visibility.selectOption("hide");
+    await expect(
+      page.locator(`[data-board-lane="${hideLaneID}"]`),
+    ).toBeHidden();
+    await expect(indicator).toHaveAttribute(
+      "aria-label",
+      `Lane 2 of ${layout.visibleCount - 1}`,
+    );
+
+    const persisted = await lanes.evaluate((root, laneID) => {
+      const key = `detent.ui.board.lanes.v2.${root.dataset.boardKey}`;
+      return JSON.parse(localStorage.getItem(key) || "{}").hide?.includes(
+        laneID,
+      );
+    }, hideLaneID);
+    expect(persisted).toBe(true);
+
+    const beforeMorph = await lanes.evaluate((root) => ({
+      left: root.scrollLeft,
+      html: document.querySelector("#snapshot")?.innerHTML || "",
+    }));
+    await page.evaluate(
+      (incomingSnapshot) =>
+        new Promise((resolve) => {
+          document.addEventListener(
+            "htmx:afterSettle",
+            () => requestAnimationFrame(() => requestAnimationFrame(resolve)),
+            { once: true },
+          );
+          const target = document.querySelector("#snapshot");
+          const event = new CustomEvent("htmx:sseBeforeMessage", {
+            bubbles: true,
+            cancelable: true,
+            detail: { elt: target, data: incomingSnapshot },
+          });
+          target.dispatchEvent(event);
+          if (!event.defaultPrevented) {
+            window.htmx.swap(
+              target,
+              incomingSnapshot,
+              { swapStyle: target.getAttribute("hx-swap") || "innerHTML" },
+              { contextElement: target },
+            );
+          }
+        }),
+      beforeMorph.html,
+    );
+    expect(
+      Math.abs(
+        (await lanes.evaluate((root) => root.scrollLeft)) - beforeMorph.left,
+      ),
+    ).toBeLessThanOrEqual(1);
+    await expect(
+      page.locator(`[data-board-lane="${hideLaneID}"]`),
+    ).toBeHidden();
+    await expect(indicator).toHaveAttribute(
+      "aria-label",
+      `Lane 2 of ${layout.visibleCount - 1}`,
+    );
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(
+      page.locator(`[data-board-lane="${hideLaneID}"]`),
+    ).toBeHidden();
+    await expect(
+      page.locator(`[data-board-lane-visibility="${hideLaneID}"]`),
+    ).toHaveValue("hide");
+    await expectNoHorizontalScroll(page);
+  });
+}
 async function expectNoHorizontalScroll(page) {
   const dimensions = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
