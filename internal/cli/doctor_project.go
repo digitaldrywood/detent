@@ -13,8 +13,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentoverride"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/skills"
 )
 
@@ -573,8 +575,15 @@ func doctorCatalogModelName(model runnerpkg.AgentModel, fallback string) string 
 
 func checkDoctorIssueAgentModels(ctx context.Context, id string, project globalconfig.Project, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {
 	name := "Project " + id + " issue agent models"
-	backend, ok := doctorDefaultCodexBackend(cfg)
-	if !ok {
+	backends := doctorWorkflowBackendConfigsByID(cfg)
+	hasCodexBackend := false
+	for _, backend := range backends {
+		if strings.TrimSpace(backend.Kind) == workflowconfig.AgentBackendCodex {
+			hasCodexBackend = true
+			break
+		}
+	}
+	if !hasCodexBackend {
 		return doctorCheck{Name: name, Status: doctorOK, Detail: "detent-agent override validation skipped because no Codex backend is configured"}
 	}
 	if deps.autoPromoteConnector == nil {
@@ -587,12 +596,20 @@ func checkDoctorIssueAgentModels(ctx context.Context, id string, project globalc
 	if projectConnector == nil {
 		return doctorCheck{Name: name, Status: doctorFail, Detail: "create issue override diagnostic connector: connector is nil", Hint: "Fix tracker configuration and rerun detent doctor."}
 	}
+	selectorContext := selector.Context{Persona: cfg.Tracker.Assignee}
+	if identifier, ok := projectConnector.(connector.InstanceIdentifier); ok {
+		selectorContext.InstanceLogin = identifier.InstanceLogin()
+	}
 
 	states := append(append([]string(nil), cfg.Tracker.ActiveStates...), cfg.Tracker.ObservedStates...)
 	issues, fetchErr := projectConnector.FetchIssuesByStates(ctx, states)
 	closeErr := closeDoctorAutoPromoteConnector(projectConnector)
 	if fetchErr != nil {
 		return doctorCheck{Name: name, Status: doctorFail, Detail: fmt.Sprintf("fetch issue agent overrides: %v", fetchErr), Hint: "Fix tracker connectivity and rerun detent doctor."}
+	}
+	router, err := doctorIssueAgentRouter(cfg)
+	if err != nil {
+		return doctorCheck{Name: name, Status: doctorFail, Detail: fmt.Sprintf("create issue agent override router: %v", err), Hint: "Fix agent route configuration and rerun detent doctor."}
 	}
 
 	if deps.modelProbe == nil {
@@ -609,7 +626,6 @@ func checkDoctorIssueAgentModels(ctx context.Context, id string, project globalc
 	probedModels := 0
 	probedEfforts := 0
 	failures := []string{}
-	defaultModel := doctorWorkflowWorkerModelChoice(cfg).Model
 	for _, issue := range issues {
 		override, found, err := agentoverride.FromIssueBody(issue.Description)
 		if !found {
@@ -626,9 +642,19 @@ func checkDoctorIssueAgentModels(ctx context.Context, id string, project globalc
 		if override.Model == "" && override.Effort == "" {
 			continue
 		}
+		selection, err := router.Route(issue, selectorContext)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("issue %s detent-agent route selection failed: %v", identifier, err))
+			continue
+		}
+		backend, ok := backends[strings.TrimSpace(selection.BackendID)]
+		if !ok {
+			failures = append(failures, fmt.Sprintf("issue %s detent-agent route %s references unavailable backend %s", identifier, selection.RouteName, selection.BackendID))
+			continue
+		}
 		model := override.Model
 		if model == "" {
-			model = defaultModel
+			model = selection.Model
 		}
 		if override.Model != "" {
 			probedModels++
@@ -675,23 +701,21 @@ func checkDoctorIssueAgentModels(ctx context.Context, id string, project globalc
 	return check
 }
 
-func doctorDefaultCodexBackend(cfg workflowconfig.Config) (workflowconfig.AgentBackend, bool) {
-	backends := doctorWorkflowBackendConfigsByID(cfg)
-	for _, route := range cfg.AgentRouteConfigs() {
-		if !route.Default || (strings.TrimSpace(route.Role) != "" && !strings.EqualFold(strings.TrimSpace(route.Role), runnerpkg.RoleCode)) {
-			continue
-		}
-		backend, ok := backends[strings.TrimSpace(route.Backend)]
-		if ok && backend.Kind == workflowconfig.AgentBackendCodex {
-			return backend, true
-		}
+func doctorIssueAgentRouter(cfg workflowconfig.Config) (*runnerpkg.Router, error) {
+	routes := cfg.AgentRouteConfigs()
+	doctorRoutes := make([]runnerpkg.Route, 0, len(routes))
+	for _, route := range routes {
+		doctorRoutes = append(doctorRoutes, runnerpkg.Route{
+			Name:       route.Name,
+			Role:       route.Role,
+			BackendID:  route.Backend,
+			Model:      route.Model,
+			ModelField: route.ModelField,
+			Default:    route.Default,
+			Selector:   route.Selector,
+		})
 	}
-	for _, backend := range cfg.AgentBackendConfigs() {
-		if backend.Kind == workflowconfig.AgentBackendCodex {
-			return backend, true
-		}
-	}
-	return workflowconfig.AgentBackend{}, false
+	return runnerpkg.NewRouter(doctorRoutes)
 }
 
 func doctorProjectID(project globalconfig.Project) string {

@@ -424,11 +424,13 @@ func TestCheckDoctorIssueAgentModels(t *testing.T) {
 		name         string
 		issue        connector.Issue
 		defaultModel string
+		configure    func(*workflowconfig.Config)
 		wantStatus   doctorStatus
 		wantDetail   []string
 		wantHint     string
 		wantModel    string
 		wantEffort   string
+		wantBackend  string
 		wantProbes   int
 	}{
 		{
@@ -466,6 +468,38 @@ func TestCheckDoctorIssueAgentModels(t *testing.T) {
 			wantProbes:   1,
 		},
 		{
+			name: "effort uses issue routed model and backend",
+			issue: connector.Issue{
+				ID:          "issue-routed",
+				Identifier:  "digitaldrywood/detent#8",
+				Description: "```detent-agent\nschema: 1\neffort: medium\n```",
+				Labels:      []string{"tier:routed"},
+			},
+			configure: func(cfg *workflowconfig.Config) {
+				cfg.Agents.Backends = []workflowconfig.AgentBackend{
+					doctorCodexAgentBackend("codex-default"),
+					doctorCodexAgentBackend("codex-routed"),
+				}
+				cfg.Agents.Routes = []workflowconfig.AgentRoute{
+					{
+						Name:    "routed",
+						Backend: "codex-routed",
+						Model:   "gpt-5.5",
+						Selector: selector.Selector{
+							Labels: selector.Labels{Include: []string{"tier:routed"}},
+						},
+					},
+					{Name: "default", Backend: "codex-default", Model: "gpt-default", Default: true},
+				}
+			},
+			wantStatus:  doctorOK,
+			wantDetail:  []string{"validated 0 detent-agent model override(s)", "1 effort override(s)"},
+			wantModel:   "gpt-5.5",
+			wantEffort:  "medium",
+			wantBackend: "codex-routed",
+			wantProbes:  1,
+		},
+		{
 			name:         "unsupported effort names issue and supported efforts",
 			issue:        connector.Issue{ID: "issue-5", Identifier: "digitaldrywood/detent#5", Description: "```detent-agent\nschema: 1\neffort: bogus\n```"},
 			defaultModel: "gpt-default",
@@ -498,6 +532,9 @@ func TestCheckDoctorIssueAgentModels(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := validDoctorWorkflow(t.TempDir())
+			if tt.configure != nil {
+				tt.configure(&cfg)
+			}
 			if tt.defaultModel != "" {
 				cfg.Agents.Routes = []workflowconfig.AgentRoute{{
 					Name:    "default",
@@ -513,8 +550,15 @@ func TestCheckDoctorIssueAgentModels(t *testing.T) {
 				},
 				modelProbe: func(_ context.Context, req doctorRouteModelProbeRequest) error {
 					probes++
+					wantBackend := tt.wantBackend
+					if wantBackend == "" {
+						wantBackend = workflowconfig.DefaultAgentBackendID
+					}
 					if req.Model != tt.wantModel || req.Effort != tt.wantEffort {
 						t.Fatalf("probe model/effort = %q/%q, want %q/%q", req.Model, req.Effort, tt.wantModel, tt.wantEffort)
+					}
+					if req.Backend.ID != wantBackend {
+						t.Fatalf("probe backend = %q, want %q", req.Backend.ID, wantBackend)
 					}
 					if err := validateDoctorModelCatalog(models, req.Model); err != nil {
 						return err
