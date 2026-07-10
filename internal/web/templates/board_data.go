@@ -65,7 +65,7 @@ type boardLaneVisibilityPayload struct {
 }
 
 // boardCardView keeps cards uniform: an 11px mono meta row, a two-line
-// title, and AT MOST one extra signal (chip, status line, or none).
+// title, a runtime badge for active work, and at most one operational signal.
 type boardCardView struct {
 	DomID              string
 	Identity           string
@@ -413,19 +413,19 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		view.AgeFooterTitle = strings.TrimSpace(card.TimeInStageTitle)
 	}
 	view.ExtraKind, view.ExtraText, view.ExtraChip = boardCardExtra(card, view)
-	if view.Running && !view.ExtraChip && view.ExtraKind == primitives.KindOK && view.ExtraText == "agent working" {
+	if view.Running {
 		view.RuntimeBadge = true
 		view.RuntimeSummary = runtimeIdentitySummary(card.RuntimeIdentity)
 		view.RuntimeCompactText = runtimeIdentityBadgeSummary(card.RuntimeIdentity, false)
 		view.RuntimeCozyText = runtimeIdentityBadgeSummary(card.RuntimeIdentity, true)
 		if view.RuntimeCompactText == "" {
-			view.RuntimeCompactText = view.ExtraText
+			view.RuntimeCompactText = "agent working"
 		}
 		if view.RuntimeCozyText == "" {
-			view.RuntimeCozyText = view.ExtraText
+			view.RuntimeCozyText = "agent working"
 		}
-		threadID, detentSessionID := boardRuntimeSessionIDs(data.Snapshot, card)
-		view.RuntimeDetail = runtimeIdentityFlyoutDetail(card.RuntimeIdentity, threadID, detentSessionID)
+		providerSessionID, detentSessionID := boardRuntimeSessionIDs(data.Snapshot, card)
+		view.RuntimeDetail = runtimeIdentityFlyoutDetail(card.RuntimeIdentity, providerSessionID, detentSessionID)
 	}
 	view.PriorityBadge, view.PriorityTitle, view.PriorityDetail, view.PriorityTop = boardCardPriority(card)
 	return view

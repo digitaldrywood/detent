@@ -351,7 +351,7 @@ test("board runtime identity stays accessible across snapshot morphs", async ({
       container.innerHTML = snapshot.innerHTML;
       const fallback = container.querySelector(`#${runtimeBadgeID}`);
       const resolved = container.querySelector(
-        '[data-board-runtime-badge][data-help-description*="Thread: thread-demo-core-5260"]',
+        '[data-board-runtime-badge][data-help-description*="Provider session: thread-demo-core-5260"]',
       );
       const replacement = resolved.cloneNode(true);
       replacement.id = runtimeBadgeID;
@@ -380,13 +380,13 @@ test("board runtime identity stays accessible across snapshot morphs", async ({
     hasText: "Implement page-addressable screenshot scenarios",
   });
   const badge = card.locator(
-    '[data-board-runtime-badge][data-help-description*="Thread: thread-demo-core-5260"]',
+    '[data-board-runtime-badge][data-help-description*="Provider session: thread-demo-core-5260"]',
   );
   const compactIdentity = badge.locator('[data-runtime-density="compact"]');
   const cozyIdentity = badge.locator('[data-runtime-density="cozy"]');
   await expect(badge).toHaveAttribute(
     "data-help-description",
-    "Provider: openai · Thread: thread-demo-core-5260 · Role: code · Session: 5260",
+    "Provider: openai · Provider session: thread-demo-core-5260 · Role: code · Detent session: 5260",
   );
   await expect(compactIdentity).toBeVisible();
   await expect(compactIdentity).toHaveText("gpt-5.6-sol · xhigh");
@@ -403,9 +403,11 @@ test("board runtime identity stays accessible across snapshot morphs", async ({
   const tooltip = page.locator("body > #help-tooltip");
   await expect(tooltip).toBeVisible();
   await expect(tooltip).toContainText("Provider: openai");
-  await expect(tooltip).toContainText("Thread: thread-demo-core-5260");
+  await expect(tooltip).toContainText(
+    "Provider session: thread-demo-core-5260",
+  );
   await expect(tooltip).toContainText("Role: code");
-  await expect(tooltip).toContainText("Session: 5260");
+  await expect(tooltip).toContainText("Detent session: 5260");
   await page.evaluate(() =>
     document.documentElement.setAttribute("data-theme", "light"),
   );

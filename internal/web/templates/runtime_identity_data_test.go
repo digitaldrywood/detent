@@ -86,19 +86,19 @@ func TestRuntimeIdentityFlyoutDetail(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		identity        agentidentity.Identity
-		threadID        string
-		detentSessionID int64
-		want            string
+		name              string
+		identity          agentidentity.Identity
+		providerSessionID string
+		detentSessionID   int64
+		want              string
 	}{
 		{
 			name: "all long-tail fields",
 			identity: agentidentity.Configured("codex-high", "codex", "high", "code", "gpt-5.5", "", "", "", time.Time{}).
 				Merge(agentidentity.RuntimeUpdate("gpt-5.6-sol", "openai", "xhigh", "priority", time.Time{})),
-			threadID:        "thread-demo-core-5260",
-			detentSessionID: 5260,
-			want:            "Provider: openai · Thread: thread-demo-core-5260 · Role: code · Session: 5260",
+			providerSessionID: "thread-demo-core-5260",
+			detentSessionID:   5260,
+			want:              "Provider: openai · Provider session: thread-demo-core-5260 · Role: code · Detent session: 5260",
 		},
 		{
 			name:     "summary fallback",
@@ -112,7 +112,7 @@ func TestRuntimeIdentityFlyoutDetail(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := runtimeIdentityFlyoutDetail(tt.identity, tt.threadID, tt.detentSessionID); got != tt.want {
+			if got := runtimeIdentityFlyoutDetail(tt.identity, tt.providerSessionID, tt.detentSessionID); got != tt.want {
 				t.Fatalf("runtimeIdentityFlyoutDetail() = %q, want %q", got, tt.want)
 			}
 		})

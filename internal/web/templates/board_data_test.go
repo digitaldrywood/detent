@@ -348,7 +348,7 @@ func TestRunningBoardCardAndDetailSheetRenderRuntimeIdentity(t *testing.T) {
 	if running.RuntimeCozyText != "Codex · gpt-5.6-sol · xhigh" {
 		t.Fatalf("RuntimeCozyText = %q", running.RuntimeCozyText)
 	}
-	if running.RuntimeDetail != "Provider: openai · Thread: thread-185 · Role: code · Session: 185" {
+	if running.RuntimeDetail != "Provider: openai · Provider session: thread-185 · Role: code · Detent session: 185" {
 		t.Fatalf("RuntimeDetail = %q", running.RuntimeDetail)
 	}
 
@@ -358,7 +358,7 @@ func TestRunningBoardCardAndDetailSheetRenderRuntimeIdentity(t *testing.T) {
 		`data-board-runtime-badge`,
 		`data-help-trigger`,
 		`data-help-scope="runtime-identity"`,
-		`data-help-description="Provider: openai · Thread: thread-185 · Role: code · Session: 185"`,
+		`data-help-description="Provider: openai · Provider session: thread-185 · Role: code · Detent session: 185"`,
 		`data-runtime-density="compact"`,
 		`>gpt-5.6-sol · xhigh<`,
 		`data-runtime-density="cozy"`,
@@ -395,6 +395,63 @@ func TestRunningBoardCardAndDetailSheetRenderRuntimeIdentity(t *testing.T) {
 		if !strings.Contains(sheetHTML, want) {
 			t.Fatalf("detail sheet missing %q:\n%s", want, sheetHTML)
 		}
+	}
+}
+
+func TestRunningBoardCardKeepsRuntimeBadgeWithOperationalStatus(t *testing.T) {
+	t.Parallel()
+
+	resolvedIdentity := agentidentity.Configured("codex-high", "codex", "high", "code", "gpt-5.5", "", "", "", time.Time{}).
+		Merge(agentidentity.RuntimeUpdate("gpt-5.6-sol", "openai", "xhigh", "priority", time.Time{}))
+	tests := []struct {
+		name     string
+		identity agentidentity.Identity
+		want     string
+	}{
+		{name: "resolved identity", identity: resolvedIdentity, want: "gpt-5.6-sol · xhigh"},
+		{name: "telemetry lag", identity: agentidentity.Identity{}, want: "agent working"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			card := projectKanbanCard{
+				Identifier:      "digitaldrywood/detent#1134",
+				IssueID:         "issue-1134",
+				IssueNumber:     "#1134",
+				ProjectID:       "detent",
+				Title:           "Inline runtime identity",
+				Stage:           "In Progress",
+				WaitDetail:      "Awaiting tool result",
+				RuntimeIdentity: tt.identity,
+			}
+			view := boardCardViewFromCard(
+				DashboardData{},
+				projectKanbanLane{Title: "In Progress"},
+				card,
+				false,
+				"fleet",
+				"",
+			)
+			if !view.RuntimeBadge || view.RuntimeCompactText != tt.want {
+				t.Fatalf("runtime badge = %#v", view)
+			}
+			if view.ExtraText != "Awaiting tool result" {
+				t.Fatalf("ExtraText = %q", view.ExtraText)
+			}
+
+			html := renderBoardComponent(t, boardCardView2(view))
+			for _, want := range []string{
+				`data-board-runtime-badge`,
+				`>` + tt.want + `<`,
+				`Awaiting tool result`,
+			} {
+				if !strings.Contains(html, want) {
+					t.Fatalf("running card missing %q:\n%s", want, html)
+				}
+			}
+		})
 	}
 }
 

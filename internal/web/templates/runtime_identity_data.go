@@ -67,20 +67,20 @@ func middleTruncate(value string, maxRunes int) string {
 	return string(runes[:front]) + "…" + string(runes[len(runes)-back:])
 }
 
-func runtimeIdentityFlyoutDetail(identity agentidentity.Identity, threadID string, detentSessionID int64) string {
+func runtimeIdentityFlyoutDetail(identity agentidentity.Identity, providerSessionID string, detentSessionID int64) string {
 	identity = identity.Normalize()
 	parts := make([]string, 0, 4)
 	if identity.Provider.Known() {
 		parts = append(parts, "Provider: "+identity.Provider.Value)
 	}
-	if threadID = strings.TrimSpace(threadID); threadID != "" {
-		parts = append(parts, "Thread: "+threadID)
+	if providerSessionID = strings.TrimSpace(providerSessionID); providerSessionID != "" {
+		parts = append(parts, "Provider session: "+providerSessionID)
 	}
 	if identity.Role != "" {
 		parts = append(parts, "Role: "+identity.Role)
 	}
 	if detentSessionID > 0 {
-		parts = append(parts, "Session: "+strconv.FormatInt(detentSessionID, 10))
+		parts = append(parts, "Detent session: "+strconv.FormatInt(detentSessionID, 10))
 	}
 	detail := strings.Join(parts, " · ")
 	if detail == "" {

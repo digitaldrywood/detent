@@ -181,13 +181,14 @@ templ boardCardView2(card boardCardView) {
 			}
 		</div>
 		<div class={ boardCardTitleClass(card) }>{ card.Title }</div>
-		if card.ExtraText != "" {
+		if card.RuntimeBadge {
+			@boardRuntimeBadge(card)
+		}
+		if card.ExtraText != "" && (!card.RuntimeBadge || card.ExtraText != "agent working") {
 			if card.ExtraChip {
 				<div class="flex">
 					@primitives.Chip(card.ExtraKind, card.ExtraText)
 				</div>
-			} else if card.RuntimeBadge {
-				@boardRuntimeBadge(card)
 			} else {
 				<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.ExtraKind) }>
 					@primitives.StatusDot(card.ExtraKind, false)
