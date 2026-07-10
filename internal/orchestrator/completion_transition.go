@@ -56,7 +56,7 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			continue
 		}
 
-		if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "completed_active_review_transition"); err != nil {
+		if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "completed_active_review_transition"); err != nil {
 			if o.logger != nil {
 				o.logger.Warn(
 					"completed issue review transition failed",
@@ -122,7 +122,7 @@ func (o *Orchestrator) transitionActiveArtifactGateWaitIssuesToReview(
 			continue
 		}
 
-		if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "artifact_gate_wait_review_reconciliation"); err != nil {
+		if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "artifact_gate_wait_review_reconciliation"); err != nil {
 			if o.logger != nil {
 				o.logger.Warn(
 					"artifact gate wait review reconciliation failed",
@@ -322,7 +322,7 @@ func (o *Orchestrator) transitionTimedOutCompletedActiveGateWait(
 		return false
 	}
 	targetState := cfg.SourceState
-	if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "auto_promote_gate_wait_timeout"); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "auto_promote_gate_wait_timeout"); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"completed issue gate wait timeout transition failed",

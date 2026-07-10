@@ -121,8 +121,8 @@ func TestTickReconcilesClosedCompletedIssueStatusesFromExistingPolls(t *testing.
 	if len(state.epicTransitionWatch) != 0 {
 		t.Fatalf("epicTransitionWatch = %#v, want reconciled issues filtered", state.epicTransitionWatch)
 	}
-	if len(state.Pipeline) != 0 {
-		t.Fatalf("Pipeline = %#v, want reconciled issues filtered", state.Pipeline)
+	if len(state.Pipeline) != 1 || state.Pipeline[0].ID != review.ID || state.Pipeline[0].State != "Done" {
+		t.Fatalf("Pipeline = %#v, want reconciled issue immediately visible as Done", state.Pipeline)
 	}
 }
 

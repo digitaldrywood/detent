@@ -349,7 +349,7 @@ func (o *Orchestrator) blockNoProgressLimit(
 	if issueID == "" {
 		return false
 	}
-	if err := o.updateIssueStateByID(ctx, issueID, issue, blockedStatusState, blockedAt, noProgressLimitReason); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, issue, blockedStatusState, blockedAt, noProgressLimitReason); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"no progress limit state transition failed",

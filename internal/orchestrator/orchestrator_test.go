@@ -2093,6 +2093,10 @@ func TestRequestRefreshPreservesBoardAfterObservedStateFailure(t *testing.T) {
 	if firstRefreshAt == nil {
 		t.Fatal("first snapshot Refresh.LastRefreshAt = nil")
 	}
+	want := map[string]string{}
+	for _, issue := range first.Snapshot(time.Now()).BoardIssues {
+		want[issue.ID] = issue.State
+	}
 	tracker.setFetchByStatesError(statusErr)
 
 	refresh, err := orch.RequestRefresh(context.Background())
@@ -2117,10 +2121,6 @@ func TestRequestRefreshPreservesBoardAfterObservedStateFailure(t *testing.T) {
 	got := map[string]string{}
 	for _, issue := range snapshot.BoardIssues {
 		got[issue.ID] = issue.State
-	}
-	want := map[string]string{
-		candidate.ID: candidate.State,
-		observed.ID:  observed.State,
 	}
 	if !maps.Equal(got, want) {
 		t.Fatalf("snapshot BoardIssues = %#v, want preserved board %#v", got, want)

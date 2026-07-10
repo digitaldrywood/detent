@@ -49,29 +49,37 @@ type workflowLaneActionSignatureMetadata struct {
 	Signature string `json:"signature,omitempty"`
 }
 
+type issueStateSnapshotTransitions struct {
+	boardIssues []connector.Issue
+	pipeline    []connector.Issue
+}
+
 func (o *Orchestrator) updateIssueState(
 	ctx context.Context,
+	state *State,
 	issue connector.Issue,
 	targetState string,
 	at time.Time,
 	reason string,
 ) error {
-	return o.updateIssueStateByID(ctx, issue.ID, issue, targetState, at, reason)
+	return o.updateIssueStateByID(ctx, state, issue.ID, issue, targetState, at, reason)
 }
 
 func (o *Orchestrator) updateIssueStateByID(
 	ctx context.Context,
+	state *State,
 	issueID string,
 	issue connector.Issue,
 	targetState string,
 	at time.Time,
 	reason string,
 ) error {
-	return o.updateIssueStateByIDWithMetadata(ctx, issueID, issue, targetState, at, reason, workflowLaneMetadata{})
+	return o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, at, reason, workflowLaneMetadata{})
 }
 
 func (o *Orchestrator) updateIssueStateByIDWithMetadata(
 	ctx context.Context,
+	state *State,
 	issueID string,
 	issue connector.Issue,
 	targetState string,
@@ -88,11 +96,106 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadata(
 		}
 		return err
 	}
+	updateIssueStateSnapshots(state, issueID, issue, targetState, at)
 	if strings.TrimSpace(issue.ID) == "" {
 		issue.ID = issueID
 	}
 	o.recordLaneTransition(ctx, issue, targetState, at, reason, metadata)
 	return nil
+}
+
+func updateIssueStateSnapshots(state *State, issueID string, issue connector.Issue, targetState string, at time.Time) {
+	if state == nil {
+		return
+	}
+	issueID = strings.TrimSpace(issueID)
+	targetState = strings.TrimSpace(targetState)
+	if issueID == "" || targetState == "" {
+		return
+	}
+
+	transitioned := cloneIssue(issue)
+	if strings.TrimSpace(transitioned.ID) == "" {
+		transitioned.ID = issueID
+	}
+	applyIssueStateSnapshot(&transitioned, targetState, at)
+
+	update := func(issues []connector.Issue) (connector.Issue, bool) {
+		for index := range issues {
+			if strings.TrimSpace(issues[index].ID) != issueID {
+				continue
+			}
+			applyIssueStateSnapshot(&issues[index], targetState, at)
+			return cloneIssue(issues[index]), true
+		}
+		return connector.Issue{}, false
+	}
+	boardTransition := transitioned
+	if updated, ok := update(state.BoardIssues); ok {
+		boardTransition = updated
+	}
+	if state.tickTransitions != nil {
+		state.tickTransitions.boardIssues = upsertIssueStateSnapshot(
+			state.tickTransitions.boardIssues,
+			boardTransition,
+		)
+	}
+	if updated, ok := update(state.Pipeline); ok && state.tickTransitions != nil {
+		state.tickTransitions.pipeline = upsertIssueStateSnapshot(
+			state.tickTransitions.pipeline,
+			updated,
+		)
+	}
+}
+
+func applyIssueStateSnapshot(issue *connector.Issue, targetState string, at time.Time) {
+	if issue == nil {
+		return
+	}
+	stateChanged := normalizeState(issue.State) != normalizeState(targetState)
+	issue.State = targetState
+	if stateChanged && !at.IsZero() {
+		stageUpdatedAt := at.UTC()
+		issue.StageUpdatedAt = &stageUpdatedAt
+	}
+}
+
+func upsertIssueStateSnapshot(issues []connector.Issue, issue connector.Issue) []connector.Issue {
+	issueID := strings.TrimSpace(issue.ID)
+	if issueID == "" {
+		return issues
+	}
+	for index := range issues {
+		if strings.TrimSpace(issues[index].ID) == issueID {
+			issues[index] = cloneIssue(issue)
+			return issues
+		}
+	}
+	return append(issues, cloneIssue(issue))
+}
+
+func overlayIssueStateSnapshots(issues []connector.Issue, transitions []connector.Issue) []connector.Issue {
+	out := cloneIssues(issues)
+	for _, transition := range transitions {
+		issueID := strings.TrimSpace(transition.ID)
+		if issueID == "" {
+			continue
+		}
+		found := false
+		for index := range out {
+			if strings.TrimSpace(out[index].ID) != issueID {
+				continue
+			}
+			out[index].State = transition.State
+			out[index].StageUpdatedAt = timePointerFromPtr(transition.StageUpdatedAt)
+			found = true
+			break
+		}
+		if !found {
+			out = append(out, cloneIssue(transition))
+		}
+	}
+	return out
 }
 
 func (o *Orchestrator) recordLaneTransition(

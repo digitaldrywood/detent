@@ -49,6 +49,10 @@ func (o *Orchestrator) tickManual(ctx context.Context, state *State, request man
 }
 
 func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now time.Time, manual *manualRefreshRequest) {
+	state.tickTransitions = &issueStateSnapshotTransitions{}
+	defer func() {
+		state.tickTransitions = nil
+	}()
 	if manual != nil {
 		startManualRefresh(state, *manual, now)
 	}
@@ -165,9 +169,13 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	)
 	o.dispatchTickIssues(ctx, state, fetched, transitions, previous, completedEpics, now)
 	if refreshSucceeded(state) {
-		state.BoardIssues = boardIssuesFromFetched(fetched)
+		state.BoardIssues = overlayIssueStateSnapshots(
+			boardIssuesFromFetched(fetched),
+			state.tickTransitions.boardIssues,
+		)
 		o.markRefreshSucceeded(state, now)
 	}
+	state.Pipeline = overlayIssueStateSnapshots(state.Pipeline, state.tickTransitions.pipeline)
 	completed = true
 }
 
@@ -587,6 +595,7 @@ func (o *Orchestrator) resolveCompletedEpics(
 	previousTransitions = mergeIssueSlices(previousTransitions, previous.blockedStatusIssues)
 	completedEpics, failedParentLookups := o.closeCompletedEpicsForTerminalTransitions(
 		ctx,
+		state,
 		transitions.issues,
 		previousTransitions,
 		previous.lastRefreshAt,

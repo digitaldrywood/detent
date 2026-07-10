@@ -172,7 +172,7 @@ func (o *Orchestrator) reconcileClosedCompletedIssueStatuses(ctx context.Context
 		if !closedCompletedIssueNeedsStatusReconciliation(issue, o.cfg.TerminalStates) {
 			continue
 		}
-		if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "closed_completed_status_reconciled"); err != nil {
+		if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "closed_completed_status_reconciled"); err != nil {
 			if o.logger != nil {
 				o.logger.Warn("reconcile closed completed issue status failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
 			}

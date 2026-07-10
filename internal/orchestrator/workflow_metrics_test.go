@@ -2,6 +2,8 @@ package orchestrator
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -9,12 +11,138 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
+func TestTickPreservesOrchestratorTransitionSnapshot(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 1, 0, 0, 0, time.UTC)
+	issue := connector.Issue{
+		ID:           "issue-closed",
+		Identifier:   "digitaldrywood/detent#1131",
+		State:        "Human Review",
+		Closed:       true,
+		ClosedReason: "completed",
+	}
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:      []string{"Blocked", "Done"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	tracker := &workflowMetricsConnector{stateIssues: []connector.Issue{cloneIssue(issue)}}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.BoardIssues = []connector.Issue{cloneIssue(issue)}
+	state.Pipeline = []connector.Issue{cloneIssue(issue)}
+
+	orch.tick(context.Background(), &state, now)
+
+	snapshot := state.Snapshot(now.Add(time.Second))
+	if len(snapshot.BoardIssues) != 1 {
+		t.Fatalf("snapshot BoardIssues len = %d, want 1", len(snapshot.BoardIssues))
+	}
+	if got := snapshot.BoardIssues[0].State; got != "Done" {
+		t.Fatalf("snapshot BoardIssues state = %q, want Done", got)
+	}
+	if len(snapshot.Pipeline) != 1 {
+		t.Fatalf("snapshot Pipeline len = %d, want 1", len(snapshot.Pipeline))
+	}
+	if got := snapshot.Pipeline[0].State; got != "Done" {
+		t.Fatalf("snapshot Pipeline state = %q, want Done", got)
+	}
+
+	external := cloneIssue(issue)
+	external.Closed = false
+	external.ClosedReason = ""
+	tracker.stateIssues = []connector.Issue{external}
+	orch.tick(context.Background(), &state, now.Add(time.Minute))
+
+	snapshot = state.Snapshot(now.Add(time.Minute + time.Second))
+	if len(snapshot.BoardIssues) != 1 || snapshot.BoardIssues[0].State != "Human Review" {
+		t.Fatalf("snapshot BoardIssues = %#v, want external Human Review state", snapshot.BoardIssues)
+	}
+	if len(snapshot.Pipeline) != 1 || snapshot.Pipeline[0].State != "Human Review" {
+		t.Fatalf("snapshot Pipeline = %#v, want external Human Review state", snapshot.Pipeline)
+	}
+}
+
+func TestApplyAutoPromoteDecisionUpdatesSnapshotBeforePoll(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		trackerName string
+	}{
+		{name: "label", trackerName: "github_label"},
+		{name: "ProjectV2", trackerName: "github_project_v2"},
+		{name: "issue field", trackerName: "github_issue_field"},
+		{name: "local", trackerName: "local"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			transitionAt := time.Date(2026, 7, 10, 1, 0, 0, 0, time.UTC)
+			previousStageAt := transitionAt.Add(-5 * time.Minute)
+			issue := connector.Issue{
+				ID:             "issue-promote",
+				Identifier:     "digitaldrywood/detent#1131",
+				State:          "In Progress",
+				StageUpdatedAt: &previousStageAt,
+			}
+			tracker := &workflowMetricsConnector{name: tt.trackerName}
+			orch := &Orchestrator{connector: tracker}
+			state := newState(Config{})
+			state.BoardIssues = []connector.Issue{cloneIssue(issue)}
+			state.Pipeline = []connector.Issue{cloneIssue(issue)}
+
+			applied := orch.applyAutoPromoteDecision(
+				context.Background(),
+				&state,
+				issue,
+				AutoPromoteSummary{},
+				autoPromoteDecision(AutoPromoteActionPromote, AutoPromoteReasonReady),
+				"Merging",
+				transitionAt,
+			)
+			if !applied {
+				t.Fatal("applyAutoPromoteDecision() = false, want true")
+			}
+
+			snapshot := state.Snapshot(transitionAt.Add(time.Second))
+			if len(snapshot.BoardIssues) != 1 {
+				t.Fatalf("snapshot BoardIssues len = %d, want 1", len(snapshot.BoardIssues))
+			}
+			if got := snapshot.BoardIssues[0].State; got != "Merging" {
+				t.Fatalf("snapshot BoardIssues state = %q, want Merging", got)
+			}
+			if snapshot.BoardIssues[0].StageUpdatedAt == nil || !snapshot.BoardIssues[0].StageUpdatedAt.Equal(transitionAt) {
+				t.Fatalf("snapshot BoardIssues StageUpdatedAt = %v, want %v", snapshot.BoardIssues[0].StageUpdatedAt, transitionAt)
+			}
+			if len(snapshot.Pipeline) != 1 {
+				t.Fatalf("snapshot Pipeline len = %d, want 1", len(snapshot.Pipeline))
+			}
+			if got := snapshot.Pipeline[0].State; got != "Merging" {
+				t.Fatalf("snapshot Pipeline state = %q, want Merging", got)
+			}
+			if tracker.fetches != 0 {
+				t.Fatalf("tracker fetches = %d, want none", tracker.fetches)
+			}
+		})
+	}
+}
+
 func TestUpdateIssueStateByIDSkipsWorkflowMetricsForBlockedUpdate(t *testing.T) {
 	t.Parallel()
 
 	recorder := &workflowMetricsRecorderSpy{}
 	orch := &Orchestrator{
-		connector: workflowMetricsBlockedConnector{
+		connector: &workflowMetricsConnector{
 			err: &connector.StateUpdateBlockedError{
 				IssueID:      "issue-blocked",
 				CurrentState: "Done",
@@ -23,9 +151,12 @@ func TestUpdateIssueStateByIDSkipsWorkflowMetricsForBlockedUpdate(t *testing.T) 
 		},
 		workflowMetrics: recorder,
 	}
+	state := newState(Config{})
+	state.BoardIssues = []connector.Issue{{ID: "issue-blocked", State: "Done"}}
 
 	err := orch.updateIssueStateByID(
 		context.Background(),
+		&state,
 		"issue-blocked",
 		connector.Issue{
 			ID:         "issue-blocked",
@@ -42,6 +173,9 @@ func TestUpdateIssueStateByIDSkipsWorkflowMetricsForBlockedUpdate(t *testing.T) 
 	if len(recorder.events) != 0 {
 		t.Fatalf("workflow metric events = %#v, want none", recorder.events)
 	}
+	if got := state.BoardIssues[0].State; got != "Done" {
+		t.Fatalf("snapshot BoardIssues state = %q, want Done", got)
+	}
 }
 
 type workflowMetricsRecorderSpy struct {
@@ -53,38 +187,58 @@ func (r *workflowMetricsRecorderSpy) RecordWorkflowPhaseEvent(_ context.Context,
 	return int64(len(r.events)), nil
 }
 
-type workflowMetricsBlockedConnector struct {
-	err error
+type workflowMetricsConnector struct {
+	name        string
+	err         error
+	fetches     int
+	candidates  []connector.Issue
+	stateIssues []connector.Issue
 }
 
-func (c workflowMetricsBlockedConnector) Name() string {
-	return "workflow_metrics_blocked"
+func (c *workflowMetricsConnector) Name() string {
+	return c.name
 }
 
-func (c workflowMetricsBlockedConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+func (c *workflowMetricsConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	c.fetches++
+	return cloneIssues(c.candidates), nil
+}
+
+func (c *workflowMetricsConnector) FetchIssuesByStates(_ context.Context, states []string) ([]connector.Issue, error) {
+	c.fetches++
+	return issuesInStates(c.stateIssues, states), nil
+}
+
+func (c *workflowMetricsConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	c.fetches++
 	return nil, nil
 }
 
-func (c workflowMetricsBlockedConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
-	return nil, nil
-}
-
-func (c workflowMetricsBlockedConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
-	return nil, nil
-}
-
-func (c workflowMetricsBlockedConnector) CreateComment(context.Context, string, string) error {
+func (c *workflowMetricsConnector) CreateComment(context.Context, string, string) error {
 	return nil
 }
 
-func (c workflowMetricsBlockedConnector) UpdateIssueState(context.Context, string, string) error {
-	return c.err
-}
-
-func (c workflowMetricsBlockedConnector) SetAssignee(context.Context, string, string) error {
+func (c *workflowMetricsConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {
+	if c.err != nil {
+		return c.err
+	}
+	for index := range c.candidates {
+		if c.candidates[index].ID == issueID {
+			c.candidates[index].State = state
+		}
+	}
+	for index := range c.stateIssues {
+		if c.stateIssues[index].ID == issueID {
+			c.stateIssues[index].State = state
+		}
+	}
 	return nil
 }
 
-func (c workflowMetricsBlockedConnector) SetField(context.Context, string, string, string) error {
+func (c *workflowMetricsConnector) SetAssignee(context.Context, string, string) error {
+	return nil
+}
+
+func (c *workflowMetricsConnector) SetField(context.Context, string, string, string) error {
 	return nil
 }
