@@ -192,6 +192,8 @@ templ liveBehaviorScript() {
 			var servedVersion = document.documentElement.getAttribute("data-detent-served-version") || "";
 
 			function applyBuildVersion(event) {
+				var target = event.target instanceof Element ? event.target : null;
+				if (!target || target.id !== "detent-build-version") return;
 				var detail = event.detail || {};
 				var markup = typeof detail.data === "string" ? detail.data : "";
 				if (!markup) return;
@@ -200,7 +202,7 @@ templ liveBehaviorScript() {
 				var incoming = template.content.querySelector("[data-detent-build-version]");
 				if (!incoming) return;
 				var liveVersion = incoming.getAttribute("data-detent-build-version") || "";
-				var footer = document.getElementById("detent-build-version");
+				var footer = target;
 				if (footer) {
 					footer.textContent = liveVersion;
 					footer.setAttribute("title", liveVersion);

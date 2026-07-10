@@ -1123,6 +1123,10 @@ test("dashboard prompts reload only when the serving build changes", async ({
 
   const notice = page.locator("[data-detent-build-update]");
   const footer = page.locator("#detent-build-version");
+  await dispatchBuildVersion(page, "v98.0.0", "#live-clock");
+  await expect(notice).toBeHidden();
+  await expect(footer).toHaveText(servedVersion);
+
   await dispatchBuildVersion(page, servedVersion);
   await expect(notice).toBeHidden();
   await expect(footer).toHaveText(servedVersion);
@@ -1136,24 +1140,28 @@ test("dashboard prompts reload only when the serving build changes", async ({
   );
 });
 
-async function dispatchBuildVersion(page, version) {
-  await page.evaluate((liveVersion) => {
-    const source = document.querySelector("[sse-connect]");
+async function dispatchBuildVersion(
+  page,
+  version,
+  targetSelector = "#detent-build-version",
+) {
+  await page.evaluate(({ liveVersion, selector }) => {
+    const target = document.querySelector(selector);
     const footer = document.getElementById("detent-build-version");
-    if (!source || !footer) {
+    if (!target || !footer) {
       throw new Error("Build version SSE elements not found");
     }
     const incoming = footer.cloneNode(true);
     incoming.textContent = liveVersion;
     incoming.setAttribute("title", liveVersion);
     incoming.setAttribute("data-detent-build-version", liveVersion);
-    source.dispatchEvent(
+    target.dispatchEvent(
       new CustomEvent("htmx:sseBeforeMessage", {
         bubbles: true,
         detail: { elt: footer, data: incoming.outerHTML },
       }),
     );
-  }, version);
+  }, { liveVersion: version, selector: targetSelector });
 }
 
 test("reports page renders KPI figures and charts", async ({
