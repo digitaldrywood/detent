@@ -75,6 +75,7 @@ tracker:
     target_state: Todo
 polling:
   interval_ms: 60000
+  conditional: false
 workspace:
   root: ~/code/detent-workspaces
   auto_branch: false
@@ -245,6 +246,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Dependencies.Source != DependencySourceNativeOnly {
 		t.Fatalf("Dependencies.Source = %q, want %q", cfg.Dependencies.Source, DependencySourceNativeOnly)
+	}
+	if cfg.Polling.Conditional {
+		t.Fatal("Polling.Conditional = true, want explicit false")
 	}
 	if cfg.Tracker.GitHubGraphQLWarnRemaining != 750 {
 		t.Fatalf("Tracker.GitHubGraphQLWarnRemaining = %d, want 750", cfg.Tracker.GitHubGraphQLWarnRemaining)
@@ -607,6 +611,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Polling.IntervalMS != 120000 {
 		t.Fatalf("Polling.IntervalMS = %d", cfg.Polling.IntervalMS)
+	}
+	if !cfg.Polling.Conditional {
+		t.Fatal("Polling.Conditional = false, want true by default")
 	}
 	if cfg.Tracker.HTTPMaxIdleConns != 100 {
 		t.Fatalf("Tracker.HTTPMaxIdleConns = %d, want 100", cfg.Tracker.HTTPMaxIdleConns)

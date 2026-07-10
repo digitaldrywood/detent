@@ -51,34 +51,35 @@ const (
 )
 
 type Config struct {
-	Endpoint                string
-	APIKey                  string
-	GitHubAppID             string
-	GitHubAppPrivateKey     string
-	GitHubAppPrivateKeyPath string
-	GitHubAppInstallationID string
-	GitHubStatusSource      string
-	DependencySource        string
-	ProjectSlug             string
-	Repository              string
-	StatusField             string
-	StatusLabelPrefix       string
-	ActiveStates            []string
-	ObservedStates          []string
-	TerminalStates          []string
-	StateMap                map[string]string
-	PriorityMap             map[string]*int
-	RequiredStatusChecks    []string
-	TokenSource             TokenSource
-	HTTPClient              HTTPClient
-	HTTPTransport           HTTPTransportConfig
-	RESTMinRemainingReserve int
-	RESTFanoutMaxRequests   int
-	RESTDebugLogging        bool
-	Logger                  *slog.Logger
-	Now                     func() time.Time
-	LookupEnv               func(string) string
-	GHToken                 GHTokenFunc
+	Endpoint                   string
+	APIKey                     string
+	GitHubAppID                string
+	GitHubAppPrivateKey        string
+	GitHubAppPrivateKeyPath    string
+	GitHubAppInstallationID    string
+	GitHubStatusSource         string
+	DependencySource           string
+	ProjectSlug                string
+	Repository                 string
+	StatusField                string
+	StatusLabelPrefix          string
+	ActiveStates               []string
+	ObservedStates             []string
+	TerminalStates             []string
+	StateMap                   map[string]string
+	PriorityMap                map[string]*int
+	RequiredStatusChecks       []string
+	TokenSource                TokenSource
+	HTTPClient                 HTTPClient
+	HTTPTransport              HTTPTransportConfig
+	RESTMinRemainingReserve    int
+	RESTFanoutMaxRequests      int
+	RESTDebugLogging           bool
+	DisableConditionalRequests bool
+	Logger                     *slog.Logger
+	Now                        func() time.Time
+	LookupEnv                  func(string) string
+	GHToken                    GHTokenFunc
 }
 
 type Connector struct {
@@ -142,8 +143,9 @@ func NewConnector(cfg Config) (*Connector, error) {
 			MinRemainingReserve: int64(cfg.RESTMinRemainingReserve),
 			FanoutMaxRequests:   int64(cfg.RESTFanoutMaxRequests),
 		},
-		RESTDebugLogging: cfg.RESTDebugLogging,
-		Logger:           logger,
+		RESTDebugLogging:           cfg.RESTDebugLogging,
+		DisableConditionalRequests: cfg.DisableConditionalRequests,
+		Logger:                     logger,
 	})
 	if err != nil {
 		return nil, err
@@ -181,6 +183,10 @@ func NewConnector(cfg Config) (*Connector, error) {
 		prHydration:       newPullRequestHydrationCircuitBreaker(cfg.Now),
 		logger:            logger,
 	}, nil
+}
+
+func (c *Connector) ConditionalPollingEnabled() bool {
+	return c != nil && c.client != nil && c.client.conditionalRequests && (c.usesLabelStatus() || c.usesIssueFieldStatus())
 }
 
 func (c *Connector) Name() string {

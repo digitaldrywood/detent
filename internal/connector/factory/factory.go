@@ -33,6 +33,7 @@ type Config struct {
 	GitHubRESTMinReserve        int
 	GitHubRESTFanoutMaxRequests int
 	GitHubRESTDebugLogging      bool
+	ConditionalRequests         *bool
 	GitHubAppID                 string
 	GitHubAppPrivateKey         string
 	GitHubAppPrivateKeyPath     string
@@ -81,26 +82,27 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 				MaxIdleConnsPerHost: cfg.HTTPMaxIdleConnsPerHost,
 				IdleConnTimeout:     time.Duration(cfg.HTTPIdleConnTimeoutMS) * time.Millisecond,
 			},
-			RESTMinRemainingReserve: cfg.GitHubRESTMinReserve,
-			RESTFanoutMaxRequests:   cfg.GitHubRESTFanoutMaxRequests,
-			RESTDebugLogging:        cfg.GitHubRESTDebugLogging,
-			GitHubAppID:             cfg.GitHubAppID,
-			GitHubAppPrivateKey:     cfg.GitHubAppPrivateKey,
-			GitHubAppPrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
-			GitHubAppInstallationID: cfg.GitHubAppInstallationID,
-			GitHubStatusSource:      cfg.GitHubStatusSource,
-			DependencySource:        cfg.DependencySource,
-			ProjectSlug:             cfg.ProjectSlug,
-			Repository:              cfg.Repository,
-			StatusField:             cfg.StatusField,
-			StatusLabelPrefix:       cfg.StatusLabelPrefix,
-			ActiveStates:            cfg.ActiveStates,
-			ObservedStates:          cfg.ObservedStates,
-			TerminalStates:          cfg.TerminalStates,
-			StateMap:                cfg.StateMap,
-			PriorityMap:             cfg.PriorityMap,
-			RequiredStatusChecks:    cfg.RequiredStatusChecks,
-			Logger:                  cfg.Logger,
+			RESTMinRemainingReserve:    cfg.GitHubRESTMinReserve,
+			RESTFanoutMaxRequests:      cfg.GitHubRESTFanoutMaxRequests,
+			RESTDebugLogging:           cfg.GitHubRESTDebugLogging,
+			DisableConditionalRequests: conditionalRequestsDisabled(cfg.ConditionalRequests),
+			GitHubAppID:                cfg.GitHubAppID,
+			GitHubAppPrivateKey:        cfg.GitHubAppPrivateKey,
+			GitHubAppPrivateKeyPath:    cfg.GitHubAppPrivateKeyPath,
+			GitHubAppInstallationID:    cfg.GitHubAppInstallationID,
+			GitHubStatusSource:         cfg.GitHubStatusSource,
+			DependencySource:           cfg.DependencySource,
+			ProjectSlug:                cfg.ProjectSlug,
+			Repository:                 cfg.Repository,
+			StatusField:                cfg.StatusField,
+			StatusLabelPrefix:          cfg.StatusLabelPrefix,
+			ActiveStates:               cfg.ActiveStates,
+			ObservedStates:             cfg.ObservedStates,
+			TerminalStates:             cfg.TerminalStates,
+			StateMap:                   cfg.StateMap,
+			PriorityMap:                cfg.PriorityMap,
+			RequiredStatusChecks:       cfg.RequiredStatusChecks,
+			Logger:                     cfg.Logger,
 		})
 	case connector.BackendGitHubLocal:
 		var tokenSource githubconnector.TokenSource
@@ -127,24 +129,25 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 					MaxIdleConnsPerHost: cfg.HTTPMaxIdleConnsPerHost,
 					IdleConnTimeout:     time.Duration(cfg.HTTPIdleConnTimeoutMS) * time.Millisecond,
 				},
-				RESTMinRemainingReserve: cfg.GitHubRESTMinReserve,
-				RESTFanoutMaxRequests:   cfg.GitHubRESTFanoutMaxRequests,
-				RESTDebugLogging:        cfg.GitHubRESTDebugLogging,
-				GitHubAppID:             cfg.GitHubAppID,
-				GitHubAppPrivateKey:     cfg.GitHubAppPrivateKey,
-				GitHubAppPrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
-				GitHubAppInstallationID: cfg.GitHubAppInstallationID,
-				DependencySource:        cfg.DependencySource,
-				Repository:              cfg.Repository,
-				StatusField:             cfg.StatusField,
-				StatusLabelPrefix:       cfg.StatusLabelPrefix,
-				ActiveStates:            cfg.ActiveStates,
-				ObservedStates:          cfg.ObservedStates,
-				TerminalStates:          cfg.TerminalStates,
-				StateMap:                cfg.StateMap,
-				PriorityMap:             cfg.PriorityMap,
-				RequiredStatusChecks:    cfg.RequiredStatusChecks,
-				Logger:                  cfg.Logger,
+				RESTMinRemainingReserve:    cfg.GitHubRESTMinReserve,
+				RESTFanoutMaxRequests:      cfg.GitHubRESTFanoutMaxRequests,
+				RESTDebugLogging:           cfg.GitHubRESTDebugLogging,
+				DisableConditionalRequests: conditionalRequestsDisabled(cfg.ConditionalRequests),
+				GitHubAppID:                cfg.GitHubAppID,
+				GitHubAppPrivateKey:        cfg.GitHubAppPrivateKey,
+				GitHubAppPrivateKeyPath:    cfg.GitHubAppPrivateKeyPath,
+				GitHubAppInstallationID:    cfg.GitHubAppInstallationID,
+				DependencySource:           cfg.DependencySource,
+				Repository:                 cfg.Repository,
+				StatusField:                cfg.StatusField,
+				StatusLabelPrefix:          cfg.StatusLabelPrefix,
+				ActiveStates:               cfg.ActiveStates,
+				ObservedStates:             cfg.ObservedStates,
+				TerminalStates:             cfg.TerminalStates,
+				StateMap:                   cfg.StateMap,
+				PriorityMap:                cfg.PriorityMap,
+				RequiredStatusChecks:       cfg.RequiredStatusChecks,
+				Logger:                     cfg.Logger,
 			},
 			Local:          localCfg,
 			Repository:     cfg.Repository,
@@ -157,6 +160,10 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedBackend, kind)
 	}
+}
+
+func conditionalRequestsDisabled(enabled *bool) bool {
+	return enabled != nil && !*enabled
 }
 
 func (cfg Config) hasGitHubAppCredentials() bool {

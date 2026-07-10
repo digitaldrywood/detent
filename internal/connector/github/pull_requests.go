@@ -618,6 +618,10 @@ func pullRequestRepoName(repo pullRequestRepo) string {
 	return owner + "/" + name
 }
 
+func samePullRequestRepo(left pullRequestRepo, right pullRequestRepo) bool {
+	return strings.EqualFold(left.Owner, right.Owner) && strings.EqualFold(left.Name, right.Name)
+}
+
 func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequestRepo, pullRequest *pullRequestNode, useStatusCache bool) error {
 	if useStatusCache && c.pullRequests != nil {
 		if status, ok := c.pullRequests.Get(repo, pullRequest.Number, pullRequest.HeadSHA); ok {

@@ -11,6 +11,7 @@ tracker:
   github_rest_min_remaining_reserve: 1000
   github_rest_fanout_max_requests: 80
   github_rest_debug_logging: false
+  # github_webhook_secret: $DETENT_GITHUB_WEBHOOK_SECRET
   auto_provision: true
   active_states:
     - Todo
@@ -47,6 +48,7 @@ tracker:
     target_state: Todo
 polling:
   interval_ms: 120000
+  conditional: true
 workspace:
   root: <worktree-root>
   source_root: <source-root>

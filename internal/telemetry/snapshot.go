@@ -522,15 +522,21 @@ type GraphQLCostContributor struct {
 }
 
 type RESTUsage struct {
-	TotalRequests int64                  `json:"total_requests,omitempty"`
-	RateLimited   bool                   `json:"rate_limited,omitempty"`
-	BackoffUntil  *time.Time             `json:"backoff_until,omitempty"`
-	Contributors  []RESTUsageContributor `json:"contributors,omitempty"`
+	TotalRequests       int64                  `json:"total_requests,omitempty"`
+	ConditionalRequests int64                  `json:"conditional_requests,omitempty"`
+	NotModifiedRequests int64                  `json:"not_modified_requests,omitempty"`
+	BillableRequests    int64                  `json:"billable_requests,omitempty"`
+	RateLimited         bool                   `json:"rate_limited,omitempty"`
+	BackoffUntil        *time.Time             `json:"backoff_until,omitempty"`
+	Contributors        []RESTUsageContributor `json:"contributors,omitempty"`
 }
 
 type RESTUsageContributor struct {
 	EndpointFamily string     `json:"endpoint_family"`
 	Count          int64      `json:"count"`
+	Conditional    int64      `json:"conditional,omitempty"`
+	NotModified    int64      `json:"not_modified,omitempty"`
+	Billable       int64      `json:"billable,omitempty"`
 	Remaining      int64      `json:"remaining,omitempty"`
 	Limit          int64      `json:"limit,omitempty"`
 	Resource       string     `json:"resource,omitempty"`

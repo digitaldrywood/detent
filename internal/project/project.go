@@ -1059,6 +1059,7 @@ func defaultConnectorFactoryWithRefresh(cfg workflowconfig.Config, refreshGitHub
 		GitHubRESTMinReserve:        cfg.Tracker.GitHubRESTMinReserve,
 		GitHubRESTFanoutMaxRequests: cfg.Tracker.GitHubRESTFanoutMaxRequests,
 		GitHubRESTDebugLogging:      cfg.Tracker.GitHubRESTDebugLogging,
+		ConditionalRequests:         &cfg.Polling.Conditional,
 		GitHubAppID:                 cfg.Tracker.GitHubAppID,
 		GitHubAppPrivateKey:         cfg.Tracker.GitHubAppPrivateKey,
 		GitHubAppPrivateKeyPath:     cfg.Tracker.GitHubAppPrivateKeyPath,

@@ -38,12 +38,13 @@ type HTTPClient interface {
 }
 
 type ClientConfig struct {
-	Endpoint         string
-	TokenSource      TokenSource
-	HTTPClient       HTTPClient
-	RESTPolicy       RESTBudgetPolicy
-	RESTDebugLogging bool
-	Logger           *slog.Logger
+	Endpoint                   string
+	TokenSource                TokenSource
+	HTTPClient                 HTTPClient
+	RESTPolicy                 RESTBudgetPolicy
+	DisableConditionalRequests bool
+	RESTDebugLogging           bool
+	Logger                     *slog.Logger
 }
 
 type RESTBudgetPolicy struct {
@@ -68,6 +69,8 @@ type Client struct {
 	restRateLimit          connector.RESTRateLimit
 	restRateLimits         map[string]connector.RESTRateLimit
 	restRequests           map[string]connector.RESTEndpointUsage
+	restCache              map[string]restCacheEntry
+	conditionalRequests    bool
 	restBackoffUntil       time.Time
 	restBackoffKey         string
 	restBackoffs           *restBackoffRegistry
@@ -110,14 +113,16 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}
 
 	return &Client{
-		endpoint:         endpoint,
-		restEndpoint:     restEndpoint,
-		tokenSource:      cfg.TokenSource,
-		httpClient:       httpClient,
-		restPolicy:       normalizeRESTBudgetPolicy(cfg.RESTPolicy),
-		restDebugLogging: cfg.RESTDebugLogging,
-		logger:           logger,
-		restBackoffs:     defaultRESTBackoffs,
+		endpoint:            endpoint,
+		restEndpoint:        restEndpoint,
+		tokenSource:         cfg.TokenSource,
+		httpClient:          httpClient,
+		restPolicy:          normalizeRESTBudgetPolicy(cfg.RESTPolicy),
+		restDebugLogging:    cfg.RESTDebugLogging,
+		logger:              logger,
+		restBackoffs:        defaultRESTBackoffs,
+		conditionalRequests: !cfg.DisableConditionalRequests,
+		restCache:           map[string]restCacheEntry{},
 	}, nil
 }
 
@@ -301,7 +306,7 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 		return restProbeResult{}, fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
 	receivedAt := time.Now()
-	c.recordRESTRateLimitFromHeaders(backoffKey, method, path, resp.StatusCode, resp.Header, receivedAt)
+	c.recordRESTRateLimitFromHeaders(backoffKey, method, path, resp.StatusCode, resp.Header, receivedAt, false)
 	c.logRESTResponse(ctx, "github rest probe response", method, path, family, resp.StatusCode)
 	result := restProbeResult{
 		StatusCode: resp.StatusCode,
@@ -333,6 +338,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	}
 	backoffKey := c.restSharedBackoffKey(token)
 	c.rememberRESTBackoffKey(backoffKey)
+	cached, conditional := c.restConditionalEntry(method, path)
 	if err := c.restBackoffError(backoffKey, time.Now()); err != nil {
 		c.logger.DebugContext(ctx, "github rest backoff active",
 			"method", strings.ToUpper(strings.TrimSpace(method)),
@@ -344,7 +350,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		)
 		return nil, err
 	}
-	if err := c.restBudgetPolicyError(method, path); err != nil {
+	if err := c.restBudgetPolicyError(method, path, conditional); err != nil {
 		c.logger.DebugContext(ctx, "github rest budget reserved",
 			"method", strings.ToUpper(strings.TrimSpace(method)),
 			"path", path,
@@ -375,6 +381,9 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
+	if conditional {
+		req.Header.Set("If-None-Match", cached.etag)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -400,7 +409,24 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		return nil, fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
 	receivedAt := time.Now()
-	c.recordRESTRateLimitFromHeaders(backoffKey, method, path, resp.StatusCode, resp.Header, receivedAt)
+	c.recordRESTRateLimitFromHeaders(backoffKey, method, path, resp.StatusCode, resp.Header, receivedAt, conditional)
+	if resp.StatusCode == http.StatusNotModified {
+		if !conditional {
+			return nil, ErrInvalidResponse
+		}
+		raw = cached.body
+		headers := mergeRESTHeaders(cached.headers, resp.Header)
+		if out == nil {
+			return headers, nil
+		}
+		if len(raw) == 0 {
+			return nil, ErrInvalidResponse
+		}
+		if err := json.Unmarshal(raw, out); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
+		}
+		return headers, nil
+	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		err := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
 		c.logRESTStatusError(ctx, method, path, family, resp.StatusCode, err)
@@ -410,6 +436,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		return nil, err
 	}
 	headers := resp.Header.Clone()
+	c.storeRESTConditionalEntry(method, path, headers, raw)
 	if out == nil || resp.StatusCode == http.StatusNoContent {
 		return headers, nil
 	}
@@ -575,6 +602,9 @@ func (c *Client) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 	}
 	for _, request := range usage.Requests {
 		usage.TotalRequests += request.Count
+		usage.ConditionalRequests += request.Conditional
+		usage.NotModifiedRequests += request.NotModified
+		usage.BillableRequests += request.Billable
 		if request.RateLimited {
 			usage.RateLimited = true
 		}
@@ -613,9 +643,9 @@ func normalizeRESTBudgetPolicy(policy RESTBudgetPolicy) RESTBudgetPolicy {
 	return policy
 }
 
-func (c *Client) restBudgetPolicyError(method string, path string) error {
+func (c *Client) restBudgetPolicyError(method string, path string, conditional bool) error {
 	family := restEndpointFamily(method, path)
-	if !restFanoutEndpointFamily(family) {
+	if !restFanoutEndpointFamily(family) || conditional {
 		return nil
 	}
 
@@ -649,7 +679,7 @@ func (c *Client) restFanoutRequestCountLocked() int64 {
 	var count int64
 	for family, request := range c.restRequests {
 		if restFanoutEndpointFamily(family) {
-			count += request.Count
+			count += request.Billable
 		}
 	}
 	return count
@@ -712,7 +742,7 @@ func (c *Client) rememberRESTBackoffKey(backoffKey string) {
 	c.mu.Unlock()
 }
 
-func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, method string, path string, status int, headers http.Header, now time.Time) {
+func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, method string, path string, status int, headers http.Header, now time.Time, conditional bool) {
 	limit, hasLimit := int64Header(headers, "X-RateLimit-Limit")
 	used, hasUsed := int64Header(headers, "X-RateLimit-Used")
 	remaining, hasRemaining := int64Header(headers, "X-RateLimit-Remaining")
@@ -784,6 +814,14 @@ func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, method string
 	request := c.restRequests[family]
 	request.EndpointFamily = family
 	request.Count++
+	if conditional {
+		request.Conditional++
+	}
+	if status == http.StatusNotModified {
+		request.NotModified++
+	} else {
+		request.Billable++
+	}
 	request.LastStatus = status
 	request.RateLimited = request.RateLimited || rateLimited
 	if hasLimit {

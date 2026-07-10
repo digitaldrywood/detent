@@ -502,13 +502,18 @@ func (o *Orchestrator) githubBudgetReserveDecision(state *State) githubBudgetRes
 		graphRemaining: gitHubGraphQLRemaining(state),
 		graphReserve:   o.cfg.GitHubGraphQLMinReserve,
 	}
-	if bucket := gitHubRESTBucketFromState(state); budgetBelowReserve(bucket, o.cfg.GitHubRESTMinReserve) {
+	if bucket := gitHubRESTBucketFromState(state); budgetBelowReserve(bucket, o.cfg.GitHubRESTMinReserve) && !o.conditionalPollingEnabled() {
 		decision.degraded = true
 	}
 	if bucket := gitHubGraphQLBucketFromState(state); budgetBelowReserve(bucket, o.cfg.GitHubGraphQLMinReserve) {
 		decision.degraded = true
 	}
 	return decision
+}
+
+func (o *Orchestrator) conditionalPollingEnabled() bool {
+	poller, ok := o.connector.(connector.ConditionalPoller)
+	return ok && poller.ConditionalPollingEnabled()
 }
 
 func budgetBelowReserve(bucket *telemetry.RateLimitBucket, reserve int64) bool {

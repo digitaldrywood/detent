@@ -426,6 +426,7 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 		wantStatusField  string
 		wantStatusPrefix string
 		wantWriteProbe   bool
+		wantIntervalMS   int
 	}{
 		{
 			path:            "docs/templates/WORKFLOW.project_v2.md",
@@ -433,6 +434,7 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 			want:            []string{"github_status_source: project_v2", "project_slug: <project-node-id>"},
 			unwanted:        []string{"repository: <repo-owner>/<repo-name>", "write_probe_issue:"},
 			wantProjectSlug: true,
+			wantIntervalMS:  workflowconfig.DefaultPollingIntervalMS,
 		},
 		{
 			path:            "docs/templates/WORKFLOW.issue_field.md",
@@ -441,6 +443,7 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 			unwanted:        []string{"project_slug:", "write_probe_issue:"},
 			wantRepository:  true,
 			wantStatusField: "Status",
+			wantIntervalMS:  workflowconfig.MinPollingIntervalMS,
 		},
 		{
 			path:             "docs/templates/WORKFLOW.label.md",
@@ -449,6 +452,7 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 			unwanted:         []string{"project_slug:", "status_field:", "write_probe_issue:"},
 			wantRepository:   true,
 			wantStatusPrefix: "detent:",
+			wantIntervalMS:   workflowconfig.MinPollingIntervalMS,
 		},
 	}
 
@@ -479,8 +483,11 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 			if cfg.Tracker.GitHubStatusSource != tt.source {
 				t.Fatalf("GitHubStatusSource = %q, want %q", cfg.Tracker.GitHubStatusSource, tt.source)
 			}
-			if cfg.Polling.IntervalMS != workflowconfig.DefaultPollingIntervalMS {
-				t.Fatalf("Polling.IntervalMS = %d, want %d", cfg.Polling.IntervalMS, workflowconfig.DefaultPollingIntervalMS)
+			if cfg.Polling.IntervalMS != tt.wantIntervalMS {
+				t.Fatalf("Polling.IntervalMS = %d, want %d", cfg.Polling.IntervalMS, tt.wantIntervalMS)
+			}
+			if !cfg.Polling.Conditional {
+				t.Fatal("Polling.Conditional = false, want true")
 			}
 			assertContains(t, content, "max_concurrent_agents_by_state:\n    Merging: 1")
 			if cfg.Agent.MaxConcurrentAgentsByState["merging"] != 1 {
@@ -505,6 +512,19 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 				t.Fatalf("WriteProbeIssue = %q, want blank", cfg.Tracker.WriteProbeIssue)
 			}
 		})
+	}
+}
+
+func TestGitHubLocalWorkflowTemplateUsesAffordablePolling(t *testing.T) {
+	t.Parallel()
+
+	content := readRepositoryTextFile(t, "docs/templates/WORKFLOW.github_local.md")
+	workflow, err := workflowconfig.ParseWorkflow([]byte(content))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if workflow.Config.Polling.IntervalMS != workflowconfig.MinPollingIntervalMS || !workflow.Config.Polling.Conditional {
+		t.Fatalf("Polling = %#v, want one-minute conditional polling", workflow.Config.Polling)
 	}
 }
 

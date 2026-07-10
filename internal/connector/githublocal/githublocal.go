@@ -94,6 +94,7 @@ var _ connector.Authenticator = (*Connector)(nil)
 var _ connector.AuthHealthReporter = (*Connector)(nil)
 var _ connector.CandidateIssuesByStatesFetcher = (*Connector)(nil)
 var _ connector.Closer = (*Connector)(nil)
+var _ connector.ConditionalPoller = (*Connector)(nil)
 var _ connector.RateLimitReporter = (*Connector)(nil)
 var _ connector.GraphQLRateLimitUsageReporter = (*Connector)(nil)
 var _ connector.InstanceIdentifier = (*Connector)(nil)
@@ -207,6 +208,14 @@ func (c *Connector) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage
 
 func (c *Connector) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 	return c.github.FlushRESTRateLimitUsage()
+}
+
+func (c *Connector) ConditionalPollingEnabled() bool {
+	if c == nil || c.github == nil {
+		return false
+	}
+	poller, ok := c.github.(connector.ConditionalPoller)
+	return ok && poller.ConditionalPollingEnabled()
 }
 
 func (c *Connector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {

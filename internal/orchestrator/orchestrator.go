@@ -143,6 +143,7 @@ type Orchestrator struct {
 	recoveryRequests   chan workAttemptRecoveryRequest
 	configUpdates      chan configUpdateRequest
 	refreshes          chan manualRefreshRequest
+	reconciles         chan targetedRefreshRequest
 	runResults         chan runpkg.Completion
 	runUpdates         chan runUpdate
 	done               chan struct{}
@@ -264,6 +265,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		recoveryRequests:   make(chan workAttemptRecoveryRequest),
 		configUpdates:      make(chan configUpdateRequest),
 		refreshes:          make(chan manualRefreshRequest, 1),
+		reconciles:         make(chan targetedRefreshRequest, 128),
 		runResults:         make(chan runpkg.Completion, max(cfg.MaxConcurrentAgents, 1)),
 		runUpdates:         make(chan runUpdate, runUpdateBufferSize),
 		done:               make(chan struct{}),
@@ -295,6 +297,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			resetTicker(ticker, state.PollInterval)
 		case request := <-o.refreshes:
 			o.tickManual(ctx, &state, request)
+			resetTicker(ticker, state.PollInterval)
+		case request := <-o.reconciles:
+			o.reconcileTarget(ctx, &state, request)
 			resetTicker(ticker, state.PollInterval)
 		case result := <-o.runResults:
 			o.handleRunResult(ctx, &state, result)
