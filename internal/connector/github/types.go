@@ -39,8 +39,9 @@ type pageInfo struct {
 }
 
 type projectItemsConnection struct {
-	PageInfo pageInfo          `json:"pageInfo"`
-	Nodes    []projectItemNode `json:"nodes"`
+	TotalCount int               `json:"totalCount"`
+	PageInfo   pageInfo          `json:"pageInfo"`
+	Nodes      []projectItemNode `json:"nodes"`
 }
 
 type projectItemNode struct {

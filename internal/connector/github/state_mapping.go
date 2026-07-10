@@ -1,7 +1,6 @@
 package github
 
 import (
-	"strconv"
 	"strings"
 )
 
@@ -35,42 +34,6 @@ func (c *Connector) detentToGitHubStates(stateNames []string) []string {
 		states = append(states, state)
 	}
 	return states
-}
-
-func (c *Connector) projectStatusQuery(stateNames []string) string {
-	states := c.detentToGitHubStates(stateNames)
-	if len(states) == 0 {
-		return ""
-	}
-
-	values := make([]string, 0, len(states))
-	for _, state := range states {
-		values = append(values, projectFilterValue(state))
-	}
-	return "status:" + strings.Join(values, ",")
-}
-
-func projectFilterValue(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	for _, r := range value {
-		if r >= 'a' && r <= 'z' {
-			continue
-		}
-		if r >= 'A' && r <= 'Z' {
-			continue
-		}
-		if r >= '0' && r <= '9' {
-			continue
-		}
-		if r == '_' || r == '-' || r == '.' {
-			continue
-		}
-		return strconv.Quote(value)
-	}
-	return value
 }
 
 func (c *Connector) githubToDetentState(githubState string) string {
@@ -155,33 +118,6 @@ func normalizedStateSet(states []string) map[string]struct{} {
 		if state != "" {
 			out[state] = struct{}{}
 		}
-	}
-	return out
-}
-
-func stateSetContains(states map[string]struct{}, state string) bool {
-	_, ok := states[normalizeStateName(state)]
-	return ok
-}
-
-func stateListWithout(states []string, excluded string) []string {
-	excluded = normalizeStateName(excluded)
-	if excluded == "" {
-		return normalizeStateList(states, nil)
-	}
-	out := make([]string, 0, len(states))
-	seen := map[string]struct{}{}
-	for _, state := range states {
-		state = strings.TrimSpace(state)
-		key := normalizeStateName(state)
-		if key == "" || key == excluded {
-			continue
-		}
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, state)
 	}
 	return out
 }

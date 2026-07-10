@@ -462,7 +462,7 @@ func (c *Connector) FetchCandidateIssuesByStatesWithFilter(
 		return nil, ErrMissingProject
 	}
 
-	issues, err := c.fetchProjectItems(ctx, graphQLQueryCandidateIssues, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
+	issues, err := c.fetchProjectItems(ctx, graphQLQueryCandidateIssues, func(issue connector.Issue) bool {
 		return stateInList(issue.State, stateNames)
 	})
 	if err != nil {
@@ -525,21 +525,7 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 		return nil, ErrMissingProject
 	}
 
-	issues := []connector.Issue{}
-	if stateSetContains(wantedStates, defaultProjectItemStatusState) {
-		backlogIssues, err := c.fetchProjectBacklogIssues(ctx, 0)
-		if err != nil {
-			return nil, err
-		}
-		issues = appendUniqueIssues(issues, backlogIssues, 0)
-		stateNames = stateListWithout(stateNames, defaultProjectItemStatusState)
-		wantedStates = normalizedStateSet(stateNames)
-		if len(wantedStates) == 0 {
-			return issues, nil
-		}
-	}
-
-	statusIssues, err := c.fetchProjectItems(ctx, graphQLQueryObservedStatus, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
+	statusIssues, err := c.fetchProjectItems(ctx, graphQLQueryObservedStatus, func(issue connector.Issue) bool {
 		_, ok := wantedStates[normalizeStateName(issue.State)]
 		return ok
 	})
@@ -560,7 +546,7 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 			return nil, err
 		}
 	}
-	return appendUniqueIssues(issues, statusIssues, 0), nil
+	return statusIssues, nil
 }
 
 func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []string, limit int) ([]connector.Issue, error) {
@@ -617,27 +603,10 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 		return nil, ErrMissingProject
 	}
 
-	issues := []connector.Issue{}
-	if stateSetContains(wantedStates, defaultProjectItemStatusState) {
-		backlogIssues, err := c.fetchProjectBacklogIssues(ctx, limit)
-		if err != nil {
-			return nil, err
-		}
-		issues = appendUniqueIssues(issues, backlogIssues, limit)
-		if len(issues) >= limit {
-			return issues, nil
-		}
-		stateNames = stateListWithout(stateNames, defaultProjectItemStatusState)
-		wantedStates = normalizedStateSet(stateNames)
-		if len(wantedStates) == 0 {
-			return issues, nil
-		}
-	}
-
-	statusIssues, err := c.fetchProjectItemsWithPullRequestRefsLimit(ctx, graphQLQueryObservedStatus, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
+	statusIssues, err := c.fetchProjectItemsWithPullRequestRefsLimit(ctx, graphQLQueryObservedStatus, func(issue connector.Issue) bool {
 		_, ok := wantedStates[normalizeStateName(issue.State)]
 		return ok
-	}, limit-len(issues))
+	}, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -655,7 +624,69 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 			return nil, err
 		}
 	}
-	return appendUniqueIssues(issues, statusIssues, limit), nil
+	return statusIssues, nil
+}
+
+func (c *Connector) FetchIssuesByStatesScan(ctx context.Context, stateNames []string, limit int) (connector.IssueStateScan, error) {
+	wantedStates := normalizedStateSet(stateNames)
+	if len(wantedStates) == 0 {
+		return connector.IssueStateScan{
+			Issues:           []connector.Issue{},
+			BoardCounts:      map[string]int{},
+			EnumeratedCounts: map[string]int{},
+		}, nil
+	}
+	if c.usesLabelStatus() || c.usesIssueFieldStatus() {
+		issues, err := c.FetchIssuesByStates(ctx, stateNames)
+		if err != nil {
+			return connector.IssueStateScan{}, err
+		}
+		return issueStateScanFromIssues(issues, limit), nil
+	}
+	if c.projectID == "" {
+		return connector.IssueStateScan{}, ErrMissingProject
+	}
+
+	scan, err := c.fetchProjectItemsScanWithLimit(ctx, observedStatusProjectItemsQuery, graphQLQueryObservedStatus, func(issue connector.Issue) bool {
+		_, ok := wantedStates[normalizeStateName(issue.State)]
+		return ok
+	}, limit)
+	if err != nil {
+		return connector.IssueStateScan{}, err
+	}
+	if _, ok := wantedStates[normalizeStateName("Blocked")]; ok {
+		if err := c.populateBlockerReasons(ctx, scan.Issues); err != nil {
+			return connector.IssueStateScan{}, err
+		}
+		c.hydrateBlockedByRefs(ctx, scan.Issues)
+		if err := c.resolveBlockedByProjectState(ctx, scan.Issues); err != nil {
+			return connector.IssueStateScan{}, err
+		}
+	}
+	if attachPullRequestsForStates(wantedStates) {
+		if err := c.attachFreshPullRequests(ctx, scan.Issues); err != nil {
+			return connector.IssueStateScan{}, err
+		}
+	}
+	return scan, nil
+}
+
+func issueStateScanFromIssues(issues []connector.Issue, limit int) connector.IssueStateScan {
+	scan := connector.IssueStateScan{
+		Issues:           []connector.Issue{},
+		BoardCounts:      map[string]int{},
+		EnumeratedCounts: map[string]int{},
+		ItemsFetched:     len(issues),
+		TotalItems:       len(issues),
+	}
+	for _, issue := range issues {
+		scan.BoardCounts[issue.State]++
+		scan.EnumeratedCounts[issue.State]++
+		if limit <= 0 || len(scan.Issues) < limit {
+			scan.Issues = append(scan.Issues, issue)
+		}
+	}
+	return scan
 }
 
 func (c *Connector) FetchIssueStateProbe(ctx context.Context, stateNames []string, limit int) ([]connector.Issue, error) {
@@ -676,53 +707,14 @@ func (c *Connector) FetchIssueStateProbe(ctx context.Context, stateNames []strin
 		return nil, ErrMissingProject
 	}
 
-	issues := []connector.Issue{}
-	if stateSetContains(wantedStates, defaultProjectItemStatusState) {
-		backlogIssues, err := c.fetchExplicitProjectBacklogIssues(ctx, limit)
-		if err != nil {
-			return nil, err
-		}
-		issues = appendUniqueIssues(issues, backlogIssues, limit)
-		if len(issues) >= limit {
-			return issues, nil
-		}
-		stateNames = stateListWithout(stateNames, defaultProjectItemStatusState)
-		wantedStates = normalizedStateSet(stateNames)
-		if len(wantedStates) == 0 {
-			blankIssues, err := c.fetchBlankProjectBacklogIssues(ctx, limit-len(issues))
-			if err != nil {
-				return nil, err
-			}
-			return appendUniqueIssues(issues, blankIssues, limit), nil
-		}
-
-		statusIssues, err := c.fetchProjectItemsWithPullRequestRefsLimit(ctx, graphQLQueryObservedStatus, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
-			_, ok := wantedStates[normalizeStateName(issue.State)]
-			return ok
-		}, limit-len(issues))
-		if err != nil {
-			return nil, err
-		}
-		issues = appendUniqueIssues(issues, statusIssues, limit)
-		if len(issues) >= limit {
-			return issues, nil
-		}
-
-		blankIssues, err := c.fetchBlankProjectBacklogIssues(ctx, limit-len(issues))
-		if err != nil {
-			return nil, err
-		}
-		return appendUniqueIssues(issues, blankIssues, limit), nil
-	}
-
-	statusIssues, err := c.fetchProjectItemsWithPullRequestRefsLimit(ctx, graphQLQueryObservedStatus, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
+	statusIssues, err := c.fetchProjectItemsWithLimit(ctx, projectItemsQuery, graphQLQueryObservedStatus, func(issue connector.Issue) bool {
 		_, ok := wantedStates[normalizeStateName(issue.State)]
 		return ok
-	}, limit-len(issues))
+	}, limit)
 	if err != nil {
 		return nil, err
 	}
-	return appendUniqueIssues(issues, statusIssues, limit), nil
+	return statusIssues, nil
 }
 
 func (c *Connector) VerifyStatusOptions(ctx context.Context, stateNames []string) error {
@@ -1054,6 +1046,9 @@ func (c *Connector) fetchLinkedIssueRefs(ctx context.Context, issueID string, qu
 			return nil, err
 		}
 		pageRefs := c.appendLinkedChildIssues(nil, map[string]struct{}{}, connection.Nodes, "")
+		if err := c.hydrateLinkedChildIssueStates(ctx, pageRefs, connection.Nodes); err != nil {
+			return nil, err
+		}
 		refs = appendUniqueLinkedIssueRefs(refs, seen, pageRefs)
 		if !connection.PageInfo.HasNextPage {
 			return refs, nil
@@ -1064,6 +1059,35 @@ func (c *Connector) fetchLinkedIssueRefs(ctx context.Context, issueID string, qu
 		}
 		after = &cursor
 	}
+}
+
+func (c *Connector) hydrateLinkedChildIssueStates(ctx context.Context, refs []connector.BlockedRef, linked []linkedIssue) error {
+	byID := make(map[string]linkedIssue, len(linked))
+	for _, issue := range linked {
+		byID[strings.TrimSpace(issue.ID)] = issue
+	}
+	for index := range refs {
+		if strings.TrimSpace(refs[index].State) != "" || strings.TrimSpace(refs[index].ID) == "" {
+			continue
+		}
+		linkedIssue, ok := byID[strings.TrimSpace(refs[index].ID)]
+		if !ok || linkedIssue.ProjectItems == nil || !linkedIssue.ProjectItems.PageInfo.HasNextPage {
+			continue
+		}
+		state, _, _, _, found, err := c.fetchProjectFieldsPage(ctx, refs[index].ID, nil)
+		if err != nil {
+			return err
+		}
+		if found {
+			if strings.TrimSpace(state) == "" {
+				state = c.detentToGitHubState(defaultProjectItemStatusState)
+			}
+			refs[index].State = c.githubToDetentState(state)
+			continue
+		}
+		refs[index].State = c.githubIssueStateToDetentState(linkedIssue.State)
+	}
+	return nil
 }
 
 func appendUniqueLinkedIssueRefs(
@@ -1296,7 +1320,12 @@ func (c *Connector) normalizeIssueNode(ctx context.Context, issue githubIssueNod
 		return connector.Issue{}, false, err
 	}
 	if ok {
-		return c.buildIssue(issue, stateName, priorityName, statusUpdatedAt, fields), true, nil
+		built := c.buildIssue(issue, stateName, priorityName, statusUpdatedAt, fields)
+		linked := append(append([]linkedIssue(nil), issue.SubIssues.Nodes...), issue.TrackedIssues.Nodes...)
+		if err := c.hydrateLinkedChildIssueStates(ctx, built.ChildIssues, linked); err != nil {
+			return connector.Issue{}, false, err
+		}
+		return built, true, nil
 	}
 	return connector.Issue{}, false, nil
 }
@@ -1490,38 +1519,6 @@ func orderForIssue(issue connector.Issue, order map[string]int, fallback int) in
 		return index
 	}
 	return fallback
-}
-
-func appendUniqueIssues(issues []connector.Issue, additions []connector.Issue, limit int) []connector.Issue {
-	seen := make(map[string]struct{}, len(issues)+len(additions))
-	for _, issue := range issues {
-		key := issueKey(issue)
-		if key == "" {
-			continue
-		}
-		seen[key] = struct{}{}
-	}
-	for _, issue := range additions {
-		if limit > 0 && len(issues) >= limit {
-			return issues
-		}
-		key := issueKey(issue)
-		if key != "" {
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-		}
-		issues = append(issues, issue)
-	}
-	return issues
-}
-
-func issueKey(issue connector.Issue) string {
-	if key := strings.TrimSpace(issue.ID); key != "" {
-		return key
-	}
-	return strings.TrimSpace(issue.Identifier)
 }
 
 func attachPullRequestsForStates(states map[string]struct{}) bool {

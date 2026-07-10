@@ -901,6 +901,21 @@ func TestCheckDoctorAutoPromote(t *testing.T) {
 			want:        doctorOK,
 			wantDetails: []string{"ready=1"},
 		},
+		{
+			name: "project state count discrepancy fails",
+			cfg:  validDoctorAutoPromoteWorkflow(),
+			connector: &fakeDoctorAutoPromoteConnector{
+				scan: &connector.IssueStateScan{
+					Issues:           []connector.Issue{},
+					BoardCounts:      map[string]int{"Human Review": 2},
+					EnumeratedCounts: map[string]int{"Human Review": 0},
+					ItemsFetched:     1002,
+					TotalItems:       1002,
+				},
+			},
+			want:        doctorFail,
+			wantDetails: []string{"ProjectV2 items fetched=1002 total=1002", "Human Review counts board=2 enumerated=0", "disagree"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -3690,6 +3705,7 @@ type fakeDoctorAutoPromoteConnector struct {
 	verifyErr      error
 	verifyStates   []string
 	limit          int
+	scan           *connector.IssueStateScan
 }
 
 func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
@@ -3699,6 +3715,18 @@ func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStates(context.Context, []
 func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStatesLimit(_ context.Context, _ []string, limit int) ([]connector.Issue, error) {
 	c.limit = limit
 	return c.issues, nil
+}
+
+func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStatesScan(_ context.Context, _ []string, limit int) (connector.IssueStateScan, error) {
+	c.limit = limit
+	if c.scan != nil {
+		return *c.scan, nil
+	}
+	scan := doctorIssueStateScan(c.issues)
+	if limit > 0 && len(scan.Issues) > limit {
+		scan.Issues = scan.Issues[:limit]
+	}
+	return scan, nil
 }
 
 func (c *fakeDoctorAutoPromoteConnector) FetchIssueStatesByIdentifiers(_ context.Context, identifiers []string) ([]connector.Issue, error) {
