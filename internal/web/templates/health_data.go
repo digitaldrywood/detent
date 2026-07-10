@@ -11,12 +11,14 @@ import (
 // healthView renders the whole Health page: one verdict sentence, one
 // details table, one footnote. An at-rest system reads as one line.
 type healthView struct {
-	Kind     primitives.Kind
-	Verdict  string
-	Detail   string
-	Checked  string
-	Rows     []healthRow
-	Footnote string
+	Kind           primitives.Kind
+	Verdict        string
+	Detail         string
+	DetailAt       time.Time
+	DetailRelative bool
+	CheckedAt      time.Time
+	Rows           []healthRow
+	Footnote       string
 }
 
 type healthRow struct {
@@ -29,20 +31,23 @@ type healthRow struct {
 	QuotaPct  int
 	QuotaWarn bool
 	Resets    string
+	ResetAt   time.Time
+	DetailAt  time.Time
 }
 
 func healthViewFromDashboard(data DashboardData) healthView {
 	snapshot := data.Snapshot
 	api := gitHubAPIHealth(snapshot)
 	view := healthView{
-		Checked:  appShellSnapshotClock(DashboardShellData{Snapshot: snapshot}),
-		Footnote: "Quota bars turn amber only at 90% — polling continues normally; backoff engages automatically when a limit is exhausted.",
-		Rows:     healthRows(snapshot),
+		CheckedAt: snapshot.GeneratedAt,
+		Footnote:  "Quota bars turn amber only at 90% — polling continues normally; backoff engages automatically when a limit is exhausted.",
+		Rows:      healthRows(snapshot),
 	}
-	if len(snapshot.BackendOutages) > 0 {
+	outages := backendCapacityOutages(snapshot.BackendOutages)
+	if len(outages) > 0 {
 		view.Kind = primitives.KindWarn
 		view.Verdict = backendCapacityHealthVerdict(snapshot)
-		view.Detail = backendCapacityOutageDetail(snapshot.BackendOutages[0], snapshot.GeneratedAt)
+		view.Detail, view.DetailAt, view.DetailRelative = backendCapacityOutageDetailParts(outages[0], snapshot.GeneratedAt)
 		return view
 	}
 	switch api.State {
@@ -90,7 +95,7 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 	for _, release := range healthReleases(snapshot) {
 		rows = append(rows, healthReleaseRow(release))
 	}
-	for _, outage := range snapshot.BackendOutages {
+	for _, outage := range backendCapacityOutages(snapshot.BackendOutages) {
 		rows = append(rows, healthBackendOutageRow(outage, snapshot.GeneratedAt))
 	}
 	return rows
@@ -119,10 +124,6 @@ func healthReleaseRow(release telemetry.Release) healthRow {
 	if release.LastRelease == "" {
 		detail = formatCount(release.UnreleasedMerges) + " unreleased merges · no prior release"
 	}
-	resets := "—"
-	if release.NextTriggerAt != nil {
-		resets = release.NextTriggerAt.UTC().Format("Jan 02 15:04")
-	}
 	kind := primitives.KindOK
 	switch release.State {
 	case "failed":
@@ -131,17 +132,24 @@ func healthReleaseRow(release telemetry.Release) healthRow {
 	case "waiting_for_ci", "rerunning_ci", "release_pending":
 		kind = primitives.KindWarn
 	}
-	return healthRow{ID: "health-release-" + boardCardSlug(release.ProjectID), Component: component, Kind: kind, Status: status, Detail: detail, Resets: resets}
+	row := healthRow{ID: "health-release-" + boardCardSlug(release.ProjectID), Component: component, Kind: kind, Status: status, Detail: detail, Resets: "—"}
+	if release.NextTriggerAt != nil {
+		row.ResetAt = *release.NextTriggerAt
+	}
+	return row
 }
 
 func healthBackendOutageRow(outage telemetry.BackendOutage, now time.Time) healthRow {
+	detail, resumeAt, _ := backendCapacityOutageDetailParts(outage, now)
 	return healthRow{
 		ID:        "health-backend-" + boardCardSlug(outage.BackendID),
 		Component: "Backend " + outage.BackendID,
 		Kind:      primitives.KindWarn,
 		Status:    "Usage limit",
-		Detail:    backendCapacityOutageDetail(outage, now),
-		Resets:    outage.ResumeAt.UTC().Format("15:04"),
+		Detail:    detail,
+		DetailAt:  resumeAt,
+		Resets:    "—",
+		ResetAt:   outage.ResumeAt,
 	}
 }
 
@@ -183,7 +191,7 @@ func healthBucketRow(id string, component string, bucket *telemetry.RateLimitBuc
 		row.QuotaWarn = row.QuotaPct >= 90
 	}
 	if bucket.ResetAt != nil {
-		row.Resets = bucket.ResetAt.UTC().Format("15:04")
+		row.ResetAt = *bucket.ResetAt
 	}
 	return row
 }

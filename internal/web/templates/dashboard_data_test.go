@@ -375,7 +375,7 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			wantDetailParts: []string{
 				"GitHub secondary endpoint throttle is active for pull requests/check runs.",
 				"Primary REST quota is healthy: 4,878/5,000 remaining.",
-				"Retrying at 14:35 UTC.",
+				"Retrying at " + localTimeToken(backoffUntil, LocalTimeOnly) + ".",
 			},
 			rejectDetailPart: "REST primary:",
 		},
@@ -401,7 +401,7 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			wantDetailParts: []string{
 				"GitHub secondary endpoint throttle is active for pull requests.",
 				"Primary REST quota is low: 240/5,000 remaining.",
-				"Retrying at 14:35 UTC.",
+				"Retrying at " + localTimeToken(backoffUntil, LocalTimeOnly) + ".",
 			},
 		},
 		{
@@ -456,7 +456,7 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			wantState:       gitHubAPIHealthStateExhausted,
 			wantLabel:       "GitHub primary quota exhausted",
 			wantSummaryPart: "REST primary: 0 remaining / 5,000 total (5,000 used)",
-			wantDetailParts: []string{"reset 15:00 UTC"},
+			wantDetailParts: []string{"reset " + localTimeToken(resetAt, LocalTimeOnly)},
 		},
 	}
 
@@ -533,9 +533,9 @@ func TestThroughputTrendPoints(t *testing.T) {
 	}
 
 	wantValues := map[string]float64{
-		"14:58:30": 1,
-		"15:00":    1,
-		"15:00:40": 3,
+		localTimeToken(now.Add(-2*time.Minute), LocalTimeWithSeconds): 1,
+		localTimeToken(now.Add(-30*time.Second), LocalTimeOnly):       1,
+		localTimeToken(now.Add(10*time.Second), LocalTimeWithSeconds): 3,
 	}
 	for _, point := range points {
 		want := wantValues[point.Label]
@@ -1105,11 +1105,11 @@ func TestRunningActivityRowsUseRecentEventsNewestFirst(t *testing.T) {
 		message string
 		at      string
 	}{
-		{event: "turn_completed", message: "turn completed", at: "15:00:05 UTC"},
-		{event: "rate_limits", message: "rate snapshot", at: "15:00:04 UTC"},
-		{event: "token_usage", message: "tokens updated", at: "15:00:03 UTC"},
-		{event: "agent_message_delta", message: "editing dashboard", at: "15:00:02 UTC"},
-		{event: "turn_started", message: "turn started", at: "15:00:01 UTC"},
+		{event: "turn_completed", message: "turn completed", at: localTimeToken(now, LocalTimeWithSeconds)},
+		{event: "rate_limits", message: "rate snapshot", at: localTimeToken(now.Add(-time.Second), LocalTimeWithSeconds)},
+		{event: "token_usage", message: "tokens updated", at: localTimeToken(now.Add(-2*time.Second), LocalTimeWithSeconds)},
+		{event: "agent_message_delta", message: "editing dashboard", at: localTimeToken(now.Add(-3*time.Second), LocalTimeWithSeconds)},
+		{event: "turn_started", message: "turn started", at: localTimeToken(now.Add(-4*time.Second), LocalTimeWithSeconds)},
 	}
 	for i, wantRow := range want {
 		if rows[i].Event != wantRow.event || rows[i].Message != wantRow.message || rows[i].At != wantRow.at {
@@ -1131,7 +1131,7 @@ func TestRunningActivityRowsFallBackToLatestEvent(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("runningActivityRows() len = %d, want 1", len(rows))
 	}
-	if rows[0].At != "15:03:04 UTC" || rows[0].Event != "agent_message_delta" || rows[0].Message != "working through review feedback" {
+	if rows[0].At != localTimeToken(at, LocalTimeWithSeconds) || rows[0].Event != "agent_message_delta" || rows[0].Message != "working through review feedback" {
 		t.Fatalf("runningActivityRows()[0] = %#v", rows[0])
 	}
 }
@@ -2582,7 +2582,7 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 				},
 			},
 			want: []pipelineCardSnapshot{
-				{Lane: "Human Review", IssueNumber: "#142", Title: "Review lane PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2h 0m", WaitDetail: "PR hydration using stale cached data until 15:05 UTC"},
+				{Lane: "Human Review", IssueNumber: "#142", Title: "Review lane PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2h 0m", WaitDetail: "PR hydration using stale cached data until " + localTimeToken(retryAt, LocalTimeOnly)},
 				{Lane: "Merging", IssueNumber: "#143", Title: "Merge lane PR", CIStatus: "pending", CodexReviewState: "P2", TimeInStage: "15m 0s", WaitDetail: "quiet 10m 0s / queued 2m 0s / CI 8m 30s / slow GoReleaser Snapshot 4m 7s (queued 1m 0s) / running Test Coverage", MergeLaneStatus: "Queued #1", MergeLaneDetail: "1st in merge queue; waiting for repo merge lane"},
 				{Lane: "Done today", IssueNumber: "#144", Title: "Done lane PR", CIStatus: "pass", CodexReviewState: "P1", TimeInStage: "45m 0s"},
 				{Lane: "Done today", IssueNumber: "#145", Title: "Done lane unverified PR", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "45m 0s"},

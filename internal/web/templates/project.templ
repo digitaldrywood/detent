@@ -203,7 +203,7 @@ templ projectRunsTable(id string, rows []projectRunRow) {
 						title={ row.ContextTitle }
 					}
 				>{ row.Context }</span>
-				<span class="hidden whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums lg:inline">{ row.Finished }</span>
+				<span class="hidden whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums lg:inline">@LocalTime(row.FinishedAt, LocalTimeOptions{Style: LocalDateTime, Fallback: "—"})</span>
 			</div>
 		}
 	</section>

@@ -162,8 +162,8 @@ func TestProjectRunRows(t *testing.T) {
 	if rows[1].Context != "—" {
 		t.Fatalf("unknown completed context = %q, want em dash", rows[1].Context)
 	}
-	if rows[1].Finished == "—" || rows[0].Finished != "—" {
-		t.Fatalf("finished labels wrong: live=%q done=%q", rows[0].Finished, rows[1].Finished)
+	if rows[1].FinishedAt.IsZero() || !rows[0].FinishedAt.IsZero() {
+		t.Fatalf("finished timestamps wrong: live=%s done=%s", rows[0].FinishedAt, rows[1].FinishedAt)
 	}
 
 	limited := projectRunRows(snapshot, 2)

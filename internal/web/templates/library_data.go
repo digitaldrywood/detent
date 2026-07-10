@@ -219,13 +219,6 @@ func libraryRowTitle(row LibraryRow) string {
 	return librarySourceTitle(row)
 }
 
-func libraryTimeLabel(value time.Time) string {
-	if value.IsZero() {
-		return "n/a"
-	}
-	return value.UTC().Format("2006-01-02 15:04")
-}
-
 func libraryDateInputValue(value string, fallback time.Time) string {
 	value = strings.TrimSpace(value)
 	if value != "" {

@@ -28,8 +28,12 @@ templ HealthSnapshotV2(data DashboardData) {
 		<span class="font-medium text-text">{ view.Verdict }</span>
 		<span class="basis-full break-words text-sec md:basis-auto">
 			{ view.Detail }
+			if !view.DetailAt.IsZero() {
+				{ " " }
+				@LocalTime(view.DetailAt, LocalTimeOptions{Relative: view.DetailRelative})
+			}
 			{ " " }
-			Checked <span class="font-mono tabular-nums">{ view.Checked }</span>.
+			Checked <span class="font-mono tabular-nums">@LocalTime(view.CheckedAt, LocalTimeOptions{Style: LocalTimeWithSeconds, Fallback: "--:--:--"})</span>.
 		</span>
 	</p>
 	<section id="health-details" class="flex min-w-0 flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
@@ -52,7 +56,13 @@ templ HealthSnapshotV2(data DashboardData) {
 					<span class="text-2xs" aria-hidden="true">{ row.Kind.Glyph() }</span>
 					{ row.Status }
 				</span>
-				<span class="truncate text-xs text-sec" title={ row.Detail }>{ row.Detail }</span>
+				<span class="truncate text-xs text-sec">
+					{ row.Detail }
+					if !row.DetailAt.IsZero() {
+						{ " " }
+						@LocalTime(row.DetailAt, LocalTimeOptions{Relative: true})
+					}
+				</span>
 				if row.Quota != "" {
 					<span class="flex items-center gap-2.5">
 						<span class="whitespace-nowrap font-mono text-xs text-sec tabular-nums">{ row.Quota }</span>
@@ -63,7 +73,13 @@ templ HealthSnapshotV2(data DashboardData) {
 				} else {
 					<span class="text-xs text-dim">—</span>
 				}
-				<span class="text-right font-mono text-xs text-sec tabular-nums">{ row.Resets }</span>
+				<span class="text-right font-mono text-xs text-sec tabular-nums">
+					if !row.ResetAt.IsZero() {
+						@LocalTime(row.ResetAt, LocalTimeOptions{})
+					} else {
+						{ row.Resets }
+					}
+				</span>
 			</div>
 		}
 		</div>

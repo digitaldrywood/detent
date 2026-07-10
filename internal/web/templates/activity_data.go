@@ -140,13 +140,6 @@ func boardActivityEventID(event BoardActivityEvent) string {
 	return "activity-" + replacer.Replace(strings.TrimSpace(event.ID))
 }
 
-func boardActivityTime(event BoardActivityEvent) string {
-	if event.At.IsZero() {
-		return "now"
-	}
-	return event.At.Local().Format("Jan 2 · 15:04:05")
-}
-
 func boardActivityMeta(event BoardActivityEvent) string {
 	parts := make([]string, 0, 4)
 	if event.AttemptNumber > 0 {

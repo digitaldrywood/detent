@@ -135,6 +135,7 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "github-api-warning", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-warning"},
 		{ID: "github-api-secondary-backoff", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-secondary-backoff"},
 		{ID: "github-api-primary-exhausted", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-primary-exhausted"},
+		{ID: "backend-capacity-outage", Route: "/health/ui", WaitSelector: "#backend-capacity-outage", Page: "health", Variant: "backend-capacity-outage", HideFromManifest: true},
 		{ID: "fleet-kanban-multiproject", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "dense-kanban", KanbanMode: workflowconfig.KanbanModeReadOnly},
 		{ID: "fleet-kanban-blocked-alerts", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "healthy", KanbanMode: workflowconfig.KanbanModeReadOnly, ShowBlockedAlerts: true},
 		{ID: "fleet-kanban-external-lane-timer", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "external-lane-timer", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},

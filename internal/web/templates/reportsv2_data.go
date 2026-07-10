@@ -109,7 +109,7 @@ func reportsReleaseView(data ReportsData) reportsRelease {
 	}
 	next := "Count threshold pending"
 	if release.NextTriggerAt != nil {
-		next = release.NextTriggerAt.UTC().Format("Jan 02 15:04 UTC")
+		next = localTimeToken(*release.NextTriggerAt, LocalDateTime)
 	}
 	return reportsRelease{
 		Available: true,

@@ -57,8 +57,8 @@ func TestHealthViewVerdicts(t *testing.T) {
 			if view.Verdict != tt.wantVerdict {
 				t.Fatalf("verdict = %q, want %q", view.Verdict, tt.wantVerdict)
 			}
-			if view.Checked != "16:42:07" {
-				t.Fatalf("checked = %q", view.Checked)
+			if !view.CheckedAt.Equal(now) {
+				t.Fatalf("checked at = %s", view.CheckedAt)
 			}
 		})
 	}
@@ -77,7 +77,7 @@ func TestHealthRowsIncludeBackendCapacityOutage(t *testing.T) {
 		}},
 	})
 	row := rows[len(rows)-1]
-	if row.Component != "Backend codex" || row.Status != "Usage limit" || row.Resets != "02:39" {
+	if row.Component != "Backend codex" || row.Status != "Usage limit" || !row.ResetAt.Equal(now.Add(44*time.Minute)) {
 		t.Fatalf("backend outage row = %+v", row)
 	}
 }
@@ -101,8 +101,8 @@ func TestHealthRows(t *testing.T) {
 	if rest.Quota != "4,178 / 5,000" || rest.QuotaPct != 83 || rest.QuotaWarn {
 		t.Fatalf("rest quota = %q pct=%d warn=%v", rest.Quota, rest.QuotaPct, rest.QuotaWarn)
 	}
-	if rest.Resets != "17:00" {
-		t.Fatalf("rest resets = %q", rest.Resets)
+	if !rest.ResetAt.Equal(resetAt) {
+		t.Fatalf("rest reset at = %s", rest.ResetAt)
 	}
 	graphql := rows[1]
 	if graphql.Kind != primitives.KindWarn || graphql.Status != "Backoff" || !graphql.QuotaWarn {

@@ -152,7 +152,7 @@ func appShellVersionLabel(data DashboardShellData) string {
 }
 
 func appShellClockLabel(now time.Time) string {
-	return now.UTC().Format("15:04:05")
+	return localTimeToken(now, LocalTimeWithSeconds)
 }
 
 func appShellSnapshotClock(data DashboardShellData) string {
