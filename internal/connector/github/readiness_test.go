@@ -676,6 +676,7 @@ func TestReadinessWriteProbeTargetWarnsWhenClosed(t *testing.T) {
 	}
 	if check == nil {
 		t.Fatal("check = nil, want warning")
+		return
 	}
 	if check.Status != ReadinessWarn {
 		t.Fatalf("Status = %s, want %s: %#v", check.Status, ReadinessWarn, *check)
