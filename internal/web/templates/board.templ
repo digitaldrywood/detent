@@ -164,6 +164,9 @@ templ boardCardView2(card boardCardView) {
 			}
 		</div>
 		<div class={ boardCardTitleClass(card) }>{ card.Title }</div>
+		if card.RuntimeCardSummary != "" {
+			<div class="truncate font-mono text-2xs text-sec" title={ card.RuntimeSummary }>{ card.RuntimeCardSummary }</div>
+		}
 		if card.ExtraText != "" {
 			if card.ExtraChip {
 				<div class="flex">

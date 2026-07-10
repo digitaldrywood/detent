@@ -153,21 +153,21 @@ func TestRunningBoardCardAndDetailSheetRenderRuntimeIdentity(t *testing.T) {
 	if running.RuntimeSummary != "Codex · openai · gpt-5.6-sol · xhigh" {
 		t.Fatalf("RuntimeSummary = %q", running.RuntimeSummary)
 	}
+	if running.RuntimeCardSummary != "gpt-5.6-sol · xhigh" {
+		t.Fatalf("RuntimeCardSummary = %q", running.RuntimeCardSummary)
+	}
 
 	cardHTML := renderBoardComponent(t, boardCardView2(running))
 	for _, want := range []string{
 		`data-help-trigger`,
 		`data-help-scope="runtime-identity"`,
 		`data-help-description="Codex · openai · gpt-5.6-sol · xhigh"`,
+		`>gpt-5.6-sol · xhigh<`,
 	} {
 		if !strings.Contains(cardHTML, want) {
 			t.Fatalf("running card missing %q:\n%s", want, cardHTML)
 		}
 	}
-	if strings.Contains(cardHTML, `>Codex · openai · gpt-5.6-sol · xhigh<`) {
-		t.Fatalf("runtime summary added a permanent card row:\n%s", cardHTML)
-	}
-
 	card, ok := FindBoardCard(data, "gopher-ai", "gopherguides/gopher-ai#185")
 	if !ok {
 		t.Fatal("FindBoardCard() did not find running card")

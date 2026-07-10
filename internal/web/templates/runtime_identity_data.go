@@ -33,6 +33,17 @@ func runtimeIdentitySummary(identity agentidentity.Identity) string {
 	return strings.Join(parts, " · ")
 }
 
+func runtimeIdentityCardSummary(identity agentidentity.Identity) string {
+	identity = identity.Normalize()
+	parts := make([]string, 0, 2)
+	for _, value := range []string{identity.Model(), identity.ReasoningEffort.Value} {
+		if value = strings.TrimSpace(value); value != "" {
+			parts = append(parts, value)
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
 func runtimeIdentityDetailValue(value agentidentity.Value) string {
 	value = value.Normalize()
 	provenance := strings.TrimSpace(string(value.Provenance))

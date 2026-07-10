@@ -43,6 +43,7 @@ func (b *AgentBackend) RunTurn(
 		Model:             req.Model,
 		ModelProvider:     req.ModelProvider,
 		ServiceTier:       req.ServiceTier,
+		ReasoningEffort:   req.ReasoningEffort,
 		TurnTimeout:       req.TurnTimeout,
 	}, func(update Update) error {
 		if onUpdate == nil {
@@ -65,6 +66,28 @@ func (b *AgentBackend) RunTurn(
 		TurnID:    result.TurnID,
 		SessionID: result.SessionID,
 	}, nil
+}
+
+func (b *AgentBackend) ListModels(ctx context.Context) ([]runner.AgentModel, error) {
+	models, err := b.client.ListModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]runner.AgentModel, 0, len(models))
+	for _, model := range models {
+		out = append(out, runner.AgentModel{
+			ID:                        model.ID,
+			Model:                     model.Model,
+			Default:                   model.Default,
+			Upgrade:                   model.Upgrade,
+			SupportedReasoningEfforts: append([]string(nil), model.SupportedReasoningEfforts...),
+		})
+	}
+	return out, nil
+}
+
+func (b *AgentBackend) DefaultModel(ctx context.Context, workspace string) (string, error) {
+	return b.client.DefaultModel(ctx, workspace)
 }
 
 func agentUpdateFromCodex(update Update) runner.AgentUpdate {

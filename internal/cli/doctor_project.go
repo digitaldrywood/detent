@@ -2,11 +2,13 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentoverride"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
@@ -140,6 +142,10 @@ func checkDoctorProjectWithProgress(
 	checks := []doctorCheck{workflowCheck}
 	setDoctorCurrentCheck("Project " + id + " pinned route models")
 	checks = append(checks, checkDoctorRouteModels(ctx, id, project, workflow.Config, deps))
+	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
+		setDoctorCurrentCheck("Project " + id + " issue agent models")
+		checks = append(checks, checkDoctorIssueAgentModels(ctx, id, project, workflow.Config, deps))
+	}
 	if workflow.Config.Agent.AutoPromote.Enabled {
 		setDoctorCurrentCheck("Project " + id + " auto-promote")
 		checks = append(checks, checkDoctorAutoPromote(ctx, id, workflow.Config, deps, time.Now()))
@@ -330,12 +336,132 @@ func defaultDoctorRouteModelProbe(ctx context.Context, req doctorRouteModelProbe
 	if err != nil {
 		return err
 	}
-	_, err = backend.RunTurn(ctx, runnerpkg.AgentTurnRequest{
-		Workspace: strings.TrimSpace(req.Workspace),
-		Prompt:    "Reply exactly: OK",
-		Model:     strings.TrimSpace(req.Model),
-	}, nil)
-	return err
+	provider, ok := backend.(runnerpkg.AgentModelCatalogProvider)
+	if !ok {
+		return errors.New("backend does not advertise a model catalog")
+	}
+	models, err := provider.ListModels(ctx)
+	if err != nil {
+		return err
+	}
+	return validateDoctorModelCatalog(models, req.Model)
+}
+
+func validateDoctorModelCatalog(models []runnerpkg.AgentModel, requested string) error {
+	want := strings.TrimSpace(requested)
+	for _, model := range models {
+		if strings.TrimSpace(model.ID) == want || strings.TrimSpace(model.Model) == want {
+			if upgrade := strings.TrimSpace(model.Upgrade); upgrade != "" {
+				return fmt.Errorf("model %q is retired; use %q", want, upgrade)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("model %q is not available from the backend", want)
+}
+
+func checkDoctorIssueAgentModels(ctx context.Context, id string, project globalconfig.Project, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {
+	name := "Project " + id + " issue agent models"
+	backend, ok := doctorDefaultCodexBackend(cfg)
+	if !ok {
+		return doctorCheck{Name: name, Status: doctorOK, Detail: "detent-agent model validation skipped because no Codex backend is configured"}
+	}
+	if deps.autoPromoteConnector == nil {
+		deps.autoPromoteConnector = defaultDoctorAutoPromoteConnector
+	}
+	projectConnector, err := deps.autoPromoteConnector(cfg)
+	if err != nil {
+		return doctorCheck{Name: name, Status: doctorFail, Detail: fmt.Sprintf("create issue model diagnostic connector: %v", err), Hint: "Fix tracker credentials and rerun detent doctor."}
+	}
+	if projectConnector == nil {
+		return doctorCheck{Name: name, Status: doctorFail, Detail: "create issue model diagnostic connector: connector is nil", Hint: "Fix tracker configuration and rerun detent doctor."}
+	}
+
+	states := append(append([]string(nil), cfg.Tracker.ActiveStates...), cfg.Tracker.ObservedStates...)
+	issues, fetchErr := projectConnector.FetchIssuesByStates(ctx, states)
+	closeErr := closeDoctorAutoPromoteConnector(projectConnector)
+	if fetchErr != nil {
+		return doctorCheck{Name: name, Status: doctorFail, Detail: fmt.Sprintf("fetch issue model overrides: %v", fetchErr), Hint: "Fix tracker connectivity and rerun detent doctor."}
+	}
+
+	if deps.modelProbe == nil {
+		deps.modelProbe = defaultDoctorRouteModelProbe
+	}
+	workspacePath := projectSourceRoot(project, cfg)
+	if expanded, err := expandDoctorWorkspacePath(workspacePath); err == nil {
+		workspacePath = expanded
+	}
+	workflowPath, workflowPathErr := doctorWorkflowOptimizationWorkflowPath(project)
+	if workflowPathErr != nil {
+		workflowPath = strings.TrimSpace(project.Workflow)
+	}
+	probed := 0
+	failures := []string{}
+	for _, issue := range issues {
+		override, found, err := agentoverride.FromIssueBody(issue.Description)
+		if !found {
+			continue
+		}
+		identifier := strings.TrimSpace(issue.Identifier)
+		if identifier == "" {
+			identifier = strings.TrimSpace(issue.ID)
+		}
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("issue %s has invalid detent-agent block: %v", identifier, err))
+			continue
+		}
+		if override.Model == "" {
+			continue
+		}
+		probed++
+		err = deps.modelProbe(ctx, doctorRouteModelProbeRequest{
+			ProjectID:    id,
+			Workspace:    workspacePath,
+			WorkflowPath: workflowPath,
+			RouteName:    identifier,
+			Model:        override.Model,
+			Backend:      backend,
+		})
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("issue %s detent-agent model %s rejected by backend: %v", identifier, override.Model, err))
+		}
+	}
+
+	if len(failures) > 0 {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: strings.Join(failures, "; "),
+			Hint:   "Update rejected detent-agent model values in the original issue bodies or remove the model key to inherit the project default.",
+		}
+	}
+	detail := fmt.Sprintf("validated %d detent-agent model override(s)", probed)
+	check := doctorCheck{Name: name, Status: doctorOK, Detail: detail}
+	if closeErr != nil {
+		check.Status = doctorWarn
+		check.Detail += "; connector close failed: " + closeErr.Error()
+		check.Hint = "Rerun detent doctor and check local network resources."
+	}
+	return check
+}
+
+func doctorDefaultCodexBackend(cfg workflowconfig.Config) (workflowconfig.AgentBackend, bool) {
+	backends := doctorWorkflowBackendConfigsByID(cfg)
+	for _, route := range cfg.AgentRouteConfigs() {
+		if !route.Default || (strings.TrimSpace(route.Role) != "" && !strings.EqualFold(strings.TrimSpace(route.Role), runnerpkg.RoleCode)) {
+			continue
+		}
+		backend, ok := backends[strings.TrimSpace(route.Backend)]
+		if ok && backend.Kind == workflowconfig.AgentBackendCodex {
+			return backend, true
+		}
+	}
+	for _, backend := range cfg.AgentBackendConfigs() {
+		if backend.Kind == workflowconfig.AgentBackendCodex {
+			return backend, true
+		}
+	}
+	return workflowconfig.AgentBackend{}, false
 }
 
 func doctorProjectID(project globalconfig.Project) string {

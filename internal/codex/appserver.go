@@ -19,6 +19,7 @@ const (
 	turnStartRequestID    = 3
 	threadResumeRequestID = 4
 	configReadRequestID   = 5
+	modelListRequestID    = 6
 	methodNotFoundCode    = -32601
 
 	defaultClientName    = "detent-orchestrator"
@@ -162,6 +163,7 @@ type RunTurnRequest struct {
 	Model             string
 	ModelProvider     string
 	ServiceTier       string
+	ReasoningEffort   string
 	TurnTimeout       time.Duration
 }
 
@@ -169,6 +171,14 @@ type RunTurnResult struct {
 	ThreadID  string
 	TurnID    string
 	SessionID string
+}
+
+type Model struct {
+	ID                        string
+	Model                     string
+	Default                   bool
+	Upgrade                   string
+	SupportedReasoningEfforts []string
 }
 
 type UpdateHandler func(Update) error
@@ -394,6 +404,94 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 	return result, nil
 }
 
+func (s *AppServer) ListModels(ctx context.Context) (models []Model, err error) {
+	ctx = contextOrBackground(ctx)
+	transport, err := s.transportFactory.NewTransport(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("start codex app-server transport: %w", err)
+	}
+	defer func() {
+		closeErr := closeTransport(ctx, transport, s.readTimeout)
+		if err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+
+	if err := s.initialize(ctx, transport, nil); err != nil {
+		return nil, err
+	}
+
+	cursor := ""
+	for {
+		params := map[string]any{
+			"includeHidden": true,
+			"limit":         100,
+		}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		if err := sendRequest(ctx, transport, modelListRequestID, "model/list", params); err != nil {
+			return nil, err
+		}
+		result, err := s.awaitResponse(ctx, transport, modelListRequestID, nil)
+		if err != nil {
+			return nil, err
+		}
+		var response struct {
+			Data []struct {
+				ID                        string `json:"id"`
+				Model                     string `json:"model"`
+				Default                   bool   `json:"isDefault"`
+				Upgrade                   string `json:"upgrade"`
+				SupportedReasoningEfforts []struct {
+					Effort string `json:"reasoningEffort"`
+				} `json:"supportedReasoningEfforts"`
+			} `json:"data"`
+			NextCursor string `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(result, &response); err != nil {
+			return nil, fmt.Errorf("%w: decode model/list result: %w", ErrInvalidResponse, err)
+		}
+		for _, entry := range response.Data {
+			model := Model{
+				ID:      strings.TrimSpace(entry.ID),
+				Model:   strings.TrimSpace(entry.Model),
+				Default: entry.Default,
+				Upgrade: strings.TrimSpace(entry.Upgrade),
+			}
+			for _, option := range entry.SupportedReasoningEfforts {
+				if effort := strings.TrimSpace(option.Effort); effort != "" {
+					model.SupportedReasoningEfforts = append(model.SupportedReasoningEfforts, effort)
+				}
+			}
+			models = append(models, model)
+		}
+		cursor = strings.TrimSpace(response.NextCursor)
+		if cursor == "" {
+			return models, nil
+		}
+	}
+}
+
+func (s *AppServer) DefaultModel(ctx context.Context, workspace string) (model string, err error) {
+	ctx = contextOrBackground(ctx)
+	transport, err := s.transportFactory.NewTransport(ctx)
+	if err != nil {
+		return "", fmt.Errorf("start codex app-server transport: %w", err)
+	}
+	defer func() {
+		closeErr := closeTransport(ctx, transport, s.readTimeout)
+		if err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+
+	if err := s.initialize(ctx, transport, nil); err != nil {
+		return "", err
+	}
+	return s.resolveDefaultModel(ctx, transport, workspace, nil)
+}
+
 func (s *AppServer) initialize(ctx context.Context, transport Transport, onUpdate UpdateHandler) error {
 	params := map[string]any{
 		"capabilities": map[string]any{
@@ -481,7 +579,6 @@ func (s *AppServer) startThread(
 	if req.ServiceTier != "" {
 		params["serviceTier"] = req.ServiceTier
 	}
-
 	if err := sendRequest(ctx, transport, threadStartRequestID, "thread/start", params); err != nil {
 		return "", agentidentity.Identity{}, err
 	}
@@ -591,6 +688,9 @@ func (s *AppServer) startTurn(
 	}
 	if req.ServiceTier != "" {
 		params["serviceTier"] = req.ServiceTier
+	}
+	if req.ReasoningEffort != "" {
+		params["effort"] = req.ReasoningEffort
 	}
 
 	if err := sendRequest(ctx, transport, turnStartRequestID, "turn/start", params); err != nil {
@@ -1286,6 +1386,8 @@ func requestName(id int) string {
 		return "thread/resume"
 	case configReadRequestID:
 		return "config/read"
+	case modelListRequestID:
+		return "model/list"
 	default:
 		return strconv.Itoa(id)
 	}

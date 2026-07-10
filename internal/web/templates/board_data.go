@@ -67,31 +67,32 @@ type boardLaneVisibilityPayload struct {
 // boardCardView keeps cards uniform: an 11px mono meta row, a two-line
 // title, and AT MOST one extra signal (chip, status line, or none).
 type boardCardView struct {
-	DomID             string
-	Identity          string
-	IssueID           string
-	Number            string
-	Project           string
-	MoveProject       string
-	Scope             string
-	CurrentState      string
-	PRNumber          string
-	DragDrop          bool
-	CanDrag           bool
-	AllowedTargets    string
-	MoveDisabledText  string
-	MoveDisabledLabel string
-	Running           bool
-	Done              bool
-	Terminal          bool
-	MetaRight         string
-	AgeFooter         string
-	AgeFooterTitle    string
-	Title             string
-	ExtraKind         primitives.Kind
-	ExtraText         string
-	ExtraChip         bool
-	RuntimeSummary    string
+	DomID              string
+	Identity           string
+	IssueID            string
+	Number             string
+	Project            string
+	MoveProject        string
+	Scope              string
+	CurrentState       string
+	PRNumber           string
+	DragDrop           bool
+	CanDrag            bool
+	AllowedTargets     string
+	MoveDisabledText   string
+	MoveDisabledLabel  string
+	Running            bool
+	Done               bool
+	Terminal           bool
+	MetaRight          string
+	AgeFooter          string
+	AgeFooterTitle     string
+	Title              string
+	ExtraKind          primitives.Kind
+	ExtraText          string
+	ExtraChip          bool
+	RuntimeSummary     string
+	RuntimeCardSummary string
 }
 
 func boardViewFromDashboard(data DashboardData) boardView {
@@ -402,6 +403,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	view.ExtraKind, view.ExtraText, view.ExtraChip = boardCardExtra(card, view)
 	if view.Running {
 		view.RuntimeSummary = runtimeIdentitySummary(card.RuntimeIdentity)
+		view.RuntimeCardSummary = runtimeIdentityCardSummary(card.RuntimeIdentity)
 	}
 	return view
 }
