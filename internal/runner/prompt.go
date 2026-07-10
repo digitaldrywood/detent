@@ -36,6 +36,7 @@ No description provided.
 var (
 	templateVariablePattern = regexp.MustCompile(`{{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*}}`)
 	conditionalTagPattern   = regexp.MustCompile(`{%\s*(if\s+([A-Za-z_][A-Za-z0-9_.]*)|else|endif)\s*%}`)
+	skillDraftYesPattern    = regexp.MustCompile(`(?im)^\s*skill draft:\s*yes(?:\s|$)`)
 )
 
 type PromptOptions struct {
@@ -505,16 +506,18 @@ func appendSkillCreationBlock(prompt string, cfg config.Skills) string {
 
 	var b strings.Builder
 	b.WriteString("## Skill creation loop\n\n")
-	b.WriteString("Before final handoff, consider whether the successful run exposed a repeated or novel method worth capturing as a reusable Detent skill.\n")
+	b.WriteString("Before final handoff, make an explicit skill-draft decision. Draft when the run exposed a reusable method such as a repeated multi-step procedure, a non-obvious debugging recipe, or a project-specific convention discovered the hard way.\n")
 	b.WriteString("- Draft at most ")
 	b.WriteString(pluralizeCount(cfg.Creation.MaxDraftsPerRun, "candidate skill file", "candidate skill files"))
 	b.WriteString(" under `")
 	b.WriteString(path)
 	b.WriteString("` when the method is broadly reusable.\n")
+	b.WriteString("- This is in-scope work when one of those triggers is present; treat the draft as part of the handoff, not as an unrelated refactor.\n")
 	b.WriteString("- Do not draft a skill for routine edits, one-off project facts, secrets, or instructions that only restate the current issue.\n")
 	b.WriteString("- Use a Markdown file with YAML front matter fields `name`, `description`, and `when_to_use`, followed by concise implementation guidance.\n")
 	b.WriteString("- If you draft or modify a skill file, rerun the required validation gate after the draft so the final pull request contents are validated.\n")
 	b.WriteString("- Let normal pull request review be the approval gate; the draft skill enters future prompts only after humans review and merge it.\n")
+	b.WriteString("- In the final handoff, include exactly one line: `Skill draft: yes — <path and purpose>` when you created a draft, or `Skill draft: no — <reason>` when you did not.\n")
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + strings.TrimRight(b.String(), "\n")
 }
@@ -532,6 +535,10 @@ When this run surfaces a meaningful problem or improvement unrelated to the curr
 - If the configured status source cannot be set from this session, file the issue without a state and say so in the final handoff.`
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + block
+}
+
+func skillDraftProposed(output string) bool {
+	return skillDraftYesPattern.MatchString(output)
 }
 
 func appendGateBlock(prompt string, cfg gate.Config) string {

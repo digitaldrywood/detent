@@ -362,7 +362,7 @@ INSERT INTO codex_sessions (
   resumed_from_session_id,
   orphan_recovery_outcome
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome
+RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed
 `
 
 type CreateCodexSessionParams struct {
@@ -479,6 +479,7 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		&i.ServiceTierProvenance,
 		&i.IdentityObservedAt,
 		&i.OrphanRecoveryOutcome,
+		&i.SkillDraftProposed,
 	)
 	return i, err
 }
@@ -1069,8 +1070,9 @@ SET completed_at = ?1,
     model = COALESCE(?11, model),
     provider_thread_id = COALESCE(?12, provider_thread_id),
     provider_session_id = COALESCE(?13, provider_session_id),
-    resumed_from_session_id = COALESCE(?14, resumed_from_session_id)
-WHERE id = ?15
+    resumed_from_session_id = COALESCE(?14, resumed_from_session_id),
+    skill_draft_proposed = ?15
+WHERE id = ?16
 `
 
 type FinishCodexSessionParams struct {
@@ -1088,6 +1090,7 @@ type FinishCodexSessionParams struct {
 	ProviderThreadID      sql.NullString `json:"provider_thread_id"`
 	ProviderSessionID     sql.NullString `json:"provider_session_id"`
 	ResumedFromSessionID  sql.NullInt64  `json:"resumed_from_session_id"`
+	SkillDraftProposed    int64          `json:"skill_draft_proposed"`
 	ID                    int64          `json:"id"`
 }
 
@@ -1107,6 +1110,7 @@ func (q *Queries) FinishCodexSession(ctx context.Context, arg FinishCodexSession
 		arg.ProviderThreadID,
 		arg.ProviderSessionID,
 		arg.ResumedFromSessionID,
+		arg.SkillDraftProposed,
 		arg.ID,
 	)
 	if err != nil {
@@ -1164,7 +1168,7 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, 
 }
 
 const getCodexSession = `-- name: GetCodexSession :one
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed
 FROM codex_sessions
 WHERE id = ?
 `
@@ -1209,6 +1213,7 @@ func (q *Queries) GetCodexSession(ctx context.Context, id int64) (CodexSession, 
 		&i.ServiceTierProvenance,
 		&i.IdentityObservedAt,
 		&i.OrphanRecoveryOutcome,
+		&i.SkillDraftProposed,
 	)
 	return i, err
 }
@@ -2275,7 +2280,7 @@ func (q *Queries) ListOrphanedAgentSessions(ctx context.Context, projectID strin
 }
 
 const listRecentCodexSessions = `-- name: ListRecentCodexSessions :many
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed
 FROM codex_sessions
 ORDER BY completed_at DESC, id DESC
 LIMIT ?
@@ -2327,6 +2332,7 @@ func (q *Queries) ListRecentCodexSessions(ctx context.Context, limit int64) ([]C
 			&i.ServiceTierProvenance,
 			&i.IdentityObservedAt,
 			&i.OrphanRecoveryOutcome,
+			&i.SkillDraftProposed,
 		); err != nil {
 			return nil, err
 		}

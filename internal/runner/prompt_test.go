@@ -102,7 +102,13 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"## Available skills",
 		"- migrate — Issue mentions schema changes.",
 		"## Skill creation loop",
-		"Before final handoff, consider whether the successful run exposed",
+		"Before final handoff, make an explicit skill-draft decision",
+		"a repeated multi-step procedure",
+		"a non-obvious debugging recipe",
+		"a project-specific convention discovered the hard way",
+		"This is in-scope work",
+		"Skill draft: yes",
+		"Skill draft: no",
 		"Draft at most 1 candidate skill file under `.detent/skills/`",
 		"rerun the required validation gate after the draft",
 		"the draft skill enters future prompts only after humans review and merge it",
@@ -113,6 +119,65 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Add migrations.") {
 		t.Fatalf("prompt included skill description, want only when_to_use:\n%s", prompt)
+	}
+}
+
+func TestBuildPromptSkillCreationUsesDefaultConfigForPullRequestsOnly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		planOnly bool
+		want     bool
+	}{
+		{name: "pull request run", want: true},
+		{name: "plan only run", planOnly: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(config.Workflow{
+				Config: config.Default(),
+				Prompt: "Base prompt",
+			}, connector.Issue{
+				Identifier: "digitaldrywood/detent#1166",
+				Title:      "Tune skill creation",
+			}, PromptOptions{PlanOnly: tt.planOnly})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+
+			if got := strings.Contains(prompt, "## Skill creation loop"); got != tt.want {
+				t.Fatalf("skill creation block present = %v, want %v:\n%s", got, tt.want, prompt)
+			}
+		})
+	}
+}
+
+func TestSkillDraftProposed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{name: "yes decision", output: "Tests pass.\n\nSkill draft: yes — `.detent/skills/debug.md` captures the workflow.", want: true},
+		{name: "case and whitespace", output: "  SKILL DRAFT: YES  ", want: true},
+		{name: "no decision", output: "Skill draft: no — routine edit."},
+		{name: "discussion is not a proposal", output: "The prompt should require Skill draft: yes when appropriate."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := skillDraftProposed(tt.output); got != tt.want {
+				t.Fatalf("skillDraftProposed(%q) = %v, want %v", tt.output, got, tt.want)
+			}
+		})
 	}
 }
 

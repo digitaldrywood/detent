@@ -89,7 +89,8 @@ SET completed_at = sqlc.arg(completed_at),
     model = COALESCE(sqlc.narg(model), model),
     provider_thread_id = COALESCE(sqlc.narg(provider_thread_id), provider_thread_id),
     provider_session_id = COALESCE(sqlc.narg(provider_session_id), provider_session_id),
-    resumed_from_session_id = COALESCE(sqlc.narg(resumed_from_session_id), resumed_from_session_id)
+    resumed_from_session_id = COALESCE(sqlc.narg(resumed_from_session_id), resumed_from_session_id),
+    skill_draft_proposed = sqlc.arg(skill_draft_proposed)
 WHERE id = sqlc.arg(id);
 
 -- name: UpdateCodexSessionIdentity :execrows
