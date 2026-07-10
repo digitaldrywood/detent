@@ -7,7 +7,7 @@ import "github.com/digitaldrywood/detent/internal/web/ui/primitives"
 // #snapshot). Tabs live outside the live region.
 templ projectFrame(data DashboardData, activeTab string) {
 	@AppShell(ProjectShellDataFromDashboard(data, activeTab), projectSlugBadge(data)) {
-		<nav class="flex flex-none gap-5.5 border-b border-line px-5" aria-label="Project views">
+		<nav class="flex flex-none gap-5.5 overflow-x-auto border-b border-line px-5" aria-label="Project views">
 			for _, tab := range projectTabs(data, activeTab) {
 				<a href={ templ.SafeURL(tab.Href) } class={ projectTabClass(tab) } { sidebarAriaCurrent(tab.Active)... }>{ tab.Label }</a>
 			}
@@ -175,14 +175,14 @@ templ projectRunsSnapshotBody(data DashboardData) {
 // is a dot plus text, never color alone.
 templ projectRunsTable(id string, rows []projectRunRow) {
 	<section id={ id } class="flex flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
-		<div class="grid grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_110px] items-center gap-3.5 border-b border-line px-4 py-2">
+		<div class="grid grid-cols-[70px_minmax(0,1fr)_90px] items-center gap-3 border-b border-line px-4 py-2 lg:grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_110px] lg:gap-3.5">
 			<span class="text-2xs font-semibold uppercase text-dim">Issue</span>
-			<span class="text-2xs font-semibold uppercase text-dim">Title</span>
+			<span class="hidden text-2xs font-semibold uppercase text-dim lg:inline">Title</span>
 			<span class="text-2xs font-semibold uppercase text-dim">State</span>
 			<span class="text-2xs font-semibold uppercase text-dim">Runtime · Turns</span>
-			<span class="text-2xs font-semibold uppercase text-dim text-right">Tokens</span>
-			<span class="text-2xs font-semibold uppercase text-dim text-right">Context</span>
-			<span class="text-2xs font-semibold uppercase text-dim text-right">Finished</span>
+			<span class="hidden text-right text-2xs font-semibold uppercase text-dim lg:inline">Tokens</span>
+			<span class="hidden text-right text-2xs font-semibold uppercase text-dim lg:inline">Context</span>
+			<span class="hidden text-right text-2xs font-semibold uppercase text-dim lg:inline">Finished</span>
 		</div>
 		if len(rows) == 0 {
 			@primitives.EmptyLine("No runs recorded")
@@ -190,20 +190,20 @@ templ projectRunsTable(id string, rows []projectRunRow) {
 		for i, row := range rows {
 			<div id={ row.DomID } class={ projectRunRowClass(i == len(rows)-1) }>
 				@primitives.TrackerReferenceLink(row.Ref, row.URL, "min-w-0 truncate font-mono text-xs font-medium text-text tabular-nums")
-				<span class="truncate text-sm text-text">{ row.Title }</span>
-				<span class={ "flex items-center gap-1.5 text-xs " + boardExtraTextClass(row.StateKind) }>
+				<span class="hidden min-w-0 truncate text-sm text-text lg:inline">{ row.Title }</span>
+				<span class={ "flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-xs " + boardExtraTextClass(row.StateKind) }>
 					@primitives.StatusDot(row.StateKind, row.StateLive)
 					{ row.StateText }
 				</span>
 				<span class="whitespace-nowrap font-mono text-xs text-sec tabular-nums">{ row.Runtime }</span>
-				<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Tokens }</span>
+				<span class="hidden whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums lg:inline">{ row.Tokens }</span>
 				<span
-					class={ "whitespace-nowrap text-right font-mono text-xs tabular-nums " + boardExtraTextClass(row.ContextKind) }
+					class={ "hidden whitespace-nowrap text-right font-mono text-xs tabular-nums lg:inline " + boardExtraTextClass(row.ContextKind) }
 					if row.ContextTitle != "" {
 						title={ row.ContextTitle }
 					}
 				>{ row.Context }</span>
-				<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Finished }</span>
+				<span class="hidden whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums lg:inline">{ row.Finished }</span>
 			</div>
 		}
 	</section>

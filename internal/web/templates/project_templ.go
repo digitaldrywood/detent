@@ -46,7 +46,7 @@ func projectFrame(data DashboardData, activeTab string) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<nav class=\"flex flex-none gap-5.5 border-b border-line px-5\" aria-label=\"Project views\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<nav class=\"flex flex-none gap-5.5 overflow-x-auto border-b border-line px-5\" aria-label=\"Project views\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -781,7 +781,7 @@ func projectRunsTable(id string, rows []projectRunRow) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 40, "\" class=\"flex flex-none flex-col overflow-hidden rounded-card border border-line bg-surface\"><div class=\"grid grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_110px] items-center gap-3.5 border-b border-line px-4 py-2\"><span class=\"text-2xs font-semibold uppercase text-dim\">Issue</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Title</span> <span class=\"text-2xs font-semibold uppercase text-dim\">State</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Runtime · Turns</span> <span class=\"text-2xs font-semibold uppercase text-dim text-right\">Tokens</span> <span class=\"text-2xs font-semibold uppercase text-dim text-right\">Context</span> <span class=\"text-2xs font-semibold uppercase text-dim text-right\">Finished</span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 40, "\" class=\"flex flex-none flex-col overflow-hidden rounded-card border border-line bg-surface\"><div class=\"grid grid-cols-[70px_minmax(0,1fr)_90px] items-center gap-3 border-b border-line px-4 py-2 lg:grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_110px] lg:gap-3.5\"><span class=\"text-2xs font-semibold uppercase text-dim\">Issue</span> <span class=\"hidden text-2xs font-semibold uppercase text-dim lg:inline\">Title</span> <span class=\"text-2xs font-semibold uppercase text-dim\">State</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Runtime · Turns</span> <span class=\"hidden text-right text-2xs font-semibold uppercase text-dim lg:inline\">Tokens</span> <span class=\"hidden text-right text-2xs font-semibold uppercase text-dim lg:inline\">Context</span> <span class=\"hidden text-right text-2xs font-semibold uppercase text-dim lg:inline\">Finished</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -831,14 +831,14 @@ func projectRunsTable(id string, rows []projectRunRow) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "<span class=\"truncate text-sm text-text\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "<span class=\"hidden min-w-0 truncate text-sm text-text lg:inline\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var31 string
 			templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(row.Title)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/project.templ`, Line: 193, Col: 56}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/project.templ`, Line: 193, Col: 81}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 			if templ_7745c5c3_Err != nil {
@@ -848,7 +848,7 @@ func projectRunsTable(id string, rows []projectRunRow) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var32 = []any{"flex items-center gap-1.5 text-xs " + boardExtraTextClass(row.StateKind)}
+			var templ_7745c5c3_Var32 = []any{"flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-xs " + boardExtraTextClass(row.StateKind)}
 			templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var32...)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
@@ -896,14 +896,14 @@ func projectRunsTable(id string, rows []projectRunRow) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, "</span> <span class=\"whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, "</span> <span class=\"hidden whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums lg:inline\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var36 string
 			templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(row.Tokens)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/project.templ`, Line: 199, Col: 99}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/project.templ`, Line: 199, Col: 116}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 			if templ_7745c5c3_Err != nil {
@@ -913,7 +913,7 @@ func projectRunsTable(id string, rows []projectRunRow) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var37 = []any{"whitespace-nowrap text-right font-mono text-xs tabular-nums " + boardExtraTextClass(row.ContextKind)}
+			var templ_7745c5c3_Var37 = []any{"hidden whitespace-nowrap text-right font-mono text-xs tabular-nums lg:inline " + boardExtraTextClass(row.ContextKind)}
 			templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var37...)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
@@ -967,14 +967,14 @@ func projectRunsTable(id string, rows []projectRunRow) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 56, "</span> <span class=\"whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 56, "</span> <span class=\"hidden whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums lg:inline\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var41 string
 			templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinStringErrs(row.Finished)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/project.templ`, Line: 206, Col: 101}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/project.templ`, Line: 206, Col: 118}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
 			if templ_7745c5c3_Err != nil {

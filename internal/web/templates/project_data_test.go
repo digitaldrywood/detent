@@ -172,6 +172,21 @@ func TestProjectRunRows(t *testing.T) {
 	}
 }
 
+func TestProjectRunRowClassUsesCompactColumnsBelowDesktop(t *testing.T) {
+	t.Parallel()
+
+	got := projectRunRowClass(false)
+	for _, want := range []string{
+		"grid-cols-[70px_minmax(0,1fr)_90px]",
+		"lg:grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_110px]",
+		"border-b border-line",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("projectRunRowClass(false) missing %q: %q", want, got)
+		}
+	}
+}
+
 func TestProjectSlugLabel(t *testing.T) {
 	tests := []struct {
 		name string
