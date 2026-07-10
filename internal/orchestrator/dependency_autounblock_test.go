@@ -99,7 +99,13 @@ func TestTickAutoUnblocksDependencyOnlyOnceForSameResolvedBlockerSet(t *testing.
 		t.Fatalf("comments = %#v, want one audit comment", tracker.comments)
 	}
 	events := metrics.snapshot()
-	rework := events[len(events)-1]
+	rework := store.WorkflowPhaseEvent{}
+	for index := len(events) - 1; index >= 0; index-- {
+		if events[index].PhaseType == store.WorkflowPhaseTypeLane && events[index].PhaseName == "Rework" && events[index].Status == "entered" {
+			rework = events[index]
+			break
+		}
+	}
 	metadata, ok := workflowLaneMetadataFromJSON(rework.MetadataJSON)
 	if !ok || metadata.DependencyAutoUnblock == nil || metadata.DependencyAutoUnblock.BlockerSet == "" {
 		t.Fatalf("latest Rework metadata = %q, want dependency_auto_unblock blocker_set", rework.MetadataJSON)

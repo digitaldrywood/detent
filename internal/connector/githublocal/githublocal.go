@@ -309,6 +309,17 @@ func (c *Connector) FetchIssueStatesByIdentifiers(ctx context.Context, identifie
 	return sortIssuesByIdentifiers(out, identifiers), nil
 }
 
+func (c *Connector) IssueStateEnteredAt(ctx context.Context, issue connector.Issue) (time.Time, bool, error) {
+	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
+		return issue.StageUpdatedAt.UTC(), true, nil
+	}
+	reader, ok := c.github.(connector.IssueStateTransitionReader)
+	if !ok {
+		return time.Time{}, false, nil
+	}
+	return reader.IssueStateEnteredAt(ctx, issue)
+}
+
 func (c *Connector) FetchIssueComments(ctx context.Context, issue connector.Issue) ([]connector.IssueComment, error) {
 	githubComments, err := c.github.FetchIssueComments(ctx, issue)
 	if err != nil {
