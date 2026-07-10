@@ -1,0 +1,53 @@
+package claudecode
+
+import (
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+)
+
+var claudeCapacityRules = backendcapacity.Rules{
+	Kinds: []string{
+		"rate_limit_error",
+		"usage_limit_exceeded",
+		"quota_exceeded",
+		"rateLimitExceeded",
+		"RESOURCE_EXHAUSTED",
+		"dailyLimitExceeded",
+	},
+	Phrases: []string{
+		"usage limit reached",
+		"rate limit reached",
+		"you've hit your limit",
+		"quota exceeded",
+	},
+}
+
+func (b *AgentBackend) ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Time) (backendcapacity.Details, bool) {
+	if b == nil || err == nil {
+		return backendcapacity.Details{}, false
+	}
+	return ClassifyCapacityError(err, limits, now)
+}
+
+func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Time) (backendcapacity.Details, bool) {
+	if err == nil {
+		return backendcapacity.Details{}, false
+	}
+	return backendcapacity.Classify(err.Error(), claudeCapacityResetAt(limits), now, claudeCapacityRules)
+}
+
+func claudeCapacityResetAt(limits *telemetry.RateLimits) *time.Time {
+	if limits == nil {
+		return nil
+	}
+	for _, bucket := range []*telemetry.RateLimitBucket{limits.Primary, limits.Secondary} {
+		if bucket == nil || bucket.ResetAt == nil {
+			continue
+		}
+		resetAt := bucket.ResetAt.UTC()
+		return &resetAt
+	}
+	return nil
+}

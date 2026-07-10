@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -84,7 +85,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		if decision.Reason == AutoPromoteReasonValidatorMissing {
 			validation, shouldComment, ok := o.validatorStageResult(ctx, issue)
 			if !ok {
-				o.startValidatorStage(ctx, issue, now)
+				o.startValidatorStage(ctx, state, issue, now)
 				recordAutoPromoteSnapshotDecision(state, issueID, decision)
 				o.logAutoPromoteDecision(issue, decision, "")
 				continue
@@ -1532,7 +1533,7 @@ func (o *Orchestrator) clearAutoPromotedIssueDispatchMemory(state *State, issueI
 	delete(state.AutoPromoteDecisions, issueID)
 }
 
-func (o *Orchestrator) startValidatorStage(ctx context.Context, issue connector.Issue, now time.Time) {
+func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, issue connector.Issue, now time.Time) {
 	if o.validator == nil {
 		if o.logger != nil {
 			o.logger.Warn(
@@ -1550,6 +1551,10 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, issue connector.
 		return
 	}
 	if _, _, ok := o.validatorStageResult(ctx, issue); ok {
+		return
+	}
+	capacityScope, capacityProbeKey, capacityPaused := o.validatorCapacityDispatch(state, issue, now)
+	if capacityPaused {
 		return
 	}
 
@@ -1586,6 +1591,9 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, issue connector.
 		return
 	}
 	o.validatorRuns[identity.Key] = struct{}{}
+	if capacityProbeKey != "" {
+		markBackendCapacityProbe(state, capacityProbeKey, "validator:"+identity.IssueID)
+	}
 	o.validatorWG.Add(1)
 	o.validatorMu.Unlock()
 
@@ -1607,6 +1615,16 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, issue connector.
 		o.validatorMu.Lock()
 		if err != nil {
 			delete(o.validatorRuns, identity.Key)
+			if capacityErr, ok := backendcapacity.As(err); ok {
+				o.validatorMu.Unlock()
+				o.publishValidatorCapacityEvent(ctx, validatorCapacityEvent{
+					Scope:         capacityErr.Scope,
+					CapacityErr:   capacityErr,
+					CapacityProbe: capacityProbeKey != "",
+					CompletedAt:   completedAt,
+				})
+				return
+			}
 			attempt := o.validatorFailures[identity.Key].Attempt + 1
 			o.validatorFailures[identity.Key] = validatorStageFailure{
 				Attempt:     attempt,
@@ -1626,9 +1644,23 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, issue connector.
 					"error", err,
 				)
 			}
+			if capacityProbeKey != "" {
+				o.publishValidatorCapacityEvent(ctx, validatorCapacityEvent{
+					Scope:         capacityScope,
+					CapacityProbe: true,
+					CompletedAt:   completedAt,
+				})
+			}
 			return
 		}
 		o.validatorMu.Unlock()
+		if capacityProbeKey != "" {
+			o.publishValidatorCapacityEvent(ctx, validatorCapacityEvent{
+				Scope:         capacityScope,
+				CapacityProbe: true,
+				CompletedAt:   completedAt,
+			})
+		}
 		o.recordValidatorVerdict(ctx, issue, identity, result, completedAt)
 
 		o.validatorMu.Lock()

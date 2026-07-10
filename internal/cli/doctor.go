@@ -48,6 +48,7 @@ type doctorCheck struct {
 	Hint                      string                                     `json:"hint,omitempty"`
 	AutoPromoteCandidates     []doctorAutoPromoteCandidateDiagnostic     `json:"auto_promote_candidates,omitempty"`
 	BlockedRecoveryCandidates []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_recovery_candidates,omitempty"`
+	BackendCapacity           []doctorBackendCapacityDiagnostic          `json:"backend_capacity,omitempty"`
 	DependencyCapabilities    []connector.DependencyCapability           `json:"dependency_capabilities,omitempty"`
 	UntrackedIssues           []doctorStatusDriftIssueDiagnostic         `json:"untracked_issues,omitempty"`
 	OpenTerminalIssues        []doctorStatusDriftIssueDiagnostic         `json:"open_terminal_issues,omitempty"`
@@ -352,6 +353,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			Name: "SQLite database",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorSQLite(jobCtx, resolution, deps)}
+			},
+		},
+		doctorCheckJob{
+			Name: "Backend capacity",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorBackendCapacity(jobCtx, resolution, cfg.ProjectID, deps, time.Now())}
 			},
 		},
 	)

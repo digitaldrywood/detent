@@ -83,12 +83,13 @@ func (b *AgentBackend) RunTurn(
 	}
 
 	if err := emitUpdate(onUpdate, runner.AgentUpdate{
-		Type:            runner.AgentUpdateTurnCompleted,
-		ThreadID:        state.sessionID,
-		TurnID:          state.sessionID,
-		Status:          status,
-		Model:           state.model,
-		RuntimeIdentity: agentidentity.RuntimeUpdate(state.model, "", "", "", time.Time{}),
+		Type:                runner.AgentUpdateTurnCompleted,
+		ThreadID:            state.sessionID,
+		TurnID:              state.sessionID,
+		Status:              status,
+		Model:               state.model,
+		RuntimeIdentity:     agentidentity.RuntimeUpdate(state.model, "", "", "", time.Time{}),
+		BackendErrorMessage: state.resultText,
 	}); err != nil {
 		return result, err
 	}
@@ -270,7 +271,11 @@ func finalTurnError(state turnState, waitErr error, stderr string) error {
 		if subtype == "" {
 			subtype = "unknown"
 		}
-		return withStderrTail(fmt.Errorf("%w: result subtype %q", ErrTurnFailed, subtype), stderr)
+		err := fmt.Errorf("%w: result subtype %q", ErrTurnFailed, subtype)
+		if strings.TrimSpace(state.resultText) != "" {
+			err = fmt.Errorf("%w: %s", err, strings.TrimSpace(state.resultText))
+		}
+		return withStderrTail(err, stderr)
 	case waitErr != nil:
 		return withStderrTail(fmt.Errorf("%w: process exited: %w", ErrTurnFailed, waitErr), stderr)
 	default:

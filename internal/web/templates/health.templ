@@ -22,6 +22,7 @@ templ HealthPageV2(data DashboardData) {
 
 templ HealthSnapshotV2(data DashboardData) {
 	{{ view := healthViewFromDashboard(data) }}
+	@backendCapacityBanner(data.Snapshot)
 	<p id="health-verdict" class="flex flex-none items-center gap-2 text-sm">
 		<span class={ healthVerdictGlyphClass(view.Kind) } aria-hidden="true">{ view.Kind.Glyph() }</span>
 		<span class="font-medium text-text">{ view.Verdict }</span>

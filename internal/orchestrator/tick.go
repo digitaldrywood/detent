@@ -109,6 +109,11 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
+			o.recoverBackendCapacityBlockedIssues(ctx, state, fetched.status, now),
+		)
+		fetched = filterReconciledTickIssues(
+			state,
+			fetched,
 			o.recoverBlockedIssues(ctx, state, fetched.status, now),
 		)
 		fetched = filterReconciledTickIssues(

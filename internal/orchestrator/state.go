@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -57,6 +58,8 @@ type State struct {
 	PriorAttempts            map[string]runpkg.PriorAttempt
 	InstantFailures          map[string]InstantFailure
 	RepeatedFailures         map[string]RepeatedFailure
+	BackendOutages           map[string]BackendOutage
+	BackendRecoveries        map[string]BackendRecovery
 	DiffStats                map[string]DiffStats
 	ReapedWorkspaces         map[string]time.Time
 	TokenTotals              TokenTotals
@@ -73,6 +76,8 @@ type Running struct {
 	Attempt               int
 	WorkAttemptID         int64
 	Mode                  string
+	DispatchSourceState   string
+	DispatchTargetState   string
 	StartedAt             time.Time
 	WorkerHost            string
 	ProcessIdentity       string
@@ -88,6 +93,8 @@ type Running struct {
 	RecentEvents          []telemetry.ActivityEvent
 	DiffStats             DiffStats
 	Tokens                TokenTotals
+	CapacityScope         backendcapacity.Scope
+	CapacityProbe         bool
 	globalSlot            scheduler.Slot
 	cancel                context.CancelFunc
 }
@@ -213,6 +220,8 @@ func newState(cfg Config) State {
 		PriorAttempts:            map[string]runpkg.PriorAttempt{},
 		InstantFailures:          map[string]InstantFailure{},
 		RepeatedFailures:         map[string]RepeatedFailure{},
+		BackendOutages:           map[string]BackendOutage{},
+		BackendRecoveries:        map[string]BackendRecovery{},
 		DiffStats:                map[string]DiffStats{},
 		ReapedWorkspaces:         map[string]time.Time{},
 		laneEntries:              map[string]time.Time{},
@@ -262,6 +271,8 @@ func (s State) clone() State {
 		PriorAttempts:            clonePriorAttempts(s.PriorAttempts),
 		InstantFailures:          make(map[string]InstantFailure, len(s.InstantFailures)),
 		RepeatedFailures:         make(map[string]RepeatedFailure, len(s.RepeatedFailures)),
+		BackendOutages:           maps.Clone(s.BackendOutages),
+		BackendRecoveries:        maps.Clone(s.BackendRecoveries),
 		DiffStats:                make(map[string]DiffStats, len(s.DiffStats)),
 		ReapedWorkspaces:         make(map[string]time.Time, len(s.ReapedWorkspaces)),
 		TokenTotals:              s.TokenTotals,

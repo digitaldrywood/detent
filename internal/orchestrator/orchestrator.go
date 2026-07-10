@@ -120,34 +120,37 @@ type RuntimeUpdate struct {
 }
 
 type Orchestrator struct {
-	cfg                Config
-	connector          connector.Connector
-	workflowMetrics    WorkflowMetricsRecorder
-	workAttempts       store.WorkAttemptStore
-	agentResume        store.AgentResumeStore
-	supervisor         *runpkg.Supervisor
-	validator          Validator
-	reaper             WorkspaceReaper
-	logger             *slog.Logger
-	globalDispatchGate scheduler.ProjectDispatchGate
-	validatorMu        sync.Mutex
-	validatorWG        sync.WaitGroup
-	validatorRuns      map[string]struct{}
-	validatorResults   map[string]validatorStageResult
-	validatorFailures  map[string]validatorStageFailure
-	validatorMemo      store.ValidatorMemoStore
-	now                func() time.Time
-	stateRequests      chan stateRequest
-	drainRequests      chan drainRequest
-	forceRequests      chan forceRequest
-	recoveryRequests   chan workAttemptRecoveryRequest
-	configUpdates      chan configUpdateRequest
-	refreshes          chan manualRefreshRequest
-	reconciles         chan targetedRefreshRequest
-	runResults         chan runpkg.Completion
-	runUpdates         chan runUpdate
-	done               chan struct{}
-	refreshSeq         atomic.Uint64
+	cfg                     Config
+	connector               connector.Connector
+	workflowMetrics         WorkflowMetricsRecorder
+	workAttempts            store.WorkAttemptStore
+	agentResume             store.AgentResumeStore
+	supervisor              *runpkg.Supervisor
+	validator               Validator
+	reaper                  WorkspaceReaper
+	logger                  *slog.Logger
+	globalDispatchGate      scheduler.ProjectDispatchGate
+	validatorMu             sync.Mutex
+	validatorWG             sync.WaitGroup
+	validatorRuns           map[string]struct{}
+	validatorResults        map[string]validatorStageResult
+	validatorFailures       map[string]validatorStageFailure
+	validatorMemo           store.ValidatorMemoStore
+	capacityController      runpkg.CapacityController
+	validatorCapacity       runpkg.ValidatorCapacityController
+	now                     func() time.Time
+	stateRequests           chan stateRequest
+	drainRequests           chan drainRequest
+	forceRequests           chan forceRequest
+	recoveryRequests        chan workAttemptRecoveryRequest
+	configUpdates           chan configUpdateRequest
+	refreshes               chan manualRefreshRequest
+	reconciles              chan targetedRefreshRequest
+	runResults              chan runpkg.Completion
+	runUpdates              chan runUpdate
+	validatorCapacityEvents chan validatorCapacityEvent
+	done                    chan struct{}
+	refreshSeq              atomic.Uint64
 }
 
 type validatorStageResult struct {
@@ -206,6 +209,14 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	if candidate, ok := runner.(Validator); ok {
 		validator = candidate
 	}
+	var capacityController runpkg.CapacityController
+	if candidate, ok := runner.(runpkg.CapacityController); ok {
+		capacityController = candidate
+	}
+	var validatorCapacity runpkg.ValidatorCapacityController
+	if candidate, ok := runner.(runpkg.ValidatorCapacityController); ok {
+		validatorCapacity = candidate
+	}
 
 	logger := deps.Logger
 	if logger == nil {
@@ -244,31 +255,34 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	}
 
 	return &Orchestrator{
-		cfg:                cfg,
-		connector:          deps.Connector,
-		workflowMetrics:    deps.WorkflowMetrics,
-		workAttempts:       deps.WorkAttempts,
-		agentResume:        agentResume,
-		supervisor:         supervisor,
-		validator:          validator,
-		reaper:             reaper,
-		logger:             logger,
-		globalDispatchGate: deps.GlobalDispatchGate,
-		validatorRuns:      map[string]struct{}{},
-		validatorResults:   map[string]validatorStageResult{},
-		validatorFailures:  map[string]validatorStageFailure{},
-		validatorMemo:      validatorMemo,
-		now:                now,
-		stateRequests:      make(chan stateRequest),
-		drainRequests:      make(chan drainRequest),
-		forceRequests:      make(chan forceRequest),
-		recoveryRequests:   make(chan workAttemptRecoveryRequest),
-		configUpdates:      make(chan configUpdateRequest),
-		refreshes:          make(chan manualRefreshRequest, 1),
-		reconciles:         make(chan targetedRefreshRequest, 128),
-		runResults:         make(chan runpkg.Completion, max(cfg.MaxConcurrentAgents, 1)),
-		runUpdates:         make(chan runUpdate, runUpdateBufferSize),
-		done:               make(chan struct{}),
+		cfg:                     cfg,
+		connector:               deps.Connector,
+		workflowMetrics:         deps.WorkflowMetrics,
+		workAttempts:            deps.WorkAttempts,
+		agentResume:             agentResume,
+		supervisor:              supervisor,
+		validator:               validator,
+		reaper:                  reaper,
+		logger:                  logger,
+		globalDispatchGate:      deps.GlobalDispatchGate,
+		validatorRuns:           map[string]struct{}{},
+		validatorResults:        map[string]validatorStageResult{},
+		validatorFailures:       map[string]validatorStageFailure{},
+		validatorMemo:           validatorMemo,
+		capacityController:      capacityController,
+		validatorCapacity:       validatorCapacity,
+		now:                     now,
+		stateRequests:           make(chan stateRequest),
+		drainRequests:           make(chan drainRequest),
+		forceRequests:           make(chan forceRequest),
+		recoveryRequests:        make(chan workAttemptRecoveryRequest),
+		configUpdates:           make(chan configUpdateRequest),
+		refreshes:               make(chan manualRefreshRequest, 1),
+		reconciles:              make(chan targetedRefreshRequest, 128),
+		runResults:              make(chan runpkg.Completion, max(cfg.MaxConcurrentAgents, 1)),
+		runUpdates:              make(chan runUpdate, runUpdateBufferSize),
+		validatorCapacityEvents: make(chan validatorCapacityEvent, max(cfg.MaxConcurrentAgents, 1)),
+		done:                    make(chan struct{}),
 	}, nil
 }
 
@@ -305,6 +319,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.handleRunResult(ctx, &state, result)
 		case update := <-o.runUpdates:
 			o.handleRunUpdate(&state, update)
+		case event := <-o.validatorCapacityEvents:
+			o.handleValidatorCapacityEvent(&state, event)
 		case request := <-o.drainRequests:
 			o.startDrain(&state, request.at)
 			request.reply <- struct{}{}

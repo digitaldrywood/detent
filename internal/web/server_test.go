@@ -5998,12 +5998,19 @@ func TestStateAPIIncludesGitHubGraphQLRateLimitStatus(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
+	generatedAt := time.Date(2026, 6, 29, 15, 0, 0, 0, time.UTC)
 	if err := deps.Hub.Publish(telemetry.Snapshot{
-		GeneratedAt: time.Date(2026, 6, 29, 15, 0, 0, 0, time.UTC),
+		GeneratedAt: generatedAt,
 		RateLimits: &telemetry.RateLimits{
 			GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4608, Used: 392, Limit: 5000},
 			GitHubGraphQL: &telemetry.RateLimitBucket{Status: telemetry.RateLimitStatusExhausted},
 		},
+		BackendOutages: []telemetry.BackendOutage{{
+			BackendID: "codex",
+			Provider:  "openai",
+			Reason:    "provider usage limit reached",
+			ResumeAt:  generatedAt.Add(44 * time.Minute),
+		}},
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
@@ -6019,6 +6026,10 @@ func TestStateAPIIncludesGitHubGraphQLRateLimitStatus(t *testing.T) {
 	}
 	if got := nestedString(t, state, "rate_limits", "github_graphql", "status"); got != telemetry.RateLimitStatusExhausted {
 		t.Fatalf("rate_limits.github_graphql.status = %s, want %s", got, telemetry.RateLimitStatusExhausted)
+	}
+	outages := state["backend_outages"].([]any)
+	if len(outages) != 1 || outages[0].(map[string]any)["backend_id"] != "codex" {
+		t.Fatalf("backend_outages = %#v", outages)
 	}
 }
 

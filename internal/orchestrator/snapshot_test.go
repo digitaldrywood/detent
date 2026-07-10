@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -71,6 +72,32 @@ func TestStateSnapshotPreservesMappedTrackerPriority(t *testing.T) {
 	}
 	if got := snapshot.BoardIssues[1]; got.Priority != nil || got.PriorityName != "" {
 		t.Fatalf("unmapped priority = %#v/%q, want nil/empty", got.Priority, got.PriorityName)
+	}
+}
+
+func TestStateSnapshotIncludesBackendOutage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 1, 55, 0, 0, time.UTC)
+	resetAt := now.Add(44 * time.Minute)
+	state := newState(normalizeConfig(Config{}))
+	state.BackendOutages["codex"] = BackendOutage{
+		Scope:          backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"},
+		Kind:           "usageLimitExceeded",
+		Reason:         "provider usage limit reached",
+		DetectedAt:     now,
+		LastObservedAt: now,
+		ResetAt:        resetAt,
+		ResumeAt:       resetAt.Add(backendCapacityResetJitter),
+	}
+
+	snapshot := state.Snapshot(now)
+	if len(snapshot.BackendOutages) != 1 {
+		t.Fatalf("BackendOutages = %#v, want one", snapshot.BackendOutages)
+	}
+	outage := snapshot.BackendOutages[0]
+	if outage.BackendID != "codex" || outage.Provider != "openai" || outage.ResetAt == nil || !outage.ResetAt.Equal(resetAt) {
+		t.Fatalf("BackendOutages[0] = %#v", outage)
 	}
 }
 

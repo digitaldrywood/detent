@@ -34,6 +34,19 @@ func TestHealthViewVerdicts(t *testing.T) {
 			wantKind:    primitives.KindNeutral,
 			wantVerdict: "Waiting for the first health snapshot.",
 		},
+		{
+			name: "backend capacity outage warns",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				BackendOutages: []telemetry.BackendOutage{{
+					BackendID: "codex",
+					Provider:  "openai",
+					ResumeAt:  now.Add(44 * time.Minute),
+				}},
+			},
+			wantKind:    primitives.KindWarn,
+			wantVerdict: "Backend codex at usage limit.",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -48,6 +61,24 @@ func TestHealthViewVerdicts(t *testing.T) {
 				t.Fatalf("checked = %q", view.Checked)
 			}
 		})
+	}
+}
+
+func TestHealthRowsIncludeBackendCapacityOutage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 1, 55, 0, 0, time.UTC)
+	rows := healthRows(telemetry.Snapshot{
+		GeneratedAt: now,
+		BackendOutages: []telemetry.BackendOutage{{
+			BackendID: "codex",
+			Provider:  "openai",
+			ResumeAt:  now.Add(44 * time.Minute),
+		}},
+	})
+	row := rows[len(rows)-1]
+	if row.Component != "Backend codex" || row.Status != "Usage limit" || row.Resets != "02:39" {
+		t.Fatalf("backend outage row = %+v", row)
 	}
 }
 

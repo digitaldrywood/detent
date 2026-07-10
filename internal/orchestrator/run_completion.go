@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -93,10 +94,18 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if !event.Result.RuntimeIdentity.IsZero() {
 		running.RuntimeIdentity = running.RuntimeIdentity.Merge(event.Result.RuntimeIdentity)
 	}
+	if event.Result.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+	}
 	if running.cancel != nil {
 		running.cancel()
 	}
 	delete(state.Running, event.IssueID)
+	if capacityErr, ok := backendcapacity.As(event.Err); ok {
+		o.handleBackendCapacityError(ctx, state, event, running, capacityErr)
+		return
+	}
+	o.recoverBackendCapacity(state, running, event.CompletedAt)
 
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		tokens := event.Result.Tokens
@@ -112,9 +121,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			"final_state", strings.TrimSpace(running.Issue.State),
 		)
 		o.completeTerminalRunning(context.Background(), state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens)
-		if event.Result.RateLimits != nil {
-			state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
-		}
 		return
 	}
 

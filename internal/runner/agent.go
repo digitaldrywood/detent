@@ -744,7 +744,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		ExtraWritableRoots: extraWritableRootsForWorkspace(ctx, info.Path, r.logger),
 	}
 	execution := r.runAgentTurn(ctx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, runStartedAt, sessionID, runtimeIdentity)
-	if execution.err != nil && !agentResumeEmpty(turnRequest.Resume) && !execution.turnStarted {
+	if execution.err != nil {
+		execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
+	}
+	if execution.err != nil && !IsCapacityError(execution.err) && !agentResumeEmpty(turnRequest.Resume) && !execution.turnStarted {
 		r.logWorkerEvent(req.Issue, "worker_resume_failed_fallback",
 			"workspace_path", info.Path,
 			"backend_id", selection.BackendID,
@@ -757,6 +760,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		turnRequest.Resume = AgentResume{}
 		resumeState = store.AgentResumeState{}
 		execution = r.runAgentTurn(ctx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, runStartedAt, sessionID, runtimeIdentity)
+		if execution.err != nil {
+			execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
+		}
 	}
 	turnResult := execution.turnResult
 	turnErr := execution.err
@@ -1015,6 +1021,9 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		}
 		return nil
 	})
+	if turnErr != nil {
+		turnErr = classifyAgentCapacityError(backend, selection, backendConfig, runResult.RuntimeIdentity, turnErr, runResult.RateLimits, runStartedAt)
+	}
 	checkFinishedAttrs := []any{
 		"workspace_path", info.Path,
 		"detent_session_id", sessionID,

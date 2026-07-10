@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
@@ -124,13 +125,24 @@ func rateLimitsFromCodex(snapshot *RateLimitSnapshot) *telemetry.RateLimits {
 	if snapshot == nil {
 		return nil
 	}
-	return &telemetry.RateLimits{
-		LimitID:   snapshot.LimitID,
-		LimitName: snapshot.LimitName,
-		Primary:   rateLimitBucketFromCodex(snapshot.Primary),
-		Secondary: rateLimitBucketFromCodex(snapshot.Secondary),
-		Credits:   creditsBucketFromCodex(snapshot.Credits),
+	limits := &telemetry.RateLimits{
+		LimitID:     snapshot.LimitID,
+		LimitName:   snapshot.LimitName,
+		ReachedType: snapshot.RateLimitReachedType,
+		Primary:     rateLimitBucketFromCodex(snapshot.Primary),
+		Secondary:   rateLimitBucketFromCodex(snapshot.Secondary),
+		Credits:     creditsBucketFromCodex(snapshot.Credits),
 	}
+	if strings.TrimSpace(snapshot.RateLimitReachedType) != "" {
+		bucket := limits.Primary
+		if strings.Contains(strings.ToLower(snapshot.RateLimitReachedType), "secondary") {
+			bucket = limits.Secondary
+		}
+		if bucket != nil {
+			bucket.Status = telemetry.RateLimitStatusExhausted
+		}
+	}
+	return limits
 }
 
 func rateLimitBucketFromCodex(window *RateLimitWindow) *telemetry.RateLimitBucket {

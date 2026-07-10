@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -1193,6 +1195,73 @@ func TestRunParksIssueAfterRepeatedInstantBackendFailures(t *testing.T) {
 	}
 	if !strings.Contains(comments[0].body, backendBody) || !strings.Contains(comments[0].body, "stopped retrying") {
 		t.Fatalf("comment body missing backend error:\n%s", comments[0].body)
+	}
+}
+
+func TestRunPausesBackendAfterQuotaErrorWithoutBreakerStrike(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	resetAt := now.Add(44 * time.Minute)
+	issue := testIssue("issue-quota-exhausted", "digitaldrywood/detent#1142", "Todo")
+	tracker := newFakeConnector(issue)
+	backendBody := fmt.Sprintf(`{"type":"error","error":{"type":"usageLimitExceeded","resetAt":%d,"message":"usage limit reached"}}`, resetAt.Unix())
+	capacityErr := backendcapacity.NewError(
+		backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"},
+		backendcapacity.Details{Kind: "usageLimitExceeded", Reason: "provider usage limit reached", ResetAt: &resetAt},
+		instantBackendError{body: backendBody},
+	)
+	runner := &staticRunner{err: capacityErr}
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:           time.Millisecond,
+		MaxConcurrentAgents:    1,
+		MaxRetryBackoff:        time.Hour,
+		FailureRetryBaseDelay:  time.Hour,
+		ActiveStates:           []string{"Todo", "In Progress"},
+		ObservedStates:         []string{"Blocked"},
+		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
+		ContinuationRetryDelay: time.Second,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		_, ok := state.Retry[issue.ID]
+		return ok
+	})
+
+	if got := runner.calls.Load(); got != 1 {
+		t.Fatalf("runner calls = %d, want one capacity probe", got)
+	}
+	if len(state.InstantFailures) != 0 {
+		t.Fatalf("InstantFailures = %#v, want no breaker strikes", state.InstantFailures)
+	}
+	if len(state.RepeatedFailures) != 0 {
+		t.Fatalf("RepeatedFailures = %#v, want no breaker strikes", state.RepeatedFailures)
+	}
+	if _, ok := state.Blocked[issue.ID]; ok {
+		t.Fatalf("Blocked[%q] present after quota error", issue.ID)
+	}
+	retry := state.Retry[issue.ID]
+	if retry.Issue.State != "Todo" {
+		t.Fatalf("Retry[%q].Issue.State = %q, want pre-probe Todo state", issue.ID, retry.Issue.State)
+	}
+	if retry.Attempt != 0 {
+		t.Fatalf("Retry[%q].Attempt = %d, want unchanged initial attempt", issue.ID, retry.Attempt)
+	}
+	if retry.DueAt.Before(resetAt) || retry.DueAt.After(resetAt.Add(time.Minute)) {
+		t.Fatalf("Retry[%q].DueAt = %s, want reset-aligned retry after %s", issue.ID, retry.DueAt, resetAt)
+	}
+	updates := tracker.stateUpdateCalls()
+	if len(updates) < 2 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Todo"}) {
+		t.Fatalf("state updates = %#v, want capacity probe restored to Todo", updates)
 	}
 }
 

@@ -1311,6 +1311,29 @@ func TestBoardSnapshotWithoutPriorityConfigKeepsCardRendering(t *testing.T) {
 	}
 }
 
+func TestBoardSnapshotRendersBackendCapacityBanner(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	data.Snapshot.BackendOutages = []telemetry.BackendOutage{{
+		BackendID:   "codex",
+		BackendKind: "codex",
+		Provider:    "openai",
+		Reason:      "provider usage limit reached",
+		ResumeAt:    data.Snapshot.GeneratedAt.Add(44 * time.Minute),
+	}}
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	for _, want := range []string{
+		`id="backend-capacity-outage"`,
+		"Backend codex at usage limit",
+		"Dispatch is paused for openai; resuming at 17:26 UTC",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("capacity banner missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestBoardSnapshotSurfacesHiddenPopulatedLanes(t *testing.T) {
 	data := DashboardData{
 		Snapshot: telemetry.Snapshot{

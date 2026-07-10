@@ -138,7 +138,7 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 				slog.Any("panic", recovered),
 			)
 		}
-		if completion.Err != nil {
+		if completion.Err != nil && !IsCapacityError(completion.Err) {
 			completion.Retryable = true
 			completion.RetryAttempt = nextFailureAttempt(request.Attempt)
 			completion.RetryDelay = s.RetryDelay(completion.RetryAttempt)

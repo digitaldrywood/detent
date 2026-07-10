@@ -537,7 +537,7 @@ func (o *Orchestrator) capacitySnapshotJSON(state *State, issue connector.Issue)
 	if globalAvailable < 0 {
 		globalAvailable = 0
 	}
-	return marshalWorkAttemptJSON(map[string]any{
+	snapshot := map[string]any{
 		"project_id":              strings.TrimSpace(o.cfg.Project.ID),
 		"lane":                    normalizeState(issue.State),
 		"global_capacity":         globalCapacity,
@@ -546,7 +546,11 @@ func (o *Orchestrator) capacitySnapshotJSON(state *State, issue connector.Issue)
 		"project_state_capacity":  projectStats.capacity,
 		"project_state_used":      projectStats.used,
 		"project_state_available": projectStats.available,
-	})
+	}
+	if state != nil && len(state.BackendOutages) > 0 {
+		snapshot["backend_outages"] = backendOutagesCapacitySnapshot(state.BackendOutages)
+	}
+	return marshalWorkAttemptJSON(snapshot)
 }
 
 func (o *Orchestrator) githubRateSnapshotJSON(state *State) string {
