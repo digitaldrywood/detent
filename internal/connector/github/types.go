@@ -331,6 +331,12 @@ type restComment struct {
 	UpdatedAt *time.Time `json:"updated_at"`
 }
 
+type restIssueTimelineEvent struct {
+	Event     string     `json:"event"`
+	CreatedAt *time.Time `json:"created_at"`
+	Label     *label     `json:"label"`
+}
+
 type repository struct {
 	NameWithOwner string `json:"nameWithOwner"`
 }

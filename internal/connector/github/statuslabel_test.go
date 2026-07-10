@@ -6,9 +6,62 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
+
+func TestConnectorIssueStateEnteredAtUsesLatestMatchingLabelEvent(t *testing.T) {
+	t.Parallel()
+
+	first := time.Date(2026, 7, 10, 14, 36, 55, 0, time.UTC)
+	latest := first.Add(time.Hour)
+	tests := []struct {
+		name  string
+		body  string
+		want  time.Time
+		found bool
+	}{
+		{
+			name:  "latest matching event",
+			body:  `[{"event":"labeled","created_at":"2026-07-10T14:34:38Z","label":{"name":"detent:in-progress"}},{"event":"labeled","created_at":"2026-07-10T14:36:55Z","label":{"name":"DETENT:BLOCKED"}},{"event":"labeled","created_at":"2026-07-10T14:40:00Z","label":{"name":"detent:blocked"}},{"event":"unlabeled","created_at":"2026-07-10T15:30:00Z","label":{"name":"detent:blocked"}},{"event":"labeled","created_at":"2026-07-10T15:36:55Z","label":{"name":"detent:blocked"}}]`,
+			want:  latest,
+			found: true,
+		},
+		{
+			name: "no matching event",
+			body: `[{"event":"labeled","created_at":"2026-07-10T14:34:38Z","label":{"name":"detent:in-progress"}}]`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := newGraphQLTestServer(t, []graphqlTestResponse{{
+				method: http.MethodGet,
+				path:   "/repos/digitaldrywood/detent/issues/1162/timeline?per_page=100",
+				body:   tt.body,
+			}})
+			c := newGitHubTestConnector(t, server, Config{
+				GitHubStatusSource: GitHubStatusSourceLabel,
+				Repository:         "digitaldrywood/detent",
+				ObservedStates:     []string{"Blocked"},
+			})
+
+			got, found, err := c.IssueStateEnteredAt(t.Context(), connector.Issue{
+				Identifier: "digitaldrywood/detent#1162",
+				State:      "Blocked",
+			})
+			if err != nil {
+				t.Fatalf("IssueStateEnteredAt() error = %v", err)
+			}
+			if found != tt.found || !got.Equal(tt.want) {
+				t.Fatalf("IssueStateEnteredAt() = (%v, %v), want (%v, %v)", got, found, tt.want, tt.found)
+			}
+		})
+	}
+}
 
 func TestConnectorFetchCandidateIssuesUsesStatusLabels(t *testing.T) {
 	t.Parallel()

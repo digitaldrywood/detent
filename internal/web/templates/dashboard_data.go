@@ -3933,6 +3933,9 @@ func pipelineNow(snapshot telemetry.Snapshot) time.Time {
 }
 
 func pipelineIssueStageTime(issue telemetry.Issue) time.Time {
+	if issue.CurrentLaneEnteredAt != nil && !issue.CurrentLaneEnteredAt.IsZero() {
+		return issue.CurrentLaneEnteredAt.UTC()
+	}
 	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
 		return issue.StageUpdatedAt.UTC()
 	}

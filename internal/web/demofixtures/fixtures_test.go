@@ -33,6 +33,7 @@ func TestSnapshotForScenarioVariants(t *testing.T) {
 		{name: "transition blocked", projectID: "dogfood", variant: "transition-blocked"},
 		{name: "terminal", projectID: "dogfood", variant: "terminal"},
 		{name: "tracker refresh gap", projectID: "dogfood", variant: "tracker-refresh-gap"},
+		{name: "external lane timer", projectID: "dogfood", variant: "external-lane-timer"},
 		{name: "backoff heavy", projectID: "dogfood", variant: "backoff-heavy"},
 		{name: "blocked heavy", projectID: "billing-api", variant: "blocked-heavy"},
 		{name: "long content", projectID: "dogfood", variant: "long-content"},

@@ -1207,11 +1207,11 @@ func TestStateSnapshotSameLaneUpdateKeepsLaneEntry(t *testing.T) {
 		UpdatedAt: &enteredAt,
 	}}
 	orch := &Orchestrator{}
-	orch.refreshCurrentLaneEntries(t.Context(), &state)
+	orch.refreshCurrentLaneEntries(t.Context(), &state, now)
 
 	first := state.Snapshot(now)
 	state.BoardIssues[0].UpdatedAt = &updatedAt
-	orch.refreshCurrentLaneEntries(t.Context(), &state)
+	orch.refreshCurrentLaneEntries(t.Context(), &state, now)
 	second := state.Snapshot(now)
 
 	if first.BoardIssues[0].CurrentLaneEnteredAt == nil || second.BoardIssues[0].CurrentLaneEnteredAt == nil {

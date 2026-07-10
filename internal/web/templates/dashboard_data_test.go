@@ -1935,6 +1935,51 @@ func TestProjectKanbanCardForIssueCopiesDescriptionPreview(t *testing.T) {
 	}
 }
 
+func TestPipelineIssueStageTimePrefersCurrentLaneEntry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 16, 27, 52, 0, time.UTC)
+	createdAt := now.Add(-24 * time.Hour)
+	enteredAt := now.Add(-111 * time.Minute)
+	stageUpdatedAt := now.Add(-2 * time.Minute)
+	updatedAt := now.Add(-time.Minute)
+	tests := []struct {
+		name  string
+		issue telemetry.Issue
+		want  time.Time
+	}{
+		{
+			name: "current lane entry",
+			issue: telemetry.Issue{
+				CurrentLaneEnteredAt: &enteredAt,
+				StageUpdatedAt:       &stageUpdatedAt,
+				UpdatedAt:            &updatedAt,
+				CreatedAt:            &createdAt,
+			},
+			want: enteredAt,
+		},
+		{
+			name:  "stage fallback",
+			issue: telemetry.Issue{StageUpdatedAt: &stageUpdatedAt, UpdatedAt: &updatedAt, CreatedAt: &createdAt},
+			want:  stageUpdatedAt,
+		},
+		{
+			name:  "updated fallback",
+			issue: telemetry.Issue{UpdatedAt: &updatedAt, CreatedAt: &createdAt},
+			want:  updatedAt,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := pipelineIssueStageTime(tt.issue); !got.Equal(tt.want) {
+				t.Fatalf("pipelineIssueStageTime() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProjectKanbanCardForIssueOnlyKeepsActiveBlockers(t *testing.T) {
 	t.Parallel()
 

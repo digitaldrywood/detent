@@ -58,6 +58,8 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot = demoHotPathSnapshot()
 	case "tracker-refresh-gap":
 		snapshot = demoTrackerRefreshGapSnapshot()
+	case "external-lane-timer":
+		snapshot = demoExternalLaneTimerSnapshot()
 	case "startup-loading":
 		snapshot = demoStartupLoadingSnapshot()
 	case "github-api-healthy":
@@ -446,6 +448,20 @@ func demoTrackerRefreshGapSnapshot() telemetry.Snapshot {
 			snapshot.Projects[i].Counts.Completed++
 		}
 	}
+	return snapshot
+}
+
+func demoExternalLaneTimerSnapshot() telemetry.Snapshot {
+	snapshot := demoHealthySnapshot()
+	now := snapshot.GeneratedAt
+	enteredAt := now.Add(-111 * time.Minute)
+	recentUpdate := now.Add(-2 * time.Minute)
+	issue := demoIssue(demoPrimaryProjectID, "demo-external-lane-timer", "digitaldrywood/detent-core#1162", "Externally moved Blocked lane timer", "Blocked", 0)
+	issue.CurrentLaneEnteredAt = &enteredAt
+	issue.CurrentLaneAgeSeconds = int64(now.Sub(enteredAt) / time.Second)
+	issue.StageUpdatedAt = &recentUpdate
+	issue.UpdatedAt = &recentUpdate
+	snapshot.BoardIssues = append(snapshot.BoardIssues, issue)
 	return snapshot
 }
 

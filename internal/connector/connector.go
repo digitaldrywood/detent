@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 var (
@@ -157,6 +158,10 @@ type ConditionalPoller interface {
 
 type IssueReferenceResolver interface {
 	FetchIssueStatesByIdentifiers(context.Context, []string) ([]Issue, error)
+}
+
+type IssueStateTransitionReader interface {
+	IssueStateEnteredAt(context.Context, Issue) (time.Time, bool, error)
 }
 
 type IssueDependencyWriter interface {
