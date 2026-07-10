@@ -362,6 +362,11 @@ type ProjectSmallMultiple struct {
 	Running                   int
 	QueueCount                int
 	Blocked                   int
+	BoardLoad                 int
+	BoardTodo                 int
+	BoardActive               int
+	BoardWaiting              int
+	BoardBlocked              int
 	Completed                 int
 	TotalTokens               int64
 	ThroughputTokensPerSecond float64
@@ -408,6 +413,7 @@ type sidebarProjectItem struct {
 	BadgeClass   string
 	CountLabel   string
 	RunningLabel string
+	Breakdown    string
 	DefaultIndex int
 	Active       bool
 	Current      bool
@@ -999,7 +1005,7 @@ func sidebarFleetTooltip(data DashboardShellData) string {
 }
 
 func sidebarProjectTooltip(item sidebarProjectItem) string {
-	return item.Name + " - " + item.StatusLabel + ", " + item.RunningLabel
+	return item.Name + " - " + item.Breakdown
 }
 
 func sidebarProjectSearchLabel(data DashboardShellData) string {
@@ -1117,8 +1123,9 @@ func sidebarProjectItems(data DashboardShellData) []sidebarProjectItem {
 			DotClass:     status.DotClass,
 			ProjectColor: projectColorForProject(project),
 			BadgeClass:   status.BadgeClass,
-			CountLabel:   "run " + formatCount(project.Running),
-			RunningLabel: formatCount(project.Running) + " running",
+			CountLabel:   formatCount(project.BoardLoad),
+			RunningLabel: formatCount(project.BoardLoad) + " board load",
+			Breakdown:    projectWorkloadBreakdown(project),
 			DefaultIndex: len(items),
 			Active:       active,
 			Current:      false,
@@ -1152,17 +1159,30 @@ func sortProjectSmallMultiples(projects []ProjectSmallMultiple) {
 
 func projectSmallMultipleStatus(project ProjectSmallMultiple) projectStatusView {
 	switch {
-	case project.Blocked > 0:
-		return projectStatusView{Rank: 0, Label: "blocked", DotClass: "bg-err", BadgeClass: "bg-err/15 text-err"}
+	case project.BoardBlocked > 0:
+		dotClass := "bg-dim"
+		if project.Running > 0 {
+			dotClass = "bg-ok dt-pulse"
+		}
+		return projectStatusView{Rank: 0, Label: "blocked", DotClass: dotClass, BadgeClass: "bg-err/15 text-err"}
 	case project.Paused:
 		return projectStatusView{Rank: 4, Label: "paused", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
 	case project.Running > 0:
-		return projectStatusView{Rank: 1, Label: "active", DotClass: "bg-ok", BadgeClass: "bg-ok/15 text-ok"}
-	case project.QueueCount > 0:
-		return projectStatusView{Rank: 2, Label: "queued", DotClass: "bg-warn", BadgeClass: "bg-warn/15 text-warn"}
+		return projectStatusView{Rank: 1, Label: "active", DotClass: "bg-ok dt-pulse", BadgeClass: "bg-elev text-sec"}
+	case project.BoardLoad > 0:
+		return projectStatusView{Rank: 2, Label: "queued", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
 	default:
 		return projectStatusView{Rank: 3, Label: "idle", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
 	}
+}
+
+func projectWorkloadBreakdown(project ProjectSmallMultiple) string {
+	return strings.Join([]string{
+		formatCount(project.BoardTodo) + " todo",
+		formatCount(project.BoardActive) + " active",
+		formatCount(project.BoardWaiting) + " waiting",
+		formatCount(project.BoardBlocked) + " blocked",
+	}, " · ")
 }
 
 func projectColorForProject(project ProjectSmallMultiple) string {

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
-	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
 
 func TestAppShellScriptRefreshesOpenDetailSheetAfterSnapshotSettle(t *testing.T) {
@@ -144,38 +143,38 @@ func TestAppSidebarContentProjectVisibility(t *testing.T) {
 
 func TestAppShellProjects(t *testing.T) {
 	tests := []struct {
-		name     string
-		project  ProjectSmallMultiple
-		wantKind primitives.Kind
-		wantPuls bool
-		wantCnt  string
-		wantErr  bool
+		name          string
+		project       ProjectSmallMultiple
+		wantLive      bool
+		wantCount     string
+		wantBreakdown string
+		wantBlocked   bool
 	}{
 		{
-			name:     "blocked wins over running",
-			project:  ProjectSmallMultiple{ID: "detent", Blocked: 1, Running: 2},
-			wantKind: primitives.KindErr,
-			wantCnt:  "1",
-			wantErr:  true,
+			name:          "blocked tints board load while activity stays live",
+			project:       ProjectSmallMultiple{ID: "detent", Running: 2, BoardLoad: 22, BoardTodo: 11, BoardActive: 4, BoardWaiting: 7, BoardBlocked: 1},
+			wantLive:      true,
+			wantCount:     "22",
+			wantBreakdown: "11 todo · 4 active · 7 waiting · 1 blocked",
+			wantBlocked:   true,
 		},
 		{
-			name:     "running pulses",
-			project:  ProjectSmallMultiple{ID: "gopher-ai", Running: 2},
-			wantKind: primitives.KindOK,
-			wantPuls: true,
-			wantCnt:  "2",
+			name:          "running changes dot but never count metric",
+			project:       ProjectSmallMultiple{ID: "gopher-ai", Running: 2, BoardLoad: 9, BoardTodo: 5, BoardActive: 4},
+			wantLive:      true,
+			wantCount:     "9",
+			wantBreakdown: "5 todo · 4 active · 0 waiting · 0 blocked",
 		},
 		{
-			name:     "queued shows neutral count",
-			project:  ProjectSmallMultiple{ID: "queued", QueueCount: 3},
-			wantKind: primitives.KindNeutral,
-			wantCnt:  "3",
+			name:          "waiting contributes to load without blocked tint",
+			project:       ProjectSmallMultiple{ID: "waiting", BoardLoad: 3, BoardWaiting: 3},
+			wantCount:     "3",
+			wantBreakdown: "0 todo · 0 active · 3 waiting · 0 blocked",
 		},
 		{
-			name:     "idle shows no count",
-			project:  ProjectSmallMultiple{ID: "idle"},
-			wantKind: primitives.KindNeutral,
-			wantCnt:  "",
+			name:          "idle shows no badge",
+			project:       ProjectSmallMultiple{ID: "idle"},
+			wantBreakdown: "0 todo · 0 active · 0 waiting · 0 blocked",
 		},
 	}
 	for _, tt := range tests {
@@ -185,17 +184,17 @@ func TestAppShellProjects(t *testing.T) {
 				t.Fatalf("expected one project row, got %d", len(items))
 			}
 			item := items[0]
-			if item.Kind != tt.wantKind {
-				t.Fatalf("kind = %q, want %q", item.Kind, tt.wantKind)
+			if item.Live != tt.wantLive {
+				t.Fatalf("live = %v, want %v", item.Live, tt.wantLive)
 			}
-			if item.Pulse != tt.wantPuls {
-				t.Fatalf("pulse = %v, want %v", item.Pulse, tt.wantPuls)
+			if item.Count != tt.wantCount {
+				t.Fatalf("count = %q, want %q", item.Count, tt.wantCount)
 			}
-			if item.Count != tt.wantCnt {
-				t.Fatalf("count = %q, want %q", item.Count, tt.wantCnt)
+			if got := appProjectBreakdown(item); got != tt.wantBreakdown {
+				t.Fatalf("breakdown = %q, want %q", got, tt.wantBreakdown)
 			}
-			if item.CountErr != tt.wantErr {
-				t.Fatalf("countErr = %v, want %v", item.CountErr, tt.wantErr)
+			if got := item.Blocked > 0; got != tt.wantBlocked {
+				t.Fatalf("blocked tint = %v, want %v", got, tt.wantBlocked)
 			}
 			if item.Href != projectKanbanPath(tt.project.ID) {
 				t.Fatalf("href = %q, want kanban project opener", item.Href)
@@ -208,6 +207,35 @@ func TestAppShellProjectsSkipsBlankIDs(t *testing.T) {
 	items := appShellProjects(DashboardShellData{Projects: []ProjectSmallMultiple{{ID: "  "}, {ID: "detent"}}})
 	if len(items) != 1 || items[0].ID != "detent" {
 		t.Fatalf("expected only the detent row, got %+v", items)
+	}
+}
+
+func TestAppSidebarContentRendersLoadActivityTintAndTooltip(t *testing.T) {
+	t.Parallel()
+
+	data := DashboardShellData{Projects: []ProjectSmallMultiple{
+		{ID: "detent", Name: "Detent", Running: 1, BoardLoad: 22, BoardTodo: 11, BoardActive: 4, BoardWaiting: 7, BoardBlocked: 1},
+		{ID: "gopher-ai", Name: "Gopher AI", Running: 1, BoardLoad: 3, BoardTodo: 2, BoardActive: 1},
+	}}
+	var buf bytes.Buffer
+	if err := AppSidebarContent(data).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	html := buf.String()
+	for _, want := range []string{
+		`data-sidebar-project="detent"`,
+		`data-sidebar-project-activity="true"`,
+		`data-sidebar-project-badge`,
+		`data-sidebar-project-blocked="true"`,
+		`aria-label="22 board load">22</span>`,
+		`data-help-description="11 todo · 4 active · 7 waiting · 1 blocked"`,
+		`data-sidebar-project="gopher-ai"`,
+		`data-sidebar-project-blocked="false"`,
+		`aria-label="3 board load">3</span>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("sidebar missing %q:\n%s", want, html)
+		}
 	}
 }
 

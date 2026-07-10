@@ -160,6 +160,73 @@ test("sidebar groups global navigation and hides a single project", async ({
   await expect(singleProjectContent.locator("[data-sidebar-project]")).toHaveCount(0);
 });
 
+test("sidebar project badges keep load, activity, blocked tint, and breakdown distinct", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: sidebarRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const detent = page.locator('[data-sidebar-project="dogfood"]');
+  const detentBadge = detent.locator("[data-sidebar-project-badge]");
+  await expect(detentBadge).toHaveText("4");
+  await expect(detentBadge).toHaveAttribute(
+    "data-sidebar-project-blocked",
+    "true",
+  );
+  await expect(detentBadge).toHaveClass(/bg-err\/15/);
+  await expect(detent.locator('[data-sidebar-project-activity="true"] .dt-pulse')).toHaveClass(/bg-ok/);
+  await expect(detent).toHaveAttribute(
+    "data-help-description",
+    "1 todo · 3 active · 0 waiting · 1 blocked",
+  );
+
+  const docs = page.locator('[data-sidebar-project="docs-site"]');
+  await expect(docs.locator("[data-sidebar-project-badge]")).toHaveText("3");
+  await expect(docs.locator("[data-sidebar-project-badge]")).toHaveAttribute(
+    "data-sidebar-project-blocked",
+    "false",
+  );
+  await expect(docs.locator('[data-sidebar-project-activity="true"] .dt-pulse')).toHaveClass(/bg-ok/);
+
+  for (const density of ["compact", "cozy"]) {
+    await page.locator(`[data-density-choice="${density}"]`).click();
+    for (const theme of ["dark", "light"]) {
+      await page.evaluate((value) => {
+        if (value === "light") document.documentElement.setAttribute("data-theme", "light");
+        else document.documentElement.removeAttribute("data-theme");
+      }, theme);
+      await expect(detentBadge).toHaveText("4");
+      await expect(detentBadge).toHaveAttribute(
+        "data-sidebar-project-blocked",
+        "true",
+      );
+      await expect(detent.locator('[data-sidebar-project-activity="true"] .dt-pulse')).toBeVisible();
+    }
+  }
+  await page.locator('[data-density-choice="compact"]').click();
+  await page.evaluate(() => document.documentElement.removeAttribute("data-theme"));
+
+  await detent.hover();
+  const tooltip = page.locator("body > #help-tooltip");
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText(
+    "1 todo · 3 active · 0 waiting · 1 blocked",
+  );
+  await waitForSidebarMorph(page);
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText(
+    "1 todo · 3 active · 0 waiting · 1 blocked",
+  );
+
+  await expect(page.locator("#fig-waiting")).toContainText("1 waiting");
+  await expect(page.locator("#fig-blocked")).toContainText("1 blocked");
+});
+
 test("board home renders lanes without page overflow", async ({
   page,
 }, testInfo) => {

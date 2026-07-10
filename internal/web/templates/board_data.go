@@ -275,11 +275,12 @@ func boardVisibilityKey(data DashboardData) string {
 }
 
 func boardFigures(snapshot telemetry.Snapshot) []primitives.Figure {
-	blocked := blockedCount(snapshot)
+	workload := telemetry.BoardWorkload(snapshot)
 	return []primitives.Figure{
 		{ID: "fig-running", Value: formatCount(runningCount(snapshot)), Label: "running"},
 		{ID: "fig-queued", Value: formatCount(queueCount(snapshot)), Label: "queued"},
-		{ID: "fig-blocked", Value: formatCount(blocked), Label: "blocked", Err: blocked > 0},
+		{ID: "fig-waiting", Value: formatCount(workload.Waiting), Label: "waiting"},
+		{ID: "fig-blocked", Value: formatCount(workload.Blocked), Label: "blocked", Err: workload.Blocked > 0},
 		{ID: "fig-completed", Value: formatCount(completedCount(snapshot)), Label: "completed"},
 	}
 }

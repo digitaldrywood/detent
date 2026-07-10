@@ -125,14 +125,20 @@ templ AppSidebarContent(data DashboardShellData) {
 				<a
 					href={ templ.SafeURL(project.Href) }
 					class={ appProjectLinkClass(project) }
-					title={ project.Name }
 					data-sidebar-project={ project.ID }
-					{ sidebarAriaCurrent(project.Active)... }
+					data-help-trigger
+					data-help-scope="project-load"
+					data-help-term={ "sidebar-project-" + project.ID }
+					data-help-title={ project.Name }
+					data-help-description={ appProjectBreakdown(project) }
+					{ sidebarAriaCurrent(project.Selected)... }
 				>
-					@primitives.StatusDot(project.Kind, project.Pulse)
+					<span data-sidebar-project-activity={ boardBoolAttr(project.Live) }>
+						@primitives.StatusDot(appProjectDotKind(project), project.Live)
+					</span>
 					<span class="min-w-0 flex-1 truncate group-data-[rail=true]/rail:hidden" data-sidebar-project-label>{ project.Name }</span>
 					if project.Count != "" {
-						<span class={ appProjectCountClass(project) }>{ project.Count }</span>
+						<span class={ appProjectCountClass(project) } data-sidebar-project-badge data-sidebar-project-blocked={ boardBoolAttr(project.Blocked > 0) } aria-label={ project.Count + " board load" }>{ project.Count }</span>
 					}
 				</a>
 			}

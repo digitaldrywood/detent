@@ -53,29 +53,35 @@ func projectSmallMultiplesFromSnapshot(snapshot telemetry.Snapshot) []templates.
 	if len(snapshot.Projects) > 0 {
 		projects := make([]templates.ProjectSmallMultiple, 0, len(snapshot.Projects))
 		for _, project := range snapshot.Projects {
-			projects = append(projects, projectSmallMultipleFromSnapshot(project))
+			projects = append(projects, projectSmallMultipleFromSnapshot(project, telemetry.BoardWorkloadForProject(snapshot, projectID(project.Project))))
 		}
 		return projects
 	}
 	if snapshot.Project == (telemetry.Project{}) {
 		return nil
 	}
+	workload := telemetry.BoardWorkload(snapshot)
 	return []templates.ProjectSmallMultiple{
 		{
-			ID:          projectID(snapshot.Project),
-			Name:        strings.TrimSpace(snapshot.Project.DisplayName),
-			URL:         strings.TrimSpace(snapshot.Project.URL),
-			Color:       snapshotProjectColor(snapshot.Project.Color),
-			Running:     snapshot.Counts.Running,
-			QueueCount:  snapshot.Counts.Queue,
-			Blocked:     snapshot.Counts.Blocked,
-			Completed:   snapshot.Counts.Completed,
-			TotalTokens: snapshot.Tokens.Total,
+			ID:           projectID(snapshot.Project),
+			Name:         strings.TrimSpace(snapshot.Project.DisplayName),
+			URL:          strings.TrimSpace(snapshot.Project.URL),
+			Color:        snapshotProjectColor(snapshot.Project.Color),
+			Running:      snapshot.Counts.Running,
+			QueueCount:   snapshot.Counts.Queue,
+			Blocked:      snapshot.Counts.Blocked,
+			BoardLoad:    workload.Load,
+			BoardTodo:    workload.Todo,
+			BoardActive:  workload.Active,
+			BoardWaiting: workload.Waiting,
+			BoardBlocked: workload.Blocked,
+			Completed:    snapshot.Counts.Completed,
+			TotalTokens:  snapshot.Tokens.Total,
 		},
 	}
 }
 
-func projectSmallMultipleFromSnapshot(project telemetry.ProjectSnapshot) templates.ProjectSmallMultiple {
+func projectSmallMultipleFromSnapshot(project telemetry.ProjectSnapshot, workload telemetry.BoardWorkloadCounts) templates.ProjectSmallMultiple {
 	return templates.ProjectSmallMultiple{
 		ID:                        projectID(project.Project),
 		Name:                      strings.TrimSpace(project.Project.DisplayName),
@@ -84,6 +90,11 @@ func projectSmallMultipleFromSnapshot(project telemetry.ProjectSnapshot) templat
 		Running:                   project.Counts.Running,
 		QueueCount:                project.Counts.Queue,
 		Blocked:                   project.Counts.Blocked,
+		BoardLoad:                 workload.Load,
+		BoardTodo:                 workload.Todo,
+		BoardActive:               workload.Active,
+		BoardWaiting:              workload.Waiting,
+		BoardBlocked:              workload.Blocked,
 		Completed:                 project.Counts.Completed,
 		TotalTokens:               project.Tokens.Total,
 		ThroughputTokensPerSecond: project.Throughput.TokensPerSecond,

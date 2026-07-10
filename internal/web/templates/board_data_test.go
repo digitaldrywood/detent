@@ -790,8 +790,8 @@ func laneTitles(view boardView) []string {
 func TestBoardFigures(t *testing.T) {
 	data := boardTestData()
 	figures := boardFigures(data.Snapshot)
-	if len(figures) != 4 {
-		t.Fatalf("expected 4 figures, got %d", len(figures))
+	if len(figures) != 5 {
+		t.Fatalf("expected 5 figures, got %d", len(figures))
 	}
 	byID := map[string]primitives.Figure{}
 	for _, figure := range figures {
@@ -811,6 +811,32 @@ func TestBoardFigures(t *testing.T) {
 		if figure.Err {
 			t.Fatalf("no figure should be err-colored when nothing is blocked: %+v", figure)
 		}
+	}
+}
+
+func TestBoardFiguresSeparateWaitingFromBlockedLane(t *testing.T) {
+	t.Parallel()
+
+	snapshot := telemetry.Snapshot{
+		BoardIssues: []telemetry.Issue{
+			{ID: "waiting", State: "Todo"},
+			{ID: "blocked", State: "Blocked"},
+		},
+		Blocked: []telemetry.Blocked{
+			{Issue: telemetry.Issue{ID: "waiting", State: "Todo"}, Source: telemetry.BlockedSourceDependency},
+			{Issue: telemetry.Issue{ID: "blocked", State: "Blocked"}, Error: "needs operator action"},
+		},
+	}
+
+	byID := map[string]primitives.Figure{}
+	for _, figure := range boardFigures(snapshot) {
+		byID[figure.ID] = figure
+	}
+	if byID["fig-waiting"].Value != "1" {
+		t.Fatalf("waiting figure = %+v, want 1", byID["fig-waiting"])
+	}
+	if byID["fig-blocked"].Value != "1" || !byID["fig-blocked"].Err {
+		t.Fatalf("blocked figure = %+v, want exact blocked-lane count", byID["fig-blocked"])
 	}
 }
 

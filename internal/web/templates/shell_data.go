@@ -93,18 +93,17 @@ func appShellHealthKind(data DashboardShellData) primitives.Kind {
 	return primitives.KindNeutral
 }
 
-// appShellProject is one sidebar project row: a status dot, the name, and
-// at most one count. Counts render only when they demand attention —
-// blocked (err) wins over running; idle projects show no number at all.
 type appShellProject struct {
 	ID       string
 	Name     string
 	Href     string
-	Kind     primitives.Kind
-	Pulse    bool
+	Live     bool
 	Count    string
-	CountErr bool
-	Active   bool
+	Todo     int
+	Active   int
+	Waiting  int
+	Blocked  int
+	Selected bool
 }
 
 func appShellProjects(data DashboardShellData) []appShellProject {
@@ -117,23 +116,18 @@ func appShellProjects(data DashboardShellData) []appShellProject {
 			continue
 		}
 		item := appShellProject{
-			ID:     id,
-			Name:   projectSmallMultipleName(project),
-			Href:   projectOpenPath(id),
-			Kind:   primitives.KindNeutral,
-			Active: strings.TrimSpace(data.ProjectID) == id,
+			ID:       id,
+			Name:     projectSmallMultipleName(project),
+			Href:     projectOpenPath(id),
+			Live:     project.Running > 0,
+			Todo:     project.BoardTodo,
+			Active:   project.BoardActive,
+			Waiting:  project.BoardWaiting,
+			Blocked:  project.BoardBlocked,
+			Selected: strings.TrimSpace(data.ProjectID) == id,
 		}
-		switch {
-		case project.Blocked > 0:
-			item.Kind = primitives.KindErr
-			item.Count = strconv.Itoa(project.Blocked)
-			item.CountErr = true
-		case project.Running > 0:
-			item.Kind = primitives.KindOK
-			item.Pulse = true
-			item.Count = strconv.Itoa(project.Running)
-		case project.QueueCount > 0:
-			item.Count = strconv.Itoa(project.QueueCount)
+		if project.BoardLoad > 0 {
+			item.Count = strconv.Itoa(project.BoardLoad)
 		}
 		items = append(items, item)
 	}
@@ -202,18 +196,34 @@ func appNavInitial(item appNavItem) string {
 
 func appProjectLinkClass(project appShellProject) string {
 	base := "flex items-center gap-2 rounded-card px-2.5 py-1.5 text-sm group-data-[rail=true]/rail:justify-center group-data-[rail=true]/rail:px-0 "
-	if project.Active {
+	if project.Selected {
 		return base + "bg-elev font-medium text-text"
 	}
 	return base + "text-text hover:bg-elev/60"
 }
 
 func appProjectCountClass(project appShellProject) string {
-	base := "font-mono text-2xs font-medium tabular-nums group-data-[rail=true]/rail:hidden "
-	if project.CountErr {
-		return base + "text-err"
+	base := "rounded-chip px-1.5 py-0.5 font-mono text-2xs font-medium tabular-nums group-data-[rail=true]/rail:hidden "
+	if project.Blocked > 0 {
+		return base + "bg-err/15 text-err"
 	}
-	return base + "text-sec"
+	return base + "bg-elev text-sec"
+}
+
+func appProjectDotKind(project appShellProject) primitives.Kind {
+	if project.Live {
+		return primitives.KindOK
+	}
+	return primitives.KindNeutral
+}
+
+func appProjectBreakdown(project appShellProject) string {
+	return strings.Join([]string{
+		strconv.Itoa(project.Todo) + " todo",
+		strconv.Itoa(project.Active) + " active",
+		strconv.Itoa(project.Waiting) + " waiting",
+		strconv.Itoa(project.Blocked) + " blocked",
+	}, " · ")
 }
 
 func appDensityButtonClass(data DashboardShellData, choice string) string {

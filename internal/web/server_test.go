@@ -6856,6 +6856,15 @@ func TestServerEventsStreamsSidebarUpdates(t *testing.T) {
 
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		GeneratedAt: time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC),
+		BoardIssues: []telemetry.Issue{
+			{ID: "detent-1", ProjectID: "detent", State: "In Progress"},
+			{ID: "detent-2", ProjectID: "detent", State: "In Progress"},
+			{ID: "detent-3", ProjectID: "detent", State: "In Progress"},
+			{ID: "detent-4", ProjectID: "detent", State: "In Progress"},
+			{ID: "detent-5", ProjectID: "detent", State: "In Progress"},
+			{ID: "detent-6", ProjectID: "detent", State: "In Progress"},
+			{ID: "detent-7", ProjectID: "detent", State: "In Progress"},
+		},
 		Projects: []telemetry.ProjectSnapshot{
 			{
 				Project: telemetry.Project{
@@ -6882,11 +6891,11 @@ func TestServerEventsStreamsSidebarUpdates(t *testing.T) {
 	for _, want := range []string{
 		"Detent",
 		`href="/projects/detent/kanban"`,
-		"Detent - active, 7 running",
+		"Detent - 0 todo · 7 active · 0 waiting · 0 blocked",
 		`data-dashboard-project-entry`,
 		`data-tui-sidebar="menu-badge"`,
-		`aria-label="7 running"`,
-		">run 7</span>",
+		`aria-label="7 board load"`,
+		">7</span>",
 	} {
 		if !strings.Contains(sidebarEvent.data, want) {
 			t.Fatalf("sidebar event missing %q:\n%s", want, sidebarEvent.data)
