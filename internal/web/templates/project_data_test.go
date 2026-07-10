@@ -46,6 +46,28 @@ func TestSheetRowLinkSanitizesURL(t *testing.T) {
 	}
 }
 
+func TestBoardCardSheetClass(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		expanded bool
+		want     string
+	}{
+		{name: "compact", want: "flex h-full w-full min-w-0 flex-none flex-col overflow-hidden bg-surface md:border-l md:border-line md:w-100"},
+		{name: "expanded", expanded: true, want: "flex h-full w-full min-w-0 flex-none flex-col overflow-hidden bg-surface md:border-l md:border-line"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := boardCardSheetClass(tt.expanded); got != tt.want {
+				t.Fatalf("boardCardSheetClass(%t) = %q, want %q", tt.expanded, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProjectTabs(t *testing.T) {
 	data := DashboardData{ProjectID: "gopher-ai"}
 	tabs := projectTabs(data, "runs")

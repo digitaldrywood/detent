@@ -18,20 +18,20 @@ templ DetailSheetHost() {
 // allows.
 templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bool, expanded bool, conversation KanbanConversationData, activity BoardActivityData, sessionData BoardSessionData) {
 	{{ session := sheetSessionFor(data.Snapshot, card) }}
-	<div class="fixed inset-0 z-50 flex justify-end" data-detail-sheet>
-		<div class="flex-1 bg-page/60" data-sheet-close aria-hidden="true"></div>
+	<div class="fixed inset-0 z-50 flex min-w-0 justify-end overflow-x-hidden" data-detail-sheet>
+		<div class="hidden flex-1 bg-page/60 md:block" data-sheet-close aria-hidden="true"></div>
 		<aside class={ boardCardSheetClass(expanded) } role="dialog" aria-modal="true" aria-label={ "Details for " + card.IssueNumber }>
-			<header class="flex flex-none items-start gap-3 border-b border-line px-5 py-4">
+			<header class="flex flex-none items-start gap-3 border-b border-line px-4 py-3 md:px-5 md:py-4">
 				<div class="flex min-w-0 flex-1 flex-col gap-1">
 					<div class="flex min-w-0 items-center gap-2 font-mono text-xs font-medium text-sec">
 						<span class="min-w-20 truncate">{ projectKanbanCardProjectID(data, card) }</span>
-						@primitives.TrackerReferenceLink(card.IssueNumber, card.URL, "flex-none max-w-48 truncate text-text")
+						@primitives.TrackerReferenceLink(card.IssueNumber, card.URL, "inline-flex min-h-11 max-w-48 flex-none items-center truncate text-text md:min-h-0 md:inline")
 					</div>
 					<h2 class="text-sm font-medium leading-snug text-text">{ card.Title }</h2>
 				</div>
-				<button type="button" class="flex-none rounded-chip p-1 text-sec hover:bg-elev hover:text-text" data-sheet-close aria-label="Close details">✕</button>
+				<button type="button" class="inline-flex size-11 flex-none items-center justify-center rounded-chip text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent md:size-auto md:p-1" data-sheet-close aria-label="Close details">✕</button>
 			</header>
-			<div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
+			<div class="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto px-4 py-4 overscroll-contain md:px-5">
 				<div class="flex flex-col gap-2 text-xs">
 					@sheetRowText("State") {
 						<span class={ "flex items-center gap-1.5 " + boardExtraTextClass(sheetStateKind(data, card)) }>
@@ -110,7 +110,7 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 								@sheetRowValue("Last event", session.LastEvent, session.Message)
 							}
 							if session.Error != "" {
-								<p class="text-err">{ session.Error }</p>
+								<p class="break-words text-err [overflow-wrap:anywhere]">{ session.Error }</p>
 							}
 						</div>
 					</div>
@@ -125,13 +125,13 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 				@KanbanConversation(conversation)
 			</div>
 			if sheetHasActions(data, card, boardActions) {
-				<footer class="flex flex-none items-center gap-2 border-t border-line px-5 py-3">
+				<footer class="flex flex-none flex-wrap items-center gap-2 border-t border-line px-4 py-3 md:flex-nowrap md:px-5">
 					<div id="kanban-feedback" role="status" aria-live="polite" hidden></div>
 					if projectKanbanCardCanMove(data, card) {
 						@dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}) {
 							<button
 								type="button"
-								class="rounded-card border border-line px-3 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent"
+								class="min-h-11 rounded-card border border-line px-3 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent md:min-h-0"
 								hx-get={ projectKanbanMoveDialogPath(data, card) }
 								hx-target={ kanbanDialogTargetSelector() }
 								hx-swap="innerHTML"
@@ -149,17 +149,17 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 							<input type="hidden" name="project_id" value={ projectKanbanCardProjectID(data, card) }/>
 							<input type="hidden" name="issue_id" value={ card.IssueID }/>
 							<input type="hidden" name="current_state" value={ card.Stage }/>
-							<button type="submit" class="rounded-card border border-err/40 px-3 py-1.5 text-xs font-medium text-err hover:bg-err/15">Remove</button>
+							<button type="submit" class="min-h-11 rounded-card border border-err/40 px-3 py-1.5 text-xs font-medium text-err hover:bg-err/15 md:min-h-0">Remove</button>
 						</form>
 					}
 					<span class="flex-1"></span>
 					if card.URL != "" {
-						<a href={ card.URL } target="_blank" rel="noopener noreferrer" class="text-xs font-medium text-accent hover:underline">Open on GitHub ↗</a>
+						<a href={ card.URL } target="_blank" rel="noopener noreferrer" class="inline-flex min-h-11 items-center text-xs font-medium text-accent hover:underline md:inline md:min-h-0">Open on GitHub ↗</a>
 					}
 				</footer>
 			} else if card.URL != "" {
-				<footer class="flex flex-none items-center justify-end border-t border-line px-5 py-3">
-					<a href={ card.URL } target="_blank" rel="noopener noreferrer" class="text-xs font-medium text-accent hover:underline">Open on GitHub ↗</a>
+				<footer class="flex flex-none items-center justify-end border-t border-line px-4 py-3 md:px-5">
+					<a href={ card.URL } target="_blank" rel="noopener noreferrer" class="inline-flex min-h-11 items-center text-xs font-medium text-accent hover:underline md:inline md:min-h-0">Open on GitHub ↗</a>
 				</footer>
 			}
 		</aside>
@@ -172,7 +172,7 @@ templ sheetCommentTrigger(data DashboardData, card projectKanbanCard, target str
 	@dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}) {
 		<button
 			type="button"
-			class="rounded-card border border-line px-3 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent"
+			class="min-h-11 rounded-card border border-line px-3 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent md:min-h-0"
 			hx-get={ projectKanbanCommentDialogPath(data, card, target) }
 			hx-target={ kanbanDialogTargetSelector() }
 			hx-swap="innerHTML"
@@ -189,24 +189,24 @@ templ sheetCommentTrigger(data DashboardData, card projectKanbanCard, target str
 }
 
 templ sheetRowText(label string) {
-	<div class="flex items-center justify-between gap-3">
+	<div class="flex min-w-0 flex-col items-start gap-1 md:flex-row md:items-center md:justify-between md:gap-3" data-sheet-row={ label }>
 		<span class="flex-none text-sec">{ label }</span>
 		{ children... }
 	</div>
 }
 
 templ sheetRowValue(label string, value string, title string) {
-	<div class="flex items-center justify-between gap-3">
+	<div class="flex min-w-0 flex-col items-start gap-1 md:flex-row md:items-center md:justify-between md:gap-3" data-sheet-row={ label }>
 		<span class="flex-none text-sec">{ label }</span>
-		<span class="min-w-0 truncate font-mono text-text tabular-nums" title={ title }>{ value }</span>
+		<span class="w-full min-w-0 break-words font-mono text-text tabular-nums [overflow-wrap:anywhere] md:w-auto md:truncate" title={ title } data-sheet-row-value>{ value }</span>
 	</div>
 }
 
 templ sheetRowLink(label string, value string, href string) {
 	if value != "" {
-		<div class="flex items-center justify-between gap-3">
+		<div class="flex min-w-0 flex-col items-start gap-1 md:flex-row md:items-center md:justify-between md:gap-3" data-sheet-row={ label }>
 			<span class="flex-none text-sec">{ label }</span>
-			@primitives.TrackerReferenceLink(value, href, "min-w-0 truncate font-mono text-text")
+			@primitives.TrackerReferenceLink(value, href, "inline-flex min-h-11 w-full min-w-0 items-center break-words font-mono text-text [overflow-wrap:anywhere] md:inline md:min-h-0 md:w-auto md:truncate")
 		</div>
 	}
 }
@@ -216,7 +216,7 @@ templ sheetTagRow(label string, values []string) {
 		<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">{ label }</h3>
 		<div class="flex flex-wrap gap-1.5">
 			for _, value := range values {
-				<span class="truncate rounded-chip bg-elev px-2 py-0.5 font-mono text-2xs text-sec" title={ value }>{ value }</span>
+				<span class="inline-flex min-h-11 items-center rounded-chip bg-elev px-2 py-0.5 font-mono text-2xs text-sec md:min-h-0" title={ value }>{ value }</span>
 			}
 		</div>
 	</div>

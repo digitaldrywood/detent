@@ -130,6 +130,101 @@ test("shared figures use a compact mobile grid", async ({ page }) => {
   expect(columns).toBe(3);
 });
 
+test("issue detail is a touch-safe full-screen sheet", async ({ page }) => {
+  await page.setExtraHTTPHeaders({
+    "X-Detent-Demo-Scenario": "fleet-healthy-parallel-work",
+  });
+  await page.goto(`${runtime.url}/`, { waitUntil: "domcontentloaded" });
+
+  const tooltip = page.locator("body > #help-tooltip");
+  const runtimeBadge = page
+    .locator("[data-board-runtime-badge][data-help-trigger]")
+    .first();
+  const card = runtimeBadge.locator("xpath=ancestor::article");
+  const cardRequest = await card.getAttribute("hx-get");
+  await card.evaluate((element) => element.removeAttribute("hx-get"));
+  await runtimeBadge.tap();
+  await expect(tooltip).toBeVisible();
+  await runtimeBadge.tap();
+  await expect(tooltip).toBeHidden();
+  await runtimeBadge.tap();
+  await expect(tooltip).toBeVisible();
+  await page.locator("h1").first().tap();
+  await expect(tooltip).toBeHidden();
+  await card.evaluate(
+    (element, request) => element.setAttribute("hx-get", request),
+    cardRequest,
+  );
+  await card.tap({ position: { x: 20, y: 20 } });
+
+  const sheet = page.locator("[data-detail-sheet]");
+  const dialog = sheet.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  const dialogBox = await dialog.boundingBox();
+  expect(dialogBox).not.toBeNull();
+  expect(dialogBox.x).toBe(0);
+  expect(dialogBox.y).toBe(0);
+  expect(dialogBox.width).toBe(390);
+  expect(dialogBox.height).toBe(844);
+
+  for (const label of ["Provider", "Model", "Session"]) {
+    const row = dialog.locator(`[data-sheet-row="${label}"]`);
+    const value = row.locator("[data-sheet-row-value]");
+    await expect(value).toBeVisible();
+    const dimensions = await value.evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      whiteSpace: getComputedStyle(element).whiteSpace,
+    }));
+    expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
+    expect(dimensions.whiteSpace).toBe("normal");
+  }
+
+  const commentBodies = dialog.locator("[aria-label='Conversation'] article p");
+  if ((await commentBodies.count()) > 0) {
+    await expect(commentBodies.first()).toHaveCSS("overflow-wrap", "anywhere");
+  }
+
+  for (const control of [
+    dialog.getByRole("button", { name: "Close details" }),
+    dialog.getByRole("tab", { name: "Timeline" }),
+    dialog.getByRole("tab", { name: "Live session" }),
+  ]) {
+    const box = await control.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box.height).toBeGreaterThanOrEqual(44);
+  }
+  await expectNoHorizontalScroll(page);
+
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        document.addEventListener("htmx:afterRequest", function settled(event) {
+          if (event.detail?.target?.id !== "detail-sheet-host") return;
+          document.removeEventListener("htmx:afterRequest", settled);
+          resolve();
+        });
+        const snapshot = document.querySelector("#snapshot");
+        if (snapshot.getAttribute("hx-swap") !== "morph:innerHTML") {
+          throw new Error("snapshot must use an in-place morph swap");
+        }
+        snapshot.dispatchEvent(
+          new CustomEvent("htmx:afterSettle", {
+            bubbles: true,
+            detail: { target: snapshot },
+          }),
+        );
+      }),
+  );
+  await expect(dialog).toBeVisible();
+  await expectNoHorizontalScroll(page);
+  await expect(page).toHaveScreenshot("issue-detail-sheet.png");
+
+  await dialog.getByRole("button", { name: "Close details" }).tap();
+  await expect(sheet).toHaveCount(0);
+  await expect(tooltip).toBeHidden();
+});
+
 test("reports charts and analytics log stay usable on mobile", async ({
   page,
 }) => {
