@@ -190,6 +190,13 @@
     scrollbar-gutter: stable;
   }
 
+  @media (width < 48rem) {
+    .dt-responsive-chart {
+      aspect-ratio: var(--dt-chart-aspect-ratio);
+      height: auto !important;
+    }
+  }
+
   .htmx-indicator {
     display: none;
   }

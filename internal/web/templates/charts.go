@@ -101,6 +101,7 @@ type seriesChartView struct {
 	Title     string
 	AriaLabel string
 	Class     string
+	Style     string
 	ViewBox   string
 	LinePath  string
 	AreaPath  string
@@ -111,6 +112,7 @@ type splitSeriesChartView struct {
 	Title          string
 	AriaLabel      string
 	Class          string
+	Style          string
 	ViewBox        string
 	InputAreaPath  string
 	InputLinePath  string
@@ -126,6 +128,7 @@ type barChartView struct {
 	Title     string
 	AriaLabel string
 	Class     string
+	Style     string
 	ViewBox   string
 	Bars      []barView
 }
@@ -134,6 +137,7 @@ type timelineChartView struct {
 	Title     string
 	AriaLabel string
 	Class     string
+	Style     string
 	ViewBox   string
 	Segments  []timelineSegmentView
 }
@@ -142,6 +146,7 @@ type budgetProjectionChartView struct {
 	Title              string
 	AriaLabel          string
 	Class              string
+	Style              string
 	ViewBox            string
 	ActualAreaPath     string
 	ActualLinePath     string
@@ -229,7 +234,8 @@ func newBudgetProjectionChartView(data BudgetProjectionChartData) budgetProjecti
 	return budgetProjectionChartView{
 		Title:              chartText(data.Title, "Cost burn-down"),
 		AriaLabel:          chartText(data.AriaLabel, chartText(data.Title, "Cost burn-down")),
-		Class:              chartClass("block h-36 w-full overflow-visible rounded-md border border-line bg-elev", data.Class),
+		Class:              chartClass("dt-responsive-chart block h-36 w-full overflow-visible rounded-md border border-line bg-elev", data.Class),
+		Style:              chartAspectRatioStyle(width, height),
 		ViewBox:            chartViewBox(width, height),
 		ActualAreaPath:     webchart.SmoothAreaPath(actualScaled, baseline),
 		ActualLinePath:     webchart.SmoothLinePath(actualScaled),
@@ -279,7 +285,8 @@ func newSplitSeriesChartView(data SplitSeriesChartData) splitSeriesChartView {
 	return splitSeriesChartView{
 		Title:          chartText(data.Title, "Split series chart"),
 		AriaLabel:      chartText(data.AriaLabel, chartText(data.Title, "Split series chart")),
-		Class:          chartClass("block h-28 w-full overflow-visible rounded-md border border-line bg-elev", data.Class),
+		Class:          chartClass("dt-responsive-chart block h-28 w-full overflow-visible rounded-md border border-line bg-elev", data.Class),
+		Style:          chartAspectRatioStyle(width, height),
 		ViewBox:        chartViewBox(width, height),
 		InputAreaPath:  webchart.SmoothAreaPath(inputScaled, baseline),
 		InputLinePath:  webchart.SmoothLinePath(inputScaled),
@@ -321,9 +328,10 @@ func newSeriesChartView(data SeriesChartData, withArea bool, defaultColor string
 		Title:     chartText(data.Title, "Chart"),
 		AriaLabel: chartText(data.AriaLabel, chartText(data.Title, "Chart")),
 		Class: chartClass(
-			"block h-20 w-full overflow-visible rounded-md border border-line bg-elev "+chartText(data.ColorClass, defaultColor),
+			"dt-responsive-chart block h-20 w-full overflow-visible rounded-md border border-line bg-elev "+chartText(data.ColorClass, defaultColor),
 			data.Class,
 		),
+		Style:    chartAspectRatioStyle(width, height),
 		ViewBox:  chartViewBox(width, height),
 		LinePath: linePath,
 		AreaPath: areaPath,
@@ -497,9 +505,10 @@ func newBarChartView(data BarChartData) barChartView {
 		Title:     chartText(data.Title, "Bar chart"),
 		AriaLabel: chartText(data.AriaLabel, chartText(data.Title, "Bar chart")),
 		Class: chartClass(
-			"block h-20 w-full overflow-visible rounded-md border border-line bg-elev "+chartText(data.ColorClass, "text-accent"),
+			"dt-responsive-chart block h-20 w-full overflow-visible rounded-md border border-line bg-elev "+chartText(data.ColorClass, "text-accent"),
 			data.Class,
 		),
+		Style:   chartAspectRatioStyle(width, height),
 		ViewBox: chartViewBox(width, height),
 		Bars:    bars,
 	}
@@ -546,7 +555,8 @@ func newTimelineChartView(data TimelineChartData) timelineChartView {
 	return timelineChartView{
 		Title:     chartText(data.Title, "Timeline chart"),
 		AriaLabel: chartText(data.AriaLabel, chartText(data.Title, "Timeline chart")),
-		Class:     chartClass("block h-7 w-full overflow-hidden rounded-md border border-line bg-elev", data.Class),
+		Class:     chartClass("dt-responsive-chart block h-7 w-full overflow-hidden rounded-md border border-line bg-elev", data.Class),
+		Style:     chartAspectRatioStyle(width, height),
 		ViewBox:   chartViewBox(width, height),
 		Segments:  views,
 	}
@@ -582,6 +592,10 @@ func chartPadding(value float64, fallback float64) float64 {
 
 func chartViewBox(width float64, height float64) string {
 	return "0 0 " + webchart.FormatCoord(width) + " " + webchart.FormatCoord(height)
+}
+
+func chartAspectRatioStyle(width float64, height float64) string {
+	return "--dt-chart-aspect-ratio: " + webchart.FormatCoord(width) + " / " + webchart.FormatCoord(height)
 }
 
 func chartClass(base string, extra string) string {
