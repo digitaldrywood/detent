@@ -27,13 +27,23 @@ type Skill struct {
 	BodyPath    string
 }
 
-type ValidationError struct {
+type DropReason string
+
+const (
+	DropReasonInvalid           DropReason = "invalid"
+	DropReasonDuplicate         DropReason = "duplicate"
+	DropReasonMaxSkillsInPrompt DropReason = "max_skills_in_prompt"
+)
+
+type Drop struct {
 	Path    string
+	Name    string
+	Reason  DropReason
 	Message string
 }
 
-func (e ValidationError) Error() string {
-	return e.Path + ": " + e.Message
+func (d Drop) Error() string {
+	return d.Path + ": " + d.Message
 }
 
 type Options struct {
@@ -43,8 +53,8 @@ type Options struct {
 }
 
 type Result struct {
-	Skills []Skill
-	Errors []ValidationError
+	Skills  []Skill
+	Dropped []Drop
 }
 
 func Load(workspacePath string, opts Options) (Result, error) {
@@ -84,30 +94,37 @@ func Load(workspacePath string, opts Options) (Result, error) {
 	sort.Strings(files)
 
 	skills := make([]Skill, 0, len(files))
-	validationErrors := make([]ValidationError, 0)
+	dropped := make([]Drop, 0)
 	for _, file := range files {
 		content, err := os.ReadFile(file)
 		if err != nil {
-			validationErrors = append(validationErrors, ValidationError{
+			dropped = append(dropped, Drop{
 				Path:    file,
+				Reason:  DropReasonInvalid,
 				Message: "failed to read skill: " + err.Error(),
 			})
 			continue
 		}
 
-		skill, validationErr := parseSkill(file, content)
-		if validationErr != nil {
-			validationErrors = append(validationErrors, *validationErr)
+		skill, drop := parseSkill(file, content)
+		if drop != nil {
+			dropped = append(dropped, *drop)
 			continue
 		}
 		skills = append(skills, skill)
 	}
 
-	skills, duplicateErrors := rejectDuplicateNames(skills)
-	validationErrors = append(validationErrors, duplicateErrors...)
+	skills, duplicateDrops := rejectDuplicateNames(skills)
+	dropped = append(dropped, duplicateDrops...)
 
 	if len(skills) > maxSkills {
 		for _, skill := range skills[maxSkills:] {
+			dropped = append(dropped, Drop{
+				Path:    skill.BodyPath,
+				Name:    skill.Name,
+				Reason:  DropReasonMaxSkillsInPrompt,
+				Message: fmt.Sprintf("exceeds max_skills_in_prompt of %d", maxSkills),
+			})
 			logger.Info(
 				"dropped skill from prompt",
 				slog.Int("max_skills_in_prompt", maxSkills),
@@ -119,25 +136,25 @@ func Load(workspacePath string, opts Options) (Result, error) {
 	}
 
 	return Result{
-		Skills: skills,
-		Errors: validationErrors,
+		Skills:  skills,
+		Dropped: dropped,
 	}, nil
 }
 
-func parseSkill(path string, content []byte) (Skill, *ValidationError) {
+func parseSkill(path string, content []byte) (Skill, *Drop) {
 	frontmatter, err := splitFrontmatter(content)
 	if err != nil {
-		return Skill{}, &ValidationError{Path: path, Message: err.Error()}
+		return Skill{}, &Drop{Path: path, Reason: DropReasonInvalid, Message: err.Error()}
 	}
 
 	var doc yaml.Node
 	if err := yaml.Unmarshal(frontmatter, &doc); err != nil {
-		return Skill{}, &ValidationError{Path: path, Message: "invalid YAML: " + err.Error()}
+		return Skill{}, &Drop{Path: path, Reason: DropReasonInvalid, Message: "invalid YAML: " + err.Error()}
 	}
 
 	root := yamlRoot(&doc)
 	if root == nil || root.Kind != yaml.MappingNode {
-		return Skill{}, &ValidationError{Path: path, Message: "front matter must be a mapping"}
+		return Skill{}, &Drop{Path: path, Reason: DropReasonInvalid, Message: "front matter must be a mapping"}
 	}
 
 	fields := map[string]string{}
@@ -151,7 +168,7 @@ func parseSkill(path string, content []byte) (Skill, *ValidationError) {
 		fields[field] = strings.TrimSpace(value)
 	}
 	if len(missing) > 0 {
-		return Skill{}, &ValidationError{Path: path, Message: strings.Join(missing, ", ")}
+		return Skill{}, &Drop{Path: path, Reason: DropReasonInvalid, Message: strings.Join(missing, ", ")}
 	}
 
 	return Skill{
@@ -211,16 +228,18 @@ func stringField(root *yaml.Node, name string) (string, bool) {
 	return "", false
 }
 
-func rejectDuplicateNames(skillList []Skill) ([]Skill, []ValidationError) {
+func rejectDuplicateNames(skillList []Skill) ([]Skill, []Drop) {
 	seen := make(map[string]string, len(skillList))
 	skills := make([]Skill, 0, len(skillList))
-	validationErrors := make([]ValidationError, 0)
+	dropped := make([]Drop, 0)
 
 	for _, skill := range skillList {
 		existingPath, ok := seen[skill.Name]
 		if ok {
-			validationErrors = append(validationErrors, ValidationError{
+			dropped = append(dropped, Drop{
 				Path:    skill.BodyPath,
+				Name:    skill.Name,
+				Reason:  DropReasonDuplicate,
 				Message: fmt.Sprintf("duplicate skill name %q already defined at %s", skill.Name, existingPath),
 			})
 			continue
@@ -229,7 +248,7 @@ func rejectDuplicateNames(skillList []Skill) ([]Skill, []ValidationError) {
 		skills = append(skills, skill)
 	}
 
-	return skills, validationErrors
+	return skills, dropped
 }
 
 func workspaceRelativePath(workspacePath string, relativePath string) (string, error) {

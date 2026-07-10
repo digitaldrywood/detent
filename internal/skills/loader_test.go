@@ -34,11 +34,14 @@ func TestLoadReadsSkillsDeterministicallyDeduplicatesAndCaps(t *testing.T) {
 	if !strings.HasSuffix(result.Skills[0].BodyPath, filepath.Join(".detent", "skills", "01-alpha.md")) {
 		t.Fatalf("BodyPath = %q", result.Skills[0].BodyPath)
 	}
-	if len(result.Errors) != 1 {
-		t.Fatalf("errors len = %d, want 1: %#v", len(result.Errors), result.Errors)
+	if len(result.Dropped) != 2 {
+		t.Fatalf("dropped len = %d, want 2: %#v", len(result.Dropped), result.Dropped)
 	}
-	if !strings.Contains(result.Errors[0].Message, `duplicate skill name "deploy"`) {
-		t.Fatalf("duplicate error = %q", result.Errors[0].Message)
+	if result.Dropped[0].Reason != DropReasonDuplicate || !strings.Contains(result.Dropped[0].Message, `duplicate skill name "deploy"`) {
+		t.Fatalf("duplicate drop = %#v", result.Dropped[0])
+	}
+	if result.Dropped[1].Reason != DropReasonMaxSkillsInPrompt || result.Dropped[1].Name != "lint" {
+		t.Fatalf("over-limit drop = %#v", result.Dropped[1])
 	}
 }
 
@@ -67,11 +70,11 @@ Body
 	if result.Skills[0].Name != "good" {
 		t.Fatalf("skill name = %q, want good", result.Skills[0].Name)
 	}
-	if len(result.Errors) != 2 {
-		t.Fatalf("errors len = %d, want 2: %#v", len(result.Errors), result.Errors)
+	if len(result.Dropped) != 2 {
+		t.Fatalf("dropped len = %d, want 2: %#v", len(result.Dropped), result.Dropped)
 	}
 
-	messages := result.Errors[0].Message + "\n" + result.Errors[1].Message
+	messages := result.Dropped[0].Message + "\n" + result.Dropped[1].Message
 	for _, want := range []string{"name is required", "missing front matter"} {
 		if !strings.Contains(messages, want) {
 			t.Fatalf("errors missing %q:\n%s", want, messages)
@@ -86,7 +89,7 @@ func TestLoadMissingDirectoryIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if len(result.Skills) != 0 || len(result.Errors) != 0 {
+	if len(result.Skills) != 0 || len(result.Dropped) != 0 {
 		t.Fatalf("Load() = %#v, want empty result", result)
 	}
 }

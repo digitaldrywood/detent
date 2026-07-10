@@ -662,6 +662,7 @@ func TestOnboardingWriteWorkflowAppliesFullAutopilotProfile(t *testing.T) {
 		"dependency_auto_unblock:\n    enabled: true",
 		"max_concurrent_agents_by_state:\n    Merging: 1",
 		"auto_promote:\n    enabled: true\n    quiet_seconds: 0\n    gate_wait_state: source",
+		"# Skills guide: https://github.com/digitaldrywood/detent/blob/main/docs/ONBOARDING.md#skills-and-skill-creation",
 		"gate:\n  kind: command\n  run: make check\n  required_status_checks: []\n  require_automated_review: false",
 		"server:\n  host: 127.0.0.1\n  kanban:\n    mode: integration",
 		"Full autopilot still requires linked PRs, green CI, clear gates, and no blocking P1 automated findings.",

@@ -87,6 +87,7 @@ agent:
     pass_state: Merging
     rework_state: Rework
     rework_limit: 3
+  # Skills guide: https://github.com/digitaldrywood/detent/blob/main/docs/ONBOARDING.md#skills-and-skill-creation
   skills:
     enabled: true
     path: .detent/skills

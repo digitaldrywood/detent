@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +15,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/skills"
 )
 
 func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doctorDeps, githubToken RuntimeSecret, allowWriteProbes bool) []doctorCheck {
@@ -167,6 +170,8 @@ func checkDoctorProjectWithProgress(
 	if workflow.Config.Workspace.Kind == workflowconfig.WorkspaceFilesystem {
 		setDoctorCurrentCheck("Project " + id + " filesystem workspace")
 		checks = append(checks, checkDoctorFilesystemWorkspace(id, workflow.Config))
+		setDoctorCurrentCheck("Project " + id + " skills")
+		checks = append(checks, checkDoctorFilesystemProjectSkills(id, project, workflow.Config))
 		return checks
 	}
 
@@ -174,40 +179,125 @@ func checkDoctorProjectWithProgress(
 	setDoctorCurrentCheck(sourceRepoCheckName)
 	sourceRoot := projectSourceRoot(project, workflow.Config)
 	if sourceRoot == "" {
-		return append(checks, doctorCheck{
+		checks = append(checks, doctorCheck{
 			Name:   sourceRepoCheckName,
 			Status: doctorFail,
 			Detail: "source root is not configured",
 			Hint:   "Set workspace.source_root, project workdir, or workspace.root to an existing git checkout.",
 		})
+		return append(checks, checkDoctorProjectSkillsUnavailable(id, workflow.Config.Agent.Skills, "source root is not configured"))
 	}
 	expandedSourceRoot, err := expandDoctorWorkspacePath(sourceRoot)
 	if err != nil {
-		return append(checks, doctorCheck{
+		checks = append(checks, doctorCheck{
 			Name:   sourceRepoCheckName,
 			Status: doctorFail,
 			Detail: fmt.Sprintf("%s: %v", sourceRoot, err),
 			Hint:   "Set workspace.source_root or project workdir to an existing git checkout.",
 		})
+		return append(checks, checkDoctorProjectSkillsUnavailable(id, workflow.Config.Agent.Skills, "source root could not be resolved"))
 	}
 	if err := deps.gitWorkTree(ctx, expandedSourceRoot); err != nil {
-		return append(checks, doctorCheck{
+		checks = append(checks, doctorCheck{
 			Name:   sourceRepoCheckName,
 			Status: doctorFail,
 			Detail: fmt.Sprintf("%s: %v", expandedSourceRoot, err),
 			Hint:   "Set workspace.source_root or project workdir to an existing git checkout.",
 		})
+		return append(checks, checkDoctorProjectSkillsUnavailable(id, workflow.Config.Agent.Skills, "source repository is unavailable locally"))
 	}
 	checks = append(checks, doctorCheck{
 		Name:   sourceRepoCheckName,
 		Status: doctorOK,
 		Detail: expandedSourceRoot + " is a git worktree",
 	})
+	setDoctorCurrentCheck("Project " + id + " skills")
+	checks = append(checks, checkDoctorProjectSkills(id, expandedSourceRoot, workflow.Config.Agent.Skills))
 	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
 		setDoctorCurrentCheck("Project " + id + " GitHub readiness")
 		checks = append(checks, checkDoctorGitHubReadiness(ctx, id, project, workflow.Config, deps, githubToken, expandedSourceRoot, allowWriteProbes)...)
 	}
 	return checks
+}
+
+func checkDoctorProjectSkills(id string, sourceRoot string, cfg workflowconfig.Skills) doctorCheck {
+	name := "Project " + id + " skills"
+	detail := doctorSkillsConfigDetail(cfg)
+	if !cfg.Enabled {
+		return doctorCheck{Name: name, Status: doctorOK, Detail: detail + "; loaded=0; dropped=0"}
+	}
+
+	result, err := skills.Load(sourceRoot, skills.Options{
+		Path:              cfg.Path,
+		MaxSkillsInPrompt: cfg.MaxSkillsInPrompt,
+	})
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorWarn,
+			Detail: detail + "; inspection failed: " + err.Error(),
+			Hint:   "Fix agent.skills.path or permissions, then rerun detent doctor.",
+		}
+	}
+
+	detail += fmt.Sprintf("; loaded=%d; dropped=%d", len(result.Skills), len(result.Dropped))
+	if len(result.Dropped) == 0 {
+		return doctorCheck{Name: name, Status: doctorOK, Detail: detail}
+	}
+
+	drops := make([]string, 0, len(result.Dropped))
+	for _, drop := range result.Dropped {
+		path := drop.Path
+		if relative, err := filepath.Rel(sourceRoot, drop.Path); err == nil {
+			path = relative
+		}
+		drops = append(drops, fmt.Sprintf("%s (%s: %s)", path, drop.Reason, drop.Message))
+	}
+	return doctorCheck{
+		Name:   name,
+		Status: doctorWarn,
+		Detail: detail + "; drops: " + strings.Join(drops, "; "),
+		Hint:   "Fix invalid or duplicate skill files, or raise agent.skills.max_skills_in_prompt.",
+	}
+}
+
+func checkDoctorProjectSkillsUnavailable(id string, cfg workflowconfig.Skills, reason string) doctorCheck {
+	if !cfg.Enabled {
+		return checkDoctorProjectSkills(id, "", cfg)
+	}
+	return doctorCheck{
+		Name:   "Project " + id + " skills",
+		Status: doctorWarn,
+		Detail: doctorSkillsConfigDetail(cfg) + "; skipped because " + reason,
+		Hint:   "Make the source repository available locally, then rerun detent doctor.",
+	}
+}
+
+func checkDoctorFilesystemProjectSkills(id string, project globalconfig.Project, cfg workflowconfig.Config) doctorCheck {
+	sourceRoot := projectSourceRoot(project, cfg)
+	if sourceRoot == "" {
+		return checkDoctorProjectSkillsUnavailable(id, cfg.Agent.Skills, "source root is not configured")
+	}
+	expandedSourceRoot, err := expandDoctorWorkspacePath(sourceRoot)
+	if err != nil {
+		return checkDoctorProjectSkillsUnavailable(id, cfg.Agent.Skills, "source root could not be resolved")
+	}
+	info, err := os.Stat(expandedSourceRoot)
+	if err != nil || !info.IsDir() {
+		return checkDoctorProjectSkillsUnavailable(id, cfg.Agent.Skills, "source repository is unavailable locally")
+	}
+	return checkDoctorProjectSkills(id, expandedSourceRoot, cfg.Agent.Skills)
+}
+
+func doctorSkillsConfigDetail(cfg workflowconfig.Skills) string {
+	return fmt.Sprintf(
+		"enabled=%t; creation_enabled=%t; max_drafts_per_run=%d; path=%s; max_skills_in_prompt=%d",
+		cfg.Enabled,
+		cfg.Creation.Enabled,
+		cfg.Creation.MaxDraftsPerRun,
+		cfg.Path,
+		cfg.MaxSkillsInPrompt,
+	)
 }
 
 type doctorRouteModelProbeRequest struct {

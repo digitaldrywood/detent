@@ -2266,6 +2266,66 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      <source-root>/WORKFLOW.md
    ```
 
+## Skills And Skill Creation
+
+Detent skills are repository-owned Markdown instructions that give agents
+repeatable guidance for project-specific tasks. By default, Detent loads up to
+50 top-level `*.md` files from `<source-root>/.detent/skills` in filename order.
+Each file starts with YAML front matter containing the required string fields
+`name`, `description`, and `when_to_use`; the Markdown body contains the
+implementation guidance:
+
+```markdown
+---
+name: release-check
+description: Verify a release candidate before publishing.
+when_to_use: The issue asks to prepare or validate a release.
+---
+
+Run the repository's release validation command and record the resulting
+artifact checksums in the workpad.
+```
+
+Names must be unique. `detent doctor --project <detent-project-id> --port 0`
+reports the effective skills configuration, loaded count, and every dropped
+file. It warns when front matter is invalid, a name is duplicated, or the
+configured prompt limit drops otherwise valid files. A missing skills
+directory is healthy and reports zero loaded and zero dropped.
+
+Skill creation is a review loop, not an automatic write to the main branch.
+When creation is enabled, the agent may draft at most the configured number of
+candidate skill files in its issue worktree. Those drafts arrive in the normal
+pull request with the implementation. Reviewers approve a skill by merging the
+pull request; only merged skills become repository guidance for future runs.
+Agents should not draft skills for one-off facts, routine edits, or secrets.
+
+The `agent.skills` keys and defaults are:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `enabled` | `true` | Load repository skills and enable the creation loop when creation is also enabled. |
+| `path` | `.detent/skills` | Workspace-relative directory containing skill Markdown files. |
+| `max_skills_in_prompt` | `50` | Maximum valid skills included in an agent prompt. |
+| `creation.enabled` | `true` | Allow agents to propose skill drafts. |
+| `creation.max_drafts_per_run` | `1` | Maximum candidate skill files an agent may draft in one run. |
+
+Use this complete default block in `WORKFLOW.md`:
+
+```yaml
+agent:
+  skills:
+    enabled: true
+    path: .detent/skills
+    max_skills_in_prompt: 50
+    creation:
+      enabled: true
+      max_drafts_per_run: 1
+```
+
+Set `agent.skills.creation.enabled: false` to keep loading reviewed skills but
+stop new drafts. Set `agent.skills.enabled: false` to disable both skill loading
+and skill creation for the project.
+
 ## Phase 5 — Register The Project
 
 Before running `detent init`, `detent add-project`, mutating `global.yaml`, or

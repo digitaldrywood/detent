@@ -557,8 +557,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
 			gitErr:     errors.New("not a git worktree"),
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorFail},
-			wantDetail: []string{"is valid", "validated 0 pinned Codex route model(s)", "not a git worktree"},
+			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorFail, doctorWarn},
+			wantDetail: []string{"is valid", "validated 0 pinned Codex route model(s)", "not a git worktree", "skipped because source repository is unavailable locally"},
 		},
 		{
 			name: "workflow and source repo valid",
@@ -566,8 +566,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK},
-			wantDetail: []string{"is valid", "validated 0 pinned Codex route model(s)", "is a git worktree"},
+			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK, doctorOK},
+			wantDetail: []string{"is valid", "validated 0 pinned Codex route model(s)", "is a git worktree", "loaded=0; dropped=0"},
 		},
 	}
 
@@ -595,6 +595,165 @@ func TestCheckDoctorProjects(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCheckDoctorProjectSkills(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configure  func(*testing.T, string, *workflowconfig.Skills)
+		available  bool
+		wantStatus doctorStatus
+		wantDetail []string
+	}{
+		{
+			name: "disabled reports configuration without reading files",
+			configure: func(_ *testing.T, _ string, cfg *workflowconfig.Skills) {
+				cfg.Enabled = false
+				cfg.Creation.Enabled = false
+			},
+			available:  true,
+			wantStatus: doctorOK,
+			wantDetail: []string{"enabled=false", "creation_enabled=false", "max_drafts_per_run=1", "loaded=0", "dropped=0"},
+		},
+		{
+			name: "healthy directory reports loaded count",
+			configure: func(t *testing.T, root string, _ *workflowconfig.Skills) {
+				writeDoctorSkill(t, root, "deploy.md", "deploy")
+			},
+			available:  true,
+			wantStatus: doctorOK,
+			wantDetail: []string{"enabled=true", "path=.detent/skills", "max_skills_in_prompt=50", "loaded=1", "dropped=0"},
+		},
+		{
+			name: "invalid duplicate and over limit files warn with reasons",
+			configure: func(t *testing.T, root string, cfg *workflowconfig.Skills) {
+				cfg.MaxSkillsInPrompt = 1
+				writeDoctorSkill(t, root, "01-deploy.md", "deploy")
+				writeDoctorSkill(t, root, "02-duplicate.md", "deploy")
+				writeDoctorSkill(t, root, "03-test.md", "test")
+				path := filepath.Join(root, ".detent", "skills", "04-invalid.md")
+				if err := os.WriteFile(path, []byte("missing front matter\n"), 0o600); err != nil {
+					t.Fatalf("WriteFile() error = %v", err)
+				}
+			},
+			available:  true,
+			wantStatus: doctorWarn,
+			wantDetail: []string{"loaded=1", "dropped=3", "02-duplicate.md (duplicate:", "03-test.md (max_skills_in_prompt:", "04-invalid.md (invalid:"},
+		},
+		{
+			name:       "missing source repository skips",
+			available:  false,
+			wantStatus: doctorWarn,
+			wantDetail: []string{"enabled=true", "skipped because source repository is unavailable locally"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			cfg := workflowconfig.Default().Agent.Skills
+			if tt.configure != nil {
+				tt.configure(t, root, &cfg)
+			}
+			var got doctorCheck
+			if tt.available {
+				got = checkDoctorProjectSkills("alpha", root, cfg)
+			} else {
+				got = checkDoctorProjectSkillsUnavailable("alpha", cfg, "source repository is unavailable locally")
+			}
+			if got.Status != tt.wantStatus {
+				t.Fatalf("Status = %s, want %s: %#v", got.Status, tt.wantStatus, got)
+			}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(got.Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+				}
+			}
+		})
+	}
+}
+
+func TestCheckDoctorFilesystemProjectSkills(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configure  func(*testing.T, *globalconfig.Project, *workflowconfig.Config)
+		wantStatus doctorStatus
+		wantDetail []string
+	}{
+		{
+			name: "configured source root is inspected",
+			configure: func(t *testing.T, _ *globalconfig.Project, cfg *workflowconfig.Config) {
+				cfg.Workspace.SourceRoot = t.TempDir()
+				writeDoctorSkill(t, cfg.Workspace.SourceRoot, "deploy.md", "deploy")
+			},
+			wantStatus: doctorOK,
+			wantDetail: []string{"loaded=1", "dropped=0"},
+		},
+		{
+			name: "project workdir is inspected",
+			configure: func(t *testing.T, project *globalconfig.Project, _ *workflowconfig.Config) {
+				project.Workdir = t.TempDir()
+			},
+			wantStatus: doctorOK,
+			wantDetail: []string{"loaded=0", "dropped=0"},
+		},
+		{
+			name: "missing source root skips",
+			configure: func(t *testing.T, _ *globalconfig.Project, cfg *workflowconfig.Config) {
+				cfg.Workspace.SourceRoot = filepath.Join(t.TempDir(), "missing")
+			},
+			wantStatus: doctorWarn,
+			wantDetail: []string{"skipped because source repository is unavailable locally"},
+		},
+		{
+			name:       "unconfigured source root skips",
+			wantStatus: doctorWarn,
+			wantDetail: []string{"skipped because source root is not configured"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			project := globalconfig.Project{}
+			cfg := workflowconfig.Default()
+			cfg.Workspace.Kind = workflowconfig.WorkspaceFilesystem
+			cfg.Workspace.Root = ""
+			cfg.Workspace.SourceRoot = ""
+			if tt.configure != nil {
+				tt.configure(t, &project, &cfg)
+			}
+			got := checkDoctorFilesystemProjectSkills("alpha", project, cfg)
+			if got.Status != tt.wantStatus {
+				t.Fatalf("Status = %s, want %s: %#v", got.Status, tt.wantStatus, got)
+			}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(got.Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+				}
+			}
+		})
+	}
+}
+
+func writeDoctorSkill(t *testing.T, root string, name string, skillName string) {
+	t.Helper()
+
+	dir := filepath.Join(root, ".detent", "skills")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "---\nname: " + skillName + "\ndescription: Test skill.\nwhen_to_use: Doctor tests.\n---\nBody\n"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
 	}
 }
 
@@ -1678,7 +1837,7 @@ func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
 	if gotPath != wantPath {
 		t.Fatalf("git path = %q, want %q", gotPath, wantPath)
 	}
-	if len(checks) != 3 || checks[2].Status != doctorOK {
+	if len(checks) != 4 || checks[2].Status != doctorOK {
 		t.Fatalf("checks = %#v, want source repo OK", checks)
 	}
 }

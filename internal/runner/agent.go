@@ -1235,11 +1235,12 @@ func (r *Runner) availableSkills(workflow config.Workflow, workspacePath string)
 	if err != nil {
 		return nil, fmt.Errorf("load skills: %w", err)
 	}
-	for _, validation := range result.Errors {
+	for _, drop := range result.Dropped {
 		r.logger.Warn(
-			"invalid repo skill ignored",
-			slog.String("path", validation.Path),
-			slog.String("message", validation.Message),
+			"repo skill dropped",
+			slog.String("path", drop.Path),
+			slog.String("reason", string(drop.Reason)),
+			slog.String("message", drop.Message),
 		)
 	}
 	return result.Skills, nil
