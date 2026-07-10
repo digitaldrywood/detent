@@ -209,8 +209,8 @@ mutation DetentGitHubDeleteProjectItem($projectId: ID!, $itemId: ID!) {
   }
 }`
 
-func (c *Connector) fetchProjectItems(ctx context.Context, queryType string, keepIssue func(connector.Issue) bool) ([]connector.Issue, error) {
-	return c.fetchProjectItemsLimit(ctx, queryType, keepIssue, 0)
+func (c *Connector) fetchProjectItems(ctx context.Context, queryType string, keepIssue func(connector.Issue) bool, repairBlankStatuses bool) ([]connector.Issue, error) {
+	return c.fetchProjectItemsLimit(ctx, queryType, keepIssue, 0, repairBlankStatuses)
 }
 
 func (c *Connector) fetchProjectItemsLimit(
@@ -218,8 +218,9 @@ func (c *Connector) fetchProjectItemsLimit(
 	queryType string,
 	keepIssue func(connector.Issue) bool,
 	limit int,
+	repairBlankStatuses bool,
 ) ([]connector.Issue, error) {
-	return c.fetchProjectItemsWithLimit(ctx, projectItemsQueryForType(queryType), queryType, keepIssue, limit)
+	return c.fetchProjectItemsWithLimit(ctx, projectItemsQueryForType(queryType), queryType, keepIssue, limit, repairBlankStatuses)
 }
 
 func (c *Connector) fetchProjectItemsWithPullRequestRefsLimit(
@@ -227,8 +228,9 @@ func (c *Connector) fetchProjectItemsWithPullRequestRefsLimit(
 	queryType string,
 	keepIssue func(connector.Issue) bool,
 	limit int,
+	repairBlankStatuses bool,
 ) ([]connector.Issue, error) {
-	return c.fetchProjectItemsWithLimit(ctx, observedStatusProjectItemsQuery, queryType, keepIssue, limit)
+	return c.fetchProjectItemsWithLimit(ctx, observedStatusProjectItemsQuery, queryType, keepIssue, limit, repairBlankStatuses)
 }
 
 func (c *Connector) fetchProjectItemsWithLimit(
@@ -237,8 +239,9 @@ func (c *Connector) fetchProjectItemsWithLimit(
 	queryType string,
 	keepIssue func(connector.Issue) bool,
 	limit int,
+	repairBlankStatuses bool,
 ) ([]connector.Issue, error) {
-	scan, err := c.fetchProjectItemsScanWithLimit(ctx, queryDocument, queryType, keepIssue, limit)
+	scan, err := c.fetchProjectItemsScanWithLimit(ctx, queryDocument, queryType, keepIssue, limit, repairBlankStatuses)
 	return scan.Issues, err
 }
 
@@ -248,6 +251,7 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 	queryType string,
 	keepIssue func(connector.Issue) bool,
 	limit int,
+	repairBlankStatuses bool,
 ) (connector.IssueStateScan, error) {
 	var after *string
 	blankStatusItemIDs := []string{}
@@ -287,7 +291,7 @@ func (c *Connector) fetchProjectItemsScanWithLimit(
 			if !ok {
 				continue
 			}
-			if blankStatusItemID != "" {
+			if blankStatusItemID != "" && repairBlankStatuses {
 				blankStatusItemIDs = append(blankStatusItemIDs, blankStatusItemID)
 			}
 			if !keepIssue(issue) {

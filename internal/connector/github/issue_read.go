@@ -464,7 +464,7 @@ func (c *Connector) FetchCandidateIssuesByStatesWithFilter(
 
 	issues, err := c.fetchProjectItems(ctx, graphQLQueryCandidateIssues, func(issue connector.Issue) bool {
 		return stateInList(issue.State, stateNames)
-	})
+	}, true)
 	if err != nil {
 		return nil, err
 	}
@@ -525,10 +525,11 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 		return nil, ErrMissingProject
 	}
 
+	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
 	statusIssues, err := c.fetchProjectItems(ctx, graphQLQueryObservedStatus, func(issue connector.Issue) bool {
 		_, ok := wantedStates[normalizeStateName(issue.State)]
 		return ok
-	})
+	}, repairBlankStatuses)
 	if err != nil {
 		return nil, err
 	}
@@ -603,10 +604,11 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 		return nil, ErrMissingProject
 	}
 
+	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
 	statusIssues, err := c.fetchProjectItemsWithPullRequestRefsLimit(ctx, graphQLQueryObservedStatus, func(issue connector.Issue) bool {
 		_, ok := wantedStates[normalizeStateName(issue.State)]
 		return ok
-	}, limit)
+	}, limit, repairBlankStatuses)
 	if err != nil {
 		return nil, err
 	}
@@ -647,10 +649,11 @@ func (c *Connector) FetchIssuesByStatesScan(ctx context.Context, stateNames []st
 		return connector.IssueStateScan{}, ErrMissingProject
 	}
 
+	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
 	scan, err := c.fetchProjectItemsScanWithLimit(ctx, observedStatusProjectItemsQuery, graphQLQueryObservedStatus, func(issue connector.Issue) bool {
 		_, ok := wantedStates[normalizeStateName(issue.State)]
 		return ok
-	}, limit)
+	}, limit, repairBlankStatuses)
 	if err != nil {
 		return connector.IssueStateScan{}, err
 	}
@@ -707,10 +710,11 @@ func (c *Connector) FetchIssueStateProbe(ctx context.Context, stateNames []strin
 		return nil, ErrMissingProject
 	}
 
+	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
 	statusIssues, err := c.fetchProjectItemsWithLimit(ctx, projectItemsQuery, graphQLQueryObservedStatus, func(issue connector.Issue) bool {
 		_, ok := wantedStates[normalizeStateName(issue.State)]
 		return ok
-	}, limit)
+	}, limit, repairBlankStatuses)
 	if err != nil {
 		return nil, err
 	}

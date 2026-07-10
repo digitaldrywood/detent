@@ -340,10 +340,11 @@ func (c githubReadinessChecker) projectItemsReadCheck(ctx context.Context, state
 
 func (c githubReadinessChecker) readProjectItemsSample(ctx context.Context, states []string) (int, error) {
 	wantedStates := normalizedStateSet(states)
+	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
 	scan, err := c.connector.fetchProjectItemsScanWithLimit(ctx, observedStatusProjectItemsQuery, graphQLQueryObservedStatus, func(issue connector.Issue) bool {
 		_, ok := wantedStates[normalizeStateName(issue.State)]
 		return ok
-	}, 1)
+	}, 1, repairBlankStatuses)
 	if err != nil {
 		return 0, err
 	}

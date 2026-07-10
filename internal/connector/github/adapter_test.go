@@ -642,6 +642,44 @@ func TestConnectorFetchIssueStateProbeFindsAnyRequestedStateInSingleScan(t *test
 	}
 }
 
+func TestConnectorFetchIssueStateProbeDoesNotRepairUnrequestedBlankStatus(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: projectItemsPageResponse(false, "", []string{
+				projectIssueNode("PVTI_blank", "I_blank", 83, "Blank status issue", ""),
+			}),
+		},
+		{
+			body: `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_backlog","name":"Backlog"}]}}}}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug:    "PVT_1",
+		ObservedStates: []string{"Human Review"},
+	})
+
+	got, err := c.FetchIssueStateProbe(context.Background(), []string{"Human Review"}, 1)
+	if err != nil {
+		t.Fatalf("FetchIssueStateProbe() error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("FetchIssueStateProbe() = %#v, want no Human Review issues", got)
+	}
+
+	select {
+	case <-server.requestSeen:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for project item scan")
+	}
+	select {
+	case <-server.requestSeen:
+		t.Fatalf("requests = %#v, want no blank-status repair for an unrequested state", server.requests())
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestConnectorFetchIssuesByStatesReturnsBlankBacklogAfterFirstProjectPage(t *testing.T) {
 	t.Parallel()
 
@@ -4907,10 +4945,11 @@ func TestConnectorSetFieldWritesTextProjectValue(t *testing.T) {
 
 type graphqlTestServer struct {
 	*httptest.Server
-	t         *testing.T
-	mu        sync.Mutex
-	responses []graphqlTestResponse
-	seen      []map[string]any
+	t           *testing.T
+	mu          sync.Mutex
+	responses   []graphqlTestResponse
+	seen        []map[string]any
+	requestSeen chan struct{}
 }
 
 type graphqlTestResponse struct {
@@ -4925,7 +4964,11 @@ type graphqlTestResponse struct {
 func newGraphQLTestServer(t *testing.T, responses []graphqlTestResponse) *graphqlTestServer {
 	t.Helper()
 
-	server := &graphqlTestServer{t: t, responses: responses}
+	server := &graphqlTestServer{
+		t:           t,
+		responses:   responses,
+		requestSeen: make(chan struct{}, len(responses)+1),
+	}
 	server.Server = httptest.NewServer(http.HandlerFunc(server.serveHTTP))
 	t.Cleanup(server.Close)
 	return server
@@ -4958,6 +5001,10 @@ func (s *graphqlTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.seen = append(s.seen, payload)
+	select {
+	case s.requestSeen <- struct{}{}:
+	default:
+	}
 	if len(s.responses) == 0 {
 		s.mu.Unlock()
 		s.t.Fatalf("unexpected GraphQL request: %v", payload)
