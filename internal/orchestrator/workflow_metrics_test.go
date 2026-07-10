@@ -177,6 +177,21 @@ func TestResolveCurrentLaneEnteredAt(t *testing.T) {
 			want: transitionAt,
 		},
 		{
+			name: "leave and return uses latest durable entry",
+			issue: connector.Issue{
+				State:     "In Progress",
+				CreatedAt: &createdAt,
+				UpdatedAt: &updatedAt,
+			},
+			previous: enteredAt,
+			events: []store.WorkflowPhaseEvent{
+				{ID: 1, PhaseType: store.WorkflowPhaseTypeLane, PhaseName: "In Progress", Status: "entered", StartedAt: enteredAt},
+				{ID: 2, PhaseType: store.WorkflowPhaseTypeLane, PhaseName: "Merging", Status: "entered", StartedAt: transitionAt.Add(-time.Minute)},
+				{ID: 3, PhaseType: store.WorkflowPhaseTypeLane, PhaseName: "In Progress", Status: "entered", StartedAt: transitionAt},
+			},
+			want: transitionAt,
+		},
+		{
 			name: "restart restores durable entry",
 			issue: connector.Issue{
 				State:     "In Progress",

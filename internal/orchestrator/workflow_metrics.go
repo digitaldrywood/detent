@@ -338,12 +338,6 @@ func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *Sta
 		if _, exists := next[laneKey]; exists {
 			continue
 		}
-		if previousAt := previous[laneKey]; !previousAt.IsZero() {
-			if enteredAt := resolveCurrentLaneEnteredAt(issue, previousAt, nil); !enteredAt.IsZero() {
-				next[laneKey] = enteredAt
-			}
-			continue
-		}
 
 		identityKey := workflowIssueIdentityKey(issue)
 		result, exists := timelines[identityKey]
