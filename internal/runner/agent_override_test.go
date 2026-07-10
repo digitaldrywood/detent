@@ -200,6 +200,59 @@ func TestResolveAgentOverride(t *testing.T) {
 	}
 }
 
+func TestResolveAgentOverrideAppliesProjectEffortWithoutCatalog(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		issue             connector.Issue
+		projectEffort     string
+		wantEffort        string
+		wantRejectedField string
+	}{
+		{name: "project effort applies", projectEffort: "HIGH", wantEffort: "high"},
+		{
+			name:              "rejected issue effort falls through to project effort",
+			issue:             connector.Issue{Description: "```detent-agent\nschema: 1\nmerge:\n  effort: xhigh\n```"},
+			projectEffort:     "high",
+			wantEffort:        "high",
+			wantRejectedField: "merge.effort",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := resolveAgentOverride(
+				context.Background(),
+				tt.issue,
+				"/tmp/workspace",
+				"",
+				RoleMerge,
+				agentEffortCandidate{Field: "agent.effort.merge", Effort: tt.projectEffort},
+				nonCatalogAgentBackend{},
+			)
+			if got.Effort != tt.wantEffort {
+				t.Fatalf("Effort = %q, want %q", got.Effort, tt.wantEffort)
+			}
+			if tt.wantRejectedField == "" {
+				if len(got.Rejections) != 0 {
+					t.Fatalf("Rejections = %#v, want none", got.Rejections)
+				}
+				return
+			}
+			if len(got.Rejections) != 1 || got.Rejections[0].Field != tt.wantRejectedField {
+				t.Fatalf("Rejections = %#v, want field %q", got.Rejections, tt.wantRejectedField)
+			}
+		})
+	}
+}
+
+type nonCatalogAgentBackend struct{}
+
+func (nonCatalogAgentBackend) RunTurn(context.Context, AgentTurnRequest, AgentUpdateHandler) (AgentTurnResult, error) {
+	return AgentTurnResult{}, nil
+}
+
 type catalogAgentBackend struct {
 	models          []AgentModel
 	err             error

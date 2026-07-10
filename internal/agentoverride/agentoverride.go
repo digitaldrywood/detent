@@ -22,9 +22,10 @@ type RoleOverride struct {
 }
 
 type RoleEffort struct {
-	Role   string
-	Field  string
-	Effort string
+	Role      string
+	Field     string
+	Effort    string
+	Inherited bool
 }
 
 type blockYAML struct {
@@ -89,9 +90,15 @@ func (o Override) EffortForRole(role string) (string, string) {
 }
 
 func (o Override) RoleEfforts() []RoleEffort {
+	rework := RoleEffort{Role: "rework", Field: "rework.effort", Effort: o.Rework.Effort}
+	if rework.Effort == "" && o.Code.Effort != "" {
+		rework.Field = "code.effort"
+		rework.Effort = o.Code.Effort
+		rework.Inherited = true
+	}
 	return []RoleEffort{
 		{Role: "code", Field: "code.effort", Effort: o.Code.Effort},
-		{Role: "rework", Field: "rework.effort", Effort: o.Rework.Effort},
+		rework,
 		{Role: "merge", Field: "merge.effort", Effort: o.Merge.Effort},
 	}
 }

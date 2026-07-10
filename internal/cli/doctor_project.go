@@ -701,7 +701,9 @@ func checkDoctorIssueAgentModels(ctx context.Context, id string, project globalc
 				continue
 			}
 			probe(roleEffort.Role, roleEffort.Field, roleEffort.Effort, false)
-			probedEfforts++
+			if !roleEffort.Inherited {
+				probedEfforts++
+			}
 		}
 	}
 

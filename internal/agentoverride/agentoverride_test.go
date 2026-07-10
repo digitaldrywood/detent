@@ -126,3 +126,15 @@ func TestOverrideEffortForRole(t *testing.T) {
 		})
 	}
 }
+
+func TestOverrideRoleEffortsIncludesInheritedRework(t *testing.T) {
+	t.Parallel()
+
+	efforts := (Override{Code: RoleOverride{Effort: "high"}}).RoleEfforts()
+	if len(efforts) != 3 {
+		t.Fatalf("RoleEfforts() len = %d, want 3", len(efforts))
+	}
+	if got := efforts[1]; got != (RoleEffort{Role: "rework", Field: "code.effort", Effort: "high", Inherited: true}) {
+		t.Fatalf("rework effort = %#v, want inherited code effort", got)
+	}
+}

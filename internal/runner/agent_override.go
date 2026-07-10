@@ -16,8 +16,9 @@ type resolvedAgentOverride struct {
 }
 
 type agentEffortCandidate struct {
-	Field  string
-	Effort string
+	Field           string
+	Effort          string
+	RequiresCatalog bool
 }
 
 func resolveAgentOverride(
@@ -46,7 +47,7 @@ func resolveAgentOverride(
 
 	provider, ok := backend.(AgentModelCatalogProvider)
 	if !ok {
-		return rejectUnavailableCatalog(result, override.Model, efforts, "selected backend does not advertise a model catalog")
+		return resolveWithoutAgentCatalog(result, override.Model, efforts, "selected backend does not advertise a model catalog")
 	}
 	models, err := provider.ListModels(ctx)
 	if err != nil {
@@ -116,16 +117,39 @@ func resolveAgentOverride(
 func agentEffortCandidates(override agentoverride.Override, role string, project agentEffortCandidate) []agentEffortCandidate {
 	candidates := make([]agentEffortCandidate, 0, 3)
 	if effort, field := override.EffortForRole(role); effort != "" {
-		candidates = append(candidates, agentEffortCandidate{Field: field, Effort: effort})
+		candidates = append(candidates, agentEffortCandidate{Field: field, Effort: effort, RequiresCatalog: true})
 	}
 	if override.Effort != "" {
-		candidates = append(candidates, agentEffortCandidate{Field: "effort", Effort: override.Effort})
+		candidates = append(candidates, agentEffortCandidate{Field: "effort", Effort: override.Effort, RequiresCatalog: true})
 	}
 	project.Effort = strings.TrimSpace(project.Effort)
 	if project.Effort != "" {
 		candidates = append(candidates, project)
 	}
 	return candidates
+}
+
+func resolveWithoutAgentCatalog(result resolvedAgentOverride, model string, efforts []agentEffortCandidate, reason string) resolvedAgentOverride {
+	if model != "" {
+		result.Rejections = append(result.Rejections, AgentOverrideRejection{
+			Field:  "model",
+			Value:  model,
+			Reason: reason,
+		})
+	}
+	for _, effort := range efforts {
+		if effort.RequiresCatalog {
+			result.Rejections = append(result.Rejections, AgentOverrideRejection{
+				Field:  effort.Field,
+				Value:  effort.Effort,
+				Reason: reason,
+			})
+			continue
+		}
+		result.Effort = strings.ToLower(strings.TrimSpace(effort.Effort))
+		return result
+	}
+	return result
 }
 
 func rejectUnavailableCatalog(result resolvedAgentOverride, model string, efforts []agentEffortCandidate, reason string) resolvedAgentOverride {
