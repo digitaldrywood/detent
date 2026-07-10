@@ -105,6 +105,7 @@ func checkDoctorProjectWithProgress(
 				Detail: "skipped because WORKFLOW.md could not be loaded",
 				Hint:   "Fix the workflow file, then rerun detent doctor.",
 			},
+			checkDoctorIssueEffortGuidanceUnavailable(id, "WORKFLOW.md could not be loaded"),
 		}
 	}
 	workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, runtimeGlobalGitHubToken(githubToken))
@@ -122,6 +123,7 @@ func checkDoctorProjectWithProgress(
 				Detail: "skipped because WORKFLOW.md is invalid",
 				Hint:   "Fix the workflow file, then rerun detent doctor.",
 			},
+			checkDoctorIssueEffortGuidanceUnavailable(id, "WORKFLOW.md is invalid"),
 		}
 	}
 
@@ -170,6 +172,8 @@ func checkDoctorProjectWithProgress(
 	if workflow.Config.Workspace.Kind == workflowconfig.WorkspaceFilesystem {
 		setDoctorCurrentCheck("Project " + id + " filesystem workspace")
 		checks = append(checks, checkDoctorFilesystemWorkspace(id, workflow.Config))
+		setDoctorCurrentCheck("Project " + id + " issue effort guidance")
+		checks = append(checks, checkDoctorIssueEffortGuidanceForSource(id, project, workflow.Config))
 		setDoctorCurrentCheck("Project " + id + " skills")
 		checks = append(checks, checkDoctorFilesystemProjectSkills(id, project, workflow.Config))
 		return checks
@@ -185,6 +189,7 @@ func checkDoctorProjectWithProgress(
 			Detail: "source root is not configured",
 			Hint:   "Set workspace.source_root, project workdir, or workspace.root to an existing git checkout.",
 		})
+		checks = append(checks, checkDoctorIssueEffortGuidanceUnavailable(id, "source root is not configured"))
 		return append(checks, checkDoctorProjectSkillsUnavailable(id, workflow.Config.Agent.Skills, "source root is not configured"))
 	}
 	expandedSourceRoot, err := expandDoctorWorkspacePath(sourceRoot)
@@ -195,6 +200,7 @@ func checkDoctorProjectWithProgress(
 			Detail: fmt.Sprintf("%s: %v", sourceRoot, err),
 			Hint:   "Set workspace.source_root or project workdir to an existing git checkout.",
 		})
+		checks = append(checks, checkDoctorIssueEffortGuidanceUnavailable(id, "source root could not be resolved"))
 		return append(checks, checkDoctorProjectSkillsUnavailable(id, workflow.Config.Agent.Skills, "source root could not be resolved"))
 	}
 	if err := deps.gitWorkTree(ctx, expandedSourceRoot); err != nil {
@@ -204,6 +210,7 @@ func checkDoctorProjectWithProgress(
 			Detail: fmt.Sprintf("%s: %v", expandedSourceRoot, err),
 			Hint:   "Set workspace.source_root or project workdir to an existing git checkout.",
 		})
+		checks = append(checks, checkDoctorIssueEffortGuidanceUnavailable(id, "source repository is unavailable locally"))
 		return append(checks, checkDoctorProjectSkillsUnavailable(id, workflow.Config.Agent.Skills, "source repository is unavailable locally"))
 	}
 	checks = append(checks, doctorCheck{
@@ -211,6 +218,8 @@ func checkDoctorProjectWithProgress(
 		Status: doctorOK,
 		Detail: expandedSourceRoot + " is a git worktree",
 	})
+	setDoctorCurrentCheck("Project " + id + " issue effort guidance")
+	checks = append(checks, checkDoctorIssueEffortGuidance(id, expandedSourceRoot))
 	setDoctorCurrentCheck("Project " + id + " skills")
 	checks = append(checks, checkDoctorProjectSkills(id, expandedSourceRoot, workflow.Config.Agent.Skills))
 	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
@@ -218,6 +227,61 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, checkDoctorGitHubReadiness(ctx, id, project, workflow.Config, deps, githubToken, expandedSourceRoot, allowWriteProbes)...)
 	}
 	return checks
+}
+
+func checkDoctorIssueEffortGuidanceForSource(id string, project globalconfig.Project, cfg workflowconfig.Config) doctorCheck {
+	sourceRoot := projectSourceRoot(project, cfg)
+	if sourceRoot == "" {
+		return checkDoctorIssueEffortGuidanceUnavailable(id, "source root is not configured")
+	}
+	expandedSourceRoot, err := expandDoctorWorkspacePath(sourceRoot)
+	if err != nil {
+		return checkDoctorIssueEffortGuidanceUnavailable(id, "source root could not be resolved")
+	}
+	info, err := os.Stat(expandedSourceRoot)
+	if err != nil || !info.IsDir() {
+		return checkDoctorIssueEffortGuidanceUnavailable(id, "source repository is unavailable locally")
+	}
+	return checkDoctorIssueEffortGuidance(id, expandedSourceRoot)
+}
+
+func checkDoctorIssueEffortGuidance(id string, sourceRoot string) doctorCheck {
+	name := "Project " + id + " issue effort guidance"
+	paths := []string{"AGENTS.md", "CLAUDE.md"}
+	for _, path := range paths {
+		content, err := os.ReadFile(filepath.Join(sourceRoot, path))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return doctorCheck{
+				Name:   name,
+				Status: doctorOK,
+				Detail: fmt.Sprintf("skipped because %s could not be read: %v", path, err),
+			}
+		}
+		if strings.Contains(strings.ToLower(string(content)), "detent-agent") {
+			return doctorCheck{
+				Name:   name,
+				Status: doctorOK,
+				Detail: path + " mentions detent-agent effort guidance",
+			}
+		}
+	}
+	return doctorCheck{
+		Name:   name,
+		Status: doctorWarn,
+		Detail: "AGENTS.md and CLAUDE.md contain no detent-agent guidance",
+		Hint:   "Add a project-specific effort-selection rubric; see docs/ONBOARDING.md#per-issue-agent-overrides.",
+	}
+}
+
+func checkDoctorIssueEffortGuidanceUnavailable(id string, reason string) doctorCheck {
+	return doctorCheck{
+		Name:   "Project " + id + " issue effort guidance",
+		Status: doctorOK,
+		Detail: "skipped because " + reason,
+	}
 }
 
 func checkDoctorProjectSkills(id string, sourceRoot string, cfg workflowconfig.Skills) doctorCheck {
@@ -308,6 +372,7 @@ type doctorRouteModelProbeRequest struct {
 	RouteName    string
 	RouteRole    string
 	Model        string
+	Effort       string
 	Backend      workflowconfig.AgentBackend
 }
 
@@ -434,44 +499,100 @@ func defaultDoctorRouteModelProbe(ctx context.Context, req doctorRouteModelProbe
 	if err != nil {
 		return err
 	}
-	return validateDoctorModelCatalog(models, req.Model)
+	model := strings.TrimSpace(req.Model)
+	if model == "" && strings.TrimSpace(req.Effort) != "" {
+		defaultProvider, ok := backend.(runnerpkg.AgentDefaultModelProvider)
+		if !ok {
+			return errors.New("backend does not advertise its effective default model")
+		}
+		model, err = defaultProvider.DefaultModel(ctx, req.Workspace)
+		if err != nil {
+			return fmt.Errorf("effective default model unavailable: %w", err)
+		}
+	}
+	if err := validateDoctorModelCatalog(models, model); err != nil {
+		return err
+	}
+	if strings.TrimSpace(req.Effort) == "" {
+		return nil
+	}
+	return validateDoctorEffortCatalog(models, model, req.Effort)
 }
 
 func validateDoctorModelCatalog(models []runnerpkg.AgentModel, requested string) error {
-	want := strings.TrimSpace(requested)
-	for _, model := range models {
-		if strings.TrimSpace(model.ID) == want || strings.TrimSpace(model.Model) == want {
-			if upgrade := strings.TrimSpace(model.Upgrade); upgrade != "" {
-				return fmt.Errorf("model %q is retired; use %q", want, upgrade)
-			}
+	_, err := doctorCatalogModel(models, requested)
+	return err
+}
+
+func validateDoctorEffortCatalog(models []runnerpkg.AgentModel, requestedModel string, requestedEffort string) error {
+	model, err := doctorCatalogModel(models, requestedModel)
+	if err != nil {
+		return err
+	}
+	want := strings.TrimSpace(requestedEffort)
+	for _, effort := range model.SupportedReasoningEfforts {
+		if strings.EqualFold(strings.TrimSpace(effort), want) {
 			return nil
 		}
 	}
-	return fmt.Errorf("model %q is not available from the backend", want)
+	supported := make([]string, 0, len(model.SupportedReasoningEfforts))
+	for _, effort := range model.SupportedReasoningEfforts {
+		if effort = strings.TrimSpace(effort); effort != "" {
+			supported = append(supported, effort)
+		}
+	}
+	if len(supported) == 0 {
+		supported = append(supported, "none")
+	}
+	return fmt.Errorf("effort %q is not supported by model %q; supported efforts: %s", want, doctorCatalogModelName(model, requestedModel), strings.Join(supported, ", "))
+}
+
+func doctorCatalogModel(models []runnerpkg.AgentModel, requested string) (runnerpkg.AgentModel, error) {
+	want := strings.TrimSpace(requested)
+	for _, model := range models {
+		if strings.TrimSpace(model.ID) != want && strings.TrimSpace(model.Model) != want {
+			continue
+		}
+		if upgrade := strings.TrimSpace(model.Upgrade); upgrade != "" {
+			return runnerpkg.AgentModel{}, fmt.Errorf("model %q is retired; use %q", want, upgrade)
+		}
+		return model, nil
+	}
+	return runnerpkg.AgentModel{}, fmt.Errorf("model %q is not available from the backend", want)
+}
+
+func doctorCatalogModelName(model runnerpkg.AgentModel, fallback string) string {
+	if value := strings.TrimSpace(model.Model); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(model.ID); value != "" {
+		return value
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func checkDoctorIssueAgentModels(ctx context.Context, id string, project globalconfig.Project, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {
 	name := "Project " + id + " issue agent models"
 	backend, ok := doctorDefaultCodexBackend(cfg)
 	if !ok {
-		return doctorCheck{Name: name, Status: doctorOK, Detail: "detent-agent model validation skipped because no Codex backend is configured"}
+		return doctorCheck{Name: name, Status: doctorOK, Detail: "detent-agent override validation skipped because no Codex backend is configured"}
 	}
 	if deps.autoPromoteConnector == nil {
 		deps.autoPromoteConnector = defaultDoctorAutoPromoteConnector
 	}
 	projectConnector, err := deps.autoPromoteConnector(cfg)
 	if err != nil {
-		return doctorCheck{Name: name, Status: doctorFail, Detail: fmt.Sprintf("create issue model diagnostic connector: %v", err), Hint: "Fix tracker credentials and rerun detent doctor."}
+		return doctorCheck{Name: name, Status: doctorFail, Detail: fmt.Sprintf("create issue override diagnostic connector: %v", err), Hint: "Fix tracker credentials and rerun detent doctor."}
 	}
 	if projectConnector == nil {
-		return doctorCheck{Name: name, Status: doctorFail, Detail: "create issue model diagnostic connector: connector is nil", Hint: "Fix tracker configuration and rerun detent doctor."}
+		return doctorCheck{Name: name, Status: doctorFail, Detail: "create issue override diagnostic connector: connector is nil", Hint: "Fix tracker configuration and rerun detent doctor."}
 	}
 
 	states := append(append([]string(nil), cfg.Tracker.ActiveStates...), cfg.Tracker.ObservedStates...)
 	issues, fetchErr := projectConnector.FetchIssuesByStates(ctx, states)
 	closeErr := closeDoctorAutoPromoteConnector(projectConnector)
 	if fetchErr != nil {
-		return doctorCheck{Name: name, Status: doctorFail, Detail: fmt.Sprintf("fetch issue model overrides: %v", fetchErr), Hint: "Fix tracker connectivity and rerun detent doctor."}
+		return doctorCheck{Name: name, Status: doctorFail, Detail: fmt.Sprintf("fetch issue agent overrides: %v", fetchErr), Hint: "Fix tracker connectivity and rerun detent doctor."}
 	}
 
 	if deps.modelProbe == nil {
@@ -485,8 +606,10 @@ func checkDoctorIssueAgentModels(ctx context.Context, id string, project globalc
 	if workflowPathErr != nil {
 		workflowPath = strings.TrimSpace(project.Workflow)
 	}
-	probed := 0
+	probedModels := 0
+	probedEfforts := 0
 	failures := []string{}
+	defaultModel := doctorWorkflowWorkerModelChoice(cfg).Model
 	for _, issue := range issues {
 		override, found, err := agentoverride.FromIssueBody(issue.Description)
 		if !found {
@@ -500,20 +623,37 @@ func checkDoctorIssueAgentModels(ctx context.Context, id string, project globalc
 			failures = append(failures, fmt.Sprintf("issue %s has invalid detent-agent block: %v", identifier, err))
 			continue
 		}
-		if override.Model == "" {
+		if override.Model == "" && override.Effort == "" {
 			continue
 		}
-		probed++
+		model := override.Model
+		if model == "" {
+			model = defaultModel
+		}
+		if override.Model != "" {
+			probedModels++
+		}
+		if override.Effort != "" {
+			probedEfforts++
+		}
 		err = deps.modelProbe(ctx, doctorRouteModelProbeRequest{
 			ProjectID:    id,
 			Workspace:    workspacePath,
 			WorkflowPath: workflowPath,
 			RouteName:    identifier,
-			Model:        override.Model,
+			Model:        model,
+			Effort:       override.Effort,
 			Backend:      backend,
 		})
 		if err != nil {
-			failures = append(failures, fmt.Sprintf("issue %s detent-agent model %s rejected by backend: %v", identifier, override.Model, err))
+			fields := []string{}
+			if override.Model != "" {
+				fields = append(fields, "model "+override.Model)
+			}
+			if override.Effort != "" {
+				fields = append(fields, "effort "+override.Effort)
+			}
+			failures = append(failures, fmt.Sprintf("issue %s detent-agent %s rejected by backend: %v", identifier, strings.Join(fields, " "), err))
 		}
 	}
 
@@ -522,10 +662,10 @@ func checkDoctorIssueAgentModels(ctx context.Context, id string, project globalc
 			Name:   name,
 			Status: doctorFail,
 			Detail: strings.Join(failures, "; "),
-			Hint:   "Update rejected detent-agent model values in the original issue bodies or remove the model key to inherit the project default.",
+			Hint:   "Fix rejected detent-agent values in the original issue bodies; remove the model key to inherit the project default model, or remove the effort key to inherit the project default effort.",
 		}
 	}
-	detail := fmt.Sprintf("validated %d detent-agent model override(s)", probed)
+	detail := fmt.Sprintf("validated %d detent-agent model override(s) and %d effort override(s)", probedModels, probedEfforts)
 	check := doctorCheck{Name: name, Status: doctorOK, Detail: detail}
 	if closeErr != nil {
 		check.Status = doctorWarn

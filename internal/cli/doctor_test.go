@@ -415,42 +415,82 @@ Prompt
 func TestCheckDoctorIssueAgentModels(t *testing.T) {
 	t.Parallel()
 
+	models := []runnerpkg.AgentModel{
+		{ID: "gpt-default", Model: "gpt-default", SupportedReasoningEfforts: []string{"low", "high"}},
+		{ID: "gpt-5.5", Model: "gpt-5.5", SupportedReasoningEfforts: []string{"low", "medium", "high"}},
+		{ID: "gpt-retired", Model: "gpt-retired", Upgrade: "gpt-5.5", SupportedReasoningEfforts: []string{"medium"}},
+	}
 	tests := []struct {
-		name       string
-		issue      connector.Issue
-		probeErr   error
-		wantStatus doctorStatus
-		wantDetail string
-		wantProbes int
+		name         string
+		issue        connector.Issue
+		defaultModel string
+		wantStatus   doctorStatus
+		wantDetail   []string
+		wantHint     string
+		wantModel    string
+		wantEffort   string
+		wantProbes   int
 	}{
 		{
 			name:       "no block",
 			issue:      connector.Issue{ID: "issue-1", Identifier: "digitaldrywood/detent#1", Description: "Ship it."},
 			wantStatus: doctorOK,
-			wantDetail: "validated 0",
+			wantDetail: []string{"validated 0 detent-agent model override(s)", "0 effort override(s)"},
 		},
 		{
 			name:       "healthy model",
 			issue:      connector.Issue{ID: "issue-2", Identifier: "digitaldrywood/detent#2", Description: "```detent-agent\nschema: 1\nmodel: gpt-5.5\n```"},
 			wantStatus: doctorOK,
-			wantDetail: "validated 1",
+			wantDetail: []string{"validated 1 detent-agent model override(s)", "0 effort override(s)"},
+			wantModel:  "gpt-5.5",
 			wantProbes: 1,
 		},
 		{
+			name:         "valid effort uses project default model",
+			issue:        connector.Issue{ID: "issue-3", Identifier: "digitaldrywood/detent#3", Description: "```detent-agent\nschema: 1\neffort: high\n```"},
+			defaultModel: "gpt-default",
+			wantStatus:   doctorOK,
+			wantDetail:   []string{"validated 0 detent-agent model override(s)", "1 effort override(s)"},
+			wantModel:    "gpt-default",
+			wantEffort:   "high",
+			wantProbes:   1,
+		},
+		{
+			name:         "issue model controls effort validation",
+			issue:        connector.Issue{ID: "issue-4", Identifier: "digitaldrywood/detent#4", Description: "```detent-agent\nschema: 1\nmodel: gpt-5.5\neffort: medium\n```"},
+			defaultModel: "gpt-default",
+			wantStatus:   doctorOK,
+			wantDetail:   []string{"validated 1 detent-agent model override(s)", "1 effort override(s)"},
+			wantModel:    "gpt-5.5",
+			wantEffort:   "medium",
+			wantProbes:   1,
+		},
+		{
+			name:         "unsupported effort names issue and supported efforts",
+			issue:        connector.Issue{ID: "issue-5", Identifier: "digitaldrywood/detent#5", Description: "```detent-agent\nschema: 1\neffort: bogus\n```"},
+			defaultModel: "gpt-default",
+			wantStatus:   doctorFail,
+			wantDetail:   []string{"digitaldrywood/detent#5 detent-agent effort bogus", `effort "bogus" is not supported by model "gpt-default"`, "supported efforts: low, high"},
+			wantHint:     "remove the effort key",
+			wantModel:    "gpt-default",
+			wantEffort:   "bogus",
+			wantProbes:   1,
+		},
+		{
 			name:       "retired model",
-			issue:      connector.Issue{ID: "issue-3", Identifier: "digitaldrywood/detent#3", Description: "```detent-agent\nschema: 1\nmodel: gpt-retired\n```"},
-			probeErr:   errors.New("model retired"),
+			issue:      connector.Issue{ID: "issue-6", Identifier: "digitaldrywood/detent#6", Description: "```detent-agent\nschema: 1\nmodel: gpt-retired\n```"},
 			wantStatus: doctorFail,
-			wantDetail: "digitaldrywood/detent#3 detent-agent model gpt-retired",
+			wantDetail: []string{"digitaldrywood/detent#6 detent-agent model gpt-retired", `retired; use "gpt-5.5"`},
+			wantModel:  "gpt-retired",
 			wantProbes: 1,
 		},
 		{
 			name: "comment block ignored",
-			issue: connector.Issue{ID: "issue-4", Identifier: "digitaldrywood/detent#4", Comments: []connector.IssueComment{{
+			issue: connector.Issue{ID: "issue-7", Identifier: "digitaldrywood/detent#7", Comments: []connector.IssueComment{{
 				Body: "```detent-agent\nschema: 1\nmodel: gpt-retired\n```",
 			}}},
 			wantStatus: doctorOK,
-			wantDetail: "validated 0",
+			wantDetail: []string{"validated 0 detent-agent model override(s)", "0 effort override(s)"},
 		},
 	}
 
@@ -458,6 +498,14 @@ func TestCheckDoctorIssueAgentModels(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := validDoctorWorkflow(t.TempDir())
+			if tt.defaultModel != "" {
+				cfg.Agents.Routes = []workflowconfig.AgentRoute{{
+					Name:    "default",
+					Backend: workflowconfig.DefaultAgentBackendID,
+					Model:   tt.defaultModel,
+					Default: true,
+				}}
+			}
 			probes := 0
 			check := checkDoctorIssueAgentModels(context.Background(), "detent", globalconfig.Project{ID: "detent", Workdir: t.TempDir()}, cfg, doctorDeps{
 				autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
@@ -465,17 +513,74 @@ func TestCheckDoctorIssueAgentModels(t *testing.T) {
 				},
 				modelProbe: func(_ context.Context, req doctorRouteModelProbeRequest) error {
 					probes++
-					if req.Model != "gpt-5.5" && req.Model != "gpt-retired" {
-						t.Fatalf("probe model = %q", req.Model)
+					if req.Model != tt.wantModel || req.Effort != tt.wantEffort {
+						t.Fatalf("probe model/effort = %q/%q, want %q/%q", req.Model, req.Effort, tt.wantModel, tt.wantEffort)
 					}
-					return tt.probeErr
+					if err := validateDoctorModelCatalog(models, req.Model); err != nil {
+						return err
+					}
+					if req.Effort == "" {
+						return nil
+					}
+					return validateDoctorEffortCatalog(models, req.Model, req.Effort)
 				},
 			})
-			if check.Status != tt.wantStatus || !strings.Contains(check.Detail, tt.wantDetail) {
-				t.Fatalf("check = %#v, want status %s detail containing %q", check, tt.wantStatus, tt.wantDetail)
+			if check.Status != tt.wantStatus {
+				t.Fatalf("check status = %s, want %s: %#v", check.Status, tt.wantStatus, check)
+			}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(check.Detail, want) {
+					t.Fatalf("check detail = %q, want containing %q", check.Detail, want)
+				}
+			}
+			if tt.wantHint != "" && !strings.Contains(check.Hint, tt.wantHint) {
+				t.Fatalf("check hint = %q, want containing %q", check.Hint, tt.wantHint)
 			}
 			if probes != tt.wantProbes {
 				t.Fatalf("probes = %d, want %d", probes, tt.wantProbes)
+			}
+		})
+	}
+}
+
+func TestValidateDoctorEffortCatalog(t *testing.T) {
+	t.Parallel()
+
+	models := []runnerpkg.AgentModel{
+		{ID: "gpt-default", Model: "gpt-default", SupportedReasoningEfforts: []string{"low", "high"}},
+		{ID: "gpt-5.5", Model: "gpt-5.5", SupportedReasoningEfforts: []string{"low", "medium", "high"}},
+		{ID: "gpt-retired", Model: "gpt-retired", Upgrade: "gpt-5.5", SupportedReasoningEfforts: []string{"medium"}},
+	}
+	tests := []struct {
+		name    string
+		model   string
+		effort  string
+		wantErr []string
+	}{
+		{name: "supported effort", model: "gpt-default", effort: "HIGH"},
+		{name: "model-specific effort", model: "gpt-5.5", effort: "medium"},
+		{name: "unsupported effort", model: "gpt-default", effort: "medium", wantErr: []string{`effort "medium"`, `model "gpt-default"`, "supported efforts: low, high"}},
+		{name: "unknown model", model: "gpt-unknown", effort: "high", wantErr: []string{"not available"}},
+		{name: "retired model", model: "gpt-retired", effort: "medium", wantErr: []string{`retired; use "gpt-5.5"`}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateDoctorEffortCatalog(models, tt.model, tt.effort)
+			if len(tt.wantErr) == 0 {
+				if err != nil {
+					t.Fatalf("validateDoctorEffortCatalog() error = %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("validateDoctorEffortCatalog() error = nil")
+			}
+			for _, want := range tt.wantErr {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("validateDoctorEffortCatalog() error = %v, want containing %q", err, want)
+				}
 			}
 		})
 	}
@@ -538,8 +643,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			loadErr:    errors.New("missing workflow"),
-			wantStatus: []doctorStatus{doctorFail, doctorWarn},
-			wantDetail: []string{"missing workflow", "skipped"},
+			wantStatus: []doctorStatus{doctorFail, doctorWarn, doctorOK},
+			wantDetail: []string{"missing workflow", "skipped", "skipped because WORKFLOW.md could not be loaded"},
 		},
 		{
 			name: "workflow invalid",
@@ -547,8 +652,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: workflowconfig.Config{}},
-			wantStatus: []doctorStatus{doctorFail, doctorWarn},
-			wantDetail: []string{"tracker.kind", "skipped"},
+			wantStatus: []doctorStatus{doctorFail, doctorWarn, doctorOK},
+			wantDetail: []string{"tracker.kind", "skipped", "skipped because WORKFLOW.md is invalid"},
 		},
 		{
 			name: "source repo missing",
@@ -557,8 +662,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
 			gitErr:     errors.New("not a git worktree"),
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorFail, doctorWarn},
-			wantDetail: []string{"is valid", "validated 0 pinned Codex route model(s)", "not a git worktree", "skipped because source repository is unavailable locally"},
+			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
+			wantDetail: []string{"is valid", "validated 0 pinned Codex route model(s)", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
 		},
 		{
 			name: "workflow and source repo valid",
@@ -566,8 +671,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK, doctorOK},
-			wantDetail: []string{"is valid", "validated 0 pinned Codex route model(s)", "is a git worktree", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 	}
 
@@ -593,6 +698,92 @@ func TestCheckDoctorProjects(t *testing.T) {
 				if !strings.Contains(check.Detail, tt.wantDetail[i]) {
 					t.Fatalf("checks[%d].Detail = %q, want containing %q", i, check.Detail, tt.wantDetail[i])
 				}
+			}
+		})
+	}
+}
+
+func TestCheckDoctorIssueEffortGuidance(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		files       map[string]string
+		directories []string
+		missingRepo bool
+		wantStatus  doctorStatus
+		wantDetail  string
+		wantHint    string
+	}{
+		{
+			name:       "agents guidance passes",
+			files:      map[string]string{"AGENTS.md": "Use a detent-agent block for every issue."},
+			wantStatus: doctorOK,
+			wantDetail: "AGENTS.md mentions detent-agent effort guidance",
+		},
+		{
+			name:       "claude guidance passes case insensitively",
+			files:      map[string]string{"AGENTS.md": "No overrides documented.", "CLAUDE.md": "Choose effort with a DETENT-AGENT block."},
+			wantStatus: doctorOK,
+			wantDetail: "CLAUDE.md mentions detent-agent effort guidance",
+		},
+		{
+			name:       "docs without guidance warn",
+			files:      map[string]string{"AGENTS.md": "General agent instructions.", "CLAUDE.md": "General Claude instructions."},
+			wantStatus: doctorWarn,
+			wantDetail: "contain no detent-agent guidance",
+			wantHint:   "docs/ONBOARDING.md#per-issue-agent-overrides",
+		},
+		{
+			name:       "missing docs warn",
+			wantStatus: doctorWarn,
+			wantDetail: "contain no detent-agent guidance",
+			wantHint:   "effort-selection rubric",
+		},
+		{
+			name:        "unreadable agent doc skips",
+			directories: []string{"AGENTS.md"},
+			wantStatus:  doctorOK,
+			wantDetail:  "skipped because AGENTS.md could not be read",
+		},
+		{
+			name:        "missing source repo skips",
+			missingRepo: true,
+			wantStatus:  doctorOK,
+			wantDetail:  "skipped because source repository is unavailable locally",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			for name, content := range tt.files {
+				if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o600); err != nil {
+					t.Fatalf("WriteFile(%s) error = %v", name, err)
+				}
+			}
+			for _, name := range tt.directories {
+				if err := os.Mkdir(filepath.Join(root, name), 0o700); err != nil {
+					t.Fatalf("Mkdir(%s) error = %v", name, err)
+				}
+			}
+
+			var got doctorCheck
+			if tt.missingRepo {
+				got = checkDoctorIssueEffortGuidanceForSource("alpha", globalconfig.Project{Workdir: filepath.Join(root, "missing")}, workflowconfig.Default())
+			} else {
+				got = checkDoctorIssueEffortGuidance("alpha", root)
+			}
+			if got.Status != tt.wantStatus {
+				t.Fatalf("Status = %s, want %s: %#v", got.Status, tt.wantStatus, got)
+			}
+			if !strings.Contains(got.Detail, tt.wantDetail) {
+				t.Fatalf("Detail = %q, want containing %q", got.Detail, tt.wantDetail)
+			}
+			if tt.wantHint != "" && !strings.Contains(got.Hint, tt.wantHint) {
+				t.Fatalf("Hint = %q, want containing %q", got.Hint, tt.wantHint)
 			}
 		})
 	}
@@ -1837,7 +2028,7 @@ func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
 	if gotPath != wantPath {
 		t.Fatalf("git path = %q, want %q", gotPath, wantPath)
 	}
-	if len(checks) != 4 || checks[2].Status != doctorOK {
+	if len(checks) != 5 || checks[2].Status != doctorOK {
 		t.Fatalf("checks = %#v, want source repo OK", checks)
 	}
 }
