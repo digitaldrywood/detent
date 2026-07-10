@@ -1338,6 +1338,10 @@ func TestBoardSnapshotRenders(t *testing.T) {
 
 	for _, want := range []string{
 		`id="board-lanes"`,
+		`id="board-lane-position"`,
+		"data-board-lane-position",
+		"snap-x snap-mandatory gap-5",
+		"w-full flex-none snap-start",
 		`id="card-gopherguides-gopher-ai-185"`,
 		`id="fig-running"`,
 		`id="fig-blocked"`,
@@ -1348,6 +1352,10 @@ func TestBoardSnapshotRenders(t *testing.T) {
 		`value="auto"`,
 		`value="show"`,
 		`value="hide"`,
+		"w-[calc(100vw-2.5rem)]",
+		"min-h-11",
+		"h-11",
+		"size-11",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("board snapshot missing %q", want)
@@ -1402,6 +1410,17 @@ func TestBoardSnapshotRendersMorphSafePriorityBadge(t *testing.T) {
 	}
 	if !strings.Contains(page, `hx-swap="morph:innerHTML"`) {
 		t.Fatalf("board page missing morph snapshot swap")
+	}
+	for _, want := range []string{
+		"visibleBoardLanes",
+		"lanePositionIndex",
+		"updateLanePosition",
+		"scheduleLanePosition",
+		`event.target.matches("[data-board-lanes]")`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("board page missing mobile lane behavior %q", want)
+		}
 	}
 }
 
