@@ -506,6 +506,7 @@ func (r *Runner) runAgentTurn(
 	if turnErr != nil {
 		result.FinalState = finalStateForTurnError(turnErr)
 	}
+	result.TurnStarted = turnStarted
 	return agentTurnExecution{
 		turnResult:  turnResult,
 		result:      result,

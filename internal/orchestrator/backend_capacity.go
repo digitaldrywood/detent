@@ -37,6 +37,7 @@ type BackendRecovery struct {
 type validatorCapacityEvent struct {
 	Scope         backendcapacity.Scope
 	CapacityErr   *backendcapacity.Error
+	ProbeErr      error
 	CapacityProbe bool
 	CompletedAt   time.Time
 }
@@ -263,7 +264,12 @@ func (o *Orchestrator) handleValidatorCapacityEvent(state *State, event validato
 		return
 	}
 	if event.CapacityProbe {
-		o.recoverBackendCapacity(state, Running{CapacityScope: event.Scope, CapacityProbe: true}, event.CompletedAt)
+		running := Running{CapacityScope: event.Scope, CapacityProbe: true}
+		if event.ProbeErr != nil {
+			o.deferBackendCapacityProbe(state, running, event.CompletedAt, event.ProbeErr)
+			return
+		}
+		o.recoverBackendCapacity(state, running, event.CompletedAt)
 	}
 }
 
@@ -314,6 +320,37 @@ func (o *Orchestrator) recoverBackendCapacity(state *State, running Running, rec
 			"provider", outage.Scope.Provider,
 			"detected_at", outage.DetectedAt,
 			"recovered_at", recoveredAt,
+		)
+	}
+}
+
+func (o *Orchestrator) deferBackendCapacityProbe(state *State, running Running, failedAt time.Time, probeErr error) {
+	if !running.CapacityProbe {
+		return
+	}
+	key, outage, ok := matchingBackendOutage(state.BackendOutages, running.CapacityScope)
+	if !ok {
+		return
+	}
+	if failedAt.IsZero() {
+		failedAt = o.clockNow()
+	}
+	outage.ProbeIssueID = ""
+	outage.ResumeAt = failedAt.Add(backendCapacityProbeDelay)
+	state.BackendOutages[key] = outage
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      failedAt,
+		Event:   "backend_capacity_probe_deferred",
+		Message: "backend " + outage.Scope.BackendID + " capacity probe failed; retrying at " + outage.ResumeAt.Format(time.RFC3339),
+	})
+	if o.logger != nil {
+		o.logger.Warn(
+			"backend capacity probe deferred",
+			"backend_id", outage.Scope.BackendID,
+			"backend_kind", outage.Scope.BackendKind,
+			"provider", outage.Scope.Provider,
+			"retry_at", outage.ResumeAt,
+			"error", probeErr,
 		)
 	}
 }

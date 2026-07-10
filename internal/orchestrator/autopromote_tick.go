@@ -1647,6 +1647,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 			if capacityProbeKey != "" {
 				o.publishValidatorCapacityEvent(ctx, validatorCapacityEvent{
 					Scope:         capacityScope,
+					ProbeErr:      err,
 					CapacityProbe: true,
 					CompletedAt:   completedAt,
 				})

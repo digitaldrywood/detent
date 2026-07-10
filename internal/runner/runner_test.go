@@ -939,7 +939,7 @@ func TestRunnerRunDoesNotFallbackAfterResumedTurnStarts(t *testing.T) {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
-	_, err = runner.Run(context.Background(), RunRequest{
+	result, err := runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
 			ID:            "issue-859",
 			Identifier:    "digitaldrywood/detent#859",
@@ -950,6 +950,9 @@ func TestRunnerRunDoesNotFallbackAfterResumedTurnStarts(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Run() error = nil, want resumed turn failure")
+	}
+	if !result.TurnStarted {
+		t.Fatal("RunResult.TurnStarted = false, want provider turn evidence")
 	}
 	if len(agentBackend.requests) != 1 {
 		t.Fatalf("backend requests = %d, want no fresh fallback after turn start", len(agentBackend.requests))

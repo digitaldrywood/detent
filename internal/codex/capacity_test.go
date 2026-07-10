@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -81,6 +82,37 @@ func TestAgentBackendClassifyCapacityErrorUsesReachedWindowReset(t *testing.T) {
 	}
 	if details.ResetAt == nil || !details.ResetAt.Equal(secondaryReset) {
 		t.Fatalf("ResetAt = %v, want secondary reset %s", details.ResetAt, secondaryReset)
+	}
+}
+
+func TestAgentBackendClassifyCapacityErrorParsesResetFromBackendBody(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 1, 55, 0, 0, time.UTC)
+	resetAt := now.Add(44 * time.Minute)
+	details, ok := (&AgentBackend{}).ClassifyCapacityError(
+		&TurnFailedError{
+			Status: "failed",
+			Body:   `{"error":{"type":"usageLimitExceeded"},"resetAt":1783651140}`,
+		},
+		nil,
+		now,
+	)
+	if !ok {
+		t.Fatal("ClassifyCapacityError() ok = false, want true")
+	}
+	if details.ResetAt == nil || !details.ResetAt.Equal(resetAt) {
+		t.Fatalf("ResetAt = %v, want %s", details.ResetAt, resetAt)
+	}
+}
+
+func TestCodexCapacityErrorTextDoesNotDuplicateCarrierBody(t *testing.T) {
+	t.Parallel()
+
+	body := `{"error":{"type":"usageLimitExceeded"},"resetAt":1783651140}`
+	text := codexCapacityErrorText(&TurnFailedError{Status: "failed", Body: body})
+	if count := strings.Count(text, body); count != 1 {
+		t.Fatalf("backend body appears %d times in %q, want once", count, text)
 	}
 }
 

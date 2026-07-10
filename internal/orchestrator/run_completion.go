@@ -105,7 +105,11 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.handleBackendCapacityError(ctx, state, event, running, capacityErr)
 		return
 	}
-	o.recoverBackendCapacity(state, running, event.CompletedAt)
+	if event.Err == nil || event.Result.TurnStarted {
+		o.recoverBackendCapacity(state, running, event.CompletedAt)
+	} else {
+		o.deferBackendCapacityProbe(state, running, event.CompletedAt, event.Err)
+	}
 
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		tokens := event.Result.Tokens

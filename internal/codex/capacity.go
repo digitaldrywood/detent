@@ -43,15 +43,24 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 }
 
 func codexCapacityErrorText(err error) string {
-	parts := []string{err.Error()}
+	text := strings.TrimSpace(err.Error())
 	var carrier interface {
 		BackendErrorBody() string
 		BackendErrorMessage() string
 	}
 	if errors.As(err, &carrier) {
-		parts = append(parts, carrier.BackendErrorBody(), carrier.BackendErrorMessage())
+		for _, value := range []string{carrier.BackendErrorBody(), carrier.BackendErrorMessage()} {
+			value = strings.TrimSpace(value)
+			if value == "" || strings.Contains(text, value) {
+				continue
+			}
+			if text != "" {
+				text += "\n"
+			}
+			text += value
+		}
 	}
-	return strings.Join(parts, "\n")
+	return text
 }
 
 func codexCapacityResetAt(limits *telemetry.RateLimits) *time.Time {
