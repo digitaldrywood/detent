@@ -9,10 +9,11 @@ import (
 )
 
 const (
-	DispatchGateReasonGranted                   = "granted"
-	DispatchGateReasonGlobalCapacityFull        = "global_capacity_full"
-	DispatchGateReasonReservedForHigherPriority = "reserved_for_higher_priority_state"
-	DispatchGateReasonSelectedProjectWaiting    = "selected_project_waiting"
+	DispatchGateReasonGranted                          = "granted"
+	DispatchGateReasonGlobalCapacityFull               = "global_capacity_full"
+	DispatchGateReasonReservedForHigherPriority        = "reserved_for_higher_priority_state"
+	DispatchGateReasonReservedForHigherPriorityProject = "reserved_for_higher_priority_project"
+	DispatchGateReasonSelectedProjectWaiting           = "selected_project_waiting"
 )
 
 type ProjectDispatchGate interface {
@@ -57,22 +58,96 @@ type selectedProjectSlot struct {
 	preemptions []RunningProject
 }
 
+type projectCycleState struct {
+	epoch uint64
+	idle  bool
+}
+
 type GlobalDispatchGate struct {
 	global GlobalScheduler
 
-	mu       sync.Mutex
-	ready    map[string]readyProjectSlot
-	running  map[uint64]runningProjectSlot
-	selected map[string]selectedProjectSlot
+	mu            sync.Mutex
+	ready         map[string]readyProjectSlot
+	running       map[uint64]runningProjectSlot
+	selected      map[string]selectedProjectSlot
+	projects      map[string]ProjectCandidate
+	projectCycles map[string]projectCycleState
+	epoch         uint64
 }
 
-func NewGlobalDispatchGate(global GlobalScheduler) *GlobalDispatchGate {
-	return &GlobalDispatchGate{
-		global:   global,
-		ready:    map[string]readyProjectSlot{},
-		running:  map[uint64]runningProjectSlot{},
-		selected: map[string]selectedProjectSlot{},
+func NewGlobalDispatchGate(global GlobalScheduler, projects ...ProjectCandidate) *GlobalDispatchGate {
+	gate := &GlobalDispatchGate{
+		global:        global,
+		ready:         map[string]readyProjectSlot{},
+		running:       map[uint64]runningProjectSlot{},
+		selected:      map[string]selectedProjectSlot{},
+		projects:      map[string]ProjectCandidate{},
+		projectCycles: map[string]projectCycleState{},
+		epoch:         1,
 	}
+	gate.SetProjects(projects)
+	return gate
+}
+
+func (g *GlobalDispatchGate) SetProjects(projects []ProjectCandidate) {
+	if g == nil {
+		return
+	}
+
+	normalized := normalizeProjectCandidates(projects)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	next := make(map[string]ProjectCandidate, len(normalized))
+	for _, project := range normalized {
+		next[project.ID] = project
+	}
+	for projectID := range g.projects {
+		if _, ok := next[projectID]; ok {
+			continue
+		}
+		delete(g.ready, projectID)
+		delete(g.selected, projectID)
+		delete(g.projectCycles, projectID)
+	}
+	g.projects = next
+}
+
+func (g *GlobalDispatchGate) BeginProjectCycle(project ProjectCandidate) {
+	if g == nil || g.global == nil {
+		return
+	}
+	project, ok := normalizeSingleProjectCandidate(project)
+	if !ok {
+		return
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.projects[project.ID] = project
+	delete(g.ready, project.ID)
+	delete(g.selected, project.ID)
+	g.projectCycles[project.ID] = projectCycleState{epoch: g.epoch}
+	if g.global.Mode() != ModeStrictPriority {
+		delete(g.projectCycles, project.ID)
+	}
+}
+
+func (g *GlobalDispatchGate) EndProjectCycle(projectID string) {
+	if g == nil || g.global == nil || g.global.Mode() != ModeStrictPriority {
+		return
+	}
+	projectID = normalizeProjectID(projectID)
+	if projectID == "" {
+		return
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	_, waiting := g.ready[projectID]
+	g.projectCycles[projectID] = projectCycleState{epoch: g.epoch, idle: !waiting}
 }
 
 func (g *GlobalDispatchGate) MarkReady(project ProjectCandidate) {
@@ -87,9 +162,13 @@ func (g *GlobalDispatchGate) MarkReady(project ProjectCandidate) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	g.projects[project.ID] = project
 	ready := g.ready[project.ID]
 	ready.ProjectCandidate = project
 	g.ready[project.ID] = ready
+	if g.global.Mode() == ModeStrictPriority {
+		g.projectCycles[project.ID] = projectCycleState{epoch: g.epoch}
+	}
 }
 
 func (g *GlobalDispatchGate) MarkIdle(projectID string) {
@@ -106,6 +185,9 @@ func (g *GlobalDispatchGate) MarkIdle(projectID string) {
 
 	delete(g.ready, projectID)
 	delete(g.selected, projectID)
+	if g.global != nil && g.global.Mode() == ModeStrictPriority {
+		g.projectCycles[projectID] = projectCycleState{epoch: g.epoch, idle: true}
+	}
 }
 
 func (g *GlobalDispatchGate) TryAcquire(
@@ -148,11 +230,22 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 	default:
 	}
 
+	g.projects[project.ID] = project
 	g.ready[project.ID] = readyProjectSlot{ProjectCandidate: project, request: req}
+	if g.global.Mode() == ModeStrictPriority {
+		g.projectCycles[project.ID] = projectCycleState{epoch: g.epoch}
+		if reservedProjectID, reservedReq, reserved := g.higherPriorityProjectReservationLocked(project); reserved {
+			return Slot{}, false, g.projectDecisionLocked(project.ID, req, reservedProjectID, reservedReq), nil
+		}
+	}
 	g.reconcileSelectionsLocked()
 	if err := g.fillSelectionsLocked(ctx, now, true); err != nil {
 		if errors.Is(err, ErrNoSlots) {
-			decision := g.decisionLocked(project.ID, req, DispatchGateReasonGlobalCapacityFull)
+			reason := DispatchGateReasonGlobalCapacityFull
+			if g.hasHigherPriorityRunningProjectLocked(project) {
+				reason = DispatchGateReasonReservedForHigherPriorityProject
+			}
+			decision := g.decisionLocked(project.ID, req, reason)
 			return Slot{}, false, decision, nil
 		}
 		return Slot{}, false, DispatchGateDecision{}, err
@@ -171,7 +264,11 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 	slot, err := g.global.RequestSlot(ctx, req)
 	if err != nil {
 		if errors.Is(err, ErrNoSlots) {
-			decision := g.decisionLocked(project.ID, req, DispatchGateReasonGlobalCapacityFull)
+			reason := DispatchGateReasonGlobalCapacityFull
+			if g.hasHigherPriorityRunningProjectLocked(project) {
+				reason = DispatchGateReasonReservedForHigherPriorityProject
+			}
+			decision := g.decisionLocked(project.ID, req, reason)
 			return Slot{}, false, decision, nil
 		}
 		delete(g.selected, project.ID)
@@ -232,6 +329,13 @@ func (g *GlobalDispatchGate) Release(slot Slot) error {
 		return err
 	}
 	delete(g.running, slot.token)
+	if g.global.Mode() == ModeStrictPriority {
+		g.epoch++
+		if g.epoch == 0 {
+			g.epoch = 1
+			clear(g.projectCycles)
+		}
+	}
 	return nil
 }
 
@@ -332,10 +436,14 @@ func (g *GlobalDispatchGate) readyProjectsForSelectionLocked(excluded map[string
 		return nil, nil
 	}
 
+	strictProjectRank, strict := g.bestStrictReadyProjectRankLocked()
 	bestPriority := 0
 	first := true
 	for _, ready := range g.ready {
 		if _, ok := excluded[ready.ID]; ok {
+			continue
+		}
+		if strict && priorityRank(ready.Priority) != strictProjectRank {
 			continue
 		}
 		if maxWeight >= 0 && ready.request.Weight > maxWeight {
@@ -356,6 +464,9 @@ func (g *GlobalDispatchGate) readyProjectsForSelectionLocked(excluded map[string
 		if _, ok := excluded[ready.ID]; ok {
 			continue
 		}
+		if strict && priorityRank(ready.Priority) != strictProjectRank {
+			continue
+		}
 		if maxWeight >= 0 && ready.request.Weight > maxWeight {
 			continue
 		}
@@ -369,6 +480,22 @@ func (g *GlobalDispatchGate) readyProjectsForSelectionLocked(excluded map[string
 		return projects[i].ID < projects[j].ID
 	})
 	return projects, requests
+}
+
+func (g *GlobalDispatchGate) bestStrictReadyProjectRankLocked() (int, bool) {
+	if g.global.Mode() != ModeStrictPriority {
+		return 0, false
+	}
+	bestRank := 0
+	found := false
+	for _, ready := range g.ready {
+		rank := priorityRank(ready.Priority)
+		if !found || rank < bestRank {
+			bestRank = rank
+			found = true
+		}
+	}
+	return bestRank, found
 }
 
 func (g *GlobalDispatchGate) decisionLocked(projectID string, req SlotRequest, reason string) DispatchGateDecision {
@@ -395,6 +522,58 @@ func (g *GlobalDispatchGate) decisionLocked(projectID string, req SlotRequest, r
 		ReadyProjects:        len(g.ready),
 		RunningProjects:      len(g.running),
 	}
+}
+
+func (g *GlobalDispatchGate) projectDecisionLocked(
+	projectID string,
+	req SlotRequest,
+	selectedProjectID string,
+	selectedReq SlotRequest,
+) DispatchGateDecision {
+	decision := g.decisionLocked(projectID, req, DispatchGateReasonReservedForHigherPriorityProject)
+	decision.SelectedProjectID = selectedProjectID
+	decision.SelectedState = selectedReq.State
+	return decision
+}
+
+func (g *GlobalDispatchGate) higherPriorityProjectReservationLocked(
+	project ProjectCandidate,
+) (string, SlotRequest, bool) {
+	projectRank := priorityRank(project.Priority)
+	selectedID := ""
+	selectedRank := 0
+	selectedReq := SlotRequest{}
+	for projectID, candidate := range g.projects {
+		if projectID == project.ID || priorityRank(candidate.Priority) >= projectRank {
+			continue
+		}
+		cycle, ok := g.projectCycles[projectID]
+		if ok && cycle.epoch == g.epoch && cycle.idle {
+			continue
+		}
+		rank := priorityRank(candidate.Priority)
+		if selectedID != "" && (rank > selectedRank || rank == selectedRank && projectID > selectedID) {
+			continue
+		}
+		selectedID = projectID
+		selectedRank = rank
+		if ready, readyOK := g.ready[projectID]; readyOK {
+			selectedReq = ready.request
+		} else {
+			selectedReq = SlotRequest{}
+		}
+	}
+	return selectedID, selectedReq, selectedID != ""
+}
+
+func (g *GlobalDispatchGate) hasHigherPriorityRunningProjectLocked(project ProjectCandidate) bool {
+	projectRank := priorityRank(project.Priority)
+	for _, running := range g.running {
+		if running.ProjectID != project.ID && priorityRank(running.Priority) < projectRank {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *GlobalDispatchGate) waitReasonLocked(req SlotRequest) string {

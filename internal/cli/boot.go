@@ -211,7 +211,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	if err != nil {
 		return err
 	}
-	globalDispatchGate := scheduler.NewGlobalDispatchGate(globalScheduler)
+	globalDispatchGate := scheduler.NewGlobalDispatchGate(globalScheduler, globalProjectCandidates(cfg.Global.Projects)...)
 	runtimeGitHubToken := newRuntimeGitHubTokenState(runtimeGlobalGitHubToken(cfg.Runtime.GitHubToken))
 	globalConfigState := newGlobalConfigState(cfg.Global)
 	refreshGitHubToken := runtimeGitHubTokenRefresher(globalConfigState, runtimeGitHubToken)
@@ -293,6 +293,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}
 
 	onGlobalReload := func(reloaded globalconfig.Config) {
+		syncGlobalDispatchProjects(globalDispatchGate, reloaded.Projects, manager.Registry())
 		globalConfigState.set(reloaded)
 		republishLatestSnapshot(snapshotHub, logger)
 	}
@@ -369,6 +370,38 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 			return serve(ctx, server, listener)
 		})
 	})
+}
+
+func globalProjectCandidates(projects []globalconfig.Project) []scheduler.ProjectCandidate {
+	candidates := make([]scheduler.ProjectCandidate, 0, len(projects))
+	for _, project := range projects {
+		candidates = append(candidates, scheduler.ProjectCandidate{
+			ID:       project.ID,
+			Weight:   project.Weight,
+			Priority: project.Priority,
+			Paused:   project.Paused,
+		})
+	}
+	return candidates
+}
+
+func syncGlobalDispatchProjects(
+	gate *scheduler.GlobalDispatchGate,
+	projects []globalconfig.Project,
+	registry *project.Registry,
+) {
+	candidates := globalProjectCandidates(projects)
+	gate.SetProjects(candidates)
+	for _, candidate := range candidates {
+		if candidate.Paused {
+			continue
+		}
+		runtimeProject, ok := registry.Get(project.ID(candidate.ID))
+		if ok && runtimeProject.Running() {
+			continue
+		}
+		gate.MarkIdle(candidate.ID)
+	}
 }
 
 func startOnboarding(ctx context.Context, cfg BootConfig) error {

@@ -1063,7 +1063,7 @@ probes.
    rg '^KANBAN_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-7. **Scheduling.** Ask: "What `global.yaml` `priority` from 1-4 and `weight`
+7. **Scheduling.** Ask: "What `global.yaml` `priority` from 0-4 and `weight`
    should this project receive?" Show `$ONBOARDING_DIR/global-projects.txt`.
    Disambiguate this from the board `Priority` field: `global.yaml` `priority`
    ranks projects on the host; the board `Priority` field ranks issues inside

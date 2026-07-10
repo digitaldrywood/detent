@@ -332,7 +332,7 @@ func fairShareScore(candidate ProjectCandidate, usage store.FairShareUsage) floa
 }
 
 func priorityRank(priority int) int {
-	if priority < 1 || priority > 4 {
+	if priority < 0 || priority > 4 {
 		return 5
 	}
 	return priority

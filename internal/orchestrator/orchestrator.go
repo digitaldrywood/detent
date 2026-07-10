@@ -310,6 +310,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	defer close(o.done)
+	defer o.markGlobalProjectIdle()
 
 	ticker := time.NewTicker(o.cfg.PollInterval)
 	defer ticker.Stop()
