@@ -216,7 +216,7 @@ templ sheetTagRow(label string, values []string) {
 		<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">{ label }</h3>
 		<div class="flex flex-wrap gap-1.5">
 			for _, value := range values {
-				<span class="inline-flex min-h-11 items-center rounded-chip bg-elev px-2 py-0.5 font-mono text-2xs text-sec md:min-h-0" title={ value }>{ value }</span>
+				<span class="inline-flex min-h-11 max-w-full items-center break-words rounded-chip bg-elev px-2 py-0.5 font-mono text-2xs whitespace-normal text-sec [overflow-wrap:anywhere] md:min-h-0 md:max-w-48 md:truncate" title={ value }>{ value }</span>
 			}
 		</div>
 	</div>

@@ -68,6 +68,20 @@ func TestBoardCardSheetClass(t *testing.T) {
 	}
 }
 
+func TestSheetTagRowConstrainsLongValues(t *testing.T) {
+	t.Parallel()
+
+	var sb strings.Builder
+	if err := sheetTagRow("Labels", []string{"label-without-break-opportunities"}).Render(context.Background(), &sb); err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	for _, want := range []string{"max-w-full", "[overflow-wrap:anywhere]", "md:max-w-48", "md:truncate"} {
+		if !strings.Contains(sb.String(), want) {
+			t.Fatalf("sheet tag row missing %q:\n%s", want, sb.String())
+		}
+	}
+}
+
 func TestProjectTabs(t *testing.T) {
 	data := DashboardData{ProjectID: "gopher-ai"}
 	tabs := projectTabs(data, "runs")
