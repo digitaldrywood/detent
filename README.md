@@ -968,6 +968,63 @@ can route a public HTTPS hostname to Detent. Configure relays and reverse proxie
 to preserve the raw request body and GitHub signature headers; modifying either
 causes signature verification to fail.
 
+### Alert and Scheduled Intake
+
+GitHub projects can turn external events and repository scans into normal board
+issues with an `intake` policy in `WORKFLOW.md`. Intake is disabled by default;
+an omitted or empty `sources` list starts no receiver or scanner work.
+
+```yaml
+intake:
+  sources:
+    - name: production-errors
+      kind: sentry
+      secret: $DETENT_SENTRY_INTAKE_SECRET
+      match: level:error
+      creates:
+        status: Backlog
+        labels: [bug]
+        title: "[{source}] {summary}"
+        body: "{details}"
+      dedupe_by: fingerprint
+    - name: weekly-todos
+      kind: schedule
+      cron: "0 6 * * 1"
+      scan: stale-todos
+      creates:
+        status: Backlog
+        labels: [maintenance]
+        title: "{summary}"
+        body: "{details}"
+      dedupe_by: fingerprint
+```
+
+Webhook kinds are `webhook`, `sentry`, `datadog`, and `slack`. Send JSON to
+`POST /api/v1/intake/<project-id>/<source-name>` with the resolved source secret
+in either `X-Detent-Intake-Token` or `Authorization: Bearer <secret>`. Generic
+JSON uses `summary`, `details`, and `fingerprint`; the named adapters also map
+their common nested event fields into those values. `match` uses
+`field:value` against flattened JSON fields. `dedupe_by` can name any flattened
+field and defaults to `fingerprint`.
+
+Templates can reference `{source}`, `{kind}`, `{summary}`, `{details}`,
+`{fingerprint}`, and flattened payload fields. Detent stores a hashed intake
+marker in the issue body. A later event with the same source and fingerprint
+updates that issue and adds configured labels without resetting its status, so
+an operator promotion from Backlog remains intact. New issues receive the
+configured starting status and then enter the existing label, issue-field, or
+ProjectV2 gate pipeline. ProjectV2 intake also requires `tracker.repository` so
+Detent knows where to create the repository issue before adding it to the board.
+
+The built-in `stale-todos` scanner walks the project source root for TODO and
+FIXME entries while skipping generated/dependency trees such as `.git`,
+`node_modules`, `vendor`, `tmp`, `dist`, and `build`. Scanner schedules use
+standard five-field cron expressions.
+
+Host-local policy can override the workflow policy inside a project entry in
+`global.yaml` using the same `intake` shape. An explicit `sources: []` override
+disables workflow-defined intake for that project.
+
 `gate` controls the validation contract the agent and operator flow follow.
 Omitting it preserves the code default: `kind: command` with `run: make check`,
 plus green CI, no P1 automated PR review findings, a quiet window, and a

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/intake"
 )
 
 const authenticateQuery = `
@@ -48,6 +49,7 @@ const (
 	graphQLQueryRemoveAssignees = "remove_assignees"
 	graphQLQueryUpdateField     = "update_project_field"
 	graphQLQueryRemoveItem      = "remove_project_item"
+	graphQLQueryAddProjectItem  = "add_project_item"
 )
 
 type Config struct {
@@ -294,6 +296,7 @@ func (c *Connector) InstanceLogin() string {
 
 var _ connector.Connector = (*Connector)(nil)
 var _ connector.Authenticator = (*Connector)(nil)
+var _ intake.IssueStore = (*Connector)(nil)
 var _ connector.Closer = (*Connector)(nil)
 var _ connector.InstanceIdentifier = (*Connector)(nil)
 var _ connector.IssueChildrenResolver = (*Connector)(nil)

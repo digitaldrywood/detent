@@ -310,6 +310,7 @@ func (s *Server) registerRoutes() {
 	s.echo.DELETE("/api/v1/keys/:id", s.apiKeysRevoke, apiKeyDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/refresh", s.apiRefresh, apiDashboardMutateAuth, apiWriteScope)
 	s.echo.POST("/api/v1/webhooks/github", s.githubWebhook)
+	s.echo.POST("/api/v1/intake/:project_id/:source", s.intakeWebhook)
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/usage", s.apiUsage, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/workflow/timeline", s.apiWorkflowTimeline, apiReadAuth, apiReadScope)

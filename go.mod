@@ -13,6 +13,7 @@ require (
 	github.com/labstack/echo/v4 v4.15.1
 	github.com/lmittmann/tint v1.1.3
 	github.com/pressly/goose/v3 v3.27.1
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
 	github.com/templui/templui v1.12.0

@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -95,6 +96,7 @@ type Dependencies struct {
 	Logger                 *slog.Logger
 	GitHubToken            string
 	RefreshGitHubToken     func(context.Context) (string, error)
+	IntakeDependencies     intake.Dependencies
 }
 
 type Project struct {
@@ -111,6 +113,7 @@ type Project struct {
 	runner           orchestrator.Runner
 	scheduler        scheduler.Scheduler
 	schedulerFactory schedulerFactory
+	intake           *intake.Manager
 	events           *hub.Hub[Event]
 	logger           *slog.Logger
 	watcher          WorkflowWatcherFactory
@@ -168,6 +171,15 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	intakeDependencies := deps.IntakeDependencies
+	intakeDependencies.Root = intakeRoot(cfg.Project, workflow.Config)
+	if intakeDependencies.Logger == nil {
+		intakeDependencies.Logger = logger
+	}
+	projectIntake, err := intake.New(workflow.Config.Intake, intakeStore(projectConnector), intakeDependencies)
+	if err != nil {
+		return nil, fmt.Errorf("create project intake: %w", err)
+	}
 
 	orchestratorFactory := deps.OrchestratorFactory
 	if orchestratorFactory == nil {
@@ -212,6 +224,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		runner:           deps.Runner,
 		scheduler:        projectScheduler,
 		schedulerFactory: schedulerFactory,
+		intake:           projectIntake,
 		events:           projectEvents,
 		logger:           logger,
 		watcher:          watcherFactory,
@@ -258,6 +271,13 @@ func (p *Project) Scheduler() scheduler.Scheduler {
 	defer p.mu.Unlock()
 
 	return p.scheduler
+}
+
+func (p *Project) Intake() *intake.Manager {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.intake
 }
 
 func (p *Project) Events() *hub.Hub[Event] {
@@ -597,6 +617,8 @@ func (p *Project) waitDone(ctx context.Context, done <-chan struct{}) error {
 func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrator.Orchestrator) {
 	watcherCtx, stopWatcher := context.WithCancel(ctx)
 	watcherDone := p.startWorkflowWatcher(watcherCtx)
+	intakeCtx, stopIntake := context.WithCancel(ctx)
+	intakeDone := p.startIntake(intakeCtx)
 
 	runStarted := logProjectShutdownBoundaryBegin(p.logger, "orchestrator_run", "component", "orchestrator", "project_id", p.id)
 	err := orch.Run(ctx)
@@ -612,6 +634,14 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 		logProjectShutdownBoundaryEnd(p.logger, "workflow_watcher_stop", watcherStarted, nil, "component", "workflow_watcher", "project_id", p.id)
 	} else {
 		logProjectShutdownBoundaryEndResult(p.logger, "workflow_watcher_stop", watcherStarted, "skipped", nil, "component", "workflow_watcher", "project_id", p.id)
+	}
+	intakeStarted := logProjectShutdownBoundaryBegin(p.logger, "intake_stop", "component", "intake", "project_id", p.id)
+	stopIntake()
+	if intakeDone != nil {
+		<-intakeDone
+		logProjectShutdownBoundaryEnd(p.logger, "intake_stop", intakeStarted, nil, "component", "intake", "project_id", p.id)
+	} else {
+		logProjectShutdownBoundaryEndResult(p.logger, "intake_stop", intakeStarted, "skipped", nil, "component", "intake", "project_id", p.id)
 	}
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 		err = nil
@@ -639,6 +669,23 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 	}
 
 	close(done)
+}
+
+func (p *Project) startIntake(ctx context.Context) <-chan struct{} {
+	p.mu.Lock()
+	manager := p.intake
+	p.mu.Unlock()
+	if manager == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := manager.Run(ctx); err != nil && ctx.Err() == nil {
+			p.logger.Error("project intake stopped", "project_id", p.id, "error", err)
+		}
+	}()
+	return done
 }
 
 func logProjectShutdownBoundaryBegin(logger *slog.Logger, operation string, attrs ...any) time.Time {
@@ -739,6 +786,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	schedulerFactory := p.schedulerFactory
 	runner := p.runner
 	projectOrchestrator := p.orchestrator
+	projectIntake := p.intake
 	p.mu.Unlock()
 	if projectOrchestrator == nil {
 		return
@@ -795,6 +843,16 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		)
 		return
 	}
+	if projectIntake != nil {
+		if err := projectIntake.Update(workflow.Config.Intake, intakeStore(projectConnector), intakeRoot(projectConfig, workflow.Config)); err != nil {
+			p.logger.Warn("apply workflow intake reload failed",
+				"project_id", p.id,
+				"path", update.Path,
+				"error", err,
+			)
+			return
+		}
+	}
 
 	p.mu.Lock()
 	p.workflow = workflow
@@ -833,6 +891,10 @@ func workflowConfigWithProjectIdentity(
 	project globalconfig.Project,
 	workflow workflowconfig.Config,
 ) workflowconfig.Config {
+	if project.IntakeConfigured {
+		workflow.Intake = project.Intake
+		workflow.Intake.Normalize()
+	}
 	workflow = workflowConfigWithProjectPaths(project, workflow)
 	if workflow.Agent.Knowledge.Enabled {
 		workflow.Agent.Knowledge = workflowconfig.KnowledgeWithSources(
@@ -850,6 +912,21 @@ func workflowConfigWithProjectIdentity(
 	identity.Normalize()
 	workflow.Identity = identity
 	return workflow
+}
+
+func intakeRoot(project globalconfig.Project, workflow workflowconfig.Config) string {
+	if root := strings.TrimSpace(workflow.Workspace.SourceRoot); root != "" {
+		return root
+	}
+	return strings.TrimSpace(project.Workdir)
+}
+
+func intakeStore(projectConnector connector.Connector) intake.IssueStore {
+	store, ok := projectConnector.(intake.IssueStore)
+	if !ok {
+		return nil
+	}
+	return store
 }
 
 func workflowConfigWithProjectPaths(project globalconfig.Project, workflow workflowconfig.Config) workflowconfig.Config {
