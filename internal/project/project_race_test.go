@@ -11,6 +11,8 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 )
 
@@ -78,6 +80,66 @@ func TestHandleWorkflowUpdateDoesNotRaceWithPause(t *testing.T) {
 	case <-updateDone:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for workflow reload to finish")
+	}
+}
+
+func TestHandleWorkflowUpdateRejectsIntakeBeforeRuntimeMutation(t *testing.T) {
+	t.Parallel()
+
+	initial := projectRaceWorkflowConfig()
+	projectConnector := memory.New(memory.Config{Stateful: true})
+	got, err := New(Config{
+		Project: globalconfig.Project{ID: "detent", Weight: 1},
+		Workflow: workflowconfig.Workflow{
+			Config: initial,
+			Prompt: "initial",
+		},
+	}, Dependencies{
+		Connector: projectConnector,
+		Runner:    projectRaceBlockingRunner{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := got.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := got.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	reloaded := projectRaceWorkflowConfig()
+	reloaded.Tracker.Kind = workflowconfig.TrackerGitHub
+	reloaded.Tracker.APIKey = "token"
+	reloaded.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
+	reloaded.Tracker.Repository = "example/repo"
+	reloaded.Polling.IntervalMS = 60000
+	reloaded.Intake.Sources = []intake.Source{{
+		Name:   "alerts",
+		Kind:   "pagerduty",
+		Secret: "secret",
+	}}
+	got.handleWorkflowUpdate(context.Background(), configwatcher.Update{
+		Workflow: workflowconfig.Workflow{
+			Config: reloaded,
+			Prompt: "reloaded",
+		},
+	})
+
+	if got.Workflow().Prompt != "initial" {
+		t.Fatalf("Workflow().Prompt = %q, want initial", got.Workflow().Prompt)
+	}
+	if got.Connector() != projectConnector {
+		t.Fatal("Connector() changed after rejected intake reload")
+	}
+	state, err := got.orchestrator.State(context.Background())
+	if err != nil {
+		t.Fatalf("State() error = %v", err)
+	}
+	if state.PollInterval != time.Hour {
+		t.Fatalf("State().PollInterval = %s, want %s", state.PollInterval, time.Hour)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	intakeconfig "github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
@@ -80,19 +81,21 @@ type Settings struct {
 }
 
 type Project struct {
-	ID              string            `yaml:"id"`
-	Workflow        string            `yaml:"workflow"`
-	WorkflowRef     string            `yaml:"workflow_ref,omitempty"`
-	Workdir         string            `yaml:"workdir"`
-	Color           string            `yaml:"color,omitempty"`
-	Knowledge       Knowledge         `yaml:"knowledge,omitempty"`
-	Weight          int               `yaml:"weight"`
-	Priority        int               `yaml:"priority"`
-	Paused          bool              `yaml:"paused,omitempty"`
-	CredentialRef   string            `yaml:"credential_ref,omitempty"`
-	Authorization   selector.Selector `yaml:"authorization,omitempty"`
-	Identity        Identity          `yaml:"-"`
-	GlobalKnowledge Knowledge         `yaml:"-"`
+	ID               string              `yaml:"id"`
+	Workflow         string              `yaml:"workflow"`
+	WorkflowRef      string              `yaml:"workflow_ref,omitempty"`
+	Workdir          string              `yaml:"workdir"`
+	Color            string              `yaml:"color,omitempty"`
+	Knowledge        Knowledge           `yaml:"knowledge,omitempty"`
+	Weight           int                 `yaml:"weight"`
+	Priority         int                 `yaml:"priority"`
+	Paused           bool                `yaml:"paused,omitempty"`
+	CredentialRef    string              `yaml:"credential_ref,omitempty"`
+	Authorization    selector.Selector   `yaml:"authorization,omitempty"`
+	Intake           intakeconfig.Config `yaml:"intake,omitempty"`
+	Identity         Identity            `yaml:"-"`
+	GlobalKnowledge  Knowledge           `yaml:"-"`
+	IntakeConfigured bool                `yaml:"-"`
 }
 
 type Identity = workflowconfig.Identity
@@ -819,6 +822,7 @@ func projectErrors(value any, index int, opts options) []string {
 	problems = append(problems, knowledgeErrors(project["knowledge"], prefix+".knowledge")...)
 	problems = append(problems, credentialRefErrors(project, prefix)...)
 	problems = append(problems, authorizationErrors(project["authorization"], prefix+".authorization")...)
+	problems = append(problems, intakeErrors(project["intake"], prefix+".intake")...)
 
 	return problems
 }
@@ -1376,22 +1380,56 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 		if err != nil {
 			return nil, err
 		}
+		projectIntake, intakeConfigured, err := buildIntake(project, prefix)
+		if err != nil {
+			return nil, err
+		}
 
 		out = append(out, Project{
-			ID:            strings.TrimSpace(id),
-			Workflow:      strings.TrimSpace(workflow),
-			WorkflowRef:   strings.TrimSpace(workflowRef),
-			Workdir:       workdir,
-			Color:         color,
-			Knowledge:     knowledge,
-			Weight:        weight,
-			Priority:      priority,
-			Paused:        paused,
-			CredentialRef: credentialRef,
-			Authorization: authorization,
+			ID:               strings.TrimSpace(id),
+			Workflow:         strings.TrimSpace(workflow),
+			WorkflowRef:      strings.TrimSpace(workflowRef),
+			Workdir:          workdir,
+			Color:            color,
+			Knowledge:        knowledge,
+			Weight:           weight,
+			Priority:         priority,
+			Paused:           paused,
+			CredentialRef:    credentialRef,
+			Authorization:    authorization,
+			Intake:           projectIntake,
+			IntakeConfigured: intakeConfigured,
 		})
 	}
 	return out, nil
+}
+
+func intakeErrors(value any, prefix string) []string {
+	if value == nil {
+		return nil
+	}
+	if _, ok := value.(map[string]any); !ok {
+		return []string{prefix + ": must be a mapping"}
+	}
+	var cfg intakeconfig.Config
+	if err := decodeYAMLValue(value, &cfg); err != nil {
+		return []string{prefix + ": " + err.Error()}
+	}
+	cfg.Normalize()
+	return cfg.Validate(prefix, nil)
+}
+
+func buildIntake(project map[string]any, prefix string) (intakeconfig.Config, bool, error) {
+	value, configured := project["intake"]
+	if !configured || value == nil {
+		return intakeconfig.Config{}, configured, nil
+	}
+	var cfg intakeconfig.Config
+	if err := decodeYAMLValue(value, &cfg); err != nil {
+		return intakeconfig.Config{}, configured, fmt.Errorf("%s.intake: %w", prefix, err)
+	}
+	cfg.Normalize()
+	return cfg, configured, nil
 }
 
 func buildIdentity(value any, field string) (Identity, error) {

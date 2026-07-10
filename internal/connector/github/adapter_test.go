@@ -2945,6 +2945,7 @@ func TestParseBlockerReasonUsesStructuredWorkpadFirst(t *testing.T) {
 			signal := parseWorkpadSignal(issue)
 			if signal == nil {
 				t.Fatal("parseWorkpadSignal() = nil, want signal")
+				return
 			}
 			if signal.Source != tt.wantSource {
 				t.Fatalf("Signal.Source = %q, want %q", signal.Source, tt.wantSource)
@@ -4047,6 +4048,7 @@ func TestConnectorHydratePullRequestNormalizesStaleSuccessfulWorkflowCheckRun(t 
 	pr := got.PullRequest
 	if pr == nil {
 		t.Fatalf("PullRequest = nil, want hydrated pull request")
+		return
 	}
 	if pr.CIStatus != "pass" {
 		t.Fatalf("CIStatus = %q, want pass", pr.CIStatus)
@@ -4109,6 +4111,7 @@ func TestConnectorHydratePullRequestBlocksSkippedRequiredStatusCheck(t *testing.
 	pr := got.PullRequest
 	if pr == nil {
 		t.Fatalf("PullRequest = nil, want hydrated pull request")
+		return
 	}
 	if pr.CIStatus != "fail" {
 		t.Fatalf("CIStatus = %q, want fail for skipped required check", pr.CIStatus)
@@ -4164,6 +4167,7 @@ func TestConnectorHydratePullRequestBlocksMissingRequiredStatusCheck(t *testing.
 	pr := got.PullRequest
 	if pr == nil {
 		t.Fatalf("PullRequest = nil, want hydrated pull request")
+		return
 	}
 	if pr.CIStatus != "pending" {
 		t.Fatalf("CIStatus = %q, want pending for missing required check", pr.CIStatus)

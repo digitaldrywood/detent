@@ -755,6 +755,7 @@ func normalizeManagerProjectConfig(cfg globalconfig.Project) globalconfig.Projec
 	cfg.Identity.Normalize()
 	cfg.GlobalKnowledge.Normalize()
 	cfg.Knowledge.Normalize()
+	cfg.Intake.Normalize()
 	return cfg
 }
 

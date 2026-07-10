@@ -49,6 +49,8 @@ tracker:
 polling:
   interval_ms: 120000
   conditional: true
+intake:
+  sources: []
 workspace:
   root: <worktree-root>
   source_root: <source-root>

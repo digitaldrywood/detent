@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/pathsafe"
 	"github.com/digitaldrywood/detent/internal/selector"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
@@ -103,6 +104,7 @@ type Config struct {
 	Observability Observability   `yaml:"observability"`
 	Budget        Budget          `yaml:"budget"`
 	Hooks         Hooks           `yaml:"hooks"`
+	Intake        intake.Config   `yaml:"intake,omitempty"`
 }
 
 type Tracker struct {
@@ -938,6 +940,17 @@ func (c *Config) Validate() error {
 	c.Observability.validate(&problems)
 	c.Budget.validate("budget", &problems)
 	c.Hooks.validate(&problems)
+	states := make([]string, 0, len(c.configuredWorkflowStates()))
+	for _, state := range c.configuredWorkflowStates() {
+		states = append(states, state)
+	}
+	problems = append(problems, c.Intake.Validate("intake", states)...)
+	if c.Intake.Enabled() && c.Tracker.Kind != TrackerGitHub {
+		problems = append(problems, "intake.sources requires tracker.kind github")
+	}
+	if c.Intake.Enabled() && !validRepositoryName(c.Tracker.Repository) {
+		problems = append(problems, "tracker.repository is required for intake sources")
+	}
 
 	if len(problems) > 0 {
 		return ValidationError{Problems: problems}
@@ -1098,6 +1111,7 @@ func (c *Config) normalize() {
 	}
 	c.Server.Normalize()
 	c.Hooks.Shell = commandshell.Normalize(c.Hooks.Shell)
+	c.Intake.Normalize()
 }
 
 func (c *Config) validateTracker(problems *[]string) {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/intake"
 )
 
 const (
@@ -64,6 +65,7 @@ var _ connector.IssueChildrenResolver = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
 var _ connector.IssueCommentReader = (*Connector)(nil)
 var _ connector.IssueCreator = (*Connector)(nil)
+var _ intake.IssueStore = (*Connector)(nil)
 var _ connector.IssueParentResolver = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
 var _ connector.ProjectRemover = (*Connector)(nil)
@@ -268,6 +270,46 @@ func (c *Connector) CreateIssue(_ context.Context, draft connector.IssueDraft) (
 	return cloneIssue(issue), nil
 }
 
+func (c *Connector) FindIntakeIssue(_ context.Context, marker string) (intake.Issue, bool, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, issue := range c.issues {
+		if strings.Contains(issue.Description, marker) {
+			return memoryIntakeIssue(issue), true, nil
+		}
+	}
+	return intake.Issue{}, false, nil
+}
+
+func (c *Connector) CreateIntakeIssue(ctx context.Context, draft intake.IssueDraft) (intake.Issue, error) {
+	issue, err := c.CreateIssue(ctx, connector.IssueDraft{Title: draft.Title, Body: draft.Body, Labels: draft.Labels})
+	if err != nil {
+		return intake.Issue{}, err
+	}
+	return memoryIntakeIssue(issue), nil
+}
+
+func (c *Connector) UpdateIntakeIssue(_ context.Context, issueID string, draft intake.IssueDraft) (intake.Issue, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for index := range c.issues {
+		if c.issues[index].ID != issueID {
+			continue
+		}
+		c.issues[index].Title = strings.TrimSpace(draft.Title)
+		c.issues[index].Description = strings.TrimSpace(draft.Body)
+		c.issues[index].Labels = appendUniqueLabels(c.issues[index].Labels, draft.Labels)
+		now := c.now().UTC()
+		c.issues[index].UpdatedAt = &now
+		return memoryIntakeIssue(c.issues[index]), nil
+	}
+	return intake.Issue{}, connector.ErrNotImplemented
+}
+
+func (c *Connector) SetIntakeIssueState(ctx context.Context, issueID string, state string) error {
+	return c.UpdateIssueState(ctx, issueID, state)
+}
+
 func (c *Connector) CreatePullRequestComment(_ context.Context, repository string, number int, body string) error {
 	c.send(Event{Kind: EventKindPullRequestComment, Repository: strings.TrimSpace(repository), PRNumber: number, Body: body})
 	return nil
@@ -444,6 +486,37 @@ func (c *Connector) send(event Event) {
 
 func normalizeState(state string) string {
 	return strings.ToLower(strings.TrimSpace(state))
+}
+
+func memoryIntakeIssue(issue connector.Issue) intake.Issue {
+	return intake.Issue{
+		ID:         issue.ID,
+		Identifier: issue.Identifier,
+		Number:     issue.Number,
+		URL:        issue.URL,
+		Body:       issue.Description,
+	}
+}
+
+func appendUniqueLabels(current []string, added []string) []string {
+	out := append([]string(nil), current...)
+	seen := map[string]struct{}{}
+	for _, label := range out {
+		seen[strings.ToLower(strings.TrimSpace(label))] = struct{}{}
+	}
+	for _, label := range added {
+		label = strings.TrimSpace(label)
+		key := strings.ToLower(label)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, label)
+	}
+	return out
 }
 
 func issueReferencesChild(issue connector.Issue, childID string, childIdentifier string) bool {

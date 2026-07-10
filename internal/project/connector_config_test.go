@@ -7,6 +7,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/intake"
 )
 
 func TestTrackerStateMapConvertsWorkflowMap(t *testing.T) {
@@ -56,6 +57,22 @@ func TestWorkflowConfigWithProjectPathsResolvesArtifactWorkflowPaths(t *testing.
 	}
 	if got.Deliverable.OutputRoot != filepath.Join(workdir, ".detent", "deliverables") {
 		t.Fatalf("Deliverable.OutputRoot = %q", got.Deliverable.OutputRoot)
+	}
+}
+
+func TestWorkflowConfigWithProjectIntakeOverride(t *testing.T) {
+	t.Parallel()
+
+	workflow := workflowconfig.Default()
+	workflow.Intake = intake.Config{Sources: []intake.Source{{Name: "workflow", Kind: intake.KindWebhook, Secret: "workflow-secret"}}}
+	projectIntake := intake.Config{Sources: []intake.Source{{Name: "global", Kind: intake.KindSlack, Secret: "global-secret"}}}
+	got := workflowConfigWithProjectIdentity(globalconfig.Project{
+		Intake:           projectIntake,
+		IntakeConfigured: true,
+	}, workflow)
+
+	if len(got.Intake.Sources) != 1 || got.Intake.Sources[0].Name != "global" {
+		t.Fatalf("Intake = %#v, want global project override", got.Intake)
 	}
 }
 
