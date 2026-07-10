@@ -172,7 +172,7 @@ func projectAllClearLabel(data DashboardData) string {
 }
 
 func projectRunRowClass(last bool) string {
-	base := "grid grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_110px] items-center gap-3.5 px-4 py-2"
+	base := "grid grid-cols-[70px_minmax(0,1fr)_90px] items-center gap-3 px-4 py-2 lg:grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_110px] lg:gap-3.5"
 	if !last {
 		return base + " border-b border-line"
 	}

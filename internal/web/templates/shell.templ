@@ -432,6 +432,7 @@ templ appShellScript() {
 				});
 			}
 			function closeDetailSheet() {
+				document.dispatchEvent(new CustomEvent("detent:closeHelpTooltip"));
 				var host = document.getElementById("detail-sheet-host");
 				if (host) {
 					Array.from(host.children).forEach(function (child) {
@@ -446,6 +447,7 @@ templ appShellScript() {
 				var host = document.getElementById("detail-sheet-host");
 				var target = event.detail && event.detail.target;
 				if (!host || target !== host) return;
+				document.dispatchEvent(new CustomEvent("detent:closeHelpTooltip"));
 				var requestConfig = event.detail && event.detail.requestConfig;
 				var path = requestConfig && requestConfig.path;
 				if (path) host.dataset.detailSheetURL = path;

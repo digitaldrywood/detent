@@ -272,6 +272,7 @@ type SessionFinish struct {
 	ProviderSessionID     string
 	ResumedFromSessionID  int64
 	RuntimeIdentity       agentidentity.Identity
+	SkillDraftProposed    bool
 }
 
 type AgentResumeLookup struct {

@@ -238,6 +238,7 @@ type Agent struct {
 	Lessons                      Lessons                      `yaml:"lessons"`
 	Knowledge                    Knowledge                    `yaml:"knowledge"`
 	Skills                       Skills                       `yaml:"skills"`
+	Followups                    Followups                    `yaml:"followups"`
 }
 
 type AgentRoleEffort struct {
@@ -376,6 +377,10 @@ type Skills struct {
 type SkillCreation struct {
 	Enabled         bool `yaml:"enabled"`
 	MaxDraftsPerRun int  `yaml:"max_drafts_per_run"`
+}
+
+type Followups struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 type Budget struct {
@@ -890,6 +895,7 @@ func Default() Config {
 			Lessons:   defaultLessons(),
 			Knowledge: defaultKnowledge(),
 			Skills:    defaultSkills(),
+			Followups: Followups{Enabled: true},
 		},
 		Codex: Codex{
 			Command: "codex app-server",

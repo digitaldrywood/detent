@@ -74,6 +74,34 @@ func TestFleetAgentRows(t *testing.T) {
 	}
 }
 
+func TestFleetAgentRowClass(t *testing.T) {
+	tests := []struct {
+		name       string
+		last       bool
+		wantBorder bool
+	}{
+		{name: "middle row", wantBorder: true},
+		{name: "last row", last: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			class := fleetAgentRowClass(tt.last)
+			for _, want := range []string{
+				"grid-cols-1",
+				"md:grid-cols-[minmax(0,1.6fr)_130px_150px_minmax(0,1fr)_90px]",
+			} {
+				if !strings.Contains(class, want) {
+					t.Fatalf("fleetAgentRowClass(%t) missing %q: %q", tt.last, want, class)
+				}
+			}
+			if got := strings.Contains(class, "border-b border-line"); got != tt.wantBorder {
+				t.Fatalf("fleetAgentRowClass(%t) border = %t, want %t: %q", tt.last, got, tt.wantBorder, class)
+			}
+		})
+	}
+}
+
 func TestFleetAgentRowsUseContextPressureWhenKnown(t *testing.T) {
 	data := fleetTestData()
 	contextWindow := int64(300_000)

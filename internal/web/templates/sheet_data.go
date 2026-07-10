@@ -185,11 +185,11 @@ func sheetHasActions(data DashboardData, card projectKanbanCard, boardActions bo
 }
 
 func boardCardSheetClass(expanded bool) string {
-	base := "flex h-full flex-none flex-col overflow-hidden border-l border-line bg-surface"
+	base := "flex h-full w-full min-w-0 flex-none flex-col overflow-hidden bg-surface md:border-l md:border-line"
 	if expanded {
-		return base + " w-full"
+		return base
 	}
-	return base + " w-100"
+	return base + " md:w-100"
 }
 
 func sheetAttentionLabel(card projectKanbanCard) string {

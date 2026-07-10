@@ -514,6 +514,7 @@ func (r *Runner) runAgentTurn(
 		return nil
 	})
 	result.Output = progress.outputText()
+	result.SkillDraftProposed = skillDraftProposed(result.Output)
 	cleanupErr := agentTurnCleanupError(turnErr, turnResult)
 	if cleanupErr != nil {
 		turnErr = nil
@@ -1496,6 +1497,7 @@ func (r *Runner) finishSession(
 		ProviderSessionID:     turnResult.SessionID,
 		ResumedFromSessionID:  resumedFromSessionID,
 		RuntimeIdentity:       result.RuntimeIdentity,
+		SkillDraftProposed:    result.SkillDraftProposed,
 	}); err != nil {
 		return fmt.Errorf("finish agent session: %w", err)
 	}
@@ -1505,6 +1507,7 @@ func (r *Runner) finishSession(
 		"provider_session_id", turnResult.SessionID,
 		"final_state", result.FinalState,
 		"turns", turns,
+		"skill_draft_proposed", result.SkillDraftProposed,
 	}
 	attrs = append(attrs, runtimeIdentityLogAttrs(result.RuntimeIdentity)...)
 	r.logWorkerEvent(issue, "worker_session_finished", attrs...)

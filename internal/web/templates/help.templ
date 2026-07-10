@@ -100,6 +100,7 @@ templ helpScript() {
 			let showTimer = 0
 			let hideTimer = 0
 			let positionFrame = 0
+			let lastPointerType = ""
 
 			function helpTooltip() {
 				if (tooltip && document.documentElement.contains(tooltip)) return tooltip
@@ -257,13 +258,19 @@ templ helpScript() {
 				hideTimer = setTimeout(() => hideHelpTooltip(term, false), delay)
 			}
 
+			document.addEventListener("pointerdown", (event) => {
+				lastPointerType = event.pointerType || ""
+			}, true)
+
 			document.addEventListener("pointerover", (event) => {
+				if (event.pointerType === "touch") return
 				const trigger = helpTriggerFor(event.target)
 				if (!trigger || containsRelated(trigger, event.relatedTarget)) return
 				scheduleHelpOpen(trigger, showDelay)
 			})
 
 			document.addEventListener("pointerout", (event) => {
+				if (event.pointerType === "touch") return
 				const trigger = helpTriggerFor(event.target)
 				if (!trigger || containsRelated(trigger, event.relatedTarget)) return
 				scheduleHelpHide(trigger, hideDelay)
@@ -271,7 +278,7 @@ templ helpScript() {
 
 			document.addEventListener("focusin", (event) => {
 				const trigger = helpTriggerFor(event.target)
-				if (trigger) openHelpTooltip(trigger)
+				if (trigger && lastPointerType !== "touch") openHelpTooltip(trigger)
 			})
 
 			document.addEventListener("focusout", (event) => {
@@ -283,11 +290,14 @@ templ helpScript() {
 			document.addEventListener("click", (event) => {
 				const trigger = helpTriggerFor(event.target)
 				if (trigger) {
-					openHelpTooltip(trigger)
+					if (helpTooltip()?.dataset.open === "true" && activeHelpTrigger === trigger) hideHelpTooltip("", true)
+					else openHelpTooltip(trigger)
 					return
 				}
 				hideHelpTooltip("", true)
-			})
+			}, true)
+
+			document.addEventListener("detent:closeHelpTooltip", () => hideHelpTooltip("", true))
 
 			document.addEventListener("keydown", (event) => {
 				if (event.key === "Escape") hideHelpTooltip("", true)

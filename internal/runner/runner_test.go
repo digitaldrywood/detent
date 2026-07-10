@@ -63,7 +63,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 				ThreadID:        "thread-1",
 				TurnID:          "turn-1",
 				ItemID:          "item-1",
-				Delta:           "hello",
+				Delta:           "hello\nSkill draft: yes — `.detent/skills/debug.md` captures the workflow.",
 			},
 			{
 				Type:     AgentUpdateTokenUsage,
@@ -191,10 +191,10 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[1].WorkspacePath != workspacePath {
 		t.Fatalf("second usage update WorkspacePath = %q, want %q", usageUpdates[1].WorkspacePath, workspacePath)
 	}
-	if usageUpdates[1].LastEvent != "agent_message_delta" || usageUpdates[1].LastMessage != "hello" {
+	if usageUpdates[1].LastEvent != "agent_message_delta" || usageUpdates[1].LastMessage != "hello\nSkill draft: yes — `.detent/skills/debug.md` captures the workflow." {
 		t.Fatalf("second usage update activity = %#v, want agent message", usageUpdates[1])
 	}
-	if len(usageUpdates[1].RecentEvents) != 2 || usageUpdates[1].RecentEvents[1].Message != "hello" {
+	if len(usageUpdates[1].RecentEvents) != 2 || usageUpdates[1].RecentEvents[1].Message != "hello\nSkill draft: yes — `.detent/skills/debug.md` captures the workflow." {
 		t.Fatalf("second usage update RecentEvents = %#v, want route and agent message", usageUpdates[1].RecentEvents)
 	}
 	if usageUpdates[1].LastEventAt.IsZero() {
@@ -274,6 +274,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if sessionStore.finished.FinalState != FinalStateCompleted || sessionStore.finished.TotalTokens != 125 || sessionStore.finished.Turns != 1 || sessionStore.finished.Model != "gpt-5-codex-resolved" {
 		t.Fatalf("SessionFinish = %#v, want completed session with tokens", sessionStore.finished)
+	}
+	if !result.SkillDraftProposed || !sessionStore.finished.SkillDraftProposed {
+		t.Fatalf("skill draft telemetry result/store = %v/%v, want true/true", result.SkillDraftProposed, sessionStore.finished.SkillDraftProposed)
 	}
 	if sessionStore.finished.ProviderThreadID != "thread-1" || sessionStore.finished.ProviderSessionID != "thread-1-turn-1" {
 		t.Fatalf("SessionFinish provider IDs = %#v, want thread-1/thread-1-turn-1", sessionStore.finished)

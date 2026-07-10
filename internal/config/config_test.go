@@ -12,6 +12,34 @@ import (
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
+func TestParseWorkflowFollowups(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		agent   string
+		enabled bool
+	}{
+		{name: "defaults enabled", enabled: true},
+		{name: "explicitly enabled", agent: "agent:\n  followups:\n    enabled: true\n", enabled: true},
+		{name: "explicitly disabled", agent: "agent:\n  followups:\n    enabled: false\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workflow, err := ParseWorkflow([]byte("---\n" + tt.agent + "---\nPrompt\n"))
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			if workflow.Config.Agent.Followups.Enabled != tt.enabled {
+				t.Fatalf("Agent.Followups.Enabled = %t, want %t", workflow.Config.Agent.Followups.Enabled, tt.enabled)
+			}
+		})
+	}
+}
+
 func TestParseWorkflowFrontmatter(t *testing.T) {
 	t.Parallel()
 
@@ -143,6 +171,8 @@ agent:
     creation:
       enabled: true
       max_drafts_per_run: 3
+  followups:
+    enabled: false
 codex:
   command: codex app-server
   shell: bash
@@ -350,6 +380,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Agent.Skills.Creation.MaxDraftsPerRun != 3 {
 		t.Fatalf("Agent.Skills.Creation.MaxDraftsPerRun = %d, want 3", cfg.Agent.Skills.Creation.MaxDraftsPerRun)
+	}
+	if cfg.Agent.Followups.Enabled {
+		t.Fatal("Agent.Followups.Enabled = true, want false")
 	}
 	if cfg.Agent.Shutdown.DrainTimeoutMS != 300000 {
 		t.Fatalf("Agent.Shutdown.DrainTimeoutMS = %d, want 300000", cfg.Agent.Shutdown.DrainTimeoutMS)
@@ -686,6 +719,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Agent.Skills.Creation.MaxDraftsPerRun != 1 {
 		t.Fatalf("Agent.Skills.Creation.MaxDraftsPerRun = %d, want 1", cfg.Agent.Skills.Creation.MaxDraftsPerRun)
+	}
+	if !cfg.Agent.Followups.Enabled {
+		t.Fatal("Agent.Followups.Enabled = false, want true default")
 	}
 	if cfg.Workpad.StructuredOnly {
 		t.Fatal("Workpad.StructuredOnly = true, want false default")

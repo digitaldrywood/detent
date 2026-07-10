@@ -70,6 +70,7 @@ type CodexSession struct {
 	ServiceTierProvenance     sql.NullString `json:"service_tier_provenance"`
 	IdentityObservedAt        sql.NullString `json:"identity_observed_at"`
 	OrphanRecoveryOutcome     sql.NullString `json:"orphan_recovery_outcome"`
+	SkillDraftProposed        int64          `json:"skill_draft_proposed"`
 }
 
 type DetentRun struct {

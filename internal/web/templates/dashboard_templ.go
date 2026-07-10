@@ -1030,7 +1030,7 @@ func backendCapacityBanner(snapshot telemetry.Snapshot) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			for _, outage := range snapshot.BackendOutages {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 64, "<div class=\"min-w-0\"><p class=\"font-medium text-text\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 64, "<div class=\"min-w-0 break-words\"><p class=\"font-medium text-text\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}

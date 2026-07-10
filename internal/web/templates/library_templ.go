@@ -95,7 +95,7 @@ func LibraryPage(data LibraryData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</div><form method=\"get\" action=\"/library\" class=\"flex flex-none flex-wrap items-end gap-3 rounded-card border border-line bg-surface p-3\"><label class=\"grid gap-1.5\"><span class=\"text-2xs font-semibold uppercase text-dim\">Project</span> <select name=\"project\" class=\"h-9 min-w-44 rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</div><form method=\"get\" action=\"/library\" class=\"flex flex-none flex-col items-stretch gap-3 rounded-card border border-line bg-surface p-3 md:flex-row md:flex-wrap md:items-end\"><label class=\"grid w-full gap-1.5 md:w-auto\"><span class=\"text-2xs font-semibold uppercase text-dim\">Project</span> <select name=\"project\" class=\"h-11 w-full rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent md:h-9 md:w-auto md:min-w-44\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -141,7 +141,7 @@ func LibraryPage(data LibraryData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "</select></label> <label class=\"grid gap-1.5\"><span class=\"text-2xs font-semibold uppercase text-dim\">Kind</span> <select name=\"kind\" class=\"h-9 min-w-36 rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "</select></label> <label class=\"grid w-full gap-1.5 md:w-auto\"><span class=\"text-2xs font-semibold uppercase text-dim\">Kind</span> <select name=\"kind\" class=\"h-11 w-full rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent md:h-9 md:w-auto md:min-w-36\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -187,7 +187,7 @@ func LibraryPage(data LibraryData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "</select></label> <label class=\"grid gap-1.5\"><span class=\"text-2xs font-semibold uppercase text-dim\">Status</span> <select name=\"status\" class=\"h-9 min-w-36 rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "</select></label> <label class=\"grid w-full gap-1.5 md:w-auto\"><span class=\"text-2xs font-semibold uppercase text-dim\">Status</span> <select name=\"status\" class=\"h-11 w-full rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent md:h-9 md:w-auto md:min-w-36\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -233,7 +233,7 @@ func LibraryPage(data LibraryData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, "</select></label> <label class=\"grid gap-1.5\"><span class=\"text-2xs font-semibold uppercase text-dim\">From</span> <input type=\"date\" name=\"from\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, "</select></label> <label class=\"grid w-full gap-1.5 md:w-auto\"><span class=\"text-2xs font-semibold uppercase text-dim\">From</span> <input type=\"date\" name=\"from\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -246,7 +246,7 @@ func LibraryPage(data LibraryData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "\" class=\"h-9 rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent\"></label> <label class=\"grid gap-1.5\"><span class=\"text-2xs font-semibold uppercase text-dim\">To</span> <input type=\"date\" name=\"to\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "\" class=\"h-11 w-full rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent md:h-9 md:w-auto\"></label> <label class=\"grid w-full gap-1.5 md:w-auto\"><span class=\"text-2xs font-semibold uppercase text-dim\">To</span> <input type=\"date\" name=\"to\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -259,7 +259,7 @@ func LibraryPage(data LibraryData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 26, "\" class=\"h-9 rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent\"></label> <button type=\"submit\" class=\"inline-flex h-9 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 26, "\" class=\"h-11 w-full rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent md:h-9 md:w-auto\"></label> <button type=\"submit\" class=\"inline-flex h-11 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90 md:h-9\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -272,7 +272,7 @@ func LibraryPage(data LibraryData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			if data.HasActiveFilters {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, "<a href=\"/library\" class=\"inline-flex h-9 items-center justify-center rounded-card border border-line px-2.5 text-sec hover:border-accent hover:text-accent\" aria-label=\"Reset filters\" title=\"Reset filters\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, "<a href=\"/library\" class=\"inline-flex h-11 items-center justify-center rounded-card border border-line px-2.5 text-sec hover:border-accent hover:text-accent md:h-9\" aria-label=\"Reset filters\" title=\"Reset filters\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -285,14 +285,14 @@ func LibraryPage(data LibraryData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 30, "<span class=\"ml-auto font-mono text-xs text-sec\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 30, "<span class=\"font-mono text-xs text-sec md:ml-auto\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var14 string
 			templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(libraryResultsLabel(data))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/library.templ`, Line: 62, Col: 81}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/library.templ`, Line: 62, Col: 84}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 			if templ_7745c5c3_Err != nil {
@@ -331,7 +331,7 @@ func LibraryPage(data LibraryData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 36, "<section id=\"library-table\" class=\"flex min-w-0 flex-none flex-col overflow-hidden rounded-card border border-line bg-surface\"><div class=\"overflow-x-auto\"><div class=\"min-w-[980px]\"><div class=\"grid grid-cols-[130px_120px_minmax(220px,1.5fr)_130px_minmax(180px,1fr)_140px_120px] gap-3.5 border-b border-line px-4 py-2\"><span class=\"text-2xs font-semibold uppercase text-dim\">Project</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Kind</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Path</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Status</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Source</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Updated</span> <span class=\"text-right text-2xs font-semibold uppercase text-dim\">Links</span></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 36, "<section id=\"library-table\" class=\"flex min-w-0 flex-none flex-col overflow-hidden rounded-card border border-line bg-surface\"><div class=\"overflow-x-auto\" data-library-table-scroll><div class=\"min-w-[980px]\"><div class=\"grid grid-cols-[130px_120px_minmax(220px,1.5fr)_130px_minmax(180px,1fr)_140px_120px] gap-3.5 border-b border-line px-4 py-2\"><span class=\"text-2xs font-semibold uppercase text-dim\">Project</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Kind</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Path</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Status</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Source</span> <span class=\"text-2xs font-semibold uppercase text-dim\">Updated</span> <span class=\"text-right text-2xs font-semibold uppercase text-dim\">Links</span></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

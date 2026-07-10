@@ -46,6 +46,42 @@ func TestSheetRowLinkSanitizesURL(t *testing.T) {
 	}
 }
 
+func TestBoardCardSheetClass(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		expanded bool
+		want     string
+	}{
+		{name: "compact", want: "flex h-full w-full min-w-0 flex-none flex-col overflow-hidden bg-surface md:border-l md:border-line md:w-100"},
+		{name: "expanded", expanded: true, want: "flex h-full w-full min-w-0 flex-none flex-col overflow-hidden bg-surface md:border-l md:border-line"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := boardCardSheetClass(tt.expanded); got != tt.want {
+				t.Fatalf("boardCardSheetClass(%t) = %q, want %q", tt.expanded, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSheetTagRowConstrainsLongValues(t *testing.T) {
+	t.Parallel()
+
+	var sb strings.Builder
+	if err := sheetTagRow("Labels", []string{"label-without-break-opportunities"}).Render(context.Background(), &sb); err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	for _, want := range []string{"max-w-full", "[overflow-wrap:anywhere]", "md:max-w-48", "md:truncate"} {
+		if !strings.Contains(sb.String(), want) {
+			t.Fatalf("sheet tag row missing %q:\n%s", want, sb.String())
+		}
+	}
+}
+
 func TestProjectTabs(t *testing.T) {
 	data := DashboardData{ProjectID: "gopher-ai"}
 	tabs := projectTabs(data, "runs")
@@ -133,6 +169,21 @@ func TestProjectRunRows(t *testing.T) {
 	limited := projectRunRows(snapshot, 2)
 	if len(limited) != 2 {
 		t.Fatalf("limit not applied: %d rows", len(limited))
+	}
+}
+
+func TestProjectRunRowClassUsesCompactColumnsBelowDesktop(t *testing.T) {
+	t.Parallel()
+
+	got := projectRunRowClass(false)
+	for _, want := range []string{
+		"grid-cols-[70px_minmax(0,1fr)_90px]",
+		"lg:grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_110px]",
+		"border-b border-line",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("projectRunRowClass(false) missing %q: %q", want, got)
+		}
 	}
 }
 

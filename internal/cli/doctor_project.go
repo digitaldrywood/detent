@@ -108,6 +108,7 @@ func checkDoctorProjectWithProgress(
 				Hint:   "Fix the workflow file, then rerun detent doctor.",
 			},
 			checkDoctorIssueEffortGuidanceUnavailable(id, "WORKFLOW.md could not be loaded"),
+			checkDoctorFollowupGuidanceUnavailable(id, "WORKFLOW.md could not be loaded"),
 		}
 	}
 	workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, runtimeGlobalGitHubToken(githubToken))
@@ -126,6 +127,7 @@ func checkDoctorProjectWithProgress(
 				Hint:   "Fix the workflow file, then rerun detent doctor.",
 			},
 			checkDoctorIssueEffortGuidanceUnavailable(id, "WORKFLOW.md is invalid"),
+			checkDoctorFollowupGuidanceUnavailable(id, "WORKFLOW.md is invalid"),
 		}
 	}
 
@@ -147,6 +149,8 @@ func checkDoctorProjectWithProgress(
 		}
 	}
 	checks := []doctorCheck{workflowCheck}
+	setDoctorCurrentCheck("Project " + id + " out-of-scope follow-up guidance")
+	checks = append(checks, checkDoctorFollowupGuidance(id, workflow.Config.Agent.Followups, workflow.Prompt))
 	setDoctorCurrentCheck("Project " + id + " pinned route models")
 	checks = append(checks, checkDoctorRouteModels(ctx, id, project, workflow.Config, deps))
 	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) {
@@ -281,6 +285,49 @@ func checkDoctorIssueEffortGuidance(id string, sourceRoot string) doctorCheck {
 func checkDoctorIssueEffortGuidanceUnavailable(id string, reason string) doctorCheck {
 	return doctorCheck{
 		Name:   "Project " + id + " issue effort guidance",
+		Status: doctorOK,
+		Detail: "skipped because " + reason,
+	}
+}
+
+func checkDoctorFollowupGuidance(id string, cfg workflowconfig.Followups, workflowBody string) doctorCheck {
+	name := "Project " + id + " out-of-scope follow-up guidance"
+	if cfg.Enabled {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: "agent.followups.enabled=true provides prompt guidance",
+		}
+	}
+	if hasFollowupFilingGuidance(workflowBody) {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: "WORKFLOW.md body provides out-of-scope follow-up filing guidance",
+		}
+	}
+	return doctorCheck{
+		Name:   name,
+		Status: doctorWarn,
+		Detail: "agent.followups.enabled=false and WORKFLOW.md body contains no out-of-scope follow-up filing guidance",
+		Hint:   "Enable agent.followups.enabled or instruct agents in the WORKFLOW.md body to file separate Backlog issues for meaningful out-of-scope discoveries.",
+	}
+}
+
+func hasFollowupFilingGuidance(workflowBody string) bool {
+	body := strings.ToLower(workflowBody)
+	describesFollowup := strings.Contains(body, "out-of-scope") ||
+		strings.Contains(body, "out of scope") ||
+		strings.Contains(body, "follow-up") ||
+		strings.Contains(body, "follow up")
+	describesTrackerItem := strings.Contains(body, "issue") || strings.Contains(body, "work item")
+	describesFiling := strings.Contains(body, "file") || strings.Contains(body, "create")
+	return describesFollowup && describesTrackerItem && describesFiling
+}
+
+func checkDoctorFollowupGuidanceUnavailable(id string, reason string) doctorCheck {
+	return doctorCheck{
+		Name:   "Project " + id + " out-of-scope follow-up guidance",
 		Status: doctorOK,
 		Detail: "skipped because " + reason,
 	}

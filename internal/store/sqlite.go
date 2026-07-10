@@ -322,6 +322,7 @@ func (s *sqliteStore) FinishSession(ctx context.Context, sessionID int64, attrs 
 		ProviderThreadID:      nullString(attrs.ProviderThreadID),
 		ProviderSessionID:     nullString(attrs.ProviderSessionID),
 		ResumedFromSessionID:  nullPositiveInt64(attrs.ResumedFromSessionID),
+		SkillDraftProposed:    boolInt64(attrs.SkillDraftProposed),
 		ID:                    sessionID,
 	})
 	if err != nil {

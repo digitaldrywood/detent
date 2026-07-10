@@ -245,15 +245,16 @@ type ValidatorRequest struct {
 }
 
 type RunResult struct {
-	FinalState      string
-	Output          string
-	Model           string
-	TurnStarted     bool
-	RuntimeIdentity agentidentity.Identity
-	Tokens          TokenTotals
-	DiffStats       DiffStats
-	RateLimits      *telemetry.RateLimits
-	BudgetRefusal   *BudgetRefusal
+	FinalState         string
+	Output             string
+	Model              string
+	TurnStarted        bool
+	RuntimeIdentity    agentidentity.Identity
+	Tokens             TokenTotals
+	DiffStats          DiffStats
+	RateLimits         *telemetry.RateLimits
+	BudgetRefusal      *BudgetRefusal
+	SkillDraftProposed bool
 }
 
 type UsageUpdateHandler func(UsageUpdate) error
