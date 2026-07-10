@@ -309,20 +309,20 @@ func analyticsKindSelect(data DashboardData) templ.Component {
 			templ_7745c5c3_Var17 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "<details class=\"relative\"><summary class=\"flex cursor-pointer list-none items-center gap-1.5 rounded-card border border-line px-2.5 py-1 text-xs text-sec hover:text-text [&::-webkit-details-marker]:hidden\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "<details class=\"relative min-w-0\"><summary class=\"flex min-w-0 cursor-pointer list-none items-center gap-1.5 rounded-card border border-line px-2.5 py-1 text-xs text-sec hover:text-text [&::-webkit-details-marker]:hidden\"><span class=\"min-w-0 truncate\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var18 string
 		templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(analyticsKindLabel(analyticsKindFilter(data.AnalyticsKind)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/analytics.templ`, Line: 69, Col: 64}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/analytics.templ`, Line: 69, Col: 95}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, " <span aria-hidden=\"true\">▾</span></summary><div class=\"absolute left-0 top-full z-40 mt-1 flex w-44 flex-col gap-0.5 rounded-card border border-line bg-elev p-1.5\"><a href=\"/analytics\" class=\"rounded-chip px-2 py-1 text-xs text-text hover:bg-surface\">All events</a> <a href=\"/analytics?kind=attempts\" class=\"rounded-chip px-2 py-1 text-xs text-text hover:bg-surface\">Work attempts</a> <a href=\"/analytics?kind=activity\" class=\"rounded-chip px-2 py-1 text-xs text-text hover:bg-surface\">Activity</a></div></details>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "</span> <span aria-hidden=\"true\">▾</span></summary><div class=\"absolute left-0 top-full z-40 mt-1 flex w-44 flex-col gap-0.5 rounded-card border border-line bg-elev p-1.5\"><a href=\"/analytics\" class=\"rounded-chip px-2 py-1 text-xs text-text hover:bg-surface\">All events</a> <a href=\"/analytics?kind=attempts\" class=\"rounded-chip px-2 py-1 text-xs text-text hover:bg-surface\">Work attempts</a> <a href=\"/analytics?kind=activity\" class=\"rounded-chip px-2 py-1 text-xs text-text hover:bg-surface\">Activity</a></div></details>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

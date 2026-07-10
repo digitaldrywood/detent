@@ -1009,9 +1009,9 @@ templ boardKanbanDragScript() {
 // boardScopeSelect is the topbar scope control: a CSS-only dropdown living
 // outside #snapshot linking to each project's board.
 templ boardScopeSelect(data DashboardData) {
-	<details class="group/scope relative">
-		<summary class="flex cursor-pointer list-none items-center gap-1.5 rounded-card border border-line px-2.5 py-1 text-xs text-sec hover:text-text [&::-webkit-details-marker]:hidden">
-			{ boardScopeLabel(data) }
+	<details class="group/scope relative min-w-0">
+		<summary class="flex min-w-0 cursor-pointer list-none items-center gap-1.5 rounded-card border border-line px-2.5 py-1 text-xs text-sec hover:text-text [&::-webkit-details-marker]:hidden">
+			<span class="min-w-0 truncate">{ boardScopeLabel(data) }</span>
 			<span aria-hidden="true">▾</span>
 		</summary>
 		<div class="absolute left-0 top-full z-40 mt-1 flex w-52 flex-col gap-0.5 rounded-card border border-line bg-elev p-1.5">
