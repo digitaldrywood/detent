@@ -1,10 +1,13 @@
 package templates
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 )
+
+const runtimeIdentityBadgeModelRunes = 20
 
 func runtimeIdentitySystemName(kind string) string {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
@@ -33,15 +36,57 @@ func runtimeIdentitySummary(identity agentidentity.Identity) string {
 	return strings.Join(parts, " · ")
 }
 
-func runtimeIdentityCardSummary(identity agentidentity.Identity) string {
+func runtimeIdentityBadgeSummary(identity agentidentity.Identity, includeBackend bool) string {
 	identity = identity.Normalize()
-	parts := make([]string, 0, 2)
-	for _, value := range []string{identity.Model(), identity.ReasoningEffort.Value} {
+	parts := make([]string, 0, 3)
+	if includeBackend {
+		if backend := runtimeIdentitySystemName(identity.BackendKind); backend != "" {
+			parts = append(parts, backend)
+		}
+	}
+	for _, value := range []string{middleTruncate(identity.Model(), runtimeIdentityBadgeModelRunes), identity.ReasoningEffort.Value} {
 		if value = strings.TrimSpace(value); value != "" {
 			parts = append(parts, value)
 		}
 	}
 	return strings.Join(parts, " · ")
+}
+
+func middleTruncate(value string, maxRunes int) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if maxRunes <= 0 || len(runes) <= maxRunes {
+		return value
+	}
+	if maxRunes == 1 {
+		return "…"
+	}
+	remaining := maxRunes - 1
+	front := (remaining + 1) / 2
+	back := remaining - front
+	return string(runes[:front]) + "…" + string(runes[len(runes)-back:])
+}
+
+func runtimeIdentityFlyoutDetail(identity agentidentity.Identity, providerSessionID string, detentSessionID int64) string {
+	identity = identity.Normalize()
+	parts := make([]string, 0, 4)
+	if identity.Provider.Known() {
+		parts = append(parts, "Provider: "+identity.Provider.Value)
+	}
+	if providerSessionID = strings.TrimSpace(providerSessionID); providerSessionID != "" {
+		parts = append(parts, "Provider session: "+providerSessionID)
+	}
+	if identity.Role != "" {
+		parts = append(parts, "Role: "+identity.Role)
+	}
+	if detentSessionID > 0 {
+		parts = append(parts, "Detent session: "+strconv.FormatInt(detentSessionID, 10))
+	}
+	detail := strings.Join(parts, " · ")
+	if detail == "" {
+		return runtimeIdentitySummary(identity)
+	}
+	return detail
 }
 
 func runtimeIdentityDetailValue(value agentidentity.Value) string {

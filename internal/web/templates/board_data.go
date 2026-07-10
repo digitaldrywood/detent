@@ -65,7 +65,7 @@ type boardLaneVisibilityPayload struct {
 }
 
 // boardCardView keeps cards uniform: an 11px mono meta row, a two-line
-// title, and AT MOST one extra signal (chip, status line, or none).
+// title, a runtime badge for active work, and at most one operational signal.
 type boardCardView struct {
 	DomID              string
 	Identity           string
@@ -94,7 +94,10 @@ type boardCardView struct {
 	ExtraText          string
 	ExtraChip          bool
 	RuntimeSummary     string
-	RuntimeCardSummary string
+	RuntimeCompactText string
+	RuntimeCozyText    string
+	RuntimeDetail      string
+	RuntimeBadge       bool
 	PriorityBadge      string
 	PriorityTitle      string
 	PriorityDetail     string
@@ -411,11 +414,30 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	}
 	view.ExtraKind, view.ExtraText, view.ExtraChip = boardCardExtra(card, view)
 	if view.Running {
+		view.RuntimeBadge = true
 		view.RuntimeSummary = runtimeIdentitySummary(card.RuntimeIdentity)
-		view.RuntimeCardSummary = runtimeIdentityCardSummary(card.RuntimeIdentity)
+		view.RuntimeCompactText = runtimeIdentityBadgeSummary(card.RuntimeIdentity, false)
+		view.RuntimeCozyText = runtimeIdentityBadgeSummary(card.RuntimeIdentity, true)
+		if view.RuntimeCompactText == "" {
+			view.RuntimeCompactText = "agent working"
+		}
+		if view.RuntimeCozyText == "" {
+			view.RuntimeCozyText = "agent working"
+		}
+		providerSessionID, detentSessionID := boardRuntimeSessionIDs(data.Snapshot, card)
+		view.RuntimeDetail = runtimeIdentityFlyoutDetail(card.RuntimeIdentity, providerSessionID, detentSessionID)
 	}
 	view.PriorityBadge, view.PriorityTitle, view.PriorityDetail, view.PriorityTop = boardCardPriority(card)
 	return view
+}
+
+func boardRuntimeSessionIDs(snapshot telemetry.Snapshot, card projectKanbanCard) (string, int64) {
+	for _, running := range snapshot.Running {
+		if issueIdentifier(running.Issue) == card.Identifier && sheetSessionMatchesProject(running.ProjectID, card) {
+			return strings.TrimSpace(running.SessionID), running.DetentSessionID
+		}
+	}
+	return "", 0
 }
 
 func boardCardPriority(card projectKanbanCard) (string, string, string, bool) {

@@ -324,28 +324,117 @@ test("board runtime identity stays accessible across snapshot morphs", async ({
     viewport: desktopViewport,
   });
 
-  const card = page.locator(
-    '[data-help-description="Codex · openai · gpt-5.6-sol · xhigh"]',
+  await page.locator('[data-density-choice="compact"]').click();
+  const fallbackBadge = page
+    .locator('[data-board-runtime-badge]', { hasText: "agent working" })
+    .first();
+  const fallbackCard = fallbackBadge.locator("xpath=ancestor::article");
+  const fallbackID = await fallbackBadge.getAttribute("id");
+  const fallbackCardID = await fallbackCard.getAttribute("id");
+  expect(fallbackID).not.toBeNull();
+  expect(fallbackCardID).not.toBeNull();
+  await expect(fallbackBadge).toContainText("agent working");
+  expect(
+    await fallbackBadge.evaluate((element) =>
+      element.hasAttribute("data-help-trigger"),
+    ),
+  ).toBe(false);
+  const fallbackHeight = await fallbackCard.evaluate((element) =>
+    element.getBoundingClientRect().height,
   );
-  await expect(card).toHaveAttribute(
+  await fallbackBadge.evaluate((element) => {
+    window.__detentRuntimeFallbackBadge = element;
+  });
+  const resolvedSnapshot = await page.locator("#snapshot").evaluate(
+    (snapshot, runtimeBadgeID) => {
+      const container = document.createElement("div");
+      container.innerHTML = snapshot.innerHTML;
+      const fallback = container.querySelector(`#${runtimeBadgeID}`);
+      const resolved = container.querySelector(
+        '[data-board-runtime-badge][data-help-description*="Provider session: thread-demo-core-5260"]',
+      );
+      const replacement = resolved.cloneNode(true);
+      replacement.id = runtimeBadgeID;
+      replacement.dataset.helpTerm = `${runtimeBadgeID}-runtime-identity`;
+      fallback.replaceWith(replacement);
+      return container.innerHTML;
+    },
+    fallbackID,
+  );
+  await morphSnapshot(page, "fallback-upgrade", resolvedSnapshot);
+  const upgradedBadge = page.locator(`#${fallbackID}`);
+  expect(
+    await upgradedBadge.evaluate(
+      (element) => window.__detentRuntimeFallbackBadge === element,
+    ),
+  ).toBe(true);
+  await expect(upgradedBadge).not.toContainText("agent working");
+  await expect(upgradedBadge).toContainText("gpt-5.6-sol · xhigh");
+  expect(
+    await page
+      .locator(`#${fallbackCardID}`)
+      .evaluate((element) => element.getBoundingClientRect().height),
+  ).toBe(fallbackHeight);
+
+  const card = page.locator("article", {
+    hasText: "Implement page-addressable screenshot scenarios",
+  });
+  const badge = card.locator(
+    '[data-board-runtime-badge][data-help-description*="Provider session: thread-demo-core-5260"]',
+  );
+  const compactIdentity = badge.locator('[data-runtime-density="compact"]');
+  const cozyIdentity = badge.locator('[data-runtime-density="cozy"]');
+  await expect(badge).toHaveAttribute(
     "data-help-description",
-    "Codex · openai · gpt-5.6-sol · xhigh",
+    "Provider: openai · Provider session: thread-demo-core-5260 · Role: code · Detent session: 5260",
   );
+  await expect(compactIdentity).toBeVisible();
+  await expect(compactIdentity).toHaveText("gpt-5.6-sol · xhigh");
+  await expect(cozyIdentity).toBeHidden();
+  await page.locator('[data-density-choice="cozy"]').click();
+  await expect(compactIdentity).toBeHidden();
+  await expect(cozyIdentity).toBeVisible();
+  await expect(cozyIdentity).toHaveText("Codex · gpt-5.6-sol · xhigh");
+  await page.locator('[data-density-choice="compact"]').click();
   const initialHeight = await card.evaluate((element) =>
     element.getBoundingClientRect().height,
   );
-  await card.hover();
-  const tooltip = page.locator("#help-tooltip");
+  await badge.hover();
+  const tooltip = page.locator("body > #help-tooltip");
   await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText("Provider: openai");
   await expect(tooltip).toContainText(
-    "Codex · openai · gpt-5.6-sol · xhigh",
+    "Provider session: thread-demo-core-5260",
   );
-  await card.focus();
-  await expect(card).toBeFocused();
+  await expect(tooltip).toContainText("Role: code");
+  await expect(tooltip).toContainText("Detent session: 5260");
+  await page.evaluate(() =>
+    document.documentElement.setAttribute("data-theme", "light"),
+  );
+  await expect(badge).toHaveCSS("color", "rgb(4, 108, 78)");
+  await expect(tooltip).toHaveCSS("background-color", "rgb(240, 242, 245)");
+  await page.evaluate(() =>
+    document.documentElement.removeAttribute("data-theme"),
+  );
+  await expect(page.locator("#snapshot #help-tooltip")).toHaveCount(0);
+  const initialTooltipBox = await tooltip.boundingBox();
+  const initialCardBox = await card.boundingBox();
+  expect(initialTooltipBox).not.toBeNull();
+  expect(initialCardBox).not.toBeNull();
+  expect(initialTooltipBox.x).toBeGreaterThanOrEqual(initialCardBox.x - 1);
+  expect(initialTooltipBox.x + initialTooltipBox.width).toBeLessThanOrEqual(
+    initialCardBox.x + initialCardBox.width + 1,
+  );
+  expect(initialTooltipBox.y).toBeGreaterThanOrEqual(initialCardBox.y - 1);
+  expect(initialTooltipBox.y + initialTooltipBox.height).toBeLessThanOrEqual(
+    initialCardBox.y + initialCardBox.height + 1,
+  );
+  await badge.focus();
+  await expect(badge).toBeFocused();
 
   for (let index = 0; index < 3; index += 1) {
     await morphCurrentSnapshot(page, `tooltip-${index}`);
-    await expect(card).toBeFocused();
+    await expect(badge).toBeFocused();
     await expect(tooltip).toBeVisible();
   }
   const settledHeight = await card.evaluate((element) =>
@@ -359,8 +448,8 @@ test("board runtime identity stays accessible across snapshot morphs", async ({
   );
 
   await page.setViewportSize(narrowViewport);
-  await card.scrollIntoViewIfNeeded();
-  await card.focus();
+  await badge.scrollIntoViewIfNeeded();
+  await badge.focus();
   await expect(tooltip).toBeVisible();
   const tooltipBox = await tooltip.boundingBox();
   expect(tooltipBox).not.toBeNull();
@@ -375,6 +464,7 @@ test("board runtime identity stays accessible across snapshot morphs", async ({
       detailRequests += 1;
     }
   });
+  await card.focus();
   await card.press("Enter");
   const sheet = page.locator("[data-detail-sheet]");
   await expect(sheet).toBeVisible();
@@ -1120,6 +1210,10 @@ async function morphCurrentSnapshot(page, name) {
   const incoming = await page.locator("#snapshot").evaluate(
     (snapshot) => snapshot.innerHTML,
   );
+  await morphSnapshot(page, name, incoming);
+}
+
+async function morphSnapshot(page, name, incoming) {
   const routePath = `/__detent-runtime-identity-${name}`;
   await page.route(`**${routePath}`, async (route) => {
     await route.fulfill({

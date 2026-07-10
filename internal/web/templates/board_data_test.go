@@ -325,6 +325,8 @@ func TestRunningBoardCardAndDetailSheetRenderRuntimeIdentity(t *testing.T) {
 	identity := agentidentity.Configured("codex-high", "codex", "high", "code", "gpt-5.5", "", "", "", data.Snapshot.GeneratedAt.Add(-time.Minute)).
 		Merge(agentidentity.RuntimeUpdate("gpt-5.6-sol", "openai", "xhigh", "priority", data.Snapshot.GeneratedAt))
 	data.Snapshot.Running[0].RuntimeIdentity = identity
+	data.Snapshot.Running[0].SessionID = "thread-185"
+	data.Snapshot.Running[0].DetentSessionID = 185
 	view := boardViewFromDashboard(data)
 	var running boardCardView
 	for _, lane := range view.Lanes {
@@ -337,20 +339,37 @@ func TestRunningBoardCardAndDetailSheetRenderRuntimeIdentity(t *testing.T) {
 	if running.RuntimeSummary != "Codex · openai · gpt-5.6-sol · xhigh" {
 		t.Fatalf("RuntimeSummary = %q", running.RuntimeSummary)
 	}
-	if running.RuntimeCardSummary != "gpt-5.6-sol · xhigh" {
-		t.Fatalf("RuntimeCardSummary = %q", running.RuntimeCardSummary)
+	if !running.RuntimeBadge {
+		t.Fatal("RuntimeBadge = false, want true")
+	}
+	if running.RuntimeCompactText != "gpt-5.6-sol · xhigh" {
+		t.Fatalf("RuntimeCompactText = %q", running.RuntimeCompactText)
+	}
+	if running.RuntimeCozyText != "Codex · gpt-5.6-sol · xhigh" {
+		t.Fatalf("RuntimeCozyText = %q", running.RuntimeCozyText)
+	}
+	if running.RuntimeDetail != "Provider: openai · Provider session: thread-185 · Role: code · Detent session: 185" {
+		t.Fatalf("RuntimeDetail = %q", running.RuntimeDetail)
 	}
 
 	cardHTML := renderBoardComponent(t, boardCardView2(running))
 	for _, want := range []string{
+		`id="card-gopherguides-gopher-ai-185-runtime-badge"`,
+		`data-board-runtime-badge`,
 		`data-help-trigger`,
 		`data-help-scope="runtime-identity"`,
-		`data-help-description="Codex · openai · gpt-5.6-sol · xhigh"`,
+		`data-help-description="Provider: openai · Provider session: thread-185 · Role: code · Detent session: 185"`,
+		`data-runtime-density="compact"`,
 		`>gpt-5.6-sol · xhigh<`,
+		`data-runtime-density="cozy"`,
+		`>Codex · gpt-5.6-sol · xhigh<`,
 	} {
 		if !strings.Contains(cardHTML, want) {
 			t.Fatalf("running card missing %q:\n%s", want, cardHTML)
 		}
+	}
+	if strings.Contains(cardHTML, `>agent working<`) {
+		t.Fatalf("resolved running card retained fallback badge text:\n%s", cardHTML)
 	}
 	card, ok := FindBoardCard(data, "gopher-ai", "gopherguides/gopher-ai#185")
 	if !ok {
@@ -376,6 +395,97 @@ func TestRunningBoardCardAndDetailSheetRenderRuntimeIdentity(t *testing.T) {
 		if !strings.Contains(sheetHTML, want) {
 			t.Fatalf("detail sheet missing %q:\n%s", want, sheetHTML)
 		}
+	}
+}
+
+func TestRunningBoardCardKeepsRuntimeBadgeWithOperationalStatus(t *testing.T) {
+	t.Parallel()
+
+	resolvedIdentity := agentidentity.Configured("codex-high", "codex", "high", "code", "gpt-5.5", "", "", "", time.Time{}).
+		Merge(agentidentity.RuntimeUpdate("gpt-5.6-sol", "openai", "xhigh", "priority", time.Time{}))
+	tests := []struct {
+		name     string
+		identity agentidentity.Identity
+		want     string
+	}{
+		{name: "resolved identity", identity: resolvedIdentity, want: "gpt-5.6-sol · xhigh"},
+		{name: "telemetry lag", identity: agentidentity.Identity{}, want: "agent working"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			card := projectKanbanCard{
+				Identifier:      "digitaldrywood/detent#1134",
+				IssueID:         "issue-1134",
+				IssueNumber:     "#1134",
+				ProjectID:       "detent",
+				Title:           "Inline runtime identity",
+				Stage:           "In Progress",
+				WaitDetail:      "Awaiting tool result",
+				RuntimeIdentity: tt.identity,
+			}
+			view := boardCardViewFromCard(
+				DashboardData{},
+				projectKanbanLane{Title: "In Progress"},
+				card,
+				false,
+				"fleet",
+				"",
+			)
+			if !view.RuntimeBadge || view.RuntimeCompactText != tt.want {
+				t.Fatalf("runtime badge = %#v", view)
+			}
+			if view.ExtraText != "Awaiting tool result" {
+				t.Fatalf("ExtraText = %q", view.ExtraText)
+			}
+
+			html := renderBoardComponent(t, boardCardView2(view))
+			for _, want := range []string{
+				`data-board-runtime-badge`,
+				`>` + tt.want + `<`,
+				`Awaiting tool result`,
+			} {
+				if !strings.Contains(html, want) {
+					t.Fatalf("running card missing %q:\n%s", want, html)
+				}
+			}
+		})
+	}
+}
+
+func TestRunningBoardCardRuntimeBadgeFallsBackUntilIdentityKnown(t *testing.T) {
+	t.Parallel()
+
+	view := boardViewFromDashboard(boardTestData())
+	var running boardCardView
+	for _, lane := range view.Lanes {
+		for _, card := range lane.Cards {
+			if card.Running {
+				running = card
+			}
+		}
+	}
+	if !running.RuntimeBadge {
+		t.Fatal("RuntimeBadge = false, want true")
+	}
+	if running.RuntimeCompactText != "agent working" || running.RuntimeCozyText != "agent working" {
+		t.Fatalf("fallback runtime texts = %q / %q", running.RuntimeCompactText, running.RuntimeCozyText)
+	}
+
+	html := renderBoardComponent(t, boardCardView2(running))
+	for _, want := range []string{
+		`id="card-gopherguides-gopher-ai-185-runtime-badge"`,
+		`data-board-runtime-badge`,
+		`>agent working<`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("fallback running card missing %q:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, `data-help-scope="runtime-identity"`) {
+		t.Fatalf("fallback running card rendered an empty runtime flyout:\n%s", html)
 	}
 }
 

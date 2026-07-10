@@ -155,13 +155,26 @@ templ helpScript() {
 				const trigger = activeHelpTrigger
 				if (!tip || !trigger || !trigger.isConnected) return
 
+				const runtimeCard = trigger.dataset.helpScope === "runtime-identity" ? trigger.closest("article") : null
+				const runtimeCardRect = runtimeCard ? runtimeCard.getBoundingClientRect() : null
 				const requestedWidth = Number(tip.dataset.helpTooltipWidth || "256")
-				const width = Math.min(Math.max(160, requestedWidth), Math.max(160, window.innerWidth - margin * 2))
+				const width = runtimeCardRect
+					? Math.min(Math.max(1, runtimeCardRect.width), Math.max(1, window.innerWidth - margin * 2))
+					: Math.min(Math.max(160, requestedWidth), Math.max(160, window.innerWidth - margin * 2))
 				tip.style.width = width + "px"
 
 				const triggerRect = trigger.getBoundingClientRect()
 				const maxLeft = Math.max(margin, window.innerWidth - width - margin)
-				const left = Math.min(Math.max(margin, triggerRect.left + triggerRect.width / 2 - width / 2), maxLeft)
+				const anchorRect = runtimeCardRect || triggerRect
+				const left = Math.min(Math.max(margin, anchorRect.left + anchorRect.width / 2 - width / 2), maxLeft)
+				if (runtimeCardRect) {
+					const maxHeight = Math.min(runtimeCardRect.height, Math.max(1, window.innerHeight - margin * 2))
+					tip.style.left = left + "px"
+					tip.style.top = Math.min(Math.max(margin, runtimeCardRect.top), Math.max(margin, window.innerHeight - maxHeight - margin)) + "px"
+					tip.style.maxHeight = maxHeight + "px"
+					tip.dataset.placement = "card"
+					return
+				}
 				const availableBelow = Math.max(0, window.innerHeight - triggerRect.bottom - offset - margin)
 				const availableAbove = Math.max(0, triggerRect.top - offset - margin)
 				const desiredHeight = Math.min(tip.scrollHeight || tip.offsetHeight || 96, Math.max(48, window.innerHeight - margin * 2))
