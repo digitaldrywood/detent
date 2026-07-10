@@ -434,7 +434,7 @@ func (o *Orchestrator) parkInstantFailure(
 	targetState := o.instantFailureParkState()
 	issue := cloneIssue(running.Issue)
 	if targetState != "" {
-		if err := o.updateIssueState(ctx, issue, targetState, event.CompletedAt, "instant_fail_circuit_breaker"); err != nil {
+		if err := o.updateIssueState(ctx, state, issue, targetState, event.CompletedAt, "instant_fail_circuit_breaker"); err != nil {
 			if o.logger != nil {
 				o.logger.Error(
 					"instant fail circuit breaker state transition failed",
@@ -553,7 +553,7 @@ func (o *Orchestrator) parkRepeatedFailure(
 	targetState := o.instantFailureParkState()
 	issue := cloneIssue(running.Issue)
 	if targetState != "" {
-		if err := o.updateIssueState(ctx, issue, targetState, event.CompletedAt, "repeated_failure_circuit_breaker"); err != nil {
+		if err := o.updateIssueState(ctx, state, issue, targetState, event.CompletedAt, "repeated_failure_circuit_breaker"); err != nil {
 			if o.logger != nil {
 				o.logger.Error(
 					"repeated failure circuit breaker state transition failed",
@@ -766,7 +766,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		activityAt := event.CompletedAt.UTC()
 		mergedIssue.PullRequest.ActivityAt = &activityAt
 	}
-	if err := o.updateIssueStateByID(ctx, issueID, mergedIssue, targetState, event.CompletedAt, "merge_worker_programmatic_merge"); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, mergedIssue, targetState, event.CompletedAt, "merge_worker_programmatic_merge"); err != nil {
 		running.Issue = mergedIssue
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_state_update_failed", err)
 		return true
@@ -971,7 +971,7 @@ func (o *Orchestrator) reworkExhaustedMergeWorker(
 	if issueID == "" || o.connector == nil {
 		return false
 	}
-	if err := o.updateIssueStateByID(ctx, issueID, running.Issue, autoPromoteReworkState, completedAt, "merge_worker_retry_exhausted"); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, running.Issue, autoPromoteReworkState, completedAt, "merge_worker_retry_exhausted"); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"merge_worker_rework_failed",
@@ -1062,7 +1062,7 @@ func (o *Orchestrator) completePlanRunning(
 		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan comment failed: "+err.Error(), false, running.WorkerHost)
 		return
 	}
-	if err := o.updateIssueStateByID(ctx, issueID, issue, cfg.Stop, event.CompletedAt, "plan_artifact_created"); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, issue, cfg.Stop, event.CompletedAt, "plan_artifact_created"); err != nil {
 		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, "plan_transition_failed", err.Error(), "reviewing", "plan review transition failed")
 		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan review transition failed: "+err.Error(), false, running.WorkerHost)
 		return
@@ -1164,7 +1164,7 @@ func (o *Orchestrator) completeTerminalRunning(
 			Message: fmt.Sprintf("claim lease release failed for %s: %v", issueLabel(running.Issue), err),
 		})
 	}
-	issue := o.ensureClosedCompletedRunningIssueDone(ctx, issueID, running.Issue, completedAt)
+	issue := o.ensureClosedCompletedRunningIssueDone(ctx, state, issueID, running.Issue, completedAt)
 	finalState := strings.TrimSpace(issue.State)
 	if finalState == "" {
 		finalState = FinalStateCompleted
@@ -1193,7 +1193,7 @@ func (o *Orchestrator) completeTerminalRunning(
 	o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), completedAt)
 }
 
-func (o *Orchestrator) ensureClosedCompletedRunningIssueDone(ctx context.Context, issueID string, issue connector.Issue, now time.Time) connector.Issue {
+func (o *Orchestrator) ensureClosedCompletedRunningIssueDone(ctx context.Context, state *State, issueID string, issue connector.Issue, now time.Time) connector.Issue {
 	if !issue.Closed || !closedReasonCompleted(issue.ClosedReason) {
 		return issue
 	}
@@ -1201,7 +1201,7 @@ func (o *Orchestrator) ensureClosedCompletedRunningIssueDone(ctx context.Context
 	if strings.TrimSpace(targetState) == "" {
 		return issue
 	}
-	if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "closed_completed_running_done"); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "closed_completed_running_done"); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("mark closed completed running issue done failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
 		}

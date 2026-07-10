@@ -587,6 +587,7 @@ func (o *Orchestrator) resolveCompletedEpics(
 	previousTransitions = mergeIssueSlices(previousTransitions, previous.blockedStatusIssues)
 	completedEpics, failedParentLookups := o.closeCompletedEpicsForTerminalTransitions(
 		ctx,
+		state,
 		transitions.issues,
 		previousTransitions,
 		previous.lastRefreshAt,

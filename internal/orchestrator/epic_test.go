@@ -195,7 +195,7 @@ func TestCloseCompletedEpics(t *testing.T) {
 			}
 
 			issues := append(cloneIssues(tt.candidates), tt.stateIssues...)
-			orch.closeCompletedEpics(context.Background(), issues)
+			orch.closeCompletedEpics(context.Background(), &state, issues)
 
 			if got := tracker.stateUpdates(); !reflect.DeepEqual(got, tt.wantUpdates) {
 				t.Fatalf("state updates = %#v, want %#v", got, tt.wantUpdates)

@@ -276,7 +276,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	dispatchTargetState := ""
 	if targetState != "" {
 		sourceState := issue.State
-		if err := o.updateIssueState(ctx, issue, targetState, now, "dispatch_start"); err != nil {
+		if err := o.updateIssueState(ctx, state, issue, targetState, now, "dispatch_start"); err != nil {
 			o.releaseGlobalDispatchSlot(globalSlot)
 			o.completeDurableWorkAttempt(ctx, state, Running{
 				Issue:         issue,

@@ -51,27 +51,30 @@ type workflowLaneActionSignatureMetadata struct {
 
 func (o *Orchestrator) updateIssueState(
 	ctx context.Context,
+	state *State,
 	issue connector.Issue,
 	targetState string,
 	at time.Time,
 	reason string,
 ) error {
-	return o.updateIssueStateByID(ctx, issue.ID, issue, targetState, at, reason)
+	return o.updateIssueStateByID(ctx, state, issue.ID, issue, targetState, at, reason)
 }
 
 func (o *Orchestrator) updateIssueStateByID(
 	ctx context.Context,
+	state *State,
 	issueID string,
 	issue connector.Issue,
 	targetState string,
 	at time.Time,
 	reason string,
 ) error {
-	return o.updateIssueStateByIDWithMetadata(ctx, issueID, issue, targetState, at, reason, workflowLaneMetadata{})
+	return o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, at, reason, workflowLaneMetadata{})
 }
 
 func (o *Orchestrator) updateIssueStateByIDWithMetadata(
 	ctx context.Context,
+	state *State,
 	issueID string,
 	issue connector.Issue,
 	targetState string,
@@ -88,11 +91,39 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadata(
 		}
 		return err
 	}
+	updateIssueStateSnapshots(state, issueID, targetState, at)
 	if strings.TrimSpace(issue.ID) == "" {
 		issue.ID = issueID
 	}
 	o.recordLaneTransition(ctx, issue, targetState, at, reason, metadata)
 	return nil
+}
+
+func updateIssueStateSnapshots(state *State, issueID string, targetState string, at time.Time) {
+	if state == nil {
+		return
+	}
+	issueID = strings.TrimSpace(issueID)
+	targetState = strings.TrimSpace(targetState)
+	if issueID == "" || targetState == "" {
+		return
+	}
+
+	update := func(issues []connector.Issue) {
+		for index := range issues {
+			if strings.TrimSpace(issues[index].ID) != issueID {
+				continue
+			}
+			stateChanged := normalizeState(issues[index].State) != normalizeState(targetState)
+			issues[index].State = targetState
+			if stateChanged && !at.IsZero() {
+				stageUpdatedAt := at.UTC()
+				issues[index].StageUpdatedAt = &stageUpdatedAt
+			}
+		}
+	}
+	update(state.BoardIssues)
+	update(state.Pipeline)
 }
 
 func (o *Orchestrator) recordLaneTransition(

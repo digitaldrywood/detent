@@ -29,17 +29,18 @@ type epicIssueIndex struct {
 	byIdentifier map[string]connector.Issue
 }
 
-func (o *Orchestrator) closeCompletedEpics(ctx context.Context, issues []connector.Issue) map[string]struct{} {
+func (o *Orchestrator) closeCompletedEpics(ctx context.Context, state *State, issues []connector.Issue) map[string]struct{} {
 	plans := completedEpicPlans(issues)
 	if len(plans) == 0 {
 		return nil
 	}
-	completed, _ := o.closeCompletedEpicPlans(ctx, issues, plans)
+	completed, _ := o.closeCompletedEpicPlans(ctx, state, issues, plans)
 	return completed
 }
 
 func (o *Orchestrator) closeCompletedEpicPlans(
 	ctx context.Context,
+	state *State,
 	issues []connector.Issue,
 	plans []completedEpicPlan,
 ) (map[string]struct{}, map[string]connector.Issue) {
@@ -68,7 +69,7 @@ func (o *Orchestrator) closeCompletedEpicPlans(
 		if strings.TrimSpace(plan.issue.ID) != "" {
 			completed[plan.issue.ID] = struct{}{}
 		}
-		o.finalizeCompletedEpic(ctx, plan.issue, plan.children)
+		o.finalizeCompletedEpic(ctx, state, plan.issue, plan.children)
 	}
 	if len(failedRefreshes) == 0 {
 		failedRefreshes = nil
@@ -78,6 +79,7 @@ func (o *Orchestrator) closeCompletedEpicPlans(
 
 func (o *Orchestrator) closeCompletedEpicsForTerminalTransitions(
 	ctx context.Context,
+	state *State,
 	issues []connector.Issue,
 	previous []connector.Issue,
 	lastRefreshAt time.Time,
@@ -134,7 +136,7 @@ func (o *Orchestrator) closeCompletedEpicsForTerminalTransitions(
 		key := issueIdentityKey(plans[index].issue)
 		plans[index].retryIssues = cloneIssues(parentTransitions[key])
 	}
-	completed, failedRefreshes := o.closeCompletedEpicPlans(ctx, parents, plans)
+	completed, failedRefreshes := o.closeCompletedEpicPlans(ctx, state, parents, plans)
 	return completed, mergeIssueMaps(failedTransitions, failedRefreshes)
 }
 
@@ -379,9 +381,9 @@ func (o *Orchestrator) resolveMissingEpicChildren(ctx context.Context, index *ep
 	index.addIssues(issues)
 }
 
-func (o *Orchestrator) finalizeCompletedEpic(ctx context.Context, issue connector.Issue, children []connector.BlockedRef) {
+func (o *Orchestrator) finalizeCompletedEpic(ctx context.Context, state *State, issue connector.Issue, children []connector.BlockedRef) {
 	if !stateIn(issue.State, o.cfg.TerminalStates) {
-		if err := o.updateIssueState(ctx, issue, doneStateName(o.cfg.TerminalStates), time.Now(), "epic_children_completed"); err != nil && o.logger != nil {
+		if err := o.updateIssueState(ctx, state, issue, doneStateName(o.cfg.TerminalStates), time.Now(), "epic_children_completed"); err != nil && o.logger != nil {
 			o.logger.Warn("move completed epic to done failed", "issue_id", issue.ID, "error", err)
 		}
 	}

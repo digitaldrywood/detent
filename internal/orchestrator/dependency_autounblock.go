@@ -248,7 +248,7 @@ func (o *Orchestrator) applyBlockerAutoPromote(
 	now time.Time,
 ) bool {
 	issueID := strings.TrimSpace(blocker.ID)
-	if err := o.updateIssueStateByID(ctx, issueID, blocker, targetState, now, "blocker_auto_promote"); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, blocker, targetState, now, "blocker_auto_promote"); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"blocker auto-promote transition failed",
@@ -743,7 +743,7 @@ func (o *Orchestrator) applyDependencyAutoUnblock(
 			Blockers:   dependencyAutoUnblockBlockerLabels(blockers),
 		},
 	}
-	if err := o.updateIssueStateByIDWithMetadata(ctx, issueID, issue, targetState, now, "dependency_auto_unblock", metadata); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, now, "dependency_auto_unblock", metadata); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("dependency auto-unblock transition failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
 		}
