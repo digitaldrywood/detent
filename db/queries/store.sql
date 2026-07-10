@@ -776,6 +776,205 @@ WHERE sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_i
 ORDER BY decision_at DESC, id DESC
 LIMIT sqlc.arg(limit);
 
+-- name: ListIssueActivityEvents :many
+WITH issue_events AS (
+  SELECT
+    printf('scheduler:%d', id) AS event_id,
+    'scheduler' AS source,
+    'decision' AS kind,
+    result AS name,
+    CAST(decision_at AS TEXT) AS event_at,
+    attempt_number,
+    CAST(0 AS INTEGER) AS session_id,
+    COALESCE(lane, '') AS detail,
+    COALESCE(NULLIF(wait_reason, ''), reason, '') AS reason,
+    result AS status,
+    '' AS model,
+    CAST(0 AS INTEGER) AS turns,
+    CAST(0 AS INTEGER) AS total_tokens,
+    CAST(0 AS INTEGER) AS verbose
+  FROM scheduler_decisions
+  WHERE (sqlc.arg(project_id) = '' OR project_id = sqlc.arg(project_id))
+    AND (
+      (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
+      OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
+      OR (sqlc.arg(issue_url) != '' AND issue_url = sqlc.arg(issue_url))
+    )
+
+  UNION ALL
+
+  SELECT
+    printf('workflow:%d', id),
+    'workflow',
+    phase_type,
+    phase_name,
+    CAST(COALESCE(finished_at, started_at) AS TEXT),
+    CAST(0 AS INTEGER),
+    COALESCE(session_id, 0),
+    COALESCE(previous_phase_name, ''),
+    COALESCE(reason, ''),
+    COALESCE(status, ''),
+    '',
+    turns,
+    total_tokens,
+    CASE WHEN phase_type = 'agent_session' AND total_tokens > 0 THEN 1 ELSE 0 END
+  FROM workflow_phase_events
+  WHERE (sqlc.arg(project_id) = '' OR project_id = sqlc.arg(project_id))
+    AND (
+      (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
+      OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
+      OR (sqlc.arg(issue_url) != '' AND issue_url = sqlc.arg(issue_url))
+    )
+
+  UNION ALL
+
+  SELECT
+    printf('attempt:%d:start', id),
+    'work_attempt',
+    'attempt',
+    'started',
+    CAST(started_at AS TEXT),
+    attempt_number,
+    COALESCE(detent_session_id, 0),
+    COALESCE(NULLIF(status_message, ''), NULLIF(current_command, ''), phase, ''),
+    COALESCE(NULLIF(wait_reason, ''), error_message, ''),
+    status,
+    '',
+    CAST(0 AS INTEGER),
+    CAST(0 AS INTEGER),
+    CAST(0 AS INTEGER)
+  FROM work_attempts
+  WHERE (sqlc.arg(project_id) = '' OR project_id = sqlc.arg(project_id))
+    AND (
+      (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
+      OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
+      OR (sqlc.arg(issue_url) != '' AND issue_url = sqlc.arg(issue_url))
+    )
+
+  UNION ALL
+
+  SELECT
+    printf('attempt:%d:finish', id),
+    'work_attempt',
+    'attempt',
+    'finished',
+    CAST(completed_at AS TEXT),
+    attempt_number,
+    COALESCE(detent_session_id, 0),
+    COALESCE(NULLIF(status_message, ''), phase, ''),
+    COALESCE(NULLIF(wait_reason, ''), error_message, ''),
+    COALESCE(terminal_state, status),
+    '',
+    CAST(0 AS INTEGER),
+    CAST(0 AS INTEGER),
+    CAST(0 AS INTEGER)
+  FROM work_attempts
+  WHERE completed_at IS NOT NULL
+    AND (sqlc.arg(project_id) = '' OR project_id = sqlc.arg(project_id))
+    AND (
+      (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
+      OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
+      OR (sqlc.arg(issue_url) != '' AND issue_url = sqlc.arg(issue_url))
+    )
+
+  UNION ALL
+
+  SELECT
+    printf('session:%d:start', session.id),
+    'session',
+    'session',
+    'started',
+    CAST(session.started_at AS TEXT),
+    COALESCE(attempt.attempt_number, 0),
+    session.id,
+    COALESCE(session.agent_backend_kind, ''),
+    '',
+    'started',
+    COALESCE(session.model, ''),
+    CAST(0 AS INTEGER),
+    CAST(0 AS INTEGER),
+    CAST(0 AS INTEGER)
+  FROM codex_sessions AS session
+  LEFT JOIN work_attempts AS attempt ON attempt.id = session.work_attempt_id
+  WHERE session.started_at IS NOT NULL
+    AND (sqlc.arg(project_id) = '' OR attempt.project_id = sqlc.arg(project_id) OR attempt.project_id IS NULL)
+    AND (
+      (sqlc.arg(issue_id) != '' AND session.issue_id = sqlc.arg(issue_id))
+      OR (sqlc.arg(identifier) != '' AND session.identifier = sqlc.arg(identifier))
+      OR (sqlc.arg(issue_url) != '' AND session.issue_url = sqlc.arg(issue_url))
+    )
+
+  UNION ALL
+
+  SELECT
+    printf('session:%d:finish', session.id),
+    'session',
+    'session',
+    'finished',
+    CAST(session.completed_at AS TEXT),
+    COALESCE(attempt.attempt_number, 0),
+    session.id,
+    COALESCE(session.agent_backend_kind, ''),
+    '',
+    COALESCE(session.final_state, 'completed'),
+    COALESCE(session.model, ''),
+    session.turns,
+    session.total_tokens,
+    CAST(0 AS INTEGER)
+  FROM codex_sessions AS session
+  LEFT JOIN work_attempts AS attempt ON attempt.id = session.work_attempt_id
+  WHERE session.completed_at IS NOT NULL
+    AND (sqlc.arg(project_id) = '' OR attempt.project_id = sqlc.arg(project_id) OR attempt.project_id IS NULL)
+    AND (
+      (sqlc.arg(issue_id) != '' AND session.issue_id = sqlc.arg(issue_id))
+      OR (sqlc.arg(identifier) != '' AND session.identifier = sqlc.arg(identifier))
+      OR (sqlc.arg(issue_url) != '' AND session.issue_url = sqlc.arg(issue_url))
+    )
+
+  UNION ALL
+
+  SELECT
+    printf('usage:%d', id),
+    'usage',
+    'usage',
+    'turn_usage',
+    CAST(finished_at AS TEXT),
+    CAST(0 AS INTEGER),
+    COALESCE(session_id, 0),
+    outcome,
+    '',
+    outcome,
+    model,
+    CAST(0 AS INTEGER),
+    total_tokens,
+    CAST(1 AS INTEGER)
+  FROM usage_events
+  WHERE (sqlc.arg(project_id) = '' OR project_id = sqlc.arg(project_id))
+    AND (
+      (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
+      OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
+    )
+)
+SELECT
+  event_id,
+  source,
+  kind,
+  name,
+  event_at,
+  attempt_number,
+  session_id,
+  detail,
+  reason,
+  status,
+  model,
+  turns,
+  total_tokens,
+  verbose
+FROM issue_events
+WHERE sqlc.arg(include_verbose) = 1 OR verbose = 0
+ORDER BY event_at DESC, event_id DESC
+LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
+
 -- name: UpsertValidatorVerdict :one
 INSERT INTO validator_verdicts (
   project_id,

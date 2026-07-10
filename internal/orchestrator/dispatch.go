@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -357,6 +358,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		WorkerHost:          workerHost,
 		SelectorContext:     o.selectorContext(),
 		OnUsageUpdate:       o.usageUpdateHandler(runCtx, issue.ID),
+		OnActivityUpdate:    o.activityUpdateHandler(runCtx, issue),
 		OnOverrideRejected:  o.agentOverrideRejectionHandler(runCtx, issue),
 	}
 	if retryQueued {
@@ -566,6 +568,58 @@ func (o *Orchestrator) usageUpdateHandler(ctx context.Context, issueID string) r
 		default:
 			return nil
 		}
+	}
+}
+
+func (o *Orchestrator) activityUpdateHandler(ctx context.Context, issue connector.Issue) runpkg.AgentActivityUpdateHandler {
+	return func(update runpkg.AgentActivityUpdate) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if o.activity == nil {
+			return nil
+		}
+		o.activity.Publish(activity.Key{ProjectID: o.cfg.Project.ID, IssueID: issue.ID}, activity.Event{
+			At:                update.At,
+			DetentSessionID:   update.DetentSessionID,
+			ProviderSessionID: update.ProviderSessionID,
+			TurnID:            update.TurnID,
+			ItemID:            update.ItemID,
+			Kind:              string(update.Type),
+			Title:             activityUpdateTitle(update),
+			Content:           update.Content,
+			Status:            update.Status,
+			Model:             update.Model,
+			TotalTokens:       update.TotalTokens,
+		})
+		return nil
+	}
+}
+
+func activityUpdateTitle(update runpkg.AgentActivityUpdate) string {
+	switch update.Type {
+	case runpkg.AgentUpdateMessageDelta:
+		return "Agent"
+	case runpkg.AgentUpdateToolStarted:
+		return "Tool started · " + strings.TrimSpace(update.Tool)
+	case runpkg.AgentUpdateToolOutput:
+		return "Tool output · " + strings.TrimSpace(update.Tool)
+	case runpkg.AgentUpdateToolCompleted:
+		return "Tool finished · " + strings.TrimSpace(update.Tool)
+	case runpkg.AgentUpdateTokenUsage:
+		return "Usage"
+	case runpkg.AgentUpdateTurnStarted:
+		return "Turn started"
+	case runpkg.AgentUpdateTurnCompleted:
+		return "Turn finished"
+	case runpkg.AgentUpdateProcessStarted:
+		return "Worker started"
+	case runpkg.AgentUpdateModelUpdated:
+		return "Model updated"
+	default:
+		return strings.TrimSpace(string(update.Type))
 	}
 }
 

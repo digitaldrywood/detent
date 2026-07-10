@@ -375,7 +375,7 @@ func TestRunningBoardCardAndDetailSheetRenderRuntimeIdentity(t *testing.T) {
 	if !ok {
 		t.Fatal("FindBoardCard() did not find running card")
 	}
-	sheetHTML := renderBoardComponent(t, BoardCardSheet(data, card, true, false, KanbanConversationData{}))
+	sheetHTML := renderBoardComponent(t, BoardCardSheet(data, card, true, false, KanbanConversationData{}, BoardActivityData{}, BoardSessionData{}))
 	for _, want := range []string{
 		"Agent system",
 		"Codex",
@@ -509,7 +509,7 @@ func TestDetailSheetRendersUnknownRuntimeIdentityValuesAsUnavailable(t *testing.
 	if !ok {
 		t.Fatal("FindBoardCard() did not find running card")
 	}
-	html := renderBoardComponent(t, BoardCardSheet(data, card, true, false, KanbanConversationData{}))
+	html := renderBoardComponent(t, BoardCardSheet(data, card, true, false, KanbanConversationData{}, BoardActivityData{}, BoardSessionData{}))
 	for _, want := range []string{
 		"Claude Code",
 		"claude-local",
@@ -676,6 +676,8 @@ func TestLongLocalWorkItemIdentifiersUseDefensiveTruncationClasses(t *testing.T)
 		true,
 		false,
 		KanbanConversationData{},
+		BoardActivityData{},
+		BoardSessionData{},
 	))
 	for _, want := range []string{
 		`class="min-w-20 truncate">` + projectID,

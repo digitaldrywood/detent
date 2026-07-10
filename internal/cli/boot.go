@@ -19,6 +19,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -205,6 +206,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}()
 
 	events := hub.New[project.Event]()
+	activityBroker := activity.NewBroker()
 	globalScheduler, err := buildGlobalScheduler(cfg.Global.Global, runtimeStore)
 	if err != nil {
 		return err
@@ -221,6 +223,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		WorkAttempts:       runtimeStore,
 		AgentResume:        runtimeStore,
 		ValidatorMemo:      runtimeStore,
+		Activity:           activityBroker,
 		GitHubToken:        runtimeGitHubToken.get(),
 		RefreshGitHubToken: refreshGitHubToken,
 		ConnectorFactory:   cfg.ConnectorFactory,
@@ -283,6 +286,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		Connector: firstConnector(manager),
 		Refresher: refresherForRegistry(manager.Registry()),
 		Recovery:  recoveryForRegistry(manager.Registry()),
+		Activity:  activityBroker,
 	})
 	if err != nil {
 		return err

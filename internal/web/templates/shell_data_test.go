@@ -24,6 +24,9 @@ func TestAppShellScriptRefreshesOpenDetailSheetAfterSnapshotSettle(t *testing.T)
 		`target.id !== "snapshot"`,
 		`host.dataset.detailSheetURL`,
 		`detailSheetRefreshing`,
+		`applyDetailSheetTab(host)`,
+		`window.htmx.remove(child)`,
+		`selectedTab !== "session"`,
 		`htmx.ajax("GET", host.dataset.detailSheetURL`,
 		`swap: "morph:innerHTML"`,
 	} {

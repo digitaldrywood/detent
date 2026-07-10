@@ -10162,6 +10162,10 @@ func (storeProbe) RecordWorkflowPhaseEvent(context.Context, store.WorkflowPhaseE
 	return 0, nil
 }
 
+func (storeProbe) LatestIssueAgentResumeState(context.Context, store.IssueIdentity) (store.AgentResumeState, error) {
+	return store.AgentResumeState{}, store.ErrNotFound
+}
+
 type workflowPhaseEventStoreProbe struct {
 	storeProbe
 

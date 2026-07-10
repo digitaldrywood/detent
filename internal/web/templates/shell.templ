@@ -416,11 +416,30 @@ templ appShellScript() {
 					toggle.focus();
 				}
 			}
+			function applyDetailSheetTab(host) {
+				if (!host) return;
+				var selected = host.dataset.detailSheetTab || "activity";
+				host.querySelectorAll("[data-sheet-tab]").forEach(function (button) {
+					var active = button.getAttribute("data-sheet-tab") === selected;
+					button.setAttribute("aria-selected", active ? "true" : "false");
+					button.classList.toggle("border-accent", active);
+					button.classList.toggle("border-transparent", !active);
+					button.classList.toggle("text-text", active);
+					button.classList.toggle("text-sec", !active);
+				});
+				host.querySelectorAll("[data-sheet-panel]").forEach(function (panel) {
+					panel.classList.toggle("hidden", panel.getAttribute("data-sheet-panel") !== selected);
+				});
+			}
 			function closeDetailSheet() {
 				var host = document.getElementById("detail-sheet-host");
 				if (host) {
-					host.innerHTML = "";
+					Array.from(host.children).forEach(function (child) {
+						if (window.htmx) window.htmx.remove(child);
+						else child.remove();
+					});
 					delete host.dataset.detailSheetURL;
+					delete host.dataset.detailSheetTab;
 				}
 			}
 			document.addEventListener("htmx:afterRequest", function (event) {
@@ -431,11 +450,13 @@ templ appShellScript() {
 				var path = requestConfig && requestConfig.path;
 				if (path) host.dataset.detailSheetURL = path;
 				detailSheetRefreshing = false;
+				applyDetailSheetTab(host);
 			});
 			document.addEventListener("htmx:afterSettle", function (event) {
 				var target = event.detail && event.detail.target;
-				if (!(target instanceof Element) || (target.id !== "snapshot" && !target.closest("#snapshot"))) return;
 				var host = document.getElementById("detail-sheet-host");
+				applyDetailSheetTab(host);
+				if (!(target instanceof Element) || (target.id !== "snapshot" && !target.closest("#snapshot"))) return;
 				if (!host || !host.querySelector("[data-detail-sheet]") || !host.dataset.detailSheetURL || detailSheetRefreshing) return;
 				detailSheetRefreshing = true;
 				htmx.ajax("GET", host.dataset.detailSheetURL, { target: host, swap: "morph:innerHTML" });
@@ -463,6 +484,35 @@ templ appShellScript() {
 				}
 			});
 			document.addEventListener("click", function (event) {
+				var sheetTab = event.target.closest("[data-sheet-tab]");
+				if (sheetTab) {
+					var sheetHost = document.getElementById("detail-sheet-host");
+					if (sheetHost) {
+						var selectedTab = sheetTab.getAttribute("data-sheet-tab") || "activity";
+						sheetHost.dataset.detailSheetTab = selectedTab;
+						applyDetailSheetTab(sheetHost);
+						if (selectedTab !== "session") {
+							var liveSession = sheetHost.querySelector("#board-live-session");
+							if (liveSession) {
+								Array.from(liveSession.children).forEach(function (child) {
+									if (window.htmx) window.htmx.remove(child);
+									else child.remove();
+								});
+							}
+						}
+					}
+					return;
+				}
+				var resume = event.target.closest("[data-live-session-resume]");
+				if (resume) {
+					var log = resume.closest("[data-live-session-attach]").querySelector("[data-live-session-log]");
+					if (log) {
+						delete log.dataset.autoscrollPaused;
+						log.scrollTop = log.scrollHeight;
+						resume.classList.add("hidden");
+					}
+					return;
+				}
 				if (event.target.closest("[data-sheet-close]")) {
 					closeDetailSheet();
 					return;
@@ -517,6 +567,21 @@ templ appShellScript() {
 						button.classList.toggle("text-sec", !active);
 					});
 				}
+			});
+			document.addEventListener("scroll", function (event) {
+				var log = event.target;
+				if (!(log instanceof Element) || !log.matches("[data-live-session-log]")) return;
+				var paused = log.scrollHeight - log.scrollTop - log.clientHeight > 32;
+				if (paused) log.dataset.autoscrollPaused = "true";
+				else delete log.dataset.autoscrollPaused;
+				var resume = log.closest("[data-live-session-attach]").querySelector("[data-live-session-resume]");
+				if (resume) resume.classList.toggle("hidden", !paused);
+			}, true);
+			document.addEventListener("htmx:afterSwap", function (event) {
+				var log = event.detail && event.detail.target;
+				if (!(log instanceof Element) || !log.matches("[data-live-session-log]")) return;
+				while (log.children.length > 200) log.firstElementChild.remove();
+				if (log.dataset.autoscrollPaused !== "true") log.scrollTop = log.scrollHeight;
 			});
 		})();
 	</script>

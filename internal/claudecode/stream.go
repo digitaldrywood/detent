@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -44,8 +45,13 @@ type claudeMessage struct {
 }
 
 type contentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	ID        string          `json:"id"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	Name      string          `json:"name"`
+	ToolUseID string          `json:"tool_use_id"`
+	Input     json.RawMessage `json:"input"`
+	Content   json.RawMessage `json:"content"`
 }
 
 type streamEvent struct {
@@ -130,6 +136,8 @@ func (s *turnState) apply(event claudeEvent, includePartialMessages bool, onUpda
 			return err
 		}
 		return s.applyAssistant(event, includePartialMessages, onUpdate)
+	case "user":
+		return s.applyAssistant(event, includePartialMessages, onUpdate)
 	case "stream_event":
 		if err := s.emitModelChange(previousModel, onUpdate); err != nil {
 			return err
@@ -190,17 +198,16 @@ func (s *turnState) applyAssistant(
 	}
 	if !includePartialMessages {
 		for _, block := range event.Message.Content {
-			if block.Type != "text" || block.Text == "" {
+			if err := s.emitContentBlock(block, event.Message.ID, onUpdate); err != nil {
+				return err
+			}
+		}
+	} else {
+		for _, block := range event.Message.Content {
+			if block.Type == "text" {
 				continue
 			}
-			if err := emitUpdate(onUpdate, runner.AgentUpdate{
-				Type:     runner.AgentUpdateMessageDelta,
-				ThreadID: s.sessionID,
-				TurnID:   s.sessionID,
-				ItemID:   event.Message.ID,
-				Delta:    block.Text,
-				Model:    s.model,
-			}); err != nil {
+			if err := s.emitContentBlock(block, event.Message.ID, onUpdate); err != nil {
 				return err
 			}
 		}
@@ -237,11 +244,86 @@ func (s *turnState) applyStreamEvent(
 			return err
 		}
 	}
+	if event.StreamEvent.ContentBlock != nil && event.StreamEvent.ContentBlock.Type != "text" {
+		if err := s.emitContentBlock(*event.StreamEvent.ContentBlock, s.partialItemID, onUpdate); err != nil {
+			return err
+		}
+	}
 	if event.StreamEvent.Usage != nil && !event.StreamEvent.Usage.empty() {
 		addUsage(&s.usage, *event.StreamEvent.Usage)
 		return s.emitUsage(onUpdate)
 	}
 	return nil
+}
+
+func (s *turnState) emitContentBlock(block contentBlock, fallbackItemID string, onUpdate runner.AgentUpdateHandler) error {
+	itemID := strings.TrimSpace(block.ID)
+	if itemID == "" {
+		itemID = strings.TrimSpace(fallbackItemID)
+	}
+	switch block.Type {
+	case "text":
+		if block.Text == "" {
+			return nil
+		}
+		return emitUpdate(onUpdate, runner.AgentUpdate{
+			Type:     runner.AgentUpdateMessageDelta,
+			ThreadID: s.sessionID,
+			TurnID:   s.sessionID,
+			ItemID:   itemID,
+			Delta:    block.Text,
+			Model:    s.model,
+		})
+	case "tool_use":
+		return emitUpdate(onUpdate, runner.AgentUpdate{
+			Type:     runner.AgentUpdateToolStarted,
+			ThreadID: s.sessionID,
+			TurnID:   s.sessionID,
+			ItemID:   itemID,
+			Tool:     strings.TrimSpace(block.Name),
+			Delta:    claudeBlockContent(block.Input),
+			Status:   "started",
+			Model:    s.model,
+		})
+	case "tool_result":
+		return emitUpdate(onUpdate, runner.AgentUpdate{
+			Type:     runner.AgentUpdateToolOutput,
+			ThreadID: s.sessionID,
+			TurnID:   s.sessionID,
+			ItemID:   firstNonBlankString(block.ToolUseID, itemID),
+			Tool:     "tool_result",
+			Delta:    claudeBlockContent(block.Content),
+			Status:   "completed",
+			Model:    s.model,
+		})
+	default:
+		return nil
+	}
+}
+
+func claudeBlockContent(raw json.RawMessage) string {
+	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err == nil {
+		return compact.String()
+	}
+	return string(raw)
+}
+
+func firstNonBlankString(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (s *turnState) applyResult(event claudeEvent, onUpdate runner.AgentUpdateHandler) error {

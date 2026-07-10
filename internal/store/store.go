@@ -103,6 +103,10 @@ type RuntimeEvidenceStore interface {
 	RuntimeEvidence(context.Context, RuntimeEvidenceQuery) (RuntimeEvidence, error)
 }
 
+type ActivityStore interface {
+	ListIssueActivity(context.Context, IssueActivityQuery) ([]IssueActivityEvent, error)
+}
+
 type AgentResumeStore interface {
 	LatestCompletedAgentResumeState(context.Context, AgentResumeLookup) (AgentResumeState, error)
 	LatestIssueAgentResumeState(context.Context, IssueIdentity) (AgentResumeState, error)
@@ -746,6 +750,33 @@ type IssueIdentity struct {
 	IssueID    string
 	Identifier string
 	IssueURL   string
+}
+
+type IssueActivityQuery struct {
+	ProjectID      string
+	IssueID        string
+	Identifier     string
+	IssueURL       string
+	IncludeVerbose bool
+	Limit          int
+	Offset         int
+}
+
+type IssueActivityEvent struct {
+	ID            string
+	Source        string
+	Kind          string
+	Name          string
+	At            time.Time
+	AttemptNumber int
+	SessionID     int64
+	Detail        string
+	Reason        string
+	Status        string
+	Model         string
+	Turns         int64
+	TotalTokens   int64
+	Verbose       bool
 }
 
 type TokenSpend struct {

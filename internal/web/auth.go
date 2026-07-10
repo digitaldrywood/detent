@@ -35,6 +35,7 @@ type apiAuthOptions struct {
 	mutating                        bool
 	allowUICookie                   bool
 	allowDashboardHTMX              bool
+	allowDashboardSSE               bool
 	requireDashboardManagementToken bool
 }
 
@@ -94,7 +95,17 @@ func (s *Server) authorizeAPIRequest(c echo.Context, opts apiAuthOptions) (apike
 		return apikey.Credential{}, writeAPIAuthError(c, http.StatusUnauthorized, "unauthorized", "Valid API token is required")
 	}
 
-	if opts.allowUICookie && s.authorizeUIAPICookie(c) {
+	uiCookieAuthorized := opts.allowUICookie && s.authorizeUIAPICookie(c)
+	if opts.allowUICookie && opts.allowDashboardSSE && s.authorizeUIAPISSECookie(c) {
+		uiCookieAuthorized = true
+	}
+	if uiCookieAuthorized {
+		credential := apikey.StaticCredential()
+		s.setAPICredential(c, credential)
+		return credential, nil
+	}
+
+	if opts.allowDashboardSSE && token == "" && authorizeDashboardSSE(c) {
 		credential := apikey.StaticCredential()
 		s.setAPICredential(c, credential)
 		return credential, nil
@@ -263,6 +274,23 @@ func authorizeDashboardHTMX(c echo.Context) bool {
 	return requestDashboardHTMXTarget(req)
 }
 
+func authorizeDashboardSSE(c echo.Context) bool {
+	if c == nil || c.Request() == nil {
+		return false
+	}
+	req := c.Request()
+	if req.Method != http.MethodGet || !strings.Contains(strings.ToLower(req.Header.Get("Accept")), "text/event-stream") {
+		return false
+	}
+	if !requestSameOriginDashboardSource(req) {
+		return false
+	}
+	if requestHostLoopback(req.Host) {
+		return requestRemoteAddrLoopback(req.RemoteAddr)
+	}
+	return true
+}
+
 func requestHostLoopback(host string) bool {
 	host = strings.TrimSpace(host)
 	return host != "" && serverAddressLoopback(host)
@@ -351,6 +379,17 @@ func (s *Server) setUIAPICookie(c echo.Context) {
 
 func (s *Server) authorizeUIAPICookie(c echo.Context) bool {
 	if c == nil || c.Request() == nil || c.Request().Header.Get("HX-Request") != "true" {
+		return false
+	}
+	cookie, err := c.Cookie(uiAPICookieName)
+	if err != nil {
+		return false
+	}
+	return apiStaticTokenEqual(cookie.Value, s.uiAPIToken())
+}
+
+func (s *Server) authorizeUIAPISSECookie(c echo.Context) bool {
+	if !authorizeDashboardSSE(c) {
 		return false
 	}
 	cookie, err := c.Cookie(uiAPICookieName)
