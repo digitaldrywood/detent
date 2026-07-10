@@ -381,6 +381,34 @@ func TestRegistryRefresherTargetsProjectV2WithoutConfiguredRepository(t *testing
 	}
 }
 
+func TestRegistryRefresherTargetsBranchOnlyWebhook(t *testing.T) {
+	t.Parallel()
+
+	registry := projectpkg.NewRegistry()
+	mustSetProject(t, registry, startRefreshProject(t, "branch-target"))
+
+	refresher := refresherForRegistry(registry)
+	targeted, ok := refresher.(web.TargetedRefresher)
+	if !ok {
+		t.Fatal("refresherForRegistry() does not implement TargetedRefresher")
+	}
+	response, err := targeted.RequestTargetedRefresh(context.Background(), web.RefreshTarget{
+		Repository: "digitaldrywood/detent",
+		Branch:     "detent/digitaldrywood_detent_1133-feature",
+		Event:      "check_run",
+		DeliveryID: "delivery-branch",
+	})
+	if err != nil {
+		t.Fatalf("RequestTargetedRefresh() error = %v", err)
+	}
+	if !hasOperation(response.Operations, "target:digitaldrywood/detent") {
+		t.Fatalf("Operations = %#v, want target marker", response.Operations)
+	}
+	if !hasOperation(response.Operations, "targeted_reconcile:digitaldrywood/detent") {
+		t.Fatalf("Operations = %#v, want targeted reconcile marker", response.Operations)
+	}
+}
+
 func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
 	port := 0
 	output := newBootOutput()

@@ -111,6 +111,38 @@ func TestGitHubWebhookRoutesPerProjectAndParsesCheckSuite(t *testing.T) {
 	}
 }
 
+func TestGitHubWebhookParsesCheckRunBranchWithoutPullRequest(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	refresher := &targetedRefreshProbe{response: web.RefreshResponse{Queued: true}}
+	deps.Refresher = refresher
+	workflowCfg := workflowconfig.Default()
+	workflowCfg.Tracker.GitHubWebhookSecret = "webhook-secret"
+	server, err := web.NewServer(web.Config{KanbanWorkflow: workflowCfg}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := `{"repository":{"full_name":"digitaldrywood/detent"},"check_run":{"head_sha":"abc123","pull_requests":[],"check_suite":{"head_branch":"detent/digitaldrywood_detent_1133-feature"}}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", strings.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "check_run")
+	req.Header.Set("X-Hub-Signature-256", githubWebhookSignature("webhook-secret", []byte(body)))
+	rec := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body = %s, want %d", rec.Code, rec.Body.String(), http.StatusAccepted)
+	}
+	if refresher.targetCalls != 1 {
+		t.Fatalf("target refresh calls = %d, want 1", refresher.targetCalls)
+	}
+	if refresher.target.PullRequestNumber != 0 || refresher.target.SHA != "abc123" || refresher.target.Branch != "detent/digitaldrywood_detent_1133-feature" {
+		t.Fatalf("check run target = %#v, want branch-only target at abc123", refresher.target)
+	}
+}
+
 func TestGitHubWebhookDoesNotFallbackForUnknownRepository(t *testing.T) {
 	t.Parallel()
 

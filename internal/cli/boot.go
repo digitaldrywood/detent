@@ -1067,7 +1067,7 @@ func (r registryRefresher) RequestTargetedRefresh(ctx context.Context, target we
 
 		var next web.RefreshResponse
 		var err error
-		if target.IssueNumber > 0 || target.PullRequestNumber > 0 {
+		if target.IssueNumber > 0 || target.PullRequestNumber > 0 || strings.TrimSpace(target.Branch) != "" {
 			next, err = orch.RequestTargetedRefresh(ctx, connector.ReconcileTarget{
 				Scope:          repository,
 				WorkItemNumber: target.IssueNumber,

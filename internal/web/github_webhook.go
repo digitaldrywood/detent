@@ -110,6 +110,9 @@ func githubWebhookTarget(event string, deliveryID string, body []byte) (RefreshT
 			PullRequests []struct {
 				Number int `json:"number"`
 			} `json:"pull_requests"`
+			CheckSuite struct {
+				HeadBranch string `json:"head_branch"`
+			} `json:"check_suite"`
 		} `json:"check_run"`
 		CheckSuite *struct {
 			HeadSHA      string `json:"head_sha"`
@@ -147,6 +150,7 @@ func githubWebhookTarget(event string, deliveryID string, body []byte) (RefreshT
 	}
 	if payload.CheckRun != nil {
 		target.SHA = strings.TrimSpace(payload.CheckRun.HeadSHA)
+		target.Branch = strings.TrimSpace(payload.CheckRun.CheckSuite.HeadBranch)
 		if len(payload.CheckRun.PullRequests) > 0 {
 			target.PullRequestNumber = payload.CheckRun.PullRequests[0].Number
 		}
