@@ -1606,9 +1606,10 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		defer o.validatorWG.Done()
 
 		result, err := o.validator.Validate(ctx, ValidatorRequest{
-			Issue:           issue,
-			StartedAt:       now.UTC(),
-			SelectorContext: selectorContext,
+			Issue:            issue,
+			StartedAt:        now.UTC(),
+			SelectorContext:  selectorContext,
+			OnActivityUpdate: o.activityUpdateHandler(ctx, issue),
 		})
 
 		completedAt := o.clockNow().UTC()

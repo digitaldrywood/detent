@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activity"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
@@ -92,6 +93,7 @@ type Dependencies struct {
 	WorkAttempts           store.WorkAttemptStore
 	AgentResume            store.AgentResumeStore
 	ValidatorMemo          store.ValidatorMemoStore
+	Activity               *activity.Broker
 	Events                 *hub.Hub[Event]
 	Logger                 *slog.Logger
 	GitHubToken            string
@@ -195,6 +197,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		WorkAttempts:       deps.WorkAttempts,
 		AgentResume:        deps.AgentResume,
 		ValidatorMemo:      deps.ValidatorMemo,
+		Activity:           deps.Activity,
 		Logger:             logger,
 	}
 	orch, err := orchestratorFactory(orchConfig, orchDeps)

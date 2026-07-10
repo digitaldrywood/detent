@@ -15,6 +15,7 @@ import (
 	"github.com/a-h/templ"
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
@@ -43,6 +44,8 @@ type Dependencies struct {
 	Connector connector.Connector
 	Refresher Refresher
 	Recovery  WorkAttemptRecovery
+	Activity  *activity.Broker
+	History   activity.HistoryReader
 }
 
 type Mode string
@@ -100,6 +103,8 @@ type Server struct {
 	connector           connector.Connector
 	refresher           Refresher
 	recovery            WorkAttemptRecovery
+	activity            *activity.Broker
+	history             activity.HistoryReader
 	logger              *slog.Logger
 	mode                Mode
 	tickEvery           time.Duration
@@ -163,6 +168,14 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	kanban := cfg.kanban()
 	kanbanWorkflow := cfg.kanbanWorkflow(kanban)
 	logger := cfg.logger()
+	activityBroker := deps.Activity
+	if activityBroker == nil {
+		activityBroker = activity.NewBroker()
+	}
+	historyReader := deps.History
+	if historyReader == nil {
+		historyReader = activity.NewRolloutHistoryReader("", "")
+	}
 	dashboardAuthSecret, err := newDashboardAuthSecret()
 	if err != nil {
 		return nil, fmt.Errorf("dashboard auth secret: %w", err)
@@ -176,6 +189,8 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		connector:           deps.Connector,
 		refresher:           deps.Refresher,
 		recovery:            deps.Recovery,
+		activity:            activityBroker,
+		history:             historyReader,
 		logger:              logger,
 		mode:                mode,
 		tickEvery:           cfg.sseTickInterval(),
@@ -289,6 +304,7 @@ func (s *Server) registerRoutes() {
 	apiReadAuth := s.apiAuth(false)
 	apiMutateAuth := s.apiAuth(true)
 	apiDashboardReadAuth := s.apiAuthWithOptions(apiAuthOptions{allowUICookie: true, allowDashboardHTMX: true})
+	apiDashboardSSEReadAuth := s.apiAuthWithOptions(apiAuthOptions{allowUICookie: true, allowDashboardSSE: true})
 	apiDashboardMutateAuth := s.apiAuthWithOptions(apiAuthOptions{mutating: true, allowUICookie: true, allowDashboardHTMX: true})
 	apiKeyDashboardReadAuth := s.apiAuthWithOptions(apiAuthOptions{allowUICookie: true, allowDashboardHTMX: true, requireDashboardManagementToken: true})
 	apiKeyDashboardMutateAuth := s.apiAuthWithOptions(apiAuthOptions{mutating: true, allowUICookie: true, allowDashboardHTMX: true, requireDashboardManagementToken: true})
@@ -315,6 +331,11 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/usage", s.apiUsage, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/workflow/timeline", s.apiWorkflowTimeline, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/board/card", s.apiBoardCard, apiDashboardReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/board/activity", s.apiBoardActivity, apiDashboardReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/board/activity/events", s.apiBoardActivityEvents, apiDashboardSSEReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/board/session", s.apiBoardSession, apiDashboardReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/board/session/events", s.apiBoardSessionEvents, apiDashboardSSEReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/board/session/history", s.apiBoardSessionHistory, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/kanban/move", s.apiKanbanMoveDialog, apiDashboardReadAuth, apiReadScope)
 	s.echo.POST("/api/v1/kanban/move", s.apiKanbanMove, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/kanban/remove", s.apiKanbanRemove, apiDashboardMutateAuth, apiProjectWriteScope)
@@ -362,7 +383,8 @@ func (s *Server) apiBoardCard(c echo.Context) error {
 	ctx := c.Request().Context()
 	projectID := strings.TrimSpace(c.QueryParam("project"))
 	projectScope := c.QueryParam("scope") == "project" && projectID != ""
-	data := s.boardData(ctx, s.latestSnapshot(ctx))
+	snapshot := s.latestSnapshot(ctx)
+	data := s.boardData(ctx, snapshot)
 	demo := false
 	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
 		return err
@@ -377,7 +399,7 @@ func (s *Server) apiBoardCard(c echo.Context) error {
 			}
 		}
 	} else if projectScope {
-		if scoped, ok := s.projectDashboardData(ctx, projectID, s.latestSnapshot(ctx)); ok {
+		if scoped, ok := s.projectDashboardData(ctx, projectID, snapshot); ok {
 			data = scoped
 		}
 	}
@@ -391,7 +413,15 @@ func (s *Server) apiBoardCard(c echo.Context) error {
 	if !demo {
 		conversation = s.hydrateKanbanConversation(ctx, conversation)
 	}
-	return render(c, templates.BoardCardSheet(data, card, boardActions, expanded, conversation))
+	activityRequest := boardActivityRequest{
+		ProjectID: projectID,
+		Issue:     c.QueryParam("issue"),
+		Limit:     defaultBoardActivityLimit,
+	}
+	issue := boardActivityIssue(data.Snapshot, activityRequest)
+	activityData := s.boardActivityData(ctx, data.Snapshot, issue, activityRequest)
+	sessionData := s.boardSessionData(ctx, data.Snapshot, issue, projectID)
+	return render(c, templates.BoardCardSheet(data, card, boardActions, expanded, conversation, activityData, sessionData))
 }
 
 func (s *Server) healthDashboard(c echo.Context) error {

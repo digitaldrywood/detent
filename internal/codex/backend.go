@@ -117,6 +117,7 @@ func agentUpdateFromCodex(update Update) runner.AgentUpdate {
 		TurnID:              update.TurnID,
 		ProviderSessionID:   providerSessionID,
 		ItemID:              update.ItemID,
+		Tool:                update.Tool,
 		Delta:               update.Delta,
 		Status:              update.Status,
 		Model:               update.Model,

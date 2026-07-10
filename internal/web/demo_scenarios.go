@@ -69,6 +69,7 @@ type demoScenario struct {
 	ProjectID         string
 	KanbanMode        string
 	ShowBlockedAlerts bool
+	HideFromManifest  bool
 	Status            int
 }
 
@@ -119,7 +120,7 @@ func newDemoScenarioSet(cfg DemoConfig) *demoScenarioSet {
 }
 
 func demoScenarioInManifest(scenario demoScenario) bool {
-	return scenario.Route != "/events"
+	return scenario.Route != "/events" && !scenario.HideFromManifest
 }
 
 func demoScenarioDefinitions() []demoScenario {
@@ -136,6 +137,7 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "github-api-primary-exhausted", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-primary-exhausted"},
 		{ID: "fleet-kanban-multiproject", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "dense-kanban", KanbanMode: workflowconfig.KanbanModeReadOnly},
 		{ID: "fleet-kanban-blocked-alerts", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "healthy", KanbanMode: workflowconfig.KanbanModeReadOnly, ShowBlockedAlerts: true},
+		{ID: "fleet-kanban-external-lane-timer", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "external-lane-timer", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},
 		{ID: "project-active-overview", Route: "/projects/dogfood", WaitSelector: "#snapshot", Page: "project", Variant: "healthy", ProjectID: demoPrimaryProjectID},
 		{ID: "project-paused-overview", Route: "/projects/mobile-client", WaitSelector: "#snapshot", Page: "project", Variant: "paused", ProjectID: "mobile-client"},
 		{ID: "project-empty-overview", Route: "/projects/agent-lab", WaitSelector: "#snapshot", Page: "project", Variant: "project-empty", ProjectID: "agent-lab"},

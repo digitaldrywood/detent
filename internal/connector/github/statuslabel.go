@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
@@ -138,6 +139,48 @@ func (c *Connector) fetchLabelIssueByRef(ctx context.Context, ref issueRef) (con
 	}
 	c.cacheIssueRef(issue)
 	return c.buildLabelIssue(issue, c.githubIssueStateToDetentState(issue.State)), true, nil
+}
+
+func (c *Connector) IssueStateEnteredAt(ctx context.Context, issue connector.Issue) (time.Time, bool, error) {
+	if !c.usesLabelStatus() {
+		return time.Time{}, false, nil
+	}
+	ref, ok := issueRefFromIdentifier(issue.Identifier)
+	if !ok {
+		ref, ok = issueRefFromURL(issue.URL)
+	}
+	if !ok {
+		return time.Time{}, false, nil
+	}
+	targetLabel := normalizeLabelName(c.statusLabelForState(issue.State))
+	if targetLabel == "" {
+		return time.Time{}, false, nil
+	}
+
+	events, err := fetchRESTList[restIssueTimelineEvent](ctx, c.client, restIssueTimelinePath(ref))
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("fetch github issue timeline: %w", err)
+	}
+	var enteredAt time.Time
+	present := false
+	for _, event := range events {
+		if event.Label == nil || normalizeLabelName(event.Label.Name) != targetLabel {
+			continue
+		}
+		switch {
+		case strings.EqualFold(strings.TrimSpace(event.Event), "labeled"):
+			if !present && event.CreatedAt != nil && !event.CreatedAt.IsZero() {
+				enteredAt = event.CreatedAt.UTC()
+			}
+			present = true
+		case strings.EqualFold(strings.TrimSpace(event.Event), "unlabeled"):
+			present = false
+		}
+	}
+	if !present {
+		return time.Time{}, false, nil
+	}
+	return enteredAt, !enteredAt.IsZero(), nil
 }
 
 func (c *Connector) updateIssueStatusLabel(ctx context.Context, ref issueRef, issue githubIssueNode, targetState string) error {

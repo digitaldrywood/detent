@@ -42,6 +42,10 @@ func restIssueCommentsListPath(ref issueRef) string {
 	return restIssueCommentsPath(ref) + "?per_page=100"
 }
 
+func restIssueTimelinePath(ref issueRef) string {
+	return restIssuePath(ref) + "/timeline?per_page=100"
+}
+
 func restIssueAssigneesPath(ref issueRef) string {
 	return restIssuePath(ref) + "/assignees"
 }

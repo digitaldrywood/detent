@@ -318,7 +318,7 @@ func workflowLaneStartedAt(issue connector.Issue, fallback time.Time) time.Time 
 	return fallback
 }
 
-func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *State) {
+func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *State, observedAt time.Time) {
 	if state == nil {
 		return
 	}
@@ -346,12 +346,63 @@ func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *Sta
 			timelines[identityKey] = result
 		}
 
-		enteredAt := resolveCurrentLaneEnteredAt(issue, previous[laneKey], result.timeline.Events)
+		_, eventBacked := latestCurrentLaneEnteredAt(result.timeline.Events, issue.State)
+		trackerEnteredAt := time.Time{}
+		if !eventBacked {
+			trackerEnteredAt = o.trackerIssueStateEnteredAt(ctx, issue)
+		}
+		enteredAt := resolveCurrentLaneEnteredAt(issue, previous[laneKey], trackerEnteredAt, observedAt, result.timeline.Events)
 		if !enteredAt.IsZero() {
 			next[laneKey] = enteredAt
 		}
+		if !eventBacked {
+			o.recordObservedLaneEntry(ctx, issue, enteredAt)
+		}
 	}
 	state.laneEntries = next
+}
+
+func (o *Orchestrator) trackerIssueStateEnteredAt(ctx context.Context, issue connector.Issue) time.Time {
+	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
+		return issue.StageUpdatedAt.UTC()
+	}
+	reader, ok := o.connector.(connector.IssueStateTransitionReader)
+	if !ok || reader == nil {
+		return time.Time{}
+	}
+	enteredAt, found, err := reader.IssueStateEnteredAt(ctx, issue)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("tracker lane transition read failed", "issue_id", issue.ID, "identifier", issue.Identifier, "state", issue.State, "error", err)
+		}
+		return time.Time{}
+	}
+	if !found {
+		return time.Time{}
+	}
+	return enteredAt.UTC()
+}
+
+func (o *Orchestrator) recordObservedLaneEntry(ctx context.Context, issue connector.Issue, enteredAt time.Time) {
+	if o.workflowMetrics == nil || enteredAt.IsZero() || strings.TrimSpace(issue.State) == "" {
+		return
+	}
+	if _, err := o.workflowMetrics.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
+		ProjectID:      o.workflowMetricsProjectID(),
+		IssueID:        issue.ID,
+		Identifier:     issue.Identifier,
+		IssueURL:       issue.URL,
+		PRNumber:       workflowMetricsPRNumber(issue),
+		PhaseType:      store.WorkflowPhaseTypeLane,
+		PhaseName:      issue.State,
+		Reason:         "tracker_state_observed",
+		Status:         "entered",
+		StartedAt:      enteredAt,
+		MetadataJSON:   workflowLaneMetadataJSON(issue, workflowLaneMetadata{}),
+		EndpointFamily: "tracker",
+	}); err != nil && o.logger != nil {
+		o.logger.Warn("record observed lane enter metric failed", "issue_id", issue.ID, "identifier", issue.Identifier, "state", issue.State, "error", err)
+	}
 }
 
 func stateLaneEntryIssues(state *State) []connector.Issue {
@@ -375,16 +426,46 @@ func stateLaneEntryIssues(state *State) []connector.Issue {
 	return issues
 }
 
-func resolveCurrentLaneEnteredAt(issue connector.Issue, previous time.Time, events []store.WorkflowPhaseEvent) time.Time {
-	if enteredAt, ok := latestCurrentLaneEnteredAt(events, issue.State); ok {
-		return enteredAt
+func resolveCurrentLaneEnteredAt(issue connector.Issue, previous time.Time, trackerEnteredAt time.Time, observedAt time.Time, events []store.WorkflowPhaseEvent) time.Time {
+	enteredAt, eventBacked := latestCurrentLaneEnteredAt(events, issue.State)
+	mayMoveForward := eventBacked && laneOccupancyChangedSince(events, issue.State, previous)
+	if enteredAt.IsZero() {
+		enteredAt = trackerEnteredAt
+		mayMoveForward = !trackerEnteredAt.IsZero()
 	}
-
-	fallback := workflowLaneFallbackAt(issue)
-	if !previous.IsZero() && (fallback.IsZero() || !fallback.Before(previous)) {
+	if enteredAt.IsZero() {
+		enteredAt = workflowLaneWeakFallbackAt(issue)
+	}
+	if enteredAt.IsZero() {
+		enteredAt = observedAt
+	}
+	if !previous.IsZero() && (enteredAt.IsZero() || (enteredAt.After(previous) && !mayMoveForward)) {
 		return previous
 	}
-	return fallback
+	return enteredAt
+}
+
+func laneOccupancyChangedSince(events []store.WorkflowPhaseEvent, state string, previous time.Time) bool {
+	if previous.IsZero() {
+		return true
+	}
+	state = normalizeState(state)
+	for _, event := range events {
+		if event.PhaseType != store.WorkflowPhaseTypeLane {
+			continue
+		}
+		eventAt := event.StartedAt
+		if event.FinishedAt.After(eventAt) {
+			eventAt = event.FinishedAt
+		}
+		if eventAt.IsZero() || !eventAt.After(previous) {
+			continue
+		}
+		if normalizeState(event.PhaseName) != state || strings.EqualFold(strings.TrimSpace(event.Status), "exited") {
+			return true
+		}
+	}
+	return false
 }
 
 func latestCurrentLaneEnteredAt(events []store.WorkflowPhaseEvent, state string) (time.Time, bool) {
@@ -414,6 +495,15 @@ func latestCurrentLaneEnteredAt(events []store.WorkflowPhaseEvent, state string)
 
 func workflowLaneFallbackAt(issue connector.Issue) time.Time {
 	for _, candidate := range []*time.Time{issue.StageUpdatedAt, issue.UpdatedAt, issue.CreatedAt} {
+		if candidate != nil && !candidate.IsZero() {
+			return *candidate
+		}
+	}
+	return time.Time{}
+}
+
+func workflowLaneWeakFallbackAt(issue connector.Issue) time.Time {
+	for _, candidate := range []*time.Time{issue.UpdatedAt, issue.CreatedAt} {
 		if candidate != nil && !candidate.IsZero() {
 			return *candidate
 		}
