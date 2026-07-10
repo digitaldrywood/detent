@@ -318,6 +318,137 @@ func workflowLaneStartedAt(issue connector.Issue, fallback time.Time) time.Time 
 	return fallback
 }
 
+func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *State) {
+	if state == nil {
+		return
+	}
+
+	type timelineResult struct {
+		timeline store.WorkflowTimeline
+	}
+
+	previous := state.laneEntries
+	next := make(map[string]time.Time)
+	timelines := make(map[string]timelineResult)
+	for _, issue := range stateLaneEntryIssues(state) {
+		laneKey := workflowLaneEntryKey(issue)
+		if laneKey == "" {
+			continue
+		}
+		if _, exists := next[laneKey]; exists {
+			continue
+		}
+		if previousAt := previous[laneKey]; !previousAt.IsZero() {
+			if enteredAt := resolveCurrentLaneEnteredAt(issue, previousAt, nil); !enteredAt.IsZero() {
+				next[laneKey] = enteredAt
+			}
+			continue
+		}
+
+		identityKey := workflowIssueIdentityKey(issue)
+		result, exists := timelines[identityKey]
+		if !exists {
+			result.timeline, _ = o.issueWorkflowTimeline(ctx, issue)
+			timelines[identityKey] = result
+		}
+
+		enteredAt := resolveCurrentLaneEnteredAt(issue, previous[laneKey], result.timeline.Events)
+		if !enteredAt.IsZero() {
+			next[laneKey] = enteredAt
+		}
+	}
+	state.laneEntries = next
+}
+
+func stateLaneEntryIssues(state *State) []connector.Issue {
+	issues := make([]connector.Issue, 0, len(state.BoardIssues)+len(state.Pipeline)+len(state.Running)+len(state.Retry)+len(state.Blocked)+len(state.Completed))
+	issues = append(issues, state.BoardIssues...)
+	issues = append(issues, state.Pipeline...)
+	for _, id := range sortedKeys(state.Running) {
+		issues = append(issues, state.Running[id].Issue)
+	}
+	for _, id := range sortedKeys(state.Retry) {
+		issues = append(issues, state.Retry[id].Issue)
+	}
+	for _, id := range sortedKeys(state.Blocked) {
+		issues = append(issues, state.Blocked[id].Issue)
+	}
+	for _, id := range sortedKeys(state.Completed) {
+		issues = append(issues, state.Completed[id].Issue)
+	}
+	issues = append(issues, state.StatusDrift.UntrackedOpen...)
+	issues = append(issues, state.StatusDrift.OpenTerminal...)
+	return issues
+}
+
+func resolveCurrentLaneEnteredAt(issue connector.Issue, previous time.Time, events []store.WorkflowPhaseEvent) time.Time {
+	if enteredAt, ok := latestCurrentLaneEnteredAt(events, issue.State); ok {
+		return enteredAt
+	}
+
+	fallback := workflowLaneFallbackAt(issue)
+	if !previous.IsZero() && (fallback.IsZero() || !fallback.Before(previous)) {
+		return previous
+	}
+	return fallback
+}
+
+func latestCurrentLaneEnteredAt(events []store.WorkflowPhaseEvent, state string) (time.Time, bool) {
+	state = normalizeState(state)
+	if state == "" {
+		return time.Time{}, false
+	}
+
+	var latest store.WorkflowPhaseEvent
+	for _, event := range events {
+		if event.PhaseType != store.WorkflowPhaseTypeLane ||
+			normalizeState(event.PhaseName) != state ||
+			!strings.EqualFold(strings.TrimSpace(event.Status), "entered") ||
+			event.StartedAt.IsZero() {
+			continue
+		}
+		if latest.StartedAt.IsZero() || event.StartedAt.After(latest.StartedAt) ||
+			(event.StartedAt.Equal(latest.StartedAt) && event.ID > latest.ID) {
+			latest = event
+		}
+	}
+	if latest.StartedAt.IsZero() {
+		return time.Time{}, false
+	}
+	return latest.StartedAt, true
+}
+
+func workflowLaneFallbackAt(issue connector.Issue) time.Time {
+	for _, candidate := range []*time.Time{issue.StageUpdatedAt, issue.UpdatedAt, issue.CreatedAt} {
+		if candidate != nil && !candidate.IsZero() {
+			return *candidate
+		}
+	}
+	return time.Time{}
+}
+
+func workflowLaneEntryKey(issue connector.Issue) string {
+	identity := workflowIssueIdentityKey(issue)
+	lane := normalizeState(issue.State)
+	if identity == "" || lane == "" {
+		return ""
+	}
+	return identity + "\x00" + lane
+}
+
+func workflowIssueIdentityKey(issue connector.Issue) string {
+	if value := strings.TrimSpace(issue.ID); value != "" {
+		return "id:" + value
+	}
+	if value := strings.TrimSpace(issue.Identifier); value != "" {
+		return "identifier:" + value
+	}
+	if value := strings.TrimSpace(issue.URL); value != "" {
+		return "url:" + value
+	}
+	return ""
+}
+
 func workflowDurationSeconds(startedAt time.Time, finishedAt time.Time) int64 {
 	if startedAt.IsZero() || finishedAt.IsZero() || finishedAt.Before(startedAt) {
 		return 0

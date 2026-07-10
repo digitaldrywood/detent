@@ -1129,6 +1129,34 @@ func TestStateSnapshotDeterministicOrdering(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotSameLaneUpdateKeepsLaneEntry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 18, 0, 0, 0, time.UTC)
+	enteredAt := now.Add(-time.Hour)
+	updatedAt := now.Add(-5 * time.Minute)
+	state := newState(normalizeConfig(Config{}))
+	state.BoardIssues = []connector.Issue{{
+		ID:        "issue-1130",
+		State:     "In Progress",
+		UpdatedAt: &enteredAt,
+	}}
+	orch := &Orchestrator{}
+	orch.refreshCurrentLaneEntries(t.Context(), &state)
+
+	first := state.Snapshot(now)
+	state.BoardIssues[0].UpdatedAt = &updatedAt
+	orch.refreshCurrentLaneEntries(t.Context(), &state)
+	second := state.Snapshot(now)
+
+	if first.BoardIssues[0].CurrentLaneEnteredAt == nil || second.BoardIssues[0].CurrentLaneEnteredAt == nil {
+		t.Fatalf("CurrentLaneEnteredAt = %v then %v, want timestamps", first.BoardIssues[0].CurrentLaneEnteredAt, second.BoardIssues[0].CurrentLaneEnteredAt)
+	}
+	if !second.BoardIssues[0].CurrentLaneEnteredAt.Equal(*first.BoardIssues[0].CurrentLaneEnteredAt) {
+		t.Fatalf("CurrentLaneEnteredAt = %v after same-lane update, want %v", second.BoardIssues[0].CurrentLaneEnteredAt, first.BoardIssues[0].CurrentLaneEnteredAt)
+	}
+}
+
 func telemetryIssueIDs(issues []telemetry.Issue) []string {
 	out := make([]string, 0, len(issues))
 	for _, issue := range issues {
