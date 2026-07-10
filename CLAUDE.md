@@ -24,6 +24,25 @@
 - Run `make generate` before committing when templates, sqlc queries, or CSS inputs change.
 - Commit only when explicitly requested by the workflow or human, and use conventional commit messages.
 
+## Issue effort selection
+
+Every issue created for this repository must include an explicit reasoning
+effort override:
+
+```detent-agent
+schema: 1
+effort: high
+```
+
+Choose the effort automatically from this rubric:
+
+- `medium` — small, mechanical, and tightly specified with file:line references and complete acceptance criteria.
+- `high` — a standard feature or fix with some ambiguity or a cross-cutting surface.
+- `xhigh` — a new subsystem, tricky state or concurrency, restart or recovery semantics, or a gesture or interaction engine.
+- `max` — exceptional and operator-designated only; never auto-assign it.
+
+Leave `model` unset so the issue inherits the fleet-standard model.
+
 ## Validation
 
 - `make check` is the local pre-review gate.
