@@ -6,6 +6,12 @@ labels: "bug, detent:backlog"
 assignees: ""
 ---
 
+<!-- Choose effort using the AGENTS.md/CLAUDE.md rubric; leave model unset. -->
+<!-- ```detent-agent -->
+<!-- schema: 1 -->
+<!-- effort: medium -->
+<!-- ``` -->
+
 ## Summary
 
 

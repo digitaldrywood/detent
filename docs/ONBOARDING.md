@@ -2958,6 +2958,30 @@ the card instead of auto-resolving it.
 Use issues as executable contracts. A good issue has enough specificity that an
 agent can finish without inventing product intent.
 
+#### Per-Issue Agent Overrides
+
+An issue body can override the model, reasoning effort, or both for that
+issue's worker sessions with a fenced `detent-agent` YAML block:
+
+```detent-agent
+schema: 1
+effort: medium
+```
+
+The `schema: 1` field is required. `model` and `effort` are optional; omit
+`model` to inherit the configured route or provider default. When an issue has
+multiple complete `detent-agent` blocks, the last block wins. Detent accepts
+only the `schema`, `model`, and `effort` fields and a single YAML document.
+Invalid YAML, unknown fields, unsupported schemas, unavailable models, and
+unsupported effort values are rejected. Rejected fields fall back to the
+applicable project defaults, and Detent posts a rejection comment identifying
+what it ignored.
+
+Define a project-specific effort rubric in the repository's agent-facing docs,
+such as `AGENTS.md` or `CLAUDE.md`. Issue authors should select the least effort
+appropriate for the work so routine issues do not inherit a more expensive
+fleet baseline than they need.
+
 ```markdown
 ## Problem
 

@@ -65,6 +65,8 @@ agent:
 
 codex:
   # Optional model_reasoning_effort is unset because not every model accepts it.
+  # An issue-body ```detent-agent``` block can override effort for that issue;
+  # see docs/ONBOARDING.md#per-issue-agent-overrides.
   command: codex app-server # Provider default: upgrades automatically and avoids retirement breakage.
 
 gate:
