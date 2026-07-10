@@ -13,7 +13,7 @@ import (
 // in the topbar next to the title; pass nil when the page has no scope.
 templ AppShell(data DashboardShellData, scope templ.Component) {
 	<!DOCTYPE html>
-	<html { appShellHTMLAttributes(data)... }>
+	<html { appShellHTMLAttributes(data)... } data-detent-served-version={ appShellVersionLabel(data) }>
 		<head>
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -40,6 +40,10 @@ templ AppShell(data DashboardShellData, scope templ.Component) {
 			@helpTooltipHost()
 			@kanbanDialogHost()
 			@DetailSheetHost()
+			<div id="detent-build-update" class="fixed bottom-4 right-4 z-50 hidden items-center gap-3 rounded-card border border-line bg-surface px-4 py-3 text-sm text-text shadow-lg" role="status" aria-live="polite" data-detent-build-update hidden>
+				<span data-detent-build-update-message></span>
+				<button type="button" class="font-medium text-accent hover:underline" data-detent-build-reload>Reload</button>
+			</div>
 			<div
 				class="flex h-full"
 				sse-connect={ eventsPath(data) }
@@ -69,7 +73,7 @@ templ appSidebar(data DashboardShellData) {
 		</div>
 		<div class="flex-1"></div>
 		<div class="flex items-center px-2.5 group-data-[rail=true]/rail:px-0">
-			<span class="min-w-0 truncate text-2xs text-dim group-data-[rail=true]/rail:hidden" title={ appShellVersionLabel(data) }>{ appShellVersionLabel(data) }</span>
+			@LiveBuildVersion(data.Version)
 			<span class="flex-1 group-data-[rail=true]/rail:hidden"></span>
 			<button
 				type="button"
@@ -82,6 +86,17 @@ templ appSidebar(data DashboardShellData) {
 			</button>
 		</div>
 	</aside>
+}
+
+templ LiveBuildVersion(version string) {
+	<span
+		id="detent-build-version"
+		class="min-w-0 truncate text-2xs text-dim group-data-[rail=true]/rail:hidden"
+		title={ appShellVersionLabel(DashboardShellData{Version: version}) }
+		sse-swap="build"
+		hx-swap="outerHTML"
+		data-detent-build-version={ appShellVersionLabel(DashboardShellData{Version: version}) }
+	>{ appShellVersionLabel(DashboardShellData{Version: version}) }</span>
 }
 
 // AppSidebarContent is the live part of the sidebar (nav health dot and
@@ -174,6 +189,39 @@ templ liveBehaviorScript() {
 	<script>
 		(function () {
 			var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+			var servedVersion = document.documentElement.getAttribute("data-detent-served-version") || "";
+
+			function applyBuildVersion(event) {
+				var target = event.target instanceof Element ? event.target : null;
+				if (!target || target.id !== "detent-build-version") return;
+				var detail = event.detail || {};
+				var markup = typeof detail.data === "string" ? detail.data : "";
+				if (!markup) return;
+				var template = document.createElement("template");
+				template.innerHTML = markup;
+				var incoming = template.content.querySelector("[data-detent-build-version]");
+				if (!incoming) return;
+				var liveVersion = incoming.getAttribute("data-detent-build-version") || "";
+				var footer = target;
+				if (footer) {
+					footer.textContent = liveVersion;
+					footer.setAttribute("title", liveVersion);
+					footer.setAttribute("data-detent-build-version", liveVersion);
+				}
+				if (!servedVersion || !liveVersion || servedVersion === liveVersion) return;
+				var notice = document.querySelector("[data-detent-build-update]");
+				if (!notice) return;
+				var message = notice.querySelector("[data-detent-build-update-message]");
+				if (message) message.textContent = "Detent updated to " + liveVersion + " —";
+				notice.hidden = false;
+				notice.classList.remove("hidden");
+				notice.classList.add("flex");
+			}
+			document.addEventListener("htmx:sseBeforeMessage", applyBuildVersion);
+			document.addEventListener("click", function (event) {
+				var reload = event.target instanceof Element ? event.target.closest("[data-detent-build-reload]") : null;
+				if (reload) window.location.reload();
+			});
 
 			function liveParts() {
 				var indicator = document.querySelector("[data-live-indicator]");
