@@ -115,6 +115,11 @@ type Dependencies struct {
 	GlobalDispatchGate scheduler.ProjectDispatchGate
 	Now                func() time.Time
 	Logger             *slog.Logger
+	Retrospector       Retrospector
+}
+
+type Retrospector interface {
+	Trigger(string)
 }
 
 type WorkspaceReapResult = runpkg.WorkspaceReapResult
@@ -151,6 +156,7 @@ type Orchestrator struct {
 	capacityController      runpkg.CapacityController
 	validatorCapacity       runpkg.ValidatorCapacityController
 	now                     func() time.Time
+	retrospector            Retrospector
 	stateRequests           chan stateRequest
 	drainRequests           chan drainRequest
 	forceRequests           chan forceRequest
@@ -295,6 +301,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		validatorMemo:           validatorMemo,
 		activity:                deps.Activity,
 		release:                 deps.Release,
+		retrospector:            deps.Retrospector,
 		capacityController:      capacityController,
 		validatorCapacity:       validatorCapacity,
 		now:                     now,

@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
+	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -100,6 +101,7 @@ type Dependencies struct {
 	GitHubToken            string
 	RefreshGitHubToken     func(context.Context) (string, error)
 	IntakeDependencies     intake.Dependencies
+	RetroStore             store.RetroStore
 }
 
 type Project struct {
@@ -117,6 +119,8 @@ type Project struct {
 	scheduler        scheduler.Scheduler
 	schedulerFactory schedulerFactory
 	intake           *intake.Manager
+	retro            *retro.Manager
+	retroProduct     connector.Connector
 	events           *hub.Hub[Event]
 	logger           *slog.Logger
 	watcher          WorkflowWatcherFactory
@@ -183,6 +187,24 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create project intake: %w", err)
 	}
+	releaseBuild, err := buildReleaseCoordinator(workflow.Config, projectConnector)
+	if err != nil {
+		return nil, err
+	}
+	releaseCoordinator := releaseBuild.coordinator
+	projectRetroStore, productRetroStore, retroProductConnector, err := buildRetroIssueStores(workflow.Config, projectConnector, connectorFactory)
+	if err != nil {
+		return nil, fmt.Errorf("create project retro: %w", err)
+	}
+	projectRetro, err := retro.New(retro.Settings{
+		ProjectID:     string(id),
+		Config:        workflow.Config.Retro,
+		ProjectIssues: projectRetroStore,
+		ProductIssues: productRetroStore,
+	}, deps.RetroStore, logger, nil)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("create project retro: %w", err), closeConnector(retroProductConnector))
+	}
 
 	orchestratorFactory := deps.OrchestratorFactory
 	if orchestratorFactory == nil {
@@ -190,11 +212,6 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	}
 
 	orchConfig := projectOrchestratorConfig(cfg.Project, workflow.Config)
-	releaseBuild, err := buildReleaseCoordinator(workflow.Config, projectConnector)
-	if err != nil {
-		return nil, err
-	}
-	releaseCoordinator := releaseBuild.coordinator
 	orchDeps := orchestrator.Dependencies{
 		Connector:          projectConnector,
 		Runner:             deps.Runner,
@@ -206,13 +223,14 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		Activity:           deps.Activity,
 		Release:            releaseCoordinator,
 		Logger:             logger,
+		Retrospector:       projectRetro,
 	}
 	orch, err := orchestratorFactory(orchConfig, orchDeps)
 	if err != nil {
-		return nil, fmt.Errorf("create project orchestrator: %w", err)
+		return nil, errors.Join(fmt.Errorf("create project orchestrator: %w", err), closeConnector(retroProductConnector))
 	}
 	if orch == nil {
-		return nil, ErrMissingOrchestrator
+		return nil, errors.Join(ErrMissingOrchestrator, closeConnector(retroProductConnector))
 	}
 
 	watcherProject := cfg.Project
@@ -235,6 +253,8 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		scheduler:        projectScheduler,
 		schedulerFactory: schedulerFactory,
 		intake:           projectIntake,
+		retro:            projectRetro,
+		retroProduct:     retroProductConnector,
 		events:           projectEvents,
 		logger:           logger,
 		watcher:          watcherFactory,
@@ -535,9 +555,10 @@ func (p *Project) close(ctx context.Context, publishEvents bool) error {
 func (p *Project) closeConnector() error {
 	p.mu.Lock()
 	projectConnector := p.connector
+	retroProductConnector := p.retroProduct
 	p.mu.Unlock()
 
-	return closeConnector(projectConnector)
+	return errors.Join(closeConnector(projectConnector), closeConnector(retroProductConnector))
 }
 
 func (p *Project) stop(ctx context.Context, publishEvents bool) error {
@@ -629,6 +650,8 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 	watcherDone := p.startWorkflowWatcher(watcherCtx)
 	intakeCtx, stopIntake := context.WithCancel(ctx)
 	intakeDone := p.startIntake(intakeCtx)
+	retroCtx, stopRetro := context.WithCancel(ctx)
+	retroDone := p.startRetro(retroCtx)
 
 	runStarted := logProjectShutdownBoundaryBegin(p.logger, "orchestrator_run", "component", "orchestrator", "project_id", p.id)
 	err := orch.Run(ctx)
@@ -652,6 +675,14 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 		logProjectShutdownBoundaryEnd(p.logger, "intake_stop", intakeStarted, nil, "component", "intake", "project_id", p.id)
 	} else {
 		logProjectShutdownBoundaryEndResult(p.logger, "intake_stop", intakeStarted, "skipped", nil, "component", "intake", "project_id", p.id)
+	}
+	retroStarted := logProjectShutdownBoundaryBegin(p.logger, "retro_stop", "component", "retro", "project_id", p.id)
+	stopRetro()
+	if retroDone != nil {
+		<-retroDone
+		logProjectShutdownBoundaryEnd(p.logger, "retro_stop", retroStarted, nil, "component", "retro", "project_id", p.id)
+	} else {
+		logProjectShutdownBoundaryEndResult(p.logger, "retro_stop", retroStarted, "skipped", nil, "component", "retro", "project_id", p.id)
 	}
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 		err = nil
@@ -693,6 +724,23 @@ func (p *Project) startIntake(ctx context.Context) <-chan struct{} {
 		defer close(done)
 		if err := manager.Run(ctx); err != nil && ctx.Err() == nil {
 			p.logger.Error("project intake stopped", "project_id", p.id, "error", err)
+		}
+	}()
+	return done
+}
+
+func (p *Project) startRetro(ctx context.Context) <-chan struct{} {
+	p.mu.Lock()
+	manager := p.retro
+	p.mu.Unlock()
+	if manager == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := manager.Run(ctx); err != nil && ctx.Err() == nil {
+			p.logger.Error("project retro stopped", "project_id", p.id, "error", err)
 		}
 	}()
 	return done
@@ -797,6 +845,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	runner := p.runner
 	projectOrchestrator := p.orchestrator
 	projectIntake := p.intake
+	projectRetro := p.retro
 	p.mu.Unlock()
 	if projectOrchestrator == nil {
 		return
@@ -844,6 +893,25 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	}
 	releaseCoordinator := releaseBuild.coordinator
 
+	projectRetroStore, productRetroStore, retroProductConnector, err := buildRetroIssueStores(workflow.Config, projectConnector, connectorFactory)
+	if err != nil {
+		p.logger.Warn("workflow reload retro connector failed",
+			"project_id", p.id,
+			"path", update.Path,
+			"error", err,
+		)
+		return
+	}
+	retainRetroProduct := false
+	defer func() {
+		if retainRetroProduct {
+			return
+		}
+		if err := closeConnector(retroProductConnector); err != nil {
+			p.logger.Warn("close unused retro product connector failed", "project_id", p.id, "error", err)
+		}
+	}()
+
 	var preparedIntake *intake.Prepared
 	if projectIntake != nil {
 		preparedIntake, err = projectIntake.Prepare(
@@ -884,10 +952,24 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	if projectIntake != nil {
 		projectIntake.Apply(preparedIntake)
 	}
+	if projectRetro != nil {
+		if err := projectRetro.Update(retro.Settings{
+			ProjectID:     string(p.id),
+			Config:        workflow.Config.Retro,
+			ProjectIssues: projectRetroStore,
+			ProductIssues: productRetroStore,
+		}); err != nil {
+			p.logger.Warn("apply workflow retro reload failed", "project_id", p.id, "path", update.Path, "error", err)
+			return
+		}
+	}
 
 	p.mu.Lock()
+	previousRetroProduct := p.retroProduct
 	p.workflow = workflow
 	p.connector = projectConnector
+	p.retroProduct = retroProductConnector
+	retainRetroProduct = true
 	p.scheduler = projectScheduler
 	p.orchConfig = runtimeConfig
 	p.orchDeps.Connector = projectConnector
@@ -895,6 +977,11 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	publishEvents := p.lifecycleEvents
 	id := p.id
 	p.mu.Unlock()
+	if previousRetroProduct != retroProductConnector {
+		if err := closeConnector(previousRetroProduct); err != nil {
+			p.logger.Warn("close previous retro product connector failed", "project_id", p.id, "error", err)
+		}
+	}
 
 	p.logger.Info("workflow reloaded", "project_id", p.id, "path", update.Path)
 	if publishEvents {
@@ -982,6 +1069,37 @@ func intakeStore(projectConnector connector.Connector) intake.IssueStore {
 		return nil
 	}
 	return store
+}
+
+func buildRetroIssueStores(
+	cfg workflowconfig.Config,
+	projectConnector connector.Connector,
+	connectorFactory ConnectorFactory,
+) (intake.IssueStore, intake.IssueStore, connector.Connector, error) {
+	if !cfg.Retro.Enabled {
+		return nil, nil, nil, nil
+	}
+	projectStore := intakeStore(projectConnector)
+	if projectStore == nil {
+		return nil, nil, nil, retro.ErrMissingProjectStore
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Tracker.Repository), strings.TrimSpace(cfg.Retro.ProductRepository)) {
+		return projectStore, projectStore, nil, nil
+	}
+	productConfig := cfg
+	productConfig.Tracker.Repository = cfg.Retro.ProductRepository
+	productConnector, err := buildConnector(productConfig, connectorFactory)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if productConnector == projectConnector {
+		return projectStore, projectStore, nil, nil
+	}
+	productStore := intakeStore(productConnector)
+	if productStore == nil {
+		return nil, nil, nil, errors.Join(retro.ErrMissingProductStore, closeConnector(productConnector))
+	}
+	return projectStore, productStore, productConnector, nil
 }
 
 func workflowConfigWithProjectPaths(project globalconfig.Project, workflow workflowconfig.Config) workflowconfig.Config {

@@ -223,6 +223,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		WorkAttempts:       runtimeStore,
 		AgentResume:        runtimeStore,
 		ValidatorMemo:      runtimeStore,
+		RetroStore:         runtimeStore,
 		Activity:           activityBroker,
 		GitHubToken:        runtimeGitHubToken.get(),
 		RefreshGitHubToken: refreshGitHubToken,

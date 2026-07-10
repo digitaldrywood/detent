@@ -89,7 +89,18 @@ type doctorWorkflowOptimizationProjectReport struct {
 	SessionGuard   doctorWorkflowSessionGuard        `json:"session_guard"`
 	OrphanRecovery doctorOrphanRecoveryConfig        `json:"orphan_recovery"`
 	Metrics        doctorWorkflowOptimizationMetrics `json:"metrics"`
+	Retro          doctorWorkflowRetroStatus         `json:"retro"`
 	Error          string                            `json:"error,omitempty"`
+}
+
+type doctorWorkflowRetroStatus struct {
+	Enabled       bool       `json:"enabled"`
+	LastRun       *time.Time `json:"last_run,omitempty"`
+	Trigger       string     `json:"trigger,omitempty"`
+	Findings      int64      `json:"findings"`
+	FiledIssues   int64      `json:"filed_issues"`
+	UpdatedIssues int64      `json:"updated_issues"`
+	Error         string     `json:"error,omitempty"`
 }
 
 type doctorWorkflowModelChoice struct {
@@ -394,6 +405,10 @@ func doctorWorkflowOptimization(
 		if err != nil {
 			return doctorWorkflowOptimizationReport{}, err
 		}
+		retroStatus, err := doctorWorkflowRetroStatusForProject(ctx, db, projectID, workflow.Config.Retro.Enabled)
+		if err != nil {
+			return doctorWorkflowOptimizationReport{}, err
+		}
 		report.Projects = append(report.Projects, doctorWorkflowOptimizationProjectReport{
 			ProjectID:      projectID,
 			WorkflowPath:   workflowPath,
@@ -401,6 +416,7 @@ func doctorWorkflowOptimization(
 			SessionGuard:   doctorWorkflowSessionGuardConfig(workflow.Config),
 			OrphanRecovery: doctorOrphanRecoveryConfig{ResumeOrphanedSessions: workflow.Config.Agent.ResumeOrphanedSessions, ExperimentalThreadResume: workflow.Config.Agent.ExperimentalThreadResume},
 			Metrics:        metrics,
+			Retro:          retroStatus,
 		})
 		analyzedProjects = append(analyzedProjects, doctorWorkflowAnalyzedProject{
 			projectID:    projectID,
@@ -468,6 +484,34 @@ func doctorWorkflowOptimization(
 		report.Diff = doctorWorkflowOptimizationDiff(report)
 	}
 	return report, nil
+}
+
+func doctorWorkflowRetroStatusForProject(ctx context.Context, db doctorTelemetryStore, projectID string, enabled bool) (doctorWorkflowRetroStatus, error) {
+	status := doctorWorkflowRetroStatus{Enabled: enabled}
+	var completedAt string
+	err := db.QueryRowContext(ctx, `
+SELECT completed_at, trigger, findings_count, filed_count, updated_count, COALESCE(error, '')
+FROM retro_runs
+WHERE project_id = ?
+ORDER BY completed_at DESC, id DESC
+LIMIT 1`, strings.TrimSpace(projectID)).Scan(
+		&completedAt, &status.Trigger, &status.Findings, &status.FiledIssues, &status.UpdatedIssues, &status.Error,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return status, nil
+	}
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "no such table: retro_runs") {
+		return status, nil
+	}
+	if err != nil {
+		return doctorWorkflowRetroStatus{}, fmt.Errorf("read retro status for project %s: %w", projectID, err)
+	}
+	lastRun, err := doctorWorkflowSessionTimestamp(completedAt)
+	if err != nil {
+		return doctorWorkflowRetroStatus{}, err
+	}
+	status.LastRun = &lastRun
+	return status, nil
 }
 
 func doctorWorkflowOptimizationMetricsForProject(
@@ -1821,7 +1865,7 @@ func doctorWorkflowEstimatedImpact(findings []doctorWorkflowOptimizationFinding)
 }
 
 func writeDoctorWorkflowOptimizationPretty(out io.Writer, report doctorWorkflowOptimizationReport) error {
-	if out == nil || len(report.Findings) == 0 && len(report.Proposals) == 0 && len(report.CreatedProposalIssues) == 0 && strings.TrimSpace(report.Diff) == "" && len(report.Written) == 0 && !doctorReportHasOrphanRecovery(report) {
+	if out == nil || len(report.Findings) == 0 && len(report.Proposals) == 0 && len(report.CreatedProposalIssues) == 0 && strings.TrimSpace(report.Diff) == "" && len(report.Written) == 0 && !doctorReportHasOrphanRecovery(report) && !doctorWorkflowHasRetroStatus(report.Projects) {
 		return nil
 	}
 	if _, err := fmt.Fprintln(out); err != nil {
@@ -1837,10 +1881,24 @@ func writeDoctorWorkflowOptimizationPretty(out io.Writer, report doctorWorkflowO
 	}
 	for _, project := range report.Projects {
 		recovery := project.Metrics.OrphanRecovery
-		if recovery.Detected+recovery.Reattached+recovery.FreshContinuations == 0 {
-			continue
+		if recovery.Detected+recovery.Reattached+recovery.FreshContinuations > 0 {
+			if _, err := fmt.Fprintf(out, "Orphan recovery [%s]: detected=%d, reattached=%d, fresh_continuations=%d, reattach_failures=%d, resumed_cached_input_share=%.1f%%\n", project.ProjectID, recovery.Detected, recovery.Reattached, recovery.FreshContinuations, recovery.ReattachFailures, recovery.ResumedCachedInputShare*100); err != nil {
+				return err
+			}
 		}
-		if _, err := fmt.Fprintf(out, "Orphan recovery [%s]: detected=%d, reattached=%d, fresh_continuations=%d, reattach_failures=%d, resumed_cached_input_share=%.1f%%\n", project.ProjectID, recovery.Detected, recovery.Reattached, recovery.FreshContinuations, recovery.ReattachFailures, recovery.ResumedCachedInputShare*100); err != nil {
+		lastRun := "never"
+		if project.Retro.LastRun != nil {
+			lastRun = project.Retro.LastRun.UTC().Format(time.RFC3339)
+		}
+		if _, err := fmt.Fprintf(out, "Retro %s: enabled=%t last_run=%s findings=%d filed_issues=%d updated_issues=%d", project.ProjectID, project.Retro.Enabled, lastRun, project.Retro.Findings, project.Retro.FiledIssues, project.Retro.UpdatedIssues); err != nil {
+			return err
+		}
+		if project.Retro.Error != "" {
+			if _, err := fmt.Fprintf(out, " error=%s", project.Retro.Error); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintln(out); err != nil {
 			return err
 		}
 	}
@@ -1962,6 +2020,10 @@ func doctorReportHasOrphanRecovery(report doctorWorkflowOptimizationReport) bool
 		}
 	}
 	return false
+}
+
+func doctorWorkflowHasRetroStatus(projects []doctorWorkflowOptimizationProjectReport) bool {
+	return len(projects) > 0
 }
 
 func doctorWorkflowEvidenceLine(evidence map[string]any) string {

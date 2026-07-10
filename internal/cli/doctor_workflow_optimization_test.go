@@ -21,8 +21,52 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/lessons"
+	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/store"
 )
+
+func TestDoctorWorkflowOptimizationReportsRetroStatus(t *testing.T) {
+	t.Parallel()
+
+	paths := seedDoctorWorkflowOptimizationFixture(t)
+	ctx := context.Background()
+	backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: paths.db})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	completedAt := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	if err := backend.RecordRetroRun(ctx, retro.RunRecord{
+		ProjectID: "detent", Trigger: retro.TriggerDaily,
+		StartedAt: completedAt.Add(-time.Minute), CompletedAt: completedAt,
+		Findings: 4, Filed: 2, Updated: 1,
+	}); err != nil {
+		t.Fatalf("RecordRetroRun() error = %v", err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	db, err := openDoctorSQLiteReadOnly(ctx, paths.db)
+	if err != nil {
+		t.Fatalf("openDoctorSQLiteReadOnly() error = %v", err)
+	}
+	defer db.Close()
+	status, err := doctorWorkflowRetroStatusForProject(ctx, db, "detent", true)
+	if err != nil {
+		t.Fatalf("doctorWorkflowRetroStatusForProject() error = %v", err)
+	}
+	if !status.Enabled || status.LastRun == nil || !status.LastRun.Equal(completedAt) || status.Findings != 4 || status.FiledIssues != 2 || status.UpdatedIssues != 1 {
+		t.Fatalf("retro status = %#v", status)
+	}
+
+	var output bytes.Buffer
+	if err := writeDoctorWorkflowOptimizationPretty(&output, doctorWorkflowOptimizationReport{Projects: []doctorWorkflowOptimizationProjectReport{{ProjectID: "detent", Retro: status}}}); err != nil {
+		t.Fatalf("writeDoctorWorkflowOptimizationPretty() error = %v", err)
+	}
+	if text := output.String(); !strings.Contains(text, "Retro detent: enabled=true") || !strings.Contains(text, "filed_issues=2") {
+		t.Fatalf("pretty output missing retro status:\n%s", text)
+	}
+}
 
 func TestDoctorWorkflowOptimizationFindsFixtureRules(t *testing.T) {
 	t.Parallel()

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
 )
 
@@ -41,6 +42,7 @@ type Store interface {
 	RuntimeEvidenceStore
 	AgentResumeStore
 	OrphanSessionStore
+	RetroStore
 	APIKeyStore
 	Queries() *sqlc.Queries
 	Close() error
@@ -141,6 +143,10 @@ type AgentResumeStore interface {
 type OrphanSessionStore interface {
 	ListOrphanedAgentSessions(context.Context, string) ([]OrphanedAgentSession, error)
 	MarkAgentSessionOrphaned(context.Context, int64, time.Time) error
+}
+
+type RetroStore interface {
+	retro.TelemetryStore
 }
 
 type APIKeyStore interface {

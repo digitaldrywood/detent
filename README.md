@@ -1054,6 +1054,44 @@ Host-local policy can override the workflow policy inside a project entry in
 `global.yaml` using the same `intake` shape. An explicit `sources: []` override
 disables workflow-defined intake for that project.
 
+### Efficiency retrospection
+
+Each project can opt into an evidence-based reflection loop over its runtime
+telemetry. The pass runs after agent completions and on a daily schedule,
+groups recurring inefficiency patterns, and creates or updates fingerprinted
+board issues for human triage.
+
+```yaml
+retro:
+  enabled: true
+  schedule: "0 3 * * *"
+  target_state: Backlog
+  labels: [retro]
+  product_repository: digitaldrywood/detent
+  daily_issue_cap: 3
+  lookback_days: 7
+  min_occurrences: 2
+  single_occurrence_severity: critical
+  fallback_threshold: 3
+  receipt_baseline_multiple: 4
+```
+
+Workflow findings stay on the project's board and include a governed proposed
+`WORKFLOW.md` change when the evidence maps to a known setting. Product findings
+such as completed-work re-dispatch or systemic capacity handling route to
+`product_repository`. The configured `retro` label is always retained, and
+`target_state: Todo` can be used when a project explicitly wants findings to
+skip Backlog triage.
+
+Detent files a finding after `min_occurrences`, or after one occurrence at or
+above `single_occurrence_severity`. `daily_issue_cap` limits newly created
+issues; recurrence updates to existing fingerprinted issues remain allowed.
+Retrospection never edits workflow files, prompts, or runtime configuration.
+Its issue body records the evidence, proposed change, and pending human outcome.
+`detent doctor` reports the last run, finding count, and filed/updated issue
+counts for every enabled project. ProjectV2 trackers must set
+`tracker.repository` so Detent knows where to create project-level findings.
+
 `gate` controls the validation contract the agent and operator flow follow.
 Omitting it preserves the code default: `kind: command` with `run: make check`,
 plus green CI, no P1 automated PR review findings, a quiet window, and a

@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/pathsafe"
+	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/selector"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
@@ -106,6 +107,7 @@ type Config struct {
 	Release       Release         `yaml:"release,omitempty"`
 	Hooks         Hooks           `yaml:"hooks"`
 	Intake        intake.Config   `yaml:"intake,omitempty"`
+	Retro         retro.Config    `yaml:"retro,omitempty"`
 }
 
 type Tracker struct {
@@ -1059,6 +1061,14 @@ func (c *Config) Validate() error {
 	if c.Intake.Enabled() && !validRepositoryName(c.Tracker.Repository) {
 		problems = append(problems, "tracker.repository is required for intake sources")
 	}
+	c.Retro.Normalize()
+	problems = append(problems, c.Retro.Validate("retro", states)...)
+	if c.Retro.Enabled && c.Tracker.Kind != TrackerGitHub && c.Tracker.Kind != TrackerMemory {
+		problems = append(problems, "retro.enabled requires tracker.kind github or memory")
+	}
+	if c.Retro.Enabled && c.Tracker.Kind == TrackerGitHub && !validRepositoryName(c.Tracker.Repository) {
+		problems = append(problems, "tracker.repository is required for retro")
+	}
 
 	if len(problems) > 0 {
 		return ValidationError{Problems: problems}
@@ -1221,6 +1231,7 @@ func (c *Config) normalize() {
 	c.Server.Normalize()
 	c.Hooks.Shell = commandshell.Normalize(c.Hooks.Shell)
 	c.Intake.Normalize()
+	c.Retro.Normalize()
 }
 
 func (c *Config) validateTracker(problems *[]string) {
