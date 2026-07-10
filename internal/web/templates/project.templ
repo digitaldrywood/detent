@@ -189,7 +189,7 @@ templ projectRunsTable(id string, rows []projectRunRow) {
 		}
 		for i, row := range rows {
 			<div id={ row.DomID } class={ projectRunRowClass(i == len(rows)-1) }>
-				<span class="min-w-0 truncate font-mono text-xs font-medium text-text tabular-nums">{ row.Ref }</span>
+				@primitives.TrackerReferenceLink(row.Ref, row.URL, "min-w-0 truncate font-mono text-xs font-medium text-text tabular-nums")
 				<span class="truncate text-sm text-text">{ row.Title }</span>
 				<span class={ "flex items-center gap-1.5 text-xs " + boardExtraTextClass(row.StateKind) }>
 					@primitives.StatusDot(row.StateKind, row.StateLive)

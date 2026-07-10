@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	webchart "github.com/digitaldrywood/detent/internal/web/chart"
 )
 
@@ -39,6 +40,7 @@ type reportsSpendChart struct {
 type reportsTopRow struct {
 	ID     string
 	Ref    string
+	URL    string
 	Title  string
 	Tokens string
 	Cost   string
@@ -69,8 +71,8 @@ func reportsViewFromData(data ReportsData) reportsView {
 		Spend:       reportsSpendBars(data),
 		TokensTotal: formatInt(data.Day.Totals.TotalTokens),
 		HasSeries:   len(data.Day.Series) > 0,
-		TopIssues:   reportsTopRows("issue", data.Issue.Breakdowns),
-		TopPRs:      reportsTopRows("pr", data.PR.Breakdowns),
+		TopIssues:   reportsTopRows("issue", data.Issue.Breakdowns, data.Snapshot),
+		TopPRs:      reportsTopRows("pr", data.PR.Breakdowns, data.Snapshot),
 		Budget:      reportsBudgetView(data),
 		CycleTime:   reportsCycleTimeView(data),
 	}
@@ -187,7 +189,7 @@ func reportsCumulativeTokens(data ReportsData) SeriesChartData {
 	}
 }
 
-func reportsTopRows(prefix string, buckets []UsageBucketData) []reportsTopRow {
+func reportsTopRows(prefix string, buckets []UsageBucketData, snapshot telemetry.Snapshot) []reportsTopRow {
 	sorted := append([]UsageBucketData(nil), buckets...)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		return sorted[i].TotalTokens > sorted[j].TotalTokens
@@ -200,12 +202,64 @@ func reportsTopRows(prefix string, buckets []UsageBucketData) []reportsTopRow {
 		rows = append(rows, reportsTopRow{
 			ID:     "top-" + prefix + "-" + strconv.Itoa(i),
 			Ref:    analyticsRef(bucket.Bucket),
+			URL:    reportsBucketURL(prefix, bucket.Bucket, snapshot),
 			Title:  reportBucketLabel(bucket),
 			Tokens: fleetCompactTokens(bucket.TotalTokens),
 			Cost:   formatUSD(bucket.SpendUSD),
 		})
 	}
 	return rows
+}
+
+func reportsBucketURL(prefix string, bucket string, snapshot telemetry.Snapshot) string {
+	for _, issue := range reportsSnapshotIssues(snapshot) {
+		switch prefix {
+		case "issue":
+			if strings.EqualFold(strings.TrimSpace(bucket), strings.TrimSpace(issue.Identifier)) {
+				return issueURL(issue)
+			}
+		case "pr":
+			if reportsPRBucketMatches(bucket, issue) {
+				return pullRequestURL(issue)
+			}
+		}
+	}
+	return ""
+}
+
+func reportsSnapshotIssues(snapshot telemetry.Snapshot) []telemetry.Issue {
+	issues := append([]telemetry.Issue(nil), snapshot.BoardIssues...)
+	issues = append(issues, snapshot.Pipeline...)
+	issues = append(issues, snapshot.TrackerDrift.UntrackedOpen...)
+	issues = append(issues, snapshot.TrackerDrift.OpenTerminal...)
+	for _, row := range snapshot.Running {
+		issues = append(issues, row.Issue)
+	}
+	for _, row := range snapshot.Queue {
+		issues = append(issues, row.Issue)
+	}
+	for _, row := range snapshot.Blocked {
+		issues = append(issues, row.Issue)
+	}
+	for _, row := range snapshot.Completed {
+		issues = append(issues, row.Issue)
+	}
+	return issues
+}
+
+func reportsPRBucketMatches(bucket string, issue telemetry.Issue) bool {
+	repository, reference, ok := strings.Cut(strings.TrimSpace(bucket), "#")
+	if !ok || pullRequestNumber(issue) <= 0 || reference != strconv.Itoa(pullRequestNumber(issue)) {
+		return false
+	}
+	issueRepository := pullRequestRepository(issue)
+	if strings.EqualFold(repository, issueRepository) {
+		return true
+	}
+	if index := strings.LastIndex(issueRepository, "/"); index >= 0 {
+		issueRepository = issueRepository[index+1:]
+	}
+	return strings.EqualFold(repository, issueRepository)
 }
 
 func reportsBudgetView(data ReportsData) reportsBudget {

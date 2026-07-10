@@ -69,7 +69,7 @@ func TestProjectRunRows(t *testing.T) {
 		GeneratedAt: now,
 		Running: []telemetry.Running{
 			{
-				Issue:          telemetry.Issue{Identifier: "digitaldrywood/detent#502", ProjectID: "detent", Title: "Running issue"},
+				Issue:          telemetry.Issue{Identifier: "digitaldrywood/detent#502", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/502", Title: "Running issue"},
 				TurnCount:      2,
 				RuntimeSeconds: 120,
 				Tokens:         telemetry.Tokens{Total: 42_000, ModelContextWindow: &runningContextWindow},
@@ -85,7 +85,7 @@ func TestProjectRunRows(t *testing.T) {
 				RuntimeSeconds: 300,
 			},
 			{
-				Issue:          telemetry.Issue{Identifier: "digitaldrywood/detent#501", ProjectID: "detent", Title: "Newer failed"},
+				Issue:          telemetry.Issue{Identifier: "digitaldrywood/detent#501", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/501", Title: "Newer failed"},
 				SessionID:      "s-2",
 				CompletedAt:    now.Add(-time.Hour),
 				FinalState:     "failed",
@@ -110,6 +110,9 @@ func TestProjectRunRows(t *testing.T) {
 	}
 	if rows[1].Ref != "#501" {
 		t.Fatalf("completed rows should be newest first, got %q", rows[1].Ref)
+	}
+	if rows[0].URL != "https://github.com/digitaldrywood/detent/issues/502" || rows[1].URL != "https://github.com/digitaldrywood/detent/issues/501" {
+		t.Fatalf("run URLs = %q/%q", rows[0].URL, rows[1].URL)
 	}
 	if rows[1].DomID != "run-digitaldrywood-detent-501-s-2" {
 		t.Fatalf("completed row id = %q, want full identifier slug plus session", rows[1].DomID)

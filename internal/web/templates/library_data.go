@@ -187,6 +187,20 @@ func libraryPathLabel(row LibraryRow) string {
 	return "n/a"
 }
 
+func libraryPullRequestReferenceURL(row LibraryRow) string {
+	if !strings.EqualFold(strings.TrimSpace(row.SourceKind), "pull_request") || !libraryHasSafeURL(row.PullRequestURL) {
+		return ""
+	}
+	return librarySafeURLValue(row.PullRequestURL)
+}
+
+func librarySourceReferenceURL(row LibraryRow) string {
+	if !libraryHasSafeURL(row.SourceURL) {
+		return ""
+	}
+	return librarySafeURLValue(row.SourceURL)
+}
+
 func librarySourceTitle(row LibraryRow) string {
 	parts := []string{}
 	if label := strings.TrimSpace(row.SourceLabel); label != "" {

@@ -1,6 +1,9 @@
 package templates
 
-import "github.com/digitaldrywood/detent/internal/web/ui/components/icon"
+import (
+	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
+)
 
 templ KanbanConversation(data KanbanConversationData) {
 	@kanbanConversationScript()
@@ -95,7 +98,7 @@ templ KanbanIssueCommentsPanel(data KanbanConversationData) {
 templ kanbanPRCommentsPanel(data KanbanConversationData) {
 	<div id="kanban-pr-comments-panel" class="flex min-h-0 flex-col gap-3">
 		<div class="flex flex-none items-center justify-between gap-2 text-xs">
-			<span class="font-mono text-sec">{ kanbanConversationPRLabel(data) }</span>
+			@primitives.TrackerReferenceLink(kanbanConversationPRLabel(data), data.PRURL, "font-mono text-sec")
 			if data.PRURL != "" {
 				<a href={ data.PRURL } target="_blank" rel="noopener noreferrer" class="font-medium text-accent hover:underline">Open PR ↗</a>
 			}

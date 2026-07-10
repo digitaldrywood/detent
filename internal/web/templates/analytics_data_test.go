@@ -20,6 +20,7 @@ func analyticsTestData() DashboardData {
 					AttemptID:     71,
 					ProjectID:     "gopher-ai",
 					Identifier:    "gopherguides/gopher-ai#185",
+					IssueURL:      "https://github.com/gopherguides/gopher-ai/issues/185",
 					Status:        "running",
 					Phase:         "implementation",
 					StatusMessage: "session started",
@@ -111,6 +112,9 @@ func TestAnalyticsAttemptDetailReadsAsSentence(t *testing.T) {
 	for _, row := range view.Rows {
 		if row.Ref == "#185" {
 			detail = row.Detail
+			if row.URL != "https://github.com/gopherguides/gopher-ai/issues/185" {
+				t.Fatalf("attempt URL = %q", row.URL)
+			}
 		}
 	}
 	for _, want := range []string{"phase implementation", "session started", "on corys-mac-studio"} {

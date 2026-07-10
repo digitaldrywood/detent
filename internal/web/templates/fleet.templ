@@ -74,7 +74,7 @@ templ fleetSnapshotBody(data DashboardData) {
 						for _, card := range lane.Cards {
 							<article id={ card.DomID } class="flex flex-none flex-col gap-1 rounded-card border border-line bg-elev px-3 py-2.5">
 								<div class="flex min-w-0 items-center gap-2 font-mono text-2xs font-medium text-sec">
-									<span class="flex-none max-w-24 truncate text-text">{ card.Ref }</span>
+									@primitives.TrackerReferenceLink(card.Ref, card.URL, "flex-none max-w-24 truncate text-text")
 									<span class="min-w-16 truncate">{ card.Project }</span>
 									<span class="flex-1"></span>
 									if card.Meta != "" {
@@ -108,7 +108,7 @@ templ AgentActivityPanel(agents []fleetAgentRow, count string) {
 					<div class="flex min-w-0 items-center gap-2 font-mono text-xs font-medium text-sec">
 						@primitives.StatusDot(primitives.KindOK, true)
 						<span class="min-w-20 truncate">{ agent.Repo }</span>
-						<span class="flex-none max-w-32 truncate text-text">{ agent.Number }</span>
+						@primitives.TrackerReferenceLink(agent.Number, agent.URL, "flex-none max-w-32 truncate text-text")
 					</div>
 					<div class="truncate text-sm font-medium text-text">{ agent.Title }</div>
 				</div>
@@ -163,7 +163,10 @@ templ fleetMetricCards(metrics fleetMetrics) {
 			if metrics.HasContext {
 				<div class="mt-1 flex items-center justify-between gap-2 text-2xs">
 					<span class="text-dim">Max context</span>
-					<span class={ "whitespace-nowrap font-mono font-medium tabular-nums " + boardExtraTextClass(metrics.ContextKind) } title={ metrics.ContextTitle }>{ metrics.ContextValue }</span>
+					<span class={ "whitespace-nowrap font-mono font-medium tabular-nums " + boardExtraTextClass(metrics.ContextKind) } title={ metrics.ContextTitle }>
+						{ metrics.ContextValue }
+						@primitives.TrackerReferenceLink(metrics.ContextRef, metrics.ContextURL, "ml-1")
+					</span>
 				</div>
 				<div class="h-1 overflow-hidden rounded-xs bg-line" title={ metrics.ContextTitle }>
 					<div class={ contextPressureMeterClass(metrics.ContextKind) } style={ fleetProgressStyle(metrics.ContextPct) }></div>

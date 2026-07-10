@@ -28,6 +28,7 @@ func boardTestData() DashboardData {
 						ID:         "issue-185",
 						Identifier: "gopherguides/gopher-ai#185",
 						ProjectID:  "gopher-ai",
+						URL:        "https://github.com/gopherguides/gopher-ai/issues/185",
 						Title:      "refactor(tmux-start): extract inline bash to scripts",
 						State:      "In Progress",
 					},
@@ -99,6 +100,9 @@ func TestBoardViewLanes(t *testing.T) {
 	}
 	if card.Number != "#185" {
 		t.Fatalf("card number = %q, want #185", card.Number)
+	}
+	if card.URL != "https://github.com/gopherguides/gopher-ai/issues/185" {
+		t.Fatalf("card URL = %q", card.URL)
 	}
 	if card.AgeFooter != "3m" {
 		t.Fatalf("running card age footer = %q, want 3m", card.AgeFooter)

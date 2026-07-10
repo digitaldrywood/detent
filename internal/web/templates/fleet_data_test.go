@@ -22,6 +22,7 @@ func fleetTestData() DashboardData {
 						ID:         "issue-185",
 						Identifier: "gopherguides/gopher-ai#185",
 						ProjectID:  "gopher-ai",
+						URL:        "https://github.com/gopherguides/gopher-ai/issues/185",
 						Title:      "refactor(tmux-start): extract inline bash",
 						State:      "In Progress",
 					},
@@ -51,6 +52,9 @@ func TestFleetAgentRows(t *testing.T) {
 	row := rows[0]
 	if row.Repo != "gopherguides/gopher-ai" || row.Number != "#185" {
 		t.Fatalf("identifier split = %q %q", row.Repo, row.Number)
+	}
+	if row.URL != "https://github.com/gopherguides/gopher-ai/issues/185" {
+		t.Fatalf("agent URL = %q", row.URL)
 	}
 	if row.ID != "agent-gopherguides-gopher-ai-185" {
 		t.Fatalf("agent row id = %q, want full identifier slug", row.ID)
@@ -210,7 +214,7 @@ func TestFleetMetricsIncludesHighestActiveContext(t *testing.T) {
 	lowerWindow := int64(400_000)
 	higherWindow := int64(300_000)
 	data.Snapshot.Running = append(data.Snapshot.Running, telemetry.Running{
-		Issue:  telemetry.Issue{Identifier: "digitaldrywood/detent#977"},
+		Issue:  telemetry.Issue{Identifier: "digitaldrywood/detent#977", URL: "https://github.com/digitaldrywood/detent/issues/977"},
 		Tokens: telemetry.Tokens{Total: 270_000, ModelContextWindow: &higherWindow},
 	})
 	data.Snapshot.Running[0].Tokens.ModelContextWindow = &lowerWindow
@@ -219,8 +223,8 @@ func TestFleetMetricsIncludesHighestActiveContext(t *testing.T) {
 	if !metrics.HasContext {
 		t.Fatalf("expected context rollup: %+v", metrics)
 	}
-	if metrics.ContextValue != "90% #977" || metrics.ContextPct != 90 || metrics.ContextKind != primitives.KindWarn {
-		t.Fatalf("context rollup = %q pct=%d kind=%q", metrics.ContextValue, metrics.ContextPct, metrics.ContextKind)
+	if metrics.ContextValue != "90%" || metrics.ContextRef != "#977" || metrics.ContextURL != "https://github.com/digitaldrywood/detent/issues/977" || metrics.ContextPct != 90 || metrics.ContextKind != primitives.KindWarn {
+		t.Fatalf("context rollup = %q %q %q pct=%d kind=%q", metrics.ContextValue, metrics.ContextRef, metrics.ContextURL, metrics.ContextPct, metrics.ContextKind)
 	}
 }
 

@@ -128,6 +128,7 @@ type KanbanMoveDialogData struct {
 	Board        string
 	IssueID      string
 	Identifier   string
+	IssueURL     string
 	Title        string
 	CurrentState string
 	TargetState  string
@@ -143,6 +144,8 @@ type KanbanCommentDialogData struct {
 	PRRepository string
 	PRNumber     int
 	Identifier   string
+	IssueURL     string
+	PRURL        string
 	Title        string
 	Body         string
 	Error        string
@@ -317,10 +320,14 @@ type workflowBottleneckView struct {
 }
 
 type diagnosticsSummaryFact struct {
-	Label  string
-	Value  string
-	Detail string
-	Kind   primitives.Kind
+	Label              string
+	Value              string
+	Detail             string
+	DetailPrefix       string
+	DetailReference    string
+	DetailReferenceURL string
+	DetailSuffix       string
+	Kind               primitives.Kind
 }
 
 type runtimeStoreTableRow struct {
@@ -470,6 +477,10 @@ type prPipelineCard struct {
 	WaitDetail       string
 	MergeLaneStatus  string
 	MergeLaneDetail  string
+	MergeLanePrefix  string
+	MergeLaneRef     string
+	MergeLaneRefURL  string
+	MergeLaneSuffix  string
 	MergeLaneClass   string
 	Stage            string
 	StageAt          time.Time
@@ -491,8 +502,10 @@ type prPipelineMergeMetrics struct {
 type issueIdentityView struct {
 	Repository        string
 	IssueNumber       string
+	IssueURL          string
 	PullRequestNumber int
 	PullRequestLabel  string
+	PullRequestURL    string
 	Label             string
 }
 
@@ -1776,8 +1789,10 @@ func issueIdentity(issue telemetry.Issue) issueIdentityView {
 	return issueIdentityView{
 		Repository:        repository,
 		IssueNumber:       issueNumber,
+		IssueURL:          issueURL(issue),
 		PullRequestNumber: prNumber,
 		PullRequestLabel:  prLabel,
+		PullRequestURL:    pullRequestURL(issue),
 		Label:             label,
 	}
 }
@@ -2441,21 +2456,22 @@ func kanbanDialogTargetSelector() string {
 }
 
 func projectKanbanMoveDialogPath(data DashboardData, card projectKanbanCard) string {
-	values := kanbanMoveDialogValues(projectKanbanCardProjectID(data, card), card.IssueID, card.Identifier, card.Title, card.Stage, "", card.PRNumber, projectKanbanBoardScope(data))
+	values := kanbanMoveDialogValues(projectKanbanCardProjectID(data, card), card.IssueID, card.Identifier, card.URL, card.Title, card.Stage, "", card.PRNumber, projectKanbanBoardScope(data))
 	return "/api/v1/kanban/move?" + values.Encode()
 }
 
 func projectKanbanCommentDialogPath(data DashboardData, card projectKanbanCard, target string) string {
-	values := kanbanCommentDialogValues(projectKanbanCardProjectID(data, card), target, card.IssueID, card.PRRepository, card.Identifier, card.Title, card.PRNumber)
+	values := kanbanCommentDialogValues(projectKanbanCardProjectID(data, card), target, card.IssueID, card.PRRepository, card.Identifier, card.URL, card.PRURL, card.Title, card.PRNumber)
 	return "/api/v1/kanban/comment?" + values.Encode()
 }
 
-func kanbanMoveDialogValues(projectID string, issueID string, identifier string, title string, currentState string, targetState string, prNumber int, board string) url.Values {
+func kanbanMoveDialogValues(projectID string, issueID string, identifier string, issueURL string, title string, currentState string, targetState string, prNumber int, board string) url.Values {
 	values := url.Values{}
 	addQueryValue(values, "project_id", projectID)
 	addQueryValue(values, "kanban_board", board)
 	addQueryValue(values, "issue_id", issueID)
 	addQueryValue(values, "identifier", identifier)
+	addQueryValue(values, "issue_url", issueURL)
 	addQueryValue(values, "title", title)
 	addQueryValue(values, "current_state", currentState)
 	addQueryValue(values, "target_state", targetState)
@@ -2465,11 +2481,13 @@ func kanbanMoveDialogValues(projectID string, issueID string, identifier string,
 	return values
 }
 
-func kanbanCommentDialogValues(projectID string, target string, issueID string, prRepository string, identifier string, title string, prNumber int) url.Values {
+func kanbanCommentDialogValues(projectID string, target string, issueID string, prRepository string, identifier string, issueURL string, prURL string, title string, prNumber int) url.Values {
 	values := url.Values{}
 	addQueryValue(values, "project_id", projectID)
 	addQueryValue(values, "target", target)
 	addQueryValue(values, "identifier", identifier)
+	addQueryValue(values, "issue_url", issueURL)
+	addQueryValue(values, "pr_url", prURL)
 	addQueryValue(values, "title", title)
 	switch strings.ToLower(strings.TrimSpace(target)) {
 	case "issue":
@@ -2487,21 +2505,6 @@ func addQueryValue(values url.Values, key string, value string) {
 	value = strings.TrimSpace(value)
 	if value != "" {
 		values.Set(key, value)
-	}
-}
-
-func kanbanDialogCardLabel(identifier string, title string) string {
-	identifier = strings.TrimSpace(identifier)
-	title = strings.TrimSpace(title)
-	switch {
-	case identifier != "" && title != "":
-		return identifier + " / " + title
-	case title != "":
-		return title
-	case identifier != "":
-		return identifier
-	default:
-		return "selected card"
 	}
 }
 
@@ -3186,9 +3189,13 @@ func normalizeDashboardState(value string) string {
 }
 
 type mergeLaneCardStatus struct {
-	Label  string
-	Detail string
-	Class  string
+	Label     string
+	Detail    string
+	Prefix    string
+	Reference string
+	URL       string
+	Suffix    string
+	Class     string
 }
 
 type mergeLaneIssueRecord struct {
@@ -3235,9 +3242,11 @@ func mergeLaneStatuses(snapshot telemetry.Snapshot) map[string]mergeLaneCardStat
 		})
 
 		activePRNumber := 0
+		activePRURL := ""
 		for _, record := range groupRecords {
 			if record.active {
 				activePRNumber = pullRequestNumber(record.issue)
+				activePRURL = pullRequestURL(record.issue)
 				break
 			}
 		}
@@ -3248,7 +3257,7 @@ func mergeLaneStatuses(snapshot telemetry.Snapshot) map[string]mergeLaneCardStat
 				statuses[record.key] = mergeLaneActiveStatus(record)
 				continue
 			}
-			statuses[record.key] = mergeLaneQueuedStatus(record, position, activePRNumber)
+			statuses[record.key] = mergeLaneQueuedStatus(record, position, activePRNumber, activePRURL)
 		}
 	}
 	return statuses
@@ -3369,35 +3378,52 @@ func mergeLaneActiveStep(row telemetry.Running) string {
 
 func mergeLaneActiveStatus(record mergeLaneIssueRecord) mergeLaneCardStatus {
 	detail := "Active merge worker"
-	if number := pullRequestNumber(record.issue); number > 0 {
-		detail += " for PR #" + strconv.Itoa(number)
-	}
-	if step := strings.TrimSpace(record.step); step != "" {
-		detail += "; " + step
-	}
-	return mergeLaneCardStatus{
+	status := mergeLaneCardStatus{
 		Label:  "Merging now",
 		Detail: detail,
 		Class:  "border-accent/15 bg-accent/15 text-accent",
 	}
+	if number := pullRequestNumber(record.issue); number > 0 {
+		status.Prefix = detail + " for "
+		status.Reference = "PR #" + strconv.Itoa(number)
+		status.URL = pullRequestURL(record.issue)
+		detail += " for " + status.Reference
+	}
+	if step := strings.TrimSpace(record.step); step != "" {
+		status.Suffix = "; " + step
+		detail += status.Suffix
+	}
+	status.Detail = detail
+	if status.Reference == "" {
+		status.Prefix = detail
+		status.Suffix = ""
+	}
+	return status
 }
 
-func mergeLaneQueuedStatus(record mergeLaneIssueRecord, position int, activePRNumber int) mergeLaneCardStatus {
+func mergeLaneQueuedStatus(record mergeLaneIssueRecord, position int, activePRNumber int, activePRURL string) mergeLaneCardStatus {
 	details := []string{}
 	if queueError := strings.TrimSpace(record.queueError); queueError != "" {
 		details = append(details, "Waiting: "+queueError)
 	}
 	details = append(details, mergeLaneOrdinal(position)+" in merge queue")
 	waiting := "waiting for repo merge lane"
+	status := mergeLaneCardStatus{
+		Label: "Queued #" + strconv.Itoa(position),
+		Class: "border-warn/15 bg-warn/15 text-warn",
+	}
 	if activePRNumber > 0 {
-		waiting += " behind PR #" + strconv.Itoa(activePRNumber)
+		status.Prefix = strings.Join(append(details, waiting+" behind "), "; ")
+		status.Reference = "PR #" + strconv.Itoa(activePRNumber)
+		status.URL = activePRURL
+		waiting += " behind " + status.Reference
 	}
 	details = append(details, waiting)
-	return mergeLaneCardStatus{
-		Label:  "Queued #" + strconv.Itoa(position),
-		Detail: strings.Join(details, "; "),
-		Class:  "border-warn/15 bg-warn/15 text-warn",
+	status.Detail = strings.Join(details, "; ")
+	if status.Reference == "" {
+		status.Prefix = status.Detail
 	}
+	return status
 }
 
 func mergeLaneOrdinal(position int) string {
@@ -3643,6 +3669,10 @@ func appendPRPipelineCard(
 	if status, ok := mergeLaneStatuses[mergeLaneIssueKey(issue)]; ok {
 		card.MergeLaneStatus = status.Label
 		card.MergeLaneDetail = status.Detail
+		card.MergeLanePrefix = status.Prefix
+		card.MergeLaneRef = status.Reference
+		card.MergeLaneRefURL = status.URL
+		card.MergeLaneSuffix = status.Suffix
 		card.MergeLaneClass = status.Class
 	}
 	cardsByLane[laneID] = append(cardsByLane[laneID], card)
@@ -4039,7 +4069,7 @@ func trackerDriftIssueRows(issues []telemetry.Issue) []trackerDriftIssueRow {
 	rows := make([]trackerDriftIssueRow, 0, len(issues))
 	for _, issue := range issues {
 		rows = append(rows, trackerDriftIssueRow{
-			Number: issueNumber(issue),
+			Number: projectKanbanIssueNumber(issue),
 			Title:  strings.TrimSpace(issue.Title),
 			URL:    strings.TrimSpace(issue.URL),
 			State:  strings.TrimSpace(issue.State),
@@ -4326,12 +4356,7 @@ func diagnosticsSummaryFacts(data DashboardData) []diagnosticsSummaryFact {
 			Detail: bottleneck.Detail,
 			Kind:   primitives.KindWarn,
 		},
-		{
-			Label:  "Forward progress",
-			Value:  diagnosticsForwardProgressValue(snapshot),
-			Detail: diagnosticsForwardProgressDetail(snapshot),
-			Kind:   primitives.KindInfo,
-		},
+		diagnosticsForwardProgressFact(snapshot),
 		{
 			Label:  "Data freshness",
 			Value:  diagnosticsDataFreshnessValue(snapshot),
@@ -4400,18 +4425,26 @@ func diagnosticsForwardProgressValue(snapshot telemetry.Snapshot) string {
 	return strings.Join(parts, " / ")
 }
 
-func diagnosticsForwardProgressDetail(snapshot telemetry.Snapshot) string {
-	parts := []string{}
+func diagnosticsForwardProgressFact(snapshot telemetry.Snapshot) diagnosticsSummaryFact {
+	fact := diagnosticsSummaryFact{
+		Label: "Forward progress",
+		Value: diagnosticsForwardProgressValue(snapshot),
+		Kind:  primitives.KindInfo,
+	}
 	if transition := diagnosticsLastTransition(snapshot); transition != "" {
-		parts = append(parts, "Last transition: "+transition+".")
+		fact.Detail = "Last transition: " + transition + ". "
 	}
-	if merge := diagnosticsLastMerge(snapshot); merge != "" {
-		parts = append(parts, "Last merge: "+merge+".")
+	if latest := diagnosticsLatestCompleted(snapshot); latest != nil {
+		fact.DetailPrefix = "Last merge: "
+		fact.DetailReference = issueIdentifier(latest.Issue)
+		fact.DetailReferenceURL = issueURL(latest.Issue)
+		fact.DetailSuffix = " at " + timeLabel(latest.CompletedAt) + "."
+		return fact
 	}
-	if len(parts) == 0 {
-		return "No completed transition or merge is visible in this snapshot."
+	if fact.Detail == "" {
+		fact.Detail = "No completed transition or merge is visible in this snapshot."
 	}
-	return strings.Join(parts, " ")
+	return fact
 }
 
 func diagnosticsLastTransition(snapshot telemetry.Snapshot) string {
@@ -4438,7 +4471,7 @@ func diagnosticsLastTransition(snapshot telemetry.Snapshot) string {
 	return label + " at " + timeLabel(latest.At)
 }
 
-func diagnosticsLastMerge(snapshot telemetry.Snapshot) string {
+func diagnosticsLatestCompleted(snapshot telemetry.Snapshot) *telemetry.Completed {
 	var latest *telemetry.Completed
 	for i := range snapshot.Completed {
 		completed := snapshot.Completed[i]
@@ -4449,10 +4482,7 @@ func diagnosticsLastMerge(snapshot telemetry.Snapshot) string {
 			latest = &completed
 		}
 	}
-	if latest == nil {
-		return ""
-	}
-	return issueIdentifier(latest.Issue) + " at " + timeLabel(latest.CompletedAt)
+	return latest
 }
 
 func diagnosticsDataFreshnessValue(snapshot telemetry.Snapshot) string {
