@@ -293,7 +293,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}
 
 	onGlobalReload := func(reloaded globalconfig.Config) {
-		globalDispatchGate.SetProjects(globalProjectCandidates(reloaded.Projects))
+		syncGlobalDispatchProjects(globalDispatchGate, reloaded.Projects, manager.Registry())
 		globalConfigState.set(reloaded)
 		republishLatestSnapshot(snapshotHub, logger)
 	}
@@ -383,6 +383,25 @@ func globalProjectCandidates(projects []globalconfig.Project) []scheduler.Projec
 		})
 	}
 	return candidates
+}
+
+func syncGlobalDispatchProjects(
+	gate *scheduler.GlobalDispatchGate,
+	projects []globalconfig.Project,
+	registry *project.Registry,
+) {
+	candidates := globalProjectCandidates(projects)
+	gate.SetProjects(candidates)
+	for _, candidate := range candidates {
+		if candidate.Paused {
+			continue
+		}
+		runtimeProject, ok := registry.Get(project.ID(candidate.ID))
+		if ok && runtimeProject.Running() {
+			continue
+		}
+		gate.MarkIdle(candidate.ID)
+	}
 }
 
 func startOnboarding(ctx context.Context, cfg BootConfig) error {

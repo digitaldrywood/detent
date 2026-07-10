@@ -101,6 +101,36 @@ func TestBuildGlobalSchedulerFromSettings(t *testing.T) {
 	}
 }
 
+func TestSyncGlobalDispatchProjectsMarksUnstartedProjectsIdle(t *testing.T) {
+	t.Parallel()
+
+	projects := []globalconfig.Project{
+		{ID: "higher", Weight: 1, Priority: 0},
+		{ID: "lower", Weight: 1, Priority: 3},
+	}
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+	syncGlobalDispatchProjects(gate, projects, projectpkg.NewRegistry())
+
+	lower := globalProjectCandidates(projects)[1]
+	gate.BeginProjectCycle(lower)
+	slot, ok, decision, err := gate.TryAcquireWithDecision(
+		t.Context(),
+		lower,
+		scheduler.SlotRequest{State: "Todo"},
+		time.Date(2026, 7, 10, 15, 0, 0, 0, time.Local),
+	)
+	gate.EndProjectCycle(lower.ID)
+	if err != nil {
+		t.Fatalf("TryAcquireWithDecision() error = %v", err)
+	}
+	if !ok || decision.Reason != scheduler.DispatchGateReasonGranted {
+		t.Fatalf("TryAcquireWithDecision() ok = %t decision = %#v, want granted", ok, decision)
+	}
+	if err := gate.Release(slot); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
+}
+
 func TestRedirectDefaultLoggerWritesToFile(t *testing.T) {
 	previous := slog.Default()
 	t.Cleanup(func() {
