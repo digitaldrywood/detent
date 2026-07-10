@@ -224,6 +224,8 @@ human_action: null
    unavailable and the project has not migrated, keep a machine-readable
    issue-body line such as `Blocked by: #123` or `Depends on: owner/repo#123`.
 
+If meaningful out-of-scope work is discovered, file a separate tracker issue in Backlog with a best-guess `detent-agent` effort block instead of expanding the current work item.
+
 ## Required Execution Flow
 
 Use the current Detent state as the source of truth for which section applies.

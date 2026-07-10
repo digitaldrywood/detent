@@ -255,6 +255,56 @@ func TestBuildPromptSkillCreationInstructionsAreConfigurable(t *testing.T) {
 	}
 }
 
+func TestBuildPromptFollowupInstructionsAreConfigurable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		config      config.Config
+		planOnly    bool
+		wantPresent bool
+	}{
+		{name: "default pull request workflow", config: config.Default(), wantPresent: true},
+		{name: "disabled", config: func() config.Config {
+			cfg := config.Default()
+			cfg.Agent.Followups.Enabled = false
+			return cfg
+		}()},
+		{name: "artifact workflow", config: func() config.Config {
+			cfg := config.Default()
+			cfg.Deliverable.Kind = config.DeliverableArtifact
+			return cfg
+		}()},
+		{name: "plan only workflow", config: config.Default(), planOnly: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(config.Workflow{Config: tt.config}, connector.Issue{
+				Identifier: "digitaldrywood/detent#1164",
+				Title:      "Follow-up filing guidance",
+			}, PromptOptions{PlanOnly: tt.planOnly})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+
+			for _, text := range []string{
+				"## Out-of-scope discoveries",
+				"project's Backlog state",
+				"fenced `detent-agent` block",
+				"best-guess `effort`",
+				"file the issue without a state and say so in the final handoff",
+			} {
+				if strings.Contains(prompt, text) != tt.wantPresent {
+					t.Fatalf("prompt presence of %q = %t, want %t:\n%s", text, strings.Contains(prompt, text), tt.wantPresent, prompt)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildPromptAppendsTeamKnowledge(t *testing.T) {
 	t.Parallel()
 
