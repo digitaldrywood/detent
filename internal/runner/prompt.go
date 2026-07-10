@@ -109,6 +109,7 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		return rendered, nil
 	}
 	if !opts.PlanOnly {
+		rendered = appendFollowupsBlock(rendered, workflow.Config.Agent.Followups)
 		rendered = appendSkillCreationBlock(rendered, workflow.Config.Agent.Skills)
 	}
 	return appendClosingReferenceInstruction(rendered, issue), nil
@@ -516,6 +517,21 @@ func appendSkillCreationBlock(prompt string, cfg config.Skills) string {
 	b.WriteString("- Let normal pull request review be the approval gate; the draft skill enters future prompts only after humans review and merge it.\n")
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + strings.TrimRight(b.String(), "\n")
+}
+
+func appendFollowupsBlock(prompt string, cfg config.Followups) string {
+	if !cfg.Enabled {
+		return prompt
+	}
+
+	const block = `## Out-of-scope discoveries
+
+When this run surfaces a meaningful problem or improvement unrelated to the current issue, file a separate tracker issue instead of expanding the current issue's scope.
+- Place the follow-up issue in the project's Backlog state through the configured status source.
+- Include a fenced ` + "`detent-agent`" + ` block with ` + "`schema: 1`" + ` and a best-guess ` + "`effort`" + ` chosen from the project's effort rubric.
+- If the configured status source cannot be set from this session, file the issue without a state and say so in the final handoff.`
+
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + block
 }
 
 func appendGateBlock(prompt string, cfg gate.Config) string {
