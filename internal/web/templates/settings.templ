@@ -3,7 +3,7 @@ package templates
 import "github.com/digitaldrywood/detent/internal/web/ui/primitives"
 
 // Settings is the read-only view of the running configuration, rendered as
-// definition lists: key / mono value / hover-only copy. Theme and density
+// definition lists: key / mono value / copy action. Theme and density
 // preferences live here, and the full build string retires to the footer.
 templ Settings(data SettingsData) {
 	@AppShell(settingsDashboardShellData(data), nil) {
@@ -17,23 +17,27 @@ templ Settings(data SettingsData) {
 		}
 		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
 			<div class="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-y-auto overflow-x-hidden px-5 py-5">
-				<p class="flex-none text-xs text-sec">Read-only view of the running configuration. Copy appears on row hover.</p>
+				<p class="flex-none text-xs text-sec">
+					Read-only view of the running configuration.
+					<span class="md:hidden">Tap Copy beside a value.</span>
+					<span class="hidden md:inline">Copy appears on row hover.</span>
+				</p>
 				@settingsSection("settings-preferences", "Preferences") {
 					<div class={ settingsRowClass(false) }>
-						<span class="text-xs text-sec">Theme</span>
-						<div class="flex gap-4 text-xs text-text" role="radiogroup" aria-label="Theme">
+						<span class="col-span-2 text-xs text-sec md:col-span-1">Theme</span>
+						<div class="flex min-h-11 items-center gap-4 text-xs text-text md:min-h-0" role="radiogroup" aria-label="Theme">
 							@settingsRadio("theme", "dark", "Dark", settingsThemeChecked(data, "dark"))
 							@settingsRadio("theme", "light", "Light", settingsThemeChecked(data, "light"))
 						</div>
-						<span></span>
+						<span class="hidden md:block"></span>
 					</div>
 					<div class={ settingsRowClass(true) }>
-						<span class="text-xs text-sec">Density</span>
-						<div class="flex gap-4 text-xs text-text" role="radiogroup" aria-label="Density">
+						<span class="col-span-2 text-xs text-sec md:col-span-1">Density</span>
+						<div class="flex min-h-11 items-center gap-4 text-xs text-text md:min-h-0" role="radiogroup" aria-label="Density">
 							@settingsRadio("density", "compact", "Compact", settingsDensityChecked(data, "compact"))
 							@settingsRadio("density", "cozy", "Cozy", settingsDensityChecked(data, "cozy"))
 						</div>
-						<span></span>
+						<span class="hidden md:block"></span>
 					</div>
 				}
 				@settingsSection("settings-global", "Global") {
@@ -91,17 +95,16 @@ templ settingsSection(id string, title string) {
 }
 
 // settingsRow is one definition row: key (12px sec), mono value that
-// ellipsizes with the full value in its title, and a copy control that
-// only reveals on hover or keyboard focus.
+// ellipsizes with the full value in its title, and a copy control.
 templ settingsRow(key string, value string, copyable bool, last bool) {
 	<div class={ settingsRowClass(last) }>
-		<span class="text-xs text-sec">{ key }</span>
-		<span class="min-w-0 truncate font-mono text-xs text-text tabular-nums" title={ settingsText(value) }>{ settingsText(value) }</span>
-		<span class="text-right">
+		<span class="col-span-2 text-xs text-sec md:col-span-1">{ key }</span>
+		<span class="min-w-0 break-all font-mono text-xs text-text tabular-nums md:truncate" title={ settingsText(value) }>{ settingsText(value) }</span>
+		<span class="self-start text-right md:self-auto">
 			if copyable && hasSettingsValue(value) {
 				<button
 					type="button"
-					class="text-2xs font-medium text-accent opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+					class="inline-flex min-h-11 min-w-11 items-center justify-center text-2xs font-medium text-accent md:min-h-0 md:min-w-0 md:opacity-0 md:transition-opacity md:group-hover:opacity-100 md:focus-visible:opacity-100"
 					data-copy={ value }
 					data-label="Copy"
 					aria-label={ "Copy " + key }

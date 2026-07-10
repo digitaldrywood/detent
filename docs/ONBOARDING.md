@@ -2273,6 +2273,36 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      <source-root>/WORKFLOW.md
    ```
 
+## Out-of-Scope Follow-ups
+
+Detent adds an `## Out-of-scope discoveries` block to pull-request agent
+prompts by default. It tells agents to keep the current issue scoped and file
+meaningful unrelated problems or improvements as separate tracker issues in
+the project's Backlog state. Each self-filed issue includes a fenced
+`detent-agent` block with `schema: 1` and the agent's best-guess `effort` from
+the project's rubric. Projects should define that rubric in their
+agent-facing documentation.
+
+The agent uses the tracker's configured status source when placing the new
+issue. If that source cannot be updated from the session, the agent files the
+issue without a state and reports the limitation in its final handoff.
+Plan-only and non-pull-request runs do not receive this prompt block.
+
+The prompt guidance is controlled by `agent.followups.enabled`, which defaults
+to `true`:
+
+```yaml
+agent:
+  followups:
+    enabled: true
+```
+
+Set `agent.followups.enabled: false` to remove the generated block. Maintained
+workflow templates also include the filing rule in their prompt body, so the
+guidance remains available when the generated block is disabled. `detent
+doctor` warns when follow-ups are disabled and the loaded WORKFLOW.md body has
+no equivalent out-of-scope filing guidance.
+
 ## Skills And Skill Creation
 
 Detent skills are repository-owned Markdown instructions that give agents

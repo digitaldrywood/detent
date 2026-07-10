@@ -687,8 +687,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			loadErr:    errors.New("missing workflow"),
-			wantStatus: []doctorStatus{doctorFail, doctorWarn, doctorOK},
-			wantDetail: []string{"missing workflow", "skipped", "skipped because WORKFLOW.md could not be loaded"},
+			wantStatus: []doctorStatus{doctorFail, doctorWarn, doctorOK, doctorOK},
+			wantDetail: []string{"missing workflow", "skipped", "skipped because WORKFLOW.md could not be loaded", "skipped because WORKFLOW.md could not be loaded"},
 		},
 		{
 			name: "workflow invalid",
@@ -696,8 +696,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: workflowconfig.Config{}},
-			wantStatus: []doctorStatus{doctorFail, doctorWarn, doctorOK},
-			wantDetail: []string{"tracker.kind", "skipped", "skipped because WORKFLOW.md is invalid"},
+			wantStatus: []doctorStatus{doctorFail, doctorWarn, doctorOK, doctorOK},
+			wantDetail: []string{"tracker.kind", "skipped", "skipped because WORKFLOW.md is invalid", "skipped because WORKFLOW.md is invalid"},
 		},
 		{
 			name: "source repo missing",
@@ -706,8 +706,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
 			gitErr:     errors.New("not a git worktree"),
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
-			wantDetail: []string{"is valid", "validated 0 pinned Codex route model(s)", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
+			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK, doctorFail, doctorOK, doctorWarn},
+			wantDetail: []string{"is valid", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "not a git worktree", "skipped because source repository is unavailable locally", "skipped because source repository is unavailable locally"},
 		},
 		{
 			name: "workflow and source repo valid",
@@ -715,8 +715,8 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow("/repo")},
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 	}
 
@@ -819,6 +819,70 @@ func TestCheckDoctorIssueEffortGuidance(t *testing.T) {
 				got = checkDoctorIssueEffortGuidanceForSource("alpha", globalconfig.Project{Workdir: filepath.Join(root, "missing")}, workflowconfig.Default())
 			} else {
 				got = checkDoctorIssueEffortGuidance("alpha", root)
+			}
+			if got.Status != tt.wantStatus {
+				t.Fatalf("Status = %s, want %s: %#v", got.Status, tt.wantStatus, got)
+			}
+			if !strings.Contains(got.Detail, tt.wantDetail) {
+				t.Fatalf("Detail = %q, want containing %q", got.Detail, tt.wantDetail)
+			}
+			if tt.wantHint != "" && !strings.Contains(got.Hint, tt.wantHint) {
+				t.Fatalf("Hint = %q, want containing %q", got.Hint, tt.wantHint)
+			}
+		})
+	}
+}
+
+func TestCheckDoctorFollowupGuidance(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		cfg        workflowconfig.Followups
+		body       string
+		available  bool
+		wantStatus doctorStatus
+		wantDetail string
+		wantHint   string
+	}{
+		{
+			name:       "enabled passes without workflow prose",
+			cfg:        workflowconfig.Followups{Enabled: true},
+			available:  true,
+			wantStatus: doctorOK,
+			wantDetail: "enabled=true provides prompt guidance",
+		},
+		{
+			name:       "disabled passes with workflow prose",
+			body:       "File a separate follow-up issue in Backlog for meaningful out-of-scope work.",
+			available:  true,
+			wantStatus: doctorOK,
+			wantDetail: "WORKFLOW.md body provides out-of-scope follow-up filing guidance",
+		},
+		{
+			name:       "disabled warns without workflow prose",
+			body:       "Keep changes scoped to the current issue.",
+			available:  true,
+			wantStatus: doctorWarn,
+			wantDetail: "contains no out-of-scope follow-up filing guidance",
+			wantHint:   "Enable agent.followups.enabled",
+		},
+		{
+			name:       "unavailable workflow body skips",
+			wantStatus: doctorOK,
+			wantDetail: "skipped because WORKFLOW.md could not be loaded",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var got doctorCheck
+			if tt.available {
+				got = checkDoctorFollowupGuidance("alpha", tt.cfg, tt.body)
+			} else {
+				got = checkDoctorFollowupGuidanceUnavailable("alpha", "WORKFLOW.md could not be loaded")
 			}
 			if got.Status != tt.wantStatus {
 				t.Fatalf("Status = %s, want %s: %#v", got.Status, tt.wantStatus, got)
@@ -1029,6 +1093,32 @@ func TestCheckDoctorProjectWorkflowReportsReviewFlowChoiceAndProseMismatch(t *te
 			wantDetail: []string{"review-flow=autopilot", "review-flow prose mismatch", "instructs agents to enter the review state"},
 		},
 		{
+			name: "autopilot permits negated review prose",
+			cfg: func() workflowconfig.Config {
+				cfg := validDoctorWorkflow("/repo")
+				cfg.Agent.AutoPromote.Enabled = true
+				cfg.Agent.AutoPromote.QuietSeconds = 0
+				cfg.Agent.AutoPromote.GateWaitState = workflowconfig.AutoPromoteGateWaitStateSource
+				return cfg
+			}(),
+			prompt:     "Do NOT move the issue to Human Review. Never move the work item to Human Review.",
+			wantStatus: doctorOK,
+			wantDetail: []string{"review-flow=autopilot"},
+		},
+		{
+			name: "autopilot detects affirmative instruction in mixed prose",
+			cfg: func() workflowconfig.Config {
+				cfg := validDoctorWorkflow("/repo")
+				cfg.Agent.AutoPromote.Enabled = true
+				cfg.Agent.AutoPromote.QuietSeconds = 0
+				cfg.Agent.AutoPromote.GateWaitState = workflowconfig.AutoPromoteGateWaitStateSource
+				return cfg
+			}(),
+			prompt:     "Do not move the issue to Human Review.\nWhen requested, move the issue to Human Review.",
+			wantStatus: doctorWarn,
+			wantDetail: []string{"review-flow=autopilot", "review-flow prose mismatch"},
+		},
+		{
 			name: "autopilot contradicted by custom review state prose",
 			cfg: func() workflowconfig.Config {
 				cfg := validDoctorWorkflow("/repo")
@@ -1055,6 +1145,13 @@ func TestCheckDoctorProjectWorkflowReportsReviewFlowChoiceAndProseMismatch(t *te
 			prompt:     "Do not move the issue to Human Review; Detent promotes the issue directly to `Merging`.",
 			wantStatus: doctorWarn,
 			wantDetail: []string{"review-flow=review-gate", "review-flow prose mismatch", "promises direct review-state skipping"},
+		},
+		{
+			name:       "review gate permits negated skip and direct promotion prose",
+			cfg:        validDoctorWorkflow("/repo"),
+			prompt:     "Do not skip Human Review. Do not promote the issue directly to Merging.",
+			wantStatus: doctorOK,
+			wantDetail: []string{"review-flow=review-gate"},
 		},
 		{
 			name: "review gate contradicted by custom direct promotion prose",
@@ -2072,7 +2169,7 @@ func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
 	if gotPath != wantPath {
 		t.Fatalf("git path = %q, want %q", gotPath, wantPath)
 	}
-	if len(checks) != 5 || checks[2].Status != doctorOK {
+	if len(checks) != 6 || checks[3].Status != doctorOK || checks[3].Name != "Project alpha source repo" {
 		t.Fatalf("checks = %#v, want source repo OK", checks)
 	}
 }

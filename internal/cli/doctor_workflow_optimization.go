@@ -1364,14 +1364,56 @@ func doctorReviewFlowStateLabel(state string) string {
 }
 
 func doctorReviewFlowPhraseMatches(text string, phrases []string) int {
-	text = strings.ToLower(strings.Join(strings.Fields(text), " "))
 	count := 0
 	for _, phrase := range phrases {
-		if strings.Contains(text, strings.ToLower(strings.Join(strings.Fields(phrase), " "))) {
+		phrase = strings.ToLower(strings.Join(strings.Fields(phrase), " "))
+		if doctorReviewFlowPhraseMatch(text, phrase) {
 			count++
 		}
 	}
 	return count
+}
+
+func doctorReviewFlowPhraseMatch(text string, phrase string) bool {
+	segments := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return r == '.' || r == '!' || r == '?' || r == ';'
+	})
+	for _, segment := range segments {
+		segment = strings.Join(strings.Fields(segment), " ")
+		for offset := 0; offset < len(segment); {
+			match := strings.Index(segment[offset:], phrase)
+			if match < 0 {
+				break
+			}
+			match += offset
+			if !doctorReviewFlowPhraseNegated(segment[:match], segment[match+len(phrase):]) {
+				return true
+			}
+			offset = match + len(phrase)
+		}
+	}
+	return false
+}
+
+func doctorReviewFlowPhraseNegated(prefix string, suffix string) bool {
+	words := strings.Fields(prefix)
+	if len(words) > 5 {
+		words = words[len(words)-5:]
+	}
+	window := " " + strings.Join(words, " ") + " "
+	negated := strings.Contains(window, " not ") ||
+		strings.Contains(window, " never ") ||
+		strings.Contains(window, " don't ") ||
+		strings.Contains(window, " avoid ") ||
+		strings.Contains(window, " instead of ")
+	if !negated {
+		return false
+	}
+
+	suffix = " " + strings.Join(strings.Fields(suffix), " ") + " "
+	return !strings.Contains(suffix, " until ") &&
+		!strings.Contains(suffix, " unless ") &&
+		!strings.Contains(suffix, " except ")
 }
 
 func doctorWorkflowFinding(

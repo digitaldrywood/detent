@@ -200,6 +200,8 @@ directory. For video ad production, include:
 - validation status and validation notes
 - next external-system action
 
+If meaningful out-of-scope work is discovered, file a separate tracker issue in Backlog with a best-guess `detent-agent` effort block instead of expanding the current work item.
+
 ## Required Execution Flow
 
 This workflow uses the artifact autopilot handoff: `agent.auto_promote.enabled:
