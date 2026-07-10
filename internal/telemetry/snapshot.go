@@ -32,6 +32,7 @@ type Snapshot struct {
 	Completed          []Completed         `json:"completed"`
 	Budget             Budget              `json:"budget"`
 	RateLimits         *RateLimits         `json:"rate_limits"`
+	BackendOutages     []BackendOutage     `json:"backend_outages,omitempty"`
 	Tokens             Tokens              `json:"tokens"`
 	Throughput         TokenThroughput     `json:"throughput"`
 	LifetimeTotals     LifetimeTotals      `json:"lifetime_totals"`
@@ -480,6 +481,7 @@ type BudgetRefusal struct {
 type RateLimits struct {
 	LimitID       string           `json:"limit_id,omitempty"`
 	LimitName     string           `json:"limit_name,omitempty"`
+	ReachedType   string           `json:"reached_type,omitempty"`
 	Primary       *RateLimitBucket `json:"primary,omitempty"`
 	Secondary     *RateLimitBucket `json:"secondary,omitempty"`
 	Credits       *RateLimitBucket `json:"credits,omitempty"`
@@ -487,6 +489,20 @@ type RateLimits struct {
 	GitHubREST    *RateLimitBucket `json:"github_rest,omitempty"`
 	GraphQLCost   *GraphQLCost     `json:"graphql_cost,omitempty"`
 	RESTUsage     *RESTUsage       `json:"rest_usage,omitempty"`
+}
+
+type BackendOutage struct {
+	ProjectID      string     `json:"project_id,omitempty"`
+	BackendID      string     `json:"backend_id"`
+	BackendKind    string     `json:"backend_kind,omitempty"`
+	Provider       string     `json:"provider,omitempty"`
+	Kind           string     `json:"kind,omitempty"`
+	Reason         string     `json:"reason"`
+	DetectedAt     time.Time  `json:"detected_at"`
+	LastObservedAt time.Time  `json:"last_observed_at"`
+	ResetAt        *time.Time `json:"reset_at,omitempty"`
+	ResumeAt       time.Time  `json:"resume_at"`
+	ProbeIssueID   string     `json:"probe_issue_id,omitempty"`
 }
 
 const (

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
+
 	"github.com/digitaldrywood/detent/internal/connector"
 )
 
@@ -74,6 +76,27 @@ func TestSupervisorAppliesCappedBackoffForRunnerErrors(t *testing.T) {
 	}
 	if completion.RetryDelay != 25*time.Second {
 		t.Fatalf("RetryDelay = %s, want capped 25s", completion.RetryDelay)
+	}
+}
+
+func TestSupervisorDoesNotAdvanceRetryForCapacityError(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Date(2026, 7, 10, 2, 39, 0, 0, time.UTC)
+	supervisor, err := NewSupervisor(capacityBackend{resetAt: resetAt}, SupervisorConfig{})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	completion := supervisor.Run(t.Context(), RunRequest{
+		Issue:   connector.Issue{ID: "issue-capacity"},
+		Attempt: 2,
+	})
+	if completion.Err == nil || !IsCapacityError(completion.Err) {
+		t.Fatalf("Err = %v, want capacity error", completion.Err)
+	}
+	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
+		t.Fatalf("retry state = retryable %v attempt %d delay %s, want unchanged", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
 	}
 }
 
@@ -359,6 +382,18 @@ type errorBackend struct{}
 
 func (errorBackend) Run(context.Context, RunRequest) (RunResult, error) {
 	return RunResult{}, errors.New("runner failed")
+}
+
+type capacityBackend struct {
+	resetAt time.Time
+}
+
+func (b capacityBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, backendcapacity.NewError(
+		backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"},
+		backendcapacity.Details{Kind: "usageLimitExceeded", ResetAt: &b.resetAt},
+		errors.New("usage limit reached"),
+	)
 }
 
 type backendErrorRunner struct{}

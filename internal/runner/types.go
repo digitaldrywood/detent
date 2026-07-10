@@ -235,6 +235,7 @@ type RunResult struct {
 	FinalState      string
 	Output          string
 	Model           string
+	TurnStarted     bool
 	RuntimeIdentity agentidentity.Identity
 	Tokens          TokenTotals
 	DiffStats       DiffStats

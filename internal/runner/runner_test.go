@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -855,6 +856,56 @@ func TestRunnerRunFallsBackFreshWhenResumeFails(t *testing.T) {
 	}
 }
 
+func TestRunnerRunDoesNotFallbackFreshForCapacityError(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 7, 10, 1, 55, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-1142", Branch: "detent/issue-1142"},
+	}
+	agentBackend := &resumeCapacityAgentBackend{resetAt: startedAt.Add(44 * time.Minute)}
+	sessionStore := &fakeSessionStore{
+		sessionID: 1142,
+		resumeState: store.AgentResumeState{
+			DetentSessionID:   100,
+			ProviderThreadID:  "thread-old",
+			ProviderSessionID: "session-old",
+		},
+	}
+
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{
+				Agent: config.Agent{ExperimentalThreadResume: true},
+			},
+			Prompt: "Work",
+		},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		Store:        sessionStore,
+		Now:          newFakeClock(startedAt, startedAt.Add(time.Second)).Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(t.Context(), RunRequest{
+		Issue: connector.Issue{
+			ID:            "issue-1142",
+			Identifier:    "digitaldrywood/detent#1142",
+			Title:         "Capacity outage",
+			ModelOverride: "gpt-5-codex",
+		},
+		StartedAt: startedAt,
+	})
+	if !IsCapacityError(err) {
+		t.Fatalf("Run() error = %v, want capacity error", err)
+	}
+	if len(agentBackend.requests) != 1 {
+		t.Fatalf("backend requests = %d, want one capacity probe without fresh fallback", len(agentBackend.requests))
+	}
+}
+
 func TestRunnerRunDoesNotFallbackAfterResumedTurnStarts(t *testing.T) {
 	t.Parallel()
 
@@ -888,7 +939,7 @@ func TestRunnerRunDoesNotFallbackAfterResumedTurnStarts(t *testing.T) {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
-	_, err = runner.Run(context.Background(), RunRequest{
+	result, err := runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
 			ID:            "issue-859",
 			Identifier:    "digitaldrywood/detent#859",
@@ -899,6 +950,9 @@ func TestRunnerRunDoesNotFallbackAfterResumedTurnStarts(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Run() error = nil, want resumed turn failure")
+	}
+	if !result.TurnStarted {
+		t.Fatal("RunResult.TurnStarted = false, want provider turn evidence")
 	}
 	if len(agentBackend.requests) != 1 {
 		t.Fatalf("backend requests = %d, want no fresh fallback after turn start", len(agentBackend.requests))
@@ -3090,6 +3144,24 @@ func (*fakeCodexClient) DefaultModel(context.Context, string) (string, error) {
 
 type resumeFallbackAgentBackend struct {
 	requests []AgentTurnRequest
+}
+
+type resumeCapacityAgentBackend struct {
+	requests []AgentTurnRequest
+	resetAt  time.Time
+}
+
+func (b *resumeCapacityAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
+	b.requests = append(b.requests, req)
+	return AgentTurnResult{}, errors.New("usage limit reached")
+}
+
+func (b *resumeCapacityAgentBackend) ClassifyCapacityError(error, *telemetry.RateLimits, time.Time) (backendcapacity.Details, bool) {
+	return backendcapacity.Details{
+		Kind:    "usageLimitExceeded",
+		Reason:  "provider usage limit reached",
+		ResetAt: &b.resetAt,
+	}, true
 }
 
 func (b *resumeFallbackAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {

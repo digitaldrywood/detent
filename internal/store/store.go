@@ -167,6 +167,7 @@ const (
 	WorkAttemptTerminalSuperseded WorkAttemptTerminalState = "superseded"
 	WorkAttemptTerminalAbandoned  WorkAttemptTerminalState = "abandoned"
 	WorkAttemptTerminalNoProgress WorkAttemptTerminalState = "no_progress"
+	WorkAttemptTerminalCapacity   WorkAttemptTerminalState = "capacity"
 )
 
 type SchedulerDecisionResult string

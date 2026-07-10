@@ -69,6 +69,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Blocked:            blockedSnapshots(s.Blocked, s.Claimed, now, s.laneEntries),
 		Completed:          completedSnapshots(s.Completed, s.Claimed, now, s.laneEntries),
 		RateLimits:         cloneRateLimits(s.RateLimits),
+		BackendOutages:     backendOutageSnapshots(s.BackendOutages),
 		Tokens:             tokensFromTokenTotals(s.liveTokenTotals()),
 		Budget: telemetry.Budget{
 			Refusals: budgetRefusalSnapshots(s.BudgetRefusals),
@@ -81,6 +82,31 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Completed: len(snapshot.Completed),
 	}
 	return snapshot
+}
+
+func backendOutageSnapshots(outages map[string]BackendOutage) []telemetry.BackendOutage {
+	keys := sortedKeys(outages)
+	rows := make([]telemetry.BackendOutage, 0, len(keys))
+	for _, key := range keys {
+		outage := outages[key]
+		row := telemetry.BackendOutage{
+			BackendID:      outage.Scope.BackendID,
+			BackendKind:    outage.Scope.BackendKind,
+			Provider:       outage.Scope.Provider,
+			Kind:           outage.Kind,
+			Reason:         outage.Reason,
+			DetectedAt:     outage.DetectedAt,
+			LastObservedAt: outage.LastObservedAt,
+			ResumeAt:       outage.ResumeAt,
+			ProbeIssueID:   outage.ProbeIssueID,
+		}
+		if !outage.ResetAt.IsZero() {
+			resetAt := outage.ResetAt
+			row.ResetAt = &resetAt
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 func (s State) applyGatePendingSnapshots(snapshots []telemetry.Issue, issues []connector.Issue) {

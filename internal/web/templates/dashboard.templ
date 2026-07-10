@@ -189,9 +189,26 @@ templ GitHubAPIHealthSidebarItem(data DashboardShellData) {
 
 templ HealthSnapshot(data DashboardData) {
 	<section id="health-dashboard" class="grid min-w-0 gap-4 sm:gap-5" aria-label="Health dashboard">
+		@backendCapacityBanner(data.Snapshot)
 		@dashboardHealth(data)
 		@GitHubAPIHealthDetails(data.Snapshot)
 	</section>
+}
+
+templ backendCapacityBanner(snapshot telemetry.Snapshot) {
+	if len(snapshot.BackendOutages) > 0 {
+		<section id="backend-capacity-outage" class="flex min-w-0 items-start gap-3 rounded-md border border-warn/40 bg-warn/10 px-4 py-3 text-sm shadow-sm" role="status" aria-live="polite">
+			@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-warn"})
+			<div class="grid min-w-0 gap-2">
+				for _, outage := range snapshot.BackendOutages {
+					<div class="min-w-0">
+						<p class="font-medium text-text">{ backendCapacityOutageTitle(outage) }</p>
+						<p class="mt-0.5 text-xs text-sec">{ backendCapacityOutageDetail(outage, snapshot.GeneratedAt) }</p>
+					</div>
+				}
+			</div>
+		</section>
+	}
 }
 
 templ AnalyticsSnapshot(data DashboardData) {

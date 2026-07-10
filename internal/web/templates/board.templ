@@ -51,6 +51,11 @@ templ BoardSnapshot(data DashboardData) {
 
 templ boardSnapshotBody(data DashboardData) {
 	{{ view := boardViewFromDashboard(data) }}
+	if len(data.Snapshot.BackendOutages) > 0 {
+		<div class="flex-none px-5 pt-3.5">
+			@backendCapacityBanner(data.Snapshot)
+		</div>
+	}
 	if len(view.Exceptions) > 0 {
 		<div id="board-exceptions" class="flex-none px-5 pt-3.5">
 			@primitives.ExceptionStrip(view.Exceptions)

@@ -6222,6 +6222,45 @@ func rateLimitName(limits *telemetry.RateLimits) string {
 	return limits.LimitName
 }
 
+func backendCapacityOutageTitle(outage telemetry.BackendOutage) string {
+	backend := strings.TrimSpace(outage.BackendID)
+	if backend == "" {
+		backend = strings.TrimSpace(outage.BackendKind)
+	}
+	if backend == "" {
+		backend = "agent backend"
+	}
+	return "Backend " + backend + " at usage limit"
+}
+
+func backendCapacityOutageDetail(outage telemetry.BackendOutage, now time.Time) string {
+	provider := strings.TrimSpace(outage.Provider)
+	detail := "Dispatch is paused"
+	if provider != "" {
+		detail += " for " + provider
+	}
+	if strings.TrimSpace(outage.ProbeIssueID) != "" {
+		return detail + "; capacity probe in progress"
+	}
+	if !outage.ResumeAt.IsZero() {
+		if outage.ResumeAt.After(now) {
+			return detail + "; resuming at " + outage.ResumeAt.UTC().Format("15:04 UTC")
+		}
+		return detail + "; capacity probe due now"
+	}
+	return detail + "; waiting for a low-frequency capacity probe"
+}
+
+func backendCapacityHealthVerdict(snapshot telemetry.Snapshot) string {
+	if len(snapshot.BackendOutages) == 0 {
+		return ""
+	}
+	if len(snapshot.BackendOutages) == 1 {
+		return backendCapacityOutageTitle(snapshot.BackendOutages[0]) + "."
+	}
+	return formatCount(len(snapshot.BackendOutages)) + " agent backends are at usage limits."
+}
+
 func hasGraphQLBudget(limits *telemetry.RateLimits) bool {
 	return limits != nil && (limits.GitHubGraphQL != nil || limits.GraphQLCost != nil)
 }

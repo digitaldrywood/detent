@@ -30,6 +30,7 @@ type claudeEvent struct {
 	OutputTokens int64          `json:"output_tokens"`
 	TotalTokens  int64          `json:"total_tokens"`
 	IsError      bool           `json:"is_error"`
+	Result       string         `json:"result"`
 	DurationMS   int64          `json:"duration_ms"`
 	TotalCostUSD float64        `json:"total_cost_usd"`
 }
@@ -77,6 +78,7 @@ type turnState struct {
 	usage           runner.AgentTokenUsage
 	sawResult       bool
 	resultSubtype   string
+	resultText      string
 	resultIsError   bool
 	turnStartedSent bool
 }
@@ -244,6 +246,7 @@ func (s *turnState) applyStreamEvent(
 func (s *turnState) applyResult(event claudeEvent, onUpdate runner.AgentUpdateHandler) error {
 	s.sawResult = true
 	s.resultSubtype = event.Subtype
+	s.resultText = strings.TrimSpace(event.Result)
 	s.resultIsError = event.IsError
 	// Non-goals: --resume continuity, rate-limit telemetry, and total_cost_usd budget ingest.
 	if event.Usage != nil && !event.Usage.empty() {

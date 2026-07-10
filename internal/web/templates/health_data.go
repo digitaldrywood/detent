@@ -2,6 +2,7 @@ package templates
 
 import (
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
@@ -37,6 +38,12 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		Checked:  appShellSnapshotClock(DashboardShellData{Snapshot: snapshot}),
 		Footnote: "Quota bars turn amber only at 90% — polling continues normally; backoff engages automatically when a limit is exhausted.",
 		Rows:     healthRows(snapshot),
+	}
+	if len(snapshot.BackendOutages) > 0 {
+		view.Kind = primitives.KindWarn
+		view.Verdict = backendCapacityHealthVerdict(snapshot)
+		view.Detail = backendCapacityOutageDetail(snapshot.BackendOutages[0], snapshot.GeneratedAt)
+		return view
 	}
 	switch api.State {
 	case gitHubAPIHealthStateHealthy, gitHubAPIHealthStateAtRest:
@@ -80,7 +87,21 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 		}
 	}
 	rows = append(rows, healthSchedulerRow(snapshot), healthBackoffRow(snapshot))
+	for _, outage := range snapshot.BackendOutages {
+		rows = append(rows, healthBackendOutageRow(outage, snapshot.GeneratedAt))
+	}
 	return rows
+}
+
+func healthBackendOutageRow(outage telemetry.BackendOutage, now time.Time) healthRow {
+	return healthRow{
+		ID:        "health-backend-" + boardCardSlug(outage.BackendID),
+		Component: "Backend " + outage.BackendID,
+		Kind:      primitives.KindWarn,
+		Status:    "Usage limit",
+		Detail:    backendCapacityOutageDetail(outage, now),
+		Resets:    outage.ResumeAt.UTC().Format("15:04"),
+	}
 }
 
 func healthBucketRow(id string, component string, bucket *telemetry.RateLimitBucket) healthRow {

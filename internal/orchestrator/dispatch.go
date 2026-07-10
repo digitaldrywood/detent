@@ -179,6 +179,7 @@ const (
 	dispatchIssueFailureClaimFailed           = "claim_failed"
 	dispatchIssueFailureWorkAttemptStart      = "work_attempt_start_failed"
 	dispatchIssueFailureStartStateTransition  = "start_state_transition_failed"
+	dispatchIssueFailureBackendCapacityPaused = "backend_capacity_paused"
 )
 
 type dispatchIssueOutcome struct {
@@ -207,6 +208,11 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 ) dispatchIssueOutcome {
 	queuedRetry, retryQueued := state.Retry[issue.ID]
 	runMode := o.dispatchMode(ctx, state, issue)
+	capacityRequest := runpkg.RunRequest{Issue: issue, Mode: runMode, SelectorContext: o.selectorContext()}
+	capacityScope, capacityProbeKey, capacityPaused := o.backendCapacityDispatch(state, capacityRequest, now)
+	if capacityPaused {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureBackendCapacityPaused}
+	}
 	targetState := dispatchStartTransitionState(issue, runMode, o.cfg.ActiveStates)
 	slotIssue := issue
 	if targetState != "" {
@@ -275,6 +281,8 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	}
 	dispatchSourceState := ""
 	dispatchTargetState := ""
+	dispatchStartSourceState := ""
+	dispatchStartTargetState := ""
 	if targetState != "" {
 		sourceState := issue.State
 		if err := o.updateIssueState(ctx, state, issue, targetState, now, "dispatch_start"); err != nil {
@@ -305,6 +313,8 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		issue.State = targetState
 		dispatchSourceState = sourceState
 		dispatchTargetState = targetState
+		dispatchStartSourceState = sourceState
+		dispatchStartTargetState = targetState
 	}
 	if dispatchSourceState == "" || dispatchTargetState == "" {
 		dispatchSourceState, dispatchTargetState = o.dispatchTimelineTransitionContext(ctx, issue)
@@ -312,15 +322,20 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	o.markMergeStarted(state, issue, now)
 	claim.Issue = issue
 	runCtx, cancel := context.WithCancel(ctx)
+	markBackendCapacityProbe(state, capacityProbeKey, issue.ID)
 	state.Running[issue.ID] = Running{
-		Issue:         issue,
-		Attempt:       attempt,
-		WorkAttemptID: workAttemptID,
-		Mode:          runMode,
-		StartedAt:     now,
-		WorkerHost:    workerHost,
-		globalSlot:    globalSlot,
-		cancel:        cancel,
+		Issue:               issue,
+		Attempt:             attempt,
+		WorkAttemptID:       workAttemptID,
+		Mode:                runMode,
+		DispatchSourceState: dispatchStartSourceState,
+		DispatchTargetState: dispatchStartTargetState,
+		StartedAt:           now,
+		WorkerHost:          workerHost,
+		CapacityScope:       capacityScope,
+		CapacityProbe:       capacityProbeKey != "",
+		globalSlot:          globalSlot,
+		cancel:              cancel,
 	}
 	o.setGlobalDispatchPreempt(globalSlot, cancel)
 	state.Claimed[issue.ID] = claim

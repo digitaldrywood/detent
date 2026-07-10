@@ -2,10 +2,16 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/claudecode"
+	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/dependencyline"
@@ -85,7 +91,7 @@ func checkDoctorBlockedRecovery(ctx context.Context, id string, cfg workflowconf
 		}
 	}
 
-	check := checkDoctorBlockedRecoveryLive(ctx, name, projectConnector)
+	check := checkDoctorBlockedRecoveryLive(ctx, name, projectConnector, cfg, time.Now())
 	if err := closeDoctorAutoPromoteConnector(projectConnector); err != nil && check.Status != doctorFail {
 		check.Status = doctorWarn
 		check.Detail = check.Detail + "; connector close failed: " + err.Error()
@@ -98,6 +104,8 @@ func checkDoctorBlockedRecoveryLive(
 	ctx context.Context,
 	name string,
 	projectConnector doctorAutoPromoteConnector,
+	cfg workflowconfig.Config,
+	now time.Time,
 ) doctorCheck {
 	if verifier, ok := projectConnector.(doctorStatusOptionVerifier); ok {
 		if err := verifier.VerifyStatusOptions(ctx, []string{"Blocked", "Rework"}); err != nil {
@@ -128,23 +136,138 @@ func checkDoctorBlockedRecoveryLive(
 		}
 		candidates = append(candidates, doctorBlockedRecoveryCandidateDiagnosticFromIssue(issue, decision))
 	}
+	capacity := doctorBlockedCapacityDiagnostics(ctx, projectConnector, cfg, issues, now)
 
 	detail := fmt.Sprintf("sampled %d Blocked candidate(s)", len(issues))
-	if len(candidates) == 0 {
+	if len(candidates) == 0 && len(capacity) == 0 {
 		return doctorCheck{
 			Name:   name,
 			Status: doctorOK,
 			Detail: detail + "; no agent-recoverable blocked candidates found",
 		}
 	}
-	detail += "; " + doctorBlockedRecoveryCandidateSummaries(candidates)
+	if len(candidates) > 0 {
+		detail += "; " + doctorBlockedRecoveryCandidateSummaries(candidates)
+	}
+	if len(capacity) > 0 {
+		detail += fmt.Sprintf(
+			"; %d issue(s) parked by provider capacity exhaustion: %s",
+			len(capacity),
+			strings.Join(doctorParkedCapacityIssueLabels(capacity), ", "),
+		)
+	}
 	return doctorCheck{
 		Name:                      name,
 		Status:                    doctorWarn,
 		Detail:                    detail,
-		Hint:                      "Detent can recover these Blocked issues to Rework because the next action is PR maintenance.",
+		Hint:                      "Detent automatically recovers quota-parked issues after provider capacity returns; PR-maintenance candidates recover to Rework.",
 		BlockedRecoveryCandidates: candidates,
+		BackendCapacity:           capacity,
 	}
+}
+
+func doctorParkedCapacityIssueLabels(diagnostics []doctorBackendCapacityDiagnostic) []string {
+	labels := []string{}
+	for _, diagnostic := range diagnostics {
+		for _, issue := range diagnostic.ParkedIssues {
+			if !slices.Contains(labels, issue) {
+				labels = append(labels, issue)
+			}
+		}
+	}
+	return labels
+}
+
+func doctorBlockedCapacityDiagnostics(
+	ctx context.Context,
+	projectConnector doctorAutoPromoteConnector,
+	cfg workflowconfig.Config,
+	issues []connector.Issue,
+	now time.Time,
+) []doctorBackendCapacityDiagnostic {
+	diagnostics := []doctorBackendCapacityDiagnostic{}
+	var reader connector.IssueCommentReader
+	if candidate, ok := projectConnector.(connector.IssueCommentReader); ok {
+		reader = candidate
+	}
+	for _, issue := range issues {
+		comments := issue.Comments
+		if len(comments) == 0 && reader != nil {
+			fetched, err := reader.FetchIssueComments(ctx, issue)
+			if err != nil {
+				continue
+			}
+			comments = fetched
+		}
+		for index := len(comments) - 1; index >= 0; index-- {
+			if !orchestrator.IsLegacyFailureBreakerComment(comments[index].Body) {
+				continue
+			}
+			backend, details, ok := doctorClassifyCapacityComment(cfg, comments[index].Body, now)
+			if !ok {
+				continue
+			}
+			detectedAt := time.Time{}
+			if comments[index].CreatedAt != nil {
+				detectedAt = comments[index].CreatedAt.UTC()
+			}
+			diagnostic := doctorBackendCapacityDiagnostic{
+				BackendID:      backend.ID,
+				BackendKind:    backend.Kind,
+				Provider:       doctorBackendProvider(backend),
+				DetectedAt:     detectedAt,
+				LastObservedAt: detectedAt,
+				Active:         details.ResetAt == nil || details.ResetAt.After(now),
+				ParkedIssues:   []string{doctorIssueLabel(issue)},
+			}
+			if details.ResetAt != nil {
+				resetAt := details.ResetAt.UTC()
+				diagnostic.ResetAt = &resetAt
+				diagnostic.ResumeAt = resetAt
+			}
+			diagnostics = append(diagnostics, diagnostic)
+			break
+		}
+	}
+	return diagnostics
+}
+
+func doctorClassifyCapacityComment(
+	cfg workflowconfig.Config,
+	body string,
+	now time.Time,
+) (workflowconfig.AgentBackend, backendcapacity.Details, bool) {
+	err := errors.New(strings.TrimSpace(body))
+	for _, backend := range cfg.AgentBackendConfigs() {
+		scope := backendcapacity.Scope{
+			BackendID:   backend.ID,
+			BackendKind: backend.Kind,
+			Provider:    doctorBackendProvider(backend),
+		}
+		if !scope.Hosted() {
+			continue
+		}
+		var details backendcapacity.Details
+		var ok bool
+		switch backend.Kind {
+		case workflowconfig.AgentBackendCodex:
+			details, ok = codex.ClassifyCapacityError(err, nil, now)
+		case workflowconfig.AgentBackendClaudeCode:
+			details, ok = claudecode.ClassifyCapacityError(err, nil, now)
+		}
+		if ok {
+			return backend, details, true
+		}
+	}
+	return workflowconfig.AgentBackend{}, backendcapacity.Details{}, false
+}
+
+func doctorBackendProvider(backend workflowconfig.AgentBackend) string {
+	provider := strings.TrimSpace(backend.Provider)
+	if provider == "" && backend.Kind == workflowconfig.AgentBackendCodex {
+		provider = strings.TrimSpace(backend.CodexOptions().ModelProvider)
+	}
+	return provider
 }
 
 func fetchDoctorBlockedRecoveryIssues(
