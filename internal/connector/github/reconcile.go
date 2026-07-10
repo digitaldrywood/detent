@@ -16,7 +16,7 @@ func (c *Connector) ReconcileIssue(ctx context.Context, target connector.Reconci
 	if !ok {
 		return connector.ReconcileResult{}, nil
 	}
-	if validPullRequestRepo(c.repository) && c.repository != repo {
+	if validPullRequestRepo(c.repository) && !samePullRequestRepo(c.repository, repo) {
 		return connector.ReconcileResult{}, nil
 	}
 

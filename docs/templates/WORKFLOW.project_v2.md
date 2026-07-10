@@ -47,7 +47,7 @@ tracker:
       - Human Review
     target_state: Todo
 polling:
-  interval_ms: 60000
+  interval_ms: 120000
   conditional: true
 workspace:
   root: <worktree-root>

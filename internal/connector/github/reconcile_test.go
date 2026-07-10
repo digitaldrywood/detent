@@ -13,12 +13,14 @@ func TestConnectorReconcileIssueFetchesOneLabelIssue(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		labels    string
-		wantState string
+		name       string
+		repository string
+		labels     string
+		wantState  string
 	}{
-		{name: "configured status label", labels: `[{"name":"detent:in-progress"}]`, wantState: "In Progress"},
-		{name: "status label removed", labels: `[{"name":"enhancement"}]`, wantState: "Open"},
+		{name: "configured status label", repository: "digitaldrywood/detent", labels: `[{"name":"detent:in-progress"}]`, wantState: "In Progress"},
+		{name: "status label removed", repository: "digitaldrywood/detent", labels: `[{"name":"enhancement"}]`, wantState: "Open"},
+		{name: "repository case differs", repository: "DigitalDrywood/Detent", labels: `[{"name":"detent:in-progress"}]`, wantState: "In Progress"},
 	}
 
 	for _, tt := range tests {
@@ -39,7 +41,7 @@ func TestConnectorReconcileIssueFetchesOneLabelIssue(t *testing.T) {
 				APIKey:             "test-token",
 				HTTPClient:         server.Client(),
 				GitHubStatusSource: GitHubStatusSourceLabel,
-				Repository:         "digitaldrywood/detent",
+				Repository:         tt.repository,
 				ActiveStates:       []string{"Todo", "In Progress"},
 				ObservedStates:     []string{"Blocked"},
 				TerminalStates:     []string{"Done"},

@@ -426,6 +426,7 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 		wantStatusField  string
 		wantStatusPrefix string
 		wantWriteProbe   bool
+		wantIntervalMS   int
 	}{
 		{
 			path:            "docs/templates/WORKFLOW.project_v2.md",
@@ -433,6 +434,7 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 			want:            []string{"github_status_source: project_v2", "project_slug: <project-node-id>"},
 			unwanted:        []string{"repository: <repo-owner>/<repo-name>", "write_probe_issue:"},
 			wantProjectSlug: true,
+			wantIntervalMS:  workflowconfig.DefaultPollingIntervalMS,
 		},
 		{
 			path:            "docs/templates/WORKFLOW.issue_field.md",
@@ -441,6 +443,7 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 			unwanted:        []string{"project_slug:", "write_probe_issue:"},
 			wantRepository:  true,
 			wantStatusField: "Status",
+			wantIntervalMS:  workflowconfig.MinPollingIntervalMS,
 		},
 		{
 			path:             "docs/templates/WORKFLOW.label.md",
@@ -449,6 +452,7 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 			unwanted:         []string{"project_slug:", "status_field:", "write_probe_issue:"},
 			wantRepository:   true,
 			wantStatusPrefix: "detent:",
+			wantIntervalMS:   workflowconfig.MinPollingIntervalMS,
 		},
 	}
 
@@ -479,8 +483,8 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 			if cfg.Tracker.GitHubStatusSource != tt.source {
 				t.Fatalf("GitHubStatusSource = %q, want %q", cfg.Tracker.GitHubStatusSource, tt.source)
 			}
-			if cfg.Polling.IntervalMS != workflowconfig.MinPollingIntervalMS {
-				t.Fatalf("Polling.IntervalMS = %d, want %d", cfg.Polling.IntervalMS, workflowconfig.MinPollingIntervalMS)
+			if cfg.Polling.IntervalMS != tt.wantIntervalMS {
+				t.Fatalf("Polling.IntervalMS = %d, want %d", cfg.Polling.IntervalMS, tt.wantIntervalMS)
 			}
 			if !cfg.Polling.Conditional {
 				t.Fatal("Polling.Conditional = false, want true")
