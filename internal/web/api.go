@@ -899,7 +899,17 @@ func lifetimeTotalsResponseFromTelemetry(totals telemetry.LifetimeTotals) lifeti
 		RuntimeSeconds:        totals.RuntimeSeconds,
 		Sessions:              totals.Sessions,
 		Runs:                  totals.Runs,
+		OrphanResumed:         totals.OrphanResumed,
+		OrphanFresh:           totals.OrphanFresh,
+		ResumedInputTokens:    totals.ResumedInputTokens,
+		ResumedCachedTokens:   totals.ResumedCachedTokens,
+		ResumedCacheFraction:  resumedCacheReadFraction(totals),
 	}
+}
+
+func resumedCacheReadFraction(totals telemetry.LifetimeTotals) float64 {
+	fraction, _ := totals.ResumedCacheReadFraction()
+	return fraction
 }
 
 func budgetResponse(budget telemetry.Budget) budgetAPIResponse {
@@ -1499,16 +1509,21 @@ type throughputAPIResponse struct {
 }
 
 type lifetimeTotalsResponse struct {
-	Available             bool   `json:"available"`
-	DegradedReason        string `json:"degraded_reason,omitempty"`
-	InputTokens           int64  `json:"input_tokens"`
-	CachedInputTokens     int64  `json:"cached_input_tokens,omitempty"`
-	OutputTokens          int64  `json:"output_tokens"`
-	ReasoningOutputTokens int64  `json:"reasoning_output_tokens,omitempty"`
-	TotalTokens           int64  `json:"total_tokens"`
-	RuntimeSeconds        int64  `json:"runtime_seconds"`
-	Sessions              int64  `json:"sessions"`
-	Runs                  int64  `json:"runs"`
+	Available             bool    `json:"available"`
+	DegradedReason        string  `json:"degraded_reason,omitempty"`
+	InputTokens           int64   `json:"input_tokens"`
+	CachedInputTokens     int64   `json:"cached_input_tokens,omitempty"`
+	OutputTokens          int64   `json:"output_tokens"`
+	ReasoningOutputTokens int64   `json:"reasoning_output_tokens,omitempty"`
+	TotalTokens           int64   `json:"total_tokens"`
+	RuntimeSeconds        int64   `json:"runtime_seconds"`
+	Sessions              int64   `json:"sessions"`
+	Runs                  int64   `json:"runs"`
+	OrphanResumed         int64   `json:"orphan_continuations_resumed,omitempty"`
+	OrphanFresh           int64   `json:"orphan_continuations_fresh,omitempty"`
+	ResumedInputTokens    int64   `json:"resumed_first_turn_input_tokens,omitempty"`
+	ResumedCachedTokens   int64   `json:"resumed_first_turn_cached_input_tokens,omitempty"`
+	ResumedCacheFraction  float64 `json:"resumed_first_turn_cache_read_fraction,omitempty"`
 }
 
 type recentSessionAPIResponse struct {

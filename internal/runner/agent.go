@@ -34,6 +34,7 @@ const (
 	liveDiffStatsInterval  = 2 * time.Second
 	recentActivityLimit    = 5
 	defaultProjectID       = "default"
+	orphanResumePrompt     = "The Detent process restarted while this session was running. Continue from your last state and complete the assigned work."
 )
 
 var (
@@ -49,6 +50,14 @@ type SessionStore interface {
 
 type sessionIdentityStore interface {
 	UpdateSessionIdentity(context.Context, int64, agentidentity.Identity) error
+}
+
+type sessionProviderStore interface {
+	UpdateSessionProviderIdentity(context.Context, int64, store.SessionProviderIdentity) error
+}
+
+type sessionResumeStore interface {
+	UpdateSessionResumeState(context.Context, int64, store.SessionResumeState) error
 }
 
 type BudgetChecker interface {
@@ -479,6 +488,9 @@ func (r *Runner) runAgentTurn(
 			turnStarted = true
 		}
 		r.logAgentUpdate(runRequest.Issue, update)
+		if err := r.persistSessionProviderIdentity(ctx, detentSessionID, update); err != nil {
+			return err
+		}
 		previousIdentity := result.RuntimeIdentity
 		applyAgentUpdate(&result, update)
 		if !previousIdentity.MateriallyEqual(result.RuntimeIdentity) {
@@ -599,8 +611,23 @@ func agentResumeStateEmpty(state store.AgentResumeState) bool {
 	return strings.TrimSpace(state.ProviderThreadID) == "" && strings.TrimSpace(state.ProviderSessionID) == ""
 }
 
+func agentResumeStateMatches(state store.AgentResumeState, model string, backendID string, backendKind string, agentRole string) bool {
+	return strings.EqualFold(strings.TrimSpace(state.RequestedModel), strings.TrimSpace(model)) &&
+		strings.EqualFold(strings.TrimSpace(state.AgentBackendID), strings.TrimSpace(backendID)) &&
+		strings.EqualFold(strings.TrimSpace(state.AgentBackendKind), strings.TrimSpace(backendKind)) &&
+		strings.EqualFold(strings.TrimSpace(state.AgentRole), strings.TrimSpace(agentRole))
+}
+
 func agentResumeEmpty(resume AgentResume) bool {
 	return strings.TrimSpace(resume.ThreadID) == "" && strings.TrimSpace(resume.SessionID) == ""
+}
+
+func verifyAgentResume(ctx context.Context, backend AgentBackend, resume AgentResume) error {
+	verifier, ok := backend.(AgentResumeVerifier)
+	if !ok {
+		return ErrAgentResumeUnsupported
+	}
+	return verifier.VerifyResume(ctx, resume)
 }
 
 func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
@@ -721,7 +748,31 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
-	sessionID, sessionStarted, err := r.startSession(ctx, req, startedAt, runtimeIdentity)
+	orphanRecovery := resumeState.Orphaned
+	orphanRecoveryOutcome := ""
+	if orphanRecovery {
+		orphanRecoveryOutcome = store.OrphanRecoveryResumed
+		var verifyErr error
+		if !agentResumeStateMatches(resumeState, sessionModel, selection.BackendID, backendConfig.Kind, role) {
+			verifyErr = errors.New("orphaned session runtime identity no longer matches selected backend, model, and role")
+		} else {
+			verifyErr = verifyAgentResume(ctx, backend, agentResumeFromState(resumeState))
+		}
+		if verifyErr != nil {
+			r.logWorkerEvent(req.Issue, "worker_orphan_resume_preflight_failed_fallback",
+				"workspace_path", info.Path,
+				"backend_id", selection.BackendID,
+				"route", selection.RouteName,
+				"role", role,
+				"thread_id", resumeState.ProviderThreadID,
+				"provider_session_id", resumeState.ProviderSessionID,
+				"error", errorString(verifyErr),
+			)
+			resumeState = store.AgentResumeState{}
+			orphanRecoveryOutcome = store.OrphanRecoveryFresh
+		}
+	}
+	sessionID, sessionStarted, err := r.startSession(ctx, req, startedAt, runtimeIdentity, resumeState, orphanRecoveryOutcome)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -734,9 +785,13 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	commandStartedAttrs = append(commandStartedAttrs, runtimeIdentityLogAttrs(runtimeIdentity)...)
 	r.logWorkerEvent(req.Issue, "worker_command_started", commandStartedAttrs...)
+	turnPrompt := prompt
+	if orphanRecovery && !agentResumeStateEmpty(resumeState) {
+		turnPrompt = orphanResumePrompt
+	}
 	turnRequest := AgentTurnRequest{
 		Workspace:          info.Path,
-		Prompt:             prompt,
+		Prompt:             turnPrompt,
 		Model:              selectedModel,
 		ModelProvider:      modelProvider,
 		ServiceTier:        serviceTier,
@@ -759,6 +814,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			"error", errorString(execution.err),
 		)
 		turnRequest.Resume = AgentResume{}
+		turnRequest.Prompt = prompt
+		fallbackOutcome := ""
+		if orphanRecovery {
+			fallbackOutcome = store.OrphanRecoveryFresh
+		}
+		if updateErr := r.updateSessionResumeState(ctx, sessionID, 0, fallbackOutcome); updateErr != nil {
+			r.logger.Warn("clear agent session resume state failed", "detent_session_id", sessionID, "issue_id", req.Issue.ID, "error", updateErr)
+		}
 		resumeState = store.AgentResumeState{}
 		execution = r.runAgentTurn(ctx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, runStartedAt, sessionID, runtimeIdentity)
 		if execution.err != nil {
@@ -965,7 +1028,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		SelectorContext: req.SelectorContext,
 		OnUsageUpdate:   req.OnUsageUpdate,
 	}
-	sessionID, sessionStarted, err := r.startSession(ctx, runReq, startedAt, runtimeIdentity)
+	sessionID, sessionStarted, err := r.startSession(ctx, runReq, startedAt, runtimeIdentity, store.AgentResumeState{}, "")
 	if err != nil {
 		return gate.ValidatorResult{}, err
 	}
@@ -1000,6 +1063,9 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
 		}
 		r.logAgentUpdate(req.Issue, update)
+		if err := r.persistSessionProviderIdentity(ctx, sessionID, update); err != nil {
+			return err
+		}
 		if update.Type == AgentUpdateMessageDelta {
 			output.WriteString(update.Delta)
 		}
@@ -1296,23 +1362,29 @@ func (r *Runner) startSession(
 	req RunRequest,
 	startedAt time.Time,
 	identity agentidentity.Identity,
+	resumeState store.AgentResumeState,
+	orphanRecoveryOutcome string,
 ) (int64, bool, error) {
 	if r.store == nil {
 		return 0, false, nil
 	}
 
 	sessionID, err := r.store.StartSession(ctx, store.SessionStart{
-		IssueID:          req.Issue.ID,
-		Identifier:       req.Issue.Identifier,
-		IssueURL:         req.Issue.URL,
-		WorkAttemptID:    req.WorkAttemptID,
-		StartedAt:        startedAt,
-		Model:            identity.ResolvedModel.Value,
-		RequestedModel:   identity.RequestedModel.Value,
-		AgentBackendID:   identity.BackendID,
-		AgentBackendKind: identity.BackendKind,
-		AgentRole:        identity.Role,
-		RuntimeIdentity:  identity,
+		IssueID:               req.Issue.ID,
+		Identifier:            req.Issue.Identifier,
+		IssueURL:              req.Issue.URL,
+		WorkAttemptID:         req.WorkAttemptID,
+		StartedAt:             startedAt,
+		Model:                 identity.ResolvedModel.Value,
+		RequestedModel:        identity.RequestedModel.Value,
+		AgentBackendID:        identity.BackendID,
+		AgentBackendKind:      identity.BackendKind,
+		AgentRole:             identity.Role,
+		RuntimeIdentity:       identity,
+		ProviderThreadID:      resumeState.ProviderThreadID,
+		ProviderSessionID:     resumeState.ProviderSessionID,
+		ResumedFromSessionID:  resumeState.DetentSessionID,
+		OrphanRecoveryOutcome: orphanRecoveryOutcome,
 	})
 	if err != nil {
 		return 0, false, fmt.Errorf("start agent session: %w", err)
@@ -1321,6 +1393,42 @@ func (r *Runner) startSession(
 	attrs = append(attrs, runtimeIdentityLogAttrs(identity)...)
 	r.logWorkerEvent(req.Issue, "worker_session_started", attrs...)
 	return sessionID, true, nil
+}
+
+func (r *Runner) persistSessionProviderIdentity(ctx context.Context, sessionID int64, update AgentUpdate) error {
+	if sessionID <= 0 {
+		return nil
+	}
+	threadID := strings.TrimSpace(update.ThreadID)
+	providerSessionID := strings.TrimSpace(update.ProviderSessionID)
+	if threadID == "" && providerSessionID == "" {
+		return nil
+	}
+	providerStore, ok := r.store.(sessionProviderStore)
+	if !ok {
+		return nil
+	}
+	if err := providerStore.UpdateSessionProviderIdentity(ctx, sessionID, store.SessionProviderIdentity{
+		ThreadID:  threadID,
+		SessionID: providerSessionID,
+	}); err != nil {
+		return fmt.Errorf("update agent session provider identity: %w", err)
+	}
+	return nil
+}
+
+func (r *Runner) updateSessionResumeState(ctx context.Context, sessionID int64, resumedFromSessionID int64, orphanRecoveryOutcome string) error {
+	if sessionID <= 0 {
+		return nil
+	}
+	resumeStore, ok := r.store.(sessionResumeStore)
+	if !ok {
+		return nil
+	}
+	return resumeStore.UpdateSessionResumeState(ctx, sessionID, store.SessionResumeState{
+		ResumedFromSessionID:  resumedFromSessionID,
+		OrphanRecoveryOutcome: orphanRecoveryOutcome,
+	})
 }
 
 func (r *Runner) persistSessionIdentity(ctx context.Context, sessionID int64, identity agentidentity.Identity) error {

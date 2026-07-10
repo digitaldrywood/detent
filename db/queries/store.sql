@@ -64,8 +64,9 @@ INSERT INTO codex_sessions (
   model,
   provider_thread_id,
   provider_session_id,
-  resumed_from_session_id
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  resumed_from_session_id,
+  orphan_recovery_outcome
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetCodexSession :one
@@ -109,6 +110,57 @@ SET agent_backend_id = COALESCE(sqlc.narg(agent_backend_id), agent_backend_id),
     service_tier_provenance = sqlc.narg(service_tier_provenance),
     identity_observed_at = sqlc.narg(identity_observed_at)
 WHERE id = sqlc.arg(id);
+
+-- name: UpdateCodexSessionProviderIdentity :execrows
+UPDATE codex_sessions
+SET provider_thread_id = COALESCE(sqlc.narg(provider_thread_id), provider_thread_id),
+    provider_session_id = COALESCE(sqlc.narg(provider_session_id), provider_session_id)
+WHERE id = sqlc.arg(id);
+
+-- name: UpdateCodexSessionResumeState :execrows
+UPDATE codex_sessions
+SET resumed_from_session_id = sqlc.narg(resumed_from_session_id),
+    orphan_recovery_outcome = sqlc.narg(orphan_recovery_outcome),
+    provider_thread_id = CASE WHEN sqlc.narg(resumed_from_session_id) IS NULL THEN NULL ELSE provider_thread_id END,
+    provider_session_id = CASE WHEN sqlc.narg(resumed_from_session_id) IS NULL THEN NULL ELSE provider_session_id END
+WHERE id = sqlc.arg(id);
+
+-- name: ListOrphanedAgentSessions :many
+SELECT
+  s.id,
+  s.work_attempt_id,
+  w.project_id,
+  CAST(COALESCE(s.issue_id, w.issue_id, '') AS TEXT) AS issue_id,
+  CAST(COALESCE(s.identifier, w.identifier, '') AS TEXT) AS identifier,
+  CAST(COALESCE(s.issue_url, w.issue_url, '') AS TEXT) AS issue_url,
+  CAST(COALESCE(s.provider_thread_id, '') AS TEXT) AS provider_thread_id,
+  CAST(COALESCE(s.provider_session_id, '') AS TEXT) AS provider_session_id,
+  CAST(COALESCE(s.requested_model, '') AS TEXT) AS requested_model,
+  CAST(COALESCE(s.model, '') AS TEXT) AS model,
+  CAST(COALESCE(s.agent_backend_id, '') AS TEXT) AS agent_backend_id,
+  CAST(COALESCE(s.agent_backend_kind, '') AS TEXT) AS agent_backend_kind,
+  CAST(COALESCE(s.agent_role, '') AS TEXT) AS agent_role,
+  CAST(COALESCE(w.worker_type, '') AS TEXT) AS worker_type,
+  CAST(COALESCE(w.worker_host, '') AS TEXT) AS worker_host,
+  CAST(COALESCE(w.lane, '') AS TEXT) AS lane,
+  w.attempt_number,
+  CAST(s.started_at AS TEXT) AS started_at
+FROM codex_sessions s
+JOIN work_attempts w ON w.id = s.work_attempt_id
+WHERE w.project_id = sqlc.arg(project_id)
+  AND lower(trim(COALESCE(w.status, ''))) = 'active'
+  AND s.completed_at IS NULL
+  AND lower(trim(COALESCE(s.final_state, ''))) = 'running'
+  AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != '')
+ORDER BY s.started_at DESC, s.id DESC;
+
+-- name: MarkCodexSessionOrphaned :execrows
+UPDATE codex_sessions
+SET completed_at = sqlc.arg(completed_at),
+    final_state = 'orphaned'
+WHERE id = sqlc.arg(id)
+  AND completed_at IS NULL
+  AND lower(trim(COALESCE(final_state, ''))) = 'running';
 
 -- name: GetLatestCompletedAgentResumeState :one
 SELECT
@@ -254,7 +306,7 @@ WITH issue_sessions AS (
     COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned') AS issue_key,
     started_at,
     completed_at,
-    lower(trim(COALESCE(final_state, ''))) NOT IN ('failed', 'failure', 'cancelled', 'canceled') AS successful
+    lower(trim(COALESCE(final_state, ''))) NOT IN ('failed', 'failure', 'cancelled', 'canceled', 'orphaned') AS successful
   FROM codex_sessions
   WHERE started_at IS NOT NULL
     AND completed_at IS NOT NULL
@@ -287,7 +339,11 @@ SELECT
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COALESCE(SUM(runtime_seconds), 0) AS INTEGER) AS runtime_seconds,
   CAST(COUNT(*) AS INTEGER) AS sessions,
-  CAST((SELECT COUNT(*) FROM detent_runs) AS INTEGER) AS runs
+  CAST((SELECT COUNT(*) FROM detent_runs) AS INTEGER) AS runs,
+  CAST(COALESCE(SUM(CASE WHEN orphan_recovery_outcome = 'resumed' THEN 1 ELSE 0 END), 0) AS INTEGER) AS orphan_resumed,
+  CAST(COALESCE(SUM(CASE WHEN orphan_recovery_outcome = 'fresh' THEN 1 ELSE 0 END), 0) AS INTEGER) AS orphan_fresh,
+  CAST(COALESCE(SUM(CASE WHEN orphan_recovery_outcome = 'resumed' THEN input_tokens ELSE 0 END), 0) AS INTEGER) AS resumed_input_tokens,
+  CAST(COALESCE(SUM(CASE WHEN orphan_recovery_outcome = 'resumed' THEN cached_input_tokens ELSE 0 END), 0) AS INTEGER) AS resumed_cached_tokens
 FROM codex_sessions
 WHERE completed_at IS NOT NULL;
 

@@ -19,6 +19,8 @@ type AgentBackend struct {
 	options Options
 }
 
+var _ runner.AgentResumeVerifier = (*AgentBackend)(nil)
+
 func NewAgentBackend(client *AppServer, options Options) (*AgentBackend, error) {
 	if client == nil {
 		return nil, ErrMissingAppServer
@@ -69,6 +71,13 @@ func (b *AgentBackend) RunTurn(
 	}, nil
 }
 
+func (b *AgentBackend) VerifyResume(ctx context.Context, resume runner.AgentResume) error {
+	if strings.TrimSpace(resume.ThreadID) == "" {
+		return runner.ErrAgentResumeUnsupported
+	}
+	return b.client.VerifyThread(ctx, resume.ThreadID)
+}
+
 func (b *AgentBackend) ListModels(ctx context.Context) ([]runner.AgentModel, error) {
 	models, err := b.client.ListModels(ctx)
 	if err != nil {
@@ -96,12 +105,17 @@ func agentUpdateFromCodex(update Update) runner.AgentUpdate {
 	if identity.IsZero() && update.Model != "" {
 		identity = agentidentity.RuntimeUpdate(update.Model, "", "", "", time.Time{})
 	}
+	providerSessionID := ""
+	if update.ThreadID != "" && update.TurnID != "" {
+		providerSessionID = update.ThreadID + "-" + update.TurnID
+	}
 	return runner.AgentUpdate{
 		Type:                runner.AgentUpdateType(update.Type),
 		Method:              update.Method,
 		ProcessIdentity:     update.ProcessIdentity,
 		ThreadID:            update.ThreadID,
 		TurnID:              update.TurnID,
+		ProviderSessionID:   providerSessionID,
 		ItemID:              update.ItemID,
 		Delta:               update.Delta,
 		Status:              update.Status,

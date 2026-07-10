@@ -14,6 +14,13 @@ type Backend string
 
 const BackendSQLite Backend = "sqlite"
 
+const (
+	SessionStateRunning   = "running"
+	SessionStateOrphaned  = "orphaned"
+	OrphanRecoveryResumed = "resumed"
+	OrphanRecoveryFresh   = "fresh"
+)
+
 const defaultBusyTimeout = 5 * time.Second
 
 var ErrNotFound = errors.New("store record not found")
@@ -33,6 +40,7 @@ type Store interface {
 	ValidatorMemoStore
 	RuntimeEvidenceStore
 	AgentResumeStore
+	OrphanSessionStore
 	APIKeyStore
 	Queries() *sqlc.Queries
 	Close() error
@@ -44,6 +52,8 @@ type StatsStore interface {
 	StopRun(context.Context, int64, RunStop) error
 	StartSession(context.Context, SessionStart) (int64, error)
 	UpdateSessionIdentity(context.Context, int64, agentidentity.Identity) error
+	UpdateSessionProviderIdentity(context.Context, int64, SessionProviderIdentity) error
+	UpdateSessionResumeState(context.Context, int64, SessionResumeState) error
 	FinishSession(context.Context, int64, SessionFinish) error
 	RecordUsageEvent(context.Context, UsageEvent) (int64, error)
 	UsageReport(context.Context, UsageReportQuery) (UsageReport, error)
@@ -96,6 +106,11 @@ type RuntimeEvidenceStore interface {
 type AgentResumeStore interface {
 	LatestCompletedAgentResumeState(context.Context, AgentResumeLookup) (AgentResumeState, error)
 	LatestIssueAgentResumeState(context.Context, IssueIdentity) (AgentResumeState, error)
+}
+
+type OrphanSessionStore interface {
+	ListOrphanedAgentSessions(context.Context, string) ([]OrphanedAgentSession, error)
+	MarkAgentSessionOrphaned(context.Context, int64, time.Time) error
 }
 
 type APIKeyStore interface {
@@ -208,18 +223,32 @@ type RunStop struct {
 }
 
 type SessionStart struct {
-	RunID            int64
-	WorkAttemptID    int64
-	IssueID          string
-	Identifier       string
-	IssueURL         string
-	StartedAt        time.Time
-	Model            string
-	RequestedModel   string
-	AgentBackendID   string
-	AgentBackendKind string
-	AgentRole        string
-	RuntimeIdentity  agentidentity.Identity
+	RunID                 int64
+	WorkAttemptID         int64
+	IssueID               string
+	Identifier            string
+	IssueURL              string
+	StartedAt             time.Time
+	Model                 string
+	RequestedModel        string
+	AgentBackendID        string
+	AgentBackendKind      string
+	AgentRole             string
+	RuntimeIdentity       agentidentity.Identity
+	ProviderThreadID      string
+	ProviderSessionID     string
+	ResumedFromSessionID  int64
+	OrphanRecoveryOutcome string
+}
+
+type SessionProviderIdentity struct {
+	ThreadID  string
+	SessionID string
+}
+
+type SessionResumeState struct {
+	ResumedFromSessionID  int64
+	OrphanRecoveryOutcome string
 }
 
 type SessionFinish struct {
@@ -260,6 +289,21 @@ type AgentResumeState struct {
 	AgentBackendKind  string
 	AgentRole         string
 	CompletedAt       time.Time
+	Orphaned          bool
+}
+
+type OrphanedAgentSession struct {
+	ResumeState   AgentResumeState
+	WorkAttemptID int64
+	ProjectID     string
+	IssueID       string
+	Identifier    string
+	IssueURL      string
+	WorkerType    string
+	WorkerHost    string
+	Lane          string
+	AttemptNumber int
+	StartedAt     time.Time
 }
 
 type APIKeyCreate struct {
@@ -742,6 +786,10 @@ type LifetimeTotals struct {
 	RuntimeSeconds        int64
 	Sessions              int64
 	Runs                  int64
+	OrphanResumed         int64
+	OrphanFresh           int64
+	ResumedInputTokens    int64
+	ResumedCachedTokens   int64
 }
 
 type BudgetCostQuery struct {

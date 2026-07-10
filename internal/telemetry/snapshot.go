@@ -680,6 +680,18 @@ type LifetimeTotals struct {
 	RuntimeSeconds        int64  `json:"runtime_seconds"`
 	Sessions              int64  `json:"sessions"`
 	Runs                  int64  `json:"runs"`
+	OrphanResumed         int64  `json:"orphan_continuations_resumed,omitempty"`
+	OrphanFresh           int64  `json:"orphan_continuations_fresh,omitempty"`
+	ResumedInputTokens    int64  `json:"resumed_first_turn_input_tokens,omitempty"`
+	ResumedCachedTokens   int64  `json:"resumed_first_turn_cached_input_tokens,omitempty"`
+}
+
+func (t LifetimeTotals) ResumedCacheReadFraction() (float64, bool) {
+	if t.ResumedInputTokens <= 0 || t.ResumedCachedTokens <= 0 {
+		return 0, false
+	}
+	cached := min(t.ResumedCachedTokens, t.ResumedInputTokens)
+	return float64(cached) / float64(t.ResumedInputTokens), true
 }
 
 type CycleTimeReport struct {

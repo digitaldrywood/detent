@@ -2499,6 +2499,14 @@ templ lifetimeCard(totals telemetry.LifetimeTotals) {
 					<strong class="font-mono font-medium text-text">{ lifetimeSessions(totals) }</strong>
 				</div>
 				<div class="flex items-center justify-between gap-4">
+					<span class="text-sec">Orphan resume / fresh</span>
+					<strong class="font-mono font-medium text-text">{ lifetimeOrphanContinuations(totals) }</strong>
+				</div>
+				<div class="flex items-center justify-between gap-4">
+					<span class="text-sec">Resumed cache share</span>
+					<strong class="font-mono font-medium text-text">{ lifetimeResumedCacheShare(totals) }</strong>
+				</div>
+				<div class="flex items-center justify-between gap-4">
 					<span class="text-sec">Runtime</span>
 					<strong class="font-mono font-medium text-text">{ lifetimeRuntime(totals) }</strong>
 				</div>

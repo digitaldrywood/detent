@@ -59,6 +59,7 @@ type Config struct {
 	DispatchPriorityByState       []string
 	DispatchPriorityByLabel       []string
 	MergeFastPathEnabled          bool
+	ResumeOrphanedSessions        bool
 	MaxConcurrentAgentsPerHost    int
 	MaxRetryBackoff               time.Duration
 	Project                       scheduler.ProjectCandidate
@@ -104,6 +105,7 @@ type Dependencies struct {
 	WorkflowMetrics    WorkflowMetricsRecorder
 	WorkAttempts       store.WorkAttemptStore
 	AgentResume        store.AgentResumeStore
+	OrphanSessions     store.OrphanSessionStore
 	ValidatorMemo      store.ValidatorMemoStore
 	GlobalDispatchGate scheduler.ProjectDispatchGate
 	Now                func() time.Time
@@ -125,6 +127,7 @@ type Orchestrator struct {
 	workflowMetrics         WorkflowMetricsRecorder
 	workAttempts            store.WorkAttemptStore
 	agentResume             store.AgentResumeStore
+	orphanSessions          store.OrphanSessionStore
 	supervisor              *runpkg.Supervisor
 	validator               Validator
 	reaper                  WorkspaceReaper
@@ -238,6 +241,17 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 			agentResume = candidate
 		}
 	}
+	orphanSessions := deps.OrphanSessions
+	if orphanSessions == nil {
+		if candidate, ok := deps.WorkAttempts.(store.OrphanSessionStore); ok {
+			orphanSessions = candidate
+		}
+	}
+	if orphanSessions == nil {
+		if candidate, ok := deps.WorkflowMetrics.(store.OrphanSessionStore); ok {
+			orphanSessions = candidate
+		}
+	}
 	if agentResume == nil {
 		if candidate, ok := deps.WorkflowMetrics.(store.AgentResumeStore); ok {
 			agentResume = candidate
@@ -260,6 +274,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		workflowMetrics:         deps.WorkflowMetrics,
 		workAttempts:            deps.WorkAttempts,
 		agentResume:             agentResume,
+		orphanSessions:          orphanSessions,
 		supervisor:              supervisor,
 		validator:               validator,
 		reaper:                  reaper,

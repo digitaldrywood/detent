@@ -298,6 +298,85 @@ func TestAppServerRunTurnResumesThreadBeforeStartingTurn(t *testing.T) {
 	}
 }
 
+func TestAppServerRunTurnPublishesFreshThreadIdentityBeforeTurnStart(t *testing.T) {
+	t.Parallel()
+
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.144.1"}`),
+		responseMessage(t, 2, `{"thread":{"id":"thread-fresh"}}`),
+		responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+		notificationMessage(t, "turn/completed", `{"threadId":"thread-fresh","turn":{"id":"turn-1","status":"completed"}}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	var updates []Update
+	_, err = server.RunTurn(context.Background(), RunTurnRequest{
+		Workspace: "/tmp/detent-workspace",
+		Prompt:    "Implement issue #1155",
+		Model:     "gpt-5.6-codex",
+	}, func(update Update) error {
+		updates = append(updates, update)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if len(updates) < 2 || updates[0].Type != UpdateRuntimeIdentity || updates[0].ThreadID != "thread-fresh" || updates[0].Model != "gpt-5.6-codex" {
+		t.Fatalf("updates = %#v, want provider thread identity before turn start", updates)
+	}
+	if updates[1].Type != UpdateTurnStarted {
+		t.Fatalf("updates[1] = %#v, want turn started after identity", updates[1])
+	}
+}
+
+func TestAppServerVerifyThreadReadsPersistedTurns(t *testing.T) {
+	t.Parallel()
+
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.144.1"}`),
+		responseMessage(t, 7, `{"thread":{"id":"thread-existing","turns":[{"id":"turn-1"}]}}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	if err := server.VerifyThread(context.Background(), "thread-existing"); err != nil {
+		t.Fatalf("VerifyThread() error = %v", err)
+	}
+	sent := transport.sentMessages()
+	if len(sent) != 3 {
+		t.Fatalf("sent messages = %d, want initialize, initialized, and thread/read", len(sent))
+	}
+	assertRequest(t, sent[2], 7, "thread/read")
+	assertJSONContains(t, sent[2].Params, "threadId", "thread-existing")
+	assertJSONContains(t, sent[2].Params, "includeTurns", true)
+}
+
+func TestAppServerVerifyThreadReturnsMissingRolloutError(t *testing.T) {
+	t.Parallel()
+
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.144.1"}`),
+		errorResponseMessage(t, 7, -32602, "rollout file not found"),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	err = server.VerifyThread(context.Background(), "thread-missing")
+	if err == nil {
+		t.Fatal("VerifyThread() error = nil, want missing rollout response error")
+	}
+	if !errors.Is(err, ErrResponseError) || !strings.Contains(err.Error(), "rollout file not found") {
+		t.Fatalf("VerifyThread() error = %v, want missing rollout response error", err)
+	}
+}
+
 func TestAppServerRunTurnUsesConfigReadModelWhenThreadResponseOmitsModel(t *testing.T) {
 	t.Parallel()
 
@@ -337,14 +416,17 @@ func TestAppServerRunTurnUsesConfigReadModelWhenThreadResponseOmitsModel(t *test
 	assertJSONContains(t, sent[3].Params, "cwd", "/tmp/detent-workspace")
 	assertRequest(t, sent[4], 3, "turn/start")
 
-	if len(updates) != 3 {
-		t.Fatalf("updates = %d, want configured identity, turn started, and completed: %#v", len(updates), updates)
+	if len(updates) != 4 {
+		t.Fatalf("updates = %d, want provider identity, configured identity, turn started, and completed: %#v", len(updates), updates)
 	}
-	if updates[0].Type != UpdateRuntimeIdentity || updates[0].Model != "gpt-5.6" || updates[0].RuntimeIdentity.ResolvedModel.Provenance != "configured" {
-		t.Fatalf("updates[0] = %#v, want configured fallback identity", updates[0])
+	if updates[0].Type != UpdateProviderIdentity || updates[0].ThreadID != "thread-1" {
+		t.Fatalf("updates[0] = %#v, want provider identity", updates[0])
 	}
-	if updates[1].Type != UpdateTurnStarted || updates[1].Model != "gpt-5.6" {
-		t.Fatalf("updates[1] = %#v, want config-read fallback model", updates[1])
+	if updates[1].Type != UpdateRuntimeIdentity || updates[1].Model != "gpt-5.6" || updates[1].RuntimeIdentity.ResolvedModel.Provenance != "configured" {
+		t.Fatalf("updates[1] = %#v, want configured fallback identity", updates[1])
+	}
+	if updates[2].Type != UpdateTurnStarted || updates[2].Model != "gpt-5.6" {
+		t.Fatalf("updates[2] = %#v, want config-read fallback model", updates[2])
 	}
 }
 
@@ -378,11 +460,14 @@ func TestAppServerRunTurnContinuesWhenConfigReadFails(t *testing.T) {
 		t.Fatalf("RunTurn() error = %v, want config/read failure to be non-fatal", err)
 	}
 
-	if len(updates) != 2 {
-		t.Fatalf("updates = %d, want turn started and completed: %#v", len(updates), updates)
+	if len(updates) != 3 {
+		t.Fatalf("updates = %d, want provider identity, turn started, and completed: %#v", len(updates), updates)
 	}
-	if updates[0].Type != UpdateTurnStarted || updates[0].Model != "" {
-		t.Fatalf("updates[0] = %#v, want unpriced fallback turn started", updates[0])
+	if updates[0].Type != UpdateProviderIdentity || updates[0].ThreadID != "thread-1" {
+		t.Fatalf("updates[0] = %#v, want provider identity", updates[0])
+	}
+	if updates[1].Type != UpdateTurnStarted || updates[1].Model != "" {
+		t.Fatalf("updates[1] = %#v, want unpriced fallback turn started", updates[1])
 	}
 }
 

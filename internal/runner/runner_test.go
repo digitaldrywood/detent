@@ -785,6 +785,191 @@ func TestRunnerRunRetryResumeUsesRequestedState(t *testing.T) {
 	}
 }
 
+func TestRunnerRunResumesOrphanedSessionWithRestartPrompt(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 7, 10, 16, 20, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-1155", Branch: "detent/issue-1155"},
+	}
+	agentBackend := &fakeCodexClient{
+		updates: []AgentUpdate{
+			{Type: AgentUpdateRuntimeIdentity, ThreadID: "thread-1155", Model: "gpt-5.6-codex"},
+			{Type: AgentUpdateTurnStarted, ThreadID: "thread-1155", TurnID: "turn-2", ProviderSessionID: "thread-1155-turn-2"},
+		},
+		result: AgentTurnResult{ThreadID: "thread-1155", TurnID: "turn-2", SessionID: "thread-1155-turn-2"},
+	}
+	sessionStore := &fakeSessionStore{sessionID: 1156}
+	resumeState := store.AgentResumeState{
+		DetentSessionID:   1155,
+		ProviderThreadID:  "thread-1155",
+		ProviderSessionID: "thread-1155-turn-1",
+		RequestedModel:    "gpt-5.6-codex",
+		AgentBackendID:    "codex",
+		AgentBackendKind:  "codex",
+		AgentRole:         RoleCode,
+		Orphaned:          true,
+	}
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Implement the issue"},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		Store:        sessionStore,
+		Now:          newFakeClock(startedAt, startedAt.Add(time.Second)).Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:            "issue-1155",
+			Identifier:    "digitaldrywood/detent#1155",
+			Title:         "Resume orphaned session",
+			ModelOverride: "gpt-5.6-codex",
+		},
+		StartedAt:   startedAt,
+		RetryMode:   RetryModeResume,
+		ResumeState: resumeState,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if agentBackend.verifiedResume.ThreadID != "thread-1155" {
+		t.Fatalf("verified resume = %#v, want original thread", agentBackend.verifiedResume)
+	}
+	if agentBackend.request.Prompt != orphanResumePrompt {
+		t.Fatalf("AgentTurnRequest.Prompt = %q, want restart nudge", agentBackend.request.Prompt)
+	}
+	if sessionStore.started.ResumedFromSessionID != 1155 || sessionStore.started.OrphanRecoveryOutcome != store.OrphanRecoveryResumed {
+		t.Fatalf("SessionStart resume metadata = %#v", sessionStore.started)
+	}
+	if sessionStore.started.ProviderThreadID != "thread-1155" {
+		t.Fatalf("SessionStart.ProviderThreadID = %q, want original thread", sessionStore.started.ProviderThreadID)
+	}
+	if len(sessionStore.providerUpdates) < 2 {
+		t.Fatalf("provider updates = %#v, want thread and session identity before completion", sessionStore.providerUpdates)
+	}
+	lastProvider := sessionStore.providerUpdates[len(sessionStore.providerUpdates)-1]
+	if lastProvider.ThreadID != "thread-1155" || lastProvider.SessionID != "thread-1155-turn-2" {
+		t.Fatalf("last provider update = %#v", lastProvider)
+	}
+	if sessionStore.finished.ResumedFromSessionID != 1155 || sessionStore.finished.ProviderThreadID != "thread-1155" {
+		t.Fatalf("SessionFinish resume metadata = %#v", sessionStore.finished)
+	}
+}
+
+func TestRunnerRunOrphanResumePreflightFailureFallsBackFresh(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 7, 10, 16, 30, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-1155", Branch: "detent/issue-1155"},
+	}
+	agentBackend := &fakeCodexClient{
+		verifyErr: errors.New("rollout file not found"),
+		result:    AgentTurnResult{ThreadID: "thread-fresh", TurnID: "turn-1", SessionID: "thread-fresh-turn-1"},
+	}
+	sessionStore := &fakeSessionStore{sessionID: 1157}
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Implement the issue"},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		Store:        sessionStore,
+		Now:          newFakeClock(startedAt, startedAt.Add(time.Second)).Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:            "issue-1155",
+			Identifier:    "digitaldrywood/detent#1155",
+			Title:         "Resume orphaned session",
+			ModelOverride: "gpt-5.6-codex",
+		},
+		StartedAt: startedAt,
+		RetryMode: RetryModeResume,
+		ResumeState: store.AgentResumeState{
+			DetentSessionID:  1155,
+			ProviderThreadID: "thread-missing",
+			RequestedModel:   "gpt-5.6-codex",
+			AgentBackendID:   "codex",
+			AgentBackendKind: "codex",
+			AgentRole:        RoleCode,
+			Orphaned:         true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v, want fresh fallback success", err)
+	}
+	if !agentResumeEmpty(agentBackend.request.Resume) {
+		t.Fatalf("AgentTurnRequest.Resume = %#v, want fresh request", agentBackend.request.Resume)
+	}
+	if agentBackend.request.Prompt == orphanResumePrompt || !strings.Contains(agentBackend.request.Prompt, "Implement the issue") {
+		t.Fatalf("AgentTurnRequest.Prompt = %q, want full issue prompt", agentBackend.request.Prompt)
+	}
+	if sessionStore.started.ResumedFromSessionID != 0 || sessionStore.started.OrphanRecoveryOutcome != store.OrphanRecoveryFresh {
+		t.Fatalf("SessionStart fallback metadata = %#v", sessionStore.started)
+	}
+}
+
+func TestVerifyAgentResumeRejectsUnsupportedBackend(t *testing.T) {
+	t.Parallel()
+
+	err := verifyAgentResume(context.Background(), nonVerifyingAgentBackend{}, AgentResume{ThreadID: "thread-1155"})
+	if !errors.Is(err, ErrAgentResumeUnsupported) {
+		t.Fatalf("verifyAgentResume() error = %v, want ErrAgentResumeUnsupported", err)
+	}
+}
+
+func TestRunnerRunOrphanResumeRPCFailureFallsBackWithFullPrompt(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 7, 10, 16, 40, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-1155", Branch: "detent/issue-1155"},
+	}
+	agentBackend := &resumeFallbackAgentBackend{}
+	sessionStore := &fakeSessionStore{sessionID: 1158}
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Implement the issue"},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		Store:        sessionStore,
+		Now:          newFakeClock(startedAt, startedAt.Add(time.Second)).Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), RunRequest{
+		Issue:     connector.Issue{ID: "issue-1155", Identifier: "digitaldrywood/detent#1155", Title: "Resume orphaned session", ModelOverride: "gpt-5.6-codex"},
+		StartedAt: startedAt,
+		RetryMode: RetryModeResume,
+		ResumeState: store.AgentResumeState{
+			DetentSessionID: 1155, ProviderThreadID: "thread-old", RequestedModel: "gpt-5.6-codex",
+			AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: RoleCode, Orphaned: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v, want fresh fallback success", err)
+	}
+	if len(agentBackend.requests) != 2 {
+		t.Fatalf("backend requests = %d, want resume and fresh", len(agentBackend.requests))
+	}
+	if agentBackend.requests[0].Prompt != orphanResumePrompt {
+		t.Fatalf("resume prompt = %q", agentBackend.requests[0].Prompt)
+	}
+	if agentBackend.requests[1].Prompt == orphanResumePrompt || !strings.Contains(agentBackend.requests[1].Prompt, "Implement the issue") {
+		t.Fatalf("fresh fallback prompt = %q, want full prompt", agentBackend.requests[1].Prompt)
+	}
+	if len(sessionStore.resumeUpdates) != 1 || sessionStore.resumeUpdates[0].OrphanRecoveryOutcome != store.OrphanRecoveryFresh || sessionStore.resumeUpdates[0].ResumedFromSessionID != 0 {
+		t.Fatalf("resume updates = %#v, want fresh fallback", sessionStore.resumeUpdates)
+	}
+}
+
 func TestRunnerRunFallsBackFreshWhenResumeFails(t *testing.T) {
 	t.Parallel()
 
@@ -3113,13 +3298,15 @@ func (b *fakeMergeWorkspaceBackend) PrepareMerge(
 }
 
 type fakeCodexClient struct {
-	request      AgentTurnRequest
-	updates      []AgentUpdate
-	result       AgentTurnResult
-	err          error
-	calls        int
-	models       []AgentModel
-	catalogCalls int
+	request        AgentTurnRequest
+	updates        []AgentUpdate
+	result         AgentTurnResult
+	err            error
+	calls          int
+	models         []AgentModel
+	catalogCalls   int
+	verifyErr      error
+	verifiedResume AgentResume
 }
 
 func (c *fakeCodexClient) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
@@ -3142,8 +3329,23 @@ func (*fakeCodexClient) DefaultModel(context.Context, string) (string, error) {
 	return "", nil
 }
 
+func (c *fakeCodexClient) VerifyResume(_ context.Context, resume AgentResume) error {
+	c.verifiedResume = resume
+	return c.verifyErr
+}
+
 type resumeFallbackAgentBackend struct {
 	requests []AgentTurnRequest
+}
+
+type nonVerifyingAgentBackend struct{}
+
+func (nonVerifyingAgentBackend) RunTurn(context.Context, AgentTurnRequest, AgentUpdateHandler) (AgentTurnResult, error) {
+	return AgentTurnResult{}, nil
+}
+
+func (*resumeFallbackAgentBackend) VerifyResume(context.Context, AgentResume) error {
+	return nil
 }
 
 type resumeCapacityAgentBackend struct {
@@ -3230,6 +3432,8 @@ type fakeSessionStore struct {
 	resumeErr       error
 	resumeLookups   int
 	resumeLookup    store.AgentResumeLookup
+	providerUpdates []store.SessionProviderIdentity
+	resumeUpdates   []store.SessionResumeState
 }
 
 func (s *fakeSessionStore) StartSession(_ context.Context, attrs store.SessionStart) (int64, error) {
@@ -3246,6 +3450,16 @@ func (s *fakeSessionStore) FinishSession(_ context.Context, _ int64, attrs store
 
 func (s *fakeSessionStore) UpdateSessionIdentity(_ context.Context, _ int64, identity agentidentity.Identity) error {
 	s.identityUpdates = append(s.identityUpdates, identity)
+	return nil
+}
+
+func (s *fakeSessionStore) UpdateSessionProviderIdentity(_ context.Context, _ int64, identity store.SessionProviderIdentity) error {
+	s.providerUpdates = append(s.providerUpdates, identity)
+	return nil
+}
+
+func (s *fakeSessionStore) UpdateSessionResumeState(_ context.Context, _ int64, state store.SessionResumeState) error {
+	s.resumeUpdates = append(s.resumeUpdates, state)
 	return nil
 }
 

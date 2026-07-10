@@ -221,6 +221,7 @@ type Agent struct {
 	MaxSessionTokenOverrideLabel string                       `yaml:"max_session_token_override_label"`
 	MaxSessionTokenOverrideField string                       `yaml:"max_session_token_override_field"`
 	ExperimentalThreadResume     bool                         `yaml:"experimental_thread_resume"`
+	ResumeOrphanedSessions       bool                         `yaml:"resume_orphaned_sessions"`
 	Shutdown                     Shutdown                     `yaml:"shutdown"`
 	MaxConcurrentAgentsByState   map[string]int               `yaml:"max_concurrent_agents_by_state"`
 	DispatchPriorityByState      []string                     `yaml:"dispatch_priority_by_state"`
@@ -843,6 +844,7 @@ func Default() Config {
 			MaxConcurrentAgents:        10,
 			MaxTurns:                   20,
 			MaxRetryBackoffMS:          300000,
+			ResumeOrphanedSessions:     true,
 			Shutdown:                   Shutdown{DrainTimeoutMS: DefaultShutdownDrainTimeoutMS},
 			MaxConcurrentAgentsByState: map[string]int{},
 			DispatchPriorityByState:    []string{},

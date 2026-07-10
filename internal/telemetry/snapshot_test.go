@@ -441,6 +441,25 @@ func TestTokensJSONOmitsContextPressureWhenWindowUnknown(t *testing.T) {
 	}
 }
 
+func TestLifetimeTotalsResumedCacheReadFraction(t *testing.T) {
+	t.Parallel()
+
+	totals := telemetry.LifetimeTotals{
+		ResumedInputTokens:  200,
+		ResumedCachedTokens: 150,
+	}
+	fraction, ok := totals.ResumedCacheReadFraction()
+	if !ok || fraction != 0.75 {
+		t.Fatalf("ResumedCacheReadFraction() = %v, %v, want 0.75, true", fraction, ok)
+	}
+
+	totals.ResumedCachedTokens = 300
+	fraction, ok = totals.ResumedCacheReadFraction()
+	if !ok || fraction != 1 {
+		t.Fatalf("ResumedCacheReadFraction() capped = %v, %v, want 1, true", fraction, ok)
+	}
+}
+
 func TestContextPressureStateForPercent(t *testing.T) {
 	t.Parallel()
 

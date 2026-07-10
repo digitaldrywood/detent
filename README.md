@@ -669,6 +669,7 @@ agent:
   max_concurrent_agents: 5
   max_turns: 20
   max_retry_backoff_ms: 300000
+  resume_orphaned_sessions: true
   max_concurrent_agents_by_state:
     Merging: 1
   dispatch_priority_by_state:
@@ -2266,6 +2267,13 @@ show cache-read efficiency when cached input is reported: cached input divided
 by input tokens. Use that value with context pressure to evaluate whether
 thread-resume behavior is preserving useful context without repeatedly filling
 the window.
+
+`agent.resume_orphaned_sessions` defaults to `true`. After an unclean Detent
+restart, active sessions whose provider identity was journaled are preflighted
+and resumed with a short continuation prompt. Missing provider state,
+unsupported backends, and failed resume handshakes automatically fall back to
+the full fresh continuation prompt. Set the field to `false` to retain fresh
+redispatch behavior for every restart.
 
 Useful endpoints:
 
