@@ -784,9 +784,24 @@ templ boardKanbanDragScript() {
 			var draggedAllowedTargetKeys = [];
 			var pending = null;
 			var active = null;
+			var recentTouchStart = null;
 			function clearPending() {
 				if (pending && pending.longPressTimer) window.clearTimeout(pending.longPressTimer);
 				pending = null;
+				recentTouchStart = null;
+			}
+			function touchWithIdentifier(touches, identifier) {
+				if (!touches || identifier === null || identifier === undefined) return null;
+				for (var index = 0; index < touches.length; index += 1) {
+					if (touches[index].identifier === identifier) return touches[index];
+				}
+				return null;
+			}
+			function recentTouchIdentifier(card, event) {
+				if (event.pointerType !== "touch" || !recentTouchStart) return null;
+				if (Date.now() - recentTouchStart.startedAt >= 100) return null;
+				if (!(recentTouchStart.target instanceof Node) || !card.contains(recentTouchStart.target)) return null;
+				return recentTouchStart.identifier;
 			}
 			function feedback(message, kind) {
 				var target = document.getElementById("board-feedback");
@@ -1028,6 +1043,7 @@ templ boardKanbanDragScript() {
 				active = {
 					pointerId: press.pointerId,
 					pointerType: press.pointerType,
+					touchIdentifier: press.touchIdentifier,
 					offsetX: press.startX - press.rect.left,
 					offsetY: press.startY - press.rect.top,
 					ghost: buildGhost(card, press.rect),
@@ -1039,6 +1055,7 @@ templ boardKanbanDragScript() {
 					edgeTimer: null
 				};
 				pending = null;
+				recentTouchStart = null;
 				if (active.pointerType === "touch" && typeof active.captureElement.setPointerCapture === "function") {
 					try {
 						active.captureElement.setPointerCapture(active.pointerId);
@@ -1105,6 +1122,7 @@ templ boardKanbanDragScript() {
 				pending = {
 					pointerId: event.pointerId,
 					pointerType: event.pointerType,
+					touchIdentifier: recentTouchIdentifier(card, event),
 					card: card,
 					issueID: issueID,
 					targets: targetKeysFromValue(card.dataset.kanbanAllowedTargets || ""),
@@ -1122,6 +1140,18 @@ templ boardKanbanDragScript() {
 						if (!pending || pending.pointerId !== pointerId) return;
 						beginDrag({ clientX: pending.lastX, clientY: pending.lastY });
 					}, TOUCH_LONG_PRESS_MS);
+				}
+			});
+			document.addEventListener("touchstart", function (event) {
+				if (active || !event.changedTouches || event.changedTouches.length === 0) return;
+				var touch = event.changedTouches[0];
+				recentTouchStart = {
+					identifier: touch.identifier,
+					target: event.target,
+					startedAt: Date.now()
+				};
+				if (pending && pending.pointerType === "touch" && event.target instanceof Node && pending.card.contains(event.target)) {
+					pending.touchIdentifier = touch.identifier;
 				}
 			});
 			document.addEventListener("pointermove", function (event) {
@@ -1206,24 +1236,32 @@ templ boardKanbanDragScript() {
 			document.addEventListener("touchmove", function (event) {
 				if (!active || active.pointerType !== "touch") return;
 				event.preventDefault();
-				var touch = event.touches && event.touches[0];
+				var touch = touchWithIdentifier(event.touches, active.touchIdentifier);
+				if (!touch && active.touchIdentifier === null && event.touches && event.touches.length === 1) touch = event.touches[0];
 				if (touch) moveDragTo(touch.clientX, touch.clientY);
 			}, { passive: false });
 			document.addEventListener("touchend", function (event) {
 				if (pending && pending.pointerType === "touch") {
+					var pendingTouch = touchWithIdentifier(event.changedTouches, pending.touchIdentifier);
+					if (!pendingTouch && !(pending.touchIdentifier === null && event.touches && event.touches.length === 0)) return;
 					clearPending();
 					return;
 				}
 				if (!active || active.pointerType !== "touch") return;
-				var touch = event.changedTouches && event.changedTouches[0];
+				var touch = touchWithIdentifier(event.changedTouches, active.touchIdentifier);
+				if (!touch && active.touchIdentifier === null && event.touches && event.touches.length === 0) touch = event.changedTouches && event.changedTouches[0];
 				if (touch) dropAt(touch.clientX, touch.clientY);
 			});
-			document.addEventListener("touchcancel", function () {
+			document.addEventListener("touchcancel", function (event) {
 				if (pending && pending.pointerType === "touch") {
+					var pendingTouch = touchWithIdentifier(event.changedTouches, pending.touchIdentifier);
+					if (!pendingTouch && !(pending.touchIdentifier === null && event.touches && event.touches.length === 0)) return;
 					clearPending();
 					return;
 				}
-				if (active && active.pointerType === "touch") cancelDrag();
+				if (!active || active.pointerType !== "touch") return;
+				var touch = touchWithIdentifier(event.changedTouches, active.touchIdentifier);
+				if (touch || (active.touchIdentifier === null && event.touches && event.touches.length === 0)) cancelDrag();
 			});
 			document.addEventListener("contextmenu", function (event) {
 				var touchPress = pending && pending.pointerType === "touch";

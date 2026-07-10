@@ -685,6 +685,33 @@ test("project kanban supports long-press touch status moves", async ({
     await expect(card).toHaveCSS("touch-action", "none");
     await expect(lanes).toHaveCSS("touch-action", "none");
 
+    await page.evaluate(() => {
+      const target = document.elementFromPoint(20, 20) || document.body;
+      const remaining = new Touch({
+        identifier: 998,
+        target,
+        clientX: 20,
+        clientY: 20,
+      });
+      const released = new Touch({
+        identifier: 999,
+        target,
+        clientX: 20,
+        clientY: 20,
+      });
+      document.dispatchEvent(
+        new TouchEvent("touchend", {
+          bubbles: true,
+          cancelable: true,
+          touches: [remaining],
+          targetTouches: [remaining],
+          changedTouches: [released],
+        }),
+      );
+    });
+    await expect(ghost).toHaveCount(1);
+    await expect(card).toHaveAttribute("data-kanban-dragging", "true");
+
     await dispatchTouch(session, "touchMove", 340, dragY);
     await expect
       .poll(async () => {
