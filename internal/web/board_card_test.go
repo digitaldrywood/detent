@@ -1,17 +1,329 @@
 package web_test
 
 import (
+	"bufio"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activity"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	web "github.com/digitaldrywood/detent/internal/web"
 )
+
+func TestAPIBoardCardRendersLiveActivityAndVerboseUsage(t *testing.T) {
+	t.Parallel()
+
+	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
+	issue := telemetry.Issue{ID: "issue-1156", Identifier: "digitaldrywood/detent#1156", ProjectID: "detent", Title: "Live timeline", State: "In Progress"}
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: at,
+		BoardIssues: []telemetry.Issue{issue},
+		SchedulerDecisions: []telemetry.SchedulerDecision{{
+			ID: 1, ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, Result: "skipped", Reason: "artifact_gate_wait_status", DecisionAt: at,
+		}},
+		Running: []telemetry.Running{{
+			Issue:        issue,
+			RecentEvents: []telemetry.ActivityEvent{{At: at.Add(time.Second), Event: "token_usage", Message: "125 total tokens"}},
+			Tokens:       telemetry.Tokens{Total: 125},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/card?project=detent&issue=issue-1156", http.StatusOK)
+	for _, want := range []string{"Orchestration activity", "Dispatch skipped", "artifact_gate_wait_status", "Verbose", "Live session", "data-board-live-session", "hx-preserve"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("detail sheet missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "125 total tokens") {
+		t.Fatalf("default activity unexpectedly includes verbose usage:\n%s", body)
+	}
+
+	body = requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/activity?project=detent&issue=issue-1156&verbose=1", http.StatusOK)
+	if !strings.Contains(body, "125 total tokens") || !strings.Contains(body, "Hide usage ticks") {
+		t.Fatalf("verbose activity missing token usage:\n%s", body)
+	}
+}
+
+func TestAPIBoardCardKeysPreservedSessionByIssue(t *testing.T) {
+	t.Parallel()
+
+	issues := []telemetry.Issue{
+		{ID: "issue-1156", Identifier: "digitaldrywood/detent#1156", ProjectID: "detent", Title: "First card", State: "In Progress"},
+		{ID: "issue-1157", Identifier: "digitaldrywood/detent#1157", ProjectID: "detent", Title: "Second card", State: "In Progress"},
+	}
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: issues}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	firstBody := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/card?project=detent&issue=issue-1156", http.StatusOK)
+	secondBody := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/card?project=detent&issue=issue-1157", http.StatusOK)
+	firstID := liveSessionElementID(t, firstBody)
+	secondID := liveSessionElementID(t, secondBody)
+	if firstID == secondID {
+		t.Fatalf("live session id = %q for both issues, want issue-keyed preservation", firstID)
+	}
+	for _, rendered := range []struct {
+		body string
+		id   string
+	}{{body: firstBody, id: firstID}, {body: secondBody, id: secondID}} {
+		if !strings.Contains(rendered.body, `hx-target="#`+rendered.id+`"`) {
+			t.Fatalf("session target missing keyed id %q:\n%s", rendered.id, rendered.body)
+		}
+	}
+}
+
+func TestAPIBoardCardRotatesPreservedSessionWithWorkerLifecycle(t *testing.T) {
+	t.Parallel()
+
+	issue := telemetry.Issue{ID: "issue-1156", Identifier: "digitaldrywood/detent#1156", ProjectID: "detent", Title: "Lifecycle card", State: "In Progress"}
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		BoardIssues: []telemetry.Issue{issue},
+		Running:     []telemetry.Running{{Issue: issue, DetentSessionID: 42, SessionID: "thread-42"}},
+	}); err != nil {
+		t.Fatalf("Publish(active) error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	activeBody := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/card?project=detent&issue=issue-1156", http.StatusOK)
+	if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{issue}}); err != nil {
+		t.Fatalf("Publish(inactive) error = %v", err)
+	}
+	inactiveBody := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/card?project=detent&issue=issue-1156", http.StatusOK)
+	activeID := liveSessionElementID(t, activeBody)
+	inactiveID := liveSessionElementID(t, inactiveBody)
+	if activeID == inactiveID {
+		t.Fatalf("live session id = %q before and after worker stop, want lifecycle-keyed replacement", activeID)
+	}
+}
+
+func TestAPIBoardSessionAttachBackfillsAndFollows(t *testing.T) {
+	t.Parallel()
+
+	issue := telemetry.Issue{ID: "issue-1156", Identifier: "digitaldrywood/detent#1156", ProjectID: "detent", Title: "Live transcript", State: "In Progress"}
+	broker := activity.NewBroker()
+	deps := testDeps(t)
+	deps.Activity = broker
+	if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{issue}, Running: []telemetry.Running{{Issue: issue}}}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	broker.Publish(activity.Key{ProjectID: "detent", IssueID: issue.ID}, activity.Event{DetentSessionID: 7, Kind: "tool_output", Title: "Tool output · exec", Content: "backfill output"})
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, httpServer.URL+"/api/v1/board/session/events?project=detent&issue=issue-1156", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	t.Cleanup(func() { _ = response.Body.Close() })
+	reader := bufio.NewReader(response.Body)
+	if data := readBoardSSEData(t, reader); !strings.Contains(data, "backfill output") {
+		t.Fatalf("backfill SSE = %q", data)
+	}
+	if got := broker.SubscriberCount(activity.Key{ProjectID: "detent", IssueID: issue.ID}); got != 1 {
+		t.Fatalf("SubscriberCount() = %d, want 1", got)
+	}
+
+	broker.Publish(activity.Key{ProjectID: "detent", IssueID: issue.ID}, activity.Event{DetentSessionID: 7, Kind: "assistant", Title: "Agent", Content: "live output"})
+	if data := readBoardSSEData(t, reader); !strings.Contains(data, "live output") {
+		t.Fatalf("live SSE = %q", data)
+	}
+	cancel()
+	_ = response.Body.Close()
+	waitForBoardSubscriberCount(t, broker, activity.Key{ProjectID: "detent", IssueID: issue.ID}, 0)
+}
+
+func TestAPIBoardActivityStreamShowsDispatchSkipWithinTick(t *testing.T) {
+	t.Parallel()
+
+	issue := telemetry.Issue{ID: "issue-1156", Identifier: "digitaldrywood/detent#1156", ProjectID: "detent", Title: "Live skip", State: "In Progress"}
+	backend := openWebTestStore(t)
+	deps := testDeps(t)
+	deps.Store = backend
+	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: time.Now().UTC(), BoardIssues: []telemetry.Issue{issue}}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir(), SSETickInterval: 10 * time.Millisecond}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	t.Cleanup(cancel)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, httpServer.URL+"/api/v1/board/activity/events?project=detent&issue=issue-1156", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	t.Cleanup(func() { _ = response.Body.Close() })
+	reader := bufio.NewReader(response.Body)
+	_ = readBoardSSEData(t, reader)
+
+	if _, err := backend.RecordSchedulerDecision(ctx, store.SchedulerDecision{
+		ProjectID:  "detent",
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Result:     store.SchedulerDecisionResultSkipped,
+		Reason:     "artifact_gate_wait_status",
+		DecisionAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("RecordSchedulerDecision() error = %v", err)
+	}
+	if data := readBoardSSEData(t, reader); !strings.Contains(data, "artifact_gate_wait_status") || !strings.Contains(data, "Dispatch skipped") {
+		t.Fatalf("activity SSE = %q", data)
+	}
+}
+
+func TestAPIBoardSessionPagesFailedRolloutHistory(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
+	issue := telemetry.Issue{ID: "issue-1156", Identifier: "digitaldrywood/detent#1156", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/1156", Title: "Closed transcript", State: "Done"}
+	backend := openWebTestStore(t)
+	sessionID, err := backend.StartSession(ctx, store.SessionStart{
+		IssueID:          issue.ID,
+		Identifier:       issue.Identifier,
+		IssueURL:         issue.URL,
+		StartedAt:        at,
+		Model:            "gpt-5.6-codex",
+		RequestedModel:   "gpt-5.6-codex",
+		AgentBackendID:   "codex-default",
+		AgentBackendKind: "codex",
+		AgentRole:        "code",
+	})
+	if err != nil {
+		t.Fatalf("StartSession() error = %v", err)
+	}
+	if err := backend.FinishSession(ctx, sessionID, store.SessionFinish{
+		CompletedAt:      at.Add(time.Minute),
+		FinalState:       "failed",
+		ProviderThreadID: "thread-1156",
+	}); err != nil {
+		t.Fatalf("FinishSession() error = %v", err)
+	}
+
+	deps := testDeps(t)
+	deps.Store = backend
+	deps.History = fixedHistoryReader{page: activity.HistoryPage{
+		Events:  []activity.Event{{At: at, Kind: "assistant", Title: "Agent", Content: "rollout output"}},
+		Limit:   50,
+		HasMore: true,
+	}}
+	if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: []telemetry.Issue{issue}}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/session?project=detent&issue=issue-1156", http.StatusOK)
+	if !strings.Contains(body, "View rollout history") {
+		t.Fatalf("closed session missing rollout action:\n%s", body)
+	}
+	body = requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/session/history?project=detent&issue=issue-1156&limit=50", http.StatusOK)
+	for _, want := range []string{"Provider rollout history", "rollout output", "Load older rollout events"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("rollout history missing %q:\n%s", want, body)
+		}
+	}
+}
+
+type fixedHistoryReader struct {
+	page activity.HistoryPage
+}
+
+func (r fixedHistoryReader) Page(context.Context, activity.HistoryQuery) (activity.HistoryPage, error) {
+	return r.page, nil
+}
+
+func liveSessionElementID(t *testing.T, body string) string {
+	t.Helper()
+	const prefix = `id="board-live-session-`
+	start := strings.Index(body, prefix)
+	if start < 0 {
+		t.Fatalf("live session element id missing:\n%s", body)
+	}
+	start += len(`id="`)
+	end := strings.IndexByte(body[start:], '"')
+	if end < 0 {
+		t.Fatalf("live session element id unterminated:\n%s", body)
+	}
+	return body[start : start+end]
+}
+
+func readBoardSSEData(t *testing.T, reader *bufio.Reader) string {
+	t.Helper()
+	var data strings.Builder
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("ReadString() error = %v", err)
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			return data.String()
+		}
+		if strings.HasPrefix(line, "data: ") {
+			data.WriteString(strings.TrimPrefix(line, "data: "))
+		}
+	}
+}
+
+func waitForBoardSubscriberCount(t *testing.T, broker *activity.Broker, key activity.Key, want int) {
+	t.Helper()
+	deadline := time.NewTimer(time.Second)
+	t.Cleanup(func() { deadline.Stop() })
+	ticker := time.NewTicker(time.Millisecond)
+	t.Cleanup(ticker.Stop)
+	for {
+		if broker.SubscriberCount(key) == want {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("SubscriberCount() = %d, want %d", broker.SubscriberCount(key), want)
+		case <-ticker.C:
+		}
+	}
+}
 
 func TestAPIBoardCardRendersDetailSheet(t *testing.T) {
 	t.Parallel()

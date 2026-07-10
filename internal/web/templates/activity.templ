@@ -1,0 +1,208 @@
+package templates
+
+import (
+	"strconv"
+	"time"
+)
+
+templ BoardActivityTabs(activity BoardActivityData, session BoardSessionData) {
+	<div class="flex min-h-72 flex-col rounded-card border border-line bg-elev" data-sheet-activity-tabs>
+		<div class="flex flex-none items-center gap-1 border-b border-line px-2 pt-2" role="tablist" aria-label="Issue activity">
+			<button type="button" class="rounded-t-card border-b-2 border-accent px-3 py-2 text-xs font-medium text-text" data-sheet-tab="activity" role="tab" aria-selected="true">Timeline</button>
+			<button
+				type="button"
+				class="rounded-t-card border-b-2 border-transparent px-3 py-2 text-xs font-medium text-sec hover:text-text"
+				data-sheet-tab="session"
+				role="tab"
+				aria-selected="false"
+				hx-get={ boardSessionPath(session, false) }
+				hx-target={ boardLiveSessionTarget(session) }
+				hx-swap="innerHTML"
+			>Live session</button>
+		</div>
+		<div class="min-h-0 flex-1" data-sheet-panel="activity" role="tabpanel">
+			@BoardActivityPanel(activity)
+		</div>
+		<div class="hidden min-h-0 flex-1" data-sheet-panel="session" role="tabpanel">
+			<div id={ boardLiveSessionID(session) } class="flex min-h-72 items-center justify-center p-4 text-center text-xs text-sec" data-board-live-session hx-preserve>
+				Select Live session to attach to the active worker.
+			</div>
+		</div>
+	</div>
+}
+
+templ BoardActivityPanel(data BoardActivityData) {
+	<div
+		id="board-activity-stream"
+		class="min-h-0"
+		hx-ext="sse"
+		sse-connect={ boardActivityPath(data, data.Limit, data.Verbose, true) }
+	>
+		<div id="board-activity-timeline" sse-swap="board-activity" hx-swap="morph:innerHTML">
+			@BoardActivityContent(data)
+		</div>
+	</div>
+}
+
+templ BoardActivityContent(data BoardActivityData) {
+	<div class="flex items-center justify-between gap-3 border-b border-line px-3 py-2.5">
+		<div>
+			<h3 class="text-xs font-semibold text-text">Orchestration activity</h3>
+			<p class="text-2xs text-dim">Newest first · live</p>
+		</div>
+		<button
+			type="button"
+			class="rounded-chip border border-line px-2 py-1 text-2xs font-medium text-sec hover:border-accent hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+			hx-get={ boardActivityPath(data, data.Limit, !data.Verbose, false) }
+			hx-target="#board-activity-stream"
+			hx-swap="outerHTML"
+			aria-pressed={ strconv.FormatBool(data.Verbose) }
+		>
+			if data.Verbose {
+				Hide usage ticks
+			} else {
+				Verbose
+			}
+		</button>
+	</div>
+	if data.Error != "" {
+		<p class="border-b border-line px-3 py-2 text-xs text-warn">{ data.Error }</p>
+	}
+	if len(data.Events) == 0 {
+		<div class="flex min-h-44 items-center justify-center px-4 text-center text-xs text-sec">No activity recorded for this issue yet.</div>
+	} else {
+		<ol class="max-h-96 overflow-y-auto px-3 py-1" data-activity-list>
+			for _, event := range data.Events {
+				<li id={ boardActivityEventID(event) } class="grid grid-cols-[0.5rem_minmax(0,1fr)] gap-2 border-b border-line/70 py-2.5 last:border-b-0">
+					<span class={ "mt-1.5 size-2 rounded-full " + boardActivityDotClass(event) } aria-hidden="true"></span>
+					<div class="min-w-0">
+						<div class="flex items-start justify-between gap-3">
+							<p class="text-xs font-medium text-text">{ event.Title }</p>
+							<time class="flex-none font-mono text-2xs text-dim" datetime={ event.At.Format(time.RFC3339) }>{ boardActivityTime(event) }</time>
+						</div>
+						if event.Detail != "" {
+							<p class="mt-0.5 break-words text-xs text-sec">{ event.Detail }</p>
+						}
+						if event.Reason != "" && event.Reason != event.Detail {
+							<p class="mt-0.5 break-words font-mono text-2xs text-warn">{ event.Reason }</p>
+						}
+						if meta := boardActivityMeta(event); meta != "" {
+							<p class="mt-1 font-mono text-2xs text-dim">{ meta }</p>
+						}
+					</div>
+				</li>
+			}
+		</ol>
+	}
+	if data.HasMore {
+		<div class="border-t border-line p-2">
+			<button
+				type="button"
+				class="w-full rounded-card border border-line px-3 py-1.5 text-xs font-medium text-sec hover:border-accent hover:text-text"
+				hx-get={ boardActivityPath(data, data.Limit+50, data.Verbose, false) }
+				hx-target="#board-activity-stream"
+				hx-swap="outerHTML"
+			>Load older activity</button>
+		</div>
+	}
+}
+
+templ BoardLiveSession(data BoardSessionData) {
+	if !data.Active {
+		<div class="flex min-h-72 flex-col items-center justify-center gap-3 p-5 text-center">
+			<p class="text-xs font-medium text-text">No active worker session</p>
+			<p class="max-w-72 text-xs text-sec">The live attach stream opens only while a worker is active. Durable provider rollout history remains available on the worker host.</p>
+			if data.HistoryAvailable {
+				<button
+					type="button"
+					class="rounded-card border border-line px-3 py-1.5 text-xs font-medium text-sec hover:border-accent hover:text-text"
+					hx-get={ boardSessionHistoryPath(data, 0, 50) }
+					hx-target={ boardLiveSessionTarget(data) }
+					hx-swap="innerHTML"
+				>View rollout history</button>
+			} else {
+				<button type="button" class="rounded-card border border-line px-3 py-1.5 text-xs font-medium text-sec" disabled>Rollout history unavailable</button>
+			}
+		</div>
+	} else {
+		<div
+			class="flex min-h-72 flex-col bg-page"
+			hx-ext="sse"
+			sse-connect={ boardSessionPath(data, true) }
+			data-live-session-attach
+		>
+			<div class="flex flex-none items-center justify-between gap-3 border-b border-line px-3 py-2">
+				<span class="flex items-center gap-2 text-xs font-medium text-text"><span class="size-2 rounded-full bg-ok"></span>Attached read-only</span>
+				<button type="button" class="hidden rounded-chip border border-line px-2 py-1 text-2xs text-sec" data-live-session-resume>Resume autoscroll</button>
+			</div>
+			<div class="max-h-112 min-h-64 flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed text-text" sse-swap="session-activity" hx-swap="beforeend" data-live-session-log aria-live="polite"></div>
+		</div>
+	}
+}
+
+templ BoardLiveSessionHistory(data BoardSessionHistoryData) {
+	<div class="flex min-h-72 flex-col bg-page">
+		<div class="flex flex-none items-center justify-between gap-3 border-b border-line px-3 py-2">
+			<div>
+				<p class="text-xs font-medium text-text">Provider rollout history</p>
+				<p class="text-2xs text-dim">Read-only · loaded on demand</p>
+			</div>
+			<button type="button" class="rounded-chip border border-line px-2 py-1 text-2xs text-sec" hx-get={ boardSessionPath(data.Session, false) } hx-target={ boardLiveSessionTarget(data.Session) } hx-swap="innerHTML">Back</button>
+		</div>
+		<div class="max-h-112 min-h-64 flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed text-text" data-session-history-log>
+			if data.Error != "" {
+				<p class="py-8 text-center font-sans text-xs text-warn">{ data.Error }</p>
+			} else if len(data.Events) == 0 {
+				<p class="py-8 text-center font-sans text-xs text-sec">No readable transcript events were found in this rollout page.</p>
+			} else {
+				@BoardLiveSessionEvents(data.Events)
+			}
+			@BoardLiveSessionHistoryMore(data)
+		</div>
+	</div>
+}
+
+templ BoardLiveSessionHistoryMore(data BoardSessionHistoryData) {
+	<div id="board-session-history-more">
+		if data.Offset > 0 {
+			@BoardLiveSessionEvents(data.Events)
+		}
+		if data.HasMore {
+			<button
+				type="button"
+				class="mt-3 w-full rounded-card border border-line px-3 py-1.5 font-sans text-xs font-medium text-sec hover:border-accent hover:text-text"
+				hx-get={ boardSessionHistoryPath(data.Session, data.Offset+data.Limit, data.Limit) }
+				hx-target="#board-session-history-more"
+				hx-swap="outerHTML"
+			>Load older rollout events</button>
+		}
+	</div>
+}
+
+templ BoardLiveSessionEvents(events []BoardSessionEvent) {
+	for _, event := range events {
+		@BoardLiveSessionEvent(event)
+	}
+}
+
+templ BoardLiveSessionEvent(event BoardSessionEvent) {
+	<div class="mb-3 border-l-2 border-line pl-3 last:mb-0" data-session-event={ event.ID }>
+		<div class="flex items-center justify-between gap-3 text-2xs text-dim">
+			<span class="truncate">{ event.Title }</span>
+			<time class="flex-none" datetime={ event.At.Format(time.RFC3339) }>{ boardActivityTime(BoardActivityEvent{At: event.At}) }</time>
+		</div>
+		if event.Content != "" {
+			if event.Truncated || len(event.Content) > 4000 {
+				<details class="mt-1">
+					<summary class="cursor-pointer text-accent">Expand output</summary>
+					<pre class="mt-1 whitespace-pre-wrap break-words text-text">{ event.Content }</pre>
+				</details>
+			} else {
+				<pre class="mt-1 whitespace-pre-wrap break-words text-text">{ event.Content }</pre>
+			}
+		}
+		if event.Tokens > 0 {
+			<p class="mt-1 text-2xs text-dim">{ strconv.FormatInt(event.Tokens, 10) } tokens</p>
+		}
+	</div>
+}

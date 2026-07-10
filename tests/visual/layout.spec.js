@@ -391,11 +391,63 @@ test("board card opens the detail sheet", async ({ page }, testInfo) => {
   await page.locator("#board-lanes article[id^='card-']").first().click();
   const sheet = page.locator("[data-detail-sheet]");
   await expect(sheet).toBeVisible();
-  await expect(sheet.locator("text=State")).toBeVisible();
+  await expect(sheet.getByText("State", { exact: true })).toBeVisible();
+  await expect(sheet.locator("#board-activity-stream")).toBeVisible();
+  await expect(sheet.getByText("Orchestration activity")).toBeVisible();
   await capturePageAndAttach(page, "board-detail-sheet.png", testInfo);
 
   await page.keyboard.press("Escape");
   await expect(sheet).toHaveCount(0);
+});
+
+test("detail sheet activity tabs survive morphs across display modes", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  await page.locator('[data-density-choice="cozy"]').click();
+
+  const runningBadge = page.locator('[data-board-runtime-badge]', {
+    hasText: "agent working",
+  }).first();
+  await runningBadge.locator("xpath=ancestor::article").click();
+
+  const sheet = page.locator("[data-detail-sheet]");
+  await expect(sheet.locator("#board-activity-stream")).toBeVisible();
+  await sheet.getByRole("button", { name: "Verbose" }).click();
+  await expect(sheet.getByRole("button", { name: "Hide usage ticks" })).toBeVisible();
+
+  const sessionTab = sheet.getByRole("tab", { name: "Live session" });
+  await sessionTab.click();
+  await expect(sessionTab).toHaveAttribute("aria-selected", "true");
+  await expect(sheet.getByText("No active worker session")).toBeVisible();
+
+  const sessionHost = sheet.locator("[data-board-live-session]");
+  await sessionHost.evaluate((host) => {
+    const probe = document.createElement("span");
+    probe.dataset.sessionPreserveProbe = "true";
+    probe.textContent = "preserved session content";
+    host.append(probe);
+  });
+
+  await page.evaluate(() =>
+    document.documentElement.setAttribute("data-theme", "light"),
+  );
+  await assertNoDocumentOverflow(page);
+
+  await morphCurrentSnapshot(page, "detail-sheet-activity");
+  await expect(sessionTab).toHaveAttribute("aria-selected", "true");
+  await expect(sheet.getByText("preserved session content")).toBeVisible();
+
+  await sheet.getByRole("tab", { name: "Timeline" }).click();
+  await expect(sheet.locator("#board-activity-stream")).toBeVisible();
+  await expect(sheet.getByText("preserved session content")).toHaveCount(0);
 });
 
 test("board runtime identity stays accessible across snapshot morphs", async ({

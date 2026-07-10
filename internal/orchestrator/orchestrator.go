@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -107,6 +108,7 @@ type Dependencies struct {
 	AgentResume        store.AgentResumeStore
 	OrphanSessions     store.OrphanSessionStore
 	ValidatorMemo      store.ValidatorMemoStore
+	Activity           *activity.Broker
 	GlobalDispatchGate scheduler.ProjectDispatchGate
 	Now                func() time.Time
 	Logger             *slog.Logger
@@ -139,6 +141,7 @@ type Orchestrator struct {
 	validatorResults        map[string]validatorStageResult
 	validatorFailures       map[string]validatorStageFailure
 	validatorMemo           store.ValidatorMemoStore
+	activity                *activity.Broker
 	capacityController      runpkg.CapacityController
 	validatorCapacity       runpkg.ValidatorCapacityController
 	now                     func() time.Time
@@ -284,6 +287,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		validatorResults:        map[string]validatorStageResult{},
 		validatorFailures:       map[string]validatorStageFailure{},
 		validatorMemo:           validatorMemo,
+		activity:                deps.Activity,
 		capacityController:      capacityController,
 		validatorCapacity:       validatorCapacity,
 		now:                     now,

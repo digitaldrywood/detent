@@ -491,6 +491,9 @@ func (r *Runner) runAgentTurn(
 		if err := r.persistSessionProviderIdentity(ctx, detentSessionID, update); err != nil {
 			return err
 		}
+		if err := publishAgentActivity(runRequest, detentSessionID, update, eventAt); err != nil {
+			return err
+		}
 		previousIdentity := result.RuntimeIdentity
 		applyAgentUpdate(&result, update)
 		if !previousIdentity.MateriallyEqual(result.RuntimeIdentity) {
@@ -1023,10 +1026,11 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	runStartedAt := r.now()
 	runtimeIdentity := configuredRuntimeIdentity(selection, backendConfig, RoleValidator, sessionModel, startedAt)
 	runReq := RunRequest{
-		Issue:           req.Issue,
-		StartedAt:       req.StartedAt,
-		SelectorContext: req.SelectorContext,
-		OnUsageUpdate:   req.OnUsageUpdate,
+		Issue:            req.Issue,
+		StartedAt:        req.StartedAt,
+		SelectorContext:  req.SelectorContext,
+		OnUsageUpdate:    req.OnUsageUpdate,
+		OnActivityUpdate: req.OnActivityUpdate,
 	}
 	sessionID, sessionStarted, err := r.startSession(ctx, runReq, startedAt, runtimeIdentity, store.AgentResumeState{}, "")
 	if err != nil {
@@ -1064,6 +1068,9 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		}
 		r.logAgentUpdate(req.Issue, update)
 		if err := r.persistSessionProviderIdentity(ctx, sessionID, update); err != nil {
+			return err
+		}
+		if err := publishAgentActivity(runReq, sessionID, update, eventAt); err != nil {
 			return err
 		}
 		if update.Type == AgentUpdateMessageDelta {
@@ -1968,6 +1975,25 @@ func (r *Runner) publishRunUpdate(
 		usage.DiffStats = diffStats
 	}
 	return req.OnUsageUpdate(usage)
+}
+
+func publishAgentActivity(req RunRequest, detentSessionID int64, update AgentUpdate, at time.Time) error {
+	if req.OnActivityUpdate == nil {
+		return nil
+	}
+	return req.OnActivityUpdate(AgentActivityUpdate{
+		At:                at.UTC(),
+		DetentSessionID:   detentSessionID,
+		ProviderSessionID: strings.TrimSpace(update.ThreadID),
+		TurnID:            strings.TrimSpace(update.TurnID),
+		ItemID:            strings.TrimSpace(update.ItemID),
+		Type:              update.Type,
+		Tool:              strings.TrimSpace(update.Tool),
+		Content:           update.Delta,
+		Status:            strings.TrimSpace(update.Status),
+		Model:             strings.TrimSpace(update.Model),
+		TotalTokens:       update.Tokens.TotalTokens,
+	})
 }
 
 func (r *Runner) liveDiffStats(

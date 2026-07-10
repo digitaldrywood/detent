@@ -16,7 +16,7 @@ templ DetailSheetHost() {
 // and exception-strip Review actions: issue identity, state, PR facts,
 // blockers, the live session, and the kanban actions the project's mode
 // allows.
-templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bool, expanded bool, conversation KanbanConversationData) {
+templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bool, expanded bool, conversation KanbanConversationData, activity BoardActivityData, sessionData BoardSessionData) {
 	{{ session := sheetSessionFor(data.Snapshot, card) }}
 	<div class="fixed inset-0 z-50 flex justify-end" data-detail-sheet>
 		<div class="flex-1 bg-page/60" data-sheet-close aria-hidden="true"></div>
@@ -115,6 +115,7 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 						</div>
 					</div>
 				}
+				@BoardActivityTabs(activity, sessionData)
 				if len(card.Labels) > 0 {
 					@sheetTagRow("Labels", card.Labels)
 				}
