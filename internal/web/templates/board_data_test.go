@@ -1465,6 +1465,30 @@ func TestBoardSnapshotRendersBackendCapacityBanner(t *testing.T) {
 	}
 }
 
+func TestBoardSnapshotRendersGitHubRESTCapacityBanner(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	data.Snapshot.BackendOutages = []telemetry.BackendOutage{{
+		BackendID:   "github-rest",
+		BackendKind: "tracker",
+		Provider:    "github",
+		Kind:        "github_rest_rate_limit",
+		Reason:      "GitHub REST remaining 0 is at or below dispatch floor 1000",
+		ResumeAt:    data.Snapshot.GeneratedAt.Add(44 * time.Minute),
+	}}
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	for _, want := range []string{
+		`id="backend-capacity-outage"`,
+		"GitHub REST dispatch paused",
+		"GitHub REST remaining 0 is at or below dispatch floor 1000; resuming at 17:26 UTC",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("GitHub REST capacity banner missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestBoardSnapshotSurfacesHiddenPopulatedLanes(t *testing.T) {
 	data := DashboardData{
 		Snapshot: telemetry.Snapshot{

@@ -68,6 +68,7 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 	ctx context.Context,
 	running Running,
 	finalState string,
+	pullRequestUpdated bool,
 ) implementCompletionProgressDecision {
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	decision := implementCompletionProgressDecision{
@@ -82,7 +83,36 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		return decision
 	}
 	if !implementProgressLinkedPullRequest(running.Issue) {
-		decision.Reason = "no_linked_pull_request"
+		if pullRequestUpdated {
+			decision.Reason = "pull_request_created_or_updated"
+			return decision
+		}
+		if !implementProgressDiffStatsClean(running.DiffStats) {
+			if !diffStatsPresent(running.DiffStats) {
+				decision.Reason = "workspace_diffstat_unavailable_without_pull_request"
+				return decision
+			}
+			decision.Reason = "workspace_diff_present_without_pull_request"
+			return decision
+		}
+		attempts, err := o.recentImplementCompletionAttempts(ctx, running.Issue, running)
+		if err != nil {
+			decision.Reason = "attempt_history_lookup_failed"
+			decision.Warning = err.Error()
+			if o.logger != nil {
+				o.logger.Warn(
+					"implement worker progress history lookup failed",
+					"issue_id", running.Issue.ID,
+					"identifier", running.Issue.Identifier,
+					"error", err,
+				)
+			}
+			return decision
+		}
+		decision.Outcome = store.WorkAttemptTerminalNoProgress
+		decision.Reason = "completed_clean_diff_without_pull_request"
+		decision.ConsecutiveNoProgress = 1 + consecutiveImplementNoProgressAttempts(attempts, autoPromoteReworkSignature{})
+		decision.Block = decision.NoProgressLimit > 0 && decision.ConsecutiveNoProgress >= decision.NoProgressLimit
 		return decision
 	}
 	hydrator, ok := o.connector.(connector.PullRequestHydrator)
@@ -195,15 +225,28 @@ func consecutiveImplementNoProgressAttempts(attempts []store.WorkAttempt, curren
 	count := 0
 	for _, attempt := range attempts {
 		record, ok := implementProgressRecordFromAttempt(attempt)
-		if !ok || strings.TrimSpace(record.Outcome) != implementProgressOutcomeNoProgress {
-			return count
-		}
-		if !implementProgressSignatureEqual(record.CurrentSignature.signature(), current) {
+		if !ok || !implementProgressRecordMatchesNoProgress(record, current) {
 			return count
 		}
 		count++
 	}
 	return count
+}
+
+func implementProgressRecordMatchesNoProgress(record implementProgressRecord, current autoPromoteReworkSignature) bool {
+	if !implementProgressSignatureEqual(record.CurrentSignature.signature(), current) {
+		return false
+	}
+	if strings.TrimSpace(record.Outcome) == implementProgressOutcomeNoProgress {
+		return true
+	}
+	return !implementProgressSignatureUsable(current) &&
+		strings.TrimSpace(record.Outcome) == string(store.WorkAttemptTerminalSuccess) &&
+		strings.TrimSpace(record.Reason) == "no_linked_pull_request" &&
+		record.WorkspaceDiffStats.Status != "" &&
+		record.WorkspaceDiffStats.FilesChanged == 0 &&
+		record.WorkspaceDiffStats.AddedLines == 0 &&
+		record.WorkspaceDiffStats.RemovedLines == 0
 }
 
 func implementProgressRecordFromAttempt(attempt store.WorkAttempt) (implementProgressRecord, bool) {
@@ -401,7 +444,7 @@ func (o *Orchestrator) blockNoProgressLimit(
 
 func noProgressLimitComment(issue connector.Issue, decision implementCompletionProgressDecision) string {
 	var b strings.Builder
-	b.WriteString("Routed this issue to Blocked because the implement worker completed repeatedly without PR progress.")
+	b.WriteString("Routed this issue to Blocked because the implement worker completed repeatedly without deliverable progress.")
 	b.WriteString("\n\n- reason: ")
 	b.WriteString(noProgressLimitReason)
 	b.WriteString("\n- no_progress_limit: ")

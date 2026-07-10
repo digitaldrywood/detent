@@ -24,7 +24,7 @@ func (o *Orchestrator) reconcileTarget(ctx context.Context, state *State, reques
 	o.markRefresh(state, now)
 	completed := false
 	defer func() {
-		o.finishRefresh(state, now)
+		o.finishRefresh(state, now, true)
 		finishManualRefresh(state, request.manualRefreshRequest, completed)
 	}()
 

@@ -588,6 +588,10 @@ func (c *Client) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	rateLimit := c.restRateLimit
+	if core, ok := c.restRateLimits["core"]; ok {
+		rateLimit = core
+	}
 	backoffUntil := c.restBackoffUntil
 	if c.restBackoffs != nil && c.restBackoffKey != "" {
 		if shared := c.restBackoffs.until(c.restBackoffKey, time.Now()); shared.After(backoffUntil) {
@@ -595,7 +599,7 @@ func (c *Client) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 		}
 	}
 	usage := connector.RESTRateLimitUsage{
-		RateLimit:    c.restRateLimit,
+		RateLimit:    rateLimit,
 		HasRateLimit: c.hasRestRateLimit,
 		Requests:     sortedRESTEndpointUsages(c.restRequests),
 		BackoffUntil: backoffUntil,

@@ -515,6 +515,13 @@ func (r *Runner) runAgentTurn(
 	})
 	result.Output = progress.outputText()
 	result.SkillDraftProposed = skillDraftProposed(result.Output)
+	result.PullRequestUpdated = progress.pullRequestUpdated()
+	if turnErr == nil {
+		if deliverableErr := progress.deliverableError(); deliverableErr != nil {
+			turnErr = deliverableErr
+			result.FinalState = FinalStateFailed
+		}
+	}
 	cleanupErr := agentTurnCleanupError(turnErr, turnResult)
 	if cleanupErr != nil {
 		turnErr = nil
@@ -1786,14 +1793,20 @@ type agentRunProgress struct {
 	diffStats             DiffStats
 	diffStatsCollected    bool
 	diffStatsCheckedAt    time.Time
+	toolInvocations       map[string]deliverableToolInvocation
+	deliverableFailures   map[string]error
+	deliverableSuccesses  map[string]bool
 }
 
 func newAgentRunProgress(outputPolicy runtimeoutput.Policy) *agentRunProgress {
 	return &agentRunProgress{
-		turnIDs:      map[string]struct{}{},
-		messages:     map[string]*runtimeoutput.Buffer{},
-		outputPolicy: outputPolicy,
-		output:       runtimeoutput.NewBuffer(outputPolicy),
+		turnIDs:              map[string]struct{}{},
+		messages:             map[string]*runtimeoutput.Buffer{},
+		outputPolicy:         outputPolicy,
+		output:               runtimeoutput.NewBuffer(outputPolicy),
+		toolInvocations:      map[string]deliverableToolInvocation{},
+		deliverableFailures:  map[string]error{},
+		deliverableSuccesses: map[string]bool{},
 	}
 }
 
@@ -1861,6 +1874,10 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 		eventMessage = modelUpdatedActivityMessage(update.Model)
 	case AgentUpdateRuntimeIdentity:
 		eventMessage = "agent route selected"
+	case AgentUpdateToolStarted:
+		p.recordDeliverableToolStart(update)
+	case AgentUpdateToolCompleted:
+		p.recordDeliverableToolCompletion(update)
 	}
 
 	p.addRecentEvent(telemetry.ActivityEvent{
@@ -1869,6 +1886,152 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 		Message:    eventMessage,
 		Truncation: eventTruncation,
 	})
+}
+
+type deliverableToolInvocation struct {
+	class   string
+	command string
+	tool    string
+}
+
+func (p *agentRunProgress) recordDeliverableToolStart(update AgentUpdate) {
+	class := deliverableOperationClass(update.Tool, update.Delta)
+	if class == "" {
+		return
+	}
+	p.toolInvocations[deliverableToolKey(update)] = deliverableToolInvocation{
+		class:   class,
+		command: strings.TrimSpace(update.Delta),
+		tool:    strings.TrimSpace(update.Tool),
+	}
+}
+
+func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
+	key := deliverableToolKey(update)
+	invocation, ok := p.toolInvocations[key]
+	if !ok {
+		invocation = deliverableToolInvocation{
+			class:   deliverableOperationClass(update.Tool, update.Delta),
+			command: strings.TrimSpace(update.Delta),
+			tool:    strings.TrimSpace(update.Tool),
+		}
+	}
+	if invocation.class == "" {
+		return
+	}
+	delete(p.toolInvocations, key)
+	if deliverableToolStatusSucceeded(update.Status) {
+		delete(p.deliverableFailures, invocation.class)
+		p.deliverableSuccesses[invocation.class] = true
+		return
+	}
+	if !deliverableToolStatusFailed(update.Status) {
+		return
+	}
+	delete(p.deliverableSuccesses, invocation.class)
+	detail := strings.TrimSpace(update.Delta)
+	if detail == "" {
+		detail = strings.TrimSpace(update.BackendErrorMessage)
+	}
+	if detail == "" {
+		detail = strings.TrimSpace(update.BackendErrorBody)
+	}
+	if detail == "" {
+		detail = strings.TrimSpace(update.Status)
+	}
+	if len(detail) > 4096 {
+		detail = detail[len(detail)-4096:]
+	}
+	operation := invocation.command
+	if operation == "" {
+		operation = invocation.tool
+	}
+	p.deliverableFailures[invocation.class] = fmt.Errorf("deliverable command failed (%s): %s", strings.TrimSpace(operation), detail)
+}
+
+func (p *agentRunProgress) pullRequestUpdated() bool {
+	return p.deliverableSuccesses["pull_request"]
+}
+
+func (p *agentRunProgress) deliverableError() error {
+	errs := make([]error, 0, len(p.deliverableFailures))
+	for _, class := range []string{"pull_request", "push"} {
+		if err := p.deliverableFailures[class]; err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func deliverableToolKey(update AgentUpdate) string {
+	if itemID := strings.TrimSpace(update.ItemID); itemID != "" {
+		return itemID
+	}
+	return strings.TrimSpace(update.TurnID) + "\x00" + strings.TrimSpace(update.Tool)
+}
+
+func deliverableOperationClass(tool string, command string) string {
+	lowerTool := strings.ToLower(strings.TrimSpace(tool))
+	lowerCommand := strings.ToLower(strings.TrimSpace(command))
+	if gitPushCommand(lowerCommand) {
+		return "push"
+	}
+	if pullRequestCommand(lowerCommand) ||
+		(strings.Contains(lowerTool, "pull_request") &&
+			(strings.Contains(lowerTool, "create") || strings.Contains(lowerTool, "update") || strings.Contains(lowerTool, "edit"))) {
+		return "pull_request"
+	}
+	return ""
+}
+
+func gitPushCommand(command string) bool {
+	fields := strings.Fields(command)
+	for index, field := range fields {
+		field = strings.Trim(field, "'\";()")
+		if field != "git" {
+			continue
+		}
+		for _, candidate := range fields[index+1:] {
+			candidate = strings.Trim(candidate, "'\";()")
+			if candidate == "push" {
+				return true
+			}
+			if candidate == "git" || strings.ContainsAny(candidate, "|&") {
+				break
+			}
+		}
+	}
+	return false
+}
+
+func pullRequestCommand(command string) bool {
+	for _, operation := range []string{"gh pr create", "gh pr edit", "gh pr ready"} {
+		if strings.Contains(command, operation) {
+			return true
+		}
+	}
+	return strings.Contains(command, "gh api") &&
+		strings.Contains(command, "/pulls") &&
+		(strings.Contains(command, "--method post") || strings.Contains(command, "--method patch") ||
+			strings.Contains(command, "-x post") || strings.Contains(command, "-x patch"))
+}
+
+func deliverableToolStatusSucceeded(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "success", "succeeded":
+		return true
+	default:
+		return false
+	}
+}
+
+func deliverableToolStatusFailed(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "error", "cancelled", "canceled", "timed_out":
+		return true
+	default:
+		return false
+	}
 }
 
 func tokenUsageActivityMessage(tokens AgentTokenUsage) string {

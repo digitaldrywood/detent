@@ -101,6 +101,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		running.cancel()
 	}
 	delete(state.Running, event.IssueID)
+	if o.handleGitHubRESTCapacityCompletion(ctx, state, event, running) {
+		return
+	}
 	if capacityErr, ok := backendcapacity.As(event.Err); ok {
 		o.handleBackendCapacityError(ctx, state, event, running, capacityErr)
 		return
@@ -225,7 +228,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if diffStatsPresent(event.Result.DiffStats) {
 		running.DiffStats = event.Result.DiffStats
 	}
-	progress := o.evaluateImplementCompletionProgress(ctx, running, finalState)
+	progress := o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
 	if terminalState != store.WorkAttemptTerminalSuccess {
 		progress.Outcome = terminalState
 	}

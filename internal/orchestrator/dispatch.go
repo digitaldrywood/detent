@@ -183,6 +183,7 @@ const (
 	dispatchIssueFailureWorkAttemptStart      = "work_attempt_start_failed"
 	dispatchIssueFailureStartStateTransition  = "start_state_transition_failed"
 	dispatchIssueFailureBackendCapacityPaused = "backend_capacity_paused"
+	dispatchIssueFailureGitHubRESTPaused      = "github_rest_capacity_paused"
 )
 
 type dispatchIssueOutcome struct {
@@ -209,6 +210,9 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	now time.Time,
 	preferredWorkerHost string,
 ) dispatchIssueOutcome {
+	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubRESTPaused}
+	}
 	queuedRetry, retryQueued := state.Retry[issue.ID]
 	runMode := o.dispatchMode(ctx, state, issue)
 	capacityRequest := runpkg.RunRequest{Issue: issue, Mode: runMode, SelectorContext: o.selectorContext()}

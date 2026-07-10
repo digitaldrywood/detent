@@ -27,24 +27,26 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 	}
 
 	tests := []struct {
-		name              string
-		runningIssue      connector.Issue
-		hydratedIssue     connector.Issue
-		hydrateErr        error
-		history           []store.WorkAttempt
-		diffStats         DiffStats
-		noProgressLimit   int
-		wantTerminal      store.WorkAttemptTerminalState
-		wantReason        string
-		wantPreviousHead  string
-		wantCurrentHead   string
-		wantHydrations    int
-		wantBlocked       bool
-		wantComment       string
-		wantRetry         bool
-		wantLogContains   string
-		wantFailedAdded   []string
-		wantFailedRemoved []string
+		name               string
+		runningIssue       connector.Issue
+		hydratedIssue      connector.Issue
+		hydrateErr         error
+		history            []store.WorkAttempt
+		diffStats          DiffStats
+		noProgressLimit    int
+		wantTerminal       store.WorkAttemptTerminalState
+		wantReason         string
+		wantPreviousHead   string
+		wantCurrentHead    string
+		wantHydrations     int
+		wantBlocked        bool
+		wantComment        string
+		wantRetry          bool
+		wantLogContains    string
+		wantFailedAdded    []string
+		wantFailedRemoved  []string
+		wantConsecutive    int
+		pullRequestUpdated bool
 	}{
 		{
 			name:            "first attempt succeeds with linked PR",
@@ -81,6 +83,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			noProgressLimit:  3,
 			wantTerminal:     store.WorkAttemptTerminalNoProgress,
 			wantReason:       "unchanged_signature_clean_diff",
+			wantConsecutive:  1,
 			wantPreviousHead: "same-head",
 			wantCurrentHead:  "same-head",
 			wantHydrations:   1,
@@ -98,6 +101,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			noProgressLimit:  3,
 			wantTerminal:     store.WorkAttemptTerminalNoProgress,
 			wantReason:       "unchanged_signature_clean_diff",
+			wantConsecutive:  3,
 			wantPreviousHead: "same-head",
 			wantCurrentHead:  "same-head",
 			wantHydrations:   1,
@@ -105,13 +109,39 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantComment:      "no_progress_limit",
 		},
 		{
-			name:            "issue without linked PR is exempt",
+			name:               "new pull request creation avoids false no progress",
+			runningIssue:       implementProgressIssueWithoutPR(),
+			diffStats:          DiffStats{Status: "clean"},
+			noProgressLimit:    3,
+			pullRequestUpdated: true,
+			wantTerminal:       store.WorkAttemptTerminalSuccess,
+			wantReason:         "pull_request_created_or_updated",
+			wantRetry:          true,
+		},
+		{
+			name:            "first clean completion without linked PR records no progress",
 			runningIssue:    implementProgressIssueWithoutPR(),
 			diffStats:       DiffStats{Status: "clean"},
 			noProgressLimit: 3,
-			wantTerminal:    store.WorkAttemptTerminalSuccess,
-			wantReason:      "no_linked_pull_request",
+			wantTerminal:    store.WorkAttemptTerminalNoProgress,
+			wantReason:      "completed_clean_diff_without_pull_request",
+			wantConsecutive: 1,
 			wantRetry:       true,
+		},
+		{
+			name:         "July telemetry replay trips third clean completion without linked PR",
+			runningIssue: implementProgressIssueWithoutPR(),
+			history: []store.WorkAttempt{
+				implementProgressLegacyNoPRHistoryAttempt(2),
+				implementProgressLegacyNoPRHistoryAttempt(1),
+			},
+			diffStats:       DiffStats{Status: "clean"},
+			noProgressLimit: 3,
+			wantTerminal:    store.WorkAttemptTerminalNoProgress,
+			wantReason:      "completed_clean_diff_without_pull_request",
+			wantConsecutive: 3,
+			wantBlocked:     true,
+			wantComment:     "consecutive_no_progress_attempts: 3",
 		},
 		{
 			name:            "hydration failure fails open to success",
@@ -196,8 +226,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 				CompletedAt: base,
 				Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
 				Result: runpkg.RunResult{
-					FinalState: FinalStateCompleted,
-					DiffStats:  tt.diffStats,
+					FinalState:         FinalStateCompleted,
+					DiffStats:          tt.diffStats,
+					PullRequestUpdated: tt.pullRequestUpdated,
 				},
 			})
 
@@ -217,6 +248,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			}
 			if record.CurrentHeadSHA != tt.wantCurrentHead {
 				t.Fatalf("current head = %q, want %q", record.CurrentHeadSHA, tt.wantCurrentHead)
+			}
+			if record.ConsecutiveNoProgress != tt.wantConsecutive {
+				t.Fatalf("consecutive no progress = %d, want %d", record.ConsecutiveNoProgress, tt.wantConsecutive)
 			}
 			if !slicesEqual(record.FailedChecksAdded, tt.wantFailedAdded) {
 				t.Fatalf("failed checks added = %#v, want %#v", record.FailedChecksAdded, tt.wantFailedAdded)
@@ -412,6 +446,28 @@ func implementProgressHistoryAttempt(id int64, signature autoPromoteReworkSignat
 		TerminalState:      terminal,
 		CompletedAt:        time.Date(2026, 7, 8, 15, int(id), 0, 0, time.UTC),
 		WorkerMetadataJSON: implementProgressMetadataJSON(signature, terminal),
+	}
+}
+
+func implementProgressLegacyNoPRHistoryAttempt(id int64) store.WorkAttempt {
+	return store.WorkAttempt{
+		ID:            id,
+		ProjectID:     "gopher-ai",
+		IssueID:       "issue-213",
+		Identifier:    "gopherguides/gopher-ai#213",
+		IssueURL:      "https://github.test/gopherguides/gopher-ai/issues/213",
+		WorkerType:    "agent",
+		Status:        store.WorkAttemptStatusTerminal,
+		TerminalState: store.WorkAttemptTerminalSuccess,
+		CompletedAt:   time.Date(2026, 7, 10, 22, int(id), 0, 0, time.UTC),
+		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+			"run_mode": runpkg.RunModeImplement,
+			implementProgressMetadataKey: implementProgressRecord{
+				Outcome:            string(store.WorkAttemptTerminalSuccess),
+				Reason:             "no_linked_pull_request",
+				WorkspaceDiffStats: implementProgressDiffStats{Status: "clean"},
+			},
+		}),
 	}
 }
 
