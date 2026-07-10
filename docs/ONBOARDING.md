@@ -3042,6 +3042,7 @@ the card instead of auto-resolving it.
 | Validator-agent review | `gate.validator.enabled`, `gate.validator.min_score`, and `gate.validator.block_on` in `WORKFLOW.md`. |
 | Human validation label | `gate.kind: human_review` and `gate.approval_label` in `WORKFLOW.md`. |
 | Per-project concurrency | `agent.max_concurrent_agents` in `WORKFLOW.md`. |
+| Per-role reasoning effort | Optional `agent.effort.code`, `agent.effort.rework`, and `agent.effort.merge` defaults in `WORKFLOW.md`. |
 | Merge serialization | `agent.max_concurrent_agents_by_state.Merging: 1` in `WORKFLOW.md`. |
 | Session runaway brake | `agent.max_session_tokens`; `agent.max_session_context_multiplier` remains absent unless explicitly requested as a coarse ceiling. |
 | Hard-stop review policy | `agent.auto_promote.enabled: false` in `WORKFLOW.md`. |
@@ -3062,17 +3063,37 @@ issue's worker sessions with a fenced `detent-agent` YAML block:
 
 ```detent-agent
 schema: 1
-effort: medium
+effort: xhigh
+merge:
+  effort: high
 ```
 
-The `schema: 1` field is required. `model` and `effort` are optional; omit
-`model` to inherit the configured route or provider default. When an issue has
-multiple complete `detent-agent` blocks, the last block wins. Detent accepts
-only the `schema`, `model`, and `effort` fields and a single YAML document.
-Invalid YAML, unknown fields, unsupported schemas, unavailable models, and
-unsupported effort values are rejected. Rejected fields fall back to the
-applicable project defaults, and Detent posts a rejection comment identifying
-what it ignored.
+The `schema: 1` field is required. `model`, `effort`, and the optional `code`,
+`rework`, and `merge` role maps are accepted; each role map accepts only an
+`effort` key. Omit `model` to inherit the configured route or provider default.
+When an issue has multiple complete `detent-agent` blocks, the last block wins.
+Detent accepts a single YAML document. Invalid YAML, unknown fields, unsupported
+schemas, unavailable models, and unsupported effort values are rejected.
+Rejected fields fall back to the next applicable default, and Detent posts a
+rejection comment identifying what it ignored. Because parsing uses strict
+known-field validation, older Detent binaries reject role maps they do not yet
+recognize; single-binary fleets should upgrade before adding this syntax.
+
+Effort precedence is the issue's role effort, the issue-wide `effort`, the
+project's role default, then the selected backend or provider configuration.
+Configure project defaults under `agent.effort`:
+
+```yaml
+agent:
+  effort:
+    code: xhigh
+    merge: high
+```
+
+Unset roles retain the backend/config behavior. An unset `rework` role inherits
+the code role value at both the issue and project levels; set `rework.effort` or
+`agent.effort.rework` to choose a distinct value. Role efforts are validated
+against the effective model for that role at dispatch and by `detent doctor`.
 
 Define a project-specific effort rubric in the repository's agent-facing docs,
 such as `AGENTS.md` or `CLAUDE.md`. Issue authors should select the least effort

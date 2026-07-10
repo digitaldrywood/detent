@@ -35,6 +35,23 @@ func TestFromIssueBody(t *testing.T) {
 			wantFound: true,
 		},
 		{
+			name: "role efforts",
+			body: "```detent-agent\nschema: 1\neffort: xhigh\ncode:\n  effort: high\nrework:\n  effort: medium\nmerge:\n  effort: low\n```",
+			want: Override{
+				Effort: "xhigh",
+				Code:   RoleOverride{Effort: "high"},
+				Rework: RoleOverride{Effort: "medium"},
+				Merge:  RoleOverride{Effort: "low"},
+			},
+			wantFound: true,
+		},
+		{
+			name:      "unknown role field",
+			body:      "```detent-agent\nschema: 1\nmerge:\n  effort: high\n  extra: nope\n```",
+			wantFound: true,
+			wantErr:   "field extra not found",
+		},
+		{
 			name:      "last block wins",
 			body:      "```detent-agent\nschema: 1\nmodel: old\n```\n\n```detent-agent\nschema: 1\nmodel: current\n```",
 			want:      Override{Model: "current"},
@@ -74,5 +91,50 @@ func TestFromIssueBody(t *testing.T) {
 				t.Fatalf("override = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestOverrideEffortForRole(t *testing.T) {
+	t.Parallel()
+
+	override := Override{
+		Code:   RoleOverride{Effort: "high"},
+		Rework: RoleOverride{Effort: "medium"},
+		Merge:  RoleOverride{Effort: "low"},
+	}
+	tests := []struct {
+		name       string
+		role       string
+		override   Override
+		wantEffort string
+		wantField  string
+	}{
+		{name: "code", role: "code", override: override, wantEffort: "high", wantField: "code.effort"},
+		{name: "rework", role: "rework", override: override, wantEffort: "medium", wantField: "rework.effort"},
+		{name: "rework inherits code", role: "rework", override: Override{Code: RoleOverride{Effort: "high"}}, wantEffort: "high", wantField: "code.effort"},
+		{name: "merge", role: "merge", override: override, wantEffort: "low", wantField: "merge.effort"},
+		{name: "unconfigured", role: "plan", override: override},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			effort, field := tt.override.EffortForRole(tt.role)
+			if effort != tt.wantEffort || field != tt.wantField {
+				t.Fatalf("EffortForRole(%q) = %q, %q; want %q, %q", tt.role, effort, field, tt.wantEffort, tt.wantField)
+			}
+		})
+	}
+}
+
+func TestOverrideRoleEffortsIncludesInheritedRework(t *testing.T) {
+	t.Parallel()
+
+	efforts := (Override{Code: RoleOverride{Effort: "high"}}).RoleEfforts()
+	if len(efforts) != 3 {
+		t.Fatalf("RoleEfforts() len = %d, want 3", len(efforts))
+	}
+	if got := efforts[1]; got != (RoleEffort{Role: "rework", Field: "code.effort", Effort: "high", Inherited: true}) {
+		t.Fatalf("rework effort = %#v, want inherited code effort", got)
 	}
 }

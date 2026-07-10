@@ -224,6 +224,7 @@ type Agent struct {
 	MaxSessionTokenOverrideField string                       `yaml:"max_session_token_override_field"`
 	ExperimentalThreadResume     bool                         `yaml:"experimental_thread_resume"`
 	ResumeOrphanedSessions       bool                         `yaml:"resume_orphaned_sessions"`
+	Effort                       AgentRoleEffort              `yaml:"effort"`
 	Shutdown                     Shutdown                     `yaml:"shutdown"`
 	MaxConcurrentAgentsByState   map[string]int               `yaml:"max_concurrent_agents_by_state"`
 	DispatchPriorityByState      []string                     `yaml:"dispatch_priority_by_state"`
@@ -238,6 +239,28 @@ type Agent struct {
 	Knowledge                    Knowledge                    `yaml:"knowledge"`
 	Skills                       Skills                       `yaml:"skills"`
 	Followups                    Followups                    `yaml:"followups"`
+}
+
+type AgentRoleEffort struct {
+	Code   string `yaml:"code"`
+	Rework string `yaml:"rework"`
+	Merge  string `yaml:"merge"`
+}
+
+func (e AgentRoleEffort) Resolve(role string) (string, string) {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "code":
+		return strings.TrimSpace(e.Code), "agent.effort.code"
+	case "rework":
+		if effort := strings.TrimSpace(e.Rework); effort != "" {
+			return effort, "agent.effort.rework"
+		}
+		return strings.TrimSpace(e.Code), "agent.effort.code"
+	case "merge":
+		return strings.TrimSpace(e.Merge), "agent.effort.merge"
+	default:
+		return "", ""
+	}
 }
 
 type Shutdown struct {
@@ -1379,6 +1402,7 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	if a.MaxSessionContextMultiplier < 0 {
 		*problems = append(*problems, prefix+".max_session_context_multiplier must be greater than or equal to 0")
 	}
+	a.Effort.validate(prefix+".effort", problems)
 	a.Shutdown.validate(prefix+".shutdown", problems)
 	validateStateLimits(prefix+".max_concurrent_agents_by_state", a.MaxConcurrentAgentsByState, problems)
 	validateStateList(prefix+".dispatch_priority_by_state", a.DispatchPriorityByState, problems)
@@ -1389,6 +1413,25 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	a.Lessons.validate(prefix+".lessons", problems)
 	a.Knowledge.validate(prefix+".knowledge", problems)
 	a.Skills.validate(prefix+".skills", problems)
+}
+
+func (e AgentRoleEffort) validate(prefix string, problems *[]string) {
+	for _, roleEffort := range []struct {
+		role   string
+		effort string
+	}{
+		{role: "code", effort: e.Code},
+		{role: "rework", effort: e.Rework},
+		{role: "merge", effort: e.Merge},
+	} {
+		role := roleEffort.role
+		effort := roleEffort.effort
+		switch strings.ToLower(strings.TrimSpace(effort)) {
+		case "", claudeCodeEffortLow, claudeCodeEffortMedium, claudeCodeEffortHigh, claudeCodeEffortXHigh, claudeCodeEffortMax, claudeCodeEffortUltracode:
+		default:
+			*problems = append(*problems, prefix+"."+role+" must be one of low, medium, high, xhigh, max, ultracode")
+		}
+	}
 }
 
 func (s Shutdown) validate(prefix string, problems *[]string) {

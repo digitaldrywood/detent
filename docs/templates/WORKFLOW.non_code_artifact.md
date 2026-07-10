@@ -30,6 +30,9 @@ deliverable:
 
 agent:
   resume_orphaned_sessions: true
+  # Optional per-role reasoning defaults. Unset roles retain backend behavior.
+  # effort:
+  #   merge: high
   # Per-session ceiling on total_tokens. total_tokens counts input + output +
   # cache-created + cache-read tokens, accumulated across every turn of the
   # session, so cached context is re-counted each turn. Use max_session_tokens

@@ -1220,6 +1220,87 @@ Prompt
 	}
 }
 
+func TestParseWorkflowAgentRoleEffort(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+agent:
+  effort:
+    code: xhigh
+    rework: medium
+    merge: high
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		role       string
+		wantEffort string
+		wantField  string
+	}{
+		{name: "code", role: "code", wantEffort: "xhigh", wantField: "agent.effort.code"},
+		{name: "rework", role: "rework", wantEffort: "medium", wantField: "agent.effort.rework"},
+		{name: "merge", role: "merge", wantEffort: "high", wantField: "agent.effort.merge"},
+		{name: "unconfigured role", role: "plan"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			effort, field := workflow.Config.Agent.Effort.Resolve(tt.role)
+			if effort != tt.wantEffort || field != tt.wantField {
+				t.Fatalf("Resolve(%q) = %q, %q; want %q, %q", tt.role, effort, field, tt.wantEffort, tt.wantField)
+			}
+		})
+	}
+}
+
+func TestAgentRoleEffortReworkInheritsCode(t *testing.T) {
+	t.Parallel()
+
+	effort, field := (AgentRoleEffort{Code: "high"}).Resolve("rework")
+	if effort != "high" || field != "agent.effort.code" {
+		t.Fatalf("Resolve(rework) = %q, %q; want high, agent.effort.code", effort, field)
+	}
+}
+
+func TestAgentRoleEffortValidate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		effort      AgentRoleEffort
+		wantProblem string
+	}{
+		{name: "supported values", effort: AgentRoleEffort{Code: "xhigh", Rework: "medium", Merge: "high"}},
+		{name: "invalid merge value", effort: AgentRoleEffort{Merge: "extreme"}, wantProblem: "agent.effort.merge must be one of"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var problems []string
+			tt.effort.validate("agent.effort", &problems)
+			if tt.wantProblem == "" {
+				if len(problems) != 0 {
+					t.Fatalf("problems = %#v, want none", problems)
+				}
+				return
+			}
+			if len(problems) != 1 || !strings.Contains(problems[0], tt.wantProblem) {
+				t.Fatalf("problems = %#v, want one containing %q", problems, tt.wantProblem)
+			}
+		})
+	}
+}
+
 func TestAgentBackendConfigsMergesLegacyCodexDefaults(t *testing.T) {
 	t.Parallel()
 

@@ -686,47 +686,71 @@ func checkDoctorIssueAgentModels(ctx context.Context, id string, project globalc
 			failures = append(failures, fmt.Sprintf("issue %s has invalid detent-agent block: %v", identifier, err))
 			continue
 		}
-		if override.Model == "" && override.Effort == "" {
+		roleEfforts := override.RoleEfforts()
+		hasRoleEffort := false
+		for _, roleEffort := range roleEfforts {
+			if roleEffort.Effort != "" {
+				hasRoleEffort = true
+				break
+			}
+		}
+		if override.Model == "" && override.Effort == "" && !hasRoleEffort {
 			continue
 		}
-		selection, err := router.Route(issue, selectorContext)
-		if err != nil {
-			failures = append(failures, fmt.Sprintf("issue %s detent-agent route selection failed: %v", identifier, err))
-			continue
-		}
-		backend, ok := backends[strings.TrimSpace(selection.BackendID)]
-		if !ok {
-			failures = append(failures, fmt.Sprintf("issue %s detent-agent route %s references unavailable backend %s", identifier, selection.RouteName, selection.BackendID))
-			continue
-		}
-		model := override.Model
-		if model == "" {
-			model = selection.Model
-		}
-		if override.Model != "" {
-			probedModels++
-		}
-		if override.Effort != "" {
-			probedEfforts++
-		}
-		err = deps.modelProbe(ctx, doctorRouteModelProbeRequest{
-			ProjectID:    id,
-			Workspace:    workspacePath,
-			WorkflowPath: workflowPath,
-			RouteName:    identifier,
-			Model:        model,
-			Effort:       override.Effort,
-			Backend:      backend,
-		})
-		if err != nil {
+		probe := func(role string, field string, effort string, includeModel bool) {
+			selection, routeErr := router.RouteForRole(issue, selectorContext, role)
+			if routeErr != nil {
+				failures = append(failures, fmt.Sprintf("issue %s detent-agent %s route selection failed: %v", identifier, field, routeErr))
+				return
+			}
+			backend, ok := backends[strings.TrimSpace(selection.BackendID)]
+			if !ok {
+				failures = append(failures, fmt.Sprintf("issue %s detent-agent route %s references unavailable backend %s", identifier, selection.RouteName, selection.BackendID))
+				return
+			}
+			model := override.Model
+			if model == "" {
+				model = selection.Model
+			}
+			probeErr := deps.modelProbe(ctx, doctorRouteModelProbeRequest{
+				ProjectID:    id,
+				Workspace:    workspacePath,
+				WorkflowPath: workflowPath,
+				RouteName:    identifier + ":" + role,
+				Model:        model,
+				Effort:       effort,
+				Backend:      backend,
+			})
+			if probeErr == nil {
+				return
+			}
 			fields := []string{}
-			if override.Model != "" {
+			if includeModel && override.Model != "" {
 				fields = append(fields, "model "+override.Model)
 			}
-			if override.Effort != "" {
-				fields = append(fields, "effort "+override.Effort)
+			if effort != "" {
+				fields = append(fields, field+" "+effort)
 			}
-			failures = append(failures, fmt.Sprintf("issue %s detent-agent %s rejected by backend: %v", identifier, strings.Join(fields, " "), err))
+			failures = append(failures, fmt.Sprintf("issue %s detent-agent %s rejected by backend: %v", identifier, strings.Join(fields, " "), probeErr))
+		}
+
+		if override.Model != "" || override.Effort != "" {
+			probe(runnerpkg.RoleCode, "effort", override.Effort, true)
+			if override.Model != "" {
+				probedModels++
+			}
+			if override.Effort != "" {
+				probedEfforts++
+			}
+		}
+		for _, roleEffort := range roleEfforts {
+			if roleEffort.Effort == "" {
+				continue
+			}
+			probe(roleEffort.Role, roleEffort.Field, roleEffort.Effort, false)
+			if !roleEffort.Inherited {
+				probedEfforts++
+			}
 		}
 	}
 

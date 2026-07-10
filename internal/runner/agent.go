@@ -719,7 +719,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	runStartedAt := r.now()
 	modelProvider, serviceTier, configuredEffort := agentTurnIdentityOptions(backendConfig)
-	resolvedOverride := resolveAgentOverride(ctx, req.Issue, info.Path, selection.Model, backend)
+	projectEffort, projectEffortField := workflow.Config.Agent.Effort.Resolve(role)
+	resolvedOverride := resolveAgentOverride(ctx, req.Issue, info.Path, selection.Model, role, agentEffortCandidate{
+		Field:  projectEffortField,
+		Effort: projectEffort,
+	}, backend)
 	selectedModel := resolvedOverride.Model
 	effort := configuredEffort
 	if resolvedOverride.Effort != "" {
