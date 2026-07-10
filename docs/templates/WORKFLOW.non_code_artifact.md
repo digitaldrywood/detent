@@ -62,6 +62,14 @@ agent:
     pass_state: Ready for Pickup
     rework_state: Rework
     rework_limit: 3
+  # Skills guide: https://github.com/digitaldrywood/detent/blob/main/docs/ONBOARDING.md#skills-and-skill-creation
+  skills:
+    enabled: true
+    path: .detent/skills
+    max_skills_in_prompt: 50
+    creation:
+      enabled: true
+      max_drafts_per_run: 1
 
 codex:
   # Optional model_reasoning_effort is unset because not every model accepts it.

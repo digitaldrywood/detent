@@ -528,6 +528,37 @@ func TestGitHubLocalWorkflowTemplateUsesAffordablePolling(t *testing.T) {
 	}
 }
 
+func TestWorkflowTemplatesLinkToSkillsOnboarding(t *testing.T) {
+	t.Parallel()
+
+	const link = "https://github.com/digitaldrywood/detent/blob/main/docs/ONBOARDING.md#skills-and-skill-creation"
+	for _, path := range []string{
+		"docs/templates/WORKFLOW.project_v2.md",
+		"docs/templates/WORKFLOW.issue_field.md",
+		"docs/templates/WORKFLOW.label.md",
+		"docs/templates/WORKFLOW.github_local.md",
+		"docs/templates/WORKFLOW.non_code_artifact.md",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			assertContains(t, readRepositoryTextFile(t, path), link)
+		})
+	}
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+	for _, want := range []string{
+		"## Skills And Skill Creation",
+		"name: release-check",
+		"description: Verify a release candidate before publishing.",
+		"when_to_use: The issue asks to prepare or validate a release.",
+		"creation.max_drafts_per_run",
+		"Set `agent.skills.enabled: false`",
+	} {
+		assertContains(t, onboarding, want)
+	}
+	assertContainsWords(t, onboarding, "Reviewers approve a skill by merging the pull request")
+}
+
 func TestWorkflowTemplatesDocumentStatusEnumAndReviewFlow(t *testing.T) {
 	t.Parallel()
 
