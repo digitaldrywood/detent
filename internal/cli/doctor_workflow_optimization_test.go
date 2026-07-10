@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -184,6 +185,35 @@ func TestDoctorOrphanRecoveryFindings(t *testing.T) {
 				t.Fatalf("fallback detail = %q, want dominant reason", got.Detail)
 			}
 		})
+	}
+}
+
+func TestDoctorOrphanRecoveryTelemetryUsesTwentyFourHourWindow(t *testing.T) {
+	t.Parallel()
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	for _, statement := range []string{
+		`CREATE TABLE work_attempts (id INTEGER PRIMARY KEY, project_id TEXT)`,
+		`CREATE TABLE codex_sessions (id INTEGER PRIMARY KEY, work_attempt_id INTEGER, started_at TEXT, final_state TEXT, orphan_recovery_outcome TEXT, orphan_recovery_fallback_reason TEXT, input_tokens INTEGER, cached_input_tokens INTEGER)`,
+		`INSERT INTO work_attempts (id, project_id) VALUES (1, 'detent')`,
+		`INSERT INTO codex_sessions (work_attempt_id, started_at, final_state) VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-25 hours'), 'orphaned')`,
+		`INSERT INTO codex_sessions (work_attempt_id, started_at, final_state, orphan_recovery_outcome, input_tokens, cached_input_tokens) VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hour'), 'completed', 'resumed', 1000, 850)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("Exec(%q) error = %v", statement, err)
+		}
+	}
+
+	metrics, err := doctorOrphanRecoveryTelemetry(context.Background(), db, "detent")
+	if err != nil {
+		t.Fatalf("doctorOrphanRecoveryTelemetry() error = %v", err)
+	}
+	if metrics.Detected != 0 || metrics.Reattached != 1 || metrics.ResumedCachedInputShare != 0.85 {
+		t.Fatalf("metrics = %#v, want only the recent resumed session", metrics)
 	}
 }
 

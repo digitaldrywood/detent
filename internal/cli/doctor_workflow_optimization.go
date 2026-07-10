@@ -900,7 +900,7 @@ SELECT
   COALESCE(s.cached_input_tokens, 0)
 FROM codex_sessions s
 LEFT JOIN work_attempts w ON w.id = s.work_attempt_id
-WHERE s.started_at >= datetime('now', '-24 hours')
+WHERE datetime(s.started_at) >= datetime('now', '-24 hours')
   AND (? = '' OR w.project_id = ?)
   AND (s.final_state = 'orphaned' OR COALESCE(s.orphan_recovery_outcome, '') != '')
 ORDER BY s.started_at DESC, s.id DESC`, projectID, projectID)
