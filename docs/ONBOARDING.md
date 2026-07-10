@@ -1894,6 +1894,13 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    `$go-workflow:ship`; otherwise install or enable that workflow, or replace
    the `For Merging` section with equivalent project-local merge instructions.
 
+   Keep the templates' rebase-survival rule in every merging or delivery flow.
+   Conflict resolution during a rebase can silently drop branch changes, so the
+   agent must capture the effective pre-rebase diff, verify the same files and
+   hunks afterward, and stop in the project's blocked or exception state when
+   loss is unexplained instead of pushing. The commands named in the template
+   rule are illustrative; equivalent comparisons are valid.
+
 2. **Substitute the tracker and workspace answers.** In ProjectV2 mode, use the
    ProjectV2 node id as `tracker.project_slug`. In boardless issue-field mode,
    set the repository and issue field. In label mode, set the repository and

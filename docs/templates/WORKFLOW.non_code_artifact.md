@@ -209,6 +209,13 @@ the work item in `Production`, set the Workpad `detent-status` block to
 satisfied, and let Detent promote the item to `Ready for Pickup`. Do not
 self-move work items to `Review`.
 
+If a delivery flow uses a rebase, capture the branch's effective diff against
+its merge base or preserve the pre-rebase ref first. After the rebase, compare
+with `git range-diff` or an equivalent diff-stat and confirm the same files and
+hunks remain. If changes are missing without explanation or conflict resolution
+dropped hunks, stop before pushing and move the work item to the configured
+blocked or exception state.
+
 ### For Todo
 
 1. Move the work item to `Production`.
