@@ -128,13 +128,6 @@ templ boardCardView2(card boardCardView) {
 		role="button"
 		tabindex="0"
 		{ sheetOpenAttrs(card.Project, card.Identity, card.Scope, true)... }
-		if card.RuntimeSummary != "" {
-			data-help-trigger
-			data-help-scope="runtime-identity"
-			data-help-term={ card.DomID + "-runtime-identity" }
-			data-help-title="Agent runtime"
-			data-help-description={ card.RuntimeSummary }
-		}
 		if card.MoveDisabledText != "" {
 			title={ card.MoveDisabledText }
 		}
@@ -188,14 +181,13 @@ templ boardCardView2(card boardCardView) {
 			}
 		</div>
 		<div class={ boardCardTitleClass(card) }>{ card.Title }</div>
-		if card.RuntimeCardSummary != "" {
-			<div class="truncate font-mono text-2xs text-sec" title={ card.RuntimeSummary }>{ card.RuntimeCardSummary }</div>
-		}
 		if card.ExtraText != "" {
 			if card.ExtraChip {
 				<div class="flex">
 					@primitives.Chip(card.ExtraKind, card.ExtraText)
 				</div>
+			} else if card.RuntimeBadge {
+				@boardRuntimeBadge(card)
 			} else {
 				<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.ExtraKind) }>
 					@primitives.StatusDot(card.ExtraKind, false)
@@ -213,6 +205,31 @@ templ boardCardView2(card boardCardView) {
 			@boardKanbanDragMoveForm(card)
 		}
 	</article>
+}
+
+templ boardRuntimeBadge(card boardCardView) {
+	<div
+		id={ card.DomID + "-runtime-badge" }
+		class="flex min-w-0 items-center gap-1.5 text-2xs text-ok"
+		data-board-runtime-badge
+		if card.RuntimeSummary != "" {
+			tabindex="0"
+			role="img"
+			aria-label={ "Agent runtime: " + card.RuntimeSummary }
+			data-help-trigger
+			data-help-scope="runtime-identity"
+			data-help-term={ card.DomID + "-runtime-identity" }
+			data-help-title="Agent runtime"
+			data-help-description={ card.RuntimeDetail }
+			onclick="event.stopPropagation()"
+		}
+	>
+		@primitives.StatusDot(primitives.KindOK, false)
+		<span class="min-w-0 truncate font-mono">
+			<span class="runtime-badge-compact" data-runtime-density="compact">{ card.RuntimeCompactText }</span>
+			<span class="runtime-badge-cozy" data-runtime-density="cozy">{ card.RuntimeCozyText }</span>
+		</span>
+	</div>
 }
 
 templ boardKanbanDragMoveForm(card boardCardView) {

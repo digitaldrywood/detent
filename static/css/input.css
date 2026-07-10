@@ -302,6 +302,18 @@
     opacity: 1;
   }
 
+  .runtime-badge-cozy {
+    display: none;
+  }
+
+  [data-density="cozy"] .runtime-badge-compact {
+    display: none;
+  }
+
+  [data-density="cozy"] .runtime-badge-cozy {
+    display: inline;
+  }
+
   .help-tip-title {
     color: var(--color-text);
     display: block;

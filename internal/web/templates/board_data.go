@@ -94,7 +94,10 @@ type boardCardView struct {
 	ExtraText          string
 	ExtraChip          bool
 	RuntimeSummary     string
-	RuntimeCardSummary string
+	RuntimeCompactText string
+	RuntimeCozyText    string
+	RuntimeDetail      string
+	RuntimeBadge       bool
 	PriorityBadge      string
 	PriorityTitle      string
 	PriorityDetail     string
@@ -410,12 +413,31 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		view.AgeFooterTitle = strings.TrimSpace(card.TimeInStageTitle)
 	}
 	view.ExtraKind, view.ExtraText, view.ExtraChip = boardCardExtra(card, view)
-	if view.Running {
+	if view.Running && !view.ExtraChip && view.ExtraKind == primitives.KindOK && view.ExtraText == "agent working" {
+		view.RuntimeBadge = true
 		view.RuntimeSummary = runtimeIdentitySummary(card.RuntimeIdentity)
-		view.RuntimeCardSummary = runtimeIdentityCardSummary(card.RuntimeIdentity)
+		view.RuntimeCompactText = runtimeIdentityBadgeSummary(card.RuntimeIdentity, false)
+		view.RuntimeCozyText = runtimeIdentityBadgeSummary(card.RuntimeIdentity, true)
+		if view.RuntimeCompactText == "" {
+			view.RuntimeCompactText = view.ExtraText
+		}
+		if view.RuntimeCozyText == "" {
+			view.RuntimeCozyText = view.ExtraText
+		}
+		threadID, detentSessionID := boardRuntimeSessionIDs(data.Snapshot, card)
+		view.RuntimeDetail = runtimeIdentityFlyoutDetail(card.RuntimeIdentity, threadID, detentSessionID)
 	}
 	view.PriorityBadge, view.PriorityTitle, view.PriorityDetail, view.PriorityTop = boardCardPriority(card)
 	return view
+}
+
+func boardRuntimeSessionIDs(snapshot telemetry.Snapshot, card projectKanbanCard) (string, int64) {
+	for _, running := range snapshot.Running {
+		if issueIdentifier(running.Issue) == card.Identifier && sheetSessionMatchesProject(running.ProjectID, card) {
+			return strings.TrimSpace(running.SessionID), running.DetentSessionID
+		}
+	}
+	return "", 0
 }
 
 func boardCardPriority(card projectKanbanCard) (string, string, string, bool) {
