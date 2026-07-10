@@ -123,6 +123,70 @@ func TestDoctorWorkflowOptimizationFindsFixtureRules(t *testing.T) {
 	}
 }
 
+func TestDoctorOrphanRecoveryFindings(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		cfg      workflowconfig.Config
+		metrics  doctorOrphanRecoveryMetrics
+		wantRule string
+	}{
+		{name: "no history is quiet", cfg: validDoctorWorkflow("/repo")},
+		{
+			name: "successful reattach is quiet",
+			cfg: func() workflowconfig.Config {
+				cfg := validDoctorWorkflow("/repo")
+				cfg.Agent.ExperimentalThreadResume = true
+				return cfg
+			}(),
+			metrics: doctorOrphanRecoveryMetrics{Detected: 1, Reattached: 1},
+		},
+		{
+			name: "total fallback names dominant reason",
+			cfg: func() workflowconfig.Config {
+				cfg := validDoctorWorkflow("/repo")
+				cfg.Agent.ExperimentalThreadResume = true
+				return cfg
+			}(),
+			metrics:  doctorOrphanRecoveryMetrics{Detected: 3, FreshContinuations: 3, ReattachFailures: 3, FallbackReasons: map[string]int64{"rollout file not found": 2, "resume payload too large": 1}},
+			wantRule: doctorWorkflowRuleOrphanRecoveryFallback,
+		},
+		{
+			name:     "detected without outcome warns",
+			cfg:      validDoctorWorkflow("/repo"),
+			metrics:  doctorOrphanRecoveryMetrics{Detected: 2},
+			wantRule: doctorWorkflowRuleOrphansNeverRecovered,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", tt.cfg, doctorWorkflowOptimizationMetrics{OrphanRecovery: tt.metrics})
+			var got *doctorWorkflowOptimizationFinding
+			for i := range findings {
+				if findings[i].RuleID == doctorWorkflowRuleOrphanRecoveryFallback || findings[i].RuleID == doctorWorkflowRuleOrphansNeverRecovered {
+					got = &findings[i]
+					break
+				}
+			}
+			if tt.wantRule == "" {
+				if got != nil {
+					t.Fatalf("unexpected orphan recovery finding: %#v", *got)
+				}
+				return
+			}
+			if got == nil || got.RuleID != tt.wantRule {
+				t.Fatalf("orphan recovery finding = %#v, want %q", got, tt.wantRule)
+			}
+			if tt.wantRule == doctorWorkflowRuleOrphanRecoveryFallback && !strings.Contains(got.Detail, "rollout file not found") {
+				t.Fatalf("fallback detail = %q, want dominant reason", got.Detail)
+			}
+		})
+	}
+}
+
 func TestDoctorWorkflowOptimizationProposesGovernedSelfImprovement(t *testing.T) {
 	t.Parallel()
 

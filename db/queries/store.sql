@@ -65,8 +65,9 @@ INSERT INTO codex_sessions (
   provider_thread_id,
   provider_session_id,
   resumed_from_session_id,
-  orphan_recovery_outcome
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  orphan_recovery_outcome,
+  orphan_recovery_fallback_reason
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetCodexSession :one
@@ -122,6 +123,7 @@ WHERE id = sqlc.arg(id);
 UPDATE codex_sessions
 SET resumed_from_session_id = sqlc.narg(resumed_from_session_id),
     orphan_recovery_outcome = sqlc.narg(orphan_recovery_outcome),
+    orphan_recovery_fallback_reason = sqlc.narg(orphan_recovery_fallback_reason),
     provider_thread_id = CASE WHEN sqlc.narg(resumed_from_session_id) IS NULL THEN NULL ELSE provider_thread_id END,
     provider_session_id = CASE WHEN sqlc.narg(resumed_from_session_id) IS NULL THEN NULL ELSE provider_session_id END
 WHERE id = sqlc.arg(id);

@@ -41,6 +41,8 @@ const (
 	doctorWorkflowRuleBudgetEstimateDrift            = "budget_estimate_drift"
 	doctorWorkflowRuleSchedulerSkipRate              = "scheduler_skip_rate"
 	doctorWorkflowRuleInvalidWorkpadStatusRecurrence = "invalid_workpad_status_recurrence"
+	doctorWorkflowRuleOrphanRecoveryFallback         = "orphan_recovery_fallback"
+	doctorWorkflowRuleOrphansNeverRecovered          = "orphans_never_recovered"
 	doctorWorkflowRuleReviewFlowBehaviorMismatch     = "review_flow_behavior_mismatch"
 	doctorWorkflowRuleReviewFlowProseMismatch        = "review_flow_prose_mismatch"
 
@@ -81,12 +83,13 @@ type doctorWorkflowOptimizationOptions struct {
 }
 
 type doctorWorkflowOptimizationProjectReport struct {
-	ProjectID    string                            `json:"project_id"`
-	WorkflowPath string                            `json:"workflow_path,omitempty"`
-	ModelChoice  doctorWorkflowModelChoice         `json:"model_choice"`
-	SessionGuard doctorWorkflowSessionGuard        `json:"session_guard"`
-	Metrics      doctorWorkflowOptimizationMetrics `json:"metrics"`
-	Error        string                            `json:"error,omitempty"`
+	ProjectID      string                            `json:"project_id"`
+	WorkflowPath   string                            `json:"workflow_path,omitempty"`
+	ModelChoice    doctorWorkflowModelChoice         `json:"model_choice"`
+	SessionGuard   doctorWorkflowSessionGuard        `json:"session_guard"`
+	OrphanRecovery doctorOrphanRecoveryConfig        `json:"orphan_recovery"`
+	Metrics        doctorWorkflowOptimizationMetrics `json:"metrics"`
+	Error          string                            `json:"error,omitempty"`
 }
 
 type doctorWorkflowModelChoice struct {
@@ -98,6 +101,22 @@ type doctorWorkflowModelChoice struct {
 type doctorWorkflowSessionGuard struct {
 	MaxSessionTokens            int64   `json:"max_session_tokens"`
 	MaxSessionContextMultiplier float64 `json:"max_session_context_multiplier"`
+}
+
+type doctorOrphanRecoveryConfig struct {
+	ResumeOrphanedSessions   bool `json:"resume_orphaned_sessions"`
+	ExperimentalThreadResume bool `json:"experimental_thread_resume"`
+}
+
+type doctorOrphanRecoveryMetrics struct {
+	Detected                int64            `json:"detected"`
+	Reattached              int64            `json:"reattached"`
+	FreshContinuations      int64            `json:"fresh_continuations"`
+	ReattachFailures        int64            `json:"reattach_failures"`
+	ResumedInputTokens      int64            `json:"resumed_input_tokens"`
+	ResumedCachedTokens     int64            `json:"resumed_cached_tokens"`
+	ResumedCachedInputShare float64          `json:"resumed_cached_input_share"`
+	FallbackReasons         map[string]int64 `json:"fallback_reasons,omitempty"`
 }
 
 type doctorWorkflowOptimizationMetrics struct {
@@ -141,6 +160,7 @@ type doctorWorkflowOptimizationMetrics struct {
 	InvalidWorkpadStatusDecisions    int64                                `json:"invalid_workpad_status_decisions"`
 	InvalidWorkpadStatusIssue        string                               `json:"invalid_workpad_status_issue,omitempty"`
 	InvalidWorkpadStatusIssueCount   int64                                `json:"invalid_workpad_status_issue_count"`
+	OrphanRecovery                   doctorOrphanRecoveryMetrics          `json:"orphan_recovery"`
 }
 
 type doctorWorkflowModelTelemetry struct {
@@ -375,11 +395,12 @@ func doctorWorkflowOptimization(
 			return doctorWorkflowOptimizationReport{}, err
 		}
 		report.Projects = append(report.Projects, doctorWorkflowOptimizationProjectReport{
-			ProjectID:    projectID,
-			WorkflowPath: workflowPath,
-			ModelChoice:  doctorWorkflowWorkerModelChoice(workflow.Config),
-			SessionGuard: doctorWorkflowSessionGuardConfig(workflow.Config),
-			Metrics:      metrics,
+			ProjectID:      projectID,
+			WorkflowPath:   workflowPath,
+			ModelChoice:    doctorWorkflowWorkerModelChoice(workflow.Config),
+			SessionGuard:   doctorWorkflowSessionGuardConfig(workflow.Config),
+			OrphanRecovery: doctorOrphanRecoveryConfig{ResumeOrphanedSessions: workflow.Config.Agent.ResumeOrphanedSessions, ExperimentalThreadResume: workflow.Config.Agent.ExperimentalThreadResume},
+			Metrics:        metrics,
 		})
 		analyzedProjects = append(analyzedProjects, doctorWorkflowAnalyzedProject{
 			projectID:    projectID,
@@ -483,6 +504,10 @@ func doctorWorkflowOptimizationMetricsForProject(
 	if err != nil {
 		return doctorWorkflowOptimizationMetrics{}, err
 	}
+	orphanRecovery, err := doctorOrphanRecoveryTelemetry(ctx, db, projectID)
+	if err != nil {
+		return doctorWorkflowOptimizationMetrics{}, err
+	}
 
 	metrics := doctorWorkflowOptimizationMetrics{
 		SessionCount:                   sessions.count,
@@ -517,6 +542,7 @@ func doctorWorkflowOptimizationMetricsForProject(
 		InvalidWorkpadStatusDecisions:  reviewFlow.invalidWorkpadStatusDecisions,
 		InvalidWorkpadStatusIssue:      reviewFlow.invalidWorkpadStatusIssue,
 		InvalidWorkpadStatusIssueCount: reviewFlow.invalidWorkpadStatusIssueCount,
+		OrphanRecovery:                 orphanRecovery,
 	}
 	if usage.count > 0 {
 		metrics.InputTokens = usage.inputTokens
@@ -864,6 +890,82 @@ ORDER BY completed_at DESC, id DESC`, projectID, projectID)
 	return incidents, nil
 }
 
+func doctorOrphanRecoveryTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string) (doctorOrphanRecoveryMetrics, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT
+  COALESCE(s.final_state, ''),
+  COALESCE(s.orphan_recovery_outcome, ''),
+  COALESCE(s.orphan_recovery_fallback_reason, ''),
+  COALESCE(s.input_tokens, 0),
+  COALESCE(s.cached_input_tokens, 0)
+FROM codex_sessions s
+LEFT JOIN work_attempts w ON w.id = s.work_attempt_id
+WHERE s.started_at >= datetime('now', '-24 hours')
+  AND (? = '' OR w.project_id = ?)
+  AND (s.final_state = 'orphaned' OR COALESCE(s.orphan_recovery_outcome, '') != '')
+ORDER BY s.started_at DESC, s.id DESC`, projectID, projectID)
+	if err != nil {
+		return doctorOrphanRecoveryMetrics{}, fmt.Errorf("read orphan recovery telemetry: %w", err)
+	}
+	defer rows.Close()
+
+	metrics := doctorOrphanRecoveryMetrics{FallbackReasons: map[string]int64{}}
+	for rows.Next() {
+		var finalState, outcome, reason string
+		var inputTokens, cachedInputTokens int64
+		if err := rows.Scan(&finalState, &outcome, &reason, &inputTokens, &cachedInputTokens); err != nil {
+			return doctorOrphanRecoveryMetrics{}, err
+		}
+		if finalState == "orphaned" {
+			metrics.Detected++
+		}
+		switch outcome {
+		case "resumed":
+			metrics.Reattached++
+			metrics.ResumedInputTokens += inputTokens
+			metrics.ResumedCachedTokens += cachedInputTokens
+		case "fresh":
+			metrics.FreshContinuations++
+			metrics.ReattachFailures++
+			reason = doctorOrphanFallbackReason(reason)
+			metrics.FallbackReasons[reason]++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return doctorOrphanRecoveryMetrics{}, err
+	}
+	if metrics.ResumedInputTokens > 0 {
+		metrics.ResumedCachedInputShare = doctorRoundedFloat(float64(metrics.ResumedCachedTokens)/float64(metrics.ResumedInputTokens), 4)
+	}
+	return metrics, nil
+}
+
+func doctorOrphanFallbackReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	lower := strings.ToLower(reason)
+	switch {
+	case strings.Contains(lower, "rollout") && strings.Contains(lower, "not found"):
+		return "rollout file not found"
+	case strings.Contains(lower, "payload") && (strings.Contains(lower, "too large") || strings.Contains(lower, "oversized")):
+		return "resume payload too large"
+	case reason == "":
+		return "unknown"
+	default:
+		return reason
+	}
+}
+
+func doctorDominantFallbackReason(reasons map[string]int64) (string, int64) {
+	var dominant string
+	var count int64
+	for reason, candidate := range reasons {
+		if candidate > count || candidate == count && reason < dominant {
+			dominant, count = reason, candidate
+		}
+	}
+	return dominant, count
+}
+
 func doctorWorkflowErrorInt64(message string, key string) int64 {
 	value := doctorWorkflowErrorValue(message, key)
 	parsed, err := strconv.ParseInt(value, 10, 64)
@@ -1021,6 +1123,24 @@ func doctorWorkflowOptimizationFindings(
 	metrics doctorWorkflowOptimizationMetrics,
 ) []doctorWorkflowOptimizationFinding {
 	var findings []doctorWorkflowOptimizationFinding
+	recovery := metrics.OrphanRecovery
+	if cfg.Agent.ExperimentalThreadResume && recovery.FreshContinuations > 0 && recovery.Reattached == 0 {
+		reason, count := doctorDominantFallbackReason(recovery.FallbackReasons)
+		findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleOrphanRecoveryFallback,
+			"Orphan thread reattach consistently falls back",
+			fmt.Sprintf("all %d recovery attempt(s) used a fresh continuation; dominant failure reason (%d): %s", recovery.FreshContinuations, count, reason),
+			0,
+			map[string]any{"fresh_continuations": recovery.FreshContinuations, "reattached": recovery.Reattached, "dominant_failure_reason": reason, "dominant_failure_count": count},
+		))
+	}
+	if recovery.Detected > 0 && recovery.Reattached+recovery.FreshContinuations == 0 {
+		findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleOrphansNeverRecovered,
+			"Orphaned sessions were not recovered",
+			fmt.Sprintf("%d orphaned session(s) were detected without a recovery outcome in the recent window", recovery.Detected),
+			0,
+			map[string]any{"detected": recovery.Detected, "reattached": recovery.Reattached, "fresh_continuations": recovery.FreshContinuations},
+		))
+	}
 	if metrics.SessionCount >= 3 && metrics.MedianSessionTokens > 0 {
 		ratio := float64(metrics.MaxSessionTokens) / float64(metrics.MedianSessionTokens)
 		if ratio >= doctorWorkflowRunawayMedianMultiplier {
@@ -1701,7 +1821,7 @@ func doctorWorkflowEstimatedImpact(findings []doctorWorkflowOptimizationFinding)
 }
 
 func writeDoctorWorkflowOptimizationPretty(out io.Writer, report doctorWorkflowOptimizationReport) error {
-	if out == nil || len(report.Findings) == 0 && len(report.Proposals) == 0 && len(report.CreatedProposalIssues) == 0 && strings.TrimSpace(report.Diff) == "" && len(report.Written) == 0 {
+	if out == nil || len(report.Findings) == 0 && len(report.Proposals) == 0 && len(report.CreatedProposalIssues) == 0 && strings.TrimSpace(report.Diff) == "" && len(report.Written) == 0 && !doctorReportHasOrphanRecovery(report) {
 		return nil
 	}
 	if _, err := fmt.Fprintln(out); err != nil {
@@ -1712,6 +1832,15 @@ func writeDoctorWorkflowOptimizationPretty(out io.Writer, report doctorWorkflowO
 	}
 	if strings.TrimSpace(report.StorePath) != "" {
 		if _, err := fmt.Fprintf(out, "Store: %s\n", report.StorePath); err != nil {
+			return err
+		}
+	}
+	for _, project := range report.Projects {
+		recovery := project.Metrics.OrphanRecovery
+		if recovery.Detected+recovery.Reattached+recovery.FreshContinuations == 0 {
+			continue
+		}
+		if _, err := fmt.Fprintf(out, "Orphan recovery [%s]: detected=%d, reattached=%d, fresh_continuations=%d, reattach_failures=%d, resumed_cached_input_share=%.1f%%\n", project.ProjectID, recovery.Detected, recovery.Reattached, recovery.FreshContinuations, recovery.ReattachFailures, recovery.ResumedCachedInputShare*100); err != nil {
 			return err
 		}
 	}
@@ -1823,6 +1952,16 @@ func writeDoctorWorkflowOptimizationPretty(out io.Writer, report doctorWorkflowO
 		}
 	}
 	return nil
+}
+
+func doctorReportHasOrphanRecovery(report doctorWorkflowOptimizationReport) bool {
+	for _, project := range report.Projects {
+		recovery := project.Metrics.OrphanRecovery
+		if recovery.Detected+recovery.Reattached+recovery.FreshContinuations > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func doctorWorkflowEvidenceLine(evidence map[string]any) string {

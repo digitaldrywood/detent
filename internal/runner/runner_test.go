@@ -1013,6 +1013,9 @@ func TestRunnerRunOrphanResumePreflightFailureFallsBackFresh(t *testing.T) {
 	if sessionStore.started.ResumedFromSessionID != 0 || sessionStore.started.OrphanRecoveryOutcome != store.OrphanRecoveryFresh {
 		t.Fatalf("SessionStart fallback metadata = %#v", sessionStore.started)
 	}
+	if sessionStore.started.OrphanRecoveryFallbackReason != "rollout file not found" {
+		t.Fatalf("SessionStart.OrphanRecoveryFallbackReason = %q", sessionStore.started.OrphanRecoveryFallbackReason)
+	}
 }
 
 func TestVerifyAgentResumeRejectsUnsupportedBackend(t *testing.T) {
@@ -1067,6 +1070,9 @@ func TestRunnerRunOrphanResumeRPCFailureFallsBackWithFullPrompt(t *testing.T) {
 	}
 	if len(sessionStore.resumeUpdates) != 1 || sessionStore.resumeUpdates[0].OrphanRecoveryOutcome != store.OrphanRecoveryFresh || sessionStore.resumeUpdates[0].ResumedFromSessionID != 0 {
 		t.Fatalf("resume updates = %#v, want fresh fallback", sessionStore.resumeUpdates)
+	}
+	if sessionStore.resumeUpdates[0].OrphanRecoveryFallbackReason == "" {
+		t.Fatal("resume fallback reason is blank")
 	}
 }
 
