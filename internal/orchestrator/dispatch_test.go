@@ -448,7 +448,7 @@ func TestDispatchableSkipsQuietWindowActiveIssueWithOpenPullRequest(t *testing.T
 	}
 }
 
-func TestDispatchableSkipsArtifactGateWaitStatus(t *testing.T) {
+func TestDispatchableArtifactGateWaitStatus(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 9, 15, 40, 0, 0, time.UTC)
@@ -473,19 +473,80 @@ func TestDispatchableSkipsArtifactGateWaitStatus(t *testing.T) {
 		ObservedStates: []string{"Backlog", "Review", "Blocked"},
 		TerminalStates: []string{"Ready for Pickup", "Done", "Cancelled"},
 	})
+	tests := []struct {
+		name           string
+		state          string
+		status         string
+		stageUpdatedAt *time.Time
+		updatedAt      *time.Time
+		fieldUpdatedAt *time.Time
+		wantDispatch   bool
+		wantReason     string
+	}{
+		{
+			name:         "fresh item dispatches",
+			state:        "Todo",
+			wantDispatch: true,
+		},
+		{
+			name:           "mid wait item stays skipped",
+			state:          "Production",
+			status:         "pending_review",
+			stageUpdatedAt: timePointer(now.Add(-2 * time.Minute)),
+			updatedAt:      timePointer(now.Add(-time.Minute)),
+			fieldUpdatedAt: timePointer(now.Add(-time.Minute)),
+			wantReason:     dispatchSkipArtifactGateWaitStatus,
+		},
+		{
+			name:           "human restarted round dispatches",
+			state:          "Todo",
+			status:         "pending_review",
+			stageUpdatedAt: timePointer(now),
+			updatedAt:      timePointer(now),
+			fieldUpdatedAt: timePointer(now.Add(-time.Minute)),
+			wantDispatch:   true,
+		},
+		{
+			name:           "newer state wins stale status race",
+			state:          "Rework",
+			status:         "pending_review",
+			stageUpdatedAt: timePointer(now),
+			updatedAt:      timePointer(now),
+			fieldUpdatedAt: timePointer(now.Add(-time.Nanosecond)),
+			wantDispatch:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := dispatchTestIssue("issue-artifact-status", tt.state)
+			issue.Fields = map[string]string{"render_status": tt.status}
+			issue.StageUpdatedAt = tt.stageUpdatedAt
+			issue.UpdatedAt = tt.updatedAt
+			if tt.fieldUpdatedAt != nil {
+				issue.FieldUpdatedAt = map[string]time.Time{"render_status": *tt.fieldUpdatedAt}
+			}
+			state := newState(cfg)
+			orch := Orchestrator{cfg: cfg}
+
+			decision := orch.dispatchPlanner().dispatchableIssueDecision(issue, &state, false, now, "")
+			if decision.dispatchable != tt.wantDispatch {
+				t.Fatalf("dispatchable = %t, want %t", decision.dispatchable, tt.wantDispatch)
+			}
+			if decision.reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", decision.reason, tt.wantReason)
+			}
+		})
+	}
+
 	issue := dispatchTestIssue("issue-artifact-pending-review", "Production")
 	issue.Fields = map[string]string{"render_status": "pending_review"}
+	issue.StageUpdatedAt = timePointer(now.Add(-2 * time.Minute))
+	issue.UpdatedAt = timePointer(now.Add(-time.Minute))
+	issue.FieldUpdatedAt = map[string]time.Time{"render_status": now.Add(-time.Minute)}
 	state := newState(cfg)
 	orch := Orchestrator{cfg: cfg}
-
-	decision := orch.dispatchPlanner().dispatchableIssueDecision(issue, &state, false, now, "")
-	if decision.dispatchable {
-		t.Fatal("dispatchable artifact wait status issue = true, want false")
-	}
-	if decision.reason != dispatchSkipArtifactGateWaitStatus {
-		t.Fatalf("dispatchable reason = %q, want %q", decision.reason, dispatchSkipArtifactGateWaitStatus)
-	}
-
 	attempts := &recordingWorkAttemptStore{}
 	orch.workAttempts = attempts
 	orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)

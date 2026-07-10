@@ -575,6 +575,7 @@ func (c *Connector) mergeLocalWithGitHub(localIssue connector.Issue, upstream co
 	merged.State = localIssue.State
 	merged.Priority = localIssue.Priority
 	merged.Fields = cloneMetadata(localIssue.Fields)
+	merged.FieldUpdatedAt = maps.Clone(localIssue.FieldUpdatedAt)
 	merged.Comments = mergeIssueComments(upstream.Comments, localIssue.Comments)
 	merged.Deliverable = cloneDeliverable(localIssue.Deliverable)
 	merged.AssignedToWorker = localIssue.AssignedToWorker
@@ -638,6 +639,7 @@ func (c *Connector) overlayLocalStatuses(ctx context.Context, issues []connector
 			issue.State = localIssue.State
 			issue.Priority = localIssue.Priority
 			issue.Fields = cloneMetadata(localIssue.Fields)
+			issue.FieldUpdatedAt = maps.Clone(localIssue.FieldUpdatedAt)
 			issue.Metadata = mergeMetadata(localIssue.Metadata, issue.Metadata)
 		}
 		out = append(out, issue)

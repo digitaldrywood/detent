@@ -471,13 +471,13 @@ func boardCardExtra(card projectKanbanCard, view boardCardView) (primitives.Kind
 	if card.GatePending {
 		return primitives.KindInfo, "Awaiting checks", true
 	}
+	if detail := strings.TrimSpace(card.WaitDetail); detail != "" {
+		return primitives.KindInfo, detail, false
+	}
 	if status := strings.TrimSpace(card.CIStatus); status != "" {
 		return primitives.KindInfo, status, false
 	}
 	if view.Running {
-		if stage := strings.TrimSpace(card.WaitDetail); stage != "" {
-			return primitives.KindInfo, stage, false
-		}
 		return primitives.KindOK, "agent working", false
 	}
 	return primitives.KindNeutral, "", false

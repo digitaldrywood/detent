@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	autoPromoteActionMetadataKey = "detent.auto_promote_action"
-	autoPromoteReasonMetadataKey = "detent.auto_promote_reason"
+	autoPromoteActionMetadataKey  = "detent.auto_promote_action"
+	autoPromoteReasonMetadataKey  = "detent.auto_promote_reason"
+	dispatchSkipReasonMetadataKey = "detent.dispatch_skip_reason"
 )
 
 // Snapshot converts the orchestrator State into a telemetry.Snapshot suitable
@@ -46,9 +47,11 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	applyIssueRuntimeIdentities(boardIssueSnapshots, s.Running, s.WorkAttempts)
 	s.applyGatePendingSnapshots(boardIssueSnapshots, boardIssues)
 	s.applyAutoPromoteDecisionSnapshots(boardIssueSnapshots, boardIssues, now)
+	s.applyArtifactGateWaitDispatchSnapshots(boardIssueSnapshots, boardIssues)
 	pipelineIssueSnapshots := pipelineSnapshots(pipeline, s.AutoPromoteQuietDuration, s.PollInterval, s.MergeTimings, now, s.laneEntries)
 	applyIssueRuntimeIdentities(pipelineIssueSnapshots, s.Running, s.WorkAttempts)
 	s.applyAutoPromoteDecisionSnapshots(pipelineIssueSnapshots, pipeline, now)
+	s.applyArtifactGateWaitDispatchSnapshots(pipelineIssueSnapshots, pipeline)
 	snapshot := telemetry.Snapshot{
 		GeneratedAt:        now,
 		Instance:           s.Instance,
@@ -125,6 +128,23 @@ func (s State) applyAutoPromoteDecisionSnapshots(snapshots []telemetry.Issue, is
 		}
 		snapshots[i].Metadata[autoPromoteActionMetadataKey] = string(decision.Action)
 		snapshots[i].Metadata[autoPromoteReasonMetadataKey] = string(decision.Reason)
+	}
+}
+
+func (s State) applyArtifactGateWaitDispatchSnapshots(snapshots []telemetry.Issue, issues []connector.Issue) {
+	for i := range snapshots {
+		if i >= len(issues) {
+			return
+		}
+		issue := issues[i]
+		if !stateIn(issue.State, s.ActiveStates) || stateIn(issue.State, s.TerminalStates) ||
+			!artifactGateWaitStatusBlocksDispatch(issue, s.AutoPromote.Gate) {
+			continue
+		}
+		if snapshots[i].Metadata == nil {
+			snapshots[i].Metadata = map[string]string{}
+		}
+		snapshots[i].Metadata[dispatchSkipReasonMetadataKey] = dispatchSkipArtifactGateWaitStatus
 	}
 }
 

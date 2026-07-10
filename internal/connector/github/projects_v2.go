@@ -12,6 +12,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 )
 
+const projectFieldUpdatedAtKeyPrefix = "\x00detent-field-updated-at:"
+
 const projectItemsQuery = `
 query DetentGitHubProjectItems(
   $projectId: ID!
@@ -151,14 +153,17 @@ query DetentGitHubProjectItemForIssue($issueId: ID!, $projectItemsFirst: Int!, $
               __typename
               ... on ProjectV2ItemFieldSingleSelectValue {
                 name
+				updatedAt
                 field { ... on ProjectV2FieldCommon { name } }
               }
               ... on ProjectV2ItemFieldTextValue {
                 text
+				updatedAt
                 field { ... on ProjectV2FieldCommon { name } }
               }
               ... on ProjectV2ItemFieldNumberValue {
                 number
+				updatedAt
                 field { ... on ProjectV2FieldCommon { name } }
               }
             }
@@ -896,6 +901,9 @@ func projectFieldValues(values nodeConnection[projectFieldValue]) map[string]str
 			continue
 		}
 		fields[fieldName] = fieldValue
+		if updatedAt := parseGitHubTime(value.UpdatedAt); updatedAt != nil {
+			fields[projectFieldUpdatedAtKeyPrefix+fieldName] = updatedAt.Format(time.RFC3339Nano)
+		}
 	}
 	return fields
 }

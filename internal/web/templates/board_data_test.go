@@ -180,6 +180,20 @@ func TestBoardViewSortsCardsBySchedulerPriorityInputs(t *testing.T) {
 	}
 }
 
+func TestBoardCardExtraShowsWaitReasonAheadOfCI(t *testing.T) {
+	t.Parallel()
+
+	card := projectKanbanCard{
+		WaitDetail: "dispatch skipped: artifact_gate_wait_status",
+		CIStatus:   "pass",
+	}
+
+	kind, text, chip := boardCardExtra(card, boardCardView{})
+	if kind != primitives.KindInfo || text != card.WaitDetail || chip {
+		t.Fatalf("boardCardExtra() = %q, %q, %t, want info wait detail", kind, text, chip)
+	}
+}
+
 func TestBoardCardPriority(t *testing.T) {
 	t.Parallel()
 

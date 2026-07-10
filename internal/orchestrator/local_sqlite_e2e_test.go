@@ -229,6 +229,88 @@ func TestLocalSQLiteArtifactLifecycleEndToEnd(t *testing.T) {
 	}
 }
 
+func TestLocalSQLiteHumanRestartDispatchesArtifactRound(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 7, 10, 1, 35, 0, 0, time.UTC)
+	seed := connector.NewIssue()
+	seed.ID = "wi-artifact-restart"
+	seed.Identifier = "wi-artifact-restart"
+	seed.Title = "Rework Storyboard — round 2"
+	seed.State = "Production"
+	seed.CreatedAt = &now
+	seed.UpdatedAt = &now
+	seed.StageUpdatedAt = &now
+
+	tracker, err := local.New(local.Config{
+		Path:           filepath.Join(t.TempDir(), "artifact-restart.db"),
+		ProjectID:      "digitaldrywood-video",
+		Issues:         []connector.Issue{seed},
+		ActiveStates:   []string{"Todo", "Production", "Rework"},
+		ObservedStates: []string{"Backlog", "Review", "Blocked"},
+		TerminalStates: []string{"Ready for Pickup", "Done", "Cancelled"},
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("local.New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := tracker.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	cfg := orchestrator.Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "Production", "Rework"},
+		ObservedStates:      []string{"Backlog", "Review", "Blocked"},
+		TerminalStates:      []string{"Ready for Pickup", "Done", "Cancelled"},
+		AutoPromote: orchestrator.AutoPromoteConfig{
+			Enabled:     true,
+			SourceState: "Review",
+			PassState:   "Ready for Pickup",
+			ReworkState: "Rework",
+			Gate: gate.Config{
+				Kind: gate.KindArtifact,
+				Artifact: gate.ArtifactConfig{
+					StatusField:    "render_status",
+					PassStatuses:   []string{"approved", "valid"},
+					WaitStatuses:   []string{"queued", "rendering", "pending_review"},
+					ReworkStatuses: []string{"recut", "invalid", "missing_assets"},
+				},
+			},
+		},
+	}
+
+	now = now.Add(time.Minute)
+	if err := tracker.SetField(ctx, seed.ID, "render_status", "pending_review"); err != nil {
+		t.Fatalf("SetField(pending_review) error = %v", err)
+	}
+	waiting, err := tracker.FetchIssuesByStates(ctx, []string{"Production"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates(Production) error = %v", err)
+	}
+	if plan := orchestrator.PlanDispatch(cfg, orchestrator.State{}, waiting, now); len(plan.Dispatches) != 0 {
+		t.Fatalf("mid-wait dispatches = %#v, want none", plan.Dispatches)
+	}
+
+	now = now.Add(time.Minute)
+	if err := tracker.UpdateIssueState(ctx, seed.ID, "Todo"); err != nil {
+		t.Fatalf("UpdateIssueState(Todo) error = %v", err)
+	}
+	restarted, err := tracker.FetchIssuesByStates(ctx, []string{"Todo"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates(Todo) error = %v", err)
+	}
+	plan := orchestrator.PlanDispatch(cfg, orchestrator.State{}, restarted, now)
+	if len(plan.Dispatches) != 1 || plan.Dispatches[0].IssueID != seed.ID {
+		t.Fatalf("restarted dispatches = %#v, want %s", plan.Dispatches, seed.ID)
+	}
+}
+
 func waitForLocalStoredState(t *testing.T, db *sql.DB, issueID string, want string) {
 	t.Helper()
 
