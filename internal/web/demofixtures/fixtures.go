@@ -60,6 +60,8 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot = demoTrackerRefreshGapSnapshot()
 	case "external-lane-timer":
 		snapshot = demoExternalLaneTimerSnapshot()
+	case "unblocker-boost":
+		snapshot.BoardIssues[1].UnblockerCount = 2
 	case "startup-loading":
 		snapshot = demoStartupLoadingSnapshot()
 	case "github-api-healthy":

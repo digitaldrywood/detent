@@ -204,6 +204,33 @@ test("board keeps dependency waits on cards without global alerts", async ({
   await capturePageAndAttach(page, "board-dependency-waits.png", testInfo);
 });
 
+test("boosted card explains its direct downstream count", async ({ page }) => {
+  await page.setViewportSize(desktopViewport);
+  await page.setExtraHTTPHeaders({
+    "X-Detent-Demo-Scenario": "fleet-kanban-unblocker-boost",
+  });
+  await page.goto(`${screenshotsRuntime.url}/`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+  const card = page.locator("article", {
+    hasText: "Add screenshot manifest smoke test",
+  });
+  const badge = card.locator('[data-board-priority]', {
+    hasText: "unblocker",
+  });
+  await expect(badge).toHaveAttribute(
+    "data-help-description",
+    "Unblocks 2 issues.",
+  );
+  await badge.hover();
+  await badge.dispatchEvent("pointerover", { pointerType: "mouse" });
+  const tooltip = page.locator("body > #help-tooltip");
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText("Unblocks 2 issues");
+});
+
 test("board elevated blockers render one compact opt-in alert", async ({
   page,
 }, testInfo) => {

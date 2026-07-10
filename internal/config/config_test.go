@@ -135,6 +135,7 @@ agent:
     - Bug
     - regression
     - enhancement
+  prioritize_unblockers: false
   auto_promote:
     enabled: true
     quiet_seconds: 0
@@ -395,6 +396,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if got := cfg.Agent.DispatchPriorityByLabel; !reflect.DeepEqual(got, []string{"bug", "regression", "enhancement"}) {
 		t.Fatalf("Agent.DispatchPriorityByLabel = %#v, want bug/regression/enhancement", got)
+	}
+	if cfg.Agent.PrioritizeUnblockers {
+		t.Fatal("Agent.PrioritizeUnblockers = true, want false")
 	}
 	if got := cfg.Agent.InstructionsByState["Rework"]; !strings.Contains(got, "Address review comments") {
 		t.Fatalf("Agent.InstructionsByState[Rework] = %q, want review instructions", got)
@@ -767,6 +771,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if len(cfg.Agent.DispatchPriorityByLabel) != 0 {
 		t.Fatalf("Agent.DispatchPriorityByLabel = %#v, want empty default", cfg.Agent.DispatchPriorityByLabel)
+	}
+	if !cfg.Agent.PrioritizeUnblockers {
+		t.Fatal("Agent.PrioritizeUnblockers = false, want true default")
 	}
 	if cfg.Gate.Kind != gate.KindCommand || cfg.Gate.Run != gate.DefaultCommand {
 		t.Fatalf("Gate = %#v, want default command gate", cfg.Gate)

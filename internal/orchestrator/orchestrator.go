@@ -60,6 +60,7 @@ type Config struct {
 	MaxConcurrentAgentsByState    map[string]int
 	DispatchPriorityByState       []string
 	DispatchPriorityByLabel       []string
+	PrioritizeUnblockers          bool
 	MergeFastPathEnabled          bool
 	ResumeOrphanedSessions        bool
 	MaxConcurrentAgentsPerHost    int

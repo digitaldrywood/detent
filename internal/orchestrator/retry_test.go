@@ -118,7 +118,7 @@ func TestDispatchReadyIssuesRanksDueRetriesWithCandidates(t *testing.T) {
 	}
 
 	issues := []connector.Issue{retrying, merging}
-	sortIssuesForDispatch(issues, cfg.DispatchPriorityByState, cfg.DispatchPriorityByLabel)
+	sortIssuesForDispatch(issues, cfg.DispatchPriorityByState, cfg.DispatchPriorityByLabel, cfg.PrioritizeUnblockers)
 	orch.dispatchReadyIssues(context.Background(), &state, issues, now)
 
 	if _, ok := state.Running[merging.ID]; !ok {

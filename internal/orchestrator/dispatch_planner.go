@@ -34,13 +34,14 @@ type dispatchAction struct {
 }
 
 type dispatchPlanDecision struct {
-	Issue         connector.Issue
-	QueuePosition int
-	Attempt       int
-	WorkerHost    string
-	Retry         bool
-	Selected      bool
-	SkipReason    string
+	Issue          connector.Issue
+	QueuePosition  int
+	Attempt        int
+	WorkerHost     string
+	Retry          bool
+	Selected       bool
+	SkipReason     string
+	UnblockerCount int
 }
 
 func newDispatchPlanner(cfg Config) dispatchPlanner {
@@ -56,7 +57,19 @@ func (p dispatchPlanner) plan(
 	state.ensureInitialized(p.cfg)
 
 	plannedCandidates := cloneIssues(candidates)
-	sortIssuesForDispatch(plannedCandidates, p.cfg.DispatchPriorityByState, p.cfg.DispatchPriorityByLabel)
+	rankingIssues := cloneIssues(candidates)
+	for _, blocked := range state.Blocked {
+		rankingIssues = append(rankingIssues, cloneIssue(blocked.Issue))
+	}
+	annotateUnblockerCounts(
+		plannedCandidates,
+		rankingIssues,
+		p.cfg.ActiveStates,
+		p.cfg.TerminalStates,
+		p.cfg.PrioritizeUnblockers,
+	)
+	clearBlockedUnblockerCounts(plannedCandidates, state.Blocked)
+	sortIssuesForDispatch(plannedCandidates, p.cfg.DispatchPriorityByState, p.cfg.DispatchPriorityByLabel, p.cfg.PrioritizeUnblockers)
 	dueRetries := dueRetriesByIssue(state, now)
 	p.releaseMissingDueRetries(state, plannedCandidates, dueRetries, hooks)
 
@@ -161,7 +174,16 @@ func (p dispatchPlanner) plan(
 	return plan
 }
 
+func clearBlockedUnblockerCounts(issues []connector.Issue, blocked map[string]Blocked) {
+	for index := range issues {
+		if _, ok := blocked[issues[index].ID]; ok {
+			issues[index].UnblockerCount = 0
+		}
+	}
+}
+
 func (p dispatchPlanner) logDecision(hooks dispatchPlanHooks, decision dispatchPlanDecision) {
+	decision.UnblockerCount = decision.Issue.UnblockerCount
 	if hooks.decision != nil {
 		hooks.decision(decision)
 	}

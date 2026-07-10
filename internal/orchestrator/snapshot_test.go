@@ -44,6 +44,37 @@ func TestStateSnapshotEmpty(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotAnnotatesDirectUnblockerCount(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		ActiveStates:         []string{"Todo", "Blocked"},
+		TerminalStates:       []string{"Done"},
+		PrioritizeUnblockers: true,
+	})
+	state := newState(cfg)
+	blocker := connector.Issue{ID: "blocker", Identifier: "owner/repo#1", State: "Todo"}
+	dependent := connector.Issue{
+		ID:         "dependent",
+		Identifier: "owner/repo#2",
+		State:      "Blocked",
+		BlockedBy:  []connector.BlockedRef{{ID: blocker.ID, Identifier: blocker.Identifier}},
+	}
+	state.BoardIssues = []connector.Issue{blocker, dependent}
+	state.Blocked[dependent.ID] = Blocked{Issue: dependent, Source: BlockedSourceDependency}
+
+	snapshot := state.Snapshot(time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC))
+	for _, issue := range snapshot.BoardIssues {
+		if issue.ID == blocker.ID {
+			if issue.UnblockerCount != 1 {
+				t.Fatalf("UnblockerCount = %d, want 1", issue.UnblockerCount)
+			}
+			return
+		}
+	}
+	t.Fatal("snapshot missing blocker issue")
+}
+
 func TestStateSnapshotPreservesMappedTrackerPriority(t *testing.T) {
 	t.Parallel()
 

@@ -222,6 +222,7 @@ type Issue struct {
 	Description           string                 `json:"description,omitempty"`
 	Priority              *int                   `json:"priority,omitempty"`
 	PriorityName          string                 `json:"priority_name,omitempty"`
+	UnblockerCount        int                    `json:"unblocker_count,omitempty"`
 	State                 string                 `json:"state,omitempty"`
 	Labels                []string               `json:"labels,omitempty"`
 	Assignees             []string               `json:"assignees,omitempty"`

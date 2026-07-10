@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
@@ -24,7 +25,9 @@ func (o *Orchestrator) logDispatchPlanDecision(ctx context.Context, state *State
 	reason := strings.TrimSpace(decision.SkipReason)
 	if decision.Selected {
 		result = "selected"
-		if reason == "" {
+		if decision.UnblockerCount > 0 {
+			reason = unblockerDecisionReason(decision.UnblockerCount)
+		} else if reason == "" {
 			reason = "selected"
 		}
 	}
@@ -42,8 +45,16 @@ func (o *Orchestrator) logDispatchPlanDecision(ctx context.Context, state *State
 		"retry", decision.Retry,
 		"attempt", decision.Attempt,
 		"worker_host", strings.TrimSpace(decision.WorkerHost),
+		"unblocker_count", decision.UnblockerCount,
 	)
 	o.logger.Debug("scheduler_dispatch_decision", attrs...)
+}
+
+func unblockerDecisionReason(count int) string {
+	if count == 1 {
+		return "unblocks_1_issue"
+	}
+	return fmt.Sprintf("unblocks_%d_issues", count)
 }
 
 func (o *Orchestrator) logSchedulerSlotDecision(issue connector.Issue, outcome string, decision scheduler.DispatchGateDecision, projectStats projectStateSlotStats) {

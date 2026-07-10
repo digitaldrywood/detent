@@ -21,6 +21,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		MaxConcurrentAgentsByState: cloneStateLimits(cfg.Agent.MaxConcurrentAgentsByState),
 		DispatchPriorityByState:    append([]string(nil), cfg.Agent.DispatchPriorityByState...),
 		DispatchPriorityByLabel:    append([]string(nil), cfg.Agent.DispatchPriorityByLabel...),
+		PrioritizeUnblockers:       cfg.Agent.PrioritizeUnblockers,
 		MergeFastPathEnabled:       cfg.Agent.MergeFastPath.Enabled,
 		ResumeOrphanedSessions:     cfg.Agent.ResumeOrphanedSessions,
 		MaxConcurrentAgentsPerHost: positiveIntValue(cfg.Worker.MaxConcurrentAgentsPerHost),

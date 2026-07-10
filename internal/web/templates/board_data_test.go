@@ -153,6 +153,7 @@ func TestBoardViewSortsCardsBySchedulerPriorityInputs(t *testing.T) {
 			GeneratedAt: now,
 			BoardIssues: []telemetry.Issue{
 				{ID: "plain", Identifier: "digitaldrywood/detent#1", ProjectID: "detent", Title: "Old unprioritized", State: "Todo", StageUpdatedAt: &oldest},
+				{ID: "unblocker", Identifier: "digitaldrywood/detent#6", ProjectID: "detent", Title: "Derived unblocker", State: "Todo", UnblockerCount: 2, StageUpdatedAt: &newest},
 				{ID: "bug", Identifier: "digitaldrywood/detent#2", ProjectID: "detent", Title: "Bug label", State: "Todo", Labels: []string{"bug"}, StageUpdatedAt: &older},
 				{ID: "hotfix", Identifier: "digitaldrywood/detent#3", ProjectID: "detent", Title: "Hotfix label", State: "Todo", Labels: []string{"hotfix"}, StageUpdatedAt: &middle},
 				{ID: "rank-three", Identifier: "digitaldrywood/detent#4", ProjectID: "detent", Title: "Mapped rank three", State: "Todo", Priority: boardPriorityPointer(3), PriorityName: "P2", StageUpdatedAt: &newer},
@@ -174,7 +175,7 @@ func TestBoardViewSortsCardsBySchedulerPriorityInputs(t *testing.T) {
 	for _, card := range view.Lanes[0].Cards {
 		got = append(got, card.IssueID)
 	}
-	want := []string{"rank-one", "rank-three", "hotfix", "bug", "plain"}
+	want := []string{"rank-one", "rank-three", "hotfix", "bug", "unblocker", "plain"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("card order = %#v, want %#v", got, want)
 	}
@@ -223,6 +224,18 @@ func TestBoardCardPriority(t *testing.T) {
 			card:       projectKanbanCard{PriorityRank: 4, PriorityName: "P3", DispatchPriorityLabel: "hotfix", DispatchPriorityRank: 1},
 			wantBadge:  "P3",
 			wantDetail: "Tracker priority P3 maps to dispatch rank 4. Label hotfix is configured at dispatch label rank 1.",
+		},
+		{
+			name:       "derived unblocker boost",
+			card:       projectKanbanCard{UnblockerCount: 3},
+			wantBadge:  "unblocker",
+			wantDetail: "Unblocks 3 issues.",
+		},
+		{
+			name:       "single derived dependent",
+			card:       projectKanbanCard{UnblockerCount: 1},
+			wantBadge:  "unblocker",
+			wantDetail: "Unblocks 1 issue.",
 		},
 		{
 			name: "unprioritized",
@@ -1420,6 +1433,25 @@ func TestBoardSnapshotRendersMorphSafePriorityBadge(t *testing.T) {
 	} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("board page missing mobile lane behavior %q", want)
+		}
+	}
+}
+
+func TestBoardSnapshotRendersUnblockerPriorityDetail(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	data.Snapshot.BoardIssues[0].UnblockerCount = 2
+	html := renderBoardComponent(t, BoardSnapshot(data))
+
+	for _, want := range []string{
+		`data-board-priority`,
+		`data-help-scope="dispatch-priority"`,
+		`data-help-description="Unblocks 2 issues."`,
+		`unblocker`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("unblocker board snapshot missing %q:\n%s", want, html)
 		}
 	}
 }
