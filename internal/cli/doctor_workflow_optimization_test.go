@@ -429,6 +429,61 @@ func TestDoctorWorkflowOptimizationReviewFlowFindings(t *testing.T) {
 	}
 }
 
+func TestDoctorReviewFlowPhraseMatches(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		text    string
+		phrases []string
+		want    int
+	}{
+		{
+			name:    "affirmative enter review instruction",
+			text:    "When done, move the issue to Human Review.",
+			phrases: doctorReviewFlowEnterReviewPhrases("Human Review"),
+			want:    1,
+		},
+		{
+			name:    "do not enter review instruction",
+			text:    "Do NOT move the issue to Human Review.",
+			phrases: doctorReviewFlowEnterReviewPhrases("Human Review"),
+		},
+		{
+			name:    "never enter review instruction",
+			text:    "Never move the issue to Human Review.",
+			phrases: doctorReviewFlowEnterReviewPhrases("Human Review"),
+		},
+		{
+			name:    "negated skip review instruction",
+			text:    "Do not skip Human Review.",
+			phrases: doctorReviewFlowSkipReviewPhrases("Human Review"),
+		},
+		{
+			name:    "negated direct promotion instruction",
+			text:    "Do not promote the issue directly to Merging.",
+			phrases: doctorReviewFlowDirectPromotePhrases("Merging"),
+		},
+		{
+			name: "mixed document",
+			text: "Do not move the issue to Human Review.\n" +
+				"When explicitly requested, move the issue to Human Review.",
+			phrases: doctorReviewFlowEnterReviewPhrases("Human Review"),
+			want:    1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := doctorReviewFlowPhraseMatches(tt.text, tt.phrases); got != tt.want {
+				t.Fatalf("doctorReviewFlowPhraseMatches() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDoctorWorkflowReviewFlowTelemetryCountsImmediateReviewEntries(t *testing.T) {
 	t.Parallel()
 

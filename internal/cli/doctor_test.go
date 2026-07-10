@@ -1029,6 +1029,32 @@ func TestCheckDoctorProjectWorkflowReportsReviewFlowChoiceAndProseMismatch(t *te
 			wantDetail: []string{"review-flow=autopilot", "review-flow prose mismatch", "instructs agents to enter the review state"},
 		},
 		{
+			name: "autopilot permits negated review prose",
+			cfg: func() workflowconfig.Config {
+				cfg := validDoctorWorkflow("/repo")
+				cfg.Agent.AutoPromote.Enabled = true
+				cfg.Agent.AutoPromote.QuietSeconds = 0
+				cfg.Agent.AutoPromote.GateWaitState = workflowconfig.AutoPromoteGateWaitStateSource
+				return cfg
+			}(),
+			prompt:     "Do NOT move the issue to Human Review. Never move the work item to Human Review.",
+			wantStatus: doctorOK,
+			wantDetail: []string{"review-flow=autopilot"},
+		},
+		{
+			name: "autopilot detects affirmative instruction in mixed prose",
+			cfg: func() workflowconfig.Config {
+				cfg := validDoctorWorkflow("/repo")
+				cfg.Agent.AutoPromote.Enabled = true
+				cfg.Agent.AutoPromote.QuietSeconds = 0
+				cfg.Agent.AutoPromote.GateWaitState = workflowconfig.AutoPromoteGateWaitStateSource
+				return cfg
+			}(),
+			prompt:     "Do not move the issue to Human Review.\nWhen requested, move the issue to Human Review.",
+			wantStatus: doctorWarn,
+			wantDetail: []string{"review-flow=autopilot", "review-flow prose mismatch"},
+		},
+		{
 			name: "autopilot contradicted by custom review state prose",
 			cfg: func() workflowconfig.Config {
 				cfg := validDoctorWorkflow("/repo")
@@ -1055,6 +1081,13 @@ func TestCheckDoctorProjectWorkflowReportsReviewFlowChoiceAndProseMismatch(t *te
 			prompt:     "Do not move the issue to Human Review; Detent promotes the issue directly to `Merging`.",
 			wantStatus: doctorWarn,
 			wantDetail: []string{"review-flow=review-gate", "review-flow prose mismatch", "promises direct review-state skipping"},
+		},
+		{
+			name:       "review gate permits negated skip and direct promotion prose",
+			cfg:        validDoctorWorkflow("/repo"),
+			prompt:     "Do not skip Human Review. Do not promote the issue directly to Merging.",
+			wantStatus: doctorOK,
+			wantDetail: []string{"review-flow=review-gate"},
 		},
 		{
 			name: "review gate contradicted by custom direct promotion prose",
