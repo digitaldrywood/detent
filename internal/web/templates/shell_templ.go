@@ -280,7 +280,7 @@ func appSidebar(data DashboardShellData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "<span class=\"flex-1 group-data-[rail=true]/rail:hidden\"></span> <button type=\"button\" class=\"rounded-chip p-1 text-dim hover:bg-elev hover:text-sec\" data-sidebar-toggle aria-label=\"Toggle sidebar\" aria-controls=\"app-sidebar\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "<span class=\"flex-1 group-data-[rail=true]/rail:hidden\"></span> <button type=\"button\" class=\"hidden rounded-chip p-1 text-dim hover:bg-elev hover:text-sec md:inline-block\" data-sidebar-toggle aria-label=\"Toggle sidebar\" aria-controls=\"app-sidebar\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

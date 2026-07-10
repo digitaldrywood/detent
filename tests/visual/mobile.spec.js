@@ -96,6 +96,9 @@ test("drawer closes with Escape and a navigation tap", async ({ page }) => {
   const sidebarBox = await sidebar.boundingBox();
   expect(sidebarBox?.width).toBe(208);
   await expect(sidebar.locator("[data-sidebar-nav-label]").first()).toBeVisible();
+  await expect(
+    sidebar.getByRole("button", { name: "Toggle sidebar" }),
+  ).toBeHidden();
   await page.keyboard.press("Escape");
   await expect(sidebar).toBeHidden();
 
