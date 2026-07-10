@@ -34,7 +34,7 @@ func BoardActivityTabs(activity BoardActivityData, session BoardSessionData) tem
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"flex min-h-72 flex-col rounded-card border border-line bg-elev\" data-sheet-activity-tabs><div class=\"flex flex-none items-center gap-1 border-b border-line px-2 pt-2\" role=\"tablist\" aria-label=\"Issue activity\"><button type=\"button\" class=\"rounded-t-card border-b-2 border-accent px-3 py-2 text-xs font-medium text-text\" data-sheet-tab=\"activity\" role=\"tab\" aria-selected=\"true\">Timeline</button> <button type=\"button\" class=\"rounded-t-card border-b-2 border-transparent px-3 py-2 text-xs font-medium text-sec hover:text-text\" data-sheet-tab=\"session\" role=\"tab\" aria-selected=\"false\" hx-get=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"flex min-h-72 flex-col rounded-card border border-line bg-elev\" data-sheet-activity-tabs><div class=\"flex flex-none items-center gap-1 border-b border-line px-2 pt-2\" role=\"tablist\" aria-label=\"Issue activity\"><button type=\"button\" class=\"min-h-11 rounded-t-card border-b-2 border-accent px-3 py-2 text-xs font-medium text-text md:min-h-0\" data-sheet-tab=\"activity\" role=\"tab\" aria-selected=\"true\">Timeline</button> <button type=\"button\" class=\"min-h-11 rounded-t-card border-b-2 border-transparent px-3 py-2 text-xs font-medium text-sec hover:text-text md:min-h-0\" data-sheet-tab=\"session\" role=\"tab\" aria-selected=\"false\" hx-get=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -484,7 +484,7 @@ func BoardLiveSession(data BoardSessionData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 43, "\" data-live-session-attach><div class=\"flex flex-none items-center justify-between gap-3 border-b border-line px-3 py-2\"><span class=\"flex items-center gap-2 text-xs font-medium text-text\"><span class=\"size-2 rounded-full bg-ok\"></span>Attached read-only</span> <button type=\"button\" class=\"hidden rounded-chip border border-line px-2 py-1 text-2xs text-sec\" data-live-session-resume>Resume autoscroll</button></div><div class=\"max-h-112 min-h-64 flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed text-text\" sse-swap=\"session-activity\" hx-swap=\"beforeend\" data-live-session-log aria-live=\"polite\"></div></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 43, "\" data-live-session-attach><div class=\"flex flex-none items-center justify-between gap-3 border-b border-line px-3 py-2\"><span class=\"flex items-center gap-2 text-xs font-medium text-text\"><span class=\"size-2 rounded-full bg-ok\"></span>Attached read-only</span> <button type=\"button\" class=\"hidden rounded-chip border border-line px-2 py-1 text-2xs text-sec\" data-live-session-resume>Resume autoscroll</button></div><div class=\"max-h-112 min-h-64 min-w-0 flex-1 overflow-x-auto overflow-y-auto p-3 font-mono text-xs leading-relaxed text-text\" sse-swap=\"session-activity\" hx-swap=\"beforeend\" data-live-session-log aria-live=\"polite\"></div></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -540,7 +540,7 @@ func BoardLiveSessionHistory(data BoardSessionHistoryData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 46, "\" hx-swap=\"innerHTML\">Back</button></div><div class=\"max-h-112 min-h-64 flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed text-text\" data-session-history-log>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 46, "\" hx-swap=\"innerHTML\">Back</button></div><div class=\"max-h-112 min-h-64 min-w-0 flex-1 overflow-x-auto overflow-y-auto p-3 font-mono text-xs leading-relaxed text-text\" data-session-history-log>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -695,14 +695,14 @@ func BoardLiveSessionEvent(event BoardSessionEvent) templ.Component {
 			templ_7745c5c3_Var32 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 55, "<div class=\"mb-3 border-l-2 border-line pl-3 last:mb-0\" data-session-event=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 55, "<div class=\"mb-3 min-w-0 border-l-2 border-line pl-3 last:mb-0\" data-session-event=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var33 string
 		templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(event.ID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/activity.templ`, Line: 189, Col: 86}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/activity.templ`, Line: 189, Col: 94}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 		if templ_7745c5c3_Err != nil {
@@ -753,14 +753,14 @@ func BoardLiveSessionEvent(event BoardSessionEvent) templ.Component {
 		}
 		if event.Content != "" {
 			if event.Truncated || len(event.Content) > 4000 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 60, "<details class=\"mt-1\"><summary class=\"cursor-pointer text-accent\">Expand output</summary><pre class=\"mt-1 whitespace-pre-wrap break-words text-text\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 60, "<details class=\"mt-1\"><summary class=\"cursor-pointer text-accent\">Expand output</summary><pre class=\"mt-1 max-w-full overflow-x-auto whitespace-pre text-text\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var37 string
 				templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(event.Content)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/activity.templ`, Line: 198, Col: 80}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/activity.templ`, Line: 198, Col: 90}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 				if templ_7745c5c3_Err != nil {
@@ -771,14 +771,14 @@ func BoardLiveSessionEvent(event BoardSessionEvent) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 62, "<pre class=\"mt-1 whitespace-pre-wrap break-words text-text\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 62, "<pre class=\"mt-1 max-w-full overflow-x-auto whitespace-pre text-text\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var38 string
 				templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(event.Content)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/activity.templ`, Line: 201, Col: 79}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/activity.templ`, Line: 201, Col: 89}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 				if templ_7745c5c3_Err != nil {

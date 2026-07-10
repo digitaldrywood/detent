@@ -7,14 +7,14 @@ import (
 
 templ KanbanConversation(data KanbanConversationData) {
 	@kanbanConversationScript()
-	<section class="flex min-h-0 flex-col gap-3" aria-label="Conversation" data-kanban-comment-tabs>
+	<section class="flex min-h-0 min-w-0 max-w-full flex-col gap-3" aria-label="Conversation" data-kanban-comment-tabs>
 		<header class="flex flex-none items-center gap-2">
 			<div class="min-w-0 flex-1">
 				<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Conversation</h3>
 			</div>
 			<button
 				type="button"
-				class="inline-flex size-7 items-center justify-center rounded-chip text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+				class="inline-flex size-11 items-center justify-center rounded-chip text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent md:size-7"
 				hx-get={ kanbanConversationSheetPath(data, !data.Expanded) }
 				hx-target="#detail-sheet-host"
 				hx-swap="innerHTML"
@@ -48,7 +48,7 @@ templ KanbanConversation(data KanbanConversationData) {
 templ kanbanConversationTabButton(id string, label string, count int, active bool) {
 	<button
 		type="button"
-		class="inline-flex min-h-7 flex-1 items-center justify-center gap-1.5 rounded-chip px-2 text-xs font-medium text-sec hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent data-[kanban-comment-active=true]:bg-surface data-[kanban-comment-active=true]:text-accent"
+		class="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-chip px-2 text-xs font-medium text-sec hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent data-[kanban-comment-active=true]:bg-surface data-[kanban-comment-active=true]:text-accent md:min-h-7"
 		role="tab"
 		aria-selected={ kanbanBool(active) }
 		aria-controls={ "kanban-" + id + "-comments-tab-panel" }
@@ -85,7 +85,7 @@ templ KanbanIssueCommentsPanel(data KanbanConversationData) {
 				<textarea id="kanban-thread-comment-body" name="body" rows="4" class="min-h-24 w-full resize-y rounded-md border border-line bg-page px-3 py-2 text-sm text-text placeholder:text-sec focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent" placeholder="Issue comment">{ data.Body }</textarea>
 				<div class="flex items-center justify-end gap-2">
 					<span id="kanban-comment-submit-indicator" class="htmx-indicator text-xs text-sec">Submitting...</span>
-					<button type="submit" class="inline-flex min-h-8 items-center gap-1.5 rounded-card border border-line px-3 text-xs font-medium text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+					<button type="submit" class="inline-flex min-h-11 items-center gap-1.5 rounded-card border border-line px-3 text-xs font-medium text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent md:min-h-8">
 						@icon.MessageSquarePlus(icon.Props{Class: "size-4"})
 						Comment
 					</button>
@@ -98,9 +98,9 @@ templ KanbanIssueCommentsPanel(data KanbanConversationData) {
 templ kanbanPRCommentsPanel(data KanbanConversationData) {
 	<div id="kanban-pr-comments-panel" class="flex min-h-0 flex-col gap-3">
 		<div class="flex flex-none items-center justify-between gap-2 text-xs">
-			@primitives.TrackerReferenceLink(kanbanConversationPRLabel(data), data.PRURL, "font-mono text-sec")
+			@primitives.TrackerReferenceLink(kanbanConversationPRLabel(data), data.PRURL, "inline-flex min-h-11 items-center font-mono text-sec md:min-h-0 md:inline")
 			if data.PRURL != "" {
-				<a href={ data.PRURL } target="_blank" rel="noopener noreferrer" class="font-medium text-accent hover:underline">Open PR ↗</a>
+				<a href={ data.PRURL } target="_blank" rel="noopener noreferrer" class="inline-flex min-h-11 items-center font-medium text-accent hover:underline md:inline md:min-h-0">Open PR ↗</a>
 			}
 		</div>
 		@kanbanThreadState(data.PRError, "")
@@ -123,20 +123,20 @@ templ kanbanCommentList(data KanbanConversationData, comments []KanbanConversati
 			<div class="flex min-h-24 items-center justify-center px-3 text-center text-xs text-sec">{ empty }</div>
 		}
 		for _, comment := range comments {
-			<article class="flex flex-col gap-2 rounded-card border border-line bg-surface px-3 py-2.5">
+			<article class="flex min-w-0 max-w-full flex-col gap-2 rounded-card border border-line bg-surface px-3 py-2.5">
 				<div class="flex items-start gap-3">
 					<div class="min-w-0 flex-1">
-						<header class="flex min-w-0 items-center gap-2 text-2xs">
+						<header class="flex min-w-0 flex-wrap items-center gap-2 text-2xs md:flex-nowrap">
 							<span class="min-w-0 truncate font-medium text-text">{ comment.Author }</span>
 							<span class="font-mono text-sec" title={ comment.CreatedTitle }>{ comment.Created }</span>
 							<span class="flex-1"></span>
 							<span class="rounded-chip bg-elev px-1.5 py-0.5 font-mono text-dim">{ comment.Backend }</span>
 							<span class="rounded-chip bg-elev px-1.5 py-0.5 font-mono text-dim">{ comment.LocationStatus }</span>
 							if comment.URL != "" {
-								<a href={ comment.URL } target="_blank" rel="noopener noreferrer" class="font-medium text-accent hover:underline">Open ↗</a>
+								<a href={ comment.URL } target="_blank" rel="noopener noreferrer" class="inline-flex min-h-11 items-center font-medium text-accent hover:underline md:inline md:min-h-0">Open ↗</a>
 							}
 						</header>
-						<p class="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-text">{ comment.Body }</p>
+						<p class="mt-2 max-w-full whitespace-pre-wrap break-words text-xs leading-relaxed text-text [overflow-wrap:anywhere]">{ comment.Body }</p>
 					</div>
 					if mutable && kanbanConversationCanMutateComment(data, comment) {
 						<div class="flex flex-none items-center gap-1">
@@ -145,7 +145,7 @@ templ kanbanCommentList(data KanbanConversationData, comments []KanbanConversati
 									<input type="hidden" name="project_id" value={ data.ProjectID }/>
 									<input type="hidden" name="issue_id" value={ data.IssueID }/>
 									<input type="hidden" name="comment_id" value={ comment.ID }/>
-									<button type="submit" class="rounded-chip p-1 text-sec hover:bg-err/15 hover:text-err" title="Delete comment" aria-label="Delete comment">
+									<button type="submit" class="inline-flex size-11 items-center justify-center rounded-chip text-sec hover:bg-err/15 hover:text-err md:size-auto md:p-1" title="Delete comment" aria-label="Delete comment">
 										@icon.Trash2(icon.Props{Class: "size-3.5"})
 									</button>
 								</form>
@@ -155,7 +155,7 @@ templ kanbanCommentList(data KanbanConversationData, comments []KanbanConversati
 				</div>
 				if mutable && kanbanConversationCanEditComment(data, comment) {
 					<details>
-						<summary class="inline-flex cursor-pointer list-none items-center gap-1.5 rounded-card border border-line px-2.5 py-1.5 text-xs font-medium text-sec hover:border-accent hover:text-accent">
+						<summary class="inline-flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-card border border-line px-2.5 py-1.5 text-xs font-medium text-sec hover:border-accent hover:text-accent md:min-h-0">
 							@icon.PencilLine(icon.Props{Class: "size-3.5"})
 							Edit
 						</summary>
@@ -165,7 +165,7 @@ templ kanbanCommentList(data KanbanConversationData, comments []KanbanConversati
 							<input type="hidden" name="comment_id" value={ comment.ID }/>
 							<textarea name="body" rows="4" class="min-h-24 w-full resize-y rounded-md border border-line bg-page px-3 py-2 text-xs text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent">{ comment.Body }</textarea>
 							<div class="flex justify-end">
-								<button type="submit" class="inline-flex items-center gap-1.5 rounded-card border border-line px-2.5 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent">
+								<button type="submit" class="inline-flex min-h-11 items-center gap-1.5 rounded-card border border-line px-2.5 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent md:min-h-0">
 									@icon.Save(icon.Props{Class: "size-3.5"})
 									Save
 								</button>

@@ -8,10 +8,10 @@ import (
 templ BoardActivityTabs(activity BoardActivityData, session BoardSessionData) {
 	<div class="flex min-h-72 flex-col rounded-card border border-line bg-elev" data-sheet-activity-tabs>
 		<div class="flex flex-none items-center gap-1 border-b border-line px-2 pt-2" role="tablist" aria-label="Issue activity">
-			<button type="button" class="rounded-t-card border-b-2 border-accent px-3 py-2 text-xs font-medium text-text" data-sheet-tab="activity" role="tab" aria-selected="true">Timeline</button>
+			<button type="button" class="min-h-11 rounded-t-card border-b-2 border-accent px-3 py-2 text-xs font-medium text-text md:min-h-0" data-sheet-tab="activity" role="tab" aria-selected="true">Timeline</button>
 			<button
 				type="button"
-				class="rounded-t-card border-b-2 border-transparent px-3 py-2 text-xs font-medium text-sec hover:text-text"
+				class="min-h-11 rounded-t-card border-b-2 border-transparent px-3 py-2 text-xs font-medium text-sec hover:text-text md:min-h-0"
 				data-sheet-tab="session"
 				role="tab"
 				aria-selected="false"
@@ -135,7 +135,7 @@ templ BoardLiveSession(data BoardSessionData) {
 				<span class="flex items-center gap-2 text-xs font-medium text-text"><span class="size-2 rounded-full bg-ok"></span>Attached read-only</span>
 				<button type="button" class="hidden rounded-chip border border-line px-2 py-1 text-2xs text-sec" data-live-session-resume>Resume autoscroll</button>
 			</div>
-			<div class="max-h-112 min-h-64 flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed text-text" sse-swap="session-activity" hx-swap="beforeend" data-live-session-log aria-live="polite"></div>
+			<div class="max-h-112 min-h-64 min-w-0 flex-1 overflow-x-auto overflow-y-auto p-3 font-mono text-xs leading-relaxed text-text" sse-swap="session-activity" hx-swap="beforeend" data-live-session-log aria-live="polite"></div>
 		</div>
 	}
 }
@@ -149,7 +149,7 @@ templ BoardLiveSessionHistory(data BoardSessionHistoryData) {
 			</div>
 			<button type="button" class="rounded-chip border border-line px-2 py-1 text-2xs text-sec" hx-get={ boardSessionPath(data.Session, false) } hx-target={ boardLiveSessionTarget(data.Session) } hx-swap="innerHTML">Back</button>
 		</div>
-		<div class="max-h-112 min-h-64 flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed text-text" data-session-history-log>
+		<div class="max-h-112 min-h-64 min-w-0 flex-1 overflow-x-auto overflow-y-auto p-3 font-mono text-xs leading-relaxed text-text" data-session-history-log>
 			if data.Error != "" {
 				<p class="py-8 text-center font-sans text-xs text-warn">{ data.Error }</p>
 			} else if len(data.Events) == 0 {
@@ -186,7 +186,7 @@ templ BoardLiveSessionEvents(events []BoardSessionEvent) {
 }
 
 templ BoardLiveSessionEvent(event BoardSessionEvent) {
-	<div class="mb-3 border-l-2 border-line pl-3 last:mb-0" data-session-event={ event.ID }>
+	<div class="mb-3 min-w-0 border-l-2 border-line pl-3 last:mb-0" data-session-event={ event.ID }>
 		<div class="flex items-center justify-between gap-3 text-2xs text-dim">
 			<span class="truncate">{ event.Title }</span>
 			<time class="flex-none" datetime={ event.At.Format(time.RFC3339) }>{ boardActivityTime(BoardActivityEvent{At: event.At}) }</time>
@@ -195,10 +195,10 @@ templ BoardLiveSessionEvent(event BoardSessionEvent) {
 			if event.Truncated || len(event.Content) > 4000 {
 				<details class="mt-1">
 					<summary class="cursor-pointer text-accent">Expand output</summary>
-					<pre class="mt-1 whitespace-pre-wrap break-words text-text">{ event.Content }</pre>
+					<pre class="mt-1 max-w-full overflow-x-auto whitespace-pre text-text">{ event.Content }</pre>
 				</details>
 			} else {
-				<pre class="mt-1 whitespace-pre-wrap break-words text-text">{ event.Content }</pre>
+				<pre class="mt-1 max-w-full overflow-x-auto whitespace-pre text-text">{ event.Content }</pre>
 			}
 		}
 		if event.Tokens > 0 {

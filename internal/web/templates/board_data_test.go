@@ -681,7 +681,7 @@ func TestLongLocalWorkItemIdentifiersUseDefensiveTruncationClasses(t *testing.T)
 	))
 	for _, want := range []string{
 		`class="min-w-20 truncate">` + projectID,
-		`class="flex-none max-w-48 truncate text-text">` + localID,
+		`class="inline-flex min-h-11 max-w-48 flex-none items-center truncate text-text md:min-h-0 md:inline">` + localID,
 	} {
 		if !strings.Contains(sheetHTML, want) {
 			t.Fatalf("sheet header missing %q:\n%s", want, sheetHTML)

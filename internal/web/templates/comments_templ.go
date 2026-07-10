@@ -38,7 +38,7 @@ func KanbanConversation(data KanbanConversationData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<section class=\"flex min-h-0 flex-col gap-3\" aria-label=\"Conversation\" data-kanban-comment-tabs><header class=\"flex flex-none items-center gap-2\"><div class=\"min-w-0 flex-1\"><h3 class=\"text-2xs font-semibold uppercase tracking-[0.06em] text-dim\">Conversation</h3></div><button type=\"button\" class=\"inline-flex size-7 items-center justify-center rounded-chip text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" hx-get=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<section class=\"flex min-h-0 min-w-0 max-w-full flex-col gap-3\" aria-label=\"Conversation\" data-kanban-comment-tabs><header class=\"flex flex-none items-center gap-2\"><div class=\"min-w-0 flex-1\"><h3 class=\"text-2xs font-semibold uppercase tracking-[0.06em] text-dim\">Conversation</h3></div><button type=\"button\" class=\"inline-flex size-11 items-center justify-center rounded-chip text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent md:size-7\" hx-get=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -169,7 +169,7 @@ func kanbanConversationTabButton(id string, label string, count int, active bool
 			templ_7745c5c3_Var5 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "<button type=\"button\" class=\"inline-flex min-h-7 flex-1 items-center justify-center gap-1.5 rounded-chip px-2 text-xs font-medium text-sec hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent data-[kanban-comment-active=true]:bg-surface data-[kanban-comment-active=true]:text-accent\" role=\"tab\" aria-selected=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "<button type=\"button\" class=\"inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-chip px-2 text-xs font-medium text-sec hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent data-[kanban-comment-active=true]:bg-surface data-[kanban-comment-active=true]:text-accent md:min-h-7\" role=\"tab\" aria-selected=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -409,7 +409,7 @@ func KanbanIssueCommentsPanel(data KanbanConversationData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 32, "</textarea><div class=\"flex items-center justify-end gap-2\"><span id=\"kanban-comment-submit-indicator\" class=\"htmx-indicator text-xs text-sec\">Submitting...</span> <button type=\"submit\" class=\"inline-flex min-h-8 items-center gap-1.5 rounded-card border border-line px-3 text-xs font-medium text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 32, "</textarea><div class=\"flex items-center justify-end gap-2\"><span id=\"kanban-comment-submit-indicator\" class=\"htmx-indicator text-xs text-sec\">Submitting...</span> <button type=\"submit\" class=\"inline-flex min-h-11 items-center gap-1.5 rounded-card border border-line px-3 text-xs font-medium text-text hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent md:min-h-8\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -455,7 +455,7 @@ func kanbanPRCommentsPanel(data KanbanConversationData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = primitives.TrackerReferenceLink(kanbanConversationPRLabel(data), data.PRURL, "font-mono text-sec").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = primitives.TrackerReferenceLink(kanbanConversationPRLabel(data), data.PRURL, "inline-flex min-h-11 items-center font-mono text-sec md:min-h-0 md:inline").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -473,7 +473,7 @@ func kanbanPRCommentsPanel(data KanbanConversationData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 37, "\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"font-medium text-accent hover:underline\">Open PR ↗</a>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 37, "\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"inline-flex min-h-11 items-center font-medium text-accent hover:underline md:inline md:min-h-0\">Open PR ↗</a>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -624,7 +624,7 @@ func kanbanCommentList(data KanbanConversationData, comments []KanbanConversatio
 			}
 		}
 		for _, comment := range comments {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 48, "<article class=\"flex flex-col gap-2 rounded-card border border-line bg-surface px-3 py-2.5\"><div class=\"flex items-start gap-3\"><div class=\"min-w-0 flex-1\"><header class=\"flex min-w-0 items-center gap-2 text-2xs\"><span class=\"min-w-0 truncate font-medium text-text\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 48, "<article class=\"flex min-w-0 max-w-full flex-col gap-2 rounded-card border border-line bg-surface px-3 py-2.5\"><div class=\"flex items-start gap-3\"><div class=\"min-w-0 flex-1\"><header class=\"flex min-w-0 flex-wrap items-center gap-2 text-2xs md:flex-nowrap\"><span class=\"min-w-0 truncate font-medium text-text\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -707,19 +707,19 @@ func kanbanCommentList(data KanbanConversationData, comments []KanbanConversatio
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 55, "\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"font-medium text-accent hover:underline\">Open ↗</a>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 55, "\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"inline-flex min-h-11 items-center font-medium text-accent hover:underline md:inline md:min-h-0\">Open ↗</a>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 56, "</header><p class=\"mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-text\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 56, "</header><p class=\"mt-2 max-w-full whitespace-pre-wrap break-words text-xs leading-relaxed text-text [overflow-wrap:anywhere]\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var36 string
 			templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(comment.Body)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/comments.templ`, Line: 139, Col: 102}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/comments.templ`, Line: 139, Col: 138}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 			if templ_7745c5c3_Err != nil {
@@ -787,7 +787,7 @@ func kanbanCommentList(data KanbanConversationData, comments []KanbanConversatio
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 63, "\"> <button type=\"submit\" class=\"rounded-chip p-1 text-sec hover:bg-err/15 hover:text-err\" title=\"Delete comment\" aria-label=\"Delete comment\">")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 63, "\"> <button type=\"submit\" class=\"inline-flex size-11 items-center justify-center rounded-chip text-sec hover:bg-err/15 hover:text-err md:size-auto md:p-1\" title=\"Delete comment\" aria-label=\"Delete comment\">")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -810,7 +810,7 @@ func kanbanCommentList(data KanbanConversationData, comments []KanbanConversatio
 				return templ_7745c5c3_Err
 			}
 			if mutable && kanbanConversationCanEditComment(data, comment) {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 67, "<details><summary class=\"inline-flex cursor-pointer list-none items-center gap-1.5 rounded-card border border-line px-2.5 py-1.5 text-xs font-medium text-sec hover:border-accent hover:text-accent\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 67, "<details><summary class=\"inline-flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-card border border-line px-2.5 py-1.5 text-xs font-medium text-sec hover:border-accent hover:text-accent md:min-h-0\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -870,7 +870,7 @@ func kanbanCommentList(data KanbanConversationData, comments []KanbanConversatio
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 72, "</textarea><div class=\"flex justify-end\"><button type=\"submit\" class=\"inline-flex items-center gap-1.5 rounded-card border border-line px-2.5 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 72, "</textarea><div class=\"flex justify-end\"><button type=\"submit\" class=\"inline-flex min-h-11 items-center gap-1.5 rounded-card border border-line px-2.5 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent md:min-h-0\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
