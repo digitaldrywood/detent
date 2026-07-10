@@ -171,6 +171,72 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	}
 }
 
+func TestAppServerListModelsPaginatesCatalog(t *testing.T) {
+	t.Parallel()
+
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
+		responseMessage(t, 6, `{"data":[{"id":"gpt-default","model":"gpt-default","isDefault":true,"supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]}],"nextCursor":"page-2"}`),
+		responseMessage(t, 6, `{"data":[{"id":"gpt-5.5","model":"gpt-5.5","isDefault":false,"upgrade":"gpt-5.6","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	models, err := server.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("models = %#v, want two entries", models)
+	}
+	if models[0].ID != "gpt-default" || !models[0].Default || !reflect.DeepEqual(models[0].SupportedReasoningEfforts, []string{"low", "high"}) {
+		t.Fatalf("models[0] = %#v", models[0])
+	}
+	if models[1].Model != "gpt-5.5" || models[1].Upgrade != "gpt-5.6" || !reflect.DeepEqual(models[1].SupportedReasoningEfforts, []string{"medium"}) {
+		t.Fatalf("models[1] = %#v", models[1])
+	}
+
+	sent := transport.sentMessages()
+	if len(sent) != 4 {
+		t.Fatalf("sent messages = %d, want 4", len(sent))
+	}
+	assertRequest(t, sent[2], 6, "model/list")
+	assertJSONContains(t, sent[2].Params, "includeHidden", true)
+	assertJSONContains(t, sent[2].Params, "limit", float64(100))
+	assertRequest(t, sent[3], 6, "model/list")
+	assertJSONContains(t, sent[3].Params, "cursor", "page-2")
+}
+
+func TestAppServerDefaultModelReadsWorkspaceConfig(t *testing.T) {
+	t.Parallel()
+
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.144.0"}`),
+		responseMessage(t, 5, `{"config":{"model":"gpt-5.5"}}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	model, err := server.DefaultModel(context.Background(), "/tmp/detent-workspace")
+	if err != nil {
+		t.Fatalf("DefaultModel() error = %v", err)
+	}
+	if model != "gpt-5.5" {
+		t.Fatalf("DefaultModel() = %q, want gpt-5.5", model)
+	}
+
+	sent := transport.sentMessages()
+	if len(sent) != 3 {
+		t.Fatalf("sent messages = %d, want 3", len(sent))
+	}
+	assertRequest(t, sent[2], 5, "config/read")
+	assertJSONContains(t, sent[2].Params, "cwd", "/tmp/detent-workspace")
+}
+
 func TestAppServerRunTurnResumesThreadBeforeStartingTurn(t *testing.T) {
 	t.Parallel()
 
@@ -752,6 +818,18 @@ func assertJSONContains(t *testing.T, data json.RawMessage, path string, want an
 	got := lookupJSONPath(t, decoded, path)
 	if !jsonValuesEqual(got, want) {
 		t.Fatalf("%s = %#v, want %#v in %s", path, got, want, string(data))
+	}
+}
+
+func assertJSONOmits(t *testing.T, data json.RawMessage, key string) {
+	t.Helper()
+
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal JSON: %v", err)
+	}
+	if _, ok := decoded[key]; ok {
+		t.Fatalf("key %q unexpectedly present in %s", key, string(data))
 	}
 }
 

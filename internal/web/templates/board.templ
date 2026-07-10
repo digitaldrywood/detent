@@ -162,6 +162,9 @@ templ boardCardView2(card boardCardView) {
 			} else if card.MetaRight != "" {
 				<span class="flex-none whitespace-nowrap tabular-nums">{ card.MetaRight }</span>
 			}
+			if card.Running && card.MoveDisabledText != "" && card.MetaRight != "" {
+				<span class="flex-none whitespace-nowrap tabular-nums">{ card.MetaRight }</span>
+			}
 		</div>
 		<div class={ boardCardTitleClass(card) }>{ card.Title }</div>
 		if card.ExtraText != "" {

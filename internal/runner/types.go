@@ -56,6 +56,22 @@ type AgentBackend interface {
 	RunTurn(context.Context, AgentTurnRequest, AgentUpdateHandler) (AgentTurnResult, error)
 }
 
+type AgentModelCatalogProvider interface {
+	ListModels(context.Context) ([]AgentModel, error)
+}
+
+type AgentDefaultModelProvider interface {
+	DefaultModel(context.Context, string) (string, error)
+}
+
+type AgentModel struct {
+	ID                        string
+	Model                     string
+	Default                   bool
+	Upgrade                   string
+	SupportedReasoningEfforts []string
+}
+
 type AgentTurnRequest struct {
 	Workspace          string
 	Prompt             string
@@ -190,6 +206,15 @@ type RunRequest struct {
 	ResumeState         store.AgentResumeState
 	SelectorContext     selector.Context
 	OnUsageUpdate       UsageUpdateHandler
+	OnOverrideRejected  AgentOverrideRejectionHandler
+}
+
+type AgentOverrideRejectionHandler func([]AgentOverrideRejection) error
+
+type AgentOverrideRejection struct {
+	Field  string
+	Value  string
+	Reason string
 }
 
 type RetryMode string

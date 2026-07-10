@@ -24,6 +24,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
@@ -408,6 +409,109 @@ Prompt
 	})
 	if check.Status != doctorFail || !strings.Contains(check.Detail, "plan-default") || !strings.Contains(check.Detail, "gpt-retired-plan") {
 		t.Fatalf("check = %#v, want rejected role backend command pin", check)
+	}
+}
+
+func TestCheckDoctorIssueAgentModels(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		issue      connector.Issue
+		probeErr   error
+		wantStatus doctorStatus
+		wantDetail string
+		wantProbes int
+	}{
+		{
+			name:       "no block",
+			issue:      connector.Issue{ID: "issue-1", Identifier: "digitaldrywood/detent#1", Description: "Ship it."},
+			wantStatus: doctorOK,
+			wantDetail: "validated 0",
+		},
+		{
+			name:       "healthy model",
+			issue:      connector.Issue{ID: "issue-2", Identifier: "digitaldrywood/detent#2", Description: "```detent-agent\nschema: 1\nmodel: gpt-5.5\n```"},
+			wantStatus: doctorOK,
+			wantDetail: "validated 1",
+			wantProbes: 1,
+		},
+		{
+			name:       "retired model",
+			issue:      connector.Issue{ID: "issue-3", Identifier: "digitaldrywood/detent#3", Description: "```detent-agent\nschema: 1\nmodel: gpt-retired\n```"},
+			probeErr:   errors.New("model retired"),
+			wantStatus: doctorFail,
+			wantDetail: "digitaldrywood/detent#3 detent-agent model gpt-retired",
+			wantProbes: 1,
+		},
+		{
+			name: "comment block ignored",
+			issue: connector.Issue{ID: "issue-4", Identifier: "digitaldrywood/detent#4", Comments: []connector.IssueComment{{
+				Body: "```detent-agent\nschema: 1\nmodel: gpt-retired\n```",
+			}}},
+			wantStatus: doctorOK,
+			wantDetail: "validated 0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := validDoctorWorkflow(t.TempDir())
+			probes := 0
+			check := checkDoctorIssueAgentModels(context.Background(), "detent", globalconfig.Project{ID: "detent", Workdir: t.TempDir()}, cfg, doctorDeps{
+				autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+					return &fakeDoctorAutoPromoteConnector{issues: []connector.Issue{tt.issue}}, nil
+				},
+				modelProbe: func(_ context.Context, req doctorRouteModelProbeRequest) error {
+					probes++
+					if req.Model != "gpt-5.5" && req.Model != "gpt-retired" {
+						t.Fatalf("probe model = %q", req.Model)
+					}
+					return tt.probeErr
+				},
+			})
+			if check.Status != tt.wantStatus || !strings.Contains(check.Detail, tt.wantDetail) {
+				t.Fatalf("check = %#v, want status %s detail containing %q", check, tt.wantStatus, tt.wantDetail)
+			}
+			if probes != tt.wantProbes {
+				t.Fatalf("probes = %d, want %d", probes, tt.wantProbes)
+			}
+		})
+	}
+}
+
+func TestValidateDoctorModelCatalog(t *testing.T) {
+	t.Parallel()
+
+	models := []runnerpkg.AgentModel{
+		{ID: "gpt-5.5", Model: "gpt-5.5"},
+		{ID: "gpt-retired", Model: "gpt-retired", Upgrade: "gpt-5.5"},
+	}
+	tests := []struct {
+		name    string
+		model   string
+		wantErr string
+	}{
+		{name: "available model", model: "gpt-5.5"},
+		{name: "retired model", model: "gpt-retired", wantErr: `retired; use "gpt-5.5"`},
+		{name: "unknown model", model: "gpt-unknown", wantErr: "not available"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateDoctorModelCatalog(models, tt.model)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateDoctorModelCatalog() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("validateDoctorModelCatalog() error = %v, want containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 

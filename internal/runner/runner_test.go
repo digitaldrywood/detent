@@ -50,6 +50,11 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		},
 	}
 	codexClient := &fakeCodexClient{
+		models: []AgentModel{{
+			ID:                        "gpt-5-codex-high",
+			Model:                     "gpt-5-codex-high",
+			SupportedReasoningEfforts: []string{"high"},
+		}},
 		updates: []AgentUpdate{
 			{
 				Type:            AgentUpdateMessageDelta,
@@ -136,13 +141,13 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	var usageUpdates []UsageUpdate
 	result, err := runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
-			ID:            "issue-22",
-			Identifier:    "digitaldrywood/detent#22",
-			Title:         "Add runner",
-			URL:           "https://github.com/digitaldrywood/detent/issues/22",
-			PRNumber:      &prNumber,
-			BranchName:    "detent/digitaldrywood_detent_22",
-			ModelOverride: "gpt-5-codex-high",
+			ID:          "issue-22",
+			Identifier:  "digitaldrywood/detent#22",
+			Title:       "Add runner",
+			Description: "```detent-agent\nschema: 1\nmodel: gpt-5-codex-high\neffort: high\n```",
+			URL:         "https://github.com/digitaldrywood/detent/issues/22",
+			PRNumber:    &prNumber,
+			BranchName:  "detent/digitaldrywood_detent_22",
 		},
 		Attempt:   2,
 		StartedAt: startedAt,
@@ -245,6 +250,12 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if codexClient.request.Model != "gpt-5-codex-high" {
 		t.Fatalf("codex model = %q, want issue override", codexClient.request.Model)
 	}
+	if codexClient.request.ReasoningEffort != "high" {
+		t.Fatalf("codex effort = %q, want issue override", codexClient.request.ReasoningEffort)
+	}
+	if codexClient.catalogCalls != 1 {
+		t.Fatalf("model catalog calls = %d, want 1", codexClient.catalogCalls)
+	}
 	for _, want := range []string{
 		"Work on digitaldrywood/detent#22 attempt 2",
 		"## Available skills",
@@ -256,6 +267,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if sessionStore.started.Identifier != "digitaldrywood/detent#22" || sessionStore.started.Model != "" || sessionStore.started.RequestedModel != "gpt-5-codex-high" || sessionStore.started.AgentRole != RoleCode {
 		t.Fatalf("SessionStart = %#v, want requested model distinct from unresolved model and code role", sessionStore.started)
+	}
+	if sessionStore.started.RuntimeIdentity.ReasoningEffort != (agentidentity.Value{Value: "high", Provenance: agentidentity.ProvenanceConfigured}) {
+		t.Fatalf("SessionStart effort = %#v, want configured high", sessionStore.started.RuntimeIdentity.ReasoningEffort)
 	}
 	if sessionStore.finished.FinalState != FinalStateCompleted || sessionStore.finished.TotalTokens != 125 || sessionStore.finished.Turns != 1 || sessionStore.finished.Model != "gpt-5-codex-resolved" {
 		t.Fatalf("SessionFinish = %#v, want completed session with tokens", sessionStore.finished)
@@ -3045,11 +3059,13 @@ func (b *fakeMergeWorkspaceBackend) PrepareMerge(
 }
 
 type fakeCodexClient struct {
-	request AgentTurnRequest
-	updates []AgentUpdate
-	result  AgentTurnResult
-	err     error
-	calls   int
+	request      AgentTurnRequest
+	updates      []AgentUpdate
+	result       AgentTurnResult
+	err          error
+	calls        int
+	models       []AgentModel
+	catalogCalls int
 }
 
 func (c *fakeCodexClient) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
@@ -3061,6 +3077,15 @@ func (c *fakeCodexClient) RunTurn(_ context.Context, req AgentTurnRequest, onUpd
 		}
 	}
 	return c.result, c.err
+}
+
+func (c *fakeCodexClient) ListModels(context.Context) ([]AgentModel, error) {
+	c.catalogCalls++
+	return c.models, nil
+}
+
+func (*fakeCodexClient) DefaultModel(context.Context, string) (string, error) {
+	return "", nil
 }
 
 type resumeFallbackAgentBackend struct {

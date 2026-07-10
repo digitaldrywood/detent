@@ -42,6 +42,7 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 		Workspace:          "/tmp/detent-workspace",
 		Prompt:             "Ship issue #820",
 		Model:              "gpt-5-codex",
+		ReasoningEffort:    "high",
 		ExtraWritableRoots: []string{"/extra", "/existing", " "},
 	}, func(update runner.AgentUpdate) error {
 		updates = append(updates, update)
@@ -60,6 +61,7 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 	assertJSONContains(t, sent[2].Params, "approvalPolicy", "never")
 	assertJSONContains(t, sent[2].Params, "sandbox", "workspace-write")
 	assertJSONContains(t, sent[2].Params, "model", "gpt-5-codex")
+	assertJSONOmits(t, sent[2].Params, "effort")
 
 	assertRequest(t, sent[3], 3, "turn/start")
 	assertJSONContains(t, sent[3].Params, "approvalPolicy", "never")
@@ -67,6 +69,7 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 	assertJSONContains(t, sent[3].Params, "sandboxPolicy.networkAccess", true)
 	assertJSONContains(t, sent[3].Params, "sandboxPolicy.writableRoots", []any{"/existing", "/extra"})
 	assertJSONContains(t, sent[3].Params, "model", "gpt-5-codex")
+	assertJSONContains(t, sent[3].Params, "effort", "high")
 
 	if len(updates) < 2 || updates[0].Type != runner.AgentUpdateRuntimeIdentity || updates[1].Type != runner.AgentUpdateTurnStarted || updates[1].Model != "gpt-5-codex-resolved" {
 		t.Fatalf("updates = %#v, want resolved model on turn started", updates)

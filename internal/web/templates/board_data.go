@@ -402,6 +402,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	view.ExtraKind, view.ExtraText, view.ExtraChip = boardCardExtra(card, view)
 	if view.Running {
 		view.RuntimeSummary = runtimeIdentitySummary(card.RuntimeIdentity)
+		view.MetaRight = runtimeIdentityCardSummary(card.RuntimeIdentity)
 	}
 	return view
 }

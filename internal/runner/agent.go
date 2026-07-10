@@ -686,9 +686,23 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		startedAt = r.now().UTC()
 	}
 	runStartedAt := r.now()
-	selectedModel := selection.Model
+	modelProvider, serviceTier, configuredEffort := agentTurnIdentityOptions(backendConfig)
+	resolvedOverride := resolveAgentOverride(ctx, req.Issue, info.Path, selection.Model, backend)
+	selectedModel := resolvedOverride.Model
+	effort := configuredEffort
+	if resolvedOverride.Effort != "" {
+		effort = resolvedOverride.Effort
+	}
+	if len(resolvedOverride.Rejections) > 0 && req.OnOverrideRejected != nil {
+		if err := req.OnOverrideRejected(resolvedOverride.Rejections); err != nil {
+			r.logger.Warn("report detent-agent override rejection failed", "issue_id", req.Issue.ID, "identifier", req.Issue.Identifier, "error", err)
+		}
+	}
 	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(role))
 	runtimeIdentity := configuredRuntimeIdentity(selection, backendConfig, role, sessionModel, startedAt)
+	if effort != "" {
+		runtimeIdentity.ReasoningEffort = agentidentity.NewValue(effort, agentidentity.ProvenanceConfigured)
+	}
 	if result, refused, err := r.checkDispatchBudget(ctx, budgetChecker, dispatchEstimator, req.Issue, sessionModel, startedAt); err != nil {
 		return RunResult{}, err
 	} else if refused {
@@ -719,7 +733,6 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	commandStartedAttrs = append(commandStartedAttrs, runtimeIdentityLogAttrs(runtimeIdentity)...)
 	r.logWorkerEvent(req.Issue, "worker_command_started", commandStartedAttrs...)
-	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
 	turnRequest := AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             prompt,

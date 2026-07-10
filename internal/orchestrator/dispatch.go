@@ -341,6 +341,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		WorkerHost:          workerHost,
 		SelectorContext:     o.selectorContext(),
 		OnUsageUpdate:       o.usageUpdateHandler(runCtx, issue.ID),
+		OnOverrideRejected:  o.agentOverrideRejectionHandler(runCtx, issue),
 	}
 	if retryQueued {
 		request.RetryMode = queuedRetry.RetryMode
