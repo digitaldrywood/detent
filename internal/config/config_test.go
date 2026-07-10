@@ -660,6 +660,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if cfg.Agent.ExperimentalThreadResume {
 		t.Fatal("Agent.ExperimentalThreadResume = true, want disabled default")
 	}
+	if !cfg.Agent.ResumeOrphanedSessions {
+		t.Fatal("Agent.ResumeOrphanedSessions = false, want enabled default")
+	}
 	if cfg.Agent.Shutdown.DrainTimeoutMS != DefaultShutdownDrainTimeoutMS {
 		t.Fatalf("Agent.Shutdown.DrainTimeoutMS = %d, want %d", cfg.Agent.Shutdown.DrainTimeoutMS, DefaultShutdownDrainTimeoutMS)
 	}
@@ -734,6 +737,18 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Plan.Enabled || cfg.Plan.Review != gate.PlanReviewHuman || cfg.Plan.ApprovalLabel != gate.DefaultPlanApprovalLabel || cfg.Plan.Stop != gate.DefaultPlanStop {
 		t.Fatalf("Plan = %#v, want disabled human review plan default", cfg.Plan)
+	}
+}
+
+func TestParseWorkflowCanDisableOrphanedSessionResume(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\nagent:\n  resume_orphaned_sessions: false\n---\nPrompt\n"))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if workflow.Config.Agent.ResumeOrphanedSessions {
+		t.Fatal("Agent.ResumeOrphanedSessions = true, want explicitly disabled")
 	}
 }
 

@@ -32,6 +32,7 @@ const (
 var (
 	ErrSessionTokenCeilingExceeded = errors.New("session token ceiling exceeded")
 	ErrAgentTurnCleanup            = errors.New("agent turn cleanup failed")
+	ErrAgentResumeUnsupported      = errors.New("agent backend does not support resume verification")
 )
 
 type Backend interface {
@@ -54,6 +55,10 @@ type WorkspaceReapResult struct {
 
 type AgentBackend interface {
 	RunTurn(context.Context, AgentTurnRequest, AgentUpdateHandler) (AgentTurnResult, error)
+}
+
+type AgentResumeVerifier interface {
+	VerifyResume(context.Context, AgentResume) error
 }
 
 type AgentModelCatalogProvider interface {
@@ -129,14 +134,15 @@ type AgentUpdateHandler func(AgentUpdate) error
 type AgentUpdateType string
 
 const (
-	AgentUpdateProcessStarted  AgentUpdateType = "process_started"
-	AgentUpdateMessageDelta    AgentUpdateType = "agent_message_delta"
-	AgentUpdateTokenUsage      AgentUpdateType = "token_usage"
-	AgentUpdateRateLimits      AgentUpdateType = "rate_limits"
-	AgentUpdateTurnStarted     AgentUpdateType = "turn_started"
-	AgentUpdateTurnCompleted   AgentUpdateType = "turn_completed"
-	AgentUpdateModelUpdated    AgentUpdateType = "model_updated"
-	AgentUpdateRuntimeIdentity AgentUpdateType = "runtime_identity"
+	AgentUpdateProcessStarted   AgentUpdateType = "process_started"
+	AgentUpdateProviderIdentity AgentUpdateType = "provider_identity"
+	AgentUpdateMessageDelta     AgentUpdateType = "agent_message_delta"
+	AgentUpdateTokenUsage       AgentUpdateType = "token_usage"
+	AgentUpdateRateLimits       AgentUpdateType = "rate_limits"
+	AgentUpdateTurnStarted      AgentUpdateType = "turn_started"
+	AgentUpdateTurnCompleted    AgentUpdateType = "turn_completed"
+	AgentUpdateModelUpdated     AgentUpdateType = "model_updated"
+	AgentUpdateRuntimeIdentity  AgentUpdateType = "runtime_identity"
 )
 
 type AgentUpdate struct {
@@ -145,6 +151,7 @@ type AgentUpdate struct {
 	ProcessIdentity     string
 	ThreadID            string
 	TurnID              string
+	ProviderSessionID   string
 	ItemID              string
 	Delta               string
 	Status              string

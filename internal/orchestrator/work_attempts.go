@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,6 +32,14 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 	projectID := strings.TrimSpace(o.cfg.Project.ID)
 	if projectID == "" {
 		return
+	}
+	var orphanedSessions []store.OrphanedAgentSession
+	if o.cfg.ResumeOrphanedSessions && o.orphanSessions != nil {
+		var err error
+		orphanedSessions, err = o.orphanSessions.ListOrphanedAgentSessions(ctx, projectID)
+		if err != nil && o.logger != nil {
+			o.logger.Warn("orphaned agent session lookup failed", "project_id", projectID, "error", err)
+		}
 	}
 	timedOut, err := o.workAttempts.TimeoutExpiredWorkAttempts(ctx, store.WorkAttemptTimeout{
 		ProjectID:     projectID,
@@ -67,11 +76,99 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 		if o.logger != nil {
 			o.logger.Warn("work attempt history recovery failed", "project_id", projectID, "error", err)
 		}
+	} else {
+		for index := len(recent) - 1; index >= 0; index-- {
+			o.upsertWorkAttemptSnapshot(state, telemetryWorkAttempt(recent[index], now))
+		}
+	}
+	o.recoverOrphanedAgentSessions(ctx, state, orphanedSessions, now)
+}
+
+func (o *Orchestrator) recoverOrphanedAgentSessions(ctx context.Context, state *State, sessions []store.OrphanedAgentSession, now time.Time) {
+	if len(sessions) == 0 || o.orphanSessions == nil {
 		return
 	}
-	for index := len(recent) - 1; index >= 0; index-- {
-		o.upsertWorkAttemptSnapshot(state, telemetryWorkAttempt(recent[index], now))
+	issueIDs := make([]string, 0, len(sessions))
+	for _, session := range sessions {
+		if issueID := strings.TrimSpace(session.IssueID); issueID != "" {
+			issueIDs = append(issueIDs, issueID)
+		}
 	}
+	issueIDs = uniqueStrings(issueIDs)
+	if len(issueIDs) == 0 {
+		return
+	}
+	issues, err := o.connector.FetchIssueStatesByIDs(ctx, issueIDs)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("orphaned agent session issue reconciliation failed", "project_id", o.cfg.Project.ID, "error", err)
+		}
+		return
+	}
+	issuesByID := make(map[string]connector.Issue, len(issues))
+	for _, issue := range issues {
+		issuesByID[issue.ID] = cloneIssue(issue)
+	}
+	queued := make(map[string]struct{}, len(sessions))
+	for _, session := range sessions {
+		issue, ok := issuesByID[session.IssueID]
+		if !ok || !o.orphanResumeEligible(issue, session, now) {
+			continue
+		}
+		if _, exists := queued[issue.ID]; exists {
+			continue
+		}
+		if err := o.orphanSessions.MarkAgentSessionOrphaned(ctx, session.ResumeState.DetentSessionID, now); err != nil {
+			if o.logger != nil {
+				o.logger.Warn("mark orphaned agent session failed", "detent_session_id", session.ResumeState.DetentSessionID, "error", err)
+			}
+			continue
+		}
+		queued[issue.ID] = struct{}{}
+		attempt := session.AttemptNumber + 1
+		if attempt < 1 {
+			attempt = 1
+		}
+		resumeState := session.ResumeState
+		resumeState.Orphaned = true
+		state.Retry[issue.ID] = Retry{
+			Issue:       issue,
+			Attempt:     attempt,
+			DueAt:       now,
+			Error:       "resume orphaned provider session after service restart",
+			WorkerHost:  session.WorkerHost,
+			RetryMode:   runpkg.RetryModeResume,
+			ResumeState: resumeState,
+		}
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      now,
+			Event:   "orphaned_agent_session_queued",
+			Message: fmt.Sprintf("queued orphaned %s session resume for %s", strings.TrimSpace(session.WorkerType), issueLabel(issue)),
+		})
+	}
+}
+
+func (o *Orchestrator) orphanResumeEligible(issue connector.Issue, session store.OrphanedAgentSession, now time.Time) bool {
+	if !validCandidate(issue) || !stateIn(issue.State, o.cfg.ActiveStates) {
+		return false
+	}
+	if session.IssueID != "" && session.IssueID != issue.ID {
+		return false
+	}
+	if session.Identifier != "" && !strings.EqualFold(session.Identifier, issue.Identifier) {
+		return false
+	}
+	if len(o.cfg.WorkerHosts) > 0 && session.WorkerHost != "" && !slices.Contains(o.cfg.WorkerHosts, session.WorkerHost) {
+		return false
+	}
+	if !o.cfg.Claiming.Enabled {
+		return true
+	}
+	if !sameClaimOwner(o.claimWinner(issue), o.claimOwner()) {
+		return false
+	}
+	lease, ok := o.issueLease(issue)
+	return ok && !o.leaseStale(lease, now)
 }
 
 func (o *Orchestrator) startDurableWorkAttempt(

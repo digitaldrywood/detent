@@ -78,7 +78,7 @@ var helpDefinitions = map[helpTerm]helpEntry{
 	helpDiff:                {Label: "Diff", Description: "The current workspace change size in files and lines. Large or fast-growing diffs are a signal to review scope before the session drifts."},
 	helpEvent:               {Label: "Event", Description: "The latest Codex status or message for the session. Use it to understand what the agent is doing without opening logs."},
 	helpIssueCap:            {Label: "Issue cap", Description: "The maximum USD one issue or session may spend. It prevents one difficult task from consuming the project budget."},
-	helpLifetimeTotals:      {Label: "Lifetime totals", Description: "All-time local usage totals for tokens, sessions, runtime, and runs. Use them for capacity planning and sanity checks across restarts."},
+	helpLifetimeTotals:      {Label: "Lifetime totals", Description: "All-time local usage totals for tokens, sessions, runtime, runs, and orphan recovery. Resumed cache share measures cached input on the first resumed turns after restarts."},
 	helpModelBuckets:        {Label: "Model split", Description: "Token usage grouped by model. It shows which models drive cost and volume when a report window looks expensive."},
 	helpPrimaryRateBucket:   {Label: "Primary rate bucket", Description: "The main Codex API quota bucket for requests or tokens. When remaining capacity is low, agents may throttle until the reset."},
 	helpProjectKanban:       {Label: "Project Kanban", Description: "Project board grouped by configured Detent workflow states. Empty configured lanes stay hidden unless pinned in lane visibility."},

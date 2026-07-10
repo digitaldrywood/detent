@@ -29,6 +29,7 @@ deliverable:
   review_url: http://127.0.0.1:8080/review
 
 agent:
+  resume_orphaned_sessions: true
   # Per-session ceiling on total_tokens. total_tokens counts input + output +
   # cache-created + cache-read tokens, accumulated across every turn of the
   # session, so cached context is re-counted each turn. Use max_session_tokens

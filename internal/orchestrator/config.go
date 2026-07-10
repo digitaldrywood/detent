@@ -22,6 +22,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		DispatchPriorityByState:    append([]string(nil), cfg.Agent.DispatchPriorityByState...),
 		DispatchPriorityByLabel:    append([]string(nil), cfg.Agent.DispatchPriorityByLabel...),
 		MergeFastPathEnabled:       cfg.Agent.MergeFastPath.Enabled,
+		ResumeOrphanedSessions:     cfg.Agent.ResumeOrphanedSessions,
 		MaxConcurrentAgentsPerHost: positiveIntValue(cfg.Worker.MaxConcurrentAgentsPerHost),
 		MaxRetryBackoff:            durationFromMillis(cfg.Agent.MaxRetryBackoffMS),
 		Claiming: ClaimingConfig{

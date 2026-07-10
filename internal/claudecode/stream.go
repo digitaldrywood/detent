@@ -154,11 +154,12 @@ func (s *turnState) applyInit(event claudeEvent, onUpdate runner.AgentUpdateHand
 	}
 	s.turnStartedSent = true
 	return emitUpdate(onUpdate, runner.AgentUpdate{
-		Type:            runner.AgentUpdateTurnStarted,
-		ThreadID:        event.SessionID,
-		TurnID:          event.SessionID,
-		Model:           s.model,
-		RuntimeIdentity: agentidentity.RuntimeUpdate(s.model, "", "", "", time.Time{}),
+		Type:              runner.AgentUpdateTurnStarted,
+		ThreadID:          event.SessionID,
+		TurnID:            event.SessionID,
+		ProviderSessionID: event.SessionID,
+		Model:             s.model,
+		RuntimeIdentity:   agentidentity.RuntimeUpdate(s.model, "", "", "", time.Time{}),
 	})
 }
 

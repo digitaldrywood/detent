@@ -1035,6 +1035,177 @@ func TestLatestCompletedAgentResumeStateMatchesIssueBackendAndModel(t *testing.T
 	}
 }
 
+func TestOrphanedAgentSessionsJournalProviderIdentityAndExcludeCleanExits(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	startedAt := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
+	attemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{
+		ProjectID:     "detent",
+		IssueID:       "issue-1155",
+		Identifier:    "digitaldrywood/detent#1155",
+		IssueURL:      "https://github.com/digitaldrywood/detent/issues/1155",
+		WorkerType:    "agent",
+		WorkerHost:    "local",
+		Lane:          "In Progress",
+		AttemptNumber: 2,
+		StartedAt:     startedAt,
+	})
+	if err != nil {
+		t.Fatalf("StartWorkAttempt() error = %v", err)
+	}
+
+	orphanID, err := backend.StartSession(ctx, SessionStart{
+		WorkAttemptID:    attemptID,
+		IssueID:          "issue-1155",
+		Identifier:       "digitaldrywood/detent#1155",
+		IssueURL:         "https://github.com/digitaldrywood/detent/issues/1155",
+		StartedAt:        startedAt,
+		RequestedModel:   "gpt-5.6-codex",
+		AgentBackendID:   "codex",
+		AgentBackendKind: "codex",
+		AgentRole:        "code",
+	})
+	if err != nil {
+		t.Fatalf("StartSession(orphan) error = %v", err)
+	}
+	started, err := backend.Queries().GetCodexSession(ctx, orphanID)
+	if err != nil {
+		t.Fatalf("GetCodexSession(orphan) error = %v", err)
+	}
+	if started.FinalState.String != SessionStateRunning || started.CompletedAt.Valid {
+		t.Fatalf("started session state = %#v, want running without completed_at", started)
+	}
+	if err := backend.UpdateSessionProviderIdentity(ctx, orphanID, SessionProviderIdentity{
+		ThreadID:  "thread-1155",
+		SessionID: "thread-1155-turn-1",
+	}); err != nil {
+		t.Fatalf("UpdateSessionProviderIdentity() error = %v", err)
+	}
+	fallbackID, err := backend.StartSession(ctx, SessionStart{
+		WorkAttemptID:         attemptID,
+		IssueID:               "issue-fallback",
+		Identifier:            "digitaldrywood/detent#1157",
+		StartedAt:             startedAt.Add(30 * time.Second),
+		ProviderThreadID:      "thread-stale",
+		ProviderSessionID:     "thread-stale-turn-1",
+		ResumedFromSessionID:  orphanID,
+		OrphanRecoveryOutcome: OrphanRecoveryResumed,
+	})
+	if err != nil {
+		t.Fatalf("StartSession(fallback) error = %v", err)
+	}
+	if err := backend.UpdateSessionResumeState(ctx, fallbackID, SessionResumeState{OrphanRecoveryOutcome: OrphanRecoveryFresh}); err != nil {
+		t.Fatalf("UpdateSessionResumeState(fallback) error = %v", err)
+	}
+	fallback, err := backend.Queries().GetCodexSession(ctx, fallbackID)
+	if err != nil {
+		t.Fatalf("GetCodexSession(fallback) error = %v", err)
+	}
+	if fallback.ResumedFromSessionID.Valid || fallback.ProviderThreadID.Valid || fallback.ProviderSessionID.Valid || fallback.OrphanRecoveryOutcome.String != OrphanRecoveryFresh {
+		t.Fatalf("fallback session resume metadata = %#v, want cleared provider source and fresh outcome", fallback)
+	}
+
+	cleanID, err := backend.StartSession(ctx, SessionStart{
+		WorkAttemptID:    attemptID,
+		IssueID:          "issue-clean",
+		Identifier:       "digitaldrywood/detent#1156",
+		StartedAt:        startedAt.Add(time.Minute),
+		RequestedModel:   "gpt-5.6-codex",
+		AgentBackendID:   "codex",
+		AgentBackendKind: "codex",
+		AgentRole:        "code",
+		ProviderThreadID: "thread-clean",
+	})
+	if err != nil {
+		t.Fatalf("StartSession(clean) error = %v", err)
+	}
+	if err := backend.FinishSession(ctx, cleanID, SessionFinish{
+		CompletedAt:      startedAt.Add(2 * time.Minute),
+		FinalState:       "completed",
+		ProviderThreadID: "thread-clean",
+	}); err != nil {
+		t.Fatalf("FinishSession(clean) error = %v", err)
+	}
+
+	orphans, err := backend.ListOrphanedAgentSessions(ctx, "detent")
+	if err != nil {
+		t.Fatalf("ListOrphanedAgentSessions() error = %v", err)
+	}
+	if len(orphans) != 1 {
+		t.Fatalf("ListOrphanedAgentSessions() len = %d, want 1: %#v", len(orphans), orphans)
+	}
+	got := orphans[0]
+	if got.ResumeState.DetentSessionID != orphanID || got.ResumeState.ProviderThreadID != "thread-1155" || !got.ResumeState.Orphaned {
+		t.Fatalf("orphan resume state = %#v", got.ResumeState)
+	}
+	if got.WorkAttemptID != attemptID || got.AttemptNumber != 2 || got.WorkerHost != "local" {
+		t.Fatalf("orphan work attempt = %#v", got)
+	}
+
+	if err := backend.MarkAgentSessionOrphaned(ctx, orphanID, startedAt.Add(3*time.Minute)); err != nil {
+		t.Fatalf("MarkAgentSessionOrphaned() error = %v", err)
+	}
+	marked, err := backend.Queries().GetCodexSession(ctx, orphanID)
+	if err != nil {
+		t.Fatalf("GetCodexSession(marked) error = %v", err)
+	}
+	if marked.FinalState.String != SessionStateOrphaned || !marked.CompletedAt.Valid {
+		t.Fatalf("marked session = %#v, want terminal orphaned", marked)
+	}
+}
+
+func TestLifetimeTotalsMeasureOrphanRecoveryAndResumedCacheShare(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	startedAt := time.Date(2026, 7, 10, 16, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name         string
+		outcome      string
+		input        int64
+		cached       int64
+		resumeSource int64
+	}{
+		{name: "resumed", outcome: OrphanRecoveryResumed, input: 1000, cached: 850, resumeSource: 41},
+		{name: "fresh", outcome: OrphanRecoveryFresh, input: 400, cached: 20},
+	}
+	for index, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sessionID, err := backend.StartSession(ctx, SessionStart{
+				StartedAt:             startedAt.Add(time.Duration(index) * time.Minute),
+				OrphanRecoveryOutcome: tt.outcome,
+				ResumedFromSessionID:  tt.resumeSource,
+			})
+			if err != nil {
+				t.Fatalf("StartSession() error = %v", err)
+			}
+			if err := backend.FinishSession(ctx, sessionID, SessionFinish{
+				CompletedAt:          startedAt.Add(time.Duration(index+1) * time.Minute),
+				FinalState:           "completed",
+				InputTokens:          tt.input,
+				CachedInputTokens:    tt.cached,
+				ResumedFromSessionID: tt.resumeSource,
+			}); err != nil {
+				t.Fatalf("FinishSession() error = %v", err)
+			}
+		})
+	}
+
+	totals, err := backend.LifetimeTotals(ctx)
+	if err != nil {
+		t.Fatalf("LifetimeTotals() error = %v", err)
+	}
+	if totals.OrphanResumed != 1 || totals.OrphanFresh != 1 {
+		t.Fatalf("orphan continuation totals = %d/%d, want 1/1", totals.OrphanResumed, totals.OrphanFresh)
+	}
+	if totals.ResumedInputTokens != 1000 || totals.ResumedCachedTokens != 850 {
+		t.Fatalf("resumed token totals = %d/%d, want 1000/850", totals.ResumedInputTokens, totals.ResumedCachedTokens)
+	}
+}
+
 func TestBudgetCostEvents(t *testing.T) {
 	t.Parallel()
 

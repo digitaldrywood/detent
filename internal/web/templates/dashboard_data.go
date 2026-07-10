@@ -7228,6 +7228,18 @@ func lifetimeRuns(totals telemetry.LifetimeTotals) string {
 	return formatInt(totals.Runs)
 }
 
+func lifetimeOrphanContinuations(totals telemetry.LifetimeTotals) string {
+	return formatInt(totals.OrphanResumed) + " / " + formatInt(totals.OrphanFresh)
+}
+
+func lifetimeResumedCacheShare(totals telemetry.LifetimeTotals) string {
+	fraction, ok := totals.ResumedCacheReadFraction()
+	if !ok {
+		return "n/a"
+	}
+	return formatContextPercent(fraction * 100)
+}
+
 func throughputTrendPoints(snapshot telemetry.Snapshot) []webchart.Point {
 	points := tokenTrendPoints(snapshot)
 	if len(points) < 2 {

@@ -51,6 +51,23 @@ func TestThroughputRateFormatsRollingTokenTPS(t *testing.T) {
 	}
 }
 
+func TestLifetimeOrphanRecoveryLabels(t *testing.T) {
+	t.Parallel()
+
+	totals := telemetry.LifetimeTotals{
+		OrphanResumed:       4,
+		OrphanFresh:         1,
+		ResumedInputTokens:  1000,
+		ResumedCachedTokens: 850,
+	}
+	if got := lifetimeOrphanContinuations(totals); got != "4 / 1" {
+		t.Fatalf("lifetimeOrphanContinuations() = %q, want 4 / 1", got)
+	}
+	if got := lifetimeResumedCacheShare(totals); got != "85%" {
+		t.Fatalf("lifetimeResumedCacheShare() = %q, want 85%%", got)
+	}
+}
+
 func TestRuntimeStatusReflectsDraining(t *testing.T) {
 	t.Parallel()
 

@@ -659,6 +659,10 @@ func lifetimeTotals(ctx context.Context, source lifetimeTotalsSource) telemetry.
 		RuntimeSeconds:        totals.RuntimeSeconds,
 		Sessions:              totals.Sessions,
 		Runs:                  totals.Runs,
+		OrphanResumed:         totals.OrphanResumed,
+		OrphanFresh:           totals.OrphanFresh,
+		ResumedInputTokens:    totals.ResumedInputTokens,
+		ResumedCachedTokens:   totals.ResumedCachedTokens,
 	}
 }
 

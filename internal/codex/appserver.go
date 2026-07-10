@@ -20,6 +20,7 @@ const (
 	threadResumeRequestID = 4
 	configReadRequestID   = 5
 	modelListRequestID    = 6
+	threadReadRequestID   = 7
 	methodNotFoundCode    = -32601
 
 	defaultClientName    = "detent-orchestrator"
@@ -187,6 +188,7 @@ type UpdateType string
 
 const (
 	UpdateProcessStarted    UpdateType = "process_started"
+	UpdateProviderIdentity  UpdateType = "provider_identity"
 	UpdateAgentMessageDelta UpdateType = "agent_message_delta"
 	UpdateTokenUsage        UpdateType = "token_usage"
 	UpdateRateLimits        UpdateType = "rate_limits"
@@ -492,6 +494,47 @@ func (s *AppServer) DefaultModel(ctx context.Context, workspace string) (model s
 	return s.resolveDefaultModel(ctx, transport, workspace, nil)
 }
 
+func (s *AppServer) VerifyThread(ctx context.Context, threadID string) (err error) {
+	ctx = contextOrBackground(ctx)
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return errors.New("codex thread id is required")
+	}
+	transport, err := s.transportFactory.NewTransport(ctx)
+	if err != nil {
+		return fmt.Errorf("start codex app-server transport: %w", err)
+	}
+	defer func() {
+		closeErr := closeTransport(ctx, transport, s.readTimeout)
+		if err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+
+	if err := s.initialize(ctx, transport, nil); err != nil {
+		return err
+	}
+	params := map[string]any{
+		"threadId":     threadID,
+		"includeTurns": true,
+	}
+	if err := sendRequest(ctx, transport, threadReadRequestID, "thread/read", params); err != nil {
+		return err
+	}
+	result, err := s.awaitResponse(ctx, transport, threadReadRequestID, nil)
+	if err != nil {
+		return err
+	}
+	var response threadRuntimeResponse
+	if err := json.Unmarshal(result, &response); err != nil {
+		return fmt.Errorf("%w: decode thread/read result: %w", ErrInvalidResponse, err)
+	}
+	if strings.TrimSpace(response.Thread.ID) != threadID {
+		return fmt.Errorf("%w: thread/read result missing requested thread id", ErrInvalidResponse)
+	}
+	return nil
+}
+
 func (s *AppServer) initialize(ctx context.Context, transport Transport, onUpdate UpdateHandler) error {
 	params := map[string]any{
 		"capabilities": map[string]any{
@@ -557,6 +600,14 @@ func runtimeIdentityUpdate(method string, threadID string, identity agentidentit
 	}
 }
 
+func providerIdentityUpdate(method string, threadID string) Update {
+	return Update{
+		Type:     UpdateProviderIdentity,
+		Method:   method,
+		ThreadID: threadID,
+	}
+}
+
 func (s *AppServer) startThread(
 	ctx context.Context,
 	transport Transport,
@@ -596,10 +647,15 @@ func (s *AppServer) startThread(
 		return "", agentidentity.Identity{}, fmt.Errorf("%w: thread/start result missing thread id", ErrInvalidResponse)
 	}
 	identity := response.runtimeIdentity()
+	if identity.Model() == "" && req.Model != "" {
+		identity.ResolvedModel = agentidentity.NewValue(req.Model, agentidentity.ProvenanceConfigured)
+	}
+	update := providerIdentityUpdate("thread/start", response.Thread.ID)
 	if !identity.IsZero() {
-		if err := emitUpdate(runtimeIdentityUpdate("thread/start", response.Thread.ID, identity), onUpdate); err != nil {
-			return "", agentidentity.Identity{}, err
-		}
+		update = runtimeIdentityUpdate("thread/start", response.Thread.ID, identity)
+	}
+	if err := emitUpdate(update, onUpdate); err != nil {
+		return "", agentidentity.Identity{}, err
 	}
 	return response.Thread.ID, identity, nil
 }
@@ -649,10 +705,12 @@ func (s *AppServer) resumeThread(
 	if identity.Model() == "" && req.Model != "" {
 		identity.ResolvedModel = agentidentity.NewValue(req.Model, agentidentity.ProvenanceConfigured)
 	}
+	update := providerIdentityUpdate("thread/resume", response.Thread.ID)
 	if !identity.IsZero() {
-		if err := emitUpdate(runtimeIdentityUpdate("thread/resume", response.Thread.ID, identity), onUpdate); err != nil {
-			return "", agentidentity.Identity{}, err
-		}
+		update = runtimeIdentityUpdate("thread/resume", response.Thread.ID, identity)
+	}
+	if err := emitUpdate(update, onUpdate); err != nil {
+		return "", agentidentity.Identity{}, err
 	}
 	return response.Thread.ID, identity, nil
 }
@@ -1388,6 +1446,8 @@ func requestName(id int) string {
 		return "config/read"
 	case modelListRequestID:
 		return "model/list"
+	case threadReadRequestID:
+		return "thread/read"
 	default:
 		return strconv.Itoa(id)
 	}

@@ -224,16 +224,47 @@ func (s *sqliteStore) StartSession(ctx context.Context, attrs SessionStart) (int
 		IdentityObservedAt:        nullIdentityObservedAt(identity.ObservedAt),
 		CompletedAt:               sql.NullString{},
 		ModelContextWindow:        sql.NullInt64{},
-		FinalState:                sql.NullString{},
+		FinalState:                sql.NullString{String: SessionStateRunning, Valid: true},
 		Model:                     nullString(attrs.Model),
-		ProviderThreadID:          sql.NullString{},
-		ProviderSessionID:         sql.NullString{},
-		ResumedFromSessionID:      sql.NullInt64{},
+		ProviderThreadID:          nullString(attrs.ProviderThreadID),
+		ProviderSessionID:         nullString(attrs.ProviderSessionID),
+		ResumedFromSessionID:      nullPositiveInt64(attrs.ResumedFromSessionID),
+		OrphanRecoveryOutcome:     nullString(attrs.OrphanRecoveryOutcome),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("starting codex session: %w", err)
 	}
 	return session.ID, nil
+}
+
+func (s *sqliteStore) UpdateSessionProviderIdentity(ctx context.Context, sessionID int64, identity SessionProviderIdentity) error {
+	if sessionID <= 0 {
+		return ErrNotFound
+	}
+	rows, err := s.queries.UpdateCodexSessionProviderIdentity(ctx, sqlc.UpdateCodexSessionProviderIdentityParams{
+		ProviderThreadID:  nullString(identity.ThreadID),
+		ProviderSessionID: nullString(identity.SessionID),
+		ID:                sessionID,
+	})
+	if err != nil {
+		return fmt.Errorf("updating codex session provider identity: %w", err)
+	}
+	return requireAffected(rows, "codex session", sessionID)
+}
+
+func (s *sqliteStore) UpdateSessionResumeState(ctx context.Context, sessionID int64, state SessionResumeState) error {
+	if sessionID <= 0 {
+		return ErrNotFound
+	}
+	rows, err := s.queries.UpdateCodexSessionResumeState(ctx, sqlc.UpdateCodexSessionResumeStateParams{
+		ResumedFromSessionID:  nullPositiveInt64(state.ResumedFromSessionID),
+		OrphanRecoveryOutcome: nullString(state.OrphanRecoveryOutcome),
+		ID:                    sessionID,
+	})
+	if err != nil {
+		return fmt.Errorf("updating codex session resume state: %w", err)
+	}
+	return requireAffected(rows, "codex session", sessionID)
 }
 
 func (s *sqliteStore) UpdateSessionIdentity(ctx context.Context, sessionID int64, identity agentidentity.Identity) error {
@@ -372,6 +403,66 @@ func (s *sqliteStore) LatestIssueAgentResumeState(ctx context.Context, identity 
 		AgentRole:         strings.TrimSpace(row.AgentRole),
 		CompletedAt:       completedAt,
 	}, nil
+}
+
+func (s *sqliteStore) ListOrphanedAgentSessions(ctx context.Context, projectID string) ([]OrphanedAgentSession, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return nil, errors.New("project_id is required")
+	}
+	rows, err := s.queries.ListOrphanedAgentSessions(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("listing orphaned agent sessions: %w", err)
+	}
+	orphans := make([]OrphanedAgentSession, 0, len(rows))
+	for _, row := range rows {
+		startedAt, err := parseTimestamp("started_at", row.StartedAt)
+		if err != nil {
+			return nil, err
+		}
+		orphans = append(orphans, OrphanedAgentSession{
+			ResumeState: AgentResumeState{
+				DetentSessionID:   row.ID,
+				ProviderThreadID:  strings.TrimSpace(row.ProviderThreadID),
+				ProviderSessionID: strings.TrimSpace(row.ProviderSessionID),
+				RequestedModel:    strings.TrimSpace(row.RequestedModel),
+				Model:             strings.TrimSpace(row.Model),
+				AgentBackendID:    strings.TrimSpace(row.AgentBackendID),
+				AgentBackendKind:  strings.TrimSpace(row.AgentBackendKind),
+				AgentRole:         strings.TrimSpace(row.AgentRole),
+				Orphaned:          true,
+			},
+			WorkAttemptID: row.WorkAttemptID.Int64,
+			ProjectID:     strings.TrimSpace(row.ProjectID),
+			IssueID:       strings.TrimSpace(row.IssueID),
+			Identifier:    strings.TrimSpace(row.Identifier),
+			IssueURL:      strings.TrimSpace(row.IssueURL),
+			WorkerType:    strings.TrimSpace(row.WorkerType),
+			WorkerHost:    strings.TrimSpace(row.WorkerHost),
+			Lane:          strings.TrimSpace(row.Lane),
+			AttemptNumber: int(row.AttemptNumber),
+			StartedAt:     startedAt,
+		})
+	}
+	return orphans, nil
+}
+
+func (s *sqliteStore) MarkAgentSessionOrphaned(ctx context.Context, sessionID int64, completedAt time.Time) error {
+	if sessionID <= 0 {
+		return ErrNotFound
+	}
+	timestamp, err := requiredTimestamp("completed_at", completedAt)
+	if err != nil {
+		return err
+	}
+	rows, err := s.queries.MarkCodexSessionOrphaned(ctx, sqlc.MarkCodexSessionOrphanedParams{
+		CompletedAt: sql.NullString{String: timestamp, Valid: true},
+		ID:          sessionID,
+	})
+	if err != nil {
+		return fmt.Errorf("marking codex session orphaned: %w", err)
+	}
+	return requireAffected(rows, "codex session", sessionID)
 }
 
 func normalizeAgentResumeLookup(attrs AgentResumeLookup) AgentResumeLookup {
@@ -602,6 +693,10 @@ func (s *sqliteStore) LifetimeTotals(ctx context.Context) (LifetimeTotals, error
 		RuntimeSeconds:        row.RuntimeSeconds,
 		Sessions:              row.Sessions,
 		Runs:                  row.Runs,
+		OrphanResumed:         row.OrphanResumed,
+		OrphanFresh:           row.OrphanFresh,
+		ResumedInputTokens:    row.ResumedInputTokens,
+		ResumedCachedTokens:   row.ResumedCachedTokens,
 	}, nil
 }
 

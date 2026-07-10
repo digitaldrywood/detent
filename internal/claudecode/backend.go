@@ -46,6 +46,7 @@ type AgentBackend struct {
 }
 
 var _ runner.AgentBackend = (*AgentBackend)(nil)
+var _ runner.AgentResumeVerifier = (*AgentBackend)(nil)
 
 func NewAgentBackend(options Options) (*AgentBackend, error) {
 	if options.CommandFactory == nil && options.CommandFactoryWithArgs == nil {
@@ -62,6 +63,13 @@ func NewAgentBackend(options Options) (*AgentBackend, error) {
 
 func defaultCommandFactory(ctx context.Context) *exec.Cmd {
 	return exec.CommandContext(contextOrBackground(ctx), "claude")
+}
+
+func (*AgentBackend) VerifyResume(_ context.Context, resume runner.AgentResume) error {
+	if resume.SessionID == "" {
+		return runner.ErrAgentResumeUnsupported
+	}
+	return nil
 }
 
 func contextOrBackground(ctx context.Context) context.Context {
