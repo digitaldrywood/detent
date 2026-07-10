@@ -1376,6 +1376,13 @@ func TestCycleTimeReportFromCompletedSessions(t *testing.T) {
 		CompletedAt: base.Add(24 * time.Hour),
 		FinalState:  "Human Review",
 	})
+	seedCycleSession(t, ctx, backend, cycleSessionSeed{
+		IssueID:     "issue-218",
+		Identifier:  "digitaldrywood/detent#218",
+		StartedAt:   base.Add(-time.Hour),
+		CompletedAt: base.Add(30 * time.Minute),
+		FinalState:  SessionStateOrphaned,
+	})
 
 	report, err := backend.CycleTimeReport(ctx)
 	if err != nil {

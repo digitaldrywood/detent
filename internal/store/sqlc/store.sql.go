@@ -138,7 +138,7 @@ WITH issue_sessions AS (
     COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned') AS issue_key,
     started_at,
     completed_at,
-    lower(trim(COALESCE(final_state, ''))) NOT IN ('failed', 'failure', 'cancelled', 'canceled') AS successful
+    lower(trim(COALESCE(final_state, ''))) NOT IN ('failed', 'failure', 'cancelled', 'canceled', 'orphaned') AS successful
   FROM codex_sessions
   WHERE started_at IS NOT NULL
     AND completed_at IS NOT NULL
