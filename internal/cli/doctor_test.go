@@ -233,7 +233,7 @@ func TestRunDoctorAgentBinaryChecksFollowWorkflowBackends(t *testing.T) {
 	}
 }
 
-func TestRunDoctorFailsRejectedPinnedRouteModelAndDiffClearsPin(t *testing.T) {
+func TestRunDoctorFailsRejectedPinnedRouteModelWithoutChangingModelChoice(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -301,24 +301,113 @@ Prompt
 			t.Fatalf("route model detail missing %q:\n%s", want, check.Detail)
 		}
 	}
-	if !strings.Contains(report.WorkflowOptimization.Diff, "-      model: gpt-5-codex") ||
-		!strings.Contains(report.WorkflowOptimization.Diff, `model: ""`) {
-		t.Fatalf("diff did not clear model pin:\n%s", report.WorkflowOptimization.Diff)
+	if strings.Contains(report.WorkflowOptimization.Diff, "model:") {
+		t.Fatalf("diff changed the project's model choice:\n%s", report.WorkflowOptimization.Diff)
+	}
+	proposal := doctorWorkflowProposalBySignal(t, report.WorkflowOptimization.Proposals, "doctor_finding", doctorWorkflowRulePinnedRouteModelRejected)
+	if !strings.Contains(proposal.SuggestedChange, "backend-supported pin") || !strings.Contains(proposal.SuggestedChange, "remove the pin") {
+		t.Fatalf("proposal is not model-choice neutral: %#v", proposal)
 	}
 
 	written, err := writeDoctorWorkflowOptimizationPatches(report.WorkflowOptimization)
 	if err != nil {
 		t.Fatalf("writeDoctorWorkflowOptimizationPatches() error = %v", err)
 	}
-	if !slices.Equal(written, []string{workflowPath}) {
-		t.Fatalf("written = %#v, want workflow path", written)
+	if len(written) != 0 {
+		t.Fatalf("written = %#v, want no automatic model-choice change", written)
 	}
 	workflow, err := workflowconfig.LoadWorkflow(workflowPath)
 	if err != nil {
 		t.Fatalf("LoadWorkflow() error = %v", err)
 	}
-	if got := workflow.Config.AgentRouteConfigs()[0].Model; got != "" {
-		t.Fatalf("route model after write = %q, want empty", got)
+	if got := workflow.Config.AgentRouteConfigs()[0].Model; got != "gpt-5-codex" {
+		t.Fatalf("route model after write = %q, want preserved pin", got)
+	}
+}
+
+func TestCheckDoctorRouteModelsFailsRejectedBackendCommandPin(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: codex-main
+      kind: codex
+      command: codex --config 'model="gpt-5.5"' app-server
+  routes:
+    - name: default
+      backend: codex-main
+      default: true
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	check := checkDoctorRouteModels(context.Background(), "detent", globalconfig.Project{ID: "detent", Workflow: workflowPath, Workdir: dir}, workflow.Config, doctorDeps{
+		modelProbe: func(_ context.Context, req doctorRouteModelProbeRequest) error {
+			if req.Model != "gpt-5.5" || req.RouteName != "default" || req.Backend.ID != "codex-main" {
+				t.Fatalf("probe request = %#v, want backend command pin", req)
+			}
+			return errors.New("model retired")
+		},
+	})
+	if check.Status != doctorFail || !strings.Contains(check.Detail, "agents.backends.command") || !strings.Contains(check.Detail, "model retired") {
+		t.Fatalf("check = %#v, want rejected backend command pin", check)
+	}
+	finding := doctorWorkflowFindingByRule(t, check.WorkflowOptimization.Findings, doctorWorkflowRulePinnedRouteModelRejected)
+	if got := finding.Evidence["configured_model_source"]; got != "agents.backends.command" {
+		t.Fatalf("configured_model_source = %#v, want agents.backends.command", got)
+	}
+	proposal := doctorWorkflowProposalBySignal(t, check.WorkflowOptimization.Proposals, "doctor_finding", doctorWorkflowRulePinnedRouteModelRejected)
+	if proposal.TargetPath != "agents.backends.command" {
+		t.Fatalf("proposal target = %q, want agents.backends.command", proposal.TargetPath)
+	}
+}
+
+func TestCheckDoctorRouteModelsProbesRoleBackendCommandPins(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: codex-code
+      kind: codex
+      command: codex app-server
+    - id: codex-plan
+      kind: codex
+      command: codex --config 'model="gpt-retired-plan"' app-server
+  routes:
+    - name: code-default
+      backend: codex-code
+      default: true
+    - name: plan-default
+      role: plan
+      backend: codex-plan
+      default: true
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	dir := t.TempDir()
+	check := checkDoctorRouteModels(context.Background(), "detent", globalconfig.Project{ID: "detent", Workflow: filepath.Join(dir, "WORKFLOW.md"), Workdir: dir}, workflow.Config, doctorDeps{
+		modelProbe: func(_ context.Context, req doctorRouteModelProbeRequest) error {
+			if req.Model != "gpt-retired-plan" || req.RouteName != "plan-default" || req.RouteRole != "plan" || req.Backend.ID != "codex-plan" {
+				t.Fatalf("probe request = %#v, want plan backend command pin", req)
+			}
+			return errors.New("model retired")
+		},
+	})
+	if check.Status != doctorFail || !strings.Contains(check.Detail, "plan-default") || !strings.Contains(check.Detail, "gpt-retired-plan") {
+		t.Fatalf("check = %#v, want rejected role backend command pin", check)
 	}
 }
 
@@ -1366,7 +1455,33 @@ func TestDoctorWorkflowDetailSurfacesIdentityAndAuthorization(t *testing.T) {
 	for _, want := range []string{
 		"WORKFLOW.md is valid",
 		"identity release-captain",
+		"worker-model=provider-default",
+		"session-guard=max_session_tokens=disabled, max_session_context_multiplier=disabled",
 		"authorization selectors from global.yaml and WORKFLOW.md",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("doctorWorkflowDetail() = %q, want substring %q", got, want)
+		}
+	}
+}
+
+func TestDoctorWorkflowDetailReportsPinnedModelAndSessionGuard(t *testing.T) {
+	t.Parallel()
+
+	cfg := validDoctorWorkflow("/repo")
+	cfg.Agents.Routes = []workflowconfig.AgentRoute{{
+		Name:    "default",
+		Backend: workflowconfig.DefaultAgentBackendID,
+		Model:   "gpt-5.5",
+		Default: true,
+	}}
+	cfg.Agent.MaxSessionTokens = 2_000_000
+	cfg.Agent.MaxSessionContextMultiplier = 4
+
+	got := doctorWorkflowDetail("WORKFLOW.md", globalconfig.Project{}, cfg)
+	for _, want := range []string{
+		"worker-model=pinned gpt-5.5 via agents.routes.model",
+		"session-guard=max_session_tokens=2000000, max_session_context_multiplier=4",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("doctorWorkflowDetail() = %q, want substring %q", got, want)

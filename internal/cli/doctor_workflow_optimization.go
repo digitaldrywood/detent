@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,6 +35,9 @@ const (
 	doctorWorkflowRuleValidatorModel                 = "validator_model"
 	doctorWorkflowRuleEmptyModelTelemetry            = "empty_model_telemetry"
 	doctorWorkflowRulePinnedRouteModelRejected       = "pinned_route_model_rejected"
+	doctorWorkflowRulePinnedWorkerModelStale         = "pinned_worker_model_stale"
+	doctorWorkflowRuleSessionMultiplierKills         = "session_multiplier_ceiling_kills"
+	doctorWorkflowRuleNoSessionTokenBrake            = "no_session_token_brake"
 	doctorWorkflowRuleBudgetEstimateDrift            = "budget_estimate_drift"
 	doctorWorkflowRuleSchedulerSkipRate              = "scheduler_skip_rate"
 	doctorWorkflowRuleInvalidWorkpadStatusRecurrence = "invalid_workpad_status_recurrence"
@@ -79,48 +83,76 @@ type doctorWorkflowOptimizationOptions struct {
 type doctorWorkflowOptimizationProjectReport struct {
 	ProjectID    string                            `json:"project_id"`
 	WorkflowPath string                            `json:"workflow_path,omitempty"`
+	ModelChoice  doctorWorkflowModelChoice         `json:"model_choice"`
+	SessionGuard doctorWorkflowSessionGuard        `json:"session_guard"`
 	Metrics      doctorWorkflowOptimizationMetrics `json:"metrics"`
 	Error        string                            `json:"error,omitempty"`
 }
 
+type doctorWorkflowModelChoice struct {
+	Mode   string `json:"mode"`
+	Model  string `json:"model,omitempty"`
+	Source string `json:"source,omitempty"`
+}
+
+type doctorWorkflowSessionGuard struct {
+	MaxSessionTokens            int64   `json:"max_session_tokens"`
+	MaxSessionContextMultiplier float64 `json:"max_session_context_multiplier"`
+}
+
 type doctorWorkflowOptimizationMetrics struct {
-	SessionCount                     int64   `json:"session_count"`
-	UsageEventCount                  int64   `json:"usage_event_count"`
-	InputTokens                      int64   `json:"input_tokens"`
-	CachedInputTokens                int64   `json:"cached_input_tokens"`
-	OutputTokens                     int64   `json:"output_tokens"`
-	TotalTokens                      int64   `json:"total_tokens"`
-	InputOutputRatio                 float64 `json:"input_output_ratio"`
-	CacheReadFraction                float64 `json:"cache_read_fraction"`
-	MedianSessionTokens              int64   `json:"median_session_tokens"`
-	P90SessionTokens                 int64   `json:"p90_session_tokens"`
-	MaxSessionTokens                 int64   `json:"max_session_tokens"`
-	MaxSessionsPerIssue              int64   `json:"max_sessions_per_issue"`
-	MaxSessionsIssue                 string  `json:"max_sessions_issue,omitempty"`
-	RecentSessionCount               int64   `json:"recent_session_count"`
-	EmptyModelRecentSessions         int64   `json:"empty_model_recent_sessions"`
-	EmptyModelRecentFraction         float64 `json:"empty_model_recent_fraction"`
-	MaxReworkLapsPerIssue            int64   `json:"max_rework_laps_per_issue"`
-	MaxReworkLapsIssue               string  `json:"max_rework_laps_issue,omitempty"`
-	FailureTokens                    int64   `json:"failure_tokens"`
-	SchedulerDecisionCount           int64   `json:"scheduler_decision_count"`
-	SchedulerSkippedDecisions        int64   `json:"scheduler_skipped_decisions"`
-	SchedulerSkipRate                float64 `json:"scheduler_skip_rate"`
-	LaneEventCount                   int64   `json:"lane_event_count"`
-	LaneDwellP90Seconds              int64   `json:"lane_dwell_p90_seconds"`
-	SlowestLane                      string  `json:"slowest_lane,omitempty"`
-	SlowestLaneP90Seconds            int64   `json:"slowest_lane_p90_seconds"`
-	BudgetEstimateTokens             int64   `json:"budget_estimate_tokens"`
-	BudgetEstimateBillableTokens     int64   `json:"budget_estimate_billable_tokens"`
-	P90SessionBillableTokens         int64   `json:"p90_session_billable_tokens"`
-	BudgetEstimateBillableDriftRatio float64 `json:"budget_estimate_billable_drift_ratio"`
-	BudgetEstimateDriftRatio         float64 `json:"budget_estimate_drift_ratio"`
-	ReviewEntryCount                 int64   `json:"review_entry_count"`
-	ReviewEntryIssue                 string  `json:"review_entry_issue,omitempty"`
-	ReviewEntryIssueCount            int64   `json:"review_entry_issue_count"`
-	InvalidWorkpadStatusDecisions    int64   `json:"invalid_workpad_status_decisions"`
-	InvalidWorkpadStatusIssue        string  `json:"invalid_workpad_status_issue,omitempty"`
-	InvalidWorkpadStatusIssueCount   int64   `json:"invalid_workpad_status_issue_count"`
+	SessionCount                     int64                                `json:"session_count"`
+	UsageEventCount                  int64                                `json:"usage_event_count"`
+	InputTokens                      int64                                `json:"input_tokens"`
+	CachedInputTokens                int64                                `json:"cached_input_tokens"`
+	OutputTokens                     int64                                `json:"output_tokens"`
+	TotalTokens                      int64                                `json:"total_tokens"`
+	InputOutputRatio                 float64                              `json:"input_output_ratio"`
+	CacheReadFraction                float64                              `json:"cache_read_fraction"`
+	MedianSessionTokens              int64                                `json:"median_session_tokens"`
+	P90SessionTokens                 int64                                `json:"p90_session_tokens"`
+	MaxSessionTokens                 int64                                `json:"max_session_tokens"`
+	MaxSessionsPerIssue              int64                                `json:"max_sessions_per_issue"`
+	MaxSessionsIssue                 string                               `json:"max_sessions_issue,omitempty"`
+	RecentSessionCount               int64                                `json:"recent_session_count"`
+	EmptyModelRecentSessions         int64                                `json:"empty_model_recent_sessions"`
+	EmptyModelRecentFraction         float64                              `json:"empty_model_recent_fraction"`
+	RecentModels                     []doctorWorkflowModelTelemetry       `json:"recent_models,omitempty"`
+	RecentDefaultModels              []doctorWorkflowModelTelemetry       `json:"recent_default_models,omitempty"`
+	SessionMultiplierKills           []doctorWorkflowSessionGuardIncident `json:"session_multiplier_kills,omitempty"`
+	MaxReworkLapsPerIssue            int64                                `json:"max_rework_laps_per_issue"`
+	MaxReworkLapsIssue               string                               `json:"max_rework_laps_issue,omitempty"`
+	FailureTokens                    int64                                `json:"failure_tokens"`
+	SchedulerDecisionCount           int64                                `json:"scheduler_decision_count"`
+	SchedulerSkippedDecisions        int64                                `json:"scheduler_skipped_decisions"`
+	SchedulerSkipRate                float64                              `json:"scheduler_skip_rate"`
+	LaneEventCount                   int64                                `json:"lane_event_count"`
+	LaneDwellP90Seconds              int64                                `json:"lane_dwell_p90_seconds"`
+	SlowestLane                      string                               `json:"slowest_lane,omitempty"`
+	SlowestLaneP90Seconds            int64                                `json:"slowest_lane_p90_seconds"`
+	BudgetEstimateTokens             int64                                `json:"budget_estimate_tokens"`
+	BudgetEstimateBillableTokens     int64                                `json:"budget_estimate_billable_tokens"`
+	P90SessionBillableTokens         int64                                `json:"p90_session_billable_tokens"`
+	BudgetEstimateBillableDriftRatio float64                              `json:"budget_estimate_billable_drift_ratio"`
+	BudgetEstimateDriftRatio         float64                              `json:"budget_estimate_drift_ratio"`
+	ReviewEntryCount                 int64                                `json:"review_entry_count"`
+	ReviewEntryIssue                 string                               `json:"review_entry_issue,omitempty"`
+	ReviewEntryIssueCount            int64                                `json:"review_entry_issue_count"`
+	InvalidWorkpadStatusDecisions    int64                                `json:"invalid_workpad_status_decisions"`
+	InvalidWorkpadStatusIssue        string                               `json:"invalid_workpad_status_issue,omitempty"`
+	InvalidWorkpadStatusIssueCount   int64                                `json:"invalid_workpad_status_issue_count"`
+}
+
+type doctorWorkflowModelTelemetry struct {
+	Model        string `json:"model"`
+	SessionCount int64  `json:"session_count"`
+}
+
+type doctorWorkflowSessionGuardIncident struct {
+	IssueIdentifier   string  `json:"issue_identifier"`
+	AttemptCount      int64   `json:"attempt_count"`
+	CeilingTokens     int64   `json:"ceiling_tokens"`
+	ContextMultiplier float64 `json:"context_multiplier"`
 }
 
 type doctorWorkflowOptimizationFinding struct {
@@ -151,7 +183,23 @@ type doctorWorkflowSessionMetrics struct {
 	issueSessionCounts       map[string]int64
 	recentSessionCount       int64
 	emptyModelRecentSessions int64
+	recentModelCounts        map[string]int64
+	recentDefaultModelCounts map[string]int64
 	failureTokens            int64
+}
+
+type doctorWorkflowAnalyzedProject struct {
+	projectID    string
+	workflowPath string
+	config       workflowconfig.Config
+	metrics      doctorWorkflowOptimizationMetrics
+}
+
+type doctorWorkflowObservedDefaultModel struct {
+	Model        string
+	SessionCount int64
+	Major        int
+	Minor        int
 }
 
 type doctorWorkflowUsageMetrics struct {
@@ -296,6 +344,7 @@ func doctorWorkflowOptimization(
 ) (doctorWorkflowOptimizationReport, error) {
 	options = doctorWorkflowOptimizationOptionsWithDefaults(options)
 	report := doctorWorkflowOptimizationReport{StorePath: storePath}
+	analyzedProjects := make([]doctorWorkflowAnalyzedProject, 0, len(cfg.Projects))
 	for _, project := range cfg.Projects {
 		projectID := doctorProjectID(project)
 		workflowPath, workflowPathErr := doctorWorkflowOptimizationWorkflowPath(project)
@@ -328,7 +377,15 @@ func doctorWorkflowOptimization(
 		report.Projects = append(report.Projects, doctorWorkflowOptimizationProjectReport{
 			ProjectID:    projectID,
 			WorkflowPath: workflowPath,
+			ModelChoice:  doctorWorkflowWorkerModelChoice(workflow.Config),
+			SessionGuard: doctorWorkflowSessionGuardConfig(workflow.Config),
 			Metrics:      metrics,
+		})
+		analyzedProjects = append(analyzedProjects, doctorWorkflowAnalyzedProject{
+			projectID:    projectID,
+			workflowPath: workflowPath,
+			config:       workflow.Config,
+			metrics:      metrics,
 		})
 		findings := doctorWorkflowOptimizationFindings(projectID, workflowPath, workflow.Config, metrics)
 		report.Findings = append(report.Findings, findings...)
@@ -343,6 +400,24 @@ func doctorWorkflowOptimization(
 				return doctorWorkflowOptimizationReport{}, err
 			}
 			report.CreatedProposalIssues = append(report.CreatedProposalIssues, created...)
+		}
+	}
+	if observed, ok := doctorWorkflowObservedDefaultModelForProjects(analyzedProjects); ok {
+		for _, project := range analyzedProjects {
+			finding, stale := doctorWorkflowStalePinnedModelFinding(project, observed)
+			if !stale {
+				continue
+			}
+			report.Findings = append(report.Findings, finding)
+			proposals := doctorWorkflowProposalsForFindings(project.projectID, []doctorWorkflowOptimizationFinding{finding}, options.ProposalThreshold)
+			report.Proposals = append(report.Proposals, proposals...)
+			if options.ProposeIssues {
+				created, err := createDoctorWorkflowImprovementProposalIssues(ctx, project.projectID, project.config, deps, proposals)
+				if err != nil {
+					return doctorWorkflowOptimizationReport{}, err
+				}
+				report.CreatedProposalIssues = append(report.CreatedProposalIssues, created...)
+			}
 		}
 	}
 
@@ -404,6 +479,10 @@ func doctorWorkflowOptimizationMetricsForProject(
 	if err != nil {
 		return doctorWorkflowOptimizationMetrics{}, err
 	}
+	sessionMultiplierKills, err := doctorWorkflowSessionGuardTelemetry(ctx, db, projectID)
+	if err != nil {
+		return doctorWorkflowOptimizationMetrics{}, err
+	}
 
 	metrics := doctorWorkflowOptimizationMetrics{
 		SessionCount:                   sessions.count,
@@ -418,6 +497,9 @@ func doctorWorkflowOptimizationMetricsForProject(
 		MaxSessionTokens:               doctorMaxInt64(sessions.totalTokensBySession),
 		RecentSessionCount:             sessions.recentSessionCount,
 		EmptyModelRecentSessions:       sessions.emptyModelRecentSessions,
+		RecentModels:                   doctorWorkflowRecentModelTelemetry(sessions.recentModelCounts),
+		RecentDefaultModels:            doctorWorkflowRecentModelTelemetry(sessions.recentDefaultModelCounts),
+		SessionMultiplierKills:         sessionMultiplierKills,
 		MaxSessionsPerIssue:            doctorMaxMapValue(sessions.issueSessionCounts),
 		MaxSessionsIssue:               doctorMaxMapKey(sessions.issueSessionCounts),
 		FailureTokens:                  sessions.failureTokens,
@@ -633,6 +715,7 @@ SELECT
   COALESCE(s.cached_input_tokens, 0),
   COALESCE(s.output_tokens, 0),
   COALESCE(s.model, ''),
+  COALESCE(s.requested_model, ''),
   COALESCE(s.final_state, ''),
   COALESCE(NULLIF(s.identifier, ''), NULLIF(s.issue_id, ''), NULLIF(s.issue_url, ''), 'unassigned'),
   COALESCE(s.completed_at, '')
@@ -654,7 +737,9 @@ ORDER BY s.completed_at DESC, s.id DESC`, projectID, projectID)
 	defer rows.Close()
 
 	metrics := doctorWorkflowSessionMetrics{
-		issueSessionCounts: map[string]int64{},
+		issueSessionCounts:       map[string]int64{},
+		recentModelCounts:        map[string]int64{},
+		recentDefaultModelCounts: map[string]int64{},
 	}
 	var recentCutoff time.Time
 	for rows.Next() {
@@ -663,10 +748,11 @@ ORDER BY s.completed_at DESC, s.id DESC`, projectID, projectID)
 		var cachedInputTokens int64
 		var outputTokens int64
 		var model string
+		var requestedModel string
 		var finalState string
 		var issueKey string
 		var completedAtRaw string
-		if err := rows.Scan(&totalTokens, &inputTokens, &cachedInputTokens, &outputTokens, &model, &finalState, &issueKey, &completedAtRaw); err != nil {
+		if err := rows.Scan(&totalTokens, &inputTokens, &cachedInputTokens, &outputTokens, &model, &requestedModel, &finalState, &issueKey, &completedAtRaw); err != nil {
 			return doctorWorkflowSessionMetrics{}, err
 		}
 		completedAt, err := doctorWorkflowSessionTimestamp(completedAtRaw)
@@ -690,8 +776,14 @@ ORDER BY s.completed_at DESC, s.id DESC`, projectID, projectID)
 		}
 		if metrics.recentSessionCount < doctorWorkflowRecentSessionLimit && !completedAt.Before(recentCutoff) {
 			metrics.recentSessionCount++
-			if strings.TrimSpace(model) == "" {
+			model = strings.TrimSpace(model)
+			if model == "" {
 				metrics.emptyModelRecentSessions++
+			} else {
+				metrics.recentModelCounts[model]++
+				if strings.TrimSpace(requestedModel) == "" {
+					metrics.recentDefaultModelCounts[model]++
+				}
 			}
 		}
 		if doctorWorkflowSessionFailed(finalState) {
@@ -702,6 +794,103 @@ ORDER BY s.completed_at DESC, s.id DESC`, projectID, projectID)
 		return doctorWorkflowSessionMetrics{}, err
 	}
 	return metrics, nil
+}
+
+func doctorWorkflowRecentModelTelemetry(counts map[string]int64) []doctorWorkflowModelTelemetry {
+	models := make([]doctorWorkflowModelTelemetry, 0, len(counts))
+	for model, count := range counts {
+		models = append(models, doctorWorkflowModelTelemetry{Model: model, SessionCount: count})
+	}
+	sort.Slice(models, func(i, j int) bool {
+		if models[i].SessionCount != models[j].SessionCount {
+			return models[i].SessionCount > models[j].SessionCount
+		}
+		return models[i].Model < models[j].Model
+	})
+	return models
+}
+
+func doctorWorkflowSessionGuardTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string) ([]doctorWorkflowSessionGuardIncident, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT
+  COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned'),
+  COALESCE(error_message, '')
+FROM work_attempts
+WHERE completed_at IS NOT NULL
+  AND (? = '' OR project_id = ?)
+  AND error_message LIKE '%session token ceiling exceeded%'
+  AND error_message LIKE '%source=max_session_context_multiplier%'
+ORDER BY completed_at DESC, id DESC`, projectID, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("read session guard telemetry: %w", err)
+	}
+	defer rows.Close()
+
+	byIssue := map[string]*doctorWorkflowSessionGuardIncident{}
+	for rows.Next() {
+		var issueIdentifier string
+		var errorMessage string
+		if err := rows.Scan(&issueIdentifier, &errorMessage); err != nil {
+			return nil, err
+		}
+		issueIdentifier = strings.TrimSpace(issueIdentifier)
+		incident, ok := byIssue[issueIdentifier]
+		if !ok {
+			incident = &doctorWorkflowSessionGuardIncident{IssueIdentifier: issueIdentifier}
+			byIssue[issueIdentifier] = incident
+		}
+		incident.AttemptCount++
+		if incident.CeilingTokens == 0 {
+			incident.CeilingTokens = doctorWorkflowErrorInt64(errorMessage, "ceiling_tokens")
+		}
+		if incident.ContextMultiplier == 0 {
+			incident.ContextMultiplier = doctorWorkflowErrorFloat64(errorMessage, "context_multiplier")
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	incidents := make([]doctorWorkflowSessionGuardIncident, 0, len(byIssue))
+	for _, incident := range byIssue {
+		incidents = append(incidents, *incident)
+	}
+	sort.Slice(incidents, func(i, j int) bool {
+		if incidents[i].AttemptCount != incidents[j].AttemptCount {
+			return incidents[i].AttemptCount > incidents[j].AttemptCount
+		}
+		return incidents[i].IssueIdentifier < incidents[j].IssueIdentifier
+	})
+	return incidents, nil
+}
+
+func doctorWorkflowErrorInt64(message string, key string) int64 {
+	value := doctorWorkflowErrorValue(message, key)
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func doctorWorkflowErrorFloat64(message string, key string) float64 {
+	value := doctorWorkflowErrorValue(message, key)
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func doctorWorkflowErrorValue(message string, key string) string {
+	prefix := strings.TrimSpace(key) + "="
+	for _, field := range strings.Fields(message) {
+		field = strings.Trim(field, ",;()[]{}")
+		if value, ok := strings.CutPrefix(field, prefix); ok {
+			return strings.Trim(value, ",;()[]{}")
+		}
+	}
+	return ""
 }
 
 func doctorWorkflowSessionTimestamp(value string) (time.Time, error) {
@@ -854,6 +1043,63 @@ func doctorWorkflowOptimizationFindings(
 			}
 		}
 	}
+	if cfg.Agent.MaxSessionTokens <= 0 && cfg.Agent.MaxSessionContextMultiplier <= 0 {
+		patches := []doctorWorkflowOptimizationPatch{}
+		if metrics.MedianSessionTokens > 0 {
+			patches = append(patches, doctorWorkflowOptimizationPatch{
+				Path:  "agent.max_session_tokens",
+				Value: doctorRoundUpInt64(int64(float64(metrics.MedianSessionTokens)*doctorWorkflowRunawayMedianMultiplier), 1000),
+			})
+		}
+		findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleNoSessionTokenBrake,
+			"Session runaway brake is disabled",
+			"neither agent.max_session_tokens nor agent.max_session_context_multiplier is configured",
+			0,
+			map[string]any{
+				"max_session_tokens":             cfg.Agent.MaxSessionTokens,
+				"max_session_context_multiplier": cfg.Agent.MaxSessionContextMultiplier,
+				"unbraked_session_count":         metrics.SessionCount,
+			},
+			patches...,
+		))
+	}
+	if incidents := doctorWorkflowRepeatedSessionGuardIncidents(metrics.SessionMultiplierKills); len(incidents) > 0 {
+		attemptCounts := make(map[string]int64, len(incidents))
+		killedIssues := make([]string, 0, len(incidents))
+		ceilingTokens := make([]int64, 0, len(incidents))
+		contextMultipliers := make([]float64, 0, len(incidents))
+		var killCount int64
+		for _, incident := range incidents {
+			attemptCounts[incident.IssueIdentifier] = incident.AttemptCount
+			killCount += incident.AttemptCount
+			killedIssues = append(killedIssues, fmt.Sprintf("%s x%d", incident.IssueIdentifier, incident.AttemptCount))
+			ceilingTokens = append(ceilingTokens, incident.CeilingTokens)
+			multiplier := incident.ContextMultiplier
+			if multiplier <= 0 {
+				multiplier = cfg.Agent.MaxSessionContextMultiplier
+			}
+			contextMultipliers = append(contextMultipliers, multiplier)
+		}
+		patches := []doctorWorkflowOptimizationPatch{}
+		if cfg.Agent.MaxSessionTokens > 0 && cfg.Agent.MaxSessionContextMultiplier > 0 {
+			patches = append(patches, doctorWorkflowOptimizationPatch{Path: "agent.max_session_context_multiplier", Value: 0})
+		}
+		findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleSessionMultiplierKills,
+			"Session context multiplier repeatedly killed work",
+			fmt.Sprintf("%s produced %d session token ceiling kills at ceiling(s) %s for %s; remove or recalibrate the multiplier and rely on an intentional max_session_tokens cap", doctorWorkflowMultiplierList(contextMultipliers), killCount, doctorWorkflowInt64List(ceilingTokens), strings.Join(killedIssues, ", ")),
+			0,
+			map[string]any{
+				"configured_max_session_tokens":             cfg.Agent.MaxSessionTokens,
+				"configured_max_session_context_multiplier": cfg.Agent.MaxSessionContextMultiplier,
+				"context_multipliers":                       contextMultipliers,
+				"ceiling_tokens":                            ceilingTokens,
+				"killed_issues":                             killedIssues,
+				"attempt_counts":                            attemptCounts,
+				"session_multiplier_kill_count":             killCount,
+			},
+			patches...,
+		))
+	}
 	if metrics.MaxReworkLapsPerIssue > doctorWorkflowReworkLapThreshold && (cfg.Agent.AutoPromote.ReworkLimit == 0 || metrics.MaxReworkLapsPerIssue > int64(cfg.Agent.AutoPromote.ReworkLimit)) {
 		value := int(math.Max(1, math.Min(float64(metrics.MaxReworkLapsPerIssue-1), 2)))
 		findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleReworkLaps,
@@ -881,7 +1127,7 @@ func doctorWorkflowOptimizationFindings(
 			doctorWorkflowOptimizationPatch{Path: "gate.validator.model", Value: doctorWorkflowValidatorModel},
 		))
 	}
-	if metrics.RecentSessionCount > 0 && metrics.EmptyModelRecentSessions > 0 && metrics.EmptyModelRecentFraction >= doctorWorkflowEmptyModelMinFraction {
+	if cfg.Budget.Enabled && metrics.RecentSessionCount > 0 && metrics.EmptyModelRecentSessions > 0 && metrics.EmptyModelRecentFraction >= doctorWorkflowEmptyModelMinFraction {
 		detail := fmt.Sprintf("%d of %d recent sessions have an empty model", metrics.EmptyModelRecentSessions, metrics.RecentSessionCount)
 		evidence := map[string]any{
 			"recent_session_count":        metrics.RecentSessionCount,
@@ -895,12 +1141,14 @@ func doctorWorkflowOptimizationFindings(
 				evidence["configured_model"] = modelConfig.Model
 			}
 		}
-		findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleEmptyModelTelemetry,
+		finding := doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleEmptyModelTelemetry,
 			"Session model telemetry is incomplete",
 			detail,
 			0,
 			evidence,
-		))
+		)
+		finding.Severity = "info"
+		findings = append(findings, finding)
 	}
 	if metrics.P90SessionBillableTokens > 0 && metrics.BudgetEstimateDriftRatio >= doctorWorkflowBudgetDriftRatio {
 		findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleBudgetEstimateDrift,
@@ -1159,6 +1407,118 @@ type doctorWorkflowModelConfig struct {
 	Source string
 }
 
+func doctorWorkflowWorkerModelChoice(cfg workflowconfig.Config) doctorWorkflowModelChoice {
+	modelConfig, ok := doctorWorkflowDefaultRouteModelConfig(cfg)
+	if ok && strings.TrimSpace(modelConfig.Model) != "" {
+		return doctorWorkflowModelChoice{
+			Mode:   "pinned",
+			Model:  strings.TrimSpace(modelConfig.Model),
+			Source: modelConfig.Source,
+		}
+	}
+	choice := doctorWorkflowModelChoice{Mode: "provider_default"}
+	if ok {
+		choice.Source = modelConfig.Source
+	}
+	return choice
+}
+
+func doctorWorkflowSessionGuardConfig(cfg workflowconfig.Config) doctorWorkflowSessionGuard {
+	return doctorWorkflowSessionGuard{
+		MaxSessionTokens:            cfg.Agent.MaxSessionTokens,
+		MaxSessionContextMultiplier: cfg.Agent.MaxSessionContextMultiplier,
+	}
+}
+
+func doctorWorkflowObservedDefaultModelForProjects(projects []doctorWorkflowAnalyzedProject) (doctorWorkflowObservedDefaultModel, bool) {
+	counts := map[string]int64{}
+	for _, project := range projects {
+		if doctorWorkflowWorkerModelChoice(project.config).Mode != "provider_default" {
+			continue
+		}
+		for _, telemetry := range project.metrics.RecentDefaultModels {
+			counts[strings.TrimSpace(telemetry.Model)] += telemetry.SessionCount
+		}
+	}
+
+	var observed doctorWorkflowObservedDefaultModel
+	found := false
+	for model, count := range counts {
+		major, minor, ok := doctorWorkflowModelGeneration(model)
+		if !ok {
+			continue
+		}
+		candidate := doctorWorkflowObservedDefaultModel{
+			Model:        model,
+			SessionCount: count,
+			Major:        major,
+			Minor:        minor,
+		}
+		if !found || doctorWorkflowObservedModelLess(observed, candidate) {
+			observed = candidate
+			found = true
+		}
+	}
+	return observed, found
+}
+
+func doctorWorkflowObservedModelLess(left doctorWorkflowObservedDefaultModel, right doctorWorkflowObservedDefaultModel) bool {
+	if left.Major != right.Major {
+		return left.Major < right.Major
+	}
+	if left.Minor != right.Minor {
+		return left.Minor < right.Minor
+	}
+	if left.SessionCount != right.SessionCount {
+		return left.SessionCount < right.SessionCount
+	}
+	return left.Model < right.Model
+}
+
+func doctorWorkflowStalePinnedModelFinding(project doctorWorkflowAnalyzedProject, observed doctorWorkflowObservedDefaultModel) (doctorWorkflowOptimizationFinding, bool) {
+	choice := doctorWorkflowWorkerModelChoice(project.config)
+	if choice.Mode != "pinned" {
+		return doctorWorkflowOptimizationFinding{}, false
+	}
+	major, minor, ok := doctorWorkflowModelGeneration(choice.Model)
+	if !ok || major > observed.Major || major == observed.Major && minor >= observed.Minor {
+		return doctorWorkflowOptimizationFinding{}, false
+	}
+	return doctorWorkflowFinding(project.projectID, project.workflowPath, doctorWorkflowRulePinnedWorkerModelStale,
+		"Pinned worker model trails the observed provider default",
+		fmt.Sprintf("pinned worker model %s via %s is generation-behind observed default model %s from %d unpinned session(s); keep, update, or remove the pin according to this project's intended model policy", choice.Model, choice.Source, observed.Model, observed.SessionCount),
+		0,
+		map[string]any{
+			"model_choice":              choice.Mode,
+			"pinned_model":              choice.Model,
+			"configured_model_source":   choice.Source,
+			"observed_default_model":    observed.Model,
+			"observed_default_sessions": observed.SessionCount,
+		},
+	), true
+}
+
+func doctorWorkflowModelGeneration(model string) (int, int, bool) {
+	version, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-")
+	if !ok {
+		return 0, 0, false
+	}
+	version, _, _ = strings.Cut(version, "-")
+	parts := strings.Split(version, ".")
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, false
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	return major, minor, true
+}
+
 func doctorWorkflowDefaultRouteModelConfig(cfg workflowconfig.Config) (doctorWorkflowModelConfig, bool) {
 	backends := doctorWorkflowBackendConfigsByID(cfg)
 	for _, route := range cfg.AgentRouteConfigs() {
@@ -1175,19 +1535,18 @@ func doctorWorkflowDefaultRouteModelConfig(cfg workflowconfig.Config) (doctorWor
 				Source: "agents.routes.model",
 			}, true
 		}
+		backend, ok := backends[strings.TrimSpace(route.Backend)]
+		if ok {
+			if model := doctorWorkflowBackendCommandModel(backend); model != "" {
+				return doctorWorkflowModelConfig{
+					Model:  model,
+					Source: "agents.backends.command",
+				}, true
+			}
+		}
 		if strings.TrimSpace(route.ModelField) != "" {
 			return doctorWorkflowModelConfig{
 				Source: "agents.routes.model_field",
-			}, true
-		}
-		backend, ok := backends[strings.TrimSpace(route.Backend)]
-		if !ok {
-			continue
-		}
-		if model := doctorWorkflowBackendCommandModel(backend); model != "" {
-			return doctorWorkflowModelConfig{
-				Model:  model,
-				Source: "agents.backends.command",
 			}, true
 		}
 	}
@@ -1477,6 +1836,56 @@ func doctorWorkflowUsageFailed(outcome string) bool {
 	default:
 		return false
 	}
+}
+
+func doctorWorkflowRepeatedSessionGuardIncidents(incidents []doctorWorkflowSessionGuardIncident) []doctorWorkflowSessionGuardIncident {
+	repeated := make([]doctorWorkflowSessionGuardIncident, 0, len(incidents))
+	for _, incident := range incidents {
+		if incident.AttemptCount >= 2 {
+			repeated = append(repeated, incident)
+		}
+	}
+	return repeated
+}
+
+func doctorWorkflowInt64List(values []int64) string {
+	unique := map[int64]struct{}{}
+	for _, value := range values {
+		if value > 0 {
+			unique[value] = struct{}{}
+		}
+	}
+	sorted := make([]int64, 0, len(unique))
+	for value := range unique {
+		sorted = append(sorted, value)
+	}
+	slices.Sort(sorted)
+	if len(sorted) == 0 {
+		return "unknown"
+	}
+	parts := make([]string, 0, len(sorted))
+	for _, value := range sorted {
+		parts = append(parts, strconv.FormatInt(value, 10))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func doctorWorkflowMultiplierList(values []float64) string {
+	unique := map[string]struct{}{}
+	for _, value := range values {
+		if value > 0 {
+			unique[strconv.FormatFloat(value, 'g', -1, 64)] = struct{}{}
+		}
+	}
+	formatted := make([]string, 0, len(unique))
+	for value := range unique {
+		formatted = append(formatted, "max_session_context_multiplier="+value)
+	}
+	slices.Sort(formatted)
+	if len(formatted) == 0 {
+		return "max_session_context_multiplier=unknown"
+	}
+	return strings.Join(formatted, ", ")
 }
 
 func doctorWorkflowBillableTokens(inputTokens int64, cachedInputTokens int64, outputTokens int64, totalTokens int64, model string, pricing budget.PricingTable) int64 {
@@ -1884,7 +2293,7 @@ func doctorWorkflowFrontmatterRoot(frontmatter []byte) (*yaml.Node, error) {
 func doctorApplyWorkflowOptimizationPatch(root *yaml.Node, patch doctorWorkflowOptimizationPatch) error {
 	path := strings.TrimSpace(patch.Path)
 	switch path {
-	case "agent.max_session_tokens", "agent.auto_promote.rework_limit", "gate.validator.model", "polling.interval_ms", "budget.per_issue_max_usd":
+	case "agent.max_session_tokens", "agent.max_session_context_multiplier", "agent.auto_promote.rework_limit", "gate.validator.model", "polling.interval_ms", "budget.per_issue_max_usd":
 		return doctorSetSimpleYAMLPath(root, strings.Split(patch.Path, "."), patch.Value)
 	case "agents.routes.default.model":
 		return doctorSetDefaultRouteModel(root, fmt.Sprint(patch.Value))

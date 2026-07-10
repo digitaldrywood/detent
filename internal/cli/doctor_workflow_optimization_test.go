@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -334,7 +335,11 @@ func TestDoctorWorkflowOptimizationFindingsTokenImpactIsAvoidable(t *testing.T) 
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", workflowconfig.Config{}, tt.metrics)
+			cfg := workflowconfig.Config{}
+			if tt.ruleID == doctorWorkflowRuleEmptyModelTelemetry {
+				cfg.Budget.Enabled = true
+			}
+			findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", cfg, tt.metrics)
 			finding := doctorWorkflowFindingByRule(t, findings, tt.ruleID)
 			if finding.EstimatedTokenImpact != 0 {
 				t.Fatalf("EstimatedTokenImpact = %d, want 0", finding.EstimatedTokenImpact)
@@ -599,6 +604,307 @@ func TestDoctorWorkflowOptimizationRunawaySessionTokensRespectsConfiguredCap(t *
 	}
 }
 
+func TestDoctorWorkflowOptimizationFlagsMissingSessionBrake(t *testing.T) {
+	t.Parallel()
+
+	findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", workflowconfig.Config{}, doctorWorkflowOptimizationMetrics{
+		SessionCount:        3,
+		MedianSessionTokens: 10_000,
+	})
+	if !doctorWorkflowFindingExists(findings, "no_session_token_brake") {
+		t.Fatalf("findings = %#v, want no_session_token_brake", findings)
+	}
+}
+
+func TestDoctorWorkflowOptimizationModelAndSessionGuardConfigurations(t *testing.T) {
+	t.Parallel()
+
+	pinnedConfig := func(model string) workflowconfig.Config {
+		cfg := workflowconfig.Config{}
+		cfg.Agent.MaxSessionTokens = 2_000_000
+		cfg.Agents.Routes = []workflowconfig.AgentRoute{{
+			Name:    "default",
+			Backend: workflowconfig.DefaultAgentBackendID,
+			Model:   model,
+			Default: true,
+		}}
+		return cfg
+	}
+	unpinnedConfig := func() workflowconfig.Config {
+		cfg := workflowconfig.Config{}
+		cfg.Agent.MaxSessionTokens = 2_000_000
+		return cfg
+	}
+	observed := doctorWorkflowObservedDefaultModel{Model: "gpt-5.6-sol", SessionCount: 6, Major: 5, Minor: 6}
+	tests := []struct {
+		name         string
+		cfg          workflowconfig.Config
+		metrics      doctorWorkflowOptimizationMetrics
+		wantMode     string
+		wantRules    []string
+		wantNoRules  []string
+		wantDetail   []string
+		wantSeverity map[string]string
+	}{
+		{
+			name:        "pinned healthy",
+			cfg:         pinnedConfig("gpt-5.6-sol"),
+			wantMode:    "pinned",
+			wantNoRules: []string{doctorWorkflowRulePinnedWorkerModelStale, doctorWorkflowRuleNoSessionTokenBrake},
+		},
+		{
+			name:       "pinned stale",
+			cfg:        pinnedConfig("gpt-5.5"),
+			wantMode:   "pinned",
+			wantRules:  []string{doctorWorkflowRulePinnedWorkerModelStale},
+			wantDetail: []string{"gpt-5.5", "gpt-5.6-sol", "keep, update, or remove"},
+		},
+		{
+			name: "unpinned",
+			cfg: func() workflowconfig.Config {
+				cfg := unpinnedConfig()
+				cfg.Budget.Enabled = true
+				return cfg
+			}(),
+			metrics: doctorWorkflowOptimizationMetrics{
+				RecentSessionCount:       5,
+				EmptyModelRecentSessions: 2,
+				EmptyModelRecentFraction: 0.4,
+			},
+			wantMode:     "provider_default",
+			wantRules:    []string{doctorWorkflowRuleEmptyModelTelemetry},
+			wantNoRules:  []string{doctorWorkflowRulePinnedWorkerModelStale},
+			wantSeverity: map[string]string{doctorWorkflowRuleEmptyModelTelemetry: "info"},
+		},
+		{
+			name: "multiplier kills",
+			cfg: func() workflowconfig.Config {
+				cfg := unpinnedConfig()
+				cfg.Agent.MaxSessionContextMultiplier = 4
+				return cfg
+			}(),
+			metrics: doctorWorkflowOptimizationMetrics{SessionMultiplierKills: []doctorWorkflowSessionGuardIncident{
+				{IssueIdentifier: "gopherguides/gopher-ai#200", AttemptCount: 5, CeilingTokens: 1_032_000, ContextMultiplier: 4},
+				{IssueIdentifier: "gopherguides/gopher-ai#196", AttemptCount: 2, CeilingTokens: 1_032_000, ContextMultiplier: 4},
+			}},
+			wantMode:   "provider_default",
+			wantRules:  []string{doctorWorkflowRuleSessionMultiplierKills},
+			wantDetail: []string{"max_session_context_multiplier=4", "1032000", "gopherguides/gopher-ai#200 x5", "gopherguides/gopher-ai#196 x2", "max_session_tokens"},
+		},
+		{
+			name:      "no brake",
+			cfg:       workflowconfig.Config{},
+			metrics:   doctorWorkflowOptimizationMetrics{SessionCount: 3, MedianSessionTokens: 10_000},
+			wantMode:  "provider_default",
+			wantRules: []string{doctorWorkflowRuleNoSessionTokenBrake},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := doctorWorkflowWorkerModelChoice(tt.cfg).Mode; got != tt.wantMode {
+				t.Fatalf("model choice = %q, want %q", got, tt.wantMode)
+			}
+			findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", tt.cfg, tt.metrics)
+			project := doctorWorkflowAnalyzedProject{projectID: "detent", workflowPath: "WORKFLOW.md", config: tt.cfg, metrics: tt.metrics}
+			if finding, ok := doctorWorkflowStalePinnedModelFinding(project, observed); ok {
+				findings = append(findings, finding)
+			}
+			for _, ruleID := range tt.wantRules {
+				finding := doctorWorkflowFindingByRule(t, findings, ruleID)
+				for _, detail := range tt.wantDetail {
+					if !strings.Contains(finding.Detail, detail) {
+						t.Fatalf("%s detail = %q, want containing %q", ruleID, finding.Detail, detail)
+					}
+				}
+				if severity := tt.wantSeverity[ruleID]; severity != "" && finding.Severity != severity {
+					t.Fatalf("%s severity = %q, want %q", ruleID, finding.Severity, severity)
+				}
+				if ruleID == doctorWorkflowRuleSessionMultiplierKills || ruleID == doctorWorkflowRuleNoSessionTokenBrake {
+					proposals := doctorWorkflowProposalsForFindings("detent", []doctorWorkflowOptimizationFinding{finding}, 2)
+					proposal := doctorWorkflowProposalBySignal(t, proposals, "doctor_finding", ruleID)
+					if proposal.TargetKind != "workflow" || proposal.TargetPath == "" {
+						t.Fatalf("%s proposal = %#v, want concrete workflow correction", ruleID, proposal)
+					}
+				}
+			}
+			for _, ruleID := range tt.wantNoRules {
+				if doctorWorkflowFindingExists(findings, ruleID) {
+					t.Fatalf("findings = %#v, do not want %s", findings, ruleID)
+				}
+			}
+		})
+	}
+}
+
+func TestDoctorWorkflowSessionGuardTelemetryGroupsMultiplierKills(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "detent.db")
+	backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: dbPath})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	kills := []struct {
+		identifier string
+		count      int
+		source     string
+	}{
+		{identifier: "gopherguides/gopher-ai#200", count: 5, source: "max_session_context_multiplier"},
+		{identifier: "gopherguides/gopher-ai#196", count: 2, source: "max_session_context_multiplier"},
+		{identifier: "gopherguides/gopher-ai#201", count: 1, source: "max_session_context_multiplier"},
+		{identifier: "gopherguides/gopher-ai#202", count: 3, source: "max_session_tokens"},
+	}
+	for _, kill := range kills {
+		for attempt := 1; attempt <= kill.count; attempt++ {
+			startedAt := now.Add(time.Duration(attempt) * time.Minute)
+			attemptID, err := backend.StartWorkAttempt(ctx, store.WorkAttemptStart{
+				ProjectID:     "gopher-ai",
+				Identifier:    kill.identifier,
+				WorkerType:    "implement",
+				AttemptNumber: attempt,
+				StartedAt:     startedAt,
+			})
+			if err != nil {
+				t.Fatalf("StartWorkAttempt(%s, %d) error = %v", kill.identifier, attempt, err)
+			}
+			errorMessage := fmt.Sprintf("session token ceiling exceeded: total_tokens=1033000 ceiling_tokens=1032000 source=%s model_context_window=258000 context_multiplier=4", kill.source)
+			if err := backend.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{
+				AttemptID:     attemptID,
+				CompletedAt:   startedAt.Add(time.Minute),
+				TerminalState: store.WorkAttemptTerminalFailure,
+				ErrorClass:    "runner_error",
+				ErrorMessage:  errorMessage,
+			}); err != nil {
+				t.Fatalf("CompleteWorkAttempt(%s, %d) error = %v", kill.identifier, attempt, err)
+			}
+		}
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	db, err := openDoctorSQLiteReadOnly(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("openDoctorSQLiteReadOnly() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	incidents, err := doctorWorkflowSessionGuardTelemetry(ctx, db, "gopher-ai")
+	if err != nil {
+		t.Fatalf("doctorWorkflowSessionGuardTelemetry() error = %v", err)
+	}
+	if len(incidents) != 3 {
+		t.Fatalf("incidents = %#v, want three multiplier-sourced issues", incidents)
+	}
+	if incidents[0].IssueIdentifier != "gopherguides/gopher-ai#200" || incidents[0].AttemptCount != 5 || incidents[0].CeilingTokens != 1_032_000 || incidents[0].ContextMultiplier != 4 {
+		t.Fatalf("first incident = %#v, want #200 x5 at 4x/1032000", incidents[0])
+	}
+	if incidents[1].IssueIdentifier != "gopherguides/gopher-ai#196" || incidents[1].AttemptCount != 2 {
+		t.Fatalf("second incident = %#v, want #196 x2", incidents[1])
+	}
+}
+
+func TestDoctorWorkflowOptimizationFlagsPinBehindObservedDefault(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dir := t.TempDir()
+	pinnedWorkflow := filepath.Join(dir, "PINNED_WORKFLOW.md")
+	defaultWorkflow := filepath.Join(dir, "DEFAULT_WORKFLOW.md")
+	if err := os.WriteFile(pinnedWorkflow, []byte(`---
+tracker:
+  kind: memory
+agent:
+  max_session_tokens: 2000000
+agents:
+  routes:
+    - name: default
+      backend: codex
+      model: gpt-5.5
+      default: true
+---
+Prompt
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile(pinned workflow) error = %v", err)
+	}
+	if err := os.WriteFile(defaultWorkflow, []byte(`---
+tracker:
+  kind: memory
+agent:
+  max_session_tokens: 2000000
+---
+Prompt
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile(default workflow) error = %v", err)
+	}
+
+	dbPath := filepath.Join(dir, "detent.db")
+	backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: dbPath})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	recordSession := func(projectID string, identifier string, requestedModel string, model string, completedAt time.Time) {
+		t.Helper()
+		sessionID, err := backend.StartSession(ctx, store.SessionStart{Identifier: identifier, StartedAt: completedAt.Add(-time.Minute), Model: requestedModel})
+		if err != nil {
+			t.Fatalf("StartSession(%s) error = %v", identifier, err)
+		}
+		if err := backend.FinishSession(ctx, sessionID, store.SessionFinish{CompletedAt: completedAt, Turns: 1, InputTokens: 900, OutputTokens: 100, TotalTokens: 1000, FinalState: "completed", Model: model}); err != nil {
+			t.Fatalf("FinishSession(%s) error = %v", identifier, err)
+		}
+		if _, err := backend.RecordUsageEvent(ctx, store.UsageEvent{ProjectID: projectID, SessionID: sessionID, Identifier: identifier, Model: model, InputTokens: 900, OutputTokens: 100, TotalTokens: 1000, Outcome: "completed", StartedAt: completedAt.Add(-time.Minute), FinishedAt: completedAt}); err != nil {
+			t.Fatalf("RecordUsageEvent(%s) error = %v", identifier, err)
+		}
+	}
+	now := time.Date(2026, 7, 9, 13, 0, 0, 0, time.UTC)
+	recordSession("pinned", "example/pinned#1", "gpt-5.5", "gpt-5.5", now)
+	recordSession("default", "example/default#1", "", "gpt-5.6-sol", now.Add(time.Minute))
+	recordSession("default", "example/default#2", "", "gpt-5.6-sol", now.Add(2*time.Minute))
+	recordSession("default", "example/default#3", "gpt-5.7-preview", "gpt-5.7-preview", now.Add(3*time.Minute))
+	if err := backend.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	db, err := openDoctorSQLiteReadOnly(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("openDoctorSQLiteReadOnly() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	global := globalconfig.Config{Projects: []globalconfig.Project{
+		{ID: "pinned", Workflow: pinnedWorkflow, Workdir: dir},
+		{ID: "default", Workflow: defaultWorkflow, Workdir: dir},
+	}}
+	deps := successfulDoctorDeps()
+	deps.loadWorkflow = workflowconfig.LoadWorkflow
+	report, err := doctorWorkflowOptimization(ctx, db, dbPath, global, deps, "", doctorWorkflowOptimizationOptions{})
+	if err != nil {
+		t.Fatalf("doctorWorkflowOptimization() error = %v", err)
+	}
+	if len(report.Projects) != 2 || report.Projects[0].ModelChoice.Model != "gpt-5.5" || report.Projects[1].ModelChoice.Mode != "provider_default" {
+		t.Fatalf("project model reports = %#v", report.Projects)
+	}
+	stale := doctorWorkflowFindingByRule(t, report.Findings, doctorWorkflowRulePinnedWorkerModelStale)
+	if stale.ProjectID != "pinned" || evidenceInt64(t, stale, "observed_default_sessions") != 2 {
+		t.Fatalf("stale finding = %#v, want pinned project against two default sessions", stale)
+	}
+	proposal := doctorWorkflowProposalBySignal(t, report.Proposals, "doctor_finding", doctorWorkflowRulePinnedWorkerModelStale)
+	if !strings.Contains(proposal.SuggestedChange, "keep, update, or remove") {
+		t.Fatalf("stale proposal is not model-choice neutral: %#v", proposal)
+	}
+}
+
 func TestDoctorWorkflowOptimizationJSONReportSchema(t *testing.T) {
 	t.Parallel()
 
@@ -610,6 +916,14 @@ func TestDoctorWorkflowOptimizationJSONReportSchema(t *testing.T) {
 		}},
 		WorkflowOptimization: doctorWorkflowOptimizationReport{
 			StorePath: "/tmp/detent.db",
+			Projects: []doctorWorkflowOptimizationProjectReport{{
+				ProjectID:   "detent",
+				ModelChoice: doctorWorkflowModelChoice{Mode: "pinned", Model: "gpt-5.5", Source: "agents.routes.model"},
+				SessionGuard: doctorWorkflowSessionGuard{
+					MaxSessionTokens:            2_000_000,
+					MaxSessionContextMultiplier: 4,
+				},
+			}},
 			Findings: []doctorWorkflowOptimizationFinding{{
 				RuleID:               doctorWorkflowRuleRunawaySessionTokens,
 				ProjectID:            "detent",
@@ -633,7 +947,12 @@ func TestDoctorWorkflowOptimizationJSONReportSchema(t *testing.T) {
 		Result               string `json:"result"`
 		WorkflowOptimization struct {
 			StorePath string `json:"store_path"`
-			Findings  []struct {
+			Projects  []struct {
+				ProjectID    string                     `json:"project_id"`
+				ModelChoice  doctorWorkflowModelChoice  `json:"model_choice"`
+				SessionGuard doctorWorkflowSessionGuard `json:"session_guard"`
+			} `json:"projects"`
+			Findings []struct {
 				RuleID string         `json:"rule_id"`
 				Detail string         `json:"detail"`
 				Values map[string]any `json:"evidence"`
@@ -648,6 +967,9 @@ func TestDoctorWorkflowOptimizationJSONReportSchema(t *testing.T) {
 	}
 	if got.WorkflowOptimization.StorePath != "/tmp/detent.db" {
 		t.Fatalf("StorePath = %q, want /tmp/detent.db", got.WorkflowOptimization.StorePath)
+	}
+	if len(got.WorkflowOptimization.Projects) != 1 || got.WorkflowOptimization.Projects[0].ModelChoice.Model != "gpt-5.5" || got.WorkflowOptimization.Projects[0].SessionGuard.MaxSessionTokens != 2_000_000 {
+		t.Fatalf("workflow optimization projects = %#v, want model and session guard report", got.WorkflowOptimization.Projects)
 	}
 	if len(got.WorkflowOptimization.Findings) != 1 || got.WorkflowOptimization.Findings[0].RuleID != doctorWorkflowRuleRunawaySessionTokens {
 		t.Fatalf("workflow optimization findings = %#v", got.WorkflowOptimization.Findings)
@@ -830,6 +1152,7 @@ Prompt
 	if !doctorWorkflowHasDefaultRouteModel(workflow.Config) {
 		t.Fatal("doctorWorkflowHasDefaultRouteModel() = false, want true for backend command model")
 	}
+	workflow.Config.Budget.Enabled = true
 
 	findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", workflow.Config, doctorWorkflowOptimizationMetrics{
 		RecentSessionCount:       50,
@@ -860,6 +1183,7 @@ Prompt
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
 	}
+	workflow.Config.Budget.Enabled = true
 
 	findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", workflow.Config, doctorWorkflowOptimizationMetrics{
 		RecentSessionCount:       50,
@@ -969,10 +1293,11 @@ func TestDoctorWorkflowDefaultRouteModelConfigSources(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		raw       string
-		wantOK    bool
-		wantModel string
+		name       string
+		raw        string
+		wantOK     bool
+		wantModel  string
+		wantSource string
 	}{
 		{
 			name: "route model",
@@ -992,8 +1317,9 @@ agents:
 ---
 Prompt
 `,
-			wantOK:    true,
-			wantModel: "gpt-5-route",
+			wantOK:     true,
+			wantModel:  "gpt-5-route",
+			wantSource: "agents.routes.model",
 		},
 		{
 			name: "backend command config model",
@@ -1012,8 +1338,31 @@ agents:
 ---
 Prompt
 `,
-			wantOK:    true,
-			wantModel: "gpt-5.5",
+			wantOK:     true,
+			wantModel:  "gpt-5.5",
+			wantSource: "agents.backends.command",
+		},
+		{
+			name: "backend command config model with issue field overrides",
+			raw: `---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: codex-main
+      kind: codex
+      command: codex --config=model="gpt-5.5" app-server
+  routes:
+    - name: default
+      backend: codex-main
+      model_field: Model
+      default: true
+---
+Prompt
+`,
+			wantOK:     true,
+			wantModel:  "gpt-5.5",
+			wantSource: "agents.backends.command",
 		},
 		{
 			name: "route model field",
@@ -1033,7 +1382,8 @@ agents:
 ---
 Prompt
 `,
-			wantOK: true,
+			wantOK:     true,
+			wantSource: "agents.routes.model_field",
 		},
 		{
 			name: "no model source",
@@ -1062,6 +1412,9 @@ Prompt
 			}
 			if got.Model != tt.wantModel {
 				t.Fatalf("doctorWorkflowDefaultRouteModelConfig() model = %q, want %q", got.Model, tt.wantModel)
+			}
+			if got.Source != tt.wantSource {
+				t.Fatalf("doctorWorkflowDefaultRouteModelConfig() source = %q, want %q", got.Source, tt.wantSource)
 			}
 		})
 	}
@@ -1160,6 +1513,8 @@ tracker:
     - Blocked
 polling:
   interval_ms: 60000
+budget:
+  enabled: true
 agent:
   auto_promote:
     enabled: true

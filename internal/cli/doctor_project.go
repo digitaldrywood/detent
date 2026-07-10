@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -230,16 +231,7 @@ func checkDoctorRouteModels(ctx context.Context, id string, project globalconfig
 	var skipped int
 	var failures []string
 	var findings []doctorWorkflowOptimizationFinding
-	for index, route := range cfg.AgentRouteConfigs() {
-		model := strings.TrimSpace(route.Model)
-		if model == "" {
-			continue
-		}
-		backend, ok := backends[strings.TrimSpace(route.Backend)]
-		if !ok || strings.TrimSpace(backend.Kind) != workflowconfig.AgentBackendCodex {
-			skipped++
-			continue
-		}
+	probeModel := func(index int, route workflowconfig.AgentRoute, backend workflowconfig.AgentBackend, model string, source string) {
 		probed++
 		routeName := doctorRouteModelName(route, index)
 		err := deps.modelProbe(ctx, doctorRouteModelProbeRequest{
@@ -253,31 +245,57 @@ func checkDoctorRouteModels(ctx context.Context, id string, project globalconfig
 			Backend:      backend,
 		})
 		if err == nil {
-			continue
+			return
 		}
-		detail := fmt.Sprintf("project %s route %s model %s rejected by backend: %v", id, routeName, model, err)
+		detail := fmt.Sprintf("project %s route %s model %s via %s rejected by backend: %v", id, routeName, model, source, err)
 		failures = append(failures, detail)
 		if workflowPathErr != nil {
-			continue
+			return
 		}
 		findings = append(findings, doctorWorkflowOptimizationFinding{
 			RuleID:       doctorWorkflowRulePinnedRouteModelRejected,
 			ProjectID:    id,
 			WorkflowPath: workflowPath,
 			Severity:     "error",
-			Title:        "Pinned route model rejected",
+			Title:        "Pinned worker model rejected",
 			Detail:       detail,
 			Evidence: map[string]any{
-				"backend": backend.ID,
-				"error":   err.Error(),
-				"model":   model,
-				"route":   routeName,
+				"backend":                 backend.ID,
+				"configured_model_source": source,
+				"error":                   err.Error(),
+				"model":                   model,
+				"route":                   routeName,
 			},
-			Patch: []doctorWorkflowOptimizationPatch{{
-				Path:  doctorWorkflowRouteModelPatchPath(index),
-				Value: "",
-			}},
 		})
+	}
+	for index, route := range cfg.AgentRouteConfigs() {
+		model := strings.TrimSpace(route.Model)
+		if model == "" {
+			continue
+		}
+		backend, ok := backends[strings.TrimSpace(route.Backend)]
+		if !ok || strings.TrimSpace(backend.Kind) != workflowconfig.AgentBackendCodex {
+			skipped++
+			continue
+		}
+		probeModel(index, route, backend, model, "agents.routes.model")
+	}
+	probedCommandBackends := map[string]struct{}{}
+	for index, route := range cfg.AgentRouteConfigs() {
+		backendID := strings.TrimSpace(route.Backend)
+		if _, ok := probedCommandBackends[backendID]; ok {
+			continue
+		}
+		backend, ok := backends[backendID]
+		if !ok || strings.TrimSpace(backend.Kind) != workflowconfig.AgentBackendCodex {
+			continue
+		}
+		model := doctorWorkflowBackendCommandModel(backend)
+		if model == "" {
+			continue
+		}
+		probedCommandBackends[backendID] = struct{}{}
+		probeModel(index, route, backend, model, "agents.backends.command")
 	}
 
 	if len(failures) == 0 {
@@ -287,12 +305,15 @@ func checkDoctorRouteModels(ctx context.Context, id string, project globalconfig
 		}
 		return doctorCheck{Name: name, Status: doctorOK, Detail: detail}
 	}
-	report := doctorWorkflowOptimizationReport{Findings: findings}
+	report := doctorWorkflowOptimizationReport{
+		Findings:  findings,
+		Proposals: doctorWorkflowProposalsForFindings(id, findings, 1),
+	}
 	return doctorCheck{
 		Name:                 name,
 		Status:               doctorFail,
 		Detail:               strings.Join(failures, "; "),
-		Hint:                 "Remove the route model pin to inherit the Codex default, or update it to a backend-supported model.",
+		Hint:                 "Confirm the project's intended model policy, then update the pin to a backend-supported model or remove it to inherit the provider default.",
 		WorkflowOptimization: report,
 	}
 }
@@ -302,10 +323,6 @@ func doctorRouteModelName(route workflowconfig.AgentRoute, index int) string {
 		return name
 	}
 	return fmt.Sprintf("routes[%d]", index)
-}
-
-func doctorWorkflowRouteModelPatchPath(index int) string {
-	return fmt.Sprintf("agents.routes[%d].model", index)
 }
 
 func defaultDoctorRouteModelProbe(ctx context.Context, req doctorRouteModelProbeRequest) error {
@@ -335,8 +352,34 @@ func doctorWorkflowDetail(path string, project globalconfig.Project, cfg workflo
 		details = append(details, "identity "+doctorIdentityDetail(cfg.Identity))
 	}
 	details = append(details, doctorReviewFlowConfigDetail(cfg))
+	details = append(details, doctorWorkflowModelChoiceDetail(cfg))
+	details = append(details, doctorWorkflowSessionGuardDetail(cfg))
 	details = append(details, doctorAuthorizationDetail(project, cfg))
 	return strings.Join(details, "; ")
+}
+
+func doctorWorkflowModelChoiceDetail(cfg workflowconfig.Config) string {
+	choice := doctorWorkflowWorkerModelChoice(cfg)
+	if choice.Mode == "pinned" {
+		return fmt.Sprintf("worker-model=pinned %s via %s", choice.Model, choice.Source)
+	}
+	detail := "worker-model=provider-default"
+	if choice.Source == "agents.routes.model_field" {
+		detail += " with issue-field overrides"
+	}
+	return detail
+}
+
+func doctorWorkflowSessionGuardDetail(cfg workflowconfig.Config) string {
+	tokens := "disabled"
+	if cfg.Agent.MaxSessionTokens > 0 {
+		tokens = strconv.FormatInt(cfg.Agent.MaxSessionTokens, 10)
+	}
+	multiplier := "disabled"
+	if cfg.Agent.MaxSessionContextMultiplier > 0 {
+		multiplier = strconv.FormatFloat(cfg.Agent.MaxSessionContextMultiplier, 'g', -1, 64)
+	}
+	return fmt.Sprintf("session-guard=max_session_tokens=%s, max_session_context_multiplier=%s", tokens, multiplier)
 }
 
 func doctorWorkflowFindingDetails(findings []doctorWorkflowOptimizationFinding) string {
