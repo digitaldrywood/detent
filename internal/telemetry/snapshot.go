@@ -152,6 +152,7 @@ type RefreshAttempt struct {
 	Coalesced   bool                 `json:"coalesced,omitempty"`
 	LastError   string               `json:"last_error,omitempty"`
 	LastErrorAt *time.Time           `json:"last_error_at,omitempty"`
+	RetryAt     *time.Time           `json:"retry_at,omitempty"`
 }
 
 func (a RefreshAttempt) IsZero() bool {
@@ -163,7 +164,8 @@ func (a RefreshAttempt) IsZero() bool {
 		len(a.Operations) == 0 &&
 		!a.Coalesced &&
 		strings.TrimSpace(a.LastError) == "" &&
-		a.LastErrorAt == nil
+		a.LastErrorAt == nil &&
+		a.RetryAt == nil
 }
 
 func (r Refresh) ReadinessStatus() RefreshStatus {

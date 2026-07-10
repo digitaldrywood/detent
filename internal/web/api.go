@@ -361,6 +361,7 @@ func refreshAttemptFromResponse(response RefreshResponse) *telemetry.RefreshAtte
 		Coalesced:   response.Coalesced,
 		LastError:   strings.TrimSpace(response.LastError),
 		LastErrorAt: cloneTimePtr(response.LastErrorAt),
+		RetryAt:     cloneTimePtr(response.RetryAt),
 	}
 }
 

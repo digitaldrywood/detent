@@ -8035,6 +8035,9 @@ func TestAPIRefreshRefusesDuringGitHubGraphQLBackoff(t *testing.T) {
 	if manual["status"] != string(telemetry.RefreshAttemptStatusRefused) {
 		t.Fatalf("refresh.manual = %#v, want refused overlay", manual)
 	}
+	if manual["retry_at"] != retryAt.Format(time.RFC3339Nano) {
+		t.Fatalf("refresh.manual.retry_at = %#v, want %s", manual["retry_at"], retryAt.Format(time.RFC3339Nano))
+	}
 }
 
 func TestAPIRefreshHTMXRendersRefusalFragment(t *testing.T) {
@@ -8086,6 +8089,7 @@ func TestAPIRefreshHTMXRendersRefusalFragment(t *testing.T) {
 		`id="manual-refresh-status"`,
 		"Refresh refused",
 		"GitHub REST backoff is active",
+		"Retry at {{detent-time:time:" + retryAt.Format(time.RFC3339Nano) + "}}",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("HTMX fragment missing %q:\n%s", want, body)
@@ -8107,6 +8111,7 @@ func TestAPIRefreshHTMXRendersRefusalFragment(t *testing.T) {
 		`id="github-api-manual-refresh-status"`,
 		"Refresh refused",
 		"GitHub REST backoff is active",
+		"Retry at {{detent-time:time:" + retryAt.Format(time.RFC3339Nano) + "}}",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("HTMX sidebar fragment missing %q:\n%s", want, body)

@@ -1715,7 +1715,13 @@ func manualRefreshStatusDetail(attempt *telemetry.RefreshAttempt) string {
 		return "The forced refresh failed."
 	case telemetry.RefreshAttemptStatusRefused:
 		if err := sanitizeReadinessError(attempt.LastError); err != "" {
+			if attempt.RetryAt != nil && !attempt.RetryAt.IsZero() {
+				return err + " Retry at " + localTimeToken(*attempt.RetryAt, LocalTimeOnly) + "."
+			}
 			return err
+		}
+		if attempt.RetryAt != nil && !attempt.RetryAt.IsZero() {
+			return "Hard rate-limit backoff is active. Retry at " + localTimeToken(*attempt.RetryAt, LocalTimeOnly) + "."
 		}
 		return "Hard rate-limit backoff is active."
 	default:

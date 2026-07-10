@@ -486,6 +486,7 @@ func cloneRefreshAttempt(attempt telemetry.RefreshAttempt) telemetry.RefreshAtte
 	cloned.StartedAt = timePointerValue(attempt.StartedAt)
 	cloned.CompletedAt = timePointerValue(attempt.CompletedAt)
 	cloned.LastErrorAt = timePointerValue(attempt.LastErrorAt)
+	cloned.RetryAt = timePointerValue(attempt.RetryAt)
 	cloned.Operations = append([]string(nil), attempt.Operations...)
 	return cloned
 }
