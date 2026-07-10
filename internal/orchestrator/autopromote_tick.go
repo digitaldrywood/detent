@@ -323,7 +323,7 @@ func autoPromoteActiveGatePendingIssue(
 	cfg Config,
 	autoCfg AutoPromoteConfig,
 ) bool {
-	if !autoPromoteActiveGateTrackedIssue(issue, cfg, autoCfg) || state == nil {
+	if state == nil || !autoPromoteActiveGateEligibleIssue(issue, cfg, autoCfg) {
 		return false
 	}
 	completed, ok := state.Completed[strings.TrimSpace(issue.ID)]
@@ -336,6 +336,14 @@ func autoPromoteActiveGatePendingIssue(
 }
 
 func autoPromoteActiveGateTrackedIssue(
+	issue connector.Issue,
+	cfg Config,
+	autoCfg AutoPromoteConfig,
+) bool {
+	return autoPromoteActiveGateEligibleIssue(issue, cfg, autoCfg) && issueHasOpenPullRequest(issue)
+}
+
+func autoPromoteActiveGateEligibleIssue(
 	issue connector.Issue,
 	cfg Config,
 	autoCfg AutoPromoteConfig,
@@ -355,10 +363,7 @@ func autoPromoteActiveGateTrackedIssue(
 	case normalizeState(autoCfg.SourceState), normalizeState(autoCfg.PassState), normalizeState(autoCfg.ReworkState):
 		return false
 	}
-	if autoPromoteHumanReviewRequired(issue, autoCfg, autoCfg.Gate) {
-		return false
-	}
-	return issueHasOpenPullRequest(issue)
+	return !autoPromoteHumanReviewRequired(issue, autoCfg, autoCfg.Gate)
 }
 
 func autoPromoteSourceGateWaitEnabled(cfg AutoPromoteConfig) bool {
