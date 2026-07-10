@@ -17,49 +17,49 @@ templ LibraryPage(data LibraryData) {
 						</div>
 					}
 				</div>
-				<form method="get" action="/library" class="flex flex-none flex-wrap items-end gap-3 rounded-card border border-line bg-surface p-3">
-					<label class="grid gap-1.5">
+				<form method="get" action="/library" class="flex flex-none flex-col items-stretch gap-3 rounded-card border border-line bg-surface p-3 md:flex-row md:flex-wrap md:items-end">
+					<label class="grid w-full gap-1.5 md:w-auto">
 						<span class="text-2xs font-semibold uppercase text-dim">Project</span>
-						<select name="project" class="h-9 min-w-44 rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent">
+						<select name="project" class="h-11 w-full rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent md:h-9 md:w-auto md:min-w-44">
 							for _, option := range data.ProjectOptions {
 								<option value={ option.Value } selected?={ option.Selected }>{ libraryOptionLabel(option) }</option>
 							}
 						</select>
 					</label>
-					<label class="grid gap-1.5">
+					<label class="grid w-full gap-1.5 md:w-auto">
 						<span class="text-2xs font-semibold uppercase text-dim">Kind</span>
-						<select name="kind" class="h-9 min-w-36 rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent">
+						<select name="kind" class="h-11 w-full rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent md:h-9 md:w-auto md:min-w-36">
 							for _, option := range data.KindOptions {
 								<option value={ option.Value } selected?={ option.Selected }>{ libraryOptionLabel(option) }</option>
 							}
 						</select>
 					</label>
-					<label class="grid gap-1.5">
+					<label class="grid w-full gap-1.5 md:w-auto">
 						<span class="text-2xs font-semibold uppercase text-dim">Status</span>
-						<select name="status" class="h-9 min-w-36 rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent">
+						<select name="status" class="h-11 w-full rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent md:h-9 md:w-auto md:min-w-36">
 							for _, option := range data.StatusOptions {
 								<option value={ option.Value } selected?={ option.Selected }>{ libraryOptionLabel(option) }</option>
 							}
 						</select>
 					</label>
-					<label class="grid gap-1.5">
+					<label class="grid w-full gap-1.5 md:w-auto">
 						<span class="text-2xs font-semibold uppercase text-dim">From</span>
-						<input type="date" name="from" value={ libraryDateInputValue(data.Filters.FromValue, data.Filters.From) } class="h-9 rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent"/>
+						<input type="date" name="from" value={ libraryDateInputValue(data.Filters.FromValue, data.Filters.From) } class="h-11 w-full rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent md:h-9 md:w-auto"/>
 					</label>
-					<label class="grid gap-1.5">
+					<label class="grid w-full gap-1.5 md:w-auto">
 						<span class="text-2xs font-semibold uppercase text-dim">To</span>
-						<input type="date" name="to" value={ libraryDateInputValue(data.Filters.ToValue, data.Filters.To) } class="h-9 rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent"/>
+						<input type="date" name="to" value={ libraryDateInputValue(data.Filters.ToValue, data.Filters.To) } class="h-11 w-full rounded-card border border-line bg-page px-2.5 text-sm text-text outline-none focus:border-accent md:h-9 md:w-auto"/>
 					</label>
-					<button type="submit" class="inline-flex h-9 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90">
+					<button type="submit" class="inline-flex h-11 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90 md:h-9">
 						@icon.Search(icon.Props{Class: "size-4"})
 						Apply
 					</button>
 					if data.HasActiveFilters {
-						<a href="/library" class="inline-flex h-9 items-center justify-center rounded-card border border-line px-2.5 text-sec hover:border-accent hover:text-accent" aria-label="Reset filters" title="Reset filters">
+						<a href="/library" class="inline-flex h-11 items-center justify-center rounded-card border border-line px-2.5 text-sec hover:border-accent hover:text-accent md:h-9" aria-label="Reset filters" title="Reset filters">
 							@icon.RotateCcw(icon.Props{Class: "size-4"})
 						</a>
 					}
-					<span class="ml-auto font-mono text-xs text-sec">{ libraryResultsLabel(data) }</span>
+					<span class="font-mono text-xs text-sec md:ml-auto">{ libraryResultsLabel(data) }</span>
 				</form>
 				if len(data.Warnings) > 0 {
 					<div class="grid flex-none gap-2">
@@ -69,7 +69,7 @@ templ LibraryPage(data LibraryData) {
 					</div>
 				}
 				<section id="library-table" class="flex min-w-0 flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
-					<div class="overflow-x-auto">
+					<div class="overflow-x-auto" data-library-table-scroll>
 						<div class="min-w-[980px]">
 							<div class="grid grid-cols-[130px_120px_minmax(220px,1.5fr)_130px_minmax(180px,1fr)_140px_120px] gap-3.5 border-b border-line px-4 py-2">
 								<span class="text-2xs font-semibold uppercase text-dim">Project</span>

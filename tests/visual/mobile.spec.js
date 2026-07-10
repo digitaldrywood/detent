@@ -225,6 +225,94 @@ test("issue detail is a touch-safe full-screen sheet", async ({ page }) => {
   await expect(tooltip).toBeHidden();
 });
 
+test("settings exposes complete values and touch copy actions", async ({
+  page,
+}) => {
+  await page.setExtraHTTPHeaders({
+    "X-Detent-Demo-Scenario": "settings-loaded-fleet",
+  });
+  await page.goto(`${runtime.url}/settings`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  const pathValue = page
+    .locator("#settings-global [title]")
+    .filter({ hasText: "/" })
+    .first();
+  await expect(pathValue).toBeVisible();
+  await expect(pathValue).toHaveCSS("white-space", "normal");
+  const copy = page.locator("#settings-global [data-copy]").first();
+  await expect(copy).toBeVisible();
+  const copyBox = await copy.boundingBox();
+  expect(copyBox?.width).toBeGreaterThanOrEqual(44);
+  expect(copyBox?.height).toBeGreaterThanOrEqual(44);
+  await copy.click();
+  await expect(copy.locator("[data-copy-label]")).toHaveText("Copied!");
+  await expectNoHorizontalScroll(page);
+});
+
+test("health keeps its morph target and contains table overflow", async ({
+  page,
+}) => {
+  await page.setExtraHTTPHeaders({
+    "X-Detent-Demo-Scenario": "github-api-healthy",
+  });
+  await page.goto(`${runtime.url}/health/ui`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  await expect(page.locator("#snapshot")).toHaveAttribute(
+    "hx-swap",
+    "morph:innerHTML",
+  );
+  const table = page.locator("[data-health-table-scroll]");
+  await expect(table).toHaveCSS("overflow-x", "auto");
+  const dimensions = await table.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+  }));
+  expect(dimensions.scrollWidth).toBeGreaterThan(dimensions.clientWidth);
+  await expect(page.locator("#health-verdict")).toHaveCSS("flex-wrap", "wrap");
+  await expectNoHorizontalScroll(page);
+});
+
+test("library filters stack with touch-sized controls", async ({ page }) => {
+  await page.goto(`${runtime.url}/library`, { waitUntil: "domcontentloaded" });
+
+  const form = page.locator('form[action="/library"]');
+  await expect(form).toHaveCSS("flex-direction", "column");
+  for (const control of await form.locator("select, input, button").all()) {
+    const box = await control.boundingBox();
+    expect(box?.width).toBeLessThanOrEqual(326);
+    expect(box?.height).toBeGreaterThanOrEqual(44);
+  }
+  await expect(page.locator("[data-library-table-scroll]")).toHaveCSS(
+    "overflow-x",
+    "auto",
+  );
+  await expectNoHorizontalScroll(page);
+});
+
+test("API key controls are touch-sized and the create dialog fits", async ({
+  page,
+}) => {
+  await page.goto(`${runtime.url}/api-keys`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  const create = page.locator("[data-api-key-open-create]").first();
+  const createBox = await create.boundingBox();
+  expect(createBox?.height).toBeGreaterThanOrEqual(44);
+  await create.click();
+  const dialog = page.locator("#api-key-modal");
+  await expect(dialog).toBeVisible();
+  const dialogBox = await dialog.boundingBox();
+  expect(dialogBox?.x).toBeGreaterThanOrEqual(0);
+  expect((dialogBox?.x || 0) + (dialogBox?.width || 0)).toBeLessThanOrEqual(390);
+  expect(dialogBox?.height).toBeLessThanOrEqual(844);
+  await expectNoHorizontalScroll(page);
+});
+
 test("reports charts and analytics log stay usable on mobile", async ({
   page,
 }) => {

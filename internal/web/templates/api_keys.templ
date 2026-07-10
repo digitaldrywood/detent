@@ -8,9 +8,9 @@ templ APIKeysPage(data APIKeysData) {
 		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
 			<div class="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-hidden px-5 py-5">
 				if data.ShowStaticOnlyBanner {
-					<div class="flex items-center justify-between gap-4 rounded-card border border-warn/40 bg-warn/10 px-4 py-3 text-sm text-warn" data-api-key-banner>
+					<div class="flex items-start justify-between gap-4 rounded-card border border-warn/40 bg-warn/10 px-4 py-3 text-sm text-warn" data-api-key-banner>
 						<span>Server is bound outside loopback and only the static token is configured. Create scoped keys for each client.</span>
-						<button type="button" class="rounded-chip p-1 hover:bg-warn/10" data-api-key-dismiss-banner aria-label="Dismiss API key banner">
+						<button type="button" class="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-chip hover:bg-warn/10 md:min-h-0 md:min-w-0 md:p-1" data-api-key-dismiss-banner aria-label="Dismiss API key banner">
 							@icon.X(icon.Props{Class: "size-4"})
 						</button>
 					</div>
@@ -26,7 +26,7 @@ templ APIKeysPage(data APIKeysData) {
 							name="q"
 							value={ data.Search }
 							placeholder="Search by name"
-							class="h-9 w-full rounded-card border border-line bg-surface pl-9 pr-3 text-sm text-text outline-none focus:border-accent"
+							class="h-11 w-full rounded-card border border-line bg-surface pl-9 pr-3 text-sm text-text outline-none focus:border-accent md:h-9"
 							hx-get="/api/v1/keys"
 							hx-trigger="input changed delay:300ms, search"
 							hx-target="#api-keys-table"
@@ -36,7 +36,7 @@ templ APIKeysPage(data APIKeysData) {
 						/>
 						<input id="api-key-sort" type="hidden" name="sort" value={ data.Sort }/>
 					</div>
-					<button type="button" class="inline-flex h-9 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90" data-api-key-open-create>
+					<button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-card bg-accent px-3 text-sm font-medium text-page hover:bg-accent/90 md:h-9" data-api-key-open-create>
 						@icon.Plus(icon.Props{Class: "size-4"})
 						Create key
 					</button>
@@ -71,7 +71,9 @@ templ APIKeysTable(data APIKeysData) {
 			}
 		</section>
 	} else {
-		<section class="flex flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
+		<section class="flex min-w-0 flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
+			<div class="overflow-x-auto" data-api-keys-table-scroll>
+			<div class="min-w-[1120px]">
 			<div class="grid grid-cols-[minmax(140px,1.1fr)_140px_90px_minmax(120px,1fr)_120px_120px_110px_130px] gap-3.5 border-b border-line px-4 py-2">
 				@apiKeySortableHeader("name", "Name", data)
 				<span class="text-2xs font-semibold uppercase text-dim">Key</span>
@@ -96,6 +98,8 @@ templ APIKeysTable(data APIKeysData) {
 				}
 			</details>
 			}
+			</div>
+			</div>
 		</section>
 	}
 }
@@ -141,7 +145,7 @@ templ apiKeyTableRow(row APIKeyRow, data APIKeysData) {
 		<span class="flex justify-end gap-1.5">
 			<button
 				type="button"
-				class="rounded-chip border border-line p-1.5 text-sec hover:border-accent hover:text-accent"
+				class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-chip border border-line text-sec hover:border-accent hover:text-accent md:min-h-0 md:min-w-0 md:p-1.5"
 				hx-get={ "/api/v1/keys/" + row.ID + "/rotate" }
 				hx-target="#api-key-modal-body"
 				hx-swap="innerHTML"
@@ -153,7 +157,7 @@ templ apiKeyTableRow(row APIKeyRow, data APIKeysData) {
 			</button>
 			<button
 				type="button"
-				class="rounded-chip border border-line p-1.5 text-sec hover:border-err hover:text-err"
+				class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-chip border border-line text-sec hover:border-err hover:text-err md:min-h-0 md:min-w-0 md:p-1.5"
 				hx-delete={ "/api/v1/keys/" + row.ID }
 				hx-target="#api-keys-table"
 				hx-include="#api-key-search,#api-key-sort"
@@ -175,7 +179,7 @@ templ APIKeyModalHost(data APIKeysData) {
 	<template id="api-key-create-template">
 		@APIKeyCreateForm(data)
 	</template>
-	<dialog id="api-key-modal" class="w-full max-w-2xl rounded-card border border-line bg-page p-0 text-text shadow-lg backdrop:bg-black/50">
+	<dialog id="api-key-modal" class="max-h-dvh w-full max-w-2xl overflow-y-auto rounded-card border border-line bg-page p-0 text-text shadow-lg backdrop:bg-black/50 md:max-h-[calc(100dvh-2rem)]">
 		<div id="api-key-modal-body">
 			@APIKeyCreateForm(data)
 		</div>
