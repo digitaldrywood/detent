@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
@@ -59,6 +60,9 @@ type AgentTurnRequest struct {
 	Workspace          string
 	Prompt             string
 	Model              string
+	ModelProvider      string
+	ServiceTier        string
+	ReasoningEffort    string
 	Resume             AgentResume
 	TurnTimeout        time.Duration
 	ExtraWritableRoots []string
@@ -109,13 +113,14 @@ type AgentUpdateHandler func(AgentUpdate) error
 type AgentUpdateType string
 
 const (
-	AgentUpdateProcessStarted AgentUpdateType = "process_started"
-	AgentUpdateMessageDelta   AgentUpdateType = "agent_message_delta"
-	AgentUpdateTokenUsage     AgentUpdateType = "token_usage"
-	AgentUpdateRateLimits     AgentUpdateType = "rate_limits"
-	AgentUpdateTurnStarted    AgentUpdateType = "turn_started"
-	AgentUpdateTurnCompleted  AgentUpdateType = "turn_completed"
-	AgentUpdateModelUpdated   AgentUpdateType = "model_updated"
+	AgentUpdateProcessStarted  AgentUpdateType = "process_started"
+	AgentUpdateMessageDelta    AgentUpdateType = "agent_message_delta"
+	AgentUpdateTokenUsage      AgentUpdateType = "token_usage"
+	AgentUpdateRateLimits      AgentUpdateType = "rate_limits"
+	AgentUpdateTurnStarted     AgentUpdateType = "turn_started"
+	AgentUpdateTurnCompleted   AgentUpdateType = "turn_completed"
+	AgentUpdateModelUpdated    AgentUpdateType = "model_updated"
+	AgentUpdateRuntimeIdentity AgentUpdateType = "runtime_identity"
 )
 
 type AgentUpdate struct {
@@ -128,6 +133,7 @@ type AgentUpdate struct {
 	Delta               string
 	Status              string
 	Model               string
+	RuntimeIdentity     agentidentity.Identity
 	BackendErrorBody    string
 	BackendErrorMessage string
 	Tokens              AgentTokenUsage
@@ -201,18 +207,20 @@ type ValidatorRequest struct {
 }
 
 type RunResult struct {
-	FinalState    string
-	Output        string
-	Model         string
-	Tokens        TokenTotals
-	DiffStats     DiffStats
-	RateLimits    *telemetry.RateLimits
-	BudgetRefusal *BudgetRefusal
+	FinalState      string
+	Output          string
+	Model           string
+	RuntimeIdentity agentidentity.Identity
+	Tokens          TokenTotals
+	DiffStats       DiffStats
+	RateLimits      *telemetry.RateLimits
+	BudgetRefusal   *BudgetRefusal
 }
 
 type UsageUpdateHandler func(UsageUpdate) error
 
 type UsageUpdate struct {
+	DetentSessionID       int64
 	SessionID             string
 	ProcessIdentity       string
 	WorkspacePath         string
@@ -222,6 +230,7 @@ type UsageUpdate struct {
 	LastMessage           string
 	LastMessageTruncation *runtimeoutput.Truncation
 	RecentEvents          []telemetry.ActivityEvent
+	RuntimeIdentity       agentidentity.Identity
 	Tokens                TokenTotals
 	DiffStats             DiffStats
 	RateLimits            *telemetry.RateLimits

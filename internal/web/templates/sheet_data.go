@@ -6,6 +6,7 @@ import (
 
 	"github.com/a-h/templ"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
@@ -13,16 +14,17 @@ import (
 // sheetSession is the live-session slice of the detail sheet: what the
 // agent is doing right now, or why it is blocked.
 type sheetSession struct {
-	Present   bool
-	Kind      primitives.Kind
-	State     string
-	Host      string
-	SessionID string
-	Runtime   string
-	Turns     string
-	LastEvent string
-	Message   string
-	Error     string
+	Present         bool
+	Kind            primitives.Kind
+	State           string
+	Host            string
+	SessionID       string
+	Runtime         string
+	Turns           string
+	LastEvent       string
+	Message         string
+	Error           string
+	RuntimeIdentity agentidentity.Identity
 }
 
 // FindBoardCard locates one card on the fleet board by project and issue
@@ -86,16 +88,21 @@ func boardCardMatchesLegacyIssueNumber(cardNumber string, issueIdentity string) 
 func sheetSessionFor(snapshot telemetry.Snapshot, card projectKanbanCard) sheetSession {
 	for _, running := range snapshot.Running {
 		if issueIdentifier(running.Issue) == card.Identifier && sheetSessionMatchesProject(running.ProjectID, card) {
+			identity := running.RuntimeIdentity
+			if identity.IsZero() {
+				identity = card.RuntimeIdentity
+			}
 			session := sheetSession{
-				Present:   true,
-				Kind:      primitives.KindOK,
-				State:     "Agent running",
-				Host:      strings.TrimSpace(running.WorkerHost),
-				SessionID: strings.TrimSpace(running.SessionID),
-				Runtime:   formatDuration(running.RuntimeSeconds),
-				Turns:     formatCount(running.TurnCount),
-				LastEvent: strings.TrimSpace(running.LastEvent),
-				Message:   strings.TrimSpace(displayOutputText(running.LastMessage, running.LastMessageTruncation)),
+				Present:         true,
+				Kind:            primitives.KindOK,
+				State:           "Agent running",
+				Host:            strings.TrimSpace(running.WorkerHost),
+				SessionID:       strings.TrimSpace(running.SessionID),
+				Runtime:         formatDuration(running.RuntimeSeconds),
+				Turns:           formatCount(running.TurnCount),
+				LastEvent:       strings.TrimSpace(running.LastEvent),
+				Message:         strings.TrimSpace(displayOutputText(running.LastMessage, running.LastMessageTruncation)),
+				RuntimeIdentity: identity,
 			}
 			return session
 		}
@@ -103,16 +110,25 @@ func sheetSessionFor(snapshot telemetry.Snapshot, card projectKanbanCard) sheetS
 	for _, blocked := range snapshot.Blocked {
 		if issueIdentifier(blocked.Issue) == card.Identifier && sheetSessionMatchesProject(blocked.ProjectID, card) {
 			session := sheetSession{
-				Present:   true,
-				Kind:      primitives.KindErr,
-				State:     "Session blocked",
-				Host:      strings.TrimSpace(blocked.WorkerHost),
-				SessionID: strings.TrimSpace(blocked.SessionID),
-				LastEvent: strings.TrimSpace(blocked.LastEvent),
-				Message:   strings.TrimSpace(blocked.LastMessage),
-				Error:     strings.TrimSpace(blocked.Error),
+				Present:         true,
+				Kind:            primitives.KindErr,
+				State:           "Session blocked",
+				Host:            strings.TrimSpace(blocked.WorkerHost),
+				SessionID:       strings.TrimSpace(blocked.SessionID),
+				LastEvent:       strings.TrimSpace(blocked.LastEvent),
+				Message:         strings.TrimSpace(blocked.LastMessage),
+				Error:           strings.TrimSpace(blocked.Error),
+				RuntimeIdentity: card.RuntimeIdentity,
 			}
 			return session
+		}
+	}
+	if !card.RuntimeIdentity.IsZero() {
+		return sheetSession{
+			Present:         true,
+			Kind:            primitives.KindNeutral,
+			State:           "Recent session",
+			RuntimeIdentity: card.RuntimeIdentity,
 		}
 	}
 	return sheetSession{}

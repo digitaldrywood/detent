@@ -43,9 +43,11 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	pipeline := authorizedSnapshotIssues(s.Pipeline, s.Authorization, s.SelectorContext)
 	statusDrift := authorizedStatusDrift(s.StatusDrift, s.Authorization, s.SelectorContext)
 	boardIssueSnapshots := issueSnapshots(boardIssues, s.AutoPromoteQuietDuration, s.PollInterval, now)
+	applyIssueRuntimeIdentities(boardIssueSnapshots, s.Running, s.WorkAttempts)
 	s.applyGatePendingSnapshots(boardIssueSnapshots, boardIssues)
 	s.applyAutoPromoteDecisionSnapshots(boardIssueSnapshots, boardIssues, now)
 	pipelineIssueSnapshots := pipelineSnapshots(pipeline, s.AutoPromoteQuietDuration, s.PollInterval, s.MergeTimings, now)
+	applyIssueRuntimeIdentities(pipelineIssueSnapshots, s.Running, s.WorkAttempts)
 	s.applyAutoPromoteDecisionSnapshots(pipelineIssueSnapshots, pipeline, now)
 	snapshot := telemetry.Snapshot{
 		GeneratedAt:        now,
@@ -254,6 +256,7 @@ func runningSnapshots(running map[string]Running, claims map[string]Claimed, mer
 		applyClaimSnapshot(&issue, claims[id], now)
 		out = append(out, telemetry.Running{
 			Issue:                 issue,
+			DetentSessionID:       entry.DetentSessionID,
 			WorkerHost:            entry.WorkerHost,
 			ProcessIdentity:       entry.ProcessIdentity,
 			WorkspacePath:         entry.WorkspacePath,
@@ -272,6 +275,7 @@ func runningSnapshots(running map[string]Running, claims map[string]Claimed, mer
 			DiffStatus:            entry.DiffStats.Status,
 			Tokens:                tokensFromTokenTotals(entry.Tokens),
 		})
+		out[len(out)-1].RuntimeIdentity = entry.RuntimeIdentity
 	}
 	return out
 }
@@ -332,14 +336,47 @@ func completedSnapshots(completed map[string]Completed, claims map[string]Claime
 		applyClaimSnapshot(&issue, claims[id], now)
 		out = append(out, telemetry.Completed{
 			Issue:          issue,
+			SessionID:      entry.SessionID,
 			StartedAt:      entry.StartedAt,
 			CompletedAt:    entry.CompletedAt,
 			FinalState:     entry.FinalState,
+			Model:          entry.RuntimeIdentity.Model(),
 			RuntimeSeconds: entry.Tokens.RuntimeSeconds,
 			Tokens:         tokensFromTokenTotals(entry.Tokens),
 		})
+		out[len(out)-1].RuntimeIdentity = entry.RuntimeIdentity
 	}
 	return out
+}
+
+func applyIssueRuntimeIdentities(issues []telemetry.Issue, running map[string]Running, attempts []telemetry.WorkAttempt) {
+	for index := range issues {
+		for _, entry := range running {
+			if snapshotIssueMatches(issues[index], entry.Issue.ID, entry.Issue.Identifier, entry.Issue.URL) && !entry.RuntimeIdentity.IsZero() {
+				issues[index].RuntimeIdentity = entry.RuntimeIdentity
+				break
+			}
+		}
+		if !issues[index].RuntimeIdentity.IsZero() {
+			continue
+		}
+		for _, attempt := range attempts {
+			if snapshotIssueMatches(issues[index], attempt.IssueID, attempt.Identifier, attempt.IssueURL) && !attempt.RuntimeIdentity.IsZero() {
+				issues[index].RuntimeIdentity = attempt.RuntimeIdentity
+				break
+			}
+		}
+	}
+}
+
+func snapshotIssueMatches(issue telemetry.Issue, issueID string, identifier string, issueURL string) bool {
+	if issue.ID != "" && strings.TrimSpace(issueID) == issue.ID {
+		return true
+	}
+	if issue.Identifier != "" && strings.TrimSpace(identifier) == issue.Identifier {
+		return true
+	}
+	return issue.URL != "" && strings.TrimSpace(issueURL) == issue.URL
 }
 
 func budgetRefusalSnapshots(refusals map[string]BudgetRefusal) []telemetry.BudgetRefusal {

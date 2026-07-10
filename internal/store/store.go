@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
 )
 
@@ -42,6 +43,7 @@ type StatsStore interface {
 	UpdateRun(context.Context, int64, RunUpdate) error
 	StopRun(context.Context, int64, RunStop) error
 	StartSession(context.Context, SessionStart) (int64, error)
+	UpdateSessionIdentity(context.Context, int64, agentidentity.Identity) error
 	FinishSession(context.Context, int64, SessionFinish) error
 	RecordUsageEvent(context.Context, UsageEvent) (int64, error)
 	UsageReport(context.Context, UsageReportQuery) (UsageReport, error)
@@ -206,6 +208,7 @@ type RunStop struct {
 
 type SessionStart struct {
 	RunID            int64
+	WorkAttemptID    int64
 	IssueID          string
 	Identifier       string
 	IssueURL         string
@@ -215,6 +218,7 @@ type SessionStart struct {
 	AgentBackendID   string
 	AgentBackendKind string
 	AgentRole        string
+	RuntimeIdentity  agentidentity.Identity
 }
 
 type SessionFinish struct {
@@ -232,6 +236,7 @@ type SessionFinish struct {
 	ProviderThreadID      string
 	ProviderSessionID     string
 	ResumedFromSessionID  int64
+	RuntimeIdentity       agentidentity.Identity
 }
 
 type AgentResumeLookup struct {
@@ -412,6 +417,9 @@ type WorkAttempt struct {
 	WorkerMetadataJSON     string
 	MetricsJSON            string
 	NextAction             string
+	DetentSessionID        int64
+	ProviderSessionID      string
+	RuntimeIdentity        agentidentity.Identity
 }
 
 type WorkAttemptStart struct {
@@ -440,6 +448,9 @@ type WorkAttemptStart struct {
 	WorkerMetadataJSON     string
 	MetricsJSON            string
 	NextAction             string
+	DetentSessionID        int64
+	ProviderSessionID      string
+	RuntimeIdentity        agentidentity.Identity
 }
 
 type WorkAttemptHeartbeat struct {
@@ -460,6 +471,9 @@ type WorkAttemptHeartbeat struct {
 	NextAction             string
 	ErrorClass             string
 	ErrorMessage           string
+	DetentSessionID        int64
+	ProviderSessionID      string
+	RuntimeIdentity        agentidentity.Identity
 }
 
 type WorkAttemptCompletion struct {
@@ -478,6 +492,9 @@ type WorkAttemptCompletion struct {
 	WorkerMetadataJSON     string
 	MetricsJSON            string
 	NextAction             string
+	DetentSessionID        int64
+	ProviderSessionID      string
+	RuntimeIdentity        agentidentity.Identity
 }
 
 type WorkAttemptQuery struct {

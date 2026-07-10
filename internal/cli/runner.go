@@ -215,6 +215,7 @@ func buildClaudeAgentBackend(command string, cfg workflowconfig.ClaudeCodeOption
 			return buildClaudeCommandFromConfig(ctx, command, cfg.Shell, args)
 		},
 		PermissionMode:         cfg.PermissionMode,
+		Effort:                 cfg.Effort,
 		AllowedTools:           cfg.AllowedTools,
 		DisallowedTools:        cfg.DisallowedTools,
 		IncludePartialMessages: cfg.IncludePartialMessages,

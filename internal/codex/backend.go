@@ -6,6 +6,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -40,6 +41,8 @@ func (b *AgentBackend) RunTurn(
 		ThreadSandbox:     b.options.ThreadSandbox,
 		TurnSandboxPolicy: turnSandboxPolicyForWorkspace(b.options.ThreadSandbox, b.options.TurnSandboxPolicy, req.ExtraWritableRoots),
 		Model:             req.Model,
+		ModelProvider:     req.ModelProvider,
+		ServiceTier:       req.ServiceTier,
 		TurnTimeout:       req.TurnTimeout,
 	}, func(update Update) error {
 		if onUpdate == nil {
@@ -65,6 +68,10 @@ func (b *AgentBackend) RunTurn(
 }
 
 func agentUpdateFromCodex(update Update) runner.AgentUpdate {
+	identity := update.RuntimeIdentity
+	if identity.IsZero() && update.Model != "" {
+		identity = agentidentity.RuntimeUpdate(update.Model, "", "", "", time.Time{})
+	}
 	return runner.AgentUpdate{
 		Type:                runner.AgentUpdateType(update.Type),
 		Method:              update.Method,
@@ -75,6 +82,7 @@ func agentUpdateFromCodex(update Update) runner.AgentUpdate {
 		Delta:               update.Delta,
 		Status:              update.Status,
 		Model:               update.Model,
+		RuntimeIdentity:     identity,
 		BackendErrorBody:    update.BackendErrorBody,
 		BackendErrorMessage: update.BackendErrorMessage,
 		Tokens: runner.AgentTokenUsage{

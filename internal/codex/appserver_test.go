@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 )
 
 func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
@@ -17,7 +19,7 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 
 	transport := newFakeAppServerTransport([]Message{
 		responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
-		responseMessage(t, 2, `{"thread":{"id":"thread-1","model":"gpt-5-codex-resolved"}}`),
+		responseMessage(t, 2, `{"thread":{"id":"thread-1"},"model":"gpt-5-codex-resolved","modelProvider":"openai","reasoningEffort":"xhigh","serviceTier":"priority"}`),
 		responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
 		notificationMessage(t, "item/agentMessage/delta", `{
 			"threadId":"thread-1",
@@ -88,6 +90,8 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 		ApprovalPolicy:    json.RawMessage(`"never"`),
 		ThreadSandbox:     "workspace-write",
 		TurnSandboxPolicy: json.RawMessage(`{"type":"workspaceWrite","networkAccess":true}`),
+		ModelProvider:     "local_ollama",
+		ServiceTier:       "priority",
 	}, func(update Update) error {
 		updates = append(updates, update)
 		return nil
@@ -117,6 +121,8 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	assertJSONContains(t, sent[2].Params, "cwd", "/tmp/detent-workspace")
 	assertJSONContains(t, sent[2].Params, "approvalPolicy", "never")
 	assertJSONContains(t, sent[2].Params, "sandbox", "workspace-write")
+	assertJSONContains(t, sent[2].Params, "modelProvider", "local_ollama")
+	assertJSONContains(t, sent[2].Params, "serviceTier", "priority")
 
 	assertRequest(t, sent[3], 3, "turn/start")
 	assertJSONContains(t, sent[3].Params, "threadId", "thread-1")
@@ -125,39 +131,43 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	assertJSONContains(t, sent[3].Params, "cwd", "/tmp/detent-workspace")
 	assertJSONContains(t, sent[3].Params, "approvalPolicy", "never")
 	assertJSONContains(t, sent[3].Params, "sandboxPolicy.type", "workspaceWrite")
+	assertJSONContains(t, sent[3].Params, "serviceTier", "priority")
 
-	if len(updates) != 6 {
-		t.Fatalf("updates = %d, want 6: %#v", len(updates), updates)
+	if len(updates) != 7 {
+		t.Fatalf("updates = %d, want 7: %#v", len(updates), updates)
 	}
 	if updates[0].Type != UpdateProcessStarted || updates[0].ProcessIdentity != "4242" {
 		t.Fatalf("updates[0] = %#v, want process identity", updates[0])
 	}
-	if updates[1].Type != UpdateTurnStarted || updates[1].ThreadID != "thread-1" || updates[1].TurnID != "turn-1" || updates[1].Model != "gpt-5-codex-resolved" {
-		t.Fatalf("updates[1] = %#v, want turn started", updates[1])
+	if updates[1].Type != UpdateRuntimeIdentity || updates[1].RuntimeIdentity.Provider.Value != "openai" || updates[1].RuntimeIdentity.ReasoningEffort.Value != "xhigh" || updates[1].RuntimeIdentity.ServiceTier.Value != "priority" {
+		t.Fatalf("updates[1] = %#v, want runtime identity", updates[1])
 	}
-	if updates[2].Type != UpdateAgentMessageDelta || updates[2].Delta != "hello" {
-		t.Fatalf("updates[2] = %#v, want agent message delta", updates[2])
+	if updates[2].Type != UpdateTurnStarted || updates[2].ThreadID != "thread-1" || updates[2].TurnID != "turn-1" || updates[2].Model != "gpt-5-codex-resolved" {
+		t.Fatalf("updates[2] = %#v, want turn started", updates[2])
 	}
-	if updates[3].Type != UpdateTokenUsage || updates[3].Tokens.TotalTokens != 27 {
-		t.Fatalf("updates[3] = %#v, want token usage total 27", updates[3])
+	if updates[3].Type != UpdateAgentMessageDelta || updates[3].Delta != "hello" {
+		t.Fatalf("updates[3] = %#v, want agent message delta", updates[3])
 	}
-	if updates[3].Tokens.CachedInputTokens != 5 || updates[3].Tokens.ReasoningOutputTokens != 3 {
-		t.Fatalf("updates[3].Tokens = %#v", updates[3].Tokens)
+	if updates[4].Type != UpdateTokenUsage || updates[4].Tokens.TotalTokens != 27 {
+		t.Fatalf("updates[4] = %#v, want token usage total 27", updates[4])
 	}
-	if updates[3].Tokens.ModelContextWindow == nil || *updates[3].Tokens.ModelContextWindow != 200000 {
-		t.Fatalf("updates[3].Tokens.ModelContextWindow = %#v", updates[3].Tokens.ModelContextWindow)
+	if updates[4].Tokens.CachedInputTokens != 5 || updates[4].Tokens.ReasoningOutputTokens != 3 {
+		t.Fatalf("updates[4].Tokens = %#v", updates[4].Tokens)
 	}
-	if updates[4].Type != UpdateRateLimits || updates[4].RateLimits == nil {
-		t.Fatalf("updates[4] = %#v, want rate limits", updates[4])
+	if updates[4].Tokens.ModelContextWindow == nil || *updates[4].Tokens.ModelContextWindow != 200000 {
+		t.Fatalf("updates[4].Tokens.ModelContextWindow = %#v", updates[4].Tokens.ModelContextWindow)
 	}
-	if updates[4].RateLimits.LimitID != "codex-primary" || updates[4].RateLimits.Primary == nil {
-		t.Fatalf("updates[4].RateLimits = %#v", updates[4].RateLimits)
+	if updates[5].Type != UpdateRateLimits || updates[5].RateLimits == nil {
+		t.Fatalf("updates[5] = %#v, want rate limits", updates[5])
 	}
-	if updates[4].RateLimits.Primary.UsedPercent != 12.5 {
-		t.Fatalf("Primary.UsedPercent = %f, want 12.5", updates[4].RateLimits.Primary.UsedPercent)
+	if updates[5].RateLimits.LimitID != "codex-primary" || updates[5].RateLimits.Primary == nil {
+		t.Fatalf("updates[5].RateLimits = %#v", updates[5].RateLimits)
 	}
-	if updates[5].Type != UpdateTurnCompleted || updates[5].TurnID != "turn-1" {
-		t.Fatalf("updates[5] = %#v, want turn completed", updates[5])
+	if updates[5].RateLimits.Primary.UsedPercent != 12.5 {
+		t.Fatalf("Primary.UsedPercent = %f, want 12.5", updates[5].RateLimits.Primary.UsedPercent)
+	}
+	if updates[6].Type != UpdateTurnCompleted || updates[6].TurnID != "turn-1" {
+		t.Fatalf("updates[6] = %#v, want turn completed", updates[6])
 	}
 }
 
@@ -211,11 +221,14 @@ func TestAppServerRunTurnResumesThreadBeforeStartingTurn(t *testing.T) {
 	assertJSONContains(t, sent[3].Params, "threadId", "thread-existing")
 	assertJSONContains(t, sent[3].Params, "input.0.text", "Continue issue #18")
 
-	if len(updates) != 2 {
-		t.Fatalf("updates = %d, want turn started and completed: %#v", len(updates), updates)
+	if len(updates) != 3 {
+		t.Fatalf("updates = %d, want identity, turn started, and completed: %#v", len(updates), updates)
 	}
-	if updates[0].Type != UpdateTurnStarted || updates[0].ThreadID != "thread-existing" || updates[0].TurnID != "turn-2" || updates[0].Model != "gpt-5-codex-resumed" {
-		t.Fatalf("updates[0] = %#v, want resumed turn started", updates[0])
+	if updates[0].Type != UpdateRuntimeIdentity || updates[0].Model != "gpt-5-codex-resumed" {
+		t.Fatalf("updates[0] = %#v, want resumed runtime identity", updates[0])
+	}
+	if updates[1].Type != UpdateTurnStarted || updates[1].ThreadID != "thread-existing" || updates[1].TurnID != "turn-2" || updates[1].Model != "gpt-5-codex-resumed" {
+		t.Fatalf("updates[1] = %#v, want resumed turn started", updates[1])
 	}
 }
 
@@ -258,11 +271,14 @@ func TestAppServerRunTurnUsesConfigReadModelWhenThreadResponseOmitsModel(t *test
 	assertJSONContains(t, sent[3].Params, "cwd", "/tmp/detent-workspace")
 	assertRequest(t, sent[4], 3, "turn/start")
 
-	if len(updates) != 2 {
-		t.Fatalf("updates = %d, want turn started and completed: %#v", len(updates), updates)
+	if len(updates) != 3 {
+		t.Fatalf("updates = %d, want configured identity, turn started, and completed: %#v", len(updates), updates)
 	}
-	if updates[0].Type != UpdateTurnStarted || updates[0].Model != "gpt-5.6" {
-		t.Fatalf("updates[0] = %#v, want config-read fallback model", updates[0])
+	if updates[0].Type != UpdateRuntimeIdentity || updates[0].Model != "gpt-5.6" || updates[0].RuntimeIdentity.ResolvedModel.Provenance != "configured" {
+		t.Fatalf("updates[0] = %#v, want configured fallback identity", updates[0])
+	}
+	if updates[1].Type != UpdateTurnStarted || updates[1].Model != "gpt-5.6" {
+		t.Fatalf("updates[1] = %#v, want config-read fallback model", updates[1])
 	}
 }
 
@@ -366,6 +382,57 @@ func TestUpdateFromMessageCapturesModelReroute(t *testing.T) {
 	}
 	if update.Type != UpdateModelUpdated || update.ThreadID != "thread-1" || update.TurnID != "turn-1" || update.Model != "gpt-5.6" {
 		t.Fatalf("update = %#v, want model reroute update", update)
+	}
+	if got := update.RuntimeIdentity.ResolvedModel; got != (agentidentity.Value{Value: "gpt-5.6", Provenance: agentidentity.ProvenanceRuntime}) {
+		t.Fatalf("runtime resolved model = %#v, want gpt-5.6 runtime", got)
+	}
+}
+
+func TestUpdateFromMessageCapturesThreadSettingsIdentity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		payload      string
+		wantModel    agentidentity.Value
+		wantProvider agentidentity.Value
+		wantEffort   agentidentity.Value
+		wantTier     agentidentity.Value
+	}{
+		{
+			name:         "known runtime settings",
+			payload:      `{"threadId":"thread-1","threadSettings":{"model":"gpt-5.6-sol","modelProvider":"local_ollama","effort":"xhigh","serviceTier":"priority"}}`,
+			wantModel:    agentidentity.Value{Value: "gpt-5.6-sol", Provenance: agentidentity.ProvenanceRuntime},
+			wantProvider: agentidentity.Value{Value: "local_ollama", Provenance: agentidentity.ProvenanceRuntime},
+			wantEffort:   agentidentity.Value{Value: "xhigh", Provenance: agentidentity.ProvenanceRuntime},
+			wantTier:     agentidentity.Value{Value: "priority", Provenance: agentidentity.ProvenanceRuntime},
+		},
+		{
+			name:         "optional settings unavailable",
+			payload:      `{"threadId":"thread-1","threadSettings":{"model":"gpt-5.6-sol","modelProvider":"openai"}}`,
+			wantModel:    agentidentity.Value{Value: "gpt-5.6-sol", Provenance: agentidentity.ProvenanceRuntime},
+			wantProvider: agentidentity.Value{Value: "openai", Provenance: agentidentity.ProvenanceRuntime},
+			wantEffort:   agentidentity.UnknownValue(),
+			wantTier:     agentidentity.UnknownValue(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			update, ok, err := updateFromMessage(notificationMessage(t, "thread/settings/updated", tt.payload))
+			if err != nil {
+				t.Fatalf("updateFromMessage() error = %v", err)
+			}
+			if !ok || update.Type != UpdateRuntimeIdentity || update.ThreadID != "thread-1" {
+				t.Fatalf("update = %#v, want runtime identity update", update)
+			}
+			identity := update.RuntimeIdentity
+			if identity.ResolvedModel != tt.wantModel || identity.Provider != tt.wantProvider || identity.ReasoningEffort != tt.wantEffort || identity.ServiceTier != tt.wantTier {
+				t.Fatalf("runtime identity = %#v, want model=%#v provider=%#v effort=%#v tier=%#v", identity, tt.wantModel, tt.wantProvider, tt.wantEffort, tt.wantTier)
+			}
+		})
 	}
 }
 
@@ -513,11 +580,11 @@ func TestAppServerRunTurnReportsTurnErrorBody(t *testing.T) {
 	if !strings.Contains(err.Error(), backendError) {
 		t.Fatalf("RunTurn() error = %v, want backend body", err)
 	}
-	if len(updates) != 2 {
-		t.Fatalf("updates = %#v, want turn started and failed turn completed", updates)
+	if len(updates) != 3 {
+		t.Fatalf("updates = %#v, want identity, turn started, and failed turn completed", updates)
 	}
-	if updates[1].Status != "failed" || updates[1].BackendErrorBody != backendError {
-		t.Fatalf("failed update = %#v, want status failed with backend error", updates[1])
+	if updates[2].Status != "failed" || updates[2].BackendErrorBody != backendError {
+		t.Fatalf("failed update = %#v, want status failed with backend error", updates[2])
 	}
 }
 

@@ -68,7 +68,7 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 	assertJSONContains(t, sent[3].Params, "sandboxPolicy.writableRoots", []any{"/existing", "/extra"})
 	assertJSONContains(t, sent[3].Params, "model", "gpt-5-codex")
 
-	if len(updates) == 0 || updates[0].Type != runner.AgentUpdateTurnStarted || updates[0].Model != "gpt-5-codex-resolved" {
+	if len(updates) < 2 || updates[0].Type != runner.AgentUpdateRuntimeIdentity || updates[1].Type != runner.AgentUpdateTurnStarted || updates[1].Model != "gpt-5-codex-resolved" {
 		t.Fatalf("updates = %#v, want resolved model on turn started", updates)
 	}
 }

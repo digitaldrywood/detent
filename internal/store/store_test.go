@@ -12,6 +12,7 @@ import (
 
 	"github.com/pressly/goose/v3"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
 )
 
@@ -507,6 +508,19 @@ func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {
 		CapacitySnapshotJSON:   `{"global_available":1}`,
 		MetricsJSON:            `{"test_runs":1}`,
 		NextAction:             "wait for CI",
+		DetentSessionID:        737,
+		ProviderSessionID:      "thread-737-turn-1",
+		RuntimeIdentity: agentidentity.Configured(
+			"codex-local",
+			"codex",
+			"local",
+			"rework",
+			"qwen-alias",
+			"ollama",
+			"",
+			"",
+			base,
+		).Merge(agentidentity.RuntimeUpdate("qwen3-coder:30b", "local_ollama", "high", "", base.Add(time.Minute))),
 	}); err != nil {
 		t.Fatalf("RecordWorkAttemptHeartbeat() error = %v", err)
 	}
@@ -539,6 +553,9 @@ func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {
 	}
 	if got.Status != WorkAttemptStatusActive {
 		t.Fatalf("active status = %q, want %q", got.Status, WorkAttemptStatusActive)
+	}
+	if got.DetentSessionID != 737 || got.ProviderSessionID != "thread-737-turn-1" || got.RuntimeIdentity.Model() != "qwen3-coder:30b" || got.RuntimeIdentity.Role != "rework" {
+		t.Fatalf("active runtime identity = %#v, want correlated rework session", got)
 	}
 	receipt, err := backend.WorkAttempt(ctx, attemptID)
 	if err != nil {
@@ -590,6 +607,9 @@ func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {
 	}
 	if history[0].WorkerMetadataJSON != `{"completion_progress":{"outcome":"no_progress","current_head_sha":"abc123"}}` {
 		t.Fatalf("history WorkerMetadataJSON = %q", history[0].WorkerMetadataJSON)
+	}
+	if history[0].DetentSessionID != 737 || history[0].ProviderSessionID != "thread-737-turn-1" || history[0].RuntimeIdentity.Model() != "qwen3-coder:30b" {
+		t.Fatalf("history runtime identity = %#v, want heartbeat identity preserved at completion", history[0])
 	}
 
 	staleID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{
@@ -790,6 +810,74 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 				t.Fatalf("LifetimeTotals() sessions/runs = %#v, want 1/1", lifetime)
 			}
 		})
+	}
+}
+
+func TestSessionRuntimeIdentityPersistsRequestedAndResolvedSeparately(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	configuredAt := time.Date(2026, 7, 9, 18, 0, 0, 0, time.UTC)
+	runtimeAt := configuredAt.Add(time.Minute)
+	configured := agentidentity.Configured("codex-local", "codex", "local", "code", "qwen-alias", "ollama", "", "", configuredAt)
+
+	sessionID, err := backend.StartSession(ctx, SessionStart{
+		WorkAttemptID:   1118,
+		IssueID:         "issue-1118",
+		Identifier:      "digitaldrywood/detent#1118",
+		StartedAt:       configuredAt,
+		RequestedModel:  configured.RequestedModel.Value,
+		RuntimeIdentity: configured,
+	})
+	if err != nil {
+		t.Fatalf("StartSession() error = %v", err)
+	}
+
+	started, err := backend.Queries().GetCodexSession(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("GetCodexSession(started) error = %v", err)
+	}
+	if started.Model.Valid || started.Model.String != "" {
+		t.Fatalf("started model = %#v, want unresolved", started.Model)
+	}
+	if started.RequestedModel.String != "qwen-alias" || started.RequestedModelProvenance.String != string(agentidentity.ProvenanceConfigured) {
+		t.Fatalf("started requested model = %#v/%#v", started.RequestedModel, started.RequestedModelProvenance)
+	}
+	if started.WorkAttemptID.Int64 != 1118 || started.AgentRoute.String != "local" {
+		t.Fatalf("started attempt/route = %#v/%#v", started.WorkAttemptID, started.AgentRoute)
+	}
+
+	resolved := configured.Merge(agentidentity.RuntimeUpdate("qwen3-coder:30b", "local_ollama", "high", "flex", runtimeAt))
+	if err := backend.UpdateSessionIdentity(ctx, sessionID, resolved); err != nil {
+		t.Fatalf("UpdateSessionIdentity() error = %v", err)
+	}
+	if err := backend.FinishSession(ctx, sessionID, SessionFinish{
+		CompletedAt:       runtimeAt.Add(time.Minute),
+		FinalState:        "Human Review",
+		Model:             resolved.ResolvedModel.Value,
+		ProviderThreadID:  "thread-1118",
+		ProviderSessionID: "thread-1118-turn-1",
+		RuntimeIdentity:   resolved,
+	}); err != nil {
+		t.Fatalf("FinishSession() error = %v", err)
+	}
+
+	finished, err := backend.Queries().GetCodexSession(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("GetCodexSession(finished) error = %v", err)
+	}
+	if finished.RequestedModel.String != "qwen-alias" || finished.Model.String != "qwen3-coder:30b" {
+		t.Fatalf("finished requested/resolved = %q/%q", finished.RequestedModel.String, finished.Model.String)
+	}
+	if finished.Provider.String != "local_ollama" || finished.ProviderProvenance.String != string(agentidentity.ProvenanceRuntime) {
+		t.Fatalf("finished provider = %#v/%#v", finished.Provider, finished.ProviderProvenance)
+	}
+	if finished.ModelProvenance.String != string(agentidentity.ProvenanceRuntime) || finished.ReasoningEffort.String != "high" || finished.ServiceTier.String != "flex" {
+		t.Fatalf("finished runtime values = %#v", finished)
+	}
+	if finished.IdentityObservedAt.String != runtimeAt.Format(time.RFC3339Nano) {
+		t.Fatalf("identity observed at = %q, want %q", finished.IdentityObservedAt.String, runtimeAt.Format(time.RFC3339Nano))
 	}
 }
 

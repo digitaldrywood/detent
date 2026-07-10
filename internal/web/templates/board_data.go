@@ -91,6 +91,7 @@ type boardCardView struct {
 	ExtraKind         primitives.Kind
 	ExtraText         string
 	ExtraChip         bool
+	RuntimeSummary    string
 }
 
 func boardViewFromDashboard(data DashboardData) boardView {
@@ -399,6 +400,9 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		view.AgeFooterTitle = strings.TrimSpace(card.TimeInStageTitle)
 	}
 	view.ExtraKind, view.ExtraText, view.ExtraChip = boardCardExtra(card, view)
+	if view.Running {
+		view.RuntimeSummary = runtimeIdentitySummary(card.RuntimeIdentity)
+	}
 	return view
 }
 

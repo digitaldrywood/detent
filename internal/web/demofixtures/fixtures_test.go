@@ -83,6 +83,21 @@ func TestSnapshotForScenarioVariants(t *testing.T) {
 	}
 }
 
+func TestHealthySnapshotIncludesRuntimeIdentityFixtures(t *testing.T) {
+	t.Parallel()
+
+	snapshot := SnapshotForScenario("", "healthy")
+	if len(snapshot.Running) != 3 {
+		t.Fatalf("Running len = %d, want 3", len(snapshot.Running))
+	}
+	if got := snapshot.Running[0].RuntimeIdentity; got.BackendKind != "codex" || got.Provider.Value != "openai" || got.Model() != "gpt-5.6-sol" || got.ReasoningEffort.Value != "xhigh" {
+		t.Fatalf("Codex runtime identity = %#v", got)
+	}
+	if got := snapshot.Running[1].RuntimeIdentity; got.BackendKind != "claude_code" || got.Provider.Value != "ollama" || got.Model() != "qwen3-coder" || got.ReasoningEffort.Known() {
+		t.Fatalf("Claude runtime identity = %#v", got)
+	}
+}
+
 func assertSnapshotProjectIDs(t *testing.T, snapshot telemetry.Snapshot) {
 	t.Helper()
 

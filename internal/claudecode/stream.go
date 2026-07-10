@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
@@ -115,16 +117,26 @@ func (s *turnState) apply(event claudeEvent, includePartialMessages bool, onUpda
 	if event.SessionID != "" {
 		s.sessionID = event.SessionID
 	}
+	previousModel := s.model
 	s.observeModel(event)
 
 	switch event.Type {
 	case "system", "init":
 		return s.applyInit(event, onUpdate)
 	case "assistant":
+		if err := s.emitModelChange(previousModel, onUpdate); err != nil {
+			return err
+		}
 		return s.applyAssistant(event, includePartialMessages, onUpdate)
 	case "stream_event":
+		if err := s.emitModelChange(previousModel, onUpdate); err != nil {
+			return err
+		}
 		return s.applyStreamEvent(event, includePartialMessages, onUpdate)
 	case "result":
+		if err := s.emitModelChange(previousModel, onUpdate); err != nil {
+			return err
+		}
 		return s.applyResult(event, onUpdate)
 	default:
 		return nil
@@ -140,10 +152,25 @@ func (s *turnState) applyInit(event claudeEvent, onUpdate runner.AgentUpdateHand
 	}
 	s.turnStartedSent = true
 	return emitUpdate(onUpdate, runner.AgentUpdate{
-		Type:     runner.AgentUpdateTurnStarted,
-		ThreadID: event.SessionID,
-		TurnID:   event.SessionID,
-		Model:    s.model,
+		Type:            runner.AgentUpdateTurnStarted,
+		ThreadID:        event.SessionID,
+		TurnID:          event.SessionID,
+		Model:           s.model,
+		RuntimeIdentity: agentidentity.RuntimeUpdate(s.model, "", "", "", time.Time{}),
+	})
+}
+
+func (s *turnState) emitModelChange(previousModel string, onUpdate runner.AgentUpdateHandler) error {
+	model := strings.TrimSpace(s.model)
+	if model == "" || model == strings.TrimSpace(previousModel) {
+		return nil
+	}
+	return emitUpdate(onUpdate, runner.AgentUpdate{
+		Type:            runner.AgentUpdateModelUpdated,
+		ThreadID:        s.sessionID,
+		TurnID:          s.sessionID,
+		Model:           model,
+		RuntimeIdentity: agentidentity.RuntimeUpdate(model, "", "", "", time.Time{}),
 	})
 }
 

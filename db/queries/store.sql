@@ -40,6 +40,17 @@ INSERT INTO codex_sessions (
   agent_backend_id,
   agent_backend_kind,
   agent_role,
+  work_attempt_id,
+  agent_route,
+  provider,
+  provider_provenance,
+  requested_model_provenance,
+  model_provenance,
+  reasoning_effort,
+  reasoning_effort_provenance,
+  service_tier,
+  service_tier_provenance,
+  identity_observed_at,
   completed_at,
   turns,
   input_tokens,
@@ -54,7 +65,7 @@ INSERT INTO codex_sessions (
   provider_thread_id,
   provider_session_id,
   resumed_from_session_id
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetCodexSession :one
@@ -78,6 +89,25 @@ SET completed_at = sqlc.arg(completed_at),
     provider_thread_id = COALESCE(sqlc.narg(provider_thread_id), provider_thread_id),
     provider_session_id = COALESCE(sqlc.narg(provider_session_id), provider_session_id),
     resumed_from_session_id = COALESCE(sqlc.narg(resumed_from_session_id), resumed_from_session_id)
+WHERE id = sqlc.arg(id);
+
+-- name: UpdateCodexSessionIdentity :execrows
+UPDATE codex_sessions
+SET agent_backend_id = COALESCE(sqlc.narg(agent_backend_id), agent_backend_id),
+    agent_backend_kind = COALESCE(sqlc.narg(agent_backend_kind), agent_backend_kind),
+    agent_role = COALESCE(sqlc.narg(agent_role), agent_role),
+    agent_route = COALESCE(sqlc.narg(agent_route), agent_route),
+    provider = sqlc.narg(provider),
+    provider_provenance = sqlc.narg(provider_provenance),
+    requested_model = COALESCE(sqlc.narg(requested_model), requested_model),
+    requested_model_provenance = sqlc.narg(requested_model_provenance),
+    model = COALESCE(sqlc.narg(model), model),
+    model_provenance = sqlc.narg(model_provenance),
+    reasoning_effort = sqlc.narg(reasoning_effort),
+    reasoning_effort_provenance = sqlc.narg(reasoning_effort_provenance),
+    service_tier = sqlc.narg(service_tier),
+    service_tier_provenance = sqlc.narg(service_tier_provenance),
+    identity_observed_at = sqlc.narg(identity_observed_at)
 WHERE id = sqlc.arg(id);
 
 -- name: GetLatestCompletedAgentResumeState :one
@@ -263,7 +293,7 @@ WHERE completed_at IS NOT NULL;
 
 -- name: DailyTokenSpend :many
 SELECT
-  CAST(COALESCE(model, '') AS TEXT) AS model,
+  CAST(COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '') AS TEXT) AS model,
   CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
   CAST(COALESCE(SUM(cached_input_tokens), 0) AS INTEGER) AS cached_input_tokens,
   CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
@@ -272,12 +302,12 @@ SELECT
   CAST(COUNT(*) AS INTEGER) AS sessions
 FROM codex_sessions
 WHERE substr(completed_at, 1, 10) = ?
-GROUP BY COALESCE(model, '')
-ORDER BY COALESCE(model, '');
+GROUP BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
+ORDER BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '');
 
 -- name: IssueTokenSpend :many
 SELECT
-  CAST(COALESCE(model, '') AS TEXT) AS model,
+  CAST(COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '') AS TEXT) AS model,
   CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
   CAST(COALESCE(SUM(cached_input_tokens), 0) AS INTEGER) AS cached_input_tokens,
   CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
@@ -288,8 +318,8 @@ FROM codex_sessions
 WHERE issue_id = sqlc.arg(issue_id)
    OR identifier = sqlc.arg(identifier)
    OR issue_url = sqlc.arg(issue_url)
-GROUP BY COALESCE(model, '')
-ORDER BY COALESCE(model, '');
+GROUP BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
+ORDER BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '');
 
 -- name: RecentModelTokenQuantiles :one
 WITH recent AS (
@@ -300,7 +330,7 @@ WITH recent AS (
     total_tokens
   FROM codex_sessions
   WHERE completed_at IS NOT NULL
-    AND lower(trim(COALESCE(model, ''))) = lower(trim(sqlc.arg(model)))
+    AND lower(trim(COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), ''))) = lower(trim(sqlc.arg(model)))
   ORDER BY completed_at DESC, id DESC
   LIMIT sqlc.arg(limit)
 ),
@@ -545,8 +575,11 @@ INSERT INTO work_attempts (
   capacity_snapshot_json,
   worker_metadata_json,
   metrics_json,
-  next_action
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  next_action,
+  detent_session_id,
+  provider_session_id,
+  runtime_identity_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetWorkAttempt :one
@@ -571,8 +604,11 @@ SET heartbeat_at = ?,
     metrics_json = ?,
     next_action = ?,
     error_class = ?,
-    error_message = ?
-WHERE id = ?
+    error_message = ?,
+    detent_session_id = COALESCE(sqlc.narg(detent_session_id), detent_session_id),
+    provider_session_id = COALESCE(sqlc.narg(provider_session_id), provider_session_id),
+    runtime_identity_json = COALESCE(NULLIF(sqlc.arg(runtime_identity_json), '{}'), runtime_identity_json)
+WHERE id = sqlc.arg(work_attempt_id)
   AND completed_at IS NULL;
 
 -- name: CompleteWorkAttempt :execrows
@@ -592,8 +628,11 @@ SET status = ?,
     capacity_snapshot_json = ?,
     worker_metadata_json = ?,
     metrics_json = ?,
-    next_action = ?
-WHERE id = ?
+    next_action = ?,
+    detent_session_id = COALESCE(sqlc.narg(detent_session_id), detent_session_id),
+    provider_session_id = COALESCE(sqlc.narg(provider_session_id), provider_session_id),
+    runtime_identity_json = COALESCE(NULLIF(sqlc.arg(runtime_identity_json), '{}'), runtime_identity_json)
+WHERE id = sqlc.arg(work_attempt_id)
   AND completed_at IS NULL;
 
 -- name: ListActiveWorkAttempts :many
@@ -611,6 +650,8 @@ WHERE completed_at IS NOT NULL
   AND (sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id))
   AND (sqlc.arg(filter_worker_type) = '' OR worker_type = sqlc.arg(filter_worker_type))
   AND (
+    (sqlc.arg(issue_id) = '' AND sqlc.arg(identifier) = '' AND sqlc.arg(issue_url) = '')
+    OR
     (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
     OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
     OR (sqlc.arg(issue_url) != '' AND issue_url = sqlc.arg(issue_url))

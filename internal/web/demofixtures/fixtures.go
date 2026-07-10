@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -114,7 +115,12 @@ func demoHealthySnapshot() telemetry.Snapshot {
 		},
 		Running: []telemetry.Running{
 			{
-				Issue:           demoIssue(demoPrimaryProjectID, "demo-running-core", "digitaldrywood/detent-core#5260", "Implement page-addressable screenshot scenarios", "In Progress", 1),
+				Issue: demoIssueWithRuntimeIdentity(
+					demoIssue(demoPrimaryProjectID, "demo-running-core", "digitaldrywood/detent-core#5260", "Implement page-addressable screenshot scenarios", "In Progress", 1),
+					agentidentity.Configured("codex-high", "codex", "high", "code", "gpt-5.5", "", "", "", now.Add(-34*time.Minute)).
+						Merge(agentidentity.RuntimeUpdate("gpt-5.6-sol", "openai", "xhigh", "priority", now.Add(-33*time.Minute))),
+				),
+				DetentSessionID: 5260,
 				WorkerHost:      "demo-worker-a",
 				ProcessIdentity: "pid-5260",
 				WorkspacePath:   "/tmp/detent-screenshots/workspaces/detent-core/5260",
@@ -136,7 +142,12 @@ func demoHealthySnapshot() telemetry.Snapshot {
 				Tokens:         telemetry.Tokens{Input: 38240, CachedInput: 24700, Output: 12840, ReasoningOutput: 3100, Total: 51080, RuntimeSeconds: 2040, ModelContextWindow: demoInt64Ptr(64000)},
 			},
 			{
-				Issue:           demoIssue("docs-site", "demo-running-docs", "digitaldrywood/docs-site#5261", "Write direct loading documentation examples", "In Progress", 2),
+				Issue: demoIssueWithRuntimeIdentity(
+					demoIssue("docs-site", "demo-running-docs", "digitaldrywood/docs-site#5261", "Write direct loading documentation examples", "In Progress", 2),
+					agentidentity.Configured("claude-local", "claude_code", "local", "code", "fable", "ollama", "", "", now.Add(-18*time.Minute)).
+						Merge(agentidentity.RuntimeUpdate("qwen3-coder", "", "", "", now.Add(-17*time.Minute))),
+				),
+				DetentSessionID: 5261,
 				WorkerHost:      "demo-worker-b",
 				ProcessIdentity: "pid-5261",
 				WorkspacePath:   "/tmp/detent-screenshots/workspaces/docs-site/5261",
@@ -155,6 +166,7 @@ func demoHealthySnapshot() telemetry.Snapshot {
 			},
 			{
 				Issue:           demoIssue("infra-platform", "demo-running-infra", "digitaldrywood/infra-platform#5262", "Verify isolated runtime paths on ephemeral ports", "In Progress", 3),
+				DetentSessionID: 5262,
 				WorkerHost:      "demo-worker-c",
 				ProcessIdentity: "pid-5262",
 				WorkspacePath:   "/tmp/detent-screenshots/workspaces/infra-platform/5262",
@@ -453,6 +465,11 @@ func demoIssue(projectID string, id string, identifier string, title string, sta
 		UpdatedAt:      &at,
 		StageUpdatedAt: &at,
 	}
+}
+
+func demoIssueWithRuntimeIdentity(issue telemetry.Issue, identity agentidentity.Identity) telemetry.Issue {
+	issue.RuntimeIdentity = identity
+	return issue
 }
 
 func demoPipelineIssue(projectID string, id string, identifier string, title string, state string, pr int, ci string, mergeable string, hoursAgo int) telemetry.Issue {

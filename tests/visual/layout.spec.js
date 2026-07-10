@@ -313,6 +313,108 @@ test("board card opens the detail sheet", async ({ page }, testInfo) => {
   await expect(sheet).toHaveCount(0);
 });
 
+test("board runtime identity stays accessible across snapshot morphs", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const card = page.locator(
+    '[data-help-description="Codex · openai · gpt-5.6-sol · xhigh"]',
+  );
+  await expect(card).toHaveAttribute(
+    "data-help-description",
+    "Codex · openai · gpt-5.6-sol · xhigh",
+  );
+  const initialHeight = await card.evaluate((element) =>
+    element.getBoundingClientRect().height,
+  );
+  await card.hover();
+  const tooltip = page.locator("#help-tooltip");
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText(
+    "Codex · openai · gpt-5.6-sol · xhigh",
+  );
+  await card.focus();
+  await expect(card).toBeFocused();
+
+  for (let index = 0; index < 3; index += 1) {
+    await morphCurrentSnapshot(page, `tooltip-${index}`);
+    await expect(card).toBeFocused();
+    await expect(tooltip).toBeVisible();
+  }
+  const settledHeight = await card.evaluate((element) =>
+    element.getBoundingClientRect().height,
+  );
+  expect(settledHeight).toBe(initialHeight);
+  await attachScreenshotEvidence(
+    page,
+    "board-runtime-identity-desktop.png",
+    testInfo,
+  );
+
+  await page.setViewportSize(narrowViewport);
+  await card.scrollIntoViewIfNeeded();
+  await card.focus();
+  await expect(tooltip).toBeVisible();
+  const tooltipBox = await tooltip.boundingBox();
+  expect(tooltipBox).not.toBeNull();
+  expect(tooltipBox.x).toBeGreaterThanOrEqual(0);
+  expect(tooltipBox.x + tooltipBox.width).toBeLessThanOrEqual(
+    narrowViewport.width,
+  );
+
+  let detailRequests = 0;
+  page.on("request", (request) => {
+    if (request.url().includes("/api/v1/board/card?")) {
+      detailRequests += 1;
+    }
+  });
+  await card.press("Enter");
+  const sheet = page.locator("[data-detail-sheet]");
+  await expect(sheet).toBeVisible();
+  for (const text of [
+    "Agent system",
+    "Codex",
+    "Backend profile",
+    "codex-high",
+    "Provider",
+    "openai · runtime",
+    "Model",
+    "gpt-5.6-sol · runtime",
+    "Effort",
+    "xhigh · runtime",
+  ]) {
+    await expect(sheet).toContainText(text);
+  }
+
+  for (let index = 0; index < 3; index += 1) {
+    const expectedRequests = detailRequests + 1;
+    await morphCurrentSnapshot(page, `sheet-${index}`);
+    await expect(sheet).toBeVisible();
+    await expect.poll(() => detailRequests).toBeGreaterThanOrEqual(
+      expectedRequests,
+    );
+  }
+  await expect.poll(() => detailRequests).toBeGreaterThanOrEqual(4);
+  const sheetBox = await sheet.boundingBox();
+  expect(sheetBox).not.toBeNull();
+  expect(sheetBox.x).toBeGreaterThanOrEqual(0);
+  expect(sheetBox.x + sheetBox.width).toBeLessThanOrEqual(
+    narrowViewport.width,
+  );
+  await attachScreenshotEvidence(
+    page,
+    "board-runtime-identity-narrow.png",
+    testInfo,
+  );
+});
+
 test("board card opens the detail sheet on a glide click", async ({
   page,
 }) => {
@@ -1012,6 +1114,49 @@ async function startLaneHiddenRecorder(page, laneID) {
 
 async function laneHiddenValues(page) {
   return page.evaluate(() => window.__detentLaneHiddenValues || []);
+}
+
+async function morphCurrentSnapshot(page, name) {
+  const incoming = await page.locator("#snapshot").evaluate(
+    (snapshot) => snapshot.innerHTML,
+  );
+  const routePath = `/__detent-runtime-identity-${name}`;
+  await page.route(`**${routePath}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body: incoming,
+    });
+  });
+  await page.evaluate(
+    (path) =>
+      new Promise((resolve) => {
+        document.addEventListener("htmx:afterSettle", resolve, { once: true });
+        window.htmx.ajax("GET", path, {
+          target: "#snapshot",
+          swap: "morph:innerHTML",
+        });
+      }),
+    routePath,
+  );
+  await page.unroute(`**${routePath}`);
+}
+
+async function attachScreenshotEvidence(page, name, testInfo) {
+  const evidenceDir = path.join(
+    process.cwd(),
+    "tmp",
+    "playwright-evidence",
+    testInfo.project.name,
+  );
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  const evidencePath = path.join(evidenceDir, name);
+  await page.screenshot({
+    path: evidencePath,
+    animations: "disabled",
+    caret: "hide",
+  });
+  await testInfo.attach(name, { path: evidencePath, contentType: "image/png" });
 }
 
 async function capturePageAndAttach(page, name, testInfo) {

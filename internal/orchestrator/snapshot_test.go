@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -39,6 +40,47 @@ func TestStateSnapshotEmpty(t *testing.T) {
 	}
 	if len(snapshot.BoardIssues) != 0 {
 		t.Fatalf("BoardIssues = %#v, want empty", snapshot.BoardIssues)
+	}
+}
+
+func TestStateSnapshotUsesActiveThenMostRecentPersistedRuntimeIdentity(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 21, 0, 0, 0, time.UTC)
+	issue := connector.Issue{ID: "issue-1118", Identifier: "digitaldrywood/detent#1118", URL: "https://github.com/digitaldrywood/detent/issues/1118", State: "In Progress"}
+	active := agentidentity.Configured("codex-high", "codex", "high", "code", "gpt-5.5", "", "", "", now).
+		Merge(agentidentity.RuntimeUpdate("gpt-5.6-sol", "openai", "xhigh", "priority", now))
+	recent := agentidentity.Configured("claude-local", "claude_code", "local", "validator", "fable", "ollama", "high", "", now.Add(-time.Hour)).
+		Merge(agentidentity.RuntimeUpdate("qwen3-coder", "", "", "", now.Add(-time.Hour)))
+	older := agentidentity.Configured("codex-old", "codex", "default", "plan", "gpt-5.5", "", "", "", now.Add(-2*time.Hour))
+	state := newState(normalizeConfig(Config{}))
+	state.BoardIssues = []connector.Issue{issue}
+	state.Running[issue.ID] = Running{Issue: issue, RuntimeIdentity: active}
+	state.WorkAttempts = []telemetry.WorkAttempt{
+		{AttemptID: 2, IssueID: issue.ID, RuntimeIdentity: recent},
+		{AttemptID: 1, IssueID: issue.ID, RuntimeIdentity: older},
+	}
+
+	snapshot := state.Snapshot(now)
+	if len(snapshot.BoardIssues) != 1 || !snapshot.BoardIssues[0].RuntimeIdentity.MateriallyEqual(active) {
+		t.Fatalf("active board identity = %#v, want active runtime identity", snapshot.BoardIssues)
+	}
+
+	delete(state.Running, issue.ID)
+	state.Completed[issue.ID] = Completed{
+		Issue:           issue,
+		SessionID:       "session-recent",
+		StartedAt:       now.Add(-time.Hour),
+		CompletedAt:     now.Add(-30 * time.Minute),
+		FinalState:      "Human Review",
+		RuntimeIdentity: recent,
+	}
+	snapshot = state.Snapshot(now.Add(time.Minute))
+	if len(snapshot.BoardIssues) != 1 || !snapshot.BoardIssues[0].RuntimeIdentity.MateriallyEqual(recent) {
+		t.Fatalf("recent board identity = %#v, want newest persisted attempt", snapshot.BoardIssues)
+	}
+	if len(snapshot.Completed) != 1 || snapshot.Completed[0].SessionID != "session-recent" || snapshot.Completed[0].Model != "qwen3-coder" || !snapshot.Completed[0].RuntimeIdentity.MateriallyEqual(recent) {
+		t.Fatalf("completed runtime identity = %#v, want persisted completed identity", snapshot.Completed)
 	}
 }
 

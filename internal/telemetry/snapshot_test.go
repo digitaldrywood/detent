@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -65,7 +66,10 @@ func TestSnapshotJSONShape(t *testing.T) {
 					Labels:     []string{"enhancement"},
 					Assignees:  []string{"release-captain"},
 					BlockedBy:  []telemetry.BlockedRef{{Identifier: "DD-0", State: "Done"}},
+					RuntimeIdentity: agentidentity.Configured("codex-high", "codex", "high", "code", "gpt-5.5", "", "", "", startedAt).
+						Merge(agentidentity.RuntimeUpdate("gpt-5.6-sol", "openai", "xhigh", "priority", generatedAt)),
 				},
+				DetentSessionID: 42,
 				ProcessIdentity: "4242",
 				SessionID:       "thread-1",
 				TurnCount:       2,
@@ -273,6 +277,16 @@ func TestSnapshotJSONShape(t *testing.T) {
 	if running["process_identity"] != "4242" {
 		t.Fatalf("running process identity = %#v", running)
 	}
+	if running["detent_session_id"] != float64(42) {
+		t.Fatalf("running Detent session identity = %#v", running)
+	}
+	runtimeIdentity := running["runtime_identity"].(map[string]any)
+	if runtimeIdentity["backend_kind"] != "codex" || runtimeIdentity["backend_id"] != "codex-high" {
+		t.Fatalf("runtime identity route = %#v", runtimeIdentity)
+	}
+	if runtimeIdentity["provider"].(map[string]any)["value"] != "openai" || runtimeIdentity["resolved_model"].(map[string]any)["value"] != "gpt-5.6-sol" {
+		t.Fatalf("runtime identity observed values = %#v", runtimeIdentity)
+	}
 	recentEvents := running["recent_events"].([]any)
 	if len(recentEvents) != 2 || recentEvents[1].(map[string]any)["message"] != "writing telemetry" {
 		t.Fatalf("running recent_events = %#v", recentEvents)
@@ -332,6 +346,34 @@ func TestSnapshotJSONShape(t *testing.T) {
 	latest := trend[1].(map[string]any)
 	if latest["input_tokens"] != float64(110) || latest["output_tokens"] != float64(220) || latest["total_tokens"] != float64(330) {
 		t.Fatalf("token_trend[1] = %#v", latest)
+	}
+}
+
+func TestSnapshotOmitsUnavailableRuntimeIdentityFields(t *testing.T) {
+	t.Parallel()
+
+	raw, err := json.Marshal(telemetry.Snapshot{
+		Running:      []telemetry.Running{{Issue: telemetry.Issue{ID: "issue-1"}}},
+		WorkAttempts: []telemetry.WorkAttempt{{AttemptID: 1}},
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	for name, entry := range map[string]map[string]any{
+		"running":      decoded["running"].([]any)[0].(map[string]any),
+		"work_attempt": decoded["work_attempts"].([]any)[0].(map[string]any),
+	} {
+		if _, ok := entry["runtime_identity"]; ok {
+			t.Fatalf("%s runtime_identity = %#v, want omitted", name, entry["runtime_identity"])
+		}
+		if _, ok := entry["detent_session_id"]; ok {
+			t.Fatalf("%s detent_session_id = %#v, want omitted", name, entry["detent_session_id"])
+		}
 	}
 }
 

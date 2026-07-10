@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
@@ -60,6 +61,9 @@ func TestAgentBackendRunTurnSuccess(t *testing.T) {
 	if got := requireUpdate(t, updates, 1).Model; got != "fable" {
 		t.Fatalf("TurnStarted model = %q, want fable", got)
 	}
+	if got := requireUpdate(t, updates, 1).RuntimeIdentity; got.ResolvedModel != (agentidentity.Value{Value: "fable", Provenance: agentidentity.ProvenanceRuntime}) || !got.ReasoningEffort.IsZero() {
+		t.Fatalf("TurnStarted runtime identity = %#v, want observed model and unavailable effort", got)
+	}
 	if got := requireUpdate(t, updates, 4).Tokens; got.InputTokens != 15 || got.CachedInputTokens != 3 || got.OutputTokens != 4 || got.ReasoningOutputTokens != 2 || got.TotalTokens != 19 {
 		t.Fatalf("message token usage = %#v, want 15 input, 3 cached, 4 output, 2 reasoning, 19 total", got)
 	}
@@ -71,6 +75,47 @@ func TestAgentBackendRunTurnSuccess(t *testing.T) {
 	}
 	if got := requireUpdate(t, updates, 6); got.Status != runner.FinalStateCompleted || got.Model != "fable" {
 		t.Fatalf("TurnCompleted status = %q, want completed", got.Status)
+	}
+}
+
+func TestAgentBackendEmitsLaterAssistantModelChange(t *testing.T) {
+	t.Parallel()
+
+	fixture := strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"session-model-change","model":"fable"}`,
+		`{"type":"assistant","session_id":"session-model-change","message":{"id":"msg-model-change","type":"message","role":"assistant","model":"qwen3-coder","content":[{"type":"text","text":"updated"}],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+		`{"type":"result","subtype":"success","session_id":"session-model-change","usage":{"input_tokens":1,"output_tokens":1}}`,
+	}, "\n")
+	fixturePath := filepath.Join(t.TempDir(), "model-change.jsonl")
+	if err := os.WriteFile(fixturePath, []byte(fixture), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	backend := newTestBackend(t, Options{CommandFactory: catCommand(fixturePath, "", 0)})
+
+	var updates []runner.AgentUpdate
+	_, err := backend.RunTurn(context.Background(), runner.AgentTurnRequest{
+		Workspace: t.TempDir(),
+		Prompt:    "observe model change",
+		Model:     "fable",
+	}, appendUpdate(&updates))
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+
+	var modelUpdates []runner.AgentUpdate
+	for _, update := range updates {
+		if update.Type == runner.AgentUpdateModelUpdated {
+			modelUpdates = append(modelUpdates, update)
+		}
+	}
+	if len(modelUpdates) != 1 {
+		t.Fatalf("model updates = %#v, want one later assistant change", modelUpdates)
+	}
+	if got := modelUpdates[0].RuntimeIdentity.ResolvedModel; got != (agentidentity.Value{Value: "qwen3-coder", Provenance: agentidentity.ProvenanceRuntime}) {
+		t.Fatalf("resolved model = %#v, want runtime qwen3-coder", got)
+	}
+	if got := requireLastUpdate(t, updates).Model; got != "qwen3-coder" {
+		t.Fatalf("completed model = %q, want qwen3-coder", got)
 	}
 }
 
@@ -295,6 +340,7 @@ func TestAgentBackendBuildsCommandArgumentsAndWritesPromptToStdin(t *testing.T) 
 			return cmd
 		},
 		PermissionMode:         "plan",
+		Effort:                 "high",
 		AllowedTools:           []string{"Bash(git *)", "Edit"},
 		DisallowedTools:        []string{"WebFetch"},
 		IncludePartialMessages: true,
@@ -323,6 +369,7 @@ func TestAgentBackendBuildsCommandArgumentsAndWritesPromptToStdin(t *testing.T) 
 	wantArgs := []string{
 		"-p", "--output-format", "stream-json", "--verbose",
 		"--model", "fable",
+		"--effort", "high",
 		"--permission-mode", "plan",
 		"--allowedTools", "Bash(git *)", "Edit",
 		"--disallowedTools", "WebFetch",

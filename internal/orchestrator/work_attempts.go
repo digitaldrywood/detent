@@ -59,6 +59,19 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 	for _, attempt := range reclaimed {
 		o.recordRecoveredWorkAttempt(state, attempt, now)
 	}
+	recent, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
+		ProjectID: projectID,
+		Limit:     maxRecentWorkAttemptSnapshots,
+	})
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("work attempt history recovery failed", "project_id", projectID, "error", err)
+		}
+		return
+	}
+	for index := len(recent) - 1; index >= 0; index-- {
+		o.upsertWorkAttemptSnapshot(state, telemetryWorkAttempt(recent[index], now))
+	}
 }
 
 func (o *Orchestrator) startDurableWorkAttempt(
@@ -205,6 +218,9 @@ func (o *Orchestrator) completeDurableWorkAttemptWithMetadata(
 		WorkerMetadataJSON:     runningWorkAttemptMetadataJSON(running, metadata),
 		MetricsJSON:            runningWorkAttemptMetricsJSON(running),
 		NextAction:             "release capacity",
+		DetentSessionID:        running.DetentSessionID,
+		ProviderSessionID:      running.SessionID,
+		RuntimeIdentity:        running.RuntimeIdentity,
 	}
 	if err := o.workAttempts.CompleteWorkAttempt(ctx, completion); err != nil {
 		if o.logger != nil {
@@ -236,6 +252,9 @@ func (o *Orchestrator) runningWorkAttemptHeartbeat(state *State, running Running
 		CapacitySnapshotJSON:   o.capacitySnapshotJSON(state, running.Issue),
 		MetricsJSON:            runningWorkAttemptMetricsJSON(running),
 		NextAction:             runningWorkAttemptNextAction(running, phase),
+		DetentSessionID:        running.DetentSessionID,
+		ProviderSessionID:      running.SessionID,
+		RuntimeIdentity:        running.RuntimeIdentity,
 	}
 }
 
@@ -356,6 +375,9 @@ func (o *Orchestrator) applyWorkAttemptHeartbeatSnapshot(
 		item.CapacitySnapshotJSON = heartbeat.CapacitySnapshotJSON
 		item.MetricsJSON = heartbeat.MetricsJSON
 		item.NextAction = heartbeat.NextAction
+		item.DetentSessionID = heartbeat.DetentSessionID
+		item.ProviderSessionID = heartbeat.ProviderSessionID
+		item.RuntimeIdentity = heartbeat.RuntimeIdentity
 		state.WorkAttempts[index] = item
 		return
 	}
@@ -388,6 +410,9 @@ func (o *Orchestrator) applyWorkAttemptCompletionSnapshot(state *State, running 
 		}
 		item.MetricsJSON = completion.MetricsJSON
 		item.NextAction = completion.NextAction
+		item.DetentSessionID = completion.DetentSessionID
+		item.ProviderSessionID = completion.ProviderSessionID
+		item.RuntimeIdentity = completion.RuntimeIdentity
 		state.WorkAttempts[index] = item
 		return
 	}
@@ -419,6 +444,9 @@ func (o *Orchestrator) applyWorkAttemptCompletionSnapshot(state *State, running 
 		WorkerMetadataJSON:     completion.WorkerMetadataJSON,
 		MetricsJSON:            completion.MetricsJSON,
 		NextAction:             completion.NextAction,
+		DetentSessionID:        completion.DetentSessionID,
+		ProviderSessionID:      completion.ProviderSessionID,
+		RuntimeIdentity:        completion.RuntimeIdentity,
 	}
 	upsertWorkAttemptSnapshot(state, item)
 }
@@ -464,6 +492,9 @@ func telemetryWorkAttempt(attempt store.WorkAttempt, now time.Time) telemetry.Wo
 		WorkerMetadataJSON:     attempt.WorkerMetadataJSON,
 		MetricsJSON:            attempt.MetricsJSON,
 		NextAction:             attempt.NextAction,
+		DetentSessionID:        attempt.DetentSessionID,
+		ProviderSessionID:      attempt.ProviderSessionID,
+		RuntimeIdentity:        attempt.RuntimeIdentity,
 	}
 	if item.Status == string(store.WorkAttemptStatusActive) && item.LeaseExpiresAt != nil && item.LeaseExpiresAt.Before(now) {
 		item.Stale = true

@@ -3,11 +3,13 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
 )
 
@@ -33,6 +35,10 @@ func (s *sqliteStore) StartWorkAttempt(ctx context.Context, attrs WorkAttemptSta
 	attemptNumber := attrs.AttemptNumber
 	if attemptNumber <= 0 {
 		attemptNumber = 1
+	}
+	runtimeIdentityJSON, err := marshalRuntimeIdentity(attrs.RuntimeIdentity)
+	if err != nil {
+		return 0, err
 	}
 
 	attempt, err := s.queries.CreateWorkAttempt(ctx, sqlc.CreateWorkAttemptParams{
@@ -63,6 +69,9 @@ func (s *sqliteStore) StartWorkAttempt(ctx context.Context, attrs WorkAttemptSta
 		WorkerMetadataJson:     jsonObjectOrDefault(attrs.WorkerMetadataJSON),
 		MetricsJson:            jsonObjectOrDefault(attrs.MetricsJSON),
 		NextAction:             nullString(attrs.NextAction),
+		DetentSessionID:        nullPositiveInt64(attrs.DetentSessionID),
+		ProviderSessionID:      nullString(attrs.ProviderSessionID),
+		RuntimeIdentityJson:    runtimeIdentityJSON,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("starting work attempt: %w", err)
@@ -79,6 +88,10 @@ func (s *sqliteStore) RecordWorkAttemptHeartbeat(ctx context.Context, attrs Work
 		return err
 	}
 	leaseExpiresAt, err := optionalTimestamp("lease_expires_at", attrs.LeaseExpiresAt)
+	if err != nil {
+		return err
+	}
+	runtimeIdentityJSON, err := marshalRuntimeIdentity(attrs.RuntimeIdentity)
 	if err != nil {
 		return err
 	}
@@ -100,7 +113,10 @@ func (s *sqliteStore) RecordWorkAttemptHeartbeat(ctx context.Context, attrs Work
 		NextAction:             nullString(attrs.NextAction),
 		ErrorClass:             nullString(attrs.ErrorClass),
 		ErrorMessage:           nullString(attrs.ErrorMessage),
-		ID:                     attrs.AttemptID,
+		DetentSessionID:        nullPositiveInt64(attrs.DetentSessionID),
+		ProviderSessionID:      nullString(attrs.ProviderSessionID),
+		RuntimeIdentityJson:    runtimeIdentityJSON,
+		WorkAttemptID:          attrs.AttemptID,
 	})
 	if err != nil {
 		return fmt.Errorf("recording work attempt heartbeat: %w", err)
@@ -127,6 +143,10 @@ func (s *sqliteStore) CompleteWorkAttempt(ctx context.Context, attrs WorkAttempt
 	if terminalState == "" {
 		return errors.New("terminal_state is required")
 	}
+	runtimeIdentityJSON, err := marshalRuntimeIdentity(attrs.RuntimeIdentity)
+	if err != nil {
+		return err
+	}
 
 	rows, err := s.queries.CompleteWorkAttempt(ctx, sqlc.CompleteWorkAttemptParams{
 		Status:                 string(status),
@@ -145,7 +165,10 @@ func (s *sqliteStore) CompleteWorkAttempt(ctx context.Context, attrs WorkAttempt
 		WorkerMetadataJson:     completionMetadataJSON(attrs.WorkerMetadataJSON),
 		MetricsJson:            jsonObjectOrDefault(attrs.MetricsJSON),
 		NextAction:             nullString(attrs.NextAction),
-		ID:                     attrs.AttemptID,
+		DetentSessionID:        nullPositiveInt64(attrs.DetentSessionID),
+		ProviderSessionID:      nullString(attrs.ProviderSessionID),
+		RuntimeIdentityJson:    runtimeIdentityJSON,
+		WorkAttemptID:          attrs.AttemptID,
 	})
 	if err != nil {
 		return fmt.Errorf("completing work attempt: %w", err)
@@ -373,8 +396,12 @@ func workAttemptFromRow(row sqlc.WorkAttempt) (WorkAttempt, error) {
 	if err != nil {
 		return WorkAttempt{}, err
 	}
+	runtimeIdentity, err := unmarshalRuntimeIdentity(row.RuntimeIdentityJson)
+	if err != nil {
+		return WorkAttempt{}, err
+	}
 
-	return WorkAttempt{
+	attempt := WorkAttempt{
 		ID:                     row.ID,
 		ProjectID:              row.ProjectID,
 		IssueID:                row.IssueID.String,
@@ -407,7 +434,33 @@ func workAttemptFromRow(row sqlc.WorkAttempt) (WorkAttempt, error) {
 		WorkerMetadataJSON:     jsonObjectOrDefault(row.WorkerMetadataJson),
 		MetricsJSON:            jsonObjectOrDefault(row.MetricsJson),
 		NextAction:             row.NextAction.String,
-	}, nil
+		ProviderSessionID:      row.ProviderSessionID.String,
+		RuntimeIdentity:        runtimeIdentity,
+	}
+	if row.DetentSessionID.Valid {
+		attempt.DetentSessionID = row.DetentSessionID.Int64
+	}
+	return attempt, nil
+}
+
+func marshalRuntimeIdentity(identity agentidentity.Identity) (string, error) {
+	raw, err := json.Marshal(identity.Normalize())
+	if err != nil {
+		return "", fmt.Errorf("marshal runtime identity: %w", err)
+	}
+	return string(raw), nil
+}
+
+func unmarshalRuntimeIdentity(raw string) (agentidentity.Identity, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "{}" {
+		return agentidentity.Identity{}, nil
+	}
+	var identity agentidentity.Identity
+	if err := json.Unmarshal([]byte(raw), &identity); err != nil {
+		return agentidentity.Identity{}, fmt.Errorf("unmarshal runtime identity: %w", err)
+	}
+	return identity.Normalize(), nil
 }
 
 func schedulerDecisionFromRow(row sqlc.SchedulerDecision) (SchedulerDecision, error) {

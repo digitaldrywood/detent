@@ -9,6 +9,7 @@ import (
 
 	"github.com/a-h/templ"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
@@ -130,6 +131,106 @@ func TestBoardViewLanes(t *testing.T) {
 
 	if human, ok := lanes["Human Review"]; ok && human.DefaultVisible {
 		t.Fatalf("empty lane should be hidden by default")
+	}
+}
+
+func TestRunningBoardCardAndDetailSheetRenderRuntimeIdentity(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	identity := agentidentity.Configured("codex-high", "codex", "high", "code", "gpt-5.5", "", "", "", data.Snapshot.GeneratedAt.Add(-time.Minute)).
+		Merge(agentidentity.RuntimeUpdate("gpt-5.6-sol", "openai", "xhigh", "priority", data.Snapshot.GeneratedAt))
+	data.Snapshot.Running[0].RuntimeIdentity = identity
+	view := boardViewFromDashboard(data)
+	var running boardCardView
+	for _, lane := range view.Lanes {
+		for _, card := range lane.Cards {
+			if card.Running {
+				running = card
+			}
+		}
+	}
+	if running.RuntimeSummary != "Codex · openai · gpt-5.6-sol · xhigh" {
+		t.Fatalf("RuntimeSummary = %q", running.RuntimeSummary)
+	}
+
+	cardHTML := renderBoardComponent(t, boardCardView2(running))
+	for _, want := range []string{
+		`data-help-trigger`,
+		`data-help-scope="runtime-identity"`,
+		`data-help-description="Codex · openai · gpt-5.6-sol · xhigh"`,
+	} {
+		if !strings.Contains(cardHTML, want) {
+			t.Fatalf("running card missing %q:\n%s", want, cardHTML)
+		}
+	}
+	if strings.Contains(cardHTML, `>Codex · openai · gpt-5.6-sol · xhigh<`) {
+		t.Fatalf("runtime summary added a permanent card row:\n%s", cardHTML)
+	}
+
+	card, ok := FindBoardCard(data, "gopher-ai", "gopherguides/gopher-ai#185")
+	if !ok {
+		t.Fatal("FindBoardCard() did not find running card")
+	}
+	sheetHTML := renderBoardComponent(t, BoardCardSheet(data, card, true, false, KanbanConversationData{}))
+	for _, want := range []string{
+		"Agent system",
+		"Codex",
+		"Backend profile",
+		"codex-high",
+		"Provider",
+		"openai · runtime",
+		"Model",
+		"gpt-5.6-sol · runtime",
+		"Requested model",
+		"gpt-5.5 · configured",
+		"Effort",
+		"xhigh · runtime",
+		"Service tier",
+		"priority · runtime",
+	} {
+		if !strings.Contains(sheetHTML, want) {
+			t.Fatalf("detail sheet missing %q:\n%s", want, sheetHTML)
+		}
+	}
+}
+
+func TestDetailSheetRendersUnknownRuntimeIdentityValuesAsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	data.Snapshot.Running[0].RuntimeIdentity = agentidentity.Configured(
+		"claude-local",
+		"claude_code",
+		"local",
+		"code",
+		"fable",
+		"",
+		"",
+		"",
+		data.Snapshot.GeneratedAt.Add(-time.Minute),
+	).Merge(agentidentity.RuntimeUpdate("qwen3-coder", "", "", "", data.Snapshot.GeneratedAt))
+
+	card, ok := FindBoardCard(data, "gopher-ai", "gopherguides/gopher-ai#185")
+	if !ok {
+		t.Fatal("FindBoardCard() did not find running card")
+	}
+	html := renderBoardComponent(t, BoardCardSheet(data, card, true, false, KanbanConversationData{}))
+	for _, want := range []string{
+		"Claude Code",
+		"claude-local",
+		"Provider",
+		"Model",
+		"qwen3-coder · runtime",
+		"Effort",
+		"Unavailable · unknown",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("detail sheet missing %q:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, "Service tier") {
+		t.Fatalf("detail sheet rendered an unknown optional service tier:\n%s", html)
 	}
 }
 
