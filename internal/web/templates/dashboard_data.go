@@ -45,6 +45,7 @@ const (
 	projectKanbanBlockedRecoveryReasonMetadataKey = "detent.blocked_recovery_reason"
 	projectKanbanAutoPromoteActionMetadataKey     = "detent.auto_promote_action"
 	projectKanbanAutoPromoteReasonMetadataKey     = "detent.auto_promote_reason"
+	projectKanbanDispatchSkipReasonMetadataKey    = "detent.dispatch_skip_reason"
 )
 
 type DashboardData struct {
@@ -3733,7 +3734,9 @@ func prPipelineCardForIssue(issue telemetry.Issue, state string, laneID string, 
 
 func prPipelineWaitDetail(issue telemetry.Issue) string {
 	parts := []string{}
-	if reason := prPipelineAutoPromoteWaitReason(issue); reason != "" {
+	if reason := prPipelineDispatchSkipWaitReason(issue); reason != "" {
+		parts = append(parts, reason)
+	} else if reason := prPipelineAutoPromoteWaitReason(issue); reason != "" {
 		parts = append(parts, reason)
 	} else if reason := prPipelineHumanReviewWaitReason(issue); reason != "" {
 		parts = append(parts, reason)
@@ -3769,6 +3772,14 @@ func prPipelineWaitDetail(issue telemetry.Issue) string {
 		parts = append(parts, merge)
 	}
 	return strings.Join(parts, " / ")
+}
+
+func prPipelineDispatchSkipWaitReason(issue telemetry.Issue) string {
+	reason := strings.TrimSpace(issue.Metadata[projectKanbanDispatchSkipReasonMetadataKey])
+	if reason == "" {
+		return ""
+	}
+	return "dispatch skipped: " + reason
 }
 
 func prPipelineAutoPromoteWaitReason(issue telemetry.Issue) string {

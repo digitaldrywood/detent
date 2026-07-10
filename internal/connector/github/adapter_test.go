@@ -386,6 +386,27 @@ func TestProjectFieldValues(t *testing.T) {
 	}
 }
 
+func TestProjectFieldUpdatedAtFlowsIntoIssue(t *testing.T) {
+	t.Parallel()
+
+	updatedAt := "2026-07-10T01:36:00Z"
+	fields := projectFieldValues(nodeConnection[projectFieldValue]{Nodes: []projectFieldValue{{
+		TypeName:  "ProjectV2ItemFieldSingleSelectValue",
+		Name:      "pending_review",
+		UpdatedAt: &updatedAt,
+		Field:     projectField{Name: "render_status"},
+	}}})
+
+	issue := (&Connector{}).buildIssue(githubIssueNode{}, "Todo", "", nil, fields)
+	want := time.Date(2026, 7, 10, 1, 36, 0, 0, time.UTC)
+	if issue.Fields["render_status"] != "pending_review" {
+		t.Fatalf("render_status = %q, want pending_review", issue.Fields["render_status"])
+	}
+	if got := issue.FieldUpdatedAt["render_status"]; !got.Equal(want) {
+		t.Fatalf("render_status updated at = %v, want %v", got, want)
+	}
+}
+
 func TestProjectStatusQueryFormatsMappedStatuses(t *testing.T) {
 	t.Parallel()
 

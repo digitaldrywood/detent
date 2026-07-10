@@ -61,14 +61,17 @@ query DetentGitHubIssueSubIssues(
                   __typename
                   ... on ProjectV2ItemFieldSingleSelectValue {
                     name
+					updatedAt
                     field { ... on ProjectV2FieldCommon { name } }
                   }
                   ... on ProjectV2ItemFieldTextValue {
                     text
+					updatedAt
                     field { ... on ProjectV2FieldCommon { name } }
                   }
                   ... on ProjectV2ItemFieldNumberValue {
                     number
+					updatedAt
                     field { ... on ProjectV2FieldCommon { name } }
                   }
                 }
@@ -117,14 +120,17 @@ query DetentGitHubIssueTrackedIssues(
                   __typename
                   ... on ProjectV2ItemFieldSingleSelectValue {
                     name
+					updatedAt
                     field { ... on ProjectV2FieldCommon { name } }
                   }
                   ... on ProjectV2ItemFieldTextValue {
                     text
+					updatedAt
                     field { ... on ProjectV2FieldCommon { name } }
                   }
                   ... on ProjectV2ItemFieldNumberValue {
                     number
+					updatedAt
                     field { ... on ProjectV2FieldCommon { name } }
                   }
                 }
@@ -250,14 +256,17 @@ fragment DetentGitHubIssueParent on Issue {
               __typename
               ... on ProjectV2ItemFieldSingleSelectValue {
                 name
+				updatedAt
                 field { ... on ProjectV2FieldCommon { name } }
               }
               ... on ProjectV2ItemFieldTextValue {
                 text
+				updatedAt
                 field { ... on ProjectV2FieldCommon { name } }
               }
               ... on ProjectV2ItemFieldNumberValue {
                 number
+				updatedAt
                 field { ... on ProjectV2FieldCommon { name } }
               }
             }
@@ -291,14 +300,17 @@ fragment DetentGitHubIssueParent on Issue {
               __typename
               ... on ProjectV2ItemFieldSingleSelectValue {
                 name
+				updatedAt
                 field { ... on ProjectV2FieldCommon { name } }
               }
               ... on ProjectV2ItemFieldTextValue {
                 text
+				updatedAt
                 field { ... on ProjectV2FieldCommon { name } }
               }
               ... on ProjectV2ItemFieldNumberValue {
                 number
+				updatedAt
                 field { ... on ProjectV2FieldCommon { name } }
               }
             }
@@ -323,14 +335,17 @@ fragment DetentGitHubIssueParent on Issue {
           __typename
           ... on ProjectV2ItemFieldSingleSelectValue {
             name
+			updatedAt
             field { ... on ProjectV2FieldCommon { name } }
           }
           ... on ProjectV2ItemFieldTextValue {
             text
+			updatedAt
             field { ... on ProjectV2FieldCommon { name } }
           }
           ... on ProjectV2ItemFieldNumberValue {
             number
+			updatedAt
             field { ... on ProjectV2FieldCommon { name } }
           }
         }
@@ -1287,6 +1302,7 @@ func (c *Connector) normalizeIssueNode(ctx context.Context, issue githubIssueNod
 }
 
 func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorityName string, statusUpdatedAt *time.Time, fields map[string]string) connector.Issue {
+	fields, fieldUpdatedAt := splitProjectFieldUpdatedAt(fields)
 	repo := strings.TrimSpace(issue.Repository.NameWithOwner)
 	pullRequestRef, hasPullRequestRef := firstPullRequestReference(issue.ClosedByPullRequestsReferences)
 	var pullRequestNumber *int
@@ -1323,12 +1339,31 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		Labels:           labelNames(issue.Labels),
 		Comments:         connectorIssueComments(issue.Comments.Nodes),
 		Fields:           cloneStringMap(fields),
+		FieldUpdatedAt:   fieldUpdatedAt,
 		AssignedToWorker: true,
 		CreatedAt:        parseGitHubTime(issue.CreatedAt),
 		UpdatedAt:        parseGitHubTime(issue.UpdatedAt),
 		StageUpdatedAt:   statusUpdatedAt,
 		ModelOverride:    parseModelOverride(issue.Body),
 	}
+}
+
+func splitProjectFieldUpdatedAt(fields map[string]string) (map[string]string, map[string]time.Time) {
+	values := make(map[string]string, len(fields))
+	updatedAt := map[string]time.Time{}
+	for field, value := range fields {
+		if name, ok := strings.CutPrefix(field, projectFieldUpdatedAtKeyPrefix); ok {
+			if timestamp, err := time.Parse(time.RFC3339Nano, value); err == nil {
+				updatedAt[name] = timestamp
+			}
+			continue
+		}
+		values[field] = value
+	}
+	if len(updatedAt) == 0 {
+		updatedAt = nil
+	}
+	return values, updatedAt
 }
 
 func connectorIssueComments(comments []issueComment) []connector.IssueComment {

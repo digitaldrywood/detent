@@ -978,8 +978,47 @@ where project_id = ?`
 			return nil, err
 		}
 		issues[i].Comments = comments
+		fieldUpdatedAt, err := c.fetchFieldUpdatedAt(ctx, issues[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		issues[i].FieldUpdatedAt = fieldUpdatedAt
 	}
 	return issues, nil
+}
+
+func (c *Connector) fetchFieldUpdatedAt(ctx context.Context, issueID string) (map[string]time.Time, error) {
+	rows, err := c.db.QueryContext(ctx, `
+select payload_json, created_at from detent_work_item_events
+where project_id = ? and item_id = ? and event_kind = ?
+order by id asc`, c.projectID, strings.TrimSpace(issueID), eventKindFieldUpdate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	updatedAt := map[string]time.Time{}
+	for rows.Next() {
+		var payloadJSON string
+		var createdAt string
+		if err := rows.Scan(&payloadJSON, &createdAt); err != nil {
+			return nil, err
+		}
+		timestamp := parseTimePointer(createdAt)
+		if timestamp == nil || timestamp.IsZero() {
+			continue
+		}
+		for field := range unmarshalStringMap(payloadJSON) {
+			field = strings.TrimSpace(field)
+			if field != "" {
+				updatedAt[field] = *timestamp
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return updatedAt, nil
 }
 
 func (c *Connector) issueByID(ctx context.Context, issueID string) (connector.Issue, error) {

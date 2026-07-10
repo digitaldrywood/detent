@@ -2679,6 +2679,21 @@ func TestPRPipelineWaitDetailExplainsHumanReviewReasons(t *testing.T) {
 	}
 }
 
+func TestPRPipelineWaitDetailIncludesDispatchSkipReason(t *testing.T) {
+	t.Parallel()
+
+	issue := telemetry.Issue{
+		State: "Todo",
+		Metadata: map[string]string{
+			"detent.dispatch_skip_reason": "artifact_gate_wait_status",
+		},
+	}
+
+	if got := prPipelineWaitDetail(issue); got != "dispatch skipped: artifact_gate_wait_status" {
+		t.Fatalf("prPipelineWaitDetail() = %q, want dispatch skip reason", got)
+	}
+}
+
 func TestPRPipelineCardIncludesIssueAndPullRequestIdentity(t *testing.T) {
 	t.Parallel()
 

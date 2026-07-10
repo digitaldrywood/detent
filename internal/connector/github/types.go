@@ -344,11 +344,12 @@ type singleSelectValue struct {
 }
 
 type projectFieldValue struct {
-	TypeName string       `json:"__typename"`
-	Field    projectField `json:"field"`
-	Name     string       `json:"name"`
-	Text     string       `json:"text"`
-	Number   *float64     `json:"number"`
+	TypeName  string       `json:"__typename"`
+	Field     projectField `json:"field"`
+	Name      string       `json:"name"`
+	Text      string       `json:"text"`
+	Number    *float64     `json:"number"`
+	UpdatedAt *string      `json:"updatedAt"`
 }
 
 type projectField struct {

@@ -359,7 +359,11 @@ func (c *Connector) SetField(_ context.Context, issueID string, fieldName string
 		if issue.Fields == nil {
 			issue.Fields = map[string]string{}
 		}
+		if issue.FieldUpdatedAt == nil {
+			issue.FieldUpdatedAt = map[string]time.Time{}
+		}
 		issue.Fields[fieldName] = value
+		issue.FieldUpdatedAt[fieldName] = now
 		issue.UpdatedAt = &now
 	})
 	c.send(Event{Kind: EventKindFieldUpdate, IssueID: issueID, FieldName: fieldName, FieldValue: value})
@@ -551,6 +555,9 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	}
 	if issue.Fields != nil {
 		issue.Fields = cloneStringMap(issue.Fields)
+	}
+	if issue.FieldUpdatedAt != nil {
+		issue.FieldUpdatedAt = maps.Clone(issue.FieldUpdatedAt)
 	}
 	if issue.Metadata != nil {
 		issue.Metadata = cloneStringMap(issue.Metadata)

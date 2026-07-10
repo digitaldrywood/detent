@@ -495,10 +495,23 @@ func artifactGateWaitStatusBlocksDispatch(issue connector.Issue, cfg gate.Config
 	}
 	for _, waitStatus := range cfg.Artifact.WaitStatuses {
 		if status == normalizeArtifactGateStatus(waitStatus) {
-			return true
+			return artifactGateWaitStatusIsCurrent(issue, cfg.Artifact.StatusField)
 		}
 	}
 	return false
+}
+
+func artifactGateWaitStatusIsCurrent(issue connector.Issue, statusField string) bool {
+	for field, updatedAt := range issue.FieldUpdatedAt {
+		if strings.EqualFold(strings.TrimSpace(field), strings.TrimSpace(statusField)) &&
+			issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() && !updatedAt.IsZero() {
+			return !issue.StageUpdatedAt.After(updatedAt)
+		}
+	}
+	if issue.StageUpdatedAt == nil || issue.StageUpdatedAt.IsZero() || issue.UpdatedAt == nil || issue.UpdatedAt.IsZero() {
+		return true
+	}
+	return !issue.StageUpdatedAt.Equal(*issue.UpdatedAt)
 }
 
 func normalizeArtifactGateStatus(value string) string {

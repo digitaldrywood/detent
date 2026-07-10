@@ -234,6 +234,44 @@ func TestStateSnapshotIncludesAutoPromoteDecisionReason(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotIncludesArtifactGateWaitDispatchReason(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 1, 40, 0, 0, time.UTC)
+	stageUpdatedAt := now.Add(-2 * time.Minute)
+	updatedAt := now.Add(-time.Minute)
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled: true,
+			Gate: gate.Config{
+				Kind: gate.KindArtifact,
+				Artifact: gate.ArtifactConfig{
+					StatusField:  "render_status",
+					WaitStatuses: []string{"pending_review"},
+				},
+			},
+		},
+		ActiveStates:   []string{"Todo", "Production", "Rework"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	state.BoardIssues = []connector.Issue{{
+		ID:             "artifact-wait",
+		Identifier:     "wi-artifact-wait",
+		State:          "Todo",
+		Fields:         map[string]string{"render_status": "pending_review"},
+		FieldUpdatedAt: map[string]time.Time{"render_status": updatedAt},
+		StageUpdatedAt: &stageUpdatedAt,
+		UpdatedAt:      &updatedAt,
+	}}
+
+	snapshot := state.Snapshot(now)
+
+	if got := snapshot.BoardIssues[0].Metadata["detent.dispatch_skip_reason"]; got != dispatchSkipArtifactGateWaitStatus {
+		t.Fatalf("dispatch skip reason = %q, want %q", got, dispatchSkipArtifactGateWaitStatus)
+	}
+}
+
 func TestStateSnapshotComputesDisabledAutoPromoteReason(t *testing.T) {
 	t.Parallel()
 

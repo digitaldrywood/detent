@@ -461,6 +461,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	cloned.Comments = cloneIssueComments(issue.Comments)
 	cloned.Assignees = cloneStringSlice(issue.Assignees)
 	cloned.Fields = cloneStringMap(issue.Fields)
+	cloned.FieldUpdatedAt = cloneTimeMap(issue.FieldUpdatedAt)
 	cloned.Metadata = cloneStringMap(issue.Metadata)
 	return cloned
 }
@@ -520,6 +521,14 @@ func cloneStringMap(values map[string]string) map[string]string {
 	}
 	out := make(map[string]string, len(values))
 	maps.Copy(out, values)
+	return out
+}
+
+func cloneTimeMap(values map[string]time.Time) map[string]time.Time {
+	out := make(map[string]time.Time, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
 	return out
 }
 
