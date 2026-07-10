@@ -25,7 +25,7 @@ templ TimelineChart(data TimelineChartData) {
 }
 
 templ seriesChart(view seriesChartView) {
-	<svg class={ view.Class } viewBox={ view.ViewBox } role="img" aria-label={ view.AriaLabel } preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+	<svg class={ view.Class } style={ view.Style } viewBox={ view.ViewBox } role="img" aria-label={ view.AriaLabel } preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
 		<title>{ view.Title }</title>
 		if view.AreaPath != "" {
 			<path d={ view.AreaPath } fill="currentColor" opacity="0.18"></path>
@@ -42,7 +42,7 @@ templ seriesChart(view seriesChartView) {
 }
 
 templ splitSeriesChart(view splitSeriesChartView) {
-	<svg class={ view.Class } viewBox={ view.ViewBox } role="img" aria-label={ view.AriaLabel } preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+	<svg class={ view.Class } style={ view.Style } viewBox={ view.ViewBox } role="img" aria-label={ view.AriaLabel } preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
 		<title>{ view.Title }</title>
 		if view.OutputAreaPath != "" {
 			<path class={ view.OutputClass } d={ view.OutputAreaPath } fill="currentColor" opacity="0.12"></path>
@@ -70,7 +70,7 @@ templ splitSeriesChart(view splitSeriesChartView) {
 }
 
 templ budgetProjectionChart(view budgetProjectionChartView) {
-	<svg class={ view.Class } viewBox={ view.ViewBox } role="img" aria-label={ view.AriaLabel } preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+	<svg class={ view.Class } style={ view.Style } viewBox={ view.ViewBox } role="img" aria-label={ view.AriaLabel } preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
 		<title>{ view.Title }</title>
 		if view.CapLineY != "" {
 			<line class={ view.CapClass } x1={ view.CapLineX1 } y1={ view.CapLineY } x2={ view.CapLineX2 } y2={ view.CapLineY } stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="5 5" vector-effect="non-scaling-stroke">
@@ -100,7 +100,7 @@ templ budgetProjectionChart(view budgetProjectionChartView) {
 }
 
 templ barChart(view barChartView) {
-	<svg class={ view.Class } viewBox={ view.ViewBox } role="img" aria-label={ view.AriaLabel } preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+	<svg class={ view.Class } style={ view.Style } viewBox={ view.ViewBox } role="img" aria-label={ view.AriaLabel } preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
 		<title>{ view.Title }</title>
 		for _, bar := range view.Bars {
 			<rect x={ bar.X } y={ bar.Y } width={ bar.Width } height={ bar.Height } rx="2" fill="currentColor">
@@ -111,7 +111,7 @@ templ barChart(view barChartView) {
 }
 
 templ timelineChart(view timelineChartView) {
-	<svg class={ view.Class } viewBox={ view.ViewBox } role="img" aria-label={ view.AriaLabel } preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+	<svg class={ view.Class } style={ view.Style } viewBox={ view.ViewBox } role="img" aria-label={ view.AriaLabel } preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
 		<title>{ view.Title }</title>
 		for _, segment := range view.Segments {
 			<rect class={ segment.Class } x={ segment.X } y={ segment.Y } width={ segment.Width } height={ segment.Height } rx="3" fill="currentColor">

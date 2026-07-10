@@ -127,6 +127,70 @@ test("shared figures use a compact mobile grid", async ({ page }) => {
   expect(columns).toBe(3);
 });
 
+test("reports charts and analytics log stay usable on mobile", async ({
+  page,
+}) => {
+  await page.setExtraHTTPHeaders({
+    "X-Detent-Demo-Scenario": "reports-normal-window",
+  });
+  await page.goto(`${runtime.url}/reports`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  const reportGrids = [
+    page.locator("#reports-spend").locator(".."),
+    page.locator("#reports-top-issues").locator(".."),
+    page.locator("#reports-budget").locator(".."),
+  ];
+  for (const grid of reportGrids) {
+    await expect(grid).toBeVisible();
+    const columns = await grid.evaluate(
+      (element) =>
+        getComputedStyle(element).gridTemplateColumns.split(" ").length,
+    );
+    expect(columns).toBe(1);
+  }
+
+  const kpis = page.locator("#reports-kpis");
+  await expect(kpis).toHaveCSS("display", "grid");
+  expect(
+    await kpis.evaluate(
+      (element) =>
+        getComputedStyle(element).gridTemplateColumns.split(" ").length,
+    ),
+  ).toBe(2);
+
+  for (const chart of await page
+    .locator("#reports-spend svg, #reports-tokens svg")
+    .all()) {
+    const box = await chart.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box.width).toBeGreaterThan(300);
+    expect(box.width / box.height).toBeGreaterThan(2.5);
+    expect(box.width / box.height).toBeLessThan(3.5);
+  }
+  await expectNoHorizontalScroll(page);
+
+  await page.setExtraHTTPHeaders({
+    "X-Detent-Demo-Scenario": "diagnostics-healthy",
+  });
+  await page.goto(`${runtime.url}/analytics`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  const tableScroll = page.locator("[data-analytics-table-scroll]");
+  await expect(tableScroll).toHaveCSS("overflow-x", "auto");
+  const dimensions = await tableScroll.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+  }));
+  expect(dimensions.scrollWidth).toBeGreaterThan(dimensions.clientWidth);
+  await expect(
+    page.locator("#analytics-log [id^='event-'] > span").nth(1),
+  ).toHaveCSS("white-space", "normal");
+  await expectNoHorizontalScroll(page);
+});
+
 async function expectNoHorizontalScroll(page) {
   const dimensions = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,

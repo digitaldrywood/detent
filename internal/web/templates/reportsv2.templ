@@ -24,7 +24,7 @@ templ ReportsSnapshotV2(data ReportsData) {
 	if !reportsHasUsage(data) {
 		<p id="reports-empty" class="flex-none text-xs text-sec">No usage events recorded yet — charts populate after the first completed session.</p>
 	}
-	<div id="reports-kpis" class="flex flex-none flex-wrap gap-x-14 gap-y-4">
+	<div id="reports-kpis" class="grid flex-none grid-cols-2 gap-x-6 gap-y-4 md:flex md:flex-wrap md:gap-x-14">
 		for _, kpi := range view.KPIs {
 			<div id={ kpi.ID } class="flex flex-col gap-1">
 				<span
@@ -37,7 +37,7 @@ templ ReportsSnapshotV2(data ReportsData) {
 			</div>
 		}
 	</div>
-	<div class="grid flex-none grid-cols-2 gap-3">
+	<div class="grid flex-none grid-cols-1 gap-3 md:grid-cols-2">
 		@primitives.Panel(primitives.PanelProps{ID: "reports-spend", Title: "Spend · by day"}) {
 			if view.Spend.Annotation != "" {
 				<p class="px-4 pt-2.5 text-2xs text-dim">{ view.Spend.Annotation }</p>
@@ -60,11 +60,11 @@ templ ReportsSnapshotV2(data ReportsData) {
 			</div>
 		}
 	</div>
-	<div class="grid flex-none grid-cols-2 gap-3">
+	<div class="grid flex-none grid-cols-1 gap-3 md:grid-cols-2">
 		@reportsTopTable("reports-top-issues", "Top issues by tokens", view.TopIssues)
 		@reportsTopTable("reports-top-prs", "Top PRs by tokens", view.TopPRs)
 	</div>
-	<div class="grid flex-none grid-cols-2 gap-3">
+	<div class="grid flex-none grid-cols-1 gap-3 md:grid-cols-2">
 		@primitives.Panel(primitives.PanelProps{ID: "reports-budget", Title: "Daily budget"}) {
 			if view.Budget.State == "ok" {
 				<div class="flex flex-col gap-2.5 p-4">
@@ -105,22 +105,26 @@ templ ReportsSnapshotV2(data ReportsData) {
 
 templ reportsTopTable(id string, title string, rows []reportsTopRow) {
 	@primitives.Panel(primitives.PanelProps{ID: id, Title: title}) {
-		<div class="grid grid-cols-[90px_minmax(0,1fr)_110px_90px] gap-3.5 border-b border-line px-4 py-2">
-			<span class="text-2xs font-semibold uppercase text-dim">ID</span>
-			<span class="text-2xs font-semibold uppercase text-dim">Title</span>
-			<span class="text-2xs font-semibold uppercase text-dim text-right">Tokens</span>
-			<span class="text-2xs font-semibold uppercase text-dim text-right">Cost</span>
-		</div>
-		if len(rows) == 0 {
-			@primitives.EmptyLine("No usage buckets yet")
-		}
-		for i, row := range rows {
-			<div id={ row.ID } class={ reportsTopRowClass(i == len(rows)-1) }>
-				@primitives.TrackerReferenceLink(row.Ref, row.URL, "truncate font-mono text-xs font-medium text-text tabular-nums")
-				<span class="truncate text-sm text-text">{ row.Title }</span>
-				<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Tokens }</span>
-				<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Cost }</span>
+		<div class="overflow-x-auto">
+			<div class="min-w-[450px] md:min-w-0">
+				<div class="grid grid-cols-[90px_minmax(0,1fr)_110px_90px] gap-3.5 border-b border-line px-4 py-2">
+					<span class="text-2xs font-semibold uppercase text-dim">ID</span>
+					<span class="text-2xs font-semibold uppercase text-dim">Title</span>
+					<span class="text-right text-2xs font-semibold uppercase text-dim">Tokens</span>
+					<span class="text-right text-2xs font-semibold uppercase text-dim">Cost</span>
+				</div>
+				if len(rows) == 0 {
+					@primitives.EmptyLine("No usage buckets yet")
+				}
+				for i, row := range rows {
+					<div id={ row.ID } class={ reportsTopRowClass(i == len(rows)-1) }>
+						@primitives.TrackerReferenceLink(row.Ref, row.URL, "truncate font-mono text-xs font-medium text-text tabular-nums")
+						<span class="truncate text-sm text-text">{ row.Title }</span>
+						<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Tokens }</span>
+						<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Cost }</span>
+					</div>
+				}
 			</div>
-		}
+		</div>
 	}
 }

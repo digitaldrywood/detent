@@ -29,6 +29,8 @@ func TestSparklineChartRendersAccessibleSVG(t *testing.T) {
 		`role="img"`,
 		`aria-label="Token sparkline"`,
 		`viewBox="0 0 240 80"`,
+		`class="dt-responsive-chart `,
+		`style="--dt-chart-aspect-ratio: 240 / 80;"`,
 		"<title>Token sparkline</title>",
 		`stroke="currentColor"`,
 		"14:55: 20,000",
@@ -37,6 +39,60 @@ func TestSparklineChartRendersAccessibleSVG(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("sparkline missing %q:\n%s", want, html)
 		}
+	}
+}
+
+func TestChartsExposeTheirRenderedAspectRatio(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		component templ.Component
+		want      string
+	}{
+		{
+			name: "split series",
+			component: templates.SplitSeriesChart(templates.SplitSeriesChartData{
+				Width:  360,
+				Height: 144,
+			}),
+			want: `style="--dt-chart-aspect-ratio: 360 / 144;"`,
+		},
+		{
+			name: "budget projection",
+			component: templates.BudgetProjectionChart(templates.BudgetProjectionChartData{
+				Width:  320,
+				Height: 160,
+			}),
+			want: `style="--dt-chart-aspect-ratio: 320 / 160;"`,
+		},
+		{
+			name: "bar",
+			component: templates.MiniBarChart(templates.BarChartData{
+				Width:  270,
+				Height: 90,
+			}),
+			want: `style="--dt-chart-aspect-ratio: 270 / 90;"`,
+		},
+		{
+			name: "timeline",
+			component: templates.TimelineChart(templates.TimelineChartData{
+				Width:  280,
+				Height: 35,
+			}),
+			want: `style="--dt-chart-aspect-ratio: 280 / 35;"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			html := renderComponent(t, tt.component)
+			if !strings.Contains(html, tt.want) {
+				t.Fatalf("chart missing %q:\n%s", tt.want, html)
+			}
+		})
 	}
 }
 

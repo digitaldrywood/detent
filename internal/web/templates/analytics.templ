@@ -29,34 +29,38 @@ templ AnalyticsSnapshotV2(data DashboardData) {
 		<span class="text-dim">{ view.Summary }</span>
 	</p>
 	<section id="analytics-log" class="flex flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
-		<div class="grid grid-cols-[70px_140px_120px_70px_130px_minmax(0,1fr)] gap-3.5 border-b border-line px-4 py-2">
-			<span class="text-2xs font-semibold uppercase text-dim">Time</span>
-			<span class="text-2xs font-semibold uppercase text-dim">Event</span>
-			<span class="text-2xs font-semibold uppercase text-dim">Project</span>
-			<span class="text-2xs font-semibold uppercase text-dim">Issue</span>
-			<span class="text-2xs font-semibold uppercase text-dim">Decision</span>
-			<span class="text-2xs font-semibold uppercase text-dim">Detail</span>
-		</div>
-		if len(view.Rows) == 0 {
-			if view.Filtered {
-				@primitives.FilteredEmptyLine("No events match the current filter —", "clear filters", templ.Attributes{"href": "/analytics"})
-			} else {
-				@primitives.EmptyLine("No scheduler events in the current snapshot")
-			}
-		}
-		for i, row := range view.Rows {
-			<div id={ row.ID } class={ analyticsRowClass(i == len(view.Rows)-1) }>
-				<span class="font-mono text-xs text-sec tabular-nums">{ row.Time }</span>
-				<span class="truncate text-xs text-text">{ row.Event }</span>
-				<span class="truncate font-mono text-xs text-sec">{ row.Project }</span>
-				@primitives.TrackerReferenceLink(row.Ref, row.URL, "whitespace-nowrap font-mono text-xs font-medium text-text tabular-nums")
-				<span class={ "flex items-center gap-1.5 text-xs " + boardExtraTextClass(row.Kind) }>
-					@primitives.StatusDot(row.Kind, false)
-					{ row.Decision }
-				</span>
-				<span class="truncate text-xs text-sec" title={ row.Detail }>{ row.Detail }</span>
+		<div class="overflow-x-auto" data-analytics-table-scroll>
+			<div class="min-w-[760px] md:min-w-0">
+				<div class="grid grid-cols-[70px_140px_120px_70px_130px_minmax(0,1fr)] gap-3.5 border-b border-line px-4 py-2">
+					<span class="text-2xs font-semibold uppercase text-dim">Time</span>
+					<span class="text-2xs font-semibold uppercase text-dim">Event</span>
+					<span class="text-2xs font-semibold uppercase text-dim">Project</span>
+					<span class="text-2xs font-semibold uppercase text-dim">Issue</span>
+					<span class="text-2xs font-semibold uppercase text-dim">Decision</span>
+					<span class="text-2xs font-semibold uppercase text-dim">Detail</span>
+				</div>
+				if len(view.Rows) == 0 {
+					if view.Filtered {
+						@primitives.FilteredEmptyLine("No events match the current filter —", "clear filters", templ.Attributes{"href": "/analytics"})
+					} else {
+						@primitives.EmptyLine("No scheduler events in the current snapshot")
+					}
+				}
+				for i, row := range view.Rows {
+					<div id={ row.ID } class={ analyticsRowClass(i == len(view.Rows)-1) }>
+						<span class="font-mono text-xs text-sec tabular-nums">{ row.Time }</span>
+						<span class="whitespace-normal text-xs text-text md:truncate">{ row.Event }</span>
+						<span class="truncate font-mono text-xs text-sec">{ row.Project }</span>
+						@primitives.TrackerReferenceLink(row.Ref, row.URL, "whitespace-nowrap font-mono text-xs font-medium text-text tabular-nums")
+						<span class={ "flex items-center gap-1.5 text-xs " + boardExtraTextClass(row.Kind) }>
+							@primitives.StatusDot(row.Kind, false)
+							{ row.Decision }
+						</span>
+						<span class="truncate text-xs text-sec" title={ row.Detail }>{ row.Detail }</span>
+					</div>
+				}
 			</div>
-		}
+		</div>
 	</section>
 	<p class="flex-none text-2xs text-dim">This is a log; exceptions surface on the Board.</p>
 }
