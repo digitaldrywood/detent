@@ -173,6 +173,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			boardIssuesFromFetched(fetched),
 			state.tickTransitions.boardIssues,
 		)
+		o.refreshCurrentLaneEntries(ctx, state)
 		o.markRefreshSucceeded(state, now)
 	}
 	state.Pipeline = overlayIssueStateSnapshots(state.Pipeline, state.tickTransitions.pipeline)

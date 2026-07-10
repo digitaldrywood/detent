@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -86,7 +87,6 @@ func TestApplyAutoPromoteDecisionUpdatesSnapshotBeforePoll(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-
 			transitionAt := time.Date(2026, 7, 10, 1, 0, 0, 0, time.UTC)
 			previousStageAt := transitionAt.Add(-5 * time.Minute)
 			issue := connector.Issue{
@@ -134,6 +134,142 @@ func TestApplyAutoPromoteDecisionUpdatesSnapshotBeforePoll(t *testing.T) {
 				t.Fatalf("tracker fetches = %d, want none", tracker.fetches)
 			}
 		})
+	}
+}
+
+func TestResolveCurrentLaneEnteredAt(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 18, 0, 0, 0, time.UTC)
+	createdAt := now.Add(-4 * time.Hour)
+	enteredAt := now.Add(-time.Hour)
+	transitionAt := now.Add(-10 * time.Minute)
+	updatedAt := now.Add(-5 * time.Minute)
+
+	tests := []struct {
+		name     string
+		issue    connector.Issue
+		previous time.Time
+		events   []store.WorkflowPhaseEvent
+		want     time.Time
+	}{
+		{
+			name: "same-lane update keeps previous entry",
+			issue: connector.Issue{
+				State:     "In Progress",
+				CreatedAt: &createdAt,
+				UpdatedAt: &updatedAt,
+			},
+			previous: enteredAt,
+			want:     enteredAt,
+		},
+		{
+			name: "lane change uses transition event",
+			issue: connector.Issue{
+				State:     "Merging",
+				CreatedAt: &createdAt,
+				UpdatedAt: &updatedAt,
+			},
+			events: []store.WorkflowPhaseEvent{
+				{ID: 1, PhaseType: store.WorkflowPhaseTypeLane, PhaseName: "In Progress", Status: "entered", StartedAt: enteredAt},
+				{ID: 2, PhaseType: store.WorkflowPhaseTypeLane, PhaseName: "merging", Status: "ENTERED", StartedAt: transitionAt},
+			},
+			want: transitionAt,
+		},
+		{
+			name: "leave and return uses latest durable entry",
+			issue: connector.Issue{
+				State:     "In Progress",
+				CreatedAt: &createdAt,
+				UpdatedAt: &updatedAt,
+			},
+			previous: enteredAt,
+			events: []store.WorkflowPhaseEvent{
+				{ID: 1, PhaseType: store.WorkflowPhaseTypeLane, PhaseName: "In Progress", Status: "entered", StartedAt: enteredAt},
+				{ID: 2, PhaseType: store.WorkflowPhaseTypeLane, PhaseName: "Merging", Status: "entered", StartedAt: transitionAt.Add(-time.Minute)},
+				{ID: 3, PhaseType: store.WorkflowPhaseTypeLane, PhaseName: "In Progress", Status: "entered", StartedAt: transitionAt},
+			},
+			want: transitionAt,
+		},
+		{
+			name: "restart restores durable entry",
+			issue: connector.Issue{
+				State:     "In Progress",
+				CreatedAt: &createdAt,
+				UpdatedAt: &updatedAt,
+			},
+			events: []store.WorkflowPhaseEvent{
+				{ID: 1, PhaseType: store.WorkflowPhaseTypeLane, PhaseName: "in progress", Status: "entered", StartedAt: enteredAt},
+			},
+			want: enteredAt,
+		},
+		{
+			name: "missing phase events uses tracker fallback",
+			issue: connector.Issue{
+				State:     "Todo",
+				CreatedAt: &createdAt,
+				UpdatedAt: &enteredAt,
+			},
+			want: enteredAt,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := resolveCurrentLaneEnteredAt(tt.issue, tt.previous, tt.events)
+			if !got.Equal(tt.want) {
+				t.Fatalf("resolveCurrentLaneEnteredAt() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRefreshCurrentLaneEntriesSurvivesStoreRestart(t *testing.T) {
+	ctx := t.Context()
+	dbPath := filepath.Join(t.TempDir(), "detent.db")
+	enteredAt := time.Date(2026, 7, 9, 17, 0, 0, 0, time.UTC)
+
+	seed, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: dbPath})
+	if err != nil {
+		t.Fatalf("store.Open(seed) error = %v", err)
+	}
+	if _, err := seed.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
+		ProjectID: "detent",
+		IssueID:   "issue-1130",
+		PhaseType: store.WorkflowPhaseTypeLane,
+		PhaseName: "In Progress",
+		Status:    "entered",
+		StartedAt: enteredAt,
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("seed.Close() error = %v", err)
+	}
+
+	for index, updatedAt := range []time.Time{enteredAt.Add(30 * time.Minute), enteredAt.Add(time.Hour)} {
+		backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: dbPath})
+		if err != nil {
+			t.Fatalf("store.Open(restart %d) error = %v", index+1, err)
+		}
+
+		state := newState(normalizeConfig(Config{}))
+		state.BoardIssues = []connector.Issue{{
+			ID:        "issue-1130",
+			State:     "In Progress",
+			UpdatedAt: &updatedAt,
+		}}
+		orch := &Orchestrator{workflowMetrics: backend}
+		orch.refreshCurrentLaneEntries(ctx, &state)
+		snapshot := state.Snapshot(updatedAt.Add(time.Minute))
+		if snapshot.BoardIssues[0].CurrentLaneEnteredAt == nil || !snapshot.BoardIssues[0].CurrentLaneEnteredAt.Equal(enteredAt) {
+			t.Errorf("restart %d CurrentLaneEnteredAt = %v, want %v", index+1, snapshot.BoardIssues[0].CurrentLaneEnteredAt, enteredAt)
+		}
+		if err := backend.Close(); err != nil {
+			t.Fatalf("backend.Close(restart %d) error = %v", index+1, err)
+		}
 	}
 }
 

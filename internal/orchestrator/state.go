@@ -61,6 +61,7 @@ type State struct {
 	ReapedWorkspaces         map[string]time.Time
 	TokenTotals              TokenTotals
 	RateLimits               *telemetry.RateLimits
+	laneEntries              map[string]time.Time
 	planRework               map[string]struct{}
 	epicTransitionWatch      []connector.Issue
 	pendingEpicParentLookups map[string]connector.Issue
@@ -214,6 +215,7 @@ func newState(cfg Config) State {
 		RepeatedFailures:         map[string]RepeatedFailure{},
 		DiffStats:                map[string]DiffStats{},
 		ReapedWorkspaces:         map[string]time.Time{},
+		laneEntries:              map[string]time.Time{},
 		planRework:               map[string]struct{}{},
 		pendingEpicParentLookups: map[string]connector.Issue{},
 	}
@@ -264,6 +266,7 @@ func (s State) clone() State {
 		ReapedWorkspaces:         make(map[string]time.Time, len(s.ReapedWorkspaces)),
 		TokenTotals:              s.TokenTotals,
 		RateLimits:               cloneRateLimits(s.RateLimits),
+		laneEntries:              maps.Clone(s.laneEntries),
 		planRework:               make(map[string]struct{}, len(s.planRework)),
 		epicTransitionWatch:      cloneIssues(s.epicTransitionWatch),
 		pendingEpicParentLookups: cloneIssueMap(s.pendingEpicParentLookups),
