@@ -64,6 +64,7 @@ type State struct {
 	planRework               map[string]struct{}
 	epicTransitionWatch      []connector.Issue
 	pendingEpicParentLookups map[string]connector.Issue
+	tickTransitions          *issueStateSnapshotTransitions
 }
 
 type Running struct {
