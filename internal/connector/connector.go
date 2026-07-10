@@ -151,6 +151,10 @@ type StatusDriftReader interface {
 	FetchStatusDrift(context.Context) (StatusDrift, error)
 }
 
+type ConditionalPoller interface {
+	ConditionalPollingEnabled() bool
+}
+
 type IssueReferenceResolver interface {
 	FetchIssueStatesByIdentifiers(context.Context, []string) ([]Issue, error)
 }

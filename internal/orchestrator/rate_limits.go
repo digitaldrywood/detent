@@ -102,9 +102,12 @@ func restUsageSummary(usage connector.RESTRateLimitUsage) *telemetry.RESTUsage {
 	}
 
 	out := &telemetry.RESTUsage{
-		TotalRequests: usage.TotalRequests,
-		RateLimited:   usage.RateLimited,
-		Contributors:  make([]telemetry.RESTUsageContributor, 0, len(usage.Requests)),
+		TotalRequests:       usage.TotalRequests,
+		ConditionalRequests: usage.ConditionalRequests,
+		NotModifiedRequests: usage.NotModifiedRequests,
+		BillableRequests:    usage.BillableRequests,
+		RateLimited:         usage.RateLimited,
+		Contributors:        make([]telemetry.RESTUsageContributor, 0, len(usage.Requests)),
 	}
 	if !usage.BackoffUntil.IsZero() {
 		backoffUntil := usage.BackoffUntil
@@ -114,6 +117,9 @@ func restUsageSummary(usage connector.RESTRateLimitUsage) *telemetry.RESTUsage {
 		contributor := telemetry.RESTUsageContributor{
 			EndpointFamily: request.EndpointFamily,
 			Count:          request.Count,
+			Conditional:    request.Conditional,
+			NotModified:    request.NotModified,
+			Billable:       request.Billable,
 			Remaining:      request.Remaining,
 			Limit:          request.Limit,
 			Resource:       request.Resource,
@@ -164,7 +170,7 @@ func gitHubRESTBucket(usage connector.RESTRateLimitUsage, now time.Time) *teleme
 		Remaining:      rateLimit.Remaining,
 		Used:           rateLimit.Used,
 		Limit:          rateLimit.Limit,
-		Cost:           usage.TotalRequests,
+		Cost:           usage.BillableRequests,
 		ResetAt:        resetAt,
 		ObservedAt:     observedAt,
 		ResetInSeconds: resetInSeconds,
@@ -181,10 +187,14 @@ func (o *Orchestrator) logRESTRateLimitCycle(cycle restRateLimitCycle) {
 		resetAt = *cycle.Bucket.ResetAt
 	}
 	totalRequests := int64(0)
+	billableRequests := int64(0)
+	notModifiedRequests := int64(0)
 	rateLimited := false
 	var contributors []telemetry.RESTUsageContributor
 	if cycle.Usage != nil {
 		totalRequests = cycle.Usage.TotalRequests
+		billableRequests = cycle.Usage.BillableRequests
+		notModifiedRequests = cycle.Usage.NotModifiedRequests
 		rateLimited = cycle.Usage.RateLimited
 		contributors = cycle.Usage.Contributors
 	}
@@ -192,6 +202,8 @@ func (o *Orchestrator) logRESTRateLimitCycle(cycle restRateLimitCycle) {
 	o.logger.Info(
 		"github rest budget summary",
 		"request_count", totalRequests,
+		"billable_request_count", billableRequests,
+		"not_modified_request_count", notModifiedRequests,
 		"rate_limited", rateLimited,
 		"remaining", cycle.Bucket.Remaining,
 		"limit", cycle.Bucket.Limit,

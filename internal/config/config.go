@@ -176,7 +176,8 @@ type Identity struct {
 }
 
 type Polling struct {
-	IntervalMS int `yaml:"interval_ms"`
+	IntervalMS  int  `yaml:"interval_ms"`
+	Conditional bool `yaml:"conditional"`
 }
 
 type Claims struct {
@@ -819,7 +820,8 @@ func Default() Config {
 			AutoProvision: true,
 		},
 		Polling: Polling{
-			IntervalMS: DefaultPollingIntervalMS,
+			IntervalMS:  DefaultPollingIntervalMS,
+			Conditional: true,
 		},
 		Workspace: Workspace{
 			Kind:                   WorkspaceLocalGit,

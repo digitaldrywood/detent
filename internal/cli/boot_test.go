@@ -353,7 +353,7 @@ func TestMergeRefreshResponseKeepsInProgressWhenSomeProjectsAccepted(t *testing.
 	}
 }
 
-func TestRegistryRefresherFallsBackWhenTargetRepositoryDoesNotMatch(t *testing.T) {
+func TestRegistryRefresherTargetsProjectV2WithoutConfiguredRepository(t *testing.T) {
 	t.Parallel()
 
 	registry := projectpkg.NewRegistry()
@@ -373,11 +373,11 @@ func TestRegistryRefresherFallsBackWhenTargetRepositoryDoesNotMatch(t *testing.T
 	if err != nil {
 		t.Fatalf("RequestTargetedRefresh() error = %v", err)
 	}
-	if !hasOperation(response.Operations, "target-fallback:digitaldrywood/detent") {
-		t.Fatalf("Operations = %#v, want target fallback marker", response.Operations)
+	if !hasOperation(response.Operations, "target:digitaldrywood/detent") {
+		t.Fatalf("Operations = %#v, want target marker", response.Operations)
 	}
-	if !hasOperation(response.Operations, "poll") || !hasOperation(response.Operations, "reconcile") {
-		t.Fatalf("Operations = %#v, want poll/reconcile fallback refresh", response.Operations)
+	if !hasOperation(response.Operations, "targeted_reconcile:digitaldrywood/detent") {
+		t.Fatalf("Operations = %#v, want targeted reconcile marker", response.Operations)
 	}
 }
 

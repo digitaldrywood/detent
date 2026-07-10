@@ -383,12 +383,15 @@ func TestTickPublishesGitHubRESTUsageAndBackoff(t *testing.T) {
 				UpdatedAt:  now,
 			},
 			Requests: []connector.RESTEndpointUsage{
-				{EndpointFamily: "label issues", Count: 1, Remaining: 4879, Limit: 5000, Resource: "core"},
-				{EndpointFamily: "issue comments", Count: 1, Remaining: 4878, Limit: 5000, Resource: "core", RateLimited: true},
+				{EndpointFamily: "label issues", Count: 1, Conditional: 1, NotModified: 1, Remaining: 4879, Limit: 5000, Resource: "core"},
+				{EndpointFamily: "issue comments", Count: 1, Billable: 1, Remaining: 4878, Limit: 5000, Resource: "core", RateLimited: true},
 			},
-			TotalRequests: 2,
-			RateLimited:   true,
-			BackoffUntil:  now.Add(time.Minute),
+			TotalRequests:       2,
+			ConditionalRequests: 1,
+			NotModifiedRequests: 1,
+			BillableRequests:    1,
+			RateLimited:         true,
+			BackoffUntil:        now.Add(time.Minute),
 		},
 	}
 	orch := newRateLimitTestOrchestrator(cfg, tracker)
@@ -404,8 +407,14 @@ func TestTickPublishesGitHubRESTUsageAndBackoff(t *testing.T) {
 	if state.RateLimits.GitHubREST.Remaining != 4878 || state.RateLimits.GitHubREST.ResetInSeconds != 60 {
 		t.Fatalf("GitHubREST = %#v, want remaining 4878 reset 60s", state.RateLimits.GitHubREST)
 	}
+	if state.RateLimits.GitHubREST.Cost != 1 {
+		t.Fatalf("GitHubREST.Cost = %d, want one billable request", state.RateLimits.GitHubREST.Cost)
+	}
 	if state.RateLimits.RESTUsage.TotalRequests != 2 || !state.RateLimits.RESTUsage.RateLimited {
 		t.Fatalf("RESTUsage = %#v, want 2 requests and rate limited", state.RateLimits.RESTUsage)
+	}
+	if state.RateLimits.RESTUsage.ConditionalRequests != 1 || state.RateLimits.RESTUsage.NotModifiedRequests != 1 || state.RateLimits.RESTUsage.BillableRequests != 1 {
+		t.Fatalf("RESTUsage conditional breakdown = %#v, want one free 304 and one billable request", state.RateLimits.RESTUsage)
 	}
 	if len(state.RateLimits.RESTUsage.Contributors) != 2 || state.RateLimits.RESTUsage.Contributors[1].EndpointFamily != "issue comments" {
 		t.Fatalf("RESTUsage.Contributors = %#v, want issue comments contributor", state.RateLimits.RESTUsage.Contributors)
@@ -509,6 +518,48 @@ func TestTickSkipsNonessentialGitHubWorkBelowRESTReserve(t *testing.T) {
 	} {
 		if !strings.Contains(logOutput, want) {
 			t.Fatalf("log output missing %q:\n%s", want, logOutput)
+		}
+	}
+}
+
+func TestTickAllowsConditionalPollingBelowRESTReserve(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	issue := connector.Issue{ID: "I_1133", Identifier: "digitaldrywood/detent#1133", State: "Human Review"}
+	cfg := normalizeConfig(Config{
+		PollInterval:            time.Minute,
+		MaxConcurrentAgents:     1,
+		ActiveStates:            []string{"Todo", "In Progress"},
+		ObservedStates:          []string{"Human Review", "Blocked"},
+		TerminalStates:          []string{"Done"},
+		GitHubRESTMinReserve:    1000,
+		GitHubGraphQLMinReserve: 1000,
+	})
+	state := newState(cfg)
+	state.Pipeline = []connector.Issue{issue}
+	state.LastWorkspaceCleanupAt = now
+	state.RateLimits = &telemetry.RateLimits{
+		GitHubREST: &telemetry.RateLimitBucket{
+			Remaining: 900,
+			Limit:     5000,
+			Used:      4100,
+			ResetAt:   &resetAt,
+		},
+	}
+	base := &rateLimitConnector{stateIssues: []connector.Issue{issue}}
+	tracker := &conditionalRateLimitConnector{rateLimitConnector: base}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if base.fetchCandidateCalls != 1 || base.fetchByStatesCalls != 1 {
+		t.Fatalf("fetch calls = candidates %d states %d, want one conditional cycle", base.fetchCandidateCalls, base.fetchByStatesCalls)
+	}
+	for _, event := range state.RecentEvents {
+		if event.Event == "github_budget_reserved" {
+			t.Fatalf("RecentEvents = %#v, want no reserve skip for conditional polling", state.RecentEvents)
 		}
 	}
 }
@@ -823,6 +874,14 @@ type rateLimitConnector struct {
 	fetchByStatesLimitCalls int
 	fetchByIDCalls          int
 	fetchByIDErr            error
+}
+
+type conditionalRateLimitConnector struct {
+	*rateLimitConnector
+}
+
+func (*conditionalRateLimitConnector) ConditionalPollingEnabled() bool {
+	return true
 }
 
 func (c *rateLimitConnector) Name() string {

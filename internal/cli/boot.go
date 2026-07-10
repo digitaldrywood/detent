@@ -1037,6 +1037,12 @@ func (r registryRefresher) RequestTargetedRefresh(ctx context.Context, target we
 	if repository == "" {
 		return r.RequestRefresh(ctx)
 	}
+	projectIDs := make(map[string]struct{}, len(target.ProjectIDs))
+	for _, projectID := range target.ProjectIDs {
+		if projectID = strings.TrimSpace(projectID); projectID != "" {
+			projectIDs[projectID] = struct{}{}
+		}
+	}
 
 	var response web.RefreshResponse
 	refreshed := false
@@ -1044,8 +1050,14 @@ func (r registryRefresher) RequestTargetedRefresh(ctx context.Context, target we
 		if !trackedProject.Running() {
 			continue
 		}
+		if len(projectIDs) > 0 {
+			if _, ok := projectIDs[string(trackedProject.ID())]; !ok {
+				continue
+			}
+		}
 		workflow := trackedProject.Workflow().Config
-		if !strings.EqualFold(strings.TrimSpace(workflow.Tracker.Repository), repository) {
+		configuredRepository := strings.TrimSpace(workflow.Tracker.Repository)
+		if len(projectIDs) == 0 && configuredRepository != "" && !strings.EqualFold(configuredRepository, repository) {
 			continue
 		}
 		orch := trackedProject.Orchestrator()
@@ -1053,7 +1065,21 @@ func (r registryRefresher) RequestTargetedRefresh(ctx context.Context, target we
 			continue
 		}
 
-		next, err := orch.RequestRefresh(ctx)
+		var next web.RefreshResponse
+		var err error
+		if target.IssueNumber > 0 || target.PullRequestNumber > 0 {
+			next, err = orch.RequestTargetedRefresh(ctx, connector.ReconcileTarget{
+				Scope:          repository,
+				WorkItemNumber: target.IssueNumber,
+				ChangeNumber:   target.PullRequestNumber,
+				Revision:       strings.TrimSpace(target.SHA),
+				Branch:         strings.TrimSpace(target.Branch),
+				Event:          strings.TrimSpace(target.Event),
+				DeliveryID:     strings.TrimSpace(target.DeliveryID),
+			})
+		} else {
+			next, err = orch.RequestRefresh(ctx)
+		}
 		if err != nil {
 			return web.RefreshResponse{}, err
 		}
@@ -1066,12 +1092,7 @@ func (r registryRefresher) RequestTargetedRefresh(ctx context.Context, target we
 		response = mergeRefreshResponse(response, next)
 	}
 	if !refreshed {
-		fallback, err := r.RequestRefresh(ctx)
-		if err != nil {
-			return web.RefreshResponse{}, err
-		}
-		fallback.Operations = appendOperations([]string{"target-fallback:" + repository}, fallback.Operations)
-		return fallback, nil
+		return web.RefreshResponse{}, project.ErrProjectNotFound
 	}
 	return response, nil
 }

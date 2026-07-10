@@ -39,12 +39,14 @@ type TargetedRefresher interface {
 }
 
 type RefreshTarget struct {
-	Repository        string `json:"repository,omitempty"`
-	IssueNumber       int    `json:"issue_number,omitempty"`
-	PullRequestNumber int    `json:"pull_request_number,omitempty"`
-	SHA               string `json:"sha,omitempty"`
-	Event             string `json:"event,omitempty"`
-	DeliveryID        string `json:"delivery_id,omitempty"`
+	Repository        string   `json:"repository,omitempty"`
+	IssueNumber       int      `json:"issue_number,omitempty"`
+	PullRequestNumber int      `json:"pull_request_number,omitempty"`
+	SHA               string   `json:"sha,omitempty"`
+	Branch            string   `json:"branch,omitempty"`
+	Event             string   `json:"event,omitempty"`
+	DeliveryID        string   `json:"delivery_id,omitempty"`
+	ProjectIDs        []string `json:"-"`
 }
 
 type RefreshResponse = orchestrator.RefreshResponse

@@ -55,6 +55,9 @@ type RESTRateLimit struct {
 type RESTEndpointUsage struct {
 	EndpointFamily string
 	Count          int64
+	Conditional    int64
+	NotModified    int64
+	Billable       int64
 	Limit          int64
 	Used           int64
 	Remaining      int64
@@ -66,12 +69,15 @@ type RESTEndpointUsage struct {
 }
 
 type RESTRateLimitUsage struct {
-	RateLimit     RESTRateLimit
-	HasRateLimit  bool
-	Requests      []RESTEndpointUsage
-	TotalRequests int64
-	RateLimited   bool
-	BackoffUntil  time.Time
+	RateLimit           RESTRateLimit
+	HasRateLimit        bool
+	Requests            []RESTEndpointUsage
+	TotalRequests       int64
+	ConditionalRequests int64
+	NotModifiedRequests int64
+	BillableRequests    int64
+	RateLimited         bool
+	BackoffUntil        time.Time
 }
 
 type RESTRateLimitUsageReporter interface {

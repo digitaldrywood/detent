@@ -906,11 +906,66 @@ poll when observed. `workspace.cleanup_sweep_interval_ms` controls the startup
 and periodic idle cleanup cadence.
 
 `polling.interval_ms` defaults to `120000` and must be at least `60000`.
-Detent work is async, so it does not need sub-minute board scans. Detent polls
-GitHub GraphQL, where board scans consume a shared rate-limit budget used by
-Detent, spawned agents, and operator `gh` calls. Faster polling risks exhausting
-that budget. This is an intentional divergence from Symphony's `30000` ms
-default because Symphony polls Linear, which has a different rate model.
+`polling.conditional` defaults to `true`. GitHub label and issue-field trackers
+cache response ETags for issue lists and REST hydration endpoints, send
+`If-None-Match` on later polls, and reuse the cached representation after a
+`304 Not Modified`. An authorized conditional request that returns `304` does
+not consume GitHub's primary REST quota. This makes a `60000` interval practical
+for an idle REST-backed board while preserving the default cadence for existing
+workflows. Set `conditional: false` to restore unconditional requests; trackers
+without conditional-request support continue using their existing polling path.
+See GitHub's [conditional request guidance](https://docs.github.com/en/enterprise-cloud@latest/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests-if-appropriate).
+
+REST telemetry distinguishes `total_requests`, `conditional_requests`,
+`not_modified_requests`, and `billable_requests`. Endpoint contributors expose
+the same breakdown, and the REST rate-limit card's cycle cost uses billable
+requests rather than free `304` checks.
+
+### GitHub Webhook Freshness
+
+Each GitHub-backed project can opt into near-real-time external updates by
+setting a webhook secret in its `WORKFLOW.md`:
+
+```yaml
+tracker:
+  kind: github
+  github_status_source: label
+  repository: digitaldrywood/detent
+  github_webhook_secret: $DETENT_GITHUB_WEBHOOK_SECRET
+polling:
+  interval_ms: 60000
+  conditional: true
+```
+
+Set `DETENT_GITHUB_WEBHOOK_SECRET` in the Detent process environment. Configure
+the repository webhook with:
+
+- Payload URL: `https://<detent-host>/api/v1/webhooks/github`
+- Content type: `application/json`
+- Secret: the same high-entropy value
+- Events: Issues, Pull requests, Check suites, and Labels
+
+Detent verifies `X-Hub-Signature-256` with HMAC-SHA256, routes the delivery only
+to projects whose configured repository and secret match, and queues a fetch for
+the affected issue. Pull-request and check-suite deliveries resolve Detent's
+issue from its generated branch name. A repository-level label event has no
+single issue target, so it queues a normal conditional refresh. Unknown
+repositories never trigger a fleet-wide fallback. See GitHub's
+[webhook signature validation](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
+and [event payload reference](https://docs.github.com/en/webhooks/webhook-events-and-payloads).
+
+For a ProjectV2 tracker spanning multiple repositories, omit `tracker.repository`
+to let the connector verify project membership after signature validation. Set
+`tracker.repository` when the project is repository-scoped and strict routing is
+preferred.
+
+GitHub must be able to reach the payload URL. For local testing, GitHub documents
+[forwarding deliveries with smee.io](https://docs.github.com/en/webhooks/using-webhooks/handling-webhook-deliveries).
+For a persistent host without public ingress, an outbound tunnel such as a
+[Cloudflare Tunnel published application](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/#2a-publish-an-application)
+can route a public HTTPS hostname to Detent. Configure relays and reverse proxies
+to preserve the raw request body and GitHub signature headers; modifying either
+causes signature verification to fail.
 
 `gate` controls the validation contract the agent and operator flow follow.
 Omitting it preserves the code default: `kind: command` with `run: make check`,
@@ -2233,6 +2288,7 @@ Useful endpoints:
 | `/api/v1/projects/<id>/timeseries?window=10m&bucket=1m` | Project chart samples for running agents, token spend, and board flow. |
 | `/api/v1/projects/<id>/work-items` | Create a runtime work item with `POST` for `local_sqlite` and `github_local` trackers. |
 | `/api/v1/refresh` | Request an orchestrator refresh with `POST`. |
+| `/api/v1/webhooks/github` | Accept signed GitHub webhook deliveries with `POST`. |
 | `/api/v1/<issue>` | JSON detail for a running, retrying, or blocked issue. |
 
 ### API Authentication And Work-Item Submission
