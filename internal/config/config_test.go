@@ -1091,7 +1091,7 @@ agents:
       kind: claude_code
       provider: local_ollama
       options:
-        effort: HIGH
+        effort: ULTRACODE
         allowed_tools:
           - Bash
           - Edit
@@ -1136,8 +1136,8 @@ Prompt
 	if options.PermissionMode != "bypassPermissions" {
 		t.Fatalf("permission mode = %q, want bypassPermissions", options.PermissionMode)
 	}
-	if options.Effort != "high" {
-		t.Fatalf("effort = %q, want normalized high", options.Effort)
+	if options.Effort != "ultracode" {
+		t.Fatalf("effort = %q, want normalized ultracode", options.Effort)
 	}
 	if !reflect.DeepEqual(options.AllowedTools, []string{"Bash", "Edit"}) {
 		t.Fatalf("allowed tools = %#v, want Bash/Edit", options.AllowedTools)
@@ -2234,7 +2234,7 @@ Prompt
 `,
 			want: []string{
 				"agents.backends.provider must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens",
-				"agents.backends.options.effort must be one of low, medium, high, xhigh, max",
+				"agents.backends.options.effort must be one of low, medium, high, xhigh, max, ultracode",
 			},
 		},
 		{

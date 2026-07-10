@@ -68,6 +68,7 @@ const (
 	claudeCodeEffortHigh                      = "high"
 	claudeCodeEffortXHigh                     = "xhigh"
 	claudeCodeEffortMax                       = "max"
+	claudeCodeEffortUltracode                 = "ultracode"
 
 	IdentityOwnershipAssignee = "assignee"
 	IdentityOwnershipField    = "field"
@@ -1542,9 +1543,9 @@ func (o ClaudeCodeOptions) validate(prefix string, problems *[]string) {
 		*problems = append(*problems, prefix+".permission_mode must be one of default, acceptEdits, bypassPermissions")
 	}
 	switch o.Effort {
-	case "", claudeCodeEffortLow, claudeCodeEffortMedium, claudeCodeEffortHigh, claudeCodeEffortXHigh, claudeCodeEffortMax:
+	case "", claudeCodeEffortLow, claudeCodeEffortMedium, claudeCodeEffortHigh, claudeCodeEffortXHigh, claudeCodeEffortMax, claudeCodeEffortUltracode:
 	default:
-		*problems = append(*problems, prefix+".effort must be one of low, medium, high, xhigh, max")
+		*problems = append(*problems, prefix+".effort must be one of low, medium, high, xhigh, max, ultracode")
 	}
 	if o.TurnTimeoutMS < 0 {
 		*problems = append(*problems, prefix+".turn_timeout_ms must be greater than or equal to 0")
