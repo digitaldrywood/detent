@@ -113,6 +113,52 @@ VALUES ('detent', 'agent_session', 'agent_active', '2026-05-31T13:00:00Z', 5, '2
 	}
 }
 
+func TestSkillDraftTelemetryMigrationUpDown(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "detent.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("db.Close() error = %v", err)
+		}
+	})
+	if err := configureSQLite(ctx, db, 0); err != nil {
+		t.Fatalf("configureSQLite() error = %v", err)
+	}
+
+	migrationMu.Lock()
+	defer migrationMu.Unlock()
+	goose.SetBaseFS(migrationsFS)
+	defer goose.SetBaseFS(nil)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("goose.SetDialect() error = %v", err)
+	}
+	if err := goose.UpToContext(ctx, db, "migrations", 12); err != nil {
+		t.Fatalf("goose.UpToContext(12) error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO codex_sessions (started_at) VALUES (?)", "2026-07-10T00:00:00Z"); err != nil {
+		t.Fatalf("seed codex session error = %v", err)
+	}
+
+	assertColumnAbsent(t, db, "codex_sessions", "skill_draft_proposed")
+	if err := goose.UpToContext(ctx, db, "migrations", 13); err != nil {
+		t.Fatalf("goose.UpToContext(13) error = %v", err)
+	}
+	assertColumnPresent(t, db, "codex_sessions", "skill_draft_proposed")
+	if got := queryInt(t, db, "SELECT skill_draft_proposed FROM codex_sessions LIMIT 1"); got != 0 {
+		t.Fatalf("skill_draft_proposed default = %d, want 0", got)
+	}
+
+	if err := goose.DownToContext(ctx, db, "migrations", 12); err != nil {
+		t.Fatalf("goose.DownToContext(12) error = %v", err)
+	}
+	assertColumnAbsent(t, db, "codex_sessions", "skill_draft_proposed")
+}
+
 func TestAgentResumeStateMigrationUpDown(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "detent.db")
@@ -704,6 +750,7 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 				RuntimeSeconds:        240,
 				FinalState:            "Human Review",
 				Model:                 "gpt-5-resolved",
+				SkillDraftProposed:    true,
 			}); err != nil {
 				t.Fatalf("FinishSession() error = %v", err)
 			}
@@ -759,6 +806,9 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 			}
 			if !session.ModelContextWindow.Valid || session.ModelContextWindow.Int64 != modelContextWindow {
 				t.Fatalf("session model_context_window = %#v, want %d", session.ModelContextWindow, modelContextWindow)
+			}
+			if session.SkillDraftProposed != 1 {
+				t.Fatalf("session skill_draft_proposed = %d, want 1", session.SkillDraftProposed)
 			}
 
 			spend, err := backend.DailyTokenSpend(ctx, time.Date(2026, 5, 30, 0, 0, 0, 0, time.UTC))
