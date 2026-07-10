@@ -100,7 +100,7 @@ templ boardSnapshotBody(data DashboardData) {
 templ boardLaneView2(lane boardLaneView) {
 	<section
 		id={ lane.DomID }
-		class="flex w-full flex-none snap-start flex-col overflow-hidden rounded-card border border-line bg-surface data-[kanban-drop-allowed=false]:border-err/45 data-[kanban-drop-allowed=false]:opacity-70 data-[kanban-drop-allowed=true]:border-accent data-[kanban-drop-source=true]:border-dashed data-[kanban-drop-source=true]:border-accent/50 data-[lane-hidden=true]:hidden md:min-w-44 md:max-w-80 md:flex-1 md:snap-none"
+		class="flex w-full flex-none snap-start flex-col overflow-hidden rounded-card border border-line bg-surface data-[kanban-drop-allowed=false]:border-err/45 data-[kanban-drop-allowed=false]:opacity-70 data-[kanban-drop-allowed=false]:ring-2 data-[kanban-drop-allowed=false]:ring-inset data-[kanban-drop-allowed=false]:ring-err/20 data-[kanban-drop-allowed=true]:border-accent data-[kanban-drop-allowed=true]:ring-2 data-[kanban-drop-allowed=true]:ring-inset data-[kanban-drop-allowed=true]:ring-accent/30 data-[kanban-drop-source=true]:border-dashed data-[kanban-drop-source=true]:border-accent/50 data-[kanban-drop-source=true]:ring-2 data-[kanban-drop-source=true]:ring-inset data-[kanban-drop-source=true]:ring-accent/20 data-[lane-hidden=true]:hidden md:min-w-44 md:max-w-80 md:flex-1 md:snap-none md:data-[kanban-drop-allowed=false]:ring-0 md:data-[kanban-drop-allowed=true]:ring-0 md:data-[kanban-drop-source=true]:ring-0"
 		data-board-lane={ lane.LaneID }
 		data-board-lane-title={ lane.Title }
 		data-board-lane-default={ boardBoolAttr(lane.DefaultVisible) }
@@ -771,6 +771,10 @@ templ boardKanbanDragScript() {
 			if (window.__detentBoardKanbanDragHandlersRegistered) return;
 			window.__detentBoardKanbanDragHandlersRegistered = true;
 			var DRAG_THRESHOLD_PX = 6;
+			var TOUCH_MOVE_TOLERANCE_PX = 10;
+			var TOUCH_LONG_PRESS_MS = 450;
+			var TOUCH_EDGE_ZONE_PX = 56;
+			var TOUCH_EDGE_ADVANCE_MS = 500;
 			// Real mouse clicks travel a few pixels between press and release,
 			// so distance alone cannot separate a click from a drag. A short
 			// gesture released back over the source lane is a click: finish the
@@ -780,6 +784,10 @@ templ boardKanbanDragScript() {
 			var draggedAllowedTargetKeys = [];
 			var pending = null;
 			var active = null;
+			function clearPending() {
+				if (pending && pending.longPressTimer) window.clearTimeout(pending.longPressTimer);
+				pending = null;
+			}
 			function feedback(message, kind) {
 				var target = document.getElementById("board-feedback");
 				if (!target) return;
@@ -840,6 +848,7 @@ templ boardKanbanDragScript() {
 				var card = draggedCard(root);
 				if (card instanceof HTMLElement) card.dataset.kanbanDragging = "true";
 				setDropTargetState(card, root);
+				applyTouchDragStyles(card, root);
 				return true;
 			}
 			window.__detentBoardKanbanDragAdjustSnapshot = applyActiveDragState;
@@ -898,6 +907,39 @@ templ boardKanbanDragScript() {
 				var hit = document.elementFromPoint(x, y);
 				return hit instanceof Element ? hit.closest("[data-kanban-drop-state]") : null;
 			}
+			function applyTouchStyle(element, styles) {
+				if (!active || active.pointerType !== "touch" || !(element instanceof HTMLElement) || !element.isConnected) return;
+				if (!active.touchStyles.has(element)) {
+					var original = {};
+					Object.keys(styles).forEach(function (property) {
+						original[property] = element.style[property];
+					});
+					active.touchStyles.set(element, original);
+				}
+				Object.keys(styles).forEach(function (property) {
+					element.style[property] = styles[property];
+				});
+			}
+			function applyTouchDragStyles(card, scope) {
+				if (!active || active.pointerType !== "touch") return;
+				var root = queryRoot(scope);
+				var lanes = root.querySelector("[data-board-lanes]");
+				applyTouchStyle(lanes, { touchAction: "none", scrollSnapType: "none" });
+				applyTouchStyle(card, {
+					touchAction: "none",
+					outline: "2px solid var(--color-accent)",
+					outlineOffset: "2px"
+				});
+			}
+			function restoreTouchDragStyles() {
+				if (!active || !active.touchStyles) return;
+				active.touchStyles.forEach(function (styles, element) {
+					Object.keys(styles).forEach(function (property) {
+						element.style[property] = styles[property];
+					});
+				});
+				active.touchStyles.clear();
+			}
 			// Native drags auto-scrolled the lane strip at the viewport edges;
 			// pointer drags must do it themselves. Scrolls only while the
 			// pointer moves, which is enough to reach off-screen lanes.
@@ -911,6 +953,62 @@ templ boardKanbanDragScript() {
 					lanes.scrollLeft += 16;
 				}
 			}
+			function visibleDropLanes(lanes) {
+				return Array.from(lanes.querySelectorAll("[data-kanban-drop-state]")).filter(function (lane) {
+					return lane instanceof HTMLElement && lane.dataset.laneHidden !== "true";
+				});
+			}
+			function closestLaneIndex(lanes, laneNodes) {
+				var center = lanes.getBoundingClientRect().left + lanes.clientWidth / 2;
+				var closest = 0;
+				var distance = Infinity;
+				laneNodes.forEach(function (lane, index) {
+					var rect = lane.getBoundingClientRect();
+					var candidate = Math.abs(rect.left + rect.width / 2 - center);
+					if (candidate < distance) {
+						distance = candidate;
+						closest = index;
+					}
+				});
+				return closest;
+			}
+			function advanceTouchLane(direction) {
+				if (!active || active.pointerType !== "touch" || active.edgeDirection !== direction) return;
+				active.edgeTimer = null;
+				var lanes = document.getElementById("board-lanes");
+				if (!lanes) return;
+				var laneNodes = visibleDropLanes(lanes);
+				if (laneNodes.length === 0) return;
+				var current = closestLaneIndex(lanes, laneNodes);
+				var target = Math.max(0, Math.min(laneNodes.length - 1, current + direction));
+				if (target !== current) {
+					laneNodes[target].scrollIntoView({ behavior: "smooth", block: "nearest", inline: "start" });
+				}
+				if (active && active.edgeDirection === direction && target !== current) {
+					active.edgeTimer = window.setTimeout(function () {
+						advanceTouchLane(direction);
+					}, TOUCH_EDGE_ADVANCE_MS);
+				}
+			}
+			function updateTouchEdgeAdvance(x) {
+				if (!active || active.pointerType !== "touch") return;
+				var lanes = document.getElementById("board-lanes");
+				if (!lanes) return;
+				var rect = lanes.getBoundingClientRect();
+				var direction = x < rect.left + TOUCH_EDGE_ZONE_PX ? -1 : (x > rect.right - TOUCH_EDGE_ZONE_PX ? 1 : 0);
+				if (direction === active.edgeDirection) return;
+				if (active.edgeTimer) window.clearTimeout(active.edgeTimer);
+				active.edgeDirection = direction;
+				active.edgeTimer = direction === 0 ? null : window.setTimeout(function () {
+					advanceTouchLane(direction);
+				}, TOUCH_EDGE_ADVANCE_MS);
+			}
+			function stopTouchEdgeAdvance() {
+				if (!active) return;
+				if (active.edgeTimer) window.clearTimeout(active.edgeTimer);
+				active.edgeTimer = null;
+				active.edgeDirection = 0;
+			}
 			function suppressNextClick() {
 				var until = Date.now() + 400;
 				document.addEventListener("click", function suppress(event) {
@@ -921,26 +1019,49 @@ templ boardKanbanDragScript() {
 				}, true);
 			}
 			function beginDrag(event) {
-				draggedIssueID = pending.issueID;
-				draggedAllowedTargetKeys = pending.targets;
-				var card = draggedCard(document) || pending.card;
+				var press = pending;
+				if (!press) return;
+				if (press.longPressTimer) window.clearTimeout(press.longPressTimer);
+				draggedIssueID = press.issueID;
+				draggedAllowedTargetKeys = press.targets;
+				var card = draggedCard(document) || press.card;
 				active = {
-					pointerId: pending.pointerId,
-					offsetX: pending.startX - pending.rect.left,
-					offsetY: pending.startY - pending.rect.top,
-					ghost: buildGhost(card, pending.rect),
+					pointerId: press.pointerId,
+					pointerType: press.pointerType,
+					offsetX: press.startX - press.rect.left,
+					offsetY: press.startY - press.rect.top,
+					ghost: buildGhost(card, press.rect),
 					lastLaneBlocked: false,
-					startedAt: pending.startedAt
+					startedAt: press.startedAt,
+					captureElement: press.card,
+					touchStyles: new Map(),
+					edgeDirection: 0,
+					edgeTimer: null
 				};
 				pending = null;
+				if (active.pointerType === "touch" && typeof active.captureElement.setPointerCapture === "function") {
+					try {
+						active.captureElement.setPointerCapture(active.pointerId);
+					} catch (_) {}
+				}
 				card.dataset.kanbanDragging = "true";
 				setDropTargetState(card, document);
+				applyTouchDragStyles(card, document);
 				feedback("Moving " + (card.dataset.kanbanCurrentState || "card") + ".");
 				moveGhost(active.ghost, event.clientX, event.clientY, active.offsetX, active.offsetY);
 			}
 			function finishDrag(keepClick) {
-				if (active && active.ghost) active.ghost.remove();
-				pending = null;
+				if (active) {
+					stopTouchEdgeAdvance();
+					restoreTouchDragStyles();
+					if (active.ghost) active.ghost.remove();
+					if (active.captureElement && typeof active.captureElement.releasePointerCapture === "function") {
+						try {
+							if (active.captureElement.hasPointerCapture(active.pointerId)) active.captureElement.releasePointerCapture(active.pointerId);
+						} catch (_) {}
+					}
+				}
+				clearPending();
 				active = null;
 				draggedIssueID = "";
 				draggedAllowedTargetKeys = [];
@@ -951,53 +1072,21 @@ templ boardKanbanDragScript() {
 			}
 			function cancelDrag(keepClick) {
 				if (!active) {
-					pending = null;
+					clearPending();
 					return;
 				}
 				finishDrag(keepClick);
 				feedback("Move cancelled.", "error");
 			}
-			document.addEventListener("pointerdown", function (event) {
-				if (active || event.button !== 0 || event.pointerType === "touch") return;
-				var card = event.target instanceof Element ? event.target.closest("[data-kanban-card][data-kanban-action='move']") : null;
-				if (!card) return;
-				var issueID = card.dataset.kanbanIssueId || "";
-				if (!issueID) return;
-				pending = {
-					pointerId: event.pointerId,
-					card: card,
-					issueID: issueID,
-					targets: targetKeysFromValue(card.dataset.kanbanAllowedTargets || ""),
-					rect: card.getBoundingClientRect(),
-					startX: event.clientX,
-					startY: event.clientY,
-					startedAt: Date.now()
-				};
-			});
-			document.addEventListener("pointermove", function (event) {
-				if (pending && event.pointerId === pending.pointerId) {
-					// A missed pointerup (released outside the window) must not
-					// leave a stale press that turns a later hover into a drag.
-					if (event.buttons === 0) {
-						pending = null;
-						return;
-					}
-					if (Math.hypot(event.clientX - pending.startX, event.clientY - pending.startY) < DRAG_THRESHOLD_PX) return;
-					beginDrag(event);
-					return;
+			function moveDragTo(x, y) {
+				if (!active) return;
+				moveGhost(active.ghost, x, y, active.offsetX, active.offsetY);
+				if (active.pointerType === "touch") {
+					updateTouchEdgeAdvance(x);
+				} else {
+					autoScrollLanes(x);
 				}
-				if (!active || event.pointerId !== active.pointerId) return;
-				if (event.buttons === 0) {
-					// The release happened outside the window, so no click is
-					// coming — cancelling must not arm the click suppressor or
-					// it would eat the next real click after recovery.
-					cancelDrag(true);
-					return;
-				}
-				event.preventDefault();
-				moveGhost(active.ghost, event.clientX, event.clientY, active.offsetX, active.offsetY);
-				autoScrollLanes(event.clientX);
-				var lane = laneFromPoint(event.clientX, event.clientY);
+				var lane = laneFromPoint(x, y);
 				var card = draggedCard(document);
 				var blocked = lane instanceof HTMLElement && lane.dataset.kanbanDropSource !== "true" && !laneAllowed(card, lane);
 				if (blocked && !active.lastLaneBlocked) {
@@ -1006,14 +1095,70 @@ templ boardKanbanDragScript() {
 					feedback("Moving " + ((card && card.dataset.kanbanCurrentState) || "card") + ".");
 				}
 				active.lastLaneBlocked = blocked;
+			}
+			document.addEventListener("pointerdown", function (event) {
+				if (active || event.button !== 0 || event.isPrimary === false) return;
+				var card = event.target instanceof Element ? event.target.closest("[data-kanban-card][data-kanban-action='move']") : null;
+				if (!card) return;
+				var issueID = card.dataset.kanbanIssueId || "";
+				if (!issueID) return;
+				pending = {
+					pointerId: event.pointerId,
+					pointerType: event.pointerType,
+					card: card,
+					issueID: issueID,
+					targets: targetKeysFromValue(card.dataset.kanbanAllowedTargets || ""),
+					rect: card.getBoundingClientRect(),
+					startX: event.clientX,
+					startY: event.clientY,
+					lastX: event.clientX,
+					lastY: event.clientY,
+					startedAt: Date.now(),
+					longPressTimer: null
+				};
+				if (event.pointerType === "touch") {
+					var pointerId = event.pointerId;
+					pending.longPressTimer = window.setTimeout(function () {
+						if (!pending || pending.pointerId !== pointerId) return;
+						beginDrag({ clientX: pending.lastX, clientY: pending.lastY });
+					}, TOUCH_LONG_PRESS_MS);
+				}
 			});
-			document.addEventListener("pointerup", function (event) {
+			document.addEventListener("pointermove", function (event) {
 				if (pending && event.pointerId === pending.pointerId) {
-					pending = null;
+					if (pending.pointerType === "touch") {
+						if (Math.hypot(event.clientX - pending.startX, event.clientY - pending.startY) >= TOUCH_MOVE_TOLERANCE_PX) {
+							clearPending();
+							return;
+						}
+						pending.lastX = event.clientX;
+						pending.lastY = event.clientY;
+						return;
+					}
+					// A missed pointerup (released outside the window) must not
+					// leave a stale press that turns a later hover into a drag.
+					if (event.buttons === 0) {
+						clearPending();
+						return;
+					}
+					if (Math.hypot(event.clientX - pending.startX, event.clientY - pending.startY) < DRAG_THRESHOLD_PX) return;
+					beginDrag(event);
 					return;
 				}
 				if (!active || event.pointerId !== active.pointerId) return;
-				var lane = laneFromPoint(event.clientX, event.clientY);
+				if (active.pointerType !== "touch" && event.buttons === 0) {
+					// The release happened outside the window, so no click is
+					// coming — cancelling must not arm the click suppressor or
+					// it would eat the next real click after recovery.
+					cancelDrag(true);
+					return;
+				}
+				event.preventDefault();
+				moveDragTo(event.clientX, event.clientY);
+			}, { passive: false });
+			function dropAt(x, y) {
+				if (!active) return;
+				var lane = laneFromPoint(x, y);
 				var card = draggedCard(document);
 				if (!(lane instanceof HTMLElement)) {
 					cancelDrag();
@@ -1042,13 +1187,50 @@ templ boardKanbanDragScript() {
 				targetState.value = lane.dataset.kanbanDropState || "";
 				finishDrag();
 				form.requestSubmit();
+			}
+			document.addEventListener("pointerup", function (event) {
+				if (pending && event.pointerId === pending.pointerId) {
+					clearPending();
+					return;
+				}
+				if (!active || event.pointerId !== active.pointerId) return;
+				dropAt(event.clientX, event.clientY);
 			});
 			document.addEventListener("pointercancel", function (event) {
 				if (pending && event.pointerId === pending.pointerId) {
-					pending = null;
+					clearPending();
 					return;
 				}
-				if (active && event.pointerId === active.pointerId) cancelDrag();
+				if (active && event.pointerId === active.pointerId && active.pointerType !== "touch") cancelDrag();
+			});
+			document.addEventListener("touchmove", function (event) {
+				if (!active || active.pointerType !== "touch") return;
+				event.preventDefault();
+				var touch = event.touches && event.touches[0];
+				if (touch) moveDragTo(touch.clientX, touch.clientY);
+			}, { passive: false });
+			document.addEventListener("touchend", function (event) {
+				if (pending && pending.pointerType === "touch") {
+					clearPending();
+					return;
+				}
+				if (!active || active.pointerType !== "touch") return;
+				var touch = event.changedTouches && event.changedTouches[0];
+				if (touch) dropAt(touch.clientX, touch.clientY);
+			});
+			document.addEventListener("touchcancel", function () {
+				if (pending && pending.pointerType === "touch") {
+					clearPending();
+					return;
+				}
+				if (active && active.pointerType === "touch") cancelDrag();
+			});
+			document.addEventListener("contextmenu", function (event) {
+				var touchPress = pending && pending.pointerType === "touch";
+				var touchDrag = active && active.pointerType === "touch";
+				if ((touchPress || touchDrag) && event.target instanceof Element && event.target.closest("[data-kanban-card]")) {
+					event.preventDefault();
+				}
 			});
 			document.addEventListener("keydown", function (event) {
 				if (event.key === "Escape" && active) cancelDrag();

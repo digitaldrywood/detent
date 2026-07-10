@@ -529,6 +529,208 @@ async function expectContentToFit(locator) {
   expect(fits).toBeTruthy();
 }
 
+test("project kanban supports long-press touch status moves", async ({
+  page,
+}) => {
+  const kanbanRuntime = await startDetentRuntime("mobile-kanban-touch-drag", [
+    "--demo",
+    "kanban",
+    "--demo-project",
+    "demo-project",
+  ]);
+  let session;
+  let touchActive = false;
+  try {
+    await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, {
+      waitUntil: "domcontentloaded",
+    });
+    const lanes = page.locator("#board-lanes");
+    const card = page.locator(
+      '#board-lanes [data-kanban-card][data-kanban-current-state="Backlog"]',
+      { hasText: "Kanban demo backlog intake" },
+    );
+    const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
+    const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
+    const ghost = page.locator("body > [data-kanban-card][aria-hidden='true']");
+    await expect(card).toHaveAttribute("data-kanban-action", "move");
+
+    const cardBox = await card.boundingBox();
+    if (!cardBox) {
+      throw new Error("Touch drag source has no bounding box");
+    }
+    const startX = cardBox.x + cardBox.width / 2;
+    const startY = cardBox.y + cardBox.height / 2;
+
+    await page.touchscreen.tap(startX, startY);
+    await expect(page.locator("[data-detail-sheet]")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
+
+    session = await page.context().newCDPSession(page);
+    const swipeY = cardBox.y + cardBox.height / 2;
+    await dispatchTouch(
+      session,
+      "touchStart",
+      cardBox.x + cardBox.width - 20,
+      swipeY,
+    );
+    touchActive = true;
+    for (const x of [260, 200, 140, 80, 30]) {
+      await dispatchTouch(session, "touchMove", x, swipeY);
+    }
+    await dispatchTouch(session, "touchEnd", 30, swipeY);
+    touchActive = false;
+    await expect(ghost).toHaveCount(0);
+    await expect(page.locator("[data-kanban-drop-allowed]")).toHaveCount(0);
+    await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
+
+    const sourceHeader = sourceLane.locator("header");
+    const headerBox = await sourceHeader.boundingBox();
+    if (!headerBox) {
+      throw new Error("Touch swipe source has no bounding box");
+    }
+    const headerY = headerBox.y + headerBox.height / 2;
+    await dispatchTouch(session, "touchStart", 330, headerY);
+    touchActive = true;
+    for (const x of [280, 220, 160, 100, 50]) {
+      await dispatchTouch(session, "touchMove", x, headerY);
+    }
+    await dispatchTouch(session, "touchEnd", 50, headerY);
+    touchActive = false;
+    await expect
+      .poll(() => lanes.evaluate((root) => root.scrollLeft))
+      .toBeGreaterThan(0);
+    await page.waitForTimeout(500);
+    await sourceLane.evaluate((lane) =>
+      lane.scrollIntoView({
+        behavior: "instant",
+        block: "nearest",
+        inline: "start",
+      }),
+    );
+    await expect
+      .poll(async () => {
+        const box = await sourceLane.boundingBox();
+        return box && box.x >= 0 && box.x < 390;
+      })
+      .toBe(true);
+
+    const incomingSnapshot = await page
+      .locator("#snapshot")
+      .evaluate((snapshot) => snapshot.innerHTML);
+    const moveRequest = page.waitForRequest((request) => {
+      if (
+        request.method() !== "POST" ||
+        !request.url().endsWith("/api/v1/kanban/move")
+      ) {
+        return false;
+      }
+      return (
+        new URLSearchParams(request.postData() || "").get("kanban_drag") ===
+        "true"
+      );
+    });
+
+    const dragBox = await card.boundingBox();
+    if (!dragBox) {
+      throw new Error("Touch drag source disappeared after swipe");
+    }
+    const dragX = dragBox.x + dragBox.width / 2;
+    const dragY = dragBox.y + dragBox.height / 2;
+    await dispatchTouch(session, "touchStart", dragX, dragY);
+    touchActive = true;
+    await page.waitForTimeout(500);
+    await expect(ghost).toHaveCount(1);
+    await expect(ghost).toContainText("From Backlog");
+    await expect(card).toHaveAttribute("data-kanban-dragging", "true");
+    await expect(sourceLane).toHaveAttribute("data-kanban-drop-source", "true");
+    await expect(targetLane).toHaveAttribute(
+      "data-kanban-drop-allowed",
+      "true",
+    );
+    await expect(card).toHaveCSS("touch-action", "none");
+    await expect(lanes).toHaveCSS("touch-action", "none");
+
+    await page.evaluate(
+      (incoming) =>
+        new Promise((resolve) => {
+          document.addEventListener("htmx:afterSettle", resolve, {
+            once: true,
+          });
+          const target = document.querySelector("#snapshot");
+          const event = new CustomEvent("htmx:sseBeforeMessage", {
+            bubbles: true,
+            cancelable: true,
+            detail: { elt: target, data: incoming },
+          });
+          target.dispatchEvent(event);
+          if (!event.defaultPrevented) {
+            window.htmx.swap(
+              target,
+              incoming,
+              { swapStyle: target.getAttribute("hx-swap") || "innerHTML" },
+              { contextElement: target },
+            );
+          }
+        }),
+      incomingSnapshot,
+    );
+    await expect(ghost).toHaveCount(1);
+    await expect(card).toHaveAttribute("data-kanban-dragging", "true");
+    await expect(sourceLane).toHaveAttribute("data-kanban-drop-source", "true");
+    await expect(targetLane).toHaveAttribute(
+      "data-kanban-drop-allowed",
+      "true",
+    );
+    await expect(card).toHaveCSS("touch-action", "none");
+    await expect(lanes).toHaveCSS("touch-action", "none");
+
+    await dispatchTouch(session, "touchMove", 340, dragY);
+    await expect
+      .poll(async () => {
+        const box = await targetLane.boundingBox();
+        return Boolean(box && box.x <= 340 && box.x + box.width > 340);
+      })
+      .toBe(true);
+    await dispatchTouch(session, "touchEnd", 340, dragY);
+    touchActive = false;
+
+    const request = await moveRequest;
+    const form = new URLSearchParams(request.postData() || "");
+    expect(form.get("kanban_drag")).toBe("true");
+    expect(form.get("target_state")).toBe("Todo");
+    await expect(
+      targetLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+    await expect(
+      sourceLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toHaveCount(0);
+    await expect(ghost).toHaveCount(0);
+    await expect(lanes).not.toHaveCSS("touch-action", "none");
+    await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
+  } finally {
+    if (session && touchActive) {
+      await dispatchTouch(session, "touchCancel", 0, 0).catch(() => {});
+    }
+    await session?.detach().catch(() => {});
+    await kanbanRuntime.stop();
+  }
+});
+
+async function dispatchTouch(session, type, x, y) {
+  await session.send("Input.dispatchTouchEvent", {
+    type,
+    touchPoints:
+      type === "touchEnd" || type === "touchCancel"
+        ? []
+        : [{ x, y, radiusX: 2, radiusY: 2, force: 1 }],
+  });
+}
+
 async function expectNoHorizontalScroll(page) {
   const dimensions = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
