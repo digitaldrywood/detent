@@ -678,6 +678,72 @@ func TestCheckDoctorProjectSkills(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorFilesystemProjectSkills(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configure  func(*testing.T, *globalconfig.Project, *workflowconfig.Config)
+		wantStatus doctorStatus
+		wantDetail []string
+	}{
+		{
+			name: "configured source root is inspected",
+			configure: func(t *testing.T, _ *globalconfig.Project, cfg *workflowconfig.Config) {
+				cfg.Workspace.SourceRoot = t.TempDir()
+				writeDoctorSkill(t, cfg.Workspace.SourceRoot, "deploy.md", "deploy")
+			},
+			wantStatus: doctorOK,
+			wantDetail: []string{"loaded=1", "dropped=0"},
+		},
+		{
+			name: "project workdir is inspected",
+			configure: func(t *testing.T, project *globalconfig.Project, _ *workflowconfig.Config) {
+				project.Workdir = t.TempDir()
+			},
+			wantStatus: doctorOK,
+			wantDetail: []string{"loaded=0", "dropped=0"},
+		},
+		{
+			name: "missing source root skips",
+			configure: func(t *testing.T, _ *globalconfig.Project, cfg *workflowconfig.Config) {
+				cfg.Workspace.SourceRoot = filepath.Join(t.TempDir(), "missing")
+			},
+			wantStatus: doctorWarn,
+			wantDetail: []string{"skipped because source repository is unavailable locally"},
+		},
+		{
+			name:       "unconfigured source root skips",
+			wantStatus: doctorWarn,
+			wantDetail: []string{"skipped because source root is not configured"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			project := globalconfig.Project{}
+			cfg := workflowconfig.Default()
+			cfg.Workspace.Kind = workflowconfig.WorkspaceFilesystem
+			cfg.Workspace.Root = ""
+			cfg.Workspace.SourceRoot = ""
+			if tt.configure != nil {
+				tt.configure(t, &project, &cfg)
+			}
+			got := checkDoctorFilesystemProjectSkills("alpha", project, cfg)
+			if got.Status != tt.wantStatus {
+				t.Fatalf("Status = %s, want %s: %#v", got.Status, tt.wantStatus, got)
+			}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(got.Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+				}
+			}
+		})
+	}
+}
+
 func writeDoctorSkill(t *testing.T, root string, name string, skillName string) {
 	t.Helper()
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -169,7 +170,8 @@ func checkDoctorProjectWithProgress(
 	if workflow.Config.Workspace.Kind == workflowconfig.WorkspaceFilesystem {
 		setDoctorCurrentCheck("Project " + id + " filesystem workspace")
 		checks = append(checks, checkDoctorFilesystemWorkspace(id, workflow.Config))
-		checks = append(checks, checkDoctorProjectSkillsUnavailable(id, workflow.Config.Agent.Skills, "filesystem workspace does not expose a local source repository"))
+		setDoctorCurrentCheck("Project " + id + " skills")
+		checks = append(checks, checkDoctorFilesystemProjectSkills(id, project, workflow.Config))
 		return checks
 	}
 
@@ -269,6 +271,22 @@ func checkDoctorProjectSkillsUnavailable(id string, cfg workflowconfig.Skills, r
 		Detail: doctorSkillsConfigDetail(cfg) + "; skipped because " + reason,
 		Hint:   "Make the source repository available locally, then rerun detent doctor.",
 	}
+}
+
+func checkDoctorFilesystemProjectSkills(id string, project globalconfig.Project, cfg workflowconfig.Config) doctorCheck {
+	sourceRoot := projectSourceRoot(project, cfg)
+	if sourceRoot == "" {
+		return checkDoctorProjectSkillsUnavailable(id, cfg.Agent.Skills, "source root is not configured")
+	}
+	expandedSourceRoot, err := expandDoctorWorkspacePath(sourceRoot)
+	if err != nil {
+		return checkDoctorProjectSkillsUnavailable(id, cfg.Agent.Skills, "source root could not be resolved")
+	}
+	info, err := os.Stat(expandedSourceRoot)
+	if err != nil || !info.IsDir() {
+		return checkDoctorProjectSkillsUnavailable(id, cfg.Agent.Skills, "source repository is unavailable locally")
+	}
+	return checkDoctorProjectSkills(id, expandedSourceRoot, cfg.Agent.Skills)
 }
 
 func doctorSkillsConfigDetail(cfg workflowconfig.Skills) string {
