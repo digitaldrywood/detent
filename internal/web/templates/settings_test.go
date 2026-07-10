@@ -39,8 +39,10 @@ func TestSettingsIncludesSharedSidebarShell(t *testing.T) {
 		`href="/library"`,
 		`href="/reports"`,
 		`href="/settings"`,
-		`href="/projects/detent/kanban"`,
 		`href="/health/ui"`,
+		`data-sidebar-section="monitor"`,
+		`data-sidebar-section="insights"`,
+		`data-sidebar-section="system"`,
 		"Health",
 		">Detent</span>",
 		"Read-only view of the running configuration.",
@@ -55,6 +57,8 @@ func TestSettingsIncludesSharedSidebarShell(t *testing.T) {
 		"dashboard-nav flex min-w-0 items-center gap-4",
 		"dashboard-nav-link",
 		"underline decoration-2 underline-offset-4",
+		`href="/projects/detent/kanban"`,
+		`data-sidebar-section="projects"`,
 	} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("settings page rendered old nav marker %q:\n%s", forbidden, html)

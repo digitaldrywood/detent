@@ -61,23 +61,81 @@ func TestAppShellActiveNav(t *testing.T) {
 	}
 }
 
-func TestAppShellNavItemsMarksActive(t *testing.T) {
-	items := appShellNavItems(DashboardShellData{ActiveNav: "reports"})
-	if len(items) != 8 {
-		t.Fatalf("expected 8 nav items, got %d", len(items))
+func TestAppShellNavGroupsOrderAndActiveState(t *testing.T) {
+	groups := appShellNavGroups(DashboardShellData{ActiveNav: "reports"})
+	wantGroups := []struct {
+		id    string
+		label string
+		items []string
+	}{
+		{id: "primary", items: []string{"board"}},
+		{id: "monitor", label: "Monitor", items: []string{"fleet", "health"}},
+		{id: "insights", label: "Insights", items: []string{"reports", "library"}},
+		{id: "system", label: "System", items: []string{"analytics", "api-keys", "settings"}},
+	}
+	if len(groups) != len(wantGroups) {
+		t.Fatalf("group count = %d, want %d", len(groups), len(wantGroups))
 	}
 	healthDot := false
-	for _, item := range items {
-		want := item.ID == "reports"
-		if item.Active != want {
-			t.Fatalf("nav item %q active = %v, want %v", item.ID, item.Active, want)
+	for groupIndex, group := range groups {
+		wantGroup := wantGroups[groupIndex]
+		if group.ID != wantGroup.id || group.Label != wantGroup.label {
+			t.Fatalf("group %d = (%q, %q), want (%q, %q)", groupIndex, group.ID, group.Label, wantGroup.id, wantGroup.label)
 		}
-		if item.ID == "health" {
-			healthDot = item.HealthDot
+		if len(group.Items) != len(wantGroup.items) {
+			t.Fatalf("group %q item count = %d, want %d", group.ID, len(group.Items), len(wantGroup.items))
+		}
+		for itemIndex, item := range group.Items {
+			if item.ID != wantGroup.items[itemIndex] {
+				t.Fatalf("group %q item %d = %q, want %q", group.ID, itemIndex, item.ID, wantGroup.items[itemIndex])
+			}
+			wantActive := item.ID == "reports"
+			if item.Active != wantActive {
+				t.Fatalf("nav item %q active = %v, want %v", item.ID, item.Active, wantActive)
+			}
+			if item.ID == "health" {
+				healthDot = item.HealthDot
+			}
 		}
 	}
 	if !healthDot {
 		t.Fatalf("health nav item should carry the status dot")
+	}
+}
+
+func TestAppSidebarContentProjectVisibility(t *testing.T) {
+	tests := []struct {
+		name         string
+		projects     []ProjectSmallMultiple
+		wantProjects bool
+	}{
+		{
+			name:     "single project hidden",
+			projects: []ProjectSmallMultiple{{ID: "detent", Name: "Detent"}},
+		},
+		{
+			name: "multiple projects visible",
+			projects: []ProjectSmallMultiple{
+				{ID: "detent", Name: "Detent"},
+				{ID: "docs", Name: "Docs"},
+			},
+			wantProjects: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := AppSidebarContent(DashboardShellData{Projects: tt.projects}).Render(context.Background(), &buf); err != nil {
+				t.Fatalf("Render() error = %v", err)
+			}
+			html := buf.String()
+			if got := strings.Contains(html, `data-sidebar-section="projects"`); got != tt.wantProjects {
+				t.Fatalf("projects section present = %v, want %v:\n%s", got, tt.wantProjects, html)
+			}
+			if got := strings.Contains(html, `data-sidebar-project=`); got != tt.wantProjects {
+				t.Fatalf("project links present = %v, want %v:\n%s", got, tt.wantProjects, html)
+			}
+		})
 	}
 }
 
