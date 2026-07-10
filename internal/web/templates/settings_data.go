@@ -119,7 +119,7 @@ func settingsProjectTabsVisible(data SettingsData) bool {
 }
 
 func settingsRowClass(last bool) string {
-	base := "group grid grid-cols-[220px_minmax(0,1fr)_60px] items-center gap-3.5 px-4 py-2.5"
+	base := "group grid grid-cols-[minmax(0,1fr)_44px] items-center gap-x-3.5 gap-y-1 px-4 py-2.5 md:grid-cols-[220px_minmax(0,1fr)_60px] md:gap-y-0"
 	if !last {
 		return base + " border-b border-line"
 	}

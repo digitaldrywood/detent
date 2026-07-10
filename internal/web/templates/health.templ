@@ -23,16 +23,18 @@ templ HealthPageV2(data DashboardData) {
 templ HealthSnapshotV2(data DashboardData) {
 	{{ view := healthViewFromDashboard(data) }}
 	@backendCapacityBanner(data.Snapshot)
-	<p id="health-verdict" class="flex flex-none items-center gap-2 text-sm">
+	<p id="health-verdict" class="flex flex-none flex-wrap items-center gap-x-2 gap-y-1 text-sm">
 		<span class={ healthVerdictGlyphClass(view.Kind) } aria-hidden="true">{ view.Kind.Glyph() }</span>
 		<span class="font-medium text-text">{ view.Verdict }</span>
-		<span class="text-sec">
+		<span class="basis-full break-words text-sec md:basis-auto">
 			{ view.Detail }
 			{ " " }
 			Checked <span class="font-mono tabular-nums">{ view.Checked }</span>.
 		</span>
 	</p>
-	<section id="health-details" class="flex flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
+	<section id="health-details" class="flex min-w-0 flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
+		<div class="overflow-x-auto" data-health-table-scroll>
+		<div class="min-w-[850px] md:min-w-full">
 		<div class="grid grid-cols-[180px_140px_minmax(0,1fr)_200px_90px] gap-3.5 border-b border-line px-4 py-2">
 			<span class="text-2xs font-semibold uppercase text-dim">Component</span>
 			<span class="text-2xs font-semibold uppercase text-dim">Status</span>
@@ -64,6 +66,8 @@ templ HealthSnapshotV2(data DashboardData) {
 				<span class="text-right font-mono text-xs text-sec tabular-nums">{ row.Resets }</span>
 			</div>
 		}
+		</div>
+		</div>
 	</section>
 	<p class="flex-none text-2xs text-dim">{ view.Footnote }</p>
 }
