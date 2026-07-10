@@ -284,11 +284,28 @@ func (o *Orchestrator) latestSuccessfulGateWaitAttempt(
 }
 
 func gateWaitAttemptMatchesPullRequest(attempt store.WorkAttempt, issue connector.Issue) bool {
-	prNumber := pullRequestNumber(issue)
-	if prNumber <= 0 || attempt.PRNumber == nil || *attempt.PRNumber <= 0 {
-		return true
+	record, ok := implementProgressRecordFromAttempt(attempt)
+	if !ok || strings.TrimSpace(record.Outcome) != string(store.WorkAttemptTerminalSuccess) {
+		return false
 	}
-	return *attempt.PRNumber == int64(prNumber)
+	prNumber := int64(pullRequestNumber(issue))
+	if prNumber <= 0 {
+		return false
+	}
+	matched := false
+	if attempt.PRNumber != nil && *attempt.PRNumber > 0 {
+		if *attempt.PRNumber != prNumber {
+			return false
+		}
+		matched = true
+	}
+	if record.CurrentSignature.PRNumber > 0 {
+		if record.CurrentSignature.PRNumber != prNumber {
+			return false
+		}
+		matched = true
+	}
+	return matched
 }
 
 func completedFromGateWaitAttempt(issue connector.Issue, attempt store.WorkAttempt) Completed {

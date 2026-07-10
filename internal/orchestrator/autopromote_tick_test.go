@@ -475,16 +475,19 @@ func TestTickAutoPromoteRecoversActiveIssueAfterRestart(t *testing.T) {
 	mergingSlot := dispatchTestIssue("issue-restart-merging-slot", "Merging")
 	state.Running[mergingSlot.ID] = Running{Issue: mergingSlot}
 	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	prNumber := int64(issue.PullRequest.Number)
 	attempts := &recordingWorkAttemptStore{history: []store.WorkAttempt{{
-		ProjectID:     cfg.Project.ID,
-		IssueID:       issue.ID,
-		Identifier:    issue.Identifier,
-		IssueURL:      issue.URL,
-		WorkerType:    "agent",
-		Status:        store.WorkAttemptStatusTerminal,
-		StartedAt:     now.Add(-15 * time.Minute),
-		CompletedAt:   now.Add(-10 * time.Minute),
-		TerminalState: store.WorkAttemptTerminalSuccess,
+		ProjectID:          cfg.Project.ID,
+		IssueID:            issue.ID,
+		Identifier:         issue.Identifier,
+		IssueURL:           issue.URL,
+		PRNumber:           &prNumber,
+		WorkerType:         "agent",
+		Status:             store.WorkAttemptStatusTerminal,
+		StartedAt:          now.Add(-15 * time.Minute),
+		CompletedAt:        now.Add(-10 * time.Minute),
+		TerminalState:      store.WorkAttemptTerminalSuccess,
+		WorkerMetadataJSON: implementProgressMetadataJSON(autoPromoteReworkSignature{PRNumber: prNumber, HeadSHA: "restart-head"}, store.WorkAttemptTerminalSuccess),
 	}}}
 	orch := &Orchestrator{
 		cfg:          cfg,
@@ -529,6 +532,110 @@ func TestTickAutoPromoteRecoversActiveIssueAfterRestart(t *testing.T) {
 		if !strings.Contains(tracker.comments[0].body, fragment) {
 			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
 		}
+	}
+}
+
+func TestLatestSuccessfulGateWaitAttemptRequiresCurrentImplementationEvidence(t *testing.T) {
+	t.Parallel()
+
+	currentPR := int64(144)
+	otherPR := int64(143)
+	currentSignature := autoPromoteReworkSignature{PRNumber: currentPR, HeadSHA: "current-head"}
+	otherSignature := autoPromoteReworkSignature{PRNumber: otherPR, HeadSHA: "other-head"}
+	issue := autoPromoteTickIssue("issue-gate-wait-evidence", []string{"bug"}, &connector.PullRequest{
+		Number: 144,
+		State:  "OPEN",
+	})
+	issue.State = "In Progress"
+
+	tests := []struct {
+		name     string
+		attempts []store.WorkAttempt
+		wantID   int64
+	}{
+		{
+			name: "ignores plan success",
+			attempts: []store.WorkAttempt{{
+				ID:                 1,
+				TerminalState:      store.WorkAttemptTerminalSuccess,
+				WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"run_mode": runpkg.RunModePlan}),
+			}},
+		},
+		{
+			name: "ignores implementation success without PR association",
+			attempts: []store.WorkAttempt{{
+				ID:                 2,
+				TerminalState:      store.WorkAttemptTerminalSuccess,
+				WorkerMetadataJSON: implementProgressMetadataJSON(autoPromoteReworkSignature{}, store.WorkAttemptTerminalSuccess),
+			}},
+		},
+		{
+			name: "ignores implementation success for another PR",
+			attempts: []store.WorkAttempt{{
+				ID:                 3,
+				PRNumber:           &otherPR,
+				TerminalState:      store.WorkAttemptTerminalSuccess,
+				WorkerMetadataJSON: implementProgressMetadataJSON(otherSignature, store.WorkAttemptTerminalSuccess),
+			}},
+		},
+		{
+			name: "accepts current PR from attempt",
+			attempts: []store.WorkAttempt{{
+				ID:                 4,
+				PRNumber:           &currentPR,
+				TerminalState:      store.WorkAttemptTerminalSuccess,
+				WorkerMetadataJSON: implementProgressMetadataJSON(autoPromoteReworkSignature{}, store.WorkAttemptTerminalSuccess),
+			}},
+			wantID: 4,
+		},
+		{
+			name: "accepts current PR from completion record",
+			attempts: []store.WorkAttempt{{
+				ID:                 5,
+				TerminalState:      store.WorkAttemptTerminalSuccess,
+				WorkerMetadataJSON: implementProgressMetadataJSON(currentSignature, store.WorkAttemptTerminalSuccess),
+			}},
+			wantID: 5,
+		},
+		{
+			name: "skips newer unrelated success for older current completion",
+			attempts: []store.WorkAttempt{
+				{
+					ID:                 6,
+					TerminalState:      store.WorkAttemptTerminalSuccess,
+					WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"run_mode": runpkg.RunModePlan}),
+				},
+				{
+					ID:                 5,
+					TerminalState:      store.WorkAttemptTerminalSuccess,
+					WorkerMetadataJSON: implementProgressMetadataJSON(currentSignature, store.WorkAttemptTerminalSuccess),
+				},
+			},
+			wantID: 5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			attempts := &recordingWorkAttemptStore{history: tt.attempts}
+			orch := &Orchestrator{
+				cfg:          normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}}),
+				workAttempts: attempts,
+			}
+
+			attempt, ok, err := orch.latestSuccessfulGateWaitAttempt(context.Background(), issue)
+			if err != nil {
+				t.Fatalf("latestSuccessfulGateWaitAttempt() error = %v", err)
+			}
+			if ok != (tt.wantID > 0) {
+				t.Fatalf("latestSuccessfulGateWaitAttempt() ok = %v, want %v", ok, tt.wantID > 0)
+			}
+			if attempt.ID != tt.wantID {
+				t.Fatalf("latestSuccessfulGateWaitAttempt() ID = %d, want %d", attempt.ID, tt.wantID)
+			}
+		})
 	}
 }
 
