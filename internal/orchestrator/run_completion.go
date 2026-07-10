@@ -191,6 +191,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.handleIncompleteMergeWorkerResult(ctx, state, event, running)
 		return
 	}
+	if o.completeRedundantGateWaitRun(ctx, state, event, running) {
+		return
+	}
 
 	finalState := event.Result.FinalState
 	if finalState == "" {
@@ -253,12 +256,82 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.cleanupDrainedRun(ctx, state, event.IssueID)
 		return
 	}
+	if terminalState == store.WorkAttemptTerminalSuccess &&
+		autoPromoteActiveGatePendingIssue(running.Issue, state, o.cfg, o.cfg.AutoPromote) {
+		o.finishCompletedGateWaitRun(ctx, state, running.Issue)
+		return
+	}
 	if terminalState == store.WorkAttemptTerminalNoProgress && progress.Block {
 		if o.blockNoProgressLimit(ctx, state, progress, event.CompletedAt) {
 			return
 		}
 	}
 	o.scheduleRetry(state, running.Issue, 1, event.CompletedAt, "", true, running.WorkerHost)
+}
+
+func (o *Orchestrator) completeRedundantGateWaitRun(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+) bool {
+	if !autoPromoteActiveGateTrackedIssue(running.Issue, o.cfg, o.cfg.AutoPromote) {
+		return false
+	}
+	attempt, ok, err := o.latestSuccessfulGateWaitAttempt(ctx, running.Issue)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"gate-wait completion history lookup failed",
+				"issue_id", running.Issue.ID,
+				"identifier", running.Issue.Identifier,
+				"error", err,
+			)
+		}
+		return false
+	}
+	if !ok {
+		return false
+	}
+
+	o.completeDurableWorkAttempt(
+		ctx,
+		state,
+		running,
+		event.CompletedAt,
+		store.WorkAttemptTerminalSuperseded,
+		"awaiting_gate",
+		"completed gate-wait work already has a successful attempt",
+		"superseded",
+		"ignored redundant gate-wait dispatch",
+	)
+	state.Completed[event.IssueID] = completedFromGateWaitAttempt(running.Issue, attempt)
+	tokens := event.Result.Tokens
+	if tokens == (TokenTotals{}) {
+		tokens = running.Tokens
+	}
+	state.TokenTotals = addTokenTotals(state.TokenTotals, tokens)
+	if event.Result.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+	}
+	if diffStatsPresent(event.Result.DiffStats) {
+		state.DiffStats[event.IssueID] = event.Result.DiffStats
+	}
+	o.finishCompletedGateWaitRun(ctx, state, running.Issue)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "gate_wait_dispatch_superseded",
+		Message: "ignored redundant dispatch for completed gate-wait " + issueLabel(running.Issue),
+	})
+	return true
+}
+
+func (o *Orchestrator) finishCompletedGateWaitRun(ctx context.Context, state *State, issue connector.Issue) {
+	issueID := strings.TrimSpace(issue.ID)
+	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
+		o.logger.Warn("release completed gate-wait claim failed", "issue_id", issueID, "error", err)
+	}
+	o.releaseClaim(state, issueID)
 }
 
 func (o *Orchestrator) commentBudgetRefusal(ctx context.Context, issueID string, refusal BudgetRefusal) {

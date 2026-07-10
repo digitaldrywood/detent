@@ -475,10 +475,25 @@ func TestTickAutoPromoteRecoversActiveIssueAfterRestart(t *testing.T) {
 	mergingSlot := dispatchTestIssue("issue-restart-merging-slot", "Merging")
 	state.Running[mergingSlot.ID] = Running{Issue: mergingSlot}
 	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	prNumber := int64(issue.PullRequest.Number)
+	attempts := &recordingWorkAttemptStore{history: []store.WorkAttempt{{
+		ProjectID:          cfg.Project.ID,
+		IssueID:            issue.ID,
+		Identifier:         issue.Identifier,
+		IssueURL:           issue.URL,
+		PRNumber:           &prNumber,
+		WorkerType:         "agent",
+		Status:             store.WorkAttemptStatusTerminal,
+		StartedAt:          now.Add(-15 * time.Minute),
+		CompletedAt:        now.Add(-10 * time.Minute),
+		TerminalState:      store.WorkAttemptTerminalSuccess,
+		WorkerMetadataJSON: implementProgressMetadataJSON(autoPromoteReworkSignature{PRNumber: prNumber, HeadSHA: "restart-head"}, store.WorkAttemptTerminalSuccess),
+	}}}
 	orch := &Orchestrator{
-		cfg:       cfg,
-		connector: tracker,
-		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:          cfg,
+		connector:    tracker,
+		workAttempts: attempts,
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
 	orch.tick(context.Background(), &state, now)
@@ -491,6 +506,12 @@ func TestTickAutoPromoteRecoversActiveIssueAfterRestart(t *testing.T) {
 	}
 	if _, ok := state.Running[issue.ID]; ok {
 		t.Fatalf("Running[%q] present after pending restart recovery tick", issue.ID)
+	}
+	if completed, ok := state.Completed[issue.ID]; !ok || completed.FinalState != FinalStateCompleted {
+		t.Fatalf("Completed[%q] = %#v, want durable successful completion restored", issue.ID, completed)
+	}
+	if len(attempts.historyQueries) == 0 {
+		t.Fatal("durable work attempt history was not queried")
 	}
 
 	tracker.stateIssues[0].PullRequest.CIStatus = "success"
@@ -511,6 +532,176 @@ func TestTickAutoPromoteRecoversActiveIssueAfterRestart(t *testing.T) {
 		if !strings.Contains(tracker.comments[0].body, fragment) {
 			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
 		}
+	}
+}
+
+func TestLatestSuccessfulGateWaitAttemptRequiresCurrentImplementationEvidence(t *testing.T) {
+	t.Parallel()
+
+	currentPR := int64(144)
+	otherPR := int64(143)
+	currentSignature := autoPromoteReworkSignature{PRNumber: currentPR, HeadSHA: "current-head"}
+	otherSignature := autoPromoteReworkSignature{PRNumber: otherPR, HeadSHA: "other-head"}
+	issue := autoPromoteTickIssue("issue-gate-wait-evidence", []string{"bug"}, &connector.PullRequest{
+		Number: 144,
+		State:  "OPEN",
+	})
+	issue.State = "In Progress"
+
+	tests := []struct {
+		name     string
+		attempts []store.WorkAttempt
+		wantID   int64
+	}{
+		{
+			name: "ignores plan success",
+			attempts: []store.WorkAttempt{{
+				ID:                 1,
+				TerminalState:      store.WorkAttemptTerminalSuccess,
+				WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"run_mode": runpkg.RunModePlan}),
+			}},
+		},
+		{
+			name: "ignores implementation success without PR association",
+			attempts: []store.WorkAttempt{{
+				ID:                 2,
+				TerminalState:      store.WorkAttemptTerminalSuccess,
+				WorkerMetadataJSON: implementProgressMetadataJSON(autoPromoteReworkSignature{}, store.WorkAttemptTerminalSuccess),
+			}},
+		},
+		{
+			name: "ignores implementation success for another PR",
+			attempts: []store.WorkAttempt{{
+				ID:                 3,
+				PRNumber:           &otherPR,
+				TerminalState:      store.WorkAttemptTerminalSuccess,
+				WorkerMetadataJSON: implementProgressMetadataJSON(otherSignature, store.WorkAttemptTerminalSuccess),
+			}},
+		},
+		{
+			name: "accepts current PR from attempt",
+			attempts: []store.WorkAttempt{{
+				ID:                 4,
+				PRNumber:           &currentPR,
+				TerminalState:      store.WorkAttemptTerminalSuccess,
+				WorkerMetadataJSON: implementProgressMetadataJSON(autoPromoteReworkSignature{}, store.WorkAttemptTerminalSuccess),
+			}},
+			wantID: 4,
+		},
+		{
+			name: "accepts current PR from completion record",
+			attempts: []store.WorkAttempt{{
+				ID:                 5,
+				TerminalState:      store.WorkAttemptTerminalSuccess,
+				WorkerMetadataJSON: implementProgressMetadataJSON(currentSignature, store.WorkAttemptTerminalSuccess),
+			}},
+			wantID: 5,
+		},
+		{
+			name: "skips newer unrelated success for older current completion",
+			attempts: []store.WorkAttempt{
+				{
+					ID:                 6,
+					TerminalState:      store.WorkAttemptTerminalSuccess,
+					WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{"run_mode": runpkg.RunModePlan}),
+				},
+				{
+					ID:                 5,
+					TerminalState:      store.WorkAttemptTerminalSuccess,
+					WorkerMetadataJSON: implementProgressMetadataJSON(currentSignature, store.WorkAttemptTerminalSuccess),
+				},
+			},
+			wantID: 5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			attempts := &recordingWorkAttemptStore{history: tt.attempts}
+			orch := &Orchestrator{
+				cfg:          normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}}),
+				workAttempts: attempts,
+			}
+
+			attempt, ok, err := orch.latestSuccessfulGateWaitAttempt(context.Background(), issue)
+			if err != nil {
+				t.Fatalf("latestSuccessfulGateWaitAttempt() error = %v", err)
+			}
+			if ok != (tt.wantID > 0) {
+				t.Fatalf("latestSuccessfulGateWaitAttempt() ok = %v, want %v", ok, tt.wantID > 0)
+			}
+			if attempt.ID != tt.wantID {
+				t.Fatalf("latestSuccessfulGateWaitAttempt() ID = %d, want %d", attempt.ID, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestTickAutoPromotesCompletedGateWaitWhileDispatchRunning(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 18, 50, 0, 0, time.UTC)
+	oldReview := now.Add(-10 * time.Minute)
+	issue := autoPromoteTickIssue("issue-running-gate-wait", []string{"bug"}, &connector.PullRequest{
+		Number:                 1125,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/1125",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "pass",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	issue.State = "In Progress"
+	issue.Comments = []connector.IssueComment{{
+		Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
+	}}
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:         true,
+			QuietDuration:   0,
+			GateWaitState:   autoPromoteGateWaitSource,
+			NoProgressLimit: 3,
+			Gate: gate.Config{
+				Kind:                   gate.KindCommand,
+				RequireAutomatedReview: new(false),
+			},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:       issue,
+		CompletedAt: now.Add(-5 * time.Minute),
+		FinalState:  FinalStateCompleted,
+	}
+	state.Running[issue.ID] = Running{
+		Issue:     issue,
+		StartedAt: now.Add(-time.Minute),
+	}
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	result := orch.autoPromoteHumanReviewIssues(context.Background(), &state, []connector.Issue{issue}, now)
+
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned = %#v, want %s", result.transitioned, issue.ID)
+	}
+	if _, ok := state.Running[issue.ID]; !ok {
+		t.Fatalf("Running[%q] missing; promotion must not wait for stale dispatch completion", issue.ID)
+	}
+	if _, ok := state.Blocked[issue.ID]; ok {
+		t.Fatalf("Blocked[%q] present after gate promotion", issue.ID)
 	}
 }
 

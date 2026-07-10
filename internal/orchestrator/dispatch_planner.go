@@ -398,7 +398,7 @@ const (
 	dispatchSkipInactiveState            = "inactive_state"
 	dispatchSkipTerminalState            = "terminal_state"
 	dispatchSkipPullRequestHydration     = "pull_request_hydration_unavailable"
-	dispatchSkipAutoPromoteGatePending   = "auto_promote_gate_pending"
+	dispatchSkipAwaitingGate             = "awaiting_gate"
 	dispatchSkipArtifactGateWaitStatus   = "artifact_gate_wait_status"
 	dispatchSkipMergedPullRequest        = "merged_pull_request_reconciliation_pending"
 	dispatchSkipDuplicatePullRequest     = "duplicate_pull_request_work"
@@ -438,7 +438,7 @@ func (p dispatchPlanner) dispatchableIssueDecision(
 		return dispatchableDecision{reason: dispatchSkipArtifactGateWaitStatus}
 	}
 	if autoPromoteActiveGatePendingIssue(issue, state, p.cfg, p.cfg.AutoPromote) {
-		return dispatchableDecision{reason: dispatchSkipAutoPromoteGatePending}
+		return dispatchableDecision{reason: dispatchSkipAwaitingGate}
 	}
 	if mergedPullRequestReconciliationPending(issue, p.cfg) {
 		return dispatchableDecision{reason: dispatchSkipMergedPullRequest}

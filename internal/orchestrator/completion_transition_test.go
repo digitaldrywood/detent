@@ -249,6 +249,34 @@ func TestActiveArtifactGateWaitReviewTargetState(t *testing.T) {
 	}
 }
 
+func TestAutoPromoteActiveGatePendingIssueIncludesCompletedArtifact(t *testing.T) {
+	t.Parallel()
+
+	issue := artifactCompletionTransitionIssue("Production", "pending_review")
+	cfg := normalizeConfig(Config{
+		ActiveStates:   []string{"Todo", "Production", "Rework"},
+		ObservedStates: []string{"Backlog", "Review", "Blocked"},
+		TerminalStates: []string{"Ready for Pickup", "Done", "Cancelled"},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			SourceState:   "Review",
+			PassState:     "Ready for Pickup",
+			ReworkState:   "Rework",
+			GateWaitState: autoPromoteGateWaitSource,
+			Gate:          artifactCompletionTestGate(),
+		},
+	})
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:      issue,
+		FinalState: FinalStateCompleted,
+	}
+
+	if !autoPromoteActiveGatePendingIssue(issue, &state, cfg, cfg.AutoPromote) {
+		t.Fatal("completed artifact gate wait was not recognized without a pull request")
+	}
+}
+
 func TestTransitionActiveArtifactGateWaitIssuesReconcilesToReviewAfterRestart(t *testing.T) {
 	t.Parallel()
 
