@@ -7,9 +7,25 @@ test.describe.configure({ mode: "serial" });
 
 const desktopViewport = { width: 1440, height: 1100 };
 const narrowViewport = { width: 390, height: 844 };
+const groupedSidebarSequence = [
+  "nav:board",
+  "section:projects",
+  "section:monitor",
+  "nav:fleet",
+  "nav:health",
+  "section:insights",
+  "nav:reports",
+  "nav:library",
+  "section:system",
+  "nav:analytics",
+  "nav:api-keys",
+  "nav:settings",
+];
 
 let screenshotsRuntime;
 let kanbanRuntime;
+let singleProjectRuntime;
+let sidebarRuntime;
 let screenshotManifest;
 
 test.beforeAll(async () => {
@@ -32,10 +48,22 @@ test.beforeAll(async () => {
     "--demo-project",
     "demo-project",
   ]);
+  singleProjectRuntime = await startDetentRuntime("single-project", []);
+  sidebarRuntime = await startDetentRuntime("sidebar-live", [
+    "--demo",
+    "screenshots",
+    "--demo-clock",
+    "play",
+  ]);
 });
 
 test.afterAll(async () => {
-  await Promise.all([screenshotsRuntime?.stop(), kanbanRuntime?.stop()]);
+  await Promise.all([
+    screenshotsRuntime?.stop(),
+    kanbanRuntime?.stop(),
+    singleProjectRuntime?.stop(),
+    sidebarRuntime?.stop(),
+  ]);
 });
 
 test.afterEach(async ({ page }, testInfo) => {
@@ -73,6 +101,63 @@ test("screenshots manifest includes visual gate scenarios", async ({
       "fleet-kanban-blocked-alerts",
     ]),
   );
+});
+
+test("sidebar groups global navigation and hides a single project", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: sidebarRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const sidebar = page.locator("#app-sidebar");
+  const content = sidebar.locator("#app-sidebar-content");
+  await expect(content).toHaveAttribute("sse-swap", "sidebar-v2");
+  await expect(content).toHaveAttribute("hx-swap", "morph:innerHTML");
+  await expect(content.locator('[data-sidebar-section="projects"]')).toBeVisible();
+  expect(await content.locator("[data-sidebar-project]").count()).toBeGreaterThan(1);
+  await expect
+    .poll(() => sidebarSequence(content))
+    .toEqual(groupedSidebarSequence);
+  expect(await waitForSidebarMorph(page)).toEqual({
+    preserved: true,
+    swap: "morph:innerHTML",
+  });
+  await expect
+    .poll(() => sidebarSequence(content))
+    .toEqual(groupedSidebarSequence);
+
+  await sidebar.getByRole("button", { name: "Toggle sidebar" }).click();
+  await expect(sidebar).toHaveAttribute("data-rail", "true");
+  for (const heading of await content.locator("[data-sidebar-section]").all()) {
+    await expect(heading).toBeHidden();
+  }
+  for (const label of await content.locator("[data-sidebar-nav-label]").all()) {
+    await expect(label).toBeHidden();
+  }
+  for (const icon of await content.locator("[data-sidebar-nav-icon]").all()) {
+    await expect(icon).toBeVisible();
+  }
+  for (const label of await content.locator("[data-sidebar-project-label]").all()) {
+    await expect(label).toBeHidden();
+  }
+  for (const project of await content.locator("[data-sidebar-project]").all()) {
+    await expect(project).toBeVisible();
+    await expect(project.locator('span[aria-hidden="true"]').first()).toBeVisible();
+  }
+
+  await page.setExtraHTTPHeaders({});
+  await page.goto(`${singleProjectRuntime.url}/`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator("#board-lanes").waitFor({ state: "visible" });
+  const singleProjectContent = page.locator("#app-sidebar-content");
+  await expect(singleProjectContent.locator('[data-sidebar-section="projects"]')).toHaveCount(0);
+  await expect(singleProjectContent.locator("[data-sidebar-project]")).toHaveCount(0);
 });
 
 test("board home renders lanes without page overflow", async ({
@@ -1152,6 +1237,43 @@ async function openScenario(page, options) {
   });
   await page.locator(waitSelector).waitFor({ state: "visible" });
   await page.evaluate(() => document.fonts?.ready);
+}
+
+async function sidebarSequence(content) {
+  return content
+    .locator("[data-sidebar-nav-item], [data-sidebar-section]")
+    .evaluateAll((elements) =>
+      elements.map((element) => {
+        const nav = element.getAttribute("data-sidebar-nav-item");
+        if (nav) {
+          return `nav:${nav}`;
+        }
+        return `section:${element.getAttribute("data-sidebar-section")}`;
+      }),
+    );
+}
+
+async function waitForSidebarMorph(page) {
+  const swaps = await page.evaluate(() => {
+    window.__detentSidebarNode = document.getElementById("app-sidebar-content");
+    return window.__detentSSEMetrics?.snapshot()?.["sidebar-v2"]?.swaps || 0;
+  });
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () => window.__detentSSEMetrics?.snapshot()?.["sidebar-v2"]?.swaps || 0,
+        ),
+      { timeout: 15_000 },
+    )
+    .toBeGreaterThan(swaps);
+  return page.evaluate(() => {
+    const target = document.getElementById("app-sidebar-content");
+    return {
+      preserved: target === window.__detentSidebarNode,
+      swap: target?.getAttribute("hx-swap"),
+    };
+  });
 }
 
 async function startLaneHiddenRecorder(page, laneID) {

@@ -19,17 +19,46 @@ type appNavItem struct {
 	HealthDot bool
 }
 
-func appShellNavItems(data DashboardShellData) []appNavItem {
+type appNavGroup struct {
+	ID    string
+	Label string
+	Items []appNavItem
+}
+
+func appShellNavGroups(data DashboardShellData) []appNavGroup {
 	active := appShellActiveNav(data)
-	return []appNavItem{
-		{ID: "board", Label: "Board", Href: "/", Active: active == "board"},
-		{ID: "fleet", Label: "Fleet", Href: "/fleet", Active: active == "fleet"},
-		{ID: "library", Label: "Library", Href: "/library", Active: active == "library"},
-		{ID: "reports", Label: "Reports", Href: "/reports", Active: active == "reports"},
-		{ID: "analytics", Label: "Analytics", Href: "/analytics", Active: active == "analytics"},
-		{ID: "health", Label: "Health", Href: "/health/ui", Active: active == "health", HealthDot: true},
-		{ID: "api-keys", Label: "API Keys", Href: "/api-keys", Active: active == "api-keys"},
-		{ID: "settings", Label: "Settings", Href: "/settings", Active: active == "settings"},
+	return []appNavGroup{
+		{
+			ID: "primary",
+			Items: []appNavItem{
+				{ID: "board", Label: "Board", Href: "/", Active: active == "board"},
+			},
+		},
+		{
+			ID:    "monitor",
+			Label: "Monitor",
+			Items: []appNavItem{
+				{ID: "fleet", Label: "Fleet", Href: "/fleet", Active: active == "fleet"},
+				{ID: "health", Label: "Health", Href: "/health/ui", Active: active == "health", HealthDot: true},
+			},
+		},
+		{
+			ID:    "insights",
+			Label: "Insights",
+			Items: []appNavItem{
+				{ID: "reports", Label: "Reports", Href: "/reports", Active: active == "reports"},
+				{ID: "library", Label: "Library", Href: "/library", Active: active == "library"},
+			},
+		},
+		{
+			ID:    "system",
+			Label: "System",
+			Items: []appNavItem{
+				{ID: "analytics", Label: "Analytics", Href: "/analytics", Active: active == "analytics"},
+				{ID: "api-keys", Label: "API Keys", Href: "/api-keys", Active: active == "api-keys"},
+				{ID: "settings", Label: "Settings", Href: "/settings", Active: active == "settings"},
+			},
+		},
 	}
 }
 
@@ -145,9 +174,11 @@ func appShellTopbarTitle(data DashboardShellData) string {
 		return name
 	}
 	if active := appShellActiveNav(data); active != "" {
-		for _, item := range appShellNavItems(data) {
-			if item.ID == active {
-				return item.Label
+		for _, group := range appShellNavGroups(data) {
+			for _, item := range group.Items {
+				if item.ID == active {
+					return item.Label
+				}
 			}
 		}
 	}

@@ -87,42 +87,58 @@ templ appSidebar(data DashboardShellData) {
 // AppSidebarContent is the live part of the sidebar (nav health dot and
 // project rows), streamed as the sidebar-v2 SSE event and morphed in place.
 templ AppSidebarContent(data DashboardShellData) {
-	for _, item := range appShellNavItems(data) {
-			<a
-				href={ templ.SafeURL(item.Href) }
-				class={ appNavLinkClass(item) }
-				title={ item.Label }
-				{ sidebarAriaCurrent(item.Active)... }
-			>
-				<span class="flex-1 group-data-[rail=true]/rail:hidden">{ item.Label }</span>
-				<span class="hidden font-mono text-2xs font-medium group-data-[rail=true]/rail:block" aria-hidden="true">{ appNavInitial(item) }</span>
-				if item.HealthDot {
-					<span class="group-data-[rail=true]/rail:hidden">
-						@primitives.StatusDot(appShellHealthKind(data), false)
-					</span>
-				}
-			</a>
+	{{ projects := appShellProjects(data) }}
+	for _, group := range appShellNavGroups(data) {
+		if group.Label != "" {
+			@appSidebarSectionLabel(group.ID, group.Label)
 		}
-		if len(appShellProjects(data)) > 0 {
-			<p class="px-2.5 pb-1.5 pt-4.5 text-2xs font-semibold uppercase tracking-[0.06em] text-dim group-data-[rail=true]/rail:hidden">Projects</p>
-			<div class="hidden pb-1 pt-4.5 group-data-[rail=true]/rail:block" aria-hidden="true">
-				<span class="mx-auto block h-px w-4 bg-line"></span>
-			</div>
-			for _, project := range appShellProjects(data) {
+		for _, item := range group.Items {
+			@appSidebarNavItem(data, item)
+		}
+		if group.ID == "primary" && len(projects) > 1 {
+			@appSidebarSectionLabel("projects", "Projects")
+			for _, project := range projects {
 				<a
 					href={ templ.SafeURL(project.Href) }
 					class={ appProjectLinkClass(project) }
 					title={ project.Name }
+					data-sidebar-project={ project.ID }
 					{ sidebarAriaCurrent(project.Active)... }
 				>
 					@primitives.StatusDot(project.Kind, project.Pulse)
-					<span class="min-w-0 flex-1 truncate group-data-[rail=true]/rail:hidden">{ project.Name }</span>
+					<span class="min-w-0 flex-1 truncate group-data-[rail=true]/rail:hidden" data-sidebar-project-label>{ project.Name }</span>
 					if project.Count != "" {
 						<span class={ appProjectCountClass(project) }>{ project.Count }</span>
 					}
 				</a>
 			}
 		}
+	}
+}
+
+templ appSidebarSectionLabel(id string, label string) {
+	<p class="px-2.5 pb-1.5 pt-4.5 text-2xs font-semibold uppercase tracking-[0.06em] text-dim group-data-[rail=true]/rail:hidden" data-sidebar-section={ id }>{ label }</p>
+	<div class="hidden pb-1 pt-4.5 group-data-[rail=true]/rail:block" aria-hidden="true">
+		<span class="mx-auto block h-px w-4 bg-line"></span>
+	</div>
+}
+
+templ appSidebarNavItem(data DashboardShellData, item appNavItem) {
+	<a
+		href={ templ.SafeURL(item.Href) }
+		class={ appNavLinkClass(item) }
+		title={ item.Label }
+		data-sidebar-nav-item={ item.ID }
+		{ sidebarAriaCurrent(item.Active)... }
+	>
+		<span class="flex-1 group-data-[rail=true]/rail:hidden" data-sidebar-nav-label>{ item.Label }</span>
+		<span class="hidden font-mono text-2xs font-medium group-data-[rail=true]/rail:block" aria-hidden="true" data-sidebar-nav-icon>{ appNavInitial(item) }</span>
+		if item.HealthDot {
+			<span class="group-data-[rail=true]/rail:hidden">
+				@primitives.StatusDot(appShellHealthKind(data), false)
+			</span>
+		}
+	</a>
 }
 
 templ appTopbar(data DashboardShellData, scope templ.Component) {
