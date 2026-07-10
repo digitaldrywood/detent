@@ -18,6 +18,26 @@ const routes = [
     path: "/projects/detent/kanban",
     scenario: "kanban-full-integration",
   },
+  {
+    name: "project-overview",
+    path: "/projects/billing-api",
+    scenario: "project-hot-path",
+  },
+  {
+    name: "project-runs",
+    path: "/projects/dogfood/runs",
+    scenario: "runs-long-content",
+  },
+  {
+    name: "project-diagnostics",
+    path: "/projects/dogfood/diagnostics",
+    scenario: "diagnostics-rate-limit-pressure",
+  },
+  {
+    name: "project-configuration",
+    path: "/projects/dogfood/configuration",
+    scenario: "settings-project-context",
+  },
 ];
 
 let runtime;
@@ -114,6 +134,31 @@ test("drawer closes with Escape and a navigation tap", async ({ page }) => {
   await expect(sidebar).toBeHidden();
 });
 
+test("onboarding has a touch-safe mobile baseline", async ({ page }) => {
+  await page.setExtraHTTPHeaders({
+    "X-Detent-Demo-Scenario": "onboarding-project-selection",
+  });
+  await page.goto(`${runtime.url}/onboarding`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.locator("#onboarding-step").waitFor({ state: "visible" });
+  await page.evaluate(() => document.fonts?.ready);
+
+  for (const control of await page
+    .locator(
+      'a, button, input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]), select, textarea, summary',
+    )
+    .all()) {
+    if (!(await control.isVisible())) {
+      continue;
+    }
+    const box = await control.boundingBox();
+    expect(box?.height).toBeGreaterThanOrEqual(44);
+  }
+  await expectNoHorizontalScroll(page);
+  await expect(page).toHaveScreenshot("onboarding.png");
+});
+
 test("shared figures use a compact mobile grid", async ({ page }) => {
   await page.setExtraHTTPHeaders({
     "X-Detent-Demo-Scenario": "fleet-kanban-multiproject",
@@ -128,6 +173,26 @@ test("shared figures use a compact mobile grid", async ({ page }) => {
       getComputedStyle(element).gridTemplateColumns.split(" ").length,
   );
   expect(columns).toBe(3);
+});
+
+test("project tabs remain reachable by touch", async ({ page }) => {
+  await page.setExtraHTTPHeaders({
+    "X-Detent-Demo-Scenario": "project-hot-path",
+  });
+  await page.goto(`${runtime.url}/projects/billing-api`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  const tabs = page.locator("nav[aria-label='Project views']");
+  const diagnostics = tabs.getByRole("link", { name: "Diagnostics" });
+  await expect(tabs).toHaveCSS("overflow-x", "auto");
+  expect(
+    await tabs.evaluate((element) => element.scrollWidth > element.clientWidth),
+  ).toBe(true);
+  await diagnostics.scrollIntoViewIfNeeded();
+  const tabBox = await diagnostics.boundingBox();
+  expect(tabBox?.x).toBeGreaterThanOrEqual(0);
+  expect((tabBox?.x || 0) + (tabBox?.width || 0)).toBeLessThanOrEqual(391);
 });
 
 test("issue detail is a touch-safe full-screen sheet", async ({ page }) => {
