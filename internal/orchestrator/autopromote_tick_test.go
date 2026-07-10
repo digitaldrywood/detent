@@ -475,10 +475,22 @@ func TestTickAutoPromoteRecoversActiveIssueAfterRestart(t *testing.T) {
 	mergingSlot := dispatchTestIssue("issue-restart-merging-slot", "Merging")
 	state.Running[mergingSlot.ID] = Running{Issue: mergingSlot}
 	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	attempts := &recordingWorkAttemptStore{history: []store.WorkAttempt{{
+		ProjectID:     cfg.Project.ID,
+		IssueID:       issue.ID,
+		Identifier:    issue.Identifier,
+		IssueURL:      issue.URL,
+		WorkerType:    "agent",
+		Status:        store.WorkAttemptStatusTerminal,
+		StartedAt:     now.Add(-15 * time.Minute),
+		CompletedAt:   now.Add(-10 * time.Minute),
+		TerminalState: store.WorkAttemptTerminalSuccess,
+	}}}
 	orch := &Orchestrator{
-		cfg:       cfg,
-		connector: tracker,
-		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:          cfg,
+		connector:    tracker,
+		workAttempts: attempts,
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
 	orch.tick(context.Background(), &state, now)
@@ -491,6 +503,12 @@ func TestTickAutoPromoteRecoversActiveIssueAfterRestart(t *testing.T) {
 	}
 	if _, ok := state.Running[issue.ID]; ok {
 		t.Fatalf("Running[%q] present after pending restart recovery tick", issue.ID)
+	}
+	if completed, ok := state.Completed[issue.ID]; !ok || completed.FinalState != FinalStateCompleted {
+		t.Fatalf("Completed[%q] = %#v, want durable successful completion restored", issue.ID, completed)
+	}
+	if len(attempts.historyQueries) == 0 {
+		t.Fatal("durable work attempt history was not queried")
 	}
 
 	tracker.stateIssues[0].PullRequest.CIStatus = "success"
@@ -511,6 +529,72 @@ func TestTickAutoPromoteRecoversActiveIssueAfterRestart(t *testing.T) {
 		if !strings.Contains(tracker.comments[0].body, fragment) {
 			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
 		}
+	}
+}
+
+func TestTickAutoPromotesCompletedGateWaitWhileDispatchRunning(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 18, 50, 0, 0, time.UTC)
+	oldReview := now.Add(-10 * time.Minute)
+	issue := autoPromoteTickIssue("issue-running-gate-wait", []string{"bug"}, &connector.PullRequest{
+		Number:                 1125,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/1125",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "pass",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	issue.State = "In Progress"
+	issue.Comments = []connector.IssueComment{{
+		Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
+	}}
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:         true,
+			QuietDuration:   0,
+			GateWaitState:   autoPromoteGateWaitSource,
+			NoProgressLimit: 3,
+			Gate: gate.Config{
+				Kind:                   gate.KindCommand,
+				RequireAutomatedReview: new(false),
+			},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:       issue,
+		CompletedAt: now.Add(-5 * time.Minute),
+		FinalState:  FinalStateCompleted,
+	}
+	state.Running[issue.ID] = Running{
+		Issue:     issue,
+		StartedAt: now.Add(-time.Minute),
+	}
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	result := orch.autoPromoteHumanReviewIssues(context.Background(), &state, []connector.Issue{issue}, now)
+
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned = %#v, want %s", result.transitioned, issue.ID)
+	}
+	if _, ok := state.Running[issue.ID]; !ok {
+		t.Fatalf("Running[%q] missing; promotion must not wait for stale dispatch completion", issue.ID)
+	}
+	if _, ok := state.Blocked[issue.ID]; ok {
+		t.Fatalf("Blocked[%q] present after gate promotion", issue.ID)
 	}
 }
 

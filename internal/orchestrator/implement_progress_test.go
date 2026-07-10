@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -244,6 +245,105 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			}
 			if tt.wantLogContains != "" && !strings.Contains(logs.String(), tt.wantLogContains) {
 				t.Fatalf("logs did not contain %q:\n%s", tt.wantLogContains, logs.String())
+			}
+		})
+	}
+}
+
+func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 7, 9, 18, 50, 0, 0, time.UTC)
+	issue := implementProgressIssue("same-head", "Test")
+	signature := autoPromoteReworkSignature{
+		PRNumber:     1070,
+		HeadSHA:      "same-head",
+		FailedChecks: []string{"Test"},
+	}
+	tests := []struct {
+		name           string
+		history        []store.WorkAttempt
+		wantTerminal   store.WorkAttemptTerminalState
+		wantHydrations int
+	}{
+		{
+			name:           "initial success waits for gate without continuation",
+			wantTerminal:   store.WorkAttemptTerminalSuccess,
+			wantHydrations: 1,
+		},
+		{
+			name:         "redundant dispatch is superseded without breaker strike",
+			history:      []store.WorkAttempt{implementProgressHistoryAttempt(1, signature, store.WorkAttemptTerminalSuccess)},
+			wantTerminal: store.WorkAttemptTerminalSuperseded,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tracker := &implementProgressConnector{hydrated: issue}
+			attempts := &implementProgressAttemptStore{history: tt.history}
+			cfg := normalizeConfig(Config{
+				Project: scheduler.ProjectCandidate{ID: "detent"},
+				AutoPromote: AutoPromoteConfig{
+					Enabled:         true,
+					QuietDuration:   0,
+					GateWaitState:   autoPromoteGateWaitSource,
+					NoProgressLimit: 1,
+					Gate:            gate.Config{Kind: gate.KindCommand},
+				},
+				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+				ObservedStates:         []string{"Human Review", "Blocked"},
+				TerminalStates:         []string{"Done", "Cancelled"},
+				ContinuationRetryDelay: time.Minute,
+			})
+			orch := &Orchestrator{
+				cfg:          cfg,
+				connector:    tracker,
+				workAttempts: attempts,
+				logger:       slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+			}
+			state := newState(cfg)
+			state.Running[issue.ID] = Running{
+				Issue:         issue,
+				Attempt:       2,
+				WorkAttemptID: 42,
+				Mode:          runpkg.RunModeImplement,
+				StartedAt:     base.Add(-time.Minute),
+				DiffStats:     DiffStats{Status: "clean"},
+			}
+			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: base.Add(-time.Minute)}
+
+			orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+				IssueID:     issue.ID,
+				CompletedAt: base,
+				Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+				Result: runpkg.RunResult{
+					FinalState: FinalStateCompleted,
+					DiffStats:  DiffStats{Status: "clean"},
+				},
+			})
+
+			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != tt.wantTerminal {
+				t.Fatalf("completions = %#v, want terminal %q", attempts.completions, tt.wantTerminal)
+			}
+			if tracker.hydrations != tt.wantHydrations {
+				t.Fatalf("hydrations = %d, want %d", tracker.hydrations, tt.wantHydrations)
+			}
+			if _, ok := state.Completed[issue.ID]; !ok {
+				t.Fatalf("Completed[%q] missing after gate-wait completion", issue.ID)
+			}
+			if _, ok := state.Retry[issue.ID]; ok {
+				t.Fatalf("Retry[%q] present after gate-wait completion", issue.ID)
+			}
+			if _, ok := state.Claimed[issue.ID]; ok {
+				t.Fatalf("Claimed[%q] present after gate-wait completion", issue.ID)
+			}
+			if _, ok := state.Blocked[issue.ID]; ok {
+				t.Fatalf("Blocked[%q] present after gate-wait completion", issue.ID)
+			}
+			if len(tracker.updates) != 0 {
+				t.Fatalf("state updates = %#v, want breaker untouched", tracker.updates)
 			}
 		})
 	}

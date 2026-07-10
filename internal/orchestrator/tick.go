@@ -92,6 +92,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	o.refreshStatusDrift(ctx, state, now, reserve)
 	fetched = retainUnavailablePullRequestsFromPrevious(fetched, previous)
 	fetched = applyStatusPullRequestHydrationBlocksToCandidates(fetched)
+	o.restoreDurableGateWaitCompletions(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status))
 
 	transitions := o.refreshTransitionSets(ctx, state, fetched, previous)
 	completedEpics := o.resolveCompletedEpics(ctx, state, transitions, previous)

@@ -344,14 +344,78 @@ func TestDispatchableSkipsAutoPromoteGatePendingActiveIssue(t *testing.T) {
 	issue := dispatchTestIssueWithPullRequest("issue-gate-pending", "In Progress", "OPEN")
 	issue.PullRequest.CIStatus = "pending"
 	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{Issue: issue, FinalState: FinalStateCompleted}
 	orch := Orchestrator{cfg: cfg}
 
 	decision := orch.dispatchPlanner().dispatchableIssueDecision(issue, &state, false, now, "")
 	if decision.dispatchable {
 		t.Fatal("dispatchable gate-pending active issue = true, want false")
 	}
-	if decision.reason != dispatchSkipAutoPromoteGatePending {
-		t.Fatalf("dispatchable reason = %q, want %q", decision.reason, dispatchSkipAutoPromoteGatePending)
+	if decision.reason != dispatchSkipAwaitingGate {
+		t.Fatalf("dispatchable reason = %q, want %q", decision.reason, dispatchSkipAwaitingGate)
+	}
+}
+
+func TestDispatchPlannerSkipsCompletedGateWaitRetry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 18, 44, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 0,
+			GateWaitState: autoPromoteGateWaitSource,
+			Gate:          gate.Config{Kind: gate.KindCommand},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	issue := dispatchTestIssueWithPullRequest("issue-completed-gate-wait", "In Progress", "OPEN")
+	issue.PullRequest.CIStatus = "pending"
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:       issue,
+		CompletedAt: now.Add(-3 * time.Minute),
+		FinalState:  FinalStateCompleted,
+	}
+	planner := newDispatchPlanner(cfg)
+	planner.scheduleRetryAfter(&state, issue, 1, now, 0, "", "")
+	var decisions []dispatchPlanDecision
+
+	plan := planner.plan(&state, []connector.Issue{issue}, now, dispatchPlanHooks{
+		decision: func(decision dispatchPlanDecision) {
+			decisions = append(decisions, decision)
+		},
+	})
+
+	if len(plan.Dispatches) != 0 {
+		t.Fatalf("dispatches = %#v, want completed gate-wait retry skipped", plan.Dispatches)
+	}
+	if len(decisions) != 1 || decisions[0].SkipReason != "awaiting_gate" {
+		t.Fatalf("decisions = %#v, want awaiting_gate skip", decisions)
+	}
+	if _, ok := state.Completed[issue.ID]; !ok {
+		t.Fatalf("Completed[%q] missing after gate-wait skip", issue.ID)
+	}
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatalf("Retry[%q] present after gate-wait skip", issue.ID)
+	}
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present after gate-wait skip", issue.ID)
+	}
+
+	attempts := &recordingWorkAttemptStore{}
+	orch := Orchestrator{cfg: cfg, workAttempts: attempts}
+	loggedState := newState(cfg)
+	loggedState.Completed[issue.ID] = Completed{
+		Issue:       issue,
+		CompletedAt: now.Add(-3 * time.Minute),
+		FinalState:  FinalStateCompleted,
+	}
+	orch.dispatchReadyIssues(t.Context(), &loggedState, []connector.Issue{issue}, now)
+	if len(attempts.decisions) != 1 || attempts.decisions[0].Reason != dispatchSkipAwaitingGate {
+		t.Fatalf("scheduler decisions = %#v, want awaiting_gate skip", attempts.decisions)
 	}
 }
 
@@ -372,14 +436,15 @@ func TestDispatchableSkipsQuietWindowActiveIssueWithOpenPullRequest(t *testing.T
 	issue := dispatchTestIssueWithPullRequest("issue-quiet-gate-pending", "In Progress", "OPEN")
 	issue.PullRequest.CIStatus = "pending"
 	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{Issue: issue, FinalState: FinalStateCompleted}
 	orch := Orchestrator{cfg: cfg}
 
 	decision := orch.dispatchPlanner().dispatchableIssueDecision(issue, &state, false, now, "")
 	if decision.dispatchable {
 		t.Fatal("dispatchable quiet-window active issue with open PR = true, want false")
 	}
-	if decision.reason != dispatchSkipAutoPromoteGatePending {
-		t.Fatalf("dispatchable reason = %q, want %q", decision.reason, dispatchSkipAutoPromoteGatePending)
+	if decision.reason != dispatchSkipAwaitingGate {
+		t.Fatalf("dispatchable reason = %q, want %q", decision.reason, dispatchSkipAwaitingGate)
 	}
 }
 
@@ -2250,13 +2315,15 @@ func receiveWorkerHostRunRequest(t *testing.T, requests <-chan RunRequest) RunRe
 }
 
 type recordingWorkAttemptStore struct {
-	nextID      int64
-	starts      []store.WorkAttemptStart
-	heartbeats  []store.WorkAttemptHeartbeat
-	completions []store.WorkAttemptCompletion
-	decisions   []store.SchedulerDecision
-	reclaimed   []store.WorkAttempt
-	recent      []store.WorkAttempt
+	nextID         int64
+	starts         []store.WorkAttemptStart
+	heartbeats     []store.WorkAttemptHeartbeat
+	completions    []store.WorkAttemptCompletion
+	decisions      []store.SchedulerDecision
+	reclaimed      []store.WorkAttempt
+	recent         []store.WorkAttempt
+	history        []store.WorkAttempt
+	historyQueries []store.WorkAttemptHistoryQuery
 }
 
 func (s *recordingWorkAttemptStore) StartWorkAttempt(_ context.Context, attrs store.WorkAttemptStart) (int64, error) {
@@ -2295,8 +2362,12 @@ func (s *recordingWorkAttemptStore) ListActiveWorkAttempts(context.Context, stor
 	return nil, nil
 }
 
-func (s *recordingWorkAttemptStore) ListRecentTerminalWorkAttempts(context.Context, store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
-	return append([]store.WorkAttempt(nil), s.recent...), nil
+func (s *recordingWorkAttemptStore) ListRecentTerminalWorkAttempts(_ context.Context, query store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
+	s.historyQueries = append(s.historyQueries, query)
+	if s.history == nil {
+		return append([]store.WorkAttempt(nil), s.recent...), nil
+	}
+	return append([]store.WorkAttempt(nil), s.history...), nil
 }
 
 func (s *recordingWorkAttemptStore) RecordSchedulerDecision(_ context.Context, attrs store.SchedulerDecision) (int64, error) {

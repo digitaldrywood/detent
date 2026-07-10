@@ -128,8 +128,8 @@ func TestStateSnapshotMarksGatePendingBoardIssues(t *testing.T) {
 		want bool
 	}{
 		{id: "gate-pending", want: true},
-		{id: "running"},
-		{id: "queued"},
+		{id: "running", want: true},
+		{id: "queued", want: true},
 		{id: "rework"},
 		{id: "plain"},
 	}

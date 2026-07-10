@@ -204,9 +204,122 @@ func autoPromoteIssueCompleted(state *State, issueID string) bool {
 	return ok
 }
 
+func (o *Orchestrator) restoreDurableGateWaitCompletions(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+) {
+	if o == nil || state == nil || o.workAttempts == nil {
+		return
+	}
+	autoCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+	if !autoPromoteActiveGateTrackingEnabled(autoCfg) {
+		return
+	}
+	if state.Completed == nil {
+		state.Completed = map[string]Completed{}
+	}
+	for _, issue := range issues {
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" {
+			continue
+		}
+		if _, ok := state.Completed[issueID]; ok {
+			continue
+		}
+		if !autoPromoteActiveGateTrackedIssue(issue, o.cfg, autoCfg) {
+			continue
+		}
+		attempt, ok, err := o.latestSuccessfulGateWaitAttempt(ctx, issue)
+		if err != nil {
+			if o.logger != nil {
+				o.logger.Warn(
+					"restore durable gate-wait completion failed",
+					"issue_id", issueID,
+					"identifier", issue.Identifier,
+					"error", err,
+				)
+			}
+			continue
+		}
+		if !ok {
+			continue
+		}
+		state.Completed[issueID] = completedFromGateWaitAttempt(issue, attempt)
+	}
+}
+
+func (o *Orchestrator) latestSuccessfulGateWaitAttempt(
+	ctx context.Context,
+	issue connector.Issue,
+) (store.WorkAttempt, bool, error) {
+	if o == nil || o.workAttempts == nil {
+		return store.WorkAttempt{}, false, nil
+	}
+	limit := normalizeAutoPromoteConfig(o.cfg.AutoPromote).NoProgressLimit + 1
+	if limit < 20 {
+		limit = 20
+	}
+	attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
+		ProjectID:  strings.TrimSpace(o.cfg.Project.ID),
+		IssueID:    strings.TrimSpace(issue.ID),
+		Identifier: strings.TrimSpace(issue.Identifier),
+		IssueURL:   strings.TrimSpace(issue.URL),
+		WorkerType: "agent",
+		Limit:      limit,
+	})
+	if err != nil {
+		return store.WorkAttempt{}, false, err
+	}
+	for _, attempt := range attempts {
+		if attempt.TerminalState != store.WorkAttemptTerminalSuccess {
+			continue
+		}
+		if !gateWaitAttemptMatchesPullRequest(attempt, issue) {
+			continue
+		}
+		return attempt, true, nil
+	}
+	return store.WorkAttempt{}, false, nil
+}
+
+func gateWaitAttemptMatchesPullRequest(attempt store.WorkAttempt, issue connector.Issue) bool {
+	prNumber := pullRequestNumber(issue)
+	if prNumber <= 0 || attempt.PRNumber == nil || *attempt.PRNumber <= 0 {
+		return true
+	}
+	return *attempt.PRNumber == int64(prNumber)
+}
+
+func completedFromGateWaitAttempt(issue connector.Issue, attempt store.WorkAttempt) Completed {
+	return Completed{
+		Issue:       cloneIssue(issue),
+		StartedAt:   attempt.StartedAt,
+		CompletedAt: attempt.CompletedAt,
+		FinalState:  FinalStateCompleted,
+	}
+}
+
 func autoPromoteActiveGatePendingIssue(
 	issue connector.Issue,
 	state *State,
+	cfg Config,
+	autoCfg AutoPromoteConfig,
+) bool {
+	if !autoPromoteActiveGateTrackedIssue(issue, cfg, autoCfg) || state == nil {
+		return false
+	}
+	completed, ok := state.Completed[strings.TrimSpace(issue.ID)]
+	if !ok {
+		return false
+	}
+	autoCfg = normalizeAutoPromoteConfig(autoCfg)
+	return completedActiveFinalStateReviewEligible(completed.FinalState, autoCfg.SourceState) &&
+		completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(autoCfg.Gate))
+}
+
+func autoPromoteActiveGateTrackedIssue(
+	issue connector.Issue,
 	cfg Config,
 	autoCfg AutoPromoteConfig,
 ) bool {
@@ -228,15 +341,6 @@ func autoPromoteActiveGatePendingIssue(
 	if autoPromoteHumanReviewRequired(issue, autoCfg, autoCfg.Gate) {
 		return false
 	}
-	if autoPromoteActiveDispatchInProgress(state, issueID) {
-		return false
-	}
-	if state != nil {
-		if completed, ok := state.Completed[issueID]; ok {
-			return completedActiveFinalStateReviewEligible(completed.FinalState, autoCfg.SourceState) &&
-				completedActiveIssueReadyForReview(issue, gateRequiresPullRequest(autoCfg.Gate))
-		}
-	}
 	return issueHasOpenPullRequest(issue)
 }
 
@@ -248,22 +352,6 @@ func autoPromoteSourceGateWaitEnabled(cfg AutoPromoteConfig) bool {
 func autoPromoteActiveGateTrackingEnabled(cfg AutoPromoteConfig) bool {
 	cfg = normalizeAutoPromoteConfig(cfg)
 	return cfg.Enabled && (cfg.QuietDuration > 0 || cfg.GateWaitState == autoPromoteGateWaitSource)
-}
-
-func autoPromoteActiveDispatchInProgress(state *State, issueID string) bool {
-	if state == nil {
-		return false
-	}
-	if _, ok := state.Running[issueID]; ok {
-		return true
-	}
-	if _, ok := state.Claimed[issueID]; ok {
-		return true
-	}
-	if _, ok := state.Retry[issueID]; ok {
-		return true
-	}
-	return false
 }
 
 func issueHasOpenPullRequest(issue connector.Issue) bool {
