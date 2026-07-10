@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -485,7 +486,7 @@ func (o *Orchestrator) acquireGlobalDispatchSlot(
 }
 
 func (o *Orchestrator) dispatchStatePriority(state string) int {
-	return stateDispatchRank(stateDispatchRanks(o.cfg.DispatchPriorityByState), state)
+	return dispatchpriority.New(o.cfg.DispatchPriorityByState, nil).State(state)
 }
 
 func (o *Orchestrator) projectStateSlotStats(issue connector.Issue, state *State) projectStateSlotStats {

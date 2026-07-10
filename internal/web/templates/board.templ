@@ -142,7 +142,9 @@ templ boardCardView2(card boardCardView) {
 			if card.CanDrag {
 				data-kanban-action="move"
 				data-kanban-allowed-targets={ card.AllowedTargets }
-			} else if card.MoveDisabledText != "" {
+			}
+			else
+			if card.MoveDisabledText != "" {
 				data-kanban-move-disabled="true"
 				data-kanban-move-disabled-reason={ card.MoveDisabledText }
 			}
@@ -154,6 +156,23 @@ templ boardCardView2(card boardCardView) {
 			}
 			<span class={ boardCardNumberClass(card) }>{ card.Number }</span>
 			<span class="min-w-8 truncate">{ card.Project }</span>
+			if card.PriorityBadge != "" {
+				<span
+					id={ card.DomID + "-priority" }
+					class={ boardPriorityBadgeClass(card) }
+					tabindex="0"
+					role="img"
+					aria-label={ "Priority: " + card.PriorityBadge }
+					data-board-priority
+					data-board-priority-top={ boardBoolAttr(card.PriorityTop) }
+					data-help-trigger
+					data-help-scope="dispatch-priority"
+					data-help-term={ card.DomID + "-priority" }
+					data-help-title={ card.PriorityTitle }
+					data-help-description={ card.PriorityDetail }
+					onclick="event.stopPropagation()"
+				>{ card.PriorityBadge }</span>
+			}
 			<span class="flex-1"></span>
 			if card.MoveDisabledText != "" {
 				<span class="flex-none rounded-chip border border-line px-1.5 py-0.5 text-2xs text-dim" title={ card.MoveDisabledText } data-kanban-move-disabled-label>{ card.MoveDisabledLabel }</span>

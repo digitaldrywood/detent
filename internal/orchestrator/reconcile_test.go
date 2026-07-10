@@ -700,6 +700,43 @@ func TestMergeIssueTrackerFieldsDistinguishesMissingAndEmptyMetadata(t *testing.
 	}
 }
 
+func TestMergeIssueTrackerFieldsUpdatesMappedPriorityName(t *testing.T) {
+	t.Parallel()
+
+	current := connector.Issue{Priority: reconcilePriorityPointer(1), PriorityName: "P0"}
+	tests := []struct {
+		name         string
+		refreshed    connector.Issue
+		wantPriority *int
+		wantName     string
+	}{
+		{name: "missing priority preserves current", wantPriority: reconcilePriorityPointer(1), wantName: "P0"},
+		{name: "mapped priority updates rank and name", refreshed: connector.Issue{Priority: reconcilePriorityPointer(2), PriorityName: "P1"}, wantPriority: reconcilePriorityPointer(2), wantName: "P1"},
+		{name: "unmapped option clears rank", refreshed: connector.Issue{PriorityName: "No priority"}, wantName: "No priority"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := mergeIssueTrackerFields(current, tt.refreshed)
+			if (got.Priority == nil) != (tt.wantPriority == nil) {
+				t.Fatalf("Priority = %#v, want %#v", got.Priority, tt.wantPriority)
+			}
+			if got.Priority != nil && *got.Priority != *tt.wantPriority {
+				t.Fatalf("Priority = %d, want %d", *got.Priority, *tt.wantPriority)
+			}
+			if got.PriorityName != tt.wantName {
+				t.Fatalf("PriorityName = %q, want %q", got.PriorityName, tt.wantName)
+			}
+		})
+	}
+}
+
+func reconcilePriorityPointer(value int) *int {
+	return &value
+}
+
 type runningStateConnector struct {
 	issues        []connector.Issue
 	issuesByState []connector.Issue

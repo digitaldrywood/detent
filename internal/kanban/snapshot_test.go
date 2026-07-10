@@ -405,10 +405,12 @@ func TestCloneIssueSlicesIsolatesSourceSnapshot(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 8, 13, 0, 0, 0, time.UTC)
+	priority := 1
 	snapshot := telemetry.Snapshot{
 		BoardIssues: []telemetry.Issue{{
 			ID:        "board",
 			State:     "Todo",
+			Priority:  &priority,
 			Labels:    []string{"feature"},
 			BlockedBy: []telemetry.BlockedRef{{ID: "blocker", State: "Backlog"}},
 			Metadata:  map[string]string{"source": "board"},
@@ -436,6 +438,7 @@ func TestCloneIssueSlicesIsolatesSourceSnapshot(t *testing.T) {
 	}
 
 	clone := CloneIssueSlices(snapshot)
+	*clone.BoardIssues[0].Priority = 2
 	clone.BoardIssues[0].Labels[0] = "bug"
 	clone.BoardIssues[0].BlockedBy[0].State = "Done"
 	clone.BoardIssues[0].Metadata["source"] = "clone"
@@ -444,6 +447,9 @@ func TestCloneIssueSlicesIsolatesSourceSnapshot(t *testing.T) {
 	clone.Running[0].Metadata["source"] = "clone"
 	clone.Completed[0].Issue.BlockedBy[0].State = "Cancelled"
 
+	if *snapshot.BoardIssues[0].Priority != 1 {
+		t.Fatalf("source priority changed to %d", *snapshot.BoardIssues[0].Priority)
+	}
 	if snapshot.BoardIssues[0].Labels[0] != "feature" {
 		t.Fatalf("source label changed to %q", snapshot.BoardIssues[0].Labels[0])
 	}

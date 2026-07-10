@@ -1306,6 +1306,7 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		Title:            issue.Title,
 		Description:      issue.Body,
 		Priority:         c.priorityRank(priorityName),
+		PriorityName:     strings.TrimSpace(priorityName),
 		State:            c.githubToDetentState(statusName),
 		URL:              issue.URL,
 		Closed:           githubIssueClosed(issue.State),

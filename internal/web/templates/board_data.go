@@ -93,6 +93,10 @@ type boardCardView struct {
 	ExtraChip          bool
 	RuntimeSummary     string
 	RuntimeCardSummary string
+	PriorityBadge      string
+	PriorityTitle      string
+	PriorityDetail     string
+	PriorityTop        bool
 }
 
 func boardViewFromDashboard(data DashboardData) boardView {
@@ -405,7 +409,37 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		view.RuntimeSummary = runtimeIdentitySummary(card.RuntimeIdentity)
 		view.RuntimeCardSummary = runtimeIdentityCardSummary(card.RuntimeIdentity)
 	}
+	view.PriorityBadge, view.PriorityTitle, view.PriorityDetail, view.PriorityTop = boardCardPriority(card)
 	return view
+}
+
+func boardCardPriority(card projectKanbanCard) (string, string, string, bool) {
+	if card.PriorityRank == 0 && card.DispatchPriorityRank == 0 {
+		return "", "", "", false
+	}
+
+	badge := strings.TrimSpace(card.PriorityName)
+	if badge == "" && card.PriorityRank > 0 {
+		badge = "rank " + strconv.Itoa(card.PriorityRank)
+	}
+	if badge == "" {
+		badge = card.DispatchPriorityLabel
+	}
+	details := make([]string, 0, 2)
+	if card.PriorityRank > 0 {
+		name := strings.TrimSpace(card.PriorityName)
+		if name == "" {
+			name = "Tracker priority"
+		} else {
+			name = "Tracker priority " + name
+		}
+		details = append(details, name+" maps to dispatch rank "+strconv.Itoa(card.PriorityRank)+".")
+	}
+	if card.DispatchPriorityRank > 0 {
+		details = append(details, "Label "+card.DispatchPriorityLabel+" is configured at dispatch label rank "+strconv.Itoa(card.DispatchPriorityRank)+".")
+	}
+	top := card.PriorityRank == 1 || (card.PriorityRank == 0 && card.DispatchPriorityRank == 1)
+	return badge, "Dispatch priority", strings.Join(details, " "), top
 }
 
 // boardCardExtra picks the single allowed extra signal, most urgent first:
@@ -638,16 +672,31 @@ func boardFeedbackGlyph(kind string) string {
 }
 
 func boardCardClass(card boardCardView) string {
+	var base string
 	if card.Done {
-		return "flex flex-none flex-col gap-1.5 rounded-card border border-line bg-surface p-3 opacity-75"
+		base = "flex flex-none flex-col gap-1.5 rounded-card border border-line bg-surface p-3 opacity-75"
+	} else if card.ExtraChip && card.ExtraKind == primitives.KindWarn {
+		base = "flex flex-none flex-col gap-1.5 rounded-card border border-warn/45 bg-elev p-3"
+	} else if card.ExtraChip && card.ExtraKind == primitives.KindErr {
+		base = "flex flex-none flex-col gap-1.5 rounded-card border border-err/45 bg-elev p-3"
+	} else {
+		base = "flex flex-none flex-col gap-1.5 rounded-card border border-line bg-elev p-3"
 	}
-	if card.ExtraChip && card.ExtraKind == primitives.KindWarn {
-		return "flex flex-none flex-col gap-1.5 rounded-card border border-warn/45 bg-elev p-3"
+	if card.PriorityTop {
+		return base + " border-l-4 border-l-err"
 	}
-	if card.ExtraChip && card.ExtraKind == primitives.KindErr {
-		return "flex flex-none flex-col gap-1.5 rounded-card border border-err/45 bg-elev p-3"
+	if card.PriorityBadge != "" {
+		return base + " border-l-2 border-l-warn"
 	}
-	return "flex flex-none flex-col gap-1.5 rounded-card border border-line bg-elev p-3"
+	return base
+}
+
+func boardPriorityBadgeClass(card boardCardView) string {
+	base := "inline-flex max-w-24 flex-none items-center truncate rounded-chip border px-1.5 py-0.5 font-mono text-2xs font-semibold"
+	if card.PriorityTop {
+		return base + " border-err/30 bg-err/15 text-err"
+	}
+	return base + " border-warn/30 bg-warn/15 text-warn"
 }
 
 func boardCardInteractionClass(card boardCardView) string {
