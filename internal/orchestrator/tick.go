@@ -88,6 +88,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			Message: githubBudgetReserveMessage(reserve),
 		})
 	}
+	o.evaluateRelease(ctx, state, now)
 
 	o.refreshActiveRuns(ctx, state, now, reserve)
 	if state.Draining {

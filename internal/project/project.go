@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -189,6 +190,11 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	}
 
 	orchConfig := projectOrchestratorConfig(cfg.Project, workflow.Config)
+	releaseBuild, err := buildReleaseCoordinator(workflow.Config, projectConnector)
+	if err != nil {
+		return nil, err
+	}
+	releaseCoordinator := releaseBuild.coordinator
 	orchDeps := orchestrator.Dependencies{
 		Connector:          projectConnector,
 		Runner:             deps.Runner,
@@ -198,6 +204,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		AgentResume:        deps.AgentResume,
 		ValidatorMemo:      deps.ValidatorMemo,
 		Activity:           deps.Activity,
+		Release:            releaseCoordinator,
 		Logger:             logger,
 	}
 	orch, err := orchestratorFactory(orchConfig, orchDeps)
@@ -826,6 +833,16 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		)
 		return
 	}
+	releaseBuild, err := buildReleaseCoordinator(workflow.Config, projectConnector)
+	if err != nil {
+		p.logger.Warn("workflow reload release coordinator failed",
+			"project_id", p.id,
+			"path", update.Path,
+			"error", err,
+		)
+		return
+	}
+	releaseCoordinator := releaseBuild.coordinator
 
 	var preparedIntake *intake.Prepared
 	if projectIntake != nil {
@@ -846,8 +863,10 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 
 	runtimeConfig := projectOrchestratorConfig(projectConfig, workflow.Config)
 	if err := projectOrchestrator.UpdateRuntime(ctx, orchestrator.RuntimeUpdate{
-		Config:    runtimeConfig,
-		Connector: projectConnector,
+		Config:         runtimeConfig,
+		Connector:      projectConnector,
+		Release:        releaseCoordinator,
+		ReplaceRelease: true,
 	}); err != nil {
 		if ctx.Err() != nil {
 			return
@@ -872,6 +891,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	p.scheduler = projectScheduler
 	p.orchConfig = runtimeConfig
 	p.orchDeps.Connector = projectConnector
+	p.orchDeps.Release = releaseCoordinator
 	publishEvents := p.lifecycleEvents
 	id := p.id
 	p.mu.Unlock()
@@ -884,6 +904,29 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			At:        time.Now(),
 		})
 	}
+}
+
+type releaseCoordinatorBuild struct {
+	coordinator releasepkg.Coordinator
+}
+
+func buildReleaseCoordinator(cfg workflowconfig.Config, projectConnector connector.Connector) (releaseCoordinatorBuild, error) {
+	if !cfg.Release.Enabled {
+		return releaseCoordinatorBuild{}, nil
+	}
+	releaseBackend, ok := projectConnector.(releasepkg.Backend)
+	if !ok {
+		return releaseCoordinatorBuild{}, errors.New("create release coordinator: connector does not support releases")
+	}
+	return releaseCoordinatorBuild{coordinator: releasepkg.New(releasepkg.Config{
+		Enabled:         cfg.Release.Enabled,
+		MinMergedIssues: cfg.Release.MinMergedIssues,
+		MaxAge:          time.Duration(cfg.Release.MaxAgeHours) * time.Hour,
+		RequireGreenCI:  cfg.Release.RequireGreenCI,
+		VersionBump:     cfg.Release.VersionBump,
+		RerunFlakyOnce:  cfg.Release.RerunFlakyOnce,
+		FlakyCheckNames: append([]string(nil), cfg.Release.FlakyCheckNames...),
+	}, releaseBackend)}, nil
 }
 
 func projectOrchestratorConfig(project globalconfig.Project, workflow workflowconfig.Config) orchestrator.Config {

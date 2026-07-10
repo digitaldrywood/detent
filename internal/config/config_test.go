@@ -2580,3 +2580,74 @@ func TestParseWorkflowReportsInvalidFrontmatter(t *testing.T) {
 		})
 	}
 }
+
+func TestReleaseConfigValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		change func(*Config)
+		want   string
+	}{
+		{
+			name: "valid github policy",
+			change: func(cfg *Config) {
+				cfg.Tracker.Kind = TrackerGitHub
+				cfg.Tracker.APIKey = "token"
+				cfg.Tracker.GitHubStatusSource = GitHubStatusSourceLabel
+				cfg.Tracker.Repository = "example/repo"
+				cfg.Release.Enabled = true
+			},
+		},
+		{
+			name: "requires github tracker",
+			change: func(cfg *Config) {
+				cfg.Tracker.Kind = TrackerMemory
+				cfg.Release.Enabled = true
+			},
+			want: "release.enabled requires tracker.kind github or github_local",
+		},
+		{
+			name: "green ci cannot be waived",
+			change: func(cfg *Config) {
+				cfg.Tracker.Kind = TrackerGitHub
+				cfg.Tracker.APIKey = "token"
+				cfg.Tracker.GitHubStatusSource = GitHubStatusSourceLabel
+				cfg.Tracker.Repository = "example/repo"
+				cfg.Release.Enabled = true
+				cfg.Release.RequireGreenCI = false
+			},
+			want: "release.require_green_ci must be true",
+		},
+		{
+			name: "flaky rerun requires allowlist",
+			change: func(cfg *Config) {
+				cfg.Tracker.Kind = TrackerGitHub
+				cfg.Tracker.APIKey = "token"
+				cfg.Tracker.GitHubStatusSource = GitHubStatusSourceLabel
+				cfg.Tracker.Repository = "example/repo"
+				cfg.Release.Enabled = true
+				cfg.Release.RerunFlakyOnce = true
+			},
+			want: "release.flaky_check_names must not be empty",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Default()
+			test.change(&cfg)
+			err := cfg.Validate()
+			if test.want == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Validate() error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}

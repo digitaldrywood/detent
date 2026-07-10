@@ -732,6 +732,31 @@ scoped to the issue, run the project validation gate, and prepare the work for
 human review.
 ```
 
+Tag-based projects can opt into release cadence in the same workflow file:
+
+```yaml
+release:
+  enabled: true
+  min_merged_issues: 5
+  max_age_hours: 24
+  require_green_ci: true
+  version_bump: auto
+  rerun_flaky_once: false
+  flaky_check_names: []
+```
+
+Set `tracker.repository: owner/repo` as well, including in ProjectV2 mode, so
+Detent can inspect commits and file failure issues on the tracked board.
+
+The policy triggers after either threshold is reached, requires every check on
+the default-branch head to finish green, creates an annotated semantic-version
+tag, and observes the `Release` GitHub Actions workflow through completion.
+`feat` commits bump the minor version; other conventional commits bump the
+patch version. Failed candidate CI and failed release workflows create a
+fingerprint-deduplicated `detent:todo` issue instead of retrying indefinitely.
+The flaky rerun option is disabled by default and only reruns named workflow
+checks once.
+
 Boardless issue-field mode:
 
 ```markdown

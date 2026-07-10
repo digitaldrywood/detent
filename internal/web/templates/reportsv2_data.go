@@ -22,6 +22,7 @@ type reportsView struct {
 	TopPRs      []reportsTopRow
 	Budget      reportsBudget
 	CycleTime   reportsCycleTime
+	Release     reportsRelease
 }
 
 type reportsKPI struct {
@@ -63,6 +64,14 @@ type reportsCycleTime struct {
 	Chart     BarChartData
 }
 
+type reportsRelease struct {
+	Available bool
+	Last      string
+	Merges    string
+	Next      string
+	State     string
+}
+
 const reportsTopRowLimit = 5
 
 func reportsViewFromData(data ReportsData) reportsView {
@@ -75,11 +84,40 @@ func reportsViewFromData(data ReportsData) reportsView {
 		TopPRs:      reportsTopRows("pr", data.PR.Breakdowns, data.Snapshot),
 		Budget:      reportsBudgetView(data),
 		CycleTime:   reportsCycleTimeView(data),
+		Release:     reportsReleaseView(data),
 	}
 	if view.HasSeries {
 		view.TokenChart = reportsCumulativeTokens(data)
 	}
 	return view
+}
+
+func reportsReleaseView(data ReportsData) reportsRelease {
+	release := data.Snapshot.Release
+	for _, candidate := range data.Snapshot.Releases {
+		if strings.TrimSpace(data.ProjectID) == "" || strings.EqualFold(strings.TrimSpace(candidate.ProjectID), strings.TrimSpace(data.ProjectID)) {
+			release = candidate
+			break
+		}
+	}
+	if release.IsZero() || !release.Enabled {
+		return reportsRelease{}
+	}
+	last := release.LastRelease
+	if last == "" {
+		last = "None yet"
+	}
+	next := "Count threshold pending"
+	if release.NextTriggerAt != nil {
+		next = release.NextTriggerAt.UTC().Format("Jan 02 15:04 UTC")
+	}
+	return reportsRelease{
+		Available: true,
+		Last:      last,
+		Merges:    formatCount(release.UnreleasedMerges),
+		Next:      next,
+		State:     strings.ReplaceAll(release.State, "_", " "),
+	}
 }
 
 func reportsKPIs(data ReportsData) []reportsKPI {

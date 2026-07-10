@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/connector/local"
+	releasepkg "github.com/digitaldrywood/detent/internal/release"
 )
 
 const (
@@ -116,6 +117,55 @@ var _ connector.PullRequestHydrator = (*Connector)(nil)
 var _ connector.PullRequestMerger = (*Connector)(nil)
 var _ connector.RESTRateLimitUsageReporter = (*Connector)(nil)
 var _ connector.StatusDriftReader = (*Connector)(nil)
+var _ releasepkg.Backend = (*Connector)(nil)
+
+func (c *Connector) Inspect(ctx context.Context) (releasepkg.Repository, error) {
+	backend, err := c.releaseBackend()
+	if err != nil {
+		return releasepkg.Repository{}, err
+	}
+	return backend.Inspect(ctx)
+}
+
+func (c *Connector) CreateTag(ctx context.Context, tag releasepkg.Tag) error {
+	backend, err := c.releaseBackend()
+	if err != nil {
+		return err
+	}
+	return backend.CreateTag(ctx, tag)
+}
+
+func (c *Connector) ReleaseWorkflow(ctx context.Context, tag string) (releasepkg.WorkflowRun, bool, error) {
+	backend, err := c.releaseBackend()
+	if err != nil {
+		return releasepkg.WorkflowRun{}, false, err
+	}
+	return backend.ReleaseWorkflow(ctx, tag)
+}
+
+func (c *Connector) RerunFailedChecks(ctx context.Context, checks []releasepkg.Check) error {
+	backend, err := c.releaseBackend()
+	if err != nil {
+		return err
+	}
+	return backend.RerunFailedChecks(ctx, checks)
+}
+
+func (c *Connector) EnsureFailureIssue(ctx context.Context, failure releasepkg.Failure) (bool, error) {
+	backend, err := c.releaseBackend()
+	if err != nil {
+		return false, err
+	}
+	return backend.EnsureFailureIssue(ctx, failure)
+}
+
+func (c *Connector) releaseBackend() (releasepkg.Backend, error) {
+	backend, ok := c.github.(releasepkg.Backend)
+	if !ok {
+		return nil, errors.New("github local upstream does not support releases")
+	}
+	return backend, nil
+}
 
 func New(cfg Config) (*Connector, error) {
 	repository := strings.TrimSpace(cfg.Repository)

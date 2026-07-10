@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -47,6 +48,7 @@ type State struct {
 	Running                  map[string]Running
 	WorkAttempts             []telemetry.WorkAttempt
 	SchedulerDecisions       []telemetry.SchedulerDecision
+	Release                  releasepkg.Status
 	Claimed                  map[string]Claimed
 	Blocked                  map[string]Blocked
 	Completed                map[string]Completed
@@ -259,6 +261,7 @@ func (s State) clone() State {
 		AutoPromoteDecisions:     cloneAutoPromoteDecisions(s.AutoPromoteDecisions),
 		WorkAttempts:             cloneTelemetryWorkAttempts(s.WorkAttempts),
 		SchedulerDecisions:       cloneTelemetrySchedulerDecisions(s.SchedulerDecisions),
+		Release:                  s.Release,
 		Running:                  make(map[string]Running, len(s.Running)),
 		Claimed:                  make(map[string]Claimed, len(s.Claimed)),
 		Blocked:                  make(map[string]Blocked, len(s.Blocked)),

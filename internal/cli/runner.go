@@ -682,6 +682,12 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.Running = append(current.Running, next.Running...)
 	current.WorkAttempts = append(current.WorkAttempts, next.WorkAttempts...)
 	current.SchedulerDecisions = append(current.SchedulerDecisions, next.SchedulerDecisions...)
+	if !next.Release.IsZero() {
+		current.Releases = append(current.Releases, next.Release)
+		if current.Release.IsZero() {
+			current.Release = next.Release
+		}
+	}
 	current.Queue = append(current.Queue, next.Queue...)
 	current.Blocked = append(current.Blocked, next.Blocked...)
 	current.Completed = append(current.Completed, next.Completed...)
@@ -712,6 +718,9 @@ func stampSnapshotProjectID(snapshot telemetry.Snapshot) telemetry.Snapshot {
 	projectID := strings.TrimSpace(snapshot.Project.ID)
 	if projectID == "" {
 		return snapshot
+	}
+	if !snapshot.Release.IsZero() && strings.TrimSpace(snapshot.Release.ProjectID) == "" {
+		snapshot.Release.ProjectID = projectID
 	}
 
 	for i := range snapshot.Pipeline {

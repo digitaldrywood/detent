@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -65,6 +66,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Running:            runningSnapshots(s.Running, s.Claimed, s.MergeTimings, now, s.laneEntries),
 		WorkAttempts:       cloneTelemetryWorkAttempts(s.WorkAttempts),
 		SchedulerDecisions: cloneTelemetrySchedulerDecisions(s.SchedulerDecisions),
+		Release:            releaseSnapshot(s.Release),
 		Queue:              queueSnapshots(s.Retry, s.Claimed, s.MergeTimings, now, s.laneEntries),
 		Blocked:            blockedSnapshots(s.Blocked, s.Claimed, now, s.laneEntries),
 		Completed:          completedSnapshots(s.Completed, s.Claimed, now, s.laneEntries),
@@ -82,6 +84,21 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Completed: len(snapshot.Completed),
 	}
 	return snapshot
+}
+
+func releaseSnapshot(status releasepkg.Status) telemetry.Release {
+	return telemetry.Release{
+		ProjectID:        "",
+		Enabled:          status.Enabled,
+		State:            status.State,
+		LastRelease:      status.LastRelease,
+		LastReleaseAt:    timePointer(status.LastReleaseAt),
+		UnreleasedMerges: status.UnreleasedMerges,
+		NextTriggerAt:    timePointer(status.NextTriggerAt),
+		CandidateSHA:     status.CandidateSHA,
+		PendingTag:       status.PendingTag,
+		LastError:        status.LastError,
+	}
 }
 
 func backendOutageSnapshots(outages map[string]BackendOutage) []telemetry.BackendOutage {
