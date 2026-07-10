@@ -511,6 +511,17 @@ func TestCheckDoctorIssueAgentModels(t *testing.T) {
 			wantProbes:   1,
 		},
 		{
+			name:         "unsupported merge effort names role field",
+			issue:        connector.Issue{ID: "issue-merge", Identifier: "digitaldrywood/detent#9", Description: "```detent-agent\nschema: 1\nmerge:\n  effort: bogus\n```"},
+			defaultModel: "gpt-default",
+			wantStatus:   doctorFail,
+			wantDetail:   []string{"digitaldrywood/detent#9 detent-agent merge.effort bogus", `effort "bogus" is not supported by model "gpt-default"`, "supported efforts: low, high"},
+			wantHint:     "remove the effort key",
+			wantModel:    "gpt-default",
+			wantEffort:   "bogus",
+			wantProbes:   1,
+		},
+		{
 			name:       "retired model",
 			issue:      connector.Issue{ID: "issue-6", Identifier: "digitaldrywood/detent#6", Description: "```detent-agent\nschema: 1\nmodel: gpt-retired\n```"},
 			wantStatus: doctorFail,

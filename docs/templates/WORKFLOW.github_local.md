@@ -59,6 +59,9 @@ workspace:
   cleanup_sweep_interval_ms: 600000
 agent:
   max_concurrent_agents: 5
+  # Optional per-role reasoning defaults. Unset roles retain backend behavior.
+  # effort:
+  #   merge: high
   max_turns: 20
   max_retry_backoff_ms: 300000
   resume_orphaned_sessions: true
