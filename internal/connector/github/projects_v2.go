@@ -19,11 +19,11 @@ query DetentGitHubProjectItems(
   $projectId: ID!
   $first: Int!
   $after: String
-  $query: String
 ) {
   node(id: $projectId) {
     ... on ProjectV2 {
-      items(first: $first, after: $after, query: $query) {
+      items(first: $first, after: $after) {
+        totalCount
         pageInfo { hasNextPage endCursor }
         nodes {
           id
@@ -60,11 +60,11 @@ query DetentGitHubObservedStatusProjectItems(
   $projectId: ID!
   $first: Int!
   $after: String
-  $query: String
 ) {
   node(id: $projectId) {
     ... on ProjectV2 {
-      items(first: $first, after: $after, query: $query) {
+      items(first: $first, after: $after) {
+        totalCount
         pageInfo { hasNextPage endCursor }
         nodes {
           id
@@ -209,122 +209,56 @@ mutation DetentGitHubDeleteProjectItem($projectId: ID!, $itemId: ID!) {
   }
 }`
 
-func (c *Connector) fetchProjectItems(ctx context.Context, queryType string, query string, keepIssue func(connector.Issue) bool) ([]connector.Issue, error) {
-	return c.fetchProjectItemsLimit(ctx, queryType, query, keepIssue, 0)
-}
-
-func (c *Connector) fetchProjectBacklogIssues(ctx context.Context, limit int) ([]connector.Issue, error) {
-	issues, err := c.fetchExplicitProjectBacklogIssues(ctx, limit)
-	if err != nil {
-		return nil, err
-	}
-	if limit > 0 && len(issues) >= limit {
-		return issues, nil
-	}
-
-	blankLimit := 0
-	if limit > 0 {
-		blankLimit = limit - len(issues)
-	}
-	blankIssues, err := c.fetchBlankProjectBacklogIssues(ctx, blankLimit)
-	if err != nil {
-		return nil, err
-	}
-	return appendUniqueIssues(issues, blankIssues, limit), nil
-}
-
-func (c *Connector) fetchExplicitProjectBacklogIssues(ctx context.Context, limit int) ([]connector.Issue, error) {
-	backlogStates := []string{defaultProjectItemStatusState}
-	return c.fetchProjectItemsLimit(ctx, graphQLQueryCandidateIssues, c.projectStatusQuery(backlogStates), func(issue connector.Issue) bool {
-		return stateInList(issue.State, backlogStates)
-	}, limit)
-}
-
-func (c *Connector) fetchBlankProjectBacklogIssues(ctx context.Context, limit int) ([]connector.Issue, error) {
-	var after *string
-	issues := []connector.Issue{}
-	blankStatusItemIDs := []string{}
-
-	for {
-		var response struct {
-			Node *struct {
-				Items projectItemsConnection `json:"items"`
-			} `json:"node"`
-		}
-		if err := c.client.GraphQLWithType(ctx, graphQLQueryCandidateIssues, projectItemsQuery, map[string]any{
-			"projectId": c.projectID,
-			"first":     projectItemsPageSize,
-			"after":     after,
-			"query":     nil,
-		}, &response); err != nil {
-			return nil, fmt.Errorf("fetch github project items: %w", err)
-		}
-		if response.Node == nil {
-			return nil, ErrProjectNotFound
-		}
-
-		for _, item := range response.Node.Items.Nodes {
-			issue, ok, blankStatusItemID, err := c.normalizeProjectItem(item)
-			if err != nil {
-				return nil, err
-			}
-			if !ok || blankStatusItemID == "" {
-				continue
-			}
-			issues = append(issues, issue)
-			blankStatusItemIDs = append(blankStatusItemIDs, blankStatusItemID)
-			if limit > 0 && len(issues) >= limit {
-				c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-				return issues, nil
-			}
-		}
-
-		if !response.Node.Items.PageInfo.HasNextPage {
-			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-			return issues, nil
-		}
-		cursor := strings.TrimSpace(response.Node.Items.PageInfo.EndCursor)
-		if cursor == "" {
-			return nil, ErrInvalidResponse
-		}
-		after = &cursor
-	}
+func (c *Connector) fetchProjectItems(ctx context.Context, queryType string, keepIssue func(connector.Issue) bool, repairBlankStatuses bool) ([]connector.Issue, error) {
+	return c.fetchProjectItemsLimit(ctx, queryType, keepIssue, 0, repairBlankStatuses)
 }
 
 func (c *Connector) fetchProjectItemsLimit(
 	ctx context.Context,
 	queryType string,
-	query string,
 	keepIssue func(connector.Issue) bool,
 	limit int,
+	repairBlankStatuses bool,
 ) ([]connector.Issue, error) {
-	return c.fetchProjectItemsWithLimit(ctx, projectItemsQueryForType(queryType), queryType, query, keepIssue, limit)
+	return c.fetchProjectItemsWithLimit(ctx, projectItemsQueryForType(queryType), queryType, keepIssue, limit, repairBlankStatuses)
 }
 
 func (c *Connector) fetchProjectItemsWithPullRequestRefsLimit(
 	ctx context.Context,
 	queryType string,
-	query string,
 	keepIssue func(connector.Issue) bool,
 	limit int,
+	repairBlankStatuses bool,
 ) ([]connector.Issue, error) {
-	return c.fetchProjectItemsWithLimit(ctx, observedStatusProjectItemsQuery, queryType, query, keepIssue, limit)
+	return c.fetchProjectItemsWithLimit(ctx, observedStatusProjectItemsQuery, queryType, keepIssue, limit, repairBlankStatuses)
 }
 
 func (c *Connector) fetchProjectItemsWithLimit(
 	ctx context.Context,
 	queryDocument string,
 	queryType string,
-	query string,
 	keepIssue func(connector.Issue) bool,
 	limit int,
+	repairBlankStatuses bool,
 ) ([]connector.Issue, error) {
+	scan, err := c.fetchProjectItemsScanWithLimit(ctx, queryDocument, queryType, keepIssue, limit, repairBlankStatuses)
+	return scan.Issues, err
+}
+
+func (c *Connector) fetchProjectItemsScanWithLimit(
+	ctx context.Context,
+	queryDocument string,
+	queryType string,
+	keepIssue func(connector.Issue) bool,
+	limit int,
+	repairBlankStatuses bool,
+) (connector.IssueStateScan, error) {
 	var after *string
-	allIssues := []connector.Issue{}
 	blankStatusItemIDs := []string{}
-	var projectQuery *string
-	if query != "" {
-		projectQuery = &query
+	scan := connector.IssueStateScan{
+		Issues:           []connector.Issue{},
+		BoardCounts:      map[string]int{},
+		EnumeratedCounts: map[string]int{},
 	}
 
 	for {
@@ -337,51 +271,74 @@ func (c *Connector) fetchProjectItemsWithLimit(
 			"projectId": c.projectID,
 			"first":     projectItemsPageSize,
 			"after":     after,
-			"query":     projectQuery,
 		}, &response); err != nil {
-			return nil, fmt.Errorf("fetch github project items: %w", err)
+			return connector.IssueStateScan{}, fmt.Errorf("fetch github project items: %w", err)
 		}
 		if response.Node == nil {
-			return nil, ErrProjectNotFound
+			return connector.IssueStateScan{}, ErrProjectNotFound
 		}
+		scan.ItemsFetched += len(response.Node.Items.Nodes)
+		scan.TotalItems = max(scan.TotalItems, response.Node.Items.TotalCount)
 
 		for _, item := range response.Node.Items.Nodes {
+			if state, ok := c.projectItemBoardState(item); ok {
+				scan.BoardCounts[state]++
+			}
 			issue, ok, blankStatusItemID, err := c.normalizeProjectItem(item)
 			if err != nil {
-				return nil, err
+				return connector.IssueStateScan{}, err
 			}
 			if !ok {
 				continue
 			}
-			if blankStatusItemID != "" {
+			if blankStatusItemID != "" && repairBlankStatuses {
 				blankStatusItemIDs = append(blankStatusItemIDs, blankStatusItemID)
 			}
-			allIssues = append(allIssues, issue)
-			if limit > 0 && keepIssue(issue) {
-				issues := keptProjectIssues(allIssues, keepIssue, limit)
-				if len(issues) >= limit {
-					c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-					if err := c.resolveBlockedByProjectState(ctx, issues); err != nil {
-						return nil, err
-					}
-					return issues, nil
-				}
+			if !keepIssue(issue) {
+				continue
+			}
+			scan.EnumeratedCounts[issue.State]++
+			if limit <= 0 || len(scan.Issues) < limit {
+				scan.Issues = append(scan.Issues, issue)
 			}
 		}
 
 		if !response.Node.Items.PageInfo.HasNextPage {
-			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
-			if err := c.resolveBlockedByProjectState(ctx, allIssues); err != nil {
-				return nil, err
+			if err := c.validateProjectItemsComplete(ctx, scan.ItemsFetched, scan.TotalItems); err != nil {
+				return connector.IssueStateScan{}, err
 			}
-			return keptProjectIssues(allIssues, keepIssue, limit), nil
+			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
+			if err := c.resolveBlockedByProjectState(ctx, scan.Issues); err != nil {
+				return connector.IssueStateScan{}, err
+			}
+			return scan, nil
 		}
 		cursor := strings.TrimSpace(response.Node.Items.PageInfo.EndCursor)
 		if cursor == "" {
-			return nil, ErrInvalidResponse
+			return connector.IssueStateScan{}, ErrInvalidResponse
 		}
 		after = &cursor
 	}
+}
+
+func (c *Connector) projectItemBoardState(item projectItemNode) (string, bool) {
+	if item.Content == nil || item.Content.TypeName != "Issue" {
+		return "", false
+	}
+	state := singleSelectName(item.StatusValue)
+	if state == "" {
+		state = c.detentToGitHubState(defaultProjectItemStatusState)
+	}
+	return c.githubToDetentState(state), true
+}
+
+func (c *Connector) validateProjectItemsComplete(ctx context.Context, fetched int, total int) error {
+	if total <= 0 || fetched >= total {
+		return nil
+	}
+	err := fmt.Errorf("%w: fetched %d of %d project items", ErrProjectItemsTruncated, fetched, total)
+	c.logger.ErrorContext(ctx, "github project item scan truncated", "project_id", c.projectID, "fetched", fetched, "total", total, "error", err)
+	return err
 }
 
 func projectItemsQueryForType(queryType string) string {
@@ -389,20 +346,6 @@ func projectItemsQueryForType(queryType string) string {
 		return observedStatusProjectItemsQuery
 	}
 	return projectItemsQuery
-}
-
-func keptProjectIssues(allIssues []connector.Issue, keepIssue func(connector.Issue) bool, limit int) []connector.Issue {
-	issues := make([]connector.Issue, 0, len(allIssues))
-	for _, issue := range allIssues {
-		if !keepIssue(issue) {
-			continue
-		}
-		issues = append(issues, issue)
-		if limit > 0 && len(issues) >= limit {
-			return issues
-		}
-	}
-	return issues
 }
 
 func (c *Connector) normalizeProjectItem(item projectItemNode) (connector.Issue, bool, string, error) {

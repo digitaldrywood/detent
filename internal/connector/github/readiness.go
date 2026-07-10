@@ -339,33 +339,16 @@ func (c githubReadinessChecker) projectItemsReadCheck(ctx context.Context, state
 }
 
 func (c githubReadinessChecker) readProjectItemsSample(ctx context.Context, states []string) (int, error) {
-	var projectQuery *string
-	if query := c.connector.projectStatusQuery(states); query != "" {
-		projectQuery = &query
+	wantedStates := normalizedStateSet(states)
+	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
+	scan, err := c.connector.fetchProjectItemsScanWithLimit(ctx, observedStatusProjectItemsQuery, graphQLQueryObservedStatus, func(issue connector.Issue) bool {
+		_, ok := wantedStates[normalizeStateName(issue.State)]
+		return ok
+	}, 1, repairBlankStatuses)
+	if err != nil {
+		return 0, err
 	}
-	var response struct {
-		Node *struct {
-			Items projectItemsConnection `json:"items"`
-		} `json:"node"`
-	}
-	if err := c.connector.client.GraphQLWithType(ctx, graphQLQueryObservedStatus, observedStatusProjectItemsQuery, map[string]any{
-		"projectId": c.connector.projectID,
-		"first":     1,
-		"after":     nil,
-		"query":     projectQuery,
-	}, &response); err != nil {
-		return 0, fmt.Errorf("fetch github project items: %w", err)
-	}
-	if response.Node == nil {
-		return 0, ErrProjectNotFound
-	}
-	count := 0
-	for _, item := range response.Node.Items.Nodes {
-		if item.Content != nil && item.Content.TypeName == "Issue" {
-			count++
-		}
-	}
-	return count, nil
+	return len(scan.Issues), nil
 }
 
 func (c githubReadinessChecker) issueFieldAccessCheck(ctx context.Context) ReadinessCheck {

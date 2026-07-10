@@ -179,7 +179,7 @@ func checkDoctorAutoPromoteLive(
 		}
 	}
 
-	issues, err := fetchDoctorAutoPromoteIssues(ctx, projectConnector, []string{sourceState})
+	scan, err := fetchDoctorAutoPromoteIssues(ctx, projectConnector, []string{sourceState})
 	if err != nil {
 		return doctorCheck{
 			Name:   name,
@@ -188,6 +188,7 @@ func checkDoctorAutoPromoteLive(
 			Hint:   "Check GitHub Project access, Status field options, and repository pull request access.",
 		}
 	}
+	issues := scan.Issues
 
 	autoPromoteCfg := doctorAutoPromoteConfig(cfg)
 	reasonCounts := map[string]int{}
@@ -225,11 +226,18 @@ func checkDoctorAutoPromoteLive(
 	}
 
 	detail := fmt.Sprintf(
-		"%s; status options resolved; sampled %d %s candidate(s)",
+		"%s; status options resolved; sampled %d %s candidate(s) of %d enumerated",
 		doctorReviewFlowConfigDetail(cfg),
 		len(issues),
 		sourceState,
+		doctorStateScanCount(scan.EnumeratedCounts, sourceState),
 	)
+	if cfg.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceProjectV2 && (scan.ItemsFetched > 0 || scan.TotalItems > 0) {
+		detail += fmt.Sprintf("; ProjectV2 items fetched=%d total=%d", scan.ItemsFetched, scan.TotalItems)
+	}
+	boardCount := doctorStateScanCount(scan.BoardCounts, sourceState)
+	enumeratedCount := doctorStateScanCount(scan.EnumeratedCounts, sourceState)
+	detail += fmt.Sprintf("; %s counts board=%d enumerated=%d", sourceState, boardCount, enumeratedCount)
 	if len(reasonCounts) > 0 {
 		detail += "; reasons: " + doctorAutoPromoteReasonCounts(reasonCounts)
 	}
@@ -238,6 +246,15 @@ func checkDoctorAutoPromoteLive(
 	}
 	if len(candidates) > 0 {
 		detail += "; candidates: " + doctorAutoPromoteCandidateSummaries(candidates)
+	}
+	if boardCount != enumeratedCount {
+		return doctorCheck{
+			Name:                  name,
+			Status:                doctorFail,
+			Detail:                detail + "; board fetch and candidate enumeration disagree",
+			Hint:                  "Upgrade Detent or inspect ProjectV2 item pagination; auto-promote cannot safely act while review-state counts disagree.",
+			AutoPromoteCandidates: candidates,
+		}
 	}
 	if invalid := doctorAutoPromoteInvalidWorkpadStatusCandidates(candidates); len(invalid) > 0 {
 		return doctorCheck{
@@ -317,18 +334,48 @@ func fetchDoctorAutoPromoteIssues(
 	ctx context.Context,
 	projectConnector doctorAutoPromoteConnector,
 	states []string,
-) ([]connector.Issue, error) {
+) (connector.IssueStateScan, error) {
+	if scanner, ok := projectConnector.(connector.IssueStateScanner); ok {
+		return scanner.FetchIssuesByStatesScan(ctx, states, doctorAutoPromoteSampleLimit)
+	}
 	if limited, ok := projectConnector.(doctorAutoPromoteLimitedConnector); ok {
-		return limited.FetchIssuesByStatesLimit(ctx, states, doctorAutoPromoteSampleLimit)
+		issues, err := limited.FetchIssuesByStatesLimit(ctx, states, doctorAutoPromoteSampleLimit)
+		return doctorIssueStateScan(issues), err
 	}
 	issues, err := projectConnector.FetchIssuesByStates(ctx, states)
 	if err != nil {
-		return nil, err
+		return connector.IssueStateScan{}, err
 	}
-	if len(issues) > doctorAutoPromoteSampleLimit {
-		issues = issues[:doctorAutoPromoteSampleLimit]
+	scan := doctorIssueStateScan(issues)
+	if len(scan.Issues) > doctorAutoPromoteSampleLimit {
+		scan.Issues = scan.Issues[:doctorAutoPromoteSampleLimit]
 	}
-	return issues, nil
+	return scan, nil
+}
+
+func doctorIssueStateScan(issues []connector.Issue) connector.IssueStateScan {
+	scan := connector.IssueStateScan{
+		Issues:           issues,
+		BoardCounts:      map[string]int{},
+		EnumeratedCounts: map[string]int{},
+		ItemsFetched:     len(issues),
+		TotalItems:       len(issues),
+	}
+	for _, issue := range issues {
+		scan.BoardCounts[issue.State]++
+		scan.EnumeratedCounts[issue.State]++
+	}
+	return scan
+}
+
+func doctorStateScanCount(counts map[string]int, state string) int {
+	state = strings.TrimSpace(state)
+	for candidate, count := range counts {
+		if strings.EqualFold(strings.TrimSpace(candidate), state) {
+			return count
+		}
+	}
+	return 0
 }
 
 func checkDoctorLabelStatusDrift(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {

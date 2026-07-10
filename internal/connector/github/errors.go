@@ -25,6 +25,7 @@ var (
 	ErrIssueDependencyUpdateFailed = errors.New("github issue dependency update failed")
 	ErrIssueCloseFailed            = errors.New("github issue close failed")
 	ErrProjectItemNotFound         = errors.New("github project item not found")
+	ErrProjectItemsTruncated       = errors.New("github project item scan truncated")
 	ErrProjectItemRemoveFailed     = errors.New("github project item remove failed")
 	ErrProjectFieldNotFound        = errors.New("github project field not found")
 	ErrProjectFieldOptionNotFound  = errors.New("github project field option not found")
