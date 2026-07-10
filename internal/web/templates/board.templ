@@ -154,7 +154,7 @@ templ boardCardView2(card boardCardView) {
 			if card.Running {
 				@primitives.StatusDot(primitives.KindOK, true)
 			}
-			<span class={ boardCardNumberClass(card) }>{ card.Number }</span>
+			@primitives.TrackerReferenceLink(card.Number, card.URL, boardCardNumberClass(card))
 			<span class="min-w-8 truncate">{ card.Project }</span>
 			if card.PriorityBadge != "" {
 				<span
@@ -179,7 +179,7 @@ templ boardCardView2(card boardCardView) {
 			} else if card.Done {
 				<span class="text-ok" role="img" aria-label="done">✓</span>
 			} else if card.MetaRight != "" {
-				<span class="flex-none whitespace-nowrap tabular-nums">{ card.MetaRight }</span>
+				@primitives.TrackerReferenceLink(card.MetaRight, card.PRURL, "flex-none whitespace-nowrap tabular-nums")
 			}
 		</div>
 		<div class={ boardCardTitleClass(card) }>{ card.Title }</div>

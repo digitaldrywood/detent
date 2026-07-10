@@ -48,6 +48,7 @@ func projectTabClass(tab projectTab) string {
 type projectRunRow struct {
 	DomID        string
 	Ref          string
+	URL          string
 	Title        string
 	StateKind    primitives.Kind
 	StateText    string
@@ -70,6 +71,7 @@ func projectRunRows(snapshot telemetry.Snapshot, limit int) []projectRunRow {
 		rows = append(rows, projectRunRow{
 			DomID:        "run-" + boardCardScopedSlug(running.ProjectID, identity),
 			Ref:          projectKanbanIssueNumber(running.Issue),
+			URL:          issueURL(running.Issue),
 			Title:        issueTitle(running.Issue),
 			StateKind:    primitives.KindOK,
 			StateText:    "In progress",
@@ -93,6 +95,7 @@ func projectRunRows(snapshot telemetry.Snapshot, limit int) []projectRunRow {
 		rows = append(rows, projectRunRow{
 			DomID:        "run-" + boardCardScopedSlug(session.ProjectID, identity) + "-" + strings.TrimSpace(session.SessionID),
 			Ref:          projectKanbanIssueNumber(session.Issue),
+			URL:          issueURL(session.Issue),
 			Title:        issueTitle(session.Issue),
 			StateKind:    kind,
 			StateText:    text,

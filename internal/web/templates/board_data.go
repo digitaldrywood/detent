@@ -71,11 +71,13 @@ type boardCardView struct {
 	Identity           string
 	IssueID            string
 	Number             string
+	URL                string
 	Project            string
 	MoveProject        string
 	Scope              string
 	CurrentState       string
 	PRNumber           string
+	PRURL              string
 	DragDrop           bool
 	CanDrag            bool
 	AllowedTargets     string
@@ -309,12 +311,13 @@ func boardBlockedExceptionSummary(data DashboardData, rows []telemetry.Blocked, 
 	}
 	identity := boardCardIdentityToken(row.Identifier, row.ID, projectKanbanIssueNumber(row.Issue))
 	exception := primitives.Exception{
-		ID:    "exception-" + boardCardScopedSlug(projectID, identity),
-		Kind:  primitives.KindErr,
-		Title: "Needs review",
-		Repo:  projectID,
-		Ref:   projectKanbanIssueNumber(row.Issue),
-		Rest:  boardExceptionDetail(row, pipelineNow(data.Snapshot)),
+		ID:     "exception-" + boardCardScopedSlug(projectID, identity),
+		Kind:   primitives.KindErr,
+		Title:  "Needs review",
+		Repo:   projectID,
+		Ref:    projectKanbanIssueNumber(row.Issue),
+		RefURL: strings.TrimSpace(row.URL),
+		Rest:   boardExceptionDetail(row, pipelineNow(data.Snapshot)),
 	}
 	if len(rows) == 1 {
 		exception.ActionLabel = "Review"
@@ -372,6 +375,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		Identity:          identity,
 		IssueID:           card.IssueID,
 		Number:            card.IssueNumber,
+		URL:               card.URL,
 		Project:           projectID,
 		MoveProject:       moveProjectID,
 		Scope:             scope,
@@ -393,6 +397,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	}
 	if card.PRNumber > 0 {
 		view.PRNumber = strconv.Itoa(card.PRNumber)
+		view.PRURL = card.PRURL
 	}
 	switch {
 	case view.Done || view.Terminal:

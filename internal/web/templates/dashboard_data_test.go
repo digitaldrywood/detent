@@ -1171,6 +1171,7 @@ func TestIssueIdentityKeepsRepositoryIssueAndPullRequest(t *testing.T) {
 				IssueNumber:       "#66",
 				PullRequestNumber: 75,
 				PullRequestLabel:  "PR #75",
+				PullRequestURL:    "https://github.com/digitaldrywood/creswoodcorners-phone/pull/75",
 				Label:             "digitaldrywood/creswoodcorners-phone #66 · PR #75",
 			},
 		},
@@ -1194,6 +1195,7 @@ func TestIssueIdentityKeepsRepositoryIssueAndPullRequest(t *testing.T) {
 			want: issueIdentityView{
 				Repository:  "digitaldrywood/detent",
 				IssueNumber: "ISSUE-728",
+				IssueURL:    "https://github.com/digitaldrywood/detent/issues/728",
 				Label:       "digitaldrywood/detent ISSUE-728",
 			},
 		},

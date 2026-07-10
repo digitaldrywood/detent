@@ -27,6 +27,7 @@ type analyticsRow struct {
 	Event    string
 	Project  string
 	Ref      string
+	URL      string
 	Kind     primitives.Kind
 	Decision string
 	Detail   string
@@ -86,6 +87,7 @@ func analyticsAttemptRows(snapshot telemetry.Snapshot) []analyticsRow {
 			Event:    "Work attempt",
 			Project:  strings.TrimSpace(attempt.ProjectID),
 			Ref:      analyticsRef(attempt.Identifier),
+			URL:      strings.TrimSpace(attempt.IssueURL),
 			Kind:     kind,
 			Decision: decision,
 			Detail:   analyticsAttemptDetail(attempt),

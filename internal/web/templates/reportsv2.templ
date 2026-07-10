@@ -116,7 +116,7 @@ templ reportsTopTable(id string, title string, rows []reportsTopRow) {
 		}
 		for i, row := range rows {
 			<div id={ row.ID } class={ reportsTopRowClass(i == len(rows)-1) }>
-				<span class="truncate font-mono text-xs font-medium text-text tabular-nums">{ row.Ref }</span>
+				@primitives.TrackerReferenceLink(row.Ref, row.URL, "truncate font-mono text-xs font-medium text-text tabular-nums")
 				<span class="truncate text-sm text-text">{ row.Title }</span>
 				<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Tokens }</span>
 				<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Cost }</span>

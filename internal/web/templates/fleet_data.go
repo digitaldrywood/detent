@@ -30,6 +30,7 @@ type fleetAgentRow struct {
 	ID            string
 	Repo          string
 	Number        string
+	URL           string
 	Title         string
 	Elapsed       string
 	Stage         string
@@ -50,6 +51,7 @@ type fleetPRLane struct {
 type fleetPRCard struct {
 	DomID   string
 	Ref     string
+	URL     string
 	Project string
 	Meta    string
 	Title   string
@@ -67,6 +69,8 @@ type fleetMetrics struct {
 	TokenChart   SeriesChartData
 	HasTokens    bool
 	ContextValue string
+	ContextRef   string
+	ContextURL   string
 	ContextTitle string
 	ContextPct   int
 	ContextKind  primitives.Kind
@@ -126,6 +130,7 @@ func fleetAgentRows(snapshot telemetry.Snapshot) []fleetAgentRow {
 			ID:        "agent-" + boardCardScopedSlug(running.ProjectID, identity),
 			Repo:      repo,
 			Number:    number,
+			URL:       issueURL(running.Issue),
 			Title:     issueTitle(running.Issue),
 			Elapsed:   fleetAgentElapsed(running),
 			Stage:     fleetAgentStage(running),
@@ -246,6 +251,7 @@ func fleetPRLanes(snapshot telemetry.Snapshot) []fleetPRLane {
 			view.Cards = append(view.Cards, fleetPRCard{
 				DomID:   "pr-card-" + boardCardScopedSlug(card.ProjectID, card.IdentityToken),
 				Ref:     fleetPRCardRef(card),
+				URL:     fleetPRCardURL(card),
 				Project: strings.TrimSpace(card.ProjectID),
 				Meta:    boardCompactAge(card.TimeInStage),
 				Title:   card.Title,
@@ -273,6 +279,13 @@ func fleetPRCardRef(card prPipelineCard) string {
 		return number
 	}
 	return card.IssueNumber
+}
+
+func fleetPRCardURL(card prPipelineCard) string {
+	if strings.TrimSpace(card.Identity.PullRequestLabel) != "" {
+		return card.Identity.PullRequestURL
+	}
+	return card.Identity.IssueURL
 }
 
 func fleetMetricsFromSnapshot(data DashboardData) fleetMetrics {
@@ -321,7 +334,9 @@ func fleetMetricsFromSnapshot(data DashboardData) fleetMetrics {
 	metrics.TokensValue = fleetCompactTokens(snapshot.Tokens.Total)
 	if pressure, ok := fleetHighestContextPressure(snapshot); ok {
 		metrics.HasContext = true
-		metrics.ContextValue = formatContextPercent(pressure.Pressure.PercentUsed) + " " + contextPressureIssueLabel(pressure.Issue)
+		metrics.ContextValue = formatContextPercent(pressure.Pressure.PercentUsed)
+		metrics.ContextRef = contextPressureIssueLabel(pressure.Issue)
+		metrics.ContextURL = issueURL(pressure.Issue)
 		metrics.ContextTitle = contextPressureTitle(pressure.Tokens)
 		metrics.ContextPct = int(math.Round(pressure.Pressure.PercentUsed))
 		if metrics.ContextPct > 100 {

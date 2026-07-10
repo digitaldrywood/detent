@@ -25,7 +25,7 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 				<div class="flex min-w-0 flex-1 flex-col gap-1">
 					<div class="flex min-w-0 items-center gap-2 font-mono text-xs font-medium text-sec">
 						<span class="min-w-20 truncate">{ projectKanbanCardProjectID(data, card) }</span>
-						<span class="flex-none max-w-48 truncate text-text">{ card.IssueNumber }</span>
+						@primitives.TrackerReferenceLink(card.IssueNumber, card.URL, "flex-none max-w-48 truncate text-text")
 					</div>
 					<h2 class="text-sm font-medium leading-snug text-text">{ card.Title }</h2>
 				</div>
@@ -205,11 +205,7 @@ templ sheetRowLink(label string, value string, href string) {
 	if value != "" {
 		<div class="flex items-center justify-between gap-3">
 			<span class="flex-none text-sec">{ label }</span>
-			if href != "" {
-				<a class="min-w-0 truncate font-mono text-accent hover:underline" href={ href } target="_blank" rel="noopener noreferrer">{ value }</a>
-			} else {
-				<span class="min-w-0 truncate font-mono text-text">{ value }</span>
-			}
+			@primitives.TrackerReferenceLink(value, href, "min-w-0 truncate font-mono text-text")
 		</div>
 	}
 }

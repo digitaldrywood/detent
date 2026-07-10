@@ -350,6 +350,7 @@ templ healthFactCard(label string, value string, detail string, dotClass string)
 		<p class="mt-1 line-clamp-3 text-xs text-sec">{ detail }</p>
 	</article>
 }
+
 templ kanbanDialogHost() {
 	<div id="kanban-dialog-host">
 		@dialog.Dialog(dialog.Props{ID: kanbanActionDialogID}) {
@@ -1951,7 +1952,14 @@ templ diagnosticsOperationsSummary(data DashboardData) {
 						<span class="truncate text-2xs font-semibold uppercase text-dim">{ fact.Label }</span>
 					</div>
 					<div class="truncate text-sm font-semibold text-text">{ fact.Value }</div>
-					<p class="line-clamp-2 text-xs text-sec">{ fact.Detail }</p>
+					<p class="line-clamp-2 text-xs text-sec">
+						{ fact.Detail }
+						if fact.DetailReference != "" {
+							{ fact.DetailPrefix }
+							@primitives.TrackerReferenceLink(fact.DetailReference, fact.DetailReferenceURL, "font-mono")
+							{ fact.DetailSuffix }
+						}
+					</p>
 				</article>
 			}
 		</div>
@@ -2072,7 +2080,7 @@ templ diagnosticsRunningWorkersSection(snapshot telemetry.Snapshot) {
 						<div class="flex min-w-0 items-start gap-2">
 							@primitives.StatusDot(primitives.KindOK, true)
 							<div class="min-w-0 flex-1">
-								<div class="truncate font-mono text-xs font-medium text-text">{ issueIdentifier(row.Issue) }</div>
+								@primitives.TrackerReferenceLink(issueIdentifier(row.Issue), row.URL, "block truncate font-mono text-xs font-medium text-text")
 								<div class="truncate text-sm text-text">{ issueTitle(row.Issue) }</div>
 							</div>
 							if row.URL != "" {
@@ -2191,13 +2199,13 @@ templ runtimeStoreEvidenceSection(report telemetry.WorkflowMetrics) {
 									</tr>
 								}
 							</tbody>
-							</table>
-						</div>
+						</table>
 					</div>
-				}
-			</div>
-		}
+				</div>
+			}
+		</div>
 	}
+}
 
 templ diagnosticsCounterTile(label string, value string) {
 	<div class="rounded-card bg-elev px-3 py-2">
@@ -2513,10 +2521,10 @@ templ trackerDriftWarning(snapshot telemetry.Snapshot) {
 							<ul class="mt-3 grid gap-2">
 								for _, issue := range row.Issues {
 									<li class="min-w-0 text-xs">
-										<a class="inline-flex max-w-full items-center gap-1.5 font-medium text-accent hover:underline" href={ issue.URL } target="_blank" rel="noopener noreferrer">
-											<span class="shrink-0 font-mono">{ issue.Number }</span>
-											<span class="truncate">{ issue.Title }</span>
-										</a>
+										<div class="inline-flex max-w-full items-center gap-1.5 font-medium">
+											@primitives.TrackerReferenceLink(issue.Number, issue.URL, "shrink-0 font-mono")
+											<span class="truncate text-text">{ issue.Title }</span>
+										</div>
 										if issue.State != "" || issue.Labels != "" {
 											<div class="mt-1 flex min-w-0 flex-wrap gap-1.5 text-[0.7rem] text-sec">
 												if issue.State != "" {
@@ -2742,13 +2750,10 @@ templ prPipelineCardView(card prPipelineCard) {
 	<article class="pr-pipeline-card min-w-0 rounded-md border border-line bg-surface p-3 shadow-sm" data-pr-pipeline-identity={ card.Identity.Label }>
 		<div class="flex min-w-0 items-start justify-between gap-3">
 			<div class="min-w-0 flex-1 basis-0">
+				@issueIdentityLine(card.Identity, true)
 				if card.URL != "" {
-					<a class="block min-w-0 max-w-full overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer" aria-label={ "Open " + card.Identity.Label }>
-						@issueIdentityLine(card.Identity, true)
-						<span class="mt-1 line-clamp-2 break-words text-sm font-medium text-text">{ card.Title }</span>
-					</a>
+					<a class="mt-1 block min-w-0 max-w-full overflow-hidden text-sm font-medium text-text hover:text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer" aria-label={ "Open " + card.Identity.Label }>{ card.Title }</a>
 				} else {
-					@issueIdentityLine(card.Identity, true)
 					<span class="mt-1 line-clamp-2 break-words text-sm font-medium text-text">{ card.Title }</span>
 				}
 				if card.ProjectID != "" {
@@ -2770,7 +2775,13 @@ templ prPipelineCardView(card prPipelineCard) {
 			if card.MergeLaneStatus != "" {
 				<div class="flex min-h-7 items-center justify-between gap-3 rounded-md bg-elev/60 px-2 py-1">
 					<span class="text-sec">Merge lane</span>
-					<span class="min-w-0 truncate font-mono font-medium text-text" title={ card.MergeLaneDetail }>{ card.MergeLaneDetail }</span>
+					<span class="min-w-0 truncate font-mono font-medium text-text" title={ card.MergeLaneDetail }>
+						{ card.MergeLanePrefix }
+						if card.MergeLaneRef != "" {
+							@primitives.TrackerReferenceLink(card.MergeLaneRef, card.MergeLaneRefURL, "")
+						}
+						{ card.MergeLaneSuffix }
+					</span>
 				</div>
 			}
 			<div class="flex min-h-7 items-center justify-between gap-3 rounded-md bg-elev/60 px-2 py-1">
@@ -2793,7 +2804,7 @@ templ KanbanMoveDialogContent(data KanbanMoveDialogData) {
 			Move card
 		}
 		@dialog.Description() {
-			{ kanbanDialogCardLabel(data.Identifier, data.Title) }
+			@kanbanDialogCardDescription(data.Identifier, data.IssueURL, data.Title)
 		}
 	}
 	@kanbanDialogError(data.Error)
@@ -2804,6 +2815,7 @@ templ KanbanMoveDialogContent(data KanbanMoveDialogData) {
 		<input type="hidden" name="issue_id" value={ data.IssueID }/>
 		<input type="hidden" name="current_state" value={ data.CurrentState }/>
 		<input type="hidden" name="identifier" value={ data.Identifier }/>
+		<input type="hidden" name="issue_url" value={ data.IssueURL }/>
 		<input type="hidden" name="title" value={ data.Title }/>
 		if data.PRNumber > 0 {
 			<input type="hidden" name="pr_number" value={ strconv.Itoa(data.PRNumber) }/>
@@ -2839,7 +2851,11 @@ templ KanbanCommentDialogContent(data KanbanCommentDialogData) {
 			Comment on { kanbanCommentTargetLabel(data.Target) }
 		}
 		@dialog.Description() {
-			{ kanbanDialogCardLabel(data.Identifier, data.Title) }
+			@kanbanDialogCardDescription(data.Identifier, data.IssueURL, data.Title)
+			if data.Target == "pr" && data.PRNumber > 0 {
+				{ " · " }
+				@primitives.TrackerReferenceLink("PR #"+strconv.Itoa(data.PRNumber), data.PRURL, "font-mono")
+			}
 		}
 	}
 	@kanbanDialogError(data.Error)
@@ -2848,6 +2864,8 @@ templ KanbanCommentDialogContent(data KanbanCommentDialogData) {
 		<input type="hidden" name="project_id" value={ data.ProjectID }/>
 		<input type="hidden" name="target" value={ data.Target }/>
 		<input type="hidden" name="identifier" value={ data.Identifier }/>
+		<input type="hidden" name="issue_url" value={ data.IssueURL }/>
+		<input type="hidden" name="pr_url" value={ data.PRURL }/>
 		<input type="hidden" name="title" value={ data.Title }/>
 		if data.Target == "issue" {
 			<input type="hidden" name="issue_id" value={ data.IssueID }/>
@@ -2875,6 +2893,18 @@ templ KanbanCommentDialogContent(data KanbanCommentDialogData) {
 			}
 		}
 	</form>
+}
+
+templ kanbanDialogCardDescription(identifier string, issueURL string, title string) {
+	if identifier != "" {
+		@primitives.TrackerReferenceLink(identifier, issueURL, "font-mono")
+	}
+	if identifier != "" && title != "" {
+		{ " / " }
+	}
+	if title != "" {
+		{ title }
+	}
 }
 
 templ KanbanDialogErrorContent(message string) {
@@ -3303,7 +3333,7 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics, project telemetry
 									<div class="grid gap-1 rounded-md bg-elev/60 px-3 py-2 text-sm">
 										<div class="flex min-w-0 items-start gap-2">
 											<div class="min-w-0 flex-1">
-												<span class="block truncate font-medium text-text">{ row.Identifier }</span>
+												@primitives.TrackerReferenceLink(row.Identifier, row.URL, "block truncate font-medium text-text")
 												<span class="block truncate text-xs text-sec">{ row.Title }</span>
 											</div>
 											if row.URL != "" {
@@ -3518,7 +3548,7 @@ templ schedulerRuntimeSection(snapshot telemetry.Snapshot) {
 								<article class="rounded-md border border-line bg-elev/30 p-3">
 									<div class="flex min-w-0 items-start justify-between gap-3">
 										<div class="min-w-0">
-											<div class="truncate font-mono text-sm font-medium text-text">{ workAttemptIssueLabel(row) }</div>
+											@primitives.TrackerReferenceLink(workAttemptIssueLabel(row), row.IssueURL, "block truncate font-mono text-sm font-medium text-text")
 											<div class="mt-1 truncate text-xs text-sec">{ workAttemptWorkerLabel(row) }</div>
 										</div>
 										<span class={ workAttemptStatusClass(row) }>{ workAttemptStatusLabel(row) }</span>
@@ -3572,7 +3602,7 @@ templ schedulerRuntimeSection(snapshot telemetry.Snapshot) {
 								<article class="rounded-md border border-line bg-elev/30 p-3">
 									<div class="flex min-w-0 items-start justify-between gap-3">
 										<div class="min-w-0">
-											<div class="truncate font-mono text-sm font-medium text-text">{ schedulerDecisionIssueLabel(row) }</div>
+											@primitives.TrackerReferenceLink(schedulerDecisionIssueLabel(row), row.IssueURL, "block truncate font-mono text-sm font-medium text-text")
 											<div class="mt-1 truncate text-xs text-sec">{ schedulerDecisionLaneLabel(row) }</div>
 										</div>
 										<span class={ schedulerDecisionStatusClass(row) }>{ schedulerDecisionStatusLabel(row) }</span>
@@ -3839,10 +3869,10 @@ templ issueIdentityLine(identity issueIdentityView, accent bool) {
 			<span class={ "min-w-0 break-all font-semibold " + identityRepositoryClass(accent) } title={ identity.Repository } data-identity-repository>{ identity.Repository }</span>
 		}
 		if identity.IssueNumber != "" {
-			<span class={ "shrink-0 rounded-sm border px-1.5 py-0.5 font-semibold " + identityIssueBadgeClass(accent) } data-identity-issue>{ identity.IssueNumber }</span>
+			@primitives.TrackerReferenceLink(identity.IssueNumber, identity.IssueURL, "shrink-0 rounded-sm border px-1.5 py-0.5 font-semibold "+identityIssueBadgeClass(accent))
 		}
 		if identity.PullRequestLabel != "" {
-			<span class={ "shrink-0 rounded-sm border px-1.5 py-0.5 font-semibold " + identityPullRequestBadgeClass(accent) } data-identity-pr>{ identity.PullRequestLabel }</span>
+			@primitives.TrackerReferenceLink(identity.PullRequestLabel, identity.PullRequestURL, "shrink-0 rounded-sm border px-1.5 py-0.5 font-semibold "+identityPullRequestBadgeClass(accent))
 		}
 	</span>
 }

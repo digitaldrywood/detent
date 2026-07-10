@@ -99,22 +99,14 @@ templ libraryTableRow(row LibraryRow) {
 		<span class="min-w-0 truncate font-mono text-xs text-sec" title={ row.ProjectID }>{ row.ProjectName }</span>
 		<span class={ libraryKindClass(row.Kind) }>{ libraryKindLabel(row.Kind) }</span>
 		<div class="grid min-w-0 gap-1">
-			if libraryHasSafeURL(row.PullRequestURL) && row.SourceKind == "pull_request" {
-				<a href={ librarySafeURL(row.PullRequestURL) } target="_blank" rel="noopener noreferrer" class="min-w-0 truncate font-mono text-xs text-accent hover:underline" title={ libraryPathLabel(row) }>{ libraryPathLabel(row) }</a>
-			} else {
-				<code class="min-w-0 truncate font-mono text-xs text-text" title={ libraryPathLabel(row) }>{ libraryPathLabel(row) }</code>
-			}
+			@primitives.TrackerReferenceLink(libraryPathLabel(row), libraryPullRequestReferenceURL(row), "min-w-0 truncate font-mono text-xs text-text")
 			if libraryRowDetail(row) != "" {
 				<span class="min-w-0 truncate text-2xs text-dim" title={ libraryRowDetail(row) }>{ libraryRowDetail(row) }</span>
 			}
 		</div>
 		<span class={ libraryStatusClass(row.ValidationStatus) }>{ libraryStatusLabel(row.ValidationStatus) }</span>
 		<div class="grid min-w-0 gap-1">
-			if libraryHasSafeURL(row.SourceURL) {
-				<a href={ librarySafeURL(row.SourceURL) } target="_blank" rel="noopener noreferrer" class="min-w-0 truncate text-sm text-text hover:text-accent hover:underline" title={ libraryRowTitle(row) }>{ librarySourceTitle(row) }</a>
-			} else {
-				<span class="min-w-0 truncate text-sm text-text" title={ libraryRowTitle(row) }>{ librarySourceTitle(row) }</span>
-			}
+			@primitives.TrackerReferenceLink(librarySourceTitle(row), librarySourceReferenceURL(row), "min-w-0 truncate text-sm text-text")
 			if libraryRowTitle(row) != librarySourceTitle(row) {
 				<span class="min-w-0 truncate text-2xs text-dim" title={ libraryRowTitle(row) }>{ libraryRowTitle(row) }</span>
 			}

@@ -1879,34 +1879,39 @@ func TestKanbanDialogFragmentRoutesRenderForms(t *testing.T) {
 	}{
 		{
 			name: "move",
-			path: "/api/v1/kanban/move?project_id=detent&issue_id=I_kw1&current_state=Todo&target_state=In+Progress&pr_number=42&identifier=digitaldrywood%2Fdetent%231&title=Dialog+card",
+			path: "/api/v1/kanban/move?project_id=detent&issue_id=I_kw1&current_state=Todo&target_state=In+Progress&pr_number=42&identifier=digitaldrywood%2Fdetent%231&issue_url=https%3A%2F%2Fgithub.com%2Fdigitaldrywood%2Fdetent%2Fissues%2F1&title=Dialog+card",
 			want: []string{
 				"Move card",
 				`hx-post="/api/v1/kanban/move"`,
 				`name="kanban_dialog" value="true"`,
 				`name="target_state"`,
 				`value="In Progress"`,
+				`href="https://github.com/digitaldrywood/detent/issues/1"`,
+				`name="issue_url" value="https://github.com/digitaldrywood/detent/issues/1"`,
 			},
 		},
 		{
 			name: "issue comment",
-			path: "/api/v1/kanban/comment?project_id=detent&target=issue&issue_id=I_kw1&identifier=digitaldrywood%2Fdetent%231&title=Dialog+card",
+			path: "/api/v1/kanban/comment?project_id=detent&target=issue&issue_id=I_kw1&identifier=digitaldrywood%2Fdetent%231&issue_url=https%3A%2F%2Fgithub.com%2Fdigitaldrywood%2Fdetent%2Fissues%2F1&title=Dialog+card",
 			want: []string{
 				"Comment on issue",
 				`hx-post="/api/v1/kanban/comment"`,
 				`name="kanban_dialog" value="true"`,
 				`name="target" value="issue"`,
+				`href="https://github.com/digitaldrywood/detent/issues/1"`,
 				`<textarea`,
 			},
 		},
 		{
 			name: "pull request comment",
-			path: "/api/v1/kanban/comment?project_id=detent&target=pr&pr_repository=digitaldrywood%2Ffrontend&pr_number=42&identifier=digitaldrywood%2Fdetent%231&title=Dialog+card",
+			path: "/api/v1/kanban/comment?project_id=detent&target=pr&pr_repository=digitaldrywood%2Ffrontend&pr_number=42&pr_url=https%3A%2F%2Fgithub.com%2Fdigitaldrywood%2Ffrontend%2Fpull%2F42&identifier=digitaldrywood%2Fdetent%231&issue_url=https%3A%2F%2Fgithub.com%2Fdigitaldrywood%2Fdetent%2Fissues%2F1&title=Dialog+card",
 			want: []string{
 				"Comment on PR",
 				`name="target" value="pr"`,
 				`name="pr_repository" value="digitaldrywood/frontend"`,
 				`name="pr_number" value="42"`,
+				`href="https://github.com/digitaldrywood/frontend/pull/42"`,
+				`name="pr_url" value="https://github.com/digitaldrywood/frontend/pull/42"`,
 			},
 		},
 	}
