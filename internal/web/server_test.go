@@ -34,6 +34,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/local"
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -9169,6 +9170,8 @@ func TestReportsDailyDigestReconcilesSeededDay(t *testing.T) {
 		`data-digest-metric="sessions"`,
 		`data-digest-metric="cache"`,
 		`data-digest-metric="cost"`,
+		`data-digest-metric="tokens-per-merged"`,
+		`data-digest-metric="efficiency-anomalies"`,
 		"50%",
 		"$0.80",
 		"1 reattached · 0 fresh",
@@ -10215,6 +10218,18 @@ func (storeProbe) DailyDigest(_ context.Context, windows []store.DailyDigestWind
 		days = append(days, store.DailyDigestDay{Date: window.Date, Models: []store.UsageReportModel{}})
 	}
 	return days, nil
+}
+
+func (storeProbe) EfficiencyReceipt(context.Context, string, string, string) (efficiency.Receipt, error) {
+	return efficiency.Receipt{}, sql.ErrNoRows
+}
+
+func (storeProbe) ListEfficiencyReceipts(context.Context, efficiency.Query) ([]efficiency.Receipt, error) {
+	return nil, nil
+}
+
+func (storeProbe) EfficiencyRollup(context.Context, efficiency.Query) (efficiency.Rollup, error) {
+	return efficiency.Rollup{}, nil
 }
 
 func (p storeProbe) CycleTimeReport(ctx context.Context) (store.CycleTimeReport, error) {

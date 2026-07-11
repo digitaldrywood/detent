@@ -61,6 +61,44 @@ templ ReportsSnapshotV2(data ReportsData) {
 			</div>
 		}
 	</div>
+	@primitives.Panel(primitives.PanelProps{ID: "reports-efficiency", Title: "Fleet efficiency · merged issues", Count: view.Efficiency.Issues}) {
+		if view.Efficiency.Available {
+			<div class="grid grid-cols-1 gap-4 p-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(260px,0.6fr)]">
+				<div class="overflow-x-auto">
+					<div class="min-w-[540px]">
+						<div class="grid grid-cols-[minmax(0,1fr)_100px_100px_70px] gap-3 border-b border-line pb-2 text-2xs font-semibold uppercase text-dim">
+							<span>Metric</span><span class="text-right">Current</span><span class="text-right">Baseline</span><span class="text-right">Δ</span>
+						</div>
+						for _, row := range view.Efficiency.Rows {
+							<div class="grid grid-cols-[minmax(0,1fr)_100px_100px_70px] gap-3 border-b border-line/70 py-2 text-xs last:border-0">
+								<span class="text-sec">{ row.Label }</span>
+								<span class="text-right font-mono text-text tabular-nums">{ row.Current }</span>
+								<span class="text-right font-mono text-sec tabular-nums">{ row.Baseline }</span>
+								<span class="text-right font-mono text-sec tabular-nums">{ row.Delta }</span>
+							</div>
+						}
+					</div>
+				</div>
+				<div class="flex flex-col gap-3">
+					<div class="grid grid-cols-2 gap-2">
+						for _, dwell := range view.Efficiency.Dwell {
+							<div class="rounded-card border border-line bg-elev p-2.5">
+								<p class="text-2xs uppercase text-dim">{ dwell.Label }</p>
+								<p class="font-mono text-sm text-text tabular-nums">{ dwell.Current }</p>
+								<p class="text-2xs text-sec">baseline { dwell.Baseline }</p>
+							</div>
+						}
+					</div>
+					if view.Efficiency.HasTrend {
+						@SparklineChart(view.Efficiency.CacheChart)
+					}
+					<p class="text-xs text-sec"><span class="font-mono text-warn tabular-nums">{ view.Efficiency.Anomalies }</span> anomaly receipts in this window</p>
+				</div>
+			</div>
+		} else {
+			@primitives.EmptyLine("No merged issue receipts in this window")
+		}
+	}
 	<div class="grid flex-none grid-cols-1 gap-3 md:grid-cols-2">
 		@reportsTopTable("reports-top-issues", "Top issues by tokens", view.TopIssues)
 		@reportsTopTable("reports-top-prs", "Top PRs by tokens", view.TopPRs)

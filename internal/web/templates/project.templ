@@ -83,7 +83,7 @@ templ projectOverviewSnapshotBody(data DashboardData) {
 	</div>
 	<div class="flex flex-none flex-col gap-2.5">
 		<h2 class="text-sm font-semibold text-text">Recent runs</h2>
-		@projectRunsTable("project-recent-runs", projectRunRows(data.Snapshot, 10))
+		@projectRunsTable("project-recent-runs", projectRunRowsWithReceipts(data.Snapshot, data.EfficiencyReceipts, 10))
 	</div>
 	@fleetMetricCards(view.Metrics)
 }
@@ -167,7 +167,7 @@ templ projectRunsSnapshotBody(data DashboardData) {
 			@primitives.MonoFigure("fig-spend", view.Spend)
 		}
 	</div>
-	@projectRunsTable("project-runs", projectRunRows(data.Snapshot, 0))
+	@projectRunsTable("project-runs", projectRunRowsWithReceipts(data.Snapshot, data.EfficiencyReceipts, 0))
 }
 
 // projectRunsTable never clips columns: TITLE is the only flexible column
@@ -175,13 +175,14 @@ templ projectRunsSnapshotBody(data DashboardData) {
 // is a dot plus text, never color alone.
 templ projectRunsTable(id string, rows []projectRunRow) {
 	<section id={ id } class="flex flex-none flex-col overflow-hidden rounded-card border border-line bg-surface">
-		<div class="grid grid-cols-[70px_minmax(0,1fr)_90px] items-center gap-3 border-b border-line px-4 py-2 lg:grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_110px] lg:gap-3.5">
+		<div class="grid grid-cols-[70px_minmax(0,1fr)_90px] items-center gap-3 border-b border-line px-4 py-2 lg:grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_220px_110px] lg:gap-3.5">
 			<span class="text-2xs font-semibold uppercase text-dim">Issue</span>
 			<span class="hidden text-2xs font-semibold uppercase text-dim lg:inline">Title</span>
 			<span class="text-2xs font-semibold uppercase text-dim">State</span>
 			<span class="text-2xs font-semibold uppercase text-dim">Runtime · Turns</span>
 			<span class="hidden text-right text-2xs font-semibold uppercase text-dim lg:inline">Tokens</span>
 			<span class="hidden text-right text-2xs font-semibold uppercase text-dim lg:inline">Context</span>
+			<span class="hidden text-2xs font-semibold uppercase text-dim lg:inline">Efficiency receipt</span>
 			<span class="hidden text-right text-2xs font-semibold uppercase text-dim lg:inline">Finished</span>
 		</div>
 		if len(rows) == 0 {
@@ -203,6 +204,7 @@ templ projectRunsTable(id string, rows []projectRunRow) {
 						title={ row.ContextTitle }
 					}
 				>{ row.Context }</span>
+				<span class={ "hidden truncate font-mono text-xs tabular-nums lg:inline " + anomalyTextClass(row.Anomaly) } title={ row.ReceiptTitle }>{ row.Receipt }</span>
 				<span class="hidden whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums lg:inline">@LocalTime(row.FinishedAt, LocalTimeOptions{Style: LocalDateTime, Fallback: "—"})</span>
 			</div>
 		}

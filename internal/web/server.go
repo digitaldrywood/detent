@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,6 +23,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/hub"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/project"
@@ -407,6 +409,14 @@ func (s *Server) apiBoardCard(c echo.Context) error {
 	if !ok {
 		return echo.NewHTTPError(http.StatusNotFound, "Card not found")
 	}
+	if !demo {
+		receipt, err := s.store.EfficiencyReceipt(ctx, projectID, card.IssueID, card.Identifier)
+		if err == nil {
+			data.EfficiencyReceipts = []efficiency.Receipt{receipt}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			s.logger.Warn("efficiency receipt query failed", slog.Any("error", err))
+		}
+	}
 	boardActions := c.QueryParam("actions") == "board"
 	expanded := c.QueryParam("expanded") == "1"
 	conversation := templates.BoardCardConversationData(data, card, boardActions, expanded)
@@ -658,7 +668,7 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 		name = strings.TrimSpace(project.ID)
 	}
 	instanceName := s.instanceName()
-	return templates.DashboardData{
+	data := templates.DashboardData{
 		Title:           instancePageTitle(instanceName, name+" - Detent"),
 		ApplicationName: applicationName(instanceName),
 		InstanceName:    instanceName,
@@ -674,7 +684,14 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 		ProjectID:       strings.TrimSpace(project.ID),
 		ProjectName:     name,
 		ProjectPaused:   project.Paused,
-	}, true
+	}
+	receipts, err := s.store.ListEfficiencyReceipts(ctx, efficiency.Query{ProjectID: project.ID, Limit: 100})
+	if err != nil {
+		s.logger.Warn("efficiency receipts query failed", slog.Any("error", err))
+	} else {
+		data.EfficiencyReceipts = receipts
+	}
+	return data, true
 }
 
 func (s *Server) withKanbanRefreshFeedback(data templates.DashboardData) templates.DashboardData {

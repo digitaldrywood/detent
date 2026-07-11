@@ -786,6 +786,12 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if !cfg.Observability.DashboardEnabled {
 		t.Fatal("Observability.DashboardEnabled = false, want true")
 	}
+	if cfg.Observability.Efficiency.AnomalyTokensMultiple != 3 || cfg.Observability.Efficiency.AnomalySessionsMultiple != 3 || cfg.Observability.Efficiency.AnomalyDwellMultiple != 3 {
+		t.Fatalf("Observability.Efficiency = %#v, want 3x defaults", cfg.Observability.Efficiency)
+	}
+	if cfg.Observability.OTLP.Endpoint != "" || cfg.Observability.OTLP.ServiceName != "detent" || cfg.Observability.OTLP.TimeoutMS != 5000 {
+		t.Fatalf("Observability.OTLP = %#v, want disabled endpoint and defaults", cfg.Observability.OTLP)
+	}
 	if cfg.Budget.PricingPath != "priv/pricing/models.yaml" {
 		t.Fatalf("Budget.PricingPath = %q", cfg.Budget.PricingPath)
 	}
@@ -1909,6 +1915,42 @@ Prompt
 	}
 	if got := workflow.Config.Codex.ApprovalPolicy.Map["allow"].([]any)[0].(map[string]any)["tool"]; got != "shell" {
 		t.Fatalf("Codex.ApprovalPolicy allow tool = %v, want shell", got)
+	}
+}
+
+func TestObservabilityValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "invalid OTLP endpoint",
+			mutate: func(cfg *Config) {
+				cfg.Observability.OTLP.Endpoint = "collector:4318"
+			},
+			wantErr: "observability.otlp.endpoint must be an absolute http or https URL",
+		},
+		{
+			name: "nonpositive anomaly threshold",
+			mutate: func(cfg *Config) {
+				cfg.Observability.Efficiency.AnomalyTokensMultiple = 0
+			},
+			wantErr: "observability.efficiency.anomaly_tokens_multiple must be greater than 0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Default()
+			tt.mutate(&cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() error = %v, want containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 

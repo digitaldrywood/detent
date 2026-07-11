@@ -7,6 +7,7 @@ import (
 	"github.com/a-h/templ"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
@@ -132,6 +133,26 @@ func sheetSessionFor(snapshot telemetry.Snapshot, card projectKanbanCard) sheetS
 		}
 	}
 	return sheetSession{}
+}
+
+func findEfficiencyReceipt(receipts []efficiency.Receipt, issue telemetry.Issue) (efficiency.Receipt, bool) {
+	for _, receipt := range receipts {
+		if strings.TrimSpace(receipt.ProjectID) != "" && strings.TrimSpace(issue.ProjectID) != "" && receipt.ProjectID != issue.ProjectID {
+			continue
+		}
+		if receipt.IssueID == issue.ID || (receipt.Identifier != "" && receipt.Identifier == issue.Identifier) {
+			return receipt, true
+		}
+	}
+	return efficiency.Receipt{}, false
+}
+
+func efficiencyReceiptForCard(data DashboardData, card projectKanbanCard) (efficiency.Receipt, bool) {
+	return findEfficiencyReceipt(data.EfficiencyReceipts, telemetry.Issue{
+		ID:         card.IssueID,
+		Identifier: card.Identifier,
+		ProjectID:  card.ProjectID,
+	})
 }
 
 // sheetSessionMatchesProject guards against cross-project identifier

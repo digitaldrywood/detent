@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
@@ -59,12 +60,19 @@ type projectRunRow struct {
 	ContextKind  primitives.Kind
 	ContextTitle string
 	FinishedAt   time.Time
+	Receipt      string
+	ReceiptTitle string
+	Anomaly      bool
 }
 
 // projectRunRows lists live sessions first, then completed sessions newest
 // first. Context pressure renders only when the backend reports a model
 // context window; otherwise the column stays quiet.
 func projectRunRows(snapshot telemetry.Snapshot, limit int) []projectRunRow {
+	return projectRunRowsWithReceipts(snapshot, nil, limit)
+}
+
+func projectRunRowsWithReceipts(snapshot telemetry.Snapshot, receipts []efficiency.Receipt, limit int) []projectRunRow {
 	rows := make([]projectRunRow, 0, len(snapshot.Running)+len(snapshot.Completed))
 	for _, running := range snapshot.Running {
 		identity := boardCardIdentityToken(running.Identifier, running.ID, projectKanbanIssueNumber(running.Issue))
@@ -104,6 +112,9 @@ func projectRunRows(snapshot telemetry.Snapshot, limit int) []projectRunRow {
 			ContextKind:  contextPressureKind(session.Tokens),
 			ContextTitle: contextPressureTitle(session.Tokens),
 			FinishedAt:   session.CompletedAt,
+			Receipt:      projectRunReceiptLabel(receipts, session.Issue),
+			ReceiptTitle: projectRunReceiptTitle(receipts, session.Issue),
+			Anomaly:      projectRunReceiptAnomaly(receipts, session.Issue),
 		})
 	}
 
@@ -111,6 +122,27 @@ func projectRunRows(snapshot telemetry.Snapshot, limit int) []projectRunRow {
 		rows = rows[:limit]
 	}
 	return rows
+}
+
+func projectRunReceiptLabel(receipts []efficiency.Receipt, issue telemetry.Issue) string {
+	receipt, ok := findEfficiencyReceipt(receipts, issue)
+	if !ok {
+		return "—"
+	}
+	return formatCount(int(receipt.Sessions)) + " sessions · " + reportCacheReadFraction(receipt.CacheShare()) + " cached · " + formatUSD(receipt.EstimatedCostUSD)
+}
+
+func projectRunReceiptTitle(receipts []efficiency.Receipt, issue telemetry.Issue) string {
+	receipt, ok := findEfficiencyReceipt(receipts, issue)
+	if !ok {
+		return ""
+	}
+	return formatInt(receipt.TotalTokens) + " tokens · " + formatCount(int(receipt.Attempts)) + " attempts · " + formatDuration(float64(receipt.WallSeconds))
+}
+
+func projectRunReceiptAnomaly(receipts []efficiency.Receipt, issue telemetry.Issue) bool {
+	receipt, ok := findEfficiencyReceipt(receipts, issue)
+	return ok && receipt.Anomalous()
 }
 
 func projectRunFinalState(state string) (primitives.Kind, string) {
@@ -164,11 +196,18 @@ func projectAllClearLabel(data DashboardData) string {
 }
 
 func projectRunRowClass(last bool) string {
-	base := "grid grid-cols-[70px_minmax(0,1fr)_90px] items-center gap-3 px-4 py-2 lg:grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_110px] lg:gap-3.5"
+	base := "grid grid-cols-[70px_minmax(0,1fr)_90px] items-center gap-3 px-4 py-2 lg:grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_220px_110px] lg:gap-3.5"
 	if !last {
 		return base + " border-b border-line"
 	}
 	return base
+}
+
+func anomalyTextClass(anomaly bool) string {
+	if anomaly {
+		return "text-warn"
+	}
+	return "text-sec"
 }
 
 func ProjectShellDataFromDashboard(data DashboardData, nav string) DashboardShellData {

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
@@ -33,6 +34,10 @@ func (s *Server) dailyDigestData(ctx context.Context, snapshot telemetry.Snapsho
 	days := make([]templates.DailyDigestDayData, 0, len(runtimeDays))
 	for index, runtimeDay := range runtimeDays {
 		window := windows[index]
+		efficiencyRollup, err := s.store.EfficiencyRollup(ctx, efficiency.Query{From: window.From, To: window.To})
+		if err != nil {
+			return templates.DailyDigestData{}, err
+		}
 		day := templates.DailyDigestDayData{
 			Date:                 runtimeDay.Date,
 			From:                 window.From,
@@ -51,6 +56,7 @@ func (s *Server) dailyDigestData(ctx context.Context, snapshot telemetry.Snapsho
 			BreakerTrips:         runtimeDay.BreakerTrips,
 			FailedSessions:       runtimeDay.FailedSessions,
 			DominantErrorClass:   runtimeDay.DominantErrorClass,
+			Efficiency:           efficiencyRollup.Current,
 		}
 		populateDailyDigestTracker(&day, snapshot, projectNames)
 		days = append(days, day)

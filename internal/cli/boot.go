@@ -220,6 +220,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		Logger:             logger,
 		GlobalDispatchGate: globalDispatchGate,
 		WorkflowMetrics:    runtimeStore,
+		Efficiency:         runtimeStore,
 		WorkAttempts:       runtimeStore,
 		AgentResume:        runtimeStore,
 		ValidatorMemo:      runtimeStore,

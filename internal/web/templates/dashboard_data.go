@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/dispatchpriority"
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -49,25 +50,26 @@ const (
 )
 
 type DashboardData struct {
-	Title            string
-	ApplicationName  string
-	InstanceName     string
-	Version          string
-	Build            buildinfo.Info
-	DashboardURL     string
-	ConnectorName    string
-	Snapshot         telemetry.Snapshot
-	Projects         []ProjectSmallMultiple
-	Kanban           KanbanData
-	Assets           AssetPaths
-	ActiveNav        string
-	ProjectID        string
-	ProjectName      string
-	ProjectPaused    bool
-	SidebarCollapsed bool
-	Theme            string
-	Density          string
-	AnalyticsKind    string
+	Title              string
+	ApplicationName    string
+	InstanceName       string
+	Version            string
+	Build              buildinfo.Info
+	DashboardURL       string
+	ConnectorName      string
+	Snapshot           telemetry.Snapshot
+	EfficiencyReceipts []efficiency.Receipt
+	Projects           []ProjectSmallMultiple
+	Kanban             KanbanData
+	Assets             AssetPaths
+	ActiveNav          string
+	ProjectID          string
+	ProjectName        string
+	ProjectPaused      bool
+	SidebarCollapsed   bool
+	Theme              string
+	Density            string
+	AnalyticsKind      string
 }
 
 type DashboardShellData struct {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
@@ -85,6 +86,11 @@ func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time, 
 	if err != nil {
 		return templates.ReportsData{}, err
 	}
+	efficiencyFrom, efficiencyTo := efficiencyReportRange(from, to)
+	efficiencyRollup, err := s.store.EfficiencyRollup(ctx, efficiency.Query{ProjectID: projectID, From: efficiencyFrom, To: efficiencyTo})
+	if err != nil {
+		return templates.ReportsData{}, err
+	}
 	return templates.ReportsData{
 		Title:           instancePageTitle(instanceName, "Detent reports"),
 		ApplicationName: applicationName(instanceName),
@@ -98,12 +104,20 @@ func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time, 
 		PR:              pr,
 		Model:           model,
 		Digest:          digest,
+		Efficiency:      efficiencyRollup,
 		Assets:          s.assets.templatePaths(),
 		Projects:        projects,
 		ActiveNav:       "reports",
 		ProjectID:       projectID,
 		ProjectName:     projectName,
 	}, nil
+}
+
+func efficiencyReportRange(from time.Time, to time.Time) (time.Time, time.Time) {
+	if !to.IsZero() {
+		to = to.AddDate(0, 0, 1)
+	}
+	return from, to
 }
 
 func reportsTimezone(value string) (*time.Location, error) {
