@@ -117,6 +117,7 @@ templ DashboardShell(data DashboardShellData) {
 			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
 			<script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"></script>
 			<script src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"></script>
+			@localTimeScript()
 			@dashboardSSEMetricsScript()
 			if data.IncludeDashboardCharts {
 				<script src={ chartJSPath(data.Assets) } defer></script>
@@ -196,14 +197,22 @@ templ HealthSnapshot(data DashboardData) {
 }
 
 templ backendCapacityBanner(snapshot telemetry.Snapshot) {
-	if len(snapshot.BackendOutages) > 0 {
+	{{ outages := backendCapacityOutages(snapshot.BackendOutages) }}
+	if len(outages) > 0 {
 		<section id="backend-capacity-outage" class="flex min-w-0 items-start gap-3 rounded-md border border-warn/40 bg-warn/10 px-4 py-3 text-sm shadow-sm" role="status" aria-live="polite">
 			@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-warn"})
 			<div class="grid min-w-0 gap-2">
-				for _, outage := range snapshot.BackendOutages {
+				for _, outage := range outages {
 					<div class="min-w-0 break-words">
 						<p class="font-medium text-text">{ backendCapacityOutageTitle(outage) }</p>
-						<p class="mt-0.5 text-xs text-sec">{ backendCapacityOutageDetail(outage, snapshot.GeneratedAt) }</p>
+						{{ detail, resumeAt, showResumeAt := backendCapacityOutageDetailParts(outage, snapshot.GeneratedAt) }}
+						<p class="mt-0.5 text-xs text-sec">
+							{ detail }
+							if showResumeAt {
+								{ " " }
+								@LocalTime(resumeAt, LocalTimeOptions{Relative: true})
+							}
+						</p>
 					</div>
 				}
 			</div>
@@ -2520,7 +2529,7 @@ templ lifetimeCard(totals telemetry.LifetimeTotals) {
 }
 
 templ LiveTick(timestamp time.Time) {
-	<span class="font-mono tabular-nums">{ timestamp.UTC().Format("15:04:05") }</span>
+	<span class="font-mono tabular-nums">@LocalTime(timestamp, LocalTimeOptions{Style: LocalTimeWithSeconds, Fallback: "--:--:--"})</span>
 }
 
 templ trackerDriftWarning(snapshot telemetry.Snapshot) {

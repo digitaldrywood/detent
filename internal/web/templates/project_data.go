@@ -58,7 +58,7 @@ type projectRunRow struct {
 	Context      string
 	ContextKind  primitives.Kind
 	ContextTitle string
-	Finished     string
+	FinishedAt   time.Time
 }
 
 // projectRunRows lists live sessions first, then completed sessions newest
@@ -81,7 +81,6 @@ func projectRunRows(snapshot telemetry.Snapshot, limit int) []projectRunRow {
 			Context:      contextPressureLabel(running.Tokens),
 			ContextKind:  contextPressureKind(running.Tokens),
 			ContextTitle: contextPressureTitle(running.Tokens),
-			Finished:     "—",
 		})
 	}
 
@@ -104,7 +103,7 @@ func projectRunRows(snapshot telemetry.Snapshot, limit int) []projectRunRow {
 			Context:      contextPressureLabel(session.Tokens),
 			ContextKind:  contextPressureKind(session.Tokens),
 			ContextTitle: contextPressureTitle(session.Tokens),
-			Finished:     projectRunFinishedLabel(session.CompletedAt),
+			FinishedAt:   session.CompletedAt,
 		})
 	}
 
@@ -126,13 +125,6 @@ func projectRunFinalState(state string) (primitives.Kind, string) {
 		return primitives.KindNeutral, "Cancelled"
 	}
 	return primitives.KindNeutral, state
-}
-
-func projectRunFinishedLabel(at time.Time) string {
-	if at.IsZero() {
-		return "—"
-	}
-	return at.UTC().Format("Jan 2 15:04")
 }
 
 // projectRepoURL resolves the project's external URL: the scoped snapshot

@@ -363,7 +363,7 @@ func apiKeyRow(key store.APIKey, now time.Time) (templates.APIKeyRow, bool) {
 		LastUsed:         lastUsed,
 		LastUsedClass:    lastUsedClass,
 		UnusedBadge:      unusedBadge,
-		Created:          key.CreatedAt.Format("Jan 2, 2006"),
+		CreatedAt:        key.CreatedAt,
 		SortCreated:      key.CreatedAt.UTC().Format(time.RFC3339),
 		SortLastUsed:     sortLastUsed,
 		AdminConfirmName: apikey.HasScope(key.Scopes, apikey.ScopeAdmin),

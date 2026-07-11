@@ -141,7 +141,7 @@ templ apiKeyTableRow(row APIKeyRow, data APIKeysData) {
 				<span class="ml-1 rounded-chip bg-elev px-1.5 py-0.5 text-2xs text-dim">unused</span>
 			}
 		</span>
-		<span class="font-mono text-xs text-sec">{ row.Created }</span>
+		<span class="font-mono text-xs text-sec">@LocalTime(row.CreatedAt, LocalTimeOptions{Style: LocalDateOnly, Fallback: "—"})</span>
 		<span class="flex justify-end gap-1.5">
 			<button
 				type="button"

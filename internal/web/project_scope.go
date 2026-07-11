@@ -395,7 +395,7 @@ func timeSeriesBuckets(now time.Time, window time.Duration, bucket time.Duration
 func timeSeriesLabels(buckets []time.Time) []string {
 	labels := make([]string, 0, len(buckets))
 	for _, bucket := range buckets {
-		labels = append(labels, bucket.UTC().Format("15:04"))
+		labels = append(labels, bucket.UTC().Format(time.RFC3339Nano))
 	}
 	return labels
 }

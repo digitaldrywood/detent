@@ -190,6 +190,7 @@ type workflowLaneTrendBucket struct {
 	totalSeconds int64
 	count        int64
 	label        string
+	end          time.Time
 }
 
 type workflowLaneTrendAccumulator struct {
@@ -526,6 +527,7 @@ func workflowLaneTrends(rows []workflowMetricRow, from time.Time, to time.Time) 
 			}
 			points = append(points, WorkflowLaneTrendPoint{
 				Label:          bucket.label,
+				BucketEnd:      bucket.end,
 				Count:          bucket.count,
 				AverageSeconds: averageSeconds,
 			})
@@ -553,6 +555,7 @@ func workflowLaneTrendBuckets(from time.Time, bucketDuration time.Duration, buck
 		bucketEnd := bucketStart.Add(bucketDuration)
 		buckets = append(buckets, workflowLaneTrendBucket{
 			label: workflowLaneTrendBucketLabel(bucketEnd, window),
+			end:   bucketEnd,
 		})
 	}
 	return buckets

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -232,6 +233,10 @@ func TestProjectTimeSeriesBucketsSamples(t *testing.T) {
 
 	if len(got.Labels) != 3 {
 		t.Fatalf("Labels len = %d, want 3: %#v", len(got.Labels), got.Labels)
+	}
+	wantLabels := []string{"2026-06-12T11:56:00Z", "2026-06-12T11:58:00Z", "2026-06-12T12:00:00Z"}
+	if !reflect.DeepEqual(got.Labels, wantLabels) {
+		t.Fatalf("Labels = %#v, want machine timestamps %#v", got.Labels, wantLabels)
 	}
 	if len(got.RunningAgents) != 2 {
 		t.Fatalf("RunningAgents len = %d, want 2: %#v", len(got.RunningAgents), got.RunningAgents)

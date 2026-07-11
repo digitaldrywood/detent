@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -316,7 +315,7 @@ func refreshRefusalFromRESTUsage(usage *telemetry.RESTUsage, now time.Time) (ref
 	}
 	retryAt := usage.BackoffUntil.UTC()
 	return refreshRefusal{
-		reason:  "GitHub REST backoff is active until " + refreshRefusalTimeLabel(retryAt) + ". Force refresh was refused to preserve hard rate-limit constraints.",
+		reason:  "GitHub REST backoff is active. Force refresh was refused to preserve hard rate-limit constraints.",
 		retryAt: &retryAt,
 	}, true
 }
@@ -330,7 +329,7 @@ func refreshRefusalFromBucket(name string, bucket *telemetry.RateLimitBucket, no
 	}
 	retryAt := bucket.ResetAt.UTC()
 	return refreshRefusal{
-		reason:  fmt.Sprintf("%s backoff is active until %s. Force refresh was refused to preserve hard rate-limit constraints.", name, refreshRefusalTimeLabel(retryAt)),
+		reason:  name + " backoff is active. Force refresh was refused to preserve hard rate-limit constraints.",
 		retryAt: &retryAt,
 	}, true
 }
@@ -353,13 +352,6 @@ func htmxRequest(c echo.Context) bool {
 	return strings.EqualFold(c.Request().Header.Get("HX-Request"), "true")
 }
 
-func refreshRefusalTimeLabel(value time.Time) string {
-	if value.IsZero() {
-		return "n/a"
-	}
-	return value.UTC().Format("Jan 2 15:04:05 UTC")
-}
-
 func refreshAttemptFromResponse(response RefreshResponse) *telemetry.RefreshAttempt {
 	return &telemetry.RefreshAttempt{
 		ID:          strings.TrimSpace(response.RequestID),
@@ -369,6 +361,7 @@ func refreshAttemptFromResponse(response RefreshResponse) *telemetry.RefreshAtte
 		Coalesced:   response.Coalesced,
 		LastError:   strings.TrimSpace(response.LastError),
 		LastErrorAt: cloneTimePtr(response.LastErrorAt),
+		RetryAt:     cloneTimePtr(response.RetryAt),
 	}
 }
 

@@ -1365,14 +1365,14 @@ func projectSmallMultipleSampleLabel(at time.Time) string {
 	if at.IsZero() {
 		return "latest"
 	}
-	return at.UTC().Format("15:04:05")
+	return localTimeToken(at, LocalTimeWithSeconds)
 }
 
 func generatedAtLabel(snapshot telemetry.Snapshot) string {
 	if snapshot.GeneratedAt.IsZero() {
 		return "Snapshot pending"
 	}
-	return "Updated " + snapshot.GeneratedAt.UTC().Format("Jan 2 15:04:05 UTC")
+	return "Updated " + localTimeToken(snapshot.GeneratedAt, LocalDateTimeSeconds)
 }
 
 func snapshotReadinessStatus(snapshot telemetry.Snapshot) telemetry.RefreshStatus {
@@ -1716,7 +1716,13 @@ func manualRefreshStatusDetail(attempt *telemetry.RefreshAttempt) string {
 		return "The forced refresh failed."
 	case telemetry.RefreshAttemptStatusRefused:
 		if err := sanitizeReadinessError(attempt.LastError); err != "" {
+			if attempt.RetryAt != nil && !attempt.RetryAt.IsZero() {
+				return err + " Retry at " + localTimeToken(*attempt.RetryAt, LocalTimeOnly) + "."
+			}
 			return err
+		}
+		if attempt.RetryAt != nil && !attempt.RetryAt.IsZero() {
+			return "Hard rate-limit backoff is active. Retry at " + localTimeToken(*attempt.RetryAt, LocalTimeOnly) + "."
 		}
 		return "Hard rate-limit backoff is active."
 	default:
@@ -1948,7 +1954,7 @@ func lastCodexMeta(row telemetry.Running) string {
 		parts = append(parts, row.LastEvent)
 	}
 	if row.LastEventAt != nil {
-		parts = append(parts, row.LastEventAt.UTC().Format("15:04:05 UTC"))
+		parts = append(parts, localTimeToken(*row.LastEventAt, LocalTimeWithSeconds))
 	}
 	return strings.Join(parts, " / ")
 }
@@ -2013,7 +2019,7 @@ func activityTimeLabel(at time.Time) string {
 	if at.IsZero() {
 		return "n/a"
 	}
-	return at.UTC().Format("15:04:05 UTC")
+	return localTimeToken(at, LocalTimeWithSeconds)
 }
 
 func activityValue(value string, fallback string) string {
@@ -3510,7 +3516,7 @@ func prPipelineLanes(snapshot telemetry.Snapshot) []prPipelineLane {
 			CountLabel:  formatCount(len(cardsByLane["done-today"])),
 			DotClass:    "bg-dim",
 			EmptyTitle:  "No PRs finished today.",
-			EmptyDetail: "Merged pull requests land here for the current UTC day.",
+			EmptyDetail: "Merged pull requests land here for the current day.",
 			Cards:       cardsByLane["done-today"],
 		},
 	}
@@ -3867,7 +3873,7 @@ func pullRequestHydrationWaitDetail(unavailableReason string, degradedReason str
 		return ""
 	}
 	if nextRetryAt != nil && !nextRetryAt.IsZero() {
-		detail += " until " + nextRetryAt.UTC().Format("15:04 UTC")
+		detail += " until " + localTimeToken(*nextRetryAt, LocalTimeOnly)
 	}
 	return detail
 }
@@ -4227,8 +4233,12 @@ func boardProgressChart(snapshot telemetry.Snapshot) SeriesChartData {
 	points := telemetry.BoardProgressPoints(snapshot)
 	chartPoints := make([]webchart.Point, 0, len(points))
 	for _, point := range points {
+		label := point.Label
+		if !point.At.IsZero() {
+			label = localTimeToken(point.At, LocalTimeOnly)
+		}
 		chartPoints = append(chartPoints, webchart.Point{
-			Label: point.Label,
+			Label: label,
 			Value: float64(point.Count),
 		})
 	}
@@ -4681,7 +4691,7 @@ func workflowLaneTrendCards(report telemetry.WorkflowMetrics) []workflowLaneTren
 		points := make([]webchart.Point, 0, len(trend.Points))
 		latestAverage := int64(0)
 		for _, point := range trend.Points {
-			points = append(points, webchart.Point{Label: point.Label, Value: float64(point.AverageSeconds)})
+			points = append(points, webchart.Point{Label: workflowLaneTrendPointLabel(point, window), Value: float64(point.AverageSeconds)})
 			if point.Count > 0 {
 				latestAverage = point.AverageSeconds
 			}
@@ -4708,6 +4718,21 @@ func workflowLaneTrendCards(report telemetry.WorkflowMetrics) []workflowLaneTren
 		})
 	}
 	return cards
+}
+
+func workflowLaneTrendPointLabel(point telemetry.WorkflowLaneTrendPoint, window telemetry.WorkflowMetricsWindow) string {
+	if point.BucketEnd.IsZero() {
+		return point.Label
+	}
+	span := window.To.Sub(window.From)
+	switch {
+	case span <= 48*time.Hour:
+		return localTimeToken(point.BucketEnd, LocalTimeOnly)
+	case span <= 14*24*time.Hour:
+		return localTimeToken(point.BucketEnd, LocalDateTime)
+	default:
+		return localTimeToken(point.BucketEnd, LocalDateOnly)
+	}
 }
 
 func workflowLaneFlowRows(report telemetry.WorkflowMetrics) []workflowLaneFlowRow {
@@ -5112,7 +5137,7 @@ func workflowDiagnosticWindowLabel(window telemetry.WorkflowMetricsWindow) strin
 	if window.From.IsZero() || window.To.IsZero() {
 		return label
 	}
-	return label + " (" + window.From.UTC().Format(time.RFC3339) + " to " + window.To.UTC().Format(time.RFC3339) + ")"
+	return label + " (" + localTimeISOString(window.From) + " to " + localTimeISOString(window.To) + ")"
 }
 
 func workflowDiagnosticTrend(metric telemetry.WorkflowPhaseMetric) string {
@@ -5251,7 +5276,7 @@ func workflowDiagnosticRepresentativeRunRows(metric telemetry.WorkflowPhaseMetri
 			parts = append(parts, "url="+strings.TrimSpace(representative.IssueURL))
 		}
 		if !representative.FinishedAt.IsZero() {
-			parts = append(parts, "finished_at="+representative.FinishedAt.UTC().Format(time.RFC3339))
+			parts = append(parts, "finished_at="+localTimeISOString(representative.FinishedAt))
 		}
 		if len(parts) == 0 {
 			parts = append(parts, "unknown representative run")
@@ -5370,7 +5395,7 @@ func timeLabel(value time.Time) string {
 	if value.IsZero() {
 		return "n/a"
 	}
-	return value.UTC().Format("Jan 2 15:04:05 UTC")
+	return localTimeToken(value, LocalDateTimeSeconds)
 }
 
 func agentTimelineRows(snapshot telemetry.Snapshot) []agentTimelineRow {
@@ -5945,7 +5970,7 @@ func latestBudgetPointAt(points []telemetry.BudgetSpendPoint) time.Time {
 }
 
 func budgetPeriodLabel(periodStart time.Time, periodEnd time.Time) string {
-	return periodStart.UTC().Format("Jan 2 15:04") + " - " + periodEnd.UTC().Format("Jan 2 15:04 UTC")
+	return localTimeToken(periodStart, LocalDateTime) + " - " + localTimeToken(periodEnd, LocalDateTime)
 }
 
 func budgetPointLabel(at time.Time) string {
@@ -5954,9 +5979,9 @@ func budgetPointLabel(at time.Time) string {
 	}
 	at = at.UTC()
 	if at.Second() == 0 {
-		return at.Format("15:04")
+		return localTimeToken(at, LocalTimeOnly)
 	}
-	return at.Format("15:04:05")
+	return localTimeToken(at, LocalTimeWithSeconds)
 }
 
 func budgetCapValue(cap *float64) float64 {
@@ -6234,6 +6259,10 @@ func backendCapacityOutageTitle(outage telemetry.BackendOutage) string {
 	if strings.TrimSpace(outage.Kind) == "github_rest_rate_limit" {
 		return "GitHub REST dispatch paused"
 	}
+	return "Backend " + backendCapacityBackendID(outage) + " at usage limit"
+}
+
+func backendCapacityBackendID(outage telemetry.BackendOutage) string {
 	backend := strings.TrimSpace(outage.BackendID)
 	if backend == "" {
 		backend = strings.TrimSpace(outage.BackendKind)
@@ -6241,19 +6270,40 @@ func backendCapacityOutageTitle(outage telemetry.BackendOutage) string {
 	if backend == "" {
 		backend = "agent backend"
 	}
-	return "Backend " + backend + " at usage limit"
+	return backend
 }
 
-func backendCapacityOutageDetail(outage telemetry.BackendOutage, now time.Time) string {
+func backendCapacityOutages(outages []telemetry.BackendOutage) []telemetry.BackendOutage {
+	unique := make([]telemetry.BackendOutage, 0, len(outages))
+	seen := make(map[string]struct{}, len(outages))
+	for _, outage := range outages {
+		resetAt := time.Time{}
+		if outage.ResetAt != nil {
+			resetAt = *outage.ResetAt
+		}
+		if resetAt.IsZero() {
+			resetAt = outage.ResumeAt
+		}
+		key := backendCapacityBackendID(outage) + "\x00" + localTimeISOString(resetAt)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, outage)
+	}
+	return unique
+}
+
+func backendCapacityOutageDetailParts(outage telemetry.BackendOutage, now time.Time) (string, time.Time, bool) {
 	if strings.TrimSpace(outage.Kind) == "github_rest_rate_limit" {
 		detail := strings.TrimSpace(outage.Reason)
 		if detail == "" {
 			detail = "The shared tracker account is at its REST dispatch floor"
 		}
 		if !outage.ResumeAt.IsZero() && outage.ResumeAt.After(now) {
-			return detail + "; resuming at " + outage.ResumeAt.UTC().Format("15:04 UTC")
+			return detail + "; resuming at", outage.ResumeAt, true
 		}
-		return detail + "; dispatch can resume now"
+		return detail + "; dispatch can resume now", time.Time{}, false
 	}
 	provider := strings.TrimSpace(outage.Provider)
 	detail := "Dispatch is paused"
@@ -6261,25 +6311,26 @@ func backendCapacityOutageDetail(outage telemetry.BackendOutage, now time.Time) 
 		detail += " for " + provider
 	}
 	if strings.TrimSpace(outage.ProbeIssueID) != "" {
-		return detail + "; capacity probe in progress"
+		return detail + "; capacity probe in progress", time.Time{}, false
 	}
 	if !outage.ResumeAt.IsZero() {
 		if outage.ResumeAt.After(now) {
-			return detail + "; resuming at " + outage.ResumeAt.UTC().Format("15:04 UTC")
+			return detail + "; resuming at", outage.ResumeAt, true
 		}
-		return detail + "; capacity probe due now"
+		return detail + "; capacity probe due now", time.Time{}, false
 	}
-	return detail + "; waiting for a low-frequency capacity probe"
+	return detail + "; waiting for a low-frequency capacity probe", time.Time{}, false
 }
 
 func backendCapacityHealthVerdict(snapshot telemetry.Snapshot) string {
-	if len(snapshot.BackendOutages) == 0 {
+	outages := backendCapacityOutages(snapshot.BackendOutages)
+	if len(outages) == 0 {
 		return ""
 	}
-	if len(snapshot.BackendOutages) == 1 {
-		return backendCapacityOutageTitle(snapshot.BackendOutages[0]) + "."
+	if len(outages) == 1 {
+		return backendCapacityOutageTitle(outages[0]) + "."
 	}
-	return formatCount(len(snapshot.BackendOutages)) + " agent backends are at usage limits."
+	return formatCount(len(outages)) + " agent backends are at usage limits."
 }
 
 func hasGraphQLBudget(limits *telemetry.RateLimits) bool {
@@ -6322,7 +6373,7 @@ func graphQLBudgetReset(limits *telemetry.RateLimits, now time.Time) string {
 		if !now.IsZero() && bucket.ResetAt.After(now) {
 			return formatDuration(bucket.ResetAt.Sub(now).Seconds()) + " to reset"
 		}
-		return bucket.ResetAt.UTC().Format("15:04 UTC")
+		return localTimeToken(*bucket.ResetAt, LocalTimeOnly)
 	}
 	return "n/a"
 }
@@ -6331,7 +6382,7 @@ func graphQLBudgetResetAt(limits *telemetry.RateLimits) string {
 	if limits == nil || limits.GitHubGraphQL == nil || limits.GitHubGraphQL.ResetAt == nil {
 		return "reset time n/a"
 	}
-	return "resets " + limits.GitHubGraphQL.ResetAt.UTC().Format("15:04 UTC")
+	return "resets " + localTimeToken(*limits.GitHubGraphQL.ResetAt, LocalTimeOnly)
 }
 
 func graphQLBudgetCycleCost(limits *telemetry.RateLimits) string {
@@ -6389,7 +6440,7 @@ func restBudgetReset(limits *telemetry.RateLimits, now time.Time) string {
 		if !now.IsZero() && bucket.ResetAt.After(now) {
 			return formatDuration(bucket.ResetAt.Sub(now).Seconds()) + " to reset"
 		}
-		return bucket.ResetAt.UTC().Format("15:04 UTC")
+		return localTimeToken(*bucket.ResetAt, LocalTimeOnly)
 	}
 	return "n/a"
 }
@@ -6398,7 +6449,7 @@ func restBudgetResetAt(limits *telemetry.RateLimits) string {
 	if limits == nil || limits.GitHubREST == nil || limits.GitHubREST.ResetAt == nil {
 		return "reset time n/a"
 	}
-	return "resets " + limits.GitHubREST.ResetAt.UTC().Format("15:04 UTC")
+	return "resets " + localTimeToken(*limits.GitHubREST.ResetAt, LocalTimeOnly)
 }
 
 func restBudgetRequestCount(limits *telemetry.RateLimits) string {
@@ -6440,7 +6491,7 @@ func restContributorReset(contributor telemetry.RESTUsageContributor) string {
 		return formatDuration(float64(contributor.RetryAfterMS)/1000) + " retry"
 	}
 	if contributor.ResetAt != nil {
-		return contributor.ResetAt.UTC().Format("15:04 UTC")
+		return localTimeToken(*contributor.ResetAt, LocalTimeOnly)
 	}
 	return "reset n/a"
 }
@@ -6913,14 +6964,14 @@ func gitHubAPIBackoffRetrySentence(snapshot telemetry.Snapshot) string {
 	}
 	usage := snapshot.RateLimits.RESTUsage
 	if gitHubAPIDeadlineActive(snapshot.GeneratedAt, usage.BackoffUntil) {
-		return "Retrying at " + usage.BackoffUntil.UTC().Format("15:04 UTC")
+		return "Retrying at " + localTimeToken(*usage.BackoffUntil, LocalTimeOnly)
 	}
 	for _, contributor := range usage.Contributors {
 		if !gitHubAPIContributorBackedOff(snapshot, contributor, usage.BackoffUntil) {
 			continue
 		}
 		if contributor.ResetAt != nil && gitHubAPIDeadlineActive(snapshot.GeneratedAt, contributor.ResetAt) {
-			return "Retrying at " + contributor.ResetAt.UTC().Format("15:04 UTC")
+			return "Retrying at " + localTimeToken(*contributor.ResetAt, LocalTimeOnly)
 		}
 		if contributor.RetryAfterMS > 0 {
 			return "Retrying after " + formatDuration(float64(contributor.RetryAfterMS)/1000)
@@ -6956,7 +7007,7 @@ func gitHubAPIExhaustedReset(limits *telemetry.RateLimits) string {
 	}
 	reset := gitHubAPIEarliestExhaustedReset(limits.GitHubREST, limits.GitHubGraphQL)
 	if reset != nil {
-		return "reset " + reset.UTC().Format("15:04 UTC")
+		return "reset " + localTimeToken(*reset, LocalTimeOnly)
 	}
 	return "reset time n/a"
 }
@@ -6977,7 +7028,7 @@ func gitHubAPIGraphQLBackoffReset(limits *telemetry.RateLimits) string {
 	}
 	bucket := limits.GitHubGraphQL
 	if bucket.ResetAt != nil {
-		return "retry " + bucket.ResetAt.UTC().Format("15:04 UTC")
+		return "retry " + localTimeToken(*bucket.ResetAt, LocalTimeOnly)
 	}
 	if bucket.ResetInSeconds > 0 {
 		return "retry in " + formatDuration(float64(bucket.ResetInSeconds))
@@ -6991,7 +7042,7 @@ func gitHubAPIWarningReset(limits *telemetry.RateLimits) string {
 	}
 	reset := gitHubAPIEarliestReset(limits.GitHubREST, limits.GitHubGraphQL)
 	if reset != nil {
-		return "next reset " + reset.UTC().Format("15:04 UTC")
+		return "next reset " + localTimeToken(*reset, LocalTimeOnly)
 	}
 	return "reset time n/a"
 }
@@ -7057,7 +7108,7 @@ func rateLimitBucketStatus(bucket *telemetry.RateLimitBucket) string {
 
 func gitHubAPIHealthBucketReset(bucket *telemetry.RateLimitBucket) string {
 	if bucket.ResetAt != nil {
-		return "reset " + bucket.ResetAt.UTC().Format("15:04 UTC")
+		return "reset " + localTimeToken(*bucket.ResetAt, LocalTimeOnly)
 	}
 	if bucket.ResetInSeconds > 0 {
 		return "reset in " + formatDuration(float64(bucket.ResetInSeconds))
@@ -7107,10 +7158,10 @@ func gitHubAPIEndpointStatus(contributor telemetry.RESTUsageContributor) string 
 
 func gitHubAPIEndpointRetry(snapshot telemetry.Snapshot, contributor telemetry.RESTUsageContributor, backoffUntil *time.Time) string {
 	if gitHubAPIDeadlineActive(snapshot.GeneratedAt, backoffUntil) {
-		return "retry " + backoffUntil.UTC().Format("15:04 UTC")
+		return "retry " + localTimeToken(*backoffUntil, LocalTimeOnly)
 	}
 	if gitHubAPIDeadlineActive(snapshot.GeneratedAt, contributor.ResetAt) {
-		return "reset " + contributor.ResetAt.UTC().Format("15:04 UTC")
+		return "reset " + localTimeToken(*contributor.ResetAt, LocalTimeOnly)
 	}
 	return "retry time n/a"
 }
@@ -7298,9 +7349,9 @@ func throughputTrendLabel(at time.Time) string {
 	}
 	at = at.UTC()
 	if at.Second() == 0 {
-		return at.Format("15:04")
+		return localTimeToken(at, LocalTimeOnly)
 	}
-	return at.Format("15:04:05")
+	return localTimeToken(at, LocalTimeWithSeconds)
 }
 
 func formatDuration(seconds float64) string {
@@ -7678,7 +7729,7 @@ func formatLimit(value int64) string {
 
 func resetLabel(bucket *telemetry.RateLimitBucket) string {
 	if bucket.ResetAt != nil {
-		return bucket.ResetAt.UTC().Format("15:04 UTC")
+		return localTimeToken(*bucket.ResetAt, LocalTimeOnly)
 	}
 	if bucket.ResetInSeconds > 0 {
 		return formatDuration(float64(bucket.ResetInSeconds))
@@ -7729,5 +7780,5 @@ func tokenTrendLabel(point telemetry.TokenTrendPoint) string {
 	if point.At.IsZero() {
 		return "Latest"
 	}
-	return point.At.UTC().Format("15:04")
+	return localTimeToken(point.At, LocalTimeOnly)
 }

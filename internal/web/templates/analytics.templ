@@ -48,7 +48,7 @@ templ AnalyticsSnapshotV2(data DashboardData) {
 				}
 				for i, row := range view.Rows {
 					<div id={ row.ID } class={ analyticsRowClass(i == len(view.Rows)-1) }>
-						<span class="font-mono text-xs text-sec tabular-nums">{ row.Time }</span>
+						<span class="font-mono text-xs text-sec tabular-nums">@LocalTime(row.At, LocalTimeOptions{Style: LocalTimeWithSeconds, Fallback: "—"})</span>
 						<span class="whitespace-normal text-xs text-text md:truncate">{ row.Event }</span>
 						<span class="truncate font-mono text-xs text-sec">{ row.Project }</span>
 						@primitives.TrackerReferenceLink(row.Ref, row.URL, "whitespace-nowrap font-mono text-xs font-medium text-text tabular-nums")

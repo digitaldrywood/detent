@@ -3,6 +3,7 @@ package templates
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/a-h/templ"
 
@@ -48,7 +49,7 @@ type APIKeyRow struct {
 	LastUsed         string
 	LastUsedClass    string
 	UnusedBadge      bool
-	Created          string
+	CreatedAt        time.Time
 	SortCreated      string
 	SortLastUsed     string
 	AdminConfirmName bool

@@ -62,19 +62,19 @@ func TestHealthPageRendersGitHubAPIHealthDetails(t *testing.T) {
 		"GitHub secondary throttle active for pull requests/check runs",
 		"Primary REST quota is healthy: 4,878/5,000 remaining",
 		"GitHub secondary endpoint throttle is active for pull requests/check runs.",
-		"Retrying at 14:35 UTC",
+		"Retrying at {{detent-time:time:2026-06-25T14:35:00Z}}",
 		"REST primary",
 		"GraphQL primary",
 		"4,878 / 5,000 remaining",
 		"4,880 / 5,000 remaining",
 		"Last tracker refresh",
-		"14:29:30 UTC",
+		"{{detent-time:date-time-seconds:2026-06-25T14:29:30Z}}",
 		"Next tracker refresh",
-		"14:31:30 UTC",
+		"{{detent-time:date-time-seconds:2026-06-25T14:31:30Z}}",
 		"pull requests",
 		"check runs",
 		"429",
-		"retry 14:35 UTC",
+		"retry {{detent-time:time:2026-06-25T14:35:00Z}}",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("health page missing GitHub API health marker %q:\n%s", want, html)
@@ -226,6 +226,53 @@ func TestProjectDiagnosticsPageRendersTabbedOperationsView(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("project diagnostics page missing %q:\n%s", want, html)
 		}
+	}
+}
+
+func TestHealthPageRendersOneClientLocalCapacityNotice(t *testing.T) {
+	t.Parallel()
+
+	generatedAt := time.Date(2026, 7, 10, 16, 52, 0, 0, time.UTC)
+	resumeAt := time.Date(2026, 7, 10, 17, 44, 0, 0, time.UTC)
+	outage := telemetry.BackendOutage{
+		BackendID: "openai",
+		Reason:    "usage limit reached",
+		ResetAt:   &resumeAt,
+		ResumeAt:  resumeAt,
+	}
+	duplicate := outage
+	duplicate.ResumeAt = resumeAt.Add(time.Minute)
+	html := renderHealthPageV2(t, templates.DashboardData{
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt:    generatedAt,
+			BackendOutages: []telemetry.BackendOutage{outage, duplicate},
+		},
+	})
+
+	start := strings.Index(html, `id="backend-capacity-outage"`)
+	if start < 0 {
+		t.Fatalf("capacity banner missing:\n%s", html)
+	}
+	banner := html[start:]
+	var found bool
+	banner, _, found = strings.Cut(banner, "</section>")
+	if !found {
+		t.Fatalf("capacity banner closing tag missing:\n%s", html)
+	}
+	if got := strings.Count(banner, "Backend openai at usage limit"); got != 1 {
+		t.Fatalf("capacity notices = %d, want 1:\n%s", got, html)
+	}
+	for _, want := range []string{
+		`data-local-time`,
+		`datetime="2026-07-10T17:44:00Z"`,
+		`data-local-time-relative="true"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("capacity notice missing %q:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, "17:44 UTC") {
+		t.Fatalf("capacity notice rendered a UTC wall clock:\n%s", html)
 	}
 }
 
@@ -550,6 +597,16 @@ func renderHealthPage(t *testing.T, data templates.DashboardData) string {
 
 	var buf bytes.Buffer
 	if err := templates.HealthPage(data).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	return buf.String()
+}
+
+func renderHealthPageV2(t *testing.T, data templates.DashboardData) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	if err := templates.HealthPageV2(data).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("Render() error = %v", err)
 	}
 	return buf.String()

@@ -29,6 +29,7 @@ func (t *manualRefreshTracker) recordResponse(response RefreshResponse) {
 		Coalesced:   response.Coalesced,
 		LastError:   strings.TrimSpace(response.LastError),
 		LastErrorAt: cloneTimePtr(response.LastErrorAt),
+		RetryAt:     cloneTimePtr(response.RetryAt),
 	}
 	if attempt.Status == "" {
 		if response.Refused {
@@ -150,6 +151,7 @@ func cloneRefreshAttemptPtr(attempt *telemetry.RefreshAttempt) *telemetry.Refres
 	cloned.StartedAt = cloneTimePtr(attempt.StartedAt)
 	cloned.CompletedAt = cloneTimePtr(attempt.CompletedAt)
 	cloned.LastErrorAt = cloneTimePtr(attempt.LastErrorAt)
+	cloned.RetryAt = cloneTimePtr(attempt.RetryAt)
 	cloned.Operations = append([]string(nil), attempt.Operations...)
 	return &cloned
 }

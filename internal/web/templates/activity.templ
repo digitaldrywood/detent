@@ -2,7 +2,6 @@ package templates
 
 import (
 	"strconv"
-	"time"
 )
 
 templ BoardActivityTabs(activity BoardActivityData, session BoardSessionData) {
@@ -78,7 +77,7 @@ templ BoardActivityContent(data BoardActivityData) {
 					<div class="min-w-0">
 						<div class="flex items-start justify-between gap-3">
 							<p class="text-xs font-medium text-text">{ event.Title }</p>
-							<time class="flex-none font-mono text-2xs text-dim" datetime={ event.At.Format(time.RFC3339) }>{ boardActivityTime(event) }</time>
+							<span class="flex-none font-mono text-2xs text-dim">@LocalTime(event.At, LocalTimeOptions{Style: LocalDateTimeSeconds, Fallback: "now"})</span>
 						</div>
 						if event.Detail != "" {
 							<p class="mt-0.5 break-words text-xs text-sec">{ event.Detail }</p>
@@ -189,7 +188,7 @@ templ BoardLiveSessionEvent(event BoardSessionEvent) {
 	<div class="mb-3 min-w-0 border-l-2 border-line pl-3 last:mb-0" data-session-event={ event.ID }>
 		<div class="flex items-center justify-between gap-3 text-2xs text-dim">
 			<span class="truncate">{ event.Title }</span>
-			<time class="flex-none" datetime={ event.At.Format(time.RFC3339) }>{ boardActivityTime(BoardActivityEvent{At: event.At}) }</time>
+			<span class="flex-none">@LocalTime(event.At, LocalTimeOptions{Style: LocalDateTimeSeconds, Fallback: "now"})</span>
 		</div>
 		if event.Content != "" {
 			if event.Truncated || len(event.Content) > 4000 {

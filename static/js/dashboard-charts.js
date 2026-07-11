@@ -8,6 +8,10 @@
     "rgb(147, 51, 234)",
   ];
   const refreshMillis = 5000;
+  const timeFormatter = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
 
   function color(index) {
     return chartColors[index % chartColors.length];
@@ -54,6 +58,13 @@
     chart.update("none");
   }
 
+  function localTimeLabels(labels) {
+    return (labels || []).map(function (label) {
+      const value = new Date(label);
+      return Number.isNaN(value.getTime()) ? label : timeFormatter.format(value);
+    });
+  }
+
   async function refresh(root, charts) {
     const endpoint = root.dataset.chartEndpoint;
     if (!endpoint) {
@@ -64,7 +75,7 @@
       return;
     }
     const payload = await response.json();
-    const labels = payload.labels || [];
+    const labels = localTimeLabels(payload.labels);
 
     if (charts.running) {
       applyDatasets(charts.running, labels, (payload.running_agents || []).map(function (raw, index) {

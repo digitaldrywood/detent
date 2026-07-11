@@ -72,6 +72,8 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot = demoGitHubAPISecondaryBackoffSnapshot()
 	case "github-api-primary-exhausted":
 		snapshot = demoGitHubAPIPrimaryExhaustedSnapshot()
+	case "backend-capacity-outage":
+		snapshot = demoBackendCapacityOutageSnapshot()
 	}
 	if variant == "terminal" {
 		snapshot.BoardIssues = append(snapshot.BoardIssues, demoIssue(demoPrimaryProjectID, "demo-cancelled", "digitaldrywood/detent-core#5259", "Cancelled alternate dashboard theme", "Cancelled", 48))
@@ -342,6 +344,20 @@ func demoGitHubAPIPrimaryExhaustedSnapshot() telemetry.Snapshot {
 	snapshot.RateLimits.GitHubREST = &telemetry.RateLimitBucket{Remaining: 0, Used: 5000, Limit: 5000, ResetAt: demoTimePtr(now.Add(30 * time.Minute)), ResetInSeconds: 1800}
 	snapshot.RateLimits.GitHubGraphQL = &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: demoTimePtr(now.Add(42 * time.Minute)), ResetInSeconds: 2520}
 	snapshot.RateLimits.RESTUsage = &telemetry.RESTUsage{TotalRequests: 5000, Contributors: []telemetry.RESTUsageContributor{{EndpointFamily: "issues", Count: 4400, Remaining: 0, Limit: 5000}, {EndpointFamily: "pull requests", Count: 600, Remaining: 0, Limit: 5000}}}
+	return snapshot
+}
+
+func demoBackendCapacityOutageSnapshot() telemetry.Snapshot {
+	snapshot := demoHealthySnapshot()
+	snapshot.GeneratedAt = time.Date(2026, 7, 10, 16, 52, 0, 0, time.UTC)
+	resumeAt := time.Date(2026, 7, 10, 17, 44, 0, 0, time.UTC)
+	outage := telemetry.BackendOutage{
+		BackendID: "openai",
+		Provider:  "openai",
+		Reason:    "provider usage limit reached",
+		ResumeAt:  resumeAt,
+	}
+	snapshot.BackendOutages = []telemetry.BackendOutage{outage, outage}
 	return snapshot
 }
 

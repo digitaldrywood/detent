@@ -155,7 +155,7 @@ func kanbanConversationCommentCreatedTitle(value *time.Time) string {
 	if value == nil || value.IsZero() {
 		return ""
 	}
-	return value.UTC().Format(time.RFC3339)
+	return localTimeISOString(*value)
 }
 
 func kanbanConversationCommentBackend(value string) string {

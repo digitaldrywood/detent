@@ -152,6 +152,7 @@ type RefreshAttempt struct {
 	Coalesced   bool                 `json:"coalesced,omitempty"`
 	LastError   string               `json:"last_error,omitempty"`
 	LastErrorAt *time.Time           `json:"last_error_at,omitempty"`
+	RetryAt     *time.Time           `json:"retry_at,omitempty"`
 }
 
 func (a RefreshAttempt) IsZero() bool {
@@ -163,7 +164,8 @@ func (a RefreshAttempt) IsZero() bool {
 		len(a.Operations) == 0 &&
 		!a.Coalesced &&
 		strings.TrimSpace(a.LastError) == "" &&
-		a.LastErrorAt == nil
+		a.LastErrorAt == nil &&
+		a.RetryAt == nil
 }
 
 func (r Refresh) ReadinessStatus() RefreshStatus {
@@ -820,9 +822,10 @@ type WorkflowLaneTrend struct {
 }
 
 type WorkflowLaneTrendPoint struct {
-	Label          string `json:"label"`
-	Count          int64  `json:"count"`
-	AverageSeconds int64  `json:"average_seconds"`
+	Label          string    `json:"label"`
+	BucketEnd      time.Time `json:"bucket_end,omitzero"`
+	Count          int64     `json:"count"`
+	AverageSeconds int64     `json:"average_seconds"`
 }
 
 type WorkflowMetricComparison struct {

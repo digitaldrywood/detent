@@ -174,6 +174,7 @@ func workflowLaneTrendsFromStore(trends []store.WorkflowLaneTrend) []telemetry.W
 		for _, point := range trend.Points {
 			points = append(points, telemetry.WorkflowLaneTrendPoint{
 				Label:          point.Label,
+				BucketEnd:      point.BucketEnd,
 				Count:          point.Count,
 				AverageSeconds: point.AverageSeconds,
 			})

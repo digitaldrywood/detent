@@ -1,0 +1,143 @@
+package templates
+
+import "time"
+
+templ LocalTime(value time.Time, options LocalTimeOptions) {
+	if value.IsZero() {
+		{ localTimeFallback(options) }
+	} else {
+		<time
+			datetime={ localTimeISOString(value) }
+			title={ localTimeISOString(value) }
+			data-local-time
+			data-local-time-style={ localTimeStyle(options) }
+			if options.Relative {
+				data-local-time-relative="true"
+			}
+		>{ localTimeFallback(options) }</time>
+	}
+}
+
+templ localTimeScript() {
+	<script>
+		(function () {
+			var selector = "time[data-local-time][datetime]";
+			var tokenPattern = /\{\{detent-time:([a-z-]+):([^}]+)\}\}/g;
+			var formatters = new Map();
+			var relativeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto", style: "short" });
+
+			function optionsFor(style) {
+				switch (style) {
+				case "time-seconds":
+					return { hour: "numeric", minute: "2-digit", second: "2-digit" };
+				case "date":
+					return { year: "numeric", month: "short", day: "numeric" };
+				case "date-time":
+					return { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" };
+				case "date-time-seconds":
+					return { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" };
+				default:
+					return { hour: "numeric", minute: "2-digit" };
+				}
+			}
+
+			function formatterFor(style) {
+				if (!formatters.has(style)) {
+					formatters.set(style, new Intl.DateTimeFormat(undefined, optionsFor(style)));
+				}
+				return formatters.get(style);
+			}
+
+			function relativeLabel(value) {
+				var seconds = Math.round((value.getTime() - Date.now()) / 1000);
+				var absolute = Math.abs(seconds);
+				if (absolute < 90) return relativeFormatter.format(seconds, "second");
+				if (absolute < 90 * 60) return relativeFormatter.format(Math.round(seconds / 60), "minute");
+				if (absolute < 36 * 60 * 60) return relativeFormatter.format(Math.round(seconds / 3600), "hour");
+				return relativeFormatter.format(Math.round(seconds / 86400), "day");
+			}
+
+			function upgrade(element) {
+				var value = new Date(element.getAttribute("datetime") || "");
+				if (Number.isNaN(value.getTime())) return;
+				var style = element.getAttribute("data-local-time-style") || "time";
+				var label = formatterFor(style).format(value);
+				if (element.getAttribute("data-local-time-relative") === "true") {
+					label += " (" + relativeLabel(value) + ")";
+				}
+				element.textContent = label;
+				element.setAttribute("title", value.toISOString());
+			}
+
+			function formattedToken(style, rawValue) {
+				var value = new Date(rawValue);
+				if (Number.isNaN(value.getTime())) return rawValue;
+				return formatterFor(style).format(value);
+			}
+
+			function upgradeTextNode(node) {
+				var value = node.nodeValue || "";
+				tokenPattern.lastIndex = 0;
+				if (!tokenPattern.test(value)) return;
+				tokenPattern.lastIndex = 0;
+				if (node.parentElement && node.parentElement.closest("svg")) {
+					node.nodeValue = value.replace(tokenPattern, function (_, style, rawValue) {
+						return formattedToken(style, rawValue);
+					});
+					return;
+				}
+				var fragment = document.createDocumentFragment();
+				var offset = 0;
+				var match;
+				while ((match = tokenPattern.exec(value)) !== null) {
+					fragment.append(value.slice(offset, match.index));
+					var element = document.createElement("time");
+					element.setAttribute("datetime", match[2]);
+					element.setAttribute("title", match[2]);
+					element.setAttribute("data-local-time", "");
+					element.setAttribute("data-local-time-style", match[1]);
+					upgrade(element);
+					fragment.append(element);
+					offset = tokenPattern.lastIndex;
+				}
+				fragment.append(value.slice(offset));
+				node.replaceWith(fragment);
+			}
+
+			function upgradeTokens(scope) {
+				var walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+				var nodes = [];
+				while (walker.nextNode()) {
+					var parent = walker.currentNode.parentElement;
+					if (!parent || parent.closest("script, style, time[data-local-time]")) continue;
+					nodes.push(walker.currentNode);
+				}
+				nodes.forEach(upgradeTextNode);
+				var elements = scope instanceof Element ? [scope].concat(Array.from(scope.querySelectorAll("[title], [aria-label]"))) : Array.from(scope.querySelectorAll("[title], [aria-label]"));
+				elements.forEach(function (element) {
+					["title", "aria-label"].forEach(function (attribute) {
+						var value = element.getAttribute(attribute) || "";
+						tokenPattern.lastIndex = 0;
+						if (!tokenPattern.test(value)) return;
+						tokenPattern.lastIndex = 0;
+						element.setAttribute(attribute, value.replace(tokenPattern, function (_, style, rawValue) {
+							return formattedToken(style, rawValue);
+						}));
+					});
+				});
+			}
+
+			function upgradeAll(root) {
+				var scope = root && typeof root.querySelectorAll === "function" ? root : document;
+				upgradeTokens(scope);
+				if (scope instanceof Element && scope.matches(selector)) upgrade(scope);
+				scope.querySelectorAll(selector).forEach(upgrade);
+			}
+
+			document.addEventListener("DOMContentLoaded", function () { upgradeAll(document); });
+			document.addEventListener("htmx:afterSettle", function (event) { upgradeAll(event.target); });
+			window.__detentLocalTimeUpgrade = upgradeAll;
+			upgradeAll(document);
+		})();
+	</script>
+}

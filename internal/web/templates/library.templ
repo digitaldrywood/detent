@@ -111,7 +111,7 @@ templ libraryTableRow(row LibraryRow) {
 				<span class="min-w-0 truncate text-2xs text-dim" title={ libraryRowTitle(row) }>{ libraryRowTitle(row) }</span>
 			}
 		</div>
-		<span class="font-mono text-xs text-sec tabular-nums" title={ libraryTimeLabel(row.UpdatedAt) }>{ libraryTimeLabel(row.UpdatedAt) }</span>
+		<span class="font-mono text-xs text-sec tabular-nums">@LocalTime(row.UpdatedAt, LocalTimeOptions{Style: LocalDateTime, Fallback: "n/a"})</span>
 		<span class="flex justify-end gap-1.5">
 			if libraryHasSafeURL(row.ReviewURL) {
 				<a href={ librarySafeURL(row.ReviewURL) } target="_blank" rel="noopener noreferrer" class="rounded-chip border border-line p-1.5 text-sec hover:border-accent hover:text-accent" aria-label={ "Open review for " + libraryPathLabel(row) } title="Open review">

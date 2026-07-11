@@ -27,6 +27,7 @@ templ AppShell(data DashboardShellData, scope templ.Component) {
 			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
 			<script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"></script>
 			<script src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"></script>
+			@localTimeScript()
 			@dashboardSSEMetricsScript()
 			if data.IncludeDashboardCharts {
 				<script src={ chartJSPath(data.Assets) } defer></script>
@@ -202,7 +203,7 @@ templ appTopbar(data DashboardShellData, scope templ.Component) {
 			<div id="live-indicator" class="flex flex-none items-center gap-2 text-xs text-sec" data-live-indicator>
 				@primitives.StatusDot(primitives.KindOK, true)
 				<span data-live-label>Live ·</span>
-				<span id="live-clock" class="font-mono tabular-nums" sse-swap="tick" hx-swap="innerHTML">{ appShellSnapshotClock(data) }</span>
+				<span id="live-clock" class="font-mono tabular-nums" sse-swap="tick" hx-swap="innerHTML">@LocalTime(data.Snapshot.GeneratedAt, LocalTimeOptions{Style: LocalTimeWithSeconds, Fallback: "--:--:--"})</span>
 			</div>
 			<div class="flex w-fit overflow-hidden rounded-card border border-line" role="group" aria-label="Density">
 				<button type="button" class={ appDensityButtonClass(data, "compact") } data-density-choice="compact" aria-pressed={ appDensityPressed(data, "compact") }>Compact</button>

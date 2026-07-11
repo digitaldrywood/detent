@@ -37,7 +37,7 @@ func TestReportsReleaseView(t *testing.T) {
 		{ProjectID: "other", Enabled: true, LastRelease: "v9.0.0"},
 		{ProjectID: "detent", Enabled: true, State: "waiting", LastRelease: "v1.2.3", UnreleasedMerges: 3, NextTriggerAt: &next},
 	}}})
-	if !view.Available || view.Last != "v1.2.3" || view.Merges != "3" || view.Next != "Jul 11 12:00 UTC" || view.State != "waiting" {
+	if !view.Available || view.Last != "v1.2.3" || view.Merges != "3" || view.Next != localTimeToken(next, LocalDateTime) || view.State != "waiting" {
 		t.Fatalf("reportsReleaseView() = %#v", view)
 	}
 }

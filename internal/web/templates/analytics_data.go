@@ -23,7 +23,6 @@ type analyticsView struct {
 type analyticsRow struct {
 	ID       string
 	At       time.Time
-	Time     string
 	Event    string
 	Project  string
 	Ref      string
@@ -83,7 +82,6 @@ func analyticsAttemptRows(snapshot telemetry.Snapshot) []analyticsRow {
 		rows = append(rows, analyticsRow{
 			ID:       "event-attempt-" + strconv.FormatInt(attempt.AttemptID, 10),
 			At:       at,
-			Time:     analyticsClock(at),
 			Event:    "Work attempt",
 			Project:  strings.TrimSpace(attempt.ProjectID),
 			Ref:      analyticsRef(attempt.Identifier),
@@ -150,7 +148,6 @@ func analyticsActivityRows(snapshot telemetry.Snapshot) []analyticsRow {
 		rows = append(rows, analyticsRow{
 			ID:       "event-activity-" + strconv.Itoa(i),
 			At:       event.At,
-			Time:     analyticsClock(event.At),
 			Event:    analyticsEventLabel(event.Event),
 			Kind:     primitives.KindNeutral,
 			Decision: "recorded",
@@ -166,13 +163,6 @@ func analyticsEventLabel(event string) string {
 		return "Activity"
 	}
 	return strings.ReplaceAll(event, "_", " ")
-}
-
-func analyticsClock(at time.Time) string {
-	if at.IsZero() {
-		return "—"
-	}
-	return at.UTC().Format("15:04:05")
 }
 
 func analyticsRef(identifier string) string {

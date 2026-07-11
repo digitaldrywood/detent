@@ -1489,7 +1489,8 @@ func TestBoardSnapshotRendersBackendCapacityBanner(t *testing.T) {
 	for _, want := range []string{
 		`id="backend-capacity-outage"`,
 		"Backend codex at usage limit",
-		"Dispatch is paused for openai; resuming at 17:26 UTC",
+		"Dispatch is paused for openai; resuming at",
+		`datetime="2026-07-04T17:26:07Z"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("capacity banner missing %q:\n%s", want, html)
@@ -1513,11 +1514,16 @@ func TestBoardSnapshotRendersGitHubRESTCapacityBanner(t *testing.T) {
 	for _, want := range []string{
 		`id="backend-capacity-outage"`,
 		"GitHub REST dispatch paused",
-		"GitHub REST remaining 0 is at or below dispatch floor 1000; resuming at 17:26 UTC",
+		"GitHub REST remaining 0 is at or below dispatch floor 1000; resuming at",
+		`datetime="2026-07-04T17:26:07Z"`,
+		`data-local-time`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("GitHub REST capacity banner missing %q:\n%s", want, html)
 		}
+	}
+	if strings.Contains(html, "17:26 UTC") {
+		t.Fatalf("GitHub REST capacity banner rendered a UTC wall clock:\n%s", html)
 	}
 }
 

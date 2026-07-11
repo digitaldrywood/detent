@@ -261,8 +261,8 @@ func TestAppShellSnapshotClock(t *testing.T) {
 	}
 	at := time.Date(2026, 7, 4, 16, 42, 7, 0, time.UTC)
 	data := DashboardShellData{Snapshot: telemetry.Snapshot{GeneratedAt: at}}
-	if got := appShellSnapshotClock(data); got != "16:42:07" {
-		t.Fatalf("snapshot clock = %q, want 16:42:07", got)
+	if got := appShellSnapshotClock(data); got != localTimeToken(at, LocalTimeWithSeconds) {
+		t.Fatalf("snapshot clock = %q, want client-local token", got)
 	}
 }
 
