@@ -773,7 +773,7 @@ func (o *Orchestrator) dispatchTickIssues(
 ) {
 	issues := filterCompletedEpicCandidates(fetched.candidates, completedEpics)
 	planner := o.dispatchPlanner()
-	planner.pruneBudgetRefusals(state, now)
+	o.pruneBudgetRefusals(ctx, state, now)
 	planner.trackBlockedCandidates(state, issues, now)
 	candidateBlockedStatusIssues := issuesInStates(fetched.candidates, []string{blockedStatusState})
 	if fetched.statusOK {

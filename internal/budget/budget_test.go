@@ -239,6 +239,70 @@ func TestCheckerCheckDispatch(t *testing.T) {
 	}
 }
 
+func TestCheckerDailyStatus(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 11, 15, 0, 0, 0, time.UTC)
+	pricing := PricingTable{"gpt-test": {USDPerInputToken: 0.01}}
+	tests := []struct {
+		name      string
+		cfg       Config
+		spend     *fakeSpendStore
+		want      DailyStatus
+		wantError string
+		wantCalls int
+	}{
+		{
+			name:  "disabled budget is inactive",
+			spend: &fakeSpendStore{},
+		},
+		{
+			name:  "missing daily cap is inactive",
+			cfg:   Config{Enabled: true},
+			spend: &fakeSpendStore{},
+		},
+		{
+			name: "active cap reports live spend",
+			cfg:  Config{Enabled: true, PerDayMaxUSD: 2.5},
+			spend: &fakeSpendStore{daily: store.TokenSpend{
+				ByModel: []store.ModelTokenSpend{{Model: "gpt-test", InputTokens: 25}},
+			}},
+			want:      DailyStatus{Active: true, CurrentSpendUSD: 0.25, MaxUSD: 2.5},
+			wantCalls: 1,
+		},
+		{
+			name:      "spend lookup failure is returned",
+			cfg:       Config{Enabled: true, PerDayMaxUSD: 2.5},
+			spend:     &fakeSpendStore{dailyErr: errors.New("lookup failed")},
+			wantError: "daily token spend: lookup failed",
+			wantCalls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			checker := NewChecker(tt.cfg, tt.spend, pricing)
+			got, err := checker.DailyStatus(context.Background(), now)
+			if tt.wantError != "" {
+				if err == nil || err.Error() != tt.wantError {
+					t.Fatalf("DailyStatus() error = %v, want %q", err, tt.wantError)
+				}
+			} else if err != nil {
+				t.Fatalf("DailyStatus() error = %v", err)
+			}
+			if got.Active != tt.want.Active || got.MaxUSD != tt.want.MaxUSD {
+				t.Fatalf("DailyStatus() = %#v, want %#v", got, tt.want)
+			}
+			assertInDelta(t, got.CurrentSpendUSD, tt.want.CurrentSpendUSD)
+			if tt.spend.dailyCalls != tt.wantCalls {
+				t.Fatalf("DailyTokenSpend calls = %d, want %d", tt.spend.dailyCalls, tt.wantCalls)
+			}
+		})
+	}
+}
+
 func TestCheckerUsesDefaultEstimate(t *testing.T) {
 	t.Parallel()
 

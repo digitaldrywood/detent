@@ -327,6 +327,122 @@ func TestDispatchableFiltersIneligibleCandidates(t *testing.T) {
 	}
 }
 
+func TestPruneBudgetRefusalsReevaluatesDailyCap(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 11, 15, 0, 0, 0, time.UTC)
+	resetAt := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		refusal    BudgetRefusal
+		status     DailyBudgetStatus
+		statusErr  error
+		wantActive bool
+	}{
+		{
+			name: "cap raise clears resolved daily refusal",
+			refusal: BudgetRefusal{
+				Code:             "per_day_max_usd",
+				ProjectedCostUSD: 10,
+				ResetAt:          &resetAt,
+				RefusedAt:        now,
+			},
+			status: DailyBudgetStatus{Active: true, CurrentSpendUSD: 100, MaxUSD: 250},
+		},
+		{
+			name: "cap raise keeps daily refusal when projected spend remains over cap",
+			refusal: BudgetRefusal{
+				Code:             "per_day_max_usd",
+				ProjectedCostUSD: 10,
+				ResetAt:          &resetAt,
+				RefusedAt:        now,
+			},
+			status:     DailyBudgetStatus{Active: true, CurrentSpendUSD: 245, MaxUSD: 250},
+			wantActive: true,
+		},
+		{
+			name: "unchanged cap keeps daily refusal until midnight",
+			refusal: BudgetRefusal{
+				Code:             "per_day_max_usd",
+				ProjectedCostUSD: 10,
+				ResetAt:          &resetAt,
+				RefusedAt:        now,
+			},
+			status:     DailyBudgetStatus{Active: true, CurrentSpendUSD: 100, MaxUSD: 100},
+			wantActive: true,
+		},
+		{
+			name: "disabled daily cap clears daily refusal",
+			refusal: BudgetRefusal{
+				Code:             "per_day_max_usd",
+				ProjectedCostUSD: 10,
+				ResetAt:          &resetAt,
+				RefusedAt:        now,
+			},
+		},
+		{
+			name: "status lookup failure preserves daily refusal",
+			refusal: BudgetRefusal{
+				Code:             "per_day_max_usd",
+				ProjectedCostUSD: 10,
+				ResetAt:          &resetAt,
+				RefusedAt:        now,
+			},
+			statusErr:  errors.New("lookup failed"),
+			wantActive: true,
+		},
+		{
+			name: "per issue refusal keeps cooldown behavior",
+			refusal: BudgetRefusal{
+				Code:      "per_issue_max_usd",
+				RefusedAt: now.Add(-30 * time.Minute),
+			},
+			status:     DailyBudgetStatus{Active: true, CurrentSpendUSD: 0, MaxUSD: 1000},
+			wantActive: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{BudgetRefusalCooldown: time.Hour})
+			state := newState(cfg)
+			state.BudgetRefusals["issue"] = tt.refusal
+			orch := Orchestrator{
+				cfg: cfg,
+				dailyBudgetStatus: fakeDailyBudgetStatusProvider{
+					status: tt.status,
+					err:    tt.statusErr,
+				},
+			}
+
+			orch.dispatchTickIssues(
+				context.Background(),
+				&state,
+				tickFetchedIssues{statusOK: true},
+				tickTransitionRefresh{blockedRefreshOK: true},
+				tickPreviousState{},
+				nil,
+				now,
+			)
+			_, gotActive := state.BudgetRefusals["issue"]
+			if gotActive != tt.wantActive {
+				t.Fatalf("budget refusal active = %t, want %t", gotActive, tt.wantActive)
+			}
+		})
+	}
+}
+
+type fakeDailyBudgetStatusProvider struct {
+	status DailyBudgetStatus
+	err    error
+}
+
+func (p fakeDailyBudgetStatusProvider) DailyBudgetStatus(context.Context, time.Time) (DailyBudgetStatus, bool, error) {
+	return p.status, true, p.err
+}
+
 func TestDispatchableSkipsAutoPromoteGatePendingActiveIssue(t *testing.T) {
 	t.Parallel()
 

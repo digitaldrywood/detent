@@ -44,7 +44,7 @@ func TestDispatchParityWithElixirRecordedCandidateSets(t *testing.T) {
 
 			candidates := parityIssues(t, tt.Candidates)
 			sortIssuesForDispatch(candidates, cfg.DispatchPriorityByState, cfg.DispatchPriorityByLabel, cfg.PrioritizeUnblockers)
-			orch.pruneBudgetRefusals(&state, now)
+			orch.pruneBudgetRefusals(context.Background(), &state, now)
 			orch.trackBlockedCandidates(&state, candidates, now)
 
 			gotOrder := parityDispatchOrder(&orch, state.clone(), candidates, now)

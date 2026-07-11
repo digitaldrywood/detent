@@ -47,6 +47,16 @@ type WorkspaceReaper interface {
 	ReapWorkspace(context.Context, connector.Issue) (WorkspaceReapResult, error)
 }
 
+type DailyBudgetStatusProvider interface {
+	DailyBudgetStatus(context.Context, time.Time) (DailyBudgetStatus, bool, error)
+}
+
+type DailyBudgetStatus struct {
+	Active          bool
+	CurrentSpendUSD float64
+	MaxUSD          float64
+}
+
 type WorkspaceReapResult struct {
 	Worktrees int
 	Branches  int
