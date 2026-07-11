@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -109,6 +110,7 @@ type Dependencies struct {
 	OrphanSessions     store.OrphanSessionStore
 	ValidatorMemo      store.ValidatorMemoStore
 	Activity           *activity.Broker
+	Release            releasepkg.Coordinator
 	GlobalDispatchGate scheduler.ProjectDispatchGate
 	Now                func() time.Time
 	Logger             *slog.Logger
@@ -119,8 +121,10 @@ type WorkspaceReapResult = runpkg.WorkspaceReapResult
 type WorkspaceReaper = runpkg.WorkspaceReaper
 
 type RuntimeUpdate struct {
-	Config    Config
-	Connector connector.Connector
+	Config         Config
+	Connector      connector.Connector
+	Release        releasepkg.Coordinator
+	ReplaceRelease bool
 }
 
 type Orchestrator struct {
@@ -142,6 +146,7 @@ type Orchestrator struct {
 	validatorFailures       map[string]validatorStageFailure
 	validatorMemo           store.ValidatorMemoStore
 	activity                *activity.Broker
+	release                 releasepkg.Coordinator
 	capacityController      runpkg.CapacityController
 	validatorCapacity       runpkg.ValidatorCapacityController
 	now                     func() time.Time
@@ -288,6 +293,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		validatorFailures:       map[string]validatorStageFailure{},
 		validatorMemo:           validatorMemo,
 		activity:                deps.Activity,
+		release:                 deps.Release,
 		capacityController:      capacityController,
 		validatorCapacity:       validatorCapacity,
 		now:                     now,
@@ -480,6 +486,12 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	o.cfg = cfg
 	if update.Connector != nil {
 		o.connector = update.Connector
+	}
+	if update.ReplaceRelease {
+		o.release = update.Release
+		if update.Release == nil {
+			state.Release = releasepkg.Status{}
+		}
 	}
 	o.supervisor.UpdateConfig(runpkg.SupervisorConfig{
 		MaxRetryBackoff:       cfg.MaxRetryBackoff,

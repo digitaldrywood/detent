@@ -27,6 +27,8 @@ type Snapshot struct {
 	Running            []Running           `json:"running"`
 	WorkAttempts       []WorkAttempt       `json:"work_attempts,omitempty"`
 	SchedulerDecisions []SchedulerDecision `json:"scheduler_decisions,omitempty"`
+	Release            Release             `json:"release,omitzero"`
+	Releases           []Release           `json:"releases,omitempty"`
 	Queue              []Queued            `json:"queue"`
 	Blocked            []Blocked           `json:"blocked"`
 	Completed          []Completed         `json:"completed"`
@@ -71,6 +73,23 @@ type ProjectSnapshot struct {
 	Throughput TokenThroughput `json:"throughput"`
 	Auth       AuthHealth      `json:"auth,omitzero"`
 	Refresh    Refresh         `json:"refresh,omitzero"`
+}
+
+type Release struct {
+	ProjectID        string     `json:"project_id,omitempty"`
+	Enabled          bool       `json:"enabled"`
+	State            string     `json:"state,omitempty"`
+	LastRelease      string     `json:"last_release,omitempty"`
+	LastReleaseAt    *time.Time `json:"last_release_at,omitempty"`
+	UnreleasedMerges int        `json:"unreleased_merges"`
+	NextTriggerAt    *time.Time `json:"next_trigger_at,omitempty"`
+	CandidateSHA     string     `json:"candidate_sha,omitempty"`
+	PendingTag       string     `json:"pending_tag,omitempty"`
+	LastError        string     `json:"last_error,omitempty"`
+}
+
+func (r Release) IsZero() bool {
+	return !r.Enabled && r.State == "" && r.LastRelease == "" && r.LastReleaseAt == nil && r.UnreleasedMerges == 0 && r.NextTriggerAt == nil && r.CandidateSHA == "" && r.PendingTag == "" && r.LastError == ""
 }
 
 type AuthStatus string

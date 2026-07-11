@@ -103,6 +103,7 @@ type Config struct {
 	Server        Server          `yaml:"server"`
 	Observability Observability   `yaml:"observability"`
 	Budget        Budget          `yaml:"budget"`
+	Release       Release         `yaml:"release,omitempty"`
 	Hooks         Hooks           `yaml:"hooks"`
 	Intake        intake.Config   `yaml:"intake,omitempty"`
 }
@@ -597,6 +598,69 @@ type Observability struct {
 	RenderIntervalMS int  `yaml:"render_interval_ms"`
 }
 
+type Release struct {
+	Enabled         bool     `yaml:"enabled"`
+	MinMergedIssues int      `yaml:"min_merged_issues"`
+	MaxAgeHours     int      `yaml:"max_age_hours"`
+	RequireGreenCI  bool     `yaml:"require_green_ci"`
+	VersionBump     string   `yaml:"version_bump"`
+	RerunFlakyOnce  bool     `yaml:"rerun_flaky_once,omitempty"`
+	FlakyCheckNames []string `yaml:"flaky_check_names,omitempty"`
+}
+
+func (r *Release) normalize() {
+	if r == nil {
+		return
+	}
+	if r.MinMergedIssues == 0 {
+		r.MinMergedIssues = 5
+	}
+	if r.MaxAgeHours == 0 {
+		r.MaxAgeHours = 24
+	}
+	if strings.TrimSpace(r.VersionBump) == "" {
+		r.VersionBump = "auto"
+	}
+	r.VersionBump = strings.ToLower(strings.TrimSpace(r.VersionBump))
+	seen := make(map[string]struct{}, len(r.FlakyCheckNames))
+	names := make([]string, 0, len(r.FlakyCheckNames))
+	for _, name := range r.FlakyCheckNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		names = append(names, name)
+	}
+	r.FlakyCheckNames = names
+}
+
+func (r Release) validate(prefix string, problems *[]string) {
+	r.normalize()
+	if !r.Enabled {
+		return
+	}
+	if r.MinMergedIssues <= 0 {
+		*problems = append(*problems, prefix+".min_merged_issues must be greater than 0 when "+prefix+".enabled is true")
+	}
+	if r.MaxAgeHours <= 0 {
+		*problems = append(*problems, prefix+".max_age_hours must be greater than 0 when "+prefix+".enabled is true")
+	}
+	if !r.RequireGreenCI {
+		*problems = append(*problems, prefix+".require_green_ci must be true when "+prefix+".enabled is true")
+	}
+	if r.VersionBump != "auto" {
+		*problems = append(*problems, prefix+".version_bump must be auto")
+	}
+	if r.RerunFlakyOnce && len(r.FlakyCheckNames) == 0 {
+		*problems = append(*problems, prefix+".flaky_check_names must not be empty when "+prefix+".rerun_flaky_once is true")
+	}
+}
+
 type Hooks struct {
 	Shell        string `yaml:"shell"`
 	AfterCreate  string `yaml:"after_create"`
@@ -923,6 +987,12 @@ func Default() Config {
 			RefreshMS:        1000,
 			RenderIntervalMS: 16,
 		},
+		Release: Release{
+			MinMergedIssues: 5,
+			MaxAgeHours:     24,
+			RequireGreenCI:  true,
+			VersionBump:     "auto",
+		},
 		Budget: budget,
 		Hooks: Hooks{
 			Shell:     commandshell.Default(),
@@ -967,6 +1037,13 @@ func (c *Config) Validate() error {
 	c.Deliverable.validate(&problems)
 	c.Server.validate(&problems)
 	c.Observability.validate(&problems)
+	c.Release.validate("release", &problems)
+	if c.Release.Enabled && c.Tracker.Kind != TrackerGitHub && c.Tracker.Kind != TrackerGitHubLocal {
+		problems = append(problems, "release.enabled requires tracker.kind github or github_local")
+	}
+	if c.Release.Enabled && !validRepositoryName(c.Tracker.Repository) {
+		problems = append(problems, "tracker.repository must be owner/name when release.enabled is true")
+	}
 	c.Budget.validate("budget", &problems)
 	c.Hooks.validate(&problems)
 	states := make([]string, 0, len(c.configuredWorkflowStates()))
@@ -1104,6 +1181,7 @@ func (c *Config) normalize() {
 	c.Dependencies.Normalize()
 	c.Workspace.Normalize()
 	c.Deliverable.Normalize()
+	c.Release.normalize()
 
 	c.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(c.Agent.MaxConcurrentAgentsByState)
 	c.Agent.DispatchPriorityByState = normalizeStateList(c.Agent.DispatchPriorityByState)

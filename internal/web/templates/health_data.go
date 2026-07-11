@@ -87,10 +87,51 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 		}
 	}
 	rows = append(rows, healthSchedulerRow(snapshot), healthBackoffRow(snapshot))
+	for _, release := range healthReleases(snapshot) {
+		rows = append(rows, healthReleaseRow(release))
+	}
 	for _, outage := range snapshot.BackendOutages {
 		rows = append(rows, healthBackendOutageRow(outage, snapshot.GeneratedAt))
 	}
 	return rows
+}
+
+func healthReleases(snapshot telemetry.Snapshot) []telemetry.Release {
+	if len(snapshot.Releases) > 0 {
+		return snapshot.Releases
+	}
+	if !snapshot.Release.IsZero() {
+		return []telemetry.Release{snapshot.Release}
+	}
+	return nil
+}
+
+func healthReleaseRow(release telemetry.Release) healthRow {
+	component := "Auto-release"
+	if strings.TrimSpace(release.ProjectID) != "" {
+		component += " · " + release.ProjectID
+	}
+	status := strings.ReplaceAll(strings.TrimSpace(release.State), "_", " ")
+	if status == "" {
+		status = "Waiting"
+	}
+	detail := "Last " + release.LastRelease + " · " + formatCount(release.UnreleasedMerges) + " unreleased merges"
+	if release.LastRelease == "" {
+		detail = formatCount(release.UnreleasedMerges) + " unreleased merges · no prior release"
+	}
+	resets := "—"
+	if release.NextTriggerAt != nil {
+		resets = release.NextTriggerAt.UTC().Format("Jan 02 15:04")
+	}
+	kind := primitives.KindOK
+	switch release.State {
+	case "failed":
+		kind = primitives.KindErr
+		detail = release.LastError
+	case "waiting_for_ci", "rerunning_ci", "release_pending":
+		kind = primitives.KindWarn
+	}
+	return healthRow{ID: "health-release-" + boardCardSlug(release.ProjectID), Component: component, Kind: kind, Status: status, Detail: detail, Resets: resets}
 }
 
 func healthBackendOutageRow(outage telemetry.BackendOutage, now time.Time) healthRow {

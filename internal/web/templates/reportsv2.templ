@@ -101,6 +101,15 @@ templ ReportsSnapshotV2(data ReportsData) {
 			}
 		}
 	</div>
+	if view.Release.Available {
+		@primitives.Panel(primitives.PanelProps{ID: "reports-release", Title: "Release cadence", Count: view.Release.State}) {
+			<div class="grid grid-cols-1 gap-3 p-4 sm:grid-cols-3">
+				<div class="flex flex-col gap-1"><span class="text-2xs uppercase text-dim">Last release</span><span class="font-mono text-sm text-text">{ view.Release.Last }</span></div>
+				<div class="flex flex-col gap-1"><span class="text-2xs uppercase text-dim">Unreleased merges</span><span class="font-mono text-sm text-text">{ view.Release.Merges }</span></div>
+				<div class="flex flex-col gap-1"><span class="text-2xs uppercase text-dim">Next age trigger</span><span class="font-mono text-sm text-text">{ view.Release.Next }</span></div>
+			</div>
+		}
+	}
 }
 
 templ reportsTopTable(id string, title string, rows []reportsTopRow) {
