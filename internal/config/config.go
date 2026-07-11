@@ -52,6 +52,7 @@ const (
 	DefaultKnowledgeMaxBytes                 = 64 * 1024
 	DefaultReworkLimit                       = 3
 	DefaultNoProgressLimit                   = 3
+	DefaultNoProgressSpendLimitUSD           = 3.0
 	DefaultAutoPromoteGateWaitTimeoutSeconds = 3600
 
 	DefaultPollingIntervalMS      = 120000
@@ -222,6 +223,7 @@ type Agent struct {
 	MaxConcurrentAgents          int                          `yaml:"max_concurrent_agents"`
 	MaxTurns                     int                          `yaml:"max_turns"`
 	MaxRetryBackoffMS            int                          `yaml:"max_retry_backoff_ms"`
+	NoProgressSpendLimitUSD      float64                      `yaml:"no_progress_spend_limit_usd"`
 	MaxSessionTokens             int64                        `yaml:"max_session_tokens"`
 	MaxSessionContextMultiplier  float64                      `yaml:"max_session_context_multiplier"`
 	MaxSessionTokenOverrideLabel string                       `yaml:"max_session_token_override_label"`
@@ -957,6 +959,7 @@ func Default() Config {
 			MaxConcurrentAgents:        10,
 			MaxTurns:                   20,
 			MaxRetryBackoffMS:          300000,
+			NoProgressSpendLimitUSD:    DefaultNoProgressSpendLimitUSD,
 			ResumeOrphanedSessions:     true,
 			Shutdown:                   Shutdown{DrainTimeoutMS: DefaultShutdownDrainTimeoutMS},
 			MaxConcurrentAgentsByState: map[string]int{},
@@ -1514,6 +1517,9 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	}
 	if a.MaxSessionContextMultiplier < 0 {
 		*problems = append(*problems, prefix+".max_session_context_multiplier must be greater than or equal to 0")
+	}
+	if a.NoProgressSpendLimitUSD < 0 {
+		*problems = append(*problems, prefix+".no_progress_spend_limit_usd must be greater than or equal to 0")
 	}
 	a.Effort.validate(prefix+".effort", problems)
 	a.Shutdown.validate(prefix+".shutdown", problems)

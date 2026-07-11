@@ -3511,6 +3511,29 @@ func TestDoctorSQLitePingErrorWrapsPingAndCloseErrors(t *testing.T) {
 	}
 }
 
+func TestDoctorWorkflowSpendBreakerDetail(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		limit float64
+		want  string
+	}{
+		{name: "disabled", want: "spend-breaker=no_progress_spend_limit_usd=disabled"},
+		{name: "configured", limit: 7.5, want: "spend-breaker=no_progress_spend_limit_usd=7.50"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := workflowconfig.Config{}
+			cfg.Agent.NoProgressSpendLimitUSD = tt.limit
+			if got := doctorWorkflowSpendBreakerDetail(cfg); got != tt.want {
+				t.Fatalf("doctorWorkflowSpendBreakerDetail() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCheckDoctorServerPort(t *testing.T) {
 	t.Parallel()
 

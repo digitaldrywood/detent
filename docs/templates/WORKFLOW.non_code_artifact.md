@@ -30,6 +30,7 @@ deliverable:
 
 agent:
   resume_orphaned_sessions: true
+  no_progress_spend_limit_usd: 3
   # Optional per-role reasoning defaults. Unset roles retain backend behavior.
   # effort:
   #   merge: high

@@ -751,6 +751,48 @@ func (s *sqliteStore) BudgetCostEvents(ctx context.Context, query BudgetCostQuer
 	return events, nil
 }
 
+func (s *sqliteStore) IssueSpendSince(ctx context.Context, query IssueSpendSinceQuery) (IssueSpendSince, error) {
+	projectID := strings.TrimSpace(query.ProjectID)
+	if projectID == "" {
+		return IssueSpendSince{}, errors.New("project_id is required")
+	}
+	issueID := strings.TrimSpace(query.IssueID)
+	identifier := strings.TrimSpace(query.Identifier)
+	if issueID == "" && identifier == "" {
+		return IssueSpendSince{}, errors.New("issue identity is required")
+	}
+	since, err := requiredTimestamp("since", query.Since)
+	if err != nil {
+		return IssueSpendSince{}, err
+	}
+	row, err := s.queries.IssueSpendSince(ctx, sqlc.IssueSpendSinceParams{
+		ProjectID:  projectID,
+		Since:      since,
+		IssueID:    issueID,
+		Identifier: identifier,
+	})
+	if err != nil {
+		return IssueSpendSince{}, fmt.Errorf("reading issue spend since accepted progress: %w", err)
+	}
+	spend := IssueSpendSince{
+		CostUSD:  nonNegativeFloat(row.CostUsd),
+		Sessions: nonNegative(row.Sessions),
+	}
+	if row.FirstSessionAt != "" {
+		spend.FirstSessionAt, err = parseTimestamp("first_session_at", row.FirstSessionAt)
+		if err != nil {
+			return IssueSpendSince{}, err
+		}
+	}
+	if row.LastSessionAt != "" {
+		spend.LastSessionAt, err = parseTimestamp("last_session_at", row.LastSessionAt)
+		if err != nil {
+			return IssueSpendSince{}, err
+		}
+	}
+	return spend, nil
+}
+
 func (s *sqliteStore) LifetimeTotals(ctx context.Context) (LifetimeTotals, error) {
 	row, err := s.queries.LifetimeTotals(ctx)
 	if err != nil {

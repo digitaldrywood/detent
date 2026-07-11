@@ -222,6 +222,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		WorkflowMetrics:    runtimeStore,
 		Efficiency:         runtimeStore,
 		WorkAttempts:       runtimeStore,
+		ProgressSpend:      runtimeStore,
 		AgentResume:        runtimeStore,
 		ValidatorMemo:      runtimeStore,
 		RetroStore:         runtimeStore,

@@ -805,6 +805,7 @@ func doctorWorkflowDetail(path string, project globalconfig.Project, cfg workflo
 	details = append(details, doctorReviewFlowConfigDetail(cfg))
 	details = append(details, doctorWorkflowModelChoiceDetail(cfg))
 	details = append(details, doctorWorkflowSessionGuardDetail(cfg))
+	details = append(details, doctorWorkflowSpendBreakerDetail(cfg))
 	details = append(details, fmt.Sprintf("orphan-recovery=resume_orphaned_sessions=%t, experimental_thread_resume=%t", cfg.Agent.ResumeOrphanedSessions, cfg.Agent.ExperimentalThreadResume))
 	details = append(details, fmt.Sprintf("prioritize-unblockers=%t", cfg.Agent.PrioritizeUnblockers))
 	details = append(details, doctorAuthorizationDetail(project, cfg))
@@ -833,6 +834,14 @@ func doctorWorkflowSessionGuardDetail(cfg workflowconfig.Config) string {
 		multiplier = strconv.FormatFloat(cfg.Agent.MaxSessionContextMultiplier, 'g', -1, 64)
 	}
 	return fmt.Sprintf("session-guard=max_session_tokens=%s, max_session_context_multiplier=%s", tokens, multiplier)
+}
+
+func doctorWorkflowSpendBreakerDetail(cfg workflowconfig.Config) string {
+	limit := "disabled"
+	if cfg.Agent.NoProgressSpendLimitUSD > 0 {
+		limit = strconv.FormatFloat(cfg.Agent.NoProgressSpendLimitUSD, 'f', 2, 64)
+	}
+	return "spend-breaker=no_progress_spend_limit_usd=" + limit
 }
 
 func doctorWorkflowFindingDetails(findings []doctorWorkflowOptimizationFinding) string {

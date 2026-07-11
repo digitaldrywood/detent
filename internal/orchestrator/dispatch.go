@@ -271,6 +271,12 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	}
 
 	issue = cloneIssue(claimedIssue)
+	priorAttempt := state.PriorAttempts[issue.ID]
+	if !priorAttemptPresent(priorAttempt) {
+		if breakerAttempt, ok := o.spendProgressPriorAttempt(ctx, issue); ok {
+			priorAttempt = breakerAttempt
+		}
+	}
 	workAttemptID, ok := o.startDurableWorkAttempt(ctx, state, issue, attempt, now, workerHost, runMode)
 	if !ok {
 		o.releaseGlobalDispatchSlot(globalSlot)
@@ -359,7 +365,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		Mode:                runMode,
 		DispatchSourceState: dispatchSourceState,
 		DispatchTargetState: dispatchTargetState,
-		PriorAttempt:        state.PriorAttempts[issue.ID],
+		PriorAttempt:        priorAttempt,
 		StartedAt:           now,
 		WorkerHost:          workerHost,
 		SelectorContext:     o.selectorContext(),
@@ -370,6 +376,9 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	if retryQueued {
 		request.RetryMode = queuedRetry.RetryMode
 		request.ResumeState = queuedRetry.ResumeState
+	}
+	if priorAttempt.ExplainBeforeRetry {
+		delete(state.PriorAttempts, issue.ID)
 	}
 	o.logMergeWorkerAttempt(issue, attempt, workerHost)
 	o.logWorkerLifecycle(issue, "worker_attempt_started",

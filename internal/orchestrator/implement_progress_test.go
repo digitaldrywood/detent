@@ -558,8 +558,10 @@ func (c *implementProgressConnector) HydratePullRequest(context.Context, connect
 }
 
 type implementProgressAttemptStore struct {
-	history     []store.WorkAttempt
-	completions []store.WorkAttemptCompletion
+	history      []store.WorkAttempt
+	completions  []store.WorkAttemptCompletion
+	historyCalls int
+	queries      []store.WorkAttemptHistoryQuery
 }
 
 func (s *implementProgressAttemptStore) StartWorkAttempt(context.Context, store.WorkAttemptStart) (int64, error) {
@@ -583,7 +585,9 @@ func (s *implementProgressAttemptStore) ListActiveWorkAttempts(context.Context, 
 	return nil, nil
 }
 
-func (s *implementProgressAttemptStore) ListRecentTerminalWorkAttempts(context.Context, store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
+func (s *implementProgressAttemptStore) ListRecentTerminalWorkAttempts(_ context.Context, query store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
+	s.historyCalls++
+	s.queries = append(s.queries, query)
 	return append([]store.WorkAttempt(nil), s.history...), nil
 }
 

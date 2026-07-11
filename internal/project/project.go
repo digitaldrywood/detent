@@ -96,6 +96,7 @@ type Dependencies struct {
 	Efficiency             efficiency.Recorder
 	LifecycleExporter      efficiency.LifecycleExporter
 	WorkAttempts           store.WorkAttemptStore
+	ProgressSpend          store.ProgressSpendStore
 	AgentResume            store.AgentResumeStore
 	ValidatorMemo          store.ValidatorMemoStore
 	Activity               *activity.Broker
@@ -235,6 +236,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		Efficiency:         deps.Efficiency,
 		LifecycleExporter:  lifecycleExporter,
 		WorkAttempts:       deps.WorkAttempts,
+		ProgressSpend:      deps.ProgressSpend,
 		AgentResume:        deps.AgentResume,
 		ValidatorMemo:      deps.ValidatorMemo,
 		Activity:           deps.Activity,

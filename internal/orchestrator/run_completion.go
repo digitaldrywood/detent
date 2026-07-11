@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -143,7 +144,27 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			"retry_delay_seconds", int64(event.RetryDelay/time.Second),
 			"error", event.Err,
 		)
-		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, terminalStateForRun(event.Err, event.Result.FinalState), workAttemptErrorRunner, event.Err.Error(), "failed", "worker failed")
+		spendProgress := spendProgressDecision{}
+		if !mergeWorkerIssue(running.Issue) {
+			accepted, acceptedReason := dispatchAcceptedStateChange(running)
+			spendProgress = o.evaluateSpendProgress(ctx, running, event.CompletedAt, accepted, acceptedReason)
+		}
+		terminalState := terminalStateForRun(event.Err, event.Result.FinalState)
+		errorClass := workAttemptErrorRunner
+		errorMessage := event.Err.Error()
+		phase := "failed"
+		statusMessage := "worker failed"
+		if spendProgress.Block {
+			terminalState = store.WorkAttemptTerminalNoProgress
+			errorClass = spendProgressReason
+			errorMessage = fmt.Sprintf("spent %s since the last accepted state change; configured limit %s", budget.FormatUSD(spendProgress.Spend.CostUSD), budget.FormatUSD(spendProgress.LimitUSD))
+			phase = "no_progress"
+			statusMessage = "spend-since-progress circuit breaker tripped"
+		}
+		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, spendProgressMetadata(spendProgress))
+		if spendProgress.Block && o.blockSpendProgress(ctx, state, running.Issue, spendProgress, event.CompletedAt) {
+			return
+		}
 		if mergeWorkerIssue(running.Issue) {
 			o.logMergeWorkerFailure(running.Issue, "runner_failed", event.Err)
 			o.recordMergeFailed(state, running.Issue, event.CompletedAt, "runner_failed", event.Err)
@@ -233,6 +254,8 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		running.DiffStats = event.Result.DiffStats
 	}
 	progress := o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
+	accepted, acceptedReason := implementAcceptedStateChange(running, progress)
+	spendProgress := o.evaluateSpendProgress(ctx, running, event.CompletedAt, accepted, acceptedReason)
 	if terminalState != store.WorkAttemptTerminalSuccess {
 		progress.Outcome = terminalState
 	}
@@ -244,7 +267,15 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		phase = "no_progress"
 		statusMessage = "worker completed without PR progress"
 	}
-	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, implementCompletionProgressMetadata(progress))
+	if spendProgress.Block {
+		terminalState = store.WorkAttemptTerminalNoProgress
+		progress.Outcome = store.WorkAttemptTerminalNoProgress
+		errorClass = spendProgressReason
+		errorMessage = fmt.Sprintf("spent %s since the last accepted state change; configured limit %s", budget.FormatUSD(spendProgress.Spend.CostUSD), budget.FormatUSD(spendProgress.LimitUSD))
+		phase = "no_progress"
+		statusMessage = "spend-since-progress circuit breaker tripped"
+	}
+	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(implementCompletionProgressMetadata(progress), spendProgressMetadata(spendProgress)))
 
 	state.Completed[event.IssueID] = Completed{
 		Issue:           cloneIssue(running.Issue),
@@ -276,6 +307,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if terminalState == store.WorkAttemptTerminalSuccess &&
 		autoPromoteActiveGatePendingIssue(running.Issue, state, o.cfg, o.cfg.AutoPromote) {
 		o.finishCompletedGateWaitRun(ctx, state, running.Issue)
+		return
+	}
+	if spendProgress.Block && o.blockSpendProgress(ctx, state, running.Issue, spendProgress, event.CompletedAt) {
 		return
 	}
 	if terminalState == store.WorkAttemptTerminalNoProgress && progress.Block {
