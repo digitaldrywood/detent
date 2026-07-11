@@ -6152,6 +6152,57 @@ func TestHealthReportsDraining(t *testing.T) {
 	}
 }
 
+func TestHealthReportsEnforcedProjectBudgets(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	workflowCfg := workflowconfig.Default()
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
+	trackedProject, err := project.New(project.Config{
+		Project: globalconfig.Project{ID: "detent"},
+		Workflow: workflowconfig.Workflow{
+			Config: workflowCfg,
+			Prompt: "Work the issue.",
+		},
+	}, project.Dependencies{
+		Connector: connectorProbe{name: "memory"},
+		Runner: healthBudgetRunner{budget: workflowconfig.Budget{
+			Enabled:        true,
+			PerDayMaxUSD:   250,
+			PerIssueMaxUSD: 25,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := deps.Registry.Set(trackedProject); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	for _, want := range []string{
+		`"project_id":"detent"`,
+		`"enabled":true`,
+		`"per_day_max_usd":250`,
+		`"per_issue_max_usd":25`,
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+}
+
 func TestAPIStateReportsDraining(t *testing.T) {
 	t.Parallel()
 
@@ -9564,6 +9615,18 @@ func mustSetWebProject(t *testing.T, registry *project.Registry, id string, paus
 	t.Helper()
 
 	mustSetWebProjectWithWorkflowStates(t, registry, id, paused, nil, nil, nil)
+}
+
+type healthBudgetRunner struct {
+	budget workflowconfig.Budget
+}
+
+func (r healthBudgetRunner) Run(context.Context, orchestrator.RunRequest) (orchestrator.RunResult, error) {
+	return orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted}, nil
+}
+
+func (r healthBudgetRunner) EnforcedBudget() (workflowconfig.Budget, bool) {
+	return r.budget, true
 }
 
 func mustSetWebGitHubLabelProject(t *testing.T, registry *project.Registry, id string, repository string) {

@@ -299,6 +299,20 @@ func (p *Project) Workflow() workflowconfig.Workflow {
 	return p.workflow
 }
 
+func (p *Project) EnforcedBudget() (workflowconfig.Budget, bool) {
+	p.mu.Lock()
+	runner := p.runner
+	p.mu.Unlock()
+
+	reporter, ok := runner.(interface {
+		EnforcedBudget() (workflowconfig.Budget, bool)
+	})
+	if !ok {
+		return workflowconfig.Budget{}, false
+	}
+	return reporter.EnforcedBudget()
+}
+
 func (p *Project) Connector() connector.Connector {
 	p.mu.Lock()
 	defer p.mu.Unlock()

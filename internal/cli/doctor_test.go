@@ -3583,7 +3583,7 @@ func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 			host:       "0.0.0.0",
 			listenHost: "0.0.0.0",
 			statusCode: http.StatusOK,
-			body:       `{"status":"ok","mode":"running","checks":{"hub":"configured","store":"configured","registry":"configured","connector":"configured"}}`,
+			body:       `{"status":"ok","mode":"running","checks":{"hub":"configured","store":"configured","registry":"configured","connector":"configured"},"budgets":[{"project_id":"detent","enabled":true,"per_day_max_usd":250,"per_issue_max_usd":25}]}`,
 			want:       doctorWarn,
 			wantDetail: []string{
 				"pre-start bind",
@@ -3592,6 +3592,7 @@ func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 				"/health",
 				"status ok",
 				"mode running",
+				"enforced budget: detent enabled=true per_day_max_usd=250.00 per_issue_max_usd=25.00",
 			},
 		},
 		{
