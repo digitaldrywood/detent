@@ -463,6 +463,32 @@ Ticket prompt {{ issue.title }}
 	}
 }
 
+func TestParseWorkflowRetroDefaultsAndValidation(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+  active_states: [Todo]
+  observed_states: [Backlog, Blocked]
+retro:
+  enabled: true
+  target_state: Backlog
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	retro := workflow.Config.Retro
+	if !retro.Enabled || retro.DailyIssueCap != 3 || retro.LookbackDays != 7 || retro.MinOccurrences != 2 || retro.ProductRepository != "digitaldrywood/detent" || !reflect.DeepEqual(retro.Labels, []string{"retro"}) {
+		t.Fatalf("Retro = %#v", retro)
+	}
+}
+
 func TestParseWorkflowGitHubIssueFieldTracker(t *testing.T) {
 	t.Parallel()
 

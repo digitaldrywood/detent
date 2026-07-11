@@ -87,6 +87,7 @@ func (s *sqliteStore) RuntimeEvidence(ctx context.Context, query RuntimeEvidence
 		{name: "work_attempts", projectScoped: true},
 		{name: "scheduler_decisions", projectScoped: true},
 		{name: "validator_verdicts", projectScoped: true},
+		{name: "retro_runs", projectScoped: true},
 		{name: "api_keys"},
 		{name: "api_usage_logs"},
 	}
@@ -1040,6 +1041,8 @@ func (s *sqliteStore) runtimeTableCount(ctx context.Context, tableName string, p
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM scheduler_decisions WHERE project_id = ?", projectID)
 		case "validator_verdicts":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM validator_verdicts WHERE project_id = ?", projectID)
+		case "retro_runs":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM retro_runs WHERE project_id = ?", projectID)
 		default:
 			return 0, fmt.Errorf("unsupported project-scoped runtime table %q", tableName)
 		}
@@ -1061,6 +1064,8 @@ func (s *sqliteStore) runtimeTableCount(ctx context.Context, tableName string, p
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM scheduler_decisions")
 		case "validator_verdicts":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM validator_verdicts")
+		case "retro_runs":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM retro_runs")
 		case "api_keys":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM api_keys")
 		case "api_usage_logs":

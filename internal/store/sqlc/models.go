@@ -95,6 +95,19 @@ type FairShareUsage struct {
 	UpdatedAt      string `json:"updated_at"`
 }
 
+type RetroRun struct {
+	ID            int64          `json:"id"`
+	ProjectID     string         `json:"project_id"`
+	Trigger       string         `json:"trigger"`
+	StartedAt     string         `json:"started_at"`
+	CompletedAt   string         `json:"completed_at"`
+	FindingsCount int64          `json:"findings_count"`
+	FiledCount    int64          `json:"filed_count"`
+	UpdatedCount  int64          `json:"updated_count"`
+	Error         sql.NullString `json:"error"`
+	EventDay      string         `json:"event_day"`
+}
+
 type SchedulerDecision struct {
 	ID                     int64          `json:"id"`
 	ProjectID              string         `json:"project_id"`
