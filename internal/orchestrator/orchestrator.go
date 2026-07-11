@@ -60,6 +60,7 @@ type Config struct {
 	MaxConcurrentAgentsByState    map[string]int
 	DispatchPriorityByState       []string
 	DispatchPriorityByLabel       []string
+	PrioritizeUnblockers          bool
 	MergeFastPathEnabled          bool
 	ResumeOrphanedSessions        bool
 	MaxConcurrentAgentsPerHost    int
@@ -503,6 +504,7 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	state.AutoPromote = cloneAutoPromoteConfig(cfg.AutoPromote)
 	state.ActiveStates = append([]string(nil), cfg.ActiveStates...)
 	state.TerminalStates = append([]string(nil), cfg.TerminalStates...)
+	state.PrioritizeUnblockers = cfg.PrioritizeUnblockers
 	state.Instance = instanceSnapshot(cfg)
 	state.Authorization = cloneSelector(cfg.Authorization)
 	state.SelectorContext = cfg.SelectorContext

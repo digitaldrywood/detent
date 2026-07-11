@@ -2126,6 +2126,7 @@ func TestDoctorWorkflowDetailSurfacesIdentityAndAuthorization(t *testing.T) {
 		"worker-model=provider-default",
 		"session-guard=max_session_tokens=disabled, max_session_context_multiplier=disabled",
 		"orphan-recovery=resume_orphaned_sessions=true, experimental_thread_resume=false",
+		"prioritize-unblockers=true",
 		"authorization selectors from global.yaml and WORKFLOW.md",
 	} {
 		if !strings.Contains(got, want) {

@@ -681,6 +681,7 @@ agent:
     - bug
     - regression
     - enhancement
+  prioritize_unblockers: true
   auto_promote:
     enabled: false
     quiet_seconds: 600
@@ -858,6 +859,9 @@ In label mode, the `detent:*` labels are tracker state, not workstream filters.
 Use `tracker.authorization.labels.*`, `projects[].authorization`, and
 `agent.dispatch_priority_by_label` for selecting or ranking work by ordinary
 labels such as `documentation`, `bug`, or `enhancement`.
+`agent.prioritize_unblockers` defaults to `true` and ranks an unlabeled issue
+ahead of otherwise-equal peers when it directly unblocks waiting work. State,
+tracker priority, and every configured dispatch-label tier remain higher.
 
 The fleet `/kanban` board stays read-only, as do observer dashboards and
 shared dashboards where users should not mutate GitHub from Detent. For a

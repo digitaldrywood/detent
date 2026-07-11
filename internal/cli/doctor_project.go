@@ -806,6 +806,7 @@ func doctorWorkflowDetail(path string, project globalconfig.Project, cfg workflo
 	details = append(details, doctorWorkflowModelChoiceDetail(cfg))
 	details = append(details, doctorWorkflowSessionGuardDetail(cfg))
 	details = append(details, fmt.Sprintf("orphan-recovery=resume_orphaned_sessions=%t, experimental_thread_resume=%t", cfg.Agent.ResumeOrphanedSessions, cfg.Agent.ExperimentalThreadResume))
+	details = append(details, fmt.Sprintf("prioritize-unblockers=%t", cfg.Agent.PrioritizeUnblockers))
 	details = append(details, doctorAuthorizationDetail(project, cfg))
 	return strings.Join(details, "; ")
 }

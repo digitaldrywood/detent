@@ -81,6 +81,7 @@ agent:
     - In Progress
     - Todo
   dispatch_priority_by_label: []
+  prioritize_unblockers: true
   auto_promote:
     enabled: false
     quiet_seconds: 600

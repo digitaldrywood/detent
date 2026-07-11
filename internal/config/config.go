@@ -230,6 +230,7 @@ type Agent struct {
 	MaxConcurrentAgentsByState   map[string]int               `yaml:"max_concurrent_agents_by_state"`
 	DispatchPriorityByState      []string                     `yaml:"dispatch_priority_by_state"`
 	DispatchPriorityByLabel      []string                     `yaml:"dispatch_priority_by_label"`
+	PrioritizeUnblockers         bool                         `yaml:"prioritize_unblockers"`
 	MergeFastPath                MergeFastPath                `yaml:"merge_fast_path"`
 	AutoPromote                  AutoPromote                  `yaml:"auto_promote"`
 	OutputTruncation             OutputTruncation             `yaml:"output_truncation"`
@@ -943,6 +944,7 @@ func Default() Config {
 			MaxConcurrentAgentsByState: map[string]int{},
 			DispatchPriorityByState:    []string{},
 			DispatchPriorityByLabel:    []string{},
+			PrioritizeUnblockers:       true,
 			AutoPromote: AutoPromote{
 				QuietSeconds:           600,
 				OptoutLabel:            "requires-human-review",
