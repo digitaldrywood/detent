@@ -172,6 +172,13 @@ func TestAppShellProjects(t *testing.T) {
 			wantBreakdown: "0 todo · 0 active · 3 waiting · 0 blocked",
 		},
 		{
+			name:          "blocked-only project keeps a tinted zero-load badge",
+			project:       ProjectSmallMultiple{ID: "stalled", BoardBlocked: 2},
+			wantCount:     "0",
+			wantBreakdown: "0 todo · 0 active · 0 waiting · 2 blocked",
+			wantBlocked:   true,
+		},
+		{
 			name:          "idle shows no badge",
 			project:       ProjectSmallMultiple{ID: "idle"},
 			wantBreakdown: "0 todo · 0 active · 0 waiting · 0 blocked",

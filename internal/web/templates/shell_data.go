@@ -126,7 +126,7 @@ func appShellProjects(data DashboardShellData) []appShellProject {
 			Blocked:  project.BoardBlocked,
 			Selected: strings.TrimSpace(data.ProjectID) == id,
 		}
-		if project.BoardLoad > 0 {
+		if project.BoardLoad > 0 || project.BoardBlocked > 0 {
 			item.Count = strconv.Itoa(project.BoardLoad)
 		}
 		items = append(items, item)

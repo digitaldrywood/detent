@@ -113,18 +113,18 @@ func boardWorkloadProjectMatches(issue Issue, fallbackProjectID string, projectI
 }
 
 func normalizedWorkloadState(state string) string {
-	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "todo":
+	switch normalizeBoardState(strings.ReplaceAll(state, "_", " ")) {
+	case "Todo":
 		return "Todo"
-	case "in progress", "in_progress":
+	case "In Progress":
 		return "In Progress"
-	case "rework":
+	case "Rework":
 		return "Rework"
-	case "merging":
+	case "Merging":
 		return "Merging"
-	case "human review", "human_review":
+	case "Review":
 		return "Human Review"
-	case "blocked":
+	case "Blocked":
 		return "Blocked"
 	}
 	return ""

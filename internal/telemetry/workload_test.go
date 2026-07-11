@@ -64,6 +64,16 @@ func TestBoardWorkload(t *testing.T) {
 			want: BoardWorkloadCounts{Load: 1, Active: 1},
 		},
 		{
+			name: "review lane aliases count as active",
+			snapshot: Snapshot{BoardIssues: []Issue{
+				{ID: "review", State: "Review"},
+				{ID: "in-review", State: "In Review"},
+				{ID: "underscore", State: "human_review"},
+				{ID: "running", State: "Running"},
+			}},
+			want: BoardWorkloadCounts{Load: 4, Active: 4},
+		},
+		{
 			name: "project scope excludes other projects",
 			snapshot: Snapshot{BoardIssues: []Issue{
 				{ID: "detent", ProjectID: "detent", State: "Todo"},
