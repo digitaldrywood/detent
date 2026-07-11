@@ -296,7 +296,7 @@ func (c *Connector) EnsureFailureIssue(ctx context.Context, failure releasepkg.F
 	}
 	if search.TotalCount > 0 {
 		if len(search.Items) > 0 && strings.TrimSpace(search.Items[0].NodeID) != "" {
-			if err := c.UpdateIssueState(ctx, search.Items[0].NodeID, "Todo"); err != nil {
+			if err := c.moveReleaseIssueToTodo(ctx, search.Items[0].NodeID); err != nil {
 				return false, fmt.Errorf("restore auto-release failure issue to board: %w", err)
 			}
 		}
@@ -314,10 +314,19 @@ func (c *Connector) EnsureFailureIssue(ctx context.Context, failure releasepkg.F
 	if err != nil {
 		return false, err
 	}
-	if err := c.UpdateIssueState(ctx, issue.ID, "Todo"); err != nil {
+	if err := c.moveReleaseIssueToTodo(ctx, issue.ID); err != nil {
 		return false, fmt.Errorf("add auto-release failure issue to board: %w", err)
 	}
 	return true, nil
+}
+
+func (c *Connector) moveReleaseIssueToTodo(ctx context.Context, issueID string) error {
+	if !c.usesLabelStatus() && !c.usesIssueFieldStatus() {
+		if err := c.addIntakeIssueToProject(ctx, issueID); err != nil {
+			return err
+		}
+	}
+	return c.UpdateIssueState(ctx, issueID, "Todo")
 }
 
 func workflowRunID(detailsURL string) int64 {

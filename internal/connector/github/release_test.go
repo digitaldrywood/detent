@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,6 +92,48 @@ func TestConnectorCreateTagPublishesAnnotatedReference(t *testing.T) {
 	}
 	if first, second := <-requests, <-requests; first != "/repos/example/repo/git/tags" || second != "/repos/example/repo/git/refs" {
 		t.Fatalf("CreateTag() paths = %q, %q", first, second)
+	}
+}
+
+func TestConnectorEnsureFailureIssueAddsProjectV2Item(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{method: http.MethodGet, body: `{"total_count":0,"items":[]}`},
+		{method: http.MethodPost, path: "/repos/example/repo/issues", body: `{"node_id":"I_9","number":9,"title":"fix(release): investigate ci failed for example/repo","body":"body","state":"open","html_url":"https://github.com/example/repo/issues/9"}`},
+		{method: http.MethodPost, path: "/", body: `{"data":{"addProjectV2ItemById":{"item":{"id":"PVTI_9"}}}}`},
+		{method: http.MethodPost, path: "/", body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_9","project":{"id":"PVT_1"}}]}}}}`},
+		{method: http.MethodPost, path: "/", body: `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_todo","name":"Todo"}]}}}}`},
+		{method: http.MethodPost, path: "/", body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_9"}}}}`},
+	})
+	conn := newGitHubTestConnector(t, server, Config{
+		Repository:  "example/repo",
+		ProjectSlug: "PVT_1",
+	})
+
+	created, err := conn.EnsureFailureIssue(t.Context(), releasepkg.Failure{
+		Fingerprint: "ci_failed:example/repo:head",
+		Title:       "fix(release): investigate ci failed for example/repo",
+		Body:        "body",
+	})
+	if err != nil {
+		t.Fatalf("EnsureFailureIssue() error = %v", err)
+	}
+	if !created {
+		t.Fatal("EnsureFailureIssue() created = false, want true")
+	}
+
+	requests := server.requests()
+	if len(requests) != 6 {
+		t.Fatalf("request count = %d, want 6", len(requests))
+	}
+	addQuery, _ := requests[2]["query"].(string)
+	if !strings.Contains(addQuery, "addProjectV2ItemById") {
+		t.Fatalf("query = %q, want addProjectV2ItemById before status update", addQuery)
+	}
+	variables := requests[2]["variables"].(map[string]any)
+	if variables["projectId"] != "PVT_1" || variables["contentId"] != "I_9" {
+		t.Fatalf("variables = %#v", variables)
 	}
 }
 
