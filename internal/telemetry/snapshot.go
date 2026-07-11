@@ -821,9 +821,10 @@ type WorkflowLaneTrend struct {
 }
 
 type WorkflowLaneTrendPoint struct {
-	Label          string `json:"label"`
-	Count          int64  `json:"count"`
-	AverageSeconds int64  `json:"average_seconds"`
+	Label          string    `json:"label"`
+	BucketEnd      time.Time `json:"bucket_end,omitzero"`
+	Count          int64     `json:"count"`
+	AverageSeconds int64     `json:"average_seconds"`
 }
 
 type WorkflowMetricComparison struct {

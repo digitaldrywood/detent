@@ -545,6 +545,76 @@ func TestThroughputTrendPoints(t *testing.T) {
 	}
 }
 
+func TestBoardProgressChartUsesLocalTimeTokens(t *testing.T) {
+	t.Parallel()
+
+	completedAt := time.Date(2026, 7, 10, 17, 44, 0, 0, time.UTC)
+	chart := boardProgressChart(telemetry.Snapshot{
+		GeneratedAt: completedAt.Add(time.Minute),
+		Counts:      telemetry.Counts{Completed: 1},
+		Completed: []telemetry.Completed{
+			{Issue: telemetry.Issue{ID: "issue-1"}, CompletedAt: completedAt},
+		},
+	})
+
+	if len(chart.Points) != 1 {
+		t.Fatalf("boardProgressChart() points = %d, want 1", len(chart.Points))
+	}
+	if got, want := chart.Points[0].Label, localTimeToken(completedAt, LocalTimeOnly); got != want {
+		t.Fatalf("boardProgressChart() label = %q, want %q", got, want)
+	}
+}
+
+func TestWorkflowLaneTrendPointLabel(t *testing.T) {
+	t.Parallel()
+
+	bucketEnd := time.Date(2026, 7, 10, 17, 0, 0, 0, time.UTC)
+	windowFor := func(span time.Duration) telemetry.WorkflowMetricsWindow {
+		return telemetry.WorkflowMetricsWindow{From: bucketEnd.Add(-span), To: bucketEnd}
+	}
+
+	tests := []struct {
+		name   string
+		point  telemetry.WorkflowLaneTrendPoint
+		window telemetry.WorkflowMetricsWindow
+		want   string
+	}{
+		{
+			name:   "short window uses local time",
+			point:  telemetry.WorkflowLaneTrendPoint{BucketEnd: bucketEnd},
+			window: windowFor(24 * time.Hour),
+			want:   localTimeToken(bucketEnd, LocalTimeOnly),
+		},
+		{
+			name:   "week window uses local date time",
+			point:  telemetry.WorkflowLaneTrendPoint{BucketEnd: bucketEnd},
+			window: windowFor(7 * 24 * time.Hour),
+			want:   localTimeToken(bucketEnd, LocalDateTime),
+		},
+		{
+			name:   "month window uses local date",
+			point:  telemetry.WorkflowLaneTrendPoint{BucketEnd: bucketEnd},
+			window: windowFor(30 * 24 * time.Hour),
+			want:   localTimeToken(bucketEnd, LocalDateOnly),
+		},
+		{
+			name:   "zero bucket end keeps store label",
+			point:  telemetry.WorkflowLaneTrendPoint{Label: "17:00"},
+			window: windowFor(24 * time.Hour),
+			want:   "17:00",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := workflowLaneTrendPointLabel(tt.point, tt.window); got != tt.want {
+				t.Fatalf("workflowLaneTrendPointLabel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCycleTimeHistogramChart(t *testing.T) {
 	t.Parallel()
 

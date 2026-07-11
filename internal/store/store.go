@@ -660,6 +660,7 @@ type WorkflowLaneTrend struct {
 
 type WorkflowLaneTrendPoint struct {
 	Label          string
+	BucketEnd      time.Time
 	Count          int64
 	AverageSeconds int64
 }

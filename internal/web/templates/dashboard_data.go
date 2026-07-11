@@ -4228,8 +4228,12 @@ func boardProgressChart(snapshot telemetry.Snapshot) SeriesChartData {
 	points := telemetry.BoardProgressPoints(snapshot)
 	chartPoints := make([]webchart.Point, 0, len(points))
 	for _, point := range points {
+		label := point.Label
+		if !point.At.IsZero() {
+			label = localTimeToken(point.At, LocalTimeOnly)
+		}
 		chartPoints = append(chartPoints, webchart.Point{
-			Label: point.Label,
+			Label: label,
 			Value: float64(point.Count),
 		})
 	}
@@ -4682,7 +4686,7 @@ func workflowLaneTrendCards(report telemetry.WorkflowMetrics) []workflowLaneTren
 		points := make([]webchart.Point, 0, len(trend.Points))
 		latestAverage := int64(0)
 		for _, point := range trend.Points {
-			points = append(points, webchart.Point{Label: point.Label, Value: float64(point.AverageSeconds)})
+			points = append(points, webchart.Point{Label: workflowLaneTrendPointLabel(point, window), Value: float64(point.AverageSeconds)})
 			if point.Count > 0 {
 				latestAverage = point.AverageSeconds
 			}
@@ -4709,6 +4713,21 @@ func workflowLaneTrendCards(report telemetry.WorkflowMetrics) []workflowLaneTren
 		})
 	}
 	return cards
+}
+
+func workflowLaneTrendPointLabel(point telemetry.WorkflowLaneTrendPoint, window telemetry.WorkflowMetricsWindow) string {
+	if point.BucketEnd.IsZero() {
+		return point.Label
+	}
+	span := window.To.Sub(window.From)
+	switch {
+	case span <= 48*time.Hour:
+		return localTimeToken(point.BucketEnd, LocalTimeOnly)
+	case span <= 14*24*time.Hour:
+		return localTimeToken(point.BucketEnd, LocalDateTime)
+	default:
+		return localTimeToken(point.BucketEnd, LocalDateOnly)
+	}
 }
 
 func workflowLaneFlowRows(report telemetry.WorkflowMetrics) []workflowLaneFlowRow {
