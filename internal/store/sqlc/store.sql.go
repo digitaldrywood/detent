@@ -360,47 +360,49 @@ INSERT INTO codex_sessions (
   provider_thread_id,
   provider_session_id,
   resumed_from_session_id,
-  orphan_recovery_outcome
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed
+  orphan_recovery_outcome,
+  orphan_recovery_fallback_reason
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason
 `
 
 type CreateCodexSessionParams struct {
-	RunID                     sql.NullInt64  `json:"run_id"`
-	IssueID                   sql.NullString `json:"issue_id"`
-	Identifier                sql.NullString `json:"identifier"`
-	IssueURL                  sql.NullString `json:"issue_url"`
-	StartedAt                 sql.NullString `json:"started_at"`
-	RequestedModel            sql.NullString `json:"requested_model"`
-	AgentBackendID            sql.NullString `json:"agent_backend_id"`
-	AgentBackendKind          sql.NullString `json:"agent_backend_kind"`
-	AgentRole                 sql.NullString `json:"agent_role"`
-	WorkAttemptID             sql.NullInt64  `json:"work_attempt_id"`
-	AgentRoute                sql.NullString `json:"agent_route"`
-	Provider                  sql.NullString `json:"provider"`
-	ProviderProvenance        sql.NullString `json:"provider_provenance"`
-	RequestedModelProvenance  sql.NullString `json:"requested_model_provenance"`
-	ModelProvenance           sql.NullString `json:"model_provenance"`
-	ReasoningEffort           sql.NullString `json:"reasoning_effort"`
-	ReasoningEffortProvenance sql.NullString `json:"reasoning_effort_provenance"`
-	ServiceTier               sql.NullString `json:"service_tier"`
-	ServiceTierProvenance     sql.NullString `json:"service_tier_provenance"`
-	IdentityObservedAt        sql.NullString `json:"identity_observed_at"`
-	CompletedAt               sql.NullString `json:"completed_at"`
-	Turns                     int64          `json:"turns"`
-	InputTokens               int64          `json:"input_tokens"`
-	CachedInputTokens         sql.NullInt64  `json:"cached_input_tokens"`
-	OutputTokens              int64          `json:"output_tokens"`
-	ReasoningOutputTokens     sql.NullInt64  `json:"reasoning_output_tokens"`
-	TotalTokens               int64          `json:"total_tokens"`
-	ModelContextWindow        sql.NullInt64  `json:"model_context_window"`
-	RuntimeSeconds            int64          `json:"runtime_seconds"`
-	FinalState                sql.NullString `json:"final_state"`
-	Model                     sql.NullString `json:"model"`
-	ProviderThreadID          sql.NullString `json:"provider_thread_id"`
-	ProviderSessionID         sql.NullString `json:"provider_session_id"`
-	ResumedFromSessionID      sql.NullInt64  `json:"resumed_from_session_id"`
-	OrphanRecoveryOutcome     sql.NullString `json:"orphan_recovery_outcome"`
+	RunID                        sql.NullInt64  `json:"run_id"`
+	IssueID                      sql.NullString `json:"issue_id"`
+	Identifier                   sql.NullString `json:"identifier"`
+	IssueURL                     sql.NullString `json:"issue_url"`
+	StartedAt                    sql.NullString `json:"started_at"`
+	RequestedModel               sql.NullString `json:"requested_model"`
+	AgentBackendID               sql.NullString `json:"agent_backend_id"`
+	AgentBackendKind             sql.NullString `json:"agent_backend_kind"`
+	AgentRole                    sql.NullString `json:"agent_role"`
+	WorkAttemptID                sql.NullInt64  `json:"work_attempt_id"`
+	AgentRoute                   sql.NullString `json:"agent_route"`
+	Provider                     sql.NullString `json:"provider"`
+	ProviderProvenance           sql.NullString `json:"provider_provenance"`
+	RequestedModelProvenance     sql.NullString `json:"requested_model_provenance"`
+	ModelProvenance              sql.NullString `json:"model_provenance"`
+	ReasoningEffort              sql.NullString `json:"reasoning_effort"`
+	ReasoningEffortProvenance    sql.NullString `json:"reasoning_effort_provenance"`
+	ServiceTier                  sql.NullString `json:"service_tier"`
+	ServiceTierProvenance        sql.NullString `json:"service_tier_provenance"`
+	IdentityObservedAt           sql.NullString `json:"identity_observed_at"`
+	CompletedAt                  sql.NullString `json:"completed_at"`
+	Turns                        int64          `json:"turns"`
+	InputTokens                  int64          `json:"input_tokens"`
+	CachedInputTokens            sql.NullInt64  `json:"cached_input_tokens"`
+	OutputTokens                 int64          `json:"output_tokens"`
+	ReasoningOutputTokens        sql.NullInt64  `json:"reasoning_output_tokens"`
+	TotalTokens                  int64          `json:"total_tokens"`
+	ModelContextWindow           sql.NullInt64  `json:"model_context_window"`
+	RuntimeSeconds               int64          `json:"runtime_seconds"`
+	FinalState                   sql.NullString `json:"final_state"`
+	Model                        sql.NullString `json:"model"`
+	ProviderThreadID             sql.NullString `json:"provider_thread_id"`
+	ProviderSessionID            sql.NullString `json:"provider_session_id"`
+	ResumedFromSessionID         sql.NullInt64  `json:"resumed_from_session_id"`
+	OrphanRecoveryOutcome        sql.NullString `json:"orphan_recovery_outcome"`
+	OrphanRecoveryFallbackReason sql.NullString `json:"orphan_recovery_fallback_reason"`
 }
 
 func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSessionParams) (CodexSession, error) {
@@ -440,6 +442,7 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		arg.ProviderSessionID,
 		arg.ResumedFromSessionID,
 		arg.OrphanRecoveryOutcome,
+		arg.OrphanRecoveryFallbackReason,
 	)
 	var i CodexSession
 	err := row.Scan(
@@ -480,6 +483,7 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		&i.IdentityObservedAt,
 		&i.OrphanRecoveryOutcome,
 		&i.SkillDraftProposed,
+		&i.OrphanRecoveryFallbackReason,
 	)
 	return i, err
 }
@@ -1168,7 +1172,7 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, 
 }
 
 const getCodexSession = `-- name: GetCodexSession :one
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason
 FROM codex_sessions
 WHERE id = ?
 `
@@ -1214,6 +1218,7 @@ func (q *Queries) GetCodexSession(ctx context.Context, id int64) (CodexSession, 
 		&i.IdentityObservedAt,
 		&i.OrphanRecoveryOutcome,
 		&i.SkillDraftProposed,
+		&i.OrphanRecoveryFallbackReason,
 	)
 	return i, err
 }
@@ -2280,7 +2285,7 @@ func (q *Queries) ListOrphanedAgentSessions(ctx context.Context, projectID strin
 }
 
 const listRecentCodexSessions = `-- name: ListRecentCodexSessions :many
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason
 FROM codex_sessions
 ORDER BY completed_at DESC, id DESC
 LIMIT ?
@@ -2333,6 +2338,7 @@ func (q *Queries) ListRecentCodexSessions(ctx context.Context, limit int64) ([]C
 			&i.IdentityObservedAt,
 			&i.OrphanRecoveryOutcome,
 			&i.SkillDraftProposed,
+			&i.OrphanRecoveryFallbackReason,
 		); err != nil {
 			return nil, err
 		}
@@ -3034,19 +3040,26 @@ const updateCodexSessionResumeState = `-- name: UpdateCodexSessionResumeState :e
 UPDATE codex_sessions
 SET resumed_from_session_id = ?1,
     orphan_recovery_outcome = ?2,
+    orphan_recovery_fallback_reason = ?3,
     provider_thread_id = CASE WHEN ?1 IS NULL THEN NULL ELSE provider_thread_id END,
     provider_session_id = CASE WHEN ?1 IS NULL THEN NULL ELSE provider_session_id END
-WHERE id = ?3
+WHERE id = ?4
 `
 
 type UpdateCodexSessionResumeStateParams struct {
-	ResumedFromSessionID  sql.NullInt64  `json:"resumed_from_session_id"`
-	OrphanRecoveryOutcome sql.NullString `json:"orphan_recovery_outcome"`
-	ID                    int64          `json:"id"`
+	ResumedFromSessionID         sql.NullInt64  `json:"resumed_from_session_id"`
+	OrphanRecoveryOutcome        sql.NullString `json:"orphan_recovery_outcome"`
+	OrphanRecoveryFallbackReason sql.NullString `json:"orphan_recovery_fallback_reason"`
+	ID                           int64          `json:"id"`
 }
 
 func (q *Queries) UpdateCodexSessionResumeState(ctx context.Context, arg UpdateCodexSessionResumeStateParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, updateCodexSessionResumeState, arg.ResumedFromSessionID, arg.OrphanRecoveryOutcome, arg.ID)
+	result, err := q.db.ExecContext(ctx, updateCodexSessionResumeState,
+		arg.ResumedFromSessionID,
+		arg.OrphanRecoveryOutcome,
+		arg.OrphanRecoveryFallbackReason,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}

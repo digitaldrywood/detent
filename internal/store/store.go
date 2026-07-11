@@ -228,22 +228,23 @@ type RunStop struct {
 }
 
 type SessionStart struct {
-	RunID                 int64
-	WorkAttemptID         int64
-	IssueID               string
-	Identifier            string
-	IssueURL              string
-	StartedAt             time.Time
-	Model                 string
-	RequestedModel        string
-	AgentBackendID        string
-	AgentBackendKind      string
-	AgentRole             string
-	RuntimeIdentity       agentidentity.Identity
-	ProviderThreadID      string
-	ProviderSessionID     string
-	ResumedFromSessionID  int64
-	OrphanRecoveryOutcome string
+	RunID                        int64
+	WorkAttemptID                int64
+	IssueID                      string
+	Identifier                   string
+	IssueURL                     string
+	StartedAt                    time.Time
+	Model                        string
+	RequestedModel               string
+	AgentBackendID               string
+	AgentBackendKind             string
+	AgentRole                    string
+	RuntimeIdentity              agentidentity.Identity
+	ProviderThreadID             string
+	ProviderSessionID            string
+	ResumedFromSessionID         int64
+	OrphanRecoveryOutcome        string
+	OrphanRecoveryFallbackReason string
 }
 
 type SessionProviderIdentity struct {
@@ -252,8 +253,9 @@ type SessionProviderIdentity struct {
 }
 
 type SessionResumeState struct {
-	ResumedFromSessionID  int64
-	OrphanRecoveryOutcome string
+	ResumedFromSessionID         int64
+	OrphanRecoveryOutcome        string
+	OrphanRecoveryFallbackReason string
 }
 
 type SessionFinish struct {

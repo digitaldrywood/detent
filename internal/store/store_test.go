@@ -1146,7 +1146,7 @@ func TestOrphanedAgentSessionsJournalProviderIdentityAndExcludeCleanExits(t *tes
 	if err != nil {
 		t.Fatalf("StartSession(fallback) error = %v", err)
 	}
-	if err := backend.UpdateSessionResumeState(ctx, fallbackID, SessionResumeState{OrphanRecoveryOutcome: OrphanRecoveryFresh}); err != nil {
+	if err := backend.UpdateSessionResumeState(ctx, fallbackID, SessionResumeState{OrphanRecoveryOutcome: OrphanRecoveryFresh, OrphanRecoveryFallbackReason: "rollout file not found"}); err != nil {
 		t.Fatalf("UpdateSessionResumeState(fallback) error = %v", err)
 	}
 	fallback, err := backend.Queries().GetCodexSession(ctx, fallbackID)
@@ -1155,6 +1155,9 @@ func TestOrphanedAgentSessionsJournalProviderIdentityAndExcludeCleanExits(t *tes
 	}
 	if fallback.ResumedFromSessionID.Valid || fallback.ProviderThreadID.Valid || fallback.ProviderSessionID.Valid || fallback.OrphanRecoveryOutcome.String != OrphanRecoveryFresh {
 		t.Fatalf("fallback session resume metadata = %#v, want cleared provider source and fresh outcome", fallback)
+	}
+	if fallback.OrphanRecoveryFallbackReason.String != "rollout file not found" {
+		t.Fatalf("fallback reason = %q, want rollout file not found", fallback.OrphanRecoveryFallbackReason.String)
 	}
 
 	cleanID, err := backend.StartSession(ctx, SessionStart{
