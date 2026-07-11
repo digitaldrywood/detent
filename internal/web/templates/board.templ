@@ -261,7 +261,7 @@ templ boardKanbanDragMoveForm(card boardCardView) {
 // delegated boardLaneScript outside #snapshot, so morphs cannot tear its
 // behavior down; the script re-asserts open state on htmx:afterSettle.
 templ boardLanePicker(view boardView) {
-	<details id="board-lane-picker" class="relative" data-board-lane-picker data-preserve-details="board-lane-picker">
+	<details id="board-lane-picker" class="relative col-span-3 justify-self-start md:col-span-1" data-board-lane-picker data-preserve-details="board-lane-picker">
 		<summary class="flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-chip border border-line px-2.5 py-1 text-2xs text-sec hover:text-text [&::-webkit-details-marker]:hidden md:min-h-0">
 			Lanes <span data-board-lane-count class="tabular-nums">{ boardLaneCountLabel(view) }</span>
 			<span
