@@ -254,6 +254,41 @@ func TestAnnotateUnblockerCounts(t *testing.T) {
 	}
 }
 
+func TestAnnotateUnblockerCountsIsInputOrderIndependent(t *testing.T) {
+	t.Parallel()
+
+	dependents := []connector.Issue{
+		rankingDependencyIssue("blocked-a", "Blocked", "blocker-one", "blocker-two"),
+		rankingDependencyIssue("blocked-b", "Blocked", "blocker-two"),
+		rankingDependencyIssue("waiting-c", "Todo", "blocker-two"),
+		rankingDependencyIssue("duplicate-edge", "Blocked", "blocker-one", "blocker-one"),
+	}
+	want := map[string]int{"blocker-one": 2, "blocker-two": 3}
+
+	permutations := [][]int{
+		{0, 1, 2, 3},
+		{3, 2, 1, 0},
+		{2, 0, 3, 1},
+		{1, 3, 0, 2},
+	}
+	for _, permutation := range permutations {
+		targets := []connector.Issue{
+			rankingIssue("blocker-one", "Todo", 0, time.Time{}),
+			rankingIssue("blocker-two", "Todo", 0, time.Time{}),
+		}
+		issues := cloneRankingIssues(targets)
+		for _, index := range permutation {
+			issues = append(issues, cloneIssue(dependents[index]))
+		}
+		annotateUnblockerCounts(targets, issues, []string{"todo"}, []string{"done"}, true)
+		for _, target := range targets {
+			if target.UnblockerCount != want[target.ID] {
+				t.Fatalf("permutation %v: %s UnblockerCount = %d, want %d", permutation, target.ID, target.UnblockerCount, want[target.ID])
+			}
+		}
+	}
+}
+
 func TestDispatchPlannerRecordsUnblockerSelectionReason(t *testing.T) {
 	t.Parallel()
 
