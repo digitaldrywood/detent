@@ -556,13 +556,11 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		Verify:  s.cfg.BinaryVerifier,
 		Sign:    s.cfg.BinarySigner,
 	}
-	if releaseSwap {
-		replacement.AfterReplace = func(_ context.Context, target string) error {
-			return writeReleaseInstallLock(s.cfg.GOOS, DetectionOptions{
-				HomeDir: s.cfg.HomeDir,
-				Env:     s.cfg.Env,
-			}, target)
-		}
+	replacement.AfterReplace = func(_ context.Context, target string) error {
+		return writeReleaseInstallLock(s.cfg.GOOS, DetectionOptions{
+			HomeDir: s.cfg.HomeDir,
+			Env:     s.cfg.Env,
+		}, target, status.LatestVersion)
 	}
 	if err := ReplaceBinary(ctx, replacement); err != nil {
 		status.Action = ActionRefused
@@ -1604,29 +1602,67 @@ func installLockCandidates(goos string, opts DetectionOptions) []string {
 }
 
 func readInstallLockBinary(path string) (string, bool) {
+	metadata, ok := readInstallLock(path)
+	return metadata.binary, ok && metadata.binary != ""
+}
+
+type installLockMetadata struct {
+	binary  string
+	version string
+}
+
+func readInstallLock(path string) (installLockMetadata, bool) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", false
+		return installLockMetadata{}, false
 	}
+	var metadata installLockMetadata
 	for line := range strings.SplitSeq(string(raw), "\n") {
 		key, value, ok := strings.Cut(line, "=")
-		if !ok || strings.TrimSpace(key) != "binary" {
+		if !ok {
 			continue
 		}
 		value = strings.TrimSpace(value)
-		if value != "" {
-			return value, true
+		switch strings.TrimSpace(key) {
+		case "binary":
+			metadata.binary = value
+		case "version":
+			metadata.version = value
 		}
 	}
-	return "", false
+	return metadata, metadata.binary != ""
 }
 
-func writeReleaseInstallLock(goos string, opts DetectionOptions, binary string) error {
+func InstalledReleaseVersion(opts DetectionOptions) string {
+	goos := firstNonEmpty(opts.GOOS, runtime.GOOS)
+	executable := cleanPath(opts.ExecutablePath, goos)
+	realExecutable := executable
+	evalSymlinks := opts.EvalSymlinks
+	if evalSymlinks == nil {
+		evalSymlinks = filepath.EvalSymlinks
+	}
+	if real, err := evalSymlinks(opts.ExecutablePath); err == nil && strings.TrimSpace(real) != "" {
+		realExecutable = cleanPath(real, goos)
+	}
+	for _, candidate := range installLockCandidates(goos, opts) {
+		metadata, ok := readInstallLock(candidate)
+		if !ok || strings.TrimSpace(metadata.version) == "" {
+			continue
+		}
+		binary := cleanPath(metadata.binary, goos)
+		if samePath(binary, executable, goos) || samePath(binary, realExecutable, goos) {
+			return metadata.version
+		}
+	}
+	return ""
+}
+
+func writeReleaseInstallLock(goos string, opts DetectionOptions, binary string, version string) error {
 	lockPath, ok := installLockPath(goos, opts)
 	if !ok {
 		return errors.New("resolve release install lock path: home directory is unavailable")
 	}
-	return writeInstallLock(lockPath, binary, time.Now().UTC())
+	return writeInstallLock(lockPath, binary, version, time.Now().UTC())
 }
 
 func installLockPath(goos string, opts DetectionOptions) (string, bool) {
@@ -1647,7 +1683,7 @@ func installLockPath(goos string, opts DetectionOptions) (string, bool) {
 	return "", false
 }
 
-func writeInstallLock(path string, binary string, installedAt time.Time) error {
+func writeInstallLock(path string, binary string, version string, installedAt time.Time) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("install lock path is required")
 	}
@@ -1670,7 +1706,7 @@ func writeInstallLock(path string, binary string, installedAt time.Time) error {
 			removeFile(tempPath)
 		}
 	}()
-	raw := fmt.Sprintf("binary=%s\ninstalled_at=%s\n", binary, installedAt.UTC().Format(time.RFC3339))
+	raw := fmt.Sprintf("binary=%s\nversion=%s\ninstalled_at=%s\n", binary, strings.TrimSpace(version), installedAt.UTC().Format(time.RFC3339))
 	if _, err := temp.WriteString(raw); err != nil {
 		closeErr := temp.Close()
 		if closeErr != nil {

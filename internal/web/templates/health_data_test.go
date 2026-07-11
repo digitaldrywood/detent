@@ -94,8 +94,8 @@ func TestHealthRows(t *testing.T) {
 	}
 
 	rows := healthRows(snapshot)
-	if len(rows) != 4 {
-		t.Fatalf("expected 4 rows, got %d", len(rows))
+	if len(rows) != 5 {
+		t.Fatalf("expected 5 rows, got %d", len(rows))
 	}
 	rest := rows[0]
 	if rest.Quota != "4,178 / 5,000" || rest.QuotaPct != 83 || rest.QuotaWarn {
@@ -112,7 +112,10 @@ func TestHealthRows(t *testing.T) {
 	if scheduler.Status != "Running" || !strings.Contains(scheduler.Detail, "2 active sessions") {
 		t.Fatalf("scheduler row = %+v", scheduler)
 	}
-	backoff := rows[3]
+	if update := rows[3]; update.Status != "Disabled" {
+		t.Fatalf("update row = %+v", update)
+	}
+	backoff := rows[4]
 	if backoff.Status != "Active" || !strings.Contains(backoff.Detail, "GraphQL") {
 		t.Fatalf("backoff row = %+v", backoff)
 	}
@@ -153,11 +156,33 @@ func TestHealthRowsRESTUsageBackoff(t *testing.T) {
 
 func TestHealthRowsIdleWithoutData(t *testing.T) {
 	rows := healthRows(telemetry.Snapshot{})
-	if len(rows) != 2 {
-		t.Fatalf("expected scheduler and backoff rows only, got %d", len(rows))
+	if len(rows) != 3 {
+		t.Fatalf("expected scheduler, update, and backoff rows, got %d", len(rows))
 	}
-	if rows[0].Status != "Idle" || rows[1].Status != "None" {
+	if rows[0].Status != "Idle" || rows[1].Status != "Disabled" || rows[2].Status != "None" {
 		t.Fatalf("idle rows = %+v", rows)
+	}
+}
+
+func TestHealthUpdateRowShowsRuntimeStatus(t *testing.T) {
+	t.Parallel()
+
+	lastCheck := time.Date(2026, 7, 11, 14, 0, 0, 0, time.UTC)
+	nextCheck := lastCheck.Add(12 * time.Hour)
+	row := healthUpdateRow(telemetry.Update{
+		Enabled:            true,
+		AutoApplyEnabled:   true,
+		CheckIntervalHours: 12,
+		State:              "scheduled",
+		LastCheckAt:        &lastCheck,
+		LastAppliedVersion: "1.2.4",
+		NextCheckAt:        &nextCheck,
+	})
+	if row.Kind != primitives.KindOK || row.Status != "Scheduled" {
+		t.Fatalf("healthUpdateRow() = %+v", row)
+	}
+	if !strings.Contains(row.Detail, "last applied 1.2.4") || !row.DetailAt.Equal(lastCheck) || !row.ResetAt.Equal(nextCheck) {
+		t.Fatalf("healthUpdateRow() status detail = %+v", row)
 	}
 }
 

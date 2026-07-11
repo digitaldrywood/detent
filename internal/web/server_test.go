@@ -6152,6 +6152,40 @@ func TestHealthReportsDraining(t *testing.T) {
 	}
 }
 
+func TestHealthReportsUpdateCheckStatus(t *testing.T) {
+	t.Parallel()
+
+	lastCheck := time.Date(2026, 7, 11, 15, 0, 0, 0, time.UTC)
+	nextCheck := lastCheck.Add(24 * time.Hour)
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: lastCheck,
+		Update: telemetry.Update{
+			Enabled:            true,
+			CheckIntervalHours: 24,
+			State:              "scheduled",
+			LastCheckAt:        &lastCheck,
+			LastAppliedVersion: "1.2.4",
+			NextCheckAt:        &nextCheck,
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	payload := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	update, ok := payload["update"].(map[string]any)
+	if !ok {
+		t.Fatalf("update payload = %#v, want object", payload["update"])
+	}
+	if update["state"] != "scheduled" || update["last_applied_version"] != "1.2.4" || update["next_check_at"] == nil {
+		t.Fatalf("update payload = %#v", update)
+	}
+}
+
 func TestHealthReportsEnforcedProjectBudgets(t *testing.T) {
 	t.Parallel()
 

@@ -18,6 +18,7 @@ type Snapshot struct {
 	DashboardURL       string              `json:"dashboard_url,omitempty"`
 	Auth               AuthHealth          `json:"auth,omitzero"`
 	Shutdown           Shutdown            `json:"shutdown"`
+	Update             Update              `json:"update,omitzero"`
 	Refresh            Refresh             `json:"refresh"`
 	Events             []ActivityEvent     `json:"events,omitempty"`
 	Counts             Counts              `json:"counts"`
@@ -41,6 +42,22 @@ type Snapshot struct {
 	CycleTime          CycleTimeReport     `json:"cycle_time"`
 	WorkflowMetrics    WorkflowMetrics     `json:"workflow_metrics"`
 	TokenTrend         []TokenTrendPoint   `json:"token_trend,omitempty"`
+}
+
+type Update struct {
+	Enabled            bool       `json:"enabled"`
+	AutoApplyEnabled   bool       `json:"auto_apply_enabled"`
+	CheckIntervalHours int        `json:"check_interval_hours"`
+	State              string     `json:"state,omitempty"`
+	LastCheckAt        *time.Time `json:"last_check_at,omitempty"`
+	LastAppliedVersion string     `json:"last_applied_version,omitempty"`
+	NextCheckAt        *time.Time `json:"next_check_at,omitempty"`
+	AvailableVersion   string     `json:"available_version,omitempty"`
+	LastError          string     `json:"last_error,omitempty"`
+}
+
+func (u Update) IsZero() bool {
+	return !u.Enabled && !u.AutoApplyEnabled && u.CheckIntervalHours == 0 && u.State == "" && u.LastCheckAt == nil && u.LastAppliedVersion == "" && u.NextCheckAt == nil && u.AvailableVersion == "" && u.LastError == ""
 }
 
 type Shutdown struct {

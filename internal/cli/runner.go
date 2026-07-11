@@ -23,6 +23,7 @@ import (
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	detentupdate "github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -34,6 +35,10 @@ const (
 
 type lifetimeTotalsSource interface {
 	LifetimeTotals(context.Context) (store.LifetimeTotals, error)
+}
+
+type autoUpdateStatusSource interface {
+	Status() detentupdate.AutoStatus
 }
 
 // withRunnerFactory returns a project.Factory that constructs a
@@ -285,6 +290,7 @@ func publishSnapshots(
 	dashboardURL string,
 	interval time.Duration,
 	now func() time.Time,
+	updateSources ...autoUpdateStatusSource,
 ) {
 	if registry == nil || snapshotHub == nil {
 		return
@@ -304,7 +310,7 @@ func publishSnapshots(
 	defer ticker.Stop()
 
 	for {
-		if err := publishSnapshotOnce(ctx, registry, snapshotHub, seq, now(), trend, lifetimeSource, dashboardURL); err != nil {
+		if err := publishSnapshotOnce(ctx, registry, snapshotHub, seq, now(), trend, lifetimeSource, dashboardURL, updateSources...); err != nil {
 			slog.Default().Warn("publish telemetry snapshot failed", "error", err)
 		}
 		select {
@@ -371,11 +377,12 @@ func publishStartupSnapshotOnce(
 	lifetimeSource lifetimeTotalsSource,
 	dashboardURL string,
 	now time.Time,
+	updateSources ...autoUpdateStatusSource,
 ) error {
 	if snapshotHub == nil {
 		return nil
 	}
-	snapshot := startupSnapshot(ctx, cfg, lifetimeSource, dashboardURL, now)
+	snapshot := startupSnapshot(ctx, cfg, lifetimeSource, dashboardURL, now, updateSources...)
 	if err := snapshotHub.Publish(snapshot); err != nil {
 		return fmt.Errorf("publish startup snapshot: %w", err)
 	}
@@ -388,6 +395,7 @@ func startupSnapshot(
 	lifetimeSource lifetimeTotalsSource,
 	dashboardURL string,
 	now time.Time,
+	updateSources ...autoUpdateStatusSource,
 ) telemetry.Snapshot {
 	nextRefreshAt := now
 	refresh := telemetry.Refresh{Status: telemetry.RefreshStatusInitializing, NextRefreshAt: &nextRefreshAt}
@@ -399,6 +407,7 @@ func startupSnapshot(
 		Shutdown:       telemetry.Shutdown{Status: "running"},
 		Refresh:        refresh,
 		LifetimeTotals: lifetimeTotals(ctx, lifetimeSource),
+		Update:         telemetryUpdateStatus(updateSources),
 	}
 	switch len(snapshot.Projects) {
 	case 0:
@@ -447,6 +456,7 @@ func publishSnapshotOnce(
 	trend *tokenTrendRecorder,
 	lifetimeSource lifetimeTotalsSource,
 	dashboardURL string,
+	updateSources ...autoUpdateStatusSource,
 ) error {
 	merged := telemetry.Snapshot{GeneratedAt: now}
 	trackedProjects := registry.List()
@@ -521,11 +531,30 @@ func publishSnapshotOnce(
 		merged = trend.apply(merged)
 	}
 	merged.LifetimeTotals = lifetimeTotals(ctx, lifetimeSource)
+	merged.Update = telemetryUpdateStatus(updateSources)
 	merged.Seq = seq.Add(1)
 	if err := snapshotHub.Publish(merged); err != nil {
 		return fmt.Errorf("publish snapshot: %w", err)
 	}
 	return nil
+}
+
+func telemetryUpdateStatus(sources []autoUpdateStatusSource) telemetry.Update {
+	if len(sources) == 0 || sources[0] == nil {
+		return telemetry.Update{}
+	}
+	status := sources[0].Status()
+	return telemetry.Update{
+		Enabled:            status.Enabled,
+		AutoApplyEnabled:   status.AutoApplyEnabled,
+		CheckIntervalHours: int(status.CheckInterval / time.Hour),
+		State:              status.State,
+		LastCheckAt:        status.LastCheckAt,
+		LastAppliedVersion: status.LastAppliedVersion,
+		NextCheckAt:        status.NextCheckAt,
+		AvailableVersion:   status.AvailableVersion,
+		LastError:          status.LastError,
+	}
 }
 
 func projectSnapshotMetadata(trackedProject *project.Project) telemetry.Project {

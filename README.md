@@ -1177,6 +1177,10 @@ env: prod
 log_level: info
 github_token: gh
 port: 4000
+update:
+  auto_check_enabled: true
+  check_interval_hours: 24
+  auto_apply_enabled: false
 ```
 
 5. Verify the setup before dispatching:
@@ -2021,6 +2025,10 @@ github_token: gh
 api_token: detent_replace_with_random_secret
 port: 4000
 instance_name: buildbox
+update:
+  auto_check_enabled: false
+  check_interval_hours: 24
+  auto_apply_enabled: false
 global:
   max_concurrent_agents: 8
   scheduling: weighted
@@ -2644,6 +2652,9 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | API token | | `DETENT_API_TOKEN` | `api_token` | open on loopback, fail closed on non-loopback |
 | Web port | `--port` | `PORT` | `port` | `4000` |
 | Instance name | | | `instance_name` | short hostname |
+| Automatic update checks | | | `update.auto_check_enabled` | `false` |
+| Update check interval | | | `update.check_interval_hours` | `24` |
+| Automatic update apply | | | `update.auto_apply_enabled` | `false` |
 
 The web host resolves from `--host`, then the first registered workflow's
 `server.host`, then the built-in `127.0.0.1` default. It is not a top-level
@@ -2663,6 +2674,16 @@ from the first non-empty value in this order: top-level `instance_name` in
 single-project fallback mode without `global.yaml`, workflow top-level
 `identity.name` is used before the short hostname. Names are trimmed, must be a
 single line, and are capped at 40 characters in the web UI.
+
+Automatic update checks are host-specific and disabled by default. When
+enabled, Detent checks on a jittered in-process schedule and reports the last
+check, available or applied version, and next check on `/health` and the Health
+dashboard. `detent doctor` reports whether the host is opted in and suggests
+enabling checks when it is not. Automatic apply remains off unless explicitly
+enabled and only replaces release-installer binaries; other install sources
+remain notification-only. A successful automatic apply uses the normal
+graceful drain path, then re-executes the replaced binary on POSIX systems or
+exits cleanly for an external supervisor to restart it on other platforms.
 
 `detent doctor` prints the resolved runtime values and their sources, with the
 GitHub token redacted.

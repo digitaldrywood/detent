@@ -16,10 +16,22 @@ import (
 )
 
 func main() {
-	os.Exit(runCLI(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
+	exitCode, restartBinary := runCLIResult(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	if exitCode == cli.ExitSuccess && restartBinary != "" {
+		if err := restartProcess(restartBinary, os.Args, os.Environ()); err != nil {
+			slog.Error("restart updated Detent process", "binary", restartBinary, "error", err)
+			os.Exit(cli.ExitGeneral)
+		}
+	}
+	os.Exit(exitCode)
 }
 
 func runCLI(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	exitCode, _ := runCLIResult(ctx, args, stdout, stderr)
+	return exitCode
+}
+
+func runCLIResult(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) (int, string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -28,10 +40,11 @@ func runCLI(ctx context.Context, args []string, stdout io.Writer, stderr io.Writ
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	shutdownController := cli.NewShutdownController()
+	restartRequest := cli.NewRestartRequest()
 	stopSignals := notifyShutdownRequests(shutdownController, cancel, stderr, os.Exit)
 	defer stopSignals()
 
-	cmd := newRootCommand(ctx, shutdownController)
+	cmd := newRootCommandWithRestart(ctx, shutdownController, restartRequest)
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
 	cmd.SetArgs(args)
@@ -40,11 +53,11 @@ func runCLI(ctx context.Context, args []string, stdout io.Writer, stderr io.Writ
 	if err := cmd.ExecuteContext(ctx); err != nil {
 		if errors.Is(err, context.Canceled) {
 			slog.Info("shutdown requested")
-			return cli.ExitSuccess
+			return cli.ExitSuccess, restartRequest.Binary()
 		}
-		return renderCommandError(cmd, err, stderr, format, formatErr)
+		return renderCommandError(cmd, err, stderr, format, formatErr), ""
 	}
-	return cli.ExitSuccess
+	return cli.ExitSuccess, restartRequest.Binary()
 }
 
 func renderCommandError(cmd *cobra.Command, err error, stderr io.Writer, format cli.OutputFormat, formatErr error) int {
@@ -76,14 +89,25 @@ func writePrettyCommandError(stderr io.Writer, err error, problem cli.Problem) e
 }
 
 func newRootCommand(ctx context.Context, shutdownControllers ...*cli.ShutdownController) *cobra.Command {
+	var shutdownController *cli.ShutdownController
+	if len(shutdownControllers) > 0 {
+		shutdownController = shutdownControllers[0]
+	}
+	return newRootCommandWithRestart(ctx, shutdownController, nil)
+}
+
+func newRootCommandWithRestart(ctx context.Context, shutdownController *cli.ShutdownController, restartRequest *cli.RestartRequest) *cobra.Command {
 	build := currentBuildInfo()
 	opts := []cli.Option{
 		cli.WithVersion(build.Version),
 		cli.WithBuild(build),
 		cli.WithLoggerFunc(setupLoggerFromRuntime),
 	}
-	if len(shutdownControllers) > 0 && shutdownControllers[0] != nil {
-		opts = append(opts, cli.WithShutdownController(shutdownControllers[0]))
+	if shutdownController != nil {
+		opts = append(opts, cli.WithShutdownController(shutdownController))
+	}
+	if restartRequest != nil {
+		opts = append(opts, cli.WithRestartRequest(restartRequest))
 	}
 	cmd := cli.NewRootCommand(ctx, opts...)
 	cmd.Version = build.Version

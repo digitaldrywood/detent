@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +26,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 var ErrDoctorFailed = errors.New("doctor found failed checks")
@@ -334,6 +337,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	if global != nil {
 		globalConfig := *global
 		githubToken := runtime.GitHubToken
+		jobs = append(jobs, doctorCheckJob{
+			Name: "Update checking",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorUpdateRuntime(jobCtx, globalConfig.Update, boot, deps)}
+			},
+		})
 		if projectScopeCheck == nil {
 			jobs = append(jobs, doctorProjectCheckJobs(globalConfig, deps, githubToken, cfg.AllowWriteProbes)...)
 		}
@@ -393,6 +402,88 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	}
 
 	return report
+}
+
+func checkDoctorUpdateRuntime(ctx context.Context, cfg globalconfig.Update, boot BootConfig, deps doctorDeps) doctorCheck {
+	status, ok := readDoctorUpdateStatus(ctx, boot, deps)
+	if !ok {
+		return checkDoctorUpdate(cfg, nil)
+	}
+	return checkDoctorUpdate(cfg, &status)
+}
+
+func checkDoctorUpdate(cfg globalconfig.Update, runtimeStatus *telemetry.Update) doctorCheck {
+	detail := doctorUpdateStatusDetail(runtimeStatus)
+	if !cfg.AutoCheckEnabled {
+		return doctorCheck{
+			Name:   "Update checking",
+			Status: doctorWarn,
+			Detail: "suggestion: update.auto_check_enabled is disabled; you are responsible for noticing new Detent releases; " + detail,
+			Hint:   "Set update.auto_check_enabled: true in global.yaml to check automatically while keeping update.auto_apply_enabled off for notification-only behavior.",
+		}
+	}
+	mode := "notify only"
+	if cfg.AutoApplyEnabled {
+		mode = "auto-apply and graceful restart"
+	}
+	return doctorCheck{
+		Name:   "Update checking",
+		Status: doctorOK,
+		Detail: fmt.Sprintf("enabled every %d hours (%s); %s", cfg.NormalizedCheckIntervalHours(), mode, detail),
+	}
+}
+
+func readDoctorUpdateStatus(ctx context.Context, boot BootConfig, deps doctorDeps) (telemetry.Update, bool) {
+	port := defaultWebPort
+	if boot.Port != nil {
+		port = *boot.Port
+	}
+	if port <= 0 || deps.httpDo == nil {
+		return telemetry.Update{}, false
+	}
+	host := unbracketIPv6Host(strings.TrimSpace(boot.Host))
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = defaultWebHost
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort(host, strconv.Itoa(port))+"/health", nil)
+	if err != nil {
+		return telemetry.Update{}, false
+	}
+	resp, err := deps.httpDo(req)
+	if err != nil {
+		return telemetry.Update{}, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return telemetry.Update{}, false
+	}
+	var payload struct {
+		Update telemetry.Update `json:"update"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil || payload.Update.IsZero() {
+		return telemetry.Update{}, false
+	}
+	return payload.Update, true
+}
+
+func doctorUpdateStatusDetail(status *telemetry.Update) string {
+	if status == nil {
+		return "last check: unavailable; last applied version: unavailable; next check: unavailable"
+	}
+	lastCheck := "never"
+	if status.LastCheckAt != nil {
+		lastCheck = status.LastCheckAt.Format(time.RFC3339)
+	}
+	lastApplied := strings.TrimSpace(status.LastAppliedVersion)
+	if lastApplied == "" {
+		lastApplied = "none"
+	}
+	nextCheck := "not scheduled"
+	if status.NextCheckAt != nil {
+		nextCheck = status.NextCheckAt.Format(time.RFC3339)
+	}
+	return "last check: " + lastCheck + "; last applied version: " + lastApplied + "; next check: " + nextCheck
 }
 
 func runDoctorChecks(ctx context.Context, jobs []doctorCheckJob, timeout time.Duration, out io.Writer) [][]doctorCheck {

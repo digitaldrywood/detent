@@ -28,6 +28,68 @@ import (
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
+func TestCheckDoctorUpdate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		cfg        globalconfig.Update
+		wantStatus doctorStatus
+		wantDetail string
+	}{
+		{
+			name:       "unset suggests automatic checks",
+			wantStatus: doctorWarn,
+			wantDetail: "update.auto_check_enabled",
+		},
+		{
+			name: "enabled is healthy",
+			cfg: globalconfig.Update{
+				AutoCheckEnabled:   true,
+				CheckIntervalHours: 12,
+			},
+			wantStatus: doctorOK,
+			wantDetail: "enabled every 12 hours",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := checkDoctorUpdate(tt.cfg, nil)
+			if got.Status != tt.wantStatus || !strings.Contains(got.Detail, tt.wantDetail) {
+				t.Fatalf("checkDoctorUpdate() = %#v, want status %s detail %q", got, tt.wantStatus, tt.wantDetail)
+			}
+		})
+	}
+}
+
+func TestCheckDoctorUpdateRuntimeShowsHealthTimestamps(t *testing.T) {
+	t.Parallel()
+
+	lastCheck := time.Date(2026, 7, 11, 15, 0, 0, 0, time.UTC)
+	nextCheck := lastCheck.Add(24 * time.Hour)
+	port := 4101
+	got := checkDoctorUpdateRuntime(context.Background(), globalconfig.Update{
+		AutoCheckEnabled: true,
+	}, BootConfig{Host: "127.0.0.1", Port: &port}, doctorDeps{
+		httpDo: func(req *http.Request) (*http.Response, error) {
+			if req.URL.String() != "http://127.0.0.1:4101/health" {
+				t.Fatalf("request URL = %q", req.URL)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"update":{"enabled":true,"state":"scheduled","last_check_at":"` + lastCheck.Format(time.RFC3339) + `","last_applied_version":"1.2.4","next_check_at":"` + nextCheck.Format(time.RFC3339) + `"}}`)),
+			}, nil
+		},
+	})
+	for _, want := range []string{lastCheck.Format(time.RFC3339), "last applied version: 1.2.4", nextCheck.Format(time.RFC3339)} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want %q", got.Detail, want)
+		}
+	}
+}
+
 func TestCheckDoctorBinary(t *testing.T) {
 	t.Parallel()
 

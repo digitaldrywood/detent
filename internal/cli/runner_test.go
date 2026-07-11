@@ -22,10 +22,36 @@ import (
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	detentupdate "github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 var errProjectFactoryStub = errors.New("project factory stub")
+
+func TestTelemetryUpdateStatus(t *testing.T) {
+	t.Parallel()
+
+	lastCheck := time.Date(2026, 7, 11, 15, 0, 0, 0, time.UTC)
+	got := telemetryUpdateStatus([]autoUpdateStatusSource{autoUpdateStatusStub{status: detentupdate.AutoStatus{
+		Enabled:            true,
+		AutoApplyEnabled:   true,
+		CheckInterval:      12 * time.Hour,
+		State:              "scheduled",
+		LastCheckAt:        &lastCheck,
+		LastAppliedVersion: "1.2.4",
+	}}})
+	if !got.Enabled || !got.AutoApplyEnabled || got.CheckIntervalHours != 12 || got.LastAppliedVersion != "1.2.4" || got.LastCheckAt == nil {
+		t.Fatalf("telemetryUpdateStatus() = %#v", got)
+	}
+}
+
+type autoUpdateStatusStub struct {
+	status detentupdate.AutoStatus
+}
+
+func (s autoUpdateStatusStub) Status() detentupdate.AutoStatus {
+	return s.status
+}
 
 func TestBuildRunnerReturnsRunner(t *testing.T) {
 	t.Parallel()

@@ -177,6 +177,7 @@ type BootConfig struct {
 	StdoutTTY        bool
 	Output           io.Writer
 	Shutdown         *ShutdownController
+	Restart          *RestartRequest
 	HardExit         func(int)
 	Runner           orchestrator.Runner
 	ConnectorFactory project.ConnectorFactory
@@ -230,6 +231,7 @@ type options struct {
 	build         buildinfo.Info
 	stdoutTTY     func() bool
 	shutdown      *ShutdownController
+	restart       *RestartRequest
 }
 
 func WithBootFunc(boot BootFunc) Option {
@@ -285,6 +287,12 @@ func WithCommandRunner(run CommandRunner) Option {
 func WithShutdownController(controller *ShutdownController) Option {
 	return func(opts *options) {
 		opts.shutdown = controller
+	}
+}
+
+func WithRestartRequest(restart *RestartRequest) Option {
+	return func(opts *options) {
+		opts.restart = restart
 	}
 }
 
@@ -381,6 +389,7 @@ detent --format json config path`),
 			boot.StdoutTTY = stdoutTTY
 			boot.Output = cmd.OutOrStdout()
 			boot.Shutdown = opts.shutdown
+			boot.Restart = opts.restart
 			if !shouldLaunchTerminalDashboard(boot) {
 				slog.Info("resolved global config", "path", boot.Global.Path, "rule", boot.ConfigPathRule)
 				for _, warning := range boot.Runtime.Warnings {
