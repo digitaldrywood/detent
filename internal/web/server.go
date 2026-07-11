@@ -801,10 +801,14 @@ func (s *Server) health(c echo.Context) error {
 	}
 	status := "ok"
 	sessionsRemaining := 0
+	updateStatus := telemetry.Update{}
 	if s.hub != nil {
-		if snapshot, ok := s.hub.Latest(); ok && snapshot.Shutdown.Draining {
-			status = "draining"
-			sessionsRemaining = snapshot.Shutdown.SessionsRemaining
+		if snapshot, ok := s.hub.Latest(); ok {
+			updateStatus = snapshot.Update
+			if snapshot.Shutdown.Draining {
+				status = "draining"
+				sessionsRemaining = snapshot.Shutdown.SessionsRemaining
+			}
 		}
 	}
 	checks := map[string]string{
@@ -822,6 +826,7 @@ func (s *Server) health(c echo.Context) error {
 		Mode:              string(s.mode),
 		Connector:         s.connectorName(),
 		SessionsRemaining: sessionsRemaining,
+		Update:            updateStatus,
 		Checks:            checks,
 		Budgets:           s.enforcedBudgets(),
 	})
@@ -1009,6 +1014,7 @@ type healthResponse struct {
 	Mode              string            `json:"mode"`
 	Connector         string            `json:"connector"`
 	SessionsRemaining int               `json:"sessions_remaining,omitempty"`
+	Update            telemetry.Update  `json:"update,omitzero"`
 	Checks            map[string]string `json:"checks"`
 	Budgets           []healthBudget    `json:"budgets,omitempty"`
 }

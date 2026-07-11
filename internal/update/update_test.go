@@ -525,6 +525,13 @@ func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testi
 	if strings.TrimSpace(string(raw)) != "updated" {
 		t.Fatalf("updated binary = %q, want updated", raw)
 	}
+	if got := InstalledReleaseVersion(DetectionOptions{
+		ExecutablePath: binary,
+		GOOS:           "linux",
+		Env:            map[string]string{"DETENT_INSTALL_LOCK": lockPath},
+	}); got != "1.2.4" {
+		t.Fatalf("InstalledReleaseVersion() = %q, want 1.2.4", got)
+	}
 }
 
 func TestServiceAppliesReleaseUpdateWithoutChecksumSignatureWhenKeyMissing(t *testing.T) {
@@ -964,6 +971,16 @@ func TestServiceGoInstallFromReleaseUsesReleaseAsset(t *testing.T) {
 	}
 	if !strings.Contains(lockText, "installed_at=") {
 		t.Fatalf("install lock = %q, want installed_at", lockText)
+	}
+	if !strings.Contains(lockText, "version=1.2.4\n") {
+		t.Fatalf("install lock = %q, want applied version", lockText)
+	}
+	if got := InstalledReleaseVersion(DetectionOptions{
+		ExecutablePath: binary,
+		GOOS:           "linux",
+		HomeDir:        tmp,
+	}); got != "1.2.4" {
+		t.Fatalf("InstalledReleaseVersion() = %q, want 1.2.4", got)
 	}
 
 	detected := DetectInstallSource(DetectionOptions{

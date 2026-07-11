@@ -440,6 +440,7 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, instanceN
 		GeneratedAt:     generatedAt,
 		Status:          runtimeStatus(snapshot),
 		Shutdown:        shutdownResponse(snapshot.Shutdown),
+		Update:          snapshot.Update,
 		Instance:        instanceResponse(snapshot.Instance, instanceName),
 		Projects:        projectsAPIResponse(snapshot),
 		Refresh:         snapshot.Refresh,
@@ -1342,6 +1343,7 @@ type stateAPIResponse struct {
 	GeneratedAt     time.Time                   `json:"generated_at"`
 	Status          string                      `json:"status"`
 	Shutdown        shutdownAPIResponse         `json:"shutdown"`
+	Update          telemetry.Update            `json:"update,omitzero"`
 	Instance        instanceAPIResponse         `json:"instance"`
 	Projects        []telemetry.ProjectSnapshot `json:"projects,omitempty"`
 	Refresh         telemetry.Refresh           `json:"refresh"`

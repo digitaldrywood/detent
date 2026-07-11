@@ -91,7 +91,7 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 			rows = append(rows, row)
 		}
 	}
-	rows = append(rows, healthSchedulerRow(snapshot), healthBackoffRow(snapshot))
+	rows = append(rows, healthSchedulerRow(snapshot), healthUpdateRow(snapshot.Update), healthBackoffRow(snapshot))
 	for _, release := range healthReleases(snapshot) {
 		rows = append(rows, healthReleaseRow(release))
 	}
@@ -99,6 +99,53 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 		rows = append(rows, healthBackendOutageRow(outage, snapshot.GeneratedAt))
 	}
 	return rows
+}
+
+func healthUpdateRow(update telemetry.Update) healthRow {
+	row := healthRow{
+		ID:        "health-update",
+		Component: "Detent update",
+		Kind:      primitives.KindNeutral,
+		Status:    "Disabled",
+		Detail:    "Automatic update checks are disabled",
+		Resets:    "—",
+	}
+	if !update.Enabled {
+		if update.LastAppliedVersion != "" {
+			row.Detail += " · last applied " + update.LastAppliedVersion
+		}
+		return row
+	}
+	row.Kind = primitives.KindOK
+	row.Status = strings.ReplaceAll(strings.TrimSpace(update.State), "_", " ")
+	if row.Status == "" || row.Status == "scheduled" {
+		row.Status = "Scheduled"
+	}
+	row.Detail = "Checks every " + formatCount(update.CheckIntervalHours) + " hours"
+	if update.AutoApplyEnabled {
+		row.Detail += " · auto-apply enabled"
+	} else {
+		row.Detail += " · notify only"
+	}
+	if update.AvailableVersion != "" {
+		row.Kind = primitives.KindWarn
+		row.Detail += " · " + update.AvailableVersion + " available"
+	}
+	if update.LastAppliedVersion != "" {
+		row.Detail += " · last applied " + update.LastAppliedVersion
+	}
+	if update.LastCheckAt != nil {
+		row.DetailAt = *update.LastCheckAt
+	}
+	if update.NextCheckAt != nil {
+		row.ResetAt = *update.NextCheckAt
+	}
+	if update.LastError != "" {
+		row.Kind = primitives.KindErr
+		row.Status = "Failed"
+		row.Detail = update.LastError
+	}
+	return row
 }
 
 func healthReleases(snapshot telemetry.Snapshot) []telemetry.Release {

@@ -56,6 +56,17 @@ func (c *ShutdownController) RequestDrain() {
 	c.request(ShutdownRequestDrain)
 }
 
+func (c *ShutdownController) RequestDrainIfIdle(accepted func()) bool {
+	if c == nil || !c.Active() || !c.shutdownRequested.CompareAndSwap(false, true) {
+		return false
+	}
+	if accepted != nil {
+		accepted()
+	}
+	c.request(ShutdownRequestDrain)
+	return true
+}
+
 func (c *ShutdownController) RequestForce() {
 	if c != nil {
 		c.shutdownRequested.Store(true)
@@ -136,6 +147,7 @@ type runningShutdownConfig struct {
 	SnapshotHub        *hub.Hub[telemetry.Snapshot]
 	SnapshotSeq        *atomic.Uint64
 	LifetimeSource     lifetimeTotalsSource
+	UpdateStatusSource autoUpdateStatusSource
 	DashboardURL       string
 	Output             io.Writer
 	Logger             *slog.Logger
@@ -528,7 +540,7 @@ func publishShutdownSnapshot(ctx context.Context, cfg runningShutdownConfig, now
 			seq.Store(latest.Seq)
 		}
 	}
-	if err := publishSnapshotOnce(ctx, cfg.Registry, cfg.SnapshotHub, seq, now, nil, cfg.LifetimeSource, cfg.DashboardURL); err != nil {
+	if err := publishSnapshotOnce(ctx, cfg.Registry, cfg.SnapshotHub, seq, now, nil, cfg.LifetimeSource, cfg.DashboardURL, cfg.UpdateStatusSource); err != nil {
 		logShutdownBoundaryEnd(shutdownLogger(cfg), "shutdown_snapshot_publish", started, err)
 		shutdownLogger(cfg).Warn("publish shutdown telemetry snapshot failed", "error", err)
 		return

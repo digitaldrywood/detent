@@ -273,14 +273,18 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	snapshotSeq := &atomic.Uint64{}
-	if err := publishStartupSnapshotOnce(runCtx, cfg.Global, snapshotHub, runtimeStore, displayURL, time.Now()); err != nil {
+	updateScheduler, err := newRuntimeUpdateScheduler(cfg, logger)
+	if err != nil {
+		return err
+	}
+	if err := publishStartupSnapshotOnce(runCtx, cfg.Global, snapshotHub, runtimeStore, displayURL, time.Now(), updateScheduler); err != nil {
 		return err
 	}
 	kanbanWorkflow, err := bootKanbanWorkflow(runCtx, cfg)
 	if err != nil {
 		return err
 	}
-	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, snapshotSeq, runtimeStore, displayURL, defaultSnapshotInterval, time.Now)
+	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, snapshotSeq, runtimeStore, displayURL, defaultSnapshotInterval, time.Now, updateScheduler)
 	go republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger)
 	//nolint:contextcheck // Echo middleware receives request contexts at serve time.
 	server, err := web.NewServer(web.Config{
@@ -323,6 +327,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		if err := manager.Start(ctx); err != nil {
 			return err
 		}
+		go updateScheduler.Run(ctx)
 		globalWatcherDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, runtimeGitHubToken, onGlobalReload)
 		select {
 		case globalWatcherStarted <- globalWatcherDone:
@@ -343,15 +348,16 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		}
 		return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
 			return runWithShutdown(ctx, runningShutdownConfig{
-				Controller:        cfg.Shutdown,
-				Registry:          manager.Registry(),
-				SnapshotHub:       snapshotHub,
-				SnapshotSeq:       snapshotSeq,
-				LifetimeSource:    runtimeStore,
-				DashboardURL:      displayURL,
-				Output:            cfg.Output,
-				Logger:            logger,
-				TerminalDashboard: true,
+				Controller:         cfg.Shutdown,
+				Registry:           manager.Registry(),
+				SnapshotHub:        snapshotHub,
+				SnapshotSeq:        snapshotSeq,
+				LifetimeSource:     runtimeStore,
+				UpdateStatusSource: updateScheduler,
+				DashboardURL:       displayURL,
+				Output:             cfg.Output,
+				Logger:             logger,
+				TerminalDashboard:  true,
 				DrainTimeoutSource: func() time.Duration {
 					return shutdownDrainTimeout(manager.Registry())
 				},
@@ -377,14 +383,15 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}
 	return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
 		return runWithShutdown(ctx, runningShutdownConfig{
-			Controller:     cfg.Shutdown,
-			Registry:       manager.Registry(),
-			SnapshotHub:    snapshotHub,
-			SnapshotSeq:    snapshotSeq,
-			LifetimeSource: runtimeStore,
-			DashboardURL:   displayURL,
-			Output:         cfg.Output,
-			Logger:         logger,
+			Controller:         cfg.Shutdown,
+			Registry:           manager.Registry(),
+			SnapshotHub:        snapshotHub,
+			SnapshotSeq:        snapshotSeq,
+			LifetimeSource:     runtimeStore,
+			UpdateStatusSource: updateScheduler,
+			DashboardURL:       displayURL,
+			Output:             cfg.Output,
+			Logger:             logger,
 			DrainTimeoutSource: func() time.Duration {
 				return shutdownDrainTimeout(manager.Registry())
 			},

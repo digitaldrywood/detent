@@ -247,6 +247,10 @@ github_token: gh
 api_token: detent_test_api_token
 port: 4100
 instance_name: " buildbox "
+update:
+  auto_check_enabled: true
+  check_interval_hours: 12
+  auto_apply_enabled: true
 global:
   max_concurrent_agents: 8
   scheduling: weighted
@@ -289,11 +293,54 @@ projects:
 	if cfg.InstanceName != "buildbox" {
 		t.Fatalf("InstanceName = %q, want buildbox", cfg.InstanceName)
 	}
+	if !cfg.Update.AutoCheckEnabled || !cfg.Update.AutoApplyEnabled || cfg.Update.NormalizedCheckIntervalHours() != 12 {
+		t.Fatalf("Update = %#v, want enabled 12-hour auto-apply", cfg.Update)
+	}
 	if cfg.Projects[0].WorkflowRef != "origin/main" {
 		t.Fatalf("Project.WorkflowRef = %q, want origin/main", cfg.Projects[0].WorkflowRef)
 	}
 	if cfg.Projects[0].Color != "#1192e8" {
 		t.Fatalf("Project.Color = %q, want #1192e8", cfg.Projects[0].Color)
+	}
+}
+
+func TestReadValidatesUpdateSettings(t *testing.T) {
+	t.Parallel()
+
+	paths := createProjectFiles(t)
+	tests := []struct {
+		name   string
+		update string
+		want   string
+	}{
+		{name: "mapping", update: "disabled", want: "update: must be a mapping"},
+		{name: "enabled boolean", update: "\n  auto_check_enabled: yes-please", want: "update.auto_check_enabled: must be a boolean"},
+		{name: "positive interval", update: "\n  check_interval_hours: 0", want: "update.check_interval_hours: must be a positive integer"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			configPath := filepath.Join(paths.root, strings.ReplaceAll(tt.name, " ", "-")+".yaml")
+			writeFile(t, configPath, `apiVersion: detent/v1
+kind: GlobalConfig
+update: `+tt.update+`
+global:
+  max_concurrent_agents: 8
+  scheduling: weighted
+projects:
+  - id: detent
+    workflow: `+paths.workflow+`
+    workdir: `+paths.workdir+`
+    weight: 1
+    priority: 0
+`)
+
+			_, err := Read(configPath, WithHome(paths.home))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Read() error = %v, want substring %q", err, tt.want)
+			}
+		})
 	}
 }
 

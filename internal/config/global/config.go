@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	APIVersion = "detent/v1"
-	Kind       = "GlobalConfig"
+	APIVersion                      = "detent/v1"
+	Kind                            = "GlobalConfig"
+	DefaultUpdateCheckIntervalHours = 24
 
 	SchedulingWeighted   = "weighted"
 	SchedulingStrict     = "strict"
@@ -67,8 +68,26 @@ type Config struct {
 	APIToken        string    `yaml:"api_token,omitempty"`
 	Port            *int      `yaml:"port,omitempty"`
 	InstanceName    string    `yaml:"instance_name,omitempty"`
+	Update          Update    `yaml:"update,omitempty"`
 	Global          Settings  `yaml:"global"`
 	Projects        []Project `yaml:"projects"`
+}
+
+type Update struct {
+	AutoCheckEnabled   bool `yaml:"auto_check_enabled,omitempty"`
+	CheckIntervalHours int  `yaml:"check_interval_hours,omitempty"`
+	AutoApplyEnabled   bool `yaml:"auto_apply_enabled,omitempty"`
+}
+
+func (u Update) IsZero() bool {
+	return !u.AutoCheckEnabled && u.CheckIntervalHours == 0 && !u.AutoApplyEnabled
+}
+
+func (u Update) NormalizedCheckIntervalHours() int {
+	if u.CheckIntervalHours > 0 {
+		return u.CheckIntervalHours
+	}
+	return DefaultUpdateCheckIntervalHours
 }
 
 type Settings struct {
@@ -420,6 +439,9 @@ func (c Config) Validate(opts ...Option) error {
 	if strings.ContainsAny(c.APIToken, "\r\n") {
 		problems = append(problems, "api_token: must be a single line")
 	}
+	if c.Update.CheckIntervalHours < 0 {
+		problems = append(problems, "update.check_interval_hours: must be a positive integer")
+	}
 
 	if c.Global.MaxConcurrentAgents <= 0 {
 		problems = append(problems, "global.max_concurrent_agents: must be a positive integer")
@@ -669,9 +691,32 @@ func validateRaw(attrs map[string]any, opts options) []string {
 	problems = append(problems, optionalStringTypeError(attrs, "instance_name")...)
 	problems = append(problems, optionalSingleLineStringError(attrs, "instance_name")...)
 	problems = append(problems, optionalNonNegativeIntegerError(attrs["port"], "port")...)
+	problems = append(problems, updateErrors(attrs["update"])...)
 	problems = append(problems, globalErrors(attrs["global"])...)
 	problems = append(problems, projectsErrors(attrs["projects"], opts)...)
 
+	return problems
+}
+
+func updateErrors(value any) []string {
+	if value == nil {
+		return nil
+	}
+	update, ok := value.(map[string]any)
+	if !ok {
+		return []string{"update: must be a mapping"}
+	}
+	var problems []string
+	for _, field := range []string{"auto_check_enabled", "auto_apply_enabled"} {
+		if configured, ok := update[field]; ok {
+			if _, ok := configured.(bool); !ok {
+				problems = append(problems, "update."+field+": must be a boolean")
+			}
+		}
+	}
+	if interval, ok := update["check_interval_hours"]; ok && !positiveInteger(interval) {
+		problems = append(problems, "update.check_interval_hours: must be a positive integer")
+	}
 	return problems
 }
 
@@ -1242,6 +1287,10 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
+	update, err := buildUpdate(attrs["update"])
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
 	settings, err := buildSettings(global, opts)
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
@@ -1263,9 +1312,24 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 		APIToken:        apiToken,
 		Port:            port,
 		InstanceName:    instanceName,
+		Update:          update,
 		Global:          settings,
 		Projects:        builtProjects,
 	}, nil
+}
+
+func buildUpdate(value any) (Update, error) {
+	if value == nil {
+		return Update{}, nil
+	}
+	if _, err := mapValue(value, "update"); err != nil {
+		return Update{}, err
+	}
+	var update Update
+	if err := decodeYAMLValue(value, &update); err != nil {
+		return Update{}, fmt.Errorf("update: %w", err)
+	}
+	return update, nil
 }
 
 func buildSettings(attrs map[string]any, opts options) (Settings, error) {
