@@ -407,10 +407,18 @@ func checkDoctorServerPort(ctx context.Context, cfg BootConfig, deps doctorDeps)
 			check.Detail = fmt.Sprintf("%s is occupied for pre-start bind; health probe %s %v", addr, probe.URL, probeErr)
 			return check
 		}
+		detail := fmt.Sprintf(
+			"%s is occupied for pre-start bind; health probe %s found healthy Detent instance (status %s, mode %s)%s",
+			addr,
+			probe.URL,
+			probe.Health.Status,
+			probe.Health.Mode,
+			doctorEnforcedBudgetDetail(probe.Health.Budgets),
+		)
 		return doctorCheck{
 			Name:   "Server port",
 			Status: doctorWarn,
-			Detail: fmt.Sprintf("%s is occupied for pre-start bind; health probe %s found healthy Detent instance (status %s, mode %s)", addr, probe.URL, probe.Health.Status, probe.Health.Mode),
+			Detail: detail,
 			Hint:   "No action is needed if doctor is checking the live instance; stop Detent before a clean pre-start availability check.",
 		}
 	}
@@ -443,9 +451,35 @@ type doctorHealthProbe struct {
 }
 
 type doctorHealthResponse struct {
-	Status string            `json:"status"`
-	Mode   string            `json:"mode"`
-	Checks map[string]string `json:"checks"`
+	Status  string               `json:"status"`
+	Mode    string               `json:"mode"`
+	Checks  map[string]string    `json:"checks"`
+	Budgets []doctorHealthBudget `json:"budgets"`
+}
+
+type doctorHealthBudget struct {
+	ProjectID      string  `json:"project_id"`
+	Enabled        bool    `json:"enabled"`
+	PerDayMaxUSD   float64 `json:"per_day_max_usd"`
+	PerIssueMaxUSD float64 `json:"per_issue_max_usd"`
+}
+
+func doctorEnforcedBudgetDetail(budgets []doctorHealthBudget) string {
+	if len(budgets) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(budgets))
+	for _, budget := range budgets {
+		parts = append(parts, fmt.Sprintf(
+			"%s enabled=%t per_day_max_usd=%s per_issue_max_usd=%s",
+			budget.ProjectID,
+			budget.Enabled,
+			strconv.FormatFloat(budget.PerDayMaxUSD, 'f', 2, 64),
+			strconv.FormatFloat(budget.PerIssueMaxUSD, 'f', 2, 64),
+		))
+	}
+	return "; enforced budget: " + strings.Join(parts, ", ")
 }
 
 func probeDoctorHealth(ctx context.Context, cfg BootConfig, deps doctorDeps) (doctorHealthProbe, error) {

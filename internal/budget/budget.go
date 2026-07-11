@@ -115,6 +115,10 @@ func NewCheckerFromConfig(cfg Config, spend SpendStore) (*Checker, error) {
 	return NewChecker(cfg, spend, pricing), nil
 }
 
+func (c *Checker) EnforcedConfig() Config {
+	return c.cfg
+}
+
 func (c *Checker) CheckDispatch(ctx context.Context, req DispatchRequest) (Decision, error) {
 	if !c.cfg.Enabled {
 		return Decision{Allowed: true}, nil
