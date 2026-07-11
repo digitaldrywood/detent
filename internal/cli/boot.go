@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -174,8 +176,9 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		}
 	}
 	var instanceLock *instancelock.Lock
-	if !runtimeStoreIsMemory(runtimeStorePath(cfg)) {
-		acquiredLock, err := acquireRuntimeInstanceLock(cfg)
+	runtimeDBPath := runtimeStorePath(cfg)
+	if !runtimeStoreIsMemory(runtimeDBPath) {
+		acquiredLock, err := acquireRuntimeInstanceLock(runtimeStoreLockPath(runtimeDBPath))
 		if err != nil {
 			return err
 		}
@@ -991,21 +994,75 @@ func openRuntimeStore(ctx context.Context, cfg BootConfig) (store.Store, error) 
 	})
 }
 
-func acquireRuntimeInstanceLock(cfg BootConfig) (*instancelock.Lock, error) {
-	path := runtimeStorePath(cfg)
-	lock, err := instancelock.Acquire(path + ".lock")
+func acquireRuntimeInstanceLock(lockPath string) (*instancelock.Lock, error) {
+	lock, err := instancelock.Acquire(lockPath)
 	if errors.Is(err, instancelock.ErrHeld) {
-		return nil, fmt.Errorf("another Detent instance is using runtime database %q; wait for it to finish shutting down, then retry", path)
+		return nil, fmt.Errorf("another Detent instance is using runtime database guarded by %q; wait for it to finish shutting down, then retry", lockPath)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("protect runtime database %q: %w", path, err)
+		return nil, fmt.Errorf("protect runtime database with %q: %w", lockPath, err)
 	}
 	return lock, nil
 }
 
 func runtimeStoreIsMemory(path string) bool {
-	path = strings.ToLower(strings.TrimSpace(path))
-	return strings.HasPrefix(path, ":memory:") || strings.Contains(path, "mode=memory")
+	if path == ":memory:" {
+		return true
+	}
+	uri, ok := runtimeStoreURI(path)
+	if !ok {
+		return false
+	}
+	if uri.Query().Get("mode") == "memory" {
+		return true
+	}
+	uriPath, ok := runtimeStoreURIPath(uri)
+	return ok && uriPath == ":memory:"
+}
+
+func runtimeStoreLockPath(path string) string {
+	uri, ok := runtimeStoreURI(path)
+	if ok {
+		if uriPath, pathOK := runtimeStoreURIPath(uri); pathOK {
+			path = uriPath
+		}
+	}
+	return path + ".lock"
+}
+
+func runtimeStoreURI(path string) (*url.URL, bool) {
+	if !strings.HasPrefix(path, "file:") {
+		return nil, false
+	}
+	uri, err := url.Parse(path)
+	if err != nil || uri.Scheme != "file" {
+		return nil, false
+	}
+	return uri, true
+}
+
+func runtimeStoreURIPath(uri *url.URL) (string, bool) {
+	if uri == nil {
+		return "", false
+	}
+	path := uri.Path
+	if uri.Opaque != "" {
+		decoded, err := url.PathUnescape(uri.Opaque)
+		if err != nil {
+			return "", false
+		}
+		path = decoded
+	}
+	if path == "" {
+		return "", false
+	}
+	if uri.Host != "" && !strings.EqualFold(uri.Host, "localhost") {
+		path = "//" + uri.Host + "/" + strings.TrimPrefix(path, "/")
+	}
+	if runtime.GOOS == "windows" && len(path) >= 3 && path[0] == '/' && path[2] == ':' {
+		path = path[1:]
+	}
+	return filepath.FromSlash(path), true
 }
 
 func runtimeStorePath(cfg BootConfig) string {
