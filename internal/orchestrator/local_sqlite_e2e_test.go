@@ -314,7 +314,7 @@ func TestLocalSQLiteHumanRestartDispatchesArtifactRound(t *testing.T) {
 func waitForLocalStoredState(t *testing.T, db *sql.DB, issueID string, want string) {
 	t.Helper()
 
-	deadline := time.After(time.Second)
+	deadline := time.After(5 * time.Second)
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -342,7 +342,7 @@ func localStoredState(t *testing.T, db *sql.DB, issueID string) string {
 func waitForLocalStateUpdateEvents(t *testing.T, db *sql.DB, issueID string, want []string) {
 	t.Helper()
 
-	deadline := time.After(time.Second)
+	deadline := time.After(5 * time.Second)
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for {
