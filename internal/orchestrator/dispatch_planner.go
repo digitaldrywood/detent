@@ -319,9 +319,9 @@ func (a dispatchAction) decision() DispatchDecision {
 	}
 }
 
-func (p dispatchPlanner) pruneBudgetRefusals(state *State, now time.Time) {
+func (p dispatchPlanner) pruneBudgetRefusals(state *State, now time.Time, dailyStatus *DailyBudgetStatus) {
 	for issueID, refusal := range state.BudgetRefusals {
-		if !p.budgetRefusalActive(refusal, now) {
+		if !p.budgetRefusalActive(refusal, now, dailyStatus) {
 			delete(state.BudgetRefusals, issueID)
 		}
 	}
@@ -333,11 +333,17 @@ func (p dispatchPlanner) budgetCooldownActive(state *State, issueID string, now 
 		return false
 	}
 
-	return p.budgetRefusalActive(refusal, now)
+	return p.budgetRefusalActive(refusal, now, nil)
 }
 
-func (p dispatchPlanner) budgetRefusalActive(refusal BudgetRefusal, now time.Time) bool {
+func (p dispatchPlanner) budgetRefusalActive(refusal BudgetRefusal, now time.Time, dailyStatus *DailyBudgetStatus) bool {
 	if refusal.ResetAt != nil && now.Before(*refusal.ResetAt) {
+		if refusal.Code == "per_day_max_usd" && dailyStatus != nil {
+			if !dailyStatus.Active {
+				return false
+			}
+			return dailyStatus.CurrentSpendUSD+refusal.ProjectedCostUSD > dailyStatus.MaxUSD
+		}
 		return true
 	}
 	if p.cfg.BudgetRefusalCooldown <= 0 || refusal.RefusedAt.IsZero() {

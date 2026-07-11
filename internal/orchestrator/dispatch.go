@@ -19,8 +19,35 @@ func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
 	return newDispatchPlanner(o.cfg)
 }
 
-func (o *Orchestrator) pruneBudgetRefusals(state *State, now time.Time) {
-	o.dispatchPlanner().pruneBudgetRefusals(state, now)
+func (o *Orchestrator) pruneBudgetRefusals(ctx context.Context, state *State, now time.Time) {
+	o.dispatchPlanner().pruneBudgetRefusals(state, now, o.currentDailyBudgetStatus(ctx, state, now))
+}
+
+func (o *Orchestrator) currentDailyBudgetStatus(ctx context.Context, state *State, now time.Time) *DailyBudgetStatus {
+	if o.dailyBudgetStatus == nil || !hasActiveDailyBudgetRefusal(state, now) {
+		return nil
+	}
+
+	status, known, err := o.dailyBudgetStatus.DailyBudgetStatus(ctx, now)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("daily budget refusal re-evaluation failed", "error", err)
+		}
+		return nil
+	}
+	if !known {
+		return nil
+	}
+	return &status
+}
+
+func hasActiveDailyBudgetRefusal(state *State, now time.Time) bool {
+	for _, refusal := range state.BudgetRefusals {
+		if refusal.Code == "per_day_max_usd" && refusal.ResetAt != nil && now.Before(*refusal.ResetAt) {
+			return true
+		}
+	}
+	return false
 }
 
 func (o *Orchestrator) selectWorkerHost(state *State, preferredWorkerHost string) (string, bool) {

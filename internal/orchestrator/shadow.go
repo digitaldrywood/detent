@@ -33,7 +33,7 @@ func PlanDispatch(cfg Config, state State, candidates []connector.Issue, now tim
 	plannedState := state.clone()
 	plannedState.ensureInitialized(planner.cfg)
 	plannedCandidates := cloneIssues(candidates)
-	planner.pruneBudgetRefusals(&plannedState, now)
+	planner.pruneBudgetRefusals(&plannedState, now, nil)
 	planner.trackBlockedCandidates(&plannedState, plannedCandidates, now)
 
 	return planner.plan(&plannedState, plannedCandidates, now, dispatchPlanHooks{})

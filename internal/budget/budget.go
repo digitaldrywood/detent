@@ -62,6 +62,12 @@ type Decision struct {
 	Refusal *Refusal
 }
 
+type DailyStatus struct {
+	Active          bool
+	CurrentSpendUSD float64
+	MaxUSD          float64
+}
+
 type Refusal struct {
 	Code              ReasonCode
 	Message           string
@@ -177,6 +183,30 @@ func (c *Checker) CheckDispatch(ctx context.Context, req DispatchRequest) (Decis
 	}
 
 	return Decision{Allowed: true}, nil
+}
+
+func (c *Checker) DailyStatus(ctx context.Context, now time.Time) (DailyStatus, error) {
+	if !c.cfg.Enabled || !capActive(c.cfg.PerDayMaxUSD) {
+		return DailyStatus{}, nil
+	}
+	if missingSpendStore(c.spend) {
+		return DailyStatus{}, ErrMissingSpendStore
+	}
+
+	now = now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	dailySpend, err := c.spend.DailyTokenSpend(ctx, now)
+	if err != nil {
+		return DailyStatus{}, fmt.Errorf("daily token spend: %w", err)
+	}
+
+	return DailyStatus{
+		Active:          true,
+		CurrentSpendUSD: SpendUSD(dailySpend, c.pricing),
+		MaxUSD:          c.cfg.PerDayMaxUSD,
+	}, nil
 }
 
 func SpendUSD(spend store.TokenSpend, pricing PricingTable) float64 {

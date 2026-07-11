@@ -2904,6 +2904,13 @@ func TestRunnerUpdateWorkflowAppliesReloadedDailyBudget(t *testing.T) {
 			if !ok || enforced.PerDayMaxUSD != tt.reloadedCap {
 				t.Fatalf("EnforcedBudget() = %#v, %t, want per_day_max_usd %.2f", enforced, ok, tt.reloadedCap)
 			}
+			status, known, err := runner.DailyBudgetStatus(context.Background(), time.Date(2026, 7, 11, 15, 0, 0, 0, time.UTC))
+			if err != nil {
+				t.Fatalf("DailyBudgetStatus() error = %v", err)
+			}
+			if !known || !status.Active || status.CurrentSpendUSD != 0.10 || status.MaxUSD != tt.reloadedCap {
+				t.Fatalf("DailyBudgetStatus() = %#v, %t, want live spend 0.10 and cap %.2f", status, known, tt.reloadedCap)
+			}
 		})
 	}
 }

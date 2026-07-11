@@ -232,6 +232,26 @@ func (r *Runner) EnforcedBudget() (config.Budget, bool) {
 	return r.enforcedBudget, r.enforcedBudgetKnown
 }
 
+func (r *Runner) DailyBudgetStatus(ctx context.Context, now time.Time) (DailyBudgetStatus, bool, error) {
+	_, _, checker, _ := r.runtimeSnapshot()
+	provider, ok := checker.(interface {
+		DailyStatus(context.Context, time.Time) (budget.DailyStatus, error)
+	})
+	if !ok {
+		return DailyBudgetStatus{}, false, nil
+	}
+
+	status, err := provider.DailyStatus(ctx, now)
+	if err != nil {
+		return DailyBudgetStatus{}, true, err
+	}
+	return DailyBudgetStatus{
+		Active:          status.Active,
+		CurrentSpendUSD: status.CurrentSpendUSD,
+		MaxUSD:          status.MaxUSD,
+	}, true, nil
+}
+
 func enforcedBudgetConfig(requested config.Budget, checker BudgetChecker) (config.Budget, bool) {
 	if checker == nil {
 		if requested.Enabled {
