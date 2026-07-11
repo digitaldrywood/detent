@@ -27,6 +27,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		ResumeOrphanedSessions:     cfg.Agent.ResumeOrphanedSessions,
 		MaxConcurrentAgentsPerHost: positiveIntValue(cfg.Worker.MaxConcurrentAgentsPerHost),
 		MaxRetryBackoff:            durationFromMillis(cfg.Agent.MaxRetryBackoffMS),
+		NoProgressSpendLimitUSD:    cfg.Agent.NoProgressSpendLimitUSD,
 		Claiming: ClaimingConfig{
 			Enabled:           cfg.Tracker.Claims.Enabled,
 			OwnershipMode:     identity.OwnershipMode,

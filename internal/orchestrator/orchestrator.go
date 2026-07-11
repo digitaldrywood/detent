@@ -66,6 +66,7 @@ type Config struct {
 	ResumeOrphanedSessions        bool
 	MaxConcurrentAgentsPerHost    int
 	MaxRetryBackoff               time.Duration
+	NoProgressSpendLimitUSD       float64
 	Project                       scheduler.ProjectCandidate
 	Claiming                      ClaimingConfig
 	AutoPromote                   AutoPromoteConfig
@@ -111,6 +112,7 @@ type Dependencies struct {
 	Efficiency         efficiency.Recorder
 	LifecycleExporter  efficiency.LifecycleExporter
 	WorkAttempts       store.WorkAttemptStore
+	ProgressSpend      store.ProgressSpendStore
 	AgentResume        store.AgentResumeStore
 	OrphanSessions     store.OrphanSessionStore
 	ValidatorMemo      store.ValidatorMemoStore
@@ -144,6 +146,7 @@ type Orchestrator struct {
 	efficiency              efficiency.Recorder
 	lifecycleExporter       efficiency.LifecycleExporter
 	workAttempts            store.WorkAttemptStore
+	progressSpend           store.ProgressSpendStore
 	agentResume             store.AgentResumeStore
 	orphanSessions          store.OrphanSessionStore
 	supervisor              *runpkg.Supervisor
@@ -278,6 +281,12 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 			agentResume = candidate
 		}
 	}
+	progressSpend := deps.ProgressSpend
+	if progressSpend == nil {
+		if candidate, ok := deps.WorkflowMetrics.(store.ProgressSpendStore); ok {
+			progressSpend = candidate
+		}
+	}
 
 	supervisor, err := runpkg.NewSupervisor(runner, runpkg.SupervisorConfig{
 		MaxRetryBackoff:       cfg.MaxRetryBackoff,
@@ -296,6 +305,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		efficiency:              deps.Efficiency,
 		lifecycleExporter:       deps.LifecycleExporter,
 		workAttempts:            deps.WorkAttempts,
+		progressSpend:           progressSpend,
 		agentResume:             agentResume,
 		orphanSessions:          orphanSessions,
 		supervisor:              supervisor,

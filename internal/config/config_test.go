@@ -40,6 +40,43 @@ func TestParseWorkflowFollowups(t *testing.T) {
 	}
 }
 
+func TestNoProgressSpendLimitConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		raw     string
+		want    float64
+		wantErr string
+	}{
+		{name: "default enabled", raw: "---\ntracker:\n  kind: memory\n---\nPrompt\n", want: DefaultNoProgressSpendLimitUSD},
+		{name: "explicitly disabled", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_spend_limit_usd: 0\n---\nPrompt\n", want: 0},
+		{name: "custom threshold", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_spend_limit_usd: 8.5\n---\nPrompt\n", want: 8.5},
+		{name: "negative rejected", raw: "---\ntracker:\n  kind: memory\nagent:\n  no_progress_spend_limit_usd: -1\n---\nPrompt\n", wantErr: "agent.no_progress_spend_limit_usd must be greater than or equal to 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workflow, err := ParseWorkflow([]byte(tt.raw))
+			if tt.wantErr != "" {
+				if err == nil {
+					err = workflow.Config.Validate()
+				}
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("configuration error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			if workflow.Config.Agent.NoProgressSpendLimitUSD != tt.want {
+				t.Fatalf("NoProgressSpendLimitUSD = %g, want %g", workflow.Config.Agent.NoProgressSpendLimitUSD, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseWorkflowFrontmatter(t *testing.T) {
 	t.Parallel()
 

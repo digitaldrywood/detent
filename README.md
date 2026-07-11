@@ -669,6 +669,7 @@ agent:
   max_concurrent_agents: 5
   max_turns: 20
   max_retry_backoff_ms: 300000
+  no_progress_spend_limit_usd: 3
   resume_orphaned_sessions: true
   max_concurrent_agents_by_state:
     Merging: 1
@@ -2398,6 +2399,15 @@ show cache-read efficiency when cached input is reported: cached input divided
 by input tokens. Use that value with context pressure to evaluate whether
 thread-resume behavior is preserving useful context without repeatedly filling
 the window.
+
+`agent.no_progress_spend_limit_usd` defaults to `3`, below the default
+per-issue budget backstop. Detent sums persisted session cost for each issue
+after its latest accepted lane, pull-request, or
+recognized PR-signature change. When spend exceeds the limit, Detent parks the
+issue in `Blocked`, recommends narrowing or splitting the task, and requires
+the next worker to explain the missing progress signal in its first Workpad
+update before using tools. Set the value to `0` to disable the breaker and its
+history/spend lookups.
 
 `agent.resume_orphaned_sessions` defaults to `true`. After an unclean Detent
 restart, active sessions whose provider identity was journaled are preflighted

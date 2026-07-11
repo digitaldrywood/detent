@@ -324,9 +324,13 @@ type TokenTotals struct {
 }
 
 type PriorAttempt struct {
-	Source    string
-	Reason    string
-	Validator gate.ValidatorResult
+	Source                  string
+	Reason                  string
+	ExplainBeforeRetry      bool
+	MissingSignal           string
+	ObservedSpendUSD        float64
+	NoProgressSpendLimitUSD float64
+	Validator               gate.ValidatorResult
 }
 
 type FakeRunner struct{}

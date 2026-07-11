@@ -37,6 +37,7 @@ type Store interface {
 	StatsStore
 	FairShareStore
 	BudgetCostStore
+	ProgressSpendStore
 	WorkflowMetricsStore
 	WorkAttemptStore
 	ValidatorMemoStore
@@ -101,6 +102,10 @@ type FairShareStore interface {
 
 type BudgetCostStore interface {
 	BudgetCostEvents(context.Context, BudgetCostQuery) ([]BudgetCostEvent, error)
+}
+
+type ProgressSpendStore interface {
+	IssueSpendSince(context.Context, IssueSpendSinceQuery) (IssueSpendSince, error)
 }
 
 type WorkflowMetricsStore interface {
@@ -880,6 +885,20 @@ type BudgetCostEvent struct {
 	ProjectID string
 	At        time.Time
 	CostUSD   float64
+}
+
+type IssueSpendSinceQuery struct {
+	ProjectID  string
+	IssueID    string
+	Identifier string
+	Since      time.Time
+}
+
+type IssueSpendSince struct {
+	CostUSD        float64
+	Sessions       int64
+	FirstSessionAt time.Time
+	LastSessionAt  time.Time
 }
 
 type ModelTokenSpend struct {

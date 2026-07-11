@@ -69,11 +69,13 @@ func TestDetectAdditionalPatterns(t *testing.T) {
 			{ID: 3, Identifier: "issue-after-capacity", StartedAt: resetAt.Add(10 * time.Minute), CompletedAt: resetAt.Add(11 * time.Minute), TerminalState: "success"},
 			{ID: 4, Identifier: "issue-gate", StartedAt: base, CompletedAt: base.Add(time.Minute), TerminalState: "timed_out", ErrorClass: "gate_wait_timeout"},
 			{ID: 5, Identifier: "issue-gate-2", StartedAt: base, CompletedAt: base.Add(time.Minute), TerminalState: "timed_out", WaitReason: "gate wait timeout"},
+			{ID: 6, Identifier: "issue-spend", StartedAt: base, CompletedAt: base.Add(time.Minute), TerminalState: "no_progress", ErrorClass: "spend_since_progress_circuit_breaker", ErrorMessage: "spent $6.75; configured limit $5.00"},
 		},
 		Sessions: []Session{
 			{ID: 1, Identifier: "issue-orphan-a", StartedAt: base, CompletedAt: base.Add(time.Minute), OrphanRecoveryOutcome: "fresh"},
 			{ID: 2, Identifier: "issue-orphan-b", StartedAt: base.Add(time.Minute), CompletedAt: base.Add(2 * time.Minute), OrphanRecoveryOutcome: "fresh"},
 			{ID: 3, Identifier: "issue-orphan-c", StartedAt: base.Add(2 * time.Minute), CompletedAt: base.Add(3 * time.Minute), OrphanRecoveryOutcome: "fresh"},
+			{ID: 4, WorkAttemptID: 6, Identifier: "issue-spend", StartedAt: base, CompletedAt: base.Add(time.Minute), TotalTokens: 125000},
 		},
 		UsageEvents: []UsageEvent{
 			{Identifier: "issue-small-a", FinishedAt: base, TotalTokens: 100},
@@ -87,10 +89,14 @@ func TestDetectAdditionalPatterns(t *testing.T) {
 	}
 
 	patterns := findingPatterns(Detect(snapshot, DetectorOptions{}))
-	for _, want := range []string{PatternReceiptBaseline, PatternGateWaitTimeout, PatternInvalidWorkpadStatus, PatternSlowCapacityRecovery, PatternFallbackOrphanRecovery} {
+	for _, want := range []string{PatternReceiptBaseline, PatternGateWaitTimeout, PatternInvalidWorkpadStatus, PatternSlowCapacityRecovery, PatternFallbackOrphanRecovery, PatternSpendSinceProgressTrip} {
 		if !slices.Contains(patterns, want) {
 			t.Fatalf("patterns = %v, want %s", patterns, want)
 		}
+	}
+	spend := findingByPattern(t, Detect(snapshot, DetectorOptions{}), PatternSpendSinceProgressTrip)
+	if spend.Scope != ScopeProduct || spend.Severity != SeverityCritical || spend.TokenDelta != 125000 || !Qualifies(spend, 2, SeverityCritical) {
+		t.Fatalf("spend finding = %#v, want qualifying critical trip", spend)
 	}
 	orphan := findingByPattern(t, Detect(snapshot, DetectorOptions{}), PatternFallbackOrphanRecovery)
 	if len(orphan.Occurrences) != 3 || !Qualifies(orphan, 2, SeverityCritical) {
