@@ -846,9 +846,9 @@ func TestSidebarProjectItemsUseAttentionFirstDefaultOrder(t *testing.T) {
 	got := sidebarProjectItems(DashboardShellData{Projects: []ProjectSmallMultiple{
 		{ID: "paused", Name: "Paused", Paused: true},
 		{ID: "idle", Name: "Idle"},
-		{ID: "queued", Name: "Queued", QueueCount: 1},
-		{ID: "active", Name: "Active", Running: 1},
-		{ID: "blocked", Name: "Blocked", Blocked: 1},
+		{ID: "queued", Name: "Queued", QueueCount: 1, BoardLoad: 1, BoardTodo: 1},
+		{ID: "active", Name: "Active", Running: 1, BoardLoad: 1, BoardActive: 1},
+		{ID: "blocked", Name: "Blocked", Blocked: 1, BoardBlocked: 1},
 	}})
 	want := []string{"blocked", "active", "queued", "idle", "paused"}
 

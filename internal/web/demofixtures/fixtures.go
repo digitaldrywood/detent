@@ -553,8 +553,12 @@ func demoBlocked(projectID string, id string, identifier string, title string, e
 	if len(source) > 0 {
 		blockedSource = source[0]
 	}
+	state := "Blocked"
+	if blockedSource == telemetry.BlockedSourceDependency && target == "Todo" {
+		state = "Todo"
+	}
 	return telemetry.Blocked{
-		Issue:          demoIssue(projectID, id, identifier, title, "Blocked", hoursAgo),
+		Issue:          demoIssue(projectID, id, identifier, title, state, hoursAgo),
 		WorkerHost:     "demo-worker-blocked",
 		WorkspacePath:  "/tmp/detent-screenshots/workspaces/" + projectID + "/" + id,
 		SessionID:      "thread-" + id,
@@ -626,12 +630,34 @@ func ProjectsForVariant(variant string) []templates.ProjectSmallMultiple {
 		demoProject("observability-console", "observability-console-with-long-name", "https://github.test/digitaldrywood/observability-console", false, 0, 0, 0, 0, 17000, 1.8, now),
 		demoProject("agent-lab", "agent-lab", "https://github.test/digitaldrywood/agent-lab", false, 0, 0, 0, 0, 0, 0, now),
 	}
+	workloads := map[string]telemetry.BoardWorkloadCounts{
+		demoPrimaryProjectID: {Load: 4, Todo: 1, Active: 3, Blocked: 1},
+		"docs-site":          {Load: 3, Todo: 1, Active: 2},
+		"billing-api":        {Load: 2, Todo: 1, Waiting: 1},
+		"mobile-client":      {Load: 1, Todo: 1},
+		"infra-platform":     {Load: 1, Active: 1},
+		"release-train":      {Load: 2, Active: 2},
+		"agent-lab":          {Load: 1, Todo: 1},
+	}
+	for i := range projects {
+		workload := workloads[projects[i].ID]
+		projects[i].BoardLoad = workload.Load
+		projects[i].BoardTodo = workload.Todo
+		projects[i].BoardActive = workload.Active
+		projects[i].BoardWaiting = workload.Waiting
+		projects[i].BoardBlocked = workload.Blocked
+	}
 	switch variant {
 	case "project-empty", "reports-empty", "settings-empty", "no-history":
 		for i := range projects {
 			projects[i].Running = 0
 			projects[i].QueueCount = 0
 			projects[i].Blocked = 0
+			projects[i].BoardLoad = 0
+			projects[i].BoardTodo = 0
+			projects[i].BoardActive = 0
+			projects[i].BoardWaiting = 0
+			projects[i].BoardBlocked = 0
 			projects[i].Completed = 0
 			projects[i].TotalTokens = 0
 			projects[i].ThroughputTokensPerSecond = 0
@@ -664,6 +690,10 @@ func demoProject(id string, name string, url string, paused bool, running int, q
 		Running:                   running,
 		QueueCount:                queue,
 		Blocked:                   blocked,
+		BoardLoad:                 running + queue,
+		BoardTodo:                 queue,
+		BoardActive:               running,
+		BoardBlocked:              blocked,
 		Completed:                 completed,
 		TotalTokens:               tokens,
 		ThroughputTokensPerSecond: float64(tokens%50000) / 600,

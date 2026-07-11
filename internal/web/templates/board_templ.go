@@ -1328,7 +1328,7 @@ func boardLanePicker(view boardView) templ.Component {
 			templ_7745c5c3_Var68 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 103, "<details id=\"board-lane-picker\" class=\"relative\" data-board-lane-picker data-preserve-details=\"board-lane-picker\"><summary class=\"flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-chip border border-line px-2.5 py-1 text-2xs text-sec hover:text-text [&::-webkit-details-marker]:hidden md:min-h-0\">Lanes <span data-board-lane-count class=\"tabular-nums\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 103, "<details id=\"board-lane-picker\" class=\"relative col-span-3 justify-self-start md:col-span-1\" data-board-lane-picker data-preserve-details=\"board-lane-picker\"><summary class=\"flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-chip border border-line px-2.5 py-1 text-2xs text-sec hover:text-text [&::-webkit-details-marker]:hidden md:min-h-0\">Lanes <span data-board-lane-count class=\"tabular-nums\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
