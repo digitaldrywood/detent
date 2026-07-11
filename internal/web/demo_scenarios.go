@@ -352,7 +352,11 @@ func (s *Server) demoReports(c echo.Context, scenario demoScenario) error {
 	if scenario.Variant == "filtered-project" {
 		projectID = scenario.ProjectID
 	}
-	data, err := s.reportsData(c.Request().Context(), time.Time{}, time.Time{}, projectID)
+	timezone, err := reportsTimezone(c.QueryParam("tz"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errorResponse("invalid_timezone", "tz must be an IANA timezone"))
+	}
+	data, err := s.reportsData(c.Request().Context(), time.Time{}, time.Time{}, projectID, timezone, demoBaseTime)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, errorResponse("usage_reports_failed", "Usage reports failed"))
 	}

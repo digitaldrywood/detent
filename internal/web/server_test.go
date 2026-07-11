@@ -9129,6 +9129,57 @@ func TestReportsPageRendersUsageCharts(t *testing.T) {
 	}
 }
 
+func TestReportsDailyDigestReconcilesSeededDay(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openWebTestStore(t)
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	sessionID, err := backend.StartSession(ctx, store.SessionStart{IssueID: "issue-digest", Identifier: "digitaldrywood/detent#1203", StartedAt: today.Add(time.Hour), Model: "gpt-digest", OrphanRecoveryOutcome: store.OrphanRecoveryResumed})
+	if err != nil {
+		t.Fatalf("StartSession() error = %v", err)
+	}
+	if err := backend.FinishSession(ctx, sessionID, store.SessionFinish{CompletedAt: today.Add(2 * time.Hour), InputTokens: 100, CachedInputTokens: 50, OutputTokens: 20, TotalTokens: 120, FinalState: "completed", Model: "gpt-digest"}); err != nil {
+		t.Fatalf("FinishSession() error = %v", err)
+	}
+	createdAt := today.Add(30 * time.Minute)
+	shippedAt := today.Add(3 * time.Hour)
+	releasedAt := today.Add(4 * time.Hour)
+
+	deps := testDeps(t)
+	deps.Store = backend
+	mustSetWebProject(t, deps.Registry, "detent", false)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: today.Add(5 * time.Hour),
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		BoardIssues: []telemetry.Issue{{ID: "issue-digest", ProjectID: "detent", State: "Done", CreatedAt: &createdAt, StageUpdatedAt: &shippedAt}},
+		Release:     telemetry.Release{ProjectID: "detent", LastRelease: "v1.2.3", LastReleaseAt: &releasedAt},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{Pricing: budget.PricingTable{"gpt-digest": {USDPerInputToken: 0.01, USDPerCachedInputToken: 0.002, USDPerOutputToken: 0.01}}}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	html := requestHTML(t, server.Handler(), http.MethodGet, "/reports?tz=UTC", http.StatusOK)
+	for _, want := range []string{
+		`id="reports-daily-digest"`,
+		`data-digest-date="` + today.Format(time.DateOnly) + `"`,
+		`data-digest-metric="sessions"`,
+		`data-digest-metric="cache"`,
+		`data-digest-metric="cost"`,
+		"50%",
+		"$0.80",
+		"1 reattached · 0 fresh",
+		`data-digest-project="detent"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("daily digest missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func assertActiveSidebarLink(t *testing.T, body string, href string) {
 	t.Helper()
 
@@ -10156,6 +10207,14 @@ func (storeProbe) LifetimeTotals(context.Context) (store.LifetimeTotals, error) 
 
 func (storeProbe) UsageReport(_ context.Context, query store.UsageReportQuery) (store.UsageReport, error) {
 	return store.UsageReport{By: query.By}, nil
+}
+
+func (storeProbe) DailyDigest(_ context.Context, windows []store.DailyDigestWindow) ([]store.DailyDigestDay, error) {
+	days := make([]store.DailyDigestDay, 0, len(windows))
+	for _, window := range windows {
+		days = append(days, store.DailyDigestDay{Date: window.Date, Models: []store.UsageReportModel{}})
+	}
+	return days, nil
 }
 
 func (p storeProbe) CycleTimeReport(ctx context.Context) (store.CycleTimeReport, error) {

@@ -57,11 +57,36 @@ type StatsStore interface {
 	FinishSession(context.Context, int64, SessionFinish) error
 	RecordUsageEvent(context.Context, UsageEvent) (int64, error)
 	UsageReport(context.Context, UsageReportQuery) (UsageReport, error)
+	DailyDigest(context.Context, []DailyDigestWindow) ([]DailyDigestDay, error)
 	CycleTimeReport(context.Context) (CycleTimeReport, error)
 	LifetimeTotals(context.Context) (LifetimeTotals, error)
 	DailyTokenSpend(context.Context, time.Time) (TokenSpend, error)
 	IssueTokenSpend(context.Context, IssueIdentity) (TokenSpend, error)
 	RecentModelTokenQuantiles(context.Context, ModelTokenQuantileQuery) (ModelTokenQuantiles, error)
+}
+
+type DailyDigestWindow struct {
+	Date string
+	From time.Time
+	To   time.Time
+}
+
+type DailyDigestDay struct {
+	Date                 string
+	Sessions             int64
+	InputTokens          int64
+	CachedInputTokens    int64
+	OutputTokens         int64
+	TotalTokens          int64
+	OrphanResumed        int64
+	OrphanFresh          int64
+	CapacityOutages      int64
+	CapacitySeconds      int64
+	CapacityRecoveryMode string
+	BreakerTrips         int64
+	FailedSessions       int64
+	DominantErrorClass   string
+	Models               []UsageReportModel
 }
 
 type FairShareStore interface {

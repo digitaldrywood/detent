@@ -2288,6 +2288,89 @@ func TestUsageReportRejectsInvalidRange(t *testing.T) {
 	}
 }
 
+func TestDailyDigestReconcilesRuntimeTables(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	from := time.Date(2026, 7, 10, 5, 0, 0, 0, time.UTC)
+	to := from.Add(24 * time.Hour)
+
+	seedDigestSession(t, ctx, backend, SessionStart{StartedAt: from.Add(time.Hour), Model: "gpt-a", OrphanRecoveryOutcome: OrphanRecoveryResumed}, SessionFinish{
+		CompletedAt: from.Add(2 * time.Hour), InputTokens: 1000, CachedInputTokens: 900, OutputTokens: 100, TotalTokens: 1100, FinalState: "completed", Model: "gpt-a",
+	})
+	seedDigestSession(t, ctx, backend, SessionStart{StartedAt: from.Add(3 * time.Hour), RequestedModel: "gpt-b", OrphanRecoveryOutcome: OrphanRecoveryFresh}, SessionFinish{
+		CompletedAt: from.Add(4 * time.Hour), InputTokens: 500, CachedInputTokens: 400, OutputTokens: 50, TotalTokens: 550, FinalState: "failed", Model: "gpt-b",
+	})
+	seedDigestSession(t, ctx, backend, SessionStart{StartedAt: from.Add(-time.Hour), Model: "outside"}, SessionFinish{
+		CompletedAt: from.Add(-time.Second), InputTokens: 9000, CachedInputTokens: 9000, OutputTokens: 9000, TotalTokens: 18000, FinalState: "failed", Model: "outside",
+	})
+
+	seedDigestAttempt(t, ctx, backend, "capacity", from.Add(-time.Hour), from.Add(time.Hour), WorkAttemptTerminalCapacity, "quota", "retry_resume")
+	seedDigestAttempt(t, ctx, backend, "failure-a", from.Add(8*time.Hour), from.Add(9*time.Hour), WorkAttemptTerminalFailure, "auth", "")
+	seedDigestAttempt(t, ctx, backend, "failure-b", from.Add(10*time.Hour), from.Add(11*time.Hour), WorkAttemptTerminalTimedOut, "auth", "")
+	for _, identifier := range []string{"digitaldrywood/detent#1", "digitaldrywood/detent#1"} {
+		if _, err := backend.RecordSchedulerDecision(ctx, SchedulerDecision{ProjectID: "detent", Identifier: identifier, Result: SchedulerDecisionResultSkipped, Reason: "repeated_failure_circuit_breaker", DecisionAt: from.Add(12 * time.Hour)}); err != nil {
+			t.Fatalf("RecordSchedulerDecision() error = %v", err)
+		}
+	}
+	if _, err := backend.RecordWorkflowPhaseEvent(ctx, WorkflowPhaseEvent{ProjectID: "detent", Identifier: "digitaldrywood/detent#1", PhaseType: WorkflowPhaseTypeLane, PhaseName: "Blocked", Reason: "repeated_failure_circuit_breaker", Status: "entered", StartedAt: from.Add(12 * time.Hour)}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+
+	days, err := backend.DailyDigest(ctx, []DailyDigestWindow{
+		{Date: "2026-07-09", From: from.Add(-24 * time.Hour), To: from},
+		{Date: "2026-07-10", From: from, To: to},
+	})
+	if err != nil {
+		t.Fatalf("DailyDigest() error = %v", err)
+	}
+	if len(days) != 2 {
+		t.Fatalf("DailyDigest() len = %d, want 2", len(days))
+	}
+	previous, day := days[0], days[1]
+	if previous.CapacityOutages != 1 || previous.CapacitySeconds != 3600 {
+		t.Fatalf("previous capacity = %#v, want the first boundary-clipped outage hour", previous)
+	}
+	if day.Sessions != 2 || day.InputTokens != 1500 || day.CachedInputTokens != 1300 || day.OutputTokens != 150 || day.TotalTokens != 1650 {
+		t.Fatalf("token totals = %#v, want exact in-window session sums", day)
+	}
+	if day.OrphanResumed != 1 || day.OrphanFresh != 1 || day.FailedSessions != 1 {
+		t.Fatalf("session outcomes = %#v, want resumed/fresh/failed 1/1/1", day)
+	}
+	if day.CapacityOutages != 1 || day.CapacitySeconds != 3600 || day.CapacityRecoveryMode != "retry_resume" {
+		t.Fatalf("capacity = %#v, want one boundary-clipped retry_resume outage hour", day)
+	}
+	if day.BreakerTrips != 1 || day.DominantErrorClass != "auth" {
+		t.Fatalf("failure summary = %#v, want one distinct breaker and dominant auth", day)
+	}
+	if len(day.Models) != 2 || day.Models[0].Model != "gpt-a" || day.Models[1].Model != "gpt-b" {
+		t.Fatalf("models = %#v, want exact gpt-a/gpt-b breakdown", day.Models)
+	}
+}
+
+func seedDigestSession(t *testing.T, ctx context.Context, backend Store, start SessionStart, finish SessionFinish) {
+	t.Helper()
+	id, err := backend.StartSession(ctx, start)
+	if err != nil {
+		t.Fatalf("StartSession() error = %v", err)
+	}
+	if err := backend.FinishSession(ctx, id, finish); err != nil {
+		t.Fatalf("FinishSession() error = %v", err)
+	}
+}
+
+func seedDigestAttempt(t *testing.T, ctx context.Context, backend Store, issueID string, startedAt time.Time, completedAt time.Time, terminal WorkAttemptTerminalState, errorClass string, nextAction string) {
+	t.Helper()
+	id, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{ProjectID: "detent", IssueID: issueID, Identifier: "digitaldrywood/detent#" + issueID, WorkerType: "agent", StartedAt: startedAt})
+	if err != nil {
+		t.Fatalf("StartWorkAttempt() error = %v", err)
+	}
+	if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{AttemptID: id, CompletedAt: completedAt, Status: WorkAttemptStatusTerminal, TerminalState: terminal, ErrorClass: errorClass, NextAction: nextAction}); err != nil {
+		t.Fatalf("CompleteWorkAttempt() error = %v", err)
+	}
+}
+
 func TestOpenRejectsUnsupportedBackend(t *testing.T) {
 	t.Parallel()
 
