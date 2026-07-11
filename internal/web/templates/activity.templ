@@ -5,7 +5,7 @@ import (
 )
 
 templ BoardActivityTabs(activity BoardActivityData, session BoardSessionData) {
-	<div class="flex min-h-72 flex-col rounded-card border border-line bg-elev" data-sheet-activity-tabs>
+	<div class="flex min-h-72 flex-none flex-col rounded-card border border-line bg-elev" data-sheet-activity-tabs>
 		<div class="flex flex-none items-center gap-1 border-b border-line px-2 pt-2" role="tablist" aria-label="Issue activity">
 			<button type="button" class="min-h-11 rounded-t-card border-b-2 border-accent px-3 py-2 text-xs font-medium text-text md:min-h-0" data-sheet-tab="activity" role="tab" aria-selected="true">Timeline</button>
 			<button
@@ -70,7 +70,8 @@ templ BoardActivityContent(data BoardActivityData) {
 	if len(data.Events) == 0 {
 		<div class="flex min-h-44 items-center justify-center px-4 text-center text-xs text-sec">No activity recorded for this issue yet.</div>
 	} else {
-		<ol class="max-h-96 overflow-y-auto px-3 py-1" data-activity-list>
+		<div class="max-h-[24rem] overflow-y-auto overscroll-contain" data-activity-list-scroll>
+		<ol class="px-3 py-1" data-activity-list>
 			for _, event := range data.Events {
 				<li id={ boardActivityEventID(event) } class="grid grid-cols-[0.5rem_minmax(0,1fr)] gap-2 border-b border-line/70 py-2.5 last:border-b-0">
 					<span class={ "mt-1.5 size-2 rounded-full " + boardActivityDotClass(event) } aria-hidden="true"></span>
@@ -92,6 +93,7 @@ templ BoardActivityContent(data BoardActivityData) {
 				</li>
 			}
 		</ol>
+		</div>
 	}
 	if data.HasMore {
 		<div class="border-t border-line p-2">

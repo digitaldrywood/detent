@@ -494,6 +494,75 @@ test("board card opens the detail sheet", async ({ page }, testInfo) => {
   await expect(sheet).toHaveCount(0);
 });
 
+test("long activity history stays contained across display modes", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  await page.locator("#board-lanes article[id^='card-']").first().click();
+  const sheet = page.locator("[data-detail-sheet]");
+  const activity = sheet.locator("[data-sheet-activity-tabs]");
+  const activityPanel = sheet.locator('[data-sheet-panel="activity"]');
+  const activityScroll = sheet.locator("[data-activity-list-scroll]");
+  const labels = sheet.getByText("Labels", { exact: true });
+  const conversation = sheet.getByText("Conversation", { exact: true });
+  await seedLongActivityHistory(activityPanel, 140);
+
+  for (const density of ["compact", "cozy"]) {
+    await page.evaluate((value) => {
+      if (value === "cozy") document.documentElement.setAttribute("data-density", "cozy");
+      else document.documentElement.removeAttribute("data-density");
+    }, density);
+    for (const theme of ["dark", "light"]) {
+      await page.evaluate((value) => {
+        if (value === "light") document.documentElement.setAttribute("data-theme", "light");
+        else document.documentElement.removeAttribute("data-theme");
+      }, theme);
+
+      await expect(activityScroll).toHaveCSS("overflow-y", "auto");
+      expect(
+        await activityScroll.evaluate(
+          (element) => element.scrollHeight > element.clientHeight,
+        ),
+      ).toBeTruthy();
+      const [activityBox, activityScrollBox, labelsBox, conversationBox] =
+        await Promise.all([
+          activity.boundingBox(),
+          activityScroll.boundingBox(),
+          labels.boundingBox(),
+          conversation.boundingBox(),
+        ]);
+      expect(activityBox).not.toBeNull();
+      expect(activityScrollBox).not.toBeNull();
+      expect(labelsBox).not.toBeNull();
+      expect(conversationBox).not.toBeNull();
+      expect(
+        activityScrollBox.y + activityScrollBox.height,
+      ).toBeLessThanOrEqual(activityBox.y + activityBox.height);
+      expect(activityBox.y + activityBox.height).toBeLessThanOrEqual(
+        labelsBox.y,
+      );
+      expect(labelsBox.y + labelsBox.height).toBeLessThanOrEqual(
+        conversationBox.y,
+      );
+      await capturePageAndAttach(
+        page,
+        `board-detail-long-activity-${density}-${theme}.png`,
+        testInfo,
+      );
+    }
+  }
+
+  await sheet.getByRole("tab", { name: "Live session" }).click();
+  await expect(sheet.getByText("No active worker session")).toBeVisible();
+});
+
 test("detail sheet activity tabs survive morphs across display modes", async ({
   page,
 }) => {
@@ -1579,6 +1648,34 @@ async function morphSnapshot(page, name, incoming) {
     routePath,
   );
   await page.unroute(`**${routePath}`);
+}
+
+async function seedLongActivityHistory(activityPanel, eventCount) {
+  await activityPanel.evaluate((panel, count) => {
+    const stream = panel.querySelector("#board-activity-stream");
+    const fixture = stream?.cloneNode(true);
+    if (!stream || !fixture) {
+      throw new Error("Activity history fixture requires the activity stream");
+    }
+    fixture.removeAttribute("hx-ext");
+    fixture.removeAttribute("sse-connect");
+    window.htmx.remove(stream);
+    panel.append(fixture);
+    const scroll = fixture.querySelector("[data-activity-list-scroll]");
+    const list = scroll?.querySelector("[data-activity-list]");
+    const template = list?.querySelector("li");
+    if (!list || !template) {
+      throw new Error("Activity history fixture requires an existing event");
+    }
+    list.replaceChildren();
+    for (let index = 0; index < count; index += 1) {
+      const event = template.cloneNode(true);
+      event.id = `activity-long-history-${index}`;
+      const title = event.querySelector("p");
+      if (title) title.textContent = `Worker session cycle ${index + 1}`;
+      list.append(event);
+    }
+  }, eventCount);
 }
 
 async function attachScreenshotEvidence(page, name, testInfo) {
