@@ -144,6 +144,7 @@ func buildBudgetDispatchGuards(
 		PerIssueMaxUSD:  cfg.PerIssueMaxUSD,
 		RefusalCooldown: time.Duration(cfg.RefusalCooldownSeconds) * time.Second,
 		PricingPath:     cfg.PricingPath,
+		Overrides:       budgetOverrideStore(sessionStore),
 	}
 	if cfg.EffectiveBillingMode() == workflowconfig.BillingModeSubscription {
 		return budget.NewChecker(checkerConfig, nil, pricing), nil, nil
@@ -160,6 +161,14 @@ func buildBudgetDispatchGuards(
 		return checker, nil, nil
 	}
 	return checker, budget.NewDispatchEstimator(estimateStore), nil
+}
+
+func budgetOverrideStore(value any) budget.OverrideStore {
+	store, ok := value.(budget.OverrideStore)
+	if !ok {
+		return nil
+	}
+	return store
 }
 
 func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string, logger *slog.Logger) (workspace.Backend, error) {

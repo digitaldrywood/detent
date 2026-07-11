@@ -377,6 +377,12 @@ type ProjectSmallMultiple struct {
 	TotalTokens               int64
 	ThroughputTokensPerSecond float64
 	CurrentSpendUSD           float64
+	BudgetEnabled             bool
+	PerDayMaxUSD              float64
+	PerIssueMaxUSD            float64
+	BudgetResetAt             time.Time
+	BudgetObservedAt          time.Time
+	BudgetOverride            *telemetry.BudgetOverride
 	Samples                   []ProjectSmallMultipleSample
 }
 

@@ -67,7 +67,7 @@ templ HealthSnapshotV2(data DashboardData) {
 					<span class="flex items-center gap-2.5">
 						<span class="whitespace-nowrap font-mono text-xs text-sec tabular-nums">{ row.Quota }</span>
 						<span class="h-1 min-w-0 flex-1 overflow-hidden rounded-xs bg-line">
-							<span class={ "block " + healthQuotaBarClass(row.QuotaWarn) } style={ fleetProgressStyle(row.QuotaPct) }></span>
+							<span class={ "block " + healthQuotaBarKindClass(row.Kind, row.QuotaWarn) } style={ fleetProgressStyle(row.QuotaPct) }></span>
 						</span>
 					</span>
 				} else {

@@ -39,13 +39,17 @@ func (s *Server) projectSmallMultiples(ctx context.Context, snapshot telemetry.S
 		now = time.Now().UTC().Truncate(time.Second)
 	}
 	now = now.UTC()
+	overrideNow := time.Now().UTC().Truncate(time.Second)
 
 	spend := s.projectSpend(ctx, projectSmallMultipleIDs(projects), now)
 	for i := range projects {
 		if value, ok := spend[projects[i].ID]; ok {
 			projects[i].CurrentSpendUSD = value
 		}
+		projects[i].BudgetResetAt = dailyBudgetReset(now)
+		projects[i].BudgetObservedAt = overrideNow
 	}
+	s.applyBudgetOverrides(ctx, projects, overrideNow)
 	return s.projects.record(now, projects)
 }
 
@@ -126,11 +130,14 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 			continue
 		}
 		configured[id] = templates.ProjectSmallMultiple{
-			ID:     id,
-			Name:   id,
-			URL:    trackerProjectURL(trackedProject),
-			Color:  configuredProjectColor(trackedProject.Config().Color),
-			Paused: trackedProject.Paused(),
+			ID:             id,
+			Name:           id,
+			URL:            trackerProjectURL(trackedProject),
+			Color:          configuredProjectColor(trackedProject.Config().Color),
+			Paused:         trackedProject.Paused(),
+			BudgetEnabled:  trackedProject.Workflow().Config.Budget.Enabled,
+			PerDayMaxUSD:   trackedProject.Workflow().Config.Budget.PerDayMaxUSD,
+			PerIssueMaxUSD: trackedProject.Workflow().Config.Budget.PerIssueMaxUSD,
 		}
 	}
 
@@ -144,6 +151,9 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 		id := strings.TrimSpace(projects[i].ID)
 		if configuredProject, ok := configured[id]; ok {
 			projects[i].Paused = configuredProject.Paused
+			projects[i].BudgetEnabled = configuredProject.BudgetEnabled
+			projects[i].PerDayMaxUSD = configuredProject.PerDayMaxUSD
+			projects[i].PerIssueMaxUSD = configuredProject.PerIssueMaxUSD
 			if strings.TrimSpace(projects[i].URL) == "" {
 				projects[i].URL = configuredProject.URL
 			}
@@ -160,6 +170,47 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 		seen[id] = struct{}{}
 	}
 	return projects
+}
+
+func (s *Server) applyBudgetOverrides(ctx context.Context, projects []templates.ProjectSmallMultiple, now time.Time) {
+	overrides, ok := s.store.(store.BudgetOverrideStore)
+	if !ok {
+		return
+	}
+	active, err := overrides.ListActiveBudgetOverrides(ctx, now)
+	if err != nil {
+		s.logger.Warn("budget override query failed", slog.Any("error", err))
+		return
+	}
+	byProject := make(map[string]store.BudgetOverride, len(active))
+	for _, override := range active {
+		byProject[override.ProjectID] = override
+	}
+	for i := range projects {
+		override, ok := byProject[projects[i].ID]
+		if !ok {
+			continue
+		}
+		projects[i].BudgetOverride = &telemetry.BudgetOverride{
+			ProjectID:      override.ProjectID,
+			PerDayMaxUSD:   override.PerDayMaxUSD,
+			PerIssueMaxUSD: override.PerIssueMaxUSD,
+			ExpiresAt:      override.ExpiresAt,
+			CreatedAt:      override.CreatedAt,
+			Reason:         override.Reason,
+		}
+		if override.PerDayMaxUSD != nil {
+			projects[i].PerDayMaxUSD = *override.PerDayMaxUSD
+		}
+		if override.PerIssueMaxUSD != nil {
+			projects[i].PerIssueMaxUSD = *override.PerIssueMaxUSD
+		}
+	}
+}
+
+func dailyBudgetReset(now time.Time) time.Time {
+	_, end := dailyBudgetPeriod(now)
+	return end
 }
 
 func configuredProjectColor(value string) string {

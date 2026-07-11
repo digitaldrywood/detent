@@ -29,6 +29,7 @@ type Config struct {
 	PerIssueMaxUSD  float64
 	RefusalCooldown time.Duration
 	PricingPath     string
+	Overrides       OverrideStore
 }
 
 type SpendStore interface {
@@ -148,9 +149,13 @@ func (c *Checker) CheckDispatch(ctx context.Context, req DispatchRequest) (Decis
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	effective, err := EffectiveConfig(ctx, c.cfg, now)
+	if err != nil {
+		return Decision{}, err
+	}
 
 	projectedCost := tokenCostUSD(req.Estimate.normalized(), modelPricing)
-	if capActive(c.cfg.PerDayMaxUSD) {
+	if capActive(effective.PerDayMaxUSD) {
 		if missingSpendStore(c.spend) {
 			return Decision{}, ErrMissingSpendStore
 		}
@@ -159,14 +164,14 @@ func (c *Checker) CheckDispatch(ctx context.Context, req DispatchRequest) (Decis
 			return Decision{}, fmt.Errorf("daily token spend: %w", err)
 		}
 		currentSpend := SpendUSD(dailySpend, c.pricing)
-		if currentSpend+projectedCost > c.cfg.PerDayMaxUSD {
+		if currentSpend+projectedCost > effective.PerDayMaxUSD {
 			return Decision{
-				Refusal: c.refusal(ReasonPerDayMaxUSD, req, now, currentSpend, projectedCost, c.cfg.PerDayMaxUSD, nextDailyReset(now)),
+				Refusal: c.refusal(ReasonPerDayMaxUSD, req, now, currentSpend, projectedCost, effective.PerDayMaxUSD, nextDailyReset(now)),
 			}, nil
 		}
 	}
 
-	if capActive(c.cfg.PerIssueMaxUSD) {
+	if capActive(effective.PerIssueMaxUSD) {
 		currentSpend := 0.0
 		identity := store.IssueIdentity{
 			IssueID:    req.IssueID,
@@ -183,9 +188,9 @@ func (c *Checker) CheckDispatch(ctx context.Context, req DispatchRequest) (Decis
 			}
 			currentSpend = SpendUSD(issueSpend, c.pricing)
 		}
-		if currentSpend+projectedCost > c.cfg.PerIssueMaxUSD {
+		if currentSpend+projectedCost > effective.PerIssueMaxUSD {
 			return Decision{
-				Refusal: c.refusal(ReasonPerIssueMaxUSD, req, now, currentSpend, projectedCost, c.cfg.PerIssueMaxUSD, nil),
+				Refusal: c.refusal(ReasonPerIssueMaxUSD, req, now, currentSpend, projectedCost, effective.PerIssueMaxUSD, nil),
 			}, nil
 		}
 	}

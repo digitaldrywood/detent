@@ -416,12 +416,14 @@ type Followups struct {
 }
 
 type Budget struct {
-	BillingMode            string  `yaml:"billing_mode,omitempty"`
-	Enabled                bool    `yaml:"enabled"`
-	PerDayMaxUSD           float64 `yaml:"per_day_max_usd"`
-	PerIssueMaxUSD         float64 `yaml:"per_issue_max_usd"`
-	RefusalCooldownSeconds int     `yaml:"refusal_cooldown_seconds"`
-	PricingPath            string  `yaml:"pricing_path"`
+	BillingMode                string  `yaml:"billing_mode,omitempty"`
+	Enabled                    bool    `yaml:"enabled"`
+	PerDayMaxUSD               float64 `yaml:"per_day_max_usd"`
+	PerIssueMaxUSD             float64 `yaml:"per_issue_max_usd"`
+	RefusalCooldownSeconds     int     `yaml:"refusal_cooldown_seconds"`
+	PricingPath                string  `yaml:"pricing_path"`
+	OverrideMaxDurationSeconds int     `yaml:"override_max_duration_seconds"`
+	OverrideMaxMultiplier      float64 `yaml:"override_max_multiplier"`
 
 	perDayMaxUSDConfigured   bool
 	perIssueMaxUSDConfigured bool
@@ -2032,6 +2034,8 @@ func (b *Budget) validate(prefix string, problems *[]string) {
 	if strings.TrimSpace(b.PricingPath) == "" {
 		*problems = append(*problems, prefix+".pricing_path is required")
 	}
+	validatePositive(prefix+".override_max_duration_seconds", b.OverrideMaxDurationSeconds, problems)
+	validatePositiveFloat(prefix+".override_max_multiplier", b.OverrideMaxMultiplier, problems)
 }
 
 func (c *Codex) validate(problems *[]string) {
@@ -2405,10 +2409,12 @@ func yamlKindName(node *yaml.Node) string {
 
 func defaultBudget() Budget {
 	return Budget{
-		PerDayMaxUSD:           50.0,
-		PerIssueMaxUSD:         5.0,
-		RefusalCooldownSeconds: 3600,
-		PricingPath:            "priv/pricing/models.yaml",
+		PerDayMaxUSD:               50.0,
+		PerIssueMaxUSD:             5.0,
+		RefusalCooldownSeconds:     3600,
+		PricingPath:                "priv/pricing/models.yaml",
+		OverrideMaxDurationSeconds: 48 * 60 * 60,
+		OverrideMaxMultiplier:      3,
 	}
 }
 

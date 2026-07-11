@@ -82,6 +82,41 @@ func TestHealthRowsIncludeBackendCapacityOutage(t *testing.T) {
 	}
 }
 
+func TestHealthBudgetRowsShowEffectiveCapAndOverride(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 11, 15, 0, 0, 0, time.UTC)
+	cap := 200.0
+	rows := healthBudgetRows(DashboardData{
+		Snapshot: telemetry.Snapshot{GeneratedAt: now},
+		Projects: []ProjectSmallMultiple{{
+			ID:               "detent",
+			Name:             "Detent",
+			BudgetEnabled:    true,
+			BudgetObservedAt: now,
+			CurrentSpendUSD:  170,
+			PerDayMaxUSD:     cap,
+			BudgetResetAt:    now.Add(9 * time.Hour),
+			BudgetOverride: &telemetry.BudgetOverride{
+				ProjectID:    "detent",
+				PerDayMaxUSD: &cap,
+				ExpiresAt:    now.Add(4 * time.Hour),
+				Reason:       "release work",
+			},
+		}},
+	})
+	if len(rows) != 1 {
+		t.Fatalf("healthBudgetRows() len = %d, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.Kind != primitives.KindWarn || row.Status != "Approaching limit" || row.QuotaPct != 85 {
+		t.Fatalf("budget row = %#v", row)
+	}
+	if !strings.Contains(row.Detail, "override daily $200.00") || !strings.Contains(row.Detail, "expires in 4h0m0s") || !strings.Contains(row.Detail, "release work") {
+		t.Fatalf("budget detail = %q", row.Detail)
+	}
+}
+
 func TestHealthRows(t *testing.T) {
 	resetAt := time.Date(2026, 7, 4, 17, 0, 0, 0, time.UTC)
 	snapshot := telemetry.Snapshot{

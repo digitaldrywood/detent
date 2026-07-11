@@ -10,6 +10,32 @@ import (
 	"database/sql"
 )
 
+const activeBudgetOverride = `-- name: ActiveBudgetOverride :one
+SELECT project_id, per_day_max_usd, per_issue_max_usd, expires_at, created_at, reason
+FROM budget_overrides
+WHERE project_id = ?1
+  AND expires_at > ?2
+`
+
+type ActiveBudgetOverrideParams struct {
+	ProjectID string `json:"project_id"`
+	Now       string `json:"now"`
+}
+
+func (q *Queries) ActiveBudgetOverride(ctx context.Context, arg ActiveBudgetOverrideParams) (BudgetOverride, error) {
+	row := q.db.QueryRowContext(ctx, activeBudgetOverride, arg.ProjectID, arg.Now)
+	var i BudgetOverride
+	err := row.Scan(
+		&i.ProjectID,
+		&i.PerDayMaxUsd,
+		&i.PerIssueMaxUsd,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.Reason,
+	)
+	return i, err
+}
+
 const backfillSessionProjectID = `-- name: BackfillSessionProjectID :execrows
 UPDATE codex_sessions
 SET project_id = ?1
@@ -1310,6 +1336,19 @@ func (q *Queries) DailyTokenSpend(ctx context.Context, completedAt sql.NullStrin
 	return items, nil
 }
 
+const deleteBudgetOverride = `-- name: DeleteBudgetOverride :execrows
+DELETE FROM budget_overrides
+WHERE project_id = ?
+`
+
+func (q *Queries) DeleteBudgetOverride(ctx context.Context, projectID string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteBudgetOverride, projectID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const finishCodexSession = `-- name: FinishCodexSession :execrows
 UPDATE codex_sessions
 SET completed_at = ?1,
@@ -2100,6 +2139,43 @@ func (q *Queries) ListAPIUsageLogsByKey(ctx context.Context, apiKeyID string) ([
 			&i.Ip,
 			&i.UserAgent,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listActiveBudgetOverrides = `-- name: ListActiveBudgetOverrides :many
+SELECT project_id, per_day_max_usd, per_issue_max_usd, expires_at, created_at, reason
+FROM budget_overrides
+WHERE expires_at > ?1
+ORDER BY expires_at, project_id
+`
+
+func (q *Queries) ListActiveBudgetOverrides(ctx context.Context, now string) ([]BudgetOverride, error) {
+	rows, err := q.db.QueryContext(ctx, listActiveBudgetOverrides, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BudgetOverride{}
+	for rows.Next() {
+		var i BudgetOverride
+		if err := rows.Scan(
+			&i.ProjectID,
+			&i.PerDayMaxUsd,
+			&i.PerIssueMaxUsd,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.Reason,
 		); err != nil {
 			return nil, err
 		}
@@ -3666,6 +3742,54 @@ func (q *Queries) UpdateWorkAttemptHeartbeat(ctx context.Context, arg UpdateWork
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const upsertBudgetOverride = `-- name: UpsertBudgetOverride :one
+INSERT INTO budget_overrides (
+  project_id,
+  per_day_max_usd,
+  per_issue_max_usd,
+  expires_at,
+  created_at,
+  reason
+) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(project_id) DO UPDATE SET
+  per_day_max_usd = excluded.per_day_max_usd,
+  per_issue_max_usd = excluded.per_issue_max_usd,
+  expires_at = excluded.expires_at,
+  created_at = excluded.created_at,
+  reason = excluded.reason
+RETURNING project_id, per_day_max_usd, per_issue_max_usd, expires_at, created_at, reason
+`
+
+type UpsertBudgetOverrideParams struct {
+	ProjectID      string          `json:"project_id"`
+	PerDayMaxUsd   sql.NullFloat64 `json:"per_day_max_usd"`
+	PerIssueMaxUsd sql.NullFloat64 `json:"per_issue_max_usd"`
+	ExpiresAt      string          `json:"expires_at"`
+	CreatedAt      string          `json:"created_at"`
+	Reason         string          `json:"reason"`
+}
+
+func (q *Queries) UpsertBudgetOverride(ctx context.Context, arg UpsertBudgetOverrideParams) (BudgetOverride, error) {
+	row := q.db.QueryRowContext(ctx, upsertBudgetOverride,
+		arg.ProjectID,
+		arg.PerDayMaxUsd,
+		arg.PerIssueMaxUsd,
+		arg.ExpiresAt,
+		arg.CreatedAt,
+		arg.Reason,
+	)
+	var i BudgetOverride
+	err := row.Scan(
+		&i.ProjectID,
+		&i.PerDayMaxUsd,
+		&i.PerIssueMaxUsd,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.Reason,
+	)
+	return i, err
 }
 
 const upsertFairShareUsage = `-- name: UpsertFairShareUsage :one

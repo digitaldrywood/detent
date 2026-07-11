@@ -509,6 +509,15 @@ type Budget struct {
 	Refusals          []BudgetRefusal    `json:"refusals,omitempty"`
 }
 
+type BudgetOverride struct {
+	ProjectID      string    `json:"project_id"`
+	PerDayMaxUSD   *float64  `json:"per_day_max_usd"`
+	PerIssueMaxUSD *float64  `json:"per_issue_max_usd"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	CreatedAt      time.Time `json:"created_at"`
+	Reason         string    `json:"reason"`
+}
+
 type BudgetSpendPoint struct {
 	At       time.Time `json:"at"`
 	SpendUSD float64   `json:"spend_usd"`
