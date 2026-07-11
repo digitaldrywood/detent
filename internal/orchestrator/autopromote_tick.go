@@ -1075,7 +1075,7 @@ func staleMergingPullRequestDispatchActive(state *State, issueID string) bool {
 
 func staleMergingQueueIssues(issues []connector.Issue, cfg Config) []connector.Issue {
 	queue := issuesInStates(issues, []string{autoPromoteMergingState})
-	sortIssuesForDispatch(queue, cfg.DispatchPriorityByState, cfg.DispatchPriorityByLabel)
+	sortIssuesForDispatch(queue, cfg.DispatchPriorityByState, cfg.DispatchPriorityByLabel, cfg.PrioritizeUnblockers)
 	return queue
 }
 

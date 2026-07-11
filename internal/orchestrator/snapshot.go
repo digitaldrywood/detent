@@ -42,6 +42,12 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		refresh.Status = telemetry.RefreshStatusReady
 	}
 	boardIssues := authorizedSnapshotIssues(s.BoardIssues, s.Authorization, s.SelectorContext)
+	rankingIssues := cloneIssues(boardIssues)
+	for _, blocked := range s.Blocked {
+		rankingIssues = append(rankingIssues, cloneIssue(blocked.Issue))
+	}
+	annotateUnblockerCounts(boardIssues, rankingIssues, s.ActiveStates, s.TerminalStates, s.PrioritizeUnblockers)
+	clearBlockedUnblockerCounts(boardIssues, s.Blocked)
 	pipeline := authorizedSnapshotIssues(s.Pipeline, s.Authorization, s.SelectorContext)
 	statusDrift := authorizedStatusDrift(s.StatusDrift, s.Authorization, s.SelectorContext)
 	boardIssueSnapshots := issueSnapshots(boardIssues, s.AutoPromoteQuietDuration, s.PollInterval, now, s.laneEntries)
@@ -543,6 +549,7 @@ func telemetryIssue(issue connector.Issue, quietDuration time.Duration, pollInte
 		Description:           issue.Description,
 		Priority:              cloneIntPointer(issue.Priority),
 		PriorityName:          telemetryIssuePriorityName(issue),
+		UnblockerCount:        issue.UnblockerCount,
 		State:                 issue.State,
 		Labels:                append([]string(nil), issue.Labels...),
 		Assignees:             append([]string(nil), issue.Assignees...),

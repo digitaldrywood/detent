@@ -26,6 +26,7 @@ type State struct {
 	AutoPromote              AutoPromoteConfig
 	ActiveStates             []string
 	TerminalStates           []string
+	PrioritizeUnblockers     bool
 	Instance                 telemetry.Instance
 	Authorization            selector.Selector
 	SelectorContext          selector.Context
@@ -206,6 +207,7 @@ func newState(cfg Config) State {
 		AutoPromote:              cloneAutoPromoteConfig(cfg.AutoPromote),
 		ActiveStates:             append([]string(nil), cfg.ActiveStates...),
 		TerminalStates:           append([]string(nil), cfg.TerminalStates...),
+		PrioritizeUnblockers:     cfg.PrioritizeUnblockers,
 		Instance:                 instanceSnapshot(cfg),
 		Authorization:            cloneSelector(cfg.Authorization),
 		SelectorContext:          cfg.SelectorContext,
@@ -240,6 +242,7 @@ func (s State) clone() State {
 		AutoPromote:              cloneAutoPromoteConfig(s.AutoPromote),
 		ActiveStates:             append([]string(nil), s.ActiveStates...),
 		TerminalStates:           append([]string(nil), s.TerminalStates...),
+		PrioritizeUnblockers:     s.PrioritizeUnblockers,
 		Instance:                 s.Instance,
 		Authorization:            cloneSelector(s.Authorization),
 		SelectorContext:          s.SelectorContext,

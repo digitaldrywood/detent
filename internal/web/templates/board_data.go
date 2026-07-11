@@ -441,7 +441,7 @@ func boardRuntimeSessionIDs(snapshot telemetry.Snapshot, card projectKanbanCard)
 }
 
 func boardCardPriority(card projectKanbanCard) (string, string, string, bool) {
-	if card.PriorityRank == 0 && card.DispatchPriorityRank == 0 {
+	if card.PriorityRank == 0 && card.DispatchPriorityRank == 0 && card.UnblockerCount == 0 {
 		return "", "", "", false
 	}
 
@@ -452,7 +452,10 @@ func boardCardPriority(card projectKanbanCard) (string, string, string, bool) {
 	if badge == "" {
 		badge = card.DispatchPriorityLabel
 	}
-	details := make([]string, 0, 2)
+	if badge == "" && card.UnblockerCount > 0 {
+		badge = "unblocker"
+	}
+	details := make([]string, 0, 3)
 	if card.PriorityRank > 0 {
 		name := strings.TrimSpace(card.PriorityName)
 		if name == "" {
@@ -465,8 +468,18 @@ func boardCardPriority(card projectKanbanCard) (string, string, string, bool) {
 	if card.DispatchPriorityRank > 0 {
 		details = append(details, "Label "+card.DispatchPriorityLabel+" is configured at dispatch label rank "+strconv.Itoa(card.DispatchPriorityRank)+".")
 	}
+	if card.UnblockerCount > 0 {
+		details = append(details, unblockerPriorityDetail(card.UnblockerCount))
+	}
 	top := card.PriorityRank == 1 || (card.PriorityRank == 0 && card.DispatchPriorityRank == 1)
 	return badge, "Dispatch priority", strings.Join(details, " "), top
+}
+
+func unblockerPriorityDetail(count int) string {
+	if count == 1 {
+		return "Unblocks 1 issue."
+	}
+	return "Unblocks " + strconv.Itoa(count) + " issues."
 }
 
 // boardCardExtra picks the single allowed extra signal, most urgent first:

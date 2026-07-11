@@ -61,6 +61,7 @@ func TestApplyRuntimeUpdateRefreshesSupervisorRetryConfig(t *testing.T) {
 		FailureRetryBaseDelay:  10 * time.Second,
 		ActiveStates:           []string{"Todo"},
 		TerminalStates:         []string{"Done"},
+		PrioritizeUnblockers:   true,
 		ContinuationRetryDelay: time.Second,
 	})
 	orch := Orchestrator{
@@ -84,6 +85,9 @@ func TestApplyRuntimeUpdateRefreshesSupervisorRetryConfig(t *testing.T) {
 
 	if got := orch.supervisor.RetryDelay(4); got != 2*time.Second {
 		t.Fatalf("RetryDelay(4) = %s, want reloaded 2s cap", got)
+	}
+	if state.PrioritizeUnblockers {
+		t.Fatal("State.PrioritizeUnblockers = true, want reloaded false")
 	}
 }
 
@@ -118,7 +122,7 @@ func TestDispatchReadyIssuesRanksDueRetriesWithCandidates(t *testing.T) {
 	}
 
 	issues := []connector.Issue{retrying, merging}
-	sortIssuesForDispatch(issues, cfg.DispatchPriorityByState, cfg.DispatchPriorityByLabel)
+	sortIssuesForDispatch(issues, cfg.DispatchPriorityByState, cfg.DispatchPriorityByLabel, cfg.PrioritizeUnblockers)
 	orch.dispatchReadyIssues(context.Background(), &state, issues, now)
 
 	if _, ok := state.Running[merging.ID]; !ok {

@@ -568,6 +568,7 @@ type projectKanbanCard struct {
 	PriorityName          string
 	DispatchPriorityLabel string
 	DispatchPriorityRank  int
+	UnblockerCount        int
 	Labels                []string
 	Assignees             []string
 	Comments              []telemetry.IssueComment
@@ -2187,6 +2188,9 @@ func projectKanbanCardsByState(data DashboardData) map[string][]projectKanbanCar
 			if cards[i].DispatchPriorityRank != cards[j].DispatchPriorityRank {
 				return cards[i].DispatchPriorityRank < cards[j].DispatchPriorityRank
 			}
+			if cards[i].DispatchPriorityRank == 0 && cards[i].UnblockerCount != cards[j].UnblockerCount {
+				return cards[i].UnblockerCount > cards[j].UnblockerCount
+			}
 			left := cards[i].StageAt
 			right := cards[j].StageAt
 			if left.IsZero() || right.IsZero() {
@@ -2774,6 +2778,7 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		StageAt:               stageAt.UTC(),
 		PriorityRank:          projectKanbanPriorityRank(issue.Priority),
 		PriorityName:          strings.TrimSpace(issue.PriorityName),
+		UnblockerCount:        issue.UnblockerCount,
 		Labels:                uniqueStrings(issue.Labels),
 		Assignees:             uniqueStrings(issue.Assignees),
 		Comments:              append([]telemetry.IssueComment(nil), issue.Comments...),
