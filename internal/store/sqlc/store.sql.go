@@ -1766,6 +1766,52 @@ func (q *Queries) GetWorkAttempt(ctx context.Context, id int64) (WorkAttempt, er
 	return i, err
 }
 
+const issueSpendSince = `-- name: IssueSpendSince :one
+SELECT
+  CAST(COALESCE(SUM(cost_usd), 0) AS REAL) AS cost_usd,
+  CAST(COUNT(*) AS INTEGER) AS sessions,
+  CAST(COALESCE(MIN(finished_at), '') AS TEXT) AS first_session_at,
+  CAST(COALESCE(MAX(finished_at), '') AS TEXT) AS last_session_at
+FROM usage_events
+WHERE project_id = ?1
+  AND finished_at > ?2
+  AND (
+    (?3 != '' AND COALESCE(issue_id, '') = ?3)
+    OR (?4 != '' AND COALESCE(identifier, '') = ?4)
+  )
+`
+
+type IssueSpendSinceParams struct {
+	ProjectID  string      `json:"project_id"`
+	Since      string      `json:"since"`
+	IssueID    interface{} `json:"issue_id"`
+	Identifier interface{} `json:"identifier"`
+}
+
+type IssueSpendSinceRow struct {
+	CostUsd        float64 `json:"cost_usd"`
+	Sessions       int64   `json:"sessions"`
+	FirstSessionAt string  `json:"first_session_at"`
+	LastSessionAt  string  `json:"last_session_at"`
+}
+
+func (q *Queries) IssueSpendSince(ctx context.Context, arg IssueSpendSinceParams) (IssueSpendSinceRow, error) {
+	row := q.db.QueryRowContext(ctx, issueSpendSince,
+		arg.ProjectID,
+		arg.Since,
+		arg.IssueID,
+		arg.Identifier,
+	)
+	var i IssueSpendSinceRow
+	err := row.Scan(
+		&i.CostUsd,
+		&i.Sessions,
+		&i.FirstSessionAt,
+		&i.LastSessionAt,
+	)
+	return i, err
+}
+
 const issueTokenSpend = `-- name: IssueTokenSpend :many
 SELECT
   CAST(COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '') AS TEXT) AS model,

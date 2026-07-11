@@ -524,6 +524,20 @@ WHERE finished_at >= sqlc.arg(from_time)
   AND finished_at < sqlc.arg(to_time)
 ORDER BY finished_at, id;
 
+-- name: IssueSpendSince :one
+SELECT
+  CAST(COALESCE(SUM(cost_usd), 0) AS REAL) AS cost_usd,
+  CAST(COUNT(*) AS INTEGER) AS sessions,
+  CAST(COALESCE(MIN(finished_at), '') AS TEXT) AS first_session_at,
+  CAST(COALESCE(MAX(finished_at), '') AS TEXT) AS last_session_at
+FROM usage_events
+WHERE project_id = sqlc.arg(project_id)
+  AND finished_at > sqlc.arg(since)
+  AND (
+    (sqlc.arg(issue_id) != '' AND COALESCE(issue_id, '') = sqlc.arg(issue_id))
+    OR (sqlc.arg(identifier) != '' AND COALESCE(identifier, '') = sqlc.arg(identifier))
+  );
+
 -- name: ListFairShareUsage :many
 SELECT
   project_id,

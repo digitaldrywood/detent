@@ -30,6 +30,7 @@ const (
 	PatternInvalidWorkpadStatus   = "invalid_workpad_status"
 	PatternSlowCapacityRecovery   = "slow_capacity_recovery"
 	PatternFallbackOrphanRecovery = "fallback_orphan_recovery"
+	PatternSpendSinceProgressTrip = "spend_since_progress_trip"
 )
 
 type Snapshot struct {
@@ -133,6 +134,7 @@ func Detect(snapshot Snapshot, options DetectorOptions) []Finding {
 	}
 	appendResult(detectCompletedRedispatch(snapshot.Attempts))
 	findings = append(findings, detectSystemicBreakers(snapshot.Attempts)...)
+	appendResult(detectSpendSinceProgressTrips(snapshot.Attempts, snapshot.Sessions))
 	appendResult(detectCeilingThenSuccess(snapshot.Attempts, snapshot.Sessions))
 	appendResult(detectReceiptBaseline(snapshot.UsageEvents, options.ReceiptBaselineMultiple))
 	appendResult(detectGateWaitTimeouts(snapshot.Attempts, snapshot.PhaseEvents))
@@ -149,6 +151,43 @@ func Detect(snapshot Snapshot, options DetectorOptions) []Finding {
 		return findings[i].Pattern < findings[j].Pattern
 	})
 	return findings
+}
+
+func detectSpendSinceProgressTrips(attempts []Attempt, sessions []Session) (Finding, bool) {
+	sessionTokens := map[int64]int64{}
+	for _, session := range sessions {
+		if session.WorkAttemptID > 0 {
+			sessionTokens[session.WorkAttemptID] += session.TotalTokens
+		}
+	}
+	occurrences := []Occurrence{}
+	var tokenDelta int64
+	for _, attempt := range attempts {
+		if !strings.EqualFold(strings.TrimSpace(attempt.ErrorClass), "spend_since_progress_circuit_breaker") {
+			continue
+		}
+		tokens := sessionTokens[attempt.ID]
+		tokenDelta += tokens
+		occurrences = append(occurrences, Occurrence{
+			Issue:  attemptIssue(attempt),
+			At:     attempt.CompletedAt,
+			Tokens: tokens,
+			Detail: strings.TrimSpace(attempt.ErrorMessage),
+		})
+	}
+	return Finding{
+		Pattern:     PatternSpendSinceProgressTrip,
+		Scope:       ScopeProduct,
+		Severity:    SeverityCritical,
+		Title:       "Shrink tasks that spend without accepted progress",
+		Detail:      "Agent spend exceeded the configured limit without a lane, pull request, or recognized content-signature change.",
+		TokenDelta:  tokenDelta,
+		Occurrences: occurrences,
+		Proposal: &Proposal{
+			Path:   "agent.no_progress_spend_limit_usd",
+			Change: "Review the limit and narrow the cited task scopes before retrying them.",
+		},
+	}, len(occurrences) > 0
 }
 
 func Qualifies(finding Finding, minOccurrences int, singleOccurrenceSeverity string) bool {

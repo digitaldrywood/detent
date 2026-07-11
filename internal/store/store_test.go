@@ -1327,6 +1327,41 @@ func TestBudgetCostEvents(t *testing.T) {
 	}
 }
 
+func TestIssueSpendSinceUsesAcceptedProgressBoundaryAndIssueIdentity(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	base := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	events := []UsageEvent{
+		{ProjectID: "detent", IssueID: "issue-214", Identifier: "gopherguides/gopher-ai#214", CostUSD: 9, StartedAt: base.Add(-time.Minute), FinishedAt: base, Outcome: "completed"},
+		{ProjectID: "detent", IssueID: "issue-214", Identifier: "gopherguides/gopher-ai#214", CostUSD: 1.25, StartedAt: base.Add(time.Minute), FinishedAt: base.Add(2 * time.Minute), Outcome: "completed"},
+		{ProjectID: "detent", IssueID: "issue-214", Identifier: "gopherguides/gopher-ai#214", CostUSD: 2.5, StartedAt: base.Add(3 * time.Minute), FinishedAt: base.Add(4 * time.Minute), Outcome: "completed"},
+		{ProjectID: "detent", IssueID: "other", Identifier: "gopherguides/gopher-ai#999", CostUSD: 20, StartedAt: base.Add(time.Minute), FinishedAt: base.Add(2 * time.Minute), Outcome: "completed"},
+		{ProjectID: "other-project", IssueID: "issue-214", Identifier: "gopherguides/gopher-ai#214", CostUSD: 30, StartedAt: base.Add(time.Minute), FinishedAt: base.Add(2 * time.Minute), Outcome: "completed"},
+	}
+	for _, event := range events {
+		if _, err := backend.RecordUsageEvent(ctx, event); err != nil {
+			t.Fatalf("RecordUsageEvent() error = %v", err)
+		}
+	}
+
+	spend, err := backend.IssueSpendSince(ctx, IssueSpendSinceQuery{
+		ProjectID: "detent",
+		IssueID:   "issue-214",
+		Since:     base,
+	})
+	if err != nil {
+		t.Fatalf("IssueSpendSince() error = %v", err)
+	}
+	if math.Abs(spend.CostUSD-3.75) > 0.000001 || spend.Sessions != 2 {
+		t.Fatalf("IssueSpendSince() = %#v, want $3.75 across two sessions", spend)
+	}
+	if !spend.FirstSessionAt.Equal(base.Add(2*time.Minute)) || !spend.LastSessionAt.Equal(base.Add(4*time.Minute)) {
+		t.Fatalf("session range = %s..%s", spend.FirstSessionAt, spend.LastSessionAt)
+	}
+}
+
 func TestRecentModelTokenQuantilesUsesRecentCompletedSessions(t *testing.T) {
 	t.Parallel()
 

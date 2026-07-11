@@ -726,6 +726,22 @@ func appendPriorAttemptBlock(prompt string, prior PriorAttempt) string {
 			}
 		}
 	}
+	if prior.ExplainBeforeRetry {
+		b.WriteString("\n\n### Explain before retry\n\n")
+		b.WriteString("Your first tool action must update the Workpad to explain what accepted progress signal was missing in the prior run and what is concretely different in this retry. Do not use any other tools or resume implementation until that diagnosis is recorded.")
+		if signal := strings.TrimSpace(prior.MissingSignal); signal != "" {
+			b.WriteString("\n\n- missing accepted signal: ")
+			b.WriteString(signal)
+		}
+		if prior.ObservedSpendUSD > 0 {
+			b.WriteString("\n- spend since last accepted state change: $")
+			b.WriteString(strconv.FormatFloat(prior.ObservedSpendUSD, 'f', 2, 64))
+		}
+		if prior.NoProgressSpendLimitUSD > 0 {
+			b.WriteString("\n- configured limit: $")
+			b.WriteString(strconv.FormatFloat(prior.NoProgressSpendLimitUSD, 'f', 2, 64))
+		}
+	}
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + strings.TrimRight(b.String(), "\n")
 }
@@ -733,6 +749,7 @@ func appendPriorAttemptBlock(prompt string, prior PriorAttempt) string {
 func priorAttemptPresent(prior PriorAttempt) bool {
 	return strings.TrimSpace(prior.Source) != "" ||
 		strings.TrimSpace(prior.Reason) != "" ||
+		prior.ExplainBeforeRetry ||
 		prior.Validator.Submitted
 }
 
