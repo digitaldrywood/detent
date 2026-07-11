@@ -823,7 +823,30 @@ func (s *Server) health(c echo.Context) error {
 		Connector:         s.connectorName(),
 		SessionsRemaining: sessionsRemaining,
 		Checks:            checks,
+		Budgets:           s.enforcedBudgets(),
 	})
+}
+
+func (s *Server) enforcedBudgets() []healthBudget {
+	if s.registry == nil {
+		return nil
+	}
+
+	projects := s.registry.List()
+	budgets := make([]healthBudget, 0, len(projects))
+	for _, project := range projects {
+		cfg, ok := project.EnforcedBudget()
+		if !ok {
+			continue
+		}
+		budgets = append(budgets, healthBudget{
+			ProjectID:      string(project.ID()),
+			Enabled:        cfg.Enabled,
+			PerDayMaxUSD:   cfg.PerDayMaxUSD,
+			PerIssueMaxUSD: cfg.PerIssueMaxUSD,
+		})
+	}
+	return budgets
 }
 
 func (s *Server) redirectToOnboarding(c echo.Context) error {
@@ -987,4 +1010,12 @@ type healthResponse struct {
 	Connector         string            `json:"connector"`
 	SessionsRemaining int               `json:"sessions_remaining,omitempty"`
 	Checks            map[string]string `json:"checks"`
+	Budgets           []healthBudget    `json:"budgets,omitempty"`
+}
+
+type healthBudget struct {
+	ProjectID      string  `json:"project_id"`
+	Enabled        bool    `json:"enabled"`
+	PerDayMaxUSD   float64 `json:"per_day_max_usd"`
+	PerIssueMaxUSD float64 `json:"per_issue_max_usd"`
 }

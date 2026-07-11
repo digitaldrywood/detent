@@ -265,6 +265,22 @@ func TestCheckerUsesDefaultEstimate(t *testing.T) {
 	assertInDelta(t, decision.Refusal.ProjectedCostUSD, 0.19)
 }
 
+func TestCheckerReportsEnforcedConfig(t *testing.T) {
+	t.Parallel()
+
+	want := Config{
+		Enabled:         true,
+		PerDayMaxUSD:    250,
+		PerIssueMaxUSD:  25,
+		RefusalCooldown: 45 * time.Second,
+		PricingPath:     "pricing.yaml",
+	}
+	checker := NewChecker(want, &fakeSpendStore{}, nil)
+	if got := checker.EnforcedConfig(); got != want {
+		t.Fatalf("EnforcedConfig() = %#v, want %#v", got, want)
+	}
+}
+
 func TestRefusalCommentUsesEffectiveDueAt(t *testing.T) {
 	t.Parallel()
 

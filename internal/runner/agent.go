@@ -113,6 +113,8 @@ type Runner struct {
 	budgetChecker       BudgetChecker
 	dispatchEstimator   DispatchEstimator
 	budgetGuardBuilder  BudgetGuardBuilder
+	enforcedBudget      config.Budget
+	enforcedBudgetKnown bool
 	now                 func() time.Time
 	logger              *slog.Logger
 	afterRunTimeout     time.Duration
@@ -155,6 +157,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 			return nil, err
 		}
 	}
+	enforcedBudget, enforcedBudgetKnown := enforcedBudgetConfig(deps.Workflow.Config.Budget, budgetChecker)
 
 	return &Runner{
 		projectID:           projectID,
@@ -167,6 +170,8 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		budgetChecker:       budgetChecker,
 		dispatchEstimator:   dispatchEstimator,
 		budgetGuardBuilder:  deps.BudgetGuardBuilder,
+		enforcedBudget:      enforcedBudget,
+		enforcedBudgetKnown: enforcedBudgetKnown,
 		now:                 deps.Now,
 		logger:              deps.Logger,
 		afterRunTimeout:     deps.AfterRunTimeout,
@@ -199,12 +204,56 @@ func (r *Runner) UpdateWorkflow(workflow config.Workflow) {
 	} else {
 		r.budgetChecker = budgetChecker
 		r.dispatchEstimator = dispatchEstimator
+		r.enforcedBudget, r.enforcedBudgetKnown = enforcedBudgetConfig(workflow.Config.Budget, budgetChecker)
+		if budgetGuardBuilder != nil {
+			if r.enforcedBudgetKnown {
+				r.logger.Info(
+					"budget dispatch guards reloaded",
+					"enabled", r.enforcedBudget.Enabled,
+					"per_day_max_usd", r.enforcedBudget.PerDayMaxUSD,
+					"per_issue_max_usd", r.enforcedBudget.PerIssueMaxUSD,
+				)
+			} else {
+				r.logger.Warn("budget dispatch guards reloaded without enforced config reporting")
+			}
+		}
 	}
 	if err != nil {
 		r.logger.Warn("reload agent runtime failed", "error", err)
 		return
 	}
 	r.agentRuntime = runtime
+}
+
+func (r *Runner) EnforcedBudget() (config.Budget, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	return r.enforcedBudget, r.enforcedBudgetKnown
+}
+
+func enforcedBudgetConfig(requested config.Budget, checker BudgetChecker) (config.Budget, bool) {
+	if checker == nil {
+		if requested.Enabled {
+			return config.Budget{}, false
+		}
+		return requested, true
+	}
+
+	reporter, ok := checker.(interface {
+		EnforcedConfig() budget.Config
+	})
+	if !ok {
+		return config.Budget{}, false
+	}
+	enforced := reporter.EnforcedConfig()
+	return config.Budget{
+		Enabled:                enforced.Enabled,
+		PerDayMaxUSD:           enforced.PerDayMaxUSD,
+		PerIssueMaxUSD:         enforced.PerIssueMaxUSD,
+		RefusalCooldownSeconds: int(enforced.RefusalCooldown / time.Second),
+		PricingPath:            enforced.PricingPath,
+	}, true
 }
 
 type agentRuntime struct {

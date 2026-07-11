@@ -43,7 +43,7 @@ func TestAPIBoardCardRendersLiveActivityAndVerboseUsage(t *testing.T) {
 	}
 
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/card?project=detent&issue=issue-1156", http.StatusOK)
-	for _, want := range []string{"Orchestration activity", "Dispatch skipped", "artifact_gate_wait_status", "Verbose", "Live session", "data-board-live-session", "hx-preserve"} {
+	for _, want := range []string{"Orchestration activity", "Dispatch skipped", "artifact_gate_wait_status", "Verbose", "Live session", "data-board-live-session", "flex min-h-72 flex-none flex-col", "data-activity-list-scroll", "max-h-[24rem] overflow-y-auto overscroll-contain", "hx-preserve"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("detail sheet missing %q:\n%s", want, body)
 		}

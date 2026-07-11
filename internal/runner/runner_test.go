@@ -2822,6 +2822,92 @@ func TestRunnerUpdateWorkflowRefreshesBudgetGuards(t *testing.T) {
 	}
 }
 
+func TestRunnerUpdateWorkflowAppliesReloadedDailyBudget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		initialCap         float64
+		reloadedCap        float64
+		wantInitialAllowed bool
+		wantReloadAllowed  bool
+	}{
+		{
+			name:               "increased cap unblocks next check",
+			initialCap:         0.05,
+			reloadedCap:        0.20,
+			wantInitialAllowed: false,
+			wantReloadAllowed:  true,
+		},
+		{
+			name:               "decreased cap refuses next check",
+			initialCap:         0.20,
+			reloadedCap:        0.05,
+			wantInitialAllowed: true,
+			wantReloadAllowed:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			pricing := budget.PricingTable{
+				"gpt-test": {USDPerInputToken: 0.01},
+			}
+			spend := &fakeRunnerBudgetSpendStore{
+				daily: store.TokenSpend{
+					ByModel: []store.ModelTokenSpend{{Model: "gpt-test", InputTokens: 10}},
+				},
+			}
+			workflowCfg := config.Config{}
+			workflowCfg.Budget = config.Budget{Enabled: true, PerDayMaxUSD: tt.initialCap}
+			runner, err := NewRunner(Dependencies{
+				Workflow: config.Workflow{Config: workflowCfg},
+				Workspace: &fakeWorkspaceBackend{
+					info: workspace.Info{Path: t.TempDir(), Key: "budget-reload", Branch: "detent/budget-reload"},
+				},
+				AgentBackend: &fakeCodexClient{},
+				BudgetGuardBuilder: func(cfg config.Budget) (BudgetChecker, DispatchEstimator, error) {
+					return budget.NewChecker(budget.Config{
+						Enabled:      cfg.Enabled,
+						PerDayMaxUSD: cfg.PerDayMaxUSD,
+					}, spend, pricing), nil, nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			assertBudgetDecision := func(wantAllowed bool) {
+				t.Helper()
+				_, _, checker, _ := runner.runtimeSnapshot()
+				decision, err := checker.CheckDispatch(context.Background(), budget.DispatchRequest{
+					Model:    "gpt-test",
+					Now:      time.Date(2026, 7, 11, 15, 0, 0, 0, time.UTC),
+					Estimate: budget.TokenEstimate{InputTokens: 1},
+				})
+				if err != nil {
+					t.Fatalf("CheckDispatch() error = %v", err)
+				}
+				if decision.Allowed != wantAllowed {
+					t.Fatalf("Decision.Allowed = %t, want %t", decision.Allowed, wantAllowed)
+				}
+			}
+
+			assertBudgetDecision(tt.wantInitialAllowed)
+			workflowCfg.Budget.PerDayMaxUSD = tt.reloadedCap
+			runner.UpdateWorkflow(config.Workflow{Config: workflowCfg})
+			assertBudgetDecision(tt.wantReloadAllowed)
+
+			enforced, ok := runner.EnforcedBudget()
+			if !ok || enforced.PerDayMaxUSD != tt.reloadedCap {
+				t.Fatalf("EnforcedBudget() = %#v, %t, want per_day_max_usd %.2f", enforced, ok, tt.reloadedCap)
+			}
+		})
+	}
+}
+
 func TestRunnerRunUsesSingleConfiguredBackendDefaultRoute(t *testing.T) {
 	t.Parallel()
 
