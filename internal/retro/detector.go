@@ -381,20 +381,33 @@ func detectSlowCapacityRecovery(attempts []Attempt) (Finding, bool) {
 	ordered := append([]Attempt(nil), attempts...)
 	slices.SortFunc(ordered, compareAttemptTime)
 	occurrences := []Occurrence{}
+	seenReset := map[string]struct{}{}
 	for index, attempt := range ordered {
-		if !containsAnyFold(attempt.ErrorClass+" "+attempt.ErrorMessage, "backend_capacity", "quota", "usage limit", "resource_exhausted") {
+		if !capacityFailure(attempt) {
 			continue
 		}
 		resetAt, ok := capacityResetAt(attempt.CapacitySnapshotJSON)
 		if !ok {
 			continue
 		}
-		recoveredAt := nextSuccessfulStart(ordered[index+1:])
-		if recoveredAt.IsZero() || !recoveredAt.After(resetAt) {
+		resetKey := resetAt.UTC().Format(time.RFC3339Nano)
+		if _, ok := seenReset[resetKey]; ok {
 			continue
 		}
-		delay := recoveredAt.Sub(resetAt)
-		occurrences = append(occurrences, Occurrence{Issue: attemptIssue(attempt), At: recoveredAt, Detail: "recovered " + delay.Round(time.Second).String() + " after reset window"})
+		for laterIndex := index + 1; laterIndex < len(ordered); laterIndex++ {
+			persisted := ordered[laterIndex]
+			if persisted.StartedAt.Before(resetAt) || !capacityFailure(persisted) {
+				continue
+			}
+			seenReset[resetKey] = struct{}{}
+			detail := "capacity failure persisted " + persisted.StartedAt.Sub(resetAt).Round(time.Second).String() + " after reset window"
+			if recoveredAt := nextSuccessfulStart(ordered[laterIndex+1:]); !recoveredAt.IsZero() {
+				detail += "; recovered " + recoveredAt.Sub(resetAt).Round(time.Second).String() + " after reset window"
+			}
+			occurrence := attemptOccurrence(persisted, detail)
+			occurrences = append(occurrences, occurrence)
+			break
+		}
 	}
 	return Finding{
 		Pattern:     PatternSlowCapacityRecovery,
@@ -404,6 +417,10 @@ func detectSlowCapacityRecovery(attempts []Attempt) (Finding, bool) {
 		Detail:      "Backend capacity remained unavailable after its recorded reset window.",
 		Occurrences: occurrences,
 	}, len(occurrences) > 0
+}
+
+func capacityFailure(attempt Attempt) bool {
+	return containsAnyFold(attempt.ErrorClass+" "+attempt.ErrorMessage, "backend_capacity", "quota", "usage limit", "resource_exhausted")
 }
 
 func detectFallbackOrphanRecovery(sessions []Session, threshold int) (Finding, bool) {

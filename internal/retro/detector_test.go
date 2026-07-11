@@ -65,9 +65,10 @@ func TestDetectAdditionalPatterns(t *testing.T) {
 	snapshot := Snapshot{
 		Attempts: []Attempt{
 			{ID: 1, Identifier: "issue-capacity", StartedAt: base, CompletedAt: base.Add(time.Minute), TerminalState: "capacity", ErrorClass: "backend_capacity", CapacitySnapshotJSON: `{"outage":{"reset_at":"` + resetAt.Format(time.RFC3339) + `"}}`},
-			{ID: 2, Identifier: "issue-after-capacity", StartedAt: resetAt.Add(10 * time.Minute), CompletedAt: resetAt.Add(11 * time.Minute), TerminalState: "success"},
-			{ID: 3, Identifier: "issue-gate", StartedAt: base, CompletedAt: base.Add(time.Minute), TerminalState: "timed_out", ErrorClass: "gate_wait_timeout"},
-			{ID: 4, Identifier: "issue-gate-2", StartedAt: base, CompletedAt: base.Add(time.Minute), TerminalState: "timed_out", WaitReason: "gate wait timeout"},
+			{ID: 2, Identifier: "issue-capacity-persisted", StartedAt: resetAt.Add(5 * time.Minute), CompletedAt: resetAt.Add(6 * time.Minute), TerminalState: "capacity", ErrorClass: "backend_capacity"},
+			{ID: 3, Identifier: "issue-after-capacity", StartedAt: resetAt.Add(10 * time.Minute), CompletedAt: resetAt.Add(11 * time.Minute), TerminalState: "success"},
+			{ID: 4, Identifier: "issue-gate", StartedAt: base, CompletedAt: base.Add(time.Minute), TerminalState: "timed_out", ErrorClass: "gate_wait_timeout"},
+			{ID: 5, Identifier: "issue-gate-2", StartedAt: base, CompletedAt: base.Add(time.Minute), TerminalState: "timed_out", WaitReason: "gate wait timeout"},
 		},
 		Sessions: []Session{
 			{ID: 1, Identifier: "issue-orphan-a", StartedAt: base, CompletedAt: base.Add(time.Minute), OrphanRecoveryOutcome: "fresh"},
@@ -97,6 +98,20 @@ func TestDetectAdditionalPatterns(t *testing.T) {
 	}
 	if got := []string{orphan.Occurrences[0].Issue, orphan.Occurrences[1].Issue, orphan.Occurrences[2].Issue}; !slices.Equal(got, []string{"issue-orphan-a", "issue-orphan-b", "issue-orphan-c"}) {
 		t.Fatalf("orphan issues = %v, want project-wide consecutive fallbacks", got)
+	}
+}
+
+func TestDetectSlowCapacityRecoveryIgnoresIdleTime(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	resetAt := base.Add(time.Hour)
+	findings := Detect(Snapshot{Attempts: []Attempt{
+		{ID: 1, Identifier: "issue-capacity", StartedAt: base, CompletedAt: base.Add(time.Minute), TerminalState: "capacity", ErrorClass: "backend_capacity", CapacitySnapshotJSON: `{"reset_at":"` + resetAt.Format(time.RFC3339) + `"}`},
+		{ID: 2, Identifier: "issue-after-idle", StartedAt: resetAt.Add(time.Hour), CompletedAt: resetAt.Add(time.Hour + time.Minute), TerminalState: "success"},
+	}}, DetectorOptions{})
+	if slices.Contains(findingPatterns(findings), PatternSlowCapacityRecovery) {
+		t.Fatalf("patterns = %v, want idle time ignored", findingPatterns(findings))
 	}
 }
 
