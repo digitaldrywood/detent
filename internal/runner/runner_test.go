@@ -45,10 +45,10 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			Branch: "detent/digitaldrywood_detent_22",
 		},
 		diffStats: []workspace.DiffStat{
-			{Files: 1, Added: 2},
-			{Files: 2, Added: 5, Removed: 1},
-			{Files: 2, Added: 5, Removed: 1},
-			{Files: 2, Added: 5, Removed: 1},
+			{Files: 1, Added: 2, Fingerprint: "first-diff"},
+			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
+			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
+			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
 		},
 	}
 	codexClient := &fakeCodexClient{
@@ -201,7 +201,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[1].LastEventAt.IsZero() {
 		t.Fatal("second usage update LastEventAt is zero")
 	}
-	if usageUpdates[1].DiffStats.FilesChanged != 1 || usageUpdates[1].DiffStats.AddedLines != 2 || usageUpdates[1].DiffStats.Status != "ok" {
+	if usageUpdates[1].DiffStats.FilesChanged != 1 || usageUpdates[1].DiffStats.AddedLines != 2 || usageUpdates[1].DiffStats.Fingerprint != "first-diff" || usageUpdates[1].DiffStats.Status != "ok" {
 		t.Fatalf("second usage update DiffStats = %#v, want live diff", usageUpdates[1].DiffStats)
 	}
 	if usageUpdates[2].TurnCount != 1 || usageUpdates[2].Tokens.TotalTokens != 125 {
@@ -225,8 +225,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[3].DiffStats.FilesChanged != 2 || usageUpdates[3].DiffStats.AddedLines != 5 || usageUpdates[3].DiffStats.RemovedLines != 1 {
 		t.Fatalf("fourth usage update DiffStats = %#v, want refreshed diff", usageUpdates[3].DiffStats)
 	}
-	if result.DiffStats.FilesChanged != 2 || result.DiffStats.AddedLines != 5 || result.DiffStats.RemovedLines != 1 {
-		t.Fatalf("DiffStats = %#v, want 2 files, 5 added, 1 removed", result.DiffStats)
+	if result.DiffStats.FilesChanged != 2 || result.DiffStats.AddedLines != 5 || result.DiffStats.RemovedLines != 1 || result.DiffStats.Fingerprint != "final-diff" {
+		t.Fatalf("DiffStats = %#v, want 2 files, 5 added, 1 removed, and final fingerprint", result.DiffStats)
 	}
 	if result.RateLimits == nil || result.RateLimits.LimitID != "codex-primary" {
 		t.Fatalf("RateLimits = %#v, want codex-primary", result.RateLimits)
@@ -2819,6 +2819,92 @@ func TestRunnerUpdateWorkflowRefreshesBudgetGuards(t *testing.T) {
 	}
 	if agentBackend.calls != 0 {
 		t.Fatalf("RunTurn calls = %d, want 0 after budget refusal", agentBackend.calls)
+	}
+}
+
+func TestRunnerUpdateWorkflowAppliesReloadedDailyBudget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		initialCap         float64
+		reloadedCap        float64
+		wantInitialAllowed bool
+		wantReloadAllowed  bool
+	}{
+		{
+			name:               "increased cap unblocks next check",
+			initialCap:         0.05,
+			reloadedCap:        0.20,
+			wantInitialAllowed: false,
+			wantReloadAllowed:  true,
+		},
+		{
+			name:               "decreased cap refuses next check",
+			initialCap:         0.20,
+			reloadedCap:        0.05,
+			wantInitialAllowed: true,
+			wantReloadAllowed:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			pricing := budget.PricingTable{
+				"gpt-test": {USDPerInputToken: 0.01},
+			}
+			spend := &fakeRunnerBudgetSpendStore{
+				daily: store.TokenSpend{
+					ByModel: []store.ModelTokenSpend{{Model: "gpt-test", InputTokens: 10}},
+				},
+			}
+			workflowCfg := config.Config{}
+			workflowCfg.Budget = config.Budget{Enabled: true, PerDayMaxUSD: tt.initialCap}
+			runner, err := NewRunner(Dependencies{
+				Workflow: config.Workflow{Config: workflowCfg},
+				Workspace: &fakeWorkspaceBackend{
+					info: workspace.Info{Path: t.TempDir(), Key: "budget-reload", Branch: "detent/budget-reload"},
+				},
+				AgentBackend: &fakeCodexClient{},
+				BudgetGuardBuilder: func(cfg config.Budget) (BudgetChecker, DispatchEstimator, error) {
+					return budget.NewChecker(budget.Config{
+						Enabled:      cfg.Enabled,
+						PerDayMaxUSD: cfg.PerDayMaxUSD,
+					}, spend, pricing), nil, nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			assertBudgetDecision := func(wantAllowed bool) {
+				t.Helper()
+				_, _, checker, _ := runner.runtimeSnapshot()
+				decision, err := checker.CheckDispatch(context.Background(), budget.DispatchRequest{
+					Model:    "gpt-test",
+					Now:      time.Date(2026, 7, 11, 15, 0, 0, 0, time.UTC),
+					Estimate: budget.TokenEstimate{InputTokens: 1},
+				})
+				if err != nil {
+					t.Fatalf("CheckDispatch() error = %v", err)
+				}
+				if decision.Allowed != wantAllowed {
+					t.Fatalf("Decision.Allowed = %t, want %t", decision.Allowed, wantAllowed)
+				}
+			}
+
+			assertBudgetDecision(tt.wantInitialAllowed)
+			workflowCfg.Budget.PerDayMaxUSD = tt.reloadedCap
+			runner.UpdateWorkflow(config.Workflow{Config: workflowCfg})
+			assertBudgetDecision(tt.wantReloadAllowed)
+
+			enforced, ok := runner.EnforcedBudget()
+			if !ok || enforced.PerDayMaxUSD != tt.reloadedCap {
+				t.Fatalf("EnforcedBudget() = %#v, %t, want per_day_max_usd %.2f", enforced, ok, tt.reloadedCap)
+			}
+		})
 	}
 }
 
