@@ -144,6 +144,67 @@ func TestServiceAgeTrigger(t *testing.T) {
 	}
 }
 
+func TestTriggered(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.July, 10, 20, 0, 0, 0, time.UTC)
+	cfg := Config{MinMergedIssues: 3, MaxAge: 24 * time.Hour}
+
+	tests := []struct {
+		name   string
+		status Status
+		want   bool
+	}{
+		{name: "no merges and no age deadline", status: Status{}, want: false},
+		{name: "below count without age deadline", status: Status{UnreleasedMerges: 2}, want: false},
+		{name: "count at threshold", status: Status{UnreleasedMerges: 3}, want: true},
+		{name: "count above threshold", status: Status{UnreleasedMerges: 7}, want: true},
+		{name: "below count with future age deadline", status: Status{UnreleasedMerges: 1, NextTriggerAt: now.Add(time.Hour)}, want: false},
+		{name: "below count with age deadline reached", status: Status{UnreleasedMerges: 1, NextTriggerAt: now}, want: true},
+		{name: "below count with age deadline passed", status: Status{UnreleasedMerges: 1, NextTriggerAt: now.Add(-time.Minute)}, want: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := triggered(cfg, test.status, now); got != test.want {
+				t.Fatalf("triggered() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestServiceExistingTagIsNotAFailure(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.July, 10, 20, 0, 0, 0, time.UTC)
+	backend := &fakeBackend{
+		tagErr: ErrTagExists,
+		repo: Repository{
+			Name:      "example/repo",
+			HeadSHA:   "head",
+			LatestTag: "v1.2.3",
+			LatestSHA: "previous",
+			Commits:   []Commit{{Message: "fix: retry status", MergedAt: now.Add(-time.Hour), IssueRefs: []string{"example/repo#1"}}},
+			Checks:    []Check{{Name: "CI", Status: "completed", Conclusion: "success"}},
+		},
+	}
+	service := New(Config{Enabled: true, MinMergedIssues: 1, MaxAge: 24 * time.Hour, RequireGreenCI: true}, backend)
+
+	status, decision := service.Evaluate(context.Background(), now)
+	if status.State != "release_pending" || status.PendingTag != "v1.2.4" {
+		t.Fatalf("Evaluate() status = %#v, want release_pending v1.2.4", status)
+	}
+	if decision.Action != "tag_created" {
+		t.Fatalf("Evaluate() decision = %#v, want tag_created", decision)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if len(backend.failures) != 0 {
+		t.Fatalf("failure issues = %#v, want none", backend.failures)
+	}
+}
+
 func TestServiceFailedReleaseWorkflowFilesIssue(t *testing.T) {
 	t.Parallel()
 
@@ -185,6 +246,7 @@ type fakeBackend struct {
 	workflowFound bool
 	inspectCalls  int
 	tags          []Tag
+	tagErr        error
 	failures      []Failure
 }
 
@@ -198,6 +260,9 @@ func (f *fakeBackend) Inspect(context.Context) (Repository, error) {
 func (f *fakeBackend) CreateTag(_ context.Context, tag Tag) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.tagErr != nil {
+		return f.tagErr
+	}
 	f.tags = append(f.tags, tag)
 	f.repo.LatestTag = tag.Name
 	f.repo.LatestSHA = tag.SHA
