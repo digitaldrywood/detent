@@ -699,5 +699,6 @@ func diffStatsPresent(diffStats DiffStats) bool {
 	return diffStats.FilesChanged != 0 ||
 		diffStats.AddedLines != 0 ||
 		diffStats.RemovedLines != 0 ||
+		diffStats.Fingerprint != "" ||
 		diffStats.Status != ""
 }

@@ -115,14 +115,45 @@ func TestLocalGitDiffStat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DiffStat() error = %v", err)
 	}
-	want := DiffStat{Files: 2, Added: 2, Removed: 1}
-	if got != want {
-		t.Fatalf("DiffStat() = %+v, want %+v", got, want)
+	if got.Files != 2 || got.Added != 2 || got.Removed != 1 || got.Fingerprint == "" {
+		t.Fatalf("DiffStat() = %+v, want 2 files, 2 added, 1 removed, and a fingerprint", got)
+	}
+	originalFingerprint := got.Fingerprint
+
+	if err := os.WriteFile(filepath.Join(info.Path, "added.txt"), []byte("third\nfourth\n"), 0o600); err != nil {
+		t.Fatalf("rewrite added file: %v", err)
+	}
+	contentChanged, err := backend.DiffStat(context.Background(), info, Issue{Identifier: "DD-DIFF"})
+	if err != nil {
+		t.Fatalf("content-changed DiffStat() error = %v", err)
+	}
+	if contentChanged.Files != got.Files || contentChanged.Added != got.Added || contentChanged.Removed != got.Removed {
+		t.Fatalf("content-changed DiffStat() = %+v, want unchanged counts from %+v", contentChanged, got)
+	}
+	if contentChanged.Fingerprint == originalFingerprint {
+		t.Fatalf("content-changed fingerprint = %q, want different from original", contentChanged.Fingerprint)
+	}
+
+	if err := os.Remove(filepath.Join(info.Path, "added.txt")); err != nil {
+		t.Fatalf("remove added file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(info.Path, "other.txt"), []byte("third\nfourth\n"), 0o600); err != nil {
+		t.Fatalf("write other file: %v", err)
+	}
+	fileSetChanged, err := backend.DiffStat(context.Background(), info, Issue{Identifier: "DD-DIFF"})
+	if err != nil {
+		t.Fatalf("file-set-changed DiffStat() error = %v", err)
+	}
+	if fileSetChanged.Files != contentChanged.Files || fileSetChanged.Added != contentChanged.Added || fileSetChanged.Removed != contentChanged.Removed {
+		t.Fatalf("file-set-changed DiffStat() = %+v, want unchanged counts from %+v", fileSetChanged, contentChanged)
+	}
+	if fileSetChanged.Fingerprint == contentChanged.Fingerprint {
+		t.Fatalf("file-set-changed fingerprint = %q, want different from content-changed fingerprint", fileSetChanged.Fingerprint)
 	}
 
 	status := runGit(t, info.Path, "status", "--short")
-	if !strings.Contains(status, "?? added.txt") {
-		t.Fatalf("git status = %q, want added.txt to remain untracked", status)
+	if !strings.Contains(status, "?? other.txt") {
+		t.Fatalf("git status = %q, want other.txt to remain untracked", status)
 	}
 	if strings.Contains(status, ".detent/notes.md") || strings.Contains(status, ".detent/lessons.md") {
 		t.Fatalf("git status = %q, want handoff files ignored", status)
