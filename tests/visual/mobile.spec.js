@@ -613,7 +613,7 @@ for (const board of [
   });
 }
 
-test("board lanes scroll horizontally from card touches in both densities", async ({
+test("board cards preserve native pan axes and horizontal lane swipes", async ({
   page,
 }) => {
   const kanbanRuntime = await startDetentRuntime("mobile-kanban-card-swipe", [
@@ -638,8 +638,8 @@ test("board lanes scroll horizontally from card touches in both densities", asyn
         .locator('[data-kanban-card][data-kanban-action="move"]')
         .first();
       await expect(card).toBeVisible();
-      await expect(lanes).toHaveCSS("touch-action", "pan-x");
-      await expect(card).toHaveCSS("touch-action", "pan-x");
+      await expect(lanes).toHaveCSS("touch-action", "pan-x pan-y");
+      await expect(card).toHaveCSS("touch-action", "pan-x pan-y");
       await lanes.evaluate((root) => {
         root.scrollLeft = 0;
       });
