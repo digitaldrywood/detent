@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/factory"
 	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -92,6 +93,8 @@ type Dependencies struct {
 	Scheduler              scheduler.Scheduler
 	GlobalDispatchGate     scheduler.ProjectDispatchGate
 	WorkflowMetrics        orchestrator.WorkflowMetricsRecorder
+	Efficiency             efficiency.Recorder
+	LifecycleExporter      efficiency.LifecycleExporter
 	WorkAttempts           store.WorkAttemptStore
 	AgentResume            store.AgentResumeStore
 	ValidatorMemo          store.ValidatorMemoStore
@@ -210,6 +213,18 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	if orchestratorFactory == nil {
 		orchestratorFactory = orchestrator.New
 	}
+	lifecycleExporter := deps.LifecycleExporter
+	if lifecycleExporter == nil {
+		lifecycleExporter, err = efficiency.NewLifecycleExporter(efficiency.ExporterConfig{
+			Endpoint:    workflow.Config.Observability.OTLP.Endpoint,
+			Headers:     workflow.Config.Observability.OTLP.Headers,
+			ServiceName: workflow.Config.Observability.OTLP.ServiceName,
+			Timeout:     time.Duration(workflow.Config.Observability.OTLP.TimeoutMS) * time.Millisecond,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create lifecycle exporter: %w", err)
+		}
+	}
 
 	orchConfig := projectOrchestratorConfig(cfg.Project, workflow.Config)
 	orchDeps := orchestrator.Dependencies{
@@ -217,6 +232,8 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		Runner:             deps.Runner,
 		GlobalDispatchGate: deps.GlobalDispatchGate,
 		WorkflowMetrics:    deps.WorkflowMetrics,
+		Efficiency:         deps.Efficiency,
+		LifecycleExporter:  lifecycleExporter,
 		WorkAttempts:       deps.WorkAttempts,
 		AgentResume:        deps.AgentResume,
 		ValidatorMemo:      deps.ValidatorMemo,

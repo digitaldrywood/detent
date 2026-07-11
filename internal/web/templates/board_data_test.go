@@ -10,9 +10,47 @@ import (
 	"github.com/a-h/templ"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
+
+func TestBoardDetailSheetRendersEfficiencyReceipt(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	board := projectKanbanBoardView(data)
+	if len(board.AllLanes) == 0 || len(board.AllLanes[0].Cards) == 0 {
+		t.Fatal("board fixture has no cards")
+	}
+	card := board.AllLanes[0].Cards[0]
+	data.EfficiencyReceipts = []efficiency.Receipt{{
+		ProjectID:         card.ProjectID,
+		IssueID:           card.IssueID,
+		Identifier:        card.Identifier,
+		Sessions:          2,
+		Attempts:          2,
+		InputTokens:       1000,
+		CachedInputTokens: 970,
+		OutputTokens:      200,
+		TotalTokens:       1200,
+		EstimatedCostUSD:  1.25,
+		WallSeconds:       600,
+		WorkingSeconds:    360,
+		GateWaitSeconds:   120,
+		MergeTrainSeconds: 60,
+		ParkedSeconds:     30,
+		Redispatches:      1,
+		CIReruns:          1,
+		TokensAnomaly:     true,
+	}}
+	html := renderBoardComponent(t, BoardCardSheet(data, card, false, false, KanbanConversationData{}, BoardActivityData{}, BoardSessionData{}))
+	for _, want := range []string{"efficiency-receipt", "Efficiency receipt", "97%", "$1.25", "redispatches", "Anomaly"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("detail sheet missing %q:\n%s", want, html)
+		}
+	}
+}
 
 func boardTestData() DashboardData {
 	now := time.Date(2026, 7, 4, 16, 42, 7, 0, time.UTC)

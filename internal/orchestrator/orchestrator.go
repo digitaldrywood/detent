@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/gate"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -88,6 +89,7 @@ type Config struct {
 	GitHubGraphQLMinReserve       int64
 	GitHubRESTMinReserve          int64
 	OutputTruncationMaxBytes      int
+	EfficiencyThresholds          efficiency.Thresholds
 }
 
 type ClaimingConfig struct {
@@ -106,6 +108,8 @@ type Dependencies struct {
 	Runner             Runner
 	WorkspaceReaper    WorkspaceReaper
 	WorkflowMetrics    WorkflowMetricsRecorder
+	Efficiency         efficiency.Recorder
+	LifecycleExporter  efficiency.LifecycleExporter
 	WorkAttempts       store.WorkAttemptStore
 	AgentResume        store.AgentResumeStore
 	OrphanSessions     store.OrphanSessionStore
@@ -137,6 +141,8 @@ type Orchestrator struct {
 	cfg                     Config
 	connector               connector.Connector
 	workflowMetrics         WorkflowMetricsRecorder
+	efficiency              efficiency.Recorder
+	lifecycleExporter       efficiency.LifecycleExporter
 	workAttempts            store.WorkAttemptStore
 	agentResume             store.AgentResumeStore
 	orphanSessions          store.OrphanSessionStore
@@ -287,6 +293,8 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		cfg:                     cfg,
 		connector:               deps.Connector,
 		workflowMetrics:         deps.WorkflowMetrics,
+		efficiency:              deps.Efficiency,
+		lifecycleExporter:       deps.LifecycleExporter,
 		workAttempts:            deps.WorkAttempts,
 		agentResume:             agentResume,
 		orphanSessions:          orphanSessions,

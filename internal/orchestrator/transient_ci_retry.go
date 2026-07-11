@@ -75,6 +75,7 @@ func (o *Orchestrator) retryTransientPullRequestChecks(
 		Event:   "transient_ci_retry",
 		Message: "reran transient CI checks for " + issueLabel(issue) + ": " + transientCheckNames(retryable),
 	})
+	o.recordWorkflowReviewAction(ctx, issue, "ci_rerun", reason, now, workflowLaneMetadata{})
 	return true
 }
 

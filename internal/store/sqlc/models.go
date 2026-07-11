@@ -87,6 +87,39 @@ type DetentRun struct {
 	RuntimeSeconds       int64          `json:"runtime_seconds"`
 }
 
+type EfficiencyReceipt struct {
+	ID                    int64          `json:"id"`
+	ProjectID             string         `json:"project_id"`
+	IssueID               string         `json:"issue_id"`
+	Identifier            sql.NullString `json:"identifier"`
+	IssueURL              sql.NullString `json:"issue_url"`
+	PrNumber              sql.NullInt64  `json:"pr_number"`
+	Sessions              int64          `json:"sessions"`
+	Attempts              int64          `json:"attempts"`
+	InputTokens           int64          `json:"input_tokens"`
+	CachedInputTokens     int64          `json:"cached_input_tokens"`
+	OutputTokens          int64          `json:"output_tokens"`
+	ReasoningOutputTokens int64          `json:"reasoning_output_tokens"`
+	TotalTokens           int64          `json:"total_tokens"`
+	EstimatedCostUsd      float64        `json:"estimated_cost_usd"`
+	FirstDispatchedAt     string         `json:"first_dispatched_at"`
+	CompletedAt           string         `json:"completed_at"`
+	WallSeconds           int64          `json:"wall_seconds"`
+	WorkingSeconds        int64          `json:"working_seconds"`
+	GateWaitSeconds       int64          `json:"gate_wait_seconds"`
+	MergeTrainSeconds     int64          `json:"merge_train_seconds"`
+	ParkedSeconds         int64          `json:"parked_seconds"`
+	Redispatches          int64          `json:"redispatches"`
+	BreakerTrips          int64          `json:"breaker_trips"`
+	CiReruns              int64          `json:"ci_reruns"`
+	TokensBaseline        float64        `json:"tokens_baseline"`
+	SessionsBaseline      float64        `json:"sessions_baseline"`
+	DwellBaselineSeconds  float64        `json:"dwell_baseline_seconds"`
+	TokensAnomaly         int64          `json:"tokens_anomaly"`
+	SessionsAnomaly       int64          `json:"sessions_anomaly"`
+	DwellAnomaly          int64          `json:"dwell_anomaly"`
+}
+
 type FairShareUsage struct {
 	ProjectID      string `json:"project_id"`
 	Weight         int64  `json:"weight"`

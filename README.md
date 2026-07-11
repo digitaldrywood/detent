@@ -2398,6 +2398,30 @@ unsupported backends, and failed resume handshakes automatically fall back to
 the full fresh continuation prompt. Set the field to `false` to retain fresh
 redispatch behavior for every restart.
 
+Completed issues persist an efficiency receipt built from session, attempt,
+usage, and workflow-lane rows. Receipts appear in the project Runs table and
+issue detail sheet; Reports shows per-merged-issue percentiles, cache share,
+first-attempt merge rate, dwell decomposition, anomalies, and a trailing-window
+baseline. The default anomaly threshold is 3x the project baseline and can be
+changed per workflow. OTLP lifecycle export is optional and disabled when no
+endpoint is configured:
+
+```yaml
+observability:
+  efficiency:
+    anomaly_tokens_multiple: 3
+    anomaly_sessions_multiple: 3
+    anomaly_dwell_multiple: 3
+  otlp:
+    endpoint: http://127.0.0.1:4318
+    service_name: detent
+    timeout_ms: 5000
+```
+
+The exporter posts OTLP HTTP/JSON traces to `/v1/traces` with linked
+`detent.dispatch`, `detent.session`, `detent.gate`, and `detent.merge` spans.
+Static collector headers may be supplied with `observability.otlp.headers`.
+
 Useful endpoints:
 
 | Route | Purpose |

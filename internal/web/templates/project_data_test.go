@@ -6,9 +6,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
+
+func TestProjectRunRowsRenderEfficiencyReceipt(t *testing.T) {
+	t.Parallel()
+
+	issue := telemetry.Issue{ID: "issue-1205", Identifier: "digitaldrywood/detent#1205", ProjectID: "detent"}
+	rows := projectRunRowsWithReceipts(telemetry.Snapshot{Completed: []telemetry.Completed{{Issue: issue, CompletedAt: time.Now()}}}, []efficiency.Receipt{{
+		ProjectID:         "detent",
+		IssueID:           issue.ID,
+		Identifier:        issue.Identifier,
+		Sessions:          3,
+		Attempts:          2,
+		InputTokens:       1_000_000,
+		CachedInputTokens: 970_000,
+		TotalTokens:       1_200_000,
+		EstimatedCostUSD:  3.25,
+		WallSeconds:       600,
+		TokensAnomaly:     true,
+	}}, 0)
+	if len(rows) != 1 {
+		t.Fatalf("rows len = %d, want 1", len(rows))
+	}
+	if rows[0].Receipt != "3 sessions · 97% cached · $3.25" || !rows[0].Anomaly {
+		t.Fatalf("receipt row = %#v", rows[0])
+	}
+	for _, want := range []string{"1,200,000 tokens", "2 attempts", "10m"} {
+		if !strings.Contains(rows[0].ReceiptTitle, want) {
+			t.Fatalf("receipt title %q missing %q", rows[0].ReceiptTitle, want)
+		}
+	}
+}
 
 func TestProjectRunRowsUniqueIDsForNonGitHubIdentifiers(t *testing.T) {
 	// Non-GitHub tracker identifiers (e.g. MT-1) split to an empty #number;
@@ -178,7 +209,7 @@ func TestProjectRunRowClassUsesCompactColumnsBelowDesktop(t *testing.T) {
 	got := projectRunRowClass(false)
 	for _, want := range []string{
 		"grid-cols-[70px_minmax(0,1fr)_90px]",
-		"lg:grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_110px]",
+		"lg:grid-cols-[70px_minmax(0,1fr)_120px_130px_90px_82px_220px_110px]",
 		"border-b border-line",
 	} {
 		if !strings.Contains(got, want) {

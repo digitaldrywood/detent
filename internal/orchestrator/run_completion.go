@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
@@ -1189,6 +1190,7 @@ func (o *Orchestrator) completeTerminalRunning(
 	if mergeWorkerIssue(running.Issue) {
 		mergeTiming = o.recordMergeCompleted(state, running.Issue, completedAt, finalState)
 	}
+	o.recordEfficiencyReceipt(ctx, issue, completedAt)
 	state.Completed[issueID] = Completed{
 		Issue:           cloneIssue(issue),
 		SessionID:       running.SessionID,
@@ -1207,6 +1209,33 @@ func (o *Orchestrator) completeTerminalRunning(
 		o.logMergeWorkerSuccess(running.Issue, finalState)
 	}
 	o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), completedAt)
+}
+
+func (o *Orchestrator) recordEfficiencyReceipt(ctx context.Context, issue connector.Issue, completedAt time.Time) {
+	if o.efficiency == nil || normalizeState(issue.State) != normalizeState(doneStateName(o.cfg.TerminalStates)) {
+		return
+	}
+	receipt, err := o.efficiency.CompleteEfficiencyReceipt(ctx, efficiency.Completion{
+		ProjectID:   o.workflowMetricsProjectID(),
+		IssueID:     issue.ID,
+		Identifier:  issue.Identifier,
+		IssueURL:    issue.URL,
+		PRNumber:    workflowMetricsPRNumber(issue),
+		CompletedAt: completedAt,
+		Thresholds:  o.cfg.EfficiencyThresholds,
+	})
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("record efficiency receipt failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+		return
+	}
+	if o.lifecycleExporter == nil {
+		return
+	}
+	if err := o.lifecycleExporter.ExportLifecycle(ctx, receipt); err != nil && o.logger != nil {
+		o.logger.Warn("export efficiency lifecycle failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+	}
 }
 
 func (o *Orchestrator) ensureClosedCompletedRunningIssueDone(ctx context.Context, state *State, issueID string, issue connector.Issue, now time.Time) connector.Issue {

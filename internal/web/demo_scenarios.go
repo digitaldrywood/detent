@@ -11,6 +11,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -363,6 +364,7 @@ func (s *Server) demoReports(c echo.Context, scenario demoScenario) error {
 	data.GeneratedAt = demoBaseTime
 	data.Projects = demofixtures.ProjectsForVariant(scenario.Variant)
 	data.Snapshot = demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant)
+	data.Efficiency = demoEfficiencyRollup()
 	applyReportsPreferences(c.Request(), &data)
 	return render(c, templates.ReportsPageV2(data))
 }
@@ -380,7 +382,7 @@ func (s *Server) demoOnboarding(c echo.Context, scenario demoScenario) error {
 func (s *Server) demoDashboardData(ctx context.Context, scenario demoScenario) templates.DashboardData {
 	instanceName := s.instanceName()
 	snapshot := demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant)
-	return templates.DashboardData{
+	data := templates.DashboardData{
 		Title:           instancePageTitle(instanceName, "Detent"),
 		ApplicationName: applicationName(instanceName),
 		InstanceName:    instanceName,
@@ -394,6 +396,8 @@ func (s *Server) demoDashboardData(ctx context.Context, scenario demoScenario) t
 		Assets:          s.assets.templatePaths(),
 		ActiveNav:       "fleet",
 	}
+	data.EfficiencyReceipts = demoEfficiencyReceipts(snapshot)
+	return data
 }
 
 func (s *Server) demoProjectDashboardData(ctx context.Context, scenario demoScenario) (templates.DashboardData, bool) {
@@ -414,7 +418,7 @@ func (s *Server) demoProjectDashboardData(ctx context.Context, scenario demoScen
 		Color:       project.Color,
 	})
 	instanceName := s.instanceName()
-	return templates.DashboardData{
+	data := templates.DashboardData{
 		Title:           instancePageTitle(instanceName, project.Name+" - Detent"),
 		ApplicationName: applicationName(instanceName),
 		InstanceName:    instanceName,
@@ -430,7 +434,9 @@ func (s *Server) demoProjectDashboardData(ctx context.Context, scenario demoScen
 		ProjectID:       project.ID,
 		ProjectName:     project.Name,
 		ProjectPaused:   project.Paused,
-	}, true
+	}
+	data.EfficiencyReceipts = demoEfficiencyReceipts(scoped)
+	return data, true
 }
 
 func demoKanbanData(scenario demoScenario, projectID string) templates.KanbanData {
@@ -564,6 +570,69 @@ func (s *Server) demoSettingsData(ctx context.Context, scenario demoScenario, se
 		ActiveNav:       "settings",
 		ProjectID:       projectID,
 		ProjectName:     projectName,
+	}
+}
+
+func demoEfficiencyReceipts(snapshot telemetry.Snapshot) []efficiency.Receipt {
+	receipts := make([]efficiency.Receipt, 0, len(snapshot.Completed))
+	for index, completed := range snapshot.Completed {
+		inputTokens := completed.Tokens.Input
+		cachedTokens := completed.Tokens.CachedInput
+		if inputTokens == 0 {
+			inputTokens = completed.Tokens.Total * 4 / 5
+		}
+		if cachedTokens == 0 {
+			cachedTokens = inputTokens * 97 / 100
+		}
+		receipts = append(receipts, efficiency.Receipt{
+			ProjectID:         completed.ProjectID,
+			IssueID:           completed.ID,
+			Identifier:        completed.Identifier,
+			IssueURL:          completed.URL,
+			Sessions:          int64(index + 1),
+			Attempts:          int64(index + 1),
+			InputTokens:       inputTokens,
+			CachedInputTokens: cachedTokens,
+			OutputTokens:      completed.Tokens.Output,
+			TotalTokens:       completed.Tokens.Total,
+			EstimatedCostUSD:  float64(index+1) * 1.75,
+			FirstDispatchedAt: completed.StartedAt,
+			CompletedAt:       completed.CompletedAt,
+			WallSeconds:       int64(completed.CompletedAt.Sub(completed.StartedAt) / time.Second),
+			WorkingSeconds:    900,
+			GateWaitSeconds:   240,
+			MergeTrainSeconds: 120,
+			Redispatches:      int64(index),
+			TokensAnomaly:     index == 2,
+		})
+	}
+	return receipts
+}
+
+func demoEfficiencyRollup() efficiency.Rollup {
+	return efficiency.Rollup{
+		From: demoBaseTime.Add(-30 * 24 * time.Hour),
+		To:   demoBaseTime,
+		Current: efficiency.RollupWindow{
+			Issues:                12,
+			TokensPerIssue:        efficiency.Percentiles{P50: 1_200_000, P90: 3_500_000},
+			CostPerIssueUSD:       efficiency.Percentiles{P50: 4.2, P90: 10.8},
+			CacheShare:            0.97,
+			SessionsPerIssue:      1.4,
+			FirstAttemptMergeRate: 0.75,
+			Dwell:                 efficiency.Dwell{WorkingSeconds: 54_000, GateWaitSeconds: 12_000, MergeTrainSeconds: 4_800, ParkedSeconds: 1_200},
+			Anomalies:             2,
+		},
+		Baseline: efficiency.RollupWindow{
+			Issues:                10,
+			TokensPerIssue:        efficiency.Percentiles{P50: 1_350_000, P90: 3_100_000},
+			CostPerIssueUSD:       efficiency.Percentiles{P50: 4.6, P90: 9.8},
+			CacheShare:            0.96,
+			SessionsPerIssue:      1.6,
+			FirstAttemptMergeRate: 0.70,
+			Dwell:                 efficiency.Dwell{WorkingSeconds: 49_000, GateWaitSeconds: 15_000, MergeTrainSeconds: 5_100, ParkedSeconds: 1_800},
+		},
+		CacheTrend: []efficiency.TrendPoint{{Day: "2026-06-13", CacheShare: 0.95}, {Day: "2026-06-14", CacheShare: 0.96}, {Day: "2026-06-15", CacheShare: 0.97}},
 	}
 }
 

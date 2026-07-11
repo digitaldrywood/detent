@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -596,9 +597,24 @@ type Kanban struct {
 }
 
 type Observability struct {
-	DashboardEnabled bool `yaml:"dashboard_enabled"`
-	RefreshMS        int  `yaml:"refresh_ms"`
-	RenderIntervalMS int  `yaml:"render_interval_ms"`
+	DashboardEnabled bool                    `yaml:"dashboard_enabled"`
+	RefreshMS        int                     `yaml:"refresh_ms"`
+	RenderIntervalMS int                     `yaml:"render_interval_ms"`
+	Efficiency       EfficiencyObservability `yaml:"efficiency,omitempty"`
+	OTLP             OTLPObservability       `yaml:"otlp,omitempty"`
+}
+
+type EfficiencyObservability struct {
+	AnomalyTokensMultiple   float64 `yaml:"anomaly_tokens_multiple,omitempty"`
+	AnomalySessionsMultiple float64 `yaml:"anomaly_sessions_multiple,omitempty"`
+	AnomalyDwellMultiple    float64 `yaml:"anomaly_dwell_multiple,omitempty"`
+}
+
+type OTLPObservability struct {
+	Endpoint    string            `yaml:"endpoint,omitempty"`
+	Headers     map[string]string `yaml:"headers,omitempty"`
+	ServiceName string            `yaml:"service_name,omitempty"`
+	TimeoutMS   int               `yaml:"timeout_ms,omitempty"`
 }
 
 type Release struct {
@@ -990,6 +1006,12 @@ func Default() Config {
 			DashboardEnabled: true,
 			RefreshMS:        1000,
 			RenderIntervalMS: 16,
+			Efficiency: EfficiencyObservability{
+				AnomalyTokensMultiple:   3,
+				AnomalySessionsMultiple: 3,
+				AnomalyDwellMultiple:    3,
+			},
+			OTLP: OTLPObservability{TimeoutMS: 5000, ServiceName: "detent"},
 		},
 		Release: Release{
 			MinMergedIssues: 5,
@@ -1996,6 +2018,22 @@ func (s *Server) validate(problems *[]string) {
 func (o *Observability) validate(problems *[]string) {
 	validatePositive("observability.refresh_ms", o.RefreshMS, problems)
 	validatePositive("observability.render_interval_ms", o.RenderIntervalMS, problems)
+	validatePositiveFloat("observability.efficiency.anomaly_tokens_multiple", o.Efficiency.AnomalyTokensMultiple, problems)
+	validatePositiveFloat("observability.efficiency.anomaly_sessions_multiple", o.Efficiency.AnomalySessionsMultiple, problems)
+	validatePositiveFloat("observability.efficiency.anomaly_dwell_multiple", o.Efficiency.AnomalyDwellMultiple, problems)
+	o.OTLP.Endpoint = strings.TrimSpace(o.OTLP.Endpoint)
+	o.OTLP.ServiceName = strings.TrimSpace(o.OTLP.ServiceName)
+	if o.OTLP.Endpoint == "" {
+		return
+	}
+	parsed, err := url.Parse(o.OTLP.Endpoint)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		*problems = append(*problems, "observability.otlp.endpoint must be an absolute http or https URL")
+	}
+	validatePositive("observability.otlp.timeout_ms", o.OTLP.TimeoutMS, problems)
+	if o.OTLP.ServiceName == "" {
+		*problems = append(*problems, "observability.otlp.service_name is required when OTLP export is enabled")
+	}
 }
 
 func (h *Hooks) validate(problems *[]string) {

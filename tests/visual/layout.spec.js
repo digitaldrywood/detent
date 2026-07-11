@@ -834,8 +834,23 @@ test("project overview renders tabs, hero, and recent runs", async ({
 
   await expect(page.locator("nav[aria-label='Project views']")).toBeVisible();
   await expect(page.locator("#project-recent-runs")).toBeVisible();
+  await expect(page.locator("#project-recent-runs")).toContainText("Efficiency receipt");
   await assertNoDocumentOverflow(page);
   await capturePageAndAttach(page, "project-overview.png", testInfo);
+});
+
+test("project runs render completed efficiency receipts", async ({ page }) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/projects/dogfood/runs",
+    waitSelector: "#project-runs",
+    viewport: desktopViewport,
+  });
+
+  await expect(page.locator("#project-runs")).toContainText("Efficiency receipt");
+  await expect(page.locator("#project-runs")).toContainText("cached");
+  await expect(page.locator("#project-runs")).toContainText("$1.75");
 });
 
 test("project kanban board scopes cards to the project", async ({
@@ -1324,6 +1339,9 @@ test("reports page renders KPI figures and charts", async ({
   await expect(page.locator("#reports-kpis")).toBeVisible();
   await expect(page.locator("#reports-spend")).toBeVisible();
   await expect(page.locator("#reports-top-issues")).toBeVisible();
+  await expect(page.locator("#reports-efficiency")).toBeVisible();
+  await expect(page.locator("#reports-efficiency")).toContainText("Tokens / merged issue");
+  await expect(page.locator("#reports-efficiency")).toContainText("Baseline");
   await assertNoDocumentOverflow(page);
   await capturePageAndAttach(page, "reports.png", testInfo);
 });

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
 )
@@ -43,6 +44,8 @@ type Store interface {
 	AgentResumeStore
 	OrphanSessionStore
 	RetroStore
+	efficiency.Recorder
+	efficiency.Reader
 	APIKeyStore
 	Queries() *sqlc.Queries
 	Close() error

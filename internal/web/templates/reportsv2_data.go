@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	webchart "github.com/digitaldrywood/detent/internal/web/chart"
 )
@@ -25,6 +26,7 @@ type reportsView struct {
 	CycleTime   reportsCycleTime
 	Release     reportsRelease
 	Digest      reportsDigest
+	Efficiency  reportsEfficiency
 }
 
 type reportsKPI struct {
@@ -97,6 +99,29 @@ type reportsDigestMetric struct {
 	Detail string
 }
 
+type reportsEfficiency struct {
+	Available  bool
+	Issues     string
+	Anomalies  string
+	Rows       []reportsEfficiencyRow
+	Dwell      []reportsEfficiencyDwell
+	CacheChart SeriesChartData
+	HasTrend   bool
+}
+
+type reportsEfficiencyRow struct {
+	Label    string
+	Current  string
+	Baseline string
+	Delta    string
+}
+
+type reportsEfficiencyDwell struct {
+	Label    string
+	Current  string
+	Baseline string
+}
+
 const reportsTopRowLimit = 5
 
 func reportsViewFromData(data ReportsData) reportsView {
@@ -111,11 +136,57 @@ func reportsViewFromData(data ReportsData) reportsView {
 		CycleTime:   reportsCycleTimeView(data),
 		Release:     reportsReleaseView(data),
 		Digest:      reportsDigestView(data.Digest),
+		Efficiency:  reportsEfficiencyView(data.Efficiency),
 	}
 	if view.HasSeries {
 		view.TokenChart = reportsCumulativeTokens(data)
 	}
 	return view
+}
+
+func reportsEfficiencyView(rollup efficiency.Rollup) reportsEfficiency {
+	current := rollup.Current
+	baseline := rollup.Baseline
+	view := reportsEfficiency{
+		Available: current.Issues > 0,
+		Issues:    formatInt(current.Issues),
+		Anomalies: formatInt(current.Anomalies),
+		Rows: []reportsEfficiencyRow{
+			{Label: "Tokens / merged issue · p50", Current: fleetCompactTokens(int64(current.TokensPerIssue.P50)), Baseline: fleetCompactTokens(int64(baseline.TokensPerIssue.P50)), Delta: reportsEfficiencyDelta(current.TokensPerIssue.P50, baseline.TokensPerIssue.P50)},
+			{Label: "Tokens / merged issue · p90", Current: fleetCompactTokens(int64(current.TokensPerIssue.P90)), Baseline: fleetCompactTokens(int64(baseline.TokensPerIssue.P90)), Delta: reportsEfficiencyDelta(current.TokensPerIssue.P90, baseline.TokensPerIssue.P90)},
+			{Label: "Cost / merged issue · p50", Current: formatUSD(current.CostPerIssueUSD.P50), Baseline: formatUSD(baseline.CostPerIssueUSD.P50), Delta: reportsEfficiencyDelta(current.CostPerIssueUSD.P50, baseline.CostPerIssueUSD.P50)},
+			{Label: "Cost / merged issue · p90", Current: formatUSD(current.CostPerIssueUSD.P90), Baseline: formatUSD(baseline.CostPerIssueUSD.P90), Delta: reportsEfficiencyDelta(current.CostPerIssueUSD.P90, baseline.CostPerIssueUSD.P90)},
+			{Label: "Cache share", Current: reportCacheReadFraction(current.CacheShare), Baseline: reportCacheReadFraction(baseline.CacheShare), Delta: reportsEfficiencyDelta(current.CacheShare, baseline.CacheShare)},
+			{Label: "Sessions / issue", Current: formatDecimal(current.SessionsPerIssue), Baseline: formatDecimal(baseline.SessionsPerIssue), Delta: reportsEfficiencyDelta(current.SessionsPerIssue, baseline.SessionsPerIssue)},
+			{Label: "First-attempt merge rate", Current: reportCacheReadFraction(current.FirstAttemptMergeRate), Baseline: reportCacheReadFraction(baseline.FirstAttemptMergeRate), Delta: reportsEfficiencyDelta(current.FirstAttemptMergeRate, baseline.FirstAttemptMergeRate)},
+		},
+		Dwell: []reportsEfficiencyDwell{
+			{Label: "Working", Current: formatDuration(float64(current.Dwell.WorkingSeconds)), Baseline: formatDuration(float64(baseline.Dwell.WorkingSeconds))},
+			{Label: "Gate wait", Current: formatDuration(float64(current.Dwell.GateWaitSeconds)), Baseline: formatDuration(float64(baseline.Dwell.GateWaitSeconds))},
+			{Label: "Merge train", Current: formatDuration(float64(current.Dwell.MergeTrainSeconds)), Baseline: formatDuration(float64(baseline.Dwell.MergeTrainSeconds))},
+			{Label: "Parked", Current: formatDuration(float64(current.Dwell.ParkedSeconds)), Baseline: formatDuration(float64(baseline.Dwell.ParkedSeconds))},
+		},
+	}
+	if len(rollup.CacheTrend) > 0 {
+		view.HasTrend = true
+		points := make([]webchart.Point, 0, len(rollup.CacheTrend))
+		for _, point := range rollup.CacheTrend {
+			points = append(points, webchart.Point{Label: point.Day, Value: point.CacheShare * 100})
+		}
+		view.CacheChart = SeriesChartData{Title: "Cache share trend", AriaLabel: "Daily cache share trend", Points: points, Class: "h-24 w-full", ColorClass: "text-accent"}
+	}
+	return view
+}
+
+func reportsEfficiencyDelta(current float64, baseline float64) string {
+	if baseline == 0 {
+		return "new"
+	}
+	delta := ((current - baseline) / baseline) * 100
+	if delta > 0 {
+		return "+" + formatDecimal(delta) + "%"
+	}
+	return formatDecimal(delta) + "%"
 }
 
 func reportsDigestView(data DailyDigestData) reportsDigest {
@@ -159,6 +230,15 @@ func reportsDigestMetrics(day DailyDigestDayData, baseline []DailyDigestDayData)
 		reportsDigestCountMetric("outages", "Capacity outages", day.CapacityOutages, baseline, func(value DailyDigestDayData) int64 { return value.CapacityOutages }),
 		reportsDigestCountMetric("breakers", "Breaker trips", day.BreakerTrips, baseline, func(value DailyDigestDayData) int64 { return value.BreakerTrips }),
 		reportsDigestCountMetric("failures", "Failed sessions", day.FailedSessions, baseline, func(value DailyDigestDayData) int64 { return value.FailedSessions }),
+		reportsDigestFloatMetric("tokens-per-merged", "Tokens / merged · p50", day.Efficiency.TokensPerIssue.P50, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.TokensPerIssue.P50 }),
+		reportsDigestFloatMetric("cost-per-merged", "Cost / merged · p50", day.Efficiency.CostPerIssueUSD.P50, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.CostPerIssueUSD.P50 }),
+		reportsDigestFloatMetric("sessions-per-issue", "Sessions / issue", day.Efficiency.SessionsPerIssue, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.SessionsPerIssue }),
+		reportsDigestFloatMetric("first-attempt", "First-attempt merge", day.Efficiency.FirstAttemptMergeRate, baseline, func(value DailyDigestDayData) float64 { return value.Efficiency.FirstAttemptMergeRate }),
+		reportsDigestCountMetric("efficiency-anomalies", "Efficiency anomalies", day.Efficiency.Anomalies, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Anomalies }),
+		reportsDigestCountMetric("dwell-working", "Working dwell", day.Efficiency.Dwell.WorkingSeconds, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Dwell.WorkingSeconds }),
+		reportsDigestCountMetric("dwell-gate", "Gate-wait dwell", day.Efficiency.Dwell.GateWaitSeconds, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Dwell.GateWaitSeconds }),
+		reportsDigestCountMetric("dwell-merge", "Merge-train dwell", day.Efficiency.Dwell.MergeTrainSeconds, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Dwell.MergeTrainSeconds }),
+		reportsDigestCountMetric("dwell-parked", "Parked dwell", day.Efficiency.Dwell.ParkedSeconds, baseline, func(value DailyDigestDayData) int64 { return value.Efficiency.Dwell.ParkedSeconds }),
 	}
 	metrics[4].Value = fleetCompactTokens(day.TotalTokens)
 	metrics[4].Full = formatInt(day.TotalTokens)
@@ -176,6 +256,20 @@ func reportsDigestMetrics(day DailyDigestDayData, baseline []DailyDigestDayData)
 		if strings.TrimSpace(day.DominantErrorClass) != "" {
 			metrics[10].Detail += " · " + strings.ReplaceAll(day.DominantErrorClass, "_", " ")
 		}
+	}
+	metrics[11].Value = fleetCompactTokens(int64(day.Efficiency.TokensPerIssue.P50))
+	metrics[11].Detail = "p90 " + fleetCompactTokens(int64(day.Efficiency.TokensPerIssue.P90))
+	metrics[12].Value = formatUSD(day.Efficiency.CostPerIssueUSD.P50)
+	metrics[12].Detail = "p90 " + formatUSD(day.Efficiency.CostPerIssueUSD.P90)
+	metrics[13].Value = formatDecimal(day.Efficiency.SessionsPerIssue)
+	metrics[14].Value = reportCacheReadFraction(day.Efficiency.FirstAttemptMergeRate)
+	for index := 16; index <= 19; index++ {
+		metrics[index].Value = formatDuration(float64([]int64{
+			day.Efficiency.Dwell.WorkingSeconds,
+			day.Efficiency.Dwell.GateWaitSeconds,
+			day.Efficiency.Dwell.MergeTrainSeconds,
+			day.Efficiency.Dwell.ParkedSeconds,
+		}[index-16]))
 	}
 	return metrics
 }

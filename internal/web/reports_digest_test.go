@@ -74,3 +74,29 @@ func TestReportsTimezoneRejectsInvalidNames(t *testing.T) {
 		t.Fatalf("reportsTimezone() = %v, %v, want America/Chicago", location, err)
 	}
 }
+
+func TestEfficiencyReportRangeUsesInclusiveToDate(t *testing.T) {
+	t.Parallel()
+
+	day := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		from     time.Time
+		to       time.Time
+		wantFrom time.Time
+		wantTo   time.Time
+	}{
+		{name: "same day", from: day, to: day, wantFrom: day, wantTo: day.AddDate(0, 0, 1)},
+		{name: "open end", from: day, wantFrom: day},
+		{name: "to only", to: day, wantTo: day.AddDate(0, 0, 1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			from, to := efficiencyReportRange(tt.from, tt.to)
+			if !from.Equal(tt.wantFrom) || !to.Equal(tt.wantTo) {
+				t.Fatalf("efficiencyReportRange() = %s, %s, want %s, %s", from, to, tt.wantFrom, tt.wantTo)
+			}
+		})
+	}
+}

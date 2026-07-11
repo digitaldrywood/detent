@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -20,6 +21,7 @@ type ReportsData struct {
 	PR               UsageReportData
 	Model            UsageReportData
 	Digest           DailyDigestData
+	Efficiency       efficiency.Rollup
 	Assets           AssetPaths
 	Projects         []ProjectSmallMultiple
 	ActiveNav        string
@@ -56,6 +58,7 @@ type DailyDigestDayData struct {
 	IssuesFiled          int64
 	IssuesShipped        int64
 	ReleasesTagged       int64
+	Efficiency           efficiency.RollupWindow
 	Projects             []DailyDigestProjectData
 }
 
@@ -151,7 +154,7 @@ func reportsDashboardShellData(data ReportsData) DashboardShellData {
 }
 
 func reportsHasUsage(data ReportsData) bool {
-	return data.Day.Totals.Events > 0 || data.Day.Totals.TotalTokens > 0 || data.Day.Totals.SpendUSD > 0
+	return data.Day.Totals.Events > 0 || data.Day.Totals.TotalTokens > 0 || data.Day.Totals.SpendUSD > 0 || data.Efficiency.Current.Issues > 0
 }
 
 func reportBucketLabel(row UsageBucketData) string {

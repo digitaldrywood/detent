@@ -7,6 +7,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
@@ -80,6 +81,11 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		GitHubGraphQLMinReserve:       int64(cfg.Tracker.GitHubGraphQLMinReserve),
 		GitHubRESTMinReserve:          int64(cfg.Tracker.GitHubRESTMinReserve),
 		OutputTruncationMaxBytes:      cfg.Agent.OutputTruncation.MaxBytes,
+		EfficiencyThresholds: efficiency.Thresholds{
+			TokensMultiple:   cfg.Observability.Efficiency.AnomalyTokensMultiple,
+			SessionsMultiple: cfg.Observability.Efficiency.AnomalySessionsMultiple,
+			DwellMultiple:    cfg.Observability.Efficiency.AnomalyDwellMultiple,
+		},
 	}
 }
 

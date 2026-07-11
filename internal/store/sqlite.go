@@ -84,6 +84,7 @@ func (s *sqliteStore) RuntimeEvidence(ctx context.Context, query RuntimeEvidence
 		{name: "fair_share_usage", projectScoped: true},
 		{name: "usage_events", projectScoped: true},
 		{name: "workflow_phase_events", projectScoped: true},
+		{name: "efficiency_receipts", projectScoped: true},
 		{name: "work_attempts", projectScoped: true},
 		{name: "scheduler_decisions", projectScoped: true},
 		{name: "validator_verdicts", projectScoped: true},
@@ -1035,6 +1036,8 @@ func (s *sqliteStore) runtimeTableCount(ctx context.Context, tableName string, p
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM usage_events WHERE project_id = ?", projectID)
 		case "workflow_phase_events":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM workflow_phase_events WHERE project_id = ?", projectID)
+		case "efficiency_receipts":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM efficiency_receipts WHERE project_id = ?", projectID)
 		case "work_attempts":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM work_attempts WHERE project_id = ?", projectID)
 		case "scheduler_decisions":
@@ -1058,6 +1061,8 @@ func (s *sqliteStore) runtimeTableCount(ctx context.Context, tableName string, p
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM usage_events")
 		case "workflow_phase_events":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM workflow_phase_events")
+		case "efficiency_receipts":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM efficiency_receipts")
 		case "work_attempts":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM work_attempts")
 		case "scheduler_decisions":
