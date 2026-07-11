@@ -23,8 +23,8 @@ templ BoardActivityTabs(activity BoardActivityData, session BoardSessionData) {
 			@BoardActivityPanel(activity)
 		</div>
 		<div class="hidden min-h-0 flex-1" data-sheet-panel="session" role="tabpanel">
-			<div id={ boardLiveSessionID(session) } class="flex min-h-72 items-center justify-center p-4 text-center text-xs text-sec" data-board-live-session hx-preserve>
-				Select Live session to attach to the active worker.
+			<div id={ boardLiveSessionID(session) } class="min-h-72 min-w-0 text-left text-xs text-sec" data-board-live-session hx-preserve>
+				<div class="flex min-h-72 items-center justify-center p-4 text-center">Select Live session to attach to the active worker.</div>
 			</div>
 		</div>
 	</div>
@@ -124,33 +124,46 @@ templ BoardLiveSession(data BoardSessionData) {
 			} else {
 				<button type="button" class="rounded-card border border-line px-3 py-1.5 text-xs font-medium text-sec" disabled>Rollout history unavailable</button>
 			}
+			if !data.FullPage {
+				<a class="text-xs font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ templ.SafeURL(boardLiveSessionPagePath(data)) } target="_blank" rel="noopener">Open full-page view</a>
+			}
 		</div>
 	} else {
 		<div
-			class="flex min-h-72 flex-col bg-page"
+			class={ boardLiveSessionContainerClass(data) }
 			hx-ext="sse"
 			sse-connect={ boardSessionPath(data, true) }
 			data-live-session-attach
 		>
 			<div class="flex flex-none items-center justify-between gap-3 border-b border-line px-3 py-2">
 				<span class="flex items-center gap-2 text-xs font-medium text-text"><span class="size-2 rounded-full bg-ok"></span>Attached read-only</span>
-				<button type="button" class="hidden rounded-chip border border-line px-2 py-1 text-2xs text-sec" data-live-session-resume>Resume autoscroll</button>
+				<div class="flex items-center gap-2">
+					<button type="button" class="hidden rounded-chip border border-line px-2 py-1 text-2xs text-sec" data-live-session-resume>Resume autoscroll</button>
+					if !data.FullPage {
+						<a class="rounded-chip border border-line px-2 py-1 text-2xs text-sec hover:border-accent hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ templ.SafeURL(boardLiveSessionPagePath(data)) } target="_blank" rel="noopener">Open full-page view</a>
+					}
+				</div>
 			</div>
-			<div class="max-h-112 min-h-64 min-w-0 flex-1 overflow-x-auto overflow-y-auto p-3 font-mono text-xs leading-relaxed text-text" sse-swap="session-activity" hx-swap="beforeend" data-live-session-log aria-live="polite"></div>
+			<div class={ boardLiveSessionLogClass(data) } sse-swap="session-activity" hx-swap="beforeend" data-live-session-log aria-live="polite"></div>
 		</div>
 	}
 }
 
 templ BoardLiveSessionHistory(data BoardSessionHistoryData) {
-	<div class="flex min-h-72 flex-col bg-page">
+	<div class={ boardLiveSessionContainerClass(data.Session) }>
 		<div class="flex flex-none items-center justify-between gap-3 border-b border-line px-3 py-2">
 			<div>
 				<p class="text-xs font-medium text-text">Provider rollout history</p>
 				<p class="text-2xs text-dim">Read-only · loaded on demand</p>
 			</div>
-			<button type="button" class="rounded-chip border border-line px-2 py-1 text-2xs text-sec" hx-get={ boardSessionPath(data.Session, false) } hx-target={ boardLiveSessionTarget(data.Session) } hx-swap="innerHTML">Back</button>
+			<div class="flex items-center gap-2">
+				if !data.Session.FullPage {
+					<a class="rounded-chip border border-line px-2 py-1 text-2xs text-sec hover:border-accent hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ templ.SafeURL(boardLiveSessionPagePath(data.Session)) } target="_blank" rel="noopener">Open full-page view</a>
+				}
+				<button type="button" class="rounded-chip border border-line px-2 py-1 text-2xs text-sec" hx-get={ boardSessionPath(data.Session, false) } hx-target={ boardLiveSessionTarget(data.Session) } hx-swap="innerHTML">Back</button>
+			</div>
 		</div>
-		<div class="max-h-112 min-h-64 min-w-0 flex-1 overflow-x-auto overflow-y-auto p-3 font-mono text-xs leading-relaxed text-text" data-session-history-log>
+		<div class={ boardLiveSessionLogClass(data.Session) } data-session-history-log>
 			if data.Error != "" {
 				<p class="py-8 text-center font-sans text-xs text-warn">{ data.Error }</p>
 			} else if len(data.Events) == 0 {
@@ -187,7 +200,7 @@ templ BoardLiveSessionEvents(events []BoardSessionEvent) {
 }
 
 templ BoardLiveSessionEvent(event BoardSessionEvent) {
-	<div class="mb-3 min-w-0 border-l-2 border-line pl-3 last:mb-0" data-session-event={ event.ID }>
+	<div class="mb-3 min-w-0 border-l-2 border-line pl-3 text-left last:mb-0" data-session-event={ event.ID }>
 		<div class="flex items-center justify-between gap-3 text-2xs text-dim">
 			<span class="truncate">{ event.Title }</span>
 			<span class="flex-none">@LocalTime(event.At, LocalTimeOptions{Style: LocalDateTimeSeconds, Fallback: "now"})</span>
@@ -196,14 +209,33 @@ templ BoardLiveSessionEvent(event BoardSessionEvent) {
 			if event.Truncated || len(event.Content) > 4000 {
 				<details class="mt-1">
 					<summary class="cursor-pointer text-accent">Expand output</summary>
-					<pre class="mt-1 max-w-full overflow-x-auto whitespace-pre text-text">{ event.Content }</pre>
+					<pre class="mt-1 min-w-max whitespace-pre text-left text-text">{ event.Content }</pre>
 				</details>
 			} else {
-				<pre class="mt-1 max-w-full overflow-x-auto whitespace-pre text-text">{ event.Content }</pre>
+				<pre class="mt-1 min-w-max whitespace-pre text-left text-text">{ event.Content }</pre>
 			}
 		}
 		if event.Tokens > 0 {
 			<p class="mt-1 text-2xs text-dim">{ strconv.FormatInt(event.Tokens, 10) } tokens</p>
 		}
 	</div>
+}
+
+templ BoardLiveSessionPage(shell DashboardShellData, data BoardSessionData) {
+	@AppShell(shell, nil) {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col p-3 md:p-5" data-live-session-page>
+			<div class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-card border border-line bg-page shadow-sm">
+				<div class="flex flex-none items-center justify-between gap-3 border-b border-line px-3 py-2.5 md:px-4">
+					<div class="min-w-0">
+						<h2 class="truncate text-sm font-semibold text-text">Live session</h2>
+						<p class="truncate font-mono text-2xs text-dim">{ data.Identifier }</p>
+					</div>
+					<a class="rounded-chip border border-line px-3 py-1.5 text-xs font-medium text-sec hover:border-accent hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href="/">Back to board</a>
+				</div>
+				<div id={ boardLiveSessionID(data) } class="flex min-h-0 min-w-0 flex-1 flex-col text-left" data-board-live-session>
+					@BoardLiveSession(data)
+				</div>
+			</div>
+		</main>
+	}
 }

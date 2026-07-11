@@ -101,7 +101,27 @@ func (s *Server) apiBoardSession(c echo.Context) error {
 	request := boardActivityRequestFromContext(c)
 	snapshot := s.latestSnapshot(c.Request().Context())
 	issue := boardActivityIssue(snapshot, request)
-	return render(c, templates.BoardLiveSession(s.boardSessionData(c.Request().Context(), snapshot, issue, request.ProjectID)))
+	data := s.boardSessionData(c.Request().Context(), snapshot, issue, request.ProjectID)
+	data.FullPage = c.QueryParam("display") == "full"
+	return render(c, templates.BoardLiveSession(data))
+}
+
+func (s *Server) boardLiveSessionPage(c echo.Context) error {
+	ctx := c.Request().Context()
+	snapshot := s.latestSnapshot(ctx)
+	dashboard := s.boardData(ctx, snapshot)
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		dashboard = s.demoDashboardData(ctx, scenario)
+		snapshot = dashboard.Snapshot
+	}
+	applyDashboardPreferences(c.Request(), &dashboard)
+	request := boardActivityRequestFromContext(c)
+	issue := boardActivityIssue(snapshot, request)
+	data := s.boardSessionData(ctx, snapshot, issue, request.ProjectID)
+	data.FullPage = true
+	return render(c, templates.BoardLiveSessionPage(templates.BoardShellDataFromDashboard(dashboard), data))
 }
 
 func (s *Server) apiBoardSessionHistory(c echo.Context) error {
@@ -127,6 +147,7 @@ func (s *Server) apiBoardSessionHistory(c echo.Context) error {
 	snapshot := s.latestSnapshot(ctx)
 	issue := boardActivityIssue(snapshot, request)
 	session := s.boardSessionData(ctx, snapshot, issue, request.ProjectID)
+	session.FullPage = c.QueryParam("display") == "full"
 	data := templates.BoardSessionHistoryData{Session: session, Offset: offset, Limit: limit}
 	state, err := s.latestIssueAgentSession(ctx, issue)
 	if err != nil {
