@@ -210,7 +210,7 @@ func runDrainShutdown(
 	sessions := shutdownRunningSessions(ctx, cfg.Registry, startedAt)
 	logShutdownBoundaryEnd(shutdownLogger(cfg), "initial_running_session_inventory", inventoryStarted, nil, "sessions", len(sessions))
 	logShutdownDrainBlockers(cfg, "initial", sessions, drainTimeout)
-	writeShutdownBanner(shutdownOutput(cfg), sessions)
+	writeShutdownBanner(shutdownOutput(cfg), sessions, drainTimeout)
 	shutdownLogger(cfg).Info("shutdown requested", "sessions", len(sessions))
 
 	hardTimeout := cfg.HardTimeout
@@ -273,7 +273,7 @@ func runDrainShutdown(
 		case <-poll.C:
 		case <-progress.C:
 			logShutdownDrainBlockers(cfg, "progress", sessions, drainTimeout)
-			writeShutdownProgress(shutdownOutput(cfg), sessions)
+			writeShutdownProgress(shutdownOutput(cfg), sessions, shutdownDrainRemaining(startedAt, drainTimeout, shutdownNow(cfg)))
 		case <-timeout:
 			machine = machine.Apply(shutdownstate.EventDrainTimedOut)
 			logShutdownDrainTimeout(cfg, sessions, drainTimeout)
@@ -561,7 +561,7 @@ func defaultShutdownDrainTimeout() time.Duration {
 	return time.Duration(workflowconfig.DefaultShutdownDrainTimeoutMS) * time.Millisecond
 }
 
-func writeShutdownBanner(out io.Writer, sessions []telemetry.Running) {
+func writeShutdownBanner(out io.Writer, sessions []telemetry.Running, remaining time.Duration) {
 	if out == nil {
 		out = io.Discard
 	}
@@ -580,11 +580,11 @@ func writeShutdownBanner(out io.Writer, sessions []telemetry.Running) {
 		}
 		fmt.Fprintf(out, "  %-30s %-14s %8s  %s\n", shutdownIssueLabel(session), defaultShutdownString(session.State, "running"), formatShutdownDuration(session.RuntimeSeconds), details)
 	}
-	fmt.Fprintln(out, "draining: no new work will be dispatched; waiting for running sessions to finish")
-	fmt.Fprintln(out, "press Ctrl+C again to force quit (sessions will be interrupted and issues re-queued)")
+	fmt.Fprintf(out, "draining: no new work will be dispatched; waiting for running sessions to finish; %s remaining until force quit\n", formatShutdownRemaining(remaining))
+	fmt.Fprintln(out, "press Ctrl+C again to force quit immediately (sessions will be interrupted and issues re-queued)")
 }
 
-func writeShutdownProgress(out io.Writer, sessions []telemetry.Running) {
+func writeShutdownProgress(out io.Writer, sessions []telemetry.Running, remaining time.Duration) {
 	if out == nil || len(sessions) == 0 {
 		return
 	}
@@ -597,7 +597,26 @@ func writeShutdownProgress(out io.Writer, sessions []telemetry.Running) {
 		}
 		parts = append(parts, fmt.Sprintf("%s (%s, %s)", shutdownIssueNumber(session), formatShutdownDuration(session.RuntimeSeconds), details))
 	}
-	fmt.Fprintf(out, "%d %s remaining — %s\n", len(sessions), shutdownSessionNoun(len(sessions)), strings.Join(parts, ", "))
+	fmt.Fprintf(out, "%d %s remaining — %s remaining until force quit — %s\n", len(sessions), shutdownSessionNoun(len(sessions)), formatShutdownRemaining(remaining), strings.Join(parts, ", "))
+}
+
+func shutdownDrainRemaining(startedAt time.Time, timeout time.Duration, now time.Time) time.Duration {
+	remaining := timeout - now.Sub(startedAt)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+func formatShutdownRemaining(remaining time.Duration) string {
+	if remaining <= 0 {
+		return "0s"
+	}
+	if remaining < time.Second {
+		return remaining.Round(time.Millisecond).String()
+	}
+	seconds := (remaining + time.Second - 1) / time.Second
+	return formatShutdownDuration(float64(seconds))
 }
 
 func logShutdownDrainBlockers(cfg runningShutdownConfig, phase string, sessions []telemetry.Running, timeout time.Duration) {

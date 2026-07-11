@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -172,6 +173,35 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 			logger.Warn(warning.Detail, "check", warning.Name, "hint", warning.Hint)
 		}
 	}
+	var instanceLock *instancelock.Lock
+	if !runtimeStoreIsMemory(runtimeStorePath(cfg)) {
+		acquiredLock, err := acquireRuntimeInstanceLock(cfg)
+		if err != nil {
+			return err
+		}
+		instanceLock = acquiredLock
+	}
+	if instanceLock != nil {
+		defer func() {
+			if err := instanceLock.Close(); err != nil {
+				logger.Warn("release runtime instance lock failed", "error", err)
+			}
+		}()
+	}
+
+	listener, displayURL, err := listenForBoot(cfg)
+	if err != nil {
+		return fmt.Errorf("bind Detent web listener %s: %w", serverAddr(cfg), err)
+	}
+	listenerOwned := true
+	defer func() {
+		if listenerOwned {
+			if err := listener.Close(); err != nil {
+				logger.Warn("close web listener failed", "error", err)
+			}
+		}
+	}()
+
 	runtimeStore, err := openRuntimeStore(runCtx, cfg)
 	if err != nil {
 		return err
@@ -189,19 +219,6 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 			logger.Warn("close runtime store failed", "error", err)
 		} else {
 			logShutdownBoundaryEnd(logger, "runtime_store_close", closeStarted, nil, "component", "runtime_store")
-		}
-	}()
-
-	listener, displayURL, err := listenForBoot(cfg)
-	if err != nil {
-		return err
-	}
-	listenerOwned := true
-	defer func() {
-		if listenerOwned {
-			if err := listener.Close(); err != nil {
-				logger.Warn("close web listener failed", "error", err)
-			}
 		}
 	}()
 
@@ -318,7 +335,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		listenerOwned = false
 		if cfg.Shutdown == nil {
 			return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
-				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, nil)
+				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, nil, nil)
 			})
 		}
 		return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
@@ -338,7 +355,9 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 				ProgressInterval: defaultShutdownProgressInterval,
 				HardTimeout:      defaultShutdownHardTimeout,
 			}, func(ctx context.Context) error {
-				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, func() {
+				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, func() time.Duration {
+					return shutdownDrainTimeout(manager.Registry())
+				}, func() {
 					requestTerminalShutdownInterrupt(cfg.Shutdown, cfg.HardExit)
 				})
 			})
@@ -547,7 +566,15 @@ func unexpectedBootServeError(err error) error {
 	return err
 }
 
-func serveWithTerminalDashboard(ctx context.Context, server *web.Server, listener net.Listener, snapshots *hub.Hub[telemetry.Snapshot], build buildinfo.Info, interrupt func()) error {
+func serveWithTerminalDashboard(
+	ctx context.Context,
+	server *web.Server,
+	listener net.Listener,
+	snapshots *hub.Hub[telemetry.Snapshot],
+	build buildinfo.Info,
+	shutdownTimeoutSource func() time.Duration,
+	interrupt func(),
+) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -563,7 +590,13 @@ func serveWithTerminalDashboard(ctx context.Context, server *web.Server, listene
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	model, err := tui.NewModel(runCtx, snapshots, tui.WithBuild(build), tui.WithInterruptFunc(interrupt))
+	model, err := tui.NewModel(
+		runCtx,
+		snapshots,
+		tui.WithBuild(build),
+		tui.WithShutdownTimeoutSource(shutdownTimeoutSource),
+		tui.WithInterruptFunc(interrupt),
+	)
 	if err != nil {
 		return err
 	}
@@ -956,6 +989,23 @@ func openRuntimeStore(ctx context.Context, cfg BootConfig) (store.Store, error) 
 		Backend: store.BackendSQLite,
 		Path:    runtimeStorePath(cfg),
 	})
+}
+
+func acquireRuntimeInstanceLock(cfg BootConfig) (*instancelock.Lock, error) {
+	path := runtimeStorePath(cfg)
+	lock, err := instancelock.Acquire(path + ".lock")
+	if errors.Is(err, instancelock.ErrHeld) {
+		return nil, fmt.Errorf("another Detent instance is using runtime database %q; wait for it to finish shutting down, then retry", path)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("protect runtime database %q: %w", path, err)
+	}
+	return lock, nil
+}
+
+func runtimeStoreIsMemory(path string) bool {
+	path = strings.ToLower(strings.TrimSpace(path))
+	return strings.HasPrefix(path, ":memory:") || strings.Contains(path, "mode=memory")
 }
 
 func runtimeStorePath(cfg BootConfig) string {
