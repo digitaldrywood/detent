@@ -2314,6 +2314,7 @@ func diffStatsFromWorkspace(stat workspace.DiffStat) DiffStats {
 		FilesChanged: stat.Files,
 		AddedLines:   stat.Added,
 		RemovedLines: stat.Removed,
+		Fingerprint:  strings.TrimSpace(stat.Fingerprint),
 		Status:       status,
 	}
 }

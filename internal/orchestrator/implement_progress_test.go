@@ -46,6 +46,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 		wantFailedAdded    []string
 		wantFailedRemoved  []string
 		wantConsecutive    int
+		wantBlockReason    string
+		workpadHumanAction string
+		refreshedState     string
 		pullRequestUpdated bool
 	}{
 		{
@@ -106,6 +109,7 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantCurrentHead:  "same-head",
 			wantHydrations:   1,
 			wantBlocked:      true,
+			wantBlockReason:  noProgressLimitReason,
 			wantComment:      "no_progress_limit",
 		},
 		{
@@ -141,7 +145,80 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantReason:      "completed_clean_diff_without_pull_request",
 			wantConsecutive: 3,
 			wantBlocked:     true,
+			wantBlockReason: noProgressLimitReason,
 			wantComment:     "consecutive_no_progress_attempts: 3",
+		},
+		{
+			name:         "identical non-empty diff trips third completion without linked PR",
+			runningIssue: implementProgressIssueWithoutPR(),
+			history: []store.WorkAttempt{
+				implementProgressNoPRHistoryAttempt(2, DiffStats{FilesChanged: 9, AddedLines: 120, RemovedLines: 30, Fingerprint: "same-diff", Status: "changed"}, "", ""),
+				implementProgressNoPRHistoryAttempt(1, DiffStats{FilesChanged: 9, AddedLines: 120, RemovedLines: 30, Fingerprint: "same-diff", Status: "changed"}, "", ""),
+			},
+			diffStats:       DiffStats{FilesChanged: 9, AddedLines: 120, RemovedLines: 30, Fingerprint: "same-diff", Status: "changed"},
+			noProgressLimit: 3,
+			wantTerminal:    store.WorkAttemptTerminalNoProgress,
+			wantReason:      "unchanged_workspace_diff_without_pull_request",
+			wantConsecutive: 3,
+			wantBlocked:     true,
+			wantBlockReason: noProgressLimitReason,
+			wantComment:     "consecutive_no_progress_attempts: 3",
+		},
+		{
+			name:         "changing non-empty diff does not trip without linked PR",
+			runningIssue: implementProgressIssueWithoutPR(),
+			history: []store.WorkAttempt{
+				implementProgressNoPRHistoryAttempt(2, DiffStats{FilesChanged: 9, AddedLines: 120, RemovedLines: 30, Fingerprint: "second-diff", Status: "changed"}, "", ""),
+				implementProgressNoPRHistoryAttempt(1, DiffStats{FilesChanged: 8, AddedLines: 119, RemovedLines: 30, Fingerprint: "first-diff", Status: "changed"}, "", ""),
+			},
+			diffStats:       DiffStats{FilesChanged: 10, AddedLines: 121, RemovedLines: 30, Fingerprint: "third-diff", Status: "changed"},
+			noProgressLimit: 3,
+			wantTerminal:    store.WorkAttemptTerminalSuccess,
+			wantReason:      "workspace_diff_present_without_pull_request",
+			wantRetry:       true,
+		},
+		{
+			name:         "repeated blocked human action trips despite diff noise",
+			runningIssue: implementProgressIssueWithoutPR(),
+			history: []store.WorkAttempt{
+				implementProgressNoPRHistoryAttempt(1, DiffStats{FilesChanged: 1, AddedLines: 1, Status: "changed"}, "Choose the exhaustive review path.", "In Progress"),
+			},
+			diffStats:          DiffStats{FilesChanged: 12, AddedLines: 240, RemovedLines: 17, Status: "changed"},
+			noProgressLimit:    3,
+			wantTerminal:       store.WorkAttemptTerminalNoProgress,
+			wantReason:         "workpad_blocked_unactioned",
+			wantBlocked:        true,
+			wantBlockReason:    "workpad_blocked_unactioned",
+			wantComment:        "> Choose the exhaustive review path.",
+			workpadHumanAction: "Choose the exhaustive review path.",
+		},
+		{
+			name:         "changing blocked human action does not trip",
+			runningIssue: implementProgressIssueWithoutPR(),
+			history: []store.WorkAttempt{
+				implementProgressNoPRHistoryAttempt(2, DiffStats{FilesChanged: 2, AddedLines: 2, Fingerprint: "same-diff", Status: "changed"}, "Choose the old review path.", "In Progress"),
+				implementProgressNoPRHistoryAttempt(1, DiffStats{FilesChanged: 2, AddedLines: 2, Fingerprint: "same-diff", Status: "changed"}, "Choose the old review path.", "In Progress"),
+			},
+			diffStats:          DiffStats{FilesChanged: 2, AddedLines: 2, Fingerprint: "same-diff", Status: "changed"},
+			noProgressLimit:    3,
+			wantTerminal:       store.WorkAttemptTerminalSuccess,
+			wantReason:         "workspace_diff_present_without_pull_request",
+			wantRetry:          true,
+			workpadHumanAction: "Choose the new review path.",
+		},
+		{
+			name:         "tracker state change resets repeated blocked human action",
+			runningIssue: implementProgressIssueWithoutPR(),
+			history: []store.WorkAttempt{
+				implementProgressNoPRHistoryAttempt(1, DiffStats{FilesChanged: 1, AddedLines: 1, Fingerprint: "old-diff", Status: "changed"}, "Choose the review path.", "In Progress"),
+			},
+			diffStats:          DiffStats{FilesChanged: 2, AddedLines: 2, Fingerprint: "new-diff", Status: "changed"},
+			noProgressLimit:    3,
+			wantTerminal:       store.WorkAttemptTerminalSuccess,
+			wantReason:         "workspace_diff_present_without_pull_request",
+			wantRetry:          true,
+			workpadHumanAction: "Choose the review path.",
+			refreshedState:     "Rework",
 		},
 		{
 			name:            "hydration failure fails open to success",
@@ -193,7 +270,17 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			t.Parallel()
 
 			var logs bytes.Buffer
-			tracker := &implementProgressConnector{hydrated: tt.hydratedIssue, hydrateErr: tt.hydrateErr}
+			refreshed := tt.runningIssue
+			if tt.refreshedState != "" {
+				refreshed.State = tt.refreshedState
+			}
+			if tt.workpadHumanAction != "" {
+				refreshed.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: \"" + tt.workpadHumanAction + "\"\n```",
+					URL:  "https://github.test/workpad",
+				}}
+			}
+			tracker := &implementProgressConnector{hydrated: tt.hydratedIssue, refreshed: refreshed, hydrateErr: tt.hydrateErr}
 			attempts := &implementProgressAttemptStore{history: tt.history}
 			cfg := normalizeConfig(Config{
 				Project:                scheduler.ProjectCandidate{ID: "detent"},
@@ -251,6 +338,9 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			}
 			if record.ConsecutiveNoProgress != tt.wantConsecutive {
 				t.Fatalf("consecutive no progress = %d, want %d", record.ConsecutiveNoProgress, tt.wantConsecutive)
+			}
+			if record.BlockReason != tt.wantBlockReason {
+				t.Fatalf("block reason = %q, want %q", record.BlockReason, tt.wantBlockReason)
 			}
 			if !slicesEqual(record.FailedChecksAdded, tt.wantFailedAdded) {
 				t.Fatalf("failed checks added = %#v, want %#v", record.FailedChecksAdded, tt.wantFailedAdded)
@@ -383,11 +473,13 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 	}
 }
 
-func TestStickyBlockReasonIncludesNoProgressLimit(t *testing.T) {
+func TestStickyBlockReasonIncludesImplementProgressBreakers(t *testing.T) {
 	t.Parallel()
 
-	if !stickyBlockReason(noProgressLimitReason) {
-		t.Fatalf("stickyBlockReason(%q) = false, want true", noProgressLimitReason)
+	for _, reason := range []string{noProgressLimitReason, workpadBlockedUnactionedReason} {
+		if !stickyBlockReason(reason) {
+			t.Fatalf("stickyBlockReason(%q) = false, want true", reason)
+		}
 	}
 }
 
@@ -471,6 +563,35 @@ func implementProgressLegacyNoPRHistoryAttempt(id int64) store.WorkAttempt {
 	}
 }
 
+func implementProgressNoPRHistoryAttempt(id int64, diffStats DiffStats, humanAction string, trackerState string) store.WorkAttempt {
+	workpadStatus := ""
+	if strings.TrimSpace(humanAction) != "" {
+		workpadStatus = "blocked"
+	}
+	return store.WorkAttempt{
+		ID:            id,
+		ProjectID:     "detent",
+		IssueID:       "issue-plan",
+		Identifier:    "digitaldrywood/detent#1200",
+		IssueURL:      "https://github.test/digitaldrywood/detent/issues/1200",
+		WorkerType:    "agent",
+		Status:        store.WorkAttemptStatusTerminal,
+		TerminalState: store.WorkAttemptTerminalSuccess,
+		CompletedAt:   time.Date(2026, 7, 11, 12, int(id), 0, 0, time.UTC),
+		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+			"run_mode": runpkg.RunModeImplement,
+			implementProgressMetadataKey: map[string]any{
+				"outcome":            string(store.WorkAttemptTerminalSuccess),
+				"reason":             "workspace_diff_present_without_pull_request",
+				"workspace_diffstat": implementProgressDiffStatsFromDiffStats(diffStats),
+				"workpad_status":     workpadStatus,
+				"human_action":       humanAction,
+				"tracker_state":      trackerState,
+			},
+		}),
+	}
+}
+
 func implementProgressMetadataJSON(signature autoPromoteReworkSignature, terminal store.WorkAttemptTerminalState) string {
 	return marshalWorkAttemptJSON(map[string]any{
 		"run_mode": runpkg.RunModeImplement,
@@ -499,6 +620,7 @@ func implementProgressRecordFromCompletion(t *testing.T, completion store.WorkAt
 
 type implementProgressConnector struct {
 	hydrated   connector.Issue
+	refreshed  connector.Issue
 	hydrateErr error
 	hydrations int
 	updates    []implementProgressUpdate
@@ -528,7 +650,14 @@ func (c *implementProgressConnector) FetchIssuesByStates(context.Context, []stri
 }
 
 func (c *implementProgressConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
-	return nil, nil
+	if strings.TrimSpace(c.refreshed.ID) == "" {
+		return nil, nil
+	}
+	return []connector.Issue{cloneIssue(c.refreshed)}, nil
+}
+
+func (c *implementProgressConnector) FetchIssueComments(context.Context, connector.Issue) ([]connector.IssueComment, error) {
+	return cloneIssueComments(c.refreshed.Comments), nil
 }
 
 func (c *implementProgressConnector) CreateComment(_ context.Context, issueID string, body string) error {

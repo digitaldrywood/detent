@@ -92,22 +92,25 @@ func TestModelRendersSnapshotFromHub(t *testing.T) {
 func TestModelRendersDrainingShutdown(t *testing.T) {
 	t.Parallel()
 
+	requestedAt := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	snapshot := testSnapshot()
 	snapshot.Shutdown = telemetry.Shutdown{
 		Status:            "draining",
 		Draining:          true,
 		SessionsRemaining: 2,
+		RequestedAt:       &requestedAt,
 	}
 	model := Model{
-		snapshot:    snapshot,
-		hasSnapshot: true,
-		width:       defaultTerminalColumns,
-		now:         time.Now,
-		styles:      newStyles(),
+		snapshot:              snapshot,
+		hasSnapshot:           true,
+		width:                 defaultTerminalColumns,
+		now:                   func() time.Time { return requestedAt.Add(15 * time.Second) },
+		shutdownTimeoutSource: func() time.Duration { return 75 * time.Second },
+		styles:                newStyles(),
 	}
 
 	view := stripANSI(model.View())
-	if !strings.Contains(view, "Shutdown: draining (2 sessions remaining)") {
+	if !strings.Contains(view, "Shutdown: draining (2 sessions remaining, 1m 0s until force quit; press Ctrl+C again to force quit immediately)") {
 		t.Fatalf("View() missing draining shutdown:\n%s", view)
 	}
 }

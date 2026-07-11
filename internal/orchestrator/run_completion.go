@@ -313,7 +313,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	if terminalState == store.WorkAttemptTerminalNoProgress && progress.Block {
-		if o.blockNoProgressLimit(ctx, state, progress, event.CompletedAt) {
+		if o.blockImplementProgress(ctx, state, progress, event.CompletedAt) {
 			return
 		}
 	}

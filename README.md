@@ -1400,6 +1400,13 @@ Open the dashboard at <http://localhost:4000>. Use `--host` and `--port` to
 override the address. Before exposing a remote URL such as
 `http://prometheus:4000/`, choose the dashboard bind mode:
 
+On shutdown, the first Ctrl-C stops new dispatches and drains running agent
+sessions while the terminal reports the blocker count and time remaining. A
+second Ctrl-C force-quits immediately, interrupts those sessions, and re-queues
+their issues. A new process using the same runtime database will fail with an
+actionable error until the prior process has released it; a listener conflict
+also fails before SQLite migrations begin.
+
 - `127.0.0.1` keeps the dashboard local to the host and is the safest default
   for SSH tunnel access.
 - A specific private or Tailscale IP exposes the dashboard only on that
@@ -2105,7 +2112,8 @@ When a changed field requires restart, Detent logs
 Run more than one Detent instance when a single GitHub ProjectV2 board should
 be split across independent workers. Each instance is a separate `detent`
 process with its own `global.yaml`, process identity, authorization selector,
-and claim lease. The instances may point at the same `tracker.project_slug`,
+runtime database, listener address, and claim lease. The instances may point at
+the same `tracker.project_slug`,
 but their authorization selectors should be disjoint so each issue belongs to
 one worker set before claiming begins.
 

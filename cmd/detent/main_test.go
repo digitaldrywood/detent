@@ -400,7 +400,7 @@ func TestWriteSignalShutdownNotice(t *testing.T) {
 		{
 			name:    "drain",
 			request: cli.ShutdownRequestDrain,
-			want:    "shutdown requested; draining sessions, press Ctrl+C again to force quit",
+			want:    "shutdown requested; draining sessions; press Ctrl+C again to force quit immediately",
 		},
 		{
 			name:    "force",
@@ -466,7 +466,7 @@ func TestHandleShutdownSignalHardExitsOnForceInterrupt(t *testing.T) {
 
 	notice := output.String()
 	for _, want := range []string{
-		"shutdown requested; draining sessions, press Ctrl+C again to force quit",
+		"shutdown requested; draining sessions; press Ctrl+C again to force quit immediately",
 		"force quit requested; interrupting sessions",
 	} {
 		if !strings.Contains(notice, want) {

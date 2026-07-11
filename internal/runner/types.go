@@ -309,6 +309,7 @@ type DiffStats struct {
 	FilesChanged int
 	AddedLines   int
 	RemovedLines int
+	Fingerprint  string
 	Status       string
 }
 
