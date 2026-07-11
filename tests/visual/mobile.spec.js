@@ -612,6 +612,69 @@ for (const board of [
     await expectNoHorizontalScroll(page);
   });
 }
+
+test("board lanes scroll horizontally from card touches in both densities", async ({
+  page,
+}) => {
+  const kanbanRuntime = await startDetentRuntime("mobile-kanban-card-swipe", [
+    "--demo",
+    "kanban",
+    "--demo-project",
+    "demo-project",
+  ]);
+  let session;
+  try {
+    await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, {
+      waitUntil: "domcontentloaded",
+    });
+    session = await page.context().newCDPSession(page);
+    for (const density of ["compact", "cozy"]) {
+      await page
+        .locator(`[data-density-choice="${density}"]`)
+        .click({ force: true });
+
+      const lanes = page.locator("#board-lanes");
+      const card = lanes
+        .locator('[data-kanban-card][data-kanban-action="move"]')
+        .first();
+      await expect(card).toBeVisible();
+      await expect(lanes).toHaveCSS("touch-action", "pan-x");
+      await expect(card).toHaveCSS("touch-action", "pan-x");
+      await lanes.evaluate((root) => {
+        root.scrollLeft = 0;
+      });
+
+      const cardBox = await card.boundingBox();
+      if (!cardBox) {
+        throw new Error(`${density} swipe source has no bounding box`);
+      }
+      const startX = cardBox.x + cardBox.width - 24;
+      const swipeY = cardBox.y + cardBox.height / 2;
+      await dispatchTouch(session, "touchStart", startX, swipeY);
+      for (const distance of [50, 110, 170, 230, 290]) {
+        await dispatchTouch(
+          session,
+          "touchMove",
+          Math.max(24, startX - distance),
+          swipeY,
+        );
+      }
+      const scrolledDuringSwipe = await lanes.evaluate(
+        (root) => root.scrollLeft,
+      );
+      await dispatchTouch(session, "touchEnd", 24, swipeY);
+
+      expect(scrolledDuringSwipe).toBeGreaterThan(0);
+      await expect(
+        page.locator("body > [data-kanban-card][aria-hidden='true']"),
+      ).toHaveCount(0);
+    }
+  } finally {
+    await session?.detach();
+    await kanbanRuntime.stop();
+  }
+});
+
 test("fleet content stays readable and morph-safe", async ({ page }) => {
   await page.setExtraHTTPHeaders({
     "X-Detent-Demo-Scenario": "fleet-healthy-parallel-work",

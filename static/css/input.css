@@ -190,6 +190,15 @@
     scrollbar-gutter: stable;
   }
 
+  #board-lanes,
+  #board-lanes [data-kanban-card] {
+    touch-action: pan-x;
+  }
+
+  #board-lanes > [data-board-lane] > .dt-lane-scroll {
+    overscroll-behavior-x: auto;
+  }
+
   @media (width < 48rem) {
     .dt-responsive-chart {
       aspect-ratio: var(--dt-chart-aspect-ratio);
