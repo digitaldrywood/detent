@@ -23,31 +23,33 @@ var ErrNilHub = errors.New("nil telemetry hub")
 const defaultDashboardURL = "http://localhost:4000"
 
 const (
-	shutdownDrainNotice = "shutdown requested; draining sessions, press Ctrl+C again to force quit"
+	shutdownDrainNotice = "shutdown requested; draining sessions; press Ctrl+C again to force quit immediately"
 	shutdownForceNotice = "force quit requested; interrupting sessions"
 )
 
 type Option func(*options)
 
 type options struct {
-	now       func() time.Time
-	build     buildinfo.Info
-	interrupt func()
+	now                   func() time.Time
+	build                 buildinfo.Info
+	interrupt             func()
+	shutdownTimeoutSource func() time.Duration
 }
 
 type Model struct {
-	subscription *hub.Subscription[telemetry.Snapshot]
-	updates      <-chan telemetry.Snapshot
-	snapshot     telemetry.Snapshot
-	hasSnapshot  bool
-	width        int
-	height       int
-	now          func() time.Time
-	build        buildinfo.Info
-	interrupt    func()
-	interrupts   int
-	shutdownNote string
-	styles       styles
+	subscription          *hub.Subscription[telemetry.Snapshot]
+	updates               <-chan telemetry.Snapshot
+	snapshot              telemetry.Snapshot
+	hasSnapshot           bool
+	width                 int
+	height                int
+	now                   func() time.Time
+	build                 buildinfo.Info
+	interrupt             func()
+	shutdownTimeoutSource func() time.Duration
+	interrupts            int
+	shutdownNote          string
+	styles                styles
 }
 
 type snapshotMsg struct {
@@ -77,13 +79,14 @@ func NewModel(ctx context.Context, snapshots *hub.Hub[telemetry.Snapshot], opts 
 	}
 
 	return Model{
-		subscription: subscription,
-		updates:      subscription.C(),
-		width:        defaultTerminalColumns,
-		now:          cfg.now,
-		build:        cfg.build,
-		interrupt:    cfg.interrupt,
-		styles:       newStyles(),
+		subscription:          subscription,
+		updates:               subscription.C(),
+		width:                 defaultTerminalColumns,
+		now:                   cfg.now,
+		build:                 cfg.build,
+		interrupt:             cfg.interrupt,
+		shutdownTimeoutSource: cfg.shutdownTimeoutSource,
+		styles:                newStyles(),
 	}, nil
 }
 
@@ -104,6 +107,12 @@ func WithBuild(build buildinfo.Info) Option {
 func WithInterruptFunc(interrupt func()) Option {
 	return func(cfg *options) {
 		cfg.interrupt = interrupt
+	}
+}
+
+func WithShutdownTimeoutSource(source func() time.Duration) Option {
+	return func(cfg *options) {
+		cfg.shutdownTimeoutSource = source
 	}
 }
 
@@ -199,8 +208,8 @@ func (m Model) renderWaiting() string {
 
 func (m Model) renderSnapshot() string {
 	snapshot := m.snapshot
-	lifecycleLabel, lifecycleStatus := formatLifecycle(snapshot.Shutdown, m.styles)
-	if m.shutdownNote != "" {
+	lifecycleLabel, lifecycleStatus := formatLifecycle(snapshot.Shutdown, m.now, m.shutdownTimeoutSource, m.styles)
+	if m.shutdownNote != "" && !snapshot.Shutdown.Draining {
 		lifecycleLabel = "Shutdown"
 		lifecycleStatus = m.styles.warn.Render(m.shutdownNote)
 	}
@@ -253,9 +262,21 @@ func (m Model) renderSnapshot() string {
 	return strings.Join(lines, "\n")
 }
 
-func formatLifecycle(shutdown telemetry.Shutdown, s styles) (string, string) {
+func formatLifecycle(shutdown telemetry.Shutdown, now func() time.Time, timeoutSource func() time.Duration, s styles) (string, string) {
 	if shutdown.Draining {
-		return "Shutdown", s.warn.Render(fmt.Sprintf("draining (%d sessions remaining)", shutdown.SessionsRemaining))
+		status := fmt.Sprintf("draining (%d sessions remaining", shutdown.SessionsRemaining)
+		if shutdown.RequestedAt != nil && timeoutSource != nil {
+			if now == nil {
+				now = time.Now
+			}
+			remaining := timeoutSource() - now().Sub(*shutdown.RequestedAt)
+			if remaining < 0 {
+				remaining = 0
+			}
+			status += ", " + formatRuntimeSeconds(remaining.Seconds()) + " until force quit"
+		}
+		status += "; press Ctrl+C again to force quit immediately)"
+		return "Shutdown", s.warn.Render(status)
 	}
 	status := strings.TrimSpace(shutdown.Status)
 	if status == "" {

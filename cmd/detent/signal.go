@@ -100,7 +100,7 @@ func writeSignalShutdownNotice(out io.Writer, request cli.ShutdownRequest) {
 	}
 	switch request {
 	case cli.ShutdownRequestDrain:
-		fmt.Fprintln(out, "shutdown requested; draining sessions, press Ctrl+C again to force quit")
+		fmt.Fprintln(out, "shutdown requested; draining sessions; press Ctrl+C again to force quit immediately")
 	case cli.ShutdownRequestForce:
 		fmt.Fprintln(out, "force quit requested; interrupting sessions")
 	default:

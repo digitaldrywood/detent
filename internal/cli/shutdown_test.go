@@ -536,6 +536,8 @@ func TestRunWithShutdownActiveChildProcessReportsDrainBlockersAndTimesOut(t *tes
 	gotOutput := output.String()
 	for _, want := range []string{
 		"shutdown requested — 1 agent session in flight",
+		"20ms remaining until force quit",
+		"1 agent session remaining — 20ms remaining until force quit",
 		"#641",
 		"process=4242",
 		"session=thread-641-turn-1",
@@ -728,7 +730,7 @@ func TestShutdownBannerFormatsRunningSessions(t *testing.T) {
 			},
 			RuntimeSeconds: 724,
 		},
-	})
+	}, 75*time.Second)
 
 	got := output.String()
 	for _, want := range []string{
@@ -737,7 +739,8 @@ func TestShutdownBannerFormatsRunningSessions(t *testing.T) {
 		"In Progress",
 		"12m 4s",
 		"draining: no new work will be dispatched",
-		"press Ctrl+C again to force quit",
+		"1m 15s remaining until force quit",
+		"press Ctrl+C again to force quit immediately",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("banner missing %q:\n%s", want, got)

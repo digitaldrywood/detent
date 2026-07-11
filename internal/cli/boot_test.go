@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -475,6 +476,136 @@ func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for startRunning to stop")
+	}
+}
+
+func TestStartRunningRefusesSharedRuntimeDatabase(t *testing.T) {
+	port := 0
+	root := t.TempDir()
+	global, err := globalconfig.DefaultAt(filepath.Join(root, "global.yaml"))
+	if err != nil {
+		t.Fatalf("DefaultAt() error = %v", err)
+	}
+	dbPath := filepath.Join(root, "detent.db")
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	t.Cleanup(cancelFirst)
+	firstDone := make(chan error, 1)
+	firstOutput := newBootOutput()
+	go func() {
+		firstDone <- startRunning(firstCtx, BootConfig{
+			Mode:          BootModeRunning,
+			Global:        global,
+			Host:          "127.0.0.1",
+			Port:          &port,
+			RuntimeDBPath: dbPath,
+			Output:        firstOutput,
+		})
+	}()
+	waitForBootDashboardURL(t, firstOutput, firstDone)
+
+	secondCtx, cancelSecond := context.WithCancel(context.Background())
+	t.Cleanup(cancelSecond)
+	secondDone := make(chan error, 1)
+	secondOutput := newBootOutput()
+	go func() {
+		secondDone <- startRunning(secondCtx, BootConfig{
+			Mode:          BootModeRunning,
+			Global:        global,
+			Host:          "127.0.0.1",
+			Port:          &port,
+			RuntimeDBPath: dbPath,
+			Output:        secondOutput,
+		})
+	}()
+
+	select {
+	case err := <-secondDone:
+		if err == nil || !strings.Contains(err.Error(), "another Detent instance is using runtime database") {
+			t.Fatalf("second startRunning() error = %v, want shared runtime database error", err)
+		}
+	case <-time.After(2 * time.Second):
+		cancelSecond()
+		t.Fatalf("second startRunning() did not refuse shared database; output:\n%s", secondOutput.String())
+	}
+
+	cancelFirst()
+	select {
+	case err := <-firstDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("first startRunning() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for first runtime to stop")
+	}
+}
+
+func TestRuntimeStoreLocation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		path     string
+		memory   bool
+		lockPath string
+	}{
+		{name: "private memory", path: ":memory:", memory: true, lockPath: ":memory:.lock"},
+		{name: "memory prefix is file", path: ":memory:extra", lockPath: ":memory:extra.lock"},
+		{name: "memory text in file path", path: "/var/lib/detent/mode=memory/detent.db", lockPath: "/var/lib/detent/mode=memory/detent.db.lock"},
+		{name: "named memory URI", path: "file:detent?mode=memory&cache=shared", memory: true, lockPath: "detent.lock"},
+		{name: "special memory URI", path: "file::memory:?cache=shared", memory: true, lockPath: ":memory:.lock"},
+		{name: "absolute file URI", path: "file:/tmp/detent.db?mode=rw", lockPath: filepath.FromSlash("/tmp/detent.db.lock")},
+		{name: "localhost file URI", path: "file://localhost/tmp/detent.db?mode=rwc", lockPath: filepath.FromSlash("/tmp/detent.db.lock")},
+		{name: "escaped file URI", path: "file:/tmp/detent%20runtime.db?mode=rwc#ignored", lockPath: filepath.FromSlash("/tmp/detent runtime.db.lock")},
+		{name: "relative file URI", path: "file:detent.db?mode=rw", lockPath: "detent.db.lock"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := runtimeStoreIsMemory(tt.path); got != tt.memory {
+				t.Fatalf("runtimeStoreIsMemory(%q) = %v, want %v", tt.path, got, tt.memory)
+			}
+			if got := runtimeStoreLockPath(tt.path); got != tt.lockPath {
+				t.Fatalf("runtimeStoreLockPath(%q) = %q, want %q", tt.path, got, tt.lockPath)
+			}
+		})
+	}
+}
+
+func TestStartRunningBindsBeforeCreatingRuntimeDatabase(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := listener.Close(); err != nil {
+			t.Fatalf("listener Close() error = %v", err)
+		}
+	})
+	port := listener.Addr().(*net.TCPAddr).Port
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "detent.db")
+	global, err := globalconfig.DefaultAt(filepath.Join(root, "global.yaml"))
+	if err != nil {
+		t.Fatalf("DefaultAt() error = %v", err)
+	}
+
+	err = startRunning(context.Background(), BootConfig{
+		Mode:          BootModeRunning,
+		Global:        global,
+		Host:          "127.0.0.1",
+		Port:          &port,
+		RuntimeDBPath: dbPath,
+		Output:        io.Discard,
+	})
+	if err == nil || !strings.Contains(err.Error(), "bind Detent web listener") {
+		t.Fatalf("startRunning() error = %v, want listener bind error", err)
+	}
+	if _, err := os.Stat(dbPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runtime database exists before listener bind, Stat() error = %v", err)
 	}
 }
 
