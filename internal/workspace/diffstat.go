@@ -3,6 +3,8 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -26,9 +28,10 @@ var detentHandoffDiffExcludes = []string{
 }
 
 type DiffStat struct {
-	Files   int `json:"files"`
-	Added   int `json:"added"`
-	Removed int `json:"removed"`
+	Files       int    `json:"files"`
+	Added       int    `json:"added"`
+	Removed     int    `json:"removed"`
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 type Diff struct {
@@ -68,11 +71,11 @@ func GitDiffStat(ctx context.Context, workspacePath string) (DiffStat, error) {
 		return DiffStat{}, fmt.Errorf("stat workspace path: %w", err)
 	}
 
-	output, err := gitDiffStatOutput(ctx, workspacePath)
+	stat, err := gitDiffStatOutput(ctx, workspacePath)
 	if err != nil {
 		return DiffStat{}, err
 	}
-	return ParseDiffStat(output)
+	return stat, nil
 }
 
 func GitDiff(ctx context.Context, workspacePath string, maxBytes int) (Diff, error) {
@@ -133,29 +136,74 @@ func GitDiffFrom(ctx context.Context, workspacePath string, baseRef string, maxB
 	return Diff{Stat: stat, Patch: patch, Truncated: truncated}, nil
 }
 
-func gitDiffStatOutput(ctx context.Context, workspacePath string) (string, error) {
+func gitDiffStatOutput(ctx context.Context, workspacePath string) (DiffStat, error) {
 	if err := ensureGitInfoExcludes(ctx, workspacePath, detentHandoffDiffExcludes); err != nil {
-		return "", err
+		return DiffStat{}, err
 	}
 	indexPath, err := gitIndexPath(ctx, workspacePath)
 	if err != nil {
-		return "", err
+		return DiffStat{}, err
 	}
 	tempIndex, cleanup, err := copyGitIndex(indexPath)
 	if err != nil {
-		return "", err
+		return DiffStat{}, err
 	}
 	defer cleanup()
 
 	env := []string{"GIT_INDEX_FILE=" + tempIndex}
 	if _, err := runGitAtWithEnv(ctx, workspacePath, env, "add", "--intent-to-add", "--", "."); err != nil {
-		return "", fmt.Errorf("git add intent to add: %w", err)
+		return DiffStat{}, fmt.Errorf("git add intent to add: %w", err)
 	}
-	output, err := runGitAtWithEnv(ctx, workspacePath, env, "diff", "--stat", "HEAD")
+	return gitDiffStatWithEnv(ctx, workspacePath, env, "HEAD")
+}
+
+func gitDiffStatWithEnv(ctx context.Context, workspacePath string, env []string, diffBase string) (DiffStat, error) {
+	output, err := runGitAtWithEnv(ctx, workspacePath, env, "diff", "--stat", diffBase)
 	if err != nil {
-		return "", fmt.Errorf("git diff stat: %w", err)
+		return DiffStat{}, fmt.Errorf("git diff stat: %w", err)
 	}
-	return output, nil
+	stat, err := ParseDiffStat(output)
+	if err != nil || stat == (DiffStat{}) {
+		return stat, err
+	}
+	fingerprint, err := gitDiffFingerprint(ctx, workspacePath, env, diffBase)
+	if err != nil {
+		return DiffStat{}, err
+	}
+	stat.Fingerprint = fingerprint
+	return stat, nil
+}
+
+func gitDiffFingerprint(ctx context.Context, workspacePath string, env []string, diffBase string) (string, error) {
+	args := []string{"-C", workspacePath, "diff", "--no-ext-diff", "--binary", "--full-index", diffBase}
+	cmd := exec.CommandContext(ctx, "git")
+	cmd.Args = append([]string{"git"}, args...)
+	cmd.WaitDelay = workspaceCommandWaitDelay
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	hash := sha256.New()
+	cmd.Stdout = hash
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		exitCode := -1
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		return "", &CommandError{
+			Command:  "git",
+			Args:     args,
+			ExitCode: exitCode,
+			Output:   stderr.String(),
+			Err:      err,
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func gitDiffBase(ctx context.Context, workspacePath string, baseRef string) string {

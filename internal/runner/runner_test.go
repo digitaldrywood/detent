@@ -45,10 +45,10 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			Branch: "detent/digitaldrywood_detent_22",
 		},
 		diffStats: []workspace.DiffStat{
-			{Files: 1, Added: 2},
-			{Files: 2, Added: 5, Removed: 1},
-			{Files: 2, Added: 5, Removed: 1},
-			{Files: 2, Added: 5, Removed: 1},
+			{Files: 1, Added: 2, Fingerprint: "first-diff"},
+			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
+			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
+			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
 		},
 	}
 	codexClient := &fakeCodexClient{
@@ -201,7 +201,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[1].LastEventAt.IsZero() {
 		t.Fatal("second usage update LastEventAt is zero")
 	}
-	if usageUpdates[1].DiffStats.FilesChanged != 1 || usageUpdates[1].DiffStats.AddedLines != 2 || usageUpdates[1].DiffStats.Status != "ok" {
+	if usageUpdates[1].DiffStats.FilesChanged != 1 || usageUpdates[1].DiffStats.AddedLines != 2 || usageUpdates[1].DiffStats.Fingerprint != "first-diff" || usageUpdates[1].DiffStats.Status != "ok" {
 		t.Fatalf("second usage update DiffStats = %#v, want live diff", usageUpdates[1].DiffStats)
 	}
 	if usageUpdates[2].TurnCount != 1 || usageUpdates[2].Tokens.TotalTokens != 125 {
@@ -225,8 +225,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[3].DiffStats.FilesChanged != 2 || usageUpdates[3].DiffStats.AddedLines != 5 || usageUpdates[3].DiffStats.RemovedLines != 1 {
 		t.Fatalf("fourth usage update DiffStats = %#v, want refreshed diff", usageUpdates[3].DiffStats)
 	}
-	if result.DiffStats.FilesChanged != 2 || result.DiffStats.AddedLines != 5 || result.DiffStats.RemovedLines != 1 {
-		t.Fatalf("DiffStats = %#v, want 2 files, 5 added, 1 removed", result.DiffStats)
+	if result.DiffStats.FilesChanged != 2 || result.DiffStats.AddedLines != 5 || result.DiffStats.RemovedLines != 1 || result.DiffStats.Fingerprint != "final-diff" {
+		t.Fatalf("DiffStats = %#v, want 2 files, 5 added, 1 removed, and final fingerprint", result.DiffStats)
 	}
 	if result.RateLimits == nil || result.RateLimits.LimitID != "codex-primary" {
 		t.Fatalf("RateLimits = %#v, want codex-primary", result.RateLimits)
