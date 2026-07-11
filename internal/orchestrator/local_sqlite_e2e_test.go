@@ -14,6 +14,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 )
 
+const localSQLiteE2EWaitTimeout = 10 * time.Second
+
 // TestLocalSQLiteLifecycleEndToEnd drives the real local_sqlite connector
 // through a full work-item lifecycle with the non-code artifact template's
 // capitalized state vocabulary: seed a Todo item, let the orchestrator
@@ -314,7 +316,7 @@ func TestLocalSQLiteHumanRestartDispatchesArtifactRound(t *testing.T) {
 func waitForLocalStoredState(t *testing.T, db *sql.DB, issueID string, want string) {
 	t.Helper()
 
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(localSQLiteE2EWaitTimeout)
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -342,7 +344,7 @@ func localStoredState(t *testing.T, db *sql.DB, issueID string) string {
 func waitForLocalStateUpdateEvents(t *testing.T, db *sql.DB, issueID string, want []string) {
 	t.Helper()
 
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(localSQLiteE2EWaitTimeout)
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for {

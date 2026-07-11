@@ -210,6 +210,10 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Stress local SQLite artifact lifecycle
+        if: runner.os == 'Windows'
+        run: go test ./internal/orchestrator -run '^TestLocalSQLiteArtifactLifecycleEndToEnd$' -count=20
+
       - name: Race test
         run: go test -race ./...
 
