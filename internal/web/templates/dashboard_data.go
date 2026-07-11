@@ -6226,6 +6226,9 @@ func rateLimitName(limits *telemetry.RateLimits) string {
 }
 
 func backendCapacityOutageTitle(outage telemetry.BackendOutage) string {
+	if strings.TrimSpace(outage.Kind) == "github_rest_rate_limit" {
+		return "GitHub REST dispatch paused"
+	}
 	backend := strings.TrimSpace(outage.BackendID)
 	if backend == "" {
 		backend = strings.TrimSpace(outage.BackendKind)
@@ -6237,6 +6240,16 @@ func backendCapacityOutageTitle(outage telemetry.BackendOutage) string {
 }
 
 func backendCapacityOutageDetail(outage telemetry.BackendOutage, now time.Time) string {
+	if strings.TrimSpace(outage.Kind) == "github_rest_rate_limit" {
+		detail := strings.TrimSpace(outage.Reason)
+		if detail == "" {
+			detail = "The shared tracker account is at its REST dispatch floor"
+		}
+		if !outage.ResumeAt.IsZero() && outage.ResumeAt.After(now) {
+			return detail + "; resuming at " + outage.ResumeAt.UTC().Format("15:04 UTC")
+		}
+		return detail + "; dispatch can resume now"
+	}
 	provider := strings.TrimSpace(outage.Provider)
 	detail := "Dispatch is paused"
 	if provider != "" {

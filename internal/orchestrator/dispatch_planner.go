@@ -186,6 +186,13 @@ func (p dispatchPlanner) retryAction(
 	retry Retry,
 	now time.Time,
 ) (dispatchAction, bool, string) {
+	if outage, paused := activeGitHubRESTCapacityOutage(state, now); paused {
+		if retry.DueAt.Before(outage.ResumeAt) {
+			retry.DueAt = outage.ResumeAt
+			state.Retry[retry.Issue.ID] = retry
+		}
+		return dispatchAction{}, false, dispatchSkipGitHubRESTCapacity
+	}
 	delete(state.Retry, retry.Issue.ID)
 
 	decision := p.dispatchableIssueDecision(issue, state, true, now, retry.WorkerHost)
@@ -413,6 +420,7 @@ const (
 	dispatchSkipGlobalCapacityFull       = "global_capacity_full"
 	dispatchSkipHydrationFailed          = "hydrate_failed"
 	dispatchSkipDispatchBackoffCancelled = "dispatch_backoff_cancelled"
+	dispatchSkipGitHubRESTCapacity       = "github_rest_capacity_paused"
 )
 
 func (p dispatchPlanner) dispatchableIssueDecision(
@@ -430,6 +438,9 @@ func (p dispatchPlanner) dispatchableIssueDecision(
 	}
 	if stateIn(issue.State, p.cfg.TerminalStates) {
 		return dispatchableDecision{reason: dispatchSkipTerminalState}
+	}
+	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
+		return dispatchableDecision{reason: dispatchSkipGitHubRESTCapacity}
 	}
 	if pullRequestHydrationBlocksDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipPullRequestHydration}

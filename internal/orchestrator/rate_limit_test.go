@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -461,6 +464,181 @@ func TestTickSkipsConnectorPollingDuringGitHubRESTBackoff(t *testing.T) {
 	}
 }
 
+func TestGitHubRESTCapacityOutagePausesDispatchAndResumesAtReset(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 22, 0, 0, 0, time.UTC)
+	resetAt := now.Add(37 * time.Minute)
+	issue := connector.Issue{
+		ID:               "issue-1211",
+		Identifier:       "digitaldrywood/detent#1211",
+		Title:            "Protect REST capacity",
+		State:            "In Progress",
+		AssignedToWorker: true,
+	}
+	cfg := normalizeConfig(Config{
+		Project:                scheduler.ProjectCandidate{ID: "detent"},
+		MaxConcurrentAgents:    1,
+		ActiveStates:           []string{"Todo", "In Progress"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		GitHubRESTMinReserve:   1000,
+		ContinuationRetryDelay: time.Minute,
+	})
+	state := newState(cfg)
+	state.RateLimits = &telemetry.RateLimits{GitHubREST: &telemetry.RateLimitBucket{
+		Limit:      5000,
+		Used:       4100,
+		Remaining:  900,
+		ResetAt:    &resetAt,
+		ObservedAt: timePointer(now),
+	}}
+	state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: 2}
+	state.InstantFailures[issue.ID] = InstantFailure{Issue: issue, Count: 2}
+	orch := newRateLimitTestOrchestrator(cfg, &rateLimitConnector{})
+	orch.syncGitHubRESTCapacityOutage(&state, now)
+
+	dispatches := 0
+	hooks := dispatchPlanHooks{dispatch: func(connector.Issue, int, string) bool {
+		dispatches++
+		return true
+	}}
+	orch.dispatchPlanner().plan(&state, []connector.Issue{issue}, now, hooks)
+
+	if dispatches != 0 {
+		t.Fatalf("dispatches = %d, want 0 during GitHub REST capacity outage", dispatches)
+	}
+	outage, ok := activeGitHubRESTCapacityOutage(&state, now)
+	if !ok {
+		t.Fatalf("BackendOutages = %#v, want active GitHub REST outage", state.BackendOutages)
+	}
+	if outage.Kind != githubRESTCapacityKind || !outage.ResetAt.Equal(resetAt) || !outage.ResumeAt.Equal(resetAt) {
+		t.Fatalf("outage = %#v, want reset-aware GitHub REST capacity outage", outage)
+	}
+	if state.RepeatedFailures[issue.ID].Count != 2 || state.InstantFailures[issue.ID].Count != 2 {
+		t.Fatalf("breakers changed during capacity window: repeated=%#v instant=%#v", state.RepeatedFailures, state.InstantFailures)
+	}
+	snapshot := state.Snapshot(now)
+	if len(snapshot.BackendOutages) != 1 || snapshot.BackendOutages[0].Kind != githubRESTCapacityKind {
+		t.Fatalf("snapshot BackendOutages = %#v, want GitHub REST banner telemetry", snapshot.BackendOutages)
+	}
+
+	orch.syncGitHubRESTCapacityOutage(&state, resetAt)
+	orch.dispatchPlanner().plan(&state, []connector.Issue{issue}, resetAt, hooks)
+
+	if dispatches != 1 {
+		t.Fatalf("dispatches = %d, want 1 at reset", dispatches)
+	}
+	if _, ok := activeGitHubRESTCapacityOutage(&state, resetAt); ok {
+		t.Fatalf("BackendOutages = %#v, want automatic recovery at reset", state.BackendOutages)
+	}
+}
+
+func TestTickDetectsGitHubRESTExhaustionBeforeDispatch(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 22, 0, 0, 0, time.UTC)
+	resetAt := now.Add(30 * time.Minute)
+	issue := connector.Issue{
+		ID:               "issue-1211-tick",
+		Identifier:       "digitaldrywood/detent#1211",
+		Title:            "Stop same-cycle dispatch",
+		State:            "In Progress",
+		AssignedToWorker: true,
+	}
+	cfg := normalizeConfig(Config{
+		Project:                scheduler.ProjectCandidate{ID: "detent"},
+		PollInterval:           30 * time.Second,
+		MaxConcurrentAgents:    1,
+		ActiveStates:           []string{"Todo", "In Progress"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		GitHubRESTMinReserve:   1000,
+		ContinuationRetryDelay: time.Minute,
+	})
+	tracker := &rateLimitConnector{
+		candidates: []connector.Issue{issue},
+		restUsage: connector.RESTRateLimitUsage{
+			HasRateLimit: true,
+			RateLimit: connector.RESTRateLimit{
+				Limit: 5000, Used: 5000, Remaining: 0, Resource: "core", ResetAt: resetAt, UpdatedAt: now,
+			},
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+	state := newState(cfg)
+
+	orch.tick(context.Background(), &state, now)
+
+	if len(state.Running) != 0 {
+		t.Fatalf("Running = %#v, want no paid dispatch after same-cycle exhaustion", state.Running)
+	}
+	if _, ok := activeGitHubRESTCapacityOutage(&state, now); !ok {
+		t.Fatalf("BackendOutages = %#v, want active GitHub REST outage", state.BackendOutages)
+	}
+	if state.PollInterval != 30*time.Minute || !state.NextRefreshAt.Equal(resetAt) {
+		t.Fatalf("refresh = interval %s next %v, want reset at %v", state.PollInterval, state.NextRefreshAt, resetAt)
+	}
+}
+
+func TestRunCompletionDuringGitHubRESTCapacityOutageDoesNotStrikeBreakers(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 22, 0, 0, 0, time.UTC)
+	resetAt := now.Add(20 * time.Minute)
+	issue := implementProgressIssueWithoutPR()
+	cfg := normalizeConfig(Config{
+		Project:                scheduler.ProjectCandidate{ID: "detent"},
+		AutoPromote:            AutoPromoteConfig{NoProgressLimit: 3},
+		ActiveStates:           []string{"Todo", "In Progress"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		GitHubRESTMinReserve:   1000,
+		ContinuationRetryDelay: time.Minute,
+	})
+	attempts := &implementProgressAttemptStore{}
+	orch := &Orchestrator{
+		cfg:          cfg,
+		connector:    &implementProgressConnector{},
+		workAttempts: attempts,
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.RateLimits = &telemetry.RateLimits{GitHubREST: &telemetry.RateLimitBucket{
+		Limit: 5000, Used: 5000, Remaining: 0, ResetAt: &resetAt, ObservedAt: timePointer(now),
+	}}
+	orch.syncGitHubRESTCapacityOutage(&state, now)
+	state.Running[issue.ID] = Running{
+		Issue:         issue,
+		Attempt:       2,
+		WorkAttemptID: 42,
+		Mode:          runpkg.RunModeImplement,
+		StartedAt:     now.Add(-5 * time.Minute),
+		DiffStats:     DiffStats{Status: "clean"},
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-5 * time.Minute)}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:      issue.ID,
+		CompletedAt:  now,
+		RetryAttempt: 3,
+		Request:      runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+		Result:       runpkg.RunResult{FinalState: runpkg.FinalStateFailed, DiffStats: DiffStats{Status: "clean"}},
+		Err:          errors.New("gh pr create: HTTP 403 API rate limit exceeded"),
+	})
+
+	if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalCapacity {
+		t.Fatalf("completions = %#v, want one capacity terminal", attempts.completions)
+	}
+	retry, ok := state.Retry[issue.ID]
+	if !ok || retry.Attempt != 2 || !retry.DueAt.Equal(resetAt) {
+		t.Fatalf("Retry[%q] = %#v, want same-attempt retry at reset", issue.ID, retry)
+	}
+	if len(state.RepeatedFailures) != 0 || len(state.InstantFailures) != 0 {
+		t.Fatalf("breakers = repeated %#v instant %#v, want no strikes", state.RepeatedFailures, state.InstantFailures)
+	}
+	if _, ok := state.Completed[issue.ID]; ok {
+		t.Fatalf("Completed[%q] present during capacity outage", issue.ID)
+	}
+}
+
 func TestTickSkipsNonessentialGitHubWorkBelowRESTReserve(t *testing.T) {
 	t.Parallel()
 
@@ -505,8 +683,11 @@ func TestTickSkipsNonessentialGitHubWorkBelowRESTReserve(t *testing.T) {
 	if tracker.fetchByStatesLimitCalls != 0 {
 		t.Fatalf("FetchIssuesByStatesLimit() calls = %d, want no observed probe during reserve", tracker.fetchByStatesLimitCalls)
 	}
-	if len(state.RecentEvents) != 1 || state.RecentEvents[0].Event != "github_budget_reserved" || !strings.Contains(state.RecentEvents[0].Message, "preserve shared budget") {
+	if !rateLimitRecentEventContains(state.RecentEvents, "github_budget_reserved", "preserve shared budget") {
 		t.Fatalf("RecentEvents = %#v, want github budget reserve event", state.RecentEvents)
+	}
+	if !rateLimitRecentEventContains(state.RecentEvents, "github_rest_capacity_paused", "resuming at") {
+		t.Fatalf("RecentEvents = %#v, want GitHub REST dispatch pause event", state.RecentEvents)
 	}
 	logOutput := logs.String()
 	for _, want := range []string{

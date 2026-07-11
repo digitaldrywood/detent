@@ -255,6 +255,7 @@ type RunResult struct {
 	RateLimits         *telemetry.RateLimits
 	BudgetRefusal      *BudgetRefusal
 	SkillDraftProposed bool
+	PullRequestUpdated bool
 }
 
 type UsageUpdateHandler func(UsageUpdate) error

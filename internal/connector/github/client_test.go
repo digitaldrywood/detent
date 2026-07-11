@@ -861,6 +861,32 @@ func TestClientRESTAllowsCoreFanoutAfterSearchPoolBelowReserve(t *testing.T) {
 	}
 }
 
+func TestClientFlushRESTRateLimitUsagePrefersCoreBudget(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 22, 0, 0, 0, time.UTC)
+	client := &Client{
+		hasRestRateLimit: true,
+		restRateLimit: connector.RESTRateLimit{
+			Limit: 30, Used: 30, Remaining: 0, Resource: "search", ResetAt: now.Add(time.Minute), UpdatedAt: now,
+		},
+		restRateLimits: map[string]connector.RESTRateLimit{
+			"core": {
+				Limit: 5000, Used: 4200, Remaining: 800, Resource: "core", ResetAt: now.Add(time.Hour), UpdatedAt: now,
+			},
+			"search": {
+				Limit: 30, Used: 30, Remaining: 0, Resource: "search", ResetAt: now.Add(time.Minute), UpdatedAt: now,
+			},
+		},
+	}
+
+	usage := client.FlushRESTRateLimitUsage()
+
+	if !usage.HasRateLimit || usage.RateLimit.Resource != "core" || usage.RateLimit.Remaining != 800 {
+		t.Fatalf("RateLimit = %#v, want core budget with 800 remaining", usage.RateLimit)
+	}
+}
+
 func TestClientRESTBackoffAppliesAcrossClientsWithSharedToken(t *testing.T) {
 	t.Parallel()
 

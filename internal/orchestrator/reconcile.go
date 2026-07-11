@@ -417,12 +417,15 @@ func (o *Orchestrator) markRefreshSucceeded(state *State, now time.Time) {
 	state.LastRefreshAt = now.UTC()
 }
 
-func (o *Orchestrator) finishRefresh(state *State, now time.Time) {
+func (o *Orchestrator) finishRefresh(state *State, now time.Time, captureREST bool) {
 	o.captureConnectorAuthHealth(state)
 	cycle := o.captureConnectorRateLimits(state, now)
 	o.logGraphQLRateLimitCycle(cycle)
-	restCycle := o.captureConnectorRESTRateLimits(state, now)
-	o.logRESTRateLimitCycle(restCycle)
+	if captureREST {
+		restCycle := o.captureConnectorRESTRateLimits(state, now)
+		o.logRESTRateLimitCycle(restCycle)
+	}
+	o.syncGitHubRESTCapacityOutage(state, now)
 
 	interval := o.adaptivePollInterval(state, now)
 	state.PollInterval = interval

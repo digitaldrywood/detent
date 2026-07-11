@@ -59,15 +59,17 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		startManualRefresh(state, *manual, now)
 	}
 	completed := false
+	restRateLimitsCaptured := false
 	previous := captureTickPreviousState(state)
 	o.markRefresh(state, now)
 	defer func() {
-		o.finishRefresh(state, now)
+		o.finishRefresh(state, now, !restRateLimitsCaptured)
 		if manual != nil {
 			finishManualRefresh(state, *manual, completed)
 		}
 	}()
 
+	o.syncGitHubRESTCapacityOutage(state, now)
 	if pause := o.gitHubGraphQLPause(state, now); pause > 0 {
 		o.logger.Warn("github graphql polling paused", "remaining", gitHubGraphQLRemaining(state), "pause", pause)
 		return
@@ -174,6 +176,10 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		fetched,
 		artifactWaitTransitions.transitioned,
 	)
+	restCycle := o.captureConnectorRESTRateLimits(state, now)
+	o.logRESTRateLimitCycle(restCycle)
+	o.syncGitHubRESTCapacityOutage(state, now)
+	restRateLimitsCaptured = true
 	o.dispatchTickIssues(ctx, state, fetched, transitions, previous, completedEpics, now)
 	if refreshSucceeded(state) {
 		state.BoardIssues = overlayIssueStateSnapshots(

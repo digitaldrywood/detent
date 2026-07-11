@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"os"
@@ -331,6 +332,102 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if sessionStore.phase.ModelContextWindow == nil || *sessionStore.phase.ModelContextWindow != modelContextWindow {
 		t.Fatalf("WorkflowPhaseEvent ModelContextWindow = %#v, want %d", sessionStore.phase.ModelContextWindow, modelContextWindow)
+	}
+}
+
+func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                   string
+		updates                []AgentUpdate
+		wantErr                string
+		wantPullRequestUpdated bool
+	}{
+		{
+			name: "push rejected by GitHub rate limit",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "failed", Delta: "remote: API rate limit exceeded; HTTP 403"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantErr: "API rate limit exceeded",
+		},
+		{
+			name: "pull request creation rejected",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "pr", Tool: "commandExecution", Delta: "gh pr create --title fix --body-file /tmp/body"},
+				{Type: AgentUpdateToolCompleted, ItemID: "pr", Tool: "commandExecution", Status: "failed", Delta: "HTTP 403: API rate limit exceeded"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantErr: "API rate limit exceeded",
+		},
+		{
+			name: "successful pull request creation records delivery",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "pr", Tool: "commandExecution", Delta: "gh pr create --title fix --body-file /tmp/body"},
+				{Type: AgentUpdateToolCompleted, ItemID: "pr", Tool: "commandExecution", Status: "completed", Delta: "https://github.test/digitaldrywood/detent/pull/1212"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantPullRequestUpdated: true,
+		},
+		{
+			name: "later successful push clears failure",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push-1", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push-1", Tool: "commandExecution", Status: "failed", Delta: "HTTP 403: transient failure"},
+				{Type: AgentUpdateToolStarted, ItemID: "push-2", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push-2", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+		},
+		{
+			name: "unrelated failed test command does not fail delivery",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "test", Tool: "commandExecution", Delta: "go test ./..."},
+				{Type: AgentUpdateToolCompleted, ItemID: "test", Tool: "commandExecution", Status: "failed", Delta: "test failed"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := &Runner{
+				now:    time.Now,
+				logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			execution := r.runAgentTurn(
+				context.Background(),
+				&toolUpdateAgentBackend{updates: tt.updates},
+				AgentTurnRequest{},
+				RunRequest{Issue: connector.Issue{ID: "issue-1211", Identifier: "digitaldrywood/detent#1211"}},
+				workspace.Info{},
+				workspace.Issue{},
+				config.Agent{},
+				time.Now(),
+				0,
+				agentidentity.Identity{},
+			)
+
+			if tt.wantErr == "" {
+				if execution.err != nil || execution.result.FinalState != FinalStateCompleted {
+					t.Fatalf("execution = state %q error %v, want completed", execution.result.FinalState, execution.err)
+				}
+				if execution.result.PullRequestUpdated != tt.wantPullRequestUpdated {
+					t.Fatalf("PullRequestUpdated = %v, want %v", execution.result.PullRequestUpdated, tt.wantPullRequestUpdated)
+				}
+				return
+			}
+			if execution.err == nil || !strings.Contains(execution.err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want containing %q", execution.err, tt.wantErr)
+			}
+			if execution.result.FinalState != FinalStateFailed {
+				t.Fatalf("FinalState = %q, want %q", execution.result.FinalState, FinalStateFailed)
+			}
+		})
 	}
 }
 
@@ -3350,6 +3447,19 @@ type fakeCodexClient struct {
 	catalogCalls   int
 	verifyErr      error
 	verifiedResume AgentResume
+}
+
+type toolUpdateAgentBackend struct {
+	updates []AgentUpdate
+}
+
+func (b *toolUpdateAgentBackend) RunTurn(_ context.Context, _ AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+	for _, update := range b.updates {
+		if err := onUpdate(update); err != nil {
+			return AgentTurnResult{}, err
+		}
+	}
+	return AgentTurnResult{ThreadID: "thread-1211", TurnID: "turn-1211", SessionID: "thread-1211-turn-1211"}, nil
 }
 
 func (c *fakeCodexClient) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
