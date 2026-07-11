@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -120,6 +121,99 @@ func TestDoctorWorkflowOptimizationFindsFixtureRules(t *testing.T) {
 	}
 	if metrics.BudgetEstimateDriftRatio != 0.6313 {
 		t.Fatalf("BudgetEstimateDriftRatio = %v, want 0.6313", metrics.BudgetEstimateDriftRatio)
+	}
+}
+
+func TestDoctorOrphanRecoveryFindings(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		cfg      workflowconfig.Config
+		metrics  doctorOrphanRecoveryMetrics
+		wantRule string
+	}{
+		{name: "no history is quiet", cfg: validDoctorWorkflow("/repo")},
+		{
+			name: "successful reattach is quiet",
+			cfg: func() workflowconfig.Config {
+				cfg := validDoctorWorkflow("/repo")
+				cfg.Agent.ExperimentalThreadResume = true
+				return cfg
+			}(),
+			metrics: doctorOrphanRecoveryMetrics{Detected: 1, Reattached: 1},
+		},
+		{
+			name: "total fallback names dominant reason",
+			cfg: func() workflowconfig.Config {
+				cfg := validDoctorWorkflow("/repo")
+				cfg.Agent.ExperimentalThreadResume = true
+				return cfg
+			}(),
+			metrics:  doctorOrphanRecoveryMetrics{Detected: 3, FreshContinuations: 3, ReattachFailures: 3, FallbackReasons: map[string]int64{"rollout file not found": 2, "resume payload too large": 1}},
+			wantRule: doctorWorkflowRuleOrphanRecoveryFallback,
+		},
+		{
+			name:     "detected without outcome warns",
+			cfg:      validDoctorWorkflow("/repo"),
+			metrics:  doctorOrphanRecoveryMetrics{Detected: 2},
+			wantRule: doctorWorkflowRuleOrphansNeverRecovered,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", tt.cfg, doctorWorkflowOptimizationMetrics{OrphanRecovery: tt.metrics})
+			var got *doctorWorkflowOptimizationFinding
+			for i := range findings {
+				if findings[i].RuleID == doctorWorkflowRuleOrphanRecoveryFallback || findings[i].RuleID == doctorWorkflowRuleOrphansNeverRecovered {
+					got = &findings[i]
+					break
+				}
+			}
+			if tt.wantRule == "" {
+				if got != nil {
+					t.Fatalf("unexpected orphan recovery finding: %#v", *got)
+				}
+				return
+			}
+			if got == nil || got.RuleID != tt.wantRule {
+				t.Fatalf("orphan recovery finding = %#v, want %q", got, tt.wantRule)
+			}
+			if tt.wantRule == doctorWorkflowRuleOrphanRecoveryFallback && !strings.Contains(got.Detail, "rollout file not found") {
+				t.Fatalf("fallback detail = %q, want dominant reason", got.Detail)
+			}
+		})
+	}
+}
+
+func TestDoctorOrphanRecoveryTelemetryUsesTwentyFourHourWindow(t *testing.T) {
+	t.Parallel()
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	for _, statement := range []string{
+		`CREATE TABLE work_attempts (id INTEGER PRIMARY KEY, project_id TEXT)`,
+		`CREATE TABLE codex_sessions (id INTEGER PRIMARY KEY, work_attempt_id INTEGER, started_at TEXT, final_state TEXT, orphan_recovery_outcome TEXT, orphan_recovery_fallback_reason TEXT, input_tokens INTEGER, cached_input_tokens INTEGER)`,
+		`INSERT INTO work_attempts (id, project_id) VALUES (1, 'detent')`,
+		`INSERT INTO codex_sessions (work_attempt_id, started_at, final_state) VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-25 hours'), 'orphaned')`,
+		`INSERT INTO codex_sessions (work_attempt_id, started_at, final_state, orphan_recovery_outcome, input_tokens, cached_input_tokens) VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hour'), 'completed', 'resumed', 1000, 850)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("Exec(%q) error = %v", statement, err)
+		}
+	}
+
+	metrics, err := doctorOrphanRecoveryTelemetry(context.Background(), db, "detent")
+	if err != nil {
+		t.Fatalf("doctorOrphanRecoveryTelemetry() error = %v", err)
+	}
+	if metrics.Detected != 0 || metrics.Reattached != 1 || metrics.ResumedCachedInputShare != 0.85 {
+		t.Fatalf("metrics = %#v, want only the recent resumed session", metrics)
 	}
 }
 
