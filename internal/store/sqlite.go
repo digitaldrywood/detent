@@ -641,6 +641,70 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 	return report, nil
 }
 
+func (s *sqliteStore) DailyDigest(ctx context.Context, windows []DailyDigestWindow) ([]DailyDigestDay, error) {
+	days := make([]DailyDigestDay, 0, len(windows))
+	for _, window := range windows {
+		if strings.TrimSpace(window.Date) == "" || window.From.IsZero() || window.To.IsZero() || !window.From.Before(window.To) {
+			return nil, errors.New("daily digest window must have a date and increasing boundaries")
+		}
+		params := sqlc.DailyDigestRuntimeParams{
+			FromAt: nullString(window.From.UTC().Format(time.RFC3339Nano)),
+			ToAt:   nullString(window.To.UTC().Format(time.RFC3339Nano)),
+		}
+		runtime, err := s.queries.DailyDigestRuntime(ctx, params)
+		if err != nil {
+			return nil, fmt.Errorf("reading daily digest runtime for %s: %w", window.Date, err)
+		}
+		models, err := s.queries.DailyDigestModels(ctx, sqlc.DailyDigestModelsParams(params))
+		if err != nil {
+			return nil, fmt.Errorf("reading daily digest models for %s: %w", window.Date, err)
+		}
+		failureClasses, err := s.queries.DailyDigestFailureClasses(ctx, sqlc.DailyDigestFailureClassesParams(params))
+		if err != nil {
+			return nil, fmt.Errorf("reading daily digest failures for %s: %w", window.Date, err)
+		}
+		capacityModes, err := s.queries.DailyDigestCapacityModes(ctx, sqlc.DailyDigestCapacityModesParams(params))
+		if err != nil {
+			return nil, fmt.Errorf("reading daily digest capacity modes for %s: %w", window.Date, err)
+		}
+
+		day := DailyDigestDay{
+			Date:              window.Date,
+			Sessions:          runtime.Sessions,
+			InputTokens:       runtime.InputTokens,
+			CachedInputTokens: runtime.CachedInputTokens,
+			OutputTokens:      runtime.OutputTokens,
+			TotalTokens:       runtime.TotalTokens,
+			OrphanResumed:     runtime.OrphanResumed,
+			OrphanFresh:       runtime.OrphanFresh,
+			CapacityOutages:   runtime.CapacityOutages,
+			CapacitySeconds:   runtime.CapacitySeconds,
+			BreakerTrips:      runtime.BreakerTrips,
+			FailedSessions:    runtime.FailedSessions,
+			Models:            make([]UsageReportModel, 0, len(models)),
+		}
+		if len(failureClasses) > 0 {
+			day.DominantErrorClass = failureClasses[0].ErrorClass
+		}
+		if len(capacityModes) > 0 {
+			day.CapacityRecoveryMode = capacityModes[0].RecoveryMode
+		}
+		for _, model := range models {
+			day.Models = append(day.Models, UsageReportModel{
+				Model:                 model.Model,
+				InputTokens:           model.InputTokens,
+				CachedInputTokens:     model.CachedInputTokens,
+				OutputTokens:          model.OutputTokens,
+				ReasoningOutputTokens: model.ReasoningOutputTokens,
+				TotalTokens:           model.TotalTokens,
+				Events:                model.Sessions,
+			})
+		}
+		days = append(days, day)
+	}
+	return days, nil
+}
+
 func (s *sqliteStore) BudgetCostEvents(ctx context.Context, query BudgetCostQuery) ([]BudgetCostEvent, error) {
 	from, err := requiredTimestamp("from", query.From)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -24,7 +25,11 @@ func (s *Server) reports(c echo.Context) error {
 	}
 
 	ctx := c.Request().Context()
-	data, err := s.reportsData(ctx, from, to, c.QueryParam("project"))
+	timezone, err := reportsTimezone(c.QueryParam("tz"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errorResponse("invalid_timezone", "tz must be an IANA timezone"))
+	}
+	data, err := s.reportsData(ctx, from, to, c.QueryParam("project"), timezone, time.Now())
 	if err != nil {
 		s.logger.Error("usage reports page failed", slog.Any("error", err))
 		return c.JSON(http.StatusInternalServerError, errorResponse("usage_reports_failed", "Usage reports failed"))
@@ -50,7 +55,7 @@ func reportsDateRange(c echo.Context) (time.Time, time.Time, *apiErrorResponse, 
 	return from, to, nil, 0
 }
 
-func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time, selectedProjectID string) (templates.ReportsData, error) {
+func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time, selectedProjectID string, timezone *time.Location, now time.Time) (templates.ReportsData, error) {
 	day, err := s.usageReportData(ctx, store.UsageReportByDay, from, to)
 	if err != nil {
 		return templates.ReportsData{}, err
@@ -76,6 +81,10 @@ func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time, 
 	snapshot := s.latestSnapshot(ctx)
 	projects := s.projectSmallMultiples(ctx, snapshot)
 	projectID, projectName, _ := s.sidebarProjectContext(selectedProjectID, projects, snapshot)
+	digest, err := s.dailyDigestData(ctx, snapshot, projects, timezone, now)
+	if err != nil {
+		return templates.ReportsData{}, err
+	}
 	return templates.ReportsData{
 		Title:           instancePageTitle(instanceName, "Detent reports"),
 		ApplicationName: applicationName(instanceName),
@@ -88,12 +97,25 @@ func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time, 
 		Issue:           issue,
 		PR:              pr,
 		Model:           model,
+		Digest:          digest,
 		Assets:          s.assets.templatePaths(),
 		Projects:        projects,
 		ActiveNav:       "reports",
 		ProjectID:       projectID,
 		ProjectName:     projectName,
 	}, nil
+}
+
+func reportsTimezone(value string) (*time.Location, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.UTC, nil
+	}
+	location, err := time.LoadLocation(value)
+	if err != nil {
+		return nil, err
+	}
+	return location, nil
 }
 
 func (s *Server) usageReportData(ctx context.Context, by store.UsageReportGroup, from time.Time, to time.Time) (templates.UsageReportData, error) {

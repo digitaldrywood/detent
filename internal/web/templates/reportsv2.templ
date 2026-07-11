@@ -37,6 +37,7 @@ templ ReportsSnapshotV2(data ReportsData) {
 			</div>
 		}
 	</div>
+	@reportsDailyDigest(view.Digest)
 	<div class="grid flex-none grid-cols-1 gap-3 md:grid-cols-2">
 		@primitives.Panel(primitives.PanelProps{ID: "reports-spend", Title: "Spend · by day"}) {
 			if view.Spend.Annotation != "" {
@@ -109,6 +110,64 @@ templ ReportsSnapshotV2(data ReportsData) {
 				<div class="flex flex-col gap-1"><span class="text-2xs uppercase text-dim">Next age trigger</span><span class="font-mono text-sm text-text">{ view.Release.Next }</span></div>
 			</div>
 		}
+	}
+}
+
+templ reportsDailyDigest(digest reportsDigest) {
+	<script>
+		(function () {
+			var url = new URL(window.location.href);
+			if (url.searchParams.has("tz")) return;
+			var timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+			if (!timezone) return;
+			url.searchParams.set("tz", timezone);
+			window.location.replace(url.toString());
+		})();
+	</script>
+	@primitives.Panel(primitives.PanelProps{ID: "reports-daily-digest", Title: "Daily digest", Count: digest.Timezone, Class: "flex-none"}) {
+		<div class="flex flex-col divide-y divide-line">
+			for _, day := range digest.Days {
+				<article data-digest-day data-digest-date={ day.Date } class="flex flex-col gap-3 p-4">
+					<div class="flex flex-wrap items-center justify-between gap-2">
+						<h3 class="text-sm font-semibold text-text">{ day.Label }</h3>
+						<span class="font-mono text-2xs text-dim tabular-nums">{ day.Date }</span>
+					</div>
+					<div class="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3 lg:grid-cols-6">
+						for _, metric := range day.Metrics {
+							<div data-digest-metric={ metric.ID } data-digest-trend={ metric.Trend } class="min-w-0">
+								<div class="flex items-baseline justify-between gap-2">
+									<span
+										class="truncate font-mono text-sm font-medium text-text tabular-nums"
+										if metric.Full != "" {
+											title={ metric.Full }
+										}
+									>{ metric.Value }</span>
+									<span class={ "whitespace-nowrap text-2xs tabular-nums " + reportsDigestDeltaClass(metric.Trend) }>{ metric.Delta }</span>
+								</div>
+								<div class="truncate text-2xs text-sec">{ metric.Label }</div>
+								if metric.Detail != "" {
+									<div class="truncate text-2xs text-dim" title={ metric.Detail }>{ metric.Detail }</div>
+								}
+							</div>
+						}
+					</div>
+					if len(day.Projects) > 0 {
+						<div class="overflow-x-auto">
+							<table class="w-full min-w-[420px] text-left text-2xs">
+								<thead class="text-dim">
+									<tr><th class="pb-1 font-medium">Project</th><th class="pb-1 text-right font-medium">Shipped</th><th class="pb-1 text-right font-medium">Filed</th><th class="pb-1 text-right font-medium">Releases</th></tr>
+								</thead>
+								<tbody class="text-sec">
+									for _, project := range day.Projects {
+										<tr data-digest-project={ project.ID }><td class="py-0.5 text-text">{ project.Name }</td><td class="py-0.5 text-right font-mono tabular-nums">{ formatInt(project.Shipped) }</td><td class="py-0.5 text-right font-mono tabular-nums">{ formatInt(project.Filed) }</td><td class="py-0.5 text-right font-mono tabular-nums">{ formatInt(project.Releases) }</td></tr>
+									}
+								</tbody>
+							</table>
+						</div>
+					}
+				</article>
+			}
+		</div>
 	}
 }
 

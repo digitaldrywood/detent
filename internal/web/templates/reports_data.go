@@ -19,6 +19,7 @@ type ReportsData struct {
 	Issue            UsageReportData
 	PR               UsageReportData
 	Model            UsageReportData
+	Digest           DailyDigestData
 	Assets           AssetPaths
 	Projects         []ProjectSmallMultiple
 	ActiveNav        string
@@ -27,6 +28,43 @@ type ReportsData struct {
 	SidebarCollapsed bool
 	Theme            string
 	Density          string
+}
+
+type DailyDigestData struct {
+	Timezone string
+	Days     []DailyDigestDayData
+}
+
+type DailyDigestDayData struct {
+	Date                 string
+	From                 time.Time
+	To                   time.Time
+	Sessions             int64
+	InputTokens          int64
+	CachedInputTokens    int64
+	OutputTokens         int64
+	TotalTokens          int64
+	SpendUSD             float64
+	OrphanResumed        int64
+	OrphanFresh          int64
+	CapacityOutages      int64
+	CapacitySeconds      int64
+	CapacityRecoveryMode string
+	BreakerTrips         int64
+	FailedSessions       int64
+	DominantErrorClass   string
+	IssuesFiled          int64
+	IssuesShipped        int64
+	ReleasesTagged       int64
+	Projects             []DailyDigestProjectData
+}
+
+type DailyDigestProjectData struct {
+	ID       string
+	Name     string
+	Filed    int64
+	Shipped  int64
+	Releases int64
 }
 
 type UsageReportData struct {

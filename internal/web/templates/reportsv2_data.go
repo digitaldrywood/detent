@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	webchart "github.com/digitaldrywood/detent/internal/web/chart"
@@ -23,6 +24,7 @@ type reportsView struct {
 	Budget      reportsBudget
 	CycleTime   reportsCycleTime
 	Release     reportsRelease
+	Digest      reportsDigest
 }
 
 type reportsKPI struct {
@@ -72,6 +74,29 @@ type reportsRelease struct {
 	State     string
 }
 
+type reportsDigest struct {
+	Timezone string
+	Days     []reportsDigestDay
+}
+
+type reportsDigestDay struct {
+	Date     string
+	Label    string
+	Today    bool
+	Metrics  []reportsDigestMetric
+	Projects []DailyDigestProjectData
+}
+
+type reportsDigestMetric struct {
+	ID     string
+	Label  string
+	Value  string
+	Full   string
+	Delta  string
+	Trend  string
+	Detail string
+}
+
 const reportsTopRowLimit = 5
 
 func reportsViewFromData(data ReportsData) reportsView {
@@ -85,11 +110,144 @@ func reportsViewFromData(data ReportsData) reportsView {
 		Budget:      reportsBudgetView(data),
 		CycleTime:   reportsCycleTimeView(data),
 		Release:     reportsReleaseView(data),
+		Digest:      reportsDigestView(data.Digest),
 	}
 	if view.HasSeries {
 		view.TokenChart = reportsCumulativeTokens(data)
 	}
 	return view
+}
+
+func reportsDigestView(data DailyDigestData) reportsDigest {
+	view := reportsDigest{Timezone: data.Timezone, Days: []reportsDigestDay{}}
+	start := max(0, len(data.Days)-dailyDigestVisibleDayCount)
+	for index := len(data.Days) - 1; index >= start; index-- {
+		day := data.Days[index]
+		baselineStart := max(0, index-dailyDigestBaselineDayCount)
+		baseline := data.Days[baselineStart:index]
+		view.Days = append(view.Days, reportsDigestDay{
+			Date:     day.Date,
+			Label:    reportsDigestDateLabel(day.Date, index == len(data.Days)-1),
+			Today:    index == len(data.Days)-1,
+			Metrics:  reportsDigestMetrics(day, baseline),
+			Projects: day.Projects,
+		})
+	}
+	return view
+}
+
+const (
+	dailyDigestVisibleDayCount  = 7
+	dailyDigestBaselineDayCount = 7
+)
+
+func reportsDigestMetrics(day DailyDigestDayData, baseline []DailyDigestDayData) []reportsDigestMetric {
+	cacheShare := usageFraction(day.CachedInputTokens, day.InputTokens)
+	failureRate := usageFraction(day.FailedSessions, day.Sessions)
+	recoveries := day.OrphanResumed + day.OrphanFresh
+	metrics := []reportsDigestMetric{
+		reportsDigestCountMetric("shipped", "Shipped", day.IssuesShipped, baseline, func(value DailyDigestDayData) int64 { return value.IssuesShipped }),
+		reportsDigestCountMetric("filed", "Filed", day.IssuesFiled, baseline, func(value DailyDigestDayData) int64 { return value.IssuesFiled }),
+		reportsDigestCountMetric("releases", "Releases", day.ReleasesTagged, baseline, func(value DailyDigestDayData) int64 { return value.ReleasesTagged }),
+		reportsDigestCountMetric("sessions", "Sessions", day.Sessions, baseline, func(value DailyDigestDayData) int64 { return value.Sessions }),
+		reportsDigestCountMetric("tokens", "Tokens", day.TotalTokens, baseline, func(value DailyDigestDayData) int64 { return value.TotalTokens }),
+		reportsDigestFloatMetric("cache", "Cached share", cacheShare, baseline, func(value DailyDigestDayData) float64 {
+			return usageFraction(value.CachedInputTokens, value.InputTokens)
+		}),
+		reportsDigestFloatMetric("cost", "Estimated cost", day.SpendUSD, baseline, func(value DailyDigestDayData) float64 { return value.SpendUSD }),
+		reportsDigestCountMetric("recoveries", "Orphan recoveries", recoveries, baseline, func(value DailyDigestDayData) int64 { return value.OrphanResumed + value.OrphanFresh }),
+		reportsDigestCountMetric("outages", "Capacity outages", day.CapacityOutages, baseline, func(value DailyDigestDayData) int64 { return value.CapacityOutages }),
+		reportsDigestCountMetric("breakers", "Breaker trips", day.BreakerTrips, baseline, func(value DailyDigestDayData) int64 { return value.BreakerTrips }),
+		reportsDigestCountMetric("failures", "Failed sessions", day.FailedSessions, baseline, func(value DailyDigestDayData) int64 { return value.FailedSessions }),
+	}
+	metrics[4].Value = fleetCompactTokens(day.TotalTokens)
+	metrics[4].Full = formatInt(day.TotalTokens)
+	metrics[5].Value = reportCacheReadFraction(cacheShare)
+	metrics[6].Value = formatUSD(day.SpendUSD)
+	metrics[7].Detail = formatInt(day.OrphanResumed) + " reattached · " + formatInt(day.OrphanFresh) + " fresh"
+	if day.CapacityOutages > 0 {
+		metrics[8].Detail = formatDuration(float64(day.CapacitySeconds))
+		if strings.TrimSpace(day.CapacityRecoveryMode) != "" {
+			metrics[8].Detail += " · " + strings.ReplaceAll(day.CapacityRecoveryMode, "_", " ")
+		}
+	}
+	if day.FailedSessions > 0 {
+		metrics[10].Detail = reportCacheReadFraction(failureRate) + " of sessions"
+		if strings.TrimSpace(day.DominantErrorClass) != "" {
+			metrics[10].Detail += " · " + strings.ReplaceAll(day.DominantErrorClass, "_", " ")
+		}
+	}
+	return metrics
+}
+
+func reportsDigestCountMetric(id string, label string, current int64, baseline []DailyDigestDayData, value func(DailyDigestDayData) int64) reportsDigestMetric {
+	average := digestAverage(baseline, func(day DailyDigestDayData) float64 { return float64(value(day)) })
+	delta, trend := reportsDigestDelta(float64(current), average)
+	return reportsDigestMetric{ID: id, Label: label, Value: formatInt(current), Delta: delta, Trend: trend}
+}
+
+func reportsDigestFloatMetric(id string, label string, current float64, baseline []DailyDigestDayData, value func(DailyDigestDayData) float64) reportsDigestMetric {
+	average := digestAverage(baseline, value)
+	delta, trend := reportsDigestDelta(current, average)
+	return reportsDigestMetric{ID: id, Label: label, Delta: delta, Trend: trend}
+}
+
+func digestAverage(days []DailyDigestDayData, value func(DailyDigestDayData) float64) float64 {
+	if len(days) == 0 {
+		return 0
+	}
+	total := 0.0
+	for _, day := range days {
+		total += value(day)
+	}
+	return total / float64(len(days))
+}
+
+func reportsDigestDelta(current float64, average float64) (string, string) {
+	switch {
+	case average == 0 && current == 0:
+		return "at 7d avg", "flat"
+	case average == 0:
+		return "new vs 7d", "up"
+	}
+	change := (current - average) / average * 100
+	if change > -0.5 && change < 0.5 {
+		return "at 7d avg", "flat"
+	}
+	if change > 0 {
+		return "+" + strconv.FormatFloat(change, 'f', 0, 64) + "% vs 7d", "up"
+	}
+	return strconv.FormatFloat(change, 'f', 0, 64) + "% vs 7d", "down"
+}
+
+func reportsDigestDateLabel(date string, today bool) string {
+	parsed, err := time.Parse(time.DateOnly, date)
+	if err != nil {
+		return date
+	}
+	label := parsed.Format("Mon, Jan 2")
+	if today {
+		return "Today · " + label
+	}
+	return label
+}
+
+func reportsDigestDeltaClass(trend string) string {
+	switch trend {
+	case "up":
+		return "text-warn"
+	case "down":
+		return "text-ok"
+	default:
+		return "text-dim"
+	}
+}
+
+func usageFraction(numerator int64, denominator int64) float64 {
+	if numerator <= 0 || denominator <= 0 {
+		return 0
+	}
+	return min(float64(numerator)/float64(denominator), 1)
 }
 
 func reportsReleaseView(data ReportsData) reportsRelease {

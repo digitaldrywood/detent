@@ -61,3 +61,29 @@ func TestReportsTopRowsResolveTrackerURLs(t *testing.T) {
 		})
 	}
 }
+
+func TestReportsDigestViewShowsTrailingSevenDayDelta(t *testing.T) {
+	t.Parallel()
+
+	days := make([]DailyDigestDayData, 8)
+	for index := range 7 {
+		days[index] = DailyDigestDayData{Date: "2026-07-01", Sessions: 10, InputTokens: 100, CachedInputTokens: 80, TotalTokens: 1000, SpendUSD: 1}
+	}
+	days[7] = DailyDigestDayData{Date: "2026-07-08", Sessions: 20, InputTokens: 200, CachedInputTokens: 100, TotalTokens: 1500, SpendUSD: 2}
+
+	view := reportsDigestView(DailyDigestData{Timezone: "America/Chicago", Days: days})
+
+	if view.Timezone != "America/Chicago" || len(view.Days) != 7 || !view.Days[0].Today {
+		t.Fatalf("digest view = %#v, want seven visible days with today first", view)
+	}
+	metrics := map[string]reportsDigestMetric{}
+	for _, metric := range view.Days[0].Metrics {
+		metrics[metric.ID] = metric
+	}
+	if metrics["sessions"].Delta != "+100% vs 7d" || metrics["sessions"].Value != "20" {
+		t.Fatalf("session metric = %#v, want 20 and +100%%", metrics["sessions"])
+	}
+	if metrics["cache"].Value != "50%" || metrics["cost"].Value != "$2.00" {
+		t.Fatalf("cache/cost metrics = %#v / %#v, want exact current values", metrics["cache"], metrics["cost"])
+	}
+}

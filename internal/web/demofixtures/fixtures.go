@@ -929,6 +929,27 @@ func SeedUsageEvents(ctx context.Context, backend store.Store) error {
 		if _, err := backend.RecordUsageEvent(ctx, event); err != nil {
 			return fmt.Errorf("seed demo usage event: %w", err)
 		}
+		sessionID, err := backend.StartSession(ctx, store.SessionStart{
+			IssueID:    event.IssueID,
+			Identifier: event.Identifier,
+			StartedAt:  event.StartedAt,
+			Model:      event.Model,
+		})
+		if err != nil {
+			return fmt.Errorf("seed demo session: %w", err)
+		}
+		if err := backend.FinishSession(ctx, sessionID, store.SessionFinish{
+			CompletedAt:       event.FinishedAt,
+			InputTokens:       event.InputTokens,
+			CachedInputTokens: event.CachedInputTokens,
+			OutputTokens:      event.OutputTokens,
+			TotalTokens:       event.TotalTokens,
+			RuntimeSeconds:    event.RuntimeSeconds,
+			FinalState:        event.Outcome,
+			Model:             event.Model,
+		}); err != nil {
+			return fmt.Errorf("finish demo session: %w", err)
+		}
 	}
 	return nil
 }
@@ -946,19 +967,20 @@ func UsageEvents() []store.UsageEvent {
 			}
 			pr := int64(5200 + day*10 + i)
 			events = append(events, store.UsageEvent{
-				ProjectID:      projectID,
-				IssueID:        fmt.Sprintf("usage-%s-%02d", projectID, day),
-				Identifier:     fmt.Sprintf("digitaldrywood/%s#%d", demoUsageRepo(projectID), 5200+day*10+i),
-				PRNumber:       &pr,
-				Model:          models[(day+i)%len(models)],
-				InputTokens:    tokens * 7 / 10,
-				OutputTokens:   tokens * 3 / 10,
-				TotalTokens:    tokens,
-				CostUSD:        float64(tokens) / 100000,
-				RuntimeSeconds: int64(600 + i*90),
-				StartedAt:      finished.Add(-40 * time.Minute),
-				FinishedAt:     finished,
-				Outcome:        "completed",
+				ProjectID:         projectID,
+				IssueID:           fmt.Sprintf("usage-%s-%02d", projectID, day),
+				Identifier:        fmt.Sprintf("digitaldrywood/%s#%d", demoUsageRepo(projectID), 5200+day*10+i),
+				PRNumber:          &pr,
+				Model:             models[(day+i)%len(models)],
+				InputTokens:       tokens * 7 / 10,
+				CachedInputTokens: tokens * 6 / 10,
+				OutputTokens:      tokens * 3 / 10,
+				TotalTokens:       tokens,
+				CostUSD:           float64(tokens) / 100000,
+				RuntimeSeconds:    int64(600 + i*90),
+				StartedAt:         finished.Add(-40 * time.Minute),
+				FinishedAt:        finished,
+				Outcome:           "completed",
 			})
 		}
 	}
