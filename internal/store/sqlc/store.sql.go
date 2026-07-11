@@ -1008,8 +1008,8 @@ SELECT
   CAST(COALESCE(NULLIF(trim(next_action), ''), NULLIF(trim(wait_reason), ''), 'automatic retry') AS TEXT) AS recovery_mode,
   COUNT(*) AS outages
 FROM work_attempts
-WHERE completed_at >= ?1
-  AND completed_at < ?2
+WHERE started_at < ?1
+  AND completed_at > ?2
   AND lower(trim(COALESCE(terminal_state, ''))) = 'capacity'
 GROUP BY COALESCE(NULLIF(trim(next_action), ''), NULLIF(trim(wait_reason), ''), 'automatic retry')
 ORDER BY outages DESC, recovery_mode
@@ -1017,8 +1017,8 @@ LIMIT 1
 `
 
 type DailyDigestCapacityModesParams struct {
+	ToAt   string         `json:"to_at"`
 	FromAt sql.NullString `json:"from_at"`
-	ToAt   sql.NullString `json:"to_at"`
 }
 
 type DailyDigestCapacityModesRow struct {
@@ -1027,7 +1027,7 @@ type DailyDigestCapacityModesRow struct {
 }
 
 func (q *Queries) DailyDigestCapacityModes(ctx context.Context, arg DailyDigestCapacityModesParams) ([]DailyDigestCapacityModesRow, error) {
-	rows, err := q.db.QueryContext(ctx, dailyDigestCapacityModes, arg.FromAt, arg.ToAt)
+	rows, err := q.db.QueryContext(ctx, dailyDigestCapacityModes, arg.ToAt, arg.FromAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1167,8 +1167,8 @@ SELECT
   (SELECT COUNT(*) FROM codex_sessions AS session WHERE session.completed_at >= ?1 AND session.completed_at < ?2 AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'resumed') AS orphan_resumed,
   (SELECT COUNT(*) FROM codex_sessions AS session WHERE session.completed_at >= ?1 AND session.completed_at < ?2 AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'fresh') AS orphan_fresh,
   (SELECT COUNT(*) FROM codex_sessions AS session WHERE session.completed_at >= ?1 AND session.completed_at < ?2 AND lower(trim(COALESCE(session.final_state, ''))) IN ('failed', 'failure', 'cancelled', 'canceled', 'orphaned', 'token_ceiling_exceeded')) AS failed_sessions,
-  (SELECT COUNT(*) FROM work_attempts AS attempt WHERE attempt.completed_at >= ?1 AND attempt.completed_at < ?2 AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_outages,
-  (SELECT CAST(COALESCE(SUM(MAX(0, CAST(strftime('%s', attempt.completed_at) AS INTEGER) - CAST(strftime('%s', attempt.started_at) AS INTEGER))), 0) AS INTEGER) FROM work_attempts AS attempt WHERE attempt.completed_at >= ?1 AND attempt.completed_at < ?2 AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_seconds,
+  (SELECT COUNT(*) FROM work_attempts AS attempt WHERE attempt.started_at < ?2 AND attempt.completed_at > ?1 AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_outages,
+  (SELECT CAST(COALESCE(SUM(MAX(0, CAST(strftime('%s', MIN(attempt.completed_at, ?2)) AS INTEGER) - CAST(strftime('%s', MAX(attempt.started_at, ?1)) AS INTEGER))), 0) AS INTEGER) FROM work_attempts AS attempt WHERE attempt.started_at < ?2 AND attempt.completed_at > ?1 AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_seconds,
   (SELECT COUNT(DISTINCT trip.identifier) FROM (
     SELECT COALESCE(NULLIF(decision.identifier, ''), printf('decision:%d', decision.id)) AS identifier
     FROM scheduler_decisions AS decision

@@ -663,7 +663,10 @@ func (s *sqliteStore) DailyDigest(ctx context.Context, windows []DailyDigestWind
 		if err != nil {
 			return nil, fmt.Errorf("reading daily digest failures for %s: %w", window.Date, err)
 		}
-		capacityModes, err := s.queries.DailyDigestCapacityModes(ctx, sqlc.DailyDigestCapacityModesParams(params))
+		capacityModes, err := s.queries.DailyDigestCapacityModes(ctx, sqlc.DailyDigestCapacityModesParams{
+			FromAt: params.FromAt,
+			ToAt:   params.ToAt.String,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("reading daily digest capacity modes for %s: %w", window.Date, err)
 		}

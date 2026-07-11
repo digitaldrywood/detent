@@ -2306,7 +2306,7 @@ func TestDailyDigestReconcilesRuntimeTables(t *testing.T) {
 		CompletedAt: from.Add(-time.Second), InputTokens: 9000, CachedInputTokens: 9000, OutputTokens: 9000, TotalTokens: 18000, FinalState: "failed", Model: "outside",
 	})
 
-	seedDigestAttempt(t, ctx, backend, "capacity", from.Add(5*time.Hour), from.Add(7*time.Hour), WorkAttemptTerminalCapacity, "quota", "retry_resume")
+	seedDigestAttempt(t, ctx, backend, "capacity", from.Add(-time.Hour), from.Add(time.Hour), WorkAttemptTerminalCapacity, "quota", "retry_resume")
 	seedDigestAttempt(t, ctx, backend, "failure-a", from.Add(8*time.Hour), from.Add(9*time.Hour), WorkAttemptTerminalFailure, "auth", "")
 	seedDigestAttempt(t, ctx, backend, "failure-b", from.Add(10*time.Hour), from.Add(11*time.Hour), WorkAttemptTerminalTimedOut, "auth", "")
 	for _, identifier := range []string{"digitaldrywood/detent#1", "digitaldrywood/detent#1"} {
@@ -2318,22 +2318,28 @@ func TestDailyDigestReconcilesRuntimeTables(t *testing.T) {
 		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
 	}
 
-	days, err := backend.DailyDigest(ctx, []DailyDigestWindow{{Date: "2026-07-10", From: from, To: to}})
+	days, err := backend.DailyDigest(ctx, []DailyDigestWindow{
+		{Date: "2026-07-09", From: from.Add(-24 * time.Hour), To: from},
+		{Date: "2026-07-10", From: from, To: to},
+	})
 	if err != nil {
 		t.Fatalf("DailyDigest() error = %v", err)
 	}
-	if len(days) != 1 {
-		t.Fatalf("DailyDigest() len = %d, want 1", len(days))
+	if len(days) != 2 {
+		t.Fatalf("DailyDigest() len = %d, want 2", len(days))
 	}
-	day := days[0]
+	previous, day := days[0], days[1]
+	if previous.CapacityOutages != 1 || previous.CapacitySeconds != 3600 {
+		t.Fatalf("previous capacity = %#v, want the first boundary-clipped outage hour", previous)
+	}
 	if day.Sessions != 2 || day.InputTokens != 1500 || day.CachedInputTokens != 1300 || day.OutputTokens != 150 || day.TotalTokens != 1650 {
 		t.Fatalf("token totals = %#v, want exact in-window session sums", day)
 	}
 	if day.OrphanResumed != 1 || day.OrphanFresh != 1 || day.FailedSessions != 1 {
 		t.Fatalf("session outcomes = %#v, want resumed/fresh/failed 1/1/1", day)
 	}
-	if day.CapacityOutages != 1 || day.CapacitySeconds != 7200 || day.CapacityRecoveryMode != "retry_resume" {
-		t.Fatalf("capacity = %#v, want one two-hour retry_resume outage", day)
+	if day.CapacityOutages != 1 || day.CapacitySeconds != 3600 || day.CapacityRecoveryMode != "retry_resume" {
+		t.Fatalf("capacity = %#v, want one boundary-clipped retry_resume outage hour", day)
 	}
 	if day.BreakerTrips != 1 || day.DominantErrorClass != "auth" {
 		t.Fatalf("failure summary = %#v, want one distinct breaker and dominant auth", day)
