@@ -2431,15 +2431,26 @@ primary or secondary provider rate-window percentage. An omitted mode preserves
 legacy metered enforcement when `budget.enabled=true`, and `detent doctor` warns
 until the mode is declared.
 
-`agent.no_progress_spend_limit_usd` defaults to `3`, below the default
-per-issue budget backstop. Detent sums persisted session cost for each issue
-after its latest accepted lane, pull-request, or
-recognized PR-signature change. In metered mode, when spend exceeds the limit,
-Detent parks the issue in `Blocked`, recommends narrowing or splitting the task,
-and requires the next worker to explain the missing progress signal in its first
-Workpad update before using tools. Set the value to `0` to disable the breaker
-and its history/spend lookups. In subscription mode, the same calculation is
-advisory telemetry and never parks the issue.
+`agent.no_progress_spend_limit_usd` defaults to a base limit of `3`, below the
+default per-issue budget backstop. The effective limit scales with the session's
+reasoning effort: unknown/low `1x`, medium `1.5x`, high `3x`, xhigh `6x`, and
+max/ultracode `8x`. These multipliers assume one retry at the observed cost
+profile should fit before the breaker fires; `detent doctor` warns when an
+effort tier's effective limit is below its observed p50 per-session cost and
+recommends a base limit with `1.5x` retry-cost headroom.
+
+Detent sums persisted session cost for each issue after its latest accepted
+lane or PR advancement. PR creation, a new head commit, a dirty-to-clean
+mergeability transition, and a failing-to-passing CI transition each reset the
+spend window. Spend accumulates only while the PR fingerprint remains static.
+In metered mode, when spend exceeds the effective limit, Detent parks the issue
+in `Blocked` and identifies whether no PR evidence was produced or a linked PR
+remained static. The latter points operators toward merge-train capacity and
+serialization tuning; the former recommends narrowing or splitting the task.
+The next worker must explain the missing progress signal in its first Workpad
+update before using tools. Set the value to `0` to disable the breaker and its
+history/spend lookups. In subscription mode, the same calculation is advisory
+telemetry and never parks the issue.
 
 `agent.failure_breaker` pauses new project dispatches when the same failure
 class reaches `same_class_limit` attempts inside `window_seconds`. The default

@@ -12,6 +12,7 @@ import (
 func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 	f.Add(0, 0, 0, "", "clean", int64(1), " head ", "lint,test", int64(1), "head", "test,lint", int64(60), int64(0), true, int64(0), int64(1), int64(2), true)
 	f.Add(1, 2, 3, "fingerprint", "dirty", int64(1), "head-a", "test", int64(2), "head-b", "lint", int64(-60), int64(0), true, int64(10), int64(-10), int64(0), false)
+	f.Add(0, 0, 0, "clean", "dirty", int64(1), "same-head", "fail", int64(1), "same-head", "pass", int64(0), int64(0), false, int64(0), int64(0), int64(0), false)
 	f.Add(0, 0, 0, "", "", int64(0), "", "", int64(0), "", "", int64(0), int64(0), false, int64(0), int64(0), int64(0), false)
 
 	f.Fuzz(func(
@@ -55,6 +56,33 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 			slicesEqual(autoPromoteCanonicalChecks(leftSignature.FailedChecks), autoPromoteCanonicalChecks(rightSignature.FailedChecks))
 		if gotEqual != wantEqual || gotEqual != implementProgressSignatureEqual(rightSignature, leftSignature) {
 			t.Fatalf("implementProgressSignatureEqual(%#v, %#v) = %t, want %t", leftSignature, rightSignature, gotEqual, wantEqual)
+		}
+
+		leftFingerprint := &spendProgressPRFingerprint{
+			Number:         leftNumber,
+			HeadSHA:        strings.TrimSpace(leftHead),
+			MergeableState: strings.ToLower(strings.TrimSpace(status)),
+			CIStatus:       strings.ToLower(strings.TrimSpace(leftChecks)),
+		}
+		rightFingerprint := &spendProgressPRFingerprint{
+			Number:         rightNumber,
+			HeadSHA:        strings.TrimSpace(rightHead),
+			MergeableState: strings.ToLower(strings.TrimSpace(fingerprint)),
+			CIStatus:       strings.ToLower(strings.TrimSpace(rightChecks)),
+		}
+		wantAdvance := ""
+		switch {
+		case leftNumber != rightNumber:
+			wantAdvance = "pull_request_created"
+		case leftFingerprint.HeadSHA != "" && rightFingerprint.HeadSHA != "" && leftFingerprint.HeadSHA != rightFingerprint.HeadSHA:
+			wantAdvance = "pull_request_head_changed"
+		case leftFingerprint.MergeableState == "dirty" && rightFingerprint.MergeableState == "clean":
+			wantAdvance = "pull_request_mergeable"
+		case spendProgressCIFailing(leftFingerprint.CIStatus) && spendProgressCIPassing(rightFingerprint.CIStatus):
+			wantAdvance = "pull_request_ci_passing"
+		}
+		if got := spendProgressPRAdvance(leftFingerprint, rightFingerprint); got != wantAdvance {
+			t.Fatalf("spendProgressPRAdvance(%#v, %#v) = %q, want %q", leftFingerprint, rightFingerprint, got, wantAdvance)
 		}
 
 		resetSeconds %= 1_000_000_000

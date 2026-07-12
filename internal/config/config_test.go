@@ -354,6 +354,34 @@ func TestOverloadRetryDelayConfiguration(t *testing.T) {
 	}
 }
 
+func TestEffectiveNoProgressSpendLimitUSD(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		limit  float64
+		effort string
+		want   float64
+	}{
+		{name: "disabled", limit: 0, effort: "xhigh", want: 0},
+		{name: "unknown uses base", limit: 3, want: 3},
+		{name: "low uses base", limit: 3, effort: "low", want: 3},
+		{name: "medium", limit: 3, effort: "medium", want: 4.5},
+		{name: "high", limit: 3, effort: "high", want: 9},
+		{name: "xhigh", limit: 3, effort: "xhigh", want: 18},
+		{name: "max", limit: 3, effort: "max", want: 24},
+		{name: "ultracode", limit: 3, effort: "ultracode", want: 24},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := EffectiveNoProgressSpendLimitUSD(tt.limit, tt.effort); got != tt.want {
+				t.Fatalf("EffectiveNoProgressSpendLimitUSD(%g, %q) = %g, want %g", tt.limit, tt.effort, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRESTFanoutMaxRequestsConfiguration(t *testing.T) {
 	t.Parallel()
 
