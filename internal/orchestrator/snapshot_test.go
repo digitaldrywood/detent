@@ -45,6 +45,24 @@ func TestStateSnapshotEmpty(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotCountsRecentTransientOverloadRetries(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 21, 0, 0, 0, time.UTC)
+	recent := now.Add(-30 * time.Minute)
+	old := now.Add(-2 * time.Hour)
+	state := newState(normalizeConfig(Config{}))
+	state.WorkAttempts = []telemetry.WorkAttempt{
+		{AttemptID: 1, ErrorClass: backendcapacity.TransientOverloadErrorClass, CompletedAt: &recent},
+		{AttemptID: 2, ErrorClass: backendcapacity.TransientOverloadErrorClass, CompletedAt: &old},
+		{AttemptID: 3, ErrorClass: backendcapacity.ErrorClass, CompletedAt: &recent},
+	}
+
+	if got := state.Snapshot(now).OverloadRetriesLastHour; got != 1 {
+		t.Fatalf("OverloadRetriesLastHour = %d, want 1", got)
+	}
+}
+
 func TestStateSnapshotAnnotatesDirectUnblockerCount(t *testing.T) {
 	t.Parallel()
 

@@ -12,6 +12,7 @@ func newTestSupervisor(t *testing.T, backend Runner, cfg Config) *runpkg.Supervi
 	supervisor, err := runpkg.NewSupervisor(backend, runpkg.SupervisorConfig{
 		MaxRetryBackoff:       cfg.MaxRetryBackoff,
 		FailureRetryBaseDelay: cfg.FailureRetryBaseDelay,
+		OverloadRetryDelay:    cfg.OverloadRetryDelay,
 	})
 	if err != nil {
 		t.Fatalf("NewSupervisor() error = %v", err)

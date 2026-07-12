@@ -11,9 +11,20 @@ import (
 	"time"
 )
 
-const ErrorClass = "backend_capacity"
+const (
+	ErrorClass                  = "backend_capacity"
+	TransientOverloadErrorClass = "transient_overload"
+)
+
+type ErrorType string
+
+const (
+	ErrorTypeUsageLimit        ErrorType = "usage_limit"
+	ErrorTypeTransientOverload ErrorType = "transient_overload"
+)
 
 var retryAtPattern = regexp.MustCompile(`(?i)(?:try again|resets?)\s+at\s+([0-9]{1,2}:[0-9]{2}\s*(?:am|pm))`)
+var http5xxPattern = regexp.MustCompile(`(?i)(?:http(?:/[0-9.]+)?\s+|status(?:[\s_-]*code)?["']?\s*[:=]?\s*)(5[0-9]{2})\b`)
 
 type Scope struct {
 	BackendID   string
@@ -49,6 +60,7 @@ func (s Scope) Hosted() bool {
 }
 
 type Details struct {
+	Type    ErrorType
 	Kind    string
 	Reason  string
 	ResetAt *time.Time
@@ -93,8 +105,10 @@ func As(err error) (*Error, bool) {
 }
 
 type Rules struct {
-	Kinds   []string
-	Phrases []string
+	Kinds        []string
+	Phrases      []string
+	HTTP5xx      bool
+	RequireReset bool
 }
 
 func Classify(text string, fallbackResetAt *time.Time, now time.Time, rules Rules) (Details, bool) {
@@ -111,11 +125,43 @@ func Classify(text string, fallbackResetAt *time.Time, now time.Time, rules Rule
 		value := fallbackResetAt.UTC()
 		resetAt = &value
 	}
+	if rules.RequireReset && resetAt == nil {
+		return Details{}, false
+	}
 	return Details{
+		Type:    ErrorTypeUsageLimit,
 		Kind:    kind,
 		Reason:  "provider usage limit reached",
 		ResetAt: resetAt,
 	}, true
+}
+
+func ClassifyTransientOverload(text string, rules Rules) (Details, bool) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return Details{}, false
+	}
+	kind, ok := matchingKind(text, rules)
+	if !ok && rules.HTTP5xx {
+		match := http5xxPattern.FindStringSubmatch(text)
+		if len(match) == 2 {
+			kind = "http_" + match[1]
+			ok = true
+		}
+	}
+	if !ok {
+		return Details{}, false
+	}
+	return Details{
+		Type:   ErrorTypeTransientOverload,
+		Kind:   kind,
+		Reason: string(ErrorTypeTransientOverload),
+	}, true
+}
+
+func IsTransientOverload(err error) bool {
+	capacityErr, ok := As(err)
+	return ok && capacityErr != nil && capacityErr.Details.Type == ErrorTypeTransientOverload
 }
 
 func cloneDetails(details Details) Details {

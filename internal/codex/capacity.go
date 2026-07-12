@@ -26,6 +26,23 @@ var codexCapacityRules = backendcapacity.Rules{
 		"quota exceeded",
 		"insufficient quota",
 	},
+	RequireReset: true,
+}
+
+var codexOverloadRules = backendcapacity.Rules{
+	Kinds: []string{
+		"serverOverloaded",
+		"overloaded_error",
+		"model_at_capacity",
+	},
+	Phrases: []string{
+		"selected model is at capacity",
+		"model is at capacity",
+		"model at capacity",
+		"server overloaded",
+		"temporarily overloaded",
+	},
+	HTTP5xx: true,
 }
 
 func (b *AgentBackend) ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Time) (backendcapacity.Details, bool) {
@@ -39,7 +56,11 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 	if err == nil {
 		return backendcapacity.Details{}, false
 	}
-	return backendcapacity.Classify(codexCapacityErrorText(err), codexCapacityResetAt(limits), now, codexCapacityRules)
+	text := codexCapacityErrorText(err)
+	if details, ok := backendcapacity.ClassifyTransientOverload(text, codexOverloadRules); ok {
+		return details, true
+	}
+	return backendcapacity.Classify(text, codexCapacityResetAt(limits), now, codexCapacityRules)
 }
 
 func codexCapacityErrorText(err error) string {

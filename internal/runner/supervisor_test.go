@@ -57,6 +57,7 @@ func TestSupervisorAppliesCappedBackoffForRunnerErrors(t *testing.T) {
 	supervisor, err := NewSupervisor(errorBackend{}, SupervisorConfig{
 		FailureRetryBaseDelay: 10 * time.Second,
 		MaxRetryBackoff:       25 * time.Second,
+		OverloadRetryDelay:    45 * time.Second,
 		Now:                   func() time.Time { return time.Date(2026, 5, 31, 14, 0, 0, 0, time.UTC) },
 	})
 	if err != nil {
@@ -97,6 +98,35 @@ func TestSupervisorDoesNotAdvanceRetryForCapacityError(t *testing.T) {
 	}
 	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
 		t.Fatalf("retry state = retryable %v attempt %d delay %s, want unchanged", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+	}
+}
+
+func TestSupervisorUsesFlatSameAttemptRetryForTransientOverload(t *testing.T) {
+	t.Parallel()
+
+	var logs strings.Builder
+	supervisor, err := NewSupervisor(transientOverloadBackend{}, SupervisorConfig{
+		FailureRetryBaseDelay: time.Second,
+		MaxRetryBackoff:       time.Hour,
+		OverloadRetryDelay:    45 * time.Second,
+		Logger:                slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	completion := supervisor.Run(t.Context(), RunRequest{
+		Issue:   connector.Issue{ID: "issue-overload"},
+		Attempt: 7,
+	})
+	if !IsTransientOverload(completion.Err) {
+		t.Fatalf("Err = %v, want transient overload", completion.Err)
+	}
+	if !completion.Retryable || completion.RetryAttempt != 7 || completion.RetryDelay != 45*time.Second {
+		t.Fatalf("retry state = retryable %v attempt %d delay %s, want same attempt after 45s", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+	}
+	if !strings.Contains(logs.String(), "level=INFO") || !strings.Contains(logs.String(), "reason=transient_overload") {
+		t.Fatalf("logs = %q, want INFO transient_overload reason", logs.String())
 	}
 }
 
@@ -218,10 +248,14 @@ func TestSupervisorUpdateConfigChangesRetryDelay(t *testing.T) {
 	supervisor.UpdateConfig(SupervisorConfig{
 		FailureRetryBaseDelay: time.Second,
 		MaxRetryBackoff:       2 * time.Second,
+		OverloadRetryDelay:    30 * time.Second,
 	})
 
 	if got := supervisor.RetryDelay(4); got != 2*time.Second {
 		t.Fatalf("RetryDelay(4) = %s, want 2s", got)
+	}
+	if got := supervisor.OverloadRetryDelay(); got != 30*time.Second {
+		t.Fatalf("OverloadRetryDelay() = %s, want 30s", got)
 	}
 }
 
@@ -386,6 +420,20 @@ func (errorBackend) Run(context.Context, RunRequest) (RunResult, error) {
 
 type capacityBackend struct {
 	resetAt time.Time
+}
+
+type transientOverloadBackend struct{}
+
+func (transientOverloadBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, backendcapacity.NewError(
+		backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"},
+		backendcapacity.Details{
+			Type:   backendcapacity.ErrorTypeTransientOverload,
+			Kind:   "serverOverloaded",
+			Reason: string(backendcapacity.ErrorTypeTransientOverload),
+		},
+		errors.New("selected model is at capacity"),
+	)
 }
 
 func (b capacityBackend) Run(context.Context, RunRequest) (RunResult, error) {

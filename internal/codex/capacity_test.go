@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -14,10 +15,11 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 	now := time.Date(2026, 7, 10, 1, 55, 0, 0, time.UTC)
 	resetAt := now.Add(44 * time.Minute)
 	tests := []struct {
-		name   string
-		err    error
-		limits *telemetry.RateLimits
-		want   bool
+		name     string
+		err      error
+		limits   *telemetry.RateLimits
+		want     bool
+		wantType backendcapacity.ErrorType
 	}{
 		{
 			name: "usage limit payload",
@@ -25,12 +27,30 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 			limits: &telemetry.RateLimits{
 				Primary: &telemetry.RateLimitBucket{ResetAt: &resetAt},
 			},
-			want: true,
+			want:     true,
+			wantType: backendcapacity.ErrorTypeUsageLimit,
 		},
 		{
-			name: "google resource exhausted payload",
+			name: "google resource exhausted without reset",
 			err:  &TurnFailedError{Status: "failed", Body: `{"error":{"status":"RESOURCE_EXHAUSTED"}}`},
-			want: true,
+		},
+		{
+			name:     "server overloaded payload",
+			err:      &TurnFailedError{Status: "failed", Body: `{"message":"Selected model is at capacity","codexErrorInfo":"serverOverloaded"}`},
+			want:     true,
+			wantType: backendcapacity.ErrorTypeTransientOverload,
+		},
+		{
+			name:     "provider http 529",
+			err:      &TurnFailedError{Status: "failed", Body: `{"status_code":529,"message":"retry later"}`},
+			want:     true,
+			wantType: backendcapacity.ErrorTypeTransientOverload,
+		},
+		{
+			name:     "provider http 503",
+			err:      &TurnFailedError{Status: "failed", Body: `{"status":503,"message":"retry later"}`},
+			want:     true,
+			wantType: backendcapacity.ErrorTypeTransientOverload,
 		},
 		{
 			name: "invalid request",
@@ -49,6 +69,9 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 			}
 			if tt.limits != nil && (details.ResetAt == nil || !details.ResetAt.Equal(resetAt)) {
 				t.Fatalf("ClassifyCapacityError() ResetAt = %v, want %v", details.ResetAt, resetAt)
+			}
+			if tt.want && details.Type != tt.wantType {
+				t.Fatalf("ClassifyCapacityError() Type = %q, want %q", details.Type, tt.wantType)
 			}
 		})
 	}
@@ -82,6 +105,24 @@ func TestAgentBackendClassifyCapacityErrorUsesReachedWindowReset(t *testing.T) {
 	}
 	if details.ResetAt == nil || !details.ResetAt.Equal(secondaryReset) {
 		t.Fatalf("ResetAt = %v, want secondary reset %s", details.ResetAt, secondaryReset)
+	}
+}
+
+func TestAgentBackendClassifyCapacityErrorKeepsOverloadTransientWithRateLimitTelemetry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 20, 34, 0, 0, time.UTC)
+	resetAt := now.Add(12 * time.Hour)
+	details, ok := (&AgentBackend{}).ClassifyCapacityError(
+		&TurnFailedError{Status: "failed", Body: `{"message":"Selected model is at capacity","codexErrorInfo":"serverOverloaded"}`},
+		&telemetry.RateLimits{Primary: &telemetry.RateLimitBucket{
+			Status:  telemetry.RateLimitStatusExhausted,
+			ResetAt: &resetAt,
+		}},
+		now,
+	)
+	if !ok || details.Type != backendcapacity.ErrorTypeTransientOverload || details.ResetAt != nil {
+		t.Fatalf("ClassifyCapacityError() = %#v, %v, want reset-free transient overload", details, ok)
 	}
 }
 

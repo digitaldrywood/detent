@@ -87,6 +87,9 @@ func (o *Orchestrator) handleBackendCapacityError(
 }
 
 func (o *Orchestrator) registerBackendOutage(state *State, capacityErr *backendcapacity.Error, observedAt time.Time) BackendOutage {
+	if capacityErr == nil || capacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
+		return BackendOutage{}
+	}
 	if observedAt.IsZero() {
 		observedAt = o.clockNow()
 	}
@@ -246,6 +249,12 @@ func (o *Orchestrator) publishValidatorCapacityEvent(ctx context.Context, event 
 
 func (o *Orchestrator) handleValidatorCapacityEvent(state *State, event validatorCapacityEvent) {
 	if event.CapacityErr != nil {
+		if event.CapacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
+			if event.CapacityProbe {
+				releaseBackendCapacityProbe(state, Running{CapacityScope: event.Scope, CapacityProbe: true})
+			}
+			return
+		}
 		outage := o.registerBackendOutage(state, event.CapacityErr, event.CompletedAt)
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      event.CompletedAt,
@@ -271,6 +280,18 @@ func (o *Orchestrator) handleValidatorCapacityEvent(state *State, event validato
 		}
 		o.recoverBackendCapacity(state, running, event.CompletedAt)
 	}
+}
+
+func releaseBackendCapacityProbe(state *State, running Running) {
+	if state == nil || !running.CapacityProbe {
+		return
+	}
+	key, outage, ok := matchingBackendOutage(state.BackendOutages, running.CapacityScope)
+	if !ok {
+		return
+	}
+	outage.ProbeIssueID = ""
+	state.BackendOutages[key] = outage
 }
 
 func matchingBackendOutage(outages map[string]BackendOutage, scope backendcapacity.Scope) (string, BackendOutage, bool) {
@@ -469,7 +490,7 @@ func (o *Orchestrator) classifyBlockedCapacityIssue(
 			continue
 		}
 		capacityErr, ok := o.capacityController.ClassifyCapacityError(request, errors.New(body), state.RateLimits, now)
-		if ok && capacityErr != nil {
+		if ok && capacityErr != nil && capacityErr.Details.Type != backendcapacity.ErrorTypeTransientOverload {
 			return capacityErr, issue, true
 		}
 	}

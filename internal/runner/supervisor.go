@@ -13,6 +13,7 @@ import (
 const (
 	defaultSupervisorMaxRetryBackoff       = 5 * time.Minute
 	defaultSupervisorFailureRetryBaseDelay = 10 * time.Second
+	defaultSupervisorOverloadRetryDelay    = 45 * time.Second
 	defaultCompletionDeliveryGrace         = 250 * time.Millisecond
 )
 
@@ -21,6 +22,7 @@ var ErrMissingRunner = errors.New("runner backend is required")
 type SupervisorConfig struct {
 	MaxRetryBackoff       time.Duration
 	FailureRetryBaseDelay time.Duration
+	OverloadRetryDelay    time.Duration
 	Now                   func() time.Time
 	Logger                *slog.Logger
 }
@@ -30,6 +32,7 @@ type Supervisor struct {
 	backend               Backend
 	maxRetryBackoff       time.Duration
 	failureRetryBaseDelay time.Duration
+	overloadRetryDelay    time.Duration
 	now                   func() time.Time
 	logger                *slog.Logger
 }
@@ -55,6 +58,9 @@ func NewSupervisor(backend Backend, cfg SupervisorConfig) (*Supervisor, error) {
 	if cfg.FailureRetryBaseDelay <= 0 {
 		cfg.FailureRetryBaseDelay = defaultSupervisorFailureRetryBaseDelay
 	}
+	if cfg.OverloadRetryDelay <= 0 {
+		cfg.OverloadRetryDelay = defaultSupervisorOverloadRetryDelay
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -66,6 +72,7 @@ func NewSupervisor(backend Backend, cfg SupervisorConfig) (*Supervisor, error) {
 		backend:               backend,
 		maxRetryBackoff:       cfg.MaxRetryBackoff,
 		failureRetryBaseDelay: cfg.FailureRetryBaseDelay,
+		overloadRetryDelay:    cfg.OverloadRetryDelay,
 		now:                   cfg.Now,
 		logger:                cfg.Logger,
 	}, nil
@@ -78,12 +85,16 @@ func (s *Supervisor) UpdateConfig(cfg SupervisorConfig) {
 	if cfg.FailureRetryBaseDelay <= 0 {
 		cfg.FailureRetryBaseDelay = defaultSupervisorFailureRetryBaseDelay
 	}
+	if cfg.OverloadRetryDelay <= 0 {
+		cfg.OverloadRetryDelay = defaultSupervisorOverloadRetryDelay
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.maxRetryBackoff = cfg.MaxRetryBackoff
 	s.failureRetryBaseDelay = cfg.FailureRetryBaseDelay
+	s.overloadRetryDelay = cfg.OverloadRetryDelay
 }
 
 func (s *Supervisor) Dispatch(ctx context.Context, request RunRequest, completions chan<- Completion) {
@@ -138,7 +149,11 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 				slog.Any("panic", recovered),
 			)
 		}
-		if completion.Err != nil && !IsCapacityError(completion.Err) {
+		if IsTransientOverload(completion.Err) {
+			completion.Retryable = true
+			completion.RetryAttempt = request.Attempt
+			completion.RetryDelay = s.OverloadRetryDelay()
+		} else if completion.Err != nil && !IsCapacityError(completion.Err) {
 			completion.Retryable = true
 			completion.RetryAttempt = nextFailureAttempt(request.Attempt)
 			completion.RetryDelay = s.RetryDelay(completion.RetryAttempt)
@@ -158,7 +173,10 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 			"error", completion.Err,
 		}
 		attrs = append(attrs, backendErrorAttrs(completion.Err)...)
-		if completion.Err != nil {
+		if IsTransientOverload(completion.Err) {
+			attrs = append(attrs, "reason", "transient_overload")
+			s.logger.Info("worker_attempt_finished", attrs...)
+		} else if completion.Err != nil {
 			s.logger.Warn("worker_attempt_finished", attrs...)
 		} else {
 			s.logger.Debug("worker_attempt_finished", attrs...)
@@ -170,6 +188,13 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 	completion.Result = result
 	completion.Err = err
 	return completion
+}
+
+func (s *Supervisor) OverloadRetryDelay() time.Duration {
+	s.mu.RLock()
+	delay := s.overloadRetryDelay
+	s.mu.RUnlock()
+	return delay
 }
 
 func (s *Supervisor) RetryDelay(attempt int) time.Duration {

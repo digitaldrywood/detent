@@ -1617,6 +1617,29 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		if err != nil {
 			delete(o.validatorRuns, identity.Key)
 			if capacityErr, ok := backendcapacity.As(err); ok {
+				if capacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
+					failure := o.validatorFailures[identity.Key]
+					failure.NextRetryAt = completedAt.Add(o.cfg.OverloadRetryDelay)
+					failure.Error = string(backendcapacity.ErrorTypeTransientOverload)
+					o.validatorFailures[identity.Key] = failure
+					o.validatorMu.Unlock()
+					if o.logger != nil {
+						o.logger.Info(
+							"validator transient overload retry scheduled",
+							"reason", backendcapacity.ErrorTypeTransientOverload,
+							"issue_id", identity.IssueID,
+							"retry_at", failure.NextRetryAt,
+							"error", err,
+						)
+					}
+					o.publishValidatorCapacityEvent(ctx, validatorCapacityEvent{
+						Scope:         capacityErr.Scope,
+						CapacityErr:   capacityErr,
+						CapacityProbe: capacityProbeKey != "",
+						CompletedAt:   completedAt,
+					})
+					return
+				}
 				o.validatorMu.Unlock()
 				o.publishValidatorCapacityEvent(ctx, validatorCapacityEvent{
 					Scope:         capacityErr.Scope,

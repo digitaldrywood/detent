@@ -63,6 +63,52 @@ func TestDoctorBackendCapacityDiagnostics(t *testing.T) {
 	}
 }
 
+func TestDoctorOverloadRetryCount(t *testing.T) {
+	t.Parallel()
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`CREATE TABLE work_attempts (
+		project_id TEXT NOT NULL,
+		error_class TEXT,
+		completed_at TEXT
+	)`); err != nil {
+		t.Fatalf("CREATE TABLE error = %v", err)
+	}
+	now := time.Date(2026, 7, 12, 21, 0, 0, 0, time.UTC)
+	rows := []struct {
+		projectID  string
+		errorClass string
+		completed  time.Time
+	}{
+		{projectID: "detent", errorClass: "transient_overload", completed: now.Add(-30 * time.Minute)},
+		{projectID: "detent", errorClass: "transient_overload", completed: now.Add(-2 * time.Hour)},
+		{projectID: "other", errorClass: "transient_overload", completed: now.Add(-20 * time.Minute)},
+		{projectID: "detent", errorClass: "backend_capacity", completed: now.Add(-10 * time.Minute)},
+	}
+	for _, row := range rows {
+		if _, err := db.Exec(
+			`INSERT INTO work_attempts (project_id, error_class, completed_at) VALUES (?, ?, ?)`,
+			row.projectID,
+			row.errorClass,
+			row.completed.Format(time.RFC3339Nano),
+		); err != nil {
+			t.Fatalf("INSERT error = %v", err)
+		}
+	}
+
+	count, err := doctorOverloadRetryCount(t.Context(), db, "detent", now)
+	if err != nil {
+		t.Fatalf("doctorOverloadRetryCount() error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("doctorOverloadRetryCount() = %d, want 1", count)
+	}
+}
+
 func TestDoctorBlockedRecoveryReportsCapacityParkedIssues(t *testing.T) {
 	t.Parallel()
 

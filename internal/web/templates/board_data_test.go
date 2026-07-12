@@ -1720,6 +1720,26 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 	}
 }
 
+func TestBoardSnapshotRendersTransientOverloadCounterWithoutOutage(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	data.Snapshot.OverloadRetriesLastHour = 3
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	for _, want := range []string{
+		`id="backend-overload-retries"`,
+		"3 overload retries last hour",
+		"dispatch remains active",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("overload retry notice missing %q:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, `id="backend-capacity-outage"`) {
+		t.Fatalf("transient overload counter rendered an outage banner:\n%s", html)
+	}
+}
+
 func TestBoardSnapshotRendersGitHubRESTCapacityBanner(t *testing.T) {
 	t.Parallel()
 

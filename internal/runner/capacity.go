@@ -115,3 +115,7 @@ func IsCapacityError(err error) bool {
 	var capacityErr *backendcapacity.Error
 	return errors.As(err, &capacityErr)
 }
+
+func IsTransientOverload(err error) bool {
+	return backendcapacity.IsTransientOverload(err)
+}

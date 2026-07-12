@@ -78,3 +78,56 @@ func TestScopeHosted(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyTransientOverload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		text     string
+		wantKind string
+		want     bool
+	}{
+		{name: "provider kind", text: `{"codexErrorInfo":"serverOverloaded"}`, wantKind: "serverOverloaded", want: true},
+		{name: "model capacity phrase", text: "Selected model is at capacity", wantKind: "selectedmodelisatcapacity", want: true},
+		{name: "http 529", text: "provider request failed: HTTP 529", wantKind: "http_529", want: true},
+		{name: "status code 503", text: "provider request failed with status code 503", wantKind: "http_503", want: true},
+		{name: "json status code", text: `{"status_code":502}`, wantKind: "http_502", want: true},
+		{name: "unrelated number", text: "model context window is 500 tokens", want: false},
+	}
+	rules := Rules{
+		Kinds:   []string{"serverOverloaded"},
+		Phrases: []string{"selected model is at capacity"},
+		HTTP5xx: true,
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			details, ok := ClassifyTransientOverload(tt.text, rules)
+			if ok != tt.want {
+				t.Fatalf("ClassifyTransientOverload() ok = %v, want %v", ok, tt.want)
+			}
+			if !tt.want {
+				return
+			}
+			if details.Type != ErrorTypeTransientOverload || details.Kind != tt.wantKind || details.ResetAt != nil {
+				t.Fatalf("details = %#v, want transient overload kind %q without reset", details, tt.wantKind)
+			}
+		})
+	}
+}
+
+func TestClassifyUsageLimitCanRequireReset(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 15, 0, 0, 0, time.UTC)
+	rules := Rules{Kinds: []string{"RESOURCE_EXHAUSTED"}, RequireReset: true}
+	if _, ok := Classify(`{"status":"RESOURCE_EXHAUSTED"}`, nil, now, rules); ok {
+		t.Fatal("Classify() accepted reset-free usage limit")
+	}
+	resetAt := now.Add(time.Hour)
+	details, ok := Classify(`{"status":"RESOURCE_EXHAUSTED"}`, &resetAt, now, rules)
+	if !ok || details.Type != ErrorTypeUsageLimit || details.ResetAt == nil || !details.ResetAt.Equal(resetAt) {
+		t.Fatalf("Classify() = %#v, %v, want reset-bearing usage limit", details, ok)
+	}
+}

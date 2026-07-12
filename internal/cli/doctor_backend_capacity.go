@@ -66,20 +66,28 @@ func checkDoctorBackendCapacity(
 		return doctorCheck{Name: name, Status: doctorWarn, Detail: fmt.Sprintf("%s capacity telemetry could not be read: %v", storePath, err)}
 	}
 	diagnostics, queryErr := doctorBackendCapacityDiagnostics(ctx, db, projectID, now)
+	overloadRetries, overloadQueryErr := doctorOverloadRetryCount(ctx, db, projectID, now)
 	closeErr := db.Close()
 	if queryErr != nil {
 		return doctorCheck{Name: name, Status: doctorWarn, Detail: fmt.Sprintf("capacity telemetry query failed: %v", queryErr)}
+	}
+	if overloadQueryErr != nil {
+		return doctorCheck{Name: name, Status: doctorWarn, Detail: fmt.Sprintf("overload retry telemetry query failed: %v", overloadQueryErr)}
 	}
 	if closeErr != nil {
 		return doctorCheck{Name: name, Status: doctorWarn, Detail: fmt.Sprintf("capacity telemetry close failed: %v", closeErr)}
 	}
 	check := doctorCheck{
-		Name:            name,
-		Status:          doctorOK,
-		Detail:          "no provider capacity outages recorded",
-		BackendCapacity: diagnostics,
+		Name:                    name,
+		Status:                  doctorOK,
+		Detail:                  "no provider capacity outages recorded",
+		BackendCapacity:         diagnostics,
+		OverloadRetriesLastHour: overloadRetries,
 	}
 	if len(diagnostics) == 0 {
+		if overloadRetries > 0 {
+			check.Detail = fmt.Sprintf("%d overload retries last hour; no provider usage-limit outages recorded", overloadRetries)
+		}
 		return check
 	}
 	active := 0
@@ -89,11 +97,35 @@ func checkDoctorBackendCapacity(
 		}
 	}
 	check.Detail = doctorBackendCapacityDetail(diagnostics, active)
+	if overloadRetries > 0 {
+		check.Detail = fmt.Sprintf("%d overload retries last hour; %s", overloadRetries, check.Detail)
+	}
 	if active > 0 {
 		check.Status = doctorWarn
 		check.Hint = "Detent is pausing the affected backend until its reset-aware capacity probe succeeds."
 	}
 	return check
+}
+
+func doctorOverloadRetryCount(ctx context.Context, db doctorTelemetryStore, projectID string, now time.Time) (int, error) {
+	row := db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM work_attempts
+WHERE error_class = ?
+  AND datetime(completed_at) >= datetime(?)
+  AND datetime(completed_at) <= datetime(?)
+  AND (? = '' OR project_id = ?)`,
+		backendcapacity.TransientOverloadErrorClass,
+		now.Add(-time.Hour).UTC().Format(time.RFC3339Nano),
+		now.UTC().Format(time.RFC3339Nano),
+		strings.TrimSpace(projectID),
+		strings.TrimSpace(projectID),
+	)
+	var count int
+	if err := row.Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func doctorBackendCapacityDiagnostics(

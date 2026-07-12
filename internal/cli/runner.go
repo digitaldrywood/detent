@@ -730,6 +730,7 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.Budget.Refusals = append(current.Budget.Refusals, next.Budget.Refusals...)
 	current.BackendOutages = append(current.BackendOutages, next.BackendOutages...)
 	current.FailureBreakers = append(current.FailureBreakers, next.FailureBreakers...)
+	current.OverloadRetriesLastHour += next.OverloadRetriesLastHour
 
 	current.Counts.Running += next.Counts.Running
 	current.Counts.Queue += next.Counts.Queue
