@@ -73,6 +73,9 @@ func TestHandleRunResultParksSlowTokenCeilingFailureWithoutRetry(t *testing.T) {
 			t.Fatalf("Blocked[%q].Reason = %q, want %q", issue.ID, blocked.Reason, want)
 		}
 	}
+	if !stickyBlockReason(blocked.Reason) {
+		t.Fatalf("stickyBlockReason(%q) = false, want token ceiling park to require human recovery", blocked.Reason)
+	}
 	orch.setBlockedStatusIssue(&state, connector.Issue{
 		ID:         issue.ID,
 		Identifier: issue.Identifier,

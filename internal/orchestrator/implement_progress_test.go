@@ -474,10 +474,15 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 	}
 }
 
-func TestStickyBlockReasonIncludesImplementProgressBreakers(t *testing.T) {
+func TestStickyBlockReasonIncludesCircuitBreakers(t *testing.T) {
 	t.Parallel()
 
-	for _, reason := range []string{noProgressLimitReason, workpadBlockedUnactionedReason} {
+	for _, reason := range []string{
+		noProgressLimitReason,
+		workpadBlockedUnactionedReason,
+		"token_ceiling_circuit_breaker",
+		tokenCeilingBlockedReasonPrefix + "observed 16100000 tokens above the 16000000 max_session_tokens ceiling",
+	} {
 		if !stickyBlockReason(reason) {
 			t.Fatalf("stickyBlockReason(%q) = false, want true", reason)
 		}
