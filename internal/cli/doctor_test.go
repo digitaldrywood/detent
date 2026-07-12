@@ -787,8 +787,14 @@ func TestValidateDoctorModelCatalog(t *testing.T) {
 func TestCheckDoctorProjects(t *testing.T) {
 	t.Parallel()
 
+	parsedDisabledBudget, err := workflowconfig.ParseWorkflow([]byte("---\nbudget:\n  per_day_max_usd: 50\n  per_issue_max_usd: 5\n---\n"))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
 	disabledBudgetWorkflow := validDoctorWorkflow("/repo")
-	disabledBudgetWorkflow.Budget.Enabled = false
+	disabledBudgetWorkflow.Budget = parsedDisabledBudget.Config.Budget
+	omittedBudgetWorkflow := validDoctorWorkflow("/repo")
+	omittedBudgetWorkflow.Budget = workflowconfig.Default().Budget
 
 	tests := []struct {
 		name       string
@@ -830,6 +836,15 @@ func TestCheckDoctorProjects(t *testing.T) {
 			workflow:   workflowconfig.Workflow{Config: disabledBudgetWorkflow},
 			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
 			wantDetail: []string{"is valid", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+		},
+		{
+			name: "inherited budget caps do not warn",
+			projects: []globalconfig.Project{
+				{ID: "alpha", Workflow: "WORKFLOW.md"},
+			},
+			workflow:   workflowconfig.Workflow{Config: omittedBudgetWorkflow},
+			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "source repo missing",
@@ -884,31 +899,24 @@ func TestCheckDoctorDisabledBudgetCaps(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		cfg        workflowconfig.Budget
+		budgetYAML string
 		wantOK     bool
 		wantDetail string
 	}{
 		{
-			name: "enabled budget does not warn",
-			cfg: workflowconfig.Budget{
-				Enabled:        true,
-				PerDayMaxUSD:   50,
-				PerIssueMaxUSD: 5,
-			},
+			name:       "enabled budget does not warn",
+			budgetYAML: "  enabled: true\n  per_day_max_usd: 50\n  per_issue_max_usd: 5\n",
 		},
-		{name: "disabled budget without caps does not warn"},
+		{name: "disabled budget without caps does not warn", budgetYAML: "  enabled: false\n"},
 		{
 			name:       "disabled daily cap warns",
-			cfg:        workflowconfig.Budget{PerDayMaxUSD: 50},
+			budgetYAML: "  per_day_max_usd: 50\n",
 			wantOK:     true,
 			wantDetail: "budget.enabled=false disables configured caps: budget.per_day_max_usd=50",
 		},
 		{
-			name: "disabled issue and daily caps warn",
-			cfg: workflowconfig.Budget{
-				PerDayMaxUSD:   646.07,
-				PerIssueMaxUSD: 5,
-			},
+			name:       "disabled issue and daily caps warn",
+			budgetYAML: "  per_day_max_usd: 646.07\n  per_issue_max_usd: 5\n",
 			wantOK:     true,
 			wantDetail: "budget.enabled=false disables configured caps: budget.per_day_max_usd=646.07, budget.per_issue_max_usd=5",
 		},
@@ -918,7 +926,11 @@ func TestCheckDoctorDisabledBudgetCaps(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, ok := checkDoctorDisabledBudgetCaps("pyroapex", tt.cfg)
+			workflow, err := workflowconfig.ParseWorkflow([]byte("---\nbudget:\n" + tt.budgetYAML + "---\n"))
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			got, ok := checkDoctorDisabledBudgetCaps("pyroapex", workflow.Config.Budget)
 			if ok != tt.wantOK {
 				t.Fatalf("checkDoctorDisabledBudgetCaps() ok = %t, want %t: %#v", ok, tt.wantOK, got)
 			}

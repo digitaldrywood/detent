@@ -244,10 +244,10 @@ func checkDoctorDisabledBudgetCaps(id string, cfg workflowconfig.Budget) (doctor
 	}
 
 	caps := make([]string, 0, 2)
-	if cfg.PerDayMaxUSD > 0 {
+	if cfg.PerDayMaxUSDConfigured() && cfg.PerDayMaxUSD > 0 {
 		caps = append(caps, fmt.Sprintf("budget.per_day_max_usd=%g", cfg.PerDayMaxUSD))
 	}
-	if cfg.PerIssueMaxUSD > 0 {
+	if cfg.PerIssueMaxUSDConfigured() && cfg.PerIssueMaxUSD > 0 {
 		caps = append(caps, fmt.Sprintf("budget.per_issue_max_usd=%g", cfg.PerIssueMaxUSD))
 	}
 	if len(caps) == 0 {
