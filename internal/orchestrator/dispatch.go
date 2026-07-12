@@ -409,7 +409,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	o.markMergeStarted(state, issue, now)
 	claim.Issue = issue
 	runCtx, cancel := context.WithCancel(ctx)
-	markBackendCapacityProbe(state, capacityProbeKey, issue.ID)
+	o.markBackendCapacityProbe(state, capacityProbeKey, issue.ID, now)
 	state.Running[issue.ID] = Running{
 		Issue:               issue,
 		Attempt:             attempt,

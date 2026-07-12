@@ -2,12 +2,16 @@ package codex
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
+
+const codexCapacityAvailableThresholdPercent = 5
 
 var codexCapacityRules = backendcapacity.Rules{
 	Kinds: []string{
@@ -61,6 +65,42 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 		return details, true
 	}
 	return backendcapacity.Classify(text, codexCapacityResetAt(limits), now, codexCapacityRules)
+}
+
+func (b *AgentBackend) CapacityStatus(limits *telemetry.RateLimits) (runner.CapacityStatus, bool) {
+	if b == nil {
+		return runner.CapacityStatus{}, false
+	}
+	return CapacityStatus(limits)
+}
+
+func CapacityStatus(limits *telemetry.RateLimits) (runner.CapacityStatus, bool) {
+	if limits == nil {
+		return runner.CapacityStatus{}, false
+	}
+	if strings.TrimSpace(limits.ReachedType) != "" {
+		return runner.CapacityStatus{Detail: "live provider status still reports an exhausted window"}, true
+	}
+	minimumRemaining := int64(101)
+	found := false
+	for _, bucket := range []*telemetry.RateLimitBucket{limits.Primary, limits.Secondary} {
+		if bucket == nil || bucket.Limit <= 0 {
+			continue
+		}
+		found = true
+		remaining := bucket.Remaining * 100 / bucket.Limit
+		minimumRemaining = min(minimumRemaining, remaining)
+		if bucket.Status == telemetry.RateLimitStatusExhausted || remaining < codexCapacityAvailableThresholdPercent {
+			return runner.CapacityStatus{Detail: fmt.Sprintf("live provider status reports %d%% capacity remaining", remaining)}, true
+		}
+	}
+	if !found {
+		return runner.CapacityStatus{}, false
+	}
+	return runner.CapacityStatus{
+		Available: true,
+		Detail:    fmt.Sprintf("live provider status reports %d%% capacity remaining", minimumRemaining),
+	}, true
 }
 
 func codexCapacityErrorText(err error) string {

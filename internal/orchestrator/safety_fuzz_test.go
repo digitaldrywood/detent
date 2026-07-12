@@ -101,6 +101,14 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 		if got := backendCapacityResumeAt(resetAt, now); !got.Equal(wantResumeAt) {
 			t.Fatalf("backendCapacityResumeAt(%s, %s) = %s, want %s", resetAt, now, got, wantResumeAt)
 		}
+		probeAt := now.Add(backendCapacityProbeDelayForAttempt(filesChanged % 100))
+		wantProbeAt := probeAt
+		if wantResumeAt.After(now) && wantResumeAt.Before(wantProbeAt) {
+			wantProbeAt = wantResumeAt
+		}
+		if got := backendCapacityBoundedProbeAt(wantResumeAt, probeAt, now); !got.Equal(wantProbeAt) {
+			t.Fatalf("backendCapacityBoundedProbeAt(%s, %s, %s) = %s, want %s", wantResumeAt, probeAt, now, got, wantProbeAt)
+		}
 
 		createdSeconds %= 1_000_000_000
 		stageSeconds %= 1_000_000_000

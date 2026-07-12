@@ -126,6 +126,55 @@ func TestAgentBackendClassifyCapacityErrorKeepsOverloadTransientWithRateLimitTel
 	}
 }
 
+func TestCapacityStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		limits        *telemetry.RateLimits
+		wantReported  bool
+		wantAvailable bool
+	}{
+		{name: "missing status"},
+		{
+			name: "both windows recovered",
+			limits: &telemetry.RateLimits{
+				Primary:   &telemetry.RateLimitBucket{Limit: 100, Remaining: 20},
+				Secondary: &telemetry.RateLimitBucket{Limit: 100, Remaining: 50},
+			},
+			wantReported:  true,
+			wantAvailable: true,
+		},
+		{
+			name: "rolling window below threshold",
+			limits: &telemetry.RateLimits{
+				Primary:   &telemetry.RateLimitBucket{Limit: 100, Remaining: 4},
+				Secondary: &telemetry.RateLimitBucket{Limit: 100, Remaining: 50},
+			},
+			wantReported: true,
+		},
+		{
+			name: "provider still reports reached window",
+			limits: &telemetry.RateLimits{
+				ReachedType: "primary",
+				Primary:     &telemetry.RateLimitBucket{Limit: 100, Remaining: 20},
+			},
+			wantReported: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			status, reported := CapacityStatus(tt.limits)
+			if reported != tt.wantReported || status.Available != tt.wantAvailable {
+				t.Fatalf("CapacityStatus() = %#v, %v, want available %v reported %v", status, reported, tt.wantAvailable, tt.wantReported)
+			}
+		})
+	}
+}
+
 func TestAgentBackendClassifyCapacityErrorParsesResetFromBackendBody(t *testing.T) {
 	t.Parallel()
 

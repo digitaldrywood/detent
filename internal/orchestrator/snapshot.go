@@ -150,15 +150,20 @@ func backendOutageSnapshots(outages map[string]BackendOutage) []telemetry.Backen
 	for _, key := range keys {
 		outage := outages[key]
 		row := telemetry.BackendOutage{
-			BackendID:      outage.Scope.BackendID,
-			BackendKind:    outage.Scope.BackendKind,
-			Provider:       outage.Scope.Provider,
-			Kind:           outage.Kind,
-			Reason:         outage.Reason,
-			DetectedAt:     outage.DetectedAt,
-			LastObservedAt: outage.LastObservedAt,
-			ResumeAt:       outage.ResumeAt,
-			ProbeIssueID:   outage.ProbeIssueID,
+			BackendID:       outage.Scope.BackendID,
+			BackendKind:     outage.Scope.BackendKind,
+			Provider:        outage.Scope.Provider,
+			Kind:            outage.Kind,
+			Reason:          outage.Reason,
+			DetectedAt:      outage.DetectedAt,
+			LastObservedAt:  outage.LastObservedAt,
+			ResumeAt:        outage.ResumeAt,
+			NextProbeAt:     timePointer(outage.NextProbeAt),
+			LastProbeAt:     timePointer(outage.LastProbeAt),
+			LastProbeResult: outage.LastProbeResult,
+			LastProbeDetail: outage.LastProbeDetail,
+			ProbeAttempts:   outage.ProbeAttempts,
+			ProbeIssueID:    outage.ProbeIssueID,
 		}
 		if !outage.ResetAt.IsZero() {
 			resetAt := outage.ResetAt

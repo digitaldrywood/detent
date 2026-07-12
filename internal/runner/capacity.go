@@ -15,6 +15,15 @@ type AgentCapacityClassifier interface {
 	ClassifyCapacityError(error, *telemetry.RateLimits, time.Time) (backendcapacity.Details, bool)
 }
 
+type AgentCapacityStatusProvider interface {
+	CapacityStatus(*telemetry.RateLimits) (CapacityStatus, bool)
+}
+
+type CapacityStatus struct {
+	Available bool
+	Detail    string
+}
+
 type CapacityController interface {
 	CapacityScope(RunRequest) (backendcapacity.Scope, bool)
 	ClassifyCapacityError(RunRequest, error, *telemetry.RateLimits, time.Time) (*backendcapacity.Error, bool)
@@ -22,6 +31,10 @@ type CapacityController interface {
 
 type ValidatorCapacityController interface {
 	ValidatorCapacityScope(ValidatorRequest) (backendcapacity.Scope, bool)
+}
+
+type CapacityStatusController interface {
+	BackendCapacityStatus(backendcapacity.Scope, *telemetry.RateLimits) (CapacityStatus, bool)
 }
 
 func (r *Runner) CapacityScope(req RunRequest) (backendcapacity.Scope, bool) {
@@ -67,6 +80,22 @@ func (r *Runner) ValidatorCapacityScope(req ValidatorRequest) (backendcapacity.S
 		return backendcapacity.Scope{}, false
 	}
 	return configuredCapacityScope(selection, backendConfig, agentidentity.Identity{}), true
+}
+
+func (r *Runner) BackendCapacityStatus(
+	scope backendcapacity.Scope,
+	rateLimits *telemetry.RateLimits,
+) (CapacityStatus, bool) {
+	_, runtime, _, _ := r.runtimeSnapshot()
+	backend, ok := runtime.backends[scope.Normalize().BackendID]
+	if !ok {
+		return CapacityStatus{}, false
+	}
+	provider, ok := backend.(AgentCapacityStatusProvider)
+	if !ok {
+		return CapacityStatus{}, false
+	}
+	return provider.CapacityStatus(rateLimits)
 }
 
 func classifyAgentCapacityError(

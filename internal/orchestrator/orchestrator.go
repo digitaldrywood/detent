@@ -178,6 +178,7 @@ type Orchestrator struct {
 	activity                *activity.Broker
 	release                 releasepkg.Coordinator
 	capacityController      runpkg.CapacityController
+	capacityStatus          runpkg.CapacityStatusController
 	validatorCapacity       runpkg.ValidatorCapacityController
 	dailyBudgetStatus       runpkg.DailyBudgetStatusProvider
 	issueBudgetStatus       runpkg.IssueBudgetStatusProvider
@@ -192,6 +193,7 @@ type Orchestrator struct {
 	configUpdates           chan configUpdateRequest
 	refreshes               chan manualRefreshRequest
 	reconciles              chan targetedRefreshRequest
+	capacityClearRequests   chan capacityClearRequest
 	runResults              chan runpkg.Completion
 	runUpdates              chan runUpdate
 	validatorCapacityEvents chan validatorCapacityEvent
@@ -235,6 +237,16 @@ type runUpdate struct {
 	usage   runpkg.UsageUpdate
 }
 
+type capacityClearRequest struct {
+	scope string
+	at    time.Time
+	reply chan capacityClearReply
+}
+
+type capacityClearReply struct {
+	cleared []BackendOutage
+}
+
 func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	cfg = normalizeConfig(cfg)
 	if deps.Connector == nil {
@@ -262,6 +274,10 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	var validatorCapacity runpkg.ValidatorCapacityController
 	if candidate, ok := runner.(runpkg.ValidatorCapacityController); ok {
 		validatorCapacity = candidate
+	}
+	var capacityStatus runpkg.CapacityStatusController
+	if candidate, ok := runner.(runpkg.CapacityStatusController); ok {
+		capacityStatus = candidate
 	}
 	var dailyBudgetStatus runpkg.DailyBudgetStatusProvider
 	if candidate, ok := runner.(runpkg.DailyBudgetStatusProvider); ok {
@@ -349,6 +365,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		release:                 deps.Release,
 		retrospector:            deps.Retrospector,
 		capacityController:      capacityController,
+		capacityStatus:          capacityStatus,
 		validatorCapacity:       validatorCapacity,
 		dailyBudgetStatus:       dailyBudgetStatus,
 		issueBudgetStatus:       issueBudgetStatus,
@@ -360,6 +377,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		configUpdates:           make(chan configUpdateRequest),
 		refreshes:               make(chan manualRefreshRequest, 1),
 		reconciles:              make(chan targetedRefreshRequest, 128),
+		capacityClearRequests:   make(chan capacityClearRequest),
 		runResults:              make(chan runpkg.Completion, max(cfg.MaxConcurrentAgents, 1)),
 		runUpdates:              make(chan runUpdate, runUpdateBufferSize),
 		validatorCapacityEvents: make(chan validatorCapacityEvent, max(cfg.MaxConcurrentAgents, 1)),
@@ -397,6 +415,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case request := <-o.reconciles:
 			o.reconcileTarget(ctx, &state, request)
 			resetTicker(ticker, state.PollInterval)
+		case request := <-o.capacityClearRequests:
+			request.reply <- capacityClearReply{cleared: o.clearBackendCapacity(&state, request.scope, request.at)}
 		case result := <-o.runResults:
 			o.handleRunResult(ctx, &state, result)
 		case update := <-o.runUpdates:
@@ -417,6 +437,32 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case request := <-o.stateRequests:
 			request.reply <- state.clone()
 		}
+	}
+}
+
+func (o *Orchestrator) ClearBackendCapacity(ctx context.Context, scope string) ([]BackendOutage, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request := capacityClearRequest{
+		scope: strings.TrimSpace(scope),
+		at:    o.clockNow(),
+		reply: make(chan capacityClearReply, 1),
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-o.done:
+		return nil, ErrStopped
+	case o.capacityClearRequests <- request:
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-o.done:
+		return nil, ErrStopped
+	case reply := <-request.reply:
+		return reply.cleared, nil
 	}
 }
 

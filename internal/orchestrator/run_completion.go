@@ -64,6 +64,7 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	state.Running[event.issueID] = running
 	if event.usage.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.usage.RateLimits)
+		o.recoverBackendCapacityFromStatus(state, running, event.usage.RateLimits, event.usage.LastEventAt)
 	}
 	if o.workAttempts != nil && running.WorkAttemptID > 0 {
 		now := event.usage.LastEventAt

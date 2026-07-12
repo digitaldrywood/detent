@@ -2,6 +2,7 @@ package templates
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -225,18 +226,43 @@ templ backendCapacityBanner(snapshot telemetry.Snapshot) {
 	if len(outages) > 0 {
 		<section id="backend-capacity-outage" class="flex min-w-0 items-start gap-3 rounded-md border border-warn/40 bg-warn/10 px-4 py-3 text-sm shadow-sm" role="status" aria-live="polite">
 			@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-warn"})
-			<div class="grid min-w-0 gap-2">
+			<div class="grid min-w-0 flex-1 gap-2">
 				for _, outage := range outages {
-					<div class="min-w-0 break-words">
-						<p class="font-medium text-text">{ backendCapacityOutageTitle(outage) }</p>
-						{{ detail, resumeAt, showResumeAt := backendCapacityOutageDetailParts(outage, snapshot.GeneratedAt) }}
-						<p class="mt-0.5 text-xs text-sec">
-							{ detail }
-							if showResumeAt {
-								{ " " }
-								@LocalTime(resumeAt, LocalTimeOptions{Relative: true})
+					<div class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+						<div class="min-w-0 break-words">
+							<p class="font-medium text-text">{ backendCapacityOutageTitle(outage) }</p>
+							{{ detail, detailAt, showDetailAt := backendCapacityOutageDetailParts(outage, snapshot.GeneratedAt) }}
+							<p class="mt-0.5 text-xs text-sec">
+								{ detail }
+								if showDetailAt {
+									{ " " }
+									@LocalTime(detailAt, LocalTimeOptions{Relative: true})
+								}
+							</p>
+							if strings.TrimSpace(outage.Kind) != "github_rest_rate_limit" && !outage.ResumeAt.IsZero() {
+								<p class="mt-0.5 text-xs text-sec">
+									{ "Provider-recorded resume at " }
+									@LocalTime(outage.ResumeAt, LocalTimeOptions{Relative: true})
+								</p>
 							}
-						</p>
+							if outage.LastProbeAt != nil {
+								<p class="mt-0.5 text-xs text-sec">
+									{ "Last probe " }
+									@LocalTime(*outage.LastProbeAt, LocalTimeOptions{Relative: true})
+									{ ": " + backendCapacityProbeResult(outage) }
+									if outage.LastProbeDetail != "" {
+										<span>{ " — " + outage.LastProbeDetail }</span>
+									}
+								</p>
+							}
+						</div>
+						if strings.TrimSpace(outage.Kind) != "github_rest_rate_limit" {
+							<form hx-post="/api/v1/capacity/clear" hx-swap="none" class="shrink-0">
+								<input type="hidden" name="project_id" value={ outage.ProjectID }/>
+								<input type="hidden" name="scope" value={ outage.BackendID }/>
+								<button type="submit" class="inline-flex min-h-8 items-center justify-center rounded-md border border-warn/50 bg-surface px-3 py-1.5 text-xs font-medium text-text transition-colors hover:bg-warn/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warn/50">Clear outage</button>
+							</form>
+						}
 					</div>
 				}
 			</div>

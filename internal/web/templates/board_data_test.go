@@ -1676,19 +1676,32 @@ func TestBoardSnapshotRendersBackendCapacityBanner(t *testing.T) {
 	t.Parallel()
 
 	data := boardTestData()
+	nextProbeAt := data.Snapshot.GeneratedAt.Add(5 * time.Minute)
+	lastProbeAt := data.Snapshot.GeneratedAt.Add(-time.Minute)
 	data.Snapshot.BackendOutages = []telemetry.BackendOutage{{
-		BackendID:   "codex",
-		BackendKind: "codex",
-		Provider:    "openai",
-		Reason:      "provider usage limit reached",
-		ResumeAt:    data.Snapshot.GeneratedAt.Add(44 * time.Minute),
+		ProjectID:       "detent",
+		BackendID:       "codex",
+		BackendKind:     "codex",
+		Provider:        "openai",
+		Reason:          "provider usage limit reached",
+		ResumeAt:        data.Snapshot.GeneratedAt.Add(44 * time.Minute),
+		NextProbeAt:     &nextProbeAt,
+		LastProbeAt:     &lastProbeAt,
+		LastProbeResult: "capacity_exhausted",
+		LastProbeDetail: "provider usage limit reached",
 	}}
 	html := renderBoardComponent(t, BoardSnapshot(data))
 	for _, want := range []string{
 		`id="backend-capacity-outage"`,
 		"Backend codex at usage limit",
-		"Dispatch is paused for openai; resuming at",
-		`datetime="2026-07-04T17:26:07Z"`,
+		"Dispatch is paused for openai; next canary at",
+		"Provider-recorded resume at",
+		"Last probe",
+		"capacity exhausted",
+		`hx-post="/api/v1/capacity/clear"`,
+		`name="project_id" value="detent"`,
+		`name="scope" value="codex"`,
+		"Clear outage",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("capacity banner missing %q:\n%s", want, html)

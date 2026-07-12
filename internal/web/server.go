@@ -329,6 +329,7 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/api/v1/keys/:id/rotate", s.apiKeysRotate, apiKeyDashboardMutateAuth, apiAdminScope)
 	s.echo.DELETE("/api/v1/keys/:id", s.apiKeysRevoke, apiKeyDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/refresh", s.apiRefresh, apiDashboardMutateAuth, apiWriteScope)
+	s.echo.POST("/api/v1/capacity/clear", s.apiCapacityClear, apiDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/webhooks/github", s.githubWebhook)
 	s.echo.POST("/api/v1/intake/:project_id/:source", s.intakeWebhook)
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed, apiDashboardReadAuth, apiReadScope)
@@ -821,9 +822,11 @@ func (s *Server) health(c echo.Context) error {
 	status := "ok"
 	sessionsRemaining := 0
 	updateStatus := telemetry.Update{}
+	backendOutages := []telemetry.BackendOutage{}
 	if s.hub != nil {
 		if snapshot, ok := s.hub.Latest(); ok {
 			updateStatus = snapshot.Update
+			backendOutages = append(backendOutages, snapshot.BackendOutages...)
 			if snapshot.Shutdown.Draining {
 				status = "draining"
 				sessionsRemaining = snapshot.Shutdown.SessionsRemaining
@@ -849,6 +852,7 @@ func (s *Server) health(c echo.Context) error {
 		Checks:            checks,
 		Budgets:           s.enforcedBudgets(),
 		Workflows:         s.workflowSources(),
+		BackendOutages:    backendOutages,
 	})
 }
 
@@ -1053,14 +1057,15 @@ func (s *Server) connectorName() string {
 }
 
 type healthResponse struct {
-	Status            string                 `json:"status"`
-	Mode              string                 `json:"mode"`
-	Connector         string                 `json:"connector"`
-	SessionsRemaining int                    `json:"sessions_remaining,omitempty"`
-	Update            telemetry.Update       `json:"update,omitzero"`
-	Checks            map[string]string      `json:"checks"`
-	Budgets           []healthBudget         `json:"budgets,omitempty"`
-	Workflows         []healthWorkflowSource `json:"workflows,omitempty"`
+	Status            string                    `json:"status"`
+	Mode              string                    `json:"mode"`
+	Connector         string                    `json:"connector"`
+	SessionsRemaining int                       `json:"sessions_remaining,omitempty"`
+	Update            telemetry.Update          `json:"update,omitzero"`
+	Checks            map[string]string         `json:"checks"`
+	Budgets           []healthBudget            `json:"budgets,omitempty"`
+	Workflows         []healthWorkflowSource    `json:"workflows,omitempty"`
+	BackendOutages    []telemetry.BackendOutage `json:"backend_outages,omitempty"`
 }
 
 type healthWorkflowSource struct {
