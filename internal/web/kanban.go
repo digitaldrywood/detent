@@ -143,10 +143,27 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 	var feedback string
 	var feedbackStatus int
 	var moveIssueIdentifier string
+	var moveCurrentState string
+	var moveDataSeq uint64
 	err := s.kanbanMutations.WithLock(target.key, func() error {
 		currentState := req.currentState
 		ok, current, snapshotState, snapshotIssue, dataSeqAtWrite := s.kanbanCardFresh(target.key, req.projectID, req.issueID, req.currentState)
-		if !ok {
+		if strings.TrimSpace(current) != "" {
+			currentState = current
+		}
+		moveIssueIdentifier = kanbanBlockedMoveIssueIdentifier(snapshotIssue, req.issueID)
+		moveCurrentState = currentState
+		moveDataSeq = dataSeqAtWrite
+		if !ok && (strings.TrimSpace(current) == "" || !target.workflow.KanbanTransitionAllowed(currentState, req.targetState)) {
+			s.logger.WarnContext(c.Request().Context(), "kanban move rejected: stale card",
+				"project", req.projectID,
+				"issue_id", req.issueID,
+				"identifier", moveIssueIdentifier,
+				"current_state", req.currentState,
+				"live_state", currentState,
+				"target_state", req.targetState,
+				"data_seq", dataSeqAtWrite,
+			)
 			feedback = "Card is stale; refresh and retry."
 			if current != "" {
 				feedback = fmt.Sprintf("Card is stale; current state is %s.", current)
@@ -154,11 +171,15 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 			feedbackStatus = http.StatusConflict
 			return nil
 		}
-		if strings.TrimSpace(current) != "" {
-			currentState = current
-		}
-		moveIssueIdentifier = kanbanBlockedMoveIssueIdentifier(snapshotIssue, req.issueID)
 		if !target.workflow.KanbanTransitionAllowed(currentState, req.targetState) {
+			s.logger.WarnContext(c.Request().Context(), "kanban move blocked by transition policy",
+				"project", req.projectID,
+				"issue_id", req.issueID,
+				"identifier", moveIssueIdentifier,
+				"current_state", currentState,
+				"target_state", req.targetState,
+				"data_seq", dataSeqAtWrite,
+			)
 			feedback = fmt.Sprintf("Move from %s to %s is not allowed by the Kanban transition policy.", currentState, req.targetState)
 			feedbackStatus = http.StatusUnprocessableEntity
 			return nil
@@ -189,14 +210,39 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 	if err != nil {
 		var blocked *connector.StateUpdateBlockedError
 		if errors.As(err, &blocked) {
+			s.logger.WarnContext(c.Request().Context(), "kanban move blocked by connector",
+				"project", req.projectID,
+				"issue_id", req.issueID,
+				"identifier", moveIssueIdentifier,
+				"current_state", moveCurrentState,
+				"target_state", req.targetState,
+				"data_seq", moveDataSeq,
+				"error", blocked,
+			)
 			return s.kanbanMoveValidationResponse(c, http.StatusUnprocessableEntity, kanbanBlockedMoveMessage(blocked, req.targetState, moveIssueIdentifier))
 		}
 		if errors.Is(err, connector.ErrNotImplemented) {
 			return s.kanbanMoveValidationResponse(c, http.StatusNotImplemented, kanbanMoveUnsupportedMessage)
 		}
-		s.logger.WarnContext(c.Request().Context(), "kanban move failed", "project", req.projectID, "issue_id", req.issueID, "target_state", req.targetState, "error", err)
+		s.logger.WarnContext(c.Request().Context(), "kanban move failed",
+			"project", req.projectID,
+			"issue_id", req.issueID,
+			"identifier", moveIssueIdentifier,
+			"current_state", moveCurrentState,
+			"target_state", req.targetState,
+			"data_seq", moveDataSeq,
+			"error", err,
+		)
 		return kanbanFeedback(c, http.StatusBadGateway, "Move failed: "+err.Error())
 	}
+	s.logger.InfoContext(c.Request().Context(), "kanban move succeeded",
+		"project", req.projectID,
+		"issue_id", req.issueID,
+		"identifier", moveIssueIdentifier,
+		"current_state", moveCurrentState,
+		"target_state", req.targetState,
+		"data_seq", moveDataSeq,
+	)
 	return s.kanbanMoveSuccess(c, req, "Moved card to "+req.targetState+".")
 }
 
