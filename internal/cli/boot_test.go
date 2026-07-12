@@ -102,6 +102,37 @@ func TestBuildGlobalSchedulerFromSettings(t *testing.T) {
 	}
 }
 
+func TestRuntimeLogLevelForReloadPreservesOverrides(t *testing.T) {
+	t.Parallel()
+
+	level := &slog.LevelVar{}
+	tests := []struct {
+		name   string
+		source string
+		want   *slog.LevelVar
+	}{
+		{name: "config", source: runtimeSourceConfig, want: level},
+		{name: "default", source: runtimeSourceDefault, want: level},
+		{name: "flag", source: runtimeSourceFlag},
+		{name: "primary environment", source: "LOG_LEVEL"},
+		{name: "deprecated environment", source: "DETENT_LOG_LEVEL"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := BootConfig{
+				Runtime:  RuntimeSettings{LogLevel: RuntimeValue{Source: tt.source}},
+				LogLevel: level,
+			}
+			if got := runtimeLogLevelForReload(cfg); got != tt.want {
+				t.Fatalf("runtimeLogLevelForReload() = %p, want %p", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSyncGlobalDispatchProjectsMarksUnstartedProjectsIdle(t *testing.T) {
 	t.Parallel()
 

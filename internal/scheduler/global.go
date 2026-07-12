@@ -22,6 +22,7 @@ type FairShareStore interface {
 
 type GlobalScheduler interface {
 	Scheduler
+	Reconfigurable
 	SelectProject(context.Context, ProjectSelectionRequest) (ProjectSelection, error)
 	RecordProjectDispatch(context.Context, ProjectDispatch) error
 }
@@ -103,7 +104,30 @@ func newGlobalScheduler(mode Mode, cfg Config) *globalScheduler {
 }
 
 func (s *globalScheduler) Mode() Mode {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.mode
+}
+
+func (s *globalScheduler) Reconfigure(cfg Config) error {
+	mode, err := globalModeFromConfig(cfg)
+	if err != nil {
+		return err
+	}
+
+	s.sem.reconfigure(cfg)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.mode != mode {
+		clear(s.weightedCurrent)
+		s.weightedLastUpdate = time.Time{}
+		s.roundRobinLastID = ""
+	}
+	s.mode = mode
+	s.decayHalfLife = cfg.DecayHalfLife
+	s.fairShareStore = cfg.FairShareStore
+	return nil
 }
 
 func (s *globalScheduler) RequestSlot(ctx context.Context, req SlotRequest) (Slot, error) {
@@ -133,8 +157,15 @@ func (s *globalScheduler) SelectProject(ctx context.Context, req ProjectSelectio
 		return ProjectSelection{}, ErrNoCandidates
 	}
 
-	switch s.mode {
+	s.mu.Lock()
+	mode := s.mode
+	s.mu.Unlock()
+
+	switch mode {
 	case ModeStrictPriority:
+		if s.capacitySnapshot("").draining {
+			return ProjectSelection{}, ErrNoSlots
+		}
 		return s.selectStrictPriority(candidates, req.Running)
 	case ModeRoundRobin:
 		if !s.projectSlotAvailable(req.Running) {
@@ -155,10 +186,14 @@ func (s *globalScheduler) SelectProject(ctx context.Context, req ProjectSelectio
 }
 
 func (s *globalScheduler) RecordProjectDispatch(ctx context.Context, dispatch ProjectDispatch) error {
-	if s.mode != ModeFairShare {
+	s.mu.Lock()
+	mode := s.mode
+	fairShareStore := s.fairShareStore
+	s.mu.Unlock()
+	if mode != ModeFairShare {
 		return nil
 	}
-	if s.fairShareStore == nil {
+	if fairShareStore == nil {
 		return ErrFairShareStoreRequired
 	}
 	if ctx == nil {
@@ -175,7 +210,7 @@ func (s *globalScheduler) RecordProjectDispatch(ctx context.Context, dispatch Pr
 		dispatchedAt = time.Now()
 	}
 
-	return s.fairShareStore.RecordFairShareDispatch(ctx, store.FairShareDispatch{
+	return fairShareStore.RecordFairShareDispatch(ctx, store.FairShareDispatch{
 		ProjectID:      projectID,
 		Weight:         normalizeProjectWeight(dispatch.Weight),
 		RuntimeSeconds: nonNegative(dispatch.RuntimeSeconds),
@@ -184,7 +219,7 @@ func (s *globalScheduler) RecordProjectDispatch(ctx context.Context, dispatch Pr
 }
 
 func (s *globalScheduler) projectSlotAvailable(running []RunningProject) bool {
-	return len(running) < s.sem.capacity
+	return len(running) < s.capacitySnapshot("").globalCapacity
 }
 
 func (s *globalScheduler) selectWeightedFair(candidates []ProjectCandidate, now time.Time) ProjectSelection {
@@ -297,12 +332,15 @@ func (s *globalScheduler) selectRoundRobin(candidates []ProjectCandidate) Projec
 }
 
 func (s *globalScheduler) selectFairShare(ctx context.Context, candidates []ProjectCandidate) (ProjectSelection, error) {
-	if s.fairShareStore == nil {
+	s.mu.Lock()
+	fairShareStore := s.fairShareStore
+	s.mu.Unlock()
+	if fairShareStore == nil {
 		return ProjectSelection{}, ErrFairShareStoreRequired
 	}
 
 	usageByProject := map[string]store.FairShareUsage{}
-	usage, err := s.fairShareStore.ListFairShareUsage(ctx)
+	usage, err := fairShareStore.ListFairShareUsage(ctx)
 	if err != nil {
 		return ProjectSelection{}, fmt.Errorf("read fair-share usage: %w", err)
 	}
@@ -324,6 +362,24 @@ func (s *globalScheduler) selectFairShare(ctx context.Context, candidates []Proj
 	}
 
 	return ProjectSelection{Project: selected}, nil
+}
+
+func globalModeFromConfig(cfg Config) (Mode, error) {
+	switch normalizeKind(cfg.Kind) {
+	case "", "weighted", "weighted_fair", "weightedfair":
+		return ModeWeightedFair, nil
+	case "strict", "strict_priority", "strictpriority":
+		return ModeStrictPriority, nil
+	case "round_robin", "roundrobin":
+		return ModeRoundRobin, nil
+	case "fair_share", "fairshare":
+		if cfg.FairShareStore == nil {
+			return "", ErrFairShareStoreRequired
+		}
+		return ModeFairShare, nil
+	default:
+		return "", fmt.Errorf("%w: %s", ErrUnsupportedBackend, strings.TrimSpace(cfg.Kind))
+	}
 }
 
 func fairShareScore(candidate ProjectCandidate, usage store.FairShareUsage) float64 {

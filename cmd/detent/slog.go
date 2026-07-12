@@ -21,8 +21,21 @@ func setupLoggerFromEnv(stdout io.Writer, stderr io.Writer) *slog.Logger {
 	return setupLoggerWithOutputsAndSource(env, envSet, envValue("LOG_LEVEL", "DETENT_LOG_LEVEL"), stdout, stderr, stdoutTTY, commandOutputJSONSelected(os.Args[1:], stdoutTTY), addSource)
 }
 
-func setupLoggerFromRuntime(settings cli.RuntimeSettings, stdout io.Writer, stderr io.Writer, stdoutTTY bool) {
-	setupLoggerWithOutputsAndSource(settings.Env.Value, strings.TrimSpace(settings.Env.Value) != "", settings.LogLevel.Value, stdout, stderr, stdoutTTY, commandOutputJSONSelected(os.Args[1:], stdoutTTY), logSourceSettingFromEnv())
+func setupLoggerFromRuntime(settings cli.RuntimeSettings, stdout io.Writer, stderr io.Writer, stdoutTTY bool) *slog.LevelVar {
+	return setupRuntimeLoggerWithOutputsAndSource(settings.Env.Value, strings.TrimSpace(settings.Env.Value) != "", settings.LogLevel.Value, stdout, stderr, stdoutTTY, commandOutputJSONSelected(os.Args[1:], stdoutTTY), logSourceSettingFromEnv())
+}
+
+func setupRuntimeLoggerWithOutputsAndSource(env string, envSet bool, level string, stdout io.Writer, stderr io.Writer, stdoutTTY bool, forceStderr bool, addSource logSourceSetting) *slog.LevelVar {
+	w := stderr
+	if !forceStderr && useTextLogs(env, envSet, stdoutTTY) {
+		w = stdout
+	}
+	parsedLevel := parseLogLevel(level)
+	levelVar := &slog.LevelVar{}
+	levelVar.Set(parsedLevel)
+	logger := slog.New(newLogHandlerForTerminalWithLevel(env, envSet, parsedLevel, levelVar, w, stdoutTTY, addSource))
+	slog.SetDefault(logger)
+	return levelVar
 }
 
 func setupLogger(env string, level string, w io.Writer) *slog.Logger {
@@ -63,10 +76,18 @@ func newLogHandlerForTerminalWithSource(env string, envSet bool, level string, w
 	}
 
 	logLevel := parseLogLevel(level)
-	source := addSource.enabled(logLevel)
+	return newLogHandlerForTerminalWithLevel(env, envSet, logLevel, logLevel, w, stdoutTTY, addSource)
+}
+
+func newLogHandlerForTerminalWithLevel(env string, envSet bool, parsedLevel slog.Level, level slog.Leveler, w io.Writer, stdoutTTY bool, addSource logSourceSetting) slog.Handler {
+	if w == nil {
+		w = io.Discard
+	}
+
+	source := addSource.enabled(parsedLevel)
 	if useTextLogs(env, envSet, stdoutTTY) {
 		return tint.NewHandler(w, &tint.Options{
-			Level:       logLevel,
+			Level:       level,
 			TimeFormat:  time.Kitchen,
 			AddSource:   source,
 			ReplaceAttr: textLogReplaceAttr,
@@ -74,7 +95,7 @@ func newLogHandlerForTerminalWithSource(env string, envSet bool, level string, w
 	}
 
 	return slog.NewJSONHandler(w, &slog.HandlerOptions{
-		Level:       logLevel,
+		Level:       level,
 		AddSource:   source,
 		ReplaceAttr: sourceLogReplaceAttr,
 	})

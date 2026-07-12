@@ -2925,8 +2925,9 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    | `global.startup` | Live reload |
    | `instance_name` | Live reload |
    | `global.identity` | Live reload; project runtimes restart in-process and `/api/v1/state.instance.name` updates after the next telemetry snapshot |
-   | `global.max_concurrent_agents`, `global.scheduling`, `global.fair_share` | Restart required |
-   | `port`, `env`, `log_level` | Restart required |
+   | `global.max_concurrent_agents`, `global.scheduling`, `global.fair_share` | Live reload at the next dispatch decision; lowering capacity drains to the new limit without interrupting active workers |
+   | `log_level` | Live reload |
+   | `port`, `env`, `log_max_size_bytes`, `log_max_backups` | Restart required |
 
    When a changed field requires restart, Detent logs
    `global config setting change requires restart` with the field name.

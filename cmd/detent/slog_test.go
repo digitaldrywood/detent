@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/cli"
 )
 
 func TestParseLogLevel(t *testing.T) {
@@ -50,6 +52,27 @@ func TestSetupLoggerSetsDefault(t *testing.T) {
 	}
 	if !logger.Enabled(context.Background(), slog.LevelDebug) {
 		t.Fatal("debug logger does not enable debug records")
+	}
+}
+
+func TestSetupLoggerFromRuntimeReturnsLiveLevel(t *testing.T) {
+	previous := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	level := setupLoggerFromRuntime(cli.RuntimeSettings{
+		Env:      cli.RuntimeValue{Value: "production"},
+		LogLevel: cli.RuntimeValue{Value: "info"},
+	}, &stdout, &stderr, false)
+	slog.Debug("before reload")
+	level.Set(slog.LevelDebug)
+	slog.Debug("after reload")
+
+	if strings.Contains(stderr.String(), "before reload") || !strings.Contains(stderr.String(), "after reload") {
+		t.Fatalf("stderr = %q, want only post-reload debug record", stderr.String())
 	}
 }
 
