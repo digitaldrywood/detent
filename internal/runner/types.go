@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -172,6 +173,7 @@ type AgentUpdate struct {
 	Type                AgentUpdateType
 	Method              string
 	ProcessIdentity     string
+	WorkerProcess       procgroup.Identity
 	ThreadID            string
 	TurnID              string
 	ProviderSessionID   string

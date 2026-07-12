@@ -17,10 +17,13 @@ type Backend string
 const BackendSQLite Backend = "sqlite"
 
 const (
-	SessionStateRunning   = "running"
-	SessionStateOrphaned  = "orphaned"
-	OrphanRecoveryResumed = "resumed"
-	OrphanRecoveryFresh   = "fresh"
+	SessionStateRunning               = "running"
+	SessionStateOrphaned              = "orphaned"
+	OrphanRecoveryResumed             = "resumed"
+	OrphanRecoveryFresh               = "fresh"
+	WorkerProcessOutcomeTerminated    = "terminated"
+	WorkerProcessOutcomeAlreadyExited = "already_exited"
+	WorkerProcessOutcomeStaleIdentity = "stale_identity"
 )
 
 const defaultBusyTimeout = 5 * time.Second
@@ -59,6 +62,9 @@ type StatsStore interface {
 	StartSession(context.Context, SessionStart) (int64, error)
 	UpdateSessionIdentity(context.Context, int64, agentidentity.Identity) error
 	UpdateSessionProviderIdentity(context.Context, int64, SessionProviderIdentity) error
+	UpdateSessionWorkerProcess(context.Context, int64, WorkerProcessIdentity) error
+	ListActiveWorkerProcesses(context.Context) ([]WorkerProcess, error)
+	MarkSessionWorkerProcessReaped(context.Context, int64, WorkerProcessReap) error
 	UpdateSessionResumeState(context.Context, int64, SessionResumeState) error
 	FinishSession(context.Context, int64, SessionFinish) error
 	RecordUsageEvent(context.Context, UsageEvent) (int64, error)
@@ -289,6 +295,25 @@ type SessionStart struct {
 type SessionProviderIdentity struct {
 	ThreadID  string
 	SessionID string
+}
+
+type WorkerProcessIdentity struct {
+	PID       int
+	GroupID   int
+	StartedAt time.Time
+}
+
+type WorkerProcess struct {
+	SessionID  int64
+	IssueID    string
+	Identifier string
+	IssueURL   string
+	WorkerProcessIdentity
+}
+
+type WorkerProcessReap struct {
+	ReapedAt time.Time
+	Outcome  string
 }
 
 type SessionResumeState struct {

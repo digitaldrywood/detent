@@ -72,6 +72,11 @@ type CodexSession struct {
 	OrphanRecoveryOutcome        sql.NullString `json:"orphan_recovery_outcome"`
 	SkillDraftProposed           int64          `json:"skill_draft_proposed"`
 	OrphanRecoveryFallbackReason sql.NullString `json:"orphan_recovery_fallback_reason"`
+	WorkerPid                    sql.NullInt64  `json:"worker_pid"`
+	WorkerPgid                   sql.NullInt64  `json:"worker_pgid"`
+	WorkerStartedAt              sql.NullString `json:"worker_started_at"`
+	WorkerReapedAt               sql.NullString `json:"worker_reaped_at"`
+	WorkerReapOutcome            sql.NullString `json:"worker_reap_outcome"`
 }
 
 type DetentRun struct {

@@ -2523,6 +2523,12 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    Environment=PATH=/home/<user>/.local/bin:/home/<user>/.asdf/shims:/home/<user>/.cargo/bin:/usr/local/bin:/usr/bin:/bin
    ```
 
+   Keep the service's default `KillMode=control-group`. Detent gives each worker
+   a dedicated process group but leaves it inside the service cgroup; persisted
+   process identity lets Detent reap stale workers, and systemd then remains the
+   final backstop. Reject worker launch wrappers that double-fork or move the
+   worker into another cgroup.
+
    When the project defines `hooks.after_create` or other bootstrap hooks,
    dry-run that hook or the equivalent repo bootstrap script from an isolated
    throwaway worktree with the same service PATH before moving an issue to

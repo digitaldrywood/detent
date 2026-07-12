@@ -16,7 +16,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -490,6 +492,17 @@ func TestRunWithShutdownActiveChildProcessReportsDrainBlockersAndTimesOut(t *tes
 	var output bytes.Buffer
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	processStartedAt := time.Date(2026, 6, 23, 14, 59, 0, 0, time.UTC)
+	processStore := &shutdownWorkerProcessStore{processes: []store.WorkerProcess{{
+		SessionID:  1214,
+		IssueID:    "issue-641",
+		Identifier: "digitaldrywood/detent#641",
+		WorkerProcessIdentity: store.WorkerProcessIdentity{
+			PID:       4242,
+			GroupID:   4242,
+			StartedAt: processStartedAt,
+		},
+	}}}
 	errs := make(chan error, 1)
 
 	go func() {
@@ -502,6 +515,13 @@ func TestRunWithShutdownActiveChildProcessReportsDrainBlockersAndTimesOut(t *tes
 			DrainTimeout:     20 * time.Millisecond,
 			ProgressInterval: 5 * time.Millisecond,
 			HardTimeout:      time.Second,
+			WorkerProcesses:  processStore,
+			ReapWorkerProcess: func(_ context.Context, identity procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
+				if identity.PID != 4242 || identity.GroupID != 4242 || !identity.StartedAt.Equal(processStartedAt) {
+					t.Errorf("worker identity = %#v", identity)
+				}
+				return procgroup.TerminationOutcomeTerminated, nil
+			},
 			Now: func() time.Time {
 				return time.Date(2026, 6, 23, 15, 0, 0, 0, time.UTC)
 			},
@@ -532,6 +552,9 @@ func TestRunWithShutdownActiveChildProcessReportsDrainBlockersAndTimesOut(t *tes
 	case <-time.After(time.Second):
 		t.Fatal("runner was not canceled by forced shutdown")
 	}
+	if len(processStore.reaped) != 1 || processStore.reaped[0].sessionID != 1214 || processStore.reaped[0].reap.Outcome != store.WorkerProcessOutcomeTerminated {
+		t.Fatalf("reaped worker processes = %#v", processStore.reaped)
+	}
 
 	gotOutput := output.String()
 	for _, want := range []string{
@@ -556,11 +579,33 @@ func TestRunWithShutdownActiveChildProcessReportsDrainBlockersAndTimesOut(t *tes
 		"process=4242",
 		"session=thread-641-turn-1",
 		"digitaldrywood/detent#641",
+		"worker process lifecycle decision",
+		"reason=\"drain timeout\"",
+		"decision=terminated",
 	} {
 		if !strings.Contains(gotLogs, want) {
 			t.Fatalf("logs missing %q:\n%s", want, gotLogs)
 		}
 	}
+}
+
+type shutdownWorkerProcessStore struct {
+	processes []store.WorkerProcess
+	reaped    []shutdownWorkerProcessReap
+}
+
+type shutdownWorkerProcessReap struct {
+	sessionID int64
+	reap      store.WorkerProcessReap
+}
+
+func (s *shutdownWorkerProcessStore) ListActiveWorkerProcesses(context.Context) ([]store.WorkerProcess, error) {
+	return append([]store.WorkerProcess(nil), s.processes...), nil
+}
+
+func (s *shutdownWorkerProcessStore) MarkSessionWorkerProcessReaped(_ context.Context, sessionID int64, reap store.WorkerProcessReap) error {
+	s.reaped = append(s.reaped, shutdownWorkerProcessReap{sessionID: sessionID, reap: reap})
+	return nil
 }
 
 func TestRunWithShutdownMarksControllerActive(t *testing.T) {

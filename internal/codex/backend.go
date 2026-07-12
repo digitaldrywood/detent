@@ -113,6 +113,7 @@ func agentUpdateFromCodex(update Update) runner.AgentUpdate {
 		Type:                runner.AgentUpdateType(update.Type),
 		Method:              update.Method,
 		ProcessIdentity:     update.ProcessIdentity,
+		WorkerProcess:       update.WorkerProcess,
 		ThreadID:            update.ThreadID,
 		TurnID:              update.TurnID,
 		ProviderSessionID:   providerSessionID,

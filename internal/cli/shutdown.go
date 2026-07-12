@@ -156,6 +156,9 @@ type runningShutdownConfig struct {
 	DrainTimeoutSource func() time.Duration
 	ProgressInterval   time.Duration
 	HardTimeout        time.Duration
+	WorkerProcesses    workerProcessStore
+	ReapWorkerProcess  workerProcessReapFunc
+	WorkerReapGrace    time.Duration
 	Now                func() time.Time
 }
 
@@ -336,9 +339,23 @@ func runForceShutdownWithDeadline(
 	}); err != nil {
 		shutdownLogger(cfg).Warn("force shutdown cleanup failed", "error", err)
 	}
+	reapCtx, cancelReap := context.WithTimeout(context.Background(), hardTimeout)
+	reapErr := reapWorkerProcesses(
+		reapCtx,
+		cfg.WorkerProcesses,
+		shutdownLogger(cfg),
+		result,
+		cfg.WorkerReapGrace,
+		cfg.Now,
+		cfg.ReapWorkerProcess,
+	)
+	cancelReap()
+	if reapErr != nil {
+		shutdownLogger(cfg).Warn("worker process cleanup failed", "error", reapErr)
+	}
 	publishShutdownSnapshot(forceCtx, cfg, startedAt)
 
-	return completeShutdown(forceCtx, cfg, cancelServe, serveErrs, startedAt, machine, returnErr)
+	return errors.Join(completeShutdown(forceCtx, cfg, cancelServe, serveErrs, startedAt, machine, returnErr), reapErr)
 }
 
 func completeShutdown(

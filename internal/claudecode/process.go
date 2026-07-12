@@ -50,11 +50,20 @@ func (b *AgentBackend) RunTurn(
 		return runner.AgentTurnResult{}, fmt.Errorf("start claude command: %w", err)
 	}
 	processGroupID := procgroup.GroupID(cmd)
+	workerProcess, err := procgroup.Inspect(cmd)
+	if err != nil {
+		err = terminateWithCause(cmd, processGroupID, fmt.Errorf("inspect claude worker process: %w", err))
+		if waitErr := waitAndCleanup(cmd, processGroupID); waitErr != nil {
+			err = errors.Join(err, waitErr)
+		}
+		return runner.AgentTurnResult{}, err
+	}
 
 	processIdentity := "claude-" + strconv.Itoa(cmd.Process.Pid)
 	if err := emitUpdate(onUpdate, runner.AgentUpdate{
 		Type:            runner.AgentUpdateProcessStarted,
 		ProcessIdentity: processIdentity,
+		WorkerProcess:   workerProcess,
 	}); err != nil {
 		err = terminateWithCause(cmd, processGroupID, err)
 		if waitErr := waitAndCleanup(cmd, processGroupID); waitErr != nil {
