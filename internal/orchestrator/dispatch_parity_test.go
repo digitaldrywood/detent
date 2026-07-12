@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 )
 
 func TestDispatchParityWithElixirRecordedCandidateSets(t *testing.T) {
@@ -71,9 +73,189 @@ func TestDispatchParityWithElixirRecordedCandidateSets(t *testing.T) {
 	}
 }
 
+func TestDispatchParityAdversarialFixtures(t *testing.T) {
+	requireSoak(t)
+
+	fixture := loadDispatchParityFixture(t)
+	if len(fixture.AdversarialCases) == 0 {
+		t.Fatal("dispatch parity fixture contains no adversarial cases")
+	}
+	for _, tt := range fixture.AdversarialCases {
+		t.Run(tt.Name, func(t *testing.T) {
+			switch tt.Behavior {
+			case "always_blocked_same_reason":
+				runAlwaysBlockedParityCase(t, tt)
+			case "rate_limit_storm":
+				runRateLimitStormParityCase(t, tt)
+			case "gate_wait_timeout_loop":
+				runGateWaitTimeoutParityCase(t, tt)
+			default:
+				t.Fatalf("unknown adversarial behavior %q", tt.Behavior)
+			}
+		})
+	}
+}
+
+func runAlwaysBlockedParityCase(t *testing.T, tt dispatchParityAdversarialCase) {
+	t.Helper()
+	now := mustParseParityTime(t, tt.Now)
+	clock := &soakClock{now: now}
+	issue := connector.Issue{
+		ID:               "always-blocked",
+		Identifier:       "example/adversarial#blocked",
+		Title:            "Always blocked with the same human-only reason",
+		State:            blockedStatusState,
+		AssignedToWorker: true,
+	}
+	tracker := newSoakConnector(issue)
+	attempts := newSoakAttemptStore()
+	runner := &soakSuccessRunner{clock: clock, spend: attempts, tokensPerRun: 1}
+	orch, err := New(Config{
+		Project:        scheduler.ProjectCandidate{ID: "parity"},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework"},
+		ObservedStates: []string{blockedStatusState},
+		TerminalStates: []string{"Done", "Cancelled"},
+	}, Dependencies{Connector: tracker, Runner: runner, Now: clock.Now})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	state := newState(orch.cfg)
+	for range tt.SimulatedTicks {
+		orch.tick(t.Context(), &state, clock.Advance(time.Second))
+	}
+	assertAdversarialParityOutcome(t, tt, tracker.issueState(issue.ID), runner.callCount())
+	if blocked, ok := state.Blocked[issue.ID]; !ok || blocked.Issue.State != blockedStatusState {
+		t.Fatalf("Blocked[%q] = %#v, want parked issue", issue.ID, blocked)
+	}
+}
+
+func runRateLimitStormParityCase(t *testing.T, tt dispatchParityAdversarialCase) {
+	t.Helper()
+	now := mustParseParityTime(t, tt.Now)
+	clock := &soakClock{now: now}
+	issue := connector.Issue{
+		ID:               "rate-limit-storm",
+		Identifier:       "example/adversarial#rate-limit",
+		Title:            "REST rate limit storm",
+		State:            "In Progress",
+		AssignedToWorker: true,
+	}
+	tracker := &parityRateLimitConnector{
+		soakConnector: newSoakConnector(issue),
+		resetAt:       now.Add(time.Hour),
+	}
+	attempts := newSoakAttemptStore()
+	runner := &soakSuccessRunner{clock: clock, spend: attempts, tokensPerRun: 1}
+	orch, err := New(Config{
+		Project:              scheduler.ProjectCandidate{ID: "parity"},
+		ActiveStates:         []string{"Todo", "In Progress", "Rework"},
+		ObservedStates:       []string{blockedStatusState},
+		TerminalStates:       []string{"Done", "Cancelled"},
+		GitHubRESTMinReserve: 1_000,
+	}, Dependencies{Connector: tracker, Runner: runner, Now: clock.Now})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	state := newState(orch.cfg)
+	for range tt.SimulatedTicks {
+		orch.tick(t.Context(), &state, clock.Advance(time.Second))
+	}
+	assertAdversarialParityOutcome(t, tt, tracker.issueState(issue.ID), runner.callCount())
+	if _, ok := activeGitHubRESTCapacityOutage(&state, clock.Now()); !ok {
+		t.Fatalf("BackendOutages = %#v, want active REST capacity outage", state.BackendOutages)
+	}
+}
+
+func runGateWaitTimeoutParityCase(t *testing.T, tt dispatchParityAdversarialCase) {
+	t.Helper()
+	now := mustParseParityTime(t, tt.Now)
+	issue := connector.Issue{
+		ID:               "gate-wait-timeout",
+		Identifier:       "example/adversarial#gate-wait",
+		Title:            "Gate wait timeout loop",
+		State:            "In Progress",
+		AssignedToWorker: true,
+		PullRequest: &connector.PullRequest{
+			Number:         42,
+			URL:            "https://github.test/example/adversarial/pull/42",
+			State:          "OPEN",
+			MergeableState: "unknown",
+			CIStatus:       "pending",
+		},
+	}
+	tracker := newSoakConnector(issue)
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled:         true,
+			GateWaitTimeout: 15 * time.Minute,
+			Gate:            gate.Config{Kind: gate.KindCommand},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:       issue,
+		CompletedAt: now.Add(-16 * time.Minute),
+		FinalState:  FinalStateCompleted,
+	}
+	for range tt.SimulatedTicks {
+		issues, err := tracker.FetchCandidateIssues(t.Context())
+		if err != nil {
+			t.Fatalf("FetchCandidateIssues() error = %v", err)
+		}
+		orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, issues, now)
+		now = now.Add(time.Second)
+	}
+	assertAdversarialParityOutcome(t, tt, tracker.issueState(issue.ID), 0)
+	if comments := tracker.commentCount(issue.ID); comments != 1 {
+		t.Fatalf("timeout comments = %d, want 1", comments)
+	}
+}
+
+func assertAdversarialParityOutcome(t *testing.T, tt dispatchParityAdversarialCase, state string, dispatches int) {
+	t.Helper()
+	if state != tt.WantState {
+		t.Fatalf("state = %q, want %q", state, tt.WantState)
+	}
+	if dispatches > tt.WantMaxDispatches {
+		t.Fatalf("dispatches = %d, max %d", dispatches, tt.WantMaxDispatches)
+	}
+}
+
+type parityRateLimitConnector struct {
+	*soakConnector
+	resetAt time.Time
+}
+
+func (c *parityRateLimitConnector) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
+	return connector.RESTRateLimitUsage{
+		HasRateLimit: true,
+		RateLimited:  true,
+		RateLimit: connector.RESTRateLimit{
+			Limit:     5_000,
+			Used:      5_000,
+			Remaining: 0,
+			Resource:  "core",
+			ResetAt:   c.resetAt,
+		},
+	}
+}
+
 type dispatchParityFixture struct {
-	Source string               `json:"source"`
-	Cases  []dispatchParityCase `json:"cases"`
+	Source           string                          `json:"source"`
+	Cases            []dispatchParityCase            `json:"cases"`
+	AdversarialCases []dispatchParityAdversarialCase `json:"adversarial_cases"`
+}
+
+type dispatchParityAdversarialCase struct {
+	Name              string `json:"name"`
+	Behavior          string `json:"behavior"`
+	Now               string `json:"now"`
+	SimulatedTicks    int    `json:"simulated_ticks"`
+	WantState         string `json:"want_state"`
+	WantMaxDispatches int    `json:"want_max_dispatches"`
 }
 
 type dispatchParityCase struct {

@@ -25,7 +25,7 @@ NILAWAY_VERSION ?= v0.0.0-20260612163715-2d8907f431ca
 NILAWAY ?= go run go.uber.org/nilaway/cmd/nilaway@$(NILAWAY_VERSION)
 NILAWAY_INCLUDE_PKGS ?= github.com/digitaldrywood/detent
 
-.PHONY: dev generate css css-watch build test test-race test-cover test-cover-packages visual-e2e visual-e2e-update lint vet check modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate css css-watch build test test-race test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet check modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -88,6 +88,9 @@ test-cover:
 
 test-cover-packages: test-cover
 	go run ./tools/covercheck -profile $(COVERPROFILE) -floor $(PACKAGE_COVERAGE_FLOOR) -exceptions $(PACKAGE_COVERAGE_EXCEPTIONS)
+
+soak:
+	DETENT_RUN_SOAK_TESTS=1 go test ./internal/orchestrator -run '^(TestSoak|TestDispatchParityAdversarialFixtures)' -count=1
 
 visual-e2e: build
 	@if [ ! -x node_modules/.bin/playwright ]; then npm ci; fi
@@ -152,6 +155,7 @@ help:
 	@echo "  test-race    Run Go tests with the race detector"
 	@echo "  test-cover   Run Go coverage with a $(COVERAGE_THRESHOLD)% minimum"
 	@echo "  test-cover-packages  Run per-package coverage floor checks"
+	@echo "  soak         Run opt-in orchestrator incident and adversarial soak tests"
 	@echo "  visual-e2e   Run Playwright visual layout tests"
 	@echo "  visual-e2e-update  Update Playwright visual baselines"
 	@echo "  lint         Run golangci-lint"
