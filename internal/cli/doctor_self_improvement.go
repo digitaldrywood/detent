@@ -270,6 +270,8 @@ func doctorWorkflowFindingProposalTarget(finding doctorWorkflowOptimizationFindi
 		return target, path, fmt.Sprintf("Set `%s` to `%v` in WORKFLOW.md after human review.", path, patch.Value)
 	}
 	switch finding.RuleID {
+	case doctorWorkflowRuleRepositoryMergePolicy:
+		return "repository", strings.TrimSpace(fmt.Sprint(finding.Evidence["repository"])), strings.TrimSpace(fmt.Sprint(finding.Evidence["fix"]))
 	case doctorWorkflowRuleEmptyModelTelemetry:
 		return "telemetry", "codex_sessions.model", "Repair effective-model resolution for completed sessions while leaving the project's pin/default policy unchanged."
 	case doctorWorkflowRulePinnedRouteModelRejected:

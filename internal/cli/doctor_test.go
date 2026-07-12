@@ -4469,6 +4469,9 @@ func TestDoctorProjectCheckJobTimeoutReportsCurrentInnerCheck(t *testing.T) {
 			<-releaseReadiness
 			return nil, nil
 		},
+		githubMergeSettings: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryMergeSettings, error) {
+			return ghconnector.RepositoryMergeSettings{AllowSquashMerge: true}, nil
+		},
 	}, RuntimeSecret{Value: "token", Source: "github_token"}, false)
 	if len(jobs) != 1 {
 		t.Fatalf("jobs len = %d, want 1", len(jobs))
@@ -4793,6 +4796,9 @@ func successfulDoctorDeps() doctorDeps {
 			return []ghconnector.ReadinessCheck{
 				{Name: "GitHub readiness", Status: ghconnector.ReadinessOK, Detail: "ready"},
 			}, nil
+		},
+		githubMergeSettings: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryMergeSettings, error) {
+			return ghconnector.RepositoryMergeSettings{AllowSquashMerge: true}, nil
 		},
 		listen: func(string, string) (net.Listener, error) {
 			return fakeDoctorListener{addr: fakeDoctorAddr("127.0.0.1:49152")}, nil

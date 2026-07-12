@@ -111,6 +111,24 @@ type Connector struct {
 	instanceLogin     string
 }
 
+type RepositoryMergeSettings struct {
+	AllowMergeCommit bool `json:"allow_merge_commit"`
+	AllowSquashMerge bool `json:"allow_squash_merge"`
+	AllowRebaseMerge bool `json:"allow_rebase_merge"`
+}
+
+func (c *Connector) RepositoryMergeSettings(ctx context.Context, repository string) (RepositoryMergeSettings, error) {
+	repo, ok := pullRequestRepoFromName(repository)
+	if !ok {
+		return RepositoryMergeSettings{}, fmt.Errorf("invalid GitHub repository %q", repository)
+	}
+	var settings RepositoryMergeSettings
+	if err := c.client.REST(ctx, "GET", "/repos/"+repo.Owner+"/"+repo.Name, nil, &settings); err != nil {
+		return RepositoryMergeSettings{}, err
+	}
+	return settings, nil
+}
+
 func NewConnector(cfg Config) (*Connector, error) {
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
