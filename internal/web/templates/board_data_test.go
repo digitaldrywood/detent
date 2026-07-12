@@ -223,7 +223,7 @@ func TestBoardCardExtraShowsWaitReasonAheadOfCI(t *testing.T) {
 	t.Parallel()
 
 	card := projectKanbanCard{
-		WaitDetail: "dispatch skipped: artifact_gate_wait_status",
+		WaitDetail: "waiting on artifact gate status ('queued')",
 		CIStatus:   "pass",
 	}
 

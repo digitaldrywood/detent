@@ -14,6 +14,7 @@ import (
 )
 
 const (
+	artifactGateStatusMetadataKey = "detent.artifact_gate_status"
 	autoPromoteActionMetadataKey  = "detent.auto_promote_action"
 	autoPromoteReasonMetadataKey  = "detent.auto_promote_reason"
 	dispatchSkipReasonMetadataKey = "detent.dispatch_skip_reason"
@@ -195,6 +196,7 @@ func (s State) applyArtifactGateWaitDispatchSnapshots(snapshots []telemetry.Issu
 			snapshots[i].Metadata = map[string]string{}
 		}
 		snapshots[i].Metadata[dispatchSkipReasonMetadataKey] = dispatchSkipArtifactGateWaitStatus
+		snapshots[i].Metadata[artifactGateStatusMetadataKey] = strings.TrimSpace(artifactStatusFromIssue(issue, s.AutoPromote.Gate.Artifact.StatusField))
 	}
 }
 

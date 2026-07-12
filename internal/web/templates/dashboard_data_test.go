@@ -2818,11 +2818,12 @@ func TestPRPipelineWaitDetailIncludesDispatchSkipReason(t *testing.T) {
 		State: "Todo",
 		Metadata: map[string]string{
 			"detent.dispatch_skip_reason": "artifact_gate_wait_status",
+			"detent.artifact_gate_status": "queued",
 		},
 	}
 
-	if got := prPipelineWaitDetail(issue); got != "dispatch skipped: artifact_gate_wait_status" {
-		t.Fatalf("prPipelineWaitDetail() = %q, want dispatch skip reason", got)
+	if got := prPipelineWaitDetail(issue); got != "waiting on artifact gate status ('queued')" {
+		t.Fatalf("prPipelineWaitDetail() = %q, want artifact gate status", got)
 	}
 }
 
