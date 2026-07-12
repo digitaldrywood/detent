@@ -178,24 +178,28 @@ func TestCheckDoctorGateCommandPreservesEnvironmentAssignments(t *testing.T) {
 	}
 }
 
-func TestCheckDoctorGateCommandSkipsMakeProbeForShellSyntax(t *testing.T) {
+func TestCheckDoctorGateCommandProbesMakeBeforeShellSyntax(t *testing.T) {
 	t.Parallel()
 
 	workdir := t.TempDir()
 	cfg := workflowconfig.Default()
 	cfg.Workspace.SourceRoot = workdir
 	cfg.Gate.Run = "make check >/dev/null"
+	var gotArgs []string
 	checks := checkDoctorGateCommand(context.Background(), "alpha", "WORKFLOW.md", globalconfig.Project{ID: "alpha", Workdir: workdir}, cfg, doctorDeps{
 		resolveCommandInDir: func(context.Context, string, []string, string) (string, error) {
 			return "/usr/bin/make", nil
 		},
-		runCommandInDir: func(context.Context, string, []string, string, ...string) error {
-			t.Fatal("runCommandInDir() called for shell-bearing command")
-			return nil
+		runCommandInDir: func(_ context.Context, _ string, _ []string, _ string, args ...string) error {
+			gotArgs = append([]string(nil), args...)
+			return errors.New("No rule to make target 'check'")
 		},
 	})
-	if len(checks) != 0 {
-		t.Fatalf("checks = %#v, want shell-bearing command to avoid a false warning", checks)
+	if strings.Join(gotArgs, " ") != "-n check" {
+		t.Fatalf("args = %#v, want only the Make invocation before shell syntax", gotArgs)
+	}
+	if len(checks) != 1 || !strings.Contains(checks[0].Detail, `dry-run "make -n check" failed`) {
+		t.Fatalf("checks = %#v, want missing Make target warning", checks)
 	}
 }
 
@@ -240,6 +244,41 @@ Prompt
 		}
 	}
 	if !strings.Contains(check.Hint, "Set agent.budget.enabled: true") || !strings.Contains(check.Hint, "remove the configured agent.budget sub-settings") {
+		t.Fatalf("Hint = %q, want one-line enable-or-remove fix", check.Hint)
+	}
+}
+
+func TestCheckDoctorWorkflowLintWarnsForExplicitTopLevelBudgetSetting(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
+budget:
+  enabled: false
+  pricing_path: custom/pricing.yaml
+gate:
+  kind: human_review
+deliverable:
+  kind: artifact
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	checks := checkDoctorWorkflowLint(context.Background(), "alpha", globalconfig.Project{
+		ID:       "alpha",
+		Workflow: "WORKFLOW.md",
+	}, workflow.Config, "", doctorDeps{})
+	if len(checks) != 1 {
+		t.Fatalf("checks = %#v, want one inert top-level budget warning", checks)
+	}
+	check := checks[0]
+	for _, want := range []string{"WORKFLOW.md", "budget.pricing_path", "budget.enabled=false", "block is inert"} {
+		if !strings.Contains(check.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", check.Detail, want)
+		}
+	}
+	if !strings.Contains(check.Hint, "Set budget.enabled: true") || !strings.Contains(check.Hint, "remove the configured budget sub-settings") {
 		t.Fatalf("Hint = %q, want one-line enable-or-remove fix", check.Hint)
 	}
 }
@@ -431,6 +470,71 @@ func TestCheckDoctorWorkflowRuntimeLintCleanHistoryIsQuiet(t *testing.T) {
 	})
 	if len(checks) != 0 {
 		t.Fatalf("checks = %#v, want clean history to be quiet", checks)
+	}
+}
+
+func TestCheckDoctorWorkflowRuntimeLintTracksWaitIncidentAcrossLaneChange(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 17, 0, 0, 0, time.UTC)
+	db := openDoctorWorkflowLintDB(t)
+	for _, decision := range []struct {
+		lane string
+		at   time.Time
+	}{
+		{lane: "Todo", at: now.Add(-20 * time.Minute)},
+		{lane: "In Progress", at: now.Add(-time.Minute)},
+	} {
+		if _, err := db.Exec(`INSERT INTO scheduler_decisions (project_id, identifier, lane, result, reason, attempt_number, decision_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			"alpha", "digitaldrywood/detent#1174", decision.lane, "skipped", "artifact_gate_wait_status", 0, decision.at.Format(time.RFC3339Nano)); err != nil {
+			t.Fatalf("insert scheduler decision: %v", err)
+		}
+	}
+
+	cfg := workflowconfig.Default()
+	cfg.Gate.Kind = gate.KindArtifact
+	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress"}
+	cfg.Polling.IntervalMS = 60_000
+	checks := checkDoctorWorkflowRuntimeLint(context.Background(), "alpha", "/repo/WORKFLOW.md", "/runtime/detent.db", cfg, doctorDeps{
+		openSQLiteReadOnly: func(context.Context, string) (doctorTelemetryStore, error) { return db, nil },
+		now:                func() time.Time { return now },
+	})
+	if len(checks) != 1 {
+		t.Fatalf("checks = %#v, want one continuous wait-status warning", checks)
+	}
+	for _, want := range []string{"digitaldrywood/detent#1174", "In Progress", "20m0s", "2 skips"} {
+		if !strings.Contains(checks[0].Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", checks[0].Detail, want)
+		}
+	}
+}
+
+func TestCheckDoctorWorkflowRuntimeLintIgnoresDeathsBelowRaisedCap(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 17, 0, 0, 0, time.UTC)
+	db := openDoctorWorkflowLintDB(t)
+	for index := range 5 {
+		errorMessage := ""
+		totalTokens := int64(12_000_000)
+		if index < 2 {
+			totalTokens = int64(16_100_000 + index*100_000)
+			errorMessage = fmt.Sprintf("session token ceiling exceeded: total_tokens=%d ceiling_tokens=16000000 source=max_session_tokens", totalTokens)
+		}
+		if _, err := db.Exec(`INSERT INTO work_attempts (project_id, worker_type, completed_at, error_message, metrics_json) VALUES (?, ?, ?, ?, ?)`,
+			"alpha", "agent", now.Add(-time.Duration(index)*time.Hour).Format(time.RFC3339Nano), errorMessage, fmt.Sprintf(`{"total_tokens":%d}`, totalTokens)); err != nil {
+			t.Fatalf("insert work attempt: %v", err)
+		}
+	}
+
+	cfg := workflowconfig.Default()
+	cfg.Agent.MaxSessionTokens = 32_000_000
+	checks := checkDoctorWorkflowRuntimeLint(context.Background(), "alpha", "/repo/WORKFLOW.md", "/runtime/detent.db", cfg, doctorDeps{
+		openSQLiteReadOnly: func(context.Context, string) (doctorTelemetryStore, error) { return db, nil },
+		now:                func() time.Time { return now },
+	})
+	if len(checks) != 0 {
+		t.Fatalf("checks = %#v, want old lower-cap deaths to stay quiet after remediation", checks)
 	}
 }
 

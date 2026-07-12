@@ -55,8 +55,12 @@ func doctorRuntimeStorePath(configPath string) string {
 func checkDoctorWorkflowLint(ctx context.Context, projectID string, project globalconfig.Project, cfg workflowconfig.Config, storePath string, deps doctorDeps) []doctorCheck {
 	workflowPath := doctorWorkflowLintPath(project)
 	checks := make([]doctorCheck, 0)
-	if budgetCheck, ok := checkDoctorDisabledBudgetCaps(projectID, cfg.Budget); ok {
-		checks = append(checks, budgetCheck)
+	if len(cfg.ConfiguredSubsettings("budget")) == 0 {
+		if budgetCheck, ok := checkDoctorDisabledBudgetCaps(projectID, cfg.Budget); ok {
+			budgetCheck.Detail = workflowPath + " " + budgetCheck.Detail
+			budgetCheck.Hint = fmt.Sprintf("Set budget.enabled: true in %s, or remove the configured budget caps.", workflowPath)
+			checks = append(checks, budgetCheck)
+		}
 	}
 	checks = append(checks, checkDoctorInertWorkflowBlocks(projectID, workflowPath, cfg)...)
 	checks = append(checks, checkDoctorGateCommand(ctx, projectID, workflowPath, project, cfg, deps)...)
@@ -80,6 +84,7 @@ func checkDoctorInertWorkflowBlocks(projectID string, workflowPath string, cfg w
 		path    string
 		enabled bool
 	}{
+		{path: "budget", enabled: cfg.Budget.Enabled},
 		{path: "agent.budget", enabled: cfg.Agent.Budget.Enabled},
 		{path: "gate.validator", enabled: cfg.Gate.Validator.Enabled},
 		{path: "agent.lessons", enabled: cfg.Agent.Lessons.Enabled},
@@ -107,7 +112,7 @@ func checkDoctorGateCommand(ctx context.Context, projectID string, workflowPath 
 		return nil
 	}
 	command := strings.TrimSpace(cfg.Gate.Run)
-	fields := doctorWorkflowCommandFields(command)
+	fields := doctorWorkflowCommandFields(doctorWorkflowCommandPrefix(command))
 	if len(fields) == 0 {
 		return []doctorCheck{doctorWorkflowGateWarning(projectID, workflowPath, command, "no executable was found", "Set gate.run to a command available on PATH.")}
 	}
@@ -126,7 +131,7 @@ func checkDoctorGateCommand(ctx context.Context, projectID string, workflowPath 
 	if err != nil {
 		return []doctorCheck{doctorWorkflowGateWarning(projectID, workflowPath, command, fmt.Sprintf("command -v %q failed in %s: %v", executable, expandedWorkdir, err), "Install the executable, fix its project-relative path, or replace gate.run with an available command.")}
 	}
-	if !doctorMakeExecutable(executable) || deps.runCommandInDir == nil || doctorWorkflowHasShellSyntax(command) {
+	if !doctorMakeExecutable(executable) || deps.runCommandInDir == nil {
 		return nil
 	}
 	commandArgs := []string{}
@@ -141,33 +146,39 @@ func checkDoctorGateCommand(ctx context.Context, projectID string, workflowPath 
 	return nil
 }
 
-func doctorWorkflowHasShellSyntax(command string) bool {
+func doctorWorkflowCommandPrefix(command string) string {
+	var prefix strings.Builder
 	var quote rune
 	escaped := false
 	for _, r := range command {
 		if escaped {
+			prefix.WriteRune(r)
 			escaped = false
 			continue
 		}
 		if r == '\\' {
+			prefix.WriteRune(r)
 			escaped = true
 			continue
 		}
 		if quote != 0 {
+			prefix.WriteRune(r)
 			if r == quote {
 				quote = 0
 			}
 			continue
 		}
 		if r == '\'' || r == '"' {
+			prefix.WriteRune(r)
 			quote = r
 			continue
 		}
 		if strings.ContainsRune("|&;<>($`\n", r) {
-			return true
+			return strings.TrimSpace(prefix.String())
 		}
+		prefix.WriteRune(r)
 	}
-	return false
+	return strings.TrimSpace(prefix.String())
 }
 
 func doctorWorkflowExecutableIndex(fields []string) int {
@@ -378,7 +389,7 @@ func checkDoctorWorkflowRuntimeLint(ctx context.Context, projectID string, workf
 	}
 	if cfg.Agent.MaxSessionTokens > 0 {
 		history, err := doctorCeilingAttemptHistory(ctx, db, projectID, now)
-		if err == nil && history.Attempts >= doctorWorkflowCeilingMinAttempts && float64(history.CeilingDeaths)/float64(history.Attempts) >= doctorWorkflowCeilingShare {
+		if err == nil && history.Attempts >= doctorWorkflowCeilingMinAttempts && cfg.Agent.MaxSessionTokens < history.MaxObservedTokens && float64(history.CeilingDeaths)/float64(history.Attempts) >= doctorWorkflowCeilingShare {
 			checks = append(checks, doctorCheck{
 				Name:   "Project " + projectID + " workflow lint session ceiling",
 				Status: doctorWarn,
@@ -400,26 +411,51 @@ func checkDoctorWorkflowRuntimeLint(ctx context.Context, projectID string, workf
 
 func doctorWaitStatusIncidents(ctx context.Context, db doctorTelemetryStore, projectID string, cfg workflowconfig.Config, now time.Time) ([]doctorWaitStatusIncident, error) {
 	rows, err := db.QueryContext(ctx, `
+WITH project_decisions AS (
+  SELECT
+    id,
+    COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned') AS issue_key,
+    COALESCE(lane, '') AS lane,
+    COALESCE(result, '') AS result,
+    COALESCE(reason, '') AS reason,
+    COALESCE(attempt_number, 0) AS attempt_number,
+    decision_at
+  FROM scheduler_decisions
+  WHERE project_id = ?
+), ranked AS (
+  SELECT
+    id,
+    issue_key,
+    lane,
+    result,
+    reason,
+    attempt_number,
+    decision_at,
+    ROW_NUMBER() OVER (PARTITION BY issue_key ORDER BY id DESC) AS latest_rank,
+    MAX(CASE WHEN result != 'skipped' OR reason != 'artifact_gate_wait_status' OR attempt_number != 0 THEN id ELSE 0 END)
+      OVER (PARTITION BY issue_key) AS reset_id
+  FROM project_decisions
+), active_issues AS (
+  SELECT issue_key, lane, reset_id
+  FROM ranked
+  WHERE latest_rank = 1
+    AND result = 'skipped'
+    AND reason = 'artifact_gate_wait_status'
+    AND attempt_number = 0
+)
 SELECT
-  COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned'),
-  COALESCE(lane, ''),
-  MIN(decision_at),
-  MAX(decision_at),
+  active_issues.issue_key,
+  active_issues.lane,
+  MIN(ranked.decision_at),
+  MAX(ranked.decision_at),
   COUNT(*)
-FROM scheduler_decisions
-WHERE project_id = ?
-  AND result = 'skipped'
-  AND reason = 'artifact_gate_wait_status'
-  AND attempt_number = 0
-  AND NOT EXISTS (
-    SELECT 1
-    FROM scheduler_decisions AS newer
-    WHERE newer.project_id = scheduler_decisions.project_id
-      AND COALESCE(NULLIF(newer.identifier, ''), NULLIF(newer.issue_id, ''), NULLIF(newer.issue_url, ''), 'unassigned') = COALESCE(NULLIF(scheduler_decisions.identifier, ''), NULLIF(scheduler_decisions.issue_id, ''), NULLIF(scheduler_decisions.issue_url, ''), 'unassigned')
-	      AND newer.id > scheduler_decisions.id
-      AND (COALESCE(newer.result, '') != 'skipped' OR COALESCE(newer.reason, '') != 'artifact_gate_wait_status' OR COALESCE(newer.attempt_number, 0) != 0)
-  )
-GROUP BY COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned'), COALESCE(lane, '')`, strings.TrimSpace(projectID))
+FROM active_issues
+JOIN ranked ON ranked.issue_key = active_issues.issue_key
+WHERE ranked.id > active_issues.reset_id
+  AND ranked.result = 'skipped'
+  AND ranked.reason = 'artifact_gate_wait_status'
+  AND ranked.attempt_number = 0
+GROUP BY active_issues.issue_key, active_issues.lane`, strings.TrimSpace(projectID))
 	if err != nil {
 		return nil, err
 	}
