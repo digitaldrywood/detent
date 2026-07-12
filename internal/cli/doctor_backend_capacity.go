@@ -244,6 +244,9 @@ func doctorBackendCapacityDetail(diagnostics []doctorBackendCapacityDiagnostic, 
 		}
 	}
 	if active > 0 {
+		if !liveAvailable {
+			return fmt.Sprintf("%d recorded provider capacity outage(s) may still be active; latest recorded window %s; %s; live orchestrator enforcement unknown; affected issues: %s", active, window, probe, doctorBackendCapacityAffectedIssues(affectedIssues))
+		}
 		return fmt.Sprintf("%d enforced provider capacity outage(s); latest recorded window %s; %s; affected issues: %s", active, window, probe, doctorBackendCapacityAffectedIssues(affectedIssues))
 	}
 	liveState := "live orchestrator state unavailable"
@@ -251,6 +254,10 @@ func doctorBackendCapacityDetail(diagnostics []doctorBackendCapacityDiagnostic, 
 		liveState = "not enforced by the live orchestrator"
 	}
 	return "latest recorded provider capacity outage window " + window + "; " + probe + "; " + liveState + "; affected issues: " + doctorBackendCapacityAffectedIssues(affectedIssues)
+}
+
+func doctorBackendCapacityRecordedActive(outage doctorBackendCapacitySnapshotOutage, now time.Time) bool {
+	return outage.ResumeAt.After(now) || outage.NextProbeAt != nil && outage.NextProbeAt.After(now)
 }
 
 func doctorBackendCapacityAffectedIssues(issues []string) string {

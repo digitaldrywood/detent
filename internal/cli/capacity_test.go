@@ -57,3 +57,29 @@ func TestRunCapacityClear(t *testing.T) {
 		t.Fatalf("result = %#v", result)
 	}
 }
+
+func TestCapacityClearServerAddrNormalizesWildcardHosts(t *testing.T) {
+	t.Parallel()
+
+	port := 4101
+	tests := []struct {
+		name string
+		host string
+		want string
+	}{
+		{name: "IPv4 wildcard", host: "0.0.0.0", want: "127.0.0.1:4101"},
+		{name: "IPv6 wildcard", host: "::", want: "127.0.0.1:4101"},
+		{name: "bracketed IPv6 wildcard", host: "[::]", want: "127.0.0.1:4101"},
+		{name: "explicit host", host: "localhost", want: "localhost:4101"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := capacityClearServerAddr(BootConfig{Host: tt.host, Port: &port}); got != tt.want {
+				t.Fatalf("capacityClearServerAddr() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

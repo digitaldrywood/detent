@@ -74,7 +74,7 @@ func runCapacityClear(
 	form := url.Values{}
 	form.Set("project_id", strings.TrimSpace(projectID))
 	form.Set("scope", strings.TrimSpace(scope))
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+serverAddr(boot)+"/api/v1/capacity/clear", strings.NewReader(form.Encode()))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+capacityClearServerAddr(boot)+"/api/v1/capacity/clear", strings.NewReader(form.Encode()))
 	if err != nil {
 		return capacityClearResult{}, fmt.Errorf("create capacity clear request: %w", err)
 	}
@@ -103,6 +103,16 @@ func runCapacityClear(
 		return capacityClearResult{}, fmt.Errorf("decode capacity clear response: %w", err)
 	}
 	return result, nil
+}
+
+func capacityClearServerAddr(boot BootConfig) string {
+	host := unbracketIPv6Host(strings.TrimSpace(boot.Host))
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = defaultWebHost
+	}
+	boot.Host = host
+	return serverAddr(boot)
 }
 
 func resolveCapacityClearBoot(

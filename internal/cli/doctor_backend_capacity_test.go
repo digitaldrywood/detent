@@ -54,7 +54,7 @@ func TestDoctorBackendCapacityDiagnostics(t *testing.T) {
 		t.Fatalf("INSERT error = %v", err)
 	}
 
-	diagnostics, err := doctorBackendCapacityDiagnostics(t.Context(), db, "detent")
+	diagnostics, err := doctorBackendCapacityDiagnostics(t.Context(), db, "detent", now)
 	if err != nil {
 		t.Fatalf("doctorBackendCapacityDiagnostics() error = %v", err)
 	}
@@ -62,8 +62,12 @@ func TestDoctorBackendCapacityDiagnostics(t *testing.T) {
 		t.Fatalf("diagnostics = %#v, want one", diagnostics)
 	}
 	got := diagnostics[0]
-	if got.Active || got.BackendID != "codex" || len(got.AffectedIssues) != 1 || got.AffectedIssues[0] != "digitaldrywood/detent#1142" {
+	if !got.Active || got.BackendID != "codex" || len(got.AffectedIssues) != 1 || got.AffectedIssues[0] != "digitaldrywood/detent#1142" {
 		t.Fatalf("diagnostic = %#v", got)
+	}
+	recordedDetail := doctorBackendCapacityDetail(diagnostics, 1, false)
+	if !strings.Contains(recordedDetail, "may still be active") || !strings.Contains(recordedDetail, "enforcement unknown") {
+		t.Fatalf("recorded detail = %q", recordedDetail)
 	}
 	lastProbeAt := now.Add(5 * time.Minute)
 	nextProbeAt := now.Add(15 * time.Minute)
