@@ -54,6 +54,77 @@ func TestBackendCapacityDispatchAllowsOneResetProbe(t *testing.T) {
 	}
 }
 
+func TestHandleRunResultRetriesTransientOverloadWithoutBackendOutage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 20, 34, 0, 0, time.UTC)
+	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	cfg := normalizeConfig(Config{
+		OverloadRetryDelay: 45 * time.Second,
+		ActiveStates:       []string{"In Progress", "Merging"},
+		TerminalStates:     []string{"Done"},
+	})
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:                cfg,
+		capacityController: backendCapacityTestController{scope: scope},
+		logger:             slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+	issue := connector.Issue{ID: "issue-merge-overload", Identifier: "digitaldrywood/detent#1281", State: "Merging"}
+	state.Running[issue.ID] = Running{Issue: issue, Attempt: 7, WorkerHost: "worker-a", StartedAt: now.Add(-time.Minute)}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+	overloadErr := backendcapacity.NewError(scope, backendcapacity.Details{
+		Type:   backendcapacity.ErrorTypeTransientOverload,
+		Kind:   "serverOverloaded",
+		Reason: string(backendcapacity.ErrorTypeTransientOverload),
+	}, errors.New("selected model is at capacity"))
+
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+		IssueID:      issue.ID,
+		Request:      runpkg.RunRequest{Issue: issue, Attempt: 7},
+		Err:          overloadErr,
+		CompletedAt:  now,
+		Retryable:    true,
+		RetryAttempt: 7,
+		RetryDelay:   45 * time.Second,
+	})
+
+	if len(state.BackendOutages) != 0 {
+		t.Fatalf("BackendOutages = %#v, want none", state.BackendOutages)
+	}
+	retry, ok := state.Retry[issue.ID]
+	if !ok || retry.Attempt != 7 || !retry.DueAt.Equal(now.Add(45*time.Second)) || retry.Error != "transient_overload" {
+		t.Fatalf("Retry[%q] = %#v, want same-attempt transient retry after 45s", issue.ID, retry)
+	}
+	if _, _, paused := orch.backendCapacityDispatch(&state, runpkg.RunRequest{Issue: connector.Issue{ID: "other-issue"}}, now); paused {
+		t.Fatal("transient overload paused dispatch for another issue")
+	}
+	if len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 {
+		t.Fatalf("failure breakers = instant %#v repeated %#v, want no overload strikes", state.InstantFailures, state.RepeatedFailures)
+	}
+	if !strings.Contains(logs.String(), "level=INFO") || !strings.Contains(logs.String(), "reason=transient_overload") {
+		t.Fatalf("logs = %q, want INFO transient_overload reason", logs.String())
+	}
+}
+
+func TestRegisterBackendOutageRejectsTransientOverload(t *testing.T) {
+	t.Parallel()
+
+	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	overloadErr, ok := backendcapacity.As(backendcapacity.NewError(scope, backendcapacity.Details{
+		Type: backendcapacity.ErrorTypeTransientOverload,
+	}, errors.New("HTTP 529")))
+	if !ok {
+		t.Fatal("transient overload error did not unwrap")
+	}
+	state := newState(normalizeConfig(Config{}))
+	orch := &Orchestrator{}
+	if outage := orch.registerBackendOutage(&state, overloadErr, time.Now()); outage != (BackendOutage{}) || len(state.BackendOutages) != 0 {
+		t.Fatalf("registerBackendOutage() = %#v, outages %#v, want no outage", outage, state.BackendOutages)
+	}
+}
+
 func TestHandleRunResultKeepsOutageWhenCapacityProbeFails(t *testing.T) {
 	t.Parallel()
 
@@ -290,6 +361,75 @@ func TestValidatorCapacityPausesWithoutFailureBackoff(t *testing.T) {
 	case <-validator.requests:
 		t.Fatal("validator ran while backend capacity was paused")
 	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestValidatorTransientOverloadUsesShortRetryWithoutOutage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 21, 0, 0, 0, time.UTC)
+	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	validator := &backendCapacityTestValidator{
+		requests: make(chan ValidatorRequest, 1),
+		err: backendcapacity.NewError(scope, backendcapacity.Details{
+			Type:   backendcapacity.ErrorTypeTransientOverload,
+			Kind:   "serverOverloaded",
+			Reason: string(backendcapacity.ErrorTypeTransientOverload),
+		}, errors.New("selected model is at capacity")),
+	}
+	cfg := normalizeConfig(Config{OverloadRetryDelay: 45 * time.Second})
+	orch := &Orchestrator{
+		cfg:                     cfg,
+		validator:               validator,
+		validatorCapacity:       backendCapacityTestController{scope: scope},
+		validatorRuns:           map[string]struct{}{},
+		validatorResults:        map[string]validatorStageResult{},
+		validatorFailures:       map[string]validatorStageFailure{},
+		now:                     func() time.Time { return now },
+		validatorCapacityEvents: make(chan validatorCapacityEvent, 1),
+		done:                    make(chan struct{}),
+	}
+	state := newState(cfg)
+	issue := connector.Issue{
+		ID:    "issue-validator-overload",
+		State: "In Progress",
+		PullRequest: &connector.PullRequest{
+			HeadSHA: "overload-head",
+		},
+	}
+
+	orch.startValidatorStage(t.Context(), &state, issue, now)
+	select {
+	case <-validator.requests:
+	case <-time.After(time.Second):
+		t.Fatal("validator did not run")
+	}
+	identity := validatorStageIdentityForIssue(issue)
+	deadline := time.NewTimer(time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	t.Cleanup(func() { deadline.Stop() })
+	t.Cleanup(ticker.Stop)
+	var failure validatorStageFailure
+	for failure.NextRetryAt.IsZero() {
+		select {
+		case <-ticker.C:
+			orch.validatorMu.Lock()
+			failure = orch.validatorFailures[identity.Key]
+			orch.validatorMu.Unlock()
+		case <-deadline.C:
+			t.Fatal("validator overload retry was not scheduled")
+		}
+	}
+	if failure.Attempt != 0 || !failure.NextRetryAt.Equal(now.Add(45*time.Second)) || failure.Error != "transient_overload" {
+		t.Fatalf("validator failure = %#v, want same-attempt retry after 45s", failure)
+	}
+	if len(state.BackendOutages) != 0 {
+		t.Fatalf("BackendOutages = %#v, want none", state.BackendOutages)
+	}
+	select {
+	case event := <-orch.validatorCapacityEvents:
+		t.Fatalf("validator capacity event = %#v, want none", event)
+	default:
 	}
 }
 

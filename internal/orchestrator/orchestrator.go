@@ -33,6 +33,7 @@ const (
 	defaultGitHubRESTMinReserve         = 1000
 	defaultMaxConcurrentAgents          = 1
 	defaultMaxRetryBackoff              = 5 * time.Minute
+	defaultOverloadRetryDelay           = 45 * time.Second
 	defaultContinuationRetry            = time.Second
 	defaultFailureRetryBaseDelay        = 10 * time.Second
 	defaultFailureBreakerSameClassLimit = 5
@@ -71,6 +72,7 @@ type Config struct {
 	ResumeOrphanedSessions        bool
 	MaxConcurrentAgentsPerHost    int
 	MaxRetryBackoff               time.Duration
+	OverloadRetryDelay            time.Duration
 	NoProgressSpendLimitUSD       float64
 	FailureBreaker                FailureBreakerConfig
 	Project                       scheduler.ProjectCandidate
@@ -315,6 +317,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	supervisor, err := runpkg.NewSupervisor(runner, runpkg.SupervisorConfig{
 		MaxRetryBackoff:       cfg.MaxRetryBackoff,
 		FailureRetryBaseDelay: cfg.FailureRetryBaseDelay,
+		OverloadRetryDelay:    cfg.OverloadRetryDelay,
 		Now:                   now,
 		Logger:                logger,
 	})
@@ -553,6 +556,7 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	o.supervisor.UpdateConfig(runpkg.SupervisorConfig{
 		MaxRetryBackoff:       cfg.MaxRetryBackoff,
 		FailureRetryBaseDelay: cfg.FailureRetryBaseDelay,
+		OverloadRetryDelay:    cfg.OverloadRetryDelay,
 	})
 	state.PollInterval = cfg.PollInterval
 	state.MaxConcurrentAgents = cfg.MaxConcurrentAgents

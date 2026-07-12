@@ -243,7 +243,6 @@ func TestFailureBreakerConfiguration(t *testing.T) {
 			wantErr: "agent.failure_breaker.cooldown_seconds must be greater than 0",
 		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -262,6 +261,43 @@ func TestFailureBreakerConfiguration(t *testing.T) {
 			}
 			if got := workflow.Config.Agent.FailureBreaker; got != tt.want {
 				t.Fatalf("Agent.FailureBreaker = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOverloadRetryDelayConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		raw     string
+		want    int
+		wantErr string
+	}{
+		{name: "default", raw: "---\ntracker:\n  kind: memory\n---\nPrompt\n", want: DefaultOverloadRetryDelayMS},
+		{name: "custom", raw: "---\ntracker:\n  kind: memory\nagent:\n  overload_retry_delay_ms: 60000\n---\nPrompt\n", want: 60000},
+		{name: "zero rejected", raw: "---\ntracker:\n  kind: memory\nagent:\n  overload_retry_delay_ms: 0\n---\nPrompt\n", wantErr: "agent.overload_retry_delay_ms must be greater than 0"},
+		{name: "negative rejected", raw: "---\ntracker:\n  kind: memory\nagent:\n  overload_retry_delay_ms: -1\n---\nPrompt\n", wantErr: "agent.overload_retry_delay_ms must be greater than 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workflow, err := ParseWorkflow([]byte(tt.raw))
+			if err == nil {
+				err = workflow.Config.Validate()
+			}
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("configuration error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			if workflow.Config.Agent.OverloadRetryDelayMS != tt.want {
+				t.Fatalf("OverloadRetryDelayMS = %d, want %d", workflow.Config.Agent.OverloadRetryDelayMS, tt.want)
 			}
 		})
 	}

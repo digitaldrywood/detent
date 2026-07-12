@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/connector"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
@@ -62,26 +63,27 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	s.applyAutoPromoteDecisionSnapshots(pipelineIssueSnapshots, pipeline, now)
 	s.applyArtifactGateWaitDispatchSnapshots(pipelineIssueSnapshots, pipeline)
 	snapshot := telemetry.Snapshot{
-		GeneratedAt:        now,
-		Instance:           s.Instance,
-		Auth:               telemetryAuthHealth(s.Auth),
-		Shutdown:           shutdownSnapshot(s),
-		Events:             cloneActivityEvents(s.RecentEvents),
-		Refresh:            refresh,
-		TrackerDrift:       statusDriftSnapshot(statusDrift, s.AutoPromoteQuietDuration, s.PollInterval, now, s.laneEntries),
-		BoardIssues:        boardIssueSnapshots,
-		Pipeline:           pipelineIssueSnapshots,
-		Running:            runningSnapshots(s.Running, s.Claimed, s.MergeTimings, now, s.laneEntries),
-		WorkAttempts:       cloneTelemetryWorkAttempts(s.WorkAttempts),
-		SchedulerDecisions: cloneTelemetrySchedulerDecisions(s.SchedulerDecisions),
-		Release:            releaseSnapshot(s.Release),
-		Queue:              queueSnapshots(s.Retry, s.Claimed, s.MergeTimings, now, s.laneEntries),
-		Blocked:            blockedSnapshots(s.Blocked, s.Claimed, now, s.laneEntries),
-		Completed:          completedSnapshots(s.Completed, s.Claimed, now, s.laneEntries),
-		RateLimits:         cloneRateLimits(s.RateLimits),
-		BackendOutages:     backendOutageSnapshots(s.BackendOutages),
-		FailureBreakers:    projectFailureBreakerSnapshots(s.FailureBreaker),
-		Tokens:             tokensFromTokenTotals(s.liveTokenTotals()),
+		GeneratedAt:             now,
+		Instance:                s.Instance,
+		Auth:                    telemetryAuthHealth(s.Auth),
+		Shutdown:                shutdownSnapshot(s),
+		Events:                  cloneActivityEvents(s.RecentEvents),
+		Refresh:                 refresh,
+		TrackerDrift:            statusDriftSnapshot(statusDrift, s.AutoPromoteQuietDuration, s.PollInterval, now, s.laneEntries),
+		BoardIssues:             boardIssueSnapshots,
+		Pipeline:                pipelineIssueSnapshots,
+		Running:                 runningSnapshots(s.Running, s.Claimed, s.MergeTimings, now, s.laneEntries),
+		WorkAttempts:            cloneTelemetryWorkAttempts(s.WorkAttempts),
+		SchedulerDecisions:      cloneTelemetrySchedulerDecisions(s.SchedulerDecisions),
+		Release:                 releaseSnapshot(s.Release),
+		Queue:                   queueSnapshots(s.Retry, s.Claimed, s.MergeTimings, now, s.laneEntries),
+		Blocked:                 blockedSnapshots(s.Blocked, s.Claimed, now, s.laneEntries),
+		Completed:               completedSnapshots(s.Completed, s.Claimed, now, s.laneEntries),
+		RateLimits:              cloneRateLimits(s.RateLimits),
+		BackendOutages:          backendOutageSnapshots(s.BackendOutages),
+		FailureBreakers:         projectFailureBreakerSnapshots(s.FailureBreaker),
+		OverloadRetriesLastHour: overloadRetriesLastHour(s.WorkAttempts, now),
+		Tokens:                  tokensFromTokenTotals(s.liveTokenTotals()),
 		Budget: telemetry.Budget{
 			Refusals: budgetRefusalSnapshots(s.BudgetRefusals),
 		},
@@ -109,6 +111,22 @@ func projectFailureBreakerSnapshots(breaker ProjectFailureBreaker) []telemetry.F
 		ResumeAt:        breaker.ResumeAt,
 		CanaryIssueID:   breaker.CanaryIssueID,
 	}}
+}
+
+func overloadRetriesLastHour(attempts []telemetry.WorkAttempt, now time.Time) int {
+	cutoff := now.Add(-time.Hour)
+	count := 0
+	for _, attempt := range attempts {
+		if attempt.ErrorClass != backendcapacity.TransientOverloadErrorClass || attempt.CompletedAt == nil {
+			continue
+		}
+		completedAt := attempt.CompletedAt.UTC()
+		if completedAt.Before(cutoff) || completedAt.After(now) {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func releaseSnapshot(status releasepkg.Status) telemetry.Release {

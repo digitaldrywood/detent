@@ -60,6 +60,7 @@ const (
 	DefaultFailureBreakerWindowSeconds       = 3600
 	DefaultFailureBreakerCooldownSeconds     = 3600
 	DefaultAutoPromoteGateWaitTimeoutSeconds = 3600
+	DefaultOverloadRetryDelayMS              = 45000
 
 	DefaultPollingIntervalMS      = 120000
 	MinPollingIntervalMS          = 60000
@@ -230,6 +231,7 @@ type Agent struct {
 	MaxConcurrentAgents          int                          `yaml:"max_concurrent_agents"`
 	MaxTurns                     int                          `yaml:"max_turns"`
 	MaxRetryBackoffMS            int                          `yaml:"max_retry_backoff_ms"`
+	OverloadRetryDelayMS         int                          `yaml:"overload_retry_delay_ms"`
 	NoProgressSpendLimitUSD      float64                      `yaml:"no_progress_spend_limit_usd"`
 	FailureBreaker               FailureBreaker               `yaml:"failure_breaker"`
 	MaxSessionTokens             int64                        `yaml:"max_session_tokens"`
@@ -989,6 +991,7 @@ func Default() Config {
 			MaxConcurrentAgents:     10,
 			MaxTurns:                20,
 			MaxRetryBackoffMS:       300000,
+			OverloadRetryDelayMS:    DefaultOverloadRetryDelayMS,
 			NoProgressSpendLimitUSD: DefaultNoProgressSpendLimitUSD,
 			FailureBreaker: FailureBreaker{
 				SameClassLimit:  DefaultFailureBreakerSameClassLimit,
@@ -1574,6 +1577,7 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	validatePositive(prefix+".max_concurrent_agents", a.MaxConcurrentAgents, problems)
 	validatePositive(prefix+".max_turns", a.MaxTurns, problems)
 	validatePositive(prefix+".max_retry_backoff_ms", a.MaxRetryBackoffMS, problems)
+	validatePositive(prefix+".overload_retry_delay_ms", a.OverloadRetryDelayMS, problems)
 	if a.MaxSessionTokens < 0 {
 		*problems = append(*problems, prefix+".max_session_tokens must be greater than or equal to 0")
 	}

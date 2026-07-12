@@ -669,6 +669,7 @@ agent:
   max_concurrent_agents: 5
   max_turns: 20
   max_retry_backoff_ms: 300000
+  overload_retry_delay_ms: 45000
   no_progress_spend_limit_usd: 3
   failure_breaker:
     same_class_limit: 5

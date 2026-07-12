@@ -15,8 +15,10 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 		err  error
 		want bool
 	}{
-		{name: "anthropic rate limit", err: errors.New("claude turn failed: rate_limit_error"), want: true},
-		{name: "vertex quota", err: errors.New("claude turn failed: RESOURCE_EXHAUSTED"), want: true},
+		{name: "anthropic rate limit without reset", err: errors.New("claude turn failed: rate_limit_error")},
+		{name: "vertex quota without reset", err: errors.New("claude turn failed: RESOURCE_EXHAUSTED")},
+		{name: "anthropic overload", err: errors.New("claude turn failed: overloaded_error"), want: true},
+		{name: "http overload", err: errors.New("claude turn failed: HTTP 529"), want: true},
 		{name: "max turns", err: errors.New("claude turn failed: error_max_turns")},
 		{name: "result message", err: finalTurnError(turnState{sawResult: true, resultIsError: true, resultSubtype: "error_during_execution", resultText: "You've hit your limit. Try again at 9:39 PM"}, nil, ""), want: true},
 	}

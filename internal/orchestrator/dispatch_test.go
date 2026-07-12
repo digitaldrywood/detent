@@ -104,6 +104,7 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Agent.AutoPromote.GateWaitTimeoutSeconds = 900
 	cfg.Agent.AutoPromote.ReworkLimit = 2
 	cfg.Agent.MergeFastPath.Enabled = true
+	cfg.Agent.OverloadRetryDelayMS = 60000
 	cfg.Deliverable.MergeMethod = workflowconfig.MergeMethodRebase
 	cfg.Agent.OutputTruncation.MaxBytes = 4096
 	cfg.Identity.Name = "release-captain"
@@ -121,6 +122,9 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 
 	if got.MaxConcurrentAgentsPerHost != 2 {
 		t.Fatalf("MaxConcurrentAgentsPerHost = %d, want 2", got.MaxConcurrentAgentsPerHost)
+	}
+	if got.OverloadRetryDelay != time.Minute {
+		t.Fatalf("OverloadRetryDelay = %s, want 1m", got.OverloadRetryDelay)
 	}
 	if len(got.WorkerHosts) != 2 || got.WorkerHosts[0] != "worker-a" || got.WorkerHosts[1] != "worker-b" {
 		t.Fatalf("WorkerHosts = %#v, want worker-a and worker-b", got.WorkerHosts)

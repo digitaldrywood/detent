@@ -111,6 +111,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	if capacityErr, ok := backendcapacity.As(event.Err); ok {
+		if capacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
+			o.handleTransientOverload(ctx, state, event, running, capacityErr)
+			return
+		}
 		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, event.Err, "backend_capacity", errorString(event.Err))
 		o.handleBackendCapacityError(ctx, state, event, running, capacityErr)
 		return

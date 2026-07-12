@@ -87,6 +87,9 @@ func (o *Orchestrator) handleBackendCapacityError(
 }
 
 func (o *Orchestrator) registerBackendOutage(state *State, capacityErr *backendcapacity.Error, observedAt time.Time) BackendOutage {
+	if capacityErr == nil || capacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
+		return BackendOutage{}
+	}
 	if observedAt.IsZero() {
 		observedAt = o.clockNow()
 	}
@@ -246,6 +249,9 @@ func (o *Orchestrator) publishValidatorCapacityEvent(ctx context.Context, event 
 
 func (o *Orchestrator) handleValidatorCapacityEvent(state *State, event validatorCapacityEvent) {
 	if event.CapacityErr != nil {
+		if event.CapacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
+			return
+		}
 		outage := o.registerBackendOutage(state, event.CapacityErr, event.CompletedAt)
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      event.CompletedAt,
@@ -469,7 +475,7 @@ func (o *Orchestrator) classifyBlockedCapacityIssue(
 			continue
 		}
 		capacityErr, ok := o.capacityController.ClassifyCapacityError(request, errors.New(body), state.RateLimits, now)
-		if ok && capacityErr != nil {
+		if ok && capacityErr != nil && capacityErr.Details.Type != backendcapacity.ErrorTypeTransientOverload {
 			return capacityErr, issue, true
 		}
 	}

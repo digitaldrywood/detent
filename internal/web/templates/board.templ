@@ -61,6 +61,17 @@ templ boardSnapshotBody(data DashboardData) {
 			@backendCapacityBanner(data.Snapshot)
 		</div>
 	}
+	if data.Snapshot.OverloadRetriesLastHour > 0 {
+		<div class="flex-none px-5 pt-3.5">
+			<section id="backend-overload-retries" class="flex min-w-0 items-start gap-3 rounded-md border border-line bg-surface px-4 py-3 text-sm shadow-sm" role="status" aria-live="polite">
+				@icon.Activity(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-accent"})
+				<div class="min-w-0">
+					<p class="font-medium text-text">{ formatCount(data.Snapshot.OverloadRetriesLastHour) + " overload retries last hour" }</p>
+					<p class="mt-0.5 text-xs text-sec">Provider overloads retry only the affected work; dispatch remains active.</p>
+				</div>
+			</section>
+		</div>
+	}
 	if len(view.Exceptions) > 0 {
 		<div id="board-exceptions" class="flex-none px-5 pt-3.5">
 			@primitives.ExceptionStrip(view.Exceptions)

@@ -22,6 +22,21 @@ var claudeCapacityRules = backendcapacity.Rules{
 		"you've hit your limit",
 		"quota exceeded",
 	},
+	RequireReset: true,
+}
+
+var claudeOverloadRules = backendcapacity.Rules{
+	Kinds: []string{
+		"overloaded_error",
+		"serverOverloaded",
+	},
+	Phrases: []string{
+		"model is at capacity",
+		"model at capacity",
+		"server overloaded",
+		"temporarily overloaded",
+	},
+	HTTP5xx: true,
 }
 
 func (b *AgentBackend) ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Time) (backendcapacity.Details, bool) {
@@ -34,6 +49,9 @@ func (b *AgentBackend) ClassifyCapacityError(err error, limits *telemetry.RateLi
 func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Time) (backendcapacity.Details, bool) {
 	if err == nil {
 		return backendcapacity.Details{}, false
+	}
+	if details, ok := backendcapacity.ClassifyTransientOverload(err.Error(), claudeOverloadRules); ok {
+		return details, true
 	}
 	return backendcapacity.Classify(err.Error(), claudeCapacityResetAt(limits), now, claudeCapacityRules)
 }

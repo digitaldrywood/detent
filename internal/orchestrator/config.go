@@ -28,6 +28,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		ResumeOrphanedSessions:     cfg.Agent.ResumeOrphanedSessions,
 		MaxConcurrentAgentsPerHost: positiveIntValue(cfg.Worker.MaxConcurrentAgentsPerHost),
 		MaxRetryBackoff:            durationFromMillis(cfg.Agent.MaxRetryBackoffMS),
+		OverloadRetryDelay:         durationFromMillis(cfg.Agent.OverloadRetryDelayMS),
 		NoProgressSpendLimitUSD:    cfg.Agent.NoProgressSpendLimitUSD,
 		FailureBreaker: FailureBreakerConfig{
 			SameClassLimit: cfg.Agent.FailureBreaker.SameClassLimit,
@@ -105,6 +106,9 @@ func normalizeConfig(cfg Config) Config {
 	}
 	if cfg.MaxRetryBackoff <= 0 {
 		cfg.MaxRetryBackoff = defaultMaxRetryBackoff
+	}
+	if cfg.OverloadRetryDelay <= 0 {
+		cfg.OverloadRetryDelay = defaultOverloadRetryDelay
 	}
 	if cfg.ContinuationRetryDelay < 0 {
 		cfg.ContinuationRetryDelay = 0

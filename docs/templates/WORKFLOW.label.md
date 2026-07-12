@@ -67,6 +67,7 @@ agent:
   #   merge: high
   max_turns: 20
   max_retry_backoff_ms: 300000
+  overload_retry_delay_ms: 45000
   no_progress_spend_limit_usd: 3
   resume_orphaned_sessions: true
   # Per-session ceiling on total_tokens. total_tokens counts input + output +
