@@ -722,10 +722,27 @@ func (s *Server) kanbanRevertNotices(data templates.DashboardData) []kanbanstate
 		return nil
 	}
 	projectID := strings.TrimSpace(data.ProjectID)
+	var notices []kanbanstate.RevertNotice
 	if projectID != "" {
-		return s.kanbanMutations.ConsumeRevertNotices("project:"+projectID, projectID)
+		notices = s.kanbanMutations.ConsumeRevertNotices("project:"+projectID, projectID)
+	} else {
+		notices = s.kanbanMutations.ConsumeRevertNotices("", "")
 	}
-	return s.kanbanMutations.ConsumeRevertNotices("", "")
+	if s.logger == nil {
+		return notices
+	}
+	for _, notice := range notices {
+		s.logger.Warn("kanban move reverted",
+			"project", notice.ProjectID,
+			"issue_id", notice.IssueID,
+			"identifier", notice.Identifier,
+			"from_state", notice.From,
+			"to_state", notice.To,
+			"data_seq", notice.DataSeq,
+			"contradiction_count", notice.Contradictions,
+		)
+	}
+	return notices
 }
 
 func kanbanRevertFeedback(notices []kanbanstate.RevertNotice) string {

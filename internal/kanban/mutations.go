@@ -10,6 +10,8 @@ import (
 )
 
 const (
+	// Successful polls advance DataSeq, so this permits about two poll cycles
+	// of tracker read-after-write lag.
 	overlayContradictionLimit = 2
 	removalPendingTTL         = 5 * time.Minute
 )
@@ -45,10 +47,14 @@ type synthesizedCard struct {
 }
 
 type RevertNotice struct {
-	Identifier string
-	From       string
-	To         string
-	At         time.Time
+	ProjectID      string
+	IssueID        string
+	Identifier     string
+	From           string
+	To             string
+	DataSeq        uint64
+	Contradictions int
+	At             time.Time
 }
 
 func NewMutationTracker() *MutationTracker {
@@ -120,7 +126,7 @@ func (t *MutationTracker) cardStateLocked(stateKey string, snapshotState string,
 			return pending.current
 		}
 		delete(t.states, stateKey)
-		t.noteRevertLocked(stateKey, pending, snapshotState)
+		t.noteRevertLocked(stateKey, pending, snapshotState, dataSeq)
 		return snapshotState
 	default:
 		delete(t.states, stateKey)
@@ -332,7 +338,7 @@ func (t *MutationTracker) NoteCardRemoved(key string, issueID string, snapshotSt
 	t.mu.Unlock()
 }
 
-func (t *MutationTracker) noteRevertLocked(stateKey string, pending pendingState, snapshotState string) {
+func (t *MutationTracker) noteRevertLocked(stateKey string, pending pendingState, snapshotState string, dataSeq uint64) {
 	identifier := strings.TrimSpace(pending.issue.Identifier)
 	if identifier == "" {
 		identifier = strings.TrimSpace(pending.issue.ID)
@@ -342,10 +348,14 @@ func (t *MutationTracker) noteRevertLocked(stateKey string, pending pendingState
 		to = strings.TrimSpace(pending.snapshot)
 	}
 	t.reverted[stateKey] = RevertNotice{
-		Identifier: identifier,
-		From:       strings.TrimSpace(pending.current),
-		To:         to,
-		At:         time.Now(),
+		ProjectID:      strings.TrimSpace(pending.project),
+		IssueID:        strings.TrimSpace(pending.issue.ID),
+		Identifier:     identifier,
+		From:           strings.TrimSpace(pending.current),
+		To:             to,
+		DataSeq:        dataSeq,
+		Contradictions: pending.contradictions,
+		At:             time.Now(),
 	}
 }
 

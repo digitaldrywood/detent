@@ -4171,7 +4171,310 @@ func TestKanbanMoveRejectsConcurrentTransitionFromStaleSource(t *testing.T) {
 	}
 }
 
-func TestKanbanMoveRejectsStaleAndPROnlyCards(t *testing.T) {
+func TestKanbanMoveUsesLiveStateTransitionForStaleCard(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		transitions map[string][]string
+		wantStatus  int
+		wantUpdates []kanbanStateUpdate
+	}{
+		{
+			name: "live transition allowed",
+			transitions: map[string][]string{
+				"Todo": {"In Progress"},
+			},
+			wantStatus:  http.StatusOK,
+			wantUpdates: []kanbanStateUpdate{{issueID: "I_stale1096", state: "In Progress"}},
+		},
+		{
+			name: "live transition disallowed",
+			transitions: map[string][]string{
+				"Todo": {"Blocked"},
+			},
+			wantStatus: http.StatusConflict,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testDeps(t)
+			actionConnector := &kanbanActionConnector{name: "github"}
+			mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+				Mode:               workflowconfig.KanbanModeIntegration,
+				AllowedTransitions: tt.transitions,
+			}, actionConnector)
+			if err := deps.Hub.Publish(telemetry.Snapshot{
+				GeneratedAt: time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC),
+				Project:     telemetry.Project{ID: "detent"},
+				Refresh:     telemetry.Refresh{DataSeq: 41},
+				Pipeline: []telemetry.Issue{{
+					ID:         "I_stale1096",
+					Identifier: "digitaldrywood/detent#1096",
+					ProjectID:  "detent",
+					Title:      "Advanced under cursor",
+					State:      "Todo",
+				}},
+			}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			form := url.Values{
+				"project_id":    {"detent"},
+				"issue_id":      {"I_stale1096"},
+				"current_state": {"Backlog"},
+				"target_state":  {"In Progress"},
+			}
+			rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if got := actionConnector.stateUpdates(); !equalStateUpdates(got, tt.wantUpdates) {
+				t.Fatalf("state updates = %#v, want %#v", got, tt.wantUpdates)
+			}
+		})
+	}
+}
+
+func TestKanbanMoveLogsOutcome(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		currentState   string
+		transitions    map[string][]string
+		connectorError error
+		wantStatus     int
+		wantLevel      string
+		wantMessage    string
+		wantCurrent    string
+		wantLive       string
+	}{
+		{
+			name:         "success",
+			currentState: "Todo",
+			transitions: map[string][]string{
+				"Todo": {"In Progress"},
+			},
+			wantStatus:  http.StatusOK,
+			wantLevel:   "INFO",
+			wantMessage: "kanban move succeeded",
+			wantCurrent: "Todo",
+		},
+		{
+			name:         "stale allowed",
+			currentState: "Backlog",
+			transitions: map[string][]string{
+				"Todo": {"In Progress"},
+			},
+			wantStatus:  http.StatusOK,
+			wantLevel:   "INFO",
+			wantMessage: "kanban move succeeded",
+			wantCurrent: "Todo",
+		},
+		{
+			name:         "stale disallowed",
+			currentState: "Backlog",
+			transitions: map[string][]string{
+				"Todo": {"Blocked"},
+			},
+			wantStatus:  http.StatusConflict,
+			wantLevel:   "WARN",
+			wantMessage: "kanban move rejected: stale card",
+			wantCurrent: "Backlog",
+			wantLive:    "Todo",
+		},
+		{
+			name:         "transition blocked",
+			currentState: "Todo",
+			transitions: map[string][]string{
+				"Todo": {"Blocked"},
+			},
+			wantStatus:  http.StatusUnprocessableEntity,
+			wantLevel:   "WARN",
+			wantMessage: "kanban move blocked by transition policy",
+			wantCurrent: "Todo",
+		},
+		{
+			name:         "connector blocked",
+			currentState: "Todo",
+			transitions: map[string][]string{
+				"Todo": {"In Progress"},
+			},
+			connectorError: &connector.StateUpdateBlockedError{
+				IssueID:      "I_log1096",
+				CurrentState: "Todo",
+				TargetState:  "In Progress",
+			},
+			wantStatus:  http.StatusUnprocessableEntity,
+			wantLevel:   "WARN",
+			wantMessage: "kanban move blocked by connector",
+			wantCurrent: "Todo",
+		},
+		{
+			name:           "connector error",
+			currentState:   "Todo",
+			connectorError: errors.New("tracker unavailable"),
+			transitions: map[string][]string{
+				"Todo": {"In Progress"},
+			},
+			wantStatus:  http.StatusBadGateway,
+			wantLevel:   "WARN",
+			wantMessage: "kanban move failed",
+			wantCurrent: "Todo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var logs bytes.Buffer
+			deps := testDeps(t)
+			actionConnector := &kanbanActionConnector{name: "github", updateErr: tt.connectorError}
+			mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+				Mode:               workflowconfig.KanbanModeIntegration,
+				AllowedTransitions: tt.transitions,
+			}, actionConnector)
+			if err := deps.Hub.Publish(telemetry.Snapshot{
+				GeneratedAt: time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC),
+				Project:     telemetry.Project{ID: "detent"},
+				Refresh:     telemetry.Refresh{DataSeq: 41},
+				Pipeline: []telemetry.Issue{{
+					ID:         "I_log1096",
+					Identifier: "digitaldrywood/detent#1096",
+					ProjectID:  "detent",
+					Title:      "Logged move",
+					State:      "Todo",
+				}},
+			}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+			server, err := web.NewServer(web.Config{
+				Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+			}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			form := url.Values{
+				"project_id":    {"detent"},
+				"issue_id":      {"I_log1096"},
+				"current_state": {tt.currentState},
+				"target_state":  {"In Progress"},
+			}
+			rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+
+			records := kanbanMoveLogRecords(t, logs.Bytes())
+			if len(records) != 1 {
+				t.Fatalf("kanban move log records = %#v, want exactly one", records)
+			}
+			record := records[0]
+			assertJSONLogField(t, record, "level", tt.wantLevel)
+			assertJSONLogField(t, record, "msg", tt.wantMessage)
+			assertJSONLogField(t, record, "project", "detent")
+			assertJSONLogField(t, record, "issue_id", "I_log1096")
+			assertJSONLogField(t, record, "identifier", "digitaldrywood/detent#1096")
+			assertJSONLogField(t, record, "current_state", tt.wantCurrent)
+			assertJSONLogField(t, record, "target_state", "In Progress")
+			assertJSONLogField(t, record, "data_seq", float64(41))
+			if tt.wantLive != "" {
+				assertJSONLogField(t, record, "live_state", tt.wantLive)
+			}
+		})
+	}
+}
+
+func TestKanbanMoveLogsOverlayRevert(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+		AllowedTransitions: map[string][]string{
+			"Backlog": {"Todo"},
+		},
+	}, actionConnector)
+	publish := func(dataSeq uint64) {
+		t.Helper()
+		if err := deps.Hub.Publish(telemetry.Snapshot{
+			GeneratedAt: time.Date(2026, 7, 9, 12, int(dataSeq), 0, 0, time.UTC),
+			Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			Projects: []telemetry.ProjectSnapshot{{
+				Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Refresh: telemetry.Refresh{DataSeq: dataSeq},
+			}},
+			Refresh: telemetry.Refresh{DataSeq: dataSeq},
+			BoardIssues: []telemetry.Issue{{
+				ID:         "I_revert1096",
+				Identifier: "digitaldrywood/detent#1096",
+				ProjectID:  "detent",
+				Title:      "Reverted move",
+				State:      "Backlog",
+			}},
+		}); err != nil {
+			t.Fatalf("Publish() error = %v", err)
+		}
+	}
+	publish(7)
+	server, err := web.NewServer(web.Config{
+		Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"project_id":    {"detent"},
+		"issue_id":      {"I_revert1096"},
+		"current_state": {"Backlog"},
+		"target_state":  {"Todo"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	publish(8)
+	requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
+	publish(9)
+	requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
+	requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
+
+	records := kanbanMoveLogRecords(t, logs.Bytes())
+	var reverts []map[string]any
+	for _, record := range records {
+		if record["msg"] == "kanban move reverted" {
+			reverts = append(reverts, record)
+		}
+	}
+	if len(reverts) != 1 {
+		t.Fatalf("kanban revert log records = %#v, want exactly one", reverts)
+	}
+	record := reverts[0]
+	assertJSONLogField(t, record, "level", "WARN")
+	assertJSONLogField(t, record, "project", "detent")
+	assertJSONLogField(t, record, "issue_id", "I_revert1096")
+	assertJSONLogField(t, record, "identifier", "digitaldrywood/detent#1096")
+	assertJSONLogField(t, record, "from_state", "Todo")
+	assertJSONLogField(t, record, "to_state", "Backlog")
+	assertJSONLogField(t, record, "data_seq", float64(9))
+	assertJSONLogField(t, record, "contradiction_count", float64(2))
+}
+
+func TestKanbanMoveAllowsStaleAndRejectsPROnlyCards(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
@@ -4215,11 +4518,11 @@ func TestKanbanMoveRejectsStaleAndPROnlyCards(t *testing.T) {
 		"target_state":  {"In Progress"},
 	}
 	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", staleForm)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("stale status = %d, want %d; body = %s", rec.Code, http.StatusConflict, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stale status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "stale") {
-		t.Fatalf("stale body missing useful error: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "Moved") {
+		t.Fatalf("stale-allowed body missing success feedback: %s", rec.Body.String())
 	}
 
 	prOnlyForm := url.Values{
@@ -4232,8 +4535,8 @@ func TestKanbanMoveRejectsStaleAndPROnlyCards(t *testing.T) {
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("pr-only status = %d, want %d; body = %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
 	}
-	if len(actionConnector.stateUpdates()) != 0 {
-		t.Fatalf("state updates = %#v, want none", actionConnector.stateUpdates())
+	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_kw1", state: "In Progress"}}; !equalStateUpdates(got, want) {
+		t.Fatalf("state updates = %#v, want %#v", got, want)
 	}
 }
 
@@ -10779,6 +11082,34 @@ func performForm(t *testing.T, handler http.Handler, method string, path string,
 	req.Header.Set("HX-Request", "true")
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+func kanbanMoveLogRecords(t *testing.T, data []byte) []map[string]any {
+	t.Helper()
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var records []map[string]any
+	for {
+		var record map[string]any
+		if err := decoder.Decode(&record); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatalf("decode log record: %v", err)
+		}
+		message, _ := record["msg"].(string)
+		if strings.HasPrefix(message, "kanban move") {
+			records = append(records, record)
+		}
+	}
+	return records
+}
+
+func assertJSONLogField(t *testing.T, record map[string]any, key string, want any) {
+	t.Helper()
+
+	if got := record[key]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("log field %q = %#v, want %#v; record = %#v", key, got, want, record)
+	}
 }
 
 func kanbanPendingStateCount(t *testing.T, server *web.Server) int {
