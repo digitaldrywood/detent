@@ -249,7 +249,7 @@ func TestBuildBudgetDispatchGuards(t *testing.T) {
 
 	subscription := enabled
 	subscription.BillingMode = workflowconfig.BillingModeSubscription
-	checker, estimator, err = buildBudgetDispatchGuards(subscription, &runnerSessionStore{}, nil)
+	checker, estimator, err = buildBudgetDispatchGuards("alpha", subscription, &runnerSessionStore{}, nil)
 	if err != nil {
 		t.Fatalf("buildBudgetDispatchGuards(subscription) error = %v", err)
 	}
