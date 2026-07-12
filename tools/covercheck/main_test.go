@@ -65,6 +65,24 @@ func TestCheckCoverage(t *testing.T) {
 			},
 		},
 		{
+			name: "enforces file floors",
+			profile: coverProfile(
+				testModule+"/internal/foo/a.go:1.1,1.2 9 1",
+				testModule+"/internal/foo/a.go:2.1,2.2 1 0",
+			),
+			floor: 50,
+			exceptions: map[string]float64{
+				testModule + "/internal/foo/a.go": 95,
+			},
+			want: []coverageFailure{
+				{
+					Package:  testModule + "/internal/foo/a.go",
+					Coverage: 90,
+					Floor:    95,
+				},
+			},
+		},
+		{
 			name: "sorts failures by package",
 			profile: coverProfile(
 				testModule+"/internal/zeta/a.go:1.1,1.2 1 0",
@@ -98,6 +116,19 @@ func TestCheckCoverage(t *testing.T) {
 
 			assertFailures(t, got, tt.want)
 		})
+	}
+}
+
+func TestCheckCoverageRejectsMissingFileFloorTarget(t *testing.T) {
+	t.Parallel()
+
+	_, err := checkCoverage(
+		strings.NewReader(coverProfile(testModule+"/internal/foo/a.go:1.1,1.2 1 1")),
+		50,
+		map[string]float64{testModule + "/internal/foo/missing.go": 90},
+	)
+	if err == nil || !strings.Contains(err.Error(), "coverage floor target") {
+		t.Fatalf("checkCoverage() error = %v, want missing target error", err)
 	}
 }
 
@@ -190,7 +221,7 @@ func TestRun(t *testing.T) {
 			),
 			exceptions: testModule + "/internal/foo 0\n",
 			wantCode:   0,
-			wantStdout: "package coverage meets per-package floors\n",
+			wantStdout: "coverage meets configured package and file floors\n",
 		},
 		{
 			name: "fails with sorted package output",
@@ -199,7 +230,7 @@ func TestRun(t *testing.T) {
 				testModule+"/internal/alpha/a.go:1.1,1.2 1 0",
 			),
 			wantCode: 1,
-			wantStderr: "package coverage below floor:\n" +
+			wantStderr: "coverage below floor:\n" +
 				"  github.com/digitaldrywood/detent/internal/alpha: 0.0% below 50.0%\n" +
 				"  github.com/digitaldrywood/detent/internal/zeta: 0.0% below 50.0%\n",
 		},

@@ -1,8 +1,10 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -149,6 +151,82 @@ func TestBackendCapacityWithoutResetUsesLowFrequencyProbe(t *testing.T) {
 	now := time.Date(2026, 7, 10, 1, 55, 0, 0, time.UTC)
 	if got, want := backendCapacityResumeAt(time.Time{}, now), now.Add(backendCapacityProbeDelay); !got.Equal(want) {
 		t.Fatalf("backendCapacityResumeAt() = %s, want %s", got, want)
+	}
+}
+
+func TestBackendCapacityHelperBoundaries(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 1, 55, 0, 0, time.UTC)
+	if got := backendCapacityStatusMessage(BackendOutage{}); got != "backend agent backend at usage limit" {
+		t.Fatalf("backendCapacityStatusMessage() = %q", got)
+	}
+	outage := BackendOutage{
+		Scope:    backendcapacity.Scope{BackendKind: "codex"},
+		ResumeAt: now,
+	}
+	if got := backendCapacityStatusMessage(outage); !strings.Contains(got, "backend codex") || !strings.Contains(got, now.Format(time.RFC3339)) {
+		t.Fatalf("backendCapacityStatusMessage() = %q", got)
+	}
+
+	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	resetAt := now.Add(time.Hour)
+	capacityErr, ok := backendcapacity.As(backendcapacity.NewError(
+		scope,
+		backendcapacity.Details{Kind: "usageLimitExceeded", ResetAt: &resetAt},
+		errors.New("usage limit reached"),
+	))
+	if !ok {
+		t.Fatal("capacity error did not unwrap")
+	}
+	orch := &Orchestrator{now: func() time.Time { return now }}
+	state := State{
+		Retry:   map[string]Retry{},
+		Claimed: map[string]Claimed{},
+	}
+	registered := orch.registerBackendOutage(&state, capacityErr, time.Time{})
+	if !registered.DetectedAt.Equal(now) || state.BackendOutages[scope.Key()].Kind != "usageLimitExceeded" {
+		t.Fatalf("registered outage = %#v", registered)
+	}
+
+	running := Running{Issue: connector.Issue{ID: "issue-1"}, Attempt: 2, WorkerHost: "worker"}
+	orch.scheduleBackendCapacityRetry(&state, running, registered)
+	if state.Claimed[running.Issue.ID].ClaimedAt != registered.LastObservedAt || state.Retry[running.Issue.ID].WorkerHost != "worker" {
+		t.Fatalf("scheduled state = claims %#v retries %#v", state.Claimed, state.Retry)
+	}
+	markBackendCapacityProbe(&state, "missing", running.Issue.ID)
+	orch.recoverBackendCapacity(&state, Running{CapacityScope: backendcapacity.Scope{BackendID: "missing"}}, now)
+	if _, _, paused := orch.validatorCapacityDispatch(nil, connector.Issue{}, now); paused {
+		t.Fatal("nil validator capacity dispatch paused")
+	}
+	orch.publishValidatorCapacityEvent(t.Context(), validatorCapacityEvent{})
+	orch.handleValidatorCapacityEvent(&state, validatorCapacityEvent{})
+
+	var logs bytes.Buffer
+	orch.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	orch.handleValidatorCapacityEvent(&state, validatorCapacityEvent{CapacityErr: capacityErr, CompletedAt: now})
+	orch.recoverBackendCapacity(&state, Running{CapacityScope: scope, CapacityProbe: true}, now)
+	state.BackendOutages[scope.Key()] = registered
+	orch.deferBackendCapacityProbe(&state, Running{CapacityScope: scope, CapacityProbe: true}, time.Time{}, errors.New("probe failed"))
+	if !strings.Contains(logs.String(), "backend capacity recovered") || !strings.Contains(logs.String(), "probe failed") {
+		t.Fatalf("capacity logs = %q", logs.String())
+	}
+
+	recovery := BackendRecovery{Outage: registered, RecoveredAt: now}
+	if key, _, found := matchingBackendRecovery(map[string]BackendRecovery{scope.Key(): recovery}, scope); !found || key != scope.Key() {
+		t.Fatalf("matchingBackendRecovery() = %q, %t", key, found)
+	}
+	readerless := &Orchestrator{connector: &backendCapacityTestConnector{}}
+	if _, _, ok := readerless.classifyBlockedCapacityIssue(t.Context(), &state, connector.Issue{ID: "blocked"}, now); ok {
+		t.Fatal("readerless capacity issue classified")
+	}
+
+	recoveryState := newState(normalizeConfig(Config{}))
+	recoveryIssue := connector.Issue{ID: "recover", State: "Blocked"}
+	recoveryState.Blocked[recoveryIssue.ID] = Blocked{Issue: recoveryIssue}
+	recoveryOrch := &Orchestrator{connector: &backendCapacityTestConnector{}}
+	if !recoveryOrch.applyBackendCapacityBlockedRecovery(t.Context(), &recoveryState, recoveryIssue, BackendOutage{}, recovery, now) {
+		t.Fatal("applyBackendCapacityBlockedRecovery() = false")
 	}
 }
 

@@ -1,7 +1,10 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"math"
 	"strings"
 	"testing"
@@ -216,8 +219,72 @@ func TestSpendProgressPriorAttemptRestoresExplainBeforeRetry(t *testing.T) {
 	}
 }
 
+func TestEvaluateSpendProgressFailsOpen(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	issue := connector.Issue{ID: "issue-1"}
+	tests := []struct {
+		name     string
+		attempts *implementProgressAttemptStore
+		spend    *spendProgressStore
+		missing  bool
+		want     string
+	}{
+		{name: "missing spend store", attempts: &implementProgressAttemptStore{}, missing: true, want: "progress spend store unavailable"},
+		{name: "history lookup failure", attempts: &implementProgressAttemptStore{historyErr: errors.New("history unavailable")}, spend: &spendProgressStore{}, want: "history unavailable"},
+		{name: "spend lookup failure", attempts: &implementProgressAttemptStore{}, spend: &spendProgressStore{err: errors.New("spend unavailable")}, want: "spend unavailable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var logs bytes.Buffer
+			orch := &Orchestrator{
+				cfg:          Config{NoProgressSpendLimitUSD: 5},
+				workAttempts: tt.attempts,
+				logger:       slog.New(slog.NewTextHandler(&logs, nil)),
+			}
+			if !tt.missing {
+				orch.progressSpend = tt.spend
+			}
+			decision := orch.evaluateSpendProgress(t.Context(), Running{Issue: issue}, base, false, "")
+			if decision.Block || !strings.Contains(decision.Warning, tt.want) || !strings.Contains(logs.String(), tt.want) {
+				t.Fatalf("decision = %#v logs = %q, want warning %q", decision, logs.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestSpendProgressAttemptAcceptedCompatibility(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		record map[string]any
+		want   bool
+	}{
+		{name: "native accepted record", record: map[string]any{spendProgressMetadataKey: spendProgressRecord{AcceptedStateChange: true}}, want: true},
+		{name: "legacy pull request change", record: map[string]any{implementProgressMetadataKey: implementProgressRecord{Outcome: string(store.WorkAttemptTerminalSuccess), Reason: "pull_request_created_or_updated"}}, want: true},
+		{name: "legacy signature change", record: map[string]any{implementProgressMetadataKey: implementProgressRecord{Outcome: string(store.WorkAttemptTerminalSuccess), Reason: "signature_changed"}}, want: true},
+		{name: "unaccepted record", record: map[string]any{implementProgressMetadataKey: implementProgressRecord{Outcome: string(store.WorkAttemptTerminalSuccess), Reason: "unchanged_signature_clean_diff"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			attempt := store.WorkAttempt{
+				TerminalState:      store.WorkAttemptTerminalSuccess,
+				WorkerMetadataJSON: marshalWorkAttemptJSON(tt.record),
+			}
+			if got := spendProgressAttemptAccepted(attempt); got != tt.want {
+				t.Fatalf("spendProgressAttemptAccepted() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 type spendProgressStore struct {
 	result store.IssueSpendSince
+	err    error
 	query  store.IssueSpendSinceQuery
 	calls  int
 }
@@ -225,5 +292,5 @@ type spendProgressStore struct {
 func (s *spendProgressStore) IssueSpendSince(_ context.Context, query store.IssueSpendSinceQuery) (store.IssueSpendSince, error) {
 	s.calls++
 	s.query = query
-	return s.result, nil
+	return s.result, s.err
 }

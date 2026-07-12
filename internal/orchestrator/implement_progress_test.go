@@ -14,6 +14,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
@@ -483,6 +484,129 @@ func TestStickyBlockReasonIncludesImplementProgressBreakers(t *testing.T) {
 	}
 }
 
+func TestImplementProgressHelperBoundaries(t *testing.T) {
+	t.Parallel()
+
+	issue := connector.Issue{WorkpadSignal: &workpad.Signal{
+		Source:      workpad.SourceStructured,
+		Status:      workpad.StatusBlocked,
+		HumanAction: " approve the deployment ",
+	}}
+	if status, action := implementProgressBlockedHumanAction(issue); status != workpad.StatusBlocked || action != "approve the deployment" {
+		t.Fatalf("implementProgressBlockedHumanAction() = %q, %q", status, action)
+	}
+	issue.WorkpadSignal.Source = workpad.SourceProse
+	if status, action := implementProgressBlockedHumanAction(issue); status != "" || action != "" {
+		t.Fatalf("prose workpad signal = %q, %q, want empty", status, action)
+	}
+
+	usable := autoPromoteReworkSignature{PRNumber: 42, HeadSHA: " head ", FailedChecks: []string{"test"}}
+	attempts := []store.WorkAttempt{
+		{TerminalState: store.WorkAttemptTerminalFailure},
+		implementProgressHistoryAttempt(1, usable, store.WorkAttemptTerminalSuccess),
+	}
+	if got, ok := latestImplementProgressSignature(attempts); !ok || got.PRNumber != usable.PRNumber || got.HeadSHA != "head" {
+		t.Fatalf("latestImplementProgressSignature() = %#v, %t", got, ok)
+	}
+	if got := consecutiveImplementBlockedHumanActionAttempts(nil, "", "Blocked"); got != 0 {
+		t.Fatalf("consecutiveImplementBlockedHumanActionAttempts() = %d, want 0", got)
+	}
+
+	legacy := implementProgressRecord{
+		Outcome:            string(store.WorkAttemptTerminalSuccess),
+		Reason:             "no_linked_pull_request",
+		WorkspaceDiffStats: implementProgressDiffStats{Status: "clean"},
+	}
+	if !implementProgressRecordMatchesNoProgress(legacy, autoPromoteReworkSignature{}) {
+		t.Fatal("legacy clean completion did not match no progress")
+	}
+	legacy.WorkspaceDiffStats.FilesChanged = 1
+	if implementProgressRecordMatchesNoProgress(legacy, autoPromoteReworkSignature{}) {
+		t.Fatal("legacy dirty completion matched no progress")
+	}
+
+	invalidAttempts := []store.WorkAttempt{
+		{TerminalState: store.WorkAttemptTerminalFailure, WorkerMetadataJSON: `{}`},
+		{TerminalState: store.WorkAttemptTerminalSuccess, WorkerMetadataJSON: `{`},
+		{TerminalState: store.WorkAttemptTerminalSuccess, WorkerMetadataJSON: `{}`},
+	}
+	for _, attempt := range invalidAttempts {
+		if _, ok := implementProgressRecordFromAttempt(attempt); ok {
+			t.Fatalf("implementProgressRecordFromAttempt(%#v) unexpectedly succeeded", attempt)
+		}
+	}
+
+	added, removed := implementProgressFailedCheckDelta([]string{"test", "lint"}, []string{"lint", "build"})
+	if !slicesEqual(added, []string{"build"}) || !slicesEqual(removed, []string{"test"}) {
+		t.Fatalf("implementProgressFailedCheckDelta() = %#v, %#v", added, removed)
+	}
+}
+
+func TestImplementProgressBlockCommentIncludesBoundaryEvidence(t *testing.T) {
+	t.Parallel()
+
+	decision := implementCompletionProgressDecision{
+		BlockReason:            workpadBlockedUnactionedReason,
+		NoProgressLimit:        3,
+		ConsecutiveNoProgress:  2,
+		ConsecutiveHumanAction: 3,
+		HumanAction:            "Approve release\nConfirm rollback",
+		CurrentSignature:       autoPromoteReworkSignature{PRNumber: 42, HeadSHA: "head", FailedChecks: []string{"test"}},
+		PreviousSignature:      autoPromoteReworkSignature{HeadSHA: "previous"},
+		FailedChecksAdded:      []string{"test"},
+		FailedChecksRemoved:    []string{"lint"},
+		WorkspaceDiffStats:     DiffStats{Status: "clean"},
+	}
+	issue := connector.Issue{PullRequest: &connector.PullRequest{URL: "https://github.test/pull/42"}}
+	comment := implementProgressBlockComment(issue, decision)
+	for _, want := range []string{"workpad_blocked_unactioned", "pull/42", "head", "previous", "failed_checks_added", "0 files", "> Approve release", "> Confirm rollback"} {
+		if !strings.Contains(comment, want) {
+			t.Fatalf("comment missing %q:\n%s", want, comment)
+		}
+	}
+	if got := implementProgressRecoveryReason(decision); got != decision.HumanAction {
+		t.Fatalf("implementProgressRecoveryReason() = %q, want %q", got, decision.HumanAction)
+	}
+}
+
+func TestEvaluateImplementCompletionProgressFailureBoundaries(t *testing.T) {
+	t.Parallel()
+
+	noPR := implementProgressIssueWithoutPR()
+	var logs bytes.Buffer
+	orch := &Orchestrator{
+		cfg:          Config{AutoPromote: AutoPromoteConfig{NoProgressLimit: 3}},
+		connector:    &implementProgressConnector{},
+		workAttempts: &implementProgressAttemptStore{historyErr: errors.New("history unavailable")},
+		logger:       slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	decision := orch.evaluateImplementCompletionProgress(t.Context(), Running{Issue: noPR}, FinalStateCompleted, false)
+	if decision.Reason != "attempt_history_lookup_failed" || !strings.Contains(decision.Warning, "history unavailable") || !strings.Contains(logs.String(), "history unavailable") {
+		t.Fatalf("history failure decision = %#v logs = %q", decision, logs.String())
+	}
+
+	orch.workAttempts = &implementProgressAttemptStore{}
+	decision = orch.evaluateImplementCompletionProgress(t.Context(), Running{
+		Issue:     noPR,
+		DiffStats: DiffStats{FilesChanged: 1, Status: "dirty"},
+	}, FinalStateCompleted, false)
+	if decision.Reason != "workspace_diff_fingerprint_unavailable_without_pull_request" {
+		t.Fatalf("dirty no-PR decision = %#v", decision)
+	}
+
+	linked := implementProgressIssue("head")
+	orch.connector = &backendCapacityTestConnector{}
+	decision = orch.evaluateImplementCompletionProgress(t.Context(), Running{Issue: linked}, FinalStateCompleted, false)
+	if decision.Reason != "pull_request_hydrator_unavailable" {
+		t.Fatalf("missing hydrator decision = %#v", decision)
+	}
+
+	orch.warnImplementProgressRefresh(linked, "refresh unavailable", errors.New("tracker unavailable"))
+	if !strings.Contains(logs.String(), "tracker unavailable") {
+		t.Fatalf("refresh warning logs = %q", logs.String())
+	}
+}
+
 func implementProgressIssue(headSHA string, failedChecks ...string) connector.Issue {
 	prNumber := 1070
 	issue := connector.Issue{
@@ -688,6 +812,7 @@ func (c *implementProgressConnector) HydratePullRequest(context.Context, connect
 
 type implementProgressAttemptStore struct {
 	history      []store.WorkAttempt
+	historyErr   error
 	completions  []store.WorkAttemptCompletion
 	historyCalls int
 	queries      []store.WorkAttemptHistoryQuery
@@ -717,7 +842,7 @@ func (s *implementProgressAttemptStore) ListActiveWorkAttempts(context.Context, 
 func (s *implementProgressAttemptStore) ListRecentTerminalWorkAttempts(_ context.Context, query store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
 	s.historyCalls++
 	s.queries = append(s.queries, query)
-	return append([]store.WorkAttempt(nil), s.history...), nil
+	return append([]store.WorkAttempt(nil), s.history...), s.historyErr
 }
 
 func (s *implementProgressAttemptStore) TimeoutExpiredWorkAttempts(context.Context, store.WorkAttemptTimeout) ([]store.WorkAttempt, error) {
