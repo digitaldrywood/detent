@@ -527,6 +527,7 @@ func publishSnapshotOnce(
 		snapshot.DashboardURL = cleanDashboardURL(dashboardURL)
 		merged = mergeSnapshot(merged, snapshot)
 	}
+	merged = dedupeSnapshotIssues(merged)
 	if trend != nil {
 		merged = trend.apply(merged)
 	}
@@ -741,6 +742,78 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 		current.RateLimits = next.RateLimits
 	}
 	return current
+}
+
+func issueKey(issue telemetry.Issue) string {
+	for _, value := range []string{issue.URL, issue.Identifier, issue.ID} {
+		if key := strings.TrimSpace(value); key != "" {
+			return key
+		}
+	}
+	return ""
+}
+
+func dedupeSnapshotIssues(snapshot telemetry.Snapshot) telemetry.Snapshot {
+	var removed int
+	snapshot.Running, removed = dedupeIssueRows(snapshot.Running, func(row telemetry.Running) telemetry.Issue { return row.Issue })
+	snapshot.Counts.Running = dedupedCount(snapshot.Counts.Running, removed, len(snapshot.Running))
+	snapshot.Queue, removed = dedupeIssueRows(snapshot.Queue, func(row telemetry.Queued) telemetry.Issue { return row.Issue })
+	snapshot.Counts.Queue = dedupedCount(snapshot.Counts.Queue, removed, len(snapshot.Queue))
+	snapshot.Blocked, removed = dedupeIssueRows(snapshot.Blocked, func(row telemetry.Blocked) telemetry.Issue { return row.Issue })
+	snapshot.Counts.Blocked = dedupedCount(snapshot.Counts.Blocked, removed, len(snapshot.Blocked))
+	snapshot.Completed, removed = dedupeCompleted(snapshot.Completed)
+	snapshot.Counts.Completed = dedupedCount(snapshot.Counts.Completed, removed, len(snapshot.Completed))
+	return snapshot
+}
+
+func dedupeIssueRows[T any](rows []T, issue func(T) telemetry.Issue) ([]T, int) {
+	seen := make(map[string]int, len(rows))
+	deduped := make([]T, 0, len(rows))
+	for _, row := range rows {
+		key := issueKey(issue(row))
+		if key == "" {
+			deduped = append(deduped, row)
+			continue
+		}
+		_, ok := seen[key]
+		if !ok {
+			seen[key] = len(deduped)
+			deduped = append(deduped, row)
+			continue
+		}
+	}
+	return deduped, len(rows) - len(deduped)
+}
+
+func dedupeCompleted(rows []telemetry.Completed) ([]telemetry.Completed, int) {
+	latest := make(map[string]int, len(rows))
+	for i, row := range rows {
+		key := issueKey(row.Issue)
+		if key == "" {
+			continue
+		}
+		current, ok := latest[key]
+		if !ok || row.CompletedAt.After(rows[current].CompletedAt) {
+			latest[key] = i
+		}
+	}
+
+	deduped := make([]telemetry.Completed, 0, len(latest))
+	for i, row := range rows {
+		key := issueKey(row.Issue)
+		if key == "" || latest[key] == i {
+			deduped = append(deduped, row)
+		}
+	}
+	return deduped, len(rows) - len(deduped)
+}
+
+func dedupedCount(count, removed, length int) int {
+	count -= removed
+	if count < length {
+		return length
+	}
+	return count
 }
 
 func stampSnapshotProjectID(snapshot telemetry.Snapshot) telemetry.Snapshot {
