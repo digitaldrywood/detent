@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -34,7 +38,18 @@ type options struct {
 	interrupt             func()
 	shutdownTimeoutSource func() time.Duration
 	logPath               string
+	launcher              func(context.Context, string) error
 }
+
+type dashboardSectionIndex int
+
+const (
+	runningSection dashboardSectionIndex = iota
+	queueSection
+	blockedSection
+	completedSection
+	dashboardSectionCount
+)
 
 type Model struct {
 	subscription          *hub.Subscription[telemetry.Snapshot]
@@ -50,6 +65,12 @@ type Model struct {
 	interrupts            int
 	shutdownNote          string
 	logPath               string
+	launcher              func(context.Context, string) error
+	collapsed             [dashboardSectionCount]bool
+	offsets               [dashboardSectionCount]int
+	focusedSection        dashboardSectionIndex
+	helpVisible           bool
+	runningTable          table.Model
 	styles                styles
 }
 
@@ -59,7 +80,9 @@ type snapshotMsg struct {
 
 type subscriptionClosedMsg struct{}
 
-type shutdownInterruptMsg struct{}
+type shutdownInterruptMsg struct {
+	force bool
+}
 
 func NewModel(ctx context.Context, snapshots *hub.Hub[telemetry.Snapshot], opts ...Option) (Model, error) {
 	if snapshots == nil {
@@ -79,6 +102,13 @@ func NewModel(ctx context.Context, snapshots *hub.Hub[telemetry.Snapshot], opts 
 		return Model{}, fmt.Errorf("subscribe telemetry snapshots: %w", err)
 	}
 
+	modelStyles := newStyles()
+	launcher := cfg.launcher
+	if launcher == nil {
+		launcher = func(_ context.Context, url string) error {
+			return launchDashboard(ctx, url)
+		}
+	}
 	return Model{
 		subscription:          subscription,
 		updates:               subscription.C(),
@@ -89,7 +119,9 @@ func NewModel(ctx context.Context, snapshots *hub.Hub[telemetry.Snapshot], opts 
 		interrupt:             cfg.interrupt,
 		shutdownTimeoutSource: cfg.shutdownTimeoutSource,
 		logPath:               cfg.logPath,
-		styles:                newStyles(),
+		launcher:              launcher,
+		runningTable:          newRunningTable(modelStyles),
+		styles:                modelStyles,
 	}, nil
 }
 
@@ -125,6 +157,12 @@ func WithLogPath(path string) Option {
 	}
 }
 
+func WithDashboardLauncher(launcher func(context.Context, string) error) Option {
+	return func(cfg *options) {
+		cfg.launcher = launcher
+	}
+}
+
 func (m Model) Init() tea.Cmd {
 	return waitForSnapshot(m.updates)
 }
@@ -134,10 +172,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.syncInteractiveState()
 		return m, nil
 	case snapshotMsg:
 		m.snapshot = msg.snapshot
 		m.hasSnapshot = true
+		m.syncInteractiveState()
 		return m, waitForSnapshot(m.updates)
 	case subscriptionClosedMsg:
 		return m, nil
@@ -145,16 +185,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.interrupt != nil {
 			m.interrupt()
 		}
+		if msg.force {
+			m.Close()
+			return m, tea.Quit
+		}
 		return m, nil
 	case tea.InterruptMsg:
 		return m.handleInterrupt()
 	case tea.KeyPressMsg:
+		if m.helpVisible {
+			m.helpVisible = false
+			return m, nil
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			return m.handleInterrupt()
 		case "q", "esc":
 			m.Close()
 			return m, tea.Quit
+		case "?":
+			m.helpVisible = true
+			return m, nil
+		case "d":
+			return m, m.openDashboardCmd()
+		case "1", "2", "3", "4":
+			section := dashboardSectionIndex(int(msg.String()[0] - '1'))
+			m.collapsed[section] = !m.collapsed[section]
+			m.syncInteractiveState()
+			return m, nil
+		case "tab":
+			m.focusedSection = (m.focusedSection + 1) % dashboardSectionCount
+			m.syncInteractiveState()
+			return m, nil
+		case "j", "down":
+			m.scrollFocusedSection(msg, 1)
+			return m, nil
+		case "k", "up":
+			m.scrollFocusedSection(msg, -1)
+			return m, nil
 		default:
 			return m, nil
 		}
@@ -175,9 +243,60 @@ func (m Model) handleInterrupt() (tea.Model, tea.Cmd) {
 		m.shutdownNote = shutdownDrainNotice
 	}
 
+	force := m.interrupts > 1
 	return m, func() tea.Msg {
-		return shutdownInterruptMsg{}
+		return shutdownInterruptMsg{force: force}
 	}
+}
+
+func (m Model) openDashboardCmd() tea.Cmd {
+	launcher := m.launcher
+	if launcher == nil {
+		launcher = launchDashboard
+	}
+	url := formatDashboardURL(m.snapshot)
+	return func() tea.Msg {
+		if err := launcher(context.Background(), url); err != nil {
+			slog.Default().Warn("open terminal dashboard failed", "url", url, "error", err)
+		}
+		return nil
+	}
+}
+
+func launchDashboard(ctx context.Context, url string) error {
+	command, err := dashboardCommand(ctx, runtime.GOOS, url)
+	if err != nil {
+		return err
+	}
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("open dashboard: %w", err)
+	}
+	return nil
+}
+
+func dashboardCommand(ctx context.Context, goos string, url string) (*exec.Cmd, error) {
+	switch goos {
+	case "darwin":
+		return exec.CommandContext(ctx, "open", url), nil
+	case "linux":
+		return exec.CommandContext(ctx, "xdg-open", url), nil
+	case "windows":
+		return exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", url), nil
+	default:
+		return nil, fmt.Errorf("open dashboard: unsupported operating system %s", goos)
+	}
+}
+
+func (m *Model) scrollFocusedSection(msg tea.KeyPressMsg, delta int) {
+	if m.collapsed[m.focusedSection] {
+		return
+	}
+	if m.focusedSection == runningSection {
+		m.runningTable, _ = m.runningTable.Update(msg)
+		return
+	}
+	m.offsets[m.focusedSection] += delta
+	m.clampOffsets()
 }
 
 func (m Model) View() tea.View {
@@ -638,6 +757,7 @@ type styles struct {
 	error  lipgloss.Style
 	accent lipgloss.Style
 	muted  lipgloss.Style
+	focus  lipgloss.Style
 }
 
 func newStyles() styles {
@@ -649,6 +769,7 @@ func newStyles() styles {
 		error:  lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
 		accent: lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
 		muted:  lipgloss.NewStyle().Faint(true),
+		focus:  lipgloss.NewStyle().Bold(true).Reverse(true),
 	}
 }
 

@@ -21,9 +21,11 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hub"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tui"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -318,7 +320,8 @@ func TestRunTerminalDashboardProgramKillsOnContextCancel(t *testing.T) {
 	program := newTerminalDashboardProgramProbe()
 	errs := make(chan error, 1)
 	go func() {
-		errs <- runTerminalDashboardProgram(ctx, program)
+		_, err := runTerminalDashboardProgram(ctx, program)
+		errs <- err
 	}()
 
 	select {
@@ -338,6 +341,74 @@ func TestRunTerminalDashboardProgramKillsOnContextCancel(t *testing.T) {
 	}
 	if !program.killCalled() {
 		t.Fatal("terminal dashboard program was not killed")
+	}
+}
+
+func TestRunTerminalDashboardProgramRejectsNilProgram(t *testing.T) {
+	t.Parallel()
+
+	if _, err := runTerminalDashboardProgram(context.Background(), nil); !errors.Is(err, errNilTerminalDashboardProgram) {
+		t.Fatalf("runTerminalDashboardProgram(nil) error = %v, want %v", err, errNilTerminalDashboardProgram)
+	}
+}
+
+func TestRunTerminalDashboardProgramSurfacesFinalModelAndPrintsSummary(t *testing.T) {
+	t.Parallel()
+
+	model, err := tui.NewModel(
+		context.Background(),
+		hub.New[telemetry.Snapshot](),
+		tui.WithNow(func() time.Time { return time.Date(2026, 7, 12, 20, 30, 45, 0, time.UTC) }),
+		tui.WithLogPath("/var/log/detent.log"),
+	)
+	if err != nil {
+		t.Fatalf("NewModel() error = %v", err)
+	}
+	t.Cleanup(model.Close)
+
+	finalModel, err := runTerminalDashboardProgram(context.Background(), terminalDashboardCompletedProgram{model: model})
+	if err != nil {
+		t.Fatalf("runTerminalDashboardProgram() error = %v", err)
+	}
+	if _, ok := finalModel.(tui.Model); !ok {
+		t.Fatalf("final model type = %T, want tui.Model", finalModel)
+	}
+	var output bytes.Buffer
+	if err := writeTerminalDashboardSummary(&output, finalModel, tui.Model{}); err != nil {
+		t.Fatalf("writeTerminalDashboardSummary() error = %v", err)
+	}
+	for _, want := range []string{"Detent exit summary", "Timestamp: 2026-07-12T20:30:45Z", "Logs: /var/log/detent.log"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("summary output missing %q: %s", want, output.String())
+		}
+	}
+}
+
+func TestTerminalDashboardSummaryFollowsTerminalRestore(t *testing.T) {
+	t.Parallel()
+
+	model, err := tui.NewModel(context.Background(), hub.New[telemetry.Snapshot](), tui.WithLogPath("/var/log/detent.log"))
+	if err != nil {
+		t.Fatalf("NewModel() error = %v", err)
+	}
+	t.Cleanup(model.Close)
+
+	var output bytes.Buffer
+	program := tea.NewProgram(
+		terminalDashboardQuitModel{Model: model},
+		append(terminalDashboardProgramOptions(), tea.WithInput(nil), tea.WithOutput(&output))...,
+	)
+	finalModel, err := runTerminalDashboardProgram(context.Background(), program)
+	if err != nil {
+		t.Fatalf("runTerminalDashboardProgram() error = %v", err)
+	}
+	if err := writeTerminalDashboardSummary(&output, finalModel, model); err != nil {
+		t.Fatalf("writeTerminalDashboardSummary() error = %v", err)
+	}
+	restoreAt := strings.LastIndex(output.String(), "\x1b[?1049l")
+	summaryAt := strings.Index(output.String(), "Detent exit summary")
+	if restoreAt < 0 || summaryAt < 0 || restoreAt > summaryAt {
+		t.Fatalf("terminal restore index = %d, summary index = %d: %q", restoreAt, summaryAt, output.String())
 	}
 }
 
@@ -1184,6 +1255,16 @@ type terminalDashboardProgramProbe struct {
 	killSet bool
 }
 
+type terminalDashboardCompletedProgram struct {
+	model tea.Model
+}
+
+func (p terminalDashboardCompletedProgram) Run() (tea.Model, error) {
+	return p.model, nil
+}
+
+func (terminalDashboardCompletedProgram) Kill() {}
+
 func newTerminalDashboardProgramProbe() *terminalDashboardProgramProbe {
 	return &terminalDashboardProgramProbe{
 		started: make(chan struct{}),
@@ -1226,6 +1307,18 @@ func (terminalDashboardOptionModel) View() tea.View {
 	view := tea.NewView("detent")
 	view.AltScreen = true
 	return view
+}
+
+type terminalDashboardQuitModel struct {
+	tui.Model
+}
+
+func (m terminalDashboardQuitModel) Init() tea.Cmd {
+	return tea.Quit
+}
+
+func (m terminalDashboardQuitModel) Update(tea.Msg) (tea.Model, tea.Cmd) {
+	return m, nil
 }
 
 func writeBootGlobalConfig(t *testing.T, path string, projects []globalconfig.Project) {

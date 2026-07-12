@@ -3,22 +3,22 @@
 │ ● 7 running   ◐ 5 queued   ✗ 5 blocked   ✓ 10 completed · up 12m 5s · next 20│
 │ 7 tps · tok in 110 / out 220 · budget enabled current $12.50 | projected $0.7│
 │ dashboard http://localhost:4101 · rate codex-primary | primary 90/100 reset 6│
-├ RUNNING (7, showing 4) ───────────────────────────────────────────── +3 more ┤
+├ ▶ RUNNING (7, showing 4) ───────────────────────────────────── +3 more (j/k) ┤
 │ ID        STAGE         AGE / TURN    TOKENS/CTX    EVENT                    │
 │ ● #476    In Progress   12m 5s / 7    315,840       turn 7 completed         │
 │ ● #477    In Progress   12m 5s / 6    270,720       turn 6 completed         │
 │ ● #478    In Progress   12m 5s / 5    225,600       turn 5 completed         │
 │ ● #479    In Progress   12m 5s / 4    180,480       turn 4 completed         │
-├ QUEUE (5, showing 2) ─────────────────────────────────────────────── +3 more ┤
+├ QUEUE (5, showing 2) ───────────────────────────────────────── +3 more (j/k) ┤
 │ ◐ #470  attempt 1  retry in 1.500s   no available orchestrator slots         │
 │ ◐ #469  attempt 2  retry in 3.000s   no available orchestrator slots         │
-├ BLOCKED (5, showing 2) ───────────────────────────────────────────── +3 more ┤
+├ BLOCKED (5, showing 2) ─────────────────────────────────────── +3 more (j/k) ┤
 │ ✗ #456  blocked by dependency #904                                           │
 │ ✗ #457  blocked by dependency #903                                           │
-├ COMPLETED (10, showing 3) ────────────────────────────────────────── +7 more ┤
+├ COMPLETED (10, showing 3) ──────────────────────────────────── +7 more (j/k) ┤
 │ ✓ #450  Done  10m 5s / 4  88,410  gpt-5                                      │
 │ ✓ #449  Done  10m 5s / 4  176,820  gpt-5                                     │
 │ ✓ #448  Done  10m 5s / 4  265,230  gpt-5                                     │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ q quit · ? help                                     logs /var/log/detent.log │
+│ q quit · d open · tab · 1-4 fold · j/k/↑/↓ · ? help logs /var/log/detent.log │
 └──────────────────────────────────────────────────────────────────────────────┘
