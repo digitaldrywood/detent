@@ -2249,6 +2249,12 @@ func configuredFieldPaths(root *yaml.Node) map[string]struct{} {
 			if node.Alias == nil || activeAliases[node.Alias] {
 				return
 			}
+			if node.Alias.Kind != yaml.MappingNode && node.Alias.Kind != yaml.AliasNode {
+				if prefix != "" {
+					paths[prefix] = struct{}{}
+				}
+				return
+			}
 			activeAliases[node.Alias] = true
 			collect(node.Alias, prefix)
 			delete(activeAliases, node.Alias)

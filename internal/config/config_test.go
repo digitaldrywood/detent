@@ -1291,6 +1291,29 @@ Prompt
 	}
 }
 
+func TestConfiguredSubsettingsTracksScalarAliasLeaves(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+shared_skill_path: &skill_path custom-skills
+agent:
+  skills:
+    enabled: false
+    path: *skill_path
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+
+	got := workflow.Config.ConfiguredSubsettings("agent.skills")
+	want := []string{"agent.skills.path"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ConfiguredSubsettings(agent.skills) = %#v, want %#v", got, want)
+	}
+}
+
 func TestConfiguredSubsettingsTracksMergedFrontmatterLeaves(t *testing.T) {
 	t.Parallel()
 
