@@ -315,5 +315,31 @@
         "refusals": ["todo-budget-first"]
       }
     }
+  ],
+  "adversarial_cases": [
+    {
+      "name": "always-blocked-same-reason remains parked",
+      "behavior": "always_blocked_same_reason",
+      "now": "2026-07-11T16:00:00Z",
+      "simulated_ticks": 100,
+      "want_state": "Blocked",
+      "want_max_dispatches": 0
+    },
+    {
+      "name": "rate-limit-storm pauses paid dispatch",
+      "behavior": "rate_limit_storm",
+      "now": "2026-07-11T16:00:00Z",
+      "simulated_ticks": 100,
+      "want_state": "In Progress",
+      "want_max_dispatches": 0
+    },
+    {
+      "name": "gate-wait-timeout-loop transitions once",
+      "behavior": "gate_wait_timeout_loop",
+      "now": "2026-07-11T16:00:00Z",
+      "simulated_ticks": 100,
+      "want_state": "Human Review",
+      "want_max_dispatches": 0
+    }
   ]
 }
