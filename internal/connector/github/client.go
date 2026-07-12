@@ -31,6 +31,9 @@ const (
 	restRateLimitKindSecondaryThrottled = "secondary_throttled"
 	restFanoutCostUnitsPerRequest       = int64(4)
 	restConditionalFanoutCostUnits      = int64(1)
+	restRateLimitResetSkew              = 5 * time.Second
+	restBudgetGateFanoutCap             = "fanout_cap"
+	restBudgetGateReserve               = "reserve"
 )
 
 var defaultRESTBackoffs = newRESTBackoffRegistry()
@@ -342,7 +345,8 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	backoffKey := c.restSharedBackoffKey(token)
 	c.rememberRESTBackoffKey(backoffKey)
 	cached, conditional := c.restConditionalEntry(method, path)
-	if err := c.restBackoffError(backoffKey, time.Now()); err != nil {
+	now := time.Now()
+	if err := c.restBackoffError(backoffKey, now); err != nil {
 		c.logger.DebugContext(ctx, "github rest backoff active",
 			"method", strings.ToUpper(strings.TrimSpace(method)),
 			"path", path,
@@ -353,7 +357,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		)
 		return nil, err
 	}
-	if err := c.restBudgetPolicyError(method, path, conditional); err != nil {
+	if err := c.restBudgetPolicyError(method, path, conditional, now); err != nil {
 		c.logger.DebugContext(ctx, "github rest budget reserved",
 			"method", strings.ToUpper(strings.TrimSpace(method)),
 			"path", path,
@@ -651,7 +655,7 @@ func normalizeRESTBudgetPolicy(policy RESTBudgetPolicy) RESTBudgetPolicy {
 	return policy
 }
 
-func (c *Client) restBudgetPolicyError(method string, path string, conditional bool) error {
+func (c *Client) restBudgetPolicyError(method string, path string, conditional bool, now time.Time) error {
 	family := restEndpointFamily(method, path)
 	if !restFanoutEndpointFamily(family) {
 		return nil
@@ -667,7 +671,7 @@ func (c *Client) restBudgetPolicyError(method string, path string, conditional b
 	}
 	if c.restPolicy.FanoutMaxRequests > 0 &&
 		c.restFanoutUnits+requestCost > c.restPolicy.FanoutMaxRequests*restFanoutCostUnitsPerRequest {
-		c.recordRESTBudgetThrottleLocked(method, path, family, rateLimit, hasRateLimit)
+		c.recordRESTBudgetThrottleLocked(method, path, family, restBudgetGateFanoutCap, rateLimit, hasRateLimit, now)
 		return &StatusError{
 			StatusCode: http.StatusTooManyRequests,
 			Body:       "REST fanout request cap reached for " + family,
@@ -678,8 +682,9 @@ func (c *Client) restBudgetPolicyError(method string, path string, conditional b
 		!conditional &&
 		hasRateLimit &&
 		rateLimit.Limit > 0 &&
+		!restRateLimitSnapshotExpired(rateLimit, now) &&
 		rateLimit.Remaining <= c.restPolicy.MinRemainingReserve {
-		c.recordRESTBudgetThrottleLocked(method, path, family, rateLimit, hasRateLimit)
+		c.recordRESTBudgetThrottleLocked(method, path, family, restBudgetGateReserve, rateLimit, hasRateLimit, now)
 		return &StatusError{
 			StatusCode: http.StatusTooManyRequests,
 			Body:       "REST remaining budget is reserved for shared GitHub work",
@@ -688,6 +693,10 @@ func (c *Client) restBudgetPolicyError(method string, path string, conditional b
 	}
 	c.restFanoutUnits += requestCost
 	return nil
+}
+
+func restRateLimitSnapshotExpired(rateLimit connector.RESTRateLimit, now time.Time) bool {
+	return !rateLimit.ResetAt.IsZero() && now.After(rateLimit.ResetAt.Add(restRateLimitResetSkew))
 }
 
 func (c *Client) restRateLimitForResourceLocked(resource string) (connector.RESTRateLimit, bool) {
@@ -703,7 +712,16 @@ func (c *Client) restRateLimitForResourceLocked(resource string) (connector.REST
 	return connector.RESTRateLimit{}, false
 }
 
-func (c *Client) recordRESTBudgetThrottleLocked(method string, path string, family string, rateLimit connector.RESTRateLimit, hasRateLimit bool) {
+func (c *Client) recordRESTBudgetThrottleLocked(method string, path string, family string, branch string, rateLimit connector.RESTRateLimit, hasRateLimit bool, now time.Time) {
+	fanoutCount := float64(c.restFanoutUnits) / float64(restFanoutCostUnitsPerRequest)
+	snapshotAge := "unknown"
+	if !rateLimit.UpdatedAt.IsZero() {
+		age := now.Sub(rateLimit.UpdatedAt)
+		if age < 0 {
+			age = 0
+		}
+		snapshotAge = age.String()
+	}
 	if c.restRequests == nil {
 		c.restRequests = make(map[string]connector.RESTEndpointUsage)
 	}
@@ -729,7 +747,10 @@ func (c *Client) recordRESTBudgetThrottleLocked(method string, path string, fami
 		"resource", rateLimit.Resource,
 		"remaining", rateLimit.Remaining,
 		"reserve", c.restPolicy.MinRemainingReserve,
+		"gate_branch", branch,
+		"fanout_count", fanoutCount,
 		"fanout_cap", c.restPolicy.FanoutMaxRequests,
+		"snapshot_age", snapshotAge,
 	)
 }
 

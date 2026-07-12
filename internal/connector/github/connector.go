@@ -190,7 +190,10 @@ func NewConnector(cfg Config) (*Connector, error) {
 }
 
 func (c *Connector) ConditionalPollingEnabled() bool {
-	return c != nil && c.client != nil && c.client.conditionalRequests && (c.usesLabelStatus() || c.usesIssueFieldStatus())
+	return c != nil &&
+		c.client != nil &&
+		c.client.conditionalRequests &&
+		(c.statusSource == GitHubStatusSourceProjectV2 || c.usesLabelStatus() || c.usesIssueFieldStatus())
 }
 
 func (c *Connector) Name() string {

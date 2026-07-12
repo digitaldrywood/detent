@@ -646,6 +646,7 @@ func TestClientRESTStopsFanoutAtRequestCap(t *testing.T) {
 	t.Parallel()
 
 	var calls atomic.Int64
+	var logs bytes.Buffer
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if calls.Add(1) != 1 {
 			t.Fatalf("unexpected REST call to %s", r.URL.Path)
@@ -667,6 +668,7 @@ func TestClientRESTStopsFanoutAtRequestCap(t *testing.T) {
 		TokenSource: StaticTokenSource("test-token"),
 		HTTPClient:  server.Client(),
 		RESTPolicy:  RESTBudgetPolicy{FanoutMaxRequests: 1},
+		Logger:      slog.New(slog.NewTextHandler(&logs, nil)),
 	})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
@@ -693,6 +695,11 @@ func TestClientRESTStopsFanoutAtRequestCap(t *testing.T) {
 	}
 	if got := restEndpointUsageCount(usage.Requests, "check runs"); got != 1 {
 		t.Fatalf("check runs usage count = %d, want throttled synthetic request; usage = %#v", got, usage.Requests)
+	}
+	for _, want := range []string{"gate_branch=fanout_cap", "fanout_count=1", "snapshot_age="} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("throttle log missing %q:\n%s", want, logs.String())
+		}
 	}
 }
 
@@ -750,7 +757,9 @@ func TestClientRESTCountsRepositoryIssuesAsFanout(t *testing.T) {
 func TestClientRESTStopsFanoutBelowReserve(t *testing.T) {
 	t.Parallel()
 
+	resetAt := time.Now().UTC().Add(time.Hour)
 	var calls atomic.Int64
+	var logs bytes.Buffer
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if calls.Add(1) != 1 {
 			t.Fatalf("unexpected REST call to %s", r.URL.Path)
@@ -760,6 +769,7 @@ func TestClientRESTStopsFanoutBelowReserve(t *testing.T) {
 		w.Header().Set("X-RateLimit-Used", "4100")
 		w.Header().Set("X-RateLimit-Remaining", "900")
 		w.Header().Set("X-RateLimit-Resource", "core")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`[]`))
 	}))
@@ -770,6 +780,7 @@ func TestClientRESTStopsFanoutBelowReserve(t *testing.T) {
 		TokenSource: StaticTokenSource("test-token"),
 		HTTPClient:  server.Client(),
 		RESTPolicy:  RESTBudgetPolicy{MinRemainingReserve: 1000},
+		Logger:      slog.New(slog.NewTextHandler(&logs, nil)),
 	})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
@@ -793,6 +804,62 @@ func TestClientRESTStopsFanoutBelowReserve(t *testing.T) {
 	}
 	if got := restEndpointUsageCount(usage.Requests, "commit statuses"); got != 1 {
 		t.Fatalf("commit statuses usage count = %d, want throttled synthetic request; usage = %#v", got, usage.Requests)
+	}
+	for _, want := range []string{"gate_branch=reserve", "fanout_count=1", "snapshot_age="} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("throttle log missing %q:\n%s", want, logs.String())
+		}
+	}
+}
+
+func TestClientRESTAllowsFanoutAfterReserveSnapshotReset(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Now().UTC().Add(-time.Minute)
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Resource", "core")
+		if call == 1 {
+			w.Header().Set("X-RateLimit-Used", "4100")
+			w.Header().Set("X-RateLimit-Remaining", "900")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+		} else {
+			w.Header().Set("X-RateLimit-Used", "100")
+			w.Header().Set("X-RateLimit-Remaining", "4900")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Add(time.Hour).Unix(), 10))
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+		RESTPolicy:  RESTBudgetPolicy{MinRemainingReserve: 1000},
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	var pulls []restPullRequest
+	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/pulls?state=all", nil, &pulls); err != nil {
+		t.Fatalf("REST() pull requests error = %v", err)
+	}
+	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/commits/abc/statuses", nil, nil); err != nil {
+		t.Fatalf("REST() after reset error = %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("REST calls = %d, want post-reset request sent", calls.Load())
+	}
+
+	usage := client.FlushRESTRateLimitUsage()
+	if usage.RateLimited || usage.RateLimit.Remaining != 4900 {
+		t.Fatalf("REST usage = %#v, want refreshed budget with 4900 remaining", usage)
 	}
 }
 
