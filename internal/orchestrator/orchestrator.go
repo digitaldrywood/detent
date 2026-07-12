@@ -165,6 +165,7 @@ type Orchestrator struct {
 	capacityController      runpkg.CapacityController
 	validatorCapacity       runpkg.ValidatorCapacityController
 	dailyBudgetStatus       runpkg.DailyBudgetStatusProvider
+	issueBudgetStatus       runpkg.IssueBudgetStatusProvider
 	now                     func() time.Time
 	retrospector            Retrospector
 	stateRequests           chan stateRequest
@@ -249,6 +250,10 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	if candidate, ok := runner.(runpkg.DailyBudgetStatusProvider); ok {
 		dailyBudgetStatus = candidate
 	}
+	var issueBudgetStatus runpkg.IssueBudgetStatusProvider
+	if candidate, ok := runner.(runpkg.IssueBudgetStatusProvider); ok {
+		issueBudgetStatus = candidate
+	}
 
 	logger := deps.Logger
 	if logger == nil {
@@ -328,6 +333,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		capacityController:      capacityController,
 		validatorCapacity:       validatorCapacity,
 		dailyBudgetStatus:       dailyBudgetStatus,
+		issueBudgetStatus:       issueBudgetStatus,
 		now:                     now,
 		stateRequests:           make(chan stateRequest),
 		drainRequests:           make(chan drainRequest),

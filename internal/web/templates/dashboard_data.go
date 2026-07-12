@@ -5762,6 +5762,37 @@ func budgetCardClass(budget telemetry.Budget) string {
 	return "dashboard-panel min-w-0 rounded-md border border-line bg-surface p-4 shadow-sm sm:p-5"
 }
 
+func budgetRefusalLabel(refusal telemetry.BudgetRefusal) string {
+	if label := strings.TrimSpace(refusal.Identifier); label != "" {
+		return label
+	}
+	return strings.TrimSpace(refusal.IssueID)
+}
+
+func budgetRefusalDisposition(refusal telemetry.BudgetRefusal) string {
+	if refusal.HardHold {
+		return "Hard hold"
+	}
+	return "Temporary cooldown"
+}
+
+func budgetRefusalBadgeClass(refusal telemetry.BudgetRefusal) string {
+	if refusal.HardHold {
+		return "shrink-0 rounded-full bg-danger/15 px-2 py-1 text-xs font-medium text-danger"
+	}
+	return "shrink-0 rounded-full bg-warn/15 px-2 py-1 text-xs font-medium text-warn"
+}
+
+func budgetRefusalDetail(refusal telemetry.BudgetRefusal) string {
+	if refusal.HardHold {
+		return "Needs an operator decision; it will not retry automatically."
+	}
+	if refusal.ResetAt != nil {
+		return "Retries automatically after " + localTimeToken(*refusal.ResetAt, LocalDateTimeSeconds) + "."
+	}
+	return "Retries automatically after its cooldown."
+}
+
 func budgetSpendTodayLabel(budget telemetry.Budget) string {
 	if strings.TrimSpace(budget.DegradedReason) != "" && budget.CurrentSpendUSD <= 0 && len(budget.SpendPoints) == 0 {
 		return "unavailable / " + budgetDailyCapLabel(budget)

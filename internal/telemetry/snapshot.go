@@ -515,6 +515,7 @@ type BudgetRefusal struct {
 	MaxUSD           *float64   `json:"max_usd"`
 	ResetAt          *time.Time `json:"reset_at,omitempty"`
 	RefusedAt        time.Time  `json:"refused_at"`
+	HardHold         bool       `json:"hard_hold"`
 }
 
 type RateLimits struct {

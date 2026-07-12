@@ -2915,6 +2915,57 @@ func TestRunnerUpdateWorkflowAppliesReloadedDailyBudget(t *testing.T) {
 	}
 }
 
+func TestRunnerUpdateWorkflowReportsReloadedIssueBudget(t *testing.T) {
+	t.Parallel()
+
+	pricing := budget.PricingTable{"gpt-test": {USDPerInputToken: 0.01}}
+	issue := connector.Issue{ID: "issue-held", Identifier: "digitaldrywood/detent#1251"}
+	spend := &fakeRunnerBudgetSpendStore{issue: store.TokenSpend{
+		ByModel: []store.ModelTokenSpend{{Model: "gpt-test", InputTokens: 125}},
+	}}
+	workflowCfg := config.Config{}
+	workflowCfg.Budget = config.Budget{Enabled: true, PerIssueMaxUSD: 1}
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: workflowCfg},
+		Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "budget-reload", Branch: "detent/budget-reload"}},
+		AgentBackend: &fakeCodexClient{},
+		BudgetGuardBuilder: func(cfg config.Budget) (BudgetChecker, DispatchEstimator, error) {
+			if !cfg.Enabled {
+				return nil, nil, nil
+			}
+			return budget.NewChecker(budget.Config{
+				Enabled:        cfg.Enabled,
+				PerIssueMaxUSD: cfg.PerIssueMaxUSD,
+			}, spend, pricing), nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	assertStatus := func(want IssueBudgetStatus) {
+		t.Helper()
+		got, known, err := runner.IssueBudgetStatus(context.Background(), issue)
+		if err != nil {
+			t.Fatalf("IssueBudgetStatus() error = %v", err)
+		}
+		if !known || got != want {
+			t.Fatalf("IssueBudgetStatus() = %#v, %t, want %#v, true", got, known, want)
+		}
+	}
+
+	assertStatus(IssueBudgetStatus{Active: true, CurrentSpendUSD: 1.25, MaxUSD: 1})
+	workflowCfg.Budget.PerIssueMaxUSD = 2
+	runner.UpdateWorkflow(config.Workflow{Config: workflowCfg})
+	assertStatus(IssueBudgetStatus{Active: true, CurrentSpendUSD: 1.25, MaxUSD: 2})
+	workflowCfg.Budget.PerIssueMaxUSD = 0
+	runner.UpdateWorkflow(config.Workflow{Config: workflowCfg})
+	assertStatus(IssueBudgetStatus{})
+	workflowCfg.Budget.Enabled = false
+	runner.UpdateWorkflow(config.Workflow{Config: workflowCfg})
+	assertStatus(IssueBudgetStatus{})
+}
+
 func TestRunnerRunUsesSingleConfiguredBackendDefaultRoute(t *testing.T) {
 	t.Parallel()
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/budget"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
@@ -333,11 +334,14 @@ func TestPruneBudgetRefusalsReevaluatesDailyCap(t *testing.T) {
 	now := time.Date(2026, 7, 11, 15, 0, 0, 0, time.UTC)
 	resetAt := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name       string
-		refusal    BudgetRefusal
-		status     DailyBudgetStatus
-		statusErr  error
-		wantActive bool
+		name           string
+		refusal        BudgetRefusal
+		dailyStatus    DailyBudgetStatus
+		dailyStatusErr error
+		issueStatus    IssueBudgetStatus
+		issueKnown     bool
+		issueStatusErr error
+		wantActive     bool
 	}{
 		{
 			name: "cap raise clears resolved daily refusal",
@@ -347,7 +351,7 @@ func TestPruneBudgetRefusalsReevaluatesDailyCap(t *testing.T) {
 				ResetAt:          &resetAt,
 				RefusedAt:        now,
 			},
-			status: DailyBudgetStatus{Active: true, CurrentSpendUSD: 100, MaxUSD: 250},
+			dailyStatus: DailyBudgetStatus{Active: true, CurrentSpendUSD: 100, MaxUSD: 250},
 		},
 		{
 			name: "cap raise keeps daily refusal when projected spend remains over cap",
@@ -357,8 +361,8 @@ func TestPruneBudgetRefusalsReevaluatesDailyCap(t *testing.T) {
 				ResetAt:          &resetAt,
 				RefusedAt:        now,
 			},
-			status:     DailyBudgetStatus{Active: true, CurrentSpendUSD: 245, MaxUSD: 250},
-			wantActive: true,
+			dailyStatus: DailyBudgetStatus{Active: true, CurrentSpendUSD: 245, MaxUSD: 250},
+			wantActive:  true,
 		},
 		{
 			name: "unchanged cap keeps daily refusal until midnight",
@@ -368,8 +372,8 @@ func TestPruneBudgetRefusalsReevaluatesDailyCap(t *testing.T) {
 				ResetAt:          &resetAt,
 				RefusedAt:        now,
 			},
-			status:     DailyBudgetStatus{Active: true, CurrentSpendUSD: 100, MaxUSD: 100},
-			wantActive: true,
+			dailyStatus: DailyBudgetStatus{Active: true, CurrentSpendUSD: 100, MaxUSD: 100},
+			wantActive:  true,
 		},
 		{
 			name: "disabled daily cap clears daily refusal",
@@ -388,17 +392,49 @@ func TestPruneBudgetRefusalsReevaluatesDailyCap(t *testing.T) {
 				ResetAt:          &resetAt,
 				RefusedAt:        now,
 			},
-			statusErr:  errors.New("lookup failed"),
-			wantActive: true,
+			dailyStatusErr: errors.New("lookup failed"),
+			wantActive:     true,
 		},
 		{
-			name: "per issue refusal keeps cooldown behavior",
+			name: "per issue hold persists across cooldown boundaries",
 			refusal: BudgetRefusal{
-				Code:      "per_issue_max_usd",
-				RefusedAt: now.Add(-30 * time.Minute),
+				Code:             "per_issue_max_usd",
+				ProjectedCostUSD: 10,
+				RefusedAt:        now.Add(-48 * time.Hour),
 			},
-			status:     DailyBudgetStatus{Active: true, CurrentSpendUSD: 0, MaxUSD: 1000},
-			wantActive: true,
+			issueStatus: IssueBudgetStatus{Active: true, CurrentSpendUSD: 95, MaxUSD: 100},
+			issueKnown:  true,
+			wantActive:  true,
+		},
+		{
+			name: "per issue cap raise clears resolved hold",
+			refusal: BudgetRefusal{
+				Code:             "per_issue_max_usd",
+				ProjectedCostUSD: 10,
+				RefusedAt:        now.Add(-48 * time.Hour),
+			},
+			issueStatus: IssueBudgetStatus{Active: true, CurrentSpendUSD: 95, MaxUSD: 125},
+			issueKnown:  true,
+		},
+		{
+			name: "disabled per issue cap clears hold",
+			refusal: BudgetRefusal{
+				Code:             "per_issue_max_usd",
+				ProjectedCostUSD: 10,
+				RefusedAt:        now.Add(-48 * time.Hour),
+			},
+			issueKnown: true,
+		},
+		{
+			name: "per issue status failure preserves hold",
+			refusal: BudgetRefusal{
+				Code:             "per_issue_max_usd",
+				ProjectedCostUSD: 10,
+				RefusedAt:        now.Add(-48 * time.Hour),
+			},
+			issueKnown:     true,
+			issueStatusErr: errors.New("lookup failed"),
+			wantActive:     true,
 		},
 	}
 
@@ -408,24 +444,24 @@ func TestPruneBudgetRefusalsReevaluatesDailyCap(t *testing.T) {
 
 			cfg := normalizeConfig(Config{BudgetRefusalCooldown: time.Hour})
 			state := newState(cfg)
+			issue := dispatchTestIssue("issue", "Todo")
+			tt.refusal.Issue = issue
 			state.BudgetRefusals["issue"] = tt.refusal
 			orch := Orchestrator{
 				cfg: cfg,
 				dailyBudgetStatus: fakeDailyBudgetStatusProvider{
-					status: tt.status,
-					err:    tt.statusErr,
+					status: tt.dailyStatus,
+					err:    tt.dailyStatusErr,
+				},
+				issueBudgetStatus: fakeIssueBudgetStatusProvider{
+					status: tt.issueStatus,
+					known:  tt.issueKnown,
+					err:    tt.issueStatusErr,
 				},
 			}
 
-			orch.dispatchTickIssues(
-				context.Background(),
-				&state,
-				tickFetchedIssues{statusOK: true},
-				tickTransitionRefresh{blockedRefreshOK: true},
-				tickPreviousState{},
-				nil,
-				now,
-			)
+			orch.dispatchPlanner().pruneInactiveIssueBudgetRefusals(&state, []connector.Issue{issue})
+			orch.pruneBudgetRefusals(context.Background(), &state, now)
 			_, gotActive := state.BudgetRefusals["issue"]
 			if gotActive != tt.wantActive {
 				t.Fatalf("budget refusal active = %t, want %t", gotActive, tt.wantActive)
@@ -434,9 +470,61 @@ func TestPruneBudgetRefusalsReevaluatesDailyCap(t *testing.T) {
 	}
 }
 
+func TestPruneInactiveIssueBudgetRefusals(t *testing.T) {
+	t.Parallel()
+
+	issue := dispatchTestIssue("issue-held", "Todo")
+	tests := []struct {
+		name       string
+		code       string
+		candidates []connector.Issue
+		wantHeld   bool
+	}{
+		{
+			name:       "active candidate keeps per issue hold",
+			code:       string(budget.ReasonPerIssueMaxUSD),
+			candidates: []connector.Issue{issue},
+			wantHeld:   true,
+		},
+		{
+			name: "missing candidate clears per issue hold",
+			code: string(budget.ReasonPerIssueMaxUSD),
+		},
+		{
+			name:     "missing candidate keeps daily cooldown",
+			code:     string(budget.ReasonPerDayMaxUSD),
+			wantHeld: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := newState(normalizeConfig(Config{}))
+			state.BudgetRefusals[issue.ID] = BudgetRefusal{Issue: issue, Code: tt.code}
+			newDispatchPlanner(Config{}).pruneInactiveIssueBudgetRefusals(&state, tt.candidates)
+			_, gotHeld := state.BudgetRefusals[issue.ID]
+			if gotHeld != tt.wantHeld {
+				t.Fatalf("budget refusal held = %t, want %t", gotHeld, tt.wantHeld)
+			}
+		})
+	}
+}
+
 type fakeDailyBudgetStatusProvider struct {
 	status DailyBudgetStatus
 	err    error
+}
+
+type fakeIssueBudgetStatusProvider struct {
+	status IssueBudgetStatus
+	known  bool
+	err    error
+}
+
+func (p fakeIssueBudgetStatusProvider) IssueBudgetStatus(context.Context, connector.Issue) (IssueBudgetStatus, bool, error) {
+	return p.status, p.known, p.err
 }
 
 func (p fakeDailyBudgetStatusProvider) DailyBudgetStatus(context.Context, time.Time) (DailyBudgetStatus, bool, error) {
@@ -731,6 +819,57 @@ func TestHandleRunResultRecordsBudgetRefusalAndComment(t *testing.T) {
 	}
 	if commentConnector.comments[0].issueID != issue.ID || !strings.Contains(commentConnector.comments[0].body, "projected dispatch would exceed the daily budget") {
 		t.Fatalf("comment = %#v, want budget refusal comment", commentConnector.comments[0])
+	}
+}
+
+func TestHandleRunResultCreatesPerIssueHardHoldWithoutRetry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:    1,
+		ActiveStates:           []string{"Todo"},
+		TerminalStates:         []string{"Done"},
+		BudgetRefusalCooldown:  time.Hour,
+		ContinuationRetryDelay: time.Second,
+	})
+	orch := Orchestrator{cfg: cfg, connector: &budgetRefusalCommentConnector{}}
+	state := newState(cfg)
+	issue := dispatchTestIssue("issue-hard-budget-hold", "Todo")
+	state.Running[issue.ID] = Running{Issue: issue, StartedAt: now.Add(-time.Minute), WorkerHost: "local"}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+	maxUSD := 5.0
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     issue.ID,
+		CompletedAt: now,
+		Result: runpkg.RunResult{
+			FinalState: runpkg.FinalStateCompleted,
+			BudgetRefusal: &runpkg.BudgetRefusal{
+				Code:             string(budget.ReasonPerIssueMaxUSD),
+				Message:          "per-issue budget exceeded",
+				Comment:          "hard budget hold",
+				CurrentSpendUSD:  4.75,
+				ProjectedCostUSD: 1,
+				MaxUSD:           &maxUSD,
+				RefusedAt:        now,
+			},
+		},
+	})
+
+	if _, ok := state.BudgetRefusals[issue.ID]; !ok {
+		t.Fatal("BudgetRefusals missing per-issue hard hold")
+	}
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatal("Retry contains per-issue hard hold, want no scheduled retry")
+	}
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatal("Claimed contains per-issue hard hold, want claim released")
+	}
+	for _, boundary := range []time.Duration{time.Hour, 2 * time.Hour, 24 * time.Hour} {
+		if orch.dispatchable(issue, &state, now.Add(boundary)) {
+			t.Fatalf("dispatchable after %s = true, want hard hold", boundary)
+		}
 	}
 }
 

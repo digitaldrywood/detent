@@ -68,6 +68,12 @@ type DailyStatus struct {
 	MaxUSD          float64
 }
 
+type IssueStatus struct {
+	Active          bool
+	CurrentSpendUSD float64
+	MaxUSD          float64
+}
+
 type Refusal struct {
 	Code              ReasonCode
 	Message           string
@@ -209,6 +215,28 @@ func (c *Checker) DailyStatus(ctx context.Context, now time.Time) (DailyStatus, 
 	}, nil
 }
 
+func (c *Checker) IssueStatus(ctx context.Context, identity store.IssueIdentity) (IssueStatus, error) {
+	if !c.cfg.Enabled || !capActive(c.cfg.PerIssueMaxUSD) {
+		return IssueStatus{}, nil
+	}
+	if !issueIdentityPresent(identity) {
+		return IssueStatus{Active: true, MaxUSD: c.cfg.PerIssueMaxUSD}, nil
+	}
+	if missingSpendStore(c.spend) {
+		return IssueStatus{}, ErrMissingSpendStore
+	}
+
+	issueSpend, err := c.spend.IssueTokenSpend(ctx, identity)
+	if err != nil {
+		return IssueStatus{}, fmt.Errorf("issue token spend: %w", err)
+	}
+	return IssueStatus{
+		Active:          true,
+		CurrentSpendUSD: SpendUSD(issueSpend, c.pricing),
+		MaxUSD:          c.cfg.PerIssueMaxUSD,
+	}, nil
+}
+
 func SpendUSD(spend store.TokenSpend, pricing PricingTable) float64 {
 	total := 0.0
 	for _, row := range spend.ByModel {
@@ -319,8 +347,8 @@ Projected dispatch cost: %s
 Projected issue spend: %s / %s
 Model: %s
 The per-issue budget has no automatic reset.
-This issue will be reconsidered after: %s
-`, currentSpend, projectedCost, projectedSpend, max, model, dueAt))
+This issue is on a hard budget hold and needs an operator decision. Raise or disable the per-issue cap, or explicitly retry the issue after resetting its budget hold.
+`, currentSpend, projectedCost, projectedSpend, max, model))
 	default:
 		return strings.TrimSpace(fmt.Sprintf(`
 Detent refused to dispatch this issue because the budget check failed.

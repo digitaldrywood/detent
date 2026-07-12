@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/connector"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
@@ -466,6 +467,7 @@ func budgetRefusalSnapshots(refusals map[string]BudgetRefusal) []telemetry.Budge
 			CurrentSpendUSD:  entry.CurrentSpendUSD,
 			ProjectedCostUSD: entry.ProjectedCostUSD,
 			RefusedAt:        entry.RefusedAt,
+			HardHold:         entry.Code == string(budget.ReasonPerIssueMaxUSD),
 		}
 		if entry.MaxUSD != nil {
 			maxUSD := *entry.MaxUSD
