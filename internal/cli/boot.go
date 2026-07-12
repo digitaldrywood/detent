@@ -228,6 +228,9 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 			return err
 		}
 	}
+	if err := backfillRuntimeSessionProjects(runCtx, cfg.Global.Projects, runtimeStore, project.LoadWorkflow); err != nil {
+		return err
+	}
 
 	events := hub.New[project.Event]()
 	activityBroker := activity.NewBroker()
@@ -421,6 +424,54 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 			return serve(ctx, server, listener)
 		})
 	})
+}
+
+type sessionProjectBackfiller interface {
+	BackfillSessionProjectIDs(context.Context, []store.SessionProjectAttribution) (int64, error)
+}
+
+func backfillRuntimeSessionProjects(
+	ctx context.Context,
+	projects []globalconfig.Project,
+	backfiller sessionProjectBackfiller,
+	loadWorkflow func(globalconfig.Project) (workflowconfig.Workflow, error),
+) error {
+	attributions := make(map[string]store.SessionProjectAttribution, len(projects))
+	ambiguous := make(map[string]struct{})
+	for _, configuredProject := range projects {
+		workflow, err := loadWorkflow(configuredProject)
+		if err != nil {
+			return fmt.Errorf("load project workflow %s for session attribution: %w", configuredProject.ID, err)
+		}
+		repository := strings.TrimSpace(workflow.Config.Tracker.Repository)
+		projectID := strings.TrimSpace(configuredProject.ID)
+		if repository == "" || projectID == "" {
+			continue
+		}
+		key := strings.ToLower(repository)
+		if existing, ok := attributions[key]; ok && existing.ProjectID != projectID {
+			delete(attributions, key)
+			ambiguous[key] = struct{}{}
+			continue
+		}
+		if _, ok := ambiguous[key]; !ok {
+			attributions[key] = store.SessionProjectAttribution{ProjectID: projectID, Repository: repository}
+		}
+	}
+
+	keys := make([]string, 0, len(attributions))
+	for key := range attributions {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	ordered := make([]store.SessionProjectAttribution, 0, len(keys))
+	for _, key := range keys {
+		ordered = append(ordered, attributions[key])
+	}
+	if _, err := backfiller.BackfillSessionProjectIDs(ctx, ordered); err != nil {
+		return fmt.Errorf("backfill session project attribution: %w", err)
+	}
+	return nil
 }
 
 func globalProjectCandidates(projects []globalconfig.Project) []scheduler.ProjectCandidate {

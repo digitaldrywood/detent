@@ -205,6 +205,7 @@ func (s *sqliteStore) StartSession(ctx context.Context, attrs SessionStart) (int
 
 	session, err := s.queries.CreateCodexSession(ctx, sqlc.CreateCodexSessionParams{
 		RunID:                        nullPositiveInt64(attrs.RunID),
+		ProjectID:                    nullString(attrs.ProjectID),
 		WorkAttemptID:                nullPositiveInt64(attrs.WorkAttemptID),
 		IssueID:                      nullString(attrs.IssueID),
 		Identifier:                   nullString(attrs.Identifier),
@@ -913,6 +914,66 @@ func (s *sqliteStore) DailyTokenSpend(ctx context.Context, day time.Time) (Token
 		spend.ByModel = append(spend.ByModel, modelSpend)
 	}
 	return spend, nil
+}
+
+func (s *sqliteStore) ProjectDailyTokenSpend(ctx context.Context, projectID string, day time.Time) (TokenSpend, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return TokenSpend{}, errors.New("project_id is required")
+	}
+	date, err := dateString(day)
+	if err != nil {
+		return TokenSpend{}, err
+	}
+
+	rows, err := s.queries.ProjectDailyTokenSpend(ctx, sqlc.ProjectDailyTokenSpendParams{
+		CompletedAt: sql.NullString{String: date, Valid: true},
+		ProjectID:   nullString(projectID),
+	})
+	if err != nil {
+		return TokenSpend{}, fmt.Errorf("reading project daily token spend: %w", err)
+	}
+
+	spend := TokenSpend{Date: date, ByModel: make([]ModelTokenSpend, 0, len(rows))}
+	for _, row := range rows {
+		modelSpend := ModelTokenSpend{
+			Model:                 row.Model,
+			InputTokens:           row.InputTokens,
+			CachedInputTokens:     row.CachedInputTokens,
+			OutputTokens:          row.OutputTokens,
+			ReasoningOutputTokens: row.ReasoningOutputTokens,
+			TotalTokens:           row.TotalTokens,
+			Sessions:              row.Sessions,
+		}
+		spend.InputTokens += modelSpend.InputTokens
+		spend.CachedInputTokens += modelSpend.CachedInputTokens
+		spend.OutputTokens += modelSpend.OutputTokens
+		spend.ReasoningOutputTokens += modelSpend.ReasoningOutputTokens
+		spend.TotalTokens += modelSpend.TotalTokens
+		spend.Sessions += modelSpend.Sessions
+		spend.ByModel = append(spend.ByModel, modelSpend)
+	}
+	return spend, nil
+}
+
+func (s *sqliteStore) BackfillSessionProjectIDs(ctx context.Context, attributions []SessionProjectAttribution) (int64, error) {
+	var updated int64
+	for _, attribution := range attributions {
+		projectID := strings.TrimSpace(attribution.ProjectID)
+		repository := strings.TrimSpace(attribution.Repository)
+		if projectID == "" || repository == "" {
+			continue
+		}
+		rows, err := s.queries.BackfillSessionProjectID(ctx, sqlc.BackfillSessionProjectIDParams{
+			ProjectID:  nullString(projectID),
+			Repository: repository,
+		})
+		if err != nil {
+			return updated, fmt.Errorf("backfilling session project %q: %w", projectID, err)
+		}
+		updated += rows
+	}
+	return updated, nil
 }
 
 func (s *sqliteStore) IssueTokenSpend(ctx context.Context, identity IssueIdentity) (TokenSpend, error) {

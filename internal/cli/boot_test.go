@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tui"
 	"github.com/digitaldrywood/detent/internal/web"
@@ -67,6 +68,30 @@ func TestShouldLaunchTerminalDashboard(t *testing.T) {
 				t.Fatalf("shouldLaunchTerminalDashboard(%#v) = %v, want %v", tt.cfg, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBackfillRuntimeSessionProjects(t *testing.T) {
+	t.Parallel()
+
+	projects := []globalconfig.Project{{ID: "detent"}, {ID: "gopher-ai"}, {ID: "duplicate"}}
+	backfiller := &fakeSessionProjectBackfiller{}
+	err := backfillRuntimeSessionProjects(context.Background(), projects, backfiller, func(project globalconfig.Project) (workflowconfig.Workflow, error) {
+		cfg := workflowconfig.Default()
+		switch project.ID {
+		case "detent":
+			cfg.Tracker.Repository = "digitaldrywood/detent"
+		case "gopher-ai", "duplicate":
+			cfg.Tracker.Repository = "gopherguides/gopher-ai"
+		}
+		return workflowconfig.Workflow{Config: cfg}, nil
+	})
+	if err != nil {
+		t.Fatalf("backfillRuntimeSessionProjects() error = %v", err)
+	}
+	want := []store.SessionProjectAttribution{{ProjectID: "detent", Repository: "digitaldrywood/detent"}}
+	if len(backfiller.attributions) != len(want) || backfiller.attributions[0] != want[0] {
+		t.Fatalf("attributions = %#v, want %#v", backfiller.attributions, want)
 	}
 }
 
@@ -1401,6 +1426,15 @@ func assertRefresh(t *testing.T, response web.RefreshResponse) {
 
 type bootProvisioningConnector struct {
 	provision func(context.Context) error
+}
+
+type fakeSessionProjectBackfiller struct {
+	attributions []store.SessionProjectAttribution
+}
+
+func (f *fakeSessionProjectBackfiller) BackfillSessionProjectIDs(_ context.Context, attributions []store.SessionProjectAttribution) (int64, error) {
+	f.attributions = append([]store.SessionProjectAttribution(nil), attributions...)
+	return int64(len(attributions)), nil
 }
 
 func (bootProvisioningConnector) Name() string {

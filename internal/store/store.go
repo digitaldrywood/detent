@@ -73,6 +73,8 @@ type StatsStore interface {
 	CycleTimeReport(context.Context) (CycleTimeReport, error)
 	LifetimeTotals(context.Context) (LifetimeTotals, error)
 	DailyTokenSpend(context.Context, time.Time) (TokenSpend, error)
+	ProjectDailyTokenSpend(context.Context, string, time.Time) (TokenSpend, error)
+	BackfillSessionProjectIDs(context.Context, []SessionProjectAttribution) (int64, error)
 	IssueTokenSpend(context.Context, IssueIdentity) (TokenSpend, error)
 	RecentModelTokenQuantiles(context.Context, ModelTokenQuantileQuery) (ModelTokenQuantiles, error)
 }
@@ -275,6 +277,7 @@ type RunStop struct {
 type SessionStart struct {
 	RunID                        int64
 	WorkAttemptID                int64
+	ProjectID                    string
 	IssueID                      string
 	Identifier                   string
 	IssueURL                     string
@@ -290,6 +293,11 @@ type SessionStart struct {
 	ResumedFromSessionID         int64
 	OrphanRecoveryOutcome        string
 	OrphanRecoveryFallbackReason string
+}
+
+type SessionProjectAttribution struct {
+	ProjectID  string
+	Repository string
 }
 
 type SessionProviderIdentity struct {

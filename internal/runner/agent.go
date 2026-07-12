@@ -1499,6 +1499,7 @@ func (r *Runner) startSession(
 	}
 
 	sessionID, err := r.store.StartSession(ctx, store.SessionStart{
+		ProjectID:                    r.projectID,
 		IssueID:                      req.Issue.ID,
 		Identifier:                   req.Issue.Identifier,
 		IssueURL:                     req.Issue.URL,
