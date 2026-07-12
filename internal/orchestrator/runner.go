@@ -26,6 +26,10 @@ type DailyBudgetStatus = runner.DailyBudgetStatus
 
 type DailyBudgetStatusProvider = runner.DailyBudgetStatusProvider
 
+type IssueBudgetStatus = runner.IssueBudgetStatus
+
+type IssueBudgetStatusProvider = runner.IssueBudgetStatusProvider
+
 type DiffStats = runner.DiffStats
 
 type TokenTotals = runner.TokenTotals

@@ -345,6 +345,80 @@ func TestCheckerReportsEnforcedConfig(t *testing.T) {
 	}
 }
 
+func TestCheckerIssueStatus(t *testing.T) {
+	t.Parallel()
+
+	pricing := PricingTable{"gpt-test": {USDPerInputToken: 0.01}}
+	identity := store.IssueIdentity{IssueID: "issue-held", Identifier: "DET-1251"}
+	tests := []struct {
+		name      string
+		cfg       Config
+		spend     *fakeSpendStore
+		want      IssueStatus
+		wantError string
+	}{
+		{
+			name: "active cap reports lifetime issue spend",
+			cfg:  Config{Enabled: true, PerIssueMaxUSD: 2},
+			spend: &fakeSpendStore{issues: map[string]store.TokenSpend{
+				issueKey(identity): {ByModel: []store.ModelTokenSpend{{Model: "gpt-test", InputTokens: 125}}},
+			}},
+			want: IssueStatus{Active: true, CurrentSpendUSD: 1.25, MaxUSD: 2},
+		},
+		{
+			name:  "disabled cap reports inactive",
+			cfg:   Config{Enabled: true},
+			spend: &fakeSpendStore{},
+		},
+		{
+			name:      "spend failure is returned",
+			cfg:       Config{Enabled: true, PerIssueMaxUSD: 2},
+			spend:     &fakeSpendStore{issueErr: errors.New("database unavailable")},
+			wantError: "issue token spend",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := NewChecker(tt.cfg, tt.spend, pricing).IssueStatus(context.Background(), identity)
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("IssueStatus() error = %v, want containing %q", err, tt.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("IssueStatus() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("IssueStatus() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPerIssueRefusalCommentDescribesHardHold(t *testing.T) {
+	t.Parallel()
+
+	maxUSD := 5.0
+	comment := (Refusal{
+		Code:              ReasonPerIssueMaxUSD,
+		CurrentSpendUSD:   4.75,
+		ProjectedCostUSD:  1,
+		ProjectedSpendUSD: 5.75,
+		MaxUSD:            &maxUSD,
+		RefusedAt:         time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC),
+	}).Comment()
+	if !strings.Contains(comment, "hard budget hold") || !strings.Contains(comment, "needs an operator decision") {
+		t.Fatalf("Refusal.Comment() = %q, want hard-hold guidance", comment)
+	}
+	if strings.Contains(comment, "will be reconsidered after") {
+		t.Fatalf("Refusal.Comment() = %q, must not promise automatic reconsideration", comment)
+	}
+}
+
 func TestRefusalCommentUsesEffectiveDueAt(t *testing.T) {
 	t.Parallel()
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
@@ -319,9 +320,18 @@ func (a dispatchAction) decision() DispatchDecision {
 	}
 }
 
-func (p dispatchPlanner) pruneBudgetRefusals(state *State, now time.Time, dailyStatus *DailyBudgetStatus) {
+func (p dispatchPlanner) pruneBudgetRefusals(
+	state *State,
+	now time.Time,
+	dailyStatus *DailyBudgetStatus,
+	issueStatuses map[string]IssueBudgetStatus,
+) {
 	for issueID, refusal := range state.BudgetRefusals {
-		if !p.budgetRefusalActive(refusal, now, dailyStatus) {
+		var issueStatus *IssueBudgetStatus
+		if status, ok := issueStatuses[issueID]; ok {
+			issueStatus = &status
+		}
+		if !p.budgetRefusalActive(refusal, now, dailyStatus, issueStatus) {
 			delete(state.BudgetRefusals, issueID)
 		}
 	}
@@ -333,12 +343,23 @@ func (p dispatchPlanner) budgetCooldownActive(state *State, issueID string, now 
 		return false
 	}
 
-	return p.budgetRefusalActive(refusal, now, nil)
+	return p.budgetRefusalActive(refusal, now, nil, nil)
 }
 
-func (p dispatchPlanner) budgetRefusalActive(refusal BudgetRefusal, now time.Time, dailyStatus *DailyBudgetStatus) bool {
+func (p dispatchPlanner) budgetRefusalActive(
+	refusal BudgetRefusal,
+	now time.Time,
+	dailyStatus *DailyBudgetStatus,
+	issueStatus *IssueBudgetStatus,
+) bool {
+	if refusal.Code == string(budget.ReasonPerIssueMaxUSD) {
+		if issueStatus == nil {
+			return true
+		}
+		return issueStatus.Active && issueStatus.CurrentSpendUSD+refusal.ProjectedCostUSD > issueStatus.MaxUSD
+	}
 	if refusal.ResetAt != nil && now.Before(*refusal.ResetAt) {
-		if refusal.Code == "per_day_max_usd" && dailyStatus != nil {
+		if refusal.Code == string(budget.ReasonPerDayMaxUSD) && dailyStatus != nil {
 			if !dailyStatus.Active {
 				return false
 			}

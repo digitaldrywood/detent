@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -129,6 +130,7 @@ func TestHandleWorkAttemptRecoveryQueuesResumeRetryWhenEligible(t *testing.T) {
 	}
 	orch := newWorkAttemptRecoveryOrchestrator(t, runtimeStore, nil)
 	state := newState(orch.cfg)
+	state.BudgetRefusals[issue.ID] = BudgetRefusal{Issue: issue, Code: string(budget.ReasonPerIssueMaxUSD), RefusedAt: now.Add(-time.Hour)}
 
 	response, err := orch.handleWorkAttemptRecovery(ctx, &state, WorkAttemptRecoveryRequest{
 		ProjectID: "detent",
@@ -154,6 +156,9 @@ func TestHandleWorkAttemptRecoveryQueuesResumeRetryWhenEligible(t *testing.T) {
 	}
 	if retry.ResumeState.DetentSessionID != sessionID || retry.ResumeState.ProviderSessionID != "session-979" {
 		t.Fatalf("retry resume state = %#v, want selected session", retry.ResumeState)
+	}
+	if _, ok := state.BudgetRefusals[issue.ID]; ok {
+		t.Fatalf("state.BudgetRefusals still contains %q after explicit operator retry", issue.ID)
 	}
 	event := recoveryTimelineEvent(t, ctx, runtimeStore, issue.ID, WorkAttemptRecoveryRetryResume)
 	if event.Status != "succeeded" || !strings.Contains(event.MetadataJSON, `"resume_eligible":true`) {

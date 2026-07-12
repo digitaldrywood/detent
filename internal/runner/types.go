@@ -51,7 +51,17 @@ type DailyBudgetStatusProvider interface {
 	DailyBudgetStatus(context.Context, time.Time) (DailyBudgetStatus, bool, error)
 }
 
+type IssueBudgetStatusProvider interface {
+	IssueBudgetStatus(context.Context, connector.Issue) (IssueBudgetStatus, bool, error)
+}
+
 type DailyBudgetStatus struct {
+	Active          bool
+	CurrentSpendUSD float64
+	MaxUSD          float64
+}
+
+type IssueBudgetStatus struct {
 	Active          bool
 	CurrentSpendUSD float64
 	MaxUSD          float64

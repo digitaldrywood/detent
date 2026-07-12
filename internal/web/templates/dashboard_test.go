@@ -592,6 +592,41 @@ func TestDashboardRendersBudgetHistoryAndDailyCap(t *testing.T) {
 	}
 }
 
+func TestDashboardDistinguishesBudgetHoldLifecycle(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 15, 0, 0, 0, time.UTC)
+	resetAt := now.Add(9 * time.Hour)
+	html := renderAnalyticsPage(t, templates.DashboardData{
+		Title:         "Detent",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Budget: telemetry.Budget{
+				Enabled: true,
+				Refusals: []telemetry.BudgetRefusal{
+					{IssueID: "issue-hard", Identifier: "digitaldrywood/detent#1251", Code: "per_issue_max_usd", HardHold: true},
+					{IssueID: "issue-daily", Identifier: "digitaldrywood/detent#1247", Code: "per_day_max_usd", ResetAt: &resetAt},
+				},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		`aria-label="Budget holds"`,
+		"digitaldrywood/detent#1251",
+		"Hard hold",
+		"Needs an operator decision; it will not retry automatically.",
+		"digitaldrywood/detent#1247",
+		"Temporary cooldown",
+		"Retries automatically after {{detent-time:date-time-seconds:2026-07-13T00:00:00Z}}.",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("analytics page missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func renderHealthPage(t *testing.T, data templates.DashboardData) string {
 	t.Helper()
 

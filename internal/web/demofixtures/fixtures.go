@@ -389,6 +389,7 @@ func demoBudgetRefusalsSnapshot() telemetry.Snapshot {
 	snapshot.Budget.PerDayMaxUSD = &capValue
 	snapshot.Budget.Refusals = []telemetry.BudgetRefusal{
 		{IssueID: "demo-refusal-1", Identifier: "digitaldrywood/billing-api#5310", Code: "daily_cap_exceeded", Message: "Projected spend would exceed the daily cap.", CurrentSpendUSD: 41.15, ProjectedCostUSD: 6.2, MaxUSD: &capValue, RefusedAt: now.Add(-18 * time.Minute), ResetAt: demoTimePtr(now.Truncate(24 * time.Hour).Add(24 * time.Hour))},
+		{IssueID: "demo-refusal-2", Identifier: "digitaldrywood/billing-api#5311", Code: "per_issue_max_usd", Message: "Projected spend would exceed the per-issue cap.", CurrentSpendUSD: 41.15, ProjectedCostUSD: 6.2, MaxUSD: &capValue, RefusedAt: now.Add(-35 * time.Minute), HardHold: true},
 	}
 	return snapshot
 }

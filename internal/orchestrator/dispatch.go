@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/activity"
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -20,7 +21,36 @@ func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
 }
 
 func (o *Orchestrator) pruneBudgetRefusals(ctx context.Context, state *State, now time.Time) {
-	o.dispatchPlanner().pruneBudgetRefusals(state, now, o.currentDailyBudgetStatus(ctx, state, now))
+	o.dispatchPlanner().pruneBudgetRefusals(
+		state,
+		now,
+		o.currentDailyBudgetStatus(ctx, state, now),
+		o.currentIssueBudgetStatuses(ctx, state),
+	)
+}
+
+func (o *Orchestrator) currentIssueBudgetStatuses(ctx context.Context, state *State) map[string]IssueBudgetStatus {
+	if o.issueBudgetStatus == nil {
+		return nil
+	}
+
+	statuses := make(map[string]IssueBudgetStatus)
+	for issueID, refusal := range state.BudgetRefusals {
+		if refusal.Code != string(budget.ReasonPerIssueMaxUSD) {
+			continue
+		}
+		status, known, err := o.issueBudgetStatus.IssueBudgetStatus(ctx, refusal.Issue)
+		if err != nil {
+			if o.logger != nil {
+				o.logger.Warn("per-issue budget hold re-evaluation failed", "issue_id", issueID, "error", err)
+			}
+			continue
+		}
+		if known {
+			statuses[issueID] = status
+		}
+	}
+	return statuses
 }
 
 func (o *Orchestrator) currentDailyBudgetStatus(ctx context.Context, state *State, now time.Time) *DailyBudgetStatus {

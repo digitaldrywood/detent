@@ -317,6 +317,15 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			return
 		}
 	}
+	if event.Result.BudgetRefusal != nil && event.Result.BudgetRefusal.Code == string(budget.ReasonPerIssueMaxUSD) {
+		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
+			o.logger.Warn("per-issue budget hold claim release failed", "issue_id", event.IssueID, "error", err)
+		}
+		delete(state.Claimed, event.IssueID)
+		delete(state.Retry, event.IssueID)
+		delete(state.PriorAttempts, event.IssueID)
+		return
+	}
 	o.scheduleRetry(state, running.Issue, 1, event.CompletedAt, "", true, running.WorkerHost)
 }
 

@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -1180,7 +1181,7 @@ func TestStateSnapshotBudgetRefusals(t *testing.T) {
 	state := newState(normalizeConfig(Config{}))
 	state.BudgetRefusals["i-9"] = BudgetRefusal{
 		Issue:            connector.Issue{ID: "i-9", Identifier: "ISS-9"},
-		Code:             "per_issue",
+		Code:             string(budget.ReasonPerIssueMaxUSD),
 		Message:          "too expensive",
 		CurrentSpendUSD:  3,
 		ProjectedCostUSD: 9,
@@ -1194,8 +1195,11 @@ func TestStateSnapshotBudgetRefusals(t *testing.T) {
 		t.Fatalf("Budget.Refusals len = %d, want 1", len(snapshot.Budget.Refusals))
 	}
 	refusal := snapshot.Budget.Refusals[0]
-	if refusal.IssueID != "i-9" || refusal.Identifier != "ISS-9" || refusal.Code != "per_issue" {
+	if refusal.IssueID != "i-9" || refusal.Identifier != "ISS-9" || refusal.Code != string(budget.ReasonPerIssueMaxUSD) {
 		t.Fatalf("Refusals[0] = %#v", refusal)
+	}
+	if !refusal.HardHold {
+		t.Fatal("Refusals[0].HardHold = false, want true")
 	}
 	if refusal.MaxUSD == nil || *refusal.MaxUSD != maxUSD {
 		t.Fatalf("Refusals[0].MaxUSD = %v, want %v", refusal.MaxUSD, maxUSD)

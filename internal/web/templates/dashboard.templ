@@ -4075,6 +4075,23 @@ templ budgetCard(snapshot telemetry.Snapshot) {
 						<strong class="font-mono font-medium text-text">{ optionalUSD(snapshot.Budget.PerIssueMaxUSD) }</strong>
 					</div>
 				</div>
+				if len(snapshot.Budget.Refusals) > 0 {
+					<div class="grid gap-2 border-t border-line pt-3" aria-label="Budget holds">
+						<div class="flex items-center justify-between gap-4">
+							@plainInlineLabel("Budget holds", "font-medium text-sec")
+							<span class="font-mono text-xs text-sec">{ formatInt(int64(len(snapshot.Budget.Refusals))) }</span>
+						</div>
+						for _, refusal := range snapshot.Budget.Refusals {
+							<div class="grid gap-1 rounded-md border border-line bg-elev px-3 py-2">
+								<div class="flex items-center justify-between gap-3">
+									<strong class="min-w-0 truncate font-mono text-xs font-medium text-text">{ budgetRefusalLabel(refusal) }</strong>
+									<span class={ budgetRefusalBadgeClass(refusal) }>{ budgetRefusalDisposition(refusal) }</span>
+								</div>
+								<p class="text-xs text-sec">{ budgetRefusalDetail(refusal) }</p>
+							</div>
+						}
+					</div>
+				}
 			</div>
 		}
 	</section>
