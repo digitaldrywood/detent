@@ -580,7 +580,7 @@ func artifactGateWaitStatusIsCurrent(issue connector.Issue, statusField string) 
 	for field, updatedAt := range issue.FieldUpdatedAt {
 		if strings.EqualFold(strings.TrimSpace(field), strings.TrimSpace(statusField)) &&
 			issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() && !updatedAt.IsZero() {
-			return !issue.StageUpdatedAt.After(updatedAt)
+			return updatedAt.After(*issue.StageUpdatedAt)
 		}
 	}
 	if issue.StageUpdatedAt == nil || issue.StageUpdatedAt.IsZero() || issue.UpdatedAt == nil || issue.UpdatedAt.IsZero() {

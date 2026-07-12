@@ -322,12 +322,26 @@ func TestStateSnapshotIncludesArtifactGateWaitDispatchReason(t *testing.T) {
 		FieldUpdatedAt: map[string]time.Time{"render_status": updatedAt},
 		StageUpdatedAt: &stageUpdatedAt,
 		UpdatedAt:      &updatedAt,
+	}, {
+		ID:             "artifact-seeded-wait",
+		Identifier:     "wi-artifact-seeded-wait",
+		State:          "Todo",
+		Fields:         map[string]string{"render_status": "queued"},
+		FieldUpdatedAt: map[string]time.Time{"render_status": updatedAt},
+		StageUpdatedAt: &updatedAt,
+		UpdatedAt:      &updatedAt,
 	}}
 
 	snapshot := state.Snapshot(now)
 
 	if got := snapshot.BoardIssues[0].Metadata["detent.dispatch_skip_reason"]; got != dispatchSkipArtifactGateWaitStatus {
 		t.Fatalf("dispatch skip reason = %q, want %q", got, dispatchSkipArtifactGateWaitStatus)
+	}
+	if got := snapshot.BoardIssues[0].Metadata["detent.artifact_gate_status"]; got != "pending_review" {
+		t.Fatalf("artifact gate status = %q, want pending_review", got)
+	}
+	if got := snapshot.BoardIssues[1].Metadata["detent.dispatch_skip_reason"]; got != "" {
+		t.Fatalf("seeded wait dispatch skip reason = %q, want empty", got)
 	}
 }
 

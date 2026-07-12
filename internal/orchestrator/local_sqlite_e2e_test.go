@@ -141,6 +141,7 @@ func TestLocalSQLiteArtifactLifecycleEndToEnd(t *testing.T) {
 	seed.Identifier = "wi-artifact-1"
 	seed.Title = "Render launch video"
 	seed.State = "Todo"
+	seed.Fields = map[string]string{"render_status": "queued"}
 	seed.Deliverable = &connector.Deliverable{Kind: "artifact"}
 
 	tracker, err := local.New(local.Config{
