@@ -188,7 +188,16 @@ func TestProjectFailureBreakerCanaryStateMachine(t *testing.T) {
 	if !state.FailureBreaker.Active() {
 		t.Fatal("FailureBreaker.Active() = false before success canary")
 	}
-	orch.recordProjectAttemptOutcome(&state, "canary-success", state.FailureBreaker.ResumeAt, store.WorkAttemptTerminalSuccess, nil, "", "")
+	orch.recordProjectAttemptOutcome(&state, "in-flight-success", successAt.Add(2*time.Second), store.WorkAttemptTerminalSuccess, nil, "", "")
+	if !state.FailureBreaker.Active() {
+		t.Fatal("FailureBreaker.Active() = false after non-canary success")
+	}
+	canaryAt = state.FailureBreaker.ResumeAt
+	canary, allowed = tryReserveProjectFailureBreakerCanary(&state, "canary-success", canaryAt)
+	if !canary || !allowed {
+		t.Fatalf("tryReserveProjectFailureBreakerCanary() for success = (%t, %t), want (true, true)", canary, allowed)
+	}
+	orch.recordProjectAttemptOutcome(&state, "canary-success", canaryAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 	if state.FailureBreaker.Active() {
 		t.Fatalf("FailureBreaker = %#v, want success to close it", state.FailureBreaker)
 	}

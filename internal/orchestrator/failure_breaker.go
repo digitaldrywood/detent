@@ -127,7 +127,7 @@ func (o *Orchestrator) recordProjectAttemptOutcome(
 	}
 	switch terminalState {
 	case store.WorkAttemptTerminalSuccess:
-		o.recordProjectFailureBreakerSuccess(state, completedAt)
+		o.recordProjectFailureBreakerSuccess(state, strings.TrimSpace(issueID), completedAt)
 		return
 	case store.WorkAttemptTerminalFailure, store.WorkAttemptTerminalTimedOut, store.WorkAttemptTerminalNoProgress:
 	default:
@@ -142,8 +142,12 @@ func (o *Orchestrator) recordProjectAttemptOutcome(
 	o.recordProjectFailureBreakerFailure(state, strings.TrimSpace(issueID), class, completedAt)
 }
 
-func (o *Orchestrator) recordProjectFailureBreakerSuccess(state *State, at time.Time) {
+func (o *Orchestrator) recordProjectFailureBreakerSuccess(state *State, issueID string, at time.Time) {
 	if state.FailureBreaker.Active() {
+		canaryIssueID := strings.TrimSpace(state.FailureBreaker.CanaryIssueID)
+		if canaryIssueID == "" || canaryIssueID != issueID {
+			return
+		}
 		closedClass := state.FailureBreaker.Class
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      at,
