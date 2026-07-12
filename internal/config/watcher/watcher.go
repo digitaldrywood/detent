@@ -19,10 +19,11 @@ var ErrMissingPath = errors.New("workflow watch path is required")
 type Loader func(string) (workflowconfig.Workflow, error)
 
 type Update struct {
-	Path     string
-	Workflow workflowconfig.Workflow
-	Err      error
-	At       time.Time
+	Path       string
+	Workflow   workflowconfig.Workflow
+	Err        error
+	WatcherErr bool
+	At         time.Time
 }
 
 type Option func(*options)
@@ -103,10 +104,11 @@ func (w *Watcher) Watch(ctx context.Context) (<-chan Update, error) {
 		defer close(updates)
 		for update := range fileUpdates {
 			mapped := Update{
-				Path:     update.Path,
-				Workflow: update.Value,
-				Err:      update.Err,
-				At:       update.At,
+				Path:       update.Path,
+				Workflow:   update.Value,
+				Err:        update.Err,
+				WatcherErr: update.WatcherErr,
+				At:         update.At,
 			}
 			select {
 			case updates <- mapped:

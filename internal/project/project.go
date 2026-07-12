@@ -46,6 +46,9 @@ const (
 	EventStopped          EventKind = "project_stopped"
 	EventUnpaused         EventKind = "project_unpaused"
 	EventWorkflowReloaded EventKind = "project_workflow_reloaded"
+
+	workflowWatcherInitialBackoff = 100 * time.Millisecond
+	workflowWatcherMaxBackoff     = 5 * time.Second
 )
 
 type ID string
@@ -62,6 +65,16 @@ type Event struct {
 type RuntimeError struct {
 	Message string
 	At      time.Time
+}
+
+type WorkflowSourceStatus struct {
+	Path             string
+	Hash             string
+	ModifiedAt       time.Time
+	LoadedAt         time.Time
+	LastWatchEventAt time.Time
+	LastReconcileAt  time.Time
+	WatcherArmed     bool
 }
 
 type Config struct {
@@ -85,49 +98,51 @@ type startOptions struct {
 }
 
 type Dependencies struct {
-	Connector              connector.Connector
-	ConnectorFactory       ConnectorFactory
-	OrchestratorFactory    OrchestratorFactory
-	WorkflowWatcherFactory WorkflowWatcherFactory
-	Runner                 orchestrator.Runner
-	Scheduler              scheduler.Scheduler
-	GlobalDispatchGate     scheduler.ProjectDispatchGate
-	WorkflowMetrics        orchestrator.WorkflowMetricsRecorder
-	Efficiency             efficiency.Recorder
-	LifecycleExporter      efficiency.LifecycleExporter
-	WorkAttempts           store.WorkAttemptStore
-	ProgressSpend          store.ProgressSpendStore
-	AgentResume            store.AgentResumeStore
-	ValidatorMemo          store.ValidatorMemoStore
-	Activity               *activity.Broker
-	Events                 *hub.Hub[Event]
-	Logger                 *slog.Logger
-	GitHubToken            string
-	RefreshGitHubToken     func(context.Context) (string, error)
-	IntakeDependencies     intake.Dependencies
-	RetroStore             store.RetroStore
+	Connector                 connector.Connector
+	ConnectorFactory          ConnectorFactory
+	OrchestratorFactory       OrchestratorFactory
+	WorkflowWatcherFactory    WorkflowWatcherFactory
+	WorkflowReconcileInterval time.Duration
+	Runner                    orchestrator.Runner
+	Scheduler                 scheduler.Scheduler
+	GlobalDispatchGate        scheduler.ProjectDispatchGate
+	WorkflowMetrics           orchestrator.WorkflowMetricsRecorder
+	Efficiency                efficiency.Recorder
+	LifecycleExporter         efficiency.LifecycleExporter
+	WorkAttempts              store.WorkAttemptStore
+	ProgressSpend             store.ProgressSpendStore
+	AgentResume               store.AgentResumeStore
+	ValidatorMemo             store.ValidatorMemoStore
+	Activity                  *activity.Broker
+	Events                    *hub.Hub[Event]
+	Logger                    *slog.Logger
+	GitHubToken               string
+	RefreshGitHubToken        func(context.Context) (string, error)
+	IntakeDependencies        intake.Dependencies
+	RetroStore                store.RetroStore
 }
 
 type Project struct {
-	id               ID
-	cfg              globalconfig.Project
-	workflow         workflowconfig.Workflow
-	githubToken      string
-	connector        connector.Connector
-	connectorFactory ConnectorFactory
-	orchestrator     *orchestrator.Orchestrator
-	orchFactory      OrchestratorFactory
-	orchConfig       orchestrator.Config
-	orchDeps         orchestrator.Dependencies
-	runner           orchestrator.Runner
-	scheduler        scheduler.Scheduler
-	schedulerFactory schedulerFactory
-	intake           *intake.Manager
-	retro            *retro.Manager
-	retroProduct     connector.Connector
-	events           *hub.Hub[Event]
-	logger           *slog.Logger
-	watcher          WorkflowWatcherFactory
+	id                        ID
+	cfg                       globalconfig.Project
+	workflow                  workflowconfig.Workflow
+	githubToken               string
+	connector                 connector.Connector
+	connectorFactory          ConnectorFactory
+	orchestrator              *orchestrator.Orchestrator
+	orchFactory               OrchestratorFactory
+	orchConfig                orchestrator.Config
+	orchDeps                  orchestrator.Dependencies
+	runner                    orchestrator.Runner
+	scheduler                 scheduler.Scheduler
+	schedulerFactory          schedulerFactory
+	intake                    *intake.Manager
+	retro                     *retro.Manager
+	retroProduct              connector.Connector
+	events                    *hub.Hub[Event]
+	logger                    *slog.Logger
+	watcher                   WorkflowWatcherFactory
+	workflowReconcileInterval time.Duration
 
 	mu              sync.Mutex
 	cancel          context.CancelFunc
@@ -137,6 +152,7 @@ type Project struct {
 	started         bool
 	closed          bool
 	lifecycleEvents bool
+	workflowSource  WorkflowSourceStatus
 }
 
 func Load(cfg globalconfig.Project, deps Dependencies) (*Project, error) {
@@ -255,28 +271,37 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	watcherProject := cfg.Project
 	watcherProject.ID = string(id)
 	watcherFactory := resolveWorkflowWatcherFactory(deps, watcherProject, deps.GitHubToken, logger)
+	workflowPath := workflowSourceDisplayPath(cfg.Project)
+	workflowModifiedAt := workflowFileModifiedAt(cfg.Project)
 
 	cfg.Project.ID = string(id)
 	return &Project{
-		id:               id,
-		cfg:              cfg.Project,
-		workflow:         workflow,
-		githubToken:      strings.TrimSpace(deps.GitHubToken),
-		connector:        projectConnector,
-		connectorFactory: connectorFactory,
-		orchestrator:     orch,
-		orchFactory:      orchestratorFactory,
-		orchConfig:       orchConfig,
-		orchDeps:         orchDeps,
-		runner:           deps.Runner,
-		scheduler:        projectScheduler,
-		schedulerFactory: schedulerFactory,
-		intake:           projectIntake,
-		retro:            projectRetro,
-		retroProduct:     retroProductConnector,
-		events:           projectEvents,
-		logger:           logger,
-		watcher:          watcherFactory,
+		id:                        id,
+		cfg:                       cfg.Project,
+		workflow:                  workflow,
+		githubToken:               strings.TrimSpace(deps.GitHubToken),
+		connector:                 projectConnector,
+		connectorFactory:          connectorFactory,
+		orchestrator:              orch,
+		orchFactory:               orchestratorFactory,
+		orchConfig:                orchConfig,
+		orchDeps:                  orchDeps,
+		runner:                    deps.Runner,
+		scheduler:                 projectScheduler,
+		schedulerFactory:          schedulerFactory,
+		intake:                    projectIntake,
+		retro:                     projectRetro,
+		retroProduct:              retroProductConnector,
+		events:                    projectEvents,
+		logger:                    logger,
+		watcher:                   watcherFactory,
+		workflowReconcileInterval: deps.WorkflowReconcileInterval,
+		workflowSource: WorkflowSourceStatus{
+			Path:       workflowPath,
+			Hash:       workflow.SourceHash,
+			ModifiedAt: workflowModifiedAt,
+			LoadedAt:   time.Now().UTC(),
+		},
 	}, nil
 }
 
@@ -299,6 +324,13 @@ func (p *Project) Workflow() workflowconfig.Workflow {
 	defer p.mu.Unlock()
 
 	return p.workflow
+}
+
+func (p *Project) WorkflowSourceStatus() WorkflowSourceStatus {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.workflowSource
 }
 
 func (p *Project) EnforcedBudget() (workflowconfig.Budget, bool) {
@@ -495,6 +527,15 @@ func (p *Project) Unpause(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	p.mu.Lock()
+	if !p.cfg.Paused {
+		p.mu.Unlock()
+		return nil
+	}
+	p.mu.Unlock()
+
+	p.reconcileWorkflow(ctx)
 
 	p.mu.Lock()
 	if !p.cfg.Paused {
@@ -833,25 +874,94 @@ func (p *Project) startWorkflowWatcher(ctx context.Context) <-chan struct{} {
 	go func() {
 		defer close(done)
 
-		watcher, err := p.watcher(path)
-		if err != nil {
-			p.logger.Warn("create workflow watcher failed", "project_id", p.id, "path", path, "error", err)
-			return
+		reconcileTicker := time.NewTicker(p.workflowReconcileCadence())
+		defer reconcileTicker.Stop()
+		retryTimer := time.NewTimer(workflowWatcherInitialBackoff)
+		if !retryTimer.Stop() {
+			<-retryTimer.C
+		}
+		defer retryTimer.Stop()
+
+		var updates <-chan configwatcher.Update
+		var stopWatch context.CancelFunc
+		var retryC <-chan time.Time
+		backoff := workflowWatcherInitialBackoff
+		arm := func() error {
+			watcher, err := p.watcher(path)
+			if err != nil {
+				return fmt.Errorf("create workflow watcher: %w", err)
+			}
+			watchCtx, cancel := context.WithCancel(ctx)
+			watchUpdates, err := watcher.Watch(watchCtx)
+			if err != nil {
+				cancel()
+				return fmt.Errorf("watch workflow: %w", err)
+			}
+			updates = watchUpdates
+			stopWatch = cancel
+			p.setWorkflowWatcherArmed(true)
+			return nil
+		}
+		scheduleRetry := func(err error) {
+			p.setWorkflowWatcherArmed(false)
+			p.logger.Warn("workflow watcher stopped; re-establishing",
+				"project_id", p.id,
+				"path", path,
+				"backoff", backoff,
+				"error", err,
+			)
+			resetProjectTimer(retryTimer, backoff)
+			retryC = retryTimer.C
+			backoff = min(backoff*2, workflowWatcherMaxBackoff)
 		}
 
-		updates, err := watcher.Watch(ctx)
-		if err != nil {
-			p.logger.Warn("watch workflow failed", "project_id", p.id, "path", path, "error", err)
-			return
+		if err := arm(); err != nil {
+			scheduleRetry(err)
 		}
 
 		for {
 			select {
 			case <-ctx.Done():
+				if stopWatch != nil {
+					stopWatch()
+				}
+				p.setWorkflowWatcherArmed(false)
 				return
+			case <-reconcileTicker.C:
+				p.reconcileWorkflow(ctx)
+			case <-retryC:
+				retryC = nil
+				if err := arm(); err != nil {
+					scheduleRetry(err)
+				}
 			case update, ok := <-updates:
 				if !ok {
-					return
+					if ctx.Err() != nil {
+						p.setWorkflowWatcherArmed(false)
+						return
+					}
+					updates = nil
+					if stopWatch != nil {
+						stopWatch()
+						stopWatch = nil
+					}
+					scheduleRetry(errors.New("workflow watcher update channel closed"))
+					continue
+				}
+				p.recordWorkflowWatchEvent(update.At)
+				backoff = workflowWatcherInitialBackoff
+				if update.WatcherErr {
+					if ctx.Err() != nil {
+						p.setWorkflowWatcherArmed(false)
+						return
+					}
+					updates = nil
+					if stopWatch != nil {
+						stopWatch()
+						stopWatch = nil
+					}
+					scheduleRetry(update.Err)
+					continue
 				}
 				p.handleWorkflowUpdate(ctx, update)
 			}
@@ -860,14 +970,79 @@ func (p *Project) startWorkflowWatcher(ctx context.Context) <-chan struct{} {
 	return done
 }
 
-func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher.Update) {
+func resetProjectTimer(timer *time.Timer, delay time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(delay)
+}
+
+func (p *Project) workflowReconcileCadence() time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.workflowReconcileInterval > 0 {
+		return p.workflowReconcileInterval
+	}
+	interval := time.Duration(p.workflow.Config.Polling.IntervalMS) * time.Millisecond
+	if interval <= 0 {
+		return time.Duration(workflowconfig.DefaultPollingIntervalMS) * time.Millisecond
+	}
+	return interval
+}
+
+func (p *Project) setWorkflowWatcherArmed(armed bool) {
+	p.mu.Lock()
+	p.workflowSource.WatcherArmed = armed
+	p.mu.Unlock()
+}
+
+func (p *Project) recordWorkflowWatchEvent(at time.Time) {
+	if at.IsZero() {
+		at = time.Now()
+	}
+	p.mu.Lock()
+	p.workflowSource.LastWatchEventAt = at.UTC()
+	p.mu.Unlock()
+}
+
+func (p *Project) reconcileWorkflow(ctx context.Context) {
+	p.mu.Lock()
+	projectConfig := p.cfg
+	loadedHash := p.workflowSource.Hash
+	p.mu.Unlock()
+
+	workflow, err := LoadWorkflowContext(ctx, projectConfig)
+	now := time.Now().UTC()
+	p.mu.Lock()
+	p.workflowSource.LastReconcileAt = now
+	p.mu.Unlock()
+	if err != nil {
+		if ctx.Err() == nil {
+			p.logger.Warn("workflow reconcile failed", "project_id", p.id, "path", workflowSourceDisplayPath(projectConfig), "error", err)
+		}
+		return
+	}
+	if workflow.SourceHash == "" || workflow.SourceHash == loadedHash {
+		return
+	}
+
+	path := workflowSourceDisplayPath(projectConfig)
+	p.logger.Warn("workflow reconcile detected stale config", "project_id", p.id, "path", path)
+	p.handleWorkflowUpdate(ctx, configwatcher.Update{Path: path, Workflow: workflow, At: now})
+}
+
+func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher.Update) bool {
 	if update.Err != nil {
 		p.logger.Warn("workflow reload failed",
 			"project_id", p.id,
 			"path", update.Path,
 			"error", update.Err,
 		)
-		return
+		return false
 	}
 
 	p.mu.Lock()
@@ -877,13 +1052,10 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	schedulerFactory := p.schedulerFactory
 	runner := p.runner
 	projectOrchestrator := p.orchestrator
+	projectRunning := p.done != nil
 	projectIntake := p.intake
 	projectRetro := p.retro
 	p.mu.Unlock()
-	if projectOrchestrator == nil {
-		return
-	}
-
 	workflow := normalizeWorkflow(update.Workflow)
 	workflow.Config = workflowConfigWithProjectIdentity(projectConfig, workflow.Config)
 	workflow.Config = workflowConfigWithGitHubToken(workflow.Config, githubToken)
@@ -893,7 +1065,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			"path", update.Path,
 			"error", err,
 		)
-		return
+		return false
 	}
 
 	projectConnector, err := buildConnector(workflow.Config, connectorFactory)
@@ -903,7 +1075,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			"path", update.Path,
 			"error", err,
 		)
-		return
+		return false
 	}
 
 	projectScheduler, err := buildScheduler(workflow.Config, schedulerFactory)
@@ -913,7 +1085,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			"path", update.Path,
 			"error", err,
 		)
-		return
+		return false
 	}
 	releaseBuild, err := buildReleaseCoordinator(workflow.Config, projectConnector)
 	if err != nil {
@@ -922,7 +1094,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			"path", update.Path,
 			"error", err,
 		)
-		return
+		return false
 	}
 	releaseCoordinator := releaseBuild.coordinator
 
@@ -933,7 +1105,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			"path", update.Path,
 			"error", err,
 		)
-		return
+		return false
 	}
 	retainRetroProduct := false
 	defer func() {
@@ -958,26 +1130,28 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 				"path", update.Path,
 				"error", err,
 			)
-			return
+			return false
 		}
 	}
 
 	runtimeConfig := projectOrchestratorConfig(projectConfig, workflow.Config)
-	if err := projectOrchestrator.UpdateRuntime(ctx, orchestrator.RuntimeUpdate{
-		Config:         runtimeConfig,
-		Connector:      projectConnector,
-		Release:        releaseCoordinator,
-		ReplaceRelease: true,
-	}); err != nil {
-		if ctx.Err() != nil {
-			return
+	if projectOrchestrator != nil && projectRunning {
+		if err := projectOrchestrator.UpdateRuntime(ctx, orchestrator.RuntimeUpdate{
+			Config:         runtimeConfig,
+			Connector:      projectConnector,
+			Release:        releaseCoordinator,
+			ReplaceRelease: true,
+		}); err != nil {
+			if ctx.Err() != nil {
+				return false
+			}
+			p.logger.Warn("apply workflow reload failed",
+				"project_id", p.id,
+				"path", update.Path,
+				"error", err,
+			)
+			return false
 		}
-		p.logger.Warn("apply workflow reload failed",
-			"project_id", p.id,
-			"path", update.Path,
-			"error", err,
-		)
-		return
 	}
 	if updater, ok := runner.(workflowUpdater); ok {
 		updater.UpdateWorkflow(workflow)
@@ -993,13 +1167,20 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			ProductIssues: productRetroStore,
 		}); err != nil {
 			p.logger.Warn("apply workflow retro reload failed", "project_id", p.id, "path", update.Path, "error", err)
-			return
+			return false
 		}
 	}
 
 	p.mu.Lock()
 	previousRetroProduct := p.retroProduct
 	p.workflow = workflow
+	p.workflowSource.Hash = workflow.SourceHash
+	p.workflowSource.ModifiedAt = workflowFileModifiedAt(projectConfig)
+	if update.At.IsZero() {
+		p.workflowSource.LoadedAt = time.Now().UTC()
+	} else {
+		p.workflowSource.LoadedAt = update.At.UTC()
+	}
 	p.connector = projectConnector
 	p.retroProduct = retroProductConnector
 	retainRetroProduct = true
@@ -1024,6 +1205,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			At:        time.Now(),
 		})
 	}
+	return true
 }
 
 type releaseCoordinatorBuild struct {

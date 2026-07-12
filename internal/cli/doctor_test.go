@@ -3863,6 +3863,61 @@ func TestCheckDoctorServerPort(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorWorkflowDriftReportsStaleLiveConfig(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: memory\n---\ncurrent\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	loadedAt := time.Date(2026, 7, 12, 14, 0, 0, 0, time.UTC)
+	payload, err := json.Marshal(map[string]any{
+		"status": "ok",
+		"mode":   "running",
+		"checks": map[string]string{
+			"hub": "configured", "store": "configured", "registry": "configured", "connector": "configured",
+		},
+		"workflows": []map[string]any{{
+			"project_id":  "detent",
+			"path":        workflowPath,
+			"source_hash": "stale-hash",
+			"loaded_at":   loadedAt,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	port := 4001
+	checks := checkDoctorWorkflowDrift(context.Background(), globalconfig.Config{
+		Projects: []globalconfig.Project{{ID: "detent", Workflow: workflowPath}},
+	}, BootConfig{Host: "127.0.0.1", Port: &port}, doctorDeps{
+		loadWorkflow: workflowconfig.LoadWorkflow,
+		httpDo: func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(payload)),
+			}, nil
+		},
+	})
+
+	if len(checks) != 1 {
+		t.Fatalf("checks = %#v, want one", checks)
+	}
+	if checks[0].Status != doctorFail {
+		t.Fatalf("Status = %s, want %s: %#v", checks[0].Status, doctorFail, checks[0])
+	}
+	for _, want := range []string{
+		"project detent is running stale config",
+		"file changed at ",
+		"loaded at 2026-07-12T14:00:00Z",
+	} {
+		if !strings.Contains(checks[0].Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", checks[0].Detail, want)
+		}
+	}
+}
+
 func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 	t.Parallel()
 

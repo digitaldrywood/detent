@@ -6498,8 +6498,9 @@ func TestHealthReportsEnforcedProjectBudgets(t *testing.T) {
 	trackedProject, err := project.New(project.Config{
 		Project: globalconfig.Project{ID: "detent"},
 		Workflow: workflowconfig.Workflow{
-			Config: workflowCfg,
-			Prompt: "Work the issue.",
+			Config:     workflowCfg,
+			Prompt:     "Work the issue.",
+			SourceHash: "loaded-workflow-hash",
 		},
 	}, project.Dependencies{
 		Connector: connectorProbe{name: "memory"},
@@ -6533,6 +6534,8 @@ func TestHealthReportsEnforcedProjectBudgets(t *testing.T) {
 		`"enabled":true`,
 		`"per_day_max_usd":250`,
 		`"per_issue_max_usd":25`,
+		`"source_hash":"loaded-workflow-hash"`,
+		`"watcher_armed":false`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())

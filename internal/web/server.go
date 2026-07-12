@@ -848,7 +848,31 @@ func (s *Server) health(c echo.Context) error {
 		Update:            updateStatus,
 		Checks:            checks,
 		Budgets:           s.enforcedBudgets(),
+		Workflows:         s.workflowSources(),
 	})
+}
+
+func (s *Server) workflowSources() []healthWorkflowSource {
+	if s.registry == nil {
+		return nil
+	}
+
+	projects := s.registry.List()
+	sources := make([]healthWorkflowSource, 0, len(projects))
+	for _, trackedProject := range projects {
+		status := trackedProject.WorkflowSourceStatus()
+		sources = append(sources, healthWorkflowSource{
+			ProjectID:        string(trackedProject.ID()),
+			Path:             status.Path,
+			SourceHash:       status.Hash,
+			ModifiedAt:       status.ModifiedAt,
+			LoadedAt:         status.LoadedAt,
+			LastWatchEventAt: status.LastWatchEventAt,
+			LastReconcileAt:  status.LastReconcileAt,
+			WatcherArmed:     status.WatcherArmed,
+		})
+	}
+	return sources
 }
 
 func (s *Server) enforcedBudgets() []healthBudget {
@@ -1029,13 +1053,25 @@ func (s *Server) connectorName() string {
 }
 
 type healthResponse struct {
-	Status            string            `json:"status"`
-	Mode              string            `json:"mode"`
-	Connector         string            `json:"connector"`
-	SessionsRemaining int               `json:"sessions_remaining,omitempty"`
-	Update            telemetry.Update  `json:"update,omitzero"`
-	Checks            map[string]string `json:"checks"`
-	Budgets           []healthBudget    `json:"budgets,omitempty"`
+	Status            string                 `json:"status"`
+	Mode              string                 `json:"mode"`
+	Connector         string                 `json:"connector"`
+	SessionsRemaining int                    `json:"sessions_remaining,omitempty"`
+	Update            telemetry.Update       `json:"update,omitzero"`
+	Checks            map[string]string      `json:"checks"`
+	Budgets           []healthBudget         `json:"budgets,omitempty"`
+	Workflows         []healthWorkflowSource `json:"workflows,omitempty"`
+}
+
+type healthWorkflowSource struct {
+	ProjectID        string    `json:"project_id"`
+	Path             string    `json:"path"`
+	SourceHash       string    `json:"source_hash"`
+	ModifiedAt       time.Time `json:"modified_at,omitzero"`
+	LoadedAt         time.Time `json:"loaded_at,omitzero"`
+	LastWatchEventAt time.Time `json:"last_watch_event_at,omitzero"`
+	LastReconcileAt  time.Time `json:"last_reconcile_at,omitzero"`
+	WatcherArmed     bool      `json:"watcher_armed"`
 }
 
 type healthBudget struct {

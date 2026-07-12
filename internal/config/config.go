@@ -2,6 +2,8 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -94,8 +96,9 @@ const (
 )
 
 type Workflow struct {
-	Config Config
-	Prompt string
+	Config     Config
+	Prompt     string
+	SourceHash string
 }
 
 type Config struct {
@@ -953,9 +956,11 @@ func ParseWorkflow(raw []byte) (Workflow, error) {
 
 	cfg.normalize()
 
+	sum := sha256.Sum256(raw)
 	return Workflow{
-		Config: cfg,
-		Prompt: string(prompt),
+		Config:     cfg,
+		Prompt:     string(prompt),
+		SourceHash: hex.EncodeToString(sum[:]),
 	}, nil
 }
 
