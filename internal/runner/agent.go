@@ -56,6 +56,10 @@ type sessionProviderStore interface {
 	UpdateSessionProviderIdentity(context.Context, int64, store.SessionProviderIdentity) error
 }
 
+type sessionWorkerProcessStore interface {
+	UpdateSessionWorkerProcess(context.Context, int64, store.WorkerProcessIdentity) error
+}
+
 type sessionResumeStore interface {
 	UpdateSessionResumeState(context.Context, int64, store.SessionResumeState) error
 }
@@ -585,6 +589,9 @@ func (r *Runner) runAgentTurn(
 			turnStarted = true
 		}
 		r.logAgentUpdate(runRequest.Issue, update)
+		if err := r.persistSessionWorkerProcess(ctx, detentSessionID, update); err != nil {
+			return err
+		}
 		if err := r.persistSessionProviderIdentity(ctx, detentSessionID, update); err != nil {
 			return err
 		}
@@ -1178,6 +1185,9 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
 		}
 		r.logAgentUpdate(req.Issue, update)
+		if err := r.persistSessionWorkerProcess(ctx, sessionID, update); err != nil {
+			return err
+		}
 		if err := r.persistSessionProviderIdentity(ctx, sessionID, update); err != nil {
 			return err
 		}
@@ -1533,6 +1543,25 @@ func (r *Runner) persistSessionProviderIdentity(ctx context.Context, sessionID i
 		SessionID: providerSessionID,
 	}); err != nil {
 		return fmt.Errorf("update agent session provider identity: %w", err)
+	}
+	return nil
+}
+
+func (r *Runner) persistSessionWorkerProcess(ctx context.Context, sessionID int64, update AgentUpdate) error {
+	identity := update.WorkerProcess
+	if sessionID <= 0 || identity.PID <= 0 || identity.StartedAt.IsZero() {
+		return nil
+	}
+	processStore, ok := r.store.(sessionWorkerProcessStore)
+	if !ok {
+		return nil
+	}
+	if err := processStore.UpdateSessionWorkerProcess(ctx, sessionID, store.WorkerProcessIdentity{
+		PID:       identity.PID,
+		GroupID:   identity.GroupID,
+		StartedAt: identity.StartedAt,
+	}); err != nil {
+		return fmt.Errorf("update agent session worker process: %w", err)
 	}
 	return nil
 }

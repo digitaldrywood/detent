@@ -119,6 +119,36 @@ SET provider_thread_id = COALESCE(sqlc.narg(provider_thread_id), provider_thread
     provider_session_id = COALESCE(sqlc.narg(provider_session_id), provider_session_id)
 WHERE id = sqlc.arg(id);
 
+-- name: UpdateCodexSessionWorkerProcess :execrows
+UPDATE codex_sessions
+SET worker_pid = sqlc.arg(worker_pid),
+    worker_pgid = sqlc.arg(worker_pgid),
+    worker_started_at = sqlc.arg(worker_started_at),
+    worker_reaped_at = NULL,
+    worker_reap_outcome = NULL
+WHERE id = sqlc.arg(id);
+
+-- name: ListActiveWorkerProcesses :many
+SELECT
+  id AS session_id,
+  CAST(COALESCE(issue_id, '') AS TEXT) AS issue_id,
+  CAST(COALESCE(identifier, '') AS TEXT) AS identifier,
+  CAST(COALESCE(issue_url, '') AS TEXT) AS issue_url,
+  CAST(worker_pid AS INTEGER) AS worker_pid,
+  CAST(COALESCE(worker_pgid, 0) AS INTEGER) AS worker_pgid,
+  CAST(worker_started_at AS TEXT) AS worker_started_at
+FROM codex_sessions
+WHERE completed_at IS NULL
+  AND worker_reaped_at IS NULL
+  AND COALESCE(worker_pid, 0) > 0
+ORDER BY started_at, id;
+
+-- name: MarkCodexSessionWorkerProcessReaped :execrows
+UPDATE codex_sessions
+SET worker_reaped_at = sqlc.arg(worker_reaped_at),
+    worker_reap_outcome = sqlc.arg(worker_reap_outcome)
+WHERE id = sqlc.arg(id);
+
 -- name: UpdateCodexSessionResumeState :execrows
 UPDATE codex_sessions
 SET resumed_from_session_id = sqlc.narg(resumed_from_session_id),

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
 const (
@@ -205,6 +206,7 @@ type Update struct {
 	Type                UpdateType
 	Method              string
 	ProcessIdentity     string
+	WorkerProcess       procgroup.Identity
 	ThreadID            string
 	TurnID              string
 	ItemID              string
@@ -322,6 +324,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 			Type:            UpdateProcessStarted,
 			Method:          "process/start",
 			ProcessIdentity: identity,
+			WorkerProcess:   transportWorkerProcess(transport),
 		}, onUpdate); err != nil {
 			return RunTurnResult{}, err
 		}
@@ -1029,6 +1032,16 @@ func transportProcessIdentity(transport Transport) string {
 		return ""
 	}
 	return provider.ProcessIdentity()
+}
+
+func transportWorkerProcess(transport Transport) procgroup.Identity {
+	provider, ok := transport.(interface {
+		WorkerProcess() procgroup.Identity
+	})
+	if !ok {
+		return procgroup.Identity{}
+	}
+	return provider.WorkerProcess()
 }
 
 func updateFromMessage(msg Message) (Update, bool, error) {

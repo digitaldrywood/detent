@@ -197,6 +197,63 @@ func TestCleanup(t *testing.T) {
 	}
 }
 
+func TestInspectAndTerminate(t *testing.T) {
+	tests := []struct {
+		name        string
+		identity    func(Identity) Identity
+		wantOutcome TerminationOutcome
+		wantAlive   bool
+	}{
+		{
+			name:        "matching process group",
+			identity:    func(identity Identity) Identity { return identity },
+			wantOutcome: TerminationOutcomeTerminated,
+		},
+		{
+			name: "stale process start time",
+			identity: func(identity Identity) Identity {
+				identity.StartedAt = identity.StartedAt.Add(time.Second)
+				return identity
+			},
+			wantOutcome: TerminationOutcomeStaleIdentity,
+			wantAlive:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proc := startSleepGroup(t)
+			identity, err := Inspect(proc.cmd)
+			if err != nil {
+				t.Fatalf("Inspect() error = %v", err)
+			}
+			if identity.PID != proc.cmd.Process.Pid || identity.GroupID != GroupID(proc.cmd) || identity.StartedAt.IsZero() {
+				t.Fatalf("Inspect() = %#v", identity)
+			}
+			if !tt.wantAlive {
+				go func() { _ = proc.Wait() }()
+				go func() { _ = proc.WaitGroupMember() }()
+			}
+
+			outcome, err := Terminate(context.Background(), tt.identity(identity), 50*time.Millisecond)
+			if err != nil {
+				t.Fatalf("Terminate() error = %v", err)
+			}
+			if outcome != tt.wantOutcome {
+				t.Fatalf("Terminate() outcome = %q, want %q", outcome, tt.wantOutcome)
+			}
+			if tt.wantAlive {
+				if !processTargetAlive(identity.PID, identity.GroupID) {
+					t.Fatal("Terminate() killed a process with a stale identity")
+				}
+				return
+			}
+			_ = waitForExit(t, proc.Wait)
+			_ = waitForExit(t, proc.WaitGroupMember)
+		})
+	}
+}
+
 type startedProcess struct {
 	cmd           *exec.Cmd
 	wait          sync.Once

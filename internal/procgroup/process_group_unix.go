@@ -3,9 +3,15 @@
 package procgroup
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
+	"time"
 )
 
 func Configure(cmd *exec.Cmd) {
@@ -52,4 +58,114 @@ func Cleanup(processGroupID int) error {
 		return nil
 	}
 	return err
+}
+
+func Terminate(ctx context.Context, identity Identity, grace time.Duration) (TerminationOutcome, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if identity.PID <= 0 {
+		return TerminationOutcomeAlreadyExited, nil
+	}
+
+	current, err := inspectProcess(identity.PID)
+	if err != nil && !errors.Is(err, ErrProcessNotRunning) {
+		return "", err
+	}
+	if err == nil && !sameIdentity(current, identity) {
+		return TerminationOutcomeStaleIdentity, nil
+	}
+	groupID := identity.GroupID
+	if groupID <= 0 && err == nil {
+		groupID = current.GroupID
+	}
+	if !processTargetAlive(identity.PID, groupID) {
+		return TerminationOutcomeAlreadyExited, nil
+	}
+	if err := signalProcessTarget(identity.PID, groupID, syscall.SIGTERM); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return TerminationOutcomeAlreadyExited, nil
+		}
+		return "", err
+	}
+	if waitForProcessTargetExit(ctx, identity.PID, groupID, grace) {
+		return TerminationOutcomeTerminated, nil
+	}
+	if err := signalProcessTarget(identity.PID, groupID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return "", err
+	}
+	if !waitForProcessTargetExit(context.Background(), identity.PID, groupID, grace) {
+		return "", fmt.Errorf("process group %d remained alive after SIGKILL", groupID)
+	}
+	return TerminationOutcomeTerminated, nil
+}
+
+func inspectProcess(pid int) (Identity, error) {
+	if pid <= 0 {
+		return Identity{}, ErrProcessNotRunning
+	}
+	path, err := exec.LookPath("ps")
+	if err != nil {
+		return Identity{}, fmt.Errorf("locate ps: %w", err)
+	}
+	cmd := &exec.Cmd{
+		Path: path,
+		Args: []string{"ps", "-p", strconv.Itoa(pid), "-o", "pgid=", "-o", "lstart="},
+		Env:  append(os.Environ(), "LC_ALL=C"),
+	}
+	output, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return Identity{}, ErrProcessNotRunning
+		}
+		return Identity{}, fmt.Errorf("inspect process %d: %w", pid, err)
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) != 6 {
+		return Identity{}, fmt.Errorf("inspect process %d: unexpected ps output %q", pid, strings.TrimSpace(string(output)))
+	}
+	groupID, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return Identity{}, fmt.Errorf("inspect process %d group: %w", pid, err)
+	}
+	startedAt, err := time.ParseInLocation("Mon Jan 2 15:04:05 2006", strings.Join(fields[1:], " "), time.Local)
+	if err != nil {
+		return Identity{}, fmt.Errorf("inspect process %d start time: %w", pid, err)
+	}
+	return Identity{PID: pid, GroupID: groupID, StartedAt: startedAt.UTC()}, nil
+}
+
+func signalProcessTarget(pid int, groupID int, signal syscall.Signal) error {
+	if groupID > 0 {
+		return syscall.Kill(-groupID, signal)
+	}
+	return syscall.Kill(pid, signal)
+}
+
+func processTargetAlive(pid int, groupID int) bool {
+	err := signalProcessTarget(pid, groupID, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func waitForProcessTargetExit(ctx context.Context, pid int, groupID int, grace time.Duration) bool {
+	if grace <= 0 {
+		grace = DefaultTerminationGrace
+	}
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if !processTargetAlive(pid, groupID) {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return false
+		case <-ticker.C:
+		}
+	}
 }

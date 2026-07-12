@@ -1209,6 +1209,57 @@ func TestOrphanedAgentSessionsJournalProviderIdentityAndExcludeCleanExits(t *tes
 	}
 }
 
+func TestActiveWorkerProcessesAreJournaledAndReaped(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	startedAt := time.Date(2026, 7, 12, 15, 0, 0, 0, time.UTC)
+	sessionID, err := backend.StartSession(ctx, SessionStart{
+		IssueID:    "issue-1214",
+		Identifier: "digitaldrywood/detent#1214",
+		StartedAt:  startedAt,
+	})
+	if err != nil {
+		t.Fatalf("StartSession() error = %v", err)
+	}
+
+	processStartedAt := startedAt.Add(time.Second)
+	if err := backend.UpdateSessionWorkerProcess(ctx, sessionID, WorkerProcessIdentity{
+		PID:       4242,
+		GroupID:   4242,
+		StartedAt: processStartedAt,
+	}); err != nil {
+		t.Fatalf("UpdateSessionWorkerProcess() error = %v", err)
+	}
+
+	active, err := backend.ListActiveWorkerProcesses(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveWorkerProcesses() error = %v", err)
+	}
+	if len(active) != 1 {
+		t.Fatalf("ListActiveWorkerProcesses() len = %d, want 1", len(active))
+	}
+	if got := active[0]; got.SessionID != sessionID || got.Identifier != "digitaldrywood/detent#1214" || got.PID != 4242 || got.GroupID != 4242 || !got.StartedAt.Equal(processStartedAt) {
+		t.Fatalf("active worker process = %#v", got)
+	}
+
+	reapedAt := startedAt.Add(2 * time.Second)
+	if err := backend.MarkSessionWorkerProcessReaped(ctx, sessionID, WorkerProcessReap{
+		ReapedAt: reapedAt,
+		Outcome:  WorkerProcessOutcomeTerminated,
+	}); err != nil {
+		t.Fatalf("MarkSessionWorkerProcessReaped() error = %v", err)
+	}
+	active, err = backend.ListActiveWorkerProcesses(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveWorkerProcesses() after reap error = %v", err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("ListActiveWorkerProcesses() after reap len = %d, want 0", len(active))
+	}
+}
+
 func TestLifetimeTotalsMeasureOrphanRecoveryAndResumedCacheShare(t *testing.T) {
 	t.Parallel()
 

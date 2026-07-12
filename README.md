@@ -1967,6 +1967,13 @@ service PATH resolves every command used by project hooks and validation gates;
 `doctor` checks Detent's direct dependencies, not repo-specific bootstrap tools.
 The onboarding runbook includes the service-context check.
 
+Keep systemd's default `KillMode=control-group` for the Detent service. Detent
+starts each Codex and Claude worker in its own process group without leaving the
+service cgroup, so its persisted worker registry can terminate stale process
+groups on shutdown or startup while systemd remains the final cleanup backstop.
+Do not wrap worker commands in launchers that double-fork or explicitly move
+children into another cgroup.
+
 ### Merge Train
 
 `Merging` is intentionally serialized. Keep this in every production workflow:

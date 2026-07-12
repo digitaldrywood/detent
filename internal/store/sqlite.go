@@ -255,6 +255,71 @@ func (s *sqliteStore) UpdateSessionProviderIdentity(ctx context.Context, session
 	return requireAffected(rows, "codex session", sessionID)
 }
 
+func (s *sqliteStore) UpdateSessionWorkerProcess(ctx context.Context, sessionID int64, identity WorkerProcessIdentity) error {
+	if sessionID <= 0 || identity.PID <= 0 || identity.StartedAt.IsZero() {
+		return ErrNotFound
+	}
+	startedAt, err := requiredTimestamp("worker_started_at", identity.StartedAt)
+	if err != nil {
+		return err
+	}
+	rows, err := s.queries.UpdateCodexSessionWorkerProcess(ctx, sqlc.UpdateCodexSessionWorkerProcessParams{
+		WorkerPid:       sql.NullInt64{Int64: int64(identity.PID), Valid: true},
+		WorkerPgid:      sql.NullInt64{Int64: int64(identity.GroupID), Valid: true},
+		WorkerStartedAt: sql.NullString{String: startedAt, Valid: true},
+		ID:              sessionID,
+	})
+	if err != nil {
+		return fmt.Errorf("updating codex session worker process: %w", err)
+	}
+	return requireAffected(rows, "codex session", sessionID)
+}
+
+func (s *sqliteStore) ListActiveWorkerProcesses(ctx context.Context) ([]WorkerProcess, error) {
+	rows, err := s.queries.ListActiveWorkerProcesses(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing active worker processes: %w", err)
+	}
+	processes := make([]WorkerProcess, 0, len(rows))
+	for _, row := range rows {
+		startedAt, err := parseTimestamp("worker_started_at", row.WorkerStartedAt)
+		if err != nil {
+			return nil, err
+		}
+		processes = append(processes, WorkerProcess{
+			SessionID:  row.SessionID,
+			IssueID:    strings.TrimSpace(row.IssueID),
+			Identifier: strings.TrimSpace(row.Identifier),
+			IssueURL:   strings.TrimSpace(row.IssueURL),
+			WorkerProcessIdentity: WorkerProcessIdentity{
+				PID:       int(row.WorkerPid),
+				GroupID:   int(row.WorkerPgid),
+				StartedAt: startedAt,
+			},
+		})
+	}
+	return processes, nil
+}
+
+func (s *sqliteStore) MarkSessionWorkerProcessReaped(ctx context.Context, sessionID int64, reap WorkerProcessReap) error {
+	if sessionID <= 0 {
+		return ErrNotFound
+	}
+	reapedAt, err := requiredTimestamp("worker_reaped_at", reap.ReapedAt)
+	if err != nil {
+		return err
+	}
+	rows, err := s.queries.MarkCodexSessionWorkerProcessReaped(ctx, sqlc.MarkCodexSessionWorkerProcessReapedParams{
+		WorkerReapedAt:    sql.NullString{String: reapedAt, Valid: true},
+		WorkerReapOutcome: nullString(reap.Outcome),
+		ID:                sessionID,
+	})
+	if err != nil {
+		return fmt.Errorf("marking codex session worker process reaped: %w", err)
+	}
+	return requireAffected(rows, "codex session", sessionID)
+}
+
 func (s *sqliteStore) UpdateSessionResumeState(ctx context.Context, sessionID int64, state SessionResumeState) error {
 	if sessionID <= 0 {
 		return ErrNotFound

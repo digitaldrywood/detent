@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/notes"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -37,6 +38,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 
 	startedAt := time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC)
 	completedAt := startedAt.Add(4 * time.Second)
+	processStartedAt := startedAt.Add(500 * time.Millisecond)
 	modelContextWindow := int64(200000)
 	workspaceBackend := &fakeWorkspaceBackend{
 		info: workspace.Info{
@@ -61,10 +63,15 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			{
 				Type:            AgentUpdateMessageDelta,
 				ProcessIdentity: "4242",
-				ThreadID:        "thread-1",
-				TurnID:          "turn-1",
-				ItemID:          "item-1",
-				Delta:           "hello\nSkill draft: yes — `.detent/skills/debug.md` captures the workflow.",
+				WorkerProcess: procgroup.Identity{
+					PID:       4242,
+					GroupID:   4242,
+					StartedAt: processStartedAt,
+				},
+				ThreadID: "thread-1",
+				TurnID:   "turn-1",
+				ItemID:   "item-1",
+				Delta:    "hello\nSkill draft: yes — `.detent/skills/debug.md` captures the workflow.",
 			},
 			{
 				Type:     AgentUpdateTokenUsage,
@@ -164,6 +171,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 
 	if result.FinalState != FinalStateCompleted {
 		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateCompleted)
+	}
+	if len(sessionStore.workerProcesses) != 1 || sessionStore.workerProcesses[0].PID != 4242 || !sessionStore.workerProcesses[0].StartedAt.Equal(processStartedAt) {
+		t.Fatalf("worker process updates = %#v", sessionStore.workerProcesses)
 	}
 	if result.Tokens.TotalTokens != 125 || result.Tokens.RuntimeSeconds != 4 {
 		t.Fatalf("Tokens = %#v, want total 125 and runtime 4s", result.Tokens)
@@ -3736,6 +3746,7 @@ type fakeSessionStore struct {
 	resumeLookups   int
 	resumeLookup    store.AgentResumeLookup
 	providerUpdates []store.SessionProviderIdentity
+	workerProcesses []store.WorkerProcessIdentity
 	resumeUpdates   []store.SessionResumeState
 }
 
@@ -3758,6 +3769,11 @@ func (s *fakeSessionStore) UpdateSessionIdentity(_ context.Context, _ int64, ide
 
 func (s *fakeSessionStore) UpdateSessionProviderIdentity(_ context.Context, _ int64, identity store.SessionProviderIdentity) error {
 	s.providerUpdates = append(s.providerUpdates, identity)
+	return nil
+}
+
+func (s *fakeSessionStore) UpdateSessionWorkerProcess(_ context.Context, _ int64, identity store.WorkerProcessIdentity) error {
+	s.workerProcesses = append(s.workerProcesses, identity)
 	return nil
 }
 

@@ -33,6 +33,7 @@ type LocalTransportFactory struct {
 type localTransport struct {
 	cmd            *exec.Cmd
 	processGroupID int
+	workerProcess  procgroup.Identity
 	stdin          io.WriteCloser
 	codec          *Codec
 	received       chan transportResult
@@ -96,10 +97,23 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 		}
 		return nil, fmt.Errorf("start command: %w", err)
 	}
+	workerProcess, err := procgroup.Inspect(cmd)
+	if err != nil {
+		terminateErr := procgroup.TerminateTree(cmd, procgroup.GroupID(cmd))
+		waitErr := cmd.Wait()
+		closeErr := stdin.Close()
+		return nil, errors.Join(
+			fmt.Errorf("inspect worker process: %w", err),
+			terminateErr,
+			waitErr,
+			closeErr,
+		)
+	}
 
 	transport := &localTransport{
 		cmd:            cmd,
 		processGroupID: procgroup.GroupID(cmd),
+		workerProcess:  workerProcess,
 		stdin:          stdin,
 		codec:          NewCodec(stdout, stdin),
 		received:       make(chan transportResult, 64),
@@ -195,6 +209,10 @@ func (t *localTransport) ProcessIdentity() string {
 		return ""
 	}
 	return strconv.Itoa(t.cmd.Process.Pid)
+}
+
+func (t *localTransport) WorkerProcess() procgroup.Identity {
+	return t.workerProcess
 }
 
 func transportContextError(ctxErr error, operation string, err error) error {

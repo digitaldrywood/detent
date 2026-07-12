@@ -30,6 +30,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -209,11 +210,6 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	if err != nil {
 		return err
 	}
-	if cfg.Isolated != nil && cfg.Isolated.Demo == "screenshots" {
-		if err := demofixtures.SeedUsageEvents(runCtx, runtimeStore); err != nil {
-			return err
-		}
-	}
 	defer func() {
 		stop()
 		closeStarted := logShutdownBoundaryBegin(logger, "runtime_store_close", "component", "runtime_store")
@@ -224,6 +220,14 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 			logShutdownBoundaryEnd(logger, "runtime_store_close", closeStarted, nil, "component", "runtime_store")
 		}
 	}()
+	if err := reapWorkerProcesses(runCtx, runtimeStore, logger, "startup", procgroup.DefaultTerminationGrace, time.Now, nil); err != nil {
+		return fmt.Errorf("reap worker processes from prior instance: %w", err)
+	}
+	if cfg.Isolated != nil && cfg.Isolated.Demo == "screenshots" {
+		if err := demofixtures.SeedUsageEvents(runCtx, runtimeStore); err != nil {
+			return err
+		}
+	}
 
 	events := hub.New[project.Event]()
 	activityBroker := activity.NewBroker()
@@ -369,6 +373,8 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 				},
 				ProgressInterval: defaultShutdownProgressInterval,
 				HardTimeout:      defaultShutdownHardTimeout,
+				WorkerProcesses:  runtimeStore,
+				WorkerReapGrace:  procgroup.DefaultTerminationGrace,
 			}, func(ctx context.Context) error {
 				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, runtimeLogPath(cfg), cfg.Output, func() time.Duration {
 					return shutdownDrainTimeout(manager.Registry())
@@ -409,6 +415,8 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 			},
 			ProgressInterval: defaultShutdownProgressInterval,
 			HardTimeout:      defaultShutdownHardTimeout,
+			WorkerProcesses:  runtimeStore,
+			WorkerReapGrace:  procgroup.DefaultTerminationGrace,
 		}, func(ctx context.Context) error {
 			return serve(ctx, server, listener)
 		})
