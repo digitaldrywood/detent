@@ -563,6 +563,47 @@ test("long activity history stays contained across display modes", async ({
   await expect(sheet.getByText("No active worker session")).toBeVisible();
 });
 
+test("live session logs stay left aligned in sheet and full-page views", async ({
+  page,
+}, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "fleet-healthy-parallel-work",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const runningBadge = page.locator("[data-board-runtime-badge]", {
+    hasText: "agent working",
+  }).first();
+  await runningBadge.locator("xpath=ancestor::article").click();
+
+  const sheet = page.locator("[data-detail-sheet]");
+  await sheet.getByRole("tab", { name: "Live session" }).click();
+  const sheetSession = sheet.locator("[data-board-live-session]");
+  const popOut = sheetSession.getByRole("link", { name: "Open full-page view" });
+  await expect(popOut).toHaveAttribute("target", "_blank");
+  const [fullPage] = await Promise.all([
+    page.waitForEvent("popup"),
+    popOut.click(),
+  ]);
+  await fullPage.locator("[data-live-session-page]").waitFor({ state: "visible" });
+
+  await seedMixedSessionLog(sheetSession);
+  await assertSessionLogStartsAtColumnZero(sheetSession);
+  await attachScreenshotEvidence(page, "board-live-session-sheet.png", testInfo);
+
+  const fullPageSession = fullPage.locator("[data-board-live-session]");
+  await seedMixedSessionLog(fullPageSession);
+  await assertSessionLogStartsAtColumnZero(fullPageSession);
+  await attachScreenshotEvidence(
+    fullPage,
+    "board-live-session-full-page.png",
+    testInfo,
+  );
+});
+
 test("detail sheet activity tabs survive morphs across display modes", async ({
   page,
 }) => {
@@ -1676,6 +1717,48 @@ async function seedLongActivityHistory(activityPanel, eventCount) {
       list.append(event);
     }
   }, eventCount);
+}
+
+async function seedMixedSessionLog(session) {
+  await session.evaluate((host) => {
+    let log = host.querySelector("[data-live-session-log]");
+    if (!log) {
+      log = document.createElement("div");
+      log.className =
+        "min-h-64 min-w-0 overflow-x-auto overflow-y-auto p-3 font-mono text-xs leading-relaxed text-text";
+      log.dataset.liveSessionLog = "";
+      host.replaceChildren(log);
+    }
+    log.innerHTML = `
+      <div class="mb-3 min-w-0 border-l-2 border-line pl-3" data-session-event="short">
+        <pre class="mt-1 min-w-max whitespace-pre text-text">package orchestrator</pre>
+      </div>
+      <div class="mb-3 min-w-0 border-l-2 border-line pl-3" data-session-event="long">
+        <pre class="mt-1 min-w-max whitespace-pre text-text">/Users/example/workspaces/detent/internal/orchestrator/session/stream/this-line-is-intentionally-long-enough-to-overflow-the-detail-sheet.go</pre>
+      </div>`;
+    log.scrollLeft = 80;
+    log.dispatchEvent(
+      new CustomEvent("htmx:afterSwap", {
+        bubbles: true,
+        detail: { target: log },
+      }),
+    );
+  });
+}
+
+async function assertSessionLogStartsAtColumnZero(session) {
+  const layout = await session.evaluate((host) => {
+    const log = host.querySelector("[data-live-session-log]");
+    const lines = Array.from(log.querySelectorAll("pre"));
+    return {
+      alignments: lines.map((line) => getComputedStyle(line).textAlign),
+      leftEdges: lines.map((line) => line.getBoundingClientRect().left),
+      scrollLeft: log.scrollLeft,
+    };
+  });
+  expect(layout.alignments).toEqual(["left", "left"]);
+  expect(layout.leftEdges[0]).toBeCloseTo(layout.leftEdges[1], 0);
+  expect(layout.scrollLeft).toBe(0);
 }
 
 async function attachScreenshotEvidence(page, name, testInfo) {

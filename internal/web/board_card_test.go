@@ -58,6 +58,51 @@ func TestAPIBoardCardRendersLiveActivityAndVerboseUsage(t *testing.T) {
 	}
 }
 
+func TestBoardLiveSessionPageRendersActiveSessionFullWidth(t *testing.T) {
+	t.Parallel()
+
+	issue := telemetry.Issue{ID: "issue-1239", Identifier: "digitaldrywood/detent#1239", ProjectID: "detent", Title: "Readable live session", State: "In Progress"}
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		BoardIssues: []telemetry.Issue{issue},
+		Running:     []telemetry.Running{{Issue: issue, DetentSessionID: 1239, SessionID: "thread-1239"}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/live-session?project=detent&issue=issue-1239&identifier=digitaldrywood%2Fdetent%231239", http.StatusOK)
+	for _, want := range []string{
+		"<!doctype html>",
+		"data-live-session-page",
+		"data-board-live-session",
+		"Attached read-only",
+		"flex min-h-0 flex-1 flex-col bg-page text-left",
+		`sse-connect="/api/v1/board/session/events?display=full&amp;identifier=digitaldrywood%2Fdetent%231239&amp;issue=issue-1239&amp;project=detent"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("full-page live session missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "Open full-page view") {
+		t.Fatalf("full-page live session contains recursive pop-out link:\n%s", body)
+	}
+
+	fragment := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/session?project=detent&issue=issue-1239&identifier=digitaldrywood%2Fdetent%231239", http.StatusOK)
+	for _, want := range []string{
+		"Open full-page view",
+		`target="_blank"`,
+		`href="/live-session?identifier=digitaldrywood%2Fdetent%231239&amp;issue=issue-1239&amp;project=detent"`,
+	} {
+		if !strings.Contains(fragment, want) {
+			t.Fatalf("sheet live session missing %q:\n%s", want, fragment)
+		}
+	}
+}
+
 func TestAPIBoardCardKeysPreservedSessionByIssue(t *testing.T) {
 	t.Parallel()
 
@@ -258,8 +303,8 @@ func TestAPIBoardSessionPagesFailedRolloutHistory(t *testing.T) {
 	if !strings.Contains(body, "View rollout history") {
 		t.Fatalf("closed session missing rollout action:\n%s", body)
 	}
-	body = requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/session/history?project=detent&issue=issue-1156&limit=50", http.StatusOK)
-	for _, want := range []string{"Provider rollout history", "rollout output", "Load older rollout events"} {
+	body = requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/session/history?project=detent&issue=issue-1156&limit=50&display=full", http.StatusOK)
+	for _, want := range []string{"Provider rollout history", "rollout output", "Load older rollout events", "min-w-max whitespace-pre text-left", "display=full"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("rollout history missing %q:\n%s", want, body)
 		}

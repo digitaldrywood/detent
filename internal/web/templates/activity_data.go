@@ -45,6 +45,7 @@ type BoardSessionData struct {
 	ProviderSessionID string
 	Active            bool
 	HistoryAvailable  bool
+	FullPage          bool
 }
 
 type BoardSessionEvent struct {
@@ -95,6 +96,9 @@ func boardSessionPath(data BoardSessionData, events bool) string {
 	if data.Identifier != "" {
 		values.Set("identifier", strings.TrimSpace(data.Identifier))
 	}
+	if data.FullPage {
+		values.Set("display", "full")
+	}
 	path := "/api/v1/board/session"
 	if events {
 		path += "/events"
@@ -109,6 +113,9 @@ func boardSessionHistoryPath(data BoardSessionData, offset int, limit int) strin
 	if data.Identifier != "" {
 		values.Set("identifier", strings.TrimSpace(data.Identifier))
 	}
+	if data.FullPage {
+		values.Set("display", "full")
+	}
 	if offset > 0 {
 		values.Set("offset", strconv.Itoa(offset))
 	}
@@ -116,6 +123,31 @@ func boardSessionHistoryPath(data BoardSessionData, offset int, limit int) strin
 		values.Set("limit", strconv.Itoa(limit))
 	}
 	return "/api/v1/board/session/history?" + values.Encode()
+}
+
+func boardLiveSessionPagePath(data BoardSessionData) string {
+	values := url.Values{}
+	values.Set("project", strings.TrimSpace(data.ProjectID))
+	values.Set("issue", strings.TrimSpace(data.IssueID))
+	if data.Identifier != "" {
+		values.Set("identifier", strings.TrimSpace(data.Identifier))
+	}
+	return "/live-session?" + values.Encode()
+}
+
+func boardLiveSessionContainerClass(data BoardSessionData) string {
+	if data.FullPage {
+		return "flex min-h-0 flex-1 flex-col bg-page text-left"
+	}
+	return "flex min-h-72 flex-col bg-page text-left"
+}
+
+func boardLiveSessionLogClass(data BoardSessionData) string {
+	base := "min-w-0 flex-1 overflow-x-auto overflow-y-auto p-3 text-left font-mono text-xs leading-relaxed text-text"
+	if data.FullPage {
+		return "min-h-0 " + base
+	}
+	return "max-h-112 min-h-64 " + base
 }
 
 func boardLiveSessionID(data BoardSessionData) string {

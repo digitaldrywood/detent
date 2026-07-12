@@ -517,6 +517,7 @@ templ appShellScript() {
 					var log = resume.closest("[data-live-session-attach]").querySelector("[data-live-session-log]");
 					if (log) {
 						delete log.dataset.autoscrollPaused;
+						log.scrollLeft = 0;
 						log.scrollTop = log.scrollHeight;
 						resume.classList.add("hidden");
 					}
@@ -587,8 +588,14 @@ templ appShellScript() {
 				if (resume) resume.classList.toggle("hidden", !paused);
 			}, true);
 			document.addEventListener("htmx:afterSwap", function (event) {
-				var log = event.detail && event.detail.target;
-				if (!(log instanceof Element) || !log.matches("[data-live-session-log]")) return;
+				var target = event.detail && event.detail.target;
+				if (!(target instanceof Element)) return;
+				var log = target.matches("[data-live-session-log], [data-session-history-log]")
+					? target
+					: target.closest("[data-live-session-log], [data-session-history-log]");
+				if (!log) return;
+				log.scrollLeft = 0;
+				if (!log.matches("[data-live-session-log]")) return;
 				while (log.children.length > 200) log.firstElementChild.remove();
 				if (log.dataset.autoscrollPaused !== "true") log.scrollTop = log.scrollHeight;
 			});

@@ -287,6 +287,7 @@ func (s *Server) registerRoutes() {
 	}
 
 	s.echo.GET("/", s.board)
+	s.echo.GET("/live-session", s.boardLiveSessionPage)
 	s.echo.GET("/fleet", s.dashboard)
 	s.echo.GET("/kanban", s.redirectToBoard)
 	s.echo.GET("/health/ui", s.healthDashboard)
