@@ -37,6 +37,9 @@ const (
 
 	DeliverablePullRequest = "pull_request"
 	DeliverableArtifact    = "artifact"
+	MergeMethodSquash      = "squash"
+	MergeMethodMerge       = "merge"
+	MergeMethodRebase      = "rebase"
 
 	DependencyReadinessTerminal         = "terminal"
 	DependencyReadinessTerminalOrMerged = "terminal_or_merged"
@@ -209,9 +212,10 @@ type Workpad struct {
 }
 
 type Deliverable struct {
-	Kind       string `yaml:"kind"`
-	OutputRoot string `yaml:"output_root,omitempty"`
-	ReviewURL  string `yaml:"review_url,omitempty"`
+	Kind        string `yaml:"kind"`
+	MergeMethod string `yaml:"merge_method,omitempty"`
+	OutputRoot  string `yaml:"output_root,omitempty"`
+	ReviewURL   string `yaml:"review_url,omitempty"`
 }
 
 type Worker struct {
@@ -962,7 +966,8 @@ func Default() Config {
 			CleanupSweepIntervalMS: 600000,
 		},
 		Deliverable: Deliverable{
-			Kind: DeliverablePullRequest,
+			Kind:        DeliverablePullRequest,
+			MergeMethod: MergeMethodSquash,
 		},
 		Dependencies: Dependencies{
 			Source: DependencySourceMerged,
@@ -1500,6 +1505,7 @@ func (d *Deliverable) Normalize() {
 		return
 	}
 	d.Kind = normalizeDeliverableKind(d.Kind)
+	d.MergeMethod = normalizeMergeMethod(d.MergeMethod)
 	d.OutputRoot = strings.TrimSpace(d.OutputRoot)
 	d.ReviewURL = strings.TrimSpace(d.ReviewURL)
 }
@@ -1510,6 +1516,23 @@ func (d *Deliverable) validate(problems *[]string) {
 	default:
 		*problems = append(*problems, "deliverable.kind must be one of pull_request, artifact")
 	}
+	switch d.MergeMethod {
+	case "", MergeMethodSquash, MergeMethodMerge, MergeMethodRebase:
+	default:
+		*problems = append(*problems, "deliverable.merge_method must be one of squash, merge, rebase")
+	}
+}
+
+func (d Deliverable) EffectiveMergeMethod() string {
+	method := normalizeMergeMethod(d.MergeMethod)
+	if method == "" {
+		return MergeMethodSquash
+	}
+	return method
+}
+
+func normalizeMergeMethod(method string) string {
+	return strings.ToLower(strings.TrimSpace(method))
 }
 
 func normalizeDeliverableKind(kind string) string {

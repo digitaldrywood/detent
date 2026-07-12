@@ -57,6 +57,8 @@ workspace:
   auto_branch: true
   cleanup_idle_ttl_ms: 86400000
   cleanup_sweep_interval_ms: 600000
+deliverable:
+  merge_method: squash
 agent:
   max_concurrent_agents: 5
   # Optional per-role reasoning defaults. Unset roles retain backend behavior.

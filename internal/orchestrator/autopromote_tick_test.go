@@ -4118,6 +4118,7 @@ func TestHandleRunResultProgrammaticallyMergesCleanMergeWorkerWithoutTerminalSta
 		MaxConcurrentAgents:   1,
 		FailureRetryBaseDelay: time.Minute,
 		MaxRetryBackoff:       time.Hour,
+		MergeMethod:           "merge",
 		ActiveStates:          []string{"Todo", "In Progress", "Rework", "Merging"},
 		TerminalStates:        []string{"Done", "Cancelled"},
 	})
@@ -4164,8 +4165,8 @@ func TestHandleRunResultProgrammaticallyMergesCleanMergeWorkerWithoutTerminalSta
 	if len(tracker.merges) != 1 {
 		t.Fatalf("merges = %#v, want one programmatic merge", tracker.merges)
 	}
-	if got := tracker.merges[0]; got.repository != "digitaldrywood/creswoodcorners-phone" || got.number != 76 || got.headSHA != "head-clean" {
-		t.Fatalf("merge request = %#v, want repository digitaldrywood/creswoodcorners-phone PR 76 head-clean", got)
+	if got := tracker.merges[0]; got.repository != "digitaldrywood/creswoodcorners-phone" || got.number != 76 || got.headSHA != "head-clean" || got.method != "merge" {
+		t.Fatalf("merge request = %#v, want repository digitaldrywood/creswoodcorners-phone PR 76 head-clean using merge", got)
 	}
 	if got := tracker.hydrations; !reflect.DeepEqual(got, []autoPromoteTickHydration{{
 		issueID:    issue.ID,
@@ -4629,6 +4630,7 @@ type autoPromoteTickMerge struct {
 	repository string
 	number     int
 	headSHA    string
+	method     string
 }
 
 type autoPromoteTickRerun struct {
@@ -4839,8 +4841,8 @@ func (c *autoPromoteTickMergeConnector) HydratePullRequest(_ context.Context, is
 	return cloneIssue(issue), nil
 }
 
-func (c *autoPromoteTickMergeConnector) MergePullRequest(_ context.Context, repository string, number int, headSHA string) error {
-	c.merges = append(c.merges, autoPromoteTickMerge{repository: repository, number: number, headSHA: headSHA})
+func (c *autoPromoteTickMergeConnector) MergePullRequest(_ context.Context, repository string, number int, headSHA string, method string) error {
+	c.merges = append(c.merges, autoPromoteTickMerge{repository: repository, number: number, headSHA: headSHA, method: method})
 	if c.err != nil {
 		return c.err
 	}

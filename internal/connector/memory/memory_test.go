@@ -290,7 +290,7 @@ func TestConnectorCapturesIssueAndPullRequestComments(t *testing.T) {
 	if err := c.CreatePullRequestComment(context.Background(), "digitaldrywood/detent", 42, "pr comment"); err != nil {
 		t.Fatalf("CreatePullRequestComment() error = %v", err)
 	}
-	if err := c.MergePullRequest(context.Background(), "digitaldrywood/detent", 42, "head-sha"); err != nil {
+	if err := c.MergePullRequest(context.Background(), "digitaldrywood/detent", 42, "head-sha", "squash"); err != nil {
 		t.Fatalf("MergePullRequest() error = %v", err)
 	}
 
@@ -360,7 +360,7 @@ func TestConnectorMergePullRequestUpdatesStatefulFixture(t *testing.T) {
 		},
 	})
 
-	if err := c.MergePullRequest(context.Background(), "digitaldrywood/detent", 76, "head-sha"); err != nil {
+	if err := c.MergePullRequest(context.Background(), "digitaldrywood/detent", 76, "head-sha", "squash"); err != nil {
 		t.Fatalf("MergePullRequest() error = %v", err)
 	}
 	issues, err := c.FetchCandidateIssues(context.Background())

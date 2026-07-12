@@ -3044,6 +3044,7 @@ the card instead of auto-resolving it.
 | Human validation label | `gate.kind: human_review` and `gate.approval_label` in `WORKFLOW.md`. |
 | Per-project concurrency | `agent.max_concurrent_agents` in `WORKFLOW.md`. |
 | Per-role reasoning effort | Optional `agent.effort.code`, `agent.effort.rework`, and `agent.effort.merge` defaults in `WORKFLOW.md`. |
+| Pull request merge strategy | `deliverable.merge_method: squash`, `merge`, or `rebase`; defaults to `squash`. |
 | Merge serialization | `agent.max_concurrent_agents_by_state.Merging: 1` in `WORKFLOW.md`. |
 | Session runaway brake | `agent.max_session_tokens`; `agent.max_session_context_multiplier` remains absent unless explicitly requested as a coarse ceiling. |
 | Hard-stop review policy | `agent.auto_promote.enabled: false` in `WORKFLOW.md`. |

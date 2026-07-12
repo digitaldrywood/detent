@@ -567,6 +567,9 @@ func TestBuildOnboardingWorkflowGeneratesParseablePausedProject(t *testing.T) {
 	if workflow.Config.Gate.Validator.Model != "" {
 		t.Fatalf("Gate.Validator.Model = %q, want provider or route default", workflow.Config.Gate.Validator.Model)
 	}
+	if workflow.Config.Deliverable.MergeMethod != workflowconfig.MergeMethodSquash {
+		t.Fatalf("Deliverable.MergeMethod = %q, want squash", workflow.Config.Deliverable.MergeMethod)
+	}
 	if strings.Contains(string(raw), "max_session_context_multiplier:") {
 		t.Fatalf("WORKFLOW.md includes opt-in max_session_context_multiplier:\n%s", string(raw))
 	}
@@ -598,6 +601,7 @@ func TestBuildOnboardingWorkflowGeneratesParseablePausedProject(t *testing.T) {
 	assertOnboardingWorkflowDecision(t, result.Decisions, "gate.validator.model", "preset")
 	assertOnboardingWorkflowDecision(t, result.Decisions, "agent.max_session_tokens", "preset")
 	assertOnboardingWorkflowDecision(t, result.Decisions, "agent.max_session_context_multiplier", "preset")
+	assertOnboardingWorkflowDecision(t, result.Decisions, "deliverable.merge_method", "preset")
 	assertOnboardingWorkflowDecision(t, result.Decisions, "answers.worker_model_mode", "preset")
 	assertOnboardingWorkflowDecision(t, result.Decisions, "codex.command", "preset")
 	for _, decision := range result.Decisions {

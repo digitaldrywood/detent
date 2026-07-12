@@ -483,8 +483,8 @@ func (c *Connector) FetchPullRequestComments(ctx context.Context, repository str
 	return c.github.FetchPullRequestComments(ctx, repository, number)
 }
 
-func (c *Connector) MergePullRequest(ctx context.Context, repository string, number int, headSHA string) error {
-	return c.github.MergePullRequest(ctx, repository, number, headSHA)
+func (c *Connector) MergePullRequest(ctx context.Context, repository string, number int, headSHA string, mergeMethod string) error {
+	return c.github.MergePullRequest(ctx, repository, number, headSHA, mergeMethod)
 }
 
 func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {

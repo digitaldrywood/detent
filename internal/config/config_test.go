@@ -45,6 +45,9 @@ func TestShippedWorkflowTemplatesEnableBudgetCaps(t *testing.T) {
 			if !workflow.Config.Budget.Enabled {
 				t.Fatalf("%s budget.enabled = false, want true", path)
 			}
+			if workflow.Config.Deliverable.Kind == DeliverablePullRequest && !strings.Contains(string(raw), "\n  merge_method: squash\n") {
+				t.Fatalf("%s does not declare deliverable.merge_method: squash", path)
+			}
 		})
 	}
 	if checked == 0 {
@@ -85,6 +88,51 @@ func TestParseWorkflowBudgetCapPresence(t *testing.T) {
 			}
 			if got := workflow.Config.Budget.PerIssueMaxUSDConfigured(); got != tt.wantPerIssue {
 				t.Fatalf("PerIssueMaxUSDConfigured() = %t, want %t", got, tt.wantPerIssue)
+			}
+		})
+	}
+}
+
+func TestParseWorkflowMergeMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		value   string
+		want    string
+		wantErr string
+	}{
+		{name: "omitted defaults to squash", want: MergeMethodSquash},
+		{name: "squash", value: "squash", want: MergeMethodSquash},
+		{name: "merge", value: "merge", want: MergeMethodMerge},
+		{name: "rebase", value: "rebase", want: MergeMethodRebase},
+		{name: "normalizes case and whitespace", value: " ReBaSe ", want: MergeMethodRebase},
+		{name: "rejects invalid value", value: "octopus", wantErr: "deliverable.merge_method must be one of squash, merge, rebase"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			raw := "---\ntracker:\n  kind: memory\n"
+			if tt.value != "" {
+				raw += "deliverable:\n  merge_method: " + tt.value + "\n"
+			}
+			workflow, err := ParseWorkflow([]byte(raw + "---\nPrompt\n"))
+			if err == nil {
+				err = workflow.Config.Validate()
+			}
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("configuration error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("configuration error = %v", err)
+			}
+			if got := workflow.Config.Deliverable.MergeMethod; got != tt.want {
+				t.Fatalf("Deliverable.MergeMethod = %q, want %q", got, tt.want)
 			}
 		})
 	}

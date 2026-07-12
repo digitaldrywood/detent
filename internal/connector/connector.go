@@ -87,7 +87,7 @@ type PullRequestCommenter interface {
 }
 
 type PullRequestMerger interface {
-	MergePullRequest(context.Context, string, int, string) error
+	MergePullRequest(context.Context, string, int, string, string) error
 }
 
 type PullRequestHydrator interface {
