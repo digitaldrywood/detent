@@ -239,7 +239,7 @@ func TestKanbanSnapshotWithPendingStatesIgnoresCompletedHistoryForMissingPending
 	}
 }
 
-func TestKanbanSnapshotWithPendingStatesClearsCompletedPendingMove(t *testing.T) {
+func TestKanbanSnapshotWithPendingStatesKeepsAdvancedPendingMoveVisible(t *testing.T) {
 	t.Parallel()
 
 	server := &Server{kanbanMutations: kanbanstate.NewMutationTracker()}
@@ -252,7 +252,7 @@ func TestKanbanSnapshotWithPendingStatesClearsCompletedPendingMove(t *testing.T)
 	}
 	server.kanbanMutations.NoteCardState("project:detent", "detent", pendingIssue, "Backlog", "Todo", 1)
 
-	got := server.kanbanSnapshotWithPendingStates("project:detent", "detent", telemetry.Snapshot{
+	advancedSnapshot := telemetry.Snapshot{
 		Project: telemetry.Project{ID: "detent"},
 		Refresh: telemetry.Refresh{DataSeq: 2},
 		Completed: []telemetry.Completed{{
@@ -261,20 +261,114 @@ func TestKanbanSnapshotWithPendingStatesClearsCompletedPendingMove(t *testing.T)
 				Identifier: "digitaldrywood/detent#431",
 				ProjectID:  "detent",
 				Title:      "Completed pending card",
+				State:      "Production",
+			},
+		}},
+	}
+	for range 2 {
+		got := server.kanbanSnapshotWithPendingStates("project:detent", "detent", advancedSnapshot)
+		if len(got.BoardIssues) != 1 || got.BoardIssues[0].State != "Production" {
+			t.Fatalf("BoardIssues = %#v, want one Production card", got.BoardIssues)
+		}
+	}
+
+	visibleIssue := advancedSnapshot.Completed[0].Issue
+	visibleSnapshot := advancedSnapshot
+	visibleSnapshot.Refresh.DataSeq = 3
+	visibleSnapshot.Pipeline = []telemetry.Issue{visibleIssue}
+	got := server.kanbanSnapshotWithPendingStates("project:detent", "detent", visibleSnapshot)
+	if len(got.BoardIssues) != 0 || len(got.Pipeline) != 1 || got.Pipeline[0].State != "Production" {
+		t.Fatalf("snapshot issues = BoardIssues %#v, Pipeline %#v; want one visible Production entry", got.BoardIssues, got.Pipeline)
+	}
+}
+
+func TestKanbanSnapshotWithPendingStatesReleasesTerminalCompletedMove(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{
+		kanbanMutations: kanbanstate.NewMutationTracker(),
+		kanbanWorkflow: workflowconfig.Config{
+			Tracker: workflowconfig.Tracker{TerminalStates: []string{"Done", "Cancelled"}},
+		},
+	}
+	issue := telemetry.Issue{
+		ID:         "terminal-card",
+		Identifier: "DDW-439",
+		ProjectID:  "detent",
+		Title:      "Terminal pending card",
+		State:      "Backlog",
+	}
+	server.kanbanMutations.NoteCardState("project:detent", "detent", issue, "Backlog", "Todo", 1)
+
+	got := server.kanbanSnapshotWithPendingStates("project:detent", "detent", telemetry.Snapshot{
+		Project: telemetry.Project{ID: "detent"},
+		Refresh: telemetry.Refresh{DataSeq: 2},
+		Completed: []telemetry.Completed{{
+			Issue: telemetry.Issue{
+				ID:         issue.ID,
+				Identifier: issue.Identifier,
+				ProjectID:  issue.ProjectID,
+				Title:      issue.Title,
 				State:      "Done",
 			},
 		}},
 	})
 	if len(got.BoardIssues) != 0 {
-		t.Fatalf("BoardIssues = %#v, want no reinserted pending card", got.BoardIssues)
+		t.Fatalf("BoardIssues = %#v, want terminal completion released", got.BoardIssues)
+	}
+}
+
+func TestKanbanSnapshotWithPendingStatesConcurrentAdvancedRender(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{kanbanMutations: kanbanstate.NewMutationTracker()}
+	issue := telemetry.Issue{
+		ID:         "advanced-race-card",
+		Identifier: "DDW-438",
+		ProjectID:  "detent",
+		Title:      "Advanced race card",
+		State:      "Backlog",
+	}
+	server.kanbanMutations.NoteCardState("project:detent", "detent", issue, "Backlog", "Todo", 1)
+	snapshot := telemetry.Snapshot{
+		Project: telemetry.Project{ID: "detent"},
+		Refresh: telemetry.Refresh{DataSeq: 2},
+		Completed: []telemetry.Completed{{
+			Issue: telemetry.Issue{
+				ID:         issue.ID,
+				Identifier: issue.Identifier,
+				ProjectID:  issue.ProjectID,
+				Title:      issue.Title,
+				State:      "Production",
+			},
+		}},
 	}
 
-	got = server.kanbanSnapshotWithPendingStates("project:detent", "detent", telemetry.Snapshot{
-		Project:     telemetry.Project{ID: "detent"},
-		BoardIssues: []telemetry.Issue{pendingIssue},
-	})
-	if got.BoardIssues[0].State != "Backlog" {
-		t.Fatalf("pending state = %q, want cleared Backlog", got.BoardIssues[0].State)
+	start := make(chan struct{})
+	errs := make(chan string, 8)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range 100 {
+				got := server.kanbanSnapshotWithPendingStates("project:detent", "detent", snapshot)
+				if len(got.BoardIssues) != 1 || got.BoardIssues[0].State != "Production" {
+					select {
+					case errs <- "advanced card was not rendered exactly once":
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
 	}
 }
 

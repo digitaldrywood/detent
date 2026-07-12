@@ -349,7 +349,11 @@ func (s *Server) kanbanSnapshotWithPendingStates(lockKey string, projectID strin
 		}
 		return !s.kanbanMutations.CardRemoved(lockKey, issue.ID, issue.State, dataSeq)
 	})
-	pendingMovedCards := s.kanbanMutations.PendingMovedCards(lockKey, projectID, snapshot)
+	terminalStates := s.kanbanWorkflow.Tracker.TerminalStates
+	if configured := s.kanbanTerminalStatesByProject(projectID)[projectID]; len(configured) > 0 {
+		terminalStates = configured
+	}
+	pendingMovedCards := s.kanbanMutations.PendingMovedCards(lockKey, projectID, snapshot, terminalStates)
 	pendingStates := s.kanbanMutations.SnapshotCardStates(lockKey, projectID, snapshot)
 	kanbanstate.ApplySnapshotIssues(&snapshot, func(issue *telemetry.Issue) {
 		if issue == nil || strings.TrimSpace(issue.ID) == "" || !kanbanstate.SameProject(*issue, projectID, snapshot.Project.ID) {
