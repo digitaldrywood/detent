@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -11,6 +13,43 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
+
+func TestShippedWorkflowTemplatesEnableBudgetCaps(t *testing.T) {
+	t.Parallel()
+
+	templateDir := filepath.Join("..", "..", "docs", "templates")
+	entries, err := os.ReadDir(templateDir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q) error = %v", templateDir, err)
+	}
+
+	checked := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "WORKFLOW.") || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		checked++
+		t.Run(entry.Name(), func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(templateDir, entry.Name())
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("ReadFile(%q) error = %v", path, err)
+			}
+			workflow, err := ParseWorkflow(raw)
+			if err != nil {
+				t.Fatalf("ParseWorkflow(%q) error = %v", path, err)
+			}
+			if !workflow.Config.Budget.Enabled {
+				t.Fatalf("%s budget.enabled = false, want true", path)
+			}
+		})
+	}
+	if checked == 0 {
+		t.Fatal("no shipped WORKFLOW templates found")
+	}
+}
 
 func TestParseWorkflowFollowups(t *testing.T) {
 	t.Parallel()

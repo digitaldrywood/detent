@@ -787,6 +787,9 @@ func TestValidateDoctorModelCatalog(t *testing.T) {
 func TestCheckDoctorProjects(t *testing.T) {
 	t.Parallel()
 
+	disabledBudgetWorkflow := validDoctorWorkflow("/repo")
+	disabledBudgetWorkflow.Budget.Enabled = false
+
 	tests := []struct {
 		name       string
 		projects   []globalconfig.Project
@@ -818,6 +821,15 @@ func TestCheckDoctorProjects(t *testing.T) {
 			workflow:   workflowconfig.Workflow{Config: workflowconfig.Config{}},
 			wantStatus: []doctorStatus{doctorFail, doctorWarn, doctorOK, doctorOK},
 			wantDetail: []string{"tracker.kind", "skipped", "skipped because WORKFLOW.md is invalid", "skipped because WORKFLOW.md is invalid"},
+		},
+		{
+			name: "budget caps configured while disabled",
+			projects: []globalconfig.Project{
+				{ID: "alpha", Workflow: "WORKFLOW.md"},
+			},
+			workflow:   workflowconfig.Workflow{Config: disabledBudgetWorkflow},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "source repo missing",
@@ -862,6 +874,62 @@ func TestCheckDoctorProjects(t *testing.T) {
 				if !strings.Contains(check.Detail, tt.wantDetail[i]) {
 					t.Fatalf("checks[%d].Detail = %q, want containing %q", i, check.Detail, tt.wantDetail[i])
 				}
+			}
+		})
+	}
+}
+
+func TestCheckDoctorDisabledBudgetCaps(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		cfg        workflowconfig.Budget
+		wantOK     bool
+		wantDetail string
+	}{
+		{
+			name: "enabled budget does not warn",
+			cfg: workflowconfig.Budget{
+				Enabled:        true,
+				PerDayMaxUSD:   50,
+				PerIssueMaxUSD: 5,
+			},
+		},
+		{name: "disabled budget without caps does not warn"},
+		{
+			name:       "disabled daily cap warns",
+			cfg:        workflowconfig.Budget{PerDayMaxUSD: 50},
+			wantOK:     true,
+			wantDetail: "budget.enabled=false disables configured caps: budget.per_day_max_usd=50",
+		},
+		{
+			name: "disabled issue and daily caps warn",
+			cfg: workflowconfig.Budget{
+				PerDayMaxUSD:   646.07,
+				PerIssueMaxUSD: 5,
+			},
+			wantOK:     true,
+			wantDetail: "budget.enabled=false disables configured caps: budget.per_day_max_usd=646.07, budget.per_issue_max_usd=5",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := checkDoctorDisabledBudgetCaps("pyroapex", tt.cfg)
+			if ok != tt.wantOK {
+				t.Fatalf("checkDoctorDisabledBudgetCaps() ok = %t, want %t: %#v", ok, tt.wantOK, got)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if got.Name != "Project pyroapex budget" || got.Status != doctorWarn || got.Detail != tt.wantDetail {
+				t.Fatalf("checkDoctorDisabledBudgetCaps() = %#v", got)
+			}
+			if got.Hint != "Add this exact line under budget: in WORKFLOW.md:\n  enabled: true" {
+				t.Fatalf("Hint = %q, want copy-paste enabled line", got.Hint)
 			}
 		})
 	}
@@ -4221,6 +4289,7 @@ func validDoctorWorkflow(sourceRoot string) workflowconfig.Config {
 	cfg := workflowconfig.Default()
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Workspace.Root = sourceRoot
+	cfg.Budget.Enabled = true
 	return cfg
 }
 

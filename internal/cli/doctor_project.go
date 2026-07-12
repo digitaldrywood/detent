@@ -149,6 +149,9 @@ func checkDoctorProjectWithProgress(
 		}
 	}
 	checks := []doctorCheck{workflowCheck}
+	if budgetCheck, ok := checkDoctorDisabledBudgetCaps(id, workflow.Config.Budget); ok {
+		checks = append(checks, budgetCheck)
+	}
 	setDoctorCurrentCheck("Project " + id + " out-of-scope follow-up guidance")
 	checks = append(checks, checkDoctorFollowupGuidance(id, workflow.Config.Agent.Followups, workflow.Prompt))
 	setDoctorCurrentCheck("Project " + id + " pinned route models")
@@ -233,6 +236,30 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, checkDoctorGitHubReadiness(ctx, id, project, workflow.Config, deps, githubToken, expandedSourceRoot, allowWriteProbes)...)
 	}
 	return checks
+}
+
+func checkDoctorDisabledBudgetCaps(id string, cfg workflowconfig.Budget) (doctorCheck, bool) {
+	if cfg.Enabled {
+		return doctorCheck{}, false
+	}
+
+	caps := make([]string, 0, 2)
+	if cfg.PerDayMaxUSD > 0 {
+		caps = append(caps, fmt.Sprintf("budget.per_day_max_usd=%g", cfg.PerDayMaxUSD))
+	}
+	if cfg.PerIssueMaxUSD > 0 {
+		caps = append(caps, fmt.Sprintf("budget.per_issue_max_usd=%g", cfg.PerIssueMaxUSD))
+	}
+	if len(caps) == 0 {
+		return doctorCheck{}, false
+	}
+
+	return doctorCheck{
+		Name:   "Project " + id + " budget",
+		Status: doctorWarn,
+		Detail: "budget.enabled=false disables configured caps: " + strings.Join(caps, ", "),
+		Hint:   "Add this exact line under budget: in WORKFLOW.md:\n  enabled: true",
+	}, true
 }
 
 func checkDoctorIssueEffortGuidanceForSource(id string, project globalconfig.Project, cfg workflowconfig.Config) doctorCheck {
