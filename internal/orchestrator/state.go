@@ -155,13 +155,14 @@ type MergeTiming struct {
 }
 
 type Retry struct {
-	Issue       connector.Issue
-	Attempt     int
-	DueAt       time.Time
-	Error       string
-	WorkerHost  string
-	RetryMode   runpkg.RetryMode
-	ResumeState store.AgentResumeState
+	Issue         connector.Issue
+	Attempt       int
+	DueAt         time.Time
+	Error         string
+	WorkerHost    string
+	CapacityScope backendcapacity.Scope
+	RetryMode     runpkg.RetryMode
+	ResumeState   store.AgentResumeState
 }
 
 type InstantFailure struct {

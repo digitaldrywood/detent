@@ -4,12 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestDoctorBackendCapacityDiagnostics(t *testing.T) {
@@ -50,7 +54,7 @@ func TestDoctorBackendCapacityDiagnostics(t *testing.T) {
 		t.Fatalf("INSERT error = %v", err)
 	}
 
-	diagnostics, err := doctorBackendCapacityDiagnostics(t.Context(), db, "detent", now)
+	diagnostics, err := doctorBackendCapacityDiagnostics(t.Context(), db, "detent")
 	if err != nil {
 		t.Fatalf("doctorBackendCapacityDiagnostics() error = %v", err)
 	}
@@ -58,8 +62,32 @@ func TestDoctorBackendCapacityDiagnostics(t *testing.T) {
 		t.Fatalf("diagnostics = %#v, want one", diagnostics)
 	}
 	got := diagnostics[0]
-	if !got.Active || got.BackendID != "codex" || len(got.AffectedIssues) != 1 || got.AffectedIssues[0] != "digitaldrywood/detent#1142" {
+	if got.Active || got.BackendID != "codex" || len(got.AffectedIssues) != 1 || got.AffectedIssues[0] != "digitaldrywood/detent#1142" {
 		t.Fatalf("diagnostic = %#v", got)
+	}
+	lastProbeAt := now.Add(5 * time.Minute)
+	nextProbeAt := now.Add(15 * time.Minute)
+	diagnostics = reconcileDoctorBackendCapacity(diagnostics, []telemetry.BackendOutage{{
+		ProjectID:       "detent",
+		BackendID:       "codex",
+		BackendKind:     "codex",
+		Provider:        "openai",
+		DetectedAt:      now,
+		LastObservedAt:  now,
+		ResumeAt:        resumeAt,
+		NextProbeAt:     &nextProbeAt,
+		LastProbeAt:     &lastProbeAt,
+		LastProbeResult: "capacity_exhausted",
+		LastProbeDetail: "provider usage limit reached",
+		ProbeAttempts:   1,
+	}}, true)
+	got = diagnostics[0]
+	if !got.Active || !got.Enforced || got.LastProbeAt == nil || got.LastProbeResult != "capacity_exhausted" {
+		t.Fatalf("reconciled diagnostic = %#v", got)
+	}
+	detail := doctorBackendCapacityDetail(diagnostics, 1, true)
+	if !strings.Contains(detail, "provider-recorded") || !strings.Contains(detail, "last probe") || !strings.Contains(detail, "capacity exhausted") {
+		t.Fatalf("detail = %q", detail)
 	}
 }
 
@@ -133,6 +161,55 @@ func TestDoctorBlockedRecoveryReportsCapacityParkedIssues(t *testing.T) {
 	}
 	if !strings.Contains(check.Detail, "parked by provider capacity exhaustion") {
 		t.Fatalf("Detail = %q", check.Detail)
+	}
+}
+
+func TestReadDoctorBackendCapacityLive(t *testing.T) {
+	t.Parallel()
+
+	port := 4000
+	deps := doctorDeps{
+		httpDo: func(request *http.Request) (*http.Response, error) {
+			if request.URL.String() != "http://127.0.0.1:4000/health" {
+				t.Fatalf("URL = %s", request.URL)
+			}
+			body := `{"backend_outages":[{"project_id":"detent","backend_id":"codex","provider":"openai","last_probe_result":"capacity_exhausted"},{"project_id":"other","backend_id":"claude"}]}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		},
+	}
+	outages, ok := readDoctorBackendCapacityLive(t.Context(), BootConfig{
+		Host: "127.0.0.1",
+		Port: &port,
+	}, "detent", deps)
+	if !ok || len(outages) != 1 || outages[0].BackendID != "codex" || outages[0].LastProbeResult != "capacity_exhausted" {
+		t.Fatalf("outages = %#v, available %v", outages, ok)
+	}
+}
+
+func TestCheckDoctorBackendCapacityUsesLiveStateWithoutHistory(t *testing.T) {
+	t.Parallel()
+
+	port := 4000
+	check := checkDoctorBackendCapacity(t.Context(), globalconfig.PathResolution{
+		Path: "/tmp/global.yaml",
+	}, BootConfig{Host: "127.0.0.1", Port: &port}, "detent", doctorDeps{
+		openSQLiteReadOnly: func(context.Context, string) (doctorTelemetryStore, error) {
+			return nil, errDoctorTelemetryStoreUnavailable
+		},
+		httpDo: func(*http.Request) (*http.Response, error) {
+			body := `{"backend_outages":[{"project_id":"detent","backend_id":"codex","provider":"openai","reason":"provider usage limit reached","resume_at":"2026-07-10T05:00:00Z"}]}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		},
+	}, time.Date(2026, 7, 10, 2, 0, 0, 0, time.UTC))
+
+	if check.Status != doctorWarn || len(check.BackendCapacity) != 1 || !check.BackendCapacity[0].Enforced {
+		t.Fatalf("check = %#v, want enforced live outage warning", check)
 	}
 }
 

@@ -1592,7 +1592,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 	}
 	o.validatorRuns[identity.Key] = struct{}{}
 	if capacityProbeKey != "" {
-		markBackendCapacityProbe(state, capacityProbeKey, "validator:"+identity.IssueID)
+		o.markBackendCapacityProbe(state, capacityProbeKey, "validator:"+identity.IssueID, now)
 	}
 	o.validatorWG.Add(1)
 	o.validatorMu.Unlock()

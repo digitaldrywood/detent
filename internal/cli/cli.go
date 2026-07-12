@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -226,6 +227,7 @@ type options struct {
 	lookupEnv     func(string) string
 	ghAuthToken   func(context.Context) (string, error)
 	runCommand    CommandRunner
+	httpDo        func(*http.Request) (*http.Response, error)
 	configureLog  LoggerFunc
 	captureDemo   demoCaptureFunc
 	version       string
@@ -428,6 +430,7 @@ detent --format json config path`),
 		newWorkItemCommand(&configPath, opts),
 		newKeyCommand(&configPath, opts),
 		newConfigCommand(&configPath, opts),
+		newCapacityCommand(&configPath, &host, &port, opts),
 		newOnboardingCommand(&configPath, opts),
 		newPromoteCommand(&configPath, opts),
 		newRemoveProjectCommand(&configPath, opts),
@@ -460,6 +463,7 @@ func defaultOptions() options {
 		lookupEnv:   os.Getenv,
 		ghAuthToken: defaultGHAuthToken,
 		runCommand:  defaultCommandRunner,
+		httpDo:      http.DefaultClient.Do,
 		captureDemo: runDemoCapture,
 		stdoutTTY:   stdoutIsTTY,
 	}

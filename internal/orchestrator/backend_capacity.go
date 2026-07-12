@@ -16,17 +16,23 @@ import (
 const (
 	backendCapacityResetJitter = 5 * time.Second
 	backendCapacityProbeDelay  = 5 * time.Minute
+	backendCapacityProbeMax    = time.Hour
 )
 
 type BackendOutage struct {
-	Scope          backendcapacity.Scope
-	Kind           string
-	Reason         string
-	DetectedAt     time.Time
-	LastObservedAt time.Time
-	ResetAt        time.Time
-	ResumeAt       time.Time
-	ProbeIssueID   string
+	Scope           backendcapacity.Scope
+	Kind            string
+	Reason          string
+	DetectedAt      time.Time
+	LastObservedAt  time.Time
+	ResetAt         time.Time
+	ResumeAt        time.Time
+	NextProbeAt     time.Time
+	LastProbeAt     time.Time
+	LastProbeResult string
+	LastProbeDetail string
+	ProbeAttempts   int
+	ProbeIssueID    string
 }
 
 type BackendRecovery struct {
@@ -50,7 +56,7 @@ func (o *Orchestrator) handleBackendCapacityError(
 	capacityErr *backendcapacity.Error,
 ) {
 	running = o.restoreBackendCapacityIssueState(ctx, state, running, event.CompletedAt)
-	outage := o.registerBackendOutage(state, capacityErr, event.CompletedAt)
+	outage := o.registerBackendOutage(state, capacityErr, event.CompletedAt, running.CapacityProbe)
 	o.completeDurableWorkAttempt(
 		ctx,
 		state,
@@ -86,7 +92,12 @@ func (o *Orchestrator) handleBackendCapacityError(
 	}
 }
 
-func (o *Orchestrator) registerBackendOutage(state *State, capacityErr *backendcapacity.Error, observedAt time.Time) BackendOutage {
+func (o *Orchestrator) registerBackendOutage(
+	state *State,
+	capacityErr *backendcapacity.Error,
+	observedAt time.Time,
+	capacityProbe bool,
+) BackendOutage {
 	if capacityErr == nil || capacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
 		return BackendOutage{}
 	}
@@ -106,15 +117,45 @@ func (o *Orchestrator) registerBackendOutage(state *State, capacityErr *backendc
 	existing.Kind = strings.TrimSpace(capacityErr.Details.Kind)
 	existing.Reason = strings.TrimSpace(capacityErr.Details.Reason)
 	existing.LastObservedAt = observedAt
-	existing.ProbeIssueID = ""
 	existing.ResetAt = time.Time{}
 	if capacityErr.Details.ResetAt != nil {
 		existing.ResetAt = capacityErr.Details.ResetAt.UTC()
 	}
 	existing.ResumeAt = backendCapacityResumeAt(existing.ResetAt, observedAt)
+	if capacityProbe {
+		existing.ProbeIssueID = ""
+		if existing.ProbeAttempts == 0 {
+			existing.ProbeAttempts = 1
+		}
+		existing.LastProbeAt = observedAt
+		existing.LastProbeResult = "capacity_exhausted"
+		existing.LastProbeDetail = existing.Reason
+	}
+	if strings.TrimSpace(existing.ProbeIssueID) == "" {
+		delay := backendCapacityProbeDelayForAttempt(existing.ProbeAttempts)
+		existing.NextProbeAt = backendCapacityBoundedProbeAt(existing.ResumeAt, observedAt.Add(delay), observedAt)
+	}
 	state.BackendOutages[key] = existing
 	delete(state.BackendRecoveries, key)
 	return existing
+}
+
+func backendCapacityProbeDelayForAttempt(attempt int) time.Duration {
+	delay := backendCapacityProbeDelay
+	for range max(attempt, 0) {
+		if delay >= backendCapacityProbeMax/2 {
+			return backendCapacityProbeMax
+		}
+		delay *= 2
+	}
+	return min(delay, backendCapacityProbeMax)
+}
+
+func backendCapacityBoundedProbeAt(resumeAt time.Time, probeAt time.Time, now time.Time) time.Time {
+	if resumeAt.After(now) && resumeAt.Before(probeAt) {
+		return resumeAt
+	}
+	return probeAt
 }
 
 func backendCapacityResumeAt(resetAt time.Time, now time.Time) time.Time {
@@ -139,19 +180,27 @@ func backendCapacityStatusMessage(outage BackendOutage) string {
 	}
 	message := "backend " + backend + " at usage limit"
 	if !outage.ResumeAt.IsZero() {
-		message += " — resuming at " + outage.ResumeAt.UTC().Format(time.RFC3339)
+		message += " — provider-recorded resume at " + outage.ResumeAt.UTC().Format(time.RFC3339)
+	}
+	if !outage.NextProbeAt.IsZero() {
+		message += "; next probe at " + outage.NextProbeAt.UTC().Format(time.RFC3339)
 	}
 	return message
 }
 
 func (o *Orchestrator) scheduleBackendCapacityRetry(state *State, running Running, outage BackendOutage) {
 	issue := cloneIssue(running.Issue)
+	dueAt := outage.NextProbeAt
+	if dueAt.IsZero() {
+		dueAt = outage.ResumeAt
+	}
 	state.Retry[issue.ID] = Retry{
-		Issue:      issue,
-		Attempt:    running.Attempt,
-		DueAt:      outage.ResumeAt,
-		Error:      backendCapacityStatusMessage(outage),
-		WorkerHost: running.WorkerHost,
+		Issue:         issue,
+		Attempt:       running.Attempt,
+		DueAt:         dueAt,
+		Error:         backendCapacityStatusMessage(outage),
+		WorkerHost:    running.WorkerHost,
+		CapacityScope: outage.Scope,
 	}
 	claim, ok := state.Claimed[issue.ID]
 	if !ok {
@@ -197,7 +246,11 @@ func (o *Orchestrator) backendCapacityDispatch(
 	if !ok {
 		return scope, "", false
 	}
-	if strings.TrimSpace(outage.ProbeIssueID) != "" || now.Before(outage.ResumeAt) {
+	probeAt := outage.NextProbeAt
+	if probeAt.IsZero() {
+		probeAt = outage.ResumeAt
+	}
+	if strings.TrimSpace(outage.ProbeIssueID) != "" || (!probeAt.IsZero() && now.Before(probeAt)) {
 		return scope, "", true
 	}
 	return scope, key, false
@@ -230,7 +283,11 @@ func (o *Orchestrator) validatorCapacityDispatch(
 	if !ok {
 		return scope, "", false
 	}
-	if strings.TrimSpace(outage.ProbeIssueID) != "" || now.Before(outage.ResumeAt) {
+	probeAt := outage.NextProbeAt
+	if probeAt.IsZero() {
+		probeAt = outage.ResumeAt
+	}
+	if strings.TrimSpace(outage.ProbeIssueID) != "" || (!probeAt.IsZero() && now.Before(probeAt)) {
 		return scope, "", true
 	}
 	return scope, key, false
@@ -255,7 +312,7 @@ func (o *Orchestrator) handleValidatorCapacityEvent(state *State, event validato
 			}
 			return
 		}
-		outage := o.registerBackendOutage(state, event.CapacityErr, event.CompletedAt)
+		outage := o.registerBackendOutage(state, event.CapacityErr, event.CompletedAt, event.CapacityProbe)
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      event.CompletedAt,
 			Event:   "backend_capacity_paused",
@@ -303,7 +360,7 @@ func matchingBackendOutage(outages map[string]BackendOutage, scope backendcapaci
 	return "", BackendOutage{}, false
 }
 
-func markBackendCapacityProbe(state *State, key string, issueID string) {
+func (o *Orchestrator) markBackendCapacityProbe(state *State, key string, issueID string, startedAt time.Time) {
 	if key == "" {
 		return
 	}
@@ -312,7 +369,28 @@ func markBackendCapacityProbe(state *State, key string, issueID string) {
 		return
 	}
 	outage.ProbeIssueID = strings.TrimSpace(issueID)
+	outage.NextProbeAt = time.Time{}
+	outage.LastProbeAt = startedAt
+	outage.LastProbeResult = "in_progress"
+	outage.LastProbeDetail = "canary dispatch started"
+	outage.ProbeAttempts++
 	state.BackendOutages[key] = outage
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      startedAt,
+		Event:   "backend_capacity_probe_started",
+		Message: "backend " + outage.Scope.BackendID + " capacity probe started with " + strings.TrimSpace(issueID),
+	})
+	if o.logger != nil {
+		o.logger.Info(
+			"backend capacity probe started",
+			"backend_id", outage.Scope.BackendID,
+			"backend_kind", outage.Scope.BackendKind,
+			"provider", outage.Scope.Provider,
+			"issue_id", strings.TrimSpace(issueID),
+			"probe_attempt", outage.ProbeAttempts,
+			"provider_resume_at", outage.ResumeAt,
+		)
+	}
 }
 
 func (o *Orchestrator) recoverBackendCapacity(state *State, running Running, recoveredAt time.Time) {
@@ -323,15 +401,62 @@ func (o *Orchestrator) recoverBackendCapacity(state *State, running Running, rec
 	if !ok {
 		return
 	}
+	outage.LastProbeAt = recoveredAt
+	outage.LastProbeResult = "capacity_available"
+	outage.LastProbeDetail = "canary dispatch reached the provider"
+	outage.NextProbeAt = time.Time{}
+	o.completeBackendCapacityRecovery(state, key, outage, recoveredAt, "canary")
+}
+
+func (o *Orchestrator) recoverBackendCapacityFromStatus(
+	state *State,
+	running Running,
+	rateLimits *telemetry.RateLimits,
+	observedAt time.Time,
+) {
+	if o.capacityStatus == nil || rateLimits == nil || !running.CapacityScope.Hosted() {
+		return
+	}
+	key, outage, ok := matchingBackendOutage(state.BackendOutages, running.CapacityScope)
+	if !ok {
+		return
+	}
+	status, ok := o.capacityStatus.BackendCapacityStatus(running.CapacityScope, rateLimits)
+	if !ok {
+		return
+	}
+	if observedAt.IsZero() {
+		observedAt = o.clockNow()
+	}
+	outage.LastProbeAt = observedAt
+	outage.LastProbeDetail = strings.TrimSpace(status.Detail)
+	if !status.Available {
+		outage.LastProbeResult = "status_exhausted"
+		state.BackendOutages[key] = outage
+		return
+	}
+	outage.LastProbeResult = "status_available"
+	outage.NextProbeAt = time.Time{}
+	o.completeBackendCapacityRecovery(state, key, outage, observedAt, "live_status")
+}
+
+func (o *Orchestrator) completeBackendCapacityRecovery(
+	state *State,
+	key string,
+	outage BackendOutage,
+	recoveredAt time.Time,
+	source string,
+) {
 	delete(state.BackendOutages, key)
 	if state.BackendRecoveries == nil {
 		state.BackendRecoveries = map[string]BackendRecovery{}
 	}
 	state.BackendRecoveries[key] = BackendRecovery{Outage: outage, RecoveredAt: recoveredAt}
+	releaseBackendCapacityRetries(state, outage.Scope, recoveredAt)
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      recoveredAt,
 		Event:   "backend_capacity_recovered",
-		Message: "backend " + outage.Scope.BackendID + " capacity recovered",
+		Message: "backend " + outage.Scope.BackendID + " capacity recovered via " + source,
 	})
 	if o.logger != nil {
 		o.logger.Info(
@@ -341,6 +466,7 @@ func (o *Orchestrator) recoverBackendCapacity(state *State, running Running, rec
 			"provider", outage.Scope.Provider,
 			"detected_at", outage.DetectedAt,
 			"recovered_at", recoveredAt,
+			"source", source,
 		)
 	}
 }
@@ -357,12 +483,19 @@ func (o *Orchestrator) deferBackendCapacityProbe(state *State, running Running, 
 		failedAt = o.clockNow()
 	}
 	outage.ProbeIssueID = ""
-	outage.ResumeAt = failedAt.Add(backendCapacityProbeDelay)
+	if outage.ProbeAttempts == 0 {
+		outage.ProbeAttempts = 1
+	}
+	outage.LastProbeAt = failedAt
+	outage.LastProbeResult = "failed"
+	outage.LastProbeDetail = strings.TrimSpace(probeErr.Error())
+	delay := backendCapacityProbeDelayForAttempt(outage.ProbeAttempts)
+	outage.NextProbeAt = backendCapacityBoundedProbeAt(outage.ResumeAt, failedAt.Add(delay), failedAt)
 	state.BackendOutages[key] = outage
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      failedAt,
 		Event:   "backend_capacity_probe_deferred",
-		Message: "backend " + outage.Scope.BackendID + " capacity probe failed; retrying at " + outage.ResumeAt.Format(time.RFC3339),
+		Message: "backend " + outage.Scope.BackendID + " capacity probe failed; retrying at " + outage.NextProbeAt.Format(time.RFC3339),
 	})
 	if o.logger != nil {
 		o.logger.Warn(
@@ -370,10 +503,71 @@ func (o *Orchestrator) deferBackendCapacityProbe(state *State, running Running, 
 			"backend_id", outage.Scope.BackendID,
 			"backend_kind", outage.Scope.BackendKind,
 			"provider", outage.Scope.Provider,
-			"retry_at", outage.ResumeAt,
+			"retry_at", outage.NextProbeAt,
+			"provider_resume_at", outage.ResumeAt,
 			"error", probeErr,
 		)
 	}
+}
+
+func releaseBackendCapacityRetries(state *State, scope backendcapacity.Scope, releasedAt time.Time) {
+	for issueID, retry := range state.Retry {
+		if !retry.CapacityScope.Matches(scope) {
+			continue
+		}
+		retry.DueAt = releasedAt
+		state.Retry[issueID] = retry
+	}
+}
+
+func (o *Orchestrator) clearBackendCapacity(state *State, scopeFilter string, clearedAt time.Time) []BackendOutage {
+	if clearedAt.IsZero() {
+		clearedAt = o.clockNow()
+	}
+	cleared := []BackendOutage{}
+	for _, key := range sortedKeys(state.BackendOutages) {
+		outage := state.BackendOutages[key]
+		if !backendCapacityScopeMatchesFilter(outage.Scope, scopeFilter) {
+			continue
+		}
+		outage.LastProbeResult = "operator_cleared"
+		outage.LastProbeDetail = "operator cleared the recorded outage"
+		outage.NextProbeAt = time.Time{}
+		delete(state.BackendOutages, key)
+		if state.BackendRecoveries == nil {
+			state.BackendRecoveries = map[string]BackendRecovery{}
+		}
+		state.BackendRecoveries[key] = BackendRecovery{Outage: outage, RecoveredAt: clearedAt}
+		releaseBackendCapacityRetries(state, outage.Scope, clearedAt)
+		cleared = append(cleared, outage)
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      clearedAt,
+			Event:   "backend_capacity_operator_cleared",
+			Message: "operator cleared backend " + outage.Scope.BackendID + " capacity outage",
+		})
+		if o.logger != nil {
+			o.logger.Info(
+				"operator cleared backend capacity outage",
+				"backend_id", outage.Scope.BackendID,
+				"backend_kind", outage.Scope.BackendKind,
+				"provider", outage.Scope.Provider,
+				"cleared_at", clearedAt,
+			)
+		}
+	}
+	return cleared
+}
+
+func backendCapacityScopeMatchesFilter(scope backendcapacity.Scope, filter string) bool {
+	filter = strings.TrimSpace(filter)
+	if filter == "" {
+		return true
+	}
+	scope = scope.Normalize()
+	return strings.EqualFold(filter, scope.BackendID) ||
+		strings.EqualFold(filter, scope.BackendKind) ||
+		strings.EqualFold(filter, scope.Provider) ||
+		strings.EqualFold(filter, scope.BackendID+"/"+scope.Provider)
 }
 
 func backendOutagesCapacitySnapshot(outages map[string]BackendOutage) []map[string]any {
@@ -381,16 +575,21 @@ func backendOutagesCapacitySnapshot(outages map[string]BackendOutage) []map[stri
 	for _, key := range sortedKeys(outages) {
 		outage := outages[key]
 		rows = append(rows, map[string]any{
-			"backend_id":       outage.Scope.BackendID,
-			"backend_kind":     outage.Scope.BackendKind,
-			"provider":         outage.Scope.Provider,
-			"kind":             outage.Kind,
-			"reason":           outage.Reason,
-			"detected_at":      outage.DetectedAt,
-			"last_observed_at": outage.LastObservedAt,
-			"reset_at":         outage.ResetAt,
-			"resume_at":        outage.ResumeAt,
-			"probe_issue_id":   outage.ProbeIssueID,
+			"backend_id":        outage.Scope.BackendID,
+			"backend_kind":      outage.Scope.BackendKind,
+			"provider":          outage.Scope.Provider,
+			"kind":              outage.Kind,
+			"reason":            outage.Reason,
+			"detected_at":       outage.DetectedAt,
+			"last_observed_at":  outage.LastObservedAt,
+			"reset_at":          outage.ResetAt,
+			"resume_at":         outage.ResumeAt,
+			"next_probe_at":     outage.NextProbeAt,
+			"last_probe_at":     outage.LastProbeAt,
+			"last_probe_result": outage.LastProbeResult,
+			"last_probe_detail": outage.LastProbeDetail,
+			"probe_attempts":    outage.ProbeAttempts,
+			"probe_issue_id":    outage.ProbeIssueID,
 		})
 	}
 	return rows
@@ -431,11 +630,11 @@ func (o *Orchestrator) recoverBackendCapacityBlockedIssues(
 		key, outage, active := matchingBackendOutage(state.BackendOutages, capacityErr.Scope)
 		recoveryKey, recovery, recovered := matchingBackendRecovery(state.BackendRecoveries, capacityErr.Scope)
 		if !active && !recovered {
-			outage = o.registerBackendOutage(state, capacityErr, now)
+			outage = o.registerBackendOutage(state, capacityErr, now, false)
 			key, _, _ = matchingBackendOutage(state.BackendOutages, capacityErr.Scope)
 			active = true
 		}
-		if active && now.Before(outage.ResumeAt) {
+		if active {
 			continue
 		}
 		if !o.applyBackendCapacityBlockedRecovery(ctx, state, hydratedIssue, outage, recovery, now) {

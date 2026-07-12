@@ -393,7 +393,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		doctorCheckJob{
 			Name: "Backend capacity",
 			Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorBackendCapacity(jobCtx, resolution, cfg.ProjectID, deps, time.Now())}
+				return []doctorCheck{checkDoctorBackendCapacity(jobCtx, resolution, boot, cfg.ProjectID, deps, time.Now())}
 			},
 		},
 	)

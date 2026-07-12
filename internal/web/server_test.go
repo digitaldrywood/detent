@@ -213,6 +213,24 @@ func TestServerRoutes(t *testing.T) {
 	}
 }
 
+func TestCapacityClearEndpointIsIdempotentWithoutOutages(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	recorder := performForm(t, server.Handler(), http.MethodPost, "/api/v1/capacity/clear", url.Values{
+		"scope": {"codex"},
+	})
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNoContent, recorder.Body.String())
+	}
+	if recorder.Header().Get("HX-Trigger") != "capacityCleared" {
+		t.Fatalf("HX-Trigger = %q", recorder.Header().Get("HX-Trigger"))
+	}
+}
+
 func TestLibraryPageListsLocalArtifactsAndPullRequestRecords(t *testing.T) {
 	t.Parallel()
 
@@ -6334,6 +6352,11 @@ func TestStateAPIIncludesGitHubGraphQLRateLimitStatus(t *testing.T) {
 	outages := state["backend_outages"].([]any)
 	if len(outages) != 1 || outages[0].(map[string]any)["backend_id"] != "codex" {
 		t.Fatalf("backend_outages = %#v", outages)
+	}
+	health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	healthOutages := health["backend_outages"].([]any)
+	if len(healthOutages) != 1 || healthOutages[0].(map[string]any)["backend_id"] != "codex" {
+		t.Fatalf("health backend_outages = %#v", healthOutages)
 	}
 }
 

@@ -546,17 +546,22 @@ type RateLimits struct {
 }
 
 type BackendOutage struct {
-	ProjectID      string     `json:"project_id,omitempty"`
-	BackendID      string     `json:"backend_id"`
-	BackendKind    string     `json:"backend_kind,omitempty"`
-	Provider       string     `json:"provider,omitempty"`
-	Kind           string     `json:"kind,omitempty"`
-	Reason         string     `json:"reason"`
-	DetectedAt     time.Time  `json:"detected_at"`
-	LastObservedAt time.Time  `json:"last_observed_at"`
-	ResetAt        *time.Time `json:"reset_at,omitempty"`
-	ResumeAt       time.Time  `json:"resume_at"`
-	ProbeIssueID   string     `json:"probe_issue_id,omitempty"`
+	ProjectID       string     `json:"project_id,omitempty"`
+	BackendID       string     `json:"backend_id"`
+	BackendKind     string     `json:"backend_kind,omitempty"`
+	Provider        string     `json:"provider,omitempty"`
+	Kind            string     `json:"kind,omitempty"`
+	Reason          string     `json:"reason"`
+	DetectedAt      time.Time  `json:"detected_at"`
+	LastObservedAt  time.Time  `json:"last_observed_at"`
+	ResetAt         *time.Time `json:"reset_at,omitempty"`
+	ResumeAt        time.Time  `json:"resume_at"`
+	NextProbeAt     *time.Time `json:"next_probe_at,omitempty"`
+	LastProbeAt     *time.Time `json:"last_probe_at,omitempty"`
+	LastProbeResult string     `json:"last_probe_result,omitempty"`
+	LastProbeDetail string     `json:"last_probe_detail,omitempty"`
+	ProbeAttempts   int        `json:"probe_attempts,omitempty"`
+	ProbeIssueID    string     `json:"probe_issue_id,omitempty"`
 }
 
 const (

@@ -6397,13 +6397,21 @@ func backendCapacityOutageDetailParts(outage telemetry.BackendOutage, now time.T
 	if strings.TrimSpace(outage.ProbeIssueID) != "" {
 		return detail + "; capacity probe in progress", time.Time{}, false
 	}
-	if !outage.ResumeAt.IsZero() {
-		if outage.ResumeAt.After(now) {
-			return detail + "; resuming at", outage.ResumeAt, true
+	if outage.NextProbeAt != nil {
+		if outage.NextProbeAt.After(now) {
+			return detail + "; next canary at", *outage.NextProbeAt, true
 		}
-		return detail + "; capacity probe due now", time.Time{}, false
+		return detail + "; capacity canary due now", time.Time{}, false
 	}
 	return detail + "; waiting for a low-frequency capacity probe", time.Time{}, false
+}
+
+func backendCapacityProbeResult(outage telemetry.BackendOutage) string {
+	result := strings.ReplaceAll(strings.TrimSpace(outage.LastProbeResult), "_", " ")
+	if result == "" {
+		return "not yet probed"
+	}
+	return result
 }
 
 func backendCapacityHealthVerdict(snapshot telemetry.Snapshot) string {
