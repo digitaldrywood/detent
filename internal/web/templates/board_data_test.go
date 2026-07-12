@@ -258,6 +258,42 @@ func TestBoardViewLanes(t *testing.T) {
 	}
 }
 
+func TestBoardCardDataSeqUsesProjectRefresh(t *testing.T) {
+	t.Parallel()
+
+	data := DashboardData{
+		Snapshot: telemetry.Snapshot{
+			Refresh: telemetry.Refresh{DataSeq: 99},
+			Projects: []telemetry.ProjectSnapshot{
+				{Project: telemetry.Project{ID: "alpha"}, Refresh: telemetry.Refresh{DataSeq: 5}},
+				{Project: telemetry.Project{ID: "bravo"}, Refresh: telemetry.Refresh{DataSeq: 12}},
+			},
+			BoardIssues: []telemetry.Issue{
+				{ID: "alpha-issue", Identifier: "example/alpha#1", ProjectID: "alpha", Title: "Alpha", State: "Todo"},
+				{ID: "bravo-issue", Identifier: "example/bravo#2", ProjectID: "bravo", Title: "Bravo", State: "Todo"},
+			},
+		},
+		Kanban: KanbanData{States: []string{"Todo"}},
+	}
+
+	view := boardViewFromDashboard(data)
+	if len(view.Lanes) != 1 || len(view.Lanes[0].Cards) != 2 {
+		t.Fatalf("board cards = %+v, want one lane with two cards", view.Lanes)
+	}
+	got := map[string]uint64{}
+	for _, card := range view.Lanes[0].Cards {
+		got[card.Project] = card.DataSeq
+	}
+	if got["alpha"] != 5 || got["bravo"] != 12 {
+		t.Fatalf("card data seqs = %v, want alpha=5 bravo=12", got)
+	}
+
+	html := renderBoardComponent(t, boardCardView2(view.Lanes[0].Cards[0]))
+	if !strings.Contains(html, `data-kanban-data-seq="`) {
+		t.Fatalf("board card missing data sequence attribute:\n%s", html)
+	}
+}
+
 func TestBoardViewSortsCardsBySchedulerPriorityInputs(t *testing.T) {
 	t.Parallel()
 

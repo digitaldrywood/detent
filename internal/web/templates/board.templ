@@ -120,9 +120,11 @@ templ boardLaneView2(lane boardLaneView) {
 			<h2 class="text-xs font-semibold text-text">{ lane.Title }</h2>
 			<span class="font-mono text-2xs font-medium text-sec tabular-nums">{ lane.Count }</span>
 		</header>
-		<div class="dt-lane-scroll flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden p-2" data-preserve-scroll={ lane.DomID + "-scroll" }>
+		<div class="dt-lane-scroll flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden p-2" data-preserve-scroll={ lane.DomID + "-scroll" } data-kanban-card-container>
 			if len(lane.Cards) == 0 {
-				@primitives.EmptyLine(lane.EmptyMessage)
+				<div class="contents" data-kanban-empty-line>
+					@primitives.EmptyLine(lane.EmptyMessage)
+				</div>
 			}
 			for _, card := range lane.Cards {
 				@boardCardView2(card)
@@ -144,6 +146,9 @@ templ boardCardView2(card boardCardView) {
 		if card.DragDrop {
 			data-kanban-card
 			data-kanban-current-state={ card.CurrentState }
+			if card.DataSeq > 0 {
+				data-kanban-data-seq={ strconv.FormatUint(card.DataSeq, 10) }
+			}
 			if card.IssueID != "" {
 				data-kanban-issue-id={ card.IssueID }
 			}
@@ -819,6 +824,84 @@ templ boardKanbanDragScript() {
 				if (!draggedIssueID || !window.CSS || typeof CSS.escape !== "function") return null;
 				return queryRoot(scope).querySelector("[data-kanban-card][data-kanban-issue-id='" + CSS.escape(draggedIssueID) + "']");
 			}
+			function cardByIssueID(scope, issueID) {
+				var cards = queryRoot(scope).querySelectorAll("[data-kanban-card][data-kanban-issue-id]");
+				for (var index = 0; index < cards.length; index += 1) {
+					if (cards[index].dataset.kanbanIssueId === issueID) return cards[index];
+				}
+				return null;
+			}
+			function laneByState(scope, state) {
+				var lanes = queryRoot(scope).querySelectorAll("[data-kanban-drop-state]");
+				for (var index = 0; index < lanes.length; index += 1) {
+					if (lanes[index].dataset.kanbanDropState === state) return lanes[index];
+				}
+				return null;
+			}
+			function cardContainer(lane) {
+				return lane instanceof HTMLElement ? lane.querySelector("[data-kanban-card-container]") : null;
+			}
+			function updateEmptyLine(container) {
+				if (!(container instanceof HTMLElement)) return;
+				var emptyLine = container.querySelector("[data-kanban-empty-line]");
+				if (emptyLine instanceof HTMLElement) emptyLine.hidden = Boolean(container.querySelector("[data-kanban-card]"));
+			}
+			function placeCardInLane(card, state, scope) {
+				var lane = laneByState(scope, state);
+				var container = cardContainer(lane);
+				if (!(card instanceof HTMLElement) || !(lane instanceof HTMLElement) || !(container instanceof HTMLElement)) return null;
+				var previousContainer = card.parentElement;
+				container.appendChild(card);
+				lane.dataset.laneHidden = "false";
+				updateEmptyLine(previousContainer);
+				updateEmptyLine(container);
+				return lane;
+			}
+			function copyPendingMove(source, target) {
+				[
+					"kanbanPendingMove",
+					"kanbanPendingOrigin",
+					"kanbanPendingSeq",
+					"kanbanPendingTargetWasHidden"
+				].forEach(function (key) {
+					if (source.dataset[key] === undefined) {
+						delete target.dataset[key];
+					} else {
+						target.dataset[key] = source.dataset[key];
+					}
+				});
+			}
+			function clearPendingMove(card) {
+				if (!(card instanceof HTMLElement)) return;
+				delete card.dataset.kanbanPendingMove;
+				delete card.dataset.kanbanPendingOrigin;
+				delete card.dataset.kanbanPendingSeq;
+				delete card.dataset.kanbanPendingTargetWasHidden;
+			}
+			function pendingMoveSuperseded(liveCard, serverCard) {
+				var targetState = liveCard.dataset.kanbanPendingMove || "";
+				if ((serverCard.dataset.kanbanCurrentState || "") === targetState) return true;
+				var pendingSeq = Number.parseInt(liveCard.dataset.kanbanPendingSeq || "", 10);
+				var serverSeq = Number.parseInt(serverCard.dataset.kanbanDataSeq || "", 10);
+				return Number.isFinite(pendingSeq) && Number.isFinite(serverSeq) && serverSeq > pendingSeq;
+			}
+			function applyPendingMoveState(scope) {
+				var root = queryRoot(scope);
+				var applied = false;
+				document.querySelectorAll("#snapshot [data-kanban-card][data-kanban-pending-move]").forEach(function (liveCard) {
+					if (!(liveCard instanceof HTMLElement)) return;
+					var issueID = liveCard.dataset.kanbanIssueId || "";
+					var serverCard = cardByIssueID(root, issueID);
+					if (!(serverCard instanceof HTMLElement)) return;
+					if (pendingMoveSuperseded(liveCard, serverCard)) {
+						if (serverCard === liveCard) clearPendingMove(serverCard);
+						return;
+					}
+					copyPendingMove(liveCard, serverCard);
+					if (placeCardInLane(serverCard, liveCard.dataset.kanbanPendingMove || "", root)) applied = true;
+				});
+				return applied;
+			}
 			function targetKeysFromValue(value) {
 				return String(value || "").split(/\s+/).filter(Boolean);
 			}
@@ -866,7 +949,11 @@ templ boardKanbanDragScript() {
 				applyTouchDragStyles(card, root);
 				return true;
 			}
-			window.__detentBoardKanbanDragAdjustSnapshot = applyActiveDragState;
+			function applyDragState(scope) {
+				var pendingApplied = applyPendingMoveState(scope);
+				return applyActiveDragState(scope) || pendingApplied;
+			}
+			window.__detentBoardKanbanDragAdjustSnapshot = applyDragState;
 			function clearDropTargetState() {
 				document.querySelectorAll("[data-kanban-drop-state]").forEach(function (lane) {
 					if (!(lane instanceof HTMLElement)) return;
@@ -1095,6 +1182,18 @@ templ boardKanbanDragScript() {
 				finishDrag(keepClick);
 				feedback("Move cancelled.", "error");
 			}
+			function rollbackPendingMove(card) {
+				if (!(card instanceof HTMLElement) || !card.dataset.kanbanPendingMove) return;
+				var targetLane = card.closest("[data-kanban-drop-state]");
+				var targetWasHidden = card.dataset.kanbanPendingTargetWasHidden === "true";
+				var originState = card.dataset.kanbanPendingOrigin || "";
+				clearPendingMove(card);
+				placeCardInLane(card, originState, document);
+				if (targetLane instanceof HTMLElement) {
+					targetLane.dataset.laneHidden = targetWasHidden ? "true" : "false";
+					updateEmptyLine(cardContainer(targetLane));
+				}
+			}
 			function moveDragTo(x, y) {
 				if (!active) return;
 				moveGhost(active.ghost, x, y, active.offsetX, active.offsetY);
@@ -1117,6 +1216,7 @@ templ boardKanbanDragScript() {
 				if (active || event.button !== 0 || event.isPrimary === false) return;
 				var card = event.target instanceof Element ? event.target.closest("[data-kanban-card][data-kanban-action='move']") : null;
 				if (!card) return;
+				if (card.dataset.kanbanPendingMove) return;
 				var issueID = card.dataset.kanbanIssueId || "";
 				if (!issueID) return;
 				pending = {
@@ -1215,7 +1315,13 @@ templ boardKanbanDragScript() {
 					return;
 				}
 				targetState.value = lane.dataset.kanbanDropState || "";
+				card.dataset.kanbanPendingMove = targetState.value;
+				card.dataset.kanbanPendingOrigin = card.dataset.kanbanCurrentState || "";
+				if (card.dataset.kanbanDataSeq) card.dataset.kanbanPendingSeq = card.dataset.kanbanDataSeq;
+				card.dataset.kanbanPendingTargetWasHidden = lane.dataset.kanbanDropWasHidden || lane.dataset.laneHidden || "false";
+				placeCardInLane(card, targetState.value, document);
 				finishDrag();
+				placeCardInLane(card, targetState.value, document);
 				form.requestSubmit();
 			}
 			document.addEventListener("pointerup", function (event) {
@@ -1284,14 +1390,22 @@ templ boardKanbanDragScript() {
 				}
 			});
 			document.addEventListener("htmx:afterSettle", function () {
-				applyActiveDragState(document);
+				applyDragState(document);
 			});
-			document.body.addEventListener("htmx:responseError", function (event) {
+			function handleMoveError(event) {
 				var form = event.detail && event.detail.elt;
 				if (!(form instanceof HTMLFormElement) || !form.matches("[data-kanban-drag-move-form]")) return;
+				var issueIDInput = form.querySelector("input[name='issue_id']");
+				var issueID = issueIDInput instanceof HTMLInputElement ? issueIDInput.value : "";
+				var card = form.closest("[data-kanban-card][data-kanban-pending-move]");
+				if (!(card instanceof HTMLElement) || !card.isConnected) card = cardByIssueID(document, issueID);
+				rollbackPendingMove(card);
 				var response = event.detail.xhr ? event.detail.xhr.responseText : "";
 				feedback(responseMessage(response) || "Move failed.", "error");
-			});
+			}
+			document.body.addEventListener("htmx:responseError", handleMoveError);
+			document.body.addEventListener("htmx:sendError", handleMoveError);
+			document.body.addEventListener("htmx:timeout", handleMoveError);
 		})();
 	</script>
 }

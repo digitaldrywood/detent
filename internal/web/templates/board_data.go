@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
@@ -76,6 +77,7 @@ type boardCardView struct {
 	MoveProject        string
 	Scope              string
 	CurrentState       string
+	DataSeq            uint64
 	PRNumber           string
 	PRURL              string
 	DragDrop           bool
@@ -384,6 +386,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		MoveProject:       moveProjectID,
 		Scope:             scope,
 		CurrentState:      card.Stage,
+		DataSeq:           kanbanstate.SnapshotProjectDataSeq(data.Snapshot, moveProjectID),
 		DragDrop:          canDrag || moveDisabledText != "",
 		CanDrag:           canDrag,
 		MoveDisabledText:  moveDisabledText,

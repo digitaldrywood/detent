@@ -1232,6 +1232,202 @@ test("project kanban board supports drag status moves", async ({ page }) => {
   await expect(page.locator("#board-feedback")).toBeHidden();
 });
 
+test("project kanban move is immediate and survives a stale snapshot", async ({
+  page,
+}) => {
+  const runtime = await startDetentRuntime("kanban-optimistic-move", [
+    "--demo",
+    "kanban",
+    "--demo-project",
+    "demo-project",
+  ]);
+  let releaseMove;
+  const moveReleased = new Promise((resolve) => {
+    releaseMove = resolve;
+  });
+  try {
+    await page.route("**/api/v1/kanban/move", async (route) => {
+      await moveReleased;
+      await route.continue();
+    });
+    await page.setViewportSize(desktopViewport);
+    await page.goto(`${runtime.url}/projects/demo-project/kanban`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+    const staleSnapshot = await page
+      .locator("#snapshot")
+      .evaluate((snapshot) => snapshot.innerHTML);
+    const card = page.locator(
+      '[data-kanban-card][data-kanban-current-state="Backlog"]',
+      { hasText: "Kanban demo backlog intake" },
+    );
+    const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
+    const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
+
+    const response = page.waitForResponse(
+      (candidate) =>
+        candidate.request().method() === "POST" &&
+        candidate.url().endsWith("/api/v1/kanban/move"),
+    );
+    await dragKanbanCardToLane(page, card, targetLane);
+
+    const pendingCard = targetLane.locator("[data-kanban-pending-move='Todo']", {
+      hasText: "Kanban demo backlog intake",
+    });
+    await expect(pendingCard).toBeVisible();
+    await expect(targetLane.locator("[data-kanban-empty-line]")).toBeHidden();
+    await expect(
+      sourceLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toHaveCount(0);
+
+    await sseMorphSnapshot(page, staleSnapshot);
+    await expect(pendingCard).toBeVisible();
+    await expect(
+      sourceLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toHaveCount(0);
+
+    releaseMove();
+    await response;
+    await expect(
+      targetLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+    await expect(pendingCard).toHaveCount(0);
+  } finally {
+    releaseMove?.();
+    await runtime.stop();
+  }
+});
+
+test("project kanban move rolls back after a rejected response", async ({
+  page,
+}) => {
+  const runtime = await startDetentRuntime("kanban-optimistic-rollback", [
+    "--demo",
+    "kanban",
+    "--demo-project",
+    "demo-project",
+  ]);
+  let rejectMove;
+  const moveRejected = new Promise((resolve) => {
+    rejectMove = resolve;
+  });
+  try {
+    await page.route("**/api/v1/kanban/move", async (route) => {
+      await moveRejected;
+      await route.fulfill({
+        status: 422,
+        contentType: "text/html; charset=utf-8",
+        body: "<p>Move rejected by test policy.</p>",
+      });
+    });
+    await page.setViewportSize(desktopViewport);
+    await page.goto(`${runtime.url}/projects/demo-project/kanban`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+    const card = page.locator(
+      '[data-kanban-card][data-kanban-current-state="Backlog"]',
+      { hasText: "Kanban demo backlog intake" },
+    );
+    const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
+    const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
+    const response = page.waitForResponse(
+      (candidate) =>
+        candidate.request().method() === "POST" &&
+        candidate.url().endsWith("/api/v1/kanban/move"),
+    );
+
+    await dragKanbanCardToLane(page, card, targetLane);
+    await expect(
+      targetLane.locator("[data-kanban-pending-move='Todo']", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+
+    rejectMove();
+    expect((await response).status()).toBe(422);
+    await expect(
+      sourceLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+    await expect(
+      targetLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toHaveCount(0);
+    await expect(page.locator("[data-kanban-pending-move]")).toHaveCount(0);
+    await expect(targetLane).toHaveAttribute("data-lane-hidden", "true");
+    await expect(page.locator("#board-feedback")).toHaveText(
+      "Move rejected by test policy.",
+    );
+  } finally {
+    rejectMove?.();
+    await runtime.stop();
+  }
+});
+
+test("project kanban move rolls back after a transport failure", async ({
+  page,
+}) => {
+  const runtime = await startDetentRuntime("kanban-optimistic-send-error", [
+    "--demo",
+    "kanban",
+    "--demo-project",
+    "demo-project",
+  ]);
+  let failMove;
+  const moveFailed = new Promise((resolve) => {
+    failMove = resolve;
+  });
+  try {
+    await page.route("**/api/v1/kanban/move", async (route) => {
+      await moveFailed;
+      await route.abort("connectionfailed");
+    });
+    await page.setViewportSize(desktopViewport);
+    await page.goto(`${runtime.url}/projects/demo-project/kanban`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+    const card = page.locator(
+      '[data-kanban-card][data-kanban-current-state="Backlog"]',
+      { hasText: "Kanban demo backlog intake" },
+    );
+    const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
+    const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
+
+    await dragKanbanCardToLane(page, card, targetLane);
+    await expect(
+      targetLane.locator("[data-kanban-pending-move='Todo']", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+
+    failMove();
+    await expect(
+      sourceLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+    await expect(page.locator("[data-kanban-pending-move]")).toHaveCount(0);
+    await expect(page.locator("#board-feedback")).toHaveText("Move failed.");
+  } finally {
+    failMove?.();
+    await runtime.stop();
+  }
+});
+
 test("project kanban drag survives snapshot refresh during drag", async ({
   page,
 }) => {
@@ -1689,6 +1885,59 @@ async function morphSnapshot(page, name, incoming) {
     routePath,
   );
   await page.unroute(`**${routePath}`);
+}
+
+async function dragKanbanCardToLane(page, card, targetLane) {
+  const sourceBox = await card.boundingBox();
+  if (!sourceBox) {
+    throw new Error("Drag source has no bounding box");
+  }
+  await page.mouse.move(
+    sourceBox.x + sourceBox.width / 2,
+    sourceBox.y + sourceBox.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    sourceBox.x + sourceBox.width / 2 + 16,
+    sourceBox.y + sourceBox.height / 2 + 16,
+    { steps: 5 },
+  );
+  await expect(targetLane).toBeVisible();
+  const targetBox = await targetLane.boundingBox();
+  if (!targetBox) {
+    throw new Error("Drag target lane has no bounding box");
+  }
+  await page.mouse.move(
+    targetBox.x + targetBox.width / 2,
+    targetBox.y + Math.min(80, targetBox.height / 2),
+    { steps: 20 },
+  );
+  await page.mouse.up();
+}
+
+async function sseMorphSnapshot(page, incoming) {
+  await page.evaluate(
+    (snapshotHTML) =>
+      new Promise((resolve) => {
+        document.addEventListener("htmx:afterSettle", resolve, { once: true });
+        const target = document.querySelector("#snapshot");
+        const event = new CustomEvent("htmx:sseBeforeMessage", {
+          bubbles: true,
+          cancelable: true,
+          detail: { elt: target, data: snapshotHTML },
+        });
+        target.dispatchEvent(event);
+        if (!event.defaultPrevented) {
+          window.htmx.swap(
+            target,
+            snapshotHTML,
+            { swapStyle: target.getAttribute("hx-swap") || "innerHTML" },
+            { contextElement: target },
+          );
+        }
+      }),
+    incoming,
+  );
 }
 
 async function seedLongActivityHistory(activityPanel, eventCount) {
