@@ -835,6 +835,173 @@ func TestMergeSnapshotMergesInstanceScope(t *testing.T) {
 	}
 }
 
+func TestDedupeSnapshotIssues(t *testing.T) {
+	t.Parallel()
+
+	completedAt := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	laterCompletedAt := completedAt.Add(time.Hour)
+	tests := []struct {
+		name           string
+		snapshot       telemetry.Snapshot
+		wantRunning    []string
+		wantQueue      []string
+		wantBlocked    []string
+		wantCompleted  []string
+		wantCounts     telemetry.Counts
+		wantEmptyCount int
+	}{
+		{
+			name: "dedupes completed issue across projects and reduces capped count",
+			snapshot: telemetry.Snapshot{
+				Completed: []telemetry.Completed{
+					{Issue: telemetry.Issue{URL: " https://github.com/digitaldrywood/detent/issues/1171 ", ProjectID: "first"}, CompletedAt: completedAt},
+					{Issue: telemetry.Issue{URL: "https://github.com/digitaldrywood/detent/issues/1171", ProjectID: "second"}, CompletedAt: completedAt},
+				},
+				Counts: telemetry.Counts{Completed: 7},
+			},
+			wantCompleted: []string{"first"},
+			wantCounts:    telemetry.Counts{Completed: 6},
+		},
+		{
+			name: "dedupes running issue across scopes and floors count at slice length",
+			snapshot: telemetry.Snapshot{
+				Running: []telemetry.Running{
+					{Issue: telemetry.Issue{Identifier: " digitaldrywood/detent#1171 ", ProjectID: "first"}},
+					{Issue: telemetry.Issue{Identifier: "digitaldrywood/detent#1171", ProjectID: "second"}},
+				},
+			},
+			wantRunning: []string{"first"},
+			wantCounts:  telemetry.Counts{Running: 1},
+		},
+		{
+			name: "dedupes queued and blocked issues",
+			snapshot: telemetry.Snapshot{
+				Queue: []telemetry.Queued{
+					{Issue: telemetry.Issue{ID: "queued", ProjectID: "first"}},
+					{Issue: telemetry.Issue{ID: "queued", ProjectID: "second"}},
+				},
+				Blocked: []telemetry.Blocked{
+					{Issue: telemetry.Issue{ID: "blocked", ProjectID: "first"}},
+					{Issue: telemetry.Issue{ID: "blocked", ProjectID: "second"}},
+				},
+				Counts: telemetry.Counts{Queue: 5, Blocked: 2},
+			},
+			wantQueue:   []string{"first"},
+			wantBlocked: []string{"first"},
+			wantCounts:  telemetry.Counts{Queue: 4, Blocked: 1},
+		},
+		{
+			name: "preserves distinct issues",
+			snapshot: telemetry.Snapshot{
+				Running: []telemetry.Running{
+					{Issue: telemetry.Issue{ID: "first", ProjectID: "first"}},
+					{Issue: telemetry.Issue{ID: "second", ProjectID: "second"}},
+				},
+				Counts: telemetry.Counts{Running: 2},
+			},
+			wantRunning: []string{"first", "second"},
+			wantCounts:  telemetry.Counts{Running: 2},
+		},
+		{
+			name: "retains empty issue keys",
+			snapshot: telemetry.Snapshot{
+				Completed: []telemetry.Completed{
+					{Issue: telemetry.Issue{ProjectID: "first"}, CompletedAt: completedAt},
+					{Issue: telemetry.Issue{URL: " ", Identifier: " ", ID: " ", ProjectID: "second"}, CompletedAt: laterCompletedAt},
+				},
+				Counts: telemetry.Counts{Completed: 2},
+			},
+			wantCompleted:  []string{"first", "second"},
+			wantCounts:     telemetry.Counts{Completed: 2},
+			wantEmptyCount: 2,
+		},
+		{
+			name: "keeps latest completed entry and survivor order",
+			snapshot: telemetry.Snapshot{
+				Completed: []telemetry.Completed{
+					{Issue: telemetry.Issue{ID: "duplicate", ProjectID: "older"}, CompletedAt: completedAt},
+					{Issue: telemetry.Issue{ID: "distinct", ProjectID: "middle"}, CompletedAt: completedAt},
+					{Issue: telemetry.Issue{ID: "duplicate", ProjectID: "latest"}, CompletedAt: laterCompletedAt},
+				},
+				Counts: telemetry.Counts{Completed: 3},
+			},
+			wantCompleted: []string{"middle", "latest"},
+			wantCounts:    telemetry.Counts{Completed: 2},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := dedupeSnapshotIssues(tt.snapshot)
+			if got.Counts != tt.wantCounts {
+				t.Fatalf("Counts = %#v, want %#v", got.Counts, tt.wantCounts)
+			}
+			if len(got.Running) != len(tt.wantRunning) {
+				t.Fatalf("Running len = %d, want %d", len(got.Running), len(tt.wantRunning))
+			}
+			for i, wantProjectID := range tt.wantRunning {
+				if got.Running[i].ProjectID != wantProjectID {
+					t.Fatalf("Running[%d].ProjectID = %q, want %q", i, got.Running[i].ProjectID, wantProjectID)
+				}
+			}
+			if len(got.Queue) != len(tt.wantQueue) {
+				t.Fatalf("Queue len = %d, want %d", len(got.Queue), len(tt.wantQueue))
+			}
+			for i, wantProjectID := range tt.wantQueue {
+				if got.Queue[i].ProjectID != wantProjectID {
+					t.Fatalf("Queue[%d].ProjectID = %q, want %q", i, got.Queue[i].ProjectID, wantProjectID)
+				}
+			}
+			if len(got.Blocked) != len(tt.wantBlocked) {
+				t.Fatalf("Blocked len = %d, want %d", len(got.Blocked), len(tt.wantBlocked))
+			}
+			for i, wantProjectID := range tt.wantBlocked {
+				if got.Blocked[i].ProjectID != wantProjectID {
+					t.Fatalf("Blocked[%d].ProjectID = %q, want %q", i, got.Blocked[i].ProjectID, wantProjectID)
+				}
+			}
+			if len(got.Completed) != len(tt.wantCompleted) {
+				t.Fatalf("Completed len = %d, want %d", len(got.Completed), len(tt.wantCompleted))
+			}
+			for i, wantProjectID := range tt.wantCompleted {
+				if got.Completed[i].ProjectID != wantProjectID {
+					t.Fatalf("Completed[%d].ProjectID = %q, want %q", i, got.Completed[i].ProjectID, wantProjectID)
+				}
+			}
+			if tt.wantEmptyCount > 0 && len(got.Completed) != tt.wantEmptyCount {
+				t.Fatalf("empty-key Completed len = %d, want %d", len(got.Completed), tt.wantEmptyCount)
+			}
+		})
+	}
+}
+
+func TestIssueKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		issue telemetry.Issue
+		want  string
+	}{
+		{name: "URL takes precedence", issue: telemetry.Issue{URL: " url ", Identifier: "identifier", ID: "id"}, want: "url"},
+		{name: "identifier falls back from blank URL", issue: telemetry.Issue{URL: " ", Identifier: " identifier ", ID: "id"}, want: "identifier"},
+		{name: "ID falls back from blank identifier", issue: telemetry.Issue{Identifier: " ", ID: " id "}, want: "id"},
+		{name: "all blank", issue: telemetry.Issue{URL: " ", Identifier: "\t", ID: "\n"}, want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := issueKey(tt.issue); got != tt.want {
+				t.Fatalf("issueKey() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMergeSnapshotStampsProjectIDOnIssueRows(t *testing.T) {
 	t.Parallel()
 
