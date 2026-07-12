@@ -80,6 +80,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Completed:          completedSnapshots(s.Completed, s.Claimed, now, s.laneEntries),
 		RateLimits:         cloneRateLimits(s.RateLimits),
 		BackendOutages:     backendOutageSnapshots(s.BackendOutages),
+		FailureBreakers:    projectFailureBreakerSnapshots(s.FailureBreaker),
 		Tokens:             tokensFromTokenTotals(s.liveTokenTotals()),
 		Budget: telemetry.Budget{
 			Refusals: budgetRefusalSnapshots(s.BudgetRefusals),
@@ -92,6 +93,22 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Completed: len(snapshot.Completed),
 	}
 	return snapshot
+}
+
+func projectFailureBreakerSnapshots(breaker ProjectFailureBreaker) []telemetry.FailureBreaker {
+	if !breaker.Active() {
+		return nil
+	}
+	return []telemetry.FailureBreaker{{
+		Class:           breaker.Class,
+		Count:           breaker.Count,
+		WindowSeconds:   int64(breaker.Config.Window / time.Second),
+		CooldownSeconds: int64(breaker.Config.Cooldown / time.Second),
+		FirstFailureAt:  breaker.FirstFailureAt,
+		TrippedAt:       breaker.TrippedAt,
+		ResumeAt:        breaker.ResumeAt,
+		CanaryIssueID:   breaker.CanaryIssueID,
+	}}
 }
 
 func releaseSnapshot(status releasepkg.Status) telemetry.Release {

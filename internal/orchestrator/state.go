@@ -61,6 +61,7 @@ type State struct {
 	PriorAttempts            map[string]runpkg.PriorAttempt
 	InstantFailures          map[string]InstantFailure
 	RepeatedFailures         map[string]RepeatedFailure
+	FailureBreaker           ProjectFailureBreaker
 	BackendOutages           map[string]BackendOutage
 	BackendRecoveries        map[string]BackendRecovery
 	DiffStats                map[string]DiffStats
@@ -184,6 +185,22 @@ type RepeatedFailure struct {
 	LastFailureAt  time.Time
 }
 
+type ProjectFailureBreaker struct {
+	Config         FailureBreakerConfig
+	Failures       map[string][]ProjectFailure
+	Class          string
+	Count          int
+	FirstFailureAt time.Time
+	TrippedAt      time.Time
+	ResumeAt       time.Time
+	CanaryIssueID  string
+}
+
+type ProjectFailure struct {
+	IssueID string
+	At      time.Time
+}
+
 type TransientCheckRetry struct {
 	IssueID       string
 	HeadSHA       string
@@ -224,6 +241,7 @@ func newState(cfg Config) State {
 		PriorAttempts:            map[string]runpkg.PriorAttempt{},
 		InstantFailures:          map[string]InstantFailure{},
 		RepeatedFailures:         map[string]RepeatedFailure{},
+		FailureBreaker:           newProjectFailureBreaker(cfg.FailureBreaker),
 		BackendOutages:           map[string]BackendOutage{},
 		BackendRecoveries:        map[string]BackendRecovery{},
 		DiffStats:                map[string]DiffStats{},
@@ -277,6 +295,7 @@ func (s State) clone() State {
 		PriorAttempts:            clonePriorAttempts(s.PriorAttempts),
 		InstantFailures:          make(map[string]InstantFailure, len(s.InstantFailures)),
 		RepeatedFailures:         make(map[string]RepeatedFailure, len(s.RepeatedFailures)),
+		FailureBreaker:           cloneProjectFailureBreaker(s.FailureBreaker),
 		BackendOutages:           maps.Clone(s.BackendOutages),
 		BackendRecoveries:        maps.Clone(s.BackendRecoveries),
 		DiffStats:                make(map[string]DiffStats, len(s.DiffStats)),

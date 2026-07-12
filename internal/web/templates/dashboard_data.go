@@ -6328,6 +6328,18 @@ func backendCapacityOutageTitle(outage telemetry.BackendOutage) string {
 	return "Backend " + backendCapacityBackendID(outage) + " at usage limit"
 }
 
+func failureBreakerDetailParts(breaker telemetry.FailureBreaker, now time.Time) (string, time.Time, bool) {
+	detail := formatCount(breaker.Count) + " failures with class " + strings.TrimSpace(breaker.Class) +
+		" in " + formatDurationWindow(time.Duration(breaker.WindowSeconds)*time.Second) + "."
+	if strings.TrimSpace(breaker.CanaryIssueID) != "" {
+		return detail + " One canary attempt is in progress.", time.Time{}, false
+	}
+	if !breaker.ResumeAt.IsZero() && breaker.ResumeAt.After(now) {
+		return detail + " One canary attempt becomes eligible", breaker.ResumeAt, true
+	}
+	return detail + " One canary attempt is ready.", time.Time{}, false
+}
+
 func backendCapacityBackendID(outage telemetry.BackendOutage) string {
 	backend := strings.TrimSpace(outage.BackendID)
 	if backend == "" {

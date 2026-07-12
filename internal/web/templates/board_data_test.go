@@ -1696,6 +1696,30 @@ func TestBoardSnapshotRendersBackendCapacityBanner(t *testing.T) {
 	}
 }
 
+func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	data.Snapshot.FailureBreakers = []telemetry.FailureBreaker{{
+		Class:         "session_token_ceiling",
+		Count:         5,
+		WindowSeconds: 3600,
+		ResumeAt:      data.Snapshot.GeneratedAt.Add(time.Hour),
+	}}
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	for _, want := range []string{
+		`id="project-failure-breaker"`,
+		"Project dispatch paused by correlated failures",
+		"5 failures with class session_token_ceiling in 1h.",
+		"One canary attempt becomes eligible",
+		`datetime="2026-07-04T17:42:07Z"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("failure breaker banner missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestBoardSnapshotRendersGitHubRESTCapacityBanner(t *testing.T) {
 	t.Parallel()
 

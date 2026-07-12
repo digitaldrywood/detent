@@ -216,6 +216,13 @@ func (p dispatchPlanner) retryAction(
 		}
 		return dispatchAction{}, false, dispatchSkipGitHubRESTCapacity
 	}
+	if !projectFailureBreakerAllowsDispatch(state, now) {
+		if retry.DueAt.Before(state.FailureBreaker.ResumeAt) {
+			retry.DueAt = state.FailureBreaker.ResumeAt
+			state.Retry[retry.Issue.ID] = retry
+		}
+		return dispatchAction{}, false, dispatchSkipProjectFailureBreaker
+	}
 	delete(state.Retry, retry.Issue.ID)
 
 	decision := p.dispatchableIssueDecision(issue, state, true, now, retry.WorkerHost)
@@ -485,6 +492,7 @@ const (
 	dispatchSkipHydrationFailed          = "hydrate_failed"
 	dispatchSkipDispatchBackoffCancelled = "dispatch_backoff_cancelled"
 	dispatchSkipGitHubRESTCapacity       = "github_rest_capacity_paused"
+	dispatchSkipProjectFailureBreaker    = projectFailureBreakerDispatchPaused
 )
 
 func (p dispatchPlanner) dispatchableIssueDecision(
@@ -505,6 +513,9 @@ func (p dispatchPlanner) dispatchableIssueDecision(
 	}
 	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
 		return dispatchableDecision{reason: dispatchSkipGitHubRESTCapacity}
+	}
+	if !projectFailureBreakerAllowsDispatch(state, now) {
+		return dispatchableDecision{reason: dispatchSkipProjectFailureBreaker}
 	}
 	if pullRequestHydrationBlocksDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipPullRequestHydration}

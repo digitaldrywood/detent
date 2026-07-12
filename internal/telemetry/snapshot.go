@@ -36,12 +36,25 @@ type Snapshot struct {
 	Budget             Budget              `json:"budget"`
 	RateLimits         *RateLimits         `json:"rate_limits"`
 	BackendOutages     []BackendOutage     `json:"backend_outages,omitempty"`
+	FailureBreakers    []FailureBreaker    `json:"failure_breakers,omitempty"`
 	Tokens             Tokens              `json:"tokens"`
 	Throughput         TokenThroughput     `json:"throughput"`
 	LifetimeTotals     LifetimeTotals      `json:"lifetime_totals"`
 	CycleTime          CycleTimeReport     `json:"cycle_time"`
 	WorkflowMetrics    WorkflowMetrics     `json:"workflow_metrics"`
 	TokenTrend         []TokenTrendPoint   `json:"token_trend,omitempty"`
+}
+
+type FailureBreaker struct {
+	ProjectID       string    `json:"project_id,omitempty"`
+	Class           string    `json:"class"`
+	Count           int       `json:"count"`
+	WindowSeconds   int64     `json:"window_seconds"`
+	CooldownSeconds int64     `json:"cooldown_seconds"`
+	FirstFailureAt  time.Time `json:"first_failure_at"`
+	TrippedAt       time.Time `json:"tripped_at"`
+	ResumeAt        time.Time `json:"resume_at"`
+	CanaryIssueID   string    `json:"canary_issue_id,omitempty"`
 }
 
 type Update struct {

@@ -63,6 +63,10 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 			{Issue: telemetry.Issue{ID: "detent-completed", Identifier: "digitaldrywood/detent#5", ProjectID: "detent"}},
 			{Issue: telemetry.Issue{ID: "pyro-completed", Identifier: "digitaldrywood/pyroapex#5", ProjectID: "pyroapex"}},
 		},
+		FailureBreakers: []telemetry.FailureBreaker{
+			{ProjectID: "detent", Class: "session_token_ceiling"},
+			{ProjectID: "pyroapex", Class: "deliverable_command_failure"},
+		},
 	}, "detent")
 
 	if !ok {
@@ -100,6 +104,9 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 	}
 	if len(got.Completed) != 1 || got.Completed[0].ID != "detent-completed" {
 		t.Fatalf("Completed = %#v, want only detent row", got.Completed)
+	}
+	if len(got.FailureBreakers) != 1 || got.FailureBreakers[0].Class != "session_token_ceiling" {
+		t.Fatalf("FailureBreakers = %#v, want only detent row", got.FailureBreakers)
 	}
 }
 

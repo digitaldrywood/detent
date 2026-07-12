@@ -56,6 +56,9 @@ const (
 	DefaultReworkLimit                       = 3
 	DefaultNoProgressLimit                   = 3
 	DefaultNoProgressSpendLimitUSD           = 3.0
+	DefaultFailureBreakerSameClassLimit      = 5
+	DefaultFailureBreakerWindowSeconds       = 3600
+	DefaultFailureBreakerCooldownSeconds     = 3600
 	DefaultAutoPromoteGateWaitTimeoutSeconds = 3600
 
 	DefaultPollingIntervalMS      = 120000
@@ -228,6 +231,7 @@ type Agent struct {
 	MaxTurns                     int                          `yaml:"max_turns"`
 	MaxRetryBackoffMS            int                          `yaml:"max_retry_backoff_ms"`
 	NoProgressSpendLimitUSD      float64                      `yaml:"no_progress_spend_limit_usd"`
+	FailureBreaker               FailureBreaker               `yaml:"failure_breaker"`
 	MaxSessionTokens             int64                        `yaml:"max_session_tokens"`
 	MaxSessionContextMultiplier  float64                      `yaml:"max_session_context_multiplier"`
 	MaxSessionTokenOverrideLabel string                       `yaml:"max_session_token_override_label"`
@@ -250,6 +254,12 @@ type Agent struct {
 	Knowledge                    Knowledge                    `yaml:"knowledge"`
 	Skills                       Skills                       `yaml:"skills"`
 	Followups                    Followups                    `yaml:"followups"`
+}
+
+type FailureBreaker struct {
+	SameClassLimit  int `yaml:"same_class_limit"`
+	WindowSeconds   int `yaml:"window_seconds"`
+	CooldownSeconds int `yaml:"cooldown_seconds"`
 }
 
 type AgentRoleEffort struct {
@@ -976,10 +986,15 @@ func Default() Config {
 			SSHHosts: []string{},
 		},
 		Agent: Agent{
-			MaxConcurrentAgents:        10,
-			MaxTurns:                   20,
-			MaxRetryBackoffMS:          300000,
-			NoProgressSpendLimitUSD:    DefaultNoProgressSpendLimitUSD,
+			MaxConcurrentAgents:     10,
+			MaxTurns:                20,
+			MaxRetryBackoffMS:       300000,
+			NoProgressSpendLimitUSD: DefaultNoProgressSpendLimitUSD,
+			FailureBreaker: FailureBreaker{
+				SameClassLimit:  DefaultFailureBreakerSameClassLimit,
+				WindowSeconds:   DefaultFailureBreakerWindowSeconds,
+				CooldownSeconds: DefaultFailureBreakerCooldownSeconds,
+			},
 			ResumeOrphanedSessions:     true,
 			Shutdown:                   Shutdown{DrainTimeoutMS: DefaultShutdownDrainTimeoutMS},
 			MaxConcurrentAgentsByState: map[string]int{},
@@ -1241,6 +1256,15 @@ func (c *Config) normalize() {
 	c.Release.normalize()
 
 	c.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(c.Agent.MaxConcurrentAgentsByState)
+	if c.Agent.FailureBreaker.SameClassLimit == 0 {
+		c.Agent.FailureBreaker.SameClassLimit = DefaultFailureBreakerSameClassLimit
+	}
+	if c.Agent.FailureBreaker.WindowSeconds == 0 {
+		c.Agent.FailureBreaker.WindowSeconds = DefaultFailureBreakerWindowSeconds
+	}
+	if c.Agent.FailureBreaker.CooldownSeconds == 0 {
+		c.Agent.FailureBreaker.CooldownSeconds = DefaultFailureBreakerCooldownSeconds
+	}
 	c.Agent.DispatchPriorityByState = normalizeStateList(c.Agent.DispatchPriorityByState)
 	c.Agent.DispatchPriorityByLabel = normalizeLabels(c.Agent.DispatchPriorityByLabel)
 	c.Agent.MaxSessionTokenOverrideLabel = normalizeLabel(c.Agent.MaxSessionTokenOverrideLabel)
@@ -1559,6 +1583,9 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	if a.NoProgressSpendLimitUSD < 0 {
 		*problems = append(*problems, prefix+".no_progress_spend_limit_usd must be greater than or equal to 0")
 	}
+	validatePositive(prefix+".failure_breaker.same_class_limit", a.FailureBreaker.SameClassLimit, problems)
+	validatePositive(prefix+".failure_breaker.window_seconds", a.FailureBreaker.WindowSeconds, problems)
+	validatePositive(prefix+".failure_breaker.cooldown_seconds", a.FailureBreaker.CooldownSeconds, problems)
 	a.Effort.validate(prefix+".effort", problems)
 	a.Shutdown.validate(prefix+".shutdown", problems)
 	validateStateLimits(prefix+".max_concurrent_agents_by_state", a.MaxConcurrentAgentsByState, problems)
