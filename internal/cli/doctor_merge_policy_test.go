@@ -43,6 +43,19 @@ func TestDoctorRepositoryMergePolicyWarning(t *testing.T) {
 			wantPatch:  true,
 		},
 		{
+			name:       "undeclared ambiguity chooses enabled method",
+			settings:   ghconnector.RepositoryMergeSettings{AllowMergeCommit: true, AllowRebaseMerge: true},
+			wantDetail: "digitaldrywood/detent ambiguous merge policy: repo settings merge_commit=true,squash=false,rebase=true allow multiple methods and WORKFLOW.md declares none; agent-side auto-detection can produce mixed history",
+			wantFix:    "add `merge_method: merge` under `deliverable:` in WORKFLOW.md",
+			wantPatch:  true,
+		},
+		{
+			name:       "undeclared effective default forbidden",
+			settings:   ghconnector.RepositoryMergeSettings{AllowMergeCommit: true},
+			wantDetail: "digitaldrywood/detent effective default merge_method=squash is forbidden by repo settings merge_commit=true,squash=false,rebase=false and WORKFLOW.md declares none",
+			wantFix:    "gh api --method PATCH repos/digitaldrywood/detent -F allow_merge_commit=false -F allow_squash_merge=true -F allow_rebase_merge=false",
+		},
+		{
 			name:            "exact declared method",
 			mergeMethodYAML: "squash",
 			settings:        ghconnector.RepositoryMergeSettings{AllowSquashMerge: true},
@@ -63,10 +76,41 @@ func TestDoctorRepositoryMergePolicyWarning(t *testing.T) {
 			if (gotPatch != nil) != tt.wantPatch {
 				t.Fatalf("patch present = %t, want %t", gotPatch != nil, tt.wantPatch)
 			}
-			if gotPatch != nil && (gotPatch.Path != "deliverable.merge_method" || gotPatch.Value != workflowconfig.MergeMethodSquash) {
-				t.Fatalf("patch = %#v, want deliverable.merge_method=squash", gotPatch)
+			if gotPatch != nil && gotPatch.Path != "deliverable.merge_method" {
+				t.Fatalf("patch = %#v, want deliverable.merge_method", gotPatch)
 			}
 		})
+	}
+}
+
+func TestCheckDoctorProjectSkipsRepositoryMergePolicyForArtifact(t *testing.T) {
+	t.Parallel()
+
+	cfg := validDoctorWorkflow("/repo")
+	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	cfg.Deliverable.Kind = workflowconfig.DeliverableArtifact
+	settingsReads := 0
+	checks := checkDoctorProject(context.Background(), globalconfig.Project{ID: "artifact", Workflow: "WORKFLOW.md", Workdir: "/repo"}, doctorDeps{
+		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+			return workflowconfig.Workflow{Config: cfg}, nil
+		},
+		gitWorkTree: func(context.Context, string) error { return nil },
+		githubReadiness: func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
+			return nil, nil
+		},
+		githubMergeSettings: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryMergeSettings, error) {
+			settingsReads++
+			return ghconnector.RepositoryMergeSettings{}, nil
+		},
+	}, RuntimeSecret{}, false)
+
+	if settingsReads != 0 {
+		t.Fatalf("settings reads = %d, want 0", settingsReads)
+	}
+	for _, check := range checks {
+		if strings.Contains(check.Name, "repository merge policy") {
+			t.Fatalf("artifact checks include merge policy: %#v", check)
+		}
 	}
 }
 

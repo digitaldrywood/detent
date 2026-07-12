@@ -69,11 +69,16 @@ func checkDoctorRepositoryMergePolicy(ctx context.Context, id string, project gl
 func doctorRepositoryMergePolicyWarning(repository string, deliverable workflowconfig.Deliverable, settings ghconnector.RepositoryMergeSettings) (string, string, *doctorWorkflowOptimizationPatch) {
 	settingsDetail := doctorRepositoryMergeSettingsDetail(settings)
 	if !deliverable.MergeMethodConfigured() {
-		if doctorRepositoryEnabledMergeMethodCount(settings) <= 1 {
+		enabledCount := doctorRepositoryEnabledMergeMethodCount(settings)
+		if enabledCount == 1 && settings.AllowSquashMerge {
 			return "", "", nil
 		}
-		patch := doctorWorkflowOptimizationPatch{Path: "deliverable.merge_method", Value: workflowconfig.MergeMethodSquash}
-		return fmt.Sprintf("%s ambiguous merge policy: repo settings %s allow multiple methods and WORKFLOW.md declares none; agent-side auto-detection can produce mixed history", repository, settingsDetail), "add `merge_method: squash` under `deliverable:` in WORKFLOW.md", &patch
+		if enabledCount <= 1 {
+			return fmt.Sprintf("%s effective default merge_method=squash is forbidden by repo settings %s and WORKFLOW.md declares none", repository, settingsDetail), doctorRepositoryMergeSettingsCommand(repository, workflowconfig.MergeMethodSquash), nil
+		}
+		method := doctorRepositoryPreferredDeclaredMergeMethod(settings)
+		patch := doctorWorkflowOptimizationPatch{Path: "deliverable.merge_method", Value: method}
+		return fmt.Sprintf("%s ambiguous merge policy: repo settings %s allow multiple methods and WORKFLOW.md declares none; agent-side auto-detection can produce mixed history", repository, settingsDetail), fmt.Sprintf("add `merge_method: %s` under `deliverable:` in WORKFLOW.md", method), &patch
 	}
 
 	declared := deliverable.EffectiveMergeMethod()
@@ -84,6 +89,16 @@ func doctorRepositoryMergePolicyWarning(repository string, deliverable workflowc
 		return fmt.Sprintf("%s declared merge_method=%s is loose because repo settings %s permit additional methods", repository, declared, settingsDetail), doctorRepositoryMergeSettingsCommand(repository, declared), nil
 	}
 	return "", "", nil
+}
+
+func doctorRepositoryPreferredDeclaredMergeMethod(settings ghconnector.RepositoryMergeSettings) string {
+	if settings.AllowSquashMerge {
+		return workflowconfig.MergeMethodSquash
+	}
+	if settings.AllowMergeCommit {
+		return workflowconfig.MergeMethodMerge
+	}
+	return workflowconfig.MergeMethodRebase
 }
 
 func doctorRepositoryMergeSettingsDetail(settings ghconnector.RepositoryMergeSettings) string {
