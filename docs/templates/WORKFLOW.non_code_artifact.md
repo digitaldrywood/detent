@@ -109,6 +109,10 @@ gate:
       - invalid
       - missing_assets
 
+# A wait status parks an item only when the status field is updated after the
+# item enters its current state. A value seeded when the item is created has
+# the same timestamp as the initial state and does not block first dispatch.
+
 server:
   kanban:
     mode: integration

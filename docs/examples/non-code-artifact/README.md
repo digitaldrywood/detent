@@ -76,6 +76,10 @@ status values:
 | `invalid` | Route from Review to Rework. |
 | `missing_assets` | Route from Review to Rework. |
 
+A wait value seeded when a work item is created does not park its first
+dispatch. Wait statuses take effect after `render_status` is updated later
+than the time the item entered its current state.
+
 To flip the waiting Review card to approved:
 
 ```sh

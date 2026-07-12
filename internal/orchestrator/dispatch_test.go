@@ -688,12 +688,16 @@ func TestDispatchableArtifactGateWaitStatus(t *testing.T) {
 		wantReason     string
 	}{
 		{
-			name:         "fresh item dispatches",
-			state:        "Todo",
-			wantDispatch: true,
+			name:           "fresh item with seeded wait status dispatches",
+			state:          "Todo",
+			status:         "queued",
+			stageUpdatedAt: timePointer(now),
+			updatedAt:      timePointer(now),
+			fieldUpdatedAt: timePointer(now),
+			wantDispatch:   true,
 		},
 		{
-			name:           "mid wait item stays skipped",
+			name:           "post run wait item stays skipped",
 			state:          "Production",
 			status:         "pending_review",
 			stageUpdatedAt: timePointer(now.Add(-2 * time.Minute)),

@@ -47,6 +47,7 @@ const (
 	projectKanbanAutoPromoteActionMetadataKey     = "detent.auto_promote_action"
 	projectKanbanAutoPromoteReasonMetadataKey     = "detent.auto_promote_reason"
 	projectKanbanDispatchSkipReasonMetadataKey    = "detent.dispatch_skip_reason"
+	projectKanbanArtifactGateStatusMetadataKey    = "detent.artifact_gate_status"
 )
 
 type DashboardData struct {
@@ -3811,6 +3812,11 @@ func prPipelineDispatchSkipWaitReason(issue telemetry.Issue) string {
 	reason := strings.TrimSpace(issue.Metadata[projectKanbanDispatchSkipReasonMetadataKey])
 	if reason == "" {
 		return ""
+	}
+	if reason == "artifact_gate_wait_status" {
+		if status := strings.TrimSpace(issue.Metadata[projectKanbanArtifactGateStatusMetadataKey]); status != "" {
+			return "waiting on artifact gate status ('" + status + "')"
+		}
 	}
 	return "dispatch skipped: " + reason
 }
