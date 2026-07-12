@@ -244,7 +244,7 @@ func checkDoctorProjectWithProgress(
 func checkDoctorBillingMode(id string, cfg workflowconfig.Config) (doctorCheck, bool) {
 	mode := cfg.Budget.EffectiveBillingMode()
 	if !cfg.Budget.BillingModeConfigured() {
-		if !cfg.Budget.Enabled {
+		if !cfg.Budget.Enabled && cfg.Agent.NoProgressSpendLimitUSD <= 0 {
 			return doctorCheck{}, false
 		}
 		return doctorCheck{

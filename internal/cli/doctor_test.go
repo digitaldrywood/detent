@@ -835,17 +835,17 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: disabledBudgetWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "metered billing and USD enforcement are assumed", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
-			name: "inherited budget caps do not warn",
+			name: "inherited spend breaker warns about billing ambiguity",
 			projects: []globalconfig.Project{
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: omittedBudgetWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "metered billing and USD enforcement are assumed", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "source repo missing",
@@ -963,6 +963,15 @@ func TestCheckDoctorBillingMode(t *testing.T) {
 			budget:     workflowconfig.Budget{Enabled: true},
 			wantOK:     true,
 			wantDetail: "metered billing and USD enforcement are assumed",
+		},
+		{
+			name:       "legacy spend breaker warns about assumed metered mode",
+			spendLimit: 3,
+			wantOK:     true,
+			wantDetail: "metered billing and USD enforcement are assumed",
+		},
+		{
+			name: "undeclared mode without USD controls does not warn",
 		},
 		{
 			name:   "declared metered mode does not warn",
