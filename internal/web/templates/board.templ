@@ -1392,7 +1392,7 @@ templ boardKanbanDragScript() {
 			document.addEventListener("htmx:afterSettle", function () {
 				applyDragState(document);
 			});
-			document.body.addEventListener("htmx:responseError", function (event) {
+			function handleMoveError(event) {
 				var form = event.detail && event.detail.elt;
 				if (!(form instanceof HTMLFormElement) || !form.matches("[data-kanban-drag-move-form]")) return;
 				var issueIDInput = form.querySelector("input[name='issue_id']");
@@ -1402,7 +1402,10 @@ templ boardKanbanDragScript() {
 				rollbackPendingMove(card);
 				var response = event.detail.xhr ? event.detail.xhr.responseText : "";
 				feedback(responseMessage(response) || "Move failed.", "error");
-			});
+			}
+			document.body.addEventListener("htmx:responseError", handleMoveError);
+			document.body.addEventListener("htmx:sendError", handleMoveError);
+			document.body.addEventListener("htmx:timeout", handleMoveError);
 		})();
 	</script>
 }

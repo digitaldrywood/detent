@@ -1376,6 +1376,58 @@ test("project kanban move rolls back after a rejected response", async ({
   }
 });
 
+test("project kanban move rolls back after a transport failure", async ({
+  page,
+}) => {
+  const runtime = await startDetentRuntime("kanban-optimistic-send-error", [
+    "--demo",
+    "kanban",
+    "--demo-project",
+    "demo-project",
+  ]);
+  let failMove;
+  const moveFailed = new Promise((resolve) => {
+    failMove = resolve;
+  });
+  try {
+    await page.route("**/api/v1/kanban/move", async (route) => {
+      await moveFailed;
+      await route.abort("connectionfailed");
+    });
+    await page.setViewportSize(desktopViewport);
+    await page.goto(`${runtime.url}/projects/demo-project/kanban`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.locator("#board-lanes").waitFor({ state: "visible" });
+
+    const card = page.locator(
+      '[data-kanban-card][data-kanban-current-state="Backlog"]',
+      { hasText: "Kanban demo backlog intake" },
+    );
+    const sourceLane = page.locator('[data-kanban-drop-state="Backlog"]');
+    const targetLane = page.locator('[data-kanban-drop-state="Todo"]');
+
+    await dragKanbanCardToLane(page, card, targetLane);
+    await expect(
+      targetLane.locator("[data-kanban-pending-move='Todo']", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+
+    failMove();
+    await expect(
+      sourceLane.locator("[data-kanban-card]", {
+        hasText: "Kanban demo backlog intake",
+      }),
+    ).toBeVisible();
+    await expect(page.locator("[data-kanban-pending-move]")).toHaveCount(0);
+    await expect(page.locator("#board-feedback")).toHaveText("Move failed.");
+  } finally {
+    failMove?.();
+    await runtime.stop();
+  }
+});
+
 test("project kanban drag survives snapshot refresh during drag", async ({
   page,
 }) => {
