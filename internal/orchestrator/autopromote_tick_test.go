@@ -320,6 +320,108 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 	}
 }
 
+func TestApplyAutoPromoteDecisionArtifactReworkTicks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		initialState string
+		statuses     []string
+		wantWrites   int
+	}{
+		{
+			name:         "already in rework remains a no-op",
+			initialState: "Rework",
+			statuses:     []string{"recut", "recut", "changes_requested", "changes_requested", "recut"},
+			wantWrites:   0,
+		},
+		{
+			name:         "source routes once and changed rework status remains a no-op",
+			initialState: "Review",
+			statuses:     []string{"recut", "recut", "changes_requested", "changes_requested", "recut"},
+			wantWrites:   1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{
+				AutoPromote: AutoPromoteConfig{
+					Enabled:     true,
+					SourceState: "Review",
+					PassState:   "Ready for Pickup",
+					ReworkState: "Rework",
+					Gate: gate.Config{
+						Kind: gate.KindArtifact,
+						Artifact: gate.ArtifactConfig{
+							StatusField:    "render_status",
+							PassStatuses:   []string{"approved"},
+							WaitStatuses:   []string{"queued"},
+							ReworkStatuses: []string{"recut", "changes_requested"},
+						},
+					},
+				},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework"},
+				ObservedStates: []string{"Review"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			})
+			issue := autoPromoteTickIssue("issue-artifact-rework", nil, nil)
+			issue.State = tt.initialState
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			orch := &Orchestrator{
+				cfg:       cfg,
+				connector: tracker,
+				logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			state := newState(cfg)
+			now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+
+			for tick, status := range tt.statuses {
+				current := cloneIssue(tracker.stateIssues[0])
+				current.Fields = map[string]string{"render_status": status}
+				summary := AutoPromoteSummaryFromIssue(current)
+				summary.ArtifactStatus = status
+				decision := EvaluateAutoPromote(current, summary, cfg.AutoPromote, now.Add(time.Duration(tick)*time.Minute))
+				if decision.Action != AutoPromoteActionRework {
+					t.Fatalf("tick %d decision = %#v, want rework", tick, decision)
+				}
+				targetState := autoPromoteTargetState(decision.Action, cfg.AutoPromote)
+				orch.applyAutoPromoteDecision(
+					t.Context(),
+					&state,
+					current,
+					summary,
+					decision,
+					targetState,
+					now.Add(time.Duration(tick)*time.Minute),
+				)
+			}
+
+			if got := len(tracker.updates); got != tt.wantWrites {
+				t.Fatalf("state updates = %d, want %d: %#v", got, tt.wantWrites, tracker.updates)
+			}
+			if got := len(tracker.comments); got != tt.wantWrites {
+				t.Fatalf("comments = %d, want %d: %#v", got, tt.wantWrites, tracker.comments)
+			}
+			if got := len(state.RecentEvents); got != tt.wantWrites {
+				t.Fatalf("recent events = %d, want %d: %#v", got, tt.wantWrites, state.RecentEvents)
+			}
+			if tt.wantWrites == 1 {
+				for _, fragment := range []string{
+					"Auto-promote routed this issue from Review to Rework.",
+					"reason: artifact_status_rework",
+				} {
+					if !strings.Contains(tracker.comments[0].body, fragment) {
+						t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
 	t.Parallel()
 
