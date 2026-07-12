@@ -348,9 +348,10 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		listenerOwned = false
 		if cfg.Shutdown == nil {
 			return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
-				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, runtimeLogPath(cfg), nil, nil)
+				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, runtimeLogPath(cfg), cfg.Output, nil, nil, nil)
 			})
 		}
+		var forceExitRequested atomic.Bool
 		return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
 			return runWithShutdown(ctx, runningShutdownConfig{
 				Controller:         cfg.Shutdown,
@@ -369,10 +370,16 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 				ProgressInterval: defaultShutdownProgressInterval,
 				HardTimeout:      defaultShutdownHardTimeout,
 			}, func(ctx context.Context) error {
-				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, runtimeLogPath(cfg), func() time.Duration {
+				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, runtimeLogPath(cfg), cfg.Output, func() time.Duration {
 					return shutdownDrainTimeout(manager.Registry())
 				}, func() {
-					requestTerminalShutdownInterrupt(cfg.Shutdown, cfg.HardExit)
+					requestTerminalShutdownInterrupt(cfg.Shutdown, func(int) {
+						forceExitRequested.Store(true)
+					})
+				}, func() {
+					if forceExitRequested.Load() {
+						hardExitProcess(cfg.HardExit)
+					}
 				})
 			})
 		})
@@ -588,8 +595,10 @@ func serveWithTerminalDashboard(
 	snapshots *hub.Hub[telemetry.Snapshot],
 	build buildinfo.Info,
 	logPath string,
+	output io.Writer,
 	shutdownTimeoutSource func() time.Duration,
 	interrupt func(),
+	afterExit func(),
 ) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -619,19 +628,27 @@ func serveWithTerminalDashboard(
 	}
 	defer model.Close()
 
-	errs := make(chan error, 2)
+	type result struct {
+		err error
+	}
+	results := make(chan result, 2)
 	listenerOwned = false
 	go func() {
-		errs <- serve(runCtx, server, listener)
+		results <- result{err: serve(runCtx, server, listener)}
 	}()
 	go func() {
-		errs <- runTerminalDashboardProgram(runCtx, tea.NewProgram(model, terminalDashboardProgramOptions()...))
+		finalModel, runErr := runTerminalDashboardProgram(runCtx, tea.NewProgram(model, terminalDashboardProgramOptions()...))
+		summaryErr := writeTerminalDashboardSummary(output, finalModel, model)
+		if afterExit != nil {
+			afterExit()
+		}
+		results <- result{err: errors.Join(runErr, summaryErr)}
 	}()
 
-	first := <-errs
+	first := <-results
 	cancel()
-	second := <-errs
-	return terminalDashboardError(first, second)
+	second := <-results
+	return terminalDashboardError(first.err, second.err)
 }
 
 func terminalDashboardError(first error, second error) error {
@@ -662,6 +679,8 @@ type terminalDashboardProgram interface {
 	Kill()
 }
 
+var errNilTerminalDashboardProgram = errors.New("nil terminal dashboard program")
+
 func terminalDashboardProgramOptions() []tea.ProgramOption {
 	return []tea.ProgramOption{
 		tea.WithFilter(terminalDashboardMessageFilter),
@@ -676,12 +695,12 @@ func terminalDashboardMessageFilter(_ tea.Model, msg tea.Msg) tea.Msg {
 	return msg
 }
 
-func runTerminalDashboardProgram(ctx context.Context, program terminalDashboardProgram) error {
+func runTerminalDashboardProgram(ctx context.Context, program terminalDashboardProgram) (tea.Model, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if program == nil {
-		return nil
+		return nil, errNilTerminalDashboardProgram
 	}
 
 	done := make(chan struct{})
@@ -693,9 +712,23 @@ func runTerminalDashboardProgram(ctx context.Context, program terminalDashboardP
 		}
 	}()
 
-	_, err := program.Run()
+	finalModel, err := program.Run()
 	close(done)
-	return err
+	return finalModel, err
+}
+
+func writeTerminalDashboardSummary(output io.Writer, finalModel tea.Model, fallback tui.Model) error {
+	if output == nil {
+		output = os.Stdout
+	}
+	model := fallback
+	if final, ok := finalModel.(tui.Model); ok {
+		model = final
+	}
+	if _, err := fmt.Fprintln(output, model.ExitSummary()); err != nil {
+		return fmt.Errorf("write terminal dashboard exit summary: %w", err)
+	}
+	return nil
 }
 
 func shouldLaunchTerminalDashboard(cfg BootConfig) bool {

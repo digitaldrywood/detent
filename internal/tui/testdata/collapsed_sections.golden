@@ -1,12 +1,12 @@
 ┌ detent v0.32.0 (abcdef1) ────────────────────────────────────────────────────┐
-│ Dashboard: http://localhost:4000                                             │
-│ Logs: /var/log/detent.log                                                    │
-│ Telemetry subscription active                                                │
-│                                                                              │
-├ STATUS (0) ──────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│ Waiting for telemetry snapshot                                               │
-│                                                                              │
+│ https://github.com/digitaldrywood/detent · release-captain (detent-bot) · sco│
+│ ● 7 running   ◐ 5 queued   ✗ 5 blocked   ✓ 10 completed · up 12m 5s · next 20│
+│ 7 tps · tok in 110 / out 220 · budget enabled current $12.50 | projected $0.7│
+│ dashboard http://localhost:4101 · rate codex-primary | primary 90/100 reset 6│
+│ ▸ RUNNING (7)                                                                │
+│ ▸ QUEUE (5)                                                                  │
+│ ▸ BLOCKED (5)                                                                │
+│ ▸ COMPLETED (10)                                                             │
 │                                                                              │
 │                                                                              │
 │                                                                              │

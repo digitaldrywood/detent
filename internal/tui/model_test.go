@@ -28,6 +28,7 @@ func TestModelViewGoldens(t *testing.T) {
 		width    int
 		height   int
 		snapshot *telemetry.Snapshot
+		keys     []tea.KeyPressMsg
 		want     []string
 		notWant  []string
 	}{
@@ -35,7 +36,7 @@ func TestModelViewGoldens(t *testing.T) {
 			name:   "waiting",
 			width:  80,
 			height: 24,
-			want:   []string{"Waiting for telemetry snapshot", "logs /var/log/detent.log"},
+			want:   []string{"Waiting for telemetry snapshot", "Logs: /var/log/detent.log"},
 		},
 		{
 			name:     "busy_120x40",
@@ -51,6 +52,27 @@ func TestModelViewGoldens(t *testing.T) {
 			snapshot: &busy,
 			want:     []string{"RUNNING (7, showing 4)", "+3 more", "EVENT"},
 			notWant:  []string{"PID", "SESSION"},
+		},
+		{
+			name:     "help_overlay",
+			width:    120,
+			height:   40,
+			snapshot: &busy,
+			keys:     []tea.KeyPressMsg{tea.KeyPressMsg(tea.Key{Code: '?', Text: "?"})},
+			want:     []string{"HELP", "open web dashboard", "any key closes"},
+		},
+		{
+			name:     "collapsed_sections",
+			width:    80,
+			height:   24,
+			snapshot: &busy,
+			keys: []tea.KeyPressMsg{
+				tea.KeyPressMsg(tea.Key{Code: '1', Text: "1"}),
+				tea.KeyPressMsg(tea.Key{Code: '2', Text: "2"}),
+				tea.KeyPressMsg(tea.Key{Code: '3', Text: "3"}),
+				tea.KeyPressMsg(tea.Key{Code: '4', Text: "4"}),
+			},
+			want: []string{"▸ RUNNING (7)", "▸ QUEUE (5)", "▸ BLOCKED (5)", "▸ COMPLETED (10)"},
 		},
 	}
 
@@ -72,6 +94,10 @@ func TestModelViewGoldens(t *testing.T) {
 			model = next.(Model)
 			if tt.snapshot != nil {
 				next, _ = model.Update(snapshotMsg{snapshot: *tt.snapshot})
+				model = next.(Model)
+			}
+			for _, key := range tt.keys {
+				next, _ = model.Update(key)
 				model = next.(Model)
 			}
 
@@ -368,9 +394,16 @@ func TestModelSecondInterruptRequestsForceQuit(t *testing.T) {
 	if interrupts != 1 {
 		t.Fatalf("interrupts = %d before force command runs, want 1", interrupts)
 	}
-	model.Update(cmd())
+	next, quitCmd := model.Update(cmd())
+	assertSubscriptionClosed(t, next.(Model))
 	if interrupts != 2 {
 		t.Fatalf("interrupts = %d, want 2", interrupts)
+	}
+	if quitCmd == nil {
+		t.Fatal("second interrupt did not return quit command")
+	}
+	if _, ok := quitCmd().(tea.QuitMsg); !ok {
+		t.Fatalf("second interrupt command message = %T, want tea.QuitMsg", quitCmd())
 	}
 }
 

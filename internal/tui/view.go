@@ -13,14 +13,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-const dashboardFrameLines = 13
-
 type dashboardSection struct {
 	label       string
 	total       int
 	rows        []string
 	emptyLabel  string
 	visibleRows int
+	offset      int
+	focused     bool
+	collapsed   bool
 	styles      styles
 }
 
@@ -40,7 +41,11 @@ func (m Model) renderDashboard() string {
 		lines = m.renderWaitingDashboard(width, height)
 	}
 
-	return strings.Join(normalizeScreen(lines, width, height), "\n")
+	screen := strings.Join(normalizeScreen(lines, width, height), "\n")
+	if m.helpVisible {
+		return renderHelpOverlay(screen, width, height, m.styles)
+	}
+	return screen
 }
 
 func (m Model) dashboardSize() (int, int) {
@@ -55,6 +60,65 @@ func (m Model) dashboardSize() (int, int) {
 	return width, height
 }
 
+func newRunningTable(s styles) table.Model {
+	tableStyles := table.DefaultStyles()
+	tableStyles.Header = s.muted.Bold(true)
+	tableStyles.Cell = lipgloss.NewStyle()
+	tableStyles.Selected = s.focus
+	return table.New(table.WithStyles(tableStyles))
+}
+
+func (m *Model) syncInteractiveState() {
+	if !m.hasSnapshot {
+		return
+	}
+	width, height := m.dashboardSize()
+	runningRows, runningColumns := m.runningTableRows(m.snapshot.Running, width)
+	tableRows := runningRows
+	if len(tableRows) == 0 {
+		tableRows = []table.Row{{m.styles.muted.Render("No active agents")}}
+	}
+	demand := [dashboardSectionCount]int{
+		len(runningRows),
+		len(m.snapshot.Queue),
+		len(m.snapshot.Blocked),
+		len(m.snapshot.Completed),
+	}
+	caps := calculateSectionCaps(height, demand, m.collapsed)
+	m.runningTable.SetColumns(runningColumns)
+	m.runningTable.SetRows(tableRows)
+	m.runningTable.SetWidth(max(width-4, 1))
+	m.runningTable.SetHeight(caps.running + 1)
+	if m.focusedSection == runningSection && !m.collapsed[runningSection] {
+		m.runningTable.Focus()
+	} else {
+		m.runningTable.Blur()
+	}
+	m.clampOffsets()
+}
+
+func (m *Model) clampOffsets() {
+	if !m.hasSnapshot {
+		return
+	}
+	_, height := m.dashboardSize()
+	demand := [dashboardSectionCount]int{
+		len(m.snapshot.Running),
+		len(m.snapshot.Queue),
+		len(m.snapshot.Blocked),
+		len(m.snapshot.Completed),
+	}
+	caps := calculateSectionCaps(height, demand, m.collapsed)
+	visible := [dashboardSectionCount]int{caps.running, caps.queue, caps.blocked, caps.completed}
+	for section := queueSection; section < dashboardSectionCount; section++ {
+		if m.collapsed[section] || visible[section] <= 0 {
+			m.offsets[section] = 0
+			continue
+		}
+		m.offsets[section] = max(min(m.offsets[section], max(demand[section]-visible[section], 0)), 0)
+	}
+}
+
 func (m Model) renderWaitingDashboard(width int, height int) []string {
 	lines := []string{
 		m.renderTitleBorder(width),
@@ -67,7 +131,7 @@ func (m Model) renderWaitingDashboard(width int, height int) []string {
 	} else {
 		lines = append(lines, frameContent("Shutdown: "+m.styles.warn.Render(m.shutdownNote), width))
 	}
-	lines = append(lines, sectionDivider("STATUS", 0, 0, width, m.styles))
+	lines = append(lines, sectionDivider("STATUS", 0, 0, 0, width, m.styles, false))
 	for len(lines) < height-3 {
 		content := ""
 		if len(lines) == 7 {
@@ -80,12 +144,14 @@ func (m Model) renderWaitingDashboard(width int, height int) []string {
 }
 
 func (m Model) renderSnapshotDashboard(width int, height int) []string {
+	m.syncInteractiveState()
 	snapshot := m.snapshot
-	runningRows, runningColumns := m.runningTableRows(snapshot.Running, width)
+	runningRows, _ := m.runningTableRows(snapshot.Running, width)
 	queueRows := m.queueRows(snapshot.Queue)
 	blockedRows := m.blockedRows(snapshot.Blocked)
 	completedRows := m.completedRows(snapshot.Completed)
-	caps := calculateSectionCaps(height, len(runningRows), len(queueRows), len(blockedRows), len(completedRows))
+	demand := [dashboardSectionCount]int{len(runningRows), len(queueRows), len(blockedRows), len(completedRows)}
+	caps := calculateSectionCaps(height, demand, m.collapsed)
 
 	lines := []string{m.renderTitleBorder(width)}
 	for _, line := range m.snapshotHeader(snapshot) {
@@ -93,9 +159,13 @@ func (m Model) renderSnapshotDashboard(width int, height int) []string {
 	}
 
 	runningTotal := countOrLen(snapshot.Counts.Running, len(snapshot.Running))
-	runningVisible := min(len(runningRows), caps.running)
-	lines = append(lines, sectionDivider("RUNNING", runningTotal, runningVisible, width, m.styles))
-	lines = append(lines, renderRunningTable(runningColumns, runningRows, caps.running, width, m.styles)...)
+	if m.collapsed[runningSection] {
+		lines = append(lines, collapsedSectionLine("RUNNING", runningTotal, width, m.styles, m.focusedSection == runningSection))
+	} else {
+		runningVisible := min(len(runningRows), caps.running)
+		lines = append(lines, sectionDivider("RUNNING", runningTotal, len(runningRows), runningVisible, width, m.styles, m.focusedSection == runningSection))
+		lines = append(lines, renderRunningTable(m.runningTable, caps.running, width)...)
+	}
 
 	sections := []dashboardSection{
 		{
@@ -104,6 +174,9 @@ func (m Model) renderSnapshotDashboard(width int, height int) []string {
 			rows:        queueRows,
 			emptyLabel:  "No queued retries",
 			visibleRows: caps.queue,
+			offset:      m.offsets[queueSection],
+			focused:     m.focusedSection == queueSection,
+			collapsed:   m.collapsed[queueSection],
 			styles:      m.styles,
 		},
 		{
@@ -112,6 +185,9 @@ func (m Model) renderSnapshotDashboard(width int, height int) []string {
 			rows:        blockedRows,
 			emptyLabel:  "No blocked work",
 			visibleRows: caps.blocked,
+			offset:      m.offsets[blockedSection],
+			focused:     m.focusedSection == blockedSection,
+			collapsed:   m.collapsed[blockedSection],
 			styles:      m.styles,
 		},
 		{
@@ -120,6 +196,9 @@ func (m Model) renderSnapshotDashboard(width int, height int) []string {
 			rows:        completedRows,
 			emptyLabel:  "No completed work",
 			visibleRows: caps.completed,
+			offset:      m.offsets[completedSection],
+			focused:     m.focusedSection == completedSection,
+			collapsed:   m.collapsed[completedSection],
 			styles:      m.styles,
 		},
 	}
@@ -127,6 +206,9 @@ func (m Model) renderSnapshotDashboard(width int, height int) []string {
 		lines = append(lines, section.render(width)...)
 	}
 
+	for len(lines) < height-3 {
+		lines = append(lines, frameContent("", width))
+	}
 	lines = append(lines, horizontalDivider(width), m.renderFooter(width), bottomBorder(width))
 	return lines
 }
@@ -189,16 +271,24 @@ func (m Model) snapshotHeader(snapshot telemetry.Snapshot) []string {
 	}
 }
 
-func calculateSectionCaps(height int, runningRows int, queueRows int, blockedRows int, completedRows int) dashboardSectionCaps {
-	available := max(height-dashboardFrameLines, 4)
-	demand := [4]int{
-		max(runningRows, 1),
-		max(queueRows, 1),
-		max(blockedRows, 1),
-		max(completedRows, 1),
+func calculateSectionCaps(height int, demand [dashboardSectionCount]int, collapsed [dashboardSectionCount]bool) dashboardSectionCaps {
+	fixedLines := 12
+	if !collapsed[runningSection] {
+		fixedLines++
 	}
-	caps := [4]int{1, 1, 1, 1}
-	remaining := available - len(caps)
+	available := max(height-fixedLines, 0)
+	for section := range demand {
+		demand[section] = max(demand[section], 1)
+	}
+	caps := [dashboardSectionCount]int{}
+	for section := dashboardSectionIndex(0); section < dashboardSectionCount && available > 0; section++ {
+		if collapsed[section] {
+			continue
+		}
+		caps[section] = 1
+		available--
+	}
+	remaining := available
 	order := [...]int{0, 3, 0, 1, 2}
 	for remaining > 0 {
 		allocated := false
@@ -206,7 +296,7 @@ func calculateSectionCaps(height int, runningRows int, queueRows int, blockedRow
 			if remaining == 0 {
 				break
 			}
-			if caps[section] >= demand[section] {
+			if collapsed[section] || caps[section] >= demand[section] {
 				continue
 			}
 			caps[section]++
@@ -214,8 +304,16 @@ func calculateSectionCaps(height int, runningRows int, queueRows int, blockedRow
 			allocated = true
 		}
 		if !allocated {
-			caps[0] += remaining
-			break
+			for _, section := range order {
+				if !collapsed[section] {
+					caps[section] += remaining
+					remaining = 0
+					break
+				}
+			}
+			if remaining > 0 {
+				break
+			}
 		}
 	}
 	return dashboardSectionCaps{
@@ -288,27 +386,7 @@ func runningTableColumns(contentWidth int, terminalWidth int) []table.Column {
 	return columns
 }
 
-func renderRunningTable(columns []table.Column, rows []table.Row, visibleRows int, width int, s styles) []string {
-	contentWidth := max(width-4, 1)
-	visibleRows = max(visibleRows, 1)
-	if len(rows) == 0 {
-		rows = []table.Row{{s.muted.Render("No active agents")}}
-	} else if len(rows) > visibleRows {
-		rows = rows[:visibleRows]
-	}
-
-	tableStyles := table.DefaultStyles()
-	tableStyles.Header = s.muted.Bold(true)
-	tableStyles.Cell = lipgloss.NewStyle()
-	tableStyles.Selected = lipgloss.NewStyle()
-	component := table.New(
-		table.WithColumns(columns),
-		table.WithRows(rows),
-		table.WithStyles(tableStyles),
-	)
-	component.SetWidth(contentWidth)
-	component.SetHeight(visibleRows + 1)
-
+func renderRunningTable(component table.Model, visibleRows int, width int) []string {
 	rendered := strings.Split(component.View(), "\n")
 	if len(rendered) > visibleRows+1 {
 		rendered = rendered[:visibleRows+1]
@@ -389,12 +467,19 @@ func (m Model) completedRows(completed []telemetry.Completed) []string {
 }
 
 func (s dashboardSection) render(width int) []string {
-	visible := min(len(s.rows), s.visibleRows)
-	lines := []string{sectionDivider(s.label, s.total, visible, width, s.styles)}
+	if s.collapsed {
+		return []string{collapsedSectionLine(s.label, s.total, width, s.styles, s.focused)}
+	}
+	start := min(max(s.offset, 0), len(s.rows))
+	visible := min(len(s.rows)-start, s.visibleRows)
+	lines := []string{sectionDivider(s.label, s.total, len(s.rows), visible, width, s.styles, s.focused)}
+	if s.visibleRows <= 0 {
+		return lines
+	}
 	if visible == 0 {
 		lines = append(lines, frameContent(s.styles.muted.Render(s.emptyLabel), width))
 	} else {
-		for _, row := range s.rows[:visible] {
+		for _, row := range s.rows[start : start+visible] {
 			lines = append(lines, frameContent(row, width))
 		}
 	}
@@ -404,14 +489,29 @@ func (s dashboardSection) render(width int) []string {
 	return lines
 }
 
-func sectionDivider(label string, total int, visible int, width int, s styles) string {
+func sectionDivider(label string, total int, rowCount int, visible int, width int, s styles, focused bool) string {
+	if focused {
+		label = "▶ " + label
+	}
 	title := fmt.Sprintf(" %s (%d) ", label, total)
 	right := ""
-	if overflow := max(total-visible, 0); overflow > 0 {
+	if overflow := max(rowCount-visible, 0); overflow > 0 {
 		title = fmt.Sprintf(" %s (%d, showing %d) ", label, total, visible)
-		right = fmt.Sprintf(" +%d more ", overflow)
+		right = fmt.Sprintf(" +%d more (j/k) ", overflow)
 	}
-	return titledBorder("├", "┤", title, right, width, s.title)
+	style := s.title
+	if focused {
+		style = s.focus
+	}
+	return titledBorder("├", "┤", title, right, width, style)
+}
+
+func collapsedSectionLine(label string, total int, width int, s styles, focused bool) string {
+	style := s.title
+	if focused {
+		style = s.focus
+	}
+	return frameContent(style.Render(fmt.Sprintf("▸ %s (%d)", label, total)), width)
 }
 
 func titledBorder(left string, right string, title string, suffix string, width int, style lipgloss.Style) string {
@@ -458,7 +558,10 @@ func frameTableContent(content string, width int) string {
 }
 
 func (m Model) renderFooter(width int) string {
-	left := m.styles.muted.Render("q quit · ? help")
+	left := m.styles.muted.Render("q quit · d dashboard · tab focus · 1-4 collapse · j/k/↑/↓ scroll · ? help")
+	if width < 100 {
+		left = m.styles.muted.Render("q quit · d open · tab · 1-4 fold · j/k/↑/↓ · ? help")
+	}
 	right := m.styles.muted.Render("logs " + defaultString(m.logPath, "n/a"))
 	innerWidth := max(width-2, 0)
 	contentWidth := max(innerWidth-2, 0)
@@ -467,6 +570,41 @@ func (m Model) renderFooter(width int) string {
 	}
 	gap := max(contentWidth-ansi.StringWidth(left)-ansi.StringWidth(right), 1)
 	return frameContent(left+strings.Repeat(" ", gap)+right, width)
+}
+
+func renderHelpOverlay(screen string, width int, height int, s styles) string {
+	bindings := []string{
+		"q / esc       quit",
+		"ctrl+c       drain; press twice to force quit",
+		"d            open web dashboard",
+		"1-4          collapse Running / Queue / Blocked / Completed",
+		"tab          focus next section",
+		"j / ↓        scroll down",
+		"k / ↑        scroll up",
+		"?            show help; any key closes",
+	}
+	boxWidth := min(max(width-4, 1), 68)
+	box := []string{titledBorder("┌", "┐", " HELP ", "", boxWidth, s.focus)}
+	for _, binding := range bindings {
+		box = append(box, frameContent(binding, boxWidth))
+	}
+	box = append(box, bottomBorder(boxWidth))
+	if len(box) > height {
+		box = box[:height]
+	}
+	x := max((width-boxWidth)/2, 0)
+	y := max((height-len(box))/2, 0)
+	lines := strings.Split(screen, "\n")
+	for index, overlay := range box {
+		lineIndex := y + index
+		if lineIndex >= len(lines) {
+			break
+		}
+		left := ansi.Cut(lines[lineIndex], 0, x)
+		right := ansi.Cut(lines[lineIndex], x+boxWidth, width)
+		lines[lineIndex] = fitANSI(left+overlay+right, width)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func normalizeScreen(lines []string, width int, height int) []string {

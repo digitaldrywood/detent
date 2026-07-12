@@ -13,16 +13,16 @@
 │ ● #481    In Progress   4201        12m 5s / 2    90,240        019f...000001   turn 2 completed                     │
 │ ● #482    In Progress   4200        12m 5s / 1    45,120        019f...000000   turn 1 completed                     │
 ├ QUEUE (5) ───────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ ◐ #470  attempt 1  retry in 1.500s   no available orchestrator slots                                                 │
-│ ◐ #469  attempt 2  retry in 3.000s   no available orchestrator slots                                                 │
-│ ◐ #468  attempt 3  retry in 4.500s   no available orchestrator slots                                                 │
-│ ◐ #467  attempt 4  retry in 6.000s   no available orchestrator slots                                                 │
-│ ◐ #466  attempt 5  retry in 7.500s   no available orchestrator slots                                                 │
-├ BLOCKED (5) ─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ ✗ #456  blocked by dependency #904                                                                                   │
-│ ✗ #457  blocked by dependency #903                                                                                   │
-│ ✗ #458  blocked by dependency #902                                                                                   │
-│ ✗ #459  blocked by dependency #901                                                                                   │
+│ ◐ #470  attempt 1  retry┌ HELP ────────────────────────────────────────────────────────────┐                         │
+│ ◐ #469  attempt 2  retry│ q / esc       quit                                               │                         │
+│ ◐ #468  attempt 3  retry│ ctrl+c       drain; press twice to force quit                    │                         │
+│ ◐ #467  attempt 4  retry│ d            open web dashboard                                  │                         │
+│ ◐ #466  attempt 5  retry│ 1-4          collapse Running / Queue / Blocked / Completed      │                         │
+├ BLOCKED (5) ────────────│ tab          focus next section                                  │─────────────────────────┤
+│ ✗ #456  blocked by depen│ j / ↓        scroll down                                         │                         │
+│ ✗ #457  blocked by depen│ k / ↑        scroll up                                           │                         │
+│ ✗ #458  blocked by depen│ ?            show help; any key closes                           │                         │
+│ ✗ #459  blocked by depen└──────────────────────────────────────────────────────────────────┘                         │
 │ ✗ #460  blocked by dependency #900                                                                                   │
 ├ COMPLETED (10) ──────────────────────────────────────────────────────────────────────────────────────────────────────┤
 │ ✓ #450  Done  10m 5s / 4  88,410  gpt-5                                                                              │
