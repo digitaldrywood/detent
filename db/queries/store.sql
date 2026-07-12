@@ -32,6 +32,7 @@ WHERE id = ?;
 -- name: CreateCodexSession :one
 INSERT INTO codex_sessions (
   run_id,
+  project_id,
   issue_id,
   identifier,
   issue_url,
@@ -67,8 +68,17 @@ INSERT INTO codex_sessions (
   resumed_from_session_id,
   orphan_recovery_outcome,
   orphan_recovery_fallback_reason
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
+
+-- name: BackfillSessionProjectID :execrows
+UPDATE codex_sessions
+SET project_id = sqlc.arg(project_id)
+WHERE trim(COALESCE(project_id, '')) = ''
+  AND (
+    lower(substr(identifier, 1, instr(identifier, '#') - 1)) = lower(sqlc.arg(repository))
+    OR lower(substr(issue_url, 1, length('https://github.com/' || sqlc.arg(repository) || '/issues/'))) = lower('https://github.com/' || sqlc.arg(repository) || '/issues/')
+  );
 
 -- name: GetCodexSession :one
 SELECT *
@@ -409,6 +419,24 @@ SELECT
   CAST(COUNT(*) AS INTEGER) AS sessions
 FROM codex_sessions
 WHERE substr(completed_at, 1, 10) = ?
+GROUP BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
+ORDER BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '');
+
+-- name: ProjectDailyTokenSpend :many
+SELECT
+  CAST(COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '') AS TEXT) AS model,
+  CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(cached_input_tokens), 0) AS INTEGER) AS cached_input_tokens,
+  CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(reasoning_output_tokens), 0) AS INTEGER) AS reasoning_output_tokens,
+  CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
+  CAST(COUNT(*) AS INTEGER) AS sessions
+FROM codex_sessions
+WHERE substr(completed_at, 1, 10) = sqlc.arg(completed_at)
+  AND (
+    project_id = sqlc.arg(project_id)
+    OR trim(COALESCE(project_id, '')) = ''
+  )
 GROUP BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
 ORDER BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '');
 

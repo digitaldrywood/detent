@@ -22,6 +22,7 @@ const (
 var ErrMissingSpendStore = errors.New("budget spend store is required")
 
 type Config struct {
+	ProjectID       string
 	Enabled         bool
 	PerDayMaxUSD    float64
 	PerIssueMaxUSD  float64
@@ -30,7 +31,7 @@ type Config struct {
 }
 
 type SpendStore interface {
-	DailyTokenSpend(context.Context, time.Time) (store.TokenSpend, error)
+	ProjectDailyTokenSpend(context.Context, string, time.Time) (store.TokenSpend, error)
 	IssueTokenSpend(context.Context, store.IssueIdentity) (store.TokenSpend, error)
 }
 
@@ -152,7 +153,7 @@ func (c *Checker) CheckDispatch(ctx context.Context, req DispatchRequest) (Decis
 		if missingSpendStore(c.spend) {
 			return Decision{}, ErrMissingSpendStore
 		}
-		dailySpend, err := c.spend.DailyTokenSpend(ctx, now)
+		dailySpend, err := c.spend.ProjectDailyTokenSpend(ctx, c.cfg.ProjectID, now)
 		if err != nil {
 			return Decision{}, fmt.Errorf("daily token spend: %w", err)
 		}
@@ -203,7 +204,7 @@ func (c *Checker) DailyStatus(ctx context.Context, now time.Time) (DailyStatus, 
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	dailySpend, err := c.spend.DailyTokenSpend(ctx, now)
+	dailySpend, err := c.spend.ProjectDailyTokenSpend(ctx, c.cfg.ProjectID, now)
 	if err != nil {
 		return DailyStatus{}, fmt.Errorf("daily token spend: %w", err)
 	}

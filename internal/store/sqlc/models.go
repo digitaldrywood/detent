@@ -77,6 +77,7 @@ type CodexSession struct {
 	WorkerStartedAt              sql.NullString `json:"worker_started_at"`
 	WorkerReapedAt               sql.NullString `json:"worker_reaped_at"`
 	WorkerReapOutcome            sql.NullString `json:"worker_reap_outcome"`
+	ProjectID                    sql.NullString `json:"project_id"`
 }
 
 type DetentRun struct {

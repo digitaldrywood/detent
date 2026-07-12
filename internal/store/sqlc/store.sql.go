@@ -10,6 +10,29 @@ import (
 	"database/sql"
 )
 
+const backfillSessionProjectID = `-- name: BackfillSessionProjectID :execrows
+UPDATE codex_sessions
+SET project_id = ?1
+WHERE trim(COALESCE(project_id, '')) = ''
+  AND (
+    lower(substr(identifier, 1, instr(identifier, '#') - 1)) = lower(?2)
+    OR lower(substr(issue_url, 1, length('https://github.com/' || ?2 || '/issues/'))) = lower('https://github.com/' || ?2 || '/issues/')
+  )
+`
+
+type BackfillSessionProjectIDParams struct {
+	ProjectID  sql.NullString `json:"project_id"`
+	Repository string         `json:"repository"`
+}
+
+func (q *Queries) BackfillSessionProjectID(ctx context.Context, arg BackfillSessionProjectIDParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, backfillSessionProjectID, arg.ProjectID, arg.Repository)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const budgetCostEvents = `-- name: BudgetCostEvents :many
 SELECT
   project_id,
@@ -327,6 +350,7 @@ func (q *Queries) CreateAPIUsageLog(ctx context.Context, arg CreateAPIUsageLogPa
 const createCodexSession = `-- name: CreateCodexSession :one
 INSERT INTO codex_sessions (
   run_id,
+  project_id,
   issue_id,
   identifier,
   issue_url,
@@ -362,12 +386,13 @@ INSERT INTO codex_sessions (
   resumed_from_session_id,
   orphan_recovery_outcome,
   orphan_recovery_fallback_reason
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id
 `
 
 type CreateCodexSessionParams struct {
 	RunID                        sql.NullInt64  `json:"run_id"`
+	ProjectID                    sql.NullString `json:"project_id"`
 	IssueID                      sql.NullString `json:"issue_id"`
 	Identifier                   sql.NullString `json:"identifier"`
 	IssueURL                     sql.NullString `json:"issue_url"`
@@ -408,6 +433,7 @@ type CreateCodexSessionParams struct {
 func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSessionParams) (CodexSession, error) {
 	row := q.db.QueryRowContext(ctx, createCodexSession,
 		arg.RunID,
+		arg.ProjectID,
 		arg.IssueID,
 		arg.Identifier,
 		arg.IssueURL,
@@ -489,6 +515,7 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		&i.WorkerStartedAt,
 		&i.WorkerReapedAt,
 		&i.WorkerReapOutcome,
+		&i.ProjectID,
 	)
 	return i, err
 }
@@ -1396,7 +1423,7 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, 
 }
 
 const getCodexSession = `-- name: GetCodexSession :one
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id
 FROM codex_sessions
 WHERE id = ?
 `
@@ -1448,6 +1475,7 @@ func (q *Queries) GetCodexSession(ctx context.Context, id int64) (CodexSession, 
 		&i.WorkerStartedAt,
 		&i.WorkerReapedAt,
 		&i.WorkerReapOutcome,
+		&i.ProjectID,
 	)
 	return i, err
 }
@@ -2617,7 +2645,7 @@ func (q *Queries) ListOrphanedAgentSessions(ctx context.Context, projectID strin
 }
 
 const listRecentCodexSessions = `-- name: ListRecentCodexSessions :many
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id
 FROM codex_sessions
 ORDER BY completed_at DESC, id DESC
 LIMIT ?
@@ -2676,6 +2704,7 @@ func (q *Queries) ListRecentCodexSessions(ctx context.Context, limit int64) ([]C
 			&i.WorkerStartedAt,
 			&i.WorkerReapedAt,
 			&i.WorkerReapOutcome,
+			&i.ProjectID,
 		); err != nil {
 			return nil, err
 		}
@@ -2964,6 +2993,71 @@ func (q *Queries) MarkValidatorVerdictCommented(ctx context.Context, arg MarkVal
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const projectDailyTokenSpend = `-- name: ProjectDailyTokenSpend :many
+SELECT
+  CAST(COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '') AS TEXT) AS model,
+  CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(cached_input_tokens), 0) AS INTEGER) AS cached_input_tokens,
+  CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(reasoning_output_tokens), 0) AS INTEGER) AS reasoning_output_tokens,
+  CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
+  CAST(COUNT(*) AS INTEGER) AS sessions
+FROM codex_sessions
+WHERE substr(completed_at, 1, 10) = ?1
+  AND (
+    project_id = ?2
+    OR trim(COALESCE(project_id, '')) = ''
+  )
+GROUP BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
+ORDER BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
+`
+
+type ProjectDailyTokenSpendParams struct {
+	CompletedAt sql.NullString `json:"completed_at"`
+	ProjectID   sql.NullString `json:"project_id"`
+}
+
+type ProjectDailyTokenSpendRow struct {
+	Model                 string `json:"model"`
+	InputTokens           int64  `json:"input_tokens"`
+	CachedInputTokens     int64  `json:"cached_input_tokens"`
+	OutputTokens          int64  `json:"output_tokens"`
+	ReasoningOutputTokens int64  `json:"reasoning_output_tokens"`
+	TotalTokens           int64  `json:"total_tokens"`
+	Sessions              int64  `json:"sessions"`
+}
+
+func (q *Queries) ProjectDailyTokenSpend(ctx context.Context, arg ProjectDailyTokenSpendParams) ([]ProjectDailyTokenSpendRow, error) {
+	rows, err := q.db.QueryContext(ctx, projectDailyTokenSpend, arg.CompletedAt, arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectDailyTokenSpendRow{}
+	for rows.Next() {
+		var i ProjectDailyTokenSpendRow
+		if err := rows.Scan(
+			&i.Model,
+			&i.InputTokens,
+			&i.CachedInputTokens,
+			&i.OutputTokens,
+			&i.ReasoningOutputTokens,
+			&i.TotalTokens,
+			&i.Sessions,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const recentModelTokenQuantiles = `-- name: RecentModelTokenQuantiles :one

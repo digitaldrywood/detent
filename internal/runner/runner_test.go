@@ -277,7 +277,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			t.Fatalf("codex prompt missing %q:\n%s", want, codexClient.request.Prompt)
 		}
 	}
-	if sessionStore.started.Identifier != "digitaldrywood/detent#22" || sessionStore.started.Model != "" || sessionStore.started.RequestedModel != "gpt-5-codex-high" || sessionStore.started.AgentRole != RoleCode {
+	if sessionStore.started.ProjectID != "detent" || sessionStore.started.Identifier != "digitaldrywood/detent#22" || sessionStore.started.Model != "" || sessionStore.started.RequestedModel != "gpt-5-codex-high" || sessionStore.started.AgentRole != RoleCode {
 		t.Fatalf("SessionStart = %#v, want requested model distinct from unresolved model and code role", sessionStore.started)
 	}
 	if sessionStore.started.RuntimeIdentity.ReasoningEffort != (agentidentity.Value{Value: "high", Provenance: agentidentity.ProvenanceConfigured}) {
@@ -3827,7 +3827,7 @@ type fakeRunnerBudgetSpendStore struct {
 	issueCalls int
 }
 
-func (s *fakeRunnerBudgetSpendStore) DailyTokenSpend(context.Context, time.Time) (store.TokenSpend, error) {
+func (s *fakeRunnerBudgetSpendStore) ProjectDailyTokenSpend(context.Context, string, time.Time) (store.TokenSpend, error) {
 	s.dailyCalls++
 	return s.daily, nil
 }

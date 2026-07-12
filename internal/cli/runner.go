@@ -108,7 +108,7 @@ func buildRunner(
 		return nil, fmt.Errorf("load pricing: %w", err)
 	}
 	budgetGuardBuilder := func(cfg workflowconfig.Budget) (runnerpkg.BudgetChecker, runnerpkg.DispatchEstimator, error) {
-		return buildBudgetDispatchGuards(cfg, sessionStore, pricing)
+		return buildBudgetDispatchGuards(projectID, cfg, sessionStore, pricing)
 	}
 
 	run, err := runnerpkg.NewRunner(runnerpkg.Dependencies{
@@ -128,6 +128,7 @@ func buildRunner(
 }
 
 func buildBudgetDispatchGuards(
+	projectID string,
 	cfg workflowconfig.Budget,
 	sessionStore runnerpkg.SessionStore,
 	pricing budget.PricingTable,
@@ -142,6 +143,7 @@ func buildBudgetDispatchGuards(
 	}
 
 	checker := budget.NewChecker(budget.Config{
+		ProjectID:       projectID,
 		Enabled:         cfg.Enabled,
 		PerDayMaxUSD:    cfg.PerDayMaxUSD,
 		PerIssueMaxUSD:  cfg.PerIssueMaxUSD,

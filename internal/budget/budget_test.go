@@ -552,7 +552,7 @@ type fakeSpendStore struct {
 	issueLookups []string
 }
 
-func (s *fakeSpendStore) DailyTokenSpend(_ context.Context, day time.Time) (store.TokenSpend, error) {
+func (s *fakeSpendStore) ProjectDailyTokenSpend(_ context.Context, _ string, day time.Time) (store.TokenSpend, error) {
 	s.dailyCalls++
 	if day.IsZero() {
 		return store.TokenSpend{}, errors.New("zero day")

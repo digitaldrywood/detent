@@ -159,6 +159,56 @@ func TestSkillDraftTelemetryMigrationUpDown(t *testing.T) {
 	assertColumnAbsent(t, db, "codex_sessions", "skill_draft_proposed")
 }
 
+func TestSessionProjectAttributionMigrationUpDown(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "detent.db"))
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("db.Close() error = %v", err)
+		}
+	})
+	if err := configureSQLite(ctx, db, 0); err != nil {
+		t.Fatalf("configureSQLite() error = %v", err)
+	}
+
+	migrationMu.Lock()
+	defer migrationMu.Unlock()
+	goose.SetBaseFS(migrationsFS)
+	defer goose.SetBaseFS(nil)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("goose.SetDialect() error = %v", err)
+	}
+	if err := goose.UpToContext(ctx, db, "migrations", 16); err != nil {
+		t.Fatalf("goose.UpToContext(16) error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO work_attempts (id, project_id, worker_type, status, started_at)
+VALUES (1279, 'detent', 'implementation', 'complete', '2026-07-12T19:00:00Z');
+INSERT INTO codex_sessions (work_attempt_id, identifier, started_at, completed_at)
+VALUES (1279, 'digitaldrywood/detent#1279', '2026-07-12T19:00:00Z', '2026-07-12T20:00:00Z');
+`); err != nil {
+		t.Fatalf("seed pre-migration rows error = %v", err)
+	}
+	assertColumnAbsent(t, db, "codex_sessions", "project_id")
+
+	if err := goose.UpToContext(ctx, db, "migrations", 18); err != nil {
+		t.Fatalf("goose.UpToContext(18) error = %v", err)
+	}
+	assertColumnPresent(t, db, "codex_sessions", "project_id")
+	if got := queryString(t, db, "SELECT project_id FROM codex_sessions WHERE work_attempt_id = 1279"); got != "detent" {
+		t.Fatalf("backfilled project_id = %q, want detent", got)
+	}
+
+	if err := goose.DownToContext(ctx, db, "migrations", 17); err != nil {
+		t.Fatalf("goose.DownToContext(17) error = %v", err)
+	}
+	assertColumnAbsent(t, db, "codex_sessions", "project_id")
+}
+
 func TestAgentResumeStateMigrationUpDown(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "detent.db")
@@ -928,6 +978,115 @@ func TestSessionRuntimeIdentityPersistsRequestedAndResolvedSeparately(t *testing
 	}
 	if finished.IdentityObservedAt.String != runtimeAt.Format(time.RFC3339Nano) {
 		t.Fatalf("identity observed at = %q, want %q", finished.IdentityObservedAt.String, runtimeAt.Format(time.RFC3339Nano))
+	}
+}
+
+func TestDailyTokenSpendIsScopedToProject(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	day := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	for _, session := range []struct {
+		projectID  string
+		identifier string
+		tokens     int64
+	}{
+		{projectID: "detent", identifier: "digitaldrywood/detent#1279", tokens: 100},
+		{projectID: "gopher-ai", identifier: "gopherguides/gopher-ai#42", tokens: 900},
+	} {
+		sessionID, err := backend.StartSession(ctx, SessionStart{
+			ProjectID:  session.projectID,
+			Identifier: session.identifier,
+			StartedAt:  day.Add(-time.Minute),
+			Model:      "gpt-5",
+		})
+		if err != nil {
+			t.Fatalf("StartSession(%s) error = %v", session.identifier, err)
+		}
+		if err := backend.FinishSession(ctx, sessionID, SessionFinish{
+			CompletedAt: day,
+			InputTokens: session.tokens,
+			TotalTokens: session.tokens,
+			FinalState:  "complete",
+			Model:       "gpt-5",
+		}); err != nil {
+			t.Fatalf("FinishSession(%s) error = %v", session.identifier, err)
+		}
+	}
+
+	spend, err := backend.ProjectDailyTokenSpend(ctx, "detent", day)
+	if err != nil {
+		t.Fatalf("ProjectDailyTokenSpend() error = %v", err)
+	}
+	if spend.TotalTokens != 100 || spend.Sessions != 1 {
+		t.Fatalf("ProjectDailyTokenSpend() = %#v, want detent session only", spend)
+	}
+
+	unknownID, err := backend.StartSession(ctx, SessionStart{
+		Identifier: "example/legacy#1",
+		StartedAt:  day.Add(-time.Minute),
+		Model:      "gpt-5",
+	})
+	if err != nil {
+		t.Fatalf("StartSession(unknown) error = %v", err)
+	}
+	if err := backend.FinishSession(ctx, unknownID, SessionFinish{
+		CompletedAt: day,
+		InputTokens: 50,
+		TotalTokens: 50,
+		FinalState:  "complete",
+		Model:       "gpt-5",
+	}); err != nil {
+		t.Fatalf("FinishSession(unknown) error = %v", err)
+	}
+	spend, err = backend.ProjectDailyTokenSpend(ctx, "detent", day)
+	if err != nil {
+		t.Fatalf("ProjectDailyTokenSpend(unknown) error = %v", err)
+	}
+	if spend.TotalTokens != 150 || spend.Sessions != 2 {
+		t.Fatalf("ProjectDailyTokenSpend(unknown) = %#v, want conservative unknown fallback", spend)
+	}
+
+	updated, err := backend.BackfillSessionProjectIDs(ctx, []SessionProjectAttribution{{ProjectID: "legacy", Repository: "example/legacy"}})
+	if err != nil {
+		t.Fatalf("BackfillSessionProjectIDs() error = %v", err)
+	}
+	if updated != 1 {
+		t.Fatalf("BackfillSessionProjectIDs() = %d, want 1", updated)
+	}
+	spend, err = backend.ProjectDailyTokenSpend(ctx, "detent", day)
+	if err != nil {
+		t.Fatalf("ProjectDailyTokenSpend(backfilled) error = %v", err)
+	}
+	if spend.TotalTokens != 100 || spend.Sessions != 1 {
+		t.Fatalf("ProjectDailyTokenSpend(backfilled) = %#v, want detent session only", spend)
+	}
+
+	wildcardID, err := backend.StartSession(ctx, SessionStart{
+		IssueURL:  "https://github.com/owner/axb/issues/1",
+		StartedAt: day.Add(-time.Minute),
+		Model:     "gpt-5",
+	})
+	if err != nil {
+		t.Fatalf("StartSession(wildcard) error = %v", err)
+	}
+	if err := backend.FinishSession(ctx, wildcardID, SessionFinish{CompletedAt: day, FinalState: "complete", Model: "gpt-5"}); err != nil {
+		t.Fatalf("FinishSession(wildcard) error = %v", err)
+	}
+	updated, err = backend.BackfillSessionProjectIDs(ctx, []SessionProjectAttribution{{ProjectID: "wrong", Repository: "owner/a_b"}})
+	if err != nil {
+		t.Fatalf("BackfillSessionProjectIDs(wildcard) error = %v", err)
+	}
+	if updated != 0 {
+		t.Fatalf("BackfillSessionProjectIDs(wildcard) = %d, want 0", updated)
+	}
+	updated, err = backend.BackfillSessionProjectIDs(ctx, []SessionProjectAttribution{{ProjectID: "right", Repository: "owner/axb"}})
+	if err != nil {
+		t.Fatalf("BackfillSessionProjectIDs(exact URL) error = %v", err)
+	}
+	if updated != 1 {
+		t.Fatalf("BackfillSessionProjectIDs(exact URL) = %d, want 1", updated)
 	}
 }
 

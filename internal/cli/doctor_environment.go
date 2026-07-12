@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -281,6 +282,55 @@ func checkDoctorSQLite(ctx context.Context, resolution globalconfig.PathResoluti
 		Status: doctorOK,
 		Detail: dbPath + " is reachable",
 	}
+}
+
+func checkDoctorDailyBudgetAccuracy(ctx context.Context, resolution globalconfig.PathResolution, deps doctorDeps, now time.Time) doctorCheck {
+	const name = "Daily budget attribution"
+	if strings.TrimSpace(resolution.Path) == "" {
+		return doctorCheck{Name: name, Status: doctorWarn, Detail: "daily budget accuracy is unavailable because the global config path is unavailable"}
+	}
+
+	dbPath := filepath.Join(filepath.Dir(resolution.Path), "detent.db")
+	db, err := deps.openSQLiteReadOnly(ctx, dbPath)
+	if err != nil {
+		return doctorCheck{Name: name, Status: doctorWarn, Detail: fmt.Sprintf("daily budget accuracy is unavailable: %v", err)}
+	}
+	check := inspectDoctorDailyBudgetAccuracy(ctx, db, now)
+	if err := db.Close(); err != nil {
+		return doctorCheck{Name: name, Status: doctorWarn, Detail: fmt.Sprintf("daily budget attribution database close failed: %v", err)}
+	}
+	return check
+}
+
+func inspectDoctorDailyBudgetAccuracy(ctx context.Context, db doctorTelemetryStore, now time.Time) doctorCheck {
+	const name = "Daily budget attribution"
+	var projectIDColumns int64
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_table_info('codex_sessions') WHERE name = 'project_id'").Scan(&projectIDColumns); err != nil {
+		return doctorCheck{Name: name, Status: doctorWarn, Detail: fmt.Sprintf("daily budget attribution could not be inspected: %v", err)}
+	}
+	if projectIDColumns == 0 {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorWarn,
+			Detail: "daily budget accuracy is degraded because the session project migration has not been applied",
+			Hint:   "Restart Detent to apply the runtime store migration and project-registry backfill.",
+		}
+	}
+
+	date := now.UTC().Format(time.DateOnly)
+	var sessions int64
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM codex_sessions WHERE substr(completed_at, 1, 10) = ? AND trim(COALESCE(project_id, '')) = ''`, date).Scan(&sessions); err != nil {
+		return doctorCheck{Name: name, Status: doctorWarn, Detail: fmt.Sprintf("daily budget attribution could not be inspected: %v", err)}
+	}
+	if sessions > 0 {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorWarn,
+			Detail: fmt.Sprintf("daily budget accuracy is degraded: %d completed session(s) today are unattributed and count toward every project", sessions),
+			Hint:   "Ensure each project tracker repository matches session identifiers, then restart Detent to rerun the project-registry backfill.",
+		}
+	}
+	return doctorCheck{Name: name, Status: doctorOK, Detail: "all completed sessions today have project attribution"}
 }
 
 func checkDoctorCodex(ctx context.Context, deps doctorDeps) doctorCheck {

@@ -232,7 +232,7 @@ func TestBuildBudgetDispatchGuards(t *testing.T) {
 	t.Parallel()
 
 	disabled := workflowconfig.Default().Budget
-	checker, estimator, err := buildBudgetDispatchGuards(disabled, nil, nil)
+	checker, estimator, err := buildBudgetDispatchGuards("alpha", disabled, nil, nil)
 	if err != nil {
 		t.Fatalf("buildBudgetDispatchGuards(disabled) error = %v", err)
 	}
@@ -242,7 +242,7 @@ func TestBuildBudgetDispatchGuards(t *testing.T) {
 
 	enabled := disabled
 	enabled.Enabled = true
-	_, _, err = buildBudgetDispatchGuards(enabled, &runnerSessionStore{}, nil)
+	_, _, err = buildBudgetDispatchGuards("alpha", enabled, &runnerSessionStore{}, nil)
 	if !errors.Is(err, budget.ErrMissingSpendStore) {
 		t.Fatalf("buildBudgetDispatchGuards(missing spend store) error = %v, want ErrMissingSpendStore", err)
 	}
@@ -261,12 +261,72 @@ func TestBuildBudgetDispatchGuards(t *testing.T) {
 		}
 	})
 
-	checker, estimator, err = buildBudgetDispatchGuards(enabled, storeBackend, nil)
+	checker, estimator, err = buildBudgetDispatchGuards("alpha", enabled, storeBackend, nil)
 	if err != nil {
 		t.Fatalf("buildBudgetDispatchGuards(enabled) error = %v", err)
 	}
 	if checker == nil || estimator == nil {
 		t.Fatalf("enabled guards = %T/%T, want checker and estimator", checker, estimator)
+	}
+}
+
+func TestBuildBudgetDispatchGuardsIsolatesProjectDailySpend(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	now := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC)
+	for _, session := range []struct {
+		projectID string
+		tokens    int64
+	}{
+		{projectID: "quiet", tokens: 10},
+		{projectID: "busy", tokens: 200},
+	} {
+		sessionID, err := backend.StartSession(ctx, store.SessionStart{ProjectID: session.projectID, StartedAt: now.Add(-time.Minute), Model: "gpt-test"})
+		if err != nil {
+			t.Fatalf("StartSession(%s) error = %v", session.projectID, err)
+		}
+		if err := backend.FinishSession(ctx, sessionID, store.SessionFinish{CompletedAt: now, InputTokens: session.tokens, TotalTokens: session.tokens, FinalState: "complete", Model: "gpt-test"}); err != nil {
+			t.Fatalf("FinishSession(%s) error = %v", session.projectID, err)
+		}
+	}
+
+	cfg := workflowconfig.Default().Budget
+	cfg.Enabled = true
+	cfg.PerDayMaxUSD = 100
+	pricing := budget.PricingTable{"gpt-test": {USDPerInputToken: 1}}
+	for _, tt := range []struct {
+		projectID string
+		wantAllow bool
+	}{
+		{projectID: "quiet", wantAllow: true},
+		{projectID: "busy", wantAllow: false},
+	} {
+		t.Run(tt.projectID, func(t *testing.T) {
+			checker, _, err := buildBudgetDispatchGuards(tt.projectID, cfg, backend, pricing)
+			if err != nil {
+				t.Fatalf("buildBudgetDispatchGuards() error = %v", err)
+			}
+			decision, err := checker.CheckDispatch(ctx, budget.DispatchRequest{Model: "gpt-test", Now: now, Estimate: budget.TokenEstimate{InputTokens: 1}})
+			if err != nil {
+				t.Fatalf("CheckDispatch() error = %v", err)
+			}
+			if decision.Allowed != tt.wantAllow {
+				t.Fatalf("Allowed = %t, want %t; refusal = %#v", decision.Allowed, tt.wantAllow, decision.Refusal)
+			}
+			if !tt.wantAllow && (decision.Refusal == nil || decision.Refusal.CurrentSpendUSD != 200) {
+				t.Fatalf("Refusal = %#v, want project-scoped current spend 200", decision.Refusal)
+			}
+		})
 	}
 }
 

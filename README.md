@@ -2439,6 +2439,13 @@ a success or different failure class closes the breaker, while the same class
 starts a fresh cooldown. The board banner shows the active class, count, and
 window.
 
+Daily budget caps are scoped to the configured project. Session rows persist
+the project ID; on upgrade, Detent backfills older rows first from work
+attempts and then by matching each identifier's repository prefix against the
+configured project registry. Any session that remains unattributed counts
+toward every project's daily cap as a conservative fallback. `detent doctor`
+warns while unattributed completed sessions exist for the current UTC day.
+
 `agent.resume_orphaned_sessions` defaults to `true`. After an unclean Detent
 restart, active sessions whose provider identity was journaled are preflighted
 and resumed with a short continuation prompt. Missing provider state,

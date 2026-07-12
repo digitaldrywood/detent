@@ -365,6 +365,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			},
 		},
 		doctorCheckJob{
+			Name: "Daily budget attribution",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorDailyBudgetAccuracy(jobCtx, resolution, deps, time.Now())}
+			},
+		},
+		doctorCheckJob{
 			Name: "Backend capacity",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorBackendCapacity(jobCtx, resolution, cfg.ProjectID, deps, time.Now())}

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -3562,6 +3563,70 @@ func TestCheckDoctorSQLite(t *testing.T) {
 			}
 			if !strings.Contains(got.Detail, tt.wantDetail) {
 				t.Fatalf("Detail = %q, want containing %q", got.Detail, tt.wantDetail)
+			}
+		})
+	}
+}
+
+func TestCheckDoctorDailyBudgetAccuracy(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		schema     string
+		seed       string
+		want       doctorStatus
+		wantDetail string
+	}{
+		{
+			name:       "migration missing",
+			schema:     "CREATE TABLE codex_sessions (completed_at TEXT)",
+			want:       doctorWarn,
+			wantDetail: "migration has not been applied",
+		},
+		{
+			name:       "unattributed session today",
+			schema:     "CREATE TABLE codex_sessions (completed_at TEXT, project_id TEXT)",
+			seed:       "INSERT INTO codex_sessions (completed_at) VALUES ('2026-07-12T19:00:00Z')",
+			want:       doctorWarn,
+			wantDetail: "count toward every project",
+		},
+		{
+			name:       "all sessions attributed",
+			schema:     "CREATE TABLE codex_sessions (completed_at TEXT, project_id TEXT)",
+			seed:       "INSERT INTO codex_sessions (completed_at, project_id) VALUES ('2026-07-12T19:00:00Z', 'detent')",
+			want:       doctorOK,
+			wantDetail: "all completed sessions today have project attribution",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			dbPath := filepath.Join(dir, "detent.db")
+			db, err := sql.Open("sqlite", dbPath)
+			if err != nil {
+				t.Fatalf("sql.Open() error = %v", err)
+			}
+			if _, err := db.Exec(tt.schema); err != nil {
+				t.Fatalf("create schema error = %v", err)
+			}
+			if tt.seed != "" {
+				if _, err := db.Exec(tt.seed); err != nil {
+					t.Fatalf("seed session error = %v", err)
+				}
+			}
+			if err := db.Close(); err != nil {
+				t.Fatalf("db.Close() error = %v", err)
+			}
+
+			got := checkDoctorDailyBudgetAccuracy(context.Background(), globalconfig.PathResolution{Path: filepath.Join(dir, "global.yaml")}, doctorDeps{
+				openSQLiteReadOnly: openDoctorSQLiteReadOnly,
+			}, now)
+			if got.Status != tt.want || !strings.Contains(got.Detail, tt.wantDetail) {
+				t.Fatalf("check = %#v, want status %s detail containing %q", got, tt.want, tt.wantDetail)
 			}
 		})
 	}
