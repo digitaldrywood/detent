@@ -128,6 +128,16 @@ func TestModelRendersSnapshotFromHub(t *testing.T) {
 	}
 }
 
+func TestAssertGoldenAcceptsWindowsLineEndings(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "windows.golden")
+	if err := os.WriteFile(path, []byte("first\r\nsecond"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	assertGolden(t, path, "first\nsecond")
+}
+
 func TestModelRendersDrainingShutdown(t *testing.T) {
 	t.Parallel()
 
@@ -449,8 +459,9 @@ func assertGolden(t *testing.T, path string, got string) {
 	if err != nil {
 		t.Fatalf("ReadFile(%q) error = %v; run go test ./internal/tui -update", path, err)
 	}
-	if got != string(want) {
-		t.Fatalf("rendered view differs from %s; run go test ./internal/tui -update\nwant:\n%s\ngot:\n%s", path, want, got)
+	wantText := strings.ReplaceAll(string(want), "\r\n", "\n")
+	if got != wantText {
+		t.Fatalf("rendered view differs from %s; run go test ./internal/tui -update\nwant:\n%s\ngot:\n%s", path, wantText, got)
 	}
 }
 
