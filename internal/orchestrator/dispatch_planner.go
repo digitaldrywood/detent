@@ -337,6 +337,21 @@ func (p dispatchPlanner) pruneBudgetRefusals(
 	}
 }
 
+func (p dispatchPlanner) pruneInactiveIssueBudgetRefusals(state *State, candidates []connector.Issue) {
+	active := make(map[string]struct{}, len(candidates))
+	for _, issue := range candidates {
+		active[issue.ID] = struct{}{}
+	}
+	for issueID, refusal := range state.BudgetRefusals {
+		if refusal.Code != string(budget.ReasonPerIssueMaxUSD) {
+			continue
+		}
+		if _, ok := active[issueID]; !ok {
+			delete(state.BudgetRefusals, issueID)
+		}
+	}
+}
+
 func (p dispatchPlanner) budgetCooldownActive(state *State, issueID string, now time.Time) bool {
 	refusal, ok := state.BudgetRefusals[issueID]
 	if !ok {

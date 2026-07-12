@@ -444,6 +444,8 @@ func TestPruneBudgetRefusalsReevaluatesDailyCap(t *testing.T) {
 
 			cfg := normalizeConfig(Config{BudgetRefusalCooldown: time.Hour})
 			state := newState(cfg)
+			issue := dispatchTestIssue("issue", "Todo")
+			tt.refusal.Issue = issue
 			state.BudgetRefusals["issue"] = tt.refusal
 			orch := Orchestrator{
 				cfg: cfg,
@@ -458,18 +460,53 @@ func TestPruneBudgetRefusalsReevaluatesDailyCap(t *testing.T) {
 				},
 			}
 
-			orch.dispatchTickIssues(
-				context.Background(),
-				&state,
-				tickFetchedIssues{statusOK: true},
-				tickTransitionRefresh{blockedRefreshOK: true},
-				tickPreviousState{},
-				nil,
-				now,
-			)
+			orch.dispatchPlanner().pruneInactiveIssueBudgetRefusals(&state, []connector.Issue{issue})
+			orch.pruneBudgetRefusals(context.Background(), &state, now)
 			_, gotActive := state.BudgetRefusals["issue"]
 			if gotActive != tt.wantActive {
 				t.Fatalf("budget refusal active = %t, want %t", gotActive, tt.wantActive)
+			}
+		})
+	}
+}
+
+func TestPruneInactiveIssueBudgetRefusals(t *testing.T) {
+	t.Parallel()
+
+	issue := dispatchTestIssue("issue-held", "Todo")
+	tests := []struct {
+		name       string
+		code       string
+		candidates []connector.Issue
+		wantHeld   bool
+	}{
+		{
+			name:       "active candidate keeps per issue hold",
+			code:       string(budget.ReasonPerIssueMaxUSD),
+			candidates: []connector.Issue{issue},
+			wantHeld:   true,
+		},
+		{
+			name: "missing candidate clears per issue hold",
+			code: string(budget.ReasonPerIssueMaxUSD),
+		},
+		{
+			name:     "missing candidate keeps daily cooldown",
+			code:     string(budget.ReasonPerDayMaxUSD),
+			wantHeld: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := newState(normalizeConfig(Config{}))
+			state.BudgetRefusals[issue.ID] = BudgetRefusal{Issue: issue, Code: tt.code}
+			newDispatchPlanner(Config{}).pruneInactiveIssueBudgetRefusals(&state, tt.candidates)
+			_, gotHeld := state.BudgetRefusals[issue.ID]
+			if gotHeld != tt.wantHeld {
+				t.Fatalf("budget refusal held = %t, want %t", gotHeld, tt.wantHeld)
 			}
 		})
 	}
