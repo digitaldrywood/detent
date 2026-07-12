@@ -2242,8 +2242,18 @@ func nestedFieldSet(root *yaml.Node, keys ...string) bool {
 
 func configuredFieldPaths(root *yaml.Node) map[string]struct{} {
 	paths := map[string]struct{}{}
+	activeAliases := map[*yaml.Node]bool{}
 	var collect func(*yaml.Node, string)
 	collect = func(node *yaml.Node, prefix string) {
+		if node != nil && node.Kind == yaml.AliasNode {
+			if node.Alias == nil || activeAliases[node.Alias] {
+				return
+			}
+			activeAliases[node.Alias] = true
+			collect(node.Alias, prefix)
+			delete(activeAliases, node.Alias)
+			return
+		}
 		if node == nil || node.Kind != yaml.MappingNode {
 			return
 		}
@@ -2257,7 +2267,7 @@ func configuredFieldPaths(root *yaml.Node) map[string]struct{} {
 				path = prefix + "." + key
 			}
 			value := node.Content[index+1]
-			if value.Kind == yaml.MappingNode {
+			if value.Kind == yaml.MappingNode || value.Kind == yaml.AliasNode {
 				collect(value, path)
 				continue
 			}

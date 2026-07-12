@@ -1012,10 +1012,7 @@ func resolveDoctorCommandInDir(ctx context.Context, dir string, environment []st
 	defer cancel()
 
 	if runtime.GOOS == "windows" {
-		if strings.ContainsAny(executable, `/\\`) && !filepath.IsAbs(executable) {
-			executable = filepath.Join(dir, executable)
-		}
-		return exec.LookPath(executable)
+		return resolveDoctorWindowsCommand(dir, doctorCommandEnvironment(os.Environ(), environment), executable)
 	}
 	cmd := exec.CommandContext(commandCtx, "sh", "-c", `command -v -- "$1"`, "detent-doctor", executable) // #nosec G204 -- executable is passed as a positional shell parameter.
 	cmd.Dir = dir
@@ -1035,6 +1032,56 @@ func resolveDoctorCommandInDir(ctx context.Context, dir string, environment []st
 		return "", errors.New("command -v returned no result")
 	}
 	return resolved, nil
+}
+
+func resolveDoctorWindowsCommand(dir string, environment []string, executable string) (string, error) {
+	pathExt := doctorEnvironmentValue(environment, "PATHEXT", true)
+	if strings.ContainsAny(executable, `/\\`) {
+		if !filepath.IsAbs(executable) {
+			executable = filepath.Join(dir, executable)
+		}
+		return firstDoctorWindowsCommand(executable, pathExt)
+	}
+
+	pathValue := doctorEnvironmentValue(environment, "PATH", true)
+	for _, searchDir := range strings.Split(pathValue, ";") {
+		if searchDir == "" {
+			searchDir = dir
+		} else if !filepath.IsAbs(searchDir) {
+			searchDir = filepath.Join(dir, searchDir)
+		}
+		if resolved, err := firstDoctorWindowsCommand(filepath.Join(searchDir, executable), pathExt); err == nil {
+			return resolved, nil
+		}
+	}
+	return "", fmt.Errorf("executable %q not found on configured PATH", executable)
+}
+
+func firstDoctorWindowsCommand(path string, pathExt string) (string, error) {
+	candidates := []string{path}
+	if filepath.Ext(path) == "" {
+		extensions := strings.Split(pathExt, ";")
+		if strings.TrimSpace(pathExt) == "" {
+			extensions = []string{".COM", ".EXE", ".BAT", ".CMD"}
+		}
+		for _, extension := range extensions {
+			extension = strings.TrimSpace(extension)
+			if extension == "" {
+				continue
+			}
+			if !strings.HasPrefix(extension, ".") {
+				extension = "." + extension
+			}
+			candidates = append(candidates, path+extension)
+		}
+	}
+	for _, candidate := range candidates {
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("executable %q not found", path)
 }
 
 func runDoctorCommandInDir(ctx context.Context, dir string, environment []string, path string, args ...string) error {
@@ -1058,6 +1105,10 @@ func runDoctorCommandInDir(ctx context.Context, dir string, environment []string
 }
 
 func doctorCommandEnvironment(base []string, overrides []string) []string {
+	return doctorCommandEnvironmentForOS(base, overrides, runtime.GOOS)
+}
+
+func doctorCommandEnvironmentForOS(base []string, overrides []string, goos string) []string {
 	environment := append([]string(nil), base...)
 	for _, override := range overrides {
 		name, _, ok := strings.Cut(override, "=")
@@ -1065,19 +1116,40 @@ func doctorCommandEnvironment(base []string, overrides []string) []string {
 			continue
 		}
 		values := doctorEnvironmentValues(environment)
+		if goos == "windows" {
+			values = doctorEnvironmentValuesFolded(environment)
+		}
 		override = name + "=" + os.Expand(strings.TrimPrefix(override, name+"="), func(key string) string {
+			if goos == "windows" {
+				key = strings.ToUpper(key)
+			}
 			return values[key]
 		})
-		prefix := name + "="
 		filtered := environment[:0]
 		for _, entry := range environment {
-			if !strings.HasPrefix(entry, prefix) {
+			candidate, _, candidateOK := strings.Cut(entry, "=")
+			matches := candidateOK && candidate == name
+			if goos == "windows" {
+				matches = candidateOK && strings.EqualFold(candidate, name)
+			}
+			if !matches {
 				filtered = append(filtered, entry)
 			}
 		}
 		environment = append(filtered, override)
 	}
 	return environment
+}
+
+func doctorEnvironmentValuesFolded(environment []string) map[string]string {
+	values := make(map[string]string, len(environment))
+	for _, entry := range environment {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[strings.ToUpper(name)] = value
+		}
+	}
+	return values
 }
 
 func doctorEnvironmentValues(environment []string) map[string]string {
@@ -1089,6 +1161,24 @@ func doctorEnvironmentValues(environment []string) map[string]string {
 		}
 	}
 	return values
+}
+
+func doctorEnvironmentValue(environment []string, name string, caseInsensitive bool) string {
+	value := ""
+	for _, entry := range environment {
+		candidate, candidateValue, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		matches := candidate == name
+		if caseInsensitive {
+			matches = strings.EqualFold(candidate, name)
+		}
+		if matches {
+			value = candidateValue
+		}
+	}
+	return value
 }
 
 func defaultGitWorkTree(ctx context.Context, path string) error {

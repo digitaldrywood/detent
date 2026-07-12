@@ -19,6 +19,7 @@ import (
 
 const (
 	doctorWorkflowWaitStatusLiveness = 15 * time.Minute
+	doctorWorkflowWaitStatusWindow   = 24 * time.Hour
 	doctorWorkflowCeilingWindow      = 24 * time.Hour
 	doctorWorkflowCeilingSampleLimit = 50
 	doctorWorkflowCeilingMinAttempts = 5
@@ -150,7 +151,7 @@ func doctorWorkflowCommandPrefix(command string) string {
 	var prefix strings.Builder
 	var quote rune
 	escaped := false
-	for _, r := range command {
+	for index, r := range command {
 		if escaped {
 			prefix.WriteRune(r)
 			escaped = false
@@ -173,7 +174,10 @@ func doctorWorkflowCommandPrefix(command string) string {
 			quote = r
 			continue
 		}
-		if strings.ContainsRune("|&;<>($`\n", r) {
+		if r == '$' && index+1 < len(command) && command[index+1] == '(' {
+			return strings.TrimSpace(prefix.String())
+		}
+		if strings.ContainsRune("|&;<>(`\n", r) {
 			return strings.TrimSpace(prefix.String())
 		}
 		prefix.WriteRune(r)
@@ -388,7 +392,7 @@ func checkDoctorWorkflowRuntimeLint(ctx context.Context, projectID string, workf
 		}
 	}
 	if cfg.Agent.MaxSessionTokens > 0 {
-		history, err := doctorCeilingAttemptHistory(ctx, db, projectID, now)
+		history, err := doctorCeilingAttemptHistory(ctx, db, projectID, cfg.Agent.MaxSessionTokens, now)
 		if err == nil && history.Attempts >= doctorWorkflowCeilingMinAttempts && cfg.Agent.MaxSessionTokens < history.MaxObservedTokens && float64(history.CeilingDeaths)/float64(history.Attempts) >= doctorWorkflowCeilingShare {
 			checks = append(checks, doctorCheck{
 				Name:   "Project " + projectID + " workflow lint session ceiling",
@@ -422,6 +426,7 @@ WITH project_decisions AS (
     decision_at
   FROM scheduler_decisions
   WHERE project_id = ?
+    AND decision_at >= ?
 ), ranked AS (
   SELECT
     id,
@@ -455,7 +460,7 @@ WHERE ranked.id > active_issues.reset_id
   AND ranked.result = 'skipped'
   AND ranked.reason = 'artifact_gate_wait_status'
   AND ranked.attempt_number = 0
-GROUP BY active_issues.issue_key, active_issues.lane`, strings.TrimSpace(projectID))
+GROUP BY active_issues.issue_key, active_issues.lane`, strings.TrimSpace(projectID), now.Add(-doctorWorkflowWaitStatusWindow).UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, err
 	}
@@ -489,7 +494,7 @@ GROUP BY active_issues.issue_key, active_issues.lane`, strings.TrimSpace(project
 	return incidents, rows.Err()
 }
 
-func doctorCeilingAttemptHistory(ctx context.Context, db doctorTelemetryStore, projectID string, now time.Time) (doctorCeilingHistory, error) {
+func doctorCeilingAttemptHistory(ctx context.Context, db doctorTelemetryStore, projectID string, configuredCeiling int64, now time.Time) (doctorCeilingHistory, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT COALESCE(error_message, ''), COALESCE(metrics_json, '{}')
 FROM work_attempts
@@ -518,7 +523,9 @@ LIMIT ?`, strings.TrimSpace(projectID), now.Add(-doctorWorkflowCeilingWindow).UT
 		if err := json.Unmarshal([]byte(metricsJSON), &metrics); err == nil && metrics.TotalTokens > history.MaxObservedTokens {
 			history.MaxObservedTokens = metrics.TotalTokens
 		}
-		if strings.Contains(errorMessage, "session token ceiling exceeded") && strings.Contains(errorMessage, "source=max_session_tokens") {
+		if strings.Contains(errorMessage, "session token ceiling exceeded") &&
+			strings.Contains(errorMessage, "source=max_session_tokens") &&
+			doctorWorkflowErrorInt64(errorMessage, "ceiling_tokens") == configuredCeiling {
 			history.CeilingDeaths++
 			if total := doctorWorkflowErrorInt64(errorMessage, "total_tokens"); total > history.MaxObservedTokens {
 				history.MaxObservedTokens = total

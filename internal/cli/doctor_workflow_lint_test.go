@@ -146,7 +146,7 @@ func TestCheckDoctorGateCommandPreservesEnvironmentAssignments(t *testing.T) {
 	workdir := t.TempDir()
 	cfg := workflowconfig.Default()
 	cfg.Workspace.SourceRoot = workdir
-	cfg.Gate.Run = "CI=1 PATH=/bin make check"
+	cfg.Gate.Run = "CI=1 PATH=/bin:$PATH make check"
 	var gotEnvironment []string
 	var gotResolveEnvironment []string
 	var gotArgs []string
@@ -167,11 +167,11 @@ func TestCheckDoctorGateCommandPreservesEnvironmentAssignments(t *testing.T) {
 	if len(checks) != 0 {
 		t.Fatalf("checks = %#v, want no warning", checks)
 	}
-	if strings.Join(gotEnvironment, " ") != "CI=1 PATH=/bin" {
-		t.Fatalf("environment = %#v, want CI and PATH assignments", gotEnvironment)
+	if strings.Join(gotEnvironment, " ") != "CI=1 PATH=/bin:$PATH" {
+		t.Fatalf("environment = %#v, want CI and expanded PATH assignments", gotEnvironment)
 	}
-	if strings.Join(gotResolveEnvironment, " ") != "CI=1 PATH=/bin" {
-		t.Fatalf("resolve environment = %#v, want CI and PATH assignments", gotResolveEnvironment)
+	if strings.Join(gotResolveEnvironment, " ") != "CI=1 PATH=/bin:$PATH" {
+		t.Fatalf("resolve environment = %#v, want CI and expanded PATH assignments", gotResolveEnvironment)
 	}
 	if strings.Join(gotArgs, " ") != "-n check" {
 		t.Fatalf("args = %#v, want make dry-run target", gotArgs)
@@ -209,6 +209,45 @@ func TestDoctorCommandEnvironmentOverridesBaseValues(t *testing.T) {
 	got := doctorCommandEnvironment([]string{"PATH=/default", "HOME=/home/example", "CI=0"}, []string{"CI=1", "PATH=/project/bin:$PATH"})
 	if strings.Join(got, " ") != "HOME=/home/example CI=1 PATH=/project/bin:/default" {
 		t.Fatalf("doctorCommandEnvironment() = %#v, want overrides without duplicate variables", got)
+	}
+}
+
+func TestDoctorCommandEnvironmentExpandsWindowsPathCaseInsensitively(t *testing.T) {
+	t.Parallel()
+
+	got := doctorCommandEnvironmentForOS(
+		[]string{`Path=C:\\Windows\\System32`, "CI=0"},
+		[]string{`PATH=bin;$PATH`},
+		"windows",
+	)
+	if strings.Join(got, " ") != `CI=0 PATH=bin;C:\\Windows\\System32` {
+		t.Fatalf("doctorCommandEnvironmentForOS() = %#v, want one expanded Windows PATH", got)
+	}
+}
+
+func TestResolveDoctorWindowsCommandUsesConfiguredPath(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	if err := os.Mkdir(binDir, 0o755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	want := filepath.Join(binDir, "project-check.EXE")
+	if err := os.WriteFile(want, []byte("example"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	got, err := resolveDoctorWindowsCommand(root, []string{
+		`Path=C:\\Windows\\System32`,
+		"PATH=bin",
+		"PATHEXT=.EXE;.CMD",
+	}, "project-check")
+	if err != nil {
+		t.Fatalf("resolveDoctorWindowsCommand() error = %v", err)
+	}
+	if got != want {
+		t.Fatalf("resolveDoctorWindowsCommand() = %q, want %q", got, want)
 	}
 }
 
@@ -520,6 +559,8 @@ func TestCheckDoctorWorkflowRuntimeLintIgnoresDeathsBelowRaisedCap(t *testing.T)
 		if index < 2 {
 			totalTokens = int64(16_100_000 + index*100_000)
 			errorMessage = fmt.Sprintf("session token ceiling exceeded: total_tokens=%d ceiling_tokens=16000000 source=max_session_tokens", totalTokens)
+		} else if index == 2 {
+			totalTokens = 40_000_000
 		}
 		if _, err := db.Exec(`INSERT INTO work_attempts (project_id, worker_type, completed_at, error_message, metrics_json) VALUES (?, ?, ?, ?, ?)`,
 			"alpha", "agent", now.Add(-time.Duration(index)*time.Hour).Format(time.RFC3339Nano), errorMessage, fmt.Sprintf(`{"total_tokens":%d}`, totalTokens)); err != nil {

@@ -4,8 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1265,6 +1265,29 @@ Prompt
 				t.Fatalf("ConfiguredSubsettings(%q) = %#v, want %#v", tt.prefix, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestConfiguredSubsettingsTracksAliasedFrontmatterLeaves(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+shared_skills: &disabled_skills
+  enabled: false
+  path: custom-skills
+agent:
+  skills: *disabled_skills
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+
+	got := workflow.Config.ConfiguredSubsettings("agent.skills")
+	want := []string{"agent.skills.path"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ConfiguredSubsettings(agent.skills) = %#v, want %#v", got, want)
 	}
 }
 
