@@ -1,14 +1,20 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestGlobalConfigReloaderApply(t *testing.T) {
@@ -158,6 +164,34 @@ func TestGlobalConfigReloaderRestoresRuntimeGitHubTokenOnError(t *testing.T) {
 	}
 }
 
+func TestGlobalConfigReloaderRestoresRuntimeConfigOnReconcileError(t *testing.T) {
+	t.Parallel()
+
+	reconcileErr := errors.New("reconcile failed")
+	current := reloadTestConfig("global.yaml", 2, nil)
+	next := reloadTestConfig("global.yaml", 4, nil)
+	applied := []int{}
+	reloader := &globalConfigReloader{
+		current: current,
+		manager: &globalReloadManager{err: reconcileErr},
+		applyRuntime: func(cfg globalconfig.Config) error {
+			applied = append(applied, cfg.Global.MaxConcurrentAgents)
+			return nil
+		},
+	}
+
+	_, err := reloader.apply(context.Background(), configwatcher.FileUpdate[globalconfig.Config]{
+		Path:  next.Path,
+		Value: next,
+	})
+	if !errors.Is(err, reconcileErr) {
+		t.Fatalf("apply() error = %v, want %v", err, reconcileErr)
+	}
+	if want := []int{4, 2}; !reflect.DeepEqual(applied, want) {
+		t.Fatalf("runtime capacities = %v, want %v", applied, want)
+	}
+}
+
 func TestGlobalConfigReloaderAppliesIdentityReload(t *testing.T) {
 	t.Parallel()
 
@@ -186,45 +220,195 @@ func TestGlobalConfigReloaderAppliesIdentityReload(t *testing.T) {
 	}
 }
 
-func TestChangedGlobalConfigFieldsReloadMatrix(t *testing.T) {
+func TestChangedGlobalConfigFieldsReloadClassification(t *testing.T) {
 	t.Parallel()
 
-	base := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
-	next := reloadTestConfig("global.yaml", 4, []globalconfig.Project{{ID: "bravo", Weight: 2, CredentialRef: "github-app"}})
-	next.Env = "dev"
-	next.LogLevel = "debug"
-	logMaxSizeBytes := 2048
-	logMaxBackups := 2
-	next.LogMaxSizeBytes = &logMaxSizeBytes
-	next.LogMaxBackups = &logMaxBackups
-	next.GitHubToken = "gh"
-	port := 4101
-	next.Port = &port
-	next.InstanceName = "buildbox"
-	next.Global.Scheduling = globalconfig.SchedulingFairShare
-	next.Global.Identity = globalconfig.Identity{Name: "new-worker", GitHubLogin: "new-bot"}
-	next.Global.FairShare = map[string]any{"half_life": "2h"}
-	next.Global.Startup = map[string]any{"jitter_seconds": 1, "max_spawn_per_second": 2}
-
-	want := []globalConfigChange{
-		{Field: "env", RequiresRestart: true},
-		{Field: "log_level", RequiresRestart: true},
-		{Field: "log_max_size_bytes", RequiresRestart: true},
-		{Field: "log_max_backups", RequiresRestart: true},
-		{Field: "github_token", RequiresRestart: false},
-		{Field: "port", RequiresRestart: true},
-		{Field: "instance_name", RequiresRestart: false},
-		{Field: "projects", RequiresRestart: false},
-		{Field: "global.max_concurrent_agents", RequiresRestart: true},
-		{Field: "global.scheduling", RequiresRestart: true},
-		{Field: "global.identity", RequiresRestart: false},
-		{Field: "global.fair_share", RequiresRestart: true},
-		{Field: "global.startup", RequiresRestart: false},
+	tests := []struct {
+		name            string
+		field           string
+		requiresRestart bool
+		mutate          func(*globalconfig.Config)
+	}{
+		{name: "environment", field: "env", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { cfg.Env = "dev" }},
+		{name: "log level", field: "log_level", mutate: func(cfg *globalconfig.Config) { cfg.LogLevel = "debug" }},
+		{name: "log max size", field: "log_max_size_bytes", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { value := 2048; cfg.LogMaxSizeBytes = &value }},
+		{name: "log backups", field: "log_max_backups", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { value := 2; cfg.LogMaxBackups = &value }},
+		{name: "GitHub token", field: "github_token", mutate: func(cfg *globalconfig.Config) { cfg.GitHubToken = "gh" }},
+		{name: "port", field: "port", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { value := 4101; cfg.Port = &value }},
+		{name: "instance name", field: "instance_name", mutate: func(cfg *globalconfig.Config) { cfg.InstanceName = "buildbox" }},
+		{name: "projects", field: "projects", mutate: func(cfg *globalconfig.Config) { cfg.Projects = []globalconfig.Project{{ID: "bravo", Weight: 2}} }},
+		{name: "maximum concurrent agents", field: "global.max_concurrent_agents", mutate: func(cfg *globalconfig.Config) { cfg.Global.MaxConcurrentAgents = 4 }},
+		{name: "scheduling", field: "global.scheduling", mutate: func(cfg *globalconfig.Config) { cfg.Global.Scheduling = globalconfig.SchedulingRoundRobin }},
+		{name: "identity", field: "global.identity", mutate: func(cfg *globalconfig.Config) {
+			cfg.Global.Identity = globalconfig.Identity{Name: "new-worker", GitHubLogin: "new-bot"}
+		}},
+		{name: "fair share", field: "global.fair_share", mutate: func(cfg *globalconfig.Config) { cfg.Global.FairShare = map[string]any{"half_life": "2h"} }},
+		{name: "startup", field: "global.startup", mutate: func(cfg *globalconfig.Config) { cfg.Global.Startup = map[string]any{"jitter_seconds": 1} }},
 	}
 
-	got := changedGlobalConfigFields(base, next)
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("changedGlobalConfigFields() = %#v, want %#v", got, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			base := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+			next := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+			tt.mutate(&next)
+
+			got := changedGlobalConfigFields(base, next)
+			if len(got) != 1 {
+				t.Fatalf("changedGlobalConfigFields() = %#v, want one change", got)
+			}
+			if got[0].Field != tt.field || got[0].RequiresRestart != tt.requiresRestart {
+				t.Fatalf("changedGlobalConfigFields() = %#v, want field %q restart %t", got[0], tt.field, tt.requiresRestart)
+			}
+		})
+	}
+}
+
+func TestGlobalConfigReloaderHotAppliesSchedulerCapacityWithoutInterruptingWorkers(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	global := scheduler.NewStrictPriority(scheduler.Config{Capacity: 2})
+	gate := scheduler.NewGlobalDispatchGate(global)
+	alpha := scheduler.ProjectCandidate{ID: "alpha", Weight: 1, Priority: 3}
+	bravo := scheduler.ProjectCandidate{ID: "bravo", Weight: 1, Priority: 2}
+	charlie := scheduler.ProjectCandidate{ID: "charlie", Weight: 1, Priority: 0}
+	alphaSlot, ok, err := gate.TryAcquire(ctx, alpha, scheduler.SlotRequest{State: "Todo"}, time.Time{})
+	if err != nil || !ok {
+		t.Fatalf("alpha TryAcquire() = ok %t error %v, want granted", ok, err)
+	}
+	bravoSlot, ok, err := gate.TryAcquire(ctx, bravo, scheduler.SlotRequest{State: "Todo"}, time.Time{})
+	if err != nil || !ok {
+		t.Fatalf("bravo TryAcquire() = ok %t error %v, want granted", ok, err)
+	}
+	interrupts := 0
+	gate.SetPreempt(alphaSlot, func() { interrupts++ })
+	gate.SetPreempt(bravoSlot, func() { interrupts++ })
+
+	next := reloadTestConfig("global.yaml", 1, nil)
+	next.Global.Scheduling = globalconfig.SchedulingStrict
+	if err := applyGlobalRuntimeConfig(gate, nil, nil, next); err != nil {
+		t.Fatalf("applyGlobalRuntimeConfig() error = %v", err)
+	}
+	if _, ok, decision, err := gate.TryAcquireWithDecision(ctx, charlie, scheduler.SlotRequest{State: "Merging"}, time.Time{}); err != nil {
+		t.Fatalf("charlie TryAcquireWithDecision() error = %v", err)
+	} else if ok {
+		t.Fatal("charlie TryAcquireWithDecision() ok = true above lowered capacity")
+	} else if decision.GlobalCapacity != 1 || decision.GlobalUsed != 2 {
+		t.Fatalf("capacity decision = %#v, want capacity 1 used 2", decision)
+	}
+	if interrupts != 0 {
+		t.Fatalf("worker interrupts = %d, want 0", interrupts)
+	}
+	if err := gate.Release(alphaSlot); err != nil {
+		t.Fatalf("Release(alpha) error = %v", err)
+	}
+	if _, ok, _, err := gate.TryAcquireWithDecision(ctx, charlie, scheduler.SlotRequest{State: "Merging"}, time.Time{}); err != nil {
+		t.Fatalf("charlie second TryAcquireWithDecision() error = %v", err)
+	} else if ok {
+		t.Fatal("charlie second TryAcquireWithDecision() ok = true before usage fell below the lowered capacity")
+	}
+	if interrupts != 0 {
+		t.Fatalf("worker interrupts after attrition to capacity = %d, want 0", interrupts)
+	}
+	if err := gate.Release(bravoSlot); err != nil {
+		t.Fatalf("Release(bravo) error = %v", err)
+	}
+	charlieSlot, ok, err := gate.TryAcquire(ctx, charlie, scheduler.SlotRequest{State: "Merging"}, time.Time{})
+	if err != nil || !ok {
+		t.Fatalf("charlie TryAcquire() after attrition = ok %t error %v, want granted", ok, err)
+	}
+	next.Global.MaxConcurrentAgents = 2
+	if err := applyGlobalRuntimeConfig(gate, nil, nil, next); err != nil {
+		t.Fatalf("raise applyGlobalRuntimeConfig() error = %v", err)
+	}
+	delta := scheduler.ProjectCandidate{ID: "delta", Weight: 1, Priority: 0}
+	deltaSlot, ok, err := gate.TryAcquire(ctx, delta, scheduler.SlotRequest{State: "Todo"}, time.Time{})
+	if err != nil || !ok {
+		t.Fatalf("delta TryAcquire() after raise = ok %t error %v, want granted", ok, err)
+	}
+	if err := gate.Release(charlieSlot); err != nil {
+		t.Fatalf("Release(charlie) error = %v", err)
+	}
+	if err := gate.Release(deltaSlot); err != nil {
+		t.Fatalf("Release(delta) error = %v", err)
+	}
+}
+
+func TestGlobalConfigReloaderHotAppliesSchedulingAndFairShare(t *testing.T) {
+	t.Parallel()
+
+	store := &globalReloadFairShareStore{}
+	global := scheduler.NewWeightedFair(scheduler.Config{Capacity: 2})
+	gate := scheduler.NewGlobalDispatchGate(global)
+	next := reloadTestConfig("global.yaml", 2, nil)
+	next.Global.Scheduling = globalconfig.SchedulingFairShare
+	next.Global.FairShare = map[string]any{"half_life": "2h"}
+
+	if err := applyGlobalRuntimeConfig(gate, store, nil, next); err != nil {
+		t.Fatalf("applyGlobalRuntimeConfig() error = %v", err)
+	}
+	if global.Mode() != scheduler.ModeFairShare {
+		t.Fatalf("Mode() = %q, want %q", global.Mode(), scheduler.ModeFairShare)
+	}
+}
+
+func TestGlobalConfigReloaderHotAppliesLogLevel(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	level := &slog.LevelVar{}
+	level.Set(slog.LevelInfo)
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: level}))
+	logger.Debug("before reload")
+
+	global := scheduler.NewWeightedFair(scheduler.Config{Capacity: 2})
+	gate := scheduler.NewGlobalDispatchGate(global)
+	next := reloadTestConfig("global.yaml", 2, nil)
+	next.LogLevel = "debug"
+	if err := applyGlobalRuntimeConfig(gate, nil, level, next); err != nil {
+		t.Fatalf("applyGlobalRuntimeConfig() error = %v", err)
+	}
+	logger.Debug("after reload")
+
+	if strings.Contains(logs.String(), "before reload") || !strings.Contains(logs.String(), "after reload") {
+		t.Fatalf("captured logs = %q, want only post-reload debug record", logs.String())
+	}
+}
+
+func TestLogGlobalConfigChangesIncludesOldAndNewValues(t *testing.T) {
+	t.Parallel()
+
+	previous := reloadTestConfig("global.yaml", 2, nil)
+	next := reloadTestConfig("global.yaml", 1, nil)
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+
+	logGlobalConfigChanges(logger, previous, next)
+
+	for _, want := range []string{"global config setting reloaded", "field=global.max_concurrent_agents", "old=2", "new=1"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("reload log missing %q: %s", want, logs.String())
+		}
+	}
+}
+
+func TestLogGlobalConfigChangesPreservesRestartWarning(t *testing.T) {
+	t.Parallel()
+
+	previous := reloadTestConfig("global.yaml", 2, nil)
+	next := reloadTestConfig("global.yaml", 2, nil)
+	next.Env = "production"
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+
+	logGlobalConfigChanges(logger, previous, next)
+
+	for _, want := range []string{"level=WARN", `msg="global config setting change requires restart"`, "field=env"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("restart warning missing %q: %s", want, logs.String())
+		}
 	}
 }
 
@@ -232,6 +416,16 @@ type globalReloadManager struct {
 	calls  int
 	config project.ManagerConfig
 	err    error
+}
+
+type globalReloadFairShareStore struct{}
+
+func (s *globalReloadFairShareStore) ListFairShareUsage(context.Context) ([]store.FairShareUsage, error) {
+	return nil, nil
+}
+
+func (s *globalReloadFairShareStore) RecordFairShareDispatch(context.Context, store.FairShareDispatch) error {
+	return nil
 }
 
 func (m *globalReloadManager) Reconcile(

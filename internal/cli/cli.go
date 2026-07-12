@@ -165,6 +165,7 @@ type BootConfig struct {
 	Global           globalconfig.Config
 	ConfigPathRule   globalconfig.PathRule
 	Runtime          RuntimeSettings
+	LogLevel         *slog.LevelVar
 	WorkflowPath     string
 	Host             string
 	Port             *int
@@ -201,7 +202,7 @@ type BootFunc func(context.Context, BootConfig) error
 
 type SignalFunc func(context.Context, Signal) error
 
-type LoggerFunc func(RuntimeSettings, io.Writer, io.Writer, bool)
+type LoggerFunc func(RuntimeSettings, io.Writer, io.Writer, bool) *slog.LevelVar
 
 type CommandRunner func(context.Context, string, ...string) (string, error)
 
@@ -383,7 +384,7 @@ detent --format json config path`),
 			}
 			stdoutTTY := opts.stdoutTTY()
 			if opts.configureLog != nil {
-				opts.configureLog(boot.Runtime, cmd.OutOrStdout(), cmd.ErrOrStderr(), stdoutTTY)
+				boot.LogLevel = opts.configureLog(boot.Runtime, cmd.OutOrStdout(), cmd.ErrOrStderr(), stdoutTTY)
 			}
 			boot.Headless = headless
 			boot.StdoutTTY = stdoutTTY

@@ -161,7 +161,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 
 	useDashboard := shouldLaunchTerminalDashboard(cfg)
 	if useDashboard {
-		restoreLogger, err := redirectDefaultLoggerWithRotation(runtimeLogPath(cfg), cfg.Runtime.LogLevel.Value, runtimeLogRotation(cfg.Runtime))
+		restoreLogger, err := redirectDefaultLoggerWithRotation(runtimeLogPath(cfg), cfg.Runtime.LogLevel.Value, runtimeLogRotation(cfg.Runtime), cfg.LogLevel)
 		if err != nil {
 			return err
 		}
@@ -324,12 +324,16 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		globalConfigState.set(reloaded)
 		republishLatestSnapshot(snapshotHub, logger)
 	}
+	reloadLogLevel := runtimeLogLevelForReload(cfg)
+	applyRuntimeConfig := func(reloaded globalconfig.Config) error {
+		return applyGlobalRuntimeConfig(globalDispatchGate, runtimeStore, reloadLogLevel, reloaded)
+	}
 	startProjects := func(ctx context.Context) error {
 		if err := manager.Start(ctx); err != nil {
 			return err
 		}
 		go updateScheduler.Run(ctx)
-		globalWatcherDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, runtimeGitHubToken, onGlobalReload)
+		globalWatcherDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, runtimeGitHubToken, applyRuntimeConfig, onGlobalReload)
 		select {
 		case globalWatcherStarted <- globalWatcherDone:
 		default:
@@ -721,7 +725,7 @@ func redirectDefaultLogger(path string, level string) (func(), error) {
 	return redirectDefaultLoggerWithRotation(path, level, defaultRuntimeLogRotation())
 }
 
-func redirectDefaultLoggerWithRotation(path string, level string, rotation logRotation) (func(), error) {
+func redirectDefaultLoggerWithRotation(path string, level string, rotation logRotation, levels ...*slog.LevelVar) (func(), error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("log path is required")
 	}
@@ -735,10 +739,11 @@ func redirectDefaultLoggerWithRotation(path string, level string, rotation logRo
 	}
 
 	previous := slog.Default()
-	logLevel := parseSlogLevel(level)
+	parsedLevel := parseSlogLevel(level)
+	logLevel := resolveRuntimeLogLevel(parsedLevel, levels)
 	slog.SetDefault(slog.New(slog.NewJSONHandler(file, &slog.HandlerOptions{
 		Level:     logLevel,
-		AddSource: runtimeLogAddSource(logLevel),
+		AddSource: runtimeLogAddSource(parsedLevel),
 	})))
 
 	return func() {
@@ -747,6 +752,16 @@ func redirectDefaultLoggerWithRotation(path string, level string, rotation logRo
 			previous.Warn("close log file failed", "path", path, "error", err)
 		}
 	}, nil
+}
+
+func resolveRuntimeLogLevel(initial slog.Level, levels []*slog.LevelVar) *slog.LevelVar {
+	if len(levels) > 0 && levels[0] != nil {
+		levels[0].Set(initial)
+		return levels[0]
+	}
+	level := &slog.LevelVar{}
+	level.Set(initial)
+	return level
 }
 
 type logRotation struct {
@@ -954,18 +969,9 @@ func bootWorkflow(ctx context.Context, cfg BootConfig) (workflowconfig.Workflow,
 }
 
 func buildGlobalScheduler(settings globalconfig.Settings, fairShareStore scheduler.FairShareStore) (scheduler.GlobalScheduler, error) {
-	halfLife, err := globalFairShareHalfLife(settings.FairShare)
+	schedulerConfig, err := globalSchedulerConfig(settings, fairShareStore)
 	if err != nil {
 		return nil, err
-	}
-
-	schedulerConfig := scheduler.Config{
-		Kind:          settings.Scheduling,
-		Capacity:      settings.MaxConcurrentAgents,
-		DecayHalfLife: halfLife,
-	}
-	if settings.Scheduling == globalconfig.SchedulingFairShare {
-		schedulerConfig.FairShareStore = fairShareStore
 	}
 
 	sched, err := scheduler.NewFromConfig(schedulerConfig)
@@ -977,6 +983,52 @@ func buildGlobalScheduler(settings globalconfig.Settings, fairShareStore schedul
 		return nil, fmt.Errorf("create global scheduler: %w", scheduler.ErrUnsupportedBackend)
 	}
 	return global, nil
+}
+
+func globalSchedulerConfig(settings globalconfig.Settings, fairShareStore scheduler.FairShareStore) (scheduler.Config, error) {
+	halfLife, err := globalFairShareHalfLife(settings.FairShare)
+	if err != nil {
+		return scheduler.Config{}, err
+	}
+
+	schedulerConfig := scheduler.Config{
+		Kind:          settings.Scheduling,
+		Capacity:      settings.MaxConcurrentAgents,
+		DecayHalfLife: halfLife,
+	}
+	if settings.Scheduling == globalconfig.SchedulingFairShare {
+		schedulerConfig.FairShareStore = fairShareStore
+	}
+
+	return schedulerConfig, nil
+}
+
+func applyGlobalRuntimeConfig(
+	gate *scheduler.GlobalDispatchGate,
+	fairShareStore scheduler.FairShareStore,
+	logLevel *slog.LevelVar,
+	cfg globalconfig.Config,
+) error {
+	schedulerConfig, err := globalSchedulerConfig(cfg.Global, fairShareStore)
+	if err != nil {
+		return err
+	}
+	if err := gate.Reconfigure(schedulerConfig); err != nil {
+		return fmt.Errorf("reconfigure global scheduler: %w", err)
+	}
+	if logLevel != nil {
+		logLevel.Set(parseSlogLevel(cfg.LogLevel))
+	}
+	return nil
+}
+
+func runtimeLogLevelForReload(cfg BootConfig) *slog.LevelVar {
+	switch cfg.Runtime.LogLevel.Source {
+	case runtimeSourceConfig, runtimeSourceDefault:
+		return cfg.LogLevel
+	default:
+		return nil
+	}
 }
 
 func globalFairShareHalfLife(settings map[string]any) (time.Duration, error) {

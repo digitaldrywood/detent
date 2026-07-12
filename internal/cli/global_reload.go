@@ -25,12 +25,15 @@ type globalConfigReloader struct {
 	logger             *slog.Logger
 	githubToken        *runtimeGitHubTokenState
 	resolveGitHubToken func(context.Context, globalconfig.Config) (string, error)
+	applyRuntime       func(globalconfig.Config) error
 	onReload           func(globalconfig.Config)
 }
 
 type globalConfigChange struct {
 	Field           string
 	RequiresRestart bool
+	Old             any
+	New             any
 }
 
 func startGlobalConfigWatcher(
@@ -39,7 +42,8 @@ func startGlobalConfigWatcher(
 	manager globalConfigManager,
 	logger *slog.Logger,
 	githubToken *runtimeGitHubTokenState,
-	onReload ...func(globalconfig.Config),
+	applyRuntime func(globalconfig.Config) error,
+	onReload func(globalconfig.Config),
 ) <-chan struct{} {
 	if ctx == nil {
 		ctx = context.Background()
@@ -67,13 +71,12 @@ func startGlobalConfigWatcher(
 
 	done := make(chan struct{})
 	reloader := &globalConfigReloader{
-		current:     current,
-		manager:     manager,
-		logger:      logger,
-		githubToken: githubToken,
-	}
-	if len(onReload) > 0 {
-		reloader.onReload = onReload[0]
+		current:      current,
+		manager:      manager,
+		logger:       logger,
+		githubToken:  githubToken,
+		applyRuntime: applyRuntime,
+		onReload:     onReload,
 	}
 	syncLatestGlobalConfig(ctx, path, reloader)
 	go func() {
@@ -167,8 +170,19 @@ func (r *globalConfigReloader) apply(
 	}
 
 	managerConfig := managerConfigWithRuntimeGitHubToken(update.Value, nextGitHubToken)
+	if r.applyRuntime != nil {
+		if err := r.applyRuntime(update.Value); err != nil {
+			if r.githubToken != nil {
+				r.githubToken.set(previousGitHubToken)
+			}
+			return project.ReconcileResult{}, err
+		}
+	}
 	result, err := r.manager.Reconcile(ctx, managerConfig)
 	if err != nil {
+		if r.applyRuntime != nil {
+			err = errors.Join(err, r.applyRuntime(r.current))
+		}
 		if r.githubToken != nil {
 			r.githubToken.set(previousGitHubToken)
 		}
@@ -225,17 +239,17 @@ func logGlobalConfigChanges(logger *slog.Logger, previous globalconfig.Config, n
 			logger.Warn("global config setting change requires restart", "field", change.Field)
 			continue
 		}
-		logger.Info("global config setting reloaded", "field", change.Field)
+		logger.Info("global config setting reloaded", "field", change.Field, "old", change.Old, "new", change.New)
 	}
 }
 
 func changedGlobalConfigFields(previous globalconfig.Config, next globalconfig.Config) []globalConfigChange {
 	fields := []globalConfigChange{}
 	if previous.Env != next.Env {
-		fields = append(fields, globalConfigChange{Field: "env", RequiresRestart: true})
+		fields = append(fields, globalConfigChange{Field: "env", RequiresRestart: true, Old: previous.Env, New: next.Env})
 	}
 	if previous.LogLevel != next.LogLevel {
-		fields = append(fields, globalConfigChange{Field: "log_level", RequiresRestart: true})
+		fields = append(fields, globalConfigChange{Field: "log_level", Old: previous.LogLevel, New: next.LogLevel})
 	}
 	if !sameOptionalInt(previous.LogMaxSizeBytes, next.LogMaxSizeBytes) {
 		fields = append(fields, globalConfigChange{Field: "log_max_size_bytes", RequiresRestart: true})
@@ -244,16 +258,16 @@ func changedGlobalConfigFields(previous globalconfig.Config, next globalconfig.C
 		fields = append(fields, globalConfigChange{Field: "log_max_backups", RequiresRestart: true})
 	}
 	if previous.GitHubToken != next.GitHubToken {
-		fields = append(fields, globalConfigChange{Field: "github_token"})
+		fields = append(fields, globalConfigChange{Field: "github_token", Old: "<redacted>", New: "<redacted>"})
 	}
 	if !sameOptionalInt(previous.Port, next.Port) {
 		fields = append(fields, globalConfigChange{Field: "port", RequiresRestart: true})
 	}
 	if previous.InstanceName != next.InstanceName {
-		fields = append(fields, globalConfigChange{Field: "instance_name"})
+		fields = append(fields, globalConfigChange{Field: "instance_name", Old: previous.InstanceName, New: next.InstanceName})
 	}
 	if !reflect.DeepEqual(previous.Projects, next.Projects) {
-		fields = append(fields, globalConfigChange{Field: "projects"})
+		fields = append(fields, globalConfigChange{Field: "projects", Old: globalProjectIDs(previous.Projects), New: globalProjectIDs(next.Projects)})
 	}
 	fields = append(fields, changedGlobalSettings(previous.Global, next.Global)...)
 	return fields
@@ -262,21 +276,29 @@ func changedGlobalConfigFields(previous globalconfig.Config, next globalconfig.C
 func changedGlobalSettings(previous globalconfig.Settings, next globalconfig.Settings) []globalConfigChange {
 	fields := []globalConfigChange{}
 	if previous.MaxConcurrentAgents != next.MaxConcurrentAgents {
-		fields = append(fields, globalConfigChange{Field: "global.max_concurrent_agents", RequiresRestart: true})
+		fields = append(fields, globalConfigChange{Field: "global.max_concurrent_agents", Old: previous.MaxConcurrentAgents, New: next.MaxConcurrentAgents})
 	}
 	if previous.Scheduling != next.Scheduling {
-		fields = append(fields, globalConfigChange{Field: "global.scheduling", RequiresRestart: true})
+		fields = append(fields, globalConfigChange{Field: "global.scheduling", Old: previous.Scheduling, New: next.Scheduling})
 	}
 	if !reflect.DeepEqual(previous.Identity, next.Identity) {
-		fields = append(fields, globalConfigChange{Field: "global.identity"})
+		fields = append(fields, globalConfigChange{Field: "global.identity", Old: previous.Identity, New: next.Identity})
 	}
 	if !reflect.DeepEqual(previous.FairShare, next.FairShare) {
-		fields = append(fields, globalConfigChange{Field: "global.fair_share", RequiresRestart: true})
+		fields = append(fields, globalConfigChange{Field: "global.fair_share", Old: previous.FairShare, New: next.FairShare})
 	}
 	if !reflect.DeepEqual(previous.Startup, next.Startup) {
-		fields = append(fields, globalConfigChange{Field: "global.startup"})
+		fields = append(fields, globalConfigChange{Field: "global.startup", Old: previous.Startup, New: next.Startup})
 	}
 	return fields
+}
+
+func globalProjectIDs(projects []globalconfig.Project) []string {
+	ids := make([]string, 0, len(projects))
+	for _, cfg := range projects {
+		ids = append(ids, cfg.ID)
+	}
+	return ids
 }
 
 func sameOptionalInt(left *int, right *int) bool {

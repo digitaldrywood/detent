@@ -37,6 +37,10 @@ type Scheduler interface {
 	Mode() Mode
 }
 
+type Reconfigurable interface {
+	Reconfigure(Config) error
+}
+
 type Config struct {
 	Kind            string
 	Capacity        int
@@ -77,6 +81,7 @@ type CountingSemaphore struct {
 	usedByHost      map[string]int
 	active          map[uint64]Slot
 	nextToken       uint64
+	draining        bool
 }
 
 type capacitySnapshot struct {
@@ -84,6 +89,7 @@ type capacitySnapshot struct {
 	globalUsed     int
 	stateCapacity  int
 	stateUsed      int
+	draining       bool
 }
 
 var _ Scheduler = (*CountingSemaphore)(nil)
@@ -181,8 +187,30 @@ func (s *CountingSemaphore) ReleaseSlot(slot Slot) error {
 	s.used -= held.Weight
 	decrement(s.usedByState, held.State, held.Weight)
 	decrement(s.usedByHost, held.Host, held.Weight)
+	if s.draining && s.used < s.capacity {
+		s.draining = false
+	}
 
 	return nil
+}
+
+func (s *CountingSemaphore) reconfigure(cfg Config) {
+	capacity := cfg.Capacity
+	if capacity <= 0 {
+		capacity = defaultCapacity
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if capacity < s.capacity && s.used >= capacity {
+		s.draining = true
+	} else if capacity > s.capacity {
+		s.draining = false
+	}
+	s.capacity = capacity
+	s.capacityByState = normalizedCapacities(cfg.CapacityByState)
+	s.capacityPerHost = normalizedCapacity(cfg.CapacityPerHost)
 }
 
 func (s *CountingSemaphore) Counters() Counters {
@@ -215,6 +243,7 @@ func (s *CountingSemaphore) capacitySnapshot(state string) capacitySnapshot {
 		globalUsed:     s.used,
 		stateCapacity:  stateCapacity,
 		stateUsed:      stateUsed,
+		draining:       s.draining,
 	}
 }
 

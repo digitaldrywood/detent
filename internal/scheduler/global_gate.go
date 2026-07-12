@@ -113,6 +113,29 @@ func (g *GlobalDispatchGate) SetProjects(projects []ProjectCandidate) {
 	g.projects = next
 }
 
+func (g *GlobalDispatchGate) Reconfigure(cfg Config) error {
+	if g == nil || g.global == nil {
+		return nil
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	previousMode := g.global.Mode()
+	if err := g.global.Reconfigure(cfg); err != nil {
+		return err
+	}
+	clear(g.selected)
+	if previousMode != g.global.Mode() {
+		clear(g.projectCycles)
+		g.epoch++
+		if g.epoch == 0 {
+			g.epoch = 1
+		}
+	}
+	return nil
+}
+
 func (g *GlobalDispatchGate) BeginProjectCycle(project ProjectCandidate) {
 	if g == nil || g.global == nil {
 		return
