@@ -661,6 +661,7 @@ type terminalDashboardProgram interface {
 func terminalDashboardProgramOptions() []tea.ProgramOption {
 	return []tea.ProgramOption{
 		tea.WithFilter(terminalDashboardMessageFilter),
+		tea.WithoutSignalHandler(),
 	}
 }
 
