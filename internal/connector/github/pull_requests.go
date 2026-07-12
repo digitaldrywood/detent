@@ -309,13 +309,22 @@ func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issu
 	return issue, nil
 }
 
-func (c *Connector) MergePullRequest(ctx context.Context, repository string, number int, headSHA string) error {
+func (c *Connector) MergePullRequest(ctx context.Context, repository string, number int, headSHA string, mergeMethod string) error {
 	repo, ok := pullRequestRepoFromName(repository)
 	if !ok || number <= 0 {
 		return fmt.Errorf("merge github pull request: invalid pull request %s#%d", strings.TrimSpace(repository), number)
 	}
+	mergeMethod = strings.ToLower(strings.TrimSpace(mergeMethod))
+	if mergeMethod == "" {
+		mergeMethod = "squash"
+	}
+	switch mergeMethod {
+	case "squash", "merge", "rebase":
+	default:
+		return errors.New("merge github pull request: merge method must be one of squash, merge, rebase")
+	}
 	body := map[string]string{
-		"merge_method": "squash",
+		"merge_method": mergeMethod,
 	}
 	if headSHA = strings.TrimSpace(headSHA); headSHA != "" {
 		body["sha"] = headSHA

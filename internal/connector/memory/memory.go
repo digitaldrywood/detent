@@ -340,7 +340,7 @@ func (c *Connector) HydratePullRequest(_ context.Context, issue connector.Issue)
 	return cloneIssue(issue), nil
 }
 
-func (c *Connector) MergePullRequest(_ context.Context, repository string, number int, headSHA string) error {
+func (c *Connector) MergePullRequest(_ context.Context, repository string, number int, headSHA string, _ string) error {
 	repository = strings.TrimSpace(repository)
 	c.applyPullRequest(repository, number, func(issue *connector.Issue, now time.Time) {
 		if issue.PullRequest == nil {

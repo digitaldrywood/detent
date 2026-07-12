@@ -64,6 +64,7 @@ type Config struct {
 	DispatchPriorityByLabel       []string
 	PrioritizeUnblockers          bool
 	MergeFastPathEnabled          bool
+	MergeMethod                   string
 	ResumeOrphanedSessions        bool
 	MaxConcurrentAgentsPerHost    int
 	MaxRetryBackoff               time.Duration

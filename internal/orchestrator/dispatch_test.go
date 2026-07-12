@@ -104,6 +104,7 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Agent.AutoPromote.GateWaitTimeoutSeconds = 900
 	cfg.Agent.AutoPromote.ReworkLimit = 2
 	cfg.Agent.MergeFastPath.Enabled = true
+	cfg.Deliverable.MergeMethod = workflowconfig.MergeMethodRebase
 	cfg.Agent.OutputTruncation.MaxBytes = 4096
 	cfg.Identity.Name = "release-captain"
 	cfg.Identity.GitHubLogin = "detent-bot"
@@ -158,6 +159,9 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if !got.MergeFastPathEnabled {
 		t.Fatal("MergeFastPathEnabled = false, want true")
+	}
+	if got.MergeMethod != workflowconfig.MergeMethodRebase {
+		t.Fatalf("MergeMethod = %q, want rebase", got.MergeMethod)
 	}
 	if got.OutputTruncationMaxBytes != 4096 {
 		t.Fatalf("OutputTruncationMaxBytes = %d, want 4096", got.OutputTruncationMaxBytes)

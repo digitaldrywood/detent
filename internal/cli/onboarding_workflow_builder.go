@@ -493,6 +493,9 @@ func applyOnboardingWorkflowDecisions(
 	decisions.set(root, "tracker.repository", validation.TargetRepository, "answer", "TARGET_REPOSITORY")
 	decisions.set(root, "workspace.source_root", sourceRoot, "answer", "TARGET_SOURCE_ROOT")
 	decisions.set(root, "workspace.root", worktreeRoot, worktreeProvenance, worktreeWhy)
+	if preset != "non_code_artifact" {
+		decisions.set(root, "deliverable.merge_method", workflowconfig.MergeMethodSquash, "preset", "default pull request merge strategy")
+	}
 	decisions.set(root, "agent.max_concurrent_agents", maxConcurrentAgents, maxConcurrentProvenance, maxConcurrentWhy)
 	decisions.set(root, "agent.max_turns", maxTurns, maxTurnsProvenance, maxTurnsWhy)
 	decisions.set(root, "agent.max_retry_backoff_ms", 300000, "preset", "recommended retry backoff ceiling")

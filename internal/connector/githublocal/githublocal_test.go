@@ -146,7 +146,7 @@ func TestConnectorLocalAnnotationsStayLocalAndPRLifecycleWritesPassThrough(t *te
 	if err := conn.CreatePullRequestComment(context.Background(), "digitaldrywood/detent", 12, "ship it"); err != nil {
 		t.Fatalf("CreatePullRequestComment() error = %v", err)
 	}
-	if err := conn.MergePullRequest(context.Background(), "digitaldrywood/detent", 12, "head-sha"); err != nil {
+	if err := conn.MergePullRequest(context.Background(), "digitaldrywood/detent", 12, "head-sha", "merge"); err != nil {
 		t.Fatalf("MergePullRequest() error = %v", err)
 	}
 	got := server.writeRequests()
@@ -646,7 +646,7 @@ func (b *recordingGitHubBackend) FetchPullRequestComments(context.Context, strin
 	panic("unexpected github FetchPullRequestComments")
 }
 
-func (b *recordingGitHubBackend) MergePullRequest(context.Context, string, int, string) error {
+func (b *recordingGitHubBackend) MergePullRequest(context.Context, string, int, string, string) error {
 	panic("unexpected github MergePullRequest")
 }
 

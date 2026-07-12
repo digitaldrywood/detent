@@ -4074,30 +4074,59 @@ func TestConnectorCreatePullRequestCommentUsesIssueCommentsEndpoint(t *testing.T
 	}
 }
 
-func TestConnectorMergePullRequestUsesRESTMergeEndpoint(t *testing.T) {
+func TestConnectorMergePullRequestUsesConfiguredMethod(t *testing.T) {
 	t.Parallel()
 
-	server := newGraphQLTestServer(t, []graphqlTestResponse{{
-		method: http.MethodPut,
-		path:   "/repos/example/repo/pulls/42/merge",
-		body:   `{"sha":"merge-sha","merged":true,"message":"Pull Request successfully merged"}`,
-	}})
-	c := newGitHubTestConnector(t, server, Config{})
-
-	if err := c.MergePullRequest(context.Background(), "example/repo", 42, "head-sha"); err != nil {
-		t.Fatalf("MergePullRequest() error = %v", err)
+	tests := []struct {
+		name         string
+		method       string
+		want         string
+		wantErr      string
+		wantRequests int
+	}{
+		{name: "default", want: "squash", wantRequests: 1},
+		{name: "squash", method: "squash", want: "squash", wantRequests: 1},
+		{name: "merge", method: "merge", want: "merge", wantRequests: 1},
+		{name: "rebase", method: "rebase", want: "rebase", wantRequests: 1},
+		{name: "normalizes case and whitespace", method: " ReBaSe ", want: "rebase", wantRequests: 1},
+		{name: "rejects invalid method", method: "octopus", wantErr: "merge method must be one of squash, merge, rebase"},
 	}
 
-	requests := server.requests()
-	if len(requests) != 1 {
-		t.Fatalf("request count = %d, want 1", len(requests))
-	}
-	if requests[0]["method"] != http.MethodPut || requests[0]["path"] != "/repos/example/repo/pulls/42/merge" {
-		t.Fatalf("merge request = %#v, want REST pull request merge", requests[0])
-	}
-	body := requests[0]["body"].(map[string]any)
-	if body["merge_method"] != "squash" || body["sha"] != "head-sha" {
-		t.Fatalf("merge body = %#v, want squash merge with head sha", body)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := newGraphQLTestServer(t, []graphqlTestResponse{{
+				method: http.MethodPut,
+				path:   "/repos/example/repo/pulls/42/merge",
+				body:   `{"sha":"merge-sha","merged":true,"message":"Pull Request successfully merged"}`,
+			}})
+			c := newGitHubTestConnector(t, server, Config{})
+
+			err := c.MergePullRequest(context.Background(), "example/repo", 42, "head-sha", tt.method)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("MergePullRequest() error = %v, want %q", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("MergePullRequest() error = %v", err)
+			}
+
+			requests := server.requests()
+			if got := len(requests); got != tt.wantRequests {
+				t.Fatalf("request count = %d, want %d", got, tt.wantRequests)
+			}
+			if tt.wantRequests == 0 {
+				return
+			}
+			if requests[0]["method"] != http.MethodPut || requests[0]["path"] != "/repos/example/repo/pulls/42/merge" {
+				t.Fatalf("merge request = %#v, want REST pull request merge", requests[0])
+			}
+			body := requests[0]["body"].(map[string]any)
+			if body["merge_method"] != tt.want || body["sha"] != "head-sha" {
+				t.Fatalf("merge body = %#v, want %s merge with head sha", body, tt.want)
+			}
+		})
 	}
 }
 

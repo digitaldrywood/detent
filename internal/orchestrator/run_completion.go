@@ -945,7 +945,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	repository := pullRequestRepository(issue)
 	number := pullRequestNumber(issue)
 	headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA)
-	if err := merger.MergePullRequest(ctx, repository, number, headSHA); err != nil {
+	if err := merger.MergePullRequest(ctx, repository, number, headSHA, o.cfg.MergeMethod); err != nil {
 		running.Issue = issue
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_failed", err)
 		return true

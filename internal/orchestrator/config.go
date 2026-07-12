@@ -24,6 +24,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		DispatchPriorityByLabel:    append([]string(nil), cfg.Agent.DispatchPriorityByLabel...),
 		PrioritizeUnblockers:       cfg.Agent.PrioritizeUnblockers,
 		MergeFastPathEnabled:       cfg.Agent.MergeFastPath.Enabled,
+		MergeMethod:                cfg.Deliverable.EffectiveMergeMethod(),
 		ResumeOrphanedSessions:     cfg.Agent.ResumeOrphanedSessions,
 		MaxConcurrentAgentsPerHost: positiveIntValue(cfg.Worker.MaxConcurrentAgentsPerHost),
 		MaxRetryBackoff:            durationFromMillis(cfg.Agent.MaxRetryBackoffMS),
@@ -140,6 +141,7 @@ func normalizeConfig(cfg Config) Config {
 	cfg.MaxConcurrentAgentsByState = cloneStateLimits(cfg.MaxConcurrentAgentsByState)
 	cfg.DispatchPriorityByState = normalizedStates(cfg.DispatchPriorityByState)
 	cfg.DispatchPriorityByLabel = normalizeLabels(cfg.DispatchPriorityByLabel)
+	cfg.MergeMethod = workflowconfig.Deliverable{MergeMethod: cfg.MergeMethod}.EffectiveMergeMethod()
 	cfg.Claiming = normalizeClaimingConfig(cfg.Claiming)
 	cfg.AutoPromote = normalizeAutoPromoteConfig(cfg.AutoPromote)
 	cfg.Plan = gate.EffectivePlan(cfg.Plan)

@@ -156,6 +156,46 @@ func TestBuildPromptSkillCreationUsesDefaultConfigForPullRequestsOnly(t *testing
 	}
 }
 
+func TestBuildPromptIncludesMergeMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		deliverable   config.Deliverable
+		mergeFallback bool
+		want          string
+		wantBlock     bool
+	}{
+		{name: "omitted defaults to squash", want: "This project merges pull requests with: `squash`.", wantBlock: true},
+		{name: "squash", deliverable: config.Deliverable{MergeMethod: config.MergeMethodSquash}, want: "This project merges pull requests with: `squash`.", wantBlock: true},
+		{name: "merge", deliverable: config.Deliverable{MergeMethod: config.MergeMethodMerge}, want: "This project merges pull requests with: `merge`.", wantBlock: true},
+		{name: "rebase", deliverable: config.Deliverable{MergeMethod: config.MergeMethodRebase}, want: "This project merges pull requests with: `rebase`.", wantBlock: true},
+		{name: "merge fallback defaults to squash", mergeFallback: true, want: "This project merges pull requests with: `squash`.", wantBlock: true},
+		{name: "merge fallback uses configured method", deliverable: config.Deliverable{MergeMethod: config.MergeMethodMerge}, mergeFallback: true, want: "This project merges pull requests with: `merge`.", wantBlock: true},
+		{name: "artifact omits merge strategy", deliverable: config.Deliverable{Kind: config.DeliverableArtifact}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(config.Workflow{
+				Config: config.Config{Deliverable: tt.deliverable},
+				Prompt: "Base prompt",
+			}, connector.Issue{Identifier: "digitaldrywood/detent#1270"}, PromptOptions{MergeFallback: tt.mergeFallback})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+			if got := strings.Contains(prompt, "## Merge strategy"); got != tt.wantBlock {
+				t.Fatalf("merge strategy block present = %v, want %v:\n%s", got, tt.wantBlock, prompt)
+			}
+			if tt.want != "" && !strings.Contains(prompt, tt.want) {
+				t.Fatalf("prompt missing %q:\n%s", tt.want, prompt)
+			}
+		})
+	}
+}
+
 func TestSkillDraftProposed(t *testing.T) {
 	t.Parallel()
 

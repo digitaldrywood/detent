@@ -102,6 +102,7 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 
 	rendered = appendPriorAttemptBlock(rendered, opts.PriorAttempt)
 	rendered = appendWorkflowInstructionsBlock(rendered, workflow.Config.Agent, issue, opts)
+	rendered = appendMergeMethodBlock(rendered, workflow.Config.Deliverable)
 	rendered = appendDeliverableBlock(rendered, workflow.Config, issue, opts.WorkspacePath)
 	rendered = appendBlockedHandoffBlock(rendered)
 	rendered = appendGateBlock(rendered, workflow.Config.Gate)
@@ -158,6 +159,7 @@ func BuildMergeFallbackPrompt(workflow config.Workflow, issue connector.Issue, o
 		return "", err
 	}
 	prompt = appendWorkflowInstructionsBlock(prompt, workflow.Config.Agent, issue, opts)
+	prompt = appendMergeMethodBlock(prompt, workflow.Config.Deliverable)
 	prompt = appendBlockedHandoffBlock(prompt)
 	prompt = appendGateBlock(prompt, workflow.Config.Gate)
 	prompt = appendAvailableSkills(prompt, AvailableSkillsBlock(opts.AvailableSkills))
@@ -448,6 +450,15 @@ func appendDeliverableBlock(prompt string, cfg config.Config, issue connector.Is
 		}
 	}
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + strings.TrimRight(b.String(), "\n")
+}
+
+func appendMergeMethodBlock(prompt string, deliverable config.Deliverable) string {
+	if promptDeliverableKind(deliverable) != config.DeliverablePullRequest {
+		return prompt
+	}
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Merge strategy\n\n" +
+		"This project merges pull requests with: `" + deliverable.EffectiveMergeMethod() + "`.\n" +
+		"Use this method for every agent-shipped merge."
 }
 
 func promptDeliverableKind(cfg config.Deliverable) string {
