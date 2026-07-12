@@ -421,9 +421,7 @@ func TestProjectReestablishesClosedWorkflowWatcher(t *testing.T) {
 	if !bytes.Contains(logs.Bytes(), []byte("workflow watcher stopped")) {
 		t.Fatalf("logs = %q, want watcher failure warning", logs.String())
 	}
-	if !got.WorkflowSourceStatus().WatcherArmed {
-		t.Fatal("WatcherArmed = false after re-establishment")
-	}
+	waitForWorkflowWatcherArmed(t, got)
 
 	reloaded := initial
 	reloaded.Polling.IntervalMS = 60000
@@ -518,6 +516,44 @@ func TestProjectUnpauseReloadsWorkflowEditedWhilePaused(t *testing.T) {
 
 	if got.Workflow().Prompt != "reloaded before unpause\n" {
 		t.Fatalf("Workflow().Prompt = %q, want reloaded workflow", got.Workflow().Prompt)
+	}
+}
+
+func TestProjectUnpauseKeepsProjectPausedWhenWorkflowReloadFails(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	writeProjectGateWorkflow(t, workflowPath, 60000, "", "initial")
+	workflow, err := workflowconfig.LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow() error = %v", err)
+	}
+
+	got, err := project.New(project.Config{
+		Project:  globalconfig.Project{ID: "detent", Workflow: workflowPath, Weight: 1, Paused: true},
+		Workflow: workflow,
+	}, project.Dependencies{Runner: blockingRunner{}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := got.Stop(context.Background()); err != nil && !errors.Is(err, project.ErrNotRunning) {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	})
+
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker: [\n---\ninvalid\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := got.Unpause(context.Background()); err == nil {
+		t.Fatal("Unpause() error = nil, want workflow reload failure")
+	}
+	if !got.Paused() {
+		t.Fatal("Paused() = false after failed workflow reload, want true")
+	}
+	if got.Workflow().Prompt != "initial\n" {
+		t.Fatalf("Workflow().Prompt = %q, want original workflow", got.Workflow().Prompt)
 	}
 }
 
@@ -1402,6 +1438,25 @@ func waitForWorkflowWatcher(t *testing.T, ready <-chan struct{}) {
 	case <-ready:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for workflow watcher")
+	}
+}
+
+func waitForWorkflowWatcherArmed(t *testing.T, got *project.Project) {
+	t.Helper()
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.After(time.Second)
+
+	for {
+		if got.WorkflowSourceStatus().WatcherArmed {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatal("timed out waiting for workflow watcher to become armed")
+		}
 	}
 }
 

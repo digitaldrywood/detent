@@ -2114,7 +2114,9 @@ logged and ignored while the last valid config stays live.
 
 Paused projects do not run workflow watchers or periodic workflow reconciliation.
 `detent unpause <id>` synchronously reloads the project's current `WORKFLOW.md`
-before dispatch resumes, so edits made while paused take effect on unpause.
+before dispatch resumes, so edits made while paused take effect on unpause. If
+the current workflow cannot be loaded or prepared, unpause returns the error and
+the project remains paused.
 
 For projects whose workflow file is already present on the target branch, you
 can include `--workflow-ref origin/main` during registration or add

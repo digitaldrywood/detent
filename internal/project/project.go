@@ -533,9 +533,14 @@ func (p *Project) Unpause(ctx context.Context) error {
 		p.mu.Unlock()
 		return nil
 	}
+	fileBackedWorkflow := p.workflowSource.Hash != ""
 	p.mu.Unlock()
 
-	p.reconcileWorkflow(ctx)
+	if fileBackedWorkflow {
+		if err := p.reconcileWorkflow(ctx); err != nil {
+			return fmt.Errorf("reload workflow before unpause: %w", err)
+		}
+	}
 
 	p.mu.Lock()
 	if !p.cfg.Paused {
@@ -928,7 +933,9 @@ func (p *Project) startWorkflowWatcher(ctx context.Context) <-chan struct{} {
 				p.setWorkflowWatcherArmed(false)
 				return
 			case <-reconcileTicker.C:
-				p.reconcileWorkflow(ctx)
+				if err := p.reconcileWorkflow(ctx); err != nil {
+					continue
+				}
 			case <-retryC:
 				retryC = nil
 				if err := arm(); err != nil {
@@ -963,7 +970,9 @@ func (p *Project) startWorkflowWatcher(ctx context.Context) <-chan struct{} {
 					scheduleRetry(update.Err)
 					continue
 				}
-				p.handleWorkflowUpdate(ctx, update)
+				if err := p.handleWorkflowUpdate(ctx, update); err != nil {
+					continue
+				}
 			}
 		}
 	}()
@@ -1009,7 +1018,7 @@ func (p *Project) recordWorkflowWatchEvent(at time.Time) {
 	p.mu.Unlock()
 }
 
-func (p *Project) reconcileWorkflow(ctx context.Context) {
+func (p *Project) reconcileWorkflow(ctx context.Context) error {
 	p.mu.Lock()
 	projectConfig := p.cfg
 	loadedHash := p.workflowSource.Hash
@@ -1024,25 +1033,20 @@ func (p *Project) reconcileWorkflow(ctx context.Context) {
 		if ctx.Err() == nil {
 			p.logger.Warn("workflow reconcile failed", "project_id", p.id, "path", workflowSourceDisplayPath(projectConfig), "error", err)
 		}
-		return
+		return fmt.Errorf("load workflow: %w", err)
 	}
 	if workflow.SourceHash == "" || workflow.SourceHash == loadedHash {
-		return
+		return nil
 	}
 
 	path := workflowSourceDisplayPath(projectConfig)
 	p.logger.Warn("workflow reconcile detected stale config", "project_id", p.id, "path", path)
-	p.handleWorkflowUpdate(ctx, configwatcher.Update{Path: path, Workflow: workflow, At: now})
+	return p.handleWorkflowUpdate(ctx, configwatcher.Update{Path: path, Workflow: workflow, At: now})
 }
 
-func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher.Update) bool {
+func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher.Update) error {
 	if update.Err != nil {
-		p.logger.Warn("workflow reload failed",
-			"project_id", p.id,
-			"path", update.Path,
-			"error", update.Err,
-		)
-		return false
+		return p.workflowReloadError("workflow reload failed", update.Path, update.Err)
 	}
 
 	p.mu.Lock()
@@ -1060,52 +1064,27 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	workflow.Config = workflowConfigWithProjectIdentity(projectConfig, workflow.Config)
 	workflow.Config = workflowConfigWithGitHubToken(workflow.Config, githubToken)
 	if err := workflow.Config.Validate(); err != nil {
-		p.logger.Warn("workflow reload validation failed",
-			"project_id", p.id,
-			"path", update.Path,
-			"error", err,
-		)
-		return false
+		return p.workflowReloadError("workflow reload validation failed", update.Path, err)
 	}
 
 	projectConnector, err := buildConnector(workflow.Config, connectorFactory)
 	if err != nil {
-		p.logger.Warn("workflow reload connector failed",
-			"project_id", p.id,
-			"path", update.Path,
-			"error", err,
-		)
-		return false
+		return p.workflowReloadError("workflow reload connector failed", update.Path, err)
 	}
 
 	projectScheduler, err := buildScheduler(workflow.Config, schedulerFactory)
 	if err != nil {
-		p.logger.Warn("workflow reload scheduler failed",
-			"project_id", p.id,
-			"path", update.Path,
-			"error", err,
-		)
-		return false
+		return p.workflowReloadError("workflow reload scheduler failed", update.Path, err)
 	}
 	releaseBuild, err := buildReleaseCoordinator(workflow.Config, projectConnector)
 	if err != nil {
-		p.logger.Warn("workflow reload release coordinator failed",
-			"project_id", p.id,
-			"path", update.Path,
-			"error", err,
-		)
-		return false
+		return p.workflowReloadError("workflow reload release coordinator failed", update.Path, err)
 	}
 	releaseCoordinator := releaseBuild.coordinator
 
 	projectRetroStore, productRetroStore, retroProductConnector, err := buildRetroIssueStores(workflow.Config, projectConnector, connectorFactory)
 	if err != nil {
-		p.logger.Warn("workflow reload retro connector failed",
-			"project_id", p.id,
-			"path", update.Path,
-			"error", err,
-		)
-		return false
+		return p.workflowReloadError("workflow reload retro connector failed", update.Path, err)
 	}
 	retainRetroProduct := false
 	defer func() {
@@ -1125,12 +1104,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			intakeRoot(projectConfig, workflow.Config),
 		)
 		if err != nil {
-			p.logger.Warn("prepare workflow intake reload failed",
-				"project_id", p.id,
-				"path", update.Path,
-				"error", err,
-			)
-			return false
+			return p.workflowReloadError("prepare workflow intake reload failed", update.Path, err)
 		}
 	}
 
@@ -1143,14 +1117,9 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			ReplaceRelease: true,
 		}); err != nil {
 			if ctx.Err() != nil {
-				return false
+				return ctx.Err()
 			}
-			p.logger.Warn("apply workflow reload failed",
-				"project_id", p.id,
-				"path", update.Path,
-				"error", err,
-			)
-			return false
+			return p.workflowReloadError("apply workflow reload failed", update.Path, err)
 		}
 	}
 	if updater, ok := runner.(workflowUpdater); ok {
@@ -1166,8 +1135,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			ProjectIssues: projectRetroStore,
 			ProductIssues: productRetroStore,
 		}); err != nil {
-			p.logger.Warn("apply workflow retro reload failed", "project_id", p.id, "path", update.Path, "error", err)
-			return false
+			return p.workflowReloadError("apply workflow retro reload failed", update.Path, err)
 		}
 	}
 
@@ -1205,7 +1173,12 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			At:        time.Now(),
 		})
 	}
-	return true
+	return nil
+}
+
+func (p *Project) workflowReloadError(message, path string, err error) error {
+	p.logger.Warn(message, "project_id", p.id, "path", path, "error", err)
+	return fmt.Errorf("%s: %w", message, err)
 }
 
 type releaseCoordinatorBuild struct {

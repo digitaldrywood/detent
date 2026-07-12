@@ -59,6 +59,14 @@ func checkDoctorWorkflowDrift(ctx context.Context, cfg globalconfig.Config, boot
 	for _, configuredProject := range cfg.Projects {
 		id := doctorProjectID(configuredProject)
 		name := "Project " + id + " workflow runtime"
+		if configuredProject.Paused {
+			checks = append(checks, doctorCheck{
+				Name:   name,
+				Status: doctorOK,
+				Detail: "project " + id + " is paused; workflow drift comparison deferred until unpause",
+			})
+			continue
+		}
 		runtimeWorkflow, ok := runtimeByProject[id]
 		if !ok {
 			checks = append(checks, doctorCheck{

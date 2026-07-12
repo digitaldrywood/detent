@@ -3918,6 +3918,32 @@ func TestCheckDoctorWorkflowDriftReportsStaleLiveConfig(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorWorkflowDriftDefersPausedProject(t *testing.T) {
+	t.Parallel()
+
+	port := 4001
+	checks := checkDoctorWorkflowDrift(context.Background(), globalconfig.Config{
+		Projects: []globalconfig.Project{{ID: "detent", Workflow: "WORKFLOW.md", Paused: true}},
+	}, BootConfig{Host: "127.0.0.1", Port: &port}, doctorDeps{
+		httpDo: func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"status":"ok","mode":"running","checks":{"hub":"configured","store":"configured","registry":"configured","connector":"configured"},"workflows":[{"project_id":"detent","source_hash":"stale-hash"}]}`)),
+			}, nil
+		},
+	})
+
+	if len(checks) != 1 {
+		t.Fatalf("checks = %#v, want one", checks)
+	}
+	if checks[0].Status != doctorOK {
+		t.Fatalf("Status = %s, want %s: %#v", checks[0].Status, doctorOK, checks[0])
+	}
+	if !strings.Contains(checks[0].Detail, "paused; workflow drift comparison deferred until unpause") {
+		t.Fatalf("Detail = %q, want paused drift deferral", checks[0].Detail)
+	}
+}
+
 func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 	t.Parallel()
 
