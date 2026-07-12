@@ -186,6 +186,41 @@ func TestClientRESTConditionalRequestsCanBeDisabled(t *testing.T) {
 	}
 }
 
+func TestConnectorConditionalPollingEnabled(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		source     string
+		disabled   bool
+		wantActive bool
+	}{
+		{name: "project v2", source: GitHubStatusSourceProjectV2, wantActive: true},
+		{name: "issue field", source: GitHubStatusSourceIssueField, wantActive: true},
+		{name: "label", source: GitHubStatusSourceLabel, wantActive: true},
+		{name: "disabled", source: GitHubStatusSourceProjectV2, disabled: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			connector, err := NewConnector(Config{
+				Endpoint:                   "https://api.github.test/graphql",
+				APIKey:                     "test-token",
+				GitHubStatusSource:         test.source,
+				DisableConditionalRequests: test.disabled,
+			})
+			if err != nil {
+				t.Fatalf("NewConnector() error = %v", err)
+			}
+			if got := connector.ConditionalPollingEnabled(); got != test.wantActive {
+				t.Fatalf("ConditionalPollingEnabled() = %v, want %v", got, test.wantActive)
+			}
+		})
+	}
+}
+
 func TestClientRESTConditionalCacheIsBounded(t *testing.T) {
 	t.Parallel()
 

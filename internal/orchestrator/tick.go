@@ -11,6 +11,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
+const githubRateLimitResetSkew = 5 * time.Second
+
 type tickPreviousState struct {
 	lastRefreshAt            time.Time
 	pipeline                 []connector.Issue
@@ -79,7 +81,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		return
 	}
 
-	reserve := o.githubBudgetReserveDecision(state)
+	reserve := o.githubBudgetReserveDecision(state, now)
 	if reserve.degraded {
 		o.logGitHubBudgetReserveDecision(reserve)
 		recordStateEvent(state, telemetry.ActivityEvent{
@@ -510,17 +512,17 @@ func (o *Orchestrator) observedWorkExists(ctx context.Context, observedStates []
 	return len(issues) > 0
 }
 
-func (o *Orchestrator) githubBudgetReserveDecision(state *State) githubBudgetReserveDecision {
+func (o *Orchestrator) githubBudgetReserveDecision(state *State, now time.Time) githubBudgetReserveDecision {
 	decision := githubBudgetReserveDecision{
 		restRemaining:  gitHubRESTRemaining(state),
 		restReserve:    o.cfg.GitHubRESTMinReserve,
 		graphRemaining: gitHubGraphQLRemaining(state),
 		graphReserve:   o.cfg.GitHubGraphQLMinReserve,
 	}
-	if bucket := gitHubRESTBucketFromState(state); budgetBelowReserve(bucket, o.cfg.GitHubRESTMinReserve) && !o.conditionalPollingEnabled() {
+	if bucket := gitHubRESTBucketFromState(state); budgetBelowReserve(bucket, o.cfg.GitHubRESTMinReserve, now) && !o.conditionalPollingEnabled() {
 		decision.degraded = true
 	}
-	if bucket := gitHubGraphQLBucketFromState(state); budgetBelowReserve(bucket, o.cfg.GitHubGraphQLMinReserve) {
+	if bucket := gitHubGraphQLBucketFromState(state); budgetBelowReserve(bucket, o.cfg.GitHubGraphQLMinReserve, now) {
 		decision.degraded = true
 	}
 	return decision
@@ -531,8 +533,12 @@ func (o *Orchestrator) conditionalPollingEnabled() bool {
 	return ok && poller.ConditionalPollingEnabled()
 }
 
-func budgetBelowReserve(bucket *telemetry.RateLimitBucket, reserve int64) bool {
-	return bucket != nil && reserve > 0 && bucket.Limit > 0 && bucket.Remaining <= reserve
+func budgetBelowReserve(bucket *telemetry.RateLimitBucket, reserve int64, now time.Time) bool {
+	return bucket != nil &&
+		reserve > 0 &&
+		bucket.Limit > 0 &&
+		bucket.Remaining <= reserve &&
+		(bucket.ResetAt == nil || !now.After(bucket.ResetAt.Add(githubRateLimitResetSkew)))
 }
 
 func (o *Orchestrator) logGitHubBudgetReserveDecision(decision githubBudgetReserveDecision) {

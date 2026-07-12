@@ -703,6 +703,64 @@ func TestTickSkipsNonessentialGitHubWorkBelowRESTReserve(t *testing.T) {
 	}
 }
 
+func TestGitHubBudgetReserveDecisionUsesCurrentRateLimitWindow(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 18, 0, 0, 0, time.UTC)
+	activeReset := now.Add(time.Hour)
+	expiredReset := now.Add(-time.Minute)
+	tests := []struct {
+		name         string
+		rateLimits   *telemetry.RateLimits
+		wantDegraded bool
+	}{
+		{
+			name: "active REST window",
+			rateLimits: &telemetry.RateLimits{GitHubREST: &telemetry.RateLimitBucket{
+				Limit: 5000, Remaining: 900, ResetAt: &activeReset,
+			}},
+			wantDegraded: true,
+		},
+		{
+			name: "expired REST window",
+			rateLimits: &telemetry.RateLimits{GitHubREST: &telemetry.RateLimitBucket{
+				Limit: 5000, Remaining: 900, ResetAt: &expiredReset,
+			}},
+		},
+		{
+			name: "active GraphQL window",
+			rateLimits: &telemetry.RateLimits{GitHubGraphQL: &telemetry.RateLimitBucket{
+				Limit: 5000, Remaining: 900, ResetAt: &activeReset,
+			}},
+			wantDegraded: true,
+		},
+		{
+			name: "expired GraphQL window",
+			rateLimits: &telemetry.RateLimits{GitHubGraphQL: &telemetry.RateLimitBucket{
+				Limit: 5000, Remaining: 900, ResetAt: &expiredReset,
+			}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{
+				GitHubRESTMinReserve:    1000,
+				GitHubGraphQLMinReserve: 1000,
+			})
+			state := newState(cfg)
+			state.RateLimits = test.rateLimits
+			orch := newRateLimitTestOrchestrator(cfg, &rateLimitConnector{})
+
+			if got := orch.githubBudgetReserveDecision(&state, now).degraded; got != test.wantDegraded {
+				t.Fatalf("githubBudgetReserveDecision().degraded = %v, want %v", got, test.wantDegraded)
+			}
+		})
+	}
+}
+
 func TestTickAllowsConditionalPollingBelowRESTReserve(t *testing.T) {
 	t.Parallel()
 
