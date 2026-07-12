@@ -15,11 +15,12 @@ const (
 )
 
 type MutationTracker struct {
-	mu       sync.Mutex
-	locks    map[string]*sync.Mutex
-	states   map[string]pendingState
-	removed  map[string]pendingRemoval
-	reverted map[string]RevertNotice
+	mu          sync.Mutex
+	locks       map[string]*sync.Mutex
+	states      map[string]pendingState
+	synthesized map[string]synthesizedCard
+	removed     map[string]pendingRemoval
+	reverted    map[string]RevertNotice
 }
 
 type pendingState struct {
@@ -38,6 +39,11 @@ type pendingRemoval struct {
 	dataSeqAtWrite uint64
 }
 
+type synthesizedCard struct {
+	project string
+	issue   telemetry.Issue
+}
+
 type RevertNotice struct {
 	Identifier string
 	From       string
@@ -47,10 +53,11 @@ type RevertNotice struct {
 
 func NewMutationTracker() *MutationTracker {
 	return &MutationTracker{
-		locks:    map[string]*sync.Mutex{},
-		states:   map[string]pendingState{},
-		removed:  map[string]pendingRemoval{},
-		reverted: map[string]RevertNotice{},
+		locks:       map[string]*sync.Mutex{},
+		states:      map[string]pendingState{},
+		synthesized: map[string]synthesizedCard{},
+		removed:     map[string]pendingRemoval{},
+		reverted:    map[string]RevertNotice{},
 	}
 }
 
@@ -117,7 +124,6 @@ func (t *MutationTracker) cardStateLocked(stateKey string, snapshotState string,
 		return snapshotState
 	default:
 		delete(t.states, stateKey)
-		t.noteRevertLocked(stateKey, pending, snapshotState)
 		return snapshotState
 	}
 }
@@ -141,6 +147,7 @@ func (t *MutationTracker) NoteCardState(key string, projectID string, issue tele
 	}
 	delete(t.removed, stateKey)
 	delete(t.reverted, stateKey)
+	delete(t.synthesized, stateKey)
 	t.states[stateKey] = pendingState{
 		snapshot:       strings.TrimSpace(snapshotState),
 		current:        strings.TrimSpace(currentState),
@@ -168,6 +175,7 @@ func (t *MutationTracker) PendingMovedCards(key string, projectID string, snapsh
 			continue
 		}
 		stateKey := MutationStateKey(key, issueID)
+		delete(t.synthesized, stateKey)
 		if _, ok := t.states[stateKey]; !ok {
 			continue
 		}
@@ -183,34 +191,51 @@ func (t *MutationTracker) PendingMovedCards(key string, projectID string, snapsh
 		if _, ok := present[stateKey]; ok {
 			continue
 		}
-		if _, ok := t.states[stateKey]; !ok {
+		pending, ok := t.states[stateKey]
+		if !ok {
 			continue
 		}
 		snapshotState := strings.TrimSpace(issue.State)
-		t.cardStateLocked(stateKey, snapshotState, dataSeq)
+		state := t.cardStateLocked(stateKey, snapshotState, dataSeq)
+		_, stillPending := t.states[stateKey]
+		if !stillPending && NormalizeState(snapshotState) != NormalizeState(pending.current) && NormalizeState(snapshotState) != NormalizeState(pending.snapshot) {
+			synthesizedIssue := CloneIssue(pending.issue)
+			synthesizedIssue.State = strings.TrimSpace(state)
+			t.synthesized[stateKey] = synthesizedCard{
+				project: pending.project,
+				issue:   synthesizedIssue,
+			}
+		}
 	}
 
 	out := []telemetry.Issue{}
-	for stateKey, pending := range t.states {
+	appendCard := func(stateKey string, project string, issue telemetry.Issue) {
 		if _, ok := present[stateKey]; ok {
-			continue
+			return
 		}
-		issueID := strings.TrimSpace(pending.issue.ID)
+		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" || MutationStateKey(key, issueID) != stateKey {
-			continue
+			return
 		}
-		if projectID != "" && pending.project != "" && pending.project != projectID {
-			continue
+		if projectID != "" && project != "" && project != projectID {
+			return
 		}
-		if !SameProject(pending.issue, projectID, snapshot.Project.ID) {
-			continue
+		if !SameProject(issue, projectID, snapshot.Project.ID) {
+			return
 		}
-		issue := CloneIssue(pending.issue)
+		issue = CloneIssue(issue)
 		if strings.TrimSpace(issue.ProjectID) == "" {
 			issue.ProjectID = projectID
 		}
-		issue.State = strings.TrimSpace(pending.current)
 		out = append(out, issue)
+	}
+	for stateKey, pending := range t.states {
+		issue := CloneIssue(pending.issue)
+		issue.State = strings.TrimSpace(pending.current)
+		appendCard(stateKey, pending.project, issue)
+	}
+	for stateKey, synthesized := range t.synthesized {
+		appendCard(stateKey, synthesized.project, synthesized.issue)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		left := strings.TrimSpace(out[i].Identifier)
@@ -290,6 +315,7 @@ func (t *MutationTracker) NoteCardRemoved(key string, issueID string, snapshotSt
 
 	t.mu.Lock()
 	delete(t.states, stateKey)
+	delete(t.synthesized, stateKey)
 	delete(t.reverted, stateKey)
 	t.removed[stateKey] = pendingRemoval{
 		snapshot:       strings.TrimSpace(snapshotState),

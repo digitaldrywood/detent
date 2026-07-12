@@ -65,11 +65,10 @@ func TestMutationTrackerCardStateByDataSeq(t *testing.T) {
 			wantNotice: RevertNotice{Identifier: "DDW-433", From: "Todo", To: "Backlog"},
 		},
 		{
-			name: "third state reverts immediately with notice",
+			name: "newer third state confirms and drops entry",
 			observations: []observation{
 				{snapshotState: "Blocked", dataSeq: 8, want: "Blocked"},
 			},
-			wantNotice: RevertNotice{Identifier: "DDW-433", From: "Todo", To: "Blocked"},
 		},
 	}
 
@@ -238,6 +237,53 @@ func TestMutationTrackerPendingMovedCards(t *testing.T) {
 				t.Fatalf("pending state exists = %t, want %t", got, tt.wantPending)
 			}
 		})
+	}
+}
+
+func TestMutationTrackerPendingMovedCardsKeepsAdvancedCardUntilVisible(t *testing.T) {
+	t.Parallel()
+
+	tracker := NewMutationTracker()
+	issue := telemetry.Issue{
+		ID:         "advanced-card",
+		Identifier: "DDW-437",
+		ProjectID:  "detent",
+		Title:      "Advanced pending card",
+		State:      "Backlog",
+	}
+	tracker.NoteCardState("project:detent", "detent", issue, "Backlog", "Todo", 1)
+	advancedSnapshot := telemetry.Snapshot{
+		Project: telemetry.Project{ID: "detent"},
+		Refresh: telemetry.Refresh{DataSeq: 2},
+		Completed: []telemetry.Completed{{
+			Issue: telemetry.Issue{
+				ID:         issue.ID,
+				Identifier: issue.Identifier,
+				ProjectID:  issue.ProjectID,
+				Title:      issue.Title,
+				State:      "Production",
+			},
+		}},
+	}
+
+	for range 2 {
+		got := tracker.PendingMovedCards("project:detent", "detent", advancedSnapshot)
+		if len(got) != 1 || got[0].Identifier != issue.Identifier || got[0].State != "Production" {
+			t.Fatalf("PendingMovedCards() = %#v, want one Production card", got)
+		}
+	}
+	if pendingStateExists(tracker, "project:detent", issue.ID) {
+		t.Fatal("pending state exists after authoritative advancement")
+	}
+	if got := tracker.ConsumeRevertNotices("project:detent", "detent"); len(got) != 0 {
+		t.Fatalf("ConsumeRevertNotices() = %#v, want none", got)
+	}
+
+	visibleSnapshot := advancedSnapshot
+	visibleSnapshot.Refresh.DataSeq = 3
+	visibleSnapshot.BoardIssues = []telemetry.Issue{advancedSnapshot.Completed[0].Issue}
+	if got := tracker.PendingMovedCards("project:detent", "detent", visibleSnapshot); len(got) != 0 {
+		t.Fatalf("PendingMovedCards() = %#v, want visible snapshot entry to take over", got)
 	}
 }
 
