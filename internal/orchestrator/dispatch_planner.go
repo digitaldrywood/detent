@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 type dispatchPlanner struct {
@@ -106,12 +107,16 @@ func (p dispatchPlanner) plan(
 			}
 			continue
 		}
-		if availableSlots(state) == 0 {
+		if p.availableSlots(state) == 0 {
+			reason := dispatchSkipGlobalCapacityFull
+			if p.rateWindowBackpressureActive(state) {
+				reason = dispatchSkipRateWindowBackpressure
+			}
 			for skipIndex := index; skipIndex < len(plannedCandidates); skipIndex++ {
 				p.logDecision(hooks, dispatchPlanDecision{
 					Issue:         plannedCandidates[skipIndex],
 					QueuePosition: skipIndex + 1,
-					SkipReason:    dispatchSkipGlobalCapacityFull,
+					SkipReason:    reason,
 				})
 			}
 			break
@@ -333,6 +338,10 @@ func (p dispatchPlanner) pruneBudgetRefusals(
 	dailyStatus *DailyBudgetStatus,
 	issueStatuses map[string]IssueBudgetStatus,
 ) {
+	if p.cfg.subscriptionBilling() {
+		clear(state.BudgetRefusals)
+		return
+	}
 	for issueID, refusal := range state.BudgetRefusals {
 		var issueStatus *IssueBudgetStatus
 		if status, ok := issueStatuses[issueID]; ok {
@@ -360,6 +369,9 @@ func (p dispatchPlanner) pruneInactiveIssueBudgetRefusals(state *State, candidat
 }
 
 func (p dispatchPlanner) budgetCooldownActive(state *State, issueID string, now time.Time) bool {
+	if p.cfg.subscriptionBilling() {
+		return false
+	}
 	refusal, ok := state.BudgetRefusals[issueID]
 	if !ok {
 		return false
@@ -493,6 +505,7 @@ const (
 	dispatchSkipDispatchBackoffCancelled = "dispatch_backoff_cancelled"
 	dispatchSkipGitHubRESTCapacity       = "github_rest_capacity_paused"
 	dispatchSkipProjectFailureBreaker    = projectFailureBreakerDispatchPaused
+	dispatchSkipRateWindowBackpressure   = "provider_rate_window_backpressure"
 )
 
 func (p dispatchPlanner) dispatchableIssueDecision(
@@ -612,9 +625,42 @@ func (p dispatchPlanner) authorized(issue connector.Issue) bool {
 }
 
 func (p dispatchPlanner) slotsAvailable(issue connector.Issue, state *State, preferredWorkerHost string) bool {
-	return availableSlots(state) > 0 &&
+	return p.availableSlots(state) > 0 &&
 		p.stateSlotsAvailable(issue, state) &&
 		p.workerSlotsAvailable(state, preferredWorkerHost)
+}
+
+func (p dispatchPlanner) availableSlots(state *State) int {
+	limit := state.MaxConcurrentAgents
+	if p.cfg.subscriptionBilling() {
+		if remaining, ok := providerRateWindowRemainingPercent(state); ok {
+			limit = int(math.Ceil(float64(limit) * remaining / 100))
+			limit = max(1, limit)
+		}
+	}
+	available := limit - len(state.Running)
+	return max(0, available)
+}
+
+func (p dispatchPlanner) rateWindowBackpressureActive(state *State) bool {
+	return p.cfg.subscriptionBilling() && availableSlots(state) > 0 && p.availableSlots(state) == 0
+}
+
+func providerRateWindowRemainingPercent(state *State) (float64, bool) {
+	if state == nil || state.RateLimits == nil {
+		return 0, false
+	}
+	remaining := 100.0
+	seen := false
+	for _, bucket := range []*telemetry.RateLimitBucket{state.RateLimits.Primary, state.RateLimits.Secondary} {
+		if bucket == nil || bucket.Limit <= 0 {
+			continue
+		}
+		percent := float64(bucket.Remaining) / float64(bucket.Limit) * 100
+		remaining = min(remaining, max(0, min(100, percent)))
+		seen = true
+	}
+	return remaining, seen
 }
 
 func (p dispatchPlanner) stateSlotsAvailable(issue connector.Issue, state *State) bool {

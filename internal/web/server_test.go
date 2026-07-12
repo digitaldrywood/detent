@@ -7543,7 +7543,7 @@ func TestServerEventsEnrichesSnapshotOncePerPublish(t *testing.T) {
 	var budgetCalls atomic.Int64
 
 	registry := project.NewRegistry()
-	if err := registry.Set(newBudgetTestProject(t, "detent", 100, 10)); err != nil {
+	if err := registry.Set(newBudgetTestProject(t, "detent", 100, 10, workflowconfig.BillingModeSubscription)); err != nil {
 		t.Fatalf("Registry.Set() error = %v", err)
 	}
 
@@ -8563,7 +8563,7 @@ func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {
 	}
 
 	registry := project.NewRegistry()
-	if err := registry.Set(newBudgetTestProject(t, "detent", 100, 10)); err != nil {
+	if err := registry.Set(newBudgetTestProject(t, "detent", 100, 10, workflowconfig.BillingModeSubscription)); err != nil {
 		t.Fatalf("Registry.Set() error = %v", err)
 	}
 
@@ -10061,7 +10061,7 @@ func newSettingsTestProject(t *testing.T, cfg globalconfig.Project, worktreeRoot
 	return trackedProject
 }
 
-func newBudgetTestProject(t *testing.T, id string, perDayMaxUSD float64, perIssueMaxUSD float64) *project.Project {
+func newBudgetTestProject(t *testing.T, id string, perDayMaxUSD float64, perIssueMaxUSD float64, billingModes ...string) *project.Project {
 	t.Helper()
 
 	workflowCfg := workflowconfig.Default()
@@ -10070,6 +10070,9 @@ func newBudgetTestProject(t *testing.T, id string, perDayMaxUSD float64, perIssu
 	workflowCfg.Tracker.APIKey = "$GITHUB_TOKEN"
 	workflowCfg.Tracker.ProjectSlug = "https://github.com/orgs/digitaldrywood/projects/4"
 	workflowCfg.Budget.Enabled = true
+	if len(billingModes) > 0 {
+		workflowCfg.Budget.BillingMode = billingModes[0]
+	}
 	workflowCfg.Budget.PerDayMaxUSD = perDayMaxUSD
 	workflowCfg.Budget.PerIssueMaxUSD = perIssueMaxUSD
 

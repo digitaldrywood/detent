@@ -203,7 +203,7 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 		return
 	}
 	for _, issue := range issues {
-		if availableSlots(state) == 0 {
+		if o.dispatchPlanner().availableSlots(state) == 0 {
 			return
 		}
 		issue, ok := o.hydrateDispatchIssue(ctx, issue)

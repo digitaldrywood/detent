@@ -307,7 +307,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if diffStatsPresent(event.Result.DiffStats) {
 		state.DiffStats[event.IssueID] = event.Result.DiffStats
 	}
-	if event.Result.BudgetRefusal != nil {
+	if event.Result.BudgetRefusal != nil && !o.cfg.subscriptionBilling() {
 		refusal := *event.Result.BudgetRefusal
 		refusal.Issue = cloneIssue(running.Issue)
 		state.BudgetRefusals[event.IssueID] = refusal
@@ -331,7 +331,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			return
 		}
 	}
-	if event.Result.BudgetRefusal != nil && event.Result.BudgetRefusal.Code == string(budget.ReasonPerIssueMaxUSD) {
+	if event.Result.BudgetRefusal != nil && !o.cfg.subscriptionBilling() && event.Result.BudgetRefusal.Code == string(budget.ReasonPerIssueMaxUSD) {
 		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
 			o.logger.Warn("per-issue budget hold claim release failed", "issue_id", event.IssueID, "error", err)
 		}

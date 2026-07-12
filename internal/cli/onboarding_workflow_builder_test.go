@@ -561,7 +561,7 @@ func TestBuildOnboardingWorkflowGeneratesParseablePausedProject(t *testing.T) {
 	if workflow.Config.Gate.Run != "make check" {
 		t.Fatalf("Gate.Run = %q, want make check", workflow.Config.Gate.Run)
 	}
-	if !workflow.Config.Budget.Enabled || workflow.Config.Budget.PerDayMaxUSD != 50 || workflow.Config.Budget.PerIssueMaxUSD != 5 {
+	if workflow.Config.Budget.BillingMode != workflowconfig.BillingModeMetered || !workflow.Config.Budget.Enabled || workflow.Config.Budget.PerDayMaxUSD != 50 || workflow.Config.Budget.PerIssueMaxUSD != 5 {
 		t.Fatalf("Budget = %#v, want enabled 50/day 5/issue", workflow.Config.Budget)
 	}
 	if workflow.Config.Gate.Validator.Model != "" {

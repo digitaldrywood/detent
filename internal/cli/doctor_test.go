@@ -835,17 +835,17 @@ func TestCheckDoctorProjects(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: disabledBudgetWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "metered billing and USD enforcement are assumed", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
-			name: "inherited budget caps do not warn",
+			name: "inherited spend breaker warns about billing ambiguity",
 			projects: []globalconfig.Project{
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			},
 			workflow:   workflowconfig.Workflow{Config: omittedBudgetWorkflow},
-			wantStatus: []doctorStatus{doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
+			wantDetail: []string{"is valid", "metered billing and USD enforcement are assumed", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "source repo missing",
@@ -943,6 +943,72 @@ func TestCheckDoctorDisabledBudgetCaps(t *testing.T) {
 			}
 			if got.Hint != "Add this exact line under budget: in WORKFLOW.md:\n  enabled: true" {
 				t.Fatalf("Hint = %q, want copy-paste enabled line", got.Hint)
+			}
+		})
+	}
+}
+
+func TestCheckDoctorBillingMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		budget     workflowconfig.Budget
+		spendLimit float64
+		wantOK     bool
+		wantDetail string
+	}{
+		{
+			name:       "legacy enabled budget warns about assumed metered mode",
+			budget:     workflowconfig.Budget{Enabled: true},
+			wantOK:     true,
+			wantDetail: "metered billing and USD enforcement are assumed",
+		},
+		{
+			name:       "legacy spend breaker warns about assumed metered mode",
+			spendLimit: 3,
+			wantOK:     true,
+			wantDetail: "metered billing and USD enforcement are assumed",
+		},
+		{
+			name: "undeclared mode without USD controls does not warn",
+		},
+		{
+			name:   "declared metered mode does not warn",
+			budget: workflowconfig.Budget{BillingMode: workflowconfig.BillingModeMetered, Enabled: true},
+		},
+		{
+			name:       "subscription budget cap warns that enforcement is advisory",
+			budget:     workflowconfig.Budget{BillingMode: workflowconfig.BillingModeSubscription, Enabled: true},
+			wantOK:     true,
+			wantDetail: "budget.enabled=true",
+		},
+		{
+			name:       "subscription spend breaker warns that enforcement is advisory",
+			budget:     workflowconfig.Budget{BillingMode: workflowconfig.BillingModeSubscription},
+			spendLimit: 3,
+			wantOK:     true,
+			wantDetail: "agent.no_progress_spend_limit_usd=3",
+		},
+		{
+			name:   "subscription without USD controls does not warn",
+			budget: workflowconfig.Budget{BillingMode: workflowconfig.BillingModeSubscription},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := checkDoctorBillingMode("detent", workflowconfig.Config{
+				Budget: tt.budget,
+				Agent:  workflowconfig.Agent{NoProgressSpendLimitUSD: tt.spendLimit},
+			})
+			if ok != tt.wantOK {
+				t.Fatalf("checkDoctorBillingMode() ok = %t, want %t: %#v", ok, tt.wantOK, got)
+			}
+			if tt.wantOK && (got.Status != doctorWarn || !strings.Contains(got.Detail, tt.wantDetail)) {
+				t.Fatalf("checkDoctorBillingMode() = %#v, want warning containing %q", got, tt.wantDetail)
 			}
 		})
 	}
@@ -2268,6 +2334,7 @@ func TestDoctorWorkflowDetailSurfacesIdentityAndAuthorization(t *testing.T) {
 		"identity release-captain",
 		"worker-model=provider-default",
 		"session-guard=max_session_tokens=disabled, max_session_context_multiplier=disabled",
+		"billing-mode=metered",
 		"orphan-recovery=resume_orphaned_sessions=true, experimental_thread_resume=false",
 		"prioritize-unblockers=true",
 		"authorization selectors from global.yaml and WORKFLOW.md",
@@ -4366,6 +4433,7 @@ func validDoctorWorkflow(sourceRoot string) workflowconfig.Config {
 	cfg := workflowconfig.Default()
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Workspace.Root = sourceRoot
+	cfg.Budget.BillingMode = workflowconfig.BillingModeMetered
 	cfg.Budget.Enabled = true
 	return cfg
 }

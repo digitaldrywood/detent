@@ -300,6 +300,7 @@ func enforcedBudgetConfig(requested config.Budget, checker BudgetChecker) (confi
 	}
 	enforced := reporter.EnforcedConfig()
 	return config.Budget{
+		BillingMode:            enforced.BillingMode,
 		Enabled:                enforced.Enabled,
 		PerDayMaxUSD:           enforced.PerDayMaxUSD,
 		PerIssueMaxUSD:         enforced.PerIssueMaxUSD,
@@ -850,18 +851,20 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if effort != "" {
 		runtimeIdentity.ReasoningEffort = agentidentity.NewValue(effort, agentidentity.ProvenanceConfigured)
 	}
-	if result, refused, err := r.checkDispatchBudget(ctx, budgetChecker, dispatchEstimator, req.Issue, sessionModel, startedAt); err != nil {
-		return RunResult{}, err
-	} else if refused {
-		r.logWorkerEvent(req.Issue, "worker_budget_refused",
-			"workspace_path", info.Path,
-			"backend_id", selection.BackendID,
-			"route", selection.RouteName,
-			"role", role,
-			"model", sessionModel,
-			"code", result.BudgetRefusal.Code,
-		)
-		return result, nil
+	if workflow.Config.Budget.EffectiveBillingMode() != config.BillingModeSubscription {
+		if result, refused, err := r.checkDispatchBudget(ctx, budgetChecker, dispatchEstimator, req.Issue, sessionModel, startedAt); err != nil {
+			return RunResult{}, err
+		} else if refused {
+			r.logWorkerEvent(req.Issue, "worker_budget_refused",
+				"workspace_path", info.Path,
+				"backend_id", selection.BackendID,
+				"route", selection.RouteName,
+				"role", role,
+				"model", sessionModel,
+				"code", result.BudgetRefusal.Code,
+			)
+			return result, nil
+		}
 	}
 	resumeState, err := r.runRequestResumeState(ctx, workflow.Config.Agent, req, sessionModel, selection.BackendID, backendConfig.Kind, role)
 	if err != nil {

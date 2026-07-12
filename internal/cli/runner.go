@@ -136,20 +136,24 @@ func buildBudgetDispatchGuards(
 	if !cfg.Enabled {
 		return nil, nil, nil
 	}
-
-	spendStore, ok := sessionStore.(budget.SpendStore)
-	if !ok {
-		return nil, nil, budget.ErrMissingSpendStore
-	}
-
-	checker := budget.NewChecker(budget.Config{
+	checkerConfig := budget.Config{
 		ProjectID:       projectID,
+		BillingMode:     cfg.EffectiveBillingMode(),
 		Enabled:         cfg.Enabled,
 		PerDayMaxUSD:    cfg.PerDayMaxUSD,
 		PerIssueMaxUSD:  cfg.PerIssueMaxUSD,
 		RefusalCooldown: time.Duration(cfg.RefusalCooldownSeconds) * time.Second,
 		PricingPath:     cfg.PricingPath,
-	}, spendStore, pricing)
+	}
+	if cfg.EffectiveBillingMode() == workflowconfig.BillingModeSubscription {
+		return budget.NewChecker(checkerConfig, nil, pricing), nil, nil
+	}
+
+	spendStore, ok := sessionStore.(budget.SpendStore)
+	if !ok {
+		return nil, nil, budget.ErrMissingSpendStore
+	}
+	checker := budget.NewChecker(checkerConfig, spendStore, pricing)
 
 	estimateStore, ok := sessionStore.(budget.DispatchEstimateStore)
 	if !ok {

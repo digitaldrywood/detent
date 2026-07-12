@@ -42,6 +42,28 @@ func TestCheckerCheckDispatch(t *testing.T) {
 			wantAllow: true,
 		},
 		{
+			name: "subscription daily cap is advisory without spend lookup",
+			cfg: Config{
+				BillingMode:  "subscription",
+				Enabled:      true,
+				PerDayMaxUSD: 0.01,
+			},
+			spend:     &fakeSpendStore{},
+			req:       DispatchRequest{Model: "gpt-test", Now: now, Estimate: TokenEstimate{InputTokens: 10}},
+			wantAllow: true,
+		},
+		{
+			name: "subscription per issue cap is advisory without spend lookup",
+			cfg: Config{
+				BillingMode:    "subscription",
+				Enabled:        true,
+				PerIssueMaxUSD: 0.01,
+			},
+			spend:     &fakeSpendStore{},
+			req:       DispatchRequest{IssueID: "issue-subscription", Model: "gpt-test", Now: now, Estimate: TokenEstimate{InputTokens: 10}},
+			wantAllow: true,
+		},
+		{
 			name: "unknown model uses fallback pricing",
 			cfg: Config{
 				Enabled:      true,
@@ -55,6 +77,7 @@ func TestCheckerCheckDispatch(t *testing.T) {
 		{
 			name: "daily cap refuses when projection exceeds limit",
 			cfg: Config{
+				BillingMode:     "metered",
 				Enabled:         true,
 				PerDayMaxUSD:    1.0,
 				RefusalCooldown: time.Minute,
@@ -81,6 +104,7 @@ func TestCheckerCheckDispatch(t *testing.T) {
 		{
 			name: "per issue cap refuses only matching issue spend",
 			cfg: Config{
+				BillingMode:    "metered",
 				Enabled:        true,
 				PerIssueMaxUSD: 0.5,
 			},
@@ -262,6 +286,11 @@ func TestCheckerDailyStatus(t *testing.T) {
 			spend: &fakeSpendStore{},
 		},
 		{
+			name:  "subscription daily cap is inactive",
+			cfg:   Config{BillingMode: "subscription", Enabled: true, PerDayMaxUSD: 2.5},
+			spend: &fakeSpendStore{},
+		},
+		{
 			name: "active cap reports live spend",
 			cfg:  Config{Enabled: true, PerDayMaxUSD: 2.5},
 			spend: &fakeSpendStore{daily: store.TokenSpend{
@@ -368,6 +397,11 @@ func TestCheckerIssueStatus(t *testing.T) {
 		{
 			name:  "disabled cap reports inactive",
 			cfg:   Config{Enabled: true},
+			spend: &fakeSpendStore{},
+		},
+		{
+			name:  "subscription cap reports inactive",
+			cfg:   Config{BillingMode: "subscription", Enabled: true, PerIssueMaxUSD: 2},
 			spend: &fakeSpendStore{},
 		},
 		{

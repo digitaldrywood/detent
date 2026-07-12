@@ -515,6 +515,24 @@ func TestGraphQLUnknownStatusFormatsBudgetLabels(t *testing.T) {
 	}
 }
 
+func TestProviderRateLimitRowsShowRemainingPercentages(t *testing.T) {
+	t.Parallel()
+
+	rows := rateLimitRows(&telemetry.RateLimits{
+		Primary:   &telemetry.RateLimitBucket{Remaining: 72, Used: 28, Limit: 100},
+		Secondary: &telemetry.RateLimitBucket{Remaining: 41, Used: 59, Limit: 100},
+	})
+	if len(rows) != 2 {
+		t.Fatalf("rateLimitRows() len = %d, want 2: %#v", len(rows), rows)
+	}
+	if rows[0].Remaining != "72% left" || rows[0].Used != "28% used" || rows[0].Limit != "rolling window" {
+		t.Fatalf("primary row = %#v, want percentage labels", rows[0])
+	}
+	if rows[1].Remaining != "41% left" || rows[1].Used != "59% used" || rows[1].Limit != "rolling window" {
+		t.Fatalf("secondary row = %#v, want percentage labels", rows[1])
+	}
+}
+
 func TestThroughputTrendPoints(t *testing.T) {
 	t.Parallel()
 
