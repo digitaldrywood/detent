@@ -45,7 +45,8 @@ func TestShippedWorkflowTemplatesEnableBudgetCaps(t *testing.T) {
 			if !workflow.Config.Budget.Enabled {
 				t.Fatalf("%s budget.enabled = false, want true", path)
 			}
-			if workflow.Config.Deliverable.Kind == DeliverablePullRequest && !strings.Contains(string(raw), "\n  merge_method: squash\n") {
+			normalizedRaw := strings.ReplaceAll(string(raw), "\r\n", "\n")
+			if workflow.Config.Deliverable.Kind == DeliverablePullRequest && !strings.Contains(normalizedRaw, "\n  merge_method: squash\n") {
 				t.Fatalf("%s does not declare deliverable.merge_method: squash", path)
 			}
 		})
