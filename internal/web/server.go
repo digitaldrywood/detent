@@ -664,6 +664,7 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 		URL:         project.URL,
 		Color:       project.Color,
 	})
+	scopedSnapshot = applyProjectBudgetSnapshot(scopedSnapshot, project)
 	if target, _, _ := s.kanbanActionTarget(project.ID); target.key != "" {
 		scopedSnapshot = s.kanbanSnapshotWithPendingStates(target.key, project.ID, scopedSnapshot)
 	}
@@ -697,6 +698,21 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 		data.EfficiencyReceipts = receipts
 	}
 	return data, true
+}
+
+func applyProjectBudgetSnapshot(snapshot telemetry.Snapshot, project templates.ProjectSmallMultiple) telemetry.Snapshot {
+	if !project.BudgetEnabled {
+		return snapshot
+	}
+	dayCap := project.PerDayMaxUSD
+	issueCap := project.PerIssueMaxUSD
+	snapshot.Budget.Enabled = true
+	snapshot.Budget.PerDayMaxUSD = &dayCap
+	snapshot.Budget.PerIssueMaxUSD = &issueCap
+	snapshot.Budget.CurrentSpendUSD = project.CurrentSpendUSD
+	snapshot.Budget.PeriodEnd = project.BudgetResetAt
+	snapshot.Budget.PeriodStart = project.BudgetResetAt.AddDate(0, 0, -1)
+	return snapshot
 }
 
 func (s *Server) withKanbanRefreshFeedback(data templates.DashboardData) templates.DashboardData {

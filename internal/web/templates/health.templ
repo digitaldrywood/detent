@@ -56,7 +56,7 @@ templ HealthSnapshotV2(data DashboardData) {
 					<span class="text-2xs" aria-hidden="true">{ row.Kind.Glyph() }</span>
 					{ row.Status }
 				</span>
-				<span class="truncate text-xs text-sec">
+				<span class="min-w-0 break-words text-xs text-sec">
 					{ row.Detail }
 					if !row.DetailAt.IsZero() {
 						{ " " }

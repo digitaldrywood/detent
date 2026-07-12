@@ -417,6 +417,7 @@ func (s *Server) demoProjectDashboardData(ctx context.Context, scenario demoScen
 		URL:         project.URL,
 		Color:       project.Color,
 	})
+	scoped = applyProjectBudgetSnapshot(scoped, project)
 	instanceName := s.instanceName()
 	data := templates.DashboardData{
 		Title:           instancePageTitle(instanceName, project.Name+" - Detent"),

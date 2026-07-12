@@ -100,7 +100,11 @@ templ ProjectBudgetPanel(data DashboardData) {
 			<div>
 				<h2 class="text-sm font-semibold text-text">Daily budget</h2>
 				if budget.Enabled {
-					<p class="mt-1 text-xs text-sec"><span class="font-mono tabular-nums">{ budget.Current } / { budget.Cap }</span> · { strconv.Itoa(budget.Percent) }% used · resets @LocalTime(budget.ResetAt, LocalTimeOptions{})</p>
+					<p class="mt-1 text-xs text-sec">
+						<span class="font-mono tabular-nums">{ budget.Current } / { budget.Cap }</span>
+						<span> · { strconv.Itoa(budget.Percent) }% used · resets </span>
+						<span class="font-mono tabular-nums">@LocalTime(budget.ResetAt, LocalTimeOptions{})</span>
+					</p>
 				} else {
 					<p class="mt-1 text-xs text-sec">Budget guardrails are disabled for this project.</p>
 				}
