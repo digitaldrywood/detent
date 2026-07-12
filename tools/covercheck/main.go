@@ -18,6 +18,11 @@ type packageStats struct {
 	total   int
 }
 
+type profileStats struct {
+	packages map[string]packageStats
+	files    map[string]packageStats
+}
+
 func (s packageStats) percent() float64 {
 	if s.total == 0 {
 		return 100
@@ -72,7 +77,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	fmt.Fprintln(stdout, "package coverage meets per-package floors")
+	fmt.Fprintln(stdout, "coverage meets configured package and file floors")
 	return 0
 }
 
@@ -126,8 +131,8 @@ func checkCoverage(profile io.Reader, defaultFloor float64, exceptions map[strin
 		return nil, err
 	}
 
-	packages := make([]string, 0, len(stats))
-	for packagePath := range stats {
+	packages := make([]string, 0, len(stats.packages))
+	for packagePath := range stats.packages {
 		packages = append(packages, packagePath)
 	}
 	sort.Strings(packages)
@@ -139,7 +144,7 @@ func checkCoverage(profile io.Reader, defaultFloor float64, exceptions map[strin
 			floor = exceptionFloor
 		}
 
-		coverage := stats[packagePath].percent()
+		coverage := stats.packages[packagePath].percent()
 		if coverage < floor {
 			failures = append(failures, coverageFailure{
 				Package:  packagePath,
@@ -149,12 +154,38 @@ func checkCoverage(profile io.Reader, defaultFloor float64, exceptions map[strin
 		}
 	}
 
+	files := make([]string, 0)
+	for target := range exceptions {
+		if strings.HasSuffix(target, ".go") {
+			files = append(files, target)
+		}
+	}
+	sort.Strings(files)
+	for _, filename := range files {
+		fileStats, ok := stats.files[filename]
+		if !ok {
+			return nil, fmt.Errorf("coverage floor target %q not found in profile", filename)
+		}
+		coverage := fileStats.percent()
+		floor := exceptions[filename]
+		if coverage < floor {
+			failures = append(failures, coverageFailure{
+				Package:  filename,
+				Coverage: coverage,
+				Floor:    floor,
+			})
+		}
+	}
+
 	return failures, nil
 }
 
-func parseCoverProfile(profile io.Reader) (map[string]packageStats, error) {
+func parseCoverProfile(profile io.Reader) (profileStats, error) {
 	scanner := bufio.NewScanner(profile)
-	stats := make(map[string]packageStats)
+	stats := profileStats{
+		packages: make(map[string]packageStats),
+		files:    make(map[string]packageStats),
+	}
 
 	lineNumber := 0
 	for scanner.Scan() {
@@ -169,12 +200,12 @@ func parseCoverProfile(profile io.Reader) (map[string]packageStats, error) {
 
 		fields := strings.Fields(line)
 		if len(fields) != 3 {
-			return nil, fmt.Errorf("coverprofile line %d: want file range, statements, and count", lineNumber)
+			return profileStats{}, fmt.Errorf("coverprofile line %d: want file range, statements, and count", lineNumber)
 		}
 
 		filename, ok := profileFilename(fields[0])
 		if !ok {
-			return nil, fmt.Errorf("coverprofile line %d: invalid file range %q", lineNumber, fields[0])
+			return profileStats{}, fmt.Errorf("coverprofile line %d: invalid file range %q", lineNumber, fields[0])
 		}
 		if isExcluded(filename) {
 			continue
@@ -182,30 +213,37 @@ func parseCoverProfile(profile io.Reader) (map[string]packageStats, error) {
 
 		statements, err := strconv.Atoi(fields[1])
 		if err != nil {
-			return nil, fmt.Errorf("coverprofile line %d: invalid statement count %q: %w", lineNumber, fields[1], err)
+			return profileStats{}, fmt.Errorf("coverprofile line %d: invalid statement count %q: %w", lineNumber, fields[1], err)
 		}
 		if statements < 0 {
-			return nil, fmt.Errorf("coverprofile line %d: statement count must be non-negative", lineNumber)
+			return profileStats{}, fmt.Errorf("coverprofile line %d: statement count must be non-negative", lineNumber)
 		}
 
 		count, err := strconv.Atoi(fields[2])
 		if err != nil {
-			return nil, fmt.Errorf("coverprofile line %d: invalid coverage count %q: %w", lineNumber, fields[2], err)
+			return profileStats{}, fmt.Errorf("coverprofile line %d: invalid coverage count %q: %w", lineNumber, fields[2], err)
 		}
 		if count < 0 {
-			return nil, fmt.Errorf("coverprofile line %d: coverage count must be non-negative", lineNumber)
+			return profileStats{}, fmt.Errorf("coverprofile line %d: coverage count must be non-negative", lineNumber)
 		}
 
 		packagePath := packageDir(filename)
-		packageCoverage := stats[packagePath]
+		packageCoverage := stats.packages[packagePath]
 		packageCoverage.total += statements
 		if count > 0 {
 			packageCoverage.covered += statements
 		}
-		stats[packagePath] = packageCoverage
+		stats.packages[packagePath] = packageCoverage
+
+		fileCoverage := stats.files[filename]
+		fileCoverage.total += statements
+		if count > 0 {
+			fileCoverage.covered += statements
+		}
+		stats.files[filename] = fileCoverage
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return profileStats{}, err
 	}
 
 	return stats, nil
@@ -278,7 +316,7 @@ func validateFloor(floor float64) error {
 }
 
 func writeFailures(output io.Writer, failures []coverageFailure) {
-	fmt.Fprintln(output, "package coverage below floor:")
+	fmt.Fprintln(output, "coverage below floor:")
 	for _, failure := range failures {
 		fmt.Fprintf(output, "  %s: %.1f%% below %.1f%%\n", failure.Package, failure.Coverage, failure.Floor)
 	}

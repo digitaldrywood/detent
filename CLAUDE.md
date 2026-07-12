@@ -50,6 +50,13 @@ Leave `model` unset so the issue inherits the fleet-standard model.
 - New or modified Go behavior requires focused table-driven tests using only the standard library.
 - Generated Go files such as `*_templ.go` and sqlc output do not need hand-written tests.
 
+### Safety-critical orchestrator validation
+
+- `internal/orchestrator/implement_progress.go`, `internal/orchestrator/backend_capacity.go`, `internal/orchestrator/spend_progress.go`, and `internal/orchestrator/ranking.go` are safety-critical brakes and dispatch controls.
+- Changes to these files must preserve their exact-file coverage floor of at least 90% in `scripts/coverage-exceptions.txt` and pass `make check`.
+- Changes to their comparison, signature, time-window, or ordering logic must preserve the seed cases and pass `FuzzSafetyCriticalOrchestratorBoundaries`, which covers diffstat cleanliness, signature equality, capacity resume arithmetic, spend-progress baselines, and dispatch ordering.
+- Run `go test ./internal/orchestrator -run '^$' -fuzz=. -fuzztime=30s` before submitting such changes.
+
 ## Tooling
 
 - `make dev` runs Air and rotates `tmp/air-combined.log`.
