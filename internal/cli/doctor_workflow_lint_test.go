@@ -370,7 +370,7 @@ func TestProbeDoctorShipSkillChecksEnablementCacheAndVersion(t *testing.T) {
 		{name: "disabled", directory: "1.6.0", manifest: "1.6.0", createSkill: true, wantError: "plugin is not enabled"},
 		{name: "different provider enabled", config: "[plugins.\"go-workflow@stale\"]\nenabled = true\n", directory: "1.6.0", manifest: "1.6.0", createSkill: true, wantError: "go-workflow@gopher-ai cache version"},
 		{name: "version mismatch", config: "[plugins.\"go-workflow@gopher-ai\"]\nenabled = true\n", directory: "1.6.0", manifest: "1.5.0", createSkill: true, wantError: `version "1.5.0" does not match cache directory "1.6.0"`},
-		{name: "ship skill missing", config: "[plugins.\"go-workflow@gopher-ai\"]\nenabled = true\n", directory: "1.6.0", manifest: "1.6.0", wantError: "skills/ship/SKILL.md is missing"},
+		{name: "ship skill missing", config: "[plugins.\"go-workflow@gopher-ai\"]\nenabled = true\n", directory: "1.6.0", manifest: "1.6.0", wantError: filepath.Join("skills", "ship", "SKILL.md") + " is missing"},
 	}
 
 	for _, tt := range tests {
