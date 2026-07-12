@@ -4078,14 +4078,18 @@ func TestConnectorMergePullRequestUsesConfiguredMethod(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		method string
-		want   string
+		name         string
+		method       string
+		want         string
+		wantErr      string
+		wantRequests int
 	}{
-		{name: "default", want: "squash"},
-		{name: "squash", method: "squash", want: "squash"},
-		{name: "merge", method: "merge", want: "merge"},
-		{name: "rebase", method: "rebase", want: "rebase"},
+		{name: "default", want: "squash", wantRequests: 1},
+		{name: "squash", method: "squash", want: "squash", wantRequests: 1},
+		{name: "merge", method: "merge", want: "merge", wantRequests: 1},
+		{name: "rebase", method: "rebase", want: "rebase", wantRequests: 1},
+		{name: "normalizes case and whitespace", method: " ReBaSe ", want: "rebase", wantRequests: 1},
+		{name: "rejects invalid method", method: "octopus", wantErr: "merge method must be one of squash, merge, rebase"},
 	}
 
 	for _, tt := range tests {
@@ -4099,13 +4103,21 @@ func TestConnectorMergePullRequestUsesConfiguredMethod(t *testing.T) {
 			}})
 			c := newGitHubTestConnector(t, server, Config{})
 
-			if err := c.MergePullRequest(context.Background(), "example/repo", 42, "head-sha", tt.method); err != nil {
+			err := c.MergePullRequest(context.Background(), "example/repo", 42, "head-sha", tt.method)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("MergePullRequest() error = %v, want %q", err, tt.wantErr)
+				}
+			} else if err != nil {
 				t.Fatalf("MergePullRequest() error = %v", err)
 			}
 
 			requests := server.requests()
-			if len(requests) != 1 {
-				t.Fatalf("request count = %d, want 1", len(requests))
+			if got := len(requests); got != tt.wantRequests {
+				t.Fatalf("request count = %d, want %d", got, tt.wantRequests)
+			}
+			if tt.wantRequests == 0 {
+				return
 			}
 			if requests[0]["method"] != http.MethodPut || requests[0]["path"] != "/repos/example/repo/pulls/42/merge" {
 				t.Fatalf("merge request = %#v, want REST pull request merge", requests[0])
