@@ -168,6 +168,8 @@ type Orchestrator struct {
 	issueBudgetStatus       runpkg.IssueBudgetStatusProvider
 	now                     func() time.Time
 	retrospector            Retrospector
+	hydrationSkipStreaks    map[string]int
+	hydrationWarned         bool
 	stateRequests           chan stateRequest
 	drainRequests           chan drainRequest
 	forceRequests           chan forceRequest

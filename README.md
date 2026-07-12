@@ -734,6 +734,8 @@ scoped to the issue, run the project validation gate, and prepare the work for
 human review.
 ```
 
+Set `github_rest_fanout_max_requests` to `0` to disable the per-cycle fanout cap while retaining the REST remaining-reserve guard.
+
 Tag-based projects can opt into release cadence in the same workflow file:
 
 ```yaml
