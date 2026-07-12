@@ -5,13 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/hub"
@@ -34,6 +33,7 @@ type options struct {
 	build                 buildinfo.Info
 	interrupt             func()
 	shutdownTimeoutSource func() time.Duration
+	logPath               string
 }
 
 type Model struct {
@@ -49,6 +49,7 @@ type Model struct {
 	shutdownTimeoutSource func() time.Duration
 	interrupts            int
 	shutdownNote          string
+	logPath               string
 	styles                styles
 }
 
@@ -81,11 +82,13 @@ func NewModel(ctx context.Context, snapshots *hub.Hub[telemetry.Snapshot], opts 
 	return Model{
 		subscription:          subscription,
 		updates:               subscription.C(),
-		width:                 defaultTerminalColumns,
+		width:                 defaultTerminalWidth,
+		height:                defaultTerminalHeight,
 		now:                   cfg.now,
 		build:                 cfg.build,
 		interrupt:             cfg.interrupt,
 		shutdownTimeoutSource: cfg.shutdownTimeoutSource,
+		logPath:               cfg.logPath,
 		styles:                newStyles(),
 	}, nil
 }
@@ -116,6 +119,12 @@ func WithShutdownTimeoutSource(source func() time.Duration) Option {
 	}
 }
 
+func WithLogPath(path string) Option {
+	return func(cfg *options) {
+		cfg.logPath = strings.TrimSpace(path)
+	}
+}
+
 func (m Model) Init() tea.Cmd {
 	return waitForSnapshot(m.updates)
 }
@@ -137,22 +146,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.interrupt()
 		}
 		return m, nil
-	case tea.KeyMsg:
+	case tea.InterruptMsg:
+		return m.handleInterrupt()
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c":
-			if m.interrupt != nil {
-				m.interrupts++
-				notice := shutdownForceNotice
-				if m.interrupts == 1 {
-					notice = shutdownDrainNotice
-				}
-				m.shutdownNote = notice
-				return m, tea.Sequence(tea.Println("Shutdown: "+notice), func() tea.Msg {
-					return shutdownInterruptMsg{}
-				})
-			}
-			m.Close()
-			return m, tea.Quit
+			return m.handleInterrupt()
 		case "q", "esc":
 			m.Close()
 			return m, tea.Quit
@@ -164,12 +163,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
-func (m Model) View() string {
-	if !m.hasSnapshot {
-		return m.renderWaiting()
+func (m Model) handleInterrupt() (tea.Model, tea.Cmd) {
+	if m.interrupt == nil {
+		m.Close()
+		return m, tea.Quit
 	}
 
-	return m.renderSnapshot()
+	m.interrupts++
+	m.shutdownNote = shutdownForceNotice
+	if m.interrupts == 1 {
+		m.shutdownNote = shutdownDrainNotice
+	}
+
+	return m, func() tea.Msg {
+		return shutdownInterruptMsg{}
+	}
+}
+
+func (m Model) View() tea.View {
+	view := tea.NewView(m.renderDashboard())
+	view.AltScreen = true
+	view.DisableBracketedPasteMode = true
+	return view
 }
 
 func (m Model) Close() {
@@ -191,75 +206,6 @@ func waitForSnapshot(updates <-chan telemetry.Snapshot) tea.Cmd {
 
 		return snapshotMsg{snapshot: snapshot}
 	}
-}
-
-func (m Model) renderWaiting() string {
-	lines := []string{
-		m.styles.title.Render("╭─ DETENT STATUS"),
-		"│ Dashboard: " + m.styles.info.Render(defaultDashboardURL),
-	}
-	if m.shutdownNote != "" {
-		lines = append(lines, "│ Shutdown: "+m.styles.warn.Render(m.shutdownNote))
-	}
-	lines = append(lines, "│ "+m.styles.muted.Render("Waiting for telemetry snapshot"), closingBorder)
-
-	return strings.Join(lines, "\n")
-}
-
-func (m Model) renderSnapshot() string {
-	snapshot := m.snapshot
-	lifecycleLabel, lifecycleStatus := formatLifecycle(snapshot.Shutdown, m.now, m.shutdownTimeoutSource, m.styles)
-	if m.shutdownNote != "" && !snapshot.Shutdown.Draining {
-		lifecycleLabel = "Shutdown"
-		lifecycleStatus = m.styles.warn.Render(m.shutdownNote)
-	}
-	lines := []string{
-		m.styles.title.Render("╭─ DETENT STATUS"),
-		"│ Generated: " + m.styles.muted.Render(formatTimestamp(snapshot.GeneratedAt)),
-	}
-	if !buildinfo.IsZero(m.build) {
-		lines = append(lines, "│ Build: "+m.styles.muted.Render(buildinfo.DisplayLabel(m.build)))
-	}
-	lines = append(lines, []string{
-		"│ Agents: " + m.styles.ok.Render(fmt.Sprintf("%d running", countOrLen(snapshot.Counts.Running, len(snapshot.Running)))) +
-			m.styles.muted.Render(" | ") +
-			m.styles.warn.Render(fmt.Sprintf("%d queued", countOrLen(snapshot.Counts.Queue, len(snapshot.Queue)))) +
-			m.styles.muted.Render(" | ") +
-			m.styles.error.Render(fmt.Sprintf("%d blocked", countOrLen(snapshot.Counts.Blocked, len(snapshot.Blocked)))) +
-			m.styles.muted.Render(" | ") +
-			m.styles.info.Render(fmt.Sprintf("%d completed", countOrLen(snapshot.Counts.Completed, len(snapshot.Completed)))),
-		"│ Throughput: " + m.styles.info.Render(formatTokenThroughput(snapshot.Throughput)),
-		"│ Runtime: " + m.styles.accent.Render(formatRuntimeSeconds(snapshot.Tokens.RuntimeSeconds)),
-		"│ Tokens: " + m.styles.warn.Render("in "+formatCount(snapshot.Tokens.Input)) +
-			m.styles.muted.Render(" | ") +
-			m.styles.warn.Render("out "+formatCount(snapshot.Tokens.Output)) +
-			m.styles.muted.Render(" | ") +
-			m.styles.warn.Render("total "+formatCount(snapshot.Tokens.Total)) +
-			formatCacheReadSummary(snapshot.Tokens, m.styles),
-		"│ Budget: " + formatBudget(snapshot.Budget, m.styles),
-		"│ Rate Limits: " + formatRateLimits(snapshot.RateLimits, m.now, m.styles),
-		"│ Project: " + formatOptionalInfo(formatProject(snapshot.Project), m.styles),
-		"│ Instance: " + formatOptionalInfo(formatInstance(snapshot.Instance), m.styles),
-		"│ Scope: " + formatOptionalInfo(formatAuthorizationScope(snapshot.Instance), m.styles),
-		"│ Dashboard: " + m.styles.info.Render(formatDashboardURL(snapshot)),
-		"│ Next refresh: " + formatOptionalInfo(formatNextRefresh(snapshot.Refresh), m.styles),
-		"│ " + lifecycleLabel + ": " + lifecycleStatus,
-		m.styles.title.Render("├─ Running"),
-		"│",
-	}...)
-
-	runningLayout := newRunningTableLayout(snapshot.Running, m.width)
-	lines = append(lines, runningTableHeaderWithLayout(runningLayout, m.styles), runningTableSeparatorWithLayout(runningLayout, m.styles))
-	lines = append(lines, formatRunningRowsWithLayout(snapshot.Running, runningLayout, m.styles)...)
-	lines = append(lines, m.styles.title.Render("├─ Backoff queue"), "│")
-	lines = append(lines, formatQueueRows(snapshot.Queue, m.styles)...)
-	lines = append(lines, m.styles.title.Render("├─ Blocked"), "│")
-	lines = append(lines, formatBlockedRows(snapshot.Blocked, m.styles)...)
-	lines = append(lines, m.styles.title.Render("├─ Completed"), "│")
-	lines = append(lines, formatCompletedRows(snapshot.Completed, m.styles)...)
-	lines = append(lines, closingBorder)
-
-	return strings.Join(lines, "\n")
 }
 
 func formatLifecycle(shutdown telemetry.Shutdown, now func() time.Time, timeoutSource func() time.Duration, s styles) (string, string) {
@@ -286,151 +232,6 @@ func formatLifecycle(shutdown telemetry.Shutdown, now func() time.Time, timeoutS
 		return "Lifecycle", s.ok.Render(status)
 	}
 	return "Shutdown", s.warn.Render(status)
-}
-
-func formatRunningRows(running []telemetry.Running, eventWidth int, s styles) []string {
-	return formatRunningRowsWithLayout(running, runningTableLayout{issueWidth: runningIDWidth, eventWidth: eventWidth}, s)
-}
-
-func formatRunningRowsWithLayout(running []telemetry.Running, layout runningTableLayout, s styles) []string {
-	if len(running) == 0 {
-		return []string{"│  " + s.muted.Render("No active agents")}
-	}
-
-	rows := append([]telemetry.Running(nil), running...)
-	sort.Slice(rows, func(i int, j int) bool {
-		return issueLabel(rows[i].Issue) < issueLabel(rows[j].Issue)
-	})
-
-	lines := make([]string, 0, len(rows))
-	for _, row := range rows {
-		event := row.LastMessage
-		if row.LastMessageTruncation != nil && row.LastMessageTruncation.Truncated && strings.TrimSpace(event) != "" {
-			event += " [truncated]"
-		}
-		if strings.TrimSpace(event) == "" {
-			event = row.LastEvent
-		}
-		if strings.TrimSpace(event) == "" {
-			event = "none"
-		}
-
-		statusStyle := statusStyle(row.LastEvent, s)
-		cells := []string{
-			formatIssueCell(row.Issue, layout.issueWidth),
-			formatCell(defaultString(row.State, "unknown"), runningStageWidth, alignLeft),
-			formatCell(defaultString(row.ProcessIdentity, "n/a"), runningProcessWidth, alignLeft),
-			formatCell(formatRuntimeAndTurns(row.RuntimeSeconds, row.TurnCount), runningAgeWidth, alignLeft),
-			formatCell(formatRunningTokenPressure(row.Tokens), runningTokensWidth, alignRight),
-			formatCell(compactSessionID(row.SessionID), runningSessionWidth, alignLeft),
-			formatCell(cleanInline(event), layout.eventWidth, alignLeft),
-		}
-		tokenStyle := runningTokenStyle(row.Tokens, s)
-
-		lines = append(lines, "│ "+s.ok.Render("●")+" "+
-			s.info.Render(cells[0])+" "+
-			statusStyle.Render(cells[1])+" "+
-			s.warn.Render(cells[2])+" "+
-			s.accent.Render(cells[3])+" "+
-			tokenStyle.Render(cells[4])+" "+
-			s.info.Render(cells[5])+" "+
-			statusStyle.Render(cells[6]))
-	}
-
-	return lines
-}
-
-func formatQueueRows(queue []telemetry.Queued, s styles) []string {
-	if len(queue) == 0 {
-		return []string{"│  " + s.muted.Render("No queued retries")}
-	}
-
-	rows := append([]telemetry.Queued(nil), queue...)
-	sort.Slice(rows, func(i int, j int) bool {
-		if rows[i].DueInMillis == rows[j].DueInMillis {
-			return issueLabel(rows[i].Issue) < issueLabel(rows[j].Issue)
-		}
-		return rows[i].DueInMillis < rows[j].DueInMillis
-	})
-
-	lines := make([]string, 0, len(rows))
-	for _, row := range rows {
-		line := "│  " + s.warn.Render("↻") + " " +
-			s.error.Render(issueDisplayLabel(row.Issue, 0)) + " " +
-			s.warn.Render(fmt.Sprintf("attempt=%d", row.Attempt)) +
-			s.muted.Render(" in ") +
-			s.info.Render(formatDueIn(row.DueInMillis))
-
-		if errorText := cleanInline(row.Error); errorText != "" {
-			line += " " + s.muted.Render("error="+truncate(errorText, 96))
-		}
-
-		lines = append(lines, line)
-	}
-
-	return lines
-}
-
-func formatBlockedRows(blocked []telemetry.Blocked, s styles) []string {
-	if len(blocked) == 0 {
-		return []string{"│  " + s.muted.Render("No blocked work")}
-	}
-
-	rows := append([]telemetry.Blocked(nil), blocked...)
-	sort.Slice(rows, func(i int, j int) bool {
-		return issueLabel(rows[i].Issue) < issueLabel(rows[j].Issue)
-	})
-
-	lines := make([]string, 0, len(rows))
-	for _, row := range rows {
-		detail := cleanInline(row.Error)
-		if detail == "" {
-			detail = cleanInline(row.LastMessage)
-		}
-		if detail == "" {
-			detail = "blocked"
-		}
-
-		lines = append(lines, "│  "+s.error.Render("●")+" "+
-			s.info.Render(issueDisplayLabel(row.Issue, 0))+" "+
-			s.error.Render(defaultString(row.State, "Blocked"))+" "+
-			s.muted.Render(truncate(detail, 120)))
-	}
-
-	return lines
-}
-
-func formatCompletedRows(completed []telemetry.Completed, s styles) []string {
-	if len(completed) == 0 {
-		return []string{"│  " + s.muted.Render("No completed work")}
-	}
-
-	rows := append([]telemetry.Completed(nil), completed...)
-	sort.Slice(rows, func(i int, j int) bool {
-		return rows[i].CompletedAt.After(rows[j].CompletedAt)
-	})
-
-	lines := make([]string, 0, len(rows))
-	for _, row := range rows {
-		state := defaultString(row.FinalState, row.State)
-		if state == "" {
-			state = "completed"
-		}
-
-		line := "│  " + s.ok.Render("✓") + " " +
-			s.info.Render(issueDisplayLabel(row.Issue, 0)) + " " +
-			s.ok.Render(state) + " " +
-			s.accent.Render(formatRuntimeAndTurns(row.RuntimeSeconds, row.Turns)) + " " +
-			s.warn.Render(formatCount(row.Tokens.Total))
-
-		if strings.TrimSpace(row.Model) != "" {
-			line += " " + s.info.Render(row.Model)
-		}
-
-		lines = append(lines, line)
-	}
-
-	return lines
 }
 
 func formatBudget(budget telemetry.Budget, s styles) string {
@@ -534,54 +335,6 @@ func formatReset(bucket *telemetry.RateLimitBucket, now func() time.Time) string
 	return formatCount(seconds) + "s"
 }
 
-type runningTableLayout struct {
-	issueWidth int
-	eventWidth int
-}
-
-func newRunningTableLayout(running []telemetry.Running, columns int) runningTableLayout {
-	issueWidth := runningIDWidth
-	fullIssueWidth := maxRunningIssueLabelWidth(running)
-	if fullIssueWidth > issueWidth {
-		fullIssueWidth = min(fullIssueWidth, runningIDMaxWidth)
-		if runningEventWidthFor(columns, fullIssueWidth) >= runningEventDefaultWidth {
-			issueWidth = fullIssueWidth
-		}
-	}
-
-	return runningTableLayout{
-		issueWidth: issueWidth,
-		eventWidth: runningEventWidthFor(columns, issueWidth),
-	}
-}
-
-func maxRunningIssueLabelWidth(running []telemetry.Running) int {
-	width := 0
-	for _, row := range running {
-		width = max(width, runeLen(issueLabel(row.Issue)))
-	}
-	return width
-}
-
-func runningTableHeaderWithLayout(layout runningTableLayout, s styles) string {
-	cells := []string{
-		formatCell("ID", layout.issueWidth, alignLeft),
-		formatCell("STAGE", runningStageWidth, alignLeft),
-		formatCell("PID", runningProcessWidth, alignLeft),
-		formatCell("AGE / TURN", runningAgeWidth, alignLeft),
-		formatCell("TOKENS/CTX", runningTokensWidth, alignLeft),
-		formatCell("SESSION", runningSessionWidth, alignLeft),
-		formatCell("EVENT", layout.eventWidth, alignLeft),
-	}
-
-	return "│   " + s.muted.Render(strings.Join(cells, " "))
-}
-
-func runningTableSeparatorWithLayout(layout runningTableLayout, s styles) string {
-	width := layout.issueWidth + runningStageWidth + runningProcessWidth + runningAgeWidth + runningTokensWidth + runningSessionWidth + layout.eventWidth + runningColumnGaps
-	return "│   " + s.muted.Render(strings.Repeat("─", width))
-}
-
 func statusStyle(event string, s styles) lipgloss.Style {
 	switch event {
 	case "":
@@ -619,10 +372,6 @@ func issueDisplayLabel(issue telemetry.Issue, width int) string {
 	}
 
 	return label
-}
-
-func formatIssueCell(issue telemetry.Issue, width int) string {
-	return formatCell(issueDisplayLabel(issue, width), width, alignLeft)
 }
 
 func compactIssueLabel(label string) string {
@@ -849,23 +598,6 @@ func formatUSDCap(value *float64) string {
 	return formatUSD(*value)
 }
 
-type align int
-
-const (
-	_ align = iota
-	alignLeft
-	alignRight
-)
-
-func formatCell(value string, width int, alignment align) string {
-	text := truncate(cleanInline(value), width)
-	if alignment == alignRight {
-		return fmt.Sprintf("%*s", width, text)
-	}
-
-	return fmt.Sprintf("%-*s", width, text)
-}
-
 func cleanInline(value string) string {
 	value = strings.NewReplacer(
 		`\r\n`, " ",
@@ -898,19 +630,6 @@ func runeLen(value string) int {
 	return len([]rune(value))
 }
 
-func runningEventWidthFor(columns int, issueWidth int) int {
-	if columns <= 0 {
-		columns = defaultTerminalColumns
-	}
-
-	width := columns - issueWidth - fixedRunningWidthWithoutID - runningRowChromeWidth
-	if width < runningEventMinWidth {
-		return runningEventMinWidth
-	}
-
-	return width
-}
-
 type styles struct {
 	title  lipgloss.Style
 	ok     lipgloss.Style
@@ -934,18 +653,6 @@ func newStyles() styles {
 }
 
 const (
-	defaultTerminalColumns     = 123
-	runningIDWidth             = 8
-	runningIDMaxWidth          = 32
-	runningStageWidth          = 14
-	runningProcessWidth        = 12
-	runningAgeWidth            = 12
-	runningTokensWidth         = 13
-	runningSessionWidth        = 18
-	runningEventMinWidth       = 12
-	runningRowChromeWidth      = 10
-	runningColumnGaps          = 6
-	fixedRunningWidthWithoutID = runningStageWidth + runningProcessWidth + runningAgeWidth + runningTokensWidth + runningSessionWidth
-	runningEventDefaultWidth   = defaultTerminalColumns - runningIDWidth - fixedRunningWidthWithoutID - runningRowChromeWidth
-	closingBorder              = "╰─"
+	defaultTerminalWidth  = 80
+	defaultTerminalHeight = 24
 )
