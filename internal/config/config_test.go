@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1224,6 +1225,46 @@ Prompt
 	}
 	if workflow.Config.Agent.Knowledge.MaxBytes != 2048 {
 		t.Fatalf("Agent.Knowledge.MaxBytes = %d, want 2048", workflow.Config.Agent.Knowledge.MaxBytes)
+	}
+}
+
+func TestConfiguredSubsettingsTracksExplicitFrontmatterLeaves(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+budget:
+  enabled: false
+  per_issue_max_usd: 12
+agent:
+  skills:
+    enabled: false
+  lessons:
+    enabled: false
+    recall_n: 4
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+
+	tests := []struct {
+		prefix string
+		want   []string
+	}{
+		{prefix: "budget", want: []string{"budget.per_issue_max_usd"}},
+		{prefix: "agent.skills"},
+		{prefix: "agent.lessons", want: []string{"agent.lessons.recall_n"}},
+		{prefix: "gate.validator"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.prefix, func(t *testing.T) {
+			t.Parallel()
+			got := workflow.Config.ConfiguredSubsettings(tt.prefix)
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("ConfiguredSubsettings(%q) = %#v, want %#v", tt.prefix, got, tt.want)
+			}
+		})
 	}
 }
 

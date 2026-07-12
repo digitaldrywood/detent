@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -144,6 +145,8 @@ type doctorDeps struct {
 	lookupEnv            func(string) string
 	lookPath             func(string) (string, error)
 	runCommand           func(context.Context, string, ...string) error
+	resolveCommandInDir  func(context.Context, string, []string, string) (string, error)
+	runCommandInDir      func(context.Context, string, []string, string, ...string) error
 	httpDo               func(*http.Request) (*http.Response, error)
 	githubScopes         func(context.Context, string) ([]string, error)
 	githubReadiness      doctorGitHubReadinessFunc
@@ -157,6 +160,8 @@ type doctorDeps struct {
 	proposalConnector    func(workflowconfig.Config) (doctorWorkflowProposalConnector, error)
 	modelProbe           func(context.Context, doctorRouteModelProbeRequest) error
 	executable           func() (string, error)
+	shipSkillProbe       func(string) (doctorShipSkill, error)
+	now                  func() time.Time
 }
 
 func newDoctorCommand(configPath *string, env *string, logLevel *string, host *string, port *int, opts options) *cobra.Command {
@@ -872,6 +877,12 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.runCommand == nil {
 		d.runCommand = defaults.runCommand
 	}
+	if d.resolveCommandInDir == nil {
+		d.resolveCommandInDir = defaults.resolveCommandInDir
+	}
+	if d.runCommandInDir == nil {
+		d.runCommandInDir = defaults.runCommandInDir
+	}
 	if d.httpDo == nil {
 		d.httpDo = defaults.httpDo
 	}
@@ -911,6 +922,12 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.executable == nil {
 		d.executable = defaults.executable
 	}
+	if d.shipSkillProbe == nil {
+		d.shipSkillProbe = defaults.shipSkillProbe
+	}
+	if d.now == nil {
+		d.now = defaults.now
+	}
 	return d
 }
 
@@ -920,6 +937,8 @@ func defaultDoctorDeps() doctorDeps {
 		lookupEnv:            os.Getenv,
 		lookPath:             exec.LookPath,
 		runCommand:           runDoctorCommand,
+		resolveCommandInDir:  resolveDoctorCommandInDir,
+		runCommandInDir:      runDoctorCommandInDir,
 		httpDo:               defaultDoctorHTTPDo,
 		githubScopes:         defaultGitHubScopes,
 		githubReadiness:      ghconnector.CheckReadiness,
@@ -933,6 +952,8 @@ func defaultDoctorDeps() doctorDeps {
 		proposalConnector:    defaultDoctorProposalConnector,
 		modelProbe:           defaultDoctorRouteModelProbe,
 		executable:           os.Executable,
+		shipSkillProbe:       probeDoctorShipSkill,
+		now:                  time.Now,
 	}
 }
 
@@ -984,6 +1005,90 @@ func runDoctorCommand(ctx context.Context, path string, args ...string) error {
 		return fmt.Errorf("%w: %s", err, detail)
 	}
 	return err
+}
+
+func resolveDoctorCommandInDir(ctx context.Context, dir string, environment []string, executable string) (string, error) {
+	commandCtx, cancel := context.WithTimeout(ctx, doctorCommandTimeout)
+	defer cancel()
+
+	if runtime.GOOS == "windows" {
+		if strings.ContainsAny(executable, `/\\`) && !filepath.IsAbs(executable) {
+			executable = filepath.Join(dir, executable)
+		}
+		return exec.LookPath(executable)
+	}
+	cmd := exec.CommandContext(commandCtx, "sh", "-c", `command -v -- "$1"`, "detent-doctor", executable) // #nosec G204 -- executable is passed as a positional shell parameter.
+	cmd.Dir = dir
+	cmd.Env = doctorCommandEnvironment(os.Environ(), environment)
+	output, err := cmd.CombinedOutput()
+	if commandCtx.Err() != nil {
+		return "", commandCtx.Err()
+	}
+	resolved := strings.TrimSpace(string(output))
+	if err != nil {
+		if resolved != "" {
+			return "", fmt.Errorf("%w: %s", err, resolved)
+		}
+		return "", err
+	}
+	if resolved == "" {
+		return "", errors.New("command -v returned no result")
+	}
+	return resolved, nil
+}
+
+func runDoctorCommandInDir(ctx context.Context, dir string, environment []string, path string, args ...string) error {
+	commandCtx, cancel := context.WithTimeout(ctx, doctorCommandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(commandCtx, path, args...) // #nosec G204 -- doctor runs an operator-configured gate through a PATH-resolved executable.
+	cmd.Dir = dir
+	cmd.Env = doctorCommandEnvironment(os.Environ(), environment)
+	output, err := cmd.CombinedOutput()
+	if commandCtx.Err() != nil {
+		return commandCtx.Err()
+	}
+	if err == nil {
+		return nil
+	}
+	if detail := strings.TrimSpace(string(output)); detail != "" {
+		return fmt.Errorf("%w: %s", err, detail)
+	}
+	return err
+}
+
+func doctorCommandEnvironment(base []string, overrides []string) []string {
+	environment := append([]string(nil), base...)
+	for _, override := range overrides {
+		name, _, ok := strings.Cut(override, "=")
+		if !ok {
+			continue
+		}
+		values := doctorEnvironmentValues(environment)
+		override = name + "=" + os.Expand(strings.TrimPrefix(override, name+"="), func(key string) string {
+			return values[key]
+		})
+		prefix := name + "="
+		filtered := environment[:0]
+		for _, entry := range environment {
+			if !strings.HasPrefix(entry, prefix) {
+				filtered = append(filtered, entry)
+			}
+		}
+		environment = append(filtered, override)
+	}
+	return environment
+}
+
+func doctorEnvironmentValues(environment []string) map[string]string {
+	values := make(map[string]string, len(environment))
+	for _, entry := range environment {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[name] = value
+		}
+	}
+	return values
 }
 
 func defaultGitWorkTree(ctx context.Context, path string) error {

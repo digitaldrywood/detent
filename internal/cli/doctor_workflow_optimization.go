@@ -63,6 +63,7 @@ const (
 	doctorWorkflowInvalidWorkpadStatusMinCount = int64(2)
 	doctorWorkflowValidatorModel               = "gpt-5.4-mini"
 	doctorWorkflowRunawayCapTolerance          = 1.25
+	doctorWorkflowCapRetryCostAssumption       = "one ceiling retry re-burns the full configured cap"
 )
 
 var errDoctorTelemetryStoreUnavailable = errors.New("telemetry store unavailable")
@@ -1269,7 +1270,7 @@ func doctorWorkflowOptimizationFindings(
 			if cfg.Agent.MaxSessionTokens <= 0 || cfg.Agent.MaxSessionTokens > configuredCapLimit {
 				findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleRunawaySessionTokens,
 					"Runaway session tail",
-					fmt.Sprintf("max session tokens are %.1fx the median", ratio),
+					fmt.Sprintf("max session tokens are %.1fx the median; sizing assumes %s", ratio, doctorWorkflowCapRetryCostAssumption),
 					metrics.MaxSessionTokens-metrics.MedianSessionTokens,
 					map[string]any{
 						"session_count":         metrics.SessionCount,
@@ -1277,6 +1278,7 @@ func doctorWorkflowOptimizationFindings(
 						"p90_session_tokens":    metrics.P90SessionTokens,
 						"max_session_tokens":    metrics.MaxSessionTokens,
 						"max_to_median_ratio":   doctorRoundedFloat(ratio, 2),
+						"retry_cost_assumption": doctorWorkflowCapRetryCostAssumption,
 					},
 					doctorWorkflowOptimizationPatch{Path: "agent.max_session_tokens", Value: value},
 				))
@@ -1293,12 +1295,13 @@ func doctorWorkflowOptimizationFindings(
 		}
 		findings = append(findings, doctorWorkflowFinding(projectID, workflowPath, doctorWorkflowRuleNoSessionTokenBrake,
 			"Session runaway brake is disabled",
-			"neither agent.max_session_tokens nor agent.max_session_context_multiplier is configured",
+			"neither agent.max_session_tokens nor agent.max_session_context_multiplier is configured; any generated cap assumes "+doctorWorkflowCapRetryCostAssumption,
 			0,
 			map[string]any{
 				"max_session_tokens":             cfg.Agent.MaxSessionTokens,
 				"max_session_context_multiplier": cfg.Agent.MaxSessionContextMultiplier,
 				"unbraked_session_count":         metrics.SessionCount,
+				"retry_cost_assumption":          doctorWorkflowCapRetryCostAssumption,
 			},
 			patches...,
 		))

@@ -4780,6 +4780,12 @@ func successfulDoctorDeps() doctorDeps {
 		runCommand: func(context.Context, string, ...string) error {
 			return nil
 		},
+		resolveCommandInDir: func(_ context.Context, _ string, _ []string, executable string) (string, error) {
+			return "/usr/bin/" + executable, nil
+		},
+		runCommandInDir: func(context.Context, string, []string, string, ...string) error {
+			return nil
+		},
 		githubScopes: func(context.Context, string) ([]string, error) {
 			return []string{"repo", "read:org", "read:project", "project"}, nil
 		},
@@ -4800,6 +4806,10 @@ func successfulDoctorDeps() doctorDeps {
 		executable: func() (string, error) {
 			return filepath.Join("Users", "corylanou", "go", "bin", "detent"), nil
 		},
+		shipSkillProbe: func(string) (doctorShipSkill, error) {
+			return doctorShipSkill{Version: "1.6.0", Path: "/plugins/go-workflow/1.6.0/skills/ship/SKILL.md"}, nil
+		},
+		now: time.Now,
 	}
 }
 
