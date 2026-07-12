@@ -226,16 +226,10 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		return decision
 	}
 	previous, ok := latestImplementProgressSignature(attempts)
-	if !ok {
-		decision.Reason = "first_completed_attempt"
-		return decision
-	}
-	decision.PreviousSignature = previous
-	decision.PreviousSignatureFound = true
-	decision.FailedChecksAdded, decision.FailedChecksRemoved = implementProgressFailedCheckDelta(previous.FailedChecks, signature.FailedChecks)
-	if !implementProgressSignatureEqual(previous, signature) {
-		decision.Reason = "signature_changed"
-		return decision
+	if ok {
+		decision.PreviousSignature = previous
+		decision.PreviousSignatureFound = true
+		decision.FailedChecksAdded, decision.FailedChecksRemoved = implementProgressFailedCheckDelta(previous.FailedChecks, signature.FailedChecks)
 	}
 	if running.DiffStats.UnpushedCommits > 0 {
 		decision.Outcome = store.WorkAttemptTerminalNoProgress
@@ -245,6 +239,14 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		if decision.Block {
 			decision.BlockReason = strandedUnpushedWorkReason
 		}
+		return decision
+	}
+	if !ok {
+		decision.Reason = "first_completed_attempt"
+		return decision
+	}
+	if !implementProgressSignatureEqual(previous, signature) {
+		decision.Reason = "signature_changed"
 		return decision
 	}
 	if !implementProgressDiffStatsClean(running.DiffStats) {
