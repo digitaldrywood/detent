@@ -184,7 +184,7 @@ func TestCheckDoctorGateCommandProbesMakeBeforeShellSyntax(t *testing.T) {
 	workdir := t.TempDir()
 	cfg := workflowconfig.Default()
 	cfg.Workspace.SourceRoot = workdir
-	cfg.Gate.Run = "make check >/dev/null"
+	cfg.Gate.Run = "make check 2>/dev/null"
 	var gotArgs []string
 	checks := checkDoctorGateCommand(context.Background(), "alpha", "WORKFLOW.md", globalconfig.Project{ID: "alpha", Workdir: workdir}, cfg, doctorDeps{
 		resolveCommandInDir: func(context.Context, string, []string, string) (string, error) {
@@ -233,21 +233,23 @@ func TestResolveDoctorWindowsCommandUsesConfiguredPath(t *testing.T) {
 	if err := os.Mkdir(binDir, 0o755); err != nil {
 		t.Fatalf("Mkdir() error = %v", err)
 	}
-	want := filepath.Join(binDir, "project-check.EXE")
-	if err := os.WriteFile(want, []byte("example"), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
+	for _, name := range []string{"project-check", "project-check.local"} {
+		want := filepath.Join(binDir, name+".EXE")
+		if err := os.WriteFile(want, []byte("example"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
 
-	got, err := resolveDoctorWindowsCommand(root, []string{
-		`Path=C:\\Windows\\System32`,
-		"PATH=bin",
-		"PATHEXT=.EXE;.CMD",
-	}, "project-check")
-	if err != nil {
-		t.Fatalf("resolveDoctorWindowsCommand() error = %v", err)
-	}
-	if got != want {
-		t.Fatalf("resolveDoctorWindowsCommand() = %q, want %q", got, want)
+		got, err := resolveDoctorWindowsCommand(root, []string{
+			`Path=C:\\Windows\\System32`,
+			"PATH=bin",
+			"PATHEXT=.EXE;.CMD",
+		}, name)
+		if err != nil {
+			t.Fatalf("resolveDoctorWindowsCommand(%q) error = %v", name, err)
+		}
+		if got != want {
+			t.Fatalf("resolveDoctorWindowsCommand(%q) = %q, want %q", name, got, want)
+		}
 	}
 }
 
@@ -362,6 +364,8 @@ func TestProbeDoctorShipSkillChecksEnablementCacheAndVersion(t *testing.T) {
 		wantError   string
 	}{
 		{name: "valid", config: "[plugins.\"go-workflow@gopher-ai\"]\nenabled = true\n", directory: "1.6.0", manifest: "1.6.0", createSkill: true, wantVersion: "1.6.0"},
+		{name: "valid trailing comment", config: "[plugins.\"go-workflow@gopher-ai\"] # managed locally\nenabled = true\n", directory: "1.6.0", manifest: "1.6.0", createSkill: true, wantVersion: "1.6.0"},
+		{name: "valid single quoted key", config: "[plugins.'go-workflow@gopher-ai']\nenabled = true\n", directory: "1.6.0", manifest: "1.6.0", createSkill: true, wantVersion: "1.6.0"},
 		{name: "later matching section enabled", config: "[plugins.\"go-workflow@stale\"]\nenabled = false\n[plugins.\"go-workflow@gopher-ai\"]\nenabled = true\n", directory: "1.6.0", manifest: "1.6.0", createSkill: true, wantVersion: "1.6.0"},
 		{name: "disabled", directory: "1.6.0", manifest: "1.6.0", createSkill: true, wantError: "plugin is not enabled"},
 		{name: "different provider enabled", config: "[plugins.\"go-workflow@stale\"]\nenabled = true\n", directory: "1.6.0", manifest: "1.6.0", createSkill: true, wantError: "go-workflow@gopher-ai cache version"},

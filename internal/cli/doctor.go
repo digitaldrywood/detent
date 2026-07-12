@@ -1059,21 +1059,19 @@ func resolveDoctorWindowsCommand(dir string, environment []string, executable st
 
 func firstDoctorWindowsCommand(path string, pathExt string) (string, error) {
 	candidates := []string{path}
-	if filepath.Ext(path) == "" {
-		extensions := strings.Split(pathExt, ";")
-		if strings.TrimSpace(pathExt) == "" {
-			extensions = []string{".COM", ".EXE", ".BAT", ".CMD"}
+	extensions := strings.Split(pathExt, ";")
+	if strings.TrimSpace(pathExt) == "" {
+		extensions = []string{".COM", ".EXE", ".BAT", ".CMD"}
+	}
+	for _, extension := range extensions {
+		extension = strings.TrimSpace(extension)
+		if extension == "" {
+			continue
 		}
-		for _, extension := range extensions {
-			extension = strings.TrimSpace(extension)
-			if extension == "" {
-				continue
-			}
-			if !strings.HasPrefix(extension, ".") {
-				extension = "." + extension
-			}
-			candidates = append(candidates, path+extension)
+		if !strings.HasPrefix(extension, ".") {
+			extension = "." + extension
 		}
+		candidates = append(candidates, path+extension)
 	}
 	for _, candidate := range candidates {
 		info, err := os.Stat(candidate)

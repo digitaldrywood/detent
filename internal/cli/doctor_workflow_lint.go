@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/BurntSushi/toml"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -178,11 +179,27 @@ func doctorWorkflowCommandPrefix(command string) string {
 			return strings.TrimSpace(prefix.String())
 		}
 		if strings.ContainsRune("|&;<>(`\n", r) {
-			return strings.TrimSpace(prefix.String())
+			commandPrefix := prefix.String()
+			if r == '>' || r == '<' {
+				commandPrefix = doctorWorkflowTrimRedirectionDescriptor(commandPrefix)
+			}
+			return strings.TrimSpace(commandPrefix)
 		}
 		prefix.WriteRune(r)
 	}
 	return strings.TrimSpace(prefix.String())
+}
+
+func doctorWorkflowTrimRedirectionDescriptor(command string) string {
+	trimmed := strings.TrimRight(command, " \t")
+	index := len(trimmed)
+	for index > 0 && trimmed[index-1] >= '0' && trimmed[index-1] <= '9' {
+		index--
+	}
+	if index == len(trimmed) || index > 0 && trimmed[index-1] != ' ' && trimmed[index-1] != '\t' {
+		return command
+	}
+	return trimmed[:index]
 }
 
 func doctorWorkflowExecutableIndex(fields []string) int {
@@ -330,39 +347,21 @@ func probeDoctorShipSkill(codexHome string) (doctorShipSkill, error) {
 	return doctorShipSkill{}, fmt.Errorf("go-workflow cache is missing under %s", filepath.Join(codexHome, "plugins", "cache"))
 }
 
-func doctorCodexPluginEnabled(configPath string, plugin string, provider string) (enabled bool, resultErr error) {
-	file, err := os.Open(configPath)
-	if err != nil {
+func doctorCodexPluginEnabled(configPath string, plugin string, provider string) (bool, error) {
+	var config struct {
+		Plugins map[string]struct {
+			Enabled bool `toml:"enabled"`
+		} `toml:"plugins"`
+	}
+	if _, err := toml.DecodeFile(configPath, &config); err != nil {
 		return false, err
 	}
-	defer func() {
-		resultErr = errors.Join(resultErr, file.Close())
-	}()
-
-	matchingPlugin := false
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "[") {
-			section := strings.TrimSuffix(strings.TrimPrefix(line, `[plugins."`), `"]`)
-			matchingPlugin = strings.HasPrefix(line, `[plugins."`) && strings.HasSuffix(line, `"]`) && (section == plugin || section == plugin+"@"+provider)
-			continue
-		}
-		if !matchingPlugin {
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if ok && strings.TrimSpace(key) == "enabled" {
-			fields := strings.Fields(value)
-			if len(fields) > 0 && strings.EqualFold(fields[0], "true") {
-				enabled = true
-			}
+	for name, pluginConfig := range config.Plugins {
+		if (name == plugin || name == plugin+"@"+provider) && pluginConfig.Enabled {
+			return true, nil
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return false, err
-	}
-	return enabled, nil
+	return false, nil
 }
 
 func checkDoctorWorkflowRuntimeLint(ctx context.Context, projectID string, workflowPath string, storePath string, cfg workflowconfig.Config, deps doctorDeps) []doctorCheck {

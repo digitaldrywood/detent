@@ -1291,6 +1291,30 @@ Prompt
 	}
 }
 
+func TestConfiguredSubsettingsTracksMergedFrontmatterLeaves(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+shared_agent: &shared_agent
+  skills:
+    enabled: false
+    path: merged-skills
+agent:
+  <<: *shared_agent
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+
+	got := workflow.Config.ConfiguredSubsettings("agent.skills")
+	want := []string{"agent.skills.path"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ConfiguredSubsettings(agent.skills) = %#v, want %#v", got, want)
+	}
+}
+
 func TestKnowledgeWithSourcesAllowsSourceLessMaxBytesOverride(t *testing.T) {
 	t.Parallel()
 

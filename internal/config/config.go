@@ -2262,11 +2262,21 @@ func configuredFieldPaths(root *yaml.Node) map[string]struct{} {
 			if key == "" {
 				continue
 			}
+			value := node.Content[index+1]
+			if key == "<<" {
+				if value.Kind == yaml.SequenceNode {
+					for _, merged := range value.Content {
+						collect(merged, prefix)
+					}
+				} else {
+					collect(value, prefix)
+				}
+				continue
+			}
 			path := key
 			if prefix != "" {
 				path = prefix + "." + key
 			}
-			value := node.Content[index+1]
 			if value.Kind == yaml.MappingNode || value.Kind == yaml.AliasNode {
 				collect(value, path)
 				continue
