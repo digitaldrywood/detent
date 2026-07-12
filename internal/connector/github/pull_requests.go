@@ -15,6 +15,7 @@ import (
 
 type issuePullRequestCandidate struct {
 	Index             int
+	Identifier        string
 	BranchPrefix      string
 	PullRequestNumber int
 	PullRequestRepo   pullRequestRepo
@@ -60,8 +61,13 @@ func (c *Connector) attachPullRequestsWithCache(ctx context.Context, issues []co
 		if branchPrefix == "" && pullRequestNumber <= 0 {
 			continue
 		}
+		identifier := strings.TrimSpace(issue.Identifier)
+		if identifier == "" {
+			identifier = strings.TrimSpace(issue.ID)
+		}
 		byRepo[repo] = append(byRepo[repo], issuePullRequestCandidate{
 			Index:             index,
+			Identifier:        identifier,
 			BranchPrefix:      branchPrefix,
 			PullRequestNumber: pullRequestNumber,
 			PullRequestRepo:   linkedPullRequestRepo,
@@ -82,30 +88,92 @@ func (c *Connector) attachPullRequestsWithCache(ctx context.Context, issues []co
 	})
 
 	for _, repo := range repos {
-		if err := c.attachLinkedPullRequests(ctx, repo, issues, byRepo[repo], useStatusCache); err != nil {
-			return err
-		}
-		if !hasUnattachedBranchPullRequestCandidates(issues, byRepo[repo]) {
-			continue
-		}
-		if state, ok := c.currentPullRequestHydrationState(repo); ok {
-			c.logPullRequestHydrationSkip(ctx, repo, state, "shared_backoff")
-			markPullRequestHydrationUnavailableForCandidates(issues, byRepo[repo], repo, state)
-			continue
-		}
-		pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
-		if err != nil {
-			if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
-				markPullRequestHydrationUnavailableForCandidates(issues, byRepo[repo], repo, state)
-				continue
+		candidates := c.rotatePullRequestHydrationCandidates(repo, byRepo[repo])
+		nextCursor := ""
+		branchFirst := firstPullRequestCandidateNeedsBranchHydration(issues, candidates)
+		if branchFirst {
+			var err error
+			nextCursor, err = c.attachBranchPullRequests(ctx, repo, issues, candidates, useStatusCache)
+			if err != nil {
+				return err
 			}
+		}
+
+		linkedCursor, err := c.attachLinkedPullRequests(ctx, repo, issues, candidates, useStatusCache)
+		if err != nil {
 			return err
 		}
-		if err := c.attachMatchingPullRequests(ctx, repo, issues, byRepo[repo], pullRequests, useStatusCache); err != nil {
-			return err
+		if nextCursor == "" {
+			nextCursor = linkedCursor
 		}
+		if !branchFirst {
+			branchCursor, err := c.attachBranchPullRequests(ctx, repo, issues, candidates, useStatusCache)
+			if err != nil {
+				return err
+			}
+			if nextCursor == "" {
+				nextCursor = branchCursor
+			}
+		}
+		c.setPullRequestHydrationCursor(repo, nextCursor)
 	}
 	return nil
+}
+
+func (c *Connector) attachBranchPullRequests(
+	ctx context.Context,
+	repo pullRequestRepo,
+	issues []connector.Issue,
+	candidates []issuePullRequestCandidate,
+	useStatusCache bool,
+) (string, error) {
+	if !hasUnattachedBranchPullRequestCandidates(issues, candidates) {
+		return "", nil
+	}
+	if state, ok := c.currentPullRequestHydrationState(repo); ok {
+		c.logPullRequestHydrationSkip(ctx, repo, state, "shared_backoff")
+		markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
+		return firstUnattachedBranchPullRequestCandidate(issues, candidates), nil
+	}
+	pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
+	if err != nil {
+		if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
+			cursor := ""
+			if errors.Is(err, ErrRESTBudgetReserved) {
+				cursor = firstUnattachedBranchPullRequestCandidate(issues, candidates)
+			}
+			markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
+			return cursor, nil
+		}
+		return "", err
+	}
+	return c.attachMatchingPullRequests(ctx, repo, issues, candidates, pullRequests, useStatusCache)
+}
+
+func firstPullRequestCandidateNeedsBranchHydration(issues []connector.Issue, candidates []issuePullRequestCandidate) bool {
+	if len(candidates) == 0 {
+		return false
+	}
+	candidate := candidates[0]
+	return issues[candidate.Index].PullRequest == nil &&
+		candidate.PullRequestNumber <= 0 &&
+		strings.TrimSpace(candidate.BranchPrefix) != ""
+}
+
+func firstUnattachedBranchPullRequestCandidate(issues []connector.Issue, candidates []issuePullRequestCandidate) string {
+	for _, candidate := range candidates {
+		if issues[candidate.Index].PullRequest == nil &&
+			candidate.PullRequestNumber <= 0 &&
+			strings.TrimSpace(candidate.BranchPrefix) != "" {
+			return candidate.Identifier
+		}
+	}
+	for _, candidate := range candidates {
+		if issues[candidate.Index].PullRequest == nil && strings.TrimSpace(candidate.BranchPrefix) != "" {
+			return candidate.Identifier
+		}
+	}
+	return ""
 }
 
 func (c *Connector) attachPullRequestMergeStates(ctx context.Context, issues []connector.Issue) error {
@@ -124,6 +192,7 @@ func (c *Connector) attachPullRequestMergeStates(ctx context.Context, issues []c
 		}
 		byRepo[repo] = append(byRepo[repo], issuePullRequestCandidate{
 			Index:        index,
+			Identifier:   strings.TrimSpace(issue.Identifier),
 			BranchPrefix: branchPrefix,
 		})
 	}
@@ -343,8 +412,9 @@ func (c *Connector) attachLinkedPullRequests(
 	issues []connector.Issue,
 	candidates []issuePullRequestCandidate,
 	useStatusCache bool,
-) error {
+) (string, error) {
 	pullRequests := map[pullRequestKey]pullRequestNode{}
+	nextCursor := ""
 	for _, candidate := range candidates {
 		if issues[candidate.Index].PullRequest != nil || candidate.PullRequestNumber <= 0 {
 			continue
@@ -365,23 +435,29 @@ func (c *Connector) attachLinkedPullRequests(
 			pullRequest, err = c.fetchRepositoryPullRequest(ctx, pullRequestRepo, candidate.PullRequestNumber)
 			if err != nil {
 				if state := c.pullRequestHydrationStateForError(pullRequestRepo, err); state.Reason != "" {
+					if errors.Is(err, ErrRESTBudgetReserved) && nextCursor == "" {
+						nextCursor = candidate.Identifier
+					}
 					attachPullRequestHydrationUnavailableToIssue(&issues[candidate.Index], pullRequestRepo, candidate.PullRequestNumber, state)
 					continue
 				}
-				return err
+				return "", err
 			}
 			if err := c.populatePullRequestStatus(ctx, pullRequestRepo, &pullRequest, useStatusCache); err != nil {
 				if state := c.pullRequestHydrationStateForError(pullRequestRepo, err); state.Reason != "" {
+					if errors.Is(err, ErrRESTBudgetReserved) && nextCursor == "" {
+						nextCursor = candidate.Identifier
+					}
 					applyPullRequestHydrationUnavailableState(&pullRequest, state)
 				} else {
-					return err
+					return "", err
 				}
 			}
 			pullRequests[key] = pullRequest
 		}
 		attachPullRequestToIssue(&issues[candidate.Index], pullRequestRepo, pullRequest)
 	}
-	return nil
+	return nextCursor, nil
 }
 
 func (c *Connector) attachMatchingPullRequests(
@@ -391,15 +467,15 @@ func (c *Connector) attachMatchingPullRequests(
 	candidates []issuePullRequestCandidate,
 	pullRequests []pullRequestNode,
 	useStatusCache bool,
-) error {
+) (string, error) {
 	hydrated := map[int]pullRequestNode{}
-	for _, pullRequest := range pullRequests {
-		branchName := strings.TrimSpace(pullRequest.HeadRefName)
-		if branchName == "" {
-			continue
-		}
-		for _, candidate := range candidates {
+	for _, candidate := range candidates {
+		for _, pullRequest := range pullRequests {
 			if issues[candidate.Index].PullRequest != nil {
+				break
+			}
+			branchName := strings.TrimSpace(pullRequest.HeadRefName)
+			if branchName == "" {
 				continue
 			}
 			if !branchMatchesIssuePrefix(branchName, candidate.BranchPrefix) {
@@ -416,9 +492,12 @@ func (c *Connector) attachMatchingPullRequests(
 						hydrated[pullRequest.Number] = pullRequest
 						attachPullRequestToIssue(&issues[candidate.Index], repo, pullRequest)
 						markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
-						return nil
+						if errors.Is(err, ErrRESTBudgetReserved) {
+							return candidate.Identifier, nil
+						}
+						return "", nil
 					}
-					return err
+					return "", err
 				}
 				if err := c.populatePullRequestStatus(ctx, repo, &hydratedPullRequest, useStatusCache); err != nil {
 					if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
@@ -426,17 +505,64 @@ func (c *Connector) attachMatchingPullRequests(
 						hydrated[pullRequest.Number] = hydratedPullRequest
 						attachPullRequestToIssue(&issues[candidate.Index], repo, hydratedPullRequest)
 						markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
-						return nil
+						if errors.Is(err, ErrRESTBudgetReserved) {
+							return candidate.Identifier, nil
+						}
+						return "", nil
 					} else {
-						return err
+						return "", err
 					}
 				}
 				hydrated[pullRequest.Number] = hydratedPullRequest
 			}
 			attachPullRequestToIssue(&issues[candidate.Index], repo, hydratedPullRequest)
+			break
 		}
 	}
-	return nil
+	return "", nil
+}
+
+func (c *Connector) rotatePullRequestHydrationCandidates(repo pullRequestRepo, candidates []issuePullRequestCandidate) []issuePullRequestCandidate {
+	if c == nil || len(candidates) < 2 {
+		return candidates
+	}
+	key := pullRequestRepoName(repo)
+	c.mu.RLock()
+	cursor := c.prHydrationCursor[key]
+	c.mu.RUnlock()
+	if cursor == "" {
+		return candidates
+	}
+	for index, candidate := range candidates {
+		if candidate.Identifier != cursor || index == 0 {
+			continue
+		}
+		rotated := make([]issuePullRequestCandidate, 0, len(candidates))
+		rotated = append(rotated, candidates[index:]...)
+		rotated = append(rotated, candidates[:index]...)
+		return rotated
+	}
+	return candidates
+}
+
+func (c *Connector) setPullRequestHydrationCursor(repo pullRequestRepo, identifier string) {
+	if c == nil {
+		return
+	}
+	key := pullRequestRepoName(repo)
+	if key == "" {
+		return
+	}
+	c.mu.Lock()
+	if identifier == "" {
+		delete(c.prHydrationCursor, key)
+	} else {
+		if c.prHydrationCursor == nil {
+			c.prHydrationCursor = make(map[string]string)
+		}
+		c.prHydrationCursor[key] = identifier
+	}
+	c.mu.Unlock()
 }
 
 func hasUnattachedBranchPullRequestCandidates(issues []connector.Issue, candidates []issuePullRequestCandidate) bool {

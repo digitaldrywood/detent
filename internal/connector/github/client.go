@@ -29,6 +29,8 @@ const (
 const (
 	restRateLimitKindPrimaryExhausted   = "primary_exhausted"
 	restRateLimitKindSecondaryThrottled = "secondary_throttled"
+	restFanoutCostUnitsPerRequest       = int64(4)
+	restConditionalFanoutCostUnits      = int64(1)
 )
 
 var defaultRESTBackoffs = newRESTBackoffRegistry()
@@ -69,6 +71,7 @@ type Client struct {
 	restRateLimit          connector.RESTRateLimit
 	restRateLimits         map[string]connector.RESTRateLimit
 	restRequests           map[string]connector.RESTEndpointUsage
+	restFanoutUnits        int64
 	restCache              map[string]restCacheEntry
 	conditionalRequests    bool
 	restBackoffUntil       time.Time
@@ -614,6 +617,7 @@ func (c *Client) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 		}
 	}
 	c.restRequests = nil
+	c.restFanoutUnits = 0
 	return usage
 }
 
@@ -649,7 +653,7 @@ func normalizeRESTBudgetPolicy(policy RESTBudgetPolicy) RESTBudgetPolicy {
 
 func (c *Client) restBudgetPolicyError(method string, path string, conditional bool) error {
 	family := restEndpointFamily(method, path)
-	if !restFanoutEndpointFamily(family) || conditional {
+	if !restFanoutEndpointFamily(family) {
 		return nil
 	}
 
@@ -657,7 +661,12 @@ func (c *Client) restBudgetPolicyError(method string, path string, conditional b
 	defer c.mu.Unlock()
 
 	rateLimit, hasRateLimit := c.restRateLimitForResourceLocked(restEndpointRateLimitResource(family))
-	if c.restPolicy.FanoutMaxRequests > 0 && c.restFanoutRequestCountLocked() >= c.restPolicy.FanoutMaxRequests {
+	requestCost := restFanoutCostUnitsPerRequest
+	if conditional {
+		requestCost = restConditionalFanoutCostUnits
+	}
+	if c.restPolicy.FanoutMaxRequests > 0 &&
+		c.restFanoutUnits+requestCost > c.restPolicy.FanoutMaxRequests*restFanoutCostUnitsPerRequest {
 		c.recordRESTBudgetThrottleLocked(method, path, family, rateLimit, hasRateLimit)
 		return &StatusError{
 			StatusCode: http.StatusTooManyRequests,
@@ -666,6 +675,7 @@ func (c *Client) restBudgetPolicyError(method string, path string, conditional b
 		}
 	}
 	if c.restPolicy.MinRemainingReserve > 0 &&
+		!conditional &&
 		hasRateLimit &&
 		rateLimit.Limit > 0 &&
 		rateLimit.Remaining <= c.restPolicy.MinRemainingReserve {
@@ -676,17 +686,8 @@ func (c *Client) restBudgetPolicyError(method string, path string, conditional b
 			Err:        ErrRESTBudgetReserved,
 		}
 	}
+	c.restFanoutUnits += requestCost
 	return nil
-}
-
-func (c *Client) restFanoutRequestCountLocked() int64 {
-	var count int64
-	for family, request := range c.restRequests {
-		if restFanoutEndpointFamily(family) {
-			count += request.Billable
-		}
-	}
-	return count
 }
 
 func (c *Client) restRateLimitForResourceLocked(resource string) (connector.RESTRateLimit, bool) {
@@ -825,6 +826,9 @@ func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, method string
 		request.NotModified++
 	} else {
 		request.Billable++
+		if conditional && restFanoutEndpointFamily(family) {
+			c.restFanoutUnits += restFanoutCostUnitsPerRequest - restConditionalFanoutCostUnits
+		}
 	}
 	request.LastStatus = status
 	request.RateLimited = request.RateLimited || rateLimited

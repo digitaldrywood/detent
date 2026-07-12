@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -68,6 +69,83 @@ func TestClientRESTConditionalRequestUsesCachedResponseBelowReserve(t *testing.T
 	}
 	if usage.RateLimit.Used != 4100 || usage.RateLimit.Remaining != 900 {
 		t.Fatalf("rate limit = %#v, want unchanged 4100 used and 900 remaining", usage.RateLimit)
+	}
+}
+
+func TestClientRESTConditionalRequestsReserveConservativeFanoutCost(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if got := r.Header.Get("If-None-Match"); got == "" {
+			t.Fatal("If-None-Match is empty, want cached validator")
+		}
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+		RESTPolicy:  RESTBudgetPolicy{FanoutMaxRequests: 1},
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	headers := http.Header{"Etag": []string{`"cached"`}}
+	for index := range 5 {
+		path := "/repos/digitaldrywood/detent/pulls/" + strconv.Itoa(index+1)
+		client.storeRESTConditionalEntry(http.MethodGet, path, headers, []byte(`{}`))
+		err := client.REST(context.Background(), http.MethodGet, path, nil, nil)
+		if index < 4 && err != nil {
+			t.Fatalf("conditional REST() request %d error = %v", index+1, err)
+		}
+		if index == 4 && !errors.Is(err, ErrRESTBudgetReserved) {
+			t.Fatalf("conditional REST() request 5 error = %v, want ErrRESTBudgetReserved", err)
+		}
+	}
+	if calls.Load() != 4 {
+		t.Fatalf("REST calls = %d, want four quarter-cost conditional requests", calls.Load())
+	}
+}
+
+func TestClientRESTCachedPullRequestFleetFitsDefaultFanoutCap(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+		RESTPolicy:  RESTBudgetPolicy{FanoutMaxRequests: 80},
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	headers := http.Header{"Etag": []string{`"cached"`}}
+	for index := range 200 {
+		path := "/repos/digitaldrywood/detent/pulls/" + strconv.Itoa(index+1)
+		client.storeRESTConditionalEntry(http.MethodGet, path, headers, []byte(`{}`))
+		if err := client.REST(context.Background(), http.MethodGet, path, nil, nil); err != nil {
+			t.Fatalf("conditional REST() request %d error = %v", index+1, err)
+		}
+	}
+	if calls.Load() != 200 {
+		t.Fatalf("REST calls = %d, want 200 cached hydration requests", calls.Load())
+	}
+	usage := client.FlushRESTRateLimitUsage()
+	if usage.BillableRequests != 0 || usage.NotModifiedRequests != 200 {
+		t.Fatalf("REST usage = %#v, want 200 free not-modified requests", usage)
 	}
 }
 

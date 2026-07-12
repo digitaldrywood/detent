@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -149,6 +150,42 @@ func TestNoProgressSpendLimitConfiguration(t *testing.T) {
 			}
 			if workflow.Config.Agent.NoProgressSpendLimitUSD != tt.want {
 				t.Fatalf("NoProgressSpendLimitUSD = %g, want %g", workflow.Config.Agent.NoProgressSpendLimitUSD, tt.want)
+			}
+		})
+	}
+}
+
+func TestRESTFanoutMaxRequestsConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		value   int
+		wantErr string
+	}{
+		{name: "disabled", value: 0},
+		{name: "custom cap", value: 200},
+		{name: "negative rejected", value: -1, wantErr: "tracker.github_rest_fanout_max_requests must be greater than or equal to 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			raw := []byte("---\ntracker:\n  kind: memory\n  github_rest_fanout_max_requests: " + strconv.Itoa(tt.value) + "\n---\nPrompt\n")
+			workflow, err := ParseWorkflow(raw)
+			if err == nil {
+				err = workflow.Config.Validate()
+			}
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("configuration error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			if workflow.Config.Tracker.GitHubRESTFanoutMaxRequests != tt.value {
+				t.Fatalf("GitHubRESTFanoutMaxRequests = %d, want %d", workflow.Config.Tracker.GitHubRESTFanoutMaxRequests, tt.value)
 			}
 		})
 	}
@@ -2170,7 +2207,6 @@ Prompt
 				"tracker.github_graphql_warn_remaining must be greater than 0",
 				"tracker.github_graphql_min_remaining_reserve must be greater than 0",
 				"tracker.github_rest_min_remaining_reserve must be greater than 0",
-				"tracker.github_rest_fanout_max_requests must be greater than 0",
 				"polling.interval_ms must be greater than 0",
 				"worker.max_concurrent_agents_per_host must be greater than 0",
 				"workspace.cleanup_idle_ttl_ms must be greater than 0",

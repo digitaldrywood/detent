@@ -1309,7 +1309,7 @@ func (c *Config) validateTracker(problems *[]string) {
 	validatePositive("tracker.github_graphql_warn_remaining", c.Tracker.GitHubGraphQLWarnRemaining, problems)
 	validatePositive("tracker.github_graphql_min_remaining_reserve", c.Tracker.GitHubGraphQLMinReserve, problems)
 	validatePositive("tracker.github_rest_min_remaining_reserve", c.Tracker.GitHubRESTMinReserve, problems)
-	validatePositive("tracker.github_rest_fanout_max_requests", c.Tracker.GitHubRESTFanoutMaxRequests, problems)
+	validateNonNegative("tracker.github_rest_fanout_max_requests", c.Tracker.GitHubRESTFanoutMaxRequests, problems)
 	*problems = append(*problems, c.Tracker.Claims.Validate("tracker.claims")...)
 	*problems = append(*problems, c.Tracker.Authorization.Validate("tracker.authorization")...)
 }
@@ -2355,6 +2355,12 @@ func validateRequired(field string, value string, suffix string, problems *[]str
 func validatePositive(field string, value int, problems *[]string) {
 	if value <= 0 {
 		*problems = append(*problems, field+" must be greater than 0")
+	}
+}
+
+func validateNonNegative(field string, value int, problems *[]string) {
+	if value < 0 {
+		*problems = append(*problems, field+" must be greater than or equal to 0")
 	}
 }
 

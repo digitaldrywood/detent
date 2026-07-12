@@ -1785,6 +1785,161 @@ func TestConnectorFetchCandidateIssuesMarksBranchPullRequestHydrationUnavailable
 	}
 }
 
+func TestConnectorAttachPullRequestsRotatesAfterRESTBudgetReservation(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var pullRequests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+		switch {
+		case strings.Contains(path, "/pulls/") && !strings.HasSuffix(path, "/reviews"):
+			number := path[strings.LastIndex(path, "/")+1:]
+			mu.Lock()
+			pullRequests = append(pullRequests, number)
+			mu.Unlock()
+			_, _ = fmt.Fprintf(w, `{"number":%s,"html_url":"https://github.com/digitaldrywood/detent/pull/%s","state":"open","head":{"ref":"detent/issue-%s","sha":"sha-%s"}}`, number, number, number, number)
+		case strings.HasSuffix(path, "/check-runs"):
+			_, _ = w.Write([]byte(`{"check_runs":[]}`))
+		case strings.HasSuffix(path, "/statuses"), strings.HasSuffix(path, "/reviews"):
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			t.Fatalf("unexpected REST path %s", r.URL.RequestURI())
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewConnector(Config{
+		Endpoint:                   server.URL,
+		APIKey:                     "token",
+		HTTPClient:                 server.Client(),
+		RESTFanoutMaxRequests:      4,
+		DisableConditionalRequests: true,
+	})
+	if err != nil {
+		t.Fatalf("NewConnector() error = %v", err)
+	}
+
+	newIssues := func() []connector.Issue {
+		first := 101
+		second := 102
+		return []connector.Issue{
+			{Identifier: "digitaldrywood/detent#1", PRNumber: &first},
+			{Identifier: "digitaldrywood/detent#2", PRNumber: &second},
+		}
+	}
+
+	first := newIssues()
+	if err := c.attachPullRequests(context.Background(), first); err != nil {
+		t.Fatalf("attachPullRequests() first error = %v", err)
+	}
+	if first[0].PullRequest == nil || first[0].PullRequest.HydrationUnavailableReason != "" {
+		t.Fatalf("first pass issue 1 PullRequest = %#v, want hydrated", first[0].PullRequest)
+	}
+	if first[1].PullRequest == nil || first[1].PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTBudgetReserved {
+		t.Fatalf("first pass issue 2 PullRequest = %#v, want budget reservation", first[1].PullRequest)
+	}
+	c.FlushRESTRateLimitUsage()
+
+	second := newIssues()
+	if err := c.attachPullRequests(context.Background(), second); err != nil {
+		t.Fatalf("attachPullRequests() second error = %v", err)
+	}
+	if second[1].PullRequest == nil || second[1].PullRequest.HydrationUnavailableReason != "" {
+		t.Fatalf("second pass issue 2 PullRequest = %#v, want rotated hydration", second[1].PullRequest)
+	}
+	if second[0].PullRequest == nil || second[0].PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTBudgetReserved {
+		t.Fatalf("second pass issue 1 PullRequest = %#v, want rotated budget reservation", second[0].PullRequest)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := pullRequests, []string{"101", "102"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("hydrated pull requests = %v, want %v", got, want)
+	}
+}
+
+func TestConnectorAttachPullRequestsPrioritizesSkippedBranchCandidate(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var detailedPullRequests []string
+	var pullRequestLists int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+		switch {
+		case path == "/repos/digitaldrywood/detent/pulls":
+			mu.Lock()
+			pullRequestLists++
+			mu.Unlock()
+			_, _ = w.Write([]byte(`[{"number":202,"html_url":"https://github.com/digitaldrywood/detent/pull/202","state":"open","head":{"ref":"detent/digitaldrywood_detent_2","sha":"sha-202"}}]`))
+		case strings.Contains(path, "/pulls/") && !strings.HasSuffix(path, "/reviews"):
+			number := path[strings.LastIndex(path, "/")+1:]
+			mu.Lock()
+			detailedPullRequests = append(detailedPullRequests, number)
+			mu.Unlock()
+			_, _ = fmt.Fprintf(w, `{"number":%s,"html_url":"https://github.com/digitaldrywood/detent/pull/%s","state":"open","head":{"ref":"detent/digitaldrywood_detent_%s","sha":"sha-%s"}}`, number, number, number, number)
+		case strings.HasSuffix(path, "/check-runs"):
+			_, _ = w.Write([]byte(`{"check_runs":[]}`))
+		case strings.HasSuffix(path, "/statuses"), strings.HasSuffix(path, "/reviews"):
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			t.Fatalf("unexpected REST path %s", r.URL.RequestURI())
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewConnector(Config{
+		Endpoint:                   server.URL,
+		APIKey:                     "token",
+		HTTPClient:                 server.Client(),
+		RESTFanoutMaxRequests:      5,
+		DisableConditionalRequests: true,
+	})
+	if err != nil {
+		t.Fatalf("NewConnector() error = %v", err)
+	}
+
+	newIssues := func() []connector.Issue {
+		linked := 101
+		return []connector.Issue{
+			{Identifier: "digitaldrywood/detent#1", PRNumber: &linked},
+			{Identifier: "digitaldrywood/detent#2"},
+		}
+	}
+
+	first := newIssues()
+	if err := c.attachPullRequests(context.Background(), first); err != nil {
+		t.Fatalf("attachPullRequests() first error = %v", err)
+	}
+	if first[1].PullRequest == nil || first[1].PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTBudgetReserved {
+		t.Fatalf("first pass branch issue PullRequest = %#v, want budget reservation", first[1].PullRequest)
+	}
+	c.FlushRESTRateLimitUsage()
+
+	second := newIssues()
+	if err := c.attachPullRequests(context.Background(), second); err != nil {
+		t.Fatalf("attachPullRequests() second error = %v", err)
+	}
+	if second[1].PullRequest == nil || second[1].PullRequest.HydrationUnavailableReason != "" || second[1].PullRequest.Number != 202 {
+		t.Fatalf("second pass branch issue PullRequest = %#v, want prioritized hydration", second[1].PullRequest)
+	}
+	if second[0].PullRequest == nil || second[0].PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTBudgetReserved {
+		t.Fatalf("second pass linked issue PullRequest = %#v, want rotated budget reservation", second[0].PullRequest)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := detailedPullRequests, []string{"101", "202"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("detailed pull requests = %v, want %v", got, want)
+	}
+	if pullRequestLists != 2 {
+		t.Fatalf("pull request list calls = %d, want 2", pullRequestLists)
+	}
+}
+
 func TestConnectorFetchCandidateIssuesStopsBranchPullRequestHydrationAfterSecondaryThrottle(t *testing.T) {
 	t.Parallel()
 
