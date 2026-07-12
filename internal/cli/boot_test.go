@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -310,7 +310,7 @@ func TestRunTerminalDashboardProgramKillsOnContextCancel(t *testing.T) {
 	}
 }
 
-func TestTerminalDashboardProgramOptionsDoNotUseAltScreen(t *testing.T) {
+func TestTerminalDashboardProgramOptionsUseAltScreen(t *testing.T) {
 	t.Parallel()
 
 	var output bytes.Buffer
@@ -321,8 +321,29 @@ func TestTerminalDashboardProgramOptionsDoNotUseAltScreen(t *testing.T) {
 	if _, err := tea.NewProgram(terminalDashboardOptionModel{}, opts...).Run(); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if got := output.String(); strings.Contains(got, "\x1b[?1049") {
-		t.Fatalf("terminal dashboard output used alt-screen escape sequences:\n%q", got)
+	got := output.String()
+	for _, sequence := range []string{"\x1b[?1049h", "\x1b[?1049l"} {
+		if !strings.Contains(got, sequence) {
+			t.Fatalf("terminal dashboard output missing %q:\n%q", sequence, got)
+		}
+	}
+}
+
+func TestTerminalDashboardMessageFilterRoutesInterruptToCtrlC(t *testing.T) {
+	t.Parallel()
+
+	interrupt := terminalDashboardMessageFilter(nil, tea.InterruptMsg{})
+	key, ok := interrupt.(tea.KeyPressMsg)
+	if !ok {
+		t.Fatalf("filtered interrupt type = %T, want tea.KeyPressMsg", interrupt)
+	}
+	if got := key.String(); got != "ctrl+c" {
+		t.Fatalf("filtered interrupt = %q, want ctrl+c", got)
+	}
+
+	windowSize := tea.WindowSizeMsg{Width: 80, Height: 24}
+	if got := terminalDashboardMessageFilter(nil, windowSize); got != windowSize {
+		t.Fatalf("filtered window size = %#v, want unchanged", got)
 	}
 }
 
@@ -1170,8 +1191,10 @@ func (terminalDashboardOptionModel) Update(tea.Msg) (tea.Model, tea.Cmd) {
 	return terminalDashboardOptionModel{}, nil
 }
 
-func (terminalDashboardOptionModel) View() string {
-	return "detent"
+func (terminalDashboardOptionModel) View() tea.View {
+	view := tea.NewView("detent")
+	view.AltScreen = true
+	return view
 }
 
 func writeBootGlobalConfig(t *testing.T, path string, projects []globalconfig.Project) {

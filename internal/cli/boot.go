@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
@@ -344,7 +344,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		listenerOwned = false
 		if cfg.Shutdown == nil {
 			return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
-				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, nil, nil)
+				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, runtimeLogPath(cfg), nil, nil)
 			})
 		}
 		return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
@@ -365,7 +365,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 				ProgressInterval: defaultShutdownProgressInterval,
 				HardTimeout:      defaultShutdownHardTimeout,
 			}, func(ctx context.Context) error {
-				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, func() time.Duration {
+				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, runtimeLogPath(cfg), func() time.Duration {
 					return shutdownDrainTimeout(manager.Registry())
 				}, func() {
 					requestTerminalShutdownInterrupt(cfg.Shutdown, cfg.HardExit)
@@ -583,6 +583,7 @@ func serveWithTerminalDashboard(
 	listener net.Listener,
 	snapshots *hub.Hub[telemetry.Snapshot],
 	build buildinfo.Info,
+	logPath string,
 	shutdownTimeoutSource func() time.Duration,
 	interrupt func(),
 ) error {
@@ -605,6 +606,7 @@ func serveWithTerminalDashboard(
 		runCtx,
 		snapshots,
 		tui.WithBuild(build),
+		tui.WithLogPath(logPath),
 		tui.WithShutdownTimeoutSource(shutdownTimeoutSource),
 		tui.WithInterruptFunc(interrupt),
 	)
@@ -658,10 +660,16 @@ type terminalDashboardProgram interface {
 
 func terminalDashboardProgramOptions() []tea.ProgramOption {
 	return []tea.ProgramOption{
-		tea.WithOutput(newTerminalDashboardOutputFilter(os.Stdout)),
+		tea.WithFilter(terminalDashboardMessageFilter),
 		tea.WithoutSignalHandler(),
-		tea.WithoutBracketedPaste(),
 	}
+}
+
+func terminalDashboardMessageFilter(_ tea.Model, msg tea.Msg) tea.Msg {
+	if _, ok := msg.(tea.InterruptMsg); ok {
+		return tea.KeyPressMsg(tea.Key{Code: 'c', Mod: tea.ModCtrl})
+	}
+	return msg
 }
 
 func runTerminalDashboardProgram(ctx context.Context, program terminalDashboardProgram) error {
