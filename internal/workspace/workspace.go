@@ -48,6 +48,15 @@ type Backend interface {
 	DiffStat(context.Context, Info, Issue) (DiffStat, error)
 }
 
+type RecoveryStateProvider interface {
+	RecoveryState(context.Context, Info, Issue) (RecoveryState, error)
+}
+
+type RecoveryState struct {
+	DiffStat        DiffStat
+	UnpushedCommits int
+}
+
 type MergePreparer interface {
 	PrepareMerge(context.Context, Info, Issue, MergePrepareOptions) (MergePrepareResult, error)
 }

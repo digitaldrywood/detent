@@ -52,6 +52,10 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
 			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
 		},
+		recoveryStates: []workspace.RecoveryState{
+			{UnpushedCommits: 1, DiffStat: workspace.DiffStat{Files: 1, Added: 2}},
+			{DiffStat: workspace.DiffStat{Files: 2, Added: 5, Removed: 1}},
+		},
 	}
 	codexClient := &fakeCodexClient{
 		models: []AgentModel{{
@@ -270,12 +274,17 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Work on digitaldrywood/detent#22 attempt 2",
+		"## Existing workspace recovery",
+		"unpushed commits: 1",
 		"## Available skills",
 		"review — Issue needs code review.",
 	} {
 		if !strings.Contains(codexClient.request.Prompt, want) {
 			t.Fatalf("codex prompt missing %q:\n%s", want, codexClient.request.Prompt)
 		}
+	}
+	if workspaceBackend.recoveryCalls != 2 {
+		t.Fatalf("RecoveryState calls = %d, want initial and final checks", workspaceBackend.recoveryCalls)
 	}
 	if sessionStore.started.ProjectID != "detent" || sessionStore.started.Identifier != "digitaldrywood/detent#22" || sessionStore.started.Model != "" || sessionStore.started.RequestedModel != "gpt-5-codex-high" || sessionStore.started.AgentRole != RoleCode {
 		t.Fatalf("SessionStart = %#v, want requested model distinct from unresolved model and code role", sessionStore.started)
@@ -3561,19 +3570,38 @@ func containsRunnerString(values []string, want string) bool {
 }
 
 type fakeWorkspaceBackend struct {
-	info          workspace.Info
-	diffStat      workspace.DiffStat
-	diffStats     []workspace.DiffStat
-	diffErr       error
-	created       bool
-	beforeRun     bool
-	afterRun      bool
-	afterRunErr   error
-	diffed        bool
-	diffCalls     int
-	createIssue   workspace.Issue
-	cleanupIssue  workspace.Issue
-	cleanupResult workspace.CleanupResult
+	info           workspace.Info
+	diffStat       workspace.DiffStat
+	diffStats      []workspace.DiffStat
+	diffErr        error
+	created        bool
+	beforeRun      bool
+	afterRun       bool
+	afterRunErr    error
+	diffed         bool
+	diffCalls      int
+	createIssue    workspace.Issue
+	cleanupIssue   workspace.Issue
+	cleanupResult  workspace.CleanupResult
+	recoveryStates []workspace.RecoveryState
+	recoveryErr    error
+	recoveryCalls  int
+}
+
+func (b *fakeWorkspaceBackend) RecoveryState(context.Context, workspace.Info, workspace.Issue) (workspace.RecoveryState, error) {
+	if b.recoveryErr != nil {
+		return workspace.RecoveryState{}, b.recoveryErr
+	}
+	if len(b.recoveryStates) == 0 {
+		b.recoveryCalls++
+		return workspace.RecoveryState{}, nil
+	}
+	index := b.recoveryCalls
+	if index >= len(b.recoveryStates) {
+		index = len(b.recoveryStates) - 1
+	}
+	b.recoveryCalls++
+	return b.recoveryStates[index], nil
 }
 
 func (b *fakeWorkspaceBackend) Create(_ context.Context, issue workspace.Issue) (workspace.Info, error) {

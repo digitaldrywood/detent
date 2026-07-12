@@ -802,6 +802,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
+	var recoveryState *workspace.RecoveryState
+	if mode == RunModeImplement {
+		recoveryState = r.workspaceRecoveryState(ctx, info, workspaceIssue, "initial")
+	}
 	prompt, err := BuildPrompt(workflow, req.Issue, PromptOptions{
 		Attempt:              &attempt,
 		PlanOnly:             mode == RunModePlan,
@@ -814,6 +818,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		DispatchTargetState:  req.DispatchTargetState,
 		AvailableSkills:      availableSkills,
 		PriorAttempt:         req.PriorAttempt,
+		RecoveryState:        recoveryState,
 	})
 	if err != nil {
 		return RunResult{}, fmt.Errorf("build prompt: %w", err)
@@ -1030,12 +1035,42 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 
 	result.DiffStats = diffStatsFromWorkspace(diffStat)
+	if mode == RunModeImplement {
+		if recoveryState := r.workspaceRecoveryState(ctx, info, workspaceIssue, "final"); recoveryState != nil {
+			result.DiffStats.UnpushedCommits = recoveryState.UnpushedCommits
+		}
+	}
 	finishedAt := r.now().UTC()
 	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendConfig.Kind, 1, turnResult, resumeState.DetentSessionID); err != nil {
 		return result, err
 	}
 	return result, nil
+}
+
+func (r *Runner) workspaceRecoveryState(
+	ctx context.Context,
+	info workspace.Info,
+	issue workspace.Issue,
+	phase string,
+) *workspace.RecoveryState {
+	provider, ok := r.workspace.(workspace.RecoveryStateProvider)
+	if !ok {
+		return nil
+	}
+	state, err := provider.RecoveryState(ctx, info, issue)
+	if err == nil {
+		return &state
+	}
+	r.logger.Warn(
+		"workspace recovery state failed",
+		slog.String("issue_id", issue.ID),
+		slog.String("issue_identifier", issue.Identifier),
+		slog.String("workspace_path", info.Path),
+		slog.String("phase", phase),
+		slog.String("error", err.Error()),
+	)
+	return nil
 }
 
 func (r *Runner) checkDispatchBudget(ctx context.Context, checker BudgetChecker, estimator DispatchEstimator, issue connector.Issue, model string, now time.Time) (RunResult, bool, error) {

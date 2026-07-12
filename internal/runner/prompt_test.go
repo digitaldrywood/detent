@@ -920,6 +920,35 @@ func TestBuildPromptPrependsWorkspaceIsolationBlock(t *testing.T) {
 	}
 }
 
+func TestBuildPromptIncludesStrandedWorkspaceRecovery(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{Config: config.Config{
+		Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest},
+	}}, connector.Issue{Identifier: "digitaldrywood/detent#1290"}, PromptOptions{
+		WorkspacePath: "/tmp/detent-1290",
+		Branch:        "detent/issue-1290",
+		RecoveryState: &workspace.RecoveryState{
+			UnpushedCommits: 1,
+			DiffStat:        workspace.DiffStat{Files: 4, Added: 12, Removed: 3},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+	for _, want := range []string{
+		"## Existing workspace recovery",
+		"unpushed commits: 1",
+		"uncommitted changes: 4 files, +12/-3",
+		"validate and preserve the existing work",
+		"push the branch and open or update the pull request",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestBuildPromptUsesDefaultPromptDescriptionFallback(t *testing.T) {
 	t.Parallel()
 

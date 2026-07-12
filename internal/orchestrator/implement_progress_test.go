@@ -94,6 +94,26 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantRetry:        true,
 		},
 		{
+			name:          "stranded unpushed work on existing pull request is distinct",
+			runningIssue:  implementProgressIssue("same-head", "Test"),
+			hydratedIssue: implementProgressIssue("same-head", "Test"),
+			history: []store.WorkAttempt{
+				implementProgressStrandedHistoryAttempt(2, signature),
+				implementProgressStrandedHistoryAttempt(1, signature),
+			},
+			diffStats:        DiffStats{UnpushedCommits: 1, Status: "clean"},
+			noProgressLimit:  3,
+			wantTerminal:     store.WorkAttemptTerminalNoProgress,
+			wantReason:       strandedUnpushedWorkReason,
+			wantConsecutive:  3,
+			wantPreviousHead: "same-head",
+			wantCurrentHead:  "same-head",
+			wantHydrations:   1,
+			wantBlocked:      true,
+			wantBlockReason:  strandedUnpushedWorkReason,
+			wantComment:      "unpushed_commits: 1",
+		},
+		{
 			name:          "limit trip blocks with comment",
 			runningIssue:  implementProgressIssue("same-head", "Test"),
 			hydratedIssue: implementProgressIssue("same-head", "Test"),
@@ -164,6 +184,22 @@ func TestHandleRunResultClassifiesImplementWorkerProgress(t *testing.T) {
 			wantBlocked:     true,
 			wantBlockReason: noProgressLimitReason,
 			wantComment:     "consecutive_no_progress_attempts: 3",
+		},
+		{
+			name:         "stranded unpushed work trips distinct third completion without linked PR",
+			runningIssue: implementProgressIssueWithoutPR(),
+			history: []store.WorkAttempt{
+				implementProgressNoPRHistoryAttempt(2, DiffStats{UnpushedCommits: 1, Status: "clean"}, "", ""),
+				implementProgressNoPRHistoryAttempt(1, DiffStats{UnpushedCommits: 1, Status: "clean"}, "", ""),
+			},
+			diffStats:       DiffStats{UnpushedCommits: 1, Status: "clean"},
+			noProgressLimit: 3,
+			wantTerminal:    store.WorkAttemptTerminalNoProgress,
+			wantReason:      strandedUnpushedWorkReason,
+			wantConsecutive: 3,
+			wantBlocked:     true,
+			wantBlockReason: strandedUnpushedWorkReason,
+			wantComment:     "work produced but stranded unpushed",
 		},
 		{
 			name:         "changing non-empty diff does not trip without linked PR",
@@ -716,6 +752,30 @@ func implementProgressNoPRHistoryAttempt(id int64, diffStats DiffStats, humanAct
 				"workpad_status":     workpadStatus,
 				"human_action":       humanAction,
 				"tracker_state":      trackerState,
+			},
+		}),
+	}
+}
+
+func implementProgressStrandedHistoryAttempt(id int64, signature autoPromoteReworkSignature) store.WorkAttempt {
+	return store.WorkAttempt{
+		ID:            id,
+		ProjectID:     "detent",
+		IssueID:       "issue-plan",
+		Identifier:    "digitaldrywood/detent#1200",
+		IssueURL:      "https://github.test/digitaldrywood/detent/issues/1200",
+		WorkerType:    "agent",
+		Status:        store.WorkAttemptStatusTerminal,
+		TerminalState: store.WorkAttemptTerminalNoProgress,
+		CompletedAt:   time.Date(2026, 7, 12, 12, int(id), 0, 0, time.UTC),
+		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+			"run_mode": runpkg.RunModeImplement,
+			implementProgressMetadataKey: implementProgressRecord{
+				Outcome:            implementProgressOutcomeNoProgress,
+				Reason:             strandedUnpushedWorkReason,
+				CurrentSignature:   implementProgressSignatureRecordFromSignature(signature),
+				CurrentHeadSHA:     signature.HeadSHA,
+				WorkspaceDiffStats: implementProgressDiffStats{UnpushedCommits: 1, Status: "clean"},
 			},
 		}),
 	}
