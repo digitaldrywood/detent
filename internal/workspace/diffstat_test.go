@@ -165,6 +165,59 @@ func TestLocalGitDiffStat(t *testing.T) {
 	}
 }
 
+func TestLocalGitRecoveryStateDetectsStrandedWork(t *testing.T) {
+	t.Parallel()
+
+	source := initSourceRepo(t)
+	remote := initBareRemote(t)
+	runGit(t, source, "remote", "add", "origin", remote)
+	runGit(t, source, "push", "-u", "origin", "main")
+	root := filepath.Join(t.TempDir(), "workspaces")
+
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+	provider, ok := backend.(RecoveryStateProvider)
+	if !ok {
+		t.Fatal("NewBackend() did not return a RecoveryStateProvider")
+	}
+	issue := Issue{Identifier: "DD-RECOVERY"}
+	info, err := backend.Create(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(info.Path, "committed.txt"), []byte("committed\n"), 0o600); err != nil {
+		t.Fatalf("write committed file: %v", err)
+	}
+	runGit(t, info.Path, "add", "committed.txt")
+	runGit(t, info.Path, "commit", "-m", "test: add committed work")
+	if err := os.WriteFile(filepath.Join(info.Path, "dirty.txt"), []byte("dirty\n"), 0o600); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+
+	got, err := provider.RecoveryState(context.Background(), info, issue)
+	if err != nil {
+		t.Fatalf("RecoveryState() error = %v", err)
+	}
+	if got.UnpushedCommits != 1 || got.DiffStat.Files != 1 || got.DiffStat.Added != 1 {
+		t.Fatalf("RecoveryState() = %+v, want one unpushed commit and one dirty file", got)
+	}
+	runGit(t, info.Path, "push", "-u", "origin", "HEAD:"+info.Branch)
+	pushed, err := provider.RecoveryState(context.Background(), info, issue)
+	if err != nil {
+		t.Fatalf("RecoveryState() after push error = %v", err)
+	}
+	if pushed.UnpushedCommits != 0 || pushed.DiffStat != got.DiffStat {
+		t.Fatalf("RecoveryState() after push = %+v, want no unpushed commits and unchanged dirty diff %+v", pushed, got.DiffStat)
+	}
+}
+
 func TestLocalGitDiffIsBounded(t *testing.T) {
 	t.Parallel()
 

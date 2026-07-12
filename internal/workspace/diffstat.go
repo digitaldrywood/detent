@@ -52,6 +52,22 @@ func (l *LocalGit) DiffStat(ctx context.Context, info Info, issue Issue) (DiffSt
 	return GitDiffStat(ctx, normalized.Path)
 }
 
+func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (RecoveryState, error) {
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return RecoveryState{}, err
+	}
+	stat, err := GitDiffStat(ctx, normalized.Path)
+	if err != nil {
+		return RecoveryState{}, err
+	}
+	unpushedCommits, err := gitUnpushedCommitCount(ctx, normalized.Path)
+	if err != nil {
+		return RecoveryState{}, err
+	}
+	return RecoveryState{DiffStat: stat, UnpushedCommits: unpushedCommits}, nil
+}
+
 func (l *LocalGit) Diff(ctx context.Context, info Info, issue Issue, maxBytes int) (Diff, error) {
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {
@@ -155,6 +171,25 @@ func gitDiffStatOutput(ctx context.Context, workspacePath string) (DiffStat, err
 		return DiffStat{}, fmt.Errorf("git add intent to add: %w", err)
 	}
 	return gitDiffStatWithEnv(ctx, workspacePath, env, "HEAD")
+}
+
+func gitUnpushedCommitCount(ctx context.Context, workspacePath string) (int, error) {
+	remoteRefs, err := runGitAt(ctx, workspacePath, "for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes")
+	if err != nil {
+		return 0, fmt.Errorf("git list remote refs: %w", err)
+	}
+	if strings.TrimSpace(remoteRefs) == "" {
+		return 0, nil
+	}
+	output, err := runGitAt(ctx, workspacePath, "rev-list", "--count", "HEAD", "--not", "--remotes")
+	if err != nil {
+		return 0, fmt.Errorf("git count unpushed commits: %w", err)
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(output))
+	if err != nil {
+		return 0, fmt.Errorf("parse unpushed commit count: %w", err)
+	}
+	return count, nil
 }
 
 func gitDiffStatWithEnv(ctx context.Context, workspacePath string, env []string, diffBase string) (DiffStat, error) {

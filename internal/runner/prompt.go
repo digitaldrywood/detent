@@ -52,6 +52,7 @@ type PromptOptions struct {
 	AutoBranch           *bool
 	AvailableSkills      []skills.Skill
 	PriorAttempt         PriorAttempt
+	RecoveryState        *workspace.RecoveryState
 }
 
 type ValidatorPromptOptions struct {
@@ -81,6 +82,7 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 	}
 
 	rendered = prependWorkspaceIsolationBlock(rendered, workflow.Config, opts.WorkspacePath, opts.Branch)
+	rendered = appendWorkspaceRecoveryBlock(rendered, opts.RecoveryState)
 	if opts.PlanOnly {
 		rendered = appendPlanOnlyBlock(rendered, workflow.Config.Plan)
 	}
@@ -115,6 +117,30 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		rendered = appendSkillCreationBlock(rendered, workflow.Config.Agent.Skills)
 	}
 	return appendClosingReferenceInstruction(rendered, issue), nil
+}
+
+func appendWorkspaceRecoveryBlock(prompt string, state *workspace.RecoveryState) string {
+	if state == nil || (state.UnpushedCommits == 0 && state.DiffStat == (workspace.DiffStat{})) {
+		return prompt
+	}
+
+	var b strings.Builder
+	b.WriteString("## Existing workspace recovery\n\n")
+	b.WriteString("Detent found work left in this persistent workspace by an earlier attempt. Treat it as work in progress, not as evidence that the issue is complete.\n")
+	if state.UnpushedCommits > 0 {
+		b.WriteString("\n- unpushed commits: ")
+		b.WriteString(strconv.Itoa(state.UnpushedCommits))
+	}
+	if state.DiffStat != (workspace.DiffStat{}) {
+		b.WriteString("\n- uncommitted changes: ")
+		b.WriteString(strconv.Itoa(state.DiffStat.Files))
+		b.WriteString(" files, +")
+		b.WriteString(strconv.Itoa(state.DiffStat.Added))
+		b.WriteString("/-")
+		b.WriteString(strconv.Itoa(state.DiffStat.Removed))
+	}
+	b.WriteString("\n\nInspect, validate and preserve the existing work. Finish any remaining changes, run the required validation gate, then push the branch and open or update the pull request. Do not claim completion while commits or substantive changes remain only in the local workspace.")
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + b.String()
 }
 
 func BuildMergeFallbackPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOptions) (string, error) {

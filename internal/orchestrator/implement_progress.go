@@ -18,6 +18,7 @@ const (
 	implementProgressMetadataKey       = "completion_progress"
 	implementProgressOutcomeNoProgress = "no_progress"
 	noProgressLimitReason              = "no_progress_limit"
+	strandedUnpushedWorkReason         = "stranded_unpushed_work"
 	workpadBlockedUnactionedReason     = "workpad_blocked_unactioned"
 	workpadBlockedUnactionedLimit      = 2
 )
@@ -70,11 +71,12 @@ type implementProgressSignatureRecord struct {
 }
 
 type implementProgressDiffStats struct {
-	FilesChanged int    `json:"files_changed"`
-	AddedLines   int    `json:"added_lines"`
-	RemovedLines int    `json:"removed_lines"`
-	Fingerprint  string `json:"fingerprint,omitempty"`
-	Status       string `json:"status,omitempty"`
+	FilesChanged    int    `json:"files_changed"`
+	AddedLines      int    `json:"added_lines"`
+	RemovedLines    int    `json:"removed_lines"`
+	UnpushedCommits int    `json:"unpushed_commits,omitempty"`
+	Fingerprint     string `json:"fingerprint,omitempty"`
+	Status          string `json:"status,omitempty"`
 }
 
 func (o *Orchestrator) evaluateImplementCompletionProgress(
@@ -133,6 +135,16 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 				decision.Block = true
 				return decision
 			}
+		}
+		if running.DiffStats.UnpushedCommits > 0 {
+			decision.Outcome = store.WorkAttemptTerminalNoProgress
+			decision.Reason = strandedUnpushedWorkReason
+			decision.ConsecutiveNoProgress = 1 + consecutiveImplementStrandedWorkAttempts(attempts, autoPromoteReworkSignature{})
+			decision.Block = decision.NoProgressLimit > 0 && decision.ConsecutiveNoProgress >= decision.NoProgressLimit
+			if decision.Block {
+				decision.BlockReason = strandedUnpushedWorkReason
+			}
+			return decision
 		}
 		if !diffStatsPresent(running.DiffStats) {
 			decision.Reason = "workspace_diffstat_unavailable_without_pull_request"
@@ -214,13 +226,25 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(
 		return decision
 	}
 	previous, ok := latestImplementProgressSignature(attempts)
+	if ok {
+		decision.PreviousSignature = previous
+		decision.PreviousSignatureFound = true
+		decision.FailedChecksAdded, decision.FailedChecksRemoved = implementProgressFailedCheckDelta(previous.FailedChecks, signature.FailedChecks)
+	}
+	if running.DiffStats.UnpushedCommits > 0 {
+		decision.Outcome = store.WorkAttemptTerminalNoProgress
+		decision.Reason = strandedUnpushedWorkReason
+		decision.ConsecutiveNoProgress = 1 + consecutiveImplementStrandedWorkAttempts(attempts, signature)
+		decision.Block = decision.NoProgressLimit > 0 && decision.ConsecutiveNoProgress >= decision.NoProgressLimit
+		if decision.Block {
+			decision.BlockReason = strandedUnpushedWorkReason
+		}
+		return decision
+	}
 	if !ok {
 		decision.Reason = "first_completed_attempt"
 		return decision
 	}
-	decision.PreviousSignature = previous
-	decision.PreviousSignatureFound = true
-	decision.FailedChecksAdded, decision.FailedChecksRemoved = implementProgressFailedCheckDelta(previous.FailedChecks, signature.FailedChecks)
 	if !implementProgressSignatureEqual(previous, signature) {
 		decision.Reason = "signature_changed"
 		return decision
@@ -364,6 +388,18 @@ func consecutiveImplementSameNoPRDiffAttempts(
 	return count
 }
 
+func consecutiveImplementStrandedWorkAttempts(attempts []store.WorkAttempt, current autoPromoteReworkSignature) int {
+	count := 0
+	for _, attempt := range attempts {
+		record, ok := implementProgressRecordFromAttempt(attempt)
+		if !ok || !implementProgressSignatureEqual(record.CurrentSignature.signature(), current) || record.WorkspaceDiffStats.UnpushedCommits <= 0 {
+			return count
+		}
+		count++
+	}
+	return count
+}
+
 func implementProgressWorkpadEqual(record implementProgressRecord, workpadStatus string, humanAction string) bool {
 	return strings.TrimSpace(record.WorkpadStatus) == strings.TrimSpace(workpadStatus) &&
 		strings.TrimSpace(record.HumanAction) == strings.TrimSpace(humanAction)
@@ -472,11 +508,12 @@ func (r implementProgressSignatureRecord) signature() autoPromoteReworkSignature
 
 func implementProgressDiffStatsFromDiffStats(diffStats DiffStats) implementProgressDiffStats {
 	return implementProgressDiffStats{
-		FilesChanged: diffStats.FilesChanged,
-		AddedLines:   diffStats.AddedLines,
-		RemovedLines: diffStats.RemovedLines,
-		Fingerprint:  strings.TrimSpace(diffStats.Fingerprint),
-		Status:       strings.TrimSpace(diffStats.Status),
+		FilesChanged:    diffStats.FilesChanged,
+		AddedLines:      diffStats.AddedLines,
+		RemovedLines:    diffStats.RemovedLines,
+		UnpushedCommits: diffStats.UnpushedCommits,
+		Fingerprint:     strings.TrimSpace(diffStats.Fingerprint),
+		Status:          strings.TrimSpace(diffStats.Status),
 	}
 }
 
@@ -629,12 +666,19 @@ func implementProgressRecoveryReason(decision implementCompletionProgressDecisio
 	if humanAction := strings.TrimSpace(decision.HumanAction); humanAction != "" {
 		return humanAction
 	}
+	if decision.WorkspaceDiffStats.UnpushedCommits > 0 {
+		return "validate and push the stranded workspace commits, then open or update the pull request and move the issue to Rework"
+	}
 	return "inspect the linked PR and worker logs, then move the issue back to Rework or Todo after a human confirms the next action"
 }
 
 func implementProgressBlockComment(issue connector.Issue, decision implementCompletionProgressDecision) string {
 	var b strings.Builder
-	b.WriteString("Routed this issue to Blocked because the implement worker completed repeatedly without deliverable progress.")
+	if decision.WorkspaceDiffStats.UnpushedCommits > 0 {
+		b.WriteString("Routed this issue to Blocked because the implement worker completed repeatedly with work produced but stranded unpushed in the workspace.")
+	} else {
+		b.WriteString("Routed this issue to Blocked because the implement worker completed repeatedly without deliverable progress.")
+	}
 	b.WriteString("\n\n- reason: ")
 	blockReason := strings.TrimSpace(decision.BlockReason)
 	if blockReason == "" {
@@ -697,6 +741,10 @@ func implementProgressBlockComment(issue connector.Issue, decision implementComp
 		}
 	} else {
 		b.WriteString("unavailable")
+	}
+	if decision.WorkspaceDiffStats.UnpushedCommits > 0 {
+		b.WriteString("\n- unpushed_commits: ")
+		b.WriteString(strconv.Itoa(decision.WorkspaceDiffStats.UnpushedCommits))
 	}
 	if humanAction := strings.TrimSpace(decision.HumanAction); humanAction != "" {
 		b.WriteString("\n\nHuman action requested by the Workpad:\n\n")
