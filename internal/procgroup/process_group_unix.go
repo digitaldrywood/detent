@@ -136,12 +136,6 @@ func inspectProcess(pid int) (Identity, error) {
 	return Identity{PID: pid, GroupID: groupID, StartedAt: startedAt.UTC()}, nil
 }
 
-func sameIdentity(current Identity, recorded Identity) bool {
-	return current.PID == recorded.PID &&
-		(recorded.GroupID <= 0 || current.GroupID == recorded.GroupID) &&
-		!recorded.StartedAt.IsZero() && current.StartedAt.Equal(recorded.StartedAt)
-}
-
 func signalProcessTarget(pid int, groupID int, signal syscall.Signal) error {
 	if groupID > 0 {
 		return syscall.Kill(-groupID, signal)

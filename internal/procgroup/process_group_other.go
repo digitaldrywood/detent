@@ -1,9 +1,10 @@
-//go:build !unix
+//go:build !unix && !windows
 
 package procgroup
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"time"
@@ -41,12 +42,5 @@ func Terminate(_ context.Context, identity Identity, _ time.Duration) (Terminati
 	if identity.PID <= 0 {
 		return TerminationOutcomeAlreadyExited, nil
 	}
-	process, err := os.FindProcess(identity.PID)
-	if err != nil {
-		return TerminationOutcomeAlreadyExited, nil
-	}
-	if err := process.Kill(); err != nil {
-		return "", err
-	}
-	return TerminationOutcomeTerminated, nil
+	return "", errors.New("validated worker process termination is unsupported on this platform")
 }

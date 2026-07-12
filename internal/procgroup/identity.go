@@ -30,3 +30,9 @@ func Inspect(cmd *exec.Cmd) (Identity, error) {
 	}
 	return inspectProcess(cmd.Process.Pid)
 }
+
+func sameIdentity(current Identity, recorded Identity) bool {
+	return current.PID == recorded.PID &&
+		(recorded.GroupID <= 0 || current.GroupID == recorded.GroupID) &&
+		!recorded.StartedAt.IsZero() && current.StartedAt.Equal(recorded.StartedAt)
+}
