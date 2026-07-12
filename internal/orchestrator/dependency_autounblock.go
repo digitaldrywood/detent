@@ -850,8 +850,12 @@ func (o *Orchestrator) issueHasStickyBlockReason(ctx context.Context, state *Sta
 }
 
 func stickyBlockReason(reason string) bool {
-	switch strings.ToLower(strings.TrimSpace(reason)) {
-	case "rework_limit", "no_progress_limit", "workpad_blocked_unactioned", "circuit_breaker":
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if strings.HasPrefix(reason, tokenCeilingBlockedReasonPrefix) {
+		return true
+	}
+	switch reason {
+	case "rework_limit", "no_progress_limit", "workpad_blocked_unactioned", "circuit_breaker", "token_ceiling_circuit_breaker":
 		return true
 	default:
 		return false

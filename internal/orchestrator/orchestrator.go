@@ -41,6 +41,7 @@ const (
 	instantFailureBlockedReasonPrefix  = "instant fail circuit breaker: "
 	repeatedFailureThreshold           = 5
 	repeatedFailureBlockedReasonPrefix = "repeated failure circuit breaker: "
+	tokenCeilingBlockedReasonPrefix    = "token ceiling circuit breaker: "
 	continuationDispatchBackoff        = 100 * time.Millisecond
 	runUpdateBufferSize                = 128
 	maxRecentEvents                    = 50

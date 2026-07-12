@@ -154,7 +154,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		errorMessage := event.Err.Error()
 		phase := "failed"
 		statusMessage := "worker failed"
-		if spendProgress.Block {
+		if spendProgress.Block && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
 			terminalState = store.WorkAttemptTerminalNoProgress
 			errorClass = spendProgressReason
 			errorMessage = fmt.Sprintf("spent %s since the last accepted state change; configured limit %s", budget.FormatUSD(spendProgress.Spend.CostUSD), budget.FormatUSD(spendProgress.LimitUSD))
@@ -162,16 +162,19 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			statusMessage = "spend-since-progress circuit breaker tripped"
 		}
 		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, spendProgressMetadata(spendProgress))
+		attempt := event.RetryAttempt
+		if attempt < 1 {
+			attempt = nextAttempt(running.Attempt)
+		}
+		if o.tripTokenCeilingCircuitBreaker(ctx, state, event, running, attempt) {
+			return
+		}
 		if spendProgress.Block && o.blockSpendProgress(ctx, state, running.Issue, spendProgress, event.CompletedAt) {
 			return
 		}
 		if mergeWorkerIssue(running.Issue) {
 			o.logMergeWorkerFailure(running.Issue, "runner_failed", event.Err)
 			o.recordMergeFailed(state, running.Issue, event.CompletedAt, "runner_failed", event.Err)
-		}
-		attempt := event.RetryAttempt
-		if attempt < 1 {
-			attempt = nextAttempt(running.Attempt)
 		}
 		if mergeWorkerIssue(running.Issue) && attempt > maxMergeWorkerRunnerFailures {
 			if o.reworkExhaustedMergeWorker(ctx, state, running, event.CompletedAt, attempt, event.Err) {
@@ -566,6 +569,130 @@ func (o *Orchestrator) instantFailureParkState() string {
 	return blockedStatusState
 }
 
+func (o *Orchestrator) tripTokenCeilingCircuitBreaker(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	attempt int,
+) bool {
+	var ceilingErr *runpkg.SessionTokenCeilingError
+	if state == nil || !errors.As(event.Err, &ceilingErr) || ceilingErr == nil {
+		return false
+	}
+	failure := o.recordRepeatedFailure(state, event, running)
+	targetState := o.instantFailureParkState()
+	issue := cloneIssue(running.Issue)
+	if targetState != "" {
+		if err := o.updateIssueState(ctx, state, issue, targetState, event.CompletedAt, "token_ceiling_circuit_breaker"); err != nil {
+			if o.logger != nil {
+				o.logger.Error(
+					"token ceiling circuit breaker state transition failed",
+					"issue_id", issue.ID,
+					"identifier", issue.Identifier,
+					"target_state", targetState,
+					"error", err,
+				)
+			}
+		} else {
+			issue.State = targetState
+		}
+	}
+	if o.connector != nil {
+		comment := tokenCeilingFailureComment(issue, ceilingErr, running.Attempt, attempt, targetState)
+		if err := o.connector.CreateComment(ctx, issue.ID, comment); err != nil && o.logger != nil {
+			o.logger.Error("token ceiling circuit breaker comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+	}
+	if err := o.abandonClaim(ctx, issue.ID); err != nil && o.logger != nil {
+		o.logger.Error("token ceiling circuit breaker claim release failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+	}
+	delete(state.Claimed, issue.ID)
+	delete(state.Retry, issue.ID)
+	delete(state.BudgetRefusals, issue.ID)
+	delete(state.PriorAttempts, issue.ID)
+	delete(state.InstantFailures, issue.ID)
+	delete(state.RepeatedFailures, issue.ID)
+	if state.Blocked == nil {
+		state.Blocked = map[string]Blocked{}
+	}
+	reason := tokenCeilingFailureReason(ceilingErr)
+	state.Blocked[issue.ID] = Blocked{
+		Issue:          issue,
+		Reason:         reason,
+		RecoveryReason: string(BlockedRecoveryReasonHumanBlocker),
+		RecoveryTarget: "Rework",
+		BlockedAt:      event.CompletedAt,
+		Source:         BlockedSourceProjectStatus,
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "worker_token_ceiling_circuit_breaker_tripped",
+		Message: "parked " + issueLabel(issue) + " after a session token ceiling failure: " + reason,
+	})
+	if o.logger != nil {
+		o.logger.Error(
+			"worker token ceiling circuit breaker tripped",
+			"event", "worker_token_ceiling_circuit_breaker_tripped",
+			"issue_id", issue.ID,
+			"issue_identifier", issue.Identifier,
+			"failed_attempt", running.Attempt,
+			"prevented_retry_attempt", attempt,
+			"repeated_failures", failure.Count,
+			"target_state", targetState,
+			"observed_total_tokens", ceilingErr.TotalTokens,
+			"ceiling_tokens", ceilingErr.CeilingTokens,
+			"ceiling_source", ceilingErr.Source,
+			"error", event.Err,
+		)
+	}
+	return true
+}
+
+func tokenCeilingFailureReason(ceilingErr *runpkg.SessionTokenCeilingError) string {
+	source := strings.TrimSpace(ceilingErr.Source)
+	if source == "" {
+		source = "unknown"
+	}
+	return fmt.Sprintf(
+		"%sobserved %d tokens above the %d %s ceiling",
+		tokenCeilingBlockedReasonPrefix,
+		ceilingErr.TotalTokens,
+		ceilingErr.CeilingTokens,
+		source,
+	)
+}
+
+func tokenCeilingFailureComment(
+	issue connector.Issue,
+	ceilingErr *runpkg.SessionTokenCeilingError,
+	failedAttempt int,
+	preventedRetryAttempt int,
+	targetState string,
+) string {
+	var b strings.Builder
+	b.WriteString("Detent stopped retrying this worker because the session exceeded its configured token ceiling.")
+	if targetState = strings.TrimSpace(targetState); targetState != "" {
+		b.WriteString("\n\nIssue parked in `")
+		b.WriteString(targetState)
+		b.WriteString("` for a human decision.")
+	}
+	b.WriteString("\n\n- issue: ")
+	b.WriteString(issueLabel(issue))
+	b.WriteString("\n- failed_attempt: ")
+	b.WriteString(strconv.Itoa(failedAttempt))
+	b.WriteString("\n- prevented_retry_attempt: ")
+	b.WriteString(strconv.Itoa(preventedRetryAttempt))
+	b.WriteString("\n- observed_total_tokens: ")
+	b.WriteString(strconv.FormatInt(ceilingErr.TotalTokens, 10))
+	b.WriteString("\n- ceiling_tokens: ")
+	b.WriteString(strconv.FormatInt(ceilingErr.CeilingTokens, 10))
+	b.WriteString("\n- ceiling_source: ")
+	b.WriteString(strings.TrimSpace(ceilingErr.Source))
+	b.WriteString("\n\nChoose one recovery before moving the issue to Rework: split the issue into narrower work, apply the label configured by `agent.max_session_token_override_label` for a deliberate per-issue bypass, or raise `agent.max_session_tokens` (and `agent.max_session_context_multiplier` when it is the active guard).")
+	return b.String()
+}
+
 // tripRepeatedFailureCircuitBreaker parks an issue after too many consecutive
 // worker failures of any duration. The instant-failure breaker only counts
 // sub-instantFailureMaxDuration failures with identical error text, which lets
@@ -582,6 +709,16 @@ func (o *Orchestrator) tripRepeatedFailureCircuitBreaker(
 	if state == nil || event.Err == nil {
 		return false
 	}
+	failure := o.recordRepeatedFailure(state, event, running)
+	if failure.Count < repeatedFailureThreshold {
+		return false
+	}
+
+	o.parkRepeatedFailure(ctx, state, event, running, failure, attempt)
+	return true
+}
+
+func (o *Orchestrator) recordRepeatedFailure(state *State, event runpkg.Completion, running Running) RepeatedFailure {
 	if state.RepeatedFailures == nil {
 		state.RepeatedFailures = map[string]RepeatedFailure{}
 	}
@@ -594,12 +731,7 @@ func (o *Orchestrator) tripRepeatedFailureCircuitBreaker(
 	failure.Error = o.operatorText(event.Err.Error())
 	failure.LastFailureAt = event.CompletedAt
 	state.RepeatedFailures[event.IssueID] = failure
-	if failure.Count < repeatedFailureThreshold {
-		return false
-	}
-
-	o.parkRepeatedFailure(ctx, state, event, running, failure, attempt)
-	return true
+	return failure
 }
 
 func (o *Orchestrator) parkRepeatedFailure(

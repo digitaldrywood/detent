@@ -233,6 +233,22 @@ func TestBoardCardExtraShowsWaitReasonAheadOfCI(t *testing.T) {
 	}
 }
 
+func TestBoardCardExtraShowsTokenCeilingFailure(t *testing.T) {
+	t.Parallel()
+
+	reason := "token ceiling circuit breaker: observed 16100000 tokens above the 16000000 max_session_tokens ceiling"
+	card := projectKanbanCard{
+		BlockedSource:         telemetry.BlockedSourceProjectStatus,
+		BlockedReason:         reason,
+		BlockedRecoveryReason: "human_blocker",
+	}
+
+	kind, text, chip := boardCardExtra(card, boardCardView{})
+	if kind != primitives.KindErr || text != "needs review - "+reason || !chip {
+		t.Fatalf("boardCardExtra() = %q, %q, %t, want error token ceiling chip", kind, text, chip)
+	}
+}
+
 func TestBoardCardPriority(t *testing.T) {
 	t.Parallel()
 
