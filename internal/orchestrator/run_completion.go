@@ -153,8 +153,16 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		)
 		spendProgress := spendProgressDecision{}
 		if !mergeWorkerIssue(running.Issue) {
+			evidenceWarning := ""
+			if implementProgressLinkedPullRequest(running.Issue) || event.Result.PullRequestUpdated {
+				running.Issue, evidenceWarning = o.refreshSpendProgressIssue(ctx, running.Issue)
+			}
 			accepted, acceptedReason := dispatchAcceptedStateChange(running)
 			spendProgress = o.evaluateSpendProgress(ctx, running, event.CompletedAt, accepted, acceptedReason)
+			if evidenceWarning != "" {
+				spendProgress.Warning = evidenceWarning
+				spendProgress.Block = false
+			}
 		}
 		terminalState := terminalStateForRun(event.Err, event.Result.FinalState)
 		errorClass := workAttemptErrorRunner
@@ -267,12 +275,16 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		running.DiffStats = event.Result.DiffStats
 	}
 	progress := o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
+	running.Issue = progress.Issue
 	accepted, acceptedReason := implementAcceptedStateChange(running, progress)
 	spendProgress := o.evaluateSpendProgress(ctx, running, event.CompletedAt, accepted, acceptedReason)
+	if progress.Warning != "" && strings.HasPrefix(progress.Reason, "pull_request_hydrat") {
+		spendProgress.Warning = progress.Warning
+		spendProgress.Block = false
+	}
 	if terminalState != store.WorkAttemptTerminalSuccess {
 		progress.Outcome = terminalState
 	}
-	running.Issue = progress.Issue
 	phase := "completed"
 	statusMessage := "worker completed"
 	if terminalState == store.WorkAttemptTerminalSuccess && progress.Outcome == store.WorkAttemptTerminalNoProgress {

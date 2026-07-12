@@ -39,22 +39,108 @@ func TestEvaluateSpendProgress(t *testing.T) {
 		limit            float64
 		spend            store.IssueSpendSince
 		history          []store.WorkAttempt
+		issue            connector.Issue
+		effort           string
 		accepted         bool
 		acceptedReason   string
 		wantBlock        bool
+		wantAccepted     bool
+		wantReason       string
+		wantLimit        float64
 		wantSpendCalls   int
 		wantHistoryCalls int
 		wantSince        time.Time
 	}{
-		{name: "disabled avoids tracking", limit: 0, spend: store.IssueSpendSince{CostUSD: 100}, wantSpendCalls: 0, wantHistoryCalls: 0},
-		{name: "normal three retry sessions stay below default", limit: 3, spend: store.IssueSpendSince{CostUSD: 2.7, Sessions: 3}, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
-		{name: "below threshold", limit: 5, spend: store.IssueSpendSince{CostUSD: 4.99, Sessions: 3}, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
-		{name: "at threshold", limit: 5, spend: store.IssueSpendSince{CostUSD: 5, Sessions: 4}, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
-		{name: "metered blocks above threshold", billingMode: "metered", limit: 5, spend: store.IssueSpendSince{CostUSD: 5.01, Sessions: 4}, wantBlock: true, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
-		{name: "subscription keeps above-threshold spend advisory", billingMode: "subscription", limit: 5, spend: store.IssueSpendSince{CostUSD: 5.01, Sessions: 4}, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
-		{name: "July telemetry replay", limit: 5, spend: store.IssueSpendSince{CostUSD: 6.75, Sessions: 5}, wantBlock: true, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
-		{name: "old sessions reset after accepted change", limit: 5, spend: store.IssueSpendSince{CostUSD: 1.25, Sessions: 1}, history: []store.WorkAttempt{acceptedAttempt}, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: acceptedAt},
-		{name: "current accepted change resets without spend lookup", limit: 5, spend: store.IssueSpendSince{CostUSD: 100}, accepted: true, acceptedReason: "signature_changed", wantSpendCalls: 0, wantHistoryCalls: 0, wantSince: base},
+		{name: "disabled avoids tracking", limit: 0, spend: store.IssueSpendSince{CostUSD: 100}, wantLimit: 0, wantSpendCalls: 0, wantHistoryCalls: 0},
+		{name: "normal three retry sessions stay below default", limit: 3, spend: store.IssueSpendSince{CostUSD: 2.7, Sessions: 3}, wantLimit: 3, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
+		{name: "below threshold", limit: 5, spend: store.IssueSpendSince{CostUSD: 4.99, Sessions: 3}, wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
+		{name: "at threshold", limit: 5, spend: store.IssueSpendSince{CostUSD: 5, Sessions: 4}, wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
+		{name: "metered blocks above threshold", billingMode: "metered", limit: 5, spend: store.IssueSpendSince{CostUSD: 5.01, Sessions: 4}, wantBlock: true, wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
+		{name: "subscription keeps above-threshold spend advisory", billingMode: "subscription", limit: 5, spend: store.IssueSpendSince{CostUSD: 5.01, Sessions: 4}, wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
+		{name: "July telemetry replay", limit: 5, spend: store.IssueSpendSince{CostUSD: 6.75, Sessions: 5}, wantBlock: true, wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
+		{name: "old sessions reset after accepted change", limit: 5, spend: store.IssueSpendSince{CostUSD: 1.25, Sessions: 1}, history: []store.WorkAttempt{acceptedAttempt}, wantLimit: 5, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: acceptedAt},
+		{name: "current accepted change resets without spend lookup", limit: 5, spend: store.IssueSpendSince{CostUSD: 100}, accepted: true, acceptedReason: "signature_changed", wantAccepted: true, wantReason: "signature_changed", wantLimit: 5, wantSpendCalls: 0, wantHistoryCalls: 0, wantSince: base},
+		{
+			name:  "dirty to clean pull request resets spend",
+			limit: 5,
+			spend: store.IssueSpendSince{CostUSD: 6.75, Sessions: 2},
+			issue: spendProgressIssueWithPR("same-head", "clean", "failure"),
+			history: []store.WorkAttempt{{
+				CompletedAt: base.Add(-10 * time.Minute),
+				WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+					spendProgressMetadataKey: map[string]any{
+						"limit_usd":      5,
+						"pr_fingerprint": map[string]any{"number": 214, "head_sha": "same-head", "mergeable_state": "dirty", "ci_status": "failure"},
+					},
+				}),
+			}},
+			wantAccepted:     true,
+			wantReason:       "pull_request_mergeable",
+			wantLimit:        5,
+			wantHistoryCalls: 1,
+			wantSince:        base,
+		},
+		{
+			name:  "failing to passing pull request resets spend",
+			limit: 5,
+			spend: store.IssueSpendSince{CostUSD: 6.75, Sessions: 2},
+			issue: spendProgressIssueWithPR("same-head", "dirty", "success"),
+			history: []store.WorkAttempt{{
+				CompletedAt: base.Add(-10 * time.Minute),
+				WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+					spendProgressMetadataKey: map[string]any{
+						"limit_usd":      5,
+						"pr_fingerprint": map[string]any{"number": 214, "head_sha": "same-head", "mergeable_state": "dirty", "ci_status": "failure"},
+					},
+				}),
+			}},
+			wantAccepted:     true,
+			wantReason:       "pull_request_ci_passing",
+			wantLimit:        5,
+			wantHistoryCalls: 1,
+			wantSince:        base,
+		},
+		{
+			name:  "new pull request head resets spend",
+			limit: 5,
+			spend: store.IssueSpendSince{CostUSD: 6.75, Sessions: 2},
+			issue: spendProgressIssueWithPR("new-head", "dirty", "failure"),
+			history: []store.WorkAttempt{{
+				CompletedAt: base.Add(-10 * time.Minute),
+				WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+					spendProgressMetadataKey: map[string]any{
+						"limit_usd":      5,
+						"pr_fingerprint": map[string]any{"number": 214, "head_sha": "old-head", "mergeable_state": "dirty", "ci_status": "failure"},
+					},
+				}),
+			}},
+			wantAccepted:     true,
+			wantReason:       "pull_request_head_changed",
+			wantLimit:        5,
+			wantHistoryCalls: 1,
+			wantSince:        base,
+		},
+		{
+			name:  "byte identical pull request still parks",
+			limit: 5,
+			spend: store.IssueSpendSince{CostUSD: 6.75, Sessions: 2},
+			issue: spendProgressIssueWithPR("same-head", "dirty", "failure"),
+			history: []store.WorkAttempt{{
+				CompletedAt: base.Add(-10 * time.Minute),
+				WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+					spendProgressMetadataKey: map[string]any{
+						"limit_usd":      5,
+						"pr_fingerprint": map[string]any{"number": 214, "head_sha": "same-head", "mergeable_state": "dirty", "ci_status": "failure"},
+					},
+				}),
+			}},
+			wantBlock:        true,
+			wantLimit:        5,
+			wantSpendCalls:   1,
+			wantHistoryCalls: 1,
+			wantSince:        createdAt,
+		},
+		{name: "xhigh threshold allows one expensive session", limit: 3, effort: "xhigh", spend: store.IssueSpendSince{CostUSD: 17.99, Sessions: 1}, wantLimit: 18, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
 	}
 
 	for _, tt := range tests {
@@ -72,11 +158,25 @@ func TestEvaluateSpendProgress(t *testing.T) {
 				progressSpend: spend,
 				workAttempts:  attempts,
 			}
-			issue := connector.Issue{ID: "issue-214", Identifier: "gopherguides/gopher-ai#214", CreatedAt: &createdAt}
-			decision := orch.evaluateSpendProgress(context.Background(), Running{Issue: issue}, base, tt.accepted, tt.acceptedReason)
+			issue := tt.issue
+			issue.ID = "issue-214"
+			issue.Identifier = "gopherguides/gopher-ai#214"
+			issue.CreatedAt = &createdAt
+			running := Running{Issue: issue}
+			running.RuntimeIdentity.ReasoningEffort.Value = tt.effort
+			decision := orch.evaluateSpendProgress(context.Background(), running, base, tt.accepted, tt.acceptedReason)
 
 			if decision.Block != tt.wantBlock {
 				t.Fatalf("Block = %t, want %t", decision.Block, tt.wantBlock)
+			}
+			if decision.AcceptedStateChange != tt.wantAccepted {
+				t.Fatalf("AcceptedStateChange = %t, want %t", decision.AcceptedStateChange, tt.wantAccepted)
+			}
+			if decision.AcceptedReason != tt.wantReason {
+				t.Fatalf("AcceptedReason = %q, want %q", decision.AcceptedReason, tt.wantReason)
+			}
+			if math.Abs(decision.LimitUSD-tt.wantLimit) > 0.000001 {
+				t.Fatalf("LimitUSD = %f, want %f", decision.LimitUSD, tt.wantLimit)
 			}
 			if spend.calls != tt.wantSpendCalls {
 				t.Fatalf("spend calls = %d, want %d", spend.calls, tt.wantSpendCalls)
@@ -92,6 +192,143 @@ func TestEvaluateSpendProgress(t *testing.T) {
 			}
 		})
 	}
+}
+
+func spendProgressIssueWithPR(headSHA string, mergeableState string, ciStatus string) connector.Issue {
+	number := 214
+	return connector.Issue{
+		PRNumber: &number,
+		PullRequest: &connector.PullRequest{
+			Number:         214,
+			HeadSHA:        headSHA,
+			MergeableState: mergeableState,
+			CIStatus:       ciStatus,
+		},
+	}
+}
+
+func TestSpendProgressCommentNamesEvidenceCase(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		decision     spendProgressDecision
+		wantContains []string
+	}{
+		{
+			name: "without PR evidence",
+			decision: spendProgressDecision{
+				Spend:    store.IssueSpendSince{CostUSD: 6.75, Sessions: 2},
+				LimitUSD: 5,
+				Case:     spendProgressCaseNoPR,
+			},
+			wantContains: []string{"spend continued without any PR evidence", "case: spend_without_pr_evidence", "Shrink the task"},
+		},
+		{
+			name: "static PR evidence",
+			decision: spendProgressDecision{
+				Spend:         store.IssueSpendSince{CostUSD: 6.75, Sessions: 2},
+				LimitUSD:      5,
+				Case:          spendProgressCaseStatic,
+				PRFingerprint: &spendProgressPRFingerprint{Number: 214, HeadSHA: "same-head", MergeableState: "dirty", CIStatus: "failure"},
+			},
+			wantContains: []string{"spend continued while a linked PR existed but could not merge", "case: spend_with_static_pr_evidence", "merge-train capacity", "pr_head_sha: same-head"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			comment := spendProgressComment(connector.Issue{Identifier: "digitaldrywood/detent#1276"}, tt.decision)
+			for _, want := range tt.wantContains {
+				if !strings.Contains(comment, want) {
+					t.Fatalf("comment missing %q:\n%s", want, comment)
+				}
+			}
+			if recovery := spendProgressRecoveryReason(tt.decision); recovery == "" {
+				t.Fatal("recovery reason is empty")
+			}
+			if handoff := spendProgressRetryHandoff(tt.decision); handoff.MissingSignal == "" {
+				t.Fatal("retry handoff missing signal")
+			}
+		})
+	}
+}
+
+func TestRefreshSpendProgressIssue(t *testing.T) {
+	t.Parallel()
+
+	baseIssue := connector.Issue{ID: "issue-1276", Identifier: "digitaldrywood/detent#1276"}
+	linkedIssue := spendProgressIssueWithPR("head", "dirty", "failure")
+	linkedIssue.ID = baseIssue.ID
+	linkedIssue.Identifier = baseIssue.Identifier
+	degradedIssue := cloneIssue(linkedIssue)
+	degradedIssue.PullRequest.HydrationDegradedReason = connector.PullRequestHydrationReasonStaleCachedPullData
+
+	tests := []struct {
+		name        string
+		orch        *Orchestrator
+		issue       connector.Issue
+		wantWarning string
+		wantPR      bool
+		wantHead    string
+	}{
+		{name: "missing connector", orch: &Orchestrator{}, issue: baseIssue, wantWarning: "refresh unavailable"},
+		{name: "refresh failure", orch: &Orchestrator{connector: &implementProgressConnector{refreshErr: errors.New("github unavailable")}}, issue: baseIssue, wantWarning: "refresh failed"},
+		{name: "refresh confirms no PR", orch: &Orchestrator{connector: &implementProgressConnector{refreshed: baseIssue}}, issue: baseIssue},
+		{
+			name: "refresh discovers and hydrates PR",
+			orch: &Orchestrator{connector: &implementProgressConnector{
+				refreshed: linkedIssue,
+				hydrated:  linkedIssue,
+			}},
+			issue:    baseIssue,
+			wantPR:   true,
+			wantHead: "head",
+		},
+		{
+			name:        "linked PR without hydrator",
+			orch:        &Orchestrator{connector: connectorOnly{Connector: &implementProgressConnector{}}},
+			issue:       linkedIssue,
+			wantWarning: "hydrator unavailable",
+			wantPR:      true,
+			wantHead:    "head",
+		},
+		{
+			name:        "hydration failure",
+			orch:        &Orchestrator{connector: &implementProgressConnector{hydrateErr: errors.New("github unavailable")}},
+			issue:       linkedIssue,
+			wantWarning: "hydration failed",
+			wantPR:      true,
+			wantHead:    "head",
+		},
+		{
+			name:        "degraded hydration",
+			orch:        &Orchestrator{connector: &implementProgressConnector{hydrated: degradedIssue}},
+			issue:       linkedIssue,
+			wantWarning: connector.PullRequestHydrationReasonStaleCachedPullData,
+			wantPR:      true,
+			wantHead:    "head",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue, warning := tt.orch.refreshSpendProgressIssue(t.Context(), tt.issue)
+			if !strings.Contains(warning, tt.wantWarning) {
+				t.Fatalf("warning = %q, want containing %q", warning, tt.wantWarning)
+			}
+			if got := issue.PullRequest != nil; got != tt.wantPR {
+				t.Fatalf("PR present = %t, want %t", got, tt.wantPR)
+			}
+			if tt.wantHead != "" && issue.PullRequest.HeadSHA != tt.wantHead {
+				t.Fatalf("head = %q, want %q", issue.PullRequest.HeadSHA, tt.wantHead)
+			}
+		})
+	}
+}
+
+type connectorOnly struct {
+	connector.Connector
 }
 
 func TestDispatchAcceptedStateChange(t *testing.T) {
@@ -198,6 +435,74 @@ func TestHandleRunResultTripsSpendProgressIndependentlyOfContentDetector(t *test
 	}
 	if !state.PriorAttempts[issue.ID].ExplainBeforeRetry {
 		t.Fatalf("PriorAttempts[%q] = %#v, want explain-before-retry", issue.ID, state.PriorAttempts[issue.ID])
+	}
+}
+
+func TestHandleRunResultAcceptsPRAdvanceBeforeWorkerError(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 7, 11, 16, 0, 0, 0, time.UTC)
+	createdAt := base.Add(-time.Hour)
+	runningIssue := spendProgressIssueWithPR("old-head", "dirty", "failure")
+	runningIssue.ID = "issue-1276"
+	runningIssue.Identifier = "digitaldrywood/detent#1276"
+	runningIssue.State = "In Progress"
+	runningIssue.CreatedAt = &createdAt
+	hydratedIssue := cloneIssue(runningIssue)
+	hydratedIssue.PullRequest.HeadSHA = "new-head"
+	tracker := &implementProgressConnector{hydrated: hydratedIssue}
+	attempts := &implementProgressAttemptStore{history: []store.WorkAttempt{{
+		CompletedAt: base.Add(-20 * time.Minute),
+		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+			spendProgressMetadataKey: map[string]any{
+				"limit_usd":      5,
+				"pr_fingerprint": map[string]any{"number": 214, "head_sha": "old-head", "mergeable_state": "dirty", "ci_status": "failure"},
+			},
+		}),
+	}}}
+	cfg := normalizeConfig(Config{
+		Project:                 scheduler.ProjectCandidate{ID: "detent"},
+		NoProgressSpendLimitUSD: 5,
+		ActiveStates:            []string{"In Progress"},
+		ObservedStates:          []string{"Blocked"},
+		TerminalStates:          []string{"Done"},
+	})
+	orch := &Orchestrator{
+		cfg:           cfg,
+		connector:     tracker,
+		workAttempts:  attempts,
+		progressSpend: &spendProgressStore{result: store.IssueSpendSince{CostUSD: 6.75, Sessions: 2}},
+	}
+	state := newState(cfg)
+	running := Running{
+		Issue:         runningIssue,
+		Attempt:       2,
+		WorkAttemptID: 42,
+		Mode:          runpkg.RunModeImplement,
+		StartedAt:     base.Add(-5 * time.Minute),
+	}
+	state.Running[runningIssue.ID] = running
+	state.Claimed[runningIssue.ID] = Claimed{Issue: runningIssue, ClaimedAt: running.StartedAt}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     runningIssue.ID,
+		CompletedAt: base,
+		Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+		Err:         errors.New("session token ceiling exceeded"),
+	})
+
+	if _, blocked := state.Blocked[runningIssue.ID]; blocked {
+		t.Fatalf("Blocked[%q] present after PR head advanced", runningIssue.ID)
+	}
+	if tracker.hydrations != 1 {
+		t.Fatalf("hydrations = %d, want 1", tracker.hydrations)
+	}
+	if len(attempts.completions) != 1 {
+		t.Fatalf("completions = %#v, want one", attempts.completions)
+	}
+	record, ok := spendProgressRecordFromAttempt(store.WorkAttempt{WorkerMetadataJSON: attempts.completions[0].WorkerMetadataJSON})
+	if !ok || !record.AcceptedStateChange || record.AcceptedReason != "pull_request_head_changed" {
+		t.Fatalf("spend metadata = %#v, ok=%t", record, ok)
 	}
 }
 

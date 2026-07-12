@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -18,6 +20,8 @@ const (
 	spendProgressMetadataKey = "spend_since_progress_breaker"
 	spendProgressReason      = "spend_since_progress_circuit_breaker"
 	spendProgressHistorySize = 200
+	spendProgressCaseNoPR    = "spend_without_pr_evidence"
+	spendProgressCaseStatic  = "spend_with_static_pr_evidence"
 )
 
 type spendProgressDecision struct {
@@ -26,22 +30,37 @@ type spendProgressDecision struct {
 	AcceptedReason      string
 	Since               time.Time
 	Spend               store.IssueSpendSince
+	ConfiguredLimitUSD  float64
 	LimitUSD            float64
+	Effort              string
+	PRFingerprint       *spendProgressPRFingerprint
+	Case                string
 	Block               bool
 	Warning             string
 }
 
 type spendProgressRecord struct {
-	AcceptedStateChange bool    `json:"accepted_state_change,omitempty"`
-	AcceptedReason      string  `json:"accepted_reason,omitempty"`
-	Since               string  `json:"since,omitempty"`
-	SpendUSD            float64 `json:"spend_usd,omitempty"`
-	Sessions            int64   `json:"sessions,omitempty"`
-	FirstSessionAt      string  `json:"first_session_at,omitempty"`
-	LastSessionAt       string  `json:"last_session_at,omitempty"`
-	LimitUSD            float64 `json:"limit_usd,omitempty"`
-	BlockReason         string  `json:"block_reason,omitempty"`
-	Warning             string  `json:"warning,omitempty"`
+	AcceptedStateChange bool                        `json:"accepted_state_change,omitempty"`
+	AcceptedReason      string                      `json:"accepted_reason,omitempty"`
+	Since               string                      `json:"since,omitempty"`
+	SpendUSD            float64                     `json:"spend_usd,omitempty"`
+	Sessions            int64                       `json:"sessions,omitempty"`
+	FirstSessionAt      string                      `json:"first_session_at,omitempty"`
+	LastSessionAt       string                      `json:"last_session_at,omitempty"`
+	ConfiguredLimitUSD  float64                     `json:"configured_limit_usd,omitempty"`
+	LimitUSD            float64                     `json:"limit_usd,omitempty"`
+	Effort              string                      `json:"effort,omitempty"`
+	PRFingerprint       *spendProgressPRFingerprint `json:"pr_fingerprint,omitempty"`
+	Case                string                      `json:"case,omitempty"`
+	BlockReason         string                      `json:"block_reason,omitempty"`
+	Warning             string                      `json:"warning,omitempty"`
+}
+
+type spendProgressPRFingerprint struct {
+	Number         int64  `json:"number,omitempty"`
+	HeadSHA        string `json:"head_sha,omitempty"`
+	MergeableState string `json:"mergeable_state,omitempty"`
+	CIStatus       string `json:"ci_status,omitempty"`
 }
 
 func (o *Orchestrator) evaluateSpendProgress(
@@ -59,7 +78,10 @@ func (o *Orchestrator) evaluateSpendProgress(
 	if !decision.Enabled {
 		return decision
 	}
-	decision.LimitUSD = o.cfg.NoProgressSpendLimitUSD
+	decision.ConfiguredLimitUSD = o.cfg.NoProgressSpendLimitUSD
+	decision.Effort = spendProgressEffort(running)
+	decision.LimitUSD = workflowconfig.EffectiveNoProgressSpendLimitUSD(decision.ConfiguredLimitUSD, decision.Effort)
+	decision.PRFingerprint = spendProgressPRFingerprintFromIssue(running.Issue)
 	if accepted {
 		decision.Since = completedAt
 		return decision
@@ -74,6 +96,19 @@ func (o *Orchestrator) evaluateSpendProgress(
 	if err != nil {
 		decision.Warning = err.Error()
 		o.warnSpendProgress(running.Issue, "work attempt history lookup failed", err)
+		return decision
+	}
+	if previous, ok := latestSpendProgressPRFingerprint(attempts); ok {
+		if reason := spendProgressPRAdvance(previous, decision.PRFingerprint); reason != "" {
+			decision.AcceptedStateChange = true
+			decision.AcceptedReason = reason
+			decision.Since = completedAt
+			return decision
+		}
+	} else if decision.PRFingerprint != nil {
+		decision.AcceptedStateChange = true
+		decision.AcceptedReason = "pull_request_created"
+		decision.Since = completedAt
 		return decision
 	}
 	decision.Since = spendProgressBaseline(running.Issue, attempts)
@@ -92,8 +127,80 @@ func (o *Orchestrator) evaluateSpendProgress(
 		return decision
 	}
 	decision.Spend = spend
+	decision.Case = spendProgressCaseNoPR
+	if decision.PRFingerprint != nil {
+		decision.Case = spendProgressCaseStatic
+	}
 	decision.Block = !o.cfg.subscriptionBilling() && spend.CostUSD > decision.LimitUSD
 	return decision
+}
+
+func spendProgressEffort(running Running) string {
+	return strings.ToLower(strings.TrimSpace(running.RuntimeIdentity.ReasoningEffort.Value))
+}
+
+func spendProgressPRFingerprintFromIssue(issue connector.Issue) *spendProgressPRFingerprint {
+	number := workAttemptPRNumber(issue)
+	if number == nil || *number <= 0 {
+		return nil
+	}
+	fingerprint := &spendProgressPRFingerprint{Number: *number}
+	if issue.PullRequest == nil {
+		return fingerprint
+	}
+	fingerprint.HeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
+	fingerprint.MergeableState = strings.ToLower(strings.TrimSpace(issue.PullRequest.MergeableState))
+	fingerprint.CIStatus = strings.ToLower(strings.TrimSpace(issue.PullRequest.CIStatus))
+	return fingerprint
+}
+
+func latestSpendProgressPRFingerprint(attempts []store.WorkAttempt) (*spendProgressPRFingerprint, bool) {
+	for _, attempt := range attempts {
+		record, ok := spendProgressRecordFromAttempt(attempt)
+		if !ok || record.PRFingerprint == nil || record.PRFingerprint.Number <= 0 {
+			continue
+		}
+		fingerprint := *record.PRFingerprint
+		return &fingerprint, true
+	}
+	return nil, false
+}
+
+func spendProgressPRAdvance(previous *spendProgressPRFingerprint, current *spendProgressPRFingerprint) string {
+	if previous == nil || current == nil {
+		return ""
+	}
+	if previous.Number != current.Number {
+		return "pull_request_created"
+	}
+	if previous.HeadSHA != "" && current.HeadSHA != "" && previous.HeadSHA != current.HeadSHA {
+		return "pull_request_head_changed"
+	}
+	if previous.MergeableState == "dirty" && current.MergeableState == "clean" {
+		return "pull_request_mergeable"
+	}
+	if spendProgressCIFailing(previous.CIStatus) && spendProgressCIPassing(current.CIStatus) {
+		return "pull_request_ci_passing"
+	}
+	return ""
+}
+
+func spendProgressCIFailing(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "error", "failed", "failure", "failing":
+		return true
+	default:
+		return false
+	}
+}
+
+func spendProgressCIPassing(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "passed", "passing", "success", "successful":
+		return true
+	default:
+		return false
+	}
 }
 
 func (o *Orchestrator) recentSpendProgressAttempts(ctx context.Context, issue connector.Issue) ([]store.WorkAttempt, error) {
@@ -107,6 +214,40 @@ func (o *Orchestrator) recentSpendProgressAttempts(ctx context.Context, issue co
 		IssueURL:   strings.TrimSpace(issue.URL),
 		Limit:      spendProgressHistorySize,
 	})
+}
+
+func (o *Orchestrator) refreshSpendProgressIssue(ctx context.Context, issue connector.Issue) (connector.Issue, string) {
+	refreshed := cloneIssue(issue)
+	if !implementProgressLinkedPullRequest(refreshed) {
+		if o == nil || o.connector == nil || strings.TrimSpace(refreshed.ID) == "" {
+			return refreshed, "pull request evidence refresh unavailable"
+		}
+		issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{refreshed.ID})
+		if err != nil {
+			return refreshed, "pull request evidence refresh failed: " + err.Error()
+		}
+		for _, candidate := range issues {
+			if strings.TrimSpace(candidate.ID) == strings.TrimSpace(refreshed.ID) {
+				refreshed = mergeIssueTrackerFields(refreshed, candidate)
+				break
+			}
+		}
+	}
+	if !implementProgressLinkedPullRequest(refreshed) {
+		return refreshed, ""
+	}
+	hydrator, ok := o.connector.(connector.PullRequestHydrator)
+	if !ok {
+		return refreshed, "pull request hydrator unavailable"
+	}
+	hydrated, err := hydrator.HydratePullRequest(ctx, refreshed)
+	if err != nil {
+		return refreshed, "pull request hydration failed: " + err.Error()
+	}
+	if reason := implementProgressHydrationUnavailableReason(hydrated.PullRequest); reason != "" {
+		return hydrated, reason
+	}
+	return hydrated, ""
 }
 
 func spendProgressBaseline(issue connector.Issue, attempts []store.WorkAttempt) time.Time {
@@ -164,7 +305,11 @@ func spendProgressMetadata(decision spendProgressDecision) map[string]any {
 		AcceptedReason:      decision.AcceptedReason,
 		SpendUSD:            decision.Spend.CostUSD,
 		Sessions:            decision.Spend.Sessions,
+		ConfiguredLimitUSD:  decision.ConfiguredLimitUSD,
 		LimitUSD:            decision.LimitUSD,
+		Effort:              decision.Effort,
+		PRFingerprint:       decision.PRFingerprint,
+		Case:                decision.Case,
 		Warning:             strings.TrimSpace(decision.Warning),
 	}
 	if !decision.Since.IsZero() {
@@ -262,7 +407,7 @@ func (o *Orchestrator) blockSpendProgress(
 	state.Blocked[issueID] = Blocked{
 		Issue:          issue,
 		Reason:         spendProgressReason,
-		RecoveryReason: "narrow or split the task, then identify the missing accepted progress signal before moving the issue back to Todo or Rework",
+		RecoveryReason: spendProgressRecoveryReason(decision),
 		RecoveryTarget: "Rework",
 		BlockedAt:      blockedAt,
 		Source:         BlockedSourceProjectStatus,
@@ -270,7 +415,7 @@ func (o *Orchestrator) blockSpendProgress(
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      blockedAt,
 		Event:   "spend_since_progress_circuit_breaker_tripped",
-		Message: fmt.Sprintf("parked %s after %s without an accepted state change", issueLabel(issue), budget.FormatUSD(decision.Spend.CostUSD)),
+		Message: fmt.Sprintf("parked %s after %s: %s", issueLabel(issue), budget.FormatUSD(decision.Spend.CostUSD), spendProgressCaseSummary(decision.Case)),
 	})
 	if o.logger != nil {
 		o.logger.Error("spend since progress circuit breaker tripped",
@@ -281,6 +426,8 @@ func (o *Orchestrator) blockSpendProgress(
 			"limit_usd", decision.LimitUSD,
 			"sessions", decision.Spend.Sessions,
 			"since", decision.Since,
+			"case", decision.Case,
+			"effort", decision.Effort,
 		)
 	}
 	return true
@@ -288,35 +435,83 @@ func (o *Orchestrator) blockSpendProgress(
 
 func spendProgressComment(issue connector.Issue, decision spendProgressDecision) string {
 	var b strings.Builder
-	b.WriteString("Routed this issue to Blocked because agent spend continued without an accepted state change.")
+	b.WriteString("Routed this issue to Blocked because ")
+	b.WriteString(spendProgressCaseSummary(decision.Case))
+	b.WriteString(".")
 	b.WriteString("\n\n- reason: ")
 	b.WriteString(spendProgressReason)
+	b.WriteString("\n- case: ")
+	b.WriteString(decision.Case)
 	b.WriteString("\n- issue: ")
 	b.WriteString(issueLabel(issue))
-	b.WriteString("\n- spend_since_last_accepted_state_change: ")
+	b.WriteString("\n- spend_since_last_accepted_progress: ")
 	b.WriteString(budget.FormatUSD(decision.Spend.CostUSD))
 	b.WriteString("\n- no_progress_spend_limit_usd: ")
 	b.WriteString(budget.FormatUSD(decision.LimitUSD))
+	if decision.Effort != "" {
+		b.WriteString("\n- effective_effort: ")
+		b.WriteString(decision.Effort)
+		b.WriteString("\n- configured_base_limit_usd: ")
+		b.WriteString(budget.FormatUSD(decision.ConfiguredLimitUSD))
+	}
 	b.WriteString(fmt.Sprintf("\n- sessions: %d", decision.Spend.Sessions))
+	if decision.PRFingerprint != nil {
+		b.WriteString("\n- pr_number: ")
+		b.WriteString(strconv.FormatInt(decision.PRFingerprint.Number, 10))
+		if decision.PRFingerprint.HeadSHA != "" {
+			b.WriteString("\n- pr_head_sha: ")
+			b.WriteString(decision.PRFingerprint.HeadSHA)
+		}
+		if decision.PRFingerprint.MergeableState != "" {
+			b.WriteString("\n- pr_mergeable_state: ")
+			b.WriteString(decision.PRFingerprint.MergeableState)
+		}
+		if decision.PRFingerprint.CIStatus != "" {
+			b.WriteString("\n- pr_ci_status: ")
+			b.WriteString(decision.PRFingerprint.CIStatus)
+		}
+	}
 	if !decision.Since.IsZero() {
-		b.WriteString("\n- last_accepted_state_change_at: ")
+		b.WriteString("\n- last_accepted_progress_at: ")
 		b.WriteString(decision.Since.UTC().Format(time.RFC3339))
 	}
 	if !decision.Spend.FirstSessionAt.IsZero() && !decision.Spend.LastSessionAt.IsZero() {
 		b.WriteString("\n- observed_session_span: ")
 		b.WriteString(decision.Spend.LastSessionAt.Sub(decision.Spend.FirstSessionAt).Round(time.Second).String())
 	}
-	b.WriteString("\n\nShrink the task before retrying: split or narrow the scope so the next session can produce a concrete accepted change.")
+	if decision.Case == spendProgressCaseStatic {
+		b.WriteString("\n\nThe linked PR fingerprint stayed static during this spend window. Check merge-train capacity, Merging serialization, and dispatch priority before narrowing the task; this pattern can indicate throughput starvation rather than missing implementation work.")
+	} else {
+		b.WriteString("\n\nShrink the task before retrying: split or narrow the scope so the next session can produce a concrete accepted change or linked PR evidence.")
+	}
 	b.WriteString("\n\nOn the next dispatch, the agent's first tool action must update the Workpad to explain which accepted progress signal was missing and what is concretely different before any other tool use.")
 	return b.String()
 }
 
+func spendProgressCaseSummary(progressCase string) string {
+	if progressCase == spendProgressCaseStatic {
+		return "spend continued while a linked PR existed but could not merge"
+	}
+	return "spend continued without any PR evidence"
+}
+
+func spendProgressRecoveryReason(decision spendProgressDecision) string {
+	if decision.Case == spendProgressCaseStatic {
+		return "inspect merge-train capacity, Merging serialization, and dispatch priority before moving the issue back to Rework"
+	}
+	return "narrow or split the task, then identify why no linked PR evidence was produced before moving the issue back to Todo or Rework"
+}
+
 func spendProgressRetryHandoff(decision spendProgressDecision) runpkg.PriorAttempt {
+	missingSignal := "lane transition, pull request creation, or a recognized PR fingerprint advancement"
+	if decision.Case == spendProgressCaseStatic {
+		missingSignal = "new PR head commit, dirty-to-clean mergeability, failing-to-passing CI, or merge-train capacity that lets the linked PR advance"
+	}
 	return runpkg.PriorAttempt{
 		Source:                  spendProgressReason,
-		Reason:                  "spend exceeded the configured limit without an accepted state change",
+		Reason:                  spendProgressCaseSummary(decision.Case),
 		ExplainBeforeRetry:      true,
-		MissingSignal:           "lane transition, pull request creation or merge, or a recognized PR content-signature change",
+		MissingSignal:           missingSignal,
 		ObservedSpendUSD:        decision.Spend.CostUSD,
 		NoProgressSpendLimitUSD: decision.LimitUSD,
 	}
@@ -341,8 +536,12 @@ func (o *Orchestrator) spendProgressPriorAttempt(ctx context.Context, issue conn
 		return runpkg.PriorAttempt{}, false
 	}
 	return spendProgressRetryHandoff(spendProgressDecision{
-		Spend:    store.IssueSpendSince{CostUSD: record.SpendUSD, Sessions: record.Sessions},
-		LimitUSD: record.LimitUSD,
+		Spend:              store.IssueSpendSince{CostUSD: record.SpendUSD, Sessions: record.Sessions},
+		ConfiguredLimitUSD: record.ConfiguredLimitUSD,
+		LimitUSD:           record.LimitUSD,
+		Effort:             record.Effort,
+		PRFingerprint:      record.PRFingerprint,
+		Case:               record.Case,
 	}), true
 }
 

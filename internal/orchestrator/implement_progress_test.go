@@ -751,6 +751,7 @@ type implementProgressConnector struct {
 	hydrated   connector.Issue
 	refreshed  connector.Issue
 	hydrateErr error
+	refreshErr error
 	hydrations int
 	updates    []implementProgressUpdate
 	comments   []implementProgressComment
@@ -779,6 +780,9 @@ func (c *implementProgressConnector) FetchIssuesByStates(context.Context, []stri
 }
 
 func (c *implementProgressConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	if c.refreshErr != nil {
+		return nil, c.refreshErr
+	}
 	if strings.TrimSpace(c.refreshed.ID) == "" {
 		return nil, nil
 	}

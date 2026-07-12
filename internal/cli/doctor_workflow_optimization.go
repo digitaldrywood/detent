@@ -37,6 +37,7 @@ const (
 	doctorWorkflowRulePinnedRouteModelRejected       = "pinned_route_model_rejected"
 	doctorWorkflowRulePinnedWorkerModelStale         = "pinned_worker_model_stale"
 	doctorWorkflowRuleSessionMultiplierKills         = "session_multiplier_ceiling_kills"
+	doctorWorkflowRuleSpendProgressBelowMedian       = "spend_progress_below_median_session_cost"
 	doctorWorkflowRuleNoSessionTokenBrake            = "no_session_token_brake"
 	doctorWorkflowRuleBudgetEstimateDrift            = "budget_estimate_drift"
 	doctorWorkflowRuleSchedulerSkipRate              = "scheduler_skip_rate"
@@ -172,6 +173,7 @@ type doctorWorkflowOptimizationMetrics struct {
 	InvalidWorkpadStatusIssue        string                               `json:"invalid_workpad_status_issue,omitempty"`
 	InvalidWorkpadStatusIssueCount   int64                                `json:"invalid_workpad_status_issue_count"`
 	OrphanRecovery                   doctorOrphanRecoveryMetrics          `json:"orphan_recovery"`
+	MedianSessionCostUSDByEffort     map[string]float64                   `json:"median_session_cost_usd_by_effort,omitempty"`
 }
 
 type doctorWorkflowModelTelemetry struct {
@@ -217,6 +219,7 @@ type doctorWorkflowSessionMetrics struct {
 	recentModelCounts        map[string]int64
 	recentDefaultModelCounts map[string]int64
 	failureTokens            int64
+	costUSDByEffort          map[string][]float64
 }
 
 type doctorWorkflowAnalyzedProject struct {
@@ -587,6 +590,7 @@ func doctorWorkflowOptimizationMetricsForProject(
 		InvalidWorkpadStatusIssue:      reviewFlow.invalidWorkpadStatusIssue,
 		InvalidWorkpadStatusIssueCount: reviewFlow.invalidWorkpadStatusIssueCount,
 		OrphanRecovery:                 orphanRecovery,
+		MedianSessionCostUSDByEffort:   doctorWorkflowMedianSessionCostUSDByEffort(sessions.costUSDByEffort),
 	}
 	if usage.count > 0 {
 		metrics.InputTokens = usage.inputTokens
@@ -786,6 +790,7 @@ SELECT
   COALESCE(s.output_tokens, 0),
   COALESCE(s.model, ''),
   COALESCE(s.requested_model, ''),
+  COALESCE(s.reasoning_effort, ''),
   COALESCE(s.final_state, ''),
   COALESCE(NULLIF(s.identifier, ''), NULLIF(s.issue_id, ''), NULLIF(s.issue_url, ''), 'unassigned'),
   COALESCE(s.completed_at, '')
@@ -810,6 +815,7 @@ ORDER BY s.completed_at DESC, s.id DESC`, projectID, projectID)
 		issueSessionCounts:       map[string]int64{},
 		recentModelCounts:        map[string]int64{},
 		recentDefaultModelCounts: map[string]int64{},
+		costUSDByEffort:          map[string][]float64{},
 	}
 	var recentCutoff time.Time
 	for rows.Next() {
@@ -819,10 +825,11 @@ ORDER BY s.completed_at DESC, s.id DESC`, projectID, projectID)
 		var outputTokens int64
 		var model string
 		var requestedModel string
+		var reasoningEffort string
 		var finalState string
 		var issueKey string
 		var completedAtRaw string
-		if err := rows.Scan(&totalTokens, &inputTokens, &cachedInputTokens, &outputTokens, &model, &requestedModel, &finalState, &issueKey, &completedAtRaw); err != nil {
+		if err := rows.Scan(&totalTokens, &inputTokens, &cachedInputTokens, &outputTokens, &model, &requestedModel, &reasoningEffort, &finalState, &issueKey, &completedAtRaw); err != nil {
 			return doctorWorkflowSessionMetrics{}, err
 		}
 		completedAt, err := doctorWorkflowSessionTimestamp(completedAtRaw)
@@ -839,6 +846,13 @@ ORDER BY s.completed_at DESC, s.id DESC`, projectID, projectID)
 		}
 		if billableTokens := doctorWorkflowBillableTokens(inputTokens, cachedInputTokens, outputTokens, totalTokens, model, pricing); billableTokens > 0 {
 			metrics.billableTokensBySession = append(metrics.billableTokensBySession, billableTokens)
+		}
+		reasoningEffort = strings.ToLower(strings.TrimSpace(reasoningEffort))
+		costModel := doctorFirstNonEmptyString(model, requestedModel)
+		if reasoningEffort != "" {
+			if costUSD, ok := budget.UsageCostUSD(pricing, costModel, inputTokens, cachedInputTokens, outputTokens); ok && costUSD > 0 {
+				metrics.costUSDByEffort[reasoningEffort] = append(metrics.costUSDByEffort[reasoningEffort], costUSD)
+			}
 		}
 		metrics.issueSessionCounts[issueKey]++
 		if metrics.count == 1 {
@@ -878,6 +892,68 @@ func doctorWorkflowRecentModelTelemetry(counts map[string]int64) []doctorWorkflo
 		return models[i].Model < models[j].Model
 	})
 	return models
+}
+
+func doctorWorkflowMedianSessionCostUSDByEffort(costs map[string][]float64) map[string]float64 {
+	medians := make(map[string]float64, len(costs))
+	for effort, values := range costs {
+		if median := doctorPercentileFloat64(values, 0.50); median > 0 {
+			medians[effort] = doctorRoundedFloat(median, 4)
+		}
+	}
+	return medians
+}
+
+func doctorWorkflowSpendProgressLimitFinding(
+	projectID string,
+	workflowPath string,
+	cfg workflowconfig.Config,
+	medianCostByEffort map[string]float64,
+) (doctorWorkflowOptimizationFinding, bool) {
+	configuredLimit := cfg.Agent.NoProgressSpendLimitUSD
+	if configuredLimit <= 0 || len(medianCostByEffort) == 0 {
+		return doctorWorkflowOptimizationFinding{}, false
+	}
+	efforts := make([]string, 0, len(medianCostByEffort))
+	for effort := range medianCostByEffort {
+		efforts = append(efforts, effort)
+	}
+	slices.Sort(efforts)
+	offendingMedians := map[string]float64{}
+	effectiveLimits := map[string]float64{}
+	details := make([]string, 0, len(efforts))
+	recommendedBase := configuredLimit
+	for _, effort := range efforts {
+		median := medianCostByEffort[effort]
+		effective := workflowconfig.EffectiveNoProgressSpendLimitUSD(configuredLimit, effort)
+		if median <= 0 || effective >= median {
+			continue
+		}
+		offendingMedians[effort] = median
+		effectiveLimits[effort] = effective
+		details = append(details, fmt.Sprintf("%s (%s < %s)", effort, budget.FormatUSD(effective), budget.FormatUSD(median)))
+		candidate := median * 1.5 / workflowconfig.NoProgressSpendLimitMultiplier(effort)
+		recommendedBase = math.Max(recommendedBase, candidate)
+	}
+	if len(offendingMedians) == 0 {
+		return doctorWorkflowOptimizationFinding{}, false
+	}
+	recommendedBase = math.Ceil(recommendedBase*100) / 100
+	return doctorWorkflowFinding(
+		projectID,
+		workflowPath,
+		doctorWorkflowRuleSpendProgressBelowMedian,
+		"Spend-progress breaker is below observed session cost",
+		"effective breaker limit is below observed p50 per-session cost for effort tier(s): "+strings.Join(details, ", "),
+		0,
+		map[string]any{
+			"configured_base_limit_usd":             configuredLimit,
+			"effective_limit_usd_by_effort":         effectiveLimits,
+			"observed_p50_session_cost_by_effort":   offendingMedians,
+			"recommended_retry_cost_headroom_ratio": 1.5,
+		},
+		doctorWorkflowOptimizationPatch{Path: "agent.no_progress_spend_limit_usd", Value: recommendedBase},
+	), true
 }
 
 func doctorWorkflowSessionGuardTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string) ([]doctorWorkflowSessionGuardIncident, error) {
@@ -1226,6 +1302,9 @@ func doctorWorkflowOptimizationFindings(
 			},
 			patches...,
 		))
+	}
+	if finding, ok := doctorWorkflowSpendProgressLimitFinding(projectID, workflowPath, cfg, metrics.MedianSessionCostUSDByEffort); ok {
+		findings = append(findings, finding)
 	}
 	if incidents := doctorWorkflowRepeatedSessionGuardIncidents(metrics.SessionMultiplierKills); len(incidents) > 0 {
 		attemptCounts := make(map[string]int64, len(incidents))
@@ -2171,6 +2250,22 @@ func doctorPercentileInt64(values []int64, percentile float64) int64 {
 	}
 	sorted := append([]int64(nil), values...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	index := int(math.Ceil(percentile*float64(len(sorted)))) - 1
+	if index < 0 {
+		index = 0
+	}
+	if index >= len(sorted) {
+		index = len(sorted) - 1
+	}
+	return sorted[index]
+}
+
+func doctorPercentileFloat64(values []float64, percentile float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sorted := append([]float64(nil), values...)
+	sort.Float64s(sorted)
 	index := int(math.Ceil(percentile*float64(len(sorted)))) - 1
 	if index < 0 {
 		index = 0

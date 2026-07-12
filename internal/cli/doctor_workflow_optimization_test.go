@@ -809,6 +809,47 @@ func TestDoctorWorkflowOptimizationRunawaySessionTokensRespectsConfiguredCap(t *
 	}
 }
 
+func TestDoctorWorkflowOptimizationWarnsWhenSpendProgressLimitIsBelowMedianCost(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		baseLimit   float64
+		medians     map[string]float64
+		wantFinding bool
+		wantPatch   float64
+	}{
+		{name: "xhigh effective limit below median", baseLimit: 3, medians: map[string]float64{"xhigh": 20}, wantFinding: true, wantPatch: 5},
+		{name: "xhigh effective limit above median", baseLimit: 3, medians: map[string]float64{"xhigh": 17}},
+		{name: "custom base covers median", baseLimit: 4, medians: map[string]float64{"high": 11}},
+		{name: "disabled breaker does not warn", baseLimit: 0, medians: map[string]float64{"xhigh": 20}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := workflowconfig.Default()
+			cfg.Agent.NoProgressSpendLimitUSD = tt.baseLimit
+			findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", cfg, doctorWorkflowOptimizationMetrics{
+				MedianSessionCostUSDByEffort: tt.medians,
+			})
+			gotFinding := doctorWorkflowFindingExists(findings, doctorWorkflowRuleSpendProgressBelowMedian)
+			if gotFinding != tt.wantFinding {
+				t.Fatalf("spend-progress finding exists = %t, want %t: %#v", gotFinding, tt.wantFinding, findings)
+			}
+			if !tt.wantFinding {
+				return
+			}
+			finding := doctorWorkflowFindingByRule(t, findings, doctorWorkflowRuleSpendProgressBelowMedian)
+			if len(finding.Patch) != 1 || finding.Patch[0].Value != tt.wantPatch {
+				t.Fatalf("patch = %#v, want base limit %g", finding.Patch, tt.wantPatch)
+			}
+			if !strings.Contains(finding.Detail, "xhigh ($18.00 < $20.00)") {
+				t.Fatalf("detail = %q", finding.Detail)
+			}
+		})
+	}
+}
+
 func TestDoctorWorkflowOptimizationFlagsMissingSessionBrake(t *testing.T) {
 	t.Parallel()
 
