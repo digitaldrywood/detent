@@ -250,6 +250,9 @@ func (o *Orchestrator) publishValidatorCapacityEvent(ctx context.Context, event 
 func (o *Orchestrator) handleValidatorCapacityEvent(state *State, event validatorCapacityEvent) {
 	if event.CapacityErr != nil {
 		if event.CapacityErr.Details.Type == backendcapacity.ErrorTypeTransientOverload {
+			if event.CapacityProbe {
+				releaseBackendCapacityProbe(state, Running{CapacityScope: event.Scope, CapacityProbe: true})
+			}
 			return
 		}
 		outage := o.registerBackendOutage(state, event.CapacityErr, event.CompletedAt)
@@ -277,6 +280,18 @@ func (o *Orchestrator) handleValidatorCapacityEvent(state *State, event validato
 		}
 		o.recoverBackendCapacity(state, running, event.CompletedAt)
 	}
+}
+
+func releaseBackendCapacityProbe(state *State, running Running) {
+	if state == nil || !running.CapacityProbe {
+		return
+	}
+	key, outage, ok := matchingBackendOutage(state.BackendOutages, running.CapacityScope)
+	if !ok {
+		return
+	}
+	outage.ProbeIssueID = ""
+	state.BackendOutages[key] = outage
 }
 
 func matchingBackendOutage(outages map[string]BackendOutage, scope backendcapacity.Scope) (string, BackendOutage, bool) {

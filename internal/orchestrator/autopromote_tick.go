@@ -1632,6 +1632,12 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 							"error", err,
 						)
 					}
+					o.publishValidatorCapacityEvent(ctx, validatorCapacityEvent{
+						Scope:         capacityErr.Scope,
+						CapacityErr:   capacityErr,
+						CapacityProbe: capacityProbeKey != "",
+						CompletedAt:   completedAt,
+					})
 					return
 				}
 				o.validatorMu.Unlock()

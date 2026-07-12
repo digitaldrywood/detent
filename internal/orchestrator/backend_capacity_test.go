@@ -125,6 +125,51 @@ func TestRegisterBackendOutageRejectsTransientOverload(t *testing.T) {
 	}
 }
 
+func TestHandleRunResultTransientOverloadReleasesCapacityProbe(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 21, 30, 0, 0, time.UTC)
+	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	cfg := normalizeConfig(Config{OverloadRetryDelay: 45 * time.Second, TerminalStates: []string{"Done"}})
+	orch := &Orchestrator{cfg: cfg}
+	state := newState(cfg)
+	issue := connector.Issue{ID: "issue-overloaded-probe", State: "In Progress"}
+	resumeAt := now.Add(-time.Second)
+	state.BackendOutages[scope.Key()] = BackendOutage{
+		Scope:        scope,
+		ResumeAt:     resumeAt,
+		ProbeIssueID: issue.ID,
+	}
+	state.Running[issue.ID] = Running{
+		Issue:         issue,
+		Attempt:       3,
+		StartedAt:     now.Add(-time.Minute),
+		CapacityScope: scope,
+		CapacityProbe: true,
+	}
+	overloadErr := backendcapacity.NewError(scope, backendcapacity.Details{
+		Type:   backendcapacity.ErrorTypeTransientOverload,
+		Kind:   "serverOverloaded",
+		Reason: string(backendcapacity.ErrorTypeTransientOverload),
+	}, errors.New("selected model is at capacity"))
+
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+		IssueID:      issue.ID,
+		Err:          overloadErr,
+		CompletedAt:  now,
+		RetryAttempt: 3,
+		RetryDelay:   45 * time.Second,
+	})
+
+	outage := state.BackendOutages[scope.Key()]
+	if outage.ProbeIssueID != "" || !outage.ResumeAt.Equal(resumeAt) {
+		t.Fatalf("outage = %#v, want released probe with unchanged resume time", outage)
+	}
+	if retry := state.Retry[issue.ID]; retry.Attempt != 3 || !retry.DueAt.Equal(now.Add(45*time.Second)) {
+		t.Fatalf("Retry[%q] = %#v, want same-attempt overload retry", issue.ID, retry)
+	}
+}
+
 func TestHandleRunResultKeepsOutageWhenCapacityProbeFails(t *testing.T) {
 	t.Parallel()
 
@@ -364,7 +409,7 @@ func TestValidatorCapacityPausesWithoutFailureBackoff(t *testing.T) {
 	}
 }
 
-func TestValidatorTransientOverloadUsesShortRetryWithoutOutage(t *testing.T) {
+func TestValidatorTransientOverloadReleasesCapacityProbe(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 12, 21, 0, 0, 0, time.UTC)
@@ -397,6 +442,11 @@ func TestValidatorTransientOverloadUsesShortRetryWithoutOutage(t *testing.T) {
 			HeadSHA: "overload-head",
 		},
 	}
+	resumeAt := now
+	state.BackendOutages[scope.Key()] = BackendOutage{
+		Scope:    scope,
+		ResumeAt: resumeAt,
+	}
 
 	orch.startValidatorStage(t.Context(), &state, issue, now)
 	select {
@@ -423,13 +473,16 @@ func TestValidatorTransientOverloadUsesShortRetryWithoutOutage(t *testing.T) {
 	if failure.Attempt != 0 || !failure.NextRetryAt.Equal(now.Add(45*time.Second)) || failure.Error != "transient_overload" {
 		t.Fatalf("validator failure = %#v, want same-attempt retry after 45s", failure)
 	}
-	if len(state.BackendOutages) != 0 {
-		t.Fatalf("BackendOutages = %#v, want none", state.BackendOutages)
-	}
+	var capacityEvent validatorCapacityEvent
 	select {
-	case event := <-orch.validatorCapacityEvents:
-		t.Fatalf("validator capacity event = %#v, want none", event)
-	default:
+	case capacityEvent = <-orch.validatorCapacityEvents:
+	case <-time.After(time.Second):
+		t.Fatal("validator overload probe release event was not published")
+	}
+	orch.handleValidatorCapacityEvent(&state, capacityEvent)
+	outage := state.BackendOutages[scope.Key()]
+	if outage.ProbeIssueID != "" || !outage.ResumeAt.Equal(resumeAt) {
+		t.Fatalf("outage = %#v, want released probe with unchanged resume time", outage)
 	}
 }
 

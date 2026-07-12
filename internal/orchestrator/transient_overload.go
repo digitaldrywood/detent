@@ -18,6 +18,7 @@ func (o *Orchestrator) handleTransientOverload(
 	running Running,
 	overloadErr *backendcapacity.Error,
 ) {
+	releaseBackendCapacityProbe(state, running)
 	o.completeDurableWorkAttempt(
 		ctx,
 		state,
