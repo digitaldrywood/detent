@@ -1036,6 +1036,7 @@ func TestMergeSnapshotStampsProjectIDOnIssueRows(t *testing.T) {
 		Completed: []telemetry.Completed{
 			{Issue: telemetry.Issue{ID: "completed", Identifier: "digitaldrywood/detent#5"}, CompletedAt: completedAt},
 		},
+		FailureBreakers: []telemetry.FailureBreaker{{Class: "session_token_ceiling"}},
 	})
 
 	tests := []struct {
@@ -1050,6 +1051,7 @@ func TestMergeSnapshotStampsProjectIDOnIssueRows(t *testing.T) {
 		{name: "queued", got: got.Queue[0].ProjectID},
 		{name: "blocked", got: got.Blocked[0].ProjectID},
 		{name: "completed", got: got.Completed[0].ProjectID},
+		{name: "failure breaker", got: got.FailureBreakers[0].ProjectID},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

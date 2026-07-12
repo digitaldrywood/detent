@@ -460,6 +460,7 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, instanceN
 		RecentSessions:  recentSessionEntries(snapshot.Completed),
 		RateLimits:      snapshot.RateLimits,
 		BackendOutages:  append([]telemetry.BackendOutage(nil), snapshot.BackendOutages...),
+		FailureBreakers: append([]telemetry.FailureBreaker(nil), snapshot.FailureBreakers...),
 		Budget:          budgetResponse(snapshot.Budget),
 	}
 }
@@ -1363,6 +1364,7 @@ type stateAPIResponse struct {
 	RecentSessions  []recentSessionAPIResponse  `json:"recent_sessions"`
 	RateLimits      *telemetry.RateLimits       `json:"rate_limits"`
 	BackendOutages  []telemetry.BackendOutage   `json:"backend_outages,omitempty"`
+	FailureBreakers []telemetry.FailureBreaker  `json:"failure_breakers,omitempty"`
 	Budget          budgetAPIResponse           `json:"budget"`
 }
 

@@ -22,33 +22,36 @@ import (
 )
 
 const (
-	defaultPollInterval                = 30 * time.Second
-	defaultRunningReconcileInterval    = 2 * time.Minute
-	defaultWorkspaceCleanupIdleTTL     = 24 * time.Hour
-	defaultWorkspaceCleanupSweep       = 10 * time.Minute
-	gitHubGraphQLPauseRemaining        = 100
-	gitHubGraphQLBackoffRemaining      = 500
-	defaultGitHubGraphQLWarnRemaining  = 500
-	defaultGitHubGraphQLMinReserve     = 1000
-	defaultGitHubRESTMinReserve        = 1000
-	defaultMaxConcurrentAgents         = 1
-	defaultMaxRetryBackoff             = 5 * time.Minute
-	defaultContinuationRetry           = time.Second
-	defaultFailureRetryBaseDelay       = 10 * time.Second
-	maxMergeWorkerRunnerFailures       = 3
-	instantFailureThreshold            = 5
-	instantFailureMaxDuration          = 10 * time.Second
-	instantFailureBlockedReasonPrefix  = "instant fail circuit breaker: "
-	repeatedFailureThreshold           = 5
-	repeatedFailureBlockedReasonPrefix = "repeated failure circuit breaker: "
-	tokenCeilingBlockedReasonPrefix    = "token ceiling circuit breaker: "
-	continuationDispatchBackoff        = 100 * time.Millisecond
-	runUpdateBufferSize                = 128
-	maxRecentEvents                    = 50
-	blockedStatusState                 = "Blocked"
-	blockedReasonDependency            = "blocked by non-terminal dependency"
-	blockedReasonProjectStatus         = "blocked by project status"
-	mergeWorkerTerminalStateMissing    = "merge worker completed without reaching a terminal issue or pull request state"
+	defaultPollInterval                 = 30 * time.Second
+	defaultRunningReconcileInterval     = 2 * time.Minute
+	defaultWorkspaceCleanupIdleTTL      = 24 * time.Hour
+	defaultWorkspaceCleanupSweep        = 10 * time.Minute
+	gitHubGraphQLPauseRemaining         = 100
+	gitHubGraphQLBackoffRemaining       = 500
+	defaultGitHubGraphQLWarnRemaining   = 500
+	defaultGitHubGraphQLMinReserve      = 1000
+	defaultGitHubRESTMinReserve         = 1000
+	defaultMaxConcurrentAgents          = 1
+	defaultMaxRetryBackoff              = 5 * time.Minute
+	defaultContinuationRetry            = time.Second
+	defaultFailureRetryBaseDelay        = 10 * time.Second
+	defaultFailureBreakerSameClassLimit = 5
+	defaultFailureBreakerWindow         = time.Hour
+	defaultFailureBreakerCooldown       = time.Hour
+	maxMergeWorkerRunnerFailures        = 3
+	instantFailureThreshold             = 5
+	instantFailureMaxDuration           = 10 * time.Second
+	instantFailureBlockedReasonPrefix   = "instant fail circuit breaker: "
+	repeatedFailureThreshold            = 5
+	repeatedFailureBlockedReasonPrefix  = "repeated failure circuit breaker: "
+	tokenCeilingBlockedReasonPrefix     = "token ceiling circuit breaker: "
+	continuationDispatchBackoff         = 100 * time.Millisecond
+	runUpdateBufferSize                 = 128
+	maxRecentEvents                     = 50
+	blockedStatusState                  = "Blocked"
+	blockedReasonDependency             = "blocked by non-terminal dependency"
+	blockedReasonProjectStatus          = "blocked by project status"
+	mergeWorkerTerminalStateMissing     = "merge worker completed without reaching a terminal issue or pull request state"
 )
 
 var (
@@ -69,6 +72,7 @@ type Config struct {
 	MaxConcurrentAgentsPerHost    int
 	MaxRetryBackoff               time.Duration
 	NoProgressSpendLimitUSD       float64
+	FailureBreaker                FailureBreakerConfig
 	Project                       scheduler.ProjectCandidate
 	Claiming                      ClaimingConfig
 	AutoPromote                   AutoPromoteConfig
@@ -93,6 +97,12 @@ type Config struct {
 	GitHubRESTMinReserve          int64
 	OutputTruncationMaxBytes      int
 	EfficiencyThresholds          efficiency.Thresholds
+}
+
+type FailureBreakerConfig struct {
+	SameClassLimit int
+	Window         time.Duration
+	Cooldown       time.Duration
 }
 
 type ClaimingConfig struct {
@@ -526,6 +536,11 @@ func (o *Orchestrator) ForceQuit(ctx context.Context) error {
 func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ticker *time.Ticker) {
 	cfg := normalizeConfig(update.Config)
 	o.cfg = cfg
+	now := time.Now
+	if o.now != nil {
+		now = o.now
+	}
+	o.reloadProjectFailureBreaker(state, cfg.FailureBreaker, now())
 	if update.Connector != nil {
 		o.connector = update.Connector
 	}

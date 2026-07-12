@@ -670,6 +670,10 @@ agent:
   max_turns: 20
   max_retry_backoff_ms: 300000
   no_progress_spend_limit_usd: 3
+  failure_breaker:
+    same_class_limit: 5
+    window_seconds: 3600
+    cooldown_seconds: 3600
   resume_orphaned_sessions: true
   max_concurrent_agents_by_state:
     Merging: 1
@@ -2426,6 +2430,14 @@ issue in `Blocked`, recommends narrowing or splitting the task, and requires
 the next worker to explain the missing progress signal in its first Workpad
 update before using tools. Set the value to `0` to disable the breaker and its
 history/spend lookups.
+
+`agent.failure_breaker` pauses new project dispatches when the same failure
+class reaches `same_class_limit` attempts inside `window_seconds`. The default
+is five matching failures in one hour, followed by a one-hour cooldown. After
+the cooldown or a workflow reload, Detent permits exactly one canary attempt;
+a success or different failure class closes the breaker, while the same class
+starts a fresh cooldown. The board banner shows the active class, count, and
+window.
 
 `agent.resume_orphaned_sessions` defaults to `true`. After an unclean Detent
 restart, active sessions whose provider identity was journaled are preflighted

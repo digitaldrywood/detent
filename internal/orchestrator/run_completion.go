@@ -107,9 +107,11 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	delete(state.Running, event.IssueID)
 	if o.handleGitHubRESTCapacityCompletion(ctx, state, event, running) {
+		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, event.Err, "github_rest_capacity", errorString(event.Err))
 		return
 	}
 	if capacityErr, ok := backendcapacity.As(event.Err); ok {
+		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, event.Err, "backend_capacity", errorString(event.Err))
 		o.handleBackendCapacityError(ctx, state, event, running, capacityErr)
 		return
 	}
@@ -120,6 +122,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
+		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 		tokens := event.Result.Tokens
 		if tokens == (TokenTotals{}) {
 			tokens = running.Tokens
@@ -161,6 +164,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			phase = "no_progress"
 			statusMessage = "spend-since-progress circuit breaker tripped"
 		}
+		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, terminalState, event.Err, errorClass, errorMessage)
 		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, spendProgressMetadata(spendProgress))
 		attempt := event.RetryAttempt
 		if attempt < 1 {
@@ -225,6 +229,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			return
 		}
 		if state.Draining {
+			releaseProjectFailureBreakerCanary(state, event.IssueID)
 			o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalCancelled, "draining", "worker stopped during drain", "cancelled", "worker stopped during drain")
 			o.cleanupDrainedRun(ctx, state, event.IssueID)
 			return
@@ -233,6 +238,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	if o.completeRedundantGateWaitRun(ctx, state, event, running) {
+		releaseProjectFailureBreakerCanary(state, event.IssueID)
 		return
 	}
 
@@ -278,6 +284,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		phase = "no_progress"
 		statusMessage = "spend-since-progress circuit breaker tripped"
 	}
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, terminalState, nil, errorClass, errorMessage)
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(implementCompletionProgressMetadata(progress), spendProgressMetadata(spendProgress)))
 
 	state.Completed[event.IssueID] = Completed{
@@ -897,6 +904,7 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 			running.DiffStats = event.Result.DiffStats
 		}
 		running.Issue = issue
+		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 		o.completeTerminalRunning(ctx, state, issueID, running, terminalCompletedAt(issue, o.cfg.TerminalStates, event.CompletedAt), tokens)
 		if event.Result.RateLimits != nil {
 			state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
@@ -985,6 +993,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		Event:   "merge_worker_programmatic_merge",
 		Message: "programmatically merged " + issueLabel(mergedIssue) + " and moved it to " + targetState,
 	})
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 	o.completeTerminalRunning(ctx, state, issueID, running, terminalCompletedAt(mergedIssue, o.cfg.TerminalStates, event.CompletedAt), tokens)
 	mergeTiming := o.recordMergeCompleted(state, mergeTimingIssue, event.CompletedAt, targetState)
 	if completed, ok := state.Completed[issueID]; ok {
@@ -1006,6 +1015,7 @@ func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
 	issue connector.Issue,
 ) {
 	running.Issue = issue
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", "merge fast-path waiting for current-head CI")
 	attempt := running.Attempt
 	if attempt < 1 {
@@ -1030,6 +1040,7 @@ func (o *Orchestrator) failProgrammaticMergeWorkerResult(
 	reason string,
 	err error,
 ) {
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, err, reason, errorString(err))
 	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, reason, errorString(err), "merging", "programmatic merge failed")
 	o.logMergeWorkerFailure(running.Issue, reason, err)
 	o.recordMergeFailed(state, running.Issue, event.CompletedAt, reason, err)
@@ -1127,6 +1138,7 @@ func (o *Orchestrator) handleIncompleteMergeWorkerResult(
 	running Running,
 ) {
 	err := errors.New(mergeWorkerTerminalStateMissing)
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, err, workAttemptErrorMergeIncomplete, err.Error())
 	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, workAttemptErrorMergeIncomplete, err.Error(), "merging", "merge worker completed without terminal state")
 	o.logMergeWorkerFailure(running.Issue, "terminal_state_missing", err)
 	attempt := nextAttempt(running.Attempt)
@@ -1250,15 +1262,18 @@ func (o *Orchestrator) completePlanRunning(
 	issue := cloneIssue(running.Issue)
 	body := planArtifactComment(issue, event.Result.Output)
 	if err := o.connector.CreateComment(ctx, issueID, body); err != nil {
+		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, err, "plan_comment_failed", err.Error())
 		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, "plan_comment_failed", err.Error(), "reviewing", "plan comment failed")
 		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan comment failed: "+err.Error(), false, running.WorkerHost)
 		return
 	}
 	if err := o.updateIssueStateByID(ctx, state, issueID, issue, cfg.Stop, event.CompletedAt, "plan_artifact_created"); err != nil {
+		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, err, "plan_transition_failed", err.Error())
 		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, "plan_transition_failed", err.Error(), "reviewing", "plan review transition failed")
 		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan review transition failed: "+err.Error(), false, running.WorkerHost)
 		return
 	}
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "plan review created")
 	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
 		o.logger.Warn("abandon completed plan claim failed", "issue_id", issueID, "error", err)

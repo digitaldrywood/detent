@@ -204,6 +204,69 @@ func TestNoProgressSpendLimitConfiguration(t *testing.T) {
 	}
 }
 
+func TestFailureBreakerConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		raw     string
+		want    FailureBreaker
+		wantErr string
+	}{
+		{
+			name: "defaults enabled",
+			raw:  "---\ntracker:\n  kind: memory\n---\nPrompt\n",
+			want: FailureBreaker{
+				SameClassLimit:  DefaultFailureBreakerSameClassLimit,
+				WindowSeconds:   DefaultFailureBreakerWindowSeconds,
+				CooldownSeconds: DefaultFailureBreakerCooldownSeconds,
+			},
+		},
+		{
+			name: "custom values",
+			raw:  "---\ntracker:\n  kind: memory\nagent:\n  failure_breaker:\n    same_class_limit: 7\n    window_seconds: 900\n    cooldown_seconds: 120\n---\nPrompt\n",
+			want: FailureBreaker{SameClassLimit: 7, WindowSeconds: 900, CooldownSeconds: 120},
+		},
+		{
+			name:    "negative limit rejected",
+			raw:     "---\ntracker:\n  kind: memory\nagent:\n  failure_breaker:\n    same_class_limit: -1\n---\nPrompt\n",
+			wantErr: "agent.failure_breaker.same_class_limit must be greater than 0",
+		},
+		{
+			name:    "negative window rejected",
+			raw:     "---\ntracker:\n  kind: memory\nagent:\n  failure_breaker:\n    window_seconds: -1\n---\nPrompt\n",
+			wantErr: "agent.failure_breaker.window_seconds must be greater than 0",
+		},
+		{
+			name:    "negative cooldown rejected",
+			raw:     "---\ntracker:\n  kind: memory\nagent:\n  failure_breaker:\n    cooldown_seconds: -1\n---\nPrompt\n",
+			wantErr: "agent.failure_breaker.cooldown_seconds must be greater than 0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workflow, err := ParseWorkflow([]byte(tt.raw))
+			if err == nil {
+				err = workflow.Config.Validate()
+			}
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("configuration error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("configuration error = %v", err)
+			}
+			if got := workflow.Config.Agent.FailureBreaker; got != tt.want {
+				t.Fatalf("Agent.FailureBreaker = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRESTFanoutMaxRequestsConfiguration(t *testing.T) {
 	t.Parallel()
 

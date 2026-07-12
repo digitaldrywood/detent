@@ -270,6 +270,9 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubRESTPaused}
 	}
+	if !projectFailureBreakerAllowsDispatch(state, now) {
+		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
+	}
 	queuedRetry, retryQueued := state.Retry[issue.ID]
 	runMode := o.dispatchMode(ctx, state, issue)
 	capacityRequest := runpkg.RunRequest{Issue: issue, Mode: runMode, SelectorContext: o.selectorContext()}
@@ -313,9 +316,17 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		"attempt", attempt,
 		"worker_host", strings.TrimSpace(workerHost),
 	)
+	canary, allowed := tryReserveProjectFailureBreakerCanary(state, issue.ID, now)
+	if !allowed {
+		o.releaseGlobalDispatchSlot(globalSlot)
+		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
+	}
 
 	claimedIssue, claim, ok := o.claimIssue(ctx, issue, now)
 	if !ok {
+		if canary {
+			releaseProjectFailureBreakerCanary(state, issue.ID)
+		}
 		o.releaseGlobalDispatchSlot(globalSlot)
 		o.logWorkerLifecycle(issue, "worker_capacity_released",
 			"attempt", attempt,
@@ -336,6 +347,9 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	}
 	workAttemptID, ok := o.startDurableWorkAttempt(ctx, state, issue, attempt, now, workerHost, runMode)
 	if !ok {
+		if canary {
+			releaseProjectFailureBreakerCanary(state, issue.ID)
+		}
 		o.releaseGlobalDispatchSlot(globalSlot)
 		o.logWorkerLifecycle(issue, "worker_capacity_released",
 			"attempt", attempt,
@@ -356,6 +370,9 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	if targetState != "" {
 		sourceState := issue.State
 		if err := o.updateIssueState(ctx, state, issue, targetState, now, "dispatch_start"); err != nil {
+			if canary {
+				releaseProjectFailureBreakerCanary(state, issue.ID)
+			}
 			o.releaseGlobalDispatchSlot(globalSlot)
 			o.completeDurableWorkAttempt(ctx, state, Running{
 				Issue:         issue,
