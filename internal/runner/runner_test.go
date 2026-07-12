@@ -728,6 +728,44 @@ func TestRunnerRunLogsBudgetRefusalWithDerivedRole(t *testing.T) {
 	}
 }
 
+func TestRunnerSubscriptionSkipsUSDBudgetGuards(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	workflowCfg := config.Default()
+	workflowCfg.Budget.BillingMode = config.BillingModeSubscription
+	workflowCfg.Budget.Enabled = true
+	checker := &fakeBudgetChecker{refusal: budget.Refusal{Code: budget.ReasonPerDayMaxUSD}}
+	estimator := &fakeDispatchEstimator{err: errors.New("estimator must not run")}
+	backend := &fakeCodexClient{}
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{Config: workflowCfg, Prompt: "work {{ issue.identifier }}"},
+		Workspace: &fakeWorkspaceBackend{
+			info: workspace.Info{Path: t.TempDir(), Key: "issue-subscription", Branch: "detent/issue-subscription"},
+		},
+		AgentBackend:      backend,
+		BudgetChecker:     checker,
+		DispatchEstimator: estimator,
+		Now:               newFakeClock(now).Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Run(t.Context(), RunRequest{
+		Issue: connector.Issue{ID: "issue-subscription", Identifier: "digitaldrywood/detent#1282", State: "Todo"},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.BudgetRefusal != nil || checker.calls != 0 || estimator.model != "" {
+		t.Fatalf("result = %#v, checker calls = %d, estimator model = %q; want no USD guard execution", result, checker.calls, estimator.model)
+	}
+	if backend.calls != 1 {
+		t.Fatalf("backend calls = %d, want dispatched agent turn", backend.calls)
+	}
+}
+
 func TestRunnerRunLeavesThreadResumeDisabledByDefault(t *testing.T) {
 	t.Parallel()
 

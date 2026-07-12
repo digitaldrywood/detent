@@ -74,6 +74,7 @@ type Config struct {
 	MaxRetryBackoff               time.Duration
 	OverloadRetryDelay            time.Duration
 	NoProgressSpendLimitUSD       float64
+	BillingMode                   string
 	FailureBreaker                FailureBreakerConfig
 	Project                       scheduler.ProjectCandidate
 	Claiming                      ClaimingConfig

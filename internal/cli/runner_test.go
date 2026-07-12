@@ -247,6 +247,20 @@ func TestBuildBudgetDispatchGuards(t *testing.T) {
 		t.Fatalf("buildBudgetDispatchGuards(missing spend store) error = %v, want ErrMissingSpendStore", err)
 	}
 
+	subscription := enabled
+	subscription.BillingMode = workflowconfig.BillingModeSubscription
+	checker, estimator, err = buildBudgetDispatchGuards(subscription, &runnerSessionStore{}, nil)
+	if err != nil {
+		t.Fatalf("buildBudgetDispatchGuards(subscription) error = %v", err)
+	}
+	if checker == nil || estimator != nil {
+		t.Fatalf("subscription guards = %T/%T, want advisory checker and nil estimator", checker, estimator)
+	}
+	decision, err := checker.CheckDispatch(t.Context(), budget.DispatchRequest{Model: "gpt-5", Estimate: budget.TokenEstimate{TotalTokens: 1_000_000}})
+	if err != nil || !decision.Allowed || decision.Refusal != nil {
+		t.Fatalf("subscription decision = %#v, error = %v, want allowed", decision, err)
+	}
+
 	ctx := context.Background()
 	storeBackend, err := store.Open(ctx, store.Config{
 		Backend: store.BackendSQLite,

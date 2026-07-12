@@ -2423,14 +2423,23 @@ by input tokens. Use that value with context pressure to evaluate whether
 thread-resume behavior is preserving useful context without repeatedly filling
 the window.
 
+`budget.billing_mode` accepts `metered` or `subscription`. Metered mode
+enforces configured USD caps and the spend-progress breaker. Subscription mode
+keeps notional spend telemetry but never refuses dispatch or parks work based
+on USD; Detent instead scales dispatch concurrency with the lowest reported
+primary or secondary provider rate-window percentage. An omitted mode preserves
+legacy metered enforcement when `budget.enabled=true`, and `detent doctor` warns
+until the mode is declared.
+
 `agent.no_progress_spend_limit_usd` defaults to `3`, below the default
 per-issue budget backstop. Detent sums persisted session cost for each issue
 after its latest accepted lane, pull-request, or
-recognized PR-signature change. When spend exceeds the limit, Detent parks the
-issue in `Blocked`, recommends narrowing or splitting the task, and requires
-the next worker to explain the missing progress signal in its first Workpad
-update before using tools. Set the value to `0` to disable the breaker and its
-history/spend lookups.
+recognized PR-signature change. In metered mode, when spend exceeds the limit,
+Detent parks the issue in `Blocked`, recommends narrowing or splitting the task,
+and requires the next worker to explain the missing progress signal in its first
+Workpad update before using tools. Set the value to `0` to disable the breaker
+and its history/spend lookups. In subscription mode, the same calculation is
+advisory telemetry and never parks the issue.
 
 `agent.failure_breaker` pauses new project dispatches when the same failure
 class reaches `same_class_limit` attempts inside `window_seconds`. The default

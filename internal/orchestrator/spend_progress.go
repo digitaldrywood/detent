@@ -92,7 +92,7 @@ func (o *Orchestrator) evaluateSpendProgress(
 		return decision
 	}
 	decision.Spend = spend
-	decision.Block = spend.CostUSD > decision.LimitUSD
+	decision.Block = !o.cfg.subscriptionBilling() && spend.CostUSD > decision.LimitUSD
 	return decision
 }
 
@@ -323,7 +323,7 @@ func spendProgressRetryHandoff(decision spendProgressDecision) runpkg.PriorAttem
 }
 
 func (o *Orchestrator) spendProgressPriorAttempt(ctx context.Context, issue connector.Issue) (runpkg.PriorAttempt, bool) {
-	if o == nil || o.cfg.NoProgressSpendLimitUSD <= 0 || o.workAttempts == nil {
+	if o == nil || o.cfg.subscriptionBilling() || o.cfg.NoProgressSpendLimitUSD <= 0 || o.workAttempts == nil {
 		return runpkg.PriorAttempt{}, false
 	}
 	attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{

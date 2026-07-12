@@ -149,6 +149,9 @@ func checkDoctorProjectWithProgress(
 		}
 	}
 	checks := []doctorCheck{workflowCheck}
+	if billingCheck, ok := checkDoctorBillingMode(id, workflow.Config); ok {
+		checks = append(checks, billingCheck)
+	}
 	if budgetCheck, ok := checkDoctorDisabledBudgetCaps(id, workflow.Config.Budget); ok {
 		checks = append(checks, budgetCheck)
 	}
@@ -236,6 +239,41 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, checkDoctorGitHubReadiness(ctx, id, project, workflow.Config, deps, githubToken, expandedSourceRoot, allowWriteProbes)...)
 	}
 	return checks
+}
+
+func checkDoctorBillingMode(id string, cfg workflowconfig.Config) (doctorCheck, bool) {
+	mode := cfg.Budget.EffectiveBillingMode()
+	if !cfg.Budget.BillingModeConfigured() {
+		if !cfg.Budget.Enabled {
+			return doctorCheck{}, false
+		}
+		return doctorCheck{
+			Name:   "Project " + id + " billing mode",
+			Status: doctorWarn,
+			Detail: "budget.billing_mode is undeclared; metered billing and USD enforcement are assumed for compatibility",
+			Hint:   "Declare budget.billing_mode: metered or budget.billing_mode: subscription in WORKFLOW.md.",
+		}, true
+	}
+	if mode != workflowconfig.BillingModeSubscription {
+		return doctorCheck{}, false
+	}
+
+	controls := make([]string, 0, 2)
+	if cfg.Budget.Enabled {
+		controls = append(controls, "budget.enabled=true")
+	}
+	if cfg.Agent.NoProgressSpendLimitUSD > 0 {
+		controls = append(controls, fmt.Sprintf("agent.no_progress_spend_limit_usd=%g", cfg.Agent.NoProgressSpendLimitUSD))
+	}
+	if len(controls) == 0 {
+		return doctorCheck{}, false
+	}
+	return doctorCheck{
+		Name:   "Project " + id + " billing mode",
+		Status: doctorWarn,
+		Detail: "billing_mode=subscription makes USD enforcement advisory; Detent will not refuse or park work from: " + strings.Join(controls, ", "),
+		Hint:   "Use provider rate-window pacing and token or outcome-based brakes for subscription auth; set billing_mode=metered only for marginal API billing.",
+	}, true
 }
 
 func checkDoctorDisabledBudgetCaps(id string, cfg workflowconfig.Budget) (doctorCheck, bool) {
@@ -832,11 +870,20 @@ func doctorWorkflowDetail(path string, project globalconfig.Project, cfg workflo
 	details = append(details, doctorReviewFlowConfigDetail(cfg))
 	details = append(details, doctorWorkflowModelChoiceDetail(cfg))
 	details = append(details, doctorWorkflowSessionGuardDetail(cfg))
+	details = append(details, doctorWorkflowBillingModeDetail(cfg.Budget))
 	details = append(details, doctorWorkflowSpendBreakerDetail(cfg))
 	details = append(details, fmt.Sprintf("orphan-recovery=resume_orphaned_sessions=%t, experimental_thread_resume=%t", cfg.Agent.ResumeOrphanedSessions, cfg.Agent.ExperimentalThreadResume))
 	details = append(details, fmt.Sprintf("prioritize-unblockers=%t", cfg.Agent.PrioritizeUnblockers))
 	details = append(details, doctorAuthorizationDetail(project, cfg))
 	return strings.Join(details, "; ")
+}
+
+func doctorWorkflowBillingModeDetail(cfg workflowconfig.Budget) string {
+	detail := "billing-mode=" + cfg.EffectiveBillingMode()
+	if !cfg.BillingModeConfigured() {
+		detail += " (assumed)"
+	}
+	return detail
 }
 
 func doctorWorkflowModelChoiceDetail(cfg workflowconfig.Config) string {

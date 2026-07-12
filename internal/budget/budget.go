@@ -23,6 +23,7 @@ var ErrMissingSpendStore = errors.New("budget spend store is required")
 
 type Config struct {
 	ProjectID       string
+	BillingMode     string
 	Enabled         bool
 	PerDayMaxUSD    float64
 	PerIssueMaxUSD  float64
@@ -133,7 +134,7 @@ func (c *Checker) EnforcedConfig() Config {
 }
 
 func (c *Checker) CheckDispatch(ctx context.Context, req DispatchRequest) (Decision, error) {
-	if !c.cfg.Enabled {
+	if !c.usdEnforcementEnabled() {
 		return Decision{Allowed: true}, nil
 	}
 
@@ -193,7 +194,7 @@ func (c *Checker) CheckDispatch(ctx context.Context, req DispatchRequest) (Decis
 }
 
 func (c *Checker) DailyStatus(ctx context.Context, now time.Time) (DailyStatus, error) {
-	if !c.cfg.Enabled || !capActive(c.cfg.PerDayMaxUSD) {
+	if !c.usdEnforcementEnabled() || !capActive(c.cfg.PerDayMaxUSD) {
 		return DailyStatus{}, nil
 	}
 	if missingSpendStore(c.spend) {
@@ -217,7 +218,7 @@ func (c *Checker) DailyStatus(ctx context.Context, now time.Time) (DailyStatus, 
 }
 
 func (c *Checker) IssueStatus(ctx context.Context, identity store.IssueIdentity) (IssueStatus, error) {
-	if !c.cfg.Enabled || !capActive(c.cfg.PerIssueMaxUSD) {
+	if !c.usdEnforcementEnabled() || !capActive(c.cfg.PerIssueMaxUSD) {
 		return IssueStatus{}, nil
 	}
 	if !issueIdentityPresent(identity) {
@@ -236,6 +237,10 @@ func (c *Checker) IssueStatus(ctx context.Context, identity store.IssueIdentity)
 		CurrentSpendUSD: SpendUSD(issueSpend, c.pricing),
 		MaxUSD:          c.cfg.PerIssueMaxUSD,
 	}, nil
+}
+
+func (c *Checker) usdEnforcementEnabled() bool {
+	return c.cfg.Enabled && strings.ToLower(strings.TrimSpace(c.cfg.BillingMode)) != "subscription"
 }
 
 func SpendUSD(spend store.TokenSpend, pricing PricingTable) float64 {

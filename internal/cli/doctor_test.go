@@ -948,6 +948,63 @@ func TestCheckDoctorDisabledBudgetCaps(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorBillingMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		budget     workflowconfig.Budget
+		spendLimit float64
+		wantOK     bool
+		wantDetail string
+	}{
+		{
+			name:       "legacy enabled budget warns about assumed metered mode",
+			budget:     workflowconfig.Budget{Enabled: true},
+			wantOK:     true,
+			wantDetail: "metered billing and USD enforcement are assumed",
+		},
+		{
+			name:   "declared metered mode does not warn",
+			budget: workflowconfig.Budget{BillingMode: workflowconfig.BillingModeMetered, Enabled: true},
+		},
+		{
+			name:       "subscription budget cap warns that enforcement is advisory",
+			budget:     workflowconfig.Budget{BillingMode: workflowconfig.BillingModeSubscription, Enabled: true},
+			wantOK:     true,
+			wantDetail: "budget.enabled=true",
+		},
+		{
+			name:       "subscription spend breaker warns that enforcement is advisory",
+			budget:     workflowconfig.Budget{BillingMode: workflowconfig.BillingModeSubscription},
+			spendLimit: 3,
+			wantOK:     true,
+			wantDetail: "agent.no_progress_spend_limit_usd=3",
+		},
+		{
+			name:   "subscription without USD controls does not warn",
+			budget: workflowconfig.Budget{BillingMode: workflowconfig.BillingModeSubscription},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := checkDoctorBillingMode("detent", workflowconfig.Config{
+				Budget: tt.budget,
+				Agent:  workflowconfig.Agent{NoProgressSpendLimitUSD: tt.spendLimit},
+			})
+			if ok != tt.wantOK {
+				t.Fatalf("checkDoctorBillingMode() ok = %t, want %t: %#v", ok, tt.wantOK, got)
+			}
+			if tt.wantOK && (got.Status != doctorWarn || !strings.Contains(got.Detail, tt.wantDetail)) {
+				t.Fatalf("checkDoctorBillingMode() = %#v, want warning containing %q", got, tt.wantDetail)
+			}
+		})
+	}
+}
+
 func TestCheckDoctorIssueEffortGuidance(t *testing.T) {
 	t.Parallel()
 
@@ -2268,6 +2325,7 @@ func TestDoctorWorkflowDetailSurfacesIdentityAndAuthorization(t *testing.T) {
 		"identity release-captain",
 		"worker-model=provider-default",
 		"session-guard=max_session_tokens=disabled, max_session_context_multiplier=disabled",
+		"billing-mode=metered",
 		"orphan-recovery=resume_orphaned_sessions=true, experimental_thread_resume=false",
 		"prioritize-unblockers=true",
 		"authorization selectors from global.yaml and WORKFLOW.md",
@@ -4366,6 +4424,7 @@ func validDoctorWorkflow(sourceRoot string) workflowconfig.Config {
 	cfg := workflowconfig.Default()
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Workspace.Root = sourceRoot
+	cfg.Budget.BillingMode = workflowconfig.BillingModeMetered
 	cfg.Budget.Enabled = true
 	return cfg
 }

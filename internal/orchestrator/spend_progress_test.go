@@ -35,6 +35,7 @@ func TestEvaluateSpendProgress(t *testing.T) {
 
 	tests := []struct {
 		name             string
+		billingMode      string
 		limit            float64
 		spend            store.IssueSpendSince
 		history          []store.WorkAttempt
@@ -49,7 +50,8 @@ func TestEvaluateSpendProgress(t *testing.T) {
 		{name: "normal three retry sessions stay below default", limit: 3, spend: store.IssueSpendSince{CostUSD: 2.7, Sessions: 3}, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
 		{name: "below threshold", limit: 5, spend: store.IssueSpendSince{CostUSD: 4.99, Sessions: 3}, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
 		{name: "at threshold", limit: 5, spend: store.IssueSpendSince{CostUSD: 5, Sessions: 4}, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
-		{name: "above threshold", limit: 5, spend: store.IssueSpendSince{CostUSD: 5.01, Sessions: 4}, wantBlock: true, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
+		{name: "metered blocks above threshold", billingMode: "metered", limit: 5, spend: store.IssueSpendSince{CostUSD: 5.01, Sessions: 4}, wantBlock: true, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
+		{name: "subscription keeps above-threshold spend advisory", billingMode: "subscription", limit: 5, spend: store.IssueSpendSince{CostUSD: 5.01, Sessions: 4}, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
 		{name: "July telemetry replay", limit: 5, spend: store.IssueSpendSince{CostUSD: 6.75, Sessions: 5}, wantBlock: true, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: createdAt},
 		{name: "old sessions reset after accepted change", limit: 5, spend: store.IssueSpendSince{CostUSD: 1.25, Sessions: 1}, history: []store.WorkAttempt{acceptedAttempt}, wantSpendCalls: 1, wantHistoryCalls: 1, wantSince: acceptedAt},
 		{name: "current accepted change resets without spend lookup", limit: 5, spend: store.IssueSpendSince{CostUSD: 100}, accepted: true, acceptedReason: "signature_changed", wantSpendCalls: 0, wantHistoryCalls: 0, wantSince: base},
@@ -64,6 +66,7 @@ func TestEvaluateSpendProgress(t *testing.T) {
 			orch := &Orchestrator{
 				cfg: Config{
 					Project:                 scheduler.ProjectCandidate{ID: "detent"},
+					BillingMode:             tt.billingMode,
 					NoProgressSpendLimitUSD: tt.limit,
 				},
 				progressSpend: spend,

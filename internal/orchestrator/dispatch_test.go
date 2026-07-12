@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -96,6 +97,7 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Workspace.CleanupIdleTTLMS = 7200000
 	cfg.Workspace.CleanupSweepIntervalMS = 120000
 	cfg.Budget.RefusalCooldownSeconds = 45
+	cfg.Budget.BillingMode = workflowconfig.BillingModeSubscription
 	cfg.Agent.AutoPromote.Enabled = true
 	cfg.Agent.AutoPromote.QuietSeconds = 30
 	cfg.Agent.AutoPromote.OptoutLabel = " Requires-Human-Review "
@@ -131,6 +133,9 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if got.BudgetRefusalCooldown != 45*time.Second {
 		t.Fatalf("BudgetRefusalCooldown = %s, want 45s", got.BudgetRefusalCooldown)
+	}
+	if got.BillingMode != workflowconfig.BillingModeSubscription {
+		t.Fatalf("BillingMode = %q, want subscription", got.BillingMode)
 	}
 	if got.WorkspaceCleanupIdleTTL != 2*time.Hour {
 		t.Fatalf("WorkspaceCleanupIdleTTL = %s, want 2h0m0s", got.WorkspaceCleanupIdleTTL)
@@ -202,6 +207,67 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if got.AutoPromote.Gate.Kind != gate.KindHumanReview || got.AutoPromote.Gate.ApprovalLabel != "approved-by-human" {
 		t.Fatalf("AutoPromote.Gate = %#v, want human_review approved-by-human", got.AutoPromote.Gate)
+	}
+}
+
+func TestPlanDispatchSubscriptionRateWindowBackpressure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		billingMode string
+		limits      *telemetry.RateLimits
+		want        int
+	}{
+		{name: "metered ignores provider window", billingMode: workflowconfig.BillingModeMetered, limits: providerRateLimits(20, 100), want: 10},
+		{name: "subscription scales to primary remaining", billingMode: workflowconfig.BillingModeSubscription, limits: providerRateLimits(50, 100), want: 5},
+		{name: "subscription uses lower secondary remaining", billingMode: workflowconfig.BillingModeSubscription, limits: &telemetry.RateLimits{Primary: &telemetry.RateLimitBucket{Remaining: 80, Limit: 100}, Secondary: &telemetry.RateLimitBucket{Remaining: 30, Limit: 100}}, want: 3},
+		{name: "subscription preserves one soft slot at exhaustion", billingMode: workflowconfig.BillingModeSubscription, limits: providerRateLimits(0, 100), want: 1},
+		{name: "subscription without snapshot uses configured capacity", billingMode: workflowconfig.BillingModeSubscription, want: 10},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{
+				BillingMode:         tt.billingMode,
+				MaxConcurrentAgents: 10,
+				ActiveStates:        []string{"Todo"},
+				TerminalStates:      []string{"Done"},
+			})
+			state := newState(cfg)
+			state.RateLimits = tt.limits
+			issues := make([]connector.Issue, 10)
+			for index := range issues {
+				issues[index] = dispatchTestIssue(fmt.Sprintf("issue-%02d", index), "Todo")
+			}
+
+			plan := PlanDispatch(cfg, state, issues, time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC))
+			if got := len(plan.Dispatches); got != tt.want {
+				t.Fatalf("dispatches = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func providerRateLimits(remaining, limit int64) *telemetry.RateLimits {
+	return &telemetry.RateLimits{Primary: &telemetry.RateLimitBucket{Remaining: remaining, Limit: limit}}
+}
+
+func TestSubscriptionPrunesLegacyUSDBudgetRefusals(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{BillingMode: workflowconfig.BillingModeSubscription})
+	planner := newDispatchPlanner(cfg)
+	state := newState(cfg)
+	state.BudgetRefusals["daily"] = BudgetRefusal{Code: string(budget.ReasonPerDayMaxUSD)}
+	state.BudgetRefusals["issue"] = BudgetRefusal{Code: string(budget.ReasonPerIssueMaxUSD)}
+
+	planner.pruneBudgetRefusals(&state, time.Now(), nil, nil)
+
+	if len(state.BudgetRefusals) != 0 {
+		t.Fatalf("BudgetRefusals = %#v, want cleared in subscription mode", state.BudgetRefusals)
 	}
 }
 

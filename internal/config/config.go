@@ -35,11 +35,13 @@ const (
 	WorkspaceLocalGit   = "local_git"
 	WorkspaceFilesystem = "filesystem"
 
-	DeliverablePullRequest = "pull_request"
-	DeliverableArtifact    = "artifact"
-	MergeMethodSquash      = "squash"
-	MergeMethodMerge       = "merge"
-	MergeMethodRebase      = "rebase"
+	DeliverablePullRequest  = "pull_request"
+	DeliverableArtifact     = "artifact"
+	MergeMethodSquash       = "squash"
+	MergeMethodMerge        = "merge"
+	MergeMethodRebase       = "rebase"
+	BillingModeMetered      = "metered"
+	BillingModeSubscription = "subscription"
 
 	DependencyReadinessTerminal         = "terminal"
 	DependencyReadinessTerminalOrMerged = "terminal_or_merged"
@@ -407,6 +409,7 @@ type Followups struct {
 }
 
 type Budget struct {
+	BillingMode            string  `yaml:"billing_mode,omitempty"`
 	Enabled                bool    `yaml:"enabled"`
 	PerDayMaxUSD           float64 `yaml:"per_day_max_usd"`
 	PerIssueMaxUSD         float64 `yaml:"per_issue_max_usd"`
@@ -415,6 +418,28 @@ type Budget struct {
 
 	perDayMaxUSDConfigured   bool
 	perIssueMaxUSDConfigured bool
+}
+
+func (b Budget) EffectiveBillingMode() string {
+	if strings.EqualFold(strings.TrimSpace(b.BillingMode), BillingModeSubscription) {
+		return BillingModeSubscription
+	}
+	return BillingModeMetered
+}
+
+func (b Budget) BillingModeConfigured() bool {
+	return strings.TrimSpace(b.BillingMode) != ""
+}
+
+func (b Budget) USDEnforcementEnabled() bool {
+	return b.Enabled && b.EffectiveBillingMode() == BillingModeMetered
+}
+
+func (b *Budget) Normalize() {
+	if b == nil {
+		return
+	}
+	b.BillingMode = strings.ToLower(strings.TrimSpace(b.BillingMode))
 }
 
 func (b Budget) PerDayMaxUSDConfigured() bool {
@@ -1257,6 +1282,8 @@ func (c *Config) normalize() {
 	c.Workspace.Normalize()
 	c.Deliverable.Normalize()
 	c.Release.normalize()
+	c.Budget.Normalize()
+	c.Agent.Budget.Normalize()
 
 	c.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(c.Agent.MaxConcurrentAgentsByState)
 	if c.Agent.FailureBreaker.SameClassLimit == 0 {
@@ -1960,6 +1987,11 @@ func (s *SkillCreation) validate(prefix string, problems *[]string) {
 }
 
 func (b *Budget) validate(prefix string, problems *[]string) {
+	switch b.BillingMode {
+	case "", BillingModeMetered, BillingModeSubscription:
+	default:
+		*problems = append(*problems, prefix+".billing_mode must be one of metered, subscription")
+	}
 	validatePositiveFloat(prefix+".per_day_max_usd", b.PerDayMaxUSD, problems)
 	validatePositiveFloat(prefix+".per_issue_max_usd", b.PerIssueMaxUSD, problems)
 	if b.RefusalCooldownSeconds < 0 {

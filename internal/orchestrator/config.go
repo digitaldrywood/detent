@@ -30,6 +30,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		MaxRetryBackoff:            durationFromMillis(cfg.Agent.MaxRetryBackoffMS),
 		OverloadRetryDelay:         durationFromMillis(cfg.Agent.OverloadRetryDelayMS),
 		NoProgressSpendLimitUSD:    cfg.Agent.NoProgressSpendLimitUSD,
+		BillingMode:                cfg.Budget.EffectiveBillingMode(),
 		FailureBreaker: FailureBreakerConfig{
 			SameClassLimit: cfg.Agent.FailureBreaker.SameClassLimit,
 			Window:         durationFromSeconds(cfg.Agent.FailureBreaker.WindowSeconds),
@@ -98,6 +99,10 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 }
 
 func normalizeConfig(cfg Config) Config {
+	cfg.BillingMode = strings.ToLower(strings.TrimSpace(cfg.BillingMode))
+	if cfg.BillingMode == "" {
+		cfg.BillingMode = workflowconfig.BillingModeMetered
+	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = defaultPollInterval
 	}
@@ -179,6 +184,10 @@ func normalizeConfig(cfg Config) Config {
 	}
 
 	return cfg
+}
+
+func (cfg Config) subscriptionBilling() bool {
+	return cfg.BillingMode == workflowconfig.BillingModeSubscription
 }
 
 func normalizeClaimingConfig(cfg ClaimingConfig) ClaimingConfig {

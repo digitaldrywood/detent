@@ -542,6 +542,7 @@ func applyOnboardingWorkflowDecisions(
 	decisions.set(root, "plan.enabled", false, "preset", "direct implementation dispatch by default")
 	decisions.set(root, "plan.review", "human", "preset", "human plan approval if plan mode is enabled later")
 	decisions.set(root, "server.kanban.mode", kanbanMode, kanbanProvenance, kanbanWhy)
+	decisions.set(root, "budget.billing_mode", workflowconfig.BillingModeMetered, "preset", "enforce USD guardrails for metered API billing")
 	decisions.set(root, "budget.enabled", true, "preset", "enable spend guardrails at onboarding")
 	decisions.set(root, "budget.per_day_max_usd", dayBudget, dayBudgetProvenance, dayBudgetWhy)
 	decisions.set(root, "budget.per_issue_max_usd", issueBudget, issueBudgetProvenance, issueBudgetWhy)

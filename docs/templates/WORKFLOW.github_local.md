@@ -163,6 +163,7 @@ server:
     # as one compact top-of-board alert; dependency waits stay on cards.
     # show_blocked_alerts: true
 budget:
+  billing_mode: metered
   enabled: true
   per_day_max_usd: 50
   per_issue_max_usd: 5

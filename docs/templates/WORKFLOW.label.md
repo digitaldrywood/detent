@@ -170,6 +170,7 @@ server:
     #   Rework: [Blocked, Cancelled]
     #   Merging: [Blocked, Cancelled]
 budget:
+  billing_mode: metered
   enabled: true
   per_day_max_usd: 50
   per_issue_max_usd: 5

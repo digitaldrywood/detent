@@ -45,6 +45,9 @@ func TestShippedWorkflowTemplatesEnableBudgetCaps(t *testing.T) {
 			if !workflow.Config.Budget.Enabled {
 				t.Fatalf("%s budget.enabled = false, want true", path)
 			}
+			if workflow.Config.Budget.BillingMode != BillingModeMetered {
+				t.Fatalf("%s budget.billing_mode = %q, want metered", path, workflow.Config.Budget.BillingMode)
+			}
 			normalizedRaw := strings.ReplaceAll(string(raw), "\r\n", "\n")
 			if workflow.Config.Deliverable.Kind == DeliverablePullRequest && !strings.Contains(normalizedRaw, "\n  merge_method: squash\n") {
 				t.Fatalf("%s does not declare deliverable.merge_method: squash", path)
@@ -89,6 +92,54 @@ func TestParseWorkflowBudgetCapPresence(t *testing.T) {
 			}
 			if got := workflow.Config.Budget.PerIssueMaxUSDConfigured(); got != tt.wantPerIssue {
 				t.Fatalf("PerIssueMaxUSDConfigured() = %t, want %t", got, tt.wantPerIssue)
+			}
+		})
+	}
+}
+
+func TestParseWorkflowBillingMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		value      string
+		want       string
+		configured bool
+		wantErr    string
+	}{
+		{name: "omitted assumes metered", want: BillingModeMetered},
+		{name: "metered", value: "metered", want: BillingModeMetered, configured: true},
+		{name: "subscription", value: "subscription", want: BillingModeSubscription, configured: true},
+		{name: "normalizes case and whitespace", value: " Subscription ", want: BillingModeSubscription, configured: true},
+		{name: "rejects invalid mode", value: "credits", wantErr: "budget.billing_mode must be one of metered, subscription"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			frontmatter := "---\ntracker:\n  kind: memory\n"
+			if tt.value != "" {
+				frontmatter += "budget:\n  billing_mode: \"" + tt.value + "\"\n"
+			}
+			workflow, err := ParseWorkflow([]byte(frontmatter + "---\n"))
+			if err == nil {
+				err = workflow.Config.Validate()
+			}
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("ParseWorkflow() error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			if got := workflow.Config.Budget.EffectiveBillingMode(); got != tt.want {
+				t.Fatalf("EffectiveBillingMode() = %q, want %q", got, tt.want)
+			}
+			if got := workflow.Config.Budget.BillingModeConfigured(); got != tt.configured {
+				t.Fatalf("BillingModeConfigured() = %t, want %t", got, tt.configured)
 			}
 		})
 	}

@@ -197,7 +197,7 @@ func (o *Orchestrator) blockerAutoPromoteCapacity(state *State, targetState stri
 	if state == nil {
 		return 0
 	}
-	available := availableSlots(state)
+	available := o.dispatchPlanner().availableSlots(state)
 	stats := o.projectStateSlotStats(connector.Issue{State: targetState}, state)
 	if stats.available < available {
 		available = stats.available
