@@ -147,6 +147,15 @@ type IssueComment struct {
 	TargetType        string     `json:"target_type,omitempty" yaml:"target_type,omitempty"`
 }
 
+type IssueEvent struct {
+	ID        string            `json:"id,omitempty" yaml:"id,omitempty"`
+	Kind      string            `json:"kind,omitempty" yaml:"kind,omitempty"`
+	State     string            `json:"state,omitempty" yaml:"state,omitempty"`
+	Body      string            `json:"body,omitempty" yaml:"body,omitempty"`
+	Fields    map[string]string `json:"fields,omitempty" yaml:"fields,omitempty"`
+	CreatedAt *time.Time        `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+}
+
 type Deliverable struct {
 	Kind             string            `json:"kind,omitempty" yaml:"kind,omitempty"`
 	Path             string            `json:"path,omitempty" yaml:"path,omitempty"`

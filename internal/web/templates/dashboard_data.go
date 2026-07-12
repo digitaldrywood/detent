@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	webchart "github.com/digitaldrywood/detent/internal/web/chart"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
+	"github.com/digitaldrywood/detent/internal/workitem"
 )
 
 const (
@@ -101,6 +102,7 @@ type RateLimits = telemetry.RateLimits
 type KanbanData struct {
 	Mode                        string
 	ProjectID                   string
+	TrackerKind                 string
 	States                      []string
 	TerminalStates              []string
 	TerminalStatesByProject     map[string][]string
@@ -118,6 +120,7 @@ type KanbanData struct {
 type KanbanProjectData struct {
 	Mode                        string
 	ProjectID                   string
+	TrackerKind                 string
 	States                      []string
 	TerminalStates              []string
 	DispatchPriorityByLabel     []string
@@ -2450,6 +2453,7 @@ func projectKanbanCardKanbanData(data DashboardData, card projectKanbanCard) Kan
 	return KanbanData{
 		Mode:                        projectData.Mode,
 		ProjectID:                   projectID,
+		TrackerKind:                 projectData.TrackerKind,
 		States:                      projectData.States,
 		TerminalStates:              projectData.TerminalStates,
 		DispatchPriorityByLabel:     projectData.DispatchPriorityByLabel,
@@ -2810,6 +2814,9 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		HasPullRequest:        issue.PullRequest != nil,
 		Movable:               strings.TrimSpace(issue.ID) != "",
 		RuntimeIdentity:       issue.RuntimeIdentity,
+	}
+	if projectKanbanCardUsesInternalIssueView(data, card) {
+		card.URL = workitem.WorkItemURL(data.DashboardURL, projectKanbanCardProjectID(data, card), card.Identifier)
 	}
 	if issue.PullRequest != nil {
 		ciStatus := prPipelineCIStatus(issue, projectKanbanLaneID(state))

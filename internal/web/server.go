@@ -293,6 +293,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/health/ui", s.healthDashboard)
 	s.echo.GET("/analytics", s.analyticsDashboard)
 	s.echo.GET("/library", s.library)
+	s.echo.GET("/projects/:project_id/issues/:issue_ref", s.issueDetail)
 	s.echo.GET("/projects/*", s.projectDashboard)
 	s.echo.GET("/settings", s.settings)
 	s.echo.GET("/api-keys", s.apiKeysPage)

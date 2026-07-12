@@ -111,7 +111,7 @@ func Create(ctx context.Context, target Target, req Request) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
-	itemURL := WorkItemURL(target.DashboardURL, target.ProjectID)
+	itemURL := WorkItemURL(target.DashboardURL, target.ProjectID, identifier)
 	now := target.now().UTC()
 	issue := connector.NewIssue()
 	issue.ID = identifier
@@ -157,11 +157,15 @@ func createdIssue(ctx context.Context, projectConnector connector.Connector, ide
 	return connector.Issue{}, false, nil
 }
 
-func WorkItemURL(base string, projectID string) string {
+func WorkItemURL(base string, projectID string, identifier string) string {
 	projectID = strings.TrimSpace(projectID)
+	identifier = strings.TrimSpace(identifier)
 	path := "/kanban"
 	if projectID != "" {
 		path = "/projects/" + url.PathEscape(projectID) + "/kanban"
+	}
+	if projectID != "" && identifier != "" {
+		path = "/projects/" + url.PathEscape(projectID) + "/issues/" + url.PathEscape(identifier)
 	}
 	base = strings.TrimSpace(base)
 	if base == "" {
@@ -171,7 +175,12 @@ func WorkItemURL(base string, projectID string) string {
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return path
 	}
-	parsed.Path = path
+	decodedPath, err := url.PathUnescape(path)
+	if err != nil {
+		return path
+	}
+	parsed.RawPath = path
+	parsed.Path = decodedPath
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String()

@@ -67,6 +67,7 @@ var _ connector.IssueCloser = (*Connector)(nil)
 var _ connector.IssueCommentDeleter = (*Connector)(nil)
 var _ connector.IssueCommentReader = (*Connector)(nil)
 var _ connector.IssueCommentUpdater = (*Connector)(nil)
+var _ connector.IssueEventReader = (*Connector)(nil)
 var _ connector.IssueFieldClearer = (*Connector)(nil)
 var _ connector.IssueFieldSetter = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
@@ -317,6 +318,36 @@ order by id asc`, c.projectID, strings.TrimSpace(issue.ID), eventKindComment, ev
 		}
 	}
 	return comments, nil
+}
+
+func (c *Connector) FetchIssueEvents(ctx context.Context, issue connector.Issue) ([]connector.IssueEvent, error) {
+	rows, err := c.db.QueryContext(ctx, `
+select id, event_kind, state, body, payload_json, created_at from detent_work_item_events
+where project_id = ? and item_id = ?
+order by id asc`, c.projectID, strings.TrimSpace(issue.ID))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := []connector.IssueEvent{}
+	for rows.Next() {
+		var id int64
+		var event connector.IssueEvent
+		var payloadJSON string
+		var createdAt string
+		if err := rows.Scan(&id, &event.Kind, &event.State, &event.Body, &payloadJSON, &createdAt); err != nil {
+			return nil, err
+		}
+		event.ID = strconv.FormatInt(id, 10)
+		event.Fields = unmarshalStringMap(payloadJSON)
+		event.CreatedAt = parseTimePointer(createdAt)
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
 }
 
 func (c *Connector) CreateComment(ctx context.Context, issueID string, body string) error {

@@ -173,17 +173,25 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 						</form>
 					}
 					<span class="flex-1"></span>
-					if card.URL != "" {
-						<a href={ card.URL } target="_blank" rel="noopener noreferrer" class="inline-flex min-h-11 items-center text-xs font-medium text-accent hover:underline md:inline md:min-h-0">Open on GitHub ↗</a>
-					}
+					@sheetIssueAction(data, card)
 				</footer>
 			} else if card.URL != "" {
 				<footer class="flex flex-none items-center justify-end border-t border-line px-4 py-3 md:px-5">
-					<a href={ card.URL } target="_blank" rel="noopener noreferrer" class="inline-flex min-h-11 items-center text-xs font-medium text-accent hover:underline md:inline md:min-h-0">Open on GitHub ↗</a>
+					@sheetIssueAction(data, card)
 				</footer>
 			}
 		</aside>
 	</div>
+}
+
+templ sheetIssueAction(data DashboardData, card projectKanbanCard) {
+	if card.URL != "" {
+		if projectKanbanCardUsesInternalIssueView(data, card) {
+			<a href={ card.URL } class="inline-flex min-h-11 items-center text-xs font-medium text-accent hover:underline md:inline md:min-h-0">Open issue</a>
+		} else {
+			<a href={ card.URL } target="_blank" rel="noopener noreferrer" class="inline-flex min-h-11 items-center text-xs font-medium text-accent hover:underline md:inline md:min-h-0">Open on GitHub ↗</a>
+		}
+	}
 }
 
 // sheetCommentTrigger opens the shared kanban comment dialog for the card's
