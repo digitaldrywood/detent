@@ -188,10 +188,13 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 		o.logAutoPromoteDecision(issue, decision, "")
 		return false, connector.Issue{}
 	}
+	promoted := promotedIssue(issue, targetState, now)
+	if normalizeState(issue.State) == normalizeState(targetState) {
+		return true, promoted
+	}
 	if !o.applyAutoPromoteDecision(ctx, state, issue, summary, decision, targetState, now) {
 		return false, connector.Issue{}
 	}
-	promoted := promotedIssue(issue, targetState, now)
 	return true, promoted
 }
 

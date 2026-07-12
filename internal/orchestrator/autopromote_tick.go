@@ -2123,6 +2123,10 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 	targetState string,
 	now time.Time,
 ) bool {
+	if normalizeState(issue.State) == normalizeState(targetState) {
+		return false
+	}
+
 	issueID := strings.TrimSpace(issue.ID)
 	transitionReason := string(decision.Reason)
 	body := autoPromoteComment(summary, decision, displayStateName(issue.State), targetState)

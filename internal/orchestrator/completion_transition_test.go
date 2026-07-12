@@ -370,6 +370,50 @@ func TestTransitionCompletedActiveIssuesLeavesAutoPromoteIssueActive(t *testing.
 	}
 }
 
+func TestTransitionCompletedActiveIssuesHandlesArtifactReworkNoop(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 13, 0, 0, 0, time.UTC)
+	issue := artifactCompletionTransitionIssue("Rework", "recut")
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	cfg := normalizeConfig(Config{
+		AutoPromote: AutoPromoteConfig{
+			Enabled:     true,
+			SourceState: "Review",
+			PassState:   "Ready for Pickup",
+			ReworkState: "Rework",
+			Gate:        artifactCompletionTestGate(),
+		},
+		ActiveStates:   []string{"Todo", "Production", "Rework"},
+		ObservedStates: []string{"Review"},
+		TerminalStates: []string{"Ready for Pickup", "Done", "Cancelled"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:      issue,
+		FinalState: FinalStateCompleted,
+	}
+
+	result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing", issue.ID)
+	}
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none", tracker.updates)
+	}
+	if len(tracker.comments) != 0 {
+		t.Fatalf("comments = %#v, want none", tracker.comments)
+	}
+	if got := state.Completed[issue.ID].Issue.State; got != "Rework" {
+		t.Fatalf("Completed issue state = %q, want Rework", got)
+	}
+	if len(state.RecentEvents) != 0 {
+		t.Fatalf("RecentEvents = %#v, want none", state.RecentEvents)
+	}
+}
+
 func TestTransitionCompletedActiveIssuesRoutesInvalidWorkpadStatusToRework(t *testing.T) {
 	t.Parallel()
 
