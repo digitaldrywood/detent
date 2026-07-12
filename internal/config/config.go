@@ -396,6 +396,17 @@ type Budget struct {
 	PerIssueMaxUSD         float64 `yaml:"per_issue_max_usd"`
 	RefusalCooldownSeconds int     `yaml:"refusal_cooldown_seconds"`
 	PricingPath            string  `yaml:"pricing_path"`
+
+	perDayMaxUSDConfigured   bool
+	perIssueMaxUSDConfigured bool
+}
+
+func (b Budget) PerDayMaxUSDConfigured() bool {
+	return b.perDayMaxUSDConfigured
+}
+
+func (b Budget) PerIssueMaxUSDConfigured() bool {
+	return b.perIssueMaxUSDConfigured
 }
 
 type Codex struct {
@@ -888,11 +899,15 @@ func ParseWorkflow(raw []byte) (Workflow, error) {
 		normalizeTrackerIDFields(root)
 		gitHubStatusSourceSet := trackerFieldSet(root, "github_status_source")
 		knowledgeConfigured := nestedFieldSet(root, "agent", "knowledge")
+		perDayMaxUSDConfigured := nestedFieldSet(root, "budget", "per_day_max_usd")
+		perIssueMaxUSDConfigured := nestedFieldSet(root, "budget", "per_issue_max_usd")
 		if err := root.Decode(&cfg); err != nil {
 			return Workflow{}, fmt.Errorf("decode YAML frontmatter: %w", err)
 		}
 		cfg.Tracker.gitHubStatusSourceSet = gitHubStatusSourceSet
 		cfg.Agent.Knowledge.Configured = knowledgeConfigured
+		cfg.Budget.perDayMaxUSDConfigured = perDayMaxUSDConfigured
+		cfg.Budget.perIssueMaxUSDConfigured = perIssueMaxUSDConfigured
 	}
 
 	cfg.normalize()

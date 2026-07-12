@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -11,6 +13,81 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
+
+func TestShippedWorkflowTemplatesEnableBudgetCaps(t *testing.T) {
+	t.Parallel()
+
+	templateDir := filepath.Join("..", "..", "docs", "templates")
+	entries, err := os.ReadDir(templateDir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q) error = %v", templateDir, err)
+	}
+
+	checked := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "WORKFLOW.") || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		checked++
+		t.Run(entry.Name(), func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(templateDir, entry.Name())
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("ReadFile(%q) error = %v", path, err)
+			}
+			workflow, err := ParseWorkflow(raw)
+			if err != nil {
+				t.Fatalf("ParseWorkflow(%q) error = %v", path, err)
+			}
+			if !workflow.Config.Budget.Enabled {
+				t.Fatalf("%s budget.enabled = false, want true", path)
+			}
+		})
+	}
+	if checked == 0 {
+		t.Fatal("no shipped WORKFLOW templates found")
+	}
+}
+
+func TestParseWorkflowBudgetCapPresence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		budgetYAML   string
+		wantPerDay   bool
+		wantPerIssue bool
+	}{
+		{name: "budget omitted"},
+		{name: "only enabled configured", budgetYAML: "  enabled: false\n"},
+		{name: "daily cap configured", budgetYAML: "  per_day_max_usd: 50\n", wantPerDay: true},
+		{name: "issue cap configured", budgetYAML: "  per_issue_max_usd: 5\n", wantPerIssue: true},
+		{name: "both caps configured", budgetYAML: "  per_day_max_usd: 50\n  per_issue_max_usd: 5\n", wantPerDay: true, wantPerIssue: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			frontmatter := "---\n"
+			if tt.budgetYAML != "" {
+				frontmatter += "budget:\n" + tt.budgetYAML
+			}
+			workflow, err := ParseWorkflow([]byte(frontmatter + "---\n"))
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			if got := workflow.Config.Budget.PerDayMaxUSDConfigured(); got != tt.wantPerDay {
+				t.Fatalf("PerDayMaxUSDConfigured() = %t, want %t", got, tt.wantPerDay)
+			}
+			if got := workflow.Config.Budget.PerIssueMaxUSDConfigured(); got != tt.wantPerIssue {
+				t.Fatalf("PerIssueMaxUSDConfigured() = %t, want %t", got, tt.wantPerIssue)
+			}
+		})
+	}
+}
 
 func TestParseWorkflowFollowups(t *testing.T) {
 	t.Parallel()
