@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -122,6 +123,8 @@ type Config struct {
 	Hooks         Hooks           `yaml:"hooks"`
 	Intake        intake.Config   `yaml:"intake,omitempty"`
 	Retro         retro.Config    `yaml:"retro,omitempty"`
+
+	configuredFields map[string]struct{}
 }
 
 type Tracker struct {
@@ -952,6 +955,7 @@ func ParseWorkflow(raw []byte) (Workflow, error) {
 		cfg.Agent.Knowledge.Configured = knowledgeConfigured
 		cfg.Budget.perDayMaxUSDConfigured = perDayMaxUSDConfigured
 		cfg.Budget.perIssueMaxUSDConfigured = perIssueMaxUSDConfigured
+		cfg.configuredFields = configuredFieldPaths(root)
 	}
 
 	cfg.normalize()
@@ -962,6 +966,22 @@ func ParseWorkflow(raw []byte) (Workflow, error) {
 		Prompt:     string(prompt),
 		SourceHash: hex.EncodeToString(sum[:]),
 	}, nil
+}
+
+func (c Config) ConfiguredSubsettings(prefix string) []string {
+	prefix = strings.Trim(strings.TrimSpace(prefix), ".")
+	if prefix == "" {
+		return nil
+	}
+	configured := make([]string, 0)
+	for path := range c.configuredFields {
+		if path == prefix+".enabled" || !strings.HasPrefix(path, prefix+".") {
+			continue
+		}
+		configured = append(configured, path)
+	}
+	sort.Strings(configured)
+	return configured
 }
 
 func Default() Config {
@@ -2218,6 +2238,60 @@ func nestedFieldSet(root *yaml.Node, keys ...string) bool {
 		current = mappingValue(current, key)
 	}
 	return current != nil
+}
+
+func configuredFieldPaths(root *yaml.Node) map[string]struct{} {
+	paths := map[string]struct{}{}
+	activeAliases := map[*yaml.Node]bool{}
+	var collect func(*yaml.Node, string)
+	collect = func(node *yaml.Node, prefix string) {
+		if node != nil && node.Kind == yaml.AliasNode {
+			if node.Alias == nil || activeAliases[node.Alias] {
+				return
+			}
+			if node.Alias.Kind != yaml.MappingNode && node.Alias.Kind != yaml.AliasNode {
+				if prefix != "" {
+					paths[prefix] = struct{}{}
+				}
+				return
+			}
+			activeAliases[node.Alias] = true
+			collect(node.Alias, prefix)
+			delete(activeAliases, node.Alias)
+			return
+		}
+		if node == nil || node.Kind != yaml.MappingNode {
+			return
+		}
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			key := strings.TrimSpace(node.Content[index].Value)
+			if key == "" {
+				continue
+			}
+			value := node.Content[index+1]
+			if key == "<<" {
+				if value.Kind == yaml.SequenceNode {
+					for _, merged := range value.Content {
+						collect(merged, prefix)
+					}
+				} else {
+					collect(value, prefix)
+				}
+				continue
+			}
+			path := key
+			if prefix != "" {
+				path = prefix + "." + key
+			}
+			if value.Kind == yaml.MappingNode || value.Kind == yaml.AliasNode {
+				collect(value, path)
+				continue
+			}
+			paths[path] = struct{}{}
+		}
+	}
+	collect(root, "")
+	return paths
 }
 
 func mappingValue(node *yaml.Node, key string) *yaml.Node {

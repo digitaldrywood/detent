@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -1224,6 +1225,116 @@ Prompt
 	}
 	if workflow.Config.Agent.Knowledge.MaxBytes != 2048 {
 		t.Fatalf("Agent.Knowledge.MaxBytes = %d, want 2048", workflow.Config.Agent.Knowledge.MaxBytes)
+	}
+}
+
+func TestConfiguredSubsettingsTracksExplicitFrontmatterLeaves(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+budget:
+  enabled: false
+  per_issue_max_usd: 12
+agent:
+  skills:
+    enabled: false
+  lessons:
+    enabled: false
+    recall_n: 4
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+
+	tests := []struct {
+		prefix string
+		want   []string
+	}{
+		{prefix: "budget", want: []string{"budget.per_issue_max_usd"}},
+		{prefix: "agent.skills"},
+		{prefix: "agent.lessons", want: []string{"agent.lessons.recall_n"}},
+		{prefix: "gate.validator"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.prefix, func(t *testing.T) {
+			t.Parallel()
+			got := workflow.Config.ConfiguredSubsettings(tt.prefix)
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("ConfiguredSubsettings(%q) = %#v, want %#v", tt.prefix, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConfiguredSubsettingsTracksAliasedFrontmatterLeaves(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+shared_skills: &disabled_skills
+  enabled: false
+  path: custom-skills
+agent:
+  skills: *disabled_skills
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+
+	got := workflow.Config.ConfiguredSubsettings("agent.skills")
+	want := []string{"agent.skills.path"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ConfiguredSubsettings(agent.skills) = %#v, want %#v", got, want)
+	}
+}
+
+func TestConfiguredSubsettingsTracksScalarAliasLeaves(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+shared_skill_path: &skill_path custom-skills
+agent:
+  skills:
+    enabled: false
+    path: *skill_path
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+
+	got := workflow.Config.ConfiguredSubsettings("agent.skills")
+	want := []string{"agent.skills.path"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ConfiguredSubsettings(agent.skills) = %#v, want %#v", got, want)
+	}
+}
+
+func TestConfiguredSubsettingsTracksMergedFrontmatterLeaves(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+shared_agent: &shared_agent
+  skills:
+    enabled: false
+    path: merged-skills
+agent:
+  <<: *shared_agent
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+
+	got := workflow.Config.ConfiguredSubsettings("agent.skills")
+	want := []string{"agent.skills.path"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ConfiguredSubsettings(agent.skills) = %#v, want %#v", got, want)
 	}
 }
 

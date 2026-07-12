@@ -34,7 +34,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 
 	checks := make([]doctorCheck, 0, len(cfg.Projects)*2)
 	for _, project := range cfg.Projects {
-		checks = append(checks, checkDoctorProject(ctx, project, deps, githubToken, allowWriteProbes)...)
+		checks = append(checks, checkDoctorProjectWithStore(ctx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes)...)
 	}
 
 	return checks
@@ -166,7 +166,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 			Name:    "Project " + id + " checks",
 			Current: progress.Current,
 			Run: func(jobCtx context.Context) []doctorCheck {
-				return checkDoctorProjectWithProgress(jobCtx, project, deps, githubToken, allowWriteProbes, progress.Set)
+				return checkDoctorProjectWithProgress(jobCtx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes, progress.Set)
 			},
 		})
 	}
@@ -174,12 +174,17 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 }
 
 func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps doctorDeps, githubToken RuntimeSecret, allowWriteProbes bool) []doctorCheck {
-	return checkDoctorProjectWithProgress(ctx, project, deps, githubToken, allowWriteProbes, nil)
+	return checkDoctorProjectWithStore(ctx, project, "", deps, githubToken, allowWriteProbes)
+}
+
+func checkDoctorProjectWithStore(ctx context.Context, project globalconfig.Project, storePath string, deps doctorDeps, githubToken RuntimeSecret, allowWriteProbes bool) []doctorCheck {
+	return checkDoctorProjectWithProgress(ctx, project, storePath, deps, githubToken, allowWriteProbes, nil)
 }
 
 func checkDoctorProjectWithProgress(
 	ctx context.Context,
 	project globalconfig.Project,
+	storePath string,
 	deps doctorDeps,
 	githubToken RuntimeSecret,
 	allowWriteProbes bool,
@@ -253,9 +258,8 @@ func checkDoctorProjectWithProgress(
 	if billingCheck, ok := checkDoctorBillingMode(id, workflow.Config); ok {
 		checks = append(checks, billingCheck)
 	}
-	if budgetCheck, ok := checkDoctorDisabledBudgetCaps(id, workflow.Config.Budget); ok {
-		checks = append(checks, budgetCheck)
-	}
+	setDoctorCurrentCheck("Project " + id + " workflow lint")
+	checks = append(checks, checkDoctorWorkflowLint(ctx, id, project, workflow.Config, storePath, deps)...)
 	setDoctorCurrentCheck("Project " + id + " out-of-scope follow-up guidance")
 	checks = append(checks, checkDoctorFollowupGuidance(id, workflow.Config.Agent.Followups, workflow.Prompt))
 	setDoctorCurrentCheck("Project " + id + " pinned route models")
