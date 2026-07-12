@@ -1,9 +1,11 @@
 package project_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -367,6 +369,192 @@ func TestProjectAppliesWorkflowReloadsToRunningOrchestrator(t *testing.T) {
 	}
 
 	close(runner.release)
+}
+
+func TestProjectReestablishesClosedWorkflowWatcher(t *testing.T) {
+	t.Parallel()
+
+	firstUpdates := make(chan configwatcher.Update)
+	close(firstUpdates)
+	secondUpdates := make(chan configwatcher.Update, 1)
+	rearmed := make(chan struct{})
+	var watcherCreates atomic.Int32
+	var logs bytes.Buffer
+
+	initial := workflowConfig("memory")
+	initial.Polling.IntervalMS = int(time.Hour / time.Millisecond)
+	got, err := project.New(project.Config{
+		Project:  globalconfig.Project{ID: "detent", Workflow: "workflow.md", Weight: 1},
+		Workflow: workflowconfig.Workflow{Config: initial, Prompt: "initial"},
+	}, project.Dependencies{
+		Runner: blockingRunner{},
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		WorkflowWatcherFactory: func(string) (project.WorkflowWatcher, error) {
+			if watcherCreates.Add(1) == 1 {
+				return fakeWorkflowWatcher{updates: firstUpdates}, nil
+			}
+			select {
+			case <-rearmed:
+			default:
+				close(rearmed)
+			}
+			return fakeWorkflowWatcher{updates: secondUpdates}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := got.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := got.Stop(context.Background()); err != nil && !errors.Is(err, project.ErrNotRunning) {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	})
+
+	select {
+	case <-rearmed:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for workflow watcher re-establishment")
+	}
+	if !bytes.Contains(logs.Bytes(), []byte("workflow watcher stopped")) {
+		t.Fatalf("logs = %q, want watcher failure warning", logs.String())
+	}
+	waitForWorkflowWatcherArmed(t, got)
+
+	reloaded := initial
+	reloaded.Polling.IntervalMS = 60000
+	secondUpdates <- configwatcher.Update{
+		Workflow: workflowconfig.Workflow{Config: reloaded, Prompt: "reloaded"},
+	}
+	waitForWorkflowPrompt(t, got, "reloaded")
+	if got.WorkflowSourceStatus().LastWatchEventAt.IsZero() {
+		t.Fatal("LastWatchEventAt is zero after re-established watcher update")
+	}
+}
+
+func TestProjectReconcilesWorkflowWhenWatcherMissesEdit(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	writeProjectGateWorkflow(t, workflowPath, 60000, "", "initial")
+	workflow, err := workflowconfig.LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow() error = %v", err)
+	}
+
+	stalledUpdates := make(chan configwatcher.Update)
+	got, err := project.New(project.Config{
+		Project:  globalconfig.Project{ID: "detent", Workflow: workflowPath, Weight: 1},
+		Workflow: workflow,
+	}, project.Dependencies{
+		Runner:                    blockingRunner{},
+		WorkflowReconcileInterval: 20 * time.Millisecond,
+		WorkflowWatcherFactory: func(string) (project.WorkflowWatcher, error) {
+			return fakeWorkflowWatcher{updates: stalledUpdates}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := got.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := got.Stop(context.Background()); err != nil && !errors.Is(err, project.ErrNotRunning) {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	})
+
+	writeProjectGateWorkflow(t, workflowPath, 60000, "", "reconciled")
+	waitForWorkflowPrompt(t, got, "reconciled\n")
+
+	status := got.WorkflowSourceStatus()
+	if status.LastReconcileAt.IsZero() {
+		t.Fatal("LastReconcileAt is zero, want periodic reconciliation timestamp")
+	}
+	if status.Hash == "" || status.Hash != got.Workflow().SourceHash {
+		t.Fatalf("workflow source hash = %q, workflow hash = %q", status.Hash, got.Workflow().SourceHash)
+	}
+}
+
+func TestProjectUnpauseReloadsWorkflowEditedWhilePaused(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	writeProjectGateWorkflow(t, workflowPath, 60000, "", "initial")
+	workflow, err := workflowconfig.LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow() error = %v", err)
+	}
+
+	got, err := project.New(project.Config{
+		Project:  globalconfig.Project{ID: "detent", Workflow: workflowPath, Weight: 1, Paused: true},
+		Workflow: workflow,
+	}, project.Dependencies{
+		Runner: blockingRunner{},
+		WorkflowWatcherFactory: func(string) (project.WorkflowWatcher, error) {
+			return fakeWorkflowWatcher{updates: make(chan configwatcher.Update)}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	writeProjectGateWorkflow(t, workflowPath, 60000, "", "reloaded before unpause")
+	if err := got.Unpause(context.Background()); err != nil {
+		t.Fatalf("Unpause() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := got.Stop(context.Background()); err != nil && !errors.Is(err, project.ErrNotRunning) {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	})
+
+	if got.Workflow().Prompt != "reloaded before unpause\n" {
+		t.Fatalf("Workflow().Prompt = %q, want reloaded workflow", got.Workflow().Prompt)
+	}
+}
+
+func TestProjectUnpauseKeepsProjectPausedWhenWorkflowReloadFails(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	writeProjectGateWorkflow(t, workflowPath, 60000, "", "initial")
+	workflow, err := workflowconfig.LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow() error = %v", err)
+	}
+
+	got, err := project.New(project.Config{
+		Project:  globalconfig.Project{ID: "detent", Workflow: workflowPath, Weight: 1, Paused: true},
+		Workflow: workflow,
+	}, project.Dependencies{Runner: blockingRunner{}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := got.Stop(context.Background()); err != nil && !errors.Is(err, project.ErrNotRunning) {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	})
+
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker: [\n---\ninvalid\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := got.Unpause(context.Background()); err == nil {
+		t.Fatal("Unpause() error = nil, want workflow reload failure")
+	}
+	if !got.Paused() {
+		t.Fatal("Paused() = false after failed workflow reload, want true")
+	}
+	if got.Workflow().Prompt != "initial\n" {
+		t.Fatalf("Workflow().Prompt = %q, want original workflow", got.Workflow().Prompt)
+	}
 }
 
 func TestProjectWorkflowReloadRefreshesRestartDependencies(t *testing.T) {
@@ -1250,6 +1438,25 @@ func waitForWorkflowWatcher(t *testing.T, ready <-chan struct{}) {
 	case <-ready:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for workflow watcher")
+	}
+}
+
+func waitForWorkflowWatcherArmed(t *testing.T, got *project.Project) {
+	t.Helper()
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.After(time.Second)
+
+	for {
+		if got.WorkflowSourceStatus().WatcherArmed {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatal("timed out waiting for workflow watcher to become armed")
+		}
 	}
 }
 

@@ -501,10 +501,19 @@ type doctorHealthProbe struct {
 }
 
 type doctorHealthResponse struct {
-	Status  string               `json:"status"`
-	Mode    string               `json:"mode"`
-	Checks  map[string]string    `json:"checks"`
-	Budgets []doctorHealthBudget `json:"budgets"`
+	Status    string                 `json:"status"`
+	Mode      string                 `json:"mode"`
+	Checks    map[string]string      `json:"checks"`
+	Budgets   []doctorHealthBudget   `json:"budgets"`
+	Workflows []doctorHealthWorkflow `json:"workflows"`
+}
+
+type doctorHealthWorkflow struct {
+	ProjectID  string    `json:"project_id"`
+	Path       string    `json:"path"`
+	SourceHash string    `json:"source_hash"`
+	ModifiedAt time.Time `json:"modified_at"`
+	LoadedAt   time.Time `json:"loaded_at"`
 }
 
 type doctorHealthBudget struct {

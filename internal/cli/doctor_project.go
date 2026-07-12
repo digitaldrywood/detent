@@ -40,6 +40,107 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 	return checks
 }
 
+func checkDoctorWorkflowDrift(ctx context.Context, cfg globalconfig.Config, boot BootConfig, deps doctorDeps) []doctorCheck {
+	probe, err := probeDoctorHealth(ctx, boot, deps)
+	if err != nil {
+		return []doctorCheck{{
+			Name:   "Workflow runtime drift",
+			Status: doctorOK,
+			Detail: "runtime comparison skipped because no healthy live Detent instance was reachable",
+		}}
+	}
+
+	runtimeByProject := make(map[string]doctorHealthWorkflow, len(probe.Health.Workflows))
+	for _, workflow := range probe.Health.Workflows {
+		runtimeByProject[strings.TrimSpace(workflow.ProjectID)] = workflow
+	}
+
+	checks := make([]doctorCheck, 0, len(cfg.Projects))
+	for _, configuredProject := range cfg.Projects {
+		id := doctorProjectID(configuredProject)
+		name := "Project " + id + " workflow runtime"
+		if configuredProject.Paused {
+			checks = append(checks, doctorCheck{
+				Name:   name,
+				Status: doctorOK,
+				Detail: "project " + id + " is paused; workflow drift comparison deferred until unpause",
+			})
+			continue
+		}
+		runtimeWorkflow, ok := runtimeByProject[id]
+		if !ok {
+			checks = append(checks, doctorCheck{
+				Name:   name,
+				Status: doctorWarn,
+				Detail: "project " + id + " is missing workflow source status from the live instance",
+				Hint:   "Restart Detent with a version that reports workflow source status, then rerun detent doctor.",
+			})
+			continue
+		}
+
+		diskWorkflow, loadErr := loadDoctorProjectWorkflow(ctx, configuredProject, deps)
+		if loadErr != nil {
+			continue
+		}
+		if runtimeWorkflow.SourceHash == "" {
+			checks = append(checks, doctorCheck{
+				Name:   name,
+				Status: doctorWarn,
+				Detail: "project " + id + " live workflow source hash is unavailable",
+				Hint:   "Restart Detent with a version that records loaded workflow source hashes.",
+			})
+			continue
+		}
+		if diskWorkflow.SourceHash != runtimeWorkflow.SourceHash {
+			modifiedAt := doctorWorkflowModifiedAt(configuredProject)
+			checks = append(checks, doctorCheck{
+				Name:   name,
+				Status: doctorFail,
+				Detail: fmt.Sprintf(
+					"project %s is running stale config (file changed at %s, loaded at %s)",
+					id,
+					doctorWorkflowTimestamp(modifiedAt),
+					doctorWorkflowTimestamp(runtimeWorkflow.LoadedAt),
+				),
+				Hint: "Check workflow watcher warnings; Detent will reconcile the file automatically, or restart the process if drift persists.",
+			})
+			continue
+		}
+		checks = append(checks, doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: "project " + id + " loaded workflow matches the configured source",
+		})
+	}
+	return checks
+}
+
+func doctorWorkflowModifiedAt(project globalconfig.Project) time.Time {
+	if strings.TrimSpace(project.WorkflowRef) != "" {
+		return time.Time{}
+	}
+	path := strings.TrimSpace(project.Workflow)
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return time.Time{}
+		}
+		path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime().UTC()
+}
+
+func doctorWorkflowTimestamp(value time.Time) string {
+	if value.IsZero() {
+		return "unknown"
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
 func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToken RuntimeSecret, allowWriteProbes bool) []doctorCheckJob {
 	if len(cfg.Projects) == 0 {
 		return []doctorCheckJob{{

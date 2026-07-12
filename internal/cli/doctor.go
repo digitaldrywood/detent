@@ -337,6 +337,14 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	jobs := []doctorCheckJob{}
 	if global != nil {
 		globalConfig := *global
+		workflowDriftBoot := boot
+		if doctorServerPort(workflowDriftBoot) == 0 {
+			livePort := defaultWebPort
+			if globalConfig.Port != nil {
+				livePort = *globalConfig.Port
+			}
+			workflowDriftBoot.Port = &livePort
+		}
 		githubToken := runtime.GitHubToken
 		jobs = append(jobs, doctorCheckJob{
 			Name: "Update checking",
@@ -346,6 +354,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		})
 		if projectScopeCheck == nil {
 			jobs = append(jobs, doctorProjectCheckJobs(globalConfig, deps, githubToken, cfg.AllowWriteProbes)...)
+			jobs = append(jobs, doctorCheckJob{
+				Name: "Workflow runtime drift",
+				Run: func(jobCtx context.Context) []doctorCheck {
+					return checkDoctorWorkflowDrift(jobCtx, globalConfig, workflowDriftBoot, deps)
+				},
+			})
 		}
 		jobs = append(jobs, doctorCheckJob{
 			Name: "Workflow optimization",

@@ -17,10 +17,11 @@ import (
 type FileLoader[T any] func(string) (T, error)
 
 type FileUpdate[T any] struct {
-	Path  string
-	Value T
-	Err   error
-	At    time.Time
+	Path       string
+	Value      T
+	Err        error
+	WatcherErr bool
+	At         time.Time
 }
 
 type FileOption func(*fileOptions)
@@ -166,7 +167,7 @@ func (w *FileWatcher[T]) run(ctx context.Context, fsWatcher *fsnotify.Watcher, u
 			if !ok {
 				return
 			}
-			w.send(ctx, updates, FileUpdate[T]{Path: w.path, Err: err, At: time.Now()})
+			w.send(ctx, updates, FileUpdate[T]{Path: w.path, Err: err, WatcherErr: true, At: time.Now()})
 		case <-timerC:
 			timerC = nil
 			update := w.reload(ctx)

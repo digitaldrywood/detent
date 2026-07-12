@@ -58,6 +58,36 @@ func LoadWorkflowContext(ctx context.Context, cfg globalconfig.Project) (workflo
 	return workflow, err
 }
 
+func workflowSourceDisplayPath(cfg globalconfig.Project) string {
+	if strings.TrimSpace(cfg.WorkflowRef) == "" {
+		path, err := plainWorkflowPath(cfg.Workflow)
+		if err != nil {
+			return strings.TrimSpace(cfg.Workflow)
+		}
+		return path
+	}
+	source, err := newWorkflowGitRefSource(cfg)
+	if err != nil {
+		return strings.TrimSpace(cfg.Workflow)
+	}
+	return source.displayPath()
+}
+
+func workflowFileModifiedAt(cfg globalconfig.Project) time.Time {
+	if strings.TrimSpace(cfg.WorkflowRef) != "" {
+		return time.Time{}
+	}
+	path, err := plainWorkflowPath(cfg.Workflow)
+	if err != nil {
+		return time.Time{}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime().UTC()
+}
+
 func newWorkflowGitRefSource(cfg globalconfig.Project) (workflowGitRefSource, error) {
 	sourceRoot := strings.TrimSpace(cfg.Workdir)
 	if sourceRoot == "" {
