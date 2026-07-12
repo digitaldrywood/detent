@@ -1118,6 +1118,7 @@ func (s *Server) dashboardKanbanData(ctx context.Context, projectID string, snap
 	data := templates.KanbanData{
 		Mode:                        mode,
 		ProjectID:                   strings.TrimSpace(projectID),
+		TrackerKind:                 target.workflow.Tracker.Kind,
 		States:                      states,
 		TerminalStates:              target.workflow.Tracker.TerminalStates,
 		TerminalStatesByProject:     s.kanbanTerminalStatesByProject(projectID),
@@ -1160,6 +1161,7 @@ func (s *Server) kanbanProjectsData(snapshot telemetry.Snapshot) map[string]temp
 		out[projectID] = templates.KanbanProjectData{
 			Mode:                        target.kanban.Mode,
 			ProjectID:                   projectID,
+			TrackerKind:                 target.workflow.Tracker.Kind,
 			States:                      states,
 			TerminalStates:              target.workflow.Tracker.TerminalStates,
 			DispatchPriorityByLabel:     append([]string(nil), target.workflow.Agent.DispatchPriorityByLabel...),

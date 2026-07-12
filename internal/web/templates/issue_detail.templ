@@ -1,0 +1,117 @@
+package templates
+
+import "time"
+
+templ IssueDetailPage(data IssueDetailData) {
+	@AppShell(issueDetailShellData(data), nil) {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div id="snapshot" class="flex min-h-0 min-w-0 flex-1 justify-center overflow-y-auto overflow-x-hidden px-4 py-5 md:px-6">
+				<div class="flex w-full max-w-5xl flex-col gap-5">
+					<header class="flex flex-col gap-3">
+						<a href={ issueDetailProjectPath(data) } class="w-fit text-xs font-medium text-accent hover:underline">← Back to board</a>
+						<div class="flex flex-wrap items-center gap-2 text-xs text-sec">
+							<span class="font-mono text-accent">{ issueDetailReference(data) }</span>
+							if data.State != "" {
+								<span class="rounded-chip bg-elev px-2 py-0.5 font-medium text-text">{ data.State }</span>
+							}
+						</div>
+						<h2 class="max-w-4xl text-xl font-semibold leading-tight text-text md:text-2xl">{ data.Title }</h2>
+					</header>
+					<div class="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
+						<div class="flex min-w-0 flex-col gap-5">
+							<section class="flex min-w-0 flex-col gap-3 rounded-card border border-line bg-surface p-4 md:p-5" aria-labelledby="issue-spec-heading">
+								<h3 id="issue-spec-heading" class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Issue specification</h3>
+								if data.Description != "" {
+									<div class="max-w-none whitespace-pre-wrap break-words text-sm leading-6 text-text [overflow-wrap:anywhere]">{ data.Description }</div>
+								} else {
+									<p class="text-sm text-sec">No issue description.</p>
+								}
+							</section>
+							<section class="flex min-w-0 flex-col gap-3" aria-labelledby="issue-history-heading">
+								<div class="flex items-center justify-between gap-3">
+									<h3 id="issue-history-heading" class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">History</h3>
+									<span class="font-mono text-xs text-sec">{ formatInt(int64(len(data.Events))) }</span>
+								</div>
+								if len(data.Events) == 0 {
+									<div class="rounded-card border border-line bg-surface px-4 py-5 text-sm text-sec">No issue history yet.</div>
+								}
+								for _, event := range data.Events {
+									<article class="flex min-w-0 flex-col gap-2 rounded-card border border-line bg-surface px-4 py-3">
+										<header class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+											<span class="font-medium text-text">{ event.Title }</span>
+											if event.Detail != "" {
+												<span class="break-words font-mono text-sec [overflow-wrap:anywhere]">{ event.Detail }</span>
+											}
+											<span class="flex-1"></span>
+											<span class="font-mono text-sec tabular-nums">@LocalTime(event.At, LocalTimeOptions{Style: LocalDateTime, Fallback: "n/a"})
+</span>
+										</header>
+										if event.Body != "" {
+											<p class="whitespace-pre-wrap break-words text-sm leading-6 text-text [overflow-wrap:anywhere]">{ event.Body }</p>
+										}
+									</article>
+								}
+							</section>
+						</div>
+						<aside class="flex min-w-0 flex-col gap-4 lg:sticky lg:top-0 lg:self-start">
+							<section class="flex flex-col gap-3 rounded-card border border-line bg-surface p-4 text-xs">
+								<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Details</h3>
+								@issueDetailRow("Identifier", data.Identifier)
+								@issueDetailRow("State", data.State)
+								if data.Priority != "" {
+									@issueDetailRow("Priority", data.Priority)
+								}
+								if !data.CreatedAt.IsZero() {
+									@issueDetailTimeRow("Created", data.CreatedAt)
+								}
+								if !data.UpdatedAt.IsZero() {
+									@issueDetailTimeRow("Updated", data.UpdatedAt)
+								}
+							</section>
+							if len(data.Labels) > 0 {
+								@issueDetailTags("Labels", data.Labels)
+							}
+							if len(data.Assignees) > 0 {
+								@issueDetailTags("Assignees", data.Assignees)
+							}
+							if len(data.Fields) > 0 {
+								<section class="flex flex-col gap-3 rounded-card border border-line bg-surface p-4 text-xs">
+									<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Fields</h3>
+									for _, field := range data.Fields {
+										@issueDetailRow(field.Name, field.Value)
+									}
+								</section>
+							}
+						</aside>
+					</div>
+				</div>
+			</div>
+		</main>
+	}
+}
+
+templ issueDetailRow(label string, value string) {
+	<div class="flex min-w-0 items-start justify-between gap-3">
+		<span class="flex-none text-sec">{ label }</span>
+		<span class="min-w-0 break-words text-right font-mono text-text [overflow-wrap:anywhere]">{ value }</span>
+	</div>
+}
+
+templ issueDetailTimeRow(label string, value time.Time) {
+	<div class="flex min-w-0 items-start justify-between gap-3">
+		<span class="flex-none text-sec">{ label }</span>
+		<span class="min-w-0 text-right font-mono text-text tabular-nums">@LocalTime(value, LocalTimeOptions{Style: LocalDateTime, Fallback: "n/a"})
+</span>
+	</div>
+}
+
+templ issueDetailTags(label string, values []string) {
+	<section class="flex flex-col gap-3 rounded-card border border-line bg-surface p-4">
+		<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">{ label }</h3>
+		<div class="flex flex-wrap gap-1.5">
+			for _, value := range values {
+				<span class="max-w-full break-words rounded-chip bg-elev px-2 py-1 font-mono text-2xs text-sec [overflow-wrap:anywhere]">{ value }</span>
+			}
+		</div>
+	</section>
+}

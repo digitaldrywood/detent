@@ -38,7 +38,7 @@ func TestCreateBuildsWorkItemWithDefaults(t *testing.T) {
 	if got.Number != 7 {
 		t.Fatalf("Number = %d, want 7", got.Number)
 	}
-	if got.URL != "http://127.0.0.1:4000/projects/video/kanban" {
+	if got.URL != "http://127.0.0.1:4000/projects/video/issues/wi-test" {
 		t.Fatalf("URL = %q", got.URL)
 	}
 	if len(conn.upserts) != 1 {
@@ -59,6 +59,58 @@ func TestCreateBuildsWorkItemWithDefaults(t *testing.T) {
 	}
 	if issue.CreatedAt == nil || !issue.CreatedAt.Equal(now) {
 		t.Fatalf("CreatedAt = %v, want %v", issue.CreatedAt, now)
+	}
+}
+
+func TestWorkItemURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		base       string
+		projectID  string
+		identifier string
+		want       string
+	}{
+		{
+			name:       "absolute dashboard URL",
+			base:       "https://detent.example/old?query=value#fragment",
+			projectID:  "video production",
+			identifier: "wi-123",
+			want:       "https://detent.example/projects/video%20production/issues/wi-123",
+		},
+		{
+			name:       "relative detail URL",
+			projectID:  "video",
+			identifier: "wi-123",
+			want:       "/projects/video/issues/wi-123",
+		},
+		{
+			name:       "invalid dashboard URL",
+			base:       "dashboard.local",
+			projectID:  "video",
+			identifier: "wi-123",
+			want:       "/projects/video/issues/wi-123",
+		},
+		{
+			name:      "missing identifier falls back to project board",
+			projectID: "video",
+			want:      "/projects/video/kanban",
+		},
+		{
+			name: "missing project falls back to fleet board",
+			want: "/kanban",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := workitem.WorkItemURL(tt.base, tt.projectID, tt.identifier); got != tt.want {
+				t.Fatalf("WorkItemURL() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

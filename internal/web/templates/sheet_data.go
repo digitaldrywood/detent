@@ -205,6 +205,10 @@ func sheetHasActions(data DashboardData, card projectKanbanCard, boardActions bo
 		projectKanbanCardCanComment(data, card))
 }
 
+func projectKanbanCardUsesInternalIssueView(data DashboardData, card projectKanbanCard) bool {
+	return strings.EqualFold(strings.TrimSpace(projectKanbanCardKanbanData(data, card).TrackerKind), "local_sqlite")
+}
+
 func boardCardSheetClass(expanded bool) string {
 	base := "flex h-full w-full min-w-0 flex-none flex-col overflow-hidden bg-surface md:border-l md:border-line"
 	if expanded {

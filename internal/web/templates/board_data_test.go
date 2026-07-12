@@ -52,6 +52,88 @@ func TestBoardDetailSheetRendersEfficiencyReceipt(t *testing.T) {
 	}
 }
 
+func TestBoardDetailSheetUsesTrackerSpecificIssueAction(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		trackerKind string
+		url         string
+		want        []string
+		unwanted    []string
+	}{
+		{
+			name:        "local tracker",
+			trackerKind: "local_sqlite",
+			url:         "/projects/video/issues/wi-123",
+			want:        []string{"Open issue", `href="/projects/video/issues/wi-123"`},
+			unwanted:    []string{"Open on GitHub"},
+		},
+		{
+			name:        "github tracker",
+			trackerKind: "github",
+			url:         "https://github.com/digitaldrywood/detent/issues/123",
+			want:        []string{"Open on GitHub", `target="_blank"`},
+			unwanted:    []string{"Open issue"},
+		},
+		{
+			name:        "linear tracker",
+			trackerKind: "linear",
+			url:         "https://linear.app/example/issue/DET-123",
+			want:        []string{"Open on GitHub", `target="_blank"`},
+			unwanted:    []string{"Open issue"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data := DashboardData{
+				ProjectID: "video",
+				Kanban: KanbanData{
+					ProjectID:   "video",
+					TrackerKind: tt.trackerKind,
+				},
+			}
+			card := projectKanbanCard{IssueNumber: "#123", Identifier: "wi-123", Title: "Issue action", URL: tt.url}
+			html := renderBoardComponent(t, BoardCardSheet(data, card, false, false, KanbanConversationData{}, BoardActivityData{}, BoardSessionData{}))
+			for _, want := range tt.want {
+				if !strings.Contains(html, want) {
+					t.Fatalf("sheet missing %q:\n%s", want, html)
+				}
+			}
+			for _, unwanted := range tt.unwanted {
+				if strings.Contains(html, unwanted) {
+					t.Fatalf("sheet contains %q:\n%s", unwanted, html)
+				}
+			}
+		})
+	}
+}
+
+func TestProjectKanbanCardUsesInternalURLForLocalTracker(t *testing.T) {
+	t.Parallel()
+
+	data := DashboardData{
+		DashboardURL: "https://detent.example",
+		ProjectID:    "video",
+		Kanban: KanbanData{
+			ProjectID:   "video",
+			TrackerKind: "local_sqlite",
+		},
+	}
+	card := projectKanbanCardForIssue(data, telemetry.Issue{
+		ID:         "wi-123",
+		Identifier: "wi-123",
+		ProjectID:  "video",
+		URL:        "https://github.com/example/repository",
+	}, "Todo", time.Time{}, time.Time{})
+	if card.URL != "https://detent.example/projects/video/issues/wi-123" {
+		t.Fatalf("card.URL = %q, want internal issue detail URL", card.URL)
+	}
+}
+
 func boardTestData() DashboardData {
 	now := time.Date(2026, 7, 4, 16, 42, 7, 0, time.UTC)
 	startedAt := now.Add(-3*time.Minute - 39*time.Second)

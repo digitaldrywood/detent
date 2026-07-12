@@ -164,6 +164,68 @@ func TestConnectorFetchIssueCommentsReturnsEventMetadata(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchIssueEventsReturnsCompleteHistory(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	issue := connector.NewIssue()
+	issue.ID = "ad-1"
+	issue.Identifier = "wi-history"
+	issue.State = "Todo"
+	store, err := New(Config{
+		Path:      filepath.Join(t.TempDir(), "events.db"),
+		ProjectID: "video",
+		Issues:    []connector.Issue{issue},
+		Now:       func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	if err := store.CreateComment(ctx, issue.ID, "Ready for review."); err != nil {
+		t.Fatalf("CreateComment() error = %v", err)
+	}
+	if err := store.UpdateIssueState(ctx, issue.ID, "In Progress"); err != nil {
+		t.Fatalf("UpdateIssueState() error = %v", err)
+	}
+	if err := store.SetField(ctx, issue.ID, "render_status", "queued"); err != nil {
+		t.Fatalf("SetField() error = %v", err)
+	}
+
+	got, err := store.FetchIssueEvents(ctx, issue)
+	if err != nil {
+		t.Fatalf("FetchIssueEvents() error = %v", err)
+	}
+	want := []struct {
+		kind  string
+		state string
+		body  string
+		field string
+		value string
+	}{
+		{kind: eventKindComment, body: "Ready for review."},
+		{kind: eventKindStateUpdate, state: "In Progress"},
+		{kind: eventKindFieldUpdate, field: "render_status", value: "queued"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("FetchIssueEvents() len = %d, want %d: %#v", len(got), len(want), got)
+	}
+	for i, expected := range want {
+		if got[i].Kind != expected.kind || got[i].State != expected.state || got[i].Body != expected.body || got[i].Fields[expected.field] != expected.value {
+			t.Fatalf("event[%d] = %#v, want %#v", i, got[i], expected)
+		}
+		if got[i].ID != strconv.Itoa(i+1) || got[i].CreatedAt == nil || !got[i].CreatedAt.Equal(now) {
+			t.Fatalf("event[%d] metadata = %#v, want sequential ID and %v", i, got[i], now)
+		}
+	}
+}
+
 func TestConnectorUpdatesAndDeletesLocalIssueCommentsWithAuditEvents(t *testing.T) {
 	t.Parallel()
 

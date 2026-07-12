@@ -102,6 +102,10 @@ type IssueCommentReader interface {
 	FetchIssueComments(context.Context, Issue) ([]IssueComment, error)
 }
 
+type IssueEventReader interface {
+	FetchIssueEvents(context.Context, Issue) ([]IssueEvent, error)
+}
+
 type IssueCommentUpdater interface {
 	UpdateIssueComment(context.Context, string, string, string) error
 }
