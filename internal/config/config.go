@@ -224,10 +224,11 @@ type Workpad struct {
 }
 
 type Deliverable struct {
-	Kind        string `yaml:"kind"`
-	MergeMethod string `yaml:"merge_method,omitempty"`
-	OutputRoot  string `yaml:"output_root,omitempty"`
-	ReviewURL   string `yaml:"review_url,omitempty"`
+	Kind                  string `yaml:"kind"`
+	MergeMethod           string `yaml:"merge_method,omitempty"`
+	OutputRoot            string `yaml:"output_root,omitempty"`
+	ReviewURL             string `yaml:"review_url,omitempty"`
+	mergeMethodConfigured bool
 }
 
 type Worker struct {
@@ -946,6 +947,7 @@ func ParseWorkflow(raw []byte) (Workflow, error) {
 		normalizeTrackerIDFields(root)
 		gitHubStatusSourceSet := trackerFieldSet(root, "github_status_source")
 		knowledgeConfigured := nestedFieldSet(root, "agent", "knowledge")
+		mergeMethodConfigured := nestedFieldSet(root, "deliverable", "merge_method")
 		perDayMaxUSDConfigured := nestedFieldSet(root, "budget", "per_day_max_usd")
 		perIssueMaxUSDConfigured := nestedFieldSet(root, "budget", "per_issue_max_usd")
 		if err := root.Decode(&cfg); err != nil {
@@ -953,6 +955,7 @@ func ParseWorkflow(raw []byte) (Workflow, error) {
 		}
 		cfg.Tracker.gitHubStatusSourceSet = gitHubStatusSourceSet
 		cfg.Agent.Knowledge.Configured = knowledgeConfigured
+		cfg.Deliverable.mergeMethodConfigured = mergeMethodConfigured
 		cfg.Budget.perDayMaxUSDConfigured = perDayMaxUSDConfigured
 		cfg.Budget.perIssueMaxUSDConfigured = perIssueMaxUSDConfigured
 		cfg.configuredFields = configuredFieldPaths(root)
@@ -1608,6 +1611,10 @@ func (d Deliverable) EffectiveMergeMethod() string {
 		return MergeMethodSquash
 	}
 	return method
+}
+
+func (d Deliverable) MergeMethodConfigured() bool {
+	return d.mergeMethodConfigured
 }
 
 func normalizeMergeMethod(method string) string {

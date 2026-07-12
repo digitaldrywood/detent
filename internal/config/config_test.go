@@ -150,16 +150,17 @@ func TestParseWorkflowMergeMethod(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		value   string
-		want    string
-		wantErr string
+		name           string
+		value          string
+		want           string
+		wantConfigured bool
+		wantErr        string
 	}{
 		{name: "omitted defaults to squash", want: MergeMethodSquash},
-		{name: "squash", value: "squash", want: MergeMethodSquash},
-		{name: "merge", value: "merge", want: MergeMethodMerge},
-		{name: "rebase", value: "rebase", want: MergeMethodRebase},
-		{name: "normalizes case and whitespace", value: " ReBaSe ", want: MergeMethodRebase},
+		{name: "squash", value: "squash", want: MergeMethodSquash, wantConfigured: true},
+		{name: "merge", value: "merge", want: MergeMethodMerge, wantConfigured: true},
+		{name: "rebase", value: "rebase", want: MergeMethodRebase, wantConfigured: true},
+		{name: "normalizes case and whitespace", value: " ReBaSe ", want: MergeMethodRebase, wantConfigured: true},
 		{name: "rejects invalid value", value: "octopus", wantErr: "deliverable.merge_method must be one of squash, merge, rebase"},
 	}
 
@@ -186,6 +187,9 @@ func TestParseWorkflowMergeMethod(t *testing.T) {
 			}
 			if got := workflow.Config.Deliverable.MergeMethod; got != tt.want {
 				t.Fatalf("Deliverable.MergeMethod = %q, want %q", got, tt.want)
+			}
+			if got := workflow.Config.Deliverable.MergeMethodConfigured(); got != tt.wantConfigured {
+				t.Fatalf("Deliverable.MergeMethodConfigured() = %t, want %t", got, tt.wantConfigured)
 			}
 		})
 	}
