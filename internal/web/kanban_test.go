@@ -282,6 +282,42 @@ func TestKanbanSnapshotWithPendingStatesKeepsAdvancedPendingMoveVisible(t *testi
 	}
 }
 
+func TestKanbanSnapshotWithPendingStatesReleasesTerminalCompletedMove(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{
+		kanbanMutations: kanbanstate.NewMutationTracker(),
+		kanbanWorkflow: workflowconfig.Config{
+			Tracker: workflowconfig.Tracker{TerminalStates: []string{"Done", "Cancelled"}},
+		},
+	}
+	issue := telemetry.Issue{
+		ID:         "terminal-card",
+		Identifier: "DDW-439",
+		ProjectID:  "detent",
+		Title:      "Terminal pending card",
+		State:      "Backlog",
+	}
+	server.kanbanMutations.NoteCardState("project:detent", "detent", issue, "Backlog", "Todo", 1)
+
+	got := server.kanbanSnapshotWithPendingStates("project:detent", "detent", telemetry.Snapshot{
+		Project: telemetry.Project{ID: "detent"},
+		Refresh: telemetry.Refresh{DataSeq: 2},
+		Completed: []telemetry.Completed{{
+			Issue: telemetry.Issue{
+				ID:         issue.ID,
+				Identifier: issue.Identifier,
+				ProjectID:  issue.ProjectID,
+				Title:      issue.Title,
+				State:      "Done",
+			},
+		}},
+	})
+	if len(got.BoardIssues) != 0 {
+		t.Fatalf("BoardIssues = %#v, want terminal completion released", got.BoardIssues)
+	}
+}
+
 func TestKanbanSnapshotWithPendingStatesConcurrentAdvancedRender(t *testing.T) {
 	t.Parallel()
 

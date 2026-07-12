@@ -223,7 +223,7 @@ func TestMutationTrackerPendingMovedCards(t *testing.T) {
 				State:      "Backlog",
 			}, "Backlog", "Todo", 1)
 
-			got := tracker.PendingMovedCards("project:detent", "detent", tt.snapshot)
+			got := tracker.PendingMovedCards("project:detent", "detent", tt.snapshot, nil)
 			if len(got) != len(tt.wantIssues) {
 				t.Fatalf("PendingMovedCards() len = %d, want %d: %#v", len(got), len(tt.wantIssues), got)
 			}
@@ -267,7 +267,7 @@ func TestMutationTrackerPendingMovedCardsKeepsAdvancedCardUntilVisible(t *testin
 	}
 
 	for range 2 {
-		got := tracker.PendingMovedCards("project:detent", "detent", advancedSnapshot)
+		got := tracker.PendingMovedCards("project:detent", "detent", advancedSnapshot, []string{"Done"})
 		if len(got) != 1 || got[0].Identifier != issue.Identifier || got[0].State != "Production" {
 			t.Fatalf("PendingMovedCards() = %#v, want one Production card", got)
 		}
@@ -282,8 +282,45 @@ func TestMutationTrackerPendingMovedCardsKeepsAdvancedCardUntilVisible(t *testin
 	visibleSnapshot := advancedSnapshot
 	visibleSnapshot.Refresh.DataSeq = 3
 	visibleSnapshot.BoardIssues = []telemetry.Issue{advancedSnapshot.Completed[0].Issue}
-	if got := tracker.PendingMovedCards("project:detent", "detent", visibleSnapshot); len(got) != 0 {
+	if got := tracker.PendingMovedCards("project:detent", "detent", visibleSnapshot, []string{"Done"}); len(got) != 0 {
 		t.Fatalf("PendingMovedCards() = %#v, want visible snapshot entry to take over", got)
+	}
+}
+
+func TestMutationTrackerPendingMovedCardsDoesNotKeepTerminalCompletion(t *testing.T) {
+	t.Parallel()
+
+	tracker := NewMutationTracker()
+	issue := telemetry.Issue{
+		ID:         "terminal-card",
+		Identifier: "DDW-439",
+		ProjectID:  "detent",
+		Title:      "Terminal pending card",
+		State:      "Backlog",
+	}
+	tracker.NoteCardState("project:detent", "detent", issue, "Backlog", "Todo", 1)
+	snapshot := telemetry.Snapshot{
+		Project: telemetry.Project{ID: "detent"},
+		Refresh: telemetry.Refresh{DataSeq: 2},
+		Completed: []telemetry.Completed{{
+			Issue: telemetry.Issue{
+				ID:         issue.ID,
+				Identifier: issue.Identifier,
+				ProjectID:  issue.ProjectID,
+				Title:      issue.Title,
+				State:      "Done",
+			},
+		}},
+	}
+
+	if got := tracker.PendingMovedCards("project:detent", "detent", snapshot, []string{"Done", "Cancelled"}); len(got) != 0 {
+		t.Fatalf("PendingMovedCards() = %#v, want terminal completion released", got)
+	}
+	if pendingStateExists(tracker, "project:detent", issue.ID) {
+		t.Fatal("pending state exists after terminal completion")
+	}
+	if got := tracker.ConsumeRevertNotices("project:detent", "detent"); len(got) != 0 {
+		t.Fatalf("ConsumeRevertNotices() = %#v, want none", got)
 	}
 }
 

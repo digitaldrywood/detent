@@ -157,13 +157,19 @@ func (t *MutationTracker) NoteCardState(key string, projectID string, issue tele
 	}
 }
 
-func (t *MutationTracker) PendingMovedCards(key string, projectID string, snapshot telemetry.Snapshot) []telemetry.Issue {
+func (t *MutationTracker) PendingMovedCards(key string, projectID string, snapshot telemetry.Snapshot, terminalStates []string) []telemetry.Issue {
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return nil
 	}
 	projectID = strings.TrimSpace(projectID)
 	dataSeq := SnapshotProjectDataSeq(snapshot, projectID)
+	terminal := make(map[string]struct{}, len(terminalStates))
+	for _, state := range terminalStates {
+		if state = NormalizeState(state); state != "" {
+			terminal[state] = struct{}{}
+		}
+	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -198,7 +204,8 @@ func (t *MutationTracker) PendingMovedCards(key string, projectID string, snapsh
 		snapshotState := strings.TrimSpace(issue.State)
 		state := t.cardStateLocked(stateKey, snapshotState, dataSeq)
 		_, stillPending := t.states[stateKey]
-		if !stillPending && NormalizeState(snapshotState) != NormalizeState(pending.current) && NormalizeState(snapshotState) != NormalizeState(pending.snapshot) {
+		_, terminalState := terminal[NormalizeState(snapshotState)]
+		if !stillPending && !terminalState && NormalizeState(snapshotState) != NormalizeState(pending.current) && NormalizeState(snapshotState) != NormalizeState(pending.snapshot) {
 			synthesizedIssue := CloneIssue(pending.issue)
 			synthesizedIssue.State = strings.TrimSpace(state)
 			t.synthesized[stateKey] = synthesizedCard{
