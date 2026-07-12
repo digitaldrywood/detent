@@ -89,41 +89,91 @@ func (c *Connector) attachPullRequestsWithCache(ctx context.Context, issues []co
 
 	for _, repo := range repos {
 		candidates := c.rotatePullRequestHydrationCandidates(repo, byRepo[repo])
-		nextCursor, err := c.attachLinkedPullRequests(ctx, repo, issues, candidates, useStatusCache)
-		if err != nil {
-			return err
-		}
-		if !hasUnattachedBranchPullRequestCandidates(issues, candidates) {
-			c.setPullRequestHydrationCursor(repo, nextCursor)
-			continue
-		}
-		if state, ok := c.currentPullRequestHydrationState(repo); ok {
-			c.logPullRequestHydrationSkip(ctx, repo, state, "shared_backoff")
-			markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
-			continue
-		}
-		pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
-		if err != nil {
-			if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
-				markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
-				if errors.Is(err, ErrRESTBudgetReserved) && nextCursor == "" && len(candidates) > 0 {
-					nextCursor = candidates[0].Identifier
-				}
-				c.setPullRequestHydrationCursor(repo, nextCursor)
-				continue
+		nextCursor := ""
+		branchFirst := firstPullRequestCandidateNeedsBranchHydration(issues, candidates)
+		if branchFirst {
+			var err error
+			nextCursor, err = c.attachBranchPullRequests(ctx, repo, issues, candidates, useStatusCache)
+			if err != nil {
+				return err
 			}
-			return err
 		}
-		matchingCursor, err := c.attachMatchingPullRequests(ctx, repo, issues, candidates, pullRequests, useStatusCache)
+
+		linkedCursor, err := c.attachLinkedPullRequests(ctx, repo, issues, candidates, useStatusCache)
 		if err != nil {
 			return err
 		}
 		if nextCursor == "" {
-			nextCursor = matchingCursor
+			nextCursor = linkedCursor
+		}
+		if !branchFirst {
+			branchCursor, err := c.attachBranchPullRequests(ctx, repo, issues, candidates, useStatusCache)
+			if err != nil {
+				return err
+			}
+			if nextCursor == "" {
+				nextCursor = branchCursor
+			}
 		}
 		c.setPullRequestHydrationCursor(repo, nextCursor)
 	}
 	return nil
+}
+
+func (c *Connector) attachBranchPullRequests(
+	ctx context.Context,
+	repo pullRequestRepo,
+	issues []connector.Issue,
+	candidates []issuePullRequestCandidate,
+	useStatusCache bool,
+) (string, error) {
+	if !hasUnattachedBranchPullRequestCandidates(issues, candidates) {
+		return "", nil
+	}
+	if state, ok := c.currentPullRequestHydrationState(repo); ok {
+		c.logPullRequestHydrationSkip(ctx, repo, state, "shared_backoff")
+		markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
+		return firstUnattachedBranchPullRequestCandidate(issues, candidates), nil
+	}
+	pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
+	if err != nil {
+		if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
+			cursor := ""
+			if errors.Is(err, ErrRESTBudgetReserved) {
+				cursor = firstUnattachedBranchPullRequestCandidate(issues, candidates)
+			}
+			markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
+			return cursor, nil
+		}
+		return "", err
+	}
+	return c.attachMatchingPullRequests(ctx, repo, issues, candidates, pullRequests, useStatusCache)
+}
+
+func firstPullRequestCandidateNeedsBranchHydration(issues []connector.Issue, candidates []issuePullRequestCandidate) bool {
+	if len(candidates) == 0 {
+		return false
+	}
+	candidate := candidates[0]
+	return issues[candidate.Index].PullRequest == nil &&
+		candidate.PullRequestNumber <= 0 &&
+		strings.TrimSpace(candidate.BranchPrefix) != ""
+}
+
+func firstUnattachedBranchPullRequestCandidate(issues []connector.Issue, candidates []issuePullRequestCandidate) string {
+	for _, candidate := range candidates {
+		if issues[candidate.Index].PullRequest == nil &&
+			candidate.PullRequestNumber <= 0 &&
+			strings.TrimSpace(candidate.BranchPrefix) != "" {
+			return candidate.Identifier
+		}
+	}
+	for _, candidate := range candidates {
+		if issues[candidate.Index].PullRequest == nil && strings.TrimSpace(candidate.BranchPrefix) != "" {
+			return candidate.Identifier
+		}
+	}
+	return ""
 }
 
 func (c *Connector) attachPullRequestMergeStates(ctx context.Context, issues []connector.Issue) error {
