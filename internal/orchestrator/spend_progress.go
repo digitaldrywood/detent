@@ -187,7 +187,7 @@ func spendProgressPRAdvance(previous *spendProgressPRFingerprint, current *spend
 
 func spendProgressCIFailing(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "error", "failed", "failure", "failing":
+	case "error", "fail", "failed", "failure", "failing":
 		return true
 	default:
 		return false
@@ -196,7 +196,7 @@ func spendProgressCIFailing(status string) bool {
 
 func spendProgressCIPassing(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "passed", "passing", "success", "successful":
+	case "pass", "passed", "passing", "success", "successful":
 		return true
 	default:
 		return false

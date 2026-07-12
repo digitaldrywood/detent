@@ -84,13 +84,13 @@ func TestEvaluateSpendProgress(t *testing.T) {
 			name:  "failing to passing pull request resets spend",
 			limit: 5,
 			spend: store.IssueSpendSince{CostUSD: 6.75, Sessions: 2},
-			issue: spendProgressIssueWithPR("same-head", "dirty", "success"),
+			issue: spendProgressIssueWithPR("same-head", "dirty", "pass"),
 			history: []store.WorkAttempt{{
 				CompletedAt: base.Add(-10 * time.Minute),
 				WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
 					spendProgressMetadataKey: map[string]any{
 						"limit_usd":      5,
-						"pr_fingerprint": map[string]any{"number": 214, "head_sha": "same-head", "mergeable_state": "dirty", "ci_status": "failure"},
+						"pr_fingerprint": map[string]any{"number": 214, "head_sha": "same-head", "mergeable_state": "dirty", "ci_status": "fail"},
 					},
 				}),
 			}},

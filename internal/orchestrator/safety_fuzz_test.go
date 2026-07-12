@@ -12,7 +12,7 @@ import (
 func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 	f.Add(0, 0, 0, "", "clean", int64(1), " head ", "lint,test", int64(1), "head", "test,lint", int64(60), int64(0), true, int64(0), int64(1), int64(2), true)
 	f.Add(1, 2, 3, "fingerprint", "dirty", int64(1), "head-a", "test", int64(2), "head-b", "lint", int64(-60), int64(0), true, int64(10), int64(-10), int64(0), false)
-	f.Add(0, 0, 0, "clean", "dirty", int64(1), "same-head", "failure", int64(1), "same-head", "success", int64(0), int64(0), false, int64(0), int64(0), int64(0), false)
+	f.Add(0, 0, 0, "clean", "dirty", int64(1), "same-head", "fail", int64(1), "same-head", "pass", int64(0), int64(0), false, int64(0), int64(0), int64(0), false)
 	f.Add(0, 0, 0, "", "", int64(0), "", "", int64(0), "", "", int64(0), int64(0), false, int64(0), int64(0), int64(0), false)
 
 	f.Fuzz(func(
