@@ -194,7 +194,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			o.recordMergeFailed(state, running.Issue, event.CompletedAt, "runner_failed", event.Err)
 		}
 		if mergeWorkerIssue(running.Issue) && attempt > maxMergeWorkerRunnerFailures {
-			if o.reworkExhaustedMergeWorker(ctx, state, running, event.CompletedAt, attempt, event.Err) {
+			if o.blockExhaustedMergeWorker(ctx, state, running, event.CompletedAt, attempt, event.Err) {
 				return
 			}
 		}
@@ -1063,7 +1063,7 @@ func (o *Orchestrator) failProgrammaticMergeWorkerResult(
 	o.recordMergeFailed(state, running.Issue, event.CompletedAt, reason, err)
 	attempt := nextAttempt(running.Attempt)
 	if attempt > maxMergeWorkerRunnerFailures {
-		if o.reworkExhaustedMergeWorker(ctx, state, running, event.CompletedAt, attempt, err) {
+		if o.blockExhaustedMergeWorker(ctx, state, running, event.CompletedAt, attempt, err) {
 			return
 		}
 	}
@@ -1158,9 +1158,10 @@ func (o *Orchestrator) handleIncompleteMergeWorkerResult(
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, err, workAttemptErrorMergeIncomplete, err.Error())
 	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, workAttemptErrorMergeIncomplete, err.Error(), "merging", "merge worker completed without terminal state")
 	o.logMergeWorkerFailure(running.Issue, "terminal_state_missing", err)
+	o.recordMergeFailed(state, running.Issue, event.CompletedAt, "terminal_state_missing", err)
 	attempt := nextAttempt(running.Attempt)
 	if attempt > maxMergeWorkerRunnerFailures {
-		if o.reworkExhaustedMergeWorker(ctx, state, running, event.CompletedAt, attempt, err) {
+		if o.blockExhaustedMergeWorker(ctx, state, running, event.CompletedAt, attempt, err) {
 			return
 		}
 	}
@@ -1180,7 +1181,7 @@ func (o *Orchestrator) handleIncompleteMergeWorkerResult(
 	})
 }
 
-func (o *Orchestrator) reworkExhaustedMergeWorker(
+func (o *Orchestrator) blockExhaustedMergeWorker(
 	ctx context.Context,
 	state *State,
 	running Running,
@@ -1192,14 +1193,14 @@ func (o *Orchestrator) reworkExhaustedMergeWorker(
 	if issueID == "" || o.connector == nil {
 		return false
 	}
-	if err := o.updateIssueStateByID(ctx, state, issueID, running.Issue, autoPromoteReworkState, completedAt, "merge_worker_retry_exhausted"); err != nil {
+	if err := o.updateIssueStateByID(ctx, state, issueID, running.Issue, blockedStatusState, completedAt, mergeWorkerRetryExhaustedReason); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
-				"merge_worker_rework_failed",
+				"merge_worker_block_failed",
 				"issue_id", issueID,
 				"identifier", running.Issue.Identifier,
-				"reason", "runner_failed_retry_exhausted",
-				"target_state", autoPromoteReworkState,
+				"reason", mergeWorkerRetryExhaustedReason,
+				"target_state", blockedStatusState,
 				"error", err,
 			)
 		}
@@ -1208,10 +1209,10 @@ func (o *Orchestrator) reworkExhaustedMergeWorker(
 	if comment := mergeWorkerRetryExhaustedComment(running.Issue, attempt, err); strings.TrimSpace(comment) != "" {
 		if err := o.connector.CreateComment(ctx, issueID, comment); err != nil && o.logger != nil {
 			o.logger.Warn(
-				"merge_worker_rework_comment_failed",
+				"merge_worker_block_comment_failed",
 				"issue_id", issueID,
 				"identifier", running.Issue.Identifier,
-				"reason", "runner_failed_retry_exhausted",
+				"reason", mergeWorkerRetryExhaustedReason,
 				"error", err,
 			)
 		}
@@ -1224,6 +1225,20 @@ func (o *Orchestrator) reworkExhaustedMergeWorker(
 	delete(state.BudgetRefusals, issueID)
 	delete(state.PriorAttempts, issueID)
 	delete(state.Completed, issueID)
+	issue := cloneIssue(running.Issue)
+	issue.State = blockedStatusState
+	issue.BlockerReason = mergeWorkerRetryExhaustedReason + ": " + errorString(err)
+	blockedAt := completedAt.UTC()
+	issue.StageUpdatedAt = &blockedAt
+	if state.Blocked == nil {
+		state.Blocked = map[string]Blocked{}
+	}
+	state.Blocked[issueID] = Blocked{
+		Issue:     issue,
+		Reason:    mergeWorkerRetryExhaustedReason,
+		BlockedAt: completedAt,
+		Source:    BlockedSourceProjectStatus,
+	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      completedAt,
 		Event:   "merge_worker_retry_exhausted",
@@ -1234,8 +1249,9 @@ func (o *Orchestrator) reworkExhaustedMergeWorker(
 
 func mergeWorkerRetryExhaustedComment(issue connector.Issue, attempt int, err error) string {
 	var b strings.Builder
-	b.WriteString("Merge worker retries were exhausted; routed this issue from Merging to Rework.")
-	b.WriteString("\n\n- reason: runner_failed_retry_exhausted")
+	b.WriteString("Merge worker retries were exhausted; parked this issue in Blocked to stop automatic redispatch.")
+	b.WriteString("\n\n- reason: ")
+	b.WriteString(mergeWorkerRetryExhaustedReason)
 	if attempt > 0 {
 		b.WriteString("\n- attempt: ")
 		b.WriteString(strconv.Itoa(attempt))
@@ -1258,6 +1274,7 @@ func mergeWorkerRetryExhaustedComment(issue connector.Issue, attempt int, err er
 			b.WriteString(ciStatus)
 		}
 	}
+	b.WriteString("\n\nResolve the merge failure, then move the issue back to Merging to retry.")
 	return b.String()
 }
 

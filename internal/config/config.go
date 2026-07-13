@@ -1048,6 +1048,7 @@ func Default() Config {
 			MaxRetryBackoffMS:       300000,
 			OverloadRetryDelayMS:    DefaultOverloadRetryDelayMS,
 			NoProgressSpendLimitUSD: DefaultNoProgressSpendLimitUSD,
+			MergeFastPath:           MergeFastPath{Enabled: true},
 			FailureBreaker: FailureBreaker{
 				SameClassLimit:  DefaultFailureBreakerSameClassLimit,
 				WindowSeconds:   DefaultFailureBreakerWindowSeconds,

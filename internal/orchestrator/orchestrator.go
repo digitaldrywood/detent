@@ -53,6 +53,7 @@ const (
 	blockedReasonDependency             = "blocked by non-terminal dependency"
 	blockedReasonProjectStatus          = "blocked by project status"
 	mergeWorkerTerminalStateMissing     = "merge worker completed without reaching a terminal issue or pull request state"
+	mergeWorkerRetryExhaustedReason     = "merge_worker_retry_exhausted"
 )
 
 var (

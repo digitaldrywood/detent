@@ -489,7 +489,8 @@ func (o *Orchestrator) setBlockedStatusIssue(state *State, issue connector.Issue
 		existing.Source == BlockedSourceProjectStatus &&
 		(strings.HasPrefix(existing.Reason, instantFailureBlockedReasonPrefix) ||
 			strings.HasPrefix(existing.Reason, repeatedFailureBlockedReasonPrefix) ||
-			strings.HasPrefix(existing.Reason, tokenCeilingBlockedReasonPrefix)) &&
+			strings.HasPrefix(existing.Reason, tokenCeilingBlockedReasonPrefix) ||
+			strings.HasPrefix(existing.Reason, mergeWorkerRetryExhaustedReason)) &&
 		strings.TrimSpace(issue.BlockerReason) == "" {
 		existing.Issue = cloneIssue(issue)
 		state.Blocked[issue.ID] = existing
