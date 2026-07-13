@@ -585,6 +585,7 @@ func hasUnattachedBranchPullRequestCandidates(issues []connector.Issue, candidat
 
 func pullRequestNodeFromREST(pullRequest restPullRequest) pullRequestNode {
 	return pullRequestNode{
+		NodeID:         pullRequest.NodeID,
 		Number:         pullRequest.Number,
 		URL:            pullRequest.HTMLURL,
 		State:          restPullRequestState(pullRequest),
@@ -592,6 +593,7 @@ func pullRequestNodeFromREST(pullRequest restPullRequest) pullRequestNode {
 		Draft:          pullRequest.Draft,
 		ActivityAt:     cloneGitHubTime(pullRequest.UpdatedAt),
 		HeadRefName:    pullRequest.Head.Ref,
+		BaseRefName:    pullRequest.Base.Ref,
 		HeadSHA:        pullRequest.Head.SHA,
 		BaseSHA:        pullRequest.Base.SHA,
 	}
@@ -599,9 +601,11 @@ func pullRequestNodeFromREST(pullRequest restPullRequest) pullRequestNode {
 
 func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pullRequest pullRequestNode) {
 	issue.PullRequest = &connector.PullRequest{
+		NodeID:                       strings.TrimSpace(pullRequest.NodeID),
 		Number:                       pullRequest.Number,
 		URL:                          strings.TrimSpace(pullRequest.URL),
 		BranchName:                   strings.TrimSpace(pullRequest.HeadRefName),
+		BaseRef:                      strings.TrimSpace(pullRequest.BaseRefName),
 		State:                        strings.ToUpper(strings.TrimSpace(pullRequest.State)),
 		MergeableState:               strings.ToLower(strings.TrimSpace(pullRequest.MergeableState)),
 		Draft:                        pullRequest.Draft,

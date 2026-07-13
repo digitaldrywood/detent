@@ -55,6 +55,9 @@ type State struct {
 	Completed                map[string]Completed
 	Retry                    map[string]Retry
 	MergeTimings             map[string]MergeTiming
+	nativeMergeQueueEntries  map[string]nativeMergeQueueEntry
+	nativeMergeQueueRepos    map[string]nativeMergeQueueRepository
+	nativeMergeQueueDeferred map[string]struct{}
 	TransientCheckRetries    map[string]TransientCheckRetry
 	DependencyAutoUnblocks   map[string]DependencyAutoUnblockRecord
 	BudgetRefusals           map[string]BudgetRefusal
@@ -236,6 +239,9 @@ func newState(cfg Config) State {
 		Completed:                map[string]Completed{},
 		Retry:                    map[string]Retry{},
 		MergeTimings:             map[string]MergeTiming{},
+		nativeMergeQueueEntries:  map[string]nativeMergeQueueEntry{},
+		nativeMergeQueueRepos:    map[string]nativeMergeQueueRepository{},
+		nativeMergeQueueDeferred: map[string]struct{}{},
 		TransientCheckRetries:    map[string]TransientCheckRetry{},
 		DependencyAutoUnblocks:   map[string]DependencyAutoUnblockRecord{},
 		BudgetRefusals:           map[string]BudgetRefusal{},
@@ -290,6 +296,9 @@ func (s State) clone() State {
 		Completed:                make(map[string]Completed, len(s.Completed)),
 		Retry:                    make(map[string]Retry, len(s.Retry)),
 		MergeTimings:             maps.Clone(s.MergeTimings),
+		nativeMergeQueueEntries:  cloneNativeMergeQueueEntries(s.nativeMergeQueueEntries),
+		nativeMergeQueueRepos:    maps.Clone(s.nativeMergeQueueRepos),
+		nativeMergeQueueDeferred: maps.Clone(s.nativeMergeQueueDeferred),
 		TransientCheckRetries:    maps.Clone(s.TransientCheckRetries),
 		DependencyAutoUnblocks:   maps.Clone(s.DependencyAutoUnblocks),
 		BudgetRefusals:           make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
@@ -450,6 +459,10 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	}
 	if issue.PullRequest != nil {
 		pullRequest := *issue.PullRequest
+		if issue.PullRequest.MergeQueueEntry != nil {
+			entry := clonePullRequestMergeQueueEntry(*issue.PullRequest.MergeQueueEntry)
+			pullRequest.MergeQueueEntry = &entry
+		}
 		if issue.PullRequest.ActivityAt != nil {
 			activityAt := *issue.PullRequest.ActivityAt
 			pullRequest.ActivityAt = &activityAt

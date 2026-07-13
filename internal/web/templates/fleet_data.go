@@ -20,6 +20,7 @@ type fleetView struct {
 	TPS        string
 	Spend      string
 	Uptime     string
+	Merge      prPipelineMergeMetrics
 	PRLanes    []fleetPRLane
 	Metrics    fleetMetrics
 }
@@ -55,6 +56,7 @@ type fleetPRCard struct {
 	Project string
 	Meta    string
 	Title   string
+	Status  string
 }
 
 type fleetMetrics struct {
@@ -94,6 +96,7 @@ func fleetViewFromDashboard(data DashboardData) fleetView {
 		TPS:        throughputRate(snapshot),
 		Spend:      formatUSD(snapshot.Budget.CurrentSpendUSD) + " today",
 		Uptime:     "uptime " + runtimeLabel(snapshot),
+		Merge:      prPipelineMergeSummary(snapshot),
 		PRLanes:    fleetPRLanes(snapshot),
 		Metrics:    fleetMetricsFromSnapshot(data),
 	}
@@ -255,6 +258,7 @@ func fleetPRLanes(snapshot telemetry.Snapshot) []fleetPRLane {
 				Project: strings.TrimSpace(card.ProjectID),
 				Meta:    boardCompactAge(card.TimeInStage),
 				Title:   card.Title,
+				Status:  card.MergeLaneStatus,
 			})
 		}
 		views = append(views, view)

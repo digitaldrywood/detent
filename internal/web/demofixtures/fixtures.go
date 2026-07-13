@@ -527,6 +527,16 @@ func demoPipelineIssue(projectID string, id string, identifier string, title str
 		issue.PullRequest.CodexReviewState = "P1"
 		issue.PullRequest.SlowChecks = []telemetry.PullRequestCheck{{Name: "go test -race", Status: "completed", Conclusion: "failure", DurationSeconds: 620}}
 	}
+	if state == "Merging" {
+		issue.PullRequest.MergeQueueEntry = &telemetry.PullRequestMergeQueueEntry{
+			ID:                          "demo-native-merge-queue-entry",
+			State:                       "AWAITING_CHECKS",
+			Position:                    2,
+			Depth:                       6,
+			EstimatedTimeToMergeSeconds: 720,
+			URL:                         "https://github.com/digitaldrywood/release-train/queue/main",
+		}
+	}
 	if state == "Done" {
 		issue.PullRequest.State = "MERGED"
 	}

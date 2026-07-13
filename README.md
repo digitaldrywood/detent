@@ -1997,6 +1997,14 @@ Do not cap `Todo`, `In Progress`, or `Rework` unless you have a specific
 operational reason. Those states should share the global agent pool so workers
 stay busy while merge candidates wait for CI or a clean base branch.
 
+When GitHub reports `HAS_MERGE_QUEUE`, Detent delegates every eligible green
+candidate to the repository's native merge queue instead of rebasing each PR
+through the serialized worker. GitHub owns merge-group validation and batching;
+Detent keeps the issues in `Merging`, observes their queue entries, and
+reconciles them to `Done` after GitHub reports the PR merged. Repositories
+without a native queue continue through the serialized rebase and current-head
+CI path.
+
 Inside the serialized `Merging` lane, avoid duplicating the full local release
 gate when it does not buy new signal. If the PR already passed the pre-review
 gate, the branch rebases cleanly onto current `origin/main`, and no source files

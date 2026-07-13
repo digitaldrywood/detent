@@ -904,9 +904,18 @@ test("fleet page shows agent hero, PR lanes, and metric cards", async ({
 
   await expect(page.locator("#agent-activity")).toBeVisible();
   await expect(page.locator("#fleet-pr-pipeline")).toBeVisible();
+  await expect(page.locator("[data-merge-queue-depth]")).toContainText("Depth 6");
+  await expect(page.locator("[data-merge-queue-eta]")).toContainText("Drain ETA 12m 0s");
+  await expect(page.locator("#pr-lane-merging")).toContainText("Native #2 of 6 · ~12m 0s");
   await expect(page.locator("#fleet-metrics")).toBeVisible();
   await assertNoDocumentOverflow(page);
   await capturePageAndAttach(page, "fleet.png", testInfo);
+
+  await page.setViewportSize(narrowViewport);
+  await expect(page.locator("[data-merge-queue-summary]")).toBeVisible();
+  await expect(page.locator("#pr-lane-merging")).toContainText("Native #2 of 6 · ~12m 0s");
+  await assertNoDocumentOverflow(page);
+  await attachScreenshotEvidence(page, "fleet-merge-queue-narrow.png", testInfo);
 });
 
 test("health page covers key rate-limit states", async ({ page }, testInfo) => {

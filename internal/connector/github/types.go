@@ -135,6 +135,7 @@ type pullRequest struct {
 }
 
 type pullRequestNode struct {
+	NodeID                     string                            `json:"id"`
 	Number                     int                               `json:"number"`
 	URL                        string                            `json:"url"`
 	State                      string                            `json:"state"`
@@ -142,6 +143,7 @@ type pullRequestNode struct {
 	Draft                      bool                              `json:"draft"`
 	ActivityAt                 *time.Time                        `json:"activityAt"`
 	HeadRefName                string                            `json:"headRefName"`
+	BaseRefName                string                            `json:"baseRefName"`
 	HeadSHA                    string                            `json:"headSHA"`
 	BaseSHA                    string                            `json:"baseRefOid"`
 	HydrationUnavailableReason string                            `json:"-"`
@@ -235,6 +237,7 @@ type restAssignee struct {
 }
 
 type restPullRequest struct {
+	NodeID         string     `json:"node_id"`
 	Number         int        `json:"number"`
 	HTMLURL        string     `json:"html_url"`
 	State          string     `json:"state"`

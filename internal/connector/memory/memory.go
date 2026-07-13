@@ -594,6 +594,11 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	}
 	if issue.PullRequest != nil {
 		pullRequest := *issue.PullRequest
+		if issue.PullRequest.MergeQueueEntry != nil {
+			entry := *issue.PullRequest.MergeQueueEntry
+			entry.EnqueuedAt = cloneTime(issue.PullRequest.MergeQueueEntry.EnqueuedAt)
+			pullRequest.MergeQueueEntry = &entry
+		}
 		pullRequest.ActivityAt = cloneTime(issue.PullRequest.ActivityAt)
 		if issue.PullRequest.CodexReviewSubmittedAt != nil {
 			submittedAt := *issue.PullRequest.CodexReviewSubmittedAt
