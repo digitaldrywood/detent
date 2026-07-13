@@ -85,7 +85,7 @@ func (b *AgentBackend) RunTurn(
 		return result, streamErr
 	}
 
-	finalErr := finalTurnError(state, waitErr, stderr.String())
+	finalErr := finalTurnError(ctx, state, waitErr, stderr.String())
 	status := runner.FinalStateCompleted
 	if finalErr != nil {
 		status = runner.FinalStateFailed
@@ -271,10 +271,15 @@ func waitAndCleanup(cmd *exec.Cmd, processGroupID int) error {
 	return err
 }
 
-func finalTurnError(state turnState, waitErr error, stderr string) error {
-	switch {
-	case !state.sawResult:
+func finalTurnError(ctx context.Context, state turnState, waitErr error, stderr string) error {
+	if !state.sawResult {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return withStderrTail(ErrMissingResult, stderr)
+	}
+
+	switch {
 	case state.resultIsError || !strings.EqualFold(strings.TrimSpace(state.resultSubtype), "success"):
 		subtype := strings.TrimSpace(state.resultSubtype)
 		if subtype == "" {
