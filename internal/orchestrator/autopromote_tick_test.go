@@ -4285,6 +4285,15 @@ func TestHandleRunResultBlocksMergeWorkerAfterRepeatedInterruptedSessions(t *tes
 	if !ok || blocked.Issue.State != blockedStatusState {
 		t.Fatalf("Blocked[%q] = %#v, want Blocked issue", issue.ID, blocked)
 	}
+	orch.setBlockedStatusIssue(&state, connector.Issue{
+		ID:         issue.ID,
+		Identifier: issue.Identifier,
+		Title:      issue.Title,
+		State:      blockedStatusState,
+	}, now.Add(time.Minute))
+	if got := state.Blocked[issue.ID].Reason; got != blocked.Reason {
+		t.Fatalf("Blocked[%q].Reason after status refresh = %q, want preserved %q", issue.ID, got, blocked.Reason)
+	}
 	if len(tracker.comments) != 1 {
 		t.Fatalf("comments = %#v, want one exhausted retry comment", tracker.comments)
 	}
