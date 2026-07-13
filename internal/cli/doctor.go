@@ -392,6 +392,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			},
 		},
 		doctorCheckJob{
+			Name: "Budget overrides",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorBudgetOverrides(jobCtx, resolution, cfg.ProjectID, time.Now().UTC(), deps)}
+			},
+		},
+		doctorCheckJob{
 			Name: "Backend capacity",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorBackendCapacity(jobCtx, resolution, boot, cfg.ProjectID, deps, time.Now())}

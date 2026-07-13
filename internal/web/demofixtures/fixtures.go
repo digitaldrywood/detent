@@ -647,6 +647,22 @@ func ProjectsForVariant(variant string) []templates.ProjectSmallMultiple {
 		projects[i].BoardActive = workload.Active
 		projects[i].BoardWaiting = workload.Waiting
 		projects[i].BoardBlocked = workload.Blocked
+		projects[i].BudgetEnabled = true
+		projects[i].PerDayMaxUSD = demoProjectBudgetCap(projects[i].ID)
+		projects[i].PerIssueMaxUSD = projects[i].PerDayMaxUSD / 5
+		projects[i].BudgetResetAt = now.Add(12 * time.Hour)
+		projects[i].BudgetObservedAt = now
+		if projects[i].ID == demoPrimaryProjectID {
+			overrideCap := 60.0
+			projects[i].PerDayMaxUSD = overrideCap
+			projects[i].BudgetOverride = &telemetry.BudgetOverride{
+				ProjectID:    demoPrimaryProjectID,
+				PerDayMaxUSD: &overrideCap,
+				CreatedAt:    now.Add(-time.Hour),
+				ExpiresAt:    now.Add(4 * time.Hour),
+				Reason:       "release readiness",
+			}
+		}
 	}
 	switch variant {
 	case "project-empty", "reports-empty", "settings-empty", "no-history":
@@ -679,6 +695,21 @@ func ProjectsForVariant(variant string) []templates.ProjectSmallMultiple {
 		}
 	}
 	return projects
+}
+
+func demoProjectBudgetCap(projectID string) float64 {
+	switch projectID {
+	case demoPrimaryProjectID:
+		return 42
+	case "docs-site", "release-train":
+		return 20
+	case "mobile-client":
+		return 15
+	case "infra-platform":
+		return 25
+	default:
+		return 10
+	}
 }
 
 func demoProject(id string, name string, url string, paused bool, running int, queue int, blocked int, completed int, tokens int64, spend float64, now time.Time) templates.ProjectSmallMultiple {

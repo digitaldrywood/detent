@@ -40,8 +40,8 @@ func healthViewFromDashboard(data DashboardData) healthView {
 	api := gitHubAPIHealth(snapshot)
 	view := healthView{
 		CheckedAt: snapshot.GeneratedAt,
-		Footnote:  "Quota bars turn amber only at 90% — polling continues normally; backoff engages automatically when a limit is exhausted.",
-		Rows:      healthRows(snapshot),
+		Footnote:  "GitHub quota bars turn amber at 90%; project budget bars warn at 80% and turn red at the cap.",
+		Rows:      append(healthRows(snapshot), healthBudgetRows(data)...),
 	}
 	outages := backendCapacityOutages(snapshot.BackendOutages)
 	if len(outages) > 0 {
@@ -69,6 +69,52 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Detail = api.Detail
 	}
 	return view
+}
+
+func healthBudgetRows(data DashboardData) []healthRow {
+	rows := make([]healthRow, 0, len(data.Projects))
+	for _, project := range data.Projects {
+		if !project.BudgetEnabled || project.PerDayMaxUSD <= 0 {
+			continue
+		}
+		percent := int(project.CurrentSpendUSD / project.PerDayMaxUSD * 100)
+		if percent < 0 {
+			percent = 0
+		}
+		kind := primitives.KindOK
+		status := "Healthy"
+		if percent >= 100 {
+			kind = primitives.KindErr
+			status = "At limit"
+		} else if percent >= 80 {
+			kind = primitives.KindWarn
+			status = "Approaching limit"
+		}
+		detail := formatUSD(project.CurrentSpendUSD) + " spent today"
+		if project.BudgetOverride != nil {
+			observedAt := project.BudgetObservedAt
+			if observedAt.IsZero() {
+				observedAt = data.Snapshot.GeneratedAt
+			}
+			remaining := project.BudgetOverride.ExpiresAt.Sub(observedAt).Round(time.Second)
+			if remaining < 0 {
+				remaining = 0
+			}
+			detail += " · override daily " + optionalUSD(project.BudgetOverride.PerDayMaxUSD) + " / issue " + optionalUSD(project.BudgetOverride.PerIssueMaxUSD) + " expires in " + remaining.String() + " at " + project.BudgetOverride.ExpiresAt.Format(time.RFC3339) + " · " + project.BudgetOverride.Reason
+		}
+		rows = append(rows, healthRow{
+			ID:        "health-budget-" + boardCardSlug(project.ID),
+			Component: "Budget · " + projectSmallMultipleName(project),
+			Kind:      kind,
+			Status:    status,
+			Detail:    detail,
+			Quota:     formatUSD(project.CurrentSpendUSD) + " / " + formatUSD(project.PerDayMaxUSD),
+			QuotaPct:  percent,
+			QuotaWarn: percent >= 80,
+			ResetAt:   project.BudgetResetAt,
+		})
+	}
+	return rows
 }
 
 func healthRows(snapshot telemetry.Snapshot) []healthRow {
@@ -328,6 +374,13 @@ func healthQuotaBarClass(warn bool) string {
 		return "h-full bg-warn"
 	}
 	return "h-full bg-sec"
+}
+
+func healthQuotaBarKindClass(kind primitives.Kind, warn bool) string {
+	if kind == primitives.KindErr {
+		return "h-full bg-err"
+	}
+	return healthQuotaBarClass(warn)
 }
 
 func HealthShellDataFromDashboardV2(data DashboardData) DashboardShellData {

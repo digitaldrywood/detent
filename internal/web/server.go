@@ -320,6 +320,8 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/demo/scenarios", s.apiDemoScenarios, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries, apiReadAuth, apiReadScope)
 	s.echo.POST("/api/v1/projects/:project_id/work-items", s.apiCreateWorkItem, apiMutateAuth, apiProjectWriteScope)
+	s.echo.POST("/api/v1/projects/:project_id/budget/override", s.apiBudgetOverrideSet, apiDashboardMutateAuth, apiProjectWriteScope)
+	s.echo.DELETE("/api/v1/projects/:project_id/budget/override", s.apiBudgetOverrideClear, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/projects/:project_id/work-attempts/:attempt_id", s.apiWorkAttemptReceipt, apiDashboardReadAuth, apiReadScope)
 	s.echo.POST("/api/v1/projects/:project_id/work-attempts/:attempt_id/recovery", s.apiWorkAttemptRecovery, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/projects/*", s.apiProject, apiReadAuth, apiReadScope)
@@ -662,6 +664,7 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 		URL:         project.URL,
 		Color:       project.Color,
 	})
+	scopedSnapshot = applyProjectBudgetSnapshot(scopedSnapshot, project)
 	if target, _, _ := s.kanbanActionTarget(project.ID); target.key != "" {
 		scopedSnapshot = s.kanbanSnapshotWithPendingStates(target.key, project.ID, scopedSnapshot)
 	}
@@ -695,6 +698,21 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 		data.EfficiencyReceipts = receipts
 	}
 	return data, true
+}
+
+func applyProjectBudgetSnapshot(snapshot telemetry.Snapshot, project templates.ProjectSmallMultiple) telemetry.Snapshot {
+	if !project.BudgetEnabled {
+		return snapshot
+	}
+	dayCap := project.PerDayMaxUSD
+	issueCap := project.PerIssueMaxUSD
+	snapshot.Budget.Enabled = true
+	snapshot.Budget.PerDayMaxUSD = &dayCap
+	snapshot.Budget.PerIssueMaxUSD = &issueCap
+	snapshot.Budget.CurrentSpendUSD = project.CurrentSpendUSD
+	snapshot.Budget.PeriodEnd = project.BudgetResetAt
+	snapshot.Budget.PeriodStart = project.BudgetResetAt.AddDate(0, 0, -1)
+	return snapshot
 }
 
 func (s *Server) withKanbanRefreshFeedback(data templates.DashboardData) templates.DashboardData {

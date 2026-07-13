@@ -1186,3 +1186,36 @@ WHERE started_at < sqlc.arg(to_at)
 GROUP BY COALESCE(NULLIF(trim(next_action), ''), NULLIF(trim(wait_reason), ''), 'automatic retry')
 ORDER BY outages DESC, recovery_mode
 LIMIT 1;
+
+-- name: UpsertBudgetOverride :one
+INSERT INTO budget_overrides (
+  project_id,
+  per_day_max_usd,
+  per_issue_max_usd,
+  expires_at,
+  created_at,
+  reason
+) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(project_id) DO UPDATE SET
+  per_day_max_usd = excluded.per_day_max_usd,
+  per_issue_max_usd = excluded.per_issue_max_usd,
+  expires_at = excluded.expires_at,
+  created_at = excluded.created_at,
+  reason = excluded.reason
+RETURNING *;
+
+-- name: ActiveBudgetOverride :one
+SELECT *
+FROM budget_overrides
+WHERE project_id = sqlc.arg(project_id)
+  AND expires_at > sqlc.arg(now);
+
+-- name: ListActiveBudgetOverrides :many
+SELECT *
+FROM budget_overrides
+WHERE expires_at > sqlc.arg(now)
+ORDER BY expires_at, project_id;
+
+-- name: DeleteBudgetOverride :execrows
+DELETE FROM budget_overrides
+WHERE project_id = ?;

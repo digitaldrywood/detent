@@ -1,9 +1,12 @@
 package web
 
 import (
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 func TestProjectSmallMultiplesUseBoardWorkloadTaxonomy(t *testing.T) {
@@ -66,5 +69,63 @@ func TestProjectSmallMultiplesUseBoardWorkloadTaxonomy(t *testing.T) {
 	}{1, 0, 1, 0, 0}
 	if byID["gopher-ai"] != wantGopher {
 		t.Fatalf("gopher-ai workload = %+v, want %+v", byID["gopher-ai"], wantGopher)
+	}
+}
+
+func TestApplyProjectBudgetSnapshot(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC)
+	base := telemetry.Snapshot{
+		Budget: telemetry.Budget{
+			ProjectedCostUSD: 3.25,
+		},
+	}
+	dayCap := 60.0
+	issueCap := 12.0
+
+	tests := []struct {
+		name    string
+		project templates.ProjectSmallMultiple
+		want    telemetry.Budget
+	}{
+		{
+			name: "disabled preserves snapshot budget",
+			project: templates.ProjectSmallMultiple{
+				PerDayMaxUSD:  dayCap,
+				BudgetResetAt: resetAt,
+			},
+			want: base.Budget,
+		},
+		{
+			name: "enabled applies effective project budget",
+			project: templates.ProjectSmallMultiple{
+				BudgetEnabled:   true,
+				PerDayMaxUSD:    dayCap,
+				PerIssueMaxUSD:  issueCap,
+				CurrentSpendUSD: 18.5,
+				BudgetResetAt:   resetAt,
+			},
+			want: telemetry.Budget{
+				Enabled:          true,
+				PerDayMaxUSD:     &dayCap,
+				PerIssueMaxUSD:   &issueCap,
+				CurrentSpendUSD:  18.5,
+				ProjectedCostUSD: 3.25,
+				PeriodStart:      resetAt.AddDate(0, 0, -1),
+				PeriodEnd:        resetAt,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := applyProjectBudgetSnapshot(base, tt.project).Budget
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("applyProjectBudgetSnapshot() budget = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }

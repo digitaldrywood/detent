@@ -8643,6 +8643,68 @@ func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {
 	}
 }
 
+func TestServerBudgetOverrideUIUsesSharedStore(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openWebTestStore(t)
+	registry := project.NewRegistry()
+	if err := registry.Set(newBudgetTestProject(t, "detent", 100, 10)); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+	snapshots := hub.New[telemetry.Snapshot]()
+	if err := snapshots.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Now().UTC(),
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects:    []telemetry.ProjectSnapshot{{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}}},
+		Counts:      telemetry.Counts{Queue: 1},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	deps := testDeps(t)
+	deps.Hub = snapshots
+	deps.Store = backend
+	deps.Registry = registry
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"per_day_max_usd": {"200"},
+		"duration":        {"4h"},
+		"reason":          {"release work"},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/detent/budget/override", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set override status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{`id="project-budget"`, "$0.00 / $200.00", "Override active", "release work", "Clear override early"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("override response missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+	active, err := backend.(store.BudgetOverrideStore).ActiveBudgetOverride(ctx, "detent", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("ActiveBudgetOverride() error = %v", err)
+	}
+	if active.PerDayMaxUSD == nil || *active.PerDayMaxUSD != 200 || active.Reason != "release work" {
+		t.Fatalf("active override = %#v", active)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/projects/detent/budget/override", nil)
+	req.Header.Set("HX-Request", "true")
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "Override active") {
+		t.Fatalf("clear override status/body = %d/%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestDashboardRendersProjectSmallMultiplesFromSnapshots(t *testing.T) {
 	t.Parallel()
 

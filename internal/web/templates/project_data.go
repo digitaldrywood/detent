@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -10,6 +11,67 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
+
+type projectBudgetView struct {
+	Enabled       bool
+	Current       string
+	Cap           string
+	Percent       int
+	Kind          primitives.Kind
+	ResetAt       time.Time
+	Override      *telemetry.BudgetOverride
+	OverrideLabel string
+	Remaining     string
+	PerDayValue   string
+	PerIssueValue string
+}
+
+func projectBudget(data DashboardData) projectBudgetView {
+	for _, project := range data.Projects {
+		if strings.TrimSpace(project.ID) != strings.TrimSpace(data.ProjectID) {
+			continue
+		}
+		view := projectBudgetView{
+			Enabled:       project.BudgetEnabled,
+			Current:       formatUSD(project.CurrentSpendUSD),
+			Cap:           formatUSD(project.PerDayMaxUSD),
+			ResetAt:       project.BudgetResetAt,
+			Override:      project.BudgetOverride,
+			PerDayValue:   strconv.FormatFloat(project.PerDayMaxUSD, 'f', 2, 64),
+			PerIssueValue: strconv.FormatFloat(project.PerIssueMaxUSD, 'f', 2, 64),
+		}
+		if project.PerDayMaxUSD > 0 {
+			view.Percent = int(project.CurrentSpendUSD / project.PerDayMaxUSD * 100)
+		}
+		view.Kind = primitives.KindOK
+		if view.Percent >= 100 {
+			view.Kind = primitives.KindErr
+		} else if view.Percent >= 80 {
+			view.Kind = primitives.KindWarn
+		}
+		if view.Override != nil {
+			view.OverrideLabel = "daily " + optionalUSD(view.Override.PerDayMaxUSD) + " · issue " + optionalUSD(view.Override.PerIssueMaxUSD)
+			now := project.BudgetObservedAt
+			if now.IsZero() {
+				now = data.Snapshot.GeneratedAt
+			}
+			if now.IsZero() {
+				now = time.Now().UTC()
+			}
+			remaining := view.Override.ExpiresAt.Sub(now).Round(time.Second)
+			if remaining < 0 {
+				remaining = 0
+			}
+			view.Remaining = remaining.String()
+		}
+		return view
+	}
+	return projectBudgetView{}
+}
+
+func projectBudgetOverridePath(data DashboardData) string {
+	return "/api/v1/projects/" + url.PathEscape(strings.TrimSpace(data.ProjectID)) + "/budget/override"
+}
 
 // projectTab is one entry in the project sub-nav. Tabs are real links; the
 // active one is marked by weight and a 2px accent underline (accent =

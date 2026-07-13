@@ -33,6 +33,15 @@ type ApiUsageLog struct {
 	CreatedAt  string `json:"created_at"`
 }
 
+type BudgetOverride struct {
+	ProjectID      string          `json:"project_id"`
+	PerDayMaxUsd   sql.NullFloat64 `json:"per_day_max_usd"`
+	PerIssueMaxUsd sql.NullFloat64 `json:"per_issue_max_usd"`
+	ExpiresAt      string          `json:"expires_at"`
+	CreatedAt      string          `json:"created_at"`
+	Reason         string          `json:"reason"`
+}
+
 type CodexSession struct {
 	ID                           int64          `json:"id"`
 	RunID                        sql.NullInt64  `json:"run_id"`
