@@ -650,6 +650,14 @@ func (b *recordingGitHubBackend) MergePullRequest(context.Context, string, int, 
 	panic("unexpected github MergePullRequest")
 }
 
+func (b *recordingGitHubBackend) InspectPullRequestMergeQueue(context.Context, connector.Issue) (connector.PullRequestMergeQueueStatus, error) {
+	panic("unexpected github InspectPullRequestMergeQueue")
+}
+
+func (b *recordingGitHubBackend) EnqueuePullRequest(context.Context, connector.Issue) (connector.PullRequestMergeQueueEntry, error) {
+	panic("unexpected github EnqueuePullRequest")
+}
+
 func (b *recordingGitHubBackend) HydratePullRequest(context.Context, connector.Issue) (connector.Issue, error) {
 	panic("unexpected github HydratePullRequest")
 }

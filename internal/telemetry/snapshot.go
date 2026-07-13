@@ -310,26 +310,37 @@ type BlockedRef struct {
 }
 
 type PullRequest struct {
-	Number                     int                `json:"number,omitempty"`
-	URL                        string             `json:"url,omitempty"`
-	BranchName                 string             `json:"branch_name,omitempty"`
-	State                      string             `json:"state,omitempty"`
-	MergeableState             string             `json:"mergeable_state,omitempty"`
-	HeadSHA                    string             `json:"head_sha,omitempty"`
-	BaseSHA                    string             `json:"base_sha,omitempty"`
-	HydrationUnavailableReason string             `json:"hydration_unavailable_reason,omitempty"`
-	HydrationDegradedReason    string             `json:"hydration_degraded_reason,omitempty"`
-	HydrationNextRetryAt       *time.Time         `json:"hydration_next_retry_at,omitempty"`
-	CIStatus                   string             `json:"ci_status,omitempty"`
-	CheckRunCount              int                `json:"check_run_count,omitempty"`
-	StatusContextCount         int                `json:"status_context_count,omitempty"`
-	CIQueueSeconds             int64              `json:"ci_queue_seconds,omitempty"`
-	CIDurationSeconds          int64              `json:"ci_duration_seconds,omitempty"`
-	QuietWaitSeconds           int64              `json:"quiet_wait_seconds,omitempty"`
-	SlowChecks                 []PullRequestCheck `json:"slow_checks,omitempty"`
-	RunningChecks              []string           `json:"running_checks,omitempty"`
-	RequiredCheckFailures      []PullRequestCheck `json:"required_check_failures,omitempty"`
-	CodexReviewState           string             `json:"codex_review_state,omitempty"`
+	Number                     int                         `json:"number,omitempty"`
+	URL                        string                      `json:"url,omitempty"`
+	BranchName                 string                      `json:"branch_name,omitempty"`
+	State                      string                      `json:"state,omitempty"`
+	MergeableState             string                      `json:"mergeable_state,omitempty"`
+	HeadSHA                    string                      `json:"head_sha,omitempty"`
+	BaseSHA                    string                      `json:"base_sha,omitempty"`
+	HydrationUnavailableReason string                      `json:"hydration_unavailable_reason,omitempty"`
+	HydrationDegradedReason    string                      `json:"hydration_degraded_reason,omitempty"`
+	HydrationNextRetryAt       *time.Time                  `json:"hydration_next_retry_at,omitempty"`
+	CIStatus                   string                      `json:"ci_status,omitempty"`
+	CheckRunCount              int                         `json:"check_run_count,omitempty"`
+	StatusContextCount         int                         `json:"status_context_count,omitempty"`
+	CIQueueSeconds             int64                       `json:"ci_queue_seconds,omitempty"`
+	CIDurationSeconds          int64                       `json:"ci_duration_seconds,omitempty"`
+	QuietWaitSeconds           int64                       `json:"quiet_wait_seconds,omitempty"`
+	SlowChecks                 []PullRequestCheck          `json:"slow_checks,omitempty"`
+	RunningChecks              []string                    `json:"running_checks,omitempty"`
+	RequiredCheckFailures      []PullRequestCheck          `json:"required_check_failures,omitempty"`
+	CodexReviewState           string                      `json:"codex_review_state,omitempty"`
+	MergeQueueEntry            *PullRequestMergeQueueEntry `json:"merge_queue_entry,omitempty"`
+}
+
+type PullRequestMergeQueueEntry struct {
+	ID                          string     `json:"id,omitempty"`
+	State                       string     `json:"state,omitempty"`
+	Position                    int        `json:"position,omitempty"`
+	Depth                       int        `json:"depth,omitempty"`
+	EstimatedTimeToMergeSeconds int64      `json:"estimated_time_to_merge_seconds,omitempty"`
+	EnqueuedAt                  *time.Time `json:"enqueued_at,omitempty"`
+	URL                         string     `json:"url,omitempty"`
 }
 
 type PullRequestCheck struct {

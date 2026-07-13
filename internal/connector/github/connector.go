@@ -50,6 +50,8 @@ const (
 	graphQLQueryUpdateField     = "update_project_field"
 	graphQLQueryRemoveItem      = "remove_project_item"
 	graphQLQueryAddProjectItem  = "add_project_item"
+	graphQLQueryMergeQueue      = "merge_queue"
+	graphQLQueryEnqueuePR       = "enqueue_pull_request"
 )
 
 type Config struct {

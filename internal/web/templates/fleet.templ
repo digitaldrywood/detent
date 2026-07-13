@@ -59,7 +59,15 @@ templ fleetSnapshotBody(data DashboardData) {
 		}
 	</div>
 	<div id="fleet-pr-pipeline" class="flex flex-none flex-col gap-2.5">
-		<h2 class="text-sm font-semibold text-text">PR pipeline</h2>
+		<div class="flex min-w-0 flex-wrap items-center justify-between gap-2">
+			<h2 class="text-sm font-semibold text-text">PR pipeline</h2>
+			if view.Merge.Available {
+				<div class="flex min-w-0 flex-wrap items-center gap-3 font-mono text-2xs text-sec tabular-nums" data-merge-queue-summary>
+					<span data-merge-queue-depth>Depth <strong class="font-semibold text-text">{ view.Merge.Depth }</strong></span>
+					<span data-merge-queue-eta>Drain ETA <strong class="font-semibold text-text">{ view.Merge.DrainETA }</strong></span>
+				</div>
+			}
+		</div>
 		<div class="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-3">
 			for _, lane := range view.PRLanes {
 				<section id={ lane.ID } class="flex h-48 min-w-0 flex-col overflow-hidden rounded-card border border-line bg-surface">
@@ -82,6 +90,9 @@ templ fleetSnapshotBody(data DashboardData) {
 									}
 								</div>
 								<div class="line-clamp-2 text-xs text-text">{ card.Title }</div>
+								if card.Status != "" {
+									<div class="truncate font-mono text-2xs font-medium text-accent">{ card.Status }</div>
+								}
 							</article>
 						}
 					</div>

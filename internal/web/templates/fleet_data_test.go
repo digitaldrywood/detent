@@ -174,6 +174,40 @@ func TestFleetPRLanesScopeLocalIdentityIDs(t *testing.T) {
 	}
 }
 
+func TestFleetSnapshotShowsNativeMergeQueueDepthAndETA(t *testing.T) {
+	now := time.Date(2026, 7, 13, 18, 0, 0, 0, time.UTC)
+	data := DashboardData{Snapshot: telemetry.Snapshot{
+		GeneratedAt: now,
+		Pipeline: []telemetry.Issue{{
+			ID:         "native-queued",
+			Identifier: "digitaldrywood/detent#1301",
+			ProjectID:  "detent",
+			Title:      "Delegate native merge queue",
+			State:      "Merging",
+			PullRequest: &telemetry.PullRequest{MergeQueueEntry: &telemetry.PullRequestMergeQueueEntry{
+				ID:                          "MQE_1301",
+				State:                       "AWAITING_CHECKS",
+				Position:                    2,
+				Depth:                       6,
+				EstimatedTimeToMergeSeconds: 720,
+			}},
+		}},
+	}}
+
+	html := renderBoardComponent(t, FleetSnapshotV2(data))
+	for _, want := range []string{
+		`data-merge-queue-depth`,
+		`Depth <strong class="font-semibold text-text">6</strong>`,
+		`data-merge-queue-eta`,
+		`Drain ETA <strong class="font-semibold text-text">12m 0s</strong>`,
+		`Native #2 of 6 · ~12m 0s`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("FleetSnapshotV2() missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestFleetAgentRowsUniqueIDsForNonGitHubIdentifiers(t *testing.T) {
 	// Memory/non-GitHub tracker identifiers have no #number; each running
 	// session must still get a unique, stable DOM id for SSE morph targeting.

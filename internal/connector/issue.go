@@ -69,36 +69,39 @@ type DependencyCapabilityReporter interface {
 }
 
 type PullRequest struct {
-	Number                       int                  `json:"number,omitempty" yaml:"number,omitempty"`
-	URL                          string               `json:"url,omitempty" yaml:"url,omitempty"`
-	BranchName                   string               `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
-	State                        string               `json:"state,omitempty" yaml:"state,omitempty"`
-	MergeableState               string               `json:"mergeable_state,omitempty" yaml:"mergeable_state,omitempty"`
-	Draft                        bool                 `json:"draft,omitempty" yaml:"draft,omitempty"`
-	ActivityAt                   *time.Time           `json:"activity_at,omitempty" yaml:"activity_at,omitempty"`
-	HeadSHA                      string               `json:"head_sha,omitempty" yaml:"head_sha,omitempty"`
-	BaseSHA                      string               `json:"base_sha,omitempty" yaml:"base_sha,omitempty"`
-	HydrationUnavailableReason   string               `json:"hydration_unavailable_reason,omitempty" yaml:"hydration_unavailable_reason,omitempty"`
-	HydrationDegradedReason      string               `json:"hydration_degraded_reason,omitempty" yaml:"hydration_degraded_reason,omitempty"`
-	HydrationNextRetryAt         *time.Time           `json:"hydration_next_retry_at,omitempty" yaml:"hydration_next_retry_at,omitempty"`
-	CIStatus                     string               `json:"ci_status,omitempty" yaml:"ci_status,omitempty"`
-	CheckRunCount                int                  `json:"check_run_count,omitempty" yaml:"check_run_count,omitempty"`
-	StatusContextCount           int                  `json:"status_context_count,omitempty" yaml:"status_context_count,omitempty"`
-	CIQueueSeconds               int64                `json:"ci_queue_seconds,omitempty" yaml:"ci_queue_seconds,omitempty"`
-	CIDurationSeconds            int64                `json:"ci_duration_seconds,omitempty" yaml:"ci_duration_seconds,omitempty"`
-	SlowChecks                   []PullRequestCheck   `json:"slow_checks,omitempty" yaml:"slow_checks,omitempty"`
-	RunningChecks                []string             `json:"running_checks,omitempty" yaml:"running_checks,omitempty"`
-	StaleSuccessfulChecks        []PullRequestCheck   `json:"stale_successful_checks,omitempty" yaml:"stale_successful_checks,omitempty"`
-	RequiredCheckFailures        []PullRequestCheck   `json:"required_check_failures,omitempty" yaml:"required_check_failures,omitempty"`
-	TransientFailedChecks        []PullRequestCheck   `json:"transient_failed_checks,omitempty" yaml:"transient_failed_checks,omitempty"`
-	CodexReviewState             string               `json:"codex_review_state,omitempty" yaml:"codex_review_state,omitempty"`
-	CodexReviewAPIState          string               `json:"codex_review_api_state,omitempty" yaml:"codex_review_api_state,omitempty"`
-	CodexReviewBodySeverity      string               `json:"codex_review_body_severity,omitempty" yaml:"codex_review_body_severity,omitempty"`
-	CodexReviewSubmittedAt       *time.Time           `json:"codex_review_submitted_at,omitempty" yaml:"codex_review_submitted_at,omitempty"`
-	CodexReviewFindings          []PullRequestFinding `json:"codex_review_findings,omitempty" yaml:"codex_review_findings,omitempty"`
-	LatestCodexReviewState       string               `json:"latest_codex_review_state,omitempty" yaml:"latest_codex_review_state,omitempty"`
-	LatestCodexReviewCommitSHA   string               `json:"latest_codex_review_commit_sha,omitempty" yaml:"latest_codex_review_commit_sha,omitempty"`
-	LatestCodexReviewSubmittedAt *time.Time           `json:"latest_codex_review_submitted_at,omitempty" yaml:"latest_codex_review_submitted_at,omitempty"`
+	NodeID                       string                      `json:"node_id,omitempty" yaml:"node_id,omitempty"`
+	Number                       int                         `json:"number,omitempty" yaml:"number,omitempty"`
+	URL                          string                      `json:"url,omitempty" yaml:"url,omitempty"`
+	BranchName                   string                      `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
+	BaseRef                      string                      `json:"base_ref,omitempty" yaml:"base_ref,omitempty"`
+	State                        string                      `json:"state,omitempty" yaml:"state,omitempty"`
+	MergeableState               string                      `json:"mergeable_state,omitempty" yaml:"mergeable_state,omitempty"`
+	Draft                        bool                        `json:"draft,omitempty" yaml:"draft,omitempty"`
+	ActivityAt                   *time.Time                  `json:"activity_at,omitempty" yaml:"activity_at,omitempty"`
+	HeadSHA                      string                      `json:"head_sha,omitempty" yaml:"head_sha,omitempty"`
+	BaseSHA                      string                      `json:"base_sha,omitempty" yaml:"base_sha,omitempty"`
+	HydrationUnavailableReason   string                      `json:"hydration_unavailable_reason,omitempty" yaml:"hydration_unavailable_reason,omitempty"`
+	HydrationDegradedReason      string                      `json:"hydration_degraded_reason,omitempty" yaml:"hydration_degraded_reason,omitempty"`
+	HydrationNextRetryAt         *time.Time                  `json:"hydration_next_retry_at,omitempty" yaml:"hydration_next_retry_at,omitempty"`
+	CIStatus                     string                      `json:"ci_status,omitempty" yaml:"ci_status,omitempty"`
+	CheckRunCount                int                         `json:"check_run_count,omitempty" yaml:"check_run_count,omitempty"`
+	StatusContextCount           int                         `json:"status_context_count,omitempty" yaml:"status_context_count,omitempty"`
+	CIQueueSeconds               int64                       `json:"ci_queue_seconds,omitempty" yaml:"ci_queue_seconds,omitempty"`
+	CIDurationSeconds            int64                       `json:"ci_duration_seconds,omitempty" yaml:"ci_duration_seconds,omitempty"`
+	SlowChecks                   []PullRequestCheck          `json:"slow_checks,omitempty" yaml:"slow_checks,omitempty"`
+	RunningChecks                []string                    `json:"running_checks,omitempty" yaml:"running_checks,omitempty"`
+	StaleSuccessfulChecks        []PullRequestCheck          `json:"stale_successful_checks,omitempty" yaml:"stale_successful_checks,omitempty"`
+	RequiredCheckFailures        []PullRequestCheck          `json:"required_check_failures,omitempty" yaml:"required_check_failures,omitempty"`
+	TransientFailedChecks        []PullRequestCheck          `json:"transient_failed_checks,omitempty" yaml:"transient_failed_checks,omitempty"`
+	CodexReviewState             string                      `json:"codex_review_state,omitempty" yaml:"codex_review_state,omitempty"`
+	CodexReviewAPIState          string                      `json:"codex_review_api_state,omitempty" yaml:"codex_review_api_state,omitempty"`
+	CodexReviewBodySeverity      string                      `json:"codex_review_body_severity,omitempty" yaml:"codex_review_body_severity,omitempty"`
+	CodexReviewSubmittedAt       *time.Time                  `json:"codex_review_submitted_at,omitempty" yaml:"codex_review_submitted_at,omitempty"`
+	CodexReviewFindings          []PullRequestFinding        `json:"codex_review_findings,omitempty" yaml:"codex_review_findings,omitempty"`
+	LatestCodexReviewState       string                      `json:"latest_codex_review_state,omitempty" yaml:"latest_codex_review_state,omitempty"`
+	LatestCodexReviewCommitSHA   string                      `json:"latest_codex_review_commit_sha,omitempty" yaml:"latest_codex_review_commit_sha,omitempty"`
+	LatestCodexReviewSubmittedAt *time.Time                  `json:"latest_codex_review_submitted_at,omitempty" yaml:"latest_codex_review_submitted_at,omitempty"`
+	MergeQueueEntry              *PullRequestMergeQueueEntry `json:"merge_queue_entry,omitempty" yaml:"merge_queue_entry,omitempty"`
 }
 
 const (

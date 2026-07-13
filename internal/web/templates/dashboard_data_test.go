@@ -2933,6 +2933,47 @@ func TestPRPipelineLanesShowMergeLaneStatus(t *testing.T) {
 	}
 }
 
+func TestPRPipelineLanesShowNativeMergeQueueDepthAndETA(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 13, 18, 0, 0, 0, time.UTC)
+	queuedAt := now.Add(-2 * time.Minute)
+	lanes := prPipelineLanes(telemetry.Snapshot{
+		GeneratedAt: now,
+		Pipeline: []telemetry.Issue{{
+			ID:             "native-queued",
+			Identifier:     "digitaldrywood/detent#144",
+			Title:          "Native queued merge",
+			State:          "Merging",
+			StageUpdatedAt: &queuedAt,
+			PullRequest: &telemetry.PullRequest{
+				Number: 144,
+				URL:    "https://github.com/digitaldrywood/detent/pull/144",
+				MergeQueueEntry: &telemetry.PullRequestMergeQueueEntry{
+					ID:                          "MQE_144",
+					State:                       "AWAITING_CHECKS",
+					Position:                    2,
+					Depth:                       6,
+					EstimatedTimeToMergeSeconds: 720,
+					URL:                         "https://github.com/digitaldrywood/detent/queue/main",
+				},
+			},
+		}},
+	})
+
+	cards := collectPipelineCards(lanes)
+	if len(cards) != 1 {
+		t.Fatalf("cards len = %d, want 1; cards = %#v", len(cards), cards)
+	}
+	if cards[0].MergeLaneStatus != "Native #2 of 6 · ~12m 0s" {
+		t.Fatalf("MergeLaneStatus = %q, want native position, depth, and ETA", cards[0].MergeLaneStatus)
+	}
+	wantDetail := "GitHub native merge queue; state awaiting_checks; position 2 of 6; estimated drain 12m 0s"
+	if cards[0].MergeLaneDetail != wantDetail {
+		t.Fatalf("MergeLaneDetail = %q, want %q", cards[0].MergeLaneDetail, wantDetail)
+	}
+}
+
 func TestPRPipelineLanesPreserveTrackerRefreshRows(t *testing.T) {
 	t.Parallel()
 
@@ -3240,6 +3281,71 @@ func TestPRPipelineMergeSummaryTracksActiveAndRecentDurations(t *testing.T) {
 	}
 	if summary.TotalP50 != "7m 0s" || summary.TotalP90 != "9m 0s" {
 		t.Fatalf("total percentiles = %#v, want total p50/p90", summary)
+	}
+	if summary.Depth != "2" || summary.DrainETA != "4m 0s" {
+		t.Fatalf("queue forecast = depth %q ETA %q, want 2 and 4m", summary.Depth, summary.DrainETA)
+	}
+}
+
+func TestPRPipelineMergeSummaryPrefersNativeQueueETA(t *testing.T) {
+	t.Parallel()
+
+	summary := prPipelineMergeSummary(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 13, 18, 0, 0, 0, time.UTC),
+		Pipeline: []telemetry.Issue{
+			{
+				ID:         "native-1",
+				Identifier: "digitaldrywood/detent#501",
+				State:      "Merging",
+				PullRequest: &telemetry.PullRequest{MergeQueueEntry: &telemetry.PullRequestMergeQueueEntry{
+					ID:                          "MQE_501",
+					EstimatedTimeToMergeSeconds: 300,
+				}},
+			},
+			{
+				ID:         "native-2",
+				Identifier: "digitaldrywood/detent#502",
+				State:      "Merging",
+				PullRequest: &telemetry.PullRequest{MergeQueueEntry: &telemetry.PullRequestMergeQueueEntry{
+					ID:                          "MQE_502",
+					EstimatedTimeToMergeSeconds: 900,
+				}},
+			},
+		},
+	})
+
+	if summary.Depth != "2" || summary.DrainETA != "15m 0s" {
+		t.Fatalf("queue forecast = depth %q ETA %q, want 2 and 15m", summary.Depth, summary.DrainETA)
+	}
+}
+
+func TestPRPipelineMergeSummaryUsesDistinctNativeQueueDepths(t *testing.T) {
+	t.Parallel()
+
+	summary := prPipelineMergeSummary(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 13, 18, 0, 0, 0, time.UTC),
+		Pipeline: []telemetry.Issue{
+			nativeQueueSummaryIssue("native-1", "https://github.test/one/queue/main", 6),
+			nativeQueueSummaryIssue("native-2", "https://github.test/one/queue/main", 6),
+			nativeQueueSummaryIssue("native-3", "https://github.test/two/queue/main", 3),
+		},
+	})
+
+	if summary.Depth != "9" {
+		t.Fatalf("queue depth = %q, want distinct native queue depths totaling 9", summary.Depth)
+	}
+}
+
+func nativeQueueSummaryIssue(id string, queueURL string, depth int) telemetry.Issue {
+	return telemetry.Issue{
+		ID:         id,
+		Identifier: "digitaldrywood/detent#" + id,
+		State:      "Merging",
+		PullRequest: &telemetry.PullRequest{MergeQueueEntry: &telemetry.PullRequestMergeQueueEntry{
+			ID:    "MQE_" + id,
+			Depth: depth,
+			URL:   queueURL,
+		}},
 	}
 }
 

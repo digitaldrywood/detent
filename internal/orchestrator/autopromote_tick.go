@@ -1147,6 +1147,9 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 		if staleMergingPullRequestDispatchActive(state, issueID) {
 			continue
 		}
+		if _, deferred := state.nativeMergeQueueDeferred[issueID]; deferred {
+			continue
+		}
 		stateKey := normalizeState(issue.State)
 		projectStats := o.projectStateSlotStats(issue, state)
 		selected := selectedByState[stateKey]
@@ -1201,6 +1204,9 @@ func staleMergingIssueReadyForDispatch(issue connector.Issue) bool {
 		return false
 	}
 	pullRequest := issue.PullRequest
+	if pullRequest.MergeQueueEntry != nil && strings.TrimSpace(pullRequest.MergeQueueEntry.ID) != "" {
+		return false
+	}
 	if pullRequestHydrationBlocksProgress(pullRequest) {
 		return false
 	}

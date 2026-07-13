@@ -688,7 +688,7 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 	if pullRequest == nil {
 		pullRequest = &connector.PullRequest{Number: *prNumber}
 	}
-	return &telemetry.PullRequest{
+	out := &telemetry.PullRequest{
 		Number:                     pullRequest.Number,
 		URL:                        pullRequest.URL,
 		BranchName:                 pullRequest.BranchName,
@@ -710,6 +710,18 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 		RequiredCheckFailures:      telemetryPullRequestChecks(pullRequest.RequiredCheckFailures),
 		CodexReviewState:           pullRequest.CodexReviewState,
 	}
+	if pullRequest.MergeQueueEntry != nil {
+		out.MergeQueueEntry = &telemetry.PullRequestMergeQueueEntry{
+			ID:                          pullRequest.MergeQueueEntry.ID,
+			State:                       pullRequest.MergeQueueEntry.State,
+			Position:                    pullRequest.MergeQueueEntry.Position,
+			Depth:                       pullRequest.MergeQueueEntry.Depth,
+			EstimatedTimeToMergeSeconds: pullRequest.MergeQueueEntry.EstimatedTimeToMergeSeconds,
+			EnqueuedAt:                  cloneTime(pullRequest.MergeQueueEntry.EnqueuedAt),
+			URL:                         pullRequest.MergeQueueEntry.URL,
+		}
+	}
+	return out
 }
 
 func cloneTime(value *time.Time) *time.Time {

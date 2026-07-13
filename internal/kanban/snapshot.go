@@ -139,6 +139,11 @@ func clonePullRequest(pr *telemetry.PullRequest) *telemetry.PullRequest {
 		return nil
 	}
 	out := *pr
+	if pr.MergeQueueEntry != nil {
+		entry := *pr.MergeQueueEntry
+		entry.EnqueuedAt = CloneTimePointer(pr.MergeQueueEntry.EnqueuedAt)
+		out.MergeQueueEntry = &entry
+	}
 	out.HydrationNextRetryAt = CloneTimePointer(pr.HydrationNextRetryAt)
 	out.SlowChecks = append([]telemetry.PullRequestCheck(nil), pr.SlowChecks...)
 	out.RunningChecks = append([]string(nil), pr.RunningChecks...)

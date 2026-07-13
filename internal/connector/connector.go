@@ -90,6 +90,27 @@ type PullRequestMerger interface {
 	MergePullRequest(context.Context, string, int, string, string) error
 }
 
+type PullRequestMergeQueue interface {
+	InspectPullRequestMergeQueue(context.Context, Issue) (PullRequestMergeQueueStatus, error)
+	EnqueuePullRequest(context.Context, Issue) (PullRequestMergeQueueEntry, error)
+}
+
+type PullRequestMergeQueueStatus struct {
+	Available         bool
+	PullRequestNodeID string
+	Entry             *PullRequestMergeQueueEntry
+}
+
+type PullRequestMergeQueueEntry struct {
+	ID                          string     `json:"id,omitempty" yaml:"id,omitempty"`
+	State                       string     `json:"state,omitempty" yaml:"state,omitempty"`
+	Position                    int        `json:"position,omitempty" yaml:"position,omitempty"`
+	Depth                       int        `json:"depth,omitempty" yaml:"depth,omitempty"`
+	EstimatedTimeToMergeSeconds int64      `json:"estimated_time_to_merge_seconds,omitempty" yaml:"estimated_time_to_merge_seconds,omitempty"`
+	EnqueuedAt                  *time.Time `json:"enqueued_at,omitempty" yaml:"enqueued_at,omitempty"`
+	URL                         string     `json:"url,omitempty" yaml:"url,omitempty"`
+}
+
 type PullRequestHydrator interface {
 	HydratePullRequest(context.Context, Issue) (Issue, error)
 }

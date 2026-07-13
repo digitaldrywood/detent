@@ -53,6 +53,7 @@ type githubBackend interface {
 	connector.PullRequestCommenter
 	connector.PullRequestCommentReader
 	connector.PullRequestHydrator
+	connector.PullRequestMergeQueue
 	connector.PullRequestMerger
 	connector.RateLimitReporter
 	connector.RESTRateLimitUsageReporter
@@ -114,6 +115,7 @@ var _ connector.ProjectRemover = (*Connector)(nil)
 var _ connector.PullRequestCommenter = (*Connector)(nil)
 var _ connector.PullRequestCommentReader = (*Connector)(nil)
 var _ connector.PullRequestHydrator = (*Connector)(nil)
+var _ connector.PullRequestMergeQueue = (*Connector)(nil)
 var _ connector.PullRequestMerger = (*Connector)(nil)
 var _ connector.RESTRateLimitUsageReporter = (*Connector)(nil)
 var _ connector.StatusDriftReader = (*Connector)(nil)
@@ -485,6 +487,14 @@ func (c *Connector) FetchPullRequestComments(ctx context.Context, repository str
 
 func (c *Connector) MergePullRequest(ctx context.Context, repository string, number int, headSHA string, mergeMethod string) error {
 	return c.github.MergePullRequest(ctx, repository, number, headSHA, mergeMethod)
+}
+
+func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue connector.Issue) (connector.PullRequestMergeQueueStatus, error) {
+	return c.github.InspectPullRequestMergeQueue(ctx, issue)
+}
+
+func (c *Connector) EnqueuePullRequest(ctx context.Context, issue connector.Issue) (connector.PullRequestMergeQueueEntry, error) {
+	return c.github.EnqueuePullRequest(ctx, issue)
 }
 
 func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {

@@ -507,6 +507,8 @@ type prPipelineCard struct {
 
 type prPipelineMergeMetrics struct {
 	Available     bool
+	Depth         string
+	DrainETA      string
 	ActiveElapsed string
 	QueueWait     string
 	RecentCount   string
@@ -3301,6 +3303,10 @@ func mergeLaneStatuses(snapshot telemetry.Snapshot) map[string]mergeLaneCardStat
 
 		for i, record := range groupRecords {
 			position := i + 1
+			if native := nativeMergeQueueCardStatus(record); native != (mergeLaneCardStatus{}) {
+				statuses[record.key] = native
+				continue
+			}
 			if record.active {
 				statuses[record.key] = mergeLaneActiveStatus(record)
 				continue
@@ -3309,6 +3315,42 @@ func mergeLaneStatuses(snapshot telemetry.Snapshot) map[string]mergeLaneCardStat
 		}
 	}
 	return statuses
+}
+
+func nativeMergeQueueCardStatus(record mergeLaneIssueRecord) mergeLaneCardStatus {
+	if record.issue.PullRequest == nil || record.issue.PullRequest.MergeQueueEntry == nil {
+		return mergeLaneCardStatus{}
+	}
+	entry := record.issue.PullRequest.MergeQueueEntry
+	if strings.TrimSpace(entry.ID) == "" {
+		return mergeLaneCardStatus{}
+	}
+	label := "Native queue"
+	if entry.Position > 0 && entry.Depth > 0 {
+		label = "Native #" + strconv.Itoa(entry.Position) + " of " + strconv.Itoa(entry.Depth)
+	} else if entry.Position > 0 {
+		label = "Native #" + strconv.Itoa(entry.Position)
+	}
+	if entry.EstimatedTimeToMergeSeconds > 0 {
+		label += " · ~" + formatDuration(float64(entry.EstimatedTimeToMergeSeconds))
+	}
+	details := []string{"GitHub native merge queue"}
+	if state := strings.TrimSpace(entry.State); state != "" {
+		details = append(details, "state "+strings.ToLower(state))
+	}
+	if entry.Position > 0 && entry.Depth > 0 {
+		details = append(details, "position "+strconv.Itoa(entry.Position)+" of "+strconv.Itoa(entry.Depth))
+	}
+	if entry.EstimatedTimeToMergeSeconds > 0 {
+		details = append(details, "estimated drain "+formatDuration(float64(entry.EstimatedTimeToMergeSeconds)))
+	}
+	return mergeLaneCardStatus{
+		Label:  label,
+		Detail: strings.Join(details, "; "),
+		Prefix: strings.Join(details, "; "),
+		URL:    strings.TrimSpace(entry.URL),
+		Class:  "border-accent/15 bg-accent/15 text-accent",
+	}
 }
 
 func mergeLaneIssueRecords(snapshot telemetry.Snapshot) []mergeLaneIssueRecord {
@@ -3568,10 +3610,28 @@ func prPipelineTotalLabel(snapshot telemetry.Snapshot) string {
 
 func prPipelineMergeSummary(snapshot telemetry.Snapshot) prPipelineMergeMetrics {
 	now := pipelineNow(snapshot)
+	depth := len(mergeLaneIssueRecords(snapshot))
+	nativeQueueDepths := map[string]int{}
+	nativeUnknownDepth := 0
 	activeSeconds := int64(0)
 	queueSeconds := int64(0)
+	nativeDrainSeconds := int64(0)
 	collectLive := func(issue telemetry.Issue) {
-		if normalizeDashboardState(issue.State) != "merging" || issue.MergeTiming == nil {
+		if normalizeDashboardState(issue.State) != "merging" {
+			return
+		}
+		if issue.PullRequest != nil && issue.PullRequest.MergeQueueEntry != nil {
+			entry := issue.PullRequest.MergeQueueEntry
+			nativeDrainSeconds = max(nativeDrainSeconds, entry.EstimatedTimeToMergeSeconds)
+			if entry.Depth > 0 {
+				if queueURL := strings.TrimSpace(entry.URL); queueURL != "" {
+					nativeQueueDepths[queueURL] = max(nativeQueueDepths[queueURL], entry.Depth)
+				} else {
+					nativeUnknownDepth = max(nativeUnknownDepth, entry.Depth)
+				}
+			}
+		}
+		if issue.MergeTiming == nil {
 			return
 		}
 		timing := issue.MergeTiming
@@ -3605,13 +3665,29 @@ func prPipelineMergeSummary(snapshot telemetry.Snapshot) prPipelineMergeMetrics 
 			totalDurations = append(totalDurations, row.MergeTiming.TotalMergingSeconds)
 		}
 	}
+	for _, queueDepth := range nativeQueueDepths {
+		nativeUnknownDepth += queueDepth
+	}
+	if nativeUnknownDepth > 0 {
+		depth = nativeUnknownDepth
+	}
 
+	activeP50 := percentileDuration(activeDurations, 50)
+	drainSeconds := nativeDrainSeconds
+	if drainSeconds == 0 && activeP50 > 0 && depth > 0 {
+		drainSeconds = activeP50 * int64(depth)
+		if activeSeconds > 0 {
+			drainSeconds -= min(activeSeconds, activeP50)
+		}
+	}
 	summary := prPipelineMergeMetrics{
-		Available:     activeSeconds > 0 || queueSeconds > 0 || len(activeDurations) > 0 || len(totalDurations) > 0,
+		Available:     depth > 0 || activeSeconds > 0 || queueSeconds > 0 || len(activeDurations) > 0 || len(totalDurations) > 0,
+		Depth:         formatCount(depth),
+		DrainETA:      formatOptionalDuration(drainSeconds),
 		ActiveElapsed: formatOptionalDuration(activeSeconds),
 		QueueWait:     formatOptionalDuration(queueSeconds),
 		RecentCount:   formatCount(len(activeDurations)),
-		ActiveP50:     formatOptionalDuration(percentileDuration(activeDurations, 50)),
+		ActiveP50:     formatOptionalDuration(activeP50),
 		ActiveP90:     formatOptionalDuration(percentileDuration(activeDurations, 90)),
 		TotalP50:      formatOptionalDuration(percentileDuration(totalDurations, 50)),
 		TotalP90:      formatOptionalDuration(percentileDuration(totalDurations, 90)),
