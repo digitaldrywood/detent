@@ -2436,6 +2436,91 @@ func TestTickAutoPromoteRunsValidatorStage(t *testing.T) {
 	}
 }
 
+func TestTickAutoPromoteStartsValidatorBeforeAutomatedReview(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 13, 10, 0, 0, 0, time.UTC)
+	cfg := autoPromoteValidatorTestConfig()
+	issue := autoPromoteTickIssue("issue-validator-no-review", []string{"bug"}, &connector.PullRequest{
+		Number:     1298,
+		URL:        "https://github.test/digitaldrywood/detent/pull/1298",
+		BranchName: "detent/digitaldrywood_detent_1298",
+		HeadSHA:    "head-validator-no-review",
+		State:      "OPEN",
+		CIStatus:   "success",
+	})
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	validator := &autoPromoteTickValidator{
+		result: gate.ValidatorResult{
+			Submitted: true,
+			Verdict:   gate.ValidatorVerdictPass,
+			Score:     0.95,
+		},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		validator: validator,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+
+	orch.tick(t.Context(), &state, now)
+
+	waitForValidatorRequests(t, validator, 1)
+	if got := state.AutoPromoteDecisions[issue.ID].Reason; got != AutoPromoteReasonValidatorMissing {
+		t.Fatalf("auto-promote reason = %q, want %q", got, AutoPromoteReasonValidatorMissing)
+	}
+}
+
+func TestTickAutoPromoteValidatorUnavailableRoutesRework(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	memo := openValidatorMemoStore(t)
+	now := time.Date(2026, 7, 13, 10, 30, 0, 0, time.UTC)
+	cfg := autoPromoteValidatorTestConfig()
+	issue := autoPromoteTickIssue("issue-validator-unavailable", []string{"bug"}, &connector.PullRequest{
+		Number:     1299,
+		URL:        "https://github.test/digitaldrywood/detent/pull/1299",
+		BranchName: "detent/digitaldrywood_detent_1299",
+		HeadSHA:    "head-validator-unavailable",
+		State:      "OPEN",
+		CIStatus:   "success",
+	})
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:           cfg,
+		connector:     tracker,
+		validatorMemo: memo,
+		logger:        slog.New(slog.NewTextHandler(&logs, nil)),
+		now:           func() time.Time { return now },
+	}
+	state := newState(cfg)
+
+	orch.tick(ctx, &state, now)
+	waitForValidatorResult(t, orch, issue)
+	verdict := waitForPersistedValidatorFailure(t, memo, store.ValidatorVerdictKey{
+		ProjectID: "detent",
+		IssueID:   issue.ID,
+		HeadSHA:   issue.PullRequest.HeadSHA,
+	}, gate.DefaultValidatorMaxAttempts)
+	if verdict.Summary != "validator review production could not start: validator runner unavailable" {
+		t.Fatalf("validator summary = %q", verdict.Summary)
+	}
+
+	orch.tick(ctx, &state, now.Add(time.Second))
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Rework"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	for _, fragment := range []string{"validator stage unavailable", "issue_id=issue-validator-unavailable", "pull_request=1299"} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs missing %q:\n%s", fragment, logs.String())
+		}
+	}
+}
+
 func TestTickAutoPromoteUsesPersistedValidatorVerdictAfterRestart(t *testing.T) {
 	t.Parallel()
 
@@ -2630,6 +2715,83 @@ func TestTickAutoPromoteValidatorFailureBackoff(t *testing.T) {
 	clock.Set(resumeAt)
 	orch.tick(ctx, &state, resumeAt)
 	waitForValidatorRequests(t, validator, 2)
+}
+
+func TestTickAutoPromoteValidatorFailureExhaustionRoutesRework(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	memo := openValidatorMemoStore(t)
+	clock := newAutoPromoteTickClock(time.Date(2026, 7, 13, 11, 0, 0, 0, time.UTC))
+	cfg := autoPromoteValidatorTestConfig()
+	cfg.FailureRetryBaseDelay = time.Second
+	cfg.MaxRetryBackoff = time.Second
+	issue := autoPromoteTickIssue("issue-validator-exhausted", []string{"bug"}, &connector.PullRequest{
+		Number:     1298,
+		URL:        "https://github.test/digitaldrywood/detent/pull/1298",
+		BranchName: "detent/digitaldrywood_detent_1298",
+		HeadSHA:    "head-validator-exhausted",
+		State:      "OPEN",
+		CIStatus:   "success",
+	})
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	validator := &autoPromoteTickValidator{err: errors.New("validator returned no output")}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:           cfg,
+		connector:     tracker,
+		validator:     validator,
+		validatorMemo: memo,
+		logger:        slog.New(slog.NewTextHandler(&logs, nil)),
+		now:           clock.Now,
+	}
+	state := newState(cfg)
+	key := store.ValidatorVerdictKey{
+		ProjectID: "detent",
+		IssueID:   issue.ID,
+		HeadSHA:   issue.PullRequest.HeadSHA,
+	}
+
+	orch.tick(ctx, &state, clock.Now())
+	failure := waitForValidatorFailure(t, orch, issue, 1)
+	first := waitForPersistedValidatorFailure(t, memo, key, 1)
+	if first.Verdict != gate.ValidatorVerdictError || first.Submitted || first.NextRetryAt == nil {
+		t.Fatalf("first persisted validator failure = %#v", first)
+	}
+
+	clock.Set(failure.NextRetryAt)
+	orch.tick(ctx, &state, clock.Now())
+	failure = waitForValidatorFailure(t, orch, issue, 2)
+	waitForPersistedValidatorFailure(t, memo, key, 2)
+
+	clock.Set(failure.NextRetryAt)
+	orch.tick(ctx, &state, clock.Now())
+	waitForValidatorRequests(t, validator, gate.DefaultValidatorMaxAttempts)
+	waitForValidatorResult(t, orch, issue)
+	exhausted := waitForPersistedValidatorFailure(t, memo, key, gate.DefaultValidatorMaxAttempts)
+	if exhausted.NextRetryAt != nil {
+		t.Fatalf("exhausted validator retry_at = %s, want nil", exhausted.NextRetryAt)
+	}
+
+	clock.Set(clock.Now().Add(time.Second))
+	orch.tick(ctx, &state, clock.Now())
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Rework"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	for _, fragment := range []string{
+		"validator stage failed; retry scheduled",
+		"validator stage retries exhausted",
+		"issue_id=issue-validator-exhausted",
+		"pull_request=1298",
+		"validator returned no output",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs missing %q:\n%s", fragment, logs.String())
+		}
+	}
+	if len(tracker.prComments) != 1 || !strings.Contains(tracker.prComments[0].body, "Validator verdict: error") {
+		t.Fatalf("pull request comments = %#v, want validator error", tracker.prComments)
+	}
 }
 
 func TestTickAutoPromoteRecordsValidatorReworkHandoff(t *testing.T) {
@@ -5008,6 +5170,24 @@ func waitForPersistedValidatorVerdict(t *testing.T, memo store.ValidatorMemoStor
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("validator verdict was not persisted for %#v", key)
+}
+
+func waitForPersistedValidatorFailure(t *testing.T, memo store.ValidatorMemoStore, key store.ValidatorVerdictKey, attempt int) store.ValidatorVerdict {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		verdict, err := memo.ValidatorVerdict(t.Context(), key)
+		if err == nil && verdict.FailureAttempts >= attempt {
+			return verdict
+		}
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("ValidatorVerdict() error = %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("persisted validator failure attempt %d was not recorded", attempt)
+	return store.ValidatorVerdict{}
 }
 
 func waitForValidatorFailure(t *testing.T, orch *Orchestrator, issue connector.Issue, attempt int) validatorStageFailure {

@@ -15,6 +15,7 @@ const (
 	DefaultPlanApprovalLabel           = "plan-approved"
 	DefaultPlanStop                    = "Plan Review"
 	DefaultValidatorMinScore           = 0.8
+	DefaultValidatorMaxAttempts        = 3
 	DefaultValidatorMaxInlineDiffBytes = 64 * 1024
 	DefaultArtifactStatusField         = "validation_status"
 	DefaultTransientCIRetries          = 2
@@ -51,6 +52,7 @@ type ValidatorConfig struct {
 	Model              string   `yaml:"model"`
 	MinScore           float64  `yaml:"min_score"`
 	BlockOn            []string `yaml:"block_on"`
+	MaxAttempts        int      `yaml:"max_attempts"`
 	TurnTimeoutMS      int      `yaml:"turn_timeout_ms"`
 	MaxInlineDiffBytes *int     `yaml:"max_inline_diff_bytes"`
 }
@@ -106,6 +108,7 @@ const (
 	ValidatorVerdictPass   = "pass"
 	ValidatorVerdictWait   = "wait"
 	ValidatorVerdictRework = "rework"
+	ValidatorVerdictError  = "error"
 )
 
 type Reason string
@@ -119,6 +122,7 @@ const (
 	ReasonAutomatedReviewNotQuiet      Reason = "automated_review_not_quiet"
 	ReasonHumanApprovalMissing         Reason = "human_approval_missing"
 	ReasonValidatorMissing             Reason = "validator_missing"
+	ReasonValidatorError               Reason = "validator_error"
 	ReasonValidatorWait                Reason = "validator_wait"
 	ReasonValidatorRework              Reason = "validator_rework"
 	ReasonValidatorScoreBelowThreshold Reason = "validator_score_below_threshold"
@@ -406,15 +410,15 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 		out.Findings = cloneFindings(summary.P1Findings)
 		return out
 	}
+	if out, ok := evaluateValidator(cfg.Validator, summary.Validator); ok {
+		return out
+	}
 	if automatedReviewRequired(cfg) && !automatedReviewSubmitted(summary.ReviewState) {
 		return decision(ActionWait, ReasonAutomatedReviewMissing)
 	}
 	if remaining := quietRemaining(summary, opts, now); remaining > 0 {
 		out := decision(ActionWait, ReasonAutomatedReviewNotQuiet)
 		out.QuietRemaining = remaining
-		return out
-	}
-	if out, ok := evaluateValidator(cfg.Validator, summary.Validator); ok {
 		return out
 	}
 	return decision(ActionPass, ReasonReady)
@@ -546,6 +550,9 @@ func effectiveValidatorConfig(cfg ValidatorConfig) ValidatorConfig {
 	if cfg.MinScore == 0 {
 		cfg.MinScore = DefaultValidatorMinScore
 	}
+	if cfg.MaxAttempts == 0 {
+		cfg.MaxAttempts = DefaultValidatorMaxAttempts
+	}
 	if cfg.MaxInlineDiffBytes == nil {
 		cfg.MaxInlineDiffBytes = newInt(DefaultValidatorMaxInlineDiffBytes)
 	}
@@ -591,6 +598,9 @@ func validateValidator(prefix string, cfg ValidatorConfig) []string {
 	}
 	if cfg.TurnTimeoutMS < 0 {
 		problems = append(problems, prefix+".turn_timeout_ms must be greater than or equal to 0")
+	}
+	if cfg.MaxAttempts < 0 {
+		problems = append(problems, prefix+".max_attempts must be greater than 0")
 	}
 	if cfg.MaxInlineDiffBytes != nil && *cfg.MaxInlineDiffBytes < 0 {
 		problems = append(problems, prefix+".max_inline_diff_bytes must be greater than or equal to 0")
@@ -678,6 +688,11 @@ func evaluateValidator(cfg ValidatorConfig, result ValidatorResult) (Decision, b
 	cfg = effectiveValidatorConfig(cfg)
 	if !cfg.Enabled {
 		return Decision{}, false
+	}
+	if normalizeValidatorVerdict(result.Verdict) == ValidatorVerdictError {
+		out := decision(ActionRework, ReasonValidatorError)
+		out.Findings = cloneFindings(result.Findings)
+		return out, true
 	}
 	if !result.Submitted {
 		return decision(ActionWait, ReasonValidatorMissing), true

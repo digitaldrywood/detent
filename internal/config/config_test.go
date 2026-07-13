@@ -2031,6 +2031,7 @@ gate:
     enabled: true
     model: gpt-5-validator
     min_score: 0.85
+    max_attempts: 4
     turn_timeout_ms: 120000
     max_inline_diff_bytes: 32768
     block_on:
@@ -2055,6 +2056,9 @@ Prompt
 	}
 	if validator.MinScore != 0.85 {
 		t.Fatalf("Gate.Validator.MinScore = %v, want 0.85", validator.MinScore)
+	}
+	if validator.MaxAttempts != 4 {
+		t.Fatalf("Gate.Validator.MaxAttempts = %d, want 4", validator.MaxAttempts)
 	}
 	if validator.TurnTimeoutMS != 120000 {
 		t.Fatalf("Gate.Validator.TurnTimeoutMS = %d, want 120000", validator.TurnTimeoutMS)

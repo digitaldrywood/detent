@@ -41,22 +41,28 @@ func (s *sqliteStore) RecordValidatorVerdict(ctx context.Context, attrs Validato
 	if err != nil {
 		return err
 	}
+	nextRetryAt, err := nullableTimestamp("next_retry_at", attrs.NextRetryAt)
+	if err != nil {
+		return err
+	}
 
 	if _, err := s.queries.UpsertValidatorVerdict(ctx, sqlc.UpsertValidatorVerdictParams{
-		ProjectID:    projectID,
-		IssueID:      issueID,
-		HeadSha:      headSHA,
-		Identifier:   nullString(attrs.Identifier),
-		IssueURL:     nullString(attrs.IssueURL),
-		PrNumber:     nullOptionalInt64(attrs.PRNumber),
-		Submitted:    boolInt64(attrs.Submitted),
-		Verdict:      strings.TrimSpace(attrs.Verdict),
-		Score:        nonNegativeFloat(attrs.Score),
-		Summary:      nullString(attrs.Summary),
-		FindingsJson: findingsJSON,
-		Commented:    boolInt64(attrs.Commented),
-		RecordedAt:   recordedAt,
-		UpdatedAt:    updatedAt,
+		ProjectID:       projectID,
+		IssueID:         issueID,
+		HeadSha:         headSHA,
+		Identifier:      nullString(attrs.Identifier),
+		IssueURL:        nullString(attrs.IssueURL),
+		PrNumber:        nullOptionalInt64(attrs.PRNumber),
+		Submitted:       boolInt64(attrs.Submitted),
+		Verdict:         strings.TrimSpace(attrs.Verdict),
+		Score:           nonNegativeFloat(attrs.Score),
+		Summary:         nullString(attrs.Summary),
+		FindingsJson:    findingsJSON,
+		Commented:       boolInt64(attrs.Commented),
+		FailureAttempts: int64(max(attrs.FailureAttempts, 0)),
+		NextRetryAt:     nextRetryAt,
+		RecordedAt:      recordedAt,
+		UpdatedAt:       updatedAt,
 	}); err != nil {
 		return fmt.Errorf("recording validator verdict: %w", err)
 	}
@@ -172,20 +178,22 @@ func validatorVerdictFromRow(row sqlc.ValidatorVerdict) (ValidatorVerdict, error
 	}
 
 	return ValidatorVerdict{
-		ProjectID:  row.ProjectID,
-		IssueID:    row.IssueID,
-		HeadSHA:    row.HeadSha,
-		Identifier: row.Identifier.String,
-		IssueURL:   row.IssueURL.String,
-		PRNumber:   optionalInt64Pointer(row.PrNumber),
-		Submitted:  row.Submitted != 0,
-		Verdict:    row.Verdict,
-		Score:      nonNegativeFloat(row.Score),
-		Summary:    row.Summary.String,
-		Findings:   findings,
-		Commented:  row.Commented != 0,
-		RecordedAt: recordedAt.UTC(),
-		UpdatedAt:  updatedAt.UTC(),
+		ProjectID:       row.ProjectID,
+		IssueID:         row.IssueID,
+		HeadSHA:         row.HeadSha,
+		Identifier:      row.Identifier.String,
+		IssueURL:        row.IssueURL.String,
+		PRNumber:        optionalInt64Pointer(row.PrNumber),
+		Submitted:       row.Submitted != 0,
+		Verdict:         row.Verdict,
+		Score:           nonNegativeFloat(row.Score),
+		Summary:         row.Summary.String,
+		Findings:        findings,
+		Commented:       row.Commented != 0,
+		FailureAttempts: int(row.FailureAttempts),
+		NextRetryAt:     nullableTime(row.NextRetryAt),
+		RecordedAt:      recordedAt.UTC(),
+		UpdatedAt:       updatedAt.UTC(),
 	}, nil
 }
 

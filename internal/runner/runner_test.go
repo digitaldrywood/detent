@@ -2755,6 +2755,28 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 	}
 }
 
+func TestParseValidatorResultRejectsMissingOutput(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		output string
+	}{
+		{name: "empty", output: ""},
+		{name: "whitespace", output: " \n\t"},
+		{name: "prose without verdict", output: "The change looks good."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if _, err := parseValidatorResult(tt.output); err == nil {
+				t.Fatal("parseValidatorResult() error = nil, want missing JSON error")
+			}
+		})
+	}
+}
+
 func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
 	t.Parallel()
 

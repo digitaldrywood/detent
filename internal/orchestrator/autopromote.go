@@ -75,6 +75,7 @@ const (
 	AutoPromoteReasonCodexReviewNotQuiet             AutoPromoteReason = "codex_review_not_quiet"
 	AutoPromoteReasonHumanApprovalMissing            AutoPromoteReason = "human_approval_missing"
 	AutoPromoteReasonValidatorMissing                AutoPromoteReason = "validator_missing"
+	AutoPromoteReasonValidatorError                  AutoPromoteReason = "validator_error"
 	AutoPromoteReasonValidatorWait                   AutoPromoteReason = "validator_wait"
 	AutoPromoteReasonValidatorRework                 AutoPromoteReason = "validator_rework"
 	AutoPromoteReasonValidatorScoreBelowThreshold    AutoPromoteReason = "validator_score_below_threshold"
@@ -843,6 +844,8 @@ func autoPromoteReasonFromGate(reason gate.Reason) AutoPromoteReason {
 		return AutoPromoteReasonHumanApprovalMissing
 	case gate.ReasonValidatorMissing:
 		return AutoPromoteReasonValidatorMissing
+	case gate.ReasonValidatorError:
+		return AutoPromoteReasonValidatorError
 	case gate.ReasonValidatorWait:
 		return AutoPromoteReasonValidatorWait
 	case gate.ReasonValidatorRework:
