@@ -258,9 +258,6 @@ func completedActiveShouldEnterReview(issue connector.Issue, cfg AutoPromoteConf
 	if gate.Effective(cfg.Gate).Kind == gate.KindArtifact {
 		return true
 	}
-	if cfg.QuietDuration > 0 {
-		return true
-	}
 	return cfg.GateWaitState == autoPromoteGateWaitReview
 }
 
