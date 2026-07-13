@@ -508,7 +508,7 @@ func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
 				MaxConcurrentAgents: 1,
 				AutoPromote: AutoPromoteConfig{
 					Enabled:       true,
-					QuietDuration: 0,
+					QuietDuration: 10 * time.Minute,
 					Gate:          gate.Config{Kind: gate.KindCommand},
 				},
 				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
@@ -545,6 +545,50 @@ func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
 				t.Fatalf("Completed[%q] present after auto-promote transition", tt.issue.ID)
 			}
 		})
+	}
+}
+
+func TestTickRoutesCompletedActiveArtifactToReview(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	issue := artifactCompletionTransitionIssue("Production", "approved")
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			SourceState:   "Review",
+			PassState:     "Ready for Pickup",
+			ReworkState:   "Rework",
+			GateWaitState: autoPromoteGateWaitSource,
+			Gate:          artifactCompletionTestGate(),
+		},
+		ActiveStates:   []string{"Todo", "Production", "Rework"},
+		ObservedStates: []string{"Review"},
+		TerminalStates: []string{"Ready for Pickup", "Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:      issue,
+		FinalState: FinalStateCompleted,
+	}
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	wantUpdates := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Review"}}
+	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
+		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
+	}
+	if got := state.Completed[issue.ID].Issue.State; got != "Review" {
+		t.Fatalf("Completed issue state = %q, want Review", got)
 	}
 }
 

@@ -369,7 +369,9 @@ func autoPromoteActiveGateEligibleIssue(
 
 func autoPromoteSourceGateWaitEnabled(cfg AutoPromoteConfig) bool {
 	cfg = normalizeAutoPromoteConfig(cfg)
-	return cfg.Enabled && cfg.QuietDuration == 0 && cfg.GateWaitState == autoPromoteGateWaitSource
+	return cfg.Enabled &&
+		cfg.GateWaitState == autoPromoteGateWaitSource &&
+		gate.Effective(cfg.Gate).Kind == gate.KindCommand
 }
 
 func autoPromoteActiveGateTrackingEnabled(cfg AutoPromoteConfig) bool {

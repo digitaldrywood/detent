@@ -183,6 +183,86 @@ func TestRunCompletionTransitionsLabelModeIssueToHumanReview(t *testing.T) {
 	}
 }
 
+func TestRunCompletionPromotesLabelModeWorkpadDirectlyToMerging(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-label-autopilot", "digitaldrywood/detent#1288", "Todo")
+	issue.Labels = []string{"detent:todo", "bug"}
+	tracker := newFakeLabelConnector(issue)
+	activityAt := time.Now().Add(-time.Hour)
+	runner := &staticRunner{
+		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted},
+		onRun: func(request orchestrator.RunRequest) {
+			tracker.setCandidatePullRequest(request.Issue.ID, &connector.PullRequest{
+				Number:         1288,
+				URL:            "https://github.com/digitaldrywood/detent/pull/1288",
+				State:          "OPEN",
+				MergeableState: "clean",
+				CIStatus:       "success",
+				ActivityAt:     &activityAt,
+			})
+			tracker.setIssueComments(request.Issue.ID, []connector.IssueComment{{
+				Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
+			}})
+		},
+	}
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:          5 * time.Millisecond,
+		MaxConcurrentAgents:   1,
+		MaxRetryBackoff:       time.Hour,
+		FailureRetryBaseDelay: time.Hour,
+		AutoPromote: orchestrator.AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			GateWaitState: "source",
+			OptoutLabel:   "requires-human-review",
+			Gate: gate.Config{
+				Kind:                   gate.KindCommand,
+				RequireAutomatedReview: new(false),
+			},
+		},
+		ActiveStates:           []string{"Todo", "In Progress", "Rework"},
+		ObservedStates:         []string{"Human Review", "Merging"},
+		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
+		ContinuationRetryDelay: time.Millisecond,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	waitForStateUpdate(t, tracker, stateUpdateCall{issueID: issue.ID, state: "Merging"})
+	updates := tracker.stateUpdateCalls()
+	wantUpdates := []stateUpdateCall{
+		{issueID: issue.ID, state: "In Progress"},
+		{issueID: issue.ID, state: "Merging"},
+	}
+	if !stateUpdateCallsContainInOrder(updates, wantUpdates) {
+		t.Fatalf("state updates = %#v, want sequence %#v", updates, wantUpdates)
+	}
+	for _, update := range updates {
+		if update.issueID == issue.ID && update.state == "Human Review" {
+			t.Fatalf("state updates = %#v, want no Human Review transition", updates)
+		}
+	}
+
+	got := tracker.candidateIssue(issue.ID)
+	if got.State != "Merging" {
+		t.Fatalf("State = %q, want Merging", got.State)
+	}
+	if count := statusLabelCount(got.Labels, "detent:"); count != 1 {
+		t.Fatalf("detent status label count = %d in %#v, want 1", count, got.Labels)
+	}
+	if !labelListContains(got.Labels, "detent:merging") {
+		t.Fatalf("Labels = %#v, want detent:merging", got.Labels)
+	}
+}
+
 func TestRunStartsLabelModeTodoIssueInProgress(t *testing.T) {
 	t.Parallel()
 

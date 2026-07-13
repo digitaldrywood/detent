@@ -103,7 +103,7 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 			},
 		},
 		{
-			name:       "command gate with quiet window advances to human review",
+			name:       "command gate with quiet window and source wait skips human review target",
 			issue:      completionTransitionIssue("In Progress", "OPEN"),
 			finalState: FinalStateCompleted,
 			cfg: AutoPromoteConfig{
@@ -111,7 +111,6 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 				QuietDuration: 10 * time.Minute,
 				Gate:          gate.Config{Kind: gate.KindCommand},
 			},
-			want: autoPromoteSourceState,
 		},
 		{
 			name:       "zero quiet command gate with review wait advances to human review",
