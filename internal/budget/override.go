@@ -68,6 +68,9 @@ func SetOverride(ctx context.Context, writer OverrideWriter, base Config, limits
 	if projectID == "" {
 		return store.BudgetOverride{}, errors.New("project is required")
 	}
+	if !base.Enabled {
+		return store.BudgetOverride{}, errors.New("budget overrides require budget enforcement to be enabled")
+	}
 	reason := strings.TrimSpace(req.Reason)
 	if reason == "" {
 		return store.BudgetOverride{}, errors.New("reason is required")

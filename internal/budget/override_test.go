@@ -78,20 +78,22 @@ func TestSetOverrideGuardrails(t *testing.T) {
 	validCap := 200.0
 	tooHigh := 301.0
 	tests := []struct {
-		name    string
-		req     OverrideRequest
-		wantErr string
+		name          string
+		budgetEnabled bool
+		req           OverrideRequest
+		wantErr       string
 	}{
-		{name: "valid override", req: OverrideRequest{ProjectID: "detent", PerDayMaxUSD: &validCap, Duration: time.Hour, Reason: "release", Now: now}},
-		{name: "duration exceeds maximum", req: OverrideRequest{ProjectID: "detent", PerDayMaxUSD: &validCap, Duration: 49 * time.Hour, Reason: "release", Now: now}, wantErr: "exceeds maximum"},
-		{name: "multiplier exceeds maximum", req: OverrideRequest{ProjectID: "detent", PerDayMaxUSD: &tooHigh, Duration: time.Hour, Reason: "release", Now: now}, wantErr: "3.00x base cap"},
-		{name: "reason required", req: OverrideRequest{ProjectID: "detent", PerDayMaxUSD: &validCap, Duration: time.Hour, Now: now}, wantErr: "reason is required"},
+		{name: "valid override", budgetEnabled: true, req: OverrideRequest{ProjectID: "detent", PerDayMaxUSD: &validCap, Duration: time.Hour, Reason: "release", Now: now}},
+		{name: "disabled budget", req: OverrideRequest{ProjectID: "detent", PerDayMaxUSD: &validCap, Duration: time.Hour, Reason: "release", Now: now}, wantErr: "require budget enforcement to be enabled"},
+		{name: "duration exceeds maximum", budgetEnabled: true, req: OverrideRequest{ProjectID: "detent", PerDayMaxUSD: &validCap, Duration: 49 * time.Hour, Reason: "release", Now: now}, wantErr: "exceeds maximum"},
+		{name: "multiplier exceeds maximum", budgetEnabled: true, req: OverrideRequest{ProjectID: "detent", PerDayMaxUSD: &tooHigh, Duration: time.Hour, Reason: "release", Now: now}, wantErr: "3.00x base cap"},
+		{name: "reason required", budgetEnabled: true, req: OverrideRequest{ProjectID: "detent", PerDayMaxUSD: &validCap, Duration: time.Hour, Now: now}, wantErr: "reason is required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			fake := &fakeOverrideStore{}
-			got, err := SetOverride(context.Background(), fake, Config{PerDayMaxUSD: 100, PerIssueMaxUSD: 10}, OverrideLimits{}, tt.req)
+			got, err := SetOverride(context.Background(), fake, Config{Enabled: tt.budgetEnabled, PerDayMaxUSD: 100, PerIssueMaxUSD: 10}, OverrideLimits{}, tt.req)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("SetOverride() error = %v, want containing %q", err, tt.wantErr)
@@ -120,7 +122,7 @@ func TestSetOverrideCannotExtendPastOriginalMaximumLifetime(t *testing.T) {
 		CreatedAt:    createdAt,
 		ExpiresAt:    now.Add(30 * time.Minute),
 	}}
-	_, err := SetOverride(context.Background(), fake, Config{PerDayMaxUSD: 100}, OverrideLimits{}, OverrideRequest{
+	_, err := SetOverride(context.Background(), fake, Config{Enabled: true, PerDayMaxUSD: 100}, OverrideLimits{}, OverrideRequest{
 		ProjectID:    "detent",
 		PerDayMaxUSD: &cap,
 		Duration:     2 * time.Hour,
