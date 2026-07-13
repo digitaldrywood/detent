@@ -493,20 +493,22 @@ type ValidatorFinding struct {
 }
 
 type ValidatorVerdict struct {
-	ProjectID  string
-	IssueID    string
-	HeadSHA    string
-	Identifier string
-	IssueURL   string
-	PRNumber   *int64
-	Submitted  bool
-	Verdict    string
-	Score      float64
-	Summary    string
-	Findings   []ValidatorFinding
-	Commented  bool
-	RecordedAt time.Time
-	UpdatedAt  time.Time
+	ProjectID       string
+	IssueID         string
+	HeadSHA         string
+	Identifier      string
+	IssueURL        string
+	PRNumber        *int64
+	Submitted       bool
+	Verdict         string
+	Score           float64
+	Summary         string
+	Findings        []ValidatorFinding
+	Commented       bool
+	FailureAttempts int
+	NextRetryAt     *time.Time
+	RecordedAt      time.Time
+	UpdatedAt       time.Time
 }
 
 type WorkAttempt struct {

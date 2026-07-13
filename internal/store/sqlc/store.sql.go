@@ -1758,7 +1758,7 @@ func (q *Queries) GetUsageEvent(ctx context.Context, id int64) (UsageEvent, erro
 }
 
 const getValidatorVerdict = `-- name: GetValidatorVerdict :one
-SELECT id, project_id, issue_id, head_sha, identifier, issue_url, pr_number, submitted, verdict, score, summary, findings_json, commented, recorded_at, updated_at
+SELECT id, project_id, issue_id, head_sha, identifier, issue_url, pr_number, submitted, verdict, score, summary, findings_json, commented, recorded_at, updated_at, failure_attempts, next_retry_at
 FROM validator_verdicts
 WHERE project_id = ?
   AND issue_id = ?
@@ -1790,6 +1790,8 @@ func (q *Queries) GetValidatorVerdict(ctx context.Context, arg GetValidatorVerdi
 		&i.Commented,
 		&i.RecordedAt,
 		&i.UpdatedAt,
+		&i.FailureAttempts,
+		&i.NextRetryAt,
 	)
 	return i, err
 }
@@ -2946,7 +2948,7 @@ func (q *Queries) ListRecentTerminalWorkAttempts(ctx context.Context, arg ListRe
 }
 
 const listValidatorVerdicts = `-- name: ListValidatorVerdicts :many
-SELECT id, project_id, issue_id, head_sha, identifier, issue_url, pr_number, submitted, verdict, score, summary, findings_json, commented, recorded_at, updated_at
+SELECT id, project_id, issue_id, head_sha, identifier, issue_url, pr_number, submitted, verdict, score, summary, findings_json, commented, recorded_at, updated_at, failure_attempts, next_retry_at
 FROM validator_verdicts
 WHERE (?1 = '' OR project_id = ?1)
   AND (?2 IS NULL OR updated_at >= ?2)
@@ -2985,6 +2987,8 @@ func (q *Queries) ListValidatorVerdicts(ctx context.Context, arg ListValidatorVe
 			&i.Commented,
 			&i.RecordedAt,
 			&i.UpdatedAt,
+			&i.FailureAttempts,
+			&i.NextRetryAt,
 		); err != nil {
 			return nil, err
 		}
@@ -3847,9 +3851,11 @@ INSERT INTO validator_verdicts (
   summary,
   findings_json,
   commented,
+  failure_attempts,
+  next_retry_at,
   recorded_at,
   updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(project_id, issue_id, head_sha) DO UPDATE SET
   identifier = excluded.identifier,
   issue_url = excluded.issue_url,
@@ -3860,26 +3866,30 @@ ON CONFLICT(project_id, issue_id, head_sha) DO UPDATE SET
   summary = excluded.summary,
   findings_json = excluded.findings_json,
   commented = excluded.commented,
+  failure_attempts = excluded.failure_attempts,
+  next_retry_at = excluded.next_retry_at,
   recorded_at = excluded.recorded_at,
   updated_at = excluded.updated_at
-RETURNING id, project_id, issue_id, head_sha, identifier, issue_url, pr_number, submitted, verdict, score, summary, findings_json, commented, recorded_at, updated_at
+RETURNING id, project_id, issue_id, head_sha, identifier, issue_url, pr_number, submitted, verdict, score, summary, findings_json, commented, recorded_at, updated_at, failure_attempts, next_retry_at
 `
 
 type UpsertValidatorVerdictParams struct {
-	ProjectID    string         `json:"project_id"`
-	IssueID      string         `json:"issue_id"`
-	HeadSha      string         `json:"head_sha"`
-	Identifier   sql.NullString `json:"identifier"`
-	IssueURL     sql.NullString `json:"issue_url"`
-	PrNumber     sql.NullInt64  `json:"pr_number"`
-	Submitted    int64          `json:"submitted"`
-	Verdict      string         `json:"verdict"`
-	Score        float64        `json:"score"`
-	Summary      sql.NullString `json:"summary"`
-	FindingsJson string         `json:"findings_json"`
-	Commented    int64          `json:"commented"`
-	RecordedAt   string         `json:"recorded_at"`
-	UpdatedAt    string         `json:"updated_at"`
+	ProjectID       string         `json:"project_id"`
+	IssueID         string         `json:"issue_id"`
+	HeadSha         string         `json:"head_sha"`
+	Identifier      sql.NullString `json:"identifier"`
+	IssueURL        sql.NullString `json:"issue_url"`
+	PrNumber        sql.NullInt64  `json:"pr_number"`
+	Submitted       int64          `json:"submitted"`
+	Verdict         string         `json:"verdict"`
+	Score           float64        `json:"score"`
+	Summary         sql.NullString `json:"summary"`
+	FindingsJson    string         `json:"findings_json"`
+	Commented       int64          `json:"commented"`
+	FailureAttempts int64          `json:"failure_attempts"`
+	NextRetryAt     sql.NullString `json:"next_retry_at"`
+	RecordedAt      string         `json:"recorded_at"`
+	UpdatedAt       string         `json:"updated_at"`
 }
 
 func (q *Queries) UpsertValidatorVerdict(ctx context.Context, arg UpsertValidatorVerdictParams) (ValidatorVerdict, error) {
@@ -3896,6 +3906,8 @@ func (q *Queries) UpsertValidatorVerdict(ctx context.Context, arg UpsertValidato
 		arg.Summary,
 		arg.FindingsJson,
 		arg.Commented,
+		arg.FailureAttempts,
+		arg.NextRetryAt,
 		arg.RecordedAt,
 		arg.UpdatedAt,
 	)
@@ -3916,6 +3928,8 @@ func (q *Queries) UpsertValidatorVerdict(ctx context.Context, arg UpsertValidato
 		&i.Commented,
 		&i.RecordedAt,
 		&i.UpdatedAt,
+		&i.FailureAttempts,
+		&i.NextRetryAt,
 	)
 	return i, err
 }

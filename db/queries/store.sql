@@ -1082,9 +1082,11 @@ INSERT INTO validator_verdicts (
   summary,
   findings_json,
   commented,
+  failure_attempts,
+  next_retry_at,
   recorded_at,
   updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(project_id, issue_id, head_sha) DO UPDATE SET
   identifier = excluded.identifier,
   issue_url = excluded.issue_url,
@@ -1095,6 +1097,8 @@ ON CONFLICT(project_id, issue_id, head_sha) DO UPDATE SET
   summary = excluded.summary,
   findings_json = excluded.findings_json,
   commented = excluded.commented,
+  failure_attempts = excluded.failure_attempts,
+  next_retry_at = excluded.next_retry_at,
   recorded_at = excluded.recorded_at,
   updated_at = excluded.updated_at
 RETURNING *;

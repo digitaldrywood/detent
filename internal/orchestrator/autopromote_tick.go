@@ -1536,20 +1536,41 @@ func (o *Orchestrator) clearAutoPromotedIssueDispatchMemory(state *State, issueI
 }
 
 func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, issue connector.Issue, now time.Time) {
-	if o.validator == nil {
+	identity := validatorStageIdentityForIssue(issue)
+	if identity.Key == "" {
 		if o.logger != nil {
-			o.logger.Warn(
-				"validator stage skipped",
+			o.logger.Error(
+				"validator stage identity unavailable",
 				"issue_id", strings.TrimSpace(issue.ID),
 				"identifier", issue.Identifier,
-				"reason", "validator runner unavailable",
+				"pull_request", pullRequestNumber(issue),
 			)
 		}
 		return
 	}
-
-	identity := validatorStageIdentityForIssue(issue)
-	if identity.Key == "" {
+	validatorConfig := gate.Effective(o.cfg.AutoPromote.Gate).Validator
+	if o.validator == nil {
+		failureErr := errors.New("validator runner unavailable")
+		result := validatorFailureResult(failureErr, validatorConfig.MaxAttempts, validatorConfig.MaxAttempts)
+		result.Summary = "validator review production could not start: " + failureErr.Error()
+		result.Findings[0].Body = result.Summary
+		o.validatorMu.Lock()
+		if o.validatorResults == nil {
+			o.validatorResults = map[string]validatorStageResult{}
+		}
+		o.validatorResults[identity.Key] = validatorStageResult{Result: result}
+		o.validatorMu.Unlock()
+		o.recordValidatorStageOutcome(ctx, issue, identity, result, validatorConfig.MaxAttempts, nil, now.UTC())
+		if o.logger != nil {
+			o.logger.Error(
+				"validator stage unavailable",
+				"issue_id", identity.IssueID,
+				"identifier", issue.Identifier,
+				"pull_request", pullRequestNumber(issue),
+				"head_sha", identity.HeadSHA,
+				"error", failureErr,
+			)
+		}
 		return
 	}
 	if _, _, ok := o.validatorStageResult(ctx, issue); ok {
@@ -1652,23 +1673,38 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 				return
 			}
 			attempt := o.validatorFailures[identity.Key].Attempt + 1
-			o.validatorFailures[identity.Key] = validatorStageFailure{
-				Attempt:     attempt,
-				NextRetryAt: completedAt.Add(validatorStageRetryDelay(retryConfig, attempt)),
-				Error:       err.Error(),
+			retryAt := completedAt.Add(validatorStageRetryDelay(retryConfig, attempt))
+			failure := validatorStageFailure{Attempt: attempt, NextRetryAt: retryAt, Error: err.Error()}
+			exhausted := attempt >= validatorConfig.MaxAttempts
+			failureResult := validatorFailureResult(err, attempt, validatorConfig.MaxAttempts)
+			if exhausted {
+				delete(o.validatorFailures, identity.Key)
+				o.validatorResults[identity.Key] = validatorStageResult{Result: failureResult}
+			} else {
+				o.validatorFailures[identity.Key] = failure
 			}
-			failure := o.validatorFailures[identity.Key]
 			o.validatorMu.Unlock()
+			var nextRetryAt *time.Time
+			if !exhausted {
+				nextRetryAt = &retryAt
+			}
+			o.recordValidatorStageOutcome(ctx, issue, identity, failureResult, attempt, nextRetryAt, completedAt)
 			if o.logger != nil {
-				o.logger.Warn(
-					"validator stage failed",
+				attrs := []any{
 					"issue_id", strings.TrimSpace(issue.ID),
 					"identifier", issue.Identifier,
+					"pull_request", pullRequestNumber(issue),
 					"head_sha", identity.HeadSHA,
-					"retry_at", failure.NextRetryAt,
 					"attempt", attempt,
+					"max_attempts", validatorConfig.MaxAttempts,
 					"error", err,
-				)
+				}
+				if exhausted {
+					o.logger.Error("validator stage retries exhausted", attrs...)
+				} else {
+					attrs = append(attrs, "retry_at", failure.NextRetryAt)
+					o.logger.Warn("validator stage failed; retry scheduled", attrs...)
+				}
 			}
 			if capacityProbeKey != "" {
 				o.publishValidatorCapacityEvent(ctx, validatorCapacityEvent{
@@ -1889,6 +1925,27 @@ func (o *Orchestrator) loadValidatorVerdict(ctx context.Context, issue connector
 		}
 		return validatorStageResult{}, false
 	}
+	validatorConfig := gate.Effective(o.cfg.AutoPromote.Gate).Validator
+	if !verdict.Submitted && strings.EqualFold(strings.TrimSpace(verdict.Verdict), gate.ValidatorVerdictError) && verdict.FailureAttempts < validatorConfig.MaxAttempts {
+		nextRetryAt := o.clockNow().UTC()
+		if verdict.NextRetryAt != nil {
+			nextRetryAt = verdict.NextRetryAt.UTC()
+		}
+		o.validatorMu.Lock()
+		if o.validatorFailures == nil {
+			o.validatorFailures = map[string]validatorStageFailure{}
+		}
+		failure := o.validatorFailures[identity.Key]
+		if verdict.FailureAttempts > failure.Attempt {
+			o.validatorFailures[identity.Key] = validatorStageFailure{
+				Attempt:     verdict.FailureAttempts,
+				NextRetryAt: nextRetryAt,
+				Error:       verdict.Summary,
+			}
+		}
+		o.validatorMu.Unlock()
+		return validatorStageResult{}, false
+	}
 	return validatorStageResult{
 		Result: gate.ValidatorResult{
 			Submitted: verdict.Submitted,
@@ -1908,6 +1965,18 @@ func (o *Orchestrator) recordValidatorVerdict(
 	result gate.ValidatorResult,
 	recordedAt time.Time,
 ) {
+	o.recordValidatorStageOutcome(ctx, issue, identity, result, 0, nil, recordedAt)
+}
+
+func (o *Orchestrator) recordValidatorStageOutcome(
+	ctx context.Context,
+	issue connector.Issue,
+	identity validatorStageIdentity,
+	result gate.ValidatorResult,
+	failureAttempts int,
+	nextRetryAt *time.Time,
+	recordedAt time.Time,
+) {
 	if o.validatorMemo == nil {
 		return
 	}
@@ -1915,19 +1984,21 @@ func (o *Orchestrator) recordValidatorVerdict(
 		recordedAt = o.clockNow().UTC()
 	}
 	if err := o.validatorMemo.RecordValidatorVerdict(ctx, store.ValidatorVerdict{
-		ProjectID:  o.workflowMetricsProjectID(),
-		IssueID:    identity.IssueID,
-		HeadSHA:    identity.HeadSHA,
-		Identifier: issue.Identifier,
-		IssueURL:   issue.URL,
-		PRNumber:   workflowMetricsPRNumber(issue),
-		Submitted:  result.Submitted,
-		Verdict:    result.Verdict,
-		Score:      result.Score,
-		Summary:    result.Summary,
-		Findings:   storeFindingsFromGate(result.Findings),
-		RecordedAt: recordedAt,
-		UpdatedAt:  recordedAt,
+		ProjectID:       o.workflowMetricsProjectID(),
+		IssueID:         identity.IssueID,
+		HeadSHA:         identity.HeadSHA,
+		Identifier:      issue.Identifier,
+		IssueURL:        issue.URL,
+		PRNumber:        workflowMetricsPRNumber(issue),
+		Submitted:       result.Submitted,
+		Verdict:         result.Verdict,
+		Score:           result.Score,
+		Summary:         result.Summary,
+		Findings:        storeFindingsFromGate(result.Findings),
+		FailureAttempts: failureAttempts,
+		NextRetryAt:     nextRetryAt,
+		RecordedAt:      recordedAt,
+		UpdatedAt:       recordedAt,
 	}); err != nil && o.logger != nil {
 		o.logger.Warn(
 			"validator verdict persistence failed",
@@ -1936,6 +2007,27 @@ func (o *Orchestrator) recordValidatorVerdict(
 			"head_sha", identity.HeadSHA,
 			"error", err,
 		)
+	}
+}
+
+func validatorFailureResult(err error, attempt int, maxAttempts int) gate.ValidatorResult {
+	if attempt < 1 {
+		attempt = 1
+	}
+	if maxAttempts < 1 {
+		maxAttempts = gate.DefaultValidatorMaxAttempts
+	}
+	summary := fmt.Sprintf("validator review production attempt %d/%d failed: %v", attempt, maxAttempts, err)
+	if attempt >= maxAttempts {
+		summary = fmt.Sprintf("validator review production failed after %d attempts: %v", attempt, err)
+	}
+	return gate.ValidatorResult{
+		Verdict: gate.ValidatorVerdictError,
+		Summary: summary,
+		Findings: []gate.Finding{{
+			Severity: "p1",
+			Body:     summary,
+		}},
 	}
 }
 

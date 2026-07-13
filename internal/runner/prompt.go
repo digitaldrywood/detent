@@ -744,7 +744,7 @@ func appendPriorAttemptBlock(prompt string, prior PriorAttempt) string {
 		b.WriteString("\n- failing gate reason: ")
 		b.WriteString(reason)
 	}
-	if prior.Validator.Submitted {
+	if prior.Validator.Submitted || strings.TrimSpace(prior.Validator.Verdict) != "" || strings.TrimSpace(prior.Validator.Summary) != "" || len(prior.Validator.Findings) > 0 {
 		b.WriteString("\n- validator verdict: ")
 		b.WriteString(strings.TrimSpace(prior.Validator.Verdict))
 		if prior.Validator.Score > 0 {
@@ -867,6 +867,7 @@ func gateAssigns(cfg gate.Config) map[string]any {
 			"model":                 effective.Validator.Model,
 			"min_score":             effective.Validator.MinScore,
 			"block_on":              effective.Validator.BlockOn,
+			"max_attempts":          effective.Validator.MaxAttempts,
 			"max_inline_diff_bytes": validatorMaxInlineDiffBytes(effective.Validator),
 		},
 	}

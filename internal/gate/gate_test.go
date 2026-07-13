@@ -300,7 +300,7 @@ func TestEvaluate(t *testing.T) {
 			want:  Decision{Action: ActionWait, Reason: ReasonValidatorMissing},
 		},
 		{
-			name: "validator gate waits for quiet window before requesting validator",
+			name: "validator gate requests validator before quiet window",
 			cfg: Config{
 				Kind:      KindCommand,
 				Validator: ValidatorConfig{Enabled: true, MinScore: 0.8, BlockOn: []string{"p1"}},
@@ -312,7 +312,40 @@ func TestEvaluate(t *testing.T) {
 				LastActivityAt: &recentActivity,
 			},
 			opts: EvaluationOptions{QuietDuration: 10 * time.Minute},
-			want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewNotQuiet, QuietRemaining: 570 * time.Second},
+			want: Decision{Action: ActionWait, Reason: ReasonValidatorMissing},
+		},
+		{
+			name: "validator gate requests validator before automated review",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true},
+			},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+			},
+			want: Decision{Action: ActionWait, Reason: ReasonValidatorMissing},
+		},
+		{
+			name: "validator gate reworks production errors",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true},
+			},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				Validator: ValidatorResult{
+					Verdict:  ValidatorVerdictError,
+					Summary:  "validator review production failed",
+					Findings: []Finding{{Severity: "p1", Body: "validator review production failed"}},
+				},
+			},
+			want: Decision{
+				Action:   ActionRework,
+				Reason:   ReasonValidatorError,
+				Findings: []Finding{{Severity: "p1", Body: "validator review production failed"}},
+			},
 		},
 		{
 			name: "validator gate passes above score threshold",

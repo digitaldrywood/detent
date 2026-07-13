@@ -271,6 +271,10 @@ func checkDoctorProjectWithProgress(
 	if workflow.Config.Agent.AutoPromote.Enabled {
 		setDoctorCurrentCheck("Project " + id + " auto-promote")
 		checks = append(checks, checkDoctorAutoPromote(ctx, id, workflow.Config, deps, time.Now()))
+		if workflow.Config.Gate.Validator.Enabled {
+			setDoctorCurrentCheck("Project " + id + " validator health")
+			checks = append(checks, checkDoctorValidatorHealth(ctx, id, storePath, deps, time.Now()))
+		}
 	}
 	if doctorTrackerUsesGitHubReads(workflow.Config.Tracker.Kind) && workflow.Config.Deliverable.Kind == workflowconfig.DeliverablePullRequest {
 		setDoctorCurrentCheck("Project " + id + " repository merge policy")

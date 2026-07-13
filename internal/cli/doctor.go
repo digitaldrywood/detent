@@ -53,6 +53,7 @@ type doctorCheck struct {
 	AutoPromoteCandidates     []doctorAutoPromoteCandidateDiagnostic     `json:"auto_promote_candidates,omitempty"`
 	BlockedRecoveryCandidates []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_recovery_candidates,omitempty"`
 	BackendCapacity           []doctorBackendCapacityDiagnostic          `json:"backend_capacity,omitempty"`
+	ValidatorFailures         []doctorValidatorFailureDiagnostic         `json:"validator_failures,omitempty"`
 	OverloadRetriesLastHour   int                                        `json:"overload_retries_last_hour,omitempty"`
 	DependencyCapabilities    []connector.DependencyCapability           `json:"dependency_capabilities,omitempty"`
 	UntrackedIssues           []doctorStatusDriftIssueDiagnostic         `json:"untracked_issues,omitempty"`

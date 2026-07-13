@@ -723,6 +723,7 @@ gate:
     # Watch rework-rate per validator model once cache/model telemetry lands.
     model: ""
     min_score: 0.8
+    max_attempts: 3
     max_inline_diff_bytes: 65536
     block_on:
       - p1
@@ -1125,6 +1126,9 @@ criteria and returns a structured verdict, score, summary, and severity-tagged
 findings. `gate.validator.model` optionally overrides the selected validator
 route model, `min_score` below threshold routes to `Rework`, and any finding
 severity listed in `block_on` routes to `Rework` regardless of score.
+Validator production failures are retried with backoff up to `max_attempts`
+(default `3`). Each failure is logged and visible to `detent doctor`; an
+exhausted validator routes the item to `Rework` with the failure cause.
 For Codex-backed validators, start with the cheap-tier override
 `gate.validator.model: gpt-5.4-mini` and watch rework-rate per validator model
 once cache/model telemetry lands. `gate.validator.max_inline_diff_bytes`
