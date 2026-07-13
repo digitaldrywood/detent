@@ -163,6 +163,74 @@ func TestDelegateNativeMergeQueueIssuesCachesQueueEntries(t *testing.T) {
 	}
 }
 
+func TestDelegateNativeMergeQueueIssuesReenqueuesMissingCachedEntry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 13, 18, 0, 0, 0, time.UTC)
+	issue := nativeMergeQueueTestIssue(202, "success")
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{},
+		},
+	}
+	cfg := normalizeConfig(Config{
+		MergeFastPathEnabled: true,
+		ActiveStates:         []string{"Merging"},
+		TerminalStates:       []string{"Done"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+
+	first := orch.delegateNativeMergeQueueIssues(context.Background(), &state, []connector.Issue{issue}, now)
+	second := orch.delegateNativeMergeQueueIssues(context.Background(), &state, first, now.Add(nativeMergeQueueEntryRefresh))
+
+	if tracker.inspections != 2 || len(tracker.enqueued) != 2 {
+		t.Fatalf("queue calls = %d inspections and %d enqueues, want two each after entry disappears", tracker.inspections, len(tracker.enqueued))
+	}
+	if second[0].PullRequest == nil || second[0].PullRequest.MergeQueueEntry == nil || second[0].PullRequest.MergeQueueEntry.State == "MISSING" {
+		t.Fatalf("re-enqueued queue entry = %#v, want active replacement", second[0].PullRequest)
+	}
+}
+
+func TestDelegateNativeMergeQueueIssuesFallsBackWhenCachedQueueDisappears(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 13, 18, 0, 0, 0, time.UTC)
+	issue := nativeMergeQueueTestIssue(203, "success")
+	available := true
+	tracker := &nativeMergeQueueConnector{
+		autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+			autoPromoteTickConnector: &autoPromoteTickConnector{},
+		},
+		available: &available,
+	}
+	cfg := normalizeConfig(Config{
+		MergeFastPathEnabled: true,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		ActiveStates:   []string{"Merging"},
+		TerminalStates: []string{"Done"},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+
+	first := orch.delegateNativeMergeQueueIssues(context.Background(), &state, []connector.Issue{issue}, now)
+	available = false
+	second := orch.delegateNativeMergeQueueIssues(context.Background(), &state, first, now.Add(nativeMergeQueueEntryRefresh))
+
+	if len(tracker.enqueued) != 1 {
+		t.Fatalf("enqueued = %#v, want no enqueue after queue disappears", tracker.enqueued)
+	}
+	if second[0].PullRequest == nil || second[0].PullRequest.MergeQueueEntry != nil {
+		t.Fatalf("pull request = %#v, want stale queue entry cleared", second[0].PullRequest)
+	}
+	candidates := orch.mergeWorkerDispatchCandidates(&state, second)
+	if len(candidates) != 1 || candidates[0].ID != issue.ID {
+		t.Fatalf("merge worker candidates = %#v, want fallback issue %q", candidates, issue.ID)
+	}
+}
+
 func TestDelegateNativeMergeQueueIssuesRecoversExistingEntriesAfterRestart(t *testing.T) {
 	t.Parallel()
 

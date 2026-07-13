@@ -15,7 +15,7 @@ query DetentInspectPullRequestMergeQueue($owner: String!, $name: String!, $numbe
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       id
-      mergeStateStatus
+      mergeQueue { url }
       mergeQueueEntry {
         id
         state
@@ -72,9 +72,11 @@ func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue conn
 	var response struct {
 		Repository *struct {
 			PullRequest *struct {
-				ID               string               `json:"id"`
-				MergeStateStatus string               `json:"mergeStateStatus"`
-				MergeQueueEntry  *mergeQueueEntryNode `json:"mergeQueueEntry"`
+				ID         string `json:"id"`
+				MergeQueue *struct {
+					URL string `json:"url"`
+				} `json:"mergeQueue"`
+				MergeQueueEntry *mergeQueueEntryNode `json:"mergeQueueEntry"`
 			} `json:"pullRequest"`
 		} `json:"repository"`
 	}
@@ -90,7 +92,7 @@ func (c *Connector) InspectPullRequestMergeQueue(ctx context.Context, issue conn
 	}
 	pullRequest := response.Repository.PullRequest
 	status := connector.PullRequestMergeQueueStatus{
-		Available:         strings.EqualFold(strings.TrimSpace(pullRequest.MergeStateStatus), "HAS_MERGE_QUEUE") || pullRequest.MergeQueueEntry != nil,
+		Available:         pullRequest.MergeQueue != nil || pullRequest.MergeQueueEntry != nil,
 		PullRequestNodeID: strings.TrimSpace(pullRequest.ID),
 	}
 	status.Entry = connectorMergeQueueEntry(pullRequest.MergeQueueEntry)

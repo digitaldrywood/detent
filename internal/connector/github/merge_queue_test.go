@@ -21,12 +21,12 @@ func TestConnectorInspectPullRequestMergeQueue(t *testing.T) {
 	}{
 		{
 			name:      "detects merge queue policy",
-			response:  `{"data":{"repository":{"pullRequest":{"id":"PR_42","mergeStateStatus":"HAS_MERGE_QUEUE","mergeQueueEntry":null}}}}`,
+			response:  `{"data":{"repository":{"pullRequest":{"id":"PR_42","mergeStateStatus":"CLEAN","mergeQueue":{"url":"https://github.test/example/repo/queue/main"},"mergeQueueEntry":null}}}}`,
 			available: true,
 		},
 		{
 			name:      "falls back without merge queue policy",
-			response:  `{"data":{"repository":{"pullRequest":{"id":"PR_42","mergeStateStatus":"CLEAN","mergeQueueEntry":null}}}}`,
+			response:  `{"data":{"repository":{"pullRequest":{"id":"PR_42","mergeStateStatus":"CLEAN","mergeQueue":null,"mergeQueueEntry":null}}}}`,
 			available: false,
 		},
 		{
@@ -66,7 +66,12 @@ func TestConnectorInspectPullRequestMergeQueue(t *testing.T) {
 			if !reflect.DeepEqual(status.Entry, tt.wantEntry) {
 				t.Fatalf("entry = %#v, want %#v", status.Entry, tt.wantEntry)
 			}
-			variables := server.requests()[0]["variables"].(map[string]any)
+			request := server.requests()[0]
+			query := request["query"].(string)
+			if !strings.Contains(query, "mergeQueue { url }") || strings.Contains(query, "mergeStateStatus") {
+				t.Fatalf("query = %q, want mergeQueue capability field without mergeStateStatus", query)
+			}
+			variables := request["variables"].(map[string]any)
 			if variables["owner"] != "example" || variables["name"] != "repo" || variables["number"] != float64(42) {
 				t.Fatalf("variables = %#v, want example/repo#42", variables)
 			}

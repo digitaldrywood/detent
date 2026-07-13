@@ -61,7 +61,7 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			continue
 		}
 
-		cached, previouslyQueued := state.nativeMergeQueueEntries[issueID]
+		_, previouslyQueued := state.nativeMergeQueueEntries[issueID]
 		status, err := queue.InspectPullRequestMergeQueue(ctx, candidate)
 		if err != nil {
 			state.nativeMergeQueueDeferred[issueID] = struct{}{}
@@ -79,12 +79,9 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 			continue
 		}
 		if previouslyQueued {
-			cached.CheckedAt = now
-			cached.Entry.State = "MISSING"
-			state.nativeMergeQueueEntries[issueID] = cached
-			applyNativeMergeQueueEntry(out, issueID, cached.Entry)
+			delete(state.nativeMergeQueueEntries, issueID)
+			clearNativeMergeQueueEntry(out, issueID)
 			o.logNativeMergeQueueFailure(candidate, "entry_missing", nil)
-			continue
 		}
 		if !status.Available {
 			continue
@@ -162,6 +159,17 @@ func applyNativeMergeQueueEntry(issues []connector.Issue, issueID string, entry 
 		cloned := cloneIssue(issues[index])
 		queueEntry := clonePullRequestMergeQueueEntry(entry)
 		cloned.PullRequest.MergeQueueEntry = &queueEntry
+		issues[index] = cloned
+	}
+}
+
+func clearNativeMergeQueueEntry(issues []connector.Issue, issueID string) {
+	for index := range issues {
+		if strings.TrimSpace(issues[index].ID) != issueID || issues[index].PullRequest == nil {
+			continue
+		}
+		cloned := cloneIssue(issues[index])
+		cloned.PullRequest.MergeQueueEntry = nil
 		issues[index] = cloned
 	}
 }
