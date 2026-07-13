@@ -4789,6 +4789,9 @@ func successfulDoctorDeps() doctorDeps {
 		runCommandInDir: func(context.Context, string, []string, string, ...string) error {
 			return nil
 		},
+		httpDo: func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("health unavailable")
+		},
 		githubScopes: func(context.Context, string) ([]string, error) {
 			return []string{"repo", "read:org", "read:project", "project"}, nil
 		},
