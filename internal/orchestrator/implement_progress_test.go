@@ -533,6 +533,7 @@ func TestStickyBlockReasonIncludesCircuitBreakers(t *testing.T) {
 		workpadBlockedUnactionedReason,
 		"token_ceiling_circuit_breaker",
 		tokenCeilingBlockedReasonPrefix + "observed 16100000 tokens above the 16000000 max_session_tokens ceiling",
+		mergeWorkerRetryExhaustedReason,
 	} {
 		if !stickyBlockReason(reason) {
 			t.Fatalf("stickyBlockReason(%q) = false, want true", reason)

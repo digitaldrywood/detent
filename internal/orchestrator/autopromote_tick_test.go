@@ -3206,6 +3206,56 @@ func TestTickFailsAndRetriesStaleMergingWithoutStartupTelemetry(t *testing.T) {
 	}
 }
 
+func TestFailStalledMergeWorkerStartsBlocksAfterRetryCap(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 13, 21, 30, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("issue-stalled-merge-exhausted", []string{"bug"}, &connector.PullRequest{
+		Number:         72,
+		URL:            "https://github.test/digitaldrywood/detent/pull/72",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+		HeadSHA:        "head-stalled",
+	})
+	issue.State = "Merging"
+	issue.Identifier = "digitaldrywood/detent#72"
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue:     cloneIssue(issue),
+		Attempt:   maxMergeWorkerRunnerFailures,
+		StartedAt: now.Add(-3 * time.Minute),
+	}
+
+	orch.failStalledMergeWorkerStarts(context.Background(), &state, now)
+
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatalf("Retry[%q] present after exhausted startup failures", issue.ID)
+	}
+	if _, ok := state.Running[issue.ID]; ok {
+		t.Fatalf("Running[%q] present after exhausted startup failures", issue.ID)
+	}
+	blocked, ok := state.Blocked[issue.ID]
+	if !ok || blocked.Issue.State != blockedStatusState {
+		t.Fatalf("Blocked[%q] = %#v, want Blocked issue", issue.ID, blocked)
+	}
+	if got := tracker.updates; !reflect.DeepEqual(got, []autoPromoteTickUpdate{{issueID: issue.ID, state: blockedStatusState}}) {
+		t.Fatalf("updates = %#v, want Blocked transition", got)
+	}
+}
+
 func TestTickDispatchesFreshAutoPromotedMergingIssue(t *testing.T) {
 	t.Parallel()
 
@@ -4186,7 +4236,7 @@ func TestTickPreservesDueMergingRetryWhenLaneFullAndMergingFetchOmitted(t *testi
 	}
 }
 
-func TestHandleRunResultReworksMergeWorkerAfterRepeatedRunnerFailures(t *testing.T) {
+func TestHandleRunResultBlocksMergeWorkerAfterRepeatedInterruptedSessions(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 25, 21, 10, 0, 0, time.UTC)
@@ -4222,19 +4272,23 @@ func TestHandleRunResultReworksMergeWorkerAfterRepeatedRunnerFailures(t *testing
 	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
 		IssueID:     issue.ID,
 		CompletedAt: now,
-		Err:         errors.New("run agent turn: stream turn: EOF"),
+		Err:         errors.New("codex turn failed: status interrupted: null"),
 	})
 
 	if _, ok := state.Retry[issue.ID]; ok {
 		t.Fatalf("Retry[%q] present after exhausted merge runner failures", issue.ID)
 	}
-	if got := tracker.updates; !reflect.DeepEqual(got, []autoPromoteTickUpdate{{issueID: issue.ID, state: autoPromoteReworkState}}) {
-		t.Fatalf("updates = %#v, want Rework transition", got)
+	if got := tracker.updates; !reflect.DeepEqual(got, []autoPromoteTickUpdate{{issueID: issue.ID, state: blockedStatusState}}) {
+		t.Fatalf("updates = %#v, want Blocked transition", got)
+	}
+	blocked, ok := state.Blocked[issue.ID]
+	if !ok || blocked.Issue.State != blockedStatusState {
+		t.Fatalf("Blocked[%q] = %#v, want Blocked issue", issue.ID, blocked)
 	}
 	if len(tracker.comments) != 1 {
 		t.Fatalf("comments = %#v, want one exhausted retry comment", tracker.comments)
 	}
-	for _, fragment := range []string{"runner_failed_retry_exhausted", "stream turn: EOF", "pull request"} {
+	for _, fragment := range []string{mergeWorkerRetryExhaustedReason, "status interrupted: null", "pull request"} {
 		if !strings.Contains(tracker.comments[0].body, fragment) {
 			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
 		}
@@ -4636,7 +4690,7 @@ func TestHandleRunResultCompletesMergeWorkerWhenLatestIssueIsTerminal(t *testing
 	}
 }
 
-func TestHandleRunResultReworksMergeWorkerAfterRepeatedIncompleteResults(t *testing.T) {
+func TestHandleRunResultBlocksMergeWorkerAfterRepeatedIncompleteResults(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 26, 13, 20, 0, 0, time.UTC)
@@ -4678,13 +4732,13 @@ func TestHandleRunResultReworksMergeWorkerAfterRepeatedIncompleteResults(t *test
 	if _, ok := state.Retry[issue.ID]; ok {
 		t.Fatalf("Retry[%q] present after repeated incomplete merge results", issue.ID)
 	}
-	if got := tracker.updates; !reflect.DeepEqual(got, []autoPromoteTickUpdate{{issueID: issue.ID, state: autoPromoteReworkState}}) {
-		t.Fatalf("updates = %#v, want Rework transition", got)
+	if got := tracker.updates; !reflect.DeepEqual(got, []autoPromoteTickUpdate{{issueID: issue.ID, state: blockedStatusState}}) {
+		t.Fatalf("updates = %#v, want Blocked transition", got)
 	}
 	if len(tracker.comments) != 1 {
 		t.Fatalf("comments = %#v, want one exhausted retry comment", tracker.comments)
 	}
-	for _, fragment := range []string{"runner_failed_retry_exhausted", "terminal issue or pull request state", "pull request"} {
+	for _, fragment := range []string{mergeWorkerRetryExhaustedReason, "terminal issue or pull request state", "pull request"} {
 		if !strings.Contains(tracker.comments[0].body, fragment) {
 			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
 		}

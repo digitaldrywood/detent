@@ -296,7 +296,7 @@ func (o *Orchestrator) refreshActiveRuns(ctx context.Context, state *State, now 
 		o.reapWorkspacesIfDue(ctx, state, now)
 	}
 	o.reconcileRunningIssues(ctx, state, now)
-	o.failStalledMergeWorkerStarts(state, now)
+	o.failStalledMergeWorkerStarts(ctx, state, now)
 	o.heartbeatRunningClaims(ctx, state, now)
 	o.heartbeatRunningWorkAttempts(ctx, state, now)
 }

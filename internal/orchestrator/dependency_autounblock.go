@@ -851,7 +851,7 @@ func (o *Orchestrator) issueHasStickyBlockReason(ctx context.Context, state *Sta
 
 func stickyBlockReason(reason string) bool {
 	reason = strings.ToLower(strings.TrimSpace(reason))
-	if strings.HasPrefix(reason, tokenCeilingBlockedReasonPrefix) {
+	if strings.HasPrefix(reason, tokenCeilingBlockedReasonPrefix) || strings.HasPrefix(reason, mergeWorkerRetryExhaustedReason) {
 		return true
 	}
 	switch reason {

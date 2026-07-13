@@ -1100,8 +1100,8 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if cfg.Agent.MaxSessionContextMultiplier != 0 {
 		t.Fatalf("Agent.MaxSessionContextMultiplier = %v, want disabled default", cfg.Agent.MaxSessionContextMultiplier)
 	}
-	if cfg.Agent.MergeFastPath.Enabled {
-		t.Fatal("Agent.MergeFastPath.Enabled = true, want false default")
+	if !cfg.Agent.MergeFastPath.Enabled {
+		t.Fatal("Agent.MergeFastPath.Enabled = false, want true default")
 	}
 	if cfg.Agent.ExperimentalThreadResume {
 		t.Fatal("Agent.ExperimentalThreadResume = true, want disabled default")
@@ -1396,18 +1396,31 @@ func TestValidatePlanRejectsInvalidConfig(t *testing.T) {
 func TestParseWorkflowAgentMergeFastPath(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := ParseWorkflow([]byte(`---
+	for _, tt := range []struct {
+		name    string
+		enabled string
+		want    bool
+	}{
+		{name: "enabled", enabled: "true", want: true},
+		{name: "disabled", enabled: "false", want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workflow, err := ParseWorkflow([]byte(`---
 agent:
   merge_fast_path:
-    enabled: true
+    enabled: ` + tt.enabled + `
 ---
 Body
 `))
-	if err != nil {
-		t.Fatalf("ParseWorkflow() error = %v", err)
-	}
-	if !workflow.Config.Agent.MergeFastPath.Enabled {
-		t.Fatal("Agent.MergeFastPath.Enabled = false, want true")
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			if workflow.Config.Agent.MergeFastPath.Enabled != tt.want {
+				t.Fatalf("Agent.MergeFastPath.Enabled = %t, want %t", workflow.Config.Agent.MergeFastPath.Enabled, tt.want)
+			}
+		})
 	}
 }
 

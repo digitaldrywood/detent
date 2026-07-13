@@ -105,7 +105,6 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Agent.AutoPromote.GateWaitState = " Review "
 	cfg.Agent.AutoPromote.GateWaitTimeoutSeconds = 900
 	cfg.Agent.AutoPromote.ReworkLimit = 2
-	cfg.Agent.MergeFastPath.Enabled = true
 	cfg.Agent.OverloadRetryDelayMS = 60000
 	cfg.Deliverable.MergeMethod = workflowconfig.MergeMethodRebase
 	cfg.Agent.OutputTruncation.MaxBytes = 4096

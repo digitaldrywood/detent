@@ -963,7 +963,7 @@ func mergeWorkerSlotDecisionAttrs(
 	return attrs
 }
 
-func (o *Orchestrator) failStalledMergeWorkerStarts(state *State, now time.Time) {
+func (o *Orchestrator) failStalledMergeWorkerStarts(ctx context.Context, state *State, now time.Time) {
 	if state == nil || state.Draining {
 		return
 	}
@@ -982,12 +982,18 @@ func (o *Orchestrator) failStalledMergeWorkerStarts(state *State, now time.Time)
 		err := fmt.Errorf("merge worker did not report process or session startup within %s", timeout)
 		o.logMergeWorkerFailure(running.Issue, "runner_startup_timeout", err)
 		o.recordMergeFailed(state, running.Issue, now, "runner_startup_timeout", err)
+		o.recordProjectAttemptOutcome(state, issueID, now, store.WorkAttemptTerminalFailure, err, "runner_startup_timeout", err.Error())
+		o.completeDurableWorkAttempt(ctx, state, running, now, store.WorkAttemptTerminalFailure, "runner_startup_timeout", err.Error(), "starting", "merge worker startup timed out")
 		o.releaseGlobalDispatchSlot(running.globalSlot)
 		if running.cancel != nil {
 			running.cancel()
 		}
 		delete(state.Running, issueID)
-		o.scheduleRetry(state, running.Issue, nextAttempt(running.Attempt), now, err.Error(), false, running.WorkerHost)
+		attempt := nextAttempt(running.Attempt)
+		if attempt > maxMergeWorkerRunnerFailures && o.blockExhaustedMergeWorker(ctx, state, running, now, attempt, err) {
+			continue
+		}
+		o.scheduleRetry(state, running.Issue, attempt, now, err.Error(), false, running.WorkerHost)
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now,
 			Event:   "merge_worker_startup_timeout",
