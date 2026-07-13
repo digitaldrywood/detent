@@ -681,6 +681,71 @@ func TestTickAutoPromoteRecoversActiveIssueAfterRestart(t *testing.T) {
 	}
 }
 
+func TestTickAutoPromoteRecoversOptionalReviewDeadlineAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 13, 19, 0, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("issue-restart-optional-review", []string{"bug"}, &connector.PullRequest{
+		Number:         1297,
+		URL:            "https://github.test/digitaldrywood/detent/pull/1297",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	cfg := normalizeConfig(Config{
+		Project:             scheduler.ProjectCandidate{ID: "detent"},
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:         true,
+			QuietDuration:   0,
+			GateWaitState:   autoPromoteGateWaitReview,
+			GateWaitTimeout: 15 * time.Minute,
+			Gate: gate.Config{
+				Kind:            gate.KindCommand,
+				AutomatedReview: gate.AutomatedReviewOptional,
+			},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	mergingSlot := dispatchTestIssue("issue-restart-optional-merging-slot", "Merging")
+	state.Running[mergingSlot.ID] = Running{Issue: mergingSlot}
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	prNumber := int64(issue.PullRequest.Number)
+	completedAt := now.Add(-20 * time.Minute)
+	attempts := &recordingWorkAttemptStore{history: []store.WorkAttempt{{
+		ProjectID:          cfg.Project.ID,
+		IssueID:            issue.ID,
+		Identifier:         issue.Identifier,
+		IssueURL:           issue.URL,
+		PRNumber:           &prNumber,
+		WorkerType:         "agent",
+		Status:             store.WorkAttemptStatusTerminal,
+		StartedAt:          completedAt.Add(-5 * time.Minute),
+		CompletedAt:        completedAt,
+		TerminalState:      store.WorkAttemptTerminalSuccess,
+		WorkerMetadataJSON: implementProgressMetadataJSON(autoPromoteReworkSignature{PRNumber: prNumber, HeadSHA: "optional-head"}, store.WorkAttemptTerminalSuccess),
+	}}}
+	orch := &Orchestrator{
+		cfg:          cfg,
+		connector:    tracker,
+		workAttempts: attempts,
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	wantUpdates := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}
+	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
+		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
+	}
+	if len(attempts.historyQueries) == 0 {
+		t.Fatal("durable work attempt history was not queried")
+	}
+}
+
 func TestLatestSuccessfulGateWaitAttemptRequiresCurrentImplementationEvidence(t *testing.T) {
 	t.Parallel()
 
