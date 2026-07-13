@@ -216,6 +216,47 @@ func TestAgentBackendRunTurnErrorResult(t *testing.T) {
 	}
 }
 
+func TestFinalTurnErrorAfterStreamClose(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		canceled bool
+		state    turnState
+		waitErr  error
+		wantErr  error
+	}{
+		{name: "cancellation takes precedence", canceled: true, waitErr: errors.New("process exited"), wantErr: context.Canceled},
+		{name: "uncanceled missing result", waitErr: errors.New("process exited"), wantErr: ErrMissingResult},
+		{name: "late cancellation preserves success", canceled: true, state: turnState{sawResult: true, resultSubtype: "success"}},
+		{name: "late cancellation preserves result error", canceled: true, state: turnState{sawResult: true, resultIsError: true, resultSubtype: "error_during_execution"}, wantErr: ErrTurnFailed},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			if tt.canceled {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+
+			err := finalTurnError(ctx, tt.state, tt.waitErr, "")
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("finalTurnError() error = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("finalTurnError() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestAgentBackendRunTurnSkipsMalformedLines(t *testing.T) {
 	t.Parallel()
 

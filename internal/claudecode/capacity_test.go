@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -20,7 +21,7 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 		{name: "anthropic overload", err: errors.New("claude turn failed: overloaded_error"), want: true},
 		{name: "http overload", err: errors.New("claude turn failed: HTTP 529"), want: true},
 		{name: "max turns", err: errors.New("claude turn failed: error_max_turns")},
-		{name: "result message", err: finalTurnError(turnState{sawResult: true, resultIsError: true, resultSubtype: "error_during_execution", resultText: "You've hit your limit. Try again at 9:39 PM"}, nil, ""), want: true},
+		{name: "result message", err: finalTurnError(context.Background(), turnState{sawResult: true, resultIsError: true, resultSubtype: "error_during_execution", resultText: "You've hit your limit. Try again at 9:39 PM"}, nil, ""), want: true},
 	}
 
 	for _, tt := range tests {
