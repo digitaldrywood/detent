@@ -16,6 +16,7 @@ type AutoPromoteConfig struct {
 	AllowedIssueLabels    []string
 	GateWaitState         string
 	GateWaitTimeout       time.Duration
+	GateWaitTimeoutAction string
 	SourceState           string
 	PassState             string
 	ReworkState           string
@@ -40,6 +41,7 @@ type AutoPromoteSummary struct {
 	ArtifactStatus                        string
 	LastActivityAt                        *time.Time
 	CompletedFinalState                   string
+	AutomatedReviewWaitExpired            bool
 }
 
 type AutoPromoteFinding struct {
@@ -154,7 +156,8 @@ func EvaluateAutoPromote(
 		summary.ArtifactStatus = artifactStatusFromIssue(issue, cfg.Gate.Artifact.StatusField)
 	}
 	gateDecision := gate.Evaluate(cfg.Gate, issue.Labels, gateSummary(summary), now, gate.EvaluationOptions{
-		QuietDuration: cfg.QuietDuration,
+		QuietDuration:              cfg.QuietDuration,
+		AutomatedReviewWaitExpired: summary.AutomatedReviewWaitExpired,
 	})
 	decision := autoPromoteDecision(autoPromoteActionFromGate(gateDecision.Action), autoPromoteReasonFromGate(gateDecision.Reason))
 	decision.CIStatus = gateDecision.CIStatus
@@ -220,6 +223,7 @@ func normalizeAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {
 	if cfg.GateWaitTimeout <= 0 {
 		cfg.GateWaitTimeout = defaultAutoPromoteGateWaitTimeout
 	}
+	cfg.GateWaitTimeoutAction = normalizeAutoPromoteGateWaitTimeoutAction(cfg.GateWaitTimeoutAction, cfg.Gate)
 	cfg.SourceState = strings.TrimSpace(cfg.SourceState)
 	if cfg.SourceState == "" {
 		cfg.SourceState = autoPromoteSourceState
@@ -241,6 +245,19 @@ func normalizeAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {
 	}
 	cfg.Gate = gate.Effective(cfg.Gate)
 	return cfg
+}
+
+func normalizeAutoPromoteGateWaitTimeoutAction(action string, gateCfg gate.Config) string {
+	switch normalizeState(action) {
+	case autoPromoteGateWaitTimeoutMerge:
+		return autoPromoteGateWaitTimeoutMerge
+	case autoPromoteGateWaitTimeoutHumanReview, "human-review", "humanreview":
+		return autoPromoteGateWaitTimeoutHumanReview
+	}
+	if gate.AutomatedReviewMode(gateCfg) == gate.AutomatedReviewRequired {
+		return autoPromoteGateWaitTimeoutHumanReview
+	}
+	return autoPromoteGateWaitTimeoutMerge
 }
 
 func normalizeAutoPromoteGateWaitState(state string) string {

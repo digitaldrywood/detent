@@ -26,12 +26,17 @@ const (
 	PlanReviewHuman     = "human"
 	PlanReviewAutomated = "automated"
 	PlanReviewBoth      = "both"
+
+	AutomatedReviewRequired = "required"
+	AutomatedReviewOptional = "optional"
+	AutomatedReviewOff      = "off"
 )
 
 type Config struct {
 	Kind                   string          `yaml:"kind"`
 	Run                    string          `yaml:"run"`
 	ApprovalLabel          string          `yaml:"approval_label"`
+	AutomatedReview        string          `yaml:"automated_review"`
 	RequireAutomatedReview *bool           `yaml:"require_automated_review"`
 	RequiredStatusChecks   []string        `yaml:"required_status_checks"`
 	CIFailureAction        string          `yaml:"ci_failure_action"`
@@ -92,7 +97,8 @@ type ValidatorResult struct {
 }
 
 type EvaluationOptions struct {
-	QuietDuration time.Duration
+	QuietDuration              time.Duration
+	AutomatedReviewWaitExpired bool
 }
 
 type Action string
@@ -171,6 +177,7 @@ func Effective(cfg Config) Config {
 	cfg.Kind = NormalizeKind(cfg.Kind)
 	cfg.Run = strings.TrimSpace(cfg.Run)
 	cfg.ApprovalLabel = normalizeLabel(cfg.ApprovalLabel)
+	cfg.AutomatedReview = NormalizeAutomatedReview(cfg.AutomatedReview)
 	cfg.RequiredStatusChecks = NormalizeRequiredStatusChecks(cfg.RequiredStatusChecks)
 	cfg.CIFailureAction = NormalizeCIFailureAction(cfg.CIFailureAction)
 	if cfg.TransientCIRetryLimit == nil {
@@ -185,17 +192,33 @@ func Effective(cfg Config) Config {
 	if cfg.Kind == KindCommand && cfg.Run == "" {
 		cfg.Run = DefaultCommand
 	}
-	if cfg.Kind == KindHumanReview {
+	switch cfg.Kind {
+	case KindHumanReview:
 		cfg.Run = ""
+		cfg.AutomatedReview = ""
 		cfg.RequireAutomatedReview = nil
 		if cfg.ApprovalLabel == "" {
 			cfg.ApprovalLabel = DefaultApprovalLabel
 		}
-	} else if cfg.Kind == KindArtifact {
+	case KindArtifact:
 		cfg.Run = ""
+		cfg.AutomatedReview = ""
 		cfg.RequireAutomatedReview = nil
-	} else if cfg.RequireAutomatedReview == nil {
-		cfg.RequireAutomatedReview = new(true)
+	default:
+		if cfg.AutomatedReview == "" {
+			cfg.AutomatedReview = AutomatedReviewRequired
+			if cfg.RequireAutomatedReview != nil && !*cfg.RequireAutomatedReview {
+				cfg.AutomatedReview = AutomatedReviewOff
+			}
+		}
+		switch cfg.AutomatedReview {
+		case AutomatedReviewRequired:
+			cfg.RequireAutomatedReview = new(true)
+		case AutomatedReviewOff:
+			cfg.RequireAutomatedReview = new(false)
+		case AutomatedReviewOptional:
+			cfg.RequireAutomatedReview = nil
+		}
 	}
 	if cfg.ApprovalLabel == "" {
 		cfg.ApprovalLabel = DefaultApprovalLabel
@@ -266,6 +289,25 @@ func NormalizeCIFailureAction(action string) string {
 	}
 }
 
+func NormalizeAutomatedReview(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "":
+		return ""
+	case AutomatedReviewRequired:
+		return AutomatedReviewRequired
+	case AutomatedReviewOptional:
+		return AutomatedReviewOptional
+	case AutomatedReviewOff, "disabled", "false":
+		return AutomatedReviewOff
+	default:
+		return strings.ToLower(strings.TrimSpace(mode))
+	}
+}
+
+func AutomatedReviewMode(cfg Config) string {
+	return Effective(cfg).AutomatedReview
+}
+
 func NormalizeRequiredStatusChecks(checks []string) []string {
 	normalized := make([]string, 0, len(checks))
 	seen := make(map[string]struct{}, len(checks))
@@ -294,6 +336,11 @@ func Validate(prefix string, cfg Config) []string {
 	case CIFailureActionSkip, CIFailureActionRework:
 	default:
 		problems = append(problems, prefix+".ci_failure_action must be one of skip, rework")
+	}
+	switch NormalizeAutomatedReview(cfg.AutomatedReview) {
+	case "", AutomatedReviewRequired, AutomatedReviewOptional, AutomatedReviewOff:
+	default:
+		problems = append(problems, prefix+".automated_review must be one of required, optional, off")
 	}
 	if cfg.TransientCIRetryLimit != nil && *cfg.TransientCIRetryLimit < 0 {
 		problems = append(problems, prefix+".transient_ci_retry_limit must be greater than or equal to 0")
@@ -339,9 +386,12 @@ func Instructions(cfg Config) string {
 			"Run full `" + cfg.Run + "` in Merging when code changes, conflicts are resolved, or validation state is stale or unknown. " +
 			"Watch current-head CI with REST check-runs polling/backoff, report slow checks, and record merge wait telemetry in the Workpad prose: quiet-window wait, local merge-gate duration, PR CI duration, slow check names, and whether post-merge main CI is still running. " +
 			"Keep blocker and human-action declarations in the structured detent-status block; narrative Workpad sentences are telemetry only."
-		if automatedReviewRequired(cfg) {
+		switch AutomatedReviewMode(cfg) {
+		case AutomatedReviewRequired:
 			instructions += " Automated review is required on the current pull request head before promotion."
-		} else {
+		case AutomatedReviewOptional:
+			instructions += " Automated review is optional: wait for it until the configured gate deadline, then promote when the remaining checks pass. Any P1 automated review findings still block promotion."
+		default:
 			instructions += " Automated review is not required for promotion, but any P1 automated review findings still block promotion."
 		}
 		if cfg.Validator.Enabled {
@@ -413,7 +463,7 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 	if out, ok := evaluateValidator(cfg.Validator, summary.Validator); ok {
 		return out
 	}
-	if automatedReviewRequired(cfg) && !automatedReviewSubmitted(summary.ReviewState) {
+	if automatedReviewWaits(cfg) && !automatedReviewSubmitted(summary.ReviewState) && !opts.AutomatedReviewWaitExpired {
 		return decision(ActionWait, ReasonAutomatedReviewMissing)
 	}
 	if remaining := quietRemaining(summary, opts, now); remaining > 0 {
@@ -770,7 +820,7 @@ func normalizeLabel(label string) string {
 	return strings.ToLower(strings.TrimSpace(label))
 }
 
-func automatedReviewRequired(cfg Config) bool {
+func automatedReviewWaits(cfg Config) bool {
 	cfg = Effective(cfg)
-	return cfg.Kind == KindCommand && cfg.RequireAutomatedReview != nil && *cfg.RequireAutomatedReview
+	return cfg.Kind == KindCommand && cfg.AutomatedReview != AutomatedReviewOff
 }

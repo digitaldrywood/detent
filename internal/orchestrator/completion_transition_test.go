@@ -591,6 +591,77 @@ func TestTransitionCompletedActiveIssuesKeepsHumanReviewWhenRequired(t *testing.
 	}
 }
 
+func TestTransitionCompletedActiveIssuesAutomatedReviewTimeoutModes(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 13, 18, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name         string
+		mode         string
+		timeout      string
+		ciStatus     string
+		reviewState  string
+		wantState    string
+		wantDispatch bool
+	}{
+		{name: "required absent holds for human", mode: gate.AutomatedReviewRequired, ciStatus: "success", wantState: "Human Review"},
+		{name: "optional absent merges", mode: gate.AutomatedReviewOptional, ciStatus: "success", wantState: "Merging", wantDispatch: true},
+		{name: "optional present merges", mode: gate.AutomatedReviewOptional, ciStatus: "success", reviewState: "COMMENTED", wantState: "Merging", wantDispatch: true},
+		{name: "optional late p1 reworks", mode: gate.AutomatedReviewOptional, ciStatus: "success", reviewState: "P1", wantState: "Rework"},
+		{name: "optional pending ci keeps waiting", mode: gate.AutomatedReviewOptional, ciStatus: "pending"},
+		{name: "optional can hold for human", mode: gate.AutomatedReviewOptional, timeout: autoPromoteGateWaitTimeoutHumanReview, ciStatus: "success", wantState: "Human Review"},
+		{name: "off promotes without review", mode: gate.AutomatedReviewOff, ciStatus: "success", wantState: "Merging", wantDispatch: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := completionTransitionIssue("In Progress", "OPEN")
+			issue.PullRequest.URL = "https://github.test/digitaldrywood/detent/pull/1297"
+			issue.PullRequest.MergeableState = "clean"
+			issue.PullRequest.CIStatus = tt.ciStatus
+			issue.PullRequest.CodexReviewState = tt.reviewState
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			cfg := normalizeConfig(Config{
+				AutoPromote: AutoPromoteConfig{
+					Enabled:               true,
+					GateWaitTimeout:       15 * time.Minute,
+					GateWaitTimeoutAction: tt.timeout,
+					Gate: gate.Config{
+						Kind:            gate.KindCommand,
+						AutomatedReview: tt.mode,
+					},
+				},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			})
+			orch := &Orchestrator{cfg: cfg, connector: tracker}
+			state := newState(cfg)
+			state.Completed[issue.ID] = Completed{
+				Issue:       issue,
+				CompletedAt: now.Add(-16 * time.Minute),
+				FinalState:  FinalStateCompleted,
+			}
+
+			result := orch.transitionCompletedActiveIssuesToReview(context.Background(), &state, []connector.Issue{issue}, now)
+
+			if tt.wantState == "" {
+				if len(result.transitioned) != 0 || len(tracker.updates) != 0 {
+					t.Fatalf("transitioned = %#v, updates = %#v, want continued wait", result.transitioned, tracker.updates)
+				}
+				return
+			}
+			if got := state.Completed[issue.ID].Issue.State; got != tt.wantState {
+				t.Fatalf("Completed issue state = %q, want %q", got, tt.wantState)
+			}
+			if got := len(result.dispatchCandidates) == 1; got != tt.wantDispatch {
+				t.Fatalf("dispatch candidate = %t, want %t: %#v", got, tt.wantDispatch, result.dispatchCandidates)
+			}
+		})
+	}
+}
+
 func TestTransitionCompletedActiveIssuesHandlesFailedReviewUpdate(t *testing.T) {
 	t.Parallel()
 

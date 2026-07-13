@@ -859,6 +859,7 @@ func gateAssigns(cfg gate.Config) map[string]any {
 		"kind":                     effective.Kind,
 		"run":                      effective.Run,
 		"approval_label":           effective.ApprovalLabel,
+		"automated_review":         effective.AutomatedReview,
 		"require_automated_review": requireAutomatedReview(effective),
 		"ci_failure_action":        effective.CIFailureAction,
 		"transient_ci_retry_limit": transientCIRetryLimit,
@@ -884,8 +885,7 @@ func planAssigns(cfg gate.PlanConfig) map[string]any {
 }
 
 func requireAutomatedReview(cfg gate.Config) bool {
-	effective := gate.Effective(cfg)
-	return effective.RequireAutomatedReview != nil && *effective.RequireAutomatedReview
+	return gate.AutomatedReviewMode(cfg) == gate.AutomatedReviewRequired
 }
 
 func issueAssigns(issue connector.Issue) map[string]any {

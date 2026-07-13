@@ -20,14 +20,16 @@ import (
 )
 
 const (
-	autoPromoteSourceState            = "Human Review"
-	autoPromoteMergingState           = "Merging"
-	autoPromoteReworkState            = "Rework"
-	autoPromoteGateWaitSource         = "source"
-	autoPromoteGateWaitReview         = "review"
-	defaultAutoPromoteGateWaitTimeout = time.Hour
-	defaultMergeWorkerStartupTimeout  = 2 * time.Minute
-	mergeWorkerProjectStateFull       = "project_state_capacity_full"
+	autoPromoteSourceState                = "Human Review"
+	autoPromoteMergingState               = "Merging"
+	autoPromoteReworkState                = "Rework"
+	autoPromoteGateWaitSource             = "source"
+	autoPromoteGateWaitReview             = "review"
+	autoPromoteGateWaitTimeoutMerge       = "merge"
+	autoPromoteGateWaitTimeoutHumanReview = "human_review"
+	defaultAutoPromoteGateWaitTimeout     = time.Hour
+	defaultMergeWorkerStartupTimeout      = 2 * time.Minute
+	mergeWorkerProjectStateFull           = "project_state_capacity_full"
 )
 
 type autoPromoteTickResult struct {
@@ -81,6 +83,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 
 		summary := AutoPromoteSummaryFromIssue(issue)
 		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issueID)
+		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
 		if decision.Reason == AutoPromoteReasonValidatorMissing {
 			validation, shouldComment, ok := o.validatorStageResult(ctx, issue)
@@ -141,6 +144,19 @@ func autoPromoteCompletedFinalState(state *State, issueID string) string {
 		return ""
 	}
 	return completed.FinalState
+}
+
+func autoPromoteReviewWaitExpired(state *State, issueID string, cfg AutoPromoteConfig, now time.Time) bool {
+	if state == nil {
+		return false
+	}
+	completed, ok := state.Completed[strings.TrimSpace(issueID)]
+	if !ok || completed.CompletedAt.IsZero() {
+		return false
+	}
+	cfg = normalizeAutoPromoteConfig(cfg)
+	return cfg.GateWaitTimeoutAction == autoPromoteGateWaitTimeoutMerge &&
+		!now.Before(completed.CompletedAt.Add(cfg.GateWaitTimeout))
 }
 
 func recordAutoPromoteSnapshotDecision(state *State, issueID string, decision AutoPromoteDecision) {

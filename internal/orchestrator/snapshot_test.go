@@ -198,8 +198,12 @@ func TestStateSnapshotMarksGatePendingBoardIssues(t *testing.T) {
 	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
 	cfg := normalizeConfig(Config{
 		AutoPromote: AutoPromoteConfig{
-			Enabled: true,
-			Gate:    gate.Config{Kind: gate.KindCommand},
+			Enabled:         true,
+			GateWaitTimeout: 15 * time.Minute,
+			Gate: gate.Config{
+				Kind:            gate.KindCommand,
+				AutomatedReview: gate.AutomatedReviewOptional,
+			},
 		},
 		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
 		TerminalStates: []string{"Done", "Cancelled"},
@@ -255,6 +259,17 @@ func TestStateSnapshotMarksGatePendingBoardIssues(t *testing.T) {
 	}
 	if snapshot.Queue[0].GatePending {
 		t.Fatal("queued issue GatePending = true, want false")
+	}
+	pendingMetadata := byID["gate-pending"].Metadata
+	if got := pendingMetadata[automatedReviewModeMetadataKey]; got != gate.AutomatedReviewOptional {
+		t.Fatalf("automated review mode metadata = %q, want optional", got)
+	}
+	if got := pendingMetadata[automatedReviewTimeoutActionMetadataKey]; got != autoPromoteGateWaitTimeoutMerge {
+		t.Fatalf("automated review timeout action metadata = %q, want merge", got)
+	}
+	wantDeadline := now.Add(14 * time.Minute).UTC().Format(time.RFC3339)
+	if got := pendingMetadata[automatedReviewDeadlineMetadataKey]; got != wantDeadline {
+		t.Fatalf("automated review deadline metadata = %q, want %q", got, wantDeadline)
 	}
 }
 

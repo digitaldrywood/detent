@@ -1568,6 +1568,17 @@ func TestCheckDoctorAutoPromote(t *testing.T) {
 		CodexReviewState:       "COMMENTED",
 		CodexReviewSubmittedAt: &oldActivity,
 	})
+	mergedWithoutReview := doctorAutoPromoteIssue("issue-merged-missing-review", &connector.PullRequest{
+		Number: 46,
+		URL:    "https://github.test/pull/46",
+		State:  "MERGED",
+	})
+	mergedWithReview := doctorAutoPromoteIssue("issue-merged-reviewed", &connector.PullRequest{
+		Number:           47,
+		URL:              "https://github.test/pull/47",
+		State:            "MERGED",
+		CodexReviewState: "COMMENTED",
+	})
 
 	tests := []struct {
 		name        string
@@ -1658,6 +1669,24 @@ func TestCheckDoctorAutoPromote(t *testing.T) {
 			},
 			want:        doctorOK,
 			wantDetails: []string{"ready=1"},
+		},
+		{
+			name: "dead automated review producer warns",
+			cfg:  validDoctorAutoPromoteWorkflow(),
+			connector: &fakeDoctorAutoPromoteConnector{
+				mergedIssues: []connector.Issue{mergedWithoutReview},
+			},
+			want:        doctorWarn,
+			wantDetails: []string{"recent merged PR automated reviews=0/1", "producer appears inactive"},
+		},
+		{
+			name: "working automated review producer passes",
+			cfg:  validDoctorAutoPromoteWorkflow(),
+			connector: &fakeDoctorAutoPromoteConnector{
+				mergedIssues: []connector.Issue{mergedWithReview},
+			},
+			want:        doctorOK,
+			wantDetails: []string{"recent merged PR automated reviews=1/1"},
 		},
 		{
 			name: "project state count discrepancy fails",
@@ -4632,6 +4661,7 @@ func doctorDependencyResolvedIssue(id string, identifier string, state string, c
 
 type fakeDoctorAutoPromoteConnector struct {
 	issues         []connector.Issue
+	mergedIssues   []connector.Issue
 	hydratedIssues []connector.Issue
 	resolvedIssues []connector.Issue
 	capabilities   []connector.DependencyCapability
@@ -4643,25 +4673,42 @@ type fakeDoctorAutoPromoteConnector struct {
 	scan           *connector.IssueStateScan
 }
 
-func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
-	return c.issues, nil
+func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStates(_ context.Context, states []string) ([]connector.Issue, error) {
+	return c.issuesForStates(states), nil
 }
 
-func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStatesLimit(_ context.Context, _ []string, limit int) ([]connector.Issue, error) {
+func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStatesLimit(_ context.Context, states []string, limit int) ([]connector.Issue, error) {
 	c.limit = limit
-	return c.issues, nil
+	return c.issuesForStates(states), nil
 }
 
-func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStatesScan(_ context.Context, _ []string, limit int) (connector.IssueStateScan, error) {
+func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStatesScan(_ context.Context, states []string, limit int) (connector.IssueStateScan, error) {
 	c.limit = limit
-	if c.scan != nil {
+	if c.scan != nil && !doctorFakeTerminalStates(states) {
 		return *c.scan, nil
 	}
-	scan := doctorIssueStateScan(c.issues)
+	scan := doctorIssueStateScan(c.issuesForStates(states))
 	if limit > 0 && len(scan.Issues) > limit {
 		scan.Issues = scan.Issues[:limit]
 	}
 	return scan, nil
+}
+
+func (c *fakeDoctorAutoPromoteConnector) issuesForStates(states []string) []connector.Issue {
+	if doctorFakeTerminalStates(states) {
+		return c.mergedIssues
+	}
+	return c.issues
+}
+
+func doctorFakeTerminalStates(states []string) bool {
+	for _, state := range states {
+		switch strings.ToLower(strings.TrimSpace(state)) {
+		case "done", "cancelled", "canceled":
+			return true
+		}
+	}
+	return false
 }
 
 func (c *fakeDoctorAutoPromoteConnector) FetchIssueStatesByIdentifiers(_ context.Context, identifiers []string) ([]connector.Issue, error) {

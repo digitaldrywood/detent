@@ -53,6 +53,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			AllowedIssueLabels:    append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),
 			GateWaitState:         cfg.Agent.AutoPromote.GateWaitState,
 			GateWaitTimeout:       durationFromSeconds(cfg.Agent.AutoPromote.GateWaitTimeoutSeconds),
+			GateWaitTimeoutAction: cfg.Agent.AutoPromote.GateWaitTimeoutAction,
 			SourceState:           cfg.Agent.AutoPromote.SourceState,
 			PassState:             cfg.Agent.AutoPromote.PassState,
 			ReworkState:           cfg.Agent.AutoPromote.ReworkState,

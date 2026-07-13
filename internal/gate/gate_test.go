@@ -622,10 +622,55 @@ func TestInstructionsDescribeRequiredStatusChecks(t *testing.T) {
 	}
 }
 
+func TestEvaluateAutomatedReviewModes(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		mode       string
+		review     string
+		expired    bool
+		p1Findings []Finding
+		want       Decision
+	}{
+		{name: "required absent", mode: AutomatedReviewRequired, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
+		{name: "required absent after deadline", mode: AutomatedReviewRequired, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "required present", mode: AutomatedReviewRequired, review: "COMMENTED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "required late review", mode: AutomatedReviewRequired, review: "COMMENTED", expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "optional absent", mode: AutomatedReviewOptional, want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing}},
+		{name: "optional absent after deadline", mode: AutomatedReviewOptional, expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "optional present", mode: AutomatedReviewOptional, review: "APPROVED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "optional late review", mode: AutomatedReviewOptional, review: "APPROVED", expired: true, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "off absent", mode: AutomatedReviewOff, want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "off present", mode: AutomatedReviewOff, review: "COMMENTED", want: Decision{Action: ActionPass, Reason: ReasonReady}},
+		{name: "required p1", mode: AutomatedReviewRequired, review: "P1", want: Decision{Action: ActionRework, Reason: ReasonP1Findings}},
+		{name: "optional late p1", mode: AutomatedReviewOptional, review: "COMMENTED", expired: true, p1Findings: []Finding{{Severity: "p1"}}, want: Decision{Action: ActionRework, Reason: ReasonP1Findings, Findings: []Finding{{Severity: "p1"}}}},
+		{name: "off p1", mode: AutomatedReviewOff, review: "P1", want: Decision{Action: ActionRework, Reason: ReasonP1Findings}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := Evaluate(Config{Kind: KindCommand, AutomatedReview: tt.mode}, nil, Summary{
+				PullRequestURL: "https://github.test/pull/1297",
+				CIStatus:       "green",
+				ReviewState:    tt.review,
+				P1Findings:     tt.p1Findings,
+			}, now, EvaluationOptions{AutomatedReviewWaitExpired: tt.expired})
+			if got.Action != tt.want.Action || got.Reason != tt.want.Reason || !slices.Equal(got.Findings, tt.want.Findings) {
+				t.Fatalf("Evaluate() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func configsEqual(left Config, right Config) bool {
 	return left.Kind == right.Kind &&
 		left.Run == right.Run &&
 		left.ApprovalLabel == right.ApprovalLabel &&
+		AutomatedReviewMode(left) == AutomatedReviewMode(right) &&
 		left.CIFailureAction == right.CIFailureAction &&
 		slices.Equal(left.RequiredStatusChecks, right.RequiredStatusChecks) &&
 		intPointerEqual(left.TransientCIRetryLimit, right.TransientCIRetryLimit) &&
