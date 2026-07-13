@@ -507,15 +507,14 @@ func TestRunWithShutdownActiveChildProcessReportsDrainBlockersAndTimesOut(t *tes
 
 	go func() {
 		errs <- runWithShutdown(context.Background(), runningShutdownConfig{
-			Controller:       controller,
-			Registry:         registry,
-			SnapshotHub:      hub.New[telemetry.Snapshot](),
-			Output:           &output,
-			Logger:           logger,
-			DrainTimeout:     20 * time.Millisecond,
-			ProgressInterval: 5 * time.Millisecond,
-			HardTimeout:      time.Second,
-			WorkerProcesses:  processStore,
+			Controller:      controller,
+			Registry:        registry,
+			SnapshotHub:     hub.New[telemetry.Snapshot](),
+			Output:          &output,
+			Logger:          logger,
+			DrainTimeout:    20 * time.Millisecond,
+			HardTimeout:     time.Second,
+			WorkerProcesses: processStore,
 			ReapWorkerProcess: func(_ context.Context, identity procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
 				if identity.PID != 4242 || identity.GroupID != 4242 || !identity.StartedAt.Equal(processStartedAt) {
 					t.Errorf("worker identity = %#v", identity)
@@ -560,7 +559,6 @@ func TestRunWithShutdownActiveChildProcessReportsDrainBlockersAndTimesOut(t *tes
 	for _, want := range []string{
 		"shutdown requested — 1 agent session in flight",
 		"20ms remaining until force quit",
-		"1 agent session remaining — 20ms remaining until force quit",
 		"#641",
 		"process=4242",
 		"session=thread-641-turn-1",
@@ -790,6 +788,27 @@ func TestShutdownBannerFormatsRunningSessions(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("banner missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestShutdownProgressFormatsRunningSessions(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	writeShutdownProgress(&output, []telemetry.Running{
+		{
+			Issue: telemetry.Issue{
+				Identifier: "digitaldrywood/detent#641",
+			},
+			RuntimeSeconds:  724,
+			SessionID:       "thread-641-turn-1",
+			ProcessIdentity: "4242",
+		},
+	}, 20*time.Millisecond)
+
+	want := "1 agent session remaining — 20ms remaining until force quit — #641 (12m 4s, session=thread-641-turn-1 process=4242)\n"
+	if got := output.String(); got != want {
+		t.Fatalf("progress = %q, want %q", got, want)
 	}
 }
 
