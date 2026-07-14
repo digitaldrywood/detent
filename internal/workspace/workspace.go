@@ -30,6 +30,7 @@ const (
 const defaultHookTimeout = time.Minute
 const workspaceCommandWaitDelay = time.Second
 const hookOutputTailBytes = 16 * 1024
+const workerScratchRelativePath = ".detent/tmp"
 
 var (
 	ErrHookFailed         = errors.New("workspace hook failed")
@@ -783,6 +784,48 @@ func removeWorkspacePath(root string, path string) error {
 				err:         retryErr,
 			}
 		}
+	}
+	return nil
+}
+
+func PrepareWorkerScratch(workspacePath string) (scratchPath string, err error) {
+	workspacePath, err = canonicalExistingPath(workspacePath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("%w: resolve worker workspace: %w", ErrMissingWorkspace, err)
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolve worker workspace: %w", err)
+	}
+	scratchPath = filepath.Join(workspacePath, filepath.FromSlash(workerScratchRelativePath))
+	if err := removeWorkspacePath(workspacePath, scratchPath); err != nil {
+		return "", fmt.Errorf("remove stale worker scratch: %w", err)
+	}
+
+	root, err := os.OpenRoot(workspacePath)
+	if err != nil {
+		return "", fmt.Errorf("open worker workspace: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, root.Close())
+	}()
+
+	if err := root.MkdirAll(workerScratchRelativePath, 0o700); err != nil {
+		return "", fmt.Errorf("create worker scratch: %w", err)
+	}
+	return scratchPath, nil
+}
+
+func CleanupWorkerScratch(workspacePath string) error {
+	workspacePath, err := canonicalExistingPath(workspacePath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("resolve worker workspace: %w", err)
+	}
+	scratchPath := filepath.Join(workspacePath, filepath.FromSlash(workerScratchRelativePath))
+	if err := removeWorkspacePath(workspacePath, scratchPath); err != nil {
+		return fmt.Errorf("remove worker scratch: %w", err)
 	}
 	return nil
 }

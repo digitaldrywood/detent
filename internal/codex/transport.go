@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,6 +54,8 @@ type transportResult struct {
 	err error
 }
 
+type workerTempDirContextKey struct{}
+
 func NewLocalTransportFactory(newCommand CommandFactory) (*LocalTransportFactory, error) {
 	if newCommand == nil {
 		return nil, errors.New("command factory is nil")
@@ -68,6 +71,7 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 	if cmd == nil {
 		return nil, errors.New("command factory returned nil command")
 	}
+	procgroup.SetTempDir(cmd, workerTempDir(ctx))
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -128,6 +132,26 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 	go transport.wait()
 
 	return transport, nil
+}
+
+func withWorkerTempDir(ctx context.Context, path string) context.Context {
+	ctx = contextOrBackground(ctx)
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, workerTempDirContextKey{}, path)
+}
+
+func workerTempDir(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	path, ok := ctx.Value(workerTempDirContextKey{}).(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(path)
 }
 
 func (t *localTransport) Send(ctx context.Context, msg Message) error {

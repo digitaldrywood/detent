@@ -1113,6 +1113,43 @@ func TestLocalGitCleanupRemediatesGeneratedCachePermissions(t *testing.T) {
 	}
 }
 
+func TestWorkerScratchLifecycleRemediatesGeneratedCachePermissions(t *testing.T) {
+	t.Parallel()
+	skipWindows(t)
+
+	workspacePath := t.TempDir()
+	scratchPath, err := PrepareWorkerScratch(workspacePath)
+	if err != nil {
+		t.Fatalf("PrepareWorkerScratch() error = %v", err)
+	}
+	t.Cleanup(func() {
+		restoreWritableTree(t, scratchPath)
+	})
+	canonicalWorkspace := mustCanonicalExistingPath(t, workspacePath)
+	if !strings.HasPrefix(scratchPath, canonicalWorkspace+string(filepath.Separator)) {
+		t.Fatalf("scratch path = %q, want path under %q", scratchPath, canonicalWorkspace)
+	}
+
+	cacheDir := filepath.Join(scratchPath, "go-mod", "modernc.org", "libc@v1.73.4")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatalf("mkdir cache dir: %v", err)
+	}
+	cacheFile := filepath.Join(cacheDir, "libc_amd64.go")
+	if err := os.WriteFile(cacheFile, []byte("package libc\n"), 0o444); err != nil {
+		t.Fatalf("write cache file: %v", err)
+	}
+	if err := os.Chmod(cacheDir, 0o555); err != nil {
+		t.Fatalf("chmod cache dir: %v", err)
+	}
+
+	if err := CleanupWorkerScratch(workspacePath); err != nil {
+		t.Fatalf("CleanupWorkerScratch() error = %v", err)
+	}
+	if _, err := os.Stat(scratchPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("worker scratch exists after cleanup, stat error = %v", err)
+	}
+}
+
 func TestLocalGitCleanupRejectsForeignGitRepoWithoutBeforeRemove(t *testing.T) {
 	t.Parallel()
 

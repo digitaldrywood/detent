@@ -450,6 +450,58 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 	}
 }
 
+func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		runErr  error
+		wantErr error
+	}{
+		{name: "completed turn"},
+		{name: "cancelled turn", runErr: context.Canceled, wantErr: context.Canceled},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workspacePath := t.TempDir()
+			backend := &scratchWritingAgentBackend{runErr: tt.runErr}
+			r := &Runner{
+				now:    time.Now,
+				logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			execution := r.runAgentTurn(
+				context.Background(),
+				backend,
+				AgentTurnRequest{Workspace: workspacePath},
+				RunRequest{Issue: connector.Issue{ID: "issue-1305", Identifier: "digitaldrywood/detent#1305"}},
+				workspace.Info{Path: workspacePath},
+				workspace.Issue{ID: "issue-1305", Identifier: "digitaldrywood/detent#1305"},
+				config.Agent{},
+				time.Now(),
+				0,
+				agentidentity.Identity{},
+			)
+
+			if !errors.Is(execution.err, tt.wantErr) {
+				t.Fatalf("runAgentTurn() error = %v, want %v", execution.err, tt.wantErr)
+			}
+			canonicalWorkspace, err := filepath.EvalSymlinks(workspacePath)
+			if err != nil {
+				t.Fatalf("EvalSymlinks() error = %v", err)
+			}
+			if backend.tempDir == "" || !strings.HasPrefix(backend.tempDir, canonicalWorkspace+string(filepath.Separator)) {
+				t.Fatalf("worker temp directory = %q, want path under %q", backend.tempDir, canonicalWorkspace)
+			}
+			if _, err := os.Stat(backend.tempDir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("worker temp directory exists after turn, stat error = %v", err)
+			}
+		})
+	}
+}
+
 func TestConfiguredRuntimeIdentityKeepsClaudeIntentDistinct(t *testing.T) {
 	t.Parallel()
 
@@ -3699,6 +3751,26 @@ type fakeCodexClient struct {
 
 type toolUpdateAgentBackend struct {
 	updates []AgentUpdate
+}
+
+type scratchWritingAgentBackend struct {
+	runErr  error
+	tempDir string
+}
+
+func (b *scratchWritingAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
+	b.tempDir = req.TempDir
+	cacheDir := filepath.Join(req.TempDir, "go-mod", "modernc.org", "libc@v1.73.4")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return AgentTurnResult{}, err
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "libc_amd64.go"), []byte("package libc\n"), 0o444); err != nil {
+		return AgentTurnResult{}, err
+	}
+	if err := os.Chmod(cacheDir, 0o555); err != nil {
+		return AgentTurnResult{}, err
+	}
+	return AgentTurnResult{ThreadID: "thread-1305", TurnID: "turn-1305", SessionID: "thread-1305-turn-1305"}, b.runErr
 }
 
 func (b *toolUpdateAgentBackend) RunTurn(_ context.Context, _ AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {

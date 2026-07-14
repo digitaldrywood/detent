@@ -36,6 +36,7 @@ func (b *AgentBackend) RunTurn(
 	req runner.AgentTurnRequest,
 	onUpdate runner.AgentUpdateHandler,
 ) (runner.AgentTurnResult, error) {
+	ctx = withWorkerTempDir(ctx, req.TempDir)
 	result, err := b.client.RunTurn(ctx, RunTurnRequest{
 		Workspace:         req.Workspace,
 		Prompt:            req.Prompt,
