@@ -190,6 +190,7 @@ func (o *Orchestrator) handleOperatorStopCompletion(ctx context.Context, state *
 	if completedAt.IsZero() {
 		completedAt = o.clockNow().UTC()
 	}
+	o.deferBackendCapacityProbe(state, running, completedAt, runpkg.ErrOperatorStopped)
 	result := pending.result
 	result.CompletedAt = completedAt
 	err := o.finishOperatorStopTransition(ctx, state, running.Issue, &result)
@@ -204,13 +205,13 @@ func (o *Orchestrator) finishOperatorStopTransition(ctx context.Context, state *
 	if err != nil {
 		result.Outcome = "transition_failed"
 		state.Blocked[issue.ID] = operatorStopBlocked(issue, *result, "run stopped; retry the transition to "+result.Destination+": "+err.Error())
-		o.updateOperatorStopOutcome(ctx, result, runningFromStopResult(issue, *result), err)
+		o.updateOperatorStopOutcome(ctx, state, result, runningFromStopResult(issue, *result), err)
 		o.recordOperatorStopAudit(ctx, state, *result, err)
 		return fmt.Errorf("%w: move %s to %s: %w", ErrStopRunTransition, issueLabel(issue), result.Destination, err)
 	}
 	result.Outcome = "succeeded"
 	delete(state.Blocked, issue.ID)
-	o.updateOperatorStopOutcome(ctx, result, runningFromStopResult(issue, *result), nil)
+	o.updateOperatorStopOutcome(ctx, state, result, runningFromStopResult(issue, *result), nil)
 	o.completedStops[stopRunResultKey(*result)] = *result
 	o.recordOperatorStopAudit(ctx, state, *result, nil)
 	return nil
@@ -266,8 +267,8 @@ func (o *Orchestrator) completeOperatorStopAttempt(ctx context.Context, state *S
 	return nil
 }
 
-func (o *Orchestrator) updateOperatorStopOutcome(ctx context.Context, result *StopRunResult, running Running, outcomeErr error) {
-	if o.operatorStops == nil || result.WorkAttemptID <= 0 {
+func (o *Orchestrator) updateOperatorStopOutcome(ctx context.Context, state *State, result *StopRunResult, running Running, outcomeErr error) {
+	if result.WorkAttemptID <= 0 {
 		return
 	}
 	phase := "operator_stop_succeeded"
@@ -278,15 +279,22 @@ func (o *Orchestrator) updateOperatorStopOutcome(ctx context.Context, result *St
 		message = "run stopped; work item transition failed: " + outcomeErr.Error()
 		nextAction = "retry tracker transition to " + result.Destination
 	}
-	if err := o.operatorStops.UpdateOperatorStop(context.WithoutCancel(ctx), store.OperatorStopUpdate{
+	update := store.OperatorStopUpdate{
 		AttemptID:          result.WorkAttemptID,
 		Phase:              phase,
 		StatusMessage:      message,
 		WorkerMetadataJSON: operatorStopWorkAttemptMetadata(running, *result, result.Outcome, errorString(outcomeErr)),
 		NextAction:         nextAction,
-	}); err != nil && o.logger != nil {
-		o.logger.Warn("operator stop outcome persistence failed", "attempt_id", result.WorkAttemptID, "outcome", result.Outcome, "error", err)
 	}
+	if o.operatorStops != nil {
+		if err := o.operatorStops.UpdateOperatorStop(context.WithoutCancel(ctx), update); err != nil {
+			if o.logger != nil {
+				o.logger.Warn("operator stop outcome persistence failed", "attempt_id", result.WorkAttemptID, "outcome", result.Outcome, "error", err)
+			}
+			return
+		}
+	}
+	o.applyOperatorStopOutcomeSnapshot(state, update)
 }
 
 func (o *Orchestrator) recordOperatorStopAudit(ctx context.Context, state *State, result StopRunResult, outcomeErr error) {
@@ -376,7 +384,7 @@ func (o *Orchestrator) reconcileOperatorStopHolds(ctx context.Context, state *St
 		if strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(blocked.Destination)) {
 			result.Outcome = "succeeded"
 			delete(state.Blocked, issueID)
-			o.updateOperatorStopOutcome(ctx, &result, runningFromStopResult(issue, result), nil)
+			o.updateOperatorStopOutcome(ctx, state, &result, runningFromStopResult(issue, result), nil)
 			o.completedStops[stopRunResultKey(result)] = result
 			transitioned[issueID] = struct{}{}
 			continue

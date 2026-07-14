@@ -549,6 +549,24 @@ func (o *Orchestrator) applyWorkAttemptCompletionSnapshot(state *State, running 
 	upsertWorkAttemptSnapshot(state, item)
 }
 
+func (o *Orchestrator) applyOperatorStopOutcomeSnapshot(state *State, update store.OperatorStopUpdate) {
+	if state == nil || update.AttemptID <= 0 {
+		return
+	}
+	for index := range state.WorkAttempts {
+		if state.WorkAttempts[index].AttemptID != update.AttemptID {
+			continue
+		}
+		item := state.WorkAttempts[index]
+		item.Phase = update.Phase
+		item.StatusMessage = update.StatusMessage
+		item.WorkerMetadataJSON = update.WorkerMetadataJSON
+		item.NextAction = update.NextAction
+		state.WorkAttempts[index] = item
+		return
+	}
+}
+
 func appendSchedulerDecisionSnapshot(state *State, item telemetry.SchedulerDecision) {
 	if state == nil {
 		return

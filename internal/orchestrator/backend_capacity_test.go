@@ -181,6 +181,52 @@ func TestHandleRunResultTransientOverloadReleasesCapacityProbe(t *testing.T) {
 	}
 }
 
+func TestHandleOperatorStopCompletionDefersCapacityProbe(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 14, 22, 30, 0, 0, time.UTC)
+	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	cfg := normalizeConfig(Config{StopRunTargetState: "Blocked"})
+	issue := connector.Issue{ID: "issue-stopped-probe", Identifier: "digitaldrywood/detent#1311", State: "In Progress"}
+	connector := &backendCapacityTestConnector{}
+	orch := &Orchestrator{
+		cfg:            cfg,
+		connector:      connector,
+		pendingStops:   map[string]*pendingStopRun{},
+		completedStops: map[string]StopRunResult{},
+		now:            func() time.Time { return now },
+	}
+	state := newState(cfg)
+	state.BackendOutages[scope.Key()] = BackendOutage{
+		Scope:         scope,
+		ResumeAt:      now.Add(time.Hour),
+		ProbeIssueID:  issue.ID,
+		ProbeAttempts: 1,
+	}
+	running := Running{Issue: issue, Attempt: 1, CapacityScope: scope, CapacityProbe: true}
+	state.Running[issue.ID] = running
+	orch.pendingStops[issue.ID] = &pendingStopRun{result: StopRunResult{
+		IssueID:     issue.ID,
+		Identifier:  issue.Identifier,
+		Attempt:     running.Attempt,
+		Destination: "Blocked",
+		Outcome:     "pending",
+		RequestedAt: now.Add(-time.Second),
+	}}
+
+	if handled := orch.handleOperatorStopCompletion(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now}, running); !handled {
+		t.Fatal("handleOperatorStopCompletion() handled = false")
+	}
+
+	outage := state.BackendOutages[scope.Key()]
+	if outage.ProbeIssueID != "" || outage.NextProbeAt.IsZero() || outage.LastProbeResult != "failed" {
+		t.Fatalf("outage = %#v, want stopped probe released and deferred", outage)
+	}
+	if len(connector.updates) != 1 || connector.updates[0] != (backendCapacityTestUpdate{issueID: issue.ID, state: "Blocked"}) {
+		t.Fatalf("tracker updates = %#v, want Blocked transition", connector.updates)
+	}
+}
+
 func TestBackendCapacityStatusProbeRecoversOutageEarly(t *testing.T) {
 	t.Parallel()
 

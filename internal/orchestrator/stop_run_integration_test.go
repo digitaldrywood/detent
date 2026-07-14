@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestStopRunTargetsOneRunAndBlocksRedispatch(t *testing.T) {
@@ -49,6 +50,9 @@ func TestStopRunTargetsOneRunAndBlocksRedispatch(t *testing.T) {
 	})
 	if _, retrying := state.Retry[issue.ID]; retrying {
 		t.Fatalf("Retry[%q] present after operator stop", issue.ID)
+	}
+	if attempt, ok := workAttemptSnapshot(state, running.WorkAttemptID); !ok || attempt.Phase != "operator_stop_succeeded" || attempt.NextAction != "await operator resume" {
+		t.Fatalf("work attempt snapshot = %#v, %v, want successful operator stop", attempt, ok)
 	}
 	if got := reaper.reapedIssues(); len(got) != 0 {
 		t.Fatalf("workspace reaps = %#v, want none", got)
@@ -119,9 +123,12 @@ func TestStopRunRecoveryReconcilesDurableHoldBeforeDispatch(t *testing.T) {
 	}
 	stop := runOrchestrator(t, orch)
 	defer stop()
-	waitForState(t, orch, func(state orchestrator.State) bool {
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
 		return len(tracker.stateUpdateCalls()) > 0 && len(state.Running) == 0 && len(state.Blocked) == 0
 	})
+	if attempt, ok := workAttemptSnapshot(state, attemptID); !ok || attempt.Phase != "operator_stop_succeeded" || attempt.NextAction != "await operator resume" {
+		t.Fatalf("work attempt snapshot = %#v, %v, want reconciled operator stop", attempt, ok)
+	}
 	select {
 	case request := <-runner.started:
 		t.Fatalf("recovered stopped item redispatched: %#v", request)
@@ -140,7 +147,12 @@ func TestStopRunHoldsItemWhenTrackerTransitionFails(t *testing.T) {
 	issue := testIssue("issue-stop-failure", "digitaldrywood/detent#1311", "In Progress")
 	tracker := &operatorStopFailingConnector{fakeConnector: newFakeConnector(issue), err: errors.New("tracker unavailable")}
 	runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 1)}
-	orch, err := orchestrator.New(orchestrator.Config{PollInterval: time.Hour, MaxConcurrentAgents: 1, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"In Progress"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, StopRunTargetState: "Blocked"}, orchestrator.Dependencies{Connector: tracker, Runner: runner})
+	runtimeStore, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtimeStore.Close() })
+	orch, err := orchestrator.New(orchestrator.Config{PollInterval: time.Hour, MaxConcurrentAgents: 1, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"In Progress"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, StopRunTargetState: "Blocked"}, orchestrator.Dependencies{Connector: tracker, Runner: runner, WorkAttempts: runtimeStore})
 	if err != nil {
 		t.Fatalf("orchestrator.New() error = %v", err)
 	}
@@ -163,10 +175,20 @@ func TestStopRunHoldsItemWhenTrackerTransitionFails(t *testing.T) {
 	if _, retrying := state.Retry[issue.ID]; retrying {
 		t.Fatalf("Retry[%q] present while reconciliation is pending", issue.ID)
 	}
+	if attempt, ok := workAttemptSnapshot(state, running.WorkAttemptID); !ok || attempt.Phase != "operator_stop_transition_failed" || attempt.NextAction != "retry tracker transition to Blocked" {
+		t.Fatalf("work attempt snapshot = %#v, %v, want failed operator stop transition", attempt, ok)
+	}
 	tracker.setError(nil)
 	result, err = orch.StopRun(t.Context(), request)
 	if err != nil || result.Outcome != "succeeded" || !result.AlreadyStopped {
 		t.Fatalf("retry StopRun() = %#v, %v, want success", result, err)
+	}
+	state, err = orch.State(t.Context())
+	if err != nil {
+		t.Fatalf("State() error = %v", err)
+	}
+	if attempt, ok := workAttemptSnapshot(state, running.WorkAttemptID); !ok || attempt.Phase != "operator_stop_succeeded" || attempt.NextAction != "await operator resume" {
+		t.Fatalf("work attempt snapshot = %#v, %v, want successful operator stop retry", attempt, ok)
 	}
 }
 
@@ -258,4 +280,13 @@ func hasOperatorStopAudit(events []store.WorkflowPhaseEvent, result orchestrator
 		}
 	}
 	return false
+}
+
+func workAttemptSnapshot(state orchestrator.State, attemptID int64) (telemetry.WorkAttempt, bool) {
+	for _, attempt := range state.WorkAttempts {
+		if attempt.AttemptID == attemptID {
+			return attempt, true
+		}
+	}
+	return telemetry.WorkAttempt{}, false
 }
