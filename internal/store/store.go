@@ -43,6 +43,7 @@ type Store interface {
 	ProgressSpendStore
 	WorkflowMetricsStore
 	WorkAttemptStore
+	OperatorStopStore
 	ValidatorMemoStore
 	RuntimeEvidenceStore
 	AgentResumeStore
@@ -135,6 +136,11 @@ type WorkAttemptStore interface {
 	ListRecentSchedulerDecisions(context.Context, SchedulerDecisionQuery) ([]SchedulerDecision, error)
 }
 
+type OperatorStopStore interface {
+	UpdateOperatorStop(context.Context, OperatorStopUpdate) error
+	ListPendingOperatorStops(context.Context, string) ([]WorkAttempt, error)
+}
+
 type ValidatorMemoStore interface {
 	RecordValidatorVerdict(context.Context, ValidatorVerdict) error
 	ValidatorVerdict(context.Context, ValidatorVerdictKey) (ValidatorVerdict, error)
@@ -207,14 +213,15 @@ type RuntimeWorkflowPhaseEventEvidence struct {
 type WorkflowPhaseType string
 
 const (
-	WorkflowPhaseTypeLane          WorkflowPhaseType = "lane"
-	WorkflowPhaseTypeAgentSession  WorkflowPhaseType = "agent_session"
-	WorkflowPhaseTypeLocalCheck    WorkflowPhaseType = "local_check"
-	WorkflowPhaseTypeCI            WorkflowPhaseType = "ci"
-	WorkflowPhaseTypeGitHubBackoff WorkflowPhaseType = "github_backoff"
-	WorkflowPhaseTypeReview        WorkflowPhaseType = "review"
-	WorkflowPhaseTypeMergeQueue    WorkflowPhaseType = "merge_queue"
-	WorkflowPhaseTypeRecovery      WorkflowPhaseType = "recovery"
+	WorkflowPhaseTypeLane           WorkflowPhaseType = "lane"
+	WorkflowPhaseTypeAgentSession   WorkflowPhaseType = "agent_session"
+	WorkflowPhaseTypeLocalCheck     WorkflowPhaseType = "local_check"
+	WorkflowPhaseTypeCI             WorkflowPhaseType = "ci"
+	WorkflowPhaseTypeGitHubBackoff  WorkflowPhaseType = "github_backoff"
+	WorkflowPhaseTypeReview         WorkflowPhaseType = "review"
+	WorkflowPhaseTypeMergeQueue     WorkflowPhaseType = "merge_queue"
+	WorkflowPhaseTypeRecovery       WorkflowPhaseType = "recovery"
+	WorkflowPhaseTypeOperatorAction WorkflowPhaseType = "operator_action"
 )
 
 type WorkAttemptStatus string
@@ -227,14 +234,15 @@ const (
 type WorkAttemptTerminalState string
 
 const (
-	WorkAttemptTerminalSuccess    WorkAttemptTerminalState = "success"
-	WorkAttemptTerminalFailure    WorkAttemptTerminalState = "failure"
-	WorkAttemptTerminalCancelled  WorkAttemptTerminalState = "cancelled"
-	WorkAttemptTerminalTimedOut   WorkAttemptTerminalState = "timed_out"
-	WorkAttemptTerminalSuperseded WorkAttemptTerminalState = "superseded"
-	WorkAttemptTerminalAbandoned  WorkAttemptTerminalState = "abandoned"
-	WorkAttemptTerminalNoProgress WorkAttemptTerminalState = "no_progress"
-	WorkAttemptTerminalCapacity   WorkAttemptTerminalState = "capacity"
+	WorkAttemptTerminalSuccess         WorkAttemptTerminalState = "success"
+	WorkAttemptTerminalFailure         WorkAttemptTerminalState = "failure"
+	WorkAttemptTerminalCancelled       WorkAttemptTerminalState = "cancelled"
+	WorkAttemptTerminalTimedOut        WorkAttemptTerminalState = "timed_out"
+	WorkAttemptTerminalSuperseded      WorkAttemptTerminalState = "superseded"
+	WorkAttemptTerminalAbandoned       WorkAttemptTerminalState = "abandoned"
+	WorkAttemptTerminalNoProgress      WorkAttemptTerminalState = "no_progress"
+	WorkAttemptTerminalCapacity        WorkAttemptTerminalState = "capacity"
+	WorkAttemptTerminalOperatorStopped WorkAttemptTerminalState = "operator_stopped"
 )
 
 type SchedulerDecisionResult string
@@ -651,6 +659,14 @@ type WorkAttemptReclaim struct {
 	TerminalState WorkAttemptTerminalState
 	ErrorClass    string
 	ErrorMessage  string
+}
+
+type OperatorStopUpdate struct {
+	AttemptID          int64
+	Phase              string
+	StatusMessage      string
+	WorkerMetadataJSON string
+	NextAction         string
 }
 
 type SchedulerDecision struct {

@@ -1239,7 +1239,7 @@ func writeBootKanbanWorkflow(t *testing.T, path string, mode string) {
 	content := `---
 tracker:
   kind: memory
-  observed_states: [Backlog]
+  observed_states: [Backlog, Blocked]
   active_states: [Ready, Doing]
   terminal_states: [Done]
 server:

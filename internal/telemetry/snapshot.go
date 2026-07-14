@@ -381,6 +381,9 @@ type ActivityEvent struct {
 
 type Running struct {
 	Issue
+	Attempt               int                       `json:"attempt"`
+	WorkAttemptID         int64                     `json:"work_attempt_id,omitempty"`
+	StopDestination       string                    `json:"stop_destination,omitempty"`
 	DetentSessionID       int64                     `json:"detent_session_id,omitempty"`
 	WorkerHost            string                    `json:"worker_host,omitempty"`
 	ProcessIdentity       string                    `json:"process_identity,omitempty"`
@@ -476,21 +479,26 @@ type BlockedSource string
 const (
 	BlockedSourceDependency    BlockedSource = "dependency"
 	BlockedSourceProjectStatus BlockedSource = "project_status"
+	BlockedSourceOperatorStop  BlockedSource = "operator_stop_reconciliation"
 )
 
 type Blocked struct {
 	Issue
-	WorkerHost     string        `json:"worker_host,omitempty"`
-	WorkspacePath  string        `json:"workspace_path,omitempty"`
-	SessionID      string        `json:"session_id,omitempty"`
-	Error          string        `json:"error,omitempty"`
-	Source         BlockedSource `json:"source,omitempty"`
-	RecoveryReason string        `json:"recovery_reason,omitempty"`
-	RecoveryTarget string        `json:"recovery_target,omitempty"`
-	BlockedAt      *time.Time    `json:"blocked_at,omitempty"`
-	LastEventAt    *time.Time    `json:"last_event_at,omitempty"`
-	LastEvent      string        `json:"last_event,omitempty"`
-	LastMessage    string        `json:"last_message,omitempty"`
+	WorkerHost      string        `json:"worker_host,omitempty"`
+	WorkspacePath   string        `json:"workspace_path,omitempty"`
+	SessionID       string        `json:"session_id,omitempty"`
+	Error           string        `json:"error,omitempty"`
+	Source          BlockedSource `json:"source,omitempty"`
+	RecoveryReason  string        `json:"recovery_reason,omitempty"`
+	RecoveryTarget  string        `json:"recovery_target,omitempty"`
+	BlockedAt       *time.Time    `json:"blocked_at,omitempty"`
+	LastEventAt     *time.Time    `json:"last_event_at,omitempty"`
+	LastEvent       string        `json:"last_event,omitempty"`
+	LastMessage     string        `json:"last_message,omitempty"`
+	Attempt         int           `json:"attempt,omitempty"`
+	WorkAttemptID   int64         `json:"work_attempt_id,omitempty"`
+	DetentSessionID int64         `json:"detent_session_id,omitempty"`
+	Destination     string        `json:"destination,omitempty"`
 }
 
 type Completed struct {

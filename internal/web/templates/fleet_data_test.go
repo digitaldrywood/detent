@@ -89,7 +89,7 @@ func TestFleetAgentRowClass(t *testing.T) {
 			class := fleetAgentRowClass(tt.last)
 			for _, want := range []string{
 				"grid-cols-1",
-				"md:grid-cols-[minmax(0,1.6fr)_130px_150px_minmax(0,1fr)_90px]",
+				"md:grid-cols-[minmax(0,1.6fr)_130px_150px_minmax(0,1fr)_90px_36px]",
 			} {
 				if !strings.Contains(class, want) {
 					t.Fatalf("fleetAgentRowClass(%t) missing %q: %q", tt.last, want, class)

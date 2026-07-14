@@ -82,6 +82,7 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 		}
 	}
 	o.recoverOrphanedAgentSessions(ctx, state, orphanedSessions, now)
+	o.recoverPendingOperatorStops(ctx, state, now)
 }
 
 func (o *Orchestrator) recoverOrphanedAgentSessions(ctx context.Context, state *State, sessions []store.OrphanedAgentSession, now time.Time) {

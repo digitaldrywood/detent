@@ -40,14 +40,15 @@ var (
 )
 
 type Dependencies struct {
-	Hub       *hub.Hub[telemetry.Snapshot]
-	Store     store.Store
-	Registry  *project.Registry
-	Connector connector.Connector
-	Refresher Refresher
-	Recovery  WorkAttemptRecovery
-	Activity  *activity.Broker
-	History   activity.HistoryReader
+	Hub        *hub.Hub[telemetry.Snapshot]
+	Store      store.Store
+	Registry   *project.Registry
+	Connector  connector.Connector
+	Refresher  Refresher
+	Recovery   WorkAttemptRecovery
+	RunStopper RunStopper
+	Activity   *activity.Broker
+	History    activity.HistoryReader
 }
 
 type Mode string
@@ -105,6 +106,7 @@ type Server struct {
 	connector           connector.Connector
 	refresher           Refresher
 	recovery            WorkAttemptRecovery
+	runStopper          RunStopper
 	activity            *activity.Broker
 	history             activity.HistoryReader
 	logger              *slog.Logger
@@ -191,6 +193,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		connector:           deps.Connector,
 		refresher:           deps.Refresher,
 		recovery:            deps.Recovery,
+		runStopper:          deps.RunStopper,
 		activity:            activityBroker,
 		history:             historyReader,
 		logger:              logger,
@@ -324,6 +327,8 @@ func (s *Server) registerRoutes() {
 	s.echo.DELETE("/api/v1/projects/:project_id/budget/override", s.apiBudgetOverrideClear, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/projects/:project_id/work-attempts/:attempt_id", s.apiWorkAttemptReceipt, apiDashboardReadAuth, apiReadScope)
 	s.echo.POST("/api/v1/projects/:project_id/work-attempts/:attempt_id/recovery", s.apiWorkAttemptRecovery, apiDashboardMutateAuth, apiProjectWriteScope)
+	s.echo.GET("/api/v1/projects/:project_id/runs/:attempt/stop", s.apiStopRunDialog, apiDashboardReadAuth, apiReadScope)
+	s.echo.POST("/api/v1/projects/:project_id/runs/:attempt/stop", s.apiStopRun, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/projects/*", s.apiProject, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/keys", s.apiKeysList, apiKeyDashboardReadAuth, apiAdminScope)
 	s.echo.POST("/api/v1/keys", s.apiKeysCreate, apiKeyDashboardMutateAuth, apiAdminScope)

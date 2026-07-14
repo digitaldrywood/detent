@@ -314,13 +314,14 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 			Clock: isolatedDemoClock(cfg),
 		},
 	}, web.Dependencies{
-		Hub:       snapshotHub,
-		Store:     runtimeStore,
-		Registry:  manager.Registry(),
-		Connector: firstConnector(manager),
-		Refresher: refresherForRegistry(manager.Registry()),
-		Recovery:  recoveryForRegistry(manager.Registry()),
-		Activity:  activityBroker,
+		Hub:        snapshotHub,
+		Store:      runtimeStore,
+		Registry:   manager.Registry(),
+		Connector:  firstConnector(manager),
+		Refresher:  refresherForRegistry(manager.Registry()),
+		Recovery:   recoveryForRegistry(manager.Registry()),
+		RunStopper: registryRefresher{registry: manager.Registry()},
+		Activity:   activityBroker,
 	})
 	if err != nil {
 		return err
@@ -1417,6 +1418,14 @@ func (r registryRefresher) RecoverWorkAttempt(ctx context.Context, request orche
 		return orchestrator.WorkAttemptRecoveryResponse{}, err
 	}
 	return orch.RecoverWorkAttempt(ctx, request)
+}
+
+func (r registryRefresher) StopRun(ctx context.Context, request orchestrator.StopRunRequest) (orchestrator.StopRunResult, error) {
+	orch, err := r.projectOrchestrator(request.ProjectID)
+	if err != nil {
+		return orchestrator.StopRunResult{}, err
+	}
+	return orch.StopRun(ctx, request)
 }
 
 func (r registryRefresher) projectOrchestrator(projectID string) (*orchestrator.Orchestrator, error) {

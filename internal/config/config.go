@@ -254,6 +254,7 @@ type Agent struct {
 	ResumeOrphanedSessions       bool                         `yaml:"resume_orphaned_sessions"`
 	Effort                       AgentRoleEffort              `yaml:"effort"`
 	Shutdown                     Shutdown                     `yaml:"shutdown"`
+	StopRun                      StopRun                      `yaml:"stop_run,omitempty"`
 	MaxConcurrentAgentsByState   map[string]int               `yaml:"max_concurrent_agents_by_state"`
 	DispatchPriorityByState      []string                     `yaml:"dispatch_priority_by_state"`
 	DispatchPriorityByLabel      []string                     `yaml:"dispatch_priority_by_label"`
@@ -268,6 +269,10 @@ type Agent struct {
 	Knowledge                    Knowledge                    `yaml:"knowledge"`
 	Skills                       Skills                       `yaml:"skills"`
 	Followups                    Followups                    `yaml:"followups"`
+}
+
+type StopRun struct {
+	TargetState string `yaml:"target_state,omitempty"`
 }
 
 type FailureBreaker struct {
@@ -1052,6 +1057,7 @@ func Default() Config {
 			MaxRetryBackoffMS:       300000,
 			OverloadRetryDelayMS:    DefaultOverloadRetryDelayMS,
 			NoProgressSpendLimitUSD: DefaultNoProgressSpendLimitUSD,
+			StopRun:                 StopRun{TargetState: "Blocked"},
 			MergeFastPath:           MergeFastPath{Enabled: true},
 			FailureBreaker: FailureBreaker{
 				SameClassLimit:  DefaultFailureBreakerSameClassLimit,
@@ -1154,6 +1160,7 @@ func (c *Config) Validate() error {
 		validatePositive("worker.max_concurrent_agents_per_host", *c.Worker.MaxConcurrentAgentsPerHost, &problems)
 	}
 	c.Agent.validate("agent", &problems)
+	c.validateStopRun(&problems)
 	c.validateAgentInstructions(&problems)
 	c.validateAutoPromoteReworkLimit(&problems)
 	c.validateAutoPromoteNoProgressLimit(&problems)
@@ -1319,6 +1326,10 @@ func (c *Config) normalize() {
 	c.Release.normalize()
 	c.Budget.Normalize()
 	c.Agent.Budget.Normalize()
+	c.Agent.StopRun.TargetState = strings.TrimSpace(c.Agent.StopRun.TargetState)
+	if c.Agent.StopRun.TargetState == "" {
+		c.Agent.StopRun.TargetState = "Blocked"
+	}
 
 	c.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(c.Agent.MaxConcurrentAgentsByState)
 	if c.Agent.FailureBreaker.SameClassLimit == 0 {
@@ -1417,6 +1428,23 @@ func (c *Config) validateAgentInstructions(problems *[]string) {
 	configuredStates := c.configuredWorkflowStates()
 	validateInstructionsByState("agent.instructions_by_state", c.Agent.InstructionsByState, configuredStates, problems)
 	validateInstructionsByTransition("agent.instructions_by_transition", c.Agent.InstructionsByTransition, configuredStates, problems)
+}
+
+func (c *Config) validateStopRun(problems *[]string) {
+	target := strings.TrimSpace(c.Agent.StopRun.TargetState)
+	if target == "" {
+		*problems = append(*problems, "agent.stop_run.target_state is required")
+		return
+	}
+	if stateListContains(c.Tracker.ActiveStates, target) {
+		*problems = append(*problems, "agent.stop_run.target_state must not be an active state")
+	}
+	if stateListContains(c.Tracker.TerminalStates, target) {
+		*problems = append(*problems, "agent.stop_run.target_state must not be a terminal state")
+	}
+	if !stateListContains(c.Tracker.ObservedStates, target) {
+		*problems = append(*problems, "agent.stop_run.target_state must be included in tracker.observed_states")
+	}
 }
 
 func (c Config) configuredWorkflowStates() map[string]string {

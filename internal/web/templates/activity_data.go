@@ -43,6 +43,8 @@ type BoardSessionData struct {
 	Identifier        string
 	DetentSessionID   int64
 	ProviderSessionID string
+	StopPath          string
+	StopDestination   string
 	Active            bool
 	HistoryAvailable  bool
 	FullPage          bool

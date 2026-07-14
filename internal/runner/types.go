@@ -20,6 +20,7 @@ const (
 	FinalStateCompleted             = "completed"
 	FinalStateFailed                = "failed"
 	FinalStateTokenCeilingExceeded  = "token_ceiling_exceeded"
+	FinalStateOperatorStopped       = "operator_stopped"
 	TokenCeilingSourceAbsolute      = "max_session_tokens"
 	TokenCeilingSourceContextWindow = "max_session_context_multiplier"
 
@@ -33,6 +34,7 @@ const (
 
 var (
 	ErrSessionTokenCeilingExceeded = errors.New("session token ceiling exceeded")
+	ErrOperatorStopped             = errors.New("operator stopped run")
 	ErrAgentTurnCleanup            = errors.New("agent turn cleanup failed")
 	ErrAgentResumeUnsupported      = errors.New("agent backend does not support resume verification")
 )

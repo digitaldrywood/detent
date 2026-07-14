@@ -225,6 +225,34 @@ func (s *sqliteStore) ListRecentTerminalWorkAttempts(ctx context.Context, query 
 	return workAttemptsFromRows(rows)
 }
 
+func (s *sqliteStore) UpdateOperatorStop(ctx context.Context, attrs OperatorStopUpdate) error {
+	if attrs.AttemptID <= 0 {
+		return ErrNotFound
+	}
+	updated, err := s.queries.UpdateOperatorStop(ctx, sqlc.UpdateOperatorStopParams{
+		Phase:              nullString(attrs.Phase),
+		StatusMessage:      nullString(attrs.StatusMessage),
+		WorkerMetadataJson: attrs.WorkerMetadataJSON,
+		NextAction:         nullString(attrs.NextAction),
+		WorkAttemptID:      attrs.AttemptID,
+	})
+	if err != nil {
+		return fmt.Errorf("updating operator stop: %w", err)
+	}
+	if updated == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *sqliteStore) ListPendingOperatorStops(ctx context.Context, projectID string) ([]WorkAttempt, error) {
+	rows, err := s.queries.ListPendingOperatorStops(ctx, strings.TrimSpace(projectID))
+	if err != nil {
+		return nil, fmt.Errorf("listing pending operator stops: %w", err)
+	}
+	return workAttemptsFromRows(rows)
+}
+
 func (s *sqliteStore) TimeoutExpiredWorkAttempts(ctx context.Context, attrs WorkAttemptTimeout) ([]WorkAttempt, error) {
 	now, err := requiredTimestamp("now", attrs.Now)
 	if err != nil {

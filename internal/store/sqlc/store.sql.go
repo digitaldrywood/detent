@@ -2722,6 +2722,74 @@ func (q *Queries) ListOrphanedAgentSessions(ctx context.Context, projectID strin
 	return items, nil
 }
 
+const listPendingOperatorStops = `-- name: ListPendingOperatorStops :many
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
+FROM work_attempts
+WHERE project_id = ?1
+  AND terminal_state = 'operator_stopped'
+  AND phase IN ('operator_stop_pending', 'operator_stop_transition_failed')
+ORDER BY completed_at, id
+`
+
+func (q *Queries) ListPendingOperatorStops(ctx context.Context, projectID string) ([]WorkAttempt, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingOperatorStops, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkAttempt{}
+	for rows.Next() {
+		var i WorkAttempt
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.IssueID,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.PrNumber,
+			&i.Repo,
+			&i.WorkerType,
+			&i.WorkerHost,
+			&i.Lane,
+			&i.AttemptNumber,
+			&i.Status,
+			&i.StartedAt,
+			&i.LeaseExpiresAt,
+			&i.HeartbeatAt,
+			&i.CompletedAt,
+			&i.TerminalState,
+			&i.ErrorClass,
+			&i.ErrorMessage,
+			&i.Phase,
+			&i.StatusMessage,
+			&i.CurrentStep,
+			&i.TotalSteps,
+			&i.ProgressPercent,
+			&i.CurrentCommand,
+			&i.WaitReason,
+			&i.GithubRateSnapshotJson,
+			&i.CiState,
+			&i.CapacitySnapshotJson,
+			&i.WorkerMetadataJson,
+			&i.MetricsJson,
+			&i.NextAction,
+			&i.DetentSessionID,
+			&i.ProviderSessionID,
+			&i.RuntimeIdentityJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRecentCodexSessions = `-- name: ListRecentCodexSessions :many
 SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id
 FROM codex_sessions
@@ -3664,6 +3732,38 @@ func (q *Queries) UpdateDetentRun(ctx context.Context, arg UpdateDetentRunParams
 		arg.TotalTokens,
 		arg.RuntimeSeconds,
 		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateOperatorStop = `-- name: UpdateOperatorStop :execrows
+UPDATE work_attempts
+SET phase = ?1,
+    status_message = ?2,
+    worker_metadata_json = ?3,
+    next_action = ?4
+WHERE id = ?5
+  AND terminal_state = 'operator_stopped'
+`
+
+type UpdateOperatorStopParams struct {
+	Phase              sql.NullString `json:"phase"`
+	StatusMessage      sql.NullString `json:"status_message"`
+	WorkerMetadataJson string         `json:"worker_metadata_json"`
+	NextAction         sql.NullString `json:"next_action"`
+	WorkAttemptID      int64          `json:"work_attempt_id"`
+}
+
+func (q *Queries) UpdateOperatorStop(ctx context.Context, arg UpdateOperatorStopParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateOperatorStop,
+		arg.Phase,
+		arg.StatusMessage,
+		arg.WorkerMetadataJson,
+		arg.NextAction,
+		arg.WorkAttemptID,
 	)
 	if err != nil {
 		return 0, err

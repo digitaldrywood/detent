@@ -26,6 +26,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		MergeFastPathEnabled:       cfg.Agent.MergeFastPath.Enabled,
 		MergeMethod:                cfg.Deliverable.EffectiveMergeMethod(),
 		ResumeOrphanedSessions:     cfg.Agent.ResumeOrphanedSessions,
+		StopRunTargetState:         cfg.Agent.StopRun.TargetState,
 		MaxConcurrentAgentsPerHost: positiveIntValue(cfg.Worker.MaxConcurrentAgentsPerHost),
 		MaxRetryBackoff:            durationFromMillis(cfg.Agent.MaxRetryBackoffMS),
 		OverloadRetryDelay:         durationFromMillis(cfg.Agent.OverloadRetryDelayMS),
@@ -148,6 +149,9 @@ func normalizeConfig(cfg Config) Config {
 	}
 	if len(cfg.TerminalStates) == 0 {
 		cfg.TerminalStates = []string{"Done", "Cancelled", "Canceled", "Closed"}
+	}
+	if strings.TrimSpace(cfg.StopRunTargetState) == "" {
+		cfg.StopRunTargetState = blockedStatusState
 	}
 	if cfg.WorkspaceCleanupIdleTTL <= 0 {
 		cfg.WorkspaceCleanupIdleTTL = defaultWorkspaceCleanupIdleTTL

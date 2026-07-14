@@ -26,6 +26,7 @@ type State struct {
 	AutoPromote              AutoPromoteConfig
 	ActiveStates             []string
 	TerminalStates           []string
+	StopRunTargetState       string
 	PrioritizeUnblockers     bool
 	Instance                 telemetry.Instance
 	Authorization            selector.Selector
@@ -102,8 +103,11 @@ type Running struct {
 	Tokens                TokenTotals
 	CapacityScope         backendcapacity.Scope
 	CapacityProbe         bool
+	StopDestination       string
 	globalSlot            scheduler.Slot
 	cancel                context.CancelFunc
+	stop                  context.CancelCauseFunc
+	done                  <-chan struct{}
 }
 
 type Claimed struct {
@@ -119,15 +123,21 @@ type BlockedSource = telemetry.BlockedSource
 const (
 	BlockedSourceDependency    = telemetry.BlockedSourceDependency
 	BlockedSourceProjectStatus = telemetry.BlockedSourceProjectStatus
+	BlockedSourceOperatorStop  = telemetry.BlockedSourceOperatorStop
 )
 
 type Blocked struct {
-	Issue          connector.Issue
-	Reason         string
-	RecoveryReason string
-	RecoveryTarget string
-	BlockedAt      time.Time
-	Source         BlockedSource
+	Issue           connector.Issue
+	Reason          string
+	RecoveryReason  string
+	RecoveryTarget  string
+	BlockedAt       time.Time
+	Source          BlockedSource
+	Attempt         int
+	WorkAttemptID   int64
+	DetentSessionID int64
+	SessionID       string
+	Destination     string
 }
 
 type Completed struct {
@@ -228,6 +238,7 @@ func newState(cfg Config) State {
 		AutoPromote:              cloneAutoPromoteConfig(cfg.AutoPromote),
 		ActiveStates:             append([]string(nil), cfg.ActiveStates...),
 		TerminalStates:           append([]string(nil), cfg.TerminalStates...),
+		StopRunTargetState:       cfg.StopRunTargetState,
 		PrioritizeUnblockers:     cfg.PrioritizeUnblockers,
 		Instance:                 instanceSnapshot(cfg),
 		Authorization:            cloneSelector(cfg.Authorization),
@@ -267,6 +278,7 @@ func (s State) clone() State {
 		AutoPromote:              cloneAutoPromoteConfig(s.AutoPromote),
 		ActiveStates:             append([]string(nil), s.ActiveStates...),
 		TerminalStates:           append([]string(nil), s.TerminalStates...),
+		StopRunTargetState:       s.StopRunTargetState,
 		PrioritizeUnblockers:     s.PrioritizeUnblockers,
 		Instance:                 s.Instance,
 		Authorization:            cloneSelector(s.Authorization),
@@ -324,6 +336,8 @@ func (s State) clone() State {
 		running.RecentEvents = cloneActivityEvents(running.RecentEvents)
 		running.globalSlot = scheduler.Slot{}
 		running.cancel = nil
+		running.stop = nil
+		running.done = nil
 		cloned.Running[id] = running
 	}
 	for id, claimed := range s.Claimed {
