@@ -568,7 +568,7 @@ func runAgentBackendTurn(
 		return result, err, nil
 	}
 
-	tempDir, err := workspace.PrepareWorkerScratch(workspacePath)
+	tempDir, err := workspace.PrepareWorkerScratch(ctx, workspacePath)
 	if workspace.IsMissingWorkspaceError(err) {
 		result, runErr := backend.RunTurn(ctx, request, onUpdate)
 		return result, runErr, nil

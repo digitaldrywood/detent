@@ -1118,7 +1118,7 @@ func TestWorkerScratchLifecycleRemediatesGeneratedCachePermissions(t *testing.T)
 	skipWindows(t)
 
 	workspacePath := t.TempDir()
-	scratchPath, err := PrepareWorkerScratch(workspacePath)
+	scratchPath, err := PrepareWorkerScratch(context.Background(), workspacePath)
 	if err != nil {
 		t.Fatalf("PrepareWorkerScratch() error = %v", err)
 	}
@@ -1147,6 +1147,35 @@ func TestWorkerScratchLifecycleRemediatesGeneratedCachePermissions(t *testing.T)
 	}
 	if _, err := os.Stat(scratchPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("worker scratch exists after cleanup, stat error = %v", err)
+	}
+}
+
+func TestPrepareWorkerScratchInstallsGitExcludeBeforeUse(t *testing.T) {
+	t.Parallel()
+
+	workspacePath := initSourceRepo(t)
+	scratchPath, err := PrepareWorkerScratch(context.Background(), workspacePath)
+	if err != nil {
+		t.Fatalf("PrepareWorkerScratch() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scratchPath, "cache"), []byte("temporary"), 0o600); err != nil {
+		t.Fatalf("write worker scratch: %v", err)
+	}
+
+	status := runCommand(t, workspacePath, "git", "status", "--short", "--untracked-files=all")
+	if strings.Contains(status, ".detent/tmp") {
+		t.Fatalf("git status includes worker scratch:\n%s", status)
+	}
+	excludePath := strings.TrimSpace(runCommand(t, workspacePath, "git", "rev-parse", "--git-path", "info/exclude"))
+	if !filepath.IsAbs(excludePath) {
+		excludePath = filepath.Join(workspacePath, excludePath)
+	}
+	exclude, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("read git exclude: %v", err)
+	}
+	if !strings.Contains(string(exclude), ".detent/tmp/") {
+		t.Fatalf("git exclude = %q, want worker scratch pattern", exclude)
 	}
 }
 

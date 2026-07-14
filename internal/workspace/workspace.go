@@ -788,13 +788,16 @@ func removeWorkspacePath(root string, path string) error {
 	return nil
 }
 
-func PrepareWorkerScratch(workspacePath string) (scratchPath string, err error) {
+func PrepareWorkerScratch(ctx context.Context, workspacePath string) (scratchPath string, err error) {
 	workspacePath, err = canonicalExistingPath(workspacePath)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", fmt.Errorf("%w: resolve worker workspace: %w", ErrMissingWorkspace, err)
 	}
 	if err != nil {
 		return "", fmt.Errorf("resolve worker workspace: %w", err)
+	}
+	if err := ensureWorkerScratchExcluded(ctx, workspacePath); err != nil {
+		return "", err
 	}
 	scratchPath = filepath.Join(workspacePath, filepath.FromSlash(workerScratchRelativePath))
 	if err := removeWorkspacePath(workspacePath, scratchPath); err != nil {
@@ -813,6 +816,20 @@ func PrepareWorkerScratch(workspacePath string) (scratchPath string, err error) 
 		return "", fmt.Errorf("create worker scratch: %w", err)
 	}
 	return scratchPath, nil
+}
+
+func ensureWorkerScratchExcluded(ctx context.Context, workspacePath string) error {
+	_, err := os.Lstat(filepath.Join(workspacePath, ".git"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat worker workspace git metadata: %w", err)
+	}
+	if err := ensureGitInfoExcludes(ctx, workspacePath, detentHandoffDiffExcludes); err != nil {
+		return fmt.Errorf("exclude worker scratch from git: %w", err)
+	}
+	return nil
 }
 
 func CleanupWorkerScratch(workspacePath string) error {
