@@ -1,0 +1,65 @@
+package templates
+
+import (
+	"strconv"
+
+	"github.com/digitaldrywood/detent/internal/web/ui/components/button"
+	"github.com/digitaldrywood/detent/internal/web/ui/components/dialog"
+	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
+)
+
+templ StopRunDialogContent(data StopRunDialogData) {
+	@dialog.Header() {
+		@dialog.Title() {
+			Stop run and block item
+		}
+		@dialog.Description() {
+			Stop only this active worker and move its work item out of dispatch.
+		}
+	}
+	if data.Outcome == "succeeded" {
+		<div role="status" class="rounded-md border border-ok bg-ok/15 px-3 py-2 text-sm text-ok" data-stop-run-result="succeeded">
+			Stopped { data.Identifier } and moved it to { data.Destination }.
+		</div>
+	}
+	if data.Error != "" {
+		<div role="alert" class="rounded-md border border-err bg-err/15 px-3 py-2 text-sm text-err" data-stop-run-result={ data.Outcome }>{ data.Error }</div>
+	}
+	<dl class="grid gap-2 rounded-md border border-line bg-elev p-3 text-xs sm:grid-cols-2" data-stop-run-confirmation>
+		<div class="min-w-0"><dt class="text-dim">Repository</dt><dd class="truncate font-mono text-text">{ data.Repository }</dd></div>
+		<div class="min-w-0"><dt class="text-dim">Issue</dt><dd class="truncate font-mono text-text">@primitives.TrackerReferenceLink(data.Identifier, data.IssueURL, "")</dd></div>
+		<div class="min-w-0"><dt class="text-dim">Agent role</dt><dd class="truncate font-mono text-text">{ data.Role }</dd></div>
+		<div class="min-w-0"><dt class="text-dim">Current stage</dt><dd class="truncate font-mono text-text">{ data.Stage }</dd></div>
+		<div class="min-w-0 sm:col-span-2"><dt class="text-dim">Active session</dt><dd class="break-all font-mono text-text">{ stopRunSessionLabel(data) }</dd></div>
+		<div class="min-w-0 sm:col-span-2"><dt class="text-dim">Destination</dt><dd class="font-mono font-semibold text-text">{ data.Destination }</dd></div>
+	</dl>
+	if data.CanSubmit {
+		<form class="grid gap-4" hx-post={ stopRunPostPath(data) } hx-target={ kanbanDialogTargetSelector() } hx-swap="innerHTML">
+			<input type="hidden" name="confirm" value="true"/>
+			<input type="hidden" name="issue_id" value={ data.IssueID }/>
+			<input type="hidden" name="work_attempt_id" value={ strconv.FormatInt(data.WorkAttemptID, 10) }/>
+			<input type="hidden" name="detent_session_id" value={ strconv.FormatInt(data.DetentSessionID, 10) }/>
+			<input type="hidden" name="provider_session_id" value={ data.ProviderSessionID }/>
+			@dialog.Footer() {
+				@dialog.Close() {
+					@button.Button(button.Props{Variant: button.VariantOutline, Type: button.TypeButton}) {
+						Cancel
+					}
+				}
+				@button.Button(button.Props{Type: button.TypeSubmit, Class: "border-err bg-err text-white hover:bg-err/90 focus-visible:ring-err"}) {
+					@icon.CircleStop(icon.Props{Class: "size-4"})
+					{ stopRunSubmitLabel(data) }
+				}
+			}
+		</form>
+	} else {
+		@dialog.Footer() {
+			@dialog.Close() {
+				@button.Button(button.Props{Variant: button.VariantOutline, Type: button.TypeButton}) {
+					Close
+				}
+			}
+		}
+	}
+}

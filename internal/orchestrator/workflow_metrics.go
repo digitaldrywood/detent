@@ -87,8 +87,35 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadata(
 	reason string,
 	metadata workflowLaneMetadata,
 ) error {
+	return o.updateIssueStateByIDWithMetadataMode(ctx, state, issueID, issue, targetState, at, reason, metadata, false)
+}
+
+func (o *Orchestrator) updateIssueStateByIDStrictWithMetadata(
+	ctx context.Context,
+	state *State,
+	issueID string,
+	issue connector.Issue,
+	targetState string,
+	at time.Time,
+	reason string,
+	metadata workflowLaneMetadata,
+) error {
+	return o.updateIssueStateByIDWithMetadataMode(ctx, state, issueID, issue, targetState, at, reason, metadata, true)
+}
+
+func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
+	ctx context.Context,
+	state *State,
+	issueID string,
+	issue connector.Issue,
+	targetState string,
+	at time.Time,
+	reason string,
+	metadata workflowLaneMetadata,
+	strict bool,
+) error {
 	if err := o.connector.UpdateIssueState(ctx, issueID, targetState); err != nil {
-		if errors.Is(err, connector.ErrStateUpdateBlocked) {
+		if errors.Is(err, connector.ErrStateUpdateBlocked) && !strict {
 			if o.logger != nil {
 				o.logger.Debug("skip blocked issue state update", "issue_id", issueID, "target_state", targetState, "error", err)
 			}

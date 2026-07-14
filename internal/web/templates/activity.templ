@@ -2,6 +2,9 @@ package templates
 
 import (
 	"strconv"
+
+	"github.com/digitaldrywood/detent/internal/web/ui/components/dialog"
+	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
 )
 
 templ BoardActivityTabs(activity BoardActivityData, session BoardSessionData) {
@@ -139,6 +142,21 @@ templ BoardLiveSession(data BoardSessionData) {
 				<span class="flex items-center gap-2 text-xs font-medium text-text"><span class="size-2 rounded-full bg-ok"></span>Attached read-only</span>
 				<div class="flex items-center gap-2">
 					<button type="button" class="hidden rounded-chip border border-line px-2 py-1 text-2xs text-sec" data-live-session-resume>Resume autoscroll</button>
+					if data.StopPath != "" {
+						@dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}) {
+							<button
+								type="button"
+								class="inline-flex min-h-9 items-center gap-1.5 rounded-chip border border-err/40 px-2 py-1 text-2xs font-medium text-err hover:bg-err/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-err"
+								hx-get={ data.StopPath }
+								hx-target={ kanbanDialogTargetSelector() }
+								hx-swap="innerHTML"
+								title={ "Stop run and move item to " + data.StopDestination }
+							>
+								@icon.CircleStop(icon.Props{Class: "size-3.5"})
+								Stop run
+							</button>
+						}
+					}
 					if !data.FullPage {
 						<a class="rounded-chip border border-line px-2 py-1 text-2xs text-sec hover:border-accent hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ templ.SafeURL(boardLiveSessionPagePath(data)) } target="_blank" rel="noopener">Open full-page view</a>
 					}

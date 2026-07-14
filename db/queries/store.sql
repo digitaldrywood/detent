@@ -808,6 +808,23 @@ WHERE completed_at IS NOT NULL
 ORDER BY completed_at DESC, id DESC
 LIMIT sqlc.arg(result_limit);
 
+-- name: UpdateOperatorStop :execrows
+UPDATE work_attempts
+SET phase = sqlc.arg(phase),
+    status_message = sqlc.arg(status_message),
+    worker_metadata_json = sqlc.arg(worker_metadata_json),
+    next_action = sqlc.arg(next_action)
+WHERE id = sqlc.arg(work_attempt_id)
+  AND terminal_state = 'operator_stopped';
+
+-- name: ListPendingOperatorStops :many
+SELECT *
+FROM work_attempts
+WHERE project_id = sqlc.arg(project_id)
+  AND terminal_state = 'operator_stopped'
+  AND phase IN ('operator_stop_pending', 'operator_stop_transition_failed')
+ORDER BY completed_at, id;
+
 -- name: TimeoutExpiredWorkAttempts :many
 UPDATE work_attempts
 SET status = ?,

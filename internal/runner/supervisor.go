@@ -97,9 +97,11 @@ func (s *Supervisor) UpdateConfig(cfg SupervisorConfig) {
 	s.overloadRetryDelay = cfg.OverloadRetryDelay
 }
 
-func (s *Supervisor) Dispatch(ctx context.Context, request RunRequest, completions chan<- Completion) {
+func (s *Supervisor) Dispatch(ctx context.Context, request RunRequest, completions chan<- Completion) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
 		completion := s.Run(ctx, request)
+		close(done)
 		if completions == nil {
 			return
 		}
@@ -130,6 +132,7 @@ func (s *Supervisor) Dispatch(ctx context.Context, request RunRequest, completio
 			)
 		}
 	}()
+	return done
 }
 
 func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Completion) {
@@ -153,7 +156,7 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 			completion.Retryable = true
 			completion.RetryAttempt = request.Attempt
 			completion.RetryDelay = s.OverloadRetryDelay()
-		} else if completion.Err != nil && !IsCapacityError(completion.Err) {
+		} else if completion.Err != nil && !IsCapacityError(completion.Err) && !errors.Is(completion.Err, ErrOperatorStopped) {
 			completion.Retryable = true
 			completion.RetryAttempt = nextFailureAttempt(request.Attempt)
 			completion.RetryDelay = s.RetryDelay(completion.RetryAttempt)

@@ -408,7 +408,8 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	}
 	o.markMergeStarted(state, issue, now)
 	claim.Issue = issue
-	runCtx, cancel := context.WithCancel(ctx)
+	runCtx, stop := context.WithCancelCause(ctx)
+	cancel := func() { stop(nil) }
 	o.markBackendCapacityProbe(state, capacityProbeKey, issue.ID, now)
 	state.Running[issue.ID] = Running{
 		Issue:               issue,
@@ -421,8 +422,10 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		WorkerHost:          workerHost,
 		CapacityScope:       capacityScope,
 		CapacityProbe:       capacityProbeKey != "",
+		StopDestination:     o.cfg.StopRunTargetState,
 		globalSlot:          globalSlot,
 		cancel:              cancel,
+		stop:                stop,
 	}
 	o.setGlobalDispatchPreempt(globalSlot, cancel)
 	state.Claimed[issue.ID] = claim
@@ -460,7 +463,9 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		"worker_host", strings.TrimSpace(workerHost),
 		"mode", strings.TrimSpace(runMode),
 	)
-	o.supervisor.Dispatch(runCtx, request, o.runResults)
+	running := state.Running[issue.ID]
+	running.done = o.supervisor.Dispatch(runCtx, request, o.runResults)
+	state.Running[issue.ID] = running
 	return dispatchIssueOutcome{dispatched: true}
 }
 

@@ -388,6 +388,9 @@ func runningSnapshots(running map[string]Running, claims map[string]Claimed, mer
 		applyClaimSnapshot(&issue, claims[id], now)
 		out = append(out, telemetry.Running{
 			Issue:                 issue,
+			Attempt:               entry.Attempt,
+			WorkAttemptID:         entry.WorkAttemptID,
+			StopDestination:       entry.StopDestination,
 			DetentSessionID:       entry.DetentSessionID,
 			WorkerHost:            entry.WorkerHost,
 			ProcessIdentity:       entry.ProcessIdentity,
@@ -443,11 +446,16 @@ func blockedSnapshots(blocked map[string]Blocked, claims map[string]Claimed, now
 		issue := telemetryIssue(entry.Issue, 0, 0, now, laneEntries)
 		applyClaimSnapshot(&issue, claims[id], now)
 		item := telemetry.Blocked{
-			Issue:          issue,
-			Error:          entry.Reason,
-			Source:         entry.Source,
-			RecoveryReason: entry.RecoveryReason,
-			RecoveryTarget: entry.RecoveryTarget,
+			Issue:           issue,
+			Error:           entry.Reason,
+			Source:          entry.Source,
+			RecoveryReason:  entry.RecoveryReason,
+			RecoveryTarget:  entry.RecoveryTarget,
+			Attempt:         entry.Attempt,
+			WorkAttemptID:   entry.WorkAttemptID,
+			DetentSessionID: entry.DetentSessionID,
+			SessionID:       entry.SessionID,
+			Destination:     entry.Destination,
 		}
 		if !entry.BlockedAt.IsZero() {
 			blockedAt := entry.BlockedAt

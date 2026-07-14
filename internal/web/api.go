@@ -602,6 +602,12 @@ func runningEntries(entries []telemetry.Running) []runningAPIResponse {
 			PullRequestNumber:     pullRequestNumber(entry.Issue),
 			BudgetAlert:           false,
 			State:                 entry.State,
+			Attempt:               entry.Attempt,
+			WorkAttemptID:         entry.WorkAttemptID,
+			DetentSessionID:       entry.DetentSessionID,
+			AgentRole:             entry.RuntimeIdentity.Role,
+			StopDestination:       entry.StopDestination,
+			StopURL:               templates.StopRunDialogPath(entry),
 			WorkerHost:            optionalString(entry.WorkerHost),
 			WorkspacePath:         optionalString(entry.WorkspacePath),
 			SessionID:             optionalString(entry.SessionID),
@@ -713,6 +719,12 @@ func recentSessionEntries(entries []telemetry.Completed) []recentSessionAPIRespo
 
 func runningIssueResponse(entry telemetry.Running) *runningIssueAPIResponse {
 	return &runningIssueAPIResponse{
+		Attempt:               entry.Attempt,
+		WorkAttemptID:         entry.WorkAttemptID,
+		DetentSessionID:       entry.DetentSessionID,
+		AgentRole:             entry.RuntimeIdentity.Role,
+		StopDestination:       entry.StopDestination,
+		StopURL:               templates.StopRunDialogPath(entry),
 		WorkerHost:            optionalString(entry.WorkerHost),
 		WorkspacePath:         optionalString(entry.WorkspacePath),
 		SessionID:             optionalString(entry.SessionID),
@@ -1407,6 +1419,12 @@ type runningAPIResponse struct {
 	PullRequestNumber     *int                      `json:"pull_request_number"`
 	BudgetAlert           bool                      `json:"budget_alert?"`
 	State                 string                    `json:"state"`
+	Attempt               int                       `json:"attempt"`
+	WorkAttemptID         int64                     `json:"work_attempt_id,omitempty"`
+	DetentSessionID       int64                     `json:"detent_session_id,omitempty"`
+	AgentRole             string                    `json:"agent_role,omitempty"`
+	StopDestination       string                    `json:"stop_destination,omitempty"`
+	StopURL               string                    `json:"stop_url,omitempty"`
 	WorkerHost            *string                   `json:"worker_host"`
 	WorkspacePath         *string                   `json:"workspace_path"`
 	SessionID             *string                   `json:"session_id"`
@@ -1676,6 +1694,12 @@ type attemptsAPIResponse struct {
 }
 
 type runningIssueAPIResponse struct {
+	Attempt               int                       `json:"attempt"`
+	WorkAttemptID         int64                     `json:"work_attempt_id,omitempty"`
+	DetentSessionID       int64                     `json:"detent_session_id,omitempty"`
+	AgentRole             string                    `json:"agent_role,omitempty"`
+	StopDestination       string                    `json:"stop_destination,omitempty"`
+	StopURL               string                    `json:"stop_url,omitempty"`
 	WorkerHost            *string                   `json:"worker_host"`
 	WorkspacePath         *string                   `json:"workspace_path"`
 	SessionID             *string                   `json:"session_id"`

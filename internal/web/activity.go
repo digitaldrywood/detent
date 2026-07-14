@@ -525,6 +525,8 @@ func (s *Server) boardSessionData(ctx context.Context, snapshot telemetry.Snapsh
 			data.Active = true
 			data.DetentSessionID = running.DetentSessionID
 			data.ProviderSessionID = running.SessionID
+			data.StopPath = templates.StopRunDialogPath(running)
+			data.StopDestination = running.StopDestination
 			return data
 		}
 	}

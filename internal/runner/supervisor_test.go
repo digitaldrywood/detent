@@ -101,6 +101,24 @@ func TestSupervisorDoesNotAdvanceRetryForCapacityError(t *testing.T) {
 	}
 }
 
+func TestSupervisorDoesNotRetryOperatorStoppedRun(t *testing.T) {
+	t.Parallel()
+	supervisor, err := NewSupervisor(operatorStoppedBackend{}, SupervisorConfig{})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+	completion := supervisor.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-1311"}, Attempt: 4})
+	if !errors.Is(completion.Err, ErrOperatorStopped) {
+		t.Fatalf("Err = %v, want ErrOperatorStopped", completion.Err)
+	}
+	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
+		t.Fatalf("retry state = retryable %v attempt %d delay %s, want no retry", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+	}
+	if got := finalStateForTurnError(ErrOperatorStopped); got != FinalStateOperatorStopped {
+		t.Fatalf("finalStateForTurnError() = %q, want %q", got, FinalStateOperatorStopped)
+	}
+}
+
 func TestSupervisorUsesFlatSameAttemptRetryForTransientOverload(t *testing.T) {
 	t.Parallel()
 
@@ -416,6 +434,12 @@ type errorBackend struct{}
 
 func (errorBackend) Run(context.Context, RunRequest) (RunResult, error) {
 	return RunResult{}, errors.New("runner failed")
+}
+
+type operatorStoppedBackend struct{}
+
+func (operatorStoppedBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{FinalState: FinalStateOperatorStopped}, ErrOperatorStopped
 }
 
 type capacityBackend struct {

@@ -71,6 +71,7 @@ type Config struct {
 	MergeFastPathEnabled          bool
 	MergeMethod                   string
 	ResumeOrphanedSessions        bool
+	StopRunTargetState            string
 	MaxConcurrentAgentsPerHost    int
 	MaxRetryBackoff               time.Duration
 	OverloadRetryDelay            time.Duration
@@ -162,6 +163,7 @@ type Orchestrator struct {
 	efficiency              efficiency.Recorder
 	lifecycleExporter       efficiency.LifecycleExporter
 	workAttempts            store.WorkAttemptStore
+	operatorStops           store.OperatorStopStore
 	progressSpend           store.ProgressSpendStore
 	agentResume             store.AgentResumeStore
 	orphanSessions          store.OrphanSessionStore
@@ -195,10 +197,13 @@ type Orchestrator struct {
 	refreshes               chan manualRefreshRequest
 	reconciles              chan targetedRefreshRequest
 	capacityClearRequests   chan capacityClearRequest
+	stopRequests            chan stopRunRequest
 	runResults              chan runpkg.Completion
 	runUpdates              chan runUpdate
 	validatorCapacityEvents chan validatorCapacityEvent
 	done                    chan struct{}
+	pendingStops            map[string]*pendingStopRun
+	completedStops          map[string]StopRunResult
 	refreshSeq              atomic.Uint64
 }
 
@@ -331,6 +336,15 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 			progressSpend = candidate
 		}
 	}
+	var operatorStops store.OperatorStopStore
+	if candidate, ok := deps.WorkAttempts.(store.OperatorStopStore); ok {
+		operatorStops = candidate
+	}
+	if operatorStops == nil {
+		if candidate, ok := deps.WorkflowMetrics.(store.OperatorStopStore); ok {
+			operatorStops = candidate
+		}
+	}
 
 	supervisor, err := runpkg.NewSupervisor(runner, runpkg.SupervisorConfig{
 		MaxRetryBackoff:       cfg.MaxRetryBackoff,
@@ -350,6 +364,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		efficiency:              deps.Efficiency,
 		lifecycleExporter:       deps.LifecycleExporter,
 		workAttempts:            deps.WorkAttempts,
+		operatorStops:           operatorStops,
 		progressSpend:           progressSpend,
 		agentResume:             agentResume,
 		orphanSessions:          orphanSessions,
@@ -379,10 +394,13 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		refreshes:               make(chan manualRefreshRequest, 1),
 		reconciles:              make(chan targetedRefreshRequest, 128),
 		capacityClearRequests:   make(chan capacityClearRequest),
+		stopRequests:            make(chan stopRunRequest),
 		runResults:              make(chan runpkg.Completion, max(cfg.MaxConcurrentAgents, 1)),
 		runUpdates:              make(chan runUpdate, runUpdateBufferSize),
 		validatorCapacityEvents: make(chan validatorCapacityEvent, max(cfg.MaxConcurrentAgents, 1)),
 		done:                    make(chan struct{}),
+		pendingStops:            map[string]*pendingStopRun{},
+		completedStops:          map[string]StopRunResult{},
 	}, nil
 }
 
@@ -418,6 +436,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			resetTicker(ticker, state.PollInterval)
 		case request := <-o.capacityClearRequests:
 			request.reply <- capacityClearReply{cleared: o.clearBackendCapacity(&state, request.scope, request.at)}
+		case request := <-o.stopRequests:
+			o.handleStopRunRequest(ctx, &state, request)
 		case result := <-o.runResults:
 			o.handleRunResult(ctx, &state, result)
 		case update := <-o.runUpdates:
@@ -612,6 +632,7 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	state.AutoPromote = cloneAutoPromoteConfig(cfg.AutoPromote)
 	state.ActiveStates = append([]string(nil), cfg.ActiveStates...)
 	state.TerminalStates = append([]string(nil), cfg.TerminalStates...)
+	state.StopRunTargetState = cfg.StopRunTargetState
 	state.PrioritizeUnblockers = cfg.PrioritizeUnblockers
 	state.Instance = instanceSnapshot(cfg)
 	state.Authorization = cloneSelector(cfg.Authorization)

@@ -95,6 +95,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if o.retrospector != nil {
 		defer o.retrospector.Trigger("completion")
 	}
+	if o.handleOperatorStopCompletion(ctx, state, event, running) {
+		return
+	}
 	o.releaseGlobalDispatchSlot(running.globalSlot)
 	o.logWorkerLifecycle(running.Issue, "worker_capacity_released",
 		"attempt", running.Attempt,

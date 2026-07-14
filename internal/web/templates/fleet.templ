@@ -1,6 +1,10 @@
 package templates
 
-import "github.com/digitaldrywood/detent/internal/web/ui/primitives"
+import (
+	"github.com/digitaldrywood/detent/internal/web/ui/components/dialog"
+	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
+)
 
 // FleetPage is the secondary ops view: agent activity hero above the fold,
 // then figures, PR pipeline lanes, and three quiet metric cards. Trends
@@ -113,7 +117,7 @@ templ AgentActivityPanel(agents []fleetAgentRow, count string) {
 		for i, agent := range agents {
 			<div
 				id={ agent.ID }
-				class={ fleetAgentRowClass(i == len(agents)-1) }
+				class={ fleetAgentRowClass(i == len(agents)-1, agent.StopPath != "") }
 				data-fleet-agent-row
 			>
 				<div class="flex min-w-0 flex-col gap-1">
@@ -147,6 +151,23 @@ templ AgentActivityPanel(agents []fleetAgentRow, count string) {
 					}
 				</div>
 				<div class="hidden text-right font-mono text-xs text-sec tabular-nums md:block">{ agent.Telemetry }</div>
+				if agent.StopPath != "" {
+					<div class="justify-self-start md:justify-self-end">
+						@dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}) {
+							<button
+								type="button"
+								class="inline-flex size-9 items-center justify-center rounded-md border border-err/40 text-err hover:bg-err/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-err"
+								hx-get={ agent.StopPath }
+								hx-target={ kanbanDialogTargetSelector() }
+								hx-swap="innerHTML"
+								aria-label={ "Stop run and block item for " + agent.Repo + agent.Number }
+								title="Stop run and block item"
+							>
+								@icon.CircleStop(icon.Props{Class: "size-4"})
+							</button>
+						}
+					</div>
+				}
 			</div>
 		}
 	}

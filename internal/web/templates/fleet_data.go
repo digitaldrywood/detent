@@ -39,6 +39,7 @@ type fleetAgentRow struct {
 	ProgressKind  primitives.Kind
 	ProgressTitle string
 	Telemetry     string
+	StopPath      string
 }
 
 type fleetPRLane struct {
@@ -138,6 +139,7 @@ func fleetAgentRows(snapshot telemetry.Snapshot) []fleetAgentRow {
 			Elapsed:   fleetAgentElapsed(running),
 			Stage:     fleetAgentStage(running),
 			Telemetry: fleetAgentTelemetry(running),
+			StopPath:  StopRunDialogPath(running),
 		}
 		row.Progress, row.ProgressTitle, row.ProgressKind = fleetAgentProgress(running, typical)
 		rows = append(rows, row)
@@ -412,8 +414,11 @@ func fleetCompactTokens(total int64) string {
 	return strconv.FormatInt(total, 10)
 }
 
-func fleetAgentRowClass(last bool) string {
+func fleetAgentRowClass(last bool, stoppable bool) string {
 	base := "grid min-w-0 grid-cols-1 items-stretch gap-2.5 px-4 py-3.5 md:grid-cols-[minmax(0,1.6fr)_130px_150px_minmax(0,1fr)_90px] md:items-center md:gap-4"
+	if stoppable {
+		base = "grid min-w-0 grid-cols-1 items-stretch gap-2.5 px-4 py-3.5 md:grid-cols-[minmax(0,1.6fr)_130px_150px_minmax(0,1fr)_90px_36px] md:items-center md:gap-4"
+	}
 	if !last {
 		return base + " border-b border-line"
 	}

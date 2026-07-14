@@ -2482,7 +2482,7 @@ func TestRunDoctorUsesReadOnlyWriteChecksByDefaultForExistingConfiguredProject(t
 	workflow.Tracker.Repository = "digitaldrywood/detent"
 	workflow.Tracker.StatusLabelPrefix = "detent:"
 	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress"}
-	workflow.Tracker.ObservedStates = []string{"Human Review"}
+	workflow.Tracker.ObservedStates = []string{"Human Review", "Blocked"}
 	workflow.Tracker.TerminalStates = []string{"Done"}
 	workflow.Tracker.WriteProbeIssue = "digitaldrywood/detent#1"
 	workflow.Agent.AutoPromote.NoProgressLimit = 0
