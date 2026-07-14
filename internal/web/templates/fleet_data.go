@@ -414,8 +414,11 @@ func fleetCompactTokens(total int64) string {
 	return strconv.FormatInt(total, 10)
 }
 
-func fleetAgentRowClass(last bool) string {
-	base := "grid min-w-0 grid-cols-1 items-stretch gap-2.5 px-4 py-3.5 md:grid-cols-[minmax(0,1.6fr)_130px_150px_minmax(0,1fr)_90px_36px] md:items-center md:gap-4"
+func fleetAgentRowClass(last bool, stoppable bool) string {
+	base := "grid min-w-0 grid-cols-1 items-stretch gap-2.5 px-4 py-3.5 md:grid-cols-[minmax(0,1.6fr)_130px_150px_minmax(0,1fr)_90px] md:items-center md:gap-4"
+	if stoppable {
+		base = "grid min-w-0 grid-cols-1 items-stretch gap-2.5 px-4 py-3.5 md:grid-cols-[minmax(0,1.6fr)_130px_150px_minmax(0,1fr)_90px_36px] md:items-center md:gap-4"
+	}
 	if !last {
 		return base + " border-b border-line"
 	}

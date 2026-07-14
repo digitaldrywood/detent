@@ -78,18 +78,20 @@ func TestFleetAgentRowClass(t *testing.T) {
 	tests := []struct {
 		name       string
 		last       bool
+		stoppable  bool
+		wantGrid   string
 		wantBorder bool
 	}{
-		{name: "middle row", wantBorder: true},
-		{name: "last row", last: true},
+		{name: "middle row without action", wantGrid: "md:grid-cols-[minmax(0,1.6fr)_130px_150px_minmax(0,1fr)_90px]", wantBorder: true},
+		{name: "last row with action", last: true, stoppable: true, wantGrid: "md:grid-cols-[minmax(0,1.6fr)_130px_150px_minmax(0,1fr)_90px_36px]"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			class := fleetAgentRowClass(tt.last)
+			class := fleetAgentRowClass(tt.last, tt.stoppable)
 			for _, want := range []string{
 				"grid-cols-1",
-				"md:grid-cols-[minmax(0,1.6fr)_130px_150px_minmax(0,1fr)_90px_36px]",
+				tt.wantGrid,
 			} {
 				if !strings.Contains(class, want) {
 					t.Fatalf("fleetAgentRowClass(%t) missing %q: %q", tt.last, want, class)
@@ -99,6 +101,17 @@ func TestFleetAgentRowClass(t *testing.T) {
 				t.Fatalf("fleetAgentRowClass(%t) border = %t, want %t: %q", tt.last, got, tt.wantBorder, class)
 			}
 		})
+	}
+}
+
+func TestStopRunDialogPathRequiresConfiguredDestination(t *testing.T) {
+	running := telemetry.Running{Issue: telemetry.Issue{ID: "issue-1311", ProjectID: "detent"}, Attempt: 2}
+	if path := StopRunDialogPath(running); path != "" {
+		t.Fatalf("StopRunDialogPath() = %q without destination, want empty", path)
+	}
+	running.StopDestination = "Blocked"
+	if path := StopRunDialogPath(running); !strings.Contains(path, "/projects/detent/runs/2/stop") {
+		t.Fatalf("StopRunDialogPath() = %q with destination", path)
 	}
 }
 

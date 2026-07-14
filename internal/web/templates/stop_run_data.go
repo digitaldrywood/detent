@@ -31,7 +31,7 @@ type StopRunDialogData struct {
 func StopRunDialogPath(running telemetry.Running) string {
 	projectID := strings.TrimSpace(running.ProjectID)
 	issueID := strings.TrimSpace(running.ID)
-	if projectID == "" || issueID == "" {
+	if projectID == "" || issueID == "" || strings.TrimSpace(running.StopDestination) == "" {
 		return ""
 	}
 	values := url.Values{}
