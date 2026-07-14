@@ -2829,6 +2829,55 @@ func TestPRPipelineWaitDetailExplainsHumanReviewReasons(t *testing.T) {
 	}
 }
 
+func TestPRPipelineWaitDetailDistinguishesOptionalReviewFromHumanHold(t *testing.T) {
+	t.Parallel()
+
+	deadline := time.Date(2026, 7, 13, 19, 30, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		issue telemetry.Issue
+		want  string
+	}{
+		{
+			name: "optional review shows merge deadline",
+			issue: telemetry.Issue{
+				State: "In Progress",
+				Metadata: map[string]string{
+					projectKanbanAutoPromoteActionMetadataKey:            "await_review",
+					projectKanbanAutoPromoteReasonMetadataKey:            "automated_review_missing",
+					projectKanbanAutomatedReviewModeMetadataKey:          "optional",
+					projectKanbanAutomatedReviewTimeoutActionMetadataKey: "merge",
+					projectKanbanAutomatedReviewDeadlineMetadataKey:      deadline.Format(time.RFC3339),
+				},
+			},
+			want: "waiting for optional automated review; will merge at " + localTimeToken(deadline, LocalTimeOnly),
+		},
+		{
+			name: "human review shows explicit hold",
+			issue: telemetry.Issue{
+				State: "Human Review",
+				Metadata: map[string]string{
+					projectKanbanAutoPromoteActionMetadataKey:            "await_review",
+					projectKanbanAutoPromoteReasonMetadataKey:            "automated_review_missing",
+					projectKanbanAutomatedReviewModeMetadataKey:          "required",
+					projectKanbanAutomatedReviewTimeoutActionMetadataKey: "human_review",
+				},
+			},
+			want: "held for human review after required automated review timed out",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := prPipelineWaitDetail(tt.issue); got != tt.want {
+				t.Fatalf("prPipelineWaitDetail() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPRPipelineWaitDetailIncludesDispatchSkipReason(t *testing.T) {
 	t.Parallel()
 

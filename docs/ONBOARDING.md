@@ -1302,14 +1302,17 @@ probes.
 
    For criteria-based auto-promote, use `agent.auto_promote.enabled`,
    `quiet_seconds`, `optout_label`, `allowed_issue_labels`, `gate_wait_state`,
-   `gate_wait_timeout_seconds`, and the top-level command gate's
-   `require_automated_review` setting. `quiet_seconds` is the quiet period after
+   `gate_wait_timeout_seconds`, `gate_wait_timeout_action`, and the top-level
+   command gate's `automated_review` setting. `quiet_seconds` is the quiet period after
    observed issue/status/review activity and linked PR activity such as a fresh
    push to the PR head, `optout_label` is the per-issue escape hatch,
    `allowed_issue_labels` is an allowlist such as `documentation` for low-risk
    issue classes, and `gate_wait_state: source` keeps zero-quiet completed work
    in its active lane while checks are pending until
-   `gate_wait_timeout_seconds` expires. When automated review is required, a
+   `gate_wait_timeout_seconds` expires. `automated_review: optional` defaults
+   the timeout action to `merge`; `required` defaults it to `human_review`.
+   The legacy `require_automated_review` boolean maps to `required` or `off`.
+   When automated review is required, a
    Codex/ChatGPT/Claude review on an older commit does not clear this gate.
    Verify:
 
@@ -2196,15 +2199,16 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
          - <allowed-label>
        gate_wait_state: <source-or-review>
        gate_wait_timeout_seconds: <positive-seconds>
+       gate_wait_timeout_action: <merge-or-human_review>
        rework_limit: <0-to-disable-or-max-rework-laps>
    ```
 
    For a command gate, auto-promote requires a linked open PR, green CI, no P1
-   automated PR review findings, and the configured quiet period. With
-   `require_automated_review: true`, it also requires a current-head automated
-   GitHub PR review. With `require_automated_review: false`, bot PR review is
-   not required to exist, but any observed P1 bot findings still route the item
-   to `Rework`. `gate.required_status_checks` should list every
+   automated PR review findings, and the configured quiet period.
+   `automated_review: required` requires a current-head automated GitHub PR
+   review. `optional` waits until the gate deadline and then promotes if every
+   other check passes; `off` does not wait. Any observed P1 bot findings still
+   route the item to `Rework`. `gate.required_status_checks` should list every
    release-blocking branch-protection or ruleset check name; Detent treats
    missing, skipped, failed, cancelled, neutral, or still-running required
    checks as non-green on the current PR head. Failed or cancelled current-head
@@ -2221,7 +2225,8 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    auto-promotion; scores below `min_score` or findings whose severity appears
    in `block_on` route the item to `Rework`. `detent doctor --port 0` reports sampled
    `Human Review` candidates and reasons such as `automated_review_missing`
-   when that gate is not met.
+   when that gate is not met, and warns when recent merged PRs show no automated
+   reviews for a project configured to expect them.
 
    Keep `agent.max_session_context_multiplier` absent unless the operator
    explicitly requested the coarse ceiling. Use `agent.max_session_tokens` as

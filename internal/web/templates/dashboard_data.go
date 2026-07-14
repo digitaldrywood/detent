@@ -42,13 +42,16 @@ const (
 )
 
 const (
-	projectKanbanBlockedSourceMetadataKey         = "detent.blocked_source"
-	projectKanbanBlockedReasonMetadataKey         = "detent.blocked_reason"
-	projectKanbanBlockedRecoveryReasonMetadataKey = "detent.blocked_recovery_reason"
-	projectKanbanAutoPromoteActionMetadataKey     = "detent.auto_promote_action"
-	projectKanbanAutoPromoteReasonMetadataKey     = "detent.auto_promote_reason"
-	projectKanbanDispatchSkipReasonMetadataKey    = "detent.dispatch_skip_reason"
-	projectKanbanArtifactGateStatusMetadataKey    = "detent.artifact_gate_status"
+	projectKanbanBlockedSourceMetadataKey                = "detent.blocked_source"
+	projectKanbanBlockedReasonMetadataKey                = "detent.blocked_reason"
+	projectKanbanBlockedRecoveryReasonMetadataKey        = "detent.blocked_recovery_reason"
+	projectKanbanAutoPromoteActionMetadataKey            = "detent.auto_promote_action"
+	projectKanbanAutoPromoteReasonMetadataKey            = "detent.auto_promote_reason"
+	projectKanbanAutomatedReviewModeMetadataKey          = "detent.automated_review_mode"
+	projectKanbanAutomatedReviewDeadlineMetadataKey      = "detent.automated_review_deadline"
+	projectKanbanAutomatedReviewTimeoutActionMetadataKey = "detent.automated_review_timeout_action"
+	projectKanbanDispatchSkipReasonMetadataKey           = "detent.dispatch_skip_reason"
+	projectKanbanArtifactGateStatusMetadataKey           = "detent.artifact_gate_status"
 )
 
 type DashboardData struct {
@@ -3918,6 +3921,20 @@ func prPipelineAutoPromoteWaitReason(issue telemetry.Issue) string {
 	reason := strings.TrimSpace(issue.Metadata[projectKanbanAutoPromoteReasonMetadataKey])
 	if reason == "" {
 		return ""
+	}
+	if reason == "automated_review_missing" {
+		mode := strings.TrimSpace(issue.Metadata[projectKanbanAutomatedReviewModeMetadataKey])
+		timeoutAction := strings.TrimSpace(issue.Metadata[projectKanbanAutomatedReviewTimeoutActionMetadataKey])
+		if prPipelineLaneID(issue.State) == "human-review" && timeoutAction == "human_review" {
+			return "held for human review after " + mode + " automated review timed out"
+		}
+		if mode == "optional" && timeoutAction == "merge" {
+			deadline, err := time.Parse(time.RFC3339, strings.TrimSpace(issue.Metadata[projectKanbanAutomatedReviewDeadlineMetadataKey]))
+			if err == nil {
+				return "waiting for optional automated review; will merge at " + localTimeToken(deadline, LocalTimeOnly)
+			}
+			return "waiting for optional automated review; will merge when the wait expires"
+		}
 	}
 	return "auto-promote " + action + ": " + reason
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -15,10 +16,13 @@ import (
 )
 
 const (
-	artifactGateStatusMetadataKey = "detent.artifact_gate_status"
-	autoPromoteActionMetadataKey  = "detent.auto_promote_action"
-	autoPromoteReasonMetadataKey  = "detent.auto_promote_reason"
-	dispatchSkipReasonMetadataKey = "detent.dispatch_skip_reason"
+	artifactGateStatusMetadataKey           = "detent.artifact_gate_status"
+	autoPromoteActionMetadataKey            = "detent.auto_promote_action"
+	autoPromoteReasonMetadataKey            = "detent.auto_promote_reason"
+	automatedReviewModeMetadataKey          = "detent.automated_review_mode"
+	automatedReviewDeadlineMetadataKey      = "detent.automated_review_deadline"
+	automatedReviewTimeoutActionMetadataKey = "detent.automated_review_timeout_action"
+	dispatchSkipReasonMetadataKey           = "detent.dispatch_skip_reason"
 )
 
 // Snapshot converts the orchestrator State into a telemetry.Snapshot suitable
@@ -187,6 +191,19 @@ func (s State) applyGatePendingSnapshots(snapshots []telemetry.Issue, issues []c
 		if i >= len(issues) {
 			return
 		}
+		issueID := strings.TrimSpace(issues[i].ID)
+		if completed, ok := s.Completed[issueID]; ok && !completed.CompletedAt.IsZero() {
+			autoCfg := normalizeAutoPromoteConfig(s.AutoPromote)
+			mode := gate.AutomatedReviewMode(autoCfg.Gate)
+			if autoCfg.Gate.Kind == gate.KindCommand && mode != gate.AutomatedReviewOff {
+				if snapshots[i].Metadata == nil {
+					snapshots[i].Metadata = map[string]string{}
+				}
+				snapshots[i].Metadata[automatedReviewModeMetadataKey] = mode
+				snapshots[i].Metadata[automatedReviewDeadlineMetadataKey] = completed.CompletedAt.Add(autoCfg.GateWaitTimeout).UTC().Format(time.RFC3339)
+				snapshots[i].Metadata[automatedReviewTimeoutActionMetadataKey] = autoCfg.GateWaitTimeoutAction
+			}
+		}
 		if autoPromoteActiveGatePendingIssue(issues[i], &s, cfg, s.AutoPromote) {
 			snapshots[i].GatePending = true
 		}
@@ -209,6 +226,7 @@ func (s State) applyAutoPromoteDecisionSnapshots(snapshots []telemetry.Issue, is
 			}
 			summary := AutoPromoteSummaryFromIssue(issues[i])
 			summary.CompletedFinalState = autoPromoteCompletedFinalState(&s, issueID)
+			summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(&s, issueID, s.AutoPromote, now)
 			decision = EvaluateAutoPromote(issues[i], summary, s.AutoPromote, now)
 		}
 		if !autoPromoteDecisionVisibleOnCard(decision) {

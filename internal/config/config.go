@@ -94,6 +94,9 @@ const (
 
 	AutoPromoteGateWaitStateSource = "source"
 	AutoPromoteGateWaitStateReview = "review"
+
+	AutoPromoteGateWaitTimeoutActionMerge       = "merge"
+	AutoPromoteGateWaitTimeoutActionHumanReview = "human_review"
 )
 
 type Workflow struct {
@@ -368,6 +371,7 @@ type AutoPromote struct {
 	AllowedIssueLabels     []string `yaml:"allowed_issue_labels"`
 	GateWaitState          string   `yaml:"gate_wait_state,omitempty"`
 	GateWaitTimeoutSeconds int      `yaml:"gate_wait_timeout_seconds,omitempty"`
+	GateWaitTimeoutAction  string   `yaml:"gate_wait_timeout_action,omitempty"`
 	SourceState            string   `yaml:"source_state,omitempty"`
 	PassState              string   `yaml:"pass_state,omitempty"`
 	ReworkState            string   `yaml:"rework_state,omitempty"`
@@ -1333,6 +1337,7 @@ func (c *Config) normalize() {
 	c.Agent.AutoPromote.OptoutLabel = normalizeLabel(c.Agent.AutoPromote.OptoutLabel)
 	c.Agent.AutoPromote.AllowedIssueLabels = normalizeLabels(c.Agent.AutoPromote.AllowedIssueLabels)
 	c.Agent.AutoPromote.GateWaitState = normalizeAutoPromoteGateWaitState(c.Agent.AutoPromote.GateWaitState)
+	c.Agent.AutoPromote.GateWaitTimeoutAction = normalizeAutoPromoteGateWaitTimeoutAction(c.Agent.AutoPromote.GateWaitTimeoutAction)
 	if c.Agent.AutoPromote.GateWaitTimeoutSeconds == 0 {
 		c.Agent.AutoPromote.GateWaitTimeoutSeconds = DefaultAutoPromoteGateWaitTimeoutSeconds
 	}
@@ -1354,6 +1359,10 @@ func (c *Config) normalize() {
 	c.Codex.ModelProvider = strings.TrimSpace(c.Codex.ModelProvider)
 	c.Codex.ServiceTier = strings.TrimSpace(c.Codex.ServiceTier)
 	c.Gate = gate.Effective(c.Gate)
+	c.Agent.AutoPromote.GateWaitTimeoutAction = EffectiveAutoPromoteGateWaitTimeoutAction(
+		c.Agent.AutoPromote.GateWaitTimeoutAction,
+		c.Gate,
+	)
 	c.Plan = gate.EffectivePlan(c.Plan)
 	if c.Plan.Enabled {
 		c.Tracker.ObservedStates = appendStateUnique(c.Tracker.ObservedStates, c.Plan.Stop)
@@ -1919,6 +1928,11 @@ func (a *AutoPromote) validate(prefix string, problems *[]string) {
 	if a.GateWaitTimeoutSeconds <= 0 {
 		*problems = append(*problems, prefix+".gate_wait_timeout_seconds must be greater than 0")
 	}
+	switch normalizeAutoPromoteGateWaitTimeoutAction(a.GateWaitTimeoutAction) {
+	case "", AutoPromoteGateWaitTimeoutActionMerge, AutoPromoteGateWaitTimeoutActionHumanReview:
+	default:
+		*problems = append(*problems, prefix+".gate_wait_timeout_action must be one of merge, human_review")
+	}
 	if strings.TrimSpace(a.SourceState) == "" {
 		*problems = append(*problems, prefix+".source_state must not be blank")
 	}
@@ -1945,6 +1959,28 @@ func normalizeAutoPromoteGateWaitState(state string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(state))
 	}
+}
+
+func normalizeAutoPromoteGateWaitTimeoutAction(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "", AutoPromoteGateWaitTimeoutActionMerge, AutoPromoteGateWaitTimeoutActionHumanReview:
+		return strings.ToLower(strings.TrimSpace(action))
+	case "human-review", "humanreview":
+		return AutoPromoteGateWaitTimeoutActionHumanReview
+	default:
+		return strings.ToLower(strings.TrimSpace(action))
+	}
+}
+
+func EffectiveAutoPromoteGateWaitTimeoutAction(action string, gateCfg gate.Config) string {
+	action = normalizeAutoPromoteGateWaitTimeoutAction(action)
+	if action != "" {
+		return action
+	}
+	if gate.AutomatedReviewMode(gateCfg) == gate.AutomatedReviewRequired {
+		return AutoPromoteGateWaitTimeoutActionHumanReview
+	}
+	return AutoPromoteGateWaitTimeoutActionMerge
 }
 
 func (o OutputTruncation) validate(prefix string, problems *[]string) {

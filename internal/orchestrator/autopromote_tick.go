@@ -20,14 +20,16 @@ import (
 )
 
 const (
-	autoPromoteSourceState            = "Human Review"
-	autoPromoteMergingState           = "Merging"
-	autoPromoteReworkState            = "Rework"
-	autoPromoteGateWaitSource         = "source"
-	autoPromoteGateWaitReview         = "review"
-	defaultAutoPromoteGateWaitTimeout = time.Hour
-	defaultMergeWorkerStartupTimeout  = 2 * time.Minute
-	mergeWorkerProjectStateFull       = "project_state_capacity_full"
+	autoPromoteSourceState                = "Human Review"
+	autoPromoteMergingState               = "Merging"
+	autoPromoteReworkState                = "Rework"
+	autoPromoteGateWaitSource             = "source"
+	autoPromoteGateWaitReview             = "review"
+	autoPromoteGateWaitTimeoutMerge       = "merge"
+	autoPromoteGateWaitTimeoutHumanReview = "human_review"
+	defaultAutoPromoteGateWaitTimeout     = time.Hour
+	defaultMergeWorkerStartupTimeout      = 2 * time.Minute
+	mergeWorkerProjectStateFull           = "project_state_capacity_full"
 )
 
 type autoPromoteTickResult struct {
@@ -81,6 +83,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 
 		summary := AutoPromoteSummaryFromIssue(issue)
 		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issueID)
+		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
 		if decision.Reason == AutoPromoteReasonValidatorMissing {
 			validation, shouldComment, ok := o.validatorStageResult(ctx, issue)
@@ -141,6 +144,19 @@ func autoPromoteCompletedFinalState(state *State, issueID string) string {
 		return ""
 	}
 	return completed.FinalState
+}
+
+func autoPromoteReviewWaitExpired(state *State, issueID string, cfg AutoPromoteConfig, now time.Time) bool {
+	if state == nil {
+		return false
+	}
+	completed, ok := state.Completed[strings.TrimSpace(issueID)]
+	if !ok || completed.CompletedAt.IsZero() {
+		return false
+	}
+	cfg = normalizeAutoPromoteConfig(cfg)
+	return cfg.GateWaitTimeoutAction == autoPromoteGateWaitTimeoutMerge &&
+		!now.Before(completed.CompletedAt.Add(cfg.GateWaitTimeout))
 }
 
 func recordAutoPromoteSnapshotDecision(state *State, issueID string, decision AutoPromoteDecision) {
@@ -214,7 +230,7 @@ func (o *Orchestrator) restoreDurableGateWaitCompletions(
 		return
 	}
 	autoCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
-	if !autoPromoteActiveGateTrackingEnabled(autoCfg) {
+	if !autoPromoteDurableGateWaitTrackingEnabled(autoCfg) {
 		return
 	}
 	if state.Completed == nil {
@@ -228,7 +244,7 @@ func (o *Orchestrator) restoreDurableGateWaitCompletions(
 		if _, ok := state.Completed[issueID]; ok {
 			continue
 		}
-		if !autoPromoteActiveGateTrackedIssue(issue, o.cfg, autoCfg) {
+		if !autoPromoteDurableGateWaitTrackedIssue(issue, o.cfg, autoCfg) {
 			continue
 		}
 		attempt, ok, err := o.latestSuccessfulGateWaitAttempt(ctx, issue)
@@ -344,6 +360,22 @@ func autoPromoteActiveGateTrackedIssue(
 	return autoPromoteActiveGateEligibleIssue(issue, cfg, autoCfg) && issueHasOpenPullRequest(issue)
 }
 
+func autoPromoteDurableGateWaitTrackedIssue(
+	issue connector.Issue,
+	cfg Config,
+	autoCfg AutoPromoteConfig,
+) bool {
+	if autoPromoteActiveGateTrackedIssue(issue, cfg, autoCfg) {
+		return true
+	}
+	autoCfg = normalizeAutoPromoteConfig(autoCfg)
+	return autoPromoteReviewStateDeadlineTrackingEnabled(autoCfg) &&
+		normalizeState(issue.State) == normalizeState(autoCfg.SourceState) &&
+		!stateIn(issue.State, cfg.TerminalStates) &&
+		!autoPromoteHumanReviewRequired(issue, autoCfg, autoCfg.Gate) &&
+		issueHasOpenPullRequest(issue)
+}
+
 func autoPromoteActiveGateEligibleIssue(
 	issue connector.Issue,
 	cfg Config,
@@ -377,6 +409,19 @@ func autoPromoteSourceGateWaitEnabled(cfg AutoPromoteConfig) bool {
 func autoPromoteActiveGateTrackingEnabled(cfg AutoPromoteConfig) bool {
 	cfg = normalizeAutoPromoteConfig(cfg)
 	return cfg.Enabled && (cfg.QuietDuration > 0 || cfg.GateWaitState == autoPromoteGateWaitSource)
+}
+
+func autoPromoteDurableGateWaitTrackingEnabled(cfg AutoPromoteConfig) bool {
+	return autoPromoteActiveGateTrackingEnabled(cfg) || autoPromoteReviewStateDeadlineTrackingEnabled(cfg)
+}
+
+func autoPromoteReviewStateDeadlineTrackingEnabled(cfg AutoPromoteConfig) bool {
+	cfg = normalizeAutoPromoteConfig(cfg)
+	mode := gate.AutomatedReviewMode(cfg.Gate)
+	return cfg.Enabled &&
+		cfg.GateWaitState == autoPromoteGateWaitReview &&
+		cfg.GateWaitTimeoutAction == autoPromoteGateWaitTimeoutMerge &&
+		(mode == gate.AutomatedReviewRequired || mode == gate.AutomatedReviewOptional)
 }
 
 func issueHasOpenPullRequest(issue connector.Issue) bool {

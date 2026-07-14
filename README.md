@@ -695,6 +695,7 @@ agent:
     allowed_issue_labels: []
     gate_wait_state: review
     gate_wait_timeout_seconds: 3600
+    gate_wait_timeout_action: human_review
     rework_limit: 3
   skills:
     enabled: true
@@ -713,7 +714,7 @@ codex:
 gate:
   kind: command
   run: make check
-  require_automated_review: true
+  automated_review: required
   required_status_checks: []
   ci_failure_action: rework
   transient_ci_retry_limit: 2
@@ -1105,9 +1106,11 @@ counts for every enabled project. ProjectV2 trackers must set
 Omitting it preserves the code default: `kind: command` with `run: make check`,
 plus green CI, no P1 automated PR review findings, a quiet window, and a
 current-head automated PR review before auto-promotion. Set
-`require_automated_review: false` on a command gate when the workflow should
-auto-promote from `Human Review` after a linked open PR, green CI, no P1 bot
-review findings, and the quiet period. The quiet period resets on observed
+`automated_review: optional` to wait through
+`agent.auto_promote.gate_wait_timeout_seconds` and then continue to `Merging`
+when the remaining checks pass. Set `automated_review: off` to skip that wait.
+The legacy `require_automated_review` boolean remains accepted and maps `true`
+to `required` and `false` to `off`. The quiet period resets on observed
 issue updates, Project status updates, automated PR review submission, and
 linked PR activity such as a fresh push to the PR head. Failed or cancelled
 current-head CI moves a `Human Review` item back to
@@ -1770,9 +1773,10 @@ of that state is controlled by the workflow:
 - `gate.kind: command` requires a linked open PR, green CI, no P1 automated PR
   review findings, and the configured quiet period. By default it also requires
   a current-head automated GitHub PR review.
-- `gate.kind: command` with `require_automated_review: false` keeps the linked
-  PR, green CI, no-P1, and quiet-period checks but does not require a bot PR
-  review to exist.
+- `gate.automated_review: optional` waits for a current-head review until the
+  gate deadline, honors any review that arrives, and then promotes without one
+  when the remaining checks pass. `off` does not wait; `required` waits and
+  defaults to a Human Review timeout.
 - `gate.required_status_checks` names release-blocking check runs or commit
   status contexts that must be present, completed, and successful on the current
   PR head.
@@ -1796,7 +1800,9 @@ of that state is controlled by the workflow:
   active issues in their current lane while CI/check gates are still pending;
   `review` restores the legacy behavior of parking those pending issues in the
   configured review source state. `gate_wait_timeout_seconds` bounds that active
-  wait and moves overdue items to review with an audit comment.
+  wait. `gate_wait_timeout_action: merge | human_review` makes the terminal
+  action explicit; it defaults to `merge` for optional review and
+  `human_review` for required review.
 - `gate.kind: human_review` requires a linked open PR plus the configured
   `approval_label` on the issue.
 
@@ -1812,7 +1818,9 @@ accidental bypass.
 A Codex coding session that created the PR is not the same signal as a
 Codex/ChatGPT/Claude GitHub PR review. If automated PR review is required and
 the PR head changes after a review, request or wait for a fresh automated review
-before expecting auto-promotion.
+before expecting auto-promotion. `detent doctor` warns when required or optional
+review is configured but none of the sampled recent merged PRs has an automated
+review, which indicates the review producer may be inactive.
 
 ### Set up status
 

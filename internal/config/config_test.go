@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1954,6 +1955,53 @@ Prompt
 	}
 }
 
+func TestParseWorkflowAutomatedReviewModeAndTimeoutAction(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		mode       string
+		action     string
+		wantAction string
+	}{
+		{name: "optional defaults to merge", mode: gate.AutomatedReviewOptional, wantAction: AutoPromoteGateWaitTimeoutActionMerge},
+		{name: "required defaults to human review", mode: gate.AutomatedReviewRequired, wantAction: AutoPromoteGateWaitTimeoutActionHumanReview},
+		{name: "optional can hold for human", mode: gate.AutomatedReviewOptional, action: AutoPromoteGateWaitTimeoutActionHumanReview, wantAction: AutoPromoteGateWaitTimeoutActionHumanReview},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			raw := fmt.Sprintf(`---
+tracker:
+  kind: memory
+agent:
+  auto_promote:
+    gate_wait_timeout_action: %s
+gate:
+  kind: command
+  automated_review: %s
+---
+Prompt
+`, tt.action, tt.mode)
+			workflow, err := ParseWorkflow([]byte(raw))
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			if err := workflow.Config.Validate(); err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if got := workflow.Config.Gate.AutomatedReview; got != tt.mode {
+				t.Fatalf("Gate.AutomatedReview = %q, want %q", got, tt.mode)
+			}
+			if got := workflow.Config.Agent.AutoPromote.GateWaitTimeoutAction; got != tt.wantAction {
+				t.Fatalf("GateWaitTimeoutAction = %q, want %q", got, tt.wantAction)
+			}
+		})
+	}
+}
+
 func TestParseWorkflowCommandGateCIFailureAction(t *testing.T) {
 	t.Parallel()
 
@@ -2748,6 +2796,24 @@ Prompt
 			want: []string{
 				"agent.auto_promote.gate_wait_state must be one of source, review",
 				"agent.auto_promote.gate_wait_timeout_seconds must be greater than 0",
+			},
+		},
+		{
+			name: "invalid automated review settings",
+			raw: `---
+tracker:
+  kind: memory
+agent:
+  auto_promote:
+    gate_wait_timeout_action: abandon
+gate:
+  automated_review: sometimes
+---
+Prompt
+`,
+			want: []string{
+				"agent.auto_promote.gate_wait_timeout_action must be one of merge, human_review",
+				"gate.automated_review must be one of required, optional, off",
 			},
 		},
 		{

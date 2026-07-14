@@ -39,8 +39,13 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 			cfg,
 		)
 		if targetState == "" {
-			if o.transitionTimedOutCompletedActiveGateWait(ctx, state, issue, completed, cfg, now) {
+			if transitioned, promoted := o.transitionTimedOutCompletedActiveGateWait(ctx, state, issue, completed, cfg, now); transitioned {
 				result.transitioned[issueID] = struct{}{}
+				if mergeWorkerIssue(promoted) {
+					o.recordMergeQueueEntered(state, promoted, now, "completed_active_gate_wait_timeout")
+					result.dispatchCandidates = append(result.dispatchCandidates, promoted)
+					o.logMergeWorkerPickup(promoted, "completed_active_gate_wait_timeout")
+				}
 			}
 			continue
 		}
@@ -310,16 +315,42 @@ func (o *Orchestrator) transitionTimedOutCompletedActiveGateWait(
 	completed Completed,
 	cfg AutoPromoteConfig,
 	now time.Time,
-) bool {
+) (bool, connector.Issue) {
 	issueID := strings.TrimSpace(issue.ID)
 	if issueID == "" || completed.CompletedAt.IsZero() {
-		return false
+		return false, connector.Issue{}
 	}
 	if now.Before(completed.CompletedAt.Add(cfg.GateWaitTimeout)) {
-		return false
+		return false, connector.Issue{}
 	}
 	if !autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg) {
-		return false
+		return false, connector.Issue{}
+	}
+	if cfg.GateWaitTimeoutAction == autoPromoteGateWaitTimeoutMerge {
+		summary := AutoPromoteSummaryFromIssue(issue)
+		summary.CompletedFinalState = completed.FinalState
+		summary.AutomatedReviewWaitExpired = true
+		decision := EvaluateAutoPromote(issue, summary, cfg, now)
+		if autoPromoteDecisionNeedsWorkpadHydration(decision) {
+			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
+		}
+		targetState := autoPromoteTargetState(decision.Action, cfg)
+		if targetState == "" {
+			recordAutoPromoteSnapshotDecision(state, issueID, decision)
+			o.logAutoPromoteDecision(issue, decision, "")
+			return false, connector.Issue{}
+		}
+		if !o.applyAutoPromoteDecision(ctx, state, issue, summary, decision, targetState, now) {
+			return false, connector.Issue{}
+		}
+		promoted := promotedIssue(issue, targetState, now)
+		o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, targetState)
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      now,
+			Event:   "completed_active_gate_wait_timeout",
+			Message: "moved " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + targetState + " after auto-promote gate wait timeout",
+		})
+		return true, promoted
 	}
 	targetState := cfg.SourceState
 	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "auto_promote_gate_wait_timeout"); err != nil {
@@ -333,7 +364,7 @@ func (o *Orchestrator) transitionTimedOutCompletedActiveGateWait(
 				"error", err,
 			)
 		}
-		return false
+		return false, connector.Issue{}
 	}
 	if err := o.connector.CreateComment(ctx, issueID, completedActiveGateWaitTimeoutComment(issue, completed, cfg, now)); err != nil && o.logger != nil {
 		o.logger.Warn(
@@ -349,7 +380,7 @@ func (o *Orchestrator) transitionTimedOutCompletedActiveGateWait(
 		Event:   "completed_active_gate_wait_timeout",
 		Message: "moved " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + targetState + " after auto-promote gate wait timeout",
 	})
-	return true
+	return true, promotedIssue(issue, targetState, now)
 }
 
 func completedActiveGateWaitTimeoutComment(

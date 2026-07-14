@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/factory"
 	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 )
 
@@ -256,21 +257,68 @@ func checkDoctorAutoPromoteLive(
 			AutoPromoteCandidates: candidates,
 		}
 	}
-	if invalid := doctorAutoPromoteInvalidWorkpadStatusCandidates(candidates); len(invalid) > 0 {
-		return doctorCheck{
-			Name:                  name,
-			Status:                doctorWarn,
-			Detail:                detail + "; invalid workpad status candidate(s): " + doctorAutoPromoteCandidateSummaries(invalid),
-			Hint:                  "Update the Workpad detent-status block to one of in_progress, blocked, or complete; if this repeats, align WORKFLOW.md handoff prose with the configured review flow.",
-			AutoPromoteCandidates: candidates,
-		}
-	}
-	return doctorCheck{
+	check := doctorCheck{
 		Name:                  name,
 		Status:                doctorOK,
 		Detail:                detail,
 		AutoPromoteCandidates: candidates,
 	}
+	if invalid := doctorAutoPromoteInvalidWorkpadStatusCandidates(candidates); len(invalid) > 0 {
+		check.Status = doctorWarn
+		check.Detail += "; invalid workpad status candidate(s): " + doctorAutoPromoteCandidateSummaries(invalid)
+		check.Hint = "Update the Workpad detent-status block to one of in_progress, blocked, or complete; if this repeats, align WORKFLOW.md handoff prose with the configured review flow."
+	}
+	merged, reviewed, err := doctorAutomatedReviewProducerSample(ctx, cfg, projectConnector)
+	if err != nil {
+		check.Status = doctorWarn
+		check.Detail += "; automated-review producer health unavailable: " + err.Error()
+		check.Hint = "Check terminal issue and merged pull request read access, then rerun detent doctor."
+	} else if merged > 0 {
+		check.Detail += fmt.Sprintf("; recent merged PR automated reviews=%d/%d", reviewed, merged)
+		if reviewed == 0 {
+			check.Status = doctorWarn
+			check.Detail += "; automated-review producer appears inactive"
+			check.Hint = "Restore the automated review producer or use gate.automated_review: optional so a missing review cannot strand merging."
+		}
+	}
+	return check
+}
+
+func doctorAutomatedReviewProducerSample(
+	ctx context.Context,
+	cfg workflowconfig.Config,
+	projectConnector doctorAutoPromoteConnector,
+) (int, int, error) {
+	mode := gate.AutomatedReviewMode(cfg.Gate)
+	if mode == gate.AutomatedReviewOff {
+		return 0, 0, nil
+	}
+	states := append([]string(nil), cfg.Tracker.TerminalStates...)
+	if len(states) == 0 {
+		states = []string{"Done"}
+	}
+	scan, err := fetchDoctorAutoPromoteIssues(ctx, projectConnector, states)
+	if err != nil {
+		return 0, 0, err
+	}
+	merged := 0
+	reviewed := 0
+	for _, issue := range scan.Issues {
+		if hydrator, ok := projectConnector.(connector.PullRequestHydrator); ok && issue.PullRequest != nil {
+			issue, err = hydrator.HydratePullRequest(ctx, issue)
+			if err != nil {
+				return 0, 0, fmt.Errorf("hydrate recent merged pull request for %s: %w", doctorIssueLabel(issue), err)
+			}
+		}
+		if issue.PullRequest == nil || !strings.EqualFold(strings.TrimSpace(issue.PullRequest.State), "merged") {
+			continue
+		}
+		merged++
+		if doctorLatestCodexReviewState(issue.PullRequest) != "" || doctorLatestCodexReviewSubmittedAt(issue.PullRequest) != nil {
+			reviewed++
+		}
+	}
+	return merged, reviewed, nil
 }
 
 func doctorReviewFlowChoice(cfg workflowconfig.Config) string {
@@ -284,11 +332,13 @@ func doctorReviewFlowChoice(cfg workflowconfig.Config) string {
 
 func doctorReviewFlowConfigDetail(cfg workflowconfig.Config) string {
 	return fmt.Sprintf(
-		"review-flow=%s (auto_promote.enabled=%t, quiet_seconds=%d, gate_wait_state=%s)",
+		"review-flow=%s (auto_promote.enabled=%t, quiet_seconds=%d, gate_wait_state=%s, automated_review=%s, gate_wait_timeout_action=%s)",
 		doctorReviewFlowChoice(cfg),
 		cfg.Agent.AutoPromote.Enabled,
 		cfg.Agent.AutoPromote.QuietSeconds,
 		doctorReviewFlowGateWaitState(cfg),
+		gate.AutomatedReviewMode(cfg.Gate),
+		workflowconfig.EffectiveAutoPromoteGateWaitTimeoutAction(cfg.Agent.AutoPromote.GateWaitTimeoutAction, cfg.Gate),
 	)
 }
 
@@ -515,6 +565,7 @@ func doctorAutoPromoteConfig(cfg workflowconfig.Config) orchestrator.AutoPromote
 		QuietDuration:         time.Duration(cfg.Agent.AutoPromote.QuietSeconds) * time.Second,
 		OptoutLabel:           cfg.Agent.AutoPromote.OptoutLabel,
 		AllowedIssueLabels:    append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),
+		GateWaitTimeoutAction: cfg.Agent.AutoPromote.GateWaitTimeoutAction,
 		SourceState:           cfg.Agent.AutoPromote.SourceState,
 		PassState:             cfg.Agent.AutoPromote.PassState,
 		ReworkState:           cfg.Agent.AutoPromote.ReworkState,
