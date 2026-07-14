@@ -97,8 +97,8 @@ func runCITriggerLabel(ctx context.Context, input ciTriggerLabelInput, deps ciTr
 	if input.Label == "" {
 		return ciTriggerLabelResult{}, NewValidationError("ci-trigger-label --label is required", "Pass the configured gate.ci_trigger_label value.", nil)
 	}
-	if input.StaggerSeconds < 0 {
-		return ciTriggerLabelResult{}, NewValidationError("ci-trigger-label --stagger-seconds must be greater than or equal to 0", "Pass a non-negative stagger.", nil)
+	if input.StaggerSeconds <= 0 {
+		return ciTriggerLabelResult{}, NewValidationError("ci-trigger-label --stagger-seconds must be greater than 0", "Pass a positive stagger.", nil)
 	}
 	deps = deps.withDefaults()
 	coordinationDir, err := ciTriggerLabelCoordinationDir(input.CoordinationDir, deps.userCacheDir)

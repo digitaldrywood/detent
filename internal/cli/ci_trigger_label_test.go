@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -95,5 +96,19 @@ func TestRunCITriggerLabelWaitsForRepositoryStagger(t *testing.T) {
 	}
 	if len(calls) != 2 || calls[1][3] != "POST" {
 		t.Fatalf("calls = %#v, want list then add without delete", calls)
+	}
+}
+
+func TestRunCITriggerLabelRejectsZeroStagger(t *testing.T) {
+	t.Parallel()
+
+	_, err := runCITriggerLabel(context.Background(), ciTriggerLabelInput{
+		Repository:     "digitaldrywood/detent",
+		PullRequest:    1314,
+		Label:          "ci:ready",
+		StaggerSeconds: 0,
+	}, ciTriggerLabelDeps{})
+	if err == nil || !strings.Contains(err.Error(), "--stagger-seconds must be greater than 0") {
+		t.Fatalf("runCITriggerLabel() error = %v, want positive stagger validation", err)
 	}
 }

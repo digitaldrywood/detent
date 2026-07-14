@@ -1128,9 +1128,9 @@ implementation, rework, and merge workers to run the host-coordinated
 `detent ci-trigger-label` command after every head-changing push before they
 wait for current-head checks. Trigger events use a shared lock and persisted
 timestamp per repository and are spaced by
-`ci_trigger_label_stagger_seconds` (default `15`) to avoid a self-hosted CI
-stampede. `detent doctor` warns when it finds a label-gated required check
-without this setting.
+`ci_trigger_label_stagger_seconds` (a positive value, default `15`) to avoid a
+self-hosted CI stampede. `detent doctor` warns when it finds a label-gated
+required check without this setting.
 
 Set `gate.validator.enabled: true` to add a validator-agent review before
 auto-promotion. The validator inspects the PR diff against the issue acceptance

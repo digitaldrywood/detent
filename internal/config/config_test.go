@@ -2081,8 +2081,28 @@ Prompt
 	if got := workflow.Config.Gate.CITriggerLabel; got != "ci:ready" {
 		t.Fatalf("Gate.CITriggerLabel = %q, want ci:ready", got)
 	}
-	if got := workflow.Config.Gate.CITriggerLabelStaggerSeconds; got != 20 {
-		t.Fatalf("Gate.CITriggerLabelStaggerSeconds = %d, want 20", got)
+	if got := workflow.Config.Gate.CITriggerLabelStaggerSeconds; got == nil || *got != 20 {
+		t.Fatalf("Gate.CITriggerLabelStaggerSeconds = %v, want 20", got)
+	}
+}
+
+func TestParseWorkflowGateCITriggerLabelRejectsZeroStagger(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+gate:
+  ci_trigger_label: ci:ready
+  ci_trigger_label_stagger_seconds: 0
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err == nil || !strings.Contains(err.Error(), "gate.ci_trigger_label_stagger_seconds must be greater than 0") {
+		t.Fatalf("Validate() error = %v, want positive stagger validation", err)
 	}
 }
 

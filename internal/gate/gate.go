@@ -42,7 +42,7 @@ type Config struct {
 	RequireAutomatedReview       *bool           `yaml:"require_automated_review"`
 	RequiredStatusChecks         []string        `yaml:"required_status_checks"`
 	CITriggerLabel               string          `yaml:"ci_trigger_label"`
-	CITriggerLabelStaggerSeconds int             `yaml:"ci_trigger_label_stagger_seconds"`
+	CITriggerLabelStaggerSeconds *int            `yaml:"ci_trigger_label_stagger_seconds"`
 	CIFailureAction              string          `yaml:"ci_failure_action"`
 	TransientCIRetryLimit        *int            `yaml:"transient_ci_retry_limit"`
 	Validator                    ValidatorConfig `yaml:"validator"`
@@ -184,8 +184,8 @@ func Effective(cfg Config) Config {
 	cfg.AutomatedReview = NormalizeAutomatedReview(cfg.AutomatedReview)
 	cfg.RequiredStatusChecks = NormalizeRequiredStatusChecks(cfg.RequiredStatusChecks)
 	cfg.CITriggerLabel = normalizeLabel(cfg.CITriggerLabel)
-	if cfg.CITriggerLabel != "" && cfg.CITriggerLabelStaggerSeconds == 0 {
-		cfg.CITriggerLabelStaggerSeconds = DefaultCITriggerLabelStaggerSeconds
+	if cfg.CITriggerLabel != "" && cfg.CITriggerLabelStaggerSeconds == nil {
+		cfg.CITriggerLabelStaggerSeconds = newInt(DefaultCITriggerLabelStaggerSeconds)
 	}
 	cfg.CIFailureAction = NormalizeCIFailureAction(cfg.CIFailureAction)
 	if cfg.TransientCIRetryLimit == nil {
@@ -353,8 +353,8 @@ func Validate(prefix string, cfg Config) []string {
 	if cfg.TransientCIRetryLimit != nil && *cfg.TransientCIRetryLimit < 0 {
 		problems = append(problems, prefix+".transient_ci_retry_limit must be greater than or equal to 0")
 	}
-	if cfg.CITriggerLabelStaggerSeconds < 0 {
-		problems = append(problems, prefix+".ci_trigger_label_stagger_seconds must be greater than or equal to 0")
+	if cfg.CITriggerLabelStaggerSeconds != nil && *cfg.CITriggerLabelStaggerSeconds <= 0 {
+		problems = append(problems, prefix+".ci_trigger_label_stagger_seconds must be greater than 0")
 	}
 	for _, check := range cfg.RequiredStatusChecks {
 		if strings.TrimSpace(check) == "" {
@@ -417,7 +417,11 @@ func ciTriggerLabelInstructions(cfg Config) string {
 	if cfg.CITriggerLabel == "" {
 		return ""
 	}
-	return "This project uses CI trigger label `" + cfg.CITriggerLabel + "`. After every push that changes a pull request head in implementation, rework, or merging, run `detent ci-trigger-label --repository <owner/repo> --pull-request <number> --label " + cfg.CITriggerLabel + " --stagger-seconds " + strconv.Itoa(cfg.CITriggerLabelStaggerSeconds) + "` before waiting for current-head checks. The command removes the label if present, adds it again through GitHub's REST issue-label endpoints, and uses a host-wide lock plus persisted timestamp to serialize reapplications at least " + strconv.Itoa(cfg.CITriggerLabelStaggerSeconds) + " seconds apart so concurrent workers do not stampede self-hosted CI. "
+	staggerSeconds := 0
+	if cfg.CITriggerLabelStaggerSeconds != nil {
+		staggerSeconds = *cfg.CITriggerLabelStaggerSeconds
+	}
+	return "This project uses CI trigger label `" + cfg.CITriggerLabel + "`. After every push that changes a pull request head in implementation, rework, or merging, run `detent ci-trigger-label --repository <owner/repo> --pull-request <number> --label " + cfg.CITriggerLabel + " --stagger-seconds " + strconv.Itoa(staggerSeconds) + "` before waiting for current-head checks. The command removes the label if present, adds it again through GitHub's REST issue-label endpoints, and uses a host-wide lock plus persisted timestamp to serialize reapplications at least " + strconv.Itoa(staggerSeconds) + " seconds apart so concurrent workers do not stampede self-hosted CI. "
 }
 
 func requiredStatusCheckInstructions(checks []string) string {

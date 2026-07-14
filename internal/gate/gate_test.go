@@ -72,7 +72,7 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 				ApprovalLabel:                DefaultApprovalLabel,
 				RequireAutomatedReview:       new(true),
 				CITriggerLabel:               "ci:ready",
-				CITriggerLabelStaggerSeconds: DefaultCITriggerLabelStaggerSeconds,
+				CITriggerLabelStaggerSeconds: newInt(DefaultCITriggerLabelStaggerSeconds),
 				CIFailureAction:              CIFailureActionRework,
 			},
 		},
@@ -644,7 +644,7 @@ func TestInstructionsDescribeCITriggerLabel(t *testing.T) {
 	got := Instructions(Config{
 		Kind:                         KindCommand,
 		CITriggerLabel:               "ci:ready",
-		CITriggerLabelStaggerSeconds: 20,
+		CITriggerLabelStaggerSeconds: newInt(20),
 	})
 	for _, want := range []string{
 		"CI trigger label `ci:ready`",
@@ -712,7 +712,9 @@ func configsEqual(left Config, right Config) bool {
 		left.ApprovalLabel == right.ApprovalLabel &&
 		AutomatedReviewMode(left) == AutomatedReviewMode(right) &&
 		left.CIFailureAction == right.CIFailureAction &&
+		left.CITriggerLabel == right.CITriggerLabel &&
 		slices.Equal(left.RequiredStatusChecks, right.RequiredStatusChecks) &&
+		intPointerEqual(left.CITriggerLabelStaggerSeconds, right.CITriggerLabelStaggerSeconds) &&
 		intPointerEqual(left.TransientCIRetryLimit, right.TransientCIRetryLimit) &&
 		boolPointerEqual(left.RequireAutomatedReview, right.RequireAutomatedReview) &&
 		validatorConfigsEqual(left.Validator, right.Validator) &&

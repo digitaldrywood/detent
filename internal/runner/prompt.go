@@ -853,6 +853,10 @@ func deliverableAssigns(cfg config.Deliverable) map[string]any {
 
 func gateAssigns(cfg gate.Config) map[string]any {
 	effective := gate.Effective(cfg)
+	ciTriggerLabelStaggerSeconds := 0
+	if effective.CITriggerLabelStaggerSeconds != nil {
+		ciTriggerLabelStaggerSeconds = *effective.CITriggerLabelStaggerSeconds
+	}
 	transientCIRetryLimit := 0
 	if effective.TransientCIRetryLimit != nil {
 		transientCIRetryLimit = *effective.TransientCIRetryLimit
@@ -862,7 +866,7 @@ func gateAssigns(cfg gate.Config) map[string]any {
 		"run":                              effective.Run,
 		"approval_label":                   effective.ApprovalLabel,
 		"ci_trigger_label":                 effective.CITriggerLabel,
-		"ci_trigger_label_stagger_seconds": effective.CITriggerLabelStaggerSeconds,
+		"ci_trigger_label_stagger_seconds": ciTriggerLabelStaggerSeconds,
 		"automated_review":                 effective.AutomatedReview,
 		"require_automated_review":         requireAutomatedReview(effective),
 		"ci_failure_action":                effective.CIFailureAction,
