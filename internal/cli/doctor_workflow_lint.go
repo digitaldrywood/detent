@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -27,6 +28,13 @@ const (
 	doctorWorkflowCeilingMinAttempts = 5
 	doctorWorkflowCeilingShare       = 0.20
 )
+
+var doctorJobLabelConditionPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)github\.event\.label\.name\s*==\s*'([^']*)'`),
+	regexp.MustCompile(`(?i)github\.event\.label\.name\s*==\s*"([^"]*)"`),
+	regexp.MustCompile(`(?i)'([^']*)'\s*==\s*github\.event\.label\.name`),
+	regexp.MustCompile(`(?i)"([^"]*)"\s*==\s*github\.event\.label\.name`),
+}
 
 type doctorShipSkill struct {
 	Version string
@@ -125,8 +133,13 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 			jobName := doctorYAMLScalarValue(doctorYAMLMapValue(jobNode, "name"))
 			labelGated := doctorRequiredCheckLabelGated(on, jobNode)
 			risks := append([]string(nil), workflowRisks...)
-			if doctorJobRequiresLabelEvent(jobNode) {
+			jobRequiresLabel := doctorJobRequiresLabelEvent(jobNode)
+			jobMatchesTriggerLabel := !jobRequiresLabel || ciTriggerLabel == "" || doctorJobConditionMatchesLabel(jobNode, ciTriggerLabel)
+			if jobRequiresLabel {
 				risks = append(risks, "job condition requires labeled event")
+				if !jobMatchesTriggerLabel {
+					risks = append(risks, "job condition does not match gate.ci_trigger_label")
+				}
 			}
 			for _, requiredName := range required {
 				if !doctorRequiredCheckMatchesJob(requiredName, jobID, jobName) {
@@ -137,7 +150,7 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 				trigger.labelGated = trigger.labelGated || labelGated
 				if len(risks) == 0 {
 					trigger.safe = true
-				} else if labelGated && ciTriggerLabel != "" && doctorOnlyLabelGateRisk(risks) {
+				} else if labelGated && ciTriggerLabel != "" && jobMatchesTriggerLabel && doctorOnlyLabelGateRisk(risks) {
 					trigger.safe = true
 				} else {
 					relativePath, pathErr := filepath.Rel(root, path)
@@ -169,7 +182,9 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 	}
 	detail := "required checks are not produced on every pull-request head: " + strings.Join(warnings, ", ")
 	hint := "Remove pull_request path filters and include the synchronize activity for required-check workflows; skip non-applicable work inside the job while still reporting the required check."
-	if ciTriggerLabel == "" && strings.Contains(detail, "label-gated:") {
+	if strings.Contains(detail, "does not match gate.ci_trigger_label") {
+		hint = "Set gate.ci_trigger_label to a label explicitly accepted by the required job condition, or update the workflow condition to accept the configured label."
+	} else if ciTriggerLabel == "" && strings.Contains(detail, "label-gated:") {
 		hint = "Configure gate.ci_trigger_label with the workflow's label so Detent re-applies it after every PR-head push, or include the synchronize activity in the required-check workflow."
 	}
 	return []doctorCheck{{
@@ -213,6 +228,22 @@ func doctorJobRequiresLabelEvent(job *yaml.Node) bool {
 	condition := strings.ToLower(doctorYAMLScalarValue(doctorYAMLMapValue(job, "if")))
 	return strings.Contains(condition, "github.event.label") ||
 		strings.Contains(condition, "github.event.action") && strings.Contains(condition, "labeled")
+}
+
+func doctorJobConditionMatchesLabel(job *yaml.Node, label string) bool {
+	condition := doctorYAMLScalarValue(doctorYAMLMapValue(job, "if"))
+	if !strings.Contains(strings.ToLower(condition), "github.event.label") {
+		return true
+	}
+	label = strings.TrimSpace(label)
+	for _, pattern := range doctorJobLabelConditionPatterns {
+		for _, match := range pattern.FindAllStringSubmatch(condition, -1) {
+			if len(match) > 1 && strings.EqualFold(strings.TrimSpace(match[1]), label) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func doctorWorkflowYAMLFile(name string) bool {
