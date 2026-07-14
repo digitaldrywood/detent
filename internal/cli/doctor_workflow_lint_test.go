@@ -178,6 +178,105 @@ func TestCheckDoctorWorkflowLintWarnsForPathFilteredRequiredCheck(t *testing.T) 
 	}
 }
 
+func TestCheckDoctorWorkflowLintWarnsForUnconfiguredLabelGatedRequiredCheck(t *testing.T) {
+	t.Parallel()
+
+	workdir := t.TempDir()
+	workflowDir := filepath.Join(workdir, ".github", "workflows")
+	if err := os.MkdirAll(workflowDir, 0o700); err != nil {
+		t.Fatalf("mkdir workflows: %v", err)
+	}
+	workflow := []byte("name: CI\non:\n  pull_request:\n    types: [labeled, synchronize]\njobs:\n  test:\n    name: Test\n    runs-on: self-hosted\n    if: github.event.label.name == 'ci:ready'\n    steps:\n      - run: go test ./...\n")
+	if err := os.WriteFile(filepath.Join(workflowDir, "ci.yml"), workflow, 0o600); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	cfg := workflowconfig.Default()
+	cfg.Workspace.SourceRoot = workdir
+	cfg.Gate.RequiredStatusChecks = []string{"Test"}
+
+	checks := checkDoctorWorkflowLint(context.Background(), "alpha", globalconfig.Project{
+		ID:       "alpha",
+		Workflow: "WORKFLOW.md",
+		Workdir:  workdir,
+	}, cfg, "", doctorDeps{})
+
+	if len(checks) != 1 {
+		t.Fatalf("checks = %#v, want one warning", checks)
+	}
+	check := checks[0]
+	for _, want := range []string{"Test", "ci.yml", "label-gated", "gate.ci_trigger_label"} {
+		if !strings.Contains(check.Detail+" "+check.Hint, want) {
+			t.Fatalf("check = %#v, want containing %q", check, want)
+		}
+	}
+}
+
+func TestCheckDoctorWorkflowLintAcceptsConfiguredLabelGatedRequiredCheck(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name            string
+		on              string
+		condition       string
+		configuredLabel string
+		wantWarning     bool
+		wantDetail      string
+		wantHint        string
+	}{
+		{name: "explicit labeled and synchronize types", on: "on:\n  pull_request:\n    types: [labeled, synchronize]"},
+		{name: "one of multiple matching labels", on: "on:\n  pull_request:\n    types: [labeled, synchronize]", condition: "github.event.label.name == 'ci:ready' || github.event.label.name == 'ci:full'", configuredLabel: "ci:full"},
+		{name: "mismatched configured label", on: "on:\n  pull_request:\n    types: [labeled, synchronize]", configuredLabel: "ci:full", wantWarning: true, wantDetail: "does not match gate.ci_trigger_label", wantHint: "Set gate.ci_trigger_label to a label explicitly accepted"},
+		{name: "pull request label list matches", on: "on:\n  pull_request:\n    types: [labeled]", condition: "contains(github.event.pull_request.labels.*.name, 'ci:ready')"},
+		{name: "pull request label list mismatch", on: "on:\n  pull_request:\n    types: [labeled]", condition: "contains(github.event.pull_request.labels.*.name, 'ci:ready')", configuredLabel: "ci:full", wantWarning: true, wantDetail: "does not match gate.ci_trigger_label", wantHint: "Set gate.ci_trigger_label to a label explicitly accepted"},
+		{name: "default pull request mapping", on: "on:\n  pull_request:", wantWarning: true, wantDetail: "job condition requires labeled event"},
+		{name: "shorthand pull request", on: "on: pull_request", wantWarning: true, wantDetail: "job condition requires labeled event"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workdir := t.TempDir()
+			workflowDir := filepath.Join(workdir, ".github", "workflows")
+			if err := os.MkdirAll(workflowDir, 0o700); err != nil {
+				t.Fatalf("mkdir workflows: %v", err)
+			}
+			condition := tt.condition
+			if condition == "" {
+				condition = "github.event.label.name == 'ci:ready'"
+			}
+			workflow := []byte("name: CI\n" + tt.on + "\njobs:\n  test:\n    name: Test\n    runs-on: self-hosted\n    if: " + condition + "\n    steps:\n      - run: go test ./...\n")
+			if err := os.WriteFile(filepath.Join(workflowDir, "ci.yml"), workflow, 0o600); err != nil {
+				t.Fatalf("write workflow: %v", err)
+			}
+			cfg := workflowconfig.Default()
+			cfg.Workspace.SourceRoot = workdir
+			cfg.Gate.RequiredStatusChecks = []string{"Test"}
+			cfg.Gate.CITriggerLabel = tt.configuredLabel
+			if cfg.Gate.CITriggerLabel == "" {
+				cfg.Gate.CITriggerLabel = "ci:ready"
+			}
+
+			checks := checkDoctorWorkflowLint(context.Background(), "alpha", globalconfig.Project{
+				ID:       "alpha",
+				Workflow: "WORKFLOW.md",
+				Workdir:  workdir,
+			}, cfg, "", doctorDeps{})
+
+			if tt.wantWarning {
+				if len(checks) != 1 || !strings.Contains(checks[0].Detail, tt.wantDetail) {
+					t.Fatalf("checks = %#v, want unsafe default trigger warning", checks)
+				}
+				if tt.wantHint != "" && !strings.Contains(checks[0].Hint, tt.wantHint) {
+					t.Fatalf("Hint = %q, want containing %q", checks[0].Hint, tt.wantHint)
+				}
+				return
+			}
+			if len(checks) != 0 {
+				t.Fatalf("checks = %#v, want explicit label gate to be accepted", checks)
+			}
+		})
+	}
+}
+
 func TestDoctorWorkflowExecutableIndexSkipsEnvironmentAssignments(t *testing.T) {
 	t.Parallel()
 

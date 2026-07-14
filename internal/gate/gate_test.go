@@ -61,6 +61,22 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 			},
 		},
 		{
+			name: "command normalizes ci trigger label and defaults stagger",
+			cfg: Config{
+				Kind:           KindCommand,
+				CITriggerLabel: " CI:Ready ",
+			},
+			want: Config{
+				Kind:                         KindCommand,
+				Run:                          DefaultCommand,
+				ApprovalLabel:                DefaultApprovalLabel,
+				RequireAutomatedReview:       new(true),
+				CITriggerLabel:               "ci:ready",
+				CITriggerLabelStaggerSeconds: newInt(DefaultCITriggerLabelStaggerSeconds),
+				CIFailureAction:              CIFailureActionRework,
+			},
+		},
+		{
 			name: "human review normalizes alias and approval label",
 			cfg:  Config{Kind: "human-review", Run: "make check", ApprovalLabel: " Human-Approved "},
 			want: Config{Kind: KindHumanReview, Run: "", ApprovalLabel: "human-approved", CIFailureAction: CIFailureActionSkip},
@@ -622,6 +638,56 @@ func TestInstructionsDescribeRequiredStatusChecks(t *testing.T) {
 	}
 }
 
+func TestInstructionsDescribeCITriggerLabel(t *testing.T) {
+	t.Parallel()
+
+	got := Instructions(Config{
+		Kind:                         KindCommand,
+		CITriggerLabel:               "ci:ready",
+		CITriggerLabelStaggerSeconds: newInt(20),
+	})
+	for _, want := range []string{
+		"CI trigger label `ci:ready`",
+		"After every push",
+		"detent ci-trigger-label",
+		"removes the label if present, adds it again",
+		"REST issue-label endpoints",
+		"before waiting for current-head checks",
+		"host-wide lock plus persisted timestamp",
+		"at least 20 seconds apart",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Instructions() missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestInstructionsEncodeCITriggerLabel(t *testing.T) {
+	t.Parallel()
+
+	got := Instructions(Config{
+		Kind:                         KindCommand,
+		CITriggerLabel:               "team's ci ready",
+		CITriggerLabelStaggerSeconds: newInt(15),
+	})
+	if want := "--label-base64 " + encodeCITriggerLabelArgument("team's ci ready") + " --stagger-seconds 15"; !strings.Contains(got, want) {
+		t.Fatalf("Instructions() missing %q:\n%s", want, got)
+	}
+}
+
+func TestInstructionsIncludeGitHubHostname(t *testing.T) {
+	t.Parallel()
+
+	got := InstructionsForGitHubHost(Config{
+		Kind:                         KindCommand,
+		CITriggerLabel:               "ci:ready",
+		CITriggerLabelStaggerSeconds: newInt(15),
+	}, "github.example.com")
+	if want := "--label-base64 " + encodeCITriggerLabelArgument("ci:ready") + " --hostname-base64 " + encodeCITriggerLabelArgument("github.example.com") + " --stagger-seconds 15"; !strings.Contains(got, want) {
+		t.Fatalf("InstructionsForGitHubHost() missing %q:\n%s", want, got)
+	}
+}
+
 func TestEvaluateAutomatedReviewModes(t *testing.T) {
 	t.Parallel()
 
@@ -672,7 +738,9 @@ func configsEqual(left Config, right Config) bool {
 		left.ApprovalLabel == right.ApprovalLabel &&
 		AutomatedReviewMode(left) == AutomatedReviewMode(right) &&
 		left.CIFailureAction == right.CIFailureAction &&
+		left.CITriggerLabel == right.CITriggerLabel &&
 		slices.Equal(left.RequiredStatusChecks, right.RequiredStatusChecks) &&
+		intPointerEqual(left.CITriggerLabelStaggerSeconds, right.CITriggerLabelStaggerSeconds) &&
 		intPointerEqual(left.TransientCIRetryLimit, right.TransientCIRetryLimit) &&
 		boolPointerEqual(left.RequireAutomatedReview, right.RequireAutomatedReview) &&
 		validatorConfigsEqual(left.Validator, right.Validator) &&

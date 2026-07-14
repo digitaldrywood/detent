@@ -1122,6 +1122,17 @@ Set `required_status_checks` to the exact branch-protection or ruleset check
 names that are release-blocking for the project. Detent treats a configured
 required check as non-green when it is missing, skipped, failed, cancelled,
 neutral, or still running on the current PR head.
+For required workflows that run only on a `pull_request` `labeled` event, set
+`ci_trigger_label` to that label, such as `ci:ready`. Detent then instructs
+implementation, rework, and merge workers to run the host-coordinated
+`detent ci-trigger-label` command after every head-changing push before they
+wait for current-head checks, passing the configured GitHub tracker host for
+Enterprise installations. Generated commands encode label and host arguments
+without shell-specific quoting. Trigger events use a shared lock and persisted
+timestamp per repository and are spaced by
+`ci_trigger_label_stagger_seconds` (a positive value, default `15`) to avoid a
+self-hosted CI stampede. `detent doctor` warns when it finds a label-gated
+required check without this setting.
 
 Set `gate.validator.enabled: true` to add a validator-agent review before
 auto-promotion. The validator inspects the PR diff against the issue acceptance
@@ -1780,6 +1791,9 @@ of that state is controlled by the workflow:
 - `gate.required_status_checks` names release-blocking check runs or commit
   status contexts that must be present, completed, and successful on the current
   PR head.
+- `gate.ci_trigger_label` re-fires label-gated required CI after each PR-head
+  push; `gate.ci_trigger_label_stagger_seconds` spaces host-local reapplications
+  by `15` seconds by default.
 - `gate.ci_failure_action: rework` routes failed or cancelled current-head CI
   from `Human Review` back to `Rework` by default; set
   `gate.ci_failure_action: skip` only when non-green CI should leave the item

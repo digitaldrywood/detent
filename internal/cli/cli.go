@@ -415,6 +415,7 @@ detent --format json config path`),
 	AddFormatFlag(cmd, &format)
 	cmd.AddCommand(
 		newDoctorCommand(&configPath, &env, &logLevel, &host, &port, opts),
+		newCITriggerLabelCommand(opts),
 		newDevRuntimeCommand(&host, &port, opts),
 		newInitCommand(&configPath, opts),
 		newAddProjectCommand(&configPath, opts),
