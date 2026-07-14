@@ -417,7 +417,7 @@ func ciTriggerLabelInstructions(cfg Config) string {
 	if cfg.CITriggerLabel == "" {
 		return ""
 	}
-	return "This project uses CI trigger label `" + cfg.CITriggerLabel + "`. After every push that changes a pull request head in implementation, rework, or merging, re-apply that label by removing it if present and adding it again through GitHub's REST issue-label endpoints; fire the fresh labeled event before waiting for current-head checks. Serialize trigger-label reapplications on the host and start them at least " + strconv.Itoa(cfg.CITriggerLabelStaggerSeconds) + " seconds apart so concurrent workers do not stampede self-hosted CI. "
+	return "This project uses CI trigger label `" + cfg.CITriggerLabel + "`. After every push that changes a pull request head in implementation, rework, or merging, run `detent ci-trigger-label --repository <owner/repo> --pull-request <number> --label " + cfg.CITriggerLabel + " --stagger-seconds " + strconv.Itoa(cfg.CITriggerLabelStaggerSeconds) + "` before waiting for current-head checks. The command removes the label if present, adds it again through GitHub's REST issue-label endpoints, and uses a host-wide lock plus persisted timestamp to serialize reapplications at least " + strconv.Itoa(cfg.CITriggerLabelStaggerSeconds) + " seconds apart so concurrent workers do not stampede self-hosted CI. "
 }
 
 func requiredStatusCheckInstructions(checks []string) string {

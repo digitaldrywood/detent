@@ -113,8 +113,8 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 			continue
 		}
 		rootNode := document.Content[0]
-		risks := doctorRequiredCheckTriggerRisks(doctorYAMLMapValue(rootNode, "on"))
-		labelGated := doctorRequiredCheckLabelGated(doctorYAMLMapValue(rootNode, "on"))
+		on := doctorYAMLMapValue(rootNode, "on")
+		workflowRisks := doctorRequiredCheckTriggerRisks(on)
 		jobs := doctorYAMLMapValue(rootNode, "jobs")
 		if jobs == nil || jobs.Kind != yaml.MappingNode {
 			continue
@@ -123,6 +123,11 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 			jobID := strings.TrimSpace(jobs.Content[index].Value)
 			jobNode := jobs.Content[index+1]
 			jobName := doctorYAMLScalarValue(doctorYAMLMapValue(jobNode, "name"))
+			labelGated := doctorRequiredCheckLabelGated(on, jobNode)
+			risks := append([]string(nil), workflowRisks...)
+			if doctorJobRequiresLabelEvent(jobNode) {
+				risks = append(risks, "job condition requires labeled event")
+			}
 			for _, requiredName := range required {
 				if !doctorRequiredCheckMatchesJob(requiredName, jobID, jobName) {
 					continue
@@ -175,7 +180,7 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 	}}
 }
 
-func doctorRequiredCheckLabelGated(on *yaml.Node) bool {
+func doctorRequiredCheckLabelGated(on *yaml.Node, job *yaml.Node) bool {
 	if on == nil || on.Kind != yaml.MappingNode {
 		return false
 	}
@@ -183,11 +188,31 @@ func doctorRequiredCheckLabelGated(on *yaml.Node) bool {
 	if pullRequest == nil || pullRequest.Kind != yaml.MappingNode {
 		return false
 	}
-	return doctorYAMLContainsScalar(doctorYAMLMapValue(pullRequest, "types"), "labeled")
+	types := doctorYAMLMapValue(pullRequest, "types")
+	if !doctorYAMLContainsScalar(types, "labeled") {
+		return false
+	}
+	return !doctorYAMLContainsScalar(types, "synchronize") || doctorJobRequiresLabelEvent(job)
 }
 
 func doctorOnlyLabelGateRisk(risks []string) bool {
-	return len(risks) == 1 && risks[0] == "pull_request types exclude synchronize"
+	if len(risks) == 0 {
+		return false
+	}
+	for _, risk := range risks {
+		switch risk {
+		case "pull_request types exclude synchronize", "job condition requires labeled event":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func doctorJobRequiresLabelEvent(job *yaml.Node) bool {
+	condition := strings.ToLower(doctorYAMLScalarValue(doctorYAMLMapValue(job, "if")))
+	return strings.Contains(condition, "github.event.label") ||
+		strings.Contains(condition, "github.event.action") && strings.Contains(condition, "labeled")
 }
 
 func doctorWorkflowYAMLFile(name string) bool {

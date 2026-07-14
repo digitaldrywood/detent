@@ -186,7 +186,7 @@ func TestCheckDoctorWorkflowLintWarnsForUnconfiguredLabelGatedRequiredCheck(t *t
 	if err := os.MkdirAll(workflowDir, 0o700); err != nil {
 		t.Fatalf("mkdir workflows: %v", err)
 	}
-	workflow := []byte("name: CI\non:\n  pull_request:\n    types: [labeled]\njobs:\n  test:\n    name: Test\n    runs-on: self-hosted\n    if: github.event.label.name == 'ci:ready'\n    steps:\n      - run: go test ./...\n")
+	workflow := []byte("name: CI\non:\n  pull_request:\n    types: [labeled, synchronize]\njobs:\n  test:\n    name: Test\n    runs-on: self-hosted\n    if: github.event.label.name == 'ci:ready'\n    steps:\n      - run: go test ./...\n")
 	if err := os.WriteFile(filepath.Join(workflowDir, "ci.yml"), workflow, 0o600); err != nil {
 		t.Fatalf("write workflow: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestCheckDoctorWorkflowLintAcceptsConfiguredLabelGatedRequiredCheck(t *test
 	if err := os.MkdirAll(workflowDir, 0o700); err != nil {
 		t.Fatalf("mkdir workflows: %v", err)
 	}
-	workflow := []byte("name: CI\non:\n  pull_request:\n    types: [labeled]\njobs:\n  test:\n    name: Test\n    runs-on: self-hosted\n    if: github.event.label.name == 'ci:ready'\n    steps:\n      - run: go test ./...\n")
+	workflow := []byte("name: CI\non:\n  pull_request:\n    types: [labeled, synchronize]\njobs:\n  test:\n    name: Test\n    runs-on: self-hosted\n    if: github.event.label.name == 'ci:ready'\n    steps:\n      - run: go test ./...\n")
 	if err := os.WriteFile(filepath.Join(workflowDir, "ci.yml"), workflow, 0o600); err != nil {
 		t.Fatalf("write workflow: %v", err)
 	}

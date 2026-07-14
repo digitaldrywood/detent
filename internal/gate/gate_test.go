@@ -649,9 +649,11 @@ func TestInstructionsDescribeCITriggerLabel(t *testing.T) {
 	for _, want := range []string{
 		"CI trigger label `ci:ready`",
 		"After every push",
-		"removing it if present and adding it again",
+		"detent ci-trigger-label",
+		"removes the label if present, adds it again",
 		"REST issue-label endpoints",
 		"before waiting for current-head checks",
+		"host-wide lock plus persisted timestamp",
 		"at least 20 seconds apart",
 	} {
 		if !strings.Contains(got, want) {
