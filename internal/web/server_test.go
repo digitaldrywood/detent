@@ -1437,6 +1437,13 @@ func TestAPIKeyRevokeExpireRotateAndRateLimit(t *testing.T) {
 	t.Parallel()
 
 	server, backend, _, _ := newAPIKeyWorkItemTestServer(t)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			t.Errorf("Shutdown() error = %v", err)
+		}
+	})
 	createdToken, createdID := createAPIKeyThroughHTTP(t, server, `{
 		"name": "Client",
 		"scopes": ["read"],
