@@ -381,6 +381,10 @@ func ValidatePlan(prefix string, cfg PlanConfig) []string {
 }
 
 func Instructions(cfg Config) string {
+	return InstructionsForGitHubHost(cfg, "")
+}
+
+func InstructionsForGitHubHost(cfg Config, hostname string) string {
 	cfg = Effective(cfg)
 	switch cfg.Kind {
 	case KindHumanReview:
@@ -393,7 +397,7 @@ func Instructions(cfg Config) string {
 		instructions := "The validation gate is a command. Run `" + cfg.Run +
 			"` from the workspace root before Human Review; the pull request still needs green CI before promotion. " +
 			requiredStatusCheckInstructions(cfg.RequiredStatusChecks) +
-			ciTriggerLabelInstructions(cfg) +
+			ciTriggerLabelInstructions(cfg, hostname) +
 			"In Merging, run a focused rebase/smoke gate after a clean rebase when the PR already passed current-head validation and no source files changed during rebase. " +
 			"Run full `" + cfg.Run + "` in Merging when code changes, conflicts are resolved, or validation state is stale or unknown. " +
 			"Watch current-head CI with REST check-runs polling/backoff, report slow checks, and record merge wait telemetry in the Workpad prose: quiet-window wait, local merge-gate duration, PR CI duration, slow check names, and whether post-merge main CI is still running. " +
@@ -413,7 +417,7 @@ func Instructions(cfg Config) string {
 	}
 }
 
-func ciTriggerLabelInstructions(cfg Config) string {
+func ciTriggerLabelInstructions(cfg Config, hostname string) string {
 	if cfg.CITriggerLabel == "" {
 		return ""
 	}
@@ -421,7 +425,11 @@ func ciTriggerLabelInstructions(cfg Config) string {
 	if cfg.CITriggerLabelStaggerSeconds != nil {
 		staggerSeconds = *cfg.CITriggerLabelStaggerSeconds
 	}
-	return "This project uses CI trigger label `" + cfg.CITriggerLabel + "`. After every push that changes a pull request head in implementation, rework, or merging, run `detent ci-trigger-label --repository <owner/repo> --pull-request <number> --label " + quoteCITriggerLabel(cfg.CITriggerLabel) + " --stagger-seconds " + strconv.Itoa(staggerSeconds) + "` before waiting for current-head checks. The command removes the label if present, adds it again through GitHub's REST issue-label endpoints, and uses a host-wide lock plus persisted timestamp to serialize reapplications at least " + strconv.Itoa(staggerSeconds) + " seconds apart so concurrent workers do not stampede self-hosted CI. "
+	hostnameArgument := ""
+	if hostname = strings.TrimSpace(hostname); hostname != "" {
+		hostnameArgument = " --hostname " + quoteCITriggerLabel(hostname)
+	}
+	return "This project uses CI trigger label `" + cfg.CITriggerLabel + "`. After every push that changes a pull request head in implementation, rework, or merging, run `detent ci-trigger-label --repository <owner/repo> --pull-request <number> --label " + quoteCITriggerLabel(cfg.CITriggerLabel) + hostnameArgument + " --stagger-seconds " + strconv.Itoa(staggerSeconds) + "` before waiting for current-head checks. The command removes the label if present, adds it again through GitHub's REST issue-label endpoints, and uses a host-wide lock plus persisted timestamp to serialize reapplications at least " + strconv.Itoa(staggerSeconds) + " seconds apart so concurrent workers do not stampede self-hosted CI. "
 }
 
 func quoteCITriggerLabel(label string) string {

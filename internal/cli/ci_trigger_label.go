@@ -37,6 +37,7 @@ type ciTriggerLabelInput struct {
 	Repository      string
 	PullRequest     int
 	Label           string
+	Hostname        string
 	StaggerSeconds  int
 	CoordinationDir string
 }
@@ -54,7 +55,7 @@ func newCITriggerLabelCommand(opts options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "ci-trigger-label",
 		Short:        "Reapply a pull request CI trigger label with host-wide staggering",
-		Example:      "detent ci-trigger-label --repository owner/repo --pull-request 42 --label ci:ready --stagger-seconds 15",
+		Example:      "detent ci-trigger-label --repository owner/repo --pull-request 42 --label ci:ready --hostname github.com --stagger-seconds 15",
 		Args:         NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -68,6 +69,7 @@ func newCITriggerLabelCommand(opts options) *cobra.Command {
 	cmd.Flags().StringVar(&input.Repository, "repository", "", "GitHub repository in owner/name form")
 	cmd.Flags().IntVar(&input.PullRequest, "pull-request", 0, "pull request number")
 	cmd.Flags().StringVar(&input.Label, "label", "", "CI trigger label to remove and add")
+	cmd.Flags().StringVar(&input.Hostname, "hostname", "", "GitHub host for API requests")
 	cmd.Flags().IntVar(&input.StaggerSeconds, "stagger-seconds", gate.DefaultCITriggerLabelStaggerSeconds, "minimum seconds between trigger-label reapplications on this host")
 	cmd.Flags().StringVar(&input.CoordinationDir, "coordination-dir", "", "host-local coordination directory")
 	return cmd
@@ -88,6 +90,7 @@ func defaultCITriggerLabelDeps(opts options) ciTriggerLabelDeps {
 func runCITriggerLabel(ctx context.Context, input ciTriggerLabelInput, deps ciTriggerLabelDeps) (result ciTriggerLabelResult, err error) {
 	input.Repository = strings.TrimSpace(input.Repository)
 	input.Label = strings.TrimSpace(input.Label)
+	input.Hostname = strings.TrimSpace(input.Hostname)
 	if !validCITriggerLabelRepository(input.Repository) {
 		return ciTriggerLabelResult{}, NewValidationError("ci-trigger-label --repository must be owner/name", "Pass --repository owner/name.", nil)
 	}
@@ -207,20 +210,28 @@ func enforceCITriggerLabelStagger(ctx context.Context, timestampPath string, sta
 
 func reapplyGitHubPullRequestLabel(ctx context.Context, input ciTriggerLabelInput, run CommandRunner) error {
 	basePath := "repos/" + input.Repository + "/issues/" + strconv.Itoa(input.PullRequest) + "/labels"
-	output, err := run(ctx, "gh", "api", "--paginate", basePath, "--jq", ".[].name")
+	output, err := run(ctx, "gh", ciTriggerLabelGHArgs(input.Hostname, "--paginate", basePath, "--jq", ".[].name")...)
 	if err != nil {
 		return fmt.Errorf("list pull request labels: %w", err)
 	}
 	if ciTriggerLabelPresent(output, input.Label) {
 		labelPath := basePath + "/" + url.PathEscape(input.Label)
-		if _, err := run(ctx, "gh", "api", "--method", "DELETE", labelPath, "--silent"); err != nil {
+		if _, err := run(ctx, "gh", ciTriggerLabelGHArgs(input.Hostname, "--method", "DELETE", labelPath, "--silent")...); err != nil {
 			return fmt.Errorf("remove CI trigger label: %w", err)
 		}
 	}
-	if _, err := run(ctx, "gh", "api", "--method", "POST", basePath, "-f", "labels[]="+input.Label, "--silent"); err != nil {
+	if _, err := run(ctx, "gh", ciTriggerLabelGHArgs(input.Hostname, "--method", "POST", basePath, "-f", "labels[]="+input.Label, "--silent")...); err != nil {
 		return fmt.Errorf("add CI trigger label: %w", err)
 	}
 	return nil
+}
+
+func ciTriggerLabelGHArgs(hostname string, args ...string) []string {
+	result := []string{"api"}
+	if hostname = strings.TrimSpace(hostname); hostname != "" {
+		result = append(result, "--hostname", hostname)
+	}
+	return append(result, args...)
 }
 
 func ciTriggerLabelPresent(output string, label string) bool {

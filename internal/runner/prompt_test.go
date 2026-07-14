@@ -626,6 +626,26 @@ func TestBuildPromptRendersGateAssignsAndInstructions(t *testing.T) {
 	}
 }
 
+func TestBuildPromptIncludesGitHubTrackerHostnameInCITriggerCommand(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{Config: config.Config{
+		Tracker: config.Tracker{Kind: config.TrackerGitHub, Endpoint: "https://github.example.com/api/graphql"},
+		Gate: gate.Config{
+			Kind:           gate.KindCommand,
+			CITriggerLabel: "CI Ready",
+		},
+	}}, connector.Issue{Identifier: "owner/repo#42", Title: "Enterprise label gate"}, PromptOptions{})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+	for _, want := range []string{"--label 'ci ready'", "--hostname 'github.example.com'", "--stagger-seconds 15"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestBuildPromptAppendsWorkflowInstructionsByState(t *testing.T) {
 	t.Parallel()
 

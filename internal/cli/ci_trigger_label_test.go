@@ -20,6 +20,7 @@ func TestRunCITriggerLabelRemovesAndAddsExistingLabel(t *testing.T) {
 		Repository:      "digitaldrywood/detent",
 		PullRequest:     1313,
 		Label:           "ci:ready",
+		Hostname:        "github.example.com",
 		StaggerSeconds:  15,
 		CoordinationDir: coordinationDir,
 	}, ciTriggerLabelDeps{
@@ -39,9 +40,9 @@ func TestRunCITriggerLabelRemovesAndAddsExistingLabel(t *testing.T) {
 		t.Fatalf("result = %#v", result)
 	}
 	want := [][]string{
-		{"gh", "api", "--paginate", "repos/digitaldrywood/detent/issues/1313/labels", "--jq", ".[].name"},
-		{"gh", "api", "--method", "DELETE", "repos/digitaldrywood/detent/issues/1313/labels/ci:ready", "--silent"},
-		{"gh", "api", "--method", "POST", "repos/digitaldrywood/detent/issues/1313/labels", "-f", "labels[]=ci:ready", "--silent"},
+		{"gh", "api", "--hostname", "github.example.com", "--paginate", "repos/digitaldrywood/detent/issues/1313/labels", "--jq", ".[].name"},
+		{"gh", "api", "--hostname", "github.example.com", "--method", "DELETE", "repos/digitaldrywood/detent/issues/1313/labels/ci:ready", "--silent"},
+		{"gh", "api", "--hostname", "github.example.com", "--method", "POST", "repos/digitaldrywood/detent/issues/1313/labels", "-f", "labels[]=ci:ready", "--silent"},
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %#v, want %#v", calls, want)

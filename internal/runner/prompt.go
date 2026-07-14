@@ -3,6 +3,7 @@ package runner
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -107,7 +108,7 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 	rendered = appendMergeMethodBlock(rendered, workflow.Config.Deliverable)
 	rendered = appendDeliverableBlock(rendered, workflow.Config, issue, opts.WorkspacePath)
 	rendered = appendBlockedHandoffBlock(rendered)
-	rendered = appendGateBlock(rendered, workflow.Config.Gate)
+	rendered = appendGateBlock(rendered, workflow.Config)
 	rendered = appendAvailableSkills(rendered, AvailableSkillsBlock(opts.AvailableSkills))
 	if promptDeliverableKind(workflow.Config.Deliverable) != config.DeliverablePullRequest {
 		return rendered, nil
@@ -187,7 +188,7 @@ func BuildMergeFallbackPrompt(workflow config.Workflow, issue connector.Issue, o
 	prompt = appendWorkflowInstructionsBlock(prompt, workflow.Config.Agent, issue, opts)
 	prompt = appendMergeMethodBlock(prompt, workflow.Config.Deliverable)
 	prompt = appendBlockedHandoffBlock(prompt)
-	prompt = appendGateBlock(prompt, workflow.Config.Gate)
+	prompt = appendGateBlock(prompt, workflow.Config)
 	prompt = appendAvailableSkills(prompt, AvailableSkillsBlock(opts.AvailableSkills))
 	if promptDeliverableKind(workflow.Config.Deliverable) != config.DeliverablePullRequest {
 		return prompt, nil
@@ -580,12 +581,30 @@ func skillDraftProposed(output string) bool {
 	return skillDraftYesPattern.MatchString(output)
 }
 
-func appendGateBlock(prompt string, cfg gate.Config) string {
-	instructions := gate.Instructions(cfg)
+func appendGateBlock(prompt string, cfg config.Config) string {
+	instructions := gate.InstructionsForGitHubHost(cfg.Gate, githubTrackerHostname(cfg.Tracker))
 	if strings.TrimSpace(instructions) == "" {
 		return prompt
 	}
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Validation gate\n\n" + instructions
+}
+
+func githubTrackerHostname(tracker config.Tracker) string {
+	if tracker.Kind != config.TrackerGitHub && tracker.Kind != config.TrackerGitHubLocal {
+		return ""
+	}
+	endpoint := strings.TrimSpace(tracker.Endpoint)
+	if endpoint == "" {
+		return "github.com"
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	if strings.EqualFold(parsed.Hostname(), "api.github.com") {
+		return "github.com"
+	}
+	return parsed.Host
 }
 
 func appendBlockedHandoffBlock(prompt string) string {

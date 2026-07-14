@@ -675,6 +675,19 @@ func TestInstructionsQuoteCITriggerLabel(t *testing.T) {
 	}
 }
 
+func TestInstructionsIncludeGitHubHostname(t *testing.T) {
+	t.Parallel()
+
+	got := InstructionsForGitHubHost(Config{
+		Kind:                         KindCommand,
+		CITriggerLabel:               "ci:ready",
+		CITriggerLabelStaggerSeconds: newInt(15),
+	}, "github.example.com")
+	if want := "--label 'ci:ready' --hostname 'github.example.com' --stagger-seconds 15"; !strings.Contains(got, want) {
+		t.Fatalf("InstructionsForGitHubHost() missing %q:\n%s", want, got)
+	}
+}
+
 func TestEvaluateAutomatedReviewModes(t *testing.T) {
 	t.Parallel()
 
