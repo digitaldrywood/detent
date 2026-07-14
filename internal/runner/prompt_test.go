@@ -639,7 +639,7 @@ func TestBuildPromptIncludesGitHubTrackerHostnameInCITriggerCommand(t *testing.T
 	if err != nil {
 		t.Fatalf("BuildPrompt() error = %v", err)
 	}
-	for _, want := range []string{"--label 'ci ready'", "--hostname 'github.example.com'", "--stagger-seconds 15"} {
+	for _, want := range []string{"--label-base64 Y2kgcmVhZHk", "--hostname-base64 Z2l0aHViLmV4YW1wbGUuY29t", "--stagger-seconds 15"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}

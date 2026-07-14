@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -37,7 +38,9 @@ type ciTriggerLabelInput struct {
 	Repository      string
 	PullRequest     int
 	Label           string
+	LabelBase64     string
 	Hostname        string
+	HostnameBase64  string
 	StaggerSeconds  int
 	CoordinationDir string
 }
@@ -69,7 +72,9 @@ func newCITriggerLabelCommand(opts options) *cobra.Command {
 	cmd.Flags().StringVar(&input.Repository, "repository", "", "GitHub repository in owner/name form")
 	cmd.Flags().IntVar(&input.PullRequest, "pull-request", 0, "pull request number")
 	cmd.Flags().StringVar(&input.Label, "label", "", "CI trigger label to remove and add")
+	cmd.Flags().StringVar(&input.LabelBase64, "label-base64", "", "URL-safe base64-encoded CI trigger label")
 	cmd.Flags().StringVar(&input.Hostname, "hostname", "", "GitHub host for API requests")
+	cmd.Flags().StringVar(&input.HostnameBase64, "hostname-base64", "", "URL-safe base64-encoded GitHub host")
 	cmd.Flags().IntVar(&input.StaggerSeconds, "stagger-seconds", gate.DefaultCITriggerLabelStaggerSeconds, "minimum seconds between trigger-label reapplications on this host")
 	cmd.Flags().StringVar(&input.CoordinationDir, "coordination-dir", "", "host-local coordination directory")
 	return cmd
@@ -88,6 +93,10 @@ func defaultCITriggerLabelDeps(opts options) ciTriggerLabelDeps {
 }
 
 func runCITriggerLabel(ctx context.Context, input ciTriggerLabelInput, deps ciTriggerLabelDeps) (result ciTriggerLabelResult, err error) {
+	input, err = decodeCITriggerLabelInput(input)
+	if err != nil {
+		return ciTriggerLabelResult{}, err
+	}
 	input.Repository = strings.TrimSpace(input.Repository)
 	input.Label = strings.TrimSpace(input.Label)
 	input.Hostname = strings.TrimSpace(input.Hostname)
@@ -127,6 +136,35 @@ func runCITriggerLabel(ctx context.Context, input ciTriggerLabelInput, deps ciTr
 		return ciTriggerLabelResult{}, fmt.Errorf("record CI trigger-label timestamp: %w", err)
 	}
 	return ciTriggerLabelResult{Repository: input.Repository, PullRequest: input.PullRequest, Label: input.Label, Reapplied: true}, nil
+}
+
+func decodeCITriggerLabelInput(input ciTriggerLabelInput) (ciTriggerLabelInput, error) {
+	var err error
+	input.Label, err = decodeCITriggerLabelValue("--label", input.Label, "--label-base64", input.LabelBase64)
+	if err != nil {
+		return ciTriggerLabelInput{}, err
+	}
+	input.Hostname, err = decodeCITriggerLabelValue("--hostname", input.Hostname, "--hostname-base64", input.HostnameBase64)
+	if err != nil {
+		return ciTriggerLabelInput{}, err
+	}
+	return input, nil
+}
+
+func decodeCITriggerLabelValue(plainFlag string, plainValue string, encodedFlag string, encodedValue string) (string, error) {
+	plainValue = strings.TrimSpace(plainValue)
+	encodedValue = strings.TrimSpace(encodedValue)
+	if plainValue != "" && encodedValue != "" {
+		return "", NewValidationError("ci-trigger-label "+plainFlag+" and "+encodedFlag+" are mutually exclusive", "Pass only one representation.", nil)
+	}
+	if encodedValue == "" {
+		return plainValue, nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(encodedValue)
+	if err != nil {
+		return "", NewValidationError("ci-trigger-label "+encodedFlag+" is invalid", "Pass unpadded URL-safe base64.", nil)
+	}
+	return string(decoded), nil
 }
 
 func (deps ciTriggerLabelDeps) withDefaults() ciTriggerLabelDeps {

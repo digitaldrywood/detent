@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,8 +20,8 @@ func TestRunCITriggerLabelRemovesAndAddsExistingLabel(t *testing.T) {
 	result, err := runCITriggerLabel(context.Background(), ciTriggerLabelInput{
 		Repository:      "digitaldrywood/detent",
 		PullRequest:     1313,
-		Label:           "ci:ready",
-		Hostname:        "github.example.com",
+		LabelBase64:     base64.RawURLEncoding.EncodeToString([]byte("ci:ready")),
+		HostnameBase64:  base64.RawURLEncoding.EncodeToString([]byte("github.example.com")),
 		StaggerSeconds:  15,
 		CoordinationDir: coordinationDir,
 	}, ciTriggerLabelDeps{
@@ -111,5 +112,20 @@ func TestRunCITriggerLabelRejectsZeroStagger(t *testing.T) {
 	}, ciTriggerLabelDeps{})
 	if err == nil || !strings.Contains(err.Error(), "--stagger-seconds must be greater than 0") {
 		t.Fatalf("runCITriggerLabel() error = %v, want positive stagger validation", err)
+	}
+}
+
+func TestRunCITriggerLabelRejectsConflictingLabelRepresentations(t *testing.T) {
+	t.Parallel()
+
+	_, err := runCITriggerLabel(context.Background(), ciTriggerLabelInput{
+		Repository:     "digitaldrywood/detent",
+		PullRequest:    1314,
+		Label:          "ci:ready",
+		LabelBase64:    base64.RawURLEncoding.EncodeToString([]byte("ci:ready")),
+		StaggerSeconds: 15,
+	}, ciTriggerLabelDeps{})
+	if err == nil || !strings.Contains(err.Error(), "--label and --label-base64 are mutually exclusive") {
+		t.Fatalf("runCITriggerLabel() error = %v, want mutually exclusive validation", err)
 	}
 }

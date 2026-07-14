@@ -662,7 +662,7 @@ func TestInstructionsDescribeCITriggerLabel(t *testing.T) {
 	}
 }
 
-func TestInstructionsQuoteCITriggerLabel(t *testing.T) {
+func TestInstructionsEncodeCITriggerLabel(t *testing.T) {
 	t.Parallel()
 
 	got := Instructions(Config{
@@ -670,7 +670,7 @@ func TestInstructionsQuoteCITriggerLabel(t *testing.T) {
 		CITriggerLabel:               "team's ci ready",
 		CITriggerLabelStaggerSeconds: newInt(15),
 	})
-	if want := "--label 'team'\\''s ci ready' --stagger-seconds 15"; !strings.Contains(got, want) {
+	if want := "--label-base64 " + encodeCITriggerLabelArgument("team's ci ready") + " --stagger-seconds 15"; !strings.Contains(got, want) {
 		t.Fatalf("Instructions() missing %q:\n%s", want, got)
 	}
 }
@@ -683,7 +683,7 @@ func TestInstructionsIncludeGitHubHostname(t *testing.T) {
 		CITriggerLabel:               "ci:ready",
 		CITriggerLabelStaggerSeconds: newInt(15),
 	}, "github.example.com")
-	if want := "--label 'ci:ready' --hostname 'github.example.com' --stagger-seconds 15"; !strings.Contains(got, want) {
+	if want := "--label-base64 " + encodeCITriggerLabelArgument("ci:ready") + " --hostname-base64 " + encodeCITriggerLabelArgument("github.example.com") + " --stagger-seconds 15"; !strings.Contains(got, want) {
 		t.Fatalf("InstructionsForGitHubHost() missing %q:\n%s", want, got)
 	}
 }

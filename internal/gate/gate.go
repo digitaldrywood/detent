@@ -1,6 +1,7 @@
 package gate
 
 import (
+	"encoding/base64"
 	"strconv"
 	"strings"
 	"time"
@@ -427,13 +428,13 @@ func ciTriggerLabelInstructions(cfg Config, hostname string) string {
 	}
 	hostnameArgument := ""
 	if hostname = strings.TrimSpace(hostname); hostname != "" {
-		hostnameArgument = " --hostname " + quoteCITriggerLabel(hostname)
+		hostnameArgument = " --hostname-base64 " + encodeCITriggerLabelArgument(hostname)
 	}
-	return "This project uses CI trigger label `" + cfg.CITriggerLabel + "`. After every push that changes a pull request head in implementation, rework, or merging, run `detent ci-trigger-label --repository <owner/repo> --pull-request <number> --label " + quoteCITriggerLabel(cfg.CITriggerLabel) + hostnameArgument + " --stagger-seconds " + strconv.Itoa(staggerSeconds) + "` before waiting for current-head checks. The command removes the label if present, adds it again through GitHub's REST issue-label endpoints, and uses a host-wide lock plus persisted timestamp to serialize reapplications at least " + strconv.Itoa(staggerSeconds) + " seconds apart so concurrent workers do not stampede self-hosted CI. "
+	return "This project uses CI trigger label `" + cfg.CITriggerLabel + "`. After every push that changes a pull request head in implementation, rework, or merging, run `detent ci-trigger-label --repository <owner/repo> --pull-request <number> --label-base64 " + encodeCITriggerLabelArgument(cfg.CITriggerLabel) + hostnameArgument + " --stagger-seconds " + strconv.Itoa(staggerSeconds) + "` before waiting for current-head checks. The command removes the label if present, adds it again through GitHub's REST issue-label endpoints, and uses a host-wide lock plus persisted timestamp to serialize reapplications at least " + strconv.Itoa(staggerSeconds) + " seconds apart so concurrent workers do not stampede self-hosted CI. "
 }
 
-func quoteCITriggerLabel(label string) string {
-	return "'" + strings.ReplaceAll(label, "'", "'\\''") + "'"
+func encodeCITriggerLabelArgument(value string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(value))
 }
 
 func requiredStatusCheckInstructions(checks []string) string {
