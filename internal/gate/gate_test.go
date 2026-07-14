@@ -662,6 +662,19 @@ func TestInstructionsDescribeCITriggerLabel(t *testing.T) {
 	}
 }
 
+func TestInstructionsQuoteCITriggerLabel(t *testing.T) {
+	t.Parallel()
+
+	got := Instructions(Config{
+		Kind:                         KindCommand,
+		CITriggerLabel:               "team's ci ready",
+		CITriggerLabelStaggerSeconds: newInt(15),
+	})
+	if want := "--label 'team'\\''s ci ready' --stagger-seconds 15"; !strings.Contains(got, want) {
+		t.Fatalf("Instructions() missing %q:\n%s", want, got)
+	}
+}
+
 func TestEvaluateAutomatedReviewModes(t *testing.T) {
 	t.Parallel()
 

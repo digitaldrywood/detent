@@ -215,12 +215,13 @@ func TestCheckDoctorWorkflowLintAcceptsConfiguredLabelGatedRequiredCheck(t *test
 	t.Parallel()
 
 	for _, tt := range []struct {
-		name string
-		on   string
+		name        string
+		on          string
+		wantWarning bool
 	}{
 		{name: "explicit labeled and synchronize types", on: "on:\n  pull_request:\n    types: [labeled, synchronize]"},
-		{name: "default pull request mapping", on: "on:\n  pull_request:"},
-		{name: "shorthand pull request", on: "on: pull_request"},
+		{name: "default pull request mapping", on: "on:\n  pull_request:", wantWarning: true},
+		{name: "shorthand pull request", on: "on: pull_request", wantWarning: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -245,8 +246,14 @@ func TestCheckDoctorWorkflowLintAcceptsConfiguredLabelGatedRequiredCheck(t *test
 				Workdir:  workdir,
 			}, cfg, "", doctorDeps{})
 
+			if tt.wantWarning {
+				if len(checks) != 1 || !strings.Contains(checks[0].Detail, "job condition requires labeled event") {
+					t.Fatalf("checks = %#v, want unsafe default trigger warning", checks)
+				}
+				return
+			}
 			if len(checks) != 0 {
-				t.Fatalf("checks = %#v, want configured label gate to be accepted", checks)
+				t.Fatalf("checks = %#v, want explicit label gate to be accepted", checks)
 			}
 		})
 	}
