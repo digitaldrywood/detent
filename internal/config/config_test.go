@@ -2059,6 +2059,33 @@ Prompt
 	}
 }
 
+func TestParseWorkflowGateCITriggerLabel(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+gate:
+  ci_trigger_label: " CI:Ready "
+  ci_trigger_label_stagger_seconds: 20
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	if got := workflow.Config.Gate.CITriggerLabel; got != "ci:ready" {
+		t.Fatalf("Gate.CITriggerLabel = %q, want ci:ready", got)
+	}
+	if got := workflow.Config.Gate.CITriggerLabelStaggerSeconds; got != 20 {
+		t.Fatalf("Gate.CITriggerLabelStaggerSeconds = %d, want 20", got)
+	}
+}
+
 func TestParseWorkflowGateTransientCIRetryLimitCanDisable(t *testing.T) {
 	t.Parallel()
 

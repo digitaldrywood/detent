@@ -61,6 +61,22 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 			},
 		},
 		{
+			name: "command normalizes ci trigger label and defaults stagger",
+			cfg: Config{
+				Kind:           KindCommand,
+				CITriggerLabel: " CI:Ready ",
+			},
+			want: Config{
+				Kind:                         KindCommand,
+				Run:                          DefaultCommand,
+				ApprovalLabel:                DefaultApprovalLabel,
+				RequireAutomatedReview:       new(true),
+				CITriggerLabel:               "ci:ready",
+				CITriggerLabelStaggerSeconds: DefaultCITriggerLabelStaggerSeconds,
+				CIFailureAction:              CIFailureActionRework,
+			},
+		},
+		{
 			name: "human review normalizes alias and approval label",
 			cfg:  Config{Kind: "human-review", Run: "make check", ApprovalLabel: " Human-Approved "},
 			want: Config{Kind: KindHumanReview, Run: "", ApprovalLabel: "human-approved", CIFailureAction: CIFailureActionSkip},
@@ -615,6 +631,28 @@ func TestInstructionsDescribeRequiredStatusChecks(t *testing.T) {
 	for _, want := range []string{
 		"required status checks must be present on the current PR head",
 		"missing, skipped, failed, cancelled, or still-running required checks block promotion",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Instructions() missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestInstructionsDescribeCITriggerLabel(t *testing.T) {
+	t.Parallel()
+
+	got := Instructions(Config{
+		Kind:                         KindCommand,
+		CITriggerLabel:               "ci:ready",
+		CITriggerLabelStaggerSeconds: 20,
+	})
+	for _, want := range []string{
+		"CI trigger label `ci:ready`",
+		"After every push",
+		"removing it if present and adding it again",
+		"REST issue-label endpoints",
+		"before waiting for current-head checks",
+		"at least 20 seconds apart",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("Instructions() missing %q:\n%s", want, got)

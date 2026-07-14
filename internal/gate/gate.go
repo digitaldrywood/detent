@@ -1,6 +1,7 @@
 package gate
 
 import (
+	"strconv"
 	"strings"
 	"time"
 )
@@ -10,15 +11,16 @@ const (
 	KindHumanReview = "human_review"
 	KindArtifact    = "artifact"
 
-	DefaultCommand                     = "make check"
-	DefaultApprovalLabel               = "human-approved"
-	DefaultPlanApprovalLabel           = "plan-approved"
-	DefaultPlanStop                    = "Plan Review"
-	DefaultValidatorMinScore           = 0.8
-	DefaultValidatorMaxAttempts        = 3
-	DefaultValidatorMaxInlineDiffBytes = 64 * 1024
-	DefaultArtifactStatusField         = "validation_status"
-	DefaultTransientCIRetries          = 2
+	DefaultCommand                      = "make check"
+	DefaultApprovalLabel                = "human-approved"
+	DefaultPlanApprovalLabel            = "plan-approved"
+	DefaultPlanStop                     = "Plan Review"
+	DefaultValidatorMinScore            = 0.8
+	DefaultValidatorMaxAttempts         = 3
+	DefaultValidatorMaxInlineDiffBytes  = 64 * 1024
+	DefaultArtifactStatusField          = "validation_status"
+	DefaultTransientCIRetries           = 2
+	DefaultCITriggerLabelStaggerSeconds = 15
 
 	CIFailureActionSkip   = "skip"
 	CIFailureActionRework = "rework"
@@ -33,16 +35,18 @@ const (
 )
 
 type Config struct {
-	Kind                   string          `yaml:"kind"`
-	Run                    string          `yaml:"run"`
-	ApprovalLabel          string          `yaml:"approval_label"`
-	AutomatedReview        string          `yaml:"automated_review"`
-	RequireAutomatedReview *bool           `yaml:"require_automated_review"`
-	RequiredStatusChecks   []string        `yaml:"required_status_checks"`
-	CIFailureAction        string          `yaml:"ci_failure_action"`
-	TransientCIRetryLimit  *int            `yaml:"transient_ci_retry_limit"`
-	Validator              ValidatorConfig `yaml:"validator"`
-	Artifact               ArtifactConfig  `yaml:"artifact"`
+	Kind                         string          `yaml:"kind"`
+	Run                          string          `yaml:"run"`
+	ApprovalLabel                string          `yaml:"approval_label"`
+	AutomatedReview              string          `yaml:"automated_review"`
+	RequireAutomatedReview       *bool           `yaml:"require_automated_review"`
+	RequiredStatusChecks         []string        `yaml:"required_status_checks"`
+	CITriggerLabel               string          `yaml:"ci_trigger_label"`
+	CITriggerLabelStaggerSeconds int             `yaml:"ci_trigger_label_stagger_seconds"`
+	CIFailureAction              string          `yaml:"ci_failure_action"`
+	TransientCIRetryLimit        *int            `yaml:"transient_ci_retry_limit"`
+	Validator                    ValidatorConfig `yaml:"validator"`
+	Artifact                     ArtifactConfig  `yaml:"artifact"`
 }
 
 type ArtifactConfig struct {
@@ -179,6 +183,10 @@ func Effective(cfg Config) Config {
 	cfg.ApprovalLabel = normalizeLabel(cfg.ApprovalLabel)
 	cfg.AutomatedReview = NormalizeAutomatedReview(cfg.AutomatedReview)
 	cfg.RequiredStatusChecks = NormalizeRequiredStatusChecks(cfg.RequiredStatusChecks)
+	cfg.CITriggerLabel = normalizeLabel(cfg.CITriggerLabel)
+	if cfg.CITriggerLabel != "" && cfg.CITriggerLabelStaggerSeconds == 0 {
+		cfg.CITriggerLabelStaggerSeconds = DefaultCITriggerLabelStaggerSeconds
+	}
 	cfg.CIFailureAction = NormalizeCIFailureAction(cfg.CIFailureAction)
 	if cfg.TransientCIRetryLimit == nil {
 		cfg.TransientCIRetryLimit = newInt(DefaultTransientCIRetries)
@@ -345,6 +353,9 @@ func Validate(prefix string, cfg Config) []string {
 	if cfg.TransientCIRetryLimit != nil && *cfg.TransientCIRetryLimit < 0 {
 		problems = append(problems, prefix+".transient_ci_retry_limit must be greater than or equal to 0")
 	}
+	if cfg.CITriggerLabelStaggerSeconds < 0 {
+		problems = append(problems, prefix+".ci_trigger_label_stagger_seconds must be greater than or equal to 0")
+	}
 	for _, check := range cfg.RequiredStatusChecks {
 		if strings.TrimSpace(check) == "" {
 			problems = append(problems, prefix+".required_status_checks must not contain blank names")
@@ -382,6 +393,7 @@ func Instructions(cfg Config) string {
 		instructions := "The validation gate is a command. Run `" + cfg.Run +
 			"` from the workspace root before Human Review; the pull request still needs green CI before promotion. " +
 			requiredStatusCheckInstructions(cfg.RequiredStatusChecks) +
+			ciTriggerLabelInstructions(cfg) +
 			"In Merging, run a focused rebase/smoke gate after a clean rebase when the PR already passed current-head validation and no source files changed during rebase. " +
 			"Run full `" + cfg.Run + "` in Merging when code changes, conflicts are resolved, or validation state is stale or unknown. " +
 			"Watch current-head CI with REST check-runs polling/backoff, report slow checks, and record merge wait telemetry in the Workpad prose: quiet-window wait, local merge-gate duration, PR CI duration, slow check names, and whether post-merge main CI is still running. " +
@@ -399,6 +411,13 @@ func Instructions(cfg Config) string {
 		}
 		return instructions
 	}
+}
+
+func ciTriggerLabelInstructions(cfg Config) string {
+	if cfg.CITriggerLabel == "" {
+		return ""
+	}
+	return "This project uses CI trigger label `" + cfg.CITriggerLabel + "`. After every push that changes a pull request head in implementation, rework, or merging, re-apply that label by removing it if present and adding it again through GitHub's REST issue-label endpoints; fire the fresh labeled event before waiting for current-head checks. Serialize trigger-label reapplications on the host and start them at least " + strconv.Itoa(cfg.CITriggerLabelStaggerSeconds) + " seconds apart so concurrent workers do not stampede self-hosted CI. "
 }
 
 func requiredStatusCheckInstructions(checks []string) string {

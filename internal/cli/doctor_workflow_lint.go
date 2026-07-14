@@ -74,13 +74,15 @@ func checkDoctorWorkflowLint(ctx context.Context, projectID string, project glob
 }
 
 type doctorRequiredCheckTrigger struct {
-	matched bool
-	safe    bool
-	risks   []string
+	matched    bool
+	safe       bool
+	labelGated bool
+	risks      []string
 }
 
 func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Project, cfg workflowconfig.Config) []doctorCheck {
 	required := uniqueDoctorStrings(cfg.Gate.RequiredStatusChecks)
+	ciTriggerLabel := gate.Effective(cfg.Gate).CITriggerLabel
 	if len(required) == 0 || cfg.Deliverable.Kind != workflowconfig.DeliverablePullRequest {
 		return nil
 	}
@@ -112,6 +114,7 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 		}
 		rootNode := document.Content[0]
 		risks := doctorRequiredCheckTriggerRisks(doctorYAMLMapValue(rootNode, "on"))
+		labelGated := doctorRequiredCheckLabelGated(doctorYAMLMapValue(rootNode, "on"))
 		jobs := doctorYAMLMapValue(rootNode, "jobs")
 		if jobs == nil || jobs.Kind != yaml.MappingNode {
 			continue
@@ -126,7 +129,10 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 				}
 				trigger := triggers[requiredName]
 				trigger.matched = true
+				trigger.labelGated = trigger.labelGated || labelGated
 				if len(risks) == 0 {
+					trigger.safe = true
+				} else if labelGated && ciTriggerLabel != "" && doctorOnlyLabelGateRisk(risks) {
 					trigger.safe = true
 				} else {
 					relativePath, pathErr := filepath.Rel(root, path)
@@ -147,17 +153,41 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 		if !trigger.matched || trigger.safe {
 			continue
 		}
+		if trigger.labelGated && ciTriggerLabel == "" {
+			warnings = append(warnings, name+" (label-gated: "+strings.Join(uniqueDoctorStrings(trigger.risks), "; ")+")")
+			continue
+		}
 		warnings = append(warnings, name+" ("+strings.Join(uniqueDoctorStrings(trigger.risks), "; ")+")")
 	}
 	if len(warnings) == 0 {
 		return nil
 	}
+	detail := "required checks are not produced on every pull-request head: " + strings.Join(warnings, ", ")
+	hint := "Remove pull_request path filters and include the synchronize activity for required-check workflows; skip non-applicable work inside the job while still reporting the required check."
+	if ciTriggerLabel == "" && strings.Contains(detail, "label-gated:") {
+		hint = "Configure gate.ci_trigger_label with the workflow's label so Detent re-applies it after every PR-head push, or include the synchronize activity in the required-check workflow."
+	}
 	return []doctorCheck{{
 		Name:   "Project " + projectID + " workflow lint required check triggers",
 		Status: doctorWarn,
-		Detail: "required checks are not produced on every pull-request head: " + strings.Join(warnings, ", "),
-		Hint:   "Remove pull_request path filters and include the synchronize activity for required-check workflows; skip non-applicable work inside the job while still reporting the required check.",
+		Detail: detail,
+		Hint:   hint,
 	}}
+}
+
+func doctorRequiredCheckLabelGated(on *yaml.Node) bool {
+	if on == nil || on.Kind != yaml.MappingNode {
+		return false
+	}
+	pullRequest := doctorYAMLMapValue(on, "pull_request")
+	if pullRequest == nil || pullRequest.Kind != yaml.MappingNode {
+		return false
+	}
+	return doctorYAMLContainsScalar(doctorYAMLMapValue(pullRequest, "types"), "labeled")
+}
+
+func doctorOnlyLabelGateRisk(risks []string) bool {
+	return len(risks) == 1 && risks[0] == "pull_request types exclude synchronize"
 }
 
 func doctorWorkflowYAMLFile(name string) bool {

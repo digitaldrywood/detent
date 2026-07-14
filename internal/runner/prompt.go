@@ -858,13 +858,15 @@ func gateAssigns(cfg gate.Config) map[string]any {
 		transientCIRetryLimit = *effective.TransientCIRetryLimit
 	}
 	return map[string]any{
-		"kind":                     effective.Kind,
-		"run":                      effective.Run,
-		"approval_label":           effective.ApprovalLabel,
-		"automated_review":         effective.AutomatedReview,
-		"require_automated_review": requireAutomatedReview(effective),
-		"ci_failure_action":        effective.CIFailureAction,
-		"transient_ci_retry_limit": transientCIRetryLimit,
+		"kind":                             effective.Kind,
+		"run":                              effective.Run,
+		"approval_label":                   effective.ApprovalLabel,
+		"ci_trigger_label":                 effective.CITriggerLabel,
+		"ci_trigger_label_stagger_seconds": effective.CITriggerLabelStaggerSeconds,
+		"automated_review":                 effective.AutomatedReview,
+		"require_automated_review":         requireAutomatedReview(effective),
+		"ci_failure_action":                effective.CIFailureAction,
+		"transient_ci_retry_limit":         transientCIRetryLimit,
 		"validator": map[string]any{
 			"enabled":               effective.Validator.Enabled,
 			"model":                 effective.Validator.Model,

@@ -597,15 +597,16 @@ func TestBuildPromptRendersGateAssignsAndInstructions(t *testing.T) {
 	prompt, err := BuildPrompt(config.Workflow{
 		Config: config.Config{
 			Gate: gate.Config{
-				Kind:          gate.KindHumanReview,
-				ApprovalLabel: "Approved-By-Human",
+				Kind:           gate.KindHumanReview,
+				ApprovalLabel:  "Approved-By-Human",
+				CITriggerLabel: "CI:Ready",
 			},
 			Plan: gate.PlanConfig{
 				Enabled:       true,
 				ApprovalLabel: "Plan-Approved",
 			},
 		},
-		Prompt: "Gate {{ gate.kind }} label={{ gate.approval_label }} run={{ gate.run }} ci={{ gate.ci_failure_action }} max={{ gate.validator.max_inline_diff_bytes }} plan={{ plan.approval_label }}",
+		Prompt: "Gate {{ gate.kind }} label={{ gate.approval_label }} trigger={{ gate.ci_trigger_label }} stagger={{ gate.ci_trigger_label_stagger_seconds }} run={{ gate.run }} ci={{ gate.ci_failure_action }} max={{ gate.validator.max_inline_diff_bytes }} plan={{ plan.approval_label }}",
 	}, connector.Issue{
 		Identifier: "digitaldrywood/detent#266",
 		Title:      "Gate prompt",
@@ -615,7 +616,7 @@ func TestBuildPromptRendersGateAssignsAndInstructions(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"Gate human_review label=approved-by-human run= ci=skip max=65536 plan=plan-approved",
+		"Gate human_review label=approved-by-human trigger=ci:ready stagger=15 run= ci=skip max=65536 plan=plan-approved",
 		"## Validation gate",
 		"Keep the pull request in Human Review until a human applies label `approved-by-human`",
 	} {
