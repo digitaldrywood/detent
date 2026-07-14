@@ -517,6 +517,16 @@ func (r *Runner) prepareMergeFastPath(
 	info workspace.Info,
 	issue workspace.Issue,
 ) (RunResult, workspace.MergePrepareResult, bool, error) {
+	if mergeFastPathCheckedHead(req.Issue) {
+		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_checked_head",
+			"workspace_path", info.Path,
+			"workspace_branch", info.Branch,
+		)
+		return RunResult{
+			FinalState: FinalStateCompleted,
+			Output:     RunOutputMergeFastPathCheckedHead,
+		}, workspace.MergePrepareResult{}, true, nil
+	}
 	preparer, ok := r.workspace.(workspace.MergePreparer)
 	if !ok {
 		return RunResult{}, workspace.MergePrepareResult{}, false, nil
@@ -545,6 +555,28 @@ func (r *Runner) prepareMergeFastPath(
 		return RunResult{}, precheck, false, nil
 	default:
 		return RunResult{}, precheck, false, fmt.Errorf("merge fast-path precheck returned unknown status %q", precheck.Status)
+	}
+}
+
+func mergeFastPathCheckedHead(issue connector.Issue) bool {
+	if issue.PullRequest == nil {
+		return false
+	}
+	pullRequest := issue.PullRequest
+	if !strings.EqualFold(strings.TrimSpace(pullRequest.State), "open") || pullRequest.Draft {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(pullRequest.MergeableState), "behind") {
+		return false
+	}
+	if strings.TrimSpace(pullRequest.HeadSHA) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(pullRequest.CIStatus)) {
+	case "success", "green", "pass", "passed":
+		return true
+	default:
+		return false
 	}
 }
 

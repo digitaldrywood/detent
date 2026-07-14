@@ -2009,9 +2009,12 @@ When GitHub reports `HAS_MERGE_QUEUE`, Detent delegates every eligible green
 candidate to the repository's native merge queue instead of rebasing each PR
 through the serialized worker. GitHub owns merge-group validation and batching;
 Detent keeps the issues in `Merging`, observes their queue entries, and
-reconciles them to `Done` after GitHub reports the PR merged. Repositories
-without a native queue continue through the serialized rebase and current-head
-CI path.
+reconciles them to `Done` after GitHub reports the PR merged. Without a native
+queue, a BEHIND PR whose existing head is mergeable and already has green
+required checks is merged directly against the current base without rewriting
+the checked head. Rebase is reserved for fallback cases; if a refreshed head
+is missing required contexts, Detent routes the issue to `Rework` instead of
+retrying an incomplete merge worker.
 
 Inside the serialized `Merging` lane, avoid duplicating the full local release
 gate when it does not buy new signal. If the PR already passed the pre-review

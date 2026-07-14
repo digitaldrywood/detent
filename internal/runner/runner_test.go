@@ -1728,6 +1728,42 @@ func TestRunnerMergeModeCleanPrecheckSkipsAgent(t *testing.T) {
 	}
 }
 
+func TestMergeFastPathCheckedHead(t *testing.T) {
+	t.Parallel()
+
+	base := connector.PullRequest{
+		State:          "open",
+		MergeableState: "behind",
+		CIStatus:       "success",
+		HeadSHA:        "checked-head",
+	}
+	tests := []struct {
+		name   string
+		mutate func(*connector.PullRequest)
+		want   bool
+	}{
+		{name: "behind green head", want: true},
+		{name: "current head", mutate: func(pr *connector.PullRequest) { pr.MergeableState = "clean" }},
+		{name: "pending checks", mutate: func(pr *connector.PullRequest) { pr.CIStatus = "pending" }},
+		{name: "draft", mutate: func(pr *connector.PullRequest) { pr.Draft = true }},
+		{name: "closed", mutate: func(pr *connector.PullRequest) { pr.State = "closed" }},
+		{name: "missing head sha", mutate: func(pr *connector.PullRequest) { pr.HeadSHA = "" }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			pullRequest := base
+			if tt.mutate != nil {
+				tt.mutate(&pullRequest)
+			}
+			if got := mergeFastPathCheckedHead(connector.Issue{PullRequest: &pullRequest}); got != tt.want {
+				t.Fatalf("mergeFastPathCheckedHead() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunnerMergeModeConflictUsesFocusedPrompt(t *testing.T) {
 	t.Parallel()
 

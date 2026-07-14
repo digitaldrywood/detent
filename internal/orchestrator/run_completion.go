@@ -20,6 +20,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
+const (
+	mergeWorkerRequiredChecksMissingReason = "required_checks_missing_after_head_update"
+	mergeWorkerFastPathNotReadyReason      = "merge_fast_path_head_not_ready"
+)
+
 func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	running, ok := state.Running[event.issueID]
 	if !ok {
@@ -956,8 +961,24 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	}
 	issue = refreshedIssue
 	if !mergeWorkerProgrammaticMergeReady(issue) {
-		if mergeFastPathCleanResult(event) && mergeWorkerProgrammaticMergeWaiting(issue) {
+		if pullRequestHydrationBlocksProgress(issue.PullRequest) {
+			o.waitForMergeWorkerPullRequestHydration(ctx, state, event, running, issue)
+			return true
+		}
+		if missingChecks := mergeWorkerMissingRequiredChecks(issue); len(missingChecks) > 0 {
+			if mergeWorkerMissingRequiredChecksPropagating(issue, running.Attempt) {
+				o.waitForMergeWorkerRequiredCheckPropagation(ctx, state, event, running, issue)
+				return true
+			}
+			o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeWorkerRequiredChecksMissingReason, missingChecks)
+			return true
+		}
+		if mergeFastPathResult(event) && mergeWorkerProgrammaticMergeWaiting(issue) {
 			o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
+			return true
+		}
+		if mergeFastPathResult(event) {
+			o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeWorkerFastPathNotReadyReason, nil)
 			return true
 		}
 		return false
@@ -1031,21 +1052,84 @@ func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
 	running Running,
 	issue connector.Issue,
 ) {
+	o.waitForMergeWorkerRetry(
+		ctx,
+		state,
+		event,
+		running,
+		issue,
+		running.Attempt,
+		"waiting for current-head CI",
+		"merge_worker_waiting_current_head_ci",
+		"merge worker is waiting for current-head CI for ",
+	)
+}
+
+func (o *Orchestrator) waitForMergeWorkerRequiredCheckPropagation(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+) {
+	o.waitForMergeWorkerRetry(
+		ctx,
+		state,
+		event,
+		running,
+		issue,
+		nextAttempt(running.Attempt),
+		"waiting for required checks to appear on the current head",
+		"merge_worker_waiting_required_check_propagation",
+		"merge worker is waiting for required checks to appear for ",
+	)
+}
+
+func (o *Orchestrator) waitForMergeWorkerPullRequestHydration(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+) {
+	o.waitForMergeWorkerRetry(
+		ctx,
+		state,
+		event,
+		running,
+		issue,
+		running.Attempt,
+		"waiting for fresh pull request hydration",
+		"merge_worker_waiting_pull_request_hydration",
+		"merge worker is waiting for fresh pull request hydration for ",
+	)
+}
+
+func (o *Orchestrator) waitForMergeWorkerRetry(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+	attempt int,
+	retryError string,
+	eventName string,
+	eventMessage string,
+) {
 	running.Issue = issue
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
-	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", "merge fast-path waiting for current-head CI")
-	attempt := running.Attempt
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError)
 	if attempt < 1 {
 		attempt = 1
 	}
-	o.scheduleRetry(state, issue, attempt, event.CompletedAt, "waiting for current-head CI", true, running.WorkerHost)
+	o.scheduleRetry(state, issue, attempt, event.CompletedAt, retryError, true, running.WorkerHost)
 	if o.logger != nil {
-		o.logger.Info("merge_worker_waiting_current_head_ci", mergeWorkerLogAttrs(issue, "attempt", attempt)...)
+		o.logger.Info(eventName, mergeWorkerLogAttrs(issue, "attempt", attempt)...)
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
-		Event:   "merge_worker_waiting_current_head_ci",
-		Message: "merge worker is waiting for current-head CI for " + issueLabel(issue),
+		Event:   eventName,
+		Message: eventMessage + issueLabel(issue),
 	})
 }
 
@@ -1087,9 +1171,16 @@ func mergeWorkerTurnSucceeded(event runpkg.Completion) bool {
 	return event.Err == nil && !strings.EqualFold(strings.TrimSpace(event.Result.FinalState), runpkg.FinalStateFailed)
 }
 
-func mergeFastPathCleanResult(event runpkg.Completion) bool {
-	return event.Request.Mode == runpkg.RunModeMerge &&
-		strings.TrimSpace(event.Result.Output) == runpkg.RunOutputMergeFastPathClean
+func mergeFastPathResult(event runpkg.Completion) bool {
+	if event.Request.Mode != runpkg.RunModeMerge {
+		return false
+	}
+	switch strings.TrimSpace(event.Result.Output) {
+	case runpkg.RunOutputMergeFastPathClean, runpkg.RunOutputMergeFastPathCheckedHead:
+		return true
+	default:
+		return false
+	}
 }
 
 func mergeWorkerProgrammaticMergeReady(issue connector.Issue) bool {
@@ -1103,7 +1194,9 @@ func mergeWorkerProgrammaticMergeReady(issue connector.Issue) bool {
 	if normalizePullRequestState(pullRequest.State) != "open" || pullRequest.Draft {
 		return false
 	}
-	if strings.ToLower(strings.TrimSpace(pullRequest.MergeableState)) != "clean" {
+	switch strings.ToLower(strings.TrimSpace(pullRequest.MergeableState)) {
+	case "clean", "behind":
+	default:
 		return false
 	}
 	if !mergeWorkerCIGreen(pullRequest.CIStatus) {
@@ -1125,7 +1218,11 @@ func mergeWorkerProgrammaticMergeWaiting(issue connector.Issue) bool {
 	if normalizePullRequestState(pullRequest.State) != "open" || pullRequest.Draft {
 		return false
 	}
-	if mergeable := strings.ToLower(strings.TrimSpace(pullRequest.MergeableState)); mergeable != "" && mergeable != "clean" && mergeable != "unknown" {
+	mergeable := strings.ToLower(strings.TrimSpace(pullRequest.MergeableState))
+	if mergeable != "" && mergeable != "clean" && mergeable != "unknown" && mergeable != "behind" && mergeable != "blocked" {
+		return false
+	}
+	if mergeable == "blocked" && len(pullRequest.RunningChecks) == 0 {
 		return false
 	}
 	if pullRequestRepository(issue) == "" || pullRequestNumber(issue) <= 0 || strings.TrimSpace(pullRequest.HeadSHA) == "" {
@@ -1137,6 +1234,111 @@ func mergeWorkerProgrammaticMergeWaiting(issue connector.Issue) bool {
 	default:
 		return false
 	}
+}
+
+func mergeWorkerMissingRequiredChecks(issue connector.Issue) []string {
+	if issue.PullRequest == nil {
+		return nil
+	}
+	checks := make([]string, 0, len(issue.PullRequest.RequiredCheckFailures))
+	seen := map[string]struct{}{}
+	for _, check := range issue.PullRequest.RequiredCheckFailures {
+		if !strings.EqualFold(strings.TrimSpace(check.Status), "missing") &&
+			!strings.EqualFold(strings.TrimSpace(check.Conclusion), "missing") {
+			continue
+		}
+		name := strings.TrimSpace(check.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		checks = append(checks, name)
+	}
+	return checks
+}
+
+func mergeWorkerMissingRequiredChecksPropagating(issue connector.Issue, attempt int) bool {
+	if len(mergeWorkerMissingRequiredChecks(issue)) == 0 || attempt >= maxMergeWorkerRunnerFailures {
+		return false
+	}
+	if issue.PullRequest == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(issue.PullRequest.CIStatus)) {
+	case "", "pending", "running", "queued", "in_progress", "waiting":
+		return true
+	default:
+		return false
+	}
+}
+
+func (o *Orchestrator) reworkMergeWorkerResult(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+	reason string,
+	missingChecks []string,
+) {
+	issueID := strings.TrimSpace(event.IssueID)
+	running.Issue = issue
+	if err := o.updateIssueStateByID(ctx, state, issueID, issue, autoPromoteReworkState, event.CompletedAt, reason); err != nil {
+		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "merge_worker_rework_failed", err)
+		return
+	}
+	if comment := mergeWorkerReworkComment(issue, reason, missingChecks); comment != "" {
+		if err := o.connector.CreateComment(ctx, issueID, comment); err != nil && o.logger != nil {
+			o.logger.Warn("merge worker rework comment failed", "issue_id", issueID, "reason", reason, "error", err)
+		}
+	}
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "rework", "merge worker routed current head to Rework")
+	o.logMergeWorkerFailure(issue, reason, nil)
+	o.recordMergeFailed(state, issue, event.CompletedAt, reason, nil)
+	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
+		o.logger.Warn("abandon merge worker rework claim failed", "issue_id", issueID, "error", err)
+	}
+	o.clearAutoPromotedIssueDispatchMemory(state, issueID)
+	if state.PriorAttempts == nil {
+		state.PriorAttempts = map[string]runpkg.PriorAttempt{}
+	}
+	state.PriorAttempts[issueID] = runpkg.PriorAttempt{Source: "merge_worker", Reason: reason}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "merge_worker_routed_to_rework",
+		Message: "routed merge worker to Rework for " + issueLabel(issue) + ": " + reason,
+	})
+}
+
+func mergeWorkerReworkComment(issue connector.Issue, reason string, missingChecks []string) string {
+	var b strings.Builder
+	b.WriteString("Merge worker routed this issue from Merging to Rework.")
+	b.WriteString("\n\n- reason: ")
+	b.WriteString(reason)
+	if len(missingChecks) > 0 {
+		b.WriteString("\n- missing_required_checks: ")
+		b.WriteString(strings.Join(missingChecks, ", "))
+	}
+	if issue.PullRequest != nil {
+		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
+			b.WriteString("\n- pull request: ")
+			b.WriteString(url)
+		}
+		if headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA); headSHA != "" {
+			b.WriteString("\n- head_sha: ")
+			b.WriteString(headSHA)
+		}
+		if mergeableState := strings.TrimSpace(issue.PullRequest.MergeableState); mergeableState != "" {
+			b.WriteString("\n- mergeable_state: ")
+			b.WriteString(mergeableState)
+		}
+	}
+	b.WriteString("\n\nRefresh or re-push the current PR head so required checks run, then complete the normal Rework gate.")
+	return b.String()
 }
 
 func mergeWorkerCIGreen(status string) bool {
