@@ -27,7 +27,8 @@ const (
 	RunModePlan      = "plan"
 	RunModeMerge     = "merge"
 
-	RunOutputMergeFastPathClean = "merge_fast_path_clean"
+	RunOutputMergeFastPathClean       = "merge_fast_path_clean"
+	RunOutputMergeFastPathCheckedHead = "merge_fast_path_checked_head"
 )
 
 var (

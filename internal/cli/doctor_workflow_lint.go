@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"gopkg.in/yaml.v3"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -65,10 +66,226 @@ func checkDoctorWorkflowLint(ctx context.Context, projectID string, project glob
 		}
 	}
 	checks = append(checks, checkDoctorInertWorkflowBlocks(projectID, workflowPath, cfg)...)
+	checks = append(checks, checkDoctorRequiredCheckTriggers(projectID, project, cfg)...)
 	checks = append(checks, checkDoctorGateCommand(ctx, projectID, workflowPath, project, cfg, deps)...)
 	checks = append(checks, checkDoctorShipSkill(projectID, workflowPath, cfg, deps)...)
 	checks = append(checks, checkDoctorWorkflowRuntimeLint(ctx, projectID, workflowPath, storePath, cfg, deps)...)
 	return checks
+}
+
+type doctorRequiredCheckTrigger struct {
+	matched bool
+	safe    bool
+	risks   []string
+}
+
+func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Project, cfg workflowconfig.Config) []doctorCheck {
+	required := uniqueDoctorStrings(cfg.Gate.RequiredStatusChecks)
+	if len(required) == 0 || cfg.Deliverable.Kind != workflowconfig.DeliverablePullRequest {
+		return nil
+	}
+	root, err := expandDoctorWorkspacePath(projectSourceRoot(project, cfg))
+	if err != nil {
+		return nil
+	}
+	dir := filepath.Join(root, ".github", "workflows")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	triggers := make(map[string]doctorRequiredCheckTrigger, len(required))
+	for _, name := range required {
+		triggers[name] = doctorRequiredCheckTrigger{}
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !doctorWorkflowYAMLFile(entry.Name()) {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var document yaml.Node
+		if err := yaml.Unmarshal(raw, &document); err != nil || len(document.Content) == 0 {
+			continue
+		}
+		rootNode := document.Content[0]
+		risks := doctorRequiredCheckTriggerRisks(doctorYAMLMapValue(rootNode, "on"))
+		jobs := doctorYAMLMapValue(rootNode, "jobs")
+		if jobs == nil || jobs.Kind != yaml.MappingNode {
+			continue
+		}
+		for index := 0; index+1 < len(jobs.Content); index += 2 {
+			jobID := strings.TrimSpace(jobs.Content[index].Value)
+			jobNode := jobs.Content[index+1]
+			jobName := doctorYAMLScalarValue(doctorYAMLMapValue(jobNode, "name"))
+			for _, requiredName := range required {
+				if !doctorRequiredCheckMatchesJob(requiredName, jobID, jobName) {
+					continue
+				}
+				trigger := triggers[requiredName]
+				trigger.matched = true
+				if len(risks) == 0 {
+					trigger.safe = true
+				} else {
+					relativePath, pathErr := filepath.Rel(root, path)
+					if pathErr != nil {
+						relativePath = path
+					}
+					for _, risk := range risks {
+						trigger.risks = append(trigger.risks, filepath.ToSlash(relativePath)+": "+risk)
+					}
+				}
+				triggers[requiredName] = trigger
+			}
+		}
+	}
+	warnings := make([]string, 0)
+	for _, name := range required {
+		trigger := triggers[name]
+		if !trigger.matched || trigger.safe {
+			continue
+		}
+		warnings = append(warnings, name+" ("+strings.Join(uniqueDoctorStrings(trigger.risks), "; ")+")")
+	}
+	if len(warnings) == 0 {
+		return nil
+	}
+	return []doctorCheck{{
+		Name:   "Project " + projectID + " workflow lint required check triggers",
+		Status: doctorWarn,
+		Detail: "required checks are not produced on every pull-request head: " + strings.Join(warnings, ", "),
+		Hint:   "Remove pull_request path filters and include the synchronize activity for required-check workflows; skip non-applicable work inside the job while still reporting the required check.",
+	}}
+}
+
+func doctorWorkflowYAMLFile(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".yml", ".yaml":
+		return true
+	default:
+		return false
+	}
+}
+
+func doctorRequiredCheckMatchesJob(required string, jobID string, jobName string) bool {
+	required = strings.TrimSpace(required)
+	if index := strings.LastIndex(required, " / "); index >= 0 {
+		required = strings.TrimSpace(required[index+3:])
+	}
+	return strings.EqualFold(required, strings.TrimSpace(jobID)) || strings.EqualFold(required, strings.TrimSpace(jobName))
+}
+
+func doctorRequiredCheckTriggerRisks(on *yaml.Node) []string {
+	if on == nil {
+		return []string{"no pull_request or push trigger"}
+	}
+	switch on.Kind {
+	case yaml.ScalarNode:
+		if doctorRequiredCheckHeadEvent(on.Value) {
+			return nil
+		}
+		return []string{"no pull_request or push trigger"}
+	case yaml.SequenceNode:
+		for _, event := range on.Content {
+			if doctorRequiredCheckHeadEvent(event.Value) {
+				return nil
+			}
+		}
+		return []string{"no pull_request or push trigger"}
+	case yaml.MappingNode:
+		risks := make([]string, 0, 4)
+		pullRequest := doctorYAMLMapValue(on, "pull_request")
+		if pullRequest != nil {
+			pullRequestRisks := doctorPullRequestEventRisks(pullRequest)
+			if len(pullRequestRisks) == 0 {
+				return nil
+			}
+			risks = append(risks, pullRequestRisks...)
+		}
+		push := doctorYAMLMapValue(on, "push")
+		if push != nil {
+			pushRisks := doctorPushEventRisks(push)
+			if len(pushRisks) == 0 {
+				return nil
+			}
+			risks = append(risks, pushRisks...)
+		}
+		if pullRequest == nil && push == nil {
+			return []string{"no pull_request or push trigger"}
+		}
+		return risks
+	default:
+		return []string{"no pull_request or push trigger"}
+	}
+}
+
+func doctorRequiredCheckHeadEvent(event string) bool {
+	event = strings.ToLower(strings.TrimSpace(event))
+	return event == "pull_request" || event == "push"
+}
+
+func doctorPullRequestEventRisks(event *yaml.Node) []string {
+	if event.Kind != yaml.MappingNode {
+		return nil
+	}
+	risks := make([]string, 0, 2)
+	if doctorYAMLMapValue(event, "paths") != nil || doctorYAMLMapValue(event, "paths-ignore") != nil {
+		risks = append(risks, "pull_request paths filter")
+	}
+	if types := doctorYAMLMapValue(event, "types"); types != nil && !doctorYAMLContainsScalar(types, "synchronize") {
+		risks = append(risks, "pull_request types exclude synchronize")
+	}
+	return risks
+}
+
+func doctorPushEventRisks(event *yaml.Node) []string {
+	if event.Kind != yaml.MappingNode {
+		return nil
+	}
+	risks := make([]string, 0, 2)
+	if doctorYAMLMapValue(event, "paths") != nil || doctorYAMLMapValue(event, "paths-ignore") != nil {
+		risks = append(risks, "push paths filter")
+	}
+	if doctorYAMLMapValue(event, "branches") != nil || doctorYAMLMapValue(event, "branches-ignore") != nil {
+		risks = append(risks, "push branch filter")
+	}
+	return risks
+}
+
+func doctorYAMLMapValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		if strings.EqualFold(strings.TrimSpace(node.Content[index].Value), key) {
+			return node.Content[index+1]
+		}
+	}
+	return nil
+}
+
+func doctorYAMLScalarValue(node *yaml.Node) string {
+	if node == nil || node.Kind != yaml.ScalarNode {
+		return ""
+	}
+	return strings.TrimSpace(node.Value)
+}
+
+func doctorYAMLContainsScalar(node *yaml.Node, value string) bool {
+	if node == nil {
+		return false
+	}
+	if node.Kind == yaml.ScalarNode {
+		return strings.EqualFold(strings.TrimSpace(node.Value), value)
+	}
+	for _, child := range node.Content {
+		if doctorYAMLContainsScalar(child, value) {
+			return true
+		}
+	}
+	return false
 }
 
 func doctorWorkflowLintPath(project globalconfig.Project) string {

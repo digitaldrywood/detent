@@ -17,7 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func TestMergingFastPathCleanPrecheckMergesWithoutAgentDispatch(t *testing.T) {
+func TestMergingFastPathBehindCheckedHeadMergesWithoutRebaseOrAgentDispatch(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 26, 13, 20, 0, 0, time.UTC)
@@ -38,7 +38,7 @@ func TestMergingFastPathCleanPrecheckMergesWithoutAgentDispatch(t *testing.T) {
 		URL:            "https://github.test/digitaldrywood/detent/pull/860",
 		BranchName:     "detent/detent-digitaldrywood_detent_860-030a2359de53",
 		State:          "OPEN",
-		MergeableState: "clean",
+		MergeableState: "behind",
 		CIStatus:       "success",
 		HeadSHA:        "head-fast-path",
 	})
@@ -94,8 +94,8 @@ func TestMergingFastPathCleanPrecheckMergesWithoutAgentDispatch(t *testing.T) {
 	}
 	orch.handleRunResult(context.Background(), &state, completion)
 
-	if got := workspaceBackend.prepareCalls.Load(); got != 1 {
-		t.Fatalf("PrepareMerge() calls = %d, want 1", got)
+	if got := workspaceBackend.prepareCalls.Load(); got != 0 {
+		t.Fatalf("PrepareMerge() calls = %d, want 0", got)
 	}
 	if got := workspaceBackend.afterRunCalls.Load(); got != 1 {
 		t.Fatalf("AfterRun() calls = %d, want 1", got)
@@ -134,6 +134,83 @@ func TestMergingFastPathCleanPrecheckMergesWithoutAgentDispatch(t *testing.T) {
 	}
 	if completed.Issue.PullRequest == nil || completed.Issue.PullRequest.State != "MERGED" {
 		t.Fatalf("Completed[%q].Issue.PullRequest = %#v, want merged PR", issue.ID, completed.Issue.PullRequest)
+	}
+}
+
+func TestMergingFastPathMissingRequiredChecksRoutesToRework(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 14, 13, 25, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:    1,
+		FailureRetryBaseDelay:  time.Minute,
+		MaxRetryBackoff:        time.Hour,
+		ContinuationRetryDelay: 5 * time.Second,
+		MergeFastPathEnabled:   true,
+		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:         []string{"Merging"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+	})
+	issue := autoPromoteTickIssue("issue-missing-required-checks", []string{"bug"}, &connector.PullRequest{
+		Number:         862,
+		URL:            "https://github.test/digitaldrywood/detent/pull/862",
+		BranchName:     "detent/merge-fast-path-missing-checks",
+		State:          "OPEN",
+		MergeableState: "blocked",
+		CIStatus:       "pending",
+		HeadSHA:        "head-missing-required-checks",
+		RequiredCheckFailures: []connector.PullRequestCheck{
+			{Name: "Test", Status: "missing", Conclusion: "missing"},
+			{Name: "Checks", Status: "missing", Conclusion: "missing"},
+		},
+	})
+	issue.State = "Merging"
+	issue.Identifier = "digitaldrywood/detent#862"
+	issue.PRRepository = "digitaldrywood/detent"
+	issue.BranchName = "detent/merge-fast-path-missing-checks"
+
+	tracker := &autoPromoteTickMergeConnector{
+		autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue:      cloneIssue(issue),
+		Attempt:    1,
+		StartedAt:  now.Add(-time.Minute),
+		WorkerHost: "worker-a",
+		Mode:       runpkg.RunModeMerge,
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     issue.ID,
+		CompletedAt: now,
+		Request:     runpkg.RunRequest{Mode: runpkg.RunModeMerge},
+		Result: runpkg.RunResult{
+			FinalState: runpkg.FinalStateCompleted,
+			Output:     runpkg.RunOutputMergeFastPathClean,
+		},
+	})
+
+	if len(tracker.merges) != 0 {
+		t.Fatalf("merges = %#v, want none with missing required checks", tracker.merges)
+	}
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Rework"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "Test, Checks") {
+		t.Fatalf("comments = %#v, want missing required check names", tracker.comments)
+	}
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatalf("Retry[%q] present after Rework handoff", issue.ID)
+	}
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present after Rework handoff", issue.ID)
 	}
 }
 
@@ -220,6 +297,51 @@ func TestMergingFastPathCleanPrecheckWaitsForCurrentHeadCI(t *testing.T) {
 	}
 	if _, ok := state.Claimed[issue.ID]; !ok {
 		t.Fatalf("Claimed[%q] missing while waiting for CI", issue.ID)
+	}
+}
+
+func TestMergeWorkerProgrammaticMergeDisposition(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		state     string
+		ci        string
+		running   []string
+		wantReady bool
+		wantWait  bool
+	}{
+		{name: "clean green", state: "clean", ci: "success", wantReady: true},
+		{name: "behind green", state: "behind", ci: "success", wantReady: true},
+		{name: "behind pending", state: "behind", ci: "pending", wantWait: true},
+		{name: "blocked running", state: "blocked", ci: "pending", running: []string{"Test"}, wantWait: true},
+		{name: "blocked without running checks", state: "blocked", ci: "pending"},
+		{name: "dirty", state: "dirty", ci: "success"},
+		{name: "failed", state: "clean", ci: "failure"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := connector.Issue{
+				ID:           "issue-disposition",
+				PRRepository: "digitaldrywood/detent",
+				PullRequest: &connector.PullRequest{
+					Number:         863,
+					State:          "open",
+					MergeableState: tt.state,
+					CIStatus:       tt.ci,
+					HeadSHA:        "head-disposition",
+					RunningChecks:  tt.running,
+				},
+			}
+			if got := mergeWorkerProgrammaticMergeReady(issue); got != tt.wantReady {
+				t.Fatalf("mergeWorkerProgrammaticMergeReady() = %t, want %t", got, tt.wantReady)
+			}
+			if got := mergeWorkerProgrammaticMergeWaiting(issue); got != tt.wantWait {
+				t.Fatalf("mergeWorkerProgrammaticMergeWaiting() = %t, want %t", got, tt.wantWait)
+			}
+		})
 	}
 }
 

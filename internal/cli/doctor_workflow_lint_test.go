@@ -117,6 +117,67 @@ func TestCheckDoctorWorkflowLintStaticLandmines(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorWorkflowLintWarnsForPathFilteredRequiredCheck(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		on          string
+		wantWarning bool
+		wantDetail  string
+	}{
+		{name: "pull request paths", on: "pull_request:\n    paths:\n      - '**/*.go'", wantWarning: true, wantDetail: "pull_request paths filter"},
+		{name: "pull request types exclude synchronize", on: "pull_request:\n    types: [opened, reopened]", wantWarning: true, wantDetail: "types exclude synchronize"},
+		{name: "pull request synchronize", on: "pull_request:\n    types: [opened, synchronize]"},
+		{name: "unfiltered pull request", on: "pull_request:"},
+		{name: "unfiltered push", on: "push:"},
+		{name: "filtered push", on: "push:\n    branches: [main]", wantWarning: true, wantDetail: "push branch filter"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workdir := t.TempDir()
+			workflowDir := filepath.Join(workdir, ".github", "workflows")
+			if err := os.MkdirAll(workflowDir, 0o700); err != nil {
+				t.Fatalf("mkdir workflows: %v", err)
+			}
+			workflow := []byte("name: CI\non:\n  " + tt.on + "\njobs:\n  test:\n    name: Test\n    runs-on: ubuntu-latest\n    steps:\n      - run: go test ./...\n")
+			if err := os.WriteFile(filepath.Join(workflowDir, "ci.yml"), workflow, 0o600); err != nil {
+				t.Fatalf("write workflow: %v", err)
+			}
+			cfg := workflowconfig.Default()
+			cfg.Workspace.SourceRoot = workdir
+			cfg.Gate.RequiredStatusChecks = []string{"Test"}
+
+			checks := checkDoctorWorkflowLint(context.Background(), "alpha", globalconfig.Project{
+				ID:       "alpha",
+				Workflow: "WORKFLOW.md",
+				Workdir:  workdir,
+			}, cfg, "", doctorDeps{})
+
+			if !tt.wantWarning {
+				if len(checks) != 0 {
+					t.Fatalf("checks = %#v, want none", checks)
+				}
+				return
+			}
+			if len(checks) != 1 {
+				t.Fatalf("checks = %#v, want one warning", checks)
+			}
+			check := checks[0]
+			if check.Status != doctorWarn || !strings.Contains(check.Name, "required check triggers") {
+				t.Fatalf("check = %#v, want required check trigger warning", check)
+			}
+			for _, want := range []string{"Test", "ci.yml", tt.wantDetail, "every pull-request head"} {
+				if !strings.Contains(check.Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", check.Detail, want)
+				}
+			}
+		})
+	}
+}
+
 func TestDoctorWorkflowExecutableIndexSkipsEnvironmentAssignments(t *testing.T) {
 	t.Parallel()
 
