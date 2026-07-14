@@ -214,28 +214,41 @@ func TestCheckDoctorWorkflowLintWarnsForUnconfiguredLabelGatedRequiredCheck(t *t
 func TestCheckDoctorWorkflowLintAcceptsConfiguredLabelGatedRequiredCheck(t *testing.T) {
 	t.Parallel()
 
-	workdir := t.TempDir()
-	workflowDir := filepath.Join(workdir, ".github", "workflows")
-	if err := os.MkdirAll(workflowDir, 0o700); err != nil {
-		t.Fatalf("mkdir workflows: %v", err)
-	}
-	workflow := []byte("name: CI\non:\n  pull_request:\n    types: [labeled, synchronize]\njobs:\n  test:\n    name: Test\n    runs-on: self-hosted\n    if: github.event.label.name == 'ci:ready'\n    steps:\n      - run: go test ./...\n")
-	if err := os.WriteFile(filepath.Join(workflowDir, "ci.yml"), workflow, 0o600); err != nil {
-		t.Fatalf("write workflow: %v", err)
-	}
-	cfg := workflowconfig.Default()
-	cfg.Workspace.SourceRoot = workdir
-	cfg.Gate.RequiredStatusChecks = []string{"Test"}
-	cfg.Gate.CITriggerLabel = "ci:ready"
+	for _, tt := range []struct {
+		name string
+		on   string
+	}{
+		{name: "explicit labeled and synchronize types", on: "on:\n  pull_request:\n    types: [labeled, synchronize]"},
+		{name: "default pull request mapping", on: "on:\n  pull_request:"},
+		{name: "shorthand pull request", on: "on: pull_request"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	checks := checkDoctorWorkflowLint(context.Background(), "alpha", globalconfig.Project{
-		ID:       "alpha",
-		Workflow: "WORKFLOW.md",
-		Workdir:  workdir,
-	}, cfg, "", doctorDeps{})
+			workdir := t.TempDir()
+			workflowDir := filepath.Join(workdir, ".github", "workflows")
+			if err := os.MkdirAll(workflowDir, 0o700); err != nil {
+				t.Fatalf("mkdir workflows: %v", err)
+			}
+			workflow := []byte("name: CI\n" + tt.on + "\njobs:\n  test:\n    name: Test\n    runs-on: self-hosted\n    if: github.event.label.name == 'ci:ready'\n    steps:\n      - run: go test ./...\n")
+			if err := os.WriteFile(filepath.Join(workflowDir, "ci.yml"), workflow, 0o600); err != nil {
+				t.Fatalf("write workflow: %v", err)
+			}
+			cfg := workflowconfig.Default()
+			cfg.Workspace.SourceRoot = workdir
+			cfg.Gate.RequiredStatusChecks = []string{"Test"}
+			cfg.Gate.CITriggerLabel = "ci:ready"
 
-	if len(checks) != 0 {
-		t.Fatalf("checks = %#v, want configured label gate to be accepted", checks)
+			checks := checkDoctorWorkflowLint(context.Background(), "alpha", globalconfig.Project{
+				ID:       "alpha",
+				Workflow: "WORKFLOW.md",
+				Workdir:  workdir,
+			}, cfg, "", doctorDeps{})
+
+			if len(checks) != 0 {
+				t.Fatalf("checks = %#v, want configured label gate to be accepted", checks)
+			}
+		})
 	}
 }
 

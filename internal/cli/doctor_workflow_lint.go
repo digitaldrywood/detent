@@ -181,18 +181,30 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 }
 
 func doctorRequiredCheckLabelGated(on *yaml.Node, job *yaml.Node) bool {
-	if on == nil || on.Kind != yaml.MappingNode {
+	jobRequiresLabel := doctorJobRequiresLabelEvent(job)
+	switch {
+	case on == nil:
+		return false
+	case on.Kind == yaml.ScalarNode:
+		return jobRequiresLabel && strings.EqualFold(strings.TrimSpace(on.Value), "pull_request")
+	case on.Kind == yaml.SequenceNode:
+		return jobRequiresLabel && doctorYAMLContainsScalar(on, "pull_request")
+	case on.Kind != yaml.MappingNode:
 		return false
 	}
 	pullRequest := doctorYAMLMapValue(on, "pull_request")
-	if pullRequest == nil || pullRequest.Kind != yaml.MappingNode {
+	if pullRequest == nil {
 		return false
+	}
+	if pullRequest.Kind != yaml.MappingNode {
+		return jobRequiresLabel
 	}
 	types := doctorYAMLMapValue(pullRequest, "types")
-	if !doctorYAMLContainsScalar(types, "labeled") {
-		return false
+	if types == nil {
+		return jobRequiresLabel
 	}
-	return !doctorYAMLContainsScalar(types, "synchronize") || doctorJobRequiresLabelEvent(job)
+	return doctorYAMLContainsScalar(types, "labeled") &&
+		(!doctorYAMLContainsScalar(types, "synchronize") || jobRequiresLabel)
 }
 
 func doctorOnlyLabelGateRisk(risks []string) bool {
