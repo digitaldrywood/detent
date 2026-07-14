@@ -17,7 +17,8 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 		responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
 		notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
 	})
-	server, err := NewAppServer(staticTransportFactory{transport: transport},
+	factory := &workerTempCapturingTransportFactory{transport: transport}
+	server, err := NewAppServer(factory,
 		WithReadTimeout(time.Second),
 		WithTurnTimeout(time.Second),
 	)
@@ -40,6 +41,7 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 	var updates []runner.AgentUpdate
 	_, err = backend.RunTurn(context.Background(), runner.AgentTurnRequest{
 		Workspace:          "/tmp/detent-workspace",
+		TempDir:            "/tmp/detent-workspace/.detent/tmp",
 		Prompt:             "Ship issue #820",
 		Model:              "gpt-5-codex",
 		ReasoningEffort:    "high",
@@ -50,6 +52,9 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if factory.tempDir != "/tmp/detent-workspace/.detent/tmp" {
+		t.Fatalf("worker temp directory = %q, want request temp directory", factory.tempDir)
 	}
 
 	sent := transport.sentMessages()
@@ -74,4 +79,14 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 	if len(updates) < 2 || updates[0].Type != runner.AgentUpdateRuntimeIdentity || updates[1].Type != runner.AgentUpdateTurnStarted || updates[1].Model != "gpt-5-codex-resolved" {
 		t.Fatalf("updates = %#v, want resolved model on turn started", updates)
 	}
+}
+
+type workerTempCapturingTransportFactory struct {
+	transport Transport
+	tempDir   string
+}
+
+func (f *workerTempCapturingTransportFactory) NewTransport(ctx context.Context) (Transport, error) {
+	f.tempDir = workerTempDir(ctx)
+	return f.transport, nil
 }

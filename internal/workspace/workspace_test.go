@@ -1113,6 +1113,72 @@ func TestLocalGitCleanupRemediatesGeneratedCachePermissions(t *testing.T) {
 	}
 }
 
+func TestWorkerScratchLifecycleRemediatesGeneratedCachePermissions(t *testing.T) {
+	t.Parallel()
+	skipWindows(t)
+
+	workspacePath := t.TempDir()
+	scratchPath, err := PrepareWorkerScratch(context.Background(), workspacePath)
+	if err != nil {
+		t.Fatalf("PrepareWorkerScratch() error = %v", err)
+	}
+	t.Cleanup(func() {
+		restoreWritableTree(t, scratchPath)
+	})
+	canonicalWorkspace := mustCanonicalExistingPath(t, workspacePath)
+	if !strings.HasPrefix(scratchPath, canonicalWorkspace+string(filepath.Separator)) {
+		t.Fatalf("scratch path = %q, want path under %q", scratchPath, canonicalWorkspace)
+	}
+
+	cacheDir := filepath.Join(scratchPath, "go-mod", "modernc.org", "libc@v1.73.4")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatalf("mkdir cache dir: %v", err)
+	}
+	cacheFile := filepath.Join(cacheDir, "libc_amd64.go")
+	if err := os.WriteFile(cacheFile, []byte("package libc\n"), 0o444); err != nil {
+		t.Fatalf("write cache file: %v", err)
+	}
+	if err := os.Chmod(cacheDir, 0o555); err != nil {
+		t.Fatalf("chmod cache dir: %v", err)
+	}
+
+	if err := CleanupWorkerScratch(workspacePath); err != nil {
+		t.Fatalf("CleanupWorkerScratch() error = %v", err)
+	}
+	if _, err := os.Stat(scratchPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("worker scratch exists after cleanup, stat error = %v", err)
+	}
+}
+
+func TestPrepareWorkerScratchInstallsGitExcludeBeforeUse(t *testing.T) {
+	t.Parallel()
+
+	workspacePath := initSourceRepo(t)
+	scratchPath, err := PrepareWorkerScratch(context.Background(), workspacePath)
+	if err != nil {
+		t.Fatalf("PrepareWorkerScratch() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scratchPath, "cache"), []byte("temporary"), 0o600); err != nil {
+		t.Fatalf("write worker scratch: %v", err)
+	}
+
+	status := runCommand(t, workspacePath, "git", "status", "--short", "--untracked-files=all")
+	if strings.Contains(status, ".detent/tmp") {
+		t.Fatalf("git status includes worker scratch:\n%s", status)
+	}
+	excludePath := strings.TrimSpace(runCommand(t, workspacePath, "git", "rev-parse", "--git-path", "info/exclude"))
+	if !filepath.IsAbs(excludePath) {
+		excludePath = filepath.Join(workspacePath, excludePath)
+	}
+	exclude, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("read git exclude: %v", err)
+	}
+	if !strings.Contains(string(exclude), ".detent/tmp/") {
+		t.Fatalf("git exclude = %q, want worker scratch pattern", exclude)
+	}
+}
+
 func TestLocalGitCleanupRejectsForeignGitRepoWithoutBeforeRemove(t *testing.T) {
 	t.Parallel()
 

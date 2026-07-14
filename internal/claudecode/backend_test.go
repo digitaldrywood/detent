@@ -390,6 +390,7 @@ func TestAgentBackendBuildsCommandArgumentsAndWritesPromptToStdin(t *testing.T) 
 
 	_, err := backend.RunTurn(context.Background(), runner.AgentTurnRequest{
 		Workspace:          workspace,
+		TempDir:            filepath.Join(workspace, ".detent", "tmp"),
 		Prompt:             "prompt from stdin",
 		Model:              "fable",
 		ExtraWritableRoots: []string{"/tmp/root-a", " ", "/tmp/root-b"},
@@ -427,6 +428,15 @@ func TestAgentBackendBuildsCommandArgumentsAndWritesPromptToStdin(t *testing.T) 
 	}
 	if got, want := canonicalPath(t, observed.Workdir), canonicalPath(t, workspace); got != want {
 		t.Fatalf("workdir = %q, want %q", got, want)
+	}
+	for name, got := range map[string]string{
+		"TMPDIR": observed.TMPDIR,
+		"TMP":    observed.TMP,
+		"TEMP":   observed.TEMP,
+	} {
+		if want := filepath.Join(workspace, ".detent", "tmp"); got != want {
+			t.Fatalf("%s = %q, want %q", name, got, want)
+		}
 	}
 }
 
@@ -533,6 +543,9 @@ func TestClaudeCodeHelperProcess(t *testing.T) {
 		Args:    argsAfterDashDash(os.Args),
 		Stdin:   string(stdin),
 		Workdir: workdir,
+		TMPDIR:  os.Getenv("TMPDIR"),
+		TMP:     os.Getenv("TMP"),
+		TEMP:    os.Getenv("TEMP"),
 	}
 	raw, err := json.Marshal(observed)
 	if err != nil {
@@ -575,6 +588,9 @@ type helperObservation struct {
 	Args    []string `json:"args"`
 	Stdin   string   `json:"stdin"`
 	Workdir string   `json:"workdir"`
+	TMPDIR  string   `json:"tmpdir"`
+	TMP     string   `json:"tmp"`
+	TEMP    string   `json:"temp"`
 }
 
 func newTestBackend(t *testing.T, options Options) *AgentBackend {

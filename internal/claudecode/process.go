@@ -35,6 +35,7 @@ func (b *AgentBackend) RunTurn(
 	if err != nil {
 		return runner.AgentTurnResult{}, err
 	}
+	procgroup.SetTempDir(cmd, req.TempDir)
 
 	stderr := newTailBuffer(b.options.StderrTailBytes)
 	cmd.Stderr = stderr

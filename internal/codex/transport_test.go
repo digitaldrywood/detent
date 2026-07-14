@@ -92,6 +92,40 @@ func TestLocalTransportReceiveHonorsContext(t *testing.T) {
 	}
 }
 
+func TestLocalTransportFactoryAppliesWorkerTempDir(t *testing.T) {
+	t.Parallel()
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "silent")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+
+	tempDir := t.TempDir()
+	transport, err := factory.NewTransport(withWorkerTempDir(context.Background(), tempDir))
+	if err != nil {
+		t.Fatalf("NewTransport() error = %v", err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := transport.Close(closeCtx); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	local, ok := transport.(*localTransport)
+	if !ok {
+		t.Fatalf("transport = %T, want *localTransport", transport)
+	}
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		if got := environmentValue(local.cmd.Env, name); got != tempDir {
+			t.Fatalf("%s = %q, want %q", name, got, tempDir)
+		}
+	}
+}
+
 func TestLocalTransportSendHonorsContextDuringBlockedWrite(t *testing.T) {
 	t.Parallel()
 
@@ -402,6 +436,17 @@ func helperCommand(ctx context.Context, mode string) *exec.Cmd {
 		"DETENT_CODEX_TRANSPORT_MODE="+mode,
 	)
 	return cmd
+}
+
+func environmentValue(environment []string, name string) string {
+	value := ""
+	for _, entry := range environment {
+		key, candidate, ok := strings.Cut(entry, "=")
+		if ok && key == name {
+			value = candidate
+		}
+	}
+	return value
 }
 
 func helperTurnBackpressure(completedParams json.RawMessage, blockAfterFlood bool) {

@@ -100,6 +100,7 @@ type AgentModel struct {
 
 type AgentTurnRequest struct {
 	Workspace          string
+	TempDir            string
 	Prompt             string
 	Model              string
 	ModelProvider      string

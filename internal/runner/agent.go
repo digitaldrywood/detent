@@ -556,6 +556,35 @@ type agentTurnExecution struct {
 	turnStarted bool
 }
 
+func runAgentBackendTurn(
+	ctx context.Context,
+	backend AgentBackend,
+	request AgentTurnRequest,
+	onUpdate AgentUpdateHandler,
+) (AgentTurnResult, error, error) {
+	workspacePath := strings.TrimSpace(request.Workspace)
+	if workspacePath == "" {
+		result, err := backend.RunTurn(ctx, request, onUpdate)
+		return result, err, nil
+	}
+
+	tempDir, err := workspace.PrepareWorkerScratch(ctx, workspacePath)
+	if workspace.IsMissingWorkspaceError(err) {
+		result, runErr := backend.RunTurn(ctx, request, onUpdate)
+		return result, runErr, nil
+	}
+	if err != nil {
+		return AgentTurnResult{}, fmt.Errorf("prepare worker scratch: %w", err), nil
+	}
+	request.TempDir = tempDir
+	result, runErr := backend.RunTurn(ctx, request, onUpdate)
+	cleanupErr := workspace.CleanupWorkerScratch(workspacePath)
+	if cleanupErr != nil {
+		cleanupErr = fmt.Errorf("cleanup worker scratch: %w", cleanupErr)
+	}
+	return result, runErr, cleanupErr
+}
+
 func (r *Runner) runAgentTurn(
 	ctx context.Context,
 	backend AgentBackend,
@@ -581,7 +610,7 @@ func (r *Runner) runAgentTurn(
 		}
 	}
 	turnStarted := false
-	turnResult, turnErr := backend.RunTurn(ctx, turnRequest, func(update AgentUpdate) error {
+	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurn(ctx, backend, turnRequest, func(update AgentUpdate) error {
 		eventAt := r.now()
 		if !update.RuntimeIdentity.IsZero() {
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
@@ -631,6 +660,7 @@ func (r *Runner) runAgentTurn(
 	if cleanupErr != nil {
 		turnErr = nil
 	}
+	cleanupErr = errors.Join(cleanupErr, scratchCleanupErr)
 	if turnErr != nil {
 		result.FinalState = finalStateForTurnError(turnErr)
 	}
@@ -1208,7 +1238,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}
 	var output strings.Builder
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
-	turnResult, turnErr := backend.RunTurn(ctx, AgentTurnRequest{
+	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurn(ctx, backend, AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             prompt,
 		Model:              selectedModel,
@@ -1254,6 +1284,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		}
 		return nil
 	})
+	turnErr = errors.Join(turnErr, scratchCleanupErr)
 	if turnErr != nil {
 		turnErr = classifyAgentCapacityError(backend, selection, backendConfig, runResult.RuntimeIdentity, turnErr, runResult.RateLimits, runStartedAt)
 	}
