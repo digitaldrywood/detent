@@ -961,7 +961,15 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	}
 	issue = refreshedIssue
 	if !mergeWorkerProgrammaticMergeReady(issue) {
+		if pullRequestHydrationBlocksProgress(issue.PullRequest) {
+			o.waitForMergeWorkerPullRequestHydration(ctx, state, event, running, issue)
+			return true
+		}
 		if missingChecks := mergeWorkerMissingRequiredChecks(issue); len(missingChecks) > 0 {
+			if mergeWorkerMissingRequiredChecksPropagating(issue, running.Attempt) {
+				o.waitForMergeWorkerRequiredCheckPropagation(ctx, state, event, running, issue)
+				return true
+			}
 			o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeWorkerRequiredChecksMissingReason, missingChecks)
 			return true
 		}
@@ -1044,21 +1052,84 @@ func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
 	running Running,
 	issue connector.Issue,
 ) {
+	o.waitForMergeWorkerRetry(
+		ctx,
+		state,
+		event,
+		running,
+		issue,
+		running.Attempt,
+		"waiting for current-head CI",
+		"merge_worker_waiting_current_head_ci",
+		"merge worker is waiting for current-head CI for ",
+	)
+}
+
+func (o *Orchestrator) waitForMergeWorkerRequiredCheckPropagation(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+) {
+	o.waitForMergeWorkerRetry(
+		ctx,
+		state,
+		event,
+		running,
+		issue,
+		nextAttempt(running.Attempt),
+		"waiting for required checks to appear on the current head",
+		"merge_worker_waiting_required_check_propagation",
+		"merge worker is waiting for required checks to appear for ",
+	)
+}
+
+func (o *Orchestrator) waitForMergeWorkerPullRequestHydration(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+) {
+	o.waitForMergeWorkerRetry(
+		ctx,
+		state,
+		event,
+		running,
+		issue,
+		running.Attempt,
+		"waiting for fresh pull request hydration",
+		"merge_worker_waiting_pull_request_hydration",
+		"merge worker is waiting for fresh pull request hydration for ",
+	)
+}
+
+func (o *Orchestrator) waitForMergeWorkerRetry(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+	attempt int,
+	retryError string,
+	eventName string,
+	eventMessage string,
+) {
 	running.Issue = issue
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
-	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", "merge fast-path waiting for current-head CI")
-	attempt := running.Attempt
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError)
 	if attempt < 1 {
 		attempt = 1
 	}
-	o.scheduleRetry(state, issue, attempt, event.CompletedAt, "waiting for current-head CI", true, running.WorkerHost)
+	o.scheduleRetry(state, issue, attempt, event.CompletedAt, retryError, true, running.WorkerHost)
 	if o.logger != nil {
-		o.logger.Info("merge_worker_waiting_current_head_ci", mergeWorkerLogAttrs(issue, "attempt", attempt)...)
+		o.logger.Info(eventName, mergeWorkerLogAttrs(issue, "attempt", attempt)...)
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
-		Event:   "merge_worker_waiting_current_head_ci",
-		Message: "merge worker is waiting for current-head CI for " + issueLabel(issue),
+		Event:   eventName,
+		Message: eventMessage + issueLabel(issue),
 	})
 }
 
@@ -1187,6 +1258,21 @@ func mergeWorkerMissingRequiredChecks(issue connector.Issue) []string {
 		checks = append(checks, name)
 	}
 	return checks
+}
+
+func mergeWorkerMissingRequiredChecksPropagating(issue connector.Issue, attempt int) bool {
+	if len(mergeWorkerMissingRequiredChecks(issue)) == 0 || attempt >= maxMergeWorkerRunnerFailures {
+		return false
+	}
+	if issue.PullRequest == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(issue.PullRequest.CIStatus)) {
+	case "", "pending", "running", "queued", "in_progress", "waiting":
+		return true
+	default:
+		return false
+	}
 }
 
 func (o *Orchestrator) reworkMergeWorkerResult(

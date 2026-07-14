@@ -180,7 +180,7 @@ func TestMergingFastPathMissingRequiredChecksRoutesToRework(t *testing.T) {
 	state := newState(cfg)
 	state.Running[issue.ID] = Running{
 		Issue:      cloneIssue(issue),
-		Attempt:    1,
+		Attempt:    maxMergeWorkerRunnerFailures,
 		StartedAt:  now.Add(-time.Minute),
 		WorkerHost: "worker-a",
 		Mode:       runpkg.RunModeMerge,
@@ -212,6 +212,131 @@ func TestMergingFastPathMissingRequiredChecksRoutesToRework(t *testing.T) {
 	if _, ok := state.Claimed[issue.ID]; ok {
 		t.Fatalf("Claimed[%q] present after Rework handoff", issue.ID)
 	}
+}
+
+func TestMergingFastPathMissingRequiredChecksWaitsForPropagation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 14, 13, 25, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("issue-propagating-required-checks", []string{"bug"}, &connector.PullRequest{
+		Number:         864,
+		URL:            "https://github.test/digitaldrywood/detent/pull/864",
+		BranchName:     "detent/merge-fast-path-propagating-checks",
+		State:          "OPEN",
+		MergeableState: "blocked",
+		CIStatus:       "pending",
+		HeadSHA:        "head-propagating-required-checks",
+		RequiredCheckFailures: []connector.PullRequestCheck{
+			{Name: "Test", Status: "missing", Conclusion: "missing"},
+		},
+	})
+	issue.State = "Merging"
+	issue.Identifier = "digitaldrywood/detent#864"
+	issue.PRRepository = "digitaldrywood/detent"
+
+	tracker, state := completeMergeFastPathTestRun(t, issue, now, 1)
+
+	if len(tracker.merges) != 0 {
+		t.Fatalf("merges = %#v, want none while required checks propagate", tracker.merges)
+	}
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want no state transition while required checks propagate", tracker.updates)
+	}
+	retry, ok := state.Retry[issue.ID]
+	if !ok {
+		t.Fatalf("Retry[%q] missing while required checks propagate", issue.ID)
+	}
+	if retry.Attempt != 2 {
+		t.Fatalf("Retry[%q].Attempt = %d, want 2", issue.ID, retry.Attempt)
+	}
+	if !strings.Contains(retry.Error, "required checks") {
+		t.Fatalf("Retry[%q].Error = %q, want required-check propagation wait", issue.ID, retry.Error)
+	}
+}
+
+func TestMergingFastPathHydrationUnavailableDefers(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 14, 13, 25, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("issue-fast-path-hydration-unavailable", []string{"bug"}, &connector.PullRequest{
+		Number:                     865,
+		URL:                        "https://github.test/digitaldrywood/detent/pull/865",
+		BranchName:                 "detent/merge-fast-path-hydration-unavailable",
+		State:                      "OPEN",
+		MergeableState:             "behind",
+		CIStatus:                   "success",
+		HeadSHA:                    "head-hydration-unavailable",
+		HydrationUnavailableReason: connector.PullRequestHydrationReasonRESTBudgetReserved,
+	})
+	issue.State = "Merging"
+	issue.Identifier = "digitaldrywood/detent#865"
+	issue.PRRepository = "digitaldrywood/detent"
+
+	tracker, state := completeMergeFastPathTestRun(t, issue, now, 2)
+
+	if len(tracker.merges) != 0 {
+		t.Fatalf("merges = %#v, want none without fresh pull request hydration", tracker.merges)
+	}
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want no state transition without fresh pull request hydration", tracker.updates)
+	}
+	retry, ok := state.Retry[issue.ID]
+	if !ok {
+		t.Fatalf("Retry[%q] missing without fresh pull request hydration", issue.ID)
+	}
+	if retry.Attempt != 2 {
+		t.Fatalf("Retry[%q].Attempt = %d, want unchanged attempt 2", issue.ID, retry.Attempt)
+	}
+	if !strings.Contains(retry.Error, "pull request hydration") {
+		t.Fatalf("Retry[%q].Error = %q, want pull request hydration wait", issue.ID, retry.Error)
+	}
+}
+
+func completeMergeFastPathTestRun(
+	t *testing.T,
+	issue connector.Issue,
+	now time.Time,
+	attempt int,
+) (*autoPromoteTickMergeConnector, State) {
+	t.Helper()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:    1,
+		FailureRetryBaseDelay:  time.Minute,
+		MaxRetryBackoff:        time.Hour,
+		ContinuationRetryDelay: 5 * time.Second,
+		MergeFastPathEnabled:   true,
+		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:         []string{"Merging"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+	})
+	tracker := &autoPromoteTickMergeConnector{
+		autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue:      cloneIssue(issue),
+		Attempt:    attempt,
+		StartedAt:  now.Add(-time.Minute),
+		WorkerHost: "worker-a",
+		Mode:       runpkg.RunModeMerge,
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     issue.ID,
+		CompletedAt: now,
+		Request:     runpkg.RunRequest{Mode: runpkg.RunModeMerge},
+		Result: runpkg.RunResult{
+			FinalState: runpkg.FinalStateCompleted,
+			Output:     runpkg.RunOutputMergeFastPathClean,
+		},
+	})
+	return tracker, state
 }
 
 func TestMergingFastPathCleanPrecheckWaitsForCurrentHeadCI(t *testing.T) {
