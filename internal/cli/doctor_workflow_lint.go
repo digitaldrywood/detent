@@ -34,6 +34,8 @@ var doctorJobLabelConditionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)github\.event\.label\.name\s*==\s*"([^"]*)"`),
 	regexp.MustCompile(`(?i)'([^']*)'\s*==\s*github\.event\.label\.name`),
 	regexp.MustCompile(`(?i)"([^"]*)"\s*==\s*github\.event\.label\.name`),
+	regexp.MustCompile(`(?i)contains\(\s*github\.event\.pull_request\.labels\.\*\.name\s*,\s*'([^']*)'\s*\)`),
+	regexp.MustCompile(`(?i)contains\(\s*github\.event\.pull_request\.labels\.\*\.name\s*,\s*"([^"]*)"\s*\)`),
 }
 
 type doctorShipSkill struct {
@@ -133,10 +135,15 @@ func checkDoctorRequiredCheckTriggers(projectID string, project globalconfig.Pro
 			jobName := doctorYAMLScalarValue(doctorYAMLMapValue(jobNode, "name"))
 			labelGated := doctorRequiredCheckLabelGated(on, jobNode)
 			risks := append([]string(nil), workflowRisks...)
-			jobRequiresLabel := doctorJobRequiresLabelEvent(jobNode)
-			jobMatchesTriggerLabel := !jobRequiresLabel || ciTriggerLabel == "" || doctorJobConditionMatchesLabel(jobNode, ciTriggerLabel)
-			if jobRequiresLabel {
-				risks = append(risks, "job condition requires labeled event")
+			jobRequiresLabelEvent := doctorJobRequiresLabelEvent(jobNode)
+			jobUsesTriggerLabel := doctorJobUsesTriggerLabel(jobNode)
+			jobMatchesTriggerLabel := !jobUsesTriggerLabel || ciTriggerLabel == "" || doctorJobConditionMatchesLabel(jobNode, ciTriggerLabel)
+			if jobUsesTriggerLabel {
+				if jobRequiresLabelEvent {
+					risks = append(risks, "job condition requires labeled event")
+				} else {
+					risks = append(risks, "job condition requires trigger label")
+				}
 				if !jobMatchesTriggerLabel {
 					risks = append(risks, "job condition does not match gate.ci_trigger_label")
 				}
@@ -207,7 +214,7 @@ func doctorRequiredCheckLabelGated(on *yaml.Node, job *yaml.Node) bool {
 	if !doctorYAMLContainsScalar(types, "labeled") {
 		return false
 	}
-	return !doctorYAMLContainsScalar(types, "synchronize") || doctorJobRequiresLabelEvent(job)
+	return !doctorYAMLContainsScalar(types, "synchronize") || doctorJobUsesTriggerLabel(job)
 }
 
 func doctorOnlyLabelGateRisk(risks []string) bool {
@@ -216,7 +223,7 @@ func doctorOnlyLabelGateRisk(risks []string) bool {
 	}
 	for _, risk := range risks {
 		switch risk {
-		case "pull_request types exclude synchronize", "job condition requires labeled event":
+		case "pull_request types exclude synchronize", "job condition requires labeled event", "job condition requires trigger label":
 		default:
 			return false
 		}
@@ -230,9 +237,15 @@ func doctorJobRequiresLabelEvent(job *yaml.Node) bool {
 		strings.Contains(condition, "github.event.action") && strings.Contains(condition, "labeled")
 }
 
+func doctorJobUsesTriggerLabel(job *yaml.Node) bool {
+	condition := strings.ToLower(doctorYAMLScalarValue(doctorYAMLMapValue(job, "if")))
+	return doctorJobRequiresLabelEvent(job) || strings.Contains(condition, "github.event.pull_request.labels")
+}
+
 func doctorJobConditionMatchesLabel(job *yaml.Node, label string) bool {
 	condition := doctorYAMLScalarValue(doctorYAMLMapValue(job, "if"))
-	if !strings.Contains(strings.ToLower(condition), "github.event.label") {
+	lowerCondition := strings.ToLower(condition)
+	if !strings.Contains(lowerCondition, "github.event.label") && !strings.Contains(lowerCondition, "github.event.pull_request.labels") {
 		return true
 	}
 	label = strings.TrimSpace(label)

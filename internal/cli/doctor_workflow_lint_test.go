@@ -226,6 +226,8 @@ func TestCheckDoctorWorkflowLintAcceptsConfiguredLabelGatedRequiredCheck(t *test
 		{name: "explicit labeled and synchronize types", on: "on:\n  pull_request:\n    types: [labeled, synchronize]"},
 		{name: "one of multiple matching labels", on: "on:\n  pull_request:\n    types: [labeled, synchronize]", condition: "github.event.label.name == 'ci:ready' || github.event.label.name == 'ci:full'", configuredLabel: "ci:full"},
 		{name: "mismatched configured label", on: "on:\n  pull_request:\n    types: [labeled, synchronize]", configuredLabel: "ci:full", wantWarning: true, wantDetail: "does not match gate.ci_trigger_label", wantHint: "Set gate.ci_trigger_label to a label explicitly accepted"},
+		{name: "pull request label list matches", on: "on:\n  pull_request:\n    types: [labeled]", condition: "contains(github.event.pull_request.labels.*.name, 'ci:ready')"},
+		{name: "pull request label list mismatch", on: "on:\n  pull_request:\n    types: [labeled]", condition: "contains(github.event.pull_request.labels.*.name, 'ci:ready')", configuredLabel: "ci:full", wantWarning: true, wantDetail: "does not match gate.ci_trigger_label", wantHint: "Set gate.ci_trigger_label to a label explicitly accepted"},
 		{name: "default pull request mapping", on: "on:\n  pull_request:", wantWarning: true, wantDetail: "job condition requires labeled event"},
 		{name: "shorthand pull request", on: "on: pull_request", wantWarning: true, wantDetail: "job condition requires labeled event"},
 	} {
