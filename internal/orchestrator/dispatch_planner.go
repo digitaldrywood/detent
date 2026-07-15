@@ -72,6 +72,7 @@ func (p dispatchPlanner) plan(
 	)
 	clearBlockedUnblockerCounts(plannedCandidates, state.Blocked)
 	sortIssuesForDispatch(plannedCandidates, p.cfg.DispatchPriorityByState, p.cfg.DispatchPriorityByLabel, p.cfg.PrioritizeUnblockers)
+	prioritizeReadyMergingIssues(plannedCandidates)
 	dueRetries := dueRetriesByIssue(state, now)
 	p.releaseMissingDueRetries(state, plannedCandidates, dueRetries, hooks)
 

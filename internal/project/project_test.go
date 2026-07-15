@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -379,7 +380,7 @@ func TestProjectReestablishesClosedWorkflowWatcher(t *testing.T) {
 	secondUpdates := make(chan configwatcher.Update, 1)
 	rearmed := make(chan struct{})
 	var watcherCreates atomic.Int32
-	var logs bytes.Buffer
+	var logs lockedBuffer
 
 	initial := workflowConfig("memory")
 	initial.Polling.IntervalMS = int(time.Hour / time.Millisecond)
@@ -418,7 +419,7 @@ func TestProjectReestablishesClosedWorkflowWatcher(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for workflow watcher re-establishment")
 	}
-	if !bytes.Contains(logs.Bytes(), []byte("workflow watcher stopped")) {
+	if !strings.Contains(logs.String(), "workflow watcher stopped") {
 		t.Fatalf("logs = %q, want watcher failure warning", logs.String())
 	}
 	waitForWorkflowWatcherArmed(t, got)
@@ -1608,6 +1609,25 @@ func (c provisioningConnector) Provision(ctx context.Context) error {
 type closeTrackingConnector struct {
 	closed chan struct{}
 	once   sync.Once
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
 }
 
 func newCloseTrackingConnector() *closeTrackingConnector {

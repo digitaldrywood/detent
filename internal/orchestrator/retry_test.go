@@ -138,6 +138,116 @@ func TestDispatchReadyIssuesRanksDueRetriesWithCandidates(t *testing.T) {
 	}
 }
 
+func TestDispatchReadyIssuesDefersNotReadyMergeRetryBehindReadyHead(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		DispatchPriorityByState: []string{"Merging"},
+		ActiveStates:            []string{"Merging"},
+		TerminalStates:          []string{"Done"},
+	})
+	orch := Orchestrator{
+		cfg:        cfg,
+		supervisor: newTestSupervisor(t, FakeRunner{}, cfg),
+		runResults: make(chan runpkg.Completion, 1),
+	}
+	state := newState(cfg)
+	now := time.Date(2026, 7, 15, 8, 15, 0, 0, time.UTC)
+	waiting := nativeMergeQueueTestIssue(1323, "pending")
+	waiting.ID = "issue-deferred-head"
+	waitingCreatedAt := now.Add(-time.Hour)
+	waiting.CreatedAt = &waitingCreatedAt
+	ready := nativeMergeQueueTestIssue(1324, "success")
+	ready.ID = "issue-ready-after-deferral"
+	ready.Identifier = "digitaldrywood/pyroapex#1324"
+	ready.PRRepository = "digitaldrywood/pyroapex"
+	ready.PullRequest.URL = "https://github.test/digitaldrywood/pyroapex/pull/1324"
+	readyCreatedAt := now.Add(-time.Minute)
+	ready.CreatedAt = &readyCreatedAt
+
+	state.Claimed[waiting.ID] = Claimed{Issue: waiting, ClaimedAt: now.Add(-time.Minute)}
+	state.Retry[waiting.ID] = Retry{
+		Issue:   waiting,
+		Attempt: 1,
+		DueAt:   now.Add(-time.Millisecond),
+		Error:   "waiting for current-head CI",
+	}
+
+	orch.dispatchReadyIssues(context.Background(), &state, []connector.Issue{waiting, ready}, now)
+
+	if _, ok := state.Running[ready.ID]; !ok {
+		t.Fatalf("Running[%q] missing", ready.ID)
+	}
+	if _, ok := state.Running[waiting.ID]; ok {
+		t.Fatalf("Running[%q] present while a ready head was queued", waiting.ID)
+	}
+	if _, ok := state.Retry[waiting.ID]; !ok {
+		t.Fatalf("Retry[%q] missing after ready head dispatch", waiting.ID)
+	}
+}
+
+func TestDispatchReadyIssuesRevisitsDeferredMergeWhenCurrentHeadBecomesReady(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		DispatchPriorityByState: []string{"Merging"},
+		ActiveStates:            []string{"Merging"},
+		TerminalStates:          []string{"Done"},
+	})
+	orch := Orchestrator{
+		cfg:        cfg,
+		supervisor: newTestSupervisor(t, FakeRunner{}, cfg),
+		runResults: make(chan runpkg.Completion, 1),
+	}
+	state := newState(cfg)
+	now := time.Date(2026, 7, 15, 8, 30, 0, 0, time.UTC)
+	queueHead := nativeMergeQueueTestIssue(1326, "pending")
+	queueHead.ID = "issue-older-waiting-head"
+	queueHeadCreatedAt := now.Add(-time.Hour)
+	queueHead.CreatedAt = &queueHeadCreatedAt
+	deferred := nativeMergeQueueTestIssue(1327, "pending")
+	deferred.ID = "issue-deferred-now-ready"
+	deferred.Identifier = "digitaldrywood/pyroapex#1327"
+	deferred.PRRepository = "digitaldrywood/pyroapex"
+	deferred.PullRequest.URL = "https://github.test/digitaldrywood/pyroapex/pull/1327"
+	deferredCreatedAt := now.Add(-time.Minute)
+	deferred.CreatedAt = &deferredCreatedAt
+	refreshed := cloneIssue(deferred)
+	refreshed.PullRequest.CIStatus = "success"
+
+	state.Claimed[deferred.ID] = Claimed{Issue: deferred, ClaimedAt: now.Add(-time.Minute)}
+	state.Retry[deferred.ID] = Retry{
+		Issue:   deferred,
+		Attempt: 1,
+		DueAt:   now.Add(-time.Millisecond),
+		Error:   "waiting for current-head CI",
+	}
+
+	orch.dispatchReadyIssues(context.Background(), &state, []connector.Issue{queueHead, refreshed}, now)
+
+	running, ok := state.Running[deferred.ID]
+	if !ok {
+		t.Fatalf("Running[%q] missing", deferred.ID)
+	}
+	if running.Issue.PullRequest == nil || running.Issue.PullRequest.CIStatus != "success" {
+		t.Fatalf("Running[%q].Issue.PullRequest = %#v, want refreshed green head", deferred.ID, running.Issue.PullRequest)
+	}
+	if _, ok := state.Running[queueHead.ID]; ok {
+		t.Fatalf("Running[%q] present while refreshed deferred head was ready", queueHead.ID)
+	}
+	if _, ok := state.Retry[deferred.ID]; ok {
+		t.Fatalf("Retry[%q] present after refreshed head dispatch", deferred.ID)
+	}
+}
+
 func TestDispatchReadyIssuesPreservesBlockedStatusForMissingDueRetry(t *testing.T) {
 	t.Parallel()
 

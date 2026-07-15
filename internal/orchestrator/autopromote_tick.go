@@ -1129,6 +1129,7 @@ func staleMergingPullRequestDispatchActive(state *State, issueID string) bool {
 func staleMergingQueueIssues(issues []connector.Issue, cfg Config) []connector.Issue {
 	queue := issuesInStates(issues, []string{autoPromoteMergingState})
 	sortIssuesForDispatch(queue, cfg.DispatchPriorityByState, cfg.DispatchPriorityByLabel, cfg.PrioritizeUnblockers)
+	prioritizeReadyMergingIssues(queue)
 	return queue
 }
 
@@ -1184,6 +1185,7 @@ func mergeWorkerRepositoryKey(issue connector.Issue) string {
 }
 
 func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []connector.Issue) []connector.Issue {
+	o.logMergeWorkerQueueCycle(issues)
 	candidates := o.staleMergingQueueDispatchCandidates(state, issues)
 	if len(candidates) == 0 {
 		return nil
@@ -1225,6 +1227,79 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 		out = append(out, issue)
 	}
 	return out
+}
+
+func (o *Orchestrator) logMergeWorkerQueueCycle(issues []connector.Issue) {
+	if o.logger == nil {
+		return
+	}
+	queueDepth := 0
+	readyCount := 0
+	for _, issue := range issues {
+		if !mergeWorkerIssue(issue) {
+			continue
+		}
+		queueDepth++
+		if mergeWorkerHeadReady(issue) {
+			readyCount++
+		}
+	}
+	o.logger.Info(
+		"merge_worker_queue_cycle",
+		"queue_depth", queueDepth,
+		"ready_count", readyCount,
+	)
+}
+
+func prioritizeReadyMergingIssues(issues []connector.Issue) {
+	ordered := make([]connector.Issue, 0, len(issues))
+	readyHeads := make(map[string]struct{})
+	seenRepositories := make(map[string]struct{})
+	for _, issue := range issues {
+		if !mergeWorkerIssue(issue) {
+			continue
+		}
+		repository := mergeWorkerRepositoryKey(issue)
+		if repository != "" {
+			if _, seen := seenRepositories[repository]; seen {
+				continue
+			}
+			seenRepositories[repository] = struct{}{}
+		}
+		if mergeWorkerHeadReady(issue) {
+			readyHeads[issue.ID] = struct{}{}
+			ordered = append(ordered, issue)
+		}
+	}
+	for _, issue := range issues {
+		if !mergeWorkerIssue(issue) {
+			continue
+		}
+		if _, ready := readyHeads[issue.ID]; ready {
+			continue
+		}
+		ordered = append(ordered, issue)
+	}
+	if len(ordered) == 0 {
+		return
+	}
+	next := 0
+	for index := range issues {
+		if !mergeWorkerIssue(issues[index]) {
+			continue
+		}
+		issues[index] = ordered[next]
+		next++
+	}
+}
+
+func mergeWorkerHeadReady(issue connector.Issue) bool {
+	if !mergeWorkerIssue(issue) || strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
+		return false
+	}
+	return mergeWorkerProgrammaticMergeReady(issue) &&
+		strings.EqualFold(strings.TrimSpace(issue.PullRequest.MergeableState), "clean") &&
+		len(issue.PullRequest.RequiredCheckFailures) == 0
 }
 
 func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues []connector.Issue) []connector.Issue {
