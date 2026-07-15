@@ -726,8 +726,9 @@ func (l *LocalGit) removePath(ctx context.Context, path string) error {
 		return nil
 	}
 
+	sourceWorktree := l.isSourceWorktree(ctx, path)
 	if _, err := l.runGit(ctx, "worktree", "remove", "--force", path); err != nil {
-		if l.isSourceWorktree(ctx, path) {
+		if sourceWorktree {
 			return l.retrySourceWorktreeRemoveAfterPermissionRemediation(ctx, path, err)
 		}
 		if l.isGitWorkspace(ctx, path) {
@@ -750,6 +751,16 @@ func (l *LocalGit) retrySourceWorktreeRemoveAfterPermissionRemediation(ctx conte
 			remediation: workspaceRemovalRemediation,
 			err:         errors.Join(removeErr, fmt.Errorf("remediate workspace permissions: %w", chmodErr)),
 		}
+	}
+	if !l.isSourceWorktree(ctx, path) {
+		if retryErr := removeWorkspacePath(l.root, path); retryErr != nil {
+			return &workspaceRemovalError{
+				path:        path,
+				remediation: workspaceRemovalRemediation,
+				err:         errors.Join(removeErr, retryErr),
+			}
+		}
+		return nil
 	}
 	if _, retryErr := l.runGit(ctx, "worktree", "remove", "--force", path); retryErr != nil {
 		return &workspaceRemovalError{
