@@ -117,7 +117,13 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Tracker.Claims.LeaseField = "Detent Lease"
 	cfg.Tracker.Claims.TTLSeconds = 300
 	cfg.Tracker.Claims.HeartbeatSeconds = 45
-	cfg.Gate = gate.Config{Kind: gate.KindHumanReview, ApprovalLabel: " Approved-By-Human "}
+	staggerSeconds := 20
+	cfg.Gate = gate.Config{
+		Kind:                         gate.KindHumanReview,
+		ApprovalLabel:                " Approved-By-Human ",
+		CITriggerLabel:               " CI:Ready ",
+		CITriggerLabelStaggerSeconds: &staggerSeconds,
+	}
 
 	got := ConfigFromWorkflow(cfg)
 
@@ -206,6 +212,9 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if got.AutoPromote.Gate.Kind != gate.KindHumanReview || got.AutoPromote.Gate.ApprovalLabel != "approved-by-human" {
 		t.Fatalf("AutoPromote.Gate = %#v, want human_review approved-by-human", got.AutoPromote.Gate)
+	}
+	if got.AutoPromote.Gate.CITriggerLabel != "ci:ready" || got.AutoPromote.Gate.CITriggerLabelStaggerSeconds == nil || *got.AutoPromote.Gate.CITriggerLabelStaggerSeconds != 20 {
+		t.Fatalf("AutoPromote.Gate trigger label = %#v, want ci:ready with 20s stagger", got.AutoPromote.Gate)
 	}
 }
 

@@ -5060,6 +5060,13 @@ type autoPromoteTickHydration struct {
 	number     int
 }
 
+type autoPromoteTickRelabel struct {
+	repository string
+	number     int
+	label      string
+	stagger    time.Duration
+}
+
 func autoPromoteReworkEventMetadata(prNumber int, headSHA string, failedChecks ...string) string {
 	issue := connector.Issue{
 		PullRequest: &connector.PullRequest{
@@ -5140,6 +5147,9 @@ type autoPromoteTickMergeConnector struct {
 	*autoPromoteTickConnector
 	merges         []autoPromoteTickMerge
 	hydrations     []autoPromoteTickHydration
+	relabels       []autoPromoteTickRelabel
+	relabelStarted chan autoPromoteTickRelabel
+	relabelRelease <-chan struct{}
 	hydratedIssues []connector.Issue
 	err            error
 	hydrateErr     error
@@ -5255,6 +5265,27 @@ func (c *autoPromoteTickMergeConnector) HydratePullRequest(_ context.Context, is
 		}
 	}
 	return cloneIssue(issue), nil
+}
+
+func (c *autoPromoteTickMergeConnector) ReapplyPullRequestLabel(ctx context.Context, repository string, number int, label string, stagger time.Duration) error {
+	relabel := autoPromoteTickRelabel{
+		repository: repository,
+		number:     number,
+		label:      label,
+		stagger:    stagger,
+	}
+	c.relabels = append(c.relabels, relabel)
+	if c.relabelStarted != nil {
+		c.relabelStarted <- relabel
+	}
+	if c.relabelRelease != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-c.relabelRelease:
+		}
+	}
+	return nil
 }
 
 func (c *autoPromoteTickMergeConnector) MergePullRequest(_ context.Context, repository string, number int, headSHA string, method string) error {

@@ -4130,6 +4130,46 @@ func TestConnectorMergePullRequestUsesConfiguredMethod(t *testing.T) {
 	}
 }
 
+func TestConnectorReapplyPullRequestLabelRemovesAndAddsExistingLabel(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/issues/42",
+			body:   `{"node_id":"PR_42","number":42,"labels":[{"name":"bug"},{"name":"ci:ready"}]}`,
+		},
+		{
+			method: http.MethodDelete,
+			path:   "/repos/example/repo/issues/42/labels/ci:ready",
+			body:   `[{"name":"bug"}]`,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/repos/example/repo/issues/42/labels",
+			body:   `[{"name":"bug"},{"name":"ci:ready"}]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	c.triggerLabelDir = t.TempDir()
+
+	if err := c.ReapplyPullRequestLabel(context.Background(), "example/repo", 42, "ci:ready", 15*time.Second); err != nil {
+		t.Fatalf("ReapplyPullRequestLabel() error = %v", err)
+	}
+
+	requests := server.requests()
+	if got := len(requests); got != 3 {
+		t.Fatalf("request count = %d, want 3", got)
+	}
+	if requests[1]["method"] != http.MethodDelete || requests[2]["method"] != http.MethodPost {
+		t.Fatalf("requests = %#v, want GET, DELETE, POST", requests)
+	}
+	body := requests[2]["body"].(map[string]any)
+	if got := body["labels"]; !reflect.DeepEqual(got, []any{"ci:ready"}) {
+		t.Fatalf("labels body = %#v, want ci:ready", got)
+	}
+}
+
 func TestConnectorHydratePullRequestRefreshesCurrentStatus(t *testing.T) {
 	t.Parallel()
 

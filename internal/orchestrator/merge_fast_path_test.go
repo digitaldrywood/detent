@@ -1,18 +1,21 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -252,6 +255,159 @@ func TestMergingFastPathMissingRequiredChecksWaitsForPropagation(t *testing.T) {
 	if !strings.Contains(retry.Error, "required checks") {
 		t.Fatalf("Retry[%q].Error = %q, want required-check propagation wait", issue.ID, retry.Error)
 	}
+}
+
+func TestMergingFastPathMainAdvanceRetriggersMissingCurrentHeadChecks(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 15, 13, 25, 0, 0, time.UTC)
+	staggerSeconds := 15
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:    1,
+		FailureRetryBaseDelay:  time.Minute,
+		MaxRetryBackoff:        time.Hour,
+		ContinuationRetryDelay: 5 * time.Second,
+		MergeFastPathEnabled:   true,
+		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:         []string{"Merging"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		AutoPromote: AutoPromoteConfig{Gate: gate.Config{
+			Kind:                         gate.KindCommand,
+			RequiredStatusChecks:         []string{"Test", "Checks"},
+			CITriggerLabel:               "ci:ready",
+			CITriggerLabelStaggerSeconds: &staggerSeconds,
+		}},
+	})
+	issue := autoPromoteTickIssue("issue-sibling-blocked-after-main-advance", []string{"bug"}, &connector.PullRequest{
+		Number:         866,
+		URL:            "https://github.test/digitaldrywood/detent/pull/866",
+		BranchName:     "detent/sibling-blocked-after-main-advance",
+		State:          "OPEN",
+		MergeableState: "blocked",
+		CIStatus:       "pending",
+		HeadSHA:        "head-after-main-advance",
+		BaseSHA:        "advanced-main",
+		RequiredCheckFailures: []connector.PullRequestCheck{
+			{Name: "Test", Status: "missing", Conclusion: "missing"},
+			{Name: "Checks", Status: "missing", Conclusion: "missing"},
+		},
+	})
+	issue.State = "Merging"
+	issue.Identifier = "digitaldrywood/detent#866"
+	issue.PRRepository = "digitaldrywood/detent"
+
+	relabelStarted := make(chan autoPromoteTickRelabel, 2)
+	relabelRelease := make(chan struct{}, 1)
+	t.Cleanup(func() {
+		select {
+		case relabelRelease <- struct{}{}:
+		default:
+		}
+	})
+	tracker := &autoPromoteTickMergeConnector{
+		autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
+		relabelStarted:           relabelStarted,
+		relabelRelease:           relabelRelease,
+	}
+	var logs mergeFastPathLockedBuffer
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue:      cloneIssue(issue),
+		Attempt:    1,
+		StartedAt:  now.Add(-time.Minute),
+		WorkerHost: "worker-a",
+		Mode:       runpkg.RunModeMerge,
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     issue.ID,
+		CompletedAt: now,
+		Request:     runpkg.RunRequest{Mode: runpkg.RunModeMerge},
+		Result: runpkg.RunResult{
+			FinalState: runpkg.FinalStateCompleted,
+			Output:     runpkg.RunOutputMergeFastPathClean,
+		},
+	})
+
+	want := autoPromoteTickRelabel{
+		repository: "digitaldrywood/detent",
+		number:     866,
+		label:      "ci:ready",
+		stagger:    15 * time.Second,
+	}
+	select {
+	case got := <-relabelStarted:
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("relabel = %#v, want %#v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for trigger-label relabel to start")
+	}
+	if !strings.Contains(logs.String(), "ci_trigger_label_scheduled") {
+		t.Fatalf("logs = %q, want scheduled relabel decision", logs.String())
+	}
+	if _, ok := state.Retry[issue.ID]; !ok {
+		t.Fatalf("Retry[%q] missing while retriggered checks propagate", issue.ID)
+	}
+	if !orch.scheduleMergeWorkerCITriggerLabel(context.Background(), issue, []string{"Test", "Checks"}, 2) {
+		t.Fatal("second scheduleMergeWorkerCITriggerLabel() = false, want pending relabel")
+	}
+	if !strings.Contains(logs.String(), "reapply_pending_for_head") {
+		t.Fatalf("logs = %q, want same-head pending decision", logs.String())
+	}
+	select {
+	case got := <-relabelStarted:
+		t.Fatalf("unexpected duplicate relabel while first is pending: %#v", got)
+	default:
+	}
+	relabelRelease <- struct{}{}
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for !strings.Contains(logs.String(), "ci_trigger_label_reapplied") {
+		select {
+		case <-deadline.C:
+			t.Fatalf("logs = %q, want applied relabel decision", logs.String())
+		case <-ticker.C:
+		}
+	}
+	if orch.scheduleMergeWorkerCITriggerLabel(context.Background(), issue, []string{"Test", "Checks"}, 2) {
+		t.Fatal("third scheduleMergeWorkerCITriggerLabel() = true, want same-head skip")
+	}
+	if !strings.Contains(logs.String(), "ci_trigger_label_skipped") || !strings.Contains(logs.String(), "already_reapplied_for_head") {
+		t.Fatalf("logs = %q, want same-head skipped decision", logs.String())
+	}
+	select {
+	case got := <-relabelStarted:
+		t.Fatalf("unexpected duplicate relabel after first completed: %#v", got)
+	default:
+	}
+}
+
+type mergeFastPathLockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *mergeFastPathLockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *mergeFastPathLockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
 }
 
 func TestMergingFastPathHydrationUnavailableDefers(t *testing.T) {

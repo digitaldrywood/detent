@@ -189,6 +189,8 @@ type Orchestrator struct {
 	retrospector            Retrospector
 	hydrationSkipStreaks    map[string]int
 	hydrationWarned         bool
+	ciTriggerLabelMu        sync.Mutex
+	ciTriggerLabelHeads     map[string]ciTriggerLabelHead
 	stateRequests           chan stateRequest
 	drainRequests           chan drainRequest
 	forceRequests           chan forceRequest
@@ -386,6 +388,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		dailyBudgetStatus:       dailyBudgetStatus,
 		issueBudgetStatus:       issueBudgetStatus,
 		now:                     now,
+		ciTriggerLabelHeads:     map[string]ciTriggerLabelHead{},
 		stateRequests:           make(chan stateRequest),
 		drainRequests:           make(chan drainRequest),
 		forceRequests:           make(chan forceRequest),
@@ -402,6 +405,11 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		pendingStops:            map[string]*pendingStopRun{},
 		completedStops:          map[string]StopRunResult{},
 	}, nil
+}
+
+type ciTriggerLabelHead struct {
+	HeadSHA string
+	Pending bool
 }
 
 func (o *Orchestrator) Run(ctx context.Context) error {
