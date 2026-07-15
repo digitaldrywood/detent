@@ -107,6 +107,7 @@ type Connector struct {
 	pullRequests      *pullRequestStatusCache
 	prHydration       *pullRequestHydrationCircuitBreaker
 	prHydrationCursor map[string]string
+	triggerLabelDir   string
 	logger            *slog.Logger
 	mu                sync.RWMutex
 	writeMu           sync.Mutex

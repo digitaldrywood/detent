@@ -5060,6 +5060,13 @@ type autoPromoteTickHydration struct {
 	number     int
 }
 
+type autoPromoteTickRelabel struct {
+	repository string
+	number     int
+	label      string
+	stagger    time.Duration
+}
+
 func autoPromoteReworkEventMetadata(prNumber int, headSHA string, failedChecks ...string) string {
 	issue := connector.Issue{
 		PullRequest: &connector.PullRequest{
@@ -5140,6 +5147,7 @@ type autoPromoteTickMergeConnector struct {
 	*autoPromoteTickConnector
 	merges         []autoPromoteTickMerge
 	hydrations     []autoPromoteTickHydration
+	relabels       []autoPromoteTickRelabel
 	hydratedIssues []connector.Issue
 	err            error
 	hydrateErr     error
@@ -5255,6 +5263,16 @@ func (c *autoPromoteTickMergeConnector) HydratePullRequest(_ context.Context, is
 		}
 	}
 	return cloneIssue(issue), nil
+}
+
+func (c *autoPromoteTickMergeConnector) ReapplyPullRequestLabel(_ context.Context, repository string, number int, label string, stagger time.Duration) error {
+	c.relabels = append(c.relabels, autoPromoteTickRelabel{
+		repository: repository,
+		number:     number,
+		label:      label,
+		stagger:    stagger,
+	})
+	return nil
 }
 
 func (c *autoPromoteTickMergeConnector) MergePullRequest(_ context.Context, repository string, number int, headSHA string, method string) error {

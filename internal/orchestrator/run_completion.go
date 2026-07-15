@@ -23,6 +23,7 @@ import (
 const (
 	mergeWorkerRequiredChecksMissingReason = "required_checks_missing_after_head_update"
 	mergeWorkerFastPathNotReadyReason      = "merge_fast_path_head_not_ready"
+	mergeWorkerCITriggerLabelFailedReason  = "ci_trigger_label_reapply_failed"
 )
 
 func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
@@ -969,7 +970,13 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			return true
 		}
 		if missingChecks := mergeWorkerMissingRequiredChecks(issue); len(missingChecks) > 0 {
-			if mergeWorkerMissingRequiredChecksPropagating(issue, running.Attempt) {
+			reapplied, err := o.reapplyMergeWorkerCITriggerLabel(ctx, issue, missingChecks)
+			if err != nil {
+				running.Issue = issue
+				o.failProgrammaticMergeWorkerResult(ctx, state, event, running, mergeWorkerCITriggerLabelFailedReason, err)
+				return true
+			}
+			if reapplied || mergeWorkerMissingRequiredChecksPropagating(issue, running.Attempt) {
 				o.waitForMergeWorkerRequiredCheckPropagation(ctx, state, event, running, issue)
 				return true
 			}
@@ -1276,6 +1283,63 @@ func mergeWorkerMissingRequiredChecksPropagating(issue connector.Issue, attempt 
 	default:
 		return false
 	}
+}
+
+func (o *Orchestrator) reapplyMergeWorkerCITriggerLabel(ctx context.Context, issue connector.Issue, missingChecks []string) (bool, error) {
+	cfg := gate.Effective(o.cfg.AutoPromote.Gate)
+	label := strings.TrimSpace(cfg.CITriggerLabel)
+	attrs := mergeWorkerLogAttrs(issue, "missing_required_checks", strings.Join(missingChecks, ","))
+	if label == "" {
+		if o.logger != nil {
+			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "not_configured")...)
+		}
+		return false, nil
+	}
+	repository := pullRequestRepository(issue)
+	number := pullRequestNumber(issue)
+	headSHA := ""
+	if issue.PullRequest != nil {
+		headSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
+	}
+	attrs = append(attrs, "label", label)
+	if repository == "" || number <= 0 || headSHA == "" {
+		if o.logger != nil {
+			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "pull_request_identity_incomplete")...)
+		}
+		return false, nil
+	}
+	key := strings.ToLower(repository) + "#" + strconv.Itoa(number) + "|" + strings.ToLower(label)
+	if o.ciTriggerLabelHeads == nil {
+		o.ciTriggerLabelHeads = map[string]string{}
+	}
+	if o.ciTriggerLabelHeads[key] == headSHA {
+		if o.logger != nil {
+			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "already_reapplied_for_head")...)
+		}
+		return false, nil
+	}
+	reapplier, ok := o.connector.(connector.PullRequestLabelReapplier)
+	if !ok {
+		if o.logger != nil {
+			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "connector_unsupported")...)
+		}
+		return false, nil
+	}
+	stagger := time.Duration(gate.DefaultCITriggerLabelStaggerSeconds) * time.Second
+	if cfg.CITriggerLabelStaggerSeconds != nil {
+		stagger = time.Duration(*cfg.CITriggerLabelStaggerSeconds) * time.Second
+	}
+	if err := reapplier.ReapplyPullRequestLabel(ctx, repository, number, label, stagger); err != nil {
+		if o.logger != nil {
+			o.logger.Error("ci_trigger_label_failed", append(attrs, "stagger", stagger, "error", err)...)
+		}
+		return false, fmt.Errorf("reapply CI trigger label %q to %s#%d: %w", label, repository, number, err)
+	}
+	o.ciTriggerLabelHeads[key] = headSHA
+	if o.logger != nil {
+		o.logger.Info("ci_trigger_label_reapplied", append(attrs, "stagger", stagger)...)
+	}
+	return true, nil
 }
 
 func (o *Orchestrator) reworkMergeWorkerResult(

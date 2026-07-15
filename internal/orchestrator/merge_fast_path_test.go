@@ -13,6 +13,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -251,6 +252,104 @@ func TestMergingFastPathMissingRequiredChecksWaitsForPropagation(t *testing.T) {
 	}
 	if !strings.Contains(retry.Error, "required checks") {
 		t.Fatalf("Retry[%q].Error = %q, want required-check propagation wait", issue.ID, retry.Error)
+	}
+}
+
+func TestMergingFastPathMainAdvanceRetriggersMissingCurrentHeadChecks(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 15, 13, 25, 0, 0, time.UTC)
+	staggerSeconds := 15
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:    1,
+		FailureRetryBaseDelay:  time.Minute,
+		MaxRetryBackoff:        time.Hour,
+		ContinuationRetryDelay: 5 * time.Second,
+		MergeFastPathEnabled:   true,
+		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:         []string{"Merging"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		AutoPromote: AutoPromoteConfig{Gate: gate.Config{
+			Kind:                         gate.KindCommand,
+			RequiredStatusChecks:         []string{"Test", "Checks"},
+			CITriggerLabel:               "ci:ready",
+			CITriggerLabelStaggerSeconds: &staggerSeconds,
+		}},
+	})
+	issue := autoPromoteTickIssue("issue-sibling-blocked-after-main-advance", []string{"bug"}, &connector.PullRequest{
+		Number:         866,
+		URL:            "https://github.test/digitaldrywood/detent/pull/866",
+		BranchName:     "detent/sibling-blocked-after-main-advance",
+		State:          "OPEN",
+		MergeableState: "blocked",
+		CIStatus:       "pending",
+		HeadSHA:        "head-after-main-advance",
+		BaseSHA:        "advanced-main",
+		RequiredCheckFailures: []connector.PullRequestCheck{
+			{Name: "Test", Status: "missing", Conclusion: "missing"},
+			{Name: "Checks", Status: "missing", Conclusion: "missing"},
+		},
+	})
+	issue.State = "Merging"
+	issue.Identifier = "digitaldrywood/detent#866"
+	issue.PRRepository = "digitaldrywood/detent"
+
+	tracker := &autoPromoteTickMergeConnector{
+		autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
+	}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue:      cloneIssue(issue),
+		Attempt:    1,
+		StartedAt:  now.Add(-time.Minute),
+		WorkerHost: "worker-a",
+		Mode:       runpkg.RunModeMerge,
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     issue.ID,
+		CompletedAt: now,
+		Request:     runpkg.RunRequest{Mode: runpkg.RunModeMerge},
+		Result: runpkg.RunResult{
+			FinalState: runpkg.FinalStateCompleted,
+			Output:     runpkg.RunOutputMergeFastPathClean,
+		},
+	})
+
+	want := []autoPromoteTickRelabel{{
+		repository: "digitaldrywood/detent",
+		number:     866,
+		label:      "ci:ready",
+		stagger:    15 * time.Second,
+	}}
+	if !reflect.DeepEqual(tracker.relabels, want) {
+		t.Fatalf("relabels = %#v, want %#v", tracker.relabels, want)
+	}
+	if !strings.Contains(logs.String(), "ci_trigger_label_reapplied") {
+		t.Fatalf("logs = %q, want applied relabel decision", logs.String())
+	}
+	if _, ok := state.Retry[issue.ID]; !ok {
+		t.Fatalf("Retry[%q] missing while retriggered checks propagate", issue.ID)
+	}
+	reapplied, err := orch.reapplyMergeWorkerCITriggerLabel(context.Background(), issue, []string{"Test", "Checks"})
+	if err != nil {
+		t.Fatalf("second reapplyMergeWorkerCITriggerLabel() error = %v", err)
+	}
+	if reapplied {
+		t.Fatal("second reapplyMergeWorkerCITriggerLabel() = true, want same-head skip")
+	}
+	if len(tracker.relabels) != 1 {
+		t.Fatalf("relabels after same-head decision = %#v, want one", tracker.relabels)
+	}
+	if !strings.Contains(logs.String(), "ci_trigger_label_skipped") || !strings.Contains(logs.String(), "already_reapplied_for_head") {
+		t.Fatalf("logs = %q, want same-head skipped decision", logs.String())
 	}
 }
 

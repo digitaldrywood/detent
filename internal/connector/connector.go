@@ -119,6 +119,10 @@ type PullRequestCheckRerunner interface {
 	RerunPullRequestChecks(context.Context, Issue, []PullRequestCheck) error
 }
 
+type PullRequestLabelReapplier interface {
+	ReapplyPullRequestLabel(context.Context, string, int, string, time.Duration) error
+}
+
 type IssueCommentReader interface {
 	FetchIssueComments(context.Context, Issue) ([]IssueComment, error)
 }

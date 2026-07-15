@@ -649,6 +649,7 @@ func TestInstructionsDescribeCITriggerLabel(t *testing.T) {
 	for _, want := range []string{
 		"CI trigger label `ci:ready`",
 		"After every push",
+		"Merging workers reapply the label automatically",
 		"detent ci-trigger-label",
 		"removes the label if present, adds it again",
 		"REST issue-label endpoints",

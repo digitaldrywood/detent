@@ -556,3 +556,7 @@ func restRepositoryOpenIssuesPath(repo pullRequestRepo, page int) string {
 func restIssueLabelsPath(ref issueRef) string {
 	return restIssuePath(ref) + "/labels"
 }
+
+func restIssueLabelPath(ref issueRef, label string) string {
+	return restIssueLabelsPath(ref) + "/" + url.PathEscape(label)
+}

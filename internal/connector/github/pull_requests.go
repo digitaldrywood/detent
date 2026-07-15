@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/citrigger"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/reviewseverity"
 )
@@ -377,6 +378,38 @@ func (c *Connector) RerunPullRequestChecks(ctx context.Context, issue connector.
 		return fmt.Errorf("rerun github pull request checks: %w", errors.Join(errs...))
 	}
 	return nil
+}
+
+func (c *Connector) ReapplyPullRequestLabel(ctx context.Context, repository string, number int, labelName string, stagger time.Duration) error {
+	repo, ok := pullRequestRepoFromName(repository)
+	labelName = strings.TrimSpace(labelName)
+	if !ok || number <= 0 || labelName == "" {
+		return fmt.Errorf("reapply github pull request label: invalid pull request %s#%d or label", strings.TrimSpace(repository), number)
+	}
+	return citrigger.Reapply(ctx, citrigger.Options{
+		CoordinationDir: c.triggerLabelDir,
+		Repository:      repository,
+		Stagger:         stagger,
+	}, citrigger.Dependencies{}, func(ctx context.Context) error {
+		ref := issueRef{Owner: repo.Owner, Name: repo.Name, Number: number}
+		issue, err := c.fetchRESTIssue(ctx, ref)
+		if err != nil {
+			return fmt.Errorf("fetch github pull request labels: %w", err)
+		}
+		if stringSliceContainsFold(labelNames(issue.Labels), labelName) {
+			if err := c.client.REST(ctx, http.MethodDelete, restIssueLabelPath(ref, labelName), nil, nil); err != nil {
+				return fmt.Errorf("remove github pull request label: %w", err)
+			}
+		}
+		var response []label
+		if err := c.client.REST(ctx, http.MethodPost, restIssueLabelsPath(ref), map[string]any{"labels": []string{labelName}}, &response); err != nil {
+			return fmt.Errorf("add github pull request label: %w", err)
+		}
+		if !stringSliceContainsFold(labelNames(nodeConnection[label]{Nodes: response}), labelName) {
+			return errors.New("add github pull request label: response did not include label")
+		}
+		return nil
+	})
 }
 
 func hydratedPullRequestRef(issue connector.Issue) (pullRequestRepo, int, bool) {

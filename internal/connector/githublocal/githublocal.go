@@ -115,6 +115,7 @@ var _ connector.ProjectRemover = (*Connector)(nil)
 var _ connector.PullRequestCommenter = (*Connector)(nil)
 var _ connector.PullRequestCommentReader = (*Connector)(nil)
 var _ connector.PullRequestHydrator = (*Connector)(nil)
+var _ connector.PullRequestLabelReapplier = (*Connector)(nil)
 var _ connector.PullRequestMergeQueue = (*Connector)(nil)
 var _ connector.PullRequestMerger = (*Connector)(nil)
 var _ connector.RESTRateLimitUsageReporter = (*Connector)(nil)
@@ -499,6 +500,14 @@ func (c *Connector) EnqueuePullRequest(ctx context.Context, issue connector.Issu
 
 func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
 	return c.github.HydratePullRequest(ctx, issue)
+}
+
+func (c *Connector) ReapplyPullRequestLabel(ctx context.Context, repository string, number int, label string, stagger time.Duration) error {
+	reapplier, ok := c.github.(connector.PullRequestLabelReapplier)
+	if !ok {
+		return connector.ErrNotImplemented
+	}
+	return reapplier.ReapplyPullRequestLabel(ctx, repository, number, label, stagger)
 }
 
 func (c *Connector) FetchIssueParents(ctx context.Context, issueID string) ([]connector.Issue, error) {
