@@ -1,11 +1,14 @@
 package local
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -111,6 +114,84 @@ func TestConnectorPersistsWorkItemStateAndEvents(t *testing.T) {
 	}
 	if _, err := reopened.issueByID(ctx, "ad-1"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("issueByID() error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestConnectorFetchesMixedTypeWorkItemFields(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	issue := connector.NewIssue()
+	issue.ID = "mock-1"
+	issue.Identifier = "video/mock-1"
+	issue.State = "Review"
+	var logs bytes.Buffer
+
+	store, err := New(Config{
+		Path:      filepath.Join(t.TempDir(), "mixed-fields.db"),
+		ProjectID: "video",
+		Issues:    []connector.Issue{issue},
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelWarn,
+		})),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	const fieldsJSON = `{"gate":"mock","slug":"demo","render_status":"recut","review_round":6,"approved":true,"quality":null,"nested":{"stage":1},"cuts":[1,2]}`
+	if _, err := store.db.ExecContext(ctx, `
+update detent_work_items set fields_json = ? where project_id = ? and id = ?`,
+		fieldsJSON, "video", issue.ID); err != nil {
+		t.Fatalf("update fields_json error = %v", err)
+	}
+
+	issues, err := store.FetchIssuesByStates(ctx, []string{"Review"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(issues))
+	}
+	want := map[string]string{
+		"gate":          "mock",
+		"slug":          "demo",
+		"render_status": "recut",
+		"review_round":  "6",
+		"approved":      "true",
+		"quality":       "null",
+	}
+	if len(issues[0].Fields) != len(want) {
+		t.Fatalf("Fields = %#v, want %#v", issues[0].Fields, want)
+	}
+	for field, value := range want {
+		if issues[0].Fields[field] != value {
+			t.Errorf("Fields[%q] = %q, want %q", field, issues[0].Fields[field], value)
+		}
+	}
+	for _, field := range []string{"nested", "cuts"} {
+		if value, ok := issues[0].Fields[field]; ok {
+			t.Errorf("Fields[%q] = %q, want field omitted", field, value)
+		}
+	}
+	if count := strings.Count(logs.String(), "local sqlite work item field has non-string JSON value"); count != 5 {
+		t.Fatalf("field warning count = %d, want 5:\n%s", count, logs.String())
+	}
+	for _, warning := range []string{
+		"field=review_round json_type=number action=stringified",
+		"field=approved json_type=boolean action=stringified",
+		"field=quality json_type=null action=stringified",
+		"field=nested json_type=object action=skipped",
+		"field=cuts json_type=array action=skipped",
+	} {
+		if !strings.Contains(logs.String(), warning) {
+			t.Errorf("logs missing %q:\n%s", warning, logs.String())
+		}
 	}
 }
 

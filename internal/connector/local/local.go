@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -49,6 +50,7 @@ type Config struct {
 	ObservedStates []string
 	TerminalStates []string
 	Now            func() time.Time
+	Logger         *slog.Logger
 }
 
 type Connector struct {
@@ -58,6 +60,7 @@ type Connector struct {
 	observedStates []string
 	terminalStates []string
 	now            func() time.Time
+	logger         *slog.Logger
 }
 
 var _ connector.Connector = (*Connector)(nil)
@@ -105,9 +108,13 @@ func New(cfg Config) (*Connector, error) {
 		observedStates: cloneStrings(cfg.ObservedStates),
 		terminalStates: cloneStrings(cfg.TerminalStates),
 		now:            cfg.Now,
+		logger:         cfg.Logger,
 	}
 	if conn.now == nil {
 		conn.now = time.Now
+	}
+	if conn.logger == nil {
+		conn.logger = slog.Default()
 	}
 	if err := conn.migrate(context.Background()); err != nil {
 		_ = db.Close()
@@ -989,7 +996,7 @@ where project_id = ?`
 
 	issues := []connector.Issue{}
 	for rows.Next() {
-		issue, err := scanIssue(rows)
+		issue, err := c.scanIssue(rows)
 		if err != nil {
 			closeErr := rows.Close()
 			return nil, errors.Join(err, closeErr)
@@ -1137,7 +1144,7 @@ type issueScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanIssue(scanner issueScanner) (connector.Issue, error) {
+func (c *Connector) scanIssue(scanner issueScanner) (connector.Issue, error) {
 	var issue connector.Issue
 	var projectID string
 	var priority sql.NullInt64
@@ -1166,7 +1173,26 @@ func scanIssue(scanner issueScanner) (connector.Issue, error) {
 	}
 	issue.Assignees = unmarshalStringSlice(assigneesJSON)
 	issue.Labels = unmarshalStringSlice(labelsJSON)
-	issue.Fields = unmarshalStringMap(fieldsJSON)
+	issue.Fields = map[string]string{}
+	fields, warnings, fieldsErr := unmarshalIssueFields(fieldsJSON)
+	if fieldsErr != nil {
+		c.logger.Warn("decode local sqlite work item fields failed",
+			"project_id", projectID,
+			"issue_id", issue.ID,
+			"error", fieldsErr,
+		)
+	} else {
+		issue.Fields = fields
+		for _, warning := range warnings {
+			c.logger.Warn("local sqlite work item field has non-string JSON value",
+				"project_id", projectID,
+				"issue_id", issue.ID,
+				"field", warning.field,
+				"json_type", warning.jsonType,
+				"action", warning.action,
+			)
+		}
+	}
 	issue.Metadata = unmarshalStringMap(metadataJSON)
 	applyGitHubIdentityMetadata(&issue, githubIdentity{
 		NodeID:        githubNodeID,
@@ -1433,4 +1459,72 @@ func unmarshalStringMap(raw string) map[string]string {
 		return map[string]string{}
 	}
 	return values
+}
+
+type fieldHydrationWarning struct {
+	field    string
+	jsonType string
+	action   string
+}
+
+func unmarshalIssueFields(raw string) (map[string]string, []fieldHydrationWarning, error) {
+	var encoded map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &encoded); err != nil {
+		return map[string]string{}, nil, err
+	}
+
+	fields := make(map[string]string, len(encoded))
+	warnings := make([]fieldHydrationWarning, 0)
+	for field, encodedValue := range encoded {
+		value, jsonType, ok := issueFieldString(encodedValue)
+		if jsonType != "string" {
+			action := "skipped"
+			if ok {
+				action = "stringified"
+			}
+			warnings = append(warnings, fieldHydrationWarning{
+				field:    field,
+				jsonType: jsonType,
+				action:   action,
+			})
+		}
+		if ok {
+			fields[field] = value
+		}
+	}
+	return fields, warnings, nil
+}
+
+func issueFieldString(raw json.RawMessage) (string, string, bool) {
+	value := strings.TrimSpace(string(raw))
+	if value == "" {
+		return "", "invalid", false
+	}
+
+	switch value[0] {
+	case '"':
+		var decoded string
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return "", "invalid", false
+		}
+		return decoded, "string", true
+	case 't', 'f':
+		var decoded bool
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return "", "invalid", false
+		}
+		return strconv.FormatBool(decoded), "boolean", true
+	case 'n':
+		return "null", "null", true
+	case '[':
+		return "", "array", false
+	case '{':
+		return "", "object", false
+	default:
+		var decoded json.Number
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return "", "invalid", false
+		}
+		return decoded.String(), "number", true
+	}
 }

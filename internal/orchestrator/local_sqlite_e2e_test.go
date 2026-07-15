@@ -266,6 +266,21 @@ func TestLocalSQLiteArtifactReworkUsesConfiguredStatusField(t *testing.T) {
 			t.Errorf("Close() error = %v", err)
 		}
 	})
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open tracker db: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	const fieldsJSON = `{"render_status":"recut","review_round":6}`
+	if _, err := db.ExecContext(t.Context(), `
+update detent_work_items set fields_json = ? where project_id = ? and id = ?`,
+		fieldsJSON, "digitaldrywood-video", seed.ID); err != nil {
+		t.Fatalf("update fields_json error = %v", err)
+	}
 
 	runner := &staticRunner{
 		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted},
@@ -307,16 +322,6 @@ func TestLocalSQLiteArtifactReworkUsesConfiguredStatusField(t *testing.T) {
 	}
 	stop := runOrchestrator(t, orch)
 	t.Cleanup(stop)
-
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("open tracker db: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Errorf("Close() error = %v", err)
-		}
-	})
 
 	waitForLocalStateUpdateEvents(t, db, seed.ID, []string{"Rework"})
 }
