@@ -163,6 +163,9 @@ func TestDispatchReadyIssuesDefersNotReadyMergeRetryBehindReadyHead(t *testing.T
 	waiting.CreatedAt = &waitingCreatedAt
 	ready := nativeMergeQueueTestIssue(1324, "success")
 	ready.ID = "issue-ready-after-deferral"
+	ready.Identifier = "digitaldrywood/pyroapex#1324"
+	ready.PRRepository = "digitaldrywood/pyroapex"
+	ready.PullRequest.URL = "https://github.test/digitaldrywood/pyroapex/pull/1324"
 	readyCreatedAt := now.Add(-time.Minute)
 	ready.CreatedAt = &readyCreatedAt
 
@@ -212,6 +215,9 @@ func TestDispatchReadyIssuesRevisitsDeferredMergeWhenCurrentHeadBecomesReady(t *
 	queueHead.CreatedAt = &queueHeadCreatedAt
 	deferred := nativeMergeQueueTestIssue(1327, "pending")
 	deferred.ID = "issue-deferred-now-ready"
+	deferred.Identifier = "digitaldrywood/pyroapex#1327"
+	deferred.PRRepository = "digitaldrywood/pyroapex"
+	deferred.PullRequest.URL = "https://github.test/digitaldrywood/pyroapex/pull/1327"
 	deferredCreatedAt := now.Add(-time.Minute)
 	deferred.CreatedAt = &deferredCreatedAt
 	refreshed := cloneIssue(deferred)

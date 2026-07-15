@@ -1253,15 +1253,32 @@ func (o *Orchestrator) logMergeWorkerQueueCycle(issues []connector.Issue) {
 
 func prioritizeReadyMergingIssues(issues []connector.Issue) {
 	ordered := make([]connector.Issue, 0, len(issues))
+	readyHeads := make(map[string]struct{})
+	seenRepositories := make(map[string]struct{})
 	for _, issue := range issues {
-		if mergeWorkerIssue(issue) && mergeWorkerHeadReady(issue) {
+		if !mergeWorkerIssue(issue) {
+			continue
+		}
+		repository := mergeWorkerRepositoryKey(issue)
+		if repository != "" {
+			if _, seen := seenRepositories[repository]; seen {
+				continue
+			}
+			seenRepositories[repository] = struct{}{}
+		}
+		if mergeWorkerHeadReady(issue) {
+			readyHeads[issue.ID] = struct{}{}
 			ordered = append(ordered, issue)
 		}
 	}
 	for _, issue := range issues {
-		if mergeWorkerIssue(issue) && !mergeWorkerHeadReady(issue) {
-			ordered = append(ordered, issue)
+		if !mergeWorkerIssue(issue) {
+			continue
 		}
+		if _, ready := readyHeads[issue.ID]; ready {
+			continue
+		}
+		ordered = append(ordered, issue)
 	}
 	if len(ordered) == 0 {
 		return

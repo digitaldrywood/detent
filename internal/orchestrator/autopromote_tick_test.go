@@ -3989,6 +3989,9 @@ func TestMergeWorkerDispatchCandidatesPrefersReadyHead(t *testing.T) {
 	waiting.CreatedAt = &waitingCreatedAt
 	ready := nativeMergeQueueTestIssue(1322, "success")
 	ready.ID = "issue-ready-head"
+	ready.Identifier = "digitaldrywood/pyroapex#1322"
+	ready.PRRepository = "digitaldrywood/pyroapex"
+	ready.PullRequest.URL = "https://github.test/digitaldrywood/pyroapex/pull/1322"
 	ready.CreatedAt = &readyCreatedAt
 	state := newState(cfg)
 	var logs strings.Builder
@@ -4126,6 +4129,7 @@ func TestMergeWorkerDispatchCandidatesConsumesNotReadyQueueHeadRepository(t *tes
 		State:                      "OPEN",
 		MergeableState:             "clean",
 		CIStatus:                   "success",
+		HeadSHA:                    "head-phone-blocked",
 		HydrationUnavailableReason: connector.PullRequestHydrationReasonSecondaryThrottled,
 	})
 	phoneHead.State = "Merging"
@@ -4137,6 +4141,7 @@ func TestMergeWorkerDispatchCandidatesConsumesNotReadyQueueHeadRepository(t *tes
 		State:          "OPEN",
 		MergeableState: "clean",
 		CIStatus:       "success",
+		HeadSHA:        "head-phone-ready",
 	})
 	phoneSibling.State = "Merging"
 	phoneSibling.Identifier = "digitaldrywood/creswoodcorners-phone#68"
@@ -4147,6 +4152,7 @@ func TestMergeWorkerDispatchCandidatesConsumesNotReadyQueueHeadRepository(t *tes
 		State:          "OPEN",
 		MergeableState: "clean",
 		CIStatus:       "success",
+		HeadSHA:        "head-outlet-ready",
 	})
 	outlet.State = "Merging"
 	outlet.Identifier = "digitaldrywood/creswoodcornersoutlet#89"
