@@ -536,6 +536,56 @@ func TestEvaluateAutoPromote(t *testing.T) {
 			},
 		},
 		{
+			name: "artifact gate routes configured rework field over stale summary",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-artifact-configured-rework", nil)
+				issue.Fields = map[string]string{"render_status": "recut"}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate: gate.Config{
+					Kind: gate.KindArtifact,
+					Artifact: gate.ArtifactConfig{
+						StatusField:    "render_status",
+						PassStatuses:   []string{"approved"},
+						WaitStatuses:   []string{"pending_review"},
+						ReworkStatuses: []string{"recut"},
+					},
+				},
+			},
+			input: AutoPromoteSummary{ArtifactStatus: "pending_review"},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionRework,
+				Reason: AutoPromoteReasonArtifactStatusRework,
+			},
+		},
+		{
+			name: "artifact gate promotes configured pass field over stale summary",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-artifact-configured-pass", nil)
+				issue.Fields = map[string]string{"render_status": "approved"}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate: gate.Config{
+					Kind: gate.KindArtifact,
+					Artifact: gate.ArtifactConfig{
+						StatusField:    "render_status",
+						PassStatuses:   []string{"approved"},
+						WaitStatuses:   []string{"pending_review"},
+						ReworkStatuses: []string{"recut"},
+					},
+				},
+			},
+			input: AutoPromoteSummary{ArtifactStatus: "pending_review"},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
 			name: "artifact gate routes rework from deliverable validation status",
 			issue: func() connector.Issue {
 				issue := autoPromoteTestIssue("issue-artifact-deliverable", nil)
