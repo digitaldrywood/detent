@@ -25,6 +25,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/instancelock"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
@@ -3661,6 +3662,41 @@ func TestCheckDoctorSQLite(t *testing.T) {
 				t.Fatalf("Detail = %q, want containing %q", got.Detail, tt.wantDetail)
 			}
 		})
+	}
+}
+
+func TestCheckDoctorInstanceLock(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	resolution := globalconfig.PathResolution{Path: filepath.Join(root, "global.yaml")}
+	lockPath := filepath.Join(root, "detent.db.lock")
+
+	check := checkDoctorInstanceLock(resolution)
+	if check.Status != doctorOK || !strings.Contains(check.Detail, "no active or stale holder") {
+		t.Fatalf("missing lock check = %+v, want OK", check)
+	}
+
+	if err := os.WriteFile(lockPath, []byte("pid=987654\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	check = checkDoctorInstanceLock(resolution)
+	if check.Status != doctorWarn || !strings.Contains(check.Detail, "stale lock:") {
+		t.Fatalf("stale lock check = %+v, want explicit stale warning", check)
+	}
+
+	lock, err := instancelock.Acquire(lockPath)
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := lock.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	check = checkDoctorInstanceLock(resolution)
+	if check.Status != doctorOK || !strings.Contains(check.Detail, "is held by pid") {
+		t.Fatalf("held lock check = %+v, want holder detail", check)
 	}
 }
 

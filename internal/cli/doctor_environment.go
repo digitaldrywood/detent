@@ -16,6 +16,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/instancelock"
 )
 
 var doctorHealthCheckKeys = []string{"hub", "store", "registry", "connector"}
@@ -281,6 +282,34 @@ func checkDoctorSQLite(ctx context.Context, resolution globalconfig.PathResoluti
 		Name:   "SQLite database",
 		Status: doctorOK,
 		Detail: dbPath + " is reachable",
+	}
+}
+
+func checkDoctorInstanceLock(resolution globalconfig.PathResolution) doctorCheck {
+	const name = "Instance lock"
+	if strings.TrimSpace(resolution.Path) == "" {
+		return doctorCheck{Name: name, Status: doctorFail, Detail: "global config path is unavailable", Hint: "Fix config resolution, then rerun detent doctor."}
+	}
+
+	lockPath := filepath.Join(filepath.Dir(resolution.Path), "detent.db.lock")
+	inspection, err := instancelock.Inspect(lockPath)
+	if err != nil {
+		return doctorCheck{Name: name, Status: doctorFail, Detail: fmt.Sprintf("%s could not be inspected: %v", lockPath, err), Hint: "Check the lock file permissions, then rerun detent doctor."}
+	}
+	switch inspection.Status {
+	case instancelock.StatusStale:
+		detail := "stale lock: " + lockPath
+		if inspection.MetadataError == nil {
+			detail = fmt.Sprintf("stale lock: %s was left by pid %d on %s, started %s", lockPath, inspection.Owner.PID, inspection.Owner.Hostname, inspection.Owner.StartedAt.Format(time.RFC3339))
+		}
+		return doctorCheck{Name: name, Status: doctorWarn, Detail: detail, Hint: "Detent will self-heal this stale lock on the next start."}
+	case instancelock.StatusHeld:
+		if inspection.MetadataError == nil {
+			return doctorCheck{Name: name, Status: doctorOK, Detail: fmt.Sprintf("%s is held by pid %d on %s, started %s", lockPath, inspection.Owner.PID, inspection.Owner.Hostname, inspection.Owner.StartedAt.Format(time.RFC3339))}
+		}
+		return doctorCheck{Name: name, Status: doctorWarn, Detail: fmt.Sprintf("%s is held with unreadable owner metadata: %v", lockPath, inspection.MetadataError), Hint: "Stop the running Detent instance before repairing its lock metadata."}
+	default:
+		return doctorCheck{Name: name, Status: doctorOK, Detail: lockPath + " has no active or stale holder"}
 	}
 }
 

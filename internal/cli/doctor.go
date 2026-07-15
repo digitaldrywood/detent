@@ -381,6 +381,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	}
 	jobs = append(jobs,
 		doctorCheckJob{
+			Name: "Instance lock",
+			Run: func(_ context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorInstanceLock(resolution)}
+			},
+		},
+		doctorCheckJob{
 			Name: "SQLite database",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorSQLite(jobCtx, resolution, deps)}
