@@ -232,6 +232,95 @@ func TestLocalSQLiteArtifactLifecycleEndToEnd(t *testing.T) {
 	}
 }
 
+func TestLocalSQLiteArtifactReworkUsesConfiguredStatusField(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "artifact-rework.db")
+	seed := connector.NewIssue()
+	seed.ID = "wi-artifact-rework"
+	seed.Identifier = "wi-artifact-rework"
+	seed.Title = "Recut launch video"
+	seed.State = "Review"
+	seed.Fields = map[string]string{
+		"render_status": "recut",
+		"review_round":  "6",
+	}
+	seed.Deliverable = &connector.Deliverable{
+		Kind:             "artifact",
+		ValidationStatus: "pending_review",
+	}
+
+	tracker, err := local.New(local.Config{
+		Path:           dbPath,
+		ProjectID:      "digitaldrywood-video",
+		Issues:         []connector.Issue{seed},
+		ActiveStates:   []string{"Todo", "Production", "Rework"},
+		ObservedStates: []string{"Backlog", "Review", "Blocked"},
+		TerminalStates: []string{"Ready for Pickup", "Done", "Cancelled"},
+	})
+	if err != nil {
+		t.Fatalf("local.New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := tracker.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	runner := &staticRunner{
+		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted},
+	}
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:        time.Second,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "Production", "Rework"},
+		ObservedStates:      []string{"Backlog", "Review", "Blocked"},
+		TerminalStates:      []string{"Ready for Pickup", "Done", "Cancelled"},
+		AutoPromote: orchestrator.AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 0,
+			GateWaitState: "source",
+			SourceState:   "Review",
+			PassState:     "Ready for Pickup",
+			ReworkState:   "Rework",
+			ReworkLimit:   0,
+			Gate: gate.Config{
+				Kind: gate.KindArtifact,
+				Artifact: gate.ArtifactConfig{
+					StatusField:    "render_status",
+					PassStatuses:   []string{"approved", "valid"},
+					WaitStatuses:   []string{"pending_review"},
+					ReworkStatuses: []string{"recut", "invalid", "missing_assets"},
+				},
+			},
+		},
+		MaxRetryBackoff:        time.Millisecond,
+		FailureRetryBaseDelay:  time.Millisecond,
+		ContinuationRetryDelay: time.Millisecond,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	t.Cleanup(stop)
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open tracker db: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	waitForLocalStateUpdateEvents(t, db, seed.ID, []string{"Rework"})
+}
+
 func TestLocalSQLiteHumanRestartDispatchesArtifactRound(t *testing.T) {
 	t.Parallel()
 

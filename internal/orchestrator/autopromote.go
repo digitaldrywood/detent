@@ -152,7 +152,11 @@ func EvaluateAutoPromote(
 			return autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonPullRequestHydrationUnavailable)
 		}
 	}
-	if strings.TrimSpace(summary.ArtifactStatus) == "" {
+	if status, ok := artifactStatusFieldFromIssue(issue, cfg.Gate.Artifact.StatusField); ok {
+		summary.ArtifactStatus = status
+	} else if !strings.EqualFold(cfg.Gate.Artifact.StatusField, gate.DefaultArtifactStatusField) {
+		summary.ArtifactStatus = ""
+	} else if strings.TrimSpace(summary.ArtifactStatus) == "" {
 		summary.ArtifactStatus = artifactStatusFromIssue(issue, cfg.Gate.Artifact.StatusField)
 	}
 	gateDecision := gate.Evaluate(cfg.Gate, issue.Labels, gateSummary(summary), now, gate.EvaluationOptions{
@@ -349,19 +353,30 @@ func gateRequiresPullRequest(cfg gate.Config) bool {
 }
 
 func artifactStatusFromIssue(issue connector.Issue, statusField string) string {
+	if status, ok := artifactStatusFieldFromIssue(issue, statusField); ok {
+		return status
+	}
+	if statusField = strings.TrimSpace(statusField); statusField != "" &&
+		!strings.EqualFold(statusField, gate.DefaultArtifactStatusField) {
+		return ""
+	}
 	if issue.Deliverable != nil && strings.TrimSpace(issue.Deliverable.ValidationStatus) != "" {
 		return strings.TrimSpace(issue.Deliverable.ValidationStatus)
 	}
+	return ""
+}
+
+func artifactStatusFieldFromIssue(issue connector.Issue, statusField string) (string, bool) {
 	statusField = strings.TrimSpace(statusField)
 	if statusField == "" {
 		statusField = gate.DefaultArtifactStatusField
 	}
 	for key, value := range issue.Fields {
 		if strings.EqualFold(strings.TrimSpace(key), statusField) {
-			return strings.TrimSpace(value)
+			return strings.TrimSpace(value), true
 		}
 	}
-	return ""
+	return "", false
 }
 
 type autoPromoteWorkpadBlockerCheck struct {
