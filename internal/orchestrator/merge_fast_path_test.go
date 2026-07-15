@@ -1,12 +1,14 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -294,10 +296,20 @@ func TestMergingFastPathMainAdvanceRetriggersMissingCurrentHeadChecks(t *testing
 	issue.Identifier = "digitaldrywood/detent#866"
 	issue.PRRepository = "digitaldrywood/detent"
 
+	relabelStarted := make(chan autoPromoteTickRelabel, 2)
+	relabelRelease := make(chan struct{}, 1)
+	t.Cleanup(func() {
+		select {
+		case relabelRelease <- struct{}{}:
+		default:
+		}
+	})
 	tracker := &autoPromoteTickMergeConnector{
 		autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
+		relabelStarted:           relabelStarted,
+		relabelRelease:           relabelRelease,
 	}
-	var logs strings.Builder
+	var logs mergeFastPathLockedBuffer
 	orch := &Orchestrator{
 		cfg:       cfg,
 		connector: tracker,
@@ -323,34 +335,79 @@ func TestMergingFastPathMainAdvanceRetriggersMissingCurrentHeadChecks(t *testing
 		},
 	})
 
-	want := []autoPromoteTickRelabel{{
+	want := autoPromoteTickRelabel{
 		repository: "digitaldrywood/detent",
 		number:     866,
 		label:      "ci:ready",
 		stagger:    15 * time.Second,
-	}}
-	if !reflect.DeepEqual(tracker.relabels, want) {
-		t.Fatalf("relabels = %#v, want %#v", tracker.relabels, want)
 	}
-	if !strings.Contains(logs.String(), "ci_trigger_label_reapplied") {
-		t.Fatalf("logs = %q, want applied relabel decision", logs.String())
+	select {
+	case got := <-relabelStarted:
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("relabel = %#v, want %#v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for trigger-label relabel to start")
+	}
+	if !strings.Contains(logs.String(), "ci_trigger_label_scheduled") {
+		t.Fatalf("logs = %q, want scheduled relabel decision", logs.String())
 	}
 	if _, ok := state.Retry[issue.ID]; !ok {
 		t.Fatalf("Retry[%q] missing while retriggered checks propagate", issue.ID)
 	}
-	reapplied, err := orch.reapplyMergeWorkerCITriggerLabel(context.Background(), issue, []string{"Test", "Checks"})
-	if err != nil {
-		t.Fatalf("second reapplyMergeWorkerCITriggerLabel() error = %v", err)
+	if !orch.scheduleMergeWorkerCITriggerLabel(context.Background(), issue, []string{"Test", "Checks"}, 2) {
+		t.Fatal("second scheduleMergeWorkerCITriggerLabel() = false, want pending relabel")
 	}
-	if reapplied {
-		t.Fatal("second reapplyMergeWorkerCITriggerLabel() = true, want same-head skip")
+	if !strings.Contains(logs.String(), "reapply_pending_for_head") {
+		t.Fatalf("logs = %q, want same-head pending decision", logs.String())
 	}
-	if len(tracker.relabels) != 1 {
-		t.Fatalf("relabels after same-head decision = %#v, want one", tracker.relabels)
+	select {
+	case got := <-relabelStarted:
+		t.Fatalf("unexpected duplicate relabel while first is pending: %#v", got)
+	default:
+	}
+	relabelRelease <- struct{}{}
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for !strings.Contains(logs.String(), "ci_trigger_label_reapplied") {
+		select {
+		case <-deadline.C:
+			t.Fatalf("logs = %q, want applied relabel decision", logs.String())
+		case <-ticker.C:
+		}
+	}
+	if orch.scheduleMergeWorkerCITriggerLabel(context.Background(), issue, []string{"Test", "Checks"}, 2) {
+		t.Fatal("third scheduleMergeWorkerCITriggerLabel() = true, want same-head skip")
 	}
 	if !strings.Contains(logs.String(), "ci_trigger_label_skipped") || !strings.Contains(logs.String(), "already_reapplied_for_head") {
 		t.Fatalf("logs = %q, want same-head skipped decision", logs.String())
 	}
+	select {
+	case got := <-relabelStarted:
+		t.Fatalf("unexpected duplicate relabel after first completed: %#v", got)
+	default:
+	}
+}
+
+type mergeFastPathLockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *mergeFastPathLockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *mergeFastPathLockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
 }
 
 func TestMergingFastPathHydrationUnavailableDefers(t *testing.T) {
