@@ -531,7 +531,11 @@ func (r *Runner) prepareMergeFastPath(
 	if !ok {
 		return RunResult{}, workspace.MergePrepareResult{}, false, nil
 	}
-	precheck, err := preparer.PrepareMerge(ctx, info, issue, workspace.MergePrepareOptions{})
+	opts := workspace.MergePrepareOptions{}
+	if req.Issue.PullRequest != nil {
+		opts.TargetBranch = strings.TrimSpace(req.Issue.PullRequest.BaseRef)
+	}
+	precheck, err := preparer.PrepareMerge(ctx, info, issue, opts)
 	if err != nil {
 		return RunResult{}, precheck, false, fmt.Errorf("merge fast-path precheck: %w", err)
 	}
@@ -566,7 +570,8 @@ func mergeFastPathCheckedHead(issue connector.Issue) bool {
 	if !strings.EqualFold(strings.TrimSpace(pullRequest.State), "open") || pullRequest.Draft {
 		return false
 	}
-	if !strings.EqualFold(strings.TrimSpace(pullRequest.MergeableState), "behind") {
+	mergeableState := strings.ToLower(strings.TrimSpace(pullRequest.MergeableState))
+	if mergeableState != "behind" && mergeableState != "clean" {
 		return false
 	}
 	if strings.TrimSpace(pullRequest.HeadSHA) == "" {

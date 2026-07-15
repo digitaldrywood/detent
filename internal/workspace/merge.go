@@ -9,10 +9,7 @@ import (
 	"strings"
 )
 
-const (
-	defaultMergeRemote       = "origin"
-	defaultMergeTargetBranch = "main"
-)
+const defaultMergeRemote = "origin"
 
 func (l *LocalGit) PrepareMerge(
 	ctx context.Context,
@@ -30,13 +27,17 @@ func (l *LocalGit) PrepareMerge(
 	}
 	targetBranch := strings.TrimSpace(opts.TargetBranch)
 	if targetBranch == "" {
-		targetBranch = defaultMergeTargetBranch
+		targetBranch, err = remoteDefaultBranch(ctx, normalized.Path, remote)
+		if err != nil {
+			return MergePrepareResult{}, fmt.Errorf("resolve remote default branch: %w", err)
+		}
 	}
 	targetRef := remote + "/" + targetBranch
+	fetchRefspec := "+refs/heads/" + targetBranch + ":refs/remotes/" + targetRef
 
-	if _, err := runGitAt(ctx, normalized.Path, "fetch", remote, targetBranch); err != nil {
+	if _, err := runGitAt(ctx, normalized.Path, "fetch", remote, fetchRefspec); err != nil {
 		return MergePrepareResult{}, errors.Join(
-			fmt.Errorf("git fetch %s %s: %w", remote, targetBranch, err),
+			fmt.Errorf("git fetch %s %s: %w", remote, fetchRefspec, err),
 			abortRebaseIfInProgress(ctx, normalized.Path),
 		)
 	}
@@ -88,6 +89,24 @@ func (l *LocalGit) PrepareMerge(
 		)
 	}
 	return MergePrepareResult{Status: MergePrepareStatusClean, DiffStat: diffStat}, nil
+}
+
+func remoteDefaultBranch(ctx context.Context, workspacePath string, remote string) (string, error) {
+	output, err := runGitAt(ctx, workspacePath, "ls-remote", "--symref", remote, "HEAD")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || fields[0] != "ref:" || fields[2] != "HEAD" {
+			continue
+		}
+		branch := strings.TrimPrefix(fields[1], "refs/heads/")
+		if branch != fields[1] && strings.TrimSpace(branch) != "" {
+			return branch, nil
+		}
+	}
+	return "", fmt.Errorf("remote %s HEAD is not a branch", remote)
 }
 
 func remoteBranchHead(ctx context.Context, workspacePath string, remote string, branch string) (string, bool, error) {
