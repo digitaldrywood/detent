@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -61,10 +62,27 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 		return backendcapacity.Details{}, false
 	}
 	text := codexCapacityErrorText(err)
+	if errors.Is(err, context.DeadlineExceeded) && codexStartupHandshakeTimeout(text) {
+		return backendcapacity.Details{
+			Type:   backendcapacity.ErrorTypeTransientOverload,
+			Kind:   backendcapacity.StartupTimeoutKind,
+			Reason: "backend startup handshake timed out",
+		}, true
+	}
 	if details, ok := backendcapacity.ClassifyTransientOverload(text, codexOverloadRules); ok {
 		return details, true
 	}
 	return backendcapacity.Classify(text, codexCapacityResetAt(limits), now, codexCapacityRules)
+}
+
+func codexStartupHandshakeTimeout(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	for _, operation := range []string{"initialize", "thread/start", "thread/resume", "turn/start"} {
+		if strings.Contains(text, "wait for "+operation+" response") {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *AgentBackend) CapacityStatus(limits *telemetry.RateLimits) (runner.CapacityStatus, bool) {

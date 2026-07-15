@@ -66,6 +66,7 @@ type State struct {
 	InstantFailures          map[string]InstantFailure
 	RepeatedFailures         map[string]RepeatedFailure
 	FailureBreaker           ProjectFailureBreaker
+	DispatchRecoveries       map[string]DispatchRecovery
 	BackendOutages           map[string]BackendOutage
 	BackendRecoveries        map[string]BackendRecovery
 	DiffStats                map[string]DiffStats
@@ -260,6 +261,7 @@ func newState(cfg Config) State {
 		InstantFailures:          map[string]InstantFailure{},
 		RepeatedFailures:         map[string]RepeatedFailure{},
 		FailureBreaker:           newProjectFailureBreaker(cfg.FailureBreaker),
+		DispatchRecoveries:       map[string]DispatchRecovery{},
 		BackendOutages:           map[string]BackendOutage{},
 		BackendRecoveries:        map[string]BackendRecovery{},
 		DiffStats:                map[string]DiffStats{},
@@ -318,6 +320,7 @@ func (s State) clone() State {
 		InstantFailures:          make(map[string]InstantFailure, len(s.InstantFailures)),
 		RepeatedFailures:         make(map[string]RepeatedFailure, len(s.RepeatedFailures)),
 		FailureBreaker:           cloneProjectFailureBreaker(s.FailureBreaker),
+		DispatchRecoveries:       cloneDispatchRecoveries(s.DispatchRecoveries),
 		BackendOutages:           maps.Clone(s.BackendOutages),
 		BackendRecoveries:        maps.Clone(s.BackendRecoveries),
 		DiffStats:                make(map[string]DiffStats, len(s.DiffStats)),

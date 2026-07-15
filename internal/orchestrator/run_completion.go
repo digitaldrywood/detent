@@ -71,6 +71,14 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.usage.RateLimits)
 		o.recoverBackendCapacityFromStatus(state, running, event.usage.RateLimits, event.usage.LastEventAt)
 	}
+	if strings.TrimSpace(event.usage.SessionID) != "" || event.usage.TurnCount > 0 {
+		progressedAt := event.usage.LastEventAt
+		if progressedAt.IsZero() {
+			progressedAt = o.clockNow()
+		}
+		o.recordProjectFailureBreakerProgress(state, event.issueID, progressedAt)
+		o.advanceDispatchRecovery(state, event.issueID, progressedAt)
+	}
 	if o.workAttempts != nil && running.WorkAttemptID > 0 {
 		now := event.usage.LastEventAt
 		if now.IsZero() {
@@ -115,6 +123,17 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		running.cancel()
 	}
 	delete(state.Running, event.IssueID)
+	if event.Err == nil || event.Result.TurnStarted {
+		o.recordProjectFailureBreakerProgress(state, event.IssueID, event.CompletedAt)
+		o.advanceDispatchRecovery(state, event.IssueID, event.CompletedAt)
+	} else {
+		delay := event.RetryDelay
+		if delay <= 0 {
+			delay = o.cfg.OverloadRetryDelay
+		}
+		o.backoffDispatchRecovery(state, event.IssueID, event.CompletedAt, delay)
+	}
+	releaseDispatchRecoveryAdmission(state, event.IssueID)
 	if o.handleGitHubRESTCapacityCompletion(ctx, state, event, running) {
 		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, event.Err, "github_rest_capacity", errorString(event.Err))
 		return

@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -116,6 +117,60 @@ func TestHandleRunResultRetriesTransientOverloadWithoutBackendOutage(t *testing.
 	}
 	if !strings.Contains(logs.String(), "level=INFO") || !strings.Contains(logs.String(), "reason=transient_overload") {
 		t.Fatalf("logs = %q, want INFO transient_overload reason", logs.String())
+	}
+}
+
+func TestHandleRunResultTracksStartupTimeoutAsCapacityAndBreakerSignal(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 15, 18, 0, 0, 0, time.UTC)
+	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	cfg := normalizeConfig(Config{
+		OverloadRetryDelay: 45 * time.Second,
+		ActiveStates:       []string{"In Progress"},
+		TerminalStates:     []string{"Done"},
+		FailureBreaker: FailureBreakerConfig{
+			SameClassLimit: 2,
+			Window:         time.Hour,
+			Cooldown:       5 * time.Minute,
+		},
+	})
+	attempts := &recordingWorkAttemptStore{}
+	orch := &Orchestrator{cfg: cfg, workAttempts: attempts}
+	state := newState(cfg)
+	issue := connector.Issue{ID: "issue-startup-timeout", State: "In Progress"}
+	state.Running[issue.ID] = Running{Issue: issue, Attempt: 3, WorkAttemptID: 42, StartedAt: now.Add(-time.Minute)}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+	timeoutErr := backendcapacity.NewError(scope, backendcapacity.Details{
+		Type:   backendcapacity.ErrorTypeTransientOverload,
+		Kind:   backendcapacity.StartupTimeoutKind,
+		Reason: "backend startup handshake timed out",
+	}, context.DeadlineExceeded)
+
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+		IssueID:      issue.ID,
+		Err:          timeoutErr,
+		CompletedAt:  now,
+		RetryAttempt: 3,
+		RetryDelay:   45 * time.Second,
+	})
+
+	if len(state.BackendOutages) != 0 {
+		t.Fatalf("BackendOutages = %#v, want short retry without outage", state.BackendOutages)
+	}
+	retry := state.Retry[issue.ID]
+	if retry.Attempt != 3 || !retry.DueAt.Equal(now.Add(45*time.Second)) || retry.Error != backendcapacity.StartupTimeoutErrorClass {
+		t.Fatalf("Retry[%q] = %#v, want startup-capacity retry", issue.ID, retry)
+	}
+	if len(state.FailureBreaker.Failures[backendcapacity.StartupTimeoutErrorClass]) != 1 || state.FailureBreaker.Active() {
+		t.Fatalf("FailureBreaker = %#v, want one preserved systemic signal", state.FailureBreaker)
+	}
+	if len(attempts.completions) != 1 {
+		t.Fatalf("work attempt completions = %#v, want one", attempts.completions)
+	}
+	completion := attempts.completions[0]
+	if completion.TerminalState != store.WorkAttemptTerminalTimedOut || completion.ErrorClass != backendcapacity.StartupTimeoutErrorClass || completion.StatusMessage != "retrying after backend startup timeout" {
+		t.Fatalf("completion = %#v, want startup timeout telemetry", completion)
 	}
 }
 

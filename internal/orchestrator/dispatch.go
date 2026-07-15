@@ -130,6 +130,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	if state.Draining {
 		return
 	}
+	o.observePullRequestHydrationRecovery(state, issues, now)
 	planner := o.dispatchPlanner()
 	var lastDispatchFailure string
 	planner.plan(state, issues, now, dispatchPlanHooks{
@@ -241,6 +242,7 @@ const (
 	dispatchIssueFailureStartStateTransition  = "start_state_transition_failed"
 	dispatchIssueFailureBackendCapacityPaused = "backend_capacity_paused"
 	dispatchIssueFailureGitHubRESTPaused      = "github_rest_capacity_paused"
+	dispatchIssueFailureRecoveryRamp          = "dispatch_recovery_ramp"
 )
 
 type dispatchIssueOutcome struct {
@@ -272,6 +274,9 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	}
 	if !projectFailureBreakerAllowsDispatch(state, now) {
 		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
+	}
+	if reason := dispatchRecoveryBlockReason(state, now); reason != "" {
+		return dispatchIssueOutcome{reason: reason}
 	}
 	queuedRetry, retryQueued := state.Retry[issue.ID]
 	runMode := o.dispatchMode(ctx, state, issue)
@@ -316,14 +321,28 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		"attempt", attempt,
 		"worker_host", strings.TrimSpace(workerHost),
 	)
+	recovery, allowed, recoveryReason := tryReserveDispatchRecovery(state, issue.ID, now)
+	if !allowed {
+		o.releaseGlobalDispatchSlot(globalSlot)
+		if recoveryReason == "" {
+			recoveryReason = dispatchIssueFailureRecoveryRamp
+		}
+		return dispatchIssueOutcome{reason: recoveryReason}
+	}
 	canary, allowed := tryReserveProjectFailureBreakerCanary(state, issue.ID, now)
 	if !allowed {
+		if recovery {
+			releaseDispatchRecoveryAdmission(state, issue.ID)
+		}
 		o.releaseGlobalDispatchSlot(globalSlot)
 		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
 	}
 
 	claimedIssue, claim, ok := o.claimIssue(ctx, issue, now)
 	if !ok {
+		if recovery {
+			releaseDispatchRecoveryAdmission(state, issue.ID)
+		}
 		if canary {
 			releaseProjectFailureBreakerCanary(state, issue.ID)
 		}
@@ -347,6 +366,9 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	}
 	workAttemptID, ok := o.startDurableWorkAttempt(ctx, state, issue, attempt, now, workerHost, runMode)
 	if !ok {
+		if recovery {
+			releaseDispatchRecoveryAdmission(state, issue.ID)
+		}
 		if canary {
 			releaseProjectFailureBreakerCanary(state, issue.ID)
 		}
@@ -370,6 +392,9 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	if targetState != "" {
 		sourceState := issue.State
 		if err := o.updateIssueState(ctx, state, issue, targetState, now, "dispatch_start"); err != nil {
+			if recovery {
+				releaseDispatchRecoveryAdmission(state, issue.ID)
+			}
 			if canary {
 				releaseProjectFailureBreakerCanary(state, issue.ID)
 			}

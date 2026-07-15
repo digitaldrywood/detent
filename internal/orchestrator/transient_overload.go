@@ -19,16 +19,37 @@ func (o *Orchestrator) handleTransientOverload(
 	overloadErr *backendcapacity.Error,
 ) {
 	releaseBackendCapacityProbe(state, running)
+	errorClass := backendcapacity.TransientOverloadErrorClass
+	terminalState := store.WorkAttemptTerminalFailure
+	statusMessage := "retrying after transient provider overload"
+	retryEvent := "transient_overload_retry"
+	retryMessage := "transient provider overload"
+	if overloadErr.Details.Kind == backendcapacity.StartupTimeoutKind {
+		errorClass = backendcapacity.StartupTimeoutErrorClass
+		terminalState = store.WorkAttemptTerminalTimedOut
+		statusMessage = "retrying after backend startup timeout"
+		retryEvent = "backend_startup_timeout_retry"
+		retryMessage = "backend startup handshake timed out"
+		o.recordProjectAttemptOutcome(
+			state,
+			event.IssueID,
+			event.CompletedAt,
+			store.WorkAttemptTerminalTimedOut,
+			event.Err,
+			errorClass,
+			event.Err.Error(),
+		)
+	}
 	o.completeDurableWorkAttempt(
 		ctx,
 		state,
 		running,
 		event.CompletedAt,
-		store.WorkAttemptTerminalFailure,
-		backendcapacity.TransientOverloadErrorClass,
+		terminalState,
+		errorClass,
 		event.Err.Error(),
 		"waiting",
-		"retrying after transient provider overload",
+		statusMessage,
 	)
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		o.releaseClaim(state, running.Issue.ID)
@@ -54,21 +75,21 @@ func (o *Orchestrator) handleTransientOverload(
 		attempt,
 		event.CompletedAt,
 		delay,
-		string(backendcapacity.ErrorTypeTransientOverload),
+		errorClass,
 		running.WorkerHost,
 	)
 	retryAt := event.CompletedAt.Add(delay)
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
-		Event:   "transient_overload_retry",
-		Message: "transient provider overload; retrying affected issue at " + retryAt.Format(time.RFC3339),
+		Event:   retryEvent,
+		Message: retryMessage + "; retrying affected issue at " + retryAt.Format(time.RFC3339),
 	})
 	if o.logger != nil {
 		o.logger.Log(
 			ctx,
 			slog.LevelInfo,
 			"transient overload retry scheduled",
-			"reason", backendcapacity.ErrorTypeTransientOverload,
+			"reason", errorClass,
 			"backend_id", overloadErr.Scope.BackendID,
 			"backend_kind", overloadErr.Scope.BackendKind,
 			"provider", overloadErr.Scope.Provider,

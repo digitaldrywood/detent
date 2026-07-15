@@ -86,6 +86,9 @@ func (s *State) ensureInitialized(cfg Config) {
 	} else {
 		s.FailureBreaker.Config = normalizeFailureBreakerConfig(s.FailureBreaker.Config)
 	}
+	if s.DispatchRecoveries == nil {
+		s.DispatchRecoveries = map[string]DispatchRecovery{}
+	}
 }
 
 func claimedIDs(values map[string]Claimed) []string {

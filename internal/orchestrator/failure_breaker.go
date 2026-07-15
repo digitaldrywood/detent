@@ -24,6 +24,13 @@ const (
 	projectFailureBreakerDispatchPaused    = "project_failure_breaker_paused"
 )
 
+type FailureBreakerCanaryResult struct {
+	Requested     bool
+	Active        bool
+	CanaryIssueID string
+	ResumeAt      time.Time
+}
+
 func newProjectFailureBreaker(cfg FailureBreakerConfig) ProjectFailureBreaker {
 	return ProjectFailureBreaker{
 		Config:   normalizeFailureBreakerConfig(cfg),
@@ -84,6 +91,43 @@ func releaseProjectFailureBreakerCanary(state *State, issueID string) {
 	}
 	if state.FailureBreaker.CanaryIssueID == strings.TrimSpace(issueID) {
 		state.FailureBreaker.CanaryIssueID = ""
+	}
+}
+
+func (o *Orchestrator) requestProjectFailureBreakerCanary(state *State, now time.Time) FailureBreakerCanaryResult {
+	if state == nil || !state.FailureBreaker.Active() {
+		return FailureBreakerCanaryResult{}
+	}
+	result := FailureBreakerCanaryResult{
+		Active:        true,
+		CanaryIssueID: strings.TrimSpace(state.FailureBreaker.CanaryIssueID),
+		ResumeAt:      state.FailureBreaker.ResumeAt,
+	}
+	if result.CanaryIssueID != "" {
+		return result
+	}
+	blockedUntil := state.FailureBreaker.ResumeAt
+	state.FailureBreaker.ResumeAt = now
+	releaseProjectFailureBreakerRetries(state, blockedUntil, now)
+	result.Requested = true
+	result.ResumeAt = now
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "project_failure_breaker_canary_requested",
+		Message: "operator requested an immediate project failure breaker canary for " + state.FailureBreaker.Class,
+	})
+	return result
+}
+
+func releaseProjectFailureBreakerRetries(state *State, blockedUntil time.Time, releasedAt time.Time) {
+	if state == nil {
+		return
+	}
+	for issueID, retry := range state.Retry {
+		if retry.DueAt.Equal(blockedUntil) && retry.DueAt.After(releasedAt) {
+			retry.DueAt = releasedAt
+			state.Retry[issueID] = retry
+		}
 	}
 }
 
@@ -148,14 +192,34 @@ func (o *Orchestrator) recordProjectFailureBreakerSuccess(state *State, issueID 
 		if canaryIssueID == "" || canaryIssueID != issueID {
 			return
 		}
-		closedClass := state.FailureBreaker.Class
-		recordStateEvent(state, telemetry.ActivityEvent{
-			At:      at,
-			Event:   "project_failure_breaker_closed",
-			Message: "project failure breaker closed after successful attempt for " + closedClass,
-		})
+		o.closeProjectFailureBreakerAfterCanary(state, issueID, at, "successful attempt")
+		return
 	}
 	resetProjectFailureBreaker(&state.FailureBreaker)
+}
+
+func (o *Orchestrator) recordProjectFailureBreakerProgress(state *State, issueID string, at time.Time) {
+	if state == nil || !state.FailureBreaker.Active() || strings.TrimSpace(state.FailureBreaker.CanaryIssueID) != strings.TrimSpace(issueID) {
+		return
+	}
+	o.closeProjectFailureBreakerAfterCanary(state, issueID, at, "successful backend start")
+}
+
+func (o *Orchestrator) closeProjectFailureBreakerAfterCanary(state *State, issueID string, at time.Time, outcome string) {
+	closedClass := state.FailureBreaker.Class
+	resetProjectFailureBreaker(&state.FailureBreaker)
+	o.activateDispatchRecovery(
+		state,
+		dispatchRecoveryProjectFailureBreaker,
+		closedClass,
+		at,
+		issueID,
+	)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      at,
+		Event:   "project_failure_breaker_closed",
+		Message: "project failure breaker closed after " + outcome + " for " + closedClass,
+	})
 }
 
 func (o *Orchestrator) recordProjectFailureBreakerFailure(state *State, issueID string, class string, at time.Time) {

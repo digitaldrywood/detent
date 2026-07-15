@@ -346,7 +346,7 @@ func (o *Orchestrator) adaptivePollInterval(state *State, now time.Time) time.Du
 
 	bucket := gitHubGraphQLBucketFromState(state)
 	if bucket == nil || bucket.Remaining <= 0 || bucket.Remaining >= gitHubGraphQLBackoffRemaining {
-		return base
+		return dispatchRecoveryPollInterval(state, now, base)
 	}
 
 	multiplier := int64(gitHubGraphQLBackoffRemaining) / bucket.Remaining
@@ -356,7 +356,7 @@ func (o *Orchestrator) adaptivePollInterval(state *State, now time.Time) time.Du
 	if multiplier < 2 {
 		multiplier = 2
 	}
-	return base * time.Duration(multiplier)
+	return dispatchRecoveryPollInterval(state, now, base*time.Duration(multiplier))
 }
 
 func (o *Orchestrator) gitHubRESTPause(state *State, now time.Time) time.Duration {

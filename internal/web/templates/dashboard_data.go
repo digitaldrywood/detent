@@ -6446,6 +6446,49 @@ func failureBreakerDetailParts(breaker telemetry.FailureBreaker, now time.Time) 
 	return detail + " One canary attempt is ready.", time.Time{}, false
 }
 
+func dispatchRecoveryTitle(recovery telemetry.DispatchRecovery) string {
+	if strings.TrimSpace(recovery.Status) == "waiting" {
+		return "Dispatch waiting on " + dispatchRecoveryKindLabel(recovery.Kind)
+	}
+	return "Dispatch recovery ramp active"
+}
+
+func dispatchRecoveryDetailParts(recovery telemetry.DispatchRecovery, now time.Time) (string, time.Time, bool) {
+	kind := dispatchRecoveryKindLabel(recovery.Kind)
+	if strings.TrimSpace(recovery.Status) == "waiting" {
+		detail := kind + " is delaying dispatch."
+		if reason := strings.TrimSpace(recovery.Reason); reason != "" {
+			detail = kind + " is delaying dispatch: " + reason + "."
+		}
+		if !recovery.ResumeAt.IsZero() && recovery.ResumeAt.After(now) {
+			return detail + " Automatic retry scheduled", recovery.ResumeAt, true
+		}
+		return detail, time.Time{}, false
+	}
+	limit := max(recovery.Limit, 1)
+	configured := max(recovery.MaxConcurrent, limit)
+	detail := kind + " cleared; recovery is admitting up to " + formatCount(limit) + " of " + formatCount(configured) + " configured workers after successful startup progress."
+	if !recovery.ResumeAt.IsZero() && recovery.ResumeAt.After(now) {
+		return detail + " Next canary becomes eligible", recovery.ResumeAt, true
+	}
+	return detail, time.Time{}, false
+}
+
+func dispatchRecoveryKindLabel(kind string) string {
+	switch strings.TrimSpace(kind) {
+	case "github_rest":
+		return "GitHub REST capacity"
+	case "pull_request_hydration":
+		return "pull-request hydration"
+	case "backend_capacity":
+		return "backend capacity"
+	case "project_failure_breaker":
+		return "project failure breaker"
+	default:
+		return "dispatch dependency"
+	}
+}
+
 func backendCapacityBackendID(outage telemetry.BackendOutage) string {
 	backend := strings.TrimSpace(outage.BackendID)
 	if backend == "" {
