@@ -3970,6 +3970,82 @@ func TestMergeWorkerDispatchCandidatesPreservesScheduledRetry(t *testing.T) {
 	}
 }
 
+func TestMergeWorkerDispatchCandidatesPrefersReadyHead(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 15, 8, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		ActiveStates:   []string{"Merging"},
+		TerminalStates: []string{"Done"},
+	})
+	waitingCreatedAt := now.Add(-time.Hour)
+	readyCreatedAt := now.Add(-time.Minute)
+	waiting := nativeMergeQueueTestIssue(1321, "pending")
+	waiting.ID = "issue-waiting-head"
+	waiting.CreatedAt = &waitingCreatedAt
+	ready := nativeMergeQueueTestIssue(1322, "success")
+	ready.ID = "issue-ready-head"
+	ready.CreatedAt = &readyCreatedAt
+	state := newState(cfg)
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:    cfg,
+		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+
+	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{waiting, ready})
+	if len(got) != 1 || got[0].ID != ready.ID {
+		t.Fatalf("mergeWorkerDispatchCandidates() = %#v, want ready issue %q", got, ready.ID)
+	}
+	for _, fragment := range []string{
+		"merge_worker_queue_cycle",
+		"queue_depth=2",
+		"ready_count=1",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+}
+
+func TestMergeWorkerHeadReady(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*connector.Issue)
+		want   bool
+	}{
+		{name: "clean green current head", want: true},
+		{name: "pending checks", mutate: func(issue *connector.Issue) { issue.PullRequest.CIStatus = "pending" }},
+		{name: "behind green", mutate: func(issue *connector.Issue) { issue.PullRequest.MergeableState = "behind" }},
+		{name: "missing required check", mutate: func(issue *connector.Issue) {
+			issue.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "Test", Status: "missing"}}
+		}},
+		{name: "missing head", mutate: func(issue *connector.Issue) { issue.PullRequest.HeadSHA = "" }},
+		{name: "draft", mutate: func(issue *connector.Issue) { issue.PullRequest.Draft = true }},
+		{name: "not merging", mutate: func(issue *connector.Issue) { issue.State = "In Progress" }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := nativeMergeQueueTestIssue(1325, "success")
+			if tt.mutate != nil {
+				tt.mutate(&issue)
+			}
+			if got := mergeWorkerHeadReady(issue); got != tt.want {
+				t.Fatalf("mergeWorkerHeadReady() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMergeWorkerDispatchCandidatesSelectsOneQueueHeadPerRepository(t *testing.T) {
 	t.Parallel()
 
