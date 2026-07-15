@@ -19,6 +19,13 @@ func (o *Orchestrator) handleTransientOverload(
 	overloadErr *backendcapacity.Error,
 ) {
 	releaseBackendCapacityProbe(state, running)
+	delay := event.RetryDelay
+	if delay <= 0 {
+		delay = o.cfg.OverloadRetryDelay
+	}
+	if delay <= 0 {
+		delay = defaultOverloadRetryDelay
+	}
 	errorClass := backendcapacity.TransientOverloadErrorClass
 	terminalState := store.WorkAttemptTerminalFailure
 	statusMessage := "retrying after transient provider overload"
@@ -39,6 +46,8 @@ func (o *Orchestrator) handleTransientOverload(
 			errorClass,
 			event.Err.Error(),
 		)
+	} else {
+		o.deferProjectFailureBreakerCanary(state, event.IssueID, event.CompletedAt, delay)
 	}
 	o.completeDurableWorkAttempt(
 		ctx,
@@ -61,13 +70,6 @@ func (o *Orchestrator) handleTransientOverload(
 	}
 	if attempt < 1 {
 		attempt = 1
-	}
-	delay := event.RetryDelay
-	if delay <= 0 {
-		delay = o.cfg.OverloadRetryDelay
-	}
-	if delay <= 0 {
-		delay = defaultOverloadRetryDelay
 	}
 	o.scheduleRetryAfter(
 		state,

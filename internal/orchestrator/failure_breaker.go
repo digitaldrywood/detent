@@ -94,6 +94,25 @@ func releaseProjectFailureBreakerCanary(state *State, issueID string) {
 	}
 }
 
+func (o *Orchestrator) deferProjectFailureBreakerCanary(state *State, issueID string, at time.Time, delay time.Duration) {
+	if state == nil || !state.FailureBreaker.Active() || state.FailureBreaker.CanaryIssueID != strings.TrimSpace(issueID) {
+		return
+	}
+	if delay <= 0 {
+		delay = defaultOverloadRetryDelay
+	}
+	if at.IsZero() {
+		at = o.clockNow()
+	}
+	state.FailureBreaker.CanaryIssueID = ""
+	state.FailureBreaker.ResumeAt = at.Add(delay)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      at,
+		Event:   "project_failure_breaker_canary_deferred",
+		Message: "project failure breaker canary deferred after transient backend capacity",
+	})
+}
+
 func (o *Orchestrator) requestProjectFailureBreakerCanary(state *State, now time.Time) FailureBreakerCanaryResult {
 	if state == nil || !state.FailureBreaker.Active() {
 		return FailureBreakerCanaryResult{}

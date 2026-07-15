@@ -183,6 +183,8 @@ func (o *Orchestrator) handleOperatorStopCompletion(ctx context.Context, state *
 	delete(state.Retry, event.IssueID)
 	delete(state.BudgetRefusals, event.IssueID)
 	delete(state.PriorAttempts, event.IssueID)
+	releaseDispatchRecoveryAdmission(state, event.IssueID)
+	releaseProjectFailureBreakerCanary(state, event.IssueID)
 	if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
 		o.logger.Warn("operator stop claim release failed", "issue_id", event.IssueID, "error", err)
 	}

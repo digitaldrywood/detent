@@ -174,6 +174,48 @@ func TestHandleRunResultTracksStartupTimeoutAsCapacityAndBreakerSignal(t *testin
 	}
 }
 
+func TestHandleRunResultTransientOverloadDefersFailureBreakerCanary(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 15, 20, 0, 0, 0, time.UTC)
+	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	cfg := normalizeConfig(Config{OverloadRetryDelay: 45 * time.Second, TerminalStates: []string{"Done"}})
+	orch := &Orchestrator{cfg: cfg}
+	state := newState(cfg)
+	issue := connector.Issue{ID: "issue-overload-canary", State: "In Progress"}
+	state.Running[issue.ID] = Running{Issue: issue, Attempt: 2, StartedAt: now.Add(-time.Minute)}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+	state.FailureBreaker.Class = "runner_error:systemic"
+	state.FailureBreaker.CanaryIssueID = issue.ID
+	state.FailureBreaker.ResumeAt = now
+	overloadErr := backendcapacity.NewError(scope, backendcapacity.Details{
+		Type:   backendcapacity.ErrorTypeTransientOverload,
+		Kind:   "serverOverloaded",
+		Reason: string(backendcapacity.ErrorTypeTransientOverload),
+	}, errors.New("selected model is at capacity"))
+
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+		IssueID:      issue.ID,
+		Err:          overloadErr,
+		CompletedAt:  now,
+		RetryAttempt: 2,
+		RetryDelay:   45 * time.Second,
+	})
+
+	if !state.FailureBreaker.Active() || state.FailureBreaker.CanaryIssueID != "" || !state.FailureBreaker.ResumeAt.Equal(now.Add(45*time.Second)) {
+		t.Fatalf("FailureBreaker = %#v, want active breaker with bounded canary backoff", state.FailureBreaker)
+	}
+	if projectFailureBreakerAllowsDispatch(&state, now.Add(44*time.Second)) {
+		t.Fatal("failure breaker admitted another canary before transient backoff elapsed")
+	}
+	if !projectFailureBreakerAllowsDispatch(&state, now.Add(45*time.Second)) {
+		t.Fatal("failure breaker did not admit a new canary after transient backoff")
+	}
+	if retry := state.Retry[issue.ID]; !retry.DueAt.Equal(now.Add(45*time.Second)) || retry.Error != backendcapacity.TransientOverloadErrorClass {
+		t.Fatalf("Retry[%q] = %#v, want transient overload canary retry", issue.ID, retry)
+	}
+}
+
 func TestRegisterBackendOutageRejectsTransientOverload(t *testing.T) {
 	t.Parallel()
 
@@ -258,6 +300,15 @@ func TestHandleOperatorStopCompletionDefersCapacityProbe(t *testing.T) {
 		ProbeIssueID:  issue.ID,
 		ProbeAttempts: 1,
 	}
+	state.DispatchRecoveries[dispatchRecoveryBackendCapacity] = DispatchRecovery{
+		Kind:       dispatchRecoveryBackendCapacity,
+		Status:     dispatchRecoveryStatusRamping,
+		Limit:      1,
+		Admissions: map[string]bool{issue.ID: false},
+	}
+	state.FailureBreaker.Class = "runner_error:systemic"
+	state.FailureBreaker.CanaryIssueID = issue.ID
+	state.FailureBreaker.ResumeAt = now
 	running := Running{Issue: issue, Attempt: 1, CapacityScope: scope, CapacityProbe: true}
 	state.Running[issue.ID] = running
 	orch.pendingStops[issue.ID] = &pendingStopRun{result: StopRunResult{
@@ -279,6 +330,12 @@ func TestHandleOperatorStopCompletionDefersCapacityProbe(t *testing.T) {
 	}
 	if len(connector.updates) != 1 || connector.updates[0] != (backendCapacityTestUpdate{issueID: issue.ID, state: "Blocked"}) {
 		t.Fatalf("tracker updates = %#v, want Blocked transition", connector.updates)
+	}
+	if recovery := state.DispatchRecoveries[dispatchRecoveryBackendCapacity]; len(recovery.Admissions) != 0 {
+		t.Fatalf("dispatch recovery = %#v, want operator-stopped admission released", recovery)
+	}
+	if !state.FailureBreaker.Active() || state.FailureBreaker.CanaryIssueID != "" {
+		t.Fatalf("failure breaker = %#v, want active breaker with canary released", state.FailureBreaker)
 	}
 }
 
