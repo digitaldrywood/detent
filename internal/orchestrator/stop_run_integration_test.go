@@ -15,6 +15,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
+const operatorStopIntegrationWaitTimeout = 10 * time.Second
+
 func TestStopRunTargetsOneRunAndBlocksRedispatch(t *testing.T) {
 	issue := testIssue("issue-stop", "digitaldrywood/detent#1311", "In Progress")
 	other := testIssue("issue-other", "digitaldrywood/detent#1312", "In Progress")
@@ -260,14 +262,15 @@ func (c *operatorStopFailingConnector) setError(err error) {
 
 func waitForOperatorStopRunnerIssue(t *testing.T, started <-chan orchestrator.RunRequest, issueID string) {
 	t.Helper()
-	deadline := time.After(time.Second)
+	deadline := time.NewTimer(operatorStopIntegrationWaitTimeout)
+	defer deadline.Stop()
 	for {
 		select {
 		case request := <-started:
 			if request.Issue.ID == issueID {
 				return
 			}
-		case <-deadline:
+		case <-deadline.C:
 			t.Fatalf("timed out waiting for runner issue %q", issueID)
 		}
 	}
