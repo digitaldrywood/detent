@@ -53,6 +53,24 @@ func (s *Server) projectSmallMultiples(ctx context.Context, snapshot telemetry.S
 	return s.projects.record(now, projects)
 }
 
+func (s *Server) cachedProjectSmallMultiples(snapshot telemetry.Snapshot) []templates.ProjectSmallMultiple {
+	projects := projectSmallMultiplesFromSnapshot(snapshot)
+	projects = s.addConfiguredProjectMultiples(projects)
+	if len(projects) == 0 {
+		return nil
+	}
+
+	now := snapshot.GeneratedAt
+	if now.IsZero() {
+		now = time.Now().UTC().Truncate(time.Second)
+	}
+	now = now.UTC()
+	for i := range projects {
+		projects[i].BudgetResetAt = dailyBudgetReset(now)
+	}
+	return s.projects.record(now, projects)
+}
+
 func projectSmallMultiplesFromSnapshot(snapshot telemetry.Snapshot) []templates.ProjectSmallMultiple {
 	if len(snapshot.Projects) > 0 {
 		projects := make([]templates.ProjectSmallMultiple, 0, len(snapshot.Projects))
