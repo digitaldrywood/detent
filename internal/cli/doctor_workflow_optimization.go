@@ -663,7 +663,7 @@ func doctorWorkflowReviewFlowTelemetry(ctx context.Context, db doctorTelemetrySt
 	metrics.reviewEntryIssue = doctorMaxMapKey(reviewEntryCounts)
 	metrics.reviewEntryIssueCount = doctorMaxMapValue(reviewEntryCounts)
 
-	invalidCounts, err := doctorWorkflowInvalidWorkpadStatusTelemetry(ctx, db, projectID)
+	invalidCounts, err := doctorWorkflowInvalidWorkpadStatusTelemetry(ctx, db, projectID, boundaryAt)
 	if err != nil {
 		return doctorWorkflowReviewFlowMetrics{}, err
 	}
@@ -785,7 +785,8 @@ func doctorWorkflowReviewEntryFollowsCompletedSession(entry doctorWorkflowReview
 	return false
 }
 
-func doctorWorkflowInvalidWorkpadStatusTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string) (map[string]int64, error) {
+func doctorWorkflowInvalidWorkpadStatusTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string, boundaryAt time.Time) (map[string]int64, error) {
+	boundary := doctorWorkflowTelemetryBoundaryValue(boundaryAt)
 	rows, err := db.QueryContext(ctx, `
 SELECT
   COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned'),
@@ -794,8 +795,9 @@ FROM workflow_phase_events
 WHERE phase_type = 'lane'
   AND lower(trim(COALESCE(status, ''))) = 'entered'
   AND lower(trim(COALESCE(reason, ''))) = 'workpad_status_invalid'
+  AND (? = '' OR started_at >= ?)
   AND (? = '' OR project_id = ?)
-GROUP BY COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned')`, projectID, projectID)
+GROUP BY COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned')`, boundary, boundary, projectID, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("read invalid workpad status telemetry: %w", err)
 	}

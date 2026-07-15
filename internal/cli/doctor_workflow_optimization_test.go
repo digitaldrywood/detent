@@ -756,6 +756,7 @@ func TestDoctorWorkflowReviewFlowTelemetryRespectsCurrentWorkflowBoundary(t *tes
 		name             string
 		entryOffsets     []time.Duration
 		wantEntries      int64
+		wantInvalid      int64
 		wantMismatch     bool
 		wantBoundaryType string
 	}{
@@ -767,6 +768,7 @@ func TestDoctorWorkflowReviewFlowTelemetryRespectsCurrentWorkflowBoundary(t *tes
 			name:             "new entries after boundary",
 			entryOffsets:     []time.Duration{time.Hour, 2 * time.Hour},
 			wantEntries:      2,
+			wantInvalid:      2,
 			wantMismatch:     true,
 			wantBoundaryType: "workflow_modified_at",
 		},
@@ -774,6 +776,7 @@ func TestDoctorWorkflowReviewFlowTelemetryRespectsCurrentWorkflowBoundary(t *tes
 			name:         "mixed old and new entries",
 			entryOffsets: []time.Duration{-time.Hour, time.Hour},
 			wantEntries:  1,
+			wantInvalid:  1,
 		},
 	}
 
@@ -844,6 +847,18 @@ Prompt
 				}); err != nil {
 					t.Fatalf("RecordWorkflowPhaseEvent(%d) error = %v", index, err)
 				}
+				if _, err := backend.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
+					ProjectID:         "detent",
+					Identifier:        issue,
+					PhaseType:         store.WorkflowPhaseTypeLane,
+					PhaseName:         "Rework",
+					PreviousPhaseName: "Human Review",
+					Status:            "entered",
+					StartedAt:         entryAt.Add(time.Minute),
+					Reason:            "workpad_status_invalid",
+				}); err != nil {
+					t.Fatalf("RecordWorkflowPhaseEvent(invalid %d) error = %v", index, err)
+				}
 			}
 			if err := backend.Close(); err != nil {
 				t.Fatalf("Close() error = %v", err)
@@ -871,6 +886,9 @@ Prompt
 			}
 			if got := report.Projects[0].Metrics.ReviewEntryCount; got != tt.wantEntries {
 				t.Fatalf("ReviewEntryCount = %d, want %d", got, tt.wantEntries)
+			}
+			if got := report.Projects[0].Metrics.InvalidWorkpadStatusDecisions; got != tt.wantInvalid {
+				t.Fatalf("InvalidWorkpadStatusDecisions = %d, want %d", got, tt.wantInvalid)
 			}
 			if got := doctorWorkflowFindingExists(report.Findings, doctorWorkflowRuleReviewFlowBehaviorMismatch); got != tt.wantMismatch {
 				t.Fatalf("review-flow mismatch finding = %t, want %t", got, tt.wantMismatch)
