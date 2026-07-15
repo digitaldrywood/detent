@@ -28,3 +28,8 @@ func tryLock(file *os.File) error {
 func unlock(file *os.File) error {
 	return windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 1, 0, new(windows.Overlapped))
 }
+
+func seekLockedOwner(file *os.File) error {
+	_, err := file.Seek(1, 0)
+	return err
+}

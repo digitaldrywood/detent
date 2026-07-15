@@ -184,6 +184,22 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 			return err
 		}
 		instanceLock = acquiredLock
+		if recovery, recovered := instanceLock.Recovery(); recovered {
+			attrs := []any{"path", runtimeStoreLockPath(runtimeDBPath)}
+			if recovery.Owner.PID > 0 {
+				attrs = append(attrs, "pid", recovery.Owner.PID)
+			}
+			if recovery.Owner.Hostname != "" {
+				attrs = append(attrs, "hostname", recovery.Owner.Hostname)
+			}
+			if !recovery.Owner.StartedAt.IsZero() {
+				attrs = append(attrs, "started_at", recovery.Owner.StartedAt)
+			}
+			if recovery.MetadataError != nil {
+				attrs = append(attrs, "metadata_error", recovery.MetadataError)
+			}
+			logger.Info("self-healed stale runtime instance lock", attrs...)
+		}
 	}
 	if instanceLock != nil {
 		defer func() {
@@ -1158,7 +1174,11 @@ func openRuntimeStore(ctx context.Context, cfg BootConfig) (store.Store, error) 
 func acquireRuntimeInstanceLock(lockPath string) (*instancelock.Lock, error) {
 	lock, err := instancelock.Acquire(lockPath)
 	if errors.Is(err, instancelock.ErrHeld) {
-		return nil, fmt.Errorf("another Detent instance is using runtime database guarded by %q; wait for it to finish shutting down, then retry", lockPath)
+		var heldErr *instancelock.HeldError
+		if errors.As(err, &heldErr) && heldErr.Owner.PID > 0 && !heldErr.Owner.StartedAt.IsZero() {
+			return nil, fmt.Errorf("another detent (pid %d, started %s) holds %s", heldErr.Owner.PID, heldErr.Owner.StartedAt.Format(time.RFC3339), lockPath)
+		}
+		return nil, fmt.Errorf("another detent holds %s, but its owner metadata is unreadable; stop the other instance or remove the stale lock", lockPath)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("protect runtime database with %q: %w", lockPath, err)

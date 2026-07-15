@@ -22,6 +22,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/instancelock"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -669,7 +670,7 @@ func TestStartRunningRefusesSharedRuntimeDatabase(t *testing.T) {
 
 	select {
 	case err := <-secondDone:
-		if err == nil || !strings.Contains(err.Error(), "another Detent instance is using runtime database") {
+		if err == nil || !strings.Contains(err.Error(), "another detent (pid ") {
 			t.Fatalf("second startRunning() error = %v, want shared runtime database error", err)
 		}
 	case <-time.After(2 * time.Second):
@@ -718,6 +719,34 @@ func TestRuntimeStoreLocation(t *testing.T) {
 				t.Fatalf("runtimeStoreLockPath(%q) = %q, want %q", tt.path, got, tt.lockPath)
 			}
 		})
+	}
+}
+
+func TestAcquireRuntimeInstanceLockReportsLiveHolder(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "detent.db.lock")
+	lock, err := instancelock.Acquire(path)
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := lock.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	_, err = acquireRuntimeInstanceLock(path)
+	if err == nil {
+		t.Fatal("acquireRuntimeInstanceLock() error = nil, want live holder error")
+	}
+	for _, want := range []string{"another detent (pid ", "started ", ") holds " + path} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("acquireRuntimeInstanceLock() error = %q, want %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("acquireRuntimeInstanceLock() error = %q, want actionable contention error", err)
 	}
 }
 

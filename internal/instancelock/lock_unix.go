@@ -20,3 +20,8 @@ func tryLock(file *os.File) error {
 func unlock(file *os.File) error {
 	return unix.Flock(int(file.Fd()), unix.LOCK_UN)
 }
+
+func seekLockedOwner(file *os.File) error {
+	_, err := file.Seek(0, 0)
+	return err
+}
