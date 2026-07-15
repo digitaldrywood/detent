@@ -1583,6 +1583,17 @@ func TestBoardSnapshotRenders(t *testing.T) {
 	}
 }
 
+func TestBoardSnapshotRendersPendingEnrichmentPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	data.PendingEnrichment = true
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	if !strings.Contains(html, "-- today") {
+		t.Fatalf("pending enrichment missing spend placeholder:\n%s", html)
+	}
+}
+
 func TestBoardSnapshotRendersMorphSafePriorityBadge(t *testing.T) {
 	t.Parallel()
 

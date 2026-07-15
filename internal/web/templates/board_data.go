@@ -108,12 +108,16 @@ type boardCardView struct {
 
 func boardViewFromDashboard(data DashboardData) boardView {
 	board := projectKanbanBoardView(data)
+	spend := "-- today"
+	if !data.PendingEnrichment {
+		spend = formatUSD(data.Snapshot.Budget.CurrentSpendUSD) + " today"
+	}
 	view := boardView{
 		Key:        boardVisibilityKey(data),
 		Exceptions: boardExceptions(data, true),
 		Figures:    boardFigures(data.Snapshot),
 		TPS:        throughputRate(data.Snapshot),
-		Spend:      formatUSD(data.Snapshot.Budget.CurrentSpendUSD) + " today",
+		Spend:      spend,
 	}
 	fallbackProjectID := boardFallbackProjectID(data)
 	globalTerminalStates := projectKanbanTerminalStateSet(data.Kanban.TerminalStates)

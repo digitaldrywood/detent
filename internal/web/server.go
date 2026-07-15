@@ -377,7 +377,8 @@ func (s *Server) board(c echo.Context) error {
 		return s.demoBoard(c, scenario)
 	}
 	ctx := c.Request().Context()
-	data := s.boardData(ctx, s.latestSnapshot(ctx))
+	snapshot, enriched := s.latestBoardSnapshot()
+	data := s.boardFirstPaintData(ctx, snapshot, !enriched)
 	data = s.withKanbanRefreshFeedback(data)
 	applyDashboardPreferences(c.Request(), &data)
 	return render(c, templates.BoardPage(data))
@@ -642,6 +643,26 @@ func (s *Server) boardData(ctx context.Context, snapshot telemetry.Snapshot) tem
 	return data
 }
 
+func (s *Server) boardFirstPaintData(ctx context.Context, snapshot telemetry.Snapshot, pendingEnrichment bool) templates.DashboardData {
+	instanceName := s.instanceName()
+	snapshot = s.fleetKanbanSnapshotWithPendingStates(snapshot)
+	return templates.DashboardData{
+		Title:             instancePageTitle(instanceName, "Detent"),
+		ApplicationName:   applicationName(instanceName),
+		InstanceName:      instanceName,
+		Version:           s.version,
+		Build:             s.build,
+		ConnectorName:     s.connector.Name(),
+		DashboardURL:      s.dashboardURL,
+		Snapshot:          snapshot,
+		Projects:          s.cachedProjectSmallMultiples(snapshot),
+		Kanban:            s.dashboardKanbanData(ctx, "", snapshot),
+		Assets:            s.assets.templatePaths(),
+		ActiveNav:         "board",
+		PendingEnrichment: pendingEnrichment,
+	}
+}
+
 func (s *Server) healthDashboardData(ctx context.Context, snapshot telemetry.Snapshot) templates.DashboardData {
 	data := s.dashboardData(ctx, snapshot)
 	data.ActiveNav = "health"
@@ -836,6 +857,17 @@ func (s *Server) latestSnapshot(ctx context.Context) telemetry.Snapshot {
 		return s.withManualRefresh(s.enrichSnapshot(ctx, telemetry.Snapshot{}))
 	}
 	return s.withManualRefresh(s.cachedEnrichedSnapshot(ctx, snapshot))
+}
+
+func (s *Server) latestBoardSnapshot() (telemetry.Snapshot, bool) {
+	snapshot, ok := s.hub.Latest()
+	if !ok {
+		return s.withManualRefresh(telemetry.Snapshot{}), false
+	}
+	if enriched, ok := s.snapshots.get(snapshot); ok {
+		return s.withManualRefresh(enriched), true
+	}
+	return s.withManualRefresh(snapshot), false
 }
 
 func (s *Server) health(c echo.Context) error {

@@ -75,6 +75,7 @@ type DashboardData struct {
 	Theme              string
 	Density            string
 	AnalyticsKind      string
+	PendingEnrichment  bool
 }
 
 type DashboardShellData struct {

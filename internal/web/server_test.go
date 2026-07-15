@@ -6665,6 +6665,145 @@ func TestDashboardReadsLatestSnapshotWithoutSubscribing(t *testing.T) {
 	}
 }
 
+func TestBoardFirstPaintDoesNotWaitForSnapshotEnrichment(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	var fetchCalls atomic.Int64
+	deps := testDeps(t)
+	deps.Connector = connectorProbe{
+		name: "github",
+		fetchCandidateIssues: func(context.Context) ([]connector.Issue, error) {
+			fetchCalls.Add(1)
+			return nil, errors.New("github rest budget reserved")
+		},
+	}
+	deps.Store = storeProbe{
+		runtimeEvidence: func(ctx context.Context, _ store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error) {
+			startedOnce.Do(func() { close(started) })
+			select {
+			case <-release:
+				return store.RuntimeEvidence{}, errors.New("github rest budget reserved")
+			case <-ctx.Done():
+				return store.RuntimeEvidence{}, ctx.Err()
+			}
+		},
+	}
+	generatedAt := time.Date(2026, 7, 15, 15, 4, 5, 0, time.UTC)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: generatedAt,
+		BoardIssues: []telemetry.Issue{{
+			ID:         "issue-cached",
+			Identifier: "digitaldrywood/detent#1318",
+			Title:      "Cached board issue",
+			State:      "In Progress",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	t.Cleanup(cancelEvents)
+	eventsDone := make(chan struct{})
+	go func() {
+		defer close(eventsDone)
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/events?view=board", nil).WithContext(eventsCtx)
+		server.Handler().ServeHTTP(rec, req)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("snapshot enrichment did not start")
+	}
+
+	type response struct {
+		code int
+		body string
+	}
+	responseReady := make(chan response, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		server.Handler().ServeHTTP(rec, req)
+		responseReady <- response{code: rec.Code, body: rec.Body.String()}
+	}()
+
+	select {
+	case got := <-responseReady:
+		if got.code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body = %s", got.code, http.StatusOK, got.body)
+		}
+		for _, want := range []string{"Cached board issue", generatedAt.Format(time.RFC3339), `id="live-clock"`} {
+			if !strings.Contains(got.body, want) {
+				t.Fatalf("body missing %q:\n%s", want, got.body)
+			}
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("board first paint exceeded 500ms while snapshot enrichment was blocked")
+	}
+	if got := fetchCalls.Load(); got != 0 {
+		t.Fatalf("FetchCandidateIssues calls = %d, want 0", got)
+	}
+
+	close(release)
+	cancelEvents()
+	select {
+	case <-eventsDone:
+	case <-time.After(time.Second):
+		t.Fatal("event stream did not stop")
+	}
+}
+
+func TestBoardFirstPaintColdBootRendersPlaceholders(t *testing.T) {
+	t.Parallel()
+
+	var runtimeEvidenceCalls atomic.Int64
+	registry := project.NewRegistry()
+	if err := registry.Set(newBudgetTestProject(t, "detent", 100, 10)); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+	deps := testDeps(t)
+	deps.Registry = registry
+	deps.Store = storeProbe{
+		runtimeEvidence: func(context.Context, store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error) {
+			runtimeEvidenceCalls.Add(1)
+			return store.RuntimeEvidence{}, nil
+		},
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	for _, want := range []string{`class="dt-skeleton`, `id="live-clock"`, "--:--:--"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+	if strings.Contains(rec.Body.String(), "Connect a repository") {
+		t.Fatalf("configured cold boot rendered unconfigured first-run state:\n%s", rec.Body.String())
+	}
+	if got := runtimeEvidenceCalls.Load(); got != 0 {
+		t.Fatalf("RuntimeEvidence calls = %d, want 0", got)
+	}
+}
+
 func TestDashboardEnrichesCycleTimeFromStore(t *testing.T) {
 	t.Parallel()
 
@@ -10812,14 +10951,18 @@ func (storeProbe) Close() error {
 }
 
 type connectorProbe struct {
-	name string
+	name                 string
+	fetchCandidateIssues func(context.Context) ([]connector.Issue, error)
 }
 
 func (p connectorProbe) Name() string {
 	return p.name
 }
 
-func (p connectorProbe) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+func (p connectorProbe) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	if p.fetchCandidateIssues != nil {
+		return p.fetchCandidateIssues(ctx)
+	}
 	return nil, connector.ErrNotImplemented
 }
 

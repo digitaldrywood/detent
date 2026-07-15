@@ -43,6 +43,19 @@ func (s *Server) cachedEnrichedSnapshot(ctx context.Context, snapshot telemetry.
 	return s.snapshots.enrich(ctx, snapshot, s.enrichSnapshot)
 }
 
+func (c *snapshotEnrichmentCache) get(snapshot telemetry.Snapshot) (telemetry.Snapshot, bool) {
+	if c == nil {
+		return telemetry.Snapshot{}, false
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.cached || !reflect.DeepEqual(c.raw, snapshot) {
+		return telemetry.Snapshot{}, false
+	}
+	return c.enriched, true
+}
+
 func (c *snapshotEnrichmentCache) enrich(ctx context.Context, snapshot telemetry.Snapshot, enrich func(context.Context, telemetry.Snapshot) telemetry.Snapshot) telemetry.Snapshot {
 	if c == nil {
 		return enrich(ctx, snapshot)
