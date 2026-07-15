@@ -199,6 +199,7 @@ type Orchestrator struct {
 	refreshes               chan manualRefreshRequest
 	reconciles              chan targetedRefreshRequest
 	capacityClearRequests   chan capacityClearRequest
+	failureCanaryRequests   chan failureBreakerCanaryRequest
 	stopRequests            chan stopRunRequest
 	runResults              chan runpkg.Completion
 	runUpdates              chan runUpdate
@@ -253,6 +254,11 @@ type capacityClearRequest struct {
 
 type capacityClearReply struct {
 	cleared []BackendOutage
+}
+
+type failureBreakerCanaryRequest struct {
+	at    time.Time
+	reply chan FailureBreakerCanaryResult
 }
 
 func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
@@ -397,6 +403,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		refreshes:               make(chan manualRefreshRequest, 1),
 		reconciles:              make(chan targetedRefreshRequest, 128),
 		capacityClearRequests:   make(chan capacityClearRequest),
+		failureCanaryRequests:   make(chan failureBreakerCanaryRequest),
 		stopRequests:            make(chan stopRunRequest),
 		runResults:              make(chan runpkg.Completion, max(cfg.MaxConcurrentAgents, 1)),
 		runUpdates:              make(chan runUpdate, runUpdateBufferSize),
@@ -444,6 +451,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			resetTicker(ticker, state.PollInterval)
 		case request := <-o.capacityClearRequests:
 			request.reply <- capacityClearReply{cleared: o.clearBackendCapacity(&state, request.scope, request.at)}
+		case request := <-o.failureCanaryRequests:
+			result := o.requestProjectFailureBreakerCanary(&state, request.at)
+			request.reply <- result
+			if result.Requested {
+				o.tick(ctx, &state, request.at)
+				resetTicker(ticker, state.PollInterval)
+			}
 		case request := <-o.stopRequests:
 			o.handleStopRunRequest(ctx, &state, request)
 		case result := <-o.runResults:
@@ -492,6 +506,31 @@ func (o *Orchestrator) ClearBackendCapacity(ctx context.Context, scope string) (
 		return nil, ErrStopped
 	case reply := <-request.reply:
 		return reply.cleared, nil
+	}
+}
+
+func (o *Orchestrator) RequestProjectFailureBreakerCanary(ctx context.Context) (FailureBreakerCanaryResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request := failureBreakerCanaryRequest{
+		at:    o.clockNow(),
+		reply: make(chan FailureBreakerCanaryResult, 1),
+	}
+	select {
+	case <-ctx.Done():
+		return FailureBreakerCanaryResult{}, ctx.Err()
+	case <-o.done:
+		return FailureBreakerCanaryResult{}, ErrStopped
+	case o.failureCanaryRequests <- request:
+	}
+	select {
+	case <-ctx.Done():
+		return FailureBreakerCanaryResult{}, ctx.Err()
+	case <-o.done:
+		return FailureBreakerCanaryResult{}, ErrStopped
+	case result := <-request.reply:
+		return result, nil
 	}
 }
 

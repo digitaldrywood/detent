@@ -666,6 +666,17 @@ func (o *Orchestrator) capacitySnapshotJSON(state *State, issue connector.Issue)
 	if state != nil && len(state.BackendOutages) > 0 {
 		snapshot["backend_outages"] = backendOutagesCapacitySnapshot(state.BackendOutages)
 	}
+	if state != nil && len(state.DispatchRecoveries) > 0 {
+		snapshot["dispatch_recoveries"] = dispatchRecoveriesCapacitySnapshot(state.DispatchRecoveries, o.cfg.MaxConcurrentAgents)
+	}
+	if state != nil && state.FailureBreaker.Active() {
+		snapshot["project_failure_breaker"] = map[string]any{
+			"class":           state.FailureBreaker.Class,
+			"count":           state.FailureBreaker.Count,
+			"resume_at":       state.FailureBreaker.ResumeAt,
+			"canary_issue_id": state.FailureBreaker.CanaryIssueID,
+		}
+	}
 	return marshalWorkAttemptJSON(snapshot)
 }
 

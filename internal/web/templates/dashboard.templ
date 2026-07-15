@@ -192,6 +192,7 @@ templ GitHubAPIHealthSidebarItem(data DashboardShellData) {
 templ HealthSnapshot(data DashboardData) {
 	<section id="health-dashboard" class="grid min-w-0 gap-4 sm:gap-5" aria-label="Health dashboard">
 		@failureBreakerBanner(data.Snapshot)
+		@dispatchRecoveryBanner(data.Snapshot)
 		@backendCapacityBanner(data.Snapshot)
 		@dashboardHealth(data)
 		@GitHubAPIHealthDetails(data.Snapshot)
@@ -202,11 +203,42 @@ templ failureBreakerBanner(snapshot telemetry.Snapshot) {
 	if len(snapshot.FailureBreakers) > 0 {
 		<section id="project-failure-breaker" class="flex min-w-0 items-start gap-3 rounded-md border border-warn/40 bg-warn/10 px-4 py-3 text-sm shadow-sm" role="status" aria-live="polite">
 			@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-warn"})
-			<div class="grid min-w-0 gap-2">
+			<div class="grid min-w-0 flex-1 gap-2">
 				for _, breaker := range snapshot.FailureBreakers {
+					<div class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+						<div class="min-w-0 break-words">
+							<p class="font-medium text-text">Project dispatch paused by correlated failures</p>
+							{{ detail, resumeAt, showResumeAt := failureBreakerDetailParts(breaker, snapshot.GeneratedAt) }}
+							<p class="mt-0.5 text-xs text-sec">
+								{ detail }
+								if showResumeAt {
+									{ " " }
+									@LocalTime(resumeAt, LocalTimeOptions{Relative: true})
+								}
+							</p>
+						</div>
+						if strings.TrimSpace(breaker.CanaryIssueID) == "" {
+							<form hx-post="/api/v1/failure-breaker/canary" hx-swap="none" class="shrink-0">
+								<input type="hidden" name="project_id" value={ breaker.ProjectID }/>
+								<button type="submit" class="inline-flex min-h-8 items-center justify-center rounded-md border border-warn/50 bg-surface px-3 py-1.5 text-xs font-medium text-text transition-colors hover:bg-warn/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warn/50">Run canary now</button>
+							</form>
+						}
+					</div>
+				}
+			</div>
+		</section>
+	}
+}
+
+templ dispatchRecoveryBanner(snapshot telemetry.Snapshot) {
+	if len(snapshot.DispatchRecoveries) > 0 {
+		<section id="dispatch-recovery-status" class="flex min-w-0 items-start gap-3 rounded-md border border-accent/40 bg-accent/10 px-4 py-3 text-sm shadow-sm" role="status" aria-live="polite">
+			@icon.Activity(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-accent"})
+			<div class="grid min-w-0 gap-2">
+				for _, recovery := range snapshot.DispatchRecoveries {
 					<div class="min-w-0 break-words">
-						<p class="font-medium text-text">Project dispatch paused by correlated failures</p>
-						{{ detail, resumeAt, showResumeAt := failureBreakerDetailParts(breaker, snapshot.GeneratedAt) }}
+						<p class="font-medium text-text">{ dispatchRecoveryTitle(recovery) }</p>
+						{{ detail, resumeAt, showResumeAt := dispatchRecoveryDetailParts(recovery, snapshot.GeneratedAt) }}
 						<p class="mt-0.5 text-xs text-sec">
 							{ detail }
 							if showResumeAt {
@@ -1989,6 +2021,7 @@ templ SnapshotView(data DashboardData) {
 templ ProjectOverviewSnapshot(data DashboardData) {
 	@dashboardHealth(data)
 	@failureBreakerBanner(data.Snapshot)
+	@dispatchRecoveryBanner(data.Snapshot)
 	@trackerDriftWarning(data.Snapshot)
 	if data.ProjectPaused {
 		<section class="rounded-md border border-warn bg-warn/15 p-4 text-warn shadow-sm" aria-label="Paused project">
@@ -2014,6 +2047,7 @@ templ ProjectDiagnosticsSnapshot(data DashboardData) {
 		@snapshotReadiness(data.Snapshot)
 	} else {
 		@failureBreakerBanner(data.Snapshot)
+		@dispatchRecoveryBanner(data.Snapshot)
 		@diagnosticsOperationsSummary(data)
 		@trackerDriftWarning(data.Snapshot)
 		@diagnosticsTabbedView(data)

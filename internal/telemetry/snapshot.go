@@ -37,6 +37,7 @@ type Snapshot struct {
 	RateLimits              *RateLimits         `json:"rate_limits"`
 	BackendOutages          []BackendOutage     `json:"backend_outages,omitempty"`
 	FailureBreakers         []FailureBreaker    `json:"failure_breakers,omitempty"`
+	DispatchRecoveries      []DispatchRecovery  `json:"dispatch_recoveries,omitempty"`
 	OverloadRetriesLastHour int                 `json:"overload_retries_last_hour,omitempty"`
 	Tokens                  Tokens              `json:"tokens"`
 	Throughput              TokenThroughput     `json:"throughput"`
@@ -56,6 +57,19 @@ type FailureBreaker struct {
 	TrippedAt       time.Time `json:"tripped_at"`
 	ResumeAt        time.Time `json:"resume_at"`
 	CanaryIssueID   string    `json:"canary_issue_id,omitempty"`
+}
+
+type DispatchRecovery struct {
+	ProjectID     string    `json:"project_id,omitempty"`
+	Kind          string    `json:"kind"`
+	Reason        string    `json:"reason,omitempty"`
+	Status        string    `json:"status"`
+	StartedAt     time.Time `json:"started_at"`
+	ResumeAt      time.Time `json:"resume_at"`
+	Limit         int       `json:"limit"`
+	MaxConcurrent int       `json:"max_concurrent"`
+	Admitted      int       `json:"admitted"`
+	Progressed    int       `json:"progressed"`
 }
 
 type Update struct {

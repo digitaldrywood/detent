@@ -14,6 +14,8 @@ import (
 const (
 	ErrorClass                  = "backend_capacity"
 	TransientOverloadErrorClass = "transient_overload"
+	StartupTimeoutErrorClass    = "backend_startup_timeout"
+	StartupTimeoutKind          = "startup_handshake_timeout"
 )
 
 type ErrorType string

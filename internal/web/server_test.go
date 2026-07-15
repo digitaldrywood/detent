@@ -231,6 +231,37 @@ func TestCapacityClearEndpointIsIdempotentWithoutOutages(t *testing.T) {
 	}
 }
 
+func TestFailureBreakerCanaryEndpointIsIdempotentWithoutActiveBreakers(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	recorder := performForm(t, server.Handler(), http.MethodPost, "/api/v1/failure-breaker/canary", nil)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNoContent, recorder.Body.String())
+	}
+	if recorder.Header().Get("HX-Trigger") != "failureBreakerCanaryRequested" {
+		t.Fatalf("HX-Trigger = %q", recorder.Header().Get("HX-Trigger"))
+	}
+}
+
+func TestFailureBreakerCanaryEndpointRejectsUnknownProject(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	recorder := performForm(t, server.Handler(), http.MethodPost, "/api/v1/failure-breaker/canary", url.Values{
+		"project_id": {"missing"},
+	})
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+	}
+}
+
 func TestLibraryPageListsLocalArtifactsAndPullRequestRecords(t *testing.T) {
 	t.Parallel()
 

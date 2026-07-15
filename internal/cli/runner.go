@@ -743,6 +743,7 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.Budget.Refusals = append(current.Budget.Refusals, next.Budget.Refusals...)
 	current.BackendOutages = append(current.BackendOutages, next.BackendOutages...)
 	current.FailureBreakers = append(current.FailureBreakers, next.FailureBreakers...)
+	current.DispatchRecoveries = append(current.DispatchRecoveries, next.DispatchRecoveries...)
 	current.OverloadRetriesLastHour += next.OverloadRetriesLastHour
 
 	current.Counts.Running += next.Counts.Running
@@ -884,6 +885,11 @@ func stampSnapshotProjectID(snapshot telemetry.Snapshot) telemetry.Snapshot {
 	for i := range snapshot.FailureBreakers {
 		if strings.TrimSpace(snapshot.FailureBreakers[i].ProjectID) == "" {
 			snapshot.FailureBreakers[i].ProjectID = projectID
+		}
+	}
+	for i := range snapshot.DispatchRecoveries {
+		if strings.TrimSpace(snapshot.DispatchRecoveries[i].ProjectID) == "" {
+			snapshot.DispatchRecoveries[i].ProjectID = projectID
 		}
 	}
 	return snapshot

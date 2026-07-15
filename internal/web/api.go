@@ -437,31 +437,32 @@ func (s *Server) handleHTTPError(err error, c echo.Context) {
 
 func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, instanceName string) stateAPIResponse {
 	return stateAPIResponse{
-		GeneratedAt:     generatedAt,
-		Status:          runtimeStatus(snapshot),
-		Shutdown:        shutdownResponse(snapshot.Shutdown),
-		Update:          snapshot.Update,
-		Instance:        instanceResponse(snapshot.Instance, instanceName),
-		Projects:        projectsAPIResponse(snapshot),
-		Refresh:         snapshot.Refresh,
-		Events:          recentEventsFromTelemetry(snapshot.Events, nil, "", ""),
-		Counts:          countsResponse(snapshot),
-		TrackerDrift:    snapshot.TrackerDrift,
-		Running:         runningEntries(snapshot.Running),
-		WorkAttempts:    workAttemptEntries(snapshot.WorkAttempts),
-		Retrying:        retryEntries(snapshot.Queue),
-		Blocked:         blockedEntries(snapshot.Blocked),
-		Stats:           statsAPIResponse{Status: "enabled"},
-		Board:           boardResponse(snapshot),
-		TokenTotals:     totalsResponse(snapshot.Tokens),
-		Throughput:      throughputResponse(snapshot.Throughput),
-		LifetimeTotals:  lifetimeTotalsResponseFromTelemetry(snapshot.LifetimeTotals),
-		WorkflowMetrics: snapshot.WorkflowMetrics,
-		RecentSessions:  recentSessionEntries(snapshot.Completed),
-		RateLimits:      snapshot.RateLimits,
-		BackendOutages:  append([]telemetry.BackendOutage(nil), snapshot.BackendOutages...),
-		FailureBreakers: append([]telemetry.FailureBreaker(nil), snapshot.FailureBreakers...),
-		Budget:          budgetResponse(snapshot.Budget),
+		GeneratedAt:        generatedAt,
+		Status:             runtimeStatus(snapshot),
+		Shutdown:           shutdownResponse(snapshot.Shutdown),
+		Update:             snapshot.Update,
+		Instance:           instanceResponse(snapshot.Instance, instanceName),
+		Projects:           projectsAPIResponse(snapshot),
+		Refresh:            snapshot.Refresh,
+		Events:             recentEventsFromTelemetry(snapshot.Events, nil, "", ""),
+		Counts:             countsResponse(snapshot),
+		TrackerDrift:       snapshot.TrackerDrift,
+		Running:            runningEntries(snapshot.Running),
+		WorkAttempts:       workAttemptEntries(snapshot.WorkAttempts),
+		Retrying:           retryEntries(snapshot.Queue),
+		Blocked:            blockedEntries(snapshot.Blocked),
+		Stats:              statsAPIResponse{Status: "enabled"},
+		Board:              boardResponse(snapshot),
+		TokenTotals:        totalsResponse(snapshot.Tokens),
+		Throughput:         throughputResponse(snapshot.Throughput),
+		LifetimeTotals:     lifetimeTotalsResponseFromTelemetry(snapshot.LifetimeTotals),
+		WorkflowMetrics:    snapshot.WorkflowMetrics,
+		RecentSessions:     recentSessionEntries(snapshot.Completed),
+		RateLimits:         snapshot.RateLimits,
+		BackendOutages:     append([]telemetry.BackendOutage(nil), snapshot.BackendOutages...),
+		FailureBreakers:    append([]telemetry.FailureBreaker(nil), snapshot.FailureBreakers...),
+		DispatchRecoveries: append([]telemetry.DispatchRecovery(nil), snapshot.DispatchRecoveries...),
+		Budget:             budgetResponse(snapshot.Budget),
 	}
 }
 
@@ -1353,31 +1354,32 @@ func snapshotErrorResponse(generatedAt time.Time, code string, message string) s
 }
 
 type stateAPIResponse struct {
-	GeneratedAt     time.Time                   `json:"generated_at"`
-	Status          string                      `json:"status"`
-	Shutdown        shutdownAPIResponse         `json:"shutdown"`
-	Update          telemetry.Update            `json:"update,omitzero"`
-	Instance        instanceAPIResponse         `json:"instance"`
-	Projects        []telemetry.ProjectSnapshot `json:"projects,omitempty"`
-	Refresh         telemetry.Refresh           `json:"refresh"`
-	Events          []recentEventAPIResponse    `json:"events"`
-	Counts          countsAPIResponse           `json:"counts"`
-	TrackerDrift    telemetry.TrackerDrift      `json:"tracker_drift"`
-	Running         []runningAPIResponse        `json:"running"`
-	WorkAttempts    []workAttemptAPIResponse    `json:"work_attempts,omitempty"`
-	Retrying        []retryAPIResponse          `json:"retrying"`
-	Blocked         []blockedAPIResponse        `json:"blocked"`
-	Stats           statsAPIResponse            `json:"stats"`
-	Board           boardAPIResponse            `json:"board"`
-	TokenTotals     tokenTotalsAPIResponse      `json:"codex_totals"`
-	Throughput      throughputAPIResponse       `json:"throughput"`
-	LifetimeTotals  lifetimeTotalsResponse      `json:"lifetime_totals"`
-	WorkflowMetrics telemetry.WorkflowMetrics   `json:"workflow_metrics"`
-	RecentSessions  []recentSessionAPIResponse  `json:"recent_sessions"`
-	RateLimits      *telemetry.RateLimits       `json:"rate_limits"`
-	BackendOutages  []telemetry.BackendOutage   `json:"backend_outages,omitempty"`
-	FailureBreakers []telemetry.FailureBreaker  `json:"failure_breakers,omitempty"`
-	Budget          budgetAPIResponse           `json:"budget"`
+	GeneratedAt        time.Time                    `json:"generated_at"`
+	Status             string                       `json:"status"`
+	Shutdown           shutdownAPIResponse          `json:"shutdown"`
+	Update             telemetry.Update             `json:"update,omitzero"`
+	Instance           instanceAPIResponse          `json:"instance"`
+	Projects           []telemetry.ProjectSnapshot  `json:"projects,omitempty"`
+	Refresh            telemetry.Refresh            `json:"refresh"`
+	Events             []recentEventAPIResponse     `json:"events"`
+	Counts             countsAPIResponse            `json:"counts"`
+	TrackerDrift       telemetry.TrackerDrift       `json:"tracker_drift"`
+	Running            []runningAPIResponse         `json:"running"`
+	WorkAttempts       []workAttemptAPIResponse     `json:"work_attempts,omitempty"`
+	Retrying           []retryAPIResponse           `json:"retrying"`
+	Blocked            []blockedAPIResponse         `json:"blocked"`
+	Stats              statsAPIResponse             `json:"stats"`
+	Board              boardAPIResponse             `json:"board"`
+	TokenTotals        tokenTotalsAPIResponse       `json:"codex_totals"`
+	Throughput         throughputAPIResponse        `json:"throughput"`
+	LifetimeTotals     lifetimeTotalsResponse       `json:"lifetime_totals"`
+	WorkflowMetrics    telemetry.WorkflowMetrics    `json:"workflow_metrics"`
+	RecentSessions     []recentSessionAPIResponse   `json:"recent_sessions"`
+	RateLimits         *telemetry.RateLimits        `json:"rate_limits"`
+	BackendOutages     []telemetry.BackendOutage    `json:"backend_outages,omitempty"`
+	FailureBreakers    []telemetry.FailureBreaker   `json:"failure_breakers,omitempty"`
+	DispatchRecoveries []telemetry.DispatchRecovery `json:"dispatch_recoveries,omitempty"`
+	Budget             budgetAPIResponse            `json:"budget"`
 }
 
 type shutdownAPIResponse struct {

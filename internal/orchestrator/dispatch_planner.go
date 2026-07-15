@@ -229,6 +229,9 @@ func (p dispatchPlanner) retryAction(
 		}
 		return dispatchAction{}, false, dispatchSkipProjectFailureBreaker
 	}
+	if reason := dispatchRecoveryBlockReason(state, now); reason != "" {
+		return dispatchAction{}, false, reason
+	}
 	delete(state.Retry, retry.Issue.ID)
 
 	decision := p.dispatchableIssueDecision(issue, state, true, now, retry.WorkerHost)
@@ -530,6 +533,9 @@ func (p dispatchPlanner) dispatchableIssueDecision(
 	}
 	if !projectFailureBreakerAllowsDispatch(state, now) {
 		return dispatchableDecision{reason: dispatchSkipProjectFailureBreaker}
+	}
+	if reason := dispatchRecoveryBlockReason(state, now); reason != "" {
+		return dispatchableDecision{reason: reason}
 	}
 	if pullRequestHydrationBlocksDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipPullRequestHydration}

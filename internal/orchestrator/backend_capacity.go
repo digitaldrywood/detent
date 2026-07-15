@@ -452,6 +452,13 @@ func (o *Orchestrator) completeBackendCapacityRecovery(
 		state.BackendRecoveries = map[string]BackendRecovery{}
 	}
 	state.BackendRecoveries[key] = BackendRecovery{Outage: outage, RecoveredAt: recoveredAt}
+	o.activateDispatchRecovery(
+		state,
+		dispatchRecoveryBackendCapacity,
+		backendCapacityStatusMessage(outage),
+		recoveredAt,
+		"",
+	)
 	releaseBackendCapacityRetries(state, outage.Scope, recoveredAt)
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      recoveredAt,
@@ -538,6 +545,13 @@ func (o *Orchestrator) clearBackendCapacity(state *State, scopeFilter string, cl
 			state.BackendRecoveries = map[string]BackendRecovery{}
 		}
 		state.BackendRecoveries[key] = BackendRecovery{Outage: outage, RecoveredAt: clearedAt}
+		o.activateDispatchRecovery(
+			state,
+			dispatchRecoveryBackendCapacity,
+			backendCapacityStatusMessage(outage),
+			clearedAt,
+			"",
+		)
 		releaseBackendCapacityRetries(state, outage.Scope, clearedAt)
 		cleared = append(cleared, outage)
 		recordStateEvent(state, telemetry.ActivityEvent{

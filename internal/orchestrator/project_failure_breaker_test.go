@@ -75,4 +75,26 @@ func TestRunPausesProjectAfterCorrelatedFailuresAcrossIssues(t *testing.T) {
 	if len(snapshot.FailureBreakers) != 1 || snapshot.FailureBreakers[0].Class == "" {
 		t.Fatalf("snapshot failure breakers = %#v, want visible active reason", snapshot.FailureBreakers)
 	}
+
+	canary, err := orch.RequestProjectFailureBreakerCanary(t.Context())
+	if err != nil {
+		t.Fatalf("RequestProjectFailureBreakerCanary() error = %v", err)
+	}
+	if !canary.Requested || !canary.Active {
+		t.Fatalf("RequestProjectFailureBreakerCanary() = %#v, want immediate canary", canary)
+	}
+	state = waitForState(t, orch, func(state orchestrator.State) bool {
+		return state.FailureBreaker.Count == 6 && state.FailureBreaker.CanaryIssueID == ""
+	})
+	if got := runner.calls.Load(); got != 6 {
+		t.Fatalf("runner calls after immediate canary = %d, want 6", got)
+	}
+	fetches = tracker.fetchCandidateCalls()
+	waitForFetchCalls(t, tracker, fetches+2)
+	if got := runner.calls.Load(); got != 6 {
+		t.Fatalf("runner calls after failed canary cooldown = %d, want 6", got)
+	}
+	if !state.FailureBreaker.ResumeAt.After(time.Now()) {
+		t.Fatalf("FailureBreaker.ResumeAt = %s, want renewed cooldown", state.FailureBreaker.ResumeAt)
+	}
 }

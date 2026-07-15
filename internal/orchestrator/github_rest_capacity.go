@@ -39,6 +39,13 @@ func (o *Orchestrator) syncGitHubRESTCapacityOutage(state *State, now time.Time)
 	if !gitHubRESTCapacityExceeded(bucket, o.cfg.GitHubRESTMinReserve, now) {
 		if exists {
 			delete(state.BackendOutages, key)
+			o.activateDispatchRecovery(
+				state,
+				dispatchRecoveryGitHubREST,
+				existing.Reason,
+				now,
+				"",
+			)
 			recordStateEvent(state, telemetry.ActivityEvent{
 				At:      now,
 				Event:   "github_rest_capacity_recovered",
@@ -66,6 +73,7 @@ func (o *Orchestrator) syncGitHubRESTCapacityOutage(state *State, now time.Time)
 		ResumeAt:       resetAt,
 	}
 	state.BackendOutages[githubRESTCapacityScope.Key()] = outage
+	o.markDispatchRecoveryWait(state, dispatchRecoveryGitHubREST, outage.Reason, outage.ResumeAt, now)
 	if !exists {
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now,

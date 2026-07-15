@@ -72,6 +72,7 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 	out.Blocked = scopedBlocked(snapshot.Blocked, selectedProjectID, fallbackProjectID)
 	out.Completed = scopedCompleted(snapshot.Completed, selectedProjectID, fallbackProjectID)
 	out.FailureBreakers = scopedFailureBreakers(snapshot.FailureBreakers, selectedProjectID, fallbackProjectID)
+	out.DispatchRecoveries = scopedDispatchRecoveries(snapshot.DispatchRecoveries, selectedProjectID, fallbackProjectID)
 	if hasSourceProject {
 		out.Counts = sourceProject.Counts
 		out.Tokens = sourceProject.Tokens
@@ -94,6 +95,20 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 		out.TokenTrend = nil
 	}
 	out.WorkflowMetrics = scopedWorkflowMetrics(out, snapshot.WorkflowMetrics, selectedProjectID)
+	return out
+}
+
+func scopedDispatchRecoveries(recoveries []telemetry.DispatchRecovery, selectedProjectID string, fallbackProjectID string) []telemetry.DispatchRecovery {
+	out := make([]telemetry.DispatchRecovery, 0, len(recoveries))
+	for _, recovery := range recoveries {
+		projectID := strings.TrimSpace(recovery.ProjectID)
+		if projectID == "" {
+			projectID = fallbackProjectID
+		}
+		if projectID == selectedProjectID {
+			out = append(out, recovery)
+		}
+	}
 	return out
 }
 

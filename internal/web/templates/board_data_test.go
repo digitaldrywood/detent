@@ -1725,6 +1725,7 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 
 	data := boardTestData()
 	data.Snapshot.FailureBreakers = []telemetry.FailureBreaker{{
+		ProjectID:     "detent",
 		Class:         "session_token_ceiling",
 		Count:         5,
 		WindowSeconds: 3600,
@@ -1737,10 +1738,82 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 		"5 failures with class session_token_ceiling in 1h.",
 		"One canary attempt becomes eligible",
 		`datetime="2026-07-04T17:42:07Z"`,
+		`hx-post="/api/v1/failure-breaker/canary"`,
+		`name="project_id" value="detent"`,
+		"Run canary now",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("failure breaker banner missing %q:\n%s", want, html)
 		}
+	}
+}
+
+func TestBoardSnapshotRendersDispatchRecoveryReason(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	data.Snapshot.DispatchRecoveries = []telemetry.DispatchRecovery{{
+		ProjectID:     "detent",
+		Kind:          "pull_request_hydration",
+		Reason:        "rest_budget_reserved",
+		Status:        "ramping",
+		StartedAt:     data.Snapshot.GeneratedAt.Add(-time.Minute),
+		ResumeAt:      data.Snapshot.GeneratedAt,
+		Limit:         1,
+		MaxConcurrent: 6,
+		Admitted:      1,
+	}}
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	for _, want := range []string{
+		`id="dispatch-recovery-status"`,
+		"Dispatch recovery ramp active",
+		"pull-request hydration cleared",
+		"admitting up to 1 of 6 configured workers",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dispatch recovery banner missing %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestDispatchRecoveryLabelsDistinguishWaitReasons(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		kind string
+		want string
+	}{
+		{kind: "github_rest", want: "GitHub REST capacity"},
+		{kind: "pull_request_hydration", want: "pull-request hydration"},
+		{kind: "backend_capacity", want: "backend capacity"},
+		{kind: "project_failure_breaker", want: "project failure breaker"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.kind, func(t *testing.T) {
+			t.Parallel()
+			recovery := telemetry.DispatchRecovery{Kind: tt.kind, Status: "waiting"}
+			if title := dispatchRecoveryTitle(recovery); !strings.Contains(title, tt.want) {
+				t.Fatalf("dispatchRecoveryTitle() = %q, want %q", title, tt.want)
+			}
+		})
+	}
+}
+
+func TestBoardSnapshotHidesCanaryActionWhileCanaryRuns(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	data.Snapshot.FailureBreakers = []telemetry.FailureBreaker{{
+		ProjectID:     "detent",
+		Class:         "backend_startup_timeout",
+		Count:         5,
+		WindowSeconds: 3600,
+		ResumeAt:      data.Snapshot.GeneratedAt,
+		CanaryIssueID: "issue-canary",
+	}}
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	if strings.Contains(html, "Run canary now") || !strings.Contains(html, "One canary attempt is in progress") {
+		t.Fatalf("active canary controls are incorrect:\n%s", html)
 	}
 }
 

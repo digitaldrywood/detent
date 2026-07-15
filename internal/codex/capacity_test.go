@@ -1,6 +1,8 @@
 package codex
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +22,7 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 		limits   *telemetry.RateLimits
 		want     bool
 		wantType backendcapacity.ErrorType
+		wantKind string
 	}{
 		{
 			name: "usage limit payload",
@@ -53,6 +56,17 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 			wantType: backendcapacity.ErrorTypeTransientOverload,
 		},
 		{
+			name:     "thread start handshake timeout",
+			err:      fmt.Errorf("run agent turn: wait for thread/start response: %w", context.DeadlineExceeded),
+			want:     true,
+			wantType: backendcapacity.ErrorTypeTransientOverload,
+			wantKind: backendcapacity.StartupTimeoutKind,
+		},
+		{
+			name: "unrelated deadline",
+			err:  fmt.Errorf("run agent turn: wait for output: %w", context.DeadlineExceeded),
+		},
+		{
 			name: "invalid request",
 			err:  &TurnFailedError{Status: "failed", Body: `{"error":{"type":"invalid_request_error"}}`},
 		},
@@ -72,6 +86,9 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 			}
 			if tt.want && details.Type != tt.wantType {
 				t.Fatalf("ClassifyCapacityError() Type = %q, want %q", details.Type, tt.wantType)
+			}
+			if tt.wantKind != "" && details.Kind != tt.wantKind {
+				t.Fatalf("ClassifyCapacityError() Kind = %q, want %q", details.Kind, tt.wantKind)
 			}
 		})
 	}
