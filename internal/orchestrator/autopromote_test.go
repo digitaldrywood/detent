@@ -586,6 +586,31 @@ func TestEvaluateAutoPromote(t *testing.T) {
 			},
 		},
 		{
+			name: "artifact gate ignores stale summary when configured field is missing",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-artifact-configured-missing", nil)
+				issue.Deliverable = &connector.Deliverable{ValidationStatus: "invalid"}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate: gate.Config{
+					Kind: gate.KindArtifact,
+					Artifact: gate.ArtifactConfig{
+						StatusField:    "render_status",
+						PassStatuses:   []string{"approved"},
+						WaitStatuses:   []string{"pending_review"},
+						ReworkStatuses: []string{"invalid"},
+					},
+				},
+			},
+			input: AutoPromoteSummary{ArtifactStatus: "invalid"},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionAwaitReview,
+				Reason: AutoPromoteReasonArtifactStatusMissing,
+			},
+		},
+		{
 			name: "artifact gate routes rework from deliverable validation status",
 			issue: func() connector.Issue {
 				issue := autoPromoteTestIssue("issue-artifact-deliverable", nil)
@@ -647,6 +672,33 @@ func TestEvaluateAutoPromote(t *testing.T) {
 				if got.Findings[i] != tt.want.Findings[i] {
 					t.Fatalf("Findings[%d] = %#v, want %#v", i, got.Findings[i], tt.want.Findings[i])
 				}
+			}
+		})
+	}
+}
+
+func TestArtifactStatusFromIssue(t *testing.T) {
+	t.Parallel()
+
+	issue := autoPromoteTestIssue("issue-artifact-status", nil)
+	issue.Fields = map[string]string{"render_status": "recut"}
+	issue.Deliverable = &connector.Deliverable{ValidationStatus: "invalid"}
+
+	tests := []struct {
+		name        string
+		statusField string
+		want        string
+	}{
+		{name: "configured field", statusField: "render_status", want: "recut"},
+		{name: "missing configured field", statusField: "publish_status"},
+		{name: "default field falls back to deliverable", statusField: gate.DefaultArtifactStatusField, want: "invalid"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := artifactStatusFromIssue(issue, tt.statusField); got != tt.want {
+				t.Fatalf("artifactStatusFromIssue() = %q, want %q", got, tt.want)
 			}
 		})
 	}
