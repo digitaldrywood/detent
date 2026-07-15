@@ -701,12 +701,12 @@ func (l *LocalGit) deleteBranch(ctx context.Context, branch string) (bool, error
 }
 
 func (l *LocalGit) isGitWorkspace(ctx context.Context, path string) bool {
-	output, err := runGitAt(ctx, path, "rev-parse", "--is-inside-work-tree")
+	output, err := runGitAtWithEnv(ctx, path, gitDiscoveryBoundary(path), "rev-parse", "--is-inside-work-tree")
 	return err == nil && strings.TrimSpace(output) == "true"
 }
 
 func (l *LocalGit) isSourceWorktree(ctx context.Context, path string) bool {
-	workspaceCommon, err := gitCommonDir(ctx, path)
+	workspaceCommon, err := gitCommonDirWithinRoot(ctx, path)
 	if err != nil {
 		return false
 	}
@@ -1055,8 +1055,20 @@ func runGitAtWithEnv(ctx context.Context, dir string, env []string, args ...stri
 	}
 }
 
+func gitDiscoveryBoundary(dir string) []string {
+	return []string{"GIT_CEILING_DIRECTORIES=" + filepath.Dir(dir)}
+}
+
 func gitCommonDir(ctx context.Context, dir string) (string, error) {
-	output, err := runGitAt(ctx, dir, "rev-parse", "--git-common-dir")
+	return gitCommonDirWithEnv(ctx, dir, nil)
+}
+
+func gitCommonDirWithinRoot(ctx context.Context, dir string) (string, error) {
+	return gitCommonDirWithEnv(ctx, dir, gitDiscoveryBoundary(dir))
+}
+
+func gitCommonDirWithEnv(ctx context.Context, dir string, env []string) (string, error) {
+	output, err := runGitAtWithEnv(ctx, dir, env, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return "", err
 	}

@@ -1067,8 +1067,10 @@ func TestLocalGitCleanupRemediatesGeneratedCachePermissions(t *testing.T) {
 	t.Parallel()
 	skipWindows(t)
 
-	source := initSourceRepo(t)
-	root := filepath.Join(t.TempDir(), "workspaces")
+	enclosing := initSourceRepo(t)
+	source := filepath.Join(enclosing, "source")
+	initSourceRepoAt(t, source)
+	root := filepath.Join(enclosing, "workspaces")
 
 	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
 		Root:       root,
@@ -1110,6 +1112,59 @@ func TestLocalGitCleanupRemediatesGeneratedCachePermissions(t *testing.T) {
 	}
 	if branchExists(t, source, "detent/dd-cache-perm") {
 		t.Fatal("detent/dd-cache-perm branch still exists after cleanup")
+	}
+}
+
+func TestLocalGitRepositoryDiscoveryStaysWithinCandidate(t *testing.T) {
+	t.Parallel()
+
+	enclosing := initSourceRepo(t)
+	source := filepath.Join(enclosing, "source")
+	initSourceRepoAt(t, source)
+	sourceSubdir := filepath.Join(source, "subdir")
+	if err := os.MkdirAll(sourceSubdir, 0o700); err != nil {
+		t.Fatalf("mkdir source subdirectory: %v", err)
+	}
+	root := filepath.Join(enclosing, "workspaces")
+
+	backend, err := NewLocalGit(LocalGitOptions{
+		Root:       root,
+		SourceRoot: sourceSubdir,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewLocalGit() error = %v", err)
+	}
+	managed, err := backend.Create(context.Background(), Issue{Identifier: "DD-MANAGED"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	foreign := filepath.Join(root, "DD-FOREIGN")
+	initSourceRepoAt(t, foreign)
+	unmanaged := filepath.Join(root, "DD-UNMANAGED")
+	if err := os.MkdirAll(unmanaged, 0o700); err != nil {
+		t.Fatalf("mkdir unmanaged workspace: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		path       string
+		wantGit    bool
+		wantSource bool
+	}{
+		{name: "managed worktree", path: managed.Path, wantGit: true, wantSource: true},
+		{name: "foreign repository", path: foreign, wantGit: true, wantSource: false},
+		{name: "unmanaged nested directory", path: unmanaged, wantGit: false, wantSource: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := backend.isGitWorkspace(context.Background(), test.path); got != test.wantGit {
+				t.Errorf("isGitWorkspace() = %t, want %t", got, test.wantGit)
+			}
+			if got := backend.isSourceWorktree(context.Background(), test.path); got != test.wantSource {
+				t.Errorf("isSourceWorktree() = %t, want %t", got, test.wantSource)
+			}
+		})
 	}
 }
 
@@ -1291,6 +1346,16 @@ func initSourceRepo(t *testing.T) string {
 	t.Helper()
 
 	dir := t.TempDir()
+	initSourceRepoAt(t, dir)
+	return dir
+}
+
+func initSourceRepoAt(t *testing.T, dir string) {
+	t.Helper()
+
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir source repo: %v", err)
+	}
 	runCommand(t, dir, "git", "init", "-b", "main")
 	runGit(t, dir, "config", "core.autocrlf", "false")
 	runGit(t, dir, "config", "user.name", "Test User")
@@ -1300,8 +1365,6 @@ func initSourceRepo(t *testing.T) string {
 	}
 	runGit(t, dir, "add", "README.md")
 	runGit(t, dir, "commit", "-m", "initial")
-
-	return dir
 }
 
 func initBareRemote(t *testing.T) string {
