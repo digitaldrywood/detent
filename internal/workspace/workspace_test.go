@@ -1064,8 +1064,8 @@ func TestLocalGitCleanupRemovesOnlyTargetWorktree(t *testing.T) {
 }
 
 func TestLocalGitCleanupRemediatesGeneratedCachePermissions(t *testing.T) {
-	t.Parallel()
 	skipWindows(t)
+	t.Setenv("GIT_CEILING_DIRECTORIES", os.TempDir())
 
 	source := initSourceRepo(t)
 	root := filepath.Join(t.TempDir(), "workspaces")
