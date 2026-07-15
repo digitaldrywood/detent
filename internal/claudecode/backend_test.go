@@ -225,9 +225,10 @@ func TestFinalTurnErrorAfterStreamClose(t *testing.T) {
 		state    turnState
 		waitErr  error
 		wantErr  error
+		wantText string
 	}{
 		{name: "cancellation takes precedence", canceled: true, waitErr: errors.New("process exited"), wantErr: context.Canceled},
-		{name: "uncanceled missing result", waitErr: errors.New("process exited"), wantErr: ErrMissingResult},
+		{name: "uncanceled missing result", waitErr: errors.New("exit status 9"), wantErr: ErrMissingResult, wantText: "process exited: exit status 9"},
 		{name: "late cancellation preserves success", canceled: true, state: turnState{sawResult: true, resultSubtype: "success"}},
 		{name: "late cancellation preserves result error", canceled: true, state: turnState{sawResult: true, resultIsError: true, resultSubtype: "error_during_execution"}, wantErr: ErrTurnFailed},
 	}
@@ -252,6 +253,9 @@ func TestFinalTurnErrorAfterStreamClose(t *testing.T) {
 			}
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("finalTurnError() error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantText != "" && !strings.Contains(err.Error(), tt.wantText) {
+				t.Fatalf("finalTurnError() error = %q, want text %q", err, tt.wantText)
 			}
 		})
 	}

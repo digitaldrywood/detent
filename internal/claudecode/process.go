@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -38,18 +39,43 @@ func (b *AgentBackend) RunTurn(
 	procgroup.SetTempDir(cmd, req.TempDir)
 
 	stderr := newTailBuffer(b.options.StderrTailBytes)
-	cmd.Stderr = stderr
 	cmd.Stdin = strings.NewReader(req.Prompt)
 
-	stdout, err := cmd.StdoutPipe()
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		return runner.AgentTurnResult{}, fmt.Errorf("create stdout pipe: %w", err)
 	}
+	stderrReader, stderrWriter, err := os.Pipe()
+	if err != nil {
+		return runner.AgentTurnResult{}, errors.Join(
+			fmt.Errorf("create stderr pipe: %w", err),
+			stdout.Close(),
+			stdoutWriter.Close(),
+		)
+	}
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = stderrWriter
 
 	procgroup.Configure(cmd)
 	if err := cmd.Start(); err != nil {
-		return runner.AgentTurnResult{}, fmt.Errorf("start claude command: %w", err)
+		return runner.AgentTurnResult{}, errors.Join(
+			fmt.Errorf("start claude command: %w", err),
+			stdout.Close(),
+			stdoutWriter.Close(),
+			stderrReader.Close(),
+			stderrWriter.Close(),
+		)
 	}
+	if err := errors.Join(stdoutWriter.Close(), stderrWriter.Close()); err != nil {
+		processGroupID := procgroup.GroupID(cmd)
+		err = terminateWithCause(cmd, processGroupID, fmt.Errorf("close parent output writers: %w", err))
+		return runner.AgentTurnResult{}, errors.Join(err, waitAndCleanup(cmd, processGroupID), stdout.Close(), stderrReader.Close())
+	}
+	stderrDone := make(chan error)
+	go func() {
+		_, err := io.Copy(stderr, stderrReader)
+		stderrDone <- err
+	}()
 	processGroupID := procgroup.GroupID(cmd)
 	workerProcess, err := procgroup.Inspect(cmd)
 	if err != nil {
@@ -57,7 +83,10 @@ func (b *AgentBackend) RunTurn(
 		if waitErr := waitAndCleanup(cmd, processGroupID); waitErr != nil {
 			err = errors.Join(err, waitErr)
 		}
-		return runner.AgentTurnResult{}, err
+		if stderrErr := <-stderrDone; stderrErr != nil {
+			err = errors.Join(err, fmt.Errorf("read claude stderr: %w", stderrErr))
+		}
+		return runner.AgentTurnResult{}, errors.Join(err, stdout.Close(), stderrReader.Close())
 	}
 
 	processIdentity := "claude-" + strconv.Itoa(cmd.Process.Pid)
@@ -70,11 +99,22 @@ func (b *AgentBackend) RunTurn(
 		if waitErr := waitAndCleanup(cmd, processGroupID); waitErr != nil {
 			err = errors.Join(err, fmt.Errorf("wait after terminating claude command: %w", waitErr))
 		}
-		return runner.AgentTurnResult{}, err
+		if stderrErr := <-stderrDone; stderrErr != nil {
+			err = errors.Join(err, fmt.Errorf("read claude stderr: %w", stderrErr))
+		}
+		return runner.AgentTurnResult{}, errors.Join(err, stdout.Close(), stderrReader.Close())
 	}
 
+	waitDone := make(chan error)
+	go func() {
+		waitDone <- waitAndCleanup(cmd, processGroupID)
+	}()
 	state, streamErr := b.consumeStream(ctx, cmd, processGroupID, stdout, onUpdate)
-	waitErr := waitAndCleanup(cmd, processGroupID)
+	waitErr := <-waitDone
+	if stderrErr := <-stderrDone; stderrErr != nil {
+		waitErr = errors.Join(waitErr, fmt.Errorf("read claude stderr: %w", stderrErr))
+	}
+	closeErr := errors.Join(stdout.Close(), stderrReader.Close())
 
 	result := runner.AgentTurnResult{
 		ThreadID:  state.sessionID,
@@ -83,7 +123,7 @@ func (b *AgentBackend) RunTurn(
 	}
 
 	if streamErr != nil {
-		return result, streamErr
+		return result, errors.Join(streamErr, closeErr)
 	}
 
 	finalErr := finalTurnError(ctx, state, waitErr, stderr.String())
@@ -101,10 +141,10 @@ func (b *AgentBackend) RunTurn(
 		RuntimeIdentity:     agentidentity.RuntimeUpdate(state.model, "", "", "", time.Time{}),
 		BackendErrorMessage: state.resultText,
 	}); err != nil {
-		return result, err
+		return result, errors.Join(err, closeErr)
 	}
 
-	return result, finalErr
+	return result, errors.Join(finalErr, closeErr)
 }
 
 func (b *AgentBackend) command(ctx context.Context, req runner.AgentTurnRequest) (*exec.Cmd, error) {
@@ -277,7 +317,10 @@ func finalTurnError(ctx context.Context, state turnState, waitErr error, stderr 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		return withStderrTail(ErrMissingResult, stderr)
+		if waitErr == nil {
+			return withStderrTail(ErrMissingResult, stderr)
+		}
+		return withStderrTail(fmt.Errorf("%w: process exited: %w", ErrMissingResult, waitErr), stderr)
 	}
 
 	switch {
