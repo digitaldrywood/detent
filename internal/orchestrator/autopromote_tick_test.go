@@ -2831,6 +2831,7 @@ func TestTickAutoPromoteValidatorFailureExhaustionRoutesRework(t *testing.T) {
 
 	clock.Set(failure.NextRetryAt)
 	orch.tick(ctx, &state, clock.Now())
+	orch.validatorWG.Wait()
 	waitForValidatorRequests(t, validator, gate.DefaultValidatorMaxAttempts)
 	waitForValidatorResult(t, orch, issue)
 	exhausted := waitForPersistedValidatorFailure(t, memo, key, gate.DefaultValidatorMaxAttempts)
