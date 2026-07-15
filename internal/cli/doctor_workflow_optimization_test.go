@@ -733,7 +733,7 @@ func TestDoctorWorkflowReviewFlowTelemetryCountsImmediateReviewEntries(t *testin
 	cfg.Agent.AutoPromote.Enabled = true
 	cfg.Agent.AutoPromote.QuietSeconds = 0
 	cfg.Agent.AutoPromote.GateWaitState = workflowconfig.AutoPromoteGateWaitStateSource
-	metrics, err := doctorWorkflowOptimizationMetricsForProject(ctx, db, "detent", cfg)
+	metrics, err := doctorWorkflowOptimizationMetricsForProject(ctx, db, "detent", cfg, time.Time{}, "")
 	if err != nil {
 		t.Fatalf("doctorWorkflowOptimizationMetricsForProject() error = %v", err)
 	}
@@ -746,6 +746,196 @@ func TestDoctorWorkflowReviewFlowTelemetryCountsImmediateReviewEntries(t *testin
 	findings := doctorWorkflowOptimizationFindings("detent", "WORKFLOW.md", cfg, metrics)
 	doctorWorkflowFindingByRule(t, findings, doctorWorkflowRuleReviewFlowBehaviorMismatch)
 	doctorWorkflowFindingByRule(t, findings, doctorWorkflowRuleInvalidWorkpadStatusRecurrence)
+}
+
+func TestDoctorWorkflowReviewFlowTelemetryRespectsCurrentWorkflowBoundary(t *testing.T) {
+	t.Parallel()
+
+	boundary := time.Date(2026, 7, 9, 16, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name             string
+		entryOffsets     []time.Duration
+		wantEntries      int64
+		wantMismatch     bool
+		wantBoundaryType string
+	}{
+		{
+			name:         "historical entries before boundary",
+			entryOffsets: []time.Duration{-2 * time.Hour, -time.Hour},
+		},
+		{
+			name:             "new entries after boundary",
+			entryOffsets:     []time.Duration{time.Hour, 2 * time.Hour},
+			wantEntries:      2,
+			wantMismatch:     true,
+			wantBoundaryType: "workflow_modified_at",
+		},
+		{
+			name:         "mixed old and new entries",
+			entryOffsets: []time.Duration{-time.Hour, time.Hour},
+			wantEntries:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			dir := t.TempDir()
+			workflowPath := filepath.Join(dir, "WORKFLOW.md")
+			if err := os.WriteFile(workflowPath, []byte(`---
+tracker:
+  kind: memory
+agent:
+  auto_promote:
+    enabled: true
+    quiet_seconds: 0
+    gate_wait_state: source
+---
+Prompt
+`), 0o600); err != nil {
+				t.Fatalf("WriteFile(WORKFLOW.md) error = %v", err)
+			}
+			if err := os.Chtimes(workflowPath, boundary, boundary); err != nil {
+				t.Fatalf("Chtimes(WORKFLOW.md) error = %v", err)
+			}
+
+			dbPath := filepath.Join(dir, "detent.db")
+			backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: dbPath})
+			if err != nil {
+				t.Fatalf("store.Open() error = %v", err)
+			}
+			issue := "digitaldrywood/detent#981"
+			for index, offset := range tt.entryOffsets {
+				entryAt := boundary.Add(offset)
+				completedAt := entryAt.Add(-2 * time.Minute)
+				sessionID, err := backend.StartSession(ctx, store.SessionStart{
+					Identifier: issue,
+					StartedAt:  completedAt.Add(-5 * time.Minute),
+				})
+				if err != nil {
+					t.Fatalf("StartSession(%d) error = %v", index, err)
+				}
+				if err := backend.FinishSession(ctx, sessionID, store.SessionFinish{
+					CompletedAt: completedAt,
+					FinalState:  "completed",
+				}); err != nil {
+					t.Fatalf("FinishSession(%d) error = %v", index, err)
+				}
+				if _, err := backend.RecordUsageEvent(ctx, store.UsageEvent{
+					ProjectID:  "detent",
+					SessionID:  sessionID,
+					Identifier: issue,
+					StartedAt:  completedAt.Add(-5 * time.Minute),
+					FinishedAt: completedAt,
+					Outcome:    "completed",
+				}); err != nil {
+					t.Fatalf("RecordUsageEvent(%d) error = %v", index, err)
+				}
+				if _, err := backend.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
+					ProjectID:         "detent",
+					Identifier:        issue,
+					PhaseType:         store.WorkflowPhaseTypeLane,
+					PhaseName:         "Human Review",
+					PreviousPhaseName: "In Progress",
+					Status:            "entered",
+					StartedAt:         entryAt,
+				}); err != nil {
+					t.Fatalf("RecordWorkflowPhaseEvent(%d) error = %v", index, err)
+				}
+			}
+			if err := backend.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+
+			db, err := openDoctorSQLiteReadOnly(ctx, dbPath)
+			if err != nil {
+				t.Fatalf("openDoctorSQLiteReadOnly() error = %v", err)
+			}
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Fatalf("Close() error = %v", err)
+				}
+			})
+			deps := successfulDoctorDeps()
+			deps.loadWorkflow = workflowconfig.LoadWorkflow
+			deps.now = func() time.Time { return boundary.Add(24 * time.Hour) }
+			report, err := doctorWorkflowOptimization(ctx, db, dbPath, globalconfig.Config{Projects: []globalconfig.Project{{
+				ID:       "detent",
+				Workflow: workflowPath,
+				Workdir:  dir,
+			}}}, deps, "", doctorWorkflowOptimizationOptions{})
+			if err != nil {
+				t.Fatalf("doctorWorkflowOptimization() error = %v", err)
+			}
+			if got := report.Projects[0].Metrics.ReviewEntryCount; got != tt.wantEntries {
+				t.Fatalf("ReviewEntryCount = %d, want %d", got, tt.wantEntries)
+			}
+			if got := doctorWorkflowFindingExists(report.Findings, doctorWorkflowRuleReviewFlowBehaviorMismatch); got != tt.wantMismatch {
+				t.Fatalf("review-flow mismatch finding = %t, want %t", got, tt.wantMismatch)
+			}
+			if tt.wantMismatch {
+				finding := doctorWorkflowFindingByRule(t, report.Findings, doctorWorkflowRuleReviewFlowBehaviorMismatch)
+				if got := finding.Evidence["telemetry_boundary_at"]; got != boundary.Format(time.RFC3339) {
+					t.Fatalf("telemetry_boundary_at = %#v, want %s", got, boundary.Format(time.RFC3339))
+				}
+				if got := finding.Evidence["telemetry_boundary_type"]; got != tt.wantBoundaryType {
+					t.Fatalf("telemetry_boundary_type = %#v, want %s", got, tt.wantBoundaryType)
+				}
+			}
+		})
+	}
+}
+
+func TestDoctorWorkflowReviewFlowBoundary(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		modified time.Time
+		wantAt   time.Time
+		wantType string
+	}{
+		{
+			name:     "current workflow modification",
+			modified: now.Add(-24 * time.Hour),
+			wantAt:   now.Add(-24 * time.Hour),
+			wantType: "workflow_modified_at",
+		},
+		{
+			name:     "old workflow uses recent window",
+			modified: now.Add(-60 * 24 * time.Hour),
+			wantAt:   now.Add(-doctorWorkflowReviewFlowRecentWindow),
+			wantType: "recent_window",
+		},
+		{
+			name:     "future modification clamps to now",
+			modified: now.Add(time.Hour),
+			wantAt:   now,
+			wantType: "workflow_modified_at",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			workflowPath := filepath.Join(dir, "WORKFLOW.md")
+			if err := os.WriteFile(workflowPath, []byte("Prompt\n"), 0o600); err != nil {
+				t.Fatalf("WriteFile(WORKFLOW.md) error = %v", err)
+			}
+			if err := os.Chtimes(workflowPath, tt.modified, tt.modified); err != nil {
+				t.Fatalf("Chtimes(WORKFLOW.md) error = %v", err)
+			}
+			gotAt, gotType := doctorWorkflowReviewFlowBoundary(globalconfig.Project{Workflow: workflowPath}, now)
+			if !gotAt.Equal(tt.wantAt) || gotType != tt.wantType {
+				t.Fatalf("doctorWorkflowReviewFlowBoundary() = %s/%s, want %s/%s", gotAt, gotType, tt.wantAt, tt.wantType)
+			}
+		})
+	}
 }
 
 func TestDoctorWorkflowOptimizationRunawaySessionTokensRespectsConfiguredCap(t *testing.T) {

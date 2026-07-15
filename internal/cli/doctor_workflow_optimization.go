@@ -60,6 +60,7 @@ const (
 	doctorWorkflowSchedulerMinDecisions        = int64(5)
 	doctorWorkflowSchedulerHighSkipRate        = 0.50
 	doctorWorkflowReviewFlowMismatchMinEntries = int64(2)
+	doctorWorkflowReviewFlowRecentWindow       = 30 * 24 * time.Hour
 	doctorWorkflowInvalidWorkpadStatusMinCount = int64(2)
 	doctorWorkflowValidatorModel               = "gpt-5.4-mini"
 	doctorWorkflowRunawayCapTolerance          = 1.25
@@ -170,6 +171,8 @@ type doctorWorkflowOptimizationMetrics struct {
 	ReviewEntryCount                 int64                                `json:"review_entry_count"`
 	ReviewEntryIssue                 string                               `json:"review_entry_issue,omitempty"`
 	ReviewEntryIssueCount            int64                                `json:"review_entry_issue_count"`
+	ReviewFlowBoundaryAt             string                               `json:"review_flow_boundary_at,omitempty"`
+	ReviewFlowBoundaryType           string                               `json:"review_flow_boundary_type,omitempty"`
 	InvalidWorkpadStatusDecisions    int64                                `json:"invalid_workpad_status_decisions"`
 	InvalidWorkpadStatusIssue        string                               `json:"invalid_workpad_status_issue,omitempty"`
 	InvalidWorkpadStatusIssueCount   int64                                `json:"invalid_workpad_status_issue_count"`
@@ -262,6 +265,8 @@ type doctorWorkflowReviewFlowMetrics struct {
 	reviewEntryCount               int64
 	reviewEntryIssue               string
 	reviewEntryIssueCount          int64
+	boundaryAt                     time.Time
+	boundaryType                   string
 	invalidWorkpadStatusDecisions  int64
 	invalidWorkpadStatusIssue      string
 	invalidWorkpadStatusIssueCount int64
@@ -405,7 +410,8 @@ func doctorWorkflowOptimization(
 			workflowPath = ""
 		}
 
-		metrics, err := doctorWorkflowOptimizationMetricsForProject(ctx, db, projectID, workflow.Config)
+		reviewFlowBoundaryAt, reviewFlowBoundaryType := doctorWorkflowReviewFlowBoundary(project, deps.now())
+		metrics, err := doctorWorkflowOptimizationMetricsForProject(ctx, db, projectID, workflow.Config, reviewFlowBoundaryAt, reviewFlowBoundaryType)
 		if err != nil {
 			return doctorWorkflowOptimizationReport{}, err
 		}
@@ -518,11 +524,33 @@ LIMIT 1`, strings.TrimSpace(projectID)).Scan(
 	return status, nil
 }
 
+func doctorWorkflowReviewFlowBoundary(project globalconfig.Project, now time.Time) (time.Time, string) {
+	now = now.UTC()
+	recentBoundary := now.Add(-doctorWorkflowReviewFlowRecentWindow)
+	modifiedAt := doctorWorkflowModifiedAt(project)
+	if modifiedAt.After(now) {
+		modifiedAt = now
+	}
+	if modifiedAt.After(recentBoundary) {
+		return modifiedAt, "workflow_modified_at"
+	}
+	return recentBoundary, "recent_window"
+}
+
+func doctorWorkflowTelemetryBoundaryValue(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
 func doctorWorkflowOptimizationMetricsForProject(
 	ctx context.Context,
 	db doctorTelemetryStore,
 	projectID string,
 	cfg workflowconfig.Config,
+	reviewFlowBoundaryAt time.Time,
+	reviewFlowBoundaryType string,
 ) (doctorWorkflowOptimizationMetrics, error) {
 	pricing, err := budget.PricingForConfig(budget.Config{PricingPath: cfg.Budget.PricingPath})
 	if err != nil {
@@ -544,7 +572,7 @@ func doctorWorkflowOptimizationMetricsForProject(
 	if err != nil {
 		return doctorWorkflowOptimizationMetrics{}, err
 	}
-	reviewFlow, err := doctorWorkflowReviewFlowTelemetry(ctx, db, projectID, cfg.Agent.AutoPromote.SourceState)
+	reviewFlow, err := doctorWorkflowReviewFlowTelemetry(ctx, db, projectID, cfg.Agent.AutoPromote.SourceState, reviewFlowBoundaryAt, reviewFlowBoundaryType)
 	if err != nil {
 		return doctorWorkflowOptimizationMetrics{}, err
 	}
@@ -587,6 +615,8 @@ func doctorWorkflowOptimizationMetricsForProject(
 		ReviewEntryCount:               reviewFlow.reviewEntryCount,
 		ReviewEntryIssue:               reviewFlow.reviewEntryIssue,
 		ReviewEntryIssueCount:          reviewFlow.reviewEntryIssueCount,
+		ReviewFlowBoundaryAt:           doctorWorkflowTelemetryBoundaryValue(reviewFlow.boundaryAt),
+		ReviewFlowBoundaryType:         reviewFlow.boundaryType,
 		InvalidWorkpadStatusDecisions:  reviewFlow.invalidWorkpadStatusDecisions,
 		InvalidWorkpadStatusIssue:      reviewFlow.invalidWorkpadStatusIssue,
 		InvalidWorkpadStatusIssueCount: reviewFlow.invalidWorkpadStatusIssueCount,
@@ -612,16 +642,16 @@ func doctorWorkflowOptimizationMetricsForProject(
 	return metrics, nil
 }
 
-func doctorWorkflowReviewFlowTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string, reviewState string) (doctorWorkflowReviewFlowMetrics, error) {
-	sessions, err := doctorWorkflowCompletedSessionTelemetry(ctx, db, projectID, reviewState)
+func doctorWorkflowReviewFlowTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string, reviewState string, boundaryAt time.Time, boundaryType string) (doctorWorkflowReviewFlowMetrics, error) {
+	sessions, err := doctorWorkflowCompletedSessionTelemetry(ctx, db, projectID, reviewState, boundaryAt)
 	if err != nil {
 		return doctorWorkflowReviewFlowMetrics{}, err
 	}
-	entries, err := doctorWorkflowReviewEntryTelemetry(ctx, db, projectID, reviewState)
+	entries, err := doctorWorkflowReviewEntryTelemetry(ctx, db, projectID, reviewState, boundaryAt)
 	if err != nil {
 		return doctorWorkflowReviewFlowMetrics{}, err
 	}
-	metrics := doctorWorkflowReviewFlowMetrics{}
+	metrics := doctorWorkflowReviewFlowMetrics{boundaryAt: boundaryAt, boundaryType: boundaryType}
 	reviewEntryCounts := map[string]int64{}
 	for _, entry := range entries {
 		if !doctorWorkflowReviewEntryFollowsCompletedSession(entry, sessions[entry.issueKey]) {
@@ -645,8 +675,9 @@ func doctorWorkflowReviewFlowTelemetry(ctx context.Context, db doctorTelemetrySt
 	return metrics, nil
 }
 
-func doctorWorkflowCompletedSessionTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string, reviewState string) (map[string][]doctorWorkflowCompletedSession, error) {
+func doctorWorkflowCompletedSessionTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string, reviewState string, boundaryAt time.Time) (map[string][]doctorWorkflowCompletedSession, error) {
 	reviewState = strings.ToLower(strings.TrimSpace(reviewState))
+	boundary := doctorWorkflowTelemetryBoundaryValue(boundaryAt)
 	rows, err := db.QueryContext(ctx, `
 SELECT
   COALESCE(NULLIF(s.identifier, ''), NULLIF(s.issue_id, ''), NULLIF(s.issue_url, ''), 'unassigned'),
@@ -654,6 +685,7 @@ SELECT
 FROM codex_sessions s
 WHERE s.completed_at IS NOT NULL
   AND lower(trim(COALESCE(s.final_state, ''))) IN ('completed', ?)
+  AND (? = '' OR s.completed_at >= ?)
   AND (
     ? = ''
     OR s.id IN (
@@ -664,7 +696,7 @@ WHERE s.completed_at IS NOT NULL
     )
   )
 ORDER BY s.completed_at DESC, s.id DESC
-LIMIT 500`, reviewState, projectID, projectID)
+LIMIT 500`, reviewState, boundary, boundary, projectID, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("read completed session review-flow telemetry: %w", err)
 	}
@@ -693,11 +725,12 @@ LIMIT 500`, reviewState, projectID, projectID)
 	return sessions, nil
 }
 
-func doctorWorkflowReviewEntryTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string, reviewState string) ([]doctorWorkflowReviewEntryEvent, error) {
+func doctorWorkflowReviewEntryTelemetry(ctx context.Context, db doctorTelemetryStore, projectID string, reviewState string, boundaryAt time.Time) ([]doctorWorkflowReviewEntryEvent, error) {
 	reviewState = strings.ToLower(strings.TrimSpace(reviewState))
 	if reviewState == "" {
 		reviewState = "human review"
 	}
+	boundary := doctorWorkflowTelemetryBoundaryValue(boundaryAt)
 	rows, err := db.QueryContext(ctx, `
 SELECT
   COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned'),
@@ -706,9 +739,10 @@ FROM workflow_phase_events
 WHERE phase_type = 'lane'
   AND lower(trim(COALESCE(status, ''))) = 'entered'
   AND lower(trim(phase_name)) = ?
+  AND (? = '' OR started_at >= ?)
   AND (? = '' OR project_id = ?)
 ORDER BY started_at DESC, id DESC
-LIMIT 500`, reviewState, projectID, projectID)
+LIMIT 500`, reviewState, boundary, boundary, projectID, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("read review-state entry telemetry: %w", err)
 	}
@@ -1442,6 +1476,8 @@ func doctorWorkflowOptimizationFindings(
 				"review_entry_count":       metrics.ReviewEntryCount,
 				"review_entry_issue":       metrics.ReviewEntryIssue,
 				"review_entry_issue_count": metrics.ReviewEntryIssueCount,
+				"telemetry_boundary_at":    metrics.ReviewFlowBoundaryAt,
+				"telemetry_boundary_type":  metrics.ReviewFlowBoundaryType,
 				"auto_promote_enabled":     cfg.Agent.AutoPromote.Enabled,
 				"quiet_seconds":            cfg.Agent.AutoPromote.QuietSeconds,
 				"gate_wait_state":          doctorReviewFlowGateWaitState(cfg),
