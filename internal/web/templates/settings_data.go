@@ -36,6 +36,7 @@ type SettingsGlobal struct {
 type SettingsProject struct {
 	ID                    string
 	WorkflowPath          string
+	WorkflowDetailsURL    string
 	Workdir               string
 	WorktreeRoot          string
 	Weight                int

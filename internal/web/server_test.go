@@ -7076,6 +7076,7 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 	dbPath := filepath.Join(root, "detent.db")
 	logPath := filepath.Join(root, "detent.log")
 	projectURL := "https://github.com/orgs/digitaldrywood/projects/4"
+	workflowDetailsURL := projectURL + "/workflows"
 
 	registry := project.NewRegistry()
 	trackedProject := newSettingsTestProject(t, globalconfig.Project{
@@ -7135,6 +7136,11 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 		">true</span>",
 		"github",
 		projectURL,
+		`href="` + workflowDetailsURL + `"`,
+		`aria-label="Open detent workflow details"`,
+		`target="_blank"`,
+		`rel="noopener noreferrer"`,
+		"View workflow ↗",
 		"Dependency auto-unblock",
 		"enabled: Blocked, Waiting -&gt; Todo when terminal_or_merged",
 		dbPath,

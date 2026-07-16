@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -77,6 +79,7 @@ func settingsProjects(registry *project.Registry) []templates.SettingsProject {
 		out = append(out, templates.SettingsProject{
 			ID:                    string(trackedProject.ID()),
 			WorkflowPath:          cfg.Workflow,
+			WorkflowDetailsURL:    workflowDetailsURL(workflow.Tracker.ProjectSlug),
 			Workdir:               cfg.Workdir,
 			WorktreeRoot:          workflow.Workspace.Root,
 			Weight:                cfg.Weight,
@@ -88,6 +91,30 @@ func settingsProjects(registry *project.Registry) []templates.SettingsProject {
 		})
 	}
 	return out
+}
+
+func workflowDetailsURL(projectURL string) string {
+	parsed, err := url.ParseRequestURI(strings.TrimSpace(projectURL))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return ""
+	}
+
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	for i := 0; i+3 < len(segments); i++ {
+		if (segments[i] != "orgs" && segments[i] != "users") || segments[i+2] != "projects" {
+			continue
+		}
+		projectNumber, err := strconv.Atoi(segments[i+3])
+		if err != nil || projectNumber <= 0 {
+			return ""
+		}
+		parsed.Path = "/" + strings.Join(segments[:i+4], "/") + "/workflows"
+		parsed.RawPath = ""
+		parsed.RawQuery = ""
+		parsed.Fragment = ""
+		return parsed.String()
+	}
+	return ""
 }
 
 func trackerKind(cfg workflowconfig.Config) string {

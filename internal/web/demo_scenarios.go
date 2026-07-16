@@ -648,7 +648,7 @@ func demoSettingsProjects(variant string) []templates.SettingsProject {
 		return nil
 	}
 	projects := []templates.SettingsProject{
-		{ID: demoPrimaryProjectID, WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/detent-core", WorktreeRoot: "/tmp/detent-screenshots/workspaces/detent-core", Weight: 120, Priority: 100, TrackerKind: "memory", TrackerProject: "digitaldrywood/detent-core", DependencyAutoUnblock: "enabled: Blocked -> Todo when terminal_or_merged"},
+		{ID: demoPrimaryProjectID, WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", WorkflowDetailsURL: "https://github.com/orgs/digitaldrywood/projects/4/workflows", Workdir: "/tmp/detent-screenshots/source/detent-core", WorktreeRoot: "/tmp/detent-screenshots/workspaces/detent-core", Weight: 120, Priority: 100, TrackerKind: "memory", TrackerProject: "digitaldrywood/detent-core", DependencyAutoUnblock: "enabled: Blocked -> Todo when terminal_or_merged"},
 		{ID: "docs-site", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/docs-site", WorktreeRoot: "/tmp/detent-screenshots/workspaces/docs-site", Weight: 90, Priority: 80, TrackerKind: "memory", TrackerProject: "digitaldrywood/docs-site", DependencyAutoUnblock: "disabled: n/a -> n/a when terminal_or_merged"},
 		{ID: "billing-api", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/billing-api", WorktreeRoot: "/tmp/detent-screenshots/workspaces/billing-api", Weight: 80, Priority: 95, TrackerKind: "memory", TrackerProject: "digitaldrywood/billing-api", DependencyAutoUnblock: "enabled: Blocked -> Rework when terminal_or_merged"},
 		{ID: "mobile-client", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/mobile-client", WorktreeRoot: "/tmp/detent-screenshots/workspaces/mobile-client", Weight: 40, Priority: 20, Paused: true, TrackerKind: "memory", TrackerProject: "digitaldrywood/mobile-client", DependencyAutoUnblock: "disabled: n/a -> n/a when terminal_or_merged"},
@@ -663,6 +663,7 @@ func demoSettingsProjects(variant string) []templates.SettingsProject {
 	if variant == "settings-missing" {
 		for i := range projects {
 			projects[i].WorkflowPath = ""
+			projects[i].WorkflowDetailsURL = ""
 			projects[i].Workdir = ""
 			projects[i].WorktreeRoot = ""
 			projects[i].TrackerProject = ""
