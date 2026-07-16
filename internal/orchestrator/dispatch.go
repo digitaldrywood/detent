@@ -448,6 +448,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		CapacityScope:       capacityScope,
 		CapacityProbe:       capacityProbeKey != "",
 		StopDestination:     o.cfg.StopRunTargetState,
+		StopPriorityOptions: stopRunPriorityOptions(o.cfg.StopRunPriorityNames),
 		globalSlot:          globalSlot,
 		cancel:              cancel,
 		stop:                stop,

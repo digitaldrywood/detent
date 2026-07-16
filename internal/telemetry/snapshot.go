@@ -398,6 +398,7 @@ type Running struct {
 	Attempt               int                       `json:"attempt"`
 	WorkAttemptID         int64                     `json:"work_attempt_id,omitempty"`
 	StopDestination       string                    `json:"stop_destination,omitempty"`
+	StopPriorityOptions   []StopRunPriorityOption   `json:"stop_priority_options,omitempty"`
 	DetentSessionID       int64                     `json:"detent_session_id,omitempty"`
 	WorkerHost            string                    `json:"worker_host,omitempty"`
 	ProcessIdentity       string                    `json:"process_identity,omitempty"`
@@ -416,6 +417,11 @@ type Running struct {
 	DiffFiles             int                       `json:"diff_files"`
 	DiffStatus            string                    `json:"diff_status,omitempty"`
 	Tokens                Tokens                    `json:"tokens"`
+}
+
+type StopRunPriorityOption struct {
+	Rank int    `json:"rank"`
+	Name string `json:"name"`
 }
 
 type WorkAttempt struct {

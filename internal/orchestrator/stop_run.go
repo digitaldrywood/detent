@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -17,8 +19,17 @@ import (
 
 var (
 	ErrStopRunInvalidIdentity = errors.New("stop run identity is invalid")
+	ErrStopRunInvalidRoute    = errors.New("stop run destination or priority is invalid")
 	ErrStopRunStale           = errors.New("active run has completed or changed")
 	ErrStopRunTransition      = errors.New("run stopped but work item transition failed")
+)
+
+const (
+	StopRunDestinationBlocked   = "Blocked"
+	StopRunDestinationBacklog   = "Backlog"
+	StopRunDestinationCancelled = "Cancelled"
+	StopRunDestinationTodo      = "Todo"
+	StopRunReasonMaxLength      = 280
 )
 
 type StopRunRequest struct {
@@ -28,6 +39,9 @@ type StopRunRequest struct {
 	WorkAttemptID     int64
 	DetentSessionID   int64
 	ProviderSessionID string
+	Destination       string
+	Priority          int
+	Reason            string
 }
 
 type StopRunResult struct {
@@ -39,6 +53,9 @@ type StopRunResult struct {
 	DetentSessionID   int64     `json:"detent_session_id,omitempty"`
 	ProviderSessionID string    `json:"provider_session_id,omitempty"`
 	Destination       string    `json:"destination"`
+	Priority          int       `json:"priority,omitempty"`
+	PriorityName      string    `json:"priority_name,omitempty"`
+	Reason            string    `json:"reason,omitempty"`
 	Outcome           string    `json:"outcome"`
 	RequestedAt       time.Time `json:"requested_at"`
 	CompletedAt       time.Time `json:"completed_at,omitzero"`
@@ -70,6 +87,9 @@ type operatorStopMetadata struct {
 	DetentSessionID   int64     `json:"detent_session_id,omitempty"`
 	ProviderSessionID string    `json:"provider_session_id,omitempty"`
 	Destination       string    `json:"destination"`
+	Priority          int       `json:"priority,omitempty"`
+	PriorityName      string    `json:"priority_name,omitempty"`
+	Reason            string    `json:"reason,omitempty"`
 	Outcome           string    `json:"outcome"`
 	RequestedAt       time.Time `json:"requested_at"`
 	CompletedAt       time.Time `json:"completed_at,omitzero"`
@@ -99,9 +119,13 @@ func (o *Orchestrator) StopRun(ctx context.Context, request StopRunRequest) (Sto
 }
 
 func (o *Orchestrator) handleStopRunRequest(ctx context.Context, state *State, event stopRunRequest) {
-	request := normalizeStopRunRequest(event.request)
-	if !o.validStopRunRequest(request) {
+	request := o.normalizeStopRunRequest(event.request)
+	if !o.validStopRunIdentity(request) {
 		event.reply <- stopRunReply{err: ErrStopRunInvalidIdentity}
+		return
+	}
+	if !validStopRunRoute(request) {
+		event.reply <- stopRunReply{err: ErrStopRunInvalidRoute}
 		return
 	}
 	if pending, ok := o.pendingStops[request.IssueID]; ok {
@@ -136,6 +160,14 @@ func (o *Orchestrator) handleStopRunRequest(ctx context.Context, state *State, e
 		event.reply <- stopRunReply{err: ErrStopRunStale}
 		return
 	}
+	priorityName := ""
+	if request.Destination == StopRunDestinationTodo {
+		priorityName = stopRunPriorityName(running.StopPriorityOptions, o.cfg.StopRunPriorityNames, request.Priority)
+		if priorityName == "" {
+			event.reply <- stopRunReply{err: ErrStopRunInvalidRoute}
+			return
+		}
+	}
 	result := StopRunResult{
 		ProjectID:         o.cfg.Project.ID,
 		IssueID:           running.Issue.ID,
@@ -144,7 +176,10 @@ func (o *Orchestrator) handleStopRunRequest(ctx context.Context, state *State, e
 		WorkAttemptID:     running.WorkAttemptID,
 		DetentSessionID:   running.DetentSessionID,
 		ProviderSessionID: running.SessionID,
-		Destination:       o.cfg.StopRunTargetState,
+		Destination:       request.Destination,
+		Priority:          request.Priority,
+		PriorityName:      priorityName,
+		Reason:            request.Reason,
 		Outcome:           "pending",
 		RequestedAt:       event.at,
 	}
@@ -203,13 +238,14 @@ func (o *Orchestrator) handleOperatorStopCompletion(ctx context.Context, state *
 }
 
 func (o *Orchestrator) finishOperatorStopTransition(ctx context.Context, state *State, issue connector.Issue, result *StopRunResult) error {
+	if result.Destination == StopRunDestinationTodo {
+		if err := o.connector.SetField(ctx, issue.ID, "Priority", result.PriorityName); err != nil {
+			return o.failOperatorStopTransition(ctx, state, issue, result, fmt.Errorf("set priority to %s: %w", result.PriorityName, err))
+		}
+	}
 	err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, result.Destination, result.CompletedAt, string(store.WorkAttemptTerminalOperatorStopped), workflowLaneMetadata{})
 	if err != nil {
-		result.Outcome = "transition_failed"
-		state.Blocked[issue.ID] = operatorStopBlocked(issue, *result, "run stopped; retry the transition to "+result.Destination+": "+err.Error())
-		o.updateOperatorStopOutcome(ctx, state, result, runningFromStopResult(issue, *result), err)
-		o.recordOperatorStopAudit(ctx, state, *result, err)
-		return fmt.Errorf("%w: move %s to %s: %w", ErrStopRunTransition, issueLabel(issue), result.Destination, err)
+		return o.failOperatorStopTransition(ctx, state, issue, result, err)
 	}
 	result.Outcome = "succeeded"
 	delete(state.Blocked, issue.ID)
@@ -217,6 +253,14 @@ func (o *Orchestrator) finishOperatorStopTransition(ctx context.Context, state *
 	o.completedStops[stopRunResultKey(*result)] = *result
 	o.recordOperatorStopAudit(ctx, state, *result, nil)
 	return nil
+}
+
+func (o *Orchestrator) failOperatorStopTransition(ctx context.Context, state *State, issue connector.Issue, result *StopRunResult, transitionErr error) error {
+	result.Outcome = "transition_failed"
+	state.Blocked[issue.ID] = operatorStopBlocked(issue, *result, "run stopped; retry the transition to "+result.Destination+": "+transitionErr.Error())
+	o.updateOperatorStopOutcome(ctx, state, result, runningFromStopResult(issue, *result), transitionErr)
+	o.recordOperatorStopAudit(ctx, state, *result, transitionErr)
+	return fmt.Errorf("%w: move %s to %s: %w", ErrStopRunTransition, issueLabel(issue), result.Destination, transitionErr)
 }
 
 func (o *Orchestrator) retryOperatorStopTransition(ctx context.Context, state *State, blocked Blocked, reply chan stopRunReply, at time.Time) {
@@ -229,6 +273,9 @@ func (o *Orchestrator) retryOperatorStopTransition(ctx context.Context, state *S
 		DetentSessionID:   blocked.DetentSessionID,
 		ProviderSessionID: blocked.SessionID,
 		Destination:       blocked.Destination,
+		Priority:          blocked.Priority,
+		PriorityName:      blocked.PriorityName,
+		Reason:            blocked.StopReason,
 		Outcome:           "transition_failed",
 		RequestedAt:       blocked.BlockedAt,
 		CompletedAt:       at,
@@ -274,8 +321,11 @@ func (o *Orchestrator) updateOperatorStopOutcome(ctx context.Context, state *Sta
 		return
 	}
 	phase := "operator_stop_succeeded"
-	message := "run stopped and work item moved to " + result.Destination
+	message := operatorStopMessage(*result)
 	nextAction := "await operator resume"
+	if result.Destination == StopRunDestinationTodo {
+		nextAction = "await scheduler at priority " + result.PriorityName
+	}
 	if outcomeErr != nil {
 		phase = "operator_stop_transition_failed"
 		message = "run stopped; work item transition failed: " + outcomeErr.Error()
@@ -315,7 +365,7 @@ func (o *Orchestrator) recordOperatorStopAudit(ctx context.Context, state *State
 			Identifier:   result.Identifier,
 			PhaseType:    store.WorkflowPhaseTypeOperatorAction,
 			PhaseName:    "stop_run",
-			Reason:       string(store.WorkAttemptTerminalOperatorStopped),
+			Reason:       operatorStopAuditReason(result),
 			Status:       result.Outcome,
 			StartedAt:    result.RequestedAt,
 			FinishedAt:   result.CompletedAt,
@@ -324,7 +374,7 @@ func (o *Orchestrator) recordOperatorStopAudit(ctx context.Context, state *State
 			o.logger.Warn("operator stop audit persistence failed", "issue_id", result.IssueID, "error", err)
 		}
 	}
-	message := "stopped run and moved item to " + result.Destination
+	message := operatorStopMessage(result)
 	if outcomeErr != nil {
 		message = "stopped run but failed to move item to " + result.Destination + ": " + outcomeErr.Error()
 	}
@@ -335,7 +385,7 @@ func (o *Orchestrator) recordOperatorStopAudit(ctx context.Context, state *State
 			DetentSessionID:   result.DetentSessionID,
 			ProviderSessionID: result.ProviderSessionID,
 			Kind:              "operator_stop",
-			Title:             "Stop run and block item",
+			Title:             "Stop run and route item",
 			Content:           message,
 			Status:            result.Outcome,
 		})
@@ -382,8 +432,8 @@ func (o *Orchestrator) reconcileOperatorStopHolds(ctx context.Context, state *St
 		if !ok {
 			continue
 		}
-		result := StopRunResult{ProjectID: o.cfg.Project.ID, IssueID: issueID, Identifier: issue.Identifier, Attempt: blocked.Attempt, WorkAttemptID: blocked.WorkAttemptID, DetentSessionID: blocked.DetentSessionID, ProviderSessionID: blocked.SessionID, Destination: blocked.Destination, RequestedAt: blocked.BlockedAt, CompletedAt: now, AlreadyStopped: true}
-		if strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(blocked.Destination)) {
+		result := StopRunResult{ProjectID: o.cfg.Project.ID, IssueID: issueID, Identifier: issue.Identifier, Attempt: blocked.Attempt, WorkAttemptID: blocked.WorkAttemptID, DetentSessionID: blocked.DetentSessionID, ProviderSessionID: blocked.SessionID, Destination: blocked.Destination, Priority: blocked.Priority, PriorityName: blocked.PriorityName, Reason: blocked.StopReason, RequestedAt: blocked.BlockedAt, CompletedAt: now, AlreadyStopped: true}
+		if blocked.Destination != StopRunDestinationTodo && strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(blocked.Destination)) {
 			result.Outcome = "succeeded"
 			delete(state.Blocked, issueID)
 			o.updateOperatorStopOutcome(ctx, state, &result, runningFromStopResult(issue, result), nil)
@@ -398,15 +448,33 @@ func (o *Orchestrator) reconcileOperatorStopHolds(ctx context.Context, state *St
 	return transitioned
 }
 
-func normalizeStopRunRequest(request StopRunRequest) StopRunRequest {
+func (o *Orchestrator) normalizeStopRunRequest(request StopRunRequest) StopRunRequest {
 	request.ProjectID = strings.TrimSpace(request.ProjectID)
 	request.IssueID = strings.TrimSpace(request.IssueID)
 	request.ProviderSessionID = strings.TrimSpace(request.ProviderSessionID)
+	request.Destination = strings.TrimSpace(request.Destination)
+	if request.Destination == "" {
+		request.Destination = strings.TrimSpace(o.cfg.StopRunTargetState)
+	}
+	if destination, ok := canonicalStopRunDestination(request.Destination); ok {
+		request.Destination = destination
+	}
+	request.Reason = strings.TrimSpace(request.Reason)
+	if request.Destination != StopRunDestinationTodo {
+		request.Priority = 0
+	}
 	return request
 }
 
-func (o *Orchestrator) validStopRunRequest(request StopRunRequest) bool {
+func (o *Orchestrator) validStopRunIdentity(request StopRunRequest) bool {
 	return request.IssueID != "" && request.Attempt >= 0 && (request.ProjectID == "" || request.ProjectID == strings.TrimSpace(o.cfg.Project.ID))
+}
+
+func validStopRunRoute(request StopRunRequest) bool {
+	if _, ok := canonicalStopRunDestination(request.Destination); !ok || utf8.RuneCountInString(request.Reason) > StopRunReasonMaxLength {
+		return false
+	}
+	return request.Destination != StopRunDestinationTodo || request.Priority >= 1 && request.Priority <= 4
 }
 
 func runningMatchesStopRequest(running Running, request StopRunRequest) bool {
@@ -435,6 +503,12 @@ func stopRunResultMatchesRequest(result StopRunResult, request StopRunRequest) b
 	if request.DetentSessionID > 0 && request.DetentSessionID != result.DetentSessionID {
 		return false
 	}
+	if request.Destination != "" && request.Destination != result.Destination {
+		return false
+	}
+	if request.Priority > 0 && request.Priority != result.Priority {
+		return false
+	}
 	return request.ProviderSessionID == "" || request.ProviderSessionID == result.ProviderSessionID
 }
 
@@ -455,7 +529,7 @@ func runAlreadyCompleted(done <-chan struct{}) bool {
 }
 
 func operatorStopBlocked(issue connector.Issue, result StopRunResult, reason string) Blocked {
-	return Blocked{Issue: cloneIssue(issue), Reason: reason, BlockedAt: result.RequestedAt, Source: BlockedSourceOperatorStop, Attempt: result.Attempt, WorkAttemptID: result.WorkAttemptID, DetentSessionID: result.DetentSessionID, SessionID: result.ProviderSessionID, Destination: result.Destination}
+	return Blocked{Issue: cloneIssue(issue), Reason: reason, BlockedAt: result.RequestedAt, Source: BlockedSourceOperatorStop, Attempt: result.Attempt, WorkAttemptID: result.WorkAttemptID, DetentSessionID: result.DetentSessionID, SessionID: result.ProviderSessionID, Destination: result.Destination, Priority: result.Priority, PriorityName: result.PriorityName, StopReason: result.Reason}
 }
 
 func operatorStopWorkAttemptMetadata(running Running, result StopRunResult, outcome string, message string) string {
@@ -468,7 +542,7 @@ func operatorStopWorkAttemptMetadata(running Running, result StopRunResult, outc
 }
 
 func operatorStopMetadataFromResult(result StopRunResult, message string) operatorStopMetadata {
-	return operatorStopMetadata{ProjectID: result.ProjectID, IssueID: result.IssueID, Identifier: result.Identifier, Attempt: result.Attempt, WorkAttemptID: result.WorkAttemptID, DetentSessionID: result.DetentSessionID, ProviderSessionID: result.ProviderSessionID, Destination: result.Destination, Outcome: result.Outcome, RequestedAt: result.RequestedAt, CompletedAt: result.CompletedAt, Error: message}
+	return operatorStopMetadata{ProjectID: result.ProjectID, IssueID: result.IssueID, Identifier: result.Identifier, Attempt: result.Attempt, WorkAttemptID: result.WorkAttemptID, DetentSessionID: result.DetentSessionID, ProviderSessionID: result.ProviderSessionID, Destination: result.Destination, Priority: result.Priority, PriorityName: result.PriorityName, Reason: result.Reason, Outcome: result.Outcome, RequestedAt: result.RequestedAt, CompletedAt: result.CompletedAt, Error: message}
 }
 
 func operatorStopMetadataFromAttempt(attempt store.WorkAttempt) (operatorStopMetadata, bool) {
@@ -482,7 +556,7 @@ func operatorStopMetadataFromAttempt(attempt store.WorkAttempt) (operatorStopMet
 }
 
 func stopRunResultFromMetadata(metadata operatorStopMetadata) StopRunResult {
-	return StopRunResult{ProjectID: metadata.ProjectID, IssueID: metadata.IssueID, Identifier: metadata.Identifier, Attempt: metadata.Attempt, WorkAttemptID: metadata.WorkAttemptID, DetentSessionID: metadata.DetentSessionID, ProviderSessionID: metadata.ProviderSessionID, Destination: metadata.Destination, Outcome: metadata.Outcome, RequestedAt: metadata.RequestedAt, CompletedAt: metadata.CompletedAt}
+	return StopRunResult{ProjectID: metadata.ProjectID, IssueID: metadata.IssueID, Identifier: metadata.Identifier, Attempt: metadata.Attempt, WorkAttemptID: metadata.WorkAttemptID, DetentSessionID: metadata.DetentSessionID, ProviderSessionID: metadata.ProviderSessionID, Destination: metadata.Destination, Priority: metadata.Priority, PriorityName: metadata.PriorityName, Reason: metadata.Reason, Outcome: metadata.Outcome, RequestedAt: metadata.RequestedAt, CompletedAt: metadata.CompletedAt}
 }
 
 func runningFromStopResult(issue connector.Issue, result StopRunResult) Running {
@@ -515,4 +589,52 @@ func (o *Orchestrator) completedStopForRequest(request StopRunRequest) (StopRunR
 
 func stopRunResultKey(result StopRunResult) string {
 	return fmt.Sprintf("%s:%d:%d", result.IssueID, result.Attempt, result.WorkAttemptID)
+}
+
+func canonicalStopRunDestination(value string) (string, bool) {
+	for _, destination := range []string{StopRunDestinationBlocked, StopRunDestinationBacklog, StopRunDestinationCancelled, StopRunDestinationTodo} {
+		if strings.EqualFold(strings.TrimSpace(value), destination) {
+			return destination, true
+		}
+	}
+	return strings.TrimSpace(value), false
+}
+
+func stopRunPriorityOptions(names map[int]string) []telemetry.StopRunPriorityOption {
+	options := make([]telemetry.StopRunPriorityOption, 0, len(names))
+	for rank, name := range names {
+		name = strings.TrimSpace(name)
+		if rank >= 1 && rank <= 4 && name != "" {
+			options = append(options, telemetry.StopRunPriorityOption{Rank: rank, Name: name})
+		}
+	}
+	slices.SortFunc(options, func(left, right telemetry.StopRunPriorityOption) int { return left.Rank - right.Rank })
+	return options
+}
+
+func stopRunPriorityName(options []telemetry.StopRunPriorityOption, configured map[int]string, rank int) string {
+	for _, option := range options {
+		if option.Rank == rank {
+			return strings.TrimSpace(option.Name)
+		}
+	}
+	return strings.TrimSpace(configured[rank])
+}
+
+func operatorStopMessage(result StopRunResult) string {
+	message := "stopped run and moved item to " + result.Destination
+	if result.PriorityName != "" {
+		message += " with priority " + result.PriorityName
+	}
+	if result.Reason != "" {
+		message += ": " + result.Reason
+	}
+	return message
+}
+
+func operatorStopAuditReason(result StopRunResult) string {
+	if result.Reason != "" {
+		return result.Reason
+	}
+	return string(store.WorkAttemptTerminalOperatorStopped)
 }

@@ -392,6 +392,7 @@ func runningSnapshots(running map[string]Running, claims map[string]Claimed, mer
 			Attempt:               entry.Attempt,
 			WorkAttemptID:         entry.WorkAttemptID,
 			StopDestination:       entry.StopDestination,
+			StopPriorityOptions:   append([]telemetry.StopRunPriorityOption(nil), entry.StopPriorityOptions...),
 			DetentSessionID:       entry.DetentSessionID,
 			WorkerHost:            entry.WorkerHost,
 			ProcessIdentity:       entry.ProcessIdentity,

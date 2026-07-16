@@ -18,6 +18,10 @@ type StopRunDialogData struct {
 	Role              string
 	Stage             string
 	Destination       string
+	Priority          int
+	PriorityName      string
+	PriorityOptions   []telemetry.StopRunPriorityOption
+	Reason            string
 	Attempt           int
 	WorkAttemptID     int64
 	DetentSessionID   int64
@@ -68,5 +72,17 @@ func stopRunSubmitLabel(data StopRunDialogData) string {
 	if data.RetryTransition {
 		return "Retry move to " + data.Destination
 	}
-	return "Stop run and move to " + data.Destination
+	return "Stop run"
+}
+
+func stopRunPriorityLabel(option telemetry.StopRunPriorityOption) string {
+	return option.Name + " · rank " + strconv.Itoa(option.Rank)
+}
+
+func stopRunResultDetail(data StopRunDialogData) string {
+	detail := data.Destination
+	if data.PriorityName != "" {
+		detail += " at " + data.PriorityName + " priority"
+	}
+	return detail
 }

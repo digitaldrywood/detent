@@ -12,15 +12,15 @@ import (
 templ StopRunDialogContent(data StopRunDialogData) {
 	@dialog.Header() {
 		@dialog.Title() {
-			Stop run and block item
+			Stop run and route item
 		}
 		@dialog.Description() {
-			Stop only this active worker and move its work item out of dispatch.
+			Stop only this active worker, then choose where its work item goes next.
 		}
 	}
 	if data.Outcome == "succeeded" {
 		<div role="status" class="rounded-md border border-ok bg-ok/15 px-3 py-2 text-sm text-ok" data-stop-run-result="succeeded">
-			Stopped { data.Identifier } and moved it to { data.Destination }.
+			Stopped { data.Identifier } and moved it to { stopRunResultDetail(data) }.
 		</div>
 	}
 	if data.Error != "" {
@@ -32,7 +32,6 @@ templ StopRunDialogContent(data StopRunDialogData) {
 		<div class="min-w-0"><dt class="text-dim">Agent role</dt><dd class="truncate font-mono text-text">{ data.Role }</dd></div>
 		<div class="min-w-0"><dt class="text-dim">Current stage</dt><dd class="truncate font-mono text-text">{ data.Stage }</dd></div>
 		<div class="min-w-0 sm:col-span-2"><dt class="text-dim">Active session</dt><dd class="break-all font-mono text-text">{ stopRunSessionLabel(data) }</dd></div>
-		<div class="min-w-0 sm:col-span-2"><dt class="text-dim">Destination</dt><dd class="font-mono font-semibold text-text">{ data.Destination }</dd></div>
 	</dl>
 	if data.CanSubmit {
 		<form class="grid gap-4" hx-post={ stopRunPostPath(data) } hx-target={ kanbanDialogTargetSelector() } hx-swap="innerHTML">
@@ -41,6 +40,49 @@ templ StopRunDialogContent(data StopRunDialogData) {
 			<input type="hidden" name="work_attempt_id" value={ strconv.FormatInt(data.WorkAttemptID, 10) }/>
 			<input type="hidden" name="detent_session_id" value={ strconv.FormatInt(data.DetentSessionID, 10) }/>
 			<input type="hidden" name="provider_session_id" value={ data.ProviderSessionID }/>
+			if data.RetryTransition {
+				<input type="hidden" name="destination" value={ data.Destination }/>
+				<input type="hidden" name="priority" value={ strconv.Itoa(data.Priority) }/>
+				<input type="hidden" name="reason" value={ data.Reason }/>
+				<div class="rounded-md border border-line bg-elev p-3 text-sm text-text">
+					Retry moving the stopped item to <span class="font-semibold">{ stopRunResultDetail(data) }</span>.
+				</div>
+			} else {
+				<fieldset class="grid gap-2" data-stop-run-destinations>
+					<legend class="mb-1 text-sm font-medium text-text">Destination</legend>
+					<div class="grid gap-2 sm:grid-cols-2">
+						<label class="flex cursor-pointer gap-3 rounded-md border border-line bg-page p-3 text-sm text-text hover:border-accent/60">
+							<input type="radio" name="destination" value="Blocked" class="mt-0.5 size-4 accent-accent" checked?={ data.Destination == "Blocked" }/>
+							<span><span class="block font-medium">Blocked</span><span class="text-xs text-dim">Needs a blocker cleared before work resumes.</span></span>
+						</label>
+						<label class="flex cursor-pointer gap-3 rounded-md border border-line bg-page p-3 text-sm text-text hover:border-accent/60">
+							<input type="radio" name="destination" value="Backlog" class="mt-0.5 size-4 accent-accent" checked?={ data.Destination == "Backlog" }/>
+							<span><span class="block font-medium">Backlog</span><span class="text-xs text-dim">Park it outside the active dispatch queue.</span></span>
+						</label>
+						<label class="flex cursor-pointer gap-3 rounded-md border border-line bg-page p-3 text-sm text-text hover:border-accent/60">
+							<input type="radio" name="destination" value="Cancelled" class="mt-0.5 size-4 accent-accent" checked?={ data.Destination == "Cancelled" }/>
+							<span><span class="block font-medium">Cancelled</span><span class="text-xs text-dim">End the work item without another dispatch.</span></span>
+						</label>
+						<label class="flex cursor-pointer gap-3 rounded-md border border-line bg-page p-3 text-sm text-text hover:border-accent/60">
+							<input type="radio" name="destination" value="Todo" class="mt-0.5 size-4 accent-accent" checked?={ data.Destination == "Todo" }/>
+							<span><span class="block font-medium">Todo</span><span class="text-xs text-dim">Return it to dispatch at an explicit priority.</span></span>
+						</label>
+					</div>
+				</fieldset>
+				<div class="grid gap-1.5">
+					<label class="text-sm font-medium text-text" for="stop-run-priority">Todo priority</label>
+					<select id="stop-run-priority" name="priority" class="min-h-10 w-full rounded-md border border-line bg-page px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent" data-stop-run-priority>
+						for _, option := range data.PriorityOptions {
+							<option value={ strconv.Itoa(option.Rank) } selected?={ option.Rank == data.Priority }>{ stopRunPriorityLabel(option) }</option>
+						}
+					</select>
+					<p class="text-xs text-dim">Applied before Todo becomes eligible for dispatch.</p>
+				</div>
+				<div class="grid gap-1.5">
+					<label class="text-sm font-medium text-text" for="stop-run-reason">Reason <span class="font-normal text-dim">(optional)</span></label>
+					<textarea id="stop-run-reason" name="reason" rows="2" maxlength="280" class="min-h-20 w-full resize-y rounded-md border border-line bg-page px-3 py-2 text-sm text-text placeholder:text-sec focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent" placeholder="Why is this run being stopped?">{ data.Reason }</textarea>
+				</div>
+			}
 			@dialog.Footer() {
 				@dialog.Close() {
 					@button.Button(button.Props{Variant: button.VariantOutline, Type: button.TypeButton}) {

@@ -6,12 +6,15 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web/demofixtures"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -24,6 +27,9 @@ type stopRunRequestPayload struct {
 	WorkAttemptID     int64  `json:"work_attempt_id" form:"work_attempt_id"`
 	DetentSessionID   int64  `json:"detent_session_id" form:"detent_session_id"`
 	ProviderSessionID string `json:"provider_session_id" form:"provider_session_id"`
+	Destination       string `json:"destination" form:"destination"`
+	Priority          int    `json:"priority" form:"priority"`
+	Reason            string `json:"reason" form:"reason"`
 	Confirm           bool   `json:"confirm" form:"confirm"`
 }
 
@@ -36,7 +42,13 @@ func (s *Server) apiStopRunDialog(c echo.Context) error {
 	if err != nil {
 		return stopRunErrorResponse(c, http.StatusBadRequest, "invalid_run_identity", err.Error(), templates.StopRunDialogData{})
 	}
-	running, ok := activeRunForStop(s.latestSnapshot(c.Request().Context()), request)
+	snapshot := s.latestSnapshot(c.Request().Context())
+	if scenario, demoStop, scenarioErr := s.stopRunDemoScenario(c); scenarioErr != nil {
+		return scenarioErr
+	} else if demoStop {
+		snapshot = demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant)
+	}
+	running, ok := activeRunForStop(snapshot, request)
 	if !ok {
 		data := stopRunDialogDataFromRequest(request)
 		data.Outcome = "stale"
@@ -70,9 +82,21 @@ func (s *Server) apiStopRun(c echo.Context) error {
 		WorkAttemptID:     payload.WorkAttemptID,
 		DetentSessionID:   payload.DetentSessionID,
 		ProviderSessionID: strings.TrimSpace(payload.ProviderSessionID),
+		Destination:       strings.TrimSpace(payload.Destination),
+		Priority:          payload.Priority,
+		Reason:            strings.TrimSpace(payload.Reason),
+	}
+	scenario, demoStop, scenarioErr := s.stopRunDemoScenario(c)
+	if scenarioErr != nil {
+		return scenarioErr
+	}
+	snapshot := s.latestSnapshot(c.Request().Context())
+	if demoStop {
+		snapshot = demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant)
 	}
 	data := stopRunDialogDataFromRequest(request)
-	if running, ok := activeRunForStop(s.latestSnapshot(c.Request().Context()), request); ok {
+	running, runningOK := activeRunForStop(snapshot, request)
+	if runningOK {
 		data = stopRunDialogData(running)
 	}
 	if !payload.Confirm {
@@ -80,7 +104,15 @@ func (s *Server) apiStopRun(c echo.Context) error {
 		data.CanSubmit = true
 		return stopRunErrorResponse(c, http.StatusPreconditionRequired, "confirmation_required", data.Error, data)
 	}
-	result, err := s.runStopper.StopRun(c.Request().Context(), request)
+	var result orchestrator.StopRunResult
+	if demoStop {
+		if !runningOK {
+			return stopRunErrorResponse(c, http.StatusConflict, "stale_run", "The selected run is no longer active or its identity changed. The work item was not moved.", data)
+		}
+		result, err = demoStopRunResult(request, running)
+	} else {
+		result, err = s.runStopper.StopRun(c.Request().Context(), request)
+	}
 	if err != nil {
 		status, code, message := stopRunAPIError(err, result)
 		data.Outcome = result.Outcome
@@ -90,16 +122,49 @@ func (s *Server) apiStopRun(c echo.Context) error {
 		if result.Destination != "" {
 			data.Destination = result.Destination
 		}
+		data.Priority = result.Priority
+		data.PriorityName = result.PriorityName
+		data.Reason = result.Reason
 		return stopRunErrorResponse(c, status, code, message, data)
 	}
 	data.Outcome = result.Outcome
 	data.Destination = result.Destination
+	data.Priority = result.Priority
+	data.PriorityName = result.PriorityName
+	data.Reason = result.Reason
 	data.CanSubmit = false
 	if htmxRequest(c) {
 		c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
 		return render(c, templates.StopRunDialogContent(data))
 	}
 	return c.JSON(http.StatusOK, result)
+}
+
+func (s *Server) stopRunDemoScenario(c echo.Context) (demoScenario, bool, error) {
+	scenario, ok, err := s.demoScenarioOrError(c)
+	return scenario, ok && scenario.Variant == "stop-run-picker", err
+}
+
+func demoStopRunResult(request orchestrator.StopRunRequest, running telemetry.Running) (orchestrator.StopRunResult, error) {
+	destination := strings.TrimSpace(request.Destination)
+	validDestination := destination == orchestrator.StopRunDestinationBlocked || destination == orchestrator.StopRunDestinationBacklog || destination == orchestrator.StopRunDestinationCancelled || destination == orchestrator.StopRunDestinationTodo
+	if !validDestination || utf8.RuneCountInString(request.Reason) > orchestrator.StopRunReasonMaxLength || destination == orchestrator.StopRunDestinationTodo && (request.Priority < 1 || request.Priority > 4) {
+		return orchestrator.StopRunResult{}, orchestrator.ErrStopRunInvalidRoute
+	}
+	priorityName := ""
+	if destination == orchestrator.StopRunDestinationTodo {
+		for _, option := range running.StopPriorityOptions {
+			if option.Rank == request.Priority {
+				priorityName = option.Name
+				break
+			}
+		}
+		if priorityName == "" {
+			return orchestrator.StopRunResult{}, orchestrator.ErrStopRunInvalidRoute
+		}
+	}
+	now := time.Now().UTC()
+	return orchestrator.StopRunResult{ProjectID: request.ProjectID, IssueID: request.IssueID, Identifier: running.Identifier, Attempt: request.Attempt, WorkAttemptID: request.WorkAttemptID, DetentSessionID: request.DetentSessionID, ProviderSessionID: request.ProviderSessionID, Destination: destination, Priority: request.Priority, PriorityName: priorityName, Reason: request.Reason, Outcome: "succeeded", RequestedAt: now, CompletedAt: now}, nil
 }
 
 func stopRunAttemptParam(c echo.Context) (int, error) {
@@ -155,6 +220,8 @@ func stopRunPayload(c echo.Context) (stopRunRequestPayload, error) {
 	}
 	payload.IssueID = strings.TrimSpace(payload.IssueID)
 	payload.ProviderSessionID = strings.TrimSpace(payload.ProviderSessionID)
+	payload.Destination = strings.TrimSpace(payload.Destination)
+	payload.Reason = strings.TrimSpace(payload.Reason)
 	return payload, nil
 }
 
@@ -207,6 +274,8 @@ func stopRunDialogData(running telemetry.Running) templates.StopRunDialogData {
 		Role:              role,
 		Stage:             running.State,
 		Destination:       destination,
+		Priority:          firstStopRunPriority(running.StopPriorityOptions),
+		PriorityOptions:   stopRunPriorityOptionsForDialog(running.StopPriorityOptions),
 		Attempt:           running.Attempt,
 		WorkAttemptID:     running.WorkAttemptID,
 		DetentSessionID:   running.DetentSessionID,
@@ -224,6 +293,8 @@ func stopRunDialogDataFromRequest(request orchestrator.StopRunRequest) templates
 		Role:              "unknown",
 		Stage:             "unknown",
 		Destination:       "Blocked",
+		Priority:          1,
+		PriorityOptions:   stopRunPriorityOptionsForDialog(nil),
 		Attempt:           request.Attempt,
 		WorkAttemptID:     request.WorkAttemptID,
 		DetentSessionID:   request.DetentSessionID,
@@ -244,6 +315,8 @@ func stopRunAPIError(err error, result orchestrator.StopRunResult) (int, string,
 	switch {
 	case errors.Is(err, orchestrator.ErrStopRunInvalidIdentity):
 		return http.StatusBadRequest, "invalid_run_identity", "The selected run identity is invalid."
+	case errors.Is(err, orchestrator.ErrStopRunInvalidRoute):
+		return http.StatusUnprocessableEntity, "invalid_stop_destination", "Choose Blocked, Backlog, Cancelled, or Todo with an available priority. Reasons must be 280 characters or fewer."
 	case errors.Is(err, orchestrator.ErrStopRunStale):
 		return http.StatusConflict, "stale_run", "The selected run is no longer active or its identity changed. The work item was not moved."
 	case errors.Is(err, orchestrator.ErrStopRunTransition):
@@ -257,6 +330,21 @@ func stopRunAPIError(err error, result orchestrator.StopRunResult) (int, string,
 	default:
 		return http.StatusInternalServerError, "stop_run_failed", "Stopping the selected run failed: " + err.Error()
 	}
+}
+
+func stopRunPriorityOptionsForDialog(options []telemetry.StopRunPriorityOption) []telemetry.StopRunPriorityOption {
+	if len(options) == 0 {
+		return []telemetry.StopRunPriorityOption{{Rank: 1, Name: "Urgent"}, {Rank: 2, Name: "High"}, {Rank: 3, Name: "Medium"}, {Rank: 4, Name: "Low"}}
+	}
+	return append([]telemetry.StopRunPriorityOption(nil), options...)
+}
+
+func firstStopRunPriority(options []telemetry.StopRunPriorityOption) int {
+	options = stopRunPriorityOptionsForDialog(options)
+	if len(options) == 0 {
+		return 0
+	}
+	return options[0].Rank
 }
 
 func stopRunErrorResponse(c echo.Context, status int, code string, message string, data templates.StopRunDialogData) error {

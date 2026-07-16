@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -98,6 +100,105 @@ func TestStopRunTargetsOneRunAndBlocksRedispatch(t *testing.T) {
 	}
 }
 
+func TestStopRunRoutesToOperatorDestination(t *testing.T) {
+	tests := []struct {
+		name         string
+		destination  string
+		priority     int
+		priorityName string
+	}{
+		{name: "blocked", destination: orchestrator.StopRunDestinationBlocked},
+		{name: "backlog", destination: orchestrator.StopRunDestinationBacklog},
+		{name: "cancelled", destination: orchestrator.StopRunDestinationCancelled},
+		{name: "prioritized todo", destination: orchestrator.StopRunDestinationTodo, priority: 3, priorityName: "Medium"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := testIssue("issue-stop-route", "digitaldrywood/detent#1354", "In Progress")
+			tracker := newFakeConnector(issue)
+			runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 2)}
+			orch, err := orchestrator.New(orchestrator.Config{PollInterval: time.Hour, MaxConcurrentAgents: 1, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Backlog", "Blocked"}, TerminalStates: []string{"Cancelled", "Done"}}, orchestrator.Dependencies{Connector: tracker, Runner: runner})
+			if err != nil {
+				t.Fatalf("orchestrator.New() error = %v", err)
+			}
+			stop := runOrchestrator(t, orch)
+			t.Cleanup(stop)
+			state := waitForState(t, orch, func(state orchestrator.State) bool { return state.Running[issue.ID].Issue.ID != "" })
+			running := state.Running[issue.ID]
+			result, err := orch.StopRun(t.Context(), orchestrator.StopRunRequest{ProjectID: "detent", IssueID: issue.ID, Attempt: running.Attempt, Destination: tt.destination, Priority: tt.priority})
+			if err != nil {
+				t.Fatalf("StopRun() error = %v", err)
+			}
+			if result.Destination != tt.destination || result.Priority != tt.priority || result.PriorityName != tt.priorityName {
+				t.Fatalf("StopRun() result = %#v", result)
+			}
+			updates := tracker.stateUpdateCalls()
+			if len(updates) == 0 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: tt.destination}) {
+				t.Fatalf("state updates = %#v, want destination %s", updates, tt.destination)
+			}
+			if tt.priorityName != "" && !tracker.hasSetField(issue.ID, "Priority", tt.priorityName) {
+				t.Fatalf("priority updates = %#v, want %s", tracker.setFieldCalls(), tt.priorityName)
+			}
+		})
+	}
+}
+
+func TestStopRunAppliesTodoPriorityBeforeRedispatch(t *testing.T) {
+	issue := testIssue("issue-stop-priority", "digitaldrywood/detent#1354", "In Progress")
+	tracker := newOperatorStopAtomicConnector(issue)
+	runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 2)}
+	runtimeStore, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtimeStore.Close() })
+	orch, err := orchestrator.New(orchestrator.Config{PollInterval: 5 * time.Millisecond, MaxConcurrentAgents: 1, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, StopRunPriorityNames: map[int]string{2: "High"}}, orchestrator.Dependencies{Connector: tracker, Runner: runner, WorkAttempts: runtimeStore, WorkflowMetrics: runtimeStore})
+	if err != nil {
+		t.Fatalf("orchestrator.New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	t.Cleanup(stop)
+	waitForOperatorStopRunnerIssue(t, runner.started, issue.ID)
+	state := waitForState(t, orch, func(state orchestrator.State) bool { return state.Running[issue.ID].Issue.ID != "" })
+	running := state.Running[issue.ID]
+	reply := make(chan stopRunTestReply, 1)
+	go func() {
+		result, stopErr := orch.StopRun(t.Context(), orchestrator.StopRunRequest{ProjectID: "detent", IssueID: issue.ID, Attempt: running.Attempt, WorkAttemptID: running.WorkAttemptID, Destination: orchestrator.StopRunDestinationTodo, Priority: 2, Reason: "making room for the release blocker"})
+		reply <- stopRunTestReply{result: result, err: stopErr}
+	}()
+	select {
+	case <-tracker.priorityStarted:
+	case <-time.After(operatorStopIntegrationWaitTimeout):
+		t.Fatal("timed out waiting for priority update")
+	}
+	select {
+	case request := <-runner.started:
+		t.Fatalf("stopped item redispatched before priority/state completed: %#v", request)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(tracker.releasePriority)
+	var stopped stopRunTestReply
+	select {
+	case stopped = <-reply:
+	case <-time.After(operatorStopIntegrationWaitTimeout):
+		t.Fatal("timed out waiting for stop result")
+	}
+	if stopped.err != nil || stopped.result.Outcome != "succeeded" || stopped.result.PriorityName != "High" {
+		t.Fatalf("StopRun() = %#v, %v", stopped.result, stopped.err)
+	}
+	if operations := tracker.operationsSnapshot(); !slices.Equal(operations, []string{"priority:High", "state:Todo"}) {
+		t.Fatalf("tracker operations = %#v, want priority before state", operations)
+	}
+	waitForOperatorStopRunnerIssue(t, runner.started, issue.ID)
+	timeline, err := runtimeStore.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{IssueID: issue.ID})
+	if err != nil {
+		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
+	}
+	if !hasOperatorStopReason(timeline.Events, "making room for the release blocker") {
+		t.Fatalf("workflow events = %#v, want operator reason", timeline.Events)
+	}
+}
+
 func TestStopRunRecoveryReconcilesDurableHoldBeforeDispatch(t *testing.T) {
 	issue := testIssue("issue-stop-recovery", "digitaldrywood/detent#1311", "In Progress")
 	tracker := newFakeConnector(issue)
@@ -142,6 +243,47 @@ func TestStopRunRecoveryReconcilesDurableHoldBeforeDispatch(t *testing.T) {
 	}
 	if receipt.Phase != "operator_stop_succeeded" || receipt.NextAction != "await operator resume" {
 		t.Fatalf("work attempt = %#v, want reconciled operator stop", receipt)
+	}
+}
+
+func TestStopRunRecoveryAppliesTodoPriorityBeforeDispatch(t *testing.T) {
+	issue := testIssue("issue-stop-todo-recovery", "digitaldrywood/detent#1354", "Todo")
+	tracker := newOperatorStopAtomicConnector(issue)
+	close(tracker.releasePriority)
+	runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 1)}
+	runtimeStore, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = runtimeStore.Close() })
+	now := time.Date(2026, 7, 16, 18, 0, 0, 0, time.UTC)
+	attemptID, err := runtimeStore.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "detent", IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL, WorkerType: "agent", Lane: "In Progress", AttemptNumber: 0, StartedAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("StartWorkAttempt() error = %v", err)
+	}
+	metadata, err := json.Marshal(map[string]any{"operator_stop": map[string]any{"project_id": "detent", "issue_id": issue.ID, "identifier": issue.Identifier, "attempt": 0, "work_attempt_id": attemptID, "destination": "Todo", "priority": 2, "priority_name": "High", "reason": "resume after the release blocker", "outcome": "transition_failed", "requested_at": now.Add(-30 * time.Second), "completed_at": now.Add(-20 * time.Second)}})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := runtimeStore.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: now.Add(-20 * time.Second), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalOperatorStopped, Phase: "operator_stop_transition_failed", StatusMessage: "run stopped; tracker transition failed", WorkerMetadataJSON: string(metadata), NextAction: "retry tracker transition to Todo"}); err != nil {
+		t.Fatalf("CompleteWorkAttempt() error = %v", err)
+	}
+	orch, err := orchestrator.New(orchestrator.Config{PollInterval: 5 * time.Millisecond, MaxConcurrentAgents: 1, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, StopRunPriorityNames: map[int]string{2: "High"}}, orchestrator.Dependencies{Connector: tracker, Runner: runner, WorkAttempts: runtimeStore, WorkflowMetrics: runtimeStore})
+	if err != nil {
+		t.Fatalf("orchestrator.New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	t.Cleanup(stop)
+	waitForOperatorStopRunnerIssue(t, runner.started, issue.ID)
+	if operations := tracker.operationsSnapshot(); !slices.Equal(operations, []string{"priority:High", "state:Todo"}) {
+		t.Fatalf("tracker operations = %#v, want recovered priority before state and dispatch", operations)
+	}
+	receipt, err := runtimeStore.WorkAttempt(t.Context(), attemptID)
+	if err != nil {
+		t.Fatalf("WorkAttempt() error = %v", err)
+	}
+	if receipt.Phase != "operator_stop_succeeded" || receipt.NextAction != "await scheduler at priority High" {
+		t.Fatalf("work attempt = %#v, want recovered prioritized Todo stop", receipt)
 	}
 }
 
@@ -244,6 +386,49 @@ type operatorStopFailingConnector struct {
 	err error
 }
 
+type stopRunTestReply struct {
+	result orchestrator.StopRunResult
+	err    error
+}
+
+type operatorStopAtomicConnector struct {
+	*fakeConnector
+	mu              sync.Mutex
+	operations      []string
+	priorityStarted chan struct{}
+	releasePriority chan struct{}
+}
+
+func newOperatorStopAtomicConnector(issue connector.Issue) *operatorStopAtomicConnector {
+	return &operatorStopAtomicConnector{fakeConnector: newFakeConnector(issue), priorityStarted: make(chan struct{}), releasePriority: make(chan struct{})}
+}
+
+func (c *operatorStopAtomicConnector) SetField(ctx context.Context, issueID string, field string, value string) error {
+	c.mu.Lock()
+	c.operations = append(c.operations, "priority:"+value)
+	c.mu.Unlock()
+	close(c.priorityStarted)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.releasePriority:
+	}
+	return c.fakeConnector.SetField(ctx, issueID, field, value)
+}
+
+func (c *operatorStopAtomicConnector) UpdateIssueState(ctx context.Context, issueID string, state string) error {
+	c.mu.Lock()
+	c.operations = append(c.operations, "state:"+state)
+	c.mu.Unlock()
+	return c.fakeConnector.UpdateIssueState(ctx, issueID, state)
+}
+
+func (c *operatorStopAtomicConnector) operationsSnapshot() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.operations...)
+}
+
 func (c *operatorStopFailingConnector) UpdateIssueState(ctx context.Context, issueID string, state string) error {
 	c.mu.Lock()
 	err := c.err
@@ -279,6 +464,15 @@ func waitForOperatorStopRunnerIssue(t *testing.T, started <-chan orchestrator.Ru
 func hasOperatorStopAudit(events []store.WorkflowPhaseEvent, result orchestrator.StopRunResult) bool {
 	for _, event := range events {
 		if event.PhaseType == store.WorkflowPhaseTypeOperatorAction && event.PhaseName == "stop_run" && event.Status == "succeeded" && event.SessionID == result.DetentSessionID {
+			return true
+		}
+	}
+	return false
+}
+
+func hasOperatorStopReason(events []store.WorkflowPhaseEvent, reason string) bool {
+	for _, event := range events {
+		if event.PhaseType == store.WorkflowPhaseTypeOperatorAction && event.PhaseName == "stop_run" && event.Reason == reason {
 			return true
 		}
 	}

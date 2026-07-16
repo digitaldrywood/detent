@@ -105,6 +105,7 @@ type Running struct {
 	CapacityScope         backendcapacity.Scope
 	CapacityProbe         bool
 	StopDestination       string
+	StopPriorityOptions   []telemetry.StopRunPriorityOption
 	globalSlot            scheduler.Slot
 	cancel                context.CancelFunc
 	stop                  context.CancelCauseFunc
@@ -139,6 +140,9 @@ type Blocked struct {
 	DetentSessionID int64
 	SessionID       string
 	Destination     string
+	Priority        int
+	PriorityName    string
+	StopReason      string
 }
 
 type Completed struct {
@@ -337,6 +341,7 @@ func (s State) clone() State {
 		running.Issue = cloneIssue(running.Issue)
 		running.LastMessageTruncation = runtimeoutput.CloneTruncation(running.LastMessageTruncation)
 		running.RecentEvents = cloneActivityEvents(running.RecentEvents)
+		running.StopPriorityOptions = append([]telemetry.StopRunPriorityOption(nil), running.StopPriorityOptions...)
 		running.globalSlot = scheduler.Slot{}
 		running.cancel = nil
 		running.stop = nil
