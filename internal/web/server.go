@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -40,15 +41,16 @@ var (
 )
 
 type Dependencies struct {
-	Hub        *hub.Hub[telemetry.Snapshot]
-	Store      store.Store
-	Registry   *project.Registry
-	Connector  connector.Connector
-	Refresher  Refresher
-	Recovery   WorkAttemptRecovery
-	RunStopper RunStopper
-	Activity   *activity.Broker
-	History    activity.HistoryReader
+	Hub             *hub.Hub[telemetry.Snapshot]
+	Store           store.Store
+	Registry        *project.Registry
+	Connector       connector.Connector
+	Refresher       Refresher
+	Recovery        WorkAttemptRecovery
+	RunStopper      RunStopper
+	Activity        *activity.Broker
+	History         activity.HistoryReader
+	MagicLinkSender auth.Sender
 }
 
 type Mode string
@@ -145,6 +147,8 @@ type Server struct {
 	asyncWrites         *asyncStoreWriter
 	dashboardAuthSecret [32]byte
 	afterFunc           func(time.Duration, func()) *time.Timer
+	sessionAuth         sessionAuthenticator
+	magicLinks          *auth.Service
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -183,6 +187,10 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	dashboardAuthSecret, err := newDashboardAuthSecret()
 	if err != nil {
 		return nil, fmt.Errorf("dashboard auth secret: %w", err)
+	}
+	magicLinks, magicLinksEnabled, err := newMagicLinkService(cfg, deps.Store, deps.MagicLinkSender)
+	if err != nil {
+		return nil, err
 	}
 
 	server := &Server{
@@ -231,9 +239,14 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		asyncWrites:         newAsyncStoreWriter(256, logger),
 		dashboardAuthSecret: dashboardAuthSecret,
 		afterFunc:           time.AfterFunc,
+		magicLinks:          magicLinks,
+	}
+	if magicLinksEnabled {
+		server.sessionAuth = magicLinks
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
 	e.Use(server.uiAPICookie)
+	e.Use(server.sessionGate)
 	server.registerRoutes()
 	server.warnIfAPITokenMissingOnNonLoopback()
 
@@ -278,6 +291,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) registerRoutes() {
 	s.echo.GET("/static/*", s.assets.serve)
 	s.echo.GET("/health", s.health)
+	if s.magicLinks != nil {
+		s.echo.GET("/login", s.loginPage)
+		s.echo.POST("/login", s.requestMagicLink)
+		s.echo.GET("/auth/magic-link", s.consumeMagicLink)
+	}
 	if s.mode == ModeOnboarding {
 		s.echo.GET("/", s.redirectToOnboarding)
 		s.echo.GET("/onboarding", s.onboarding)

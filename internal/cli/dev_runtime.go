@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -32,6 +34,9 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 	var demoProjectID string
 	var allowLiveDB bool
 	var allowProductionPort bool
+	var authEmail string
+	var authSMTP string
+	var authFrom string
 
 	cmd := &cobra.Command{
 		Use:     "dev-runtime",
@@ -52,6 +57,10 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 				runtimePort = 0
 			}
 
+			authConfig, err := devRuntimeAuthConfig(authEmail, authSMTP, authFrom)
+			if err != nil {
+				return WrapValidation(err)
+			}
 			runtime, err := devruntime.Build(devruntime.Config{
 				Home:                home,
 				DBPath:              dbPath,
@@ -63,6 +72,7 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 				Port:                runtimePort,
 				AllowLiveDatabase:   allowLiveDB,
 				AllowProductionPort: allowProductionPort,
+				Auth:                authConfig,
 			})
 			if err != nil {
 				return devRuntimeError(err)
@@ -80,8 +90,40 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 	cmd.Flags().StringVar(&demoProjectID, "demo-project", "", "generated primary project ID for isolated demos; screenshots stays dogfood")
 	cmd.Flags().BoolVar(&allowLiveDB, "allow-live-db", false, "allow --db to point at the operator's live ~/.detent/detent.db")
 	cmd.Flags().BoolVar(&allowProductionPort, "allow-production-port", false, "allow binding the isolated runtime to the live dogfood port")
+	cmd.Flags().StringVar(&authEmail, "auth-email", "", "allowed email for isolated magic-link auth")
+	cmd.Flags().StringVar(&authSMTP, "auth-smtp", "", "SMTP host:port for isolated magic-link auth")
+	cmd.Flags().StringVar(&authFrom, "auth-from", "", "sender email for isolated magic-link auth")
 	cmd.AddCommand(newDevRuntimeCaptureCommand(opts))
 	return cmd
+}
+
+func devRuntimeAuthConfig(email string, smtpAddress string, from string) (globalconfig.Auth, error) {
+	email = strings.TrimSpace(email)
+	smtpAddress = strings.TrimSpace(smtpAddress)
+	from = strings.TrimSpace(from)
+	if email == "" && smtpAddress == "" && from == "" {
+		return globalconfig.Auth{}, nil
+	}
+	if email == "" || smtpAddress == "" || from == "" {
+		return globalconfig.Auth{}, errors.New("--auth-email, --auth-smtp, and --auth-from must be set together")
+	}
+	host, portText, err := net.SplitHostPort(smtpAddress)
+	if err != nil || strings.TrimSpace(host) == "" {
+		return globalconfig.Auth{}, errors.New("--auth-smtp must be a host:port address")
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port <= 0 || port > 65535 {
+		return globalconfig.Auth{}, errors.New("--auth-smtp port must be between 1 and 65535")
+	}
+	return globalconfig.Auth{
+		Mode:          globalconfig.AuthModeMagicLink,
+		AllowedEmails: []string{email},
+		SMTP: globalconfig.SMTP{
+			Host: host,
+			Port: port,
+			From: from,
+		},
+	}, nil
 }
 
 func devRuntimeBootConfig(runtime devruntime.Runtime, host string, opts options, output io.Writer) BootConfig {

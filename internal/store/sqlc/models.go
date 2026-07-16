@@ -6,6 +6,7 @@ package sqlc
 
 import (
 	"database/sql"
+	"time"
 )
 
 type ApiKey struct {
@@ -31,6 +32,23 @@ type ApiUsageLog struct {
 	Ip         string `json:"ip"`
 	UserAgent  string `json:"user_agent"`
 	CreatedAt  string `json:"created_at"`
+}
+
+type AuthMagicLink struct {
+	ID        int64        `json:"id"`
+	TokenHash string       `json:"token_hash"`
+	Email     string       `json:"email"`
+	ExpiresAt time.Time    `json:"expires_at"`
+	UsedAt    sql.NullTime `json:"used_at"`
+	CreatedAt time.Time    `json:"created_at"`
+}
+
+type AuthSession struct {
+	ID        int64     `json:"id"`
+	TokenHash string    `json:"token_hash"`
+	Email     string    `json:"email"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type BudgetOverride struct {

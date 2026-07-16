@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
@@ -37,6 +38,7 @@ type Config struct {
 }
 
 type Store interface {
+	auth.Store
 	StatsStore
 	FairShareStore
 	BudgetCostStore

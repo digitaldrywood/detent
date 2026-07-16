@@ -1,0 +1,52 @@
+package templates
+
+templ AuthPage(data AuthPageData) {
+	<!DOCTYPE html>
+	<html lang="en" data-theme="dark">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="application-name" content="Detent"/>
+			<meta name="referrer" content="no-referrer"/>
+			<title>{ authPageTitle(data.State) } · Detent</title>
+			<link rel="icon" type="image/svg+xml" href={ faviconPath(data.Assets) }/>
+			<link rel="preload" href="/static/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin/>
+			<link rel="preload" href="/static/fonts/GeistMono-Variable.woff2" as="font" type="font/woff2" crossorigin/>
+			<link rel="stylesheet" href={ stylesheetPath(data.Assets) }/>
+		</head>
+		<body class="min-h-screen bg-page font-sans text-text antialiased">
+			<main class="grid min-h-screen place-items-center px-4 py-12">
+				<section class="w-full max-w-96 rounded-card border border-line bg-surface p-6 shadow-lg md:p-8" aria-labelledby="auth-title">
+					<div class="mb-6 flex items-center gap-3">
+						<span class="grid size-9 place-items-center rounded-card bg-accent font-mono text-sm font-semibold text-page" aria-hidden="true">D</span>
+						<div>
+							<p class="text-sm font-semibold">Detent</p>
+							<p class="text-xs text-sec">Remote board access</p>
+						</div>
+					</div>
+					<h1 id="auth-title" class="text-xl font-semibold">{ authPageTitle(data.State) }</h1>
+					if data.State == AuthPageCheckInbox {
+						<p class="mt-3 text-sm text-sec" role="status">If that address is allowed, a single-use sign-in link is on its way.</p>
+						<a href={ templ.SafeURL(authRetryPath(data.Next)) } class="mt-6 inline-flex min-h-11 items-center justify-center rounded-card border border-line px-4 text-sm font-medium text-text transition-colors hover:bg-elev focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Try another address</a>
+					} else {
+						if data.State == AuthPageInvalidLink {
+							<p class="mt-3 rounded-card border border-err/40 bg-err/10 p-3 text-sm text-err" role="alert">This sign-in link is invalid, expired, or has already been used.</p>
+						} else if data.State == AuthPageUnavailable {
+							<p class="mt-3 rounded-card border border-err/40 bg-err/10 p-3 text-sm text-err" role="alert">Sign-in is temporarily unavailable. Request a new link or use the CLI escape hatch.</p>
+						} else {
+							<p class="mt-2 text-sm text-sec">Enter an allowed email address. We will send a short-lived sign-in link.</p>
+						}
+						<form method="post" action="/login" class="mt-6 space-y-4">
+							<input type="hidden" name="next" value={ data.Next }/>
+							<div class="space-y-2">
+								<label for="auth-email" class="block text-sm font-medium">Email address</label>
+								<input id="auth-email" name="email" type="email" autocomplete="email" inputmode="email" required autofocus class="min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm text-text placeholder:text-dim focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" placeholder="operator@example.com"/>
+							</div>
+							<button type="submit" class="inline-flex min-h-11 w-full items-center justify-center rounded-card bg-accent px-4 text-sm font-semibold text-page transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Email me a sign-in link</button>
+						</form>
+					}
+				</section>
+			</main>
+		</body>
+	</html>
+}

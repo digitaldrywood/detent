@@ -69,6 +69,7 @@ type Config struct {
 	Port            *int      `yaml:"port,omitempty"`
 	InstanceName    string    `yaml:"instance_name,omitempty"`
 	Update          Update    `yaml:"update,omitempty"`
+	Auth            Auth      `yaml:"auth,omitempty"`
 	Global          Settings  `yaml:"global"`
 	Projects        []Project `yaml:"projects"`
 }
@@ -442,6 +443,7 @@ func (c Config) Validate(opts ...Option) error {
 	if c.Update.CheckIntervalHours < 0 {
 		problems = append(problems, "update.check_interval_hours: must be a positive integer")
 	}
+	problems = append(problems, c.Auth.validate("auth")...)
 
 	if c.Global.MaxConcurrentAgents <= 0 {
 		problems = append(problems, "global.max_concurrent_agents: must be a positive integer")
@@ -692,6 +694,7 @@ func validateRaw(attrs map[string]any, opts options) []string {
 	problems = append(problems, optionalSingleLineStringError(attrs, "instance_name")...)
 	problems = append(problems, optionalNonNegativeIntegerError(attrs["port"], "port")...)
 	problems = append(problems, updateErrors(attrs["update"])...)
+	problems = append(problems, authErrors(attrs["auth"])...)
 	problems = append(problems, globalErrors(attrs["global"])...)
 	problems = append(problems, projectsErrors(attrs["projects"], opts)...)
 
@@ -1291,6 +1294,10 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
+	auth, err := buildAuth(attrs["auth"])
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
 	settings, err := buildSettings(global, opts)
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
@@ -1313,6 +1320,7 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 		Port:            port,
 		InstanceName:    instanceName,
 		Update:          update,
+		Auth:            auth,
 		Global:          settings,
 		Projects:        builtProjects,
 	}, nil
