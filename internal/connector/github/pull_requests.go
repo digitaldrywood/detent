@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/digitaldrywood/detent/internal/citrigger"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/reviewseverity"
@@ -30,6 +32,18 @@ type pullRequestKey struct {
 type pullRequestRepo struct {
 	Owner string
 	Name  string
+}
+
+const (
+	linkedPullRequestHydrationConcurrency     = 8
+	linkedPullRequestHydrationRequestEstimate = 5
+)
+
+type linkedPullRequestHydration struct {
+	repo        pullRequestRepo
+	number      int
+	pullRequest pullRequestNode
+	state       pullRequestHydrationState
 }
 
 func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.Issue) error {
@@ -455,8 +469,9 @@ func (c *Connector) attachLinkedPullRequests(
 	candidates []issuePullRequestCandidate,
 	useStatusCache bool,
 ) (string, error) {
-	pullRequests := map[pullRequestKey]pullRequestNode{}
-	nextCursor := ""
+	hydrations := make([]linkedPullRequestHydration, 0, len(candidates))
+	hydrationByKey := make(map[pullRequestKey]int, len(candidates))
+	hydrationByCandidate := make(map[int]int, len(candidates))
 	for _, candidate := range candidates {
 		if issues[candidate.Index].PullRequest != nil || candidate.PullRequestNumber <= 0 {
 			continue
@@ -471,35 +486,87 @@ func (c *Connector) attachLinkedPullRequests(
 			continue
 		}
 		key := pullRequestKey{Repo: pullRequestRepo, Number: candidate.PullRequestNumber}
-		pullRequest, ok := pullRequests[key]
+		hydrationIndex, ok := hydrationByKey[key]
 		if !ok {
-			var err error
-			pullRequest, err = c.fetchRepositoryPullRequest(ctx, pullRequestRepo, candidate.PullRequestNumber)
-			if err != nil {
-				if state := c.pullRequestHydrationStateForError(pullRequestRepo, err); state.Reason != "" {
-					if errors.Is(err, ErrRESTBudgetReserved) && nextCursor == "" {
-						nextCursor = candidate.Identifier
-					}
-					attachPullRequestHydrationUnavailableToIssue(&issues[candidate.Index], pullRequestRepo, candidate.PullRequestNumber, state)
-					continue
-				}
-				return "", err
-			}
-			if err := c.populatePullRequestStatus(ctx, pullRequestRepo, &pullRequest, useStatusCache); err != nil {
-				if state := c.pullRequestHydrationStateForError(pullRequestRepo, err); state.Reason != "" {
-					if errors.Is(err, ErrRESTBudgetReserved) && nextCursor == "" {
-						nextCursor = candidate.Identifier
-					}
-					applyPullRequestHydrationUnavailableState(&pullRequest, state)
-				} else {
-					return "", err
-				}
-			}
-			pullRequests[key] = pullRequest
+			hydrationIndex = len(hydrations)
+			hydrationByKey[key] = hydrationIndex
+			hydrations = append(hydrations, linkedPullRequestHydration{
+				repo:   pullRequestRepo,
+				number: candidate.PullRequestNumber,
+			})
 		}
-		attachPullRequestToIssue(&issues[candidate.Index], pullRequestRepo, pullRequest)
+		hydrationByCandidate[candidate.Index] = hydrationIndex
+	}
+
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(c.linkedPullRequestHydrationLimit())
+	for index := range hydrations {
+		group.Go(func() error {
+			return c.hydrateLinkedPullRequest(groupCtx, &hydrations[index], useStatusCache)
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return "", err
+	}
+
+	nextCursor := ""
+	for _, candidate := range candidates {
+		hydrationIndex, ok := hydrationByCandidate[candidate.Index]
+		if !ok {
+			continue
+		}
+		hydration := hydrations[hydrationIndex]
+		if hydration.state.Reason != "" {
+			if hydration.state.Reason == connector.PullRequestHydrationReasonRESTBudgetReserved && nextCursor == "" {
+				nextCursor = candidate.Identifier
+			}
+			if hydration.pullRequest.Number <= 0 {
+				attachPullRequestHydrationUnavailableToIssue(&issues[candidate.Index], hydration.repo, candidate.PullRequestNumber, hydration.state)
+				continue
+			}
+		}
+		attachPullRequestToIssue(&issues[candidate.Index], hydration.repo, hydration.pullRequest)
 	}
 	return nextCursor, nil
+}
+
+func (c *Connector) hydrateLinkedPullRequest(ctx context.Context, hydration *linkedPullRequestHydration, useStatusCache bool) error {
+	pullRequest, err := c.fetchRepositoryPullRequest(ctx, hydration.repo, hydration.number)
+	if err != nil {
+		state := c.pullRequestHydrationStateForError(hydration.repo, err)
+		if state.Reason == "" {
+			return err
+		}
+		hydration.state = state
+		return nil
+	}
+	if err := c.populatePullRequestStatus(ctx, hydration.repo, &pullRequest, useStatusCache); err != nil {
+		state := c.pullRequestHydrationStateForError(hydration.repo, err)
+		if state.Reason == "" {
+			return err
+		}
+		hydration.state = state
+		applyPullRequestHydrationUnavailableState(&pullRequest, state)
+	}
+	hydration.pullRequest = pullRequest
+	return nil
+}
+
+func (c *Connector) linkedPullRequestHydrationLimit() int {
+	limit := linkedPullRequestHydrationConcurrency
+	if c == nil || c.client == nil {
+		return limit
+	}
+	if fanoutLimit := c.client.restPolicy.FanoutMaxRequests; fanoutLimit > 0 {
+		limit = int(fanoutLimit) / linkedPullRequestHydrationRequestEstimate
+		if limit < 1 {
+			return 1
+		}
+		if limit > linkedPullRequestHydrationConcurrency {
+			return linkedPullRequestHydrationConcurrency
+		}
+	}
+	return limit
 }
 
 func (c *Connector) attachMatchingPullRequests(

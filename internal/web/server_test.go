@@ -6794,6 +6794,87 @@ func TestBoardFirstPaintDoesNotWaitForSnapshotEnrichment(t *testing.T) {
 	}
 }
 
+func TestProjectBoardNavigationUsesCurrentInMemorySnapshot(t *testing.T) {
+	t.Parallel()
+
+	releaseStore := make(chan struct{})
+	t.Cleanup(func() { close(releaseStore) })
+	var fetchCalls atomic.Int64
+	var runtimeEvidenceCalls atomic.Int64
+	deps := testDeps(t)
+	deps.Connector = connectorProbe{
+		name: "github",
+		fetchCandidateIssues: func(context.Context) ([]connector.Issue, error) {
+			fetchCalls.Add(1)
+			return nil, errors.New("unexpected tracker hydration")
+		},
+	}
+	deps.Store = storeProbe{
+		runtimeEvidence: func(ctx context.Context, _ store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error) {
+			runtimeEvidenceCalls.Add(1)
+			select {
+			case <-releaseStore:
+				return store.RuntimeEvidence{}, nil
+			case <-ctx.Done():
+				return store.RuntimeEvidence{}, ctx.Err()
+			}
+		},
+	}
+	mustSetWebProject(t, deps.Registry, "detent", false)
+	mustSetWebProject(t, deps.Registry, "pyroapex", false)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 16, 15, 4, 5, 0, time.UTC),
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+			{Project: telemetry.Project{ID: "pyroapex", DisplayName: "Pyro Apex"}},
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "issue-cached",
+			Identifier: "digitaldrywood/detent#1356",
+			Title:      "Cached project board issue",
+			State:      "In Progress",
+			ProjectID:  "detent",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	type response struct {
+		code int
+		body string
+	}
+	responseReady := make(chan response, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/projects/detent/kanban", nil)
+		server.Handler().ServeHTTP(rec, req)
+		responseReady <- response{code: rec.Code, body: rec.Body.String()}
+	}()
+
+	select {
+	case got := <-responseReady:
+		if got.code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body = %s", got.code, http.StatusOK, got.body)
+		}
+		if !strings.Contains(got.body, "Cached project board issue") {
+			t.Fatalf("body missing cached project board issue:\n%s", got.body)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("project board navigation exceeded 500ms while current in-memory state was available")
+	}
+	if got := fetchCalls.Load(); got != 0 {
+		t.Fatalf("FetchCandidateIssues calls = %d, want 0", got)
+	}
+	if got := runtimeEvidenceCalls.Load(); got != 0 {
+		t.Fatalf("RuntimeEvidence calls = %d, want 0", got)
+	}
+}
+
 func TestBoardFirstPaintColdBootRendersPlaceholders(t *testing.T) {
 	t.Parallel()
 

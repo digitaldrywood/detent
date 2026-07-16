@@ -53,6 +53,11 @@ func (o *Orchestrator) tickManual(ctx context.Context, state *State, request man
 func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now time.Time, manual *manualRefreshRequest) {
 	o.beginGlobalProjectCycle()
 	defer o.endGlobalProjectCycle()
+	completed := false
+	timing := newRefreshTiming(o.logger, o.cfg.Project.ID, manual != nil)
+	defer func() {
+		timing.log(ctx, completed, state)
+	}()
 	state.tickTransitions = &issueStateSnapshotTransitions{}
 	defer func() {
 		state.tickTransitions = nil
@@ -60,7 +65,6 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	if manual != nil {
 		startManualRefresh(state, *manual, now)
 	}
-	completed := false
 	restRateLimitsCaptured := false
 	previous := captureTickPreviousState(state)
 	o.markRefresh(state, now)
@@ -90,17 +94,22 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			Message: githubBudgetReserveMessage(reserve),
 		})
 	}
+	timing.next("release")
 	o.evaluateRelease(ctx, state, now)
 
+	timing.next("active_runs")
 	o.refreshActiveRuns(ctx, state, now, reserve)
 	if state.Draining {
 		return
 	}
+	timing.next("tracker_fetch")
 	fetched, ok := o.fetchTickIssues(ctx, state, now, reserve)
 	if !ok {
 		return
 	}
+	timing.next("status_drift")
 	o.refreshStatusDrift(ctx, state, now, reserve)
+	timing.next("reconciliation")
 	fetched = retainUnavailablePullRequestsFromPrevious(fetched, previous)
 	fetched = applyStatusPullRequestHydrationBlocksToCandidates(fetched)
 	o.observePullRequestHydrationSkips(mergeIssueSlices(fetched.candidates, fetched.status))
@@ -190,11 +199,14 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		fetched,
 		artifactWaitTransitions.transitioned,
 	)
+	timing.next("rate_limits")
 	restCycle := o.captureConnectorRESTRateLimits(state, now)
 	o.logRESTRateLimitCycle(restCycle)
 	o.syncGitHubRESTCapacityOutage(state, now)
 	restRateLimitsCaptured = true
+	timing.next("dispatch")
 	o.dispatchTickIssues(ctx, state, fetched, transitions, previous, completedEpics, now)
+	timing.next("publish")
 	if refreshSucceeded(state) {
 		state.BoardIssues = overlayIssueStateSnapshots(
 			boardIssuesFromFetched(fetched),

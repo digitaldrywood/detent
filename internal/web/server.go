@@ -482,7 +482,14 @@ func (s *Server) projectDashboard(c echo.Context) error {
 		}
 		return s.demoProjectDashboard(c, scenario, view)
 	}
-	data, ok := s.projectDashboardData(ctx, projectID, s.latestSnapshot(ctx))
+	var data templates.DashboardData
+	var ok bool
+	if view == "kanban" {
+		snapshot, enriched := s.latestBoardSnapshot()
+		data, ok = s.projectBoardFirstPaintData(ctx, projectID, snapshot, !enriched)
+	} else {
+		data, ok = s.projectDashboardData(ctx, projectID, s.latestSnapshot(ctx))
+	}
 	if !ok {
 		return echo.NewHTTPError(http.StatusNotFound, "Project not found")
 	}
@@ -680,6 +687,28 @@ func (s *Server) analyticsDashboardData(ctx context.Context, snapshot telemetry.
 
 func (s *Server) projectDashboardData(ctx context.Context, projectID string, snapshot telemetry.Snapshot) (templates.DashboardData, bool) {
 	projects := s.projectSmallMultiples(ctx, snapshot)
+	return s.projectDashboardDataFromProjects(ctx, projectID, snapshot, projects, true)
+}
+
+func (s *Server) projectBoardFirstPaintData(
+	ctx context.Context,
+	projectID string,
+	snapshot telemetry.Snapshot,
+	pendingEnrichment bool,
+) (templates.DashboardData, bool) {
+	projects := s.cachedProjectSmallMultiples(snapshot)
+	data, ok := s.projectDashboardDataFromProjects(ctx, projectID, snapshot, projects, false)
+	data.PendingEnrichment = pendingEnrichment
+	return data, ok
+}
+
+func (s *Server) projectDashboardDataFromProjects(
+	ctx context.Context,
+	projectID string,
+	snapshot telemetry.Snapshot,
+	projects []templates.ProjectSmallMultiple,
+	loadDetails bool,
+) (templates.DashboardData, bool) {
 	project, ok := s.dashboardProject(projectID, projects, snapshot)
 	if !ok {
 		return templates.DashboardData{}, false
@@ -695,7 +724,9 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 	if target, _, _ := s.kanbanActionTarget(project.ID); target.key != "" {
 		scopedSnapshot = s.kanbanSnapshotWithPendingStates(target.key, project.ID, scopedSnapshot)
 	}
-	scopedSnapshot.WorkflowMetrics = s.snapshotWorkflowMetrics(ctx, scopedSnapshot)
+	if loadDetails {
+		scopedSnapshot.WorkflowMetrics = s.snapshotWorkflowMetrics(ctx, scopedSnapshot)
+	}
 	name := strings.TrimSpace(project.Name)
 	if name == "" {
 		name = strings.TrimSpace(project.ID)
@@ -718,11 +749,13 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 		ProjectName:     name,
 		ProjectPaused:   project.Paused,
 	}
-	receipts, err := s.store.ListEfficiencyReceipts(ctx, efficiency.Query{ProjectID: project.ID, Limit: 100})
-	if err != nil {
-		s.logger.Warn("efficiency receipts query failed", slog.Any("error", err))
-	} else {
-		data.EfficiencyReceipts = receipts
+	if loadDetails {
+		receipts, err := s.store.ListEfficiencyReceipts(ctx, efficiency.Query{ProjectID: project.ID, Limit: 100})
+		if err != nil {
+			s.logger.Warn("efficiency receipts query failed", slog.Any("error", err))
+		} else {
+			data.EfficiencyReceipts = receipts
+		}
 	}
 	return data, true
 }
