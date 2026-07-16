@@ -1708,6 +1708,9 @@ func TestRunnerMergeModeCleanPrecheckSkipsAgent(t *testing.T) {
 			ID:         "issue-860",
 			Identifier: "digitaldrywood/detent#860",
 			BranchName: "detent/digitaldrywood_detent_860",
+			PullRequest: &connector.PullRequest{
+				BaseRef: " dev ",
+			},
 		},
 		Mode: RunModeMerge,
 	})
@@ -1719,6 +1722,9 @@ func TestRunnerMergeModeCleanPrecheckSkipsAgent(t *testing.T) {
 	}
 	if !workspaceBackend.prepareCalled {
 		t.Fatal("PrepareMerge() was not called")
+	}
+	if workspaceBackend.prepareOptions.TargetBranch != "dev" {
+		t.Fatalf("PrepareMerge() TargetBranch = %q, want dev", workspaceBackend.prepareOptions.TargetBranch)
 	}
 	if !workspaceBackend.afterRun {
 		t.Fatal("AfterRun() was not called")
@@ -1743,7 +1749,7 @@ func TestMergeFastPathCheckedHead(t *testing.T) {
 		want   bool
 	}{
 		{name: "behind green head", want: true},
-		{name: "current head", mutate: func(pr *connector.PullRequest) { pr.MergeableState = "clean" }},
+		{name: "current head", mutate: func(pr *connector.PullRequest) { pr.MergeableState = " CLEAN " }, want: true},
 		{name: "pending checks", mutate: func(pr *connector.PullRequest) { pr.CIStatus = "pending" }},
 		{name: "draft", mutate: func(pr *connector.PullRequest) { pr.Draft = true }},
 		{name: "closed", mutate: func(pr *connector.PullRequest) { pr.State = "closed" }},
@@ -3758,18 +3764,20 @@ func (b *fakeWorkspaceBackend) DiffStat(context.Context, workspace.Info, workspa
 
 type fakeMergeWorkspaceBackend struct {
 	fakeWorkspaceBackend
-	prepareResult workspace.MergePrepareResult
-	prepareErr    error
-	prepareCalled bool
+	prepareResult  workspace.MergePrepareResult
+	prepareErr     error
+	prepareCalled  bool
+	prepareOptions workspace.MergePrepareOptions
 }
 
 func (b *fakeMergeWorkspaceBackend) PrepareMerge(
-	context.Context,
-	workspace.Info,
-	workspace.Issue,
-	workspace.MergePrepareOptions,
+	_ context.Context,
+	_ workspace.Info,
+	_ workspace.Issue,
+	opts workspace.MergePrepareOptions,
 ) (workspace.MergePrepareResult, error) {
 	b.prepareCalled = true
+	b.prepareOptions = opts
 	return b.prepareResult, b.prepareErr
 }
 

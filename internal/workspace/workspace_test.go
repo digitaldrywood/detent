@@ -291,6 +291,98 @@ func TestLocalGitPrepareMergeRebasesAndPushesCleanBranch(t *testing.T) {
 	}
 }
 
+func TestLocalGitPrepareMergeUsesDevBranch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		remoteDefault string
+		opts          MergePrepareOptions
+	}{
+		{name: "remote default", remoteDefault: "dev"},
+		{name: "explicit target", remoteDefault: "main", opts: MergePrepareOptions{TargetBranch: "dev"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testLocalGitPrepareMergeUsesDevBranch(t, tt.remoteDefault, tt.opts)
+		})
+	}
+}
+
+func testLocalGitPrepareMergeUsesDevBranch(t *testing.T, remoteDefault string, opts MergePrepareOptions) {
+	t.Helper()
+
+	source := initSourceRepo(t)
+	remote := initBareRemote(t)
+	runGit(t, source, "remote", "add", "origin", remote)
+	runGit(t, source, "push", "-u", "origin", "main")
+	runGit(t, source, "switch", "-c", "dev")
+	if err := os.WriteFile(filepath.Join(source, "dev.txt"), []byte("dev\n"), 0o600); err != nil {
+		t.Fatalf("write dev file: %v", err)
+	}
+	runGit(t, source, "add", "dev.txt")
+	runGit(t, source, "commit", "-m", "dev branch")
+	runGit(t, source, "push", "-u", "origin", "dev")
+	runGit(t, source, "config", "--replace-all", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+	runGit(t, source, "update-ref", "-d", "refs/remotes/origin/dev")
+	runGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/"+remoteDefault)
+
+	root := filepath.Join(t.TempDir(), "workspaces")
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+	preparer, ok := backend.(MergePreparer)
+	if !ok {
+		t.Fatal("backend does not implement MergePreparer")
+	}
+	issue := Issue{Identifier: "DD-DEFAULT-BRANCH"}
+	info, err := backend.Create(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(info.Path, "feature.txt"), []byte("feature\n"), 0o600); err != nil {
+		t.Fatalf("write feature: %v", err)
+	}
+	runGit(t, info.Path, "add", "feature.txt")
+	runGit(t, info.Path, "commit", "-m", "feature")
+	runGit(t, info.Path, "push", "origin", "HEAD:"+info.Branch)
+
+	runGit(t, source, "switch", "main")
+	if err := os.WriteFile(filepath.Join(source, "main-latest.txt"), []byte("main\n"), 0o600); err != nil {
+		t.Fatalf("write latest main file: %v", err)
+	}
+	runGit(t, source, "add", "main-latest.txt")
+	runGit(t, source, "commit", "-m", "main latest")
+	runGit(t, source, "push", "origin", "main")
+	runGit(t, source, "switch", "dev")
+	if err := os.WriteFile(filepath.Join(source, "dev-latest.txt"), []byte("dev latest\n"), 0o600); err != nil {
+		t.Fatalf("write latest dev file: %v", err)
+	}
+	runGit(t, source, "add", "dev-latest.txt")
+	runGit(t, source, "commit", "-m", "dev latest")
+	runGit(t, source, "push", "origin", "dev")
+
+	result, err := preparer.PrepareMerge(context.Background(), info, issue, opts)
+	if err != nil {
+		t.Fatalf("PrepareMerge() error = %v", err)
+	}
+	if result.Status != MergePrepareStatusClean {
+		t.Fatalf("PrepareMerge() status = %q, want clean", result.Status)
+	}
+	if got := readFile(t, filepath.Join(info.Path, "dev-latest.txt")); got != "dev latest\n" {
+		t.Fatalf("dev-latest.txt = %q, want rebased dev file", got)
+	}
+	if _, err := os.Stat(filepath.Join(info.Path, "main-latest.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("main-latest.txt stat error = %v, want file absent", err)
+	}
+}
+
 func TestLocalGitPrepareMergeAbortsConflictingRebase(t *testing.T) {
 	t.Parallel()
 
