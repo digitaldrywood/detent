@@ -100,6 +100,7 @@ var _ connector.ConditionalPoller = (*Connector)(nil)
 var _ connector.RateLimitReporter = (*Connector)(nil)
 var _ connector.GraphQLRateLimitUsageReporter = (*Connector)(nil)
 var _ connector.InstanceIdentifier = (*Connector)(nil)
+var _ connector.ProjectURLResolver = (*Connector)(nil)
 var _ connector.IssueChildrenResolver = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
 var _ connector.IssueCommentDeleter = (*Connector)(nil)
@@ -241,6 +242,14 @@ func (c *Connector) Authenticate(ctx context.Context) error {
 
 func (c *Connector) InstanceLogin() string {
 	return c.github.InstanceLogin()
+}
+
+func (c *Connector) ProjectURL(ctx context.Context) (string, error) {
+	resolver, ok := c.github.(connector.ProjectURLResolver)
+	if !ok {
+		return "", nil
+	}
+	return resolver.ProjectURL(ctx)
 }
 
 func (c *Connector) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {

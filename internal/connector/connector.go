@@ -62,6 +62,10 @@ type InstanceIdentifier interface {
 	InstanceLogin() string
 }
 
+type ProjectURLResolver interface {
+	ProjectURL(context.Context) (string, error)
+}
+
 type Provisioner interface {
 	Provision(context.Context) error
 }
