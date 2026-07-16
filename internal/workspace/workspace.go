@@ -68,9 +68,10 @@ type MergePrepareOptions struct {
 }
 
 type MergePrepareResult struct {
-	Status   MergePrepareStatus
-	DiffStat DiffStat
-	Message  string
+	Status      MergePrepareStatus
+	DiffStat    DiffStat
+	Message     string
+	HeadChanged bool
 }
 
 type MergePrepareStatus string

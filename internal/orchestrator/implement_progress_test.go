@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -525,6 +527,145 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 	}
 }
 
+func TestHandleRunResultCommentsOnWorkerLaneTransition(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 16, 9, 30, 0, 0, time.UTC)
+	runningIssue := implementProgressIssue("head")
+	hydratedIssue := cloneIssue(runningIssue)
+	hydratedIssue.State = blockedStatusState
+	hydratedIssue.WorkpadSignal = &workpad.Signal{
+		Source:      workpad.SourceStructured,
+		Status:      workpad.StatusBlocked,
+		HumanAction: "Restart the browser session.",
+	}
+	tracker := &implementProgressConnector{hydrated: hydratedIssue}
+	attempts := &implementProgressAttemptStore{}
+	cfg := normalizeConfig(Config{
+		Project:                scheduler.ProjectCandidate{ID: "detent"},
+		AutoPromote:            AutoPromoteConfig{NoProgressLimit: 3},
+		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:         []string{"Human Review", "Blocked"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		ContinuationRetryDelay: time.Minute,
+	})
+	orch := &Orchestrator{
+		cfg:          cfg,
+		connector:    tracker,
+		workAttempts: attempts,
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.Running[runningIssue.ID] = Running{
+		Issue:         runningIssue,
+		Attempt:       1,
+		WorkAttemptID: 42,
+		Mode:          runpkg.RunModeImplement,
+		StartedAt:     now.Add(-time.Minute),
+		DiffStats:     DiffStats{Status: "clean"},
+	}
+	state.Claimed[runningIssue.ID] = Claimed{Issue: runningIssue, ClaimedAt: now.Add(-time.Minute)}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     runningIssue.ID,
+		CompletedAt: now,
+		Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+		Result: runpkg.RunResult{
+			FinalState: runpkg.FinalStateCompleted,
+			DiffStats:  runpkg.DiffStats{Status: "clean"},
+		},
+	})
+
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one worker routing audit comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"Worker routed this issue from In Progress to Blocked.",
+		"reason: workpad_blocked",
+		"human_action: Restart the browser session.",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment %q missing %q", tracker.comments[0].body, fragment)
+		}
+	}
+}
+
+func TestHandleRunResultReappliesCITriggerAfterWorkerPush(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 16, 9, 45, 0, 0, time.UTC)
+	staggerSeconds := 15
+	runningIssue := implementProgressIssue("old-head")
+	hydratedIssue := implementProgressIssue("new-head")
+	relabelStarted := make(chan autoPromoteTickRelabel, 1)
+	relabelRelease := make(chan struct{}, 1)
+	t.Cleanup(func() {
+		select {
+		case relabelRelease <- struct{}{}:
+		default:
+		}
+	})
+	tracker := &implementProgressConnector{
+		hydrated:       hydratedIssue,
+		relabelStarted: relabelStarted,
+		relabelRelease: relabelRelease,
+	}
+	attempts := &implementProgressAttemptStore{}
+	cfg := normalizeConfig(Config{
+		Project: scheduler.ProjectCandidate{ID: "detent"},
+		AutoPromote: AutoPromoteConfig{
+			NoProgressLimit: 3,
+			Gate: gate.Config{
+				Kind:                         gate.KindCommand,
+				RequiredStatusChecks:         []string{"Test", "Checks"},
+				CITriggerLabel:               "ci:ready",
+				CITriggerLabelStaggerSeconds: &staggerSeconds,
+			},
+		},
+		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:         []string{"Human Review", "Blocked"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		ContinuationRetryDelay: time.Minute,
+	})
+	orch := &Orchestrator{
+		cfg:          cfg,
+		connector:    tracker,
+		workAttempts: attempts,
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.Running[runningIssue.ID] = Running{
+		Issue:         runningIssue,
+		Attempt:       1,
+		WorkAttemptID: 42,
+		Mode:          runpkg.RunModeImplement,
+		StartedAt:     now.Add(-time.Minute),
+		DiffStats:     DiffStats{Status: "clean"},
+	}
+	state.Claimed[runningIssue.ID] = Claimed{Issue: runningIssue, ClaimedAt: now.Add(-time.Minute)}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     runningIssue.ID,
+		CompletedAt: now,
+		Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+		Result: runpkg.RunResult{
+			FinalState:            runpkg.FinalStateCompleted,
+			DiffStats:             runpkg.DiffStats{Status: "clean"},
+			PullRequestHeadPushed: true,
+		},
+	})
+
+	select {
+	case got := <-relabelStarted:
+		want := autoPromoteTickRelabel{repository: "digitaldrywood/detent", number: 1070, label: "ci:ready", stagger: 15 * time.Second}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("relabel = %#v, want %#v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for worker-push trigger-label reapplication")
+	}
+}
+
 func TestStickyBlockReasonIncludesCircuitBreakers(t *testing.T) {
 	t.Parallel()
 
@@ -824,13 +965,15 @@ func implementProgressRecordFromCompletion(t *testing.T, completion store.WorkAt
 }
 
 type implementProgressConnector struct {
-	hydrated   connector.Issue
-	refreshed  connector.Issue
-	hydrateErr error
-	refreshErr error
-	hydrations int
-	updates    []implementProgressUpdate
-	comments   []implementProgressComment
+	hydrated       connector.Issue
+	refreshed      connector.Issue
+	hydrateErr     error
+	refreshErr     error
+	hydrations     int
+	updates        []implementProgressUpdate
+	comments       []implementProgressComment
+	relabelStarted chan autoPromoteTickRelabel
+	relabelRelease chan struct{}
 }
 
 type implementProgressUpdate struct {
@@ -893,6 +1036,21 @@ func (c *implementProgressConnector) HydratePullRequest(context.Context, connect
 		return connector.Issue{}, c.hydrateErr
 	}
 	return cloneIssue(c.hydrated), nil
+}
+
+func (c *implementProgressConnector) ReapplyPullRequestLabel(ctx context.Context, repository string, number int, label string, stagger time.Duration) error {
+	relabel := autoPromoteTickRelabel{repository: repository, number: number, label: label, stagger: stagger}
+	if c.relabelStarted != nil {
+		c.relabelStarted <- relabel
+	}
+	if c.relabelRelease != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-c.relabelRelease:
+		}
+	}
+	return nil
 }
 
 type implementProgressAttemptStore struct {

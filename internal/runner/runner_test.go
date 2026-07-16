@@ -358,10 +358,12 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                   string
-		updates                []AgentUpdate
-		wantErr                string
-		wantPullRequestUpdated bool
+		name                        string
+		updates                     []AgentUpdate
+		wantErr                     string
+		wantPullRequestUpdated      bool
+		wantPullRequestHeadPushed   bool
+		wantCITriggerLabelReapplied bool
 	}{
 		{
 			name: "push rejected by GitHub rate limit",
@@ -399,6 +401,32 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 				{Type: AgentUpdateToolCompleted, ItemID: "push-2", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
+			wantPullRequestHeadPushed: true,
+		},
+		{
+			name: "CI trigger label after latest push records delivery",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
+				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolCompleted, ItemID: "relabel", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantPullRequestHeadPushed:   true,
+			wantCITriggerLabelReapplied: true,
+		},
+		{
+			name: "push after CI trigger label requires fresh reapplication",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push-1", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push-1", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
+				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolCompleted, ItemID: "relabel", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
+				{Type: AgentUpdateToolStarted, ItemID: "push-2", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push-2", Tool: "commandExecution", Status: "completed", Delta: "branch pushed again"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantPullRequestHeadPushed: true,
 		},
 		{
 			name: "unrelated failed test command does not fail delivery",
@@ -437,6 +465,12 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 				}
 				if execution.result.PullRequestUpdated != tt.wantPullRequestUpdated {
 					t.Fatalf("PullRequestUpdated = %v, want %v", execution.result.PullRequestUpdated, tt.wantPullRequestUpdated)
+				}
+				if execution.result.PullRequestHeadPushed != tt.wantPullRequestHeadPushed {
+					t.Fatalf("PullRequestHeadPushed = %v, want %v", execution.result.PullRequestHeadPushed, tt.wantPullRequestHeadPushed)
+				}
+				if execution.result.CITriggerLabelReapplied != tt.wantCITriggerLabelReapplied {
+					t.Fatalf("CITriggerLabelReapplied = %v, want %v", execution.result.CITriggerLabelReapplied, tt.wantCITriggerLabelReapplied)
 				}
 				return
 			}
@@ -1691,7 +1725,7 @@ func TestRunnerMergeModeCleanPrecheckSkipsAgent(t *testing.T) {
 				Branch: "detent/digitaldrywood_detent_860",
 			},
 		},
-		prepareResult: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean},
+		prepareResult: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean, HeadChanged: true},
 	}
 	codexClient := &fakeCodexClient{}
 	runner, err := NewRunner(Dependencies{
@@ -1719,6 +1753,9 @@ func TestRunnerMergeModeCleanPrecheckSkipsAgent(t *testing.T) {
 	}
 	if result.FinalState != FinalStateCompleted {
 		t.Fatalf("FinalState = %q, want completed", result.FinalState)
+	}
+	if !result.PullRequestHeadPushed {
+		t.Fatal("PullRequestHeadPushed = false, want true")
 	}
 	if !workspaceBackend.prepareCalled {
 		t.Fatal("PrepareMerge() was not called")

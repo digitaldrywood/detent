@@ -546,9 +546,10 @@ func (r *Runner) prepareMergeFastPath(
 			"workspace_branch", info.Branch,
 		)
 		return RunResult{
-			FinalState: FinalStateCompleted,
-			Output:     RunOutputMergeFastPathClean,
-			DiffStats:  diffStatsFromWorkspace(precheck.DiffStat),
+			FinalState:            FinalStateCompleted,
+			Output:                RunOutputMergeFastPathClean,
+			DiffStats:             diffStatsFromWorkspace(precheck.DiffStat),
+			PullRequestHeadPushed: precheck.HeadChanged,
 		}, precheck, true, nil
 	case workspace.MergePrepareStatusConflict, workspace.MergePrepareStatusDirty:
 		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_fallback",
@@ -690,6 +691,8 @@ func (r *Runner) runAgentTurn(
 	result.Output = progress.outputText()
 	result.SkillDraftProposed = skillDraftProposed(result.Output)
 	result.PullRequestUpdated = progress.pullRequestUpdated()
+	result.PullRequestHeadPushed = progress.pullRequestHeadPushed()
+	result.CITriggerLabelReapplied = progress.ciTriggerLabelReapplied()
 	if turnErr == nil {
 		if deliverableErr := progress.deliverableError(); deliverableErr != nil {
 			turnErr = deliverableErr
@@ -2048,6 +2051,9 @@ type agentRunProgress struct {
 	toolInvocations       map[string]deliverableToolInvocation
 	deliverableFailures   map[string]error
 	deliverableSuccesses  map[string]bool
+	successfulPushes      int
+	ciTriggerPushSequence int
+	ciTriggerLabelValid   bool
 }
 
 func newAgentRunProgress(outputPolicy runtimeoutput.Policy) *agentRunProgress {
@@ -2175,12 +2181,23 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 	if deliverableToolStatusSucceeded(update.Status) {
 		delete(p.deliverableFailures, invocation.class)
 		p.deliverableSuccesses[invocation.class] = true
+		switch invocation.class {
+		case "push":
+			p.successfulPushes++
+			p.ciTriggerLabelValid = false
+		case "ci_trigger_label":
+			p.ciTriggerPushSequence = p.successfulPushes
+			p.ciTriggerLabelValid = true
+		}
 		return
 	}
 	if !deliverableToolStatusFailed(update.Status) {
 		return
 	}
 	delete(p.deliverableSuccesses, invocation.class)
+	if invocation.class == "ci_trigger_label" {
+		p.ciTriggerLabelValid = false
+	}
 	detail := strings.TrimSpace(update.Delta)
 	if detail == "" {
 		detail = strings.TrimSpace(update.BackendErrorMessage)
@@ -2205,6 +2222,14 @@ func (p *agentRunProgress) pullRequestUpdated() bool {
 	return p.deliverableSuccesses["pull_request"]
 }
 
+func (p *agentRunProgress) pullRequestHeadPushed() bool {
+	return p.successfulPushes > 0
+}
+
+func (p *agentRunProgress) ciTriggerLabelReapplied() bool {
+	return p.successfulPushes > 0 && p.ciTriggerLabelValid && p.ciTriggerPushSequence == p.successfulPushes
+}
+
 func (p *agentRunProgress) deliverableError() error {
 	errs := make([]error, 0, len(p.deliverableFailures))
 	for _, class := range []string{"pull_request", "push"} {
@@ -2225,6 +2250,9 @@ func deliverableToolKey(update AgentUpdate) string {
 func deliverableOperationClass(tool string, command string) string {
 	lowerTool := strings.ToLower(strings.TrimSpace(tool))
 	lowerCommand := strings.ToLower(strings.TrimSpace(command))
+	if ciTriggerLabelCommand(lowerCommand) {
+		return "ci_trigger_label"
+	}
 	if gitPushCommand(lowerCommand) {
 		return "push"
 	}
@@ -2234,6 +2262,10 @@ func deliverableOperationClass(tool string, command string) string {
 		return "pull_request"
 	}
 	return ""
+}
+
+func ciTriggerLabelCommand(command string) bool {
+	return strings.Contains(command, "detent ci-trigger-label")
 }
 
 func gitPushCommand(command string) bool {

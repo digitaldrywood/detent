@@ -271,17 +271,19 @@ type ValidatorRequest struct {
 }
 
 type RunResult struct {
-	FinalState         string
-	Output             string
-	Model              string
-	TurnStarted        bool
-	RuntimeIdentity    agentidentity.Identity
-	Tokens             TokenTotals
-	DiffStats          DiffStats
-	RateLimits         *telemetry.RateLimits
-	BudgetRefusal      *BudgetRefusal
-	SkillDraftProposed bool
-	PullRequestUpdated bool
+	FinalState              string
+	Output                  string
+	Model                   string
+	TurnStarted             bool
+	RuntimeIdentity         agentidentity.Identity
+	Tokens                  TokenTotals
+	DiffStats               DiffStats
+	RateLimits              *telemetry.RateLimits
+	BudgetRefusal           *BudgetRefusal
+	SkillDraftProposed      bool
+	PullRequestUpdated      bool
+	PullRequestHeadPushed   bool
+	CITriggerLabelReapplied bool
 }
 
 type UsageUpdateHandler func(UsageUpdate) error

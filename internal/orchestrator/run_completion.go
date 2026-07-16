@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const (
@@ -179,10 +180,17 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			"retry_delay_seconds", int64(event.RetryDelay/time.Second),
 			"error", event.Err,
 		)
+		pushEvidenceRefreshed := false
+		if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
+			var warning string
+			running.Issue, warning = o.refreshSpendProgressIssue(ctx, running.Issue)
+			pushEvidenceRefreshed = warning == ""
+			o.scheduleCITriggerLabel(ctx, running.Issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true)
+		}
 		spendProgress := spendProgressDecision{}
 		if !mergeWorkerIssue(running.Issue) {
 			evidenceWarning := ""
-			if implementProgressLinkedPullRequest(running.Issue) || event.Result.PullRequestUpdated {
+			if !pushEvidenceRefreshed && (implementProgressLinkedPullRequest(running.Issue) || event.Result.PullRequestUpdated) {
 				running.Issue, evidenceWarning = o.refreshSpendProgressIssue(ctx, running.Issue)
 			}
 			accepted, acceptedReason := dispatchAcceptedStateChange(running)
@@ -302,8 +310,13 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if diffStatsPresent(event.Result.DiffStats) {
 		running.DiffStats = event.Result.DiffStats
 	}
+	dispatchedIssue := cloneIssue(running.Issue)
 	progress := o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
 	running.Issue = progress.Issue
+	o.commentWorkerLaneTransition(ctx, dispatchedIssue, running.Issue)
+	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
+		o.scheduleCITriggerLabel(ctx, running.Issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true)
+	}
 	accepted, acceptedReason := implementAcceptedStateChange(running, progress)
 	spendProgress := o.evaluateSpendProgress(ctx, running, event.CompletedAt, accepted, acceptedReason)
 	if progress.Warning != "" && strings.HasPrefix(progress.Reason, "pull_request_hydrat") {
@@ -982,13 +995,19 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		return true
 	}
 	issue = refreshedIssue
+	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
+		if o.scheduleCITriggerLabel(ctx, issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true) {
+			o.waitForMergeWorkerCITriggerLabel(ctx, state, event, running, issue)
+			return true
+		}
+	}
 	if !mergeWorkerProgrammaticMergeReady(issue) {
 		if pullRequestHydrationBlocksProgress(issue.PullRequest) {
 			o.waitForMergeWorkerPullRequestHydration(ctx, state, event, running, issue)
 			return true
 		}
 		if missingChecks := mergeWorkerMissingRequiredChecks(issue); len(missingChecks) > 0 {
-			triggerPending := o.scheduleMergeWorkerCITriggerLabel(ctx, issue, missingChecks, running.Attempt)
+			triggerPending := o.scheduleCITriggerLabel(ctx, issue, missingChecks, running.Attempt, false)
 			if triggerPending || mergeWorkerMissingRequiredChecksPropagating(issue, running.Attempt) {
 				o.waitForMergeWorkerRequiredCheckPropagation(ctx, state, event, running, issue)
 				return true
@@ -1105,6 +1124,26 @@ func (o *Orchestrator) waitForMergeWorkerRequiredCheckPropagation(
 		"waiting for required checks to appear on the current head",
 		"merge_worker_waiting_required_check_propagation",
 		"merge worker is waiting for required checks to appear for ",
+	)
+}
+
+func (o *Orchestrator) waitForMergeWorkerCITriggerLabel(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+) {
+	o.waitForMergeWorkerRetry(
+		ctx,
+		state,
+		event,
+		running,
+		issue,
+		running.Attempt,
+		"waiting for CI trigger label after current-head push",
+		"merge_worker_waiting_ci_trigger_label",
+		"merge worker is waiting for the CI trigger label after pushing ",
 	)
 }
 
@@ -1298,10 +1337,10 @@ func mergeWorkerMissingRequiredChecksPropagating(issue connector.Issue, attempt 
 	}
 }
 
-func (o *Orchestrator) scheduleMergeWorkerCITriggerLabel(ctx context.Context, issue connector.Issue, missingChecks []string, attempt int) bool {
+func (o *Orchestrator) scheduleCITriggerLabel(ctx context.Context, issue connector.Issue, checkNames []string, attempt int, afterHeadPush bool) bool {
 	cfg := gate.Effective(o.cfg.AutoPromote.Gate)
 	label := strings.TrimSpace(cfg.CITriggerLabel)
-	attrs := mergeWorkerLogAttrs(issue, "missing_required_checks", strings.Join(missingChecks, ","))
+	attrs := mergeWorkerLogAttrs(issue, "required_checks", strings.Join(checkNames, ","))
 	if label == "" {
 		if o.logger != nil {
 			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "not_configured")...)
@@ -1349,7 +1388,7 @@ func (o *Orchestrator) scheduleMergeWorkerCITriggerLabel(ctx context.Context, is
 		}
 		return current.Pending
 	}
-	if attempt >= maxMergeWorkerRunnerFailures {
+	if !afterHeadPush && attempt >= maxMergeWorkerRunnerFailures {
 		o.ciTriggerLabelMu.Unlock()
 		if o.logger != nil {
 			o.logger.Info("ci_trigger_label_skipped", append(attrs, "reason", "attempt_limit_reached", "attempt", attempt)...)
@@ -1363,6 +1402,63 @@ func (o *Orchestrator) scheduleMergeWorkerCITriggerLabel(ctx context.Context, is
 	}
 	go o.reapplyMergeWorkerCITriggerLabel(ctx, reapplier, key, headSHA, repository, number, label, stagger, attrs)
 	return true
+}
+
+func (o *Orchestrator) commentWorkerLaneTransition(ctx context.Context, before connector.Issue, after connector.Issue) {
+	if o == nil || o.connector == nil || strings.TrimSpace(after.ID) == "" {
+		return
+	}
+	fromState := displayStateName(before.State)
+	toState := displayStateName(after.State)
+	if fromState == "" || toState == "" || normalizeState(fromState) == normalizeState(toState) {
+		return
+	}
+	reason := "worker_lane_transition"
+	humanAction := ""
+	blockers := []workpad.Blocker(nil)
+	if signal := after.WorkpadSignal; signal != nil && signal.Source == workpad.SourceStructured && strings.TrimSpace(signal.Status) == workpad.StatusBlocked {
+		reason = "workpad_blocked"
+		humanAction = strings.TrimSpace(signal.HumanAction)
+		blockers = signal.Blockers
+	}
+	var body strings.Builder
+	body.WriteString("Worker routed this issue from ")
+	body.WriteString(fromState)
+	body.WriteString(" to ")
+	body.WriteString(toState)
+	body.WriteString(".\n\n- reason: ")
+	body.WriteString(reason)
+	if humanAction != "" {
+		body.WriteString("\n- human_action: ")
+		body.WriteString(humanAction)
+	}
+	for _, blocker := range blockers {
+		ref := strings.TrimSpace(blocker.Identifier)
+		if ref == "" {
+			ref = strings.TrimSpace(blocker.Ref)
+		}
+		detail := strings.TrimSpace(blocker.Reason)
+		if ref == "" && detail == "" {
+			continue
+		}
+		body.WriteString("\n- blocker: ")
+		body.WriteString(ref)
+		if ref != "" && detail != "" {
+			body.WriteString(" — ")
+		}
+		body.WriteString(detail)
+	}
+	prURL := ""
+	if after.PullRequest != nil {
+		prURL = strings.TrimSpace(after.PullRequest.URL)
+	}
+	if prURL != "" {
+		body.WriteString("\n- pull request: ")
+		body.WriteString(prURL)
+	}
+	if err := o.connector.CreateComment(ctx, after.ID, body.String()); err != nil && o.logger != nil {
+		o.logger.Warn("worker lane transition comment failed", "issue_id", after.ID, "identifier", after.Identifier, "from_state", fromState, "target_state", toState, "reason", reason, "error", err)
+	}
 }
 
 func (o *Orchestrator) reapplyMergeWorkerCITriggerLabel(

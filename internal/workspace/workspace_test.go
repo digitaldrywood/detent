@@ -281,6 +281,9 @@ func TestLocalGitPrepareMergeRebasesAndPushesCleanBranch(t *testing.T) {
 	if result.DiffStat != (DiffStat{}) {
 		t.Fatalf("PrepareMerge() DiffStat = %#v, want zero", result.DiffStat)
 	}
+	if !result.HeadChanged {
+		t.Fatal("PrepareMerge() HeadChanged = false, want true after rebase")
+	}
 	if got := readFile(t, filepath.Join(info.Path, "main.txt")); got != "main\n" {
 		t.Fatalf("main.txt = %q, want rebased main file", got)
 	}
@@ -288,6 +291,14 @@ func TestLocalGitPrepareMergeRebasesAndPushesCleanBranch(t *testing.T) {
 	remoteHead := strings.Fields(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch))
 	if len(remoteHead) == 0 || remoteHead[0] != head {
 		t.Fatalf("remote branch head = %#v, want %s", remoteHead, head)
+	}
+
+	result, err = preparer.PrepareMerge(context.Background(), info, issue, MergePrepareOptions{})
+	if err != nil {
+		t.Fatalf("second PrepareMerge() error = %v", err)
+	}
+	if result.HeadChanged {
+		t.Fatal("second PrepareMerge() HeadChanged = true, want false for unchanged head")
 	}
 }
 

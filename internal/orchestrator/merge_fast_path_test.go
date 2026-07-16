@@ -217,6 +217,97 @@ func TestMergingFastPathMissingRequiredChecksRoutesToRework(t *testing.T) {
 	}
 }
 
+func TestMergingFastPathChangedHeadReappliesCITriggerBeforeMerge(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 16, 9, 15, 0, 0, time.UTC)
+	staggerSeconds := 15
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:    1,
+		FailureRetryBaseDelay:  time.Minute,
+		MaxRetryBackoff:        time.Hour,
+		ContinuationRetryDelay: 5 * time.Second,
+		MergeFastPathEnabled:   true,
+		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:         []string{"Merging"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		AutoPromote: AutoPromoteConfig{Gate: gate.Config{
+			Kind:                         gate.KindCommand,
+			RequiredStatusChecks:         []string{"Test", "Checks"},
+			CITriggerLabel:               "ci:ready",
+			CITriggerLabelStaggerSeconds: &staggerSeconds,
+		}},
+	})
+	issue := autoPromoteTickIssue("issue-changed-head", []string{"bug"}, &connector.PullRequest{
+		Number:         867,
+		URL:            "https://github.test/digitaldrywood/detent/pull/867",
+		BranchName:     "detent/changed-head",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+		HeadSHA:        "new-head",
+	})
+	issue.State = "Merging"
+	issue.Identifier = "digitaldrywood/detent#867"
+	issue.PRRepository = "digitaldrywood/detent"
+
+	relabelStarted := make(chan autoPromoteTickRelabel, 1)
+	relabelRelease := make(chan struct{}, 1)
+	t.Cleanup(func() {
+		select {
+		case relabelRelease <- struct{}{}:
+		default:
+		}
+	})
+	tracker := &autoPromoteTickMergeConnector{
+		autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
+		relabelStarted:           relabelStarted,
+		relabelRelease:           relabelRelease,
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue:      cloneIssue(issue),
+		Attempt:    1,
+		StartedAt:  now.Add(-time.Minute),
+		WorkerHost: "worker-a",
+		Mode:       runpkg.RunModeMerge,
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     issue.ID,
+		CompletedAt: now,
+		Request:     runpkg.RunRequest{Mode: runpkg.RunModeMerge},
+		Result: runpkg.RunResult{
+			FinalState:              runpkg.FinalStateCompleted,
+			Output:                  runpkg.RunOutputMergeFastPathClean,
+			PullRequestHeadPushed:   true,
+			CITriggerLabelReapplied: false,
+		},
+	})
+
+	select {
+	case got := <-relabelStarted:
+		want := autoPromoteTickRelabel{repository: "digitaldrywood/detent", number: 867, label: "ci:ready", stagger: 15 * time.Second}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("relabel = %#v, want %#v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for changed-head trigger-label reapplication")
+	}
+	if len(tracker.merges) != 0 {
+		t.Fatalf("merges = %#v, want none before changed-head checks run", tracker.merges)
+	}
+	if _, ok := state.Retry[issue.ID]; !ok {
+		t.Fatalf("Retry[%q] missing while changed-head checks propagate", issue.ID)
+	}
+}
+
 func TestMergingFastPathMissingRequiredChecksWaitsForPropagation(t *testing.T) {
 	t.Parallel()
 
@@ -355,8 +446,8 @@ func TestMergingFastPathMainAdvanceRetriggersMissingCurrentHeadChecks(t *testing
 	if _, ok := state.Retry[issue.ID]; !ok {
 		t.Fatalf("Retry[%q] missing while retriggered checks propagate", issue.ID)
 	}
-	if !orch.scheduleMergeWorkerCITriggerLabel(context.Background(), issue, []string{"Test", "Checks"}, 2) {
-		t.Fatal("second scheduleMergeWorkerCITriggerLabel() = false, want pending relabel")
+	if !orch.scheduleCITriggerLabel(context.Background(), issue, []string{"Test", "Checks"}, 2, false) {
+		t.Fatal("second scheduleCITriggerLabel() = false, want pending relabel")
 	}
 	if !strings.Contains(logs.String(), "reapply_pending_for_head") {
 		t.Fatalf("logs = %q, want same-head pending decision", logs.String())
@@ -378,8 +469,8 @@ func TestMergingFastPathMainAdvanceRetriggersMissingCurrentHeadChecks(t *testing
 		case <-ticker.C:
 		}
 	}
-	if orch.scheduleMergeWorkerCITriggerLabel(context.Background(), issue, []string{"Test", "Checks"}, 2) {
-		t.Fatal("third scheduleMergeWorkerCITriggerLabel() = true, want same-head skip")
+	if orch.scheduleCITriggerLabel(context.Background(), issue, []string{"Test", "Checks"}, 2, false) {
+		t.Fatal("third scheduleCITriggerLabel() = true, want same-head skip")
 	}
 	if !strings.Contains(logs.String(), "ci_trigger_label_skipped") || !strings.Contains(logs.String(), "already_reapplied_for_head") {
 		t.Fatalf("logs = %q, want same-head skipped decision", logs.String())
