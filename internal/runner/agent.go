@@ -2212,6 +2212,9 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 	failureClass := invocation.class
 	if invocation.class == "push_ci_trigger_label" {
 		failureClass = "push"
+		if combinedPushMayHaveChanged(update, invocation.command) {
+			p.successfulPushes++
+		}
 	}
 	delete(p.deliverableSuccesses, failureClass)
 	if invocation.class == "ci_trigger_label" || invocation.class == "push_ci_trigger_label" {
@@ -2345,6 +2348,30 @@ func gitPushChanged(update AgentUpdate, command string) bool {
 	}
 	output := strings.ToLower(strings.Join([]string{update.Delta, update.BackendErrorMessage, update.BackendErrorBody}, " "))
 	return !strings.Contains(output, "everything up-to-date") && !strings.Contains(output, "everything up to date")
+}
+
+func combinedPushMayHaveChanged(update AgentUpdate, command string) bool {
+	if !gitPushChanged(update, command) {
+		return false
+	}
+	output := strings.ToLower(strings.Join([]string{update.Delta, update.BackendErrorMessage, update.BackendErrorBody}, " "))
+	for _, failure := range []string{
+		"failed to push",
+		"push rejected",
+		"remote rejected",
+		"[rejected]",
+		"authentication failed",
+		"permission denied",
+		"repository not found",
+		"could not read from remote repository",
+		"could not resolve host",
+		"unable to access",
+	} {
+		if strings.Contains(output, failure) {
+			return false
+		}
+	}
+	return true
 }
 
 func gitPushCommand(command string) bool {

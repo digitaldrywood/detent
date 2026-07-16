@@ -452,6 +452,16 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			wantErr: "push rejected",
 		},
 		{
+			name: "combined label failure preserves changed push delivery",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel", Tool: "commandExecution", Status: "failed", Delta: "branch pushed; ci-trigger-label: HTTP 500"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantErr:                   "HTTP 500",
+			wantPullRequestHeadPushed: true,
+		},
+		{
 			name: "later non-gate label requires configured label reapplication",
 			updates: []AgentUpdate{
 				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
@@ -513,22 +523,22 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 				if execution.err != nil || execution.result.FinalState != FinalStateCompleted {
 					t.Fatalf("execution = state %q error %v, want completed", execution.result.FinalState, execution.err)
 				}
-				if execution.result.PullRequestUpdated != tt.wantPullRequestUpdated {
-					t.Fatalf("PullRequestUpdated = %v, want %v", execution.result.PullRequestUpdated, tt.wantPullRequestUpdated)
+			} else {
+				if execution.err == nil || !strings.Contains(execution.err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want containing %q", execution.err, tt.wantErr)
 				}
-				if execution.result.PullRequestHeadPushed != tt.wantPullRequestHeadPushed {
-					t.Fatalf("PullRequestHeadPushed = %v, want %v", execution.result.PullRequestHeadPushed, tt.wantPullRequestHeadPushed)
+				if execution.result.FinalState != FinalStateFailed {
+					t.Fatalf("FinalState = %q, want %q", execution.result.FinalState, FinalStateFailed)
 				}
-				if execution.result.CITriggerLabelReapplied != tt.wantCITriggerLabelReapplied {
-					t.Fatalf("CITriggerLabelReapplied = %v, want %v", execution.result.CITriggerLabelReapplied, tt.wantCITriggerLabelReapplied)
-				}
-				return
 			}
-			if execution.err == nil || !strings.Contains(execution.err.Error(), tt.wantErr) {
-				t.Fatalf("error = %v, want containing %q", execution.err, tt.wantErr)
+			if execution.result.PullRequestUpdated != tt.wantPullRequestUpdated {
+				t.Fatalf("PullRequestUpdated = %v, want %v", execution.result.PullRequestUpdated, tt.wantPullRequestUpdated)
 			}
-			if execution.result.FinalState != FinalStateFailed {
-				t.Fatalf("FinalState = %q, want %q", execution.result.FinalState, FinalStateFailed)
+			if execution.result.PullRequestHeadPushed != tt.wantPullRequestHeadPushed {
+				t.Fatalf("PullRequestHeadPushed = %v, want %v", execution.result.PullRequestHeadPushed, tt.wantPullRequestHeadPushed)
+			}
+			if execution.result.CITriggerLabelReapplied != tt.wantCITriggerLabelReapplied {
+				t.Fatalf("CITriggerLabelReapplied = %v, want %v", execution.result.CITriggerLabelReapplied, tt.wantCITriggerLabelReapplied)
 			}
 		})
 	}
