@@ -326,7 +326,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		}
 		o.scheduleCITriggerLabel(ctx, running.Issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, forceReapply)
 	}
-	o.commentWorkerLaneTransition(ctx, dispatchedIssue, running.Issue)
+	o.commentObservedLaneTransition(ctx, dispatchedIssue, running.Issue)
 	accepted, acceptedReason := implementAcceptedStateChange(running, progress)
 	spendProgress := o.evaluateSpendProgress(ctx, running, event.CompletedAt, accepted, acceptedReason)
 	if progress.Warning != "" && strings.HasPrefix(progress.Reason, "pull_request_hydrat") {
@@ -1420,7 +1420,7 @@ func (o *Orchestrator) scheduleCITriggerLabel(ctx context.Context, issue connect
 	return true
 }
 
-func (o *Orchestrator) commentWorkerLaneTransition(ctx context.Context, before connector.Issue, after connector.Issue) {
+func (o *Orchestrator) commentObservedLaneTransition(ctx context.Context, before connector.Issue, after connector.Issue) {
 	if o == nil || o.connector == nil || strings.TrimSpace(after.ID) == "" {
 		return
 	}
@@ -1429,7 +1429,7 @@ func (o *Orchestrator) commentWorkerLaneTransition(ctx context.Context, before c
 	if fromState == "" || toState == "" || normalizeState(fromState) == normalizeState(toState) {
 		return
 	}
-	reason := "worker_lane_transition"
+	reason := "tracker_lane_transition"
 	humanAction := ""
 	blockers := []workpad.Blocker(nil)
 	if signal := after.WorkpadSignal; signal != nil && signal.Source == workpad.SourceStructured && strings.TrimSpace(signal.Status) == workpad.StatusBlocked {
@@ -1438,11 +1438,11 @@ func (o *Orchestrator) commentWorkerLaneTransition(ctx context.Context, before c
 		blockers = signal.Blockers
 	}
 	var body strings.Builder
-	body.WriteString("Worker routed this issue from ")
+	body.WriteString("Observed this issue move from ")
 	body.WriteString(fromState)
 	body.WriteString(" to ")
 	body.WriteString(toState)
-	body.WriteString(".\n\n- reason: ")
+	body.WriteString(" during worker completion.\n\n- source: tracker_refresh\n- reason: ")
 	body.WriteString(reason)
 	if humanAction != "" {
 		body.WriteString("\n- human_action: ")
@@ -1473,7 +1473,7 @@ func (o *Orchestrator) commentWorkerLaneTransition(ctx context.Context, before c
 		body.WriteString(prURL)
 	}
 	if err := o.connector.CreateComment(ctx, after.ID, body.String()); err != nil && o.logger != nil {
-		o.logger.Warn("worker lane transition comment failed", "issue_id", after.ID, "identifier", after.Identifier, "from_state", fromState, "target_state", toState, "reason", reason, "error", err)
+		o.logger.Warn("observed lane transition comment failed", "issue_id", after.ID, "identifier", after.Identifier, "from_state", fromState, "target_state", toState, "reason", reason, "error", err)
 	}
 }
 

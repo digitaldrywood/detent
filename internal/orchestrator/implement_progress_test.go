@@ -527,7 +527,7 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 	}
 }
 
-func TestHandleRunResultCommentsOnWorkerLaneTransition(t *testing.T) {
+func TestHandleRunResultCommentsOnObservedLaneTransition(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 16, 9, 30, 0, 0, time.UTC)
@@ -577,10 +577,11 @@ func TestHandleRunResultCommentsOnWorkerLaneTransition(t *testing.T) {
 	})
 
 	if len(tracker.comments) != 1 {
-		t.Fatalf("comments = %#v, want one worker routing audit comment", tracker.comments)
+		t.Fatalf("comments = %#v, want one observed routing audit comment", tracker.comments)
 	}
 	for _, fragment := range []string{
-		"Worker routed this issue from In Progress to Blocked.",
+		"Observed this issue move from In Progress to Blocked during worker completion.",
+		"source: tracker_refresh",
 		"reason: workpad_blocked",
 		"human_action: Restart the browser session.",
 	} {
