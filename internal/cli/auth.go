@@ -282,6 +282,9 @@ func privateDashboardURL(cfg globalconfig.Config, host string, port int, portSet
 	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
 		return "", errors.New("--base-url must be an absolute http or https URL without user information")
 	}
+	if parsed.Scheme == "http" && !privateDashboardLoopbackHost(parsed.Hostname()) {
+		return "", errors.New("--base-url must use https unless it targets a loopback host")
+	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", errors.New("--base-url must not contain a query or fragment")
 	}
@@ -293,4 +296,13 @@ func privateDashboardURL(cfg globalconfig.Config, host string, port int, portSet
 	query.Set("token", token)
 	parsed.RawQuery = query.Encode()
 	return parsed.String(), nil
+}
+
+func privateDashboardLoopbackHost(host string) bool {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

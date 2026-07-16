@@ -75,7 +75,7 @@ func (s *Server) setPrivateDashboardCookie(c echo.Context, token string) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   c.Request().TLS != nil,
+		Secure:   true,
 	})
 }
 

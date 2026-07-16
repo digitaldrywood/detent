@@ -125,6 +125,28 @@ func TestPrivateDashboardAccessEnforcesReadOnlyMode(t *testing.T) {
 	}
 }
 
+func TestPrivateDashboardCookieIsSecureBehindTLSProxy(t *testing.T) {
+	t.Parallel()
+
+	token := privateDashboardTestToken(7)
+	server, err := web.NewServer(web.Config{
+		GlobalConfig: globalconfig.Config{DashboardAccess: globalconfig.DashboardAccess{
+			Mode:  globalconfig.DashboardAccessModePrivateToken,
+			Token: token,
+		}},
+	}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://detent.internal/?token="+url.QueryEscape(token), nil)
+	server.Handler().ServeHTTP(rec, req)
+	cookie := privateDashboardCookie(t, rec.Result().Cookies())
+	if !cookie.Secure {
+		t.Fatal("private dashboard cookie Secure = false behind HTTP TLS proxy hop")
+	}
+}
+
 func TestPrivateDashboardAccessRotationInvalidatesSession(t *testing.T) {
 	oldToken := privateDashboardTestToken(2)
 	newToken := privateDashboardTestToken(3)

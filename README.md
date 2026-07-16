@@ -2687,9 +2687,9 @@ dashboard_access:
   allow_write: false
 ```
 
-Opening the printed `?token=...` URL establishes an HttpOnly, SameSite session
-cookie and redirects to a clean URL. Dashboard pages, mobile views, reports,
-SSE updates, and read APIs then work without putting the token in later links.
+Opening the printed `?token=...` URL establishes a Secure, HttpOnly, SameSite
+session cookie and redirects to a clean URL. Dashboard pages, mobile views,
+reports, SSE updates, and read APIs then work without putting the token in later links.
 Requests without the token or a valid session receive the same non-revealing
 `404` response as an unknown route. `/health`, signed GitHub webhooks, intake
 webhooks, and API clients with their own bearer credentials remain independent
@@ -2710,7 +2710,8 @@ Detent redacts the token from reload logs, but browsers, chat systems, proxy
 logs, and referrer destinations can still expose bearer URLs. This mode is
 appropriate for a small personal deployment and is weaker than identity-based
 magic-link or OAuth/OIDC access. TLS termination and proxy log redaction are
-the deployer's responsibility. To disable the mode, remove
+the deployer's responsibility. Public `--base-url` values must use HTTPS;
+plain HTTP is accepted only for loopback testing. To disable the mode, remove
 `dashboard_access` from the global config.
 
 Create a runtime work item:

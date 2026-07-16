@@ -133,6 +133,29 @@ func TestAuthTokenRotateRequiresEnabledMode(t *testing.T) {
 	}
 }
 
+func TestAuthTokenEnableRejectsInsecurePublicURL(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	writeGlobalConfig(t, path, nil)
+	cmd := cli.NewRootCommand(context.Background())
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path, "auth", "token", "enable", "--base-url", "http://detent.example.com"})
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "must use https") {
+		t.Fatalf("Execute() error = %v, want HTTPS requirement", err)
+	}
+	cfg, readErr := globalconfig.Read(path)
+	if readErr != nil {
+		t.Fatalf("Read() error = %v", readErr)
+	}
+	if !cfg.DashboardAccess.IsZero() {
+		t.Fatalf("DashboardAccess = %#v after rejected URL, want disabled", cfg.DashboardAccess)
+	}
+}
+
 func runDashboardAuthCommand(t *testing.T, path string, operation string, args ...string) string {
 	t.Helper()
 
