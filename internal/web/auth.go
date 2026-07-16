@@ -114,6 +114,16 @@ func (s *Server) authorizeAPIRequest(c echo.Context, opts apiAuthOptions) (apike
 		return credential, nil
 	}
 
+	if s.authorizePrivateDashboardSession(c) {
+		access := s.dashboardAccess()
+		if opts.mutating && !access.AllowWrite {
+			return apikey.Credential{}, writeAPIAuthError(c, http.StatusForbidden, "dashboard_read_only", "Private dashboard access is read-only")
+		}
+		credential := apikey.StaticCredential()
+		s.setAPICredential(c, credential)
+		return credential, nil
+	}
+
 	if opts.allowDashboardSSE && token == "" && authorizeDashboardSSE(c) {
 		credential := apikey.StaticCredential()
 		s.setAPICredential(c, credential)

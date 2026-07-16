@@ -245,8 +245,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		server.sessionAuth = magicLinks
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
-	e.Use(server.uiAPICookie)
-	e.Use(server.sessionGate)
+	e.Use(server.privateDashboardAccess, server.uiAPICookie, server.sessionGate)
 	server.registerRoutes()
 	server.warnIfAPITokenMissingOnNonLoopback()
 

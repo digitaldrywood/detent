@@ -234,6 +234,10 @@ func TestChangedGlobalConfigFieldsReloadClassification(t *testing.T) {
 		{name: "log max size", field: "log_max_size_bytes", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { value := 2048; cfg.LogMaxSizeBytes = &value }},
 		{name: "log backups", field: "log_max_backups", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { value := 2; cfg.LogMaxBackups = &value }},
 		{name: "GitHub token", field: "github_token", mutate: func(cfg *globalconfig.Config) { cfg.GitHubToken = "gh" }},
+		{name: "dashboard access mode", field: "dashboard_access.mode", mutate: func(cfg *globalconfig.Config) {
+			cfg.DashboardAccess.Mode = globalconfig.DashboardAccessModePrivateToken
+		}},
+		{name: "dashboard write access", field: "dashboard_access.allow_write", mutate: func(cfg *globalconfig.Config) { cfg.DashboardAccess.AllowWrite = true }},
 		{name: "port", field: "port", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { value := 4101; cfg.Port = &value }},
 		{name: "instance name", field: "instance_name", mutate: func(cfg *globalconfig.Config) { cfg.InstanceName = "buildbox" }},
 		{name: "projects", field: "projects", mutate: func(cfg *globalconfig.Config) { cfg.Projects = []globalconfig.Project{{ID: "bravo", Weight: 2}} }},
@@ -408,6 +412,28 @@ func TestLogGlobalConfigChangesPreservesRestartWarning(t *testing.T) {
 	for _, want := range []string{"level=WARN", `msg="global config setting change requires restart"`, "field=env"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("restart warning missing %q: %s", want, logs.String())
+		}
+	}
+}
+
+func TestLogGlobalConfigChangesRedactsDashboardToken(t *testing.T) {
+	t.Parallel()
+
+	previous := reloadTestConfig("global.yaml", 2, nil)
+	previous.DashboardAccess.Token = "private-old-token"
+	next := reloadTestConfig("global.yaml", 2, nil)
+	next.DashboardAccess.Token = "private-new-token"
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+
+	logGlobalConfigChanges(logger, previous, next)
+
+	if !strings.Contains(logs.String(), "field=dashboard_access.token") || !strings.Contains(logs.String(), "<redacted>") {
+		t.Fatalf("reload log missing redacted dashboard token change: %s", logs.String())
+	}
+	for _, token := range []string{previous.DashboardAccess.Token, next.DashboardAccess.Token} {
+		if strings.Contains(logs.String(), token) {
+			t.Fatalf("reload log leaked dashboard token %q: %s", token, logs.String())
 		}
 	}
 }
