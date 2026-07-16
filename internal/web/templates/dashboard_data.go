@@ -6489,6 +6489,120 @@ func dispatchRecoveryKindLabel(kind string) string {
 	}
 }
 
+type boardBannerSummary struct {
+	ID    string
+	Title string
+}
+
+func boardFailureBreakerSummary(breakers []telemetry.FailureBreaker) (boardBannerSummary, bool) {
+	if len(breakers) == 0 {
+		return boardBannerSummary{}, false
+	}
+	count := boardAffectedProjectCount(len(breakers), func(yield func(string)) {
+		for _, breaker := range breakers {
+			yield(breaker.ProjectID)
+		}
+	})
+	return boardBannerSummary{
+		ID:    "board-failure-breaker-summary",
+		Title: boardBannerProjectTitle("Project dispatch paused by correlated failures", count),
+	}, true
+}
+
+func boardDispatchRecoverySummaries(recoveries []telemetry.DispatchRecovery) []boardBannerSummary {
+	type group struct {
+		title    string
+		projects map[string]struct{}
+		missing  int
+	}
+	groups := make(map[string]*group)
+	order := make([]string, 0)
+	for _, recovery := range recoveries {
+		if strings.TrimSpace(recovery.Status) != "waiting" {
+			continue
+		}
+		key := strings.TrimSpace(recovery.Kind)
+		if _, ok := groups[key]; !ok {
+			groups[key] = &group{
+				title:    "Dispatch waiting on " + dispatchRecoveryKindLabel(recovery.Kind),
+				projects: make(map[string]struct{}),
+			}
+			order = append(order, key)
+		}
+		if projectID := strings.TrimSpace(recovery.ProjectID); projectID != "" {
+			groups[key].projects[projectID] = struct{}{}
+		} else {
+			groups[key].missing++
+		}
+	}
+	summaries := make([]boardBannerSummary, 0, len(order))
+	for _, key := range order {
+		group, ok := groups[key]
+		if !ok {
+			continue
+		}
+		count := len(group.projects) + group.missing
+		summaries = append(summaries, boardBannerSummary{
+			ID:    "board-dispatch-recovery-summary-" + boardCardSlug(key),
+			Title: boardBannerProjectTitle(group.title, count),
+		})
+	}
+	return summaries
+}
+
+func boardBackendCapacitySummaries(outages []telemetry.BackendOutage) []boardBannerSummary {
+	type group struct {
+		title    string
+		projects map[string]struct{}
+		missing  int
+	}
+	groups := make(map[string]*group)
+	order := make([]string, 0)
+	for _, outage := range backendCapacityOutages(outages) {
+		title := backendCapacityOutageTitle(outage)
+		if _, ok := groups[title]; !ok {
+			groups[title] = &group{title: title, projects: make(map[string]struct{})}
+			order = append(order, title)
+		}
+		if projectID := strings.TrimSpace(outage.ProjectID); projectID != "" {
+			groups[title].projects[projectID] = struct{}{}
+		} else {
+			groups[title].missing++
+		}
+	}
+	summaries := make([]boardBannerSummary, 0, len(order))
+	for _, key := range order {
+		group, ok := groups[key]
+		if !ok {
+			continue
+		}
+		count := len(group.projects) + group.missing
+		summaries = append(summaries, boardBannerSummary{
+			ID:    "board-backend-capacity-summary-" + boardCardSlug(key),
+			Title: boardBannerProjectTitle(group.title, count),
+		})
+	}
+	return summaries
+}
+
+func boardAffectedProjectCount(entries int, projectIDs func(func(string))) int {
+	projects := make(map[string]struct{}, entries)
+	missing := 0
+	projectIDs(func(projectID string) {
+		projectID = strings.TrimSpace(projectID)
+		if projectID == "" {
+			missing++
+			return
+		}
+		projects[projectID] = struct{}{}
+	})
+	return len(projects) + missing
+}
+
+func boardBannerProjectTitle(title string, count int) string {
+	return title + " — " + boardCountLabel(count, "project", "projects")
+}
+
 func backendCapacityBackendID(outage telemetry.BackendOutage) string {
 	backend := strings.TrimSpace(outage.BackendID)
 	if backend == "" {
@@ -6511,7 +6625,7 @@ func backendCapacityOutages(outages []telemetry.BackendOutage) []telemetry.Backe
 		if resetAt.IsZero() {
 			resetAt = outage.ResumeAt
 		}
-		key := backendCapacityBackendID(outage) + "\x00" + localTimeISOString(resetAt)
+		key := strings.TrimSpace(outage.ProjectID) + "\x00" + backendCapacityBackendID(outage) + "\x00" + localTimeISOString(resetAt)
 		if _, ok := seen[key]; ok {
 			continue
 		}

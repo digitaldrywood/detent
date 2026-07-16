@@ -1704,18 +1704,15 @@ func TestBoardSnapshotRendersBackendCapacityBanner(t *testing.T) {
 	html := renderBoardComponent(t, BoardSnapshot(data))
 	for _, want := range []string{
 		`id="backend-capacity-outage"`,
-		"Backend codex at usage limit",
-		"Dispatch is paused for openai; next canary at",
-		"Provider-recorded resume at",
-		"Last probe",
-		"capacity exhausted",
-		`hx-post="/api/v1/capacity/clear"`,
-		`name="project_id" value="detent"`,
-		`name="scope" value="codex"`,
-		"Clear outage",
+		"Backend codex at usage limit — 1 project",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("capacity banner missing %q:\n%s", want, html)
+		}
+	}
+	for _, unwanted := range []string{"Dispatch is paused for openai", "Last probe", "Clear outage"} {
+		if strings.Contains(html, unwanted) {
+			t.Fatalf("capacity summary contains detail %q:\n%s", unwanted, html)
 		}
 	}
 }
@@ -1734,21 +1731,20 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 	html := renderBoardComponent(t, BoardSnapshot(data))
 	for _, want := range []string{
 		`id="project-failure-breaker"`,
-		"Project dispatch paused by correlated failures",
-		"5 failures with class session_token_ceiling in 1h.",
-		"One canary attempt becomes eligible",
-		`datetime="2026-07-04T17:42:07Z"`,
-		`hx-post="/api/v1/failure-breaker/canary"`,
-		`name="project_id" value="detent"`,
-		"Run canary now",
+		"Project dispatch paused by correlated failures — 1 project",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("failure breaker banner missing %q:\n%s", want, html)
 		}
 	}
+	for _, unwanted := range []string{"5 failures with class", "One canary attempt", "Run canary now"} {
+		if strings.Contains(html, unwanted) {
+			t.Fatalf("failure breaker summary contains detail %q:\n%s", unwanted, html)
+		}
+	}
 }
 
-func TestBoardSnapshotRendersDispatchRecoveryReason(t *testing.T) {
+func TestBoardSnapshotHidesRampActiveDispatchRecovery(t *testing.T) {
 	t.Parallel()
 
 	data := boardTestData()
@@ -1764,15 +1760,31 @@ func TestBoardSnapshotRendersDispatchRecoveryReason(t *testing.T) {
 		Admitted:      1,
 	}}
 	html := renderBoardComponent(t, BoardSnapshot(data))
-	for _, want := range []string{
-		`id="dispatch-recovery-status"`,
-		"Dispatch recovery ramp active",
-		"pull-request hydration cleared",
-		"admitting up to 1 of 6 configured workers",
-	} {
+	if strings.Contains(html, `id="dispatch-recovery-status"`) || strings.Contains(html, "Dispatch recovery ramp active") {
+		t.Fatalf("board rendered ramp-active recovery:\n%s", html)
+	}
+}
+
+func TestBoardSnapshotCollapsesWaitingDispatchRecoveries(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	data.Snapshot.DispatchRecoveries = []telemetry.DispatchRecovery{
+		{ProjectID: "detent", Kind: "github_rest", Status: "waiting"},
+		{ProjectID: "docs", Kind: "github_rest", Status: "waiting"},
+		{ProjectID: "billing", Kind: "backend_capacity", Status: "ramping", Limit: 1, MaxConcurrent: 6},
+	}
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	if got := strings.Count(html, "Dispatch waiting on GitHub REST capacity"); got != 1 {
+		t.Fatalf("waiting recovery summaries = %d, want 1:\n%s", got, html)
+	}
+	for _, want := range []string{`id="dispatch-recovery-status"`, "Dispatch waiting on GitHub REST capacity — 2 projects"} {
 		if !strings.Contains(html, want) {
-			t.Fatalf("dispatch recovery banner missing %q:\n%s", want, html)
+			t.Fatalf("waiting recovery summary missing %q:\n%s", want, html)
 		}
+	}
+	if strings.Contains(html, "Dispatch recovery ramp active") {
+		t.Fatalf("waiting recovery summary included ramp detail:\n%s", html)
 	}
 }
 
@@ -1799,7 +1811,7 @@ func TestDispatchRecoveryLabelsDistinguishWaitReasons(t *testing.T) {
 	}
 }
 
-func TestBoardSnapshotHidesCanaryActionWhileCanaryRuns(t *testing.T) {
+func TestHealthSnapshotHidesCanaryActionWhileCanaryRuns(t *testing.T) {
 	t.Parallel()
 
 	data := boardTestData()
@@ -1811,7 +1823,7 @@ func TestBoardSnapshotHidesCanaryActionWhileCanaryRuns(t *testing.T) {
 		ResumeAt:      data.Snapshot.GeneratedAt,
 		CanaryIssueID: "issue-canary",
 	}}
-	html := renderBoardComponent(t, BoardSnapshot(data))
+	html := renderBoardComponent(t, HealthSnapshotV2(data))
 	if strings.Contains(html, "Run canary now") || !strings.Contains(html, "One canary attempt is in progress") {
 		t.Fatalf("active canary controls are incorrect:\n%s", html)
 	}
@@ -1823,14 +1835,8 @@ func TestBoardSnapshotRendersTransientOverloadCounterWithoutOutage(t *testing.T)
 	data := boardTestData()
 	data.Snapshot.OverloadRetriesLastHour = 3
 	html := renderBoardComponent(t, BoardSnapshot(data))
-	for _, want := range []string{
-		`id="backend-overload-retries"`,
-		"3 overload retries last hour",
-		"dispatch remains active",
-	} {
-		if !strings.Contains(html, want) {
-			t.Fatalf("overload retry notice missing %q:\n%s", want, html)
-		}
+	if strings.Contains(html, `id="backend-overload-retries"`) || strings.Contains(html, "3 overload retries last hour") {
+		t.Fatalf("board rendered informational overload retry notice:\n%s", html)
 	}
 	if strings.Contains(html, `id="backend-capacity-outage"`) {
 		t.Fatalf("transient overload counter rendered an outage banner:\n%s", html)
@@ -1852,17 +1858,40 @@ func TestBoardSnapshotRendersGitHubRESTCapacityBanner(t *testing.T) {
 	html := renderBoardComponent(t, BoardSnapshot(data))
 	for _, want := range []string{
 		`id="backend-capacity-outage"`,
-		"GitHub REST dispatch paused",
-		"GitHub REST remaining 0 is at or below dispatch floor 1000; resuming at",
-		`datetime="2026-07-04T17:26:07Z"`,
-		`data-local-time`,
+		"GitHub REST dispatch paused — 1 project",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("GitHub REST capacity banner missing %q:\n%s", want, html)
 		}
 	}
-	if strings.Contains(html, "17:26 UTC") {
-		t.Fatalf("GitHub REST capacity banner rendered a UTC wall clock:\n%s", html)
+	if strings.Contains(html, "remaining 0") || strings.Contains(html, `data-local-time`) {
+		t.Fatalf("GitHub REST Board summary rendered Health detail:\n%s", html)
+	}
+}
+
+func TestHealthSnapshotKeepsRecoveryAndOverloadDetail(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	data.Snapshot.DispatchRecoveries = []telemetry.DispatchRecovery{
+		{ProjectID: "detent", Kind: "github_rest", Reason: "quota exhausted", Status: "waiting", ResumeAt: data.Snapshot.GeneratedAt.Add(time.Minute)},
+		{ProjectID: "docs", Kind: "backend_capacity", Status: "ramping", Limit: 1, MaxConcurrent: 6},
+	}
+	data.Snapshot.OverloadRetriesLastHour = 3
+	html := renderBoardComponent(t, HealthSnapshotV2(data))
+	for _, want := range []string{
+		"Dispatch waiting on GitHub REST capacity",
+		"GitHub REST capacity is delaying dispatch: quota exhausted.",
+		"Project detent",
+		"Dispatch recovery ramp active",
+		"backend capacity cleared; recovery is admitting up to 1 of 6 configured workers",
+		"Project docs",
+		`id="backend-overload-retries"`,
+		"3 overload retries last hour",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("Health recovery detail missing %q:\n%s", want, html)
+		}
 	}
 }
 
