@@ -95,6 +95,15 @@ func (s *Server) authorizeAPIRequest(c echo.Context, opts apiAuthOptions) (apike
 		return apikey.Credential{}, writeAPIAuthError(c, http.StatusUnauthorized, "unauthorized", "Valid API token is required")
 	}
 
+	if _, ok := webSessionFromContext(c.Request().Context()); ok {
+		if opts.requireDashboardManagementToken && !s.authorizeAPIKeyDashboardToken(c) {
+			return apikey.Credential{}, writeAPIAuthError(c, http.StatusForbidden, "dashboard_token_required", "open the API Keys page from the dashboard before managing API keys")
+		}
+		credential := apikey.StaticCredential()
+		s.setAPICredential(c, credential)
+		return credential, nil
+	}
+
 	uiCookieAuthorized := opts.allowUICookie && s.authorizeUIAPICookie(c)
 	if opts.allowUICookie && opts.allowDashboardSSE && s.authorizeUIAPISSECookie(c) {
 		uiCookieAuthorized = true

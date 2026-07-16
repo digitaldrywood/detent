@@ -46,8 +46,8 @@ func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
 	if got := queryInt(t, sqliteBackend.db, "PRAGMA busy_timeout"); got != 5000 {
 		t.Fatalf("busy_timeout = %d, want 5000", got)
 	}
-	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('detent_runs', 'codex_sessions', 'fair_share_usage', 'usage_events', 'workflow_phase_events', 'work_attempts', 'scheduler_decisions', 'validator_verdicts', 'api_keys', 'api_usage_logs', 'efficiency_receipts', 'budget_overrides')"); got != 12 {
-		t.Fatalf("migrated table count = %d, want 12", got)
+	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('detent_runs', 'codex_sessions', 'fair_share_usage', 'usage_events', 'workflow_phase_events', 'work_attempts', 'scheduler_decisions', 'validator_verdicts', 'api_keys', 'api_usage_logs', 'efficiency_receipts', 'budget_overrides', 'auth_magic_links', 'auth_sessions')"); got != 14 {
+		t.Fatalf("migrated table count = %d, want 14", got)
 	}
 }
 

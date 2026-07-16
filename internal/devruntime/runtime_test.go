@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 )
 
@@ -73,6 +74,34 @@ func TestBuildUsesCustomDemoProjectID(t *testing.T) {
 	}
 	if runtime.Global.Projects[0].ID != "demo-project" {
 		t.Fatalf("primary demo project ID = %q, want demo-project", runtime.Global.Projects[0].ID)
+	}
+}
+
+func TestBuildWritesMagicLinkAuthConfig(t *testing.T) {
+	t.Parallel()
+
+	authConfig := globalconfig.Auth{
+		Mode:          globalconfig.AuthModeMagicLink,
+		AllowedEmails: []string{"operator@example.com"},
+		SMTP: globalconfig.SMTP{
+			Host: "127.0.0.1",
+			Port: 2525,
+			From: "detent@example.com",
+		},
+	}
+	runtime, err := Build(Config{Home: t.TempDir(), Port: 0, Auth: authConfig})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if !runtime.Global.Auth.MagicLinkEnabled() || runtime.Global.Auth.SMTP.Port != 2525 {
+		t.Fatalf("runtime auth = %#v", runtime.Global.Auth)
+	}
+	read, err := globalconfig.Read(runtime.ConfigPath)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if !read.Auth.MagicLinkEnabled() || read.Auth.AllowedEmails[0] != "operator@example.com" {
+		t.Fatalf("persisted auth = %#v", read.Auth)
 	}
 }
 

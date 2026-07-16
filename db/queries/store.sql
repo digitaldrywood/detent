@@ -1240,3 +1240,43 @@ ORDER BY expires_at, project_id;
 -- name: DeleteBudgetOverride :execrows
 DELETE FROM budget_overrides
 WHERE project_id = ?;
+
+-- name: CreateMagicLink :exec
+INSERT INTO auth_magic_links (
+  token_hash,
+  email,
+  expires_at,
+  created_at
+) VALUES (
+  sqlc.arg(token_hash),
+  sqlc.arg(email),
+  sqlc.arg(expires_at),
+  sqlc.arg(created_at)
+);
+
+-- name: ConsumeMagicLink :one
+UPDATE auth_magic_links
+SET used_at = sqlc.arg(now)
+WHERE token_hash = sqlc.arg(token_hash)
+  AND used_at IS NULL
+  AND expires_at > sqlc.arg(now)
+RETURNING email;
+
+-- name: CreateWebSession :exec
+INSERT INTO auth_sessions (
+  token_hash,
+  email,
+  expires_at,
+  created_at
+) VALUES (
+  sqlc.arg(token_hash),
+  sqlc.arg(email),
+  sqlc.arg(expires_at),
+  sqlc.arg(created_at)
+);
+
+-- name: GetWebSession :one
+SELECT email, expires_at
+FROM auth_sessions
+WHERE token_hash = sqlc.arg(token_hash)
+  AND expires_at > sqlc.arg(now);

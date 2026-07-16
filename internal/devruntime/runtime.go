@@ -47,6 +47,7 @@ type Config struct {
 	Port                int
 	AllowLiveDatabase   bool
 	AllowProductionPort bool
+	Auth                globalconfig.Auth
 }
 
 type Runtime struct {
@@ -136,6 +137,7 @@ func Build(cfg Config) (Runtime, error) {
 
 	configPath := filepath.Join(home, "global.yaml")
 	global := globalConfig(configPath, workflowPath, sourceRoot, cfg.Port, demo, demoProjectID)
+	global.Auth = cfg.Auth
 	if len(demoProjects) > 0 {
 		global.Projects = demoProjects
 	}

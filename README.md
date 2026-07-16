@@ -2609,6 +2609,48 @@ Useful endpoints:
 | `/api/v1/webhooks/github` | Accept signed GitHub webhook deliveries with `POST`. |
 | `/api/v1/<issue>` | JSON detail for a running, retrying, or blocked issue. |
 
+### Dashboard Magic-Link Authentication
+
+Magic-link authentication is disabled unless the top-level `auth` block selects
+`magic_link`. When enabled, dashboard pages, browser API calls, SSE streams, and
+mobile views require a persisted session. Existing API keys and `api_token`
+credentials continue through their normal API checks, while signed GitHub and
+token-authenticated intake webhooks keep their dedicated authentication.
+
+```yaml
+auth:
+  mode: magic_link
+  public_url: https://detent.example.com
+  allowed_emails:
+    - operator@example.com
+  link_ttl: 15m
+  session_ttl: 720h
+  smtp:
+    host: smtp.example.com
+    port: 587
+    username: smtp-user
+    password: smtp-password
+    from: detent@example.com
+```
+
+`public_url` is recommended for reverse-proxy deployments so email and CLI
+links use the externally reachable origin. Without it, the running server uses
+its resolved dashboard URL and the CLI uses the configured local port. SMTP
+credentials are optional, but `username` and `password` must be set together.
+Detent uses STARTTLS when the server advertises it. TLS termination for the
+dashboard remains the operator's responsibility.
+
+Allowed submissions always receive the same “check your inbox” page as denied
+submissions. Links are single-use, short-lived, and stored only as SHA-256
+hashes. Sessions are also hashed in SQLite, survive restarts, and expire after
+`session_ttl`. Auth configuration changes require a Detent restart.
+
+If SMTP delivery is unavailable, create the same one-time link directly:
+
+```sh
+detent auth link operator@example.com --format pretty
+```
+
 ### API Authentication And Work-Item Submission
 
 Configure a top-level `api_token` in `global.yaml`, or set

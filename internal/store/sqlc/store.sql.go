@@ -8,6 +8,7 @@ package sqlc
 import (
 	"context"
 	"database/sql"
+	"time"
 )
 
 const activeBudgetOverride = `-- name: ActiveBudgetOverride :one
@@ -245,6 +246,27 @@ func (q *Queries) CompletedIssueCycleRows(ctx context.Context) ([]CompletedIssue
 		return nil, err
 	}
 	return items, nil
+}
+
+const consumeMagicLink = `-- name: ConsumeMagicLink :one
+UPDATE auth_magic_links
+SET used_at = ?1
+WHERE token_hash = ?2
+  AND used_at IS NULL
+  AND expires_at > ?1
+RETURNING email
+`
+
+type ConsumeMagicLinkParams struct {
+	Now       sql.NullTime `json:"now"`
+	TokenHash string       `json:"token_hash"`
+}
+
+func (q *Queries) ConsumeMagicLink(ctx context.Context, arg ConsumeMagicLinkParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, consumeMagicLink, arg.Now, arg.TokenHash)
+	var email string
+	err := row.Scan(&email)
+	return email, err
 }
 
 const countAPIUsageLogsByKey = `-- name: CountAPIUsageLogsByKey :one
@@ -601,6 +623,37 @@ func (q *Queries) CreateDetentRun(ctx context.Context, arg CreateDetentRunParams
 	return i, err
 }
 
+const createMagicLink = `-- name: CreateMagicLink :exec
+INSERT INTO auth_magic_links (
+  token_hash,
+  email,
+  expires_at,
+  created_at
+) VALUES (
+  ?1,
+  ?2,
+  ?3,
+  ?4
+)
+`
+
+type CreateMagicLinkParams struct {
+	TokenHash string    `json:"token_hash"`
+	Email     string    `json:"email"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (q *Queries) CreateMagicLink(ctx context.Context, arg CreateMagicLinkParams) error {
+	_, err := q.db.ExecContext(ctx, createMagicLink,
+		arg.TokenHash,
+		arg.Email,
+		arg.ExpiresAt,
+		arg.CreatedAt,
+	)
+	return err
+}
+
 const createSchedulerDecision = `-- name: CreateSchedulerDecision :one
 INSERT INTO scheduler_decisions (
   project_id,
@@ -789,6 +842,37 @@ func (q *Queries) CreateUsageEvent(ctx context.Context, arg CreateUsageEventPara
 		&i.ModelContextWindow,
 	)
 	return i, err
+}
+
+const createWebSession = `-- name: CreateWebSession :exec
+INSERT INTO auth_sessions (
+  token_hash,
+  email,
+  expires_at,
+  created_at
+) VALUES (
+  ?1,
+  ?2,
+  ?3,
+  ?4
+)
+`
+
+type CreateWebSessionParams struct {
+	TokenHash string    `json:"token_hash"`
+	Email     string    `json:"email"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (q *Queries) CreateWebSession(ctx context.Context, arg CreateWebSessionParams) error {
+	_, err := q.db.ExecContext(ctx, createWebSession,
+		arg.TokenHash,
+		arg.Email,
+		arg.ExpiresAt,
+		arg.CreatedAt,
+	)
+	return err
 }
 
 const createWorkAttempt = `-- name: CreateWorkAttempt :one
@@ -1793,6 +1877,30 @@ func (q *Queries) GetValidatorVerdict(ctx context.Context, arg GetValidatorVerdi
 		&i.FailureAttempts,
 		&i.NextRetryAt,
 	)
+	return i, err
+}
+
+const getWebSession = `-- name: GetWebSession :one
+SELECT email, expires_at
+FROM auth_sessions
+WHERE token_hash = ?1
+  AND expires_at > ?2
+`
+
+type GetWebSessionParams struct {
+	TokenHash string    `json:"token_hash"`
+	Now       time.Time `json:"now"`
+}
+
+type GetWebSessionRow struct {
+	Email     string    `json:"email"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+func (q *Queries) GetWebSession(ctx context.Context, arg GetWebSessionParams) (GetWebSessionRow, error) {
+	row := q.db.QueryRowContext(ctx, getWebSession, arg.TokenHash, arg.Now)
+	var i GetWebSessionRow
+	err := row.Scan(&i.Email, &i.ExpiresAt)
 	return i, err
 }
 
