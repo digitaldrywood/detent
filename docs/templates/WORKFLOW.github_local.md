@@ -1,4 +1,5 @@
 ---
+# Keep machine-specific config and direction in gitignored WORKFLOW.local.md.
 tracker:
   kind: github_local
   repository: <repo-owner>/<repo-name>

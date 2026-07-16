@@ -27,17 +27,23 @@ type FileUpdate[T any] struct {
 type FileOption func(*fileOptions)
 
 type FileWatcher[T any] struct {
-	path      string
-	watchPath string
-	dirs      []string
-	debounce  time.Duration
-	loader    FileLoader[T]
-	logger    *slog.Logger
+	path     string
+	files    []watchedFile
+	dirs     []string
+	debounce time.Duration
+	loader   FileLoader[T]
+	logger   *slog.Logger
 }
 
 type fileOptions struct {
-	debounce time.Duration
-	logger   *slog.Logger
+	debounce   time.Duration
+	logger     *slog.Logger
+	watchPaths []string
+}
+
+type watchedFile struct {
+	path   string
+	target string
 }
 
 func NewFile[T any](path string, loader FileLoader[T], opts ...FileOption) (*FileWatcher[T], error) {
@@ -69,15 +75,36 @@ func NewFile[T any](path string, loader FileLoader[T], opts ...FileOption) (*Fil
 	}
 
 	path = filepath.Clean(absolute)
-	watchPath := resolveWatchPath(path)
+	files := []watchedFile{{path: path, target: resolveWatchPath(path)}}
+	seen := map[string]struct{}{path: {}}
+	for _, additionalPath := range cfg.watchPaths {
+		additionalPath = strings.TrimSpace(additionalPath)
+		if additionalPath == "" {
+			continue
+		}
+		additionalAbsolute, err := filepath.Abs(additionalPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve additional config watch path: %w", err)
+		}
+		additionalPath = filepath.Clean(additionalAbsolute)
+		if _, ok := seen[additionalPath]; ok {
+			continue
+		}
+		seen[additionalPath] = struct{}{}
+		files = append(files, watchedFile{path: additionalPath, target: resolveWatchPath(additionalPath)})
+	}
+	watchPaths := make([]string, 0, len(files)*2)
+	for _, file := range files {
+		watchPaths = append(watchPaths, file.path, file.target)
+	}
 
 	return &FileWatcher[T]{
-		path:      path,
-		watchPath: watchPath,
-		dirs:      watchDirs(path, watchPath),
-		debounce:  cfg.debounce,
-		loader:    loader,
-		logger:    cfg.logger,
+		path:     path,
+		files:    files,
+		dirs:     watchDirs(watchPaths...),
+		debounce: cfg.debounce,
+		loader:   loader,
+		logger:   cfg.logger,
 	}, nil
 }
 
@@ -111,6 +138,12 @@ func WithFileDebounce(debounce time.Duration) FileOption {
 func WithFileLogger(logger *slog.Logger) FileOption {
 	return func(opts *fileOptions) {
 		opts.logger = logger
+	}
+}
+
+func WithFileWatchPaths(paths ...string) FileOption {
+	return func(opts *fileOptions) {
+		opts.watchPaths = append(opts.watchPaths, paths...)
 	}
 }
 
@@ -186,32 +219,39 @@ func (w *FileWatcher[T]) matches(event fsnotify.Event) bool {
 		return false
 	}
 	name := filepath.Clean(event.Name)
-	return name == w.path || name == w.watchPath
+	for _, file := range w.files {
+		if name == file.path || name == file.target {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *FileWatcher[T]) refreshWatchPath(addDir func(string) error) {
-	watchPath := resolveWatchPath(w.path)
-	if watchPath == w.watchPath {
-		return
-	}
-
-	w.watchPath = watchPath
-	for _, dir := range watchDirs(w.path, watchPath) {
-		if hasWatchDir(w.dirs, dir) {
+	for index := range w.files {
+		watchPath := resolveWatchPath(w.files[index].path)
+		if watchPath == w.files[index].target {
 			continue
 		}
-		if addDir != nil {
-			if err := addDir(dir); err != nil {
-				w.logger.Warn("watch config symlink target directory failed",
-					"path", w.path,
-					"target", watchPath,
-					"dir", dir,
-					"error", err,
-				)
+
+		w.files[index].target = watchPath
+		for _, dir := range watchDirs(w.files[index].path, watchPath) {
+			if hasWatchDir(w.dirs, dir) {
 				continue
 			}
+			if addDir != nil {
+				if err := addDir(dir); err != nil {
+					w.logger.Warn("watch config symlink target directory failed",
+						"path", w.files[index].path,
+						"target", watchPath,
+						"dir", dir,
+						"error", err,
+					)
+					continue
+				}
+			}
+			w.dirs = append(w.dirs, dir)
 		}
-		w.dirs = append(w.dirs, dir)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -204,6 +205,94 @@ func TestWatchReportsInvalidReload(t *testing.T) {
 	}
 }
 
+func TestWatchReloadsLocalWorkflowOverlayLifecycle(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "WORKFLOW.md")
+	localPath := workflowconfig.LocalWorkflowPath(path)
+	writeWorkflow(t, path, 60000, "shared")
+
+	w, err := New(path, WithDebounce(10*time.Millisecond))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	updates, err := w.Watch(ctx)
+	if err != nil {
+		t.Fatalf("Watch() error = %v", err)
+	}
+
+	writeWorkflow(t, localPath, 61000, "local first")
+	created := receiveUpdate(t, updates)
+	if created.Err != nil {
+		t.Fatalf("create update error = %v", created.Err)
+	}
+	if created.Workflow.Config.Polling.IntervalMS != 61000 || !strings.Contains(created.Workflow.Prompt, "local first") {
+		t.Fatalf("create workflow = %#v, want local overlay", created.Workflow)
+	}
+
+	writeWorkflow(t, localPath, 62000, "local second")
+	edited := receiveUpdate(t, updates)
+	if edited.Err != nil {
+		t.Fatalf("edit update error = %v", edited.Err)
+	}
+	if edited.Workflow.Config.Polling.IntervalMS != 62000 || !strings.Contains(edited.Workflow.Prompt, "local second") {
+		t.Fatalf("edit workflow = %#v, want updated local overlay", edited.Workflow)
+	}
+
+	if err := os.Remove(localPath); err != nil {
+		t.Fatalf("Remove() error = %v", err)
+	}
+	deleted := receiveUpdate(t, updates)
+	if deleted.Err != nil {
+		t.Fatalf("delete update error = %v", deleted.Err)
+	}
+	if deleted.Workflow.Config.Polling.IntervalMS != 60000 || deleted.Workflow.Prompt != "shared\n" {
+		t.Fatalf("delete workflow = %#v, want shared workflow", deleted.Workflow)
+	}
+	if deleted.Workflow.Overlay.Path != "" {
+		t.Fatalf("delete Overlay = %#v, want inactive", deleted.Workflow.Overlay)
+	}
+}
+
+func TestWatchSurvivesSharedWorkflowDeletionAndCreation(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "WORKFLOW.md")
+	writeWorkflow(t, path, 60000, "first")
+
+	w, err := New(path, WithDebounce(10*time.Millisecond))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	updates, err := w.Watch(ctx)
+	if err != nil {
+		t.Fatalf("Watch() error = %v", err)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("Remove() error = %v", err)
+	}
+	deleted := receiveUpdate(t, updates)
+	if deleted.Err == nil {
+		t.Fatal("delete update error = nil, want missing shared workflow error")
+	}
+
+	writeWorkflow(t, path, 63000, "recreated")
+	recreated := receiveUpdate(t, updates)
+	if recreated.Err != nil {
+		t.Fatalf("recreate update error = %v", recreated.Err)
+	}
+	if recreated.Workflow.Config.Polling.IntervalMS != 63000 || recreated.Workflow.Prompt != "recreated\n" {
+		t.Fatalf("recreated workflow = %#v, want recreated shared workflow", recreated.Workflow)
+	}
+}
+
 func TestFileWatcherDebouncesGlobalConfigWrites(t *testing.T) {
 	t.Parallel()
 
@@ -369,8 +458,8 @@ func TestFileWatcherRefreshesRetargetedSymlinkTarget(t *testing.T) {
 	})
 
 	resolvedNext := resolveWatchPath(linkPath)
-	if w.watchPath != resolvedNext {
-		t.Fatalf("watchPath = %q, want %q", w.watchPath, resolvedNext)
+	if w.files[0].target != resolvedNext {
+		t.Fatalf("watchPath = %q, want %q", w.files[0].target, resolvedNext)
 	}
 	nextWatchDir := filepath.Dir(resolvedNext)
 	if !hasWatchDir(w.dirs, nextWatchDir) {

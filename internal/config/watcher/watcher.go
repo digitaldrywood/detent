@@ -63,7 +63,7 @@ func New(path string, opts ...Option) (*Watcher, error) {
 			err = workflow.Config.Validate()
 		}
 		return workflow, err
-	}, WithFileDebounce(cfg.debounce), WithFileLogger(cfg.logger))
+	}, WithFileDebounce(cfg.debounce), WithFileLogger(cfg.logger), WithFileWatchPaths(workflowconfig.LocalWorkflowPath(path)))
 	if err != nil {
 		return nil, err
 	}

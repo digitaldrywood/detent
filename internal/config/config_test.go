@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +18,151 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
+
+func TestParseWorkflowOverlayPrecedence(t *testing.T) {
+	t.Parallel()
+
+	shared := []byte("---\ntracker:\n  kind: memory\n  assignee: shared\n  active_states: [Todo, In Progress]\npolling:\n  interval_ms: 60000\n  conditional: true\nagent:\n  max_turns: 20\n---\nShared direction.\n")
+	tests := []struct {
+		name             string
+		local            string
+		wantAssignee     string
+		wantInterval     int
+		wantConditional  bool
+		wantActiveStates []string
+		wantMaxTurns     int
+		wantPrompt       string
+		wantKeys         []string
+	}{
+		{
+			name:             "nested scalar keys override independently",
+			local:            "---\ntracker:\n  assignee: local\npolling:\n  interval_ms: 90000\n---\n",
+			wantAssignee:     "local",
+			wantInterval:     90000,
+			wantConditional:  true,
+			wantActiveStates: []string{"Todo", "In Progress"},
+			wantMaxTurns:     20,
+			wantPrompt:       "Shared direction.\n",
+			wantKeys:         []string{"polling.interval_ms", "tracker.assignee"},
+		},
+		{
+			name:             "sequences replace shared values",
+			local:            "---\ntracker:\n  active_states: [Backlog]\n---\n",
+			wantAssignee:     "shared",
+			wantInterval:     60000,
+			wantConditional:  true,
+			wantActiveStates: []string{"Backlog"},
+			wantMaxTurns:     20,
+			wantPrompt:       "Shared direction.\n",
+			wantKeys:         []string{"tracker.active_states"},
+		},
+		{
+			name:             "local prose follows shared prose",
+			local:            "---\nagent:\n  max_turns: 30\n---\nLocal direction.\n",
+			wantAssignee:     "shared",
+			wantInterval:     60000,
+			wantConditional:  true,
+			wantActiveStates: []string{"Todo", "In Progress"},
+			wantMaxTurns:     30,
+			wantPrompt:       "Shared direction.\n\n---\n\n## Machine-local workflow overlay\n\nLocal direction.\n",
+			wantKeys:         []string{"agent.max_turns"},
+		},
+		{
+			name:             "prose-only overlay leaves structured config intact",
+			local:            "---\n---\nLocal direction.\n",
+			wantAssignee:     "shared",
+			wantInterval:     60000,
+			wantConditional:  true,
+			wantActiveStates: []string{"Todo", "In Progress"},
+			wantMaxTurns:     20,
+			wantPrompt:       "Shared direction.\n\n---\n\n## Machine-local workflow overlay\n\nLocal direction.\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workflow, err := ParseWorkflowOverlay(shared, []byte(tt.local), "/repo/WORKFLOW.local.md")
+			if err != nil {
+				t.Fatalf("ParseWorkflowOverlay() error = %v", err)
+			}
+			if workflow.Config.Tracker.Kind != TrackerMemory {
+				t.Fatalf("Tracker.Kind = %q, want %q", workflow.Config.Tracker.Kind, TrackerMemory)
+			}
+			if workflow.Config.Tracker.Assignee != tt.wantAssignee {
+				t.Fatalf("Tracker.Assignee = %q, want %q", workflow.Config.Tracker.Assignee, tt.wantAssignee)
+			}
+			if workflow.Config.Polling.IntervalMS != tt.wantInterval {
+				t.Fatalf("Polling.IntervalMS = %d, want %d", workflow.Config.Polling.IntervalMS, tt.wantInterval)
+			}
+			if workflow.Config.Polling.Conditional != tt.wantConditional {
+				t.Fatalf("Polling.Conditional = %t, want %t", workflow.Config.Polling.Conditional, tt.wantConditional)
+			}
+			if !slices.Equal(workflow.Config.Tracker.ActiveStates, tt.wantActiveStates) {
+				t.Fatalf("Tracker.ActiveStates = %#v, want %#v", workflow.Config.Tracker.ActiveStates, tt.wantActiveStates)
+			}
+			if workflow.Config.Agent.MaxTurns != tt.wantMaxTurns {
+				t.Fatalf("Agent.MaxTurns = %d, want %d", workflow.Config.Agent.MaxTurns, tt.wantMaxTurns)
+			}
+			if workflow.Prompt != tt.wantPrompt {
+				t.Fatalf("Prompt = %q, want %q", workflow.Prompt, tt.wantPrompt)
+			}
+			if workflow.Overlay.Path != "/repo/WORKFLOW.local.md" {
+				t.Fatalf("Overlay.Path = %q, want local path", workflow.Overlay.Path)
+			}
+			if !slices.Equal(workflow.Overlay.OverriddenKeys, tt.wantKeys) {
+				t.Fatalf("Overlay.OverriddenKeys = %#v, want %#v", workflow.Overlay.OverriddenKeys, tt.wantKeys)
+			}
+		})
+	}
+}
+
+func TestLoadWorkflowWithoutOverlayPreservesExistingBehavior(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte("---\ntracker:\n  kind: memory\n---\nShared direction.\n")
+	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	workflow, err := LoadWorkflow(path)
+	if err != nil {
+		t.Fatalf("LoadWorkflow() error = %v", err)
+	}
+	sum := sha256.Sum256(raw)
+	if workflow.SourceHash != hex.EncodeToString(sum[:]) {
+		t.Fatalf("SourceHash = %q, want shared-only hash", workflow.SourceHash)
+	}
+	if workflow.Prompt != "Shared direction.\n" {
+		t.Fatalf("Prompt = %q, want shared prompt", workflow.Prompt)
+	}
+	if workflow.Overlay.Path != "" || len(workflow.Overlay.OverriddenKeys) != 0 {
+		t.Fatalf("Overlay = %#v, want inactive", workflow.Overlay)
+	}
+}
+
+func TestLocalWorkflowPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		path string
+		want string
+	}{
+		{path: "/repo/WORKFLOW.md", want: "/repo/WORKFLOW.local.md"},
+		{path: "/repo/workflow.md", want: "/repo/workflow.local.md"},
+		{path: "/repo/workflow", want: "/repo/workflow.local"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			t.Parallel()
+			if got := LocalWorkflowPath(tt.path); got != tt.want {
+				t.Fatalf("LocalWorkflowPath(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestShippedWorkflowTemplatesEnableBudgetCaps(t *testing.T) {
 	t.Parallel()

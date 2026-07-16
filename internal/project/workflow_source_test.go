@@ -79,6 +79,37 @@ func TestLoadWorkflowUsesConfiguredGitRef(t *testing.T) {
 	}
 }
 
+func TestLoadWorkflowUsesLocalOverlayWithConfiguredGitRef(t *testing.T) {
+	t.Parallel()
+
+	repo := initWorkflowSourceRepo(t)
+	workflowPath := filepath.Join(repo, "WORKFLOW.md")
+	writeWorkflowSourceFile(t, workflowPath, "from ref")
+	commitWorkflowSourceRepo(t, repo, "initial workflow")
+	updateWorkflowSourceRef(t, repo, "origin/main", "HEAD")
+	if err := os.WriteFile(filepath.Join(repo, "WORKFLOW.local.md"), []byte("---\npolling:\n  interval_ms: 90000\n---\nlocal direction\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	workflow, err := LoadWorkflow(globalconfig.Project{
+		Workflow:    "WORKFLOW.md",
+		WorkflowRef: "origin/main",
+		Workdir:     repo,
+	})
+	if err != nil {
+		t.Fatalf("LoadWorkflow() error = %v", err)
+	}
+	if workflow.Config.Polling.IntervalMS != 90000 {
+		t.Fatalf("Polling.IntervalMS = %d, want 90000", workflow.Config.Polling.IntervalMS)
+	}
+	if got := workflow.Prompt; !strings.Contains(got, "from ref") || !strings.Contains(got, "local direction") {
+		t.Fatalf("Prompt = %q, want shared and local direction", got)
+	}
+	if workflow.Overlay.Path != filepath.Join(repo, "WORKFLOW.local.md") {
+		t.Fatalf("Overlay.Path = %q, want working-tree overlay", workflow.Overlay.Path)
+	}
+}
+
 func TestLoadWorkflowUsesAbsolutePathUnderWorkdirWithConfiguredGitRef(t *testing.T) {
 	t.Parallel()
 
@@ -163,6 +194,54 @@ func TestGitRefWorkflowWatcherReloadsWhenRefAdvances(t *testing.T) {
 	}
 	if got := strings.TrimSpace(update.Workflow.Prompt); got != "second" {
 		t.Fatalf("Prompt = %q, want second", got)
+	}
+}
+
+func TestGitRefWorkflowWatcherReloadsLocalOverlayLifecycle(t *testing.T) {
+	t.Parallel()
+
+	repo := initWorkflowSourceRepo(t)
+	writeWorkflowSourceFile(t, filepath.Join(repo, "WORKFLOW.md"), "shared")
+	commitWorkflowSourceRepo(t, repo, "initial workflow")
+	updateWorkflowSourceRef(t, repo, "origin/main", "HEAD")
+
+	watcher, err := newGitRefWorkflowWatcher(globalconfig.Project{
+		Workflow:    "WORKFLOW.md",
+		WorkflowRef: "origin/main",
+		Workdir:     repo,
+	}, time.Hour, slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), nil)))
+	if err != nil {
+		t.Fatalf("newGitRefWorkflowWatcher() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	updates, err := watcher.Watch(ctx)
+	if err != nil {
+		t.Fatalf("Watch() error = %v", err)
+	}
+
+	localPath := filepath.Join(repo, "WORKFLOW.local.md")
+	writeWorkflowSourceFile(t, localPath, "local")
+	created := readWorkflowSourceUpdate(t, updates)
+	if created.Err != nil {
+		t.Fatalf("create update error = %v", created.Err)
+	}
+	if !strings.Contains(created.Workflow.Prompt, "shared") || !strings.Contains(created.Workflow.Prompt, "local") {
+		t.Fatalf("create Prompt = %q, want shared and local", created.Workflow.Prompt)
+	}
+
+	if err := os.Remove(localPath); err != nil {
+		t.Fatalf("Remove() error = %v", err)
+	}
+	deleted := readWorkflowSourceUpdate(t, updates)
+	if deleted.Err != nil {
+		t.Fatalf("delete update error = %v", deleted.Err)
+	}
+	if got := strings.TrimSpace(deleted.Workflow.Prompt); got != "shared" {
+		t.Fatalf("delete Prompt = %q, want shared", got)
+	}
+	if deleted.Workflow.Overlay.Path != "" {
+		t.Fatalf("delete Overlay = %#v, want inactive", deleted.Workflow.Overlay)
 	}
 }
 
