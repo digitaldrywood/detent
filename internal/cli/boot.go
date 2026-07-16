@@ -324,6 +324,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	} else if err := publishStartupSnapshotOnce(runCtx, cfg.Global, snapshotHub, runtimeStore, displayURL, time.Now(), updateScheduler); err != nil {
 		return err
 	}
+	chatProvider := buildChatProvider(manager.Registry(), logger)
 	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, snapshotSeq, runtimeStore, displayURL, defaultSnapshotInterval, time.Now, updateScheduler)
 	go republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger)
 	go persistBoardSnapshots(runCtx, snapshotHub, boardSnapshotStore, defaultBoardSnapshotInterval, logger)
@@ -355,6 +356,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		Recovery:   recoveryForRegistry(manager.Registry()),
 		RunStopper: registryRefresher{registry: manager.Registry()},
 		Activity:   activityBroker,
+		Chat:       chatProvider,
 	})
 	if err != nil {
 		return err

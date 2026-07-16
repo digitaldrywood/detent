@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -51,6 +52,7 @@ type Dependencies struct {
 	Activity        *activity.Broker
 	History         activity.HistoryReader
 	MagicLinkSender auth.Sender
+	Chat            chatpkg.Provider
 }
 
 type Mode string
@@ -149,6 +151,7 @@ type Server struct {
 	afterFunc           func(time.Duration, func()) *time.Timer
 	sessionAuth         sessionAuthenticator
 	magicLinks          *auth.Service
+	chat                *chatpkg.Service
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -244,6 +247,11 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	if magicLinksEnabled {
 		server.sessionAuth = magicLinks
 	}
+	chatProvider := deps.Chat
+	if server.demo != nil {
+		chatProvider = server.demoChatProvider()
+	}
+	server.chat = chatpkg.NewService(chatProvider, server, server)
 	e.HTTPErrorHandler = server.handleHTTPError
 	e.Use(server.privateDashboardAccess, server.uiAPICookie, server.sessionGate)
 	server.registerRoutes()
@@ -366,6 +374,11 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/board/session", s.apiBoardSession, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/board/session/events", s.apiBoardSessionEvents, apiDashboardSSEReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/board/session/history", s.apiBoardSessionHistory, apiDashboardReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/chat", s.apiChatPanel, apiDashboardReadAuth, apiReadScope)
+	s.echo.POST("/api/v1/chat/messages", s.apiChatMessage, apiDashboardMutateAuth, apiWriteScope)
+	s.echo.POST("/api/v1/chat/actions/:action_id/confirm", s.apiChatConfirm, apiDashboardMutateAuth, apiWriteScope)
+	s.echo.POST("/api/v1/chat/actions/:action_id/reject", s.apiChatReject, apiDashboardMutateAuth, apiWriteScope)
+	s.echo.POST("/api/v1/projects/:project_id/issues/:issue_id/priority", s.apiIssuePriority, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/kanban/move", s.apiKanbanMoveDialog, apiDashboardReadAuth, apiReadScope)
 	s.echo.POST("/api/v1/kanban/move", s.apiKanbanMove, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/kanban/remove", s.apiKanbanRemove, apiDashboardMutateAuth, apiProjectWriteScope)

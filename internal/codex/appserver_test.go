@@ -171,6 +171,106 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	}
 }
 
+func TestAppServerRunTurnExecutesDynamicToolRequest(t *testing.T) {
+	t.Parallel()
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.144.5"}`),
+		responseMessage(t, 2, `{"thread":{"id":"thread-chat"}}`),
+		responseMessage(t, 3, `{"turn":{"id":"turn-chat"}}`),
+		serverRequestMessage(t, 99, "item/tool/call", `{"threadId":"thread-chat","turnId":"turn-chat","callId":"call-1","tool":"board_state","arguments":{"state":"Blocked"}}`),
+		notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-chat","turnId":"turn-chat","itemId":"item-1","delta":"Two items are blocked."}`),
+		notificationMessage(t, "turn/completed", `{"threadId":"thread-chat","turn":{"id":"turn-chat","status":"completed"}}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	var call DynamicToolCall
+	_, err = server.RunTurn(context.Background(), RunTurnRequest{
+		Workspace:             "/tmp/detent-chat",
+		Prompt:                "What is blocked?",
+		Model:                 "gpt-test",
+		DeveloperInstructions: "Use Detent tools only.",
+		DynamicTools: []DynamicTool{{
+			Type:        "function",
+			Name:        "board_state",
+			Description: "Read the board.",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+		}},
+		ToolHandler: func(_ context.Context, candidate DynamicToolCall) (DynamicToolResult, error) {
+			call = candidate
+			return DynamicToolResult{Content: `{"blocked":2}`, Success: true}, nil
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if call.Name != "board_state" || string(call.Arguments) != `{"state":"Blocked"}` {
+		t.Fatalf("tool call = %#v", call)
+	}
+
+	sent := transport.sentMessages()
+	if len(sent) != 5 {
+		t.Fatalf("sent messages = %d, want 5", len(sent))
+	}
+	assertJSONContains(t, sent[2].Params, "developerInstructions", "Use Detent tools only.")
+	assertJSONContains(t, sent[2].Params, "dynamicTools.0.name", "board_state")
+	assertResponseResultContains(t, sent[4], 99, "success", true)
+	assertResponseResultContains(t, sent[4], 99, "contentItems.0.text", `{"blocked":2}`)
+}
+
+func TestAppServerRunTurnRepliesToMalformedDynamicToolRequest(t *testing.T) {
+	t.Parallel()
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.144.5"}`),
+		responseMessage(t, 2, `{"thread":{"id":"thread-chat"}}`),
+		responseMessage(t, 3, `{"turn":{"id":"turn-chat"}}`),
+		serverRequestMessage(t, 99, "item/tool/call", `{"threadId":"thread-chat","turnId":"turn-chat","callId":"call-1","tool":42,"arguments":{}}`),
+		notificationMessage(t, "turn/completed", `{"threadId":"thread-chat","turn":{"id":"turn-chat","status":"completed"}}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	_, err = server.RunTurn(context.Background(), RunTurnRequest{
+		Workspace: "/tmp/detent-chat",
+		Prompt:    "What is blocked?",
+		Model:     "gpt-test",
+		DynamicTools: []DynamicTool{{
+			Type:        "function",
+			Name:        "board_state",
+			Description: "Read the board.",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+		}},
+		ToolHandler: func(context.Context, DynamicToolCall) (DynamicToolResult, error) {
+			t.Fatal("ToolHandler() called for malformed request")
+			return DynamicToolResult{}, nil
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+
+	sent := transport.sentMessages()
+	if len(sent) != 5 {
+		t.Fatalf("sent messages = %d, want 5", len(sent))
+	}
+	assertResponseResultContains(t, sent[4], 99, "success", false)
+	var response struct {
+		ContentItems []struct {
+			Text string `json:"text"`
+		} `json:"contentItems"`
+	}
+	if err := json.Unmarshal(sent[4].Result, &response); err != nil {
+		t.Fatalf("unmarshal malformed tool response: %v", err)
+	}
+	if len(response.ContentItems) != 1 || !strings.Contains(response.ContentItems[0].Text, "decode dynamic tool call") {
+		t.Fatalf("malformed tool response = %#v", response)
+	}
+}
+
 func TestAppServerListModelsPaginatesCatalog(t *testing.T) {
 	t.Parallel()
 
@@ -256,10 +356,11 @@ func TestAppServerRunTurnResumesThreadBeforeStartingTurn(t *testing.T) {
 
 	var updates []Update
 	result, err := server.RunTurn(context.Background(), RunTurnRequest{
-		Workspace:      "/tmp/detent-workspace",
-		Prompt:         "Continue issue #18",
-		ResumeThreadID: "thread-existing",
-		Model:          "gpt-5-codex",
+		Workspace:             "/tmp/detent-workspace",
+		Prompt:                "Continue issue #18",
+		ResumeThreadID:        "thread-existing",
+		DeveloperInstructions: "Use only Detent tools.",
+		Model:                 "gpt-5-codex",
 	}, func(update Update) error {
 		updates = append(updates, update)
 		return nil
@@ -282,6 +383,7 @@ func TestAppServerRunTurnResumesThreadBeforeStartingTurn(t *testing.T) {
 	assertRequest(t, sent[2], 4, "thread/resume")
 	assertJSONContains(t, sent[2].Params, "threadId", "thread-existing")
 	assertJSONContains(t, sent[2].Params, "cwd", "/tmp/detent-workspace")
+	assertJSONContains(t, sent[2].Params, "developerInstructions", "Use only Detent tools.")
 	assertJSONContains(t, sent[2].Params, "model", "gpt-5-codex")
 	assertRequest(t, sent[3], 3, "turn/start")
 	assertJSONContains(t, sent[3].Params, "threadId", "thread-existing")
