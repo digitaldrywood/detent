@@ -1129,11 +1129,13 @@ implementation and rework workers to run the host-coordinated
 wait for current-head checks, passing the configured GitHub tracker host for
 Enterprise installations. Generated commands encode label and host arguments
 without shell-specific quoting. Detent records successful worker pushes and
-reapplies the label at completion when the worker did not. Merging workers also
-reapply it immediately after deterministic head-changing pushes and whenever
-current-head hydration reports required checks as missing, including after a
-rebase or another merge advances the base. Trigger events use a shared lock and
-persisted timestamp per repository and are spaced by
+reapplies the configured label at completion when the worker did not leave it
+as the final CI trigger after the latest push. This preserves label ordering
+when a project uses additional CI lane labels. Merging workers also reapply it
+immediately after deterministic head-changing pushes and whenever current-head
+hydration reports required checks as missing, including after a rebase or
+another merge advances the base. Trigger events use a shared lock and persisted
+timestamp per repository and are spaced by
 `ci_trigger_label_stagger_seconds` (a positive value, default `15`) to avoid a
 self-hosted CI stampede. `detent doctor` warns when it finds a label-gated
 required check without this setting.

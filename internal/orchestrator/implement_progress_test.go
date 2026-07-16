@@ -666,6 +666,88 @@ func TestHandleRunResultReappliesCITriggerAfterWorkerPush(t *testing.T) {
 	}
 }
 
+func TestHandleRunResultRefreshesNewPullRequestBeforeCITrigger(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
+	staggerSeconds := 15
+	runningIssue := implementProgressIssue("")
+	runningIssue.PullRequest = nil
+	refreshedIssue := implementProgressIssue("new-head")
+	relabelStarted := make(chan autoPromoteTickRelabel, 1)
+	relabelRelease := make(chan struct{}, 1)
+	t.Cleanup(func() {
+		select {
+		case relabelRelease <- struct{}{}:
+		default:
+		}
+	})
+	tracker := &implementProgressConnector{
+		refreshed:      refreshedIssue,
+		hydrated:       refreshedIssue,
+		relabelStarted: relabelStarted,
+		relabelRelease: relabelRelease,
+	}
+	attempts := &implementProgressAttemptStore{}
+	cfg := normalizeConfig(Config{
+		Project: scheduler.ProjectCandidate{ID: "detent"},
+		AutoPromote: AutoPromoteConfig{
+			NoProgressLimit: 3,
+			Gate: gate.Config{
+				Kind:                         gate.KindCommand,
+				RequiredStatusChecks:         []string{"Test", "Checks"},
+				CITriggerLabel:               "ci:ready",
+				CITriggerLabelStaggerSeconds: &staggerSeconds,
+			},
+		},
+		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:         []string{"Human Review", "Blocked"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		ContinuationRetryDelay: time.Minute,
+	})
+	orch := &Orchestrator{
+		cfg:          cfg,
+		connector:    tracker,
+		workAttempts: attempts,
+		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.Running[runningIssue.ID] = Running{
+		Issue:         runningIssue,
+		Attempt:       1,
+		WorkAttemptID: 42,
+		Mode:          runpkg.RunModeImplement,
+		StartedAt:     now.Add(-time.Minute),
+		DiffStats:     DiffStats{Status: "clean"},
+	}
+	state.Claimed[runningIssue.ID] = Claimed{Issue: runningIssue, ClaimedAt: now.Add(-time.Minute)}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     runningIssue.ID,
+		CompletedAt: now,
+		Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
+		Result: runpkg.RunResult{
+			FinalState:            runpkg.FinalStateCompleted,
+			DiffStats:             runpkg.DiffStats{Status: "clean"},
+			PullRequestUpdated:    true,
+			PullRequestHeadPushed: true,
+		},
+	})
+
+	select {
+	case got := <-relabelStarted:
+		want := autoPromoteTickRelabel{repository: "digitaldrywood/detent", number: 1070, label: "ci:ready", stagger: 15 * time.Second}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("relabel = %#v, want %#v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for new-PR trigger-label reapplication")
+	}
+	if tracker.hydrations != 1 {
+		t.Fatalf("hydrations = %d, want 1", tracker.hydrations)
+	}
+}
+
 func TestStickyBlockReasonIncludesCircuitBreakers(t *testing.T) {
 	t.Parallel()
 

@@ -313,10 +313,18 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	dispatchedIssue := cloneIssue(running.Issue)
 	progress := o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
 	running.Issue = progress.Issue
-	o.commentWorkerLaneTransition(ctx, dispatchedIssue, running.Issue)
 	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
+		if pullRequestRepository(running.Issue) == "" || pullRequestNumber(running.Issue) <= 0 || running.Issue.PullRequest == nil || strings.TrimSpace(running.Issue.PullRequest.HeadSHA) == "" {
+			refreshed, warning := o.refreshSpendProgressIssue(ctx, running.Issue)
+			running.Issue = refreshed
+			progress.Issue = refreshed
+			if warning != "" && o.logger != nil {
+				o.logger.Warn("worker push pull request refresh failed", "issue_id", running.Issue.ID, "identifier", running.Issue.Identifier, "warning", warning)
+			}
+		}
 		o.scheduleCITriggerLabel(ctx, running.Issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true)
 	}
+	o.commentWorkerLaneTransition(ctx, dispatchedIssue, running.Issue)
 	accepted, acceptedReason := implementAcceptedStateChange(running, progress)
 	spendProgress := o.evaluateSpendProgress(ctx, running, event.CompletedAt, accepted, acceptedReason)
 	if progress.Warning != "" && strings.HasPrefix(progress.Reason, "pull_request_hydrat") {
