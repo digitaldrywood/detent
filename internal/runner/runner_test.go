@@ -364,6 +364,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 		wantPullRequestUpdated      bool
 		wantPullRequestHeadPushed   bool
 		wantCITriggerLabelReapplied bool
+		ciTriggerRepository         string
 	}{
 		{
 			name: "push rejected by GitHub rate limit",
@@ -416,6 +417,28 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			wantCITriggerLabelReapplied: true,
 		},
 		{
+			name: "CI trigger label for another pull request is not accepted",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
+				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 9999 --label ci:ready"},
+				{Type: AgentUpdateToolCompleted, ItemID: "relabel", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantPullRequestHeadPushed: true,
+		},
+		{
+			name: "CI trigger label for another repository is not accepted",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
+				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/another --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolCompleted, ItemID: "relabel", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantPullRequestHeadPushed: true,
+		},
+		{
 			name: "combined push and CI trigger label records both deliveries",
 			updates: []AgentUpdate{
 				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
@@ -434,6 +457,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			},
 			wantPullRequestHeadPushed:   true,
 			wantCITriggerLabelReapplied: true,
+			ciTriggerRepository:         "acme/push-service",
 		},
 		{
 			name: "push after label in combined command requires fresh reapplication",
@@ -510,6 +534,11 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			ciTriggerRepository := tt.ciTriggerRepository
+			if ciTriggerRepository == "" {
+				ciTriggerRepository = "digitaldrywood/detent"
+			}
+			prNumber := 1212
 
 			r := &Runner{
 				now:    time.Now,
@@ -519,7 +548,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 				context.Background(),
 				&toolUpdateAgentBackend{updates: tt.updates},
 				AgentTurnRequest{},
-				RunRequest{Issue: connector.Issue{ID: "issue-1211", Identifier: "digitaldrywood/detent#1211"}},
+				RunRequest{Issue: connector.Issue{ID: "issue-1211", Identifier: "digitaldrywood/detent#1211", PRNumber: &prNumber, PRRepository: ciTriggerRepository}},
 				workspace.Info{},
 				workspace.Issue{},
 				config.Agent{},

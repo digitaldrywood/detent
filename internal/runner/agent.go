@@ -641,7 +641,12 @@ func (r *Runner) runAgentTurn(
 		FinalState:      FinalStateCompleted,
 		RuntimeIdentity: initialIdentity.Normalize(),
 	}
-	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: agentConfig.OutputTruncation.MaxBytes}, ciTriggerLabel)
+	progress := newAgentRunProgress(
+		runtimeoutput.Policy{MaxBytes: agentConfig.OutputTruncation.MaxBytes},
+		ciTriggerLabel,
+		strings.TrimSpace(runRequest.Issue.PRRepository),
+		ciTriggerPullRequestNumber(runRequest.Issue),
+	)
 	if !result.RuntimeIdentity.IsZero() {
 		eventAt := r.now()
 		progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: result.RuntimeIdentity}, eventAt)
@@ -1279,7 +1284,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	checkStartedAttrs = append(checkStartedAttrs, runtimeIdentityLogAttrs(runtimeIdentity)...)
 	r.logWorkerEvent(req.Issue, "worker_check_started", checkStartedAttrs...)
 	runResult := RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}
-	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: workflow.Config.Agent.OutputTruncation.MaxBytes}, "")
+	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: workflow.Config.Agent.OutputTruncation.MaxBytes}, "", "", 0)
 	eventAt := r.now()
 	progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: runtimeIdentity}, eventAt)
 	if err := r.publishRunUpdate(ctx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID); err != nil {
@@ -2054,12 +2059,14 @@ type agentRunProgress struct {
 	deliverableFailures   map[string]error
 	deliverableSuccesses  map[string]bool
 	ciTriggerLabel        string
+	ciTriggerRepository   string
+	ciTriggerPRNumber     int
 	successfulPushes      int
 	ciTriggerPushSequence int
 	ciTriggerLabelValid   bool
 }
 
-func newAgentRunProgress(outputPolicy runtimeoutput.Policy, ciTriggerLabel string) *agentRunProgress {
+func newAgentRunProgress(outputPolicy runtimeoutput.Policy, ciTriggerLabel string, ciTriggerRepository string, ciTriggerPRNumber int) *agentRunProgress {
 	return &agentRunProgress{
 		turnIDs:              map[string]struct{}{},
 		messages:             map[string]*runtimeoutput.Buffer{},
@@ -2069,6 +2076,8 @@ func newAgentRunProgress(outputPolicy runtimeoutput.Policy, ciTriggerLabel strin
 		deliverableFailures:  map[string]error{},
 		deliverableSuccesses: map[string]bool{},
 		ciTriggerLabel:       strings.TrimSpace(ciTriggerLabel),
+		ciTriggerRepository:  strings.TrimSpace(ciTriggerRepository),
+		ciTriggerPRNumber:    ciTriggerPRNumber,
 	}
 }
 
@@ -2159,7 +2168,7 @@ type deliverableToolInvocation struct {
 }
 
 func (p *agentRunProgress) recordDeliverableToolStart(update AgentUpdate) {
-	invocation := newDeliverableToolInvocation(update.Tool, update.Delta, p.ciTriggerLabel)
+	invocation := newDeliverableToolInvocation(update.Tool, update.Delta, p.ciTriggerLabel, p.ciTriggerRepository, p.ciTriggerPRNumber)
 	if invocation.class == "" {
 		return
 	}
@@ -2170,7 +2179,7 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 	key := deliverableToolKey(update)
 	invocation, ok := p.toolInvocations[key]
 	if !ok {
-		invocation = newDeliverableToolInvocation(update.Tool, update.Delta, p.ciTriggerLabel)
+		invocation = newDeliverableToolInvocation(update.Tool, update.Delta, p.ciTriggerLabel, p.ciTriggerRepository, p.ciTriggerPRNumber)
 	}
 	if invocation.class == "" {
 		return
@@ -2291,63 +2300,86 @@ func deliverableOperationClass(tool string, command string) string {
 	return ""
 }
 
-func newDeliverableToolInvocation(tool string, command string, ciTriggerLabel string) deliverableToolInvocation {
+func newDeliverableToolInvocation(tool string, command string, ciTriggerLabel string, ciTriggerRepository string, ciTriggerPRNumber int) deliverableToolInvocation {
 	command = strings.TrimSpace(command)
 	return deliverableToolInvocation{
 		class:                 deliverableOperationClass(tool, command),
 		command:               command,
 		tool:                  strings.TrimSpace(tool),
-		ciTriggerLabelMatches: ciTriggerLabelCommandMatches(command, ciTriggerLabel),
+		ciTriggerLabelMatches: ciTriggerLabelCommandMatches(command, ciTriggerLabel, ciTriggerRepository, ciTriggerPRNumber),
 		ciTriggerAfterPush:    ciTriggerLabelRunsAfterPush(command),
 	}
 }
 
 func ciTriggerLabelCommand(command string) bool {
-	return strings.Contains(command, "detent ci-trigger-label")
+	_, ok := ciTriggerLabelCommandFields(command)
+	return ok
 }
 
-func ciTriggerLabelCommandMatches(command string, label string) bool {
+func ciTriggerLabelCommandMatches(command string, label string, repository string, pullRequestNumber int) bool {
 	label = strings.TrimSpace(label)
-	lowerCommand := strings.ToLower(command)
-	marker := "detent ci-trigger-label"
-	index := strings.LastIndex(lowerCommand, marker)
-	if label == "" || index < 0 {
+	repository = strings.TrimSpace(repository)
+	fields, ok := ciTriggerLabelCommandFields(command)
+	if label == "" || repository == "" || pullRequestNumber <= 0 || !ok {
 		return false
 	}
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(label))
-	fields := strings.Fields(command[index+len(marker):])
-	for fieldIndex, field := range fields {
-		field = strings.Trim(field, "'\";()")
-		switch {
-		case strings.EqualFold(field, "--label") && fieldIndex+1 < len(fields):
-			return strings.EqualFold(strings.Trim(fields[fieldIndex+1], "'\";()"), label)
-		case strings.EqualFold(field, "--label-base64") && fieldIndex+1 < len(fields):
-			return strings.Trim(fields[fieldIndex+1], "'\";()") == encoded
-		case strings.HasPrefix(strings.ToLower(field), "--label="):
-			return strings.EqualFold(strings.Trim(strings.TrimPrefix(field, "--label="), "'\";()"), label)
-		case strings.HasPrefix(strings.ToLower(field), "--label-base64="):
-			return strings.Trim(strings.TrimPrefix(field, "--label-base64="), "'\";()") == encoded
-		}
+	labelValue, labelPresent := commandFlagValue(fields, "--label")
+	encodedLabelValue, encodedLabelPresent := commandFlagValue(fields, "--label-base64")
+	repositoryValue, repositoryPresent := commandFlagValue(fields, "--repository")
+	pullRequestValue, pullRequestPresent := commandFlagValue(fields, "--pull-request")
+	labelMatches := labelPresent && strings.EqualFold(labelValue, label)
+	if encodedLabelPresent {
+		labelMatches = encodedLabelValue == encoded
 	}
-	return false
+	return labelMatches &&
+		repositoryPresent && strings.EqualFold(repositoryValue, repository) &&
+		pullRequestPresent && pullRequestValue == strconv.Itoa(pullRequestNumber)
 }
 
 func ciTriggerLabelRunsAfterPush(command string) bool {
-	fields := strings.Fields(strings.ToLower(command))
-	ciTriggerIndex := -1
-	for index := 1; index < len(fields); index++ {
-		executable := strings.Trim(fields[index-1], "'\";()")
-		subcommand := strings.Trim(fields[index], "'\";()")
-		if (executable == "detent" || strings.HasSuffix(executable, "/detent")) && subcommand == "ci-trigger-label" {
-			ciTriggerIndex = index - 1
-		}
-	}
+	fields := strings.Fields(command)
+	ciTriggerIndex := ciTriggerLabelCommandIndex(fields)
 	pushIndexes := gitPushCommandIndexes(command)
 	if ciTriggerIndex < 0 || len(pushIndexes) == 0 {
 		return false
 	}
 	pushIndex := pushIndexes[len(pushIndexes)-1]
 	return pushIndex >= 0 && pushIndex < ciTriggerIndex
+}
+
+func ciTriggerLabelCommandFields(command string) ([]string, bool) {
+	fields := strings.Fields(command)
+	index := ciTriggerLabelCommandIndex(fields)
+	if index < 0 {
+		return nil, false
+	}
+	return fields[index+2:], true
+}
+
+func ciTriggerLabelCommandIndex(fields []string) int {
+	index := -1
+	for fieldIndex := 1; fieldIndex < len(fields); fieldIndex++ {
+		executable := strings.ToLower(strings.Trim(fields[fieldIndex-1], "'\";()"))
+		subcommand := strings.ToLower(strings.Trim(fields[fieldIndex], "'\";()"))
+		if (executable == "detent" || strings.HasSuffix(executable, "/detent")) && subcommand == "ci-trigger-label" {
+			index = fieldIndex - 1
+		}
+	}
+	return index
+}
+
+func commandFlagValue(fields []string, flag string) (string, bool) {
+	for index, field := range fields {
+		field = strings.Trim(field, "'\";()")
+		switch {
+		case strings.EqualFold(field, flag) && index+1 < len(fields):
+			return strings.Trim(fields[index+1], "'\";()"), true
+		case strings.HasPrefix(strings.ToLower(field), strings.ToLower(flag)+"="):
+			return strings.Trim(field[len(flag)+1:], "'\";()"), true
+		}
+	}
+	return "", false
 }
 
 func gitPushChanged(update AgentUpdate, command string) bool {
@@ -2653,6 +2685,16 @@ func pullRequestNumber(issue connector.Issue) *int64 {
 		return nil
 	}
 	return &number
+}
+
+func ciTriggerPullRequestNumber(issue connector.Issue) int {
+	if number := pullRequestNumber(issue); number != nil {
+		return int(*number)
+	}
+	if issue.PullRequest != nil {
+		return issue.PullRequest.Number
+	}
+	return 0
 }
 
 func diffStatsFromWorkspace(stat workspace.DiffStat) DiffStats {
