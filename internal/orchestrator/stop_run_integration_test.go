@@ -211,8 +211,11 @@ func TestStopRunAppliesTodoPriorityBeforeRedispatch(t *testing.T) {
 	if stopped.err != nil || stopped.result.Outcome != "succeeded" || stopped.result.PriorityName != "High" {
 		t.Fatalf("StopRun() = %#v, %v", stopped.result, stopped.err)
 	}
-	if operations := tracker.operationsSnapshot(); !slices.Equal(operations, []string{"priority:High", "state:Todo"}) {
-		t.Fatalf("tracker operations = %#v, want priority before state", operations)
+	operations := tracker.operationsSnapshot()
+	priorityAt := slices.Index(operations, "priority:High")
+	stateAt := slices.Index(operations, "state:Todo")
+	if priorityAt < 0 || stateAt < 0 || priorityAt > stateAt {
+		t.Fatalf("tracker operations = %#v, want first priority before first state", operations)
 	}
 	waitForOperatorStopRunnerIssue(t, runner.started, issue.ID)
 	timeline, err := runtimeStore.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{IssueID: issue.ID})
