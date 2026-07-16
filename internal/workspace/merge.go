@@ -77,6 +77,14 @@ func (l *LocalGit) PrepareMerge(
 			abortRebaseIfInProgress(ctx, normalized.Path),
 		)
 	}
+	localHead, err := runGitAt(ctx, normalized.Path, "rev-parse", "HEAD")
+	if err != nil {
+		return MergePrepareResult{}, errors.Join(
+			fmt.Errorf("inspect local branch head: %w", err),
+			abortRebaseIfInProgress(ctx, normalized.Path),
+		)
+	}
+	headChanged := !remoteBranchExists || !strings.EqualFold(strings.TrimSpace(localHead), strings.TrimSpace(remoteHead))
 	pushArgs := []string{"push"}
 	if remoteBranchExists {
 		pushArgs = append(pushArgs, "--force-with-lease=refs/heads/"+branch+":"+remoteHead)
@@ -88,7 +96,7 @@ func (l *LocalGit) PrepareMerge(
 			abortRebaseIfInProgress(ctx, normalized.Path),
 		)
 	}
-	return MergePrepareResult{Status: MergePrepareStatusClean, DiffStat: diffStat}, nil
+	return MergePrepareResult{Status: MergePrepareStatusClean, DiffStat: diffStat, HeadChanged: headChanged}, nil
 }
 
 func remoteDefaultBranch(ctx context.Context, workspacePath string, remote string) (string, error) {

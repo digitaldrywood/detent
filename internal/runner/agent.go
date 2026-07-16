@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -546,9 +547,10 @@ func (r *Runner) prepareMergeFastPath(
 			"workspace_branch", info.Branch,
 		)
 		return RunResult{
-			FinalState: FinalStateCompleted,
-			Output:     RunOutputMergeFastPathClean,
-			DiffStats:  diffStatsFromWorkspace(precheck.DiffStat),
+			FinalState:            FinalStateCompleted,
+			Output:                RunOutputMergeFastPathClean,
+			DiffStats:             diffStatsFromWorkspace(precheck.DiffStat),
+			PullRequestHeadPushed: precheck.HeadChanged,
 		}, precheck, true, nil
 	case workspace.MergePrepareStatusConflict, workspace.MergePrepareStatusDirty:
 		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_fallback",
@@ -630,6 +632,7 @@ func (r *Runner) runAgentTurn(
 	info workspace.Info,
 	workspaceIssue workspace.Issue,
 	agentConfig config.Agent,
+	ciTriggerLabel string,
 	runStartedAt time.Time,
 	detentSessionID int64,
 	initialIdentity agentidentity.Identity,
@@ -638,7 +641,12 @@ func (r *Runner) runAgentTurn(
 		FinalState:      FinalStateCompleted,
 		RuntimeIdentity: initialIdentity.Normalize(),
 	}
-	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: agentConfig.OutputTruncation.MaxBytes})
+	progress := newAgentRunProgress(
+		runtimeoutput.Policy{MaxBytes: agentConfig.OutputTruncation.MaxBytes},
+		ciTriggerLabel,
+		strings.TrimSpace(runRequest.Issue.PRRepository),
+		ciTriggerPullRequestNumber(runRequest.Issue),
+	)
 	if !result.RuntimeIdentity.IsZero() {
 		eventAt := r.now()
 		progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: result.RuntimeIdentity}, eventAt)
@@ -690,6 +698,8 @@ func (r *Runner) runAgentTurn(
 	result.Output = progress.outputText()
 	result.SkillDraftProposed = skillDraftProposed(result.Output)
 	result.PullRequestUpdated = progress.pullRequestUpdated()
+	result.PullRequestHeadPushed = progress.pullRequestHeadPushed()
+	result.CITriggerLabelReapplied = progress.ciTriggerLabelReapplied()
 	if turnErr == nil {
 		if deliverableErr := progress.deliverableError(); deliverableErr != nil {
 			turnErr = deliverableErr
@@ -998,7 +1008,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		Resume:             agentResumeFromState(resumeState),
 		ExtraWritableRoots: extraWritableRootsForWorkspace(ctx, info.Path, r.logger),
 	}
-	execution := r.runAgentTurn(ctx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, runStartedAt, sessionID, runtimeIdentity)
+	execution := r.runAgentTurn(ctx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity)
 	if execution.err != nil {
 		execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 	}
@@ -1022,7 +1032,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			r.logger.Warn("clear agent session resume state failed", "detent_session_id", sessionID, "issue_id", req.Issue.ID, "error", updateErr)
 		}
 		resumeState = store.AgentResumeState{}
-		execution = r.runAgentTurn(ctx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, runStartedAt, sessionID, runtimeIdentity)
+		execution = r.runAgentTurn(ctx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity)
 		if execution.err != nil {
 			execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 		}
@@ -1274,7 +1284,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	checkStartedAttrs = append(checkStartedAttrs, runtimeIdentityLogAttrs(runtimeIdentity)...)
 	r.logWorkerEvent(req.Issue, "worker_check_started", checkStartedAttrs...)
 	runResult := RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}
-	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: workflow.Config.Agent.OutputTruncation.MaxBytes})
+	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: workflow.Config.Agent.OutputTruncation.MaxBytes}, "", "", 0)
 	eventAt := r.now()
 	progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: runtimeIdentity}, eventAt)
 	if err := r.publishRunUpdate(ctx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID); err != nil {
@@ -2048,9 +2058,15 @@ type agentRunProgress struct {
 	toolInvocations       map[string]deliverableToolInvocation
 	deliverableFailures   map[string]error
 	deliverableSuccesses  map[string]bool
+	ciTriggerLabel        string
+	ciTriggerRepository   string
+	ciTriggerPRNumber     int
+	successfulPushes      int
+	ciTriggerPushSequence int
+	ciTriggerLabelValid   bool
 }
 
-func newAgentRunProgress(outputPolicy runtimeoutput.Policy) *agentRunProgress {
+func newAgentRunProgress(outputPolicy runtimeoutput.Policy, ciTriggerLabel string, ciTriggerRepository string, ciTriggerPRNumber int) *agentRunProgress {
 	return &agentRunProgress{
 		turnIDs:              map[string]struct{}{},
 		messages:             map[string]*runtimeoutput.Buffer{},
@@ -2059,6 +2075,9 @@ func newAgentRunProgress(outputPolicy runtimeoutput.Policy) *agentRunProgress {
 		toolInvocations:      map[string]deliverableToolInvocation{},
 		deliverableFailures:  map[string]error{},
 		deliverableSuccesses: map[string]bool{},
+		ciTriggerLabel:       strings.TrimSpace(ciTriggerLabel),
+		ciTriggerRepository:  strings.TrimSpace(ciTriggerRepository),
+		ciTriggerPRNumber:    ciTriggerPRNumber,
 	}
 }
 
@@ -2141,46 +2160,75 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 }
 
 type deliverableToolInvocation struct {
-	class   string
-	command string
-	tool    string
+	class                 string
+	command               string
+	tool                  string
+	ciTriggerLabelMatches bool
+	ciTriggerAfterPush    bool
 }
 
 func (p *agentRunProgress) recordDeliverableToolStart(update AgentUpdate) {
-	class := deliverableOperationClass(update.Tool, update.Delta)
-	if class == "" {
+	invocation := newDeliverableToolInvocation(update.Tool, update.Delta, p.ciTriggerLabel, p.ciTriggerRepository, p.ciTriggerPRNumber)
+	if invocation.class == "" {
 		return
 	}
-	p.toolInvocations[deliverableToolKey(update)] = deliverableToolInvocation{
-		class:   class,
-		command: strings.TrimSpace(update.Delta),
-		tool:    strings.TrimSpace(update.Tool),
-	}
+	p.toolInvocations[deliverableToolKey(update)] = invocation
 }
 
 func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 	key := deliverableToolKey(update)
 	invocation, ok := p.toolInvocations[key]
 	if !ok {
-		invocation = deliverableToolInvocation{
-			class:   deliverableOperationClass(update.Tool, update.Delta),
-			command: strings.TrimSpace(update.Delta),
-			tool:    strings.TrimSpace(update.Tool),
-		}
+		invocation = newDeliverableToolInvocation(update.Tool, update.Delta, p.ciTriggerLabel, p.ciTriggerRepository, p.ciTriggerPRNumber)
 	}
 	if invocation.class == "" {
 		return
 	}
 	delete(p.toolInvocations, key)
 	if deliverableToolStatusSucceeded(update.Status) {
-		delete(p.deliverableFailures, invocation.class)
-		p.deliverableSuccesses[invocation.class] = true
+		switch invocation.class {
+		case "push":
+			delete(p.deliverableFailures, "push")
+			p.deliverableSuccesses["push"] = true
+			if gitPushChanged(update, invocation.command) {
+				p.successfulPushes++
+				p.ciTriggerLabelValid = false
+			}
+		case "ci_trigger_label":
+			delete(p.deliverableFailures, "ci_trigger_label")
+			p.deliverableSuccesses["ci_trigger_label"] = true
+			p.ciTriggerPushSequence = p.successfulPushes
+			p.ciTriggerLabelValid = invocation.ciTriggerLabelMatches
+		case "push_ci_trigger_label":
+			delete(p.deliverableFailures, "push")
+			delete(p.deliverableFailures, "ci_trigger_label")
+			p.deliverableSuccesses["push"] = true
+			p.deliverableSuccesses["ci_trigger_label"] = true
+			if gitPushChanged(update, invocation.command) {
+				p.successfulPushes++
+			}
+			p.ciTriggerPushSequence = p.successfulPushes
+			p.ciTriggerLabelValid = invocation.ciTriggerLabelMatches && invocation.ciTriggerAfterPush
+		case "pull_request":
+			delete(p.deliverableFailures, "pull_request")
+			p.deliverableSuccesses["pull_request"] = true
+		}
 		return
 	}
 	if !deliverableToolStatusFailed(update.Status) {
 		return
 	}
-	delete(p.deliverableSuccesses, invocation.class)
+	failureClass := invocation.class
+	if invocation.class == "push_ci_trigger_label" {
+		failureClass = "push"
+		if combinedPushMayHaveChanged(update, invocation.command) {
+			p.successfulPushes++
+		}
+	}
+	delete(p.deliverableSuccesses, failureClass)
+	if invocation.class == "ci_trigger_label" || invocation.class == "push_ci_trigger_label" {
+		p.ciTriggerLabelValid = false
+	}
 	detail := strings.TrimSpace(update.Delta)
 	if detail == "" {
 		detail = strings.TrimSpace(update.BackendErrorMessage)
@@ -2198,11 +2246,19 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 	if operation == "" {
 		operation = invocation.tool
 	}
-	p.deliverableFailures[invocation.class] = fmt.Errorf("deliverable command failed (%s): %s", strings.TrimSpace(operation), detail)
+	p.deliverableFailures[failureClass] = fmt.Errorf("deliverable command failed (%s): %s", strings.TrimSpace(operation), detail)
 }
 
 func (p *agentRunProgress) pullRequestUpdated() bool {
 	return p.deliverableSuccesses["pull_request"]
+}
+
+func (p *agentRunProgress) pullRequestHeadPushed() bool {
+	return p.successfulPushes > 0
+}
+
+func (p *agentRunProgress) ciTriggerLabelReapplied() bool {
+	return p.successfulPushes > 0 && p.ciTriggerLabelValid && p.ciTriggerPushSequence == p.successfulPushes
 }
 
 func (p *agentRunProgress) deliverableError() error {
@@ -2225,7 +2281,15 @@ func deliverableToolKey(update AgentUpdate) string {
 func deliverableOperationClass(tool string, command string) string {
 	lowerTool := strings.ToLower(strings.TrimSpace(tool))
 	lowerCommand := strings.ToLower(strings.TrimSpace(command))
-	if gitPushCommand(lowerCommand) {
+	push := gitPushCommand(lowerCommand)
+	ciTrigger := ciTriggerLabelCommand(lowerCommand)
+	if push && ciTrigger {
+		return "push_ci_trigger_label"
+	}
+	if ciTrigger {
+		return "ci_trigger_label"
+	}
+	if push {
 		return "push"
 	}
 	if pullRequestCommand(lowerCommand) ||
@@ -2236,24 +2300,148 @@ func deliverableOperationClass(tool string, command string) string {
 	return ""
 }
 
-func gitPushCommand(command string) bool {
+func newDeliverableToolInvocation(tool string, command string, ciTriggerLabel string, ciTriggerRepository string, ciTriggerPRNumber int) deliverableToolInvocation {
+	command = strings.TrimSpace(command)
+	return deliverableToolInvocation{
+		class:                 deliverableOperationClass(tool, command),
+		command:               command,
+		tool:                  strings.TrimSpace(tool),
+		ciTriggerLabelMatches: ciTriggerLabelCommandMatches(command, ciTriggerLabel, ciTriggerRepository, ciTriggerPRNumber),
+		ciTriggerAfterPush:    ciTriggerLabelRunsAfterPush(command),
+	}
+}
+
+func ciTriggerLabelCommand(command string) bool {
+	_, ok := ciTriggerLabelCommandFields(command)
+	return ok
+}
+
+func ciTriggerLabelCommandMatches(command string, label string, repository string, pullRequestNumber int) bool {
+	label = strings.TrimSpace(label)
+	repository = strings.TrimSpace(repository)
+	fields, ok := ciTriggerLabelCommandFields(command)
+	if label == "" || repository == "" || pullRequestNumber <= 0 || !ok {
+		return false
+	}
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(label))
+	labelValue, labelPresent := commandFlagValue(fields, "--label")
+	encodedLabelValue, encodedLabelPresent := commandFlagValue(fields, "--label-base64")
+	repositoryValue, repositoryPresent := commandFlagValue(fields, "--repository")
+	pullRequestValue, pullRequestPresent := commandFlagValue(fields, "--pull-request")
+	labelMatches := labelPresent && strings.EqualFold(labelValue, label)
+	if encodedLabelPresent {
+		labelMatches = encodedLabelValue == encoded
+	}
+	return labelMatches &&
+		repositoryPresent && strings.EqualFold(repositoryValue, repository) &&
+		pullRequestPresent && pullRequestValue == strconv.Itoa(pullRequestNumber)
+}
+
+func ciTriggerLabelRunsAfterPush(command string) bool {
 	fields := strings.Fields(command)
+	ciTriggerIndex := ciTriggerLabelCommandIndex(fields)
+	pushIndexes := gitPushCommandIndexes(command)
+	if ciTriggerIndex < 0 || len(pushIndexes) == 0 {
+		return false
+	}
+	pushIndex := pushIndexes[len(pushIndexes)-1]
+	return pushIndex >= 0 && pushIndex < ciTriggerIndex
+}
+
+func ciTriggerLabelCommandFields(command string) ([]string, bool) {
+	fields := strings.Fields(command)
+	index := ciTriggerLabelCommandIndex(fields)
+	if index < 0 {
+		return nil, false
+	}
+	return fields[index+2:], true
+}
+
+func ciTriggerLabelCommandIndex(fields []string) int {
+	index := -1
+	for fieldIndex := 1; fieldIndex < len(fields); fieldIndex++ {
+		executable := strings.ToLower(strings.Trim(fields[fieldIndex-1], "'\";()"))
+		subcommand := strings.ToLower(strings.Trim(fields[fieldIndex], "'\";()"))
+		if (executable == "detent" || strings.HasSuffix(executable, "/detent")) && subcommand == "ci-trigger-label" {
+			index = fieldIndex - 1
+		}
+	}
+	return index
+}
+
+func commandFlagValue(fields []string, flag string) (string, bool) {
+	for index, field := range fields {
+		field = strings.Trim(field, "'\";()")
+		switch {
+		case strings.EqualFold(field, flag) && index+1 < len(fields):
+			return strings.Trim(fields[index+1], "'\";()"), true
+		case strings.HasPrefix(strings.ToLower(field), strings.ToLower(flag)+"="):
+			return strings.Trim(field[len(flag)+1:], "'\";()"), true
+		}
+	}
+	return "", false
+}
+
+func gitPushChanged(update AgentUpdate, command string) bool {
+	if gitPushCommandCount(command) != 1 {
+		return true
+	}
+	output := strings.ToLower(strings.Join([]string{update.Delta, update.BackendErrorMessage, update.BackendErrorBody}, " "))
+	return !strings.Contains(output, "everything up-to-date") && !strings.Contains(output, "everything up to date")
+}
+
+func combinedPushMayHaveChanged(update AgentUpdate, command string) bool {
+	if !gitPushChanged(update, command) {
+		return false
+	}
+	output := strings.ToLower(strings.Join([]string{update.Delta, update.BackendErrorMessage, update.BackendErrorBody}, " "))
+	for _, failure := range []string{
+		"failed to push",
+		"push rejected",
+		"remote rejected",
+		"[rejected]",
+		"authentication failed",
+		"permission denied",
+		"repository not found",
+		"could not read from remote repository",
+		"could not resolve host",
+		"unable to access",
+	} {
+		if strings.Contains(output, failure) {
+			return false
+		}
+	}
+	return true
+}
+
+func gitPushCommand(command string) bool {
+	return gitPushCommandCount(command) > 0
+}
+
+func gitPushCommandCount(command string) int {
+	return len(gitPushCommandIndexes(command))
+}
+
+func gitPushCommandIndexes(command string) []int {
+	fields := strings.Fields(command)
+	indexes := make([]int, 0, 1)
 	for index, field := range fields {
 		field = strings.Trim(field, "'\";()")
 		if field != "git" {
 			continue
 		}
-		for _, candidate := range fields[index+1:] {
+		for candidateIndex, candidate := range fields[index+1:] {
 			candidate = strings.Trim(candidate, "'\";()")
 			if candidate == "push" {
-				return true
+				indexes = append(indexes, index+candidateIndex+1)
+				break
 			}
 			if candidate == "git" || strings.ContainsAny(candidate, "|&") {
 				break
 			}
 		}
 	}
-	return false
+	return indexes
 }
 
 func pullRequestCommand(command string) bool {
@@ -2497,6 +2685,16 @@ func pullRequestNumber(issue connector.Issue) *int64 {
 		return nil
 	}
 	return &number
+}
+
+func ciTriggerPullRequestNumber(issue connector.Issue) int {
+	if number := pullRequestNumber(issue); number != nil {
+		return int(*number)
+	}
+	if issue.PullRequest != nil {
+		return issue.PullRequest.Number
+	}
+	return 0
 }
 
 func diffStatsFromWorkspace(stat workspace.DiffStat) DiffStats {

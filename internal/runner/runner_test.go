@@ -358,10 +358,13 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                   string
-		updates                []AgentUpdate
-		wantErr                string
-		wantPullRequestUpdated bool
+		name                        string
+		updates                     []AgentUpdate
+		wantErr                     string
+		wantPullRequestUpdated      bool
+		wantPullRequestHeadPushed   bool
+		wantCITriggerLabelReapplied bool
+		ciTriggerRepository         string
 	}{
 		{
 			name: "push rejected by GitHub rate limit",
@@ -399,6 +402,124 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 				{Type: AgentUpdateToolCompleted, ItemID: "push-2", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
+			wantPullRequestHeadPushed: true,
+		},
+		{
+			name: "CI trigger label after latest push records delivery",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
+				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label-base64 Y2k6cmVhZHk"},
+				{Type: AgentUpdateToolCompleted, ItemID: "relabel", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantPullRequestHeadPushed:   true,
+			wantCITriggerLabelReapplied: true,
+		},
+		{
+			name: "CI trigger label for another pull request is not accepted",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
+				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 9999 --label ci:ready"},
+				{Type: AgentUpdateToolCompleted, ItemID: "relabel", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantPullRequestHeadPushed: true,
+		},
+		{
+			name: "CI trigger label for another repository is not accepted",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
+				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/another --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolCompleted, ItemID: "relabel", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantPullRequestHeadPushed: true,
+		},
+		{
+			name: "combined push and CI trigger label records both deliveries",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel", Tool: "commandExecution", Status: "completed", Delta: "branch pushed and label reapplied"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantPullRequestHeadPushed:   true,
+			wantCITriggerLabelReapplied: true,
+		},
+		{
+			name: "repository push substring does not invalidate combined delivery order",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository acme/push-service --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel", Tool: "commandExecution", Status: "completed", Delta: "branch pushed and label reapplied"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantPullRequestHeadPushed:   true,
+			wantCITriggerLabelReapplied: true,
+			ciTriggerRepository:         "acme/push-service",
+		},
+		{
+			name: "push after label in combined command requires fresh reapplication",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel-push", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready && git push origin HEAD"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel-push", Tool: "commandExecution", Status: "completed", Delta: "first branch updated; label reapplied; Everything up-to-date"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantPullRequestHeadPushed: true,
+		},
+		{
+			name: "successful no-op push does not report a changed head",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "Everything up-to-date"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+		},
+		{
+			name: "combined push and CI trigger failure remains deliverable error",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel", Tool: "commandExecution", Status: "failed", Delta: "remote: push rejected"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantErr: "push rejected",
+		},
+		{
+			name: "combined label failure preserves changed push delivery",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel", Tool: "commandExecution", Status: "failed", Delta: "branch pushed; ci-trigger-label: HTTP 500"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantErr:                   "HTTP 500",
+			wantPullRequestHeadPushed: true,
+		},
+		{
+			name: "later non-gate label requires configured label reapplication",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
+				{Type: AgentUpdateToolStarted, ItemID: "ready", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolCompleted, ItemID: "ready", Tool: "commandExecution", Status: "completed", Delta: "ready label reapplied"},
+				{Type: AgentUpdateToolStarted, ItemID: "race", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:race"},
+				{Type: AgentUpdateToolCompleted, ItemID: "race", Tool: "commandExecution", Status: "completed", Delta: "race label reapplied"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantPullRequestHeadPushed: true,
+		},
+		{
+			name: "push after CI trigger label requires fresh reapplication",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push-1", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push-1", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
+				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolCompleted, ItemID: "relabel", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
+				{Type: AgentUpdateToolStarted, ItemID: "push-2", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push-2", Tool: "commandExecution", Status: "completed", Delta: "branch pushed again"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantPullRequestHeadPushed: true,
 		},
 		{
 			name: "unrelated failed test command does not fail delivery",
@@ -413,6 +534,11 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			ciTriggerRepository := tt.ciTriggerRepository
+			if ciTriggerRepository == "" {
+				ciTriggerRepository = "digitaldrywood/detent"
+			}
+			prNumber := 1212
 
 			r := &Runner{
 				now:    time.Now,
@@ -422,10 +548,11 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 				context.Background(),
 				&toolUpdateAgentBackend{updates: tt.updates},
 				AgentTurnRequest{},
-				RunRequest{Issue: connector.Issue{ID: "issue-1211", Identifier: "digitaldrywood/detent#1211"}},
+				RunRequest{Issue: connector.Issue{ID: "issue-1211", Identifier: "digitaldrywood/detent#1211", PRNumber: &prNumber, PRRepository: ciTriggerRepository}},
 				workspace.Info{},
 				workspace.Issue{},
 				config.Agent{},
+				"ci:ready",
 				time.Now(),
 				0,
 				agentidentity.Identity{},
@@ -435,16 +562,22 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 				if execution.err != nil || execution.result.FinalState != FinalStateCompleted {
 					t.Fatalf("execution = state %q error %v, want completed", execution.result.FinalState, execution.err)
 				}
-				if execution.result.PullRequestUpdated != tt.wantPullRequestUpdated {
-					t.Fatalf("PullRequestUpdated = %v, want %v", execution.result.PullRequestUpdated, tt.wantPullRequestUpdated)
+			} else {
+				if execution.err == nil || !strings.Contains(execution.err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want containing %q", execution.err, tt.wantErr)
 				}
-				return
+				if execution.result.FinalState != FinalStateFailed {
+					t.Fatalf("FinalState = %q, want %q", execution.result.FinalState, FinalStateFailed)
+				}
 			}
-			if execution.err == nil || !strings.Contains(execution.err.Error(), tt.wantErr) {
-				t.Fatalf("error = %v, want containing %q", execution.err, tt.wantErr)
+			if execution.result.PullRequestUpdated != tt.wantPullRequestUpdated {
+				t.Fatalf("PullRequestUpdated = %v, want %v", execution.result.PullRequestUpdated, tt.wantPullRequestUpdated)
 			}
-			if execution.result.FinalState != FinalStateFailed {
-				t.Fatalf("FinalState = %q, want %q", execution.result.FinalState, FinalStateFailed)
+			if execution.result.PullRequestHeadPushed != tt.wantPullRequestHeadPushed {
+				t.Fatalf("PullRequestHeadPushed = %v, want %v", execution.result.PullRequestHeadPushed, tt.wantPullRequestHeadPushed)
+			}
+			if execution.result.CITriggerLabelReapplied != tt.wantCITriggerLabelReapplied {
+				t.Fatalf("CITriggerLabelReapplied = %v, want %v", execution.result.CITriggerLabelReapplied, tt.wantCITriggerLabelReapplied)
 			}
 		})
 	}
@@ -480,6 +613,7 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 				workspace.Info{Path: workspacePath},
 				workspace.Issue{ID: "issue-1305", Identifier: "digitaldrywood/detent#1305"},
 				config.Agent{},
+				"",
 				time.Now(),
 				0,
 				agentidentity.Identity{},
@@ -1691,7 +1825,7 @@ func TestRunnerMergeModeCleanPrecheckSkipsAgent(t *testing.T) {
 				Branch: "detent/digitaldrywood_detent_860",
 			},
 		},
-		prepareResult: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean},
+		prepareResult: workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean, HeadChanged: true},
 	}
 	codexClient := &fakeCodexClient{}
 	runner, err := NewRunner(Dependencies{
@@ -1719,6 +1853,9 @@ func TestRunnerMergeModeCleanPrecheckSkipsAgent(t *testing.T) {
 	}
 	if result.FinalState != FinalStateCompleted {
 		t.Fatalf("FinalState = %q, want completed", result.FinalState)
+	}
+	if !result.PullRequestHeadPushed {
+		t.Fatal("PullRequestHeadPushed = false, want true")
 	}
 	if !workspaceBackend.prepareCalled {
 		t.Fatal("PrepareMerge() was not called")
