@@ -1016,6 +1016,9 @@ test("health keeps full waiting and ramp recovery detail", async ({ page }) => {
   await expect(recoveries).toContainText("Project dogfood");
   await expect(recoveries).toContainText("Project docs-site");
   await expect(recoveries).toContainText("Project billing-api");
+  await expect(page.locator("#health-verdict")).not.toContainText(
+    "All systems nominal",
+  );
   await expect(page.locator("#backend-overload-retries")).toContainText(
     "3 overload retries last hour",
   );

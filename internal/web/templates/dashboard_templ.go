@@ -1279,7 +1279,7 @@ func backendCapacityBanner(snapshot telemetry.Snapshot) templ.Component {
 			templ_7745c5c3_Var52 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		outages := backendCapacityOutages(snapshot.BackendOutages)
+		outages := backendCapacityOutageDetails(snapshot.BackendOutages)
 		if len(outages) > 0 {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 84, "<section id=\"backend-capacity-outage\" class=\"flex min-w-0 items-start gap-3 rounded-md border border-warn/40 bg-warn/10 px-4 py-3 text-sm shadow-sm\" role=\"status\" aria-live=\"polite\">")
 			if templ_7745c5c3_Err != nil {

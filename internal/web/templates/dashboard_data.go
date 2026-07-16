@@ -6558,7 +6558,7 @@ func boardBackendCapacitySummaries(outages []telemetry.BackendOutage) []boardBan
 	}
 	groups := make(map[string]*group)
 	order := make([]string, 0)
-	for _, outage := range backendCapacityOutages(outages) {
+	for _, outage := range backendCapacityOutageDetails(outages) {
 		title := backendCapacityOutageTitle(outage)
 		if _, ok := groups[title]; !ok {
 			groups[title] = &group{title: title, projects: make(map[string]struct{})}
@@ -6615,6 +6615,14 @@ func backendCapacityBackendID(outage telemetry.BackendOutage) string {
 }
 
 func backendCapacityOutages(outages []telemetry.BackendOutage) []telemetry.BackendOutage {
+	return uniqueBackendCapacityOutages(outages, false)
+}
+
+func backendCapacityOutageDetails(outages []telemetry.BackendOutage) []telemetry.BackendOutage {
+	return uniqueBackendCapacityOutages(outages, true)
+}
+
+func uniqueBackendCapacityOutages(outages []telemetry.BackendOutage, byProject bool) []telemetry.BackendOutage {
 	unique := make([]telemetry.BackendOutage, 0, len(outages))
 	seen := make(map[string]struct{}, len(outages))
 	for _, outage := range outages {
@@ -6625,7 +6633,10 @@ func backendCapacityOutages(outages []telemetry.BackendOutage) []telemetry.Backe
 		if resetAt.IsZero() {
 			resetAt = outage.ResumeAt
 		}
-		key := strings.TrimSpace(outage.ProjectID) + "\x00" + backendCapacityBackendID(outage) + "\x00" + localTimeISOString(resetAt)
+		key := backendCapacityBackendID(outage) + "\x00" + localTimeISOString(resetAt)
+		if byProject {
+			key = strings.TrimSpace(outage.ProjectID) + "\x00" + key
+		}
 		if _, ok := seen[key]; ok {
 			continue
 		}

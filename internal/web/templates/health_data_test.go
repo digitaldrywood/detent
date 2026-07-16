@@ -47,6 +47,30 @@ func TestHealthViewVerdicts(t *testing.T) {
 			wantKind:    primitives.KindWarn,
 			wantVerdict: "Backend codex at usage limit.",
 		},
+		{
+			name: "failure breaker warns",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				FailureBreakers: []telemetry.FailureBreaker{{
+					ProjectID: "detent",
+				}},
+			},
+			wantKind:    primitives.KindWarn,
+			wantVerdict: "Project dispatch paused by correlated failures — 1 project.",
+		},
+		{
+			name: "waiting recovery warns",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				DispatchRecoveries: []telemetry.DispatchRecovery{{
+					ProjectID: "detent",
+					Kind:      "github_rest",
+					Status:    "waiting",
+				}},
+			},
+			wantKind:    primitives.KindWarn,
+			wantVerdict: "Dispatch is waiting on capacity.",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -61,6 +85,34 @@ func TestHealthViewVerdicts(t *testing.T) {
 				t.Fatalf("checked at = %s", view.CheckedAt)
 			}
 		})
+	}
+}
+
+func TestBackendCapacityProjectDetailDoesNotInflateVerdict(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 1, 55, 0, 0, time.UTC)
+	resumeAt := now.Add(44 * time.Minute)
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: now,
+		BackendOutages: []telemetry.BackendOutage{
+			{ProjectID: "detent", BackendID: "codex", Provider: "openai", ResumeAt: resumeAt},
+			{ProjectID: "docs", BackendID: "codex", Provider: "openai", ResumeAt: resumeAt},
+		},
+	}
+	view := healthViewFromDashboard(DashboardData{Snapshot: snapshot})
+	if view.Verdict != "Backend codex at usage limit." {
+		t.Fatalf("verdict = %q, want one backend outage", view.Verdict)
+	}
+	summaries := boardBackendCapacitySummaries(snapshot.BackendOutages)
+	if len(summaries) != 1 || summaries[0].Title != "Backend codex at usage limit — 2 projects" {
+		t.Fatalf("Board summaries = %#v", summaries)
+	}
+	html := renderBoardComponent(t, HealthSnapshotV2(DashboardData{Snapshot: snapshot}))
+	for _, project := range []string{"Project detent", "Project docs"} {
+		if !strings.Contains(html, project) {
+			t.Fatalf("Health detail missing %q:\n%s", project, html)
+		}
 	}
 }
 

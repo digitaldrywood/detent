@@ -51,18 +51,38 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		return view
 	}
 	switch api.State {
-	case gitHubAPIHealthStateHealthy, gitHubAPIHealthStateAtRest:
-		view.Kind = primitives.KindOK
-		view.Verdict = "All systems nominal."
-		view.Detail = api.Summary
 	case gitHubAPIHealthStateWarning:
 		view.Kind = primitives.KindWarn
 		view.Verdict = api.Label + "."
 		view.Detail = api.Detail
+		return view
 	case gitHubAPIHealthStateBackoff, gitHubAPIHealthStateExhausted:
 		view.Kind = primitives.KindErr
 		view.Verdict = api.Label + "."
 		view.Detail = api.Detail
+		return view
+	}
+	if summary, ok := boardFailureBreakerSummary(snapshot.FailureBreakers); ok {
+		view.Kind = primitives.KindWarn
+		view.Verdict = summary.Title + "."
+		view.Detail = "Dispatch remains paused until a canary succeeds."
+		return view
+	}
+	if summaries := boardDispatchRecoverySummaries(snapshot.DispatchRecoveries); len(summaries) > 0 {
+		details := make([]string, 0, len(summaries))
+		for _, summary := range summaries {
+			details = append(details, summary.Title)
+		}
+		view.Kind = primitives.KindWarn
+		view.Verdict = "Dispatch is waiting on capacity."
+		view.Detail = strings.Join(details, "; ") + "."
+		return view
+	}
+	switch api.State {
+	case gitHubAPIHealthStateHealthy, gitHubAPIHealthStateAtRest:
+		view.Kind = primitives.KindOK
+		view.Verdict = "All systems nominal."
+		view.Detail = api.Summary
 	default:
 		view.Kind = primitives.KindNeutral
 		view.Verdict = "Waiting for the first health snapshot."
