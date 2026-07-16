@@ -2181,7 +2181,7 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 		case "push":
 			delete(p.deliverableFailures, "push")
 			p.deliverableSuccesses["push"] = true
-			if gitPushChanged(update) {
+			if gitPushChanged(update, invocation.command) {
 				p.successfulPushes++
 				p.ciTriggerLabelValid = false
 			}
@@ -2195,7 +2195,7 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 			delete(p.deliverableFailures, "ci_trigger_label")
 			p.deliverableSuccesses["push"] = true
 			p.deliverableSuccesses["ci_trigger_label"] = true
-			if gitPushChanged(update) {
+			if gitPushChanged(update, invocation.command) {
 				p.successfulPushes++
 			}
 			p.ciTriggerPushSequence = p.successfulPushes
@@ -2339,13 +2339,21 @@ func ciTriggerLabelRunsAfterPush(command string) bool {
 	return pushIndex >= 0 && pushIndex < ciTriggerIndex
 }
 
-func gitPushChanged(update AgentUpdate) bool {
+func gitPushChanged(update AgentUpdate, command string) bool {
+	if gitPushCommandCount(command) != 1 {
+		return true
+	}
 	output := strings.ToLower(strings.Join([]string{update.Delta, update.BackendErrorMessage, update.BackendErrorBody}, " "))
 	return !strings.Contains(output, "everything up-to-date") && !strings.Contains(output, "everything up to date")
 }
 
 func gitPushCommand(command string) bool {
+	return gitPushCommandCount(command) > 0
+}
+
+func gitPushCommandCount(command string) int {
 	fields := strings.Fields(command)
+	count := 0
 	for index, field := range fields {
 		field = strings.Trim(field, "'\";()")
 		if field != "git" {
@@ -2354,14 +2362,15 @@ func gitPushCommand(command string) bool {
 		for _, candidate := range fields[index+1:] {
 			candidate = strings.Trim(candidate, "'\";()")
 			if candidate == "push" {
-				return true
+				count++
+				break
 			}
 			if candidate == "git" || strings.ContainsAny(candidate, "|&") {
 				break
 			}
 		}
 	}
-	return false
+	return count
 }
 
 func pullRequestCommand(command string) bool {

@@ -429,7 +429,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			name: "push after label in combined command requires fresh reapplication",
 			updates: []AgentUpdate{
 				{Type: AgentUpdateToolStarted, ItemID: "push-relabel-push", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready && git push origin HEAD"},
-				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel-push", Tool: "commandExecution", Status: "completed", Delta: "branches pushed and label reapplied"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel-push", Tool: "commandExecution", Status: "completed", Delta: "first branch updated; label reapplied; Everything up-to-date"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
 			wantPullRequestHeadPushed: true,
