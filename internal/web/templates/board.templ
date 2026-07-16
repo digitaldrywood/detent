@@ -51,30 +51,22 @@ templ BoardSnapshot(data DashboardData) {
 
 templ boardSnapshotBody(data DashboardData) {
 	{{ view := boardViewFromDashboard(data) }}
-	if len(data.Snapshot.FailureBreakers) > 0 {
+	{{ failureSummary, hasFailureSummary := boardFailureBreakerSummary(data.Snapshot.FailureBreakers) }}
+	if hasFailureSummary {
 		<div class="flex-none px-5 pt-3.5">
-			@failureBreakerBanner(data.Snapshot)
+			@boardFailureBreakerBanner(failureSummary)
 		</div>
 	}
-	if len(data.Snapshot.DispatchRecoveries) > 0 {
+	{{ recoverySummaries := boardDispatchRecoverySummaries(data.Snapshot.DispatchRecoveries) }}
+	if len(recoverySummaries) > 0 {
 		<div class="flex-none px-5 pt-3.5">
-			@dispatchRecoveryBanner(data.Snapshot)
+			@boardDispatchRecoveryBanner(recoverySummaries)
 		</div>
 	}
-	if len(data.Snapshot.BackendOutages) > 0 {
+	{{ capacitySummaries := boardBackendCapacitySummaries(data.Snapshot.BackendOutages) }}
+	if len(capacitySummaries) > 0 {
 		<div class="flex-none px-5 pt-3.5">
-			@backendCapacityBanner(data.Snapshot)
-		</div>
-	}
-	if data.Snapshot.OverloadRetriesLastHour > 0 {
-		<div class="flex-none px-5 pt-3.5">
-			<section id="backend-overload-retries" class="flex min-w-0 items-start gap-3 rounded-md border border-line bg-surface px-4 py-3 text-sm shadow-sm" role="status" aria-live="polite">
-				@icon.Activity(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-accent"})
-				<div class="min-w-0">
-					<p class="font-medium text-text">{ formatCount(data.Snapshot.OverloadRetriesLastHour) + " overload retries last hour" }</p>
-					<p class="mt-0.5 text-xs text-sec">Provider overloads retry only the affected work; dispatch remains active.</p>
-				</div>
-			</section>
+			@boardBackendCapacityBanner(capacitySummaries)
 		</div>
 	}
 	if len(view.Exceptions) > 0 {
@@ -116,6 +108,35 @@ templ boardSnapshotBody(data DashboardData) {
 			@boardLaneView2(lane)
 		}
 	</div>
+}
+
+templ boardFailureBreakerBanner(summary boardBannerSummary) {
+	<section id="project-failure-breaker" class="flex min-w-0 items-center gap-3 rounded-md border border-warn/40 bg-warn/10 px-4 py-2.5 text-sm shadow-sm" role="status" aria-live="polite">
+		@icon.CircleAlert(icon.Props{Class: "size-4 shrink-0 text-warn"})
+		<p id={ summary.ID } class="min-w-0 break-words font-medium text-text">{ summary.Title }</p>
+	</section>
+}
+
+templ boardDispatchRecoveryBanner(summaries []boardBannerSummary) {
+	<section id="dispatch-recovery-status" class="flex min-w-0 items-start gap-3 rounded-md border border-warn/40 bg-warn/10 px-4 py-2.5 text-sm shadow-sm" role="status" aria-live="polite">
+		@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-warn"})
+		<div class="grid min-w-0 gap-1.5">
+			for _, summary := range summaries {
+				<p id={ summary.ID } class="min-w-0 break-words font-medium text-text">{ summary.Title }</p>
+			}
+		</div>
+	</section>
+}
+
+templ boardBackendCapacityBanner(summaries []boardBannerSummary) {
+	<section id="backend-capacity-outage" class="flex min-w-0 items-start gap-3 rounded-md border border-warn/40 bg-warn/10 px-4 py-2.5 text-sm shadow-sm" role="status" aria-live="polite">
+		@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-warn"})
+		<div class="grid min-w-0 gap-1.5">
+			for _, summary := range summaries {
+				<p id={ summary.ID } class="min-w-0 break-words font-medium text-text">{ summary.Title }</p>
+			}
+		</div>
+	</section>
 }
 
 templ boardLaneView2(lane boardLaneView) {

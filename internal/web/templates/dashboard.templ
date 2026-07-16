@@ -194,6 +194,7 @@ templ HealthSnapshot(data DashboardData) {
 		@failureBreakerBanner(data.Snapshot)
 		@dispatchRecoveryBanner(data.Snapshot)
 		@backendCapacityBanner(data.Snapshot)
+		@overloadRetriesBanner(data.Snapshot)
 		@dashboardHealth(data)
 		@GitHubAPIHealthDetails(data.Snapshot)
 	</section>
@@ -208,6 +209,9 @@ templ failureBreakerBanner(snapshot telemetry.Snapshot) {
 					<div class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 						<div class="min-w-0 break-words">
 							<p class="font-medium text-text">Project dispatch paused by correlated failures</p>
+							if strings.TrimSpace(breaker.ProjectID) != "" {
+								<p class="mt-0.5 text-xs font-medium text-sec">{ "Project " + strings.TrimSpace(breaker.ProjectID) }</p>
+							}
 							{{ detail, resumeAt, showResumeAt := failureBreakerDetailParts(breaker, snapshot.GeneratedAt) }}
 							<p class="mt-0.5 text-xs text-sec">
 								{ detail }
@@ -238,6 +242,9 @@ templ dispatchRecoveryBanner(snapshot telemetry.Snapshot) {
 				for _, recovery := range snapshot.DispatchRecoveries {
 					<div class="min-w-0 break-words">
 						<p class="font-medium text-text">{ dispatchRecoveryTitle(recovery) }</p>
+						if strings.TrimSpace(recovery.ProjectID) != "" {
+							<p class="mt-0.5 text-xs font-medium text-sec">{ "Project " + strings.TrimSpace(recovery.ProjectID) }</p>
+						}
 						{{ detail, resumeAt, showResumeAt := dispatchRecoveryDetailParts(recovery, snapshot.GeneratedAt) }}
 						<p class="mt-0.5 text-xs text-sec">
 							{ detail }
@@ -254,7 +261,7 @@ templ dispatchRecoveryBanner(snapshot telemetry.Snapshot) {
 }
 
 templ backendCapacityBanner(snapshot telemetry.Snapshot) {
-	{{ outages := backendCapacityOutages(snapshot.BackendOutages) }}
+	{{ outages := backendCapacityOutageDetails(snapshot.BackendOutages) }}
 	if len(outages) > 0 {
 		<section id="backend-capacity-outage" class="flex min-w-0 items-start gap-3 rounded-md border border-warn/40 bg-warn/10 px-4 py-3 text-sm shadow-sm" role="status" aria-live="polite">
 			@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-warn"})
@@ -263,6 +270,9 @@ templ backendCapacityBanner(snapshot telemetry.Snapshot) {
 					<div class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 						<div class="min-w-0 break-words">
 							<p class="font-medium text-text">{ backendCapacityOutageTitle(outage) }</p>
+							if strings.TrimSpace(outage.ProjectID) != "" {
+								<p class="mt-0.5 text-xs font-medium text-sec">{ "Project " + strings.TrimSpace(outage.ProjectID) }</p>
+							}
 							{{ detail, detailAt, showDetailAt := backendCapacityOutageDetailParts(outage, snapshot.GeneratedAt) }}
 							<p class="mt-0.5 text-xs text-sec">
 								{ detail }
@@ -297,6 +307,18 @@ templ backendCapacityBanner(snapshot telemetry.Snapshot) {
 						}
 					</div>
 				}
+			</div>
+		</section>
+	}
+}
+
+templ overloadRetriesBanner(snapshot telemetry.Snapshot) {
+	if snapshot.OverloadRetriesLastHour > 0 {
+		<section id="backend-overload-retries" class="flex min-w-0 items-start gap-3 rounded-md border border-line bg-surface px-4 py-3 text-sm shadow-sm" role="status" aria-live="polite">
+			@icon.Activity(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-accent"})
+			<div class="min-w-0">
+				<p class="font-medium text-text">{ formatCount(snapshot.OverloadRetriesLastHour) + " overload retries last hour" }</p>
+				<p class="mt-0.5 text-xs text-sec">Provider overloads retry only the affected work; dispatch remains active.</p>
 			</div>
 		</section>
 	}

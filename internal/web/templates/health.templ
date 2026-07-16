@@ -22,7 +22,10 @@ templ HealthPageV2(data DashboardData) {
 
 templ HealthSnapshotV2(data DashboardData) {
 	{{ view := healthViewFromDashboard(data) }}
+	@failureBreakerBanner(data.Snapshot)
+	@dispatchRecoveryBanner(data.Snapshot)
 	@backendCapacityBanner(data.Snapshot)
+	@overloadRetriesBanner(data.Snapshot)
 	<p id="health-verdict" class="flex flex-none flex-wrap items-center gap-x-2 gap-y-1 text-sm">
 		<span class={ healthVerdictGlyphClass(view.Kind) } aria-hidden="true">{ view.Kind.Glyph() }</span>
 		<span class="font-medium text-text">{ view.Verdict }</span>

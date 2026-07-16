@@ -319,6 +319,59 @@ test("board elevated blockers render one compact opt-in alert", async ({
   await capturePageAndAttach(page, "board-blocked-alerts.png", testInfo);
 });
 
+test("board hides informational recovery and overload notices", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "board-ramp-active-recoveries",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  await expect(page.locator("#dispatch-recovery-status")).toHaveCount(0);
+  await expect(page.locator("#backend-overload-retries")).toHaveCount(0);
+  await expect(page.locator("#snapshot > :visible").first()).toHaveAttribute(
+    "id",
+    "board-figures",
+  );
+});
+
+test("board collapses degraded health banners by kind", async ({ page }) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "board-degraded-health-banners",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  const failure = page.locator("#project-failure-breaker");
+  const recovery = page.locator("#dispatch-recovery-status");
+  const capacity = page.locator("#backend-capacity-outage");
+  await expect(failure).toHaveCount(1);
+  await expect(recovery).toHaveCount(1);
+  await expect(capacity).toHaveCount(1);
+  await expect(failure).toHaveClass(/border-warn/);
+  await expect(recovery).toHaveClass(/border-warn/);
+  await expect(capacity).toHaveClass(/border-warn/);
+  await expect(failure.locator("p")).toHaveCount(1);
+  await expect(recovery.locator("p")).toHaveCount(1);
+  await expect(capacity.locator("p")).toHaveCount(1);
+  await expect(failure).toContainText("2 projects");
+  await expect(recovery).toContainText(
+    "Dispatch waiting on GitHub REST capacity — 2 projects",
+  );
+  await expect(capacity).toContainText(
+    "Backend codex at usage limit — 2 projects",
+  );
+  await expect(page.locator("#backend-overload-retries")).toHaveCount(0);
+  await expect(page.locator("#snapshot")).not.toContainText(
+    "Dispatch recovery ramp active",
+  );
+});
+
 test("board lane picker hides and restores lanes", async ({ page }) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
@@ -940,6 +993,35 @@ test("health page covers key rate-limit states", async ({ page }, testInfo) => {
     await assertNoDocumentOverflow(page);
     await capturePageAndAttach(page, `${scenario}.png`, testInfo);
   }
+});
+
+test("health keeps full waiting and ramp recovery detail", async ({ page }) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "health-dispatch-recoveries",
+    route: "/health/ui",
+    waitSelector: "#dispatch-recovery-status",
+    viewport: desktopViewport,
+  });
+
+  const recoveries = page.locator("#dispatch-recovery-status");
+  await expect(
+    recoveries.getByText("Dispatch waiting on GitHub REST capacity", {
+      exact: true,
+    }),
+  ).toHaveCount(2);
+  await expect(
+    recoveries.getByText("Dispatch recovery ramp active", { exact: true }),
+  ).toHaveCount(1);
+  await expect(recoveries).toContainText("Project dogfood");
+  await expect(recoveries).toContainText("Project docs-site");
+  await expect(recoveries).toContainText("Project billing-api");
+  await expect(page.locator("#health-verdict")).not.toContainText(
+    "All systems nominal",
+  );
+  await expect(page.locator("#backend-overload-retries")).toContainText(
+    "3 overload retries last hour",
+  );
 });
 
 test("project overview renders tabs, hero, and recent runs", async ({

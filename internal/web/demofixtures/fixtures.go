@@ -74,6 +74,10 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot = demoGitHubAPIPrimaryExhaustedSnapshot()
 	case "backend-capacity-outage":
 		snapshot = demoBackendCapacityOutageSnapshot()
+	case "board-ramp-active-recoveries":
+		snapshot = demoBoardRampActiveRecoveriesSnapshot()
+	case "board-degraded-health-banners":
+		snapshot = demoBoardDegradedHealthBannersSnapshot()
 	}
 	if variant == "terminal" {
 		snapshot.BoardIssues = append(snapshot.BoardIssues, demoIssue(demoPrimaryProjectID, "demo-cancelled", "digitaldrywood/detent-core#5259", "Cancelled alternate dashboard theme", "Cancelled", 48))
@@ -358,6 +362,38 @@ func demoBackendCapacityOutageSnapshot() telemetry.Snapshot {
 		ResumeAt:  resumeAt,
 	}
 	snapshot.BackendOutages = []telemetry.BackendOutage{outage, outage}
+	return snapshot
+}
+
+func demoBoardRampActiveRecoveriesSnapshot() telemetry.Snapshot {
+	snapshot := demoHealthySnapshot()
+	now := snapshot.GeneratedAt
+	snapshot.DispatchRecoveries = []telemetry.DispatchRecovery{
+		{ProjectID: demoPrimaryProjectID, Kind: "github_rest", Status: "ramping", StartedAt: now.Add(-2 * time.Minute), Limit: 1, MaxConcurrent: 6, Admitted: 1},
+		{ProjectID: "docs-site", Kind: "backend_capacity", Status: "ramping", StartedAt: now.Add(-time.Minute), Limit: 2, MaxConcurrent: 6, Admitted: 2},
+	}
+	snapshot.OverloadRetriesLastHour = 4
+	return snapshot
+}
+
+func demoBoardDegradedHealthBannersSnapshot() telemetry.Snapshot {
+	snapshot := demoHealthySnapshot()
+	now := snapshot.GeneratedAt
+	snapshot.FailureBreakers = []telemetry.FailureBreaker{
+		{ProjectID: demoPrimaryProjectID, Class: "backend_startup_timeout", Count: 4, WindowSeconds: 3600, ResumeAt: now.Add(12 * time.Minute)},
+		{ProjectID: "docs-site", Class: "session_token_ceiling", Count: 3, WindowSeconds: 3600, ResumeAt: now.Add(18 * time.Minute)},
+	}
+	snapshot.DispatchRecoveries = []telemetry.DispatchRecovery{
+		{ProjectID: demoPrimaryProjectID, Kind: "github_rest", Reason: "primary quota exhausted", Status: "waiting", StartedAt: now.Add(-3 * time.Minute), ResumeAt: now.Add(20 * time.Minute), MaxConcurrent: 6},
+		{ProjectID: "docs-site", Kind: "github_rest", Reason: "primary quota exhausted", Status: "waiting", StartedAt: now.Add(-2 * time.Minute), ResumeAt: now.Add(20 * time.Minute), MaxConcurrent: 6},
+		{ProjectID: "billing-api", Kind: "backend_capacity", Status: "ramping", StartedAt: now.Add(-time.Minute), Limit: 1, MaxConcurrent: 6, Admitted: 1},
+	}
+	resumeAt := now.Add(30 * time.Minute)
+	snapshot.BackendOutages = []telemetry.BackendOutage{
+		{ProjectID: demoPrimaryProjectID, BackendID: "codex", BackendKind: "codex", Provider: "openai", Reason: "provider usage limit reached", ResumeAt: resumeAt},
+		{ProjectID: "docs-site", BackendID: "codex", BackendKind: "codex", Provider: "openai", Reason: "provider usage limit reached", ResumeAt: resumeAt},
+	}
+	snapshot.OverloadRetriesLastHour = 3
 	return snapshot
 }
 
