@@ -524,7 +524,7 @@ func TestMergingFastPathMainAdvanceRetriggersMissingCurrentHeadChecks(t *testing
 	if _, ok := state.Retry[issue.ID]; !ok {
 		t.Fatalf("Retry[%q] missing while retriggered checks propagate", issue.ID)
 	}
-	if !orch.scheduleCITriggerLabel(context.Background(), issue, []string{"Test", "Checks"}, 2, false) {
+	if !orch.scheduleCITriggerLabel(context.Background(), issue, []string{"Test", "Checks"}, 2, false, false) {
 		t.Fatal("second scheduleCITriggerLabel() = false, want pending relabel")
 	}
 	if !strings.Contains(logs.String(), "reapply_pending_for_head") {
@@ -547,7 +547,7 @@ func TestMergingFastPathMainAdvanceRetriggersMissingCurrentHeadChecks(t *testing
 		case <-ticker.C:
 		}
 	}
-	if orch.scheduleCITriggerLabel(context.Background(), issue, []string{"Test", "Checks"}, 2, false) {
+	if orch.scheduleCITriggerLabel(context.Background(), issue, []string{"Test", "Checks"}, 2, false, false) {
 		t.Fatal("third scheduleCITriggerLabel() = true, want same-head skip")
 	}
 	if !strings.Contains(logs.String(), "ci_trigger_label_skipped") || !strings.Contains(logs.String(), "already_reapplied_for_head") {

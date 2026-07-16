@@ -2181,8 +2181,10 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 		case "push":
 			delete(p.deliverableFailures, "push")
 			p.deliverableSuccesses["push"] = true
-			p.successfulPushes++
-			p.ciTriggerLabelValid = false
+			if gitPushChanged(update) {
+				p.successfulPushes++
+				p.ciTriggerLabelValid = false
+			}
 		case "ci_trigger_label":
 			delete(p.deliverableFailures, "ci_trigger_label")
 			p.deliverableSuccesses["ci_trigger_label"] = true
@@ -2193,7 +2195,9 @@ func (p *agentRunProgress) recordDeliverableToolCompletion(update AgentUpdate) {
 			delete(p.deliverableFailures, "ci_trigger_label")
 			p.deliverableSuccesses["push"] = true
 			p.deliverableSuccesses["ci_trigger_label"] = true
-			p.successfulPushes++
+			if gitPushChanged(update) {
+				p.successfulPushes++
+			}
 			p.ciTriggerPushSequence = p.successfulPushes
 			p.ciTriggerLabelValid = invocation.ciTriggerLabelMatches && invocation.ciTriggerAfterPush
 		case "pull_request":
@@ -2331,7 +2335,13 @@ func ciTriggerLabelRunsAfterPush(command string) bool {
 	if ciTriggerIndex < 0 || !gitPushCommand(lowerCommand) {
 		return false
 	}
-	return strings.LastIndex(lowerCommand[:ciTriggerIndex], "push") >= 0
+	pushIndex := strings.LastIndex(lowerCommand, "push")
+	return pushIndex >= 0 && pushIndex < ciTriggerIndex
+}
+
+func gitPushChanged(update AgentUpdate) bool {
+	output := strings.ToLower(strings.Join([]string{update.Delta, update.BackendErrorMessage, update.BackendErrorBody}, " "))
+	return !strings.Contains(output, "everything up-to-date") && !strings.Contains(output, "everything up to date")
 }
 
 func gitPushCommand(command string) bool {

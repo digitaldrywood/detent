@@ -185,7 +185,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			var warning string
 			running.Issue, warning = o.refreshSpendProgressIssue(ctx, running.Issue)
 			pushEvidenceRefreshed = warning == ""
-			o.scheduleCITriggerLabel(ctx, running.Issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true)
+			o.scheduleCITriggerLabel(ctx, running.Issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, warning != "")
 		}
 		spendProgress := spendProgressDecision{}
 		if !mergeWorkerIssue(running.Issue) {
@@ -314,15 +314,17 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	progress := o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
 	running.Issue = progress.Issue
 	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
+		forceReapply := false
 		if pullRequestRepository(running.Issue) == "" || pullRequestNumber(running.Issue) <= 0 || running.Issue.PullRequest == nil || strings.TrimSpace(progress.CurrentSignature.HeadSHA) == "" {
 			refreshed, warning := o.refreshSpendProgressIssue(ctx, running.Issue)
 			running.Issue = refreshed
 			progress.Issue = refreshed
+			forceReapply = warning != ""
 			if warning != "" && o.logger != nil {
 				o.logger.Warn("worker push pull request refresh failed", "issue_id", running.Issue.ID, "identifier", running.Issue.Identifier, "warning", warning)
 			}
 		}
-		o.scheduleCITriggerLabel(ctx, running.Issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true)
+		o.scheduleCITriggerLabel(ctx, running.Issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, forceReapply)
 	}
 	o.commentWorkerLaneTransition(ctx, dispatchedIssue, running.Issue)
 	accepted, acceptedReason := implementAcceptedStateChange(running, progress)
@@ -1006,7 +1008,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	if event.Result.PullRequestHeadPushed {
 		triggerPending := false
 		if !event.Result.CITriggerLabelReapplied {
-			triggerPending = o.scheduleCITriggerLabel(ctx, issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true)
+			triggerPending = o.scheduleCITriggerLabel(ctx, issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, false)
 		}
 		if triggerPending {
 			o.waitForMergeWorkerCITriggerLabel(ctx, state, event, running, issue)
@@ -1023,7 +1025,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			return true
 		}
 		if missingChecks := mergeWorkerMissingRequiredChecks(issue); len(missingChecks) > 0 {
-			triggerPending := o.scheduleCITriggerLabel(ctx, issue, missingChecks, running.Attempt, false)
+			triggerPending := o.scheduleCITriggerLabel(ctx, issue, missingChecks, running.Attempt, false, false)
 			if triggerPending || mergeWorkerMissingRequiredChecksPropagating(issue, running.Attempt) {
 				o.waitForMergeWorkerRequiredCheckPropagation(ctx, state, event, running, issue)
 				return true
@@ -1353,7 +1355,7 @@ func mergeWorkerMissingRequiredChecksPropagating(issue connector.Issue, attempt 
 	}
 }
 
-func (o *Orchestrator) scheduleCITriggerLabel(ctx context.Context, issue connector.Issue, checkNames []string, attempt int, afterHeadPush bool) bool {
+func (o *Orchestrator) scheduleCITriggerLabel(ctx context.Context, issue connector.Issue, checkNames []string, attempt int, afterHeadPush bool, forceReapply bool) bool {
 	cfg := gate.Effective(o.cfg.AutoPromote.Gate)
 	label := strings.TrimSpace(cfg.CITriggerLabel)
 	attrs := mergeWorkerLogAttrs(issue, "required_checks", strings.Join(checkNames, ","))
@@ -1393,7 +1395,7 @@ func (o *Orchestrator) scheduleCITriggerLabel(ctx context.Context, issue connect
 		o.ciTriggerLabelHeads = map[string]ciTriggerLabelHead{}
 	}
 	current, exists := o.ciTriggerLabelHeads[key]
-	if exists && current.HeadSHA == headSHA && (current.Pending || !afterHeadPush) {
+	if exists && current.HeadSHA == headSHA && (current.Pending || !forceReapply) {
 		o.ciTriggerLabelMu.Unlock()
 		reason := "already_reapplied_for_head"
 		if current.Pending {
