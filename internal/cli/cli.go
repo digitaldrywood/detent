@@ -235,6 +235,7 @@ type options struct {
 	stdoutTTY     func() bool
 	shutdown      *ShutdownController
 	restart       *RestartRequest
+	service       ServiceFactory
 }
 
 func WithBootFunc(boot BootFunc) Option {
@@ -302,6 +303,14 @@ func WithRestartRequest(restart *RestartRequest) Option {
 func WithLoggerFunc(configure LoggerFunc) Option {
 	return func(opts *options) {
 		opts.configureLog = configure
+	}
+}
+
+func WithServiceFactory(factory ServiceFactory) Option {
+	return func(opts *options) {
+		if factory != nil {
+			opts.service = factory
+		}
 	}
 }
 
@@ -414,6 +423,8 @@ detent --format json config path`),
 	cmd.PersistentFlags().BoolVar(&headless, "headless", false, "stream logs instead of launching the terminal dashboard")
 	AddFormatFlag(cmd, &format)
 	cmd.AddCommand(
+		newStartCommand(&configPath, &host, &port, opts),
+		newStatusCommand(&configPath, &host, &port, opts),
 		newDoctorCommand(&configPath, &env, &logLevel, &host, &port, opts),
 		newCITriggerLabelCommand(opts),
 		newDevRuntimeCommand(&host, &port, opts),
@@ -468,6 +479,7 @@ func defaultOptions() options {
 		httpDo:      http.DefaultClient.Do,
 		captureDemo: runDemoCapture,
 		stdoutTTY:   stdoutIsTTY,
+		service:     defaultServiceFactory,
 	}
 }
 
