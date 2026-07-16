@@ -314,7 +314,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	progress := o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
 	running.Issue = progress.Issue
 	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
-		if pullRequestRepository(running.Issue) == "" || pullRequestNumber(running.Issue) <= 0 || running.Issue.PullRequest == nil || strings.TrimSpace(running.Issue.PullRequest.HeadSHA) == "" {
+		if pullRequestRepository(running.Issue) == "" || pullRequestNumber(running.Issue) <= 0 || running.Issue.PullRequest == nil || strings.TrimSpace(progress.CurrentSignature.HeadSHA) == "" {
 			refreshed, warning := o.refreshSpendProgressIssue(ctx, running.Issue)
 			running.Issue = refreshed
 			progress.Issue = refreshed
@@ -1393,7 +1393,7 @@ func (o *Orchestrator) scheduleCITriggerLabel(ctx context.Context, issue connect
 		o.ciTriggerLabelHeads = map[string]ciTriggerLabelHead{}
 	}
 	current, exists := o.ciTriggerLabelHeads[key]
-	if exists && current.HeadSHA == headSHA {
+	if exists && current.HeadSHA == headSHA && (current.Pending || !afterHeadPush) {
 		o.ciTriggerLabelMu.Unlock()
 		reason := "already_reapplied_for_head"
 		if current.Pending {
