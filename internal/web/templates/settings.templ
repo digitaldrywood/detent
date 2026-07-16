@@ -54,11 +54,26 @@ templ Settings(data SettingsData) {
 				}
 				for _, project := range data.Projects {
 					<div
+						class="flex flex-none flex-col gap-2.5"
 						if project.ID == data.Projects[0].ID {
 							id="settings-projects"
 						}
 					>
-						@settingsSection("settings-project-"+project.ID, "Project · "+settingsText(project.ID)) {
+						<div class="flex items-center justify-between gap-3">
+							<h2 class="text-sm font-semibold text-text">{ "Project · " + settingsText(project.ID) }</h2>
+							if hasSettingsValue(project.WorkflowDetailsURL) {
+								<a
+									href={ templ.SafeURL(project.WorkflowDetailsURL) }
+									target="_blank"
+									rel="noopener noreferrer"
+									class="flex-none text-xs font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+									aria-label={ "Open " + settingsText(project.ID) + " workflow details" }
+								>View workflow ↗</a>
+							} else {
+								<span class="flex-none text-xs text-dim">Workflow details unavailable</span>
+							}
+						</div>
+						<section id={ "settings-project-" + project.ID } class="flex flex-col overflow-hidden rounded-card border border-line bg-surface">
 							@settingsRow("Tracker", settingsText(project.TrackerKind), false, false)
 							@settingsRow("Project URL", project.TrackerProject, true, false)
 							@settingsRow("Workflow path", project.WorkflowPath, true, false)
@@ -68,7 +83,7 @@ templ Settings(data SettingsData) {
 							@settingsRow("Priority", settingsInt(project.Priority), false, false)
 							@settingsRow("Paused", settingsBool(project.Paused), false, false)
 							@settingsRow("Dependency auto-unblock", settingsText(project.DependencyAutoUnblock), false, true)
-						}
+						</section>
 					</div>
 				}
 				@settingsSection("settings-runtime", "Runtime paths") {

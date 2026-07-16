@@ -2,11 +2,14 @@ package web
 
 import (
 	"context"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/labstack/echo/v4"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
@@ -40,7 +43,7 @@ func (s *Server) settingsData(ctx context.Context, selectedProjectID string) tem
 			ConfigPath: globalConfig.Path,
 			PathRule:   string(s.configRule),
 		},
-		Projects: settingsProjects(s.registry),
+		Projects: settingsProjects(ctx, s.registry),
 		Runtime: templates.SettingsRuntime{
 			DBPath:        s.dbPath,
 			LogPath:       s.logPath,
@@ -61,7 +64,7 @@ func (s *Server) storeName() string {
 	return "memory"
 }
 
-func settingsProjects(registry *project.Registry) []templates.SettingsProject {
+func settingsProjects(ctx context.Context, registry *project.Registry) []templates.SettingsProject {
 	if registry == nil {
 		return nil
 	}
@@ -74,20 +77,62 @@ func settingsProjects(registry *project.Registry) []templates.SettingsProject {
 		}
 		cfg := trackedProject.Config()
 		workflow := trackedProject.Workflow().Config
+		projectURL := settingsTrackerProjectURL(ctx, trackedProject, workflow)
 		out = append(out, templates.SettingsProject{
 			ID:                    string(trackedProject.ID()),
 			WorkflowPath:          cfg.Workflow,
+			WorkflowDetailsURL:    workflowDetailsURL(projectURL),
 			Workdir:               cfg.Workdir,
 			WorktreeRoot:          workflow.Workspace.Root,
 			Weight:                cfg.Weight,
 			Priority:              cfg.Priority,
 			Paused:                cfg.Paused,
 			TrackerKind:           trackerKind(workflow),
-			TrackerProject:        trackerProject(workflow),
+			TrackerProject:        projectURL,
 			DependencyAutoUnblock: dependencyAutoUnblockPolicy(workflow),
 		})
 	}
 	return out
+}
+
+func settingsTrackerProjectURL(ctx context.Context, trackedProject *project.Project, cfg workflowconfig.Config) string {
+	configured := trackerProject(cfg)
+	if workflowDetailsURL(configured) != "" || trackedProject == nil {
+		return configured
+	}
+	resolver, ok := trackedProject.Connector().(connector.ProjectURLResolver)
+	if !ok {
+		return configured
+	}
+	resolved, err := resolver.ProjectURL(ctx)
+	if err != nil || workflowDetailsURL(resolved) == "" {
+		return configured
+	}
+	return strings.TrimSpace(resolved)
+}
+
+func workflowDetailsURL(projectURL string) string {
+	parsed, err := url.ParseRequestURI(strings.TrimSpace(projectURL))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return ""
+	}
+
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	for i := 0; i+3 < len(segments); i++ {
+		if (segments[i] != "orgs" && segments[i] != "users") || segments[i+2] != "projects" {
+			continue
+		}
+		projectNumber, err := strconv.Atoi(segments[i+3])
+		if err != nil || projectNumber <= 0 {
+			return ""
+		}
+		parsed.Path = "/" + strings.Join(segments[:i+4], "/") + "/workflows"
+		parsed.RawPath = ""
+		parsed.RawQuery = ""
+		parsed.Fragment = ""
+		return parsed.String()
+	}
+	return ""
 }
 
 func trackerKind(cfg workflowconfig.Config) string {

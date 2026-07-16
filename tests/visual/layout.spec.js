@@ -1839,6 +1839,38 @@ test("settings page renders definition lists and preferences", async ({
   await capturePageAndAttach(page, "settings.png", testInfo);
 });
 
+test("settings links to the selected project workflow details", async ({
+  page,
+}) => {
+  const workflowURL =
+    "https://github.com/orgs/digitaldrywood/projects/4/workflows";
+  await page.context().route(workflowURL, async (route) => {
+    await route.fulfill({
+      contentType: "text/html",
+      body: "<title>Workflow details</title><main>Workflow details</main>",
+    });
+  });
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "settings-project-context",
+    route: "/projects/dogfood/configuration",
+    waitSelector: "#settings-project-dogfood",
+    viewport: desktopViewport,
+  });
+
+  const link = page.getByRole("link", {
+    name: "Open dogfood workflow details",
+  });
+  await expect(link).toHaveAttribute("href", workflowURL);
+  const [workflowPage] = await Promise.all([
+    page.waitForEvent("popup"),
+    link.click(),
+  ]);
+  await expect(workflowPage.getByText("Workflow details")).toBeVisible();
+  expect(workflowPage.url()).toBe(workflowURL);
+  await workflowPage.close();
+});
+
 test("density modes keep shell geometry stable", async ({ page }) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,

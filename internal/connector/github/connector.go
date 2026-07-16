@@ -17,7 +17,16 @@ query DetentGitHubAuthenticate($projectId: ID!) {
   viewer { login }
   node(id: $projectId) {
     __typename
-    ... on ProjectV2 { id }
+    ... on ProjectV2 { id url }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}`
+
+const projectURLQuery = `
+query DetentGitHubProjectURL($projectId: ID!) {
+  node(id: $projectId) {
+    __typename
+    ... on ProjectV2 { url }
   }
   rateLimit { limit used remaining cost resetAt }
 }`
@@ -112,6 +121,7 @@ type Connector struct {
 	mu                sync.RWMutex
 	writeMu           sync.Mutex
 	instanceLogin     string
+	projectURL        string
 }
 
 type RepositoryMergeSettings struct {
@@ -273,6 +283,7 @@ func (c *Connector) Authenticate(ctx context.Context) error {
 		Node *struct {
 			TypeName string `json:"__typename"`
 			ID       string `json:"id"`
+			URL      string `json:"url"`
 		} `json:"node"`
 	}
 	if err := c.client.GraphQLWithType(ctx, graphQLQueryAuthenticate, authenticateQuery, map[string]any{"projectId": c.projectID}, &response); err != nil {
@@ -287,6 +298,7 @@ func (c *Connector) Authenticate(ctx context.Context) error {
 	login := strings.TrimSpace(response.Viewer.Login)
 	c.mu.Lock()
 	c.instanceLogin = login
+	c.projectURL = strings.TrimSpace(response.Node.URL)
 	c.mu.Unlock()
 
 	return nil
@@ -320,11 +332,42 @@ func (c *Connector) InstanceLogin() string {
 	return c.instanceLogin
 }
 
+func (c *Connector) ProjectURL(ctx context.Context) (string, error) {
+	if c == nil || c.usesIssueFieldStatus() || c.usesLabelStatus() || strings.TrimSpace(c.projectID) == "" {
+		return "", nil
+	}
+	c.mu.RLock()
+	projectURL := c.projectURL
+	c.mu.RUnlock()
+	if projectURL != "" {
+		return projectURL, nil
+	}
+
+	var response struct {
+		Node *struct {
+			TypeName string `json:"__typename"`
+			URL      string `json:"url"`
+		} `json:"node"`
+	}
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryProjectMetadata, projectURLQuery, map[string]any{"projectId": c.projectID}, &response); err != nil {
+		return "", fmt.Errorf("resolve github project URL: %w", err)
+	}
+	if response.Node == nil || response.Node.TypeName != "ProjectV2" || strings.TrimSpace(response.Node.URL) == "" {
+		return "", ErrProjectNotFound
+	}
+	projectURL = strings.TrimSpace(response.Node.URL)
+	c.mu.Lock()
+	c.projectURL = projectURL
+	c.mu.Unlock()
+	return projectURL, nil
+}
+
 var _ connector.Connector = (*Connector)(nil)
 var _ connector.Authenticator = (*Connector)(nil)
 var _ intake.IssueStore = (*Connector)(nil)
 var _ connector.Closer = (*Connector)(nil)
 var _ connector.InstanceIdentifier = (*Connector)(nil)
+var _ connector.ProjectURLResolver = (*Connector)(nil)
 var _ connector.IssueChildrenResolver = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
 var _ connector.IssueCommentReader = (*Connector)(nil)

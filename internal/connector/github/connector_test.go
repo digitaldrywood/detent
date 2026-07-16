@@ -27,7 +27,7 @@ func TestConnectorAuthenticateValidatesViewerAndProject(t *testing.T) {
 		requests <- payload
 
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"viewer":{"login":"octocat"},"node":{"__typename":"ProjectV2","id":"PVT_1"}}}`))
+		_, _ = w.Write([]byte(`{"data":{"viewer":{"login":"octocat"},"node":{"__typename":"ProjectV2","id":"PVT_1","url":"https://github.com/orgs/octo-org/projects/7"}}}`))
 	}))
 	t.Cleanup(server.Close)
 
@@ -51,11 +51,60 @@ func TestConnectorAuthenticateValidatesViewerAndProject(t *testing.T) {
 	if got := c.InstanceLogin(); got != "octocat" {
 		t.Fatalf("InstanceLogin() = %q, want octocat", got)
 	}
+	projectURL, err := c.ProjectURL(context.Background())
+	if err != nil {
+		t.Fatalf("ProjectURL() error = %v", err)
+	}
+	if projectURL != "https://github.com/orgs/octo-org/projects/7" {
+		t.Fatalf("ProjectURL() = %q, want authenticated project URL", projectURL)
+	}
 
 	payload := <-requests
 	variables := payload["variables"].(map[string]any)
 	if variables["projectId"] != "PVT_1" {
 		t.Fatalf("projectId = %v, want PVT_1", variables["projectId"])
+	}
+}
+
+func TestConnectorProjectURLResolvesAndCachesMetadata(t *testing.T) {
+	t.Parallel()
+
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		if query, _ := payload["query"].(string); !strings.Contains(query, "DetentGitHubProjectURL") {
+			t.Fatalf("query = %q, want project URL metadata query", query)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"node":{"__typename":"ProjectV2","url":"https://github.com/users/octocat/projects/12"}}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewConnector(Config{
+		Endpoint:    server.URL,
+		APIKey:      "token",
+		ProjectSlug: "PVT_1",
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewConnector() error = %v", err)
+	}
+
+	for range 2 {
+		projectURL, err := c.ProjectURL(context.Background())
+		if err != nil {
+			t.Fatalf("ProjectURL() error = %v", err)
+		}
+		if projectURL != "https://github.com/users/octocat/projects/12" {
+			t.Fatalf("ProjectURL() = %q, want resolved project URL", projectURL)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("project URL requests = %d, want 1", got)
 	}
 }
 

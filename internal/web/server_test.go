@@ -7076,6 +7076,7 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 	dbPath := filepath.Join(root, "detent.db")
 	logPath := filepath.Join(root, "detent.log")
 	projectURL := "https://github.com/orgs/digitaldrywood/projects/4"
+	workflowDetailsURL := projectURL + "/workflows"
 
 	registry := project.NewRegistry()
 	trackedProject := newSettingsTestProject(t, globalconfig.Project{
@@ -7135,6 +7136,11 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 		">true</span>",
 		"github",
 		projectURL,
+		`href="` + workflowDetailsURL + `"`,
+		`aria-label="Open detent workflow details"`,
+		`target="_blank"`,
+		`rel="noopener noreferrer"`,
+		"View workflow ↗",
 		"Dependency auto-unblock",
 		"enabled: Blocked, Waiting -&gt; Todo when terminal_or_merged",
 		dbPath,
@@ -10383,7 +10389,7 @@ func newSettingsTestProject(t *testing.T, cfg globalconfig.Project, worktreeRoot
 	workflowCfg.Tracker.Kind = workflowconfig.TrackerGitHub
 	workflowCfg.Tracker.Endpoint = "https://api.github.com/graphql"
 	workflowCfg.Tracker.APIKey = "$GITHUB_TOKEN"
-	workflowCfg.Tracker.ProjectSlug = projectURL
+	workflowCfg.Tracker.ProjectSlug = "PVT_settings"
 	workflowCfg.Tracker.DependencyAutoUnblock.Enabled = true
 	workflowCfg.Tracker.DependencyAutoUnblock.SourceStates = []string{"Blocked", "Waiting"}
 	workflowCfg.Tracker.DependencyAutoUnblock.TargetState = "Todo"
@@ -10399,7 +10405,7 @@ func newSettingsTestProject(t *testing.T, cfg globalconfig.Project, worktreeRoot
 			Prompt: "Work the issue.",
 		},
 	}, project.Dependencies{
-		Connector: connectorProbe{name: "github"},
+		Connector: connectorProbe{name: "github", projectURL: projectURL},
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -11064,11 +11070,16 @@ func (storeProbe) Close() error {
 
 type connectorProbe struct {
 	name                 string
+	projectURL           string
 	fetchCandidateIssues func(context.Context) ([]connector.Issue, error)
 }
 
 func (p connectorProbe) Name() string {
 	return p.name
+}
+
+func (p connectorProbe) ProjectURL(context.Context) (string, error) {
+	return p.projectURL, nil
 }
 
 func (p connectorProbe) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
