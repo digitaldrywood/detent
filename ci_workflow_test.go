@@ -165,7 +165,7 @@ func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
 	for _, want := range []string{
 		"name: Resolve release installer version",
 		"GH_TOKEN: ${{ github.token }}",
-		"gh release view --repo \"$GITHUB_REPOSITORY\" --json tagName --jq .tagName",
+		"bash ./scripts/resolve-release-tag.sh",
 		"DETENT_VERSION=$tag",
 		"$GITHUB_ENV",
 	} {
