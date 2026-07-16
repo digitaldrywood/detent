@@ -420,6 +420,7 @@ type operatorStopAtomicConnector struct {
 	*fakeConnector
 	mu              sync.Mutex
 	operations      []string
+	priorityOnce    sync.Once
 	priorityStarted chan struct{}
 	releasePriority chan struct{}
 }
@@ -432,7 +433,9 @@ func (c *operatorStopAtomicConnector) SetField(ctx context.Context, issueID stri
 	c.mu.Lock()
 	c.operations = append(c.operations, "priority:"+value)
 	c.mu.Unlock()
-	close(c.priorityStarted)
+	c.priorityOnce.Do(func() {
+		close(c.priorityStarted)
+	})
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
