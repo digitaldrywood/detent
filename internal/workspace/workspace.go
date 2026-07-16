@@ -1099,15 +1099,18 @@ func GitMetadataWritableRoots(ctx context.Context, workspacePath string) ([]stri
 	if err != nil {
 		return nil, fmt.Errorf("workspace path: %w", err)
 	}
-	commonDir, err := gitCommonDir(ctx, workspaceRoot)
+	if _, err := os.Lstat(filepath.Join(workspaceRoot, ".git")); err != nil {
+		return nil, fmt.Errorf("workspace git metadata: %w", err)
+	}
+	metadata, err := inspectGitMetadata(ctx, workspaceRoot)
 	if err != nil {
-		return nil, fmt.Errorf("git common dir: %w", err)
+		return nil, err
 	}
 
 	roots := []string{}
 	seen := map[string]struct{}{}
 	addRoot := func(path string) {
-		if path == "" || path == commonDir || pathWithin(workspaceRoot, path) || !pathWithin(commonDir, path) {
+		if path == "" || path == metadata.commonDir || pathWithin(workspaceRoot, path) || !pathWithin(metadata.commonDir, path) {
 			return
 		}
 		if _, ok := seen[path]; ok {
@@ -1117,45 +1120,19 @@ func GitMetadataWritableRoots(ctx context.Context, workspacePath string) ([]stri
 		roots = append(roots, path)
 	}
 
-	gitDir, err := gitDir(ctx, workspaceRoot)
-	if err != nil {
-		return nil, fmt.Errorf("git dir: %w", err)
-	}
-	addRoot(gitDir)
-
-	objectsDir, err := gitExistingPath(ctx, workspaceRoot, "objects")
-	if err != nil {
-		return nil, fmt.Errorf("git objects dir: %w", err)
-	}
-	addRoot(objectsDir)
-
-	ref, err := gitSymbolicHead(ctx, workspaceRoot)
-	if err != nil {
-		var cmdErr *CommandError
-		if errors.As(err, &cmdErr) && cmdErr.ExitCode == 1 {
-			return roots, nil
-		}
-		return nil, fmt.Errorf("git symbolic head: %w", err)
-	}
-	if !strings.HasPrefix(ref, "refs/heads/") {
+	addRoot(metadata.gitDir)
+	addRoot(metadata.objectsDir)
+	if !strings.HasPrefix(metadata.headRef, "refs/heads/") {
 		return roots, nil
 	}
 
-	refPath, err := gitPath(ctx, workspaceRoot, ref)
-	if err != nil {
-		return nil, fmt.Errorf("git branch ref path: %w", err)
-	}
-	refDir, err := canonicalExistingDir(filepath.Dir(refPath))
+	refDir, err := canonicalExistingDir(filepath.Dir(filepath.Join(metadata.commonDir, filepath.FromSlash(metadata.headRef))))
 	if err != nil {
 		return nil, fmt.Errorf("git branch ref dir: %w", err)
 	}
 	addRoot(refDir)
 
-	logPath, err := gitPath(ctx, workspaceRoot, "logs/"+ref)
-	if err != nil {
-		return nil, fmt.Errorf("git branch log path: %w", err)
-	}
-	logDir, err := canonicalExistingDir(filepath.Dir(logPath))
+	logDir, err := canonicalExistingDir(filepath.Dir(filepath.Join(metadata.commonDir, "logs", filepath.FromSlash(metadata.headRef))))
 	if err != nil {
 		return nil, fmt.Errorf("git branch log dir: %w", err)
 	}
@@ -1164,50 +1141,52 @@ func GitMetadataWritableRoots(ctx context.Context, workspacePath string) ([]stri
 	return roots, nil
 }
 
-func gitDir(ctx context.Context, dir string) (string, error) {
-	output, err := runGitAt(ctx, dir, "rev-parse", "--git-dir")
-	if err != nil {
-		return "", err
-	}
-	path := strings.TrimSpace(output)
-	if path == "" {
-		return "", errors.New("git dir is empty")
-	}
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(dir, path)
-	}
-	return canonicalExistingPath(path)
+type gitMetadata struct {
+	commonDir  string
+	gitDir     string
+	objectsDir string
+	headRef    string
 }
 
-func gitExistingPath(ctx context.Context, dir string, name string) (string, error) {
-	path, err := gitPath(ctx, dir, name)
+func inspectGitMetadata(ctx context.Context, dir string) (gitMetadata, error) {
+	output, err := runGitAtWithEnv(
+		ctx,
+		dir,
+		gitDiscoveryBoundary(dir),
+		"rev-parse",
+		"--path-format=absolute",
+		"--git-common-dir",
+		"--git-dir",
+		"--git-path", "objects",
+		"--symbolic-full-name", "HEAD",
+	)
 	if err != nil {
-		return "", err
+		return gitMetadata{}, fmt.Errorf("inspect git metadata: %w", err)
 	}
-	return canonicalExistingPath(path)
-}
+	fields := strings.Split(strings.TrimSpace(output), "\n")
+	if len(fields) != 4 {
+		return gitMetadata{}, fmt.Errorf("inspect git metadata: expected 4 fields, got %d", len(fields))
+	}
 
-func gitPath(ctx context.Context, dir string, gitPath string) (string, error) {
-	output, err := runGitAt(ctx, dir, "rev-parse", "--git-path", gitPath)
-	if err != nil {
-		return "", err
+	paths := make([]string, 3)
+	for i, field := range fields[:3] {
+		path, err := canonicalExistingPath(strings.TrimSpace(field))
+		if err != nil {
+			return gitMetadata{}, fmt.Errorf("inspect git metadata field %d: %w", i+1, err)
+		}
+		paths[i] = path
 	}
-	path := strings.TrimSpace(output)
-	if path == "" {
-		return "", errors.New("git path is empty")
+	headRef := strings.TrimSpace(fields[3])
+	if headRef == "" {
+		return gitMetadata{}, errors.New("inspect git metadata: head ref is empty")
 	}
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(dir, path)
-	}
-	return filepath.Clean(path), nil
-}
 
-func gitSymbolicHead(ctx context.Context, dir string) (string, error) {
-	output, err := runGitAt(ctx, dir, "symbolic-ref", "-q", "HEAD")
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(output), nil
+	return gitMetadata{
+		commonDir:  paths[0],
+		gitDir:     paths[1],
+		objectsDir: paths[2],
+		headRef:    headRef,
+	}, nil
 }
 
 func canonicalExistingDir(path string) (string, error) {
