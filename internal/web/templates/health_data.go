@@ -68,7 +68,7 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Detail = "Dispatch remains paused until a canary succeeds."
 		return view
 	}
-	if summaries := boardDispatchRecoverySummaries(snapshot.DispatchRecoveries); len(summaries) > 0 {
+	if summaries := healthDispatchRecoverySummaries(snapshot.DispatchRecoveries); len(summaries) > 0 {
 		details := make([]string, 0, len(summaries))
 		for _, summary := range summaries {
 			details = append(details, summary.Title)

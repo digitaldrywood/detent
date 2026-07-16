@@ -104,7 +104,7 @@ func TestBackendCapacityProjectDetailDoesNotInflateVerdict(t *testing.T) {
 	if view.Verdict != "Backend codex at usage limit." {
 		t.Fatalf("verdict = %q, want one backend outage", view.Verdict)
 	}
-	summaries := boardBackendCapacitySummaries(snapshot.BackendOutages)
+	summaries := boardBackendCapacitySummaries(snapshot.BackendOutages, time.Time{})
 	if len(summaries) != 1 || summaries[0].Title != "Backend codex at usage limit — 2 projects" {
 		t.Fatalf("Board summaries = %#v", summaries)
 	}

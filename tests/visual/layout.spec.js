@@ -338,7 +338,29 @@ test("board hides informational recovery and overload notices", async ({
   );
 });
 
-test("board collapses degraded health banners by kind", async ({ page }) => {
+test("board hides scheduled pacing while health retains its signal", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "board-scheduled-pacing",
+    route: "/",
+    waitSelector: "#board-lanes",
+    viewport: desktopViewport,
+  });
+
+  await expect(page.locator("#dispatch-recovery-status")).toHaveCount(0);
+  await expect(page.locator("#backend-capacity-outage")).toHaveCount(0);
+  await expect(page.locator("#snapshot > :visible").first()).toHaveAttribute(
+    "id",
+    "board-figures",
+  );
+  await expect(
+    page.locator('[data-sidebar-nav-item="health"] .bg-warn'),
+  ).toBeVisible();
+});
+
+test("board shows only health states needing attention", async ({ page }) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
     scenario: "board-degraded-health-banners",
@@ -352,19 +374,14 @@ test("board collapses degraded health banners by kind", async ({ page }) => {
   const capacity = page.locator("#backend-capacity-outage");
   await expect(failure).toHaveCount(1);
   await expect(recovery).toHaveCount(1);
-  await expect(capacity).toHaveCount(1);
+  await expect(capacity).toHaveCount(0);
   await expect(failure).toHaveClass(/border-warn/);
   await expect(recovery).toHaveClass(/border-warn/);
-  await expect(capacity).toHaveClass(/border-warn/);
   await expect(failure.locator("p")).toHaveCount(1);
   await expect(recovery.locator("p")).toHaveCount(1);
-  await expect(capacity.locator("p")).toHaveCount(1);
   await expect(failure).toContainText("2 projects");
   await expect(recovery).toContainText(
-    "Dispatch waiting on GitHub REST capacity — 2 projects",
-  );
-  await expect(capacity).toContainText(
-    "Backend codex at usage limit — 2 projects",
+    "Dispatch retry overdue for GitHub REST capacity — 1 project",
   );
   await expect(page.locator("#backend-overload-retries")).toHaveCount(0);
   await expect(page.locator("#snapshot")).not.toContainText(
@@ -1022,6 +1039,35 @@ test("health keeps full waiting and ramp recovery detail", async ({ page }) => {
   await expect(page.locator("#backend-overload-retries")).toContainText(
     "3 overload retries last hour",
   );
+});
+
+test("health keeps full scheduled pacing detail hidden from the board", async ({
+  page,
+}) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "health-scheduled-pacing",
+    route: "/health/ui",
+    waitSelector: "#dispatch-recovery-status",
+    viewport: desktopViewport,
+  });
+
+  const recoveries = page.locator("#dispatch-recovery-status");
+  await expect(
+    recoveries.getByText("Dispatch waiting on GitHub REST capacity", {
+      exact: true,
+    }),
+  ).toHaveCount(2);
+  await expect(recoveries).toContainText(
+    "remaining 288 at or below dispatch floor",
+  );
+  await expect(recoveries).toContainText("rest_budget_reserved");
+  await expect(page.locator("#backend-capacity-outage")).toContainText(
+    "GitHub REST dispatch paused",
+  );
+  await expect(
+    page.locator('[data-sidebar-nav-item="health"] .bg-warn'),
+  ).toBeVisible();
 });
 
 test("project overview renders tabs, hero, and recent runs", async ({

@@ -140,6 +140,8 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "fleet-kanban-multiproject", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "dense-kanban", KanbanMode: workflowconfig.KanbanModeReadOnly},
 		{ID: "fleet-kanban-blocked-alerts", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "healthy", KanbanMode: workflowconfig.KanbanModeReadOnly, ShowBlockedAlerts: true},
 		{ID: "board-ramp-active-recoveries", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "board-ramp-active-recoveries", KanbanMode: workflowconfig.KanbanModeReadOnly},
+		{ID: "board-scheduled-pacing", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "board-scheduled-pacing", KanbanMode: workflowconfig.KanbanModeReadOnly},
+		{ID: "health-scheduled-pacing", Route: "/health/ui", WaitSelector: "#dispatch-recovery-status", Page: "health", Variant: "board-scheduled-pacing"},
 		{ID: "board-degraded-health-banners", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "board-degraded-health-banners", KanbanMode: workflowconfig.KanbanModeReadOnly},
 		{ID: "health-dispatch-recoveries", Route: "/health/ui", WaitSelector: "#dispatch-recovery-status", Page: "health", Variant: "board-degraded-health-banners"},
 		{ID: "fleet-kanban-external-lane-timer", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "external-lane-timer", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},

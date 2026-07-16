@@ -57,13 +57,13 @@ templ boardSnapshotBody(data DashboardData) {
 			@boardFailureBreakerBanner(failureSummary)
 		</div>
 	}
-	{{ recoverySummaries := boardDispatchRecoverySummaries(data.Snapshot.DispatchRecoveries) }}
+	{{ recoverySummaries := boardDispatchRecoverySummaries(data.Snapshot.DispatchRecoveries, data.Snapshot.GeneratedAt) }}
 	if len(recoverySummaries) > 0 {
 		<div class="flex-none px-5 pt-3.5">
 			@boardDispatchRecoveryBanner(recoverySummaries)
 		</div>
 	}
-	{{ capacitySummaries := boardBackendCapacitySummaries(data.Snapshot.BackendOutages) }}
+	{{ capacitySummaries := boardBackendCapacitySummaries(data.Snapshot.BackendOutages, data.Snapshot.GeneratedAt) }}
 	if len(capacitySummaries) > 0 {
 		<div class="flex-none px-5 pt-3.5">
 			@boardBackendCapacityBanner(capacitySummaries)

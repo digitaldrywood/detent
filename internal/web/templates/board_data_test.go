@@ -1687,7 +1687,6 @@ func TestBoardSnapshotRendersBackendCapacityBanner(t *testing.T) {
 	t.Parallel()
 
 	data := boardTestData()
-	nextProbeAt := data.Snapshot.GeneratedAt.Add(5 * time.Minute)
 	lastProbeAt := data.Snapshot.GeneratedAt.Add(-time.Minute)
 	data.Snapshot.BackendOutages = []telemetry.BackendOutage{{
 		ProjectID:       "detent",
@@ -1695,8 +1694,6 @@ func TestBoardSnapshotRendersBackendCapacityBanner(t *testing.T) {
 		BackendKind:     "codex",
 		Provider:        "openai",
 		Reason:          "provider usage limit reached",
-		ResumeAt:        data.Snapshot.GeneratedAt.Add(44 * time.Minute),
-		NextProbeAt:     &nextProbeAt,
 		LastProbeAt:     &lastProbeAt,
 		LastProbeResult: "capacity_exhausted",
 		LastProbeDetail: "provider usage limit reached",
@@ -1714,6 +1711,100 @@ func TestBoardSnapshotRendersBackendCapacityBanner(t *testing.T) {
 		if strings.Contains(html, unwanted) {
 			t.Fatalf("capacity summary contains detail %q:\n%s", unwanted, html)
 		}
+	}
+}
+
+func TestBoardSnapshotHidesScheduledPacingStates(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	data.Snapshot.DispatchRecoveries = []telemetry.DispatchRecovery{
+		{ProjectID: "detent", Kind: "github_rest", Status: "waiting", ResumeAt: data.Snapshot.GeneratedAt.Add(14 * time.Minute)},
+		{ProjectID: "docs", Kind: "pull_request_hydration", Reason: "rest_budget_reserved", Status: "waiting", ResumeAt: data.Snapshot.GeneratedAt.Add(14 * time.Minute)},
+	}
+	data.Snapshot.BackendOutages = []telemetry.BackendOutage{{
+		Kind:     "github_rest_rate_limit",
+		Reason:   "GitHub REST remaining is at or below dispatch floor",
+		ResumeAt: data.Snapshot.GeneratedAt.Add(14 * time.Minute),
+	}}
+
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	for _, unwanted := range []string{`id="dispatch-recovery-status"`, `id="backend-capacity-outage"`, "rest_budget_reserved"} {
+		if strings.Contains(html, unwanted) {
+			t.Fatalf("scheduled pacing state rendered Board banner %q:\n%s", unwanted, html)
+		}
+	}
+	if !strings.Contains(html, `id="board-figures"`) || !strings.Contains(html, `id="board-lanes"`) {
+		t.Fatalf("Board content missing after pacing banners were hidden:\n%s", html)
+	}
+}
+
+func TestBoardSnapshotEscalatesStuckAutomaticRecovery(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		prepare  func(*DashboardData)
+		wantID   string
+		wantText string
+	}{
+		{
+			name: "dispatch retry overdue",
+			prepare: func(data *DashboardData) {
+				data.Snapshot.DispatchRecoveries = []telemetry.DispatchRecovery{{
+					ProjectID: "detent",
+					Kind:      "github_rest",
+					Status:    "waiting",
+					ResumeAt:  data.Snapshot.GeneratedAt.Add(-2 * time.Minute),
+				}}
+			},
+			wantID:   `id="dispatch-recovery-status"`,
+			wantText: "Dispatch retry overdue for GitHub REST capacity",
+		},
+		{
+			name: "capacity probe overdue",
+			prepare: func(data *DashboardData) {
+				nextProbeAt := data.Snapshot.GeneratedAt.Add(-2 * time.Minute)
+				data.Snapshot.BackendOutages = []telemetry.BackendOutage{{
+					ProjectID:   "detent",
+					BackendID:   "codex",
+					ResumeAt:    data.Snapshot.GeneratedAt.Add(-10 * time.Minute),
+					NextProbeAt: &nextProbeAt,
+				}}
+			},
+			wantID:   `id="backend-capacity-outage"`,
+			wantText: "Backend codex recovery overdue",
+		},
+		{
+			name: "repeated capacity probes",
+			prepare: func(data *DashboardData) {
+				nextProbeAt := data.Snapshot.GeneratedAt.Add(10 * time.Minute)
+				data.Snapshot.BackendOutages = []telemetry.BackendOutage{{
+					ProjectID:       "detent",
+					BackendID:       "codex",
+					ResumeAt:        data.Snapshot.GeneratedAt.Add(10 * time.Minute),
+					NextProbeAt:     &nextProbeAt,
+					LastProbeResult: "capacity_exhausted",
+					ProbeAttempts:   3,
+				}}
+			},
+			wantID:   `id="backend-capacity-outage"`,
+			wantText: "Backend codex recovery failed repeatedly",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			data := boardTestData()
+			tt.prepare(&data)
+			html := renderBoardComponent(t, BoardSnapshot(data))
+			for _, want := range []string{tt.wantID, tt.wantText} {
+				if !strings.Contains(html, want) {
+					t.Fatalf("stuck recovery banner missing %q:\n%s", want, html)
+				}
+			}
+		})
 	}
 }
 
@@ -1853,7 +1944,6 @@ func TestBoardSnapshotRendersGitHubRESTCapacityBanner(t *testing.T) {
 		Provider:    "github",
 		Kind:        "github_rest_rate_limit",
 		Reason:      "GitHub REST remaining 0 is at or below dispatch floor 1000",
-		ResumeAt:    data.Snapshot.GeneratedAt.Add(44 * time.Minute),
 	}}
 	html := renderBoardComponent(t, BoardSnapshot(data))
 	for _, want := range []string{

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
 
 func TestAppShellScriptRefreshesOpenDetailSheetAfterSnapshotSettle(t *testing.T) {
@@ -102,6 +103,44 @@ func TestAppShellNavGroupsOrderAndActiveState(t *testing.T) {
 	}
 	if !healthDot {
 		t.Fatalf("health nav item should carry the status dot")
+	}
+}
+
+func TestAppShellHealthKindReflectsScheduledPacing(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 16, 15, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		snapshot telemetry.Snapshot
+	}{
+		{
+			name: "scheduled dispatch recovery",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				DispatchRecoveries: []telemetry.DispatchRecovery{{
+					Kind: "github_rest", Status: "waiting", ResumeAt: now.Add(10 * time.Minute),
+				}},
+			},
+		},
+		{
+			name: "scheduled capacity resume",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				BackendOutages: []telemetry.BackendOutage{{
+					BackendID: "github-rest", Kind: "github_rest_rate_limit", ResumeAt: now.Add(10 * time.Minute),
+				}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := appShellHealthKind(DashboardShellData{Snapshot: tt.snapshot}); got != primitives.KindWarn {
+				t.Fatalf("appShellHealthKind() = %q, want %q", got, primitives.KindWarn)
+			}
+		})
 	}
 }
 

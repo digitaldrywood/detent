@@ -76,6 +76,8 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot = demoBackendCapacityOutageSnapshot()
 	case "board-ramp-active-recoveries":
 		snapshot = demoBoardRampActiveRecoveriesSnapshot()
+	case "board-scheduled-pacing":
+		snapshot = demoBoardScheduledPacingSnapshot()
 	case "board-degraded-health-banners":
 		snapshot = demoBoardDegradedHealthBannersSnapshot()
 	}
@@ -376,6 +378,26 @@ func demoBoardRampActiveRecoveriesSnapshot() telemetry.Snapshot {
 	return snapshot
 }
 
+func demoBoardScheduledPacingSnapshot() telemetry.Snapshot {
+	snapshot := demoHealthySnapshot()
+	now := snapshot.GeneratedAt
+	snapshot.DispatchRecoveries = []telemetry.DispatchRecovery{
+		{ProjectID: demoPrimaryProjectID, Kind: "github_rest", Reason: "remaining 288 at or below dispatch floor", Status: "waiting", StartedAt: now.Add(-3 * time.Minute), ResumeAt: now.Add(14 * time.Minute), MaxConcurrent: 6},
+		{ProjectID: "docs-site", Kind: "github_rest", Reason: "remaining 296 at or below dispatch floor", Status: "waiting", StartedAt: now.Add(-2 * time.Minute), ResumeAt: now.Add(14 * time.Minute), MaxConcurrent: 6},
+		{ProjectID: "billing-api", Kind: "pull_request_hydration", Reason: "rest_budget_reserved", Status: "waiting", StartedAt: now.Add(-time.Minute), ResumeAt: now.Add(14 * time.Minute), MaxConcurrent: 6},
+	}
+	snapshot.BackendOutages = []telemetry.BackendOutage{{
+		BackendID:   "github-rest",
+		BackendKind: "tracker",
+		Provider:    "github",
+		Kind:        "github_rest_rate_limit",
+		Reason:      "GitHub REST remaining 288 is at or below dispatch floor 1000",
+		DetectedAt:  now.Add(-3 * time.Minute),
+		ResumeAt:    now.Add(14 * time.Minute),
+	}}
+	return snapshot
+}
+
 func demoBoardDegradedHealthBannersSnapshot() telemetry.Snapshot {
 	snapshot := demoHealthySnapshot()
 	now := snapshot.GeneratedAt
@@ -385,7 +407,7 @@ func demoBoardDegradedHealthBannersSnapshot() telemetry.Snapshot {
 	}
 	snapshot.DispatchRecoveries = []telemetry.DispatchRecovery{
 		{ProjectID: demoPrimaryProjectID, Kind: "github_rest", Reason: "primary quota exhausted", Status: "waiting", StartedAt: now.Add(-3 * time.Minute), ResumeAt: now.Add(20 * time.Minute), MaxConcurrent: 6},
-		{ProjectID: "docs-site", Kind: "github_rest", Reason: "primary quota exhausted", Status: "waiting", StartedAt: now.Add(-2 * time.Minute), ResumeAt: now.Add(20 * time.Minute), MaxConcurrent: 6},
+		{ProjectID: "docs-site", Kind: "github_rest", Reason: "automatic retry did not recover", Status: "waiting", StartedAt: now.Add(-12 * time.Minute), ResumeAt: now.Add(-2 * time.Minute), MaxConcurrent: 6},
 		{ProjectID: "billing-api", Kind: "backend_capacity", Status: "ramping", StartedAt: now.Add(-time.Minute), Limit: 1, MaxConcurrent: 6, Admitted: 1},
 	}
 	resumeAt := now.Add(30 * time.Minute)
