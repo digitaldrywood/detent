@@ -27,6 +27,8 @@ import (
 const (
 	throughputTrendWindow        = 10 * time.Minute
 	defaultThroughputWindow      = time.Minute
+	boardRecoveryOverdueGrace    = time.Minute
+	boardRecoveryFailureAttempts = 3
 	prPipelineDoneTodayLimit     = 10
 	prPipelineMergeSummaryWindow = 24 * time.Hour
 	prPipelineActiveMergeTarget  = 5 * time.Minute
@@ -6509,7 +6511,37 @@ func boardFailureBreakerSummary(breakers []telemetry.FailureBreaker) (boardBanne
 	}, true
 }
 
-func boardDispatchRecoverySummaries(recoveries []telemetry.DispatchRecovery) []boardBannerSummary {
+func boardDispatchRecoverySummaries(recoveries []telemetry.DispatchRecovery, now time.Time) []boardBannerSummary {
+	return dispatchRecoverySummaries(recoveries, func(recovery telemetry.DispatchRecovery) (string, bool) {
+		status := strings.TrimSpace(recovery.Status)
+		switch status {
+		case "ramping":
+			return "", false
+		case "waiting":
+			if automaticRecoveryPending(recovery.ResumeAt, now) {
+				return "", false
+			}
+			kind := dispatchRecoveryKindLabel(recovery.Kind)
+			if automaticRecoveryOverdue(recovery.ResumeAt, now) {
+				return "Dispatch retry overdue for " + kind, true
+			}
+			return "Dispatch waiting on " + kind, true
+		default:
+			return "Dispatch recovery requires attention for " + dispatchRecoveryKindLabel(recovery.Kind), true
+		}
+	})
+}
+
+func healthDispatchRecoverySummaries(recoveries []telemetry.DispatchRecovery) []boardBannerSummary {
+	return dispatchRecoverySummaries(recoveries, func(recovery telemetry.DispatchRecovery) (string, bool) {
+		if strings.TrimSpace(recovery.Status) != "waiting" {
+			return "", false
+		}
+		return "Dispatch waiting on " + dispatchRecoveryKindLabel(recovery.Kind), true
+	})
+}
+
+func dispatchRecoverySummaries(recoveries []telemetry.DispatchRecovery, selectTitle func(telemetry.DispatchRecovery) (string, bool)) []boardBannerSummary {
 	type group struct {
 		title    string
 		projects map[string]struct{}
@@ -6518,13 +6550,14 @@ func boardDispatchRecoverySummaries(recoveries []telemetry.DispatchRecovery) []b
 	groups := make(map[string]*group)
 	order := make([]string, 0)
 	for _, recovery := range recoveries {
-		if strings.TrimSpace(recovery.Status) != "waiting" {
+		title, selected := selectTitle(recovery)
+		if !selected {
 			continue
 		}
-		key := strings.TrimSpace(recovery.Kind)
+		key := strings.TrimSpace(recovery.Kind) + "\x00" + title
 		if _, ok := groups[key]; !ok {
 			groups[key] = &group{
-				title:    "Dispatch waiting on " + dispatchRecoveryKindLabel(recovery.Kind),
+				title:    title,
 				projects: make(map[string]struct{}),
 			}
 			order = append(order, key)
@@ -6550,7 +6583,7 @@ func boardDispatchRecoverySummaries(recoveries []telemetry.DispatchRecovery) []b
 	return summaries
 }
 
-func boardBackendCapacitySummaries(outages []telemetry.BackendOutage) []boardBannerSummary {
+func boardBackendCapacitySummaries(outages []telemetry.BackendOutage, now time.Time) []boardBannerSummary {
 	type group struct {
 		title    string
 		projects map[string]struct{}
@@ -6559,7 +6592,10 @@ func boardBackendCapacitySummaries(outages []telemetry.BackendOutage) []boardBan
 	groups := make(map[string]*group)
 	order := make([]string, 0)
 	for _, outage := range backendCapacityOutageDetails(outages) {
-		title := backendCapacityOutageTitle(outage)
+		title, selected := boardBackendCapacityTitle(outage, now)
+		if !selected {
+			continue
+		}
 		if _, ok := groups[title]; !ok {
 			groups[title] = &group{title: title, projects: make(map[string]struct{})}
 			order = append(order, title)
@@ -6583,6 +6619,35 @@ func boardBackendCapacitySummaries(outages []telemetry.BackendOutage) []boardBan
 		})
 	}
 	return summaries
+}
+
+func boardBackendCapacityTitle(outage telemetry.BackendOutage, now time.Time) (string, bool) {
+	if strings.TrimSpace(outage.ProbeIssueID) != "" {
+		return "", false
+	}
+	backend := backendCapacityBackendID(outage)
+	if outage.ProbeAttempts >= boardRecoveryFailureAttempts {
+		return "Backend " + backend + " recovery failed repeatedly", true
+	}
+	resumeAt := outage.ResumeAt
+	if outage.NextProbeAt != nil && !outage.NextProbeAt.IsZero() {
+		resumeAt = *outage.NextProbeAt
+	}
+	if automaticRecoveryPending(resumeAt, now) {
+		return "", false
+	}
+	if automaticRecoveryOverdue(resumeAt, now) {
+		return "Backend " + backend + " recovery overdue", true
+	}
+	return backendCapacityOutageTitle(outage), true
+}
+
+func automaticRecoveryPending(resumeAt time.Time, now time.Time) bool {
+	return !resumeAt.IsZero() && !now.IsZero() && now.Before(resumeAt.Add(boardRecoveryOverdueGrace))
+}
+
+func automaticRecoveryOverdue(resumeAt time.Time, now time.Time) bool {
+	return !resumeAt.IsZero() && !now.IsZero() && !now.Before(resumeAt.Add(boardRecoveryOverdueGrace))
 }
 
 func boardAffectedProjectCount(entries int, projectIDs func(func(string))) int {

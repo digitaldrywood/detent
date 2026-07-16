@@ -83,12 +83,17 @@ func appShellActiveNav(data DashboardShellData) string {
 
 func appShellHealthKind(data DashboardShellData) primitives.Kind {
 	switch gitHubAPIHealth(data.Snapshot).State {
-	case gitHubAPIHealthStateHealthy, gitHubAPIHealthStateAtRest:
-		return primitives.KindOK
-	case gitHubAPIHealthStateWarning:
-		return primitives.KindWarn
 	case gitHubAPIHealthStateBackoff, gitHubAPIHealthStateExhausted:
 		return primitives.KindErr
+	case gitHubAPIHealthStateWarning:
+		return primitives.KindWarn
+	}
+	if len(data.Snapshot.BackendOutages) > 0 || len(data.Snapshot.FailureBreakers) > 0 || len(data.Snapshot.DispatchRecoveries) > 0 {
+		return primitives.KindWarn
+	}
+	switch gitHubAPIHealth(data.Snapshot).State {
+	case gitHubAPIHealthStateHealthy, gitHubAPIHealthStateAtRest:
+		return primitives.KindOK
 	}
 	return primitives.KindNeutral
 }

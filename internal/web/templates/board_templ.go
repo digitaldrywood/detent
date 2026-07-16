@@ -184,7 +184,7 @@ func boardSnapshotBody(data DashboardData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		recoverySummaries := boardDispatchRecoverySummaries(data.Snapshot.DispatchRecoveries)
+		recoverySummaries := boardDispatchRecoverySummaries(data.Snapshot.DispatchRecoveries, data.Snapshot.GeneratedAt)
 		if len(recoverySummaries) > 0 {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "<div class=\"flex-none px-5 pt-3.5\">")
 			if templ_7745c5c3_Err != nil {
@@ -199,7 +199,7 @@ func boardSnapshotBody(data DashboardData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		capacitySummaries := boardBackendCapacitySummaries(data.Snapshot.BackendOutages)
+		capacitySummaries := boardBackendCapacitySummaries(data.Snapshot.BackendOutages, data.Snapshot.GeneratedAt)
 		if len(capacitySummaries) > 0 {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "<div class=\"flex-none px-5 pt-3.5\">")
 			if templ_7745c5c3_Err != nil {
