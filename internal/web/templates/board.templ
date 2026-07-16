@@ -205,7 +205,7 @@ templ boardCardView2(card boardCardView) {
 			}
 		}
 	>
-		<div class="flex min-w-0 items-center gap-1.5 font-mono text-2xs font-medium text-sec">
+		<div class="flex min-w-0 items-center gap-1.5 font-mono text-2xs font-medium text-sec" data-board-card-content="cozy">
 			if card.Running {
 				@primitives.StatusDot(primitives.KindOK, true)
 			}
@@ -237,26 +237,56 @@ templ boardCardView2(card boardCardView) {
 				@primitives.TrackerReferenceLink(card.MetaRight, card.PRURL, "flex-none whitespace-nowrap tabular-nums")
 			}
 		</div>
-		<div class={ boardCardTitleClass(card) }>{ card.Title }</div>
+		<div class={ boardCardTitleClass(card) } data-board-card-title>{ card.Title }</div>
+		<div class="min-w-0 items-center gap-1.5 font-mono text-2xs text-sec" data-board-card-content="compact">
+			<span class="flex-none font-medium text-text">{ card.State }</span>
+			if card.CompactSignal != "" {
+				<span aria-hidden="true">·</span>
+				<span class="min-w-0 truncate">{ card.CompactSignal }</span>
+			}
+		</div>
 		if card.RuntimeBadge {
 			@boardRuntimeBadge(card)
 		}
 		if card.ExtraText != "" && (!card.RuntimeBadge || card.ExtraText != "agent working") {
 			if card.ExtraChip {
-				<div class="flex">
+				<div class="flex" data-board-card-expanded>
 					@primitives.Chip(card.ExtraKind, card.ExtraText)
 				</div>
 			} else {
-				<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.ExtraKind) }>
+				<div class={ "flex items-center gap-1.5 text-2xs " + boardExtraTextClass(card.ExtraKind) } data-board-card-expanded>
 					@primitives.StatusDot(card.ExtraKind, false)
 					{ card.ExtraText }
 				</div>
 			}
 		}
 		if card.AgeFooter != "" {
-			<div class="mt-0.5 flex items-center justify-between gap-2 border-t border-line/70 pt-1.5 font-mono text-2xs text-sec" title={ card.AgeFooterTitle } data-board-card-age-footer>
+			<div class="mt-0.5 flex items-center justify-between gap-2 border-t border-line/70 pt-1.5 font-mono text-2xs text-sec" title={ card.AgeFooterTitle } data-board-card-age-footer data-board-card-expanded>
 				<span class="min-w-0 truncate">In lane</span>
 				<span class="flex-none whitespace-nowrap tabular-nums">{ card.AgeFooter }</span>
+			</div>
+		}
+		if len(card.Labels) > 0 || card.Effort != "" || card.Activity != "" || card.PRStatus != "" {
+			<div class="gap-1.5 border-t border-line/70 pt-1.5 text-2xs text-sec" data-board-card-content="comfy">
+				if len(card.Labels) > 0 {
+					<div class="flex min-w-0 flex-wrap gap-1" data-board-card-labels>
+						for _, label := range card.Labels {
+							<span class="max-w-full truncate rounded-chip bg-surface px-1.5 py-0.5">{ label }</span>
+						}
+					</div>
+				}
+				if card.Effort != "" {
+					<div class="flex min-w-0 items-center gap-1.5" data-board-card-effort>
+						<span class="text-dim">Effort</span>
+						<span class="truncate font-mono text-text">{ card.Effort }</span>
+					</div>
+				}
+				if card.Activity != "" {
+					<div class="line-clamp-2 min-w-0" data-board-card-activity><span class="text-dim">Activity</span> { card.Activity }</div>
+				}
+				if card.PRStatus != "" {
+					<div class={ "w-fit rounded-chip border px-1.5 py-0.5 font-mono " + card.PRStatusClass } data-board-card-pr-status>{ card.PRStatus }</div>
+				}
 			</div>
 		}
 		if card.CanDrag {
@@ -270,6 +300,7 @@ templ boardRuntimeBadge(card boardCardView) {
 		id={ card.DomID + "-runtime-badge" }
 		class="flex min-w-0 items-center gap-1.5 text-2xs text-ok"
 		data-board-runtime-badge
+		data-board-card-expanded
 		if card.RuntimeSummary != "" {
 			tabindex="0"
 			role="img"
@@ -284,8 +315,8 @@ templ boardRuntimeBadge(card boardCardView) {
 	>
 		@primitives.StatusDot(primitives.KindOK, false)
 		<span class="min-w-0 truncate font-mono">
-			<span class="runtime-badge-compact" data-runtime-density="compact">{ card.RuntimeCompactText }</span>
 			<span class="runtime-badge-cozy" data-runtime-density="cozy">{ card.RuntimeCozyText }</span>
+			<span class="runtime-badge-comfy" data-runtime-density="comfy">{ card.RuntimeComfyText }</span>
 		</span>
 	</div>
 }

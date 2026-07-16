@@ -145,10 +145,28 @@ test("sidebar groups global navigation and hides a single project", async ({
   for (const label of await content.locator("[data-sidebar-project-label]").all()) {
     await expect(label).toBeHidden();
   }
-  for (const project of await content.locator("[data-sidebar-project]").all()) {
+  const collapsedProjects = await content.locator("[data-sidebar-project]").all();
+  const identities = [];
+  for (const project of collapsedProjects) {
     await expect(project).toBeVisible();
-    await expect(project.locator('span[aria-hidden="true"]').first()).toBeVisible();
+    const identity = project.locator("[data-sidebar-project-identity]");
+    await expect(identity).toBeVisible();
+    await expect(identity).not.toHaveText("");
+    identities.push((await identity.textContent()).trim());
+    await expect(project).toHaveAttribute("data-help-title", /.+/);
+    await expect(project.locator("[data-sidebar-project-activity]")).toBeVisible();
+    const load = project.locator("[data-sidebar-project-badge]");
+    if ((await load.count()) > 0) {
+      await expect(load).toBeVisible();
+    }
   }
+  expect(new Set(identities).size).toBe(collapsedProjects.length);
+
+  const collapsedDetent = content.locator('[data-sidebar-project="dogfood"]');
+  await collapsedDetent.hover();
+  const tooltip = page.locator("body > #help-tooltip");
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText(await collapsedDetent.getAttribute("data-help-title"));
 
   await page.setExtraHTTPHeaders({});
   await page.goto(`${singleProjectRuntime.url}/`, {
@@ -208,7 +226,7 @@ test("sidebar project badges keep load, activity, blocked tint, and breakdown di
       await expect(detent.locator('[data-sidebar-project-activity="true"] .dt-pulse')).toBeVisible();
     }
   }
-  await page.locator('[data-density-choice="compact"]').click();
+  await page.locator('[data-density-choice="cozy"]').click();
   await page.evaluate(() => document.documentElement.removeAttribute("data-theme"));
 
   await detent.hover();
@@ -735,7 +753,7 @@ test("board runtime identity stays accessible across snapshot morphs", async ({
     viewport: desktopViewport,
   });
 
-  await page.locator('[data-density-choice="compact"]').click();
+  await page.locator('[data-density-choice="cozy"]').click();
   const fallbackBadge = page
     .locator('[data-board-runtime-badge]', { hasText: "agent working" })
     .first();
@@ -793,20 +811,20 @@ test("board runtime identity stays accessible across snapshot morphs", async ({
   const badge = card.locator(
     '[data-board-runtime-badge][data-help-description*="Provider session: thread-demo-core-5260"]',
   );
-  const compactIdentity = badge.locator('[data-runtime-density="compact"]');
   const cozyIdentity = badge.locator('[data-runtime-density="cozy"]');
+  const comfyIdentity = badge.locator('[data-runtime-density="comfy"]');
   await expect(badge).toHaveAttribute(
     "data-help-description",
     "Provider: openai · Provider session: thread-demo-core-5260 · Role: code · Detent session: 5260",
   );
-  await expect(compactIdentity).toBeVisible();
-  await expect(compactIdentity).toHaveText("gpt-5.6-sol · xhigh");
-  await expect(cozyIdentity).toBeHidden();
-  await page.locator('[data-density-choice="cozy"]').click();
-  await expect(compactIdentity).toBeHidden();
   await expect(cozyIdentity).toBeVisible();
-  await expect(cozyIdentity).toHaveText("Codex · gpt-5.6-sol · xhigh");
-  await page.locator('[data-density-choice="compact"]').click();
+  await expect(cozyIdentity).toHaveText("gpt-5.6-sol · xhigh");
+  await expect(comfyIdentity).toBeHidden();
+  await page.locator('[data-density-choice="comfy"]').click();
+  await expect(cozyIdentity).toBeHidden();
+  await expect(comfyIdentity).toBeVisible();
+  await expect(comfyIdentity).toHaveText("Codex · gpt-5.6-sol · xhigh");
+  await page.locator('[data-density-choice="cozy"]').click();
   const initialHeight = await card.evaluate((element) =>
     element.getBoundingClientRect().height,
   );
@@ -1821,7 +1839,7 @@ test("settings page renders definition lists and preferences", async ({
   await capturePageAndAttach(page, "settings.png", testInfo);
 });
 
-test("density toggle changes rhythm across the shell", async ({ page }) => {
+test("density modes keep shell geometry stable", async ({ page }) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
     scenario: "fleet-healthy-parallel-work",
@@ -1830,21 +1848,16 @@ test("density toggle changes rhythm across the shell", async ({ page }) => {
     viewport: desktopViewport,
   });
 
-  const compactSpacing = await page.evaluate(() =>
-    getComputedStyle(document.documentElement)
-      .getPropertyValue("--spacing")
-      .trim(),
-  );
-  await page.locator('[data-density-choice="cozy"]').click();
-  await expect(page.locator("html")).toHaveAttribute("data-density", "cozy");
-  const cozySpacing = await page.evaluate(() =>
-    getComputedStyle(document.documentElement)
-      .getPropertyValue("--spacing")
-      .trim(),
-  );
-  expect(compactSpacing).toBe("4px");
-  expect(cozySpacing).toBe("5px");
-  await page.locator('[data-density-choice="compact"]').click();
+  for (const density of ["compact", "cozy", "comfy"]) {
+    await page.locator(`[data-density-choice="${density}"]`).click();
+    await expect(page.locator("html")).toHaveAttribute("data-density", density);
+    const spacing = await page.evaluate(() =>
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--spacing")
+        .trim(),
+    );
+    expect(spacing).toBe("4px");
+  }
 });
 
 test("light theme applies through the token cascade", async ({

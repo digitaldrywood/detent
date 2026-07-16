@@ -36,6 +36,7 @@ templ Settings(data SettingsData) {
 						<div class="flex min-h-11 items-center gap-4 text-xs text-text md:min-h-0" role="radiogroup" aria-label="Density">
 							@settingsRadio("density", "compact", "Compact", settingsDensityChecked(data, "compact"))
 							@settingsRadio("density", "cozy", "Cozy", settingsDensityChecked(data, "cozy"))
+							@settingsRadio("density", "comfy", "Comfy", settingsDensityChecked(data, "comfy"))
 						</div>
 						<span class="hidden md:block"></span>
 					</div>
@@ -167,11 +168,7 @@ templ settingsCopyScript() {
 					}
 				}
 				if (name === "density") {
-					if (radio.value === "cozy") {
-						document.documentElement.setAttribute("data-density", "cozy");
-					} else {
-						document.documentElement.removeAttribute("data-density");
-					}
+					document.documentElement.setAttribute("data-density", radio.value);
 				}
 			});
 		})();

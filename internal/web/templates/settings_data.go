@@ -134,10 +134,12 @@ func settingsThemeChecked(data SettingsData, theme string) bool {
 }
 
 func settingsDensityChecked(data SettingsData, density string) bool {
-	if strings.TrimSpace(data.Density) == "cozy" {
+	switch strings.TrimSpace(data.Density) {
+	case "compact", "comfy":
+		return density == strings.TrimSpace(data.Density)
+	default:
 		return density == "cozy"
 	}
-	return density == "compact"
 }
 
 func settingsText(value string) string {

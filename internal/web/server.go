@@ -544,12 +544,14 @@ func dashboardTheme(r *http.Request) string {
 func dashboardDensity(r *http.Request) string {
 	cookie, err := r.Cookie(densityCookieName)
 	if err != nil {
-		return ""
-	}
-	if strings.TrimSpace(cookie.Value) == "cozy" {
 		return "cozy"
 	}
-	return ""
+	switch strings.TrimSpace(cookie.Value) {
+	case "compact", "cozy", "comfy":
+		return strings.TrimSpace(cookie.Value)
+	default:
+		return "cozy"
+	}
 }
 
 func applyDashboardPreferences(r *http.Request, data *templates.DashboardData) {

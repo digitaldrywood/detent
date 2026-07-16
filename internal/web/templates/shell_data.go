@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/a-h/templ"
 
@@ -101,6 +102,7 @@ func appShellHealthKind(data DashboardShellData) primitives.Kind {
 type appShellProject struct {
 	ID       string
 	Name     string
+	Initials string
 	Href     string
 	Live     bool
 	Count    string
@@ -131,6 +133,7 @@ func appShellProjects(data DashboardShellData) []appShellProject {
 			Blocked:  project.BoardBlocked,
 			Selected: strings.TrimSpace(data.ProjectID) == id,
 		}
+		item.Initials = appProjectInitials(item.Name, item.ID)
 		if project.BoardLoad > 0 || project.BoardBlocked > 0 {
 			item.Count = strconv.Itoa(project.BoardLoad)
 		}
@@ -200,7 +203,7 @@ func appNavInitial(item appNavItem) string {
 }
 
 func appProjectLinkClass(project appShellProject) string {
-	base := "flex items-center gap-2 rounded-card px-2.5 py-1.5 text-sm group-data-[rail=true]/rail:justify-center group-data-[rail=true]/rail:px-0 "
+	base := "relative flex items-center gap-2 rounded-card px-2.5 py-1.5 text-sm group-data-[rail=true]/rail:justify-center group-data-[rail=true]/rail:px-0 "
 	if project.Selected {
 		return base + "bg-elev font-medium text-text"
 	}
@@ -208,11 +211,41 @@ func appProjectLinkClass(project appShellProject) string {
 }
 
 func appProjectCountClass(project appShellProject) string {
-	base := "rounded-chip px-1.5 py-0.5 font-mono text-2xs font-medium tabular-nums group-data-[rail=true]/rail:hidden "
+	base := "rounded-chip px-1.5 py-0.5 font-mono text-2xs font-medium tabular-nums group-data-[rail=true]/rail:absolute group-data-[rail=true]/rail:-bottom-0.5 group-data-[rail=true]/rail:-right-0.5 group-data-[rail=true]/rail:min-w-3 group-data-[rail=true]/rail:px-0.5 group-data-[rail=true]/rail:py-0 group-data-[rail=true]/rail:text-center group-data-[rail=true]/rail:text-[9px] group-data-[rail=true]/rail:ring-1 group-data-[rail=true]/rail:ring-page "
 	if project.Blocked > 0 {
 		return base + "bg-err/15 text-err"
 	}
 	return base + "bg-elev text-sec"
+}
+
+func appProjectInitials(name string, id string) string {
+	value := strings.TrimSpace(name)
+	if value == "" {
+		value = strings.TrimSpace(id)
+	}
+	words := strings.FieldsFunc(value, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+	if len(words) == 0 {
+		return "?"
+	}
+	initials := make([]rune, 0, 2)
+	if len(words) > 1 {
+		for _, word := range words[:2] {
+			for _, r := range word {
+				initials = append(initials, r)
+				break
+			}
+		}
+	} else {
+		for _, r := range words[0] {
+			initials = append(initials, r)
+			if len(initials) == 2 {
+				break
+			}
+		}
+	}
+	return strings.ToUpper(string(initials))
 }
 
 func appProjectDotKind(project appShellProject) primitives.Kind {
@@ -247,10 +280,12 @@ func appDensityPressed(data DashboardShellData, choice string) string {
 }
 
 func appShellDensity(data DashboardShellData) string {
-	if strings.TrimSpace(data.Density) == "cozy" {
+	switch strings.TrimSpace(data.Density) {
+	case "compact", "comfy":
+		return strings.TrimSpace(data.Density)
+	default:
 		return "cozy"
 	}
-	return "compact"
 }
 
 func appShellHTMLAttributes(data DashboardShellData) templ.Attributes {
@@ -258,8 +293,6 @@ func appShellHTMLAttributes(data DashboardShellData) templ.Attributes {
 	if strings.TrimSpace(data.Theme) == "light" {
 		attrs["data-theme"] = "light"
 	}
-	if strings.TrimSpace(data.Density) == "cozy" {
-		attrs["data-density"] = "cozy"
-	}
+	attrs["data-density"] = appShellDensity(data)
 	return attrs
 }

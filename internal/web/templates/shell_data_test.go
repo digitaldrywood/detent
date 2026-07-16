@@ -270,12 +270,14 @@ func TestAppSidebarContentRendersLoadActivityTintAndTooltip(t *testing.T) {
 	html := buf.String()
 	for _, want := range []string{
 		`data-sidebar-project="detent"`,
+		`data-sidebar-project-identity>DE</span>`,
 		`data-sidebar-project-activity="true"`,
 		`data-sidebar-project-badge`,
 		`data-sidebar-project-blocked="true"`,
 		`aria-label="22 board load">22</span>`,
 		`data-help-description="11 todo · 4 active · 7 waiting · 1 blocked"`,
 		`data-sidebar-project="gopher-ai"`,
+		`data-sidebar-project-identity>GA</span>`,
 		`data-sidebar-project-blocked="false"`,
 		`aria-label="3 board load">3</span>`,
 	} {
@@ -287,15 +289,16 @@ func TestAppSidebarContentRendersLoadActivityTintAndTooltip(t *testing.T) {
 
 func TestAppShellHTMLAttributes(t *testing.T) {
 	tests := []struct {
-		name        string
-		data        DashboardShellData
-		wantTheme   bool
-		wantDensity bool
+		name      string
+		data      DashboardShellData
+		wantTheme bool
+		want      string
 	}{
-		{name: "defaults", data: DashboardShellData{}},
-		{name: "light theme", data: DashboardShellData{Theme: "light"}, wantTheme: true},
-		{name: "cozy density", data: DashboardShellData{Density: "cozy"}, wantDensity: true},
-		{name: "unknown values ignored", data: DashboardShellData{Theme: "sepia", Density: "spacious"}},
+		{name: "defaults", data: DashboardShellData{}, want: "cozy"},
+		{name: "light theme", data: DashboardShellData{Theme: "light"}, wantTheme: true, want: "cozy"},
+		{name: "compact density", data: DashboardShellData{Density: "compact"}, want: "compact"},
+		{name: "comfy density", data: DashboardShellData{Density: "comfy"}, want: "comfy"},
+		{name: "unknown values default cozy", data: DashboardShellData{Theme: "sepia", Density: "spacious"}, want: "cozy"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -303,8 +306,8 @@ func TestAppShellHTMLAttributes(t *testing.T) {
 			if _, ok := attrs["data-theme"]; ok != tt.wantTheme {
 				t.Fatalf("data-theme present = %v, want %v", ok, tt.wantTheme)
 			}
-			if _, ok := attrs["data-density"]; ok != tt.wantDensity {
-				t.Fatalf("data-density present = %v, want %v", ok, tt.wantDensity)
+			if got := attrs["data-density"]; got != tt.want {
+				t.Fatalf("data-density = %v, want %q", got, tt.want)
 			}
 		})
 	}
@@ -357,9 +360,10 @@ func TestAppShellVersionLabel(t *testing.T) {
 }
 
 func TestAppDensityHelpers(t *testing.T) {
-	compact := DashboardShellData{}
-	cozy := DashboardShellData{Density: "cozy"}
-	if appShellDensity(compact) != "compact" || appShellDensity(cozy) != "cozy" {
+	cozy := DashboardShellData{}
+	compact := DashboardShellData{Density: "compact"}
+	comfy := DashboardShellData{Density: "comfy"}
+	if appShellDensity(cozy) != "cozy" || appShellDensity(compact) != "compact" || appShellDensity(comfy) != "comfy" {
 		t.Fatalf("density normalization failed")
 	}
 	if appDensityPressed(compact, "compact") != "true" || appDensityPressed(compact, "cozy") != "false" {
@@ -367,5 +371,27 @@ func TestAppDensityHelpers(t *testing.T) {
 	}
 	if appDensityPressed(cozy, "cozy") != "true" {
 		t.Fatalf("cozy pressed state wrong")
+	}
+	if appDensityPressed(comfy, "comfy") != "true" {
+		t.Fatalf("comfy pressed state wrong")
+	}
+}
+
+func TestAppProjectInitials(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+		want string
+	}{
+		{name: "Detent", id: "detent", want: "DE"},
+		{name: "Gopher AI", id: "gopher-ai", want: "GA"},
+		{name: "", id: "docs-site", want: "DS"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			if got := appProjectInitials(tt.name, tt.id); got != tt.want {
+				t.Fatalf("appProjectInitials(%q, %q) = %q, want %q", tt.name, tt.id, got, tt.want)
+			}
+		})
 	}
 }
