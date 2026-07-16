@@ -124,7 +124,7 @@ func (o *Orchestrator) handleStopRunRequest(ctx context.Context, state *State, e
 		event.reply <- stopRunReply{err: ErrStopRunInvalidIdentity}
 		return
 	}
-	if !validStopRunRoute(request) {
+	if !o.validStopRunRoute(request) {
 		event.reply <- stopRunReply{err: ErrStopRunInvalidRoute}
 		return
 	}
@@ -470,11 +470,14 @@ func (o *Orchestrator) validStopRunIdentity(request StopRunRequest) bool {
 	return request.IssueID != "" && request.Attempt >= 0 && (request.ProjectID == "" || request.ProjectID == strings.TrimSpace(o.cfg.Project.ID))
 }
 
-func validStopRunRoute(request StopRunRequest) bool {
-	if _, ok := canonicalStopRunDestination(request.Destination); !ok || utf8.RuneCountInString(request.Reason) > StopRunReasonMaxLength {
+func (o *Orchestrator) validStopRunRoute(request StopRunRequest) bool {
+	if utf8.RuneCountInString(request.Reason) > StopRunReasonMaxLength {
 		return false
 	}
-	return request.Destination != StopRunDestinationTodo || request.Priority >= 1 && request.Priority <= 4
+	if _, ok := canonicalStopRunDestination(request.Destination); ok {
+		return request.Destination != StopRunDestinationTodo || request.Priority >= 1 && request.Priority <= 4
+	}
+	return request.Destination != "" && strings.EqualFold(request.Destination, strings.TrimSpace(o.cfg.StopRunTargetState)) && request.Priority == 0
 }
 
 func runningMatchesStopRequest(running Running, request StopRunRequest) bool {

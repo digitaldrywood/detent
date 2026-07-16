@@ -143,6 +143,31 @@ func TestStopRunRoutesToOperatorDestination(t *testing.T) {
 	}
 }
 
+func TestStopRunPreservesConfiguredCustomDefault(t *testing.T) {
+	issue := testIssue("issue-stop-custom", "digitaldrywood/detent#1354", "In Progress")
+	tracker := newFakeConnector(issue)
+	runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 1)}
+	orch, err := orchestrator.New(orchestrator.Config{PollInterval: time.Hour, MaxConcurrentAgents: 1, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"In Progress"}, ObservedStates: []string{"Paused"}, TerminalStates: []string{"Done"}, StopRunTargetState: "Paused"}, orchestrator.Dependencies{Connector: tracker, Runner: runner})
+	if err != nil {
+		t.Fatalf("orchestrator.New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	t.Cleanup(stop)
+	state := waitForState(t, orch, func(state orchestrator.State) bool { return state.Running[issue.ID].Issue.ID != "" })
+	running := state.Running[issue.ID]
+	result, err := orch.StopRun(t.Context(), orchestrator.StopRunRequest{ProjectID: "detent", IssueID: issue.ID, Attempt: running.Attempt})
+	if err != nil {
+		t.Fatalf("StopRun() error = %v", err)
+	}
+	if result.Destination != "Paused" || result.Priority != 0 {
+		t.Fatalf("StopRun() result = %#v, want configured Paused default", result)
+	}
+	updates := tracker.stateUpdateCalls()
+	if len(updates) == 0 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Paused"}) {
+		t.Fatalf("state updates = %#v, want configured Paused default", updates)
+	}
+}
+
 func TestStopRunAppliesTodoPriorityBeforeRedispatch(t *testing.T) {
 	issue := testIssue("issue-stop-priority", "digitaldrywood/detent#1354", "In Progress")
 	tracker := newOperatorStopAtomicConnector(issue)

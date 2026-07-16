@@ -86,3 +86,12 @@ func stopRunResultDetail(data StopRunDialogData) string {
 	}
 	return detail
 }
+
+func stopRunPickerDestination(destination string) bool {
+	for _, value := range []string{"Blocked", "Backlog", "Cancelled", "Todo"} {
+		if strings.EqualFold(strings.TrimSpace(destination), value) {
+			return true
+		}
+	}
+	return false
+}
