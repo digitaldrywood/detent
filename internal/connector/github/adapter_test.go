@@ -4476,6 +4476,64 @@ func TestConnectorHydratePullRequestNormalizesStaleSuccessfulWorkflowCheckRun(t 
 	}
 }
 
+func TestConnectorHydratePullRequestUsesEffectiveCheckRunsForWorkflowTelemetry(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/pulls/971",
+			body:   `{"number":971,"html_url":"https://github.com/example/repo/pull/971","state":"open","mergeable_state":"clean","draft":false,"head":{"ref":"detent/example_repo_971","sha":"head-sha"},"base":{"sha":"base-sha"},"updated_at":"2026-07-16T18:10:00Z"}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/commits/head-sha/check-runs?per_page=100",
+			body:   `{"check_runs":[{"id":97101,"name":"Verify","status":"completed","conclusion":"cancelled","details_url":"https://github.com/example/repo/actions/runs/7001/job/97101","created_at":"2026-07-16T18:00:00Z","started_at":"2026-07-16T18:01:00Z","completed_at":"2026-07-16T18:02:00Z"},{"id":97102,"name":"Verify","status":"completed","conclusion":"success","details_url":"https://github.com/example/repo/actions/runs/7002/job/97102","created_at":"2026-07-16T18:05:00Z","started_at":"2026-07-16T18:06:00Z","completed_at":"2026-07-16T18:10:00Z"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/actions/runs/7002",
+			body:   `{"id":7002,"status":"completed","conclusion":"success","created_at":"2026-07-16T18:05:00Z","run_started_at":"2026-07-16T18:06:00Z","updated_at":"2026-07-16T18:10:00Z"}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/commits/head-sha/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/pulls/971/reviews?per_page=100",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	prNumber := 971
+	issue := connector.Issue{
+		ID:         "I_kw971",
+		Identifier: "example/repo#971",
+		PRNumber:   &prNumber,
+	}
+
+	got, err := c.HydratePullRequest(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("HydratePullRequest() error = %v", err)
+	}
+
+	pr := got.PullRequest
+	if pr == nil {
+		t.Fatal("PullRequest = nil, want hydrated pull request")
+		return
+	}
+	if pr.CIStatus != "pass" || pr.CIQueueSeconds != 60 || pr.CIDurationSeconds != 240 {
+		t.Fatalf("PullRequest CI = %#v, want pass with 60s queue and 240s duration", pr)
+	}
+	for _, request := range server.requests() {
+		if request["path"] == "/repos/example/repo/actions/runs/7001" {
+			t.Fatalf("request path = %q, want superseded workflow run excluded", request["path"])
+		}
+	}
+}
+
 func TestConnectorHydratePullRequestTreatsSkippedRequiredStatusCheckAsPending(t *testing.T) {
 	t.Parallel()
 

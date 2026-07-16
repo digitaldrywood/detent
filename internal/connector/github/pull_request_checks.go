@@ -29,7 +29,8 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 	if err != nil {
 		return pullRequestCI{}, fmt.Errorf("fetch github check runs: %w", err)
 	}
-	workflowRuns, workflowRunErr := fetchRESTWorkflowRunsForCheckRuns(ctx, c.client, repo, checkRuns)
+	effectiveRuns := effectiveCheckRuns(checkRuns)
+	workflowRuns, workflowRunErr := fetchRESTWorkflowRunsForCheckRuns(ctx, c.client, repo, effectiveRuns)
 	if workflowRunErr != nil {
 		workflowRuns = nil
 	}
@@ -37,7 +38,7 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 	if err != nil {
 		return pullRequestCI{}, fmt.Errorf("fetch github commit statuses: %w", err)
 	}
-	telemetry := checkRunTelemetry(checkRuns, workflowRuns)
+	telemetry := checkRunTelemetry(effectiveRuns, workflowRuns)
 	staleSuccessfulChecks := staleSuccessfulCheckRuns(checkRuns)
 	c.logStaleSuccessfulCheckRuns(ctx, repo, sha, staleSuccessfulChecks)
 	requiredFailures := requiredStatusCheckFailures(checkRuns, statuses, c.requiredChecks)
