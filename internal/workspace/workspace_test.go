@@ -483,18 +483,19 @@ func TestGitMetadataWritableRootsForLinkedWorktree(t *testing.T) {
 		t.Fatalf("GitMetadataWritableRoots() error = %v", err)
 	}
 
+	commonDir := mustCanonicalExistingPath(t, filepath.Join(source, ".git"))
 	wantRoots := []string{
-		mustCanonicalExistingPath(t, strings.TrimSpace(runGit(t, info.Path, "rev-parse", "--git-dir"))),
-		mustCanonicalExistingPath(t, strings.TrimSpace(runGit(t, info.Path, "rev-parse", "--git-path", "objects"))),
-		mustCanonicalExistingPath(t, filepath.Dir(strings.TrimSpace(runGit(t, info.Path, "rev-parse", "--git-path", "refs/heads/detent/dd-git-roots")))),
-		mustCanonicalExistingPath(t, filepath.Dir(strings.TrimSpace(runGit(t, info.Path, "rev-parse", "--git-path", "logs/refs/heads/detent/dd-git-roots")))),
+		linkedWorktreeGitDir(t, info.Path),
+		mustCanonicalExistingPath(t, filepath.Join(commonDir, "objects")),
+		mustCanonicalExistingPath(t, filepath.Join(commonDir, "refs", "heads", "detent")),
+		mustCanonicalExistingPath(t, filepath.Join(commonDir, "logs", "refs", "heads", "detent")),
 	}
 	for _, want := range wantRoots {
 		if !containsString(roots, want) {
 			t.Fatalf("GitMetadataWritableRoots() = %#v, missing %q", roots, want)
 		}
 	}
-	if commonDir := mustCanonicalExistingPath(t, strings.TrimSpace(runGit(t, info.Path, "rev-parse", "--git-common-dir"))); containsString(roots, commonDir) {
+	if containsString(roots, commonDir) {
 		t.Fatalf("GitMetadataWritableRoots() = %#v, should not allow entire common git dir %q", roots, commonDir)
 	}
 
@@ -505,6 +506,21 @@ func TestGitMetadataWritableRootsForLinkedWorktree(t *testing.T) {
 	runGit(t, info.Path, "commit", "-m", "agent commit")
 	if got := strings.TrimSpace(runGit(t, info.Path, "log", "-1", "--pretty=%s")); got != "agent commit" {
 		t.Fatalf("latest commit subject = %q, want agent commit", got)
+	}
+}
+
+func TestGitMetadataWritableRootsRejectsEnclosingRepository(t *testing.T) {
+	t.Parallel()
+	skipWindows(t)
+
+	source := initSourceRepo(t)
+	workspacePath := filepath.Join(source, "nested")
+	if err := os.MkdirAll(workspacePath, 0o700); err != nil {
+		t.Fatalf("mkdir nested workspace: %v", err)
+	}
+
+	if _, err := GitMetadataWritableRoots(context.Background(), workspacePath); err == nil {
+		t.Fatal("GitMetadataWritableRoots() error = nil, want nested workspace rejection")
 	}
 }
 
@@ -1481,6 +1497,20 @@ func initBareRemote(t *testing.T) string {
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	return runCommand(t, dir, "git", args...)
+}
+
+func linkedWorktreeGitDir(t *testing.T, workspacePath string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(workspacePath, ".git"))
+	if err != nil {
+		t.Fatalf("read linked worktree .git file: %v", err)
+	}
+	gitDir, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir: ")
+	if !ok || strings.TrimSpace(gitDir) == "" {
+		t.Fatalf("linked worktree .git file = %q, want gitdir path", data)
+	}
+	return mustCanonicalExistingPath(t, gitDir)
 }
 
 func branchExists(t *testing.T, dir string, branch string) bool {
