@@ -308,7 +308,7 @@ func TestMergingFastPathChangedHeadReappliesCITriggerBeforeMerge(t *testing.T) {
 	}
 }
 
-func TestMergingFallbackPushWaitsAfterWorkerReappliesCITrigger(t *testing.T) {
+func TestMergingFallbackPushWaitsAfterWorkerReappliesCITriggerWhenHydrationIsGreen(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 16, 10, 15, 0, 0, time.UTC)
@@ -328,9 +328,8 @@ func TestMergingFallbackPushWaitsAfterWorkerReappliesCITrigger(t *testing.T) {
 		BranchName:     "detent/fallback-pushed-head",
 		State:          "OPEN",
 		MergeableState: "clean",
-		CIStatus:       "pending",
+		CIStatus:       "success",
 		HeadSHA:        "new-fallback-head",
-		RunningChecks:  []string{"Test"},
 	})
 	issue.State = "Merging"
 	issue.Identifier = "digitaldrywood/detent#868"

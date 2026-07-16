@@ -1014,10 +1014,8 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			o.waitForMergeWorkerCITriggerLabel(ctx, state, event, running, issue)
 			return true
 		}
-		if mergeWorkerProgrammaticMergeWaiting(issue) {
-			o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
-			return true
-		}
+		o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
+		return true
 	}
 	if !mergeWorkerProgrammaticMergeReady(issue) {
 		if pullRequestHydrationBlocksProgress(issue.PullRequest) {
