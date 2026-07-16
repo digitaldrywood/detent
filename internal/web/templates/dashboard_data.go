@@ -1520,6 +1520,9 @@ func diagnosticsRuntimeStoreHasLoadedData(store telemetry.RuntimeStoreEvidence) 
 }
 
 func snapshotReady(snapshot telemetry.Snapshot) bool {
+	if snapshot.LastKnown {
+		return false
+	}
 	return snapshotReadinessStatus(snapshot) == telemetry.RefreshStatusReady
 }
 
@@ -2445,7 +2448,8 @@ func projectKanbanDragDropEnabled(data DashboardData) bool {
 // The redesigned snapshot views use it so a transient tracker/API failure
 // keeps the last-known content visible instead of flashing skeletons.
 func snapshotCarriesData(data DashboardData) bool {
-	return snapshotReady(data.Snapshot) ||
+	return data.Snapshot.LastKnown ||
+		snapshotReady(data.Snapshot) ||
 		(snapshotDegraded(data.Snapshot) && snapshotHasPriorTrackerSnapshot(data.Snapshot))
 }
 

@@ -67,9 +67,10 @@ const (
 	DefaultAutoPromoteGateWaitTimeoutSeconds = 3600
 	DefaultOverloadRetryDelayMS              = 45000
 
-	DefaultPollingIntervalMS      = 120000
-	MinPollingIntervalMS          = 60000
-	DefaultShutdownDrainTimeoutMS = 75000
+	DefaultPollingIntervalMS              = 120000
+	MinPollingIntervalMS                  = 60000
+	DefaultShutdownDrainTimeoutMS         = 75000
+	DefaultBoardSnapshotStaleAfterSeconds = 15 * 60
 
 	defaultCodexProtocol                      = "app-server"
 	defaultClaudeCodeProtocol                 = "headless"
@@ -662,9 +663,10 @@ func (b *AgentBackend) decodeOptions() {
 }
 
 type Server struct {
-	Port   *int   `yaml:"port"`
-	Host   string `yaml:"host"`
-	Kanban Kanban `yaml:"kanban,omitempty"`
+	Port                           *int   `yaml:"port"`
+	Host                           string `yaml:"host"`
+	BoardSnapshotStaleAfterSeconds int    `yaml:"board_snapshot_stale_after_seconds"`
+	Kanban                         Kanban `yaml:"kanban,omitempty"`
 }
 
 type Kanban struct {
@@ -1236,8 +1238,9 @@ func Default() Config {
 		Gate: gate.DefaultConfig(),
 		Plan: gate.DefaultPlanConfig(),
 		Server: Server{
-			Host:   "127.0.0.1",
-			Kanban: Kanban{Mode: KanbanModeReadOnly},
+			Host:                           "127.0.0.1",
+			BoardSnapshotStaleAfterSeconds: DefaultBoardSnapshotStaleAfterSeconds,
+			Kanban:                         Kanban{Mode: KanbanModeReadOnly},
 		},
 		Observability: Observability{
 			DashboardEnabled: true,
@@ -2340,6 +2343,9 @@ func (s *Server) Normalize() {
 		return
 	}
 	s.Host = strings.TrimSpace(s.Host)
+	if s.BoardSnapshotStaleAfterSeconds == 0 {
+		s.BoardSnapshotStaleAfterSeconds = DefaultBoardSnapshotStaleAfterSeconds
+	}
 	s.Kanban.Normalize()
 }
 
@@ -2350,6 +2356,7 @@ func (s *Server) validate(problems *[]string) {
 	if strings.TrimSpace(s.Host) == "" {
 		*problems = append(*problems, "server.host is required")
 	}
+	validatePositive("server.board_snapshot_stale_after_seconds", s.BoardSnapshotStaleAfterSeconds, problems)
 	*problems = append(*problems, s.Kanban.Validate("server.kanban")...)
 }
 

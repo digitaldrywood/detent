@@ -1670,6 +1670,32 @@ func TestKanbanTransitionPolicyAllowsConfiguredOverrides(t *testing.T) {
 	}
 }
 
+func TestServerBoardSnapshotStaleness(t *testing.T) {
+	t.Parallel()
+
+	if got := Default().Server.BoardSnapshotStaleAfterSeconds; got != DefaultBoardSnapshotStaleAfterSeconds {
+		t.Fatalf("Default Server.BoardSnapshotStaleAfterSeconds = %d, want %d", got, DefaultBoardSnapshotStaleAfterSeconds)
+	}
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+server:
+  board_snapshot_stale_after_seconds: 120
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if got := workflow.Config.Server.BoardSnapshotStaleAfterSeconds; got != 120 {
+		t.Fatalf("Server.BoardSnapshotStaleAfterSeconds = %d, want 120", got)
+	}
+	workflow.Config.Server.BoardSnapshotStaleAfterSeconds = -1
+	if err := workflow.Config.Validate(); err == nil || !strings.Contains(err.Error(), "server.board_snapshot_stale_after_seconds must be greater than 0") {
+		t.Fatalf("Validate() error = %v, want board snapshot staleness validation", err)
+	}
+}
+
 func TestKanbanTransitionPolicyAllowsConfiguredOverridesWithoutStateLists(t *testing.T) {
 	t.Parallel()
 

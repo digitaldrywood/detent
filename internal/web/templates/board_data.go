@@ -825,6 +825,14 @@ func boardCardClass(card boardCardView) string {
 	return base
 }
 
+func boardLanesClass(data DashboardData) string {
+	base := "dt-lane-scroll flex min-h-0 min-w-0 flex-1 snap-x snap-mandatory gap-5 overflow-x-auto overflow-y-hidden scroll-px-5 px-5 pb-5 md:snap-none md:gap-3"
+	if data.Snapshot.LastKnown {
+		return base + " opacity-60 grayscale"
+	}
+	return base
+}
+
 func boardPriorityBadgeClass(card boardCardView) string {
 	base := "inline-flex max-w-24 flex-none items-center truncate rounded-chip border px-1.5 py-0.5 font-mono text-2xs font-semibold"
 	if card.PriorityTop {
