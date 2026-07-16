@@ -2333,12 +2333,20 @@ func ciTriggerLabelCommandMatches(command string, label string) bool {
 }
 
 func ciTriggerLabelRunsAfterPush(command string) bool {
-	lowerCommand := strings.ToLower(command)
-	ciTriggerIndex := strings.LastIndex(lowerCommand, "detent ci-trigger-label")
-	if ciTriggerIndex < 0 || !gitPushCommand(lowerCommand) {
+	fields := strings.Fields(strings.ToLower(command))
+	ciTriggerIndex := -1
+	for index := 1; index < len(fields); index++ {
+		executable := strings.Trim(fields[index-1], "'\";()")
+		subcommand := strings.Trim(fields[index], "'\";()")
+		if (executable == "detent" || strings.HasSuffix(executable, "/detent")) && subcommand == "ci-trigger-label" {
+			ciTriggerIndex = index - 1
+		}
+	}
+	pushIndexes := gitPushCommandIndexes(command)
+	if ciTriggerIndex < 0 || len(pushIndexes) == 0 {
 		return false
 	}
-	pushIndex := strings.LastIndex(lowerCommand, "push")
+	pushIndex := pushIndexes[len(pushIndexes)-1]
 	return pushIndex >= 0 && pushIndex < ciTriggerIndex
 }
 
@@ -2379,17 +2387,21 @@ func gitPushCommand(command string) bool {
 }
 
 func gitPushCommandCount(command string) int {
+	return len(gitPushCommandIndexes(command))
+}
+
+func gitPushCommandIndexes(command string) []int {
 	fields := strings.Fields(command)
-	count := 0
+	indexes := make([]int, 0, 1)
 	for index, field := range fields {
 		field = strings.Trim(field, "'\";()")
 		if field != "git" {
 			continue
 		}
-		for _, candidate := range fields[index+1:] {
+		for candidateIndex, candidate := range fields[index+1:] {
 			candidate = strings.Trim(candidate, "'\";()")
 			if candidate == "push" {
-				count++
+				indexes = append(indexes, index+candidateIndex+1)
 				break
 			}
 			if candidate == "git" || strings.ContainsAny(candidate, "|&") {
@@ -2397,7 +2409,7 @@ func gitPushCommandCount(command string) int {
 			}
 		}
 	}
-	return count
+	return indexes
 }
 
 func pullRequestCommand(command string) bool {

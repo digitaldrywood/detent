@@ -426,6 +426,16 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			wantCITriggerLabelReapplied: true,
 		},
 		{
+			name: "repository push substring does not invalidate combined delivery order",
+			updates: []AgentUpdate{
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository acme/push-service --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel", Tool: "commandExecution", Status: "completed", Delta: "branch pushed and label reapplied"},
+				{Type: AgentUpdateTurnCompleted, Status: "completed"},
+			},
+			wantPullRequestHeadPushed:   true,
+			wantCITriggerLabelReapplied: true,
+		},
+		{
 			name: "push after label in combined command requires fresh reapplication",
 			updates: []AgentUpdate{
 				{Type: AgentUpdateToolStarted, ItemID: "push-relabel-push", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready && git push origin HEAD"},
