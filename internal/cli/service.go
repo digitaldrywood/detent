@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -154,13 +155,17 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 		ExecutablePath: executable,
 		GOOS:           runtime.GOOS,
 	})
+	binaryPath := serviceBinaryPath(executable, os.Args[0], exec.LookPath, filepath.EvalSymlinks)
+	if resolvedPort.Source == "PORT" && !portFlag.Set {
+		arguments = append(arguments[:len(arguments)-1], "--port", strconv.Itoa(resolvedPort.Value), "--headless")
+	}
 	factory := opts.service
 	if factory == nil {
 		factory = defaultServiceFactory
 	}
 	return factory(servicepkg.Config{
 		GOOS:         runtime.GOOS,
-		BinaryPath:   executable,
+		BinaryPath:   binaryPath,
 		ConfigPath:   resolution.Path,
 		Arguments:    arguments,
 		LockPath:     filepath.Join(filepath.Dir(resolution.Path), "detent.db.lock"),
@@ -169,6 +174,34 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 		DashboardURL: "http://" + net.JoinHostPort(dashboardHost, strconv.Itoa(resolvedPort.Value)),
 		Install:      install,
 	})
+}
+
+func serviceBinaryPath(executable string, invocation string, lookPath func(string) (string, error), evalSymlinks func(string) (string, error)) string {
+	invocation = strings.TrimSpace(invocation)
+	if invocation == "" || lookPath == nil || evalSymlinks == nil {
+		return executable
+	}
+	candidate := invocation
+	if !filepath.IsAbs(candidate) && !strings.ContainsAny(candidate, `/\`) {
+		resolved, err := lookPath(candidate)
+		if err != nil {
+			return executable
+		}
+		candidate = resolved
+	}
+	candidate, err := filepath.Abs(candidate)
+	if err != nil {
+		return executable
+	}
+	realCandidate, err := evalSymlinks(candidate)
+	if err != nil {
+		return executable
+	}
+	realExecutable, err := evalSymlinks(executable)
+	if err != nil || filepath.Clean(realCandidate) != filepath.Clean(realExecutable) {
+		return executable
+	}
+	return candidate
 }
 
 func confirmServiceInstall(cmd *cobra.Command, result servicepkg.StartResult) (bool, error) {

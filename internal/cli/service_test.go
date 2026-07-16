@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -260,6 +261,105 @@ func TestServiceCommandResolvesConfigAndRuntime(t *testing.T) {
 	}
 	if want := []string{"--config", path, "--headless"}; !reflect.DeepEqual(captured.Arguments, want) {
 		t.Fatalf("arguments = %#v, want %#v", captured.Arguments, want)
+	}
+}
+
+func TestServiceCommandPersistsEnvironmentPort(t *testing.T) {
+	t.Setenv("PORT", "4200")
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	var captured servicepkg.Config
+	runner := &serviceRunnerStub{status: servicepkg.Status{ServiceManager: servicepkg.ManagerManual, Service: string(servicepkg.ManagerManual), State: servicepkg.StateStopped}}
+	cmd := NewRootCommand(t.Context(), WithServiceFactory(func(cfg servicepkg.Config) (ServiceRunner, error) {
+		captured = cfg
+		return runner, nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "--config", path, "status"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if captured.DashboardURL != "http://localhost:4200" {
+		t.Fatalf("DashboardURL = %q, want environment port", captured.DashboardURL)
+	}
+	want := []string{"--config", path, "--port", "4200", "--headless"}
+	if !reflect.DeepEqual(captured.Arguments, want) {
+		t.Fatalf("arguments = %#v, want %#v", captured.Arguments, want)
+	}
+}
+
+func TestServiceBinaryPathPreservesVerifiedInvocation(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	stable := filepath.Join(root, "bin", "detent")
+	cellar := filepath.Join(root, "Cellar", "detent", "1.2.3", "bin", "detent")
+	other := filepath.Join(root, "other", "detent")
+	tests := []struct {
+		name       string
+		invocation string
+		lookPath   func(string) (string, error)
+		eval       func(string) (string, error)
+		want       string
+	}{
+		{
+			name:       "absolute stable symlink",
+			invocation: stable,
+			lookPath:   exec.LookPath,
+			eval: func(path string) (string, error) {
+				if path == stable || path == cellar {
+					return cellar, nil
+				}
+				return path, nil
+			},
+			want: stable,
+		},
+		{
+			name:       "path lookup",
+			invocation: "detent",
+			lookPath: func(string) (string, error) {
+				return stable, nil
+			},
+			eval: func(string) (string, error) {
+				return cellar, nil
+			},
+			want: stable,
+		},
+		{
+			name:       "different executable",
+			invocation: other,
+			lookPath:   exec.LookPath,
+			eval: func(path string) (string, error) {
+				if path == other {
+					return other, nil
+				}
+				return cellar, nil
+			},
+			want: cellar,
+		},
+		{
+			name:       "lookup failure",
+			invocation: "detent",
+			lookPath: func(string) (string, error) {
+				return "", errors.New("not found")
+			},
+			eval: func(path string) (string, error) {
+				return path, nil
+			},
+			want: cellar,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := serviceBinaryPath(cellar, tt.invocation, tt.lookPath, tt.eval); got != tt.want {
+				t.Fatalf("serviceBinaryPath() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
