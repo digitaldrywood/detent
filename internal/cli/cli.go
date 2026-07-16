@@ -217,25 +217,27 @@ type ProjectManager interface {
 type Option func(*options)
 
 type options struct {
-	resolvePath   func(string) (globalconfig.PathResolution, error)
-	read          func(string) (globalconfig.Config, error)
-	readProject   func(string, string) (globalconfig.Config, []string, error)
-	readOrDefault func(string) (globalconfig.Config, error)
-	write         func(string, globalconfig.Config) error
-	boot          BootFunc
-	signal        SignalFunc
-	lookupEnv     func(string) string
-	ghAuthToken   func(context.Context) (string, error)
-	runCommand    CommandRunner
-	httpDo        func(*http.Request) (*http.Response, error)
-	configureLog  LoggerFunc
-	captureDemo   demoCaptureFunc
-	version       string
-	build         buildinfo.Info
-	stdoutTTY     func() bool
-	shutdown      *ShutdownController
-	restart       *RestartRequest
-	service       ServiceFactory
+	resolvePath       func(string) (globalconfig.PathResolution, error)
+	read              func(string) (globalconfig.Config, error)
+	readProject       func(string, string) (globalconfig.Config, []string, error)
+	readDoctor        func(string) (globalconfig.Config, error)
+	readDoctorProject func(string, string) (globalconfig.Config, []string, error)
+	readOrDefault     func(string) (globalconfig.Config, error)
+	write             func(string, globalconfig.Config) error
+	boot              BootFunc
+	signal            SignalFunc
+	lookupEnv         func(string) string
+	ghAuthToken       func(context.Context) (string, error)
+	runCommand        CommandRunner
+	httpDo            func(*http.Request) (*http.Response, error)
+	configureLog      LoggerFunc
+	captureDemo       demoCaptureFunc
+	version           string
+	build             buildinfo.Info
+	stdoutTTY         func() bool
+	shutdown          *ShutdownController
+	restart           *RestartRequest
+	service           ServiceFactory
 }
 
 func WithBootFunc(boot BootFunc) Option {
@@ -465,6 +467,12 @@ func defaultOptions() options {
 		},
 		readProject: func(path string, projectID string) (globalconfig.Config, []string, error) {
 			return globalconfig.ReadProject(path, projectID)
+		},
+		readDoctor: func(path string) (globalconfig.Config, error) {
+			return globalconfig.Read(path, globalconfig.WithMissingWorkflowFiles())
+		},
+		readDoctorProject: func(path string, projectID string) (globalconfig.Config, []string, error) {
+			return globalconfig.ReadProject(path, projectID, globalconfig.WithMissingWorkflowFiles())
 		},
 		readOrDefault: func(path string) (globalconfig.Config, error) {
 			return globalconfig.ReadOrDefault(path, globalconfig.WithProjectPathLiterals())

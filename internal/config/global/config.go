@@ -153,9 +153,10 @@ type ValidationError struct {
 }
 
 type options struct {
-	home                string
-	relativeTo          string
-	projectPathLiterals bool
+	home                      string
+	relativeTo                string
+	projectPathLiterals       bool
+	allowMissingWorkflowFiles bool
 }
 
 type pathOptions struct {
@@ -180,6 +181,12 @@ func WithRelativeTo(path string) Option {
 func WithProjectPathLiterals() Option {
 	return func(opts *options) {
 		opts.projectPathLiterals = true
+	}
+}
+
+func WithMissingWorkflowFiles() Option {
+	return func(opts *options) {
+		opts.allowMissingWorkflowFiles = true
 	}
 }
 
@@ -1060,6 +1067,9 @@ func plainWorkflowPathErrors(path string, field string, opts options, expected p
 	}
 	if relativeWorkflowPathLiteral(path) {
 		return []string{field + ": " + plainWorkflowPathRequirement}
+	}
+	if opts.allowMissingWorkflowFiles {
+		return nil
 	}
 	return projectPathErrors(path, field, opts, expected)
 }
