@@ -65,45 +65,51 @@ type boardLaneVisibilityPayload struct {
 	Hide    []string `json:"hide,omitempty"`
 }
 
-// boardCardView keeps cards uniform: an 11px mono meta row, a two-line
-// title, a runtime badge for active work, and at most one operational signal.
+// boardCardView preformats the shared and density-specific card fields.
 type boardCardView struct {
-	DomID              string
-	Identity           string
-	IssueID            string
-	Number             string
-	URL                string
-	Project            string
-	MoveProject        string
-	Scope              string
-	CurrentState       string
-	DataSeq            uint64
-	PRNumber           string
-	PRURL              string
-	DragDrop           bool
-	CanDrag            bool
-	AllowedTargets     string
-	MoveDisabledText   string
-	MoveDisabledLabel  string
-	Running            bool
-	Done               bool
-	Terminal           bool
-	MetaRight          string
-	AgeFooter          string
-	AgeFooterTitle     string
-	Title              string
-	ExtraKind          primitives.Kind
-	ExtraText          string
-	ExtraChip          bool
-	RuntimeSummary     string
-	RuntimeCompactText string
-	RuntimeCozyText    string
-	RuntimeDetail      string
-	RuntimeBadge       bool
-	PriorityBadge      string
-	PriorityTitle      string
-	PriorityDetail     string
-	PriorityTop        bool
+	DomID             string
+	Identity          string
+	IssueID           string
+	Number            string
+	URL               string
+	Project           string
+	MoveProject       string
+	Scope             string
+	CurrentState      string
+	DataSeq           uint64
+	PRNumber          string
+	PRURL             string
+	DragDrop          bool
+	CanDrag           bool
+	AllowedTargets    string
+	MoveDisabledText  string
+	MoveDisabledLabel string
+	Running           bool
+	Done              bool
+	Terminal          bool
+	MetaRight         string
+	AgeFooter         string
+	AgeFooterTitle    string
+	Title             string
+	State             string
+	CompactSignal     string
+	ExtraKind         primitives.Kind
+	ExtraText         string
+	ExtraChip         bool
+	RuntimeSummary    string
+	RuntimeCozyText   string
+	RuntimeComfyText  string
+	RuntimeDetail     string
+	RuntimeBadge      bool
+	Labels            []string
+	Effort            string
+	Activity          string
+	PRStatus          string
+	PRStatusClass     string
+	PriorityBadge     string
+	PriorityTitle     string
+	PriorityDetail    string
+	PriorityTop       bool
 }
 
 func boardViewFromDashboard(data DashboardData) boardView {
@@ -402,6 +408,9 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		Done:     strings.EqualFold(lane.Title, "Done"),
 		Terminal: terminal,
 		Title:    card.Title,
+		State:    card.Stage,
+		Labels:   append([]string(nil), card.Labels...),
+		Effort:   strings.TrimSpace(card.RuntimeIdentity.ReasoningEffort.Value),
 	}
 	if canDrag {
 		view.AllowedTargets = projectKanbanMoveTargetKeys(data, card)
@@ -421,22 +430,99 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		view.AgeFooterTitle = strings.TrimSpace(card.TimeInStageTitle)
 	}
 	view.ExtraKind, view.ExtraText, view.ExtraChip = boardCardExtra(card, view)
+	view.Activity = boardCardActivity(data.Snapshot, card)
+	view.PRStatus, view.PRStatusClass = boardCardPRStatus(card)
 	if view.Running {
 		view.RuntimeBadge = true
 		view.RuntimeSummary = runtimeIdentitySummary(card.RuntimeIdentity)
-		view.RuntimeCompactText = runtimeIdentityBadgeSummary(card.RuntimeIdentity, false)
-		view.RuntimeCozyText = runtimeIdentityBadgeSummary(card.RuntimeIdentity, true)
-		if view.RuntimeCompactText == "" {
-			view.RuntimeCompactText = "agent working"
-		}
+		view.RuntimeCozyText = runtimeIdentityBadgeSummary(card.RuntimeIdentity, false)
+		view.RuntimeComfyText = runtimeIdentityBadgeSummary(card.RuntimeIdentity, true)
 		if view.RuntimeCozyText == "" {
 			view.RuntimeCozyText = "agent working"
+		}
+		if view.RuntimeComfyText == "" {
+			view.RuntimeComfyText = "agent working"
 		}
 		providerSessionID, detentSessionID := boardRuntimeSessionIDs(data.Snapshot, card)
 		view.RuntimeDetail = runtimeIdentityFlyoutDetail(card.RuntimeIdentity, providerSessionID, detentSessionID)
 	}
 	view.PriorityBadge, view.PriorityTitle, view.PriorityDetail, view.PriorityTop = boardCardPriority(card)
+	view.CompactSignal = boardCardCompactSignal(view)
 	return view
+}
+
+func boardCardCompactSignal(card boardCardView) string {
+	switch {
+	case card.RuntimeBadge && card.ExtraText == "agent working":
+		return card.RuntimeCozyText
+	case card.ExtraText != "":
+		return card.ExtraText
+	case card.AgeFooter != "":
+		return "In lane " + card.AgeFooter
+	case card.RuntimeBadge:
+		return card.RuntimeCozyText
+	case card.Done:
+		return "Done"
+	default:
+		return ""
+	}
+}
+
+func boardCardActivity(snapshot telemetry.Snapshot, card projectKanbanCard) string {
+	for _, running := range snapshot.Running {
+		if issueIdentifier(running.Issue) != card.Identifier || !sheetSessionMatchesProject(running.ProjectID, card) {
+			continue
+		}
+		if message := boardCardActivityPreview(running.LastMessage); message != "" {
+			return message
+		}
+		return boardCardActivityPreview(running.LastEvent)
+	}
+	var latest *telemetry.IssueComment
+	for i := range card.Comments {
+		comment := &card.Comments[i]
+		if strings.TrimSpace(comment.Body) == "" {
+			continue
+		}
+		if latest == nil || boardCardCommentTime(*comment).After(boardCardCommentTime(*latest)) {
+			latest = comment
+		}
+	}
+	if latest == nil {
+		return ""
+	}
+	return boardCardActivityPreview(latest.Body)
+}
+
+func boardCardCommentTime(comment telemetry.IssueComment) time.Time {
+	if comment.UpdatedAt != nil {
+		return comment.UpdatedAt.UTC()
+	}
+	if comment.CreatedAt != nil {
+		return comment.CreatedAt.UTC()
+	}
+	return time.Time{}
+}
+
+func boardCardActivityPreview(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	const limit = 96
+	if len([]rune(value)) <= limit {
+		return value
+	}
+	runes := []rune(value)
+	return string(runes[:limit-3]) + "..."
+}
+
+func boardCardPRStatus(card projectKanbanCard) (string, string) {
+	if card.PRNumber <= 0 {
+		return "", ""
+	}
+	status := "PR #" + strconv.Itoa(card.PRNumber)
+	if ci := strings.TrimSpace(card.CIStatus); ci != "" {
+		status += " · CI " + ci
+	}
+	return status, card.CIClass
 }
 
 func boardRuntimeSessionIDs(snapshot telemetry.Snapshot, card projectKanbanCard) (string, int64) {

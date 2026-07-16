@@ -44,10 +44,11 @@ func TestDashboardDensity(t *testing.T) {
 		value  string
 		want   string
 	}{
-		{name: "no cookie", want: ""},
+		{name: "no cookie defaults cozy", want: "cozy"},
 		{name: "cozy", cookie: densityCookieName, value: "cozy", want: "cozy"},
-		{name: "compact stays default", cookie: densityCookieName, value: "compact", want: ""},
-		{name: "garbage ignored", cookie: densityCookieName, value: "roomy", want: ""},
+		{name: "compact", cookie: densityCookieName, value: "compact", want: "compact"},
+		{name: "comfy", cookie: densityCookieName, value: "comfy", want: "comfy"},
+		{name: "garbage defaults cozy", cookie: densityCookieName, value: "roomy", want: "cozy"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

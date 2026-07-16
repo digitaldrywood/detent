@@ -133,9 +133,10 @@ templ AppSidebarContent(data DashboardShellData) {
 					data-help-description={ appProjectBreakdown(project) }
 					{ sidebarAriaCurrent(project.Selected)... }
 				>
-					<span data-sidebar-project-activity={ boardBoolAttr(project.Live) }>
+					<span class="group-data-[rail=true]/rail:absolute group-data-[rail=true]/rail:right-0 group-data-[rail=true]/rail:top-0 group-data-[rail=true]/rail:z-10 group-data-[rail=true]/rail:grid group-data-[rail=true]/rail:size-2.5 group-data-[rail=true]/rail:place-items-center group-data-[rail=true]/rail:rounded-full group-data-[rail=true]/rail:bg-page" data-sidebar-project-activity={ boardBoolAttr(project.Live) }>
 						@primitives.StatusDot(appProjectDotKind(project), project.Live)
 					</span>
+					<span class="hidden size-7 place-items-center rounded-card border border-line bg-elev font-mono text-2xs font-semibold text-text group-data-[rail=true]/rail:grid" aria-hidden="true" data-sidebar-project-identity>{ project.Initials }</span>
 					<span class="min-w-0 flex-1 truncate group-data-[rail=true]/rail:hidden" data-sidebar-project-label>{ project.Name }</span>
 					if project.Count != "" {
 						<span class={ appProjectCountClass(project) } data-sidebar-project-badge data-sidebar-project-blocked={ boardBoolAttr(project.Blocked > 0) } aria-label={ project.Count + " board load" }>{ project.Count }</span>
@@ -214,6 +215,7 @@ templ appTopbar(data DashboardShellData, scope templ.Component) {
 			<div class="flex w-fit overflow-hidden rounded-card border border-line" role="group" aria-label="Density">
 				<button type="button" class={ appDensityButtonClass(data, "compact") } data-density-choice="compact" aria-pressed={ appDensityPressed(data, "compact") }>Compact</button>
 				<button type="button" class={ appDensityButtonClass(data, "cozy") } data-density-choice="cozy" aria-pressed={ appDensityPressed(data, "cozy") }>Cozy</button>
+				<button type="button" class={ appDensityButtonClass(data, "comfy") } data-density-choice="comfy" aria-pressed={ appDensityPressed(data, "comfy") }>Comfy</button>
 			</div>
 		</div>
 	</header>
@@ -562,11 +564,7 @@ templ appShellScript() {
 				var density = event.target.closest("[data-density-choice]");
 				if (density) {
 					var choice = density.getAttribute("data-density-choice");
-					if (choice === "cozy") {
-						document.documentElement.setAttribute("data-density", "cozy");
-					} else {
-						document.documentElement.removeAttribute("data-density");
-					}
+					document.documentElement.setAttribute("data-density", choice);
 					document.cookie = "density=" + choice + "; path=/; max-age=31536000; samesite=lax";
 					document.querySelectorAll("[data-density-choice]").forEach(function (button) {
 						var active = button === density;

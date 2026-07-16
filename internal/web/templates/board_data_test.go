@@ -527,11 +527,11 @@ func TestRunningBoardCardAndDetailSheetRenderRuntimeIdentity(t *testing.T) {
 	if !running.RuntimeBadge {
 		t.Fatal("RuntimeBadge = false, want true")
 	}
-	if running.RuntimeCompactText != "gpt-5.6-sol · xhigh" {
-		t.Fatalf("RuntimeCompactText = %q", running.RuntimeCompactText)
-	}
-	if running.RuntimeCozyText != "Codex · gpt-5.6-sol · xhigh" {
+	if running.RuntimeCozyText != "gpt-5.6-sol · xhigh" {
 		t.Fatalf("RuntimeCozyText = %q", running.RuntimeCozyText)
+	}
+	if running.RuntimeComfyText != "Codex · gpt-5.6-sol · xhigh" {
+		t.Fatalf("RuntimeComfyText = %q", running.RuntimeComfyText)
 	}
 	if running.RuntimeDetail != "Provider: openai · Provider session: thread-185 · Role: code · Detent session: 185" {
 		t.Fatalf("RuntimeDetail = %q", running.RuntimeDetail)
@@ -544,9 +544,9 @@ func TestRunningBoardCardAndDetailSheetRenderRuntimeIdentity(t *testing.T) {
 		`data-help-trigger`,
 		`data-help-scope="runtime-identity"`,
 		`data-help-description="Provider: openai · Provider session: thread-185 · Role: code · Detent session: 185"`,
-		`data-runtime-density="compact"`,
-		`>gpt-5.6-sol · xhigh<`,
 		`data-runtime-density="cozy"`,
+		`>gpt-5.6-sol · xhigh<`,
+		`data-runtime-density="comfy"`,
 		`>Codex · gpt-5.6-sol · xhigh<`,
 	} {
 		if !strings.Contains(cardHTML, want) {
@@ -619,7 +619,7 @@ func TestRunningBoardCardKeepsRuntimeBadgeWithOperationalStatus(t *testing.T) {
 				"fleet",
 				"",
 			)
-			if !view.RuntimeBadge || view.RuntimeCompactText != tt.want {
+			if !view.RuntimeBadge || view.RuntimeCozyText != tt.want {
 				t.Fatalf("runtime badge = %#v", view)
 			}
 			if view.ExtraText != "Awaiting tool result" {
@@ -655,8 +655,8 @@ func TestRunningBoardCardRuntimeBadgeFallsBackUntilIdentityKnown(t *testing.T) {
 	if !running.RuntimeBadge {
 		t.Fatal("RuntimeBadge = false, want true")
 	}
-	if running.RuntimeCompactText != "agent working" || running.RuntimeCozyText != "agent working" {
-		t.Fatalf("fallback runtime texts = %q / %q", running.RuntimeCompactText, running.RuntimeCozyText)
+	if running.RuntimeCozyText != "agent working" || running.RuntimeComfyText != "agent working" {
+		t.Fatalf("fallback runtime texts = %q / %q", running.RuntimeCozyText, running.RuntimeComfyText)
 	}
 
 	html := renderBoardComponent(t, boardCardView2(running))
@@ -671,6 +671,72 @@ func TestRunningBoardCardRuntimeBadgeFallsBackUntilIdentityKnown(t *testing.T) {
 	}
 	if strings.Contains(html, `data-help-scope="runtime-identity"`) {
 		t.Fatalf("fallback running card rendered an empty runtime flyout:\n%s", html)
+	}
+}
+
+func TestBoardCardViewBuildsDensitySpecificContent(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 16, 18, 0, 0, 0, time.UTC)
+	identity := agentidentity.Configured("codex-high", "codex", "priority", "code", "gpt-5.6-sol", "openai", "xhigh", "", now)
+	card := projectKanbanCard{
+		Identifier:      "digitaldrywood/detent#1360",
+		IssueID:         "issue-1360",
+		IssueNumber:     "#1360",
+		ProjectID:       "detent",
+		Title:           "Make density informational",
+		Stage:           "In Progress",
+		Labels:          []string{"detent:todo", "ux"},
+		PRNumber:        1400,
+		CIStatus:        "pass",
+		CIClass:         "border-ok/15 bg-ok/15 text-ok",
+		RuntimeIdentity: identity,
+	}
+	data := DashboardData{Snapshot: telemetry.Snapshot{Running: []telemetry.Running{{
+		Issue:       telemetry.Issue{Identifier: card.Identifier, ProjectID: card.ProjectID},
+		LastMessage: "Rendered the richer card fields.",
+	}}}}
+	view := boardCardViewFromCard(data, projectKanbanLane{Title: "In Progress"}, card, false, "fleet", "")
+
+	if view.State != "In Progress" || view.CompactSignal != "pass" {
+		t.Fatalf("compact content = %q / %q", view.State, view.CompactSignal)
+	}
+	if strings.Join(view.Labels, ",") != "detent:todo,ux" || view.Effort != "xhigh" {
+		t.Fatalf("rich labels/effort = %v / %q", view.Labels, view.Effort)
+	}
+	if view.Activity != "Rendered the richer card fields." {
+		t.Fatalf("Activity = %q", view.Activity)
+	}
+	if view.PRStatus != "PR #1400 · CI pass" || view.PRStatusClass != card.CIClass {
+		t.Fatalf("PR status = %q / %q", view.PRStatus, view.PRStatusClass)
+	}
+
+	html := renderBoardComponent(t, boardCardView2(view))
+	for _, want := range []string{
+		`data-board-card-content="compact"`,
+		`data-board-card-content="cozy"`,
+		`data-board-card-content="comfy"`,
+		`data-board-card-labels`,
+		`data-board-card-effort`,
+		`data-board-card-activity`,
+		`data-board-card-pr-status`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("density card missing %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestBoardCardActivityPreview(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("activity ", 20)
+	if got := boardCardActivityPreview("  one\n two  "); got != "one two" {
+		t.Fatalf("normalized preview = %q", got)
+	}
+	got := boardCardActivityPreview(long)
+	if len([]rune(got)) != 96 || !strings.HasSuffix(got, "...") {
+		t.Fatalf("truncated preview = %q (%d runes)", got, len([]rune(got)))
 	}
 }
 
@@ -810,8 +876,8 @@ func TestBoardSnapshotRendersAwaitingChecksOnlyForGatePendingCards(t *testing.T)
 	if strings.Contains(plain, "Awaiting checks") {
 		t.Fatalf("plain active card rendered awaiting checks badge:\n%s", plain)
 	}
-	if got := strings.Count(html, ">Awaiting checks<"); got != 1 {
-		t.Fatalf("visible Awaiting checks label rendered %d times, want 1:\n%s", got, html)
+	if got := strings.Count(html, ">Awaiting checks<"); got != 2 {
+		t.Fatalf("density-specific Awaiting checks labels rendered %d times, want 2:\n%s", got, html)
 	}
 }
 
