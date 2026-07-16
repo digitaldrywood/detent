@@ -1003,9 +1003,17 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		return true
 	}
 	issue = refreshedIssue
-	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
-		if o.scheduleCITriggerLabel(ctx, issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true) {
+	if event.Result.PullRequestHeadPushed {
+		triggerPending := false
+		if !event.Result.CITriggerLabelReapplied {
+			triggerPending = o.scheduleCITriggerLabel(ctx, issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true)
+		}
+		if triggerPending {
 			o.waitForMergeWorkerCITriggerLabel(ctx, state, event, running, issue)
+			return true
+		}
+		if mergeWorkerProgrammaticMergeWaiting(issue) {
+			o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
 			return true
 		}
 	}

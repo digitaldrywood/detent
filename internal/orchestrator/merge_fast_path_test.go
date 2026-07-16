@@ -308,6 +308,84 @@ func TestMergingFastPathChangedHeadReappliesCITriggerBeforeMerge(t *testing.T) {
 	}
 }
 
+func TestMergingFallbackPushWaitsAfterWorkerReappliesCITrigger(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 16, 10, 15, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:    1,
+		FailureRetryBaseDelay:  time.Minute,
+		MaxRetryBackoff:        time.Hour,
+		ContinuationRetryDelay: 5 * time.Second,
+		MergeFastPathEnabled:   true,
+		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:         []string{"Merging"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+	})
+	issue := autoPromoteTickIssue("issue-fallback-pushed-head", []string{"bug"}, &connector.PullRequest{
+		Number:         868,
+		URL:            "https://github.test/digitaldrywood/detent/pull/868",
+		BranchName:     "detent/fallback-pushed-head",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "pending",
+		HeadSHA:        "new-fallback-head",
+		RunningChecks:  []string{"Test"},
+	})
+	issue.State = "Merging"
+	issue.Identifier = "digitaldrywood/detent#868"
+	issue.PRRepository = "digitaldrywood/detent"
+
+	tracker := &autoPromoteTickMergeConnector{
+		autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue:      cloneIssue(issue),
+		Attempt:    1,
+		StartedAt:  now.Add(-time.Minute),
+		WorkerHost: "worker-a",
+		Mode:       runpkg.RunModeMerge,
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     issue.ID,
+		CompletedAt: now,
+		Request:     runpkg.RunRequest{Mode: runpkg.RunModeMerge},
+		Result: runpkg.RunResult{
+			FinalState:              runpkg.FinalStateCompleted,
+			PullRequestHeadPushed:   true,
+			CITriggerLabelReapplied: true,
+		},
+	})
+
+	if len(tracker.relabels) != 0 {
+		t.Fatalf("relabels = %#v, want no duplicate after worker reapplication", tracker.relabels)
+	}
+	if len(tracker.merges) != 0 {
+		t.Fatalf("merges = %#v, want none while current-head checks run", tracker.merges)
+	}
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want no lane transition while current-head checks run", tracker.updates)
+	}
+	retry, ok := state.Retry[issue.ID]
+	if !ok {
+		t.Fatalf("Retry[%q] missing while current-head checks run", issue.ID)
+	}
+	if retry.Attempt != 1 {
+		t.Fatalf("Retry[%q].Attempt = %d, want unchanged attempt 1", issue.ID, retry.Attempt)
+	}
+	if !strings.Contains(retry.Error, "current-head CI") {
+		t.Fatalf("Retry[%q].Error = %q, want current-head CI wait", issue.ID, retry.Error)
+	}
+}
+
 func TestMergingFastPathMissingRequiredChecksWaitsForPropagation(t *testing.T) {
 	t.Parallel()
 
