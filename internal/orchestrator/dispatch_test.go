@@ -117,6 +117,7 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Tracker.Claims.LeaseField = "Detent Lease"
 	cfg.Tracker.Claims.TTLSeconds = 300
 	cfg.Tracker.Claims.HeartbeatSeconds = 45
+	cfg.Tracker.PriorityMap = workflowconfig.StringOrMap{IsMap: true, Map: map[string]any{"Critical": 1, "Normal": 3, "No priority": nil}}
 	staggerSeconds := 20
 	cfg.Gate = gate.Config{
 		Kind:                         gate.KindHumanReview,
@@ -126,6 +127,9 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 
 	got := ConfigFromWorkflow(cfg)
+	if got.StopRunPriorityNames[1] != "Critical" || got.StopRunPriorityNames[3] != "Normal" || len(got.StopRunPriorityNames) != 2 {
+		t.Fatalf("StopRunPriorityNames = %#v, want configured ranked options", got.StopRunPriorityNames)
+	}
 
 	if got.MaxConcurrentAgentsPerHost != 2 {
 		t.Fatalf("MaxConcurrentAgentsPerHost = %d, want 2", got.MaxConcurrentAgentsPerHost)

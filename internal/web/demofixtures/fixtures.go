@@ -80,6 +80,11 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot = demoBoardScheduledPacingSnapshot()
 	case "board-degraded-health-banners":
 		snapshot = demoBoardDegradedHealthBannersSnapshot()
+	case "stop-run-picker":
+		if len(snapshot.Running) > 0 {
+			snapshot.Running[0].StopDestination = "Blocked"
+			snapshot.Running[0].StopPriorityOptions = []telemetry.StopRunPriorityOption{{Rank: 1, Name: "Urgent"}, {Rank: 2, Name: "High"}, {Rank: 3, Name: "Medium"}, {Rank: 4, Name: "Low"}}
+		}
 	}
 	if variant == "terminal" {
 		snapshot.BoardIssues = append(snapshot.BoardIssues, demoIssue(demoPrimaryProjectID, "demo-cancelled", "digitaldrywood/detent-core#5259", "Cancelled alternate dashboard theme", "Cancelled", 48))

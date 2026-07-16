@@ -72,6 +72,7 @@ type Config struct {
 	MergeMethod                   string
 	ResumeOrphanedSessions        bool
 	StopRunTargetState            string
+	StopRunPriorityNames          map[int]string
 	MaxConcurrentAgentsPerHost    int
 	MaxRetryBackoff               time.Duration
 	OverloadRetryDelay            time.Duration

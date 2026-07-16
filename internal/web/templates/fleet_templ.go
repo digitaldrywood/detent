@@ -755,7 +755,7 @@ func AgentActivityPanel(agents []fleetAgentRow, count string) templ.Component {
 							return templ_7745c5c3_Err
 						}
 						var templ_7745c5c3_Var36 string
-						templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs("Stop run and block item for " + agent.Repo + agent.Number)
+						templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs("Stop run and route item for " + agent.Repo + agent.Number)
 						if templ_7745c5c3_Err != nil {
 							return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/fleet.templ`, Line: 163, Col: 79}
 						}
@@ -763,7 +763,7 @@ func AgentActivityPanel(agents []fleetAgentRow, count string) templ.Component {
 						if templ_7745c5c3_Err != nil {
 							return templ_7745c5c3_Err
 						}
-						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 60, "\" title=\"Stop run and block item\">")
+						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 60, "\" title=\"Stop run and route item\">")
 						if templ_7745c5c3_Err != nil {
 							return templ_7745c5c3_Err
 						}

@@ -146,6 +146,7 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "health-dispatch-recoveries", Route: "/health/ui", WaitSelector: "#dispatch-recovery-status", Page: "health", Variant: "board-degraded-health-banners"},
 		{ID: "fleet-kanban-external-lane-timer", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "external-lane-timer", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},
 		{ID: "fleet-kanban-unblocker-boost", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "unblocker-boost", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},
+		{ID: "stop-run-picker", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "stop-run-picker", HideFromManifest: true},
 		{ID: "project-active-overview", Route: "/projects/dogfood", WaitSelector: "#snapshot", Page: "project", Variant: "healthy", ProjectID: demoPrimaryProjectID},
 		{ID: "project-paused-overview", Route: "/projects/mobile-client", WaitSelector: "#snapshot", Page: "project", Variant: "paused", ProjectID: "mobile-client"},
 		{ID: "project-empty-overview", Route: "/projects/agent-lab", WaitSelector: "#snapshot", Page: "project", Variant: "project-empty", ProjectID: "agent-lab"},

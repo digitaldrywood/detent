@@ -160,8 +160,8 @@ templ AgentActivityPanel(agents []fleetAgentRow, count string) {
 								hx-get={ agent.StopPath }
 								hx-target={ kanbanDialogTargetSelector() }
 								hx-swap="innerHTML"
-								aria-label={ "Stop run and block item for " + agent.Repo + agent.Number }
-								title="Stop run and block item"
+								aria-label={ "Stop run and route item for " + agent.Repo + agent.Number }
+								title="Stop run and route item"
 							>
 								@icon.CircleStop(icon.Props{Class: "size-4"})
 							</button>

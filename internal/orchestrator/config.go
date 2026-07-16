@@ -27,6 +27,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		MergeMethod:                cfg.Deliverable.EffectiveMergeMethod(),
 		ResumeOrphanedSessions:     cfg.Agent.ResumeOrphanedSessions,
 		StopRunTargetState:         cfg.Agent.StopRun.TargetState,
+		StopRunPriorityNames:       stopRunPriorityNames(cfg.Tracker.PriorityMap),
 		MaxConcurrentAgentsPerHost: positiveIntValue(cfg.Worker.MaxConcurrentAgentsPerHost),
 		MaxRetryBackoff:            durationFromMillis(cfg.Agent.MaxRetryBackoffMS),
 		OverloadRetryDelay:         durationFromMillis(cfg.Agent.OverloadRetryDelayMS),
@@ -153,6 +154,11 @@ func normalizeConfig(cfg Config) Config {
 	if strings.TrimSpace(cfg.StopRunTargetState) == "" {
 		cfg.StopRunTargetState = blockedStatusState
 	}
+	if len(cfg.StopRunPriorityNames) == 0 {
+		cfg.StopRunPriorityNames = map[int]string{1: "Urgent", 2: "High", 3: "Medium", 4: "Low"}
+	} else {
+		cfg.StopRunPriorityNames = cloneStopRunPriorityNames(cfg.StopRunPriorityNames)
+	}
 	if cfg.WorkspaceCleanupIdleTTL <= 0 {
 		cfg.WorkspaceCleanupIdleTTL = defaultWorkspaceCleanupIdleTTL
 	}
@@ -189,6 +195,35 @@ func normalizeConfig(cfg Config) Config {
 	}
 
 	return cfg
+}
+
+func stopRunPriorityNames(value workflowconfig.StringOrMap) map[int]string {
+	if !value.IsMap {
+		return nil
+	}
+	result := make(map[int]string, 4)
+	for name, value := range value.Map {
+		rank, ok := value.(int)
+		name = strings.TrimSpace(name)
+		if !ok || rank < 1 || rank > 4 || name == "" {
+			continue
+		}
+		if current := result[rank]; current == "" || name < current {
+			result[rank] = name
+		}
+	}
+	return result
+}
+
+func cloneStopRunPriorityNames(values map[int]string) map[int]string {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make(map[int]string, len(values))
+	for rank, name := range values {
+		result[rank] = strings.TrimSpace(name)
+	}
+	return result
 }
 
 func (cfg Config) subscriptionBilling() bool {

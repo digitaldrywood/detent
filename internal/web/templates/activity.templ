@@ -150,7 +150,7 @@ templ BoardLiveSession(data BoardSessionData) {
 								hx-get={ data.StopPath }
 								hx-target={ kanbanDialogTargetSelector() }
 								hx-swap="innerHTML"
-								title={ "Stop run and move item to " + data.StopDestination }
+								title="Stop run and choose item destination"
 							>
 								@icon.CircleStop(icon.Props{Class: "size-3.5"})
 								Stop run
