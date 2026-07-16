@@ -176,11 +176,24 @@ func (s workflowGitRefSource) load(ctx context.Context) (workflowconfig.Workflow
 	if err != nil {
 		return workflowconfig.Workflow{}, revision, fmt.Errorf("load workflow from %s: %w", s.displayPath(), err)
 	}
-	workflow, err := workflowconfig.ParseWorkflow(raw)
+	localPath := s.localPath()
+	localRaw, localErr := os.ReadFile(localPath)
+	if errors.Is(localErr, os.ErrNotExist) {
+		workflow, err := workflowconfig.ParseWorkflow(raw)
+		return workflow, revision, err
+	}
+	if localErr != nil {
+		return workflowconfig.Workflow{}, revision, fmt.Errorf("read local workflow overlay: %w", localErr)
+	}
+	workflow, err := workflowconfig.ParseWorkflowOverlay(raw, localRaw, localPath)
 	if err != nil {
 		return workflowconfig.Workflow{}, revision, err
 	}
 	return workflow, revision, nil
+}
+
+func (s workflowGitRefSource) localPath() string {
+	return filepath.Join(s.sourceRoot, filepath.FromSlash(workflowconfig.LocalWorkflowPath(s.path)))
 }
 
 func (s workflowGitRefSource) revision(ctx context.Context) (string, error) {
@@ -231,12 +244,31 @@ func (w *gitRefWorkflowWatcher) Watch(ctx context.Context) (<-chan configwatcher
 		ctx = context.Background()
 	}
 
+	localWatcher, err := configwatcher.NewFile(w.source.localPath(), func(string) (workflowconfig.Workflow, error) {
+		workflow, _, err := w.source.load(ctx)
+		if err == nil {
+			err = workflow.Config.Validate()
+		}
+		return workflow, err
+	}, configwatcher.WithFileLogger(w.logger))
+	if err != nil {
+		return nil, fmt.Errorf("create local workflow overlay watcher: %w", err)
+	}
+	localUpdates, err := localWatcher.Watch(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("watch local workflow overlay: %w", err)
+	}
+
 	updates := make(chan configwatcher.Update, 1)
-	go w.run(ctx, updates)
+	go w.run(ctx, updates, localUpdates)
 	return updates, nil
 }
 
-func (w *gitRefWorkflowWatcher) run(ctx context.Context, updates chan<- configwatcher.Update) {
+func (w *gitRefWorkflowWatcher) run(
+	ctx context.Context,
+	updates chan<- configwatcher.Update,
+	localUpdates <-chan configwatcher.FileUpdate[workflowconfig.Workflow],
+) {
 	defer close(updates)
 
 	ticker := time.NewTicker(w.interval)
@@ -249,6 +281,26 @@ func (w *gitRefWorkflowWatcher) run(ctx context.Context, updates chan<- configwa
 			return
 		case <-ticker.C:
 			lastRevision, lastErr = w.reload(ctx, updates, lastRevision, lastErr)
+		case update, ok := <-localUpdates:
+			if !ok {
+				w.send(ctx, updates, configwatcher.Update{
+					Path:       w.source.localPath(),
+					Err:        errors.New("local workflow overlay watcher stopped"),
+					WatcherErr: true,
+					At:         time.Now(),
+				})
+				return
+			}
+			w.send(ctx, updates, configwatcher.Update{
+				Path:       update.Path,
+				Workflow:   update.Value,
+				Err:        update.Err,
+				WatcherErr: update.WatcherErr,
+				At:         update.At,
+			})
+			if update.WatcherErr {
+				return
+			}
 		}
 	}
 }

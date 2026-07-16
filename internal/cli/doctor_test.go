@@ -2399,6 +2399,124 @@ func TestDoctorWorkflowDetailReportsPinnedModelAndSessionGuard(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorLocalWorkflowOverlay(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		overlay    workflowconfig.WorkflowOverlay
+		tracked    bool
+		trackedErr error
+		wantOK     bool
+		wantStatus doctorStatus
+		wantDetail []string
+		wantHint   string
+	}{
+		{
+			name: "active untracked overlay",
+			overlay: workflowconfig.WorkflowOverlay{
+				Path:           "/repo/WORKFLOW.local.md",
+				OverriddenKeys: []string{"polling.interval_ms", "tracker.assignee"},
+			},
+			wantOK:     true,
+			wantStatus: doctorOK,
+			wantDetail: []string{"is active", "polling.interval_ms, tracker.assignee", "not tracked by Git"},
+		},
+		{
+			name: "tracked overlay warns",
+			overlay: workflowconfig.WorkflowOverlay{
+				Path:           "/repo/WORKFLOW.local.md",
+				OverriddenKeys: []string{"tracker.assignee"},
+			},
+			tracked:    true,
+			wantOK:     true,
+			wantStatus: doctorWarn,
+			wantDetail: []string{"is active", "tracker.assignee", "tracked by Git"},
+			wantHint:   "Add WORKFLOW.local.md to .gitignore",
+		},
+		{
+			name: "prose-only overlay",
+			overlay: workflowconfig.WorkflowOverlay{
+				Path: "/repo/WORKFLOW.local.md",
+			},
+			wantOK:     true,
+			wantStatus: doctorOK,
+			wantDetail: []string{"is active", "prose only"},
+		},
+		{
+			name:       "tracking lookup failure warns",
+			overlay:    workflowconfig.WorkflowOverlay{Path: "/repo/WORKFLOW.local.md"},
+			trackedErr: errors.New("git unavailable"),
+			wantOK:     true,
+			wantStatus: doctorWarn,
+			wantDetail: []string{"could not be determined", "git unavailable"},
+			wantHint:   "listed in .gitignore",
+		},
+		{name: "inactive overlay"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			check, ok := checkDoctorLocalWorkflowOverlay(context.Background(), "detent", workflowconfig.Workflow{Overlay: tt.overlay}, doctorDeps{
+				gitTracked: func(context.Context, string) (bool, error) {
+					return tt.tracked, tt.trackedErr
+				},
+			})
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %t, want %t", ok, tt.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if check.Status != tt.wantStatus {
+				t.Fatalf("Status = %s, want %s", check.Status, tt.wantStatus)
+			}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(check.Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", check.Detail, want)
+				}
+			}
+			if tt.wantHint != "" && !strings.Contains(check.Hint, tt.wantHint) {
+				t.Fatalf("Hint = %q, want containing %q", check.Hint, tt.wantHint)
+			}
+		})
+	}
+}
+
+func TestDefaultGitTracked(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	if err := runDoctorCommand(context.Background(), "git", "-C", repo, "init"); err != nil {
+		t.Fatalf("git init error = %v", err)
+	}
+	path := filepath.Join(repo, "WORKFLOW.local.md")
+	if err := os.WriteFile(path, []byte("---\n---\nlocal\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	tracked, err := defaultGitTracked(context.Background(), path)
+	if err != nil {
+		t.Fatalf("defaultGitTracked() untracked error = %v", err)
+	}
+	if tracked {
+		t.Fatal("defaultGitTracked() = true, want false before git add")
+	}
+
+	if err := runDoctorCommand(context.Background(), "git", "-C", repo, "add", "WORKFLOW.local.md"); err != nil {
+		t.Fatalf("git add error = %v", err)
+	}
+	tracked, err = defaultGitTracked(context.Background(), path)
+	if err != nil {
+		t.Fatalf("defaultGitTracked() tracked error = %v", err)
+	}
+	if !tracked {
+		t.Fatal("defaultGitTracked() = false, want true after git add")
+	}
+}
+
 func TestCheckDoctorInstanceIdentity(t *testing.T) {
 	t.Parallel()
 

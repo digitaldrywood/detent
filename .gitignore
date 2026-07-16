@@ -1,6 +1,7 @@
 tmp/
 /detent
 node_modules/
+/WORKFLOW.local.md
 
 # Release signing secrets — NEVER commit the private key or the password
 .envrc

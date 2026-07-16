@@ -103,6 +103,12 @@ type Workflow struct {
 	Config     Config
 	Prompt     string
 	SourceHash string
+	Overlay    WorkflowOverlay
+}
+
+type WorkflowOverlay struct {
+	Path           string
+	OverriddenKeys []string
 }
 
 type Config struct {
@@ -932,29 +938,107 @@ func LoadWorkflow(path string) (Workflow, error) {
 		return Workflow{}, fmt.Errorf("read workflow file: %w", err)
 	}
 
-	return ParseWorkflow(raw)
+	localPath := LocalWorkflowPath(path)
+	localRaw, err := os.ReadFile(localPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return ParseWorkflow(raw)
+	}
+	if err != nil {
+		return Workflow{}, fmt.Errorf("read local workflow overlay: %w", err)
+	}
+	return ParseWorkflowOverlay(raw, localRaw, localPath)
 }
 
 func ParseWorkflow(raw []byte) (Workflow, error) {
-	frontmatter, prompt, err := splitFrontmatter(raw)
+	root, prompt, err := parseWorkflowDocument(raw)
+	if err != nil {
+		return Workflow{}, err
+	}
+	cfg, err := decodeWorkflowConfig(root)
 	if err != nil {
 		return Workflow{}, err
 	}
 
-	cfg := Default()
-	if len(bytes.TrimSpace(frontmatter)) > 0 {
-		var doc yaml.Node
-		if err := yaml.Unmarshal(frontmatter, &doc); err != nil {
-			return Workflow{}, fmt.Errorf("parse YAML frontmatter: %w", err)
-		}
+	sum := sha256.Sum256(raw)
+	return Workflow{
+		Config:     cfg,
+		Prompt:     string(prompt),
+		SourceHash: hex.EncodeToString(sum[:]),
+	}, nil
+}
 
-		root, err := documentRoot(&doc)
-		if err != nil {
-			return Workflow{}, err
-		}
-		if root.Kind != yaml.MappingNode {
-			return Workflow{}, errors.New("workflow frontmatter must be a mapping")
-		}
+func LocalWorkflowPath(path string) string {
+	extension := filepath.Ext(path)
+	if extension == "" {
+		return path + ".local"
+	}
+	return strings.TrimSuffix(path, extension) + ".local" + extension
+}
+
+func ParseWorkflowOverlay(sharedRaw []byte, localRaw []byte, localPath string) (Workflow, error) {
+	sharedRoot, sharedPrompt, err := parseWorkflowDocument(sharedRaw)
+	if err != nil {
+		return Workflow{}, err
+	}
+	localRoot, localPrompt, err := parseWorkflowDocument(localRaw)
+	if err != nil {
+		return Workflow{}, fmt.Errorf("parse local workflow overlay: %w", err)
+	}
+
+	if sharedRoot == nil {
+		sharedRoot = &yaml.Node{Kind: yaml.MappingNode}
+	}
+	if localRoot != nil {
+		mergeWorkflowMappings(sharedRoot, localRoot)
+	}
+	cfg, err := decodeWorkflowConfig(sharedRoot)
+	if err != nil {
+		return Workflow{}, err
+	}
+
+	overridden := sortedConfiguredFieldPaths(localRoot)
+	combined := make([]byte, 0, len(sharedRaw)+len(localRaw)+len("\x00workflow.local.md\x00"))
+	combined = append(combined, sharedRaw...)
+	combined = append(combined, "\x00workflow.local.md\x00"...)
+	combined = append(combined, localRaw...)
+	sum := sha256.Sum256(combined)
+	return Workflow{
+		Config:     cfg,
+		Prompt:     mergeWorkflowPrompts(sharedPrompt, localPrompt),
+		SourceHash: hex.EncodeToString(sum[:]),
+		Overlay: WorkflowOverlay{
+			Path:           strings.TrimSpace(localPath),
+			OverriddenKeys: overridden,
+		},
+	}, nil
+}
+
+func parseWorkflowDocument(raw []byte) (*yaml.Node, []byte, error) {
+	frontmatter, prompt, err := splitFrontmatter(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(bytes.TrimSpace(frontmatter)) == 0 {
+		return nil, prompt, nil
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(frontmatter, &doc); err != nil {
+		return nil, nil, fmt.Errorf("parse YAML frontmatter: %w", err)
+	}
+	root, err := documentRoot(&doc)
+	if err != nil {
+		return nil, nil, err
+	}
+	if root.Kind != yaml.MappingNode {
+		return nil, nil, errors.New("workflow frontmatter must be a mapping")
+	}
+	return root, prompt, nil
+}
+
+func decodeWorkflowConfig(root *yaml.Node) (Config, error) {
+	cfg := Default()
+	if root != nil {
 		normalizeTrackerIDFields(root)
 		gitHubStatusSourceSet := trackerFieldSet(root, "github_status_source")
 		knowledgeConfigured := nestedFieldSet(root, "agent", "knowledge")
@@ -962,7 +1046,7 @@ func ParseWorkflow(raw []byte) (Workflow, error) {
 		perDayMaxUSDConfigured := nestedFieldSet(root, "budget", "per_day_max_usd")
 		perIssueMaxUSDConfigured := nestedFieldSet(root, "budget", "per_issue_max_usd")
 		if err := root.Decode(&cfg); err != nil {
-			return Workflow{}, fmt.Errorf("decode YAML frontmatter: %w", err)
+			return Config{}, fmt.Errorf("decode YAML frontmatter: %w", err)
 		}
 		cfg.Tracker.gitHubStatusSourceSet = gitHubStatusSourceSet
 		cfg.Agent.Knowledge.Configured = knowledgeConfigured
@@ -971,15 +1055,61 @@ func ParseWorkflow(raw []byte) (Workflow, error) {
 		cfg.Budget.perIssueMaxUSDConfigured = perIssueMaxUSDConfigured
 		cfg.configuredFields = configuredFieldPaths(root)
 	}
-
 	cfg.normalize()
+	return cfg, nil
+}
 
-	sum := sha256.Sum256(raw)
-	return Workflow{
-		Config:     cfg,
-		Prompt:     string(prompt),
-		SourceHash: hex.EncodeToString(sum[:]),
-	}, nil
+func mergeWorkflowMappings(shared *yaml.Node, local *yaml.Node) {
+	for index := 0; index+1 < len(local.Content); index += 2 {
+		localKey := local.Content[index]
+		localValue := local.Content[index+1]
+		sharedIndex := mappingKeyIndex(shared, localKey.Value)
+		if sharedIndex < 0 {
+			shared.Content = append(shared.Content, localKey, localValue)
+			continue
+		}
+		sharedValue := shared.Content[sharedIndex+1]
+		if sharedValue.Kind == yaml.MappingNode && localValue.Kind == yaml.MappingNode {
+			mergeWorkflowMappings(sharedValue, localValue)
+			continue
+		}
+		shared.Content[sharedIndex] = localKey
+		shared.Content[sharedIndex+1] = localValue
+	}
+}
+
+func mappingKeyIndex(node *yaml.Node, key string) int {
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		if node.Content[index].Value == key {
+			return index
+		}
+	}
+	return -1
+}
+
+func sortedConfiguredFieldPaths(root *yaml.Node) []string {
+	if root == nil {
+		return nil
+	}
+	paths := configuredFieldPaths(root)
+	configured := make([]string, 0, len(paths))
+	for path := range paths {
+		configured = append(configured, path)
+	}
+	sort.Strings(configured)
+	return configured
+}
+
+func mergeWorkflowPrompts(shared []byte, local []byte) string {
+	if len(bytes.TrimSpace(local)) == 0 {
+		return string(shared)
+	}
+	sharedPrompt := strings.TrimRight(string(shared), "\n")
+	localPrompt := strings.TrimLeft(string(local), "\n")
+	if sharedPrompt == "" {
+		return "## Machine-local workflow overlay\n\n" + localPrompt
+	}
+	return sharedPrompt + "\n\n---\n\n## Machine-local workflow overlay\n\n" + localPrompt
 }
 
 func (c Config) ConfiguredSubsettings(prefix string) []string {

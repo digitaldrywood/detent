@@ -255,6 +255,9 @@ func checkDoctorProjectWithProgress(
 		}
 	}
 	checks := []doctorCheck{workflowCheck}
+	if overlayCheck, ok := checkDoctorLocalWorkflowOverlay(ctx, id, workflow, deps); ok {
+		checks = append(checks, overlayCheck)
+	}
 	if billingCheck, ok := checkDoctorBillingMode(id, workflow.Config); ok {
 		checks = append(checks, billingCheck)
 	}
@@ -352,6 +355,49 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, checkDoctorGitHubReadiness(ctx, id, project, workflow.Config, deps, githubToken, expandedSourceRoot, allowWriteProbes)...)
 	}
 	return checks
+}
+
+func checkDoctorLocalWorkflowOverlay(
+	ctx context.Context,
+	id string,
+	workflow workflowconfig.Workflow,
+	deps doctorDeps,
+) (doctorCheck, bool) {
+	path := strings.TrimSpace(workflow.Overlay.Path)
+	if path == "" {
+		return doctorCheck{}, false
+	}
+
+	detail := path + " is active"
+	if len(workflow.Overlay.OverriddenKeys) == 0 {
+		detail += "; overrides no structured config keys (prose only)"
+	} else {
+		detail += "; overrides structured config keys: " + strings.Join(workflow.Overlay.OverriddenKeys, ", ")
+	}
+	check := doctorCheck{
+		Name:   "Project " + id + " local workflow overlay",
+		Status: doctorOK,
+		Detail: detail,
+	}
+	if deps.gitTracked == nil {
+		deps.gitTracked = defaultGitTracked
+	}
+	tracked, err := deps.gitTracked(ctx, path)
+	if err != nil {
+		check.Status = doctorWarn
+		check.Detail += "; Git tracking status could not be determined: " + err.Error()
+		check.Hint = "Verify that " + filepath.Base(path) + " is listed in .gitignore and is not tracked by Git."
+		return check, true
+	}
+	if !tracked {
+		check.Detail += "; file is not tracked by Git"
+		return check, true
+	}
+
+	check.Status = doctorWarn
+	check.Detail += "; file is tracked by Git"
+	check.Hint = "Add " + filepath.Base(path) + " to .gitignore and remove it from Git tracking with git rm --cached -- " + filepath.Base(path) + "."
+	return check, true
 }
 
 func checkDoctorBillingMode(id string, cfg workflowconfig.Config) (doctorCheck, bool) {

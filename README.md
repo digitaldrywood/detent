@@ -165,9 +165,10 @@ agent-executable [Project Onboarding](docs/ONBOARDING.md) runbook.
 Configured GitHub status is the state machine; ProjectV2 board status, the
 boardless issue field, or repository status labels drive everything.
 
-1. **You write the contract.** Each project has a `WORKFLOW.md`: the tracker
-   binding, board states, the agent prompt, the validation gate, and the review
-   policy.
+1. **You write the contract.** Each project has a checked-in `WORKFLOW.md`: the
+   tracker binding, board states, the agent prompt, the validation gate, and
+   the review policy. An optional, gitignored `WORKFLOW.local.md` applies
+   machine-specific overrides without changing that shared contract.
 2. **You mark an issue `Todo`.** Detent claims it, creates an isolated Git
    worktree from your source checkout, and dispatches a Codex agent with the
    contract — moving the issue to `In Progress`.
@@ -2072,6 +2073,34 @@ Detent separates host-level orchestration from per-project workflow:
 - Each project has its own `WORKFLOW.md` with tracker credentials, states,
   workspace rules, Codex settings, budgets, hooks, and agent instructions.
 
+### Machine-local workflow overlays
+
+Keep `WORKFLOW.md` checked in as the shared project contract. For settings or
+agent direction that only apply on one machine, create `WORKFLOW.local.md`
+beside it and add that file to the repository's `.gitignore`. The local file
+uses the same YAML-frontmatter-plus-Markdown format. Local frontmatter wins per
+structured leaf key; mapping siblings that are not mentioned remain shared,
+while local lists and scalar values replace their shared values. Local Markdown
+is appended after the shared direction under a visible machine-local heading.
+
+Detent loads both files at startup. Its workflow watcher reloads edits,
+creation, and deletion of either file without a restart, and periodic
+reconciliation covers missed filesystem events. `detent doctor` reports an
+active overlay, lists its structured override keys, and warns if Git tracks the
+local file.
+
+For example:
+
+```markdown
+---
+tracker:
+  assignee: local-operator
+polling:
+  interval_ms: 90000
+---
+Use the tools installed on this build host.
+```
+
 A minimal global config looks like this:
 
 ```yaml
@@ -2131,9 +2160,11 @@ When set, the workflow file is read from a git ref in the configured source
 checkout instead of the checkout's working-tree copy. `workflow` may be an
 absolute path under `workdir` or a repository relative path such as
 `WORKFLOW.md`. When the ref advances, Detent reloads the workflow content from
-that ref; when `workflow_ref` is omitted, Detent keeps reading the working-tree
-file. If `workflow_ref` points at a ref that does not contain the workflow file,
-`detent doctor` reports a load failure for `<ref>:WORKFLOW.md`.
+that ref. `WORKFLOW.local.md` remains machine-local in the working tree and is
+applied over the ref-backed shared file. When `workflow_ref` is omitted, Detent
+keeps reading the working-tree shared file. If `workflow_ref` points at a ref
+that does not contain the workflow file, `detent doctor` reports a load failure
+for `<ref>:WORKFLOW.md`.
 
 Use the project administration commands to edit `global.yaml`:
 

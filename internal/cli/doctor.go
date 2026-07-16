@@ -158,6 +158,7 @@ type doctorDeps struct {
 	openSQLiteReadOnly   func(context.Context, string) (doctorTelemetryStore, error)
 	gitWorkTree          func(context.Context, string) error
 	gitRemoteURL         func(context.Context, string) (string, error)
+	gitTracked           func(context.Context, string) (bool, error)
 	autoPromoteConnector func(workflowconfig.Config) (doctorAutoPromoteConnector, error)
 	proposalConnector    func(workflowconfig.Config) (doctorWorkflowProposalConnector, error)
 	modelProbe           func(context.Context, doctorRouteModelProbeRequest) error
@@ -927,6 +928,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.gitRemoteURL == nil {
 		d.gitRemoteURL = defaults.gitRemoteURL
 	}
+	if d.gitTracked == nil {
+		d.gitTracked = defaults.gitTracked
+	}
 	if d.autoPromoteConnector == nil {
 		d.autoPromoteConnector = defaults.autoPromoteConnector
 	}
@@ -966,6 +970,7 @@ func defaultDoctorDeps() doctorDeps {
 		openSQLiteReadOnly:   openDoctorSQLiteReadOnly,
 		gitWorkTree:          defaultGitWorkTree,
 		gitRemoteURL:         defaultGitRemoteURL,
+		gitTracked:           defaultGitTracked,
 		autoPromoteConnector: defaultDoctorAutoPromoteConnector,
 		proposalConnector:    defaultDoctorProposalConnector,
 		modelProbe:           defaultDoctorRouteModelProbe,
@@ -1238,6 +1243,28 @@ func defaultGitRemoteURL(ctx context.Context, path string) (string, error) {
 		return "", errors.New("origin remote URL is blank")
 	}
 	return remote, nil
+}
+
+func defaultGitTracked(ctx context.Context, path string) (bool, error) {
+	commandCtx, cancel := context.WithTimeout(ctx, doctorCommandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(commandCtx, "git", "-C", filepath.Dir(path), "ls-files", "--error-unmatch", "--", filepath.Base(path)) // #nosec G204 -- the local workflow path is passed as a git argument, not shell input.
+	output, err := cmd.CombinedOutput()
+	if commandCtx.Err() != nil {
+		return false, commandCtx.Err()
+	}
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	if detail := strings.TrimSpace(string(output)); detail != "" {
+		return false, fmt.Errorf("check tracked file: %w: %s", err, detail)
+	}
+	return false, fmt.Errorf("check tracked file: %w", err)
 }
 
 func defaultGitHubScopes(ctx context.Context, token string) ([]string, error) {
