@@ -17,6 +17,7 @@ const (
 	workflowActionBlockedRecovery          = "blocked_recovery"
 	workflowActionBlockedRecoveryExhausted = "blocked_recovery_exhausted"
 	workflowActionPlanReviewRework         = "plan_review_rework"
+	workflowActionReworkBreakerAutoUnpark  = "rework_breaker_auto_unpark"
 )
 
 type WorkflowMetricsRecorder interface {
@@ -30,6 +31,7 @@ type WorkflowMetricsTimelineReader interface {
 type workflowLaneMetadata struct {
 	PullRequest           *workflowLanePullRequestMetadata           `json:"pull_request,omitempty"`
 	DependencyAutoUnblock *workflowLaneDependencyAutoUnblockMetadata `json:"dependency_auto_unblock,omitempty"`
+	ReworkBreaker         *workflowLaneReworkBreakerMetadata         `json:"rework_breaker,omitempty"`
 	ActionSignatures      []workflowLaneActionSignatureMetadata      `json:"action_signatures,omitempty"`
 }
 
@@ -42,6 +44,10 @@ type workflowLanePullRequestMetadata struct {
 type workflowLaneDependencyAutoUnblockMetadata struct {
 	BlockerSet string   `json:"blocker_set,omitempty"`
 	Blockers   []string `json:"blockers,omitempty"`
+}
+
+type workflowLaneReworkBreakerMetadata struct {
+	Reason string `json:"reason,omitempty"`
 }
 
 type workflowLaneActionSignatureMetadata struct {
@@ -584,7 +590,7 @@ func workflowLaneMetadataJSON(issue connector.Issue, metadata workflowLaneMetada
 	if metadata.PullRequest == nil {
 		metadata.PullRequest = workflowLanePullRequestMetadataFromIssue(issue)
 	}
-	if metadata.PullRequest == nil && metadata.DependencyAutoUnblock == nil && len(metadata.ActionSignatures) == 0 {
+	if metadata.PullRequest == nil && metadata.DependencyAutoUnblock == nil && metadata.ReworkBreaker == nil && len(metadata.ActionSignatures) == 0 {
 		return "{}"
 	}
 	data, err := json.Marshal(metadata)

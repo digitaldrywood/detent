@@ -11,6 +11,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
+const reworkBreakerStageUpdateSkew = time.Second
+
 type BlockedRecoveryAction string
 
 const (
@@ -48,6 +50,15 @@ type BlockedRecoveryDecision struct {
 	Kind        BlockedRecoveryKind
 	TargetState string
 	Detail      string
+}
+
+type reworkBreakerPark struct {
+	Event     store.WorkflowPhaseEvent
+	Reason    AutoPromoteReason
+	PRNumber  int64
+	HeadSHA   string
+	Signature string
+	Timeline  store.WorkflowTimeline
 }
 
 func EvaluateBlockedRecovery(issue connector.Issue) BlockedRecoveryDecision {
@@ -117,9 +128,20 @@ func (o *Orchestrator) recoverBlockedIssues(
 	now time.Time,
 ) map[string]struct{} {
 	transitioned := map[string]struct{}{}
+	autoPromoteCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	for _, issue := range issuesInStates(issues, []string{blockedStatusState}) {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
+			continue
+		}
+		if park, ok := o.latestReworkBreakerPark(ctx, issue); autoPromoteCfg.Enabled && ok {
+			if !reworkBreakerAutoUnparkReady(issue, park) || reworkBreakerAutoUnparkConsumed(park.Timeline, park.Signature) {
+				continue
+			}
+			if !o.applyReworkBreakerAutoUnpark(ctx, state, issue, park, autoPromoteCfg.PassState, now) {
+				continue
+			}
+			transitioned[issueID] = struct{}{}
 			continue
 		}
 		if o.issueHasStickyBlockReason(ctx, state, issue) {
@@ -143,6 +165,211 @@ func (o *Orchestrator) recoverBlockedIssues(
 		return nil
 	}
 	return transitioned
+}
+
+func (o *Orchestrator) latestReworkBreakerPark(ctx context.Context, issue connector.Issue) (reworkBreakerPark, bool) {
+	timeline, ok := o.issueWorkflowTimeline(ctx, issue)
+	if !ok {
+		return reworkBreakerPark{}, false
+	}
+	for index := len(timeline.Events) - 1; index >= 0; index-- {
+		event := timeline.Events[index]
+		if event.PhaseType != store.WorkflowPhaseTypeLane || !strings.EqualFold(strings.TrimSpace(event.Status), "entered") {
+			continue
+		}
+		if normalizeState(event.PhaseName) != normalizeState(blockedStatusState) || !strings.EqualFold(strings.TrimSpace(event.Reason), "rework_limit") {
+			return reworkBreakerPark{}, false
+		}
+		metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON)
+		if !ok || metadata.PullRequest == nil {
+			return reworkBreakerPark{}, false
+		}
+		reason, ok := reworkBreakerParkReason(timeline.Events, index, metadata)
+		if !ok {
+			return reworkBreakerPark{}, false
+		}
+		prNumber := metadata.PullRequest.Number
+		headSHA := strings.TrimSpace(metadata.PullRequest.HeadSHA)
+		if prNumber <= 0 || headSHA == "" {
+			return reworkBreakerPark{}, false
+		}
+		return reworkBreakerPark{
+			Event:     event,
+			Reason:    reason,
+			PRNumber:  prNumber,
+			HeadSHA:   headSHA,
+			Signature: fmt.Sprintf("pr=%d;head=%s", prNumber, headSHA),
+			Timeline:  timeline,
+		}, true
+	}
+	return reworkBreakerPark{}, false
+}
+
+func reworkBreakerParkReason(
+	events []store.WorkflowPhaseEvent,
+	parkIndex int,
+	parkMetadata workflowLaneMetadata,
+) (AutoPromoteReason, bool) {
+	if parkMetadata.ReworkBreaker != nil {
+		reason := AutoPromoteReason(strings.TrimSpace(parkMetadata.ReworkBreaker.Reason))
+		return reason, reworkBreakerReasonEligible(reason)
+	}
+	for index := parkIndex - 1; index >= 0; index-- {
+		event := events[index]
+		if event.PhaseType != store.WorkflowPhaseTypeLane || !strings.EqualFold(strings.TrimSpace(event.Status), "entered") {
+			continue
+		}
+		if normalizeState(event.PhaseName) == normalizeState(blockedStatusState) {
+			return "", false
+		}
+		if normalizeState(event.PhaseName) != normalizeState(autoPromoteReworkState) {
+			continue
+		}
+		reason := AutoPromoteReason(strings.TrimSpace(event.Reason))
+		if !reworkBreakerReasonEligible(reason) {
+			continue
+		}
+		metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON)
+		if !ok || !reworkBreakerPullRequestMetadataEqual(metadata.PullRequest, parkMetadata.PullRequest) {
+			continue
+		}
+		return reason, true
+	}
+	return "", false
+}
+
+func reworkBreakerReasonEligible(reason AutoPromoteReason) bool {
+	switch reason {
+	case AutoPromoteReasonCINotGreen, AutoPromoteReasonMergeConflicts:
+		return true
+	default:
+		return false
+	}
+}
+
+func reworkBreakerPullRequestMetadataEqual(left, right *workflowLanePullRequestMetadata) bool {
+	return left != nil && right != nil &&
+		left.Number > 0 && left.Number == right.Number &&
+		strings.TrimSpace(left.HeadSHA) != "" && strings.TrimSpace(left.HeadSHA) == strings.TrimSpace(right.HeadSHA)
+}
+
+func reworkBreakerAutoUnparkReady(issue connector.Issue, park reworkBreakerPark) bool {
+	if normalizeState(issue.State) != normalizeState(blockedStatusState) || issue.Closed || reworkBreakerIssueHeld(issue) {
+		return false
+	}
+	if issue.StageUpdatedAt != nil && issue.StageUpdatedAt.After(park.Event.StartedAt.Add(reworkBreakerStageUpdateSkew)) {
+		return false
+	}
+	pr := issue.PullRequest
+	if pr == nil || pr.Draft || normalizePullRequestState(pr.State) != "open" {
+		return false
+	}
+	if pr.Number != int(park.PRNumber) || strings.TrimSpace(pr.HeadSHA) != park.HeadSHA {
+		return false
+	}
+	if pullRequestHydrationUnavailableReason(pr) != "" || pullRequestHydrationDegradedReason(pr) != "" {
+		return false
+	}
+	return reworkBreakerCIGreen(pr) &&
+		strings.EqualFold(strings.TrimSpace(pr.MergeableState), "clean") &&
+		len(autoPromoteFindingsFromPullRequest(pr)) == 0
+}
+
+func reworkBreakerIssueHeld(issue connector.Issue) bool {
+	issue = issueWithTextDependencyRefs(issue)
+	if len(issue.BlockedBy) > 0 || strings.TrimSpace(issue.BlockerReason) != "" || blockedRecoveryHumanOnly(issue) {
+		return true
+	}
+	signal := issue.WorkpadSignal
+	return signal != nil && (signal.Invalid != nil || strings.TrimSpace(signal.HumanAction) != "" || len(signal.Blockers) > 0 || strings.EqualFold(strings.TrimSpace(signal.Status), "blocked"))
+}
+
+func reworkBreakerCIGreen(pr *connector.PullRequest) bool {
+	if pr == nil || len(pr.RunningChecks) > 0 || len(pr.RequiredCheckFailures) > 0 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(pr.CIStatus)) {
+	case "pass", "passed", "passing", "success", "successful":
+		return true
+	default:
+		return false
+	}
+}
+
+func reworkBreakerAutoUnparkConsumed(timeline store.WorkflowTimeline, signature string) bool {
+	for _, event := range timeline.Events {
+		metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON)
+		if ok && workflowLaneMetadataHasActionSignature(metadata, workflowActionReworkBreakerAutoUnpark, signature) {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *Orchestrator) applyReworkBreakerAutoUnpark(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	park reworkBreakerPark,
+	targetState string,
+	now time.Time,
+) bool {
+	issueID := strings.TrimSpace(issue.ID)
+	targetState = strings.TrimSpace(targetState)
+	if targetState == "" {
+		targetState = autoPromoteMergingState
+	}
+	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionReworkBreakerAutoUnpark, park.Signature)
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, now, "rework_breaker_auto_unpark", metadata); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("rework breaker auto-unpark transition failed", "issue_id", issueID, "identifier", issue.Identifier, "reason", park.Reason, "signature", park.Signature, "error", err)
+		}
+		return false
+	}
+
+	body := reworkBreakerAutoUnparkComment(issue, park, targetState)
+	if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
+		o.logger.Warn("rework breaker auto-unpark comment failed", "issue_id", issueID, "identifier", issue.Identifier, "reason", park.Reason, "signature", park.Signature, "error", err)
+	}
+
+	o.clearAutoPromotedIssueDispatchMemory(state, issueID)
+	promoted := promotedIssue(issue, targetState, now)
+	if mergeWorkerIssue(promoted) {
+		o.recordMergeQueueEntered(state, promoted, now, "rework_breaker_auto_unpark")
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "rework_breaker_auto_unpark",
+		Message: "auto-unparked " + issueLabel(issue) + " from Blocked to " + targetState + ": " + string(park.Reason),
+	})
+	if o.logger != nil {
+		o.logger.Info("rework breaker auto-unpark", "issue_id", issueID, "identifier", issue.Identifier, "reason", park.Reason, "signature", park.Signature, "head_sha", park.HeadSHA)
+	}
+	return true
+}
+
+func reworkBreakerAutoUnparkComment(issue connector.Issue, park reworkBreakerPark, targetState string) string {
+	var b strings.Builder
+	b.WriteString("Auto-unparked this breaker-parked issue from Blocked to ")
+	b.WriteString(strings.TrimSpace(targetState))
+	b.WriteString(" after the original merge-path condition cleared.")
+	b.WriteString("\n\nPark reason: ")
+	b.WriteString(string(park.Reason))
+	b.WriteString(fmt.Sprintf("\nLinked PR: #%d", park.PRNumber))
+	if issue.PullRequest != nil && strings.TrimSpace(issue.PullRequest.URL) != "" {
+		b.WriteString(" ")
+		b.WriteString(strings.TrimSpace(issue.PullRequest.URL))
+	}
+	b.WriteString("\nParked head: ")
+	b.WriteString(park.HeadSHA)
+	if issue.PullRequest != nil {
+		b.WriteString("\nCurrent-head CI: ")
+		b.WriteString(strings.TrimSpace(issue.PullRequest.CIStatus))
+		b.WriteString("\nMergeable state: ")
+		b.WriteString(strings.TrimSpace(issue.PullRequest.MergeableState))
+	}
+	b.WriteString("\n\nThis is the only automatic unpark permitted for this PR head. If the breaker parks it again without a new head, a human must review it.")
+	return b.String()
 }
 
 func (o *Orchestrator) applyBlockedRecovery(

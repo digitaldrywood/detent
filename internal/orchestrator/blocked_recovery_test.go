@@ -146,6 +146,256 @@ func TestRecoverBlockedIssuesUsesPersistedSignatureGuard(t *testing.T) {
 	}
 }
 
+func TestRecoverBlockedIssuesReworkBreakerGuards(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 7, 16, 21, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name          string
+		reason        AutoPromoteReason
+		mutate        func(*connector.Issue)
+		manualReblock bool
+		consumed      bool
+		disabled      bool
+		wantUnpark    bool
+	}{
+		{
+			name:       "same head green and clean",
+			reason:     AutoPromoteReasonCINotGreen,
+			wantUnpark: true,
+		},
+		{
+			name:       "merge conflicts cleared",
+			reason:     AutoPromoteReasonMergeConflicts,
+			wantUnpark: true,
+		},
+		{
+			name:   "changed head",
+			reason: AutoPromoteReasonCINotGreen,
+			mutate: func(issue *connector.Issue) {
+				issue.PullRequest.HeadSHA = "new-head"
+			},
+		},
+		{
+			name:   "ci still red",
+			reason: AutoPromoteReasonCINotGreen,
+			mutate: func(issue *connector.Issue) {
+				issue.PullRequest.CIStatus = "failure"
+			},
+		},
+		{
+			name:   "required check still running",
+			reason: AutoPromoteReasonCINotGreen,
+			mutate: func(issue *connector.Issue) {
+				issue.PullRequest.RunningChecks = []string{"Test"}
+			},
+		},
+		{
+			name:   "merge state is not clean",
+			reason: AutoPromoteReasonMergeConflicts,
+			mutate: func(issue *connector.Issue) {
+				issue.PullRequest.MergeableState = "behind"
+			},
+		},
+		{
+			name:   "explicit human hold",
+			reason: AutoPromoteReasonCINotGreen,
+			mutate: func(issue *connector.Issue) {
+				issue.BlockerReason = "hold until Friday"
+			},
+		},
+		{
+			name:   "new p1 finding",
+			reason: AutoPromoteReasonCINotGreen,
+			mutate: func(issue *connector.Issue) {
+				issue.PullRequest.CodexReviewState = "P1"
+			},
+		},
+		{
+			name:          "manual reblock supersedes breaker park",
+			reason:        AutoPromoteReasonCINotGreen,
+			manualReblock: true,
+		},
+		{
+			name:     "auto promotion disabled",
+			reason:   AutoPromoteReasonCINotGreen,
+			disabled: true,
+		},
+		{
+			name:       "automated review finding is human-gated",
+			reason:     AutoPromoteReasonP1Findings,
+			wantUnpark: false,
+		},
+		{
+			name:       "same head auto-unpark already consumed",
+			reason:     AutoPromoteReasonCINotGreen,
+			consumed:   true,
+			wantUnpark: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := reworkBreakerRecoveryIssue("issue-" + strings.ReplaceAll(tt.name, " ", "-"))
+			parkedIssue := cloneIssue(issue)
+			if tt.mutate != nil {
+				tt.mutate(&issue)
+			}
+			tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{issue}}
+			orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{})
+			orch.cfg.AutoPromote.Enabled = !tt.disabled
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			orch.workflowMetrics = metrics
+			recordReworkBreakerPark(t, metrics, parkedIssue, base.Add(-time.Hour), tt.reason)
+			if tt.consumed {
+				recordReworkBreakerAutoUnpark(t, metrics, parkedIssue, base.Add(-30*time.Minute))
+				recordReworkBreakerPark(t, metrics, parkedIssue, base.Add(-10*time.Minute), tt.reason)
+			}
+			if tt.manualReblock {
+				recordReworkBreakerManualBlock(t, metrics, parkedIssue, base.Add(-time.Minute))
+			}
+			state := newState(orch.cfg)
+
+			transitioned := orch.recoverBlockedIssues(context.Background(), &state, []connector.Issue{issue}, base)
+
+			if got := len(tracker.updates); got != boolInt(tt.wantUnpark) {
+				t.Fatalf("updates = %#v, want unpark %v", tracker.updates, tt.wantUnpark)
+			}
+			_, didTransition := transitioned[issue.ID]
+			if didTransition != tt.wantUnpark {
+				t.Fatalf("transitioned[%q] = %v, want %v", issue.ID, didTransition, tt.wantUnpark)
+			}
+			if tt.wantUnpark {
+				if tracker.updates[0].state != autoPromoteMergingState {
+					t.Fatalf("update state = %q, want %q", tracker.updates[0].state, autoPromoteMergingState)
+				}
+				if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "only automatic unpark permitted") {
+					t.Fatalf("comments = %#v, want one-shot auto-unpark audit", tracker.comments)
+				}
+				assertWorkflowActionSignature(t, metrics, issue, workflowActionReworkBreakerAutoUnpark, "pr=1585;head=parked-head")
+			}
+		})
+	}
+}
+
+func reworkBreakerRecoveryIssue(id string) connector.Issue {
+	issue := dependencyAutoUnblockIssue(id, blockedStatusState)
+	prNumber := 1585
+	issue.PRNumber = &prNumber
+	issue.PullRequest = &connector.PullRequest{
+		Number:         prNumber,
+		State:          "OPEN",
+		URL:            "https://github.test/digitaldrywood/pyroapex/pull/1585",
+		HeadSHA:        "parked-head",
+		MergeableState: "clean",
+		CIStatus:       "success",
+		CheckRunCount:  4,
+	}
+	return issue
+}
+
+func recordReworkBreakerPark(
+	t *testing.T,
+	metrics *autoPromoteWorkflowMetricsRecorder,
+	issue connector.Issue,
+	at time.Time,
+	reason AutoPromoteReason,
+) {
+	t.Helper()
+
+	metadata := workflowLaneMetadata{
+		ReworkBreaker: &workflowLaneReworkBreakerMetadata{Reason: string(reason)},
+	}
+	for _, event := range []store.WorkflowPhaseEvent{
+		{
+			ProjectID:    defaultWorkflowMetricsProjectID,
+			IssueID:      issue.ID,
+			Identifier:   issue.Identifier,
+			IssueURL:     issue.URL,
+			PhaseType:    store.WorkflowPhaseTypeLane,
+			PhaseName:    autoPromoteReworkState,
+			Reason:       string(reason),
+			Status:       "entered",
+			StartedAt:    at.Add(-time.Minute),
+			MetadataJSON: workflowLaneMetadataJSON(issue, workflowLaneMetadata{}),
+		},
+		{
+			ProjectID:    defaultWorkflowMetricsProjectID,
+			IssueID:      issue.ID,
+			Identifier:   issue.Identifier,
+			IssueURL:     issue.URL,
+			PhaseType:    store.WorkflowPhaseTypeLane,
+			PhaseName:    blockedStatusState,
+			Reason:       "rework_limit",
+			Status:       "entered",
+			StartedAt:    at,
+			MetadataJSON: workflowLaneMetadataJSON(issue, metadata),
+		},
+	} {
+		if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), event); err != nil {
+			t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+		}
+	}
+}
+
+func recordReworkBreakerAutoUnpark(
+	t *testing.T,
+	metrics *autoPromoteWorkflowMetricsRecorder,
+	issue connector.Issue,
+	at time.Time,
+) {
+	t.Helper()
+
+	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionReworkBreakerAutoUnpark, "pr=1585;head=parked-head")
+	if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), store.WorkflowPhaseEvent{
+		ProjectID:    defaultWorkflowMetricsProjectID,
+		IssueID:      issue.ID,
+		Identifier:   issue.Identifier,
+		IssueURL:     issue.URL,
+		PhaseType:    store.WorkflowPhaseTypeLane,
+		PhaseName:    autoPromoteMergingState,
+		Reason:       "rework_breaker_auto_unpark",
+		Status:       "entered",
+		StartedAt:    at,
+		MetadataJSON: workflowLaneMetadataJSON(issue, metadata),
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+}
+
+func recordReworkBreakerManualBlock(
+	t *testing.T,
+	metrics *autoPromoteWorkflowMetricsRecorder,
+	issue connector.Issue,
+	at time.Time,
+) {
+	t.Helper()
+
+	if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), store.WorkflowPhaseEvent{
+		ProjectID:    defaultWorkflowMetricsProjectID,
+		IssueID:      issue.ID,
+		Identifier:   issue.Identifier,
+		IssueURL:     issue.URL,
+		PhaseType:    store.WorkflowPhaseTypeLane,
+		PhaseName:    blockedStatusState,
+		Reason:       "tracker_state_observed",
+		Status:       "entered",
+		StartedAt:    at,
+		MetadataJSON: workflowLaneMetadataJSON(issue, workflowLaneMetadata{}),
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
 func blockedRecoverySignatureIssue(id string, headSHA string) connector.Issue {
 	issue := dependencyAutoUnblockIssue(id, "Blocked")
 	prNumber := 418

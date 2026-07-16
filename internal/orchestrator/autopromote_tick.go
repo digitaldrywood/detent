@@ -2379,6 +2379,7 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 	issueID := strings.TrimSpace(issue.ID)
 	transitionReason := string(decision.Reason)
 	body := autoPromoteComment(summary, decision, displayStateName(issue.State), targetState)
+	metadata := workflowLaneMetadata{}
 	if decision.Action == AutoPromoteActionRework {
 		limit, err := o.autoPromoteReworkLimit(ctx, issue, summary)
 		if err != nil {
@@ -2399,10 +2400,11 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 			targetState = blockedStatusState
 			transitionReason = "rework_limit"
 			body = autoPromoteReworkLimitComment(summary, decision, displayStateName(issue.State), limit)
+			metadata.ReworkBreaker = &workflowLaneReworkBreakerMetadata{Reason: string(decision.Reason)}
 		}
 	}
 
-	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, transitionReason); err != nil {
+	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, now, transitionReason, metadata); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"auto promote transition failed",
