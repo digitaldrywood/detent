@@ -784,10 +784,18 @@ func checkDoctorConfig(configPath string, projectID string, opts options) (globa
 
 	var cfg globalconfig.Config
 	if projectID == "" {
-		cfg, err = opts.read(resolution.Path)
+		read := opts.readDoctor
+		if read == nil {
+			read = opts.read
+		}
+		cfg, err = read(resolution.Path)
 	} else {
 		var skippedProjects []string
-		cfg, skippedProjects, err = opts.readProject(resolution.Path, projectID)
+		readProject := opts.readDoctorProject
+		if readProject == nil {
+			readProject = opts.readProject
+		}
+		cfg, skippedProjects, err = readProject(resolution.Path, projectID)
 		scope.SkippedProjects = skippedProjects
 	}
 	if err != nil {
