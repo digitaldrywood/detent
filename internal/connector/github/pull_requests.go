@@ -498,9 +498,17 @@ func (c *Connector) attachLinkedPullRequests(
 		hydrationByCandidate[candidate.Index] = hydrationIndex
 	}
 
+	concurrentStart := 0
+	if c.linkedPullRequestHydrationUsesFiniteFanoutCap() && len(hydrations) > 0 {
+		if err := c.hydrateLinkedPullRequest(ctx, &hydrations[0], useStatusCache); err != nil {
+			return "", err
+		}
+		concurrentStart = 1
+	}
+
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.SetLimit(c.linkedPullRequestHydrationLimit())
-	for index := range hydrations {
+	for index := concurrentStart; index < len(hydrations); index++ {
 		group.Go(func() error {
 			return c.hydrateLinkedPullRequest(groupCtx, &hydrations[index], useStatusCache)
 		})
@@ -550,6 +558,10 @@ func (c *Connector) hydrateLinkedPullRequest(ctx context.Context, hydration *lin
 	}
 	hydration.pullRequest = pullRequest
 	return nil
+}
+
+func (c *Connector) linkedPullRequestHydrationUsesFiniteFanoutCap() bool {
+	return c != nil && c.client != nil && c.client.restPolicy.FanoutMaxRequests > 0
 }
 
 func (c *Connector) linkedPullRequestHydrationLimit() int {
