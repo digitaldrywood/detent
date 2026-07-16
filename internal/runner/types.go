@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -80,6 +81,28 @@ type WorkspaceReapResult struct {
 type AgentBackend interface {
 	RunTurn(context.Context, AgentTurnRequest, AgentUpdateHandler) (AgentTurnResult, error)
 }
+
+type AgentToolBackend interface {
+	RunTurnWithTools(context.Context, AgentTurnRequest, []AgentTool, AgentToolHandler, AgentUpdateHandler) (AgentTurnResult, error)
+}
+
+type AgentTool struct {
+	Name        string
+	Description string
+	InputSchema json.RawMessage
+}
+
+type AgentToolCall struct {
+	Name      string
+	Arguments json.RawMessage
+}
+
+type AgentToolResult struct {
+	Content string
+	Success bool
+}
+
+type AgentToolHandler func(context.Context, AgentToolCall) (AgentToolResult, error)
 
 type AgentResumeVerifier interface {
 	VerifyResume(context.Context, AgentResume) error

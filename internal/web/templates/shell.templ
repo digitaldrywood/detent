@@ -41,6 +41,7 @@ templ AppShell(data DashboardShellData, scope templ.Component) {
 			@helpTooltipHost()
 			@kanbanDialogHost()
 			@DetailSheetHost()
+			@ChatPanelHost()
 			<div id="detent-build-update" class="fixed bottom-4 right-4 z-50 hidden items-center gap-3 rounded-card border border-line bg-surface px-4 py-3 text-sm text-text shadow-lg" role="status" aria-live="polite" data-detent-build-update hidden>
 				<span data-detent-build-update-message></span>
 				<button type="button" class="font-medium text-accent hover:underline" data-detent-build-reload>Reload</button>
@@ -217,6 +218,19 @@ templ appTopbar(data DashboardShellData, scope templ.Component) {
 				<button type="button" class={ appDensityButtonClass(data, "cozy") } data-density-choice="cozy" aria-pressed={ appDensityPressed(data, "cozy") }>Cozy</button>
 				<button type="button" class={ appDensityButtonClass(data, "comfy") } data-density-choice="comfy" aria-pressed={ appDensityPressed(data, "comfy") }>Comfy</button>
 			</div>
+			<button
+				type="button"
+				class="inline-flex min-h-9 items-center gap-2 rounded-card border border-line px-3 text-xs font-medium text-sec hover:border-accent hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+				data-chat-toggle
+				hx-get="/api/v1/chat"
+				hx-target="#chat-panel-body"
+				hx-swap="innerHTML"
+				aria-controls="chat-panel"
+				aria-expanded="false"
+			>
+				@icon.MessageCircle(icon.Props{Class: "size-4"})
+				Chat
+			</button>
 		</div>
 	</header>
 }
@@ -393,6 +407,24 @@ templ appShellScript() {
 	<script>
 		(function () {
 			var detailSheetRefreshing = false;
+			function setChatPanel(open) {
+				var panel = document.querySelector("[data-chat-panel]");
+				var scrim = document.querySelector("[data-chat-scrim]");
+				var toggle = document.querySelector("[data-chat-toggle]");
+				if (!panel || !scrim || !toggle) return;
+				var wasOpen = panel.getAttribute("data-chat-open") === "true";
+				var value = open ? "true" : "false";
+				panel.setAttribute("data-chat-open", value);
+				panel.setAttribute("aria-hidden", open ? "false" : "true");
+				scrim.setAttribute("data-chat-open", value);
+				toggle.setAttribute("aria-expanded", value);
+				if (open) {
+					var input = panel.querySelector("textarea");
+					if (input) input.focus();
+				} else if (wasOpen) {
+					toggle.focus();
+				}
+			}
 			function setMobileTopbar(open) {
 				var controls = document.querySelector("[data-mobile-topbar-controls]");
 				var toggle = document.querySelector("[data-mobile-topbar-toggle]");
@@ -484,6 +516,7 @@ templ appShellScript() {
 				if (event.key === "Escape") {
 					setMobileTopbar(false);
 					setMobileSidebar(false, true);
+					setChatPanel(false);
 					closeDetailSheet();
 					return;
 				}
@@ -495,6 +528,15 @@ templ appShellScript() {
 				}
 			});
 			document.addEventListener("click", function (event) {
+				if (event.target.closest("[data-chat-toggle]")) {
+					setMobileTopbar(false);
+					setChatPanel(true);
+					return;
+				}
+				if (event.target.closest("[data-chat-close], [data-chat-scrim]")) {
+					setChatPanel(false);
+					return;
+				}
 				var sheetTab = event.target.closest("[data-sheet-tab]");
 				if (sheetTab) {
 					var sheetHost = document.getElementById("detail-sheet-host");

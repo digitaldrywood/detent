@@ -156,17 +156,20 @@ type ClientInfo struct {
 }
 
 type RunTurnRequest struct {
-	Workspace         string
-	Prompt            string
-	ResumeThreadID    string
-	ApprovalPolicy    any
-	ThreadSandbox     string
-	TurnSandboxPolicy any
-	Model             string
-	ModelProvider     string
-	ServiceTier       string
-	ReasoningEffort   string
-	TurnTimeout       time.Duration
+	Workspace             string
+	Prompt                string
+	ResumeThreadID        string
+	DeveloperInstructions string
+	ApprovalPolicy        any
+	ThreadSandbox         string
+	TurnSandboxPolicy     any
+	Model                 string
+	ModelProvider         string
+	ServiceTier           string
+	ReasoningEffort       string
+	TurnTimeout           time.Duration
+	DynamicTools          []DynamicTool
+	ToolHandler           DynamicToolHandler
 }
 
 type RunTurnResult struct {
@@ -174,6 +177,25 @@ type RunTurnResult struct {
 	TurnID    string
 	SessionID string
 }
+
+type DynamicTool struct {
+	Type        string          `json:"type"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"inputSchema"`
+}
+
+type DynamicToolCall struct {
+	Name      string
+	Arguments json.RawMessage
+}
+
+type DynamicToolResult struct {
+	Content string
+	Success bool
+}
+
+type DynamicToolHandler func(context.Context, DynamicToolCall) (DynamicToolResult, error)
 
 type Model struct {
 	ID                        string
@@ -406,7 +428,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		}
 	}
 
-	if err := s.streamTurn(ctx, transport, req.turnTimeout(s.turnTimeout), onUpdate); err != nil {
+	if err := s.streamTurn(ctx, transport, req.turnTimeout(s.turnTimeout), req.ToolHandler, onUpdate); err != nil {
 		return RunTurnResult{}, err
 	}
 
@@ -442,7 +464,7 @@ func (s *AppServer) ListModels(ctx context.Context) (models []Model, err error) 
 		if err := sendRequest(ctx, transport, modelListRequestID, "model/list", params); err != nil {
 			return nil, err
 		}
-		result, err := s.awaitResponse(ctx, transport, modelListRequestID, nil)
+		result, err := s.awaitResponse(ctx, transport, modelListRequestID, nil, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -528,7 +550,7 @@ func (s *AppServer) VerifyThread(ctx context.Context, threadID string) (err erro
 	if err := sendRequest(ctx, transport, threadReadRequestID, "thread/read", params); err != nil {
 		return err
 	}
-	result, err := s.awaitResponse(ctx, transport, threadReadRequestID, nil)
+	result, err := s.awaitResponse(ctx, transport, threadReadRequestID, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -553,7 +575,7 @@ func (s *AppServer) initialize(ctx context.Context, transport Transport, onUpdat
 	if err := sendRequest(ctx, transport, initializeRequestID, "initialize", params); err != nil {
 		return err
 	}
-	if _, err := s.awaitResponse(ctx, transport, initializeRequestID, onUpdate); err != nil {
+	if _, err := s.awaitResponse(ctx, transport, initializeRequestID, nil, onUpdate); err != nil {
 		return err
 	}
 
@@ -625,6 +647,12 @@ func (s *AppServer) startThread(
 		"cwd": req.Workspace,
 	}
 	setOptional(params, "approvalPolicy", req.ApprovalPolicy)
+	if req.DeveloperInstructions != "" {
+		params["developerInstructions"] = req.DeveloperInstructions
+	}
+	if len(req.DynamicTools) > 0 {
+		params["dynamicTools"] = req.DynamicTools
+	}
 	if req.ThreadSandbox != "" {
 		params["sandbox"] = req.ThreadSandbox
 	}
@@ -641,7 +669,7 @@ func (s *AppServer) startThread(
 		return "", agentidentity.Identity{}, err
 	}
 
-	result, err := s.awaitResponse(ctx, transport, threadStartRequestID, onUpdate)
+	result, err := s.awaitResponse(ctx, transport, threadStartRequestID, req.ToolHandler, onUpdate)
 	if err != nil {
 		return "", agentidentity.Identity{}, err
 	}
@@ -679,6 +707,9 @@ func (s *AppServer) resumeThread(
 		"cwd":      req.Workspace,
 	}
 	setOptional(params, "approvalPolicy", req.ApprovalPolicy)
+	if req.DeveloperInstructions != "" {
+		params["developerInstructions"] = req.DeveloperInstructions
+	}
 	if req.ThreadSandbox != "" {
 		params["sandbox"] = req.ThreadSandbox
 	}
@@ -696,7 +727,7 @@ func (s *AppServer) resumeThread(
 		return "", agentidentity.Identity{}, err
 	}
 
-	result, err := s.awaitResponse(ctx, transport, threadResumeRequestID, onUpdate)
+	result, err := s.awaitResponse(ctx, transport, threadResumeRequestID, req.ToolHandler, onUpdate)
 	if err != nil {
 		return "", agentidentity.Identity{}, err
 	}
@@ -776,7 +807,7 @@ func (s *AppServer) startTurn(
 		return onUpdate(update)
 	}
 
-	result, err := s.awaitResponse(ctx, transport, turnStartRequestID, trackTurnStarted)
+	result, err := s.awaitResponse(ctx, transport, turnStartRequestID, req.ToolHandler, trackTurnStarted)
 	if err != nil {
 		return startTurnResult{}, err
 	}
@@ -835,7 +866,7 @@ func (s *AppServer) resolveDefaultModel(
 	if err := sendRequest(ctx, transport, configReadRequestID, "config/read", params); err != nil {
 		return "", err
 	}
-	result, err := s.awaitResponse(ctx, transport, configReadRequestID, onUpdate)
+	result, err := s.awaitResponse(ctx, transport, configReadRequestID, nil, onUpdate)
 	if err != nil {
 		var responseErr *ResponseError
 		if errors.As(err, &responseErr) {
@@ -859,6 +890,7 @@ func (s *AppServer) awaitResponse(
 	ctx context.Context,
 	transport Transport,
 	requestID int,
+	toolHandler DynamicToolHandler,
 	onUpdate UpdateHandler,
 ) (json.RawMessage, error) {
 	for {
@@ -882,7 +914,7 @@ func (s *AppServer) awaitResponse(
 			return msg.Result, nil
 		}
 
-		handled, err := handleServerRequest(ctx, transport, msg)
+		handled, err := handleServerRequest(ctx, transport, msg, toolHandler)
 		if err != nil {
 			return nil, err
 		}
@@ -902,14 +934,14 @@ func (r RunTurnRequest) turnTimeout(fallback time.Duration) time.Duration {
 	return fallback
 }
 
-func (s *AppServer) streamTurn(ctx context.Context, transport Transport, turnTimeout time.Duration, onUpdate UpdateHandler) error {
+func (s *AppServer) streamTurn(ctx context.Context, transport Transport, turnTimeout time.Duration, toolHandler DynamicToolHandler, onUpdate UpdateHandler) error {
 	for {
 		msg, err := receiveWithTimeout(ctx, transport, turnTimeout)
 		if err != nil {
 			return fmt.Errorf("stream turn: %w", err)
 		}
 
-		handled, err := handleServerRequest(ctx, transport, msg)
+		handled, err := handleServerRequest(ctx, transport, msg, toolHandler)
 		if err != nil {
 			return err
 		}
@@ -954,7 +986,7 @@ func sendRequest(ctx context.Context, transport Transport, id int, method string
 	})
 }
 
-func handleServerRequest(ctx context.Context, transport Transport, msg Message) (bool, error) {
+func handleServerRequest(ctx context.Context, transport Transport, msg Message, toolHandler DynamicToolHandler) (bool, error) {
 	if msg.Method == "" || len(msg.ID) == 0 {
 		return false, nil
 	}
@@ -962,7 +994,7 @@ func handleServerRequest(ctx context.Context, transport Transport, msg Message) 
 	response := Message{
 		ID: msg.ID,
 	}
-	result, ok, err := serverRequestResult(msg.Method)
+	result, ok, err := serverRequestResult(ctx, msg, toolHandler)
 	if err != nil {
 		return true, err
 	}
@@ -981,9 +1013,9 @@ func handleServerRequest(ctx context.Context, transport Transport, msg Message) 
 	return true, nil
 }
 
-func serverRequestResult(method string) (json.RawMessage, bool, error) {
+func serverRequestResult(ctx context.Context, msg Message, toolHandler DynamicToolHandler) (json.RawMessage, bool, error) {
 	var result any
-	switch method {
+	switch msg.Method {
 	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
 		result = map[string]string{"decision": "decline"}
 	case "item/permissions/requestApproval":
@@ -992,15 +1024,43 @@ func serverRequestResult(method string) (json.RawMessage, bool, error) {
 		result = map[string]any{"answers": map[string]any{}}
 	case "mcpServer/elicitation/request":
 		result = map[string]any{"action": "decline", "content": nil}
+	case "item/tool/call":
+		if toolHandler == nil {
+			result = map[string]any{
+				"contentItems": []map[string]string{{"type": "inputText", "text": "dynamic tool handler unavailable"}},
+				"success":      false,
+			}
+			break
+		}
+		var params struct {
+			Tool      string          `json:"tool"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if err := json.Unmarshal(msg.Params, &params); err != nil {
+			result = dynamicToolResponse("decode dynamic tool call: "+err.Error(), false)
+			break
+		}
+		toolResult, err := toolHandler(ctx, DynamicToolCall{Name: params.Tool, Arguments: params.Arguments})
+		if err != nil {
+			toolResult = DynamicToolResult{Content: err.Error(), Success: false}
+		}
+		result = dynamicToolResponse(toolResult.Content, toolResult.Success)
 	default:
 		return nil, false, nil
 	}
 
 	data, err := json.Marshal(result)
 	if err != nil {
-		return nil, true, fmt.Errorf("marshal %s server request response: %w", method, err)
+		return nil, true, fmt.Errorf("marshal %s server request response: %w", msg.Method, err)
 	}
 	return data, true, nil
+}
+
+func dynamicToolResponse(content string, success bool) map[string]any {
+	return map[string]any{
+		"contentItems": []map[string]string{{"type": "inputText", "text": content}},
+		"success":      success,
+	}
 }
 
 func maybeEmitUpdate(msg Message, onUpdate UpdateHandler) error {

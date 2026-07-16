@@ -20,6 +20,7 @@ type AgentBackend struct {
 }
 
 var _ runner.AgentResumeVerifier = (*AgentBackend)(nil)
+var _ runner.AgentToolBackend = (*AgentBackend)(nil)
 
 func NewAgentBackend(client *AppServer, options Options) (*AgentBackend, error) {
 	if client == nil {
@@ -36,19 +37,58 @@ func (b *AgentBackend) RunTurn(
 	req runner.AgentTurnRequest,
 	onUpdate runner.AgentUpdateHandler,
 ) (runner.AgentTurnResult, error) {
+	return b.runTurn(ctx, req, nil, nil, onUpdate)
+}
+
+func (b *AgentBackend) RunTurnWithTools(
+	ctx context.Context,
+	req runner.AgentTurnRequest,
+	tools []runner.AgentTool,
+	toolHandler runner.AgentToolHandler,
+	onUpdate runner.AgentUpdateHandler,
+) (runner.AgentTurnResult, error) {
+	dynamicTools := make([]DynamicTool, 0, len(tools))
+	for _, tool := range tools {
+		dynamicTools = append(dynamicTools, DynamicTool{
+			Type:        "function",
+			Name:        tool.Name,
+			Description: tool.Description,
+			InputSchema: tool.InputSchema,
+		})
+	}
+	var dynamicHandler DynamicToolHandler
+	if toolHandler != nil {
+		dynamicHandler = func(ctx context.Context, call DynamicToolCall) (DynamicToolResult, error) {
+			result, err := toolHandler(ctx, runner.AgentToolCall{Name: call.Name, Arguments: call.Arguments})
+			return DynamicToolResult{Content: result.Content, Success: result.Success}, err
+		}
+	}
+	return b.runTurn(ctx, req, dynamicTools, dynamicHandler, onUpdate)
+}
+
+func (b *AgentBackend) runTurn(
+	ctx context.Context,
+	req runner.AgentTurnRequest,
+	tools []DynamicTool,
+	toolHandler DynamicToolHandler,
+	onUpdate runner.AgentUpdateHandler,
+) (runner.AgentTurnResult, error) {
 	ctx = withWorkerTempDir(ctx, req.TempDir)
 	result, err := b.client.RunTurn(ctx, RunTurnRequest{
-		Workspace:         req.Workspace,
-		Prompt:            req.Prompt,
-		ResumeThreadID:    req.Resume.ThreadID,
-		ApprovalPolicy:    b.options.ApprovalPolicy,
-		ThreadSandbox:     b.options.ThreadSandbox,
-		TurnSandboxPolicy: turnSandboxPolicyForWorkspace(b.options.ThreadSandbox, b.options.TurnSandboxPolicy, req.ExtraWritableRoots),
-		Model:             req.Model,
-		ModelProvider:     req.ModelProvider,
-		ServiceTier:       req.ServiceTier,
-		ReasoningEffort:   req.ReasoningEffort,
-		TurnTimeout:       req.TurnTimeout,
+		Workspace:             req.Workspace,
+		Prompt:                req.Prompt,
+		ResumeThreadID:        req.Resume.ThreadID,
+		DeveloperInstructions: toolTurnInstructions(tools),
+		ApprovalPolicy:        approvalPolicy(b.options.ApprovalPolicy, tools),
+		ThreadSandbox:         threadSandbox(b.options.ThreadSandbox, tools),
+		TurnSandboxPolicy:     turnSandboxPolicy(b.options.ThreadSandbox, b.options.TurnSandboxPolicy, req.ExtraWritableRoots, tools),
+		Model:                 req.Model,
+		ModelProvider:         req.ModelProvider,
+		ServiceTier:           req.ServiceTier,
+		ReasoningEffort:       req.ReasoningEffort,
+		TurnTimeout:           req.TurnTimeout,
+		DynamicTools:          tools,
+		ToolHandler:           toolHandler,
 	}, func(update Update) error {
 		if onUpdate == nil {
 			return nil
@@ -70,6 +110,34 @@ func (b *AgentBackend) RunTurn(
 		TurnID:    result.TurnID,
 		SessionID: result.SessionID,
 	}, nil
+}
+
+func approvalPolicy(configured any, tools []DynamicTool) any {
+	if len(tools) > 0 {
+		return "never"
+	}
+	return configured
+}
+
+func threadSandbox(configured string, tools []DynamicTool) string {
+	if len(tools) > 0 {
+		return "read-only"
+	}
+	return configured
+}
+
+func turnSandboxPolicy(threadSandbox string, configured any, roots []string, tools []DynamicTool) any {
+	if len(tools) > 0 {
+		return nil
+	}
+	return turnSandboxPolicyForWorkspace(threadSandbox, configured, roots)
+}
+
+func toolTurnInstructions(tools []DynamicTool) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	return "You are Detent's board operator assistant. Use only the provided Detent tools for board, fleet, telemetry, activity, and operator actions. Never use shell, filesystem, network, MCP, browser, delegation, or configuration tools. Mutating tools only create proposals; tell the operator that confirmation is required and never claim a proposal already executed."
 }
 
 func (b *AgentBackend) VerifyResume(ctx context.Context, resume runner.AgentResume) error {
