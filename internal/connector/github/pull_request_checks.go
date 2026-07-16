@@ -18,6 +18,12 @@ type checkRunTelemetrySummary struct {
 	RunningChecks   []string
 }
 
+type checkRunContextResult struct {
+	Run     restCheckRun
+	Pending bool
+	Settled bool
+}
+
 func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo, sha string) (pullRequestCI, error) {
 	checkRuns, err := fetchRESTCheckRuns(ctx, c.client, restCommitCheckRunsPath(repo, sha))
 	if err != nil {
@@ -36,7 +42,9 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 	c.logStaleSuccessfulCheckRuns(ctx, repo, sha, staleSuccessfulChecks)
 	requiredFailures := requiredStatusCheckFailures(checkRuns, statuses, c.requiredChecks)
 	state := combinedCIState(checkRunsState(checkRuns), commitStatusesState(statuses))
-	if requiredState := requiredStatusCheckState(requiredFailures); requiredState != "" {
+	if requiredState := requiredStatusCheckState(requiredFailures); requiredState == "pending" {
+		state = requiredState
+	} else if requiredState != "" {
 		state = combinedCIState(requiredState, state)
 	}
 	return pullRequestCI{
@@ -55,7 +63,7 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 
 func (c *Connector) transientCheckRunFailures(ctx context.Context, repo pullRequestRepo, checkRuns []restCheckRun) []connector.PullRequestCheck {
 	failures := make([]connector.PullRequestCheck, 0)
-	for _, checkRun := range checkRuns {
+	for _, checkRun := range effectiveCheckRuns(checkRuns) {
 		if !completedFailedCheckRun(checkRun) {
 			continue
 		}
@@ -103,7 +111,7 @@ func completedFailedCheckRun(checkRun restCheckRun) bool {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(checkRun.Conclusion)) {
-	case "", "success", "skipped", "neutral":
+	case "", "success", "skipped", "neutral", "cancelled", "canceled":
 		return false
 	default:
 		return true
@@ -212,23 +220,27 @@ func checkRunsState(checkRuns []restCheckRun) string {
 		return ""
 	}
 	pending := false
-	for _, checkRun := range checkRuns {
-		status := normalizedCheckRunStatus(checkRun)
-		conclusion := strings.ToLower(strings.TrimSpace(checkRun.Conclusion))
-		if status != "" && status != "completed" {
+	failed := false
+	for _, group := range groupedCheckRuns(checkRuns) {
+		result := selectCheckRunContext(group)
+		if result.Pending || !result.Settled {
 			pending = true
 			continue
 		}
+		conclusion := strings.ToLower(strings.TrimSpace(result.Run.Conclusion))
 		switch conclusion {
-		case "success", "skipped", "neutral":
+		case "success", "neutral":
 		case "":
 			pending = true
 		default:
-			return "failure"
+			failed = true
 		}
 	}
 	if pending {
 		return "pending"
+	}
+	if failed {
+		return "failure"
 	}
 	return "success"
 }
@@ -239,22 +251,20 @@ func requiredStatusCheckFailures(checkRuns []restCheckRun, statuses []restCommit
 		return nil
 	}
 
-	checkRunsByName := make(map[string]restCheckRun, len(checkRuns))
-	for _, checkRun := range checkRuns {
-		name := strings.TrimSpace(checkRun.Name)
+	checkRunsByName := make(map[string]checkRunContextResult, len(checkRuns))
+	for _, group := range groupedCheckRuns(checkRuns) {
+		name := strings.TrimSpace(group[0].Name)
 		if name == "" {
 			continue
 		}
-		if _, ok := checkRunsByName[name]; !ok {
-			checkRunsByName[name] = checkRun
-		}
+		checkRunsByName[name] = selectCheckRunContext(group)
 	}
 	statusesByContext := latestCommitStatusesByContext(statuses)
 
 	failures := make([]connector.PullRequestCheck, 0, len(required))
 	for _, name := range required {
-		if checkRun, ok := checkRunsByName[name]; ok {
-			if failure, failed := requiredCheckRunFailure(name, checkRun); failed {
+		if result, ok := checkRunsByName[name]; ok && (result.Pending || result.Settled) {
+			if failure, failed := requiredCheckRunFailure(name, result.Run); failed {
 				failures = append(failures, failure)
 			}
 			continue
@@ -263,6 +273,13 @@ func requiredStatusCheckFailures(checkRuns []restCheckRun, statuses []restCommit
 			if failure, failed := requiredCommitStatusFailure(name, status); failed {
 				failures = append(failures, failure)
 			}
+			continue
+		}
+		if _, ok := checkRunsByName[name]; ok {
+			failures = append(failures, connector.PullRequestCheck{
+				Name:   name,
+				Status: "pending",
+			})
 			continue
 		}
 		failures = append(failures, connector.PullRequestCheck{
@@ -280,6 +297,9 @@ func requiredStatusCheckFailures(checkRuns []restCheckRun, statuses []restCommit
 func requiredCheckRunFailure(name string, checkRun restCheckRun) (connector.PullRequestCheck, bool) {
 	status := normalizedCheckRunStatus(checkRun)
 	conclusion := strings.ToLower(strings.TrimSpace(checkRun.Conclusion))
+	if ignoredCheckRunConclusion(conclusion) {
+		return connector.PullRequestCheck{}, false
+	}
 	if status != "" && status != "completed" {
 		return connector.PullRequestCheck{
 			ID:            checkRun.ID,
@@ -326,6 +346,7 @@ func requiredStatusCheckState(failures []connector.PullRequestCheck) string {
 		return ""
 	}
 	pending := false
+	failed := false
 	for _, failure := range failures {
 		status := strings.ToLower(strings.TrimSpace(failure.Status))
 		conclusion := strings.ToLower(strings.TrimSpace(failure.Conclusion))
@@ -333,11 +354,14 @@ func requiredStatusCheckState(failures []connector.PullRequestCheck) string {
 		case requiredStatusCheckPending(status, conclusion):
 			pending = true
 		default:
-			return "failure"
+			failed = true
 		}
 	}
 	if pending {
 		return "pending"
+	}
+	if failed {
+		return "failure"
 	}
 	return ""
 }
@@ -369,7 +393,7 @@ func checkRunTelemetry(checkRuns []restCheckRun, workflowRuns []restWorkflowRun)
 		queueStartedAt = earliestGitHubTime(queueStartedAt, run.RunStartedAt)
 	}
 
-	for _, checkRun := range checkRuns {
+	for _, checkRun := range effectiveCheckRuns(checkRuns) {
 		queueCreatedAt = earliestGitHubTime(queueCreatedAt, checkRun.CreatedAt)
 		queueStartedAt = earliestGitHubTime(queueStartedAt, checkRun.StartedAt)
 		checkStartedAt = earliestGitHubTime(checkStartedAt, checkRun.StartedAt)
@@ -378,7 +402,7 @@ func checkRunTelemetry(checkRuns []restCheckRun, workflowRuns []restWorkflowRun)
 		name := strings.TrimSpace(checkRun.Name)
 		status := normalizedCheckRunStatus(checkRun)
 		conclusion := strings.ToLower(strings.TrimSpace(checkRun.Conclusion))
-		if status != "completed" || conclusion == "" {
+		if (status != "" && status != "completed") || conclusion == "" {
 			hasRunning = true
 			runningChecks = append(runningChecks, name)
 			continue
@@ -430,6 +454,102 @@ func checkRunTelemetry(checkRuns []restCheckRun, workflowRuns []restWorkflowRun)
 	}
 }
 
+func groupedCheckRuns(checkRuns []restCheckRun) [][]restCheckRun {
+	groups := make([][]restCheckRun, 0, len(checkRuns))
+	groupIndexes := make(map[string]int, len(checkRuns))
+	for _, checkRun := range checkRuns {
+		name := strings.TrimSpace(checkRun.Name)
+		if name == "" {
+			groups = append(groups, []restCheckRun{checkRun})
+			continue
+		}
+		index, ok := groupIndexes[name]
+		if !ok {
+			groupIndexes[name] = len(groups)
+			groups = append(groups, []restCheckRun{checkRun})
+			continue
+		}
+		groups[index] = append(groups[index], checkRun)
+	}
+	return groups
+}
+
+func effectiveCheckRuns(checkRuns []restCheckRun) []restCheckRun {
+	effective := make([]restCheckRun, 0, len(checkRuns))
+	for _, group := range groupedCheckRuns(checkRuns) {
+		result := selectCheckRunContext(group)
+		if result.Pending || result.Settled {
+			effective = append(effective, result.Run)
+		}
+	}
+	return effective
+}
+
+func selectCheckRunContext(checkRuns []restCheckRun) checkRunContextResult {
+	var latestPending restCheckRun
+	var latestSettled restCheckRun
+	hasPending := false
+	hasSettled := false
+	for _, checkRun := range checkRuns {
+		status := normalizedCheckRunStatus(checkRun)
+		conclusion := strings.ToLower(strings.TrimSpace(checkRun.Conclusion))
+		if (status != "" && status != "completed") || conclusion == "" {
+			if !hasPending || restCheckRunAfter(checkRun, latestPending) {
+				latestPending = checkRun
+				hasPending = true
+			}
+			continue
+		}
+		if ignoredCheckRunConclusion(conclusion) {
+			continue
+		}
+		if !hasSettled || restCheckRunAfter(checkRun, latestSettled) {
+			latestSettled = checkRun
+			hasSettled = true
+		}
+	}
+	if hasPending {
+		return checkRunContextResult{Run: latestPending, Pending: true}
+	}
+	if hasSettled {
+		return checkRunContextResult{Run: latestSettled, Settled: true}
+	}
+	return checkRunContextResult{}
+}
+
+func ignoredCheckRunConclusion(conclusion string) bool {
+	switch strings.ToLower(strings.TrimSpace(conclusion)) {
+	case "cancelled", "canceled", "skipped":
+		return true
+	default:
+		return false
+	}
+}
+
+func restCheckRunAfter(left restCheckRun, right restCheckRun) bool {
+	leftAt := checkRunOrderTime(left)
+	rightAt := checkRunOrderTime(right)
+	switch {
+	case leftAt != nil && rightAt != nil && !leftAt.Equal(*rightAt):
+		return leftAt.After(*rightAt)
+	case leftAt != nil && rightAt == nil:
+		return true
+	case leftAt == nil && rightAt != nil:
+		return false
+	default:
+		return left.ID > right.ID
+	}
+}
+
+func checkRunOrderTime(checkRun restCheckRun) *time.Time {
+	for _, at := range []*time.Time{checkRun.CreatedAt, checkRun.StartedAt, checkRun.CompletedAt} {
+		if at != nil {
+			return at
+		}
+	}
+	return nil
+}
+
 func earliestGitHubTime(current *time.Time, candidate *time.Time) *time.Time {
 	if candidate == nil {
 		return current
@@ -458,6 +578,7 @@ func commitStatusesState(statuses []restCommitStatus) string {
 	}
 	latestByContext := latestCommitStatusesByContext(statuses)
 	pending := false
+	failed := false
 	for _, status := range latestByContext {
 		switch strings.ToLower(strings.TrimSpace(status.State)) {
 		case "success":
@@ -466,11 +587,14 @@ func commitStatusesState(statuses []restCommitStatus) string {
 		case "":
 			pending = true
 		default:
-			return "failure"
+			failed = true
 		}
 	}
 	if pending {
 		return "pending"
+	}
+	if failed {
+		return "failure"
 	}
 	return "success"
 }
@@ -521,10 +645,11 @@ func combinedCIState(checkRuns string, statuses string) string {
 	states := []string{checkRuns, statuses}
 	hasSuccess := false
 	hasPending := false
+	hasFailure := false
 	for _, state := range states {
 		switch strings.ToLower(strings.TrimSpace(state)) {
 		case "failure", "failed", "error":
-			return "failure"
+			hasFailure = true
 		case "pending", "expected", "queued", "waiting", "in_progress", "in progress":
 			hasPending = true
 		case "success", "green", "pass", "passed":
@@ -533,6 +658,9 @@ func combinedCIState(checkRuns string, statuses string) string {
 	}
 	if hasPending {
 		return "pending"
+	}
+	if hasFailure {
+		return "failure"
 	}
 	if hasSuccess {
 		return "success"

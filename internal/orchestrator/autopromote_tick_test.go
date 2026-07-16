@@ -2281,6 +2281,27 @@ func TestTickReconcilesStaleTodoMergedPullRequestWithFailedChecksToRework(t *tes
 	}
 }
 
+func TestAutoPromoteFailedChecksIgnoreCancelledAndSkippedArtifacts(t *testing.T) {
+	t.Parallel()
+
+	pullRequest := &connector.PullRequest{
+		SlowChecks: []connector.PullRequestCheck{
+			{Name: "Cancelled coverage", Conclusion: "cancelled"},
+			{Name: "Skipped label gate", Conclusion: "skipped"},
+			{Name: "Neutral snapshot", Conclusion: "neutral"},
+		},
+		RequiredCheckFailures: []connector.PullRequestCheck{
+			{Name: "Checks", Conclusion: "failure"},
+			{Name: "Canceled spelling", Conclusion: "canceled"},
+		},
+	}
+
+	want := []string{"Neutral snapshot", "Checks"}
+	if got := autoPromoteFailedChecksFromPullRequest(pullRequest); !reflect.DeepEqual(got, want) {
+		t.Fatalf("autoPromoteFailedChecksFromPullRequest() = %#v, want %#v", got, want)
+	}
+}
+
 func TestTickReconcilesStaleTodoHydratesWorkpadBlockerBeforePromotion(t *testing.T) {
 	t.Parallel()
 

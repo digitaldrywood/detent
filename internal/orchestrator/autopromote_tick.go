@@ -2336,7 +2336,7 @@ func autoPromoteStaleSuccessfulChecks(pullRequest *connector.PullRequest) []stri
 
 func autoPromoteCheckFailed(check connector.PullRequestCheck) bool {
 	switch strings.ToLower(strings.TrimSpace(check.Conclusion)) {
-	case "failure", "failed", "error", "timed_out", "startup_failure", "action_required", "cancelled", "canceled", "missing", "skipped", "neutral":
+	case "failure", "failed", "error", "timed_out", "startup_failure", "action_required", "missing", "neutral":
 		return true
 	default:
 		return false
