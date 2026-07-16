@@ -732,6 +732,7 @@ gate:
 server:
   host: 127.0.0.1
   port: 4000
+  board_snapshot_stale_after_seconds: 900
 hooks:
   timeout_ms: 60000
 ---
@@ -741,6 +742,11 @@ Read the issue description, follow repository instructions, keep changes
 scoped to the issue, run the project validation gate, and prepare the work for
 human review.
 ```
+
+Detent persists a last-known board snapshot beside the runtime database every
+30 seconds. On restart it renders that snapshot with stale styling until live
+tracker hydration completes. `server.board_snapshot_stale_after_seconds`
+controls the maximum cache age; older snapshots are ignored.
 
 Set `github_rest_fanout_max_requests` to `0` to disable the per-cycle fanout cap while retaining the REST remaining-reserve guard.
 

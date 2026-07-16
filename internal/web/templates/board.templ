@@ -51,6 +51,11 @@ templ BoardSnapshot(data DashboardData) {
 
 templ boardSnapshotBody(data DashboardData) {
 	{{ view := boardViewFromDashboard(data) }}
+	if data.Snapshot.LastKnown {
+		<section id="board-last-known" class="mx-5 mt-3.5 flex-none rounded-md border border-warn/20 bg-warn/10 px-3 py-2 text-sm text-warn" role="status" aria-live="polite" data-board-snapshot-stale="true">
+			<span>Showing last state from </span>@LocalTime(data.Snapshot.GeneratedAt, LocalTimeOptions{Style: LocalDateTime, Relative: true, Fallback: "recently"})<span> — refreshing…</span>
+		</section>
+	}
 	{{ failureSummary, hasFailureSummary := boardFailureBreakerSummary(data.Snapshot.FailureBreakers) }}
 	if hasFailureSummary {
 		<div class="flex-none px-5 pt-3.5">
@@ -99,7 +104,7 @@ templ boardSnapshotBody(data DashboardData) {
 	</div>
 	<div
 		id="board-lanes"
-		class="dt-lane-scroll flex min-h-0 min-w-0 flex-1 snap-x snap-mandatory gap-5 overflow-x-auto overflow-y-hidden scroll-px-5 px-5 pb-5 md:snap-none md:gap-3"
+		class={ boardLanesClass(data) }
 		data-board-lanes
 		data-board-key={ view.Key }
 		data-preserve-scroll="board-lanes"

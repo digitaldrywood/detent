@@ -10,6 +10,8 @@ import (
 )
 
 type Snapshot struct {
+	LastKnown               bool                `json:"-"`
+	LastKnownUntil          time.Time           `json:"-"`
 	Seq                     uint64              `json:"seq,omitempty"`
 	GeneratedAt             time.Time           `json:"generated_at"`
 	Project                 Project             `json:"project"`

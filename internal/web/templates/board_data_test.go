@@ -1660,6 +1660,27 @@ func TestBoardSnapshotRendersPendingEnrichmentPlaceholder(t *testing.T) {
 	}
 }
 
+func TestBoardSnapshotRendersLastKnownState(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	data.Snapshot.LastKnown = true
+	html := renderBoardComponent(t, BoardSnapshot(data))
+
+	for _, want := range []string{
+		`id="board-last-known"`,
+		`data-board-snapshot-stale="true"`,
+		"Showing last state from",
+		"refreshing…",
+		`data-local-time-relative="true"`,
+		"grayscale",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("last-known board snapshot missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestBoardSnapshotRendersMorphSafePriorityBadge(t *testing.T) {
 	t.Parallel()
 

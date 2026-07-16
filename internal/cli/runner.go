@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/boardsnapshot"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/claudecode"
 	"github.com/digitaldrywood/detent/internal/codex"
@@ -29,6 +30,7 @@ import (
 
 const (
 	defaultSnapshotInterval      = time.Second
+	defaultBoardSnapshotInterval = 30 * time.Second
 	defaultTokenTrendWindowSize  = 60
 	defaultTokenThroughputWindow = time.Minute
 )
@@ -385,6 +387,62 @@ func republishLatestSnapshot(snapshotHub *hub.Hub[telemetry.Snapshot], logger *s
 	}
 }
 
+func persistBoardSnapshots(
+	ctx context.Context,
+	snapshotHub *hub.Hub[telemetry.Snapshot],
+	cache boardsnapshot.Store,
+	interval time.Duration,
+	logger *slog.Logger,
+) {
+	if snapshotHub == nil || cache == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if interval <= 0 {
+		interval = defaultBoardSnapshotInterval
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	subscription, err := snapshotHub.Subscribe(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			logger.Warn("subscribe board snapshot cache failed", "error", err)
+		}
+		return
+	}
+	defer subscription.Close()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	var pending telemetry.Snapshot
+	dirty := false
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case snapshot, ok := <-subscription.C():
+			if !ok {
+				return
+			}
+			if boardsnapshot.Eligible(snapshot) {
+				pending = snapshot
+				dirty = true
+			}
+		case <-ticker.C:
+			if !dirty {
+				continue
+			}
+			if err := cache.Save(ctx, pending); err != nil {
+				logger.Warn("persist board snapshot failed", "error", err)
+				continue
+			}
+			dirty = false
+		}
+	}
+}
+
 func publishStartupSnapshotOnce(
 	ctx context.Context,
 	cfg globalconfig.Config,
@@ -549,6 +607,9 @@ func publishSnapshotOnce(
 	merged.LifetimeTotals = lifetimeTotals(ctx, lifetimeSource)
 	merged.Update = telemetryUpdateStatus(updateSources)
 	merged.Seq = seq.Add(1)
+	if current, ok := snapshotHub.Latest(); ok && current.LastKnown && now.Before(current.LastKnownUntil) && !boardsnapshot.Eligible(merged) {
+		return nil
+	}
 	if err := snapshotHub.Publish(merged); err != nil {
 		return fmt.Errorf("publish snapshot: %w", err)
 	}

@@ -555,6 +555,137 @@ func TestPublishSnapshotOnceAssignsMonotonicSeq(t *testing.T) {
 	}
 }
 
+func TestPublishSnapshotOncePreservesLastKnownSnapshotUntilHydration(t *testing.T) {
+	t.Parallel()
+
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	trackedProject, err := projectpkg.New(projectpkg.Config{
+		Project:  globalconfig.Project{ID: "alpha", Workdir: t.TempDir(), Weight: 1},
+		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
+	}, projectpkg.Dependencies{})
+	if err != nil {
+		t.Fatalf("project.New() error = %v", err)
+	}
+	registry := projectpkg.NewRegistry()
+	mustSetProject(t, registry, trackedProject)
+
+	cached := telemetry.Snapshot{
+		LastKnown:      true,
+		LastKnownUntil: time.Date(2026, 7, 16, 18, 5, 0, 0, time.UTC),
+		GeneratedAt:    time.Date(2026, 7, 16, 17, 59, 0, 0, time.UTC),
+		Refresh:        telemetry.Refresh{Status: telemetry.RefreshStatusReady},
+		BoardIssues:    []telemetry.Issue{{ID: "cached-issue"}},
+	}
+	snapshotHub := hub.New[telemetry.Snapshot]()
+	if err := snapshotHub.Publish(cached); err != nil {
+		t.Fatalf("Publish(cached) error = %v", err)
+	}
+	var seq atomic.Uint64
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, cached.GeneratedAt.Add(time.Minute), nil, nil, ""); err != nil {
+		t.Fatalf("publishSnapshotOnce() error = %v", err)
+	}
+
+	got, ok := snapshotHub.Latest()
+	if !ok || !got.LastKnown || len(got.BoardIssues) != 1 || got.BoardIssues[0].ID != "cached-issue" {
+		t.Fatalf("Latest() = %#v, %v; want cached last-known snapshot", got, ok)
+	}
+}
+
+func TestPublishSnapshotOnceExpiresLastKnownSnapshotDuringHydration(t *testing.T) {
+	t.Parallel()
+
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	trackedProject, err := projectpkg.New(projectpkg.Config{
+		Project:  globalconfig.Project{ID: "alpha", Workdir: t.TempDir(), Weight: 1},
+		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
+	}, projectpkg.Dependencies{})
+	if err != nil {
+		t.Fatalf("project.New() error = %v", err)
+	}
+	registry := projectpkg.NewRegistry()
+	mustSetProject(t, registry, trackedProject)
+
+	expiresAt := time.Date(2026, 7, 16, 18, 0, 0, 0, time.UTC)
+	snapshotHub := hub.New[telemetry.Snapshot]()
+	if err := snapshotHub.Publish(telemetry.Snapshot{
+		LastKnown:      true,
+		LastKnownUntil: expiresAt,
+		GeneratedAt:    expiresAt.Add(-time.Minute),
+		Refresh:        telemetry.Refresh{Status: telemetry.RefreshStatusReady},
+		BoardIssues:    []telemetry.Issue{{ID: "expired-issue"}},
+	}); err != nil {
+		t.Fatalf("Publish(cached) error = %v", err)
+	}
+	var seq atomic.Uint64
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, expiresAt, nil, nil, ""); err != nil {
+		t.Fatalf("publishSnapshotOnce() error = %v", err)
+	}
+
+	got, ok := snapshotHub.Latest()
+	if !ok || got.LastKnown || len(got.BoardIssues) != 0 || got.Refresh.ReadinessStatus() != telemetry.RefreshStatusInitializing {
+		t.Fatalf("Latest() = %#v, %v; want initializing live snapshot after cache expiry", got, ok)
+	}
+}
+
+func TestPersistBoardSnapshotsWritesLatestEligibleSnapshot(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	snapshotHub := hub.New[telemetry.Snapshot]()
+	cache := &boardSnapshotStoreStub{saved: make(chan telemetry.Snapshot, 1)}
+	done := make(chan struct{})
+	go func() {
+		persistBoardSnapshots(ctx, snapshotHub, cache, time.Millisecond, nil)
+		close(done)
+	}()
+
+	now := time.Date(2026, 7, 16, 18, 0, 0, 0, time.UTC)
+	if err := snapshotHub.Publish(telemetry.Snapshot{
+		GeneratedAt: now.Add(-time.Second),
+		Refresh:     telemetry.Refresh{Status: telemetry.RefreshStatusInitializing},
+	}); err != nil {
+		t.Fatalf("Publish(initializing) error = %v", err)
+	}
+	if err := snapshotHub.Publish(telemetry.Snapshot{
+		Seq:         2,
+		GeneratedAt: now,
+		Refresh:     telemetry.Refresh{Status: telemetry.RefreshStatusReady},
+	}); err != nil {
+		t.Fatalf("Publish(ready) error = %v", err)
+	}
+
+	select {
+	case got := <-cache.saved:
+		if got.Seq != 2 {
+			t.Fatalf("saved snapshot Seq = %d, want 2", got.Seq)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for board snapshot persistence")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for board snapshot persistence shutdown")
+	}
+}
+
+type boardSnapshotStoreStub struct {
+	saved chan telemetry.Snapshot
+}
+
+func (s *boardSnapshotStoreStub) Load(context.Context) (telemetry.Snapshot, bool, error) {
+	return telemetry.Snapshot{}, false, nil
+}
+
+func (s *boardSnapshotStoreStub) Save(_ context.Context, snapshot telemetry.Snapshot) error {
+	s.saved <- snapshot
+	return nil
+}
+
 func TestPublishSnapshotOncePreservesProjectDataSeq(t *testing.T) {
 	t.Parallel()
 

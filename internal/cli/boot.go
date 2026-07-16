@@ -22,6 +22,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/digitaldrywood/detent/internal/activity"
+	"github.com/digitaldrywood/detent/internal/boardsnapshot"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -301,15 +302,31 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := publishStartupSnapshotOnce(runCtx, cfg.Global, snapshotHub, runtimeStore, displayURL, time.Now(), updateScheduler); err != nil {
-		return err
-	}
 	kanbanWorkflow, err := bootKanbanWorkflow(runCtx, cfg)
 	if err != nil {
 		return err
 	}
+	boardSnapshotStore, err := boardsnapshot.New(boardsnapshot.Config{
+		Path:   runtimeBoardSnapshotPath(cfg),
+		MaxAge: time.Duration(kanbanWorkflow.Server.BoardSnapshotStaleAfterSeconds) * time.Second,
+	})
+	if err != nil {
+		return err
+	}
+	cachedSnapshot, cached, loadErr := boardSnapshotStore.Load(runCtx)
+	if loadErr != nil {
+		logger.Warn("load board snapshot failed", "error", loadErr)
+	}
+	if cached {
+		if err := snapshotHub.Publish(cachedSnapshot); err != nil {
+			return fmt.Errorf("publish cached board snapshot: %w", err)
+		}
+	} else if err := publishStartupSnapshotOnce(runCtx, cfg.Global, snapshotHub, runtimeStore, displayURL, time.Now(), updateScheduler); err != nil {
+		return err
+	}
 	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, snapshotSeq, runtimeStore, displayURL, defaultSnapshotInterval, time.Now, updateScheduler)
 	go republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger)
+	go persistBoardSnapshots(runCtx, snapshotHub, boardSnapshotStore, defaultBoardSnapshotInterval, logger)
 	//nolint:contextcheck // Echo middleware receives request contexts at serve time.
 	server, err := web.NewServer(web.Config{
 		Mode:               web.ModeRunning,
@@ -1255,6 +1272,25 @@ func runtimeStorePath(cfg BootConfig) string {
 		path = filepath.Join(mustGetwd(), ".detent", "detent.db")
 	}
 	return path
+}
+
+func runtimeBoardSnapshotPath(cfg BootConfig) string {
+	databasePath := runtimeStorePath(cfg)
+	if runtimeStoreIsMemory(databasePath) {
+		root := filepath.Dir(strings.TrimSpace(cfg.Global.Path))
+		if root == "." || root == "" {
+			root = filepath.Join(mustGetwd(), ".detent")
+		}
+		return filepath.Join(root, "detent-board-snapshot.json")
+	}
+	if uri, ok := runtimeStoreURI(databasePath); ok {
+		if uriPath, pathOK := runtimeStoreURIPath(uri); pathOK {
+			databasePath = uriPath
+		}
+	}
+	extension := filepath.Ext(databasePath)
+	base := strings.TrimSuffix(databasePath, extension)
+	return base + "-board-snapshot.json"
 }
 
 func runtimeLogPath(cfg BootConfig) string {
