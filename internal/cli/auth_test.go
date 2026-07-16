@@ -3,6 +3,8 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"os"
@@ -80,4 +82,93 @@ func writeAuthCommandConfig(t *testing.T) string {
 		t.Fatalf("Write() error = %v", err)
 	}
 	return configPath
+}
+
+func TestAuthTokenEnableAndRotate(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	writeGlobalConfig(t, path, nil)
+
+	enabledURL := runDashboardAuthCommand(t, path, "enable", "--allow-write", "--base-url", "https://detent.example.com")
+	enabledToken := dashboardTokenFromURL(t, enabledURL)
+	cfg, err := globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read() after enable error = %v", err)
+	}
+	if cfg.DashboardAccess.Mode != globalconfig.DashboardAccessModePrivateToken || !cfg.DashboardAccess.AllowWrite {
+		t.Fatalf("DashboardAccess after enable = %#v", cfg.DashboardAccess)
+	}
+	if cfg.DashboardAccess.Token != enabledToken {
+		t.Fatalf("stored token differs from enable URL")
+	}
+
+	rotatedURL := runDashboardAuthCommand(t, path, "rotate", "--base-url", "https://detent.example.com")
+	rotatedToken := dashboardTokenFromURL(t, rotatedURL)
+	if rotatedToken == enabledToken {
+		t.Fatal("rotated token equals enabled token")
+	}
+	cfg, err = globalconfig.Read(path)
+	if err != nil {
+		t.Fatalf("Read() after rotate error = %v", err)
+	}
+	if cfg.DashboardAccess.Token != rotatedToken || !cfg.DashboardAccess.AllowWrite {
+		t.Fatalf("DashboardAccess after rotate = %#v", cfg.DashboardAccess)
+	}
+}
+
+func TestAuthTokenRotateRequiresEnabledMode(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	writeGlobalConfig(t, path, nil)
+	cmd := cli.NewRootCommand(context.Background())
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path, "auth", "token", "rotate"})
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("Execute() error = %v, want not enabled", err)
+	}
+}
+
+func runDashboardAuthCommand(t *testing.T, path string, operation string, args ...string) string {
+	t.Helper()
+
+	commandArgs := []string{"--config", path, "--format", "json", "auth", "token", operation}
+	commandArgs = append(commandArgs, args...)
+	cmd := cli.NewRootCommand(context.Background())
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs(commandArgs)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute(%s) error = %v", operation, err)
+	}
+	var result struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("Unmarshal(%s) error = %v; output = %s", operation, err, stdout.String())
+	}
+	return result.URL
+}
+
+func dashboardTokenFromURL(t *testing.T, value string) string {
+	t.Helper()
+
+	parsed, err := url.Parse(value)
+	if err != nil {
+		t.Fatalf("Parse(%q) error = %v", value, err)
+	}
+	if parsed.Scheme != "https" || parsed.Host != "detent.example.com" || parsed.Path != "/" {
+		t.Fatalf("dashboard URL = %q, want https://detent.example.com/", value)
+	}
+	token := parsed.Query().Get("token")
+	decoded, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(decoded) != 32 {
+		t.Fatalf("dashboard token is not 256-bit URL-safe base64: %q", token)
+	}
+	return token
 }

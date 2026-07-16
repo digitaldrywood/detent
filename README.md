@@ -2207,6 +2207,7 @@ can include `--workflow-ref origin/main` during registration or add
 | --- | --- |
 | Project list and project settings | Live reload |
 | Credentials: `github_token` and project credentials | Live reload |
+| `dashboard_access` mode, token, and write access | Live reload; token changes invalidate private dashboard sessions |
 | `global.startup` | Live reload |
 | `instance_name` | Live reload |
 | `global.identity` | Live reload; project runtimes restart in-process and `/api/v1/state.instance.name` updates after the next telemetry snapshot |
@@ -2666,6 +2667,52 @@ API routes fail closed and mutating routes return `403` until a token is
 configured. With no token on loopback, read-only API routes remain open for
 local development.
 
+### Private Dashboard URL Access
+
+For a personal deployment that needs remote dashboard access without a VPN,
+Detent can require a private, unguessable URL. Enable it with the public URL
+served by your TLS proxy:
+
+```sh
+detent auth token enable --base-url https://detent.example.com
+```
+
+The command generates a 256-bit URL-safe token, stores this configuration in
+the permission-restricted global config, and prints the private URL once:
+
+```yaml
+dashboard_access:
+  mode: private_token
+  token: generated_value
+  allow_write: false
+```
+
+Opening the printed `?token=...` URL establishes an HttpOnly, SameSite session
+cookie and redirects to a clean URL. Dashboard pages, mobile views, reports,
+SSE updates, and read APIs then work without putting the token in later links.
+Requests without the token or a valid session receive the same non-revealing
+`404` response as an unknown route. `/health`, signed GitHub webhooks, intake
+webhooks, and API clients with their own bearer credentials remain independent
+of dashboard access.
+
+Private URL access is read-only by default. This matters because the URL is a
+bearer credential: anyone who receives it can use the dashboard. Set
+`dashboard_access.allow_write: true` only when every holder should also be able
+to stop runs, move or comment on items, rotate API keys, and change runtime
+state. Rotate a leaked or stale URL immediately:
+
+```sh
+detent auth token rotate --base-url https://detent.example.com
+```
+
+Rotation hot-reloads and invalidates every existing private dashboard session.
+Detent redacts the token from reload logs, but browsers, chat systems, proxy
+logs, and referrer destinations can still expose bearer URLs. This mode is
+appropriate for a small personal deployment and is weaker than identity-based
+magic-link or OAuth/OIDC access. TLS termination and proxy log redaction are
+the deployer's responsibility. To disable the mode, remove
+`dashboard_access` from the global config.
+
 Create a runtime work item:
 
 ```sh
@@ -2798,6 +2845,7 @@ Structured command objects:
 | `detent remove-project api` | `{"status":"ok","project":"api","removed":true}` |
 | `detent work-item add api --title "..." --body "..."` | `{"id":"wi-...","identifier":"wi-...","url":"/projects/api/kanban"}` |
 | `detent config path` | `{"path":"/path/global.yaml","rule":"--config"}` |
+| `detent auth token enable` / `detent auth token rotate` | `{"url":"https://detent.example.com/?token=..."}` |
 | `detent doctor` | `{"checks":[{"name":"Config resolution","status":"OK","detail":"...","hint":"..."}],"summary":{"ok":8,"warn":0,"fail":0},"result":"PASS"}` |
 
 ## Configuration
@@ -2829,6 +2877,7 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | Log backups | | `LOG_MAX_BACKUPS`, then `DETENT_LOG_MAX_BACKUPS` | `log_max_backups` | `5` |
 | GitHub token | | `GITHUB_TOKEN` | `github_token` | required for GitHub projects |
 | API token | | `DETENT_API_TOKEN` | `api_token` | open on loopback, fail closed on non-loopback |
+| Private dashboard URL | | | `dashboard_access` | disabled |
 | Web port | `--port` | `PORT` | `port` | `4000` |
 | Instance name | | | `instance_name` | short hostname |
 | Automatic update checks | | | `update.auto_check_enabled` | `false` |

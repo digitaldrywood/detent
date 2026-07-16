@@ -260,6 +260,15 @@ func changedGlobalConfigFields(previous globalconfig.Config, next globalconfig.C
 	if previous.GitHubToken != next.GitHubToken {
 		fields = append(fields, globalConfigChange{Field: "github_token", Old: "<redacted>", New: "<redacted>"})
 	}
+	if previous.DashboardAccess.Mode != next.DashboardAccess.Mode {
+		fields = append(fields, globalConfigChange{Field: "dashboard_access.mode", Old: previous.DashboardAccess.Mode, New: next.DashboardAccess.Mode})
+	}
+	if previous.DashboardAccess.Token != next.DashboardAccess.Token {
+		fields = append(fields, globalConfigChange{Field: "dashboard_access.token", Old: "<redacted>", New: "<redacted>"})
+	}
+	if previous.DashboardAccess.AllowWrite != next.DashboardAccess.AllowWrite {
+		fields = append(fields, globalConfigChange{Field: "dashboard_access.allow_write", Old: previous.DashboardAccess.AllowWrite, New: next.DashboardAccess.AllowWrite})
+	}
 	if !sameOptionalInt(previous.Port, next.Port) {
 		fields = append(fields, globalConfigChange{Field: "port", RequiresRestart: true})
 	}

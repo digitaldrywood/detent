@@ -1,6 +1,7 @@
 package global
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"maps"
@@ -22,10 +23,11 @@ const (
 	Kind                            = "GlobalConfig"
 	DefaultUpdateCheckIntervalHours = 24
 
-	SchedulingWeighted   = "weighted"
-	SchedulingStrict     = "strict"
-	SchedulingRoundRobin = "round_robin"
-	SchedulingFairShare  = "fair_share"
+	SchedulingWeighted              = "weighted"
+	SchedulingStrict                = "strict"
+	SchedulingRoundRobin            = "round_robin"
+	SchedulingFairShare             = "fair_share"
+	DashboardAccessModePrivateToken = "private_token"
 
 	configFileMode = 0o600
 )
@@ -57,21 +59,32 @@ type PathResolution struct {
 }
 
 type Config struct {
-	Path            string    `yaml:"-"`
-	APIVersion      string    `yaml:"apiVersion"`
-	Kind            string    `yaml:"kind"`
-	Env             string    `yaml:"env,omitempty"`
-	LogLevel        string    `yaml:"log_level,omitempty"`
-	LogMaxSizeBytes *int      `yaml:"log_max_size_bytes,omitempty"`
-	LogMaxBackups   *int      `yaml:"log_max_backups,omitempty"`
-	GitHubToken     string    `yaml:"github_token,omitempty"`
-	APIToken        string    `yaml:"api_token,omitempty"`
-	Port            *int      `yaml:"port,omitempty"`
-	InstanceName    string    `yaml:"instance_name,omitempty"`
-	Update          Update    `yaml:"update,omitempty"`
-	Auth            Auth      `yaml:"auth,omitempty"`
-	Global          Settings  `yaml:"global"`
-	Projects        []Project `yaml:"projects"`
+	Path            string          `yaml:"-"`
+	APIVersion      string          `yaml:"apiVersion"`
+	Kind            string          `yaml:"kind"`
+	Env             string          `yaml:"env,omitempty"`
+	LogLevel        string          `yaml:"log_level,omitempty"`
+	LogMaxSizeBytes *int            `yaml:"log_max_size_bytes,omitempty"`
+	LogMaxBackups   *int            `yaml:"log_max_backups,omitempty"`
+	GitHubToken     string          `yaml:"github_token,omitempty"`
+	APIToken        string          `yaml:"api_token,omitempty"`
+	DashboardAccess DashboardAccess `yaml:"dashboard_access,omitempty"`
+	Port            *int            `yaml:"port,omitempty"`
+	InstanceName    string          `yaml:"instance_name,omitempty"`
+	Update          Update          `yaml:"update,omitempty"`
+	Auth            Auth            `yaml:"auth,omitempty"`
+	Global          Settings        `yaml:"global"`
+	Projects        []Project       `yaml:"projects"`
+}
+
+type DashboardAccess struct {
+	Mode       string `yaml:"mode,omitempty"`
+	Token      string `yaml:"token,omitempty"`
+	AllowWrite bool   `yaml:"allow_write,omitempty"`
+}
+
+func (a DashboardAccess) IsZero() bool {
+	return strings.TrimSpace(a.Mode) == "" && strings.TrimSpace(a.Token) == "" && !a.AllowWrite
 }
 
 type Update struct {
@@ -440,6 +453,7 @@ func (c Config) Validate(opts ...Option) error {
 	if strings.ContainsAny(c.APIToken, "\r\n") {
 		problems = append(problems, "api_token: must be a single line")
 	}
+	problems = append(problems, dashboardAccessProblems(c.DashboardAccess)...)
 	if c.Update.CheckIntervalHours < 0 {
 		problems = append(problems, "update.check_interval_hours: must be a positive integer")
 	}
@@ -690,6 +704,7 @@ func validateRaw(attrs map[string]any, opts options) []string {
 	problems = append(problems, optionalStringTypeError(attrs, "github_token")...)
 	problems = append(problems, optionalStringTypeError(attrs, "api_token")...)
 	problems = append(problems, optionalSingleLineStringError(attrs, "api_token")...)
+	problems = append(problems, dashboardAccessRawErrors(attrs["dashboard_access"])...)
 	problems = append(problems, optionalStringTypeError(attrs, "instance_name")...)
 	problems = append(problems, optionalSingleLineStringError(attrs, "instance_name")...)
 	problems = append(problems, optionalNonNegativeIntegerError(attrs["port"], "port")...)
@@ -1282,6 +1297,10 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
+	dashboardAccess, err := buildDashboardAccess(attrs["dashboard_access"])
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
 	instanceName, err := optionalString(attrs["instance_name"], "instance_name")
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
@@ -1317,6 +1336,7 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 		LogMaxBackups:   logMaxBackups,
 		GitHubToken:     githubToken,
 		APIToken:        apiToken,
+		DashboardAccess: dashboardAccess,
 		Port:            port,
 		InstanceName:    instanceName,
 		Update:          update,
@@ -1324,6 +1344,61 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 		Global:          settings,
 		Projects:        builtProjects,
 	}, nil
+}
+
+func dashboardAccessRawErrors(value any) []string {
+	if value == nil {
+		return nil
+	}
+	attrs, ok := value.(map[string]any)
+	if !ok {
+		return []string{"dashboard_access: must be a mapping"}
+	}
+	var problems []string
+	problems = append(problems, optionalStringTypeError(attrs, "mode")...)
+	problems = append(problems, optionalStringTypeError(attrs, "token")...)
+	problems = append(problems, optionalSingleLineStringError(attrs, "token")...)
+	if allowWrite, configured := attrs["allow_write"]; configured {
+		if _, ok := allowWrite.(bool); !ok {
+			problems = append(problems, "dashboard_access.allow_write: must be a boolean")
+		}
+	}
+	return problems
+}
+
+func buildDashboardAccess(value any) (DashboardAccess, error) {
+	if value == nil {
+		return DashboardAccess{}, nil
+	}
+	if _, err := mapValue(value, "dashboard_access"); err != nil {
+		return DashboardAccess{}, err
+	}
+	var access DashboardAccess
+	if err := decodeYAMLValue(value, &access); err != nil {
+		return DashboardAccess{}, fmt.Errorf("dashboard_access: %w", err)
+	}
+	access.Mode = strings.ToLower(strings.TrimSpace(access.Mode))
+	access.Token = strings.TrimSpace(access.Token)
+	return access, nil
+}
+
+func dashboardAccessProblems(access DashboardAccess) []string {
+	mode := strings.ToLower(strings.TrimSpace(access.Mode))
+	token := strings.TrimSpace(access.Token)
+	if mode == "" {
+		if token != "" || access.AllowWrite {
+			return []string{"dashboard_access.mode: must equal private_token when dashboard access settings are configured"}
+		}
+		return nil
+	}
+	if mode != DashboardAccessModePrivateToken {
+		return []string{"dashboard_access.mode: must equal " + DashboardAccessModePrivateToken}
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(decoded) != 32 {
+		return []string{"dashboard_access.token: must be a 256-bit unpadded URL-safe base64 value"}
+	}
+	return nil
 }
 
 func buildUpdate(value any) (Update, error) {
