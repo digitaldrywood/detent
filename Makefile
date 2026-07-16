@@ -24,8 +24,9 @@ DATABASE_URL ?= tmp/detent.db
 NILAWAY_VERSION ?= v0.0.0-20260612163715-2d8907f431ca
 NILAWAY ?= go run go.uber.org/nilaway/cmd/nilaway@$(NILAWAY_VERSION)
 NILAWAY_INCLUDE_PKGS ?= github.com/digitaldrywood/detent
+CHECK_LOCK_WAIT ?= 15m
 
-.PHONY: dev generate css css-watch build test test-race test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet check modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate css css-watch build test test-race test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -109,7 +110,11 @@ vet:
 nilaway-audit:
 	$(NILAWAY) -include-pkgs=$(NILAWAY_INCLUDE_PKGS) ./...
 
-check: build lint vet nilaway-audit test-race test-cover test-cover-packages
+check:
+	@common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)" && \
+	go run ./tools/checklock -lock "$$common_dir/detent-validation.lock" -wait-timeout "$(CHECK_LOCK_WAIT)" -- $(MAKE) check-unlocked
+
+check-unlocked: build lint vet nilaway-audit test-race test-cover test-cover-packages
 	@echo "All checks passed."
 
 modernize-check:
