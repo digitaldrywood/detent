@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
 
@@ -61,12 +62,13 @@ func TestCheckDoctorWorkflowLocation(t *testing.T) {
 		configuredOutside bool
 		wantFinding       bool
 		wantFoundPath     bool
+		wantStatus        doctorStatus
 	}{
 		{name: "root present", rootWorkflow: true},
-		{name: "nonstandard present", detentWorkflow: true, wantFinding: true, wantFoundPath: true},
+		{name: "nonstandard present", detentWorkflow: true, wantFinding: true, wantFoundPath: true, wantStatus: doctorFail},
 		{name: "both present", rootWorkflow: true, detentWorkflow: true},
-		{name: "neither present", wantFinding: true},
-		{name: "config points outside repo", configuredOutside: true, wantFinding: true, wantFoundPath: true},
+		{name: "neither present", wantFinding: true, wantStatus: doctorFail},
+		{name: "config points outside repo", configuredOutside: true, wantFinding: true, wantFoundPath: true, wantStatus: doctorWarn},
 	}
 
 	for _, tt := range tests {
@@ -102,8 +104,8 @@ func TestCheckDoctorWorkflowLocation(t *testing.T) {
 			if !tt.wantFinding {
 				return
 			}
-			if check.Status != doctorFail {
-				t.Fatalf("check.Status = %s, want %s", check.Status, doctorFail)
+			if check.Status != tt.wantStatus {
+				t.Fatalf("check.Status = %s, want %s", check.Status, tt.wantStatus)
 			}
 			if !strings.Contains(check.Detail, expectedPath) {
 				t.Fatalf("check.Detail = %q, want expected path %q", check.Detail, expectedPath)
@@ -117,6 +119,39 @@ func TestCheckDoctorWorkflowLocation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCheckDoctorProjectContinuesWithConfiguredExternalWorkflow(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	repoRoot := filepath.Join(root, "repo")
+	externalPath := filepath.Join(root, "config", "WORKFLOW.md")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatalf("create repo root: %v", err)
+	}
+	writeDoctorWorkflowLocationFile(t, externalPath)
+	deps := successfulDoctorDeps()
+	deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
+		return workflowconfig.Workflow{Config: validDoctorWorkflow(repoRoot)}, nil
+	}
+
+	checks := checkDoctorProject(context.Background(), globalconfig.Project{
+		ID:       "alpha",
+		Workflow: externalPath,
+		Workdir:  repoRoot,
+	}, deps, RuntimeSecret{}, false)
+	if len(checks) < 2 {
+		t.Fatalf("len(checks) = %d, want continued project checks: %#v", len(checks), checks)
+	}
+	if checks[0].Status != doctorWarn {
+		t.Fatalf("workflow check status = %s, want %s", checks[0].Status, doctorWarn)
+	}
+	for _, want := range []string{externalPath, filepath.Join(repoRoot, "WORKFLOW.md"), "is valid"} {
+		if !strings.Contains(checks[0].Detail, want) {
+			t.Fatalf("workflow check detail = %q, want containing %q", checks[0].Detail, want)
+		}
 	}
 }
 

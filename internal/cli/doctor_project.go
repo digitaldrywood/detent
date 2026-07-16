@@ -198,18 +198,23 @@ func checkDoctorProjectWithProgress(
 	}
 	workflowCheckName := "Project " + id + " workflow"
 	setDoctorCurrentCheck(workflowCheckName)
+	var workflowLocationFinding *doctorCheck
 	if workflowLocationCheck, ok := checkDoctorWorkflowLocation(project); ok {
 		workflowLocationCheck.Name = workflowCheckName
-		return []doctorCheck{
-			workflowLocationCheck,
-			{
-				Name:   "Project " + id + " source repo",
-				Status: doctorWarn,
-				Detail: "skipped because the repository-root workflow is missing",
-				Hint:   "Move the workflow file to the repository root, then rerun detent doctor.",
-			},
-			checkDoctorIssueEffortGuidanceUnavailable(id, "the repository-root workflow is missing"),
-			checkDoctorFollowupGuidanceUnavailable(id, "the repository-root workflow is missing"),
+		if workflowLocationCheck.Status == doctorWarn {
+			workflowLocationFinding = &workflowLocationCheck
+		} else {
+			return []doctorCheck{
+				workflowLocationCheck,
+				{
+					Name:   "Project " + id + " source repo",
+					Status: doctorWarn,
+					Detail: "skipped because the repository-root workflow is missing",
+					Hint:   "Move the workflow file to the repository root, then rerun detent doctor.",
+				},
+				checkDoctorIssueEffortGuidanceUnavailable(id, "the repository-root workflow is missing"),
+				checkDoctorFollowupGuidanceUnavailable(id, "the repository-root workflow is missing"),
+			}
 		}
 	}
 	workflow, err := loadDoctorProjectWorkflow(ctx, project, deps)
@@ -256,12 +261,20 @@ func checkDoctorProjectWithProgress(
 		Status: doctorOK,
 		Detail: doctorWorkflowDetail(project.Workflow, project, workflow.Config),
 	}
+	if workflowLocationFinding != nil {
+		workflowCheck.Status = workflowLocationFinding.Status
+		workflowCheck.Detail = workflowLocationFinding.Detail + "; " + workflowCheck.Detail
+		workflowCheck.Hint = workflowLocationFinding.Hint
+	}
 	if workflowPath, err := doctorWorkflowOptimizationWorkflowPath(project); err == nil {
 		findings := doctorReviewFlowWorkflowFindings(id, workflowPath, workflow.Config, workflow.Prompt)
 		if len(findings) > 0 {
 			workflowCheck.Status = doctorWarn
 			workflowCheck.Detail += "; review-flow prose mismatch: " + doctorWorkflowFindingDetails(findings)
-			workflowCheck.Hint = "Align WORKFLOW.md handoff prose with the configured review-flow choice, or adjust the frontmatter if the configured choice is not intended."
+			if workflowCheck.Hint != "" {
+				workflowCheck.Hint += " "
+			}
+			workflowCheck.Hint += "Align WORKFLOW.md handoff prose with the configured review-flow choice, or adjust the frontmatter if the configured choice is not intended."
 			workflowCheck.WorkflowOptimization = doctorWorkflowOptimizationReport{
 				Findings:  findings,
 				Proposals: doctorWorkflowProposalsForFindings(id, findings, 1),
@@ -396,8 +409,12 @@ func checkDoctorWorkflowLocation(project globalconfig.Project) (doctorCheck, boo
 
 	for _, candidate := range doctorNonstandardWorkflowCandidates(repoRoot, workflowPath, workflowName) {
 		if doctorWorkflowFileExists(candidate) {
+			status := doctorFail
+			if filepath.Clean(candidate) == filepath.Clean(workflowPath) {
+				status = doctorWarn
+			}
 			return doctorCheck{
-				Status: doctorFail,
+				Status: status,
 				Detail: fmt.Sprintf("workflow found at %s; expected %s", candidate, expectedPath),
 				Hint:   doctorWorkflowRootConvention(expectedPath),
 			}, true
