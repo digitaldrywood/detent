@@ -742,6 +742,53 @@ func TestWorkflowTemplatesRecommendRequiredExecutionFlow(t *testing.T) {
 	}
 }
 
+func TestDocsDeclareProjectSpecificCIQualityGates(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+	readme := readRepositoryTextFile(t, "README.md")
+
+	for _, want := range []string{
+		"every CI stage category the project requires",
+		"project-specific local command and CI check name",
+		"illustrative examples from multiple ecosystems, not Detent defaults or a required tool list",
+		"detent doctor` does not validate or parse CI configuration",
+	} {
+		assertContainsWords(t, onboarding, want)
+	}
+	for _, want := range []string{
+		"required CI stage categories",
+		"project-specific commands and check names",
+		"every required stage must exist and pass on the current pull request head",
+	} {
+		assertContainsWords(t, readme, want)
+	}
+
+	for _, path := range []string{
+		"docs/templates/WORKFLOW.project_v2.md",
+		"docs/templates/WORKFLOW.issue_field.md",
+		"docs/templates/WORKFLOW.label.md",
+		"docs/templates/WORKFLOW.github_local.md",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			template := readRepositoryTextFile(t, path)
+			for _, want := range []string{
+				"## Project CI Quality Gates",
+				"<required-stage-category>",
+				"<project-command>",
+				"<project-check-name>",
+				"Whenever you touch CI configuration or perform a review",
+				"passes on the current pull request head",
+				"Do not rely on Detent or `detent doctor` to infer required stages or inspect CI configuration",
+			} {
+				assertContainsWords(t, template, want)
+			}
+		})
+	}
+}
+
 func readRepositoryTextFile(t *testing.T, path string) string {
 	t.Helper()
 
