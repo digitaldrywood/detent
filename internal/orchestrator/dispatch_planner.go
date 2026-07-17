@@ -499,6 +499,7 @@ const (
 	dispatchSkipUnauthorized             = "unauthorized"
 	dispatchSkipBlockedByDependency      = "blocked_by_dependency"
 	dispatchSkipAlreadyRunning           = "already_running"
+	dispatchSkipRetryPending             = "retry_pending"
 	dispatchSkipAlreadyClaimed           = "already_claimed"
 	dispatchSkipBlocked                  = "blocked"
 	dispatchSkipBudgetCooldown           = "budget_cooldown"
@@ -560,6 +561,9 @@ func (p dispatchPlanner) dispatchableIssueDecision(
 	}
 	if _, ok := state.Running[issue.ID]; ok {
 		return dispatchableDecision{reason: dispatchSkipAlreadyRunning}
+	}
+	if _, ok := state.Retry[issue.ID]; ok {
+		return dispatchableDecision{reason: dispatchSkipRetryPending}
 	}
 	if _, ok := state.Claimed[issue.ID]; ok && !allowClaimed {
 		return dispatchableDecision{reason: dispatchSkipAlreadyClaimed}

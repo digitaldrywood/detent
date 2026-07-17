@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
@@ -174,6 +175,44 @@ func TestClaimingHeartbeatKeepsActiveLeaseFromReclaim(t *testing.T) {
 	}
 	if _, ok := betaState.Running[issue.ID]; ok {
 		t.Fatalf("beta Running[%q] present", issue.ID)
+	}
+}
+
+func TestSuccessfulContinuationReleasesClaimLease(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 14, 0, 0, 0, time.UTC)
+	issue := claimTestIssue("issue-continuation")
+	issue.State = "Rework"
+	issue.Fields["Detent Lease"] = now.Add(-time.Minute).Format(time.RFC3339Nano)
+	claimStore := newClaimTestStore([]connector.Issue{issue})
+	cfg := normalizeConfig(claimTestConfig("alpha", "alpha"))
+	cfg.ActiveStates = normalizedStates([]string{"Rework"})
+	cfg.ContinuationRetryDelay = time.Minute
+	orch := Orchestrator{
+		cfg:       cfg,
+		connector: claimTestConnector{store: claimStore, login: "alpha"},
+	}
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{Issue: issue, StartedAt: now.Add(-time.Minute)}
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute), Owner: "alpha"}
+
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+		IssueID:     issue.ID,
+		CompletedAt: now,
+		Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
+	})
+
+	if got := claimStore.issue(issue.ID).Fields["Detent Lease"]; got != "" {
+		t.Fatalf("Detent Lease = %q, want released", got)
+	}
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present after continuation completion", issue.ID)
+	}
+	if retry, ok := state.Retry[issue.ID]; !ok {
+		t.Fatalf("Retry[%q] missing after continuation completion", issue.ID)
+	} else if want := now.Add(time.Minute); !retry.DueAt.Equal(want) {
+		t.Fatalf("Retry[%q].DueAt = %s, want %s", issue.ID, retry.DueAt, want)
 	}
 }
 

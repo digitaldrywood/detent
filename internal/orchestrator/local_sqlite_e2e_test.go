@@ -232,6 +232,68 @@ func TestLocalSQLiteArtifactLifecycleEndToEnd(t *testing.T) {
 	}
 }
 
+func TestLocalSQLiteStatuslessCompletionReleasesClaimAndSchedulesRetry(t *testing.T) {
+	t.Parallel()
+
+	seed := connector.NewIssue()
+	seed.ID = "wi-artifact-statusless"
+	seed.Identifier = "wi-artifact-statusless"
+	seed.Title = "Recut launch video"
+	seed.State = "Rework"
+	seed.Fields = map[string]string{"render_status": "recut"}
+	seed.Deliverable = &connector.Deliverable{Kind: "artifact"}
+
+	tracker, err := local.New(local.Config{
+		Path:           filepath.Join(t.TempDir(), "artifact-statusless.db"),
+		ProjectID:      "digitaldrywood-video",
+		Issues:         []connector.Issue{seed},
+		ActiveStates:   []string{"Todo", "Production", "Rework"},
+		ObservedStates: []string{"Backlog", "Review", "Blocked"},
+		TerminalStates: []string{"Ready for Pickup", "Done", "Cancelled"},
+	})
+	if err != nil {
+		t.Fatalf("local.New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := tracker.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	runner := &staticRunner{result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted}}
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:           time.Millisecond,
+		MaxConcurrentAgents:    1,
+		ActiveStates:           []string{"Todo", "Production", "Rework"},
+		ObservedStates:         []string{"Backlog", "Review", "Blocked"},
+		TerminalStates:         []string{"Ready for Pickup", "Done", "Cancelled"},
+		ContinuationRetryDelay: time.Hour,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	t.Cleanup(stop)
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		_, completed := state.Completed[seed.ID]
+		_, retry := state.Retry[seed.ID]
+		return completed && retry
+	})
+	if _, ok := state.Running[seed.ID]; ok {
+		t.Fatalf("Running[%q] present after completed run", seed.ID)
+	}
+	if _, ok := state.Claimed[seed.ID]; ok {
+		t.Fatalf("Claimed[%q] present after completed run", seed.ID)
+	}
+	if got := runner.calls.Load(); got != 1 {
+		t.Fatalf("runner calls = %d, want 1 before retry is due", got)
+	}
+}
+
 func TestLocalSQLiteArtifactReworkUsesConfiguredStatusField(t *testing.T) {
 	t.Parallel()
 
