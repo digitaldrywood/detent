@@ -27,24 +27,53 @@ type FileUpdate[T any] struct {
 type FileOption func(*fileOptions)
 
 type FileWatcher[T any] struct {
-	path     string
-	files    []watchedFile
-	dirs     []string
-	debounce time.Duration
-	loader   FileLoader[T]
-	logger   *slog.Logger
+	path       string
+	files      []watchedFile
+	dirs       []string
+	debounce   time.Duration
+	loader     FileLoader[T]
+	logger     *slog.Logger
+	newWatcher fileWatcherFactory
+	newTimer   fileTimerFactory
 }
 
 type fileOptions struct {
 	debounce   time.Duration
 	logger     *slog.Logger
 	watchPaths []string
+	newWatcher fileWatcherFactory
+	newTimer   fileTimerFactory
 }
 
 type watchedFile struct {
 	path   string
 	target string
 }
+
+type fileEventWatcher interface {
+	Add(string) error
+	Close() error
+	Events() <-chan fsnotify.Event
+	Errors() <-chan error
+}
+
+type fsnotifyEventWatcher struct {
+	watcher *fsnotify.Watcher
+}
+
+type fileWatcherFactory func() (fileEventWatcher, error)
+
+type fileTimer interface {
+	C() <-chan time.Time
+	Reset(time.Duration) bool
+	Stop() bool
+}
+
+type standardFileTimer struct {
+	timer *time.Timer
+}
+
+type fileTimerFactory func(time.Duration) fileTimer
 
 func NewFile[T any](path string, loader FileLoader[T], opts ...FileOption) (*FileWatcher[T], error) {
 	path = strings.TrimSpace(path)
@@ -61,8 +90,12 @@ func NewFile[T any](path string, loader FileLoader[T], opts ...FileOption) (*Fil
 	}
 
 	cfg := fileOptions{
-		debounce: defaultDebounce,
-		logger:   slog.Default(),
+		debounce:   defaultDebounce,
+		logger:     slog.Default(),
+		newWatcher: newFileEventWatcher,
+		newTimer: func(duration time.Duration) fileTimer {
+			return &standardFileTimer{timer: time.NewTimer(duration)}
+		},
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -72,6 +105,14 @@ func NewFile[T any](path string, loader FileLoader[T], opts ...FileOption) (*Fil
 	}
 	if cfg.logger == nil {
 		cfg.logger = slog.Default()
+	}
+	if cfg.newWatcher == nil {
+		cfg.newWatcher = newFileEventWatcher
+	}
+	if cfg.newTimer == nil {
+		cfg.newTimer = func(duration time.Duration) fileTimer {
+			return &standardFileTimer{timer: time.NewTimer(duration)}
+		}
 	}
 
 	path = filepath.Clean(absolute)
@@ -99,13 +140,58 @@ func NewFile[T any](path string, loader FileLoader[T], opts ...FileOption) (*Fil
 	}
 
 	return &FileWatcher[T]{
-		path:     path,
-		files:    files,
-		dirs:     watchDirs(watchPaths...),
-		debounce: cfg.debounce,
-		loader:   loader,
-		logger:   cfg.logger,
+		path:       path,
+		files:      files,
+		dirs:       watchDirs(watchPaths...),
+		debounce:   cfg.debounce,
+		loader:     loader,
+		logger:     cfg.logger,
+		newWatcher: cfg.newWatcher,
+		newTimer:   cfg.newTimer,
 	}, nil
+}
+
+func newFileEventWatcher() (fileEventWatcher, error) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, err
+	}
+	return &fsnotifyEventWatcher{watcher: watcher}, nil
+}
+
+func (w *fsnotifyEventWatcher) Add(path string) error {
+	return w.watcher.Add(path)
+}
+
+func (w *fsnotifyEventWatcher) Close() error {
+	return w.watcher.Close()
+}
+
+func (w *fsnotifyEventWatcher) Events() <-chan fsnotify.Event {
+	return w.watcher.Events
+}
+
+func (w *fsnotifyEventWatcher) Errors() <-chan error {
+	return w.watcher.Errors
+}
+
+func (t *standardFileTimer) C() <-chan time.Time {
+	return t.timer.C
+}
+
+func (t *standardFileTimer) Reset(duration time.Duration) bool {
+	return t.timer.Reset(duration)
+}
+
+func (t *standardFileTimer) Stop() bool {
+	return t.timer.Stop()
+}
+
+func withFileRuntime(newWatcher fileWatcherFactory, newTimer fileTimerFactory) FileOption {
+	return func(opts *fileOptions) {
+		opts.newWatcher = newWatcher
+		opts.newTimer = newTimer
+	}
 }
 
 func watchDirs(paths ...string) []string {
@@ -152,7 +238,7 @@ func (w *FileWatcher[T]) Watch(ctx context.Context) (<-chan FileUpdate[T], error
 		ctx = context.Background()
 	}
 
-	fsWatcher, err := fsnotify.NewWatcher()
+	fsWatcher, err := w.newWatcher()
 	if err != nil {
 		return nil, fmt.Errorf("create config watcher: %w", err)
 	}
@@ -168,7 +254,7 @@ func (w *FileWatcher[T]) Watch(ctx context.Context) (<-chan FileUpdate[T], error
 	return updates, nil
 }
 
-func (w *FileWatcher[T]) run(ctx context.Context, fsWatcher *fsnotify.Watcher, updates chan<- FileUpdate[T]) {
+func (w *FileWatcher[T]) run(ctx context.Context, fsWatcher fileEventWatcher, updates chan<- FileUpdate[T]) {
 	defer close(updates)
 	defer func() {
 		if err := fsWatcher.Close(); err != nil {
@@ -176,9 +262,9 @@ func (w *FileWatcher[T]) run(ctx context.Context, fsWatcher *fsnotify.Watcher, u
 		}
 	}()
 
-	timer := time.NewTimer(w.debounce)
+	timer := w.newTimer(w.debounce)
 	if !timer.Stop() {
-		<-timer.C
+		<-timer.C()
 	}
 	var timerC <-chan time.Time
 	var lastUpdate *FileUpdate[T]
@@ -187,16 +273,16 @@ func (w *FileWatcher[T]) run(ctx context.Context, fsWatcher *fsnotify.Watcher, u
 		select {
 		case <-ctx.Done():
 			return
-		case event, ok := <-fsWatcher.Events:
+		case event, ok := <-fsWatcher.Events():
 			if !ok {
 				return
 			}
 			if w.matches(event) {
 				w.refreshWatchPath(fsWatcher.Add)
 				resetTimer(timer, w.debounce)
-				timerC = timer.C
+				timerC = timer.C()
 			}
-		case err, ok := <-fsWatcher.Errors:
+		case err, ok := <-fsWatcher.Errors():
 			if !ok {
 				return
 			}

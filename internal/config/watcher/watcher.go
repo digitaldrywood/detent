@@ -33,9 +33,10 @@ type Watcher struct {
 }
 
 type options struct {
-	debounce time.Duration
-	loader   Loader
-	logger   *slog.Logger
+	debounce    time.Duration
+	loader      Loader
+	logger      *slog.Logger
+	fileOptions []FileOption
 }
 
 func New(path string, opts ...Option) (*Watcher, error) {
@@ -63,7 +64,11 @@ func New(path string, opts ...Option) (*Watcher, error) {
 			err = workflow.Config.Validate()
 		}
 		return workflow, err
-	}, WithFileDebounce(cfg.debounce), WithFileLogger(cfg.logger), WithFileWatchPaths(workflowconfig.LocalWorkflowPath(path)))
+	}, append([]FileOption{
+		WithFileDebounce(cfg.debounce),
+		WithFileLogger(cfg.logger),
+		WithFileWatchPaths(workflowconfig.LocalWorkflowPath(path)),
+	}, cfg.fileOptions...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +91,12 @@ func WithLoader(loader Loader) Option {
 func WithLogger(logger *slog.Logger) Option {
 	return func(opts *options) {
 		opts.logger = logger
+	}
+}
+
+func withFileOptions(fileOptions ...FileOption) Option {
+	return func(opts *options) {
+		opts.fileOptions = append(opts.fileOptions, fileOptions...)
 	}
 }
 
@@ -127,10 +138,10 @@ func retryInterval(debounce time.Duration) time.Duration {
 	return reloadRetryInterval
 }
 
-func resetTimer(timer *time.Timer, debounce time.Duration) {
+func resetTimer(timer fileTimer, debounce time.Duration) {
 	if !timer.Stop() {
 		select {
-		case <-timer.C:
+		case <-timer.C():
 		default:
 		}
 	}
