@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -324,9 +325,11 @@ func (o *Orchestrator) fetchTickIssues(
 	candidateIssues, err := o.fetchCandidateIssuesForTick(ctx, state)
 	if err != nil {
 		o.logger.Warn("fetch candidate issues failed", "error", err)
+		recordRefreshSourceFailure(state, telemetry.RefreshSourceCandidates, err, now)
 		markRefreshError(state, "fetch candidate issues failed: "+err.Error(), now)
 		return tickFetchedIssues{}, false
 	}
+	recordRefreshSourceSuccess(state, telemetry.RefreshSourceCandidates, now)
 
 	fetched := tickFetchedIssues{
 		candidates: cloneIssues(candidateIssues),
@@ -347,21 +350,34 @@ func (o *Orchestrator) fetchTickIssues(
 		)
 		return fetched, true
 	}
-	if !tickHasActiveWork(state, candidateIssues) && !o.observedWorkExists(ctx, observedStates) {
-		fetched.statusOK = true
-		clearRefreshError(state)
-		return fetched, true
+	if !tickHasActiveWork(state, candidateIssues) {
+		exists, probeErr := o.observedWorkExists(ctx, observedStates)
+		if probeErr != nil {
+			o.logger.Warn("fetch observed status probe failed", "error", probeErr)
+			recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, probeErr, now)
+			markRefreshError(state, "fetch observed status probe failed: "+probeErr.Error(), now)
+			return fetched, true
+		}
+		if !exists {
+			fetched.statusOK = true
+			recordRefreshSourceSuccess(state, telemetry.RefreshSourceStatuses, now)
+			clearRefreshError(state)
+			return fetched, true
+		}
 	}
 
 	statusIssues, statusErr := o.fetchObservedIssuesByStates(ctx, observedStates)
 	if statusErr != nil {
 		o.logger.Warn("fetch observed status issues failed", "error", statusErr)
+		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, statusErr, now)
 		markRefreshError(state, "fetch observed status issues failed: "+statusErr.Error(), now)
 		return fetched, true
 	}
+	recordRefreshSourceSuccess(state, telemetry.RefreshSourceStatuses, now)
 	fetched.status = cloneIssues(statusIssues)
 	fetched.statusOK = true
 	if !o.hydratePlanIssueComments(ctx, &fetched) {
+		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, errors.New("fetch plan issue comments failed"), now)
 		markRefreshError(state, "fetch plan issue comments failed", now)
 		return tickFetchedIssues{}, false
 	}
@@ -472,6 +488,7 @@ func (o *Orchestrator) refreshStatusDrift(
 	drift, err := reader.FetchStatusDrift(ctx)
 	if err != nil {
 		o.logger.Warn("fetch tracker status drift failed", "error", err)
+		recordRefreshSourceFailure(state, telemetry.RefreshSourceDrift, err, now)
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now,
 			Event:   "tracker_status_drift_failed",
@@ -479,6 +496,7 @@ func (o *Orchestrator) refreshStatusDrift(
 		})
 		return
 	}
+	recordRefreshSourceSuccess(state, telemetry.RefreshSourceDrift, now)
 	state.StatusDrift = cloneStatusDrift(drift)
 }
 
@@ -519,25 +537,23 @@ func refreshSucceeded(state *State) bool {
 		state.LastRefreshErrorAt.IsZero()
 }
 
-func (o *Orchestrator) observedWorkExists(ctx context.Context, observedStates []string) bool {
+func (o *Orchestrator) observedWorkExists(ctx context.Context, observedStates []string) (bool, error) {
 	if prober, ok := o.connector.(connector.IssueStateProber); ok {
 		issues, err := prober.FetchIssueStateProbe(ctx, observedStates, 1)
 		if err != nil {
-			o.logger.Warn("fetch lightweight observed status probe failed", "error", err)
-			return false
+			return false, fmt.Errorf("fetch lightweight observed status probe: %w", err)
 		}
-		return len(issues) > 0
+		return len(issues) > 0, nil
 	}
 	limiter, ok := o.connector.(connector.IssuesByStatesLimiter)
 	if !ok {
-		return true
+		return true, nil
 	}
 	issues, err := limiter.FetchIssuesByStatesLimit(ctx, observedStates, 1)
 	if err != nil {
-		o.logger.Warn("fetch bounded observed status probe failed", "error", err)
-		return false
+		return false, fmt.Errorf("fetch bounded observed status probe: %w", err)
 	}
-	return len(issues) > 0
+	return len(issues) > 0, nil
 }
 
 func (o *Orchestrator) githubBudgetReserveDecision(state *State, now time.Time) githubBudgetReserveDecision {

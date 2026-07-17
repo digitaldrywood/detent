@@ -29,20 +29,32 @@ const (
 // for publishing to the web dashboard. Slices are sorted by issue id so the
 // output is deterministic.
 func (s State) Snapshot(now time.Time) telemetry.Snapshot {
+	staleAfter := refreshStaleAfter(s.PollInterval)
+	sources := refreshSourceSnapshots(s.RefreshSources)
 	refresh := telemetry.Refresh{
 		PollIntervalSeconds: int64(s.PollInterval / time.Second),
+		StaleAfterSeconds:   int64(staleAfter / time.Second),
+		FailureThreshold:    refreshFailureDegradedThreshold,
 		DataSeq:             s.DataSeq,
 		LastRefreshAt:       timePointer(s.LastRefreshAt),
 		NextRefreshAt:       timePointer(s.NextRefreshAt),
-		LastError:           s.LastRefreshError,
-		LastErrorAt:         timePointer(s.LastRefreshErrorAt),
+		Sources:             sources,
 	}
 	if !s.ManualRefresh.IsZero() {
 		manual := cloneRefreshAttempt(s.ManualRefresh)
 		refresh.Manual = &manual
 	}
-	if refresh.LastError != "" || refresh.LastErrorAt != nil {
+	if source, ok := degradedRefreshSource(sources, refresh.FailureThreshold, now, staleAfter); ok {
 		refresh.Status = telemetry.RefreshStatusDegraded
+		refresh.LastError = source.LastError
+		refresh.LastErrorAt = cloneTimePointer(source.LastErrorAt)
+		if refresh.LastError == "" {
+			refresh.LastError = "tracker " + string(source.Name) + " data is stale"
+		}
+	} else if s.LastRefreshError != "" || !s.LastRefreshErrorAt.IsZero() {
+		refresh.Status = telemetry.RefreshStatusDegraded
+		refresh.LastError = s.LastRefreshError
+		refresh.LastErrorAt = timePointer(s.LastRefreshErrorAt)
 	} else if refresh.LastRefreshAt == nil {
 		refresh.Status = telemetry.RefreshStatusInitializing
 	} else {

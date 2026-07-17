@@ -896,23 +896,15 @@ func appTopbar(data DashboardShellData, scope templ.Component) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 65, "<div class=\"hidden flex-1 md:block\"></div><div id=\"live-indicator\" class=\"flex flex-none items-center gap-2 text-xs text-sec\" data-live-indicator>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 65, "<div class=\"hidden flex-1 md:block\"></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = primitives.StatusDot(primitives.KindOK, true).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = LiveStatus(data).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 66, "<span data-live-label>Live ·</span> <span id=\"live-clock\" class=\"font-mono tabular-nums\" sse-swap=\"tick\" hx-swap=\"innerHTML\">")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = LocalTime(data.Snapshot.GeneratedAt, LocalTimeOptions{Style: LocalTimeWithSeconds, Fallback: "--:--:--"}).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 67, "</span></div><div class=\"flex w-fit overflow-hidden rounded-card border border-line\" role=\"group\" aria-label=\"Density\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 66, "<div class=\"flex w-fit overflow-hidden rounded-card border border-line\" role=\"group\" aria-label=\"Density\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -921,7 +913,7 @@ func appTopbar(data DashboardShellData, scope templ.Component) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 68, "<button type=\"button\" class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 67, "<button type=\"button\" class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -934,20 +926,20 @@ func appTopbar(data DashboardShellData, scope templ.Component) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 69, "\" data-density-choice=\"compact\" aria-pressed=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 68, "\" data-density-choice=\"compact\" aria-pressed=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var47 string
 		templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinStringErrs(appDensityPressed(data, "compact"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 217, Col: 154}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 213, Col: 154}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 70, "\">Compact</button> ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 69, "\">Compact</button> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -956,7 +948,7 @@ func appTopbar(data DashboardShellData, scope templ.Component) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 71, "<button type=\"button\" class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 70, "<button type=\"button\" class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -969,20 +961,20 @@ func appTopbar(data DashboardShellData, scope templ.Component) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 72, "\" data-density-choice=\"cozy\" aria-pressed=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 71, "\" data-density-choice=\"cozy\" aria-pressed=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var50 string
 		templ_7745c5c3_Var50, templ_7745c5c3_Err = templ.JoinStringErrs(appDensityPressed(data, "cozy"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 218, Col: 145}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 214, Col: 145}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var50))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 73, "\">Cozy</button> ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 72, "\">Cozy</button> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -991,7 +983,7 @@ func appTopbar(data DashboardShellData, scope templ.Component) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 74, "<button type=\"button\" class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 73, "<button type=\"button\" class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1004,20 +996,20 @@ func appTopbar(data DashboardShellData, scope templ.Component) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 75, "\" data-density-choice=\"comfy\" aria-pressed=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 74, "\" data-density-choice=\"comfy\" aria-pressed=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var53 string
 		templ_7745c5c3_Var53, templ_7745c5c3_Err = templ.JoinStringErrs(appDensityPressed(data, "comfy"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 219, Col: 148}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 215, Col: 148}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var53))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 76, "\">Comfy</button></div><button type=\"button\" class=\"inline-flex min-h-9 items-center gap-2 rounded-card border border-line px-3 text-xs font-medium text-sec hover:border-accent hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" data-chat-toggle hx-get=\"/api/v1/chat\" hx-target=\"#chat-panel-body\" hx-swap=\"innerHTML\" aria-controls=\"chat-panel\" aria-expanded=\"false\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 75, "\">Comfy</button></div><button type=\"button\" class=\"inline-flex min-h-9 items-center gap-2 rounded-card border border-line px-3 text-xs font-medium text-sec hover:border-accent hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" data-chat-toggle hx-get=\"/api/v1/chat\" hx-target=\"#chat-panel-body\" hx-swap=\"innerHTML\" aria-controls=\"chat-panel\" aria-expanded=\"false\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1025,7 +1017,109 @@ func appTopbar(data DashboardShellData, scope templ.Component) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 77, "Chat</button></div></header>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 76, "Chat</button></div></header>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		return nil
+	})
+}
+
+func LiveStatus(data DashboardShellData) templ.Component {
+	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
+			return templ_7745c5c3_CtxErr
+		}
+		templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+		if !templ_7745c5c3_IsBuffer {
+			defer func() {
+				templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+				if templ_7745c5c3_Err == nil {
+					templ_7745c5c3_Err = templ_7745c5c3_BufErr
+				}
+			}()
+		}
+		ctx = templ.InitializeContext(ctx)
+		templ_7745c5c3_Var54 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var54 == nil {
+			templ_7745c5c3_Var54 = templ.NopComponent
+		}
+		ctx = templ.ClearChildren(ctx)
+		var templ_7745c5c3_Var55 = []any{"flex flex-none items-center gap-2 text-xs " + appLiveStatusTextClass(data)}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var55...)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 77, "<div id=\"live-indicator\" class=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var56 string
+		templ_7745c5c3_Var56, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var55).String())
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 1, Col: 0}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var56))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 78, "\" data-live-indicator data-freshness-kind=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var57 string
+		templ_7745c5c3_Var57, templ_7745c5c3_Err = templ.JoinStringErrs(string(appLiveStatusKind(data)))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 239, Col: 55}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var57))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 79, "\" data-freshness-label=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var58 string
+		templ_7745c5c3_Var58, templ_7745c5c3_Err = templ.JoinStringErrs(appLiveStatusLabel(data))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 240, Col: 49}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var58))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 80, "\" sse-swap=\"live-status\" hx-swap=\"morph:outerHTML\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = primitives.StatusDot(appLiveStatusKind(data), false).Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 81, "<span data-live-label>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var59 string
+		templ_7745c5c3_Var59, templ_7745c5c3_Err = templ.JoinStringErrs(appLiveStatusLabel(data))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/shell.templ`, Line: 245, Col: 50}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var59))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 82, " ·</span> <span id=\"live-clock\" class=\"font-mono tabular-nums\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = LocalTime(appLiveStatusAt(data), LocalTimeOptions{Relative: true, Fallback: "--:--:--"}).Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 83, "</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1059,12 +1153,12 @@ func liveBehaviorScript() templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var54 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var54 == nil {
-			templ_7745c5c3_Var54 = templ.NopComponent
+		templ_7745c5c3_Var60 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var60 == nil {
+			templ_7745c5c3_Var60 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 78, "<script>\n\t\t(function () {\n\t\t\tvar reduceMotion = window.matchMedia && window.matchMedia(\"(prefers-reduced-motion: reduce)\").matches;\n\t\t\tvar servedVersion = document.documentElement.getAttribute(\"data-detent-served-version\") || \"\";\n\n\t\t\tfunction applyBuildVersion(event) {\n\t\t\t\tvar target = event.target instanceof Element ? event.target : null;\n\t\t\t\tif (!target || target.id !== \"detent-build-version\") return;\n\t\t\t\tvar detail = event.detail || {};\n\t\t\t\tvar markup = typeof detail.data === \"string\" ? detail.data : \"\";\n\t\t\t\tif (!markup) return;\n\t\t\t\tvar template = document.createElement(\"template\");\n\t\t\t\ttemplate.innerHTML = markup;\n\t\t\t\tvar incoming = template.content.querySelector(\"[data-detent-build-version]\");\n\t\t\t\tif (!incoming) return;\n\t\t\t\tvar liveVersion = incoming.getAttribute(\"data-detent-build-version\") || \"\";\n\t\t\t\tvar footer = target;\n\t\t\t\tif (footer) {\n\t\t\t\t\tfooter.textContent = liveVersion;\n\t\t\t\t\tfooter.setAttribute(\"title\", liveVersion);\n\t\t\t\t\tfooter.setAttribute(\"data-detent-build-version\", liveVersion);\n\t\t\t\t}\n\t\t\t\tif (!servedVersion || !liveVersion || servedVersion === liveVersion) return;\n\t\t\t\tvar notice = document.querySelector(\"[data-detent-build-update]\");\n\t\t\t\tif (!notice) return;\n\t\t\t\tvar message = notice.querySelector(\"[data-detent-build-update-message]\");\n\t\t\t\tif (message) message.textContent = \"Detent updated to \" + liveVersion + \" —\";\n\t\t\t\tnotice.hidden = false;\n\t\t\t\tnotice.classList.remove(\"hidden\");\n\t\t\t\tnotice.classList.add(\"flex\");\n\t\t\t}\n\t\t\tdocument.addEventListener(\"htmx:sseBeforeMessage\", applyBuildVersion);\n\t\t\tdocument.addEventListener(\"click\", function (event) {\n\t\t\t\tvar reload = event.target instanceof Element ? event.target.closest(\"[data-detent-build-reload]\") : null;\n\t\t\t\tif (reload) window.location.reload();\n\t\t\t});\n\n\t\t\tfunction liveParts() {\n\t\t\t\tvar indicator = document.querySelector(\"[data-live-indicator]\");\n\t\t\t\tif (!indicator) return null;\n\t\t\t\treturn {\n\t\t\t\t\tindicator: indicator,\n\t\t\t\t\tdot: indicator.querySelector(\"span[aria-hidden]\"),\n\t\t\t\t\tlabel: indicator.querySelector(\"[data-live-label]\"),\n\t\t\t\t\tclock: document.getElementById(\"live-clock\"),\n\t\t\t\t};\n\t\t\t}\n\t\t\tfunction setDisconnected() {\n\t\t\t\tvar parts = liveParts();\n\t\t\t\tif (!parts || document.documentElement.getAttribute(\"data-live\") === \"stale\") return;\n\t\t\t\tdocument.documentElement.setAttribute(\"data-live\", \"stale\");\n\t\t\t\tif (parts.label) parts.label.textContent = \"Reconnecting… data as of\";\n\t\t\t\tif (parts.dot) {\n\t\t\t\t\tparts.dot.classList.remove(\"bg-ok\");\n\t\t\t\t\tparts.dot.classList.add(\"bg-warn\");\n\t\t\t\t}\n\t\t\t\tparts.indicator.classList.remove(\"text-sec\");\n\t\t\t\tparts.indicator.classList.add(\"text-warn\");\n\t\t\t\tvar snapshot = document.getElementById(\"snapshot\");\n\t\t\t\tif (snapshot) snapshot.style.opacity = \"0.85\";\n\t\t\t}\n\t\t\tfunction setConnected() {\n\t\t\t\tvar parts = liveParts();\n\t\t\t\tif (!parts) return;\n\t\t\t\tdocument.documentElement.removeAttribute(\"data-live\");\n\t\t\t\tif (parts.label) parts.label.textContent = \"Live ·\";\n\t\t\t\tif (parts.dot) {\n\t\t\t\t\tparts.dot.classList.remove(\"bg-warn\");\n\t\t\t\t\tparts.dot.classList.add(\"bg-ok\");\n\t\t\t\t}\n\t\t\t\tparts.indicator.classList.remove(\"text-warn\");\n\t\t\t\tparts.indicator.classList.add(\"text-sec\");\n\t\t\t\tvar snapshot = document.getElementById(\"snapshot\");\n\t\t\t\tif (snapshot) snapshot.style.opacity = \"\";\n\t\t\t}\n\t\t\tdocument.addEventListener(\"htmx:sseError\", setDisconnected);\n\t\t\tdocument.addEventListener(\"htmx:sseClose\", setDisconnected);\n\t\t\tdocument.addEventListener(\"htmx:sseOpen\", setConnected);\n\t\t\tdocument.addEventListener(\"htmx:sseBeforeMessage\", setConnected);\n\n\t\t\tvar previousText = new Map();\n\t\t\tvar previousCounts = new Map();\n\t\t\tfunction snapshotState() {\n\t\t\t\tvar snapshot = document.getElementById(\"snapshot\");\n\t\t\t\tif (!snapshot) return;\n\t\t\t\tpreviousText = new Map();\n\t\t\t\tsnapshot.querySelectorAll(\"[id]\").forEach(function (node) {\n\t\t\t\t\tpreviousText.set(node.id, node.textContent);\n\t\t\t\t});\n\t\t\t\tpreviousCounts = new Map();\n\t\t\t\tsnapshot.querySelectorAll(\"[data-preserve-scroll]\").forEach(function (container) {\n\t\t\t\t\tpreviousCounts.set(container.getAttribute(\"data-preserve-scroll\"), {\n\t\t\t\t\t\tcount: container.childElementCount,\n\t\t\t\t\t\tscrolled: container.scrollTop > 24,\n\t\t\t\t\t});\n\t\t\t\t});\n\t\t\t}\n\t\t\tfunction highlightChanges() {\n\t\t\t\tif (reduceMotion) return;\n\t\t\t\tvar snapshot = document.getElementById(\"snapshot\");\n\t\t\t\tif (!snapshot || previousText.size === 0) return;\n\t\t\t\tsnapshot.querySelectorAll(\"[id]\").forEach(function (node) {\n\t\t\t\t\tvar before = previousText.get(node.id);\n\t\t\t\t\tif (before === undefined || before === node.textContent) return;\n\t\t\t\t\tnode.removeAttribute(\"data-changed\");\n\t\t\t\t\tvoid node.offsetWidth;\n\t\t\t\t\tnode.setAttribute(\"data-changed\", \"true\");\n\t\t\t\t\tsetTimeout(function () {\n\t\t\t\t\t\tnode.removeAttribute(\"data-changed\");\n\t\t\t\t\t}, 1100);\n\t\t\t\t});\n\t\t\t}\n\t\t\tfunction accumulateNew() {\n\t\t\t\tvar snapshot = document.getElementById(\"snapshot\");\n\t\t\t\tif (!snapshot) return;\n\t\t\t\tsnapshot.querySelectorAll(\"[data-preserve-scroll]\").forEach(function (container) {\n\t\t\t\t\tvar key = container.getAttribute(\"data-preserve-scroll\");\n\t\t\t\t\tvar before = previousCounts.get(key);\n\t\t\t\t\tif (!before || !before.scrolled) return;\n\t\t\t\t\tvar added = container.childElementCount - before.count;\n\t\t\t\t\tif (added <= 0) return;\n\t\t\t\t\tvar chip = container.querySelector(\"[data-new-chip]\");\n\t\t\t\t\tvar count = added;\n\t\t\t\t\tif (chip) {\n\t\t\t\t\t\tcount += parseInt(chip.getAttribute(\"data-new-count\") || \"0\", 10);\n\t\t\t\t\t} else {\n\t\t\t\t\t\tchip = document.createElement(\"button\");\n\t\t\t\t\t\tchip.type = \"button\";\n\t\t\t\t\t\tchip.setAttribute(\"data-new-chip\", \"\");\n\t\t\t\t\t\tchip.className = \"sticky top-0 z-10 mx-auto flex-none rounded-chip border border-line bg-elev px-2.5 py-1 text-2xs font-medium text-accent\";\n\t\t\t\t\t\tchip.addEventListener(\"click\", function () {\n\t\t\t\t\t\t\tcontainer.scrollTo({ top: 0 });\n\t\t\t\t\t\t\tchip.remove();\n\t\t\t\t\t\t});\n\t\t\t\t\t\tcontainer.prepend(chip);\n\t\t\t\t\t}\n\t\t\t\t\tchip.setAttribute(\"data-new-count\", String(count));\n\t\t\t\t\tchip.textContent = count + \" new ↑\";\n\t\t\t\t});\n\t\t\t}\n\t\t\tdocument.addEventListener(\"htmx:beforeSwap\", function (event) {\n\t\t\t\tvar target = event.detail && event.detail.target;\n\t\t\t\tif (target instanceof Element && (target.id === \"snapshot\" || target.closest(\"#snapshot\"))) {\n\t\t\t\t\tsnapshotState();\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"htmx:afterSettle\", function (event) {\n\t\t\t\tvar target = event.detail && event.detail.target;\n\t\t\t\tif (target instanceof Element && (target.id === \"snapshot\" || target.closest(\"#snapshot\"))) {\n\t\t\t\t\thighlightChanges();\n\t\t\t\t\taccumulateNew();\n\t\t\t\t}\n\t\t\t});\n\t\t})();\n\t</script>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 84, "<script>\n\t\t(function () {\n\t\t\tvar reduceMotion = window.matchMedia && window.matchMedia(\"(prefers-reduced-motion: reduce)\").matches;\n\t\t\tvar servedVersion = document.documentElement.getAttribute(\"data-detent-served-version\") || \"\";\n\n\t\t\tfunction applyBuildVersion(event) {\n\t\t\t\tvar target = event.target instanceof Element ? event.target : null;\n\t\t\t\tif (!target || target.id !== \"detent-build-version\") return;\n\t\t\t\tvar detail = event.detail || {};\n\t\t\t\tvar markup = typeof detail.data === \"string\" ? detail.data : \"\";\n\t\t\t\tif (!markup) return;\n\t\t\t\tvar template = document.createElement(\"template\");\n\t\t\t\ttemplate.innerHTML = markup;\n\t\t\t\tvar incoming = template.content.querySelector(\"[data-detent-build-version]\");\n\t\t\t\tif (!incoming) return;\n\t\t\t\tvar liveVersion = incoming.getAttribute(\"data-detent-build-version\") || \"\";\n\t\t\t\tvar footer = target;\n\t\t\t\tif (footer) {\n\t\t\t\t\tfooter.textContent = liveVersion;\n\t\t\t\t\tfooter.setAttribute(\"title\", liveVersion);\n\t\t\t\t\tfooter.setAttribute(\"data-detent-build-version\", liveVersion);\n\t\t\t\t}\n\t\t\t\tif (!servedVersion || !liveVersion || servedVersion === liveVersion) return;\n\t\t\t\tvar notice = document.querySelector(\"[data-detent-build-update]\");\n\t\t\t\tif (!notice) return;\n\t\t\t\tvar message = notice.querySelector(\"[data-detent-build-update-message]\");\n\t\t\t\tif (message) message.textContent = \"Detent updated to \" + liveVersion + \" —\";\n\t\t\t\tnotice.hidden = false;\n\t\t\t\tnotice.classList.remove(\"hidden\");\n\t\t\t\tnotice.classList.add(\"flex\");\n\t\t\t}\n\t\t\tdocument.addEventListener(\"htmx:sseBeforeMessage\", applyBuildVersion);\n\t\t\tdocument.addEventListener(\"click\", function (event) {\n\t\t\t\tvar reload = event.target instanceof Element ? event.target.closest(\"[data-detent-build-reload]\") : null;\n\t\t\t\tif (reload) window.location.reload();\n\t\t\t});\n\n\t\t\tfunction liveParts() {\n\t\t\t\tvar indicator = document.querySelector(\"[data-live-indicator]\");\n\t\t\t\tif (!indicator) return null;\n\t\t\t\treturn {\n\t\t\t\t\tindicator: indicator,\n\t\t\t\t\tdot: indicator.querySelector(\"span[aria-hidden]\"),\n\t\t\t\t\tlabel: indicator.querySelector(\"[data-live-label]\"),\n\t\t\t\t\tclock: document.getElementById(\"live-clock\"),\n\t\t\t\t};\n\t\t\t}\n\t\t\tfunction setDisconnected() {\n\t\t\t\tvar parts = liveParts();\n\t\t\t\tif (!parts || document.documentElement.getAttribute(\"data-live\") === \"stale\") return;\n\t\t\t\tdocument.documentElement.setAttribute(\"data-live\", \"stale\");\n\t\t\t\tif (parts.label) parts.label.textContent = \"Reconnecting… data as of\";\n\t\t\t\tif (parts.dot) {\n\t\t\t\t\tparts.dot.classList.remove(\"bg-ok\", \"bg-warn\", \"bg-err\", \"bg-info\", \"bg-dim\");\n\t\t\t\t\tparts.dot.classList.add(\"bg-warn\");\n\t\t\t\t}\n\t\t\t\tparts.indicator.classList.remove(\"text-sec\");\n\t\t\t\tparts.indicator.classList.add(\"text-warn\");\n\t\t\t\tvar snapshot = document.getElementById(\"snapshot\");\n\t\t\t\tif (snapshot) snapshot.style.opacity = \"0.85\";\n\t\t\t}\n\t\t\tfunction restoreFreshness(parts) {\n\t\t\t\tvar kind = parts.indicator.getAttribute(\"data-freshness-kind\") || \"neutral\";\n\t\t\t\tvar label = parts.indicator.getAttribute(\"data-freshness-label\") || \"Live\";\n\t\t\t\tif (parts.label) parts.label.textContent = label + \" ·\";\n\t\t\t\tif (parts.dot) {\n\t\t\t\t\tparts.dot.classList.remove(\"bg-ok\", \"bg-warn\", \"bg-err\", \"bg-info\", \"bg-dim\");\n\t\t\t\t\tparts.dot.classList.add(kind === \"ok\" ? \"bg-ok\" : kind === \"warn\" ? \"bg-warn\" : kind === \"err\" ? \"bg-err\" : kind === \"info\" ? \"bg-info\" : \"bg-dim\");\n\t\t\t\t}\n\t\t\t\tparts.indicator.classList.remove(\"text-warn\", \"text-err\", \"text-info\", \"text-sec\");\n\t\t\t\tparts.indicator.classList.add(kind === \"warn\" ? \"text-warn\" : kind === \"err\" ? \"text-err\" : kind === \"info\" ? \"text-info\" : \"text-sec\");\n\t\t\t}\n\t\t\tfunction setConnected() {\n\t\t\t\tvar parts = liveParts();\n\t\t\t\tif (!parts) return;\n\t\t\t\tdocument.documentElement.removeAttribute(\"data-live\");\n\t\t\t\trestoreFreshness(parts);\n\t\t\t\tvar snapshot = document.getElementById(\"snapshot\");\n\t\t\t\tif (snapshot) snapshot.style.opacity = \"\";\n\t\t\t}\n\t\t\tdocument.addEventListener(\"htmx:sseError\", setDisconnected);\n\t\t\tdocument.addEventListener(\"htmx:sseClose\", setDisconnected);\n\t\t\tdocument.addEventListener(\"htmx:sseOpen\", setConnected);\n\t\t\tdocument.addEventListener(\"htmx:sseBeforeMessage\", setConnected);\n\n\t\t\tvar previousText = new Map();\n\t\t\tvar previousCounts = new Map();\n\t\t\tfunction snapshotState() {\n\t\t\t\tvar snapshot = document.getElementById(\"snapshot\");\n\t\t\t\tif (!snapshot) return;\n\t\t\t\tpreviousText = new Map();\n\t\t\t\tsnapshot.querySelectorAll(\"[id]\").forEach(function (node) {\n\t\t\t\t\tpreviousText.set(node.id, node.textContent);\n\t\t\t\t});\n\t\t\t\tpreviousCounts = new Map();\n\t\t\t\tsnapshot.querySelectorAll(\"[data-preserve-scroll]\").forEach(function (container) {\n\t\t\t\t\tpreviousCounts.set(container.getAttribute(\"data-preserve-scroll\"), {\n\t\t\t\t\t\tcount: container.childElementCount,\n\t\t\t\t\t\tscrolled: container.scrollTop > 24,\n\t\t\t\t\t});\n\t\t\t\t});\n\t\t\t}\n\t\t\tfunction highlightChanges() {\n\t\t\t\tif (reduceMotion) return;\n\t\t\t\tvar snapshot = document.getElementById(\"snapshot\");\n\t\t\t\tif (!snapshot || previousText.size === 0) return;\n\t\t\t\tsnapshot.querySelectorAll(\"[id]\").forEach(function (node) {\n\t\t\t\t\tvar before = previousText.get(node.id);\n\t\t\t\t\tif (before === undefined || before === node.textContent) return;\n\t\t\t\t\tnode.removeAttribute(\"data-changed\");\n\t\t\t\t\tvoid node.offsetWidth;\n\t\t\t\t\tnode.setAttribute(\"data-changed\", \"true\");\n\t\t\t\t\tsetTimeout(function () {\n\t\t\t\t\t\tnode.removeAttribute(\"data-changed\");\n\t\t\t\t\t}, 1100);\n\t\t\t\t});\n\t\t\t}\n\t\t\tfunction accumulateNew() {\n\t\t\t\tvar snapshot = document.getElementById(\"snapshot\");\n\t\t\t\tif (!snapshot) return;\n\t\t\t\tsnapshot.querySelectorAll(\"[data-preserve-scroll]\").forEach(function (container) {\n\t\t\t\t\tvar key = container.getAttribute(\"data-preserve-scroll\");\n\t\t\t\t\tvar before = previousCounts.get(key);\n\t\t\t\t\tif (!before || !before.scrolled) return;\n\t\t\t\t\tvar added = container.childElementCount - before.count;\n\t\t\t\t\tif (added <= 0) return;\n\t\t\t\t\tvar chip = container.querySelector(\"[data-new-chip]\");\n\t\t\t\t\tvar count = added;\n\t\t\t\t\tif (chip) {\n\t\t\t\t\t\tcount += parseInt(chip.getAttribute(\"data-new-count\") || \"0\", 10);\n\t\t\t\t\t} else {\n\t\t\t\t\t\tchip = document.createElement(\"button\");\n\t\t\t\t\t\tchip.type = \"button\";\n\t\t\t\t\t\tchip.setAttribute(\"data-new-chip\", \"\");\n\t\t\t\t\t\tchip.className = \"sticky top-0 z-10 mx-auto flex-none rounded-chip border border-line bg-elev px-2.5 py-1 text-2xs font-medium text-accent\";\n\t\t\t\t\t\tchip.addEventListener(\"click\", function () {\n\t\t\t\t\t\t\tcontainer.scrollTo({ top: 0 });\n\t\t\t\t\t\t\tchip.remove();\n\t\t\t\t\t\t});\n\t\t\t\t\t\tcontainer.prepend(chip);\n\t\t\t\t\t}\n\t\t\t\t\tchip.setAttribute(\"data-new-count\", String(count));\n\t\t\t\t\tchip.textContent = count + \" new ↑\";\n\t\t\t\t});\n\t\t\t}\n\t\t\tdocument.addEventListener(\"htmx:beforeSwap\", function (event) {\n\t\t\t\tvar target = event.detail && event.detail.target;\n\t\t\t\tif (target instanceof Element && (target.id === \"snapshot\" || target.closest(\"#snapshot\"))) {\n\t\t\t\t\tsnapshotState();\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"htmx:afterSettle\", function (event) {\n\t\t\t\tvar target = event.detail && event.detail.target;\n\t\t\t\tif (target instanceof Element && (target.id === \"snapshot\" || target.closest(\"#snapshot\"))) {\n\t\t\t\t\thighlightChanges();\n\t\t\t\t\taccumulateNew();\n\t\t\t\t}\n\t\t\t});\n\t\t})();\n\t</script>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1088,12 +1182,12 @@ func appShellScript() templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var55 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var55 == nil {
-			templ_7745c5c3_Var55 = templ.NopComponent
+		templ_7745c5c3_Var61 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var61 == nil {
+			templ_7745c5c3_Var61 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 79, "<script>\n\t\t(function () {\n\t\t\tvar detailSheetRefreshing = false;\n\t\t\tfunction setChatPanel(open) {\n\t\t\t\tvar panel = document.querySelector(\"[data-chat-panel]\");\n\t\t\t\tvar scrim = document.querySelector(\"[data-chat-scrim]\");\n\t\t\t\tvar toggle = document.querySelector(\"[data-chat-toggle]\");\n\t\t\t\tif (!panel || !scrim || !toggle) return;\n\t\t\t\tvar wasOpen = panel.getAttribute(\"data-chat-open\") === \"true\";\n\t\t\t\tvar value = open ? \"true\" : \"false\";\n\t\t\t\tpanel.setAttribute(\"data-chat-open\", value);\n\t\t\t\tpanel.setAttribute(\"aria-hidden\", open ? \"false\" : \"true\");\n\t\t\t\tscrim.setAttribute(\"data-chat-open\", value);\n\t\t\t\ttoggle.setAttribute(\"aria-expanded\", value);\n\t\t\t\tif (open) {\n\t\t\t\t\tvar input = panel.querySelector(\"textarea\");\n\t\t\t\t\tif (input) input.focus();\n\t\t\t\t} else if (wasOpen) {\n\t\t\t\t\ttoggle.focus();\n\t\t\t\t}\n\t\t\t}\n\t\t\tfunction setMobileTopbar(open) {\n\t\t\t\tvar controls = document.querySelector(\"[data-mobile-topbar-controls]\");\n\t\t\t\tvar toggle = document.querySelector(\"[data-mobile-topbar-toggle]\");\n\t\t\t\tif (!controls || !toggle) return;\n\t\t\t\tvar value = open ? \"true\" : \"false\";\n\t\t\t\tcontrols.setAttribute(\"data-mobile-open\", value);\n\t\t\t\ttoggle.setAttribute(\"aria-expanded\", value);\n\t\t\t}\n\t\t\tfunction setMobileSidebar(open, restoreFocus) {\n\t\t\t\tvar sidebar = document.getElementById(\"app-sidebar\");\n\t\t\t\tvar scrim = document.querySelector(\"[data-mobile-sidebar-scrim]\");\n\t\t\t\tvar toggle = document.querySelector(\"[data-mobile-sidebar-toggle]\");\n\t\t\t\tif (!sidebar || !scrim || !toggle) return;\n\t\t\t\tvar wasOpen = sidebar.getAttribute(\"data-mobile-open\") === \"true\";\n\t\t\t\tvar value = open ? \"true\" : \"false\";\n\t\t\t\tif (open && sidebar.dataset.desktopRail === undefined) {\n\t\t\t\t\tsidebar.dataset.desktopRail = sidebar.getAttribute(\"data-rail\") || \"false\";\n\t\t\t\t\tsidebar.setAttribute(\"data-rail\", \"false\");\n\t\t\t\t} else if (!open && sidebar.dataset.desktopRail !== undefined) {\n\t\t\t\t\tsidebar.setAttribute(\"data-rail\", sidebar.dataset.desktopRail);\n\t\t\t\t\tdelete sidebar.dataset.desktopRail;\n\t\t\t\t}\n\t\t\t\tsidebar.setAttribute(\"data-mobile-open\", value);\n\t\t\t\tscrim.setAttribute(\"data-mobile-open\", value);\n\t\t\t\ttoggle.setAttribute(\"aria-expanded\", value);\n\t\t\t\tif (open) {\n\t\t\t\t\tvar firstLink = sidebar.querySelector(\"a\");\n\t\t\t\t\tif (firstLink) firstLink.focus();\n\t\t\t\t} else if (restoreFocus && wasOpen) {\n\t\t\t\t\ttoggle.focus();\n\t\t\t\t}\n\t\t\t}\n\t\t\tfunction applyDetailSheetTab(host) {\n\t\t\t\tif (!host) return;\n\t\t\t\tvar selected = host.dataset.detailSheetTab || \"activity\";\n\t\t\t\thost.querySelectorAll(\"[data-sheet-tab]\").forEach(function (button) {\n\t\t\t\t\tvar active = button.getAttribute(\"data-sheet-tab\") === selected;\n\t\t\t\t\tbutton.setAttribute(\"aria-selected\", active ? \"true\" : \"false\");\n\t\t\t\t\tbutton.classList.toggle(\"border-accent\", active);\n\t\t\t\t\tbutton.classList.toggle(\"border-transparent\", !active);\n\t\t\t\t\tbutton.classList.toggle(\"text-text\", active);\n\t\t\t\t\tbutton.classList.toggle(\"text-sec\", !active);\n\t\t\t\t});\n\t\t\t\thost.querySelectorAll(\"[data-sheet-panel]\").forEach(function (panel) {\n\t\t\t\t\tpanel.classList.toggle(\"hidden\", panel.getAttribute(\"data-sheet-panel\") !== selected);\n\t\t\t\t});\n\t\t\t}\n\t\t\tfunction closeDetailSheet() {\n\t\t\t\tdocument.dispatchEvent(new CustomEvent(\"detent:closeHelpTooltip\"));\n\t\t\t\tvar host = document.getElementById(\"detail-sheet-host\");\n\t\t\t\tif (host) {\n\t\t\t\t\tArray.from(host.children).forEach(function (child) {\n\t\t\t\t\t\tif (window.htmx) window.htmx.remove(child);\n\t\t\t\t\t\telse child.remove();\n\t\t\t\t\t});\n\t\t\t\t\tdelete host.dataset.detailSheetURL;\n\t\t\t\t\tdelete host.dataset.detailSheetTab;\n\t\t\t\t}\n\t\t\t}\n\t\t\tdocument.addEventListener(\"htmx:afterRequest\", function (event) {\n\t\t\t\tvar host = document.getElementById(\"detail-sheet-host\");\n\t\t\t\tvar target = event.detail && event.detail.target;\n\t\t\t\tif (!host || target !== host) return;\n\t\t\t\tdocument.dispatchEvent(new CustomEvent(\"detent:closeHelpTooltip\"));\n\t\t\t\tvar requestConfig = event.detail && event.detail.requestConfig;\n\t\t\t\tvar path = requestConfig && requestConfig.path;\n\t\t\t\tif (path) host.dataset.detailSheetURL = path;\n\t\t\t\tdetailSheetRefreshing = false;\n\t\t\t\tapplyDetailSheetTab(host);\n\t\t\t});\n\t\t\tdocument.addEventListener(\"htmx:afterSettle\", function (event) {\n\t\t\t\tvar target = event.detail && event.detail.target;\n\t\t\t\tvar host = document.getElementById(\"detail-sheet-host\");\n\t\t\t\tapplyDetailSheetTab(host);\n\t\t\t\tif (!(target instanceof Element) || (target.id !== \"snapshot\" && !target.closest(\"#snapshot\"))) return;\n\t\t\t\tif (!host || !host.querySelector(\"[data-detail-sheet]\") || !host.dataset.detailSheetURL || detailSheetRefreshing) return;\n\t\t\t\tdetailSheetRefreshing = true;\n\t\t\t\thtmx.ajax(\"GET\", host.dataset.detailSheetURL, { target: host, swap: \"morph:innerHTML\" });\n\t\t\t});\n\t\t\tdocument.addEventListener(\"kanbanActionSucceeded\", function () {\n\t\t\t\tif (window.tui && window.tui.dialog) {\n\t\t\t\t\twindow.tui.dialog.close(\"kanban-action-dialog\");\n\t\t\t\t}\n\t\t\t\tvar content = document.getElementById(\"kanban-dialog-content\");\n\t\t\t\tif (content) content.replaceChildren();\n\t\t\t\tcloseDetailSheet();\n\t\t\t});\n\t\t\tdocument.addEventListener(\"keydown\", function (event) {\n\t\t\t\tif (event.key === \"Escape\") {\n\t\t\t\t\tsetMobileTopbar(false);\n\t\t\t\t\tsetMobileSidebar(false, true);\n\t\t\t\t\tsetChatPanel(false);\n\t\t\t\t\tcloseDetailSheet();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.key !== \"Enter\" && event.key !== \" \") return;\n\t\t\t\tvar target = event.target;\n\t\t\t\tif (target instanceof Element && target.matches('[role=\"button\"][hx-get]')) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\ttarget.click();\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"click\", function (event) {\n\t\t\t\tif (event.target.closest(\"[data-chat-toggle]\")) {\n\t\t\t\t\tsetMobileTopbar(false);\n\t\t\t\t\tsetChatPanel(true);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-chat-close], [data-chat-scrim]\")) {\n\t\t\t\t\tsetChatPanel(false);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar sheetTab = event.target.closest(\"[data-sheet-tab]\");\n\t\t\t\tif (sheetTab) {\n\t\t\t\t\tvar sheetHost = document.getElementById(\"detail-sheet-host\");\n\t\t\t\t\tif (sheetHost) {\n\t\t\t\t\t\tvar selectedTab = sheetTab.getAttribute(\"data-sheet-tab\") || \"activity\";\n\t\t\t\t\t\tsheetHost.dataset.detailSheetTab = selectedTab;\n\t\t\t\t\t\tapplyDetailSheetTab(sheetHost);\n\t\t\t\t\t\tif (selectedTab !== \"session\") {\n\t\t\t\t\t\t\tvar liveSession = sheetHost.querySelector(\"[data-board-live-session]\");\n\t\t\t\t\t\t\tif (liveSession) {\n\t\t\t\t\t\t\t\tArray.from(liveSession.children).forEach(function (child) {\n\t\t\t\t\t\t\t\t\tif (window.htmx) window.htmx.remove(child);\n\t\t\t\t\t\t\t\t\telse child.remove();\n\t\t\t\t\t\t\t\t});\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t}\n\t\t\t\t\t}\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar resume = event.target.closest(\"[data-live-session-resume]\");\n\t\t\t\tif (resume) {\n\t\t\t\t\tvar log = resume.closest(\"[data-live-session-attach]\").querySelector(\"[data-live-session-log]\");\n\t\t\t\t\tif (log) {\n\t\t\t\t\t\tdelete log.dataset.autoscrollPaused;\n\t\t\t\t\t\tlog.scrollLeft = 0;\n\t\t\t\t\t\tlog.scrollTop = log.scrollHeight;\n\t\t\t\t\t\tresume.classList.add(\"hidden\");\n\t\t\t\t\t}\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-sheet-close]\")) {\n\t\t\t\t\tcloseDetailSheet();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar mobileToggle = event.target.closest(\"[data-mobile-sidebar-toggle]\");\n\t\t\t\tif (mobileToggle) {\n\t\t\t\t\tsetMobileTopbar(false);\n\t\t\t\t\tsetMobileSidebar(true, false);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-mobile-sidebar-scrim]\")) {\n\t\t\t\t\tsetMobileSidebar(false, true);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"#app-sidebar a\") && window.matchMedia(\"(max-width: 767px)\").matches) {\n\t\t\t\t\tsetMobileSidebar(false, false);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar topbarToggle = event.target.closest(\"[data-mobile-topbar-toggle]\");\n\t\t\t\tif (topbarToggle) {\n\t\t\t\t\tvar controls = document.querySelector(\"[data-mobile-topbar-controls]\");\n\t\t\t\t\tsetMobileSidebar(false, false);\n\t\t\t\t\tsetMobileTopbar(controls && controls.getAttribute(\"data-mobile-open\") !== \"true\");\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar topbarControls = event.target.closest(\"[data-mobile-topbar-controls]\");\n\t\t\t\tif (!topbarControls) setMobileTopbar(false);\n\t\t\t\tvar toggle = event.target.closest(\"[data-sidebar-toggle]\");\n\t\t\t\tif (toggle) {\n\t\t\t\t\tvar sidebar = document.getElementById(\"app-sidebar\");\n\t\t\t\t\tif (!sidebar) return;\n\t\t\t\t\tvar rail = sidebar.getAttribute(\"data-rail\") !== \"true\";\n\t\t\t\t\tsidebar.setAttribute(\"data-rail\", rail ? \"true\" : \"false\");\n\t\t\t\t\tdocument.cookie = \"sidebar_state=\" + (rail ? \"false\" : \"true\") + \"; path=/; max-age=31536000; samesite=lax\";\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar density = event.target.closest(\"[data-density-choice]\");\n\t\t\t\tif (density) {\n\t\t\t\t\tvar choice = density.getAttribute(\"data-density-choice\");\n\t\t\t\t\tdocument.documentElement.setAttribute(\"data-density\", choice);\n\t\t\t\t\tdocument.cookie = \"density=\" + choice + \"; path=/; max-age=31536000; samesite=lax\";\n\t\t\t\t\tdocument.querySelectorAll(\"[data-density-choice]\").forEach(function (button) {\n\t\t\t\t\t\tvar active = button === density;\n\t\t\t\t\t\tbutton.setAttribute(\"aria-pressed\", active ? \"true\" : \"false\");\n\t\t\t\t\t\tbutton.classList.toggle(\"bg-elev\", active);\n\t\t\t\t\t\tbutton.classList.toggle(\"text-text\", active);\n\t\t\t\t\t\tbutton.classList.toggle(\"font-medium\", active);\n\t\t\t\t\t\tbutton.classList.toggle(\"text-sec\", !active);\n\t\t\t\t\t});\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"scroll\", function (event) {\n\t\t\t\tvar log = event.target;\n\t\t\t\tif (!(log instanceof Element) || !log.matches(\"[data-live-session-log]\")) return;\n\t\t\t\tvar paused = log.scrollHeight - log.scrollTop - log.clientHeight > 32;\n\t\t\t\tif (paused) log.dataset.autoscrollPaused = \"true\";\n\t\t\t\telse delete log.dataset.autoscrollPaused;\n\t\t\t\tvar resume = log.closest(\"[data-live-session-attach]\").querySelector(\"[data-live-session-resume]\");\n\t\t\t\tif (resume) resume.classList.toggle(\"hidden\", !paused);\n\t\t\t}, true);\n\t\t\tdocument.addEventListener(\"htmx:afterSwap\", function (event) {\n\t\t\t\tvar target = event.detail && event.detail.target;\n\t\t\t\tif (!(target instanceof Element)) return;\n\t\t\t\tvar log = target.matches(\"[data-live-session-log], [data-session-history-log]\")\n\t\t\t\t\t? target\n\t\t\t\t\t: target.closest(\"[data-live-session-log], [data-session-history-log]\");\n\t\t\t\tif (!log) return;\n\t\t\t\tlog.scrollLeft = 0;\n\t\t\t\tif (!log.matches(\"[data-live-session-log]\")) return;\n\t\t\t\twhile (log.children.length > 200) log.firstElementChild.remove();\n\t\t\t\tif (log.dataset.autoscrollPaused !== \"true\") log.scrollTop = log.scrollHeight;\n\t\t\t});\n\t\t})();\n\t</script>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 85, "<script>\n\t\t(function () {\n\t\t\tvar detailSheetRefreshing = false;\n\t\t\tfunction setChatPanel(open) {\n\t\t\t\tvar panel = document.querySelector(\"[data-chat-panel]\");\n\t\t\t\tvar scrim = document.querySelector(\"[data-chat-scrim]\");\n\t\t\t\tvar toggle = document.querySelector(\"[data-chat-toggle]\");\n\t\t\t\tif (!panel || !scrim || !toggle) return;\n\t\t\t\tvar wasOpen = panel.getAttribute(\"data-chat-open\") === \"true\";\n\t\t\t\tvar value = open ? \"true\" : \"false\";\n\t\t\t\tpanel.setAttribute(\"data-chat-open\", value);\n\t\t\t\tpanel.setAttribute(\"aria-hidden\", open ? \"false\" : \"true\");\n\t\t\t\tscrim.setAttribute(\"data-chat-open\", value);\n\t\t\t\ttoggle.setAttribute(\"aria-expanded\", value);\n\t\t\t\tif (open) {\n\t\t\t\t\tvar input = panel.querySelector(\"textarea\");\n\t\t\t\t\tif (input) input.focus();\n\t\t\t\t} else if (wasOpen) {\n\t\t\t\t\ttoggle.focus();\n\t\t\t\t}\n\t\t\t}\n\t\t\tfunction setMobileTopbar(open) {\n\t\t\t\tvar controls = document.querySelector(\"[data-mobile-topbar-controls]\");\n\t\t\t\tvar toggle = document.querySelector(\"[data-mobile-topbar-toggle]\");\n\t\t\t\tif (!controls || !toggle) return;\n\t\t\t\tvar value = open ? \"true\" : \"false\";\n\t\t\t\tcontrols.setAttribute(\"data-mobile-open\", value);\n\t\t\t\ttoggle.setAttribute(\"aria-expanded\", value);\n\t\t\t}\n\t\t\tfunction setMobileSidebar(open, restoreFocus) {\n\t\t\t\tvar sidebar = document.getElementById(\"app-sidebar\");\n\t\t\t\tvar scrim = document.querySelector(\"[data-mobile-sidebar-scrim]\");\n\t\t\t\tvar toggle = document.querySelector(\"[data-mobile-sidebar-toggle]\");\n\t\t\t\tif (!sidebar || !scrim || !toggle) return;\n\t\t\t\tvar wasOpen = sidebar.getAttribute(\"data-mobile-open\") === \"true\";\n\t\t\t\tvar value = open ? \"true\" : \"false\";\n\t\t\t\tif (open && sidebar.dataset.desktopRail === undefined) {\n\t\t\t\t\tsidebar.dataset.desktopRail = sidebar.getAttribute(\"data-rail\") || \"false\";\n\t\t\t\t\tsidebar.setAttribute(\"data-rail\", \"false\");\n\t\t\t\t} else if (!open && sidebar.dataset.desktopRail !== undefined) {\n\t\t\t\t\tsidebar.setAttribute(\"data-rail\", sidebar.dataset.desktopRail);\n\t\t\t\t\tdelete sidebar.dataset.desktopRail;\n\t\t\t\t}\n\t\t\t\tsidebar.setAttribute(\"data-mobile-open\", value);\n\t\t\t\tscrim.setAttribute(\"data-mobile-open\", value);\n\t\t\t\ttoggle.setAttribute(\"aria-expanded\", value);\n\t\t\t\tif (open) {\n\t\t\t\t\tvar firstLink = sidebar.querySelector(\"a\");\n\t\t\t\t\tif (firstLink) firstLink.focus();\n\t\t\t\t} else if (restoreFocus && wasOpen) {\n\t\t\t\t\ttoggle.focus();\n\t\t\t\t}\n\t\t\t}\n\t\t\tfunction applyDetailSheetTab(host) {\n\t\t\t\tif (!host) return;\n\t\t\t\tvar selected = host.dataset.detailSheetTab || \"activity\";\n\t\t\t\thost.querySelectorAll(\"[data-sheet-tab]\").forEach(function (button) {\n\t\t\t\t\tvar active = button.getAttribute(\"data-sheet-tab\") === selected;\n\t\t\t\t\tbutton.setAttribute(\"aria-selected\", active ? \"true\" : \"false\");\n\t\t\t\t\tbutton.classList.toggle(\"border-accent\", active);\n\t\t\t\t\tbutton.classList.toggle(\"border-transparent\", !active);\n\t\t\t\t\tbutton.classList.toggle(\"text-text\", active);\n\t\t\t\t\tbutton.classList.toggle(\"text-sec\", !active);\n\t\t\t\t});\n\t\t\t\thost.querySelectorAll(\"[data-sheet-panel]\").forEach(function (panel) {\n\t\t\t\t\tpanel.classList.toggle(\"hidden\", panel.getAttribute(\"data-sheet-panel\") !== selected);\n\t\t\t\t});\n\t\t\t}\n\t\t\tfunction closeDetailSheet() {\n\t\t\t\tdocument.dispatchEvent(new CustomEvent(\"detent:closeHelpTooltip\"));\n\t\t\t\tvar host = document.getElementById(\"detail-sheet-host\");\n\t\t\t\tif (host) {\n\t\t\t\t\tArray.from(host.children).forEach(function (child) {\n\t\t\t\t\t\tif (window.htmx) window.htmx.remove(child);\n\t\t\t\t\t\telse child.remove();\n\t\t\t\t\t});\n\t\t\t\t\tdelete host.dataset.detailSheetURL;\n\t\t\t\t\tdelete host.dataset.detailSheetTab;\n\t\t\t\t}\n\t\t\t}\n\t\t\tdocument.addEventListener(\"htmx:afterRequest\", function (event) {\n\t\t\t\tvar host = document.getElementById(\"detail-sheet-host\");\n\t\t\t\tvar target = event.detail && event.detail.target;\n\t\t\t\tif (!host || target !== host) return;\n\t\t\t\tdocument.dispatchEvent(new CustomEvent(\"detent:closeHelpTooltip\"));\n\t\t\t\tvar requestConfig = event.detail && event.detail.requestConfig;\n\t\t\t\tvar path = requestConfig && requestConfig.path;\n\t\t\t\tif (path) host.dataset.detailSheetURL = path;\n\t\t\t\tdetailSheetRefreshing = false;\n\t\t\t\tapplyDetailSheetTab(host);\n\t\t\t});\n\t\t\tdocument.addEventListener(\"htmx:afterSettle\", function (event) {\n\t\t\t\tvar target = event.detail && event.detail.target;\n\t\t\t\tvar host = document.getElementById(\"detail-sheet-host\");\n\t\t\t\tapplyDetailSheetTab(host);\n\t\t\t\tif (!(target instanceof Element) || (target.id !== \"snapshot\" && !target.closest(\"#snapshot\"))) return;\n\t\t\t\tif (!host || !host.querySelector(\"[data-detail-sheet]\") || !host.dataset.detailSheetURL || detailSheetRefreshing) return;\n\t\t\t\tdetailSheetRefreshing = true;\n\t\t\t\thtmx.ajax(\"GET\", host.dataset.detailSheetURL, { target: host, swap: \"morph:innerHTML\" });\n\t\t\t});\n\t\t\tdocument.addEventListener(\"kanbanActionSucceeded\", function () {\n\t\t\t\tif (window.tui && window.tui.dialog) {\n\t\t\t\t\twindow.tui.dialog.close(\"kanban-action-dialog\");\n\t\t\t\t}\n\t\t\t\tvar content = document.getElementById(\"kanban-dialog-content\");\n\t\t\t\tif (content) content.replaceChildren();\n\t\t\t\tcloseDetailSheet();\n\t\t\t});\n\t\t\tdocument.addEventListener(\"keydown\", function (event) {\n\t\t\t\tif (event.key === \"Escape\") {\n\t\t\t\t\tsetMobileTopbar(false);\n\t\t\t\t\tsetMobileSidebar(false, true);\n\t\t\t\t\tsetChatPanel(false);\n\t\t\t\t\tcloseDetailSheet();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.key !== \"Enter\" && event.key !== \" \") return;\n\t\t\t\tvar target = event.target;\n\t\t\t\tif (target instanceof Element && target.matches('[role=\"button\"][hx-get]')) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\ttarget.click();\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"click\", function (event) {\n\t\t\t\tif (event.target.closest(\"[data-chat-toggle]\")) {\n\t\t\t\t\tsetMobileTopbar(false);\n\t\t\t\t\tsetChatPanel(true);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-chat-close], [data-chat-scrim]\")) {\n\t\t\t\t\tsetChatPanel(false);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar sheetTab = event.target.closest(\"[data-sheet-tab]\");\n\t\t\t\tif (sheetTab) {\n\t\t\t\t\tvar sheetHost = document.getElementById(\"detail-sheet-host\");\n\t\t\t\t\tif (sheetHost) {\n\t\t\t\t\t\tvar selectedTab = sheetTab.getAttribute(\"data-sheet-tab\") || \"activity\";\n\t\t\t\t\t\tsheetHost.dataset.detailSheetTab = selectedTab;\n\t\t\t\t\t\tapplyDetailSheetTab(sheetHost);\n\t\t\t\t\t\tif (selectedTab !== \"session\") {\n\t\t\t\t\t\t\tvar liveSession = sheetHost.querySelector(\"[data-board-live-session]\");\n\t\t\t\t\t\t\tif (liveSession) {\n\t\t\t\t\t\t\t\tArray.from(liveSession.children).forEach(function (child) {\n\t\t\t\t\t\t\t\t\tif (window.htmx) window.htmx.remove(child);\n\t\t\t\t\t\t\t\t\telse child.remove();\n\t\t\t\t\t\t\t\t});\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t}\n\t\t\t\t\t}\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar resume = event.target.closest(\"[data-live-session-resume]\");\n\t\t\t\tif (resume) {\n\t\t\t\t\tvar log = resume.closest(\"[data-live-session-attach]\").querySelector(\"[data-live-session-log]\");\n\t\t\t\t\tif (log) {\n\t\t\t\t\t\tdelete log.dataset.autoscrollPaused;\n\t\t\t\t\t\tlog.scrollLeft = 0;\n\t\t\t\t\t\tlog.scrollTop = log.scrollHeight;\n\t\t\t\t\t\tresume.classList.add(\"hidden\");\n\t\t\t\t\t}\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-sheet-close]\")) {\n\t\t\t\t\tcloseDetailSheet();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar mobileToggle = event.target.closest(\"[data-mobile-sidebar-toggle]\");\n\t\t\t\tif (mobileToggle) {\n\t\t\t\t\tsetMobileTopbar(false);\n\t\t\t\t\tsetMobileSidebar(true, false);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"[data-mobile-sidebar-scrim]\")) {\n\t\t\t\t\tsetMobileSidebar(false, true);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (event.target.closest(\"#app-sidebar a\") && window.matchMedia(\"(max-width: 767px)\").matches) {\n\t\t\t\t\tsetMobileSidebar(false, false);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar topbarToggle = event.target.closest(\"[data-mobile-topbar-toggle]\");\n\t\t\t\tif (topbarToggle) {\n\t\t\t\t\tvar controls = document.querySelector(\"[data-mobile-topbar-controls]\");\n\t\t\t\t\tsetMobileSidebar(false, false);\n\t\t\t\t\tsetMobileTopbar(controls && controls.getAttribute(\"data-mobile-open\") !== \"true\");\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar topbarControls = event.target.closest(\"[data-mobile-topbar-controls]\");\n\t\t\t\tif (!topbarControls) setMobileTopbar(false);\n\t\t\t\tvar toggle = event.target.closest(\"[data-sidebar-toggle]\");\n\t\t\t\tif (toggle) {\n\t\t\t\t\tvar sidebar = document.getElementById(\"app-sidebar\");\n\t\t\t\t\tif (!sidebar) return;\n\t\t\t\t\tvar rail = sidebar.getAttribute(\"data-rail\") !== \"true\";\n\t\t\t\t\tsidebar.setAttribute(\"data-rail\", rail ? \"true\" : \"false\");\n\t\t\t\t\tdocument.cookie = \"sidebar_state=\" + (rail ? \"false\" : \"true\") + \"; path=/; max-age=31536000; samesite=lax\";\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar density = event.target.closest(\"[data-density-choice]\");\n\t\t\t\tif (density) {\n\t\t\t\t\tvar choice = density.getAttribute(\"data-density-choice\");\n\t\t\t\t\tdocument.documentElement.setAttribute(\"data-density\", choice);\n\t\t\t\t\tdocument.cookie = \"density=\" + choice + \"; path=/; max-age=31536000; samesite=lax\";\n\t\t\t\t\tdocument.querySelectorAll(\"[data-density-choice]\").forEach(function (button) {\n\t\t\t\t\t\tvar active = button === density;\n\t\t\t\t\t\tbutton.setAttribute(\"aria-pressed\", active ? \"true\" : \"false\");\n\t\t\t\t\t\tbutton.classList.toggle(\"bg-elev\", active);\n\t\t\t\t\t\tbutton.classList.toggle(\"text-text\", active);\n\t\t\t\t\t\tbutton.classList.toggle(\"font-medium\", active);\n\t\t\t\t\t\tbutton.classList.toggle(\"text-sec\", !active);\n\t\t\t\t\t});\n\t\t\t\t}\n\t\t\t});\n\t\t\tdocument.addEventListener(\"scroll\", function (event) {\n\t\t\t\tvar log = event.target;\n\t\t\t\tif (!(log instanceof Element) || !log.matches(\"[data-live-session-log]\")) return;\n\t\t\t\tvar paused = log.scrollHeight - log.scrollTop - log.clientHeight > 32;\n\t\t\t\tif (paused) log.dataset.autoscrollPaused = \"true\";\n\t\t\t\telse delete log.dataset.autoscrollPaused;\n\t\t\t\tvar resume = log.closest(\"[data-live-session-attach]\").querySelector(\"[data-live-session-resume]\");\n\t\t\t\tif (resume) resume.classList.toggle(\"hidden\", !paused);\n\t\t\t}, true);\n\t\t\tdocument.addEventListener(\"htmx:afterSwap\", function (event) {\n\t\t\t\tvar target = event.detail && event.detail.target;\n\t\t\t\tif (!(target instanceof Element)) return;\n\t\t\t\tvar log = target.matches(\"[data-live-session-log], [data-session-history-log]\")\n\t\t\t\t\t? target\n\t\t\t\t\t: target.closest(\"[data-live-session-log], [data-session-history-log]\");\n\t\t\t\tif (!log) return;\n\t\t\t\tlog.scrollLeft = 0;\n\t\t\t\tif (!log.matches(\"[data-live-session-log]\")) return;\n\t\t\t\twhile (log.children.length > 200) log.firstElementChild.remove();\n\t\t\t\tif (log.dataset.autoscrollPaused !== \"true\") log.scrollTop = log.scrollHeight;\n\t\t\t});\n\t\t})();\n\t</script>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

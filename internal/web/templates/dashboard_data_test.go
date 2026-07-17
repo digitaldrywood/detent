@@ -2269,11 +2269,11 @@ func TestProjectKanbanCardCanRemoveRespectsCapability(t *testing.T) {
 	}
 }
 
-func TestProjectKanbanBoardDoesNotTreatCompletedSessionsAsCurrentDone(t *testing.T) {
+func TestProjectKanbanBoardShowsRecentTerminalCompletion(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 13, 15, 0, 0, 0, time.UTC)
-	board := projectKanbanBoardView(DashboardData{
+	data := DashboardData{
 		Kanban: KanbanData{
 			States: []string{"Todo", "Done"},
 		},
@@ -2285,19 +2285,68 @@ func TestProjectKanbanBoardDoesNotTreatCompletedSessionsAsCurrentDone(t *testing
 						ID:         "issue-396",
 						Identifier: "digitaldrywood/detent#396",
 						Title:      "Completed session only",
+						State:      "Done",
 					},
 					CompletedAt: now,
 					FinalState:  "Done",
 				},
 			},
+			WorkAttempts: []telemetry.WorkAttempt{{
+				IssueID:       "issue-396",
+				Identifier:    "digitaldrywood/detent#396",
+				Status:        "terminal",
+				CompletedAt:   &now,
+				TerminalState: "success",
+				Phase:         "completed",
+				StatusMessage: "worker reached terminal state",
+			}},
+		},
+	}
+	board := projectKanbanBoardView(data)
+
+	if len(board.AllLanes) != 2 || len(board.AllLanes[1].Cards) != 1 {
+		t.Fatalf("lanes = %#v, want one recent Done card", board.AllLanes)
+	}
+	if got := board.AllLanes[1].Cards[0].Title; got != "Completed session only" {
+		t.Fatalf("Done card title = %q, want completed issue title", got)
+	}
+	if got := boardFiguresFromDashboard(data)[4].Value; got != "1" {
+		t.Fatalf("recent completion count = %q, want 1", got)
+	}
+}
+
+func TestProjectKanbanBoardRestoresRecentTerminalCompletionFromWorkAttempt(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 15, 0, 0, 0, time.UTC)
+	completedAt := now.Add(-25 * time.Hour)
+	board := projectKanbanBoardView(DashboardData{
+		Kanban: KanbanData{
+			States:         []string{"Todo", "Done"},
+			TerminalStates: []string{"Done"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			WorkAttempts: []telemetry.WorkAttempt{{
+				AttemptID:     1385,
+				ProjectID:     "detent",
+				IssueID:       "issue-1385",
+				Identifier:    "digitaldrywood/detent#1385",
+				IssueURL:      "https://github.com/digitaldrywood/detent/issues/1385",
+				Status:        "terminal",
+				CompletedAt:   &completedAt,
+				TerminalState: "success",
+				Phase:         "completed",
+				StatusMessage: "worker reached terminal state",
+			}},
 		},
 	})
 
-	if len(board.Lanes) != 0 {
-		t.Fatalf("visible lanes len = %d, want 0; lanes = %#v", len(board.Lanes), board.Lanes)
+	if len(board.AllLanes) != 2 || len(board.AllLanes[1].Cards) != 1 {
+		t.Fatalf("lanes = %#v, want durable Done card", board.AllLanes)
 	}
-	if got := collectKanbanLaneTitles(board.EmptyLanes); len(got) != 2 || got[0] != "Todo" || got[1] != "Done" {
-		t.Fatalf("empty lanes = %#v, want Todo and Done", got)
+	if got := board.AllLanes[1].Cards[0].Identifier; got != "digitaldrywood/detent#1385" {
+		t.Fatalf("Done card identifier = %q", got)
 	}
 }
 
@@ -2461,7 +2510,7 @@ func TestCompletedOpenPRSessionDoesNotCreateWorkflowCards(t *testing.T) {
 		},
 	}
 
-	if got := projectKanbanIssues(snapshot, nil); len(got) != 0 {
+	if got := projectKanbanIssues(DashboardData{Snapshot: snapshot}); len(got) != 0 {
 		t.Fatalf("projectKanbanIssues() len = %d, want 0; got %#v", len(got), got)
 	}
 	if got := collectPipelineCards(prPipelineLanes(snapshot)); len(got) != 0 {

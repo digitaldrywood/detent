@@ -92,11 +92,49 @@ func appShellHealthKind(data DashboardShellData) primitives.Kind {
 	if len(data.Snapshot.BackendOutages) > 0 || len(data.Snapshot.FailureBreakers) > 0 || len(data.Snapshot.DispatchRecoveries) > 0 {
 		return primitives.KindWarn
 	}
+	if refreshFreshnessKind(data.Snapshot) == primitives.KindWarn {
+		return primitives.KindWarn
+	}
 	switch gitHubAPIHealth(data.Snapshot).State {
 	case gitHubAPIHealthStateHealthy, gitHubAPIHealthStateAtRest:
 		return primitives.KindOK
 	}
 	return primitives.KindNeutral
+}
+
+func appLiveStatusKind(data DashboardShellData) primitives.Kind {
+	return refreshFreshnessKind(data.Snapshot)
+}
+
+func appLiveStatusLabel(data DashboardShellData) string {
+	switch appLiveStatusKind(data) {
+	case primitives.KindWarn:
+		return "Live · stale data"
+	case primitives.KindOK:
+		return "Live · data current"
+	default:
+		return "Live · waiting for data"
+	}
+}
+
+func appLiveStatusTextClass(data DashboardShellData) string {
+	if appLiveStatusKind(data) == primitives.KindWarn {
+		return "text-warn"
+	}
+	return "text-sec"
+}
+
+func appLiveStatusAt(data DashboardShellData) time.Time {
+	if at := refreshOldestSuccess(data.Snapshot.Refresh.Sources); !at.IsZero() {
+		return at
+	}
+	if data.Snapshot.Refresh.LastRefreshAt != nil {
+		return data.Snapshot.Refresh.LastRefreshAt.UTC()
+	}
+	if snapshotHasPriorTrackerSnapshot(data.Snapshot) {
+		return data.Snapshot.GeneratedAt
+	}
+	return time.Time{}
 }
 
 type appShellProject struct {

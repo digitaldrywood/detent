@@ -134,6 +134,78 @@ func TestHealthRowsIncludeBackendCapacityOutage(t *testing.T) {
 	}
 }
 
+func TestHealthRefreshRowsDegradeAtFailureThreshold(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 14, 0, 0, 0, time.UTC)
+	lastSuccess := now.Add(-time.Minute)
+	lastErrorAt := now.Add(-10 * time.Second)
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: now,
+		Refresh: telemetry.Refresh{
+			StaleAfterSeconds: 120,
+			FailureThreshold:  3,
+			Sources: []telemetry.RefreshSource{{
+				ProjectID:     "detent",
+				Name:          telemetry.RefreshSourceCandidates,
+				LastSuccessAt: &lastSuccess,
+				FailureStreak: 2,
+				LastError:     "status 503",
+				LastErrorAt:   &lastErrorAt,
+			}},
+		},
+	}
+
+	rows := healthRefreshRows(snapshot)
+	if len(rows) != 1 || rows[0].Kind != primitives.KindOK || rows[0].Status != "Current" {
+		t.Fatalf("health row before threshold = %#v", rows)
+	}
+	if strings.Contains(rows[0].Detail, "status 503") {
+		t.Fatalf("health row exposed transient error before threshold: %q", rows[0].Detail)
+	}
+
+	snapshot.Refresh.Sources[0].FailureStreak = 3
+	rows = healthRefreshRows(snapshot)
+	if len(rows) != 1 || rows[0].Kind != primitives.KindWarn || rows[0].Status != "Stale" {
+		t.Fatalf("health row at threshold = %#v", rows)
+	}
+	if !strings.Contains(rows[0].Detail, "candidate fetch") || !strings.Contains(rows[0].Detail, "3 consecutive failures") || !strings.Contains(rows[0].Detail, "status 503") {
+		t.Fatalf("health row missing failure detail: %q", rows[0].Detail)
+	}
+	view := healthViewFromDashboard(DashboardData{Snapshot: snapshot})
+	if view.Kind != primitives.KindWarn || view.Verdict != "Tracker data is stale." {
+		t.Fatalf("health verdict = (%q, %q)", view.Kind, view.Verdict)
+	}
+}
+
+func TestFleetFreshnessPreservesSourcelessProjectFailure(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 15, 0, 0, 0, time.UTC)
+	lastSuccess := now.Add(-time.Second)
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: now,
+		Refresh: telemetry.Refresh{
+			Status: telemetry.RefreshStatusDegraded,
+			Sources: []telemetry.RefreshSource{
+				{ProjectID: "detent", Name: telemetry.RefreshSourceCandidates, LastSuccessAt: &lastSuccess},
+				{ProjectID: "docs", Name: telemetry.RefreshSourceProject, Degraded: true, LastError: "runtime unavailable"},
+			},
+		},
+	}
+
+	if got := refreshFreshnessKind(snapshot); got != primitives.KindWarn {
+		t.Fatalf("refreshFreshnessKind() = %q, want %q", got, primitives.KindWarn)
+	}
+	rows := healthRefreshRows(snapshot)
+	if len(rows) != 2 || rows[1].Component != "Tracker freshness · docs" || rows[1].Kind != primitives.KindWarn {
+		t.Fatalf("health refresh rows = %#v", rows)
+	}
+	if !strings.Contains(rows[1].Detail, "project refresh") || !strings.Contains(rows[1].Detail, "runtime unavailable") {
+		t.Fatalf("degraded project detail = %q", rows[1].Detail)
+	}
+}
+
 func TestHealthBudgetRowsShowEffectiveCapAndOverride(t *testing.T) {
 	t.Parallel()
 

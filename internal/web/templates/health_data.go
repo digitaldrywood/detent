@@ -50,6 +50,12 @@ func healthViewFromDashboard(data DashboardData) healthView {
 		view.Detail, view.DetailAt, view.DetailRelative = backendCapacityOutageDetailParts(outages[0], snapshot.GeneratedAt)
 		return view
 	}
+	if refreshFreshnessKind(snapshot) == primitives.KindWarn {
+		view.Kind = primitives.KindWarn
+		view.Verdict = "Tracker data is stale."
+		view.Detail = refreshStaleBannerDetail(snapshot)
+		return view
+	}
 	switch api.State {
 	case gitHubAPIHealthStateWarning:
 		view.Kind = primitives.KindWarn
@@ -157,6 +163,7 @@ func healthRows(snapshot telemetry.Snapshot) []healthRow {
 			rows = append(rows, row)
 		}
 	}
+	rows = append(rows, healthRefreshRows(snapshot)...)
 	rows = append(rows, healthSchedulerRow(snapshot), healthUpdateRow(snapshot.Update), healthBackoffRow(snapshot))
 	for _, release := range healthReleases(snapshot) {
 		rows = append(rows, healthReleaseRow(release))

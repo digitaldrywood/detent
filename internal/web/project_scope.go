@@ -171,11 +171,14 @@ func scopedWorkflowLaneTrends(trends []telemetry.WorkflowLaneTrend, selectedProj
 
 func projectSnapshotHasRefreshSignal(project telemetry.ProjectSnapshot) bool {
 	return project.Refresh.PollIntervalSeconds != 0 ||
+		project.Refresh.StaleAfterSeconds != 0 ||
+		project.Refresh.FailureThreshold != 0 ||
 		project.Refresh.Status != "" ||
 		project.Refresh.LastRefreshAt != nil ||
 		project.Refresh.NextRefreshAt != nil ||
 		strings.TrimSpace(project.Refresh.LastError) != "" ||
-		project.Refresh.LastErrorAt != nil
+		project.Refresh.LastErrorAt != nil ||
+		len(project.Refresh.Sources) > 0
 }
 
 func projectSnapshotForID(snapshot telemetry.Snapshot, selectedProjectID string) (telemetry.ProjectSnapshot, bool) {

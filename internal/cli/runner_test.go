@@ -45,6 +45,34 @@ func TestTelemetryUpdateStatus(t *testing.T) {
 	}
 }
 
+func TestStampSnapshotProjectIDPreservesDegradedFreshness(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 15, 0, 0, 0, time.UTC)
+	snapshot := stampSnapshotProjectID(telemetry.Snapshot{
+		Project: telemetry.Project{ID: "docs"},
+		Refresh: telemetry.Refresh{
+			Status:      telemetry.RefreshStatusDegraded,
+			LastError:   "project runtime unavailable",
+			LastErrorAt: &now,
+		},
+	})
+
+	if len(snapshot.Refresh.Sources) != 1 {
+		t.Fatalf("Refresh.Sources = %#v, want one project source", snapshot.Refresh.Sources)
+	}
+	source := snapshot.Refresh.Sources[0]
+	if source.ProjectID != "docs" || source.Name != telemetry.RefreshSourceProject || !source.Degraded {
+		t.Fatalf("project refresh source = %#v", source)
+	}
+	if source.LastError != "project runtime unavailable" || source.LastErrorAt == nil || !source.LastErrorAt.Equal(now) {
+		t.Fatalf("project refresh error = %q at %v", source.LastError, source.LastErrorAt)
+	}
+	if !snapshot.Refresh.Stale(now) {
+		t.Fatal("Refresh.Stale() = false, want true")
+	}
+}
+
 type autoUpdateStatusStub struct {
 	status detentupdate.AutoStatus
 }

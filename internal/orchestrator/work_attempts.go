@@ -835,7 +835,8 @@ func runningWorkAttemptMetricsJSON(running Running) string {
 
 func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) string {
 	out := map[string]any{
-		"run_mode": strings.TrimSpace(running.Mode),
+		"run_mode":    strings.TrimSpace(running.Mode),
+		"issue_title": strings.TrimSpace(running.Issue.Title),
 	}
 	for key, value := range metadata {
 		key = strings.TrimSpace(key)

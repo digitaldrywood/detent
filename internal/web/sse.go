@@ -23,6 +23,7 @@ const (
 	sseEventSidebar      = "sidebar"
 	sseEventGitHubAPI    = "github-api-health"
 	sseEventTick         = "tick"
+	sseEventLiveStatus   = "live-status"
 	sseEventSidebarV2    = "sidebar-v2"
 	sseViewHealth        = "health"
 	sseViewAnalytics     = "analytics"
@@ -160,6 +161,11 @@ func (s *Server) events(c echo.Context) error {
 			} else if ok {
 				sent = true
 			}
+			if ok, err := stream.sendComponent(ctx, res.Writer, sseEventLiveStatus, templates.LiveStatus(templates.DashboardShellDataFromDashboard(data)), s.sseFragmentInterval); err != nil {
+				return err
+			} else if ok {
+				sent = true
+			}
 			if ok, err := stream.sendComponent(ctx, res.Writer, sseEventGitHubAPI, templates.GitHubAPIHealthSidebarItem(templates.DashboardShellDataFromDashboard(data)), s.sseHealthInterval); err != nil {
 				return err
 			} else if ok {
@@ -291,7 +297,7 @@ func newSSEStream(logger *slog.Logger, metricsEvery time.Duration) *sseStream {
 		last:              make(map[string]sseSentEvent),
 		pending:           make(map[string]ssePendingEvent),
 		metrics:           make(map[string]*sseEventMetrics),
-		pendingFlushOrder: []string{sseEventSnapshot, sseEventSidebar, sseEventGitHubAPI, sseEventSidebarV2},
+		pendingFlushOrder: []string{sseEventSnapshot, sseEventSidebar, sseEventLiveStatus, sseEventGitHubAPI, sseEventSidebarV2},
 	}
 }
 
