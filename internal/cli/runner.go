@@ -908,6 +908,16 @@ func stampSnapshotProjectID(snapshot telemetry.Snapshot) telemetry.Snapshot {
 			snapshot.Refresh.Sources[i].ProjectID = projectID
 		}
 	}
+	if len(snapshot.Refresh.Sources) == 0 && snapshot.Refresh.Degraded() {
+		snapshot.Refresh.Sources = []telemetry.RefreshSource{{
+			ProjectID:     projectID,
+			Name:          telemetry.RefreshSourceProject,
+			LastSuccessAt: cloneTime(snapshot.Refresh.LastRefreshAt),
+			Degraded:      true,
+			LastError:     snapshot.Refresh.LastError,
+			LastErrorAt:   cloneTime(snapshot.Refresh.LastErrorAt),
+		}}
+	}
 
 	for i := range snapshot.Pipeline {
 		snapshot.Pipeline[i] = stampIssueProjectID(snapshot.Pipeline[i], projectID)

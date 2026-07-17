@@ -25,6 +25,7 @@ func recordRefreshSourceSuccess(state *State, name telemetry.RefreshSourceName, 
 	source := state.RefreshSources[name]
 	source.Name = name
 	source.LastSuccessAt = &at
+	source.Degraded = false
 	source.FailureStreak = 0
 	source.LastError = ""
 	source.LastErrorAt = nil
@@ -77,6 +78,9 @@ func refreshSourceSnapshots(sources map[telemetry.RefreshSourceName]telemetry.Re
 
 func degradedRefreshSource(sources []telemetry.RefreshSource, threshold int, now time.Time, staleAfter time.Duration) (telemetry.RefreshSource, bool) {
 	for _, source := range sources {
+		if source.Degraded {
+			return source, true
+		}
 		if source.FailureStreak >= threshold {
 			return source, true
 		}

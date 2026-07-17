@@ -94,6 +94,9 @@ func refreshStaleSources(refresh telemetry.Refresh, now time.Time) []telemetry.R
 }
 
 func refreshSourceStale(refresh telemetry.Refresh, source telemetry.RefreshSource, now time.Time) bool {
+	if source.Degraded {
+		return true
+	}
 	threshold := refresh.FailureThreshold
 	if threshold <= 0 {
 		threshold = 3
@@ -128,6 +131,8 @@ func refreshSourceDisplayName(name telemetry.RefreshSourceName) string {
 		return "status fetch"
 	case telemetry.RefreshSourceDrift:
 		return "drift fetch"
+	case telemetry.RefreshSourceProject:
+		return "project refresh"
 	default:
 		return strings.TrimSpace(string(name)) + " fetch"
 	}
@@ -218,7 +223,9 @@ func refreshSourceOrder(name telemetry.RefreshSourceName) int {
 		return 1
 	case telemetry.RefreshSourceDrift:
 		return 2
-	default:
+	case telemetry.RefreshSourceProject:
 		return 3
+	default:
+		return 4
 	}
 }

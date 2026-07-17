@@ -178,6 +178,34 @@ func TestHealthRefreshRowsDegradeAtFailureThreshold(t *testing.T) {
 	}
 }
 
+func TestFleetFreshnessPreservesSourcelessProjectFailure(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 15, 0, 0, 0, time.UTC)
+	lastSuccess := now.Add(-time.Second)
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: now,
+		Refresh: telemetry.Refresh{
+			Status: telemetry.RefreshStatusDegraded,
+			Sources: []telemetry.RefreshSource{
+				{ProjectID: "detent", Name: telemetry.RefreshSourceCandidates, LastSuccessAt: &lastSuccess},
+				{ProjectID: "docs", Name: telemetry.RefreshSourceProject, Degraded: true, LastError: "runtime unavailable"},
+			},
+		},
+	}
+
+	if got := refreshFreshnessKind(snapshot); got != primitives.KindWarn {
+		t.Fatalf("refreshFreshnessKind() = %q, want %q", got, primitives.KindWarn)
+	}
+	rows := healthRefreshRows(snapshot)
+	if len(rows) != 2 || rows[1].Component != "Tracker freshness · docs" || rows[1].Kind != primitives.KindWarn {
+		t.Fatalf("health refresh rows = %#v", rows)
+	}
+	if !strings.Contains(rows[1].Detail, "project refresh") || !strings.Contains(rows[1].Detail, "runtime unavailable") {
+		t.Fatalf("degraded project detail = %q", rows[1].Detail)
+	}
+}
+
 func TestHealthBudgetRowsShowEffectiveCapAndOverride(t *testing.T) {
 	t.Parallel()
 

@@ -184,6 +184,7 @@ const (
 	RefreshSourceCandidates RefreshSourceName = "candidates"
 	RefreshSourceStatuses   RefreshSourceName = "statuses"
 	RefreshSourceDrift      RefreshSourceName = "drift"
+	RefreshSourceProject    RefreshSourceName = "project"
 )
 
 type Refresh struct {
@@ -204,6 +205,7 @@ type RefreshSource struct {
 	ProjectID     string            `json:"project_id,omitempty"`
 	Name          RefreshSourceName `json:"name"`
 	LastSuccessAt *time.Time        `json:"last_success_at,omitempty"`
+	Degraded      bool              `json:"degraded,omitempty"`
 	FailureStreak int               `json:"failure_streak,omitempty"`
 	LastError     string            `json:"last_error,omitempty"`
 	LastErrorAt   *time.Time        `json:"last_error_at,omitempty"`
@@ -284,6 +286,9 @@ func (r Refresh) Stale(now time.Time) bool {
 	}
 	staleAfter := time.Duration(r.StaleAfterSeconds) * time.Second
 	for _, source := range r.Sources {
+		if source.Degraded {
+			return true
+		}
 		if source.FailureStreak >= threshold {
 			return true
 		}
