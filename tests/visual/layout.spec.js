@@ -133,15 +133,27 @@ test("sidebar groups global navigation and hides a single project", async ({
 
   await sidebar.getByRole("button", { name: "Toggle sidebar" }).click();
   await expect(sidebar).toHaveAttribute("data-rail", "true");
+  await expect(sidebar).toHaveCSS("width", "52px");
   for (const heading of await content.locator("[data-sidebar-section]").all()) {
     await expect(heading).toBeHidden();
   }
   for (const label of await content.locator("[data-sidebar-nav-label]").all()) {
     await expect(label).toBeHidden();
   }
-  for (const icon of await content.locator("[data-sidebar-nav-icon]").all()) {
+  const collapsedNavItems = await content.locator("[data-sidebar-nav-item]").all();
+  const navIconNames = [];
+  for (const navItem of collapsedNavItems) {
+    await expect(navItem).toHaveAttribute("aria-label", /.+/);
+    const icon = navItem.locator("[data-sidebar-nav-icon]");
     await expect(icon).toBeVisible();
+    await expect(icon.locator("svg")).toHaveCount(1);
+    navIconNames.push(await icon.getAttribute("data-sidebar-nav-icon"));
   }
+  expect(new Set(navIconNames).size).toBe(collapsedNavItems.length);
+  for (const divider of await content.locator("[data-sidebar-divider]").all()) {
+    await expect(divider).toBeVisible();
+  }
+  await expect(content.locator('[data-sidebar-nav-item="board"]')).toHaveClass(/ring-accent/);
   for (const label of await content.locator("[data-sidebar-project-label]").all()) {
     await expect(label).toBeHidden();
   }
@@ -153,6 +165,7 @@ test("sidebar groups global navigation and hides a single project", async ({
     await expect(identity).toBeVisible();
     await expect(identity).not.toHaveText("");
     identities.push((await identity.textContent()).trim());
+    await expect(project).toHaveAttribute("aria-label", /.+/);
     await expect(project).toHaveAttribute("data-help-title", /.+/);
     await expect(project.locator("[data-sidebar-project-activity]")).toBeVisible();
     const load = project.locator("[data-sidebar-project-badge]");
@@ -161,12 +174,29 @@ test("sidebar groups global navigation and hides a single project", async ({
     }
   }
   expect(new Set(identities).size).toBe(collapsedProjects.length);
+  await expect(sidebar).toHaveScreenshot("collapsed-sidebar.png");
+
+  const tooltip = page.locator("body > #help-tooltip");
+  for (const navItem of collapsedNavItems) {
+    await navItem.hover();
+    await expect(tooltip).toBeVisible();
+    await expect(tooltip).toContainText(await navItem.getAttribute("aria-label"));
+  }
+
+  const collapsedAnalytics = content.locator('[data-sidebar-nav-item="analytics"]');
+  await collapsedAnalytics.hover();
+  await waitForSidebarMorph(page);
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText("Analytics");
 
   const collapsedDetent = content.locator('[data-sidebar-project="dogfood"]');
   await collapsedDetent.hover();
-  const tooltip = page.locator("body > #help-tooltip");
   await expect(tooltip).toBeVisible();
   await expect(tooltip).toContainText(await collapsedDetent.getAttribute("data-help-title"));
+
+  await content.locator('[data-sidebar-nav-item="reports"]').click();
+  await expect.poll(() => new URL(page.url()).pathname).toBe("/reports");
+  await expect(sidebar).toHaveAttribute("data-rail", "true");
 
   await page.setExtraHTTPHeaders({});
   await page.goto(`${singleProjectRuntime.url}/`, {

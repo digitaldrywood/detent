@@ -132,6 +132,7 @@ templ AppSidebarContent(data DashboardShellData) {
 					data-help-term={ "sidebar-project-" + project.ID }
 					data-help-title={ project.Name }
 					data-help-description={ appProjectBreakdown(project) }
+					aria-label={ project.Name }
 					{ sidebarAriaCurrent(project.Selected)... }
 				>
 					<span class="group-data-[rail=true]/rail:absolute group-data-[rail=true]/rail:right-0 group-data-[rail=true]/rail:top-0 group-data-[rail=true]/rail:z-10 group-data-[rail=true]/rail:grid group-data-[rail=true]/rail:size-2.5 group-data-[rail=true]/rail:place-items-center group-data-[rail=true]/rail:rounded-full group-data-[rail=true]/rail:bg-page" data-sidebar-project-activity={ boardBoolAttr(project.Live) }>
@@ -150,7 +151,7 @@ templ AppSidebarContent(data DashboardShellData) {
 
 templ appSidebarSectionLabel(id string, label string) {
 	<p class="px-2.5 pb-1.5 pt-4.5 text-2xs font-semibold uppercase tracking-[0.06em] text-dim group-data-[rail=true]/rail:hidden" data-sidebar-section={ id }>{ label }</p>
-	<div class="hidden pb-1 pt-4.5 group-data-[rail=true]/rail:block" aria-hidden="true">
+	<div class="hidden pb-1 pt-4.5 group-data-[rail=true]/rail:block" data-sidebar-divider={ id } aria-hidden="true">
 		<span class="mx-auto block h-px w-4 bg-line"></span>
 	</div>
 }
@@ -159,14 +160,20 @@ templ appSidebarNavItem(data DashboardShellData, item appNavItem) {
 	<a
 		href={ templ.SafeURL(item.Href) }
 		class={ appNavLinkClass(item) }
-		title={ item.Label }
+		aria-label={ item.Label }
 		data-sidebar-nav-item={ item.ID }
+		data-help-trigger
+		data-help-scope="sidebar-nav"
+		data-help-term={ "sidebar-nav-" + item.ID }
+		data-help-title={ item.Label }
 		{ sidebarAriaCurrent(item.Active)... }
 	>
+		<span class="inline-flex size-4 shrink-0 items-center justify-center" aria-hidden="true" data-sidebar-nav-icon={ item.Icon }>
+			@appNavIcon(item)
+		</span>
 		<span class="flex-1 group-data-[rail=true]/rail:hidden" data-sidebar-nav-label>{ item.Label }</span>
-		<span class="hidden font-mono text-2xs font-medium group-data-[rail=true]/rail:block" aria-hidden="true" data-sidebar-nav-icon>{ appNavInitial(item) }</span>
 		if item.HealthDot {
-			<span class="group-data-[rail=true]/rail:hidden">
+			<span class="group-data-[rail=true]/rail:absolute group-data-[rail=true]/rail:right-0.5 group-data-[rail=true]/rail:top-0.5">
 				@primitives.StatusDot(appShellHealthKind(data), false)
 			</span>
 		}

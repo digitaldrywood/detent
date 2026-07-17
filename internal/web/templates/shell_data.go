@@ -8,14 +8,15 @@ import (
 
 	"github.com/a-h/templ"
 
+	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
 
-// appNavItem is one text link in the redesigned sidebar.
 type appNavItem struct {
 	ID        string
 	Label     string
 	Href      string
+	Icon      string
 	Active    bool
 	HealthDot bool
 }
@@ -32,32 +33,32 @@ func appShellNavGroups(data DashboardShellData) []appNavGroup {
 		{
 			ID: "primary",
 			Items: []appNavItem{
-				{ID: "board", Label: "Board", Href: "/", Active: active == "board"},
+				{ID: "board", Label: "Board", Href: "/", Icon: "kanban", Active: active == "board"},
 			},
 		},
 		{
 			ID:    "monitor",
 			Label: "Monitor",
 			Items: []appNavItem{
-				{ID: "fleet", Label: "Fleet", Href: "/fleet", Active: active == "fleet"},
-				{ID: "health", Label: "Health", Href: "/health/ui", Active: active == "health", HealthDot: true},
+				{ID: "fleet", Label: "Fleet", Href: "/fleet", Icon: "network", Active: active == "fleet"},
+				{ID: "health", Label: "Health", Href: "/health/ui", Icon: "activity", Active: active == "health", HealthDot: true},
 			},
 		},
 		{
 			ID:    "insights",
 			Label: "Insights",
 			Items: []appNavItem{
-				{ID: "reports", Label: "Reports", Href: "/reports", Active: active == "reports"},
-				{ID: "library", Label: "Library", Href: "/library", Active: active == "library"},
+				{ID: "reports", Label: "Reports", Href: "/reports", Icon: "file-chart-column", Active: active == "reports"},
+				{ID: "library", Label: "Library", Href: "/library", Icon: "library", Active: active == "library"},
 			},
 		},
 		{
 			ID:    "system",
 			Label: "System",
 			Items: []appNavItem{
-				{ID: "analytics", Label: "Analytics", Href: "/analytics", Active: active == "analytics"},
-				{ID: "api-keys", Label: "API Keys", Href: "/api-keys", Active: active == "api-keys"},
-				{ID: "settings", Label: "Settings", Href: "/settings", Active: active == "settings"},
+				{ID: "analytics", Label: "Analytics", Href: "/analytics", Icon: "chart-no-axes-combined", Active: active == "analytics"},
+				{ID: "api-keys", Label: "API Keys", Href: "/api-keys", Icon: "key-round", Active: active == "api-keys"},
+				{ID: "settings", Label: "Settings", Href: "/settings", Icon: "settings", Active: active == "settings"},
 			},
 		},
 	}
@@ -226,24 +227,21 @@ func appShellTopbarTitle(data DashboardShellData) string {
 }
 
 func appNavLinkClass(item appNavItem) string {
-	base := "flex items-center justify-between gap-2 rounded-card px-2.5 py-1.5 text-sm group-data-[rail=true]/rail:justify-center group-data-[rail=true]/rail:px-0 group-data-[rail=true]/rail:py-2 "
+	base := "relative flex items-center justify-between gap-2 rounded-card px-2.5 py-1.5 text-sm group-data-[rail=true]/rail:justify-center group-data-[rail=true]/rail:px-0 group-data-[rail=true]/rail:py-2 "
 	if item.Active {
-		return base + "bg-elev font-medium text-text"
+		return base + "bg-elev font-medium text-text group-data-[rail=true]/rail:text-accent group-data-[rail=true]/rail:ring-1 group-data-[rail=true]/rail:ring-accent/40"
 	}
 	return base + "text-sec hover:bg-elev/60 hover:text-text"
 }
 
-func appNavInitial(item appNavItem) string {
-	if item.Label == "" {
-		return ""
-	}
-	return item.Label[:1]
+func appNavIcon(item appNavItem) templ.Component {
+	return icon.Icon(item.Icon)(icon.Props{Class: "size-4"})
 }
 
 func appProjectLinkClass(project appShellProject) string {
 	base := "relative flex items-center gap-2 rounded-card px-2.5 py-1.5 text-sm group-data-[rail=true]/rail:justify-center group-data-[rail=true]/rail:px-0 "
 	if project.Selected {
-		return base + "bg-elev font-medium text-text"
+		return base + "bg-elev font-medium text-text group-data-[rail=true]/rail:text-accent group-data-[rail=true]/rail:ring-1 group-data-[rail=true]/rail:ring-accent/40"
 	}
 	return base + "text-text hover:bg-elev/60"
 }
