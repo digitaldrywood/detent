@@ -113,7 +113,7 @@ func (o *Orchestrator) fetchWorkspaceCleanupCandidates(ctx context.Context, stat
 }
 
 func cleanupFetchStates(cfg Config) []string {
-	return appendUniqueStates(cfg.ObservedStates, cfg.TerminalStates)
+	return appendUniqueStates(cfg.TerminalStates, cfg.ObservedStates)
 }
 
 func cleanupTerminalFetchStates(cfg Config) []string {

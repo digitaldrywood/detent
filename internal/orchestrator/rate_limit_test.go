@@ -1083,7 +1083,7 @@ func TestReapWorkspacesScopesScheduledCleanupFetch(t *testing.T) {
 			name:              "cleanup interval due",
 			wantProbeCalls:    1,
 			wantFallbackCalls: 0,
-			wantStates:        []string{"human review", "blocked", "done", "cancelled"},
+			wantStates:        []string{"done", "cancelled", "human review", "blocked"},
 		},
 	}
 
