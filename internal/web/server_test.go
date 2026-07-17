@@ -1376,6 +1376,13 @@ func TestAPIKeyManagementAndScopedWorkItemAccess(t *testing.T) {
 	t.Parallel()
 
 	server, backend, _, _ := newAPIKeyWorkItemTestServer(t)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			t.Errorf("Shutdown() error = %v", err)
+		}
+	})
 	create := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/keys", `{
 		"name": "Video Studio",
 		"scopes": ["write"],
@@ -1573,6 +1580,13 @@ func TestAPIUsageLogRecordsReturnedHTTPErrorStatus(t *testing.T) {
 	t.Parallel()
 
 	server, backend, _, _ := newAPIKeyWorkItemTestServer(t)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			t.Errorf("Shutdown() error = %v", err)
+		}
+	})
 	token, keyID := createAPIKeyThroughHTTP(t, server, `{
 		"name": "Read client",
 		"scopes": ["read"],

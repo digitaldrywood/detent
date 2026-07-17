@@ -194,6 +194,13 @@ func TestChatConfirmationEnforcesAPIKeyProjectScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			t.Errorf("Shutdown() error = %v", err)
+		}
+	})
 	restrictedAuth := map[string]string{"Authorization": "Bearer " + created.Token}
 	panel := performDashboardHTMXRequest(t, server.Handler(), dashboardHTMXRequest{path: "/api/v1/chat", headers: restrictedAuth})
 	cookie := panel.Result().Cookies()[0]
