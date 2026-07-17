@@ -6798,12 +6798,13 @@ func TestBoardPageNavigationUsesCurrentInMemorySnapshot(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		path     string
-		wantBody string
+		name              string
+		path              string
+		wantBody          string
+		wantPendingBudget bool
 	}{
 		{name: "fleet", path: "/fleet", wantBody: `id="snapshot"`},
-		{name: "project overview", path: "/projects/detent", wantBody: "Recent runs"},
+		{name: "project overview", path: "/projects/detent", wantBody: "Recent runs", wantPendingBudget: true},
 		{name: "project kanban", path: "/projects/detent/kanban", wantBody: "Cached project board issue"},
 		{name: "project runs", path: "/projects/detent/runs", wantBody: "Runs"},
 		{name: "project diagnostics", path: "/projects/detent/diagnostics", wantBody: "Diagnostics"},
@@ -6826,7 +6827,9 @@ func TestBoardPageNavigationUsesCurrentInMemorySnapshot(t *testing.T) {
 				},
 			}
 			deps.Store = blockingStore
-			mustSetWebProject(t, deps.Registry, "detent", false)
+			if err := deps.Registry.Set(newBudgetTestProject(t, "detent", 100, 10)); err != nil {
+				t.Fatalf("Registry.Set() error = %v", err)
+			}
 			mustSetWebProject(t, deps.Registry, "pyroapex", false)
 			if err := deps.Hub.Publish(telemetry.Snapshot{
 				GeneratedAt: time.Date(2026, 7, 16, 15, 4, 5, 0, time.UTC),
@@ -6869,6 +6872,14 @@ func TestBoardPageNavigationUsesCurrentInMemorySnapshot(t *testing.T) {
 				}
 				if !strings.Contains(got.body, tt.wantBody) {
 					t.Fatalf("body missing %q:\n%s", tt.wantBody, got.body)
+				}
+				if tt.wantPendingBudget {
+					if !strings.Contains(got.body, "Loading budget data…") {
+						t.Fatalf("body missing pending budget state:\n%s", got.body)
+					}
+					if strings.Contains(got.body, "$0.00 / $100.00") {
+						t.Fatalf("body rendered zero spend while budget enrichment was pending:\n%s", got.body)
+					}
 				}
 			case <-time.After(500 * time.Millisecond):
 				t.Fatal("board navigation exceeded 500ms while current in-memory state was available")
