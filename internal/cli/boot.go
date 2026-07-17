@@ -154,7 +154,17 @@ func defaultBoot(ctx context.Context, cfg BootConfig) error {
 	}
 }
 
+type startRunningDependencies struct {
+	boardSnapshotStore    boardsnapshot.Store
+	boardSnapshotInterval time.Duration
+	backgroundWaitStarted func()
+}
+
 func startRunning(ctx context.Context, cfg BootConfig) error {
+	return startRunningWithDependencies(ctx, cfg, startRunningDependencies{})
+}
+
+func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps startRunningDependencies) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -284,6 +294,14 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		stop()
+		for _, runtimeProject := range manager.Registry().List() {
+			if err := runtimeProject.Close(); err != nil {
+				logger.Warn("close runtime project failed", "project_id", runtimeProject.ID(), "error", err)
+			}
+		}
+	}()
 	globalWatcherStarted := make(chan (<-chan struct{}), 1)
 	defer func() {
 		stop()
@@ -306,12 +324,15 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	if err != nil {
 		return err
 	}
-	boardSnapshotStore, err := boardsnapshot.New(boardsnapshot.Config{
-		Path:   runtimeBoardSnapshotPath(cfg),
-		MaxAge: time.Duration(kanbanWorkflow.Server.BoardSnapshotStaleAfterSeconds) * time.Second,
-	})
-	if err != nil {
-		return err
+	boardSnapshotStore := deps.boardSnapshotStore
+	if boardSnapshotStore == nil {
+		boardSnapshotStore, err = boardsnapshot.New(boardsnapshot.Config{
+			Path:   runtimeBoardSnapshotPath(cfg),
+			MaxAge: time.Duration(kanbanWorkflow.Server.BoardSnapshotStaleAfterSeconds) * time.Second,
+		})
+		if err != nil {
+			return err
+		}
 	}
 	cachedSnapshot, cached, loadErr := boardSnapshotStore.Load(runCtx)
 	if loadErr != nil {
@@ -325,9 +346,21 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		return err
 	}
 	chatProvider := buildChatProvider(manager.Registry(), logger)
-	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, snapshotSeq, runtimeStore, displayURL, defaultSnapshotInterval, time.Now, updateScheduler)
-	go republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger)                               // #nosec G118 -- runCtx is the service-lifetime context canceled during shutdown.
-	go persistBoardSnapshots(runCtx, snapshotHub, boardSnapshotStore, defaultBoardSnapshotInterval, logger) // #nosec G118 -- runCtx is the service-lifetime context canceled during shutdown.
+	var resourceWorkers sync.WaitGroup
+	defer func() {
+		stop()
+		if deps.backgroundWaitStarted != nil {
+			deps.backgroundWaitStarted()
+		}
+		resourceWorkers.Wait()
+	}()
+	resourceWorkers.Go(func() {
+		publishSnapshots(runCtx, manager.Registry(), snapshotHub, snapshotSeq, runtimeStore, displayURL, defaultSnapshotInterval, time.Now, updateScheduler)
+	})
+	go republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger) // #nosec G118 -- runCtx is the service-lifetime context canceled during shutdown.
+	resourceWorkers.Go(func() {
+		persistBoardSnapshots(runCtx, snapshotHub, boardSnapshotStore, deps.boardSnapshotInterval, logger)
+	})
 	//nolint:contextcheck // Echo middleware receives request contexts at serve time.
 	server, err := web.NewServer(web.Config{
 		Mode:               web.ModeRunning,
