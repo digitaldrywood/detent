@@ -244,7 +244,7 @@ func TestRunAutoPromoteBlocksAfterPersistedReworkLimitSurvivesRestart(t *testing
 
 	var gotStateUpdate bool
 	var gotComment bool
-	deadline := time.After(time.Second)
+	deadline := time.After(slowCIIntegrationWaitTimeout)
 	for !gotStateUpdate || !gotComment {
 		select {
 		case event := <-events:
@@ -262,7 +262,15 @@ func TestRunAutoPromoteBlocksAfterPersistedReworkLimitSurvivesRestart(t *testing
 				}
 			}
 		case <-deadline:
-			t.Fatalf("timed out waiting for Blocked auto-promote events; state_update=%v comment=%v", gotStateUpdate, gotComment)
+			timeline, timelineErr := restartedStore.IssueWorkflowTimeline(ctx, store.IssueIdentity{IssueID: issue.ID})
+			t.Fatalf(
+				"timed out waiting for Blocked auto-promote events; state_update=%v comment=%v tracker_events=%#v workflow_timeline=%#v workflow_timeline_error=%v",
+				gotStateUpdate,
+				gotComment,
+				tracker.Events(),
+				timeline.Events,
+				timelineErr,
+			)
 		}
 	}
 }

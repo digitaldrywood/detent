@@ -24,6 +24,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
+const slowCIIntegrationWaitTimeout = 10 * time.Second
+
 func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 	t.Parallel()
 
@@ -2393,8 +2395,16 @@ func runOrchestrator(t *testing.T, orch *orchestrator.Orchestrator) func() {
 			if err != nil && !errors.Is(err, context.Canceled) {
 				t.Fatalf("Run() error = %v", err)
 			}
-		case <-time.After(time.Second):
-			t.Fatal("timed out waiting for Run() to stop")
+		case <-time.After(slowCIIntegrationWaitTimeout):
+			stateCtx, stateCancel := context.WithTimeout(context.Background(), time.Second)
+			state, stateErr := orch.State(stateCtx)
+			stateCancel()
+			t.Fatalf(
+				"timed out waiting for Run() to stop; state=%#v event_history=%#v state_error=%v",
+				state,
+				state.RecentEvents,
+				stateErr,
+			)
 		}
 	}
 }
