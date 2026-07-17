@@ -2321,6 +2321,34 @@ func autoPromoteFailedChecksFromPullRequest(pullRequest *connector.PullRequest) 
 	return uniqueStrings(checks)
 }
 
+func autoPromotePendingChecksFromPullRequest(pullRequest *connector.PullRequest) []string {
+	if pullRequest == nil {
+		return nil
+	}
+	checks := append([]string(nil), pullRequest.RunningChecks...)
+	for _, check := range pullRequest.RequiredCheckFailures {
+		if !autoPromoteCheckPending(check) {
+			continue
+		}
+		checks = append(checks, check.Name)
+	}
+	return uniqueStrings(checks)
+}
+
+func autoPromoteCheckPending(check connector.PullRequestCheck) bool {
+	status := strings.ToLower(strings.TrimSpace(check.Status))
+	conclusion := strings.ToLower(strings.TrimSpace(check.Conclusion))
+	if conclusion == "missing" {
+		return true
+	}
+	switch status {
+	case "missing", "pending", "queued", "waiting", "in_progress", "in progress", "requested", "expected":
+		return true
+	default:
+		return false
+	}
+}
+
 func autoPromoteStaleSuccessfulChecks(pullRequest *connector.PullRequest) []string {
 	if pullRequest == nil {
 		return nil
@@ -2667,6 +2695,9 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 		}
 		if failedChecks := strings.Join(autoPromoteFailedChecksFromPullRequest(issue.PullRequest), ", "); failedChecks != "" {
 			attrs = append(attrs, "failed_checks", failedChecks)
+		}
+		if pendingChecks := strings.Join(autoPromotePendingChecksFromPullRequest(issue.PullRequest), ", "); pendingChecks != "" {
+			attrs = append(attrs, "pending_checks", pendingChecks)
 		}
 		if staleSuccessfulChecks := strings.Join(autoPromoteStaleSuccessfulChecks(issue.PullRequest), ", "); staleSuccessfulChecks != "" {
 			attrs = append(attrs,
