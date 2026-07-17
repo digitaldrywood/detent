@@ -250,11 +250,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
-          if [ -z "$tag" ]; then
-            echo "Could not resolve latest Detent release tag" >&2
-            exit 1
-          fi
+          tag="$(bash ./scripts/resolve-release-tag.sh)"
           echo "DETENT_VERSION=$tag" >> "$GITHUB_ENV"
 
       - name: Smoke release installer
