@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -1124,19 +1125,105 @@ func TestRegistryRefresherReturnsProjectNotFoundWithoutOrchestrators(t *testing.
 	}
 }
 
+func TestAwaitBootDashboardURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		writes      []string
+		done        bool
+		doneErr     error
+		timeout     time.Duration
+		wantURL     string
+		wantErrText string
+	}{
+		{
+			name:    "dashboard banner",
+			writes:  []string{"Detent dev\nDashboard: ", "http://127.0.0.1:12345\n"},
+			timeout: time.Second,
+			wantURL: "http://127.0.0.1:12345",
+		},
+		{
+			name:        "startup error",
+			done:        true,
+			doneErr:     errors.New("store unavailable"),
+			timeout:     time.Second,
+			wantErrText: "startRunning returned before boot banner was written: store unavailable",
+		},
+		{
+			name:        "startup stops without error",
+			done:        true,
+			timeout:     time.Second,
+			wantErrText: "startRunning returned before boot banner was written without error",
+		},
+		{
+			name:        "diagnostic timeout",
+			writes:      []string{"Detent dev\nProject: https://github.com/digitaldrywood/detent\n"},
+			timeout:     0,
+			wantErrText: "timed out waiting for boot dashboard URL; output:\nDetent dev\nProject: https://github.com/digitaldrywood/detent",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			output := newBootOutput()
+			for _, write := range tt.writes {
+				if _, err := output.Write([]byte(write)); err != nil {
+					t.Fatalf("Write() error = %v", err)
+				}
+			}
+			done := make(chan error, 1)
+			if tt.done {
+				done <- tt.doneErr
+			}
+
+			url, err := awaitBootDashboardURL(output, done, tt.timeout)
+			if tt.wantErrText != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErrText) {
+					t.Fatalf("awaitBootDashboardURL() error = %v, want containing %q", err, tt.wantErrText)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("awaitBootDashboardURL() error = %v", err)
+			}
+			if url != tt.wantURL {
+				t.Fatalf("awaitBootDashboardURL() = %q, want %q", url, tt.wantURL)
+			}
+		})
+	}
+}
+
+const bootDashboardURLTimeout = 45 * time.Second
+
 type bootOutput struct {
-	mu     sync.Mutex
-	buffer bytes.Buffer
+	mu                    sync.Mutex
+	buffer                bytes.Buffer
+	dashboardURL          chan string
+	dashboardURLPublished bool
 }
 
 func newBootOutput() *bootOutput {
-	return &bootOutput{}
+	return &bootOutput{dashboardURL: make(chan string, 1)}
 }
 
 func (o *bootOutput) Write(p []byte) (int, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.buffer.Write(p)
+
+	n, err := o.buffer.Write(p)
+	if err != nil || o.dashboardURLPublished {
+		return n, err
+	}
+	url := bootDashboardURL(o.buffer.String())
+	if url == "" {
+		return n, nil
+	}
+	o.dashboardURLPublished = true
+	o.dashboardURL <- url
+	return n, nil
 }
 
 func (o *bootOutput) String() string {
@@ -1148,25 +1235,38 @@ func (o *bootOutput) String() string {
 func waitForBootDashboardURL(t *testing.T, output *bootOutput, done <-chan error) string {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	for ctx.Err() == nil {
-		select {
-		case err := <-done:
-			t.Fatalf("startRunning returned before boot banner was written: %v", err)
-		default:
-		}
-
-		for _, line := range strings.Split(output.String(), "\n") {
-			url, ok := strings.CutPrefix(line, "Dashboard: ")
-			if ok && strings.TrimSpace(url) != "" {
-				return strings.TrimSpace(url)
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
+	url, err := awaitBootDashboardURL(output, done, bootDashboardURLTimeout)
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Fatalf("timed out waiting for boot dashboard URL; output:\n%s", output.String())
+	return url
+}
+
+func awaitBootDashboardURL(output *bootOutput, done <-chan error, timeout time.Duration) (string, error) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			return "", errors.New("startRunning returned before boot banner was written without error")
+		}
+		return "", fmt.Errorf("startRunning returned before boot banner was written: %w", err)
+	case url := <-output.dashboardURL:
+		return url, nil
+	case <-timer.C:
+		return "", fmt.Errorf("timed out waiting for boot dashboard URL; output:\n%s", output.String())
+	}
+}
+
+func bootDashboardURL(output string) string {
+	lines := strings.Split(output, "\n")
+	for _, line := range lines[:len(lines)-1] {
+		url, ok := strings.CutPrefix(line, "Dashboard: ")
+		if ok && strings.TrimSpace(url) != "" {
+			return strings.TrimSpace(url)
+		}
+	}
 	return ""
 }
 
