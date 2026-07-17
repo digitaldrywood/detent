@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -41,6 +42,47 @@ func TestReportsEfficiencyRendersRollupAndBaseline(t *testing.T) {
 	for _, want := range []string{"reports-efficiency", "Fleet efficiency", "Tokens / merged issue", "Baseline", "97%", "anomaly receipts", "Cache share trend"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("reports efficiency missing %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestReportsCostPerOutcomeRendersOutsideSnapshot(t *testing.T) {
+	t.Parallel()
+
+	from := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	data := ReportsData{
+		OutcomeWindow: "7d",
+		Digest:        DailyDigestData{Timezone: "UTC"},
+		Projects:      []ProjectSmallMultiple{{ID: "detent", Name: "Detent"}},
+		CostPerOutcome: efficiency.CostPerOutcomeReport{Projects: []efficiency.CostPerOutcomeProject{{
+			ProjectID: "detent",
+			Current: efficiency.CostPerOutcomeMetrics{
+				MergedPRs:              2,
+				ClosedIssues:           4,
+				TokensPerMergedPR:      2_000,
+				SpendPerMergedPRUSD:    4,
+				TokensPerClosedIssue:   1_000,
+				SpendPerClosedIssueUSD: 2,
+			},
+			Trend: []efficiency.CostPerOutcomePoint{
+				{From: from, Metrics: efficiency.CostPerOutcomeMetrics{TokensPerMergedPR: 1_500, TokensPerClosedIssue: 750, SpendPerMergedPRUSD: 3, SpendPerClosedIssueUSD: 1.5}},
+				{From: from.Add(24 * time.Hour), Metrics: efficiency.CostPerOutcomeMetrics{TokensPerMergedPR: 2_000, TokensPerClosedIssue: 1_000, SpendPerMergedPRUSD: 4, SpendPerClosedIssueUSD: 2}},
+			},
+		}}},
+	}
+	var output bytes.Buffer
+	if err := ReportsPageV2(data).Render(context.Background(), &output); err != nil {
+		t.Fatalf("ReportsPageV2() render error = %v", err)
+	}
+	html := output.String()
+	snapshotStart := strings.Index(html, `id="snapshot"`)
+	outcomeStart := strings.Index(html, `id="reports-cost-outcomes"`)
+	if snapshotStart < 0 || outcomeStart < 0 || outcomeStart < snapshotStart || !strings.Contains(html[snapshotStart:outcomeStart], "</div>") {
+		t.Fatalf("cost-per-outcome section is not rendered after the snapshot")
+	}
+	for _, want := range []string{"Cost per outcome", `data-outcome-project="detent"`, "Tokens / merged PR", "2.0K", "$4.00", "Tokens / closed issue", "1.0K", "Detent tokens per outcome trend", `data-outcome-window="7d"`, `aria-current="true"`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("cost-per-outcome report missing %q:\n%s", want, html)
 		}
 	}
 }

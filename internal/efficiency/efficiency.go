@@ -115,6 +115,42 @@ type Rollup struct {
 	CacheTrend []TrendPoint
 }
 
+type CostPerOutcomeQuery struct {
+	ProjectID string
+	From      time.Time
+	To        time.Time
+	Bucket    time.Duration
+}
+
+type CostPerOutcomeMetrics struct {
+	TotalTokens            int64
+	SpendUSD               float64
+	MergedPRs              int64
+	ClosedIssues           int64
+	TokensPerMergedPR      float64
+	SpendPerMergedPRUSD    float64
+	TokensPerClosedIssue   float64
+	SpendPerClosedIssueUSD float64
+}
+
+type CostPerOutcomePoint struct {
+	From    time.Time
+	To      time.Time
+	Metrics CostPerOutcomeMetrics
+}
+
+type CostPerOutcomeProject struct {
+	ProjectID string
+	Current   CostPerOutcomeMetrics
+	Trend     []CostPerOutcomePoint
+}
+
+type CostPerOutcomeReport struct {
+	From     time.Time
+	To       time.Time
+	Projects []CostPerOutcomeProject
+}
+
 type Recorder interface {
 	CompleteEfficiencyReceipt(context.Context, Completion) (Receipt, error)
 }
@@ -123,4 +159,5 @@ type Reader interface {
 	EfficiencyReceipt(context.Context, string, string, string) (Receipt, error)
 	ListEfficiencyReceipts(context.Context, Query) ([]Receipt, error)
 	EfficiencyRollup(context.Context, Query) (Rollup, error)
+	CostPerOutcome(context.Context, CostPerOutcomeQuery) (CostPerOutcomeReport, error)
 }

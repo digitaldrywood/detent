@@ -11061,6 +11061,10 @@ func (storeProbe) EfficiencyRollup(context.Context, efficiency.Query) (efficienc
 	return efficiency.Rollup{}, nil
 }
 
+func (storeProbe) CostPerOutcome(_ context.Context, query efficiency.CostPerOutcomeQuery) (efficiency.CostPerOutcomeReport, error) {
+	return efficiency.CostPerOutcomeReport{From: query.From, To: query.To}, nil
+}
+
 func (p storeProbe) CycleTimeReport(ctx context.Context) (store.CycleTimeReport, error) {
 	if p.cycleTimeReport != nil {
 		return p.cycleTimeReport(ctx)

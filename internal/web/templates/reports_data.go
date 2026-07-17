@@ -22,6 +22,8 @@ type ReportsData struct {
 	Model            UsageReportData
 	Digest           DailyDigestData
 	Efficiency       efficiency.Rollup
+	CostPerOutcome   efficiency.CostPerOutcomeReport
+	OutcomeWindow    string
 	Assets           AssetPaths
 	Projects         []ProjectSmallMultiple
 	ActiveNav        string
@@ -154,7 +156,7 @@ func reportsDashboardShellData(data ReportsData) DashboardShellData {
 }
 
 func reportsHasUsage(data ReportsData) bool {
-	return data.Day.Totals.Events > 0 || data.Day.Totals.TotalTokens > 0 || data.Day.Totals.SpendUSD > 0 || data.Efficiency.Current.Issues > 0
+	return data.Day.Totals.Events > 0 || data.Day.Totals.TotalTokens > 0 || data.Day.Totals.SpendUSD > 0 || data.Efficiency.Current.Issues > 0 || len(data.CostPerOutcome.Projects) > 0
 }
 
 func reportBucketLabel(row UsageBucketData) string {

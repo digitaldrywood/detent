@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -24,13 +25,17 @@ func (s *Server) reports(c echo.Context) error {
 	if response != nil {
 		return c.JSON(status, response)
 	}
+	outcomeWindow, err := reportsOutcomeWindow(c.QueryParam("outcome_window"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errorResponse("invalid_outcome_window", "outcome_window must be 24h, 7d, or 30d"))
+	}
 
 	ctx := c.Request().Context()
 	timezone, err := reportsTimezone(c.QueryParam("tz"))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, errorResponse("invalid_timezone", "tz must be an IANA timezone"))
 	}
-	data, err := s.reportsData(ctx, from, to, c.QueryParam("project"), timezone, time.Now())
+	data, err := s.reportsData(ctx, from, to, c.QueryParam("project"), timezone, outcomeWindow, time.Now())
 	if err != nil {
 		s.logger.Error("usage reports page failed", slog.Any("error", err))
 		return c.JSON(http.StatusInternalServerError, errorResponse("usage_reports_failed", "Usage reports failed"))
@@ -56,7 +61,7 @@ func reportsDateRange(c echo.Context) (time.Time, time.Time, *apiErrorResponse, 
 	return from, to, nil, 0
 }
 
-func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time, selectedProjectID string, timezone *time.Location, now time.Time) (templates.ReportsData, error) {
+func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time, selectedProjectID string, timezone *time.Location, outcomeWindow reportsOutcomeWindowOption, now time.Time) (templates.ReportsData, error) {
 	day, err := s.usageReportData(ctx, store.UsageReportByDay, from, to)
 	if err != nil {
 		return templates.ReportsData{}, err
@@ -91,6 +96,16 @@ func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time, 
 	if err != nil {
 		return templates.ReportsData{}, err
 	}
+	outcomeTo := now.UTC().Truncate(time.Second)
+	costPerOutcome, err := s.store.CostPerOutcome(ctx, efficiency.CostPerOutcomeQuery{
+		ProjectID: projectID,
+		From:      outcomeTo.Add(-outcomeWindow.Duration),
+		To:        outcomeTo,
+		Bucket:    outcomeWindow.Bucket,
+	})
+	if err != nil {
+		return templates.ReportsData{}, err
+	}
 	return templates.ReportsData{
 		Title:           instancePageTitle(instanceName, "Detent reports"),
 		ApplicationName: applicationName(instanceName),
@@ -105,12 +120,33 @@ func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time, 
 		Model:           model,
 		Digest:          digest,
 		Efficiency:      efficiencyRollup,
+		CostPerOutcome:  costPerOutcome,
+		OutcomeWindow:   outcomeWindow.ID,
 		Assets:          s.assets.templatePaths(),
 		Projects:        projects,
 		ActiveNav:       "reports",
 		ProjectID:       projectID,
 		ProjectName:     projectName,
 	}, nil
+}
+
+type reportsOutcomeWindowOption struct {
+	ID       string
+	Duration time.Duration
+	Bucket   time.Duration
+}
+
+func reportsOutcomeWindow(value string) (reportsOutcomeWindowOption, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "7d":
+		return reportsOutcomeWindowOption{ID: "7d", Duration: 7 * 24 * time.Hour, Bucket: 24 * time.Hour}, nil
+	case "24h":
+		return reportsOutcomeWindowOption{ID: "24h", Duration: 24 * time.Hour, Bucket: time.Hour}, nil
+	case "30d":
+		return reportsOutcomeWindowOption{ID: "30d", Duration: 30 * 24 * time.Hour, Bucket: 24 * time.Hour}, nil
+	default:
+		return reportsOutcomeWindowOption{}, errors.New("unsupported outcome window")
+	}
 }
 
 func efficiencyReportRange(from time.Time, to time.Time) (time.Time, time.Time) {
