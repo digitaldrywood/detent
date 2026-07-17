@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/devruntime"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestStartIsolatedRuntimeAutoPromotesFixtureAndStopsOnCancel(t *testing.T) {
@@ -65,10 +66,19 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	output := &lockedBuffer{}
 	done := make(chan error, 1)
+	runtimeDone := make(chan struct{})
 	go func() {
 		done <- startRunning(ctx, devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output))
+		close(runtimeDone)
 	}()
-	t.Cleanup(cancel)
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-runtimeDone:
+		case <-time.After(10 * time.Second):
+			t.Error("timed out waiting for isolated runtime cleanup")
+		}
+	})
 
 	dashboardURL := waitForIsolatedRuntimeURL(t, output, done)
 	if banner := output.String(); !strings.Contains(banner, "Demo: kanban") {
@@ -182,6 +192,74 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	}
 }
 
+func TestStartRunningWaitsForBoardSnapshotPersistence(t *testing.T) {
+	runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0, Demo: devruntime.DemoKanban})
+	if err != nil {
+		t.Fatalf("devruntime.Build() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	output := &lockedBuffer{}
+	store := newBlockingBoardSnapshotStore()
+	backgroundWaitStarted := make(chan struct{})
+	done := make(chan struct{})
+	var runErr error
+	go func() {
+		runErr = startRunningWithDependencies(
+			ctx,
+			devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output),
+			startRunningDependencies{
+				boardSnapshotStore:    store,
+				boardSnapshotInterval: time.Millisecond,
+				backgroundWaitStarted: func() {
+					close(backgroundWaitStarted)
+				},
+			},
+		)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		store.release()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("timed out waiting for isolated runtime cleanup")
+		}
+	})
+
+	dashboardURL := waitForIsolatedRuntimeURL(t, output, nil)
+	waitForDashboard(t, dashboardURL+"/health", nil)
+	postRuntimeRefresh(t, dashboardURL, nil)
+	select {
+	case <-store.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for board snapshot persistence")
+	}
+
+	cancel()
+	select {
+	case <-backgroundWaitStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for background shutdown")
+	}
+	select {
+	case <-done:
+		t.Fatalf("startRunningWithDependencies() returned before persistence completed: %v", runErr)
+	default:
+	}
+
+	store.release()
+	select {
+	case <-done:
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("startRunningWithDependencies() error = %v, want %v", runErr, context.Canceled)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for isolated runtime to stop")
+	}
+}
+
 func TestStartScreenshotsDemoServesScenarioManifestAndUsage(t *testing.T) {
 	runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0, Demo: devruntime.DemoScreenshots})
 	if err != nil {
@@ -236,6 +314,38 @@ func TestStartScreenshotsDemoServesScenarioManifestAndUsage(t *testing.T) {
 type lockedBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
+}
+
+type blockingBoardSnapshotStore struct {
+	started     chan struct{}
+	releaseSave chan struct{}
+	startOnce   sync.Once
+	releaseOnce sync.Once
+}
+
+func newBlockingBoardSnapshotStore() *blockingBoardSnapshotStore {
+	return &blockingBoardSnapshotStore{
+		started:     make(chan struct{}),
+		releaseSave: make(chan struct{}),
+	}
+}
+
+func (s *blockingBoardSnapshotStore) Load(context.Context) (telemetry.Snapshot, bool, error) {
+	return telemetry.Snapshot{}, false, nil
+}
+
+func (s *blockingBoardSnapshotStore) Save(context.Context, telemetry.Snapshot) error {
+	s.startOnce.Do(func() {
+		close(s.started)
+	})
+	<-s.releaseSave
+	return nil
+}
+
+func (s *blockingBoardSnapshotStore) release() {
+	s.releaseOnce.Do(func() {
+		close(s.releaseSave)
+	})
 }
 
 func (b *lockedBuffer) Write(p []byte) (int, error) {
