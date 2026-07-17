@@ -121,6 +121,10 @@ templ helpScript() {
 				return helpTermFor(trigger) === term
 			}
 
+			function replacementHelpTrigger(term) {
+				return Array.from(document.querySelectorAll("[data-help-trigger]")).find((trigger) => sameHelpTerm(trigger, term)) || null
+			}
+
 			function containsRelated(root, relatedTarget) {
 				return relatedTarget instanceof Node && root.contains(relatedTarget)
 			}
@@ -165,6 +169,19 @@ templ helpScript() {
 				tip.style.width = width + "px"
 
 				const triggerRect = trigger.getBoundingClientRect()
+				const desiredHeight = Math.min(tip.scrollHeight || tip.offsetHeight || 96, Math.max(48, window.innerHeight - margin * 2))
+				const sidebarRail = trigger.closest("#app-sidebar[data-rail='true']")
+				if (sidebarRail) {
+					const height = Math.min(desiredHeight, Math.max(48, window.innerHeight - margin * 2))
+					const maxLeft = Math.max(margin, window.innerWidth - width - margin)
+					const left = Math.min(Math.max(margin, triggerRect.right + offset), maxLeft)
+					const top = Math.min(Math.max(margin, triggerRect.top + triggerRect.height / 2 - height / 2), Math.max(margin, window.innerHeight - height - margin))
+					tip.style.left = left + "px"
+					tip.style.top = top + "px"
+					tip.style.maxHeight = height + "px"
+					tip.dataset.placement = "right"
+					return
+				}
 				const maxLeft = Math.max(margin, window.innerWidth - width - margin)
 				const anchorRect = runtimeCardRect || triggerRect
 				const left = Math.min(Math.max(margin, anchorRect.left + anchorRect.width / 2 - width / 2), maxLeft)
@@ -178,7 +195,6 @@ templ helpScript() {
 				}
 				const availableBelow = Math.max(0, window.innerHeight - triggerRect.bottom - offset - margin)
 				const availableAbove = Math.max(0, triggerRect.top - offset - margin)
-				const desiredHeight = Math.min(tip.scrollHeight || tip.offsetHeight || 96, Math.max(48, window.innerHeight - margin * 2))
 				const useTop = desiredHeight > availableBelow && availableAbove > availableBelow
 				const available = useTop ? availableAbove : availableBelow
 				const maxHeight = Math.max(48, available)
@@ -248,7 +264,12 @@ templ helpScript() {
 				}
 
 				clearHelpShow()
-				showTimer = setTimeout(() => openHelpTooltip(trigger), delay)
+				const term = helpTermFor(trigger)
+				showTimer = setTimeout(() => {
+					showTimer = 0
+					const nextTrigger = trigger.isConnected ? trigger : replacementHelpTrigger(term)
+					if (nextTrigger) openHelpTooltip(nextTrigger)
+				}, delay)
 			}
 
 			function scheduleHelpHide(trigger, delay) {
@@ -304,10 +325,15 @@ templ helpScript() {
 			})
 
 			document.addEventListener("htmx:afterSettle", () => {
+				if (showTimer) return
 				if (!activeHelpTrigger) return
 				if (!document.documentElement.contains(activeHelpTrigger)) {
-					hideHelpTooltip("", true)
-					return
+					const replacement = replacementHelpTrigger(currentHelpTerm)
+					if (!replacement) {
+						hideHelpTooltip("", true)
+						return
+					}
+					setActiveHelpTrigger(replacement)
 				}
 				openHelpTooltip(activeHelpTrigger)
 			})

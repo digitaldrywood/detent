@@ -66,6 +66,7 @@ func TestAppShellActiveNav(t *testing.T) {
 
 func TestAppShellNavGroupsOrderAndActiveState(t *testing.T) {
 	groups := appShellNavGroups(DashboardShellData{ActiveNav: "reports"})
+	icons := make(map[string]string)
 	wantGroups := []struct {
 		id    string
 		label string
@@ -96,6 +97,13 @@ func TestAppShellNavGroupsOrderAndActiveState(t *testing.T) {
 			if item.Active != wantActive {
 				t.Fatalf("nav item %q active = %v, want %v", item.ID, item.Active, wantActive)
 			}
+			if item.Icon == "" {
+				t.Fatalf("nav item %q has no icon", item.ID)
+			}
+			if existing, ok := icons[item.Icon]; ok {
+				t.Fatalf("nav items %q and %q share icon %q", existing, item.ID, item.Icon)
+			}
+			icons[item.Icon] = item.ID
 			if item.ID == "health" {
 				healthDot = item.HealthDot
 			}
@@ -103,6 +111,33 @@ func TestAppShellNavGroupsOrderAndActiveState(t *testing.T) {
 	}
 	if !healthDot {
 		t.Fatalf("health nav item should carry the status dot")
+	}
+}
+
+func TestAppSidebarContentRendersNavIconsAndTooltipMetadata(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	if err := AppSidebarContent(DashboardShellData{}).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	html := buf.String()
+	for _, want := range []string{
+		`data-sidebar-nav-icon="kanban"`,
+		`data-sidebar-nav-icon="network"`,
+		`data-sidebar-nav-icon="activity"`,
+		`data-sidebar-nav-icon="file-chart-column"`,
+		`data-sidebar-nav-icon="library"`,
+		`data-sidebar-nav-icon="chart-no-axes-combined"`,
+		`data-sidebar-nav-icon="key-round"`,
+		`data-sidebar-nav-icon="settings"`,
+		`data-help-scope="sidebar-nav"`,
+		`data-help-term="sidebar-nav-board"`,
+		`aria-label="Board"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("sidebar missing %q:\n%s", want, html)
+		}
 	}
 }
 
