@@ -28,6 +28,7 @@ const (
 	RunModeImplement = "implement"
 	RunModePlan      = "plan"
 	RunModeMerge     = "merge"
+	RunModeRoutine   = "routine"
 
 	RunOutputMergeFastPathClean       = "merge_fast_path_clean"
 	RunOutputMergeFastPathCheckedHead = "merge_fast_path_checked_head"
@@ -128,6 +129,7 @@ type AgentTurnRequest struct {
 	Workspace          string
 	TempDir            string
 	Prompt             string
+	ToolInstructions   string
 	Model              string
 	ModelProvider      string
 	ServiceTier        string
@@ -268,6 +270,15 @@ type RunRequest struct {
 	OnUsageUpdate       UsageUpdateHandler
 	OnActivityUpdate    AgentActivityUpdateHandler
 	OnOverrideRejected  AgentOverrideRejectionHandler
+	Routine             *RoutineRequest
+	AgentTools          []AgentTool
+	AgentToolHandler    AgentToolHandler
+}
+
+type RoutineRequest struct {
+	Name     string
+	Schedule string
+	Prompt   string
 }
 
 type AgentOverrideRejectionHandler func([]AgentOverrideRejection) error

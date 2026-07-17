@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	"github.com/digitaldrywood/detent/internal/retro"
+	"github.com/digitaldrywood/detent/internal/routine"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -121,6 +122,7 @@ type Dependencies struct {
 	RefreshGitHubToken        func(context.Context) (string, error)
 	IntakeDependencies        intake.Dependencies
 	RetroStore                store.RetroStore
+	RoutineStore              store.RoutineStore
 }
 
 type Project struct {
@@ -139,6 +141,7 @@ type Project struct {
 	schedulerFactory          schedulerFactory
 	intake                    *intake.Manager
 	retro                     *retro.Manager
+	routine                   *routine.Manager
 	retroProduct              connector.Connector
 	events                    *hub.Hub[Event]
 	logger                    *slog.Logger
@@ -226,6 +229,16 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("create project retro: %w", err), closeConnector(retroProductConnector))
 	}
+	projectRoutine, err := routine.New(routine.Settings{
+		ProjectID:    string(id),
+		Definitions:  workflow.Config.Routines,
+		SearchStates: workflow.Config.KanbanStateNames(),
+		Runner:       deps.Runner,
+		Issues:       routineIssueStore(projectConnector),
+	}, deps.RoutineStore, logger, nil)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("create project routine: %w", err), closeConnector(retroProductConnector))
+	}
 
 	orchestratorFactory := deps.OrchestratorFactory
 	if orchestratorFactory == nil {
@@ -292,6 +305,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		schedulerFactory:          schedulerFactory,
 		intake:                    projectIntake,
 		retro:                     projectRetro,
+		routine:                   projectRoutine,
 		retroProduct:              retroProductConnector,
 		events:                    projectEvents,
 		logger:                    logger,
@@ -374,6 +388,13 @@ func (p *Project) Intake() *intake.Manager {
 	defer p.mu.Unlock()
 
 	return p.intake
+}
+
+func (p *Project) Routines() *routine.Manager {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.routine
 }
 
 func (p *Project) Events() *hub.Hub[Event] {
@@ -732,6 +753,8 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 	intakeDone := p.startIntake(intakeCtx)
 	retroCtx, stopRetro := context.WithCancel(ctx)
 	retroDone := p.startRetro(retroCtx)
+	routineCtx, stopRoutine := context.WithCancel(ctx)
+	routineDone := p.startRoutine(routineCtx)
 
 	runStarted := logProjectShutdownBoundaryBegin(p.logger, "orchestrator_run", "component", "orchestrator", "project_id", p.id)
 	err := orch.Run(ctx)
@@ -763,6 +786,14 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 		logProjectShutdownBoundaryEnd(p.logger, "retro_stop", retroStarted, nil, "component", "retro", "project_id", p.id)
 	} else {
 		logProjectShutdownBoundaryEndResult(p.logger, "retro_stop", retroStarted, "skipped", nil, "component", "retro", "project_id", p.id)
+	}
+	routineStarted := logProjectShutdownBoundaryBegin(p.logger, "routine_stop", "component", "routine", "project_id", p.id)
+	stopRoutine()
+	if routineDone != nil {
+		<-routineDone
+		logProjectShutdownBoundaryEnd(p.logger, "routine_stop", routineStarted, nil, "component", "routine", "project_id", p.id)
+	} else {
+		logProjectShutdownBoundaryEndResult(p.logger, "routine_stop", routineStarted, "skipped", nil, "component", "routine", "project_id", p.id)
 	}
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 		err = nil
@@ -821,6 +852,23 @@ func (p *Project) startRetro(ctx context.Context) <-chan struct{} {
 		defer close(done)
 		if err := manager.Run(ctx); err != nil && ctx.Err() == nil {
 			p.logger.Error("project retro stopped", "project_id", p.id, "error", err)
+		}
+	}()
+	return done
+}
+
+func (p *Project) startRoutine(ctx context.Context) <-chan struct{} {
+	p.mu.Lock()
+	manager := p.routine
+	p.mu.Unlock()
+	if manager == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := manager.Run(ctx); err != nil && ctx.Err() == nil {
+			p.logger.Error("project routine stopped", "project_id", p.id, "error", err)
 		}
 	}()
 	return done
@@ -1060,6 +1108,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	projectRunning := p.done != nil
 	projectIntake := p.intake
 	projectRetro := p.retro
+	projectRoutine := p.routine
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)
 	workflow.Config = workflowConfigWithProjectIdentity(projectConfig, workflow.Config)
@@ -1137,6 +1186,17 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			ProductIssues: productRetroStore,
 		}); err != nil {
 			return p.workflowReloadError("apply workflow retro reload failed", update.Path, err)
+		}
+	}
+	if projectRoutine != nil {
+		if err := projectRoutine.Update(routine.Settings{
+			ProjectID:    string(p.id),
+			Definitions:  workflow.Config.Routines,
+			SearchStates: workflow.Config.KanbanStateNames(),
+			Runner:       runner,
+			Issues:       routineIssueStore(projectConnector),
+		}); err != nil {
+			return p.workflowReloadError("apply workflow routine reload failed", update.Path, err)
 		}
 	}
 
@@ -1267,6 +1327,14 @@ func intakeStore(projectConnector connector.Connector) intake.IssueStore {
 		return nil
 	}
 	return store
+}
+
+func routineIssueStore(projectConnector connector.Connector) routine.IssueStore {
+	issueStore, ok := projectConnector.(routine.IssueStore)
+	if !ok {
+		return nil
+	}
+	return issueStore
 }
 
 func buildRetroIssueStores(

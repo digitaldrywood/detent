@@ -133,6 +133,7 @@ type Config struct {
 	Hooks         Hooks           `yaml:"hooks"`
 	Intake        intake.Config   `yaml:"intake,omitempty"`
 	Retro         retro.Config    `yaml:"retro,omitempty"`
+	Routines      []Routine       `yaml:"routines,omitempty"`
 
 	configuredFields map[string]struct{}
 }
@@ -1332,6 +1333,13 @@ func (c *Config) Validate() error {
 	if c.Retro.Enabled && c.Tracker.Kind == TrackerGitHub && !validRepositoryName(c.Tracker.Repository) {
 		problems = append(problems, "tracker.repository is required for retro")
 	}
+	problems = append(problems, ValidateRoutines("routines", c.Routines)...)
+	if len(c.Routines) > 0 && c.Tracker.Kind != TrackerGitHub && c.Tracker.Kind != TrackerMemory {
+		problems = append(problems, "routines requires tracker.kind github or memory")
+	}
+	if len(c.Routines) > 0 && c.Tracker.Kind == TrackerGitHub && !validRepositoryName(c.Tracker.Repository) {
+		problems = append(problems, "tracker.repository is required for routines")
+	}
 
 	if len(problems) > 0 {
 		return ValidationError{Problems: problems}
@@ -1515,6 +1523,7 @@ func (c *Config) normalize() {
 	c.Hooks.Shell = commandshell.Normalize(c.Hooks.Shell)
 	c.Intake.Normalize()
 	c.Retro.Normalize()
+	c.Routines = NormalizeRoutines(c.Routines)
 }
 
 func (c *Config) validateTracker(problems *[]string) {

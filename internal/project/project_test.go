@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
+	routinemodel "github.com/digitaldrywood/detent/internal/routine/model"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
@@ -123,6 +124,23 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for orchestrator dependencies")
+	}
+}
+
+func TestNewConfiguresScheduledRoutines(t *testing.T) {
+	t.Parallel()
+	workflowCfg := workflowConfig("memory")
+	workflowCfg.Routines = []workflowconfig.Routine{{Name: "dependency-audit", Schedule: "0 3 * * 1", Prompt: "Inspect configured dependency criteria."}}
+	got, err := project.New(project.Config{
+		Project:  globalconfig.Project{ID: "detent", Workdir: "/workspace/detent"},
+		Workflow: workflowconfig.Workflow{Config: workflowCfg},
+	}, project.Dependencies{Runner: orchestrator.FakeRunner{}, RoutineStore: &projectRoutineStore{}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = got.Close() })
+	if got.Routines() == nil || !got.Routines().Enabled() {
+		t.Fatalf("Routines() = %#v, want enabled manager", got.Routines())
 	}
 }
 
@@ -1239,6 +1257,24 @@ func workflowConfig(kind string) workflowconfig.Config {
 }
 
 type blockingRunner struct{}
+
+type projectRoutineStore struct {
+	records []routinemodel.RunRecord
+}
+
+func (s *projectRoutineStore) LatestRoutineRun(_ context.Context, projectID string, name string) (routinemodel.RunRecord, bool, error) {
+	for index := len(s.records) - 1; index >= 0; index-- {
+		if s.records[index].ProjectID == projectID && s.records[index].RoutineName == name {
+			return s.records[index], true, nil
+		}
+	}
+	return routinemodel.RunRecord{}, false, nil
+}
+
+func (s *projectRoutineStore) RecordRoutineRun(_ context.Context, record routinemodel.RunRecord) error {
+	s.records = append(s.records, record)
+	return nil
+}
 
 func (blockingRunner) Run(ctx context.Context, _ orchestrator.RunRequest) (orchestrator.RunResult, error) {
 	<-ctx.Done()

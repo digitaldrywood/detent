@@ -1075,6 +1075,55 @@ Host-local policy can override the workflow policy inside a project entry in
 `global.yaml` using the same `intake` shape. An explicit `sources: []` override
 disables workflow-defined intake for that project.
 
+### Scheduled maintenance routines
+
+GitHub and memory-backed projects can schedule repository maintenance agents
+from `WORKFLOW.md`. Detent provides the scheduling, proposal, deduplication, and
+run-ledger mechanism; every sweep criterion remains project-owned configuration
+instead of built-in Go behavior.
+
+```yaml
+routines:
+  - name: dependency-audit
+    schedule: "0 3 * * 1"
+    prompt: |
+      Apply the dependency-audit criteria in the Maintenance section below.
+      Propose only actionable upgrades with repository evidence and explicit
+      acceptance criteria.
+  - name: flaky-test-sweep
+    schedule: "30 4 * * *"
+    prompt: |
+      Inspect the configured test history and repository guidance for repeatable
+      flaky-test findings. Ignore isolated failures without supporting evidence.
+```
+
+Names are normalized labels and must be unique. Schedules are standard
+five-field cron expressions evaluated in the Detent process timezone, and each
+routine requires a non-empty prompt. The prompt may contain the criteria
+directly or point the agent to a named section or file in the repository.
+Invalid blocks fail workflow validation and appear as `detent doctor` workflow
+errors.
+
+When a routine is enabled or its schedule changes, its first run is the next
+scheduled occurrence; Detent does not replay missed occurrences. Each run uses
+a fresh read-only agent session. The agent proposes zero or more findings with
+a stable `dedup_key`, title, and issue body. Detent validates those proposals,
+files accepted findings with the `detent:todo` label in `Todo`, and leaves
+normal onboarding to the existing board loop.
+
+Filed issue bodies carry a project/routine/key fingerprint. A later run with the
+same fingerprint skips filing while the matching issue is open, including when
+that issue has moved to another configured board state. Closing the issue allows
+a future recurrence to file a new issue. Multiple identical proposals in one
+run are also collapsed.
+
+The runtime store records the scheduled, started, and completed times, filed
+and deduplicated counts, issue references, and any failure for every run.
+`detent doctor` shows the latest result for each configured routine, warns when
+a routine has never run, and flags three consecutive failures. ProjectV2
+trackers must set `tracker.repository` so Detent can create the repository issue
+before adding it to the board.
+
 ### Efficiency retrospection
 
 Each project can opt into an evidence-based reflection loop over its runtime

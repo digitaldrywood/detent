@@ -78,7 +78,7 @@ func (b *AgentBackend) runTurn(
 		Workspace:             req.Workspace,
 		Prompt:                req.Prompt,
 		ResumeThreadID:        req.Resume.ThreadID,
-		DeveloperInstructions: toolTurnInstructions(tools),
+		DeveloperInstructions: toolTurnInstructions(tools, req.ToolInstructions),
 		ApprovalPolicy:        approvalPolicy(b.options.ApprovalPolicy, tools),
 		ThreadSandbox:         threadSandbox(b.options.ThreadSandbox, tools),
 		TurnSandboxPolicy:     turnSandboxPolicy(b.options.ThreadSandbox, b.options.TurnSandboxPolicy, req.ExtraWritableRoots, tools),
@@ -133,9 +133,12 @@ func turnSandboxPolicy(threadSandbox string, configured any, roots []string, too
 	return turnSandboxPolicyForWorkspace(threadSandbox, configured, roots)
 }
 
-func toolTurnInstructions(tools []DynamicTool) string {
+func toolTurnInstructions(tools []DynamicTool, override string) string {
 	if len(tools) == 0 {
 		return ""
+	}
+	if override = strings.TrimSpace(override); override != "" {
+		return override
 	}
 	return "You are Detent's board operator assistant. Use only the provided Detent tools for board, fleet, telemetry, activity, and operator actions. Never use shell, filesystem, network, MCP, browser, delegation, or configuration tools. Mutating tools only create proposals; tell the operator that confirmation is required and never claim a proposal already executed."
 }

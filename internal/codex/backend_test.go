@@ -112,10 +112,11 @@ func TestAgentBackendToolTurnUsesRestrictedSandbox(t *testing.T) {
 	}
 
 	_, err = backend.RunTurnWithTools(context.Background(), runner.AgentTurnRequest{
-		Workspace:       "/tmp/detent-workspace",
-		TempDir:         "/tmp/detent-workspace/.detent/tmp",
-		Prompt:          "What is blocked?",
-		ReasoningEffort: "high",
+		Workspace:        "/tmp/detent-workspace",
+		TempDir:          "/tmp/detent-workspace/.detent/tmp",
+		Prompt:           "What is blocked?",
+		ToolInstructions: "Inspect only and submit proposals.",
+		ReasoningEffort:  "high",
 	}, []runner.AgentTool{{
 		Name:        "board_state",
 		Description: "Return live board state.",
@@ -132,7 +133,7 @@ func TestAgentBackendToolTurnUsesRestrictedSandbox(t *testing.T) {
 	assertJSONContains(t, sent[2].Params, "approvalPolicy", "never")
 	assertJSONContains(t, sent[2].Params, "sandbox", "read-only")
 	assertJSONContains(t, sent[2].Params, "dynamicTools.0.name", "board_state")
-	assertJSONContains(t, sent[2].Params, "developerInstructions", toolTurnInstructions([]DynamicTool{{Name: "board_state"}}))
+	assertJSONContains(t, sent[2].Params, "developerInstructions", "Inspect only and submit proposals.")
 	assertJSONContains(t, sent[3].Params, "approvalPolicy", "never")
 	assertJSONContains(t, sent[3].Params, "effort", "high")
 	assertJSONOmits(t, sent[3].Params, "sandboxPolicy")
