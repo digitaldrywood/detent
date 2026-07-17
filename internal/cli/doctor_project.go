@@ -291,6 +291,10 @@ func checkDoctorProjectWithProgress(
 	}
 	setDoctorCurrentCheck("Project " + id + " workflow lint")
 	checks = append(checks, checkDoctorWorkflowLint(ctx, id, project, workflow.Config, workflow.Prompt, workflowTokenThreshold, storePath, deps)...)
+	if len(workflow.Config.Routines) > 0 {
+		setDoctorCurrentCheck("Project " + id + " scheduled routines")
+		checks = append(checks, checkDoctorRoutines(ctx, id, workflow.Config.Routines, storePath, deps))
+	}
 	setDoctorCurrentCheck("Project " + id + " out-of-scope follow-up guidance")
 	checks = append(checks, checkDoctorFollowupGuidance(id, workflow.Config.Agent.Followups, workflow.Prompt))
 	setDoctorCurrentCheck("Project " + id + " pinned route models")

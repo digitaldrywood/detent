@@ -1011,6 +1011,49 @@ func TestRunnerRunLeavesThreadResumeDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestRunnerRunRoutineRequestsReadOnlyBackendTurn(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "routine-maintenance", Branch: "detent/routine-maintenance"},
+	}
+	agentBackend := &fakeCodexClient{
+		result: AgentTurnResult{ThreadID: "thread-routine", TurnID: "turn-1", SessionID: "thread-routine-turn-1"},
+	}
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		Store:        &fakeSessionStore{sessionID: 1396},
+		Now:          newFakeClock(startedAt, startedAt.Add(time.Second), startedAt.Add(2*time.Second)).Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{ID: "routine-maintenance", Identifier: "detent/routine/maintenance", State: "Routine"},
+		Mode:  RunModeRoutine,
+		Routine: &RoutineRequest{
+			Name: "maintenance", Schedule: "0 * * * *", Prompt: "Inspect configured criteria.",
+		},
+		StartedAt: startedAt,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !agentBackend.request.ReadOnly {
+		t.Fatal("AgentTurnRequest.ReadOnly = false, want true for routine")
+	}
+	if agentBackend.request.ToolInstructions != routineToolInstructions {
+		t.Fatalf("AgentTurnRequest.ToolInstructions = %q, want routine instructions", agentBackend.request.ToolInstructions)
+	}
+	if !agentResumeEmpty(agentBackend.request.Resume) {
+		t.Fatalf("AgentTurnRequest.Resume = %#v, want fresh routine session", agentBackend.request.Resume)
+	}
+}
+
 func TestRunnerRunRetryFreshSuppressesThreadResume(t *testing.T) {
 	t.Parallel()
 
@@ -2292,6 +2335,7 @@ func TestRunRoleDerivesStageFromModeAndState(t *testing.T) {
 		{name: "implement mode in progress uses code", mode: RunModeImplement, state: "In Progress", want: RoleCode},
 		{name: "plan mode uses plan", mode: RunModePlan, state: "Todo", want: RolePlan},
 		{name: "plan mode overrides rework state", mode: RunModePlan, state: "Rework", want: RolePlan},
+		{name: "routine mode uses routine", mode: RunModeRoutine, state: "Routine", want: RoleRoutine},
 		{name: "rework state uses rework", mode: RunModeImplement, state: "Rework", want: RoleRework},
 		{name: "rework state trims and folds case", mode: RunModeImplement, state: " reWORK ", want: RoleRework},
 		{name: "merging state uses merge", mode: RunModeImplement, state: "Merging", want: RoleMerge},

@@ -19,6 +19,7 @@ const (
 	RolePlan      = "plan"
 	RoleRework    = "rework"
 	RoleMerge     = "merge"
+	RoleRoutine   = "routine"
 	RoleValidator = "validator"
 )
 

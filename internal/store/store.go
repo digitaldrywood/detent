@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/retro"
+	routinemodel "github.com/digitaldrywood/detent/internal/routine/model"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
 )
 
@@ -51,6 +52,7 @@ type Store interface {
 	AgentResumeStore
 	OrphanSessionStore
 	RetroStore
+	RoutineStore
 	efficiency.Recorder
 	efficiency.Reader
 	APIKeyStore
@@ -171,6 +173,11 @@ type OrphanSessionStore interface {
 
 type RetroStore interface {
 	retro.TelemetryStore
+}
+
+type RoutineStore interface {
+	LatestRoutineRun(context.Context, string, string) (routinemodel.RunRecord, bool, error)
+	RecordRoutineRun(context.Context, routinemodel.RunRecord) error
 }
 
 type APIKeyStore interface {

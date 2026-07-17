@@ -482,14 +482,19 @@ func normalizeRunMode(mode string) string {
 		return RunModePlan
 	case RunModeMerge:
 		return RunModeMerge
+	case RunModeRoutine:
+		return RunModeRoutine
 	default:
 		return RunModeImplement
 	}
 }
 
 func runRole(mode string, issue connector.Issue) string {
-	if normalizeRunMode(mode) == RunModePlan {
+	switch normalizeRunMode(mode) {
+	case RunModePlan:
 		return RolePlan
+	case RunModeRoutine:
+		return RoleRoutine
 	}
 	switch strings.ToLower(strings.TrimSpace(issue.State)) {
 	case RoleRework:
@@ -601,22 +606,41 @@ func runAgentBackendTurn(
 	request AgentTurnRequest,
 	onUpdate AgentUpdateHandler,
 ) (AgentTurnResult, error, error) {
+	return runAgentBackendTurnWithTools(ctx, backend, request, nil, nil, onUpdate)
+}
+
+func runAgentBackendTurnWithTools(
+	ctx context.Context,
+	backend AgentBackend,
+	request AgentTurnRequest,
+	tools []AgentTool,
+	toolHandler AgentToolHandler,
+	onUpdate AgentUpdateHandler,
+) (AgentTurnResult, error, error) {
+	run := func(ctx context.Context, request AgentTurnRequest) (AgentTurnResult, error) {
+		if len(tools) > 0 {
+			if toolBackend, ok := backend.(AgentToolBackend); ok {
+				return toolBackend.RunTurnWithTools(ctx, request, tools, toolHandler, onUpdate)
+			}
+		}
+		return backend.RunTurn(ctx, request, onUpdate)
+	}
 	workspacePath := strings.TrimSpace(request.Workspace)
 	if workspacePath == "" {
-		result, err := backend.RunTurn(ctx, request, onUpdate)
+		result, err := run(ctx, request)
 		return result, err, nil
 	}
 
 	tempDir, err := workspace.PrepareWorkerScratch(ctx, workspacePath)
 	if workspace.IsMissingWorkspaceError(err) {
-		result, runErr := backend.RunTurn(ctx, request, onUpdate)
+		result, runErr := run(ctx, request)
 		return result, runErr, nil
 	}
 	if err != nil {
 		return AgentTurnResult{}, fmt.Errorf("prepare worker scratch: %w", err), nil
 	}
 	request.TempDir = tempDir
-	result, runErr := backend.RunTurn(ctx, request, onUpdate)
+	result, runErr := run(ctx, request)
 	cleanupErr := workspace.CleanupWorkerScratch(workspacePath)
 	if cleanupErr != nil {
 		cleanupErr = fmt.Errorf("cleanup worker scratch: %w", cleanupErr)
@@ -655,7 +679,7 @@ func (r *Runner) runAgentTurn(
 		}
 	}
 	turnStarted := false
-	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurn(ctx, backend, turnRequest, func(update AgentUpdate) error {
+	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurnWithTools(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, func(update AgentUpdate) error {
 		eventAt := r.now()
 		if !update.RuntimeIdentity.IsZero() {
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
@@ -886,7 +910,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if mode == RunModeImplement {
 		recoveryState = r.workspaceRecoveryState(ctx, info, workspaceIssue, "initial")
 	}
-	prompt, err := BuildPrompt(workflow, req.Issue, PromptOptions{
+	promptOptions := PromptOptions{
 		Attempt:              &attempt,
 		PlanOnly:             mode == RunModePlan,
 		MergeFallback:        mergeFallback,
@@ -899,7 +923,13 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		AvailableSkills:      availableSkills,
 		PriorAttempt:         req.PriorAttempt,
 		RecoveryState:        recoveryState,
-	})
+	}
+	var prompt string
+	if mode == RunModeRoutine && req.Routine != nil {
+		prompt, err = BuildRoutinePrompt(workflow, req.Issue, *req.Routine, promptOptions)
+	} else {
+		prompt, err = BuildPrompt(workflow, req.Issue, promptOptions)
+	}
 	if err != nil {
 		return RunResult{}, fmt.Errorf("build prompt: %w", err)
 	}
@@ -951,9 +981,12 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			return result, nil
 		}
 	}
-	resumeState, err := r.runRequestResumeState(ctx, workflow.Config.Agent, req, sessionModel, selection.BackendID, backendConfig.Kind, role)
-	if err != nil {
-		return RunResult{}, err
+	resumeState := store.AgentResumeState{}
+	if mode != RunModeRoutine {
+		resumeState, err = r.runRequestResumeState(ctx, workflow.Config.Agent, req, sessionModel, selection.BackendID, backendConfig.Kind, role)
+		if err != nil {
+			return RunResult{}, err
+		}
 	}
 	orphanRecovery := resumeState.Orphaned
 	orphanRecoveryOutcome := ""
@@ -1001,12 +1034,16 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	turnRequest := AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             turnPrompt,
+		ReadOnly:           mode == RunModeRoutine,
 		Model:              selectedModel,
 		ModelProvider:      modelProvider,
 		ServiceTier:        serviceTier,
 		ReasoningEffort:    effort,
 		Resume:             agentResumeFromState(resumeState),
 		ExtraWritableRoots: extraWritableRootsForWorkspace(ctx, info.Path, r.logger),
+	}
+	if mode == RunModeRoutine {
+		turnRequest.ToolInstructions = routineToolInstructions
 	}
 	execution := r.runAgentTurn(ctx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity)
 	if execution.err != nil {

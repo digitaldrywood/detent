@@ -183,28 +183,42 @@ func (b *AgentBackend) argv(req runner.AgentTurnRequest) []string {
 	if sessionID := strings.TrimSpace(req.Resume.SessionID); sessionID != "" {
 		args = append(args, "--resume", sessionID)
 	}
-	if mode := strings.TrimSpace(b.options.PermissionMode); mode != "" {
-		args = append(args, "--permission-mode", mode)
-	}
-	if tools := nonEmptyStrings(b.options.AllowedTools); len(tools) > 0 {
-		args = append(args, "--allowedTools")
-		args = append(args, tools...)
-	}
-	if tools := nonEmptyStrings(b.options.DisallowedTools); len(tools) > 0 {
-		args = append(args, "--disallowedTools")
-		args = append(args, tools...)
+	if req.ReadOnly {
+		args = append(args, "--permission-mode", "plan")
+	} else {
+		if mode := strings.TrimSpace(b.options.PermissionMode); mode != "" {
+			args = append(args, "--permission-mode", mode)
+		}
+		if tools := nonEmptyStrings(b.options.AllowedTools); len(tools) > 0 {
+			args = append(args, "--allowedTools")
+			args = append(args, tools...)
+		}
+		if tools := nonEmptyStrings(b.options.DisallowedTools); len(tools) > 0 {
+			args = append(args, "--disallowedTools")
+			args = append(args, tools...)
+		}
 	}
 	if b.options.IncludePartialMessages {
 		args = append(args, "--include-partial-messages")
 	}
-	for _, root := range req.ExtraWritableRoots {
-		root = strings.TrimSpace(root)
-		if root == "" {
-			continue
+	if !req.ReadOnly {
+		for _, root := range req.ExtraWritableRoots {
+			root = strings.TrimSpace(root)
+			if root == "" {
+				continue
+			}
+			args = append(args, "--add-dir", root)
 		}
-		args = append(args, "--add-dir", root)
+		args = append(args, b.options.ExtraArgs...)
+	} else {
+		args = append(args,
+			"--safe-mode",
+			"--strict-mcp-config",
+			"--disable-slash-commands",
+			"--no-chrome",
+			"--tools", "Read", "Glob", "Grep",
+		)
 	}
-	args = append(args, b.options.ExtraArgs...)
 	return args
 }
 

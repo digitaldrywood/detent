@@ -40,6 +40,8 @@ var (
 	skillDraftYesPattern    = regexp.MustCompile(`(?im)^\s*skill draft:\s*yes(?:\s|$)`)
 )
 
+const routineToolInstructions = "You are Detent's scheduled maintenance analyst. Inspect the workspace using read-only operations and follow the configured routine criteria. Do not modify files, git state, configuration, or external systems. Submit each actionable finding only through the provided proposal tool. Proposals are not filed until Detent validates and deduplicates them."
+
 type PromptOptions struct {
 	Attempt              *int
 	PlanOnly             bool
@@ -118,6 +120,26 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		rendered = appendSkillCreationBlock(rendered, workflow.Config.Agent.Skills)
 	}
 	return appendClosingReferenceInstruction(rendered, issue), nil
+}
+
+func BuildRoutinePrompt(workflow config.Workflow, issue connector.Issue, routine RoutineRequest, opts PromptOptions) (string, error) {
+	var b strings.Builder
+	b.WriteString("You are running a scheduled Detent maintenance routine.\n\n")
+	b.WriteString("Routine: ")
+	b.WriteString(strings.TrimSpace(routine.Name))
+	b.WriteString("\nSchedule: ")
+	b.WriteString(strings.TrimSpace(routine.Schedule))
+	b.WriteString("\nProject: ")
+	b.WriteString(strings.TrimSpace(issue.Identifier))
+	b.WriteString("\n\n## Criteria\n\n")
+	b.WriteString(strings.TrimSpace(routine.Prompt))
+	b.WriteString("\n\n## Deliverable\n\n")
+	b.WriteString("Inspect the repository without changing it. For every distinct actionable finding, propose one issue with a stable `dedup_key`, a concise title, and a complete body with evidence and acceptance criteria. Use the `propose_maintenance_issue` tool when it is available. Do not create or edit tracker issues directly. If the tool is unavailable, return only JSON in the form `{")
+	b.WriteString("\"issues\":[{\"dedup_key\":\"stable-key\",\"title\":\"...\",\"body\":\"...\"}]}`. Return `{")
+	b.WriteString("\"issues\":[]}` when no actionable finding meets the criteria.")
+
+	prompt := prependWorkspaceIsolationBlock(b.String(), workflow.Config, opts.WorkspacePath, opts.Branch)
+	return appendKnowledgeBlock(prompt, workflow.Config.Agent.Knowledge)
 }
 
 func appendWorkspaceRecoveryBlock(prompt string, state *workspace.RecoveryState) string {

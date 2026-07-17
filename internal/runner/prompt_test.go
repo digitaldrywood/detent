@@ -122,6 +122,36 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 	}
 }
 
+func TestBuildRoutinePromptUsesConfiguredCriteriaAndProposalContract(t *testing.T) {
+	t.Parallel()
+	prompt, err := BuildRoutinePrompt(config.Workflow{Config: config.Config{
+		Tracker: config.Tracker{Kind: config.TrackerMemory},
+	}}, connector.Issue{Identifier: "detent/routine/dependency-audit"}, RoutineRequest{
+		Name: "dependency-audit", Schedule: "0 3 * * 1", Prompt: "Follow the dependency criteria in WORKFLOW.md.",
+	}, PromptOptions{WorkspacePath: "/tmp/detent", Branch: "main"})
+	if err != nil {
+		t.Fatalf("BuildRoutinePrompt() error = %v", err)
+	}
+	for _, want := range []string{
+		"Routine: dependency-audit",
+		"Schedule: 0 3 * * 1",
+		"Follow the dependency criteria in WORKFLOW.md.",
+		"propose_maintenance_issue",
+		`{"issues":[{"dedup_key":"stable-key"`,
+		`{"issues":[]}`,
+		"Do not create or edit tracker issues directly.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, unwanted := range []string{"## Validation gate", "## Skill creation loop", "## Blocked handoff"} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("prompt contains issue-workflow section %q:\n%s", unwanted, prompt)
+		}
+	}
+}
+
 func TestBuildPromptSkillCreationUsesDefaultConfigForPullRequestsOnly(t *testing.T) {
 	t.Parallel()
 

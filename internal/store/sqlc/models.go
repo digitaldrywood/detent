@@ -174,6 +174,19 @@ type RetroRun struct {
 	EventDay      string         `json:"event_day"`
 }
 
+type RoutineRun struct {
+	ID                int64          `json:"id"`
+	ProjectID         string         `json:"project_id"`
+	RoutineName       string         `json:"routine_name"`
+	ScheduledFor      string         `json:"scheduled_for"`
+	StartedAt         string         `json:"started_at"`
+	CompletedAt       string         `json:"completed_at"`
+	FiledCount        int64          `json:"filed_count"`
+	DeduplicatedCount int64          `json:"deduplicated_count"`
+	IssuesJson        string         `json:"issues_json"`
+	Error             sql.NullString `json:"error"`
+}
+
 type SchedulerDecision struct {
 	ID                     int64          `json:"id"`
 	ProjectID              string         `json:"project_id"`
