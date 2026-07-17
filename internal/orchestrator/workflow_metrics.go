@@ -134,6 +134,9 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 		issue.ID = issueID
 	}
 	o.recordLaneTransition(ctx, issue, targetState, at, reason, metadata)
+	if normalizeState(targetState) == normalizeState(autoPromoteReworkState) && normalizeState(issue.State) != normalizeState(targetState) {
+		o.captureReworkLesson(issue, at, reason)
+	}
 	return nil
 }
 
@@ -390,6 +393,11 @@ func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *Sta
 		}
 		if !eventBacked {
 			o.recordObservedLaneEntry(ctx, issue, enteredAt)
+			if normalizeState(issue.State) == normalizeState(autoPromoteReworkState) {
+				observed := cloneIssue(issue)
+				observed.State = ""
+				o.captureReworkLesson(observed, enteredAt, "tracker_state_observed")
+			}
 		}
 	}
 	state.laneEntries = next

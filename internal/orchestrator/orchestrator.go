@@ -103,6 +103,13 @@ type Config struct {
 	GitHubRESTMinReserve          int64
 	OutputTruncationMaxBytes      int
 	EfficiencyThresholds          efficiency.Thresholds
+	Lessons                       LessonCaptureConfig
+}
+
+type LessonCaptureConfig struct {
+	Enabled    bool
+	Path       string
+	MaxEntries int
 }
 
 type FailureBreakerConfig struct {

@@ -318,6 +318,63 @@ func TestDoctorWorkflowOptimizationProposesGovernedSelfImprovement(t *testing.T)
 	}
 }
 
+func TestDoctorWorkflowImprovementProposalsUsesCapturedLessonThreshold(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		captureCount  int
+		wantProposals int
+	}{
+		{name: "below threshold", captureCount: 1},
+		{name: "at threshold", captureCount: 2, wantProposals: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			paths := seedDoctorWorkflowOptimizationFixture(t)
+			for index := range tt.captureCount {
+				appended, err := lessons.AppendUnique(filepath.Join(paths.dir, lessons.DefaultPath), lessons.Entry{
+					IssueRef:    "digitaldrywood/detent#" + strconv.Itoa(1397+index),
+					FailureKind: "ci_failure",
+					CaptureKey:  "automatic-ci-failure-" + strconv.Itoa(index),
+				}, lessons.AppendOptions{Date: time.Date(2026, 7, 17, 15, index, 0, 0, time.UTC)})
+				if err != nil || !appended {
+					t.Fatalf("lessons.AppendUnique() = (%t, %v), want (true, nil)", appended, err)
+				}
+			}
+
+			ctx := context.Background()
+			db, err := openDoctorSQLiteReadOnly(ctx, paths.db)
+			if err != nil {
+				t.Fatalf("openDoctorSQLiteReadOnly() error = %v", err)
+			}
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Fatalf("Close() error = %v", err)
+				}
+			})
+			workflow, err := workflowconfig.LoadWorkflow(paths.workflow)
+			if err != nil {
+				t.Fatalf("LoadWorkflow() error = %v", err)
+			}
+			project := doctorWorkflowOptimizationGlobal(paths).Projects[0]
+			proposals, err := doctorWorkflowImprovementProposals(ctx, db, project, workflow.Config, nil, 2)
+			if err != nil {
+				t.Fatalf("doctorWorkflowImprovementProposals() error = %v", err)
+			}
+			if len(proposals) != tt.wantProposals {
+				t.Fatalf("doctorWorkflowImprovementProposals() len = %d, want %d: %#v", len(proposals), tt.wantProposals, proposals)
+			}
+			if tt.wantProposals > 0 && (proposals[0].SignalKind != "lesson_failure_kind" || proposals[0].Pattern != "ci_failure" || proposals[0].Count != 2) {
+				t.Fatalf("doctorWorkflowImprovementProposals() = %#v, want repeated ci_failure lesson proposal", proposals)
+			}
+		})
+	}
+}
+
 func TestDoctorWorkflowOptimizationCreatesProposalIssuesWithMemoryTracker(t *testing.T) {
 	t.Parallel()
 

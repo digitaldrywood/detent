@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	"github.com/digitaldrywood/detent/internal/retro"
@@ -1212,6 +1213,15 @@ func projectOrchestratorConfig(project globalconfig.Project, workflow workflowco
 		Weight:   project.Weight,
 		Priority: project.Priority,
 		Paused:   project.Paused,
+	}
+	lessonPath := strings.TrimSpace(cfg.Lessons.Path)
+	if lessonPath == "" {
+		lessonPath = lessons.DefaultPath
+	}
+	cfg.Lessons.Path = projectRelativePath(project.Workdir, lessonPath)
+	cfg.Lessons.Enabled = true
+	if cfg.Lessons.MaxEntries <= 0 {
+		cfg.Lessons.MaxEntries = lessons.DefaultMaxEntries
 	}
 	cfg.Authorization = combineAuthorizationSelectors(cfg.Authorization, project.Authorization)
 	return cfg

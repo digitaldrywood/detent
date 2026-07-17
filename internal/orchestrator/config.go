@@ -93,6 +93,10 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		GitHubGraphQLMinReserve:       int64(cfg.Tracker.GitHubGraphQLMinReserve),
 		GitHubRESTMinReserve:          int64(cfg.Tracker.GitHubRESTMinReserve),
 		OutputTruncationMaxBytes:      cfg.Agent.OutputTruncation.MaxBytes,
+		Lessons: LessonCaptureConfig{
+			Path:       cfg.Agent.Lessons.Path,
+			MaxEntries: cfg.Agent.Lessons.MaxEntries,
+		},
 		EfficiencyThresholds: efficiency.Thresholds{
 			TokensMultiple:   cfg.Observability.Efficiency.AnomalyTokensMultiple,
 			SessionsMultiple: cfg.Observability.Efficiency.AnomalySessionsMultiple,
