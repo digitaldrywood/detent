@@ -1055,12 +1055,8 @@ func TestStartRunningReconcilesGlobalConfigChangedBeforeWatcherStarts(t *testing
 		})
 	}()
 
-	select {
-	case <-provisionStarted:
-	case err := <-done:
-		t.Fatalf("startRunning returned before provisioning blocked: %v", err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for project provisioning to start")
+	if err := awaitProjectProvisioningStart(provisionStarted, done, output, bootProvisioningStartTimeout); err != nil {
+		t.Fatal(err)
 	}
 
 	baseURL := waitForBootDashboardURL(t, output, done)
@@ -1122,6 +1118,73 @@ func TestRegistryRefresherReturnsProjectNotFoundWithoutOrchestrators(t *testing.
 	_, err := refresher.RequestRefresh(context.Background())
 	if !errors.Is(err, projectpkg.ErrProjectNotFound) {
 		t.Fatalf("RequestRefresh() error = %v, want %v", err, projectpkg.ErrProjectNotFound)
+	}
+}
+
+func TestAwaitProjectProvisioningStart(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		started     bool
+		done        bool
+		doneErr     error
+		timeout     time.Duration
+		wantErrText string
+	}{
+		{
+			name:    "provisioning starts",
+			started: true,
+			timeout: time.Second,
+		},
+		{
+			name:        "startup error",
+			done:        true,
+			doneErr:     errors.New("store unavailable"),
+			timeout:     time.Second,
+			wantErrText: "startRunning returned before project provisioning started: store unavailable",
+		},
+		{
+			name:        "startup stops without error",
+			done:        true,
+			timeout:     time.Second,
+			wantErrText: "startRunning returned before project provisioning started without error",
+		},
+		{
+			name:        "deadline while startup remains active",
+			timeout:     0,
+			wantErrText: "project provisioning did not start within 0s; startRunning remained active; output:\nDetent dev",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			provisionStarted := make(chan struct{})
+			if tt.started {
+				close(provisionStarted)
+			}
+			done := make(chan error, 1)
+			if tt.done {
+				done <- tt.doneErr
+			}
+			output := newBootOutput()
+			if _, err := output.Write([]byte("Detent dev\n")); err != nil {
+				t.Fatalf("Write() error = %v", err)
+			}
+
+			err := awaitProjectProvisioningStart(provisionStarted, done, output, tt.timeout)
+			if tt.wantErrText == "" {
+				if err != nil {
+					t.Fatalf("awaitProjectProvisioningStart() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErrText) {
+				t.Fatalf("awaitProjectProvisioningStart() error = %v, want containing %q", err, tt.wantErrText)
+			}
+		})
 	}
 }
 
@@ -1196,7 +1259,10 @@ func TestAwaitBootDashboardURL(t *testing.T) {
 	}
 }
 
-const bootDashboardURLTimeout = 45 * time.Second
+const (
+	bootProvisioningStartTimeout = 45 * time.Second
+	bootDashboardURLTimeout      = 45 * time.Second
+)
 
 type bootOutput struct {
 	mu                    sync.Mutex
@@ -1230,6 +1296,43 @@ func (o *bootOutput) String() string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.buffer.String()
+}
+
+func awaitProjectProvisioningStart(
+	provisionStarted <-chan struct{},
+	done <-chan error,
+	output *bootOutput,
+	timeout time.Duration,
+) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-provisionStarted:
+		return nil
+	case err := <-done:
+		return projectProvisioningStartExitError(err)
+	case <-timer.C:
+		select {
+		case <-provisionStarted:
+			return nil
+		case err := <-done:
+			return projectProvisioningStartExitError(err)
+		default:
+			return fmt.Errorf(
+				"project provisioning did not start within %s; startRunning remained active; output:\n%s",
+				timeout,
+				output.String(),
+			)
+		}
+	}
+}
+
+func projectProvisioningStartExitError(err error) error {
+	if err == nil {
+		return errors.New("startRunning returned before project provisioning started without error")
+	}
+	return fmt.Errorf("startRunning returned before project provisioning started: %w", err)
 }
 
 func waitForBootDashboardURL(t *testing.T, output *bootOutput, done <-chan error) string {
