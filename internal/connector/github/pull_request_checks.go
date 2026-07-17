@@ -267,23 +267,23 @@ func requiredStatusCheckFailures(checkRuns []restCheckRun, statuses []restCommit
 
 	failures := make([]connector.PullRequestCheck, 0, len(required))
 	for _, name := range required {
-		if result, ok := checkRunsByName[name]; ok && (result.Pending || result.Settled) {
-			if failure, failed := requiredCheckRunFailure(name, result.Run); failed {
-				failures = append(failures, failure)
+		if result, ok := checkRunsByName[name]; ok {
+			if result.Pending || result.Settled {
+				if failure, failed := requiredCheckRunFailure(name, result.Run); failed {
+					failures = append(failures, failure)
+				}
+				continue
 			}
+			failures = append(failures, connector.PullRequestCheck{
+				Name:   name,
+				Status: "pending",
+			})
 			continue
 		}
 		if status, ok := statusesByContext[name]; ok {
 			if failure, failed := requiredCommitStatusFailure(name, status); failed {
 				failures = append(failures, failure)
 			}
-			continue
-		}
-		if _, ok := checkRunsByName[name]; ok {
-			failures = append(failures, connector.PullRequestCheck{
-				Name:   name,
-				Status: "pending",
-			})
 			continue
 		}
 		failures = append(failures, connector.PullRequestCheck{

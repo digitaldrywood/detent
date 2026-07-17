@@ -2704,6 +2704,17 @@ func TestRequiredStatusCheckFailures(t *testing.T) {
 			}},
 		},
 		{
+			name:      "skipped required check overrides successful legacy status",
+			checkRuns: []restCheckRun{{Name: "Windows Core", Status: "completed", Conclusion: "skipped"}},
+			statuses:  []restCommitStatus{{Context: "Windows Core", State: "success"}},
+			required:  []string{"Windows Core"},
+			wantState: "pending",
+			wantChecks: []connector.PullRequestCheck{{
+				Name:   "Windows Core",
+				Status: "pending",
+			}},
+		},
+		{
 			name: "pending required check wins over settled failure",
 			checkRuns: []restCheckRun{
 				{Name: "Checks", Status: "completed", Conclusion: "failure"},
