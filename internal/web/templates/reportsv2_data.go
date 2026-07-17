@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +28,7 @@ type reportsView struct {
 	Release     reportsRelease
 	Digest      reportsDigest
 	Efficiency  reportsEfficiency
+	Outcomes    reportsCostPerOutcome
 }
 
 type reportsKPI struct {
@@ -122,6 +124,36 @@ type reportsEfficiencyDwell struct {
 	Baseline string
 }
 
+type reportsCostPerOutcome struct {
+	Window   string
+	Options  []reportsOutcomeWindowOption
+	Projects []reportsOutcomeProject
+}
+
+type reportsOutcomeWindowOption struct {
+	Label  string
+	Href   string
+	Active bool
+}
+
+type reportsOutcomeProject struct {
+	ID         string
+	Name       string
+	MergedPRs  string
+	Closed     string
+	Metrics    []reportsOutcomeMetric
+	TokenChart SplitSeriesChartData
+	SpendChart SplitSeriesChartData
+	HasTrend   bool
+}
+
+type reportsOutcomeMetric struct {
+	ID     string
+	Label  string
+	Value  string
+	Detail string
+}
+
 const reportsTopRowLimit = 5
 
 func reportsViewFromData(data ReportsData) reportsView {
@@ -137,11 +169,114 @@ func reportsViewFromData(data ReportsData) reportsView {
 		Release:     reportsReleaseView(data),
 		Digest:      reportsDigestView(data.Digest),
 		Efficiency:  reportsEfficiencyView(data.Efficiency),
+		Outcomes:    reportsCostPerOutcomeView(data),
 	}
 	if view.HasSeries {
 		view.TokenChart = reportsCumulativeTokens(data)
 	}
 	return view
+}
+
+func reportsCostPerOutcomeView(data ReportsData) reportsCostPerOutcome {
+	window := strings.TrimSpace(data.OutcomeWindow)
+	if window == "" {
+		window = "7d"
+	}
+	view := reportsCostPerOutcome{Window: window, Options: make([]reportsOutcomeWindowOption, 0, 3)}
+	for _, option := range []string{"24h", "7d", "30d"} {
+		view.Options = append(view.Options, reportsOutcomeWindowOption{Label: option, Href: reportsOutcomeWindowHref(data, option), Active: option == window})
+	}
+	projectNames := make(map[string]string, len(data.Projects))
+	for _, project := range data.Projects {
+		projectNames[strings.TrimSpace(project.ID)] = projectSmallMultipleName(project)
+	}
+	for _, project := range data.CostPerOutcome.Projects {
+		name := projectNames[strings.TrimSpace(project.ProjectID)]
+		if name == "" {
+			name = project.ProjectID
+		}
+		current := project.Current
+		item := reportsOutcomeProject{
+			ID:        project.ProjectID,
+			Name:      name,
+			MergedPRs: formatInt(current.MergedPRs),
+			Closed:    formatInt(current.ClosedIssues),
+			Metrics: []reportsOutcomeMetric{
+				{ID: "tokens-merged-pr", Label: "Tokens / merged PR", Value: reportsOutcomeTokenValue(current.TokensPerMergedPR, current.MergedPRs), Detail: reportsOutcomeCount(current.MergedPRs, "merged PR", "merged PRs")},
+				{ID: "spend-merged-pr", Label: "Spend / merged PR", Value: reportsOutcomeSpendValue(current.SpendPerMergedPRUSD, current.MergedPRs), Detail: reportsOutcomeCount(current.MergedPRs, "merged PR", "merged PRs")},
+				{ID: "tokens-closed-issue", Label: "Tokens / closed issue", Value: reportsOutcomeTokenValue(current.TokensPerClosedIssue, current.ClosedIssues), Detail: reportsOutcomeCount(current.ClosedIssues, "closed issue", "closed issues")},
+				{ID: "spend-closed-issue", Label: "Spend / closed issue", Value: reportsOutcomeSpendValue(current.SpendPerClosedIssueUSD, current.ClosedIssues), Detail: reportsOutcomeCount(current.ClosedIssues, "closed issue", "closed issues")},
+			},
+		}
+		if len(project.Trend) > 0 {
+			item.HasTrend = true
+			tokenPoints := make([]SplitSeriesPoint, 0, len(project.Trend))
+			spendPoints := make([]SplitSeriesPoint, 0, len(project.Trend))
+			for _, point := range project.Trend {
+				label := reportsOutcomePointLabel(point.From, window)
+				tokenPoints = append(tokenPoints, SplitSeriesPoint{Label: label, Input: point.Metrics.TokensPerMergedPR, Output: point.Metrics.TokensPerClosedIssue})
+				spendPoints = append(spendPoints, SplitSeriesPoint{Label: label, Input: point.Metrics.SpendPerMergedPRUSD, Output: point.Metrics.SpendPerClosedIssueUSD})
+			}
+			item.TokenChart = SplitSeriesChartData{Title: name + " tokens per outcome", AriaLabel: name + " tokens per outcome trend", InputLabel: "Merged PR", OutputLabel: "Closed issue", Points: tokenPoints, ValueSuffix: " tokens", Class: "h-28 w-full"}
+			item.SpendChart = SplitSeriesChartData{Title: name + " spend per outcome", AriaLabel: name + " spend per outcome trend", InputLabel: "Merged PR", OutputLabel: "Closed issue", Points: spendPoints, ValueSuffix: " USD", Class: "h-28 w-full", InputClass: "text-accent", OutputClass: "text-ok"}
+		}
+		view.Projects = append(view.Projects, item)
+	}
+	return view
+}
+
+func reportsOutcomeWindowHref(data ReportsData, window string) string {
+	values := url.Values{"outcome_window": []string{window}}
+	if value := strings.TrimSpace(data.ProjectID); value != "" {
+		values.Set("project", value)
+	}
+	if value := strings.TrimSpace(data.Digest.Timezone); value != "" {
+		values.Set("tz", value)
+	}
+	if value := strings.TrimSpace(data.Day.From); value != "" {
+		values.Set("from", value)
+	}
+	if value := strings.TrimSpace(data.Day.To); value != "" {
+		values.Set("to", value)
+	}
+	return "/reports?" + values.Encode() + "#reports-cost-outcomes"
+}
+
+func reportsOutcomeTokenValue(value float64, outcomes int64) string {
+	if outcomes == 0 {
+		return "—"
+	}
+	return fleetCompactTokens(int64(value))
+}
+
+func reportsOutcomeSpendValue(value float64, outcomes int64) string {
+	if outcomes == 0 {
+		return "—"
+	}
+	return formatUSD(value)
+}
+
+func reportsOutcomeCount(count int64, singular string, plural string) string {
+	label := plural
+	if count == 1 {
+		label = singular
+	}
+	return formatInt(count) + " " + label
+}
+
+func reportsOutcomePointLabel(at time.Time, window string) string {
+	if window == "24h" {
+		return at.Format("15:04")
+	}
+	return at.Format("Jan 2")
+}
+
+func reportsOutcomeWindowClass(active bool) string {
+	base := "rounded-card px-2.5 py-1.5 text-xs"
+	if active {
+		return base + " bg-elev font-medium text-text"
+	}
+	return base + " text-sec hover:text-text"
 }
 
 func reportsEfficiencyView(rollup efficiency.Rollup) reportsEfficiency {

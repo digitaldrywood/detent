@@ -99,6 +99,7 @@ func TestEfficiencyReceiptReconcilesRawRowsAndFlagsOutlier(t *testing.T) {
 type efficiencySeed struct {
 	issueID       string
 	identifier    string
+	prNumber      *int64
 	startedAt     time.Time
 	completedAt   time.Time
 	attempts      int
@@ -217,6 +218,7 @@ func seedEfficiencyIssue(t *testing.T, ctx context.Context, backend Store, seed 
 		IssueID:     seed.issueID,
 		Identifier:  seed.identifier,
 		IssueURL:    url,
+		PRNumber:    seed.prNumber,
 		CompletedAt: seed.completedAt,
 		Thresholds:  efficiency.Thresholds{TokensMultiple: 2, SessionsMultiple: 2, DwellMultiple: 2},
 	})

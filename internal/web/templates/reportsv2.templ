@@ -8,15 +8,78 @@ import "github.com/digitaldrywood/detent/internal/web/ui/primitives"
 // trends.
 templ ReportsPageV2(data ReportsData) {
 	@AppShell(ReportsShellDataFromData(data), nil) {
-		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden">
 			<div
 				id="snapshot"
-				class="flex min-h-0 min-w-0 flex-1 flex-col gap-5 overflow-y-auto overflow-x-hidden px-5 py-5"
+				class="flex min-w-0 flex-none flex-col gap-5 px-5 py-5"
 			>
 				@ReportsSnapshotV2(data)
 			</div>
+			@reportsCostPerOutcomeSection(reportsCostPerOutcomeView(data))
 		</main>
 	}
+}
+
+templ reportsCostPerOutcomeSection(view reportsCostPerOutcome) {
+	<section id="reports-cost-outcomes" class="flex flex-none flex-col gap-3 px-5 pb-5" aria-labelledby="reports-cost-outcomes-title">
+		<div class="flex flex-wrap items-center justify-between gap-3">
+			<div>
+				<h2 id="reports-cost-outcomes-title" class="text-sm font-semibold text-text">Cost per outcome</h2>
+				<p class="mt-1 text-xs text-sec">Project usage divided by merged pull requests and closed issues.</p>
+			</div>
+			<nav class="flex overflow-hidden rounded-card border border-line" aria-label="Cost per outcome window">
+				for _, option := range view.Options {
+					<a
+						href={ templ.SafeURL(option.Href) }
+						class={ reportsOutcomeWindowClass(option.Active) }
+						data-outcome-window={ option.Label }
+						if option.Active {
+							aria-current="true"
+						}
+					>{ option.Label }</a>
+				}
+			</nav>
+		</div>
+		if len(view.Projects) == 0 {
+			@primitives.Panel(primitives.PanelProps{ID: "reports-cost-outcomes-empty", Title: "Project outcomes · " + view.Window}) {
+				@primitives.EmptyLine("No usage or completed outcomes in this window")
+			}
+		} else {
+			for _, project := range view.Projects {
+				<article data-outcome-project={ project.ID } class="rounded-card border border-line bg-surface">
+					<header class="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3">
+						<h3 class="text-sm font-semibold text-text">{ project.Name }</h3>
+						<p class="font-mono text-2xs text-dim tabular-nums">{ project.MergedPRs } merged PRs · { project.Closed } closed issues</p>
+					</header>
+					<div class="grid grid-cols-2 gap-x-5 gap-y-4 p-4 lg:grid-cols-4">
+						for _, metric := range project.Metrics {
+							<div data-outcome-metric={ metric.ID }>
+								<p class="font-mono text-lg font-semibold text-text tabular-nums">{ metric.Value }</p>
+								<p class="text-xs text-sec">{ metric.Label }</p>
+								<p class="text-2xs text-dim">{ metric.Detail }</p>
+							</div>
+						}
+					</div>
+					if project.HasTrend {
+						<div class="grid grid-cols-1 gap-3 border-t border-line p-4 lg:grid-cols-2">
+							<div>
+								<p class="mb-2 text-xs font-medium text-sec">Tokens per outcome</p>
+								@SplitSeriesChart(project.TokenChart)
+							</div>
+							<div>
+								<p class="mb-2 text-xs font-medium text-sec">Spend per outcome</p>
+								@SplitSeriesChart(project.SpendChart)
+							</div>
+							<p class="flex items-center gap-4 text-2xs text-dim lg:col-span-2">
+								<span class="flex items-center gap-1.5"><span class="size-2 rounded-full bg-accent"></span>Merged PR</span>
+								<span class="flex items-center gap-1.5"><span class="size-2 rounded-full bg-ok"></span>Closed issue</span>
+							</p>
+						</div>
+					}
+				</article>
+			}
+		}
+	</section>
 }
 
 templ ReportsSnapshotV2(data ReportsData) {

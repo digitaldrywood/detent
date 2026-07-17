@@ -366,7 +366,11 @@ func (s *Server) demoReports(c echo.Context, scenario demoScenario) error {
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, errorResponse("invalid_timezone", "tz must be an IANA timezone"))
 	}
-	data, err := s.reportsData(c.Request().Context(), time.Time{}, time.Time{}, projectID, timezone, demoBaseTime)
+	outcomeWindow, err := reportsOutcomeWindow(c.QueryParam("outcome_window"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errorResponse("invalid_outcome_window", "outcome_window must be 24h, 7d, or 30d"))
+	}
+	data, err := s.reportsData(c.Request().Context(), time.Time{}, time.Time{}, projectID, timezone, outcomeWindow, demoBaseTime)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, errorResponse("usage_reports_failed", "Usage reports failed"))
 	}
@@ -374,6 +378,7 @@ func (s *Server) demoReports(c echo.Context, scenario demoScenario) error {
 	data.Projects = demofixtures.ProjectsForVariant(scenario.Variant)
 	data.Snapshot = demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant)
 	data.Efficiency = demoEfficiencyRollup()
+	data.CostPerOutcome = demoCostPerOutcomeReport(outcomeWindow, demoBaseTime, projectID)
 	applyReportsPreferences(c.Request(), &data)
 	return render(c, templates.ReportsPageV2(data))
 }
@@ -644,6 +649,55 @@ func demoEfficiencyRollup() efficiency.Rollup {
 		},
 		CacheTrend: []efficiency.TrendPoint{{Day: "2026-06-13", CacheShare: 0.95}, {Day: "2026-06-14", CacheShare: 0.96}, {Day: "2026-06-15", CacheShare: 0.97}},
 	}
+}
+
+func demoCostPerOutcomeReport(window reportsOutcomeWindowOption, now time.Time, selectedProjectID string) efficiency.CostPerOutcomeReport {
+	projects := []struct {
+		id           string
+		tokens       int64
+		spend        float64
+		mergedPRs    int64
+		closedIssues int64
+	}{
+		{id: "billing-api", tokens: 2_400_000, spend: 18, mergedPRs: 3, closedIssues: 4},
+		{id: demoPrimaryProjectID, tokens: 3_600_000, spend: 24, mergedPRs: 4, closedIssues: 6},
+	}
+	report := efficiency.CostPerOutcomeReport{From: now.Add(-window.Duration), To: now, Projects: make([]efficiency.CostPerOutcomeProject, 0, len(projects))}
+	pointCount := int(window.Duration / window.Bucket)
+	for _, project := range projects {
+		if selectedProjectID != "" && selectedProjectID != project.id {
+			continue
+		}
+		current := efficiency.CostPerOutcomeMetrics{
+			TotalTokens:            project.tokens,
+			SpendUSD:               project.spend,
+			MergedPRs:              project.mergedPRs,
+			ClosedIssues:           project.closedIssues,
+			TokensPerMergedPR:      float64(project.tokens) / float64(project.mergedPRs),
+			SpendPerMergedPRUSD:    project.spend / float64(project.mergedPRs),
+			TokensPerClosedIssue:   float64(project.tokens) / float64(project.closedIssues),
+			SpendPerClosedIssueUSD: project.spend / float64(project.closedIssues),
+		}
+		trend := make([]efficiency.CostPerOutcomePoint, pointCount)
+		for index := range trend {
+			from := report.From.Add(time.Duration(index) * window.Bucket)
+			factor := float64(index%5+1) / 5
+			trend[index] = efficiency.CostPerOutcomePoint{
+				From: from,
+				To:   from.Add(window.Bucket),
+				Metrics: efficiency.CostPerOutcomeMetrics{
+					MergedPRs:              1,
+					ClosedIssues:           1,
+					TokensPerMergedPR:      current.TokensPerMergedPR * factor,
+					SpendPerMergedPRUSD:    current.SpendPerMergedPRUSD * factor,
+					TokensPerClosedIssue:   current.TokensPerClosedIssue * factor,
+					SpendPerClosedIssueUSD: current.SpendPerClosedIssueUSD * factor,
+				},
+			}
+		}
+		report.Projects = append(report.Projects, efficiency.CostPerOutcomeProject{ProjectID: project.id, Current: current, Trend: trend})
+	}
+	return report
 }
 
 func demoSettingsProjects(variant string) []templates.SettingsProject {

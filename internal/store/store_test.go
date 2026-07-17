@@ -51,6 +51,55 @@ func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
 	}
 }
 
+func TestCostPerOutcomeIndexesMigrationUpDown(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "detent.db"))
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("db.Close() error = %v", err)
+		}
+	})
+	if err := configureSQLite(ctx, db, 0); err != nil {
+		t.Fatalf("configureSQLite() error = %v", err)
+	}
+
+	migrationMu.Lock()
+	defer migrationMu.Unlock()
+	goose.SetBaseFS(migrationsFS)
+	defer goose.SetBaseFS(nil)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("goose.SetDialect() error = %v", err)
+	}
+	if err := goose.UpToContext(ctx, db, "migrations", 21); err != nil {
+		t.Fatalf("goose.UpToContext(21) error = %v", err)
+	}
+
+	indexes := []string{
+		"usage_events_finished_at_idx",
+		"usage_events_project_finished_at_idx",
+		"efficiency_receipts_completed_at_idx",
+	}
+	for _, index := range indexes {
+		assertIndexAbsent(t, db, index)
+	}
+	if err := goose.UpToContext(ctx, db, "migrations", 22); err != nil {
+		t.Fatalf("goose.UpToContext(22) error = %v", err)
+	}
+	for _, index := range indexes {
+		assertIndexPresent(t, db, index)
+	}
+	if err := goose.DownToContext(ctx, db, "migrations", 21); err != nil {
+		t.Fatalf("goose.DownToContext(21) error = %v", err)
+	}
+	for _, index := range indexes {
+		assertIndexAbsent(t, db, index)
+	}
+}
+
 func TestCachedTokenTelemetryMigrationUpDown(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "detent.db")
@@ -2915,6 +2964,28 @@ func assertColumnAbsent(t *testing.T, db *sql.DB, table string, column string) {
 
 	if count := columnCount(t, db, table, column); count != 0 {
 		t.Fatalf("%s.%s column count = %d, want 0", table, column, count)
+	}
+}
+
+func assertIndexPresent(t *testing.T, db *sql.DB, index string) {
+	t.Helper()
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", index).Scan(&count); err != nil {
+		t.Fatalf("query index %q error = %v", index, err)
+	}
+	if count != 1 {
+		t.Fatalf("index %q count = %d, want 1", index, count)
+	}
+}
+
+func assertIndexAbsent(t *testing.T, db *sql.DB, index string) {
+	t.Helper()
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", index).Scan(&count); err != nil {
+		t.Fatalf("query index %q error = %v", index, err)
+	}
+	if count != 0 {
+		t.Fatalf("index %q count = %d, want 0", index, count)
 	}
 }
 
