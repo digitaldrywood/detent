@@ -244,6 +244,9 @@ func TestBoardViewLanes(t *testing.T) {
 	if len(done.Cards) != 1 || !done.Cards[0].Done {
 		t.Fatalf("Done lane should carry one done-styled card, got %+v", done.Cards)
 	}
+	if done.DefaultVisible {
+		t.Fatalf("populated Done lane should be hidden by default")
+	}
 
 	backlog := lanes["Backlog"]
 	if backlog.Cards[0].ExtraText != "" {
@@ -255,6 +258,31 @@ func TestBoardViewLanes(t *testing.T) {
 
 	if human, ok := lanes["Human Review"]; ok && human.DefaultVisible {
 		t.Fatalf("empty lane should be hidden by default")
+	}
+}
+
+func TestRecentCompletionCardSuppressesMoveDisabledBadge(t *testing.T) {
+	t.Parallel()
+
+	card := projectKanbanCard{
+		IssueNumber:      "#1385",
+		Identifier:       "digitaldrywood/detent#1385",
+		ProjectID:        "detent",
+		Title:            "Completed digitaldrywood/detent#1385",
+		Stage:            "Done",
+		RecentCompletion: true,
+	}
+	lane := projectKanbanLane{Title: "Done", Cards: []projectKanbanCard{card}}
+	view := boardCardViewFromCard(DashboardData{}, lane, card, true, "project", "detent")
+
+	if view.Number != "#1385" {
+		t.Fatalf("card number = %q, want #1385", view.Number)
+	}
+	if view.MoveDisabledText != "" || view.MoveDisabledLabel != "" {
+		t.Fatalf("recent completion move badge = %q / %q, want suppressed", view.MoveDisabledText, view.MoveDisabledLabel)
+	}
+	if view.DragDrop || view.CanDrag {
+		t.Fatalf("recent completion should remain non-draggable: %+v", view)
 	}
 }
 

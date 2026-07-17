@@ -152,8 +152,7 @@ func boardViewFromDashboard(data DashboardData) boardView {
 			CardCount: len(lane.Cards),
 			Live:      strings.EqualFold(lane.Title, "In Progress") && len(lane.Cards) > 0,
 			// Populated lanes show by default, except terminal graveyards
-			// (Cancelled, Closed, …). Done stays visible so finished work
-			// reads at a glance; everything is reachable via the picker.
+			// (Done, Cancelled, Closed, …), which remain reachable via the picker.
 			DefaultVisible: boardLaneDefaultVisible(lane, laneTerminal, boardHasCards),
 			EmptyMessage:   "No issues in " + lane.Title,
 		}
@@ -276,7 +275,7 @@ func boardLaneDefaultVisible(lane projectKanbanLane, terminal bool, boardHasCard
 		// states are legible instead of a blank strip.
 		return !terminal
 	}
-	return len(lane.Cards) > 0 && (!terminal || strings.EqualFold(lane.Title, "Done"))
+	return len(lane.Cards) > 0 && !terminal
 }
 
 func boardVisibilityKey(data DashboardData) string {
@@ -392,7 +391,10 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	}
 	identity := boardCardIdentityToken(card.Identifier, card.IssueID, card.IssueNumber)
 	moveDisabledText := projectKanbanCardMoveDisabledText(data, card)
-	canDrag := moveDisabledText == ""
+	if card.RecentCompletion {
+		moveDisabledText = ""
+	}
+	canDrag := moveDisabledText == "" && !card.RecentCompletion
 	view := boardCardView{
 		DomID:             "card-" + boardCardScopedSlug(projectID, identity),
 		Identity:          identity,
