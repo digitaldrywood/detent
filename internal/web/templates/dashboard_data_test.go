@@ -2310,6 +2310,9 @@ func TestProjectKanbanBoardShowsRecentTerminalCompletion(t *testing.T) {
 	if got := board.AllLanes[1].Cards[0].Title; got != "Completed session only" {
 		t.Fatalf("Done card title = %q, want completed issue title", got)
 	}
+	if board.AllLanes[1].DefaultVisible {
+		t.Fatalf("populated Done lane should be hidden by default")
+	}
 	if got := boardFiguresFromDashboard(data)[4].Value; got != "1" {
 		t.Fatalf("recent completion count = %q, want 1", got)
 	}
@@ -2347,6 +2350,12 @@ func TestProjectKanbanBoardRestoresRecentTerminalCompletionFromWorkAttempt(t *te
 	}
 	if got := board.AllLanes[1].Cards[0].Identifier; got != "digitaldrywood/detent#1385" {
 		t.Fatalf("Done card identifier = %q", got)
+	}
+	if got := board.AllLanes[1].Cards[0].IssueNumber; got != "#1385" {
+		t.Fatalf("Done card issue number = %q, want #1385", got)
+	}
+	if !board.AllLanes[1].Cards[0].RecentCompletion {
+		t.Fatalf("Done card should be marked as a recent completion")
 	}
 }
 

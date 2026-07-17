@@ -48,7 +48,7 @@ test("faked tracker failures show stale data without hiding live SSE", async ({
   await expect(health).toContainText("status 503");
 });
 
-test("idle healthy board shows current freshness and recent Done cards", async ({
+test("idle healthy board keeps freshness while Done is opt-in", async ({
   page,
 }) => {
   await page.setExtraHTTPHeaders({
@@ -61,13 +61,33 @@ test("idle healthy board shows current freshness and recent Done cards", async (
   await expect(page.locator("#fig-completed")).toContainText("2 completed · 48h");
 
   const done = page.locator('[data-board-lane="done"]');
+
+  await expect(done).toHaveAttribute("data-board-lane-default", "false");
+  await expect(done).toBeHidden();
+  await expect(page.locator("[data-board-lane-count]")).toHaveText("0/9");
+
+  const picker = page.locator("#board-lane-picker");
+  await picker.locator("summary").click();
+  await picker
+    .locator('[data-board-lane-visibility="done"]')
+    .selectOption("show");
+
   await expect(done).toBeVisible();
+  await expect(page.locator("[data-board-lane-count]")).toHaveText("1/9");
   await expect(done).toContainText("Release v0.44.0");
   await expect(done).toContainText("Finish overnight release batch");
+  await expect(done.locator('[data-kanban-move-disabled-label]')).toHaveCount(0);
+
+  const persisted = await page.locator("#board-lanes").evaluate((root) => {
+    const key = `detent.ui.board.lanes.v2.${root.dataset.boardKey}`;
+    return JSON.parse(localStorage.getItem(key) || "{}").show?.includes("done");
+  });
+  expect(persisted).toBe(true);
 
   const originalDone = await done.elementHandle();
   await morphCurrentSnapshot(page);
   expect(await originalDone?.evaluate((element) => element.isConnected)).toBe(true);
+  await expect(done).toBeVisible();
 });
 
 async function morphCurrentSnapshot(page) {

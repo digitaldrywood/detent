@@ -607,6 +607,7 @@ type projectKanbanCard struct {
 	PRRepository          string
 	PRURL                 string
 	Movable               bool
+	RecentCompletion      bool
 	DisabledText          string
 	RuntimeIdentity       agentidentity.Identity
 }
@@ -2958,6 +2959,7 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		ClearedBlockers:       clearedBlockers,
 		HasPullRequest:        issue.PullRequest != nil,
 		Movable:               strings.TrimSpace(issue.ID) != "" && issue.Metadata[projectKanbanRecentCompletionMetadataKey] != "true",
+		RecentCompletion:      issue.Metadata[projectKanbanRecentCompletionMetadataKey] == "true",
 		RuntimeIdentity:       issue.RuntimeIdentity,
 	}
 	if projectKanbanCardUsesInternalIssueView(data, card) {
