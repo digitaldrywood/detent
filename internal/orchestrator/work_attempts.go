@@ -68,6 +68,7 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 	for _, attempt := range reclaimed {
 		o.recordRecoveredWorkAttempt(state, attempt, now)
 	}
+	o.recoverPendingWorkAttemptCapacityReleases(ctx, state, projectID, now)
 	recent, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
 		ProjectID: projectID,
 		Limit:     maxRecentWorkAttemptSnapshots,
@@ -83,6 +84,97 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 	}
 	o.recoverOrphanedAgentSessions(ctx, state, orphanedSessions, now)
 	o.recoverPendingOperatorStops(ctx, state, now)
+}
+
+func (o *Orchestrator) recoverPendingWorkAttemptCapacityReleases(ctx context.Context, state *State, projectID string, now time.Time) {
+	releases, ok := o.workAttempts.(store.WorkAttemptCapacityReleaseStore)
+	if !ok {
+		return
+	}
+	pending, err := releases.ListPendingWorkAttemptCapacityReleases(ctx, projectID)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("work attempt capacity release recovery failed", "project_id", projectID, "error", err)
+		}
+		return
+	}
+	issuesByID, err := o.workAttemptCapacityReleaseIssues(ctx, pending)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("work attempt capacity release issue lookup failed", "project_id", projectID, "error", err)
+		}
+		return
+	}
+	for _, attempt := range pending {
+		if o.workAttemptCapacityReleaseNeedsClaimClear(attempt, issuesByID) {
+			if err := o.abandonClaim(ctx, attempt.IssueID); err != nil {
+				recordStateEvent(state, telemetry.ActivityEvent{
+					At:      now,
+					Event:   "work_attempt_capacity_release_failed",
+					Message: fmt.Sprintf("capacity release failed for %s: %v", workAttemptLabel(attempt), err),
+				})
+				continue
+			}
+		}
+		if err := releases.ClearWorkAttemptCapacityRelease(ctx, attempt.ID); err != nil {
+			if o.logger != nil {
+				o.logger.Warn("work attempt capacity release clear failed", "project_id", projectID, "attempt_id", attempt.ID, "issue_id", attempt.IssueID, "identifier", attempt.Identifier, "error", err)
+			}
+			continue
+		}
+		if o.logger != nil {
+			o.logger.Info("reconciled terminal work attempt capacity release", "project_id", projectID, "attempt_id", attempt.ID, "issue_id", attempt.IssueID, "identifier", attempt.Identifier, "terminal_state", attempt.TerminalState)
+		}
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      now,
+			Event:   "work_attempt_capacity_released",
+			Message: "released legacy terminal capacity for " + workAttemptLabel(attempt),
+		})
+	}
+}
+
+func (o *Orchestrator) workAttemptCapacityReleaseIssues(ctx context.Context, attempts []store.WorkAttempt) (map[string]connector.Issue, error) {
+	issuesByID := make(map[string]connector.Issue)
+	if !o.cfg.Claiming.Enabled || strings.TrimSpace(o.cfg.Claiming.LeaseField) == "" {
+		return issuesByID, nil
+	}
+	issueIDs := make([]string, 0, len(attempts))
+	for _, attempt := range attempts {
+		if issueID := strings.TrimSpace(attempt.IssueID); issueID != "" {
+			issueIDs = append(issueIDs, issueID)
+		}
+	}
+	issueIDs = uniqueStrings(issueIDs)
+	if len(issueIDs) == 0 {
+		return issuesByID, nil
+	}
+	issues, err := o.connector.FetchIssueStatesByIDs(ctx, issueIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, issue := range issues {
+		issuesByID[issue.ID] = issue
+	}
+	return issuesByID, nil
+}
+
+func (o *Orchestrator) workAttemptCapacityReleaseNeedsClaimClear(attempt store.WorkAttempt, issuesByID map[string]connector.Issue) bool {
+	issue, ok := issuesByID[strings.TrimSpace(attempt.IssueID)]
+	if !ok || attempt.CompletedAt.IsZero() {
+		return false
+	}
+	lease, ok := o.issueLease(issue)
+	return ok && lease.Before(attempt.CompletedAt)
+}
+
+func workAttemptLabel(attempt store.WorkAttempt) string {
+	if identifier := strings.TrimSpace(attempt.Identifier); identifier != "" {
+		return identifier
+	}
+	if issueID := strings.TrimSpace(attempt.IssueID); issueID != "" {
+		return issueID
+	}
+	return fmt.Sprintf("work attempt %d", attempt.ID)
 }
 
 func (o *Orchestrator) recoverOrphanedAgentSessions(ctx context.Context, state *State, sessions []store.OrphanedAgentSession, now time.Time) {

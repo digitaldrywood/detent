@@ -105,6 +105,20 @@ func (q *Queries) BudgetCostEvents(ctx context.Context, arg BudgetCostEventsPara
 	return items, nil
 }
 
+const clearWorkAttemptCapacityRelease = `-- name: ClearWorkAttemptCapacityRelease :exec
+UPDATE work_attempts
+SET next_action = NULL
+WHERE id = ?1
+  AND status = 'terminal'
+  AND completed_at IS NOT NULL
+  AND lower(trim(COALESCE(next_action, ''))) = 'release capacity'
+`
+
+func (q *Queries) ClearWorkAttemptCapacityRelease(ctx context.Context, workAttemptID int64) error {
+	_, err := q.db.ExecContext(ctx, clearWorkAttemptCapacityRelease, workAttemptID)
+	return err
+}
+
 const completeWorkAttempt = `-- name: CompleteWorkAttempt :execrows
 UPDATE work_attempts
 SET status = ?,
@@ -2841,6 +2855,75 @@ ORDER BY completed_at, id
 
 func (q *Queries) ListPendingOperatorStops(ctx context.Context, projectID string) ([]WorkAttempt, error) {
 	rows, err := q.db.QueryContext(ctx, listPendingOperatorStops, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkAttempt{}
+	for rows.Next() {
+		var i WorkAttempt
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.IssueID,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.PrNumber,
+			&i.Repo,
+			&i.WorkerType,
+			&i.WorkerHost,
+			&i.Lane,
+			&i.AttemptNumber,
+			&i.Status,
+			&i.StartedAt,
+			&i.LeaseExpiresAt,
+			&i.HeartbeatAt,
+			&i.CompletedAt,
+			&i.TerminalState,
+			&i.ErrorClass,
+			&i.ErrorMessage,
+			&i.Phase,
+			&i.StatusMessage,
+			&i.CurrentStep,
+			&i.TotalSteps,
+			&i.ProgressPercent,
+			&i.CurrentCommand,
+			&i.WaitReason,
+			&i.GithubRateSnapshotJson,
+			&i.CiState,
+			&i.CapacitySnapshotJson,
+			&i.WorkerMetadataJson,
+			&i.MetricsJson,
+			&i.NextAction,
+			&i.DetentSessionID,
+			&i.ProviderSessionID,
+			&i.RuntimeIdentityJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingWorkAttemptCapacityReleases = `-- name: ListPendingWorkAttemptCapacityReleases :many
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json
+FROM work_attempts
+WHERE project_id = ?1
+  AND status = 'terminal'
+  AND completed_at IS NOT NULL
+  AND lower(trim(COALESCE(next_action, ''))) = 'release capacity'
+ORDER BY completed_at, id
+`
+
+func (q *Queries) ListPendingWorkAttemptCapacityReleases(ctx context.Context, projectID string) ([]WorkAttempt, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingWorkAttemptCapacityReleases, projectID)
 	if err != nil {
 		return nil, err
 	}

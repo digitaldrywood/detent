@@ -225,6 +225,28 @@ func (s *sqliteStore) ListRecentTerminalWorkAttempts(ctx context.Context, query 
 	return workAttemptsFromRows(rows)
 }
 
+func (s *sqliteStore) ListPendingWorkAttemptCapacityReleases(ctx context.Context, projectID string) ([]WorkAttempt, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return nil, errors.New("project_id is required")
+	}
+	rows, err := s.queries.ListPendingWorkAttemptCapacityReleases(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("listing pending work attempt capacity releases: %w", err)
+	}
+	return workAttemptsFromRows(rows)
+}
+
+func (s *sqliteStore) ClearWorkAttemptCapacityRelease(ctx context.Context, attemptID int64) error {
+	if attemptID <= 0 {
+		return errors.New("attempt_id is required")
+	}
+	if err := s.queries.ClearWorkAttemptCapacityRelease(ctx, attemptID); err != nil {
+		return fmt.Errorf("clearing work attempt capacity release: %w", err)
+	}
+	return nil
+}
+
 func (s *sqliteStore) UpdateOperatorStop(ctx context.Context, attrs OperatorStopUpdate) error {
 	if attrs.AttemptID <= 0 {
 		return ErrNotFound

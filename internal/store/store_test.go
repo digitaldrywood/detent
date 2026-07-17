@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"math"
 	"path/filepath"
 	"strings"
@@ -782,6 +783,84 @@ func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {
 	}
 	if len(recovered) != 1 || recovered[0].ID != staleID || recovered[0].TerminalState != WorkAttemptTerminalTimedOut {
 		t.Fatalf("recovered stale attempts = %#v, want stale timeout id %d", recovered, staleID)
+	}
+}
+
+func TestWorkAttemptCapacityReleaseStore(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	backend := openTestStore(t, ctx)
+	base := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		projectID   string
+		nextAction  string
+		terminal    bool
+		wantPending bool
+	}{
+		{name: "terminal release for project", projectID: "detent", nextAction: " release CAPACITY ", terminal: true, wantPending: true},
+		{name: "active release for project", projectID: "detent", nextAction: "release capacity"},
+		{name: "unrelated terminal action", projectID: "detent", nextAction: "retry tracker transition", terminal: true},
+		{name: "terminal release for another project", projectID: "video", nextAction: "release capacity", terminal: true},
+	}
+
+	var wantID int64
+	for index, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			startedAt := base.Add(time.Duration(index) * time.Minute)
+			attemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{
+				ProjectID:  tt.projectID,
+				IssueID:    fmt.Sprintf("issue-%d", index),
+				WorkerType: "agent",
+				StartedAt:  startedAt,
+				NextAction: tt.nextAction,
+			})
+			if err != nil {
+				t.Fatalf("StartWorkAttempt() error = %v", err)
+			}
+			if tt.terminal {
+				if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{
+					AttemptID:     attemptID,
+					CompletedAt:   startedAt.Add(30 * time.Second),
+					TerminalState: WorkAttemptTerminalSuccess,
+					NextAction:    tt.nextAction,
+				}); err != nil {
+					t.Fatalf("CompleteWorkAttempt() error = %v", err)
+				}
+			}
+			if tt.wantPending {
+				wantID = attemptID
+			}
+		})
+	}
+
+	pending, err := backend.ListPendingWorkAttemptCapacityReleases(ctx, " detent ")
+	if err != nil {
+		t.Fatalf("ListPendingWorkAttemptCapacityReleases() error = %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != wantID {
+		t.Fatalf("pending capacity releases = %#v, want attempt %d", pending, wantID)
+	}
+	if err := backend.ClearWorkAttemptCapacityRelease(ctx, wantID); err != nil {
+		t.Fatalf("ClearWorkAttemptCapacityRelease() error = %v", err)
+	}
+	if err := backend.ClearWorkAttemptCapacityRelease(ctx, wantID); err != nil {
+		t.Fatalf("ClearWorkAttemptCapacityRelease() repeated error = %v", err)
+	}
+	pending, err = backend.ListPendingWorkAttemptCapacityReleases(ctx, "detent")
+	if err != nil {
+		t.Fatalf("ListPendingWorkAttemptCapacityReleases() after clear error = %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending capacity releases after clear = %#v, want none", pending)
+	}
+	receipt, err := backend.WorkAttempt(ctx, wantID)
+	if err != nil {
+		t.Fatalf("WorkAttempt() error = %v", err)
+	}
+	if receipt.NextAction != "" {
+		t.Fatalf("NextAction = %q, want cleared", receipt.NextAction)
 	}
 }
 

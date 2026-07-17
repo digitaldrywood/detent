@@ -87,6 +87,129 @@ func TestRecoverDurableWorkAttemptsRestoresMostRecentRuntimeIdentity(t *testing.
 	}
 }
 
+func TestRecoverDurableWorkAttemptsReleasesLegacyTerminalCapacityActions(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC)
+	issue := claimTestIssue("issue-1430")
+	issue.Fields["Detent Lease"] = now.Add(-time.Hour).Format(time.RFC3339Nano)
+	claimStore := newClaimTestStore([]connector.Issue{issue})
+	attempts := &recordingWorkAttemptStore{pendingCapacityReleases: []store.WorkAttempt{{
+		ID:            1430,
+		ProjectID:     "detent",
+		IssueID:       issue.ID,
+		Identifier:    issue.Identifier,
+		Status:        store.WorkAttemptStatusTerminal,
+		CompletedAt:   now.Add(-30 * time.Minute),
+		TerminalState: store.WorkAttemptTerminalSuccess,
+		NextAction:    "release capacity",
+	}}}
+	cfg := normalizeConfig(claimTestConfig("alpha", "alpha"))
+	cfg.Project = scheduler.ProjectCandidate{ID: "detent"}
+	o := &Orchestrator{
+		cfg:          cfg,
+		connector:    claimTestConnector{store: claimStore, login: "alpha"},
+		workAttempts: attempts,
+	}
+	state := newState(cfg)
+
+	o.recoverDurableWorkAttempts(t.Context(), &state, now)
+
+	if got := claimStore.issue(issue.ID).Fields["Detent Lease"]; got != "" {
+		t.Fatalf("Detent Lease = %q, want released", got)
+	}
+	if len(attempts.clearedCapacityReleases) != 1 || attempts.clearedCapacityReleases[0] != 1430 {
+		t.Fatalf("cleared capacity releases = %v, want [1430]", attempts.clearedCapacityReleases)
+	}
+}
+
+func TestRecoverDurableWorkAttemptsRetainsCapacityActionWhenReleaseFails(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC)
+	issue := claimTestIssue("issue-1430-failure")
+	wantLease := now.Add(-time.Hour).Format(time.RFC3339Nano)
+	issue.Fields["Detent Lease"] = wantLease
+	claimStore := newClaimTestStore([]connector.Issue{issue})
+	attempts := &recordingWorkAttemptStore{pendingCapacityReleases: []store.WorkAttempt{{
+		ID:            1431,
+		ProjectID:     "detent",
+		IssueID:       issue.ID,
+		Identifier:    issue.Identifier,
+		Status:        store.WorkAttemptStatusTerminal,
+		CompletedAt:   now.Add(-30 * time.Minute),
+		TerminalState: store.WorkAttemptTerminalSuccess,
+		NextAction:    "release capacity",
+	}}}
+	cfg := normalizeConfig(claimTestConfig("alpha", "alpha"))
+	cfg.Project = scheduler.ProjectCandidate{ID: "detent"}
+	o := &Orchestrator{
+		cfg: cfg,
+		connector: failingCapacityReleaseConnector{
+			claimTestConnector: claimTestConnector{store: claimStore, login: "alpha"},
+			err:                errors.New("tracker unavailable"),
+		},
+		workAttempts: attempts,
+	}
+	state := newState(cfg)
+
+	o.recoverDurableWorkAttempts(t.Context(), &state, now)
+
+	if got := claimStore.issue(issue.ID).Fields["Detent Lease"]; got != wantLease {
+		t.Fatalf("Detent Lease = %q, want pending lease %q", got, wantLease)
+	}
+	if len(attempts.clearedCapacityReleases) != 0 {
+		t.Fatalf("cleared capacity releases = %v, want none", attempts.clearedCapacityReleases)
+	}
+	foundFailure := false
+	for _, event := range state.RecentEvents {
+		if event.Event == "work_attempt_capacity_release_failed" {
+			foundFailure = true
+			break
+		}
+	}
+	if !foundFailure {
+		t.Fatalf("RecentEvents = %#v, want capacity release failure", state.RecentEvents)
+	}
+}
+
+func TestRecoverDurableWorkAttemptsPreservesNewerClaimLease(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC)
+	issue := claimTestIssue("issue-1430-newer-lease")
+	wantLease := now.Add(-10 * time.Minute).Format(time.RFC3339Nano)
+	issue.Fields["Detent Lease"] = wantLease
+	claimStore := newClaimTestStore([]connector.Issue{issue})
+	attempts := &recordingWorkAttemptStore{pendingCapacityReleases: []store.WorkAttempt{{
+		ID:            1432,
+		ProjectID:     "detent",
+		IssueID:       issue.ID,
+		Identifier:    issue.Identifier,
+		Status:        store.WorkAttemptStatusTerminal,
+		CompletedAt:   now.Add(-30 * time.Minute),
+		TerminalState: store.WorkAttemptTerminalSuccess,
+		NextAction:    "release capacity",
+	}}}
+	cfg := normalizeConfig(claimTestConfig("alpha", "alpha"))
+	cfg.Project = scheduler.ProjectCandidate{ID: "detent"}
+	o := &Orchestrator{
+		cfg:          cfg,
+		connector:    claimTestConnector{store: claimStore, login: "alpha"},
+		workAttempts: attempts,
+	}
+	state := newState(cfg)
+
+	o.recoverDurableWorkAttempts(t.Context(), &state, now)
+
+	if got := claimStore.issue(issue.ID).Fields["Detent Lease"]; got != wantLease {
+		t.Fatalf("Detent Lease = %q, want newer lease %q preserved", got, wantLease)
+	}
+	if len(attempts.clearedCapacityReleases) != 1 || attempts.clearedCapacityReleases[0] != 1432 {
+		t.Fatalf("cleared capacity releases = %v, want stale action [1432] acknowledged", attempts.clearedCapacityReleases)
+	}
+}
+
 func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	t.Parallel()
 
@@ -2735,15 +2858,26 @@ func receiveWorkerHostRunRequest(t *testing.T, requests <-chan RunRequest) RunRe
 }
 
 type recordingWorkAttemptStore struct {
-	nextID         int64
-	starts         []store.WorkAttemptStart
-	heartbeats     []store.WorkAttemptHeartbeat
-	completions    []store.WorkAttemptCompletion
-	decisions      []store.SchedulerDecision
-	reclaimed      []store.WorkAttempt
-	recent         []store.WorkAttempt
-	history        []store.WorkAttempt
-	historyQueries []store.WorkAttemptHistoryQuery
+	nextID                  int64
+	starts                  []store.WorkAttemptStart
+	heartbeats              []store.WorkAttemptHeartbeat
+	completions             []store.WorkAttemptCompletion
+	decisions               []store.SchedulerDecision
+	reclaimed               []store.WorkAttempt
+	recent                  []store.WorkAttempt
+	history                 []store.WorkAttempt
+	historyQueries          []store.WorkAttemptHistoryQuery
+	pendingCapacityReleases []store.WorkAttempt
+	clearedCapacityReleases []int64
+}
+
+type failingCapacityReleaseConnector struct {
+	claimTestConnector
+	err error
+}
+
+func (c failingCapacityReleaseConnector) SetField(context.Context, string, string, string) error {
+	return c.err
 }
 
 type recordingRetrospector struct {
@@ -2788,6 +2922,15 @@ func (s *recordingWorkAttemptStore) ReclaimActiveWorkAttempts(context.Context, s
 
 func (s *recordingWorkAttemptStore) ListActiveWorkAttempts(context.Context, store.WorkAttemptQuery) ([]store.WorkAttempt, error) {
 	return nil, nil
+}
+
+func (s *recordingWorkAttemptStore) ListPendingWorkAttemptCapacityReleases(context.Context, string) ([]store.WorkAttempt, error) {
+	return append([]store.WorkAttempt(nil), s.pendingCapacityReleases...), nil
+}
+
+func (s *recordingWorkAttemptStore) ClearWorkAttemptCapacityRelease(_ context.Context, attemptID int64) error {
+	s.clearedCapacityReleases = append(s.clearedCapacityReleases, attemptID)
+	return nil
 }
 
 func (s *recordingWorkAttemptStore) ListRecentTerminalWorkAttempts(_ context.Context, query store.WorkAttemptHistoryQuery) ([]store.WorkAttempt, error) {
