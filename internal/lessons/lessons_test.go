@@ -130,7 +130,10 @@ func TestAppendRendersFallbacksAndEscapesTitleQuotes(t *testing.T) {
 	entry := entries[0]
 	for _, want := range []string{
 		`## 2026-05-22 - issue MT-9 - "Needs \"quotes\" escaped"`,
+		"- **Captured at:** 2026-05-22T00:00:00Z",
 		"- **Failure kind:** <unknown>",
+		"- **Issue:** issue MT-9",
+		"- **Pull request:** <unavailable>",
 		"- **Symptom:** command failed before diff",
 		"- **Hypothesis (Detent):** <unavailable>",
 		"- **Hint for next time:** <unavailable>",
@@ -138,6 +141,104 @@ func TestAppendRendersFallbacksAndEscapesTitleQuotes(t *testing.T) {
 		if !strings.Contains(entry, want) {
 			t.Fatalf("entry missing %q:\n%s", want, entry)
 		}
+	}
+}
+
+func TestAppendRoundTripsStructuredFields(t *testing.T) {
+	t.Parallel()
+
+	capturedAt := time.Date(2026, 7, 17, 14, 15, 16, 123, time.UTC)
+	tests := []struct {
+		name  string
+		entry Entry
+		want  map[string]string
+	}{
+		{
+			name: "issue and pull request context",
+			entry: Entry{
+				IssueRef:    "digitaldrywood/detent#1397",
+				PullRequest: "https://github.com/digitaldrywood/detent/pull/1401",
+				Title:       "Capture rework",
+				FailureKind: "ci_failure",
+				Symptom:     "checks failed: test, lint",
+				Hypothesis:  "the change was not ready",
+				Hint:        "run the gate locally",
+				CaptureKey:  "rework|detent|1397|2026-07-17T14:15:16.000000123Z",
+			},
+			want: map[string]string{
+				"Captured at":         capturedAt.Format(time.RFC3339Nano),
+				"Failure kind":        "ci_failure",
+				"Issue":               "digitaldrywood/detent#1397",
+				"Pull request":        "https://github.com/digitaldrywood/detent/pull/1401",
+				"Symptom":             "checks failed: test, lint",
+				"Hypothesis (Detent)": "the change was not ready",
+				"Hint for next time":  "run the gate locally",
+				"Capture key":         "rework|detent|1397|2026-07-17T14:15:16.000000123Z",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "lessons.md")
+			if err := Append(path, tt.entry, AppendOptions{Date: capturedAt}); err != nil {
+				t.Fatalf("Append() error = %v", err)
+			}
+			entries, err := ReadAll(path)
+			if err != nil {
+				t.Fatalf("ReadAll() error = %v", err)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("ReadAll() len = %d, want 1", len(entries))
+			}
+			for label, want := range tt.want {
+				if got := renderedEntryField(entries[0], label); got != want {
+					t.Errorf("renderedEntryField(%q) = %q, want %q", label, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestAppendUniqueAndCaptureSummary(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "lessons.md")
+	firstAt := time.Date(2026, 7, 16, 9, 30, 0, 0, time.FixedZone("CDT", -5*60*60))
+	secondAt := firstAt.Add(2 * time.Hour)
+	tests := []struct {
+		name       string
+		captureKey string
+		capturedAt time.Time
+		wantAppend bool
+	}{
+		{name: "first capture", captureKey: "rework|detent|1397|first", capturedAt: firstAt, wantAppend: true},
+		{name: "duplicate capture", captureKey: "rework|detent|1397|first", capturedAt: firstAt, wantAppend: false},
+		{name: "second capture", captureKey: "rework|detent|1397|second", capturedAt: secondAt, wantAppend: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			appended, err := AppendUnique(path, Entry{
+				IssueRef:    "digitaldrywood/detent#1397",
+				FailureKind: "ci_failure",
+				CaptureKey:  tt.captureKey,
+			}, AppendOptions{Date: tt.capturedAt})
+			if err != nil {
+				t.Fatalf("AppendUnique() error = %v", err)
+			}
+			if appended != tt.wantAppend {
+				t.Fatalf("AppendUnique() = %t, want %t", appended, tt.wantAppend)
+			}
+		})
+	}
+
+	summary, err := CaptureSummary(path)
+	if err != nil {
+		t.Fatalf("CaptureSummary() error = %v", err)
+	}
+	if summary.Count != 2 || summary.LastCapturedAt == nil || !summary.LastCapturedAt.Equal(secondAt.UTC()) {
+		t.Fatalf("CaptureSummary() = %#v, want count 2 last %v", summary, secondAt.UTC())
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,11 +18,13 @@ const (
 type Entry struct {
 	IssueNumber string
 	IssueRef    string
+	PullRequest string
 	Title       string
 	FailureKind string
 	Symptom     string
 	Hypothesis  string
 	Hint        string
+	CaptureKey  string
 }
 
 type AppendOptions struct {
@@ -35,7 +38,66 @@ type FailureKindPattern struct {
 	Examples    []string
 }
 
+type CaptureStats struct {
+	Count          int
+	LastCapturedAt *time.Time
+}
+
+var appendMu sync.Mutex
+
 func Append(path string, entry Entry, opts AppendOptions) error {
+	appendMu.Lock()
+	defer appendMu.Unlock()
+
+	return appendEntry(path, entry, opts)
+}
+
+func AppendUnique(path string, entry Entry, opts AppendOptions) (bool, error) {
+	appendMu.Lock()
+	defer appendMu.Unlock()
+
+	captureKey := strings.TrimSpace(entry.CaptureKey)
+	if captureKey == "" {
+		return false, errors.New("lesson capture key is required")
+	}
+	entries, err := ReadAll(path)
+	if err != nil {
+		return false, err
+	}
+	for _, existing := range entries {
+		if renderedEntryField(existing, "Capture key") == captureKey {
+			return false, nil
+		}
+	}
+	return true, appendEntryTo(path, entry, opts, entries)
+}
+
+func CaptureSummary(path string) (CaptureStats, error) {
+	entries, err := ReadAll(path)
+	if err != nil {
+		return CaptureStats{}, err
+	}
+	stats := CaptureStats{Count: len(entries)}
+	for _, entry := range entries {
+		capturedAt, ok := renderedEntryCapturedAt(entry)
+		if !ok || stats.LastCapturedAt != nil && !capturedAt.After(*stats.LastCapturedAt) {
+			continue
+		}
+		value := capturedAt
+		stats.LastCapturedAt = &value
+	}
+	return stats, nil
+}
+
+func appendEntry(path string, entry Entry, opts AppendOptions) error {
+	entries, err := ReadAll(path)
+	if err != nil {
+		return err
+	}
+	return appendEntryTo(path, entry, opts, entries)
+}
+
+func appendEntryTo(path string, entry Entry, opts AppendOptions, entries []string) error {
 	maxEntries := opts.MaxEntries
 	if maxEntries <= 0 {
 		maxEntries = DefaultMaxEntries
@@ -44,11 +106,6 @@ func Append(path string, entry Entry, opts AppendOptions) error {
 	date := opts.Date
 	if date.IsZero() {
 		date = time.Now().UTC()
-	}
-
-	entries, err := ReadAll(path)
-	if err != nil {
-		return err
 	}
 
 	rendered := renderEntry(entry, date)
@@ -144,10 +201,16 @@ func ReadAll(path string) ([]string, error) {
 func renderEntry(entry Entry, date time.Time) string {
 	lines := []string{
 		"## " + date.Format("2006-01-02") + " - " + issueRef(entry) + " - \"" + headingTitle(entry) + "\"",
+		"- **Captured at:** " + date.UTC().Format(time.RFC3339Nano),
 		"- **Failure kind:** " + field(entry.FailureKind, "<unknown>"),
+		"- **Issue:** " + field(entry.IssueRef, issueRef(entry)),
+		"- **Pull request:** " + field(entry.PullRequest, "<unavailable>"),
 		"- **Symptom:** " + field(entry.Symptom, "<unavailable>"),
 		"- **Hypothesis (Detent):** " + field(entry.Hypothesis, "<unavailable>"),
 		"- **Hint for next time:** " + field(entry.Hint, "<unavailable>"),
+	}
+	if captureKey := strings.TrimSpace(entry.CaptureKey); captureKey != "" {
+		lines = append(lines, "- **Capture key:** "+field(captureKey, ""))
 	}
 
 	return strings.Join(lines, "\n")
@@ -220,6 +283,24 @@ func renderedEntryHeading(entry string) string {
 		}
 	}
 	return ""
+}
+
+func renderedEntryCapturedAt(entry string) (time.Time, bool) {
+	if value := renderedEntryField(entry, "Captured at"); value != "" {
+		capturedAt, err := time.Parse(time.RFC3339Nano, value)
+		if err == nil {
+			return capturedAt.UTC(), true
+		}
+	}
+	heading := renderedEntryHeading(entry)
+	if len(heading) < len("2006-01-02") {
+		return time.Time{}, false
+	}
+	capturedAt, err := time.Parse("2006-01-02", heading[:len("2006-01-02")])
+	if err != nil {
+		return time.Time{}, false
+	}
+	return capturedAt.UTC(), true
 }
 
 func writeEntries(path string, entries []string) error {

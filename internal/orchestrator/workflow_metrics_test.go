@@ -5,10 +5,13 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/lessons"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -456,6 +459,139 @@ func TestUpdateIssueStateByIDSkipsWorkflowMetricsForBlockedUpdate(t *testing.T) 
 	}
 	if got := state.BoardIssues[0].State; got != "Done" {
 		t.Fatalf("snapshot BoardIssues state = %q, want Done", got)
+	}
+}
+
+func TestUpdateIssueStateByIDCapturesReworkLesson(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		reason          string
+		pullRequest     *connector.PullRequest
+		wantFailureKind string
+		wantContext     []string
+	}{
+		{
+			name:   "CI failure includes failed checks",
+			reason: string(AutoPromoteReasonCINotGreen),
+			pullRequest: &connector.PullRequest{
+				Number: 1401,
+				URL:    "https://github.com/digitaldrywood/detent/pull/1401",
+				RequiredCheckFailures: []connector.PullRequestCheck{
+					{Name: "test", Conclusion: "failure"},
+					{Name: "lint", Conclusion: "failure"},
+				},
+			},
+			wantFailureKind: "ci_failure",
+			wantContext:     []string{"failed checks: test, lint", "https://github.com/digitaldrywood/detent/pull/1401"},
+		},
+		{
+			name:   "requested changes include review findings",
+			reason: string(AutoPromoteReasonP1Findings),
+			pullRequest: &connector.PullRequest{
+				Number:           1402,
+				CodexReviewState: "CHANGES_REQUESTED",
+				CodexReviewFindings: []connector.PullRequestFinding{
+					{Body: "Add rollback coverage."},
+				},
+			},
+			wantFailureKind: "changes_requested",
+			wantContext:     []string{"CHANGES_REQUESTED: Add rollback coverage.", "PR #1402"},
+		},
+		{
+			name:            "generic transition keeps a non-empty kind",
+			reason:          "operator_rework",
+			wantFailureKind: "operator_rework",
+			wantContext:     []string{"reason: operator_rework"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), ".detent", "lessons.md")
+			transitionAt := time.Date(2026, 7, 17, 15, 30, 0, 0, time.UTC)
+			issue := connector.Issue{
+				ID:          "issue-1397",
+				Identifier:  "digitaldrywood/detent#1397",
+				Number:      1397,
+				Title:       "Capture rework lessons",
+				State:       "In Progress",
+				PullRequest: tt.pullRequest,
+			}
+			orch := &Orchestrator{
+				cfg: Config{
+					Project: scheduler.ProjectCandidate{ID: "detent"},
+					Lessons: LessonCaptureConfig{Enabled: true, Path: path, MaxEntries: 10},
+				},
+				connector: &workflowMetricsConnector{},
+			}
+			state := newState(Config{})
+			if err := orch.updateIssueStateByID(t.Context(), &state, issue.ID, issue, "Rework", transitionAt, tt.reason); err != nil {
+				t.Fatalf("updateIssueStateByID() error = %v", err)
+			}
+
+			patterns, err := lessons.FailureKindPatterns(path, 1)
+			if err != nil {
+				t.Fatalf("FailureKindPatterns() error = %v", err)
+			}
+			if len(patterns) != 1 || patterns[0].FailureKind != tt.wantFailureKind {
+				t.Fatalf("FailureKindPatterns() = %#v, want %q", patterns, tt.wantFailureKind)
+			}
+			entries, err := lessons.ReadAll(path)
+			if err != nil {
+				t.Fatalf("ReadAll() error = %v", err)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("ReadAll() len = %d, want 1", len(entries))
+			}
+			for _, want := range tt.wantContext {
+				if !strings.Contains(entries[0], want) {
+					t.Errorf("lesson missing %q:\n%s", want, entries[0])
+				}
+			}
+		})
+	}
+}
+
+func TestRefreshCurrentLaneEntriesCapturesObservedReworkOnce(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), ".detent", "lessons.md")
+	enteredAt := time.Date(2026, 7, 17, 16, 0, 0, 0, time.UTC)
+	issue := connector.Issue{
+		ID:             "issue-1397",
+		Identifier:     "digitaldrywood/detent#1397",
+		Number:         1397,
+		Title:          "Capture observed rework",
+		State:          "Rework",
+		StageUpdatedAt: &enteredAt,
+	}
+	cfg := Config{
+		Project: scheduler.ProjectCandidate{ID: "detent"},
+		Lessons: LessonCaptureConfig{Enabled: true, Path: path, MaxEntries: 10},
+	}
+	orch := &Orchestrator{cfg: cfg}
+	state := newState(cfg)
+	state.BoardIssues = []connector.Issue{issue}
+
+	orch.refreshCurrentLaneEntries(t.Context(), &state, enteredAt.Add(time.Minute))
+	orch.refreshCurrentLaneEntries(t.Context(), &state, enteredAt.Add(2*time.Minute))
+
+	entries, err := lessons.ReadAll(path)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("ReadAll() len = %d, want one deduplicated capture", len(entries))
+	}
+	patterns, err := lessons.FailureKindPatterns(path, 1)
+	if err != nil {
+		t.Fatalf("FailureKindPatterns() error = %v", err)
+	}
+	if len(patterns) != 1 || patterns[0].FailureKind != reworkTransitionFailureKind {
+		t.Fatalf("FailureKindPatterns() = %#v, want %q", patterns, reworkTransitionFailureKind)
 	}
 }
 

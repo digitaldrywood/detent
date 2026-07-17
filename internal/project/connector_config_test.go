@@ -60,6 +60,54 @@ func TestWorkflowConfigWithProjectPathsResolvesArtifactWorkflowPaths(t *testing.
 	}
 }
 
+func TestProjectOrchestratorConfigEnablesLessonCapture(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		lessonPath string
+		maxEntries int
+		wantPath   string
+		wantMax    int
+	}{
+		{
+			name:     "defaults",
+			wantPath: filepath.Join(".detent", "lessons.md"),
+			wantMax:  50,
+		},
+		{
+			name:       "workflow override",
+			lessonPath: filepath.Join("ops", "lessons.md"),
+			maxEntries: 12,
+			wantPath:   filepath.Join("ops", "lessons.md"),
+			wantMax:    12,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workdir := t.TempDir()
+			cfg := workflowconfig.Default()
+			cfg.Agent.Lessons.Enabled = false
+			cfg.Agent.Lessons.Path = tt.lessonPath
+			cfg.Agent.Lessons.MaxEntries = tt.maxEntries
+
+			got := projectOrchestratorConfig(globalconfig.Project{ID: "detent", Workdir: workdir}, cfg)
+			if !got.Lessons.Enabled {
+				t.Fatal("Lessons.Enabled = false, want automatic capture enabled")
+			}
+			if got.Lessons.Path != filepath.Join(workdir, tt.wantPath) {
+				t.Fatalf("Lessons.Path = %q, want %q", got.Lessons.Path, filepath.Join(workdir, tt.wantPath))
+			}
+			if got.Lessons.MaxEntries != tt.wantMax {
+				t.Fatalf("Lessons.MaxEntries = %d, want %d", got.Lessons.MaxEntries, tt.wantMax)
+			}
+		})
+	}
+}
+
 func TestWorkflowConfigWithProjectIntakeOverride(t *testing.T) {
 	t.Parallel()
 
