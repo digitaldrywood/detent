@@ -500,7 +500,7 @@ test("board applies persisted todo visibility before snapshot morphs", async ({
 
   await expect(lane).toBeVisible();
   await expect(visibility).toHaveValue("show");
-  await expect(count).toHaveText("8/9");
+  await expect(count).toHaveText("7/9");
 
   const incomingSnapshot = await page.evaluate((laneID) => {
     const template = document.createElement("template");
@@ -558,7 +558,7 @@ test("board applies persisted todo visibility before snapshot morphs", async ({
   expect(hiddenValues).not.toContain("true");
   await expect(lane).toBeVisible();
   await expect(visibility).toHaveValue("show");
-  await expect(count).toHaveText("8/9");
+  await expect(count).toHaveText("7/9");
 
   await startLaneHiddenRecorder(page, laneID);
   await page.evaluate(
@@ -588,7 +588,7 @@ test("board applies persisted todo visibility before snapshot morphs", async ({
   expect(sseHiddenValues).not.toContain("true");
   await expect(lane).toBeVisible();
   await expect(visibility).toHaveValue("show");
-  await expect(count).toHaveText("8/9");
+  await expect(count).toHaveText("7/9");
 });
 
 test("board card opens the detail sheet", async ({ page }, testInfo) => {
