@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -98,6 +99,66 @@ func TestServerShutdownDrainsAsyncWritesAfterActiveHandlers(t *testing.T) {
 	waitForAsyncWriterSignal(t, ran)
 	if err := waitForAsyncWriterClose(t, serveErr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		t.Fatalf("StartListener() error = %v, want %v", err, http.ErrServerClosed)
+	}
+}
+
+func TestServerShutdownJoinsAsyncWriterBeforeStoreClose(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server := &Server{
+		echo:        echo.New(),
+		logger:      logger,
+		asyncWrites: newAsyncStoreWriter(1, logger),
+	}
+
+	var storeClosed atomic.Bool
+	var accessAfterClose atomic.Int64
+	accessStore := func() {
+		if storeClosed.Load() {
+			accessAfterClose.Add(1)
+		}
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	jobCanceled := make(chan struct{})
+	if !server.asyncWrites.Enqueue(func(ctx context.Context) {
+		close(started)
+		select {
+		case <-ctx.Done():
+			close(jobCanceled)
+		case <-release:
+		}
+		accessStore()
+	}) {
+		t.Fatal("Enqueue(active) = false, want true")
+	}
+	waitForAsyncWriterSignal(t, started)
+	if !server.asyncWrites.Enqueue(func(context.Context) {
+		accessStore()
+	}) {
+		t.Fatal("Enqueue(queued) = false, want true")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	shutdownErr := make(chan error, 1)
+	go func() {
+		shutdownErr <- server.Shutdown(ctx)
+	}()
+	if err := waitForAsyncWriterClose(t, shutdownErr); err != nil {
+		t.Fatalf("Shutdown() error = %v, want nil", err)
+	}
+	storeClosed.Store(true)
+	close(release)
+	waitForAsyncWriterSignal(t, server.asyncWrites.done)
+	if got := accessAfterClose.Load(); got != 0 {
+		t.Fatalf("store accesses after Shutdown returned = %d, want 0", got)
+	}
+	select {
+	case <-jobCanceled:
+	default:
+		t.Fatal("active job did not observe shutdown cancellation")
 	}
 }
 

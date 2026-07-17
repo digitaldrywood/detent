@@ -105,33 +105,76 @@ func TestAsyncStoreWriter(t *testing.T) {
 			},
 		},
 		{
-			name: "close returns canceled context error",
+			name: "close cancels active job and joins within deadline",
 			run: func(t *testing.T) {
 				t.Helper()
 
 				writer := newAsyncStoreWriter(1, discardAsyncStoreWriterLogger())
 				started := make(chan struct{})
-				release := make(chan struct{})
-				if !writer.Enqueue(func(context.Context) {
+				jobErr := make(chan error, 1)
+				if !writer.Enqueue(func(ctx context.Context) {
 					close(started)
-					<-release
+					<-ctx.Done()
+					jobErr <- ctx.Err()
 				}) {
 					t.Fatal("Enqueue() = false, want true")
 				}
 				waitForAsyncWriterSignal(t, started)
+				ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+				defer cancel()
+
+				if err := writer.Close(ctx); err != nil {
+					t.Fatalf("Close() error = %v, want nil", err)
+				}
+				if err := ctx.Err(); err != nil {
+					t.Fatalf("context error after Close = %v, want nil", err)
+				}
+				if err := waitForAsyncWriterClose(t, jobErr); !errors.Is(err, context.Canceled) {
+					t.Fatalf("job context error = %v, want %v", err, context.Canceled)
+				}
+				select {
+				case <-writer.done:
+				default:
+					t.Fatal("worker still running after Close returned")
+				}
+			},
+		},
+		{
+			name: "close cancellation discards queued jobs",
+			run: func(t *testing.T) {
+				t.Helper()
+
+				writer := newAsyncStoreWriter(1, discardAsyncStoreWriterLogger())
+				started := make(chan struct{})
+				if !writer.Enqueue(func(ctx context.Context) {
+					close(started)
+					<-ctx.Done()
+				}) {
+					t.Fatal("Enqueue(active) = false, want true")
+				}
+				waitForAsyncWriterSignal(t, started)
+				queued := make(chan struct{})
+				if !writer.Enqueue(func(context.Context) {
+					close(queued)
+				}) {
+					t.Fatal("Enqueue(queued) = false, want true")
+				}
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
 
-				closed := make(chan error, 1)
-				go func() {
-					closed <- writer.Close(ctx)
-				}()
-				err := waitForAsyncWriterClose(t, closed)
-				if !errors.Is(err, context.Canceled) {
-					t.Fatalf("Close() error = %v, want %v", err, context.Canceled)
+				if err := writer.Close(ctx); err != nil {
+					t.Fatalf("Close() error = %v, want nil", err)
 				}
-				close(release)
-				waitForAsyncWriterSignal(t, writer.done)
+				select {
+				case <-writer.done:
+				default:
+					t.Fatal("worker still running after Close returned")
+				}
+				select {
+				case <-queued:
+					t.Fatal("queued job ran after shutdown cancellation")
+				default:
+				}
 			},
 		},
 	}

@@ -11,6 +11,7 @@ type asyncStoreWriter struct {
 	jobs   chan func(context.Context)
 	done   chan struct{}
 	logger *slog.Logger
+	cancel context.CancelFunc
 
 	mu     sync.Mutex
 	closed bool
@@ -23,12 +24,14 @@ func newAsyncStoreWriter(buffer int, logger *slog.Logger) *asyncStoreWriter {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	writer := &asyncStoreWriter{
 		jobs:   make(chan func(context.Context), buffer),
 		done:   make(chan struct{}),
 		logger: logger,
+		cancel: cancel,
 	}
-	go writer.run()
+	go writer.run(ctx)
 	return writer
 }
 
@@ -67,19 +70,46 @@ func (w *asyncStoreWriter) Close(ctx context.Context) error {
 	}
 	w.mu.Unlock()
 
-	select {
-	case <-w.done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	drainCtx := ctx
+	cancelDrain := func() {}
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining > 0 {
+			joinGrace := min(time.Second, remaining/5)
+			drainCtx, cancelDrain = context.WithDeadline(ctx, deadline.Add(-joinGrace))
+		}
 	}
+	defer cancelDrain()
+	stopCancel := context.AfterFunc(drainCtx, w.cancel)
+	defer stopCancel()
+
+	<-w.done
+	return nil
 }
 
-func (w *asyncStoreWriter) run() {
+func (w *asyncStoreWriter) run(ctx context.Context) {
 	defer close(w.done)
-	for job := range w.jobs {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		job(ctx)
-		cancel()
+	defer w.cancel()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case job, ok := <-w.jobs:
+			if !ok {
+				return
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			jobCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			job(jobCtx)
+			cancel()
+		}
 	}
 }
