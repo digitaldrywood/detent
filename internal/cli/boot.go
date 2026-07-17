@@ -326,8 +326,8 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}
 	chatProvider := buildChatProvider(manager.Registry(), logger)
 	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, snapshotSeq, runtimeStore, displayURL, defaultSnapshotInterval, time.Now, updateScheduler)
-	go republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger)
-	go persistBoardSnapshots(runCtx, snapshotHub, boardSnapshotStore, defaultBoardSnapshotInterval, logger)
+	go republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger)                               // #nosec G118 -- runCtx is the service-lifetime context canceled during shutdown.
+	go persistBoardSnapshots(runCtx, snapshotHub, boardSnapshotStore, defaultBoardSnapshotInterval, logger) // #nosec G118 -- runCtx is the service-lifetime context canceled during shutdown.
 	//nolint:contextcheck // Echo middleware receives request contexts at serve time.
 	server, err := web.NewServer(web.Config{
 		Mode:               web.ModeRunning,

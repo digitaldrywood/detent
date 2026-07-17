@@ -26,7 +26,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.4'
+          go-version: '1.26.5'
           cache: true
 
       - name: Download modules
@@ -37,7 +37,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/go/bin/golangci-lint
-          key: golangci-lint-${{ runner.os }}-go1.26.4-v2.1.6
+          key: golangci-lint-${{ runner.os }}-go1.26.5-v2.1.6
 
       - name: Install golangci-lint
         if: steps.golangci-lint-cache.outputs.cache-hit != 'true'
@@ -62,7 +62,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.4'
+          go-version: '1.26.5'
           cache: true
 
       - name: Download modules
@@ -88,11 +88,25 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.4'
+          go-version: '1.26.5'
           cache: true
 
       - name: Check coverage
         run: make test-cover-packages
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+          cache: true
+
+      - name: Run govulncheck and gosec
+        run: make security
 
   browser-visual:
     name: Browser Visual
@@ -104,7 +118,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.4'
+          go-version: '1.26.5'
           cache: true
 
       - name: Detect visual-sensitive changes
@@ -195,7 +209,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.4'
+          go-version: '1.26.5'
           cache: true
 
       - name: Download modules
@@ -225,7 +239,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.4'
+          go-version: '1.26.5'
           cache: true
 
       - name: Run non-agent core tests
@@ -333,7 +347,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.4'
+          go-version: '1.26.5'
           cache: true
 
       - name: Install minisign

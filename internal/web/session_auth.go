@@ -177,7 +177,7 @@ func (s *Server) renderAuthPage(c echo.Context, status int, state templates.Auth
 }
 
 func (s *Server) setSessionCookie(c echo.Context, token string, expiresAt time.Time) {
-	c.SetCookie(&http.Cookie{
+	c.SetCookie(&http.Cookie{ // #nosec G124 -- all cookie security attributes are set below; Secure follows the configured HTTP/TLS mode.
 		Name:     webSessionCookieName,
 		Value:    token,
 		Path:     "/",
@@ -189,7 +189,7 @@ func (s *Server) setSessionCookie(c echo.Context, token string, expiresAt time.T
 }
 
 func (s *Server) clearSessionCookie(c echo.Context) {
-	c.SetCookie(&http.Cookie{
+	c.SetCookie(&http.Cookie{ // #nosec G124 -- the clearing cookie mirrors the protected session cookie attributes.
 		Name:     webSessionCookieName,
 		Path:     "/",
 		Expires:  time.Unix(1, 0),

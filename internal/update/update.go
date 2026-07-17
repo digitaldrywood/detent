@@ -1050,11 +1050,11 @@ func escapeBatchValue(value string) string {
 }
 
 func startProcess(command string, args []string) error {
-	return exec.Command(command, args...).Start()
+	return exec.Command(command, args...).Start() // #nosec G204 -- updater commands and arguments are resolved internally and bypass a shell.
 }
 
 func runCommand(ctx context.Context, command string, args []string, stdout io.Writer, stderr io.Writer) error {
-	cmd := exec.CommandContext(ctx, command, args...)
+	cmd := exec.CommandContext(ctx, command, args...) // #nosec G204 -- updater commands and arguments are resolved internally and bypass a shell.
 	cmd.Stdout = outputWriter(stdout)
 	cmd.Stderr = outputWriter(stderr)
 	if err := cmd.Run(); err != nil {
@@ -1064,7 +1064,7 @@ func runCommand(ctx context.Context, command string, args []string, stdout io.Wr
 }
 
 func verifyBinaryVersion(ctx context.Context, path string) (string, error) {
-	cmd := exec.CommandContext(ctx, path, "version")
+	cmd := exec.CommandContext(ctx, path, "version") // #nosec G204 -- the downloaded binary path is verified before installation and bypasses a shell.
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(output), fmt.Errorf("verify %s version: %w: %s", path, err, strings.TrimSpace(string(output)))
@@ -1073,7 +1073,7 @@ func verifyBinaryVersion(ctx context.Context, path string) (string, error) {
 }
 
 func signBinary(ctx context.Context, path string) error {
-	cmd := exec.CommandContext(ctx, "codesign", "-s", "-", path)
+	cmd := exec.CommandContext(ctx, "codesign", "-s", "-", path) // #nosec G204 -- the downloaded binary path is passed directly to codesign without a shell.
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("codesign %s: %w: %s", path, err, strings.TrimSpace(string(output)))
@@ -1085,7 +1085,7 @@ func hasValidCodeSignature(ctx context.Context, path string, verifier CodeSignat
 	if verifier != nil {
 		return verifier(ctx, path)
 	}
-	cmd := exec.CommandContext(ctx, "codesign", "--verify", "--strict", path)
+	cmd := exec.CommandContext(ctx, "codesign", "--verify", "--strict", path) // #nosec G204 -- the downloaded binary path is passed directly to codesign without a shell.
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		return true, nil

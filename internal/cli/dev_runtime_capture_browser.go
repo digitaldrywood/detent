@@ -170,7 +170,7 @@ func demoCaptureBrowserPaths() []string {
 }
 
 func executableDemoCaptureFile(path string) bool {
-	info, err := os.Stat(path)
+	info, err := os.Stat(path) // #nosec G703 -- candidates are assembled from fixed browser locations and environment-provided installation roots.
 	if err != nil {
 		return false
 	}

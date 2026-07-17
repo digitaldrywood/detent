@@ -981,7 +981,7 @@ where project_id = ?`
 		// Callers such as the orchestrator lowercase configured states while
 		// rows may hold the template's capitalized spellings; compare
 		// case-insensitively so items stay visible either way.
-		query += " and state collate nocase in (" + strings.Join(placeholders, ",") + ")"
+		query += " and state collate nocase in (" + strings.Join(placeholders, ",") + ")" // #nosec G202 -- only generated question-mark placeholders are concatenated; values remain bound parameters.
 	}
 	query += " order by updated_at desc, id asc"
 	if limit > 0 {
