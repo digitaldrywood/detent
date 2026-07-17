@@ -94,6 +94,17 @@ templ projectOverviewSnapshotBody(data DashboardData) {
 }
 
 templ ProjectBudgetPanel(data DashboardData) {
+	if budgetEnrichmentPending(data) {
+		<section id="project-budget" class="flex flex-none flex-col gap-3 rounded-card border border-line bg-surface p-4" aria-busy="true">
+			<h2 class="text-sm font-semibold text-text">Daily budget</h2>
+			<p class="text-xs text-sec">Loading budget data…</p>
+		</section>
+	} else {
+		@projectBudgetPanel(data)
+	}
+}
+
+templ projectBudgetPanel(data DashboardData) {
 	{{ budget := projectBudget(data) }}
 	<section id="project-budget" class="flex flex-none flex-col gap-4 rounded-card border border-line bg-surface p-4">
 		<div class="flex flex-wrap items-start justify-between gap-3">

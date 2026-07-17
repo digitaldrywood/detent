@@ -101,6 +101,15 @@ func fleetViewFromDashboard(data DashboardData) fleetView {
 		PRLanes:    fleetPRLanes(snapshot),
 		Metrics:    fleetMetricsFromSnapshot(data),
 	}
+	if budgetEnrichmentPending(data) {
+		view.Spend = "— today"
+		view.Metrics.SpendValue = "—"
+		view.Metrics.SpendNote = "Loading budget data."
+		view.Metrics.SpendPct = 0
+		view.Metrics.SpendTitle = ""
+		view.Metrics.SpendWarn = false
+		view.Metrics.HasSpend = false
+	}
 	if len(view.Exceptions) == 0 {
 		if snapshotDegraded(snapshot) {
 			// Body renders on degraded-with-prior-data, so the reassurance
@@ -112,6 +121,22 @@ func fleetViewFromDashboard(data DashboardData) fleetView {
 		}
 	}
 	return view
+}
+
+func budgetEnrichmentPending(data DashboardData) bool {
+	if !data.PendingEnrichment {
+		return false
+	}
+	projectID := strings.TrimSpace(data.ProjectID)
+	for _, project := range data.Projects {
+		if projectID != "" && strings.TrimSpace(project.ID) != projectID {
+			continue
+		}
+		if project.BudgetEnabled {
+			return true
+		}
+	}
+	return false
 }
 
 func fleetAgentsWorkingLabel(running int) string {

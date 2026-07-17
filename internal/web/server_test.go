@@ -6794,84 +6794,103 @@ func TestBoardFirstPaintDoesNotWaitForSnapshotEnrichment(t *testing.T) {
 	}
 }
 
-func TestProjectBoardNavigationUsesCurrentInMemorySnapshot(t *testing.T) {
+func TestBoardPageNavigationUsesCurrentInMemorySnapshot(t *testing.T) {
 	t.Parallel()
 
-	releaseStore := make(chan struct{})
-	t.Cleanup(func() { close(releaseStore) })
-	var fetchCalls atomic.Int64
-	var runtimeEvidenceCalls atomic.Int64
-	deps := testDeps(t)
-	deps.Connector = connectorProbe{
-		name: "github",
-		fetchCandidateIssues: func(context.Context) ([]connector.Issue, error) {
-			fetchCalls.Add(1)
-			return nil, errors.New("unexpected tracker hydration")
-		},
+	tests := []struct {
+		name              string
+		path              string
+		wantBody          string
+		wantPendingBudget bool
+	}{
+		{name: "fleet", path: "/fleet", wantBody: `id="snapshot"`},
+		{name: "project overview", path: "/projects/detent", wantBody: "Recent runs", wantPendingBudget: true},
+		{name: "project kanban", path: "/projects/detent/kanban", wantBody: "Cached project board issue"},
+		{name: "project runs", path: "/projects/detent/runs", wantBody: "Runs"},
+		{name: "project diagnostics", path: "/projects/detent/diagnostics", wantBody: "Diagnostics"},
 	}
-	deps.Store = storeProbe{
-		runtimeEvidence: func(ctx context.Context, _ store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error) {
-			runtimeEvidenceCalls.Add(1)
-			select {
-			case <-releaseStore:
-				return store.RuntimeEvidence{}, nil
-			case <-ctx.Done():
-				return store.RuntimeEvidence{}, ctx.Err()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			releaseStore := make(chan struct{})
+			t.Cleanup(func() { close(releaseStore) })
+			var fetchCalls atomic.Int64
+			blockingStore := &renderBlockingStore{release: releaseStore}
+			deps := testDeps(t)
+			deps.Connector = connectorProbe{
+				name: "github",
+				fetchCandidateIssues: func(context.Context) ([]connector.Issue, error) {
+					fetchCalls.Add(1)
+					return nil, errors.New("unexpected tracker hydration")
+				},
 			}
-		},
-	}
-	mustSetWebProject(t, deps.Registry, "detent", false)
-	mustSetWebProject(t, deps.Registry, "pyroapex", false)
-	if err := deps.Hub.Publish(telemetry.Snapshot{
-		GeneratedAt: time.Date(2026, 7, 16, 15, 4, 5, 0, time.UTC),
-		Projects: []telemetry.ProjectSnapshot{
-			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
-			{Project: telemetry.Project{ID: "pyroapex", DisplayName: "Pyro Apex"}},
-		},
-		BoardIssues: []telemetry.Issue{{
-			ID:         "issue-cached",
-			Identifier: "digitaldrywood/detent#1356",
-			Title:      "Cached project board issue",
-			State:      "In Progress",
-			ProjectID:  "detent",
-		}},
-	}); err != nil {
-		t.Fatalf("Publish() error = %v", err)
-	}
+			deps.Store = blockingStore
+			if err := deps.Registry.Set(newBudgetTestProject(t, "detent", 100, 10)); err != nil {
+				t.Fatalf("Registry.Set() error = %v", err)
+			}
+			mustSetWebProject(t, deps.Registry, "pyroapex", false)
+			if err := deps.Hub.Publish(telemetry.Snapshot{
+				GeneratedAt: time.Date(2026, 7, 16, 15, 4, 5, 0, time.UTC),
+				Projects: []telemetry.ProjectSnapshot{
+					{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+					{Project: telemetry.Project{ID: "pyroapex", DisplayName: "Pyro Apex"}},
+				},
+				BoardIssues: []telemetry.Issue{{
+					ID:         "issue-cached",
+					Identifier: "digitaldrywood/detent#1356",
+					Title:      "Cached project board issue",
+					State:      "In Progress",
+					ProjectID:  "detent",
+				}},
+			}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
 
-	server, err := web.NewServer(web.Config{}, deps)
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
 
-	type response struct {
-		code int
-		body string
-	}
-	responseReady := make(chan response, 1)
-	go func() {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/projects/detent/kanban", nil)
-		server.Handler().ServeHTTP(rec, req)
-		responseReady <- response{code: rec.Code, body: rec.Body.String()}
-	}()
+			type response struct {
+				code int
+				body string
+			}
+			responseReady := make(chan response, 1)
+			go func() {
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+				server.Handler().ServeHTTP(rec, req)
+				responseReady <- response{code: rec.Code, body: rec.Body.String()}
+			}()
 
-	select {
-	case got := <-responseReady:
-		if got.code != http.StatusOK {
-			t.Fatalf("status = %d, want %d; body = %s", got.code, http.StatusOK, got.body)
-		}
-		if !strings.Contains(got.body, "Cached project board issue") {
-			t.Fatalf("body missing cached project board issue:\n%s", got.body)
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("project board navigation exceeded 500ms while current in-memory state was available")
-	}
-	if got := fetchCalls.Load(); got != 0 {
-		t.Fatalf("FetchCandidateIssues calls = %d, want 0", got)
-	}
-	if got := runtimeEvidenceCalls.Load(); got != 0 {
-		t.Fatalf("RuntimeEvidence calls = %d, want 0", got)
+			select {
+			case got := <-responseReady:
+				if got.code != http.StatusOK {
+					t.Fatalf("status = %d, want %d; body = %s", got.code, http.StatusOK, got.body)
+				}
+				if !strings.Contains(got.body, tt.wantBody) {
+					t.Fatalf("body missing %q:\n%s", tt.wantBody, got.body)
+				}
+				if tt.wantPendingBudget {
+					if !strings.Contains(got.body, "Loading budget data…") {
+						t.Fatalf("body missing pending budget state:\n%s", got.body)
+					}
+					if strings.Contains(got.body, "$0.00 / $100.00") {
+						t.Fatalf("body rendered zero spend while budget enrichment was pending:\n%s", got.body)
+					}
+				}
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("board navigation exceeded 500ms while current in-memory state was available")
+			}
+			if got := fetchCalls.Load(); got != 0 {
+				t.Fatalf("FetchCandidateIssues calls = %d, want 0", got)
+			}
+			if got := blockingStore.calls.Load(); got != 0 {
+				t.Fatalf("render-path store calls = %d, want 0", got)
+			}
+		})
 	}
 }
 
@@ -7019,7 +7038,16 @@ func TestDashboardRendersServerMetadata(t *testing.T) {
 func TestDashboardWiresHTMXSSE(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{DashboardURL: "http://localhost:4101"}, testDeps(t))
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC),
+		Refresh: telemetry.Refresh{
+			Status: telemetry.RefreshStatusReady,
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{DashboardURL: "http://localhost:4101"}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -9625,6 +9653,7 @@ func TestProjectDiagnosticsRendersRuntimeStoreEvidence(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
 	html := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/diagnostics", http.StatusOK)
 	for _, want := range []string{
 		"Runtime store",
@@ -9642,7 +9671,6 @@ func TestProjectDiagnosticsRendersRuntimeStoreEvidence(t *testing.T) {
 		}
 	}
 
-	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
 	metrics := state["workflow_metrics"].(map[string]any)
 	runtimeStore := metrics["runtime_store"].(map[string]any)
 	if runtimeStore["backend"] != "sqlite" || runtimeStore["path"] != dbPath || runtimeStore["status"] != "healthy" {
@@ -9678,6 +9706,7 @@ func TestProjectDiagnosticsRendersWorkflowMetricsEmptyHistory(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
+	requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
 	html := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/diagnostics", http.StatusOK)
 	for _, want := range []string{
 		"SQLite history is empty.",
@@ -9713,6 +9742,7 @@ func TestProjectDiagnosticsRendersWorkflowMetricsTrends(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
+	requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
 	html := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/diagnostics", http.StatusOK)
 	for _, want := range []string{
 		"Lane trends",
@@ -10964,6 +10994,43 @@ type storeProbe struct {
 	budgetCostEvents  func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error)
 	runtimeEvidence   func(context.Context, store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error)
 	validatorVerdicts func(context.Context, store.ValidatorVerdictQuery) ([]store.ValidatorVerdict, error)
+}
+
+type renderBlockingStore struct {
+	storeProbe
+
+	release <-chan struct{}
+	calls   atomic.Int64
+}
+
+func (s *renderBlockingStore) wait(ctx context.Context) error {
+	s.calls.Add(1)
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *renderBlockingStore) CycleTimeReport(ctx context.Context) (store.CycleTimeReport, error) {
+	return store.CycleTimeReport{}, s.wait(ctx)
+}
+
+func (s *renderBlockingStore) BudgetCostEvents(ctx context.Context, _ store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+	return nil, s.wait(ctx)
+}
+
+func (s *renderBlockingStore) WorkflowMetricsReport(ctx context.Context, _ store.WorkflowMetricsQuery) (store.WorkflowMetricsReport, error) {
+	return store.WorkflowMetricsReport{}, s.wait(ctx)
+}
+
+func (s *renderBlockingStore) RuntimeEvidence(ctx context.Context, _ store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error) {
+	return store.RuntimeEvidence{}, s.wait(ctx)
+}
+
+func (s *renderBlockingStore) ListEfficiencyReceipts(ctx context.Context, _ efficiency.Query) ([]efficiency.Receipt, error) {
+	return nil, s.wait(ctx)
 }
 
 func (storeProbe) LifetimeTotals(context.Context) (store.LifetimeTotals, error) {

@@ -396,7 +396,8 @@ func (s *Server) dashboard(c echo.Context) error {
 		return s.demoDashboard(c, scenario)
 	}
 	ctx := c.Request().Context()
-	data := s.dashboardData(ctx, s.latestSnapshot(ctx))
+	snapshot, enriched := s.latestBoardSnapshot()
+	data := s.dashboardFirstPaintData(ctx, snapshot, !enriched)
 	applyDashboardPreferences(c.Request(), &data)
 	return render(c, templates.FleetPage(data))
 }
@@ -512,14 +513,8 @@ func (s *Server) projectDashboard(c echo.Context) error {
 		}
 		return s.demoProjectDashboard(c, scenario, view)
 	}
-	var data templates.DashboardData
-	var ok bool
-	if view == "kanban" {
-		snapshot, enriched := s.latestBoardSnapshot()
-		data, ok = s.projectBoardFirstPaintData(ctx, projectID, snapshot, !enriched)
-	} else {
-		data, ok = s.projectDashboardData(ctx, projectID, s.latestSnapshot(ctx))
-	}
+	snapshot, enriched := s.latestBoardSnapshot()
+	data, ok := s.projectFirstPaintData(ctx, projectID, snapshot, !enriched)
 	if !ok {
 		return echo.NewHTTPError(http.StatusNotFound, "Project not found")
 	}
@@ -684,6 +679,12 @@ func (s *Server) boardData(ctx context.Context, snapshot telemetry.Snapshot) tem
 }
 
 func (s *Server) boardFirstPaintData(ctx context.Context, snapshot telemetry.Snapshot, pendingEnrichment bool) templates.DashboardData {
+	data := s.dashboardFirstPaintData(ctx, snapshot, pendingEnrichment)
+	data.ActiveNav = "board"
+	return data
+}
+
+func (s *Server) dashboardFirstPaintData(ctx context.Context, snapshot telemetry.Snapshot, pendingEnrichment bool) templates.DashboardData {
 	instanceName := s.instanceName()
 	snapshot = s.fleetKanbanSnapshotWithPendingStates(snapshot)
 	return templates.DashboardData{
@@ -698,7 +699,7 @@ func (s *Server) boardFirstPaintData(ctx context.Context, snapshot telemetry.Sna
 		Projects:          s.cachedProjectSmallMultiples(snapshot),
 		Kanban:            s.dashboardKanbanData(ctx, "", snapshot),
 		Assets:            s.assets.templatePaths(),
-		ActiveNav:         "board",
+		ActiveNav:         "fleet",
 		PendingEnrichment: pendingEnrichment,
 	}
 }
@@ -722,7 +723,7 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 	return s.projectDashboardDataFromProjects(ctx, projectID, snapshot, projects, true)
 }
 
-func (s *Server) projectBoardFirstPaintData(
+func (s *Server) projectFirstPaintData(
 	ctx context.Context,
 	projectID string,
 	snapshot telemetry.Snapshot,
