@@ -120,6 +120,53 @@ func TestManagerNextScheduledUsesRuntimeTimezoneAfterRestart(t *testing.T) {
 	}
 }
 
+func TestManagerScheduledRunSkipsStaleTimerAfterScheduleUpdate(t *testing.T) {
+	t.Parallel()
+	current := time.Date(2026, time.July, 17, 9, 15, 0, 0, time.UTC)
+	runs := 0
+	backend := fakeRunner{onRun: func(runner.RunRequest) { runs++ }}
+	store := &fakeStore{}
+	issues := &fakeIssueStore{}
+	manager, err := New(Settings{
+		ProjectID: "detent",
+		Definitions: []config.Routine{{
+			Name: "maintenance", Schedule: "0 * * * *", Prompt: "Inspect.",
+		}},
+		Runner: backend, Issues: issues,
+	}, store, nil, func() time.Time { return current })
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stale, _, _, err := manager.nextScheduled(context.Background())
+	if err != nil {
+		t.Fatalf("nextScheduled() error = %v", err)
+	}
+	current = current.Add(5 * time.Minute)
+	if err := manager.Update(Settings{
+		ProjectID: "detent",
+		Definitions: []config.Routine{{
+			Name: "maintenance", Schedule: "30 * * * *", Prompt: "Inspect.",
+		}},
+		Runner: backend, Issues: issues,
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if _, err := manager.runNamed(context.Background(), "maintenance", stale, true); err != nil {
+		t.Fatalf("runNamed() error = %v", err)
+	}
+	if runs != 0 || len(store.records) != 0 {
+		t.Fatalf("runs = %d, records = %d; want stale occurrence skipped", runs, len(store.records))
+	}
+	next, _, _, err := manager.nextScheduled(context.Background())
+	if err != nil {
+		t.Fatalf("nextScheduled() after update error = %v", err)
+	}
+	want := time.Date(2026, time.July, 17, 9, 30, 0, 0, time.UTC)
+	if !next.Equal(want) {
+		t.Fatalf("nextScheduled() after update = %s, want %s", next, want)
+	}
+}
+
 func TestManagerRunOnceFilesAndDeduplicatesOpenIssue(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.July, 17, 10, 0, 0, 0, time.UTC)
@@ -255,9 +302,13 @@ type fakeRunner struct {
 	proposals []Proposal
 	output    string
 	err       error
+	onRun     func(runner.RunRequest)
 }
 
 func (f fakeRunner) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
+	if f.onRun != nil {
+		f.onRun(request)
+	}
 	if f.err != nil {
 		return runner.RunResult{}, f.err
 	}

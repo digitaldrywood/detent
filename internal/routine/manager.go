@@ -205,10 +205,10 @@ func (m *Manager) Run(ctx context.Context) error {
 }
 
 func (m *Manager) RunOnce(ctx context.Context, name string) (Result, error) {
-	return m.runNamed(ctx, name, m.now())
+	return m.runNamed(ctx, name, m.now(), false)
 }
 
-func (m *Manager) runNamed(ctx context.Context, name string, scheduledFor time.Time) (Result, error) {
+func (m *Manager) runNamed(ctx context.Context, name string, scheduledFor time.Time, scheduled bool) (Result, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -217,10 +217,24 @@ func (m *Manager) runNamed(ctx context.Context, name string, scheduledFor time.T
 
 	m.mu.RLock()
 	settings := cloneSettings(m.settings)
+	baseline := m.baselines[strings.ToLower(strings.TrimSpace(name))]
 	m.mu.RUnlock()
 	definition, ok := routineByName(settings.Definitions, name)
 	if !ok {
+		if scheduled {
+			return Result{}, nil
+		}
 		return Result{}, fmt.Errorf("%w: %s", ErrRoutineNotFound, strings.TrimSpace(name))
+	}
+	if scheduled {
+		next, err := m.nextForDefinition(ctx, settings, definition, baseline)
+		if err != nil {
+			return Result{}, err
+		}
+		if !next.Equal(scheduledFor) {
+			m.logger.DebugContext(ctx, "skip stale scheduled routine", "routine", definition.Name, "scheduled_for", scheduledFor, "next", next)
+			return Result{}, nil
+		}
 	}
 	result, err := m.runOnce(ctx, settings, definition, scheduledFor)
 	baselineAt := scheduledFor
@@ -232,6 +246,9 @@ func (m *Manager) runNamed(ctx context.Context, name string, scheduledFor time.T
 		m.baselines[definition.Name] = baselineAt
 	}
 	m.mu.Unlock()
+	if !scheduled {
+		m.signalUpdate()
+	}
 	return result, err
 }
 
@@ -349,27 +366,34 @@ func (m *Manager) nextScheduled(ctx context.Context) (time.Time, string, bool, e
 
 	var earliest time.Time
 	earliestName := ""
-	location := m.now().Location()
 	for _, definition := range settings.Definitions {
-		schedule, err := cron.ParseStandard(definition.Schedule)
+		next, err := m.nextForDefinition(ctx, settings, definition, baselines[definition.Name])
 		if err != nil {
 			return time.Time{}, "", false, err
 		}
-		last, found, err := m.store.LatestRoutineRun(ctx, settings.ProjectID, definition.Name)
-		if err != nil {
-			return time.Time{}, "", false, err
-		}
-		after := baselines[definition.Name].In(location)
-		if found && last.StartedAt.After(after) {
-			after = last.StartedAt.In(location)
-		}
-		next := schedule.Next(after)
 		if earliest.IsZero() || next.Before(earliest) {
 			earliest = next
 			earliestName = definition.Name
 		}
 	}
 	return earliest, earliestName, !earliest.IsZero(), nil
+}
+
+func (m *Manager) nextForDefinition(ctx context.Context, settings Settings, definition config.Routine, baseline time.Time) (time.Time, error) {
+	schedule, err := cron.ParseStandard(definition.Schedule)
+	if err != nil {
+		return time.Time{}, err
+	}
+	last, found, err := m.store.LatestRoutineRun(ctx, settings.ProjectID, definition.Name)
+	if err != nil {
+		return time.Time{}, err
+	}
+	location := m.now().Location()
+	after := baseline.In(location)
+	if found && last.StartedAt.After(after) {
+		after = last.StartedAt.In(location)
+	}
+	return schedule.Next(after), nil
 }
 
 func Due(schedule string, lastRun time.Time, now time.Time) (bool, error) {
@@ -578,7 +602,7 @@ func (m *Manager) signalUpdate() {
 }
 
 func (m *Manager) runAndLog(ctx context.Context, name string, scheduledFor time.Time) {
-	result, err := m.runNamed(ctx, name, scheduledFor)
+	result, err := m.runNamed(ctx, name, scheduledFor, true)
 	if err != nil {
 		if ctx.Err() == nil {
 			m.logger.ErrorContext(ctx, "scheduled routine failed", "routine", name, "filed", len(result.Filed), "deduplicated", result.Deduplicated, "error", err)
