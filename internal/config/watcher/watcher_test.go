@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
+
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
@@ -18,12 +20,12 @@ import (
 func TestWatchDebouncesWorkflowWrites(t *testing.T) {
 	t.Parallel()
 
-	debounce := 150 * time.Millisecond
+	runtime := newControlledFileRuntime()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "WORKFLOW.md")
 	writeWorkflow(t, path, 60000, "initial")
 
-	w, err := New(path, WithDebounce(debounce))
+	w, err := New(path, withFileOptions(runtime.option()))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -37,7 +39,12 @@ func TestWatchDebouncesWorkflowWrites(t *testing.T) {
 	}
 
 	writeWorkflow(t, path, 61000, "first")
+	runtime.sendEvent(t, path)
+	runtime.waitForReset(t)
 	writeWorkflow(t, path, 62000, "second")
+	runtime.sendEvent(t, path)
+	runtime.waitForReset(t)
+	runtime.fire(t)
 
 	update := receiveUpdate(t, updates)
 	if update.Err != nil {
@@ -50,11 +57,7 @@ func TestWatchDebouncesWorkflowWrites(t *testing.T) {
 		t.Fatalf("Prompt = %q, want second", update.Workflow.Prompt)
 	}
 
-	select {
-	case extra := <-updates:
-		t.Fatalf("extra update after debounce = %#v", extra)
-	case <-time.After(2 * debounce):
-	}
+	assertNoUpdate(t, updates)
 }
 
 func TestWatchSuppressesDuplicateWorkflowUpdates(t *testing.T) {
@@ -296,13 +299,14 @@ func TestWatchSurvivesSharedWorkflowDeletionAndCreation(t *testing.T) {
 func TestFileWatcherDebouncesGlobalConfigWrites(t *testing.T) {
 	t.Parallel()
 
+	runtime := newControlledFileRuntime()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "global.yaml")
 	writeGlobalConfig(t, path, 2)
 
 	w, err := NewFile(path, func(path string) (globalconfig.Config, error) {
 		return globalconfig.Read(path)
-	}, WithFileDebounce(150*time.Millisecond))
+	}, runtime.option())
 	if err != nil {
 		t.Fatalf("NewFile() error = %v", err)
 	}
@@ -316,7 +320,12 @@ func TestFileWatcherDebouncesGlobalConfigWrites(t *testing.T) {
 	}
 
 	writeGlobalConfig(t, path, 3)
+	runtime.sendEvent(t, path)
+	runtime.waitForReset(t)
 	writeGlobalConfig(t, path, 4)
+	runtime.sendEvent(t, path)
+	runtime.waitForReset(t)
+	runtime.fire(t)
 
 	update := receiveFileUpdate(t, updates)
 	if update.Err != nil {
@@ -328,6 +337,8 @@ func TestFileWatcherDebouncesGlobalConfigWrites(t *testing.T) {
 	if update.Value.Path != path {
 		t.Fatalf("Path = %q, want %q", update.Value.Path, path)
 	}
+
+	assertNoFileUpdate(t, updates)
 }
 
 func TestFileWatcherWatchesSymlinkTargetWrites(t *testing.T) {
@@ -500,6 +511,114 @@ func receiveFileUpdate[T any](t *testing.T, updates <-chan FileUpdate[T]) FileUp
 	}
 
 	return FileUpdate[T]{}
+}
+
+func assertNoUpdate(t *testing.T, updates <-chan Update) {
+	t.Helper()
+
+	select {
+	case extra := <-updates:
+		t.Fatalf("extra update after debounce = %#v", extra)
+	case <-time.After(25 * time.Millisecond):
+	}
+}
+
+func assertNoFileUpdate[T any](t *testing.T, updates <-chan FileUpdate[T]) {
+	t.Helper()
+
+	select {
+	case extra := <-updates:
+		t.Fatalf("extra update after debounce = %#v", extra)
+	case <-time.After(25 * time.Millisecond):
+	}
+}
+
+type controlledFileRuntime struct {
+	events chan fsnotify.Event
+	errors chan error
+	timer  *controlledFileTimer
+}
+
+type controlledFileTimer struct {
+	ticks  chan time.Time
+	resets chan time.Duration
+}
+
+func newControlledFileRuntime() *controlledFileRuntime {
+	return &controlledFileRuntime{
+		events: make(chan fsnotify.Event, 2),
+		errors: make(chan error),
+		timer: &controlledFileTimer{
+			ticks:  make(chan time.Time, 1),
+			resets: make(chan time.Duration, 2),
+		},
+	}
+}
+
+func (r *controlledFileRuntime) option() FileOption {
+	return withFileRuntime(
+		func() (fileEventWatcher, error) { return r, nil },
+		func(time.Duration) fileTimer { return r.timer },
+	)
+}
+
+func (r *controlledFileRuntime) Add(string) error {
+	return nil
+}
+
+func (r *controlledFileRuntime) Close() error {
+	return nil
+}
+
+func (r *controlledFileRuntime) Events() <-chan fsnotify.Event {
+	return r.events
+}
+
+func (r *controlledFileRuntime) Errors() <-chan error {
+	return r.errors
+}
+
+func (r *controlledFileRuntime) sendEvent(t *testing.T, path string) {
+	t.Helper()
+
+	select {
+	case r.events <- fsnotify.Event{Name: path, Op: fsnotify.Write}:
+	case <-time.After(time.Second):
+		t.Fatal("timed out sending file event")
+	}
+}
+
+func (r *controlledFileRuntime) waitForReset(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-r.timer.resets:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for debounce reset")
+	}
+}
+
+func (r *controlledFileRuntime) fire(t *testing.T) {
+	t.Helper()
+
+	select {
+	case r.timer.ticks <- time.Now():
+	case <-time.After(time.Second):
+		t.Fatal("timed out firing debounce timer")
+	}
+}
+
+func (t *controlledFileTimer) C() <-chan time.Time {
+	return t.ticks
+}
+
+func (t *controlledFileTimer) Reset(duration time.Duration) bool {
+	t.resets <- duration
+	return true
+}
+
+func (t *controlledFileTimer) Stop() bool {
+	return true
 }
 
 func writeWorkflow(t *testing.T, path string, intervalMS int, prompt string) {
