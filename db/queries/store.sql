@@ -808,6 +808,23 @@ WHERE completed_at IS NOT NULL
 ORDER BY completed_at DESC, id DESC
 LIMIT sqlc.arg(result_limit);
 
+-- name: ListPendingWorkAttemptCapacityReleases :many
+SELECT *
+FROM work_attempts
+WHERE project_id = sqlc.arg(project_id)
+  AND status = 'terminal'
+  AND completed_at IS NOT NULL
+  AND lower(trim(COALESCE(next_action, ''))) = 'release capacity'
+ORDER BY completed_at, id;
+
+-- name: ClearWorkAttemptCapacityRelease :exec
+UPDATE work_attempts
+SET next_action = NULL
+WHERE id = sqlc.arg(work_attempt_id)
+  AND status = 'terminal'
+  AND completed_at IS NOT NULL
+  AND lower(trim(COALESCE(next_action, ''))) = 'release capacity';
+
 -- name: UpdateOperatorStop :execrows
 UPDATE work_attempts
 SET phase = sqlc.arg(phase),

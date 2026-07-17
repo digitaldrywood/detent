@@ -46,6 +46,7 @@ type Store interface {
 	ProgressSpendStore
 	WorkflowMetricsStore
 	WorkAttemptStore
+	WorkAttemptCapacityReleaseStore
 	OperatorStopStore
 	ValidatorMemoStore
 	RuntimeEvidenceStore
@@ -138,6 +139,11 @@ type WorkAttemptStore interface {
 	ReclaimActiveWorkAttempts(context.Context, WorkAttemptReclaim) ([]WorkAttempt, error)
 	RecordSchedulerDecision(context.Context, SchedulerDecision) (int64, error)
 	ListRecentSchedulerDecisions(context.Context, SchedulerDecisionQuery) ([]SchedulerDecision, error)
+}
+
+type WorkAttemptCapacityReleaseStore interface {
+	ListPendingWorkAttemptCapacityReleases(context.Context, string) ([]WorkAttempt, error)
+	ClearWorkAttemptCapacityRelease(context.Context, int64) error
 }
 
 type OperatorStopStore interface {
