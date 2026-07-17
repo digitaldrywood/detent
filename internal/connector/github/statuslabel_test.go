@@ -248,33 +248,134 @@ func TestConnectorFetchLabelIssuesByStatesAttachesCurrentAgentBranchPullRequest(
 	}
 }
 
-func TestConnectorFetchIssueStateProbeSkipsPullRequestHydration(t *testing.T) {
+func TestConnectorFetchIssueStateProbeSkipsPullRequestHydrationAcrossCleanupCycles(t *testing.T) {
+	t.Parallel()
+
+	responses := make([]graphqlTestResponse, 3)
+	for index := range responses {
+		responses[index] = graphqlTestResponse{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Adone&page=1&per_page=100&state=all",
+			body:   `[{"node_id":"I_433","number":433,"title":"Done issue","body":"","state":"closed","html_url":"https://github.com/digitaldrywood/detent/issues/433","assignees":[],"labels":[{"name":"detent:done"},{"name":"bug"}]}]`,
+		}
+	}
+	server := newGraphQLTestServer(t, responses)
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+		TerminalStates:     []string{"Done"},
+	})
+
+	for cycle := 1; cycle <= 3; cycle++ {
+		got, err := c.FetchIssueStateProbe(context.Background(), []string{"Done"}, 1)
+		if err != nil {
+			t.Fatalf("cleanup cycle %d FetchIssueStateProbe() error = %v", cycle, err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("cleanup cycle %d FetchIssueStateProbe() len = %d, want 1", cycle, len(got))
+		}
+		if got[0].PullRequest != nil {
+			t.Fatalf("cleanup cycle %d PullRequest = %#v, want no terminal PR hydration", cycle, got[0].PullRequest)
+		}
+	}
+	if len(server.requests()) != 3 {
+		t.Fatalf("request count = %d, want one label issue probe per cleanup cycle", len(server.requests()))
+	}
+}
+
+func TestConnectorFetchIssuesByStatesScopesPullRequestHydrationByIssueState(t *testing.T) {
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{
 			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Adone&page=1&per_page=100&state=all",
+			body:   `[{"node_id":"I_10","number":10,"title":"Done issue","body":"","state":"closed","html_url":"https://github.com/digitaldrywood/detent/issues/10","assignees":[],"labels":[{"name":"detent:done"}]}]`,
+		},
+		{
+			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Ahuman-review&page=1&per_page=100&state=all",
-			body:   `[{"node_id":"I_433","number":433,"title":"Human Review issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/433","assignees":[],"labels":[{"name":"detent:human-review"},{"name":"bug"}]}]`,
+			body:   `[{"node_id":"I_20","number":20,"title":"Review issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/20","assignees":[],"labels":[{"name":"detent:human-review"}]}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
+			body:   `[{"number":110,"html_url":"https://github.com/digitaldrywood/detent/pull/110","state":"closed","merged_at":"2026-07-01T12:00:00Z","head":{"ref":"detent/digitaldrywood_detent_10","sha":"sha-110"}},{"number":120,"html_url":"https://github.com/digitaldrywood/detent/pull/120","state":"open","head":{"ref":"detent/digitaldrywood_detent_20","sha":"sha-120"}}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/120",
+			body:   `{"number":120,"html_url":"https://github.com/digitaldrywood/detent/pull/120","state":"open","head":{"ref":"detent/digitaldrywood_detent_20","sha":"sha-120"}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/sha-120/check-runs?per_page=100",
+			body:   `{"check_runs":[{"status":"completed","conclusion":"success"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/sha-120/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/120/reviews?per_page=100",
+			body:   `[]`,
 		},
 	})
 	c := newGitHubTestConnector(t, server, Config{
 		GitHubStatusSource: GitHubStatusSourceLabel,
 		Repository:         "digitaldrywood/detent",
+		TerminalStates:     []string{"Done"},
 	})
 
-	got, err := c.FetchIssueStateProbe(context.Background(), []string{"Human Review"}, 1)
+	issues, err := c.FetchIssuesByStates(context.Background(), []string{"Done", "Human Review"})
 	if err != nil {
-		t.Fatalf("FetchIssueStateProbe() error = %v", err)
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("FetchIssueStateProbe() len = %d, want 1", len(got))
+	if len(issues) != 2 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 2", len(issues))
 	}
-	if got[0].PullRequest != nil {
-		t.Fatalf("PullRequest = %#v, want no probe hydration", got[0].PullRequest)
+	if issues[0].PullRequest != nil {
+		t.Fatalf("done PullRequest = %#v, want no terminal hydration", issues[0].PullRequest)
 	}
-	if len(server.requests()) != 1 {
-		t.Fatalf("request count = %d, want only label issue probe", len(server.requests()))
+	if issues[1].PullRequest == nil || issues[1].PullRequest.Number != 120 || issues[1].PullRequest.CIStatus != "pass" {
+		t.Fatalf("review PullRequest = %#v, want hydrated PR 120", issues[1].PullRequest)
+	}
+	for _, request := range server.requests() {
+		path, _ := request["path"].(string)
+		if strings.Contains(path, "110") {
+			t.Fatalf("request path = %q, want no terminal PR hydration", path)
+		}
+	}
+}
+
+func TestPullRequestStatusPolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		state          string
+		useStatusCache bool
+		want           pullRequestStatusCachePolicy
+	}{
+		{name: "terminal skips cached hydration", state: "Done", useStatusCache: true, want: pullRequestStatusSkip},
+		{name: "terminal skips fresh hydration", state: "Done", want: pullRequestStatusSkip},
+		{name: "active skips hydration", state: "In Progress", useStatusCache: true, want: pullRequestStatusSkip},
+		{name: "review reads cache by default", state: "Human Review", useStatusCache: true, want: pullRequestStatusReadCache},
+		{name: "review bypasses cache when fresh", state: "Human Review", want: pullRequestStatusBypassCache},
+		{name: "merging reads cache by default", state: "Merging", useStatusCache: true, want: pullRequestStatusReadCache},
+		{name: "blocked bypasses cache when fresh", state: "Blocked", want: pullRequestStatusBypassCache},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := pullRequestStatusPolicy(test.state, test.useStatusCache); got != test.want {
+				t.Fatalf("pullRequestStatusPolicy(%q, %v) = %v, want %v", test.state, test.useStatusCache, got, test.want)
+			}
+		})
 	}
 }
 

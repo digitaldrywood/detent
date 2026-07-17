@@ -94,9 +94,10 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			Message: githubBudgetReserveMessage(reserve),
 		})
 	}
+	timing.next("status_drift")
+	o.refreshStatusDrift(ctx, state, now, reserve)
 	timing.next("release")
 	o.evaluateRelease(ctx, state, now)
-
 	timing.next("active_runs")
 	o.refreshActiveRuns(ctx, state, now, reserve)
 	if state.Draining {
@@ -107,8 +108,6 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	if !ok {
 		return
 	}
-	timing.next("status_drift")
-	o.refreshStatusDrift(ctx, state, now, reserve)
 	timing.next("reconciliation")
 	fetched = retainUnavailablePullRequestsFromPrevious(fetched, previous)
 	fetched = applyStatusPullRequestHydrationBlocksToCandidates(fetched)
@@ -354,7 +353,7 @@ func (o *Orchestrator) fetchTickIssues(
 		return fetched, true
 	}
 
-	statusIssues, statusErr := o.connector.FetchIssuesByStates(ctx, observedStates)
+	statusIssues, statusErr := o.fetchObservedIssuesByStates(ctx, observedStates)
 	if statusErr != nil {
 		o.logger.Warn("fetch observed status issues failed", "error", statusErr)
 		markRefreshError(state, "fetch observed status issues failed: "+statusErr.Error(), now)
@@ -368,6 +367,13 @@ func (o *Orchestrator) fetchTickIssues(
 	}
 	clearRefreshError(state)
 	return fetched, true
+}
+
+func (o *Orchestrator) fetchObservedIssuesByStates(ctx context.Context, states []string) ([]connector.Issue, error) {
+	if fetcher, ok := o.connector.(connector.FreshIssuesByStatesFetcher); ok {
+		return fetcher.FetchFreshIssuesByStates(ctx, states)
+	}
+	return o.connector.FetchIssuesByStates(ctx, states)
 }
 
 func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *State) ([]connector.Issue, error) {

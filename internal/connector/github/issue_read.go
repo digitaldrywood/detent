@@ -475,6 +475,14 @@ func (c *Connector) FetchCandidateIssuesByStatesWithFilter(
 }
 
 func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string) ([]connector.Issue, error) {
+	return c.fetchIssuesByStates(ctx, stateNames, true)
+}
+
+func (c *Connector) FetchFreshIssuesByStates(ctx context.Context, stateNames []string) ([]connector.Issue, error) {
+	return c.fetchIssuesByStates(ctx, stateNames, false)
+}
+
+func (c *Connector) fetchIssuesByStates(ctx context.Context, stateNames []string, useStatusCache bool) ([]connector.Issue, error) {
 	wantedStates := normalizedStateSet(stateNames)
 	if len(wantedStates) == 0 {
 		return []connector.Issue{}, nil
@@ -493,10 +501,8 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 				return nil, err
 			}
 		}
-		if attachPullRequestsForStates(wantedStates) {
-			if err := c.attachFreshPullRequests(ctx, issues); err != nil {
-				return nil, err
-			}
+		if err := c.attachStatePullRequests(ctx, issues, useStatusCache); err != nil {
+			return nil, err
 		}
 		return issues, nil
 	}
@@ -514,10 +520,8 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 				return nil, err
 			}
 		}
-		if attachPullRequestsForStates(wantedStates) {
-			if err := c.attachFreshPullRequests(ctx, issues); err != nil {
-				return nil, err
-			}
+		if err := c.attachStatePullRequests(ctx, issues, useStatusCache); err != nil {
+			return nil, err
 		}
 		return issues, nil
 	}
@@ -542,10 +546,8 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 			return nil, err
 		}
 	}
-	if attachPullRequestsForStates(wantedStates) {
-		if err := c.attachFreshPullRequests(ctx, statusIssues); err != nil {
-			return nil, err
-		}
+	if err := c.attachStatePullRequests(ctx, statusIssues, useStatusCache); err != nil {
+		return nil, err
 	}
 	return statusIssues, nil
 }
@@ -572,10 +574,8 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 				return nil, err
 			}
 		}
-		if attachPullRequestsForStates(wantedStates) {
-			if err := c.attachFreshPullRequests(ctx, issues); err != nil {
-				return nil, err
-			}
+		if err := c.attachStatePullRequests(ctx, issues, false); err != nil {
+			return nil, err
 		}
 		return issues, nil
 	}
@@ -593,10 +593,8 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 				return nil, err
 			}
 		}
-		if attachPullRequestsForStates(wantedStates) {
-			if err := c.attachFreshPullRequests(ctx, issues); err != nil {
-				return nil, err
-			}
+		if err := c.attachStatePullRequests(ctx, issues, false); err != nil {
+			return nil, err
 		}
 		return issues, nil
 	}
@@ -621,10 +619,8 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 			return nil, err
 		}
 	}
-	if attachPullRequestsForStates(wantedStates) {
-		if err := c.attachFreshPullRequests(ctx, statusIssues); err != nil {
-			return nil, err
-		}
+	if err := c.attachStatePullRequests(ctx, statusIssues, false); err != nil {
+		return nil, err
 	}
 	return statusIssues, nil
 }
@@ -666,10 +662,8 @@ func (c *Connector) FetchIssuesByStatesScan(ctx context.Context, stateNames []st
 			return connector.IssueStateScan{}, err
 		}
 	}
-	if attachPullRequestsForStates(wantedStates) {
-		if err := c.attachFreshPullRequests(ctx, scan.Issues); err != nil {
-			return connector.IssueStateScan{}, err
-		}
+	if err := c.attachStatePullRequests(ctx, scan.Issues, false); err != nil {
+		return connector.IssueStateScan{}, err
 	}
 	return scan, nil
 }
@@ -1525,11 +1519,51 @@ func orderForIssue(issue connector.Issue, order map[string]int, fallback int) in
 	return fallback
 }
 
-func attachPullRequestsForStates(states map[string]struct{}) bool {
-	for _, state := range []string{"Human Review", "Merging", "Blocked"} {
-		if _, ok := states[normalizeStateName(state)]; ok {
-			return true
+type pullRequestStatusCachePolicy uint8
+
+const (
+	pullRequestStatusSkip pullRequestStatusCachePolicy = iota
+	pullRequestStatusReadCache
+	pullRequestStatusBypassCache
+)
+
+func pullRequestStatusPolicy(state string, useStatusCache bool) pullRequestStatusCachePolicy {
+	switch normalizeStateName(state) {
+	case normalizeStateName("Human Review"), normalizeStateName("Merging"), normalizeStateName("Blocked"):
+		if useStatusCache {
+			return pullRequestStatusReadCache
 		}
+		return pullRequestStatusBypassCache
+	default:
+		return pullRequestStatusSkip
 	}
-	return false
+}
+
+func (c *Connector) attachStatePullRequests(ctx context.Context, issues []connector.Issue, useStatusCache bool) error {
+	selected := make([]connector.Issue, 0, len(issues))
+	indexes := make([]int, 0, len(issues))
+	for index, issue := range issues {
+		if pullRequestStatusPolicy(issue.State, useStatusCache) == pullRequestStatusSkip {
+			continue
+		}
+		selected = append(selected, issue)
+		indexes = append(indexes, index)
+	}
+	if len(selected) == 0 {
+		return nil
+	}
+
+	var err error
+	if useStatusCache {
+		err = c.attachPullRequests(ctx, selected)
+	} else {
+		err = c.attachFreshPullRequests(ctx, selected)
+	}
+	if err != nil {
+		return err
+	}
+	for index, issueIndex := range indexes {
+		issues[issueIndex] = selected[index]
+	}
+	return nil
 }

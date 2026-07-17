@@ -1814,7 +1814,7 @@ func TestRunKeepsRefreshReadyWhenTerminalCleanupFetchFailsAfterSnapshot(t *testi
 		TerminalStates:                []string{"Done", "Cancelled"},
 		ObservedStates:                []string{"Human Review"},
 		WorkspaceCleanupIdleTTL:       time.Hour,
-		WorkspaceCleanupSweepInterval: time.Hour,
+		WorkspaceCleanupSweepInterval: time.Nanosecond,
 	}, orchestrator.Dependencies{
 		Connector:       tracker,
 		Runner:          runner,
