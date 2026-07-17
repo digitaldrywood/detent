@@ -50,6 +50,7 @@ type doctorCheck struct {
 	Status                    doctorStatus                               `json:"status"`
 	Detail                    string                                     `json:"detail"`
 	Hint                      string                                     `json:"hint,omitempty"`
+	WorkflowSkillSuggestions  []doctorWorkflowSkillSuggestion            `json:"workflow_skill_suggestions,omitempty"`
 	AutoPromoteCandidates     []doctorAutoPromoteCandidateDiagnostic     `json:"auto_promote_candidates,omitempty"`
 	BlockedRecoveryCandidates []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_recovery_candidates,omitempty"`
 	BackendCapacity           []doctorBackendCapacityDiagnostic          `json:"backend_capacity,omitempty"`
@@ -127,6 +128,7 @@ type doctorConfig struct {
 	Build                     buildinfo.Info
 	AllowWriteProbes          bool
 	WorkflowDiff              bool
+	WorkflowTokenThreshold    int
 	WorkflowProposalThreshold int
 	WorkflowProposeIssues     bool
 }
@@ -177,6 +179,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 	workflowDiff := false
 	workflowWrite := false
 	workflowProposeIssues := false
+	workflowTokenThreshold := doctorWorkflowDefaultTokenThreshold
 	workflowProposalThreshold := doctorWorkflowProposalDefaultThreshold
 	strict := false
 	projectID := ""
@@ -187,6 +190,9 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 		Args:         NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if workflowTokenThreshold <= 0 {
+				return errors.New("--workflow-token-threshold must be greater than zero")
+			}
 			out, err := OutputForCommand(cmd)
 			if err != nil {
 				return err
@@ -204,6 +210,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 				Build:                     opts.build,
 				AllowWriteProbes:          allowWriteProbes,
 				WorkflowDiff:              workflowDiff || workflowWrite,
+				WorkflowTokenThreshold:    workflowTokenThreshold,
 				WorkflowProposalThreshold: workflowProposalThreshold,
 				WorkflowProposeIssues:     workflowProposeIssues,
 				Flags: runtimeFlags{
@@ -238,6 +245,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 	cmd.Flags().BoolVar(&allowWriteProbes, "allow-write-probes", false, "run configured GitHub write probes")
 	cmd.Flags().BoolVar(&workflowDiff, "diff", false, "print proposed WORKFLOW.md frontmatter changes for workflow optimization findings")
 	cmd.Flags().BoolVar(&workflowWrite, "write", false, "apply proposed WORKFLOW.md frontmatter changes after confirmation")
+	cmd.Flags().IntVar(&workflowTokenThreshold, "workflow-token-threshold", doctorWorkflowDefaultTokenThreshold, "warn when a WORKFLOW.md prompt body exceeds this estimated token count")
 	cmd.Flags().IntVar(&workflowProposalThreshold, "proposal-threshold", doctorWorkflowProposalDefaultThreshold, "minimum repeated signal count before emitting a governed self-improvement proposal")
 	cmd.Flags().BoolVar(&workflowProposeIssues, "propose-issues", false, "create governed backlog issue proposals for repeated workflow optimization signals")
 	cmd.Flags().BoolVar(&strict, "strict", false, "fail when checks warn or workflow optimization findings exist")
@@ -361,7 +369,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			},
 		})
 		if projectScopeCheck == nil {
-			jobs = append(jobs, doctorProjectCheckJobs(globalConfig, deps, githubToken, cfg.AllowWriteProbes)...)
+			jobs = append(jobs, doctorProjectCheckJobs(globalConfig, deps, githubToken, cfg.AllowWriteProbes, cfg.WorkflowTokenThreshold)...)
 			jobs = append(jobs, doctorCheckJob{
 				Name: "Workflow runtime drift",
 				Run: func(jobCtx context.Context) []doctorCheck {

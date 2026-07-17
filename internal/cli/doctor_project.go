@@ -141,7 +141,7 @@ func doctorWorkflowTimestamp(value time.Time) string {
 	return value.UTC().Format(time.RFC3339)
 }
 
-func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToken RuntimeSecret, allowWriteProbes bool) []doctorCheckJob {
+func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToken RuntimeSecret, allowWriteProbes bool, workflowTokenThreshold int) []doctorCheckJob {
 	if len(cfg.Projects) == 0 {
 		return []doctorCheckJob{{
 			Name: "Project workflows",
@@ -166,7 +166,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 			Name:    "Project " + id + " checks",
 			Current: progress.Current,
 			Run: func(jobCtx context.Context) []doctorCheck {
-				return checkDoctorProjectWithProgress(jobCtx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes, progress.Set)
+				return checkDoctorProjectWithProgress(jobCtx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes, workflowTokenThreshold, progress.Set)
 			},
 		})
 	}
@@ -178,7 +178,7 @@ func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps 
 }
 
 func checkDoctorProjectWithStore(ctx context.Context, project globalconfig.Project, storePath string, deps doctorDeps, githubToken RuntimeSecret, allowWriteProbes bool) []doctorCheck {
-	return checkDoctorProjectWithProgress(ctx, project, storePath, deps, githubToken, allowWriteProbes, nil)
+	return checkDoctorProjectWithProgress(ctx, project, storePath, deps, githubToken, allowWriteProbes, doctorWorkflowDefaultTokenThreshold, nil)
 }
 
 func checkDoctorProjectWithProgress(
@@ -188,6 +188,7 @@ func checkDoctorProjectWithProgress(
 	deps doctorDeps,
 	githubToken RuntimeSecret,
 	allowWriteProbes bool,
+	workflowTokenThreshold int,
 	setCurrent func(string),
 ) []doctorCheck {
 	id := doctorProjectID(project)
@@ -289,7 +290,7 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, billingCheck)
 	}
 	setDoctorCurrentCheck("Project " + id + " workflow lint")
-	checks = append(checks, checkDoctorWorkflowLint(ctx, id, project, workflow.Config, storePath, deps)...)
+	checks = append(checks, checkDoctorWorkflowLint(ctx, id, project, workflow.Config, workflow.Prompt, workflowTokenThreshold, storePath, deps)...)
 	setDoctorCurrentCheck("Project " + id + " out-of-scope follow-up guidance")
 	checks = append(checks, checkDoctorFollowupGuidance(id, workflow.Config.Agent.Followups, workflow.Prompt))
 	setDoctorCurrentCheck("Project " + id + " pinned route models")

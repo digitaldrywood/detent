@@ -95,7 +95,7 @@ func TestCheckDoctorWorkflowLintStaticLandmines(t *testing.T) {
 				ID:       "alpha",
 				Workflow: "WORKFLOW.md",
 				Workdir:  workdir,
-			}, tt.cfg, "", tt.deps)
+			}, tt.cfg, "", doctorWorkflowDefaultTokenThreshold, "", tt.deps)
 			if len(checks) != 1 {
 				t.Fatalf("checks = %#v, want one warning", checks)
 			}
@@ -154,7 +154,7 @@ func TestCheckDoctorWorkflowLintWarnsForPathFilteredRequiredCheck(t *testing.T) 
 				ID:       "alpha",
 				Workflow: "WORKFLOW.md",
 				Workdir:  workdir,
-			}, cfg, "", doctorDeps{})
+			}, cfg, "", doctorWorkflowDefaultTokenThreshold, "", doctorDeps{})
 
 			if !tt.wantWarning {
 				if len(checks) != 0 {
@@ -198,7 +198,7 @@ func TestCheckDoctorWorkflowLintWarnsForUnconfiguredLabelGatedRequiredCheck(t *t
 		ID:       "alpha",
 		Workflow: "WORKFLOW.md",
 		Workdir:  workdir,
-	}, cfg, "", doctorDeps{})
+	}, cfg, "", doctorWorkflowDefaultTokenThreshold, "", doctorDeps{})
 
 	if len(checks) != 1 {
 		t.Fatalf("checks = %#v, want one warning", checks)
@@ -259,7 +259,7 @@ func TestCheckDoctorWorkflowLintAcceptsConfiguredLabelGatedRequiredCheck(t *test
 				ID:       "alpha",
 				Workflow: "WORKFLOW.md",
 				Workdir:  workdir,
-			}, cfg, "", doctorDeps{})
+			}, cfg, "", doctorWorkflowDefaultTokenThreshold, "", doctorDeps{})
 
 			if tt.wantWarning {
 				if len(checks) != 1 || !strings.Contains(checks[0].Detail, tt.wantDetail) {
@@ -434,7 +434,7 @@ Prompt
 	checks := checkDoctorWorkflowLint(context.Background(), "alpha", globalconfig.Project{
 		ID:       "alpha",
 		Workflow: "WORKFLOW.md",
-	}, workflow.Config, "", doctorDeps{})
+	}, workflow.Config, "", doctorWorkflowDefaultTokenThreshold, "", doctorDeps{})
 	if len(checks) != 1 {
 		t.Fatalf("checks = %#v, want one inert agent budget warning", checks)
 	}
@@ -469,7 +469,7 @@ Prompt
 	checks := checkDoctorWorkflowLint(context.Background(), "alpha", globalconfig.Project{
 		ID:       "alpha",
 		Workflow: "WORKFLOW.md",
-	}, workflow.Config, "", doctorDeps{})
+	}, workflow.Config, "", doctorWorkflowDefaultTokenThreshold, "", doctorDeps{})
 	if len(checks) != 1 {
 		t.Fatalf("checks = %#v, want one inert top-level budget warning", checks)
 	}
@@ -494,7 +494,7 @@ func TestCheckDoctorWorkflowLintCleanWorkflowIsQuiet(t *testing.T) {
 		ID:       "alpha",
 		Workflow: "WORKFLOW.md",
 		Workdir:  workdir,
-	}, cfg, "", doctorDeps{
+	}, cfg, "", doctorWorkflowDefaultTokenThreshold, "", doctorDeps{
 		resolveCommandInDir: func(context.Context, string, []string, string) (string, error) {
 			return "/usr/bin/make", nil
 		},
