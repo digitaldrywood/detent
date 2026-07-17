@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"unicode"
@@ -18,6 +19,7 @@ const (
 type doctorWorkflowSkillSuggestion struct {
 	Heading         string `json:"heading"`
 	SkillName       string `json:"skill_name"`
+	Path            string `json:"path"`
 	EstimatedTokens int    `json:"estimated_tokens"`
 }
 
@@ -99,7 +101,7 @@ var doctorWorkflowCoreHeadings = []string{
 	"workpad status contract",
 }
 
-func checkDoctorWorkflowPromptSize(projectID string, workflowPath string, prompt string, threshold int) (doctorCheck, bool) {
+func checkDoctorWorkflowPromptSize(projectID string, workflowPath string, prompt string, skillsPath string, threshold int) (doctorCheck, bool) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return doctorCheck{}, false
@@ -111,12 +113,13 @@ func checkDoctorWorkflowPromptSize(projectID string, workflowPath string, prompt
 		return doctorCheck{}, false
 	}
 
-	suggestions := doctorWorkflowPromptSkillSuggestions(prompt)
+	skillsPath = doctorWorkflowSkillsPath(skillsPath)
+	suggestions := doctorWorkflowPromptSkillSuggestions(prompt, skillsPath)
 	detail := fmt.Sprintf("%s prompt body is approximately %d tokens (%d characters at %d characters/token), above the %d-token threshold", workflowPath, estimatedTokens, characters, doctorWorkflowEstimatedCharsPerToken, threshold)
 	if len(suggestions) > 0 {
 		parts := make([]string, 0, len(suggestions))
 		for _, suggestion := range suggestions {
-			parts = append(parts, fmt.Sprintf("%q (~%d tokens) -> .detent/skills/%s.md", suggestion.Heading, suggestion.EstimatedTokens, suggestion.SkillName))
+			parts = append(parts, fmt.Sprintf("%q (~%d tokens) -> %s", suggestion.Heading, suggestion.EstimatedTokens, suggestion.Path))
 		}
 		detail += "; extraction candidates: " + strings.Join(parts, "; ")
 	}
@@ -125,7 +128,7 @@ func checkDoctorWorkflowPromptSize(projectID string, workflowPath string, prompt
 		Name:                     "Project " + projectID + " workflow lint prompt size",
 		Status:                   doctorWarn,
 		Detail:                   detail,
-		Hint:                     "Keep WORKFLOW.md as a thin core and move domain-specific or conditional guidance into reviewed lazy skills through the existing skill-creation flow. This check is guidance only and never rewrites WORKFLOW.md.",
+		Hint:                     fmt.Sprintf("Keep WORKFLOW.md as a thin core and move domain-specific or conditional guidance into reviewed lazy skills under %s through the existing skill-creation flow. This check is guidance only and never rewrites WORKFLOW.md.", skillsPath),
 		WorkflowSkillSuggestions: suggestions,
 	}, true
 }
@@ -142,7 +145,7 @@ func doctorWorkflowEstimatedTokens(content string) int {
 	return (characters + doctorWorkflowEstimatedCharsPerToken - 1) / doctorWorkflowEstimatedCharsPerToken
 }
 
-func doctorWorkflowPromptSkillSuggestions(prompt string) []doctorWorkflowSkillSuggestion {
+func doctorWorkflowPromptSkillSuggestions(prompt string, skillsPath string) []doctorWorkflowSkillSuggestion {
 	sections := doctorWorkflowPromptSections(prompt)
 	candidates := make([]doctorWorkflowPromptSection, 0, len(sections))
 	for _, section := range sections {
@@ -175,13 +178,27 @@ func doctorWorkflowPromptSkillSuggestions(prompt string) []doctorWorkflowSkillSu
 
 	suggestions := make([]doctorWorkflowSkillSuggestion, 0, len(candidates))
 	for _, section := range candidates {
+		skillName := doctorWorkflowSkillName(section.heading)
 		suggestions = append(suggestions, doctorWorkflowSkillSuggestion{
 			Heading:         section.heading,
-			SkillName:       doctorWorkflowSkillName(section.heading),
+			SkillName:       skillName,
+			Path:            doctorWorkflowSkillCandidatePath(skillsPath, skillName),
 			EstimatedTokens: doctorWorkflowEstimatedTokens(section.heading + "\n" + section.content),
 		})
 	}
 	return suggestions
+}
+
+func doctorWorkflowSkillsPath(skillsPath string) string {
+	skillsPath = strings.TrimRight(filepath.ToSlash(strings.TrimSpace(skillsPath)), "/")
+	if skillsPath == "" {
+		return ".detent/skills"
+	}
+	return skillsPath
+}
+
+func doctorWorkflowSkillCandidatePath(skillsPath string, skillName string) string {
+	return doctorWorkflowSkillsPath(skillsPath) + "/" + skillName + ".md"
 }
 
 func doctorWorkflowPromptSections(prompt string) []doctorWorkflowPromptSection {

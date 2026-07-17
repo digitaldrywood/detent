@@ -68,7 +68,7 @@ func doctorRuntimeStorePath(configPath string) string {
 func checkDoctorWorkflowLint(ctx context.Context, projectID string, project globalconfig.Project, cfg workflowconfig.Config, prompt string, workflowTokenThreshold int, storePath string, deps doctorDeps) []doctorCheck {
 	workflowPath := doctorWorkflowLintPath(project)
 	checks := make([]doctorCheck, 0)
-	if sizeCheck, ok := checkDoctorWorkflowPromptSize(projectID, workflowPath, prompt, workflowTokenThreshold); ok {
+	if sizeCheck, ok := checkDoctorWorkflowPromptSize(projectID, workflowPath, prompt, cfg.Agent.Skills.Path, workflowTokenThreshold); ok {
 		checks = append(checks, sizeCheck)
 	}
 	if len(cfg.ConfiguredSubsettings("budget")) == 0 {
