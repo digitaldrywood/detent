@@ -135,7 +135,9 @@ func (o *Orchestrator) recoverBlockedIssues(
 			continue
 		}
 		if park, ok := o.latestReworkBreakerPark(ctx, issue); autoPromoteCfg.Enabled && ok {
-			if !reworkBreakerAutoUnparkReady(issue, park) || reworkBreakerAutoUnparkConsumed(park.Timeline, park.Signature) {
+			if reworkBreakerAutoUnparkConsumed(park.Timeline, park.Signature) ||
+				!reworkBreakerAutoUnparkReady(issue, park) ||
+				!o.reworkBreakerAutoPromoteGateReady(ctx, state, issue, autoPromoteCfg, now) {
 				continue
 			}
 			if !o.applyReworkBreakerAutoUnpark(ctx, state, issue, park, autoPromoteCfg.PassState, now) {
@@ -296,6 +298,29 @@ func reworkBreakerCIGreen(pr *connector.PullRequest) bool {
 	}
 }
 
+func (o *Orchestrator) reworkBreakerAutoPromoteGateReady(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	cfg AutoPromoteConfig,
+	now time.Time,
+) bool {
+	issueID := strings.TrimSpace(issue.ID)
+	summary := AutoPromoteSummaryFromIssue(issue)
+	summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issueID)
+	summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
+	decision := EvaluateAutoPromote(issue, summary, cfg, now)
+	if decision.Reason == AutoPromoteReasonValidatorMissing {
+		validation, _, ok := o.validatorStageResult(ctx, issue)
+		if !ok {
+			return false
+		}
+		summary.Validator = validation
+		decision = EvaluateAutoPromote(issue, summary, cfg, now)
+	}
+	return decision.Action == AutoPromoteActionPromote
+}
+
 func reworkBreakerAutoUnparkConsumed(timeline store.WorkflowTimeline, signature string) bool {
 	for _, event := range timeline.Events {
 		metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON)
@@ -320,7 +345,7 @@ func (o *Orchestrator) applyReworkBreakerAutoUnpark(
 		targetState = autoPromoteMergingState
 	}
 	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionReworkBreakerAutoUnpark, park.Signature)
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, now, "rework_breaker_auto_unpark", metadata); err != nil {
+	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, targetState, now, "rework_breaker_auto_unpark", metadata); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("rework breaker auto-unpark transition failed", "issue_id", issueID, "identifier", issue.Identifier, "reason", park.Reason, "signature", park.Signature, "error", err)
 		}

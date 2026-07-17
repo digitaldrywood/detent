@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -157,6 +158,8 @@ func TestRecoverBlockedIssuesReworkBreakerGuards(t *testing.T) {
 		manualReblock bool
 		consumed      bool
 		disabled      bool
+		mutateConfig  func(*AutoPromoteConfig)
+		prepare       func(*Orchestrator, connector.Issue)
 		wantUnpark    bool
 	}{
 		{
@@ -212,6 +215,88 @@ func TestRecoverBlockedIssuesReworkBreakerGuards(t *testing.T) {
 			},
 		},
 		{
+			name:   "auto promote optout label",
+			reason: AutoPromoteReasonCINotGreen,
+			mutate: func(issue *connector.Issue) {
+				issue.Labels = append(issue.Labels, "requires-human-review")
+			},
+			mutateConfig: func(cfg *AutoPromoteConfig) {
+				cfg.OptoutLabel = "requires-human-review"
+			},
+		},
+		{
+			name:   "required human approval missing",
+			reason: AutoPromoteReasonCINotGreen,
+			mutateConfig: func(cfg *AutoPromoteConfig) {
+				cfg.Gate = gate.Config{
+					Kind:          gate.KindHumanReview,
+					ApprovalLabel: "human-approved",
+				}
+			},
+		},
+		{
+			name:   "required automated review missing",
+			reason: AutoPromoteReasonCINotGreen,
+			mutateConfig: func(cfg *AutoPromoteConfig) {
+				cfg.Gate = gate.Config{
+					Kind:            gate.KindCommand,
+					AutomatedReview: gate.AutomatedReviewRequired,
+				}
+			},
+		},
+		{
+			name:   "validator result missing",
+			reason: AutoPromoteReasonCINotGreen,
+			mutateConfig: func(cfg *AutoPromoteConfig) {
+				cfg.Gate = gate.Config{
+					Kind:            gate.KindCommand,
+					AutomatedReview: gate.AutomatedReviewOff,
+					Validator:       gate.ValidatorConfig{Enabled: true},
+				}
+			},
+		},
+		{
+			name:   "passing validator result",
+			reason: AutoPromoteReasonCINotGreen,
+			mutateConfig: func(cfg *AutoPromoteConfig) {
+				cfg.Gate = gate.Config{
+					Kind:            gate.KindCommand,
+					AutomatedReview: gate.AutomatedReviewOff,
+					Validator:       gate.ValidatorConfig{Enabled: true},
+				}
+			},
+			prepare: func(orch *Orchestrator, issue connector.Issue) {
+				identity := validatorStageIdentityForIssue(issue)
+				orch.validatorResults = map[string]validatorStageResult{
+					identity.Key: {
+						Result: gate.ValidatorResult{
+							Submitted: true,
+							Verdict:   gate.ValidatorVerdictPass,
+							Score:     1,
+						},
+					},
+				}
+			},
+			wantUnpark: true,
+		},
+		{
+			name:   "artifact status waiting",
+			reason: AutoPromoteReasonCINotGreen,
+			mutate: func(issue *connector.Issue) {
+				issue.Fields[gate.DefaultArtifactStatusField] = "pending"
+			},
+			mutateConfig: func(cfg *AutoPromoteConfig) {
+				cfg.Gate = gate.Config{Kind: gate.KindArtifact}
+			},
+		},
+		{
+			name:   "allowed issue label missing",
+			reason: AutoPromoteReasonCINotGreen,
+			mutateConfig: func(cfg *AutoPromoteConfig) {
+				cfg.AllowedIssueLabels = []string{"approved-for-merge"}
+			},
+		},
+		{
 			name:          "manual reblock supersedes breaker park",
 			reason:        AutoPromoteReasonCINotGreen,
 			manualReblock: true,
@@ -246,6 +331,16 @@ func TestRecoverBlockedIssuesReworkBreakerGuards(t *testing.T) {
 			tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{issue}}
 			orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{})
 			orch.cfg.AutoPromote.Enabled = !tt.disabled
+			orch.cfg.AutoPromote.Gate = gate.Config{
+				Kind:            gate.KindCommand,
+				AutomatedReview: gate.AutomatedReviewOff,
+			}
+			if tt.mutateConfig != nil {
+				tt.mutateConfig(&orch.cfg.AutoPromote)
+			}
+			if tt.prepare != nil {
+				tt.prepare(orch, issue)
+			}
 			metrics := &autoPromoteWorkflowMetricsRecorder{}
 			orch.workflowMetrics = metrics
 			recordReworkBreakerPark(t, metrics, parkedIssue, base.Add(-time.Hour), tt.reason)
@@ -278,6 +373,67 @@ func TestRecoverBlockedIssuesReworkBreakerGuards(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRecoverBlockedIssuesDoesNotRecordRejectedReworkBreakerUnpark(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 16, 21, 0, 0, 0, time.UTC)
+	issue := reworkBreakerRecoveryIssue("issue-rejected-unpark")
+	tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{issue}}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{})
+	orch.connector = reworkBreakerRejectingConnector{dependencyAutoUnblockConnector: tracker}
+	orch.cfg.AutoPromote.Enabled = true
+	orch.cfg.AutoPromote.Gate = gate.Config{
+		Kind:            gate.KindCommand,
+		AutomatedReview: gate.AutomatedReviewOff,
+	}
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	orch.workflowMetrics = metrics
+	recordReworkBreakerPark(t, metrics, issue, now.Add(-time.Hour), AutoPromoteReasonCINotGreen)
+	state := newState(orch.cfg)
+
+	transitioned := orch.recoverBlockedIssues(context.Background(), &state, []connector.Issue{issue}, now)
+
+	if got := len(tracker.updates); got != 1 {
+		t.Fatalf("updates = %#v, want one rejected transition attempt", tracker.updates)
+	}
+	if len(tracker.comments) != 0 {
+		t.Fatalf("comments = %#v, want no success audit after rejected transition", tracker.comments)
+	}
+	if _, ok := transitioned[issue.ID]; ok {
+		t.Fatalf("transitioned[%q] present after rejected transition", issue.ID)
+	}
+	if reworkBreakerAutoUnparkConsumed(metricsTimeline(t, metrics, issue), "pr=1585;head=parked-head") {
+		t.Fatal("rejected transition consumed the one-shot auto-unpark")
+	}
+}
+
+type reworkBreakerRejectingConnector struct {
+	*dependencyAutoUnblockConnector
+}
+
+func (c reworkBreakerRejectingConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {
+	c.updates = append(c.updates, dependencyAutoUnblockUpdate{issueID: issueID, state: state})
+	return connector.ErrStateUpdateBlocked
+}
+
+func metricsTimeline(
+	t *testing.T,
+	metrics *autoPromoteWorkflowMetricsRecorder,
+	issue connector.Issue,
+) store.WorkflowTimeline {
+	t.Helper()
+
+	timeline, err := metrics.IssueWorkflowTimeline(context.Background(), store.IssueIdentity{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		IssueURL:   issue.URL,
+	})
+	if err != nil {
+		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
+	}
+	return timeline
 }
 
 func reworkBreakerRecoveryIssue(id string) connector.Issue {

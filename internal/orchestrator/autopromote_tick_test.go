@@ -1517,6 +1517,10 @@ func TestTickAutoUnparksClearedReworkBreaker(t *testing.T) {
 		AutoPromote: AutoPromoteConfig{
 			Enabled:     true,
 			ReworkLimit: 3,
+			Gate: gate.Config{
+				Kind:            gate.KindCommand,
+				AutomatedReview: gate.AutomatedReviewOff,
+			},
 		},
 		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
 		TerminalStates: []string{"Done", "Cancelled"},
