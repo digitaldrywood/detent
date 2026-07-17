@@ -65,9 +65,12 @@ func doctorRuntimeStorePath(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "detent.db")
 }
 
-func checkDoctorWorkflowLint(ctx context.Context, projectID string, project globalconfig.Project, cfg workflowconfig.Config, storePath string, deps doctorDeps) []doctorCheck {
+func checkDoctorWorkflowLint(ctx context.Context, projectID string, project globalconfig.Project, cfg workflowconfig.Config, prompt string, workflowTokenThreshold int, storePath string, deps doctorDeps) []doctorCheck {
 	workflowPath := doctorWorkflowLintPath(project)
 	checks := make([]doctorCheck, 0)
+	if sizeCheck, ok := checkDoctorWorkflowPromptSize(projectID, workflowPath, prompt, workflowTokenThreshold); ok {
+		checks = append(checks, sizeCheck)
+	}
 	if len(cfg.ConfiguredSubsettings("budget")) == 0 {
 		if budgetCheck, ok := checkDoctorDisabledBudgetCaps(projectID, cfg.Budget); ok {
 			budgetCheck.Detail = workflowPath + " " + budgetCheck.Detail

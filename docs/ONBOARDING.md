@@ -1926,6 +1926,16 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    loss is unexplained instead of pushing. The commands named in the template
    rule are illustrative; equivalent comparisons are valid.
 
+   Treat the prompt body as a thin, always-loaded core. Keep universal safety,
+   state-transition, validation, and handoff contracts in `WORKFLOW.md`; move
+   domain-specific runbooks and conditionally relevant tool guidance into
+   reviewed lazy skills under `.detent/skills`. `detent doctor` estimates the
+   loaded prompt body at four characters per token and warns above 4,000 tokens
+   by default. Use `--workflow-token-threshold <tokens>` to choose a different
+   positive threshold. The warning names non-overlapping Markdown sections and
+   candidate skill files, but never rewrites `WORKFLOW.md`; use the existing
+   skill-creation review flow described below to perform any extraction.
+
 2. **Substitute the tracker and workspace answers.** In ProjectV2 mode, use the
    ProjectV2 node id as `tracker.project_slug`. In boardless issue-field mode,
    set the repository and issue field. In label mode, set the repository and

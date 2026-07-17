@@ -4655,7 +4655,7 @@ func TestDoctorProjectCheckJobTimeoutReportsCurrentInnerCheck(t *testing.T) {
 		githubMergeSettings: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryMergeSettings, error) {
 			return ghconnector.RepositoryMergeSettings{AllowSquashMerge: true}, nil
 		},
-	}, RuntimeSecret{Value: "token", Source: "github_token"}, false)
+	}, RuntimeSecret{Value: "token", Source: "github_token"}, false, doctorWorkflowDefaultTokenThreshold)
 	if len(jobs) != 1 {
 		t.Fatalf("jobs len = %d, want 1", len(jobs))
 	}
