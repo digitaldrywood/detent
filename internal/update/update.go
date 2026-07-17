@@ -1064,7 +1064,7 @@ func runCommand(ctx context.Context, command string, args []string, stdout io.Wr
 }
 
 func verifyBinaryVersion(ctx context.Context, path string) (string, error) {
-	cmd := exec.CommandContext(ctx, path, "version")
+	cmd := exec.CommandContext(ctx, path, "version") // #nosec G204 -- the downloaded binary path is verified before installation and bypasses a shell.
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(output), fmt.Errorf("verify %s version: %w: %s", path, err, strings.TrimSpace(string(output)))
