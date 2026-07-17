@@ -1001,8 +1001,11 @@ func TestReapWorkspacesFallsBackToStateSweepWhenKnownWorkspaceIssueIDFetchFails(
 	if tracker.fetchByIDCalls != 1 {
 		t.Fatalf("FetchIssueStatesByIDs() calls = %d, want 1", tracker.fetchByIDCalls)
 	}
-	if tracker.fetchByStatesCalls != 1 {
-		t.Fatalf("FetchIssuesByStates() calls = %d, want fallback state sweep", tracker.fetchByStatesCalls)
+	if tracker.fetchByStatesLimitCalls != 1 {
+		t.Fatalf("FetchIssuesByStatesLimit() calls = %d, want bounded fallback state sweep", tracker.fetchByStatesLimitCalls)
+	}
+	if tracker.fetchByStatesCalls != 0 {
+		t.Fatalf("FetchIssuesByStates() calls = %d, want bounded fallback state sweep", tracker.fetchByStatesCalls)
 	}
 	if _, ok := state.ReapedWorkspaces[terminal.ID]; !ok {
 		t.Fatalf("ReapedWorkspaces[%q] missing after fallback state sweep", terminal.ID)
@@ -1047,11 +1050,97 @@ func TestReapWorkspacesStillSweepsWhenKnownWorkspaceIsActive(t *testing.T) {
 	if tracker.fetchByIDCalls != 1 {
 		t.Fatalf("FetchIssueStatesByIDs() calls = %d, want 1", tracker.fetchByIDCalls)
 	}
-	if tracker.fetchByStatesCalls != 1 {
-		t.Fatalf("FetchIssuesByStates() calls = %d, want due sweep after active known workspace", tracker.fetchByStatesCalls)
+	if tracker.fetchByStatesLimitCalls != 1 {
+		t.Fatalf("FetchIssuesByStatesLimit() calls = %d, want bounded due sweep after active known workspace", tracker.fetchByStatesLimitCalls)
+	}
+	if tracker.fetchByStatesCalls != 0 {
+		t.Fatalf("FetchIssuesByStates() calls = %d, want bounded due sweep after active known workspace", tracker.fetchByStatesCalls)
 	}
 	if _, ok := state.ReapedWorkspaces[terminal.ID]; !ok {
 		t.Fatalf("ReapedWorkspaces[%q] missing after due sweep", terminal.ID)
+	}
+}
+
+func TestReapWorkspacesScopesScheduledCleanupFetch(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name              string
+		lastCleanupAt     time.Time
+		wantProbeCalls    int
+		wantFallbackCalls int
+		wantStates        []string
+	}{
+		{
+			name:              "cleanup interval not due",
+			lastCleanupAt:     now,
+			wantProbeCalls:    1,
+			wantFallbackCalls: 0,
+			wantStates:        []string{"done", "cancelled"},
+		},
+		{
+			name:              "cleanup interval due",
+			wantProbeCalls:    1,
+			wantFallbackCalls: 0,
+			wantStates:        []string{"human review", "blocked", "done", "cancelled"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{
+				ActiveStates:                  []string{"Todo", "In Progress"},
+				ObservedStates:                []string{"Human Review", "Blocked"},
+				TerminalStates:                []string{"Done", "Cancelled"},
+				WorkspaceCleanupSweepInterval: 10 * time.Minute,
+			})
+			state := newState(cfg)
+			state.LastWorkspaceCleanupAt = test.lastCleanupAt
+			base := &rateLimitConnector{}
+			tracker := &cleanupProbeConnector{rateLimitConnector: base}
+			orch := newRateLimitTestOrchestrator(cfg, tracker)
+			orch.reaper = rateLimitWorkspaceReaper{}
+
+			orch.reapWorkspacesIfDue(context.Background(), &state, now)
+
+			if tracker.probeCalls != test.wantProbeCalls {
+				t.Fatalf("FetchIssueStateProbe() calls = %d, want %d", tracker.probeCalls, test.wantProbeCalls)
+			}
+			if base.fetchByStatesCalls != test.wantFallbackCalls {
+				t.Fatalf("FetchIssuesByStates() calls = %d, want %d", base.fetchByStatesCalls, test.wantFallbackCalls)
+			}
+			if tracker.limit != 100 {
+				t.Fatalf("FetchIssueStateProbe() limit = %d, want 100", tracker.limit)
+			}
+			if strings.Join(tracker.states, ",") != strings.Join(test.wantStates, ",") {
+				t.Fatalf("FetchIssueStateProbe() states = %#v, want %#v", tracker.states, test.wantStates)
+			}
+		})
+	}
+}
+
+func TestTickPrioritizesStatusDriftBeforeBulkTrackerReads(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		ActiveStates:                  []string{"Todo", "In Progress"},
+		ObservedStates:                []string{"Human Review"},
+		TerminalStates:                []string{"Done"},
+		WorkspaceCleanupSweepInterval: 10 * time.Minute,
+	})
+	state := newState(cfg)
+	tracker := &orderedTickConnector{rateLimitConnector: &rateLimitConnector{}}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+	orch.reaper = rateLimitWorkspaceReaper{}
+
+	orch.tick(context.Background(), &state, now)
+
+	if len(tracker.calls) == 0 || tracker.calls[0] != "status_drift" {
+		t.Fatalf("tracker call order = %#v, want status drift first", tracker.calls)
 	}
 }
 
@@ -1117,6 +1206,45 @@ type rateLimitConnector struct {
 
 type conditionalRateLimitConnector struct {
 	*rateLimitConnector
+}
+
+type cleanupProbeConnector struct {
+	*rateLimitConnector
+	probeCalls int
+	states     []string
+	limit      int
+}
+
+func (c *cleanupProbeConnector) FetchIssueStateProbe(_ context.Context, states []string, limit int) ([]connector.Issue, error) {
+	c.probeCalls++
+	c.states = append([]string(nil), states...)
+	c.limit = limit
+	return cloneIssues(c.stateIssues), nil
+}
+
+type orderedTickConnector struct {
+	*rateLimitConnector
+	calls []string
+}
+
+func (c *orderedTickConnector) FetchStatusDrift(context.Context) (connector.StatusDrift, error) {
+	c.calls = append(c.calls, "status_drift")
+	return connector.StatusDrift{}, nil
+}
+
+func (c *orderedTickConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	c.calls = append(c.calls, "candidates")
+	return c.rateLimitConnector.FetchCandidateIssues(ctx)
+}
+
+func (c *orderedTickConnector) FetchIssuesByStates(ctx context.Context, states []string) ([]connector.Issue, error) {
+	c.calls = append(c.calls, "states")
+	return c.rateLimitConnector.FetchIssuesByStates(ctx, states)
+}
+
+func (c *orderedTickConnector) FetchIssueStateProbe(ctx context.Context, states []string, limit int) ([]connector.Issue, error) {
+	c.calls = append(c.calls, "probe")
+	return c.FetchIssuesByStatesLimit(ctx, states, limit)
 }
 
 func (*conditionalRateLimitConnector) ConditionalPollingEnabled() bool {

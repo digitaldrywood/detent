@@ -161,6 +161,10 @@ type IssuesByStatesLimiter interface {
 	FetchIssuesByStatesLimit(context.Context, []string, int) ([]Issue, error)
 }
 
+type FreshIssuesByStatesFetcher interface {
+	FetchFreshIssuesByStates(context.Context, []string) ([]Issue, error)
+}
+
 type IssueStateScan struct {
 	Issues           []Issue        `json:"issues,omitempty"`
 	BoardCounts      map[string]int `json:"board_counts,omitempty"`

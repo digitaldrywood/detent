@@ -358,6 +358,62 @@ func TestConnectorFetchIssueStatesByIdentifiersReturnsLocalOnlyIssues(t *testing
 	}
 }
 
+func TestConnectorFetchIssueStateProbeStaysLocal(t *testing.T) {
+	t.Parallel()
+
+	var requestMu sync.Mutex
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestMu.Lock()
+		requests++
+		requestMu.Unlock()
+		http.Error(w, "unexpected upstream request", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	conn, err := New(Config{
+		GitHub: githubconnector.Config{
+			Endpoint:   server.URL + "/graphql",
+			APIKey:     "ghp_test",
+			HTTPClient: server.Client(),
+		},
+		Local: local.Config{
+			Path: filepath.Join(t.TempDir(), "probe-work-items.db"),
+			Issues: []connector.Issue{{
+				ID:         "local-1",
+				Identifier: "digitaldrywood/detent#1",
+				Title:      "Local cleanup candidate",
+				State:      "Done",
+				Fields:     map[string]string{},
+			}},
+		},
+		Repository:     "digitaldrywood/detent",
+		ActiveStates:   []string{"Todo", "In Progress"},
+		TerminalStates: []string{"Done"},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	issues, err := conn.FetchIssueStateProbe(context.Background(), []string{"Done"}, 100)
+	if err != nil {
+		t.Fatalf("FetchIssueStateProbe() error = %v", err)
+	}
+	if len(issues) != 1 || issues[0].ID != "local-1" {
+		t.Fatalf("FetchIssueStateProbe() = %#v, want local cleanup candidate", issues)
+	}
+	requestMu.Lock()
+	defer requestMu.Unlock()
+	if requests != 0 {
+		t.Fatalf("upstream requests = %d, want 0", requests)
+	}
+}
+
 func TestConnectorFetchIssueCommentsMergesRemoteAndLocalInCreatedOrder(t *testing.T) {
 	t.Parallel()
 

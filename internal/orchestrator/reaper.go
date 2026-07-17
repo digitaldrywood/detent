@@ -17,6 +17,8 @@ type workspaceCleanupDiagnostic interface {
 	Remediation() string
 }
 
+const workspaceCleanupCandidateLimit = 100
+
 func (o *Orchestrator) reapWorkspacesIfDue(ctx context.Context, state *State, now time.Time) {
 	if o.reaper == nil {
 		return
@@ -77,7 +79,7 @@ func (o *Orchestrator) reapWorkspaceIssueIDs(ctx context.Context, state *State, 
 }
 
 func (o *Orchestrator) reapWorkspaceStates(ctx context.Context, state *State, states []string, now time.Time) bool {
-	issues, err := o.connector.FetchIssuesByStates(ctx, states)
+	issues, err := o.fetchWorkspaceCleanupCandidates(ctx, states)
 	if err != nil {
 		o.logger.Warn("fetch workspace cleanup candidates failed", slog.Any("error", err))
 		message := workspaceCleanupFetchFailedMessage(states, err)
@@ -100,8 +102,18 @@ func (o *Orchestrator) reapWorkspaceStates(ctx context.Context, state *State, st
 	return true
 }
 
+func (o *Orchestrator) fetchWorkspaceCleanupCandidates(ctx context.Context, states []string) ([]connector.Issue, error) {
+	if prober, ok := o.connector.(connector.IssueStateProber); ok {
+		return prober.FetchIssueStateProbe(ctx, states, workspaceCleanupCandidateLimit)
+	}
+	if limiter, ok := o.connector.(connector.IssuesByStatesLimiter); ok {
+		return limiter.FetchIssuesByStatesLimit(ctx, states, workspaceCleanupCandidateLimit)
+	}
+	return o.connector.FetchIssuesByStates(ctx, states)
+}
+
 func cleanupFetchStates(cfg Config) []string {
-	return appendUniqueStates(cfg.TerminalStates, cfg.ObservedStates)
+	return appendUniqueStates(cfg.ObservedStates, cfg.TerminalStates)
 }
 
 func cleanupTerminalFetchStates(cfg Config) []string {

@@ -1572,6 +1572,8 @@ func restEndpointFamily(method string, path string) string {
 		return "issue comments"
 	case len(segments) == 6 && segments[3] == "issues" && segments[5] == "comments":
 		return "issue comments"
+	case len(segments) >= 6 && segments[3] == "issues" && segments[5] == "issue-field-values":
+		return "issue field values"
 	case len(segments) >= 7 && segments[3] == "issues" && segments[5] == "dependencies":
 		return "issue dependencies"
 	case len(segments) == 5 && segments[3] == "issues":
@@ -1606,6 +1608,8 @@ func restRequestPurpose(method string, path string) string {
 		return "hydrate_issue_comments"
 	case "issue dependencies":
 		return "hydrate_issue_dependencies"
+	case "issue field values":
+		return "hydrate_issue_fields"
 	case "pull requests":
 		return "hydrate_pull_request"
 	case "reviews":
@@ -1650,7 +1654,8 @@ func retryAfterSeconds(err error) int64 {
 
 func restFanoutEndpointFamily(family string) bool {
 	switch family {
-	case "pull requests", "check runs", "commit statuses", "reviews", "repository issues":
+	case "pull requests", "check runs", "commit statuses", "reviews", "repository issues",
+		"issue reads", "issue comments", "issue dependencies", "issue field values":
 		return true
 	default:
 		return false

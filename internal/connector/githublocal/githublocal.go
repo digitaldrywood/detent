@@ -313,7 +313,7 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, states []strin
 }
 
 func (c *Connector) FetchIssueStateProbe(ctx context.Context, states []string, limit int) ([]connector.Issue, error) {
-	return c.FetchIssuesByStatesLimit(ctx, states, limit)
+	return c.local.FetchIssueStateProbe(ctx, states, limit)
 }
 
 func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) ([]connector.Issue, error) {

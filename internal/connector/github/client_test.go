@@ -754,6 +754,35 @@ func TestClientRESTCountsRepositoryIssuesAsFanout(t *testing.T) {
 	}
 }
 
+func TestRESTFanoutEndpointFamilyIncludesBulkHydrationReads(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		path       string
+		wantFamily string
+	}{
+		{name: "issue read", path: "/repos/digitaldrywood/detent/issues/1384", wantFamily: "issue reads"},
+		{name: "issue comments", path: "/repos/digitaldrywood/detent/issues/1384/comments?per_page=100", wantFamily: "issue comments"},
+		{name: "issue dependencies", path: "/repos/digitaldrywood/detent/issues/1384/dependencies/blocked_by?per_page=100", wantFamily: "issue dependencies"},
+		{name: "issue field values", path: "/repos/digitaldrywood/detent/issues/1384/issue-field-values?per_page=100", wantFamily: "issue field values"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			family := restEndpointFamily(http.MethodGet, test.path)
+			if family != test.wantFamily {
+				t.Fatalf("restEndpointFamily() = %q, want %q", family, test.wantFamily)
+			}
+			if !restFanoutEndpointFamily(family) {
+				t.Fatalf("restFanoutEndpointFamily(%q) = false, want true", family)
+			}
+		})
+	}
+}
+
 func TestClientRESTStopsFanoutBelowReserve(t *testing.T) {
 	t.Parallel()
 

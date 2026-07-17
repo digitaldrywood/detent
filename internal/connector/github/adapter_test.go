@@ -747,11 +747,6 @@ func TestConnectorFetchIssuesByStatesScansBacklogAndObservedStatesExhaustively(t
 		{
 			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_backlog","content":{"__typename":"Issue","id":"I_backlog","number":40,"title":"Explicit backlog","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/40","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Backlog"},"priorityValue":null}]}}}}`,
 		},
-		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
-			body:   `[]`,
-		},
 	})
 	c := newGitHubTestConnector(t, server, Config{
 		ProjectSlug:    "PVT_1",
@@ -770,8 +765,8 @@ func TestConnectorFetchIssuesByStatesScansBacklogAndObservedStatesExhaustively(t
 	}
 
 	requests := server.requests()
-	if len(requests) != 2 {
-		t.Fatalf("request count = %d, want project scan and pull request lookup", len(requests))
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want project scan without unrelated pull request lookup", len(requests))
 	}
 	variables := requestVariables(t, requests[0])
 	if _, ok := variables["query"]; ok {
@@ -787,13 +782,13 @@ func TestConnectorBoundedBacklogFetchesUseUnfilteredLightweightQuery(t *testing.
 	t.Parallel()
 
 	tests := []struct {
-		name                 string
-		fetch                func(context.Context, *Connector) ([]connector.Issue, error)
-		pullRequestHydration bool
+		name                  string
+		fetch                 func(context.Context, *Connector) ([]connector.Issue, error)
+		linkedPullRequestRefs bool
 	}{
 		{
-			name:                 "FetchIssuesByStatesLimit",
-			pullRequestHydration: true,
+			name:                  "FetchIssuesByStatesLimit",
+			linkedPullRequestRefs: true,
 			fetch: func(ctx context.Context, c *Connector) ([]connector.Issue, error) {
 				return c.FetchIssuesByStatesLimit(ctx, []string{"Backlog", "Human Review"}, 1)
 			},
@@ -810,17 +805,9 @@ func TestConnectorBoundedBacklogFetchesUseUnfilteredLightweightQuery(t *testing.
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			responses := []graphqlTestResponse{{
+			server := newGraphQLTestServer(t, []graphqlTestResponse{{
 				body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_backlog","content":{"__typename":"Issue","id":"I_backlog","number":40,"title":"Explicit backlog","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/40","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Backlog"},"priorityValue":null}]}}}}`,
-			}}
-			if tt.pullRequestHydration {
-				responses = append(responses, graphqlTestResponse{
-					method: http.MethodGet,
-					path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
-					body:   `[]`,
-				})
-			}
-			server := newGraphQLTestServer(t, responses)
+			}})
 			c := newGitHubTestConnector(t, server, Config{
 				ProjectSlug:    "PVT_1",
 				ObservedStates: []string{"Backlog", "Human Review"},
@@ -835,20 +822,16 @@ func TestConnectorBoundedBacklogFetchesUseUnfilteredLightweightQuery(t *testing.
 			}
 
 			requests := server.requests()
-			wantRequests := 1
-			if tt.pullRequestHydration {
-				wantRequests++
-			}
-			if len(requests) != wantRequests {
-				t.Fatalf("request count = %d, want %d", len(requests), wantRequests)
+			if len(requests) != 1 {
+				t.Fatalf("request count = %d, want project scan without unrelated pull request lookup", len(requests))
 			}
 			variables := requestVariables(t, requests[0])
 			if _, ok := variables["query"]; ok {
 				t.Fatalf("query = %v, want unfiltered ProjectV2 items", variables["query"])
 			}
 			query := requests[0]["query"].(string)
-			if got := strings.Contains(query, "closedByPullRequestsReferences"); got != tt.pullRequestHydration {
-				t.Fatalf("project query linked pull request refs = %t, want %t:\n%s", got, tt.pullRequestHydration, query)
+			if got := strings.Contains(query, "closedByPullRequestsReferences"); got != tt.linkedPullRequestRefs {
+				t.Fatalf("project query linked pull request refs = %t, want %t:\n%s", got, tt.linkedPullRequestRefs, query)
 			}
 		})
 	}
@@ -2028,7 +2011,7 @@ func TestConnectorFetchCandidateIssuesStopsBranchPullRequestHydrationAfterSecond
 	}
 }
 
-func TestConnectorFetchIssuesByStatesRechecksPullRequestStatusForPromotion(t *testing.T) {
+func TestConnectorFetchFreshIssuesByStatesRechecksPullRequestStatusForPromotion(t *testing.T) {
 	t.Parallel()
 
 	projectBody := `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_401","content":{"__typename":"Issue","id":"I_401","number":401,"title":"Human review issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/401","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":411,"url":"https://github.com/digitaldrywood/detent/pull/411","state":"OPEN","repository":{"nameWithOwner":"digitaldrywood/detent"}}]}},"statusValue":{"name":"Human Review"},"priorityValue":null}]}}}}`
@@ -2048,23 +2031,23 @@ func TestConnectorFetchIssuesByStatesRechecksPullRequestStatusForPromotion(t *te
 
 	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
 
-	first, err := c.FetchIssuesByStates(context.Background(), []string{"Human Review"})
+	first, err := c.FetchFreshIssuesByStates(context.Background(), []string{"Human Review"})
 	if err != nil {
-		t.Fatalf("FetchIssuesByStates() first error = %v", err)
+		t.Fatalf("FetchFreshIssuesByStates() first error = %v", err)
 	}
 	if len(first) != 1 || first[0].PullRequest == nil {
-		t.Fatalf("FetchIssuesByStates() first = %#v, want hydrated PR", first)
+		t.Fatalf("FetchFreshIssuesByStates() first = %#v, want hydrated PR", first)
 	}
 	if first[0].PullRequest.CIStatus != "pass" || first[0].PullRequest.CodexReviewState != "" {
 		t.Fatalf("first PullRequest = %#v, want pass with no review finding", first[0].PullRequest)
 	}
 
-	second, err := c.FetchIssuesByStates(context.Background(), []string{"Human Review"})
+	second, err := c.FetchFreshIssuesByStates(context.Background(), []string{"Human Review"})
 	if err != nil {
-		t.Fatalf("FetchIssuesByStates() second error = %v", err)
+		t.Fatalf("FetchFreshIssuesByStates() second error = %v", err)
 	}
 	if len(second) != 1 || second[0].PullRequest == nil {
-		t.Fatalf("FetchIssuesByStates() second = %#v, want hydrated PR", second)
+		t.Fatalf("FetchFreshIssuesByStates() second = %#v, want hydrated PR", second)
 	}
 	pr := second[0].PullRequest
 	if pr.CIStatus != "fail" || pr.CodexReviewState != "P1" {
@@ -2089,7 +2072,7 @@ func TestConnectorFetchIssuesByStatesRechecksPullRequestStatusForPromotion(t *te
 	}
 }
 
-func TestConnectorFetchIssuesByStatesUsesCachedPullRequestStatusAfterRateLimit(t *testing.T) {
+func TestConnectorFetchFreshIssuesByStatesUsesCachedPullRequestStatusAfterRateLimit(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
@@ -2125,20 +2108,20 @@ func TestConnectorFetchIssuesByStatesUsesCachedPullRequestStatusAfterRateLimit(t
 		},
 	})
 
-	first, err := c.FetchIssuesByStates(context.Background(), []string{"Human Review"})
+	first, err := c.FetchFreshIssuesByStates(context.Background(), []string{"Human Review"})
 	if err != nil {
-		t.Fatalf("FetchIssuesByStates() first error = %v", err)
+		t.Fatalf("FetchFreshIssuesByStates() first error = %v", err)
 	}
 	if len(first) != 1 || first[0].PullRequest == nil || first[0].PullRequest.CIStatus != "pass" {
-		t.Fatalf("FetchIssuesByStates() first = %#v, want cached hydrated PR", first)
+		t.Fatalf("FetchFreshIssuesByStates() first = %#v, want cached hydrated PR", first)
 	}
 
-	second, err := c.FetchIssuesByStates(context.Background(), []string{"Human Review"})
+	second, err := c.FetchFreshIssuesByStates(context.Background(), []string{"Human Review"})
 	if err != nil {
-		t.Fatalf("FetchIssuesByStates() second error = %v", err)
+		t.Fatalf("FetchFreshIssuesByStates() second error = %v", err)
 	}
 	if len(second) != 1 || second[0].PullRequest == nil {
-		t.Fatalf("FetchIssuesByStates() second = %#v, want hydrated PR", second)
+		t.Fatalf("FetchFreshIssuesByStates() second = %#v, want hydrated PR", second)
 	}
 	pr := second[0].PullRequest
 	if pr.HydrationUnavailableReason != "" {
