@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -264,19 +265,140 @@ func TestServiceCommandResolvesConfigAndRuntime(t *testing.T) {
 	}
 }
 
-func TestServiceCommandPersistsEnvironmentPort(t *testing.T) {
+func TestStatusCommandResolvesDashboardPort(t *testing.T) {
+	t.Setenv("PORT", "4200")
+
+	tests := []struct {
+		name             string
+		configPort       int
+		writeConfig      bool
+		definition       string
+		manager          servicepkg.ManagerName
+		wantDashboardURL string
+		wantFactoryURL   string
+	}{
+		{
+			name:             "ambient port with config port",
+			configPort:       4100,
+			writeConfig:      true,
+			manager:          servicepkg.ManagerManual,
+			wantDashboardURL: "http://localhost:4100",
+			wantFactoryURL:   "http://localhost:4100",
+		},
+		{
+			name:             "installed unit port",
+			configPort:       4100,
+			writeConfig:      true,
+			definition:       "[Service]\nExecStart=\"/usr/bin/detent\" \"--config\" \"/tmp/global.yaml\" \"--port\" \"4300\" \"--headless\"\n",
+			manager:          servicepkg.ManagerSystemd,
+			wantDashboardURL: "http://localhost:4300",
+			wantFactoryURL:   "http://localhost:4100",
+		},
+		{
+			name:        "installed launchd port",
+			configPort:  4100,
+			writeConfig: true,
+			definition: `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.digitaldrywood.detent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/detent</string>
+    <string>--config</string>
+    <string>/tmp/global.yaml</string>
+    <string>--port</string>
+    <string>4400</string>
+    <string>--headless</string>
+  </array>
+</dict>
+</plist>`,
+			manager:          servicepkg.ManagerLaunchd,
+			wantDashboardURL: "http://localhost:4400",
+			wantFactoryURL:   "http://localhost:4100",
+		},
+		{
+			name:             "default port without config port",
+			manager:          servicepkg.ManagerManual,
+			wantDashboardURL: "http://localhost:4000",
+			wantFactoryURL:   "http://localhost:4000",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "global.yaml")
+			if tt.writeConfig {
+				cfg, err := globalconfig.DefaultAt(path)
+				if err != nil {
+					t.Fatalf("DefaultAt() error = %v", err)
+				}
+				cfg.Port = &tt.configPort
+				if err := globalconfig.Write(path, cfg); err != nil {
+					t.Fatalf("Write() error = %v", err)
+				}
+			}
+
+			definitionPath := ""
+			if tt.definition != "" {
+				definitionPath = filepath.Join(root, "detent.service")
+				if err := os.WriteFile(definitionPath, []byte(tt.definition), 0o600); err != nil {
+					t.Fatalf("WriteFile() error = %v", err)
+				}
+			}
+
+			var captured servicepkg.Config
+			runner := &serviceRunnerStub{status: servicepkg.Status{
+				ServiceManager: tt.manager,
+				Service:        string(tt.manager),
+				DefinitionPath: definitionPath,
+				State:          servicepkg.StateRunning,
+			}}
+			cmd := NewRootCommand(t.Context(), WithServiceFactory(func(cfg servicepkg.Config) (ServiceRunner, error) {
+				captured = cfg
+				return runner, nil
+			}))
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{"--format", "json", "--config", path, "status"})
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			var status servicepkg.Status
+			if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+			if status.DashboardURL != tt.wantDashboardURL {
+				t.Fatalf("DashboardURL = %q, want %q", status.DashboardURL, tt.wantDashboardURL)
+			}
+			if captured.DashboardURL != tt.wantFactoryURL {
+				t.Fatalf("factory DashboardURL = %q, want %q", captured.DashboardURL, tt.wantFactoryURL)
+			}
+		})
+	}
+}
+
+func TestStartCommandPersistsEnvironmentPort(t *testing.T) {
 	t.Setenv("PORT", "4200")
 
 	path := filepath.Join(t.TempDir(), "global.yaml")
 	var captured servicepkg.Config
-	runner := &serviceRunnerStub{status: servicepkg.Status{ServiceManager: servicepkg.ManagerManual, Service: string(servicepkg.ManagerManual), State: servicepkg.StateStopped}}
+	runner := &serviceRunnerStub{startResults: []servicepkg.StartResult{{
+		Action:  servicepkg.ActionAlreadyActive,
+		Manager: servicepkg.ManagerInfo{Name: servicepkg.ManagerManual, Unit: string(servicepkg.ManagerManual)},
+		State:   servicepkg.StateRunning,
+	}}}
 	cmd := NewRootCommand(t.Context(), WithServiceFactory(func(cfg servicepkg.Config) (ServiceRunner, error) {
 		captured = cfg
 		return runner, nil
 	}))
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--format", "json", "--config", path, "status"})
+	cmd.SetArgs([]string{"--format", "json", "--config", path, "start"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)

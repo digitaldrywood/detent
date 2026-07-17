@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +29,11 @@ type ServiceRunner interface {
 }
 
 type ServiceFactory func(servicepkg.Config) (ServiceRunner, error)
+
+type statusServiceRunner struct {
+	ServiceRunner
+	fallbackURL string
+}
 
 func defaultServiceFactory(cfg servicepkg.Config) (ServiceRunner, error) {
 	return servicepkg.New(cfg)
@@ -137,6 +144,14 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 	if err != nil {
 		return nil, err
 	}
+	dashboardPort := resolvedPort
+	if cmd.Name() == "status" {
+		dashboardPort = resolveConfiguredRuntimePort(cmd.Context(), runtimeInput{
+			Config:     &cfg,
+			ConfigPath: resolution,
+			Workflow:   firstGlobalWorkflowPath(cfg),
+		}, runtimeDepsFromOptions(opts))
+	}
 
 	executable, err := os.Executable()
 	if err != nil {
@@ -163,7 +178,8 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 	if factory == nil {
 		factory = defaultServiceFactory
 	}
-	return factory(servicepkg.Config{
+	dashboardURL := "http://" + net.JoinHostPort(dashboardHost, strconv.Itoa(dashboardPort.Value))
+	runner, err := factory(servicepkg.Config{
 		GOOS:         runtime.GOOS,
 		BinaryPath:   binaryPath,
 		ConfigPath:   resolution.Path,
@@ -171,9 +187,153 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 		LockPath:     filepath.Join(filepath.Dir(resolution.Path), "detent.db.lock"),
 		Version:      opts.version,
 		AutoUpdate:   serviceAutoUpdate(cfg.Update.AutoCheckEnabled, cfg.Update.AutoApplyEnabled),
-		DashboardURL: "http://" + net.JoinHostPort(dashboardHost, strconv.Itoa(resolvedPort.Value)),
+		DashboardURL: dashboardURL,
 		Install:      install,
 	})
+	if err != nil {
+		return nil, err
+	}
+	if cmd.Name() == "status" {
+		return statusServiceRunner{ServiceRunner: runner, fallbackURL: dashboardURL}, nil
+	}
+	return runner, nil
+}
+
+func (r statusServiceRunner) Status(ctx context.Context) (servicepkg.Status, error) {
+	status, err := r.ServiceRunner.Status(ctx)
+	if err != nil {
+		return servicepkg.Status{}, err
+	}
+	status.DashboardURL = r.fallbackURL
+	if port, ok := installedServicePort(status.ServiceManager, status.DefinitionPath); ok {
+		status.DashboardURL = "http://" + net.JoinHostPort(dashboardHost, strconv.Itoa(port))
+	}
+	return status, nil
+}
+
+func installedServicePort(manager servicepkg.ManagerName, path string) (int, bool) {
+	if strings.TrimSpace(path) == "" {
+		return 0, false
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	var arguments []string
+	switch manager {
+	case servicepkg.ManagerSystemd:
+		arguments = systemdDefinitionArguments(content)
+	case servicepkg.ManagerLaunchd:
+		arguments = launchdDefinitionArguments(content)
+	default:
+		return 0, false
+	}
+	for index, argument := range arguments {
+		if argument == "--port" && index+1 < len(arguments) {
+			return validServicePort(arguments[index+1])
+		}
+		if raw, ok := strings.CutPrefix(argument, "--port="); ok {
+			return validServicePort(raw)
+		}
+	}
+	return 0, false
+}
+
+func validServicePort(raw string) (int, bool) {
+	port, err := strconv.Atoi(strings.TrimSpace(raw))
+	return port, err == nil && port >= 0
+}
+
+func systemdDefinitionArguments(content []byte) []string {
+	for line := range strings.SplitSeq(string(content), "\n") {
+		value, ok := strings.CutPrefix(strings.TrimSpace(line), "ExecStart=")
+		if ok {
+			return splitDefinitionArguments(value)
+		}
+	}
+	return nil
+}
+
+func splitDefinitionArguments(value string) []string {
+	var arguments []string
+	for value = strings.TrimSpace(value); value != ""; value = strings.TrimSpace(value) {
+		if value[0] == '"' {
+			end := quotedArgumentEnd(value)
+			if end < 0 {
+				return nil
+			}
+			argument, err := strconv.Unquote(value[:end+1])
+			if err != nil {
+				return nil
+			}
+			arguments = append(arguments, argument)
+			value = value[end+1:]
+		} else {
+			index := strings.IndexAny(value, " \t")
+			if index < 0 {
+				return append(arguments, value)
+			}
+			arguments = append(arguments, value[:index])
+			value = value[index:]
+		}
+	}
+	return arguments
+}
+
+func quotedArgumentEnd(value string) int {
+	escaped := false
+	for index := 1; index < len(value); index++ {
+		switch {
+		case escaped:
+			escaped = false
+		case value[index] == '\\':
+			escaped = true
+		case value[index] == '"':
+			return index
+		}
+	}
+	return -1
+}
+
+func launchdDefinitionArguments(content []byte) []string {
+	decoder := xml.NewDecoder(bytes.NewReader(content))
+	wantArguments := false
+	inArguments := false
+	var arguments []string
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil
+		}
+		switch element := token.(type) {
+		case xml.StartElement:
+			switch element.Name.Local {
+			case "key":
+				var key string
+				if err := decoder.DecodeElement(&key, &element); err != nil {
+					return nil
+				}
+				wantArguments = strings.TrimSpace(key) == "ProgramArguments"
+			case "array":
+				if wantArguments {
+					inArguments = true
+					wantArguments = false
+				}
+			case "string":
+				if inArguments {
+					var argument string
+					if err := decoder.DecodeElement(&argument, &element); err != nil {
+						return nil
+					}
+					arguments = append(arguments, argument)
+				}
+			}
+		case xml.EndElement:
+			if inArguments && element.Name.Local == "array" {
+				return arguments
+			}
+		}
+	}
 }
 
 func serviceBinaryPath(executable string, invocation string, lookPath func(string) (string, error), evalSymlinks func(string) (string, error)) string {

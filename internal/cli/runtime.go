@@ -259,18 +259,22 @@ func resolveRuntimePort(ctx context.Context, input runtimeInput, deps runtimeDep
 		}
 		return RuntimeIntValue{Value: port, Source: "PORT"}, nil
 	}
+	return resolveConfiguredRuntimePort(ctx, input, deps), nil
+}
+
+func resolveConfiguredRuntimePort(ctx context.Context, input runtimeInput, deps runtimeDeps) RuntimeIntValue {
 	if input.Config != nil && input.Config.Port != nil {
-		return RuntimeIntValue{Value: *input.Config.Port, Source: runtimeSourceConfig}, nil
+		return RuntimeIntValue{Value: *input.Config.Port, Source: runtimeSourceConfig}
 	}
 	if input.Config != nil {
 		if port, ok := globalWorkflowServerPort(ctx, *input.Config, deps); ok {
-			return RuntimeIntValue{Value: port, Source: runtimeSourceWorkflow}, nil
+			return RuntimeIntValue{Value: port, Source: runtimeSourceWorkflow}
 		}
 	}
 	if port, ok := workflowServerPort(ctx, input.Workflow, deps); ok {
-		return RuntimeIntValue{Value: port, Source: runtimeSourceWorkflow}, nil
+		return RuntimeIntValue{Value: port, Source: runtimeSourceWorkflow}
 	}
-	return RuntimeIntValue{Value: defaultWebPort, Source: runtimeSourceDefault}, nil
+	return RuntimeIntValue{Value: defaultWebPort, Source: runtimeSourceDefault}
 }
 
 func globalWorkflowServerPort(ctx context.Context, cfg globalconfig.Config, deps runtimeDeps) (int, bool) {
