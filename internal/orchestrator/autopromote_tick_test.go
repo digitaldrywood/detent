@@ -2096,6 +2096,33 @@ func TestLogAutoPromoteDecisionIncludesHydrationReasons(t *testing.T) {
 	}
 }
 
+func TestLogAutoPromoteDecisionNamesPendingChecks(t *testing.T) {
+	t.Parallel()
+
+	var logs strings.Builder
+	orch := &Orchestrator{
+		logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	}
+	issue := autoPromoteTickIssue("issue-pending-ci-log", []string{"bug"}, &connector.PullRequest{
+		Number:        1648,
+		CIStatus:      "pending",
+		RunningChecks: []string{"Checks"},
+		RequiredCheckFailures: []connector.PullRequestCheck{{
+			Name:   "Race Tests",
+			Status: "pending",
+		}},
+	})
+	orch.logAutoPromoteDecision(issue, AutoPromoteDecision{
+		Action:   AutoPromoteActionSkip,
+		Reason:   AutoPromoteReasonCINotGreen,
+		CIStatus: "pending",
+	}, "")
+
+	if !strings.Contains(logs.String(), `pending_checks="Checks, Race Tests"`) {
+		t.Fatalf("logs %q missing pending check names", logs.String())
+	}
+}
+
 func TestTickReconcilesStaleTodoLinkedPullRequests(t *testing.T) {
 	t.Parallel()
 

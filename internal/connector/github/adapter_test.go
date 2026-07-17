@@ -2464,6 +2464,22 @@ func TestCheckRunsStateUsesSettledContextResults(t *testing.T) {
 			want: "pending",
 		},
 		{
+			name: "newer settled success supersedes pending run",
+			checkRuns: []restCheckRun{
+				{ID: 1, Name: "Checks", Status: "in_progress", StartedAt: &older},
+				{ID: 2, Name: "Checks", Status: "completed", Conclusion: "success", StartedAt: &newer},
+			},
+			want: "success",
+		},
+		{
+			name: "newer settled failure supersedes pending run",
+			checkRuns: []restCheckRun{
+				{ID: 2, Name: "Checks", Status: "completed", Conclusion: "failure", StartedAt: &newer},
+				{ID: 1, Name: "Checks", Status: "queued", StartedAt: &older},
+			},
+			want: "failure",
+		},
+		{
 			name: "pending context keeps a different failure unsettled",
 			checkRuns: []restCheckRun{
 				{Name: "Checks", Status: "completed", Conclusion: "failure"},
@@ -2488,6 +2504,15 @@ func TestCheckRunsStateUsesSettledContextResults(t *testing.T) {
 			want: "success",
 		},
 		{
+			name: "newer success supersedes ignored workflow runs",
+			checkRuns: []restCheckRun{
+				{ID: 1, Name: "Checks", Status: "completed", Conclusion: "cancelled", StartedAt: &older},
+				{ID: 2, Name: "Checks", Status: "completed", Conclusion: "skipped", StartedAt: &older},
+				{ID: 3, Name: "Checks", Status: "completed", Conclusion: "success", StartedAt: &newer},
+			},
+			want: "success",
+		},
+		{
 			name: "newer settled success supersedes failure",
 			checkRuns: []restCheckRun{
 				{ID: 1, Name: "Checks", Status: "completed", Conclusion: "failure", StartedAt: &older},
@@ -2504,12 +2529,12 @@ func TestCheckRunsStateUsesSettledContextResults(t *testing.T) {
 			want: "failure",
 		},
 		{
-			name: "only ignored conclusions remain pending",
+			name: "only ignored conclusions are non-blocking",
 			checkRuns: []restCheckRun{
 				{Name: "Checks", Status: "completed", Conclusion: "cancelled"},
 				{Name: "Test", Status: "completed", Conclusion: "skipped"},
 			},
-			want: "pending",
+			want: "success",
 		},
 	}
 
@@ -2679,6 +2704,17 @@ func TestRequiredStatusCheckFailures(t *testing.T) {
 			}},
 		},
 		{
+			name:      "skipped required check overrides successful legacy status",
+			checkRuns: []restCheckRun{{Name: "Windows Core", Status: "completed", Conclusion: "skipped"}},
+			statuses:  []restCommitStatus{{Context: "Windows Core", State: "success"}},
+			required:  []string{"Windows Core"},
+			wantState: "pending",
+			wantChecks: []connector.PullRequestCheck{{
+				Name:   "Windows Core",
+				Status: "pending",
+			}},
+		},
+		{
 			name: "pending required check wins over settled failure",
 			checkRuns: []restCheckRun{
 				{Name: "Checks", Status: "completed", Conclusion: "failure"},
@@ -2692,10 +2728,23 @@ func TestRequiredStatusCheckFailures(t *testing.T) {
 			},
 		},
 		{
-			name: "cancelled and skipped shadows do not replace settled success",
+			name: "latest skipped required run blocks despite older success",
 			checkRuns: []restCheckRun{
-				{ID: 5, Name: "Checks", Status: "completed", Conclusion: "cancelled"},
-				{ID: 4, Name: "Checks", Status: "completed", Conclusion: "skipped"},
+				{ID: 1, Name: "Checks", Status: "completed", Conclusion: "success"},
+				{ID: 2, Name: "Checks", Status: "completed", Conclusion: "skipped"},
+			},
+			required:  []string{"Checks"},
+			wantState: "pending",
+			wantChecks: []connector.PullRequestCheck{{
+				Name:   "Checks",
+				Status: "pending",
+			}},
+		},
+		{
+			name: "latest success replaces older ignored required runs",
+			checkRuns: []restCheckRun{
+				{ID: 1, Name: "Checks", Status: "completed", Conclusion: "cancelled"},
+				{ID: 2, Name: "Checks", Status: "completed", Conclusion: "skipped"},
 				{ID: 3, Name: "Checks", Status: "completed", Conclusion: "success"},
 			},
 			required: []string{"Checks"},
@@ -4531,6 +4580,58 @@ func TestConnectorHydratePullRequestUsesEffectiveCheckRunsForWorkflowTelemetry(t
 		if request["path"] == "/repos/example/repo/actions/runs/7001" {
 			t.Fatalf("request path = %q, want superseded workflow run excluded", request["path"])
 		}
+	}
+}
+
+func TestConnectorHydratePullRequestIgnoresOptionalSkippedCheckRun(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/pyroapex/pulls/1648",
+			body:   `{"number":1648,"html_url":"https://github.com/example/pyroapex/pull/1648","state":"open","mergeable_state":"clean","draft":false,"head":{"ref":"detent/1647","sha":"head-sha"},"base":{"sha":"base-sha"}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/pyroapex/commits/head-sha/check-runs?per_page=100",
+			body:   `{"check_runs":[{"id":1,"name":"Checks","status":"completed","conclusion":"success"},{"id":2,"name":"Changed-file coverage","status":"completed","conclusion":"success"},{"id":3,"name":"Race Tests","status":"completed","conclusion":"skipped"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/pyroapex/commits/head-sha/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/pyroapex/pulls/1648/reviews?per_page=100",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	prNumber := 1648
+	issue := connector.Issue{
+		ID:           "I_kw1647",
+		Identifier:   "example/pyroapex#1647",
+		PRNumber:     &prNumber,
+		PRRepository: "example/pyroapex",
+	}
+
+	got, err := c.HydratePullRequest(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("HydratePullRequest() error = %v", err)
+	}
+
+	pr := got.PullRequest
+	if pr == nil {
+		t.Fatal("PullRequest = nil, want hydrated pull request")
+		return
+	}
+	if pr.MergeableState != "clean" || pr.CIStatus != "pass" {
+		t.Fatalf("PullRequest = %#v, want clean with passing CI", pr)
+	}
+	if len(pr.RunningChecks) != 0 {
+		t.Fatalf("RunningChecks = %#v, want none", pr.RunningChecks)
 	}
 }
 

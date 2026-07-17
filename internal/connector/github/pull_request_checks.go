@@ -224,8 +224,11 @@ func checkRunsState(checkRuns []restCheckRun) string {
 	failed := false
 	for _, group := range groupedCheckRuns(checkRuns) {
 		result := selectCheckRunContext(group)
-		if result.Pending || !result.Settled {
+		if result.Pending {
 			pending = true
+			continue
+		}
+		if !result.Settled {
 			continue
 		}
 		conclusion := strings.ToLower(strings.TrimSpace(result.Run.Conclusion))
@@ -264,23 +267,23 @@ func requiredStatusCheckFailures(checkRuns []restCheckRun, statuses []restCommit
 
 	failures := make([]connector.PullRequestCheck, 0, len(required))
 	for _, name := range required {
-		if result, ok := checkRunsByName[name]; ok && (result.Pending || result.Settled) {
-			if failure, failed := requiredCheckRunFailure(name, result.Run); failed {
-				failures = append(failures, failure)
+		if result, ok := checkRunsByName[name]; ok {
+			if result.Pending || result.Settled {
+				if failure, failed := requiredCheckRunFailure(name, result.Run); failed {
+					failures = append(failures, failure)
+				}
+				continue
 			}
+			failures = append(failures, connector.PullRequestCheck{
+				Name:   name,
+				Status: "pending",
+			})
 			continue
 		}
 		if status, ok := statusesByContext[name]; ok {
 			if failure, failed := requiredCommitStatusFailure(name, status); failed {
 				failures = append(failures, failure)
 			}
-			continue
-		}
-		if _, ok := checkRunsByName[name]; ok {
-			failures = append(failures, connector.PullRequestCheck{
-				Name:   name,
-				Status: "pending",
-			})
 			continue
 		}
 		failures = append(failures, connector.PullRequestCheck{
@@ -487,35 +490,24 @@ func effectiveCheckRuns(checkRuns []restCheckRun) []restCheckRun {
 }
 
 func selectCheckRunContext(checkRuns []restCheckRun) checkRunContextResult {
-	var latestPending restCheckRun
-	var latestSettled restCheckRun
-	hasPending := false
-	hasSettled := false
-	for _, checkRun := range checkRuns {
-		status := normalizedCheckRunStatus(checkRun)
-		conclusion := strings.ToLower(strings.TrimSpace(checkRun.Conclusion))
-		if (status != "" && status != "completed") || conclusion == "" {
-			if !hasPending || restCheckRunAfter(checkRun, latestPending) {
-				latestPending = checkRun
-				hasPending = true
-			}
-			continue
-		}
-		if ignoredCheckRunConclusion(conclusion) {
-			continue
-		}
-		if !hasSettled || restCheckRunAfter(checkRun, latestSettled) {
-			latestSettled = checkRun
-			hasSettled = true
+	if len(checkRuns) == 0 {
+		return checkRunContextResult{}
+	}
+	latest := checkRuns[0]
+	for _, checkRun := range checkRuns[1:] {
+		if restCheckRunAfter(checkRun, latest) {
+			latest = checkRun
 		}
 	}
-	if hasPending {
-		return checkRunContextResult{Run: latestPending, Pending: true}
+	status := normalizedCheckRunStatus(latest)
+	conclusion := strings.ToLower(strings.TrimSpace(latest.Conclusion))
+	if (status != "" && status != "completed") || conclusion == "" {
+		return checkRunContextResult{Run: latest, Pending: true}
 	}
-	if hasSettled {
-		return checkRunContextResult{Run: latestSettled, Settled: true}
+	if ignoredCheckRunConclusion(conclusion) {
+		return checkRunContextResult{}
 	}
-	return checkRunContextResult{}
+	return checkRunContextResult{Run: latest, Settled: true}
 }
 
 func ignoredCheckRunConclusion(conclusion string) bool {
