@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"math"
@@ -611,10 +612,12 @@ type projectKanbanCard struct {
 }
 
 const (
-	githubLocalDivergenceMetadataKey       = "github_local_divergence"
-	githubLocalDivergenceDetailMetadataKey = "github_local_divergence_detail"
-	githubLocalClosedUpstreamDivergence    = "closed_upstream_local_active"
-	githubIssueNumberMetadataKey           = "github_issue_number"
+	githubLocalDivergenceMetadataKey         = "github_local_divergence"
+	githubLocalDivergenceDetailMetadataKey   = "github_local_divergence_detail"
+	githubLocalClosedUpstreamDivergence      = "closed_upstream_local_active"
+	githubIssueNumberMetadataKey             = "github_issue_number"
+	projectKanbanRecentCompletionMetadataKey = "detent.recent_completion"
+	recentCompletionWindow                   = 48 * time.Hour
 )
 
 type projectOverviewCard struct {
@@ -1424,11 +1427,14 @@ func snapshotReadinessStatus(snapshot telemetry.Snapshot) telemetry.RefreshStatu
 
 func snapshotHasRefreshSignal(refresh telemetry.Refresh) bool {
 	return refresh.PollIntervalSeconds != 0 ||
+		refresh.StaleAfterSeconds != 0 ||
+		refresh.FailureThreshold != 0 ||
 		refresh.Status != "" ||
 		refresh.LastRefreshAt != nil ||
 		refresh.NextRefreshAt != nil ||
 		strings.TrimSpace(refresh.LastError) != "" ||
-		refresh.LastErrorAt != nil
+		refresh.LastErrorAt != nil ||
+		len(refresh.Sources) > 0
 }
 
 func snapshotHasLoadedData(snapshot telemetry.Snapshot) bool {
@@ -2205,7 +2211,7 @@ func projectOverviewDiagnosticsDotClass(snapshot telemetry.Snapshot) string {
 }
 
 func projectKanbanCardsByState(data DashboardData) map[string][]projectKanbanCard {
-	issues := projectKanbanIssues(data.Snapshot, data.Kanban.States)
+	issues := projectKanbanIssues(data)
 	mergeStatuses := mergeLaneStatuses(data.Snapshot)
 	configured := projectKanbanConfiguredStateMap(data.Kanban.States)
 	cardsByState := map[string][]projectKanbanCard{}
@@ -2300,9 +2306,10 @@ func projectKanbanDispatchPriorityLabels(data DashboardData, projectID string) [
 	return data.Kanban.DispatchPriorityByLabel
 }
 
-func projectKanbanIssues(snapshot telemetry.Snapshot, configuredStates []string) []projectKanbanIssueCard {
+func projectKanbanIssues(data DashboardData) []projectKanbanIssueCard {
+	snapshot := data.Snapshot
 	byIssue := map[string]projectKanbanIssueCard{}
-	configured := projectKanbanConfiguredStateMap(configuredStates)
+	configured := projectKanbanConfiguredStateMap(data.Kanban.States)
 	nextIndex := 0
 	appendIssue := func(issue telemetry.Issue, state string, stageAt time.Time, rank int, rawRuntimeState bool) {
 		state = strings.TrimSpace(state)
@@ -2332,6 +2339,9 @@ func projectKanbanIssues(snapshot telemetry.Snapshot, configuredStates []string)
 	appendSnapshotIssue := func(issue telemetry.Issue, fallback string, stageAt time.Time, rank int) {
 		state, rawRuntimeState := projectKanbanSnapshotState(issue, fallback, configured)
 		appendIssue(issue, state, stageAt, rank, rawRuntimeState)
+	}
+	for _, completion := range projectKanbanRecentCompletions(data) {
+		appendSnapshotIssue(completion.issue, completion.state, completion.completedAt, 1)
 	}
 
 	for _, issue := range snapshot.BoardIssues {
@@ -2370,6 +2380,123 @@ func projectKanbanIssues(snapshot telemetry.Snapshot, configuredStates []string)
 		return issues[i].index < issues[j].index
 	})
 	return issues
+}
+
+type projectKanbanRecentCompletion struct {
+	issue       telemetry.Issue
+	state       string
+	completedAt time.Time
+}
+
+func projectKanbanRecentCompletions(data DashboardData) []projectKanbanRecentCompletion {
+	now := pipelineNow(data.Snapshot)
+	cutoff := now.Add(-recentCompletionWindow)
+	rows := make([]projectKanbanRecentCompletion, 0, len(data.Snapshot.Completed)+len(data.Snapshot.WorkAttempts))
+	seen := map[string]struct{}{}
+	appendCompletion := func(issue telemetry.Issue, state string, completedAt time.Time) {
+		if completedAt.IsZero() || completedAt.Before(cutoff) || completedAt.After(now) {
+			return
+		}
+		projectID := strings.TrimSpace(issue.ProjectID)
+		if selected := strings.TrimSpace(data.ProjectID); selected != "" && projectID != "" && !strings.EqualFold(projectID, selected) {
+			return
+		}
+		if !projectKanbanTerminalState(state, projectKanbanTerminalStateSetForProject(data, projectID)) {
+			return
+		}
+		key := recentCompletionKey(issue)
+		if _, ok := seen[key]; key != "" && ok {
+			return
+		}
+		if key != "" {
+			seen[key] = struct{}{}
+		}
+		issue.State = state
+		issue.Metadata = maps.Clone(issue.Metadata)
+		if issue.Metadata == nil {
+			issue.Metadata = map[string]string{}
+		}
+		issue.Metadata[projectKanbanRecentCompletionMetadataKey] = "true"
+		rows = append(rows, projectKanbanRecentCompletion{issue: issue, state: state, completedAt: completedAt.UTC()})
+	}
+
+	for _, completed := range data.Snapshot.Completed {
+		state := strings.TrimSpace(completed.State)
+		appendCompletion(completed.Issue, state, completed.CompletedAt)
+	}
+	for _, attempt := range data.Snapshot.WorkAttempts {
+		if !recentTerminalWorkAttempt(attempt) || attempt.CompletedAt == nil {
+			continue
+		}
+		state := projectKanbanDoneStateForProject(data, attempt.ProjectID)
+		issue := telemetry.Issue{
+			ID:         strings.TrimSpace(attempt.IssueID),
+			Identifier: strings.TrimSpace(attempt.Identifier),
+			ProjectID:  strings.TrimSpace(attempt.ProjectID),
+			URL:        strings.TrimSpace(attempt.IssueURL),
+			Title:      recentWorkAttemptIssueTitle(attempt),
+		}
+		if attempt.PRNumber != nil {
+			issue.PullRequest = &telemetry.PullRequest{Number: int(*attempt.PRNumber)}
+		}
+		appendCompletion(issue, state, *attempt.CompletedAt)
+	}
+
+	sort.SliceStable(rows, func(i, j int) bool {
+		return rows[i].completedAt.After(rows[j].completedAt)
+	})
+	return rows
+}
+
+func recentCompletionKey(issue telemetry.Issue) string {
+	if id := strings.TrimSpace(issue.ID); id != "" {
+		return "id:" + id
+	}
+	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" {
+		return "identifier:" + identifier
+	}
+	return ""
+}
+
+func recentTerminalWorkAttempt(attempt telemetry.WorkAttempt) bool {
+	return strings.EqualFold(strings.TrimSpace(attempt.Status), "terminal") &&
+		strings.EqualFold(strings.TrimSpace(attempt.TerminalState), "success") &&
+		strings.EqualFold(strings.TrimSpace(attempt.Phase), "completed") &&
+		strings.EqualFold(strings.TrimSpace(attempt.StatusMessage), "worker reached terminal state")
+}
+
+func recentWorkAttemptIssueTitle(attempt telemetry.WorkAttempt) string {
+	var metadata struct {
+		IssueTitle string `json:"issue_title"`
+	}
+	if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) == nil && strings.TrimSpace(metadata.IssueTitle) != "" {
+		return strings.TrimSpace(metadata.IssueTitle)
+	}
+	if identifier := strings.TrimSpace(attempt.Identifier); identifier != "" {
+		return "Completed " + identifier
+	}
+	return "Completed work"
+}
+
+func projectKanbanDoneStateForProject(data DashboardData, projectID string) string {
+	states := data.Kanban.TerminalStates
+	for configuredProjectID, projectStates := range data.Kanban.TerminalStatesByProject {
+		if strings.EqualFold(strings.TrimSpace(configuredProjectID), strings.TrimSpace(projectID)) && len(projectStates) > 0 {
+			states = projectStates
+			break
+		}
+	}
+	for _, state := range states {
+		if strings.EqualFold(strings.TrimSpace(state), "Done") {
+			return strings.TrimSpace(state)
+		}
+	}
+	for _, state := range states {
+		if strings.TrimSpace(state) != "" {
+			return strings.TrimSpace(state)
+		}
+	}
+	return "Done"
 }
 
 func projectKanbanSnapshotState(issue telemetry.Issue, fallback string, configured map[string]string) (string, bool) {
@@ -2830,7 +2957,7 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		Blockers:              blockers,
 		ClearedBlockers:       clearedBlockers,
 		HasPullRequest:        issue.PullRequest != nil,
-		Movable:               strings.TrimSpace(issue.ID) != "",
+		Movable:               strings.TrimSpace(issue.ID) != "" && issue.Metadata[projectKanbanRecentCompletionMetadataKey] != "true",
 		RuntimeIdentity:       issue.RuntimeIdentity,
 	}
 	if projectKanbanCardUsesInternalIssueView(data, card) {

@@ -144,6 +144,31 @@ func TestAppShellHealthKindReflectsScheduledPacing(t *testing.T) {
 	}
 }
 
+func TestAppLiveStatusReflectsTrackerFreshness(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 14, 0, 0, 0, time.UTC)
+	lastSuccess := now.Add(-3 * time.Minute)
+	data := DashboardShellData{Snapshot: telemetry.Snapshot{
+		GeneratedAt: now,
+		Refresh: telemetry.Refresh{
+			StaleAfterSeconds: 120,
+			FailureThreshold:  3,
+			Sources: []telemetry.RefreshSource{{
+				Name:          telemetry.RefreshSourceDrift,
+				LastSuccessAt: &lastSuccess,
+			}},
+		},
+	}}
+
+	if got := appLiveStatusKind(data); got != primitives.KindWarn {
+		t.Fatalf("appLiveStatusKind() = %q, want %q", got, primitives.KindWarn)
+	}
+	if got := appLiveStatusLabel(data); got != "Live · stale data" {
+		t.Fatalf("appLiveStatusLabel() = %q", got)
+	}
+}
+
 func TestAppSidebarContentProjectVisibility(t *testing.T) {
 	tests := []struct {
 		name         string

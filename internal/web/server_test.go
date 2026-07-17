@@ -7041,7 +7041,7 @@ func TestDashboardWiresHTMXSSE(t *testing.T) {
 		`hx-ext="sse, morph"`,
 		`sse-connect="/events?view=fleet"`,
 		`sse-swap="snapshot"`,
-		`sse-swap="tick"`,
+		`sse-swap="live-status"`,
 		`hx-swap="morph:innerHTML"`,
 		`id="agent-activity"`,
 		`id="fleet-pr-pipeline"`,
@@ -7286,9 +7286,12 @@ func TestServerEventsStreamsSidebarGitHubAPIHealth(t *testing.T) {
 	if event := readRawSSEEvent(t, conn, reader); event.name != "sidebar" {
 		t.Fatalf("second event name = %q, want sidebar", event.name)
 	}
+	if event := readRawSSEEvent(t, conn, reader); event.name != "live-status" {
+		t.Fatalf("third event name = %q, want live-status", event.name)
+	}
 	event := readRawSSEEvent(t, conn, reader)
 	if event.name != "github-api-health" {
-		t.Fatalf("third event name = %q, want github-api-health", event.name)
+		t.Fatalf("fourth event name = %q, want github-api-health", event.name)
 	}
 	for _, want := range []string{
 		`id="github-api-health"`,
@@ -7491,6 +7494,10 @@ func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *tes
 	sidebarEvent := readRawSSEEvent(t, conn, reader)
 	if sidebarEvent.name != "sidebar" {
 		t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
+	}
+	liveStatusEvent := readRawSSEEvent(t, conn, reader)
+	if liveStatusEvent.name != "live-status" {
+		t.Fatalf("event name = %q, want live-status", liveStatusEvent.name)
 	}
 	healthEvent := readRawSSEEvent(t, conn, reader)
 	if healthEvent.name != "github-api-health" {

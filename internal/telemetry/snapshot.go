@@ -178,15 +178,35 @@ const (
 	RefreshAttemptStatusRefused    RefreshAttemptStatus = "refused"
 )
 
+type RefreshSourceName string
+
+const (
+	RefreshSourceCandidates RefreshSourceName = "candidates"
+	RefreshSourceStatuses   RefreshSourceName = "statuses"
+	RefreshSourceDrift      RefreshSourceName = "drift"
+)
+
 type Refresh struct {
 	PollIntervalSeconds int64           `json:"poll_interval_seconds,omitempty"`
+	StaleAfterSeconds   int64           `json:"stale_after_seconds,omitempty"`
+	FailureThreshold    int             `json:"failure_threshold,omitempty"`
 	DataSeq             uint64          `json:"data_seq,omitempty"`
 	Status              RefreshStatus   `json:"status,omitempty"`
 	LastRefreshAt       *time.Time      `json:"last_refresh_at,omitempty"`
 	NextRefreshAt       *time.Time      `json:"next_refresh_at,omitempty"`
 	LastError           string          `json:"last_error,omitempty"`
 	LastErrorAt         *time.Time      `json:"last_error_at,omitempty"`
+	Sources             []RefreshSource `json:"sources,omitempty"`
 	Manual              *RefreshAttempt `json:"manual,omitempty"`
+}
+
+type RefreshSource struct {
+	ProjectID     string            `json:"project_id,omitempty"`
+	Name          RefreshSourceName `json:"name"`
+	LastSuccessAt *time.Time        `json:"last_success_at,omitempty"`
+	FailureStreak int               `json:"failure_streak,omitempty"`
+	LastError     string            `json:"last_error,omitempty"`
+	LastErrorAt   *time.Time        `json:"last_error_at,omitempty"`
 }
 
 type RefreshAttempt struct {
@@ -243,6 +263,38 @@ func (r Refresh) Initializing() bool {
 
 func (r Refresh) Degraded() bool {
 	return r.ReadinessStatus() == RefreshStatusDegraded
+}
+
+func (r Refresh) Source(name RefreshSourceName) (RefreshSource, bool) {
+	for _, source := range r.Sources {
+		if source.Name == name {
+			return source, true
+		}
+	}
+	return RefreshSource{}, false
+}
+
+func (r Refresh) Stale(now time.Time) bool {
+	if len(r.Sources) == 0 {
+		return r.Degraded()
+	}
+	threshold := r.FailureThreshold
+	if threshold <= 0 {
+		threshold = 3
+	}
+	staleAfter := time.Duration(r.StaleAfterSeconds) * time.Second
+	for _, source := range r.Sources {
+		if source.FailureStreak >= threshold {
+			return true
+		}
+		if staleAfter <= 0 || source.LastSuccessAt == nil || now.IsZero() {
+			continue
+		}
+		if now.After(source.LastSuccessAt.Add(staleAfter)) {
+			return true
+		}
+	}
+	return false
 }
 
 type Counts struct {

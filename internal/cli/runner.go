@@ -903,6 +903,11 @@ func stampSnapshotProjectID(snapshot telemetry.Snapshot) telemetry.Snapshot {
 	if !snapshot.Release.IsZero() && strings.TrimSpace(snapshot.Release.ProjectID) == "" {
 		snapshot.Release.ProjectID = projectID
 	}
+	for i := range snapshot.Refresh.Sources {
+		if strings.TrimSpace(snapshot.Refresh.Sources[i].ProjectID) == "" {
+			snapshot.Refresh.Sources[i].ProjectID = projectID
+		}
+	}
 
 	for i := range snapshot.Pipeline {
 		snapshot.Pipeline[i] = stampIssueProjectID(snapshot.Pipeline[i], projectID)
@@ -1050,6 +1055,17 @@ func mergeRefresh(current, next telemetry.Refresh) telemetry.Refresh {
 		(next.PollIntervalSeconds > 0 && next.PollIntervalSeconds < current.PollIntervalSeconds) {
 		current.PollIntervalSeconds = next.PollIntervalSeconds
 	}
+	if current.StaleAfterSeconds == 0 ||
+		(next.StaleAfterSeconds > 0 && next.StaleAfterSeconds < current.StaleAfterSeconds) {
+		current.StaleAfterSeconds = next.StaleAfterSeconds
+	}
+	if current.FailureThreshold == 0 ||
+		(next.FailureThreshold > 0 && next.FailureThreshold < current.FailureThreshold) {
+		current.FailureThreshold = next.FailureThreshold
+	}
+	if next.DataSeq > current.DataSeq {
+		current.DataSeq = next.DataSeq
+	}
 	current.LastRefreshAt = latestTime(current.LastRefreshAt, next.LastRefreshAt)
 	current.NextRefreshAt = earliestTime(current.NextRefreshAt, next.NextRefreshAt)
 	if strings.TrimSpace(next.LastError) != "" {
@@ -1061,6 +1077,7 @@ func mergeRefresh(current, next telemetry.Refresh) telemetry.Refresh {
 		}
 	}
 	current.LastErrorAt = latestTime(current.LastErrorAt, next.LastErrorAt)
+	current.Sources = mergeRefreshSources(current.Sources, next.Sources)
 	current.Manual = mergeRefreshAttempt(current.Manual, next.Manual)
 	switch {
 	case !currentHadSignal && nextHadSignal:
@@ -1081,12 +1098,54 @@ func mergeRefresh(current, next telemetry.Refresh) telemetry.Refresh {
 
 func refreshHasSignal(refresh telemetry.Refresh) bool {
 	return refresh.PollIntervalSeconds != 0 ||
+		refresh.StaleAfterSeconds != 0 ||
+		refresh.FailureThreshold != 0 ||
 		refresh.Status != "" ||
 		refresh.LastRefreshAt != nil ||
 		refresh.NextRefreshAt != nil ||
 		strings.TrimSpace(refresh.LastError) != "" ||
 		refresh.LastErrorAt != nil ||
+		len(refresh.Sources) > 0 ||
 		refresh.Manual != nil
+}
+
+func mergeRefreshSources(current []telemetry.RefreshSource, next []telemetry.RefreshSource) []telemetry.RefreshSource {
+	merged := make([]telemetry.RefreshSource, 0, len(current)+len(next))
+	index := make(map[string]int, len(current)+len(next))
+	appendSource := func(source telemetry.RefreshSource) {
+		key := strings.TrimSpace(source.ProjectID) + "\x00" + string(source.Name)
+		if existing, ok := index[key]; ok {
+			if refreshSourceObservedAt(source).After(refreshSourceObservedAt(merged[existing])) {
+				merged[existing] = cloneRefreshSource(source)
+			}
+			return
+		}
+		index[key] = len(merged)
+		merged = append(merged, cloneRefreshSource(source))
+	}
+	for _, source := range current {
+		appendSource(source)
+	}
+	for _, source := range next {
+		appendSource(source)
+	}
+	return merged
+}
+
+func refreshSourceObservedAt(source telemetry.RefreshSource) time.Time {
+	if source.LastErrorAt != nil && (source.LastSuccessAt == nil || source.LastErrorAt.After(*source.LastSuccessAt)) {
+		return source.LastErrorAt.UTC()
+	}
+	if source.LastSuccessAt != nil {
+		return source.LastSuccessAt.UTC()
+	}
+	return time.Time{}
+}
+
+func cloneRefreshSource(source telemetry.RefreshSource) telemetry.RefreshSource {
+	source.LastSuccessAt = cloneTime(source.LastSuccessAt)
+	source.LastErrorAt = cloneTime(source.LastErrorAt)
+	return source
 }
 
 func mergeRefreshAttempt(current *telemetry.RefreshAttempt, next *telemetry.RefreshAttempt) *telemetry.RefreshAttempt {

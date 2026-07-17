@@ -121,7 +121,7 @@ func boardViewFromDashboard(data DashboardData) boardView {
 	view := boardView{
 		Key:        boardVisibilityKey(data),
 		Exceptions: boardExceptions(data, true),
-		Figures:    boardFigures(data.Snapshot),
+		Figures:    boardFiguresFromDashboard(data),
 		TPS:        throughputRate(data.Snapshot),
 		Spend:      spend,
 	}
@@ -295,6 +295,13 @@ func boardFigures(snapshot telemetry.Snapshot) []primitives.Figure {
 		{ID: "fig-blocked", Value: formatCount(workload.Blocked), Label: "blocked", Err: workload.Blocked > 0},
 		{ID: "fig-completed", Value: formatCount(completedCount(snapshot)), Label: "completed"},
 	}
+}
+
+func boardFiguresFromDashboard(data DashboardData) []primitives.Figure {
+	figures := boardFigures(data.Snapshot)
+	figures[len(figures)-1].Value = formatCount(len(projectKanbanRecentCompletions(data)))
+	figures[len(figures)-1].Label = "completed · 48h"
+	return figures
 }
 
 // boardExceptions builds the exception strip. boardActions is true only

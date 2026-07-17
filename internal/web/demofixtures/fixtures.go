@@ -80,6 +80,10 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot = demoBoardScheduledPacingSnapshot()
 	case "board-degraded-health-banners":
 		snapshot = demoBoardDegradedHealthBannersSnapshot()
+	case "tracker-stale":
+		snapshot = demoTrackerStaleSnapshot()
+	case "recent-completions":
+		snapshot = demoRecentCompletionsSnapshot()
 	case "stop-run-picker":
 		if len(snapshot.Running) > 0 {
 			snapshot.Running[0].StopDestination = "Blocked"
@@ -269,6 +273,88 @@ func demoEmptySnapshot() telemetry.Snapshot {
 		CycleTime:       telemetry.CycleTimeReport{Available: false, DegradedReason: "no completed sessions in the selected window"},
 		WorkflowMetrics: demoEmptyWorkflowMetrics(now),
 	}
+}
+
+func demoTrackerStaleSnapshot() telemetry.Snapshot {
+	snapshot := demoHealthySnapshot()
+	now := snapshot.GeneratedAt
+	lastSuccess := now.Add(-4 * time.Minute)
+	lastErrorAt := now.Add(-15 * time.Second)
+	refresh := telemetry.Refresh{
+		PollIntervalSeconds: 60,
+		StaleAfterSeconds:   120,
+		FailureThreshold:    3,
+		Status:              telemetry.RefreshStatusDegraded,
+		LastRefreshAt:       &lastSuccess,
+		LastError:           "GitHub candidate query returned status 503",
+		LastErrorAt:         &lastErrorAt,
+		Sources: []telemetry.RefreshSource{
+			{
+				ProjectID:     demoPrimaryProjectID,
+				Name:          telemetry.RefreshSourceCandidates,
+				LastSuccessAt: &lastSuccess,
+				FailureStreak: 3,
+				LastError:     "GitHub candidate query returned status 503",
+				LastErrorAt:   &lastErrorAt,
+			},
+		},
+	}
+	snapshot.Refresh = refresh
+	for i := range snapshot.Projects {
+		if snapshot.Projects[i].Project.ID == demoPrimaryProjectID {
+			snapshot.Projects[i].Refresh = refresh
+		}
+	}
+	return snapshot
+}
+
+func demoRecentCompletionsSnapshot() telemetry.Snapshot {
+	snapshot := demoEmptySnapshot()
+	now := snapshot.GeneratedAt
+	lastRefresh := now.Add(-12 * time.Second)
+	snapshot.Refresh = telemetry.Refresh{
+		PollIntervalSeconds: 60,
+		StaleAfterSeconds:   120,
+		FailureThreshold:    3,
+		Status:              telemetry.RefreshStatusReady,
+		LastRefreshAt:       &lastRefresh,
+		Sources: []telemetry.RefreshSource{
+			{ProjectID: demoPrimaryProjectID, Name: telemetry.RefreshSourceCandidates, LastSuccessAt: &lastRefresh},
+			{ProjectID: demoPrimaryProjectID, Name: telemetry.RefreshSourceStatuses, LastSuccessAt: &lastRefresh},
+			{ProjectID: demoPrimaryProjectID, Name: telemetry.RefreshSourceDrift, LastSuccessAt: &lastRefresh},
+		},
+	}
+	completedYesterday := now.Add(-18 * time.Hour)
+	completedToday := now.Add(-35 * time.Minute)
+	snapshot.WorkAttempts = []telemetry.WorkAttempt{
+		{
+			AttemptID:          6101,
+			ProjectID:          demoPrimaryProjectID,
+			IssueID:            "recent-done-1",
+			Identifier:         "digitaldrywood/detent-core#6101",
+			IssueURL:           demoIssueURL("digitaldrywood/detent-core#6101"),
+			Status:             "terminal",
+			CompletedAt:        &completedToday,
+			TerminalState:      "success",
+			Phase:              "completed",
+			StatusMessage:      "worker reached terminal state",
+			WorkerMetadataJSON: `{"issue_title":"Release v0.44.0"}`,
+		},
+		{
+			AttemptID:          6100,
+			ProjectID:          demoPrimaryProjectID,
+			IssueID:            "recent-done-2",
+			Identifier:         "digitaldrywood/detent-core#6100",
+			IssueURL:           demoIssueURL("digitaldrywood/detent-core#6100"),
+			Status:             "terminal",
+			CompletedAt:        &completedYesterday,
+			TerminalState:      "success",
+			Phase:              "completed",
+			StatusMessage:      "worker reached terminal state",
+			WorkerMetadataJSON: `{"issue_title":"Finish overnight release batch"}`,
+		},
+	}
+	return snapshot
 }
 
 func demoStartupLoadingSnapshot() telemetry.Snapshot {

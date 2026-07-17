@@ -38,6 +38,7 @@ type State struct {
 	NextRefreshAt            time.Time
 	LastRefreshError         string
 	LastRefreshErrorAt       time.Time
+	RefreshSources           map[telemetry.RefreshSourceName]telemetry.RefreshSource
 	ManualRefresh            telemetry.RefreshAttempt
 	LastRunningReconcileAt   time.Time
 	LastWorkspaceCleanupAt   time.Time
@@ -249,6 +250,7 @@ func newState(cfg Config) State {
 		Authorization:            cloneSelector(cfg.Authorization),
 		SelectorContext:          cfg.SelectorContext,
 		AutoPromoteDecisions:     map[string]AutoPromoteDecision{},
+		RefreshSources:           map[telemetry.RefreshSourceName]telemetry.RefreshSource{},
 		Running:                  map[string]Running{},
 		Claimed:                  map[string]Claimed{},
 		Blocked:                  map[string]Blocked{},
@@ -296,6 +298,7 @@ func (s State) clone() State {
 		NextRefreshAt:            s.NextRefreshAt,
 		LastRefreshError:         s.LastRefreshError,
 		LastRefreshErrorAt:       s.LastRefreshErrorAt,
+		RefreshSources:           cloneRefreshSources(s.RefreshSources),
 		ManualRefresh:            cloneRefreshAttempt(s.ManualRefresh),
 		LastRunningReconcileAt:   s.LastRunningReconcileAt,
 		LastWorkspaceCleanupAt:   s.LastWorkspaceCleanupAt,

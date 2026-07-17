@@ -208,11 +208,7 @@ templ appTopbar(data DashboardShellData, scope templ.Component) {
 				</div>
 			}
 			<div class="hidden flex-1 md:block"></div>
-			<div id="live-indicator" class="flex flex-none items-center gap-2 text-xs text-sec" data-live-indicator>
-				@primitives.StatusDot(primitives.KindOK, true)
-				<span data-live-label>Live ·</span>
-				<span id="live-clock" class="font-mono tabular-nums" sse-swap="tick" hx-swap="innerHTML">@LocalTime(data.Snapshot.GeneratedAt, LocalTimeOptions{Style: LocalTimeWithSeconds, Fallback: "--:--:--"})</span>
-			</div>
+			@LiveStatus(data)
 			<div class="flex w-fit overflow-hidden rounded-card border border-line" role="group" aria-label="Density">
 				<button type="button" class={ appDensityButtonClass(data, "compact") } data-density-choice="compact" aria-pressed={ appDensityPressed(data, "compact") }>Compact</button>
 				<button type="button" class={ appDensityButtonClass(data, "cozy") } data-density-choice="cozy" aria-pressed={ appDensityPressed(data, "cozy") }>Cozy</button>
@@ -233,6 +229,22 @@ templ appTopbar(data DashboardShellData, scope templ.Component) {
 			</button>
 		</div>
 	</header>
+}
+
+templ LiveStatus(data DashboardShellData) {
+	<div
+		id="live-indicator"
+		class={ "flex flex-none items-center gap-2 text-xs " + appLiveStatusTextClass(data) }
+		data-live-indicator
+		data-freshness-kind={ string(appLiveStatusKind(data)) }
+		data-freshness-label={ appLiveStatusLabel(data) }
+		sse-swap="live-status"
+		hx-swap="morph:outerHTML"
+	>
+		@primitives.StatusDot(appLiveStatusKind(data), false)
+		<span data-live-label>{ appLiveStatusLabel(data) } ·</span>
+		<span id="live-clock" class="font-mono tabular-nums">@LocalTime(appLiveStatusAt(data), LocalTimeOptions{Relative: true, Fallback: "--:--:--"})</span>
+	</div>
 }
 
 // liveBehaviorScript implements the cross-cutting SSE behavior rules from
@@ -299,7 +311,7 @@ templ liveBehaviorScript() {
 				document.documentElement.setAttribute("data-live", "stale");
 				if (parts.label) parts.label.textContent = "Reconnecting… data as of";
 				if (parts.dot) {
-					parts.dot.classList.remove("bg-ok");
+					parts.dot.classList.remove("bg-ok", "bg-warn", "bg-err", "bg-info", "bg-dim");
 					parts.dot.classList.add("bg-warn");
 				}
 				parts.indicator.classList.remove("text-sec");
@@ -307,17 +319,22 @@ templ liveBehaviorScript() {
 				var snapshot = document.getElementById("snapshot");
 				if (snapshot) snapshot.style.opacity = "0.85";
 			}
+			function restoreFreshness(parts) {
+				var kind = parts.indicator.getAttribute("data-freshness-kind") || "neutral";
+				var label = parts.indicator.getAttribute("data-freshness-label") || "Live";
+				if (parts.label) parts.label.textContent = label + " ·";
+				if (parts.dot) {
+					parts.dot.classList.remove("bg-ok", "bg-warn", "bg-err", "bg-info", "bg-dim");
+					parts.dot.classList.add(kind === "ok" ? "bg-ok" : kind === "warn" ? "bg-warn" : kind === "err" ? "bg-err" : kind === "info" ? "bg-info" : "bg-dim");
+				}
+				parts.indicator.classList.remove("text-warn", "text-err", "text-info", "text-sec");
+				parts.indicator.classList.add(kind === "warn" ? "text-warn" : kind === "err" ? "text-err" : kind === "info" ? "text-info" : "text-sec");
+			}
 			function setConnected() {
 				var parts = liveParts();
 				if (!parts) return;
 				document.documentElement.removeAttribute("data-live");
-				if (parts.label) parts.label.textContent = "Live ·";
-				if (parts.dot) {
-					parts.dot.classList.remove("bg-warn");
-					parts.dot.classList.add("bg-ok");
-				}
-				parts.indicator.classList.remove("text-warn");
-				parts.indicator.classList.add("text-sec");
+				restoreFreshness(parts);
 				var snapshot = document.getElementById("snapshot");
 				if (snapshot) snapshot.style.opacity = "";
 			}
