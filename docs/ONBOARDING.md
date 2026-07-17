@@ -638,7 +638,13 @@ recommendations before asking what to change.
 3. **Inspect the validation surface.** Prefer a repo-local release gate over an
    invented command. Detent is stack-agnostic at the project boundary: identify
    the target repository's manifests, package managers, task runners, CI
-   workflows, and existing release commands. If `make check` exists, recommend
+   workflows, and existing release commands. Record every CI stage category the
+   project requires, such as tests, lint, security scanning, packaging, or
+   deployment validation, together with the project-specific local command and
+   CI check name that satisfy it. These categories and mappings are project
+   knowledge that will be written into the `WORKFLOW.md` prompt; do not infer
+   them from Detent defaults or expect `detent doctor` to discover them. If
+   `make check` exists, recommend
    `gate.kind: command` with `gate.run: make check`. Otherwise recommend the
    closest local equivalent for the detected ecosystem, such as `mix test`,
    `bundle exec rspec`, `npm test`, `pnpm test`, `pytest`, `cargo test`,
@@ -683,6 +689,12 @@ recommendations before asking what to change.
    `relevant_environment_keys`, and `passing_sanitized_command`. Use
    `recommended_gate_command` as the gate recommendation because Detent proved it
    passes with the polluted local environment removed.
+
+   The commands above are illustrative examples from multiple ecosystems, not
+   Detent defaults or a required tool list. Use the target project's own
+   documented commands and CI check names. A single command gate may cover
+   several required categories, but the onboarding notes must state that
+   mapping explicitly so an agent can verify every category independently.
 
 4. **Inspect existing global scheduling.** Show the current project table
    before recommending `priority` and `weight`. Recommend `weight: 1` and
@@ -1896,6 +1908,16 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    dispatching `Merging`, confirm the Detent host's Codex environment exposes
    `$go-workflow:ship`; otherwise install or enable that workflow, or replace
    the `For Merging` section with equivalent project-local merge instructions.
+
+   Add a `## Project CI Quality Gates` section to every code-oriented workflow
+   prompt. List each required stage category and the project-specific local
+   command and CI check name that satisfy it. Replace the template placeholders
+   with evidence from discovery; add or remove categories to match the project.
+   Instruct agents to verify that every declared stage exists and passes on the
+   current pull request head whenever they touch CI configuration or perform a
+   review. Keep the declaration stack-neutral: concrete tools are project data,
+   not Detent behavior, and `detent doctor` does not validate or parse CI
+   configuration.
 
    Keep the templates' rebase-survival rule in every merging or delivery flow.
    Conflict resolution during a rebase can silently drop branch changes, so the

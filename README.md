@@ -167,7 +167,11 @@ boardless issue field, or repository status labels drive everything.
 
 1. **You write the contract.** Each project has a checked-in `WORKFLOW.md`: the
    tracker binding, board states, the agent prompt, the validation gate, and
-   the review policy. An optional, gitignored `WORKFLOW.local.md` applies
+   the review policy. The prompt also declares the project's required CI stage
+   categories and the project-specific commands and check names that satisfy
+   each category. Agents use that declaration when they change CI configuration
+   or review a change: every required stage must exist and pass on the current
+   pull request head. An optional, gitignored `WORKFLOW.local.md` applies
    machine-specific overrides without changing that shared contract.
 2. **You mark an issue `Todo`.** Detent claims it, creates an isolated Git
    worktree from your source checkout, and dispatches a Codex agent with the

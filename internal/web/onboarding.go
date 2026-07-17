@@ -743,6 +743,23 @@ validation evidence, and handoff notes. Every Workpad update must include one
 detent-status fenced block. Detent reads blocker and human-action declarations
 from that block; narrative sentences are never read as blockers.
 
+## Project CI Quality Gates
+
+Replace these placeholders with the project's required stage categories and
+the project-specific local command and CI check name that satisfy each one. Add
+or remove categories to match the project.
+
+- <required-stage-category>: local command <project-command>; CI check
+  <project-check-name>
+- <required-stage-category>: local command <project-command>; CI check
+  <project-check-name>
+
+Treat this list as part of the project contract. Whenever you touch CI
+configuration or perform a review, verify that every declared stage exists,
+runs its mapped project tool, and passes on the current pull request head. Do
+not rely on Detent or detent doctor to infer required stages or inspect CI
+configuration.
+
 ` + "```detent-status\n" + `schema: 1
 status: in_progress
 blockers: []
