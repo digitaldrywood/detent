@@ -363,6 +363,15 @@ func TestDispatchableFiltersIneligibleCandidates(t *testing.T) {
 			want: false,
 		},
 		{
+			name:  "scheduled retry",
+			issue: dispatchTestIssue("issue-retry", "Todo"),
+			state: func(state State) {
+				issue := dispatchTestIssue("issue-retry", "Todo")
+				state.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(time.Minute)}
+			},
+			want: false,
+		},
+		{
 			name:  "already blocked",
 			issue: dispatchTestIssue("issue-blocked", "Todo"),
 			state: func(state State) {

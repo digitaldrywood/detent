@@ -403,7 +403,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		delete(state.PriorAttempts, event.IssueID)
 		return
 	}
-	o.scheduleRetry(state, running.Issue, 1, event.CompletedAt, "", true, running.WorkerHost)
+	o.scheduleContinuationRetry(ctx, state, running.Issue, 1, event.CompletedAt, "", running.WorkerHost)
 }
 
 func (o *Orchestrator) completeRedundantGateWaitRun(
@@ -1789,6 +1789,26 @@ func (o *Orchestrator) scheduleRetry(
 	workerHost string,
 ) {
 	o.dispatchPlanner().scheduleRetry(state, issue, attempt, now, err, continuation, workerHost)
+}
+
+func (o *Orchestrator) scheduleContinuationRetry(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	err string,
+	workerHost string,
+) {
+	if releaseErr := o.abandonClaim(ctx, issue.ID); releaseErr != nil {
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      cleanupEventAt(now),
+			Event:   "claim_release_failed",
+			Message: fmt.Sprintf("claim lease release failed for %s: %v", issueLabel(issue), releaseErr),
+		})
+	}
+	o.scheduleRetry(state, issue, attempt, now, err, true, workerHost)
+	delete(state.Claimed, issue.ID)
 }
 
 func (o *Orchestrator) scheduleRetryAfter(

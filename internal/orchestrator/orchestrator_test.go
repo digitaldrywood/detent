@@ -63,8 +63,8 @@ func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 	if got := runner.calls.Load(); got != 1 {
 		t.Fatalf("runner calls = %d, want 1", got)
 	}
-	if _, ok := state.Claimed[issue.ID]; !ok {
-		t.Fatalf("Claimed[%q] missing", issue.ID)
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present after completed run", issue.ID)
 	}
 	if got := state.Completed[issue.ID].FinalState; got != "Human Review" {
 		t.Fatalf("Completed[%q].FinalState = %q, want Human Review", issue.ID, got)
