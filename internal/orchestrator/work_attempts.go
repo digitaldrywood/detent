@@ -98,14 +98,23 @@ func (o *Orchestrator) recoverPendingWorkAttemptCapacityReleases(ctx context.Con
 		}
 		return
 	}
+	issuesByID, err := o.workAttemptCapacityReleaseIssues(ctx, pending)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("work attempt capacity release issue lookup failed", "project_id", projectID, "error", err)
+		}
+		return
+	}
 	for _, attempt := range pending {
-		if err := o.abandonClaim(ctx, attempt.IssueID); err != nil {
-			recordStateEvent(state, telemetry.ActivityEvent{
-				At:      now,
-				Event:   "work_attempt_capacity_release_failed",
-				Message: fmt.Sprintf("capacity release failed for %s: %v", workAttemptLabel(attempt), err),
-			})
-			continue
+		if o.workAttemptCapacityReleaseNeedsClaimClear(attempt, issuesByID) {
+			if err := o.abandonClaim(ctx, attempt.IssueID); err != nil {
+				recordStateEvent(state, telemetry.ActivityEvent{
+					At:      now,
+					Event:   "work_attempt_capacity_release_failed",
+					Message: fmt.Sprintf("capacity release failed for %s: %v", workAttemptLabel(attempt), err),
+				})
+				continue
+			}
 		}
 		if err := releases.ClearWorkAttemptCapacityRelease(ctx, attempt.ID); err != nil {
 			if o.logger != nil {
@@ -122,6 +131,40 @@ func (o *Orchestrator) recoverPendingWorkAttemptCapacityReleases(ctx context.Con
 			Message: "released legacy terminal capacity for " + workAttemptLabel(attempt),
 		})
 	}
+}
+
+func (o *Orchestrator) workAttemptCapacityReleaseIssues(ctx context.Context, attempts []store.WorkAttempt) (map[string]connector.Issue, error) {
+	issuesByID := make(map[string]connector.Issue)
+	if !o.cfg.Claiming.Enabled || strings.TrimSpace(o.cfg.Claiming.LeaseField) == "" {
+		return issuesByID, nil
+	}
+	issueIDs := make([]string, 0, len(attempts))
+	for _, attempt := range attempts {
+		if issueID := strings.TrimSpace(attempt.IssueID); issueID != "" {
+			issueIDs = append(issueIDs, issueID)
+		}
+	}
+	issueIDs = uniqueStrings(issueIDs)
+	if len(issueIDs) == 0 {
+		return issuesByID, nil
+	}
+	issues, err := o.connector.FetchIssueStatesByIDs(ctx, issueIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, issue := range issues {
+		issuesByID[issue.ID] = issue
+	}
+	return issuesByID, nil
+}
+
+func (o *Orchestrator) workAttemptCapacityReleaseNeedsClaimClear(attempt store.WorkAttempt, issuesByID map[string]connector.Issue) bool {
+	issue, ok := issuesByID[strings.TrimSpace(attempt.IssueID)]
+	if !ok || attempt.CompletedAt.IsZero() {
+		return false
+	}
+	lease, ok := o.issueLease(issue)
+	return ok && lease.Before(attempt.CompletedAt)
 }
 
 func workAttemptLabel(attempt store.WorkAttempt) string {

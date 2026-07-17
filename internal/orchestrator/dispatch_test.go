@@ -173,6 +173,43 @@ func TestRecoverDurableWorkAttemptsRetainsCapacityActionWhenReleaseFails(t *test
 	}
 }
 
+func TestRecoverDurableWorkAttemptsPreservesNewerClaimLease(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC)
+	issue := claimTestIssue("issue-1430-newer-lease")
+	wantLease := now.Add(-10 * time.Minute).Format(time.RFC3339Nano)
+	issue.Fields["Detent Lease"] = wantLease
+	claimStore := newClaimTestStore([]connector.Issue{issue})
+	attempts := &recordingWorkAttemptStore{pendingCapacityReleases: []store.WorkAttempt{{
+		ID:            1432,
+		ProjectID:     "detent",
+		IssueID:       issue.ID,
+		Identifier:    issue.Identifier,
+		Status:        store.WorkAttemptStatusTerminal,
+		CompletedAt:   now.Add(-30 * time.Minute),
+		TerminalState: store.WorkAttemptTerminalSuccess,
+		NextAction:    "release capacity",
+	}}}
+	cfg := normalizeConfig(claimTestConfig("alpha", "alpha"))
+	cfg.Project = scheduler.ProjectCandidate{ID: "detent"}
+	o := &Orchestrator{
+		cfg:          cfg,
+		connector:    claimTestConnector{store: claimStore, login: "alpha"},
+		workAttempts: attempts,
+	}
+	state := newState(cfg)
+
+	o.recoverDurableWorkAttempts(t.Context(), &state, now)
+
+	if got := claimStore.issue(issue.ID).Fields["Detent Lease"]; got != wantLease {
+		t.Fatalf("Detent Lease = %q, want newer lease %q preserved", got, wantLease)
+	}
+	if len(attempts.clearedCapacityReleases) != 1 || attempts.clearedCapacityReleases[0] != 1432 {
+		t.Fatalf("cleared capacity releases = %v, want stale action [1432] acknowledged", attempts.clearedCapacityReleases)
+	}
+}
+
 func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	t.Parallel()
 
