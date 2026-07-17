@@ -130,6 +130,7 @@ type AgentTurnRequest struct {
 	TempDir            string
 	Prompt             string
 	ToolInstructions   string
+	ReadOnly           bool
 	Model              string
 	ModelProvider      string
 	ServiceTier        string

@@ -1034,6 +1034,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	turnRequest := AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             turnPrompt,
+		ReadOnly:           mode == RunModeRoutine,
 		Model:              selectedModel,
 		ModelProvider:      modelProvider,
 		ServiceTier:        serviceTier,

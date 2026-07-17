@@ -360,7 +360,7 @@ func (m *Manager) nextScheduled(ctx context.Context) (time.Time, string, bool, e
 			return time.Time{}, "", false, err
 		}
 		after := baselines[definition.Name].In(location)
-		if found {
+		if found && last.StartedAt.After(after) {
 			after = last.StartedAt.In(location)
 		}
 		next := schedule.Next(after)

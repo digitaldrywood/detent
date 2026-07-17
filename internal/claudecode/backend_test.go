@@ -444,6 +444,61 @@ func TestAgentBackendBuildsCommandArgumentsAndWritesPromptToStdin(t *testing.T) 
 	}
 }
 
+func TestAgentBackendReadOnlyTurnOverridesWritableConfiguration(t *testing.T) {
+	t.Parallel()
+
+	observedPath := filepath.Join(t.TempDir(), "observed.json")
+	backend := newTestBackend(t, Options{
+		CommandFactory: func(ctx context.Context) *exec.Cmd {
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestClaudeCodeHelperProcess", "--")
+			cmd.Env = append(os.Environ(),
+				"CLAUDECODE_HELPER=argv",
+				"CLAUDECODE_OBSERVED_PATH="+observedPath,
+			)
+			return cmd
+		},
+		PermissionMode:  "bypassPermissions",
+		AllowedTools:    []string{"Bash", "Edit", "Write"},
+		DisallowedTools: []string{"Read"},
+		ExtraArgs:       []string{"--dangerously-skip-permissions"},
+	})
+
+	workspace := t.TempDir()
+	_, err := backend.RunTurn(context.Background(), runner.AgentTurnRequest{
+		Workspace:          workspace,
+		Prompt:             "Inspect maintenance criteria.",
+		Model:              "fable",
+		ReadOnly:           true,
+		ExtraWritableRoots: []string{"/tmp/writable"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+
+	var observed helperObservation
+	raw, err := os.ReadFile(observedPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if err := json.Unmarshal(raw, &observed); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	wantArgs := []string{
+		"-p", "--output-format", "stream-json", "--verbose",
+		"--model", "fable",
+		"--permission-mode", "plan",
+		"--safe-mode",
+		"--strict-mcp-config",
+		"--disable-slash-commands",
+		"--no-chrome",
+		"--tools", "Read", "Glob", "Grep",
+	}
+	if !reflect.DeepEqual(observed.Args, wantArgs) {
+		t.Fatalf("args = %#v, want %#v", observed.Args, wantArgs)
+	}
+}
+
 func TestAgentBackendAddsResumeSessionArgument(t *testing.T) {
 	t.Parallel()
 

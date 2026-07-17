@@ -74,14 +74,15 @@ func (b *AgentBackend) runTurn(
 	onUpdate runner.AgentUpdateHandler,
 ) (runner.AgentTurnResult, error) {
 	ctx = withWorkerTempDir(ctx, req.TempDir)
+	restricted := req.ReadOnly || len(tools) > 0
 	result, err := b.client.RunTurn(ctx, RunTurnRequest{
 		Workspace:             req.Workspace,
 		Prompt:                req.Prompt,
 		ResumeThreadID:        req.Resume.ThreadID,
 		DeveloperInstructions: toolTurnInstructions(tools, req.ToolInstructions),
-		ApprovalPolicy:        approvalPolicy(b.options.ApprovalPolicy, tools),
-		ThreadSandbox:         threadSandbox(b.options.ThreadSandbox, tools),
-		TurnSandboxPolicy:     turnSandboxPolicy(b.options.ThreadSandbox, b.options.TurnSandboxPolicy, req.ExtraWritableRoots, tools),
+		ApprovalPolicy:        approvalPolicy(b.options.ApprovalPolicy, restricted),
+		ThreadSandbox:         threadSandbox(b.options.ThreadSandbox, restricted),
+		TurnSandboxPolicy:     turnSandboxPolicy(b.options.ThreadSandbox, b.options.TurnSandboxPolicy, req.ExtraWritableRoots, restricted),
 		Model:                 req.Model,
 		ModelProvider:         req.ModelProvider,
 		ServiceTier:           req.ServiceTier,
@@ -112,22 +113,22 @@ func (b *AgentBackend) runTurn(
 	}, nil
 }
 
-func approvalPolicy(configured any, tools []DynamicTool) any {
-	if len(tools) > 0 {
+func approvalPolicy(configured any, restricted bool) any {
+	if restricted {
 		return "never"
 	}
 	return configured
 }
 
-func threadSandbox(configured string, tools []DynamicTool) string {
-	if len(tools) > 0 {
+func threadSandbox(configured string, restricted bool) string {
+	if restricted {
 		return "read-only"
 	}
 	return configured
 }
 
-func turnSandboxPolicy(threadSandbox string, configured any, roots []string, tools []DynamicTool) any {
-	if len(tools) > 0 {
+func turnSandboxPolicy(threadSandbox string, configured any, roots []string, restricted bool) any {
+	if restricted {
 		return nil
 	}
 	return turnSandboxPolicyForWorkspace(threadSandbox, configured, roots)

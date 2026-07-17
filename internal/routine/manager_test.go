@@ -49,13 +49,13 @@ func TestManagerNextScheduledUsesPersistedRun(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, time.July, 17, 9, 15, 0, 0, time.UTC)
 	store := &fakeStore{records: []RunRecord{{
-		ProjectID: "detent", RoutineName: "hourly", ScheduledFor: base.Add(-15 * time.Minute), StartedAt: base.Add(-14 * time.Minute), CompletedAt: base.Add(-13 * time.Minute),
+		ProjectID: "detent", RoutineName: "frequent", ScheduledFor: base.Add(5 * time.Minute), StartedAt: base.Add(6 * time.Minute), CompletedAt: base.Add(7 * time.Minute),
 	}}}
 	manager, err := New(Settings{
 		ProjectID: "detent",
 		Definitions: []config.Routine{
 			{Name: "daily", Schedule: "0 12 * * *", Prompt: "Inspect daily."},
-			{Name: "hourly", Schedule: "0 * * * *", Prompt: "Inspect hourly."},
+			{Name: "frequent", Schedule: "*/20 * * * *", Prompt: "Inspect frequently."},
 		},
 		Runner: fakeRunner{}, Issues: &fakeIssueStore{},
 	}, store, nil, func() time.Time { return base })
@@ -66,8 +66,32 @@ func TestManagerNextScheduledUsesPersistedRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nextScheduled() error = %v", err)
 	}
-	if !scheduled || name != "hourly" || !next.Equal(time.Date(2026, time.July, 17, 10, 0, 0, 0, time.UTC)) {
+	if !scheduled || name != "frequent" || !next.Equal(time.Date(2026, time.July, 17, 9, 40, 0, 0, time.UTC)) {
 		t.Fatalf("nextScheduled() = %s, %q, %t", next, name, scheduled)
+	}
+}
+
+func TestManagerNextScheduledDoesNotReplayMissedRunAfterRestart(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.July, 17, 9, 15, 0, 0, time.UTC)
+	store := &fakeStore{records: []RunRecord{{
+		ProjectID: "detent", RoutineName: "hourly", ScheduledFor: time.Date(2026, time.July, 17, 7, 0, 0, 0, time.UTC),
+		StartedAt: time.Date(2026, time.July, 17, 7, 1, 0, 0, time.UTC), CompletedAt: time.Date(2026, time.July, 17, 7, 2, 0, 0, time.UTC),
+	}}}
+	manager, err := New(Settings{
+		ProjectID: "detent", Definitions: []config.Routine{{Name: "hourly", Schedule: "0 * * * *", Prompt: "Inspect."}},
+		Runner: fakeRunner{}, Issues: &fakeIssueStore{},
+	}, store, nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	next, name, scheduled, err := manager.nextScheduled(context.Background())
+	if err != nil {
+		t.Fatalf("nextScheduled() error = %v", err)
+	}
+	want := time.Date(2026, time.July, 17, 10, 0, 0, 0, time.UTC)
+	if !scheduled || name != "hourly" || !next.Equal(want) {
+		t.Fatalf("nextScheduled() = %s, %q, %t; want %s, hourly, true", next, name, scheduled, want)
 	}
 }
 
