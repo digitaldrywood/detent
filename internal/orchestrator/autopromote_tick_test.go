@@ -1489,6 +1489,98 @@ func TestTickAutoPromoteBlocksRepeatedCINotGreenSignature(t *testing.T) {
 	if blocked.PhaseName != "Blocked" || blocked.Reason != "rework_limit" {
 		t.Fatalf("latest workflow event = %#v, want Blocked rework_limit entry", blocked)
 	}
+	metadata, ok := workflowLaneMetadataFromJSON(blocked.MetadataJSON)
+	if !ok || metadata.ReworkBreaker == nil || metadata.ReworkBreaker.Reason != string(AutoPromoteReasonCINotGreen) {
+		t.Fatalf("blocked metadata = %#v, want ci_not_green rework breaker reason", metadata)
+	}
+}
+
+func TestTickAutoUnparksClearedReworkBreaker(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 16, 21, 0, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("issue-cleared-rework-breaker", []string{"bug"}, &connector.PullRequest{
+		Number:         1585,
+		URL:            "https://github.test/digitaldrywood/pyroapex/pull/1585",
+		State:          "OPEN",
+		HeadSHA:        "parked-head",
+		MergeableState: "clean",
+		CIStatus:       "success",
+		CheckRunCount:  4,
+	})
+	issue.Identifier = "digitaldrywood/pyroapex#1521"
+	issue.URL = "https://github.test/digitaldrywood/pyroapex/issues/1521"
+	issue.State = "Blocked"
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:     true,
+			ReworkLimit: 3,
+			Gate: gate.Config{
+				Kind:            gate.KindCommand,
+				AutomatedReview: gate.AutomatedReviewOff,
+			},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	prNumber := int64(1585)
+	for _, event := range []store.WorkflowPhaseEvent{
+		{
+			ProjectID:    defaultWorkflowMetricsProjectID,
+			IssueID:      issue.ID,
+			Identifier:   issue.Identifier,
+			IssueURL:     issue.URL,
+			PRNumber:     &prNumber,
+			PhaseType:    store.WorkflowPhaseTypeLane,
+			PhaseName:    autoPromoteReworkState,
+			Reason:       string(AutoPromoteReasonCINotGreen),
+			Status:       "entered",
+			StartedAt:    now.Add(-2 * time.Hour),
+			MetadataJSON: autoPromoteReworkEventMetadata(1585, "parked-head", "Test"),
+		},
+		{
+			ProjectID:    defaultWorkflowMetricsProjectID,
+			IssueID:      issue.ID,
+			Identifier:   issue.Identifier,
+			IssueURL:     issue.URL,
+			PRNumber:     &prNumber,
+			PhaseType:    store.WorkflowPhaseTypeLane,
+			PhaseName:    blockedStatusState,
+			Reason:       "rework_limit",
+			Status:       "entered",
+			StartedAt:    now.Add(-time.Hour),
+			MetadataJSON: autoPromoteReworkEventMetadata(1585, "parked-head", "Test"),
+		},
+	} {
+		if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), event); err != nil {
+			t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+		}
+	}
+	orch := &Orchestrator{
+		cfg:             cfg,
+		connector:       tracker,
+		workflowMetrics: metrics,
+		logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: autoPromoteMergingState}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one breaker recovery audit comment", tracker.comments)
+	}
+	for _, fragment := range []string{"Auto-unparked", "Blocked to Merging", "ci_not_green", "parked-head"} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+		}
+	}
 }
 
 func TestTickAutoPromoteResetsReworkLimitAfterHeadSHAChange(t *testing.T) {
