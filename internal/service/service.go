@@ -365,7 +365,7 @@ func inspectManual(path string) (Inspection, error) {
 }
 
 func runCommand(ctx context.Context, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- service backends select the command and pass arguments without a shell.
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
 		return string(output), ctx.Err()

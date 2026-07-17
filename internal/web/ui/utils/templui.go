@@ -160,7 +160,7 @@ func SetupScriptRoutes(mux *http.ServeMux, isDevelopment bool) {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write(file)
+		_, _ = w.Write(file) // #nosec G705 -- bytes come from the compile-time embedded templUI JavaScript filesystem, not request input.
 	})
 
 	mux.Handle("GET /templui/js/", handler)

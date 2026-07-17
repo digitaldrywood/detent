@@ -386,7 +386,7 @@ func (s *Server) setUIAPICookie(c echo.Context) {
 	if strings.HasPrefix(c.Request().URL.Path, "/api/") || s.uiAPIToken() == "" {
 		return
 	}
-	c.SetCookie(&http.Cookie{
+	c.SetCookie(&http.Cookie{ // #nosec G124 -- HttpOnly and SameSiteLax are fixed below; Secure follows the request transport.
 		Name:     uiAPICookieName,
 		Value:    s.uiAPIToken(),
 		Path:     "/api/v1/",
@@ -447,7 +447,7 @@ func (s *Server) setAPIKeyDashboardCookie(c echo.Context, token string) {
 	if c == nil || c.Request() == nil || strings.TrimSpace(token) == "" {
 		return
 	}
-	c.SetCookie(&http.Cookie{
+	c.SetCookie(&http.Cookie{ // #nosec G124 -- HttpOnly and SameSiteStrict are fixed below; Secure follows the request transport.
 		Name:     apiKeyDashboardCookieName,
 		Value:    token,
 		Path:     "/api/v1/keys",

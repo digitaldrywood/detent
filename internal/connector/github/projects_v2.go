@@ -395,7 +395,7 @@ func (c *Connector) defaultBlankProjectItemStatuses(ctx context.Context, itemIDs
 		return
 	}
 
-	go c.defaultBlankProjectItemStatusesAsync(ctx, itemIDs, statusName)
+	go c.defaultBlankProjectItemStatusesAsync(ctx, itemIDs, statusName) // #nosec G118 -- the worker intentionally detaches cancellation while retaining context values for this must-finish write.
 }
 
 func (c *Connector) defaultBlankProjectItemStatusesAsync(parentCtx context.Context, itemIDs []string, statusName string) {

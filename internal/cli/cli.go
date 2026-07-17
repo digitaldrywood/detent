@@ -493,7 +493,7 @@ func defaultOptions() options {
 }
 
 func defaultCommandRunner(ctx context.Context, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- command runners receive internally selected executables and bypass a shell.
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
 		return string(output), ctx.Err()

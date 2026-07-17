@@ -175,7 +175,7 @@ func runGit(dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- arguments are assembled from fixed git subcommands and trusted repository paths.
 	if strings.TrimSpace(dir) != "" {
 		cmd.Dir = dir
 	}

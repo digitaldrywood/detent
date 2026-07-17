@@ -285,7 +285,7 @@ func Write(path string, cfg Config, opts ...Option) error {
 		return err
 	}
 
-	raw, err := yaml.Marshal(cfg)
+	raw, err := yaml.Marshal(cfg) // #nosec G117 -- the operator-provided API token must be persisted in the permission-restricted config file.
 	if err != nil {
 		return fmt.Errorf("marshal global config %s: %w", expandedPath, err)
 	}
@@ -1084,7 +1084,7 @@ func projectPathErrors(path string, field string, opts options, expected pathExp
 		return []string{field + ": path does not exist"}
 	}
 
-	info, err := os.Stat(expanded)
+	info, err := os.Stat(expanded) // #nosec G703 -- validation intentionally inspects the operator-configured project path after expansion.
 	if err != nil {
 		return []string{field + ": path does not exist"}
 	}

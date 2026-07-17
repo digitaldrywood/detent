@@ -277,11 +277,11 @@ func launchDashboard(ctx context.Context, url string) error {
 func dashboardCommand(ctx context.Context, goos string, url string) (*exec.Cmd, error) {
 	switch goos {
 	case "darwin":
-		return exec.CommandContext(ctx, "open", url), nil
+		return exec.CommandContext(ctx, "open", url), nil // #nosec G204 -- the validated dashboard URL is passed to the platform opener without a shell.
 	case "linux":
-		return exec.CommandContext(ctx, "xdg-open", url), nil
+		return exec.CommandContext(ctx, "xdg-open", url), nil // #nosec G204 -- the validated dashboard URL is passed to the platform opener without a shell.
 	case "windows":
-		return exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", url), nil
+		return exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", url), nil // #nosec G204 -- the validated dashboard URL is passed to the platform opener without a shell.
 	default:
 		return nil, fmt.Errorf("open dashboard: unsupported operating system %s", goos)
 	}

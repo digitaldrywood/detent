@@ -148,7 +148,7 @@ func chatSessionID(c echo.Context) (string, error) {
 		return "", err
 	}
 	id := hex.EncodeToString(data)
-	c.SetCookie(&http.Cookie{
+	c.SetCookie(&http.Cookie{ // #nosec G124 -- HttpOnly and SameSiteStrict are fixed below; Secure follows the request transport.
 		Name:     chatSessionCookieName,
 		Value:    id,
 		Path:     "/",

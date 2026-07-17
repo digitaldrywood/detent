@@ -888,7 +888,7 @@ func makeWorkspaceTreeRemovable(path string) error {
 		default:
 			return nil
 		}
-		if err := os.Chmod(path, mode); err != nil {
+		if err := os.Chmod(path, mode); err != nil { // #nosec G122 -- the path is confined by validateWorkspacePath and symlinks are skipped before chmod.
 			return fmt.Errorf("chmod %s: %w", path, err)
 		}
 		return nil

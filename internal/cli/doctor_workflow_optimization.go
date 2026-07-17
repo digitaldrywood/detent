@@ -2502,7 +2502,7 @@ func writeDoctorWorkflowOptimizationPatches(report doctorWorkflowOptimizationRep
 		if bytes.Equal(raw, updated) {
 			continue
 		}
-		if err := os.WriteFile(path, updated, info.Mode().Perm()); err != nil {
+		if err := os.WriteFile(path, updated, info.Mode().Perm()); err != nil { // #nosec G703 -- path comes from the operator-selected workflow files already read and validated above.
 			return nil, fmt.Errorf("write workflow %s: %w", path, err)
 		}
 		written = append(written, path)

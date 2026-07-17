@@ -2768,6 +2768,7 @@ Common development commands:
 make setup
 make dev
 make check
+make security
 make modernize-check
 ```
 
@@ -2780,6 +2781,9 @@ commit SHA and build date, rotates
 `make check` runs the local release gate: build, `golangci-lint`, `go vet`,
 NilAway, race tests, and the 70 percent coverage check. Run `make generate`
 before committing changes to Templ templates, sqlc queries, or Tailwind inputs.
+`make security` runs the pinned `govulncheck` and standalone `gosec` scans used
+by CI. The gosec baseline skips generated files and documents each legacy rule
+excluded in the Makefile; new findings must be fixed or narrowly annotated.
 `make modernize-check` runs the Go modernizer diff check with the repo's
 selected safe analyzer set.
 

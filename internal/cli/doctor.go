@@ -1214,7 +1214,7 @@ func defaultGitWorkTree(ctx context.Context, path string) error {
 	commandCtx, cancel := context.WithTimeout(ctx, doctorCommandTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(commandCtx, "git", "-C", path, "rev-parse", "--is-inside-work-tree")
+	cmd := exec.CommandContext(commandCtx, "git", "-C", path, "rev-parse", "--is-inside-work-tree") // #nosec G204 -- the configured path is passed as a fixed git argument without a shell.
 	output, err := cmd.CombinedOutput()
 	if commandCtx.Err() != nil {
 		return commandCtx.Err()

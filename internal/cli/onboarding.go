@@ -1240,7 +1240,7 @@ func normalizeOnboardingAnswersFile(path string, write bool) (onboardingAnswersN
 		MutationConfirmed:      answers.Values["MUTATION_CONFIRMED"] == "true" && answers.LastNonblank == "MUTATION_CONFIRMED=true",
 	}
 	if write && result.Changed {
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil { // #nosec G703 -- path is the explicit operator-selected answers file and is restricted to mode 0600.
 			return onboardingAnswersNormalizationResult{}, fmt.Errorf("write onboarding answers %s: %w", path, err)
 		}
 		if err := os.Chmod(path, 0o600); err != nil {

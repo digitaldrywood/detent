@@ -24,9 +24,18 @@ DATABASE_URL ?= tmp/detent.db
 NILAWAY_VERSION ?= v0.0.0-20260612163715-2d8907f431ca
 NILAWAY ?= go run go.uber.org/nilaway/cmd/nilaway@$(NILAWAY_VERSION)
 NILAWAY_INCLUDE_PKGS ?= github.com/digitaldrywood/detent
+GOVULNCHECK_VERSION ?= v1.6.0
+GOVULNCHECK ?= go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+GOSEC_VERSION ?= v2.28.0
+GOSEC ?= go run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
+# G115: existing conversions are bounded or intentionally preserve platform/API widths.
+# G301: shared runtime, service, and artifact directories intentionally require traversal access.
+# G304: Detent intentionally reads operator-selected config, workflow, and workspace paths.
+# G306: flagged files are non-secret configs, manifests, screenshots, and generated artifacts.
+GOSEC_EXCLUDES ?= G115,G301,G304,G306
 CHECK_LOCK_WAIT ?= 15m
 
-.PHONY: dev generate css css-watch build test test-race test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate css css-watch build test test-race test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -107,6 +116,10 @@ lint:
 vet:
 	go vet ./...
 
+security:
+	$(GOVULNCHECK) ./...
+	$(GOSEC) -quiet -exclude-generated -severity=medium -confidence=medium -exclude=$(GOSEC_EXCLUDES) ./...
+
 nilaway-audit:
 	$(NILAWAY) -include-pkgs=$(NILAWAY_INCLUDE_PKGS) ./...
 
@@ -164,6 +177,7 @@ help:
 	@echo "  visual-e2e   Run Playwright visual layout tests"
 	@echo "  visual-e2e-update  Update Playwright visual baselines"
 	@echo "  lint         Run golangci-lint"
+	@echo "  security     Run govulncheck and gosec security scans"
 	@echo "  check        Run the local validation gate, including NilAway"
 	@echo "  modernize-check  Run the Go modernizer diff check"
 	@echo "  nilaway-audit  Run the local NilAway audit"
