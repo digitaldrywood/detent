@@ -55,6 +55,7 @@ type heartbeatTarget struct {
 	sequence             uint64
 	nextDue              time.Time
 	inFlight             bool
+	flightDone           chan struct{}
 }
 
 type heartbeatResult struct {
@@ -148,6 +149,7 @@ func (m *heartbeatManager) upsert(target heartbeatTarget) {
 		target.sequence = current.sequence
 		target.nextDue = current.nextDue
 		target.inFlight = current.inFlight
+		target.flightDone = current.flightDone
 		target.workspaceModifiedAt = current.workspaceModifiedAt
 		target.workspaceAdvanced = current.workspaceAdvanced
 		target.workerAlive = current.workerAlive
@@ -168,9 +170,13 @@ func (m *heartbeatManager) remove(issueID string) {
 		return
 	}
 	m.mu.Lock()
+	target := m.targets[strings.TrimSpace(issueID)]
 	delete(m.targets, strings.TrimSpace(issueID))
 	m.mu.Unlock()
 	m.notify()
+	if target.flightDone != nil {
+		<-target.flightDone
+	}
 }
 
 func (m *heartbeatManager) protects(issueID string) bool {
@@ -258,6 +264,7 @@ func (m *heartbeatManager) due(now time.Time) []heartbeatTarget {
 			continue
 		}
 		target.inFlight = true
+		target.flightDone = make(chan struct{})
 		target.nextDue = now.Add(m.settings.interval)
 		m.targets[issueID] = target
 		due = append(due, target)
@@ -266,6 +273,9 @@ func (m *heartbeatManager) due(now time.Time) []heartbeatTarget {
 }
 
 func (m *heartbeatManager) execute(ctx context.Context, target heartbeatTarget) {
+	if target.flightDone != nil {
+		defer close(target.flightDone)
+	}
 	operationCtx, cancel := context.WithTimeout(ctx, heartbeatOperationTimeout)
 	defer cancel()
 	settings := m.settingsSnapshot()

@@ -1850,6 +1850,7 @@ func (o *Orchestrator) completeTerminalRunning(
 	completedAt time.Time,
 	tokens TokenTotals,
 ) {
+	o.heartbeats.remove(issueID)
 	o.completeDurableWorkAttempt(ctx, state, running, completedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker reached terminal state")
 	o.releaseGlobalDispatchSlot(running.globalSlot)
 	if running.cancel != nil {
