@@ -20,6 +20,10 @@ func GroupID(*exec.Cmd) int {
 	return 0
 }
 
+func Deprioritize(*exec.Cmd) error {
+	return nil
+}
+
 func TerminateTree(cmd *exec.Cmd, _ int) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil

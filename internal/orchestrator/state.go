@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
@@ -91,6 +92,7 @@ type Running struct {
 	StartedAt             time.Time
 	WorkerHost            string
 	ProcessIdentity       string
+	WorkerProcess         procgroup.Identity
 	WorkspacePath         string
 	SessionID             string
 	DetentSessionID       int64

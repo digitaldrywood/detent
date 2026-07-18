@@ -1033,6 +1033,7 @@ func (o *Orchestrator) failStalledMergeWorkerStarts(ctx context.Context, state *
 		if running.cancel != nil {
 			running.cancel()
 		}
+		o.heartbeats.remove(issueID)
 		delete(state.Running, issueID)
 		attempt := nextAttempt(running.Attempt)
 		if attempt > maxMergeWorkerRunnerFailures && o.blockExhaustedMergeWorker(ctx, state, running, now, attempt, err) {

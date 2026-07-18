@@ -31,6 +31,20 @@ func Inspect(cmd *exec.Cmd) (Identity, error) {
 	return inspectProcess(cmd.Process.Pid)
 }
 
+func Alive(identity Identity) (bool, error) {
+	if identity.PID <= 0 || identity.StartedAt.IsZero() {
+		return false, nil
+	}
+	current, err := inspectProcess(identity.PID)
+	if errors.Is(err, ErrProcessNotRunning) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return sameIdentity(current, identity), nil
+}
+
 func sameIdentity(current Identity, recorded Identity) bool {
 	return current.PID == recorded.PID &&
 		(recorded.GroupID <= 0 || current.GroupID == recorded.GroupID) &&

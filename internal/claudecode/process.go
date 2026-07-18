@@ -66,6 +66,11 @@ func (b *AgentBackend) RunTurn(
 			stderrWriter.Close(),
 		)
 	}
+	if err := procgroup.Deprioritize(cmd); err != nil {
+		processGroupID := procgroup.GroupID(cmd)
+		err = terminateWithCause(cmd, processGroupID, fmt.Errorf("deprioritize claude worker process: %w", err))
+		return runner.AgentTurnResult{}, errors.Join(err, waitAndCleanup(cmd, processGroupID), stdout.Close(), stdoutWriter.Close(), stderrReader.Close(), stderrWriter.Close())
+	}
 	if err := errors.Join(stdoutWriter.Close(), stderrWriter.Close()); err != nil {
 		processGroupID := procgroup.GroupID(cmd)
 		err = terminateWithCause(cmd, processGroupID, fmt.Errorf("close parent output writers: %w", err))

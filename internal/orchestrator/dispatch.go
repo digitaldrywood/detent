@@ -492,6 +492,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	running := state.Running[issue.ID]
 	running.done = o.supervisor.Dispatch(runCtx, request, o.runResults)
 	state.Running[issue.ID] = running
+	o.trackRunningHeartbeat(state, running, claim, now)
 	return dispatchIssueOutcome{dispatched: true}
 }
 
