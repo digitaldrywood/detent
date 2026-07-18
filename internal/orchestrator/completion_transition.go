@@ -52,7 +52,9 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 
 		result.transitioned[issueID] = struct{}{}
 		if direct, promoted := o.tryDirectCompletedActiveAutoPromote(ctx, state, issue, targetState, completed.FinalState, cfg, now); direct {
-			if mergeWorkerIssue(promoted) {
+			if normalizeState(issue.State) == normalizeState(promoted.State) {
+				result.dispatchCandidates = append(result.dispatchCandidates, promoted)
+			} else if mergeWorkerIssue(promoted) {
 				o.recordMergeQueueEntered(state, promoted, now, "completed_active_auto_promote")
 				result.dispatchCandidates = append(result.dispatchCandidates, promoted)
 				o.logMergeWorkerPickup(promoted, "completed_active_auto_promote")
@@ -195,6 +197,8 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 	}
 	promoted := promotedIssue(issue, targetState, now)
 	if normalizeState(issue.State) == normalizeState(targetState) {
+		o.logAutoPromoteDecision(issue, decision, targetState)
+		o.logCompletedActiveAutoPromoteSameState(issue, decision, cfg)
 		return true, promoted
 	}
 	if !o.applyAutoPromoteDecision(ctx, state, issue, summary, decision, targetState, now) {
@@ -214,14 +218,46 @@ func (o *Orchestrator) finishCompletedActiveReviewTransition(
 	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
 		o.logger.Warn("abandon completed review claim failed", "issue_id", issueID, "error", err)
 	}
-	updated := mergeIssueTrackerFields(completed.Issue, issue)
-	updated.State = targetState
-	completed.Issue = updated
-	state.Completed[issueID] = completed
+	sameState := normalizeState(issue.State) == normalizeState(targetState)
+	if sameState {
+		delete(state.Completed, issueID)
+	} else {
+		updated := mergeIssueTrackerFields(completed.Issue, issue)
+		updated.State = targetState
+		completed.Issue = updated
+		state.Completed[issueID] = completed
+	}
 	delete(state.Claimed, issueID)
-	delete(state.Retry, issueID)
-	delete(state.BudgetRefusals, issueID)
+	if !sameState {
+		delete(state.Retry, issueID)
+		delete(state.BudgetRefusals, issueID)
+	}
 	delete(state.PriorAttempts, issueID)
+}
+
+func (o *Orchestrator) logCompletedActiveAutoPromoteSameState(
+	issue connector.Issue,
+	decision AutoPromoteDecision,
+	cfg AutoPromoteConfig,
+) {
+	if o.logger == nil {
+		return
+	}
+	gateCfg := gate.Effective(cfg.Gate)
+	if gateCfg.Kind != gate.KindArtifact || decision.Action != AutoPromoteActionRework {
+		return
+	}
+	statusField := strings.TrimSpace(gateCfg.Artifact.StatusField)
+	o.logger.Warn(
+		"completed artifact gate status unchanged after successful rework",
+		"issue_id", strings.TrimSpace(issue.ID),
+		"identifier", issue.Identifier,
+		"state", issue.State,
+		"action", decision.Action,
+		"reason", decision.Reason,
+		"gate_status_field", statusField,
+		"gate_status", artifactStatusFromIssue(issue, statusField),
+	)
 }
 
 func completedActiveReviewTargetState(
