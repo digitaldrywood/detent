@@ -973,16 +973,15 @@ func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
 
 	baseURL := waitForBootDashboardURL(t, output, done)
 	settingsURL := baseURL + "/settings"
-	body := waitForDashboard(t, settingsURL, done)
-	if !strings.Contains(body, "alpha") {
-		t.Fatalf("settings body missing alpha:\n%s", body)
-	}
+	waitForDashboardCondition(t, settingsURL, done, "initial alpha project", func(body string) bool {
+		return strings.Contains(body, "alpha")
+	})
 
 	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
 		{ID: "alpha", Workflow: alpha.workflowPath, Workdir: alpha.workdirPath, Weight: 1},
 		{ID: "bravo", Workflow: bravo.workflowPath, Workdir: bravo.workdirPath, Weight: 1},
 	})
-	body = waitForDashboardCondition(t, settingsURL, done, "bravo added", func(body string) bool {
+	body := waitForDashboardCondition(t, settingsURL, done, "bravo added", func(body string) bool {
 		return strings.Contains(body, "bravo")
 	})
 	if !strings.Contains(body, "alpha") {
