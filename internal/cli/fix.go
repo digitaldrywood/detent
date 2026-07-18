@@ -2,14 +2,17 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
 
 type workflowLayoutFixResult struct {
@@ -26,23 +29,24 @@ type workflowLayoutFixResult struct {
 	Noop            bool                                                 `json:"noop"`
 }
 
-func newFixCommand() *cobra.Command {
+func newFixCommand(configPath *string, opts options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "fix",
 		Short:   "Repair Detent project configuration",
 		Example: "detent fix workflow-layout --workflow /repo/WORKFLOW.md --dry-run",
 	}
-	cmd.AddCommand(newWorkflowLayoutFixCommand())
+	cmd.AddCommand(newWorkflowLayoutFixCommand(configPath, opts))
 	return cmd
 }
 
-func newWorkflowLayoutFixCommand() *cobra.Command {
+func newWorkflowLayoutFixCommand(configPath *string, opts options) *cobra.Command {
 	var workflowPath string
 	var dryRun bool
 	var confirmed bool
 	cmd := &cobra.Command{
 		Use:     "workflow-layout",
 		Short:   "Migrate legacy workflow configuration into detent.yaml",
+		Long:    "Migrate legacy workflow configuration into detent.yaml. GitHub credentials resolve from GITHUB_TOKEN or the resolved global config, including github_token: gh.",
 		Example: "detent fix workflow-layout --workflow /repo/WORKFLOW.md --dry-run\n  detent fix workflow-layout --workflow /repo/WORKFLOW.md --yes",
 		Args:    NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -52,7 +56,14 @@ func newWorkflowLayoutFixCommand() *cobra.Command {
 			if dryRun && confirmed {
 				return WrapValidation(errors.New("--dry-run and --yes cannot be used together"))
 			}
-			plan, err := workflowconfig.PlanProjectDefinitionMigration(workflowPath)
+			githubToken, err := resolveWorkflowLayoutMigrationGitHubToken(cmd.Context(), workflowPath, derefString(configPath), opts)
+			if err != nil {
+				return err
+			}
+			plan, err := workflowconfig.PlanProjectDefinitionMigration(
+				workflowPath,
+				workflowconfig.WithProjectDefinitionMigrationGitHubToken(githubToken),
+			)
 			if err != nil {
 				return err
 			}
@@ -102,6 +113,50 @@ func newWorkflowLayoutFixCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show the migration without writing files")
 	cmd.Flags().BoolVar(&confirmed, "yes", false, "apply the migration without an interactive confirmation")
 	return cmd
+}
+
+func resolveWorkflowLayoutMigrationGitHubToken(
+	ctx context.Context,
+	workflowPath string,
+	configPath string,
+	opts options,
+) (string, error) {
+	deps := runtimeDepsFromOptions(opts).withDefaults()
+	workflow, err := workflowconfig.LoadProjectDefinition(workflowPath)
+	if err != nil || !trackerUsesGitHubToken(workflow.Config.Tracker.Kind) {
+		return "", nil
+	}
+	if trackerHasGitHubAppCredentials(workflow.Config.Tracker, deps.lookupEnv) {
+		return "", nil
+	}
+	if token, _ := resolveRuntimeSecret(workflow.Config.Tracker.APIKey, deps.lookupEnv); token != "" {
+		return "", nil
+	}
+
+	resolution, err := resolveConfigPathResolution(configPath, opts)
+	if err != nil {
+		return "", err
+	}
+	read := opts.read
+	if read == nil {
+		read = func(path string) (globalconfig.Config, error) {
+			return globalconfig.Read(path)
+		}
+	}
+	global, err := read(resolution.Path)
+	if err != nil {
+		var missing globalconfig.MissingFileError
+		if !errors.As(err, &missing) || !errors.Is(missing.Err, os.ErrNotExist) {
+			return "", err
+		}
+		global = globalconfig.Config{}
+	}
+	global.Projects = []globalconfig.Project{{Workflow: workflowPath}}
+	token, _, err := resolveRuntimeGitHubToken(ctx, &global, deps)
+	if err != nil {
+		return "", err
+	}
+	return runtimeGlobalGitHubToken(token), nil
 }
 
 func newWorkflowLayoutFixResult(plan workflowconfig.ProjectDefinitionMigrationPlan) workflowLayoutFixResult {

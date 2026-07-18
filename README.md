@@ -621,7 +621,9 @@ compatibility window. Run `detent doctor` to identify legacy, split, mixed, or
 stale layouts. A migratable warning includes the exact
 `detent fix workflow-layout --workflow <path>` command; preview it with
 `--dry-run`, confirm interactively, or pass `--yes` for explicit
-non-interactive confirmation. See
+non-interactive confirmation. The fixer uses the normal global-config path and
+GitHub credential resolution (`GITHUB_TOKEN`, top-level `github_token`, and
+`github_token: gh`) without writing resolved secrets into project files. See
 [Workflow Layout Migration](docs/workflow-layout-migration.md).
 
 Legacy combined ProjectV2 example:
