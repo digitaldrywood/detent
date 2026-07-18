@@ -23,7 +23,10 @@ var (
 	ErrProjectNotFound = errors.New("project not found")
 )
 
-const defaultMaxConcurrentStarts = 4
+const (
+	defaultMaxConcurrentStarts    = 4
+	defaultStartupRollbackTimeout = 5 * time.Second
+)
 
 type Factory func(globalconfig.Project) (*Project, error)
 
@@ -57,23 +60,25 @@ type rollbackProject struct {
 }
 
 type ManagerDependencies struct {
-	Registry            *Registry
-	ProjectFactory      Factory
-	ProjectDependencies Dependencies
-	Events              *hub.Hub[Event]
-	Logger              *slog.Logger
-	Sleep               func(context.Context, time.Duration) error
-	Jitter              func(time.Duration) time.Duration
+	Registry               *Registry
+	ProjectFactory         Factory
+	ProjectDependencies    Dependencies
+	Events                 *hub.Hub[Event]
+	Logger                 *slog.Logger
+	Sleep                  func(context.Context, time.Duration) error
+	Jitter                 func(time.Duration) time.Duration
+	StartupRollbackTimeout time.Duration
 }
 
 type Manager struct {
-	mu       sync.Mutex
-	cfg      ManagerConfig
-	registry *Registry
-	factory  Factory
-	sleep    func(context.Context, time.Duration) error
-	jitter   func(time.Duration) time.Duration
-	logger   *slog.Logger
+	mu                     sync.Mutex
+	cfg                    ManagerConfig
+	registry               *Registry
+	factory                Factory
+	sleep                  func(context.Context, time.Duration) error
+	jitter                 func(time.Duration) time.Duration
+	logger                 *slog.Logger
+	startupRollbackTimeout time.Duration
 
 	running bool
 	spawned bool
@@ -130,15 +135,20 @@ func NewManager(cfg ManagerConfig, deps ManagerDependencies) (*Manager, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	startupRollbackTimeout := deps.StartupRollbackTimeout
+	if startupRollbackTimeout <= 0 {
+		startupRollbackTimeout = defaultStartupRollbackTimeout
+	}
 
 	cfg = normalizeManagerConfig(cfg)
 	return &Manager{
-		cfg:      cfg,
-		registry: registry,
-		factory:  factory,
-		sleep:    sleep,
-		jitter:   jitter,
-		logger:   logger,
+		cfg:                    cfg,
+		registry:               registry,
+		factory:                factory,
+		sleep:                  sleep,
+		jitter:                 jitter,
+		logger:                 logger,
+		startupRollbackTimeout: startupRollbackTimeout,
 	}, nil
 }
 
@@ -609,14 +619,18 @@ func (m *Manager) rollbackInitialStart(
 	projects []*Project,
 	started []startedProject,
 ) error {
-	cleanupErr := m.stopUncommittedStartedProjects(ctx, started)
-	cleanupErr = errors.Join(cleanupErr, closeProjectSlice(ctx, projects))
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.startupRollbackTimeout)
+	defer cancel()
+	cleanupErr := m.stopUncommittedStartedProjects(cleanupCtx, started)
+	cleanupErr = errors.Join(cleanupErr, closeProjectSlice(cleanupCtx, projects))
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for _, id := range registered {
-		m.registry.Delete(id)
+	if cleanupCtx.Err() == nil {
+		for _, id := range registered {
+			m.registry.Delete(id)
+		}
 	}
 	m.running = false
 	m.spawned = false
