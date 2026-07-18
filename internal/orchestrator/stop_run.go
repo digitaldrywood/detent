@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -22,6 +23,7 @@ var (
 	ErrStopRunInvalidRoute    = errors.New("stop run destination or priority is invalid")
 	ErrStopRunStale           = errors.New("active run has completed or changed")
 	ErrStopRunTransition      = errors.New("run stopped but work item transition failed")
+	ErrStopRunWorkerProcess   = errors.New("worker process group exit was not verified")
 )
 
 const (
@@ -74,7 +76,11 @@ type stopRunReply struct {
 }
 
 type pendingStopRun struct {
-	result StopRunResult
+	result     StopRunResult
+	completion *runpkg.Completion
+	running    Running
+	reapDone   bool
+	reapErr    error
 }
 
 type operatorStopMetadata struct {
@@ -129,6 +135,12 @@ func (o *Orchestrator) handleStopRunRequest(ctx context.Context, state *State, e
 	}
 	if pending, ok := o.pendingStops[request.IssueID]; ok {
 		if stopRunResultMatchesRequest(pending.result, request) {
+			if pending.completion != nil && pending.reapErr != nil {
+				result, err := o.finishOperatorStopCompletion(ctx, state, pending)
+				result.AlreadyStopped = true
+				event.reply <- stopRunReply{result: result, err: err}
+				return
+			}
 			result := pending.result
 			result.AlreadyStopped = true
 			event.reply <- stopRunReply{result: result}
@@ -197,13 +209,15 @@ func (o *Orchestrator) handleStopRunRequest(ctx context.Context, state *State, e
 	delete(state.Retry, request.IssueID)
 	delete(state.BudgetRefusals, request.IssueID)
 	state.Running[request.IssueID] = running
+	recordStateEvent(state, telemetry.ActivityEvent{At: event.at, Event: "operator_stop_requested", Message: "operator requested stop for " + issueLabel(running.Issue)})
+	event.reply <- stopRunReply{result: result}
 	if running.stop != nil {
 		running.stop(runpkg.ErrOperatorStopped)
 	} else if running.cancel != nil {
 		running.cancel()
 	}
-	recordStateEvent(state, telemetry.ActivityEvent{At: event.at, Event: "operator_stop_requested", Message: "operator requested stop for " + issueLabel(running.Issue)})
-	event.reply <- stopRunReply{result: result}
+	pending := o.pendingStops[request.IssueID]
+	o.reapPendingOperatorStop(ctx, state, pending, running)
 }
 
 func (o *Orchestrator) handleOperatorStopCompletion(ctx context.Context, state *State, event runpkg.Completion, running Running) bool {
@@ -211,7 +225,65 @@ func (o *Orchestrator) handleOperatorStopCompletion(ctx context.Context, state *
 	if !ok {
 		return false
 	}
+	pending.completion = &event
+	pending.running = running
+	if pending.reapErr != nil || !pending.reapDone {
+		return true
+	}
+	if _, err := o.finishOperatorStopCompletion(ctx, state, pending); errors.Is(err, ErrStopRunWorkerProcess) && o.logger != nil {
+		o.logger.Warn("operator stop worker process reap failed", "issue_id", event.IssueID, "identifier", running.Issue.Identifier, "error", err)
+	}
+	return true
+}
+
+func (o *Orchestrator) finishOperatorStopCompletion(ctx context.Context, state *State, pending *pendingStopRun) (StopRunResult, error) {
+	if pending == nil || pending.completion == nil {
+		return StopRunResult{}, ErrStopRunStale
+	}
+	event := *pending.completion
+	running := pending.running
+	if pending.reapErr != nil || !pending.reapDone {
+		o.reapPendingOperatorStop(ctx, state, pending, running)
+	}
+	if pending.reapErr != nil {
+		return pending.result, pending.reapErr
+	}
 	delete(o.pendingStops, event.IssueID)
+	result, transitionErr := o.completeOperatorStopCompletion(ctx, state, event, running, pending.result)
+	return result, transitionErr
+}
+
+func (o *Orchestrator) reapPendingOperatorStop(ctx context.Context, state *State, pending *pendingStopRun, running Running) {
+	if pending == nil {
+		return
+	}
+	outcome, identity, err := o.reapOperatorStopWorker(ctx, running)
+	pending.reapDone = err == nil
+	pending.reapErr = err
+	if o.logger != nil {
+		attrs := []any{
+			"operation", "worker_process_reap",
+			"reason", "operator_stop",
+			"decision", string(outcome),
+			"detent_session_id", running.DetentSessionID,
+			"issue_id", running.Issue.ID,
+			"issue_identifier", running.Issue.Identifier,
+			"pid", identity.PID,
+			"pgid", identity.GroupID,
+		}
+		if err != nil {
+			attrs = append(attrs, "error", err)
+		}
+		o.logger.Info("worker process lifecycle decision", attrs...)
+	}
+	if err != nil {
+		state.Blocked[running.Issue.ID] = operatorStopBlocked(running.Issue, pending.result, "operator stop is waiting for the worker process group to exit: "+err.Error())
+		return
+	}
+	state.Blocked[running.Issue.ID] = operatorStopBlocked(running.Issue, pending.result, "operator stop is waiting for the worker to exit")
+}
+
+func (o *Orchestrator) completeOperatorStopCompletion(ctx context.Context, state *State, event runpkg.Completion, running Running, result StopRunResult) (StopRunResult, error) {
 	o.releaseGlobalDispatchSlot(running.globalSlot)
 	tokens := event.Result.Tokens
 	if tokens == (TokenTotals{}) {
@@ -234,12 +306,60 @@ func (o *Orchestrator) handleOperatorStopCompletion(ctx context.Context, state *
 		completedAt = o.clockNow().UTC()
 	}
 	o.deferBackendCapacityProbe(state, running, completedAt, runpkg.ErrOperatorStopped)
-	result := pending.result
 	result.CompletedAt = completedAt
-	if err := o.finishOperatorStopTransition(ctx, state, running.Issue, &result); err != nil && o.logger != nil {
-		o.logger.Warn("operator stop tracker transition failed", "issue_id", event.IssueID, "destination", result.Destination, "error", err)
+	if err := o.finishOperatorStopTransition(ctx, state, running.Issue, &result); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("operator stop tracker transition failed", "issue_id", event.IssueID, "destination", result.Destination, "error", err)
+		}
+		return result, err
 	}
-	return true
+	return result, nil
+}
+
+func (o *Orchestrator) reapOperatorStopWorker(ctx context.Context, running Running) (procgroup.TerminationOutcome, procgroup.Identity, error) {
+	identity, found, err := o.persistedWorkerProcess(ctx, running)
+	if err != nil {
+		return "", procgroup.Identity{}, fmt.Errorf("%w: load persisted identity: %w", ErrStopRunWorkerProcess, err)
+	}
+	if !found {
+		return procgroup.TerminationOutcomeAlreadyExited, procgroup.Identity{}, nil
+	}
+	outcome, err := o.reapWorkerProcess(context.WithoutCancel(ctx), identity, o.workerReapGrace)
+	if err != nil {
+		return "", identity, fmt.Errorf("%w: %w", ErrStopRunWorkerProcess, err)
+	}
+	if outcome == procgroup.TerminationOutcomeStaleIdentity {
+		return outcome, identity, fmt.Errorf("%w: persisted PID, PGID, or start time is stale", ErrStopRunWorkerProcess)
+	}
+	if o.workerProcesses != nil && running.DetentSessionID > 0 {
+		if err := o.workerProcesses.MarkSessionWorkerProcessReaped(context.WithoutCancel(ctx), running.DetentSessionID, store.WorkerProcessReap{
+			ReapedAt: o.clockNow().UTC(),
+			Outcome:  string(outcome),
+		}); err != nil {
+			return outcome, identity, fmt.Errorf("%w: persist reap outcome: %w", ErrStopRunWorkerProcess, err)
+		}
+	}
+	return outcome, identity, nil
+}
+
+func (o *Orchestrator) persistedWorkerProcess(ctx context.Context, running Running) (procgroup.Identity, bool, error) {
+	if o.workerProcesses != nil && running.DetentSessionID > 0 {
+		processes, err := o.workerProcesses.ListActiveWorkerProcesses(context.WithoutCancel(ctx))
+		if err != nil {
+			return procgroup.Identity{}, false, err
+		}
+		for _, process := range processes {
+			if process.SessionID == running.DetentSessionID {
+				return procgroup.Identity{PID: process.PID, GroupID: process.GroupID, StartedAt: process.StartedAt}, true, nil
+			}
+		}
+		if running.WorkerProcess.PID > 0 {
+			return procgroup.Identity{}, false, fmt.Errorf("active worker identity for session %d was not persisted", running.DetentSessionID)
+		}
+		return procgroup.Identity{}, false, nil
+	}
+	identity := running.WorkerProcess
+	return identity, identity.PID > 0, nil
 }
 
 func (o *Orchestrator) finishOperatorStopTransition(ctx context.Context, state *State, issue connector.Issue, result *StopRunResult) error {
