@@ -135,6 +135,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.backoffDispatchRecovery(state, event.IssueID, event.CompletedAt, delay)
 	}
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
+	if o.handleMergeRevocationCompletion(ctx, state, event, running) {
+		return
+	}
 	if o.handleGitHubRESTCapacityCompletion(ctx, state, event, running) {
 		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, event.Err, "github_rest_capacity", errorString(event.Err))
 		return
@@ -1005,6 +1008,10 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		return true
 	}
 	issue = refreshedIssue
+	if revocation, revoked := mergeRevocationForIssue(issue, o.cfg, true); revoked {
+		o.finishMergeRevocation(ctx, state, event, running, revocation)
+		return true
+	}
 	if event.Result.PullRequestHeadPushed {
 		triggerPending := false
 		if !event.Result.CITriggerLabelReapplied {

@@ -44,7 +44,7 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 
 	for _, candidate := range staleMergingQueueIssues(out, o.cfg) {
 		issueID := strings.TrimSpace(candidate.ID)
-		if !nativeMergeQueueCandidate(candidate) || staleMergingPullRequestDispatchActive(state, issueID) {
+		if !nativeMergeQueueCandidate(candidate, o.cfg) || staleMergingPullRequestDispatchActive(state, issueID) {
 			continue
 		}
 		if cached, ok := state.nativeMergeQueueEntries[issueID]; ok && now.Sub(cached.CheckedAt) < nativeMergeQueueEntryRefresh {
@@ -109,13 +109,21 @@ func (o *Orchestrator) delegateNativeMergeQueueIssues(
 	return out
 }
 
-func nativeMergeQueueCandidate(issue connector.Issue) bool {
+func nativeMergeQueueCandidate(issue connector.Issue, cfg Config) bool {
 	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
 		return false
 	}
+	if _, revoked := mergeApprovalLabelRevoked(issue, cfg); revoked {
+		return false
+	}
 	pullRequest := issue.PullRequest
-	return !pullRequestHydrationBlocksProgress(pullRequest) &&
-		normalizePullRequestState(pullRequest.State) == "open" &&
+	if pullRequestHydrationBlocksProgress(pullRequest) {
+		return false
+	}
+	if _, revoked := mergeCITriggerLabelRevoked(issue, cfg); revoked {
+		return false
+	}
+	return normalizePullRequestState(pullRequest.State) == "open" &&
 		!pullRequest.Draft &&
 		mergeWorkerCIGreen(pullRequest.CIStatus) &&
 		pullRequestRepository(issue) != "" &&

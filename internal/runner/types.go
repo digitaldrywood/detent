@@ -22,6 +22,7 @@ const (
 	FinalStateFailed                = "failed"
 	FinalStateTokenCeilingExceeded  = "token_ceiling_exceeded"
 	FinalStateOperatorStopped       = "operator_stopped"
+	FinalStateMergeRevoked          = "merge_revoked"
 	TokenCeilingSourceAbsolute      = "max_session_tokens"
 	TokenCeilingSourceContextWindow = "max_session_context_multiplier"
 
@@ -37,6 +38,7 @@ const (
 var (
 	ErrSessionTokenCeilingExceeded = errors.New("session token ceiling exceeded")
 	ErrOperatorStopped             = errors.New("operator stopped run")
+	ErrMergeRevoked                = errors.New("merge eligibility revoked")
 	ErrAgentTurnCleanup            = errors.New("agent turn cleanup failed")
 	ErrAgentResumeUnsupported      = errors.New("agent backend does not support resume verification")
 )

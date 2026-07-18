@@ -716,8 +716,8 @@ func (r *Runner) runAgentTurn(
 		}
 		return nil
 	})
-	if errors.Is(context.Cause(ctx), ErrOperatorStopped) {
-		turnErr = ErrOperatorStopped
+	if cause := context.Cause(ctx); cooperativeStopError(cause) {
+		turnErr = cause
 	}
 	result.Output = progress.outputText()
 	result.SkillDraftProposed = skillDraftProposed(result.Output)
@@ -1116,7 +1116,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		finishedAt := r.now().UTC()
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		finishContext := ctx
-		if errors.Is(turnErr, ErrOperatorStopped) {
+		if cooperativeStopError(turnErr) {
 			finishContext = context.WithoutCancel(ctx)
 		}
 		return result, errors.Join(
@@ -2005,6 +2005,9 @@ func appendSessionTokenCeilingLesson(cfg config.Lessons, issue connector.Issue, 
 func finalStateForTurnError(err error) string {
 	if errors.Is(err, ErrOperatorStopped) {
 		return FinalStateOperatorStopped
+	}
+	if errors.Is(err, ErrMergeRevoked) {
+		return FinalStateMergeRevoked
 	}
 	if errors.Is(err, ErrSessionTokenCeilingExceeded) {
 		return FinalStateTokenCeilingExceeded

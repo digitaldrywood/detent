@@ -322,7 +322,7 @@ func TestNativeMergeQueueCandidate(t *testing.T) {
 			if tt.mutate != nil {
 				tt.mutate(&issue)
 			}
-			if got := nativeMergeQueueCandidate(issue); got != tt.want {
+			if got := nativeMergeQueueCandidate(issue, normalizeConfig(Config{})); got != tt.want {
 				t.Fatalf("nativeMergeQueueCandidate() = %t, want %t", got, tt.want)
 			}
 		})

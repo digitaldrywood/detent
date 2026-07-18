@@ -141,6 +141,7 @@ type pullRequestNode struct {
 	State                      string                            `json:"state"`
 	MergeableState             string                            `json:"mergeableState"`
 	Draft                      bool                              `json:"draft"`
+	Labels                     []string                          `json:"labels"`
 	ActivityAt                 *time.Time                        `json:"activityAt"`
 	HeadRefName                string                            `json:"headRefName"`
 	BaseRefName                string                            `json:"baseRefName"`
@@ -243,6 +244,7 @@ type restPullRequest struct {
 	State          string     `json:"state"`
 	MergeableState string     `json:"mergeable_state"`
 	Draft          bool       `json:"draft"`
+	Labels         []label    `json:"labels"`
 	Head           restHead   `json:"head"`
 	Base           restHead   `json:"base"`
 	UpdatedAt      *time.Time `json:"updated_at"`

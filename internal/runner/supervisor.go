@@ -156,7 +156,7 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 			completion.Retryable = true
 			completion.RetryAttempt = request.Attempt
 			completion.RetryDelay = s.OverloadRetryDelay()
-		} else if completion.Err != nil && !IsCapacityError(completion.Err) && !errors.Is(completion.Err, ErrOperatorStopped) {
+		} else if completion.Err != nil && !IsCapacityError(completion.Err) && !cooperativeStopError(completion.Err) {
 			completion.Retryable = true
 			completion.RetryAttempt = nextFailureAttempt(request.Attempt)
 			completion.RetryDelay = s.RetryDelay(completion.RetryAttempt)
@@ -191,6 +191,10 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 	completion.Result = result
 	completion.Err = err
 	return completion
+}
+
+func cooperativeStopError(err error) bool {
+	return errors.Is(err, ErrOperatorStopped) || errors.Is(err, ErrMergeRevoked)
 }
 
 func (s *Supervisor) OverloadRetryDelay() time.Duration {

@@ -609,6 +609,9 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 			pullRequest.LatestCodexReviewSubmittedAt = &submittedAt
 		}
 		pullRequest.CodexReviewFindings = append([]connector.PullRequestFinding(nil), issue.PullRequest.CodexReviewFindings...)
+		if issue.PullRequest.Labels != nil {
+			pullRequest.Labels = append([]string{}, issue.PullRequest.Labels...)
+		}
 		issue.PullRequest = &pullRequest
 	}
 	if issue.Deliverable != nil {
