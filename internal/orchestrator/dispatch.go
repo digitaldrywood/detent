@@ -436,6 +436,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	runCtx, stop := context.WithCancelCause(ctx)
 	cancel := func() { stop(nil) }
 	o.markBackendCapacityProbe(state, capacityProbeKey, issue.ID, now)
+	dispatchWorkpadHash, dispatchWorkpadRead := o.artifactGateDispatchWorkpadSnapshot(ctx, issue)
 	state.Running[issue.ID] = Running{
 		Issue:               issue,
 		Attempt:             attempt,
@@ -443,6 +444,8 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		Mode:                runMode,
 		DispatchSourceState: dispatchStartSourceState,
 		DispatchTargetState: dispatchStartTargetState,
+		DispatchWorkpadHash: dispatchWorkpadHash,
+		DispatchWorkpadRead: dispatchWorkpadRead,
 		StartedAt:           now,
 		WorkerHost:          workerHost,
 		CapacityScope:       capacityScope,

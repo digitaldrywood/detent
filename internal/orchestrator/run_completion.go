@@ -330,7 +330,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	dispatchedIssue := cloneIssue(running.Issue)
 	if terminalState == store.WorkAttemptTerminalSuccess {
-		running.Issue = o.applyArtifactGateCompletionFields(ctx, running.Issue, running.StartedAt)
+		running.Issue = o.applyArtifactGateCompletionFields(ctx, running.Issue, running.DispatchWorkpadHash, running.DispatchWorkpadRead)
 	}
 	progress := o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
 	running.Issue = progress.Issue

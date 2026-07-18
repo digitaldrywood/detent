@@ -4,14 +4,18 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
-func (o *Orchestrator) applyArtifactGateCompletionFields(ctx context.Context, issue connector.Issue, startedAt time.Time) connector.Issue {
+func (o *Orchestrator) applyArtifactGateCompletionFields(
+	ctx context.Context,
+	issue connector.Issue,
+	dispatchWorkpadHash string,
+	dispatchWorkpadRead bool,
+) connector.Issue {
 	issue = cloneIssue(issue)
 	if o == nil || o.connector == nil {
 		return issue
@@ -27,12 +31,13 @@ func (o *Orchestrator) applyArtifactGateCompletionFields(ctx context.Context, is
 	if !ok || signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured || len(signal.Fields) == 0 {
 		return issue
 	}
-	if !workpadCurrent || !artifactGateCompletionWorkpadUpdatedSince(issue.Comments, startedAt) {
+	completionWorkpadHash := artifactGateWorkpadStatusHash(issue.Comments)
+	if !workpadCurrent || !dispatchWorkpadRead || completionWorkpadHash == "" || completionWorkpadHash == dispatchWorkpadHash {
 		if o.logger != nil {
 			o.logger.WarnContext(ctx, "artifact gate Workpad field update skipped",
 				"issue_id", issue.ID,
 				"identifier", issue.Identifier,
-				"reason", "Workpad status block was not updated during the completed attempt",
+				"reason", "Workpad status block content was not updated during the completed attempt",
 			)
 		}
 		return issue
@@ -116,22 +121,48 @@ func artifactGateCompletionStatusAllowed(status string, cfg gate.ArtifactConfig)
 	return false
 }
 
-func artifactGateCompletionWorkpadUpdatedSince(comments []connector.IssueComment, startedAt time.Time) bool {
-	if startedAt.IsZero() {
-		return false
-	}
+func artifactGateWorkpadStatusHash(comments []connector.IssueComment) string {
 	for index := len(comments) - 1; index >= 0; index-- {
 		comment := comments[index]
 		if !autoPromoteIsWorkpadComment(comment.Body) {
 			continue
 		}
-		updatedAt := comment.UpdatedAt
-		if updatedAt == nil {
-			updatedAt = comment.CreatedAt
+		content, ok := workpad.LastStatusBlock(comment.Body)
+		if !ok {
+			return ""
 		}
-		return updatedAt != nil && !updatedAt.Before(startedAt)
+		return workpad.ContentHash(content)
 	}
-	return false
+	return ""
+}
+
+func (o *Orchestrator) artifactGateDispatchWorkpadSnapshot(ctx context.Context, issue connector.Issue) (string, bool) {
+	if o == nil || o.connector == nil || gate.Effective(o.cfg.AutoPromote.Gate).Kind != gate.KindArtifact {
+		return "", false
+	}
+	reader, ok := o.connector.(connector.IssueCommentReader)
+	if !ok {
+		if o.logger != nil {
+			o.logger.WarnContext(ctx, "artifact gate dispatch Workpad snapshot failed",
+				"issue_id", issue.ID,
+				"identifier", issue.Identifier,
+				"reason", "issue comment reader unavailable",
+			)
+		}
+		return "", false
+	}
+	comments, err := reader.FetchIssueComments(ctx, issue)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.WarnContext(ctx, "artifact gate dispatch Workpad snapshot failed",
+				"issue_id", issue.ID,
+				"identifier", issue.Identifier,
+				"error", err,
+			)
+		}
+		return "", false
+	}
+	return artifactGateWorkpadStatusHash(comments), true
 }
 
 func (o *Orchestrator) warnUnchangedArtifactGateCompletion(ctx context.Context, dispatched connector.Issue, completed connector.Issue) {

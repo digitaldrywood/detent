@@ -20,7 +20,7 @@ func TestHandleRunResultAppliesArtifactGateWorkpadField(t *testing.T) {
 		name             string
 		workpadStatus    string
 		workpadFields    string
-		workpadBeforeRun bool
+		workpadUnchanged bool
 		wantSetFields    []autoPromoteTickSetField
 		wantStatus       string
 		wantLogFragments []string
@@ -60,7 +60,7 @@ func TestHandleRunResultAppliesArtifactGateWorkpadField(t *testing.T) {
 			name:             "skips field from stale completion declaration",
 			workpadStatus:    "complete",
 			workpadFields:    "fields:\n  render_status: pending_review\n",
-			workpadBeforeRun: true,
+			workpadUnchanged: true,
 			wantStatus:       "recut",
 			wantLogFragments: []string{"artifact gate Workpad field update skipped", "artifact gate completion left status field unchanged"},
 		},
@@ -71,10 +71,6 @@ func TestHandleRunResultAppliesArtifactGateWorkpadField(t *testing.T) {
 			t.Parallel()
 
 			now := time.Date(2026, 7, 18, 18, 0, 0, 0, time.UTC)
-			workpadAt := now.Add(-10 * time.Second)
-			if tt.workpadBeforeRun {
-				workpadAt = now.Add(-2 * time.Minute)
-			}
 			issue := connector.NewIssue()
 			issue.ID = "issue-artifact-completion"
 			issue.Identifier = "digitaldrywood/video#42"
@@ -82,13 +78,17 @@ func TestHandleRunResultAppliesArtifactGateWorkpadField(t *testing.T) {
 			issue.State = "Production"
 			issue.Fields = map[string]string{"render_status": "recut"}
 			issue.Deliverable = &connector.Deliverable{Kind: "artifact"}
+			workpadBody := "## Codex Workpad\n\n### Validation\n\nCurrent attempt.\n\n```detent-status\nschema: 1\nstatus: " + tt.workpadStatus + "\n" + tt.workpadFields + "blockers: []\nhuman_action: null\n```"
+			dispatchWorkpadBody := "## Codex Workpad\n\n### Validation\n\nPrior attempt.\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"
+			if tt.workpadUnchanged {
+				dispatchWorkpadBody = "## Codex Workpad\n\n### Validation\n\nPrior attempt.\n\n```detent-status\nschema: 1\nstatus: " + tt.workpadStatus + "\n" + tt.workpadFields + "blockers: []\nhuman_action: null\n```"
+			}
 			tracker := &autoPromoteTickConnector{
 				stateIssues: []connector.Issue{issue},
 				issueComments: map[string][]connector.IssueComment{
 					issue.ID: {{
-						Body:      "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: " + tt.workpadStatus + "\n" + tt.workpadFields + "blockers: []\nhuman_action: null\n```",
-						URL:       "https://github.test/comment/42",
-						CreatedAt: &workpadAt,
+						Body: workpadBody,
+						URL:  "https://github.test/comment/42",
 					}},
 				},
 			}
@@ -121,9 +121,11 @@ func TestHandleRunResultAppliesArtifactGateWorkpadField(t *testing.T) {
 			}
 			state := newState(cfg)
 			state.Running[issue.ID] = Running{
-				Issue:     cloneIssue(issue),
-				Attempt:   1,
-				StartedAt: now.Add(-time.Minute),
+				Issue:               cloneIssue(issue),
+				Attempt:             1,
+				DispatchWorkpadHash: artifactGateWorkpadStatusHash([]connector.IssueComment{{Body: dispatchWorkpadBody}}),
+				DispatchWorkpadRead: true,
+				StartedAt:           now.Add(-time.Minute),
 			}
 
 			orch.handleRunResult(context.Background(), &state, runpkg.Completion{
@@ -189,5 +191,50 @@ func TestArtifactGateCompletionFieldUpdate(t *testing.T) {
 				t.Fatalf("artifactGateCompletionFieldUpdate() = (%q, %q), want (%q, %q)", field, value, tt.wantField, tt.wantValue)
 			}
 		})
+	}
+}
+
+func TestArtifactGateWorkpadStatusHashUsesOnlyStructuredBlock(t *testing.T) {
+	t.Parallel()
+
+	block := "```detent-status\nschema: 1\nstatus: complete\nfields:\n  render_status: pending_review\nblockers: []\nhuman_action: null\n```"
+	prior := artifactGateWorkpadStatusHash([]connector.IssueComment{{Body: "## Codex Workpad\n\nPrior prose.\n\n" + block}})
+	updatedProse := artifactGateWorkpadStatusHash([]connector.IssueComment{{Body: "## Codex Workpad\n\nUpdated prose only.\n\n" + block}})
+	updatedBlock := artifactGateWorkpadStatusHash([]connector.IssueComment{{Body: "## Codex Workpad\n\nUpdated prose.\n\n```detent-status\nschema: 1\nstatus: complete\nfields:\n  render_status: approved\nblockers: []\nhuman_action: null\n```"}})
+
+	if prior == "" {
+		t.Fatal("artifactGateWorkpadStatusHash() is empty")
+	}
+	if updatedProse != prior {
+		t.Fatalf("prose-only update hash = %q, want %q", updatedProse, prior)
+	}
+	if updatedBlock == prior {
+		t.Fatalf("structured block update hash = %q, want different from %q", updatedBlock, prior)
+	}
+}
+
+func TestArtifactGateDispatchWorkpadSnapshot(t *testing.T) {
+	t.Parallel()
+
+	issue := connector.NewIssue()
+	issue.ID = "issue-artifact-snapshot"
+	issue.Identifier = "digitaldrywood/video#43"
+	comment := connector.IssueComment{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"}
+	tracker := &autoPromoteTickConnector{issueComments: map[string][]connector.IssueComment{issue.ID: {comment}}}
+	orch := &Orchestrator{
+		cfg:       normalizeConfig(Config{AutoPromote: AutoPromoteConfig{Gate: gate.Config{Kind: gate.KindArtifact}}}),
+		connector: tracker,
+	}
+
+	hash, ok := orch.artifactGateDispatchWorkpadSnapshot(context.Background(), issue)
+
+	if !ok {
+		t.Fatal("artifactGateDispatchWorkpadSnapshot() ok = false")
+	}
+	if want := artifactGateWorkpadStatusHash([]connector.IssueComment{comment}); hash != want {
+		t.Fatalf("artifactGateDispatchWorkpadSnapshot() hash = %q, want %q", hash, want)
+	}
+	if !reflect.DeepEqual(tracker.fetchComments, []string{issue.ID}) {
+		t.Fatalf("FetchIssueComments() issues = %#v, want %#v", tracker.fetchComments, []string{issue.ID})
 	}
 }
