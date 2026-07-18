@@ -609,8 +609,9 @@ func (m *Manager) rollbackInitialStart(
 	projects []*Project,
 	started []startedProject,
 ) error {
-	cleanupErr := m.stopUncommittedStartedProjects(ctx, started)
-	cleanupErr = errors.Join(cleanupErr, closeProjectSlice(ctx, projects))
+	cleanupCtx := context.WithoutCancel(ctx)
+	cleanupErr := m.stopUncommittedStartedProjects(cleanupCtx, started)
+	cleanupErr = errors.Join(cleanupErr, closeProjectSlice(cleanupCtx, projects))
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

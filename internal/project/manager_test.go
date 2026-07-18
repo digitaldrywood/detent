@@ -205,6 +205,88 @@ func TestManagerStartsProjectsWithBoundedConcurrency(t *testing.T) {
 	}
 }
 
+func TestManagerStartCancellationWaitsForStartedProjectCleanup(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[project.Event](hub.WithBuffer(4))
+	refreshStarted := make(chan struct{})
+	releaseRefresh := make(chan struct{})
+	alphaConnector := &blockingStartupConnector{
+		provisioningConnector: provisioningConnector{},
+		closeTracker:          newCloseTrackingConnector(),
+		refreshStarted:        refreshStarted,
+		releaseRefresh:        releaseRefresh,
+	}
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{
+			{ID: "alpha", Weight: 1},
+			{ID: "bravo", Weight: 1},
+		},
+		Startup: project.StartupConfig{MaxConcurrentStarts: 2},
+	}, project.ManagerDependencies{
+		Events: events,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			workflowCfg := workflowConfig("memory")
+			workflowCfg.Tracker.AutoProvision = true
+			var currentConnector connector.Connector = provisioningConnector{
+				provision: func(ctx context.Context) error {
+					<-ctx.Done()
+					return ctx.Err()
+				},
+			}
+			if cfg.ID == "alpha" {
+				currentConnector = alphaConnector
+			}
+			return project.New(project.Config{
+				Project:  cfg,
+				Workflow: workflowconfig.Workflow{Config: workflowCfg},
+			}, project.Dependencies{
+				Connector: currentConnector,
+				Events:    events,
+				Runner:    blockingRunner{},
+			})
+		},
+		Sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.Start(ctx)
+	}()
+
+	select {
+	case <-refreshStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial project refresh")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		t.Fatalf("Manager.Start() returned before project refresh cleanup completed: %v", err)
+	default:
+	}
+
+	close(releaseRefresh)
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Manager.Start() error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for manager startup rollback")
+	}
+	assertConnectorClosed(t, alphaConnector.closeTracker)
+	if manager.Registry().Len() != 0 {
+		t.Fatalf("Registry().Len() = %d, want 0", manager.Registry().Len())
+	}
+}
+
 func TestManagerLiveAddRemovePauseUnpause(t *testing.T) {
 	t.Parallel()
 
@@ -1459,6 +1541,30 @@ func TestManagerConfigFromGlobal(t *testing.T) {
 	if len(got.Projects[0].GlobalKnowledge.Sources) != 1 || got.Projects[0].GlobalKnowledge.Sources[0].Name != "Global" {
 		t.Fatalf("Projects[0].GlobalKnowledge = %#v, want global source", got.Projects[0].GlobalKnowledge)
 	}
+}
+
+type blockingStartupConnector struct {
+	provisioningConnector
+	closeTracker   *closeTrackingConnector
+	refreshStarted chan struct{}
+	releaseRefresh <-chan struct{}
+	startOnce      sync.Once
+}
+
+func (c *blockingStartupConnector) Name() string {
+	return "blocking-startup"
+}
+
+func (c *blockingStartupConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	c.startOnce.Do(func() {
+		close(c.refreshStarted)
+	})
+	<-c.releaseRefresh
+	return nil, nil
+}
+
+func (c *blockingStartupConnector) Close() error {
+	return c.closeTracker.Close()
 }
 
 func newManagerTestProject(t *testing.T, cfg globalconfig.Project, events *hub.Hub[project.Event]) (*project.Project, error) {
