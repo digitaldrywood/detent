@@ -62,6 +62,9 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 	if err == nil {
 		return backendcapacity.Details{}, false
 	}
+	if errors.Is(err, context.Canceled) {
+		return backendcapacity.Details{}, false
+	}
 	text := codexCapacityErrorText(err)
 	if codexStartupOperation(text) {
 		switch {

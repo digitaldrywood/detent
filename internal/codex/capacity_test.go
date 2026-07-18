@@ -79,6 +79,10 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 			wantKind: backendcapacity.StartupFailureKind,
 		},
 		{
+			name: "canceled transport spawn",
+			err:  fmt.Errorf("run agent turn: start codex app-server transport: start command: %w", context.Canceled),
+		},
+		{
 			name: "unrelated deadline",
 			err:  fmt.Errorf("run agent turn: wait for output: %w", context.DeadlineExceeded),
 		},
