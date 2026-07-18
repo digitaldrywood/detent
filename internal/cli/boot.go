@@ -317,8 +317,8 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	snapshotSeq := &atomic.Uint64{}
-	updateScheduler, err := newRuntimeUpdateScheduler(cfg, logger, func(ctx context.Context) bool {
-		return runtimeUpdateIdle(ctx, manager.Registry())
+	updateScheduler, err := newRuntimeUpdateScheduler(cfg, logger, func(ctx context.Context) (func(), bool) {
+		return runtimeUpdateIdleReservation(ctx, manager.Registry(), globalDispatchGate)
 	})
 	if err != nil {
 		return err

@@ -11,6 +11,7 @@ import (
 const (
 	DispatchGateReasonGranted                          = "granted"
 	DispatchGateReasonGlobalCapacityFull               = "global_capacity_full"
+	DispatchGateReasonPaused                           = "dispatch_paused"
 	DispatchGateReasonReservedForHigherPriority        = "reserved_for_higher_priority_state"
 	DispatchGateReasonReservedForHigherPriorityProject = "reserved_for_higher_priority_project"
 	DispatchGateReasonSelectedProjectWaiting           = "selected_project_waiting"
@@ -66,13 +67,14 @@ type projectCycleState struct {
 type GlobalDispatchGate struct {
 	global GlobalScheduler
 
-	mu            sync.Mutex
-	ready         map[string]readyProjectSlot
-	running       map[uint64]runningProjectSlot
-	selected      map[string]selectedProjectSlot
-	projects      map[string]ProjectCandidate
-	projectCycles map[string]projectCycleState
-	epoch         uint64
+	mu             sync.Mutex
+	ready          map[string]readyProjectSlot
+	running        map[uint64]runningProjectSlot
+	selected       map[string]selectedProjectSlot
+	projects       map[string]ProjectCandidate
+	projectCycles  map[string]projectCycleState
+	dispatchPauses int
+	epoch          uint64
 }
 
 func NewGlobalDispatchGate(global GlobalScheduler, projects ...ProjectCandidate) *GlobalDispatchGate {
@@ -111,6 +113,27 @@ func (g *GlobalDispatchGate) SetProjects(projects []ProjectCandidate) {
 		delete(g.projectCycles, projectID)
 	}
 	g.projects = next
+}
+
+func (g *GlobalDispatchGate) PauseDispatch() func() {
+	if g == nil {
+		return func() {}
+	}
+	g.mu.Lock()
+	g.dispatchPauses++
+	clear(g.selected)
+	g.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			if g.dispatchPauses > 0 {
+				g.dispatchPauses--
+			}
+		})
+	}
 }
 
 func (g *GlobalDispatchGate) Reconfigure(cfg Config) error {
@@ -255,6 +278,9 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 
 	g.projects[project.ID] = project
 	g.ready[project.ID] = readyProjectSlot{ProjectCandidate: project, request: req}
+	if g.dispatchPauses > 0 {
+		return Slot{}, false, g.decisionLocked(project.ID, req, DispatchGateReasonPaused), nil
+	}
 	if g.global.Mode() == ModeStrictPriority {
 		g.projectCycles[project.ID] = projectCycleState{epoch: g.epoch}
 		if reservedProjectID, reservedReq, reserved := g.higherPriorityProjectReservationLocked(project); reserved {

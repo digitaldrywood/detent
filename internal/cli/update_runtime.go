@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -41,13 +42,13 @@ func (r *RestartRequest) set(binary string) {
 	r.binary = strings.TrimSpace(binary)
 }
 
-func newRuntimeUpdateScheduler(cfg BootConfig, logger *slog.Logger, isIdle func(context.Context) bool) (*detentupdate.Scheduler, error) {
+func newRuntimeUpdateScheduler(cfg BootConfig, logger *slog.Logger, reserveIdle func(context.Context) (func(), bool)) (*detentupdate.Scheduler, error) {
 	interval := time.Duration(cfg.Global.Update.NormalizedCheckIntervalHours()) * time.Hour
 	schedulerConfig := detentupdate.SchedulerConfig{
 		Enabled:          cfg.Global.Update.AutoCheckEnabled,
 		AutoApplyEnabled: cfg.Global.Update.AutoApplyEnabled,
 		CheckInterval:    interval,
-		IsIdle:           isIdle,
+		ReserveIdle:      reserveIdle,
 		Logger:           logger,
 	}
 	executable, err := os.Executable()
@@ -108,6 +109,18 @@ func runtimeUpdateIdle(ctx context.Context, registry *project.Registry) bool {
 		}
 	}
 	return true
+}
+
+func runtimeUpdateIdleReservation(ctx context.Context, registry *project.Registry, gate *scheduler.GlobalDispatchGate) (func(), bool) {
+	if gate == nil {
+		return nil, false
+	}
+	release := gate.PauseDispatch()
+	if !runtimeUpdateIdle(ctx, registry) {
+		release()
+		return nil, false
+	}
+	return release, true
 }
 
 func requestUpdateRestart(controller *ShutdownController, restart *RestartRequest, binary string) bool {

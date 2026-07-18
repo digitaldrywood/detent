@@ -48,6 +48,43 @@ func TestGlobalDispatchGateUsesConfiguredProjectSelection(t *testing.T) {
 	}
 }
 
+func TestGlobalDispatchGatePauseBlocksNewSlotsUntilEveryReservationReleases(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
+	project := scheduler.ProjectCandidate{ID: "alpha", Weight: 1}
+	firstRelease := gate.PauseDispatch()
+	secondRelease := gate.PauseDispatch()
+
+	if _, ok, decision, err := gate.TryAcquireWithDecision(ctx, project, scheduler.SlotRequest{State: "Todo"}, now); err != nil {
+		t.Fatalf("TryAcquireWithDecision() while paused error = %v", err)
+	} else if ok || decision.Reason != scheduler.DispatchGateReasonPaused {
+		t.Fatalf("TryAcquireWithDecision() while paused ok = %t decision = %#v", ok, decision)
+	}
+
+	firstRelease()
+	firstRelease()
+	if _, ok, decision, err := gate.TryAcquireWithDecision(ctx, project, scheduler.SlotRequest{State: "Todo"}, now.Add(time.Second)); err != nil {
+		t.Fatalf("TryAcquireWithDecision() with nested pause error = %v", err)
+	} else if ok || decision.Reason != scheduler.DispatchGateReasonPaused {
+		t.Fatalf("TryAcquireWithDecision() with nested pause ok = %t decision = %#v", ok, decision)
+	}
+
+	secondRelease()
+	slot, ok, decision, err := gate.TryAcquireWithDecision(ctx, project, scheduler.SlotRequest{State: "Todo"}, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatalf("TryAcquireWithDecision() after release error = %v", err)
+	}
+	if !ok || decision.Reason != scheduler.DispatchGateReasonGranted {
+		t.Fatalf("TryAcquireWithDecision() after release ok = %t decision = %#v", ok, decision)
+	}
+	if err := gate.Release(slot); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
+}
+
 func TestGlobalDispatchGateReservesFreedSlotForPendingMergeLane(t *testing.T) {
 	t.Parallel()
 

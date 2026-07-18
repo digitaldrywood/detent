@@ -71,6 +71,7 @@ func TestSchedulerAutoApplyBehavior(t *testing.T) {
 		restartAccepted    bool
 		wantApplyCalls     int
 		wantRestartCalls   int
+		wantReleaseCalls   int
 		wantState          string
 		wantAppliedVersion string
 		installSource      InstallSource
@@ -95,6 +96,7 @@ func TestSchedulerAutoApplyBehavior(t *testing.T) {
 			autoApply:          true,
 			wantApplyCalls:     1,
 			wantRestartCalls:   1,
+			wantReleaseCalls:   1,
 			wantState:          "applied_restart_deferred",
 			wantAppliedVersion: "1.2.4",
 			installSource:      InstallSourceRelease,
@@ -127,13 +129,14 @@ func TestSchedulerAutoApplyBehavior(t *testing.T) {
 				},
 			}
 			restartCalls := 0
+			releaseCalls := 0
 			scheduler, err := NewScheduler(SchedulerConfig{
 				Enabled:          true,
 				AutoApplyEnabled: tt.autoApply,
 				CheckInterval:    time.Hour,
 				Updater:          updater,
-				IsIdle: func(context.Context) bool {
-					return true
+				ReserveIdle: func(context.Context) (func(), bool) {
+					return func() { releaseCalls++ }, true
 				},
 				RequestRestart: func(binary string) bool {
 					restartCalls++
@@ -155,6 +158,9 @@ func TestSchedulerAutoApplyBehavior(t *testing.T) {
 			}
 			if restartCalls != tt.wantRestartCalls {
 				t.Fatalf("restart calls = %d, want %d", restartCalls, tt.wantRestartCalls)
+			}
+			if releaseCalls != tt.wantReleaseCalls {
+				t.Fatalf("idle reservation releases = %d, want %d", releaseCalls, tt.wantReleaseCalls)
 			}
 			got := scheduler.Status()
 			if got.State != tt.wantState || got.LastAppliedVersion != tt.wantAppliedVersion {
@@ -183,16 +189,24 @@ func TestSchedulerDefersAutoApplyUntilIdle(t *testing.T) {
 		},
 	}
 	idle := false
+	reservationHeld := false
 	restartCalls := 0
 	scheduler, err := NewScheduler(SchedulerConfig{
 		Enabled:          true,
 		AutoApplyEnabled: true,
 		CheckInterval:    time.Hour,
 		Updater:          updater,
-		IsIdle: func(context.Context) bool {
-			return idle
+		ReserveIdle: func(context.Context) (func(), bool) {
+			if !idle {
+				return nil, false
+			}
+			reservationHeld = true
+			return func() { reservationHeld = false }, true
 		},
 		RequestRestart: func(string) bool {
+			if !reservationHeld {
+				t.Error("idle reservation released before restart request")
+			}
 			restartCalls++
 			return true
 		},
@@ -228,6 +242,9 @@ func TestSchedulerDefersAutoApplyUntilIdle(t *testing.T) {
 	if got := scheduler.Status(); got.State != "restart_requested" || got.AvailableVersion != "" {
 		t.Fatalf("Status() = %#v, want restart requested", got)
 	}
+	if !reservationHeld {
+		t.Fatal("idle reservation released before shutdown owns dispatch")
+	}
 }
 
 func TestSchedulerApplyPendingBypassesIdleWait(t *testing.T) {
@@ -252,8 +269,8 @@ func TestSchedulerApplyPendingBypassesIdleWait(t *testing.T) {
 		AutoApplyEnabled: true,
 		CheckInterval:    time.Hour,
 		Updater:          updater,
-		IsIdle: func(context.Context) bool {
-			return false
+		ReserveIdle: func(context.Context) (func(), bool) {
+			return nil, false
 		},
 		RequestRestart: func(string) bool { return true },
 	})
@@ -275,7 +292,42 @@ func TestSchedulerApplyPendingBypassesIdleWait(t *testing.T) {
 	}
 }
 
-func TestSchedulerAutoApplyRequiresIdleCheck(t *testing.T) {
+func TestSchedulerReleasesIdleReservationWhenApplyFails(t *testing.T) {
+	t.Parallel()
+
+	applyErr := errors.New("fixture apply failed")
+	updater := &schedulerUpdaterStub{
+		checkStatus: Status{
+			LatestVersion:   "1.2.4",
+			UpdateAvailable: true,
+			Action:          ActionAvailable,
+			InstallSource:   InstallSourceRelease,
+		},
+		applyErr: applyErr,
+	}
+	releaseCalls := 0
+	scheduler, err := NewScheduler(SchedulerConfig{
+		Enabled:          true,
+		AutoApplyEnabled: true,
+		CheckInterval:    time.Hour,
+		Updater:          updater,
+		ReserveIdle: func(context.Context) (func(), bool) {
+			return func() { releaseCalls++ }, true
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewScheduler() error = %v", err)
+	}
+
+	if _, err := scheduler.CheckNow(context.Background()); !errors.Is(err, applyErr) {
+		t.Fatalf("CheckNow() error = %v, want %v", err, applyErr)
+	}
+	if releaseCalls != 1 {
+		t.Fatalf("idle reservation releases = %d, want 1", releaseCalls)
+	}
+}
+
+func TestSchedulerAutoApplyRequiresIdleReservation(t *testing.T) {
 	t.Parallel()
 
 	_, err := NewScheduler(SchedulerConfig{
@@ -284,8 +336,8 @@ func TestSchedulerAutoApplyRequiresIdleCheck(t *testing.T) {
 		CheckInterval:    time.Hour,
 		Updater:          &schedulerUpdaterStub{},
 	})
-	if err == nil || !strings.Contains(err.Error(), "idle check") {
-		t.Fatalf("NewScheduler() error = %v, want idle check requirement", err)
+	if err == nil || !strings.Contains(err.Error(), "idle reservation") {
+		t.Fatalf("NewScheduler() error = %v, want idle reservation requirement", err)
 	}
 }
 
@@ -311,8 +363,8 @@ func TestSchedulerRunPollsPendingUpdateUntilIdle(t *testing.T) {
 		CheckInterval:    time.Hour,
 		IdlePollInterval: 2 * time.Second,
 		Updater:          updater,
-		IsIdle: func(context.Context) bool {
-			return idle
+		ReserveIdle: func(context.Context) (func(), bool) {
+			return func() {}, idle
 		},
 		RequestRestart: func(string) bool { return true },
 		NextDelay:      func(interval time.Duration) time.Duration { return interval },
