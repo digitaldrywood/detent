@@ -177,6 +177,18 @@ func sheetSessionMatchesProject(sessionProjectID string, card projectKanbanCard)
 // #snapshot holds other content, so their Review sheets omit those
 // actions rather than swap board lanes over the page the user is on.
 func boardCardSheetPath(projectID string, issueIdentity string, scope string, boardActions bool) string {
+	return boardCardDetailPath("/api/v1/board/card", projectID, issueIdentity, scope, boardActions)
+}
+
+func boardCardCorePath(projectID string, issueIdentity string, scope string, boardActions bool) string {
+	return boardCardDetailPath("/api/v1/board/card/core", projectID, issueIdentity, scope, boardActions)
+}
+
+func boardCardReceiptPath(projectID string, issueIdentity string, scope string, boardActions bool) string {
+	return boardCardDetailPath("/api/v1/board/receipt", projectID, issueIdentity, scope, boardActions)
+}
+
+func boardCardDetailPath(path string, projectID string, issueIdentity string, scope string, boardActions bool) string {
 	values := url.Values{}
 	if projectID = strings.TrimSpace(projectID); projectID != "" {
 		values.Set("project", projectID)
@@ -188,15 +200,28 @@ func boardCardSheetPath(projectID string, issueIdentity string, scope string, bo
 	if boardActions {
 		values.Set("actions", "board")
 	}
-	return "/api/v1/board/card?" + values.Encode()
+	return path + "?" + values.Encode()
 }
 
 func sheetOpenAttrs(projectID string, issueIdentity string, scope string, boardActions bool) templ.Attributes {
 	return templ.Attributes{
-		"hx-get":    boardCardSheetPath(projectID, issueIdentity, scope, boardActions),
-		"hx-target": "#detail-sheet-host",
-		"hx-swap":   "innerHTML",
+		"hx-get":                     boardCardSheetPath(projectID, issueIdentity, scope, boardActions),
+		"hx-target":                  "#detail-sheet-host",
+		"hx-swap":                    "innerHTML",
+		"hx-sync":                    "#detail-sheet-host:replace",
+		"data-detail-sheet-trigger":  "true",
+		"data-detail-sheet-core-url": boardCardCorePath(projectID, issueIdentity, scope, boardActions),
 	}
+}
+
+func boardCardDetailIdentity(data DashboardData, card projectKanbanCard) (string, string, string) {
+	projectID := projectKanbanCardProjectID(data, card)
+	identity := boardCardIdentityToken(card.Identifier, card.IssueID, card.IssueNumber)
+	return projectID, identity, projectKanbanBoardScope(data)
+}
+
+func boardCardDetailKey(projectID string, issueIdentity string) string {
+	return boardCardScopedSlug(projectID, issueIdentity)
 }
 
 func sheetHasActions(data DashboardData, card projectKanbanCard, boardActions bool) bool {

@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/activity"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	web "github.com/digitaldrywood/detent/internal/web"
@@ -43,7 +44,7 @@ func TestAPIBoardCardRendersLiveActivityAndVerboseUsage(t *testing.T) {
 	}
 
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/card?project=detent&issue=issue-1156", http.StatusOK)
-	for _, want := range []string{"Orchestration activity", "Dispatch skipped", "artifact_gate_wait_status", "Verbose", "Live session", "data-board-live-session", "flex min-h-72 flex-none flex-col", "data-activity-list-scroll", "max-h-[24rem] overflow-y-auto overscroll-contain", "hx-preserve"} {
+	for _, want := range []string{"Loading orchestration activity", `aria-busy="true"`, "Live session", "data-board-live-session", "flex min-h-72 flex-none flex-col", "hx-preserve"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("detail sheet missing %q:\n%s", want, body)
 		}
@@ -53,6 +54,11 @@ func TestAPIBoardCardRendersLiveActivityAndVerboseUsage(t *testing.T) {
 	}
 
 	body = requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/activity?project=detent&issue=issue-1156&verbose=1", http.StatusOK)
+	for _, want := range []string{"Dispatch skipped", "artifact_gate_wait_status", "125 total tokens", "Hide usage ticks", "data-activity-list-scroll", "max-h-[24rem] overflow-y-auto overscroll-contain"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("verbose activity missing %q:\n%s", want, body)
+		}
+	}
 	if !strings.Contains(body, "125 total tokens") || !strings.Contains(body, "Hide usage ticks") {
 		t.Fatalf("verbose activity missing token usage:\n%s", body)
 	}
@@ -427,6 +433,262 @@ func TestAPIBoardCardRendersDetailSheet(t *testing.T) {
 	}
 }
 
+func TestAPIBoardCardDoesNotWaitForCommentReaders(t *testing.T) {
+	t.Parallel()
+
+	issueStarted := make(chan struct{}, 1)
+	issueRelease := make(chan struct{})
+	prStarted := make(chan struct{}, 1)
+	prRelease := make(chan struct{})
+	connector := &blockingKanbanCommentConnector{
+		kanbanActionConnector: &kanbanActionConnector{name: "github"},
+		issueStarted:          issueStarted,
+		issueRelease:          issueRelease,
+		prStarted:             prStarted,
+		prRelease:             prRelease,
+	}
+	deps := testDeps(t)
+	storeStarted := make(chan string, 3)
+	storeRelease := make(chan struct{})
+	deps.Store = &blockingBoardDetailStore{Store: deps.Store, started: storeStarted, release: storeRelease}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, connector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		Projects: []telemetry.ProjectSnapshot{{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}}},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_async_comments",
+			Identifier: "digitaldrywood/detent#1446",
+			ProjectID:  "detent",
+			Title:      "Open card details immediately",
+			State:      "In Progress",
+			PullRequest: &telemetry.PullRequest{
+				Number: 1447,
+				URL:    "https://github.com/digitaldrywood/detent/pull/1447",
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	response := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=I_async_comments&actions=board", nil)
+		server.Handler().ServeHTTP(recorder, request)
+		response <- recorder
+	}()
+
+	timer := time.NewTimer(250 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case recorder := <-response:
+		close(issueRelease)
+		close(prRelease)
+		close(storeRelease)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+		}
+		for _, want := range []string{
+			"Open card details immediately",
+			"In Progress",
+			"Loading efficiency receipt",
+			"Loading orchestration activity",
+			"Loading issue comments",
+			`aria-busy="true"`,
+			`/api/v1/board/receipt?`,
+			`/api/v1/board/activity?`,
+			`/api/v1/board/conversation?`,
+		} {
+			if !strings.Contains(recorder.Body.String(), want) {
+				t.Fatalf("initial sheet missing %q:\n%s", want, recorder.Body.String())
+			}
+		}
+	case <-timer.C:
+		close(issueRelease)
+		close(prRelease)
+		close(storeRelease)
+		<-response
+		t.Fatal("initial detail sheet waited for a blocked enrichment")
+	}
+
+	select {
+	case <-issueStarted:
+		t.Fatal("initial detail sheet called FetchIssueComments")
+	default:
+	}
+	select {
+	case <-prStarted:
+		t.Fatal("initial detail sheet called FetchPullRequestComments")
+	default:
+	}
+	select {
+	case operation := <-storeStarted:
+		t.Fatalf("initial detail sheet called %s", operation)
+	default:
+	}
+}
+
+type blockingKanbanCommentConnector struct {
+	*kanbanActionConnector
+	issueStarted chan<- struct{}
+	issueRelease <-chan struct{}
+	prStarted    chan<- struct{}
+	prRelease    <-chan struct{}
+}
+
+func (c *blockingKanbanCommentConnector) FetchIssueComments(ctx context.Context, _ connector.Issue) ([]connector.IssueComment, error) {
+	select {
+	case c.issueStarted <- struct{}{}:
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.issueRelease:
+		return nil, nil
+	}
+}
+
+func (c *blockingKanbanCommentConnector) FetchPullRequestComments(ctx context.Context, _ string, _ int) ([]connector.IssueComment, error) {
+	select {
+	case c.prStarted <- struct{}{}:
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.prRelease:
+		return nil, nil
+	}
+}
+
+type blockingBoardDetailStore struct {
+	store.Store
+	started chan<- string
+	release <-chan struct{}
+}
+
+func (s *blockingBoardDetailStore) EfficiencyReceipt(ctx context.Context, _ string, _ string, _ string) (efficiency.Receipt, error) {
+	if err := s.wait(ctx, "EfficiencyReceipt"); err != nil {
+		return efficiency.Receipt{}, err
+	}
+	return efficiency.Receipt{}, store.ErrNotFound
+}
+
+func (s *blockingBoardDetailStore) ListIssueActivity(ctx context.Context, _ store.IssueActivityQuery) ([]store.IssueActivityEvent, error) {
+	if err := s.wait(ctx, "ListIssueActivity"); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (s *blockingBoardDetailStore) LatestIssueAgentSession(ctx context.Context, _ store.IssueIdentity) (store.IssueAgentSession, error) {
+	if err := s.wait(ctx, "LatestIssueAgentSession"); err != nil {
+		return store.IssueAgentSession{}, err
+	}
+	return store.IssueAgentSession{}, store.ErrNotFound
+}
+
+func (s *blockingBoardDetailStore) wait(ctx context.Context, operation string) error {
+	select {
+	case s.started <- operation:
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.release:
+		return nil
+	}
+}
+
+func TestAPIBoardConversationHydratesCommentReadersIndependently(t *testing.T) {
+	t.Parallel()
+
+	issueStarted := make(chan struct{}, 1)
+	issueRelease := make(chan struct{})
+	prStarted := make(chan struct{}, 1)
+	prRelease := make(chan struct{})
+	connector := &blockingKanbanCommentConnector{
+		kanbanActionConnector: &kanbanActionConnector{name: "github"},
+		issueStarted:          issueStarted,
+		issueRelease:          issueRelease,
+		prStarted:             prStarted,
+		prRelease:             prRelease,
+	}
+	deps := testDeps(t)
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{Mode: workflowconfig.KanbanModeIntegration}, connector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		Projects: []telemetry.ProjectSnapshot{{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}}},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_split_comments",
+			Identifier: "digitaldrywood/detent#1446",
+			ProjectID:  "detent",
+			Title:      "Hydrate comments independently",
+			State:      "In Progress",
+			PullRequest: &telemetry.PullRequest{
+				Number: 1447,
+				URL:    "https://github.com/digitaldrywood/detent/pull/1447",
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	issueResponse := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/board/conversation?project=detent&issue=I_split_comments&actions=board&target=issue", nil)
+		server.Handler().ServeHTTP(recorder, request)
+		issueResponse <- recorder
+	}()
+	select {
+	case <-issueStarted:
+	case <-time.After(time.Second):
+		t.Fatal("issue comment reader did not start")
+	}
+	select {
+	case <-prStarted:
+		t.Fatal("issue comment fragment called the PR comment reader")
+	default:
+	}
+	close(issueRelease)
+	if recorder := <-issueResponse; recorder.Code != http.StatusOK {
+		t.Fatalf("issue status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	prResponse := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/board/conversation?project=detent&issue=I_split_comments&actions=board&target=pr", nil)
+		server.Handler().ServeHTTP(recorder, request)
+		prResponse <- recorder
+	}()
+	select {
+	case <-prStarted:
+	case <-time.After(time.Second):
+		t.Fatal("PR comment reader did not start")
+	}
+	select {
+	case <-issueStarted:
+		t.Fatal("PR comment fragment called the issue comment reader")
+	default:
+	}
+	close(prRelease)
+	if recorder := <-prResponse; recorder.Code != http.StatusOK {
+		t.Fatalf("PR status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestAPIBoardCardRendersIssueComments(t *testing.T) {
 	t.Parallel()
 
@@ -560,12 +822,16 @@ func TestAPIBoardCardRendersPullRequestCommentsWhenSupported(t *testing.T) {
 	for _, want := range []string{
 		`data-kanban-comment-tab="pr"`,
 		"PR comments",
-		"Reviewed implementation details",
+		"Loading PR comments",
 		"Comment · PR",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("sheet missing %q:\n%s", want, rec.Body.String())
 		}
+	}
+	fragment := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=detent&issue=digitaldrywood%2Fdetent%2342&scope=project&actions=board&target=pr", http.StatusOK)
+	if !strings.Contains(fragment, "Reviewed implementation details") {
+		t.Fatalf("project PR comments missing hydrated content:\n%s", fragment)
 	}
 
 	rec = httptest.NewRecorder()
@@ -577,13 +843,16 @@ func TestAPIBoardCardRendersPullRequestCommentsWhenSupported(t *testing.T) {
 	for _, want := range []string{
 		`data-kanban-comment-tab="pr"`,
 		"PR comments",
-		"Reviewed implementation details",
+		"Loading PR comments",
 		"Comment · PR",
-		`name="kanban_board" value="fleet"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("fleet sheet missing %q:\n%s", want, rec.Body.String())
 		}
+	}
+	fragment = requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=detent&issue=digitaldrywood%2Fdetent%2342&actions=board&target=pr", http.StatusOK)
+	if !strings.Contains(fragment, "Reviewed implementation details") {
+		t.Fatalf("fleet PR comments missing hydrated content:\n%s", fragment)
 	}
 }
 
@@ -728,8 +997,9 @@ func TestAPIBoardCardPreservesProjectScope(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("fleet status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `name="kanban_board" value="fleet"`) {
-		t.Fatalf("fleet sheet should preserve fleet scope for inline actions:\n%s", rec.Body.String())
+	conversation := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=detent&issue=digitaldrywood%2Fdetent%2342&actions=board&target=issue", http.StatusOK)
+	if !strings.Contains(conversation, `name="kanban_board" value="fleet"`) {
+		t.Fatalf("fleet conversation should preserve fleet scope for inline actions:\n%s", conversation)
 	}
 	// The all-project board is draggable, so its sheet offers the same
 	// inline move action as a project board sheet.
@@ -787,12 +1057,16 @@ func TestAPIBoardCardFleetSheetShowsIssueCommentControls(t *testing.T) {
 	for _, want := range []string{
 		"Fleet comment card",
 		"Comment on issue",
-		`name="kanban_board" value="fleet"`,
-		`name="kanban_thread" value="true"`,
-		`hx-post="/api/v1/kanban/comment"`,
+		"Loading issue comments",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("fleet sheet missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+	conversation := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=detent&issue=digitaldrywood%2Fdetent%23953&actions=board&target=issue", http.StatusOK)
+	for _, want := range []string{`name="kanban_board" value="fleet"`, `name="kanban_thread" value="true"`, `hx-post="/api/v1/kanban/comment"`} {
+		if !strings.Contains(conversation, want) {
+			t.Fatalf("fleet conversation missing %q:\n%s", want, conversation)
 		}
 	}
 }
@@ -851,11 +1125,16 @@ func TestAPIBoardCardFleetReadOnlyShowsCommentsWithoutWriteControls(t *testing.T
 	}
 	for _, want := range []string{
 		"Read-only fleet comment card",
-		"Existing read-only discussion",
-		"alice",
+		"Loading issue comments",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("read-only fleet sheet missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+	conversation := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=detent&issue=digitaldrywood%2Fdetent%23954&actions=board&target=issue", http.StatusOK)
+	for _, want := range []string{"Existing read-only discussion", "alice"} {
+		if !strings.Contains(conversation, want) {
+			t.Fatalf("read-only fleet conversation missing %q:\n%s", want, conversation)
 		}
 	}
 	for _, unwanted := range []string{
@@ -863,8 +1142,8 @@ func TestAPIBoardCardFleetReadOnlyShowsCommentsWithoutWriteControls(t *testing.T
 		`name="kanban_thread" value="true"`,
 		`hx-post="/api/v1/kanban/comment"`,
 	} {
-		if strings.Contains(rec.Body.String(), unwanted) {
-			t.Fatalf("read-only fleet sheet contains %q:\n%s", unwanted, rec.Body.String())
+		if strings.Contains(rec.Body.String(), unwanted) || strings.Contains(conversation, unwanted) {
+			t.Fatalf("read-only fleet sheet contains %q:\n%s\n%s", unwanted, rec.Body.String(), conversation)
 		}
 	}
 }

@@ -500,27 +500,98 @@ templ appShellScript() {
 					panel.classList.toggle("hidden", panel.getAttribute("data-sheet-panel") !== selected);
 				});
 			}
+			function abortDetailSheetRequest(host) {
+				if (!host || !host.dataset.detailSheetTrigger || !window.htmx) return;
+				var trigger = document.getElementById(host.dataset.detailSheetTrigger);
+				if (trigger) window.htmx.trigger(trigger, "htmx:abort");
+			}
+			function removeDetailSheetChildren(host) {
+				if (!host) return;
+				Array.from(host.children).forEach(function (child) {
+					if (window.htmx) window.htmx.remove(child);
+					else child.remove();
+				});
+			}
+			function mountImmediateDetailSheet(trigger, path) {
+				var host = document.getElementById("detail-sheet-host");
+				var template = document.getElementById("detail-sheet-immediate-template");
+				if (!host || !(template instanceof HTMLTemplateElement)) return;
+				detailSheetRefreshing = false;
+				if (host.dataset.detailSheetTrigger && host.dataset.detailSheetTrigger !== trigger.id) {
+					abortDetailSheetRequest(host);
+				}
+				removeDetailSheetChildren(host);
+				host.appendChild(template.content.cloneNode(true));
+				var sheet = host.querySelector("[data-detail-sheet]");
+				var title = trigger.querySelector("[data-board-card-title]");
+				var state = trigger.querySelector("[data-board-card-state]");
+				var referenceText = trigger.dataset.detailSheetReference || "";
+				var values = [
+					["[data-immediate-project]", trigger.dataset.detailSheetProject || ""],
+					["[data-immediate-reference]", referenceText],
+					["[data-immediate-title]", title ? title.textContent.trim() : ""],
+					["[data-immediate-state]", state ? state.textContent.trim() : ""],
+					["[data-immediate-identity]", referenceText]
+				];
+				values.forEach(function (entry) {
+					var target = host.querySelector(entry[0]);
+					if (target) target.textContent = entry[1];
+				});
+				if (sheet) sheet.dataset.detailSheetKey = trigger.id;
+				var dialog = host.querySelector('[role="dialog"]');
+				if (dialog && referenceText) dialog.setAttribute("aria-label", "Details for " + referenceText);
+				host.dataset.detailSheetTrigger = trigger.id;
+				host.dataset.detailSheetURL = path || trigger.getAttribute("hx-get") || "";
+				delete host.dataset.detailSheetTab;
+				document.dispatchEvent(new CustomEvent("detent:closeHelpTooltip"));
+				applyDetailSheetTab(host);
+			}
 			function closeDetailSheet() {
 				document.dispatchEvent(new CustomEvent("detent:closeHelpTooltip"));
+				detailSheetRefreshing = false;
 				var host = document.getElementById("detail-sheet-host");
 				if (host) {
-					Array.from(host.children).forEach(function (child) {
-						if (window.htmx) window.htmx.remove(child);
-						else child.remove();
-					});
+					abortDetailSheetRequest(host);
+					removeDetailSheetChildren(host);
 					delete host.dataset.detailSheetURL;
 					delete host.dataset.detailSheetTab;
+					delete host.dataset.detailSheetTrigger;
 				}
 			}
+			document.addEventListener("htmx:beforeRequest", function (event) {
+				var trigger = event.detail && event.detail.elt;
+				var target = event.detail && event.detail.target;
+				if (target instanceof Element && target.matches("[data-detail-enrichment]")) {
+					target.setAttribute("aria-busy", "true");
+				}
+				if (!(trigger instanceof Element) || !trigger.matches("[data-detail-sheet-trigger]")) return;
+				var requestConfig = event.detail && event.detail.requestConfig;
+				mountImmediateDetailSheet(trigger, requestConfig && requestConfig.path);
+			});
+			document.addEventListener("htmx:beforeSwap", function (event) {
+				var host = document.getElementById("detail-sheet-host");
+				var target = event.detail && event.detail.target;
+				var requestConfig = event.detail && event.detail.requestConfig;
+				var trigger = requestConfig && requestConfig.elt;
+				if (!host || target !== host || !(trigger instanceof Element) || !trigger.matches("[data-detail-sheet-trigger]")) return;
+				if (host.dataset.detailSheetTrigger !== trigger.id) event.detail.shouldSwap = false;
+			});
 			document.addEventListener("htmx:afterRequest", function (event) {
 				var host = document.getElementById("detail-sheet-host");
 				var target = event.detail && event.detail.target;
+				if (target instanceof Element && target.matches("[data-detail-enrichment]")) {
+					target.setAttribute("aria-busy", "false");
+				}
+				if (target instanceof Element && target.matches("[data-detail-sheet-core]")) {
+					detailSheetRefreshing = false;
+				}
 				if (!host || target !== host) return;
-				document.dispatchEvent(new CustomEvent("detent:closeHelpTooltip"));
 				var requestConfig = event.detail && event.detail.requestConfig;
+				var trigger = requestConfig && requestConfig.elt;
+				if (trigger instanceof Element && trigger.matches("[data-detail-sheet-trigger]") && host.dataset.detailSheetTrigger !== trigger.id) return;
+				document.dispatchEvent(new CustomEvent("detent:closeHelpTooltip"));
 				var path = requestConfig && requestConfig.path;
 				if (path) host.dataset.detailSheetURL = path;
-				detailSheetRefreshing = false;
 				applyDetailSheetTab(host);
 			});
 			document.addEventListener("htmx:afterSettle", function (event) {
@@ -528,9 +599,11 @@ templ appShellScript() {
 				var host = document.getElementById("detail-sheet-host");
 				applyDetailSheetTab(host);
 				if (!(target instanceof Element) || (target.id !== "snapshot" && !target.closest("#snapshot"))) return;
-				if (!host || !host.querySelector("[data-detail-sheet]") || !host.dataset.detailSheetURL || detailSheetRefreshing) return;
+				if (!host || !host.querySelector("[data-detail-sheet]") || detailSheetRefreshing) return;
+				var core = host.querySelector("[data-detail-sheet-core][hx-get]");
+				if (!core) return;
 				detailSheetRefreshing = true;
-				htmx.ajax("GET", host.dataset.detailSheetURL, { target: host, swap: "morph:innerHTML" });
+				htmx.trigger(core, "detailSheetRefresh");
 			});
 			function showActionNotice(message) {
 				var notice = document.querySelector("[data-detent-action-notice]");

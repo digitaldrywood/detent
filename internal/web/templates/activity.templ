@@ -23,20 +23,42 @@ templ BoardActivityTabs(activity BoardActivityData, session BoardSessionData) {
 			>Live session</button>
 		</div>
 		<div class="min-h-0 flex-1" data-sheet-panel="activity" role="tabpanel">
-			@BoardActivityPanel(activity)
+			if activity.Pending {
+				@BoardActivityPending(activity)
+			} else {
+				@BoardActivityPanel(activity)
+			}
 		</div>
 		<div class="hidden min-h-0 flex-1" data-sheet-panel="session" role="tabpanel">
-			<div id={ boardLiveSessionID(session) } class="min-h-72 min-w-0 text-left text-xs text-sec" data-board-live-session hx-preserve>
+			<div id={ boardLiveSessionID(session) } class="min-h-72 min-w-0 text-left text-xs text-sec" data-board-live-session data-detail-enrichment aria-busy="false" hx-preserve>
 				<div class="flex min-h-72 items-center justify-center p-4 text-center">Select Live session to attach to the active worker.</div>
 			</div>
 		</div>
 	</div>
 }
 
+templ BoardActivityPending(data BoardActivityData) {
+	<div
+		id="board-activity-stream"
+		class="flex min-h-72 items-center justify-center p-4 text-center text-xs text-sec"
+		aria-label="Orchestration activity"
+		aria-busy="true"
+		data-detail-enrichment
+		hx-get={ boardActivityPath(data, data.Limit, data.Verbose, false) }
+		hx-trigger="load"
+		hx-target="this"
+		hx-swap="outerHTML"
+		hx-sync="this:replace"
+	>Loading orchestration activity…</div>
+}
+
 templ BoardActivityPanel(data BoardActivityData) {
 	<div
 		id="board-activity-stream"
 		class="min-h-0"
+		aria-label="Orchestration activity"
+		aria-busy="false"
+		data-detail-enrichment
 		hx-ext="sse"
 		sse-connect={ boardActivityPath(data, data.Limit, data.Verbose, true) }
 	>
@@ -68,7 +90,10 @@ templ BoardActivityContent(data BoardActivityData) {
 		</button>
 	</div>
 	if data.Error != "" {
-		<p class="border-b border-line px-3 py-2 text-xs text-warn">{ data.Error }</p>
+		<div class="flex items-center justify-between gap-3 border-b border-line px-3 py-2 text-xs text-warn" role="alert">
+			<p>{ data.Error }</p>
+			<button type="button" class="flex-none rounded-chip border border-warn/40 px-2 py-1 font-medium hover:bg-warn/10" hx-get={ boardActivityPath(data, data.Limit, data.Verbose, false) } hx-target="#board-activity-stream" hx-swap="outerHTML">Retry</button>
+		</div>
 	}
 	if len(data.Events) == 0 {
 		<div class="flex min-h-44 items-center justify-center px-4 text-center text-xs text-sec">No activity recorded for this issue yet.</div>

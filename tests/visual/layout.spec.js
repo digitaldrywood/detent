@@ -630,6 +630,13 @@ test("long activity history stays contained across display modes", async ({
   const activityScroll = sheet.locator("[data-activity-list-scroll]");
   const labels = sheet.getByText("Labels", { exact: true });
   const conversation = sheet.getByText("Conversation", { exact: true });
+  await expect(sheet.locator("#board-activity-stream")).toHaveAttribute(
+    "aria-busy",
+    "false",
+  );
+  await expect(
+    activityPanel.locator("[data-activity-list] > li").first(),
+  ).toBeVisible();
   await seedLongActivityHistory(activityPanel, 140);
 
   for (const density of ["compact", "cozy"]) {
@@ -746,11 +753,13 @@ test("detail sheet activity tabs survive morphs across display modes", async ({
   await expect(sheet.getByRole("button", { name: "Hide usage ticks" })).toBeVisible();
 
   const sessionTab = sheet.getByRole("tab", { name: "Live session" });
+  const sessionHost = sheet.locator("[data-board-live-session]");
   await sessionTab.click();
   await expect(sessionTab).toHaveAttribute("aria-selected", "true");
-  await expect(sheet.getByText("No active worker session")).toBeVisible();
+  await expect(sessionHost).not.toContainText(
+    "Select Live session to attach to the active worker.",
+  );
 
-  const sessionHost = sheet.locator("[data-board-live-session]");
   await sessionHost.evaluate((host) => {
     const probe = document.createElement("span");
     probe.dataset.sessionPreserveProbe = "true";
@@ -917,10 +926,10 @@ test("board runtime identity stays accessible across snapshot morphs", async ({
     narrowViewport.width,
   );
 
-  let detailRequests = 0;
+  let detailCoreRequests = 0;
   page.on("request", (request) => {
-    if (request.url().includes("/api/v1/board/card?")) {
-      detailRequests += 1;
+    if (request.url().includes("/api/v1/board/card/core?")) {
+      detailCoreRequests += 1;
     }
   });
   await card.focus();
@@ -943,14 +952,14 @@ test("board runtime identity stays accessible across snapshot morphs", async ({
   }
 
   for (let index = 0; index < 3; index += 1) {
-    const expectedRequests = detailRequests + 1;
+    const expectedRequests = detailCoreRequests + 1;
     await morphCurrentSnapshot(page, `sheet-${index}`);
     await expect(sheet).toBeVisible();
-    await expect.poll(() => detailRequests).toBeGreaterThanOrEqual(
+    await expect.poll(() => detailCoreRequests).toBeGreaterThanOrEqual(
       expectedRequests,
     );
   }
-  await expect.poll(() => detailRequests).toBeGreaterThanOrEqual(4);
+  await expect.poll(() => detailCoreRequests).toBeGreaterThanOrEqual(3);
   const sheetBox = await sheet.boundingBox();
   expect(sheetBox).not.toBeNull();
   expect(sheetBox.x).toBeGreaterThanOrEqual(0);

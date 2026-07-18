@@ -30,6 +30,8 @@ type KanbanConversationData struct {
 	Expanded            bool
 	CanComment          bool
 	PRCommentsSupported bool
+	IssuePending        bool
+	PRPending           bool
 	IssueComments       []KanbanConversationComment
 	PRComments          []KanbanConversationComment
 	IssueError          string
@@ -245,6 +247,15 @@ func kanbanCommentListClass(expanded bool) string {
 func kanbanConversationSheetPath(data KanbanConversationData, expanded bool) string {
 	path := boardCardSheetPath(data.ProjectID, data.IssueIdentity, data.BoardScope, data.BoardActions)
 	if expanded {
+		path += "&expanded=1"
+	}
+	return path
+}
+
+func kanbanConversationLoadPath(data KanbanConversationData, target string) string {
+	path := boardCardDetailPath("/api/v1/board/conversation", data.ProjectID, data.IssueIdentity, data.BoardScope, data.BoardActions)
+	path += "&target=" + url.QueryEscape(strings.TrimSpace(target))
+	if data.Expanded {
 		path += "&expanded=1"
 	}
 	return path

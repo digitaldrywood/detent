@@ -27,9 +27,15 @@ const (
 
 func (s *Server) apiBoardActivity(c echo.Context) error {
 	request := boardActivityRequestFromContext(c)
-	snapshot := s.latestSnapshot(c.Request().Context())
+	ctx := c.Request().Context()
+	snapshot := s.latestSnapshot(ctx)
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		snapshot = s.demoDashboardData(ctx, scenario).Snapshot
+	}
 	issue := boardActivityIssue(snapshot, request)
-	data := s.boardActivityData(c.Request().Context(), snapshot, issue, request)
+	data := s.boardActivityData(ctx, snapshot, issue, request)
 	return render(c, templates.BoardActivityPanel(data))
 }
 
@@ -99,9 +105,15 @@ func (s *Server) sendBoardActivity(
 
 func (s *Server) apiBoardSession(c echo.Context) error {
 	request := boardActivityRequestFromContext(c)
-	snapshot := s.latestSnapshot(c.Request().Context())
+	ctx := c.Request().Context()
+	snapshot := s.latestSnapshot(ctx)
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		snapshot = s.demoDashboardData(ctx, scenario).Snapshot
+	}
 	issue := boardActivityIssue(snapshot, request)
-	data := s.boardSessionData(c.Request().Context(), snapshot, issue, request.ProjectID)
+	data := s.boardSessionData(ctx, snapshot, issue, request.ProjectID)
 	data.FullPage = c.QueryParam("display") == "full"
 	return render(c, templates.BoardLiveSession(data))
 }
@@ -300,14 +312,7 @@ func activityIssueMatches(issue telemetry.Issue, value string) bool {
 }
 
 func (s *Server) boardActivityData(ctx context.Context, snapshot telemetry.Snapshot, issue telemetry.Issue, request boardActivityRequest) templates.BoardActivityData {
-	data := templates.BoardActivityData{
-		ProjectID:  firstActivityValue(request.ProjectID, issue.ProjectID),
-		IssueID:    firstActivityValue(issue.ID, request.Issue),
-		Identifier: firstActivityValue(issue.Identifier, request.Identifier),
-		IssueURL:   issue.URL,
-		Verbose:    request.Verbose,
-		Limit:      request.Limit,
-	}
+	data := boardActivityBaseData(issue, request)
 	events := make([]templates.BoardActivityEvent, 0, request.Limit+16)
 	if activityStore, ok := s.store.(store.ActivityStore); ok {
 		stored, err := activityStore.ListIssueActivity(ctx, store.IssueActivityQuery{
@@ -347,6 +352,17 @@ func (s *Server) boardActivityData(ctx context.Context, snapshot telemetry.Snaps
 		data.HasMore = false
 	}
 	return data
+}
+
+func boardActivityBaseData(issue telemetry.Issue, request boardActivityRequest) templates.BoardActivityData {
+	return templates.BoardActivityData{
+		ProjectID:  firstActivityValue(request.ProjectID, issue.ProjectID),
+		IssueID:    firstActivityValue(issue.ID, request.Issue),
+		Identifier: firstActivityValue(issue.Identifier, request.Identifier),
+		IssueURL:   issue.URL,
+		Verbose:    request.Verbose,
+		Limit:      request.Limit,
+	}
 }
 
 func boardStoredActivityEvent(event store.IssueActivityEvent) templates.BoardActivityEvent {
@@ -519,6 +535,20 @@ func boardMergeEvents(issue telemetry.Issue) []templates.BoardActivityEvent {
 }
 
 func (s *Server) boardSessionData(ctx context.Context, snapshot telemetry.Snapshot, issue telemetry.Issue, projectID string) templates.BoardSessionData {
+	data := boardSessionSnapshotData(snapshot, issue, projectID)
+	if data.Active {
+		return data
+	}
+	state, err := s.latestIssueAgentSession(ctx, issue)
+	if err == nil && firstActivityValue(state.ProviderThreadID, state.ProviderSessionID) != "" {
+		data.DetentSessionID = state.DetentSessionID
+		data.ProviderSessionID = firstActivityValue(state.ProviderThreadID, state.ProviderSessionID)
+		data.HistoryAvailable = true
+	}
+	return data
+}
+
+func boardSessionSnapshotData(snapshot telemetry.Snapshot, issue telemetry.Issue, projectID string) templates.BoardSessionData {
 	data := templates.BoardSessionData{ProjectID: firstActivityValue(projectID, issue.ProjectID), IssueID: issue.ID, Identifier: issue.Identifier}
 	for _, running := range snapshot.Running {
 		if snapshotActivityMatches(running.ProjectID, running.ID, running.Identifier, issue) {
@@ -529,12 +559,6 @@ func (s *Server) boardSessionData(ctx context.Context, snapshot telemetry.Snapsh
 			data.StopDestination = running.StopDestination
 			return data
 		}
-	}
-	state, err := s.latestIssueAgentSession(ctx, issue)
-	if err == nil && firstActivityValue(state.ProviderThreadID, state.ProviderSessionID) != "" {
-		data.DetentSessionID = state.DetentSessionID
-		data.ProviderSessionID = firstActivityValue(state.ProviderThreadID, state.ProviderSessionID)
-		data.HistoryAvailable = true
 	}
 	return data
 }

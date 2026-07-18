@@ -870,14 +870,63 @@ func (s *Server) kanbanThreadConversationData(c echo.Context) templates.KanbanCo
 	return s.hydrateKanbanConversation(ctx, conversation)
 }
 
-func (s *Server) hydrateKanbanConversation(ctx context.Context, data templates.KanbanConversationData) templates.KanbanConversationData {
+func (s *Server) apiBoardConversation(c echo.Context) error {
+	projectID := strings.TrimSpace(c.QueryParam("project"))
+	data, demo, err := s.boardCardDashboardData(c, false)
+	if err != nil {
+		return err
+	}
+	card, ok := templates.FindBoardCard(data, projectID, c.QueryParam("issue"))
+	if !ok {
+		return echo.NewHTTPError(http.StatusNotFound, "Card not found")
+	}
+	conversation := templates.BoardCardConversationData(data, card, c.QueryParam("actions") == "board", c.QueryParam("expanded") == "1")
+	conversation = s.kanbanConversationShellData(conversation, demo)
+	switch c.QueryParam("target") {
+	case "pr":
+		conversation.PRPending = false
+		if !demo {
+			conversation = s.hydrateKanbanPRConversation(c.Request().Context(), conversation)
+		}
+		return render(c, templates.KanbanPRCommentsPanel(conversation))
+	default:
+		conversation.IssuePending = false
+		if !demo {
+			conversation = s.hydrateKanbanIssueConversation(c.Request().Context(), conversation)
+		}
+		return render(c, templates.KanbanIssueCommentsPanel(conversation))
+	}
+}
+
+func (s *Server) kanbanConversationShellData(data templates.KanbanConversationData, demo bool) templates.KanbanConversationData {
+	if demo {
+		data.IssuePending = true
+		data.PRCommentsSupported = data.PRNumber > 0 && strings.TrimSpace(data.PRRepository) != ""
+		data.PRPending = data.PRCommentsSupported
+		return data
+	}
 	target, response, _ := s.kanbanActionTarget(data.ProjectID)
 	if response != "" {
 		data.IssueError = response
-		if data.PRNumber > 0 {
-			data.PRCommentsSupported = false
-			data.PRComments = nil
-		}
+		data.PRCommentsSupported = false
+		return data
+	}
+	_, data.IssuePending = target.connector.(connector.IssueCommentReader)
+	_, data.PRCommentsSupported = target.connector.(connector.PullRequestCommentReader)
+	data.PRCommentsSupported = data.PRCommentsSupported && data.PRNumber > 0 && strings.TrimSpace(data.PRRepository) != ""
+	data.PRPending = data.PRCommentsSupported
+	return data
+}
+
+func (s *Server) hydrateKanbanConversation(ctx context.Context, data templates.KanbanConversationData) templates.KanbanConversationData {
+	data = s.hydrateKanbanIssueConversation(ctx, data)
+	return s.hydrateKanbanPRConversation(ctx, data)
+}
+
+func (s *Server) hydrateKanbanIssueConversation(ctx context.Context, data templates.KanbanConversationData) templates.KanbanConversationData {
+	target, response, _ := s.kanbanActionTarget(data.ProjectID)
+	if response != "" {
+		data.IssueError = response
 		return data
 	}
 	if reader, ok := target.connector.(connector.IssueCommentReader); ok {
@@ -891,6 +940,17 @@ func (s *Server) hydrateKanbanConversation(ctx context.Context, data templates.K
 		} else {
 			data = templates.KanbanConversationWithIssueComments(data, telemetryCommentsFromConnector(comments), data.IssueError)
 		}
+	}
+	return data
+}
+
+func (s *Server) hydrateKanbanPRConversation(ctx context.Context, data templates.KanbanConversationData) templates.KanbanConversationData {
+	target, response, _ := s.kanbanActionTarget(data.ProjectID)
+	if response != "" {
+		data.PRCommentsSupported = false
+		data.PRComments = nil
+		data.PRError = response
+		return data
 	}
 	if data.PRNumber <= 0 || strings.TrimSpace(data.PRRepository) == "" {
 		data.PRCommentsSupported = false

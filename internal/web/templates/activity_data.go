@@ -15,6 +15,7 @@ type BoardActivityData struct {
 	Identifier string
 	IssueURL   string
 	Events     []BoardActivityEvent
+	Pending    bool
 	Verbose    bool
 	Limit      int
 	HasMore    bool

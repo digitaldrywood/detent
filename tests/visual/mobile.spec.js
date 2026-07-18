@@ -225,6 +225,7 @@ test("issue detail is a touch-safe full-screen sheet", async ({ page }) => {
   const sheet = page.locator("[data-detail-sheet]");
   const dialog = sheet.getByRole("dialog");
   await expect(dialog).toBeVisible();
+  await expect(sheet).not.toHaveAttribute("data-detail-sheet-immediate", "");
   const dialogBox = await dialog.boundingBox();
   expect(dialogBox).not.toBeNull();
   expect(dialogBox.x).toBe(0);
@@ -265,7 +266,7 @@ test("issue detail is a touch-safe full-screen sheet", async ({ page }) => {
     () =>
       new Promise((resolve) => {
         document.addEventListener("htmx:afterRequest", function settled(event) {
-          if (event.detail?.target?.id !== "detail-sheet-host") return;
+          if (event.detail?.target?.id !== "detail-sheet-core") return;
           document.removeEventListener("htmx:afterRequest", settled);
           resolve();
         });
