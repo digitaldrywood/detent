@@ -23,6 +23,7 @@ func TestWorkflowLayoutFixUsesRuntimeGitHubCredentials(t *testing.T) {
 		globalToken   string
 		wantGHCalls   int
 		resolvedToken string
+		mixed         bool
 	}{
 		{
 			name:          "GITHUB_TOKEN",
@@ -35,6 +36,13 @@ func TestWorkflowLayoutFixUsesRuntimeGitHubCredentials(t *testing.T) {
 			wantGHCalls:   2,
 			resolvedToken: "gh-token",
 		},
+		{
+			name:          "github_token gh repairs mixed layout",
+			globalToken:   "gh",
+			wantGHCalls:   2,
+			resolvedToken: "gh-token",
+			mixed:         true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -43,8 +51,17 @@ func TestWorkflowLayoutFixUsesRuntimeGitHubCredentials(t *testing.T) {
 
 			dir := t.TempDir()
 			workflowPath := filepath.Join(dir, "WORKFLOW.md")
-			legacy := "---\ntracker:\n  kind: github\n  project_slug: PVT_example\n---\nPrompt\n"
-			if err := os.WriteFile(workflowPath, []byte(legacy), 0o640); err != nil {
+			workflowContent := "---\ntracker:\n  kind: github\n  project_slug: PVT_example\n---\nPrompt\n"
+			if tt.mixed {
+				workflowContent = "Prompt\n"
+				if err := os.WriteFile(workflowconfig.DefinitionPath(workflowPath), []byte("schema: 1\ntracker:\n  kind: github\n  project_slug: PVT_example\n"), 0o640); err != nil {
+					t.Fatalf("WriteFile(detent.yaml) error = %v", err)
+				}
+				if err := os.WriteFile(workflowconfig.LocalWorkflowPath(workflowPath), []byte("---\nagent:\n  max_turns: 12\n---\nLocal prompt\n"), 0o600); err != nil {
+					t.Fatalf("WriteFile(WORKFLOW.local.md) error = %v", err)
+				}
+			}
+			if err := os.WriteFile(workflowPath, []byte(workflowContent), 0o640); err != nil {
 				t.Fatalf("WriteFile() error = %v", err)
 			}
 			configPath := filepath.Join(dir, "global.yaml")
@@ -80,11 +97,16 @@ func TestWorkflowLayoutFixUsesRuntimeGitHubCredentials(t *testing.T) {
 				return cmd.ExecuteContext(cmd.Context())
 			}
 
+			configBefore, readBeforeErr := os.ReadFile(workflowconfig.DefinitionPath(workflowPath))
 			if err := run("--dry-run"); err != nil {
 				t.Fatalf("dry run error = %v", err)
 			}
-			if _, err := os.Stat(workflowconfig.DefinitionPath(workflowPath)); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("Stat(detent.yaml) error = %v, want not exist after dry run", err)
+			configAfter, readAfterErr := os.ReadFile(workflowconfig.DefinitionPath(workflowPath))
+			switch {
+			case errors.Is(readBeforeErr, os.ErrNotExist) && !errors.Is(readAfterErr, os.ErrNotExist):
+				t.Fatalf("ReadFile(detent.yaml) error = %v, want not exist after dry run", readAfterErr)
+			case readBeforeErr == nil && (readAfterErr != nil || string(configAfter) != string(configBefore)):
+				t.Fatalf("detent.yaml changed during dry run: error = %v, content = %q", readAfterErr, configAfter)
 			}
 			if err := run("--yes"); err != nil {
 				t.Fatalf("apply error = %v", err)
@@ -108,6 +130,15 @@ func TestWorkflowLayoutFixUsesRuntimeGitHubCredentials(t *testing.T) {
 			}
 			if string(workflowRaw) != "Prompt\n" {
 				t.Fatalf("WORKFLOW.md = %q, want prompt only", workflowRaw)
+			}
+			if tt.mixed {
+				localRaw, err := os.ReadFile(workflowconfig.LocalWorkflowPath(workflowPath))
+				if err != nil {
+					t.Fatalf("ReadFile(WORKFLOW.local.md) error = %v", err)
+				}
+				if string(localRaw) != "Local prompt\n" {
+					t.Fatalf("WORKFLOW.local.md = %q, want prompt only", localRaw)
+				}
 			}
 		})
 	}

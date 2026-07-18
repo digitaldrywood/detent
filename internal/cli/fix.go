@@ -56,13 +56,11 @@ func newWorkflowLayoutFixCommand(configPath *string, opts options) *cobra.Comman
 			if dryRun && confirmed {
 				return WrapValidation(errors.New("--dry-run and --yes cannot be used together"))
 			}
-			githubToken, err := resolveWorkflowLayoutMigrationGitHubToken(cmd.Context(), workflowPath, derefString(configPath), opts)
-			if err != nil {
-				return err
-			}
 			plan, err := workflowconfig.PlanProjectDefinitionMigration(
 				workflowPath,
-				workflowconfig.WithProjectDefinitionMigrationGitHubToken(githubToken),
+				workflowconfig.WithProjectDefinitionMigrationGitHubTokenResolver(func(cfg workflowconfig.Config) (string, error) {
+					return resolveWorkflowLayoutMigrationGitHubToken(cmd.Context(), cfg, derefString(configPath), opts)
+				}),
 			)
 			if err != nil {
 				return err
@@ -117,19 +115,18 @@ func newWorkflowLayoutFixCommand(configPath *string, opts options) *cobra.Comman
 
 func resolveWorkflowLayoutMigrationGitHubToken(
 	ctx context.Context,
-	workflowPath string,
+	effective workflowconfig.Config,
 	configPath string,
 	opts options,
 ) (string, error) {
 	deps := runtimeDepsFromOptions(opts).withDefaults()
-	workflow, err := workflowconfig.LoadProjectDefinition(workflowPath)
-	if err != nil || !trackerUsesGitHubToken(workflow.Config.Tracker.Kind) {
+	if !trackerUsesGitHubToken(effective.Tracker.Kind) {
 		return "", nil
 	}
-	if trackerHasGitHubAppCredentials(workflow.Config.Tracker, deps.lookupEnv) {
+	if trackerHasGitHubAppCredentials(effective.Tracker, deps.lookupEnv) {
 		return "", nil
 	}
-	if token, _ := resolveRuntimeSecret(workflow.Config.Tracker.APIKey, deps.lookupEnv); token != "" {
+	if token, _ := resolveRuntimeSecret(effective.Tracker.APIKey, deps.lookupEnv); token != "" {
 		return "", nil
 	}
 
@@ -151,7 +148,10 @@ func resolveWorkflowLayoutMigrationGitHubToken(
 		}
 		global = globalconfig.Config{}
 	}
-	global.Projects = []globalconfig.Project{{Workflow: workflowPath}}
+	global.Projects = []globalconfig.Project{{Workflow: "workflow-layout migration"}}
+	deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
+		return workflowconfig.Workflow{Config: effective}, nil
+	}
 	token, _, err := resolveRuntimeGitHubToken(ctx, &global, deps)
 	if err != nil {
 		return "", err
