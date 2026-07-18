@@ -254,7 +254,7 @@ func TestLocalGitCreatePrunesMissingRegisteredWorktree(t *testing.T) {
 	if err := os.Rename(first.Path, movedPath); err != nil {
 		t.Fatalf("move registered worktree: %v", err)
 	}
-	if got := runGit(t, source, "worktree", "list", "--porcelain"); !strings.Contains(got, first.Path) {
+	if got := runGit(t, source, "worktree", "list", "--porcelain"); !strings.Contains(got, filepath.ToSlash(first.Path)) {
 		t.Fatalf("git worktree list does not contain missing registered path:\n%s", got)
 	}
 
