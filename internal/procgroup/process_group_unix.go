@@ -48,7 +48,9 @@ func Deprioritize(cmd *exec.Cmd) error {
 		return fmt.Errorf("read Detent process priority: %w", err)
 	}
 	target := min(19, current+workerNiceDelta)
-	if err := unix.Setpriority(unix.PRIO_PROCESS, cmd.Process.Pid, target); err != nil {
+	if err := unix.Setpriority(unix.PRIO_PROCESS, cmd.Process.Pid, target); errors.Is(err, syscall.ESRCH) {
+		return nil
+	} else if err != nil {
 		return fmt.Errorf("set worker process %d priority: %w", cmd.Process.Pid, err)
 	}
 	return nil

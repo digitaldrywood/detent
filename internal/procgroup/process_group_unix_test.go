@@ -125,6 +125,17 @@ func TestDeprioritize(t *testing.T) {
 	}
 }
 
+func TestDeprioritizeExitedProcess(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), "true")
+	Configure(cmd)
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if err := Deprioritize(cmd); err != nil {
+		t.Fatalf("Deprioritize() error = %v, want exited process ignored", err)
+	}
+}
+
 func TestAliveRejectsStaleProcessIdentity(t *testing.T) {
 	proc := startSleep(t)
 	identity, err := Inspect(proc.cmd)
