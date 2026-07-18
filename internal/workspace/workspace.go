@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
@@ -40,6 +41,15 @@ var (
 )
 
 var unsafeKeyPattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
+
+var sourceOperationLocks = struct {
+	sync.Mutex
+	bySource map[string]*sourceOperationLock
+}{bySource: make(map[string]*sourceOperationLock)}
+
+type sourceOperationLock struct {
+	permit chan struct{}
+}
 
 type Backend interface {
 	Create(context.Context, Issue) (Info, error)
@@ -302,6 +312,39 @@ func NewLocalGit(opts LocalGitOptions) (*LocalGit, error) {
 		hooks:      hooks,
 		logger:     logger,
 	}, nil
+}
+
+func newSourceOperationLock() *sourceOperationLock {
+	lock := &sourceOperationLock{permit: make(chan struct{}, 1)}
+	lock.permit <- struct{}{}
+	return lock
+}
+
+func sourceOperationLockFor(sourceRoot string) *sourceOperationLock {
+	key := filepath.Clean(sourceRoot)
+	sourceOperationLocks.Lock()
+	defer sourceOperationLocks.Unlock()
+	lock, ok := sourceOperationLocks.bySource[key]
+	if !ok {
+		lock = newSourceOperationLock()
+		sourceOperationLocks.bySource[key] = lock
+	}
+	return lock
+}
+
+func (l *sourceOperationLock) acquire(ctx context.Context) (func(), error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-l.permit:
+		return func() {
+			l.permit <- struct{}{}
+		}, nil
+	}
+}
+
+func (l *LocalGit) acquireSourceOperation(ctx context.Context) (func(), error) {
+	return sourceOperationLockFor(l.sourceRoot).acquire(ctx)
 }
 
 func SafeKey(identifier string) string {
@@ -945,6 +988,11 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 	if strings.TrimSpace(command) == "" {
 		return nil
 	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	timeout := l.hooks.Timeout
 	if timeout == 0 {

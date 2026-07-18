@@ -21,6 +21,11 @@ func (l *LocalGit) PrepareMerge(
 	if err != nil {
 		return MergePrepareResult{}, err
 	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return MergePrepareResult{}, fmt.Errorf("wait for source repository operation: %w", err)
+	}
+	defer release()
 	remote := strings.TrimSpace(opts.Remote)
 	if remote == "" {
 		remote = defaultMergeRemote

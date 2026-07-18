@@ -91,6 +91,130 @@ func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T)
 	}
 }
 
+func TestLocalGitCreateSerializesAfterCreateHooksForSharedSource(t *testing.T) {
+	skipWindows(t)
+
+	source := initSourceRepo(t)
+	hookState := t.TempDir()
+	lockPath := filepath.Join(hookState, "hook.lock")
+	startedPath := filepath.Join(hookState, "first.started")
+	releasePath := filepath.Join(hookState, "first.release")
+	hookCommand := "set -eu\n" +
+		"mkdir " + shellQuote(lockPath) + "\n" +
+		"if [ \"$ISSUE_IDENTIFIER\" = \"DD-FIRST\" ]; then\n" +
+		"  : > " + shellQuote(startedPath) + "\n" +
+		"  while [ ! -f " + shellQuote(releasePath) + " ]; do sleep 0.01; done\n" +
+		"fi\n" +
+		"rmdir " + shellQuote(lockPath)
+
+	newBackend := func() *LocalGit {
+		backend, err := NewLocalGit(LocalGitOptions{
+			Root:       filepath.Join(t.TempDir(), "workspaces"),
+			SourceRoot: source,
+			AutoBranch: true,
+			Hooks: Hooks{
+				AfterCreate: hookCommand,
+				Timeout:     5 * time.Second,
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewLocalGit() error = %v", err)
+		}
+		return backend
+	}
+	firstBackend := newBackend()
+	secondBackend := newBackend()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := firstBackend.Create(ctx, Issue{Identifier: "DD-FIRST"})
+		firstDone <- err
+	}()
+	waitForFile(t, startedPath, 5*time.Second)
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := secondBackend.Create(ctx, Issue{Identifier: "DD-SECOND"})
+		secondDone <- err
+	}()
+
+	premature := false
+	var prematureErr error
+	select {
+	case prematureErr = <-secondDone:
+		premature = true
+	case <-time.After(500 * time.Millisecond):
+	}
+	if err := os.WriteFile(releasePath, nil, 0o600); err != nil {
+		t.Fatalf("release first hook: %v", err)
+	}
+	if err := waitForError(t, firstDone, 5*time.Second); err != nil {
+		t.Fatalf("first Create() error = %v", err)
+	}
+	if premature {
+		t.Fatalf("second Create() completed while first hook held the source lock: %v", prematureErr)
+	}
+	if err := waitForError(t, secondDone, 5*time.Second); err != nil {
+		t.Fatalf("second Create() error = %v", err)
+	}
+}
+
+func TestLocalGitCreateRunsAfterCreateHooksConcurrentlyForDifferentSources(t *testing.T) {
+	skipWindows(t)
+
+	hookState := t.TempDir()
+	startedPath := filepath.Join(hookState, "first.started")
+	releasePath := filepath.Join(hookState, "first.release")
+	hookCommand := "set -eu\n" +
+		"if [ \"$ISSUE_IDENTIFIER\" = \"DD-FIRST\" ]; then\n" +
+		"  : > " + shellQuote(startedPath) + "\n" +
+		"  while [ ! -f " + shellQuote(releasePath) + " ]; do sleep 0.01; done\n" +
+		"fi"
+	newBackend := func(source string) *LocalGit {
+		backend, err := NewLocalGit(LocalGitOptions{
+			Root:       filepath.Join(t.TempDir(), "workspaces"),
+			SourceRoot: source,
+			AutoBranch: true,
+			Hooks: Hooks{
+				AfterCreate: hookCommand,
+				Timeout:     5 * time.Second,
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewLocalGit() error = %v", err)
+		}
+		return backend
+	}
+	firstBackend := newBackend(initSourceRepo(t))
+	secondBackend := newBackend(initSourceRepo(t))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := firstBackend.Create(ctx, Issue{Identifier: "DD-FIRST"})
+		firstDone <- err
+	}()
+	waitForFile(t, startedPath, 5*time.Second)
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := secondBackend.Create(ctx, Issue{Identifier: "DD-SECOND"})
+		secondDone <- err
+	}()
+	if err := waitForError(t, secondDone, 5*time.Second); err != nil {
+		t.Fatalf("second Create() error = %v", err)
+	}
+	if err := os.WriteFile(releasePath, nil, 0o600); err != nil {
+		t.Fatalf("release first hook: %v", err)
+	}
+	if err := waitForError(t, firstDone, 5*time.Second); err != nil {
+		t.Fatalf("first Create() error = %v", err)
+	}
+}
+
 func TestLocalGitInfoForIssueNamespacesKeysByProjectID(t *testing.T) {
 	t.Parallel()
 
@@ -1640,6 +1764,39 @@ func TestLocalGitRejectsExistingGitRepoFromDifferentSource(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(foreign, ".git")); err != nil {
 		t.Fatalf("foreign repo was removed, stat error = %v", err)
+	}
+}
+
+func waitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		select {
+		case <-ticker.C:
+		case <-timer.C:
+			t.Fatalf("timed out waiting for %s", path)
+		}
+	}
+}
+
+func waitForError(t *testing.T, result <-chan error, timeout time.Duration) error {
+	t.Helper()
+
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for result")
+		return nil
 	}
 }
 
