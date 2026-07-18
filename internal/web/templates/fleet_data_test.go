@@ -115,6 +115,28 @@ func TestStopRunDialogPathRequiresConfiguredDestination(t *testing.T) {
 	}
 }
 
+func TestStopRunRetryDialogPathRequiresFailedOperatorTransition(t *testing.T) {
+	blocked := telemetry.Blocked{
+		Issue:           telemetry.Issue{ID: "issue-1435", ProjectID: "detent"},
+		Source:          telemetry.BlockedSourceOperatorStop,
+		RecoveryReason:  "pending",
+		Attempt:         2,
+		WorkAttemptID:   1435,
+		DetentSessionID: 608,
+		SessionID:       "thread-1435",
+	}
+	if path := StopRunRetryDialogPath(blocked, ""); path != "" {
+		t.Fatalf("StopRunRetryDialogPath() = %q for pending stop, want empty", path)
+	}
+	blocked.RecoveryReason = "transition_failed"
+	path := StopRunRetryDialogPath(blocked, "")
+	for _, want := range []string{"/projects/detent/runs/2/stop", "issue_id=issue-1435", "work_attempt_id=1435", "detent_session_id=608", "provider_session_id=thread-1435"} {
+		if !strings.Contains(path, want) {
+			t.Fatalf("StopRunRetryDialogPath() missing %q: %q", want, path)
+		}
+	}
+}
+
 func TestFleetAgentRowsUseContextPressureWhenKnown(t *testing.T) {
 	data := fleetTestData()
 	contextWindow := int64(300_000)

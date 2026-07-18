@@ -1205,6 +1205,44 @@ func TestBoardExceptionsSuppressExpectedWaitingBlocks(t *testing.T) {
 	}
 }
 
+func TestBoardExceptionsExposeOperatorStopRoutingRetry(t *testing.T) {
+	data := boardTestData()
+	data.Kanban.ShowBlockedAlerts = true
+	data.Snapshot.Blocked = []telemetry.Blocked{
+		{
+			Issue:           telemetry.Issue{ID: "issue-1435", Identifier: "digitaldrywood/detent#1435", ProjectID: "detent"},
+			Error:           "operator stop is waiting for the worker to exit",
+			Source:          telemetry.BlockedSourceOperatorStop,
+			RecoveryReason:  "pending",
+			Attempt:         2,
+			WorkAttemptID:   1435,
+			DetentSessionID: 608,
+			SessionID:       "thread-1435",
+			Destination:     "Blocked",
+		},
+	}
+	if exceptions := boardExceptions(data, true); len(exceptions) != 0 {
+		t.Fatalf("pending operator stop exceptions = %+v, want none", exceptions)
+	}
+
+	data.Snapshot.Blocked[0].RecoveryReason = "transition_failed"
+	data.Snapshot.Blocked[0].Error = "run stopped; retry the transition to Blocked: tracker unavailable"
+	exceptions := boardExceptions(data, true)
+	if len(exceptions) != 1 {
+		t.Fatalf("transition failure exceptions = %+v, want one", exceptions)
+	}
+	exception := exceptions[0]
+	if exception.Title != "Run stopped; routing failed" || exception.ActionLabel != "Retry routing" {
+		t.Fatalf("exception = %+v", exception)
+	}
+	if got, _ := exception.ActionAttrs["hx-get"].(string); !strings.Contains(got, "/api/v1/projects/detent/runs/2/stop") {
+		t.Fatalf("retry path = %q", got)
+	}
+	if exception.ActionAttrs["data-tui-dialog-target"] != kanbanActionDialogID {
+		t.Fatalf("dialog target = %#v", exception.ActionAttrs["data-tui-dialog-target"])
+	}
+}
+
 func TestBoardExceptionsCompactHumanBlocks(t *testing.T) {
 	data := boardTestData()
 	blockedAt := data.Snapshot.GeneratedAt.Add(-12 * time.Minute)

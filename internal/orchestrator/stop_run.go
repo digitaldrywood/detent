@@ -533,7 +533,7 @@ func runAlreadyCompleted(done <-chan struct{}) bool {
 }
 
 func operatorStopBlocked(issue connector.Issue, result StopRunResult, reason string) Blocked {
-	return Blocked{Issue: cloneIssue(issue), Reason: reason, BlockedAt: result.RequestedAt, Source: BlockedSourceOperatorStop, Attempt: result.Attempt, WorkAttemptID: result.WorkAttemptID, DetentSessionID: result.DetentSessionID, SessionID: result.ProviderSessionID, Destination: result.Destination, Priority: result.Priority, PriorityName: result.PriorityName, StopReason: result.Reason}
+	return Blocked{Issue: cloneIssue(issue), Reason: reason, RecoveryReason: result.Outcome, RecoveryTarget: result.Destination, BlockedAt: result.RequestedAt, Source: BlockedSourceOperatorStop, Attempt: result.Attempt, WorkAttemptID: result.WorkAttemptID, DetentSessionID: result.DetentSessionID, SessionID: result.ProviderSessionID, Destination: result.Destination, Priority: result.Priority, PriorityName: result.PriorityName, StopReason: result.Reason}
 }
 
 func operatorStopWorkAttemptMetadata(running Running, result StopRunResult, outcome string, message string) string {

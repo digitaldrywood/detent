@@ -103,7 +103,7 @@ templ StopRunDialogContent(data StopRunDialogData) {
 				@button.Button(button.Props{Type: button.TypeSubmit, Class: "border-err bg-err text-white hover:bg-err/90 focus-visible:ring-err"}) {
 					@icon.CircleStop(icon.Props{Class: "size-4"})
 					{ stopRunSubmitLabel(data) }
-					<span id="stop-run-submit-indicator" class="htmx-indicator inline-flex items-center gap-1.5">
+					<span id="stop-run-submit-indicator" class="htmx-indicator items-center gap-1.5">
 						@icon.LoaderCircle(icon.Props{Class: "size-4 animate-spin"})
 						Stopping...
 					</span>

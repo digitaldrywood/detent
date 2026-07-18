@@ -470,6 +470,9 @@ func blockedSnapshots(blocked map[string]Blocked, claims map[string]Claimed, now
 			DetentSessionID: entry.DetentSessionID,
 			SessionID:       entry.SessionID,
 			Destination:     entry.Destination,
+			Priority:        entry.Priority,
+			PriorityName:    entry.PriorityName,
+			StopReason:      entry.StopReason,
 		}
 		if !entry.BlockedAt.IsZero() {
 			blockedAt := entry.BlockedAt

@@ -630,7 +630,7 @@ func StopRunDialogContent(data StopRunDialogData) templ.Component {
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 54, " <span id=\"stop-run-submit-indicator\" class=\"htmx-indicator inline-flex items-center gap-1.5\">")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 54, " <span id=\"stop-run-submit-indicator\" class=\"htmx-indicator items-center gap-1.5\">")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}

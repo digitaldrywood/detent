@@ -29,6 +29,7 @@ test("operator chooses the stopped item's destination, priority, and reason", as
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("heading", { name: "Stop run and route item" })).toBeVisible();
   await expect(dialog.getByRole("radio", { name: /Blocked/ })).toBeChecked();
+  await expect(dialog.locator("#stop-run-submit-indicator")).toBeHidden();
 
   await dialog.getByRole("radio", { name: /Todo/ }).check();
   await dialog.getByLabel("Todo priority").selectOption("2");
