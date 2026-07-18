@@ -221,6 +221,18 @@ func healthUpdateRow(update telemetry.Update) healthRow {
 	return row
 }
 
+func detentUpdatePending(update telemetry.Update) bool {
+	return strings.TrimSpace(update.State) == "pending_idle" && strings.TrimSpace(update.AvailableVersion) != ""
+}
+
+func detentPendingUpdateVersion(update telemetry.Update) string {
+	version := strings.TrimSpace(update.AvailableVersion)
+	if version == "" {
+		return "update"
+	}
+	return version
+}
+
 func healthReleases(snapshot telemetry.Snapshot) []telemetry.Release {
 	if len(snapshot.Releases) > 0 {
 		return snapshot.Releases

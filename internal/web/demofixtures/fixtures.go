@@ -46,6 +46,14 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot = demoDrainingSnapshot()
 	case "degraded":
 		snapshot = demoDegradedSnapshot()
+	case "pending-update":
+		snapshot.Update = telemetry.Update{
+			Enabled:            true,
+			AutoApplyEnabled:   true,
+			CheckIntervalHours: 6,
+			State:              "pending_idle",
+			AvailableVersion:   "0.46.0",
+		}
 	case "budget-refusals":
 		snapshot = demoBudgetRefusalsSnapshot()
 	case "blocked-heavy":

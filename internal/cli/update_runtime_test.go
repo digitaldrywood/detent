@@ -1,9 +1,23 @@
 package cli
 
 import (
+	"context"
 	"sync"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/project"
 )
+
+func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
+	t.Parallel()
+
+	if runtimeUpdateIdle(context.Background(), nil) {
+		t.Fatal("runtimeUpdateIdle() with nil registry = true, want false")
+	}
+	if !runtimeUpdateIdle(context.Background(), project.NewRegistry()) {
+		t.Fatal("runtimeUpdateIdle() with empty registry = false, want true")
+	}
+}
 
 func TestRequestUpdateRestartUsesShutdownDrainState(t *testing.T) {
 	t.Parallel()

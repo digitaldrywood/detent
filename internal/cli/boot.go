@@ -317,7 +317,9 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	snapshotSeq := &atomic.Uint64{}
-	updateScheduler, err := newRuntimeUpdateScheduler(cfg, logger)
+	updateScheduler, err := newRuntimeUpdateScheduler(cfg, logger, func(ctx context.Context) bool {
+		return runtimeUpdateIdle(ctx, manager.Registry())
+	})
 	if err != nil {
 		return err
 	}
@@ -382,15 +384,16 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			Clock: isolatedDemoClock(cfg),
 		},
 	}, web.Dependencies{
-		Hub:        snapshotHub,
-		Store:      runtimeStore,
-		Registry:   manager.Registry(),
-		Connector:  firstConnector(manager),
-		Refresher:  refresherForRegistry(manager.Registry()),
-		Recovery:   recoveryForRegistry(manager.Registry()),
-		RunStopper: registryRefresher{registry: manager.Registry()},
-		Activity:   activityBroker,
-		Chat:       chatProvider,
+		Hub:           snapshotHub,
+		Store:         runtimeStore,
+		Registry:      manager.Registry(),
+		Connector:     firstConnector(manager),
+		Refresher:     refresherForRegistry(manager.Registry()),
+		Recovery:      recoveryForRegistry(manager.Registry()),
+		RunStopper:    registryRefresher{registry: manager.Registry()},
+		UpdateApplier: updateScheduler,
+		Activity:      activityBroker,
+		Chat:          chatProvider,
 	})
 	if err != nil {
 		return err

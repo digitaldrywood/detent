@@ -371,6 +371,14 @@ func formatBudget(budget telemetry.Budget, s styles) string {
 	return strings.Join(parts, s.muted.Render(" | "))
 }
 
+func formatPendingUpdate(update telemetry.Update, s styles) (string, bool) {
+	version := strings.TrimSpace(update.AvailableVersion)
+	if strings.TrimSpace(update.State) != "pending_idle" || version == "" {
+		return "", false
+	}
+	return s.warn.Render(version + " pending; automatic apply is waiting for all active work attempts to finish"), true
+}
+
 func formatRateLimits(rateLimits *telemetry.RateLimits, now func() time.Time, s styles) string {
 	if rateLimits == nil {
 		return s.muted.Render("unavailable")

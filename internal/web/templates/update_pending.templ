@@ -1,0 +1,24 @@
+package templates
+
+import (
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
+)
+
+templ updatePendingBanner(snapshot telemetry.Snapshot, class string) {
+	if detentUpdatePending(snapshot.Update) {
+		<section id="update-pending" class={ "flex min-w-0 flex-none flex-col gap-3 rounded-card border border-warn/40 bg-warn/10 px-4 py-3 text-sm shadow-sm sm:flex-row sm:items-center " + class } role="status" aria-live="polite">
+			<div class="flex min-w-0 flex-1 items-start gap-3">
+				@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-warn"})
+				<div class="min-w-0">
+					<p class="font-medium text-text">{ "Detent " + detentPendingUpdateVersion(snapshot.Update) + " is pending" }</p>
+					<p id="update-pending-detail" class="mt-0.5 break-words text-xs text-sec">Automatic apply is waiting for all active work attempts across every project to finish.</p>
+				</div>
+			</div>
+			<form class="shrink-0" hx-post="/api/v1/update/apply" hx-target="#update-pending-detail" hx-swap="innerHTML" hx-confirm="Apply the update now? Detent will drain active attempts and restart.">
+				<input type="hidden" name="confirm" value="true"/>
+				<button type="submit" class="inline-flex min-h-8 items-center justify-center rounded-card border border-warn/50 bg-surface px-3 py-1.5 text-xs font-medium text-text hover:bg-warn/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warn/50">Apply now</button>
+			</form>
+		</section>
+	}
+}

@@ -2940,7 +2940,7 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | Instance name | | | `instance_name` | short hostname |
 | Automatic update checks | | | `update.auto_check_enabled` | `false` |
 | Update check interval | | | `update.check_interval_hours` | `24` |
-| Automatic update apply | | | `update.auto_apply_enabled` | `false` |
+| Automatic update apply when idle | | | `update.auto_apply_enabled` | `false` |
 
 The web host resolves from `--host`, then the first registered workflow's
 `server.host`, then the built-in `127.0.0.1` default. It is not a top-level
@@ -2967,7 +2967,10 @@ check, available or applied version, and next check on `/health` and the Health
 dashboard. `detent doctor` reports whether the host is opted in and suggests
 enabling checks when it is not. Automatic apply remains off unless explicitly
 enabled and only replaces release-installer binaries; other install sources
-remain notification-only. A successful automatic apply uses the normal
+remain notification-only. When work attempts are active, Detent shows the
+pending version in the web and terminal dashboards and waits for the next
+fleet-wide idle window before applying it. An operator can instead confirm
+immediate apply from the web notification. A successful apply uses the normal
 graceful drain path, then re-executes the replaced binary on POSIX systems or
 exits cleanly for an external supervisor to restart it on other platforms.
 
