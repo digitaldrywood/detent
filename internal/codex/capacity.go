@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -62,12 +63,21 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 		return backendcapacity.Details{}, false
 	}
 	text := codexCapacityErrorText(err)
-	if errors.Is(err, context.DeadlineExceeded) && codexStartupHandshakeTimeout(text) {
-		return backendcapacity.Details{
-			Type:   backendcapacity.ErrorTypeTransientOverload,
-			Kind:   backendcapacity.StartupTimeoutKind,
-			Reason: "backend startup handshake timed out",
-		}, true
+	if codexStartupOperation(text) {
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			return backendcapacity.Details{
+				Type:   backendcapacity.ErrorTypeTransientOverload,
+				Kind:   backendcapacity.StartupTimeoutKind,
+				Reason: "backend startup handshake timed out",
+			}, true
+		case errors.Is(err, io.EOF), strings.Contains(strings.ToLower(text), "process exited"), strings.Contains(strings.ToLower(text), "start codex app-server transport"):
+			return backendcapacity.Details{
+				Type:   backendcapacity.ErrorTypeTransientOverload,
+				Kind:   backendcapacity.StartupFailureKind,
+				Reason: "backend startup handshake failed",
+			}, true
+		}
 	}
 	if details, ok := backendcapacity.ClassifyTransientOverload(text, codexOverloadRules); ok {
 		return details, true
@@ -75,8 +85,11 @@ func ClassifyCapacityError(err error, limits *telemetry.RateLimits, now time.Tim
 	return backendcapacity.Classify(text, codexCapacityResetAt(limits), now, codexCapacityRules)
 }
 
-func codexStartupHandshakeTimeout(text string) bool {
+func codexStartupOperation(text string) bool {
 	text = strings.ToLower(strings.TrimSpace(text))
+	if strings.Contains(text, "start codex app-server transport") {
+		return true
+	}
 	for _, operation := range []string{"initialize", "thread/start", "thread/resume", "turn/start"} {
 		if strings.Contains(text, "wait for "+operation+" response") {
 			return true

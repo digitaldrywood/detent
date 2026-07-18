@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -364,7 +365,9 @@ func projectAttemptFailureClass(
 			return projectFailureClassBackendError + ":" + projectFailureHash(message)
 		}
 	}
-	if class := normalizeProjectFailureClass(errorClass); class != "" && class != workAttemptErrorRunner {
+	if class := normalizeProjectFailureClass(errorClass); class == backendcapacity.StartupFailureErrorClass || class == backendcapacity.StartupTimeoutErrorClass {
+		return backendcapacity.StartupFailureErrorClass
+	} else if class != "" && class != workAttemptErrorRunner {
 		return class
 	}
 	if terminalState == store.WorkAttemptTerminalNoProgress {

@@ -2,7 +2,9 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +63,20 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 			want:     true,
 			wantType: backendcapacity.ErrorTypeTransientOverload,
 			wantKind: backendcapacity.StartupTimeoutKind,
+		},
+		{
+			name:     "initialize process exit",
+			err:      fmt.Errorf("run agent turn: wait for initialize response: %w: codex app-server process exited (exit status 23): stderr: broken environment", io.EOF),
+			want:     true,
+			wantType: backendcapacity.ErrorTypeTransientOverload,
+			wantKind: backendcapacity.StartupFailureKind,
+		},
+		{
+			name:     "transport spawn failure",
+			err:      errors.New("run agent turn: start codex app-server transport: start command: executable file not found"),
+			want:     true,
+			wantType: backendcapacity.ErrorTypeTransientOverload,
+			wantKind: backendcapacity.StartupFailureKind,
 		},
 		{
 			name: "unrelated deadline",

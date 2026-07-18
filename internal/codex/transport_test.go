@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -91,6 +92,43 @@ func TestLocalTransportReceiveHonorsContext(t *testing.T) {
 	_, err = transport.Receive(receiveCtx)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Receive() error = %v, want context deadline exceeded", err)
+	}
+}
+
+func TestLocalTransportEarlyExitIncludesStatusAndStderr(t *testing.T) {
+	t.Parallel()
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "exit-stderr")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+	server, err := NewAppServer(factory, WithReadTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	err = server.CheckHealth(context.Background())
+	if err == nil {
+		t.Fatal("CheckHealth() error = nil, want early exit diagnostics")
+	}
+	for _, want := range []string{"exit status 23", "broken launch environment"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("CheckHealth() error = %v, want containing %q", err, want)
+		}
+	}
+}
+
+func TestTailBufferKeepsBoundedSuffix(t *testing.T) {
+	t.Parallel()
+
+	buffer := newTailBuffer(5)
+	if _, err := buffer.Write([]byte("abcdef")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if got := buffer.String(); got != "bcdef" {
+		t.Fatalf("String() = %q, want %q", got, "bcdef")
 	}
 }
 
@@ -434,6 +472,9 @@ func TestLocalTransportHelperProcess(t *testing.T) {
 		time.Sleep(time.Hour)
 	case "exit":
 		return
+	case "exit-stderr":
+		fmt.Fprint(os.Stderr, "broken launch environment")
+		os.Exit(23)
 	case "turn-error-backpressure":
 		helperTurnBackpressure(json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed"}}`), true)
 	case "turn-complete-backpressure":

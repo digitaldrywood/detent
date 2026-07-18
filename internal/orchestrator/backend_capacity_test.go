@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -162,7 +163,7 @@ func TestHandleRunResultTracksStartupTimeoutAsCapacityAndBreakerSignal(t *testin
 	if retry.Attempt != 3 || !retry.DueAt.Equal(now.Add(45*time.Second)) || retry.Error != backendcapacity.StartupTimeoutErrorClass {
 		t.Fatalf("Retry[%q] = %#v, want startup-capacity retry", issue.ID, retry)
 	}
-	if len(state.FailureBreaker.Failures[backendcapacity.StartupTimeoutErrorClass]) != 1 || state.FailureBreaker.Active() {
+	if len(state.FailureBreaker.Failures[backendcapacity.StartupFailureErrorClass]) != 1 || state.FailureBreaker.Active() {
 		t.Fatalf("FailureBreaker = %#v, want one preserved systemic signal", state.FailureBreaker)
 	}
 	if len(attempts.completions) != 1 {
@@ -171,6 +172,56 @@ func TestHandleRunResultTracksStartupTimeoutAsCapacityAndBreakerSignal(t *testin
 	completion := attempts.completions[0]
 	if completion.TerminalState != store.WorkAttemptTerminalTimedOut || completion.ErrorClass != backendcapacity.StartupTimeoutErrorClass || completion.StatusMessage != "retrying after backend startup timeout" {
 		t.Fatalf("completion = %#v, want startup timeout telemetry", completion)
+	}
+}
+
+func TestHandleRunResultTracksStartupExitAsStableBreakerSignal(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 18, 18, 0, 0, 0, time.UTC)
+	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+	cfg := normalizeConfig(Config{
+		OverloadRetryDelay: 45 * time.Second,
+		TerminalStates:     []string{"Done"},
+		FailureBreaker: FailureBreakerConfig{
+			SameClassLimit: 2,
+			Window:         time.Hour,
+			Cooldown:       5 * time.Minute,
+		},
+	})
+	attempts := &recordingWorkAttemptStore{}
+	orch := &Orchestrator{cfg: cfg, workAttempts: attempts}
+	state := newState(cfg)
+
+	for index, stderr := range []string{"first issue stderr", "second issue stderr"} {
+		issue := connector.Issue{ID: fmt.Sprintf("issue-startup-exit-%d", index+1), State: "In Progress"}
+		state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: int64(42 + index), StartedAt: now.Add(-time.Minute)}
+		state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+		exitErr := backendcapacity.NewError(scope, backendcapacity.Details{
+			Type:   backendcapacity.ErrorTypeTransientOverload,
+			Kind:   backendcapacity.StartupFailureKind,
+			Reason: "backend startup handshake failed",
+		}, fmt.Errorf("wait for initialize response: EOF: stderr: %s", stderr))
+
+		orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+			IssueID:      issue.ID,
+			Err:          exitErr,
+			CompletedAt:  now.Add(time.Duration(index) * time.Second),
+			RetryAttempt: 1,
+			RetryDelay:   45 * time.Second,
+		})
+	}
+
+	if !state.FailureBreaker.Active() || state.FailureBreaker.Class != backendcapacity.StartupFailureErrorClass || state.FailureBreaker.Count != 2 {
+		t.Fatalf("FailureBreaker = %#v, want two normalized startup failures", state.FailureBreaker)
+	}
+	if len(attempts.completions) != 2 {
+		t.Fatalf("work attempt completions = %#v, want two", attempts.completions)
+	}
+	for _, completion := range attempts.completions {
+		if completion.ErrorClass != backendcapacity.StartupFailureErrorClass || !strings.Contains(completion.ErrorMessage, "stderr") {
+			t.Fatalf("completion = %#v, want startup class with stderr diagnostics", completion)
+		}
 	}
 }
 
