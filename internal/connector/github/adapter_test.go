@@ -2601,7 +2601,11 @@ func TestTransientCheckRunFailuresExcludeSupersededFailures(t *testing.T) {
 	}
 	c := &Connector{}
 
-	if got := c.transientCheckRunFailures(context.Background(), pullRequestRepo{}, checkRuns); len(got) != 0 {
+	got, err := c.transientCheckRunFailures(context.Background(), pullRequestRepo{}, checkRuns)
+	if err != nil {
+		t.Fatalf("transientCheckRunFailures() error = %v", err)
+	}
+	if len(got) != 0 {
 		t.Fatalf("transientCheckRunFailures() = %#v, want none", got)
 	}
 }
@@ -4907,6 +4911,92 @@ func TestConnectorHydratePullRequestIncludesWorkflowAndAnnotationsInRESTFanoutCa
 	}
 	if got := restEndpointUsageCount(usage.Requests, "check run annotations"); got != 1 {
 		t.Fatalf("check run annotations usage count = %d, want throttled synthetic request; usage = %#v", got, usage.Requests)
+	}
+}
+
+func TestConnectorHydratePullRequestPropagatesCIDetailThrottles(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 18, 13, 0, 0, 0, time.UTC)
+	throttleResponse := func(path string) graphqlTestResponse {
+		return graphqlTestResponse{
+			method: http.MethodGet,
+			path:   path,
+			status: http.StatusTooManyRequests,
+			headers: map[string]string{
+				"Retry-After":           "120",
+				"X-RateLimit-Limit":     "5000",
+				"X-RateLimit-Used":      "264",
+				"X-RateLimit-Remaining": "4736",
+				"X-RateLimit-Resource":  "core",
+			},
+			body: `{"message":"secondary rate limit"}`,
+		}
+	}
+	tests := []struct {
+		name         string
+		responses    []graphqlTestResponse
+		wantRequests int
+	}{
+		{
+			name: "workflow run",
+			responses: []graphqlTestResponse{
+				{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: `{"number":42,"html_url":"https://github.com/example/repo/pull/42","state":"open","head":{"ref":"detent/example","sha":"head-sha"}}`},
+				{method: http.MethodGet, path: "/repos/example/repo/commits/head-sha/check-runs?per_page=100", body: `{"check_runs":[{"id":9001,"name":"Checks","status":"completed","conclusion":"failure","details_url":"https://github.com/example/repo/actions/runs/8001/job/9001"}]}`},
+				throttleResponse("/repos/example/repo/actions/runs/8001"),
+				{method: http.MethodGet, path: "/repos/example/repo/commits/head-sha/statuses?per_page=100", body: `[]`},
+				{method: http.MethodGet, path: "/repos/example/repo/check-runs/9001/annotations?per_page=100", body: `[]`},
+				{method: http.MethodGet, path: "/repos/example/repo/pulls/42/reviews?per_page=100", body: `[]`},
+			},
+			wantRequests: 3,
+		},
+		{
+			name: "check run annotations",
+			responses: []graphqlTestResponse{
+				{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: `{"number":42,"html_url":"https://github.com/example/repo/pull/42","state":"open","head":{"ref":"detent/example","sha":"head-sha"}}`},
+				{method: http.MethodGet, path: "/repos/example/repo/commits/head-sha/check-runs?per_page=100", body: `{"check_runs":[{"id":9001,"name":"Checks","status":"completed","conclusion":"failure"}]}`},
+				{method: http.MethodGet, path: "/repos/example/repo/commits/head-sha/statuses?per_page=100", body: `[]`},
+				throttleResponse("/repos/example/repo/check-runs/9001/annotations?per_page=100"),
+				{method: http.MethodGet, path: "/repos/example/repo/pulls/42/reviews?per_page=100", body: `[]`},
+			},
+			wantRequests: 4,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := newGraphQLTestServer(t, test.responses)
+			c := newGitHubTestConnector(t, server, Config{
+				Now: func() time.Time {
+					return now
+				},
+			})
+			prNumber := 42
+			issue := connector.Issue{
+				ID:         "I_kw42",
+				Identifier: "example/repo#1",
+				PRNumber:   &prNumber,
+			}
+
+			got, err := c.HydratePullRequest(context.Background(), issue)
+			if err != nil {
+				t.Fatalf("HydratePullRequest() error = %v", err)
+			}
+			if got.PullRequest == nil {
+				t.Fatal("PullRequest = nil, want hydration throttle marker")
+			}
+			if got.PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonSecondaryThrottled {
+				t.Fatalf("HydrationUnavailableReason = %q, want secondary_throttled", got.PullRequest.HydrationUnavailableReason)
+			}
+			if got.PullRequest.HydrationNextRetryAt == nil || !got.PullRequest.HydrationNextRetryAt.After(now.Add(120*time.Second)) {
+				t.Fatalf("HydrationNextRetryAt = %v, want retry-after plus jitter", got.PullRequest.HydrationNextRetryAt)
+			}
+			if requests := server.requests(); len(requests) != test.wantRequests {
+				t.Fatalf("outbound REST requests = %d, want %d; requests = %#v", len(requests), test.wantRequests, requests)
+			}
+		})
 	}
 }
 
