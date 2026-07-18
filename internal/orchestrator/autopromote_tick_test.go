@@ -5727,5 +5727,14 @@ func (c *autoPromoteTickConnector) SetAssignee(context.Context, string, string) 
 
 func (c *autoPromoteTickConnector) SetField(_ context.Context, issueID string, field string, value string) error {
 	c.setFields = append(c.setFields, autoPromoteTickSetField{issueID: issueID, field: field, value: value})
+	for index := range c.stateIssues {
+		if c.stateIssues[index].ID != issueID {
+			continue
+		}
+		if c.stateIssues[index].Fields == nil {
+			c.stateIssues[index].Fields = map[string]string{}
+		}
+		c.stateIssues[index].Fields[field] = value
+	}
 	return nil
 }

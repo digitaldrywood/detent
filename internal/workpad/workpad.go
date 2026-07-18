@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -26,12 +27,13 @@ const (
 var refPattern = regexp.MustCompile(`^(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#([1-9][0-9]*)$`)
 
 type Signal struct {
-	Source      string    `json:"source,omitempty" yaml:"source,omitempty"`
-	CommentURL  string    `json:"comment_url,omitempty" yaml:"comment_url,omitempty"`
-	Status      string    `json:"status,omitempty" yaml:"status,omitempty"`
-	Blockers    []Blocker `json:"blockers,omitempty" yaml:"blockers,omitempty"`
-	HumanAction string    `json:"human_action,omitempty" yaml:"human_action,omitempty"`
-	Invalid     *Invalid  `json:"invalid,omitempty" yaml:"invalid,omitempty"`
+	Source      string            `json:"source,omitempty" yaml:"source,omitempty"`
+	CommentURL  string            `json:"comment_url,omitempty" yaml:"comment_url,omitempty"`
+	Status      string            `json:"status,omitempty" yaml:"status,omitempty"`
+	Blockers    []Blocker         `json:"blockers,omitempty" yaml:"blockers,omitempty"`
+	HumanAction string            `json:"human_action,omitempty" yaml:"human_action,omitempty"`
+	Fields      map[string]string `json:"fields,omitempty" yaml:"fields,omitempty"`
+	Invalid     *Invalid          `json:"invalid,omitempty" yaml:"invalid,omitempty"`
 }
 
 type Blocker struct {
@@ -47,10 +49,11 @@ type Invalid struct {
 }
 
 type statusBlockYAML struct {
-	Schema      int           `yaml:"schema"`
-	Status      string        `yaml:"status"`
-	Blockers    []blockerYAML `yaml:"blockers"`
-	HumanAction *string       `yaml:"human_action"`
+	Schema      int               `yaml:"schema"`
+	Status      string            `yaml:"status"`
+	Blockers    []blockerYAML     `yaml:"blockers"`
+	HumanAction *string           `yaml:"human_action"`
+	Fields      map[string]string `yaml:"fields"`
 }
 
 type blockerYAML struct {
@@ -163,6 +166,28 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	if raw.Status == StatusBlocked && len(blockers) == 0 && humanAction == "" {
 		problems = append(problems, "status blocked requires at least one blocker ref or human_action")
 	}
+	fields := make(map[string]string, len(raw.Fields))
+	fieldNames := make([]string, 0, len(raw.Fields))
+	for name := range raw.Fields {
+		fieldNames = append(fieldNames, name)
+	}
+	sort.Strings(fieldNames)
+	for _, name := range fieldNames {
+		value := strings.TrimSpace(raw.Fields[name])
+		name = strings.TrimSpace(name)
+		if name == "" {
+			problems = append(problems, "fields must not contain a blank field name")
+			continue
+		}
+		if value == "" {
+			problems = append(problems, fmt.Sprintf("fields[%q] must not be blank", name))
+			continue
+		}
+		fields[name] = value
+	}
+	if len(fields) == 0 {
+		fields = nil
+	}
 	if len(problems) > 0 {
 		return nil, errors.New(strings.Join(problems, "; "))
 	}
@@ -172,6 +197,7 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 		Status:      raw.Status,
 		Blockers:    blockers,
 		HumanAction: humanAction,
+		Fields:      fields,
 	}, nil
 }
 
@@ -222,6 +248,12 @@ func CloneSignal(signal *Signal) *Signal {
 	}
 	cloned := *signal
 	cloned.Blockers = append([]Blocker(nil), signal.Blockers...)
+	if signal.Fields != nil {
+		cloned.Fields = make(map[string]string, len(signal.Fields))
+		for name, value := range signal.Fields {
+			cloned.Fields[name] = value
+		}
+	}
 	if signal.Invalid != nil {
 		invalid := *signal.Invalid
 		cloned.Invalid = &invalid

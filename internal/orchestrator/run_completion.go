@@ -329,6 +329,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		running.DiffStats = event.Result.DiffStats
 	}
 	dispatchedIssue := cloneIssue(running.Issue)
+	if terminalState == store.WorkAttemptTerminalSuccess {
+		running.Issue = o.applyArtifactGateCompletionFields(ctx, running.Issue, running.DispatchWorkpadHash, running.DispatchWorkpadRead)
+	}
 	progress := o.evaluateImplementCompletionProgress(ctx, running, finalState, event.Result.PullRequestUpdated)
 	running.Issue = progress.Issue
 	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
@@ -368,6 +371,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		errorMessage = fmt.Sprintf("spent %s since the last accepted state change; configured limit %s", budget.FormatUSD(spendProgress.Spend.CostUSD), budget.FormatUSD(spendProgress.LimitUSD))
 		phase = "no_progress"
 		statusMessage = "spend-since-progress circuit breaker tripped"
+	}
+	if terminalState == store.WorkAttemptTerminalSuccess {
+		o.warnUnchangedArtifactGateCompletion(ctx, dispatchedIssue, running.Issue)
 	}
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, terminalState, nil, errorClass, errorMessage)
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(implementCompletionProgressMetadata(progress), spendProgressMetadata(spendProgress)))

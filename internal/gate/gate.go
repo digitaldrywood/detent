@@ -393,7 +393,17 @@ func InstructionsForGitHubHost(cfg Config, hostname string) string {
 			cfg.ApprovalLabel + "`; do not move it to Merging before that label is present."
 	case KindArtifact:
 		return "The validation gate is artifact status. Detent evaluates `" + cfg.Artifact.StatusField +
-			"` from the work item fields or deliverable validation status. Passing statuses advance the item, waiting statuses keep it in place, and rework statuses route it to rework without requiring a pull request or CI."
+			"` from the work item fields or deliverable validation status. Passing statuses advance the item, waiting statuses keep it in place, and rework statuses route it to rework without requiring a pull request or CI. " +
+			"At worker completion, update the configured field without shell or database commands by including it in the structured Workpad block:\n\n" +
+			"```detent-status\n" +
+			"schema: 1\n" +
+			"status: complete\n" +
+			"fields:\n" +
+			"  " + cfg.Artifact.StatusField + ": <configured status>\n" +
+			"blockers: []\n" +
+			"human_action: null\n" +
+			"```\n\n" +
+			"Allowed pass statuses: " + strings.Join(cfg.Artifact.PassStatuses, ", ") + ". Allowed wait statuses: " + strings.Join(cfg.Artifact.WaitStatuses, ", ") + ". Allowed rework statuses: " + strings.Join(cfg.Artifact.ReworkStatuses, ", ") + "."
 	default:
 		instructions := "The validation gate is a command. Run `" + cfg.Run +
 			"` from the workspace root before Human Review; the pull request still needs green CI before promotion. " +

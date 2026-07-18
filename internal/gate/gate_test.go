@@ -619,6 +619,38 @@ func TestInstructionsDescribeOptimizedMergingGate(t *testing.T) {
 	}
 }
 
+func TestInstructionsDescribeArtifactWorkpadCompletionField(t *testing.T) {
+	t.Parallel()
+
+	got := Instructions(Config{
+		Kind: KindArtifact,
+		Artifact: ArtifactConfig{
+			StatusField:    "render_status",
+			PassStatuses:   []string{"approved"},
+			WaitStatuses:   []string{"pending_review"},
+			ReworkStatuses: []string{"recut"},
+		},
+	})
+	for _, want := range []string{
+		"without shell or database commands",
+		"```detent-status\n" +
+			"schema: 1\n" +
+			"status: complete\n" +
+			"fields:\n" +
+			"  render_status: <configured status>\n" +
+			"blockers: []\n" +
+			"human_action: null\n" +
+			"```",
+		"Allowed pass statuses: approved.",
+		"Allowed wait statuses: pending_review.",
+		"Allowed rework statuses: recut.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Instructions() missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestInstructionsDescribeRequiredStatusChecks(t *testing.T) {
 	t.Parallel()
 

@@ -89,6 +89,8 @@ type Running struct {
 	Mode                  string
 	DispatchSourceState   string
 	DispatchTargetState   string
+	DispatchWorkpadHash   string
+	DispatchWorkpadRead   bool
 	StartedAt             time.Time
 	WorkerHost            string
 	ProcessIdentity       string
