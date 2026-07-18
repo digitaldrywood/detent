@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
@@ -131,6 +132,7 @@ type LocalGit struct {
 	autoBranch bool
 	hooks      Hooks
 	logger     *slog.Logger
+	createMu   sync.Mutex
 }
 
 type PathError struct {
@@ -332,7 +334,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 		return Info{}, err
 	}
 
-	created, err := l.ensureWorktree(ctx, info.Path, info.Branch)
+	created, err := l.createWorktree(ctx, info.Path, info.Branch)
 	if err != nil {
 		return Info{}, err
 	}
@@ -351,6 +353,12 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 	}
 
 	return info, nil
+}
+
+func (l *LocalGit) createWorktree(ctx context.Context, path string, branch string) (bool, error) {
+	l.createMu.Lock()
+	defer l.createMu.Unlock()
+	return l.ensureWorktree(ctx, path, branch)
 }
 
 func (l *LocalGit) Cleanup(ctx context.Context, identifier string) error {

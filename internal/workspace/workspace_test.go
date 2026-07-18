@@ -504,6 +504,68 @@ func TestLocalGitCreateDoesNotFallBackWhenOriginIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestLocalGitCreateSerializesRemoteOperations(t *testing.T) {
+	t.Parallel()
+	skipWindows(t)
+
+	source := initSourceRepo(t)
+	remote := initBareRemote(t)
+	runGit(t, source, "remote", "add", "origin", remote)
+	runGit(t, source, "push", "-u", "origin", "main")
+
+	operationDir := t.TempDir()
+	lockDir := filepath.Join(operationDir, "active")
+	overlapPath := filepath.Join(operationDir, "overlap")
+	uploadPackPath := filepath.Join(operationDir, "upload-pack")
+	uploadPack := "#!/bin/sh\n" +
+		"lock_dir=" + shellQuote(lockDir) + "\n" +
+		"overlap_path=" + shellQuote(overlapPath) + "\n" +
+		"owns_lock=\n" +
+		"if mkdir \"$lock_dir\" 2>/dev/null; then\n" +
+		"  owns_lock=1\n" +
+		"else\n" +
+		"  : > \"$overlap_path\"\n" +
+		"fi\n" +
+		"sleep 0.1\n" +
+		"if [ -n \"$owns_lock\" ]; then\n" +
+		"  rmdir \"$lock_dir\"\n" +
+		"fi\n" +
+		"exec git-upload-pack \"$@\"\n"
+	if err := os.WriteFile(uploadPackPath, []byte(uploadPack), 0o700); err != nil {
+		t.Fatalf("write upload-pack wrapper: %v", err)
+	}
+	runGit(t, source, "config", "remote.origin.uploadpack", uploadPackPath)
+
+	backend, err := NewLocalGit(LocalGitOptions{
+		Root:       filepath.Join(t.TempDir(), "workspaces"),
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewLocalGit() error = %v", err)
+	}
+
+	const creates = 6
+	start := make(chan struct{})
+	results := make(chan error, creates)
+	for i := range creates {
+		go func() {
+			<-start
+			_, err := backend.Create(context.Background(), Issue{Identifier: fmt.Sprintf("DD-CONCURRENT-%d", i)})
+			results <- err
+		}()
+	}
+	close(start)
+	for range creates {
+		if err := <-results; err != nil {
+			t.Errorf("Create() error = %v", err)
+		}
+	}
+	if _, err := os.Stat(overlapPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remote operations overlapped, marker stat error = %v", err)
+	}
+}
+
 func TestLocalGitPrepareMergeRebasesAndPushesCleanBranch(t *testing.T) {
 	t.Parallel()
 
