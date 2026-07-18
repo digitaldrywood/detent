@@ -230,8 +230,8 @@ func (o *Orchestrator) finishCompletedActiveReviewTransition(
 	delete(state.Claimed, issueID)
 	if !sameState {
 		delete(state.Retry, issueID)
+		delete(state.BudgetRefusals, issueID)
 	}
-	delete(state.BudgetRefusals, issueID)
 	delete(state.PriorAttempts, issueID)
 }
 
