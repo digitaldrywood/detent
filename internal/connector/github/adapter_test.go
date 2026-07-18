@@ -4841,6 +4841,75 @@ func TestConnectorHydratePullRequestDetectsTransientKilledCheck(t *testing.T) {
 	}
 }
 
+func TestConnectorHydratePullRequestIncludesWorkflowAndAnnotationsInRESTFanoutCap(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/pulls/42",
+			body:   `{"number":42,"html_url":"https://github.com/example/repo/pull/42","state":"open","mergeable_state":"clean","head":{"ref":"detent/example","sha":"head-sha"},"base":{"sha":"base-sha"}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/commits/head-sha/check-runs?per_page=100",
+			body:   `{"check_runs":[{"id":9001,"name":"Checks","status":"completed","conclusion":"failure","details_url":"https://github.com/example/repo/actions/runs/8001/job/9001"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/actions/runs/8001",
+			body:   `{"id":8001}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/commits/head-sha/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/check-runs/9001/annotations?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/pulls/42/reviews?per_page=100",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		RESTFanoutMaxRequests:      4,
+		DisableConditionalRequests: true,
+	})
+	prNumber := 42
+	issue := connector.Issue{
+		ID:         "I_kw42",
+		Identifier: "example/repo#1",
+		PRNumber:   &prNumber,
+	}
+
+	got, err := c.HydratePullRequest(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("HydratePullRequest() error = %v", err)
+	}
+	if got.PullRequest == nil || got.PullRequest.HydrationUnavailableReason != connector.PullRequestHydrationReasonRESTBudgetReserved {
+		t.Fatalf("PullRequest = %#v, want REST budget reservation", got.PullRequest)
+	}
+	if requests := server.requests(); len(requests) != 4 {
+		t.Fatalf("outbound REST requests = %d, want fanout cap 4; requests = %#v", len(requests), requests)
+	}
+
+	usage := c.FlushRESTRateLimitUsage()
+	if got := restEndpointUsageCount(usage.Requests, "other"); got != 0 {
+		t.Fatalf("other usage count = %d, want no unclassified hydration requests; usage = %#v", got, usage.Requests)
+	}
+	if got := restEndpointUsageCount(usage.Requests, "workflow runs"); got != 1 {
+		t.Fatalf("workflow runs usage count = %d, want 1; usage = %#v", got, usage.Requests)
+	}
+	if got := restEndpointUsageCount(usage.Requests, "check run annotations"); got != 1 {
+		t.Fatalf("check run annotations usage count = %d, want throttled synthetic request; usage = %#v", got, usage.Requests)
+	}
+}
+
 func TestConnectorRerunPullRequestChecksUsesWorkflowRun(t *testing.T) {
 	t.Parallel()
 

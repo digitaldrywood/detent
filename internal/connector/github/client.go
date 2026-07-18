@@ -1586,6 +1586,10 @@ func restEndpointFamily(method string, path string) string {
 		return "reviews"
 	case len(segments) == 6 && segments[3] == "pulls" && segments[5] == "merge":
 		return "mutations"
+	case len(segments) == 6 && segments[3] == "actions" && segments[4] == "runs":
+		return "workflow runs"
+	case len(segments) == 6 && segments[3] == "check-runs" && segments[5] == "annotations":
+		return "check run annotations"
 	case len(segments) == 6 && segments[3] == "commits" && segments[5] == "check-runs":
 		return "check runs"
 	case len(segments) == 6 && segments[3] == "commits" && segments[5] == "statuses":
@@ -1654,7 +1658,7 @@ func retryAfterSeconds(err error) int64 {
 
 func restFanoutEndpointFamily(family string) bool {
 	switch family {
-	case "pull requests", "check runs", "commit statuses", "reviews", "repository issues",
+	case "pull requests", "check runs", "check run annotations", "workflow runs", "commit statuses", "reviews", "repository issues",
 		"issue reads", "issue comments", "issue dependencies", "issue field values":
 		return true
 	default:
