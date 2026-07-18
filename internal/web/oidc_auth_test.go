@@ -116,6 +116,7 @@ func TestOIDCCallbackDoesNotLogCredentials(t *testing.T) {
 	transactionCookie := responseCookie(start.Result(), "detent_oidc_transaction")
 	if transactionCookie == nil {
 		t.Fatal("OIDC start response did not set a transaction cookie")
+		return
 	}
 	code := "authorization-code-must-not-be-logged"
 	callback := performWebAuthRequest(t, server, http.MethodGet, "/auth/oidc/callback?code="+code+"&state="+url.QueryEscape(provider.state), "", transactionCookie)
