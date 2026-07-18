@@ -1,6 +1,7 @@
 package workpad
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -18,6 +19,7 @@ func TestSignalFromComment(t *testing.T) {
 		wantBlockers  []string
 		wantHuman     string
 		wantComment   string
+		wantFields    map[string]string
 		wantLastBlock bool
 	}{
 		{
@@ -28,6 +30,14 @@ func TestSignalFromComment(t *testing.T) {
 			wantReason:   "digitaldrywood/detent#1462: needs migration",
 			wantBlockers: []string{"digitaldrywood/detent#1462"},
 			wantComment:  "https://github.test/comment/1",
+		},
+		{
+			name:        "valid gate field",
+			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nfields:\n  render_status: pending_review\nblockers: []\nhuman_action: null\n```",
+			wantOK:      true,
+			wantStatus:  StatusComplete,
+			wantFields:  map[string]string{"render_status": "pending_review"},
+			wantComment: "https://github.test/comment/1",
 		},
 		{
 			name:        "malformed yaml",
@@ -114,6 +124,9 @@ func TestSignalFromComment(t *testing.T) {
 			}
 			if got.HumanAction != tt.wantHuman {
 				t.Fatalf("HumanAction = %q, want %q", got.HumanAction, tt.wantHuman)
+			}
+			if !reflect.DeepEqual(got.Fields, tt.wantFields) {
+				t.Fatalf("Fields = %#v, want %#v", got.Fields, tt.wantFields)
 			}
 			if Reason(got) != tt.wantReason {
 				t.Fatalf("Reason() = %q, want %q", Reason(got), tt.wantReason)
