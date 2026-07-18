@@ -305,9 +305,14 @@ func TestAPIBoardSessionPagesFailedRolloutHistory(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
+	sheetBody := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/card?project=detent&issue=issue-1156", http.StatusOK)
+	mountedSessionID := liveSessionElementID(t, sheetBody)
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/session?project=detent&issue=issue-1156", http.StatusOK)
 	if !strings.Contains(body, "View rollout history") {
 		t.Fatalf("closed session missing rollout action:\n%s", body)
+	}
+	if !strings.Contains(body, `hx-target="#`+mountedSessionID+`"`) {
+		t.Fatalf("closed session rollout target does not match mounted host %q:\n%s", mountedSessionID, body)
 	}
 	body = requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/session/history?project=detent&issue=issue-1156&limit=50&display=full", http.StatusOK)
 	for _, want := range []string{"Provider rollout history", "rollout output", "Load older rollout events", "min-w-max whitespace-pre text-left", "display=full"} {
