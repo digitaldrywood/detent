@@ -1182,8 +1182,8 @@ func TestRunSchedulesRetryAfterRunnerError(t *testing.T) {
 	if _, ok := state.Running[issue.ID]; ok {
 		t.Fatalf("Running[%q] present after runner error", issue.ID)
 	}
-	if _, ok := state.Claimed[issue.ID]; !ok {
-		t.Fatalf("Claimed[%q] missing after runner error", issue.ID)
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present after terminal runner error", issue.ID)
 	}
 	if got := state.Retry[issue.ID].Attempt; got != 1 {
 		t.Fatalf("Retry[%q].Attempt = %d, want 1", issue.ID, got)
@@ -1212,8 +1212,8 @@ func TestRunSchedulesRetryAfterRunnerPanic(t *testing.T) {
 	if _, ok := state.Running[issue.ID]; ok {
 		t.Fatalf("Running[%q] present after runner panic", issue.ID)
 	}
-	if _, ok := state.Claimed[issue.ID]; !ok {
-		t.Fatalf("Claimed[%q] missing after runner panic", issue.ID)
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present after terminal runner panic", issue.ID)
 	}
 	if got := state.Retry[issue.ID].Attempt; got != 1 {
 		t.Fatalf("Retry[%q].Attempt = %d, want 1", issue.ID, got)

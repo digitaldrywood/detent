@@ -71,6 +71,7 @@ func (o *Orchestrator) handleTransientOverload(
 	if attempt < 1 {
 		attempt = 1
 	}
+	running.Issue, _ = o.demoteTerminalAttemptRetry(ctx, state, running.Issue, running.WorkProductPushed, event.CompletedAt)
 	o.scheduleRetryAfter(
 		state,
 		running.Issue,

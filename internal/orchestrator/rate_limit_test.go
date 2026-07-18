@@ -631,6 +631,12 @@ func TestRunCompletionDuringGitHubRESTCapacityOutageDoesNotStrikeBreakers(t *tes
 	if !ok || retry.Attempt != 2 || !retry.DueAt.Equal(resetAt) {
 		t.Fatalf("Retry[%q] = %#v, want same-attempt retry at reset", issue.ID, retry)
 	}
+	if retry.Issue.State != "Todo" {
+		t.Fatalf("Retry[%q].Issue.State = %q, want Todo", issue.ID, retry.Issue.State)
+	}
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present during terminal REST-capacity retry", issue.ID)
+	}
 	if len(state.RepeatedFailures) != 0 || len(state.InstantFailures) != 0 {
 		t.Fatalf("breakers = repeated %#v instant %#v, want no strikes", state.RepeatedFailures, state.InstantFailures)
 	}

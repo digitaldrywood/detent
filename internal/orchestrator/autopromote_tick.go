@@ -1042,6 +1042,7 @@ func (o *Orchestrator) failStalledMergeWorkerStarts(ctx context.Context, state *
 		o.recordProjectAttemptOutcome(state, issueID, now, store.WorkAttemptTerminalFailure, err, "runner_startup_timeout", err.Error())
 		o.completeDurableWorkAttempt(ctx, state, running, now, store.WorkAttemptTerminalFailure, "runner_startup_timeout", err.Error(), "starting", "merge worker startup timed out")
 		o.releaseGlobalDispatchSlot(running.globalSlot)
+		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, now)
 		if running.cancel != nil {
 			running.cancel()
 		}

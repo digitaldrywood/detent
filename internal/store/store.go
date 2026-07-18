@@ -618,6 +618,7 @@ type WorkAttemptHeartbeat struct {
 	GitHubRateSnapshotJSON string
 	CIState                string
 	CapacitySnapshotJSON   string
+	WorkerMetadataJSON     string
 	MetricsJSON            string
 	NextAction             string
 	ErrorClass             string

@@ -440,6 +440,7 @@ func (o *Orchestrator) runningWorkAttemptHeartbeat(state *State, running Running
 		GitHubRateSnapshotJSON: o.githubRateSnapshotJSON(state),
 		CIState:                workAttemptCIState(running.Issue),
 		CapacitySnapshotJSON:   o.capacitySnapshotJSON(state, running.Issue),
+		WorkerMetadataJSON:     runningWorkAttemptMetadataJSON(running, nil),
 		MetricsJSON:            runningWorkAttemptMetricsJSON(running),
 		NextAction:             runningWorkAttemptNextAction(running, phase),
 		DetentSessionID:        running.DetentSessionID,
@@ -563,6 +564,9 @@ func (o *Orchestrator) applyWorkAttemptHeartbeatSnapshot(
 		item.GitHubRateSnapshotJSON = heartbeat.GitHubRateSnapshotJSON
 		item.CIState = heartbeat.CIState
 		item.CapacitySnapshotJSON = heartbeat.CapacitySnapshotJSON
+		if strings.TrimSpace(heartbeat.WorkerMetadataJSON) != "" {
+			item.WorkerMetadataJSON = heartbeat.WorkerMetadataJSON
+		}
 		item.MetricsJSON = heartbeat.MetricsJSON
 		item.NextAction = heartbeat.NextAction
 		item.DetentSessionID = heartbeat.DetentSessionID
@@ -927,8 +931,9 @@ func runningWorkAttemptMetricsJSON(running Running) string {
 
 func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) string {
 	out := map[string]any{
-		"run_mode":    strings.TrimSpace(running.Mode),
-		"issue_title": strings.TrimSpace(running.Issue.Title),
+		"run_mode":            strings.TrimSpace(running.Mode),
+		"issue_title":         strings.TrimSpace(running.Issue.Title),
+		"work_product_pushed": running.WorkProductPushed,
 	}
 	for key, value := range metadata {
 		key = strings.TrimSpace(key)

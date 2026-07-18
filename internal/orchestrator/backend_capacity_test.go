@@ -650,7 +650,7 @@ func TestBackendCapacityHelperBoundaries(t *testing.T) {
 
 	running := Running{Issue: connector.Issue{ID: "issue-1"}, Attempt: 2, WorkerHost: "worker"}
 	orch.scheduleBackendCapacityRetry(&state, running, registered)
-	if state.Claimed[running.Issue.ID].ClaimedAt != registered.LastObservedAt || state.Retry[running.Issue.ID].WorkerHost != "worker" {
+	if _, ok := state.Claimed[running.Issue.ID]; ok || state.Retry[running.Issue.ID].WorkerHost != "worker" {
 		t.Fatalf("scheduled state = claims %#v retries %#v", state.Claimed, state.Retry)
 	}
 	if !state.Retry[running.Issue.ID].DueAt.Equal(registered.NextProbeAt) {

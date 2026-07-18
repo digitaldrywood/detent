@@ -652,6 +652,7 @@ func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {
 		WaitReason:             "github_checks",
 		GitHubRateSnapshotJSON: `{"rest_remaining":4878}`,
 		CapacitySnapshotJSON:   `{"global_available":1}`,
+		WorkerMetadataJSON:     `{"work_product_pushed":true}`,
 		MetricsJSON:            `{"test_runs":1}`,
 		NextAction:             "wait for CI",
 		DetentSessionID:        737,
@@ -702,6 +703,9 @@ func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {
 	}
 	if got.DetentSessionID != 737 || got.ProviderSessionID != "thread-737-turn-1" || got.RuntimeIdentity.Model() != "qwen3-coder:30b" || got.RuntimeIdentity.Role != "rework" {
 		t.Fatalf("active runtime identity = %#v, want correlated rework session", got)
+	}
+	if got.WorkerMetadataJSON != `{"work_product_pushed":true}` {
+		t.Fatalf("active WorkerMetadataJSON = %q", got.WorkerMetadataJSON)
 	}
 	receipt, err := backend.WorkAttempt(ctx, attemptID)
 	if err != nil {

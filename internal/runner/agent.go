@@ -2619,6 +2619,7 @@ func (r *Runner) publishRunUpdate(
 		LastMessageTruncation: runtimeoutput.CloneTruncation(progress.lastMessageTruncation),
 		RecentEvents:          progress.recentActivity(),
 		RuntimeIdentity:       result.RuntimeIdentity,
+		WorkProductPushed:     progress.pullRequestHeadPushed() || progress.pullRequestUpdated(),
 		Tokens:                result.Tokens,
 		RateLimits:            result.RateLimits,
 	}

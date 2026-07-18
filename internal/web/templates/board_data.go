@@ -85,6 +85,8 @@ type boardCardView struct {
 	MoveDisabledText  string
 	MoveDisabledLabel string
 	Running           bool
+	Retrying          bool
+	Waiting           bool
 	Done              bool
 	Terminal          bool
 	MetaRight         string
@@ -144,13 +146,24 @@ func boardViewFromDashboard(data DashboardData) boardView {
 		// is terminal for every card's own project; an empty lane falls back
 		// to the global set.
 		laneTerminal := boardLaneTerminal(data, lane, globalTerminalStates)
+		liveCount := 0
+		for _, card := range lane.Cards {
+			if boardCardIsRunning(data.Snapshot, card) {
+				liveCount++
+			}
+		}
+		inProgress := strings.EqualFold(lane.Title, "In Progress")
+		count := formatCount(len(lane.Cards))
+		if inProgress {
+			count += " (" + formatCount(liveCount) + " live)"
+		}
 		laneView := boardLaneView{
 			DomID:     "lane-" + lane.ID,
 			LaneID:    lane.ID,
 			Title:     lane.Title,
-			Count:     formatCount(len(lane.Cards)),
+			Count:     count,
 			CardCount: len(lane.Cards),
-			Live:      strings.EqualFold(lane.Title, "In Progress") && len(lane.Cards) > 0,
+			Live:      inProgress && liveCount > 0,
 			// Populated lanes show by default, except terminal graveyards
 			// (Done, Cancelled, Closed, …), which remain reachable via the picker.
 			DefaultVisible: boardLaneDefaultVisible(lane, laneTerminal, boardHasCards),
@@ -395,6 +408,9 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		moveDisabledText = ""
 	}
 	canDrag := moveDisabledText == "" && !card.RecentCompletion
+	running := boardCardIsRunning(data.Snapshot, card)
+	retrying := !running && boardCardIsRetrying(data.Snapshot, card)
+	waiting := strings.EqualFold(lane.Title, "In Progress") && !running && !retrying
 	view := boardCardView{
 		DomID:             "card-" + boardCardScopedSlug(projectID, identity),
 		Identity:          identity,
@@ -410,7 +426,9 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		CanDrag:           canDrag,
 		MoveDisabledText:  moveDisabledText,
 		MoveDisabledLabel: boardMoveDisabledLabel(moveDisabledText),
-		Running:           strings.EqualFold(lane.Title, "In Progress"),
+		Running:           running,
+		Retrying:          retrying,
+		Waiting:           waiting,
 		// Done drives the green ✓; other terminal states (Cancelled, Closed)
 		// are terminal but not done, so they suppress meta without claiming
 		// success.
@@ -612,6 +630,12 @@ func boardCardExtra(card projectKanbanCard, view boardCardView) (primitives.Kind
 	if detail := strings.TrimSpace(card.WaitDetail); detail != "" {
 		return primitives.KindInfo, detail, false
 	}
+	if view.Retrying {
+		return primitives.KindInfo, "Awaiting retry", true
+	}
+	if view.Waiting {
+		return primitives.KindNeutral, "No live attempt", true
+	}
 	if status := strings.TrimSpace(card.CIStatus); status != "" {
 		return primitives.KindInfo, status, false
 	}
@@ -619,6 +643,31 @@ func boardCardExtra(card projectKanbanCard, view boardCardView) (primitives.Kind
 		return primitives.KindOK, "agent working", false
 	}
 	return primitives.KindNeutral, "", false
+}
+
+func boardCardIsRunning(snapshot telemetry.Snapshot, card projectKanbanCard) bool {
+	for _, running := range snapshot.Running {
+		if boardCardMatchesIssue(running.Issue, card) {
+			return true
+		}
+	}
+	return false
+}
+
+func boardCardIsRetrying(snapshot telemetry.Snapshot, card projectKanbanCard) bool {
+	for _, retry := range snapshot.Queue {
+		if boardCardMatchesIssue(retry.Issue, card) {
+			return true
+		}
+	}
+	return false
+}
+
+func boardCardMatchesIssue(issue telemetry.Issue, card projectKanbanCard) bool {
+	if strings.TrimSpace(issue.ID) != "" && strings.TrimSpace(card.IssueID) != "" && strings.TrimSpace(issue.ID) == strings.TrimSpace(card.IssueID) {
+		return sheetSessionMatchesProject(issue.ProjectID, card)
+	}
+	return issueIdentifier(issue) == card.Identifier && sheetSessionMatchesProject(issue.ProjectID, card)
 }
 
 func boardCardBlockedWaitingText(card projectKanbanCard) string {
