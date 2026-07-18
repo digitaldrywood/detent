@@ -531,7 +531,7 @@ without re-asking. For an early "use label for this repo" answer, record
 Ask: "Use ProjectV2 board mode, boardless issue-field mode, or repository label
 mode?" Explain that this answer maps to `tracker.github_status_source:
 project_v2`, `tracker.github_status_source: issue_field`, or
-`tracker.github_status_source: label` in `WORKFLOW.md`. Do not choose label
+`tracker.github_status_source: label` in `detent.yaml`. Do not choose label
 mode for the operator, and do not infer ProjectV2, issue-field, or label mode
 from existing registered projects.
 
@@ -1648,7 +1648,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    cat "$ONBOARDING_DIR/status-options.before-detent.txt"
    ```
 
-   Detent will add missing canonical `Status` options from `WORKFLOW.md` on
+   Detent will add missing canonical `Status` options from `detent.yaml` on
    first run and reorder known options into Detent's configured order. It
    preserves extra custom options after the configured Detent states; do not
    delete a custom option unless the operator confirms it is a predecessor
@@ -1666,7 +1666,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    Compare option names against the configured Detent states, including
    case-only differences such as `In progress` versus `In Progress`. If this
-   project uses custom state names in `WORKFLOW.md`, replace the default list
+   project uses custom state names in `detent.yaml`, replace the default list
    below with those configured states. Verify:
 
    ```sh
@@ -2061,8 +2061,8 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    ```sh
    KANBAN_MODE="${KANBAN_MODE:?set KANBAN_MODE to read_only or integration from answers.env}"
-   perl -0pi -e "s#(?m)^    mode: (read_only|integration)$#    mode: ${KANBAN_MODE}#" <source-root>/WORKFLOW.md
-   rg -n "kanban:|mode: ${KANBAN_MODE}|show_blocked_alerts|allowed_transitions" <source-root>/WORKFLOW.md
+   perl -0pi -e "s#(?m)^    mode: (read_only|integration)$#    mode: ${KANBAN_MODE}#" <source-root>/detent.yaml
+   rg -n "kanban:|mode: ${KANBAN_MODE}|show_blocked_alerts|allowed_transitions" <source-root>/detent.yaml
    ```
 
 4. **Set the dashboard bind from the interview.** This writes the default
@@ -2071,8 +2071,8 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    Verify:
 
    ```sh
-   perl -0pi -e 's#(?m)^  host: .*$#  host: <dashboard-host>#' <source-root>/WORKFLOW.md
-   rg -n '^server:|host: <dashboard-host>|port:' <source-root>/WORKFLOW.md
+   perl -0pi -e 's#(?m)^  host: .*$#  host: <dashboard-host>#' <source-root>/detent.yaml
+   rg -n '^server:|host: <dashboard-host>|port:' <source-root>/detent.yaml
    ```
 
 5. **Set the worker model from the interview.** Render the explicit answer in
@@ -2104,7 +2104,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    ```sh
    rg -n '^gate:|kind: <command|human_review>|run: <gate-command>|require_automated_review: <true|false>|ci_failure_action: <skip|rework>|validator:|enabled: <true|false>|min_score: <score>|block_on:|approval_label: <label>' \
-     <source-root>/WORKFLOW.md
+     <source-root>/detent.yaml
    ```
 
    Command gate shape:
@@ -2201,7 +2201,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    ```sh
    rg -n 'max_concurrent_agents: <max>|Merging: 1|dispatch_priority_by_label:|auto_promote:|dependency_auto_unblock:|enabled: <true|false>|quiet_seconds: <seconds>|optout_label: <label>|allowed_issue_labels:|gate_wait_state:|gate_wait_timeout_seconds:|rework_limit:|source_states:|target_state:|readiness:' \
-     <source-root>/WORKFLOW.md
+     <source-root>/detent.yaml
    ```
 
    Label tie-breaker shape:
@@ -2402,7 +2402,7 @@ The `agent.skills` keys and defaults are:
 | `creation.enabled` | `true` | Allow agents to propose skill drafts. |
 | `creation.max_drafts_per_run` | `1` | Maximum candidate skill files an agent may draft in one run. |
 
-Use this complete default block in `WORKFLOW.md`:
+Use this complete default block in `detent.yaml`:
 
 ```yaml
 agent:
@@ -2489,12 +2489,12 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    issue-field and comment write limits; in label mode it shares REST label,
    issue, and comment write limits. For production or high-volume projects,
    prefer
-   GitHub App installation authentication in `WORKFLOW.md`. Set `instance_name`
+   GitHub App installation authentication in `detent.yaml`. Set `instance_name`
    to the interview answer or the short hostname on new installs. For existing
    installs, preserve
    `env`, `log_level`, `github_token`, `port`, and `instance_name` unless the
    human selected different values. Use a non-4000 port if another Detent
-   instance is already running; keep the dashboard host in `WORKFLOW.md`
+   instance is already running; keep the dashboard host in `detent.yaml`
    `server.host` or pass it with `--host`. Verify:
 
    ```sh
@@ -2524,7 +2524,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    instance_name: <instance-name>
    ```
 
-   GitHub App installation auth is configured in `WORKFLOW.md` with
+   GitHub App installation auth is configured in `detent.yaml` with
    `github_app_id`, `github_app_installation_id`, and either
    `github_app_private_key` or `github_app_private_key_path`.
 

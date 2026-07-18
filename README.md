@@ -1048,7 +1048,7 @@ causes signature verification to fail.
 ### Alert and Scheduled Intake
 
 GitHub projects can turn external events and repository scans into normal board
-issues with an `intake` policy in `WORKFLOW.md`. Intake is disabled by default;
+issues with an `intake` policy in `detent.yaml`. Intake is disabled by default;
 an omitted or empty `sources` list starts no receiver or scanner work.
 
 ```yaml
@@ -1105,7 +1105,7 @@ disables workflow-defined intake for that project.
 ### Scheduled maintenance routines
 
 GitHub and memory-backed projects can schedule repository maintenance agents
-from `WORKFLOW.md`. Detent provides the scheduling, proposal, deduplication, and
+from `detent.yaml`. Detent provides the scheduling, proposal, deduplication, and
 run-ledger mechanism; every sweep criterion remains project-owned configuration
 instead of built-in Go behavior.
 
@@ -1540,7 +1540,7 @@ also fails before SQLite migrations begin.
 
 When Detent is bound to `127.0.0.1`, `curl` from the same host can work while
 `http://<host>:4000/` fails from another machine because loopback is not
-reachable remotely. Set `server.host` in `WORKFLOW.md` for the default bind, or
+reachable remotely. Set `server.host` in `detent.yaml` for the default bind, or
 set `--host` in the CLI command or service `ExecStart`:
 
 ```sh
@@ -2377,7 +2377,7 @@ The selector schema is the same in `projects[].authorization` and
 `tracker.authorization`: `assignee_in`, `author_in`, `priority_in`,
 `labels.include`, `labels.exclude`, `fields`, `and`, and `or`.
 `projects[].authorization` from `global.yaml` is combined with
-`tracker.authorization` from `WORKFLOW.md` as an `and`, so both selectors must
+`tracker.authorization` from `detent.yaml` as an `and`, so both selectors must
 match. Use `@me` inside `assignee_in`, `author_in`, or field selector values to
 match the current instance identity (`github_login` and `name`). For example,
 one common pattern is a global project selector for a broad lane label and a
@@ -2415,7 +2415,7 @@ a fresh lease, the issue is skipped. When the lease timestamp is stale by
 refreshes running claim leases every `heartbeat_seconds`; that value must be
 greater than zero and less than or equal to `ttl_seconds`.
 
-Task-to-model routing also lives in `WORKFLOW.md`. If `agents.backends` is
+Task-to-model routing also lives in `detent.yaml`. If `agents.backends` is
 omitted, routes can reference the legacy `codex` backend built from the top-level
 `codex` block. Routes are evaluated in order, skipping defaults first; the first
 non-default selector match wins, then the single `default` route is used. A
