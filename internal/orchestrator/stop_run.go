@@ -76,11 +76,12 @@ type stopRunReply struct {
 }
 
 type pendingStopRun struct {
-	result     StopRunResult
-	completion *runpkg.Completion
-	running    Running
-	reapDone   bool
-	reapErr    error
+	result        StopRunResult
+	completion    *runpkg.Completion
+	running       Running
+	workerProcess procgroup.Identity
+	reapDone      bool
+	reapErr       error
 }
 
 type operatorStopMetadata struct {
@@ -257,7 +258,10 @@ func (o *Orchestrator) reapPendingOperatorStop(ctx context.Context, state *State
 	if pending == nil {
 		return
 	}
-	outcome, identity, err := o.reapOperatorStopWorker(ctx, running)
+	outcome, identity, err := o.reapOperatorStopWorker(ctx, running, pending.workerProcess)
+	if identity.PID > 0 {
+		pending.workerProcess = identity
+	}
 	pending.reapDone = err == nil
 	pending.reapErr = err
 	if o.logger != nil {
@@ -316,10 +320,14 @@ func (o *Orchestrator) completeOperatorStopCompletion(ctx context.Context, state
 	return result, nil
 }
 
-func (o *Orchestrator) reapOperatorStopWorker(ctx context.Context, running Running) (procgroup.TerminationOutcome, procgroup.Identity, error) {
-	identity, found, err := o.persistedWorkerProcess(ctx, running)
-	if err != nil {
-		return "", procgroup.Identity{}, fmt.Errorf("%w: load persisted identity: %w", ErrStopRunWorkerProcess, err)
+func (o *Orchestrator) reapOperatorStopWorker(ctx context.Context, running Running, identity procgroup.Identity) (procgroup.TerminationOutcome, procgroup.Identity, error) {
+	found := identity.PID > 0
+	if !found {
+		var err error
+		identity, found, err = o.persistedWorkerProcess(ctx, running)
+		if err != nil {
+			return "", procgroup.Identity{}, fmt.Errorf("%w: load persisted identity: %w", ErrStopRunWorkerProcess, err)
+		}
 	}
 	if !found {
 		return procgroup.TerminationOutcomeAlreadyExited, procgroup.Identity{}, nil
