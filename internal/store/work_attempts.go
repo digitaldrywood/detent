@@ -109,6 +109,7 @@ func (s *sqliteStore) RecordWorkAttemptHeartbeat(ctx context.Context, attrs Work
 		GithubRateSnapshotJson: jsonObjectOrDefault(attrs.GitHubRateSnapshotJSON),
 		CiState:                nullString(attrs.CIState),
 		CapacitySnapshotJson:   jsonObjectOrDefault(attrs.CapacitySnapshotJSON),
+		WorkerMetadataJson:     jsonObjectOrDefault(attrs.WorkerMetadataJSON),
 		MetricsJson:            jsonObjectOrDefault(attrs.MetricsJSON),
 		NextAction:             nullString(attrs.NextAction),
 		ErrorClass:             nullString(attrs.ErrorClass),

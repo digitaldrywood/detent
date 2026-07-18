@@ -48,9 +48,10 @@ func TestHandleRunUpdatePersistsRuntimeIdentityHeartbeat(t *testing.T) {
 				GroupID:   4242,
 				StartedAt: processStartedAt,
 			},
-			LastEventAt:     at,
-			LastEvent:       "runtime_identity",
-			RuntimeIdentity: identity,
+			LastEventAt:       at,
+			LastEvent:         "runtime_identity",
+			RuntimeIdentity:   identity,
+			WorkProductPushed: true,
 		},
 	})
 
@@ -66,6 +67,9 @@ func TestHandleRunUpdatePersistsRuntimeIdentityHeartbeat(t *testing.T) {
 	}
 	if running := state.Running[issue.ID]; running.WorkerProcess.PID != 4242 || !running.WorkerProcess.StartedAt.Equal(processStartedAt) {
 		t.Fatalf("running worker process = %#v, want persisted process identity", running.WorkerProcess)
+	}
+	if !terminalRetryMetadataPushed(heartbeat.WorkerMetadataJSON) {
+		t.Fatalf("heartbeat WorkerMetadataJSON = %q, want pushed work product", heartbeat.WorkerMetadataJSON)
 	}
 }
 

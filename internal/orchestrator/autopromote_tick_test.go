@@ -3397,8 +3397,8 @@ func TestTickFailsAndRetriesStaleMergingWithoutStartupTelemetry(t *testing.T) {
 	if !strings.Contains(retry.Error, "did not report process or session startup") {
 		t.Fatalf("Retry[%q].Error = %q, want startup telemetry detail", issue.ID, retry.Error)
 	}
-	if _, ok := state.Claimed[issue.ID]; !ok {
-		t.Fatalf("Claimed[%q] missing after startup timeout", issue.ID)
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present after terminal startup timeout", issue.ID)
 	}
 	for _, fragment := range []string{"merge_worker_failure", "reason=runner_startup_timeout", "did not report process or session startup"} {
 		if !strings.Contains(logs.String(), fragment) {

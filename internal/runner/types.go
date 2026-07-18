@@ -352,6 +352,7 @@ type UsageUpdate struct {
 	LastMessageTruncation *runtimeoutput.Truncation
 	RecentEvents          []telemetry.ActivityEvent
 	RuntimeIdentity       agentidentity.Identity
+	WorkProductPushed     bool
 	Tokens                TokenTotals
 	DiffStats             DiffStats
 	RateLimits            *telemetry.RateLimits

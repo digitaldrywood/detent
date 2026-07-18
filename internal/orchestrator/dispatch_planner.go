@@ -769,12 +769,6 @@ func (p dispatchPlanner) scheduleRetryAfter(
 		Error:      p.operatorText(err),
 		WorkerHost: workerHost,
 	}
-	if _, ok := state.Claimed[issue.ID]; !ok {
-		state.Claimed[issue.ID] = Claimed{
-			Issue:     issue,
-			ClaimedAt: now,
-		}
-	}
 }
 
 func (p dispatchPlanner) operatorText(value string) string {

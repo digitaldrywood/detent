@@ -261,6 +261,48 @@ func TestBoardViewLanes(t *testing.T) {
 	}
 }
 
+func TestBoardViewInProgressLaneCountsOnlyLiveAttempts(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 18, 15, 0, 0, 0, time.UTC)
+	data := DashboardData{
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			BoardIssues: []telemetry.Issue{
+				{ID: "live", Identifier: "digitaldrywood/detent#1", ProjectID: "detent", Title: "Live attempt", State: "In Progress"},
+				{ID: "retry", Identifier: "digitaldrywood/detent#2", ProjectID: "detent", Title: "Retry waiting", State: "In Progress"},
+				{ID: "idle", Identifier: "digitaldrywood/detent#3", ProjectID: "detent", Title: "No live attempt", State: "In Progress"},
+			},
+			Running: []telemetry.Running{{
+				Issue: telemetry.Issue{ID: "live", Identifier: "digitaldrywood/detent#1", ProjectID: "detent", State: "In Progress"},
+			}},
+			Queue: []telemetry.Queued{{
+				Issue: telemetry.Issue{ID: "retry", Identifier: "digitaldrywood/detent#2", ProjectID: "detent", State: "In Progress"},
+			}},
+		},
+		Kanban: KanbanData{States: []string{"In Progress"}},
+	}
+
+	view := boardViewFromDashboard(data)
+	if len(view.Lanes) != 1 {
+		t.Fatalf("lanes = %d, want 1", len(view.Lanes))
+	}
+	lane := view.Lanes[0]
+	if lane.Count != "3 (1 live)" || !lane.Live {
+		t.Fatalf("In Progress lane count/live = %q/%v, want 3 (1 live)/true", lane.Count, lane.Live)
+	}
+	cards := make(map[string]boardCardView, len(lane.Cards))
+	for _, card := range lane.Cards {
+		cards[card.IssueID] = card
+	}
+	if !cards["live"].Running || cards["retry"].Running || cards["idle"].Running {
+		t.Fatalf("card live states = live:%v retry:%v idle:%v", cards["live"].Running, cards["retry"].Running, cards["idle"].Running)
+	}
+	if cards["retry"].ExtraText != "Awaiting retry" || cards["idle"].ExtraText != "No live attempt" {
+		t.Fatalf("card wait signals = retry:%q idle:%q", cards["retry"].ExtraText, cards["idle"].ExtraText)
+	}
+}
+
 func TestRecentCompletionCardSuppressesMoveDisabledBadge(t *testing.T) {
 	t.Parallel()
 
@@ -639,8 +681,11 @@ func TestRunningBoardCardKeepsRuntimeBadgeWithOperationalStatus(t *testing.T) {
 				WaitDetail:      "Awaiting tool result",
 				RuntimeIdentity: tt.identity,
 			}
+			data := DashboardData{Snapshot: telemetry.Snapshot{Running: []telemetry.Running{{
+				Issue: telemetry.Issue{ID: card.IssueID, Identifier: card.Identifier, ProjectID: card.ProjectID},
+			}}}}
 			view := boardCardViewFromCard(
-				DashboardData{},
+				data,
 				projectKanbanLane{Title: "In Progress"},
 				card,
 				false,

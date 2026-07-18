@@ -3976,14 +3976,15 @@ SET heartbeat_at = ?,
     github_rate_snapshot_json = ?,
     ci_state = ?,
     capacity_snapshot_json = ?,
+    worker_metadata_json = ?,
     metrics_json = ?,
     next_action = ?,
     error_class = ?,
     error_message = ?,
-    detent_session_id = COALESCE(?17, detent_session_id),
-    provider_session_id = COALESCE(?18, provider_session_id),
-    runtime_identity_json = COALESCE(NULLIF(?19, '{}'), runtime_identity_json)
-WHERE id = ?20
+    detent_session_id = COALESCE(?18, detent_session_id),
+    provider_session_id = COALESCE(?19, provider_session_id),
+    runtime_identity_json = COALESCE(NULLIF(?20, '{}'), runtime_identity_json)
+WHERE id = ?21
   AND completed_at IS NULL
 `
 
@@ -4000,6 +4001,7 @@ type UpdateWorkAttemptHeartbeatParams struct {
 	GithubRateSnapshotJson string         `json:"github_rate_snapshot_json"`
 	CiState                sql.NullString `json:"ci_state"`
 	CapacitySnapshotJson   string         `json:"capacity_snapshot_json"`
+	WorkerMetadataJson     string         `json:"worker_metadata_json"`
 	MetricsJson            string         `json:"metrics_json"`
 	NextAction             sql.NullString `json:"next_action"`
 	ErrorClass             sql.NullString `json:"error_class"`
@@ -4024,6 +4026,7 @@ func (q *Queries) UpdateWorkAttemptHeartbeat(ctx context.Context, arg UpdateWork
 		arg.GithubRateSnapshotJson,
 		arg.CiState,
 		arg.CapacitySnapshotJson,
+		arg.WorkerMetadataJson,
 		arg.MetricsJson,
 		arg.NextAction,
 		arg.ErrorClass,

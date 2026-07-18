@@ -142,6 +142,7 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 		o.releaseClaim(state, running.Issue.ID)
 		return true
 	}
+	running.Issue, _ = o.demoteTerminalAttemptRetry(ctx, state, running.Issue, running.WorkProductPushed, event.CompletedAt)
 	o.scheduleBackendCapacityRetry(state, running, outage)
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,

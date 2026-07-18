@@ -66,6 +66,9 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	if event.usage.WorkspacePath != "" {
 		running.WorkspacePath = event.usage.WorkspacePath
 	}
+	if event.usage.WorkProductPushed {
+		running.WorkProductPushed = true
+	}
 	if diffStatsPresent(event.usage.DiffStats) {
 		running.DiffStats = event.usage.DiffStats
 	}
@@ -122,6 +125,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if !event.Result.RuntimeIdentity.IsZero() {
 		running.RuntimeIdentity = running.RuntimeIdentity.Merge(event.Result.RuntimeIdentity)
 	}
+	running.WorkProductPushed = running.WorkProductPushed || event.Result.PullRequestHeadPushed || event.Result.PullRequestUpdated
 	if event.Result.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
@@ -129,6 +133,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		running.cancel()
 	}
 	delete(state.Running, event.IssueID)
+	if event.Err != nil {
+		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
+	}
 	if event.Err == nil || event.Result.TurnStarted {
 		o.recordProjectFailureBreakerProgress(state, event.IssueID, event.CompletedAt)
 		o.advanceDispatchRecovery(state, event.IssueID, event.CompletedAt)
@@ -243,6 +250,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		}
 		if o.tripRepeatedFailureCircuitBreaker(ctx, state, event, running, attempt) {
 			return
+		}
+		if terminalAttemptStateRetryDemotable(terminalState) {
+			running.Issue, _ = o.demoteTerminalAttemptRetry(ctx, state, running.Issue, running.WorkProductPushed, event.CompletedAt)
 		}
 		delay := event.RetryDelay
 		if delay <= 0 {

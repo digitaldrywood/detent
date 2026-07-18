@@ -104,6 +104,7 @@ type Running struct {
 	LastMessageTruncation *runtimeoutput.Truncation
 	RecentEvents          []telemetry.ActivityEvent
 	DiffStats             DiffStats
+	WorkProductPushed     bool
 	Tokens                TokenTotals
 	CapacityScope         backendcapacity.Scope
 	CapacityProbe         bool
