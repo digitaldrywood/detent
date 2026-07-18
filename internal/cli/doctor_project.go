@@ -161,10 +161,11 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 	jobs := make([]doctorCheckJob, 0, len(cfg.Projects))
 	for _, project := range cfg.Projects {
 		id := doctorProjectID(project)
-		progress := &doctorCheckProgress{}
+		progress := newDoctorCheckProgress()
 		jobs = append(jobs, doctorCheckJob{
-			Name:    "Project " + id + " checks",
-			Current: progress.Current,
+			Name:     "Project " + id + " checks",
+			Current:  progress.Current,
+			Progress: progress.Updates(),
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return checkDoctorProjectWithProgress(jobCtx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes, workflowTokenThreshold, progress.Set)
 			},

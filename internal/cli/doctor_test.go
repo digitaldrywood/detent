@@ -4625,6 +4625,33 @@ func TestRunDoctorCheckTimeoutReportsCurrentInnerCheck(t *testing.T) {
 	}
 }
 
+func TestRunDoctorCheckRenewsTimeoutForReportedProgress(t *testing.T) {
+	t.Parallel()
+
+	const timeout = 100 * time.Millisecond
+	progress := newDoctorCheckProgress()
+	checks := runDoctorCheck(context.Background(), doctorCheckJob{
+		Name:     "Project alpha checks",
+		Current:  progress.Current,
+		Progress: progress.Updates(),
+		Run: func(ctx context.Context) []doctorCheck {
+			for _, name := range []string{"first", "second", "third"} {
+				progress.Set("Project alpha " + name)
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-time.After(60 * time.Millisecond):
+				}
+			}
+			return []doctorCheck{{Name: "Project alpha checks", Status: doctorOK, Detail: "done"}}
+		},
+	}, timeout)
+
+	if len(checks) != 1 || checks[0].Status != doctorOK {
+		t.Fatalf("checks = %#v, want completed project checks", checks)
+	}
+}
+
 func TestDoctorProjectCheckJobTimeoutReportsCurrentInnerCheck(t *testing.T) {
 	t.Parallel()
 
