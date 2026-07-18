@@ -32,6 +32,36 @@ type ProjectDefinitionMigrationPlan struct {
 	Noop            bool                                  `json:"noop"`
 	changes         []projectDefinitionMigrationChange
 	expectedConfig  Config
+	githubToken     string
+}
+
+type ProjectDefinitionMigrationOption func(*projectDefinitionMigrationOptions)
+
+type projectDefinitionMigrationOptions struct {
+	githubToken         string
+	githubTokenResolver func(Config) (string, error)
+}
+
+func WithProjectDefinitionMigrationGitHubToken(token string) ProjectDefinitionMigrationOption {
+	return func(options *projectDefinitionMigrationOptions) {
+		options.githubToken = strings.TrimSpace(token)
+	}
+}
+
+func WithProjectDefinitionMigrationGitHubTokenResolver(
+	resolve func(Config) (string, error),
+) ProjectDefinitionMigrationOption {
+	return func(options *projectDefinitionMigrationOptions) {
+		options.githubTokenResolver = resolve
+	}
+}
+
+func (o projectDefinitionMigrationOptions) resolveGitHubToken(cfg Config) (string, error) {
+	if o.githubToken != "" || o.githubTokenResolver == nil {
+		return o.githubToken, nil
+	}
+	token, err := o.githubTokenResolver(cfg)
+	return strings.TrimSpace(token), err
 }
 
 type projectDefinitionMigrationChange struct {
@@ -47,7 +77,12 @@ type projectDefinitionMigrationOS struct {
 	remove func(string) error
 }
 
-func PlanProjectDefinitionMigration(path string) (ProjectDefinitionMigrationPlan, error) {
+func PlanProjectDefinitionMigration(path string, optionFns ...ProjectDefinitionMigrationOption) (ProjectDefinitionMigrationPlan, error) {
+	options := projectDefinitionMigrationOptions{}
+	for _, option := range optionFns {
+		option(&options)
+	}
+
 	sources, err := readProjectDefinitionSources(path)
 	if err != nil {
 		return ProjectDefinitionMigrationPlan{}, err
@@ -79,6 +114,7 @@ func PlanProjectDefinitionMigration(path string) (ProjectDefinitionMigrationPlan
 		LegacyKeys:      legacyKeys,
 		LocalLegacyKeys: localLegacyKeys,
 		SemanticDiff:    "effective Detent configuration: unchanged",
+		githubToken:     options.githubToken,
 	}
 
 	if layout == ProjectDefinitionSplit {
@@ -86,7 +122,12 @@ func PlanProjectDefinitionMigration(path string) (ProjectDefinitionMigrationPlan
 		if loadErr != nil {
 			return ProjectDefinitionMigrationPlan{}, loadErr
 		}
-		if validateErr := workflow.Config.Validate(); validateErr != nil {
+		githubToken, resolveErr := options.resolveGitHubToken(workflow.Config)
+		if resolveErr != nil {
+			return ProjectDefinitionMigrationPlan{}, resolveErr
+		}
+		plan.githubToken = githubToken
+		if validateErr := validateProjectDefinitionMigrationConfig(workflow.Config, githubToken); validateErr != nil {
 			return ProjectDefinitionMigrationPlan{}, fmt.Errorf("validate split project definition: %w", validateErr)
 		}
 		plan.Noop = true
@@ -112,7 +153,12 @@ func PlanProjectDefinitionMigration(path string) (ProjectDefinitionMigrationPlan
 	if err != nil {
 		return ProjectDefinitionMigrationPlan{}, err
 	}
-	if err := before.Config.Validate(); err != nil {
+	githubToken, err := options.resolveGitHubToken(before.Config)
+	if err != nil {
+		return ProjectDefinitionMigrationPlan{}, err
+	}
+	plan.githubToken = githubToken
+	if err := validateProjectDefinitionMigrationConfig(before.Config, githubToken); err != nil {
 		return ProjectDefinitionMigrationPlan{}, fmt.Errorf("validate legacy effective configuration: %w", err)
 	}
 	plan.expectedConfig = before.Config
@@ -141,7 +187,7 @@ func PlanProjectDefinitionMigration(path string) (ProjectDefinitionMigrationPlan
 	if err != nil {
 		return ProjectDefinitionMigrationPlan{}, fmt.Errorf("validate proposed split project definition: %w", err)
 	}
-	if err := after.Config.Validate(); err != nil {
+	if err := validateProjectDefinitionMigrationConfig(after.Config, githubToken); err != nil {
 		return ProjectDefinitionMigrationPlan{}, fmt.Errorf("validate proposed split effective configuration: %w", err)
 	}
 	equivalent, err := semanticallyEqualProjectConfigs(before.Config, after.Config)
@@ -174,6 +220,14 @@ func PlanProjectDefinitionMigration(path string) (ProjectDefinitionMigrationPlan
 		return plan.Operations[i].Path < plan.Operations[j].Path
 	})
 	return plan, nil
+}
+
+func validateProjectDefinitionMigrationConfig(cfg Config, githubToken string) error {
+	githubToken = strings.TrimSpace(githubToken)
+	if githubToken != "" && (cfg.Tracker.Kind == TrackerGitHub || cfg.Tracker.Kind == TrackerGitHubLocal) {
+		cfg.Tracker.APIKey = githubToken
+	}
+	return cfg.Validate()
 }
 
 func semanticallyEqualProjectConfigs(left Config, right Config) (bool, error) {
@@ -382,7 +436,7 @@ func applyProjectDefinitionMigration(plan ProjectDefinitionMigrationPlan, ops pr
 	if err != nil {
 		return rollbackProjectDefinitionMigration(staged, ops, fmt.Errorf("validate installed split project definition: %w", err))
 	}
-	if err := result.Config.Validate(); err != nil {
+	if err := validateProjectDefinitionMigrationConfig(result.Config, plan.githubToken); err != nil {
 		return rollbackProjectDefinitionMigration(staged, ops, fmt.Errorf("validate installed split effective configuration: %w", err))
 	}
 	equivalent, err := semanticallyEqualProjectConfigs(plan.expectedConfig, result.Config)

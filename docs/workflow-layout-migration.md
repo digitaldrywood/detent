@@ -55,6 +55,15 @@ For an explicitly confirmed non-interactive operation:
 detent fix workflow-layout --workflow /absolute/definition/root/WORKFLOW.md --yes
 ```
 
+The fixer resolves the global config through the same path rules as normal
+startup: `--config`, `CONFIG`, `CONFIG_HOME`, the deprecated `DETENT_CONFIG`
+and `DETENT_HOME` fallbacks, then the native user config directory or legacy
+`~/.detent/global.yaml`. For a GitHub project that does not declare a usable
+project-local token or GitHub App credential, authentication resolves in
+runtime order from `GITHUB_TOKEN` and then the top-level `github_token` value.
+The `gh`, `gh-auth`, `${gh auth token}`, and `$(gh auth token)` values invoke
+`gh auth token` exactly as they do during startup and `detent doctor`.
+
 The repair validates the legacy effective configuration before staging any
 write. It moves shared structured configuration into schema version 1
 `detent.yaml` and leaves the `WORKFLOW.md` body byte-for-byte unchanged.
@@ -72,7 +81,9 @@ command after success reports a no-op.
 
 Environment-variable references remain references throughout diagnosis,
 preview, migration, and equivalence checking. Detent does not resolve or print
-secret values during this workflow.
+secret values during this workflow. A resolved runtime token is used only to
+validate the legacy, proposed, and installed effective configurations; it is
+never added to `detent.yaml`, `detent.local.yaml`, or either workflow file.
 
 ## Local Overlays
 
