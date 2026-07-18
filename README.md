@@ -960,6 +960,12 @@ per-project directory under `workspace.root/.detent/cache`, prepend the shared
 `GOBIN` to `PATH`, and reuse compiled dependencies and tools across worktrees
 and Detent restarts. `TMPDIR`, `TMP`, and `TEMP` remain per-turn in both modes.
 
+When `workspace.auto_branch` is enabled and the source repository has an
+`origin` remote, Detent fetches that remote's default branch before creating a
+new managed branch. The source checkout's current branch and `HEAD` do not
+affect the new branch base. Existing managed branches are reused unchanged;
+local-only repositories without an `origin` continue to use `HEAD`.
+
 `workspace.cleanup_idle_ttl_ms` controls how long non-active observed
 workspaces can sit idle before cleanup. Terminal issues are cleaned on the next
 poll when observed. `workspace.cleanup_sweep_interval_ms` controls the startup

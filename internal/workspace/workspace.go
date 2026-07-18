@@ -550,7 +550,11 @@ func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch 
 			return err
 		}
 
-		_, err = l.runGit(ctx, "worktree", "add", "-b", branch, path, "HEAD")
+		baseRef, err := l.newBranchBaseRef(ctx)
+		if err != nil {
+			return err
+		}
+		_, err = l.runGit(ctx, "worktree", "add", "-b", branch, path, baseRef)
 		return err
 	})
 }
@@ -594,6 +598,36 @@ func withCommandOutput(err error) error {
 		return err
 	}
 	return fmt.Errorf("%w\n%s", err, output)
+}
+
+func (l *LocalGit) newBranchBaseRef(ctx context.Context) (string, error) {
+	remotes, err := l.runGit(ctx, "remote")
+	if err != nil {
+		return "", fmt.Errorf("list git remotes: %w", err)
+	}
+	if !stringListContains(remotes, defaultGitRemote) {
+		return "HEAD", nil
+	}
+
+	branch, err := remoteDefaultBranch(ctx, l.sourceRoot, defaultGitRemote)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s default branch: %w", defaultGitRemote, err)
+	}
+	remoteRef := defaultGitRemote + "/" + branch
+	refspec := "+refs/heads/" + branch + ":refs/remotes/" + remoteRef
+	if _, err := l.runGit(ctx, "fetch", defaultGitRemote, refspec); err != nil {
+		return "", fmt.Errorf("fetch remote default branch %s: %w", remoteRef, err)
+	}
+	return remoteRef, nil
+}
+
+func stringListContains(list string, want string) bool {
+	for _, value := range strings.Fields(list) {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (l *LocalGit) workspaceOnExpectedBranch(ctx context.Context, path string, branch string) (bool, string, error) {

@@ -244,7 +244,6 @@ func TestLocalGitCreatePrunesMissingRegisteredWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLocalGit() error = %v", err)
 	}
-
 	issue := Issue{Identifier: "DD-STALE-REGISTRATION"}
 	first, err := backend.Create(context.Background(), issue)
 	if err != nil {
@@ -286,7 +285,6 @@ func TestLocalGitCreateIncludesWorktreeAddStderr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLocalGit() error = %v", err)
 	}
-
 	occupiedPath := filepath.Join(t.TempDir(), "occupied-worktree")
 	runGit(t, source, "worktree", "add", "-b", "detent/dd-conflict", occupiedPath, "HEAD")
 
@@ -410,6 +408,99 @@ func TestRunWorktreeAddWithPrune(t *testing.T) {
 				t.Errorf("add calls = %d, want %d", addCalls, tt.wantAdds)
 			}
 		})
+	}
+}
+
+func TestLocalGitCreateBasesNewBranchOnFetchedRemoteDefault(t *testing.T) {
+	t.Parallel()
+
+	source := initSourceRepo(t)
+	remote := initBareRemote(t)
+	runGit(t, source, "remote", "add", "origin", remote)
+	runGit(t, source, "push", "-u", "origin", "main")
+	runGit(t, source, "switch", "-c", "dev")
+	if err := os.WriteFile(filepath.Join(source, "dev.txt"), []byte("dev\n"), 0o600); err != nil {
+		t.Fatalf("write dev file: %v", err)
+	}
+	runGit(t, source, "add", "dev.txt")
+	runGit(t, source, "commit", "-m", "add dev branch")
+	runGit(t, source, "push", "-u", "origin", "dev")
+	runGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/dev")
+
+	runGit(t, source, "switch", "-c", "local-feature", "main")
+	if err := os.WriteFile(filepath.Join(source, "local-only.txt"), []byte("local only\n"), 0o600); err != nil {
+		t.Fatalf("write local-only file: %v", err)
+	}
+	runGit(t, source, "add", "local-only.txt")
+	runGit(t, source, "commit", "-m", "add local-only change")
+
+	publisher := filepath.Join(t.TempDir(), "publisher")
+	runCommand(t, t.TempDir(), "git", "clone", remote, publisher)
+	runGit(t, publisher, "config", "user.name", "Test Publisher")
+	runGit(t, publisher, "config", "user.email", "publisher@example.com")
+	if err := os.WriteFile(filepath.Join(publisher, "remote-latest.txt"), []byte("remote latest\n"), 0o600); err != nil {
+		t.Fatalf("write remote-latest file: %v", err)
+	}
+	runGit(t, publisher, "add", "remote-latest.txt")
+	runGit(t, publisher, "commit", "-m", "advance remote dev")
+	runGit(t, publisher, "push", "origin", "dev")
+	wantHead := strings.TrimSpace(runGit(t, publisher, "rev-parse", "HEAD"))
+
+	backend, err := NewLocalGit(LocalGitOptions{
+		Root:       filepath.Join(t.TempDir(), "workspaces"),
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewLocalGit() error = %v", err)
+	}
+	info, err := backend.Create(context.Background(), Issue{Identifier: "DD-REMOTE-DEFAULT"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if got := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")); got != wantHead {
+		t.Fatalf("worktree HEAD = %q, want remote default HEAD %q", got, wantHead)
+	}
+	if got := readFile(t, filepath.Join(info.Path, "remote-latest.txt")); got != "remote latest\n" {
+		t.Fatalf("remote-latest.txt = %q, want remote latest content", got)
+	}
+	if _, err := os.Stat(filepath.Join(info.Path, "local-only.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("local-only.txt stat error = %v, want file absent", err)
+	}
+}
+
+func TestLocalGitCreateDoesNotFallBackWhenOriginIsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	source := initSourceRepo(t)
+	runGit(t, source, "remote", "add", "origin", filepath.Join(t.TempDir(), "missing.git"))
+	backend, err := NewLocalGit(LocalGitOptions{
+		Root:       filepath.Join(t.TempDir(), "workspaces"),
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewLocalGit() error = %v", err)
+	}
+	issue := Issue{Identifier: "DD-UNAVAILABLE-ORIGIN"}
+
+	_, err = backend.Create(context.Background(), issue)
+	if err == nil {
+		t.Fatal("Create() error = nil, want unavailable origin error")
+	}
+	if !strings.Contains(err.Error(), "resolve origin default branch") {
+		t.Fatalf("Create() error = %v, want remote default branch context", err)
+	}
+	info, infoErr := backend.infoForIssue(issue)
+	if infoErr != nil {
+		t.Fatalf("infoForIssue() error = %v", infoErr)
+	}
+	if _, statErr := os.Stat(info.Path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("workspace stat error = %v, want workspace absent", statErr)
+	}
+	if branchExists(t, source, info.Branch) {
+		t.Fatalf("branch %q exists after failed Create()", info.Branch)
 	}
 }
 
