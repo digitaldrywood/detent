@@ -171,6 +171,46 @@ func TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt(t *test
 	}
 }
 
+func TestReconcileTerminalAttemptRetryStatesRespectsLiveForeignClaim(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 18, 13, 30, 0, 0, time.UTC)
+	foreign := terminalRetryTestIssue("foreign-claim")
+	foreign.Assignees = []string{"other-worker"}
+	foreign.Fields["Lease"] = formatClaimTime(now.Add(-30 * time.Second))
+	tracker := &terminalRetryConnector{issues: map[string]connector.Issue{foreign.ID: cloneIssue(foreign)}}
+	cfg := normalizeConfig(Config{
+		ActiveStates:   []string{"Todo", "In Progress"},
+		TerminalStates: []string{"Done"},
+		Claiming: ClaimingConfig{
+			Enabled:       true,
+			AssigneeLogin: "detent-worker",
+			LeaseField:    "Lease",
+			LeaseTTL:      time.Minute,
+		},
+	})
+	o := &Orchestrator{cfg: cfg, connector: tracker}
+	state := newState(cfg)
+	state.WorkAttempts = []telemetry.WorkAttempt{{
+		AttemptID:     1,
+		IssueID:       foreign.ID,
+		Identifier:    foreign.Identifier,
+		Status:        string(store.WorkAttemptStatusTerminal),
+		TerminalState: string(store.WorkAttemptTerminalFailure),
+		ErrorClass:    "runner_error",
+		CompletedAt:   timePointer(now.Add(-time.Minute)),
+	}}
+
+	transitions := o.reconcileTerminalAttemptRetryStates(t.Context(), &state, []connector.Issue{foreign}, now)
+
+	if len(transitions) != 0 {
+		t.Fatalf("transitions = %#v, want active foreign claim left In Progress", transitions)
+	}
+	if got := tracker.transitionStates(); len(got) != 0 {
+		t.Fatalf("state transitions = %v, want none", got)
+	}
+}
+
 func TestTerminalAttemptDemotionLetsUrgentTodoRankFirst(t *testing.T) {
 	t.Parallel()
 

@@ -23,7 +23,8 @@ func (o *Orchestrator) demoteTerminalAttemptRetry(
 	if o == nil || o.connector == nil ||
 		normalizeState(issue.State) != normalizeState(planImplementationState) ||
 		terminalAttemptHasWorkProduct(issue, workProductPushed) ||
-		pullRequestHydrationBlocksProgress(issue.PullRequest) {
+		pullRequestHydrationBlocksProgress(issue.PullRequest) ||
+		o.terminalAttemptClaimBlocksDemotion(ctx, issue, at) {
 		return issue, false
 	}
 	targetState := terminalAttemptTodoState(o.cfg.ActiveStates)
@@ -134,6 +135,17 @@ func (o *Orchestrator) reconcileTerminalAttemptRetryStates(
 		}
 	}
 	return transitions
+}
+
+func (o *Orchestrator) terminalAttemptClaimBlocksDemotion(ctx context.Context, issue connector.Issue, now time.Time) bool {
+	if !o.cfg.Claiming.Enabled {
+		return false
+	}
+	owner := o.claimOwner()
+	if owner == "" || o.cfg.Claiming.LeaseField == "" || o.fieldClaimMissingOwnerField() {
+		return true
+	}
+	return !o.claimable(ctx, issue, owner, now)
 }
 
 func latestTerminalAttemptsByIssue(attempts []telemetry.WorkAttempt) map[string]telemetry.WorkAttempt {
