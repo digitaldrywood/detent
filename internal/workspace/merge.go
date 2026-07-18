@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-const defaultMergeRemote = "origin"
+const defaultGitRemote = "origin"
 
 func (l *LocalGit) PrepareMerge(
 	ctx context.Context,
@@ -23,7 +23,7 @@ func (l *LocalGit) PrepareMerge(
 	}
 	remote := strings.TrimSpace(opts.Remote)
 	if remote == "" {
-		remote = defaultMergeRemote
+		remote = defaultGitRemote
 	}
 	targetBranch := strings.TrimSpace(opts.TargetBranch)
 	if targetBranch == "" {
