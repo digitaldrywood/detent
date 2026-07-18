@@ -110,7 +110,7 @@ func mergeRevocationForIssue(issue connector.Issue, cfg Config, checkPullRequest
 		return mergeRevocation{
 			issue:       cloneIssue(issue),
 			reason:      mergeRevocationDraftPullRequest,
-			targetState: autoPromoteSourceState,
+			targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).SourceState,
 		}, true
 	case "closed":
 		return mergeRevocation{
@@ -121,6 +121,13 @@ func mergeRevocationForIssue(issue connector.Issue, cfg Config, checkPullRequest
 	default:
 		return mergeRevocation{}, false
 	}
+}
+
+func mergeRevocationRequiresImmediateStop(revocation mergeRevocation, result runpkg.RunResult) bool {
+	if revocation.reason != mergeRevocationCITriggerLabelRemoved {
+		return true
+	}
+	return !result.PullRequestHeadPushed || result.CITriggerLabelReapplied
 }
 
 func mergeApprovalLabelRevoked(issue connector.Issue, cfg Config) (string, bool) {

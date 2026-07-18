@@ -177,3 +177,25 @@ func TestProgrammaticMergeRechecksEligibilityBeforeMerge(t *testing.T) {
 		t.Fatalf("work attempt completions = %#v, want merge_revoked", attempts.completions)
 	}
 }
+
+func TestDraftMergeRevocationUsesConfiguredSourceState(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{SourceState: "Review"}})
+	issue := connector.Issue{
+		ID:    "issue-custom-review-lane",
+		State: "Merging",
+		PullRequest: &connector.PullRequest{
+			State: "OPEN",
+			Draft: true,
+		},
+	}
+
+	revocation, revoked := mergeRevocationForIssue(issue, cfg, true)
+	if !revoked {
+		t.Fatal("mergeRevocationForIssue() did not revoke a draft pull request")
+	}
+	if revocation.targetState != "Review" {
+		t.Fatalf("target state = %q, want configured source state Review", revocation.targetState)
+	}
+}
