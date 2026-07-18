@@ -195,6 +195,7 @@ type Orchestrator struct {
 	issueBudgetStatus       runpkg.IssueBudgetStatusProvider
 	now                     func() time.Time
 	retrospector            Retrospector
+	heartbeats              *heartbeatManager
 	hydrationSkipStreaks    map[string]int
 	hydrationWarned         bool
 	ciTriggerLabelMu        sync.Mutex
@@ -373,7 +374,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		return nil, err
 	}
 
-	return &Orchestrator{
+	orchestrator := &Orchestrator{
 		cfg:                     cfg,
 		connector:               deps.Connector,
 		workflowMetrics:         deps.WorkflowMetrics,
@@ -419,7 +420,9 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		done:                    make(chan struct{}),
 		pendingStops:            map[string]*pendingStopRun{},
 		completedStops:          map[string]StopRunResult{},
-	}, nil
+	}
+	orchestrator.heartbeats = newHeartbeatManager(cfg, deps.Connector, deps.WorkAttempts, now, logger)
+	return orchestrator, nil
 }
 
 type ciTriggerLabelHead struct {
@@ -433,6 +436,20 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	}
 	defer close(o.done)
 	defer o.markGlobalProjectIdle()
+	heartbeatCtx, stopHeartbeats := context.WithCancel(ctx)
+	heartbeatsDone := make(chan struct{})
+	var heartbeatResults <-chan heartbeatResult
+	if o.heartbeats != nil {
+		heartbeatResults = o.heartbeats.results
+	}
+	go func() {
+		defer close(heartbeatsDone)
+		o.heartbeats.Run(heartbeatCtx)
+	}()
+	defer func() {
+		stopHeartbeats()
+		<-heartbeatsDone
+	}()
 
 	ticker := time.NewTicker(o.cfg.PollInterval)
 	defer ticker.Stop()
@@ -472,6 +489,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.handleRunResult(ctx, &state, result)
 		case update := <-o.runUpdates:
 			o.handleRunUpdate(&state, update)
+		case result := <-heartbeatResults:
+			o.handleHeartbeatResult(&state, result)
 		case event := <-o.validatorCapacityEvents:
 			o.handleValidatorCapacityEvent(&state, event)
 		case request := <-o.drainRequests:
@@ -670,6 +689,7 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	if update.Connector != nil {
 		o.connector = update.Connector
 	}
+	o.heartbeats.configure(cfg, o.connector, o.workAttempts)
 	if update.ReplaceRelease {
 		o.release = update.Release
 		if update.Release == nil {
@@ -740,6 +760,7 @@ func (o *Orchestrator) forceQuit(ctx context.Context, state *State, now time.Tim
 	var err error
 	for _, issueID := range sortedKeys(state.Running) {
 		o.cancelRunning(state, issueID)
+		o.heartbeats.remove(issueID)
 		err = errors.Join(err, o.abandonClaim(ctx, issueID))
 		delete(state.Running, issueID)
 		delete(state.Claimed, issueID)

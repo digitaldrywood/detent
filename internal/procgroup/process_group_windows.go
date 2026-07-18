@@ -22,6 +22,21 @@ func GroupID(*exec.Cmd) int {
 	return 0
 }
 
+func Deprioritize(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 0 {
+		return ErrProcessNotRunning
+	}
+	handle, err := openProcess(cmd.Process.Pid, windows.PROCESS_SET_INFORMATION)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(handle)
+	if err := windows.SetPriorityClass(handle, windows.BELOW_NORMAL_PRIORITY_CLASS); err != nil {
+		return fmt.Errorf("set worker process %d priority: %w", cmd.Process.Pid, err)
+	}
+	return nil
+}
+
 func TerminateTree(cmd *exec.Cmd, _ int) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil

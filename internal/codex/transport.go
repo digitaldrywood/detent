@@ -101,6 +101,17 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 		}
 		return nil, fmt.Errorf("start command: %w", err)
 	}
+	if err := procgroup.Deprioritize(cmd); err != nil {
+		terminateErr := procgroup.TerminateTree(cmd, procgroup.GroupID(cmd))
+		waitErr := cmd.Wait()
+		closeErr := stdin.Close()
+		return nil, errors.Join(
+			fmt.Errorf("deprioritize worker process: %w", err),
+			terminateErr,
+			waitErr,
+			closeErr,
+		)
+	}
 	workerProcess, err := procgroup.Inspect(cmd)
 	if err != nil {
 		terminateErr := procgroup.TerminateTree(cmd, procgroup.GroupID(cmd))

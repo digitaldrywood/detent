@@ -26,7 +26,7 @@ func (o *Orchestrator) claimIssue(ctx context.Context, issue connector.Issue, no
 	if owner == "" || o.cfg.Claiming.LeaseField == "" || o.fieldClaimMissingOwnerField() {
 		return connector.Issue{}, Claimed{}, false
 	}
-	if !o.claimable(issue, owner, now) {
+	if !o.claimable(ctx, issue, owner, now) {
 		return connector.Issue{}, Claimed{}, false
 	}
 	if err := o.writeClaim(ctx, issue.ID, owner, now); err != nil {
@@ -82,7 +82,7 @@ func (o *Orchestrator) refetchClaimedIssue(ctx context.Context, fallback connect
 	return connector.Issue{}, false
 }
 
-func (o *Orchestrator) claimable(issue connector.Issue, owner string, now time.Time) bool {
+func (o *Orchestrator) claimable(ctx context.Context, issue connector.Issue, owner string, now time.Time) bool {
 	winner := o.claimWinner(issue)
 	if winner == "" || sameClaimOwner(winner, owner) {
 		return true
@@ -91,7 +91,13 @@ func (o *Orchestrator) claimable(issue connector.Issue, owner string, now time.T
 	if !ok {
 		return true
 	}
-	return o.leaseStale(lease, now)
+	if !o.leaseStale(lease, now) {
+		return false
+	}
+	if o.heartbeats != nil && o.heartbeats.protects(issue.ID) {
+		return false
+	}
+	return !o.persistedWorkerLive(ctx, issue)
 }
 
 func (o *Orchestrator) verifiedClaim(issue connector.Issue, owner string) (Claimed, bool) {

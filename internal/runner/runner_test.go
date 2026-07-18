@@ -203,6 +203,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[1].ProcessIdentity != "4242" {
 		t.Fatalf("second usage update ProcessIdentity = %q, want 4242", usageUpdates[1].ProcessIdentity)
 	}
+	if usageUpdates[1].WorkerProcess.PID != 4242 || usageUpdates[1].WorkerProcess.GroupID != 4242 || !usageUpdates[1].WorkerProcess.StartedAt.Equal(processStartedAt) {
+		t.Fatalf("second usage update WorkerProcess = %#v, want persisted process identity", usageUpdates[1].WorkerProcess)
+	}
 	if usageUpdates[1].WorkspacePath != workspacePath {
 		t.Fatalf("second usage update WorkspacePath = %q, want %q", usageUpdates[1].WorkspacePath, workspacePath)
 	}

@@ -12,7 +12,11 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
+
+const workerNiceDelta = 5
 
 func Configure(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
@@ -33,6 +37,21 @@ func GroupID(cmd *exec.Cmd) int {
 		return cmd.Process.Pid
 	}
 	return pgid
+}
+
+func Deprioritize(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 0 {
+		return ErrProcessNotRunning
+	}
+	current, err := processNice(os.Getpid())
+	if err != nil {
+		return fmt.Errorf("read Detent process priority: %w", err)
+	}
+	target := min(19, current+workerNiceDelta)
+	if err := unix.Setpriority(unix.PRIO_PROCESS, cmd.Process.Pid, target); err != nil {
+		return fmt.Errorf("set worker process %d priority: %w", cmd.Process.Pid, err)
+	}
+	return nil
 }
 
 func TerminateTree(cmd *exec.Cmd, processGroupID int) error {

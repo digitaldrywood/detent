@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -35,12 +36,18 @@ func TestHandleRunUpdatePersistsRuntimeIdentityHeartbeat(t *testing.T) {
 	identity := agentidentity.Configured("codex-high", "codex", "high", "code", "gpt-5.5", "", "", "", time.Time{}).
 		Merge(agentidentity.RuntimeUpdate("gpt-5.6-sol", "openai", "xhigh", "priority", time.Time{}))
 	at := time.Date(2026, 7, 9, 20, 0, 0, 0, time.UTC)
+	processStartedAt := at.Add(-time.Second)
 
 	o.handleRunUpdate(&state, runUpdate{
 		issueID: issue.ID,
 		usage: runpkg.UsageUpdate{
 			DetentSessionID: 1118,
 			SessionID:       "thread-1118-turn-1",
+			WorkerProcess: procgroup.Identity{
+				PID:       4242,
+				GroupID:   4242,
+				StartedAt: processStartedAt,
+			},
 			LastEventAt:     at,
 			LastEvent:       "runtime_identity",
 			RuntimeIdentity: identity,
@@ -56,6 +63,9 @@ func TestHandleRunUpdatePersistsRuntimeIdentityHeartbeat(t *testing.T) {
 	}
 	if !state.WorkAttempts[0].RuntimeIdentity.MateriallyEqual(identity) {
 		t.Fatalf("snapshot work attempt identity = %#v, want runtime identity", state.WorkAttempts[0].RuntimeIdentity)
+	}
+	if running := state.Running[issue.ID]; running.WorkerProcess.PID != 4242 || !running.WorkerProcess.StartedAt.Equal(processStartedAt) {
+		t.Fatalf("running worker process = %#v, want persisted process identity", running.WorkerProcess)
 	}
 }
 

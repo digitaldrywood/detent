@@ -60,6 +60,9 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	if event.usage.ProcessIdentity != "" {
 		running.ProcessIdentity = event.usage.ProcessIdentity
 	}
+	if event.usage.WorkerProcess.PID > 0 && !event.usage.WorkerProcess.StartedAt.IsZero() {
+		running.WorkerProcess = event.usage.WorkerProcess
+	}
 	if event.usage.WorkspacePath != "" {
 		running.WorkspacePath = event.usage.WorkspacePath
 	}
@@ -68,6 +71,7 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	}
 	running.Tokens = event.usage.Tokens
 	state.Running[event.issueID] = running
+	o.trackRunningHeartbeat(state, running, state.Claimed[event.issueID], o.clockNow())
 	if event.usage.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.usage.RateLimits)
 		o.recoverBackendCapacityFromStatus(state, running, event.usage.RateLimits, event.usage.LastEventAt)
@@ -101,6 +105,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if !ok {
 		return
 	}
+	o.heartbeats.remove(event.IssueID)
 	if o.retrospector != nil {
 		defer o.retrospector.Trigger("completion")
 	}
@@ -1829,6 +1834,7 @@ func (o *Orchestrator) retryDelay(attempt int, continuation bool) time.Duration 
 
 func (o *Orchestrator) releaseClaim(state *State, issueID string) {
 	o.cancelRunning(state, issueID)
+	o.heartbeats.remove(issueID)
 	delete(state.Running, issueID)
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)

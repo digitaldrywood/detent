@@ -343,6 +343,7 @@ type UsageUpdate struct {
 	DetentSessionID       int64
 	SessionID             string
 	ProcessIdentity       string
+	WorkerProcess         procgroup.Identity
 	WorkspacePath         string
 	TurnCount             int
 	LastEventAt           time.Time

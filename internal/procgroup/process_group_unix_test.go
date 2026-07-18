@@ -5,6 +5,7 @@ package procgroup
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -102,6 +103,54 @@ func TestGroupID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cmd := tt.cmd(t)
 			tt.want(t, cmd, GroupID(cmd))
+		})
+	}
+}
+
+func TestDeprioritize(t *testing.T) {
+	proc := startSleep(t)
+	parentPriority, err := processNice(os.Getpid())
+	if err != nil {
+		t.Fatalf("Getpriority(parent) error = %v", err)
+	}
+	if err := Deprioritize(proc.cmd); err != nil {
+		t.Fatalf("Deprioritize() error = %v", err)
+	}
+	workerPriority, err := processNice(proc.cmd.Process.Pid)
+	if err != nil {
+		t.Fatalf("Getpriority(worker) error = %v", err)
+	}
+	if want := min(19, parentPriority+workerNiceDelta); workerPriority != want {
+		t.Fatalf("worker priority = %d, want %d", workerPriority, want)
+	}
+}
+
+func TestAliveRejectsStaleProcessIdentity(t *testing.T) {
+	proc := startSleep(t)
+	identity, err := Inspect(proc.cmd)
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		identity Identity
+		want     bool
+	}{
+		{name: "matching identity", identity: identity, want: true},
+		{name: "stale start time", identity: Identity{PID: identity.PID, GroupID: identity.GroupID, StartedAt: identity.StartedAt.Add(time.Second)}},
+		{name: "missing start time", identity: Identity{PID: identity.PID, GroupID: identity.GroupID}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Alive(tt.identity)
+			if err != nil {
+				t.Fatalf("Alive() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("Alive() = %v, want %v", got, tt.want)
+			}
 		})
 	}
 }

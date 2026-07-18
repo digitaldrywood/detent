@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/notes"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/skills"
@@ -2079,6 +2080,7 @@ func applyAgentUpdate(result *RunResult, update AgentUpdate) {
 type agentRunProgress struct {
 	sessionID             string
 	processIdentity       string
+	workerProcess         procgroup.Identity
 	turnIDs               map[string]struct{}
 	messages              map[string]*runtimeoutput.Buffer
 	messageOrder          []string
@@ -2121,6 +2123,9 @@ func newAgentRunProgress(outputPolicy runtimeoutput.Policy, ciTriggerLabel strin
 func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 	if update.ProcessIdentity != "" {
 		p.processIdentity = update.ProcessIdentity
+	}
+	if update.WorkerProcess.PID > 0 && !update.WorkerProcess.StartedAt.IsZero() {
+		p.workerProcess = update.WorkerProcess
 	}
 	if update.ThreadID != "" && update.TurnID != "" {
 		p.sessionID = update.ThreadID + "-" + update.TurnID
@@ -2602,6 +2607,7 @@ func (r *Runner) publishRunUpdate(
 		DetentSessionID:       detentSessionID,
 		SessionID:             progress.sessionID,
 		ProcessIdentity:       progress.processIdentity,
+		WorkerProcess:         progress.workerProcess,
 		WorkspacePath:         info.Path,
 		TurnCount:             progress.turnCount(),
 		LastEventAt:           progress.lastEventAt,
