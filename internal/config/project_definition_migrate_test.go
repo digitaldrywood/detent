@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -225,7 +226,7 @@ func assertProjectDefinitionFile(t *testing.T, path string, content string, mode
 	if err != nil {
 		t.Fatalf("Stat(%q) error = %v", path, err)
 	}
-	if info.Mode().Perm() != mode {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != mode {
 		t.Fatalf("%s mode = %o, want %o", path, info.Mode().Perm(), mode)
 	}
 }

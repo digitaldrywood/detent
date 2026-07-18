@@ -534,7 +534,7 @@ func TestWorkflowTemplatesUseSplitProjectDefinition(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ReadFile(%s) error = %v", configPath, err)
 			}
-			if !strings.HasPrefix(string(configRaw), "schema: 1\n") {
+			if !strings.HasPrefix(strings.ReplaceAll(string(configRaw), "\r\n", "\n"), "schema: 1\n") {
 				t.Fatalf("%s missing schema version", configPath)
 			}
 			if _, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
@@ -839,7 +839,8 @@ func readRepositoryTextFile(t *testing.T, path string) string {
 		if configErr != nil {
 			t.Fatalf("ReadFile(%s) error = %v", configPath, configErr)
 		}
-		config := strings.TrimPrefix(string(configRaw), "schema: 1\n")
+		config := strings.ReplaceAll(string(configRaw), "\r\n", "\n")
+		config = strings.TrimPrefix(config, "schema: 1\n")
 		return "---\n" + config + "---\n" + content
 	}
 	return content
