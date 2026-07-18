@@ -160,7 +160,7 @@ func TestBuildOnboardingWorkflowPreservesArtifactPresetGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildOnboardingWorkflow() error = %v", err)
 	}
-	workflow, err := workflowconfig.ParseWorkflow([]byte(result.Workflow))
+	workflow, err := parseOnboardingBuildWorkflowResult(result)
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v\n%s", err, result.Workflow)
 	}
@@ -220,15 +220,15 @@ func TestBuildOnboardingWorkflowWorkerModelFixtures(t *testing.T) {
 			if err != nil {
 				t.Fatalf("buildOnboardingWorkflow() error = %v", err)
 			}
-			workflow, err := workflowconfig.ParseWorkflow([]byte(result.Workflow))
+			workflow, err := parseOnboardingBuildWorkflowResult(result)
 			if err != nil {
 				t.Fatalf("ParseWorkflow() error = %v\n%s", err, result.Workflow)
 			}
 			if workflow.Config.Codex.Command != tt.wantCommand {
 				t.Fatalf("Codex.Command = %q, want %q", workflow.Config.Codex.Command, tt.wantCommand)
 			}
-			assertOnboardingWorkflowContains(t, result.Workflow, tt.wantComment)
-			assertOnboardingWorkflowContains(t, result.Workflow, "Optional model_reasoning_effort is unset because not every model accepts it.")
+			assertOnboardingWorkflowContains(t, result.Config, tt.wantComment)
+			assertOnboardingWorkflowContains(t, result.Config, "Optional model_reasoning_effort is unset because not every model accepts it.")
 			assertOnboardingWorkflowDecision(t, result.Decisions, "answers.worker_model_mode", "answer")
 			assertOnboardingWorkflowDecision(t, result.Decisions, "codex.command", "answer")
 			if tt.wantModel != "" {
@@ -332,14 +332,14 @@ func TestBuildOnboardingWorkflowSessionContextMultiplierIsOptIn(t *testing.T) {
 			if err != nil {
 				t.Fatalf("buildOnboardingWorkflow() error = %v", err)
 			}
-			workflow, err := workflowconfig.ParseWorkflow([]byte(result.Workflow))
+			workflow, err := parseOnboardingBuildWorkflowResult(result)
 			if err != nil {
 				t.Fatalf("ParseWorkflow() error = %v\n%s", err, result.Workflow)
 			}
 			if workflow.Config.Agent.MaxSessionContextMultiplier != tt.wantMultiplier {
 				t.Fatalf("MaxSessionContextMultiplier = %v, want %v", workflow.Config.Agent.MaxSessionContextMultiplier, tt.wantMultiplier)
 			}
-			gotPresent := strings.Contains(result.Workflow, "max_session_context_multiplier:")
+			gotPresent := strings.Contains(result.Config, "max_session_context_multiplier:")
 			if gotPresent != tt.wantPresent {
 				t.Fatalf("max_session_context_multiplier presence = %t, want %t\n%s", gotPresent, tt.wantPresent, result.Workflow)
 			}
@@ -439,7 +439,7 @@ func TestBuildOnboardingWorkflowRendersReviewFlowVariants(t *testing.T) {
 			if err != nil {
 				t.Fatalf("buildOnboardingWorkflow() error = %v", err)
 			}
-			workflow, err := workflowconfig.ParseWorkflow([]byte(result.Workflow))
+			workflow, err := parseOnboardingBuildWorkflowResult(result)
 			if err != nil {
 				t.Fatalf("ParseWorkflow() error = %v\n%s", err, result.Workflow)
 			}
@@ -481,6 +481,20 @@ func TestBuildOnboardingWorkflowRendersReviewFlowVariants(t *testing.T) {
 				assertOnboardingWorkflowContains(t, result.Workflow, want)
 			}
 		})
+	}
+}
+
+func TestRenderOnboardingWorkflowPromptReplacesCRLFExecutionFlow(t *testing.T) {
+	t.Parallel()
+
+	prompt := []byte("Portable direction.\r\n\r\n## Required Execution Flow\r\n\r\nMove the issue to `Human Review` only after the gate passes.\r\n")
+	got := renderOnboardingWorkflowPrompt("project_v2", prompt, onboardingWorkflowAutopilotFlow)
+	if strings.Contains(got, "Move the issue to `Human Review` only after") {
+		t.Fatalf("rendered prompt retained review flow:\n%s", got)
+	}
+	assertOnboardingWorkflowContains(t, got, "do not move the issue to `Human Review`")
+	if strings.Contains(got, "\r") {
+		t.Fatalf("rendered prompt retained carriage returns: %q", got)
 	}
 }
 
@@ -548,7 +562,7 @@ func TestBuildOnboardingWorkflowGeneratesParseablePausedProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(WORKFLOW.md) error = %v", err)
 	}
-	workflow, err := workflowconfig.ParseWorkflow(raw)
+	workflow, err := workflowconfig.LoadWorkflow(outputPath)
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v\n%s", err, string(raw))
 	}
@@ -570,8 +584,12 @@ func TestBuildOnboardingWorkflowGeneratesParseablePausedProject(t *testing.T) {
 	if workflow.Config.Deliverable.MergeMethod != workflowconfig.MergeMethodSquash {
 		t.Fatalf("Deliverable.MergeMethod = %q, want squash", workflow.Config.Deliverable.MergeMethod)
 	}
-	if strings.Contains(string(raw), "max_session_context_multiplier:") {
-		t.Fatalf("WORKFLOW.md includes opt-in max_session_context_multiplier:\n%s", string(raw))
+	configRaw, err := os.ReadFile(workflowconfig.DefinitionPath(outputPath))
+	if err != nil {
+		t.Fatalf("ReadFile(detent.yaml) error = %v", err)
+	}
+	if strings.Contains(string(configRaw), "max_session_context_multiplier:") {
+		t.Fatalf("detent.yaml includes opt-in max_session_context_multiplier:\n%s", string(configRaw))
 	}
 
 	got, err := project.New(project.Config{
@@ -614,6 +632,16 @@ func TestBuildOnboardingWorkflowGeneratesParseablePausedProject(t *testing.T) {
 			t.Fatalf("decision %#v missing why", decision)
 		}
 	}
+}
+
+func parseOnboardingBuildWorkflowResult(result onboardingBuildWorkflowResult) (workflowconfig.Workflow, error) {
+	return workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+		WorkflowPath: result.Path,
+		Workflow:     []byte(result.Workflow),
+		ConfigPath:   result.ConfigPath,
+		Config:       []byte(result.Config),
+		HasConfig:    true,
+	})
 }
 
 func assertOnboardingWorkflowDecision(t *testing.T, decisions []onboardingWorkflowDecision, path string, provenance string) {

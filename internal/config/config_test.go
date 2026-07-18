@@ -187,9 +187,21 @@ func TestShippedWorkflowTemplatesEnableBudgetCaps(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ReadFile(%q) error = %v", path, err)
 			}
-			workflow, err := ParseWorkflow(raw)
+			variant := strings.TrimSuffix(strings.TrimPrefix(entry.Name(), "WORKFLOW."), ".md")
+			configPath := filepath.Join(templateDir, "detent."+variant+".yaml")
+			configRaw, err := os.ReadFile(configPath)
 			if err != nil {
-				t.Fatalf("ParseWorkflow(%q) error = %v", path, err)
+				t.Fatalf("ReadFile(%q) error = %v", configPath, err)
+			}
+			workflow, err := ParseProjectDefinition(ProjectDefinitionSources{
+				WorkflowPath: path,
+				Workflow:     raw,
+				ConfigPath:   configPath,
+				Config:       configRaw,
+				HasConfig:    true,
+			})
+			if err != nil {
+				t.Fatalf("ParseProjectDefinition(%q) error = %v", path, err)
 			}
 			if !workflow.Config.Budget.Enabled {
 				t.Fatalf("%s budget.enabled = false, want true", path)
@@ -197,7 +209,7 @@ func TestShippedWorkflowTemplatesEnableBudgetCaps(t *testing.T) {
 			if workflow.Config.Budget.BillingMode != BillingModeMetered {
 				t.Fatalf("%s budget.billing_mode = %q, want metered", path, workflow.Config.Budget.BillingMode)
 			}
-			normalizedRaw := strings.ReplaceAll(string(raw), "\r\n", "\n")
+			normalizedRaw := strings.ReplaceAll(string(configRaw), "\r\n", "\n")
 			if workflow.Config.Deliverable.Kind == DeliverablePullRequest && !strings.Contains(normalizedRaw, "\n  merge_method: squash\n") {
 				t.Fatalf("%s does not declare deliverable.merge_method: squash", path)
 			}

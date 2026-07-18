@@ -67,7 +67,11 @@ func New(path string, opts ...Option) (*Watcher, error) {
 	}, append([]FileOption{
 		WithFileDebounce(cfg.debounce),
 		WithFileLogger(cfg.logger),
-		WithFileWatchPaths(workflowconfig.LocalWorkflowPath(path)),
+		WithFileWatchPaths(
+			workflowconfig.DefinitionPath(path),
+			workflowconfig.LocalWorkflowPath(path),
+			workflowconfig.LocalDefinitionPath(path),
+		),
 	}, cfg.fileOptions...)...)
 	if err != nil {
 		return nil, err

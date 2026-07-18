@@ -91,14 +91,27 @@ func checkDoctorWorkflowDrift(ctx context.Context, cfg globalconfig.Config, boot
 			})
 			continue
 		}
-		if diskWorkflow.SourceHash != runtimeWorkflow.SourceHash {
+		diagnostic := doctorProjectDefinition(id, diskWorkflow.Definition)
+		diagnostic.RuntimeLayout = runtimeWorkflow.Layout
+		diagnostic.RuntimeRevision = runtimeWorkflow.Revision
+		stale := diskWorkflow.SourceHash != runtimeWorkflow.SourceHash
+		if runtimeWorkflow.Layout != "" && runtimeWorkflow.Layout != string(diskWorkflow.Definition.Layout) {
+			stale = true
+		}
+		diagnostic.Stale = stale
+		if stale {
 			modifiedAt := doctorWorkflowModifiedAt(configuredProject)
 			checks = append(checks, doctorCheck{
-				Name:   name,
-				Status: doctorFail,
+				Name:              name,
+				Status:            doctorFail,
+				ProjectDefinition: diagnostic,
 				Detail: fmt.Sprintf(
-					"project %s is running stale config (file changed at %s, loaded at %s)",
+					"project %s is running stale configuration (configured layout=%s revision=%s; runtime layout=%s revision=%s; file changed at %s, loaded at %s)",
 					id,
+					diskWorkflow.Definition.Layout,
+					diskWorkflow.Definition.Revision,
+					runtimeWorkflow.Layout,
+					runtimeWorkflow.Revision,
 					doctorWorkflowTimestamp(modifiedAt),
 					doctorWorkflowTimestamp(runtimeWorkflow.LoadedAt),
 				),
@@ -107,9 +120,10 @@ func checkDoctorWorkflowDrift(ctx context.Context, cfg globalconfig.Config, boot
 			continue
 		}
 		checks = append(checks, doctorCheck{
-			Name:   name,
-			Status: doctorOK,
-			Detail: "project " + id + " loaded workflow matches the configured source",
+			Name:              name,
+			Status:            doctorOK,
+			Detail:            fmt.Sprintf("project %s loaded %s revision %s matches the configured source", id, diskWorkflow.Definition.Layout, diskWorkflow.Definition.Revision),
+			ProjectDefinition: diagnostic,
 		})
 	}
 	return checks
@@ -127,11 +141,19 @@ func doctorWorkflowModifiedAt(project globalconfig.Project) time.Time {
 		}
 		path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return time.Time{}
+	var modified time.Time
+	for _, candidate := range []string{
+		path,
+		workflowconfig.DefinitionPath(path),
+		workflowconfig.LocalWorkflowPath(path),
+		workflowconfig.LocalDefinitionPath(path),
+	} {
+		info, err := os.Stat(candidate)
+		if err == nil && info.ModTime().After(modified) {
+			modified = info.ModTime()
+		}
 	}
-	return info.ModTime().UTC()
+	return modified.UTC()
 }
 
 func doctorWorkflowTimestamp(value time.Time) string {
@@ -200,52 +222,30 @@ func checkDoctorProjectWithProgress(
 	}
 	workflowCheckName := "Project " + id + " workflow"
 	setDoctorCurrentCheck(workflowCheckName)
-	var workflowLocationFinding *doctorCheck
-	if workflowLocationCheck, ok := checkDoctorWorkflowLocation(project); ok {
-		workflowLocationCheck.Name = workflowCheckName
-		if workflowLocationCheck.Status == doctorWarn {
-			workflowLocationFinding = &workflowLocationCheck
-		} else {
-			return []doctorCheck{
-				workflowLocationCheck,
-				{
-					Name:   "Project " + id + " source repo",
-					Status: doctorWarn,
-					Detail: "skipped because the repository-root workflow is missing",
-					Hint:   "Move the workflow file to the repository root, then rerun detent doctor.",
-				},
-				checkDoctorIssueEffortGuidanceUnavailable(id, "the repository-root workflow is missing"),
-				checkDoctorFollowupGuidanceUnavailable(id, "the repository-root workflow is missing"),
-			}
-		}
-	}
 	workflow, err := loadDoctorProjectWorkflow(ctx, project, deps)
 	if err != nil {
+		check := doctorProjectDefinitionFailureCheck(id, project, err)
 		return []doctorCheck{
-			{
-				Name:   workflowCheckName,
-				Status: doctorFail,
-				Detail: fmt.Sprintf("%s: %v", project.Workflow, err),
-				Hint:   "Fix the WORKFLOW.md path or YAML frontmatter.",
-			},
+			check,
 			{
 				Name:   "Project " + id + " source repo",
 				Status: doctorWarn,
-				Detail: "skipped because WORKFLOW.md could not be loaded",
-				Hint:   "Fix the workflow file, then rerun detent doctor.",
+				Detail: "skipped because WORKFLOW.md could not be loaded as a project definition",
+				Hint:   "Fix the project-definition files, then rerun detent doctor.",
 			},
-			checkDoctorIssueEffortGuidanceUnavailable(id, "WORKFLOW.md could not be loaded"),
-			checkDoctorFollowupGuidanceUnavailable(id, "WORKFLOW.md could not be loaded"),
+			checkDoctorIssueEffortGuidanceUnavailable(id, "WORKFLOW.md could not be loaded as a project definition"),
+			checkDoctorFollowupGuidanceUnavailable(id, "WORKFLOW.md could not be loaded as a project definition"),
 		}
 	}
 	workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, runtimeGlobalGitHubToken(githubToken))
 	if err := workflow.Config.Validate(); err != nil {
 		return []doctorCheck{
 			{
-				Name:   workflowCheckName,
-				Status: doctorFail,
-				Detail: fmt.Sprintf("%s: %v", project.Workflow, err),
-				Hint:   "Fix invalid WORKFLOW.md frontmatter.",
+				Name:              workflowCheckName,
+				Status:            doctorFail,
+				Detail:            fmt.Sprintf("%s: %v", project.Workflow, err),
+				Hint:              "Fix invalid Detent configuration in detent.yaml or legacy WORKFLOW.md frontmatter.",
+				ProjectDefinition: doctorProjectDefinition(id, workflow.Definition),
 			},
 			{
 				Name:   "Project " + id + " source repo",
@@ -259,14 +259,26 @@ func checkDoctorProjectWithProgress(
 	}
 
 	workflowCheck := doctorCheck{
-		Name:   workflowCheckName,
-		Status: doctorOK,
-		Detail: doctorWorkflowDetail(project.Workflow, project, workflow.Config),
+		Name:              workflowCheckName,
+		Status:            doctorOK,
+		Detail:            doctorWorkflowDetail(project.Workflow, project, workflow.Config),
+		ProjectDefinition: doctorProjectDefinition(id, workflow.Definition),
 	}
-	if workflowLocationFinding != nil {
-		workflowCheck.Status = workflowLocationFinding.Status
-		workflowCheck.Detail = workflowLocationFinding.Detail + "; " + workflowCheck.Detail
-		workflowCheck.Hint = workflowLocationFinding.Hint
+	if workflow.Definition.Layout == "" {
+		if workflowLocationFinding, ok := checkDoctorWorkflowLocation(project); ok {
+			workflowCheck.Status = workflowLocationFinding.Status
+			workflowCheck.Detail = workflowLocationFinding.Detail + "; " + workflowCheck.Detail
+			workflowCheck.Hint = workflowLocationFinding.Hint
+		}
+	}
+	if workflow.Definition.Layout != "" {
+		workflowCheck.Detail = doctorProjectDefinitionDetail(workflow.Definition) + "; " + workflowCheck.Detail
+	}
+	if workflow.Definition.Layout == workflowconfig.ProjectDefinitionLegacy {
+		workflowCheck.Status = doctorWarn
+		command := doctorProjectDefinitionFixCommand(doctorProjectDefinitionMigrationPath(project, workflow.Definition))
+		workflowCheck.ProjectDefinition.FixCommand = command
+		workflowCheck.Hint = "Migrate without changing runtime behavior: " + command
 	}
 	if workflowPath, err := doctorWorkflowOptimizationWorkflowPath(project); err == nil {
 		findings := doctorReviewFlowWorkflowFindings(id, workflowPath, workflow.Config, workflow.Prompt)
@@ -390,6 +402,82 @@ func checkDoctorProjectWithProgress(
 	return checks
 }
 
+func doctorProjectDefinitionFailureCheck(id string, project globalconfig.Project, err error) doctorCheck {
+	check := doctorCheck{
+		Name:   "Project " + id + " workflow",
+		Status: doctorFail,
+		Detail: fmt.Sprintf("%s: %v", project.Workflow, err),
+		Hint:   "Fix the configured WORKFLOW.md and detent.yaml project-definition files.",
+	}
+	var definitionErr *workflowconfig.ProjectDefinitionError
+	if !errors.As(err, &definitionErr) {
+		return check
+	}
+	check.ProjectDefinition = doctorProjectDefinition(id, definitionErr.Definition)
+	check.Detail = doctorProjectDefinitionDetail(definitionErr.Definition) + "; " + err.Error()
+	if definitionErr.Definition.Migratable {
+		command := doctorProjectDefinitionFixCommand(doctorProjectDefinitionMigrationPath(project, definitionErr.Definition))
+		check.ProjectDefinition.FixCommand = command
+		check.Hint = "Repair the layout without changing runtime behavior: " + command
+	}
+	return check
+}
+
+func doctorProjectDefinition(id string, definition workflowconfig.ProjectDefinition) *doctorProjectDefinitionDiagnostic {
+	diagnostic := &doctorProjectDefinitionDiagnostic{
+		ProjectID:         id,
+		Layout:            string(definition.Layout),
+		Revision:          definition.Revision,
+		WorkflowPath:      definition.WorkflowPath,
+		ConfigPath:        definition.ConfigPath,
+		LocalWorkflowPath: definition.LocalWorkflowPath,
+		LocalConfigPath:   definition.LocalConfigPath,
+		LegacyKeys:        append([]string(nil), definition.LegacyKeys...),
+		LocalLegacyKeys:   append([]string(nil), definition.LocalLegacyKeys...),
+	}
+	if definition.Migratable || definition.Layout == workflowconfig.ProjectDefinitionLegacy {
+		diagnostic.FixCommand = doctorProjectDefinitionFixCommand(definition.WorkflowPath)
+	}
+	return diagnostic
+}
+
+func doctorProjectDefinitionDetail(definition workflowconfig.ProjectDefinition) string {
+	parts := []string{
+		"layout=" + string(definition.Layout),
+		"revision=" + definition.Revision,
+		"workflow=" + definition.WorkflowPath,
+	}
+	if definition.ConfigPath != "" {
+		parts = append(parts, "config="+definition.ConfigPath)
+	}
+	if len(definition.LegacyKeys) > 0 {
+		parts = append(parts, "legacy keys="+strings.Join(definition.LegacyKeys, ", "))
+	}
+	if len(definition.LocalLegacyKeys) > 0 {
+		parts = append(parts, "local legacy keys="+strings.Join(definition.LocalLegacyKeys, ", "))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func doctorProjectDefinitionFixCommand(workflowPath string) string {
+	return "detent fix workflow-layout --workflow " + doctorShellQuote(workflowPath)
+}
+
+func doctorProjectDefinitionMigrationPath(project globalconfig.Project, definition workflowconfig.ProjectDefinition) string {
+	if strings.TrimSpace(project.WorkflowRef) == "" {
+		return definition.WorkflowPath
+	}
+	workflowPath := strings.TrimSpace(project.Workflow)
+	if filepath.IsAbs(workflowPath) || strings.TrimSpace(project.Workdir) == "" {
+		return workflowPath
+	}
+	return filepath.Join(project.Workdir, filepath.FromSlash(workflowPath))
+}
+
+func doctorShellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
 func checkDoctorWorkflowLocation(project globalconfig.Project) (doctorCheck, bool) {
 	if strings.TrimSpace(project.WorkflowRef) != "" || strings.TrimSpace(project.Workdir) == "" {
 		return doctorCheck{}, false
@@ -478,12 +566,15 @@ func checkDoctorLocalWorkflowOverlay(
 	workflow workflowconfig.Workflow,
 	deps doctorDeps,
 ) (doctorCheck, bool) {
-	path := strings.TrimSpace(workflow.Overlay.Path)
-	if path == "" {
+	paths := doctorLocalDefinitionPaths(workflow)
+	if len(paths) == 0 {
 		return doctorCheck{}, false
 	}
 
-	detail := path + " is active"
+	detail := strings.Join(paths, ", ") + " active"
+	if len(paths) == 1 {
+		detail = paths[0] + " is active"
+	}
 	if len(workflow.Overlay.OverriddenKeys) == 0 {
 		detail += "; overrides no structured config keys (prose only)"
 	} else {
@@ -497,22 +588,59 @@ func checkDoctorLocalWorkflowOverlay(
 	if deps.gitTracked == nil {
 		deps.gitTracked = defaultGitTracked
 	}
-	tracked, err := deps.gitTracked(ctx, path)
-	if err != nil {
-		check.Status = doctorWarn
-		check.Detail += "; Git tracking status could not be determined: " + err.Error()
-		check.Hint = "Verify that " + filepath.Base(path) + " is listed in .gitignore and is not tracked by Git."
+	var trackedPaths []string
+	for _, path := range paths {
+		tracked, err := deps.gitTracked(ctx, path)
+		if err != nil {
+			check.Status = doctorWarn
+			check.Detail += "; Git tracking status for " + path + " could not be determined: " + err.Error()
+			check.Hint = "Verify local project-definition overlays are listed in .gitignore and are not tracked by Git."
+			continue
+		}
+		if tracked {
+			trackedPaths = append(trackedPaths, path)
+		}
+	}
+	if len(trackedPaths) == 0 {
+		if len(paths) == 1 {
+			check.Detail += "; file is not tracked by Git"
+		} else {
+			check.Detail += "; files are not tracked by Git"
+		}
 		return check, true
 	}
-	if !tracked {
-		check.Detail += "; file is not tracked by Git"
-		return check, true
-	}
-
 	check.Status = doctorWarn
-	check.Detail += "; file is tracked by Git"
-	check.Hint = "Add " + filepath.Base(path) + " to .gitignore and remove it from Git tracking with git rm --cached -- " + filepath.Base(path) + "."
+	if len(trackedPaths) == 1 && len(paths) == 1 {
+		check.Detail += "; file is tracked by Git"
+		check.Hint = "Add " + filepath.Base(trackedPaths[0]) + " to .gitignore and remove it from Git tracking with git rm --cached -- " + filepath.Base(trackedPaths[0]) + "."
+	} else {
+		check.Detail += "; tracked by Git: " + strings.Join(trackedPaths, ", ")
+		check.Hint = "Add WORKFLOW.local.md and detent.local.yaml to .gitignore and remove tracked overlays with git rm --cached."
+	}
 	return check, true
+}
+
+func doctorLocalDefinitionPaths(workflow workflowconfig.Workflow) []string {
+	if workflow.Definition.Layout == "" && workflow.Overlay.Path != "" {
+		return []string{workflow.Overlay.Path}
+	}
+	var candidates []string
+	if workflow.Definition.LocalWorkflowPath != "" {
+		candidates = append(candidates, workflow.Definition.LocalWorkflowPath)
+	}
+	if workflow.Definition.LocalConfigPath != "" {
+		candidates = append(candidates, workflow.Definition.LocalConfigPath)
+	}
+	if len(candidates) == 0 && workflow.Overlay.Path != "" {
+		candidates = append(candidates, workflow.Overlay.Path)
+	}
+	paths := make([]string, 0, len(candidates))
+	for _, path := range candidates {
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			paths = append(paths, path)
+		}
+	}
+	return paths
 }
 
 func checkDoctorBillingMode(id string, cfg workflowconfig.Config) (doctorCheck, bool) {

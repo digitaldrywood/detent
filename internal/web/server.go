@@ -1052,6 +1052,8 @@ func (s *Server) workflowSources() []healthWorkflowSource {
 			ProjectID:        string(trackedProject.ID()),
 			Path:             status.Path,
 			SourceHash:       status.Hash,
+			Revision:         status.Revision,
+			Layout:           string(status.Layout),
 			ModifiedAt:       status.ModifiedAt,
 			LoadedAt:         status.LoadedAt,
 			LastWatchEventAt: status.LastWatchEventAt,
@@ -1255,6 +1257,8 @@ type healthWorkflowSource struct {
 	ProjectID        string    `json:"project_id"`
 	Path             string    `json:"path"`
 	SourceHash       string    `json:"source_hash"`
+	Revision         string    `json:"revision,omitempty"`
+	Layout           string    `json:"layout,omitempty"`
 	ModifiedAt       time.Time `json:"modified_at,omitzero"`
 	LoadedAt         time.Time `json:"loaded_at,omitzero"`
 	LastWatchEventAt time.Time `json:"last_watch_event_at,omitzero"`

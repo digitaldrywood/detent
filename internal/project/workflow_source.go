@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -81,11 +82,19 @@ func workflowFileModifiedAt(cfg globalconfig.Project) time.Time {
 	if err != nil {
 		return time.Time{}
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return time.Time{}
+	var modified time.Time
+	for _, candidate := range []string{
+		path,
+		workflowconfig.DefinitionPath(path),
+		workflowconfig.LocalWorkflowPath(path),
+		workflowconfig.LocalDefinitionPath(path),
+	} {
+		info, err := os.Stat(candidate)
+		if err == nil && info.ModTime().After(modified) {
+			modified = info.ModTime()
+		}
 	}
-	return info.ModTime().UTC()
+	return modified.UTC()
 }
 
 func newWorkflowGitRefSource(cfg globalconfig.Project) (workflowGitRefSource, error) {
@@ -176,24 +185,69 @@ func (s workflowGitRefSource) load(ctx context.Context) (workflowconfig.Workflow
 	if err != nil {
 		return workflowconfig.Workflow{}, revision, fmt.Errorf("load workflow from %s: %w", s.displayPath(), err)
 	}
-	localPath := s.localPath()
-	localRaw, localErr := os.ReadFile(localPath)
-	if errors.Is(localErr, os.ErrNotExist) {
-		workflow, err := workflowconfig.ParseWorkflow(raw)
-		return workflow, revision, err
-	}
-	if localErr != nil {
-		return workflowconfig.Workflow{}, revision, fmt.Errorf("read local workflow overlay: %w", localErr)
-	}
-	workflow, err := workflowconfig.ParseWorkflowOverlay(raw, localRaw, localPath)
+	configPath := path.Join(path.Dir(s.path), "detent.yaml")
+	configRaw, hasConfig, err := s.loadOptionalRefFile(ctx, revision, configPath)
 	if err != nil {
 		return workflowconfig.Workflow{}, revision, err
 	}
+	localWorkflowPath := s.localPath()
+	localRaw, hasLocalWorkflow, err := readOptionalWorkflowSourceFile(localWorkflowPath)
+	if err != nil {
+		return workflowconfig.Workflow{}, revision, fmt.Errorf("read local workflow overlay: %w", err)
+	}
+	localConfigPath := s.localConfigPath()
+	localConfigRaw, hasLocalConfig, err := readOptionalWorkflowSourceFile(localConfigPath)
+	if err != nil {
+		return workflowconfig.Workflow{}, revision, fmt.Errorf("read local project config: %w", err)
+	}
+	workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+		WorkflowPath:      revision + ":" + s.path,
+		Workflow:          raw,
+		ConfigPath:        revision + ":" + configPath,
+		Config:            configRaw,
+		HasConfig:         hasConfig,
+		LocalWorkflowPath: localWorkflowPath,
+		LocalWorkflow:     localRaw,
+		HasLocalWorkflow:  hasLocalWorkflow,
+		LocalConfigPath:   localConfigPath,
+		LocalConfig:       localConfigRaw,
+		HasLocalConfig:    hasLocalConfig,
+	})
+	if err != nil {
+		return workflowconfig.Workflow{}, revision, err
+	}
+	workflow.Definition.Revision = revision
 	return workflow, revision, nil
+}
+
+func (s workflowGitRefSource) loadOptionalRefFile(ctx context.Context, revision string, refPath string) ([]byte, bool, error) {
+	raw, err := runWorkflowGit(ctx, s.sourceRoot, "show", revision+":"+refPath)
+	if err == nil {
+		return raw, true, nil
+	}
+	if _, existsErr := runWorkflowGit(ctx, s.sourceRoot, "cat-file", "-e", revision+":"+refPath); existsErr != nil {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("load project config from %s:%s: %w", revision, refPath, err)
+}
+
+func readOptionalWorkflowSourceFile(path string) ([]byte, bool, error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return raw, true, nil
 }
 
 func (s workflowGitRefSource) localPath() string {
 	return filepath.Join(s.sourceRoot, filepath.FromSlash(workflowconfig.LocalWorkflowPath(s.path)))
+}
+
+func (s workflowGitRefSource) localConfigPath() string {
+	return filepath.Join(s.sourceRoot, filepath.FromSlash(workflowconfig.LocalDefinitionPath(s.path)))
 }
 
 func (s workflowGitRefSource) revision(ctx context.Context) (string, error) {
@@ -250,7 +304,7 @@ func (w *gitRefWorkflowWatcher) Watch(ctx context.Context) (<-chan configwatcher
 			err = workflow.Config.Validate()
 		}
 		return workflow, err
-	}, configwatcher.WithFileLogger(w.logger))
+	}, configwatcher.WithFileLogger(w.logger), configwatcher.WithFileWatchPaths(w.source.localConfigPath()))
 	if err != nil {
 		return nil, fmt.Errorf("create local workflow overlay watcher: %w", err)
 	}
