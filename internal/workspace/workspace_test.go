@@ -231,6 +231,188 @@ func TestLocalGitCreateAndCleanupWithoutHooks(t *testing.T) {
 	}
 }
 
+func TestLocalGitCreatePrunesMissingRegisteredWorktree(t *testing.T) {
+	t.Parallel()
+
+	source := initSourceRepo(t)
+	root := filepath.Join(t.TempDir(), "workspaces")
+	backend, err := NewLocalGit(LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewLocalGit() error = %v", err)
+	}
+
+	issue := Issue{Identifier: "DD-STALE-REGISTRATION"}
+	first, err := backend.Create(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("first Create() error = %v", err)
+	}
+	movedPath := filepath.Join(t.TempDir(), "moved-workspace")
+	if err := os.Rename(first.Path, movedPath); err != nil {
+		t.Fatalf("move registered worktree: %v", err)
+	}
+	if got := runGit(t, source, "worktree", "list", "--porcelain"); !strings.Contains(got, filepath.ToSlash(first.Path)) {
+		t.Fatalf("git worktree list does not contain missing registered path:\n%s", got)
+	}
+
+	second, err := backend.Create(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("second Create() error = %v", err)
+	}
+	if !second.Created {
+		t.Fatal("second Create() Created = false, want true")
+	}
+	if second.Path != first.Path {
+		t.Fatalf("second Create() Path = %q, want %q", second.Path, first.Path)
+	}
+	if got := strings.TrimSpace(runGit(t, second.Path, "branch", "--show-current")); got != first.Branch {
+		t.Fatalf("second worktree branch = %q, want %q", got, first.Branch)
+	}
+}
+
+func TestLocalGitCreateIncludesWorktreeAddStderr(t *testing.T) {
+	t.Parallel()
+
+	source := initSourceRepo(t)
+	root := filepath.Join(t.TempDir(), "workspaces")
+	backend, err := NewLocalGit(LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewLocalGit() error = %v", err)
+	}
+
+	occupiedPath := filepath.Join(t.TempDir(), "occupied-worktree")
+	runGit(t, source, "worktree", "add", "-b", "detent/dd-conflict", occupiedPath, "HEAD")
+
+	_, err = backend.Create(context.Background(), Issue{Identifier: "DD-CONFLICT"})
+	if err == nil {
+		t.Fatal("Create() error = nil, want occupied branch error")
+	}
+	var commandErr *CommandError
+	if !errors.As(err, &commandErr) {
+		t.Fatalf("Create() error = %T, want *CommandError", err)
+	}
+	output := strings.TrimSpace(commandErr.Output)
+	if output == "" {
+		t.Fatal("CommandError.Output is empty, want git stderr")
+	}
+	if !strings.Contains(err.Error(), output) {
+		t.Fatalf("Create() error = %q, want git stderr %q", err, output)
+	}
+}
+
+func TestRunWorktreeAddWithPrune(t *testing.T) {
+	t.Parallel()
+
+	initialPruneErr := errors.New("initial prune failed")
+	retryPruneErr := errors.New("retry prune failed")
+	nonRetryErr := errors.New("exit status 1")
+	exit128Err := errors.New("exit status 128")
+	retryAddErr := errors.New("retry add failed")
+	nonRetryCommandErr := &CommandError{ExitCode: 1, Err: nonRetryErr}
+	exit128CommandErr := &CommandError{ExitCode: 128, Err: exit128Err}
+
+	tests := []struct {
+		name        string
+		pruneErrors []error
+		addErrors   []error
+		wantPrunes  int
+		wantAdds    int
+		wantErrors  []error
+	}{
+		{
+			name:       "successful add",
+			addErrors:  []error{nil},
+			wantPrunes: 1,
+			wantAdds:   1,
+		},
+		{
+			name:        "initial prune fails",
+			pruneErrors: []error{initialPruneErr},
+			wantPrunes:  1,
+			wantErrors:  []error{initialPruneErr},
+		},
+		{
+			name:       "non-128 add is not retried",
+			addErrors:  []error{nonRetryCommandErr},
+			wantPrunes: 1,
+			wantAdds:   1,
+			wantErrors: []error{nonRetryErr},
+		},
+		{
+			name:        "exit 128 succeeds after prune",
+			pruneErrors: []error{nil, nil},
+			addErrors:   []error{exit128CommandErr, nil},
+			wantPrunes:  2,
+			wantAdds:    2,
+		},
+		{
+			name:        "retry prune fails",
+			pruneErrors: []error{nil, retryPruneErr},
+			addErrors:   []error{exit128CommandErr},
+			wantPrunes:  2,
+			wantAdds:    1,
+			wantErrors:  []error{exit128Err, retryPruneErr},
+		},
+		{
+			name:        "retry add fails without another retry",
+			pruneErrors: []error{nil, nil},
+			addErrors:   []error{exit128CommandErr, retryAddErr},
+			wantPrunes:  2,
+			wantAdds:    2,
+			wantErrors:  []error{retryAddErr},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			pruneCalls := 0
+			addCalls := 0
+			err := runWorktreeAddWithPrune(func() error {
+				call := pruneCalls
+				pruneCalls++
+				if call >= len(tt.pruneErrors) {
+					return nil
+				}
+				return tt.pruneErrors[call]
+			}, func() error {
+				call := addCalls
+				addCalls++
+				if call >= len(tt.addErrors) {
+					return nil
+				}
+				return tt.addErrors[call]
+			})
+
+			if len(tt.wantErrors) == 0 && err != nil {
+				t.Fatalf("runWorktreeAddWithPrune() error = %v, want nil", err)
+			}
+			if len(tt.wantErrors) > 0 && err == nil {
+				t.Fatal("runWorktreeAddWithPrune() error = nil, want error")
+			}
+			for _, wantErr := range tt.wantErrors {
+				if !errors.Is(err, wantErr) {
+					t.Errorf("runWorktreeAddWithPrune() error = %v, want errors.Is(%v)", err, wantErr)
+				}
+			}
+			if pruneCalls != tt.wantPrunes {
+				t.Errorf("prune calls = %d, want %d", pruneCalls, tt.wantPrunes)
+			}
+			if addCalls != tt.wantAdds {
+				t.Errorf("add calls = %d, want %d", addCalls, tt.wantAdds)
+			}
+		})
+	}
+}
+
 func TestLocalGitPrepareMergeRebasesAndPushesCleanBranch(t *testing.T) {
 	t.Parallel()
 

@@ -532,22 +532,68 @@ func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch strin
 		return true, nil
 	}
 
-	_, err = l.runGit(ctx, "worktree", "add", "--detach", path, "HEAD")
+	err = l.addWorktreeWithPrune(ctx, func() error {
+		_, addErr := l.runGit(ctx, "worktree", "add", "--detach", path, "HEAD")
+		return addErr
+	})
 	return err == nil, err
 }
 
 func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch string) error {
-	exists, err := l.branchExists(ctx, branch)
-	if err != nil {
+	return l.addWorktreeWithPrune(ctx, func() error {
+		exists, err := l.branchExists(ctx, branch)
+		if err != nil {
+			return err
+		}
+		if exists {
+			_, err = l.runGit(ctx, "worktree", "add", path, branch)
+			return err
+		}
+
+		_, err = l.runGit(ctx, "worktree", "add", "-b", branch, path, "HEAD")
 		return err
-	}
-	if exists {
-		_, err = l.runGit(ctx, "worktree", "add", path, branch)
+	})
+}
+
+func (l *LocalGit) addWorktreeWithPrune(ctx context.Context, add func() error) error {
+	return runWorktreeAddWithPrune(func() error {
+		_, err := l.runGit(ctx, "worktree", "prune")
 		return err
+	}, add)
+}
+
+func runWorktreeAddWithPrune(prune func() error, add func() error) error {
+	if err := prune(); err != nil {
+		return fmt.Errorf("prune stale worktree registrations before add: %w", withCommandOutput(err))
 	}
 
-	_, err = l.runGit(ctx, "worktree", "add", "-b", branch, path, "HEAD")
-	return err
+	err := add()
+	var commandErr *CommandError
+	if !errors.As(err, &commandErr) || commandErr.ExitCode != 128 {
+		return withCommandOutput(err)
+	}
+	if pruneErr := prune(); pruneErr != nil {
+		return errors.Join(
+			withCommandOutput(err),
+			fmt.Errorf("prune stale worktree registrations before retry: %w", withCommandOutput(pruneErr)),
+		)
+	}
+	return withCommandOutput(add())
+}
+
+func withCommandOutput(err error) error {
+	if err == nil {
+		return nil
+	}
+	var commandErr *CommandError
+	if !errors.As(err, &commandErr) {
+		return err
+	}
+	output := strings.TrimSpace(commandErr.Output)
+	if output == "" {
+		return err
+	}
+	return fmt.Errorf("%w\n%s", err, output)
 }
 
 func (l *LocalGit) workspaceOnExpectedBranch(ctx context.Context, path string, branch string) (bool, string, error) {
