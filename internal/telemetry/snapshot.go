@@ -578,6 +578,9 @@ type Blocked struct {
 	WorkAttemptID   int64         `json:"work_attempt_id,omitempty"`
 	DetentSessionID int64         `json:"detent_session_id,omitempty"`
 	Destination     string        `json:"destination,omitempty"`
+	Priority        int           `json:"priority,omitempty"`
+	PriorityName    string        `json:"priority_name,omitempty"`
+	StopReason      string        `json:"stop_reason,omitempty"`
 }
 
 type Completed struct {

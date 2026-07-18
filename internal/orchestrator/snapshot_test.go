@@ -45,6 +45,34 @@ func TestStateSnapshotEmpty(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotCarriesOperatorStopRecovery(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 18, 18, 0, 0, 0, time.UTC)
+	state := newState(normalizeConfig(Config{}))
+	state.Blocked["issue-1435"] = Blocked{
+		Issue:           connector.Issue{ID: "issue-1435", Identifier: "digitaldrywood/detent#1435"},
+		Reason:          "run stopped; retry the transition to Todo: tracker unavailable",
+		RecoveryReason:  "transition_failed",
+		RecoveryTarget:  "Todo",
+		BlockedAt:       now.Add(-time.Minute),
+		Source:          BlockedSourceOperatorStop,
+		Attempt:         2,
+		WorkAttemptID:   1435,
+		DetentSessionID: 608,
+		SessionID:       "thread-1435",
+		Destination:     "Todo",
+		Priority:        2,
+		PriorityName:    "High",
+		StopReason:      "operator requested",
+	}
+
+	blocked := state.Snapshot(now).Blocked[0]
+	if blocked.RecoveryReason != "transition_failed" || blocked.RecoveryTarget != "Todo" || blocked.Priority != 2 || blocked.PriorityName != "High" || blocked.StopReason != "operator requested" {
+		t.Fatalf("Blocked[0] = %#v", blocked)
+	}
+}
+
 func TestStateSnapshotCountsRecentTransientOverloadRetries(t *testing.T) {
 	t.Parallel()
 

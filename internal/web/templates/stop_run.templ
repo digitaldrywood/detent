@@ -23,6 +23,11 @@ templ StopRunDialogContent(data StopRunDialogData) {
 			Stopped { data.Identifier } and moved it to { stopRunResultDetail(data) }.
 		</div>
 	}
+	if data.Outcome == "pending" {
+		<div role="status" class="rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-sm text-text" data-stop-run-result="pending">
+			Stop accepted for { data.Identifier }; board routing to { stopRunResultDetail(data) } is continuing in the background.
+		</div>
+	}
 	if data.Error != "" {
 		<div role="alert" class="rounded-md border border-err bg-err/15 px-3 py-2 text-sm text-err" data-stop-run-result={ data.Outcome }>{ data.Error }</div>
 	}
@@ -34,7 +39,7 @@ templ StopRunDialogContent(data StopRunDialogData) {
 		<div class="min-w-0 sm:col-span-2"><dt class="text-dim">Active session</dt><dd class="break-all font-mono text-text">{ stopRunSessionLabel(data) }</dd></div>
 	</dl>
 	if data.CanSubmit {
-		<form class="grid gap-4" hx-post={ stopRunPostPath(data) } hx-target={ kanbanDialogTargetSelector() } hx-swap="innerHTML">
+		<form class="grid gap-4" hx-post={ stopRunPostPath(data) } hx-target={ kanbanDialogTargetSelector() } hx-swap="innerHTML" hx-disabled-elt="find button[type='submit']" hx-indicator="#stop-run-submit-indicator">
 			<input type="hidden" name="confirm" value="true"/>
 			<input type="hidden" name="issue_id" value={ data.IssueID }/>
 			<input type="hidden" name="work_attempt_id" value={ strconv.FormatInt(data.WorkAttemptID, 10) }/>
@@ -98,6 +103,10 @@ templ StopRunDialogContent(data StopRunDialogData) {
 				@button.Button(button.Props{Type: button.TypeSubmit, Class: "border-err bg-err text-white hover:bg-err/90 focus-visible:ring-err"}) {
 					@icon.CircleStop(icon.Props{Class: "size-4"})
 					{ stopRunSubmitLabel(data) }
+					<span id="stop-run-submit-indicator" class="htmx-indicator items-center gap-1.5">
+						@icon.LoaderCircle(icon.Props{Class: "size-4 animate-spin"})
+						Stopping...
+					</span>
 				}
 			}
 		</form>

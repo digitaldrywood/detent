@@ -490,7 +490,7 @@ func (s *Server) executeChatStop(ctx context.Context, action chatpkg.Action) (st
 	if err != nil {
 		return "", err
 	}
-	return chatHandlerMessage(recorder, "Stopped "+action.Identifier+" and moved it to "+action.Destination+" via chat.")
+	return chatHandlerMessage(recorder, "Stop accepted for "+action.Identifier+"; board routing to "+action.Destination+" is continuing in the background.")
 }
 
 func (s *Server) executeChatFileIssue(ctx context.Context, action chatpkg.Action) (string, chatpkg.Action, error) {
@@ -605,7 +605,7 @@ func demoChatAction(action chatpkg.Action) string {
 	case chatpkg.ActionSetPriority:
 		return "Set " + action.Identifier + " priority to " + action.Priority + " via chat."
 	case chatpkg.ActionStopRun:
-		return "Stopped " + action.Identifier + " and moved it to " + action.Destination + " via chat."
+		return "Stop accepted for " + action.Identifier + "; board routing to " + action.Destination + " is continuing in the background."
 	case chatpkg.ActionFileIssue:
 		return "Filed " + strconv.Quote(action.Title) + " on " + action.ProjectID + " via chat."
 	default:

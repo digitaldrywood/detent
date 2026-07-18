@@ -38,18 +38,46 @@ func StopRunDialogPath(running telemetry.Running) string {
 	if projectID == "" || issueID == "" || strings.TrimSpace(running.StopDestination) == "" {
 		return ""
 	}
+	return stopRunDialogPath(projectID, issueID, running.Attempt, running.WorkAttemptID, running.DetentSessionID, running.SessionID)
+}
+
+func StopRunRetryDialogPath(blocked telemetry.Blocked, fallbackProjectID string) string {
+	if !operatorStopTransitionFailed(blocked) {
+		return ""
+	}
+	projectID := strings.TrimSpace(blocked.ProjectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(fallbackProjectID)
+	}
+	return stopRunDialogPath(projectID, strings.TrimSpace(blocked.ID), blocked.Attempt, blocked.WorkAttemptID, blocked.DetentSessionID, blocked.SessionID)
+}
+
+func stopRunDialogPath(projectID string, issueID string, attempt int, workAttemptID int64, detentSessionID int64, providerSessionID string) string {
+	if projectID == "" || issueID == "" {
+		return ""
+	}
 	values := url.Values{}
 	values.Set("issue_id", issueID)
-	if running.WorkAttemptID > 0 {
-		values.Set("work_attempt_id", strconv.FormatInt(running.WorkAttemptID, 10))
+	if workAttemptID > 0 {
+		values.Set("work_attempt_id", strconv.FormatInt(workAttemptID, 10))
 	}
-	if running.DetentSessionID > 0 {
-		values.Set("detent_session_id", strconv.FormatInt(running.DetentSessionID, 10))
+	if detentSessionID > 0 {
+		values.Set("detent_session_id", strconv.FormatInt(detentSessionID, 10))
 	}
-	if sessionID := strings.TrimSpace(running.SessionID); sessionID != "" {
+	if sessionID := strings.TrimSpace(providerSessionID); sessionID != "" {
 		values.Set("provider_session_id", sessionID)
 	}
-	return "/api/v1/projects/" + url.PathEscape(projectID) + "/runs/" + strconv.Itoa(running.Attempt) + "/stop?" + values.Encode()
+	return "/api/v1/projects/" + url.PathEscape(projectID) + "/runs/" + strconv.Itoa(attempt) + "/stop?" + values.Encode()
+}
+
+func operatorStopTransitionFailed(blocked telemetry.Blocked) bool {
+	if blocked.Source != telemetry.BlockedSourceOperatorStop {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(blocked.RecoveryReason), "transition_failed") {
+		return true
+	}
+	return strings.Contains(strings.ToLower(strings.TrimSpace(blocked.Error)), "retry the transition")
 }
 
 func stopRunPostPath(data StopRunDialogData) string {

@@ -38,7 +38,7 @@ func TestStopRunAPIRequiresAuthorizationAndConfirmation(t *testing.T) {
 
 func TestStopRunAPITargetsExactActiveIdentity(t *testing.T) {
 	t.Parallel()
-	stopper := &fakeRunStopper{result: orchestrator.StopRunResult{ProjectID: "detent", IssueID: "issue-1311", Attempt: 0, WorkAttemptID: 1311, DetentSessionID: 91, ProviderSessionID: "thread-1311", Destination: "Todo", Priority: 2, PriorityName: "High", Reason: "make room for the release blocker", Outcome: "succeeded"}}
+	stopper := &fakeRunStopper{result: orchestrator.StopRunResult{ProjectID: "detent", IssueID: "issue-1311", Attempt: 0, WorkAttemptID: 1311, DetentSessionID: 91, ProviderSessionID: "thread-1311", Destination: "Todo", Priority: 2, PriorityName: "High", Reason: "make room for the release blocker", Outcome: "pending"}}
 	server := newStopRunServer(t, stopper)
 
 	recorder := performStopRunJSON(t, server.Handler(), `/api/v1/projects/detent/runs/0/stop`, `{"issue_id":"issue-1311","work_attempt_id":1311,"detent_session_id":91,"provider_session_id":"thread-1311","destination":"Todo","priority":2,"reason":"make room for the release blocker","confirm":true}`, "Bearer detent_test_token")
@@ -52,7 +52,7 @@ func TestStopRunAPITargetsExactActiveIdentity(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if result.Outcome != "succeeded" || result.Destination != "Todo" || result.PriorityName != "High" || result.Reason == "" {
+	if result.Outcome != "pending" || result.Destination != "Todo" || result.PriorityName != "High" || result.Reason == "" {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -87,7 +87,7 @@ func TestStopRunAPIMapsStaleAndTransitionFailure(t *testing.T) {
 
 func TestStopRunControlsRenderContextualConfirmationAndResult(t *testing.T) {
 	t.Parallel()
-	stopper := &fakeRunStopper{result: orchestrator.StopRunResult{ProjectID: "detent", IssueID: "issue-1311", Attempt: 0, WorkAttemptID: 1311, DetentSessionID: 91, ProviderSessionID: "thread-1311", Destination: "Blocked", Outcome: "succeeded"}}
+	stopper := &fakeRunStopper{result: orchestrator.StopRunResult{ProjectID: "detent", IssueID: "issue-1311", Attempt: 0, WorkAttemptID: 1311, DetentSessionID: 91, ProviderSessionID: "thread-1311", Destination: "Blocked", Outcome: "pending"}}
 	server := newStopRunServer(t, stopper)
 
 	fleet := stopRunRequest(t, server.Handler(), http.MethodGet, "/fleet", "", map[string]string{})
@@ -106,7 +106,7 @@ func TestStopRunControlsRenderContextualConfirmationAndResult(t *testing.T) {
 
 	dialogPath := "/api/v1/projects/detent/runs/0/stop?issue_id=issue-1311&work_attempt_id=1311&detent_session_id=91&provider_session_id=thread-1311"
 	dialog := stopRunRequest(t, server.Handler(), http.MethodGet, dialogPath, "", map[string]string{"Authorization": "Bearer detent_test_token", "HX-Request": "true"})
-	for _, want := range []string{"digitaldrywood/detent", "digitaldrywood/detent#1311", "code", "In Progress", "Detent 91", "provider thread-1311", "attempt 0", "Blocked", "Backlog", "Cancelled", "Todo", "Urgent · rank 1", "Low · rank 4", `maxlength="280"`, "sm:grid-cols-2"} {
+	for _, want := range []string{"digitaldrywood/detent", "digitaldrywood/detent#1311", "code", "In Progress", "Detent 91", "provider thread-1311", "attempt 0", "Blocked", "Backlog", "Cancelled", "Todo", "Urgent · rank 1", "Low · rank 4", `maxlength="280"`, "sm:grid-cols-2", "hx-disabled-elt=", "stop-run-submit-indicator", "Stopping...", "Cancel"} {
 		if !strings.Contains(dialog.Body.String(), want) {
 			t.Fatalf("confirmation missing %q: %s", want, dialog.Body.String())
 		}
@@ -114,10 +114,11 @@ func TestStopRunControlsRenderContextualConfirmationAndResult(t *testing.T) {
 
 	form := url.Values{"issue_id": {"issue-1311"}, "work_attempt_id": {"1311"}, "detent_session_id": {"91"}, "provider_session_id": {"thread-1311"}, "confirm": {"true"}}
 	success := stopRunRequest(t, server.Handler(), http.MethodPost, "/api/v1/projects/detent/runs/0/stop", form.Encode(), map[string]string{"Authorization": "Bearer detent_test_token", "Content-Type": "application/x-www-form-urlencoded", "HX-Request": "true"})
-	if success.Code != http.StatusOK || success.Header().Get("HX-Trigger") != "kanbanActionSucceeded" {
+	wantTrigger := `{"kanbanActionSucceeded":{"message":"Stop accepted; board routing is continuing in the background."}}`
+	if success.Code != http.StatusOK || success.Header().Get("HX-Trigger") != wantTrigger {
 		t.Fatalf("success status/header = %d/%q; body = %s", success.Code, success.Header().Get("HX-Trigger"), success.Body.String())
 	}
-	if !strings.Contains(success.Body.String(), `data-stop-run-result="succeeded"`) || !strings.Contains(success.Body.String(), "moved it to Blocked") {
+	if !strings.Contains(success.Body.String(), `data-stop-run-result="pending"`) || !strings.Contains(success.Body.String(), "board routing to Blocked is continuing") {
 		t.Fatalf("success result missing: %s", success.Body.String())
 	}
 }
@@ -138,14 +139,59 @@ func TestStopRunHTMXTransitionFailureStaysActionable(t *testing.T) {
 	}
 }
 
+func TestStopRunAsyncTransitionFailureReopensRetryDialog(t *testing.T) {
+	t.Parallel()
+	stopper := &fakeRunStopper{result: orchestrator.StopRunResult{ProjectID: "detent", IssueID: "issue-1311", Attempt: 0, WorkAttemptID: 1311, DetentSessionID: 91, ProviderSessionID: "thread-1311", Destination: "Todo", Priority: 2, PriorityName: "High", Reason: "make room", Outcome: "succeeded"}}
+	server := newStopRunServerWithSnapshot(t, stopper, telemetry.Snapshot{
+		BoardIssues: []telemetry.Issue{{ID: "issue-1311", Identifier: "digitaldrywood/detent#1311", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/1311", Title: "Stop unhealthy run", State: "In Progress"}},
+		Blocked: []telemetry.Blocked{{
+			Issue:           telemetry.Issue{ID: "issue-1311", Identifier: "digitaldrywood/detent#1311", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/1311", Title: "Stop unhealthy run", State: "In Progress"},
+			Error:           "run stopped; retry the transition to Todo: tracker unavailable",
+			Source:          telemetry.BlockedSourceOperatorStop,
+			RecoveryReason:  "transition_failed",
+			RecoveryTarget:  "Todo",
+			Attempt:         0,
+			WorkAttemptID:   1311,
+			DetentSessionID: 91,
+			SessionID:       "thread-1311",
+			Destination:     "Todo",
+			Priority:        2,
+			PriorityName:    "High",
+			StopReason:      "make room",
+		}},
+	})
+
+	dialogPath := "/api/v1/projects/detent/runs/0/stop?issue_id=issue-1311&work_attempt_id=1311&detent_session_id=91&provider_session_id=thread-1311"
+	dialog := stopRunRequest(t, server.Handler(), http.MethodGet, dialogPath, "", map[string]string{"Authorization": "Bearer detent_test_token", "HX-Request": "true"})
+	for _, want := range []string{"Redispatch remains suppressed", "tracker unavailable", "Retry move to Todo", "High priority", `data-stop-run-result="transition_failed"`} {
+		if !strings.Contains(dialog.Body.String(), want) {
+			t.Fatalf("retry dialog missing %q: %s", want, dialog.Body.String())
+		}
+	}
+
+	form := url.Values{"issue_id": {"issue-1311"}, "work_attempt_id": {"1311"}, "detent_session_id": {"91"}, "provider_session_id": {"thread-1311"}, "destination": {"Todo"}, "priority": {"2"}, "reason": {"make room"}, "confirm": {"true"}}
+	retry := stopRunRequest(t, server.Handler(), http.MethodPost, "/api/v1/projects/detent/runs/0/stop", form.Encode(), map[string]string{"Authorization": "Bearer detent_test_token", "Content-Type": "application/x-www-form-urlencoded", "HX-Request": "true"})
+	if retry.Code != http.StatusOK || stopper.calls != 1 {
+		t.Fatalf("retry status/calls = %d/%d; body = %s", retry.Code, stopper.calls, retry.Body.String())
+	}
+	if stopper.request.Destination != "Todo" || stopper.request.Priority != 2 || stopper.request.Reason != "make room" {
+		t.Fatalf("retry request = %#v", stopper.request)
+	}
+}
+
 func newStopRunServer(t *testing.T, stopper *fakeRunStopper) *web.Server {
+	t.Helper()
+	return newStopRunServerWithSnapshot(t, stopper, telemetry.Snapshot{
+		BoardIssues: []telemetry.Issue{{ID: "issue-1311", Identifier: "digitaldrywood/detent#1311", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/1311", Title: "Stop unhealthy run", State: "In Progress"}},
+		Running:     []telemetry.Running{{Issue: telemetry.Issue{ID: "issue-1311", Identifier: "digitaldrywood/detent#1311", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/1311", Title: "Stop unhealthy run", State: "In Progress", RuntimeIdentity: agentidentity.Identity{Role: "code"}}, Attempt: 0, WorkAttemptID: 1311, DetentSessionID: 91, SessionID: "thread-1311", StopDestination: "Blocked", StopPriorityOptions: []telemetry.StopRunPriorityOption{{Rank: 1, Name: "Urgent"}, {Rank: 2, Name: "High"}, {Rank: 3, Name: "Medium"}, {Rank: 4, Name: "Low"}}}},
+	})
+}
+
+func newStopRunServerWithSnapshot(t *testing.T, stopper *fakeRunStopper, snapshot telemetry.Snapshot) *web.Server {
 	t.Helper()
 	deps := testDeps(t)
 	deps.RunStopper = stopper
-	if err := deps.Hub.Publish(telemetry.Snapshot{
-		BoardIssues: []telemetry.Issue{{ID: "issue-1311", Identifier: "digitaldrywood/detent#1311", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/1311", Title: "Stop unhealthy run", State: "In Progress"}},
-		Running:     []telemetry.Running{{Issue: telemetry.Issue{ID: "issue-1311", Identifier: "digitaldrywood/detent#1311", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/1311", Title: "Stop unhealthy run", State: "In Progress", RuntimeIdentity: agentidentity.Identity{Role: "code"}}, Attempt: 0, WorkAttemptID: 1311, DetentSessionID: 91, SessionID: "thread-1311", StopDestination: "Blocked", StopPriorityOptions: []telemetry.StopRunPriorityOption{{Rank: 1, Name: "Urgent"}, {Rank: 2, Name: "High"}, {Rank: 3, Name: "Medium"}, {Rank: 4, Name: "Low"}}}},
-	}); err != nil {
+	if err := deps.Hub.Publish(snapshot); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
 	server, err := web.NewServer(web.Config{GlobalConfig: globalconfig.Config{APIToken: "detent_test_token"}, StaticDir: t.TempDir()}, deps)

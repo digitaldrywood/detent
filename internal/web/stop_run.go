@@ -22,6 +22,8 @@ type RunStopper interface {
 	StopRun(context.Context, orchestrator.StopRunRequest) (orchestrator.StopRunResult, error)
 }
 
+const stopRunAcceptedTrigger = `{"kanbanActionSucceeded":{"message":"Stop accepted; board routing is continuing in the background."}}`
+
 type stopRunRequestPayload struct {
 	IssueID           string `json:"issue_id" form:"issue_id"`
 	WorkAttemptID     int64  `json:"work_attempt_id" form:"work_attempt_id"`
@@ -50,6 +52,11 @@ func (s *Server) apiStopRunDialog(c echo.Context) error {
 	}
 	running, ok := activeRunForStop(snapshot, request)
 	if !ok {
+		if blocked, retryOK := stoppedRunForTransitionRetry(snapshot, request); retryOK {
+			data := stopRunDialogDataFromBlocked(blocked, request.ProjectID)
+			data.Error = stopRunTransitionRetryMessage(blocked)
+			return render(c, templates.StopRunDialogContent(data))
+		}
 		data := stopRunDialogDataFromRequest(request)
 		data.Outcome = "stale"
 		data.Error = "The selected run is no longer active or its identity changed. The work item was not moved."
@@ -134,7 +141,11 @@ func (s *Server) apiStopRun(c echo.Context) error {
 	data.Reason = result.Reason
 	data.CanSubmit = false
 	if htmxRequest(c) {
-		c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
+		trigger := kanbanDialogSucceeded
+		if result.Outcome == "pending" {
+			trigger = stopRunAcceptedTrigger
+		}
+		c.Response().Header().Set("HX-Trigger", trigger)
 		return render(c, templates.StopRunDialogContent(data))
 	}
 	return c.JSON(http.StatusOK, result)
@@ -164,7 +175,7 @@ func demoStopRunResult(request orchestrator.StopRunRequest, running telemetry.Ru
 		}
 	}
 	now := time.Now().UTC()
-	return orchestrator.StopRunResult{ProjectID: request.ProjectID, IssueID: request.IssueID, Identifier: running.Identifier, Attempt: request.Attempt, WorkAttemptID: request.WorkAttemptID, DetentSessionID: request.DetentSessionID, ProviderSessionID: request.ProviderSessionID, Destination: destination, Priority: request.Priority, PriorityName: priorityName, Reason: request.Reason, Outcome: "succeeded", RequestedAt: now, CompletedAt: now}, nil
+	return orchestrator.StopRunResult{ProjectID: request.ProjectID, IssueID: request.IssueID, Identifier: running.Identifier, Attempt: request.Attempt, WorkAttemptID: request.WorkAttemptID, DetentSessionID: request.DetentSessionID, ProviderSessionID: request.ProviderSessionID, Destination: destination, Priority: request.Priority, PriorityName: priorityName, Reason: request.Reason, Outcome: "pending", RequestedAt: now}, nil
 }
 
 func stopRunAttemptParam(c echo.Context) (int, error) {
@@ -300,6 +311,84 @@ func stopRunDialogDataFromRequest(request orchestrator.StopRunRequest) templates
 		DetentSessionID:   request.DetentSessionID,
 		ProviderSessionID: request.ProviderSessionID,
 	}
+}
+
+func stoppedRunForTransitionRetry(snapshot telemetry.Snapshot, request orchestrator.StopRunRequest) (telemetry.Blocked, bool) {
+	for _, blocked := range snapshot.Blocked {
+		if blocked.Source != telemetry.BlockedSourceOperatorStop || !strings.EqualFold(strings.TrimSpace(blocked.RecoveryReason), "transition_failed") && !strings.Contains(strings.ToLower(strings.TrimSpace(blocked.Error)), "retry the transition") {
+			continue
+		}
+		if request.ProjectID != "" && blocked.ProjectID != "" && request.ProjectID != blocked.ProjectID {
+			continue
+		}
+		if blocked.ID != request.IssueID || blocked.Attempt != request.Attempt {
+			continue
+		}
+		if request.WorkAttemptID > 0 && request.WorkAttemptID != blocked.WorkAttemptID {
+			continue
+		}
+		if request.DetentSessionID > 0 && request.DetentSessionID != blocked.DetentSessionID {
+			continue
+		}
+		if request.ProviderSessionID != "" && request.ProviderSessionID != blocked.SessionID {
+			continue
+		}
+		return blocked, true
+	}
+	return telemetry.Blocked{}, false
+}
+
+func stopRunDialogDataFromBlocked(blocked telemetry.Blocked, fallbackProjectID string) templates.StopRunDialogData {
+	projectID := strings.TrimSpace(blocked.ProjectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(fallbackProjectID)
+	}
+	repository, _ := splitRunIdentifier(blocked.Identifier)
+	if repository == "" {
+		repository = projectID
+	}
+	identifier := strings.TrimSpace(blocked.Identifier)
+	if identifier == "" {
+		identifier = strings.TrimSpace(blocked.ID)
+	}
+	priority := blocked.Priority
+	if priority == 0 {
+		priority = 1
+	}
+	return templates.StopRunDialogData{
+		ProjectID:         projectID,
+		Repository:        repository,
+		IssueID:           blocked.ID,
+		Identifier:        identifier,
+		IssueURL:          blocked.URL,
+		Title:             blocked.Title,
+		Role:              "stopped",
+		Stage:             "Run stopped",
+		Destination:       blocked.Destination,
+		Priority:          priority,
+		PriorityName:      blocked.PriorityName,
+		PriorityOptions:   stopRunPriorityOptionsForDialog(nil),
+		Reason:            blocked.StopReason,
+		Attempt:           blocked.Attempt,
+		WorkAttemptID:     blocked.WorkAttemptID,
+		DetentSessionID:   blocked.DetentSessionID,
+		ProviderSessionID: blocked.SessionID,
+		Outcome:           "transition_failed",
+		CanSubmit:         true,
+		RetryTransition:   true,
+	}
+}
+
+func stopRunTransitionRetryMessage(blocked telemetry.Blocked) string {
+	destination := strings.TrimSpace(blocked.Destination)
+	if destination == "" {
+		destination = "the configured hold state"
+	}
+	message := "The run stopped, but moving the work item to " + destination + " failed. Redispatch remains suppressed; correct the tracker error and retry this operation."
+	if detail := strings.TrimSpace(blocked.Error); detail != "" {
+		message += " " + detail
+	}
+	return message
 }
 
 func splitRunIdentifier(identifier string) (string, string) {

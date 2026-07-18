@@ -29,6 +29,7 @@ test("operator chooses the stopped item's destination, priority, and reason", as
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("heading", { name: "Stop run and route item" })).toBeVisible();
   await expect(dialog.getByRole("radio", { name: /Blocked/ })).toBeChecked();
+  await expect(dialog.locator("#stop-run-submit-indicator")).toBeHidden();
 
   await dialog.getByRole("radio", { name: /Todo/ }).check();
   await dialog.getByLabel("Todo priority").selectOption("2");
@@ -53,6 +54,9 @@ test("operator chooses the stopped item's destination, priority, and reason", as
   expect(submitted.get("destination")).toBe("Todo");
   expect(submitted.get("priority")).toBe("2");
   expect(submitted.get("reason")).toBe("Make room for the release blocker");
-  expect(await response.text()).toContain("moved it to Todo at High priority");
+  expect(await response.text()).toContain("board routing to Todo at High priority is continuing");
   await expect(dialog).toBeHidden();
+  await expect(page.locator("[data-detent-action-notice]")).toContainText(
+    "Stop accepted; board routing is continuing in the background.",
+  );
 });

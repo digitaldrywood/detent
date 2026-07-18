@@ -74,8 +74,7 @@ type stopRunReply struct {
 }
 
 type pendingStopRun struct {
-	result  StopRunResult
-	replies []chan stopRunReply
+	result StopRunResult
 }
 
 type operatorStopMetadata struct {
@@ -130,7 +129,9 @@ func (o *Orchestrator) handleStopRunRequest(ctx context.Context, state *State, e
 	}
 	if pending, ok := o.pendingStops[request.IssueID]; ok {
 		if stopRunResultMatchesRequest(pending.result, request) {
-			pending.replies = append(pending.replies, event.reply)
+			result := pending.result
+			result.AlreadyStopped = true
+			event.reply <- stopRunReply{result: result}
 			return
 		}
 		event.reply <- stopRunReply{err: ErrStopRunStale}
@@ -191,7 +192,7 @@ func (o *Orchestrator) handleStopRunRequest(ctx context.Context, state *State, e
 		event.reply <- stopRunReply{err: fmt.Errorf("record operator stop intent: %w", err)}
 		return
 	}
-	o.pendingStops[request.IssueID] = &pendingStopRun{result: result, replies: []chan stopRunReply{event.reply}}
+	o.pendingStops[request.IssueID] = &pendingStopRun{result: result}
 	state.Blocked[request.IssueID] = operatorStopBlocked(running.Issue, result, "operator stop is waiting for the worker to exit")
 	delete(state.Retry, request.IssueID)
 	delete(state.BudgetRefusals, request.IssueID)
@@ -202,6 +203,7 @@ func (o *Orchestrator) handleStopRunRequest(ctx context.Context, state *State, e
 		running.cancel()
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{At: event.at, Event: "operator_stop_requested", Message: "operator requested stop for " + issueLabel(running.Issue)})
+	event.reply <- stopRunReply{result: result}
 }
 
 func (o *Orchestrator) handleOperatorStopCompletion(ctx context.Context, state *State, event runpkg.Completion, running Running) bool {
@@ -234,9 +236,8 @@ func (o *Orchestrator) handleOperatorStopCompletion(ctx context.Context, state *
 	o.deferBackendCapacityProbe(state, running, completedAt, runpkg.ErrOperatorStopped)
 	result := pending.result
 	result.CompletedAt = completedAt
-	err := o.finishOperatorStopTransition(ctx, state, running.Issue, &result)
-	for _, reply := range pending.replies {
-		reply <- stopRunReply{result: result, err: err}
+	if err := o.finishOperatorStopTransition(ctx, state, running.Issue, &result); err != nil && o.logger != nil {
+		o.logger.Warn("operator stop tracker transition failed", "issue_id", event.IssueID, "destination", result.Destination, "error", err)
 	}
 	return true
 }
@@ -536,7 +537,7 @@ func runAlreadyCompleted(done <-chan struct{}) bool {
 }
 
 func operatorStopBlocked(issue connector.Issue, result StopRunResult, reason string) Blocked {
-	return Blocked{Issue: cloneIssue(issue), Reason: reason, BlockedAt: result.RequestedAt, Source: BlockedSourceOperatorStop, Attempt: result.Attempt, WorkAttemptID: result.WorkAttemptID, DetentSessionID: result.DetentSessionID, SessionID: result.ProviderSessionID, Destination: result.Destination, Priority: result.Priority, PriorityName: result.PriorityName, StopReason: result.Reason}
+	return Blocked{Issue: cloneIssue(issue), Reason: reason, RecoveryReason: result.Outcome, RecoveryTarget: result.Destination, BlockedAt: result.RequestedAt, Source: BlockedSourceOperatorStop, Attempt: result.Attempt, WorkAttemptID: result.WorkAttemptID, DetentSessionID: result.DetentSessionID, SessionID: result.ProviderSessionID, Destination: result.Destination, Priority: result.Priority, PriorityName: result.PriorityName, StopReason: result.Reason}
 }
 
 func operatorStopWorkAttemptMetadata(running Running, result StopRunResult, outcome string, message string) string {

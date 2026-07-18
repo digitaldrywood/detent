@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/a-h/templ"
+
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
@@ -325,17 +327,55 @@ func boardExceptions(data DashboardData, boardActions bool) []primitives.Excepti
 		return nil
 	}
 
-	rows := make([]telemetry.Blocked, 0, len(data.Snapshot.Blocked))
+	retryRows := make([]telemetry.Blocked, 0, len(data.Snapshot.Blocked))
+	reviewRows := make([]telemetry.Blocked, 0, len(data.Snapshot.Blocked))
 	for _, row := range data.Snapshot.Blocked {
 		if boardBlockedWaiting(row.Source, row.RecoveryReason, row.Error) {
 			continue
 		}
-		rows = append(rows, row)
+		if StopRunRetryDialogPath(row, data.ProjectID) != "" {
+			retryRows = append(retryRows, row)
+			continue
+		}
+		reviewRows = append(reviewRows, row)
 	}
-	if len(rows) == 0 {
+	if len(retryRows) == 0 && len(reviewRows) == 0 {
 		return nil
 	}
-	return []primitives.Exception{boardBlockedExceptionSummary(data, rows, boardActions)}
+	exceptions := make([]primitives.Exception, 0, len(retryRows)+1)
+	for _, row := range retryRows {
+		exceptions = append(exceptions, boardOperatorStopException(data, row))
+	}
+	if len(reviewRows) > 0 {
+		exceptions = append(exceptions, boardBlockedExceptionSummary(data, reviewRows, boardActions))
+	}
+	return exceptions
+}
+
+func boardOperatorStopException(data DashboardData, row telemetry.Blocked) primitives.Exception {
+	projectID := strings.TrimSpace(row.ProjectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(data.ProjectID)
+	}
+	identity := boardCardIdentityToken(row.Identifier, row.ID, projectKanbanIssueNumber(row.Issue))
+	return primitives.Exception{
+		ID:          "exception-" + boardCardScopedSlug(projectID, identity),
+		Kind:        primitives.KindErr,
+		Title:       "Run stopped; routing failed",
+		Repo:        projectID,
+		Ref:         projectKanbanIssueNumber(row.Issue),
+		RefURL:      strings.TrimSpace(row.URL),
+		Rest:        boardExceptionDetail(row, pipelineNow(data.Snapshot)),
+		ActionLabel: "Retry routing",
+		ActionAttrs: templ.Attributes{
+			"hx-get":                       StopRunRetryDialogPath(row, data.ProjectID),
+			"hx-target":                    kanbanDialogTargetSelector(),
+			"hx-swap":                      "innerHTML",
+			"data-tui-dialog-trigger":      true,
+			"data-tui-dialog-target":       kanbanActionDialogID,
+			"data-tui-dialog-trigger-open": "false",
+		},
+	}
 }
 
 func boardBlockedExceptionSummary(data DashboardData, rows []telemetry.Blocked, boardActions bool) primitives.Exception {
@@ -684,6 +724,9 @@ func boardCardBlockedWaitingText(card projectKanbanCard) string {
 }
 
 func boardBlockedWaiting(source telemetry.BlockedSource, recoveryReason string, reason string) bool {
+	if source == telemetry.BlockedSourceOperatorStop && !operatorStopTransitionFailed(telemetry.Blocked{Source: source, RecoveryReason: recoveryReason, Error: reason}) {
+		return true
+	}
 	if strings.EqualFold(strings.TrimSpace(recoveryReason), "human_blocker") {
 		return false
 	}

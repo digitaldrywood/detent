@@ -46,6 +46,10 @@ templ AppShell(data DashboardShellData, scope templ.Component) {
 				<span data-detent-build-update-message></span>
 				<button type="button" class="font-medium text-accent hover:underline" data-detent-build-reload>Reload</button>
 			</div>
+			<div id="detent-action-notice" class="fixed right-4 top-16 z-50 hidden max-w-md items-center gap-3 rounded-card border border-accent/40 bg-surface px-4 py-3 text-sm text-text shadow-lg" role="status" aria-live="polite" data-detent-action-notice hidden>
+				<span data-detent-action-notice-message></span>
+				<button type="button" class="font-medium text-accent hover:underline" data-detent-action-notice-dismiss>Dismiss</button>
+			</div>
 			<div
 				class="flex h-full"
 				sse-connect={ eventsPath(data) }
@@ -528,13 +532,30 @@ templ appShellScript() {
 				detailSheetRefreshing = true;
 				htmx.ajax("GET", host.dataset.detailSheetURL, { target: host, swap: "morph:innerHTML" });
 			});
-			document.addEventListener("kanbanActionSucceeded", function () {
+			function showActionNotice(message) {
+				var notice = document.querySelector("[data-detent-action-notice]");
+				var content = notice && notice.querySelector("[data-detent-action-notice-message]");
+				if (!notice || !content || !message) return;
+				content.textContent = message;
+				notice.hidden = false;
+				notice.classList.remove("hidden");
+				notice.classList.add("flex");
+			}
+			function hideActionNotice() {
+				var notice = document.querySelector("[data-detent-action-notice]");
+				if (!notice) return;
+				notice.hidden = true;
+				notice.classList.add("hidden");
+				notice.classList.remove("flex");
+			}
+			document.addEventListener("kanbanActionSucceeded", function (event) {
 				if (window.tui && window.tui.dialog) {
 					window.tui.dialog.close("kanban-action-dialog");
 				}
 				var content = document.getElementById("kanban-dialog-content");
 				if (content) content.replaceChildren();
 				closeDetailSheet();
+				showActionNotice(event.detail && event.detail.message);
 			});
 			document.addEventListener("keydown", function (event) {
 				if (event.key === "Escape") {
@@ -552,6 +573,10 @@ templ appShellScript() {
 				}
 			});
 			document.addEventListener("click", function (event) {
+				if (event.target.closest("[data-detent-action-notice-dismiss]")) {
+					hideActionNotice();
+					return;
+				}
 				if (event.target.closest("[data-chat-toggle]")) {
 					setMobileTopbar(false);
 					setChatPanel(true);

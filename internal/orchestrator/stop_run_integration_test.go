@@ -44,8 +44,8 @@ func TestStopRunTargetsOneRunAndBlocksRedispatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StopRun() error = %v", err)
 	}
-	if result.Outcome != "succeeded" || result.Destination != "Blocked" {
-		t.Fatalf("StopRun() result = %#v, want successful Blocked transition", result)
+	if result.Outcome != "pending" || result.Destination != "Blocked" || !result.CompletedAt.IsZero() {
+		t.Fatalf("StopRun() result = %#v, want pending Blocked acknowledgement", result)
 	}
 	state = waitForOperatorStopState(t, orch, func(state orchestrator.State) bool {
 		_, stoppedRunning := state.Running[issue.ID]
@@ -132,6 +132,12 @@ func TestStopRunRoutesToOperatorDestination(t *testing.T) {
 			if result.Destination != tt.destination || result.Priority != tt.priority || result.PriorityName != tt.priorityName {
 				t.Fatalf("StopRun() result = %#v", result)
 			}
+			if result.Outcome != "pending" || !result.CompletedAt.IsZero() {
+				t.Fatalf("StopRun() result = %#v, want pending acknowledgement", result)
+			}
+			waitForOperatorStopState(t, orch, func(state orchestrator.State) bool {
+				return len(tracker.stateUpdateCalls()) > 0 && state.Running[issue.ID].Issue.ID == ""
+			})
 			updates := tracker.stateUpdateCalls()
 			if len(updates) == 0 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: tt.destination}) {
 				t.Fatalf("state updates = %#v, want destination %s", updates, tt.destination)
@@ -162,6 +168,12 @@ func TestStopRunPreservesConfiguredCustomDefault(t *testing.T) {
 	if result.Destination != "Paused" || result.Priority != 0 {
 		t.Fatalf("StopRun() result = %#v, want configured Paused default", result)
 	}
+	if result.Outcome != "pending" || !result.CompletedAt.IsZero() {
+		t.Fatalf("StopRun() result = %#v, want pending acknowledgement", result)
+	}
+	waitForOperatorStopState(t, orch, func(state orchestrator.State) bool {
+		return len(tracker.stateUpdateCalls()) > 0 && state.Running[issue.ID].Issue.ID == ""
+	})
 	updates := tracker.stateUpdateCalls()
 	if len(updates) == 0 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Paused"}) {
 		t.Fatalf("state updates = %#v, want configured Paused default", updates)
@@ -208,9 +220,12 @@ func TestStopRunAppliesTodoPriorityBeforeRedispatch(t *testing.T) {
 	case <-time.After(operatorStopIntegrationWaitTimeout):
 		t.Fatal("timed out waiting for stop result")
 	}
-	if stopped.err != nil || stopped.result.Outcome != "succeeded" || stopped.result.PriorityName != "High" {
+	if stopped.err != nil || stopped.result.Outcome != "pending" || stopped.result.PriorityName != "High" || !stopped.result.CompletedAt.IsZero() {
 		t.Fatalf("StopRun() = %#v, %v", stopped.result, stopped.err)
 	}
+	waitForOperatorStopState(t, orch, func(state orchestrator.State) bool {
+		return len(tracker.operationsSnapshot()) >= 2
+	})
 	operations := tracker.operationsSnapshot()
 	priorityAt := slices.Index(operations, "priority:High")
 	stateAt := slices.Index(operations, "state:Todo")
@@ -225,6 +240,49 @@ func TestStopRunAppliesTodoPriorityBeforeRedispatch(t *testing.T) {
 	if !hasOperatorStopReason(timeline.Events, "making room for the release blocker") {
 		t.Fatalf("workflow events = %#v, want operator reason", timeline.Events)
 	}
+}
+
+func TestStopRunAcknowledgesBeforeTrackerTransitionCompletes(t *testing.T) {
+	issue := testIssue("issue-stop-acknowledgement", "digitaldrywood/detent#1435", "In Progress")
+	tracker := newOperatorStopAtomicConnector(issue)
+	runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 1)}
+	orch, err := orchestrator.New(orchestrator.Config{PollInterval: time.Hour, MaxConcurrentAgents: 1, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"In Progress"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, StopRunPriorityNames: map[int]string{2: "High"}}, orchestrator.Dependencies{Connector: tracker, Runner: runner})
+	if err != nil {
+		t.Fatalf("orchestrator.New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	t.Cleanup(stop)
+	t.Cleanup(func() {
+		select {
+		case <-tracker.releasePriority:
+		default:
+			close(tracker.releasePriority)
+		}
+	})
+	waitForOperatorStopRunnerIssue(t, runner.started, issue.ID)
+	state := waitForOperatorStopState(t, orch, func(state orchestrator.State) bool { return state.Running[issue.ID].Issue.ID != "" })
+	running := state.Running[issue.ID]
+	reply := make(chan stopRunTestReply, 1)
+	go func() {
+		result, stopErr := orch.StopRun(t.Context(), orchestrator.StopRunRequest{ProjectID: "detent", IssueID: issue.ID, Attempt: running.Attempt, WorkAttemptID: running.WorkAttemptID, Destination: orchestrator.StopRunDestinationTodo, Priority: 2})
+		reply <- stopRunTestReply{result: result, err: stopErr}
+	}()
+
+	var accepted stopRunTestReply
+	select {
+	case accepted = <-reply:
+	case <-time.After(operatorStopIntegrationWaitTimeout):
+		t.Fatal("timed out waiting for stop acknowledgement before tracker transition")
+	}
+	if accepted.err != nil || accepted.result.Outcome != "pending" || accepted.result.PriorityName != "High" || !accepted.result.CompletedAt.IsZero() {
+		t.Fatalf("StopRun() = %#v, %v, want pending acknowledgement", accepted.result, accepted.err)
+	}
+	select {
+	case <-tracker.priorityStarted:
+	case <-time.After(operatorStopIntegrationWaitTimeout):
+		t.Fatal("timed out waiting for tracker transition")
+	}
+	close(tracker.releasePriority)
 }
 
 func TestStopRunRecoveryReconcilesDurableHoldBeforeDispatch(t *testing.T) {
@@ -337,10 +395,13 @@ func TestStopRunHoldsItemWhenTrackerTransitionFails(t *testing.T) {
 	running := state.Running[issue.ID]
 	request := orchestrator.StopRunRequest{ProjectID: "detent", IssueID: issue.ID, Attempt: running.Attempt}
 	result, err := orch.StopRun(t.Context(), request)
-	if !errors.Is(err, orchestrator.ErrStopRunTransition) || result.Outcome != "transition_failed" {
-		t.Fatalf("StopRun() = %#v, %v, want transition failure", result, err)
+	if err != nil || result.Outcome != "pending" || !result.CompletedAt.IsZero() {
+		t.Fatalf("StopRun() = %#v, %v, want pending acknowledgement", result, err)
 	}
-	state = waitForOperatorStopState(t, orch, func(state orchestrator.State) bool { return state.Blocked[issue.ID].Source != "" })
+	state = waitForOperatorStopState(t, orch, func(state orchestrator.State) bool {
+		attempt, ok := workAttemptSnapshot(state, running.WorkAttemptID)
+		return state.Blocked[issue.ID].Source != "" && ok && attempt.Phase == "operator_stop_transition_failed"
+	})
 	if state.Blocked[issue.ID].Destination != "Blocked" {
 		t.Fatalf("Blocked = %#v, want Blocked reconciliation hold", state.Blocked[issue.ID])
 	}
