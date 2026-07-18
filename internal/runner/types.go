@@ -138,6 +138,9 @@ type AgentTurnRequest struct {
 	Resume             AgentResume
 	TurnTimeout        time.Duration
 	ExtraWritableRoots []string
+	Environment        procgroup.Environment
+	cacheStrategy      string
+	projectID          string
 }
 
 type AgentResume struct {

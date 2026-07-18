@@ -55,6 +55,7 @@ type transportResult struct {
 }
 
 type workerTempDirContextKey struct{}
+type workerEnvironmentContextKey struct{}
 
 func NewLocalTransportFactory(newCommand CommandFactory) (*LocalTransportFactory, error) {
 	if newCommand == nil {
@@ -71,6 +72,7 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 	if cmd == nil {
 		return nil, errors.New("command factory returned nil command")
 	}
+	procgroup.SetEnvironment(cmd, workerEnvironment(ctx))
 	procgroup.SetTempDir(cmd, workerTempDir(ctx))
 
 	stdin, err := cmd.StdinPipe()
@@ -163,6 +165,25 @@ func workerTempDir(ctx context.Context) string {
 		return ""
 	}
 	return strings.TrimSpace(path)
+}
+
+func withWorkerEnvironment(ctx context.Context, environment procgroup.Environment) context.Context {
+	ctx = contextOrBackground(ctx)
+	if len(environment.Variables) == 0 && len(environment.PathPrefixes) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, workerEnvironmentContextKey{}, environment)
+}
+
+func workerEnvironment(ctx context.Context) procgroup.Environment {
+	if ctx == nil {
+		return procgroup.Environment{}
+	}
+	environment, ok := ctx.Value(workerEnvironmentContextKey{}).(procgroup.Environment)
+	if !ok {
+		return procgroup.Environment{}
+	}
+	return environment
 }
 
 func (t *localTransport) Send(ctx context.Context, msg Message) error {

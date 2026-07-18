@@ -55,6 +55,7 @@ polling:
 workspace:
   root: <worktree-root>
   source_root: <source-root>
+  cache_strategy: isolated
   auto_branch: true
   cleanup_idle_ttl_ms: 86400000
   cleanup_sweep_interval_ms: 600000
