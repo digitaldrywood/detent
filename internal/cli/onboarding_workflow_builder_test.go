@@ -484,6 +484,20 @@ func TestBuildOnboardingWorkflowRendersReviewFlowVariants(t *testing.T) {
 	}
 }
 
+func TestRenderOnboardingWorkflowPromptReplacesCRLFExecutionFlow(t *testing.T) {
+	t.Parallel()
+
+	prompt := []byte("Portable direction.\r\n\r\n## Required Execution Flow\r\n\r\nMove the issue to `Human Review` only after the gate passes.\r\n")
+	got := renderOnboardingWorkflowPrompt("project_v2", prompt, onboardingWorkflowAutopilotFlow)
+	if strings.Contains(got, "Move the issue to `Human Review` only after") {
+		t.Fatalf("rendered prompt retained review flow:\n%s", got)
+	}
+	assertOnboardingWorkflowContains(t, got, "do not move the issue to `Human Review`")
+	if strings.Contains(got, "\r") {
+		t.Fatalf("rendered prompt retained carriage returns: %q", got)
+	}
+}
+
 func TestBuildOnboardingWorkflowRejectsMalformedAnswers(t *testing.T) {
 	t.Parallel()
 

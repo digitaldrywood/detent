@@ -785,7 +785,9 @@ func onboardingWorkflowReviewFlowFor(autoPromote bool, quietSeconds int, gateWai
 }
 
 func renderOnboardingWorkflowPrompt(preset string, prompt []byte, flow onboardingWorkflowReviewFlow) string {
-	text := strings.TrimLeft(string(prompt), "\n")
+	text := strings.TrimPrefix(string(prompt), "\ufeff")
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.TrimLeft(text, "\n")
 	section := onboardingWorkflowExecutionFlow(preset, flow)
 	if section == "" {
 		return text
