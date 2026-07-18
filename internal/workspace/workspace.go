@@ -344,7 +344,15 @@ func (l *sourceOperationLock) acquire(ctx context.Context) (func(), error) {
 }
 
 func (l *LocalGit) acquireSourceOperation(ctx context.Context) (func(), error) {
-	return sourceOperationLockFor(l.sourceRoot).acquire(ctx)
+	key := l.sourceRoot
+	if key != "" {
+		commonDir, err := gitCommonDir(ctx, key)
+		if err != nil {
+			return nil, fmt.Errorf("source git common dir: %w", err)
+		}
+		key = commonDir
+	}
+	return sourceOperationLockFor(key).acquire(ctx)
 }
 
 func SafeKey(identifier string) string {

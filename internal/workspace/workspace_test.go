@@ -95,6 +95,8 @@ func TestLocalGitCreateSerializesAfterCreateHooksForSharedSource(t *testing.T) {
 	skipWindows(t)
 
 	source := initSourceRepo(t)
+	alternateSource := filepath.Join(t.TempDir(), "source-worktree")
+	runGit(t, source, "worktree", "add", "--detach", alternateSource, "HEAD")
 	hookState := t.TempDir()
 	lockPath := filepath.Join(hookState, "hook.lock")
 	startedPath := filepath.Join(hookState, "first.started")
@@ -107,10 +109,10 @@ func TestLocalGitCreateSerializesAfterCreateHooksForSharedSource(t *testing.T) {
 		"fi\n" +
 		"rmdir " + shellQuote(lockPath)
 
-	newBackend := func() *LocalGit {
+	newBackend := func(sourceRoot string) *LocalGit {
 		backend, err := NewLocalGit(LocalGitOptions{
 			Root:       filepath.Join(t.TempDir(), "workspaces"),
-			SourceRoot: source,
+			SourceRoot: sourceRoot,
 			AutoBranch: true,
 			Hooks: Hooks{
 				AfterCreate: hookCommand,
@@ -122,8 +124,8 @@ func TestLocalGitCreateSerializesAfterCreateHooksForSharedSource(t *testing.T) {
 		}
 		return backend
 	}
-	firstBackend := newBackend()
-	secondBackend := newBackend()
+	firstBackend := newBackend(source)
+	secondBackend := newBackend(alternateSource)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
