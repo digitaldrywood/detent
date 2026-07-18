@@ -166,6 +166,7 @@ type doctorDeps struct {
 	runCommand           func(context.Context, string, ...string) error
 	resolveCommandInDir  func(context.Context, string, []string, string) (string, error)
 	runCommandInDir      func(context.Context, string, []string, string, ...string) error
+	codexInitialize      func(context.Context, string) error
 	httpDo               func(*http.Request) (*http.Response, error)
 	githubScopes         func(context.Context, string) ([]string, error)
 	githubReadiness      doctorGitHubReadinessFunc
@@ -961,6 +962,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.runCommandInDir == nil {
 		d.runCommandInDir = defaults.runCommandInDir
 	}
+	if d.codexInitialize == nil {
+		d.codexInitialize = defaults.codexInitialize
+	}
 	if d.httpDo == nil {
 		d.httpDo = defaults.httpDo
 	}
@@ -1023,6 +1027,7 @@ func defaultDoctorDeps() doctorDeps {
 		runCommand:           runDoctorCommand,
 		resolveCommandInDir:  resolveDoctorCommandInDir,
 		runCommandInDir:      runDoctorCommandInDir,
+		codexInitialize:      probeDoctorCodexInitialize,
 		httpDo:               defaultDoctorHTTPDo,
 		githubScopes:         defaultGitHubScopes,
 		githubReadiness:      ghconnector.CheckReadiness,

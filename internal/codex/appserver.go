@@ -336,8 +336,8 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 	}
 	defer func() {
 		closeErr := closeTransport(ctx, transport, s.readTimeout)
-		if err == nil && closeErr != nil {
-			err = closeErr
+		if closeErr != nil {
+			err = errors.Join(err, closeErr)
 		}
 	}()
 
@@ -435,6 +435,21 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 	return result, nil
 }
 
+func (s *AppServer) CheckHealth(ctx context.Context) (err error) {
+	ctx = contextOrBackground(ctx)
+	transport, err := s.transportFactory.NewTransport(ctx)
+	if err != nil {
+		return fmt.Errorf("start codex app-server transport: %w", err)
+	}
+	defer func() {
+		closeErr := closeTransport(ctx, transport, s.readTimeout)
+		if closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	return s.initialize(ctx, transport, nil)
+}
+
 func (s *AppServer) ListModels(ctx context.Context) (models []Model, err error) {
 	ctx = contextOrBackground(ctx)
 	transport, err := s.transportFactory.NewTransport(ctx)
@@ -443,8 +458,8 @@ func (s *AppServer) ListModels(ctx context.Context) (models []Model, err error) 
 	}
 	defer func() {
 		closeErr := closeTransport(ctx, transport, s.readTimeout)
-		if err == nil && closeErr != nil {
-			err = closeErr
+		if closeErr != nil {
+			err = errors.Join(err, closeErr)
 		}
 	}()
 
@@ -512,8 +527,8 @@ func (s *AppServer) DefaultModel(ctx context.Context, workspace string) (model s
 	}
 	defer func() {
 		closeErr := closeTransport(ctx, transport, s.readTimeout)
-		if err == nil && closeErr != nil {
-			err = closeErr
+		if closeErr != nil {
+			err = errors.Join(err, closeErr)
 		}
 	}()
 
@@ -535,8 +550,8 @@ func (s *AppServer) VerifyThread(ctx context.Context, threadID string) (err erro
 	}
 	defer func() {
 		closeErr := closeTransport(ctx, transport, s.readTimeout)
-		if err == nil && closeErr != nil {
-			err = closeErr
+		if closeErr != nil {
+			err = errors.Join(err, closeErr)
 		}
 	}()
 

@@ -14,7 +14,9 @@ import (
 const (
 	ErrorClass                  = "backend_capacity"
 	TransientOverloadErrorClass = "transient_overload"
+	StartupFailureErrorClass    = "backend_startup_failure"
 	StartupTimeoutErrorClass    = "backend_startup_timeout"
+	StartupFailureKind          = "startup_handshake_failure"
 	StartupTimeoutKind          = "startup_handshake_timeout"
 )
 
@@ -164,6 +166,11 @@ func ClassifyTransientOverload(text string, rules Rules) (Details, bool) {
 func IsTransientOverload(err error) bool {
 	capacityErr, ok := As(err)
 	return ok && capacityErr != nil && capacityErr.Details.Type == ErrorTypeTransientOverload
+}
+
+func IsStartupFailureKind(kind string) bool {
+	kind = strings.TrimSpace(kind)
+	return kind == StartupFailureKind || kind == StartupTimeoutKind
 }
 
 func cloneDetails(details Details) Details {

@@ -8,12 +8,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/instancelock"
@@ -363,7 +365,55 @@ func inspectDoctorDailyBudgetAccuracy(ctx context.Context, db doctorTelemetrySto
 }
 
 func checkDoctorCodex(ctx context.Context, deps doctorDeps) doctorCheck {
-	return checkDoctorBinary(ctx, deps, "codex", "codex binary", "--version", "Install Codex and ensure codex --version succeeds.")
+	const hint = "Install Codex and ensure codex --version and the app-server initialize handshake succeed."
+	path, err := deps.lookPath("codex")
+	if err != nil {
+		return doctorCheck{
+			Name:   "codex binary",
+			Status: doctorFail,
+			Detail: "codex was not found on PATH",
+			Hint:   hint,
+		}
+	}
+	if err := deps.runCommand(ctx, path, "--version"); err != nil {
+		return doctorCheck{
+			Name:   "codex binary",
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s --version failed: %v", path, err),
+			Hint:   hint,
+		}
+	}
+	initialize := deps.codexInitialize
+	if initialize == nil {
+		initialize = probeDoctorCodexInitialize
+	}
+	if err := initialize(ctx, path); err != nil {
+		return doctorCheck{
+			Name:   "codex binary",
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s app-server initialize failed: %v", path, err),
+			Hint:   hint,
+		}
+	}
+	return doctorCheck{
+		Name:   "codex binary",
+		Status: doctorOK,
+		Detail: path + " is runnable and completed an app-server initialize handshake",
+	}
+}
+
+func probeDoctorCodexInitialize(ctx context.Context, path string) error {
+	factory, err := codex.NewLocalTransportFactory(func(commandCtx context.Context) *exec.Cmd {
+		return exec.CommandContext(commandCtx, path, "app-server")
+	})
+	if err != nil {
+		return err
+	}
+	server, err := codex.NewAppServer(factory)
+	if err != nil {
+		return err
+	}
+	return server.CheckHealth(ctx)
 }
 
 func checkDoctorClaudeCode(ctx context.Context, deps doctorDeps) doctorCheck {

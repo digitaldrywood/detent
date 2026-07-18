@@ -171,6 +171,26 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	}
 }
 
+func TestAppServerCheckHealthCompletesInitializeHandshake(t *testing.T) {
+	t.Parallel()
+
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, initializeRequestID, `{"userAgent":"codex-cli/test"}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+	if err := server.CheckHealth(context.Background()); err != nil {
+		t.Fatalf("CheckHealth() error = %v", err)
+	}
+
+	sent := transport.sentMessages()
+	if len(sent) != 2 || sent[0].Method != "initialize" || sent[1].Method != "initialized" {
+		t.Fatalf("sent messages = %#v, want initialize handshake", sent)
+	}
+}
+
 func TestAppServerRunTurnExecutesDynamicToolRequest(t *testing.T) {
 	t.Parallel()
 	transport := newFakeAppServerTransport([]Message{

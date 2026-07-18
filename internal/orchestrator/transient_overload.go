@@ -31,12 +31,18 @@ func (o *Orchestrator) handleTransientOverload(
 	statusMessage := "retrying after transient provider overload"
 	retryEvent := "transient_overload_retry"
 	retryMessage := "transient provider overload"
-	if overloadErr.Details.Kind == backendcapacity.StartupTimeoutKind {
-		errorClass = backendcapacity.StartupTimeoutErrorClass
-		terminalState = store.WorkAttemptTerminalTimedOut
-		statusMessage = "retrying after backend startup timeout"
-		retryEvent = "backend_startup_timeout_retry"
-		retryMessage = "backend startup handshake timed out"
+	if backendcapacity.IsStartupFailureKind(overloadErr.Details.Kind) {
+		errorClass = backendcapacity.StartupFailureErrorClass
+		statusMessage = "retrying after backend startup failure"
+		retryEvent = "backend_startup_failure_retry"
+		retryMessage = "backend startup handshake failed"
+		if overloadErr.Details.Kind == backendcapacity.StartupTimeoutKind {
+			errorClass = backendcapacity.StartupTimeoutErrorClass
+			terminalState = store.WorkAttemptTerminalTimedOut
+			statusMessage = "retrying after backend startup timeout"
+			retryEvent = "backend_startup_timeout_retry"
+			retryMessage = "backend startup handshake timed out"
+		}
 		o.recordProjectAttemptOutcome(
 			state,
 			event.IssueID,

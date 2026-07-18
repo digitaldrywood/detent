@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -54,6 +55,18 @@ func TestProjectAttemptFailureClass(t *testing.T) {
 			terminalState: store.WorkAttemptTerminalNoProgress,
 			errorClass:    "spend_since_progress_circuit_breaker",
 			want:          "spend_since_progress_circuit_breaker",
+		},
+		{
+			name:          "startup timeout shares systemic startup class",
+			terminalState: store.WorkAttemptTerminalTimedOut,
+			errorClass:    backendcapacity.StartupTimeoutErrorClass,
+			want:          backendcapacity.StartupFailureErrorClass,
+		},
+		{
+			name:          "startup exit keeps systemic startup class",
+			terminalState: store.WorkAttemptTerminalFailure,
+			errorClass:    backendcapacity.StartupFailureErrorClass,
+			want:          backendcapacity.StartupFailureErrorClass,
 		},
 		{
 			name:          "no progress has stable class",

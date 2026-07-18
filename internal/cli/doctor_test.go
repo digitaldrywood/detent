@@ -186,6 +186,74 @@ func TestCheckDoctorClaudeCodeUsesVersionAndHint(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorCodexRequiresInitializeHandshake(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		versionErr    error
+		initializeErr error
+		wantStatus    doctorStatus
+		wantDetail    string
+		wantProbes    int
+	}{
+		{
+			name:       "version failure skips initialize",
+			versionErr: errors.New("version failed"),
+			wantStatus: doctorFail,
+			wantDetail: "version failed",
+		},
+		{
+			name:          "initialize failure includes diagnostics",
+			initializeErr: errors.New("exit status 23: stderr: broken launch environment"),
+			wantStatus:    doctorFail,
+			wantDetail:    "broken launch environment",
+			wantProbes:    1,
+		},
+		{
+			name:       "initialize success",
+			wantStatus: doctorOK,
+			wantDetail: "completed an app-server initialize handshake",
+			wantProbes: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			probes := 0
+			check := checkDoctorCodex(context.Background(), doctorDeps{
+				lookPath: func(binary string) (string, error) {
+					if binary != "codex" {
+						t.Fatalf("lookPath(%q), want codex", binary)
+					}
+					return "/usr/bin/codex", nil
+				},
+				runCommand: func(_ context.Context, path string, args ...string) error {
+					if path != "/usr/bin/codex" || !slices.Equal(args, []string{"--version"}) {
+						t.Fatalf("runCommand(%q, %#v), want codex --version", path, args)
+					}
+					return tt.versionErr
+				},
+				codexInitialize: func(_ context.Context, path string) error {
+					probes++
+					if path != "/usr/bin/codex" {
+						t.Fatalf("codexInitialize(%q), want /usr/bin/codex", path)
+					}
+					return tt.initializeErr
+				},
+			})
+			if check.Status != tt.wantStatus || !strings.Contains(check.Detail, tt.wantDetail) {
+				t.Fatalf("check = %#v, want %s containing %q", check, tt.wantStatus, tt.wantDetail)
+			}
+			if probes != tt.wantProbes {
+				t.Fatalf("initialize probes = %d, want %d", probes, tt.wantProbes)
+			}
+		})
+	}
+}
+
 func TestRunDoctorAgentBinaryChecksFollowWorkflowBackends(t *testing.T) {
 	t.Parallel()
 
@@ -5015,6 +5083,9 @@ func successfulDoctorDeps() doctorDeps {
 			return "/usr/bin/" + executable, nil
 		},
 		runCommandInDir: func(context.Context, string, []string, string, ...string) error {
+			return nil
+		},
+		codexInitialize: func(context.Context, string) error {
 			return nil
 		},
 		httpDo: func(*http.Request) (*http.Response, error) {
