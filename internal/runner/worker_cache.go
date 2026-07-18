@@ -56,7 +56,7 @@ func configureWorkerCache(request *AgentTurnRequest) error {
 	variables["GOBIN"] = goBin
 	variables["GOLANGCI_LINT_CACHE"] = golangCILint
 	request.Environment.Variables = variables
-	request.Environment.PathPrefixes = append([]string{goBin}, request.Environment.PathPrefixes...)
+	request.Environment.PathSuffixes = appendUniquePath(request.Environment.PathSuffixes, goBin)
 	if strategy == config.WorkspaceCacheShared {
 		request.ExtraWritableRoots = appendUniquePath(request.ExtraWritableRoots, root)
 	}

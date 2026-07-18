@@ -52,6 +52,7 @@ func TestConfigureWorkerCache(t *testing.T) {
 				Environment: procgroup.Environment{
 					Variables:    map[string]string{"EXISTING": "value", "GOCACHE": "/stale"},
 					PathPrefixes: []string{"/existing/bin"},
+					PathSuffixes: []string{"/fallback/bin"},
 				},
 			}
 			if err := configureWorkerCache(&request); err != nil {
@@ -68,9 +69,13 @@ func TestConfigureWorkerCache(t *testing.T) {
 			if !reflect.DeepEqual(request.Environment.Variables, wantVariables) {
 				t.Fatalf("Environment.Variables = %#v, want %#v", request.Environment.Variables, wantVariables)
 			}
-			wantPathPrefixes := []string{filepath.Join(tt.wantRoot, "go-bin"), "/existing/bin"}
+			wantPathPrefixes := []string{"/existing/bin"}
 			if !reflect.DeepEqual(request.Environment.PathPrefixes, wantPathPrefixes) {
 				t.Fatalf("Environment.PathPrefixes = %#v, want %#v", request.Environment.PathPrefixes, wantPathPrefixes)
+			}
+			wantPathSuffixes := []string{"/fallback/bin", filepath.Join(tt.wantRoot, "go-bin")}
+			if !reflect.DeepEqual(request.Environment.PathSuffixes, wantPathSuffixes) {
+				t.Fatalf("Environment.PathSuffixes = %#v, want %#v", request.Environment.PathSuffixes, wantPathSuffixes)
 			}
 			for _, name := range []string{"GOCACHE", "GOMODCACHE", "GOBIN", "GOLANGCI_LINT_CACHE"} {
 				path := wantVariables[name]

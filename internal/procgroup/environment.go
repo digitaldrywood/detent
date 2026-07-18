@@ -10,10 +10,11 @@ import (
 type Environment struct {
 	Variables    map[string]string
 	PathPrefixes []string
+	PathSuffixes []string
 }
 
 func SetEnvironment(cmd *exec.Cmd, environment Environment) {
-	if cmd == nil || (len(environment.Variables) == 0 && len(environment.PathPrefixes) == 0) {
+	if cmd == nil || (len(environment.Variables) == 0 && len(environment.PathPrefixes) == 0 && len(environment.PathSuffixes) == 0) {
 		return
 	}
 	cmd.Env = environmentWithOverrides(cmd.Environ(), environment, runtime.GOOS)
@@ -61,7 +62,7 @@ func environmentWithOverrides(current []string, configured Environment, goos str
 			continue
 		}
 		normalized := environmentKey(key, goos)
-		if normalized == pathKey && len(configured.PathPrefixes) > 0 {
+		if normalized == pathKey && (len(configured.PathPrefixes) > 0 || len(configured.PathSuffixes) > 0) {
 			pathValue = value
 			continue
 		}
@@ -80,7 +81,7 @@ func environmentWithOverrides(current []string, configured Environment, goos str
 		out = append(out, key+"="+configured.Variables[key])
 	}
 
-	pathParts := make([]string, 0, len(configured.PathPrefixes)+1)
+	pathParts := make([]string, 0, len(configured.PathPrefixes)+len(configured.PathSuffixes)+1)
 	for _, prefix := range configured.PathPrefixes {
 		if prefix = strings.TrimSpace(prefix); prefix != "" {
 			pathParts = append(pathParts, prefix)
@@ -88,6 +89,11 @@ func environmentWithOverrides(current []string, configured Environment, goos str
 	}
 	if pathValue != "" {
 		pathParts = append(pathParts, pathValue)
+	}
+	for _, suffix := range configured.PathSuffixes {
+		if suffix = strings.TrimSpace(suffix); suffix != "" {
+			pathParts = append(pathParts, suffix)
+		}
 	}
 	if len(pathParts) > 0 {
 		separator := ":"

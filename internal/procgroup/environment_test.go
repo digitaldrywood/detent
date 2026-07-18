@@ -70,6 +70,15 @@ func TestEnvironmentWithOverrides(t *testing.T) {
 			},
 			want: []string{"TEMP=C:\\temp", "GOCACHE=D:\\shared\\go-build", "PATH=D:\\shared\\go-bin;C:\\Windows"},
 		},
+		{
+			name:        "unix appends fallback tool paths",
+			goos:        "linux",
+			environment: []string{"PATH=/usr/bin", "HOME=/home/example"},
+			configured: Environment{
+				PathSuffixes: []string{"/shared/go-bin", " "},
+			},
+			want: []string{"HOME=/home/example", "PATH=/usr/bin:/shared/go-bin"},
+		},
 	}
 
 	for _, tt := range tests {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -280,6 +281,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if len(codexClient.request.ExtraWritableRoots) != 1 || codexClient.request.ExtraWritableRoots[0] != cacheRoot {
 		t.Fatalf("codex writable roots = %#v, want shared cache root %q", codexClient.request.ExtraWritableRoots, cacheRoot)
+	}
+	if !reflect.DeepEqual(codexClient.request.Environment.PathSuffixes, []string{filepath.Join(cacheRoot, "go-bin")}) {
+		t.Fatalf("codex PATH suffixes = %#v, want shared tool fallback", codexClient.request.Environment.PathSuffixes)
 	}
 	if codexClient.request.Model != "gpt-5-codex-high" {
 		t.Fatalf("codex model = %q, want issue override", codexClient.request.Model)
