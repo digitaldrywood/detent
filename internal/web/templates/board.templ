@@ -34,6 +34,7 @@ templ BoardPage(data DashboardData) {
 // prior tracker data keeps the last-known lanes visible (via
 // projectKanbanBoardLoaded) rather than flashing skeletons.
 templ BoardSnapshot(data DashboardData) {
+	@updatePendingBanner(data.Snapshot, "mx-5 mt-3.5")
 	if boardFirstRun(data) {
 		@primitives.FirstRun("Connect a repository to start orchestrating.", "Add project", "/settings", "projects are defined in the global config")
 	} else if !projectKanbanBoardLoaded(data) {

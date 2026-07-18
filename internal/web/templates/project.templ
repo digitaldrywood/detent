@@ -53,6 +53,7 @@ templ ProjectOverviewPage(data DashboardData) {
 }
 
 templ ProjectOverviewSnapshotV2(data DashboardData) {
+	@updatePendingBanner(data.Snapshot, "")
 	if !snapshotCarriesData(data) {
 		if snapshotDegraded(data.Snapshot) {
 			<div class="flex-none px-5 pt-4">
@@ -210,6 +211,7 @@ templ ProjectRunsPageV2(data DashboardData) {
 }
 
 templ ProjectRunsSnapshotV2(data DashboardData) {
+	@updatePendingBanner(data.Snapshot, "")
 	if !snapshotCarriesData(data) {
 		if snapshotDegraded(data.Snapshot) {
 			<div class="flex-none px-5 pt-4">

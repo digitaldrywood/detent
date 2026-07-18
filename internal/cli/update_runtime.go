@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -39,12 +42,13 @@ func (r *RestartRequest) set(binary string) {
 	r.binary = strings.TrimSpace(binary)
 }
 
-func newRuntimeUpdateScheduler(cfg BootConfig, logger *slog.Logger) (*detentupdate.Scheduler, error) {
+func newRuntimeUpdateScheduler(cfg BootConfig, logger *slog.Logger, reserveIdle func(context.Context) (func(), bool)) (*detentupdate.Scheduler, error) {
 	interval := time.Duration(cfg.Global.Update.NormalizedCheckIntervalHours()) * time.Hour
 	schedulerConfig := detentupdate.SchedulerConfig{
 		Enabled:          cfg.Global.Update.AutoCheckEnabled,
 		AutoApplyEnabled: cfg.Global.Update.AutoApplyEnabled,
 		CheckInterval:    interval,
+		ReserveIdle:      reserveIdle,
 		Logger:           logger,
 	}
 	executable, err := os.Executable()
@@ -81,6 +85,42 @@ func newRuntimeUpdateScheduler(cfg BootConfig, logger *slog.Logger) (*detentupda
 		return requestUpdateRestart(cfg.Shutdown, cfg.Restart, binary)
 	}
 	return detentupdate.NewScheduler(schedulerConfig)
+}
+
+func runtimeUpdateIdle(ctx context.Context, registry *project.Registry) bool {
+	if registry == nil {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	now := time.Now()
+	for _, trackedProject := range registry.List() {
+		if !trackedProject.Running() {
+			continue
+		}
+		orchestrator := trackedProject.Orchestrator()
+		if orchestrator == nil {
+			return false
+		}
+		state, err := orchestrator.State(ctx)
+		if err != nil || len(state.Snapshot(now).Running) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func runtimeUpdateIdleReservation(ctx context.Context, registry *project.Registry, gate *scheduler.GlobalDispatchGate) (func(), bool) {
+	if gate == nil {
+		return nil, false
+	}
+	release := gate.PauseDispatch()
+	if !runtimeUpdateIdle(ctx, registry) {
+		release()
+		return nil, false
+	}
+	return release, true
 }
 
 func requestUpdateRestart(controller *ShutdownController, restart *RestartRequest, binary string) bool {

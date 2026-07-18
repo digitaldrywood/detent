@@ -15,6 +15,10 @@ import (
 
 const defaultJitterFraction = 10
 
+const defaultIdlePollInterval = 5 * time.Second
+
+var ErrNoPendingUpdate = errors.New("no Detent update is pending")
+
 type Updater interface {
 	Check(context.Context) (Status, error)
 	Apply(context.Context, ApplyOptions) (Status, error)
@@ -36,8 +40,10 @@ type SchedulerConfig struct {
 	Enabled            bool
 	AutoApplyEnabled   bool
 	CheckInterval      time.Duration
+	IdlePollInterval   time.Duration
 	LastAppliedVersion string
 	Updater            Updater
+	ReserveIdle        func(context.Context) (func(), bool)
 	RequestRestart     func(string) bool
 	Logger             *slog.Logger
 	Now                func() time.Time
@@ -46,9 +52,10 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
-	cfg    SchedulerConfig
-	mu     sync.RWMutex
-	status AutoStatus
+	cfg         SchedulerConfig
+	operationMu sync.Mutex
+	mu          sync.RWMutex
+	status      AutoStatus
 }
 
 func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
@@ -57,6 +64,9 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	}
 	if cfg.Enabled && cfg.Updater == nil {
 		return nil, errors.New("update checker is required when automatic checks are enabled")
+	}
+	if cfg.Enabled && cfg.AutoApplyEnabled && cfg.ReserveIdle == nil {
+		return nil, errors.New("runtime idle reservation is required when automatic update apply is enabled")
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -69,6 +79,9 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	}
 	if cfg.Wait == nil {
 		cfg.Wait = waitForUpdateCheck
+	}
+	if cfg.IdlePollInterval <= 0 {
+		cfg.IdlePollInterval = defaultIdlePollInterval
 	}
 	state := "disabled"
 	if cfg.Enabled {
@@ -94,6 +107,15 @@ func (s *Scheduler) Run(ctx context.Context) {
 		ctx = context.Background()
 	}
 	for {
+		if s.pendingIdle() {
+			if !s.cfg.Wait(ctx, min(s.cfg.IdlePollInterval, s.cfg.CheckInterval)) {
+				return
+			}
+			if _, err := s.applyWhenIdle(ctx); err != nil && ctx.Err() == nil {
+				s.cfg.Logger.Warn("automatic update apply failed", "error", err)
+			}
+			continue
+		}
 		delay := s.cfg.NextDelay(s.cfg.CheckInterval)
 		if delay <= 0 || delay > s.cfg.CheckInterval {
 			delay = s.cfg.CheckInterval
@@ -119,6 +141,9 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+
 	s.updateStatus(func(status *AutoStatus) {
 		status.State = "checking"
 		status.NextCheckAt = nil
@@ -157,6 +182,63 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 		s.cfg.Logger.Warn("automatic update apply skipped for non-release install", "install_source", checked.InstallSource, "latest_version", checked.LatestVersion)
 		return checked, nil
 	}
+	releaseIdle, idle := s.cfg.ReserveIdle(ctx)
+	if !idle {
+		if releaseIdle != nil {
+			releaseIdle()
+		}
+		s.updateStatus(func(status *AutoStatus) {
+			status.State = "pending_idle"
+		})
+		s.cfg.Logger.Info("automatic update apply deferred until runtime is idle", "version", checked.LatestVersion)
+		return checked, nil
+	}
+
+	return s.applyLocked(ctx, releaseIdle)
+}
+
+func (s *Scheduler) ApplyPending(ctx context.Context) (Status, error) {
+	if s == nil || !s.cfg.Enabled {
+		return Status{}, ErrNoPendingUpdate
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	if !s.pendingIdle() {
+		return Status{}, ErrNoPendingUpdate
+	}
+	return s.applyLocked(ctx, nil)
+}
+
+func (s *Scheduler) applyWhenIdle(ctx context.Context) (Status, error) {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	if !s.pendingIdle() {
+		return Status{}, nil
+	}
+	releaseIdle, idle := s.cfg.ReserveIdle(ctx)
+	if !idle {
+		if releaseIdle != nil {
+			releaseIdle()
+		}
+		return Status{}, nil
+	}
+	return s.applyLocked(ctx, releaseIdle)
+}
+
+func (s *Scheduler) applyLocked(ctx context.Context, releaseIdle func()) (Status, error) {
+	keepIdleReserved := false
+	defer func() {
+		if !keepIdleReserved && releaseIdle != nil {
+			releaseIdle()
+		}
+	}()
+	s.updateStatus(func(status *AutoStatus) {
+		status.State = "applying"
+		status.LastError = ""
+	})
 
 	applied, err := s.cfg.Updater.Apply(ctx, ApplyOptions{
 		AssumeYes: true,
@@ -164,7 +246,7 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 		Stderr:    io.Discard,
 	})
 	if err != nil {
-		s.recordFailure(checkedAt, err)
+		s.recordFailure(s.cfg.Now(), err)
 		return applied, fmt.Errorf("apply Detent update: %w", err)
 	}
 	if applied.Action != ActionUpdated {
@@ -192,8 +274,15 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 	s.updateStatus(func(status *AutoStatus) {
 		status.State = "restart_requested"
 	})
+	keepIdleReserved = true
 	s.cfg.Logger.Info("Detent update applied; graceful restart requested", "version", applied.LatestVersion)
 	return applied, nil
+}
+
+func (s *Scheduler) pendingIdle() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.status.State == "pending_idle" && strings.TrimSpace(s.status.AvailableVersion) != ""
 }
 
 func (s *Scheduler) Status() AutoStatus {

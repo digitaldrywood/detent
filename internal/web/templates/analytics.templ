@@ -23,6 +23,7 @@ templ AnalyticsPageV2(data DashboardData) {
 
 templ AnalyticsSnapshotV2(data DashboardData) {
 	{{ view := analyticsViewFromDashboard(data) }}
+	@updatePendingBanner(data.Snapshot, "")
 	<p id="analytics-summary" class="flex-none text-xs text-sec">
 		Scheduler internals — work attempts and activity, newest first.
 		{ " " }

@@ -21,6 +21,19 @@ import (
 
 var updateGolden = flag.Bool("update", false, "update golden files")
 
+func TestSnapshotHeaderShowsPendingUpdate(t *testing.T) {
+	t.Parallel()
+
+	model := Model{styles: newStyles()}
+	lines := model.snapshotHeader(telemetry.Snapshot{
+		Update: telemetry.Update{State: "pending_idle", AvailableVersion: "1.2.4"},
+	})
+	got := ansi.Strip(strings.Join(lines, "\n"))
+	if !strings.Contains(got, "Update: 1.2.4 pending; automatic apply is waiting for all active work attempts to finish") {
+		t.Fatalf("snapshotHeader() missing pending update notice:\n%s", got)
+	}
+}
+
 func TestModelViewGoldens(t *testing.T) {
 	busy := busySnapshot()
 	tests := []struct {

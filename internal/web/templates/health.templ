@@ -22,6 +22,7 @@ templ HealthPageV2(data DashboardData) {
 
 templ HealthSnapshotV2(data DashboardData) {
 	{{ view := healthViewFromDashboard(data) }}
+	@updatePendingBanner(data.Snapshot, "")
 	@failureBreakerBanner(data.Snapshot)
 	@dispatchRecoveryBanner(data.Snapshot)
 	@backendCapacityBanner(data.Snapshot)

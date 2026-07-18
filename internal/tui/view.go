@@ -261,6 +261,8 @@ func (m Model) snapshotHeader(snapshot telemetry.Snapshot) []string {
 	}
 	if lifecycleLabel == "Shutdown" {
 		statusLine = lifecycleLabel + ": " + lifecycleStatus
+	} else if pendingUpdate, ok := formatPendingUpdate(snapshot.Update, m.styles); ok {
+		statusLine = "Update: " + pendingUpdate
 	}
 
 	return []string{

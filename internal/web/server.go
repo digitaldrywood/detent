@@ -49,6 +49,7 @@ type Dependencies struct {
 	Refresher       Refresher
 	Recovery        WorkAttemptRecovery
 	RunStopper      RunStopper
+	UpdateApplier   UpdateApplier
 	Activity        *activity.Broker
 	History         activity.HistoryReader
 	MagicLinkSender auth.Sender
@@ -111,6 +112,7 @@ type Server struct {
 	refresher           Refresher
 	recovery            WorkAttemptRecovery
 	runStopper          RunStopper
+	updateApplier       UpdateApplier
 	activity            *activity.Broker
 	history             activity.HistoryReader
 	logger              *slog.Logger
@@ -205,6 +207,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		refresher:           deps.Refresher,
 		recovery:            deps.Recovery,
 		runStopper:          deps.RunStopper,
+		updateApplier:       deps.UpdateApplier,
 		activity:            activityBroker,
 		history:             historyReader,
 		logger:              logger,
@@ -361,6 +364,7 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/api/v1/keys/:id/rotate", s.apiKeysRotate, apiKeyDashboardMutateAuth, apiAdminScope)
 	s.echo.DELETE("/api/v1/keys/:id", s.apiKeysRevoke, apiKeyDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/refresh", s.apiRefresh, apiDashboardMutateAuth, apiWriteScope)
+	s.echo.POST("/api/v1/update/apply", s.apiUpdateApply, apiDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/capacity/clear", s.apiCapacityClear, apiDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/failure-breaker/canary", s.apiFailureBreakerCanary, apiDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/webhooks/github", s.githubWebhook)

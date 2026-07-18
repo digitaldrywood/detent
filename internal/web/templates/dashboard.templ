@@ -2033,6 +2033,7 @@ templ dashboardCharts(data DashboardData) {
 }
 
 templ SnapshotView(data DashboardData) {
+	@updatePendingBanner(data.Snapshot, "")
 	if isProjectDashboard(data) {
 		@ProjectOverviewSnapshot(data)
 	} else {
@@ -2065,6 +2066,7 @@ templ ProjectOverviewSnapshot(data DashboardData) {
 }
 
 templ ProjectDiagnosticsSnapshot(data DashboardData) {
+	@updatePendingBanner(data.Snapshot, "")
 	if !snapshotReady(data.Snapshot) && !diagnosticsSnapshotHasLoadedData(data.Snapshot) {
 		@snapshotReadiness(data.Snapshot)
 	} else {

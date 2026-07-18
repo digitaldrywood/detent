@@ -44,6 +44,28 @@ func fleetTestData() DashboardData {
 	}
 }
 
+func TestUpdatePendingBannerShowsVersionAndOperatorAction(t *testing.T) {
+	t.Parallel()
+
+	snapshot := telemetry.Snapshot{Update: telemetry.Update{State: "pending_idle", AvailableVersion: "1.2.4"}}
+	html := renderBoardComponent(t, updatePendingBanner(snapshot, ""))
+	for _, want := range []string{
+		"Detent 1.2.4 is pending",
+		"waiting for all active work attempts across every project to finish",
+		`hx-post="/api/v1/update/apply"`,
+		`name="confirm" value="true"`,
+		"Apply now",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("updatePendingBanner() missing %q:\n%s", want, html)
+		}
+	}
+
+	if html := renderBoardComponent(t, updatePendingBanner(telemetry.Snapshot{}, "")); html != "" {
+		t.Fatalf("updatePendingBanner() without pending update = %q, want empty", html)
+	}
+}
+
 func TestFleetAgentRows(t *testing.T) {
 	rows := fleetAgentRows(fleetTestData().Snapshot)
 	if len(rows) != 1 {
