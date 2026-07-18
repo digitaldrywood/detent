@@ -92,9 +92,10 @@ type doctorOutputReport struct {
 }
 
 type doctorCheckJob struct {
-	Name    string
-	Current func() string
-	Run     func(context.Context) []doctorCheck
+	Name     string
+	Current  func() string
+	Progress <-chan struct{}
+	Run      func(context.Context) []doctorCheck
 }
 
 type doctorCheckResult struct {
@@ -105,18 +106,32 @@ type doctorCheckResult struct {
 type doctorCheckProgress struct {
 	mu      sync.Mutex
 	current string
+	updates chan struct{}
+}
+
+func newDoctorCheckProgress() *doctorCheckProgress {
+	return &doctorCheckProgress{updates: make(chan struct{}, 1)}
 }
 
 func (p *doctorCheckProgress) Set(current string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.current = strings.TrimSpace(current)
+	p.mu.Unlock()
+
+	select {
+	case p.updates <- struct{}{}:
+	default:
+	}
 }
 
 func (p *doctorCheckProgress) Current() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.current
+}
+
+func (p *doctorCheckProgress) Updates() <-chan struct{} {
+	return p.updates
 }
 
 type doctorConfig struct {
@@ -569,25 +584,50 @@ func runDoctorCheck(ctx context.Context, job doctorCheckJob, timeout time.Durati
 		ctx = context.Background()
 	}
 	timeout = doctorNormalizedTimeout(timeout)
-	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	checkCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 
 	done := make(chan []doctorCheck, 1)
 	go func() {
 		done <- job.Run(checkCtx)
 	}()
 
-	select {
-	case checks := <-done:
-		return checks
-	case <-checkCtx.Done():
-		return []doctorCheck{{
-			Name:   job.Name,
-			Status: doctorFail,
-			Detail: doctorTimeoutDetail(job, timeout, checkCtx.Err()),
-			Hint:   doctorTimeoutHint(),
-		}}
+	for {
+		select {
+		case checks := <-done:
+			return checks
+		case <-job.Progress:
+			resetDoctorCheckTimer(timer, timeout)
+		case <-timer.C:
+			cancel()
+			return []doctorCheck{{
+				Name:   job.Name,
+				Status: doctorFail,
+				Detail: doctorTimeoutDetail(job, timeout, context.DeadlineExceeded),
+				Hint:   doctorTimeoutHint(),
+			}}
+		case <-ctx.Done():
+			cancel()
+			return []doctorCheck{{
+				Name:   job.Name,
+				Status: doctorFail,
+				Detail: doctorTimeoutDetail(job, timeout, ctx.Err()),
+				Hint:   doctorTimeoutHint(),
+			}}
+		}
 	}
+}
+
+func resetDoctorCheckTimer(timer *time.Timer, timeout time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(timeout)
 }
 
 func doctorTimeoutDetail(job doctorCheckJob, timeout time.Duration, err error) string {
