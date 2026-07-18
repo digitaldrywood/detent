@@ -16,7 +16,7 @@ jobs:
         with:
           script: |
             const hasDetentStatus = context.payload.issue.labels.some(
-              (label) => label.name.startsWith('detent:'),
+              (label) => label.name.toLowerCase().startsWith('detent:'),
             )
             if (hasDetentStatus) {
               return
