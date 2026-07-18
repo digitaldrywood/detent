@@ -592,6 +592,85 @@ func TestTickRoutesCompletedActiveArtifactToReview(t *testing.T) {
 	}
 }
 
+func TestTickReleasesCompletedArtifactReworkNoopForNextDispatch(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 18, 17, 28, 32, 0, time.UTC)
+	issue := artifactCompletionTransitionIssue("Rework", "recut")
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:     true,
+			SourceState: "Review",
+			PassState:   "Ready for Pickup",
+			ReworkState: "Rework",
+			Gate:        artifactCompletionTestGate(),
+		},
+		ActiveStates:   []string{"Todo", "Production", "Rework"},
+		ObservedStates: []string{"Review"},
+		TerminalStates: []string{"Ready for Pickup", "Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:       issue,
+		CompletedAt: now,
+		FinalState:  FinalStateCompleted,
+	}
+	state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 1, DueAt: now}
+	mergingSlot := dispatchTestIssue("issue-merging-slot", "Merging")
+	state.Running[mergingSlot.ID] = Running{Issue: mergingSlot}
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	attempts := &recordingWorkAttemptStore{}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:          cfg,
+		connector:    tracker,
+		workAttempts: attempts,
+		logger:       slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+
+	orch.tick(t.Context(), &state, now)
+
+	if _, ok := state.Completed[issue.ID]; ok {
+		t.Fatalf("Completed[%q] present after same-state auto-promote", issue.ID)
+	}
+	if retry, ok := state.Retry[issue.ID]; !ok || retry.Attempt != 1 {
+		t.Fatalf("Retry[%q] = %#v, want preserved continuation attempt 1", issue.ID, retry)
+	}
+	if len(attempts.decisions) != 1 {
+		t.Fatalf("scheduler decisions after completion tick = %#v, want one", attempts.decisions)
+	}
+	if got := attempts.decisions[0]; got.IssueID != issue.ID || got.Reason != dispatchSkipLocalSlotUnavailable {
+		t.Fatalf("scheduler decision = %#v, want issue %q skipped for %q", got, issue.ID, dispatchSkipLocalSlotUnavailable)
+	}
+	for _, fragment := range []string{
+		`level=INFO msg="auto promote decision"`,
+		"action=rework",
+		"target_state=Rework",
+		`level=WARN msg="completed artifact gate status unchanged after successful rework"`,
+		"gate_status_field=render_status",
+		"gate_status=recut",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+
+	nextRetry := state.Retry[issue.ID]
+	orch.tick(t.Context(), &state, nextRetry.DueAt)
+
+	if len(attempts.decisions) != 2 {
+		t.Fatalf("scheduler decisions after next tick = %#v, want two", attempts.decisions)
+	}
+	if got := attempts.decisions[1]; got.IssueID != issue.ID || got.Reason != dispatchSkipLocalSlotUnavailable {
+		t.Fatalf("scheduler decision = %#v, want issue %q skipped for %q", got, issue.ID, dispatchSkipLocalSlotUnavailable)
+	}
+	if retry, ok := state.Retry[issue.ID]; !ok || retry.Attempt != 1 {
+		t.Fatalf("Retry[%q] after capacity skip = %#v, want rescheduled attempt 1", issue.ID, retry)
+	}
+}
+
 func TestTickAutoPromoteRecoversActiveIssueAfterRestart(t *testing.T) {
 	t.Parallel()
 

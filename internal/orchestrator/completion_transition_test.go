@@ -393,6 +393,7 @@ func TestTransitionCompletedActiveIssuesHandlesArtifactReworkNoop(t *testing.T) 
 		Issue:      issue,
 		FinalState: FinalStateCompleted,
 	}
+	state.Retry[issue.ID] = Retry{Issue: issue}
 
 	result := orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
 
@@ -405,8 +406,14 @@ func TestTransitionCompletedActiveIssuesHandlesArtifactReworkNoop(t *testing.T) 
 	if len(tracker.comments) != 0 {
 		t.Fatalf("comments = %#v, want none", tracker.comments)
 	}
-	if got := state.Completed[issue.ID].Issue.State; got != "Rework" {
-		t.Fatalf("Completed issue state = %q, want Rework", got)
+	if len(result.dispatchCandidates) != 1 || result.dispatchCandidates[0].ID != issue.ID || result.dispatchCandidates[0].State != "Rework" {
+		t.Fatalf("dispatchCandidates = %#v, want same-state Rework issue", result.dispatchCandidates)
+	}
+	if _, ok := state.Completed[issue.ID]; ok {
+		t.Fatalf("Completed[%q] present after same-state auto-promote", issue.ID)
+	}
+	if _, ok := state.Retry[issue.ID]; !ok {
+		t.Fatalf("Retry[%q] missing after same-state auto-promote", issue.ID)
 	}
 	if len(state.RecentEvents) != 0 {
 		t.Fatalf("RecentEvents = %#v, want none", state.RecentEvents)
