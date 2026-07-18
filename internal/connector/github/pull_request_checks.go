@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -32,6 +33,9 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 	effectiveRuns := effectiveCheckRuns(checkRuns)
 	workflowRuns, workflowRunErr := fetchRESTWorkflowRunsForCheckRuns(ctx, c.client, repo, effectiveRuns)
 	if workflowRunErr != nil {
+		if pullRequestHydrationThrottleError(workflowRunErr) {
+			return pullRequestCI{}, fmt.Errorf("fetch github workflow runs: %w", workflowRunErr)
+		}
 		workflowRuns = nil
 	}
 	statuses, err := fetchRESTList[restCommitStatus](ctx, c.client, restCommitStatusesPath(repo, sha))
@@ -48,6 +52,10 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 	} else if requiredState != "" {
 		state = combinedCIState(requiredState, state)
 	}
+	transientFailures, err := c.transientCheckRunFailures(ctx, repo, checkRuns)
+	if err != nil {
+		return pullRequestCI{}, err
+	}
 	return pullRequestCI{
 		State:                 state,
 		CheckRunCount:         len(checkRuns),
@@ -58,11 +66,11 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 		RunningChecks:         telemetry.RunningChecks,
 		StaleSuccessfulChecks: staleSuccessfulChecks,
 		RequiredFailures:      requiredFailures,
-		TransientFailures:     c.transientCheckRunFailures(ctx, repo, checkRuns),
+		TransientFailures:     transientFailures,
 	}, nil
 }
 
-func (c *Connector) transientCheckRunFailures(ctx context.Context, repo pullRequestRepo, checkRuns []restCheckRun) []connector.PullRequestCheck {
+func (c *Connector) transientCheckRunFailures(ctx context.Context, repo pullRequestRepo, checkRuns []restCheckRun) ([]connector.PullRequestCheck, error) {
 	failures := make([]connector.PullRequestCheck, 0)
 	for _, checkRun := range effectiveCheckRuns(checkRuns) {
 		if !completedFailedCheckRun(checkRun) {
@@ -72,6 +80,9 @@ func (c *Connector) transientCheckRunFailures(ctx context.Context, repo pullRequ
 		if checkRun.ID > 0 {
 			annotations, err := fetchRESTCheckRunAnnotations(ctx, c.client, restCheckRunAnnotationsPath(repo, checkRun.ID))
 			if err != nil {
+				if pullRequestHydrationThrottleError(err) {
+					return nil, fmt.Errorf("fetch github check run annotations: %w", err)
+				}
 				if c.logger != nil {
 					c.logger.DebugContext(ctx, "fetch github check run annotations failed", "check_run_id", checkRun.ID, "check_run_name", checkRun.Name, "error", err)
 				}
@@ -91,7 +102,11 @@ func (c *Connector) transientCheckRunFailures(ctx context.Context, repo pullRequ
 			DetailsURL:    firstNonBlank(checkRun.DetailsURL, checkRun.HTMLURL),
 		})
 	}
-	return failures
+	return failures, nil
+}
+
+func pullRequestHydrationThrottleError(err error) bool {
+	return errors.Is(err, ErrRateLimited) || errors.Is(err, ErrRESTBudgetReserved)
 }
 
 func (c *Connector) logStaleSuccessfulCheckRuns(ctx context.Context, repo pullRequestRepo, sha string, checks []connector.PullRequestCheck) {

@@ -766,6 +766,8 @@ func TestRESTFanoutEndpointFamilyIncludesBulkHydrationReads(t *testing.T) {
 		{name: "issue comments", path: "/repos/digitaldrywood/detent/issues/1384/comments?per_page=100", wantFamily: "issue comments"},
 		{name: "issue dependencies", path: "/repos/digitaldrywood/detent/issues/1384/dependencies/blocked_by?per_page=100", wantFamily: "issue dependencies"},
 		{name: "issue field values", path: "/repos/digitaldrywood/detent/issues/1384/issue-field-values?per_page=100", wantFamily: "issue field values"},
+		{name: "workflow run", path: "/repos/digitaldrywood/detent/actions/runs/8001", wantFamily: "workflow runs"},
+		{name: "check run annotations", path: "/repos/digitaldrywood/detent/check-runs/9001/annotations?per_page=100", wantFamily: "check run annotations"},
 	}
 
 	for _, test := range tests {
