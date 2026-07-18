@@ -107,6 +107,7 @@ type Workflow struct {
 	Prompt     string
 	SourceHash string
 	Overlay    WorkflowOverlay
+	Definition ProjectDefinition
 }
 
 type WorkflowOverlay struct {
@@ -939,20 +940,7 @@ type ValidationError struct {
 }
 
 func LoadWorkflow(path string) (Workflow, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return Workflow{}, fmt.Errorf("read workflow file: %w", err)
-	}
-
-	localPath := LocalWorkflowPath(path)
-	localRaw, err := os.ReadFile(localPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return ParseWorkflow(raw)
-	}
-	if err != nil {
-		return Workflow{}, fmt.Errorf("read local workflow overlay: %w", err)
-	}
-	return ParseWorkflowOverlay(raw, localRaw, localPath)
+	return LoadProjectDefinition(path)
 }
 
 func ParseWorkflow(raw []byte) (Workflow, error) {

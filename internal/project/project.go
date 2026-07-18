@@ -72,6 +72,8 @@ type RuntimeError struct {
 type WorkflowSourceStatus struct {
 	Path             string
 	Hash             string
+	Revision         string
+	Layout           workflowconfig.ProjectDefinitionLayout
 	ModifiedAt       time.Time
 	LoadedAt         time.Time
 	LastWatchEventAt time.Time
@@ -314,6 +316,8 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		workflowSource: WorkflowSourceStatus{
 			Path:       workflowPath,
 			Hash:       workflow.SourceHash,
+			Revision:   workflow.Definition.Revision,
+			Layout:     workflow.Definition.Layout,
 			ModifiedAt: workflowModifiedAt,
 			LoadedAt:   time.Now().UTC(),
 		},
@@ -1204,6 +1208,8 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	previousRetroProduct := p.retroProduct
 	p.workflow = workflow
 	p.workflowSource.Hash = workflow.SourceHash
+	p.workflowSource.Revision = workflow.Definition.Revision
+	p.workflowSource.Layout = workflow.Definition.Layout
 	p.workflowSource.ModifiedAt = workflowFileModifiedAt(projectConfig)
 	if update.At.IsZero() {
 		p.workflowSource.LoadedAt = time.Now().UTC()

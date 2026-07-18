@@ -165,14 +165,16 @@ agent-executable [Project Onboarding](docs/ONBOARDING.md) runbook.
 Configured GitHub status is the state machine; ProjectV2 board status, the
 boardless issue field, or repository status labels drive everything.
 
-1. **You write the contract.** Each project has a checked-in `WORKFLOW.md`: the
-   tracker binding, board states, the agent prompt, the validation gate, and
-   the review policy. The prompt also declares the project's required CI stage
+1. **You write the contracts.** Each project has a checked-in `detent.yaml`
+   machine contract for tracker bindings, states, lifecycle policy, scheduling,
+   retries, leases, and gates, plus a checked-in, portable `WORKFLOW.md` agent
+   instruction contract. The prompt declares the project's required CI stage
    categories and the project-specific commands and check names that satisfy
    each category. Agents use that declaration when they change CI configuration
    or review a change: every required stage must exist and pass on the current
-   pull request head. An optional, gitignored `WORKFLOW.local.md` applies
-   machine-specific overrides without changing that shared contract.
+   pull request head. Optional gitignored `detent.local.yaml` and
+   `WORKFLOW.local.md` files apply machine-specific configuration and agent
+   direction, respectively, without changing the shared contracts.
 2. **You mark an issue `Todo`.** Detent claims it, creates an isolated Git
    worktree from your source checkout, and dispatches a Codex agent with the
    contract — moving the issue to `In Progress`.
@@ -610,9 +612,19 @@ Discover existing labels with:
 gh api repos/<owner>/<repo>/labels --paginate --jq '.[].name'
 ```
 
-3. Create a `WORKFLOW.md` in the repository you want Detent to work on.
+3. Create `detent.yaml` and `WORKFLOW.md` in the repository you want Detent to
+   work on. Start from a paired `docs/templates/detent.*.yaml` and
+   `docs/templates/WORKFLOW.*.md` preset.
 
-ProjectV2-backed board mode:
+Existing combined `WORKFLOW.md` frontmatter remains readable during the
+compatibility window. Run `detent doctor` to identify legacy, split, mixed, or
+stale layouts. A migratable warning includes the exact
+`detent fix workflow-layout --workflow <path>` command; preview it with
+`--dry-run`, confirm interactively, or pass `--yes` for explicit
+non-interactive confirmation. See
+[Workflow Layout Migration](docs/workflow-layout-migration.md).
+
+Legacy combined ProjectV2 example:
 
 ```markdown
 ---
@@ -1297,7 +1309,9 @@ update:
 
 `detent doctor` is a preflight check: config resolution, the SQLite database,
 the `codex` binary, GitHub auth mode, GitHub tracker readiness, git, and
-whether the server port is free. In ProjectV2 mode it checks project access,
+whether the server port is free. It also reports each project's active
+definition root, layout, revision, authority files, local overlays, and whether
+the running process is stale. In ProjectV2 mode it checks project access,
 Status options, board item reads, repository issue/PR access, and rate-limit
 visibility. In issue-field mode it checks repository access, issue field
 discovery, Status option discovery, issue reads by field value, and REST/GraphQL
@@ -1760,7 +1774,7 @@ mode, boardless issue-field mode, boardless label mode, and `github_local`
 hybrid mode. A memory connector is available for local development, and the
 connector boundary is where GitLab and Jira support will land later.
 
-GitHub configuration lives in each project's `WORKFLOW.md` frontmatter. The
+GitHub configuration lives in each project's `detent.yaml`. The
 default `github_status_source: project_v2` mode uses `project_slug` as the
 GitHub ProjectV2 node id. Detent reads issue state, priority, labels, blockers,
 and assignment from the board, then writes comments and state transitions back
@@ -2141,37 +2155,44 @@ dispatch so packaging signal is available before and after merge.
 
 ## Multi-Project Operation
 
-Detent separates host-level orchestration from per-project workflow:
+Detent separates host-level orchestration from per-project definitions:
 
 - The resolved global config file lists projects and host-level scheduling settings.
-- Each project has its own `WORKFLOW.md` with tracker credentials, states,
-  workspace rules, Codex settings, budgets, hooks, and agent instructions.
+- Each project has `detent.yaml` for Detent-owned machine policy and
+  `WORKFLOW.md` for portable agent instructions. The `projects[].workflow`
+  path remains the definition anchor; Detent resolves the other files beside
+  it, including when that directory is an explicit external definition root.
 
 ### Machine-local workflow overlays
 
-Keep `WORKFLOW.md` checked in as the shared project contract. For settings or
-agent direction that only apply on one machine, create `WORKFLOW.local.md`
-beside it and add that file to the repository's `.gitignore`. The local file
-uses the same YAML-frontmatter-plus-Markdown format. Local frontmatter wins per
-structured leaf key; mapping siblings that are not mentioned remain shared,
-while local lists and scalar values replace their shared values. Local Markdown
-is appended after the shared direction under a visible machine-local heading.
+Keep `detent.yaml` and `WORKFLOW.md` checked in as separate shared contracts.
+For settings that apply on one machine, create schema-versioned
+`detent.local.yaml`. For machine-local agent direction, create prose-only
+`WORKFLOW.local.md`. Add both local files to the repository's `.gitignore`.
+Local configuration wins per structured leaf key; mapping siblings that are
+not mentioned remain shared, while local lists and scalar values replace their
+shared values. Local Markdown is appended after the shared direction under a
+visible machine-local heading.
 
-Detent loads both files at startup. Its workflow watcher reloads edits,
-creation, and deletion of either file without a restart, and periodic
+Detent loads all present definition files at startup. Its watcher reloads
+edits, creation, and deletion without a restart, and periodic
 reconciliation covers missed filesystem events. `detent doctor` reports an
 active overlay, lists its structured override keys, and warns if Git tracks the
 local file.
 
 For example:
 
-```markdown
----
+```yaml
+# detent.local.yaml
+schema: 1
 tracker:
   assignee: local-operator
 polling:
   interval_ms: 90000
----
+```
+
+```markdown
+<!-- WORKFLOW.local.md -->
 Use the tools installed on this build host.
 ```
 

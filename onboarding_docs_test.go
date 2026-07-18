@@ -515,6 +515,41 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 	}
 }
 
+func TestWorkflowTemplatesUseSplitProjectDefinition(t *testing.T) {
+	t.Parallel()
+
+	for _, variant := range []string{"project_v2", "issue_field", "label", "github_local", "non_code_artifact"} {
+		t.Run(variant, func(t *testing.T) {
+			t.Parallel()
+			workflowPath := "docs/templates/WORKFLOW." + variant + ".md"
+			workflowRaw, err := os.ReadFile(workflowPath)
+			if err != nil {
+				t.Fatalf("ReadFile(%s) error = %v", workflowPath, err)
+			}
+			if strings.HasPrefix(string(workflowRaw), "---\n") {
+				t.Fatalf("%s contains structured frontmatter", workflowPath)
+			}
+			configPath := "docs/templates/detent." + variant + ".yaml"
+			configRaw, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatalf("ReadFile(%s) error = %v", configPath, err)
+			}
+			if !strings.HasPrefix(string(configRaw), "schema: 1\n") {
+				t.Fatalf("%s missing schema version", configPath)
+			}
+			if _, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+				WorkflowPath: workflowPath,
+				Workflow:     workflowRaw,
+				ConfigPath:   configPath,
+				Config:       configRaw,
+				HasConfig:    true,
+			}); err != nil {
+				t.Fatalf("ParseProjectDefinition(%s) error = %v", variant, err)
+			}
+		})
+	}
+}
+
 func TestGitHubLocalWorkflowTemplateUsesAffordablePolling(t *testing.T) {
 	t.Parallel()
 
@@ -796,7 +831,18 @@ func readRepositoryTextFile(t *testing.T, path string) string {
 	if err != nil {
 		t.Fatalf("ReadFile(%s) error = %v", path, err)
 	}
-	return string(raw)
+	content := string(raw)
+	if strings.HasPrefix(path, "docs/templates/WORKFLOW.") && strings.HasSuffix(path, ".md") {
+		variant := strings.TrimSuffix(strings.TrimPrefix(path, "docs/templates/WORKFLOW."), ".md")
+		configPath := "docs/templates/detent." + variant + ".yaml"
+		configRaw, configErr := os.ReadFile(configPath)
+		if configErr != nil {
+			t.Fatalf("ReadFile(%s) error = %v", configPath, configErr)
+		}
+		config := strings.TrimPrefix(string(configRaw), "schema: 1\n")
+		return "---\n" + config + "---\n" + content
+	}
+	return content
 }
 
 func assertContains(t *testing.T, text string, want string) {

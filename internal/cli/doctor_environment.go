@@ -591,6 +591,8 @@ type doctorHealthWorkflow struct {
 	ProjectID  string    `json:"project_id"`
 	Path       string    `json:"path"`
 	SourceHash string    `json:"source_hash"`
+	Revision   string    `json:"revision"`
+	Layout     string    `json:"layout"`
 	ModifiedAt time.Time `json:"modified_at"`
 	LoadedAt   time.Time `json:"loaded_at"`
 }

@@ -37,13 +37,15 @@ type onboardingBuildWorkflowConfig struct {
 }
 
 type onboardingBuildWorkflowResult struct {
-	Status    string                       `json:"status"`
-	Preset    string                       `json:"preset"`
-	Path      string                       `json:"path"`
-	Written   bool                         `json:"written"`
-	Probe     onboardingRepoProbe          `json:"probe"`
-	Decisions []onboardingWorkflowDecision `json:"decisions"`
-	Workflow  string                       `json:"workflow"`
+	Status     string                       `json:"status"`
+	Preset     string                       `json:"preset"`
+	Path       string                       `json:"path"`
+	ConfigPath string                       `json:"config_path"`
+	Written    bool                         `json:"written"`
+	Probe      onboardingRepoProbe          `json:"probe"`
+	Decisions  []onboardingWorkflowDecision `json:"decisions"`
+	Workflow   string                       `json:"workflow"`
+	Config     string                       `json:"config"`
 }
 
 type onboardingWorkflowDecision struct {
@@ -55,7 +57,8 @@ type onboardingWorkflowDecision struct {
 
 type onboardingWorkflowPreset struct {
 	Name       string
-	Raw        []byte
+	ConfigRaw  []byte
+	PromptRaw  []byte
 	Provenance string
 	Why        string
 }
@@ -89,7 +92,7 @@ func newOnboardingBuildWorkflowCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:          "build-workflow",
-		Short:        "Build WORKFLOW.md from onboarding answers and repository probes",
+		Short:        "Build detent.yaml and WORKFLOW.md from onboarding answers and repository probes",
 		Example:      `detent onboarding build-workflow --answers "$ONBOARDING_DIR/answers.env" --output WORKFLOW.md --write`,
 		Args:         NoArgs,
 		SilenceUsage: true,
@@ -114,10 +117,10 @@ func newOnboardingBuildWorkflowCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&answersPath, "answers", "answers.env", "path to onboarding answers.env")
-	cmd.Flags().StringVar(&outputPath, "output", "WORKFLOW.md", "path to write or preview WORKFLOW.md")
+	cmd.Flags().StringVar(&outputPath, "output", "WORKFLOW.md", "WORKFLOW.md anchor path; detent.yaml is written beside it")
 	cmd.Flags().StringVar(&targetSourceRoot, "target-source-root", "", "explicit target repository checkout root")
 	cmd.Flags().StringVar(&preset, "preset", "", "workflow preset: project_v2, issue_field, label, github_local, or non_code_artifact")
-	cmd.Flags().BoolVar(&write, "write", false, "write the generated WORKFLOW.md")
+	cmd.Flags().BoolVar(&write, "write", false, "write the generated detent.yaml and WORKFLOW.md")
 	return cmd
 }
 
@@ -143,12 +146,9 @@ func buildOnboardingWorkflow(ctx context.Context, cfg onboardingBuildWorkflowCon
 		return onboardingBuildWorkflowResult{}, err
 	}
 
-	workflow, decisions, err := renderOnboardingWorkflow(ctx, preset, answers, validation, probe)
+	projectConfig, workflow, decisions, err := renderOnboardingWorkflow(ctx, preset, answers, validation, probe)
 	if err != nil {
 		return onboardingBuildWorkflowResult{}, err
-	}
-	if _, err := workflowconfig.ParseWorkflow([]byte(workflow)); err != nil {
-		return onboardingBuildWorkflowResult{}, fmt.Errorf("parse generated workflow: %w", err)
 	}
 
 	outputPath := strings.TrimSpace(cfg.OutputPath)
@@ -159,6 +159,16 @@ func buildOnboardingWorkflow(ctx context.Context, cfg onboardingBuildWorkflowCon
 		outputPath = filepath.Join(sourceRoot, outputPath)
 	}
 	outputPath = filepath.Clean(outputPath)
+	projectConfigPath := workflowconfig.DefinitionPath(outputPath)
+	if _, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+		WorkflowPath: outputPath,
+		Workflow:     []byte(workflow),
+		ConfigPath:   projectConfigPath,
+		Config:       []byte(projectConfig),
+		HasConfig:    true,
+	}); err != nil {
+		return onboardingBuildWorkflowResult{}, fmt.Errorf("parse generated project definition: %w", err)
+	}
 	if cfg.Write {
 		if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 			return onboardingBuildWorkflowResult{}, fmt.Errorf("create workflow directory %s: %w", filepath.Dir(outputPath), err)
@@ -166,16 +176,21 @@ func buildOnboardingWorkflow(ctx context.Context, cfg onboardingBuildWorkflowCon
 		if err := os.WriteFile(outputPath, []byte(workflow), 0o600); err != nil {
 			return onboardingBuildWorkflowResult{}, fmt.Errorf("write workflow %s: %w", outputPath, err)
 		}
+		if err := os.WriteFile(projectConfigPath, []byte(projectConfig), 0o600); err != nil {
+			return onboardingBuildWorkflowResult{}, fmt.Errorf("write project config %s: %w", projectConfigPath, err)
+		}
 	}
 
 	return onboardingBuildWorkflowResult{
-		Status:    "ok",
-		Preset:    preset.Name,
-		Path:      outputPath,
-		Written:   cfg.Write,
-		Probe:     probe,
-		Decisions: decisions,
-		Workflow:  workflow,
+		Status:     "ok",
+		Preset:     preset.Name,
+		Path:       outputPath,
+		ConfigPath: projectConfigPath,
+		Written:    cfg.Write,
+		Probe:      probe,
+		Decisions:  decisions,
+		Workflow:   workflow,
+		Config:     projectConfig,
 	}, nil
 }
 
@@ -248,13 +263,18 @@ func selectOnboardingWorkflowPreset(override string, answers onboardingAnswers) 
 			nil,
 		)
 	}
-	raw, err := fs.ReadFile(workflowtemplates.FS, "WORKFLOW."+name+".md")
+	promptRaw, err := fs.ReadFile(workflowtemplates.FS, "WORKFLOW."+name+".md")
 	if err != nil {
 		return onboardingWorkflowPreset{}, fmt.Errorf("read workflow preset %s: %w", name, err)
 	}
+	configRaw, err := fs.ReadFile(workflowtemplates.FS, "detent."+name+".yaml")
+	if err != nil {
+		return onboardingWorkflowPreset{}, fmt.Errorf("read project config preset %s: %w", name, err)
+	}
 	return onboardingWorkflowPreset{
 		Name:       name,
-		Raw:        raw,
+		ConfigRaw:  configRaw,
+		PromptRaw:  promptRaw,
 		Provenance: provenance,
 		Why:        why,
 	}, nil
@@ -283,46 +303,30 @@ func renderOnboardingWorkflow(
 	answers onboardingAnswers,
 	validation onboardingAnswersValidationResult,
 	probe onboardingRepoProbe,
-) (string, []onboardingWorkflowDecision, error) {
-	frontmatter, prompt, err := splitOnboardingWorkflowTemplate(preset.Raw)
+) (string, string, []onboardingWorkflowDecision, error) {
+	root, err := parseOnboardingWorkflowFrontmatter(preset.ConfigRaw)
 	if err != nil {
-		return "", nil, err
-	}
-	root, err := parseOnboardingWorkflowFrontmatter(frontmatter)
-	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	decisions := &onboardingWorkflowDecisionRecorder{}
 	decisions.add("workflow.preset", preset.Name, preset.Provenance, preset.Why)
 
 	reviewFlow, err := applyOnboardingWorkflowDecisions(root, preset.Name, answers, validation, probe, decisions)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
-	renderedPrompt := renderOnboardingWorkflowPrompt(preset.Name, prompt, reviewFlow)
+	renderedPrompt := renderOnboardingWorkflowPrompt(preset.Name, preset.PromptRaw, reviewFlow)
 
-	rawFrontmatter, err := yaml.Marshal(root)
+	rawConfig, err := yaml.Marshal(root)
 	if err != nil {
-		return "", nil, fmt.Errorf("marshal workflow frontmatter: %w", err)
+		return "", "", nil, fmt.Errorf("marshal project config: %w", err)
 	}
-	workflow := "---\n" + strings.TrimSpace(string(rawFrontmatter)) + "\n---\n" + strings.TrimLeft(renderedPrompt, "\n")
+	projectConfig := strings.TrimSpace(string(rawConfig)) + "\n"
+	workflow := strings.TrimLeft(renderedPrompt, "\n")
 	if !strings.HasSuffix(workflow, "\n") {
 		workflow += "\n"
 	}
-	return workflow, decisions.decisions, nil
-}
-
-func splitOnboardingWorkflowTemplate(raw []byte) ([]byte, []byte, error) {
-	content := strings.ReplaceAll(strings.TrimPrefix(string(raw), "\ufeff"), "\r\n", "\n")
-	if !strings.HasPrefix(content, "---\n") {
-		return nil, nil, errors.New("workflow template missing YAML frontmatter")
-	}
-	body := content[len("---\n"):]
-	frontmatter, prompt, ok := strings.Cut(body, "\n---\n")
-	if !ok {
-		return nil, nil, errors.New("workflow template has unterminated YAML frontmatter")
-	}
-	return []byte(frontmatter), []byte(prompt), nil
+	return projectConfig, workflow, decisions.decisions, nil
 }
 
 func parseOnboardingWorkflowFrontmatter(raw []byte) (*yaml.Node, error) {
@@ -1189,6 +1193,7 @@ func writeOnboardingBuildWorkflowPretty(w io.Writer, result onboardingBuildWorkf
 		"workflow builder: " + result.Status,
 		"preset: " + result.Preset,
 		"path: " + result.Path,
+		"config_path: " + result.ConfigPath,
 		"written: " + strconv.FormatBool(result.Written),
 		"source_root: " + result.Probe.SourceRoot,
 	}
@@ -1203,7 +1208,14 @@ func writeOnboardingBuildWorkflowPretty(w io.Writer, result onboardingBuildWorkf
 		lines = append(lines, fmt.Sprintf("- %s=%s (%s) %s", decision.Path, decision.Value, decision.Provenance, decision.Why))
 	}
 	if !result.Written {
-		lines = append(lines, "", "WORKFLOW.md preview:", strings.TrimSpace(result.Workflow))
+		lines = append(lines,
+			"",
+			"detent.yaml preview:",
+			strings.TrimSpace(result.Config),
+			"",
+			"WORKFLOW.md preview:",
+			strings.TrimSpace(result.Workflow),
+		)
 	}
 	_, err := fmt.Fprintln(w, strings.Join(lines, "\n"))
 	return err

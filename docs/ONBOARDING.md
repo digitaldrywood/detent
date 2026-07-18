@@ -6,6 +6,11 @@ identity gate so a reference repository, example setup, current shell directory,
 or existing Detent project cannot become the implicit target. Replace every
 `<...>` placeholder before running a command.
 
+`detent.yaml` is the schema-versioned Detent machine contract. `WORKFLOW.md`
+contains portable agent instruction prose only. Their optional gitignored local
+overlays are `detent.local.yaml` and `WORKFLOW.local.md`, respectively. All
+structured Detent paths named in this runbook belong in `detent.yaml`.
+
 Use these placeholders consistently:
 
 | Placeholder | Meaning |
@@ -1278,7 +1283,7 @@ probes.
    ```
 
    `agent.max_concurrent_agents_by_state` is **per-project** configuration: it
-   lives only in each WORKFLOW.md (`internal/config/config.go`), is enforced
+   lives only in each `detent.yaml` (`internal/config/config.go`), is enforced
    per project orchestrator (`internal/orchestrator/dispatch_planner.go`
    `stateSlotsAvailable`) and per project scheduler
    (`internal/project/project.go` `CapacityByState`). The global settings
@@ -1850,9 +1855,10 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    copying the defaults above. Do not create or link a GitHub ProjectV2 board
    or organization issue field for this mode.
 
-## Phase 4 — Author WORKFLOW.md
+## Phase 4 — Author detent.yaml And WORKFLOW.md
 
-Before writing, overwriting, or editing `<source-root>/WORKFLOW.md`, rerun:
+Before writing, overwriting, or editing `<source-root>/detent.yaml` or
+`<source-root>/WORKFLOW.md`, rerun:
 
 ```sh
 test -f "$ONBOARDING_DIR/answers.env"
@@ -1862,24 +1868,30 @@ rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
 awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 ```
 
-1. **Fetch the selected mode template.** Read the existing file first if one is
+1. **Fetch the selected mode template pair.** Read both existing files first if
+   either is
    present; this runbook is for from-zero repositories, so do not overwrite a
    human-authored contract without explicit approval. The maintained templates
-   are `docs/templates/WORKFLOW.project_v2.md`,
+   are paired `docs/templates/detent.project_v2.yaml` and
+   `docs/templates/WORKFLOW.project_v2.md` files, with equivalent
+   `docs/templates/detent.issue_field.yaml` with
    `docs/templates/WORKFLOW.issue_field.md`, and
-   `docs/templates/WORKFLOW.label.md`. The CLI-only local-status template is
-   `docs/templates/WORKFLOW.github_local.md`; use it when the target repository
+   `docs/templates/detent.label.yaml` with
+   `docs/templates/WORKFLOW.label.md`. The CLI-only local-status pair uses
+   `detent.github_local.yaml` and `WORKFLOW.github_local.md`; use it when the target repository
    must remain read-only and Detent status should live only in local SQLite.
    Non-code artifact projects can start from
+   `docs/templates/detent.non_code_artifact.yaml` and
    `docs/templates/WORKFLOW.non_code_artifact.md`; the rest of this
    onboarding flow remains GitHub-focused. The `/onboarding` web wizard can
    write the same tracker blocks interactively: choose **Repository labels**
    for `GITHUB_MODE=label`, enter the repository and status label prefix such
    as `detent:`, and it will generate `tracker.github_status_source: label`
-   without ProjectV2 fields. Verify:
+   in `detent.yaml` without ProjectV2 fields. Verify:
 
    ```sh
    test ! -f <source-root>/WORKFLOW.md
+   test ! -f <source-root>/detent.yaml
    GITHUB_MODE="$(sed -n 's/^GITHUB_MODE=//p' "$ONBOARDING_DIR/answers.env" | tail -n 1)"
    case "$GITHUB_MODE" in
      project_v2|issue_field|label) ;;
@@ -1887,7 +1899,10 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    esac
    curl -fsSL "https://raw.githubusercontent.com/digitaldrywood/detent/main/docs/templates/WORKFLOW.${GITHUB_MODE}.md" \
      -o <source-root>/WORKFLOW.md
-   rg -n "github_status_source: ${GITHUB_MODE}|^tracker:|^workspace:|^agent:" <source-root>/WORKFLOW.md
+   curl -fsSL "https://raw.githubusercontent.com/digitaldrywood/detent/main/docs/templates/detent.${GITHUB_MODE}.yaml" \
+     -o <source-root>/detent.yaml
+   rg -n "github_status_source: ${GITHUB_MODE}|^tracker:|^workspace:|^agent:" <source-root>/detent.yaml
+   test -s <source-root>/WORKFLOW.md
    ```
 
    When adding Detent to a repository that already has a `WORKFLOW.md`, audit
@@ -1936,7 +1951,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    candidate skill files, but never rewrites `WORKFLOW.md`; use the existing
    skill-creation review flow described below to perform any extraction.
 
-2. **Substitute the tracker and workspace answers.** In ProjectV2 mode, use the
+2. **Substitute the tracker and workspace answers in `detent.yaml`.** In ProjectV2 mode, use the
    ProjectV2 node id as `tracker.project_slug`. In boardless issue-field mode,
    set the repository and issue field. In label mode, set the repository and
    status-label prefix. Set `write_probe_issue` for ProjectV2 or issue-field
@@ -1999,21 +2014,21 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    ```sh
    # ProjectV2 mode:
    PROJECT_NODE_ID="$(jq -r '.id' "$ONBOARDING_DIR/project.json")"
-   rg -n 'github_status_source: project_v2|project_slug: <project-node-id>|write_probe_issue:' <source-root>/WORKFLOW.md
+   rg -n 'github_status_source: project_v2|project_slug: <project-node-id>|write_probe_issue:' <source-root>/detent.yaml
 
    # Boardless issue-field mode:
-   rg -n 'github_status_source: issue_field|repository: <repo-owner>/<repo-name>|status_field: <status-field-name>|write_probe_issue:' <source-root>/WORKFLOW.md
+   rg -n 'github_status_source: issue_field|repository: <repo-owner>/<repo-name>|status_field: <status-field-name>|write_probe_issue:' <source-root>/detent.yaml
 
    # Label mode:
-   rg -n 'github_status_source: label|repository: <repo-owner>/<repo-name>|status_label_prefix: "<status-label-prefix>"' <source-root>/WORKFLOW.md
+   rg -n 'github_status_source: label|repository: <repo-owner>/<repo-name>|status_label_prefix: "<status-label-prefix>"' <source-root>/detent.yaml
 
    # GitHub local-status mode:
-   rg -n 'kind: github_local|repository: <repo-owner>/<repo-name>|local_sqlite:|path: .detent/github-local-work-items.db' <source-root>/WORKFLOW.md
+   rg -n 'kind: github_local|repository: <repo-owner>/<repo-name>|local_sqlite:|path: .detent/github-local-work-items.db' <source-root>/detent.yaml
 
    # All modes:
-   perl -0pi -e 's#(?m)^  source_root: .*$#  source_root: <source-root>#' <source-root>/WORKFLOW.md
-   perl -0pi -e 's#(?m)^  root: .*$#  root: <worktree-root>#' <source-root>/WORKFLOW.md
-   rg -n 'source_root: <source-root>|root: <worktree-root>' <source-root>/WORKFLOW.md
+   perl -0pi -e 's#(?m)^  source_root: .*$#  source_root: <source-root>#' <source-root>/detent.yaml
+   perl -0pi -e 's#(?m)^  root: .*$#  root: <worktree-root>#' <source-root>/detent.yaml
+   rg -n 'source_root: <source-root>|root: <worktree-root>' <source-root>/detent.yaml
    ```
 
 3. **Set Kanban interaction mode when supported.** Do not add this block to
@@ -2297,8 +2312,8 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    right section. Verify:
 
    ```sh
-   awk 'seen {print} /^---$/ {count++; if (count == 2) seen=1}' <source-root>/WORKFLOW.md \
-     | rg 'Current Detent status|Codex Workpad|detent-status|dependencies/blocked_by|Required Execution Flow|For Todo|For In Progress|For Rework|For Merging|go-workflow:ship|CLAUDE.md|AGENTS.md|CONTRIBUTING.md|<gate-command>|<repo-owner>/<repo-name>'
+   rg 'Current Detent status|Codex Workpad|detent-status|dependencies/blocked_by|Required Execution Flow|For Todo|For In Progress|For Rework|For Merging|go-workflow:ship|CLAUDE.md|AGENTS.md|CONTRIBUTING.md|<gate-command>|<repo-owner>/<repo-name>' \
+     <source-root>/WORKFLOW.md
    ```
 
 9. **Check the workflow contract before registration.** This is a structural
@@ -2306,8 +2321,12 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    preflight. Verify:
 
    ```sh
-   rg -n '^tracker:|project_slug:|^workspace:|source_root:|^agent:|max_concurrent_agents_by_state:|^gate:' \
-     <source-root>/WORKFLOW.md
+   rg -n '^schema:|^tracker:|project_slug:|^workspace:|source_root:|^agent:|max_concurrent_agents_by_state:|^gate:' \
+     <source-root>/detent.yaml
+   if rg -q '^---$' <source-root>/WORKFLOW.md; then
+     printf 'WORKFLOW.md must be prose-only for new projects\n' >&2
+     exit 1
+   fi
    ```
 
 ## Out-of-Scope Follow-ups
@@ -3063,36 +3082,36 @@ the card instead of auto-resolving it.
 
 | Interview answer | Config or system target |
 | --- | --- |
-| GitHub status source | `tracker.github_status_source: project_v2`, `issue_field`, or `label` in `WORKFLOW.md`. |
+| GitHub status source | `tracker.github_status_source: project_v2`, `issue_field`, or `label` in `detent.yaml`. |
 | GitHub local status | `tracker.kind: github_local`, `tracker.repository`, and `tracker.local_sqlite.path`; no `tracker.github_status_source`. |
-| Board node id | `tracker.project_slug` in `WORKFLOW.md` for ProjectV2 mode only. |
-| Boardless repository | `tracker.repository` in `WORKFLOW.md` for issue-field and label modes. |
-| Boardless issue field | `tracker.status_field` in `WORKFLOW.md`; defaults to `Status` when omitted. |
-| Status label prefix | `tracker.status_label_prefix` in `WORKFLOW.md`; defaults to `detent:` for label mode. |
+| Board node id | `tracker.project_slug` in `detent.yaml` for ProjectV2 mode only. |
+| Boardless repository | `tracker.repository` in `detent.yaml` for issue-field and label modes. |
+| Boardless issue field | `tracker.status_field` in `detent.yaml`; defaults to `Status` when omitted. |
+| Status label prefix | `tracker.status_label_prefix` in `detent.yaml`; defaults to `detent:` for label mode. |
 | Kanban interaction | Fleet and observer boards stay read-only; trusted operator-owned project boards default to `integration`, with writes authorized and proven by post-authorization `detent doctor --allow-write-probes`. |
 | Project scheduling priority | `projects[].priority` in `global.yaml`. |
 | Project scheduling weight | `projects[].weight` in `global.yaml`. |
 | Project color | Optional `projects[].color` in `global.yaml`; missing colors are deterministic and appear in the sidebar and multi-project Kanban. |
-| Dispatch label ordering | `agent.dispatch_priority_by_label` in `WORKFLOW.md`. |
-| Authorization filters | `tracker.authorization` in `WORKFLOW.md`; optionally `projects[].authorization` in `global.yaml` for host-level scoping. |
-| Dashboard bind | `server.host` in `WORKFLOW.md`, or `--host` in the startup command or service `ExecStart`. |
+| Dispatch label ordering | `agent.dispatch_priority_by_label` in `detent.yaml`. |
+| Authorization filters | `tracker.authorization` in `detent.yaml`; optionally `projects[].authorization` in `global.yaml` for host-level scoping. |
+| Dashboard bind | `server.host` in `detent.yaml`, or `--host` in the startup command or service `ExecStart`. |
 | Worker model provider default | `codex.command: codex app-server`; follows provider upgrades and avoids retirement breakage. |
 | Worker model pin | `codex.command` with `--config 'model="<model>"'`; provides reproducibility or cost control but requires generation maintenance. |
 | Worker reasoning effort | Optional `model_reasoning_effort` Codex config override; unset by default because not every model accepts it. |
-| Validation command | `gate.kind: command` and `gate.run` in `WORKFLOW.md`. |
-| Automated PR review requirement | `gate.kind: command` and `gate.require_automated_review` in `WORKFLOW.md`. |
-| Release-blocking CI names | `gate.required_status_checks` in `WORKFLOW.md`; keep it aligned with branch protection or rulesets. |
-| Failed CI recovery | `gate.kind: command` and `gate.ci_failure_action` in `WORKFLOW.md`. |
-| Validator-agent review | `gate.validator.enabled`, `gate.validator.min_score`, and `gate.validator.block_on` in `WORKFLOW.md`. |
-| Human validation label | `gate.kind: human_review` and `gate.approval_label` in `WORKFLOW.md`. |
-| Per-project concurrency | `agent.max_concurrent_agents` in `WORKFLOW.md`. |
-| Per-role reasoning effort | Optional `agent.effort.code`, `agent.effort.rework`, and `agent.effort.merge` defaults in `WORKFLOW.md`. |
+| Validation command | `gate.kind: command` and `gate.run` in `detent.yaml`. |
+| Automated PR review requirement | `gate.kind: command` and `gate.require_automated_review` in `detent.yaml`. |
+| Release-blocking CI names | `gate.required_status_checks` in `detent.yaml`; keep it aligned with branch protection or rulesets. |
+| Failed CI recovery | `gate.kind: command` and `gate.ci_failure_action` in `detent.yaml`. |
+| Validator-agent review | `gate.validator.enabled`, `gate.validator.min_score`, and `gate.validator.block_on` in `detent.yaml`. |
+| Human validation label | `gate.kind: human_review` and `gate.approval_label` in `detent.yaml`. |
+| Per-project concurrency | `agent.max_concurrent_agents` in `detent.yaml`. |
+| Per-role reasoning effort | Optional `agent.effort.code`, `agent.effort.rework`, and `agent.effort.merge` defaults in `detent.yaml`. |
 | Pull request merge strategy | `deliverable.merge_method: squash`, `merge`, or `rebase`; defaults to `squash`. |
-| Merge serialization | `agent.max_concurrent_agents_by_state.Merging: 1` in `WORKFLOW.md`. |
+| Merge serialization | `agent.max_concurrent_agents_by_state.Merging: 1` in `detent.yaml`. |
 | Session runaway brake | `agent.max_session_tokens`; `agent.max_session_context_multiplier` remains absent unless explicitly requested as a coarse ceiling. |
-| Hard-stop review policy | `agent.auto_promote.enabled: false` in `WORKFLOW.md`. |
-| Criteria-based auto-promote | `agent.auto_promote.enabled`, `quiet_seconds`, `optout_label`, and `allowed_issue_labels` in `WORKFLOW.md`. |
-| Prompt body | Markdown body after the closing frontmatter `---` in `WORKFLOW.md`. |
+| Hard-stop review policy | `agent.auto_promote.enabled: false` in `detent.yaml`. |
+| Criteria-based auto-promote | `agent.auto_promote.enabled`, `quiet_seconds`, `optout_label`, and `allowed_issue_labels` in `detent.yaml`. |
+| Prompt body | The complete Markdown content of prose-only `WORKFLOW.md`. |
 | Intake filter | `gh issue list` flags and optional GitHub Project auto-add workflow. |
 | Initial issue status | ProjectV2 or issue-field `Status` value, or one status label in label mode, usually `Backlog` or `Todo`. |
 

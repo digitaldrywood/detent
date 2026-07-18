@@ -60,7 +60,24 @@ type doctorCheck struct {
 	DependencyCapabilities    []connector.DependencyCapability           `json:"dependency_capabilities,omitempty"`
 	UntrackedIssues           []doctorStatusDriftIssueDiagnostic         `json:"untracked_issues,omitempty"`
 	OpenTerminalIssues        []doctorStatusDriftIssueDiagnostic         `json:"open_terminal_issues,omitempty"`
+	ProjectDefinition         *doctorProjectDefinitionDiagnostic         `json:"project_definition,omitempty"`
 	WorkflowOptimization      doctorWorkflowOptimizationReport           `json:"-"`
+}
+
+type doctorProjectDefinitionDiagnostic struct {
+	ProjectID         string   `json:"project_id"`
+	Layout            string   `json:"layout"`
+	Revision          string   `json:"revision,omitempty"`
+	WorkflowPath      string   `json:"workflow_path"`
+	ConfigPath        string   `json:"config_path"`
+	LocalWorkflowPath string   `json:"local_workflow_path,omitempty"`
+	LocalConfigPath   string   `json:"local_config_path,omitempty"`
+	LegacyKeys        []string `json:"legacy_keys,omitempty"`
+	LocalLegacyKeys   []string `json:"local_legacy_keys,omitempty"`
+	FixCommand        string   `json:"fix_command,omitempty"`
+	RuntimeLayout     string   `json:"runtime_layout,omitempty"`
+	RuntimeRevision   string   `json:"runtime_revision,omitempty"`
+	Stale             bool     `json:"stale,omitempty"`
 }
 
 type doctorReport struct {

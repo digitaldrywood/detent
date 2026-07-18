@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 )
@@ -76,6 +77,45 @@ func TestLoadWorkflowUsesConfiguredGitRef(t *testing.T) {
 
 	if got := strings.TrimSpace(workflow.Prompt); got != "from ref" {
 		t.Fatalf("Prompt = %q, want from ref", got)
+	}
+}
+
+func TestLoadWorkflowUsesSplitDefinitionFromConfiguredGitRef(t *testing.T) {
+	t.Parallel()
+
+	repo := initWorkflowSourceRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "WORKFLOW.md"), []byte("from split ref\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(WORKFLOW.md) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: memory\npolling:\n  interval_ms: 90000\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(detent.yaml) error = %v", err)
+	}
+	runWorkflowSourceGit(t, repo, "add", "WORKFLOW.md", "detent.yaml")
+	runWorkflowSourceGit(t, repo, "commit", "-m", "split project definition")
+	updateWorkflowSourceRef(t, repo, "origin/main", "HEAD")
+	if err := os.WriteFile(filepath.Join(repo, "WORKFLOW.md"), []byte("working tree\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(working tree) error = %v", err)
+	}
+
+	workflow, err := LoadWorkflow(globalconfig.Project{
+		Workflow:    "WORKFLOW.md",
+		WorkflowRef: "origin/main",
+		Workdir:     repo,
+	})
+	if err != nil {
+		t.Fatalf("LoadWorkflow() error = %v", err)
+	}
+	if strings.TrimSpace(workflow.Prompt) != "from split ref" {
+		t.Fatalf("Prompt = %q, want split ref", workflow.Prompt)
+	}
+	if workflow.Config.Polling.IntervalMS != 90000 {
+		t.Fatalf("Polling.IntervalMS = %d, want 90000", workflow.Config.Polling.IntervalMS)
+	}
+	if workflow.Definition.Layout != workflowconfig.ProjectDefinitionSplit {
+		t.Fatalf("Layout = %q, want split", workflow.Definition.Layout)
+	}
+	if workflow.Definition.Revision == "" || workflow.Definition.Revision == workflow.SourceHash {
+		t.Fatalf("Revision = %q, want git commit revision", workflow.Definition.Revision)
 	}
 }
 
