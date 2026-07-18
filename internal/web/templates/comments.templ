@@ -30,22 +30,30 @@ templ KanbanConversation(data KanbanConversationData) {
 		</header>
 		if kanbanConversationHasPRTab(data) {
 			<div class="flex flex-none items-center gap-1 rounded-card bg-elev p-1" role="tablist" aria-label="Comment threads">
-				@kanbanConversationTabButton("issue", "Issue comments", len(data.IssueComments), true)
-				@kanbanConversationTabButton("pr", "PR comments", len(data.PRComments), false)
+				@kanbanConversationTabButton(data, "issue", "Issue comments", len(data.IssueComments), true)
+				@kanbanConversationTabButton(data, "pr", "PR comments", len(data.PRComments), false)
 			</div>
 		}
 		<div id="kanban-issue-comments-tab-panel" role="tabpanel" data-kanban-comment-panel="issue">
-			@KanbanIssueCommentsPanel(data)
+			if data.IssuePending {
+				@KanbanIssueCommentsPending(data)
+			} else {
+				@KanbanIssueCommentsPanel(data)
+			}
 		</div>
 		if kanbanConversationHasPRTab(data) {
 			<div id="kanban-pr-comments-tab-panel" role="tabpanel" data-kanban-comment-panel="pr" hidden>
-				@kanbanPRCommentsPanel(data)
+				if data.PRPending {
+					@KanbanPRCommentsPending(data)
+				} else {
+					@KanbanPRCommentsPanel(data)
+				}
 			</div>
 		}
 	</section>
 }
 
-templ kanbanConversationTabButton(id string, label string, count int, active bool) {
+templ kanbanConversationTabButton(data KanbanConversationData, id string, label string, count int, active bool) {
 	<button
 		type="button"
 		class="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-chip px-2 text-xs font-medium text-sec hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent data-[kanban-comment-active=true]:bg-surface data-[kanban-comment-active=true]:text-accent md:min-h-7"
@@ -55,15 +63,41 @@ templ kanbanConversationTabButton(id string, label string, count int, active boo
 		tabindex={ kanbanTabIndex(active) }
 		data-kanban-comment-tab={ id }
 		data-kanban-comment-active={ kanbanBool(active) }
+		if id == "pr" && data.PRPending {
+			hx-get={ kanbanConversationLoadPath(data, "pr") }
+			hx-trigger="click once"
+			hx-target="#kanban-pr-comments-panel"
+			hx-swap="outerHTML"
+			hx-sync="this:replace"
+		}
 	>
 		<span class="truncate">{ label }</span>
 		<span class="rounded-chip bg-page px-1.5 py-0.5 font-mono text-2xs text-sec">{ kanbanConversationCountLabel(count) }</span>
 	</button>
 }
 
+templ KanbanIssueCommentsPending(data KanbanConversationData) {
+	<div
+		id="kanban-issue-comments-panel"
+		class="flex min-h-40 items-center justify-center rounded-card border border-line bg-page p-4 text-center text-xs text-sec"
+		aria-label="Issue comments"
+		aria-busy="true"
+		data-detail-enrichment
+		hx-get={ kanbanConversationLoadPath(data, "issue") }
+		hx-trigger="load"
+		hx-target="this"
+		hx-swap="outerHTML"
+		hx-sync="this:replace"
+	>Loading issue comments…</div>
+}
+
+templ KanbanPRCommentsPending(data KanbanConversationData) {
+	<div id="kanban-pr-comments-panel" class="flex min-h-40 items-center justify-center rounded-card border border-line bg-page p-4 text-center text-xs text-sec" aria-label="Pull request comments" aria-busy="true" data-detail-enrichment>Loading PR comments…</div>
+}
+
 templ KanbanIssueCommentsPanel(data KanbanConversationData) {
-	<div id="kanban-issue-comments-panel" class="flex min-h-0 flex-col gap-3">
-		@kanbanThreadState(data.IssueError, data.IssueNotice)
+	<div id="kanban-issue-comments-panel" class="flex min-h-0 flex-col gap-3" aria-label="Issue comments" aria-busy="false" data-detail-enrichment>
+		@kanbanThreadState(data.IssueError, data.IssueNotice, kanbanConversationLoadPath(data, "issue"), "Retry issue comments")
 		@kanbanCommentList(data, data.IssueComments, "No issue comments yet.", data.Expanded, true)
 		if data.CanComment {
 			<form class="flex flex-none flex-col gap-2" hx-post="/api/v1/kanban/comment" hx-target="#kanban-issue-comments-panel" hx-swap="outerHTML" hx-disabled-elt="find button" hx-indicator="#kanban-comment-submit-indicator">
@@ -95,22 +129,29 @@ templ KanbanIssueCommentsPanel(data KanbanConversationData) {
 	</div>
 }
 
-templ kanbanPRCommentsPanel(data KanbanConversationData) {
-	<div id="kanban-pr-comments-panel" class="flex min-h-0 flex-col gap-3">
+templ KanbanPRCommentsPanel(data KanbanConversationData) {
+	<div id="kanban-pr-comments-panel" class="flex min-h-0 flex-col gap-3" aria-label="Pull request comments" aria-busy="false" data-detail-enrichment>
 		<div class="flex flex-none items-center justify-between gap-2 text-xs">
 			@primitives.TrackerReferenceLink(kanbanConversationPRLabel(data), data.PRURL, "inline-flex min-h-11 items-center font-mono text-sec md:min-h-0 md:inline")
 			if data.PRURL != "" {
 				<a href={ data.PRURL } target="_blank" rel="noopener noreferrer" class="inline-flex min-h-11 items-center font-medium text-accent hover:underline md:inline md:min-h-0">Open PR ↗</a>
 			}
 		</div>
-		@kanbanThreadState(data.PRError, "")
+		@kanbanThreadState(data.PRError, "", kanbanConversationLoadPath(data, "pr"), "Retry PR comments")
 		@kanbanCommentList(data, data.PRComments, "No PR comments yet.", data.Expanded, false)
 	</div>
 }
 
-templ kanbanThreadState(err string, notice string) {
+templ kanbanPRCommentsPanel(data KanbanConversationData) {
+	@KanbanPRCommentsPanel(data)
+}
+
+templ kanbanThreadState(err string, notice string, retryPath string, retryLabel string) {
 	if err != "" {
-		<div class="rounded-card border border-err/40 bg-err/10 px-3 py-2 text-xs text-err" role="alert">{ err }</div>
+		<div class="flex items-center justify-between gap-3 rounded-card border border-err/40 bg-err/10 px-3 py-2 text-xs text-err" role="alert">
+			<p>{ err }</p>
+			<button type="button" class="flex-none rounded-chip border border-err/40 px-2 py-1 font-medium hover:bg-err/15" hx-get={ retryPath } hx-target="closest [data-detail-enrichment]" hx-swap="outerHTML" hx-sync="closest [data-detail-enrichment]:replace">{ retryLabel }</button>
+		</div>
 	}
 	if notice != "" {
 		<div class="rounded-card border border-ok/40 bg-ok/10 px-3 py-2 text-xs text-ok" role="status">{ notice }</div>
@@ -218,7 +259,7 @@ templ kanbanConversationScript() {
 				}
 				const next = list[(index + offset + list.length) % list.length];
 				next.focus();
-				setActive(root, next.dataset.kanbanCommentTab || "issue");
+				next.click();
 			}
 
 			document.addEventListener("click", function(event) {

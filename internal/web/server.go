@@ -373,6 +373,9 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/usage", s.apiUsage, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/workflow/timeline", s.apiWorkflowTimeline, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/board/card", s.apiBoardCard, apiDashboardReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/board/card/core", s.apiBoardCardCore, apiDashboardReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/board/receipt", s.apiBoardReceipt, apiDashboardReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/board/conversation", s.apiBoardConversation, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/board/activity", s.apiBoardActivity, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/board/activity/events", s.apiBoardActivityEvents, apiDashboardSSEReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/board/session", s.apiBoardSession, apiDashboardReadAuth, apiReadScope)
@@ -429,56 +432,110 @@ func (s *Server) redirectToBoard(c echo.Context) error {
 // opened the sheet so its kanban actions post against the same scope
 // and success responses return the matching board fragment.
 func (s *Server) apiBoardCard(c echo.Context) error {
-	ctx := c.Request().Context()
 	projectID := strings.TrimSpace(c.QueryParam("project"))
-	projectScope := c.QueryParam("scope") == "project" && projectID != ""
-	snapshot := s.latestSnapshot(ctx)
-	data := s.boardData(ctx, snapshot)
-	demo := false
-	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+	data, demo, err := s.boardCardDashboardData(c, true)
+	if err != nil {
 		return err
-	} else if ok {
-		demo = true
-		data = s.demoDashboardData(ctx, scenario)
-		if projectScope {
-			projectScenario := scenario
-			projectScenario.ProjectID = projectID
-			if scoped, ok := s.demoProjectDashboardData(ctx, projectScenario); ok {
-				data = scoped
-			}
-		}
-	} else if projectScope {
-		if scoped, ok := s.projectDashboardData(ctx, projectID, snapshot); ok {
-			data = scoped
-		}
 	}
 	card, ok := templates.FindBoardCard(data, projectID, c.QueryParam("issue"))
 	if !ok {
 		return echo.NewHTTPError(http.StatusNotFound, "Card not found")
 	}
-	if !demo {
-		receipt, err := s.store.EfficiencyReceipt(ctx, projectID, card.IssueID, card.Identifier)
-		if err == nil {
-			data.EfficiencyReceipts = []efficiency.Receipt{receipt}
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			s.logger.Warn("efficiency receipt query failed", slog.Any("error", err))
-		}
-	}
 	boardActions := c.QueryParam("actions") == "board"
 	expanded := c.QueryParam("expanded") == "1"
 	conversation := templates.BoardCardConversationData(data, card, boardActions, expanded)
-	if !demo {
-		conversation = s.hydrateKanbanConversation(ctx, conversation)
-	}
+	conversation = s.kanbanConversationShellData(conversation, demo)
 	activityRequest := boardActivityRequest{
 		ProjectID: projectID,
 		Issue:     c.QueryParam("issue"),
 		Limit:     defaultBoardActivityLimit,
 	}
 	issue := boardActivityIssue(data.Snapshot, activityRequest)
-	activityData := s.boardActivityData(ctx, data.Snapshot, issue, activityRequest)
-	sessionData := s.boardSessionData(ctx, data.Snapshot, issue, projectID)
+	activityData := boardActivityBaseData(issue, activityRequest)
+	activityData.Pending = true
+	sessionData := boardSessionSnapshotData(data.Snapshot, issue, projectID)
 	return render(c, templates.BoardCardSheet(data, card, boardActions, expanded, conversation, activityData, sessionData))
+}
+
+func (s *Server) apiBoardCardCore(c echo.Context) error {
+	projectID := strings.TrimSpace(c.QueryParam("project"))
+	data, _, err := s.boardCardDashboardData(c, true)
+	if err != nil {
+		return err
+	}
+	card, ok := templates.FindBoardCard(data, projectID, c.QueryParam("issue"))
+	if !ok {
+		return echo.NewHTTPError(http.StatusNotFound, "Card not found")
+	}
+	return render(c, templates.BoardCardSheetCore(data, card, c.QueryParam("actions") == "board"))
+}
+
+func (s *Server) apiBoardReceipt(c echo.Context) error {
+	ctx := c.Request().Context()
+	projectID := strings.TrimSpace(c.QueryParam("project"))
+	data, demo, err := s.boardCardDashboardData(c, true)
+	if err != nil {
+		return err
+	}
+	card, ok := templates.FindBoardCard(data, projectID, c.QueryParam("issue"))
+	if !ok {
+		return echo.NewHTTPError(http.StatusNotFound, "Card not found")
+	}
+	path := c.Request().URL.RequestURI()
+	if demo {
+		for _, receipt := range data.EfficiencyReceipts {
+			if receipt.IssueID == card.IssueID || (receipt.Identifier != "" && receipt.Identifier == card.Identifier) {
+				return render(c, templates.BoardEfficiencyReceipt(receipt, true, path, ""))
+			}
+		}
+		return render(c, templates.BoardEfficiencyReceipt(efficiency.Receipt{}, false, path, ""))
+	}
+	receipt, err := s.store.EfficiencyReceipt(ctx, projectID, card.IssueID, card.Identifier)
+	if err == nil {
+		return render(c, templates.BoardEfficiencyReceipt(receipt, true, path, ""))
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return render(c, templates.BoardEfficiencyReceipt(efficiency.Receipt{}, false, path, ""))
+	}
+	s.logger.WarnContext(ctx, "efficiency receipt query failed", slog.Any("error", err))
+	return render(c, templates.BoardEfficiencyReceipt(efficiency.Receipt{}, false, path, "Efficiency receipt is temporarily unavailable."))
+}
+
+func (s *Server) boardCardDashboardData(c echo.Context, local bool) (templates.DashboardData, bool, error) {
+	ctx := c.Request().Context()
+	projectID := strings.TrimSpace(c.QueryParam("project"))
+	projectScope := c.QueryParam("scope") == "project" && projectID != ""
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return templates.DashboardData{}, false, err
+	} else if ok {
+		data := s.demoDashboardData(ctx, scenario)
+		if projectScope {
+			projectScenario := scenario
+			projectScenario.ProjectID = projectID
+			if scoped, found := s.demoProjectDashboardData(ctx, projectScenario); found {
+				data = scoped
+			}
+		}
+		return data, true, nil
+	}
+	if local {
+		snapshot, enriched := s.latestBoardSnapshot()
+		data := s.boardFirstPaintData(ctx, snapshot, !enriched)
+		if projectScope {
+			if scoped, ok := s.projectFirstPaintData(ctx, projectID, snapshot, !enriched); ok {
+				data = scoped
+			}
+		}
+		return data, false, nil
+	}
+	snapshot := s.latestSnapshot(ctx)
+	data := s.boardData(ctx, snapshot)
+	if projectScope {
+		if scoped, ok := s.projectDashboardData(ctx, projectID, snapshot); ok {
+			data = scoped
+		}
+	}
+	return data, false, nil
 }
 
 func (s *Server) healthDashboard(c echo.Context) error {

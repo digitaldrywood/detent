@@ -195,6 +195,8 @@ templ boardCardView2(card boardCardView) {
 		role="button"
 		tabindex="0"
 		{ sheetOpenAttrs(card.Project, card.Identity, card.Scope, true)... }
+		data-detail-sheet-project={ card.Project }
+		data-detail-sheet-reference={ card.Number }
 		if card.MoveDisabledText != "" {
 			title={ card.MoveDisabledText }
 		}
@@ -252,7 +254,7 @@ templ boardCardView2(card boardCardView) {
 		</div>
 		<div class={ boardCardTitleClass(card) } data-board-card-title>{ card.Title }</div>
 		<div class="min-w-0 items-center gap-1.5 font-mono text-2xs text-sec" data-board-card-content="compact">
-			<span class="flex-none font-medium text-text">{ card.State }</span>
+			<span class="flex-none font-medium text-text" data-board-card-state>{ card.State }</span>
 			if card.CompactSignal != "" {
 				<span aria-hidden="true">·</span>
 				<span class="min-w-0 truncate">{ card.CompactSignal }</span>

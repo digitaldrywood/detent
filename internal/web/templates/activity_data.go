@@ -15,6 +15,7 @@ type BoardActivityData struct {
 	Identifier string
 	IssueURL   string
 	Events     []BoardActivityEvent
+	Pending    bool
 	Verbose    bool
 	Limit      int
 	HasMore    bool
@@ -153,13 +154,19 @@ func boardLiveSessionLogClass(data BoardSessionData) string {
 }
 
 func boardLiveSessionID(data BoardSessionData) string {
+	detentSessionID := int64(0)
+	providerSessionID := ""
+	if data.Active {
+		detentSessionID = data.DetentSessionID
+		providerSessionID = strings.TrimSpace(data.ProviderSessionID)
+	}
 	key := strings.Join([]string{
 		strings.TrimSpace(data.ProjectID),
 		strings.TrimSpace(data.IssueID),
 		strings.TrimSpace(data.Identifier),
 		strconv.FormatBool(data.Active),
-		strconv.FormatInt(data.DetentSessionID, 10),
-		strings.TrimSpace(data.ProviderSessionID),
+		strconv.FormatInt(detentSessionID, 10),
+		providerSessionID,
 	}, "\x00")
 	digest := sha256.Sum256([]byte(key))
 	return "board-live-session-" + hex.EncodeToString(digest[:8])

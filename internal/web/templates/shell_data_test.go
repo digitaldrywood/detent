@@ -11,7 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
 
-func TestAppShellScriptRefreshesOpenDetailSheetAfterSnapshotSettle(t *testing.T) {
+func TestAppShellScriptRefreshesOpenDetailCoreAfterSnapshotSettle(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
@@ -27,15 +27,20 @@ func TestAppShellScriptRefreshesOpenDetailSheetAfterSnapshotSettle(t *testing.T)
 		`applyDetailSheetTab(host)`,
 		`window.htmx.remove(child)`,
 		`selectedTab !== "session"`,
-		`htmx.ajax("GET", host.dataset.detailSheetURL`,
-		`swap: "morph:innerHTML"`,
 		`function showActionNotice(message)`,
 		`showActionNotice(event.detail && event.detail.message)`,
 		`[data-detent-action-notice-dismiss]`,
+		`mountImmediateDetailSheet(trigger`,
+		`window.htmx.trigger(trigger, "htmx:abort")`,
+		`host.querySelector("[data-detail-sheet-core][hx-get]")`,
+		`htmx.trigger(core, "detailSheetRefresh")`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("app shell script missing %q:\n%s", want, html)
 		}
+	}
+	if strings.Contains(html, `htmx.ajax("GET", host.dataset.detailSheetURL`) {
+		t.Fatalf("app shell script still refreshes the complete detail sheet:\n%s", html)
 	}
 }
 

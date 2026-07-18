@@ -3921,6 +3921,10 @@ func TestBoardCardSheetShowsLocalCommentControlsOnly(t *testing.T) {
 	}
 
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/card?project=detent&issue=I_kw1&scope=project&actions=board", http.StatusOK)
+	if !strings.Contains(body, "Loading issue comments") {
+		t.Fatalf("body missing pending issue comments: %s", body)
+	}
+	body = requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=detent&issue=I_kw1&scope=project&actions=board&target=issue", http.StatusOK)
 	for _, want := range []string{"Remote note", "Local note"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body missing %q: %s", want, body)

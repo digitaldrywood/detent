@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/web/ui/components/dialog"
 	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
 )
@@ -10,130 +11,59 @@ import (
 // sheet down.
 templ DetailSheetHost() {
 	<div id="detail-sheet-host"></div>
+	@DetailSheetImmediateTemplate()
 }
 
-// BoardCardSheet is the Linear-style right panel opened from board cards
-// and exception-strip Review actions: issue identity, state, PR facts,
-// blockers, the live session, and the kanban actions the project's mode
-// allows.
-templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bool, expanded bool, conversation KanbanConversationData, activity BoardActivityData, sessionData BoardSessionData) {
-	{{ session := sheetSessionFor(data.Snapshot, card) }}
-	{{ receipt, hasReceipt := efficiencyReceiptForCard(data, card) }}
-	<div class="fixed inset-0 z-50 flex min-w-0 justify-end overflow-x-hidden" data-detail-sheet>
+templ DetailSheetImmediateTemplate() {
+	<template id="detail-sheet-immediate-template">
+	<div class="fixed inset-0 z-50 flex min-w-0 justify-end overflow-x-hidden" data-detail-sheet data-detail-sheet-immediate>
 		<div class="hidden flex-1 bg-page/60 md:block" data-sheet-close aria-hidden="true"></div>
-		<aside class={ boardCardSheetClass(expanded) } role="dialog" aria-modal="true" aria-label={ "Details for " + card.IssueNumber }>
+		<aside class={ boardCardSheetClass(false) } role="dialog" aria-modal="true" aria-label="Card details">
 			<header class="flex flex-none items-start gap-3 border-b border-line px-4 py-3 md:px-5 md:py-4">
 				<div class="flex min-w-0 flex-1 flex-col gap-1">
 					<div class="flex min-w-0 items-center gap-2 font-mono text-xs font-medium text-sec">
-						<span class="min-w-20 truncate">{ projectKanbanCardProjectID(data, card) }</span>
-						@primitives.TrackerReferenceLink(card.IssueNumber, card.URL, "inline-flex min-h-11 max-w-48 flex-none items-center truncate text-text md:min-h-0 md:inline")
+						<span class="min-w-20 truncate" data-immediate-project></span>
+						<span class="inline-flex min-h-11 max-w-48 flex-none items-center truncate text-text md:min-h-0 md:inline" data-immediate-reference></span>
 					</div>
-					<h2 class="text-sm font-medium leading-snug text-text">{ card.Title }</h2>
+					<h2 class="text-sm font-medium leading-snug text-text" data-immediate-title></h2>
 				</div>
 				<button type="button" class="inline-flex size-11 flex-none items-center justify-center rounded-chip text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent md:size-auto md:p-1" data-sheet-close aria-label="Close details">✕</button>
 			</header>
-			<div class="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto px-4 py-4 overscroll-contain md:px-5">
-				<div class="flex flex-col gap-2 text-xs">
+			<div class="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto px-4 py-4 overscroll-contain md:px-5" data-detail-sheet-scroll>
+				<div class="flex flex-col gap-2 text-xs" data-detail-sheet-core>
 					@sheetRowText("State") {
-						<span class={ "flex items-center gap-1.5 " + boardExtraTextClass(sheetStateKind(data, card)) }>
-							@primitives.StatusDot(sheetStateKind(data, card), false)
-							{ card.Stage }
+						<span class="flex items-center gap-1.5 text-text">
+							@primitives.StatusDot(primitives.KindInfo, false)
+							<span data-immediate-state></span>
 						</span>
 					}
-					if card.TimeInStage != "" && card.TimeInStage != "n/a" {
-						@sheetRowValue("Time in stage", card.TimeInStage, card.TimeInStageTitle)
-					}
-					if card.WaitDetail != "" {
-						@sheetRowValue("Waiting on", card.WaitDetail, card.WaitDetail)
-					}
-					@sheetRowLink("Issue", card.Identifier, card.URL)
-					if card.HasPullRequest {
-						@sheetRowLink("Pull request", card.PullRequestLabel, card.PRURL)
-						if card.CIStatus != "" {
-							@sheetRowValue("CI", card.CIStatus, "Continuous integration status")
-						}
-						if card.CodexReviewState != "" {
-							@sheetRowValue("Codex review", card.CodexReviewState, "Codex review state")
-						}
-						if card.MergeableState != "" {
-							@sheetRowValue("Merge state", card.MergeableState, "GitHub mergeStateStatus")
-						}
-					}
+					<div class="flex min-w-0 flex-col items-start gap-1 md:flex-row md:items-center md:justify-between md:gap-3" data-sheet-row="Issue">
+						<span class="flex-none text-sec">Issue</span>
+						<span class="w-full min-w-0 break-words font-mono text-text [overflow-wrap:anywhere] md:w-auto md:truncate" data-immediate-identity></span>
+					</div>
 				</div>
-				if card.AttentionLabel != "" || len(card.Blockers) > 0 || card.ConflictReason != "" {
-					<div class="flex flex-col gap-1.5">
-						<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Needs attention</h3>
-						if card.AttentionLabel != "" {
-							@primitives.Chip(primitives.KindErr, sheetAttentionLabel(card))
-						}
-						for _, blocker := range card.Blockers {
-							@primitives.Chip(primitives.KindErr, "blocked — "+blocker)
-						}
-						if card.ConflictReason != "" {
-							@primitives.Chip(primitives.KindWarn, card.ConflictReason)
-						}
-					</div>
-				}
-				if session.Present {
-					<div class="flex flex-col gap-2">
-						<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Session</h3>
-						<div class="flex flex-col gap-2 rounded-card border border-line bg-elev p-3 text-xs">
-							@sheetRowText("Status") {
-								<span class={ "flex items-center gap-1.5 " + boardExtraTextClass(session.Kind) }>
-									@primitives.StatusDot(session.Kind, session.Kind == primitives.KindOK)
-									{ session.State }
-								</span>
-							}
-							@sheetRowValue("Agent system", runtimeIdentityString(runtimeIdentitySystemName(session.RuntimeIdentity.BackendKind)), "")
-							@sheetRowValue("Backend profile", runtimeIdentityString(session.RuntimeIdentity.BackendID), "")
-							if session.RuntimeIdentity.Role != "" {
-								@sheetRowValue("Agent role", session.RuntimeIdentity.Role, "")
-							}
-							@sheetRowValue("Provider", runtimeIdentityDetailValue(session.RuntimeIdentity.Provider), "")
-							@sheetRowValue("Model", runtimeIdentityDetailValue(runtimeIdentityModelValue(session.RuntimeIdentity)), "")
-							if session.RuntimeIdentity.RequestedDiffers() {
-								@sheetRowValue("Requested model", runtimeIdentityDetailValue(session.RuntimeIdentity.RequestedModel), "")
-							}
-							@sheetRowValue("Effort", runtimeIdentityDetailValue(session.RuntimeIdentity.ReasoningEffort), "")
-							if !session.RuntimeIdentity.ServiceTier.IsZero() {
-								@sheetRowValue("Service tier", runtimeIdentityDetailValue(session.RuntimeIdentity.ServiceTier), "")
-							}
-							if session.Runtime != "" {
-								@sheetRowValue("Runtime", session.Runtime+" · "+session.Turns+" turns", "")
-							}
-							if session.Host != "" {
-								@sheetRowValue("Worker", session.Host, "")
-							}
-							if session.SessionID != "" {
-								@sheetRowValue("Session", session.SessionID, session.SessionID)
-							}
-							if session.LastEvent != "" {
-								@sheetRowValue("Last event", session.LastEvent, session.Message)
-							}
-							if session.Error != "" {
-								<p class="break-words text-err [overflow-wrap:anywhere]">{ session.Error }</p>
-							}
-						</div>
-					</div>
-				}
+				@detailSheetLoadingRegion("Efficiency receipt", "Loading efficiency receipt…", "min-h-32")
+				@detailSheetLoadingRegion("Activity", "Loading orchestration activity…", "min-h-72")
+				@detailSheetLoadingRegion("Conversation", "Loading issue comments…", "min-h-40")
+			</div>
+		</aside>
+	</div>
+	</template>
+}
+
+templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bool, expanded bool, conversation KanbanConversationData, activity BoardActivityData, sessionData BoardSessionData) {
+	{{ projectID, issueIdentity, scope := boardCardDetailIdentity(data, card) }}
+	{{ receipt, hasReceipt := efficiencyReceiptForCard(data, card) }}
+	<div class="fixed inset-0 z-50 flex min-w-0 justify-end overflow-x-hidden" data-detail-sheet data-detail-sheet-key={ boardCardDetailKey(projectID, issueIdentity) }>
+		<div class="hidden flex-1 bg-page/60 md:block" data-sheet-close aria-hidden="true"></div>
+		<aside class={ boardCardSheetClass(expanded) } role="dialog" aria-modal="true" aria-label={ "Details for " + card.IssueNumber }>
+			@BoardCardSheetHeader(data, card)
+			<div class="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-x-hidden overflow-y-auto px-4 py-4 overscroll-contain md:px-5" data-detail-sheet-scroll>
+				@BoardCardSheetCore(data, card, boardActions)
 				if hasReceipt {
-					<div id="efficiency-receipt" class="flex flex-col gap-2">
-						<div class="flex items-center justify-between gap-2">
-							<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Efficiency receipt</h3>
-							if receipt.Anomalous() {
-								@primitives.Chip(primitives.KindWarn, "Anomaly")
-							}
-						</div>
-						<div class="flex flex-col gap-2 rounded-card border border-line bg-elev p-3 text-xs">
-							@sheetRowValue("Sessions · attempts", formatInt(receipt.Sessions)+" · "+formatInt(receipt.Attempts), "")
-							@sheetRowValue("Tokens", formatInt(receipt.TotalTokens), formatInt(receipt.FreshInputTokens())+" fresh input · "+formatInt(receipt.CachedInputTokens)+" cached input · "+formatInt(receipt.OutputTokens)+" output")
-							@sheetRowValue("Cache share", reportCacheReadFraction(receipt.CacheShare()), "")
-							@sheetRowValue("Estimated cost", formatUSD(receipt.EstimatedCostUSD), "")
-							@sheetRowValue("Wall clock", formatDuration(float64(receipt.WallSeconds)), "")
-							@sheetRowValue("Dwell", formatDuration(float64(receipt.WorkingSeconds))+" working · "+formatDuration(float64(receipt.GateWaitSeconds))+" gate · "+formatDuration(float64(receipt.MergeTrainSeconds))+" merge · "+formatDuration(float64(receipt.ParkedSeconds))+" parked", "")
-							@sheetRowValue("Retries", formatInt(receipt.Redispatches)+" redispatches · "+formatInt(receipt.CIReruns)+" CI reruns · "+formatInt(receipt.BreakerTrips)+" breakers", "")
-						</div>
-					</div>
+					@BoardEfficiencyReceipt(receipt, true, "", "")
+				} else {
+					@BoardEfficiencyReceiptPending(boardCardReceiptPath(projectID, issueIdentity, scope, boardActions))
 				}
 				@BoardActivityTabs(activity, sessionData)
 				if len(card.Labels) > 0 {
@@ -181,7 +111,173 @@ templ BoardCardSheet(data DashboardData, card projectKanbanCard, boardActions bo
 				</footer>
 			}
 		</aside>
+		</div>
+}
+
+templ BoardCardSheetHeader(data DashboardData, card projectKanbanCard) {
+	<header id="detail-sheet-header" class="flex flex-none items-start gap-3 border-b border-line px-4 py-3 md:px-5 md:py-4">
+		<div class="flex min-w-0 flex-1 flex-col gap-1">
+			<div class="flex min-w-0 items-center gap-2 font-mono text-xs font-medium text-sec">
+				<span class="min-w-20 truncate">{ projectKanbanCardProjectID(data, card) }</span>
+				@primitives.TrackerReferenceLink(card.IssueNumber, card.URL, "inline-flex min-h-11 max-w-48 flex-none items-center truncate text-text md:min-h-0 md:inline")
+			</div>
+			<h2 class="text-sm font-medium leading-snug text-text">{ card.Title }</h2>
+		</div>
+		<button type="button" class="inline-flex size-11 flex-none items-center justify-center rounded-chip text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent md:size-auto md:p-1" data-sheet-close aria-label="Close details">✕</button>
+	</header>
+}
+
+templ BoardCardSheetCore(data DashboardData, card projectKanbanCard, boardActions bool) {
+	{{ session := sheetSessionFor(data.Snapshot, card) }}
+	{{ projectID, issueIdentity, scope := boardCardDetailIdentity(data, card) }}
+	<div
+		id="detail-sheet-core"
+		class="flex flex-col gap-4"
+		data-detail-sheet-core
+		hx-get={ boardCardCorePath(projectID, issueIdentity, scope, boardActions) }
+		hx-trigger="detailSheetRefresh"
+		hx-target="this"
+		hx-swap="morph:outerHTML"
+		hx-sync="this:replace"
+	>
+		<div class="flex flex-col gap-2 text-xs">
+			@sheetRowText("State") {
+				<span class={ "flex items-center gap-1.5 " + boardExtraTextClass(sheetStateKind(data, card)) }>
+					@primitives.StatusDot(sheetStateKind(data, card), false)
+					{ card.Stage }
+				</span>
+			}
+			if card.TimeInStage != "" && card.TimeInStage != "n/a" {
+				@sheetRowValue("Time in stage", card.TimeInStage, card.TimeInStageTitle)
+			}
+			if card.WaitDetail != "" {
+				@sheetRowValue("Waiting on", card.WaitDetail, card.WaitDetail)
+			}
+			@sheetRowLink("Issue", card.Identifier, card.URL)
+			if card.HasPullRequest {
+				@sheetRowLink("Pull request", card.PullRequestLabel, card.PRURL)
+				if card.CIStatus != "" {
+					@sheetRowValue("CI", card.CIStatus, "Continuous integration status")
+				}
+				if card.CodexReviewState != "" {
+					@sheetRowValue("Codex review", card.CodexReviewState, "Codex review state")
+				}
+				if card.MergeableState != "" {
+					@sheetRowValue("Merge state", card.MergeableState, "GitHub mergeStateStatus")
+				}
+			}
+		</div>
+		if card.AttentionLabel != "" || len(card.Blockers) > 0 || card.ConflictReason != "" {
+			<div class="flex flex-col gap-1.5">
+				<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Needs attention</h3>
+				if card.AttentionLabel != "" {
+					@primitives.Chip(primitives.KindErr, sheetAttentionLabel(card))
+				}
+				for _, blocker := range card.Blockers {
+					@primitives.Chip(primitives.KindErr, "blocked — "+blocker)
+				}
+				if card.ConflictReason != "" {
+					@primitives.Chip(primitives.KindWarn, card.ConflictReason)
+				}
+			</div>
+		}
+		if session.Present {
+			<div class="flex flex-col gap-2">
+				<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Session</h3>
+				<div class="flex flex-col gap-2 rounded-card border border-line bg-elev p-3 text-xs">
+					@sheetRowText("Status") {
+						<span class={ "flex items-center gap-1.5 " + boardExtraTextClass(session.Kind) }>
+							@primitives.StatusDot(session.Kind, session.Kind == primitives.KindOK)
+							{ session.State }
+						</span>
+					}
+					@sheetRowValue("Agent system", runtimeIdentityString(runtimeIdentitySystemName(session.RuntimeIdentity.BackendKind)), "")
+					@sheetRowValue("Backend profile", runtimeIdentityString(session.RuntimeIdentity.BackendID), "")
+					if session.RuntimeIdentity.Role != "" {
+						@sheetRowValue("Agent role", session.RuntimeIdentity.Role, "")
+					}
+					@sheetRowValue("Provider", runtimeIdentityDetailValue(session.RuntimeIdentity.Provider), "")
+					@sheetRowValue("Model", runtimeIdentityDetailValue(runtimeIdentityModelValue(session.RuntimeIdentity)), "")
+					if session.RuntimeIdentity.RequestedDiffers() {
+						@sheetRowValue("Requested model", runtimeIdentityDetailValue(session.RuntimeIdentity.RequestedModel), "")
+					}
+					@sheetRowValue("Effort", runtimeIdentityDetailValue(session.RuntimeIdentity.ReasoningEffort), "")
+					if !session.RuntimeIdentity.ServiceTier.IsZero() {
+						@sheetRowValue("Service tier", runtimeIdentityDetailValue(session.RuntimeIdentity.ServiceTier), "")
+					}
+					if session.Runtime != "" {
+						@sheetRowValue("Runtime", session.Runtime+" · "+session.Turns+" turns", "")
+					}
+					if session.Host != "" {
+						@sheetRowValue("Worker", session.Host, "")
+					}
+					if session.SessionID != "" {
+						@sheetRowValue("Session", session.SessionID, session.SessionID)
+					}
+					if session.LastEvent != "" {
+						@sheetRowValue("Last event", session.LastEvent, session.Message)
+					}
+					if session.Error != "" {
+						<p class="break-words text-err [overflow-wrap:anywhere]">{ session.Error }</p>
+					}
+				</div>
+			</div>
+		}
 	</div>
+}
+
+templ BoardEfficiencyReceiptPending(path string) {
+	<section
+		id="efficiency-receipt"
+		class="flex min-h-32 flex-col gap-2 rounded-card border border-line bg-elev p-3"
+		aria-label="Efficiency receipt"
+		aria-busy="true"
+		data-detail-enrichment
+		hx-get={ path }
+		hx-trigger="load"
+		hx-target="this"
+		hx-swap="outerHTML"
+		hx-sync="this:replace"
+	>
+		<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Efficiency receipt</h3>
+		<div class="flex flex-1 items-center justify-center text-center text-xs text-sec">Loading efficiency receipt…</div>
+	</section>
+}
+
+templ BoardEfficiencyReceipt(receipt efficiency.Receipt, present bool, path string, message string) {
+	<section id="efficiency-receipt" class="flex min-h-32 flex-col gap-2" aria-label="Efficiency receipt" aria-busy="false" data-detail-enrichment>
+		<div class="flex items-center justify-between gap-2">
+			<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">Efficiency receipt</h3>
+			if present && receipt.Anomalous() {
+				@primitives.Chip(primitives.KindWarn, "Anomaly")
+			}
+		</div>
+		if message != "" {
+			<div class="flex min-h-24 flex-col items-center justify-center gap-3 rounded-card border border-err/40 bg-err/10 p-3 text-center text-xs text-err" role="alert">
+				<p>{ message }</p>
+				<button type="button" class="rounded-card border border-err/40 px-3 py-1.5 font-medium hover:bg-err/15" hx-get={ path } hx-target="#efficiency-receipt" hx-swap="outerHTML">Retry receipt</button>
+			</div>
+		} else if !present {
+			<div class="flex min-h-24 items-center justify-center rounded-card border border-line bg-elev px-3 text-center text-xs text-sec">No efficiency receipt is available for this card yet.</div>
+		} else {
+			<div class="flex flex-col gap-2 rounded-card border border-line bg-elev p-3 text-xs">
+				@sheetRowValue("Sessions · attempts", formatInt(receipt.Sessions)+" · "+formatInt(receipt.Attempts), "")
+				@sheetRowValue("Tokens", formatInt(receipt.TotalTokens), formatInt(receipt.FreshInputTokens())+" fresh input · "+formatInt(receipt.CachedInputTokens)+" cached input · "+formatInt(receipt.OutputTokens)+" output")
+				@sheetRowValue("Cache share", reportCacheReadFraction(receipt.CacheShare()), "")
+				@sheetRowValue("Estimated cost", formatUSD(receipt.EstimatedCostUSD), "")
+				@sheetRowValue("Wall clock", formatDuration(float64(receipt.WallSeconds)), "")
+				@sheetRowValue("Dwell", formatDuration(float64(receipt.WorkingSeconds))+" working · "+formatDuration(float64(receipt.GateWaitSeconds))+" gate · "+formatDuration(float64(receipt.MergeTrainSeconds))+" merge · "+formatDuration(float64(receipt.ParkedSeconds))+" parked", "")
+				@sheetRowValue("Retries", formatInt(receipt.Redispatches)+" redispatches · "+formatInt(receipt.CIReruns)+" CI reruns · "+formatInt(receipt.BreakerTrips)+" breakers", "")
+			</div>
+		}
+	</section>
+}
+
+templ detailSheetLoadingRegion(label string, message string, heightClass string) {
+	<section class={ "flex flex-col gap-2 rounded-card border border-line bg-elev p-3 " + heightClass } aria-label={ label } aria-busy="true">
+		<h3 class="text-2xs font-semibold uppercase tracking-[0.06em] text-dim">{ label }</h3>
+		<div class="flex flex-1 items-center justify-center text-center text-xs text-sec">{ message }</div>
+	</section>
 }
 
 templ sheetIssueAction(data DashboardData, card projectKanbanCard) {
