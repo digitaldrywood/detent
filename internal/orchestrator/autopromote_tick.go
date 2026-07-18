@@ -715,7 +715,7 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 			continue
 		}
-		decision := staleMergingPullRequestDecisionForIssue(issue, o.cfg.TerminalStates)
+		decision := staleMergingPullRequestDecisionForIssue(issue, o.cfg)
 		if decision.reason == string(AutoPromoteReasonCINotGreen) &&
 			o.retryTransientPullRequestChecks(ctx, state, issue, now, decision.reason) {
 			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
@@ -741,12 +741,18 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 	return transitioned
 }
 
-func staleMergingPullRequestDecisionForIssue(issue connector.Issue, terminalStates []string) staleMergingPullRequestDecision {
+func staleMergingPullRequestDecisionForIssue(issue connector.Issue, cfg Config) staleMergingPullRequestDecision {
 	if strings.TrimSpace(issue.ID) == "" {
 		return staleMergingPullRequestDecision{}
 	}
-	if closedCompletedIssueNeedsStatusReconciliation(issue, terminalStates) {
-		return staleMergingPullRequestDecision{targetState: doneStateName(terminalStates), reason: "issue_closed_completed"}
+	if closedCompletedIssueNeedsStatusReconciliation(issue, cfg.TerminalStates) {
+		return staleMergingPullRequestDecision{targetState: doneStateName(cfg.TerminalStates), reason: "issue_closed_completed"}
+	}
+	if _, revoked := mergeApprovalLabelRevoked(issue, cfg); revoked {
+		return staleMergingPullRequestDecision{
+			targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).SourceState,
+			reason:      mergeRevocationApprovalLabelRemoved,
+		}
 	}
 	pullRequest := issue.PullRequest
 	if pullRequest == nil {
@@ -758,10 +764,16 @@ func staleMergingPullRequestDecisionForIssue(issue connector.Issue, terminalStat
 	}
 	switch pullRequestState {
 	case "merged":
-		return staleMergingPullRequestDecision{targetState: doneStateName(terminalStates), reason: "pull_request_merged"}
+		return staleMergingPullRequestDecision{targetState: doneStateName(cfg.TerminalStates), reason: "pull_request_merged"}
 	case "open":
 		if pullRequestHydrationBlocksProgress(pullRequest) {
 			return staleMergingPullRequestDecision{reason: string(AutoPromoteReasonPullRequestHydrationUnavailable)}
+		}
+		if _, revoked := mergeCITriggerLabelRevoked(issue, cfg); revoked {
+			return staleMergingPullRequestDecision{
+				targetState: normalizeAutoPromoteConfig(cfg.AutoPromote).SourceState,
+				reason:      mergeRevocationCITriggerLabelRemoved,
+			}
 		}
 		if pullRequest.Draft {
 			return staleMergingPullRequestDecision{targetState: autoPromoteSourceState, reason: "draft_pull_request"}
@@ -1316,7 +1328,7 @@ func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues 
 		if mergeWorkerRepositoryConsumed(consumedRepositories, repository) {
 			continue
 		}
-		if !staleMergingIssueReadyForDispatch(issue) {
+		if !staleMergingIssueReadyForDispatch(issue, o.cfg) {
 			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 			continue
 		}
@@ -1326,8 +1338,11 @@ func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues 
 	return candidates
 }
 
-func staleMergingIssueReadyForDispatch(issue connector.Issue) bool {
+func staleMergingIssueReadyForDispatch(issue connector.Issue, cfg Config) bool {
 	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
+		return false
+	}
+	if _, revoked := mergeApprovalLabelRevoked(issue, cfg); revoked {
 		return false
 	}
 	pullRequest := issue.PullRequest
@@ -1335,6 +1350,9 @@ func staleMergingIssueReadyForDispatch(issue connector.Issue) bool {
 		return false
 	}
 	if pullRequestHydrationBlocksProgress(pullRequest) {
+		return false
+	}
+	if _, revoked := mergeCITriggerLabelRevoked(issue, cfg); revoked {
 		return false
 	}
 	if normalizePullRequestState(pullRequest.State) != "open" {

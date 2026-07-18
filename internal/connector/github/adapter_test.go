@@ -4395,7 +4395,7 @@ func TestConnectorHydratePullRequestRefreshesCurrentStatus(t *testing.T) {
 		{
 			method: http.MethodGet,
 			path:   "/repos/example/repo/pulls/42",
-			body:   `{"node_id":"PR_42","number":42,"html_url":"https://github.com/example/repo/pull/42","state":"open","mergeable_state":"clean","draft":false,"head":{"ref":"detent/example_repo_1","sha":"head-sha"},"base":{"ref":"main","sha":"base-sha"},"updated_at":"2026-06-26T13:00:00Z"}`,
+			body:   `{"node_id":"PR_42","number":42,"html_url":"https://github.com/example/repo/pull/42","state":"open","mergeable_state":"clean","draft":false,"labels":[{"name":"Ready to Merge"},{"name":"bug"}],"head":{"ref":"detent/example_repo_1","sha":"head-sha"},"base":{"ref":"main","sha":"base-sha"},"updated_at":"2026-06-26T13:00:00Z"}`,
 		},
 		{
 			method: http.MethodGet,
@@ -4435,6 +4435,9 @@ func TestConnectorHydratePullRequestRefreshesCurrentStatus(t *testing.T) {
 	}
 	if pr.CIStatus != "pass" || pr.CheckRunCount != 1 {
 		t.Fatalf("hydrated CI = status %q check runs %d, want pass with one check run", pr.CIStatus, pr.CheckRunCount)
+	}
+	if !reflect.DeepEqual(pr.Labels, []string{"ready to merge", "bug"}) {
+		t.Fatalf("hydrated labels = %#v, want ready to merge and bug", pr.Labels)
 	}
 	if got.PRRepository != "example/repo" {
 		t.Fatalf("PRRepository = %q, want example/repo", got.PRRepository)

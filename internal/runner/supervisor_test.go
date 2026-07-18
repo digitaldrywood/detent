@@ -119,6 +119,25 @@ func TestSupervisorDoesNotRetryOperatorStoppedRun(t *testing.T) {
 	}
 }
 
+func TestSupervisorDoesNotRetryMergeRevokedRun(t *testing.T) {
+	t.Parallel()
+
+	supervisor, err := NewSupervisor(mergeRevokedBackend{}, SupervisorConfig{})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+	completion := supervisor.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-1434"}, Attempt: 4})
+	if !errors.Is(completion.Err, ErrMergeRevoked) {
+		t.Fatalf("Err = %v, want ErrMergeRevoked", completion.Err)
+	}
+	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
+		t.Fatalf("retry state = retryable %v attempt %d delay %s, want no retry", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+	}
+	if got := finalStateForTurnError(ErrMergeRevoked); got != FinalStateMergeRevoked {
+		t.Fatalf("finalStateForTurnError() = %q, want %q", got, FinalStateMergeRevoked)
+	}
+}
+
 func TestSupervisorUsesFlatSameAttemptRetryForTransientOverload(t *testing.T) {
 	t.Parallel()
 
@@ -440,6 +459,12 @@ type operatorStoppedBackend struct{}
 
 func (operatorStoppedBackend) Run(context.Context, RunRequest) (RunResult, error) {
 	return RunResult{FinalState: FinalStateOperatorStopped}, ErrOperatorStopped
+}
+
+type mergeRevokedBackend struct{}
+
+func (mergeRevokedBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{FinalState: FinalStateMergeRevoked}, ErrMergeRevoked
 }
 
 type capacityBackend struct {

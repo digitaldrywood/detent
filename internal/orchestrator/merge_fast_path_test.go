@@ -246,6 +246,7 @@ func TestMergingFastPathChangedHeadReappliesCITriggerBeforeMerge(t *testing.T) {
 		MergeableState: "clean",
 		CIStatus:       "success",
 		HeadSHA:        "new-head",
+		Labels:         []string{},
 	})
 	issue.State = "Merging"
 	issue.Identifier = "digitaldrywood/detent#867"

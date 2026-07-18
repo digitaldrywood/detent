@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 )
 
@@ -127,6 +129,150 @@ func TestTickReconcilesRunningIssueTrackerState(t *testing.T) {
 			}
 			if !slices.Equal(tracker.requestedIDs, []string{prior.ID}) {
 				t.Fatalf("FetchIssueStatesByIDs() ids = %#v, want [%s]", tracker.requestedIDs, prior.ID)
+			}
+		})
+	}
+}
+
+func TestReconcileRunningIssuesRevokesIneligibleMerge(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
+	base := connector.Issue{
+		ID:         "issue-merge-revoked",
+		Identifier: "digitaldrywood/detent#1434",
+		State:      "Merging",
+		Labels:     []string{"Ready to Merge"},
+		PullRequest: &connector.PullRequest{
+			Number: 1435,
+			State:  "OPEN",
+			Labels: []string{"Ready to Merge"},
+		},
+	}
+	tests := []struct {
+		name     string
+		tracker  connector.Issue
+		hydrated *connector.Issue
+		reason   string
+	}{
+		{
+			name: "board state changed",
+			tracker: func() connector.Issue {
+				issue := cloneIssue(base)
+				issue.State = "Blocked"
+				return issue
+			}(),
+			reason: mergeRevocationStateChanged,
+		},
+		{
+			name: "approval label removed",
+			tracker: func() connector.Issue {
+				issue := cloneIssue(base)
+				issue.Labels = []string{"bug"}
+				return issue
+			}(),
+			reason: mergeRevocationApprovalLabelRemoved,
+		},
+		{
+			name:    "pull request converted to draft",
+			tracker: cloneIssue(base),
+			hydrated: func() *connector.Issue {
+				issue := cloneIssue(base)
+				issue.PullRequest.Draft = true
+				return &issue
+			}(),
+			reason: mergeRevocationDraftPullRequest,
+		},
+		{
+			name:    "CI trigger label removed from pull request",
+			tracker: cloneIssue(base),
+			hydrated: func() *connector.Issue {
+				issue := cloneIssue(base)
+				issue.PullRequest.Labels = []string{}
+				return &issue
+			}(),
+			reason: mergeRevocationCITriggerLabelRemoved,
+		},
+		{
+			name:    "pull request closed",
+			tracker: cloneIssue(base),
+			hydrated: func() *connector.Issue {
+				issue := cloneIssue(base)
+				issue.PullRequest.State = "CLOSED"
+				return &issue
+			}(),
+			reason: mergeRevocationPullRequestNotOpen,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runCtx, stop := context.WithCancelCause(context.Background())
+			cfg := normalizeConfig(Config{
+				PollInterval:        time.Minute,
+				MaxConcurrentAgents: 1,
+				AutoPromote: AutoPromoteConfig{Gate: gate.Config{
+					Kind:           gate.KindHumanReview,
+					ApprovalLabel:  "Ready to Merge",
+					CITriggerLabel: "Ready to Merge",
+				}},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			})
+			state := newState(cfg)
+			state.Running[base.ID] = Running{Issue: cloneIssue(base), stop: stop}
+			state.Claimed[base.ID] = Claimed{Issue: cloneIssue(base)}
+			tracker := &runningStateConnector{issues: []connector.Issue{tt.tracker}, hydratedIssue: tt.hydrated}
+			orch := &Orchestrator{
+				cfg:       cfg,
+				connector: tracker,
+				logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+
+			orch.reconcileRunningIssues(t.Context(), &state, now)
+
+			select {
+			case <-runCtx.Done():
+			default:
+				t.Fatal("merge worker context remains active after eligibility was revoked")
+			}
+			if !errors.Is(context.Cause(runCtx), runpkg.ErrMergeRevoked) {
+				t.Fatalf("context cause = %v, want ErrMergeRevoked", context.Cause(runCtx))
+			}
+			if got := orch.pendingMergeRevocations[base.ID].reason; got != tt.reason {
+				t.Fatalf("revocation reason = %q, want %q", got, tt.reason)
+			}
+		})
+	}
+}
+
+func TestShouldReconcileRunningIssuesUsesPollIntervalForMergeWorkers(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 18, 10, 30, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{PollInterval: time.Minute})
+	orch := &Orchestrator{cfg: cfg}
+	tests := []struct {
+		name  string
+		state string
+		want  bool
+	}{
+		{name: "merge worker", state: "Merging", want: true},
+		{name: "implementation worker", state: "In Progress", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := newState(cfg)
+			state.LastRunningReconcileAt = now.Add(-90 * time.Second)
+			issue := connector.Issue{ID: "issue-interval", State: tt.state}
+			state.Running[issue.ID] = Running{Issue: issue}
+			if got := orch.shouldReconcileRunningIssues(&state, now); got != tt.want {
+				t.Fatalf("shouldReconcileRunningIssues() = %t, want %t", got, tt.want)
 			}
 		})
 	}
@@ -740,10 +886,18 @@ func reconcilePriorityPointer(value int) *int {
 type runningStateConnector struct {
 	issues        []connector.Issue
 	issuesByState []connector.Issue
+	hydratedIssue *connector.Issue
 	err           error
 	requestedIDs  []string
 	updates       []statusUpdate
 	setFieldCalls []reconcileSetFieldCall
+}
+
+func (c *runningStateConnector) HydratePullRequest(_ context.Context, issue connector.Issue) (connector.Issue, error) {
+	if c.hydratedIssue == nil {
+		return cloneIssue(issue), nil
+	}
+	return cloneIssue(*c.hydratedIssue), nil
 }
 
 func (c *runningStateConnector) Name() string {

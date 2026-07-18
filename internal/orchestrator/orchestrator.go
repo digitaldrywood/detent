@@ -215,6 +215,7 @@ type Orchestrator struct {
 	validatorCapacityEvents chan validatorCapacityEvent
 	done                    chan struct{}
 	pendingStops            map[string]*pendingStopRun
+	pendingMergeRevocations map[string]mergeRevocation
 	completedStops          map[string]StopRunResult
 	refreshSeq              atomic.Uint64
 }
@@ -419,6 +420,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		validatorCapacityEvents: make(chan validatorCapacityEvent, max(cfg.MaxConcurrentAgents, 1)),
 		done:                    make(chan struct{}),
 		pendingStops:            map[string]*pendingStopRun{},
+		pendingMergeRevocations: map[string]mergeRevocation{},
 		completedStops:          map[string]StopRunResult{},
 	}
 	orchestrator.heartbeats = newHeartbeatManager(cfg, deps.Connector, deps.WorkAttempts, now, logger)

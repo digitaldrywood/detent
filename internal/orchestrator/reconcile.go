@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -271,10 +272,18 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State,
 		}
 
 		running := state.Running[id]
+		mergeWorker := running.Mode == runpkg.RunModeMerge || mergeWorkerIssue(running.Issue)
 		running.Issue = o.hydrateRunningIssueComments(ctx, mergeIssueTrackerFields(running.Issue, issue))
 		if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 			o.completeTerminalRunning(ctx, state, id, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, now), running.Tokens)
 			continue
+		}
+		if mergeWorker {
+			var revoked bool
+			running, revoked = o.revokeRunningMergeIfIneligible(ctx, state, running, now)
+			if revoked {
+				continue
+			}
 		}
 		state.Running[id] = running
 
@@ -293,6 +302,12 @@ func (o *Orchestrator) shouldReconcileRunningIssues(state *State, now time.Time)
 		return true
 	}
 	interval := max(o.cfg.PollInterval, defaultRunningReconcileInterval)
+	for _, running := range state.Running {
+		if running.Mode == runpkg.RunModeMerge || mergeWorkerIssue(running.Issue) {
+			interval = o.cfg.PollInterval
+			break
+		}
+	}
 	return !now.Before(state.LastRunningReconcileAt.Add(interval))
 }
 

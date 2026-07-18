@@ -77,6 +77,7 @@ type PullRequest struct {
 	State                        string                      `json:"state,omitempty" yaml:"state,omitempty"`
 	MergeableState               string                      `json:"mergeable_state,omitempty" yaml:"mergeable_state,omitempty"`
 	Draft                        bool                        `json:"draft,omitempty" yaml:"draft,omitempty"`
+	Labels                       []string                    `json:"labels,omitempty" yaml:"labels,omitempty"`
 	ActivityAt                   *time.Time                  `json:"activity_at,omitempty" yaml:"activity_at,omitempty"`
 	HeadSHA                      string                      `json:"head_sha,omitempty" yaml:"head_sha,omitempty"`
 	BaseSHA                      string                      `json:"base_sha,omitempty" yaml:"base_sha,omitempty"`

@@ -4064,6 +4064,36 @@ func TestStaleMergingQueueDispatchCandidatesFiltersUnsafePullRequests(t *testing
 	}
 }
 
+func TestStaleMergingQueueDispatchCandidatesRequiresApprovalLabel(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		AutoPromote: AutoPromoteConfig{Gate: gate.Config{
+			Kind:          gate.KindHumanReview,
+			ApprovalLabel: "Ready to Merge",
+		}},
+		ActiveStates:   []string{"Merging"},
+		TerminalStates: []string{"Done"},
+	})
+	issue := autoPromoteTickIssue("issue-approval-revoked", []string{"bug"}, &connector.PullRequest{
+		Number:         1435,
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	issue.State = "Merging"
+	orch := &Orchestrator{cfg: cfg}
+	state := newState(cfg)
+
+	if got := orch.staleMergingQueueDispatchCandidates(&state, []connector.Issue{issue}); len(got) != 0 {
+		t.Fatalf("staleMergingQueueDispatchCandidates() = %#v, want none without approval label", got)
+	}
+}
+
 func TestMergeWorkerDispatchCandidatesPreservesScheduledRetry(t *testing.T) {
 	t.Parallel()
 
