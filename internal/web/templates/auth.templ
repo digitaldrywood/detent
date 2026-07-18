@@ -28,6 +28,15 @@ templ AuthPage(data AuthPageData) {
 					if data.State == AuthPageCheckInbox {
 						<p class="mt-3 text-sm text-sec" role="status">If that address is allowed, a single-use sign-in link is on its way.</p>
 						<a href={ templ.SafeURL(authRetryPath(data.Next)) } class="mt-6 inline-flex min-h-11 items-center justify-center rounded-card border border-line px-4 text-sm font-medium text-text transition-colors hover:bg-elev focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Try another address</a>
+					} else if data.State == AuthPageDenied {
+						<p class="mt-3 rounded-card border border-err/40 bg-err/10 p-3 text-sm text-err" role="alert">Your identity was verified, but it is not allowed to access this board.</p>
+						<a href={ templ.SafeURL(authRetryPath(data.Next)) } class="mt-6 inline-flex min-h-11 items-center justify-center rounded-card border border-line px-4 text-sm font-medium text-text transition-colors hover:bg-elev focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Try another account</a>
+					} else if data.State == AuthPageInvalidIdentity {
+						<p class="mt-3 rounded-card border border-err/40 bg-err/10 p-3 text-sm text-err" role="alert">Detent could not verify that sign-in. Start a new identity-provider session and try again.</p>
+						<a href={ templ.SafeURL(authRetryPath(data.Next)) } class="mt-6 inline-flex min-h-11 items-center justify-center rounded-card border border-line px-4 text-sm font-medium text-text transition-colors hover:bg-elev focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Try again</a>
+					} else if data.State == AuthPageOIDCSignIn {
+						<p class="mt-2 text-sm text-sec">Continue to the configured identity provider. Detent will allow only verified accounts on the board allowlist.</p>
+						<a href={ templ.SafeURL(authOIDCStartPath(data.Next)) } class="mt-6 inline-flex min-h-11 w-full items-center justify-center rounded-card bg-accent px-4 text-sm font-semibold text-page transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Continue with identity provider</a>
 					} else {
 						if data.State == AuthPageInvalidLink {
 							<p class="mt-3 rounded-card border border-err/40 bg-err/10 p-3 text-sm text-err" role="alert">This sign-in link is invalid, expired, or has already been used.</p>

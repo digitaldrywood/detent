@@ -55,6 +55,40 @@ func TestStartIsolatedRuntimeAutoPromotesFixtureAndStopsOnCancel(t *testing.T) {
 	}
 }
 
+func TestDevRuntimeAuthConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		email        string
+		smtp         string
+		from         string
+		issuer       string
+		clientID     string
+		clientSecret string
+		wantMode     string
+		wantErr      bool
+	}{
+		{name: "disabled"},
+		{name: "magic link", email: "operator@example.com", smtp: "127.0.0.1:2525", from: "detent@example.com", wantMode: "magic_link"},
+		{name: "oidc", email: "operator@example.com", issuer: "http://127.0.0.1:5555", clientID: "detent", clientSecret: "secret", wantMode: "oidc"},
+		{name: "mixed providers", email: "operator@example.com", smtp: "127.0.0.1:2525", from: "detent@example.com", issuer: "http://127.0.0.1:5555", clientID: "detent", clientSecret: "secret", wantErr: true},
+		{name: "incomplete oidc", email: "operator@example.com", issuer: "http://127.0.0.1:5555", clientID: "detent", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, err := devRuntimeAuthConfig(tt.email, tt.smtp, tt.from, tt.issuer, tt.clientID, tt.clientSecret)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("devRuntimeAuthConfig() error = %v, want error %t", err, tt.wantErr)
+			}
+			if cfg.Mode != tt.wantMode {
+				t.Fatalf("devRuntimeAuthConfig().Mode = %q, want %q", cfg.Mode, tt.wantMode)
+			}
+		})
+	}
+}
+
 func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	const projectID = "demo-project"
 

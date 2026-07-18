@@ -103,42 +103,96 @@ func AuthPage(data AuthPageData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-		} else {
-			if data.State == AuthPageInvalidLink {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "<p class=\"mt-3 rounded-card border border-err/40 bg-err/10 p-3 text-sm text-err\" role=\"alert\">This sign-in link is invalid, expired, or has already been used.</p>")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-			} else if data.State == AuthPageUnavailable {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<p class=\"mt-3 rounded-card border border-err/40 bg-err/10 p-3 text-sm text-err\" role=\"alert\">Sign-in is temporarily unavailable. Request a new link or use the CLI escape hatch.</p>")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "<p class=\"mt-2 text-sm text-sec\">Enter an allowed email address. We will send a short-lived sign-in link.</p>")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, " <form method=\"post\" action=\"/login\" class=\"mt-6 space-y-4\"><input type=\"hidden\" name=\"next\" value=\"")
+		} else if data.State == AuthPageDenied {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "<p class=\"mt-3 rounded-card border border-err/40 bg-err/10 p-3 text-sm text-err\" role=\"alert\">Your identity was verified, but it is not allowed to access this board.</p><a href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var7 string
-			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(data.Next)
+			var templ_7745c5c3_Var7 templ.SafeURL
+			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(authRetryPath(data.Next)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/auth.templ`, Line: 40, Col: 57}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/auth.templ`, Line: 33, Col: 55}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "\"><div class=\"space-y-2\"><label for=\"auth-email\" class=\"block text-sm font-medium\">Email address</label> <input id=\"auth-email\" name=\"email\" type=\"email\" autocomplete=\"email\" inputmode=\"email\" required autofocus class=\"min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm text-text placeholder:text-dim focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" placeholder=\"operator@example.com\"></div><button type=\"submit\" class=\"inline-flex min-h-11 w-full items-center justify-center rounded-card bg-accent px-4 text-sm font-semibold text-page transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\">Email me a sign-in link</button></form>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "\" class=\"mt-6 inline-flex min-h-11 items-center justify-center rounded-card border border-line px-4 text-sm font-medium text-text transition-colors hover:bg-elev focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\">Try another account</a>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		} else if data.State == AuthPageInvalidIdentity {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "<p class=\"mt-3 rounded-card border border-err/40 bg-err/10 p-3 text-sm text-err\" role=\"alert\">Detent could not verify that sign-in. Start a new identity-provider session and try again.</p><a href=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var8 templ.SafeURL
+			templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(authRetryPath(data.Next)))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/auth.templ`, Line: 36, Col: 55}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "\" class=\"mt-6 inline-flex min-h-11 items-center justify-center rounded-card border border-line px-4 text-sm font-medium text-text transition-colors hover:bg-elev focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\">Try again</a>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		} else if data.State == AuthPageOIDCSignIn {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "<p class=\"mt-2 text-sm text-sec\">Continue to the configured identity provider. Detent will allow only verified accounts on the board allowlist.</p><a href=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var9 templ.SafeURL
+			templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(authOIDCStartPath(data.Next)))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/auth.templ`, Line: 39, Col: 59}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "\" class=\"mt-6 inline-flex min-h-11 w-full items-center justify-center rounded-card bg-accent px-4 text-sm font-semibold text-page transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\">Continue with identity provider</a>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		} else {
+			if data.State == AuthPageInvalidLink {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "<p class=\"mt-3 rounded-card border border-err/40 bg-err/10 p-3 text-sm text-err\" role=\"alert\">This sign-in link is invalid, expired, or has already been used.</p>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			} else if data.State == AuthPageUnavailable {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "<p class=\"mt-3 rounded-card border border-err/40 bg-err/10 p-3 text-sm text-err\" role=\"alert\">Sign-in is temporarily unavailable. Request a new link or use the CLI escape hatch.</p>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			} else {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "<p class=\"mt-2 text-sm text-sec\">Enter an allowed email address. We will send a short-lived sign-in link.</p>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, " <form method=\"post\" action=\"/login\" class=\"mt-6 space-y-4\"><input type=\"hidden\" name=\"next\" value=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var10 string
+			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(data.Next)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/auth.templ`, Line: 49, Col: 57}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "\"><div class=\"space-y-2\"><label for=\"auth-email\" class=\"block text-sm font-medium\">Email address</label> <input id=\"auth-email\" name=\"email\" type=\"email\" autocomplete=\"email\" inputmode=\"email\" required autofocus class=\"min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm text-text placeholder:text-dim focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" placeholder=\"operator@example.com\"></div><button type=\"submit\" class=\"inline-flex min-h-11 w-full items-center justify-center rounded-card bg-accent px-4 text-sm font-semibold text-page transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\">Email me a sign-in link</button></form>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "</section></main></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "</section></main></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

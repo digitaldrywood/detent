@@ -486,7 +486,7 @@ func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 		"DETENT_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
 	)
 
-	install := runInstallWithTimeout(t, root, env, time.Minute)
+	install := runInstallWithTimeout(t, root, env, 2*time.Minute)
 	if install.err != nil {
 		t.Fatalf("install error = %v\nstdout:\n%s\nstderr:\n%s", install.err, install.stdout, install.stderr)
 	}

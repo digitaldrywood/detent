@@ -2299,6 +2299,7 @@ can include `--workflow-ref origin/main` during registration or add
 | Project list and project settings | Live reload |
 | Credentials: `github_token` and project credentials | Live reload |
 | `dashboard_access` mode, token, and write access | Live reload; token changes invalidate private dashboard sessions |
+| `auth` | Restart required; persisted sessions remain valid until their configured expiry |
 | `global.startup` | Live reload |
 | `instance_name` | Live reload |
 | `global.identity` | Live reload; project runtimes restart in-process and `/api/v1/state.instance.name` updates after the next telemetry snapshot |
@@ -2741,6 +2742,108 @@ If SMTP delivery is unavailable, create the same one-time link directly:
 
 ```sh
 detent auth link operator@example.com --format pretty
+```
+
+### Dashboard OIDC Authentication
+
+Set `auth.mode` to `oidc` to use any OpenID Connect provider that supports
+discovery and the authorization-code flow. Detent uses S256 PKCE, binds and
+validates `state` and `nonce`, verifies the ID-token signature and time claims,
+and requires the configured issuer and client ID to match the token exactly.
+The provider must include a verified `email` claim; authentication alone does
+not grant board access.
+
+```yaml
+auth:
+  mode: oidc
+  public_url: https://detent.example.com
+  allowed_emails:
+    - operator@example.com
+  allowed_domains:
+    - example.org
+  session_ttl: 12h
+  oidc:
+    issuer_url: https://identity.example.com
+    client_id: detent-dashboard
+    client_secret: replace-with-provider-secret
+    scopes:
+      - profile
+      - groups
+```
+
+Register this exact redirect URI with the provider:
+
+```text
+https://detent.example.com/auth/oidc/callback
+```
+
+`issuer_url` is the exact `issuer` value from the provider's
+`/.well-known/openid-configuration` document, not the discovery-document URL.
+Detent always requests `openid` and `email`, then appends configured `scopes`.
+Allowed email and domain comparisons are case-insensitive; a domain entry is an
+exact domain and does not implicitly include subdomains. An absent or false
+`email_verified` claim is denied. Keep `client_secret` only in the
+permission-restricted `global.yaml` and do not commit that file.
+
+OIDC uses the same hashed SQLite sessions as magic links. Sessions survive
+Detent restarts and expire after `session_ttl`; changing OIDC settings requires
+a restart. Existing API keys, `api_token`, signed GitHub webhooks, and intake
+webhooks retain their independent authentication paths.
+
+For a Tailscale-only dashboard, set `public_url` and the provider redirect URI
+to the HTTPS Tailscale hostname, such as
+`https://buildbox.example-tailnet.ts.net`. The browser completing sign-in must
+be connected to that tailnet. Behind a reverse proxy, use the externally
+visible HTTPS origin for both values and forward requests to Detent without
+rewriting `/auth/oidc/callback`. TLS termination remains the operator's
+responsibility.
+
+#### WorkOS AuthKit
+
+Create an OAuth application in [WorkOS Connect](https://workos.com/docs/authkit/connect/oauth),
+add Detent's callback to its redirect URIs, and copy an application credential's
+client ID and secret. Use the AuthKit domain's issuer value, typically
+`https://<subdomain>.authkit.app`; its OpenID configuration is available at
+`/.well-known/openid-configuration`. WorkOS documents `email` and
+`email_verified` in the issued ID token. A minimal WorkOS configuration is:
+
+```yaml
+auth:
+  mode: oidc
+  public_url: https://detent.example.com
+  allowed_domains: [example.com]
+  oidc:
+    issuer_url: https://example.authkit.app
+    client_id: client_01EXAMPLE
+    client_secret: replace-with-workos-credential
+    scopes: [profile]
+```
+
+See the WorkOS [OIDC metadata](https://workos.com/docs/reference/workos-connect/metadata/oauth-authorization-server)
+and [token claims](https://workos.com/docs/reference/workos-connect/token)
+references when confirming an environment's issuer and claims.
+
+#### Clerk
+
+Create an OAuth application in the Clerk Dashboard as described in
+[Clerk's OIDC provider guide](https://clerk.com/docs/guides/configure/auth-strategies/oauth/single-sign-on),
+allow the `openid`, `email`, and optional `profile` scopes, add Detent's callback
+URI, and copy the client ID and secret. Copy the Discovery URL shown in the
+application settings and use its returned `issuer` value. This is normally the
+Clerk Frontend API origin, such as
+`https://verb-noun-00.clerk.accounts.dev` in development or
+`https://clerk.example.com` for a configured production domain.
+
+```yaml
+auth:
+  mode: oidc
+  public_url: https://detent.example.com
+  allowed_emails: [operator@example.com]
+  oidc:
+    issuer_url: https://verb-noun-00.clerk.accounts.dev
+    client_id: oauth_app_example
+    client_secret: replace-with-clerk-secret
+    scopes: [profile]
 ```
 
 ### API Authentication And Work-Item Submission

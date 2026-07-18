@@ -42,18 +42,19 @@ var (
 )
 
 type Dependencies struct {
-	Hub             *hub.Hub[telemetry.Snapshot]
-	Store           store.Store
-	Registry        *project.Registry
-	Connector       connector.Connector
-	Refresher       Refresher
-	Recovery        WorkAttemptRecovery
-	RunStopper      RunStopper
-	UpdateApplier   UpdateApplier
-	Activity        *activity.Broker
-	History         activity.HistoryReader
-	MagicLinkSender auth.Sender
-	Chat            chatpkg.Provider
+	Hub              *hub.Hub[telemetry.Snapshot]
+	Store            store.Store
+	Registry         *project.Registry
+	Connector        connector.Connector
+	Refresher        Refresher
+	Recovery         WorkAttemptRecovery
+	RunStopper       RunStopper
+	UpdateApplier    UpdateApplier
+	Activity         *activity.Broker
+	History          activity.HistoryReader
+	MagicLinkSender  auth.Sender
+	IdentityProvider auth.IdentityProvider
+	Chat             chatpkg.Provider
 }
 
 type Mode string
@@ -151,8 +152,10 @@ type Server struct {
 	asyncWrites         *asyncStoreWriter
 	dashboardAuthSecret [32]byte
 	afterFunc           func(time.Duration, func()) *time.Timer
-	sessionAuth         sessionAuthenticator
+	sessions            *auth.Service
 	magicLinks          *auth.Service
+	identityProvider    auth.IdentityProvider
+	identityAllowlist   *auth.Allowlist
 	chat                *chatpkg.Service
 }
 
@@ -196,6 +199,14 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	magicLinks, magicLinksEnabled, err := newMagicLinkService(cfg, deps.Store, deps.MagicLinkSender)
 	if err != nil {
 		return nil, err
+	}
+	identityProvider, oidcSessions, identityAllowlist, oidcEnabled, err := newOIDCService(context.Background(), cfg, deps.Store, deps.IdentityProvider)
+	if err != nil {
+		return nil, err
+	}
+	sessions := magicLinks
+	if oidcEnabled {
+		sessions = oidcSessions
 	}
 
 	server := &Server{
@@ -245,10 +256,13 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		asyncWrites:         newAsyncStoreWriter(256, logger),
 		dashboardAuthSecret: dashboardAuthSecret,
 		afterFunc:           time.AfterFunc,
+		sessions:            sessions,
 		magicLinks:          magicLinks,
+		identityProvider:    identityProvider,
+		identityAllowlist:   identityAllowlist,
 	}
-	if magicLinksEnabled {
-		server.sessionAuth = magicLinks
+	if !magicLinksEnabled && !oidcEnabled {
+		server.sessions = nil
 	}
 	chatProvider := deps.Chat
 	if server.demo != nil {
@@ -301,10 +315,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) registerRoutes() {
 	s.echo.GET("/static/*", s.assets.serve)
 	s.echo.GET("/health", s.health)
-	if s.magicLinks != nil {
+	if s.magicLinks != nil || s.identityProvider != nil {
 		s.echo.GET("/login", s.loginPage)
+	}
+	if s.magicLinks != nil {
 		s.echo.POST("/login", s.requestMagicLink)
 		s.echo.GET("/auth/magic-link", s.consumeMagicLink)
+	}
+	if s.identityProvider != nil {
+		s.echo.GET("/auth/oidc/start", s.startOIDC)
+		s.echo.GET("/auth/oidc/callback", s.completeOIDC)
 	}
 	if s.mode == ModeOnboarding {
 		s.echo.GET("/", s.redirectToOnboarding)
