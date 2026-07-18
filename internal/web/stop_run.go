@@ -22,6 +22,8 @@ type RunStopper interface {
 	StopRun(context.Context, orchestrator.StopRunRequest) (orchestrator.StopRunResult, error)
 }
 
+const stopRunAcceptedTrigger = `{"kanbanActionSucceeded":{"message":"Stop accepted; board routing is continuing in the background."}}`
+
 type stopRunRequestPayload struct {
 	IssueID           string `json:"issue_id" form:"issue_id"`
 	WorkAttemptID     int64  `json:"work_attempt_id" form:"work_attempt_id"`
@@ -134,7 +136,11 @@ func (s *Server) apiStopRun(c echo.Context) error {
 	data.Reason = result.Reason
 	data.CanSubmit = false
 	if htmxRequest(c) {
-		c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
+		trigger := kanbanDialogSucceeded
+		if result.Outcome == "pending" {
+			trigger = stopRunAcceptedTrigger
+		}
+		c.Response().Header().Set("HX-Trigger", trigger)
 		return render(c, templates.StopRunDialogContent(data))
 	}
 	return c.JSON(http.StatusOK, result)
@@ -164,7 +170,7 @@ func demoStopRunResult(request orchestrator.StopRunRequest, running telemetry.Ru
 		}
 	}
 	now := time.Now().UTC()
-	return orchestrator.StopRunResult{ProjectID: request.ProjectID, IssueID: request.IssueID, Identifier: running.Identifier, Attempt: request.Attempt, WorkAttemptID: request.WorkAttemptID, DetentSessionID: request.DetentSessionID, ProviderSessionID: request.ProviderSessionID, Destination: destination, Priority: request.Priority, PriorityName: priorityName, Reason: request.Reason, Outcome: "succeeded", RequestedAt: now, CompletedAt: now}, nil
+	return orchestrator.StopRunResult{ProjectID: request.ProjectID, IssueID: request.IssueID, Identifier: running.Identifier, Attempt: request.Attempt, WorkAttemptID: request.WorkAttemptID, DetentSessionID: request.DetentSessionID, ProviderSessionID: request.ProviderSessionID, Destination: destination, Priority: request.Priority, PriorityName: priorityName, Reason: request.Reason, Outcome: "pending", RequestedAt: now}, nil
 }
 
 func stopRunAttemptParam(c echo.Context) (int, error) {

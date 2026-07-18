@@ -38,7 +38,7 @@ func TestStopRunAPIRequiresAuthorizationAndConfirmation(t *testing.T) {
 
 func TestStopRunAPITargetsExactActiveIdentity(t *testing.T) {
 	t.Parallel()
-	stopper := &fakeRunStopper{result: orchestrator.StopRunResult{ProjectID: "detent", IssueID: "issue-1311", Attempt: 0, WorkAttemptID: 1311, DetentSessionID: 91, ProviderSessionID: "thread-1311", Destination: "Todo", Priority: 2, PriorityName: "High", Reason: "make room for the release blocker", Outcome: "succeeded"}}
+	stopper := &fakeRunStopper{result: orchestrator.StopRunResult{ProjectID: "detent", IssueID: "issue-1311", Attempt: 0, WorkAttemptID: 1311, DetentSessionID: 91, ProviderSessionID: "thread-1311", Destination: "Todo", Priority: 2, PriorityName: "High", Reason: "make room for the release blocker", Outcome: "pending"}}
 	server := newStopRunServer(t, stopper)
 
 	recorder := performStopRunJSON(t, server.Handler(), `/api/v1/projects/detent/runs/0/stop`, `{"issue_id":"issue-1311","work_attempt_id":1311,"detent_session_id":91,"provider_session_id":"thread-1311","destination":"Todo","priority":2,"reason":"make room for the release blocker","confirm":true}`, "Bearer detent_test_token")
@@ -52,7 +52,7 @@ func TestStopRunAPITargetsExactActiveIdentity(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if result.Outcome != "succeeded" || result.Destination != "Todo" || result.PriorityName != "High" || result.Reason == "" {
+	if result.Outcome != "pending" || result.Destination != "Todo" || result.PriorityName != "High" || result.Reason == "" {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -87,7 +87,7 @@ func TestStopRunAPIMapsStaleAndTransitionFailure(t *testing.T) {
 
 func TestStopRunControlsRenderContextualConfirmationAndResult(t *testing.T) {
 	t.Parallel()
-	stopper := &fakeRunStopper{result: orchestrator.StopRunResult{ProjectID: "detent", IssueID: "issue-1311", Attempt: 0, WorkAttemptID: 1311, DetentSessionID: 91, ProviderSessionID: "thread-1311", Destination: "Blocked", Outcome: "succeeded"}}
+	stopper := &fakeRunStopper{result: orchestrator.StopRunResult{ProjectID: "detent", IssueID: "issue-1311", Attempt: 0, WorkAttemptID: 1311, DetentSessionID: 91, ProviderSessionID: "thread-1311", Destination: "Blocked", Outcome: "pending"}}
 	server := newStopRunServer(t, stopper)
 
 	fleet := stopRunRequest(t, server.Handler(), http.MethodGet, "/fleet", "", map[string]string{})
@@ -106,7 +106,7 @@ func TestStopRunControlsRenderContextualConfirmationAndResult(t *testing.T) {
 
 	dialogPath := "/api/v1/projects/detent/runs/0/stop?issue_id=issue-1311&work_attempt_id=1311&detent_session_id=91&provider_session_id=thread-1311"
 	dialog := stopRunRequest(t, server.Handler(), http.MethodGet, dialogPath, "", map[string]string{"Authorization": "Bearer detent_test_token", "HX-Request": "true"})
-	for _, want := range []string{"digitaldrywood/detent", "digitaldrywood/detent#1311", "code", "In Progress", "Detent 91", "provider thread-1311", "attempt 0", "Blocked", "Backlog", "Cancelled", "Todo", "Urgent · rank 1", "Low · rank 4", `maxlength="280"`, "sm:grid-cols-2"} {
+	for _, want := range []string{"digitaldrywood/detent", "digitaldrywood/detent#1311", "code", "In Progress", "Detent 91", "provider thread-1311", "attempt 0", "Blocked", "Backlog", "Cancelled", "Todo", "Urgent · rank 1", "Low · rank 4", `maxlength="280"`, "sm:grid-cols-2", "hx-disabled-elt=", "stop-run-submit-indicator", "Stopping...", "Cancel"} {
 		if !strings.Contains(dialog.Body.String(), want) {
 			t.Fatalf("confirmation missing %q: %s", want, dialog.Body.String())
 		}
@@ -114,10 +114,11 @@ func TestStopRunControlsRenderContextualConfirmationAndResult(t *testing.T) {
 
 	form := url.Values{"issue_id": {"issue-1311"}, "work_attempt_id": {"1311"}, "detent_session_id": {"91"}, "provider_session_id": {"thread-1311"}, "confirm": {"true"}}
 	success := stopRunRequest(t, server.Handler(), http.MethodPost, "/api/v1/projects/detent/runs/0/stop", form.Encode(), map[string]string{"Authorization": "Bearer detent_test_token", "Content-Type": "application/x-www-form-urlencoded", "HX-Request": "true"})
-	if success.Code != http.StatusOK || success.Header().Get("HX-Trigger") != "kanbanActionSucceeded" {
+	wantTrigger := `{"kanbanActionSucceeded":{"message":"Stop accepted; board routing is continuing in the background."}}`
+	if success.Code != http.StatusOK || success.Header().Get("HX-Trigger") != wantTrigger {
 		t.Fatalf("success status/header = %d/%q; body = %s", success.Code, success.Header().Get("HX-Trigger"), success.Body.String())
 	}
-	if !strings.Contains(success.Body.String(), `data-stop-run-result="succeeded"`) || !strings.Contains(success.Body.String(), "moved it to Blocked") {
+	if !strings.Contains(success.Body.String(), `data-stop-run-result="pending"`) || !strings.Contains(success.Body.String(), "board routing to Blocked is continuing") {
 		t.Fatalf("success result missing: %s", success.Body.String())
 	}
 }

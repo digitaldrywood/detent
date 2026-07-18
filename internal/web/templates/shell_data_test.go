@@ -29,9 +29,26 @@ func TestAppShellScriptRefreshesOpenDetailSheetAfterSnapshotSettle(t *testing.T)
 		`selectedTab !== "session"`,
 		`htmx.ajax("GET", host.dataset.detailSheetURL`,
 		`swap: "morph:innerHTML"`,
+		`function showActionNotice(message)`,
+		`showActionNotice(event.detail && event.detail.message)`,
+		`[data-detent-action-notice-dismiss]`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("app shell script missing %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestAppShellRendersActionNotice(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	if err := AppShell(DashboardShellData{}, nil).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	for _, want := range []string{"data-detent-action-notice", "data-detent-action-notice-message", "data-detent-action-notice-dismiss", "Dismiss"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Fatalf("app shell missing %q:\n%s", want, buf.String())
 		}
 	}
 }
