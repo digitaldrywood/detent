@@ -278,6 +278,33 @@ func TestInspectAndTerminate(t *testing.T) {
 			wantOutcome: TerminationOutcomeStaleIdentity,
 			wantAlive:   true,
 		},
+		{
+			name: "stale process group",
+			identity: func(identity Identity) Identity {
+				identity.GroupID++
+				return identity
+			},
+			wantOutcome: TerminationOutcomeStaleIdentity,
+			wantAlive:   true,
+		},
+		{
+			name: "missing process group",
+			identity: func(identity Identity) Identity {
+				identity.GroupID = 0
+				return identity
+			},
+			wantOutcome: TerminationOutcomeStaleIdentity,
+			wantAlive:   true,
+		},
+		{
+			name: "missing process start time",
+			identity: func(identity Identity) Identity {
+				identity.StartedAt = time.Time{}
+				return identity
+			},
+			wantOutcome: TerminationOutcomeStaleIdentity,
+			wantAlive:   true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -312,6 +339,26 @@ func TestInspectAndTerminate(t *testing.T) {
 			_ = waitForExit(t, proc.WaitGroupMember)
 		})
 	}
+}
+
+func TestTerminateEscalatesSurvivingProcessGroup(t *testing.T) {
+	proc := startIgnoringTerminationGroup(t)
+	identity, err := Inspect(proc.cmd)
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	go func() { _ = proc.Wait() }()
+	go func() { _ = proc.WaitGroupMember() }()
+
+	outcome, err := Terminate(context.Background(), identity, 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Terminate() error = %v", err)
+	}
+	if outcome != TerminationOutcomeTerminated {
+		t.Fatalf("Terminate() outcome = %q, want %q", outcome, TerminationOutcomeTerminated)
+	}
+	assertKilled(t, waitForExit(t, proc.Wait))
+	assertKilled(t, waitForExit(t, proc.WaitGroupMember))
 }
 
 type startedProcess struct {
@@ -381,6 +428,51 @@ func startSleepGroup(t *testing.T) *startedProcess {
 	}
 
 	return proc
+}
+
+func startIgnoringTerminationGroup(t *testing.T) *startedProcess {
+	t.Helper()
+
+	readyDir := t.TempDir()
+	leaderReady := readyDir + "/leader.ready"
+	memberReady := readyDir + "/member.ready"
+	cmd := exec.CommandContext(context.Background(), "sh", "-c", "trap '' TERM; : > \"$READY_PATH\"; exec sleep 30")
+	cmd.Env = append(os.Environ(), "READY_PATH="+leaderReady)
+	Configure(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	proc := &startedProcess{cmd: cmd}
+	pgid := GroupID(cmd)
+	member := exec.CommandContext(context.Background(), "sh", "-c", "trap '' TERM; : > \"$READY_PATH\"; exec sleep 30")
+	member.Env = append(os.Environ(), "READY_PATH="+memberReady)
+	member.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: pgid}
+	if err := member.Start(); err != nil {
+		_ = TerminateTree(cmd, pgid)
+		_ = proc.Wait()
+		t.Fatalf("Start() group member error = %v", err)
+	}
+	proc.groupMember = member
+	waitForProcessReadyFile(t, leaderReady)
+	waitForProcessReadyFile(t, memberReady)
+	t.Cleanup(func() {
+		_ = TerminateTree(cmd, pgid)
+		_ = proc.Wait()
+		_ = proc.WaitGroupMember()
+	})
+	return proc
+}
+
+func waitForProcessReadyFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for process readiness at %s", path)
 }
 
 func (p *startedProcess) Wait() error {

@@ -88,6 +88,9 @@ func Terminate(ctx context.Context, identity Identity, grace time.Duration) (Ter
 	if identity.PID <= 0 {
 		return TerminationOutcomeAlreadyExited, nil
 	}
+	if identity.GroupID <= 0 || identity.StartedAt.IsZero() {
+		return TerminationOutcomeStaleIdentity, nil
+	}
 
 	current, err := inspectProcess(identity.PID)
 	if err != nil && !errors.Is(err, ErrProcessNotRunning) {
@@ -97,9 +100,6 @@ func Terminate(ctx context.Context, identity Identity, grace time.Duration) (Ter
 		return TerminationOutcomeStaleIdentity, nil
 	}
 	groupID := identity.GroupID
-	if groupID <= 0 && err == nil {
-		groupID = current.GroupID
-	}
 	if !processTargetAlive(identity.PID, groupID) {
 		return TerminationOutcomeAlreadyExited, nil
 	}

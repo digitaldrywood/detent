@@ -362,14 +362,17 @@ func TestHandleOperatorStopCompletionDefersCapacityProbe(t *testing.T) {
 	state.FailureBreaker.ResumeAt = now
 	running := Running{Issue: issue, Attempt: 1, CapacityScope: scope, CapacityProbe: true}
 	state.Running[issue.ID] = running
-	orch.pendingStops[issue.ID] = &pendingStopRun{result: StopRunResult{
-		IssueID:     issue.ID,
-		Identifier:  issue.Identifier,
-		Attempt:     running.Attempt,
-		Destination: "Blocked",
-		Outcome:     "pending",
-		RequestedAt: now.Add(-time.Second),
-	}}
+	orch.pendingStops[issue.ID] = &pendingStopRun{
+		result: StopRunResult{
+			IssueID:     issue.ID,
+			Identifier:  issue.Identifier,
+			Attempt:     running.Attempt,
+			Destination: "Blocked",
+			Outcome:     "pending",
+			RequestedAt: now.Add(-time.Second),
+		},
+		reapDone: true,
+	}
 
 	if handled := orch.handleOperatorStopCompletion(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now}, running); !handled {
 		t.Fatal("handleOperatorStopCompletion() handled = false")

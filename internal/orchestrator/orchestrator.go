@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -147,7 +148,17 @@ type Dependencies struct {
 	Now                func() time.Time
 	Logger             *slog.Logger
 	Retrospector       Retrospector
+	WorkerProcesses    WorkerProcessStore
+	ReapWorkerProcess  WorkerProcessReapFunc
+	WorkerReapGrace    time.Duration
 }
+
+type WorkerProcessStore interface {
+	ListActiveWorkerProcesses(context.Context) ([]store.WorkerProcess, error)
+	MarkSessionWorkerProcessReaped(context.Context, int64, store.WorkerProcessReap) error
+}
+
+type WorkerProcessReapFunc func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error)
 
 type Retrospector interface {
 	Trigger(string)
@@ -195,6 +206,9 @@ type Orchestrator struct {
 	issueBudgetStatus       runpkg.IssueBudgetStatusProvider
 	now                     func() time.Time
 	retrospector            Retrospector
+	workerProcesses         WorkerProcessStore
+	reapWorkerProcess       WorkerProcessReapFunc
+	workerReapGrace         time.Duration
 	heartbeats              *heartbeatManager
 	hydrationSkipStreaks    map[string]int
 	hydrationWarned         bool
@@ -363,6 +377,25 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 			operatorStops = candidate
 		}
 	}
+	workerProcesses := deps.WorkerProcesses
+	if workerProcesses == nil {
+		if candidate, ok := deps.WorkAttempts.(WorkerProcessStore); ok {
+			workerProcesses = candidate
+		}
+	}
+	if workerProcesses == nil {
+		if candidate, ok := deps.WorkflowMetrics.(WorkerProcessStore); ok {
+			workerProcesses = candidate
+		}
+	}
+	reapWorkerProcess := deps.ReapWorkerProcess
+	if reapWorkerProcess == nil {
+		reapWorkerProcess = procgroup.Terminate
+	}
+	workerReapGrace := deps.WorkerReapGrace
+	if workerReapGrace <= 0 {
+		workerReapGrace = procgroup.DefaultTerminationGrace
+	}
 
 	supervisor, err := runpkg.NewSupervisor(runner, runpkg.SupervisorConfig{
 		MaxRetryBackoff:       cfg.MaxRetryBackoff,
@@ -398,6 +431,9 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		activity:                deps.Activity,
 		release:                 deps.Release,
 		retrospector:            deps.Retrospector,
+		workerProcesses:         workerProcesses,
+		reapWorkerProcess:       reapWorkerProcess,
+		workerReapGrace:         workerReapGrace,
 		capacityController:      capacityController,
 		capacityStatus:          capacityStatus,
 		validatorCapacity:       validatorCapacity,
