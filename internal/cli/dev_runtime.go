@@ -37,6 +37,9 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 	var authEmail string
 	var authSMTP string
 	var authFrom string
+	var authOIDCIssuer string
+	var authOIDCClientID string
+	var authOIDCClientSecret string
 
 	cmd := &cobra.Command{
 		Use:     "dev-runtime",
@@ -57,7 +60,7 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 				runtimePort = 0
 			}
 
-			authConfig, err := devRuntimeAuthConfig(authEmail, authSMTP, authFrom)
+			authConfig, err := devRuntimeAuthConfig(authEmail, authSMTP, authFrom, authOIDCIssuer, authOIDCClientID, authOIDCClientSecret)
 			if err != nil {
 				return WrapValidation(err)
 			}
@@ -90,19 +93,43 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 	cmd.Flags().StringVar(&demoProjectID, "demo-project", "", "generated primary project ID for isolated demos; screenshots stays dogfood")
 	cmd.Flags().BoolVar(&allowLiveDB, "allow-live-db", false, "allow --db to point at the operator's live ~/.detent/detent.db")
 	cmd.Flags().BoolVar(&allowProductionPort, "allow-production-port", false, "allow binding the isolated runtime to the live dogfood port")
-	cmd.Flags().StringVar(&authEmail, "auth-email", "", "allowed email for isolated magic-link auth")
+	cmd.Flags().StringVar(&authEmail, "auth-email", "", "allowed email for isolated dashboard auth")
 	cmd.Flags().StringVar(&authSMTP, "auth-smtp", "", "SMTP host:port for isolated magic-link auth")
 	cmd.Flags().StringVar(&authFrom, "auth-from", "", "sender email for isolated magic-link auth")
+	cmd.Flags().StringVar(&authOIDCIssuer, "auth-oidc-issuer", "", "issuer URL for isolated OIDC auth")
+	cmd.Flags().StringVar(&authOIDCClientID, "auth-oidc-client-id", "", "client ID for isolated OIDC auth")
+	cmd.Flags().StringVar(&authOIDCClientSecret, "auth-oidc-client-secret", "", "client secret for isolated OIDC auth")
 	cmd.AddCommand(newDevRuntimeCaptureCommand(opts))
 	return cmd
 }
 
-func devRuntimeAuthConfig(email string, smtpAddress string, from string) (globalconfig.Auth, error) {
+func devRuntimeAuthConfig(email string, smtpAddress string, from string, oidcIssuer string, oidcClientID string, oidcClientSecret string) (globalconfig.Auth, error) {
 	email = strings.TrimSpace(email)
 	smtpAddress = strings.TrimSpace(smtpAddress)
 	from = strings.TrimSpace(from)
-	if email == "" && smtpAddress == "" && from == "" {
+	oidcIssuer = strings.TrimSpace(oidcIssuer)
+	oidcClientID = strings.TrimSpace(oidcClientID)
+	magicLinkRequested := smtpAddress != "" || from != ""
+	oidcRequested := oidcIssuer != "" || oidcClientID != "" || oidcClientSecret != ""
+	if !magicLinkRequested && !oidcRequested && email == "" {
 		return globalconfig.Auth{}, nil
+	}
+	if magicLinkRequested && oidcRequested {
+		return globalconfig.Auth{}, errors.New("isolated runtime auth must select either magic-link or oidc settings")
+	}
+	if oidcRequested {
+		if email == "" || oidcIssuer == "" || oidcClientID == "" || oidcClientSecret == "" {
+			return globalconfig.Auth{}, errors.New("--auth-email, --auth-oidc-issuer, --auth-oidc-client-id, and --auth-oidc-client-secret must be set together")
+		}
+		return globalconfig.Auth{
+			Mode:          globalconfig.AuthModeOIDC,
+			AllowedEmails: []string{email},
+			OIDC: globalconfig.OIDC{
+				IssuerURL:    oidcIssuer,
+				ClientID:     oidcClientID,
+				ClientSecret: oidcClientSecret,
+			},
+		}, nil
 	}
 	if email == "" || smtpAddress == "" || from == "" {
 		return globalconfig.Auth{}, errors.New("--auth-email, --auth-smtp, and --auth-from must be set together")

@@ -19,10 +19,6 @@ const webSessionCookieName = "detent_session"
 
 type sessionContextKey struct{}
 
-type sessionAuthenticator interface {
-	Authenticate(context.Context, string) (auth.Session, error)
-}
-
 func webSessionFromContext(ctx context.Context) (auth.Session, bool) {
 	session, ok := ctx.Value(sessionContextKey{}).(auth.Session)
 	return session, ok
@@ -71,12 +67,12 @@ func newMagicLinkService(cfg Config, store auth.Store, sender auth.Sender) (*aut
 
 func (s *Server) sessionGate(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		if s.sessionAuth == nil || sessionRouteExempt(c.Request()) || alternativeAPIAuth(c.Request()) {
+		if s.sessions == nil || sessionRouteExempt(c.Request()) || alternativeAPIAuth(c.Request()) {
 			return next(c)
 		}
 		cookie, err := c.Cookie(webSessionCookieName)
 		if err == nil {
-			session, authErr := s.sessionAuth.Authenticate(c.Request().Context(), cookie.Value)
+			session, authErr := s.sessions.Authenticate(c.Request().Context(), cookie.Value)
 			if authErr == nil {
 				ctx := context.WithValue(c.Request().Context(), sessionContextKey{}, session)
 				c.SetRequest(c.Request().WithContext(ctx))
@@ -97,7 +93,7 @@ func sessionRouteExempt(request *http.Request) bool {
 		return false
 	}
 	path := request.URL.Path
-	return path == "/health" || path == "/login" || path == "/auth/magic-link" || strings.HasPrefix(path, "/static/") || path == "/api/v1/webhooks/github" || strings.HasPrefix(path, "/api/v1/intake/")
+	return path == "/health" || path == "/login" || path == "/auth/magic-link" || path == "/auth/oidc/start" || path == "/auth/oidc/callback" || strings.HasPrefix(path, "/static/") || path == "/api/v1/webhooks/github" || strings.HasPrefix(path, "/api/v1/intake/")
 }
 
 func alternativeAPIAuth(request *http.Request) bool {
@@ -140,6 +136,9 @@ func safeNext(value string) string {
 }
 
 func (s *Server) loginPage(c echo.Context) error {
+	if s.identityProvider != nil {
+		return s.renderAuthPage(c, http.StatusOK, templates.AuthPageOIDCSignIn, safeNext(c.QueryParam("next")))
+	}
 	return s.renderAuthPage(c, http.StatusOK, templates.AuthPageSignIn, safeNext(c.QueryParam("next")))
 }
 
@@ -183,7 +182,7 @@ func (s *Server) setSessionCookie(c echo.Context, token string, expiresAt time.T
 		Path:     "/",
 		Expires:  expiresAt,
 		HttpOnly: true,
-		Secure:   c.Request().TLS != nil || s.magicLinks.SecureCookie(),
+		Secure:   c.Request().TLS != nil || (s.sessions != nil && s.sessions.SecureCookie()),
 		SameSite: http.SameSiteLaxMode,
 	})
 }
@@ -195,7 +194,7 @@ func (s *Server) clearSessionCookie(c echo.Context) {
 		Expires:  time.Unix(1, 0),
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   c.Request().TLS != nil || (s.magicLinks != nil && s.magicLinks.SecureCookie()),
+		Secure:   c.Request().TLS != nil || (s.sessions != nil && s.sessions.SecureCookie()),
 		SameSite: http.SameSiteLaxMode,
 	})
 }

@@ -84,6 +84,50 @@ func TestMagicLinkSessionLifecyclePersists(t *testing.T) {
 	}
 }
 
+func TestSessionServicePersistsAcrossRestartAndExpires(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "detent.db")
+	backend := openAuthStore(t, dbPath)
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Fatalf("Close() cleanup error = %v", err)
+		}
+	})
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	newService := func() *auth.Service {
+		service, err := auth.NewSessionService(auth.SessionConfig{
+			SessionTTL: time.Hour,
+			PublicURL:  "https://detent.example.com",
+		}, backend, auth.WithClock(func() time.Time { return now }))
+		if err != nil {
+			t.Fatalf("NewSessionService() error = %v", err)
+		}
+		return service
+	}
+	service := newService()
+	token, session, err := service.CreateSession(ctx, "Operator@Example.com")
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	if token == "" || session.Email != "operator@example.com" || !session.ExpiresAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("CreateSession() = %q, %#v", token, session)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	backend = openAuthStore(t, dbPath)
+	service = newService()
+	if got, err := service.Authenticate(ctx, token); err != nil || got.Email != session.Email {
+		t.Fatalf("Authenticate(after restart) = %#v, %v", got, err)
+	}
+	now = now.Add(time.Hour)
+	if _, err := service.Authenticate(ctx, token); !errors.Is(err, auth.ErrInvalidSession) {
+		t.Fatalf("Authenticate(expired) error = %v, want %v", err, auth.ErrInvalidSession)
+	}
+}
+
 func TestMagicLinkExpirationAndAllowlist(t *testing.T) {
 	t.Parallel()
 

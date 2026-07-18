@@ -31,6 +31,11 @@ type Config struct {
 	PublicURL     string
 }
 
+type SessionConfig struct {
+	SessionTTL time.Duration
+	PublicURL  string
+}
+
 type MagicLink struct {
 	TokenHash string
 	Email     string
@@ -63,11 +68,19 @@ type Message struct {
 	ExpiresAt time.Time
 }
 
-type Store interface {
-	CreateMagicLink(context.Context, MagicLink) error
-	ConsumeMagicLink(context.Context, MagicLinkConsumption) (Session, error)
+type SessionStore interface {
 	CreateWebSession(context.Context, SessionRecord) error
 	WebSession(context.Context, string, time.Time) (Session, error)
+}
+
+type MagicLinkStore interface {
+	CreateMagicLink(context.Context, MagicLink) error
+	ConsumeMagicLink(context.Context, MagicLinkConsumption) (Session, error)
+}
+
+type Store interface {
+	SessionStore
+	MagicLinkStore
 }
 
 type Sender interface {
@@ -77,7 +90,8 @@ type Sender interface {
 type Option func(*Service)
 
 type Service struct {
-	store      Store
+	sessions   SessionStore
+	magicLinks MagicLinkStore
 	sender     Sender
 	allowed    map[string]struct{}
 	linkTTL    time.Duration
@@ -100,16 +114,10 @@ func WithRandom(reader io.Reader) Option {
 }
 
 func NewService(cfg Config, store Store, sender Sender, opts ...Option) (*Service, error) {
-	if store == nil {
-		return nil, ErrMissingStore
-	}
 	if cfg.LinkTTL <= 0 {
 		return nil, errors.New("magic link ttl must be positive")
 	}
-	if cfg.SessionTTL <= 0 {
-		return nil, errors.New("session ttl must be positive")
-	}
-	publicURL, err := parsePublicURL(cfg.PublicURL)
+	service, err := NewSessionService(SessionConfig{SessionTTL: cfg.SessionTTL, PublicURL: cfg.PublicURL}, store, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -124,11 +132,26 @@ func NewService(cfg Config, store Store, sender Sender, opts ...Option) (*Servic
 		return nil, errors.New("at least one allowed email is required")
 	}
 
+	service.magicLinks = store
+	service.sender = sender
+	service.allowed = allowed
+	service.linkTTL = cfg.LinkTTL
+	return service, nil
+}
+
+func NewSessionService(cfg SessionConfig, store SessionStore, opts ...Option) (*Service, error) {
+	if store == nil {
+		return nil, ErrMissingStore
+	}
+	if cfg.SessionTTL <= 0 {
+		return nil, errors.New("session ttl must be positive")
+	}
+	publicURL, err := parsePublicURL(cfg.PublicURL)
+	if err != nil {
+		return nil, err
+	}
 	service := &Service{
-		store:      store,
-		sender:     sender,
-		allowed:    allowed,
-		linkTTL:    cfg.LinkTTL,
+		sessions:   store,
 		sessionTTL: cfg.SessionTTL,
 		publicURL:  publicURL,
 		now:        time.Now,
@@ -181,7 +204,7 @@ func (s *Service) ConsumeLink(ctx context.Context, token string) (string, Sessio
 		return "", Session{}, err
 	}
 	now := s.now().UTC()
-	session, err := s.store.ConsumeMagicLink(ctx, MagicLinkConsumption{
+	session, err := s.magicLinks.ConsumeMagicLink(ctx, MagicLinkConsumption{
 		TokenHash:        tokenHash(token),
 		SessionHash:      tokenHash(sessionToken),
 		SessionExpiresAt: now.Add(s.sessionTTL),
@@ -203,7 +226,7 @@ func (s *Service) CreateSession(ctx context.Context, email string) (string, Sess
 	if session.Email == "" {
 		return "", Session{}, errors.New("session email is required")
 	}
-	if err := s.store.CreateWebSession(ctx, SessionRecord{
+	if err := s.sessions.CreateWebSession(ctx, SessionRecord{
 		TokenHash: tokenHash(token),
 		Email:     session.Email,
 		ExpiresAt: session.ExpiresAt,
@@ -218,7 +241,7 @@ func (s *Service) Authenticate(ctx context.Context, token string) (Session, erro
 	if strings.TrimSpace(token) == "" {
 		return Session{}, ErrInvalidSession
 	}
-	session, err := s.store.WebSession(ctx, tokenHash(token), s.now().UTC())
+	session, err := s.sessions.WebSession(ctx, tokenHash(token), s.now().UTC())
 	if err != nil {
 		return Session{}, err
 	}
@@ -236,7 +259,7 @@ func (s *Service) createLink(ctx context.Context, email string, next string) (st
 	}
 	now := s.now().UTC()
 	expiresAt := now.Add(s.linkTTL)
-	if err := s.store.CreateMagicLink(ctx, MagicLink{
+	if err := s.magicLinks.CreateMagicLink(ctx, MagicLink{
 		TokenHash: tokenHash(token),
 		Email:     email,
 		ExpiresAt: expiresAt,
