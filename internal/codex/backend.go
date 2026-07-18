@@ -74,6 +74,7 @@ func (b *AgentBackend) runTurn(
 	onUpdate runner.AgentUpdateHandler,
 ) (runner.AgentTurnResult, error) {
 	ctx = withWorkerTempDir(ctx, req.TempDir)
+	ctx = withWorkerEnvironment(ctx, req.Environment)
 	restricted := req.ReadOnly || len(tools) > 0
 	result, err := b.client.RunTurn(ctx, RunTurnRequest{
 		Workspace:             req.Workspace,

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
 func TestLocalTransportRoundTrip(t *testing.T) {
@@ -103,7 +105,13 @@ func TestLocalTransportFactoryAppliesWorkerTempDir(t *testing.T) {
 	}
 
 	tempDir := t.TempDir()
-	transport, err := factory.NewTransport(withWorkerTempDir(context.Background(), tempDir))
+	toolBin := t.TempDir()
+	ctx := withWorkerTempDir(context.Background(), tempDir)
+	ctx = withWorkerEnvironment(ctx, procgroup.Environment{
+		Variables:    map[string]string{"GOCACHE": "/shared/go-build", "GOMODCACHE": "/shared/go-mod"},
+		PathPrefixes: []string{toolBin},
+	})
+	transport, err := factory.NewTransport(ctx)
 	if err != nil {
 		t.Fatalf("NewTransport() error = %v", err)
 	}
@@ -123,6 +131,14 @@ func TestLocalTransportFactoryAppliesWorkerTempDir(t *testing.T) {
 		if got := environmentValue(local.cmd.Env, name); got != tempDir {
 			t.Fatalf("%s = %q, want %q", name, got, tempDir)
 		}
+	}
+	for name, want := range map[string]string{"GOCACHE": "/shared/go-build", "GOMODCACHE": "/shared/go-mod"} {
+		if got := environmentValue(local.cmd.Env, name); got != want {
+			t.Fatalf("%s = %q, want %q", name, got, want)
+		}
+	}
+	if got := environmentValue(local.cmd.Env, "PATH"); !strings.HasPrefix(got, toolBin+string(os.PathListSeparator)) {
+		t.Fatalf("PATH = %q, want prefix %q", got, toolBin)
 	}
 }
 

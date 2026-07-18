@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
@@ -398,6 +399,10 @@ func TestAgentBackendBuildsCommandArgumentsAndWritesPromptToStdin(t *testing.T) 
 		Prompt:             "prompt from stdin",
 		Model:              "fable",
 		ExtraWritableRoots: []string{"/tmp/root-a", " ", "/tmp/root-b"},
+		Environment: procgroup.Environment{
+			Variables:    map[string]string{"GOCACHE": "/shared/go-build", "GOMODCACHE": "/shared/go-mod"},
+			PathPrefixes: []string{"/shared/go-bin"},
+		},
 	}, nil)
 	if err != nil {
 		t.Fatalf("RunTurn() error = %v", err)
@@ -441,6 +446,15 @@ func TestAgentBackendBuildsCommandArgumentsAndWritesPromptToStdin(t *testing.T) 
 		if want := filepath.Join(workspace, ".detent", "tmp"); got != want {
 			t.Fatalf("%s = %q, want %q", name, got, want)
 		}
+	}
+	if observed.GOCACHE != "/shared/go-build" {
+		t.Fatalf("GOCACHE = %q, want /shared/go-build", observed.GOCACHE)
+	}
+	if observed.GOMODCACHE != "/shared/go-mod" {
+		t.Fatalf("GOMODCACHE = %q, want /shared/go-mod", observed.GOMODCACHE)
+	}
+	if !strings.HasPrefix(observed.Path, "/shared/go-bin"+string(os.PathListSeparator)) {
+		t.Fatalf("PATH = %q, want shared tool prefix", observed.Path)
 	}
 }
 
@@ -599,12 +613,15 @@ func TestClaudeCodeHelperProcess(t *testing.T) {
 		os.Exit(3)
 	}
 	observed := helperObservation{
-		Args:    argsAfterDashDash(os.Args),
-		Stdin:   string(stdin),
-		Workdir: workdir,
-		TMPDIR:  os.Getenv("TMPDIR"),
-		TMP:     os.Getenv("TMP"),
-		TEMP:    os.Getenv("TEMP"),
+		Args:       argsAfterDashDash(os.Args),
+		Stdin:      string(stdin),
+		Workdir:    workdir,
+		TMPDIR:     os.Getenv("TMPDIR"),
+		TMP:        os.Getenv("TMP"),
+		TEMP:       os.Getenv("TEMP"),
+		GOCACHE:    os.Getenv("GOCACHE"),
+		GOMODCACHE: os.Getenv("GOMODCACHE"),
+		Path:       os.Getenv("PATH"),
 	}
 	raw, err := json.Marshal(observed)
 	if err != nil {
@@ -644,12 +661,15 @@ func TestPackageDoesNotImportConfigOrCLI(t *testing.T) {
 }
 
 type helperObservation struct {
-	Args    []string `json:"args"`
-	Stdin   string   `json:"stdin"`
-	Workdir string   `json:"workdir"`
-	TMPDIR  string   `json:"tmpdir"`
-	TMP     string   `json:"tmp"`
-	TEMP    string   `json:"temp"`
+	Args       []string `json:"args"`
+	Stdin      string   `json:"stdin"`
+	Workdir    string   `json:"workdir"`
+	TMPDIR     string   `json:"tmpdir"`
+	TMP        string   `json:"tmp"`
+	TEMP       string   `json:"temp"`
+	GOCACHE    string   `json:"gocache"`
+	GOMODCACHE string   `json:"gomodcache"`
+	Path       string   `json:"path"`
 }
 
 func newTestBackend(t *testing.T, options Options) *AgentBackend {

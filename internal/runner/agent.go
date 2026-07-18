@@ -641,6 +641,10 @@ func runAgentBackendTurnWithTools(
 		return AgentTurnResult{}, fmt.Errorf("prepare worker scratch: %w", err), nil
 	}
 	request.TempDir = tempDir
+	if err := configureWorkerCache(&request); err != nil {
+		cleanupErr := workspace.CleanupWorkerScratch(workspacePath)
+		return AgentTurnResult{}, fmt.Errorf("prepare worker cache: %w", err), cleanupErr
+	}
 	result, runErr := run(ctx, request)
 	cleanupErr := workspace.CleanupWorkerScratch(workspacePath)
 	if cleanupErr != nil {
@@ -1042,6 +1046,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		ReasoningEffort:    effort,
 		Resume:             agentResumeFromState(resumeState),
 		ExtraWritableRoots: extraWritableRootsForWorkspace(ctx, info.Path, r.logger),
+		cacheStrategy:      workflow.Config.Workspace.CacheStrategy,
+		projectID:          r.projectID,
 	}
 	if mode == RunModeRoutine {
 		turnRequest.ToolInstructions = routineToolInstructions
@@ -1339,6 +1345,8 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		ReasoningEffort:    effort,
 		TurnTimeout:        durationFromMillis(validator.TurnTimeoutMS),
 		ExtraWritableRoots: extraWritableRootsForWorkspace(ctx, info.Path, r.logger),
+		cacheStrategy:      workflow.Config.Workspace.CacheStrategy,
+		projectID:          r.projectID,
 	}, func(update AgentUpdate) error {
 		eventAt := r.now()
 		if !update.RuntimeIdentity.IsZero() {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +121,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		ProjectID: "detent",
 		Workflow: config.Workflow{
 			Config: config.Config{
+				Workspace: config.Workspace{CacheStrategy: config.WorkspaceCacheShared},
 				Agent: config.Agent{
 					Skills: config.Skills{
 						Enabled:           true,
@@ -265,6 +267,23 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if codexClient.request.Workspace != workspacePath {
 		t.Fatalf("codex workspace = %q, want %q", codexClient.request.Workspace, workspacePath)
+	}
+	cacheRoot := sharedWorkerCacheRoot(workspacePath, "detent")
+	for name, want := range map[string]string{
+		"GOCACHE":             filepath.Join(cacheRoot, "go-build"),
+		"GOMODCACHE":          filepath.Join(cacheRoot, "go-mod"),
+		"GOBIN":               filepath.Join(cacheRoot, "go-bin"),
+		"GOLANGCI_LINT_CACHE": filepath.Join(cacheRoot, "golangci-lint"),
+	} {
+		if got := codexClient.request.Environment.Variables[name]; got != want {
+			t.Fatalf("codex %s = %q, want %q", name, got, want)
+		}
+	}
+	if len(codexClient.request.ExtraWritableRoots) != 1 || codexClient.request.ExtraWritableRoots[0] != cacheRoot {
+		t.Fatalf("codex writable roots = %#v, want shared cache root %q", codexClient.request.ExtraWritableRoots, cacheRoot)
+	}
+	if !reflect.DeepEqual(codexClient.request.Environment.PathSuffixes, []string{filepath.Join(cacheRoot, "go-bin")}) {
+		t.Fatalf("codex PATH suffixes = %#v, want shared tool fallback", codexClient.request.Environment.PathSuffixes)
 	}
 	if codexClient.request.Model != "gpt-5-codex-high" {
 		t.Fatalf("codex model = %q, want issue override", codexClient.request.Model)
