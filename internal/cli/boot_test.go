@@ -913,12 +913,8 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 		})
 	}()
 
-	select {
-	case <-provisionStarted:
-	case err := <-done:
-		t.Fatalf("startRunning returned before provisioning blocked: %v", err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for project provisioning to start")
+	if err := awaitProjectProvisioningStart(provisionStarted, done, output, bootProvisioningStartTimeout); err != nil {
+		t.Fatal(err)
 	}
 
 	baseURL := waitForBootDashboardURL(t, output, done)
