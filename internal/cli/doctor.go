@@ -54,6 +54,7 @@ type doctorCheck struct {
 	AutoPromoteCandidates     []doctorAutoPromoteCandidateDiagnostic     `json:"auto_promote_candidates,omitempty"`
 	BlockedRecoveryCandidates []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_recovery_candidates,omitempty"`
 	BackendCapacity           []doctorBackendCapacityDiagnostic          `json:"backend_capacity,omitempty"`
+	ArtifactGateConvergence   []doctorArtifactGateConvergenceDiagnostic  `json:"artifact_gate_convergence,omitempty"`
 	ValidatorFailures         []doctorValidatorFailureDiagnostic         `json:"validator_failures,omitempty"`
 	Routines                  []doctorRoutineDiagnostic                  `json:"routines,omitempty"`
 	OverloadRetriesLastHour   int                                        `json:"overload_retries_last_hour,omitempty"`
@@ -457,6 +458,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			Name: "Backend capacity",
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return []doctorCheck{checkDoctorBackendCapacity(jobCtx, resolution, boot, cfg.ProjectID, deps, time.Now())}
+			},
+		},
+		doctorCheckJob{
+			Name: "Artifact gate convergence",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorArtifactGateConvergence(jobCtx, resolution, cfg.ProjectID, deps)}
 			},
 		},
 	)

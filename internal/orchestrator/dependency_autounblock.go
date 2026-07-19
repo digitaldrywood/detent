@@ -851,11 +851,13 @@ func (o *Orchestrator) issueHasStickyBlockReason(ctx context.Context, state *Sta
 
 func stickyBlockReason(reason string) bool {
 	reason = strings.ToLower(strings.TrimSpace(reason))
-	if strings.HasPrefix(reason, tokenCeilingBlockedReasonPrefix) || strings.HasPrefix(reason, mergeWorkerRetryExhaustedReason) {
+	if strings.HasPrefix(reason, tokenCeilingBlockedReasonPrefix) ||
+		strings.HasPrefix(reason, artifactGateConvergenceBlockedReasonPrefix) ||
+		strings.HasPrefix(reason, mergeWorkerRetryExhaustedReason) {
 		return true
 	}
 	switch reason {
-	case "rework_limit", "no_progress_limit", "workpad_blocked_unactioned", "circuit_breaker", "token_ceiling_circuit_breaker":
+	case "rework_limit", "no_progress_limit", "workpad_blocked_unactioned", "circuit_breaker", "token_ceiling_circuit_breaker", artifactGateConvergenceReason:
 		return true
 	default:
 		return false

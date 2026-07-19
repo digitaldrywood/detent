@@ -2,13 +2,36 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
+
+const (
+	artifactGateConvergenceLimit               = 3
+	artifactGateConvergenceMetadataKey         = "artifact_gate_convergence"
+	artifactGateConvergenceReason              = "artifact_gate_convergence_breaker"
+	artifactGateConvergenceBlockedReasonPrefix = "artifact gate convergence breaker: "
+)
+
+type artifactGateConvergenceRecord struct {
+	StatusField          string `json:"status_field"`
+	DispatchStatus       string `json:"dispatch_status"`
+	CompletionStatus     string `json:"completion_status"`
+	Unchanged            bool   `json:"unchanged"`
+	ConsecutiveUnchanged int    `json:"consecutive_unchanged"`
+	Limit                int    `json:"limit"`
+	Tripped              bool   `json:"tripped,omitempty"`
+	Warning              string `json:"warning,omitempty"`
+}
 
 func (o *Orchestrator) applyArtifactGateCompletionFields(
 	ctx context.Context,
@@ -165,25 +188,216 @@ func (o *Orchestrator) artifactGateDispatchWorkpadSnapshot(ctx context.Context, 
 	return artifactGateWorkpadStatusHash(comments), true
 }
 
-func (o *Orchestrator) warnUnchangedArtifactGateCompletion(ctx context.Context, dispatched connector.Issue, completed connector.Issue) {
-	if o == nil || o.logger == nil {
-		return
+func (o *Orchestrator) evaluateArtifactGateConvergence(
+	ctx context.Context,
+	dispatched connector.Issue,
+	completed connector.Issue,
+	running Running,
+) artifactGateConvergenceRecord {
+	if o == nil {
+		return artifactGateConvergenceRecord{}
 	}
 	gateConfig := gate.Effective(o.cfg.AutoPromote.Gate)
 	if gateConfig.Kind != gate.KindArtifact {
-		return
+		return artifactGateConvergenceRecord{}
 	}
-	statusField := gateConfig.Artifact.StatusField
+	statusField := strings.TrimSpace(gateConfig.Artifact.StatusField)
 	dispatchStatus, _ := artifactStatusFieldFromIssue(dispatched, statusField)
 	completionStatus, _ := artifactStatusFieldFromIssue(completed, statusField)
-	if !strings.EqualFold(strings.TrimSpace(dispatchStatus), strings.TrimSpace(completionStatus)) {
+	record := artifactGateConvergenceRecord{
+		StatusField:      statusField,
+		DispatchStatus:   strings.TrimSpace(dispatchStatus),
+		CompletionStatus: strings.TrimSpace(completionStatus),
+		Limit:            artifactGateConvergenceLimit,
+	}
+	record.Unchanged = strings.EqualFold(record.DispatchStatus, record.CompletionStatus)
+	if !record.Unchanged {
+		return record
+	}
+
+	record.ConsecutiveUnchanged = 1
+	attempts, err := o.recentArtifactGateConvergenceAttempts(ctx, completed, running)
+	if err != nil {
+		record.Warning = err.Error()
+		if o.logger != nil {
+			o.logger.WarnContext(ctx, "artifact gate convergence history lookup failed",
+				"issue_id", completed.ID,
+				"identifier", completed.Identifier,
+				"status_field", statusField,
+				"error", err,
+			)
+		}
+	} else {
+		record.ConsecutiveUnchanged += consecutiveArtifactGateConvergenceAttempts(attempts, record)
+	}
+	record.Tripped = record.ConsecutiveUnchanged >= record.Limit
+	if o.logger != nil {
+		o.logger.WarnContext(ctx, "artifact gate completion left status field unchanged",
+			"issue_id", completed.ID,
+			"identifier", completed.Identifier,
+			"status_field", statusField,
+			"dispatch_status", dispatchStatus,
+			"completion_status", completionStatus,
+			"consecutive_unchanged", record.ConsecutiveUnchanged,
+			"limit", record.Limit,
+			"tripped", record.Tripped,
+		)
+	}
+	return record
+}
+
+func (o *Orchestrator) recentArtifactGateConvergenceAttempts(
+	ctx context.Context,
+	issue connector.Issue,
+	running Running,
+) ([]store.WorkAttempt, error) {
+	if o == nil || o.workAttempts == nil {
+		return nil, nil
+	}
+	return o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
+		ProjectID:  strings.TrimSpace(o.cfg.Project.ID),
+		IssueID:    strings.TrimSpace(issue.ID),
+		Identifier: strings.TrimSpace(issue.Identifier),
+		IssueURL:   strings.TrimSpace(issue.URL),
+		WorkerType: workAttemptWorkerType(issue, running.Mode),
+		Limit:      artifactGateConvergenceLimit + 1,
+	})
+}
+
+func consecutiveArtifactGateConvergenceAttempts(attempts []store.WorkAttempt, current artifactGateConvergenceRecord) int {
+	count := 0
+	for _, attempt := range attempts {
+		if attempt.TerminalState != store.WorkAttemptTerminalSuccess {
+			return count
+		}
+		record, ok := artifactGateConvergenceRecordFromAttempt(attempt)
+		if !ok || !record.Unchanged ||
+			!strings.EqualFold(strings.TrimSpace(record.StatusField), strings.TrimSpace(current.StatusField)) ||
+			!strings.EqualFold(strings.TrimSpace(record.DispatchStatus), strings.TrimSpace(current.DispatchStatus)) ||
+			!strings.EqualFold(strings.TrimSpace(record.CompletionStatus), strings.TrimSpace(current.CompletionStatus)) {
+			return count
+		}
+		count++
+	}
+	return count
+}
+
+func artifactGateConvergenceRecordFromAttempt(attempt store.WorkAttempt) (artifactGateConvergenceRecord, bool) {
+	var root struct {
+		Record artifactGateConvergenceRecord `json:"artifact_gate_convergence"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(attempt.WorkerMetadataJSON)), &root); err != nil {
+		return artifactGateConvergenceRecord{}, false
+	}
+	if strings.TrimSpace(root.Record.StatusField) == "" || root.Record.Limit <= 0 {
+		return artifactGateConvergenceRecord{}, false
+	}
+	return root.Record, true
+}
+
+func artifactGateConvergenceMetadata(record artifactGateConvergenceRecord) map[string]any {
+	if strings.TrimSpace(record.StatusField) == "" {
+		return nil
+	}
+	return map[string]any{artifactGateConvergenceMetadataKey: record}
+}
+
+func (o *Orchestrator) parkArtifactGateConvergence(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	completedAt time.Time,
+	record artifactGateConvergenceRecord,
+) {
+	if state == nil {
 		return
 	}
-	o.logger.WarnContext(ctx, "artifact gate completion left status field unchanged",
-		"issue_id", completed.ID,
-		"identifier", completed.Identifier,
-		"status_field", statusField,
-		"dispatch_status", dispatchStatus,
-		"completion_status", completionStatus,
+	issue = cloneIssue(issue)
+	if err := o.updateIssueState(ctx, state, issue, blockedStatusState, completedAt, artifactGateConvergenceReason); err != nil {
+		if o.logger != nil {
+			o.logger.WarnContext(ctx, "artifact gate convergence breaker state transition failed",
+				"issue_id", issue.ID,
+				"identifier", issue.Identifier,
+				"target_state", blockedStatusState,
+				"error", err,
+			)
+		}
+	} else {
+		issue.State = blockedStatusState
+	}
+	if o.connector != nil {
+		body := artifactGateConvergenceComment(issue, attempt, record)
+		if err := o.connector.CreateComment(ctx, issue.ID, body); err != nil && o.logger != nil {
+			o.logger.WarnContext(ctx, "artifact gate convergence breaker comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+	}
+	if err := o.abandonClaim(ctx, issue.ID); err != nil && o.logger != nil {
+		o.logger.WarnContext(ctx, "artifact gate convergence breaker claim release failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+	}
+	delete(state.Claimed, issue.ID)
+	delete(state.Completed, issue.ID)
+	delete(state.Retry, issue.ID)
+	delete(state.BudgetRefusals, issue.ID)
+	delete(state.PriorAttempts, issue.ID)
+	if state.Blocked == nil {
+		state.Blocked = map[string]Blocked{}
+	}
+	state.Blocked[issue.ID] = Blocked{
+		Issue:          issue,
+		Reason:         artifactGateConvergenceBlockedReason(record),
+		RecoveryReason: "review the artifact and update the configured gate status before moving the item out of Blocked",
+		RecoveryTarget: autoPromoteReworkState,
+		BlockedAt:      completedAt,
+		Source:         BlockedSourceProjectStatus,
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      completedAt,
+		Event:   artifactGateConvergenceReason,
+		Message: "parked " + issueLabel(issue) + " after repeated successful attempts left the artifact gate status unchanged",
+	})
+	if o.logger != nil {
+		o.logger.WarnContext(ctx, "artifact gate convergence breaker tripped",
+			"event", artifactGateConvergenceReason,
+			"issue_id", issue.ID,
+			"identifier", issue.Identifier,
+			"attempt", attempt,
+			"status_field", record.StatusField,
+			"status", record.CompletionStatus,
+			"consecutive_unchanged", record.ConsecutiveUnchanged,
+			"limit", record.Limit,
+			"target_state", blockedStatusState,
+		)
+	}
+}
+
+func artifactGateConvergenceBlockedReason(record artifactGateConvergenceRecord) string {
+	return artifactGateConvergenceBlockedReasonPrefix + fmt.Sprintf(
+		"%s remained %s after %d consecutive successful attempts",
+		strings.TrimSpace(record.StatusField),
+		strconv.Quote(strings.TrimSpace(record.CompletionStatus)),
+		record.ConsecutiveUnchanged,
 	)
+}
+
+func artifactGateConvergenceComment(issue connector.Issue, attempt int, record artifactGateConvergenceRecord) string {
+	var b strings.Builder
+	b.WriteString("Detent stopped redispatching this item after ")
+	b.WriteString(strconv.Itoa(record.ConsecutiveUnchanged))
+	b.WriteString(" consecutive successful attempts left the configured artifact gate status unchanged.")
+	b.WriteString("\n\nIssue parked in `")
+	b.WriteString(strings.TrimSpace(issue.State))
+	b.WriteString("`.")
+	b.WriteString("\n\n- issue: ")
+	b.WriteString(issueLabel(issue))
+	b.WriteString("\n- latest_attempt: ")
+	b.WriteString(strconv.Itoa(attempt))
+	b.WriteString("\n- status_field: `")
+	b.WriteString(strings.TrimSpace(record.StatusField))
+	b.WriteString("`")
+	b.WriteString("\n- unchanged_status: `")
+	b.WriteString(strings.TrimSpace(record.CompletionStatus))
+	b.WriteString("`")
+	b.WriteString("\n\nReview the artifact and set the configured field to the appropriate pass or wait status before moving the item out of Blocked. If further rework is required, correct the worker instructions before moving it back to Rework; another unchanged success will remain breaker-protected.")
+	return b.String()
 }

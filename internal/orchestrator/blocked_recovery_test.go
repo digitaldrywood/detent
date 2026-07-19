@@ -14,7 +14,7 @@ import (
 func TestRecoverBlockedIssuesSkipsPersistedStickyBlockedIssue(t *testing.T) {
 	t.Parallel()
 
-	for _, reason := range []string{"rework_limit", "token_ceiling_circuit_breaker"} {
+	for _, reason := range []string{"rework_limit", "token_ceiling_circuit_breaker", artifactGateConvergenceReason} {
 		t.Run(reason, func(t *testing.T) {
 			t.Parallel()
 
