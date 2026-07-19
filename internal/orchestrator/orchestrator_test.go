@@ -2412,20 +2412,37 @@ func runOrchestrator(t *testing.T, orch *orchestrator.Orchestrator) func() {
 func waitForState(t *testing.T, orch *orchestrator.Orchestrator, ready func(orchestrator.State) bool) orchestrator.State {
 	t.Helper()
 
-	deadline := time.After(time.Second)
+	return waitForStateWithin(t, orch, time.Second, ready)
+}
+
+func waitForStateWithin(t *testing.T, orch *orchestrator.Orchestrator, timeout time.Duration, ready func(orchestrator.State) bool) orchestrator.State {
+	t.Helper()
+
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	var lastState orchestrator.State
+	var lastErr error
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		state, err := orch.State(ctx)
 		cancel()
+		lastState = state
+		lastErr = err
 		if err == nil && ready(state) {
 			return state
 		}
 
 		select {
-		case <-deadline:
-			t.Fatal("timed out waiting for orchestrator state")
-		default:
-			time.Sleep(time.Millisecond)
+		case <-deadline.C:
+			t.Fatalf(
+				"timed out waiting for orchestrator state; last_state=%#v event_history=%#v last_error=%v",
+				lastState,
+				lastState.RecentEvents,
+				lastErr,
+			)
+		case <-ticker.C:
 		}
 	}
 }

@@ -77,7 +77,7 @@ func TestLocalSQLiteLifecycleEndToEnd(t *testing.T) {
 	defer stop()
 
 	// Scheduling: the capitalized Todo row must be fetched and dispatched.
-	state := waitForState(t, orch, func(state orchestrator.State) bool {
+	state := waitForStateWithin(t, orch, localSQLiteE2EWaitTimeout, func(state orchestrator.State) bool {
 		_, ok := state.Running[seed.ID]
 		return ok
 	})
@@ -111,7 +111,7 @@ func TestLocalSQLiteLifecycleEndToEnd(t *testing.T) {
 
 	// Completion: release the fake agent and wait for the run to finish.
 	close(release)
-	state = waitForState(t, orch, func(state orchestrator.State) bool {
+	state = waitForStateWithin(t, orch, localSQLiteE2EWaitTimeout, func(state orchestrator.State) bool {
 		_, ok := state.Completed[seed.ID]
 		return ok
 	})
