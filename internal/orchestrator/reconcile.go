@@ -505,6 +505,7 @@ func (o *Orchestrator) setBlockedStatusIssue(state *State, issue connector.Issue
 		(strings.HasPrefix(existing.Reason, instantFailureBlockedReasonPrefix) ||
 			strings.HasPrefix(existing.Reason, repeatedFailureBlockedReasonPrefix) ||
 			strings.HasPrefix(existing.Reason, tokenCeilingBlockedReasonPrefix) ||
+			strings.HasPrefix(existing.Reason, artifactGateConvergenceBlockedReasonPrefix) ||
 			strings.HasPrefix(existing.Reason, mergeWorkerRetryExhaustedReason)) &&
 		strings.TrimSpace(issue.BlockerReason) == "" {
 		existing.Issue = cloneIssue(issue)

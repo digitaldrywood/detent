@@ -359,6 +359,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	phase := "completed"
 	statusMessage := "worker completed"
+	artifactConvergence := artifactGateConvergenceRecord{}
+	if terminalState == store.WorkAttemptTerminalSuccess {
+		artifactConvergence = o.evaluateArtifactGateConvergence(ctx, dispatchedIssue, running.Issue, running)
+	}
 	if terminalState == store.WorkAttemptTerminalSuccess && progress.Outcome == store.WorkAttemptTerminalNoProgress {
 		terminalState = store.WorkAttemptTerminalNoProgress
 		phase = "no_progress"
@@ -372,11 +376,16 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		phase = "no_progress"
 		statusMessage = "spend-since-progress circuit breaker tripped"
 	}
-	if terminalState == store.WorkAttemptTerminalSuccess {
-		o.warnUnchangedArtifactGateCompletion(ctx, dispatchedIssue, running.Issue)
+	if artifactConvergence.Tripped {
+		phase = "blocked"
+		statusMessage = "artifact gate convergence breaker tripped"
 	}
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, terminalState, nil, errorClass, errorMessage)
-	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(implementCompletionProgressMetadata(progress), spendProgressMetadata(spendProgress)))
+	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(
+		implementCompletionProgressMetadata(progress),
+		spendProgressMetadata(spendProgress),
+		artifactGateConvergenceMetadata(artifactConvergence),
+	))
 
 	state.Completed[event.IssueID] = Completed{
 		Issue:           cloneIssue(running.Issue),
@@ -399,6 +408,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		refusal.Issue = cloneIssue(running.Issue)
 		state.BudgetRefusals[event.IssueID] = refusal
 		o.commentBudgetRefusal(ctx, event.IssueID, refusal)
+	}
+	if artifactConvergence.Tripped {
+		o.parkArtifactGateConvergence(ctx, state, running.Issue, running.Attempt, event.CompletedAt, artifactConvergence)
+		return
 	}
 
 	if state.Draining {
