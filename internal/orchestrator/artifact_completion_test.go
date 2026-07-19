@@ -186,7 +186,7 @@ func TestHandleRunResultParksThirdUnchangedArtifactGateSuccess(t *testing.T) {
 			IssueID:            issue.ID,
 			Identifier:         issue.Identifier,
 			WorkerType:         "agent",
-			TerminalState:      store.WorkAttemptTerminalSuccess,
+			TerminalState:      store.WorkAttemptTerminalNoProgress,
 			CompletedAt:        now.Add(-time.Minute),
 			WorkerMetadataJSON: `{"artifact_gate_convergence":{"status_field":"render_status","dispatch_status":"recut","completion_status":"recut","unchanged":true,"consecutive_unchanged":2,"limit":3}}`,
 		},
@@ -195,7 +195,7 @@ func TestHandleRunResultParksThirdUnchangedArtifactGateSuccess(t *testing.T) {
 			IssueID:            issue.ID,
 			Identifier:         issue.Identifier,
 			WorkerType:         "agent",
-			TerminalState:      store.WorkAttemptTerminalSuccess,
+			TerminalState:      store.WorkAttemptTerminalNoProgress,
 			CompletedAt:        now.Add(-2 * time.Minute),
 			WorkerMetadataJSON: `{"artifact_gate_convergence":{"status_field":"render_status","dispatch_status":"recut","completion_status":"recut","unchanged":true,"consecutive_unchanged":1,"limit":3}}`,
 		},
@@ -213,6 +213,7 @@ func TestHandleRunResultParksThirdUnchangedArtifactGateSuccess(t *testing.T) {
 		Attempt:       3,
 		WorkAttemptID: 47,
 		StartedAt:     now.Add(-40 * time.Second),
+		DiffStats:     DiffStats{Status: "clean"},
 	}
 	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
 
@@ -235,8 +236,8 @@ func TestHandleRunResultParksThirdUnchangedArtifactGateSuccess(t *testing.T) {
 	if _, ok := state.Retry[issue.ID]; ok {
 		t.Fatalf("Retry[%q] present after convergence breaker", issue.ID)
 	}
-	if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
-		t.Fatalf("completions = %#v, want one durable success", attempts.completions)
+	if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalNoProgress {
+		t.Fatalf("completions = %#v, want one durable no-progress worker success", attempts.completions)
 	}
 	if !strings.Contains(attempts.completions[0].WorkerMetadataJSON, `"tripped":true`) {
 		t.Fatalf("worker metadata = %q, want durable convergence trip", attempts.completions[0].WorkerMetadataJSON)
@@ -271,6 +272,14 @@ func TestConsecutiveArtifactGateConvergenceAttempts(t *testing.T) {
 			attempts: []store.WorkAttempt{
 				artifactGateConvergenceAttempt(t, store.WorkAttemptTerminalSuccess, current),
 				artifactGateConvergenceAttempt(t, store.WorkAttemptTerminalSuccess, current),
+			},
+			want: 2,
+		},
+		{
+			name: "counts worker successes reclassified as no progress",
+			attempts: []store.WorkAttempt{
+				artifactGateConvergenceAttempt(t, store.WorkAttemptTerminalNoProgress, current),
+				artifactGateConvergenceAttempt(t, store.WorkAttemptTerminalNoProgress, current),
 			},
 			want: 2,
 		},

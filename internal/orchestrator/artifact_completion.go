@@ -267,11 +267,10 @@ func (o *Orchestrator) recentArtifactGateConvergenceAttempts(
 func consecutiveArtifactGateConvergenceAttempts(attempts []store.WorkAttempt, current artifactGateConvergenceRecord) int {
 	count := 0
 	for _, attempt := range attempts {
-		if attempt.TerminalState != store.WorkAttemptTerminalSuccess {
-			return count
-		}
 		record, ok := artifactGateConvergenceRecordFromAttempt(attempt)
-		if !ok || !record.Unchanged ||
+		if !ok ||
+			(attempt.TerminalState != store.WorkAttemptTerminalSuccess && attempt.TerminalState != store.WorkAttemptTerminalNoProgress) ||
+			!record.Unchanged ||
 			!strings.EqualFold(strings.TrimSpace(record.StatusField), strings.TrimSpace(current.StatusField)) ||
 			!strings.EqualFold(strings.TrimSpace(record.DispatchStatus), strings.TrimSpace(current.DispatchStatus)) ||
 			!strings.EqualFold(strings.TrimSpace(record.CompletionStatus), strings.TrimSpace(current.CompletionStatus)) {
