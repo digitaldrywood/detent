@@ -2261,6 +2261,62 @@ func TestKanbanMoveRoutesProjectV2AndIssueFieldUpdates(t *testing.T) {
 	}
 }
 
+func TestKanbanMoveReconcilesOperatorMoveAfterTrackerSuccess(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+		AllowedTransitions: map[string][]string{
+			"Blocked": {"Rework"},
+		},
+	}, actionConnector)
+	probe := &operatorMoveProbe{result: orchestrator.OperatorMoveResult{Reconciled: true, BlockedCleared: true}}
+	deps.OperatorMoves = probe
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Refresh:     telemetry.Refresh{DataSeq: 42},
+		Blocked: []telemetry.Blocked{{
+			Issue: telemetry.Issue{
+				ID:         "I_operator_move",
+				Identifier: "digitaldrywood/detent#1482",
+				ProjectID:  "detent",
+				Title:      "Operator move",
+				State:      "Blocked",
+			},
+			Source: telemetry.BlockedSourceProjectStatus,
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", url.Values{
+		"project_id":    {"detent"},
+		"issue_id":      {"I_operator_move"},
+		"current_state": {"Blocked"},
+		"target_state":  {"Rework"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	want := orchestrator.OperatorMoveRequest{
+		ProjectID:  "detent",
+		IssueID:    "I_operator_move",
+		Identifier: "digitaldrywood/detent#1482",
+		FromState:  "Blocked",
+		ToState:    "Rework",
+	}
+	if probe.calls != 1 || probe.request != want {
+		t.Fatalf("operator move reconciliation = calls %d request %#v, want one %#v", probe.calls, probe.request, want)
+	}
+}
+
 func TestKanbanMoveRejectsMissingConnectorCapability(t *testing.T) {
 	t.Parallel()
 
@@ -11978,6 +12034,19 @@ type refreshProbe struct {
 	response web.RefreshResponse
 	err      error
 	calls    int
+}
+
+type operatorMoveProbe struct {
+	request orchestrator.OperatorMoveRequest
+	result  orchestrator.OperatorMoveResult
+	err     error
+	calls   int
+}
+
+func (p *operatorMoveProbe) ReconcileOperatorMove(_ context.Context, request orchestrator.OperatorMoveRequest) (orchestrator.OperatorMoveResult, error) {
+	p.calls++
+	p.request = request
+	return p.result, p.err
 }
 
 func (p *refreshProbe) RequestRefresh(context.Context) (web.RefreshResponse, error) {

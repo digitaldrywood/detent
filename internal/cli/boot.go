@@ -389,6 +389,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		Registry:      manager.Registry(),
 		Connector:     firstConnector(manager),
 		Refresher:     refresherForRegistry(manager.Registry()),
+		OperatorMoves: registryRefresher{registry: manager.Registry()},
 		Recovery:      recoveryForRegistry(manager.Registry()),
 		RunStopper:    registryRefresher{registry: manager.Registry()},
 		UpdateApplier: updateScheduler,
@@ -1505,6 +1506,14 @@ func (r registryRefresher) WorkAttemptReceipt(ctx context.Context, projectID str
 		return orchestrator.WorkAttemptRecoveryResponse{}, err
 	}
 	return orch.WorkAttemptReceipt(ctx, projectID, attemptID)
+}
+
+func (r registryRefresher) ReconcileOperatorMove(ctx context.Context, request orchestrator.OperatorMoveRequest) (orchestrator.OperatorMoveResult, error) {
+	orch, err := r.projectOrchestrator(request.ProjectID)
+	if err != nil {
+		return orchestrator.OperatorMoveResult{}, err
+	}
+	return orch.ReconcileOperatorMove(ctx, request)
 }
 
 func (r registryRefresher) RecoverWorkAttempt(ctx context.Context, request orchestrator.WorkAttemptRecoveryRequest) (orchestrator.WorkAttemptRecoveryResponse, error) {

@@ -33,6 +33,10 @@ type Refresher interface {
 	RequestRefresh(context.Context) (RefreshResponse, error)
 }
 
+type OperatorMoveReconciler interface {
+	ReconcileOperatorMove(context.Context, orchestrator.OperatorMoveRequest) (orchestrator.OperatorMoveResult, error)
+}
+
 type TargetedRefresher interface {
 	RequestTargetedRefresh(context.Context, RefreshTarget) (RefreshResponse, error)
 }

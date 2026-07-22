@@ -218,6 +218,7 @@ type Orchestrator struct {
 	drainRequests           chan drainRequest
 	forceRequests           chan forceRequest
 	recoveryRequests        chan workAttemptRecoveryRequest
+	operatorMoves           chan operatorMoveRequest
 	configUpdates           chan configUpdateRequest
 	refreshes               chan manualRefreshRequest
 	reconciles              chan targetedRefreshRequest
@@ -445,6 +446,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		drainRequests:           make(chan drainRequest),
 		forceRequests:           make(chan forceRequest),
 		recoveryRequests:        make(chan workAttemptRecoveryRequest),
+		operatorMoves:           make(chan operatorMoveRequest),
 		configUpdates:           make(chan configUpdateRequest),
 		refreshes:               make(chan manualRefreshRequest, 1),
 		reconciles:              make(chan targetedRefreshRequest, 128),
@@ -539,6 +541,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case request := <-o.recoveryRequests:
 			response, err := o.handleWorkAttemptRecovery(ctx, &state, request.request, request.at)
 			request.reply <- workAttemptRecoveryReply{response: response, err: err}
+		case request := <-o.operatorMoves:
+			request.reply <- o.handleOperatorMove(&state, request.request, request.at)
 		case update := <-o.configUpdates:
 			o.applyRuntimeUpdate(&state, update.update, ticker)
 			update.reply <- struct{}{}

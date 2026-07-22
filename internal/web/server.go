@@ -47,6 +47,7 @@ type Dependencies struct {
 	Registry         *project.Registry
 	Connector        connector.Connector
 	Refresher        Refresher
+	OperatorMoves    OperatorMoveReconciler
 	Recovery         WorkAttemptRecovery
 	RunStopper       RunStopper
 	UpdateApplier    UpdateApplier
@@ -111,6 +112,7 @@ type Server struct {
 	registry            *project.Registry
 	connector           connector.Connector
 	refresher           Refresher
+	operatorMoves       OperatorMoveReconciler
 	recovery            WorkAttemptRecovery
 	runStopper          RunStopper
 	updateApplier       UpdateApplier
@@ -216,6 +218,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		registry:            deps.Registry,
 		connector:           deps.Connector,
 		refresher:           deps.Refresher,
+		operatorMoves:       deps.OperatorMoves,
 		recovery:            deps.Recovery,
 		runStopper:          deps.RunStopper,
 		updateApplier:       deps.UpdateApplier,
