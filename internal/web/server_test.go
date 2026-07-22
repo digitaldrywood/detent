@@ -6534,6 +6534,53 @@ func TestHealthReportsDraining(t *testing.T) {
 	}
 }
 
+func TestHealthDistinguishesProcessHealthFromProjectConnectorDegradation(t *testing.T) {
+	t.Parallel()
+
+	lastErrorAt := time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC)
+	nextRetryAt := lastErrorAt.Add(30 * time.Second)
+	deps := testDeps(t)
+	if err := deps.Registry.SetPending(globalconfig.Project{ID: "alpha"}, project.RuntimeError{
+		Message:     "provision project connector: github transient error",
+		At:          lastErrorAt,
+		NextRetryAt: nextRetryAt,
+	}); err != nil {
+		t.Fatalf("Registry.SetPending() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	payload := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	if payload["status"] != "ok" {
+		t.Fatalf("status = %#v, want process health ok", payload["status"])
+	}
+	if payload["project_status"] != "degraded" {
+		t.Fatalf("project_status = %#v, want degraded", payload["project_status"])
+	}
+	projects, ok := payload["projects"].([]any)
+	if !ok || len(projects) != 1 {
+		t.Fatalf("projects = %#v, want one degraded project", payload["projects"])
+	}
+	projectHealth, ok := projects[0].(map[string]any)
+	if !ok {
+		t.Fatalf("projects[0] = %#v, want object", projects[0])
+	}
+	if projectHealth["project_id"] != "alpha" || projectHealth["status"] != "degraded" {
+		t.Fatalf("project health = %#v, want alpha degraded", projectHealth)
+	}
+	if projectHealth["last_error"] != "provision project connector: github transient error" {
+		t.Fatalf("last_error = %#v", projectHealth["last_error"])
+	}
+	if projectHealth["next_retry_at"] != nextRetryAt.Format(time.RFC3339) {
+		t.Fatalf("next_retry_at = %#v, want %q", projectHealth["next_retry_at"], nextRetryAt.Format(time.RFC3339))
+	}
+	if projectHealth["retry_stopped"] != false {
+		t.Fatalf("retry_stopped = %#v, want false", projectHealth["retry_stopped"])
+	}
+}
+
 func TestHealthReportsUpdateCheckStatus(t *testing.T) {
 	t.Parallel()
 

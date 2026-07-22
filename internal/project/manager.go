@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hub"
 )
 
@@ -26,6 +27,9 @@ var (
 const (
 	defaultMaxConcurrentStarts    = 4
 	defaultStartupRollbackTimeout = 5 * time.Second
+	defaultRetryInitialBackoff    = time.Second
+	defaultRetryMaxBackoff        = time.Minute
+	defaultRetryJitter            = 250 * time.Millisecond
 )
 
 type Factory func(globalconfig.Project) (*Project, error)
@@ -41,6 +45,12 @@ type ManagerConfig struct {
 	Projects                 []globalconfig.Project
 	Startup                  StartupConfig
 	RuntimeCredentialVersion string
+}
+
+type ConnectorRetryConfig struct {
+	InitialBackoff time.Duration
+	MaxBackoff     time.Duration
+	Jitter         time.Duration
 }
 
 type ReconcileResult struct {
@@ -67,7 +77,16 @@ type ManagerDependencies struct {
 	Logger                 *slog.Logger
 	Sleep                  func(context.Context, time.Duration) error
 	Jitter                 func(time.Duration) time.Duration
+	ConnectorRetry         ConnectorRetryConfig
+	RetrySleep             func(context.Context, time.Duration) error
+	RetryJitter            func(time.Duration) time.Duration
+	Now                    func() time.Time
 	StartupRollbackTimeout time.Duration
+}
+
+type retryRun struct {
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 type Manager struct {
@@ -78,6 +97,12 @@ type Manager struct {
 	sleep                  func(context.Context, time.Duration) error
 	jitter                 func(time.Duration) time.Duration
 	logger                 *slog.Logger
+	retry                  ConnectorRetryConfig
+	retrySleep             func(context.Context, time.Duration) error
+	retryJitter            func(time.Duration) time.Duration
+	now                    func() time.Time
+	retryRuns              map[ID]*retryRun
+	retryWG                sync.WaitGroup
 	startupRollbackTimeout time.Duration
 
 	running bool
@@ -135,6 +160,18 @@ func NewManager(cfg ManagerConfig, deps ManagerDependencies) (*Manager, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	retrySleep := deps.RetrySleep
+	if retrySleep == nil {
+		retrySleep = sleepContext
+	}
+	retryJitter := deps.RetryJitter
+	if retryJitter == nil {
+		retryJitter = randomJitter
+	}
+	now := deps.Now
+	if now == nil {
+		now = time.Now
+	}
 	startupRollbackTimeout := deps.StartupRollbackTimeout
 	if startupRollbackTimeout <= 0 {
 		startupRollbackTimeout = defaultStartupRollbackTimeout
@@ -148,12 +185,24 @@ func NewManager(cfg ManagerConfig, deps ManagerDependencies) (*Manager, error) {
 		sleep:                  sleep,
 		jitter:                 jitter,
 		logger:                 logger,
+		retry:                  normalizeConnectorRetryConfig(deps.ConnectorRetry),
+		retrySleep:             retrySleep,
+		retryJitter:            retryJitter,
+		now:                    now,
+		retryRuns:              map[ID]*retryRun{},
 		startupRollbackTimeout: startupRollbackTimeout,
 	}, nil
 }
 
 func (m *Manager) Registry() *Registry {
 	return m.registry
+}
+
+func (m *Manager) Wait() {
+	if m == nil {
+		return
+	}
+	m.retryWG.Wait()
 }
 
 func (m *Manager) Start(ctx context.Context) error {
@@ -173,6 +222,9 @@ func (m *Manager) Start(ctx context.Context) error {
 	for _, cfg := range m.cfg.Projects {
 		id, project, err := m.createProjectLocked(cfg)
 		if err != nil {
+			if m.handleInitialCreationFailureLocked(ctx, cfg, err) {
+				continue
+			}
 			for _, registeredID := range registered {
 				m.registry.Delete(registeredID)
 			}
@@ -261,8 +313,11 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 
 	runtimeCredentialChanged := m.cfg.RuntimeCredentialVersion != cfg.RuntimeCredentialVersion
 	result := ReconcileResult{}
+	seen := make(map[ID]struct{}, len(m.cfg.Projects))
+	pending := map[ID]struct{}{}
 	for _, current := range m.registry.List() {
 		id := current.ID()
+		seen[id] = struct{}{}
 		next, ok := desired[id]
 		if !ok {
 			result.Removed = append(result.Removed, id)
@@ -274,18 +329,41 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 		}
 		result.Changed = append(result.Changed, id)
 	}
+	for _, health := range m.registry.Health() {
+		id := normalizeProjectID(ID(health.Project.ID))
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		pending[id] = struct{}{}
+		next, ok := desired[id]
+		if !ok {
+			result.Removed = append(result.Removed, id)
+			continue
+		}
+		if !runtimeCredentialChanged && sameProjectConfig(health.Project, next) {
+			result.Unchanged = append(result.Unchanged, id)
+			continue
+		}
+		result.Changed = append(result.Changed, id)
+	}
 
 	for _, next := range cfg.Projects {
 		id := ID(next.ID)
-		if _, ok := m.registry.Get(id); !ok {
+		if _, ok := seen[id]; !ok {
 			result.Added = append(result.Added, id)
 		}
 	}
 
 	prepared := make(map[ID]*Project, len(result.Added)+len(result.Changed))
+	handled := map[ID]struct{}{}
 	for _, id := range result.Changed {
 		_, preparedProject, err := m.createProjectLocked(desired[id])
 		if err != nil {
+			if _, ok := pending[id]; ok && m.handleInitialCreationFailureLocked(ctx, desired[id], err) {
+				handled[id] = struct{}{}
+				continue
+			}
 			return result, errors.Join(err, closePreparedProjects(ctx, prepared))
 		}
 		prepared[id] = preparedProject
@@ -293,6 +371,10 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 	for _, id := range result.Added {
 		_, preparedProject, err := m.createProjectLocked(desired[id])
 		if err != nil {
+			if m.handleInitialCreationFailureLocked(ctx, desired[id], err) {
+				handled[id] = struct{}{}
+				continue
+			}
 			return result, errors.Join(err, closePreparedProjects(ctx, prepared))
 		}
 		prepared[id] = preparedProject
@@ -331,7 +413,15 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 	}
 
 	for _, id := range result.Removed {
+		if err := m.cancelAndWaitRetryLocked(ctx, id); err != nil {
+			return result, errors.Join(err, rollback())
+		}
 		current, ok := m.registry.Get(id)
+		if !ok {
+			if _, pending := m.registry.Pending(id); pending && m.registry.Delete(id) {
+				continue
+			}
+		}
 		if !ok || current == nil {
 			return result, errors.Join(ErrProjectNotFound, rollback())
 		}
@@ -347,6 +437,36 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 		}
 	}
 	for _, id := range result.Changed {
+		if _, ok := handled[id]; ok {
+			continue
+		}
+		preparedProject, err := preparedProjectByID(prepared, id)
+		if err != nil {
+			return result, errors.Join(err, rollback())
+		}
+		if _, wasPending := pending[id]; wasPending {
+			didStart, startErr := m.startPreparedProjectLocked(ctx, preparedProject)
+			if startErr != nil && ctx.Err() != nil {
+				return result, errors.Join(startErr, rollback())
+			}
+			if err := m.cancelAndWaitRetryLocked(ctx, id); err != nil {
+				return result, errors.Join(err, rollback())
+			}
+			m.registry.Delete(id)
+			if startErr != nil {
+				m.handleProjectStartupFailureLocked(ctx, preparedProject, startErr)
+			}
+			if err := m.registry.Set(preparedProject); err != nil {
+				return result, errors.Join(err, rollback())
+			}
+			if didStart {
+				started = append(started, startedProject{project: preparedProject})
+			}
+			continue
+		}
+		if err := m.cancelAndWaitRetryLocked(ctx, id); err != nil {
+			return result, errors.Join(err, rollback())
+		}
 		current, ok := m.registry.Get(id)
 		if !ok || current == nil {
 			return result, errors.Join(ErrProjectNotFound, rollback())
@@ -358,10 +478,6 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 			}
 		}
 		stopped = append(stopped, rollbackProject{project: current, wasRunning: wasRunning})
-		preparedProject, err := preparedProjectByID(prepared, id)
-		if err != nil {
-			return result, errors.Join(err, rollback())
-		}
 		didStart, err := m.startPreparedProjectLocked(ctx, preparedProject)
 		if err != nil {
 			return result, errors.Join(err, rollback())
@@ -374,6 +490,9 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 		}
 	}
 	for _, id := range result.Added {
+		if _, ok := handled[id]; ok {
+			continue
+		}
 		preparedProject, err := preparedProjectByID(prepared, id)
 		if err != nil {
 			return result, errors.Join(err, rollback())
@@ -383,7 +502,7 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 			if len(result.Removed) > 0 || len(result.Changed) > 0 || !retainAddedProjectStartFailure(preparedProject, err) {
 				return result, errors.Join(err, rollback())
 			}
-			m.logProjectStartupFailure(id, err)
+			m.handleProjectStartupFailureLocked(ctx, preparedProject, err)
 			if err := m.registry.Set(preparedProject); err != nil {
 				return result, errors.Join(err, rollback())
 			}
@@ -412,8 +531,14 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 }
 
 func (m *Manager) removeLocked(ctx context.Context, id ID) error {
+	if err := m.cancelAndWaitRetryLocked(ctx, id); err != nil {
+		return err
+	}
 	project, ok := m.registry.Get(id)
 	if !ok || project == nil {
+		if _, pending := m.registry.Pending(id); pending && m.registry.Delete(id) {
+			return nil
+		}
 		return ErrProjectNotFound
 	}
 	if err := project.close(ctx, true); err != nil {
@@ -430,6 +555,9 @@ func (m *Manager) Pause(ctx context.Context, id ID) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.cancelAndWaitRetryLocked(ctx, id); err != nil {
+		return err
+	}
 
 	project, ok := m.registry.Get(id)
 	if !ok || project == nil {
@@ -593,13 +721,21 @@ func (m *Manager) startInitialProjects(
 				return err
 			}
 			if err := trackedProject.provision(groupCtx); err != nil {
-				return err
+				if groupCtx.Err() != nil {
+					return err
+				}
+				m.handleProjectStartupFailure(ctx, trackedProject, err)
+				return nil
 			}
 			if err := groupCtx.Err(); err != nil {
 				return err
 			}
 			if err := trackedProject.start(ctx, startOptions{provision: false, publishEvents: true}); err != nil {
-				return err
+				if ctx.Err() != nil {
+					return err
+				}
+				m.handleProjectStartupFailure(ctx, trackedProject, err)
+				return nil
 			}
 			startedMu.Lock()
 			started = append(started, startedProject{project: trackedProject})
@@ -619,6 +755,9 @@ func (m *Manager) rollbackInitialStart(
 	projects []*Project,
 	started []startedProject,
 ) error {
+	m.cancelAllRetries()
+	m.Wait()
+
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.startupRollbackTimeout)
 	defer cancel()
 	cleanupErr := m.stopUncommittedStartedProjects(cleanupCtx, started)
@@ -720,12 +859,312 @@ func (m *Manager) waitBeforeSpawn(ctx context.Context) error {
 	return m.sleep(ctx, delay)
 }
 
-func (m *Manager) logProjectStartupFailure(id ID, err error) {
+func (m *Manager) handleInitialCreationFailureLocked(
+	ctx context.Context,
+	cfg globalconfig.Project,
+	err error,
+) bool {
+	if !errors.Is(err, ErrConnectorCreation) {
+		return false
+	}
+
+	id := normalizeProjectID(ID(cfg.ID))
+	if id == "" {
+		return false
+	}
+	cfg.ID = string(id)
+	if !connector.IsRetryable(err) {
+		runtimeErr := RuntimeError{Message: err.Error(), At: m.nowUTC(), Terminal: true}
+		if pendingErr := m.registry.SetPending(cfg, runtimeErr); pendingErr != nil {
+			return false
+		}
+		m.logProjectStartupFailure(id, err, time.Time{}, true)
+		return true
+	}
+
+	attempt := 1
+	delay := m.retryDelay(attempt)
+	runtimeErr := m.retryRuntimeError(err, delay)
+	if pendingErr := m.registry.SetPending(cfg, runtimeErr); pendingErr != nil {
+		return false
+	}
+	retryCtx, cancel := context.WithCancel(ctx)
+	run := &retryRun{cancel: cancel, done: make(chan struct{})}
+	m.cancelRetryLocked(id)
+	m.retryRuns[id] = run
+	m.retryWG.Add(1)
+	m.logProjectStartupFailure(id, err, runtimeErr.NextRetryAt, false)
+	go m.retryPendingProject(retryCtx, run, cfg, attempt, delay)
+	return true
+}
+
+func (m *Manager) handleProjectStartupFailure(ctx context.Context, trackedProject *Project, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.handleProjectStartupFailureLocked(ctx, trackedProject, err)
+}
+
+func (m *Manager) handleProjectStartupFailureLocked(ctx context.Context, trackedProject *Project, err error) {
+	if trackedProject == nil || err == nil {
+		return
+	}
+	id := trackedProject.ID()
+	if !connector.IsRetryable(err) {
+		trackedProject.recordRuntimeErrorState(err, m.nowUTC(), time.Time{}, true)
+		m.logProjectStartupFailure(id, err, time.Time{}, true)
+		return
+	}
+
+	attempt := 1
+	delay := m.retryDelay(attempt)
+	runtimeErr := m.retryRuntimeError(err, delay)
+	trackedProject.recordRuntimeErrorState(err, runtimeErr.At, runtimeErr.NextRetryAt, false)
+	retryCtx, cancel := context.WithCancel(ctx)
+	run := &retryRun{cancel: cancel, done: make(chan struct{})}
+	m.cancelRetryLocked(id)
+	m.retryRuns[id] = run
+	m.retryWG.Add(1)
+	m.logProjectStartupFailure(id, err, runtimeErr.NextRetryAt, false)
+	go m.retryProject(retryCtx, run, trackedProject, attempt, delay)
+}
+
+func (m *Manager) retryPendingProject(
+	ctx context.Context,
+	run *retryRun,
+	cfg globalconfig.Project,
+	attempt int,
+	delay time.Duration,
+) {
+	id := normalizeProjectID(ID(cfg.ID))
+	defer m.finishRetry(id, run)
+	var trackedProject *Project
+
+	for {
+		if err := m.retrySleep(ctx, delay); err != nil {
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+
+		if trackedProject == nil {
+			_, candidate, err := m.createProjectLocked(cfg)
+			if err != nil {
+				if !errors.Is(err, ErrConnectorCreation) || !connector.IsRetryable(err) {
+					m.recordPendingFailure(cfg, err, time.Time{}, true)
+					m.logProjectStartupFailure(id, err, time.Time{}, true)
+					return
+				}
+				attempt++
+				delay = m.retryDelay(attempt)
+				runtimeErr := m.retryRuntimeError(err, delay)
+				m.recordPendingFailure(cfg, err, runtimeErr.NextRetryAt, false)
+				m.logProjectStartupFailure(id, err, runtimeErr.NextRetryAt, false)
+				continue
+			}
+			if !m.activateRetriedProject(ctx, cfg, candidate) {
+				return
+			}
+			trackedProject = candidate
+			if trackedProject.Paused() {
+				return
+			}
+		}
+
+		err := trackedProject.start(ctx, startOptions{provision: true, publishEvents: true})
+		if err == nil {
+			m.markProjectRetryRecovered(id)
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if !connector.IsRetryable(err) {
+			trackedProject.recordRuntimeErrorState(err, m.nowUTC(), time.Time{}, true)
+			m.logProjectStartupFailure(id, err, time.Time{}, true)
+			return
+		}
+		attempt++
+		delay = m.retryDelay(attempt)
+		runtimeErr := m.retryRuntimeError(err, delay)
+		trackedProject.recordRuntimeErrorState(err, runtimeErr.At, runtimeErr.NextRetryAt, false)
+		m.logProjectStartupFailure(id, err, runtimeErr.NextRetryAt, false)
+	}
+}
+
+func (m *Manager) retryProject(
+	ctx context.Context,
+	run *retryRun,
+	trackedProject *Project,
+	attempt int,
+	delay time.Duration,
+) {
+	id := trackedProject.ID()
+	defer m.finishRetry(id, run)
+
+	for {
+		if err := m.retrySleep(ctx, delay); err != nil {
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+
+		err := trackedProject.start(ctx, startOptions{provision: true, publishEvents: true})
+		if err == nil {
+			m.markProjectRetryRecovered(id)
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if !connector.IsRetryable(err) {
+			trackedProject.recordRuntimeErrorState(err, m.nowUTC(), time.Time{}, true)
+			m.logProjectStartupFailure(id, err, time.Time{}, true)
+			return
+		}
+		attempt++
+		delay = m.retryDelay(attempt)
+		runtimeErr := m.retryRuntimeError(err, delay)
+		trackedProject.recordRuntimeErrorState(err, runtimeErr.At, runtimeErr.NextRetryAt, false)
+		m.logProjectStartupFailure(id, err, runtimeErr.NextRetryAt, false)
+	}
+}
+
+func (m *Manager) activateRetriedProject(ctx context.Context, cfg globalconfig.Project, trackedProject *Project) bool {
+	id := normalizeProjectID(ID(cfg.ID))
+	m.mu.Lock()
+	current := m.running && ctx.Err() == nil && m.projectConfigCurrentLocked(cfg)
+	if current {
+		_, current = m.registry.Get(id)
+		current = !current
+	}
+	if current {
+		current = m.registry.Set(trackedProject) == nil
+	}
+	m.mu.Unlock()
+	if current {
+		return true
+	}
+	if err := trackedProject.close(context.WithoutCancel(ctx), false); err != nil {
+		m.logger.Warn("close unused retried project failed", "project_id", id, "error", err)
+	}
+	return false
+}
+
+func (m *Manager) projectConfigCurrentLocked(cfg globalconfig.Project) bool {
+	id := normalizeProjectID(ID(cfg.ID))
+	for _, current := range m.cfg.Projects {
+		if normalizeProjectID(ID(current.ID)) == id {
+			return sameProjectConfig(current, cfg)
+		}
+	}
+	return false
+}
+
+func (m *Manager) recordPendingFailure(
+	cfg globalconfig.Project,
+	err error,
+	nextRetryAt time.Time,
+	terminal bool,
+) {
+	runtimeErr := RuntimeError{
+		Message:     err.Error(),
+		At:          m.nowUTC(),
+		NextRetryAt: nextRetryAt,
+		Terminal:    terminal,
+	}
+	if pendingErr := m.registry.SetPending(cfg, runtimeErr); pendingErr != nil {
+		m.logger.Warn("record pending project startup failed", "project_id", cfg.ID, "error", pendingErr)
+	}
+}
+
+func (m *Manager) retryRuntimeError(err error, delay time.Duration) RuntimeError {
+	at := m.nowUTC()
+	return RuntimeError{Message: err.Error(), At: at, NextRetryAt: at.Add(delay)}
+}
+
+func (m *Manager) retryDelay(attempt int) time.Duration {
+	delay := m.retry.InitialBackoff
+	for current := 1; current < attempt && delay < m.retry.MaxBackoff; current++ {
+		if delay > m.retry.MaxBackoff/2 {
+			delay = m.retry.MaxBackoff
+			break
+		}
+		delay *= 2
+	}
+	if delay >= m.retry.MaxBackoff || m.retry.Jitter <= 0 {
+		return min(delay, m.retry.MaxBackoff)
+	}
+	jitter := m.retryJitter(m.retry.Jitter)
+	if jitter < 0 {
+		jitter = 0
+	}
+	return min(delay+jitter, m.retry.MaxBackoff)
+}
+
+func (m *Manager) nowUTC() time.Time {
+	return m.now().UTC()
+}
+
+func (m *Manager) markProjectRetryRecovered(id ID) {
+	m.mu.Lock()
+	m.spawned = true
+	m.mu.Unlock()
+	m.logger.Info("project startup recovered", "project_id", id)
+}
+
+func (m *Manager) finishRetry(id ID, run *retryRun) {
+	close(run.done)
+	m.mu.Lock()
+	if m.retryRuns[id] == run {
+		delete(m.retryRuns, id)
+	}
+	m.mu.Unlock()
+	m.retryWG.Done()
+}
+
+func (m *Manager) cancelRetryLocked(id ID) *retryRun {
+	run := m.retryRuns[normalizeProjectID(id)]
+	if run != nil {
+		run.cancel()
+	}
+	return run
+}
+
+func (m *Manager) cancelAndWaitRetryLocked(ctx context.Context, id ID) error {
+	run := m.cancelRetryLocked(id)
+	if run == nil {
+		return nil
+	}
+	select {
+	case <-run.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *Manager) cancelAllRetries() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, run := range m.retryRuns {
+		run.cancel()
+	}
+}
+
+func (m *Manager) logProjectStartupFailure(id ID, err error, nextRetryAt time.Time, retryStopped bool) {
 	logger := m.logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	logger.Warn("project startup failed", "project_id", id, "error", err)
+	logger.Warn(
+		"project startup failed",
+		"project_id", id,
+		"error", err,
+		"next_retry_at", nextRetryAt,
+		"retry_stopped", retryStopped,
+	)
 }
 
 func retainAddedProjectStartFailure(project *Project, err error) bool {
@@ -790,6 +1229,22 @@ func normalizeManagerConfig(cfg ManagerConfig) ManagerConfig {
 	cfg.Projects = append([]globalconfig.Project(nil), cfg.Projects...)
 	for i := range cfg.Projects {
 		cfg.Projects[i] = normalizeManagerProjectConfigWithIdentity(cfg.Projects[i], cfg.Identity)
+	}
+	return cfg
+}
+
+func normalizeConnectorRetryConfig(cfg ConnectorRetryConfig) ConnectorRetryConfig {
+	if cfg.InitialBackoff <= 0 {
+		cfg.InitialBackoff = defaultRetryInitialBackoff
+	}
+	if cfg.MaxBackoff <= 0 {
+		cfg.MaxBackoff = defaultRetryMaxBackoff
+	}
+	if cfg.MaxBackoff < cfg.InitialBackoff {
+		cfg.MaxBackoff = cfg.InitialBackoff
+	}
+	if cfg.Jitter <= 0 {
+		cfg.Jitter = defaultRetryJitter
 	}
 	return cfg
 }

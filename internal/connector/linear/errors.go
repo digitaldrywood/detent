@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 var (
@@ -17,7 +19,7 @@ var (
 	ErrMissingUser         = errors.New("linear user is required")
 	ErrMissingToken        = errors.New("linear token is required")
 	ErrStateNotFound       = errors.New("linear state not found")
-	ErrTransient           = errors.New("linear transient error")
+	ErrTransient           = connector.NewRetryableError("linear transient error")
 	ErrUnexpectedStatus    = errors.New("linear unexpected status")
 	ErrUserAmbiguous       = errors.New("linear user ambiguous")
 	ErrUserNotFound        = errors.New("linear user not found")
