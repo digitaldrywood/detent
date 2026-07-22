@@ -408,15 +408,14 @@ func TestModelSecondInterruptRequestsForceQuit(t *testing.T) {
 		t.Fatalf("interrupts = %d before force command runs, want 1", interrupts)
 	}
 	next, quitCmd := model.Update(cmd())
-	assertSubscriptionClosed(t, next.(Model))
 	if interrupts != 2 {
 		t.Fatalf("interrupts = %d, want 2", interrupts)
 	}
-	if quitCmd == nil {
-		t.Fatal("second interrupt did not return quit command")
+	if quitCmd != nil {
+		t.Fatal("second interrupt returned a quit command before forced cleanup completed")
 	}
-	if _, ok := quitCmd().(tea.QuitMsg); !ok {
-		t.Fatalf("second interrupt command message = %T, want tea.QuitMsg", quitCmd())
+	if next.(Model).shutdownNote != shutdownForceNotice {
+		t.Fatal("force shutdown notice did not persist while cleanup ran")
 	}
 }
 

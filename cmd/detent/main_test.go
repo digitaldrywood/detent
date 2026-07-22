@@ -428,7 +428,7 @@ func TestWriteSignalShutdownNotice(t *testing.T) {
 	}
 }
 
-func TestHandleShutdownSignalHardExitsOnForceInterrupt(t *testing.T) {
+func TestHandleShutdownSignalQueuesForceInterrupt(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -441,15 +441,8 @@ func TestHandleShutdownSignalHardExitsOnForceInterrupt(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	var exits []int
-
-	if done := handleShutdownSignal(interrupts, cancel, &output, func(code int) {
-		exits = append(exits, code)
-	}); done {
+	if request, done := handleShutdownSignal(interrupts, cancel, &output); done || request != cli.ShutdownRequestDrain {
 		t.Fatal("first interrupt stopped signal loop")
-	}
-	if len(exits) != 0 {
-		t.Fatalf("first interrupt exit codes = %v, want none", exits)
 	}
 	select {
 	case <-ctx.Done():
@@ -457,13 +450,8 @@ func TestHandleShutdownSignalHardExitsOnForceInterrupt(t *testing.T) {
 	default:
 	}
 
-	if done := handleShutdownSignal(interrupts, cancel, &output, func(code int) {
-		exits = append(exits, code)
-	}); !done {
-		t.Fatal("force interrupt did not stop signal loop")
-	}
-	if len(exits) != 1 || exits[0] != cli.ExitGeneral {
-		t.Fatalf("force interrupt exit codes = %v, want [%d]", exits, cli.ExitGeneral)
+	if request, done := handleShutdownSignal(interrupts, cancel, &output); done || request != cli.ShutdownRequestForce {
+		t.Fatalf("force interrupt = %v, done %v, want force request without stopping signal loop", request, done)
 	}
 
 	notice := output.String()
@@ -491,11 +479,7 @@ func TestHandleShutdownSignalSuppressesHandledNotices(t *testing.T) {
 		suppressNotices: true,
 	}
 	var output bytes.Buffer
-	var exits []int
-
-	if done := handleShutdownSignal(interrupts, cancel, &output, func(code int) {
-		exits = append(exits, code)
-	}); done {
+	if request, done := handleShutdownSignal(interrupts, cancel, &output); done || request != cli.ShutdownRequestDrain {
 		t.Fatal("first interrupt stopped signal loop")
 	}
 	if got := output.String(); got != "" {
@@ -507,16 +491,11 @@ func TestHandleShutdownSignalSuppressesHandledNotices(t *testing.T) {
 	default:
 	}
 
-	if done := handleShutdownSignal(interrupts, cancel, &output, func(code int) {
-		exits = append(exits, code)
-	}); !done {
-		t.Fatal("force interrupt did not stop signal loop")
+	if request, done := handleShutdownSignal(interrupts, cancel, &output); done || request != cli.ShutdownRequestForce {
+		t.Fatalf("force interrupt = %v, done %v, want force request without stopping signal loop", request, done)
 	}
 	if got := output.String(); got != "" {
 		t.Fatalf("force interrupt wrote suppressed notice:\n%s", got)
-	}
-	if len(exits) != 1 || exits[0] != cli.ExitGeneral {
-		t.Fatalf("force interrupt exit codes = %v, want [%d]", exits, cli.ExitGeneral)
 	}
 }
 

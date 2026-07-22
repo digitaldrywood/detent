@@ -29,6 +29,7 @@ const (
 	defaultShutdownProgressInterval = 15 * time.Second
 	defaultShutdownHardTimeout      = 5 * time.Second
 	shutdownDrainPollInterval       = 500 * time.Millisecond
+	shutdownInventoryTimeout        = 100 * time.Millisecond
 )
 
 type ShutdownRequest int
@@ -42,6 +43,8 @@ type ShutdownController struct {
 	requests                chan ShutdownRequest
 	active                  atomic.Bool
 	shutdownRequested       atomic.Bool
+	forceRequested          atomic.Bool
+	shutdownStatus          atomic.Pointer[telemetry.Shutdown]
 	signalNoticesSuppressed atomic.Bool
 }
 
@@ -70,6 +73,7 @@ func (c *ShutdownController) RequestDrainIfIdle(accepted func()) bool {
 func (c *ShutdownController) RequestForce() {
 	if c != nil {
 		c.shutdownRequested.Store(true)
+		c.forceRequested.Store(true)
 	}
 	c.request(ShutdownRequestForce)
 }
@@ -89,6 +93,28 @@ func (c *ShutdownController) SignalNoticesSuppressed() bool {
 	return c != nil && c.signalNoticesSuppressed.Load()
 }
 
+func (c *ShutdownController) ForceRequested() bool {
+	return c != nil && c.forceRequested.Load()
+}
+
+func (c *ShutdownController) currentShutdownStatus() (telemetry.Shutdown, bool) {
+	if c == nil {
+		return telemetry.Shutdown{}, false
+	}
+	status := c.shutdownStatus.Load()
+	if status == nil {
+		return telemetry.Shutdown{}, false
+	}
+	return *status, true
+}
+
+func (c *ShutdownController) publishShutdownStatus(status telemetry.Shutdown) {
+	if c == nil {
+		return
+	}
+	c.shutdownStatus.Store(&status)
+}
+
 func (c *ShutdownController) RequestInterrupt() bool {
 	_, handled := c.RequestInterruptKind()
 	return handled
@@ -102,6 +128,7 @@ func (c *ShutdownController) RequestInterruptKind() (ShutdownRequest, bool) {
 		c.request(ShutdownRequestDrain)
 		return ShutdownRequestDrain, true
 	}
+	c.forceRequested.Store(true)
 	c.request(ShutdownRequestForce)
 	return ShutdownRequestForce, true
 }
@@ -111,10 +138,14 @@ func (c *ShutdownController) activate() func() {
 		return func() {}
 	}
 	c.shutdownRequested.Store(false)
+	c.forceRequested.Store(false)
+	c.shutdownStatus.Store(nil)
 	c.active.Store(true)
 	return func() {
 		c.active.Store(false)
 		c.shutdownRequested.Store(false)
+		c.forceRequested.Store(false)
+		c.shutdownStatus.Store(nil)
 	}
 }
 
@@ -146,9 +177,6 @@ type runningShutdownConfig struct {
 	Registry           *project.Registry
 	SnapshotHub        *hub.Hub[telemetry.Snapshot]
 	SnapshotSeq        *atomic.Uint64
-	LifetimeSource     lifetimeTotalsSource
-	UpdateStatusSource autoUpdateStatusSource
-	DashboardURL       string
 	Output             io.Writer
 	Logger             *slog.Logger
 	TerminalDashboard  bool
@@ -188,15 +216,23 @@ func runWithShutdown(ctx context.Context, cfg runningShutdownConfig, serve shutd
 	for {
 		select {
 		case err := <-serveErrs:
+			if cfg.Controller.ForceRequested() {
+				machine = machine.Apply(shutdownstate.EventForceRequested)
+				sessions, _ := cachedShutdownRunningSessions(cfg)
+				return runForceShutdown(ctx, cfg, cancelServe, serveErrs, machine, "forced", sessions)
+			}
 			if ctx.Err() != nil && unexpectedShutdownServeError(err) == nil {
 				return ctx.Err()
 			}
 			return unexpectedShutdownServeError(err)
 		case <-ctx.Done():
-			cancelServe()
-			if err := loggedWaitForServeExit(context.Background(), cfg, serveErrs); err != nil {
-				return err
+			if cfg.Controller.ForceRequested() {
+				machine = machine.Apply(shutdownstate.EventForceRequested)
+				sessions, _ := cachedShutdownRunningSessions(cfg)
+				return runForceShutdown(ctx, cfg, cancelServe, serveErrs, machine, "forced", sessions)
 			}
+			cancelServe()
+			waitForServeCleanup(ctx, cfg, serveErrs, ctx.Err())
 			return ctx.Err()
 		case request := <-cfg.Controller.Requests():
 			shutdownLogger(cfg).Debug("shutdown request received", "operation", "shutdown_request", "request", request.String())
@@ -206,7 +242,8 @@ func runWithShutdown(ctx context.Context, cfg runningShutdownConfig, serve shutd
 				return runDrainShutdown(ctx, cfg, cancelServe, serveErrs, machine)
 			case ShutdownRequestForce:
 				machine = machine.Apply(shutdownstate.EventForceRequested)
-				return runForceShutdown(ctx, cfg, cancelServe, serveErrs, machine, "forced")
+				sessions, _ := cachedShutdownRunningSessions(cfg)
+				return runForceShutdown(ctx, cfg, cancelServe, serveErrs, machine, "forced", sessions)
 			}
 		}
 	}
@@ -222,8 +259,9 @@ func runDrainShutdown(
 	startedAt := shutdownNow(cfg)
 	drainTimeout := shutdownDrainTimeoutForConfig(cfg)
 	inventoryStarted := logShutdownBoundaryBegin(shutdownLogger(cfg), "initial_running_session_inventory")
-	sessions := shutdownRunningSessions(ctx, cfg.Registry, startedAt)
-	logShutdownBoundaryEnd(shutdownLogger(cfg), "initial_running_session_inventory", inventoryStarted, nil, "sessions", len(sessions))
+	sessions, inventoryKnown := initialShutdownRunningSessions(ctx, cfg, startedAt)
+	logShutdownBoundaryEndResult(shutdownLogger(cfg), "initial_running_session_inventory", inventoryStarted, shutdownInventoryResult(inventoryKnown), nil, "sessions", len(sessions))
+	publishShutdownSnapshot(cfg, startedAt, startedAt, sessions)
 	logShutdownDrainBlockers(cfg, "initial", sessions, drainTimeout)
 	writeShutdownBanner(shutdownOutput(cfg), sessions, drainTimeout)
 	shutdownLogger(cfg).Info("shutdown requested", "sessions", len(sessions))
@@ -233,18 +271,14 @@ func runDrainShutdown(
 		hardTimeout = defaultShutdownHardTimeout
 	}
 	drainCtx, cancelDrain := context.WithTimeout(ctx, hardTimeout)
-	if err := runLoggedShutdownStep(drainCtx, cfg, "drain_projects", func(stepCtx context.Context) error {
-		return drainProjects(stepCtx, cfg.Registry, shutdownLogger(cfg))
-	}); err != nil {
-		shutdownLogger(cfg).Warn("drain projects during shutdown failed", "error", err)
-	}
-	cancelDrain()
-	publishShutdownSnapshot(ctx, cfg, startedAt)
-
-	if len(sessions) == 0 {
-		machine = machine.Apply(shutdownstate.EventDrained)
-		return completeShutdown(ctx, cfg, cancelServe, serveErrs, startedAt, machine, nil)
-	}
+	defer cancelDrain()
+	drainErrs := make(chan error, 1)
+	go func() {
+		drainErrs <- runLoggedShutdownStep(drainCtx, cfg, "drain_projects", func(stepCtx context.Context) error {
+			return drainProjects(stepCtx, cfg.Registry, shutdownLogger(cfg))
+		})
+	}()
+	drainComplete := false
 
 	progressInterval := cfg.ProgressInterval
 	if progressInterval <= 0 {
@@ -264,35 +298,55 @@ func runDrainShutdown(
 	}
 
 	for {
-		sessions = shutdownRunningSessions(ctx, cfg.Registry, shutdownNow(cfg))
-		if len(sessions) == 0 {
+		if drainComplete && inventoryKnown && len(sessions) == 0 {
 			machine = machine.Apply(shutdownstate.EventDrained)
 			return completeShutdown(ctx, cfg, cancelServe, serveErrs, startedAt, machine, nil)
 		}
 
 		select {
 		case err := <-serveErrs:
+			if cfg.Controller.ForceRequested() {
+				cancelDrain()
+				machine = machine.Apply(shutdownstate.EventForceRequested)
+				return runForceShutdown(ctx, cfg, cancelServe, serveErrs, machine, "forced", sessions)
+			}
 			return unexpectedShutdownServeError(err)
 		case <-ctx.Done():
-			cancelServe()
-			if err := loggedWaitForServeExit(context.Background(), cfg, serveErrs); err != nil {
-				return err
+			cancelDrain()
+			if cfg.Controller.ForceRequested() {
+				machine = machine.Apply(shutdownstate.EventForceRequested)
+				return runForceShutdown(ctx, cfg, cancelServe, serveErrs, machine, "forced", sessions)
 			}
+			cancelServe()
+			waitForServeCleanup(ctx, cfg, serveErrs, ctx.Err())
 			return ctx.Err()
 		case request := <-cfg.Controller.Requests():
 			shutdownLogger(cfg).Debug("shutdown request received", "operation", "shutdown_request", "request", request.String())
 			if request == ShutdownRequestForce {
+				cancelDrain()
 				machine = machine.Apply(shutdownstate.EventForceRequested)
-				return runForceShutdown(ctx, cfg, cancelServe, serveErrs, machine, "forced")
+				return runForceShutdown(ctx, cfg, cancelServe, serveErrs, machine, "forced", sessions)
+			}
+		case err := <-drainErrs:
+			drainComplete = true
+			drainErrs = nil
+			if err != nil {
+				shutdownLogger(cfg).Warn("drain projects during shutdown failed", "error", err)
 			}
 		case <-poll.C:
+			if current, ok := boundedShutdownRunningSessions(ctx, cfg, shutdownNow(cfg)); ok {
+				sessions = current
+				inventoryKnown = true
+			}
+			publishShutdownSnapshot(cfg, shutdownNow(cfg), startedAt, sessions)
 		case <-progress.C:
 			logShutdownDrainBlockers(cfg, "progress", sessions, drainTimeout)
 			writeShutdownProgress(shutdownOutput(cfg), sessions, shutdownDrainRemaining(startedAt, drainTimeout, shutdownNow(cfg)))
 		case <-timeout:
+			cancelDrain()
 			machine = machine.Apply(shutdownstate.EventDrainTimedOut)
 			logShutdownDrainTimeout(cfg, sessions, drainTimeout)
-			return runForceShutdownWithDeadline(ctx, cfg, cancelServe, serveErrs, machine, "drain timeout", ErrShutdownTimeout, hardTimeout)
+			return runForceShutdownWithDeadline(ctx, cfg, cancelServe, serveErrs, machine, "drain timeout", ErrShutdownTimeout, hardTimeout, sessions)
 		}
 	}
 }
@@ -304,12 +358,13 @@ func runForceShutdown(
 	serveErrs <-chan error,
 	machine shutdownstate.Machine,
 	result string,
+	sessions []telemetry.Running,
 ) error {
 	hardTimeout := cfg.HardTimeout
 	if hardTimeout <= 0 {
 		hardTimeout = defaultShutdownHardTimeout
 	}
-	return runForceShutdownWithDeadline(ctx, cfg, cancelServe, serveErrs, machine, result, ErrShutdownForced, hardTimeout)
+	return runForceShutdownWithDeadline(ctx, cfg, cancelServe, serveErrs, machine, result, ErrShutdownForced, hardTimeout, sessions)
 }
 
 func runForceShutdownWithDeadline(
@@ -321,27 +376,22 @@ func runForceShutdownWithDeadline(
 	result string,
 	returnErr error,
 	hardTimeout time.Duration,
+	sessions []telemetry.Running,
 ) error {
 	startedAt := shutdownNow(cfg)
-	inventoryStarted := logShutdownBoundaryBegin(shutdownLogger(cfg), "force_running_session_inventory")
-	sessions := shutdownRunningSessions(ctx, cfg.Registry, startedAt)
-	logShutdownBoundaryEnd(shutdownLogger(cfg), "force_running_session_inventory", inventoryStarted, nil, "sessions", len(sessions))
 	if result == "drain timeout" {
 		fmt.Fprintf(shutdownOutput(cfg), "drain timeout reached — interrupting %d %s\n", len(sessions), shutdownSessionNoun(len(sessions)))
 	} else {
 		fmt.Fprintf(shutdownOutput(cfg), "force quit requested — interrupting %d %s\n", len(sessions), shutdownSessionNoun(len(sessions)))
 	}
 
-	forceCtx, cancel := context.WithTimeout(context.Background(), hardTimeout)
-	defer cancel()
-	if err := runLoggedShutdownStep(forceCtx, cfg, "force_projects", func(stepCtx context.Context) error {
-		return forceProjects(stepCtx, cfg.Registry, shutdownLogger(cfg))
-	}); err != nil {
-		shutdownLogger(cfg).Warn("force shutdown cleanup failed", "error", err)
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	reapCtx, cancelReap := context.WithTimeout(context.Background(), hardTimeout)
+	forceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hardTimeout)
+	defer cancel()
 	reapErr := reapWorkerProcesses(
-		reapCtx,
+		forceCtx,
 		cfg.WorkerProcesses,
 		shutdownLogger(cfg),
 		result,
@@ -349,13 +399,16 @@ func runForceShutdownWithDeadline(
 		cfg.Now,
 		cfg.ReapWorkerProcess,
 	)
-	cancelReap()
 	if reapErr != nil {
-		shutdownLogger(cfg).Warn("worker process cleanup failed", "error", reapErr)
+		shutdownLogger(cfg).Warn("shutdown cleanup error ignored in favor of primary result", "component", "worker_processes", "primary", returnErr, "error", reapErr)
 	}
-	publishShutdownSnapshot(forceCtx, cfg, startedAt)
+	if err := runLoggedShutdownStep(forceCtx, cfg, "force_projects", func(stepCtx context.Context) error {
+		return forceProjects(stepCtx, cfg.Registry, shutdownLogger(cfg))
+	}); err != nil {
+		shutdownLogger(cfg).Warn("shutdown cleanup error ignored in favor of primary result", "component", "projects", "primary", returnErr, "error", err)
+	}
 
-	return errors.Join(completeShutdown(forceCtx, cfg, cancelServe, serveErrs, startedAt, machine, returnErr), reapErr)
+	return completeShutdown(forceCtx, cfg, cancelServe, serveErrs, startedAt, machine, returnErr)
 }
 
 func completeShutdown(
@@ -381,21 +434,44 @@ func completeShutdown(
 	}); err != nil {
 		shutdownLogger(cfg).Warn("stop projects during shutdown failed", "error", err)
 	}
+	select {
+	case err := <-serveErrs:
+		if unexpected := unexpectedShutdownServeError(err); unexpected != nil {
+			if returnErr == nil {
+				return unexpected
+			}
+			shutdownLogger(cfg).Warn("shutdown cleanup error ignored in favor of primary result", "component", "serve", "primary", returnErr, "error", unexpected)
+		}
+		return returnErr
+	default:
+	}
 
 	cancelStarted := logShutdownBoundaryBegin(shutdownLogger(cfg), "serve_cancel", "component", "serve")
 	cancelServe()
 	logShutdownBoundaryEnd(shutdownLogger(cfg), "serve_cancel", cancelStarted, nil, "component", "serve")
 	if err := loggedWaitForServeExit(stopCtx, cfg, serveErrs); err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			shutdownLogger(cfg).Warn("serve did not exit before shutdown deadline", "error", err)
-			return returnErr
-		}
-		return err
+		shutdownLogger(cfg).Warn("shutdown cleanup error ignored in favor of primary result", "component", "serve", "primary", returnErr, "error", err)
+		return returnErr
 	}
 
 	result := shutdownResultLabel(machine)
 	shutdownLogger(cfg).Info("shutdown complete ("+result+")", "duration", shutdownNow(cfg).Sub(startedAt))
 	return returnErr
+}
+
+func waitForServeCleanup(ctx context.Context, cfg runningShutdownConfig, serveErrs <-chan error, primary error) {
+	hardTimeout := cfg.HardTimeout
+	if hardTimeout <= 0 {
+		hardTimeout = defaultShutdownHardTimeout
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	waitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hardTimeout)
+	defer cancel()
+	if err := loggedWaitForServeExit(waitCtx, cfg, serveErrs); err != nil {
+		shutdownLogger(cfg).Warn("shutdown cleanup error ignored in favor of primary result", "component", "serve", "primary", primary, "error", err)
+	}
 }
 
 func runLoggedShutdownStep(ctx context.Context, cfg runningShutdownConfig, operation string, step func(context.Context) error, attrs ...any) error {
@@ -508,8 +584,13 @@ func stopProjects(ctx context.Context, registry *project.Registry, logger *slog.
 }
 
 func shutdownRunningSessions(ctx context.Context, registry *project.Registry, now time.Time) []telemetry.Running {
+	sessions, _ := liveShutdownRunningSessions(ctx, registry, now)
+	return sessions
+}
+
+func liveShutdownRunningSessions(ctx context.Context, registry *project.Registry, now time.Time) ([]telemetry.Running, bool) {
 	if registry == nil {
-		return nil
+		return nil, true
 	}
 
 	var sessions []telemetry.Running
@@ -523,14 +604,54 @@ func shutdownRunningSessions(ctx context.Context, registry *project.Registry, no
 		}
 		state, err := orch.State(ctx)
 		if err != nil {
-			continue
+			return nil, false
 		}
 		sessions = append(sessions, state.Snapshot(now).Running...)
 	}
 	sort.Slice(sessions, func(i int, j int) bool {
 		return shutdownIssueLabel(sessions[i]) < shutdownIssueLabel(sessions[j])
 	})
-	return sessions
+	return sessions, true
+}
+
+func initialShutdownRunningSessions(ctx context.Context, cfg runningShutdownConfig, now time.Time) ([]telemetry.Running, bool) {
+	return boundedShutdownRunningSessions(ctx, cfg, now)
+}
+
+func boundedShutdownRunningSessions(ctx context.Context, cfg runningShutdownConfig, now time.Time) ([]telemetry.Running, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	inventoryCtx, cancel := context.WithTimeout(ctx, shutdownInventoryTimeout)
+	defer cancel()
+	sessions, ok := liveShutdownRunningSessions(inventoryCtx, cfg.Registry, now)
+	if ok {
+		return sessions, true
+	}
+	sessions, _ = cachedShutdownRunningSessions(cfg)
+	return sessions, false
+}
+
+func cachedShutdownRunningSessions(cfg runningShutdownConfig) ([]telemetry.Running, bool) {
+	if cfg.SnapshotHub == nil {
+		return nil, false
+	}
+	snapshot, ok := cfg.SnapshotHub.Latest()
+	if !ok {
+		return nil, false
+	}
+	sessions := append([]telemetry.Running(nil), snapshot.Running...)
+	sort.Slice(sessions, func(i int, j int) bool {
+		return shutdownIssueLabel(sessions[i]) < shutdownIssueLabel(sessions[j])
+	})
+	return sessions, true
+}
+
+func shutdownInventoryResult(known bool) string {
+	if known {
+		return "ok"
+	}
+	return "cached"
 }
 
 func shutdownDrainTimeoutForConfig(cfg runningShutdownConfig) time.Duration {
@@ -544,20 +665,33 @@ func shutdownDrainTimeoutForConfig(cfg runningShutdownConfig) time.Duration {
 	return timeout
 }
 
-func publishShutdownSnapshot(ctx context.Context, cfg runningShutdownConfig, now time.Time) {
+func publishShutdownSnapshot(cfg runningShutdownConfig, now time.Time, requestedAt time.Time, sessions []telemetry.Running) {
 	started := logShutdownBoundaryBegin(shutdownLogger(cfg), "shutdown_snapshot_publish")
-	if cfg.Registry == nil || cfg.SnapshotHub == nil {
+	if cfg.SnapshotHub == nil {
 		logShutdownBoundaryEndResult(shutdownLogger(cfg), "shutdown_snapshot_publish", started, "skipped", nil)
 		return
 	}
+	snapshot, _ := cfg.SnapshotHub.Latest()
 	seq := cfg.SnapshotSeq
 	if seq == nil {
 		seq = &atomic.Uint64{}
-		if latest, ok := cfg.SnapshotHub.Latest(); ok {
-			seq.Store(latest.Seq)
-		}
 	}
-	if err := publishSnapshotOnce(ctx, cfg.Registry, cfg.SnapshotHub, seq, now, nil, cfg.LifetimeSource, cfg.DashboardURL, cfg.UpdateStatusSource); err != nil {
+	for current := seq.Load(); current < snapshot.Seq && !seq.CompareAndSwap(current, snapshot.Seq); current = seq.Load() {
+	}
+	snapshot.Seq = seq.Add(1)
+	snapshot.GeneratedAt = now
+	snapshot.Running = append([]telemetry.Running(nil), sessions...)
+	snapshot.Counts.Running = len(sessions)
+	requested := requestedAt
+	shutdownStatus := telemetry.Shutdown{
+		Status:            "draining",
+		Draining:          true,
+		SessionsRemaining: len(sessions),
+		RequestedAt:       &requested,
+	}
+	cfg.Controller.publishShutdownStatus(shutdownStatus)
+	snapshot.Shutdown = shutdownStatus
+	if err := cfg.SnapshotHub.Publish(snapshot); err != nil {
 		logShutdownBoundaryEnd(shutdownLogger(cfg), "shutdown_snapshot_publish", started, err)
 		shutdownLogger(cfg).Warn("publish shutdown telemetry snapshot failed", "error", err)
 		return
