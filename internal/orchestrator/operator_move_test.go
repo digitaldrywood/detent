@@ -136,3 +136,53 @@ func TestHandleOperatorMovePreservesNonProjectStatusBlock(t *testing.T) {
 		t.Fatalf("Claimed[%q] missing", issue.ID)
 	}
 }
+
+func TestHandleOperatorMoveReconcilesConfiguredNonBlockedTargets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		target      string
+		wantCleared bool
+	}{
+		{name: "observed state", target: "Human Review", wantCleared: true},
+		{name: "terminal state", target: "Done", wantCleared: true},
+		{name: "unknown state", target: "Unconfigured", wantCleared: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := connector.Issue{ID: "configured-target", State: "Blocked"}
+			cfg := normalizeConfig(Config{
+				ActiveStates:   []string{"Rework"},
+				ObservedStates: []string{"Blocked", "Human Review"},
+				TerminalStates: []string{"Done"},
+			})
+			state := newState(cfg)
+			state.BoardIssues = []connector.Issue{issue}
+			state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus}
+
+			result := (&Orchestrator{cfg: cfg}).handleOperatorMove(&state, OperatorMoveRequest{
+				IssueID:   issue.ID,
+				FromState: "Blocked",
+				ToState:   tt.target,
+			}, time.Now())
+
+			if result.BlockedCleared != tt.wantCleared || result.Reconciled != tt.wantCleared {
+				t.Fatalf("handleOperatorMove() = %#v, want cleared %t", result, tt.wantCleared)
+			}
+			_, blocked := state.Blocked[issue.ID]
+			if blocked == tt.wantCleared {
+				t.Fatalf("Blocked[%q] presence = %t, want %t", issue.ID, blocked, !tt.wantCleared)
+			}
+			wantState := "Blocked"
+			if tt.wantCleared {
+				wantState = tt.target
+			}
+			if state.BoardIssues[0].State != wantState {
+				t.Fatalf("BoardIssues[0].State = %q, want %q", state.BoardIssues[0].State, wantState)
+			}
+		})
+	}
+}

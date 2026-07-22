@@ -69,7 +69,7 @@ func (o *Orchestrator) handleOperatorMove(state *State, request OperatorMoveRequ
 	fromState := strings.TrimSpace(request.FromState)
 	toState := strings.TrimSpace(request.ToState)
 	if state == nil || issueID == "" || normalizeState(fromState) != normalizeState(blockedStatusState) ||
-		normalizeState(toState) == normalizeState(blockedStatusState) || !stateIn(toState, o.cfg.ActiveStates) {
+		normalizeState(toState) == normalizeState(blockedStatusState) || !o.operatorMoveTargetConfigured(toState) {
 		return OperatorMoveResult{}
 	}
 
@@ -128,6 +128,10 @@ func (o *Orchestrator) handleOperatorMove(state *State, request OperatorMoveRequ
 		)
 	}
 	return result
+}
+
+func (o *Orchestrator) operatorMoveTargetConfigured(state string) bool {
+	return stateIn(state, o.cfg.ActiveStates) || stateIn(state, o.cfg.ObservedStates) || stateIn(state, o.cfg.TerminalStates)
 }
 
 func clearProjectFailureBreakerIssue(breaker *ProjectFailureBreaker, issueID string) bool {
