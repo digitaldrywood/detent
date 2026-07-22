@@ -884,6 +884,7 @@ func TestPublishSnapshotOnceSurfacesPendingConnectorRetry(t *testing.T) {
 		registry,
 		snapshotHub,
 		&seq,
+		nil,
 		lastErrorAt,
 		nil,
 		nil,
