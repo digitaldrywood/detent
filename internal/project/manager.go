@@ -90,6 +90,7 @@ type retryRun struct {
 }
 
 type Manager struct {
+	operationMu            sync.Mutex
 	mu                     sync.Mutex
 	cfg                    ManagerConfig
 	registry               *Registry
@@ -209,6 +210,8 @@ func (m *Manager) Start(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	m.operationMu.Lock()
+	defer m.operationMu.Unlock()
 
 	m.mu.Lock()
 	if m.running {
@@ -270,6 +273,8 @@ func (m *Manager) Add(ctx context.Context, cfg globalconfig.Project) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	m.operationMu.Lock()
+	defer m.operationMu.Unlock()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -281,6 +286,8 @@ func (m *Manager) Remove(ctx context.Context, id ID) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	m.operationMu.Lock()
+	defer m.operationMu.Unlock()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -292,6 +299,8 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	m.operationMu.Lock()
+	defer m.operationMu.Unlock()
 
 	cfg = normalizeManagerConfig(cfg)
 	desired := make(map[ID]globalconfig.Project, len(cfg.Projects))
@@ -552,6 +561,8 @@ func (m *Manager) Pause(ctx context.Context, id ID) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	m.operationMu.Lock()
+	defer m.operationMu.Unlock()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -570,6 +581,8 @@ func (m *Manager) Unpause(ctx context.Context, id ID) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	m.operationMu.Lock()
+	defer m.operationMu.Unlock()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1137,12 +1150,15 @@ func (m *Manager) cancelAndWaitRetryLocked(ctx context.Context, id ID) error {
 	if run == nil {
 		return nil
 	}
+	m.mu.Unlock()
+	var err error
 	select {
 	case <-run.done:
-		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		err = ctx.Err()
 	}
+	m.mu.Lock()
+	return err
 }
 
 func (m *Manager) cancelAllRetries() {

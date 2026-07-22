@@ -443,6 +443,82 @@ func TestManagerReconcileRemovesPendingConnectorRetry(t *testing.T) {
 	manager.Wait()
 }
 
+func TestManagerRemoveDoesNotDeadlockWithActivatingConnectorRetry(t *testing.T) {
+	t.Parallel()
+
+	retryContexts := make(chan context.Context)
+	factoryEntered := make(chan struct{})
+	releaseFactory := make(chan struct{})
+	var mu sync.Mutex
+	factoryCalls := 0
+
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
+	}, project.ManagerDependencies{
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			mu.Lock()
+			factoryCalls++
+			call := factoryCalls
+			mu.Unlock()
+			if call == 1 {
+				return nil, errors.Join(project.ErrConnectorCreation, githubconnector.ErrTransient)
+			}
+			close(factoryEntered)
+			<-releaseFactory
+			return project.New(project.Config{
+				Project:  cfg,
+				Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
+			}, project.Dependencies{
+				Connector: provisioningConnector{},
+				Runner:    blockingRunner{},
+			})
+		},
+		RetrySleep: func(ctx context.Context, _ time.Duration) error {
+			retryContexts <- ctx
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	var retryCtx context.Context
+	select {
+	case retryCtx = <-retryContexts:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for retry delay")
+	}
+	select {
+	case <-factoryEntered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for retry factory")
+	}
+
+	removeDone := make(chan error, 1)
+	go func() {
+		removeDone <- manager.Remove(context.Background(), "alpha")
+	}()
+	select {
+	case <-retryCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for retry cancellation")
+	}
+	close(releaseFactory)
+
+	select {
+	case err := <-removeDone:
+		if err != nil {
+			t.Fatalf("Remove() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Remove() deadlocked with activating connector retry")
+	}
+	manager.Wait()
+}
+
 func TestManagerReconcileRecoversTerminalConnectorFactoryFailureAfterConfigChange(t *testing.T) {
 	t.Parallel()
 
