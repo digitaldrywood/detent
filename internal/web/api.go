@@ -74,8 +74,10 @@ func (s *Server) apiState(c echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
 	}
-	snapshot = s.cachedEnrichedSnapshot(c.Request().Context(), snapshot)
-	snapshot = s.withManualRefresh(snapshot)
+	if !snapshot.Shutdown.Draining {
+		snapshot = s.cachedEnrichedSnapshot(c.Request().Context(), snapshot)
+		snapshot = s.withManualRefresh(snapshot)
+	}
 
 	return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, now), s.instanceName()))
 }

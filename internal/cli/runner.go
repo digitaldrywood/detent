@@ -303,6 +303,7 @@ func publishSnapshots(
 	registry *project.Registry,
 	snapshotHub *hub.Hub[telemetry.Snapshot],
 	seq *atomic.Uint64,
+	shutdown *ShutdownController,
 	lifetimeSource lifetimeTotalsSource,
 	dashboardURL string,
 	interval time.Duration,
@@ -327,7 +328,7 @@ func publishSnapshots(
 	defer ticker.Stop()
 
 	for {
-		if err := publishSnapshotOnce(ctx, registry, snapshotHub, seq, now(), trend, lifetimeSource, dashboardURL, updateSources...); err != nil {
+		if err := publishSnapshotOnce(ctx, registry, snapshotHub, seq, shutdown, now(), trend, lifetimeSource, dashboardURL, updateSources...); err != nil {
 			slog.Default().Warn("publish telemetry snapshot failed", "error", err)
 		}
 		select {
@@ -525,6 +526,7 @@ func publishSnapshotOnce(
 	registry *project.Registry,
 	snapshotHub *hub.Hub[telemetry.Snapshot],
 	seq *atomic.Uint64,
+	shutdown *ShutdownController,
 	now time.Time,
 	trend *tokenTrendRecorder,
 	lifetimeSource lifetimeTotalsSource,
@@ -621,6 +623,9 @@ func publishSnapshotOnce(
 	}
 	merged.LifetimeTotals = lifetimeTotals(ctx, lifetimeSource)
 	merged.Update = telemetryUpdateStatus(updateSources)
+	if status, ok := shutdown.currentShutdownStatus(); ok {
+		merged.Shutdown = status
+	}
 	merged.Seq = seq.Add(1)
 	if current, ok := snapshotHub.Latest(); ok && current.LastKnown && now.Before(current.LastKnownUntil) && !boardsnapshot.Eligible(merged) {
 		return nil

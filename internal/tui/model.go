@@ -80,9 +80,7 @@ type snapshotMsg struct {
 
 type subscriptionClosedMsg struct{}
 
-type shutdownInterruptMsg struct {
-	force bool
-}
+type shutdownInterruptMsg struct{}
 
 func NewModel(ctx context.Context, snapshots *hub.Hub[telemetry.Snapshot], opts ...Option) (Model, error) {
 	if snapshots == nil {
@@ -185,10 +183,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.interrupt != nil {
 			m.interrupt()
 		}
-		if msg.force {
-			m.Close()
-			return m, tea.Quit
-		}
 		return m, nil
 	case tea.InterruptMsg:
 		return m.handleInterrupt()
@@ -243,9 +237,8 @@ func (m Model) handleInterrupt() (tea.Model, tea.Cmd) {
 		m.shutdownNote = shutdownDrainNotice
 	}
 
-	force := m.interrupts > 1
 	return m, func() tea.Msg {
-		return shutdownInterruptMsg{force: force}
+		return shutdownInterruptMsg{}
 	}
 }
 

@@ -363,7 +363,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		resourceWorkers.Wait()
 	}()
 	resourceWorkers.Go(func() {
-		publishSnapshots(runCtx, manager.Registry(), snapshotHub, snapshotSeq, runtimeStore, displayURL, defaultSnapshotInterval, time.Now, updateScheduler)
+		publishSnapshots(runCtx, manager.Registry(), snapshotHub, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, defaultSnapshotInterval, time.Now, updateScheduler)
 	})
 	go republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger) // #nosec G118 -- runCtx is the service-lifetime context canceled during shutdown.
 	resourceWorkers.Go(func() {
@@ -437,19 +437,15 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, runtimeLogPath(cfg), cfg.Output, nil, nil, nil)
 			})
 		}
-		var forceExitRequested atomic.Bool
 		return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
 			return runWithShutdown(ctx, runningShutdownConfig{
-				Controller:         cfg.Shutdown,
-				Registry:           manager.Registry(),
-				SnapshotHub:        snapshotHub,
-				SnapshotSeq:        snapshotSeq,
-				LifetimeSource:     runtimeStore,
-				UpdateStatusSource: updateScheduler,
-				DashboardURL:       displayURL,
-				Output:             cfg.Output,
-				Logger:             logger,
-				TerminalDashboard:  true,
+				Controller:        cfg.Shutdown,
+				Registry:          manager.Registry(),
+				SnapshotHub:       snapshotHub,
+				SnapshotSeq:       snapshotSeq,
+				Output:            cfg.Output,
+				Logger:            logger,
+				TerminalDashboard: true,
 				DrainTimeoutSource: func() time.Duration {
 					return shutdownDrainTimeout(manager.Registry())
 				},
@@ -461,14 +457,8 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, runtimeLogPath(cfg), cfg.Output, func() time.Duration {
 					return shutdownDrainTimeout(manager.Registry())
 				}, func() {
-					requestTerminalShutdownInterrupt(cfg.Shutdown, func(int) {
-						forceExitRequested.Store(true)
-					})
-				}, func() {
-					if forceExitRequested.Load() {
-						hardExitProcess(cfg.HardExit)
-					}
-				})
+					requestTerminalShutdownInterrupt(cfg.Shutdown)
+				}, nil)
 			})
 		})
 	}
@@ -483,15 +473,12 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	}
 	return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
 		return runWithShutdown(ctx, runningShutdownConfig{
-			Controller:         cfg.Shutdown,
-			Registry:           manager.Registry(),
-			SnapshotHub:        snapshotHub,
-			SnapshotSeq:        snapshotSeq,
-			LifetimeSource:     runtimeStore,
-			UpdateStatusSource: updateScheduler,
-			DashboardURL:       displayURL,
-			Output:             cfg.Output,
-			Logger:             logger,
+			Controller:  cfg.Shutdown,
+			Registry:    manager.Registry(),
+			SnapshotHub: snapshotHub,
+			SnapshotSeq: snapshotSeq,
+			Output:      cfg.Output,
+			Logger:      logger,
 			DrainTimeoutSource: func() time.Duration {
 				return shutdownDrainTimeout(manager.Registry())
 			},
@@ -697,6 +684,10 @@ func runStartupAndServe(
 			if result.err != nil {
 				cancel()
 				serveResult := <-results
+				if primaryShutdownError(serveResult.err) {
+					logSecondaryShutdownError("startup", serveResult.err, result.err)
+					return serveResult.err
+				}
 				if unexpected := unexpectedBootServeError(serveResult.err); unexpected != nil {
 					return errors.Join(result.err, unexpected)
 				}
@@ -707,6 +698,10 @@ func runStartupAndServe(
 			cancel()
 			if !startupDone {
 				startupResult := <-results
+				if primaryShutdownError(result.err) {
+					logSecondaryShutdownError("startup", result.err, startupResult.err)
+					return result.err
+				}
 				if startupResult.err != nil {
 					if unexpected := unexpectedBootServeError(result.err); unexpected != nil {
 						return errors.Join(unexpected, startupResult.err)
@@ -717,6 +712,17 @@ func runStartupAndServe(
 			return result.err
 		}
 	}
+}
+
+func primaryShutdownError(err error) bool {
+	return errors.Is(err, ErrShutdownForced) || errors.Is(err, ErrShutdownTimeout)
+}
+
+func logSecondaryShutdownError(component string, primary error, secondary error) {
+	if secondary == nil || errors.Is(secondary, context.Canceled) {
+		return
+	}
+	slog.Default().Warn("shutdown cleanup error ignored in favor of primary result", "component", component, "primary", primary, "error", secondary)
 }
 
 func unexpectedBootServeError(err error) error {
@@ -873,23 +879,10 @@ func shouldLaunchTerminalDashboard(cfg BootConfig) bool {
 	return cfg.Mode == BootModeRunning && cfg.StdoutTTY && !cfg.Headless
 }
 
-func requestTerminalShutdownInterrupt(controller *ShutdownController, hardExit func(int)) bool {
+func requestTerminalShutdownInterrupt(controller *ShutdownController) bool {
 	request, handled := controller.RequestInterruptKind()
 	slog.Default().Debug("shutdown interrupt request", "operation", "shutdown_interrupt_request", "source", "terminal_dashboard", "request", request.String(), "handled", handled)
-	if !handled {
-		return false
-	}
-	if request == ShutdownRequestForce {
-		hardExitProcess(hardExit)
-	}
-	return true
-}
-
-func hardExitProcess(hardExit func(int)) {
-	if hardExit == nil {
-		hardExit = os.Exit
-	}
-	hardExit(ExitGeneral)
+	return handled
 }
 
 func redirectDefaultLogger(path string, level string) (func(), error) {

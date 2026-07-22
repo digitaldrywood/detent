@@ -519,7 +519,7 @@ func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 	var seq atomic.Uint64
 	go func() {
 		defer close(done)
-		publishSnapshots(ctx, registry, snapshotHub, &seq, nil, "http://localhost:4101", 5*time.Millisecond, func() time.Time { return now })
+		publishSnapshots(ctx, registry, snapshotHub, &seq, nil, nil, "http://localhost:4101", 5*time.Millisecond, func() time.Time { return now })
 	}()
 
 	var (
@@ -569,7 +569,7 @@ func TestPublishSnapshotOnceAssignsMonotonicSeq(t *testing.T) {
 	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
 
 	for index := range 3 {
-		if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, now.Add(time.Duration(index)*time.Second), nil, nil, "http://localhost:4101"); err != nil {
+		if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, nil, now.Add(time.Duration(index)*time.Second), nil, nil, "http://localhost:4101"); err != nil {
 			t.Fatalf("publishSnapshotOnce(%d) error = %v", index, err)
 		}
 		snapshot, ok := snapshotHub.Latest()
@@ -610,7 +610,7 @@ func TestPublishSnapshotOncePreservesLastKnownSnapshotUntilHydration(t *testing.
 		t.Fatalf("Publish(cached) error = %v", err)
 	}
 	var seq atomic.Uint64
-	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, cached.GeneratedAt.Add(time.Minute), nil, nil, ""); err != nil {
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, nil, cached.GeneratedAt.Add(time.Minute), nil, nil, ""); err != nil {
 		t.Fatalf("publishSnapshotOnce() error = %v", err)
 	}
 
@@ -647,7 +647,7 @@ func TestPublishSnapshotOnceExpiresLastKnownSnapshotDuringHydration(t *testing.T
 		t.Fatalf("Publish(cached) error = %v", err)
 	}
 	var seq atomic.Uint64
-	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, expiresAt, nil, nil, ""); err != nil {
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, nil, expiresAt, nil, nil, ""); err != nil {
 		t.Fatalf("publishSnapshotOnce() error = %v", err)
 	}
 
@@ -733,7 +733,7 @@ func TestPublishSnapshotOncePreservesProjectDataSeq(t *testing.T) {
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	var seq atomic.Uint64
 	now := time.Date(2026, 7, 8, 12, 15, 0, 0, time.UTC)
-	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, now, nil, nil, "http://localhost:4101"); err != nil {
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, nil, now, nil, nil, "http://localhost:4101"); err != nil {
 		t.Fatalf("publishSnapshotOnce() error = %v", err)
 	}
 
@@ -779,7 +779,7 @@ func TestPublishSnapshotOnceDoesNotLetPausedProjectsHoldFleetReadiness(t *testin
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	now := time.Date(2026, 6, 22, 14, 0, 0, 0, time.UTC)
 	var seq atomic.Uint64
-	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, now, nil, nil, "http://localhost:4101"); err != nil {
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, nil, now, nil, nil, "http://localhost:4101"); err != nil {
 		t.Fatalf("publishSnapshotOnce() error = %v", err)
 	}
 
@@ -840,7 +840,7 @@ func TestPublishSnapshotOnceSurfacesProjectStartupError(t *testing.T) {
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	now := time.Date(2026, 6, 23, 14, 0, 0, 0, time.UTC)
 	var seq atomic.Uint64
-	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, now, nil, nil, "http://localhost:4101"); err != nil {
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, nil, now, nil, nil, "http://localhost:4101"); err != nil {
 		t.Fatalf("publishSnapshotOnce() error = %v", err)
 	}
 
@@ -943,7 +943,7 @@ func TestPublishSnapshotOncePausedProjectSuppressesStartupError(t *testing.T) {
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	now := time.Date(2026, 6, 23, 14, 30, 0, 0, time.UTC)
 	var seq atomic.Uint64
-	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, now, nil, nil, "http://localhost:4101"); err != nil {
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, nil, now, nil, nil, "http://localhost:4101"); err != nil {
 		t.Fatalf("publishSnapshotOnce() error = %v", err)
 	}
 
@@ -1056,7 +1056,7 @@ func TestPublishSnapshotOncePreservesPipeline(t *testing.T) {
 
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	var seq atomic.Uint64
-	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, now, nil, nil, "http://localhost:4101"); err != nil {
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, nil, now, nil, nil, "http://localhost:4101"); err != nil {
 		t.Fatalf("publishSnapshotOnce() error = %v", err)
 	}
 

@@ -6637,6 +6637,69 @@ func TestHealthDistinguishesProcessHealthFromProjectConnectorDegradation(t *test
 	}
 }
 
+func TestHealthRespondsDuringDrainWithoutSupplementalProjectReads(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	blocked := make(chan struct{}, 1)
+	release := make(chan struct{})
+	workflowCfg := workflowconfig.Default()
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
+	trackedProject, err := project.New(project.Config{
+		Project:  globalconfig.Project{ID: "detent"},
+		Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Work the issue."},
+	}, project.Dependencies{
+		Connector: connectorProbe{name: "memory"},
+		Runner: blockingHealthBudgetRunner{
+			blocked: blocked,
+			release: release,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := deps.Registry.Set(trackedProject); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC),
+		Shutdown: telemetry.Shutdown{
+			Status:            "draining",
+			Draining:          true,
+			SessionsRemaining: 2,
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	result := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		result <- rec
+	}()
+
+	select {
+	case rec := <-result:
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"draining"`) {
+			t.Fatalf("draining health response = %d %s", rec.Code, rec.Body.String())
+		}
+		select {
+		case <-blocked:
+			t.Fatal("draining health request read supplemental project budget")
+		default:
+		}
+	case <-time.After(250 * time.Millisecond):
+		close(release)
+		<-result
+		t.Fatal("draining health request blocked on supplemental project budget")
+	}
+}
+
 func TestHealthReportsUpdateCheckStatus(t *testing.T) {
 	t.Parallel()
 
@@ -6775,6 +6838,87 @@ func TestAPIStateReportsDraining(t *testing.T) {
 	}
 	if payload.Shutdown.RequestedAt != "2026-06-12T15:00:00Z" {
 		t.Fatalf("Shutdown.RequestedAt = %q, want RFC3339 timestamp", payload.Shutdown.RequestedAt)
+	}
+}
+
+func TestAPIStateRespondsDuringDrainWithoutStoreEnrichment(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	blocked := make(chan struct{}, 1)
+	release := make(chan struct{})
+	deps.Store = storeProbe{
+		budgetCostEvents: func(ctx context.Context, _ store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+			select {
+			case blocked <- struct{}{}:
+			default:
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-release:
+				return nil, nil
+			}
+		},
+	}
+	workflowCfg := workflowconfig.Default()
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
+	workflowCfg.Budget.Enabled = true
+	workflowCfg.Budget.PerDayMaxUSD = 100
+	trackedProject, err := project.New(project.Config{
+		Project:  globalconfig.Project{ID: "detent"},
+		Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Work the issue."},
+	}, project.Dependencies{
+		Connector: connectorProbe{name: "memory"},
+		Runner: healthBudgetRunner{budget: workflowconfig.Budget{
+			Enabled:      true,
+			PerDayMaxUSD: 100,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := deps.Registry.Set(trackedProject); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+	requestedAt := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: requestedAt,
+		Shutdown: telemetry.Shutdown{
+			Status:            "draining",
+			Draining:          true,
+			SessionsRemaining: 1,
+			RequestedAt:       &requestedAt,
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	result := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/state", nil))
+		result <- rec
+	}()
+
+	select {
+	case rec := <-result:
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"draining"`) {
+			t.Fatalf("draining state response = %d %s", rec.Code, rec.Body.String())
+		}
+		select {
+		case <-blocked:
+			t.Fatal("draining state request enriched from the store")
+		default:
+		}
+	case <-time.After(250 * time.Millisecond):
+		close(release)
+		<-result
+		t.Fatal("draining state request blocked on store enrichment")
 	}
 }
 
@@ -10466,6 +10610,24 @@ func mustSetWebProject(t *testing.T, registry *project.Registry, id string, paus
 
 type healthBudgetRunner struct {
 	budget workflowconfig.Budget
+}
+
+type blockingHealthBudgetRunner struct {
+	blocked chan<- struct{}
+	release <-chan struct{}
+}
+
+func (blockingHealthBudgetRunner) Run(context.Context, orchestrator.RunRequest) (orchestrator.RunResult, error) {
+	return orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted}, nil
+}
+
+func (r blockingHealthBudgetRunner) EnforcedBudget() (workflowconfig.Budget, bool) {
+	select {
+	case r.blocked <- struct{}{}:
+	default:
+	}
+	<-r.release
+	return workflowconfig.Budget{}, false
 }
 
 func (r healthBudgetRunner) Run(context.Context, orchestrator.RunRequest) (orchestrator.RunResult, error) {

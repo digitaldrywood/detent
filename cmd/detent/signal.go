@@ -8,9 +8,12 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/cli"
 )
+
+const signalForceExitDeadline = 5 * time.Second
 
 func newSignalContext(parent context.Context) (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(parent, shutdownSignals()...)
@@ -37,12 +40,29 @@ func notifyShutdownRequests(controller *cli.ShutdownController, cancelRoot conte
 	go func() {
 		defer close(done)
 		defer signal.Stop(signals)
+		var forceExitTimer *time.Timer
+		defer func() {
+			if forceExitTimer != nil {
+				forceExitTimer.Stop()
+			}
+		}()
 		for {
 			select {
 			case <-stop:
 				return
 			case <-signals:
-				if handleShutdownSignal(controller, cancelRoot, noticeOut, hardExit) {
+				request, stopLoop := handleShutdownSignal(controller, cancelRoot, noticeOut)
+				if request == cli.ShutdownRequestForce {
+					if forceExitTimer == nil {
+						forceExitTimer = time.AfterFunc(signalForceExitDeadline, func() {
+							hardExitSignal(hardExit)
+						})
+					} else {
+						hardExitSignal(hardExit)
+						return
+					}
+				}
+				if stopLoop {
 					return
 				}
 			}
@@ -59,7 +79,7 @@ func notifyShutdownRequests(controller *cli.ShutdownController, cancelRoot conte
 	}
 }
 
-func handleShutdownSignal(controller shutdownInterruptRequester, cancelRoot context.CancelFunc, noticeOut io.Writer, hardExit func(int)) bool {
+func handleShutdownSignal(controller shutdownInterruptRequester, cancelRoot context.CancelFunc, noticeOut io.Writer) (cli.ShutdownRequest, bool) {
 	var request cli.ShutdownRequest
 	var handled bool
 	if controller != nil {
@@ -69,17 +89,13 @@ func handleShutdownSignal(controller shutdownInterruptRequester, cancelRoot cont
 	if !handled || !signalNoticesSuppressed(controller) {
 		writeSignalShutdownNotice(noticeOut, request)
 	}
-	if request == cli.ShutdownRequestForce {
-		hardExitSignal(hardExit)
-		return true
-	}
 	if handled {
-		return false
+		return request, false
 	}
 	if cancelRoot != nil {
 		cancelRoot()
 	}
-	return true
+	return request, true
 }
 
 func signalNoticesSuppressed(controller shutdownInterruptRequester) bool {

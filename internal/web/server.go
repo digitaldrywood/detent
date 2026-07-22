@@ -1050,6 +1050,12 @@ func (s *Server) health(c echo.Context) error {
 		checks["demo_clock"] = s.demo.clock
 	}
 	projectStatus, projectHealth := s.projectHealth()
+	var budgets []healthBudget
+	var workflows []healthWorkflowSource
+	if status != "draining" {
+		budgets = s.enforcedBudgets()
+		workflows = s.workflowSources()
+	}
 	return c.JSON(http.StatusOK, healthResponse{
 		Status:            status,
 		ProjectStatus:     projectStatus,
@@ -1058,8 +1064,8 @@ func (s *Server) health(c echo.Context) error {
 		SessionsRemaining: sessionsRemaining,
 		Update:            updateStatus,
 		Checks:            checks,
-		Budgets:           s.enforcedBudgets(),
-		Workflows:         s.workflowSources(),
+		Budgets:           budgets,
+		Workflows:         workflows,
 		BackendOutages:    backendOutages,
 		Projects:          projectHealth,
 	})
