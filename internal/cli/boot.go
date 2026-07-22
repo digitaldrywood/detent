@@ -158,6 +158,7 @@ type startRunningDependencies struct {
 	boardSnapshotStore    boardsnapshot.Store
 	boardSnapshotInterval time.Duration
 	backgroundWaitStarted func()
+	managerDependencies   project.ManagerDependencies
 }
 
 func startRunning(ctx context.Context, cfg BootConfig) error {
@@ -287,16 +288,20 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		ConnectorFactory:   cfg.ConnectorFactory,
 		Runner:             cfg.Runner,
 	}, runtimeStore, nil, runtimeGitHubToken.get)
-	manager, err := project.NewManager(managerConfigWithRuntimeGitHubToken(cfg.Global, runtimeGitHubToken.get()), project.ManagerDependencies{
-		ProjectFactory: projectFactory,
-		Events:         events,
-		Logger:         logger,
-	})
+	managerDependencies := deps.managerDependencies
+	managerDependencies.ProjectFactory = projectFactory
+	managerDependencies.Events = events
+	managerDependencies.Logger = logger
+	manager, err := project.NewManager(
+		managerConfigWithRuntimeGitHubToken(cfg.Global, runtimeGitHubToken.get()),
+		managerDependencies,
+	)
 	if err != nil {
 		return err
 	}
 	defer func() {
 		stop()
+		manager.Wait()
 		for _, runtimeProject := range manager.Registry().List() {
 			if err := runtimeProject.Close(); err != nil {
 				logger.Warn("close runtime project failed", "project_id", runtimeProject.ID(), "error", err)

@@ -22,6 +22,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
@@ -929,6 +930,107 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 	}
 
 	close(provisionRelease)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("startRunning() error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for startRunning to stop")
+	}
+}
+
+func TestStartRunningSurvivesTransientConnectorProvisioningFailure(t *testing.T) {
+	port := 0
+	output := newBootOutput()
+	configPath := filepath.Join(t.TempDir(), "global.yaml")
+	alpha := createBootProjectFiles(t)
+	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+		{ID: "alpha", Workflow: alpha.workflowPath, Workdir: alpha.workdirPath, Weight: 1},
+	})
+	global, err := globalconfig.Read(configPath)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+
+	firstAttempt := make(chan struct{})
+	retryScheduled := make(chan struct{})
+	releaseRetry := make(chan struct{})
+	var firstAttemptOnce sync.Once
+	var retryScheduledOnce sync.Once
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() {
+		done <- startRunningWithDependencies(ctx, BootConfig{
+			Mode:   BootModeRunning,
+			Global: global,
+			Host:   "127.0.0.1",
+			Port:   &port,
+			Output: output,
+			ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) {
+				return bootProvisioningConnector{
+					provision: func(ctx context.Context) error {
+						failed := false
+						firstAttemptOnce.Do(func() {
+							failed = true
+							close(firstAttempt)
+						})
+						if failed {
+							return githubconnector.ErrTransient
+						}
+						<-ctx.Done()
+						return ctx.Err()
+					},
+				}, nil
+			},
+		}, startRunningDependencies{
+			managerDependencies: projectpkg.ManagerDependencies{
+				RetrySleep: func(ctx context.Context, _ time.Duration) error {
+					retryScheduledOnce.Do(func() {
+						close(retryScheduled)
+					})
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-releaseRetry:
+						return nil
+					}
+				},
+			},
+		})
+	}()
+
+	select {
+	case <-firstAttempt:
+	case err := <-done:
+		t.Fatalf("startRunning() returned before first provisioning attempt: %v", err)
+	case <-time.After(bootProvisioningStartTimeout):
+		t.Fatal("timed out waiting for transient provisioning attempt")
+	}
+
+	select {
+	case err := <-done:
+		t.Fatalf("startRunning() returned after transient provisioning failure: %v", err)
+	case <-retryScheduled:
+	}
+
+	baseURL := waitForBootDashboardURL(t, output, done)
+	health := waitForDashboard(t, baseURL+"/health", done)
+	for _, want := range []string{
+		`"status":"ok"`,
+		`"project_status":"degraded"`,
+		`"project_id":"alpha"`,
+		`"status":"degraded"`,
+		`"next_retry_at"`,
+		"github transient error",
+	} {
+		if !strings.Contains(health, want) {
+			t.Fatalf("health response missing %q:\n%s", want, health)
+		}
+	}
+
 	cancel()
 	select {
 	case err := <-done:

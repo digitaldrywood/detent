@@ -1049,8 +1049,10 @@ func (s *Server) health(c echo.Context) error {
 		checks["demo"] = DemoModeScreenshots
 		checks["demo_clock"] = s.demo.clock
 	}
+	projectStatus, projectHealth := s.projectHealth()
 	return c.JSON(http.StatusOK, healthResponse{
 		Status:            status,
+		ProjectStatus:     projectStatus,
 		Mode:              string(s.mode),
 		Connector:         s.connectorName(),
 		SessionsRemaining: sessionsRemaining,
@@ -1059,7 +1061,37 @@ func (s *Server) health(c echo.Context) error {
 		Budgets:           s.enforcedBudgets(),
 		Workflows:         s.workflowSources(),
 		BackendOutages:    backendOutages,
+		Projects:          projectHealth,
 	})
+}
+
+func (s *Server) projectHealth() (string, []healthProject) {
+	if s.registry == nil {
+		return "unknown", nil
+	}
+
+	status := "ok"
+	projectHealth := s.registry.Health()
+	projects := make([]healthProject, 0, len(projectHealth))
+	for _, health := range projectHealth {
+		switch health.Status {
+		case project.HealthStatusDegraded:
+			status = "degraded"
+		case project.HealthStatusInitializing:
+			if status == "ok" {
+				status = "initializing"
+			}
+		}
+		projects = append(projects, healthProject{
+			ProjectID:    health.Project.ID,
+			Status:       string(health.Status),
+			LastError:    health.LastError,
+			LastErrorAt:  health.LastErrorAt,
+			NextRetryAt:  health.NextRetryAt,
+			RetryStopped: health.RetryStopped,
+		})
+	}
+	return status, projects
 }
 
 func (s *Server) workflowSources() []healthWorkflowSource {
@@ -1266,6 +1298,7 @@ func (s *Server) connectorName() string {
 
 type healthResponse struct {
 	Status            string                    `json:"status"`
+	ProjectStatus     string                    `json:"project_status"`
 	Mode              string                    `json:"mode"`
 	Connector         string                    `json:"connector"`
 	SessionsRemaining int                       `json:"sessions_remaining,omitempty"`
@@ -1274,6 +1307,16 @@ type healthResponse struct {
 	Budgets           []healthBudget            `json:"budgets,omitempty"`
 	Workflows         []healthWorkflowSource    `json:"workflows,omitempty"`
 	BackendOutages    []telemetry.BackendOutage `json:"backend_outages,omitempty"`
+	Projects          []healthProject           `json:"projects,omitempty"`
+}
+
+type healthProject struct {
+	ProjectID    string    `json:"project_id"`
+	Status       string    `json:"status"`
+	LastError    string    `json:"last_error,omitempty"`
+	LastErrorAt  time.Time `json:"last_error_at,omitzero"`
+	NextRetryAt  time.Time `json:"next_retry_at,omitzero"`
+	RetryStopped bool      `json:"retry_stopped"`
 }
 
 type healthWorkflowSource struct {

@@ -533,10 +533,13 @@ func publishSnapshotOnce(
 ) error {
 	merged := telemetry.Snapshot{GeneratedAt: now}
 	trackedProjects := registry.List()
-	if len(trackedProjects) == 0 {
+	projectHealth := registry.Health()
+	if len(projectHealth) == 0 {
 		return nil
 	}
+	tracked := make(map[project.ID]struct{}, len(trackedProjects))
 	for _, trackedProject := range trackedProjects {
+		tracked[trackedProject.ID()] = struct{}{}
 		projectMetadata := projectSnapshotMetadata(trackedProject)
 		if !trackedProject.Running() {
 			if trackedProject.Paused() {
@@ -548,16 +551,11 @@ func publishSnapshotOnce(
 				continue
 			}
 			if runtimeErr := trackedProject.RuntimeError(); runtimeErr.Message != "" {
-				lastErrorAt := runtimeErr.At
 				merged = mergeSnapshot(merged, telemetry.Snapshot{
 					Project:      projectMetadata,
 					DashboardURL: cleanDashboardURL(dashboardURL),
 					Shutdown:     telemetry.Shutdown{Status: "running"},
-					Refresh: telemetry.Refresh{
-						Status:      telemetry.RefreshStatusDegraded,
-						LastError:   runtimeErr.Message,
-						LastErrorAt: &lastErrorAt,
-					},
+					Refresh:      runtimeErrorRefresh(runtimeErr),
 				})
 				continue
 			}
@@ -600,6 +598,23 @@ func publishSnapshotOnce(
 		snapshot.DashboardURL = cleanDashboardURL(dashboardURL)
 		merged = mergeSnapshot(merged, snapshot)
 	}
+	for _, health := range projectHealth {
+		id := project.ID(health.Project.ID)
+		if _, ok := tracked[id]; ok {
+			continue
+		}
+		merged = mergeSnapshot(merged, telemetry.Snapshot{
+			Project:      projectSnapshotMetadataFromConfig(health.Project),
+			DashboardURL: cleanDashboardURL(dashboardURL),
+			Shutdown:     telemetry.Shutdown{Status: "running"},
+			Refresh: runtimeErrorRefresh(project.RuntimeError{
+				Message:     health.LastError,
+				At:          health.LastErrorAt,
+				NextRetryAt: health.NextRetryAt,
+				Terminal:    health.RetryStopped,
+			}),
+		})
+	}
 	merged = dedupeSnapshotIssues(merged)
 	if trend != nil {
 		merged = trend.apply(merged)
@@ -641,13 +656,32 @@ func projectSnapshotMetadata(trackedProject *project.Project) telemetry.Project 
 
 	cfg := trackedProject.Config()
 	workflow := trackedProject.Workflow()
+	metadata := projectSnapshotMetadataFromConfig(cfg)
+	metadata.URL = projectURLFromWorkflow(workflow.Config)
+	return metadata
+}
+
+func projectSnapshotMetadataFromConfig(cfg globalconfig.Project) telemetry.Project {
 	id := strings.TrimSpace(cfg.ID)
 	return telemetry.Project{
 		ID:          id,
 		DisplayName: id,
-		URL:         projectURLFromWorkflow(workflow.Config),
 		Color:       projectcolor.ColorFor(id, cfg.Color),
 	}
+}
+
+func runtimeErrorRefresh(runtimeErr project.RuntimeError) telemetry.Refresh {
+	lastErrorAt := runtimeErr.At
+	refresh := telemetry.Refresh{
+		Status:      telemetry.RefreshStatusDegraded,
+		LastError:   runtimeErr.Message,
+		LastErrorAt: &lastErrorAt,
+	}
+	if !runtimeErr.NextRetryAt.IsZero() {
+		nextRetryAt := runtimeErr.NextRetryAt
+		refresh.NextRefreshAt = &nextRetryAt
+	}
+	return refresh
 }
 
 func projectURLFromWorkflow(cfg workflowconfig.Config) string {

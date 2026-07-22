@@ -11,6 +11,27 @@ var (
 	ErrStateUpdateBlocked = errors.New("issue state update blocked")
 )
 
+type retryableError struct {
+	message string
+}
+
+func (e *retryableError) Error() string {
+	return e.message
+}
+
+func (e *retryableError) Retryable() bool {
+	return true
+}
+
+func NewRetryableError(message string) error {
+	return &retryableError{message: message}
+}
+
+func IsRetryable(err error) bool {
+	var retryable *retryableError
+	return errors.As(err, &retryable) && retryable != nil && retryable.Retryable()
+}
+
 type StateUpdateBlockedError struct {
 	IssueID      string
 	CurrentState string

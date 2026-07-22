@@ -863,6 +863,51 @@ func TestPublishSnapshotOnceSurfacesProjectStartupError(t *testing.T) {
 	}
 }
 
+func TestPublishSnapshotOnceSurfacesPendingConnectorRetry(t *testing.T) {
+	t.Parallel()
+
+	lastErrorAt := time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC)
+	nextRetryAt := lastErrorAt.Add(30 * time.Second)
+	registry := projectpkg.NewRegistry()
+	if err := registry.SetPending(globalconfig.Project{ID: "alpha"}, projectpkg.RuntimeError{
+		Message:     "create project connector: github transient error",
+		At:          lastErrorAt,
+		NextRetryAt: nextRetryAt,
+	}); err != nil {
+		t.Fatalf("Registry.SetPending() error = %v", err)
+	}
+
+	snapshotHub := hub.New[telemetry.Snapshot]()
+	var seq atomic.Uint64
+	if err := publishSnapshotOnce(
+		context.Background(),
+		registry,
+		snapshotHub,
+		&seq,
+		lastErrorAt,
+		nil,
+		nil,
+		"http://localhost:4101",
+	); err != nil {
+		t.Fatalf("publishSnapshotOnce() error = %v", err)
+	}
+
+	snapshot, ok := snapshotHub.Latest()
+	if !ok || len(snapshot.Projects) != 1 {
+		t.Fatalf("snapshot = %#v, want one pending project", snapshot)
+	}
+	refresh := snapshot.Projects[0].Refresh
+	if refresh.ReadinessStatus() != telemetry.RefreshStatusDegraded {
+		t.Fatalf("Refresh status = %q, want degraded", refresh.ReadinessStatus())
+	}
+	if refresh.LastError != "create project connector: github transient error" {
+		t.Fatalf("Refresh LastError = %q", refresh.LastError)
+	}
+	if refresh.NextRefreshAt == nil || !refresh.NextRefreshAt.Equal(nextRetryAt) {
+		t.Fatalf("Refresh NextRefreshAt = %v, want %v", refresh.NextRefreshAt, nextRetryAt)
+	}
+}
+
 func TestPublishSnapshotOncePausedProjectSuppressesStartupError(t *testing.T) {
 	t.Parallel()
 

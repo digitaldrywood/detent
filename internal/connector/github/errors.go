@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 var (
@@ -31,12 +33,12 @@ var (
 	ErrProjectFieldOptionNotFound  = errors.New("github project field option not found")
 	ErrProjectFieldUpdateFailed    = errors.New("github project field update failed")
 	ErrProjectNotFound             = errors.New("github project not found")
-	ErrRateLimited                 = errors.New("github rate limited")
-	ErrRESTBudgetReserved          = errors.New("github rest budget reserved")
+	ErrRateLimited                 = connector.NewRetryableError("github rate limited")
+	ErrRESTBudgetReserved          = connector.NewRetryableError("github rest budget reserved")
 	ErrStatusFieldNotFound         = errors.New("github status field not found")
 	ErrStatusOptionNotFound        = errors.New("github status option not found")
 	ErrStatusUpdateFailed          = errors.New("github status update failed")
-	ErrTransient                   = errors.New("github transient error")
+	ErrTransient                   = connector.NewRetryableError("github transient error")
 	ErrUnexpectedStatus            = errors.New("github unexpected status")
 )
 

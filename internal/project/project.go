@@ -33,6 +33,7 @@ import (
 
 var (
 	ErrAlreadyRunning      = errors.New("project already running")
+	ErrConnectorCreation   = errors.New("project connector creation failed")
 	ErrMissingConnector    = errors.New("project connector is required")
 	ErrMissingOrchestrator = errors.New("project orchestrator is required")
 	ErrMissingProject      = errors.New("project is required")
@@ -65,8 +66,10 @@ type Event struct {
 }
 
 type RuntimeError struct {
-	Message string
-	At      time.Time
+	Message     string
+	At          time.Time
+	NextRetryAt time.Time
+	Terminal    bool
 }
 
 type WorkflowSourceStatus struct {
@@ -810,7 +813,7 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 		p.done = nil
 		p.runErr = err
 		if err != nil {
-			p.runtimeErr = RuntimeError{Message: err.Error(), At: time.Now().UTC()}
+			p.runtimeErr = RuntimeError{Message: err.Error(), At: time.Now().UTC(), Terminal: true}
 		}
 	}
 	p.mu.Unlock()
@@ -1477,10 +1480,23 @@ func (p *Project) recordRuntimeError(err error) {
 		return
 	}
 
+	p.recordRuntimeErrorState(err, time.Now().UTC(), time.Time{}, true)
+}
+
+func (p *Project) recordRuntimeErrorState(err error, at time.Time, nextRetryAt time.Time, terminal bool) {
+	if p == nil || err == nil {
+		return
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.runtimeErr = RuntimeError{Message: err.Error(), At: time.Now().UTC()}
+	p.runtimeErr = RuntimeError{
+		Message:     err.Error(),
+		At:          at.UTC(),
+		NextRetryAt: nextRetryAt.UTC(),
+		Terminal:    terminal,
+	}
 }
 
 type workflowUpdater interface {
@@ -1506,7 +1522,7 @@ func resolveConnectorFactory(deps Dependencies) ConnectorFactory {
 func buildConnector(cfg workflowconfig.Config, connectorFactory ConnectorFactory) (connector.Connector, error) {
 	projectConnector, err := connectorFactory(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("create project connector: %w", err)
+		return nil, fmt.Errorf("%w: create project connector: %w", ErrConnectorCreation, err)
 	}
 	if projectConnector == nil {
 		return nil, ErrMissingConnector

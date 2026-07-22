@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -66,6 +67,32 @@ func TestBackendString(t *testing.T) {
 
 	if got := BackendGitHub.String(); got != "github" {
 		t.Fatalf("BackendGitHub.String() = %q, want github", got)
+	}
+}
+
+func TestIsRetryable(t *testing.T) {
+	t.Parallel()
+
+	retryable := NewRetryableError("temporarily unavailable")
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "direct", err: retryable, want: true},
+		{name: "wrapped", err: fmt.Errorf("provision: %w", retryable), want: true},
+		{name: "permanent", err: errors.New("authentication failed"), want: false},
+		{name: "nil", err: nil, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := IsRetryable(tt.err); got != tt.want {
+				t.Fatalf("IsRetryable(%v) = %t, want %t", tt.err, got, tt.want)
+			}
+		})
 	}
 }
 
