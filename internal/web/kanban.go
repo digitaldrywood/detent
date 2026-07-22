@@ -17,6 +17,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -69,6 +70,7 @@ const (
 	kanbanProjectBoardTarget       = "#snapshot"
 	kanbanFleetBoardTarget         = "#snapshot"
 	kanbanDialogSucceeded          = "kanbanActionSucceeded"
+	kanbanBlockedState             = "Blocked"
 	kanbanRefreshRetryDelay        = 2 * time.Second
 	kanbanMoveUnsupportedMessage   = "This project's tracker does not support moving cards."
 	kanbanRemoveUnsupportedMessage = "This project's tracker does not support removing cards."
@@ -235,6 +237,29 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		)
 		return kanbanFeedback(c, http.StatusBadGateway, "Move failed: "+err.Error())
 	}
+	var runtimeMove orchestrator.OperatorMoveResult
+	if s.operatorMoves != nil && strings.EqualFold(strings.TrimSpace(moveCurrentState), kanbanBlockedState) &&
+		!strings.EqualFold(strings.TrimSpace(req.targetState), kanbanBlockedState) {
+		var reconcileErr error
+		runtimeMove, reconcileErr = s.operatorMoves.ReconcileOperatorMove(c.Request().Context(), orchestrator.OperatorMoveRequest{
+			ProjectID:  req.projectID,
+			IssueID:    req.issueID,
+			Identifier: moveIssueIdentifier,
+			FromState:  moveCurrentState,
+			ToState:    req.targetState,
+		})
+		if reconcileErr != nil {
+			s.logger.WarnContext(c.Request().Context(), "kanban move runtime reconcile failed",
+				"project", req.projectID,
+				"issue_id", req.issueID,
+				"identifier", moveIssueIdentifier,
+				"current_state", moveCurrentState,
+				"target_state", req.targetState,
+				"data_seq", moveDataSeq,
+				"error", reconcileErr,
+			)
+		}
+	}
 	s.logger.InfoContext(c.Request().Context(), "kanban move succeeded",
 		"project", req.projectID,
 		"issue_id", req.issueID,
@@ -242,6 +267,7 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		"current_state", moveCurrentState,
 		"target_state", req.targetState,
 		"data_seq", moveDataSeq,
+		"runtime_block_cleared", runtimeMove.BlockedCleared,
 	)
 	return s.kanbanMoveSuccess(c, req, "Moved card to "+req.targetState+".")
 }

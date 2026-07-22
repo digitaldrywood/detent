@@ -1987,6 +1987,84 @@ func TestRunTracksStatusLabelConflictCandidateAsBlocked(t *testing.T) {
 	}
 }
 
+func TestRunDispatchesOperatorMovedBlockedIssueDuringDegradedTransitionRefresh(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-operator-move", "digitaldrywood/detent#1482", "Blocked")
+	unrelated := testIssue("issue-unrelated-blocked", "digitaldrywood/detent#1483", "Blocked")
+	tracker := &operatorMoveConnector{fakeConnector: newFakeConnector(issue, unrelated)}
+	tracker.setStateIssues(issue, unrelated)
+	runner := newBlockingRunner()
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:        time.Hour,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "Rework"},
+		ObservedStates:      []string{"Blocked"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	waitForState(t, orch, func(state orchestrator.State) bool {
+		_, movedBlocked := state.Blocked[issue.ID]
+		_, unrelatedBlocked := state.Blocked[unrelated.ID]
+		return movedBlocked && unrelatedBlocked
+	})
+	tracker.issueStateRefreshFailures.Store(1)
+	if err := tracker.UpdateIssueState(t.Context(), issue.ID, "Rework"); err != nil {
+		t.Fatalf("UpdateIssueState() error = %v", err)
+	}
+	result, err := orch.ReconcileOperatorMove(t.Context(), orchestrator.OperatorMoveRequest{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		FromState:  "Blocked",
+		ToState:    "Rework",
+	})
+	if err != nil {
+		t.Fatalf("ReconcileOperatorMove() error = %v", err)
+	}
+	if !result.Reconciled || !result.BlockedCleared {
+		t.Fatalf("ReconcileOperatorMove() = %#v, want reconciled runtime block", result)
+	}
+	state, err := orch.State(t.Context())
+	if err != nil {
+		t.Fatalf("State() error = %v", err)
+	}
+	if _, ok := state.Blocked[unrelated.ID]; !ok {
+		t.Fatalf("Blocked[%q] missing after item-scoped reconcile", unrelated.ID)
+	}
+	if _, err := orch.RequestRefresh(t.Context()); err != nil {
+		t.Fatalf("RequestRefresh() error = %v", err)
+	}
+
+	request := receiveRunRequest(t, runner.started)
+	if request.Issue.ID != issue.ID || request.Issue.State != "Rework" {
+		t.Fatalf("RunRequest.Issue = %#v, want moved Rework issue", request.Issue)
+	}
+	state = waitForState(t, orch, func(state orchestrator.State) bool {
+		for _, decision := range state.SchedulerDecisions {
+			if decision.IssueID == issue.ID && decision.Selected {
+				return true
+			}
+		}
+		return false
+	})
+	if _, ok := state.Blocked[issue.ID]; ok {
+		t.Fatalf("Blocked[%q] restored by degraded refresh", issue.ID)
+	}
+	snapshot := state.Snapshot(time.Now())
+	if snapshot.Counts.Blocked != 1 || len(snapshot.Blocked) != 1 || snapshot.Blocked[0].ID != unrelated.ID {
+		t.Fatalf("blocked snapshot = count %d rows %#v, want unrelated issue only", snapshot.Counts.Blocked, snapshot.Blocked)
+	}
+	close(runner.release)
+}
+
 func TestRunFetchesCandidatesBeforeObservedStates(t *testing.T) {
 	t.Parallel()
 
@@ -2548,6 +2626,24 @@ type fakeConnector struct {
 	fetchCandidateErrAt int
 	fetchByStatesErr    error
 	statusLabelPrefix   string
+}
+
+type operatorMoveConnector struct {
+	*fakeConnector
+	issueStateRefreshFailures atomic.Int64
+}
+
+func (c *operatorMoveConnector) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {
+	for {
+		remaining := c.issueStateRefreshFailures.Load()
+		if remaining <= 0 {
+			break
+		}
+		if c.issueStateRefreshFailures.CompareAndSwap(remaining, remaining-1) {
+			return nil, errors.New("blocked status transition refresh degraded")
+		}
+	}
+	return c.fakeConnector.FetchIssueStatesByIDs(ctx, ids)
 }
 
 type authHealthConnector struct {
