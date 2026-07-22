@@ -994,6 +994,9 @@ not consume GitHub's primary REST quota. This makes a `60000` interval practical
 for an idle REST-backed board while preserving the default cadence for existing
 workflows. Set `conditional: false` to restore unconditional requests; trackers
 without conditional-request support continue using their existing polling path.
+`polling.interval_ms` only controls tracker and project-board refreshes; it does
+not control Codex terminal-command waits or the enclosing tool-call yield
+horizon, which are governed by developer instructions on Codex turns.
 See GitHub's [conditional request guidance](https://docs.github.com/en/enterprise-cloud@latest/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests-if-appropriate).
 
 REST telemetry distinguishes `total_requests`, `conditional_requests`,

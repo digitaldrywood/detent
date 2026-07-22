@@ -14,6 +14,10 @@ import (
 
 var ErrMissingAppServer = errors.New("codex app-server is required")
 
+const terminalWaitInstructions = "For known long-running terminal commands, set the command wait to about 55 seconds and the enclosing functions.exec yield horizon to at least 60 seconds, with headroom beyond the command wait. Do not use 1-second yields for builds, test suites, CI checks, or an already-running managed session. Reuse the existing command session and wait on it instead of repeatedly running ps, pgrep, or tail probes unless there is evidence the session is stuck."
+
+const dynamicToolTurnInstructions = "You are Detent's board operator assistant. Use only the provided Detent tools for board, fleet, telemetry, activity, and operator actions. Never use shell, filesystem, network, MCP, browser, delegation, or configuration tools. Mutating tools only create proposals; tell the operator that confirmation is required and never claim a proposal already executed."
+
 type AgentBackend struct {
 	client  *AppServer
 	options Options
@@ -137,12 +141,12 @@ func turnSandboxPolicy(threadSandbox string, configured any, roots []string, res
 
 func toolTurnInstructions(tools []DynamicTool, override string) string {
 	if len(tools) == 0 {
-		return ""
+		return terminalWaitInstructions
 	}
 	if override = strings.TrimSpace(override); override != "" {
 		return override
 	}
-	return "You are Detent's board operator assistant. Use only the provided Detent tools for board, fleet, telemetry, activity, and operator actions. Never use shell, filesystem, network, MCP, browser, delegation, or configuration tools. Mutating tools only create proposals; tell the operator that confirmation is required and never claim a proposal already executed."
+	return dynamicToolTurnInstructions
 }
 
 func (b *AgentBackend) VerifyResume(ctx context.Context, resume runner.AgentResume) error {
