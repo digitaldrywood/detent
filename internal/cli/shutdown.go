@@ -615,9 +615,6 @@ func liveShutdownRunningSessions(ctx context.Context, registry *project.Registry
 }
 
 func initialShutdownRunningSessions(ctx context.Context, cfg runningShutdownConfig, now time.Time) ([]telemetry.Running, bool) {
-	if sessions, ok := cachedShutdownRunningSessions(cfg); ok {
-		return sessions, true
-	}
 	return boundedShutdownRunningSessions(ctx, cfg, now)
 }
 

@@ -577,6 +577,126 @@ func TestRunWithShutdownActiveChildProcessReportsDrainBlockersAndTimesOut(t *tes
 	}
 }
 
+func TestRunWithShutdownDoesNotTrustStaleEmptySnapshotOverLiveSession(t *testing.T) {
+	t.Parallel()
+
+	controller := NewShutdownController()
+	registry := projectpkg.NewRegistry()
+	releaseRunner := make(chan struct{})
+	runner := &shutdownBlockingRunner{
+		started:  make(chan struct{}, 1),
+		canceled: make(chan struct{}, 1),
+		release:  releaseRunner,
+	}
+	project := newShutdownRuntimeProject(t, "detent", []connector.Issue{{
+		ID:               "issue-1484",
+		Identifier:       "digitaldrywood/detent#1484",
+		Title:            "stale empty shutdown inventory",
+		State:            "Todo",
+		AssignedToWorker: true,
+	}}, runner)
+	if err := registry.Set(project); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+	if err := project.Start(context.Background()); err != nil {
+		t.Fatalf("Project.Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		select {
+		case <-releaseRunner:
+		default:
+			close(releaseRunner)
+		}
+		if err := project.Close(); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
+			t.Fatalf("Project.Close() error = %v", err)
+		}
+	})
+
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start")
+	}
+	waitForShutdownSession(t, registry, func(session telemetry.Running) bool {
+		return session.ID == "issue-1484"
+	})
+
+	snapshotHub := hub.New[telemetry.Snapshot]()
+	if err := snapshotHub.Publish(telemetry.Snapshot{
+		Seq:         1,
+		GeneratedAt: time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC),
+		Running:     []telemetry.Running{},
+		Counts:      telemetry.Counts{Running: 0},
+	}); err != nil {
+		t.Fatalf("SnapshotHub.Publish() error = %v", err)
+	}
+	snapshotCtx, cancelSnapshots := context.WithTimeout(context.Background(), time.Second)
+	defer cancelSnapshots()
+	snapshots, err := snapshotHub.Subscribe(snapshotCtx)
+	if err != nil {
+		t.Fatalf("SnapshotHub.Subscribe() error = %v", err)
+	}
+	defer snapshots.Close()
+
+	serveStarted := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runWithShutdown(context.Background(), runningShutdownConfig{
+			Controller:       controller,
+			Registry:         registry,
+			SnapshotHub:      snapshotHub,
+			DrainTimeout:     time.Second,
+			ProgressInterval: time.Hour,
+			HardTimeout:      time.Second,
+		}, func(ctx context.Context) error {
+			close(serveStarted)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+
+	select {
+	case <-serveStarted:
+	case <-time.After(time.Second):
+		t.Fatal("server did not start")
+	}
+	controller.RequestDrain()
+
+	drainObserved := false
+	for !drainObserved {
+		select {
+		case err := <-errCh:
+			t.Fatalf("shutdown completed while live session was active: %v", err)
+		case snapshot := <-snapshots.C():
+			if !snapshot.Shutdown.Draining {
+				continue
+			}
+			if snapshot.Shutdown.SessionsRemaining != 1 {
+				t.Fatalf("SessionsRemaining = %d, want live inventory count 1", snapshot.Shutdown.SessionsRemaining)
+			}
+			drainObserved = true
+		case <-snapshotCtx.Done():
+			t.Fatal("timed out waiting for draining snapshot")
+		}
+	}
+
+	select {
+	case <-runner.canceled:
+		t.Fatal("live session was canceled from stale empty shutdown inventory")
+	default:
+	}
+
+	close(releaseRunner)
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("runWithShutdown() error = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for shutdown after live session completed")
+	}
+}
+
 type shutdownWorkerProcessStore struct {
 	processes []store.WorkerProcess
 	reaped    []shutdownWorkerProcessReap
@@ -1125,6 +1245,7 @@ func newShutdownRuntimeProjectWithConfig(t *testing.T, id string, cfg workflowco
 type shutdownBlockingRunner struct {
 	started  chan struct{}
 	canceled chan struct{}
+	release  <-chan struct{}
 }
 
 type shutdownBlockingConnector struct {
@@ -1190,12 +1311,16 @@ func (r *shutdownBlockingRunner) Run(ctx context.Context, request orchestrator.R
 	default:
 	}
 
-	<-ctx.Done()
 	select {
-	case r.canceled <- struct{}{}:
-	default:
+	case <-ctx.Done():
+		select {
+		case r.canceled <- struct{}{}:
+		default:
+		}
+		return orchestrator.RunResult{}, ctx.Err()
+	case <-r.release:
+		return orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted}, nil
 	}
-	return orchestrator.RunResult{}, ctx.Err()
 }
 
 func waitForShutdownSession(t *testing.T, registry *projectpkg.Registry, ready func(telemetry.Running) bool) telemetry.Running {
