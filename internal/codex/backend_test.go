@@ -68,6 +68,7 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 	assertJSONContains(t, sent[2].Params, "sandbox", "workspace-write")
 	assertJSONContains(t, sent[2].Params, "model", "gpt-5-codex")
 	assertJSONOmits(t, sent[2].Params, "effort")
+	assertJSONContains(t, sent[2].Params, "developerInstructions", terminalWaitInstructions)
 
 	assertRequest(t, sent[3], 3, "turn/start")
 	assertJSONContains(t, sent[3].Params, "approvalPolicy", "never")
@@ -79,6 +80,49 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 
 	if len(updates) < 2 || updates[0].Type != runner.AgentUpdateRuntimeIdentity || updates[1].Type != runner.AgentUpdateTurnStarted || updates[1].Model != "gpt-5-codex-resolved" {
 		t.Fatalf("updates = %#v, want resolved model on turn started", updates)
+	}
+}
+
+func TestToolTurnInstructions(t *testing.T) {
+	t.Parallel()
+
+	tool := DynamicTool{Name: "board_state"}
+	tests := []struct {
+		name     string
+		tools    []DynamicTool
+		override string
+		want     string
+	}{
+		{
+			name: "normal turn",
+			want: terminalWaitInstructions,
+		},
+		{
+			name:     "normal turn ignores tool override",
+			override: "Use a custom tool policy.",
+			want:     terminalWaitInstructions,
+		},
+		{
+			name:  "dynamic tool turn",
+			tools: []DynamicTool{tool},
+			want:  dynamicToolTurnInstructions,
+		},
+		{
+			name:     "dynamic tool turn with override",
+			tools:    []DynamicTool{tool},
+			override: "  Inspect only and submit proposals.  ",
+			want:     "Inspect only and submit proposals.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := toolTurnInstructions(tt.tools, tt.override); got != tt.want {
+				t.Fatalf("toolTurnInstructions() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
