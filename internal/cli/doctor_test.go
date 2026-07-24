@@ -4720,6 +4720,46 @@ func TestRunDoctorCheckRenewsTimeoutForReportedProgress(t *testing.T) {
 	}
 }
 
+func TestRunDoctorCheckFreezesProgressBeforeCancellation(t *testing.T) {
+	t.Parallel()
+
+	progress := newDoctorCheckProgress()
+	postCancelPublication := make(chan struct{})
+	completed := doctorCheck{Name: "Project alpha workflow", Status: doctorOK, Detail: "loaded"}
+	canceled := doctorCheck{Name: "Project alpha route models", Status: doctorFail, Detail: "context canceled"}
+	checks := runDoctorCheck(context.Background(), doctorCheckJob{
+		Name:   "Project alpha checks",
+		Freeze: progress.Freeze,
+		Current: func() string {
+			<-postCancelPublication
+			return progress.Current()
+		},
+		Progress: progress.Updates(),
+		Run: func(ctx context.Context) []doctorCheck {
+			progress.Set("Project alpha route models", []doctorCheck{completed})
+			<-ctx.Done()
+			progress.Set("Project alpha GitHub readiness", []doctorCheck{completed, canceled})
+			close(postCancelPublication)
+			return []doctorCheck{completed, canceled}
+		},
+	}, 20*time.Millisecond)
+
+	select {
+	case <-postCancelPublication:
+	case <-time.After(time.Second):
+		t.Fatal("job did not attempt to publish after cancellation")
+	}
+	if len(checks) != 2 {
+		t.Fatalf("checks = %#v, want frozen completed check followed by timeout", checks)
+	}
+	if checks[0].Name != completed.Name || checks[0].Status != completed.Status || checks[0].Detail != completed.Detail {
+		t.Fatalf("checks[0] = %#v, want %#v", checks[0], completed)
+	}
+	if checks[1].Name != "Project alpha checks" || !strings.Contains(checks[1].Detail, "while running Project alpha route models") {
+		t.Fatalf("timeout check = %#v, want frozen route-model stage", checks[1])
+	}
+}
+
 func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 	t.Parallel()
 

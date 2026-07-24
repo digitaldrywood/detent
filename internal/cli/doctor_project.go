@@ -186,8 +186,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 		progress := newDoctorCheckProgress()
 		jobs = append(jobs, doctorCheckJob{
 			Name:     "Project " + id + " checks",
-			Current:  progress.Current,
-			Partial:  progress.Partial,
+			Freeze:   progress.Freeze,
 			Progress: progress.Updates(),
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return checkDoctorProjectWithProgress(jobCtx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes, workflowTokenThreshold, progress.Set)
