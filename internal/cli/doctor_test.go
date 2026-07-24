@@ -4720,61 +4720,88 @@ func TestRunDoctorCheckRenewsTimeoutForReportedProgress(t *testing.T) {
 	}
 }
 
-func TestDoctorProjectCheckJobTimeoutReportsCurrentInnerCheck(t *testing.T) {
+func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 	t.Parallel()
 
-	workflow := validDoctorDependencyWorkflow(false)
-	releaseReadiness := make(chan struct{})
-	t.Cleanup(func() {
-		close(releaseReadiness)
-	})
-	jobs := doctorProjectCheckJobs(globalconfig.Config{
-		Projects: []globalconfig.Project{{ID: "alpha", Workflow: "WORKFLOW.md"}},
-	}, doctorDeps{
-		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
-			return workflowconfig.Workflow{Config: workflow}, nil
-		},
-		gitWorkTree: func(context.Context, string) error {
-			return nil
-		},
-		gitRemoteURL: func(context.Context, string) (string, error) {
-			return "https://github.com/digitaldrywood/detent", nil
-		},
-		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
-			return &fakeDoctorAutoPromoteConnector{}, nil
-		},
-		githubReadiness: func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
-			<-releaseReadiness
-			return nil, nil
-		},
-		githubMergeSettings: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryMergeSettings, error) {
-			return ghconnector.RepositoryMergeSettings{AllowSquashMerge: true}, nil
-		},
-	}, RuntimeSecret{Value: "token", Source: "github_token"}, false, doctorWorkflowDefaultTokenThreshold)
-	if len(jobs) != 1 {
-		t.Fatalf("jobs len = %d, want 1", len(jobs))
+	tests := []struct {
+		name         string
+		current      string
+		blockOverlay bool
+	}{
+		{name: "GitHub readiness", current: "GitHub readiness"},
+		{name: "local workflow overlay", current: "local workflow overlay", blockOverlay: true},
 	}
 
-	checks := runDoctorCheck(context.Background(), jobs[0], 20*time.Millisecond)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	if len(checks) < 2 {
-		t.Fatalf("checks = %#v, want completed checks followed by timeout", checks)
-	}
-	var foundWorkflow bool
-	for _, check := range checks[:len(checks)-1] {
-		if check.Name == "Project alpha workflow" {
-			foundWorkflow = true
-			break
-		}
-	}
-	if !foundWorkflow {
-		t.Fatalf("checks = %#v, want completed workflow check", checks)
-	}
-	timeoutCheck := checks[len(checks)-1]
-	for _, want := range []string{"Project alpha checks", "timed out after 20ms", "while running Project alpha "} {
-		if !strings.Contains(timeoutCheck.Name+" "+timeoutCheck.Detail, want) {
-			t.Fatalf("timeout check = %#v, want containing %q", timeoutCheck, want)
-		}
+			workflow := validDoctorDependencyWorkflow(false)
+			releaseBlockedCheck := make(chan struct{})
+			t.Cleanup(func() {
+				close(releaseBlockedCheck)
+			})
+			loadedWorkflow := workflowconfig.Workflow{Config: workflow}
+			if tt.blockOverlay {
+				loadedWorkflow.Overlay.Path = "/repo/WORKFLOW.local.md"
+			}
+			jobs := doctorProjectCheckJobs(globalconfig.Config{
+				Projects: []globalconfig.Project{{ID: "alpha", Workflow: "WORKFLOW.md"}},
+			}, doctorDeps{
+				loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+					return loadedWorkflow, nil
+				},
+				gitTracked: func(context.Context, string) (bool, error) {
+					if tt.blockOverlay {
+						<-releaseBlockedCheck
+					}
+					return false, nil
+				},
+				gitWorkTree: func(context.Context, string) error {
+					return nil
+				},
+				gitRemoteURL: func(context.Context, string) (string, error) {
+					return "https://github.com/digitaldrywood/detent", nil
+				},
+				autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+					return &fakeDoctorAutoPromoteConnector{}, nil
+				},
+				githubReadiness: func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
+					if !tt.blockOverlay {
+						<-releaseBlockedCheck
+					}
+					return nil, nil
+				},
+				githubMergeSettings: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryMergeSettings, error) {
+					return ghconnector.RepositoryMergeSettings{AllowSquashMerge: true}, nil
+				},
+			}, RuntimeSecret{Value: "token", Source: "github_token"}, false, doctorWorkflowDefaultTokenThreshold)
+			if len(jobs) != 1 {
+				t.Fatalf("jobs len = %d, want 1", len(jobs))
+			}
+
+			checks := runDoctorCheck(context.Background(), jobs[0], 20*time.Millisecond)
+
+			if len(checks) < 2 {
+				t.Fatalf("checks = %#v, want completed checks followed by timeout", checks)
+			}
+			var foundWorkflow bool
+			for _, check := range checks[:len(checks)-1] {
+				if check.Name == "Project alpha workflow" {
+					foundWorkflow = true
+					break
+				}
+			}
+			if !foundWorkflow {
+				t.Fatalf("checks = %#v, want completed workflow check", checks)
+			}
+			timeoutCheck := checks[len(checks)-1]
+			for _, want := range []string{"Project alpha checks", "timed out after 20ms", "while running Project alpha " + tt.current} {
+				if !strings.Contains(timeoutCheck.Name+" "+timeoutCheck.Detail, want) {
+					t.Fatalf("timeout check = %#v, want containing %q", timeoutCheck, want)
+				}
+			}
+		})
 	}
 }
 

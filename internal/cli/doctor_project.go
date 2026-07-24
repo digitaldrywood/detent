@@ -298,9 +298,11 @@ func checkDoctorProjectWithProgress(
 		}
 	}
 	checks = append(checks, workflowCheck)
+	setDoctorCurrentCheck("Project " + id + " local workflow overlay")
 	if overlayCheck, ok := checkDoctorLocalWorkflowOverlay(ctx, id, workflow, deps); ok {
 		checks = append(checks, overlayCheck)
 	}
+	setDoctorCurrentCheck("Project " + id + " billing mode")
 	if billingCheck, ok := checkDoctorBillingMode(id, workflow.Config); ok {
 		checks = append(checks, billingCheck)
 	}
