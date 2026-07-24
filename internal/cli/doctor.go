@@ -632,7 +632,7 @@ func runDoctorCheck(ctx context.Context, job doctorCheckJob, timeout time.Durati
 		ctx = context.Background()
 	}
 	timeout = doctorNormalizedTimeout(timeout)
-	checkCtx, cancel := context.WithCancel(ctx)
+	checkCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()

@@ -4723,40 +4723,89 @@ func TestRunDoctorCheckRenewsTimeoutForReportedProgress(t *testing.T) {
 func TestRunDoctorCheckFreezesProgressBeforeCancellation(t *testing.T) {
 	t.Parallel()
 
-	progress := newDoctorCheckProgress()
-	postCancelPublication := make(chan struct{})
-	completed := doctorCheck{Name: "Project alpha workflow", Status: doctorOK, Detail: "loaded"}
-	canceled := doctorCheck{Name: "Project alpha route models", Status: doctorFail, Detail: "context canceled"}
-	checks := runDoctorCheck(context.Background(), doctorCheckJob{
-		Name:   "Project alpha checks",
-		Freeze: progress.Freeze,
-		Current: func() string {
-			<-postCancelPublication
-			return progress.Current()
+	tests := []struct {
+		name         string
+		timeout      time.Duration
+		cancelParent bool
+		wantErr      error
+	}{
+		{
+			name:    "timer expiration",
+			timeout: 20 * time.Millisecond,
+			wantErr: context.DeadlineExceeded,
 		},
-		Progress: progress.Updates(),
-		Run: func(ctx context.Context) []doctorCheck {
-			progress.Set("Project alpha route models", []doctorCheck{completed})
-			<-ctx.Done()
-			progress.Set("Project alpha GitHub readiness", []doctorCheck{completed, canceled})
-			close(postCancelPublication)
-			return []doctorCheck{completed, canceled}
+		{
+			name:         "parent cancellation",
+			timeout:      time.Second,
+			cancelParent: true,
+			wantErr:      context.Canceled,
 		},
-	}, 20*time.Millisecond)
+	}
 
-	select {
-	case <-postCancelPublication:
-	case <-time.After(time.Second):
-		t.Fatal("job did not attempt to publish after cancellation")
-	}
-	if len(checks) != 2 {
-		t.Fatalf("checks = %#v, want frozen completed check followed by timeout", checks)
-	}
-	if checks[0].Name != completed.Name || checks[0].Status != completed.Status || checks[0].Detail != completed.Detail {
-		t.Fatalf("checks[0] = %#v, want %#v", checks[0], completed)
-	}
-	if checks[1].Name != "Project alpha checks" || !strings.Contains(checks[1].Detail, "while running Project alpha route models") {
-		t.Fatalf("timeout check = %#v, want frozen route-model stage", checks[1])
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			progress := newDoctorCheckProgress()
+			postCancelPublication := make(chan struct{})
+			workerContext := make(chan context.Context, 1)
+			workerStarted := make(chan struct{})
+			parentCtx, cancelParent := context.WithCancel(context.Background())
+			defer cancelParent()
+			if tt.cancelParent {
+				go func() {
+					<-workerStarted
+					cancelParent()
+				}()
+			}
+
+			var freezeSawCanceledWorker bool
+			completed := doctorCheck{Name: "Project alpha workflow", Status: doctorOK, Detail: "loaded"}
+			canceled := doctorCheck{Name: "Project alpha route models", Status: doctorFail, Detail: "context canceled"}
+			checks := runDoctorCheck(parentCtx, doctorCheckJob{
+				Name: "Project alpha checks",
+				Freeze: func() doctorCheckSnapshot {
+					ctx := <-workerContext
+					select {
+					case <-ctx.Done():
+						freezeSawCanceledWorker = true
+					default:
+					}
+					return progress.Freeze()
+				},
+				Progress: progress.Updates(),
+				Run: func(ctx context.Context) []doctorCheck {
+					workerContext <- ctx
+					progress.Set("Project alpha route models", []doctorCheck{completed})
+					close(workerStarted)
+					<-ctx.Done()
+					progress.Set("Project alpha GitHub readiness", []doctorCheck{completed, canceled})
+					close(postCancelPublication)
+					return []doctorCheck{completed, canceled}
+				},
+			}, tt.timeout)
+
+			if freezeSawCanceledWorker {
+				t.Fatal("worker context was canceled before progress was frozen")
+			}
+			select {
+			case <-postCancelPublication:
+			case <-time.After(time.Second):
+				t.Fatal("job did not attempt to publish after cancellation")
+			}
+			if len(checks) != 2 {
+				t.Fatalf("checks = %#v, want frozen completed check followed by failure", checks)
+			}
+			if checks[0].Name != completed.Name || checks[0].Status != completed.Status || checks[0].Detail != completed.Detail {
+				t.Fatalf("checks[0] = %#v, want %#v", checks[0], completed)
+			}
+			if checks[1].Name != "Project alpha checks" || !strings.Contains(checks[1].Detail, "while running Project alpha route models") {
+				t.Fatalf("failure check = %#v, want frozen route-model stage", checks[1])
+			}
+			if !strings.Contains(checks[1].Detail, tt.wantErr.Error()) {
+				t.Fatalf("failure detail = %q, want parent error %q", checks[1].Detail, tt.wantErr)
+			}
+		})
 	}
 }
 
