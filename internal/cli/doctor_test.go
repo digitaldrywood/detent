@@ -4793,6 +4793,16 @@ func TestRunDoctorCheckFreezesProgressBeforeCancellation(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("job did not attempt to publish after cancellation")
 			}
+			postPublicationSnapshot := progress.Freeze()
+			if postPublicationSnapshot.Current != "Project alpha route models" {
+				t.Fatalf("current stage after rejected publication = %q, want %q", postPublicationSnapshot.Current, "Project alpha route models")
+			}
+			if len(postPublicationSnapshot.Checks) != 1 ||
+				postPublicationSnapshot.Checks[0].Name != completed.Name ||
+				postPublicationSnapshot.Checks[0].Status != completed.Status ||
+				postPublicationSnapshot.Checks[0].Detail != completed.Detail {
+				t.Fatalf("checks after rejected publication = %#v, want [%#v]", postPublicationSnapshot.Checks, completed)
+			}
 			if len(checks) != 2 {
 				t.Fatalf("checks = %#v, want frozen completed check followed by failure", checks)
 			}
