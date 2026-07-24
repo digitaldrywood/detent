@@ -4704,7 +4704,7 @@ func TestRunDoctorCheckRenewsTimeoutForReportedProgress(t *testing.T) {
 		Progress: progress.Updates(),
 		Run: func(ctx context.Context) []doctorCheck {
 			for _, name := range []string{"first", "second", "third"} {
-				progress.Set("Project alpha " + name)
+				progress.Set("Project alpha "+name, nil)
 				select {
 				case <-ctx.Done():
 					return nil
@@ -4757,12 +4757,23 @@ func TestDoctorProjectCheckJobTimeoutReportsCurrentInnerCheck(t *testing.T) {
 
 	checks := runDoctorCheck(context.Background(), jobs[0], 20*time.Millisecond)
 
-	if len(checks) != 1 {
-		t.Fatalf("checks len = %d, want 1", len(checks))
+	if len(checks) < 2 {
+		t.Fatalf("checks = %#v, want completed checks followed by timeout", checks)
 	}
+	var foundWorkflow bool
+	for _, check := range checks[:len(checks)-1] {
+		if check.Name == "Project alpha workflow" {
+			foundWorkflow = true
+			break
+		}
+	}
+	if !foundWorkflow {
+		t.Fatalf("checks = %#v, want completed workflow check", checks)
+	}
+	timeoutCheck := checks[len(checks)-1]
 	for _, want := range []string{"Project alpha checks", "timed out after 20ms", "while running Project alpha "} {
-		if !strings.Contains(checks[0].Name+" "+checks[0].Detail, want) {
-			t.Fatalf("timeout check = %#v, want containing %q", checks[0], want)
+		if !strings.Contains(timeoutCheck.Name+" "+timeoutCheck.Detail, want) {
+			t.Fatalf("timeout check = %#v, want containing %q", timeoutCheck, want)
 		}
 	}
 }

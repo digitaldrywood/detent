@@ -112,6 +112,7 @@ type doctorOutputReport struct {
 type doctorCheckJob struct {
 	Name     string
 	Current  func() string
+	Partial  func() []doctorCheck
 	Progress <-chan struct{}
 	Run      func(context.Context) []doctorCheck
 }
@@ -124,6 +125,7 @@ type doctorCheckResult struct {
 type doctorCheckProgress struct {
 	mu      sync.Mutex
 	current string
+	checks  []doctorCheck
 	updates chan struct{}
 }
 
@@ -131,9 +133,10 @@ func newDoctorCheckProgress() *doctorCheckProgress {
 	return &doctorCheckProgress{updates: make(chan struct{}, 1)}
 }
 
-func (p *doctorCheckProgress) Set(current string) {
+func (p *doctorCheckProgress) Set(current string, checks []doctorCheck) {
 	p.mu.Lock()
 	p.current = strings.TrimSpace(current)
+	p.checks = append(p.checks[:0], checks...)
 	p.mu.Unlock()
 
 	select {
@@ -146,6 +149,12 @@ func (p *doctorCheckProgress) Current() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.current
+}
+
+func (p *doctorCheckProgress) Partial() []doctorCheck {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]doctorCheck(nil), p.checks...)
 }
 
 func (p *doctorCheckProgress) Updates() <-chan struct{} {
@@ -627,22 +636,25 @@ func runDoctorCheck(ctx context.Context, job doctorCheckJob, timeout time.Durati
 			resetDoctorCheckTimer(timer, timeout)
 		case <-timer.C:
 			cancel()
-			return []doctorCheck{{
-				Name:   job.Name,
-				Status: doctorFail,
-				Detail: doctorTimeoutDetail(job, timeout, context.DeadlineExceeded),
-				Hint:   doctorTimeoutHint(),
-			}}
+			return doctorTimedOutChecks(job, timeout, context.DeadlineExceeded)
 		case <-ctx.Done():
 			cancel()
-			return []doctorCheck{{
-				Name:   job.Name,
-				Status: doctorFail,
-				Detail: doctorTimeoutDetail(job, timeout, ctx.Err()),
-				Hint:   doctorTimeoutHint(),
-			}}
+			return doctorTimedOutChecks(job, timeout, ctx.Err())
 		}
 	}
+}
+
+func doctorTimedOutChecks(job doctorCheckJob, timeout time.Duration, err error) []doctorCheck {
+	var checks []doctorCheck
+	if job.Partial != nil {
+		checks = job.Partial()
+	}
+	return append(checks, doctorCheck{
+		Name:   job.Name,
+		Status: doctorFail,
+		Detail: doctorTimeoutDetail(job, timeout, err),
+		Hint:   doctorTimeoutHint(),
+	})
 }
 
 func resetDoctorCheckTimer(timer *time.Timer, timeout time.Duration) {

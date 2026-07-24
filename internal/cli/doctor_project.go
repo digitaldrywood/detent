@@ -187,6 +187,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 		jobs = append(jobs, doctorCheckJob{
 			Name:     "Project " + id + " checks",
 			Current:  progress.Current,
+			Partial:  progress.Partial,
 			Progress: progress.Updates(),
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return checkDoctorProjectWithProgress(jobCtx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes, workflowTokenThreshold, progress.Set)
@@ -212,12 +213,13 @@ func checkDoctorProjectWithProgress(
 	githubToken RuntimeSecret,
 	allowWriteProbes bool,
 	workflowTokenThreshold int,
-	setCurrent func(string),
+	setProgress func(string, []doctorCheck),
 ) []doctorCheck {
 	id := doctorProjectID(project)
+	var checks []doctorCheck
 	setDoctorCurrentCheck := func(name string) {
-		if setCurrent != nil {
-			setCurrent(name)
+		if setProgress != nil {
+			setProgress(name, checks)
 		}
 	}
 	workflowCheckName := "Project " + id + " workflow"
@@ -295,7 +297,7 @@ func checkDoctorProjectWithProgress(
 			}
 		}
 	}
-	checks := []doctorCheck{workflowCheck}
+	checks = append(checks, workflowCheck)
 	if overlayCheck, ok := checkDoctorLocalWorkflowOverlay(ctx, id, workflow, deps); ok {
 		checks = append(checks, overlayCheck)
 	}
