@@ -186,7 +186,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 		progress := newDoctorCheckProgress()
 		jobs = append(jobs, doctorCheckJob{
 			Name:     "Project " + id + " checks",
-			Current:  progress.Current,
+			Freeze:   progress.Freeze,
 			Progress: progress.Updates(),
 			Run: func(jobCtx context.Context) []doctorCheck {
 				return checkDoctorProjectWithProgress(jobCtx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes, workflowTokenThreshold, progress.Set)
@@ -212,12 +212,13 @@ func checkDoctorProjectWithProgress(
 	githubToken RuntimeSecret,
 	allowWriteProbes bool,
 	workflowTokenThreshold int,
-	setCurrent func(string),
+	setProgress func(string, []doctorCheck),
 ) []doctorCheck {
 	id := doctorProjectID(project)
+	var checks []doctorCheck
 	setDoctorCurrentCheck := func(name string) {
-		if setCurrent != nil {
-			setCurrent(name)
+		if setProgress != nil {
+			setProgress(name, checks)
 		}
 	}
 	workflowCheckName := "Project " + id + " workflow"
@@ -295,10 +296,12 @@ func checkDoctorProjectWithProgress(
 			}
 		}
 	}
-	checks := []doctorCheck{workflowCheck}
+	checks = append(checks, workflowCheck)
+	setDoctorCurrentCheck("Project " + id + " local workflow overlay")
 	if overlayCheck, ok := checkDoctorLocalWorkflowOverlay(ctx, id, workflow, deps); ok {
 		checks = append(checks, overlayCheck)
 	}
+	setDoctorCurrentCheck("Project " + id + " billing mode")
 	if billingCheck, ok := checkDoctorBillingMode(id, workflow.Config); ok {
 		checks = append(checks, billingCheck)
 	}

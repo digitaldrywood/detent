@@ -112,8 +112,14 @@ type doctorOutputReport struct {
 type doctorCheckJob struct {
 	Name     string
 	Current  func() string
+	Freeze   func() doctorCheckSnapshot
 	Progress <-chan struct{}
 	Run      func(context.Context) []doctorCheck
+}
+
+type doctorCheckSnapshot struct {
+	Current string
+	Checks  []doctorCheck
 }
 
 type doctorCheckResult struct {
@@ -124,6 +130,8 @@ type doctorCheckResult struct {
 type doctorCheckProgress struct {
 	mu      sync.Mutex
 	current string
+	checks  []doctorCheck
+	frozen  bool
 	updates chan struct{}
 }
 
@@ -131,9 +139,14 @@ func newDoctorCheckProgress() *doctorCheckProgress {
 	return &doctorCheckProgress{updates: make(chan struct{}, 1)}
 }
 
-func (p *doctorCheckProgress) Set(current string) {
+func (p *doctorCheckProgress) Set(current string, checks []doctorCheck) {
 	p.mu.Lock()
+	if p.frozen {
+		p.mu.Unlock()
+		return
+	}
 	p.current = strings.TrimSpace(current)
+	p.checks = append(p.checks[:0], checks...)
 	p.mu.Unlock()
 
 	select {
@@ -146,6 +159,16 @@ func (p *doctorCheckProgress) Current() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.current
+}
+
+func (p *doctorCheckProgress) Freeze() doctorCheckSnapshot {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.frozen = true
+	return doctorCheckSnapshot{
+		Current: p.current,
+		Checks:  append([]doctorCheck(nil), p.checks...),
+	}
 }
 
 func (p *doctorCheckProgress) Updates() <-chan struct{} {
@@ -626,23 +649,35 @@ func runDoctorCheck(ctx context.Context, job doctorCheckJob, timeout time.Durati
 		case <-job.Progress:
 			resetDoctorCheckTimer(timer, timeout)
 		case <-timer.C:
+			snapshot := freezeDoctorCheck(job)
 			cancel()
-			return []doctorCheck{{
-				Name:   job.Name,
-				Status: doctorFail,
-				Detail: doctorTimeoutDetail(job, timeout, context.DeadlineExceeded),
-				Hint:   doctorTimeoutHint(),
-			}}
+			return doctorTimedOutChecks(job.Name, snapshot, timeout, context.DeadlineExceeded)
 		case <-ctx.Done():
+			snapshot := freezeDoctorCheck(job)
 			cancel()
-			return []doctorCheck{{
-				Name:   job.Name,
-				Status: doctorFail,
-				Detail: doctorTimeoutDetail(job, timeout, ctx.Err()),
-				Hint:   doctorTimeoutHint(),
-			}}
+			return doctorTimedOutChecks(job.Name, snapshot, timeout, ctx.Err())
 		}
 	}
+}
+
+func freezeDoctorCheck(job doctorCheckJob) doctorCheckSnapshot {
+	if job.Freeze != nil {
+		return job.Freeze()
+	}
+	snapshot := doctorCheckSnapshot{}
+	if job.Current != nil {
+		snapshot.Current = strings.TrimSpace(job.Current())
+	}
+	return snapshot
+}
+
+func doctorTimedOutChecks(name string, snapshot doctorCheckSnapshot, timeout time.Duration, err error) []doctorCheck {
+	return append(snapshot.Checks, doctorCheck{
+		Name:   name,
+		Status: doctorFail,
+		Detail: doctorTimeoutDetail(name, snapshot.Current, timeout, err),
+		Hint:   doctorTimeoutHint(),
+	})
 }
 
 func resetDoctorCheckTimer(timer *time.Timer, timeout time.Duration) {
@@ -655,12 +690,9 @@ func resetDoctorCheckTimer(timer *time.Timer, timeout time.Duration) {
 	timer.Reset(timeout)
 }
 
-func doctorTimeoutDetail(job doctorCheckJob, timeout time.Duration, err error) string {
-	current := ""
-	if job.Current != nil {
-		current = strings.TrimSpace(job.Current())
-	}
-	if current != "" && current != strings.TrimSpace(job.Name) {
+func doctorTimeoutDetail(name string, current string, timeout time.Duration, err error) string {
+	current = strings.TrimSpace(current)
+	if current != "" && current != strings.TrimSpace(name) {
 		return fmt.Sprintf("timed out after %s while running %s: %v", timeout, current, err)
 	}
 	return fmt.Sprintf("timed out after %s: %v", timeout, err)
