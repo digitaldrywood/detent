@@ -1073,6 +1073,10 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeWorkerRequiredChecksMissingReason, missingChecks)
 			return true
 		}
+		if mergeFastPathResult(event) && mergeWorkerMergeabilityPending(issue) {
+			o.waitForMergeWorkerMergeability(ctx, state, event, running, issue)
+			return true
+		}
 		if mergeFastPathResult(event) && mergeWorkerProgrammaticMergeWaiting(issue) {
 			o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
 			return true
@@ -1162,6 +1166,26 @@ func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
 		"waiting for current-head CI",
 		"merge_worker_waiting_current_head_ci",
 		"merge worker is waiting for current-head CI for ",
+	)
+}
+
+func (o *Orchestrator) waitForMergeWorkerMergeability(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+) {
+	o.waitForMergeWorkerRetry(
+		ctx,
+		state,
+		event,
+		running,
+		issue,
+		running.Attempt,
+		"waiting for GitHub mergeability computation",
+		"merge_worker_waiting_mergeability",
+		"merge worker is waiting for GitHub mergeability computation for ",
 	)
 }
 
@@ -1320,6 +1344,30 @@ func mergeWorkerProgrammaticMergeReady(issue connector.Issue) bool {
 		return false
 	}
 	if !mergeWorkerCIGreen(pullRequest.CIStatus) {
+		return false
+	}
+	return pullRequestRepository(issue) != "" &&
+		pullRequestNumber(issue) > 0 &&
+		strings.TrimSpace(pullRequest.HeadSHA) != ""
+}
+
+func mergeWorkerMergeabilityPending(issue connector.Issue) bool {
+	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
+		return false
+	}
+	pullRequest := issue.PullRequest
+	if pullRequestHydrationBlocksProgress(pullRequest) {
+		return false
+	}
+	if normalizePullRequestState(pullRequest.State) != "open" || pullRequest.Draft {
+		return false
+	}
+	if !mergeWorkerCIGreen(pullRequest.CIStatus) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(pullRequest.MergeableState)) {
+	case "", "unknown":
+	default:
 		return false
 	}
 	return pullRequestRepository(issue) != "" &&

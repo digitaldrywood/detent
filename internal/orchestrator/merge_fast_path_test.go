@@ -386,7 +386,7 @@ func TestMergingFallbackPushWaitsAfterWorkerReappliesCITriggerWhenHydrationIsGre
 	}
 }
 
-func TestMergingFastPathMissingRequiredChecksWaitsForPropagation(t *testing.T) {
+func TestMergingFastPathMissingRequiredChecksPrecedeUnknownMergeability(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 14, 13, 25, 0, 0, time.UTC)
@@ -395,8 +395,8 @@ func TestMergingFastPathMissingRequiredChecksWaitsForPropagation(t *testing.T) {
 		URL:            "https://github.test/digitaldrywood/detent/pull/864",
 		BranchName:     "detent/merge-fast-path-propagating-checks",
 		State:          "OPEN",
-		MergeableState: "blocked",
-		CIStatus:       "pending",
+		MergeableState: "unknown",
+		CIStatus:       "success",
 		HeadSHA:        "head-propagating-required-checks",
 		RequiredCheckFailures: []connector.PullRequestCheck{
 			{Name: "Test", Status: "missing", Conclusion: "missing"},
@@ -406,7 +406,12 @@ func TestMergingFastPathMissingRequiredChecksWaitsForPropagation(t *testing.T) {
 	issue.Identifier = "digitaldrywood/detent#864"
 	issue.PRRepository = "digitaldrywood/detent"
 
-	tracker, state := completeMergeFastPathTestRun(t, issue, now, 1)
+	staggerSeconds := 0
+	tracker, state := completeMergeFastPathTestRun(t, issue, now, 1, gate.Config{
+		Kind:                         gate.KindCommand,
+		CITriggerLabel:               "ci:ready",
+		CITriggerLabelStaggerSeconds: &staggerSeconds,
+	})
 
 	if len(tracker.merges) != 0 {
 		t.Fatalf("merges = %#v, want none while required checks propagate", tracker.merges)
@@ -423,6 +428,9 @@ func TestMergingFastPathMissingRequiredChecksWaitsForPropagation(t *testing.T) {
 	}
 	if !strings.Contains(retry.Error, "required checks") {
 		t.Fatalf("Retry[%q].Error = %q, want required-check propagation wait", issue.ID, retry.Error)
+	}
+	if strings.Contains(retry.Error, "mergeability") {
+		t.Fatalf("Retry[%q].Error = %q, want required-check handling to take precedence", issue.ID, retry.Error)
 	}
 }
 
@@ -597,7 +605,7 @@ func TestMergingFastPathHydrationUnavailableDefers(t *testing.T) {
 	issue.Identifier = "digitaldrywood/detent#865"
 	issue.PRRepository = "digitaldrywood/detent"
 
-	tracker, state := completeMergeFastPathTestRun(t, issue, now, 2)
+	tracker, state := completeMergeFastPathTestRun(t, issue, now, 2, gate.Config{})
 
 	if len(tracker.merges) != 0 {
 		t.Fatalf("merges = %#v, want none without fresh pull request hydration", tracker.merges)
@@ -622,6 +630,7 @@ func completeMergeFastPathTestRun(
 	issue connector.Issue,
 	now time.Time,
 	attempt int,
+	gateConfig gate.Config,
 ) (*autoPromoteTickMergeConnector, State) {
 	t.Helper()
 
@@ -634,6 +643,7 @@ func completeMergeFastPathTestRun(
 		ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
 		ObservedStates:         []string{"Merging"},
 		TerminalStates:         []string{"Done", "Cancelled"},
+		AutoPromote:            AutoPromoteConfig{Gate: gateConfig},
 	})
 	tracker := &autoPromoteTickMergeConnector{
 		autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
@@ -662,6 +672,60 @@ func completeMergeFastPathTestRun(
 		},
 	})
 	return tracker, state
+}
+
+func TestMergingFastPathWaitsForMergeabilityComputation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		mergeable string
+	}{
+		{name: "unknown", mergeable: "unknown"},
+		{name: "empty"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Date(2026, 7, 24, 13, 25, 0, 0, time.UTC)
+			issue := autoPromoteTickIssue("issue-mergeability-"+tt.name, []string{"bug"}, &connector.PullRequest{
+				Number:         869,
+				URL:            "https://github.test/digitaldrywood/detent/pull/869",
+				BranchName:     "detent/mergeability-" + tt.name,
+				State:          "OPEN",
+				MergeableState: tt.mergeable,
+				CIStatus:       "success",
+				HeadSHA:        "head-mergeability-" + tt.name,
+			})
+			issue.State = "Merging"
+			issue.Identifier = "digitaldrywood/detent#869"
+			issue.PRRepository = "digitaldrywood/detent"
+
+			tracker, state := completeMergeFastPathTestRun(t, issue, now, 2, gate.Config{})
+
+			if len(tracker.merges) != 0 {
+				t.Fatalf("merges = %#v, want none while GitHub computes mergeability", tracker.merges)
+			}
+			if len(tracker.updates) != 0 {
+				t.Fatalf("updates = %#v, want no lane transition while GitHub computes mergeability", tracker.updates)
+			}
+			retry, ok := state.Retry[issue.ID]
+			if !ok {
+				t.Fatalf("Retry[%q] missing while GitHub computes mergeability", issue.ID)
+			}
+			if retry.Attempt != 2 || retry.WorkerHost != "worker-a" {
+				t.Fatalf("Retry[%q] = %#v, want same-attempt retry on worker-a", issue.ID, retry)
+			}
+			if !strings.Contains(retry.Error, "mergeability computation") {
+				t.Fatalf("Retry[%q].Error = %q, want mergeability computation reason", issue.ID, retry.Error)
+			}
+			if !retry.DueAt.Equal(now.Add(5 * time.Second)) {
+				t.Fatalf("Retry[%q].DueAt = %s, want continuation retry delay", issue.ID, retry.DueAt)
+			}
+		})
+	}
 }
 
 func TestMergingFastPathCleanPrecheckWaitsForCurrentHeadCI(t *testing.T) {
@@ -754,16 +818,21 @@ func TestMergeWorkerProgrammaticMergeDisposition(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		state     string
-		ci        string
-		running   []string
-		wantReady bool
-		wantWait  bool
+		name        string
+		state       string
+		ci          string
+		running     []string
+		wantReady   bool
+		wantPending bool
+		wantWait    bool
 	}{
 		{name: "clean green", state: "clean", ci: "success", wantReady: true},
 		{name: "behind green", state: "behind", ci: "success", wantReady: true},
 		{name: "behind pending", state: "behind", ci: "pending", wantWait: true},
+		{name: "unknown green", state: "unknown", ci: "success", wantPending: true},
+		{name: "empty green", ci: "success", wantPending: true},
+		{name: "unknown pending", state: "unknown", ci: "pending", wantWait: true},
+		{name: "unknown failed", state: "unknown", ci: "failure"},
 		{name: "blocked running", state: "blocked", ci: "pending", running: []string{"Test"}, wantWait: true},
 		{name: "blocked without running checks", state: "blocked", ci: "pending"},
 		{name: "dirty", state: "dirty", ci: "success"},
@@ -787,6 +856,9 @@ func TestMergeWorkerProgrammaticMergeDisposition(t *testing.T) {
 			}
 			if got := mergeWorkerProgrammaticMergeReady(issue); got != tt.wantReady {
 				t.Fatalf("mergeWorkerProgrammaticMergeReady() = %t, want %t", got, tt.wantReady)
+			}
+			if got := mergeWorkerMergeabilityPending(issue); got != tt.wantPending {
+				t.Fatalf("mergeWorkerMergeabilityPending() = %t, want %t", got, tt.wantPending)
 			}
 			if got := mergeWorkerProgrammaticMergeWaiting(issue); got != tt.wantWait {
 				t.Fatalf("mergeWorkerProgrammaticMergeWaiting() = %t, want %t", got, tt.wantWait)
