@@ -4764,26 +4764,72 @@ func TestRunDoctorCheckRenewsTimeoutForReportedProgress(t *testing.T) {
 
 	const timeout = 100 * time.Millisecond
 	progress := newDoctorCheckProgress()
-	checks := runDoctorCheck(context.Background(), doctorCheckJob{
-		Name:     "Project alpha checks",
-		Current:  progress.Current,
-		Progress: progress.Updates(),
-		Run: func(ctx context.Context) []doctorCheck {
-			for _, name := range []string{"first", "second", "third"} {
-				progress.Set("Project alpha "+name, nil)
-				select {
-				case <-ctx.Done():
-					return nil
-				case <-time.After(60 * time.Millisecond):
+	timer := &controlledDoctorCheckTimer{
+		deadline: make(chan time.Time),
+		resets:   make(chan time.Duration),
+	}
+	advance := make(chan struct{})
+	checksDone := make(chan []doctorCheck, 1)
+	stuck := time.NewTimer(10 * time.Second)
+	defer stuck.Stop()
+	go func() {
+		checksDone <- runDoctorCheckWithTimer(context.Background(), doctorCheckJob{
+			Name:     "Project alpha checks",
+			Current:  progress.Current,
+			Progress: progress.Updates(),
+			Run: func(ctx context.Context) []doctorCheck {
+				for _, name := range []string{"first", "second", "third"} {
+					progress.Set("Project alpha "+name, nil)
+					select {
+					case <-ctx.Done():
+						return nil
+					case <-advance:
+					}
 				}
-			}
-			return []doctorCheck{{Name: "Project alpha checks", Status: doctorOK, Detail: "done"}}
-		},
-	}, timeout)
+				return []doctorCheck{{Name: "Project alpha checks", Status: doctorOK, Detail: "done"}}
+			},
+		}, timeout, timer)
+	}()
 
+	for range 3 {
+		select {
+		case got := <-timer.resets:
+			if got != timeout {
+				t.Fatalf("timer reset = %s, want %s", got, timeout)
+			}
+		case <-stuck.C:
+			t.Fatal("timed out waiting for timer reset")
+		}
+		advance <- struct{}{}
+	}
+
+	var checks []doctorCheck
+	select {
+	case checks = <-checksDone:
+	case <-stuck.C:
+		t.Fatal("timed out waiting for completed project checks")
+	}
 	if len(checks) != 1 || checks[0].Status != doctorOK {
 		t.Fatalf("checks = %#v, want completed project checks", checks)
 	}
+}
+
+type controlledDoctorCheckTimer struct {
+	deadline chan time.Time
+	resets   chan time.Duration
+}
+
+func (t *controlledDoctorCheckTimer) C() <-chan time.Time {
+	return t.deadline
+}
+
+func (t *controlledDoctorCheckTimer) Reset(timeout time.Duration) bool {
+	t.resets <- timeout
+	return true
+}
+
+func (t *controlledDoctorCheckTimer) Stop() bool {
+	return true
 }
 
 func TestRunDoctorCheckFreezesProgressBeforeCancellation(t *testing.T) {

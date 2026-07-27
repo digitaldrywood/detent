@@ -127,6 +127,16 @@ type doctorCheckResult struct {
 	Checks []doctorCheck
 }
 
+type doctorCheckTimer interface {
+	C() <-chan time.Time
+	Reset(time.Duration) bool
+	Stop() bool
+}
+
+type systemDoctorCheckTimer struct {
+	timer *time.Timer
+}
+
 type doctorCheckProgress struct {
 	mu      sync.Mutex
 	current string
@@ -643,9 +653,12 @@ func runDoctorCheck(ctx context.Context, job doctorCheckJob, timeout time.Durati
 		ctx = context.Background()
 	}
 	timeout = doctorNormalizedTimeout(timeout)
+	return runDoctorCheckWithTimer(ctx, job, timeout, &systemDoctorCheckTimer{timer: time.NewTimer(timeout)})
+}
+
+func runDoctorCheckWithTimer(ctx context.Context, job doctorCheckJob, timeout time.Duration, timer doctorCheckTimer) []doctorCheck {
 	checkCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
-	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
 	done := make(chan []doctorCheck, 1)
@@ -659,7 +672,7 @@ func runDoctorCheck(ctx context.Context, job doctorCheckJob, timeout time.Durati
 			return checks
 		case <-job.Progress:
 			resetDoctorCheckTimer(timer, timeout)
-		case <-timer.C:
+		case <-timer.C():
 			snapshot := freezeDoctorCheck(job)
 			cancel()
 			return doctorTimedOutChecks(job.Name, snapshot, timeout, context.DeadlineExceeded)
@@ -669,6 +682,18 @@ func runDoctorCheck(ctx context.Context, job doctorCheckJob, timeout time.Durati
 			return doctorTimedOutChecks(job.Name, snapshot, timeout, ctx.Err())
 		}
 	}
+}
+
+func (t *systemDoctorCheckTimer) C() <-chan time.Time {
+	return t.timer.C
+}
+
+func (t *systemDoctorCheckTimer) Reset(timeout time.Duration) bool {
+	return t.timer.Reset(timeout)
+}
+
+func (t *systemDoctorCheckTimer) Stop() bool {
+	return t.timer.Stop()
 }
 
 func freezeDoctorCheck(job doctorCheckJob) doctorCheckSnapshot {
@@ -691,10 +716,10 @@ func doctorTimedOutChecks(name string, snapshot doctorCheckSnapshot, timeout tim
 	})
 }
 
-func resetDoctorCheckTimer(timer *time.Timer, timeout time.Duration) {
+func resetDoctorCheckTimer(timer doctorCheckTimer, timeout time.Duration) {
 	if !timer.Stop() {
 		select {
-		case <-timer.C:
+		case <-timer.C():
 		default:
 		}
 	}
