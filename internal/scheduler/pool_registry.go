@@ -238,6 +238,9 @@ func (r *PoolRegistry) PoolSnapshots() []PoolSnapshot {
 }
 
 func (r *PoolRegistry) MarkReady(project ProjectCandidate) {
+	r.reconfigureMu.Lock()
+	defer r.reconfigureMu.Unlock()
+
 	runtime := r.runtimeForCandidate(project)
 	if runtime != nil {
 		runtime.gate.MarkReady(project)
@@ -245,6 +248,9 @@ func (r *PoolRegistry) MarkReady(project ProjectCandidate) {
 }
 
 func (r *PoolRegistry) MarkIdle(projectID string) {
+	r.reconfigureMu.Lock()
+	defer r.reconfigureMu.Unlock()
+
 	runtime := r.runtimeForProject(projectID)
 	if runtime != nil {
 		runtime.gate.MarkIdle(projectID)
@@ -252,6 +258,9 @@ func (r *PoolRegistry) MarkIdle(projectID string) {
 }
 
 func (r *PoolRegistry) BeginProjectCycle(project ProjectCandidate) {
+	r.reconfigureMu.Lock()
+	defer r.reconfigureMu.Unlock()
+
 	runtime := r.runtimeForCandidate(project)
 	if runtime != nil {
 		runtime.gate.BeginProjectCycle(project)
@@ -259,6 +268,9 @@ func (r *PoolRegistry) BeginProjectCycle(project ProjectCandidate) {
 }
 
 func (r *PoolRegistry) EndProjectCycle(projectID string) {
+	r.reconfigureMu.Lock()
+	defer r.reconfigureMu.Unlock()
+
 	runtime := r.runtimeForProject(projectID)
 	if runtime != nil {
 		runtime.gate.EndProjectCycle(projectID)
@@ -281,6 +293,9 @@ func (r *PoolRegistry) TryAcquireWithDecision(
 	req SlotRequest,
 	now time.Time,
 ) (Slot, bool, DispatchGateDecision, error) {
+	r.reconfigureMu.Lock()
+	defer r.reconfigureMu.Unlock()
+
 	runtime := r.runtimeForCandidate(project)
 	if runtime == nil {
 		return Slot{}, false, DispatchGateDecision{}, ErrNoCandidates
