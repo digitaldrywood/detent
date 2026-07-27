@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -129,7 +130,7 @@ func TestAgentPoolsFixModesAndPreservation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Stat() error = %v", err)
 			}
-			if info.Mode().Perm() != configFileMode {
+			if runtime.GOOS != "windows" && info.Mode().Perm() != configFileMode {
 				t.Fatalf("mode = %04o, want %04o", info.Mode().Perm(), configFileMode)
 			}
 		})
