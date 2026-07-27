@@ -246,6 +246,7 @@ type doctorDeps struct {
 	executable           func() (string, error)
 	shipSkillProbe       func(string) (doctorShipSkill, error)
 	now                  func() time.Time
+	workflowCache        *doctorWorkflowCache
 }
 
 func newDoctorCommand(configPath *string, env *string, logLevel *string, host *string, port *int, opts options) *cobra.Command {
@@ -470,6 +471,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 					ProposalThreshold: cfg.WorkflowProposalThreshold,
 					ProposeIssues:     cfg.WorkflowProposeIssues,
 				})}
+			},
+		})
+		jobs = append(jobs, doctorCheckJob{
+			Name: doctorAgentPoolsCheckName,
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorAgentPools(jobCtx, resolution, globalConfig, deps)}
 			},
 		})
 	}
@@ -1107,6 +1114,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	}
 	if d.now == nil {
 		d.now = defaults.now
+	}
+	if d.workflowCache == nil {
+		d.workflowCache = newDoctorWorkflowCache()
 	}
 	return d
 }

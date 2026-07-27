@@ -1480,6 +1480,13 @@ func projectSourceRoot(project globalconfig.Project, cfg workflowconfig.Config) 
 }
 
 func loadDoctorProjectWorkflow(ctx context.Context, project globalconfig.Project, deps doctorDeps) (workflowconfig.Workflow, error) {
+	if deps.workflowCache != nil {
+		return deps.workflowCache.load(ctx, project, deps)
+	}
+	return loadDoctorProjectWorkflowUncached(ctx, project, deps)
+}
+
+func loadDoctorProjectWorkflowUncached(ctx context.Context, project globalconfig.Project, deps doctorDeps) (workflowconfig.Workflow, error) {
 	if strings.TrimSpace(project.WorkflowRef) == "" {
 		return deps.loadWorkflow(project.Workflow)
 	}
