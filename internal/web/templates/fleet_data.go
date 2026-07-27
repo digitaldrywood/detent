@@ -153,7 +153,9 @@ func fleetAgentPools(data DashboardData) []fleetAgentPool {
 		}
 		saturated := pool.Used >= pool.Capacity
 		kind := primitives.KindOK
-		if saturated {
+		if pool.Draining {
+			kind = primitives.KindWarn
+		} else if saturated {
 			kind = primitives.KindErr
 		}
 		id := "agent-pool-" + boardCardSlug(name)
@@ -198,11 +200,11 @@ func fleetAgentCount(data DashboardData, pools []fleetAgentPool) string {
 
 func fleetAgentPoolClass(pool fleetAgentPool) string {
 	base := "flex min-w-0 items-center gap-1.5 rounded-chip border px-2 py-1 font-mono text-2xs font-medium tabular-nums "
-	if pool.Saturated {
-		return base + "border-err/40 bg-err/10 text-err"
-	}
 	if pool.Draining {
 		return base + "border-warn/40 bg-warn/10 text-warn"
+	}
+	if pool.Saturated {
+		return base + "border-err/40 bg-err/10 text-err"
 	}
 	return base + "border-line bg-elev text-sec"
 }

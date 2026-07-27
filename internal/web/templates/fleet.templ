@@ -128,10 +128,10 @@ templ AgentActivityPanel(agents []fleetAgentRow, count string, pools []fleetAgen
 						@primitives.StatusDot(pool.StatusKind, false)
 						<span class="truncate" data-pool-name>{ pool.Name }</span>
 						<span class="text-text" data-pool-usage>{ pool.Usage }</span>
-						if pool.Saturated {
-							<span data-pool-capacity-status>At capacity</span>
-						} else if pool.Draining {
+						if pool.Draining {
 							<span data-pool-capacity-status>Draining</span>
+						} else if pool.Saturated {
+							<span data-pool-capacity-status>At capacity</span>
 						}
 					</div>
 				}

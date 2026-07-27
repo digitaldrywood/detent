@@ -128,6 +128,16 @@ func TestFleetAgentPools(t *testing.T) {
 			wantStatusLabel: "At capacity",
 		},
 		{
+			name:            "draining takes precedence over saturation",
+			pools:           []telemetry.AgentPool{{Name: "retired", Used: 1, Capacity: 1, Draining: true, Generation: 4}},
+			wantCount:       "1 running",
+			wantPools:       1,
+			wantPool:        "retired",
+			wantSaturated:   true,
+			wantStrip:       true,
+			wantStatusLabel: "Draining",
+		},
+		{
 			name: "multi-pool fleet shows saturated pool",
 			pools: []telemetry.AgentPool{
 				{Name: "video", Used: 2, Capacity: 10, Generation: 3},
@@ -195,6 +205,9 @@ func TestFleetAgentPools(t *testing.T) {
 			}
 			if tt.wantStatusLabel != "" && !strings.Contains(html, tt.wantStatusLabel) {
 				t.Fatalf("capacity strip missing %q:\n%s", tt.wantStatusLabel, html)
+			}
+			if tt.wantStatusLabel == "Draining" && strings.Contains(html, "At capacity") {
+				t.Fatalf("draining pool must not render active saturation status:\n%s", html)
 			}
 		})
 	}
