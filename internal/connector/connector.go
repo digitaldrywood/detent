@@ -6,6 +6,29 @@ import (
 	"time"
 )
 
+type progressReporterContextKey struct{}
+
+func WithProgressReporter(ctx context.Context, reporter func()) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if reporter == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, progressReporterContextKey{}, reporter)
+}
+
+func ReportProgress(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	reporter, ok := ctx.Value(progressReporterContextKey{}).(func())
+	if !ok || reporter == nil {
+		return
+	}
+	reporter()
+}
+
 var (
 	ErrNotImplemented     = errors.New("connector operation not implemented")
 	ErrStateUpdateBlocked = errors.New("issue state update blocked")

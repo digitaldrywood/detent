@@ -189,6 +189,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 			Freeze:   progress.Freeze,
 			Progress: progress.Updates(),
 			Run: func(jobCtx context.Context) []doctorCheck {
+				jobCtx = connector.WithProgressReporter(jobCtx, progress.Pulse)
 				return checkDoctorProjectWithProgress(jobCtx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes, workflowTokenThreshold, progress.Set)
 			},
 		})

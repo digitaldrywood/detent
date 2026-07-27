@@ -149,6 +149,17 @@ func (p *doctorCheckProgress) Set(current string, checks []doctorCheck) {
 	p.checks = append(p.checks[:0], checks...)
 	p.mu.Unlock()
 
+	p.Pulse()
+}
+
+func (p *doctorCheckProgress) Pulse() {
+	p.mu.Lock()
+	frozen := p.frozen
+	p.mu.Unlock()
+	if frozen {
+		return
+	}
+
 	select {
 	case p.updates <- struct{}{}:
 	default:

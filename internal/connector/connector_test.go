@@ -62,6 +62,56 @@ func TestConnectorInterface(t *testing.T) {
 	}
 }
 
+func TestProgressReporter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ctx  func(*int) context.Context
+		want int
+	}{
+		{
+			name: "reports",
+			ctx: func(calls *int) context.Context {
+				return WithProgressReporter(context.Background(), func() {
+					*calls = *calls + 1
+				})
+			},
+			want: 1,
+		},
+		{
+			name: "missing reporter",
+			ctx: func(*int) context.Context {
+				return context.Background()
+			},
+		},
+		{
+			name: "nil context",
+			ctx: func(*int) context.Context {
+				return nil
+			},
+		},
+		{
+			name: "nil reporter",
+			ctx: func(*int) context.Context {
+				return WithProgressReporter(context.Background(), nil)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			calls := 0
+			ReportProgress(tt.ctx(&calls))
+			if calls != tt.want {
+				t.Fatalf("reporter calls = %d, want %d", calls, tt.want)
+			}
+		})
+	}
+}
+
 func TestBackendString(t *testing.T) {
 	t.Parallel()
 

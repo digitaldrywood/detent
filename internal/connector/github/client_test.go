@@ -85,6 +85,71 @@ func TestClientGraphQLSendsBearerRequest(t *testing.T) {
 	}
 }
 
+func TestClientReportsResponseProgress(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		run  func(context.Context, *Client) error
+	}{
+		{
+			name: "GraphQL",
+			run: func(ctx context.Context, client *Client) error {
+				return client.GraphQL(ctx, "query { viewer { login } }", nil, nil)
+			},
+		},
+		{
+			name: "REST",
+			run: func(ctx context.Context, client *Client) error {
+				return client.REST(ctx, http.MethodGet, "/user", nil, nil)
+			},
+		},
+		{
+			name: "REST probe",
+			run: func(ctx context.Context, client *Client) error {
+				_, err := client.restProbe(ctx, http.MethodGet, "/user", nil)
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/" {
+					_, _ = w.Write([]byte(`{"data":{"viewer":{"login":"octocat"}}}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			t.Cleanup(server.Close)
+
+			client, err := NewClient(ClientConfig{
+				Endpoint:    server.URL,
+				TokenSource: StaticTokenSource("test-token"),
+				HTTPClient:  server.Client(),
+			})
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+
+			calls := 0
+			ctx := connector.WithProgressReporter(context.Background(), func() {
+				calls++
+			})
+			if err := tt.run(ctx, client); err != nil {
+				t.Fatalf("request error = %v", err)
+			}
+			if calls != 1 {
+				t.Fatalf("progress reports = %d, want 1", calls)
+			}
+		})
+	}
+}
+
 func TestClientGraphQLClassifiesFailures(t *testing.T) {
 	t.Parallel()
 
