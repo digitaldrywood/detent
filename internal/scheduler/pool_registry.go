@@ -24,6 +24,7 @@ type PoolSnapshot struct {
 	Mode       Mode
 	Draining   bool
 	Generation uint64
+	Holders    []string
 }
 
 type PoolSnapshotter interface {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -106,12 +107,27 @@ func (g *GlobalDispatchGate) PoolSnapshot() PoolSnapshot {
 	defer g.mu.Unlock()
 
 	stats := g.capacitySnapshotLocked("")
+	holders := make([]string, 0, len(g.running))
+	seen := make(map[string]struct{}, len(g.running))
+	for _, running := range g.running {
+		projectID := strings.TrimSpace(running.ProjectID)
+		if projectID == "" {
+			continue
+		}
+		if _, ok := seen[projectID]; ok {
+			continue
+		}
+		seen[projectID] = struct{}{}
+		holders = append(holders, projectID)
+	}
+	sort.Strings(holders)
 	return PoolSnapshot{
 		Name:      g.poolName,
 		Capacity:  stats.globalCapacity,
 		Used:      stats.globalUsed,
 		Available: nonNegativeInt(stats.globalCapacity - stats.globalUsed),
 		Mode:      g.global.Mode(),
+		Holders:   holders,
 	}
 }
 

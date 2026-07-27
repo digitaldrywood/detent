@@ -5,6 +5,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/workload"
 )
 
 const (
@@ -28,22 +31,41 @@ type DeliveryProfileSettings struct {
 }
 
 type DeliveryProfileSummary struct {
-	EffectiveDeliveryProfile      string   `json:"effective_delivery_profile"`
-	EffectiveDeliveryProfileLabel string   `json:"effective_delivery_profile_label"`
-	KanbanMode                    string   `json:"kanban_mode"`
-	KanbanBehavior                string   `json:"kanban_behavior"`
-	GateRequiresAutomatedReview   bool     `json:"gate_requires_automated_review"`
-	GateBehavior                  string   `json:"gate_behavior"`
-	AutoPromoteEnabled            bool     `json:"auto_promote_enabled"`
-	AutoPromoteQuietSeconds       int      `json:"auto_promote_quiet_seconds"`
-	AutoPromotionBehavior         string   `json:"auto_promotion_behavior"`
-	QuietWindowBehavior           string   `json:"quiet_window_behavior"`
-	DependencyAutoUnblockEnabled  bool     `json:"dependency_auto_unblock_enabled"`
-	DependencyAutoUnblockBehavior string   `json:"dependency_auto_unblock_behavior"`
-	MergingConcurrency            int      `json:"merging_concurrency"`
-	MergeConcurrencyBehavior      string   `json:"merge_concurrency_behavior"`
-	StopBehavior                  string   `json:"stop_behavior"`
-	StopConditions                []string `json:"stop_conditions"`
+	EffectiveDeliveryProfile      string           `json:"effective_delivery_profile"`
+	EffectiveDeliveryProfileLabel string           `json:"effective_delivery_profile_label"`
+	KanbanMode                    string           `json:"kanban_mode"`
+	KanbanBehavior                string           `json:"kanban_behavior"`
+	GateRequiresAutomatedReview   bool             `json:"gate_requires_automated_review"`
+	GateBehavior                  string           `json:"gate_behavior"`
+	AutoPromoteEnabled            bool             `json:"auto_promote_enabled"`
+	AutoPromoteQuietSeconds       int              `json:"auto_promote_quiet_seconds"`
+	AutoPromotionBehavior         string           `json:"auto_promotion_behavior"`
+	QuietWindowBehavior           string           `json:"quiet_window_behavior"`
+	DependencyAutoUnblockEnabled  bool             `json:"dependency_auto_unblock_enabled"`
+	DependencyAutoUnblockBehavior string           `json:"dependency_auto_unblock_behavior"`
+	MergingConcurrency            int              `json:"merging_concurrency"`
+	MergeConcurrencyBehavior      string           `json:"merge_concurrency_behavior"`
+	StopBehavior                  string           `json:"stop_behavior"`
+	StopConditions                []string         `json:"stop_conditions"`
+	AgentPoolChoice               *AgentPoolChoice `json:"agent_pool_choice,omitempty"`
+}
+
+type ProjectWorkload struct {
+	ID       string
+	Workflow workflowconfig.Config
+}
+
+type AgentPoolChoice struct {
+	Question      string            `json:"question"`
+	Options       []AgentPoolOption `json:"options"`
+	LocalProjects []string          `json:"local_projects"`
+	CloudProjects []string          `json:"cloud_projects"`
+}
+
+type AgentPoolOption struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
 }
 
 func NormalizeDeliveryProfile(value string) string {
@@ -132,6 +154,59 @@ func SummarizeDeliveryProfile(value string) (DeliveryProfileSummary, bool) {
 			"gate failures",
 		},
 	}, true
+}
+
+func SummarizeDeliveryProfileForProjects(
+	value string,
+	projects []ProjectWorkload,
+) (DeliveryProfileSummary, bool) {
+	summary, ok := SummarizeDeliveryProfile(value)
+	if !ok {
+		return DeliveryProfileSummary{}, false
+	}
+	if choice, offered := AgentPoolChoiceForProjects(projects); offered {
+		summary.AgentPoolChoice = &choice
+	}
+	return summary, true
+}
+
+func AgentPoolChoiceForProjects(projects []ProjectWorkload) (AgentPoolChoice, bool) {
+	if len(projects) < 2 {
+		return AgentPoolChoice{}, false
+	}
+	var choice AgentPoolChoice
+	for _, project := range projects {
+		id := strings.TrimSpace(project.ID)
+		if id == "" {
+			continue
+		}
+		class, _ := workload.Classify(project.Workflow)
+		switch class {
+		case workload.ClassLocalHeavy:
+			choice.LocalProjects = append(choice.LocalProjects, id)
+		case workload.ClassCloudOnly:
+			choice.CloudProjects = append(choice.CloudProjects, id)
+		}
+	}
+	if len(choice.LocalProjects) == 0 || len(choice.CloudProjects) == 0 {
+		return AgentPoolChoice{}, false
+	}
+	sort.Strings(choice.LocalProjects)
+	sort.Strings(choice.CloudProjects)
+	choice.Question = "Optional: keep local validation/build work and cloud-only model work in separate agent pools?"
+	choice.Options = []AgentPoolOption{
+		{
+			ID:          "split",
+			Label:       "Use separate pools",
+			Description: "Start with code and cloud pools so each workload class can be tuned independently.",
+		},
+		{
+			ID:          "shared",
+			Label:       "Keep one pool",
+			Description: "Continue with one shared capacity setting and decide on partitioning later.",
+		},
+	}
+	return choice, true
 }
 
 func DeliveryProfileAnswerExpansion(value string) (map[string]string, bool) {

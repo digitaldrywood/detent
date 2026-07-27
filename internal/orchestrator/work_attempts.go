@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -745,6 +746,7 @@ func (o *Orchestrator) capacitySnapshotJSON(state *State, issue connector.Issue)
 		"project_id":              strings.TrimSpace(o.cfg.Project.ID),
 		"pool":                    pool.Name,
 		"pool_capacity":           pool.Capacity,
+		"holders":                 pool.Holders,
 		"lane":                    normalizeState(issue.State),
 		"global_capacity":         pool.Capacity,
 		"global_used":             pool.Used,
@@ -942,11 +944,11 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 func schedulerDecisionWaitReason(reason string) string {
 	switch strings.TrimSpace(reason) {
 	case dispatchSkipGlobalCapacityFull:
-		return "project_capacity_full"
+		return scheduler.DispatchGateReasonGlobalCapacityFull
 	case dispatchSkipLocalSlotUnavailable:
 		return "lane_capacity_full"
 	case dispatchIssueFailureGlobalSlotUnavailable:
-		return "project_capacity_full"
+		return scheduler.DispatchGateReasonGlobalCapacityFull
 	default:
 		return strings.TrimSpace(reason)
 	}

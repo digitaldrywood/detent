@@ -2291,6 +2291,33 @@ fleet-wide ceiling. For example, `code: 5` plus `video: 10` permits up to 15
 agents concurrently. A configuration without `agent_pools` or project `pool`
 fields retains the previous single-pool behavior.
 
+`detent doctor` recommends an initial `code` / `cloud` split only when both
+signals are present: the resolved workflows contain both local-heavy projects
+(local command/validator gates or CI triggers) and cloud-only projects, and
+the last seven days of runtime telemetry contain capacity waits where the
+waiting project and a recorded slot holder have different workload classes.
+Fresh installs, single-class fleets, and same-class starvation stay quiet.
+The finding keeps the code pool at the current default-pool cap, proposes a
+starting cloud cap labeled for provider-limit tuning, and prints the affected
+projects as valid YAML.
+
+Preview or apply that exact recommendation with:
+
+```sh
+detent fix agent-pools --dry-run
+detent fix agent-pools
+# Explicit non-interactive confirmation:
+detent fix agent-pools --yes
+```
+
+The fixer prints an additions-only diff, requires confirmation unless `--yes`
+is supplied, preserves unrelated YAML keys, comments, and project ordering,
+and writes `global.yaml` with mode `0600`. It is a no-op when doctor lacks
+either signal. It also declines any config that already declares
+`global.agent_pools`; changing an existing partition is an operator decision.
+The accepted change is picked up by global-config hot reload without a
+process restart.
+
 Set optional `projects[].color` to an opaque CSS hex color in `#RGB` or
 `#RRGGBB` form when a project needs a fixed visual marker. The sidebar,
 project cards, and top-level multi-project Kanban board keep the project name

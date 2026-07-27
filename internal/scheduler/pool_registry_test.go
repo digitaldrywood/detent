@@ -3,6 +3,7 @@ package scheduler_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -329,6 +330,9 @@ func TestProjectPoolGateRoutesLifecycleToCurrentPool(t *testing.T) {
 	}
 	if !acquired {
 		t.Fatal("TryAcquire() acquired = false, want true")
+	}
+	if snapshot := snapshotter.PoolSnapshot(); !slices.Equal(snapshot.Holders, []string{"video"}) {
+		t.Fatalf("PoolSnapshot().Holders = %#v, want video", snapshot.Holders)
 	}
 	gate.SetPreempt(slot, func() {})
 	if err := gate.Release(slot); err != nil {

@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -77,6 +78,24 @@ func TestDispatchRecoveryTelemetryUsesAgentPoolCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPoolRegistry() error = %v", err)
 	}
+	projectGate := gate.GateFor(project.ID)
+	slot, acquired, err := projectGate.TryAcquire(
+		context.Background(),
+		project,
+		scheduler.SlotRequest{State: "Todo"},
+		time.Now(),
+	)
+	if err != nil {
+		t.Fatalf("TryAcquire() error = %v", err)
+	}
+	if !acquired {
+		t.Fatal("TryAcquire() acquired = false, want true")
+	}
+	t.Cleanup(func() {
+		if err := projectGate.Release(slot); err != nil {
+			t.Fatalf("Release() error = %v", err)
+		}
+	})
 	cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, Project: project})
 	orch := &Orchestrator{cfg: cfg, globalDispatchGate: gate}
 	state := newState(cfg)
@@ -100,6 +119,10 @@ func TestDispatchRecoveryTelemetryUsesAgentPoolCapacity(t *testing.T) {
 	}
 	if capacity["pool"] != "video" || capacity["pool_capacity"] != float64(5) {
 		t.Fatalf("capacity snapshot = %#v, want video pool capacity 5", capacity)
+	}
+	holders, ok := capacity["holders"].([]any)
+	if !ok || len(holders) != 1 || holders[0] != "detent" {
+		t.Fatalf("capacity holders = %#v, want detent", capacity["holders"])
 	}
 }
 

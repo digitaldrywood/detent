@@ -690,6 +690,16 @@ recommendations before asking what to change.
      "$ONBOARDING_DIR/gate-diagnostic.json"
    ```
 
+   When one onboarding operation configures multiple projects, classify the
+   resolved workflows after this inspection. If the set contains both
+   local-heavy projects (local command/validator gates or CI triggers) and
+   cloud-only projects, present agent pools as an optional profile choice:
+   start with separate `code` and `cloud` pools, or keep one shared pool and
+   decide later. Do not phrase this as a warning because onboarding has no
+   contention telemetry. Say nothing for one project or when every project is
+   in the same class. Existing `agent_pools` are never repartitioned
+   automatically.
+
    If the diagnostic reports `status: env_polluted`, record the failing command,
    `relevant_environment_keys`, and `passing_sanitized_command`. Use
    `recommended_gate_command` as the gate recommendation because Detent proved it

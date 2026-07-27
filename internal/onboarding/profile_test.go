@@ -1,6 +1,12 @@
 package onboarding
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/gate"
+)
 
 func TestDeliveryProfileAnswerExpansion(t *testing.T) {
 	t.Parallel()
@@ -202,5 +208,83 @@ func TestSummarizeDeliveryProfile(t *testing.T) {
 				t.Fatalf("stop summary = conditions %#v behavior %q, want populated stop behavior", got.StopConditions, got.StopBehavior)
 			}
 		})
+	}
+}
+
+func TestAgentPoolChoiceForProjects(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		projects    []ProjectWorkload
+		wantOffered bool
+	}{
+		{
+			name: "mixed classes",
+			projects: []ProjectWorkload{
+				{ID: "video", Workflow: workflowconfig.Config{Gate: gate.Config{Kind: gate.KindArtifact}}},
+				{ID: "detent", Workflow: workflowconfig.Config{Gate: gate.Config{Kind: gate.KindCommand, Run: "make check"}}},
+			},
+			wantOffered: true,
+		},
+		{
+			name: "single project",
+			projects: []ProjectWorkload{
+				{ID: "detent", Workflow: workflowconfig.Config{Gate: gate.Config{Kind: gate.KindCommand, Run: "make check"}}},
+			},
+		},
+		{
+			name: "all local heavy",
+			projects: []ProjectWorkload{
+				{ID: "detent", Workflow: workflowconfig.Config{Gate: gate.Config{Kind: gate.KindCommand, Run: "make check"}}},
+				{ID: "gopher-ai", Workflow: workflowconfig.Config{Gate: gate.Config{CITriggerLabel: "ci:ready"}}},
+			},
+		},
+		{
+			name: "all cloud only",
+			projects: []ProjectWorkload{
+				{ID: "video", Workflow: workflowconfig.Config{Gate: gate.Config{Kind: gate.KindArtifact}}},
+				{ID: "podcast", Workflow: workflowconfig.Config{Gate: gate.Config{Kind: gate.KindHumanReview}}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, offered := AgentPoolChoiceForProjects(tt.projects)
+			if offered != tt.wantOffered {
+				t.Fatalf("AgentPoolChoiceForProjects() offered = %t, want %t: %#v", offered, tt.wantOffered, got)
+			}
+			if !offered {
+				return
+			}
+			if len(got.Options) != 2 || got.Options[0].ID != "split" || got.Options[1].ID != "shared" {
+				t.Fatalf("options = %#v, want split and shared choices", got.Options)
+			}
+			if got.Question == "" || strings.Contains(strings.ToLower(got.Question), "warn") {
+				t.Fatalf("question = %q, want optional non-warning wording", got.Question)
+			}
+			if len(got.LocalProjects) != 1 || got.LocalProjects[0] != "detent" ||
+				len(got.CloudProjects) != 1 || got.CloudProjects[0] != "video" {
+				t.Fatalf("project classes = local %#v cloud %#v", got.LocalProjects, got.CloudProjects)
+			}
+		})
+	}
+}
+
+func TestSummarizeDeliveryProfileForProjectsIncludesPoolChoice(t *testing.T) {
+	t.Parallel()
+
+	summary, ok := SummarizeDeliveryProfileForProjects("full_autopilot", []ProjectWorkload{
+		{ID: "detent", Workflow: workflowconfig.Config{Gate: gate.Config{Kind: gate.KindCommand, Run: "make check"}}},
+		{ID: "video", Workflow: workflowconfig.Config{Gate: gate.Config{Kind: gate.KindArtifact}}},
+	})
+	if !ok {
+		t.Fatal("SummarizeDeliveryProfileForProjects() ok = false, want true")
+	}
+	if summary.AgentPoolChoice == nil {
+		t.Fatal("AgentPoolChoice = nil, want mixed-workload choice")
 	}
 }

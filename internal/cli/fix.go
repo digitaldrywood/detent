@@ -33,9 +33,12 @@ func newFixCommand(configPath *string, opts options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "fix",
 		Short:   "Repair Detent project configuration",
-		Example: "detent fix workflow-layout --workflow /repo/WORKFLOW.md --dry-run",
+		Example: "detent fix workflow-layout --workflow /repo/WORKFLOW.md --dry-run\n  detent fix agent-pools --dry-run",
 	}
-	cmd.AddCommand(newWorkflowLayoutFixCommand(configPath, opts))
+	cmd.AddCommand(
+		newWorkflowLayoutFixCommand(configPath, opts),
+		newAgentPoolsFixCommand(configPath, opts),
+	)
 	return cmd
 }
 
@@ -172,12 +175,16 @@ func newWorkflowLayoutFixResult(plan workflowconfig.ProjectDefinitionMigrationPl
 }
 
 func confirmWorkflowLayoutFix(cmd *cobra.Command) (bool, error) {
-	if _, err := fmt.Fprint(cmd.ErrOrStderr(), "Apply this workflow-layout migration? [y/N] "); err != nil {
+	return confirmFix(cmd, "Apply this workflow-layout migration?", "migration")
+}
+
+func confirmFix(cmd *cobra.Command, prompt string, action string) (bool, error) {
+	if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "%s [y/N] ", prompt); err != nil {
 		return false, err
 	}
 	answer, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
-		return false, fmt.Errorf("read migration confirmation: %w", err)
+		return false, fmt.Errorf("read %s confirmation: %w", action, err)
 	}
 	answer = strings.ToLower(strings.TrimSpace(answer))
 	return answer == "y" || answer == "yes", nil
