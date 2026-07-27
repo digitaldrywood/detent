@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -123,6 +124,10 @@ type Project struct {
 	Weight           int                 `yaml:"weight"`
 	Priority         int                 `yaml:"priority"`
 	Paused           bool                `yaml:"paused,omitempty"`
+	PausedReason     string              `yaml:"paused_reason,omitempty"`
+	PausedAt         string              `yaml:"paused_at,omitempty"`
+	PausedUntilIssue string              `yaml:"paused_until_issue,omitempty"`
+	PausedUntil      string              `yaml:"paused_until,omitempty"`
 	CredentialRef    string              `yaml:"credential_ref,omitempty"`
 	Authorization    selector.Selector   `yaml:"authorization,omitempty"`
 	Intake           intakeconfig.Config `yaml:"intake,omitempty"`
@@ -285,9 +290,9 @@ func Write(path string, cfg Config, opts ...Option) error {
 		return err
 	}
 
-	raw, err := yaml.Marshal(cfg) // #nosec G117 -- the operator-provided API token must be persisted in the permission-restricted config file.
+	raw, err := marshalConfigPreservingComments(expandedPath, cfg)
 	if err != nil {
-		return fmt.Errorf("marshal global config %s: %w", expandedPath, err)
+		return err
 	}
 
 	if err := os.MkdirAll(filepath.Dir(expandedPath), 0o755); err != nil {
@@ -301,6 +306,147 @@ func Write(path string, cfg Config, opts ...Option) error {
 	}
 
 	return nil
+}
+
+func marshalConfigPreservingComments(path string, cfg Config) ([]byte, error) {
+	raw, err := yaml.Marshal(cfg) // #nosec G117 -- the operator-provided API token must be persisted in the permission-restricted config file.
+	if err != nil {
+		return nil, fmt.Errorf("marshal global config %s: %w", path, err)
+	}
+
+	existingRaw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return raw, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read global config %s for update: %w", path, err)
+	}
+
+	var existing yaml.Node
+	if err := yaml.Unmarshal(existingRaw, &existing); err != nil {
+		return nil, fmt.Errorf("parse global config %s for update: %w", path, err)
+	}
+	var desired yaml.Node
+	if err := yaml.Unmarshal(raw, &desired); err != nil {
+		return nil, fmt.Errorf("parse marshaled global config %s: %w", path, err)
+	}
+	mergeYAMLNode(&existing, &desired)
+
+	merged, err := yaml.Marshal(&existing)
+	if err != nil {
+		return nil, fmt.Errorf("marshal updated global config %s: %w", path, err)
+	}
+	return merged, nil
+}
+
+func mergeYAMLNode(existing *yaml.Node, desired *yaml.Node) {
+	if existing == nil || desired == nil {
+		return
+	}
+	if existing.Kind != desired.Kind {
+		replaceYAMLNode(existing, desired)
+		return
+	}
+
+	switch desired.Kind {
+	case yaml.DocumentNode:
+		if len(existing.Content) == 1 && len(desired.Content) == 1 {
+			mergeYAMLNode(existing.Content[0], desired.Content[0])
+			return
+		}
+		replaceYAMLNode(existing, desired)
+	case yaml.MappingNode:
+		mergeYAMLMapping(existing, desired)
+	case yaml.SequenceNode:
+		mergeYAMLSequence(existing, desired)
+	default:
+		replaceYAMLNode(existing, desired)
+	}
+}
+
+func mergeYAMLMapping(existing *yaml.Node, desired *yaml.Node) {
+	desiredValues := make(map[string]int, len(desired.Content)/2)
+	for index := 0; index+1 < len(desired.Content); index += 2 {
+		desiredValues[desired.Content[index].Value] = index
+	}
+
+	merged := make([]*yaml.Node, 0, len(desired.Content))
+	used := make(map[string]struct{}, len(desiredValues))
+	for index := 0; index+1 < len(existing.Content); index += 2 {
+		key := existing.Content[index]
+		value := existing.Content[index+1]
+		desiredIndex, ok := desiredValues[key.Value]
+		if !ok {
+			continue
+		}
+		mergeYAMLNode(value, desired.Content[desiredIndex+1])
+		merged = append(merged, key, value)
+		used[key.Value] = struct{}{}
+	}
+	for index := 0; index+1 < len(desired.Content); index += 2 {
+		key := desired.Content[index]
+		if _, ok := used[key.Value]; ok {
+			continue
+		}
+		merged = append(merged, key, desired.Content[index+1])
+	}
+	existing.Content = merged
+}
+
+func mergeYAMLSequence(existing *yaml.Node, desired *yaml.Node) {
+	existingByID := make(map[string]*yaml.Node, len(existing.Content))
+	for _, item := range existing.Content {
+		if id := yamlMappingScalar(item, "id"); id != "" {
+			existingByID[id] = item
+		}
+	}
+
+	merged := make([]*yaml.Node, 0, len(desired.Content))
+	for index, desiredItem := range desired.Content {
+		var existingItem *yaml.Node
+		if id := yamlMappingScalar(desiredItem, "id"); id != "" {
+			existingItem = existingByID[id]
+		} else if index < len(existing.Content) {
+			existingItem = existing.Content[index]
+		}
+		if existingItem == nil {
+			merged = append(merged, desiredItem)
+			continue
+		}
+		mergeYAMLNode(existingItem, desiredItem)
+		merged = append(merged, existingItem)
+	}
+	existing.Content = merged
+}
+
+func yamlMappingScalar(node *yaml.Node, key string) string {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return ""
+	}
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		if node.Content[index].Value == key && node.Content[index+1].Kind == yaml.ScalarNode {
+			return strings.TrimSpace(node.Content[index+1].Value)
+		}
+	}
+	return ""
+}
+
+func replaceYAMLNode(existing *yaml.Node, desired *yaml.Node) {
+	headComment := existing.HeadComment
+	lineComment := existing.LineComment
+	footComment := existing.FootComment
+	style := existing.Style
+	unchangedScalar := existing.Kind == yaml.ScalarNode &&
+		desired.Kind == yaml.ScalarNode &&
+		existing.Tag == desired.Tag &&
+		existing.Value == desired.Value
+	*existing = *desired
+	existing.HeadComment = headComment
+	existing.LineComment = lineComment
+	existing.FootComment = footComment
+	if unchangedScalar {
+		existing.Style = style
+	}
 }
 
 func ReadOrDefault(path string, opts ...Option) (Config, error) {
@@ -503,6 +649,7 @@ func (c Config) Validate(opts ...Option) error {
 		if project.CredentialRef != "" && strings.TrimSpace(project.CredentialRef) == "" {
 			problems = append(problems, prefix+".credential_ref: must not be blank")
 		}
+		problems = append(problems, pauseProjectProblems(project, prefix)...)
 		problems = append(problems, project.Authorization.Validate(prefix+".authorization")...)
 	}
 	problems = append(problems, duplicateProjectIDErrorsFromProjects(c.Projects)...)
@@ -512,6 +659,43 @@ func (c Config) Validate(opts ...Option) error {
 	}
 
 	return nil
+}
+
+func pauseProjectProblems(project Project, prefix string) []string {
+	var problems []string
+	values := []struct {
+		field string
+		value string
+	}{
+		{field: "paused_reason", value: project.PausedReason},
+		{field: "paused_at", value: project.PausedAt},
+		{field: "paused_until_issue", value: project.PausedUntilIssue},
+		{field: "paused_until", value: project.PausedUntil},
+	}
+	for _, item := range values {
+		if item.value != "" && strings.TrimSpace(item.value) == "" {
+			problems = append(problems, prefix+"."+item.field+": must not be blank")
+		}
+	}
+	for _, item := range []struct {
+		field string
+		value string
+	}{
+		{field: "paused_at", value: project.PausedAt},
+		{field: "paused_until", value: project.PausedUntil},
+	} {
+		value := strings.TrimSpace(item.value)
+		if value == "" {
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339, value); err != nil {
+			problems = append(problems, prefix+"."+item.field+": must be an RFC 3339 timestamp")
+		}
+	}
+	if strings.TrimSpace(project.PausedUntilIssue) != "" && strings.TrimSpace(project.PausedUntil) != "" {
+		problems = append(problems, prefix+".paused_until_issue and "+prefix+".paused_until: must not both be set")
+	}
+	return problems
 }
 
 func (e MissingFileError) Error() string {
@@ -889,6 +1073,7 @@ func projectErrors(value any, index int, opts options) []string {
 	problems = append(problems, positiveIntegerError(project["weight"], prefix+".weight")...)
 	problems = append(problems, integerError(project["priority"], prefix+".priority")...)
 	problems = append(problems, pausedErrors(project, prefix)...)
+	problems = append(problems, pauseMetadataErrors(project, prefix)...)
 	problems = append(problems, knowledgeErrors(project["knowledge"], prefix+".knowledge")...)
 	problems = append(problems, credentialRefErrors(project, prefix)...)
 	problems = append(problems, authorizationErrors(project["authorization"], prefix+".authorization")...)
@@ -1181,6 +1366,72 @@ func pausedErrors(attrs map[string]any, prefix string) []string {
 		return nil
 	}
 	return []string{prefix + ".paused: must be a boolean"}
+}
+
+func pauseMetadataErrors(attrs map[string]any, prefix string) []string {
+	var problems []string
+	for _, field := range []string{"paused_reason", "paused_until_issue"} {
+		problems = append(problems, optionalPauseStringErrors(attrs, field, prefix)...)
+	}
+	for _, field := range []string{"paused_at", "paused_until"} {
+		problems = append(problems, pauseTimestampErrors(attrs, field, prefix)...)
+	}
+	if pauseString(attrs["paused_until_issue"]) != "" && pauseTimestampString(attrs["paused_until"]) != "" {
+		problems = append(problems, prefix+".paused_until_issue and "+prefix+".paused_until: must not both be set")
+	}
+	return problems
+}
+
+func optionalPauseStringErrors(attrs map[string]any, field string, prefix string) []string {
+	value, ok := attrs[field]
+	if !ok || value == nil {
+		return nil
+	}
+	text, ok := value.(string)
+	if !ok {
+		return []string{prefix + "." + field + ": must be a string"}
+	}
+	if strings.TrimSpace(text) == "" {
+		return []string{prefix + "." + field + ": must not be blank"}
+	}
+	return nil
+}
+
+func pauseTimestampErrors(attrs map[string]any, field string, prefix string) []string {
+	value, ok := attrs[field]
+	if !ok || value == nil {
+		return nil
+	}
+	text := pauseTimestampString(value)
+	if text == "" {
+		if _, ok := value.(string); ok {
+			return []string{prefix + "." + field + ": must not be blank"}
+		}
+		return []string{prefix + "." + field + ": must be an RFC 3339 timestamp"}
+	}
+	if _, err := time.Parse(time.RFC3339, text); err != nil {
+		return []string{prefix + "." + field + ": must be an RFC 3339 timestamp"}
+	}
+	return nil
+}
+
+func pauseString(value any) string {
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(text)
+}
+
+func pauseTimestampString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case time.Time:
+		return typed.UTC().Format(time.RFC3339)
+	default:
+		return ""
+	}
 }
 
 func credentialRefErrors(attrs map[string]any, prefix string) []string {
@@ -1525,6 +1776,16 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 		if err != nil {
 			return nil, err
 		}
+		pausedReason, err := optionalString(project["paused_reason"], prefix+".paused_reason")
+		if err != nil {
+			return nil, err
+		}
+		pausedAt := pauseTimestampString(project["paused_at"])
+		pausedUntilIssue, err := optionalString(project["paused_until_issue"], prefix+".paused_until_issue")
+		if err != nil {
+			return nil, err
+		}
+		pausedUntil := pauseTimestampString(project["paused_until"])
 		credentialRef, err := optionalString(project["credential_ref"], prefix+".credential_ref")
 		if err != nil {
 			return nil, err
@@ -1552,6 +1813,10 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 			Weight:           weight,
 			Priority:         priority,
 			Paused:           paused,
+			PausedReason:     strings.TrimSpace(pausedReason),
+			PausedAt:         pausedAt,
+			PausedUntilIssue: strings.TrimSpace(pausedUntilIssue),
+			PausedUntil:      pausedUntil,
 			CredentialRef:    credentialRef,
 			Authorization:    authorization,
 			Intake:           projectIntake,

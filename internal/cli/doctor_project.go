@@ -14,6 +14,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/pause"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -259,6 +260,9 @@ func checkDoctorProjectWithProgress(
 			checkDoctorFollowupGuidanceUnavailable(id, "WORKFLOW.md is invalid"),
 		}
 	}
+	if pauseCheck, ok := checkDoctorProjectPause(ctx, id, project, workflow.Config, deps); ok {
+		checks = append(checks, pauseCheck)
+	}
 
 	workflowCheck := doctorCheck{
 		Name:              workflowCheckName,
@@ -404,6 +408,86 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, checkDoctorGitHubReadiness(ctx, id, project, workflow.Config, deps, githubToken, expandedSourceRoot, allowWriteProbes)...)
 	}
 	return checks
+}
+
+func checkDoctorProjectPause(
+	ctx context.Context,
+	id string,
+	project globalconfig.Project,
+	workflow workflowconfig.Config,
+	deps doctorDeps,
+) (doctorCheck, bool) {
+	if !project.Paused {
+		return doctorCheck{}, false
+	}
+
+	name := "Project " + id + " pause"
+	now := time.Now().UTC()
+	if deps.now != nil {
+		now = deps.now().UTC()
+	}
+	if pause.HeldLongerThan(project, now, 7*24*time.Hour) {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorWarn,
+			Detail: "project " + id + " has been paused without an exit condition since " + project.PausedAt,
+			Hint:   "Set paused_until_issue or paused_until, or unpause the project.",
+		}, true
+	}
+
+	var resolver connector.IssueReferenceResolver
+	var projectConnector doctorAutoPromoteConnector
+	if strings.TrimSpace(project.PausedUntilIssue) != "" {
+		if deps.autoPromoteConnector == nil {
+			deps.autoPromoteConnector = defaultDoctorAutoPromoteConnector
+		}
+		var err error
+		projectConnector, err = deps.autoPromoteConnector(workflow)
+		if err != nil {
+			return doctorCheck{
+				Name:   name,
+				Status: doctorWarn,
+				Detail: fmt.Sprintf("project %s pause exit issue could not be checked: %v", id, err),
+				Hint:   "Fix tracker credentials and rerun detent doctor.",
+			}, true
+		}
+		if resolved, ok := projectConnector.(connector.IssueReferenceResolver); ok {
+			resolver = resolved
+		}
+	}
+
+	result, err := pause.Evaluate(ctx, project, now, workflow.Tracker.Repository, resolver)
+	closeErr := closeDoctorAutoPromoteConnector(projectConnector)
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorWarn,
+			Detail: fmt.Sprintf("project %s pause exit condition could not be checked: %v", id, err),
+			Hint:   "Fix the pause exit condition or tracker connectivity, then rerun detent doctor.",
+		}, true
+	}
+	if closeErr != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorWarn,
+			Detail: fmt.Sprintf("project %s pause diagnostic connector could not be closed: %v", id, closeErr),
+			Hint:   "Rerun detent doctor and check local network resources.",
+		}, true
+	}
+	if result.Met {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorWarn,
+			Detail: "project " + id + " is paused even though " + result.Detail,
+			Hint:   "Keep Detent running for automatic unpause, or run detent unpause " + id + ".",
+		}, true
+	}
+
+	detail := "project " + id + " is paused"
+	if reason := strings.TrimSpace(project.PausedReason); reason != "" {
+		detail += ": " + reason
+	}
+	return doctorCheck{Name: name, Status: doctorOK, Detail: detail}, true
 }
 
 func doctorProjectDefinitionFailureCheck(id string, project globalconfig.Project, err error) doctorCheck {

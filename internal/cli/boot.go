@@ -424,6 +424,37 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		case globalWatcherStarted <- globalWatcherDone:
 		default:
 		}
+		resourceWorkers.Go(func() {
+			runPauseMonitor(ctx, pauseMonitorDeps{
+				read: func() (globalconfig.Config, error) {
+					return globalconfig.Read(cfg.Global.Path, globalconfig.WithProjectPathLiterals())
+				},
+				write: func(updated globalconfig.Config) error {
+					return globalconfig.Write(cfg.Global.Path, updated, globalconfig.WithProjectPathLiterals())
+				},
+				unpause: func(ctx context.Context, projectID string) error {
+					return manager.Unpause(ctx, project.ID(projectID))
+				},
+				pause: func(ctx context.Context, projectID string) error {
+					return manager.Pause(ctx, project.ID(projectID))
+				},
+				connectorFor: func(projectID string) connector.Connector {
+					trackedProject, ok := manager.Registry().Get(project.ID(projectID))
+					if !ok || trackedProject == nil {
+						return nil
+					}
+					return trackedProject.Connector()
+				},
+				repositoryFor: func(projectID string) string {
+					trackedProject, ok := manager.Registry().Get(project.ID(projectID))
+					if !ok || trackedProject == nil {
+						return ""
+					}
+					return trackedProject.Workflow().Config.Tracker.Repository
+				},
+				logger: logger,
+			})
+		})
 		return nil
 	}
 

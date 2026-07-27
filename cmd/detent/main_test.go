@@ -219,7 +219,7 @@ projects:
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	code := runCLI(context.Background(), []string{"--config", configPath, "--format", "json", "pause", "ap"}, &stdout, &stderr)
+	code := runCLI(context.Background(), []string{"--config", configPath, "--format", "json", "pause", "ap", "--reason", "integration test"}, &stdout, &stderr)
 	if code != cli.ExitNotFoundOrConfig {
 		t.Fatalf("exit code = %d, want %d\nstderr:\n%s", code, cli.ExitNotFoundOrConfig, stderr.String())
 	}
@@ -338,7 +338,7 @@ projects: []
 		cmd := newRootCommand(context.Background())
 		cmd.SetOut(&bytes.Buffer{})
 		cmd.SetErr(&bytes.Buffer{})
-		cmd.SetArgs([]string{"--config", configPath, "pause", "missing"})
+		cmd.SetArgs([]string{"--config", configPath, "pause", "missing", "--reason", "integration test"})
 
 		err := cmd.Execute()
 		if err == nil {

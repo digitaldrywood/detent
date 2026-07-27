@@ -2238,6 +2238,9 @@ projects:
     weight: 1
     priority: 3
     paused: true
+    paused_reason: waiting for website#42
+    paused_at: 2026-07-27T12:00:00Z
+    paused_until_issue: digitaldrywood/website#42
 ```
 
 Project weights are relative scheduling weights. Higher weights receive a
@@ -2276,7 +2279,9 @@ detent add-project \
   --weight 1 \
   --priority 3
 
-detent pause <id>
+detent pause <id> \
+  --reason "maintenance" \
+  --until 2026-08-01T12:00:00Z
 detent unpause <id>
 detent promote <id> --priority 1
 detent remove-project <id>
@@ -2286,6 +2291,13 @@ These commands persist the global config. A running Detent process watches the
 active `global.yaml`, including symlinked config targets, and reconciles
 supported live-reload fields without a process restart. Invalid edits are
 logged and ignored while the last valid config stays live.
+
+`detent pause` requires `--reason` and accepts either `--until-issue <ref>` or
+`--until <RFC3339 timestamp>`. Detent polls only the referenced tracker issue
+for an issue-based pause and automatically writes the unpause to `global.yaml`
+when the issue closes or the timestamp passes. The CLI records `paused_at` for
+doctor diagnostics. Hand-edited legacy `paused: true` entries remain valid
+without pause metadata or an automatic exit condition.
 
 Paused projects do not run workflow watchers or periodic workflow reconciliation.
 `detent unpause <id>` synchronously reloads the project's current `WORKFLOW.md`
@@ -3042,7 +3054,7 @@ Structured command objects:
 | `detent update` | The update status object, including `current_version`, `latest_version`, `latest_tag`, `update_available`, `install_source`, `action`, `message`, and `command` when present. |
 | `detent init` | `{"status":"ok","path":"/path/global.yaml","rule":"--config"}` |
 | `detent add-project` | `{"id":"api","workflow":"/repo/WORKFLOW.md","workdir":"/repo","weight":1,"priority":0,"paused":false,"credential_ref":"github"}` |
-| `detent pause api` / `detent unpause api` | `{"status":"ok","project":"api","paused":true}` |
+| `detent pause api --reason "maintenance"` / `detent unpause api` | `{"status":"ok","project":"api","paused":true,"paused_reason":"maintenance"}` |
 | `detent promote api --priority 1` | `{"status":"ok","project":"api","priority":1}` |
 | `detent remove-project api` | `{"status":"ok","project":"api","removed":true}` |
 | `detent work-item add api --title "..." --body "..."` | `{"id":"wi-...","identifier":"wi-...","url":"/projects/api/kanban"}` |

@@ -147,12 +147,16 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 		if id == "" {
 			continue
 		}
+		projectConfig := trackedProject.Config()
 		configured[id] = templates.ProjectSmallMultiple{
 			ID:             id,
 			Name:           id,
 			URL:            trackerProjectURL(trackedProject),
-			Color:          configuredProjectColor(trackedProject.Config().Color),
+			Color:          configuredProjectColor(projectConfig.Color),
 			Paused:         trackedProject.Paused(),
+			PauseReason:    projectConfig.PausedReason,
+			PauseIssue:     projectConfig.PausedUntilIssue,
+			PauseUntil:     projectConfig.PausedUntil,
 			BudgetEnabled:  trackedProject.Workflow().Config.Budget.Enabled,
 			PerDayMaxUSD:   trackedProject.Workflow().Config.Budget.PerDayMaxUSD,
 			PerIssueMaxUSD: trackedProject.Workflow().Config.Budget.PerIssueMaxUSD,
@@ -169,6 +173,9 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 		id := strings.TrimSpace(projects[i].ID)
 		if configuredProject, ok := configured[id]; ok {
 			projects[i].Paused = configuredProject.Paused
+			projects[i].PauseReason = configuredProject.PauseReason
+			projects[i].PauseIssue = configuredProject.PauseIssue
+			projects[i].PauseUntil = configuredProject.PauseUntil
 			projects[i].BudgetEnabled = configuredProject.BudgetEnabled
 			projects[i].PerDayMaxUSD = configuredProject.PerDayMaxUSD
 			projects[i].PerIssueMaxUSD = configuredProject.PerIssueMaxUSD
