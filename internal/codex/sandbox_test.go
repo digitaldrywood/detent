@@ -3,6 +3,7 @@ package codex
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
 )
@@ -72,6 +73,7 @@ func TestOptionsFromConfigClonesApprovalPolicy(t *testing.T) {
 	options := OptionsFromConfig(config.CodexOptions{
 		ApprovalPolicy: config.MapValue(rawPolicy),
 		ThreadSandbox:  "workspace-write",
+		StallTimeoutMS: 1250,
 		TurnSandboxPolicy: map[string]any{
 			"type": "workspaceWrite",
 		},
@@ -91,5 +93,8 @@ func TestOptionsFromConfigClonesApprovalPolicy(t *testing.T) {
 	}
 	if options.ThreadSandbox != "workspace-write" {
 		t.Fatalf("ThreadSandbox = %q, want workspace-write", options.ThreadSandbox)
+	}
+	if options.StallTimeout != 1250*time.Millisecond {
+		t.Fatalf("StallTimeout = %v, want 1.25s", options.StallTimeout)
 	}
 }

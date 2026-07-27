@@ -93,6 +93,7 @@ func (b *AgentBackend) runTurn(
 		ServiceTier:           req.ServiceTier,
 		ReasoningEffort:       req.ReasoningEffort,
 		TurnTimeout:           req.TurnTimeout,
+		StallTimeout:          b.options.StallTimeout,
 		DynamicTools:          tools,
 		ToolHandler:           toolHandler,
 	}, func(update Update) error {
