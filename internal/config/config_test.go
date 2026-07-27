@@ -672,6 +672,8 @@ worker:
   max_concurrent_agents_per_host: 2
 agent:
   max_concurrent_agents: 5
+  max_turn_duration_ms: 900000
+  max_session_duration_ms: 3600000
   max_session_tokens: 10000000
   max_session_context_multiplier: 3.5
   max_session_token_override_label: Allow-Large-Session
@@ -916,6 +918,12 @@ Ticket prompt {{ issue.title }}
 	}
 	if got := cfg.Agent.MaxConcurrentAgentsByState["merging"]; got != 1 {
 		t.Fatalf("Agent.MaxConcurrentAgentsByState[merging] = %d, want 1", got)
+	}
+	if cfg.Agent.MaxTurnDurationMS != 900000 {
+		t.Fatalf("Agent.MaxTurnDurationMS = %d, want 900000", cfg.Agent.MaxTurnDurationMS)
+	}
+	if cfg.Agent.MaxSessionDurationMS != 3600000 {
+		t.Fatalf("Agent.MaxSessionDurationMS = %d, want 3600000", cfg.Agent.MaxSessionDurationMS)
 	}
 	if cfg.Agent.MaxSessionTokens != 10000000 {
 		t.Fatalf("Agent.MaxSessionTokens = %d, want 10000000", cfg.Agent.MaxSessionTokens)
@@ -2859,6 +2867,8 @@ workspace:
   cleanup_sweep_interval_ms: 0
 agent:
   max_concurrent_agents: 0
+  max_turn_duration_ms: -1
+  max_session_duration_ms: -1
   max_session_tokens: -1
   max_session_context_multiplier: -0.5
   output_truncation:
@@ -2896,6 +2906,8 @@ Prompt
 				"workspace.cleanup_idle_ttl_ms must be greater than 0",
 				"workspace.cleanup_sweep_interval_ms must be greater than 0",
 				"agent.max_concurrent_agents must be greater than 0",
+				"agent.max_turn_duration_ms must be greater than or equal to 0",
+				"agent.max_session_duration_ms must be greater than or equal to 0",
 				"agent.max_session_tokens must be greater than or equal to 0",
 				"agent.max_session_context_multiplier must be greater than or equal to 0",
 				"agent.output_truncation.max_bytes must be greater than or equal to 0",

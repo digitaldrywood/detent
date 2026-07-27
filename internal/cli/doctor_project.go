@@ -1389,6 +1389,14 @@ func doctorWorkflowModelChoiceDetail(cfg workflowconfig.Config) string {
 }
 
 func doctorWorkflowSessionGuardDetail(cfg workflowconfig.Config) string {
+	turnDuration := "disabled"
+	if cfg.Agent.MaxTurnDurationMS > 0 {
+		turnDuration = strconv.Itoa(cfg.Agent.MaxTurnDurationMS)
+	}
+	sessionDuration := "disabled"
+	if cfg.Agent.MaxSessionDurationMS > 0 {
+		sessionDuration = strconv.Itoa(cfg.Agent.MaxSessionDurationMS)
+	}
 	tokens := "disabled"
 	if cfg.Agent.MaxSessionTokens > 0 {
 		tokens = strconv.FormatInt(cfg.Agent.MaxSessionTokens, 10)
@@ -1397,7 +1405,13 @@ func doctorWorkflowSessionGuardDetail(cfg workflowconfig.Config) string {
 	if cfg.Agent.MaxSessionContextMultiplier > 0 {
 		multiplier = strconv.FormatFloat(cfg.Agent.MaxSessionContextMultiplier, 'g', -1, 64)
 	}
-	return fmt.Sprintf("session-guard=max_session_tokens=%s, max_session_context_multiplier=%s", tokens, multiplier)
+	return fmt.Sprintf(
+		"session-guard=max_turn_duration_ms=%s, max_session_duration_ms=%s, max_session_tokens=%s, max_session_context_multiplier=%s",
+		turnDuration,
+		sessionDuration,
+		tokens,
+		multiplier,
+	)
 }
 
 func doctorWorkflowSpendBreakerDetail(cfg workflowconfig.Config) string {

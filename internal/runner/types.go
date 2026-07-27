@@ -37,6 +37,8 @@ const (
 
 var (
 	ErrSessionTokenCeilingExceeded = errors.New("session token ceiling exceeded")
+	ErrTurnDurationExceeded        = errors.New("agent turn duration exceeded")
+	ErrSessionDurationExceeded     = errors.New("agent session duration exceeded")
 	ErrOperatorStopped             = errors.New("operator stopped run")
 	ErrMergeRevoked                = errors.New("merge eligibility revoked")
 	ErrAgentTurnCleanup            = errors.New("agent turn cleanup failed")
@@ -139,6 +141,7 @@ type AgentTurnRequest struct {
 	ReasoningEffort    string
 	Resume             AgentResume
 	TurnTimeout        time.Duration
+	MaxDuration        time.Duration
 	ExtraWritableRoots []string
 	Environment        procgroup.Environment
 	cacheStrategy      string
@@ -258,6 +261,19 @@ func (e *SessionTokenCeilingError) Error() string {
 
 func (e *SessionTokenCeilingError) Unwrap() error {
 	return ErrSessionTokenCeilingExceeded
+}
+
+type agentDurationLimitError struct {
+	limit    error
+	duration time.Duration
+}
+
+func (e *agentDurationLimitError) Error() string {
+	return fmt.Sprintf("%s after %s", e.limit, e.duration)
+}
+
+func (e *agentDurationLimitError) Is(target error) bool {
+	return target == e.limit || target == context.DeadlineExceeded
 }
 
 type RunRequest struct {
