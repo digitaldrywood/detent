@@ -262,11 +262,10 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 
 	events := hub.New[project.Event]()
 	activityBroker := activity.NewBroker()
-	globalScheduler, err := buildGlobalScheduler(cfg.Global.Global, runtimeStore)
+	globalDispatchGate, err := buildGlobalDispatchPools(cfg.Global, runtimeStore)
 	if err != nil {
 		return err
 	}
-	globalDispatchGate := scheduler.NewGlobalDispatchGate(globalScheduler, globalProjectCandidates(cfg.Global.Projects)...)
 	runtimeGitHubToken := newRuntimeGitHubTokenState(runtimeGlobalGitHubToken(cfg.Runtime.GitHubToken))
 	globalConfigState := newGlobalConfigState(cfg.Global)
 	refreshGitHubToken := runtimeGitHubTokenRefresher(globalConfigState, runtimeGitHubToken)
@@ -576,6 +575,7 @@ func globalProjectCandidates(projects []globalconfig.Project) []scheduler.Projec
 	for _, project := range projects {
 		candidates = append(candidates, scheduler.ProjectCandidate{
 			ID:       project.ID,
+			Pool:     project.Pool,
 			Weight:   project.Weight,
 			Priority: project.Priority,
 			Paused:   project.Paused,
@@ -585,7 +585,7 @@ func globalProjectCandidates(projects []globalconfig.Project) []scheduler.Projec
 }
 
 func syncGlobalDispatchProjects(
-	gate *scheduler.GlobalDispatchGate,
+	gate *scheduler.PoolRegistry,
 	projects []globalconfig.Project,
 	registry *project.Registry,
 ) {
@@ -1180,6 +1180,53 @@ func buildGlobalScheduler(settings globalconfig.Settings, fairShareStore schedul
 	return global, nil
 }
 
+func buildGlobalDispatchPools(
+	cfg globalconfig.Config,
+	fairShareStore scheduler.FairShareStore,
+) (*scheduler.PoolRegistry, error) {
+	pools, err := globalPoolConfigs(cfg.Global, fairShareStore)
+	if err != nil {
+		return nil, err
+	}
+	registry, err := scheduler.NewPoolRegistry(pools, globalProjectCandidates(cfg.Projects))
+	if err != nil {
+		return nil, fmt.Errorf("create agent pools: %w", err)
+	}
+	return registry, nil
+}
+
+func globalPoolConfigs(
+	settings globalconfig.Settings,
+	fairShareStore scheduler.FairShareStore,
+) ([]scheduler.PoolConfig, error) {
+	defaultConfig, err := globalSchedulerConfig(settings, fairShareStore)
+	if err != nil {
+		return nil, err
+	}
+	pools := make([]scheduler.PoolConfig, 0, len(settings.AgentPools)+1)
+	pools = append(pools, scheduler.PoolConfig{
+		Name:      scheduler.DefaultPoolName,
+		Scheduler: defaultConfig,
+	})
+	for _, pool := range settings.AgentPools {
+		poolSettings := settings
+		poolSettings.MaxConcurrentAgents = pool.MaxConcurrentAgents
+		poolSettings.Scheduling = pool.Scheduling
+		if strings.TrimSpace(poolSettings.Scheduling) == "" {
+			poolSettings.Scheduling = settings.Scheduling
+		}
+		poolConfig, err := globalSchedulerConfig(poolSettings, fairShareStore)
+		if err != nil {
+			return nil, err
+		}
+		pools = append(pools, scheduler.PoolConfig{
+			Name:      pool.Name,
+			Scheduler: poolConfig,
+		})
+	}
+	return pools, nil
+}
+
 func globalSchedulerConfig(settings globalconfig.Settings, fairShareStore scheduler.FairShareStore) (scheduler.Config, error) {
 	halfLife, err := globalFairShareHalfLife(settings.FairShare)
 	if err != nil {
@@ -1199,17 +1246,17 @@ func globalSchedulerConfig(settings globalconfig.Settings, fairShareStore schedu
 }
 
 func applyGlobalRuntimeConfig(
-	gate *scheduler.GlobalDispatchGate,
+	gate *scheduler.PoolRegistry,
 	fairShareStore scheduler.FairShareStore,
 	logLevel *slog.LevelVar,
 	cfg globalconfig.Config,
 ) error {
-	schedulerConfig, err := globalSchedulerConfig(cfg.Global, fairShareStore)
+	pools, err := globalPoolConfigs(cfg.Global, fairShareStore)
 	if err != nil {
 		return err
 	}
-	if err := gate.Reconfigure(schedulerConfig); err != nil {
-		return fmt.Errorf("reconfigure global scheduler: %w", err)
+	if err := gate.Reconfigure(pools, globalProjectCandidates(cfg.Projects)); err != nil {
+		return fmt.Errorf("reconfigure agent pools: %w", err)
 	}
 	if logLevel != nil {
 		logLevel.Set(parseSlogLevel(cfg.LogLevel))

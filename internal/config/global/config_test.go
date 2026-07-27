@@ -449,8 +449,12 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 		Global: Settings{
 			MaxConcurrentAgents: 3,
 			Scheduling:          SchedulingStrict,
-			FairShare:           map[string]any{"half_life": "30m"},
-			Startup:             map[string]any{"jitter_seconds": 0, "max_spawn_per_second": 1},
+			AgentPools: []AgentPool{
+				{Name: "code", MaxConcurrentAgents: 5},
+				{Name: "video", MaxConcurrentAgents: 10, Scheduling: SchedulingRoundRobin},
+			},
+			FairShare: map[string]any{"half_life": "30m"},
+			Startup:   map[string]any{"jitter_seconds": 0, "max_spawn_per_second": 1},
 			Identity: Identity{
 				Name:          "release-captain",
 				GitHubLogin:   "detent-bot",
@@ -461,6 +465,7 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 		Projects: []Project{
 			{
 				ID:               "detent",
+				Pool:             "code",
 				Workflow:         paths.workflowPath,
 				Workdir:          paths.workdirPath,
 				Color:            "#1192e8",
@@ -949,6 +954,149 @@ func TestReadAcceptsSchedulingModes(t *testing.T) {
 				t.Fatalf("Global.Scheduling = %q, want %q", cfg.Global.Scheduling, mode)
 			}
 		})
+	}
+}
+
+func TestReadParsesAgentPools(t *testing.T) {
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+	raw := strings.Replace(
+		validYAML(paths, map[string]string{"scheduling": SchedulingStrict}),
+		"  scheduling: strict\n",
+		`  scheduling: strict
+  agent_pools:
+    - name: code
+      max_concurrent_agents: 5
+    - name: video
+      max_concurrent_agents: 10
+      scheduling: round_robin
+`,
+		1,
+	)
+	raw = strings.Replace(raw, `  - id: " detent "`+"\n", `  - id: " detent "
+    pool: video
+`, 1)
+	writeFile(t, configPath, raw)
+
+	cfg, err := Read(configPath, WithHome(paths.home))
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	wantPools := []AgentPool{
+		{Name: "code", MaxConcurrentAgents: 5},
+		{Name: "video", MaxConcurrentAgents: 10, Scheduling: SchedulingRoundRobin},
+	}
+	if !reflect.DeepEqual(cfg.Global.AgentPools, wantPools) {
+		t.Fatalf("Global.AgentPools = %#v, want %#v", cfg.Global.AgentPools, wantPools)
+	}
+	if cfg.Projects[0].Pool != "video" {
+		t.Fatalf("Projects[0].Pool = %q, want video", cfg.Projects[0].Pool)
+	}
+}
+
+func TestReadReportsAgentPoolValidationErrors(t *testing.T) {
+	paths := createProjectFiles(t)
+	base := validYAML(paths, nil)
+	withPools := func(pools string) string {
+		return strings.Replace(base, "  scheduling: weighted\n", "  scheduling: weighted\n"+pools, 1)
+	}
+	withProjectPool := func(raw string, pool string) string {
+		return strings.Replace(raw, `  - id: " detent "`+"\n", `  - id: " detent "
+    pool: `+pool+`
+`, 1)
+	}
+
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "duplicate name",
+			raw: withPools(`  agent_pools:
+    - name: code
+      max_concurrent_agents: 1
+    - name: code
+      max_concurrent_agents: 2
+`),
+			want: `global.agent_pools[1].name: duplicates global.agent_pools[0].name "code"`,
+		},
+		{
+			name: "blank name",
+			raw: withPools(`  agent_pools:
+    - name: "  "
+      max_concurrent_agents: 1
+`),
+			want: "global.agent_pools[0].name: must not be blank",
+		},
+		{
+			name: "reserved default",
+			raw: withPools(`  agent_pools:
+    - name: default
+      max_concurrent_agents: 1
+`),
+			want: "global.agent_pools[0].name: default is reserved",
+		},
+		{
+			name: "missing capacity",
+			raw: withPools(`  agent_pools:
+    - name: code
+`),
+			want: "global.agent_pools[0].max_concurrent_agents: is required",
+		},
+		{
+			name: "nonpositive capacity",
+			raw: withPools(`  agent_pools:
+    - name: code
+      max_concurrent_agents: 0
+`),
+			want: "global.agent_pools[0].max_concurrent_agents: must be a positive integer",
+		},
+		{
+			name: "invalid scheduling",
+			raw: withPools(`  agent_pools:
+    - name: code
+      max_concurrent_agents: 1
+      scheduling: random
+`),
+			want: "global.agent_pools[0].scheduling: must be one of weighted, strict, round_robin, fair_share",
+		},
+		{
+			name: "undefined project pool",
+			raw: withProjectPool(withPools(`  agent_pools:
+    - name: code
+      max_concurrent_agents: 1
+`), "video"),
+			want: `projects[0].pool: project "detent" references undefined agent pool "video"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := filepath.Join(paths.root, strings.ReplaceAll(tt.name, " ", "-")+".yaml")
+			writeFile(t, configPath, tt.raw)
+			_, err := Read(configPath, WithHome(paths.home))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Read() error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadWithoutAgentPoolsPreservesLegacyDefaults(t *testing.T) {
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+	writeFile(t, configPath, validYAML(paths, nil))
+
+	cfg, err := Read(configPath, WithHome(paths.home))
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if cfg.Global.AgentPools != nil {
+		t.Fatalf("Global.AgentPools = %#v, want nil", cfg.Global.AgentPools)
+	}
+	if cfg.Projects[0].Pool != "" {
+		t.Fatalf("Projects[0].Pool = %q, want empty legacy value", cfg.Projects[0].Pool)
 	}
 }
 

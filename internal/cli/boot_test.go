@@ -132,6 +132,42 @@ func TestBuildGlobalSchedulerFromSettings(t *testing.T) {
 	}
 }
 
+func TestGlobalPoolConfigsApplySchedulingInheritanceAndOverrides(t *testing.T) {
+	t.Parallel()
+
+	pools, err := globalPoolConfigs(globalconfig.Settings{
+		MaxConcurrentAgents: 1,
+		Scheduling:          globalconfig.SchedulingStrict,
+		AgentPools: []globalconfig.AgentPool{
+			{Name: "code", MaxConcurrentAgents: 5},
+			{Name: "video", MaxConcurrentAgents: 10, Scheduling: globalconfig.SchedulingRoundRobin},
+		},
+		FairShare: map[string]any{"half_life": "30m"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("globalPoolConfigs() error = %v", err)
+	}
+	if len(pools) != 3 {
+		t.Fatalf("globalPoolConfigs() = %#v, want three pools", pools)
+	}
+	tests := []struct {
+		index    int
+		name     string
+		capacity int
+		kind     string
+	}{
+		{index: 0, name: scheduler.DefaultPoolName, capacity: 1, kind: globalconfig.SchedulingStrict},
+		{index: 1, name: "code", capacity: 5, kind: globalconfig.SchedulingStrict},
+		{index: 2, name: "video", capacity: 10, kind: globalconfig.SchedulingRoundRobin},
+	}
+	for _, tt := range tests {
+		pool := pools[tt.index]
+		if pool.Name != tt.name || pool.Scheduler.Capacity != tt.capacity || pool.Scheduler.Kind != tt.kind {
+			t.Fatalf("pools[%d] = %#v, want name/capacity/kind %s/%d/%s", tt.index, pool, tt.name, tt.capacity, tt.kind)
+		}
+	}
+}
+
 func TestRuntimeLogLevelForReloadPreservesOverrides(t *testing.T) {
 	t.Parallel()
 
@@ -170,7 +206,19 @@ func TestSyncGlobalDispatchProjectsMarksUnstartedProjectsIdle(t *testing.T) {
 		{ID: "higher", Weight: 1, Priority: 0},
 		{ID: "lower", Weight: 1, Priority: 3},
 	}
-	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+	gate, err := scheduler.NewPoolRegistry(
+		[]scheduler.PoolConfig{{
+			Name: scheduler.DefaultPoolName,
+			Scheduler: scheduler.Config{
+				Kind:     globalconfig.SchedulingStrict,
+				Capacity: 1,
+			},
+		}},
+		globalProjectCandidates(projects),
+	)
+	if err != nil {
+		t.Fatalf("NewPoolRegistry() error = %v", err)
+	}
 	syncGlobalDispatchProjects(gate, projects, projectpkg.NewRegistry())
 
 	lower := globalProjectCandidates(projects)[1]

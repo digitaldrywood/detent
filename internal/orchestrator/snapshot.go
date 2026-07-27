@@ -29,6 +29,10 @@ const (
 // for publishing to the web dashboard. Slices are sorted by issue id so the
 // output is deterministic.
 func (s State) Snapshot(now time.Time) telemetry.Snapshot {
+	poolCapacity := s.PoolCapacity
+	if poolCapacity <= 0 {
+		poolCapacity = s.MaxConcurrentAgents
+	}
 	staleAfter := refreshStaleAfter(s.PollInterval)
 	sources := refreshSourceSnapshots(s.RefreshSources)
 	refresh := telemetry.Refresh{
@@ -98,7 +102,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		RateLimits:              cloneRateLimits(s.RateLimits),
 		BackendOutages:          backendOutageSnapshots(s.BackendOutages),
 		FailureBreakers:         projectFailureBreakerSnapshots(s.FailureBreaker),
-		DispatchRecoveries:      dispatchRecoverySnapshots(s.DispatchRecoveries, s.MaxConcurrentAgents),
+		DispatchRecoveries:      dispatchRecoverySnapshots(s.DispatchRecoveries, s.PoolName, poolCapacity),
 		OverloadRetriesLastHour: overloadRetriesLastHour(s.WorkAttempts, now),
 		Tokens:                  tokensFromTokenTotals(s.liveTokenTotals()),
 		Budget: telemetry.Budget{

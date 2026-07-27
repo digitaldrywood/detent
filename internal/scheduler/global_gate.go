@@ -27,6 +27,7 @@ type ProjectDispatchGate interface {
 
 type DispatchGateDecision struct {
 	ProjectID            string
+	PoolName             string
 	State                string
 	SelectedProjectID    string
 	SelectedState        string
@@ -65,7 +66,8 @@ type projectCycleState struct {
 }
 
 type GlobalDispatchGate struct {
-	global GlobalScheduler
+	poolName string
+	global   GlobalScheduler
 
 	mu             sync.Mutex
 	ready          map[string]readyProjectSlot
@@ -78,7 +80,12 @@ type GlobalDispatchGate struct {
 }
 
 func NewGlobalDispatchGate(global GlobalScheduler, projects ...ProjectCandidate) *GlobalDispatchGate {
+	return newGlobalDispatchGate(DefaultPoolName, global, projects...)
+}
+
+func newGlobalDispatchGate(poolName string, global GlobalScheduler, projects ...ProjectCandidate) *GlobalDispatchGate {
 	gate := &GlobalDispatchGate{
+		poolName:      normalizePoolName(poolName),
 		global:        global,
 		ready:         map[string]readyProjectSlot{},
 		running:       map[uint64]runningProjectSlot{},
@@ -89,6 +96,23 @@ func NewGlobalDispatchGate(global GlobalScheduler, projects ...ProjectCandidate)
 	}
 	gate.SetProjects(projects)
 	return gate
+}
+
+func (g *GlobalDispatchGate) PoolSnapshot() PoolSnapshot {
+	if g == nil || g.global == nil {
+		return PoolSnapshot{Name: DefaultPoolName}
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	stats := g.capacitySnapshotLocked("")
+	return PoolSnapshot{
+		Name:      g.poolName,
+		Capacity:  stats.globalCapacity,
+		Used:      stats.globalUsed,
+		Available: nonNegativeInt(stats.globalCapacity - stats.globalUsed),
+		Mode:      g.global.Mode(),
+	}
 }
 
 func (g *GlobalDispatchGate) SetProjects(projects []ProjectCandidate) {
@@ -253,7 +277,10 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 	now time.Time,
 ) (Slot, bool, DispatchGateDecision, error) {
 	if g == nil || g.global == nil {
-		return Slot{}, true, DispatchGateDecision{Reason: DispatchGateReasonGranted}, nil
+		return Slot{}, true, DispatchGateDecision{
+			PoolName: DefaultPoolName,
+			Reason:   DispatchGateReasonGranted,
+		}, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -557,6 +584,7 @@ func (g *GlobalDispatchGate) decisionLocked(projectID string, req SlotRequest, r
 
 	return DispatchGateDecision{
 		ProjectID:            projectID,
+		PoolName:             g.poolName,
 		State:                req.State,
 		SelectedProjectID:    selectedProjectID,
 		SelectedState:        selectedState,

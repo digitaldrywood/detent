@@ -662,6 +662,9 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 	case <-o.done:
 		return State{}, ErrStopped
 	case state := <-request.reply:
+		pool := o.dispatchPoolSnapshot()
+		state.PoolName = pool.Name
+		state.PoolCapacity = pool.Capacity
 		return state, nil
 	}
 }

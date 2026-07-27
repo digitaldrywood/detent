@@ -1005,6 +1005,7 @@ func mergeWorkerSlotDecisionAttrs(
 	attrs := mergeWorkerLogAttrs(issue,
 		"state", strings.TrimSpace(issue.State),
 		"reason", reason,
+		"pool", strings.TrimSpace(decision.PoolName),
 		"global_capacity", decision.GlobalCapacity,
 		"global_used", decision.GlobalUsed,
 		"global_available", decision.GlobalAvailable,

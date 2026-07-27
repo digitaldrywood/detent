@@ -3,6 +3,7 @@ github.com/digitaldrywood/detent/internal/orchestrator/backend_capacity.go 90 # 
 github.com/digitaldrywood/detent/internal/orchestrator/implement_progress.go 90 # Safety-critical no-progress brake.
 github.com/digitaldrywood/detent/internal/orchestrator/ranking.go 90 # Safety-critical dispatch ranking.
 github.com/digitaldrywood/detent/internal/orchestrator/spend_progress.go 90 # Safety-critical spend progress brake.
+github.com/digitaldrywood/detent/internal/scheduler/pool_registry.go 90 # Safety-critical agent-pool dispatch control.
 github.com/digitaldrywood/detent/internal/web/ui/components/icon 0 # TemplUI icon glue has no direct behavior tests yet; raise or remove after component tests cover it.
 github.com/digitaldrywood/detent/internal/web/ui/primitives 0 # UI primitive wrappers are currently untested glue; raise or remove after behavior-focused tests cover them.
 github.com/digitaldrywood/detent/internal/web/ui/utils 0 # UI class utility helpers are below the package floor; raise or remove after helper tests cover them.

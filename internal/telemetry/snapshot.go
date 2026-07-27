@@ -63,6 +63,7 @@ type FailureBreaker struct {
 
 type DispatchRecovery struct {
 	ProjectID     string    `json:"project_id,omitempty"`
+	Pool          string    `json:"pool,omitempty"`
 	Kind          string    `json:"kind"`
 	Reason        string    `json:"reason,omitempty"`
 	Status        string    `json:"status"`

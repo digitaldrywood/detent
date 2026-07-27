@@ -58,11 +58,13 @@ type SlotRequest struct {
 }
 
 type Slot struct {
-	State    string
-	Host     string
-	Weight   int
-	Priority int
-	token    uint64
+	State          string
+	Host           string
+	Weight         int
+	Priority       int
+	token          uint64
+	poolName       string
+	poolGeneration uint64
 }
 
 type Counters struct {

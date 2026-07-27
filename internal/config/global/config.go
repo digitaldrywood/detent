@@ -28,6 +28,7 @@ const (
 	SchedulingStrict                = "strict"
 	SchedulingRoundRobin            = "round_robin"
 	SchedulingFairShare             = "fair_share"
+	DefaultAgentPoolName            = "default"
 	DashboardAccessModePrivateToken = "private_token"
 
 	configFileMode = 0o600
@@ -108,14 +109,22 @@ func (u Update) NormalizedCheckIntervalHours() int {
 type Settings struct {
 	MaxConcurrentAgents int            `yaml:"max_concurrent_agents"`
 	Scheduling          string         `yaml:"scheduling"`
+	AgentPools          []AgentPool    `yaml:"agent_pools,omitempty"`
 	Identity            Identity       `yaml:"identity,omitempty"`
 	Knowledge           Knowledge      `yaml:"knowledge,omitempty"`
 	FairShare           map[string]any `yaml:"fair_share,omitempty"`
 	Startup             map[string]any `yaml:"startup,omitempty"`
 }
 
+type AgentPool struct {
+	Name                string `yaml:"name"`
+	MaxConcurrentAgents int    `yaml:"max_concurrent_agents"`
+	Scheduling          string `yaml:"scheduling,omitempty"`
+}
+
 type Project struct {
 	ID               string              `yaml:"id"`
+	Pool             string              `yaml:"pool,omitempty"`
 	Workflow         string              `yaml:"workflow"`
 	WorkflowRef      string              `yaml:"workflow_ref,omitempty"`
 	Workdir          string              `yaml:"workdir"`
@@ -396,16 +405,16 @@ func mergeYAMLMapping(existing *yaml.Node, desired *yaml.Node) {
 func mergeYAMLSequence(existing *yaml.Node, desired *yaml.Node) {
 	existingByID := make(map[string]*yaml.Node, len(existing.Content))
 	for _, item := range existing.Content {
-		if id := yamlMappingScalar(item, "id"); id != "" {
-			existingByID[id] = item
+		if key := yamlSequenceMappingKey(item); key != "" {
+			existingByID[key] = item
 		}
 	}
 
 	merged := make([]*yaml.Node, 0, len(desired.Content))
 	for index, desiredItem := range desired.Content {
 		var existingItem *yaml.Node
-		if id := yamlMappingScalar(desiredItem, "id"); id != "" {
-			existingItem = existingByID[id]
+		if key := yamlSequenceMappingKey(desiredItem); key != "" {
+			existingItem = existingByID[key]
 		} else if index < len(existing.Content) {
 			existingItem = existing.Content[index]
 		}
@@ -417,6 +426,15 @@ func mergeYAMLSequence(existing *yaml.Node, desired *yaml.Node) {
 		merged = append(merged, existingItem)
 	}
 	existing.Content = merged
+}
+
+func yamlSequenceMappingKey(node *yaml.Node) string {
+	for _, key := range []string{"id", "name"} {
+		if value := yamlMappingScalar(node, key); value != "" {
+			return key + ":" + value
+		}
+	}
+	return ""
 }
 
 func yamlMappingScalar(node *yaml.Node, key string) string {
@@ -618,6 +636,7 @@ func (c Config) Validate(opts ...Option) error {
 	if !validSchedulingMode(c.Global.Scheduling) {
 		problems = append(problems, "global.scheduling: must be one of "+strings.Join(schedulingModes, ", "))
 	}
+	problems = append(problems, agentPoolProblems(c.Global.AgentPools)...)
 	problems = append(problems, c.Global.Identity.Validate("global.identity")...)
 	problems = append(problems, startupErrors(c.Global.Startup, "global.startup")...)
 
@@ -653,6 +672,7 @@ func (c Config) Validate(opts ...Option) error {
 		problems = append(problems, project.Authorization.Validate(prefix+".authorization")...)
 	}
 	problems = append(problems, duplicateProjectIDErrorsFromProjects(c.Projects)...)
+	problems = append(problems, projectAgentPoolProblems(c.Global.AgentPools, c.Projects)...)
 
 	if len(problems) > 0 {
 		return ValidationError{Path: c.Path, Problems: problems}
@@ -975,7 +995,8 @@ func globalErrors(value any) []string {
 	var problems []string
 	problems = append(problems, prefixErrors(requiredErrors(global, []string{"max_concurrent_agents", "scheduling"}), "global")...)
 	problems = append(problems, positiveIntegerError(global["max_concurrent_agents"], "global.max_concurrent_agents")...)
-	problems = append(problems, schedulingErrors(global["scheduling"])...)
+	problems = append(problems, schedulingErrors(global["scheduling"], "global.scheduling")...)
+	problems = append(problems, agentPoolsErrors(global["agent_pools"])...)
 	problems = append(problems, optionalMapErrors(global, "identity")...)
 	problems = append(problems, identityErrors(global["identity"], "global.identity")...)
 	problems = append(problems, knowledgeErrors(global["knowledge"], "global.knowledge")...)
@@ -989,7 +1010,7 @@ func globalErrors(value any) []string {
 	return problems
 }
 
-func schedulingErrors(value any) []string {
+func schedulingErrors(value any, field string) []string {
 	if value == nil {
 		return nil
 	}
@@ -997,11 +1018,107 @@ func schedulingErrors(value any) []string {
 	if ok && validSchedulingMode(mode) {
 		return nil
 	}
-	return []string{"global.scheduling: must be one of " + strings.Join(schedulingModes, ", ")}
+	return []string{field + ": must be one of " + strings.Join(schedulingModes, ", ")}
 }
 
 func validSchedulingMode(mode string) bool {
 	return slices.Contains(schedulingModes, mode)
+}
+
+func agentPoolsErrors(value any) []string {
+	if value == nil {
+		return nil
+	}
+	pools, ok := value.([]any)
+	if !ok {
+		return []string{"global.agent_pools: must be a list"}
+	}
+
+	var problems []string
+	names := make(map[string]int, len(pools))
+	for index, value := range pools {
+		prefix := fmt.Sprintf("global.agent_pools[%d]", index)
+		pool, ok := value.(map[string]any)
+		if !ok {
+			problems = append(problems, prefix+": must be a mapping")
+			continue
+		}
+		problems = append(problems, prefixErrors(requiredErrors(pool, []string{"name", "max_concurrent_agents"}), prefix)...)
+		problems = append(problems, stringErrors(pool, "name", prefix)...)
+		problems = append(problems, positiveIntegerError(pool["max_concurrent_agents"], prefix+".max_concurrent_agents")...)
+		if scheduling, configured := pool["scheduling"]; configured {
+			problems = append(problems, schedulingErrors(scheduling, prefix+".scheduling")...)
+		}
+
+		name, ok := pool["name"].(string)
+		if !ok {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if name == DefaultAgentPoolName {
+			problems = append(problems, prefix+".name: "+DefaultAgentPoolName+" is reserved")
+		}
+		if previous, exists := names[name]; exists {
+			problems = append(problems, fmt.Sprintf("%s.name: duplicates global.agent_pools[%d].name %q", prefix, previous, name))
+			continue
+		}
+		names[name] = index
+	}
+	return problems
+}
+
+func agentPoolProblems(pools []AgentPool) []string {
+	var problems []string
+	names := make(map[string]int, len(pools))
+	for index, pool := range pools {
+		prefix := fmt.Sprintf("global.agent_pools[%d]", index)
+		name := strings.TrimSpace(pool.Name)
+		if name == "" {
+			problems = append(problems, prefix+".name: must not be blank")
+		} else if name == DefaultAgentPoolName {
+			problems = append(problems, prefix+".name: "+DefaultAgentPoolName+" is reserved")
+		} else if previous, exists := names[name]; exists {
+			problems = append(problems, fmt.Sprintf("%s.name: duplicates global.agent_pools[%d].name %q", prefix, previous, name))
+		} else {
+			names[name] = index
+		}
+		if pool.MaxConcurrentAgents <= 0 {
+			problems = append(problems, prefix+".max_concurrent_agents: must be a positive integer")
+		}
+		if pool.Scheduling != "" && !validSchedulingMode(pool.Scheduling) {
+			problems = append(problems, prefix+".scheduling: must be one of "+strings.Join(schedulingModes, ", "))
+		}
+	}
+	return problems
+}
+
+func projectAgentPoolProblems(pools []AgentPool, projects []Project) []string {
+	available := make(map[string]struct{}, len(pools)+1)
+	available[DefaultAgentPoolName] = struct{}{}
+	for _, pool := range pools {
+		available[strings.TrimSpace(pool.Name)] = struct{}{}
+	}
+
+	var problems []string
+	for index, project := range projects {
+		pool := strings.TrimSpace(project.Pool)
+		if pool == "" {
+			pool = DefaultAgentPoolName
+		}
+		if _, ok := available[pool]; ok {
+			continue
+		}
+		problems = append(problems, fmt.Sprintf(
+			"projects[%d].pool: project %q references undefined agent pool %q",
+			index,
+			strings.TrimSpace(project.ID),
+			pool,
+		))
+	}
+	return problems
 }
 
 func optionalMapErrors(attrs map[string]any, field string) []string {
@@ -1061,6 +1178,7 @@ func projectErrors(value any, index int, opts options) []string {
 	var problems []string
 	problems = append(problems, prefixErrors(requiredErrors(project, []string{"id", "workflow", "workdir", "weight", "priority"}), prefix)...)
 	problems = append(problems, stringErrors(project, "id", prefix)...)
+	problems = append(problems, stringErrors(project, "pool", prefix)...)
 	problems = append(problems, stringErrors(project, "workflow_ref", prefix)...)
 	problems = append(problems, singleLineStringErrors(project, "workflow_ref", prefix)...)
 	problems = append(problems, projectColorErrors(project, prefix)...)
@@ -1702,14 +1820,55 @@ func buildSettings(attrs map[string]any, opts options) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
+	agentPools, err := buildAgentPools(attrs["agent_pools"])
+	if err != nil {
+		return Settings{}, err
+	}
 
 	settings.MaxConcurrentAgents = maxConcurrentAgents
 	settings.Scheduling = scheduling
+	settings.AgentPools = agentPools
 	settings.Identity = identity
 	settings.Knowledge = knowledge
 	settings.FairShare = fairShare
 	settings.Startup = startup
 	return settings, nil
+}
+
+func buildAgentPools(value any) ([]AgentPool, error) {
+	if value == nil {
+		return nil, nil
+	}
+	items, err := listValue(value, "global.agent_pools")
+	if err != nil {
+		return nil, err
+	}
+	pools := make([]AgentPool, 0, len(items))
+	for index, item := range items {
+		prefix := fmt.Sprintf("global.agent_pools[%d]", index)
+		pool, err := mapValue(item, prefix)
+		if err != nil {
+			return nil, err
+		}
+		name, err := stringValue(pool["name"], prefix+".name")
+		if err != nil {
+			return nil, err
+		}
+		capacity, err := intValue(pool["max_concurrent_agents"], prefix+".max_concurrent_agents")
+		if err != nil {
+			return nil, err
+		}
+		scheduling, err := optionalString(pool["scheduling"], prefix+".scheduling")
+		if err != nil {
+			return nil, err
+		}
+		pools = append(pools, AgentPool{
+			Name:                strings.TrimSpace(name),
+			MaxConcurrentAgents: capacity,
+			Scheduling:          scheduling,
+		})
+	}
+	return pools, nil
 }
 
 func buildProjects(projects []any, opts options) ([]Project, error) {
@@ -1764,6 +1923,10 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 		if err != nil {
 			return nil, err
 		}
+		pool, err := optionalString(project["pool"], prefix+".pool")
+		if err != nil {
+			return nil, err
+		}
 		weight, err := intValue(project["weight"], prefix+".weight")
 		if err != nil {
 			return nil, err
@@ -1805,6 +1968,7 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 
 		out = append(out, Project{
 			ID:               strings.TrimSpace(id),
+			Pool:             pool,
 			Workflow:         strings.TrimSpace(workflow),
 			WorkflowRef:      strings.TrimSpace(workflowRef),
 			Workdir:          workdir,

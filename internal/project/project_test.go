@@ -46,6 +46,7 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 	got, err := project.New(project.Config{
 		Project: globalconfig.Project{
 			ID:       "detent",
+			Pool:     "code",
 			Workflow: "workflow.md",
 			Workdir:  "/workspace/detent",
 			Weight:   2,
@@ -110,8 +111,9 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 		if len(cfg.Authorization.And) != 2 {
 			t.Fatalf("Authorization.And = %#v, want workflow and project selectors", cfg.Authorization.And)
 		}
-		if cfg.Project.ID != "detent" || cfg.Project.Weight != 2 || cfg.Project.Priority != 10 {
-			t.Fatalf("orchestrator Project = %#v, want detent weight 2 priority 10", cfg.Project)
+		if cfg.Project.ID != "detent" || cfg.Project.Pool != "code" ||
+			cfg.Project.Weight != 2 || cfg.Project.Priority != 10 {
+			t.Fatalf("orchestrator Project = %#v, want detent in code pool with weight 2 priority 10", cfg.Project)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for orchestrator factory")

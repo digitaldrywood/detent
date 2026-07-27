@@ -2242,6 +2242,12 @@ update:
 global:
   max_concurrent_agents: 8
   scheduling: weighted
+  agent_pools:
+    - name: code
+      max_concurrent_agents: 5
+    - name: video
+      max_concurrent_agents: 10
+      scheduling: round_robin
   fair_share:
     half_life: 1h
   startup:
@@ -2250,6 +2256,7 @@ global:
     max_concurrent_starts: 4
 projects:
   - id: detent
+    pool: code
     workflow: /absolute/path/to/detent/WORKFLOW.md
     workdir: /absolute/path/to/detent
     color: "#1192e8"
@@ -2269,6 +2276,20 @@ projects:
 Project weights are relative scheduling weights. Higher weights receive a
 larger dispatch share in weighted and fair-share scheduling modes. Project
 priority is a rank: `0` is highest and `4` is lowest.
+
+`global.agent_pools` defines independent agent-capacity partitions. Each
+project belongs to exactly one pool through `projects[].pool`. A project with
+no `pool` uses the implicit `default` pool, whose capacity is
+`global.max_concurrent_agents` and whose policy is `global.scheduling`.
+`default` is reserved and cannot be declared in `agent_pools`.
+
+Every named pool requires a unique non-empty `name` and a positive
+`max_concurrent_agents`. Its optional `scheduling` accepts `weighted`,
+`strict`, `round_robin`, or `fair_share`; when omitted it inherits
+`global.scheduling`. Pool capacities are independent, with no additional
+fleet-wide ceiling. For example, `code: 5` plus `video: 10` permits up to 15
+agents concurrently. A configuration without `agent_pools` or project `pool`
+fields retains the previous single-pool behavior.
 
 Set optional `projects[].color` to an opaque CSS hex color in `#RGB` or
 `#RRGGBB` form when a project needs a fixed visual marker. The sidebar,
@@ -2341,7 +2362,7 @@ can include `--workflow-ref origin/main` during registration or add
 | `global.startup` | Live reload |
 | `instance_name` | Live reload |
 | `global.identity` | Live reload; project runtimes restart in-process and `/api/v1/state.instance.name` updates after the next telemetry snapshot |
-| `global.max_concurrent_agents`, `global.scheduling`, `global.fair_share` | Live reload at the next dispatch decision; lowering capacity drains to the new limit without interrupting active workers |
+| `global.max_concurrent_agents`, `global.scheduling`, `global.agent_pools`, `global.fair_share`, and project pool assignments | Live reload at the next dispatch decision; lowering capacity drains to the new limit without interrupting active workers, and removed pools drain their active workers before retirement |
 | `log_level` | Live reload |
 | `port`, `env`, `log_max_size_bytes`, `log_max_backups` | Restart required |
 

@@ -29,6 +29,7 @@ type GlobalScheduler interface {
 
 type ProjectCandidate struct {
 	ID       string
+	Pool     string
 	Weight   int
 	Priority int
 	Paused   bool
@@ -409,6 +410,7 @@ func normalizeProjectCandidates(projects []ProjectCandidate) []ProjectCandidate 
 			continue
 		}
 		seen[project.ID] = struct{}{}
+		project.Pool = normalizePoolName(project.Pool)
 		project.Weight = normalizeProjectWeight(project.Weight)
 		candidates = append(candidates, project)
 	}
@@ -417,6 +419,14 @@ func normalizeProjectCandidates(projects []ProjectCandidate) []ProjectCandidate 
 
 func normalizeProjectID(projectID string) string {
 	return strings.TrimSpace(projectID)
+}
+
+func normalizePoolName(pool string) string {
+	pool = strings.TrimSpace(pool)
+	if pool == "" {
+		return DefaultPoolName
+	}
+	return pool
 }
 
 func normalizeProjectWeight(weight int) int {

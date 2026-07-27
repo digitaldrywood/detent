@@ -69,6 +69,7 @@ func (o *Orchestrator) logSchedulerSlotDecision(issue connector.Issue, outcome s
 		"outcome", strings.TrimSpace(outcome),
 		"reason", reason,
 		"project_id", strings.TrimSpace(o.cfg.Project.ID),
+		"pool", strings.TrimSpace(decision.PoolName),
 		"project_weight", o.cfg.Project.Weight,
 		"project_priority", o.cfg.Project.Priority,
 		"global_capacity", decision.GlobalCapacity,
@@ -97,26 +98,19 @@ func (o *Orchestrator) logWorkerLifecycle(issue connector.Issue, event string, a
 
 func (o *Orchestrator) schedulerDecisionAttrs(state *State, now time.Time, issue connector.Issue, attrs ...any) []any {
 	projectStats := o.projectStateSlotStats(issue, state)
-	globalCapacity := o.cfg.MaxConcurrentAgents
-	globalUsed := 0
-	if state != nil {
-		globalUsed = len(state.Running)
-	}
-	globalAvailable := globalCapacity - globalUsed
-	if globalAvailable < 0 {
-		globalAvailable = 0
-	}
+	pool := o.dispatchPoolSnapshot()
 	all := o.issueLogAttrs(issue,
 		"lane", normalizeState(issue.State),
 		"project_id", strings.TrimSpace(o.cfg.Project.ID),
+		"pool", pool.Name,
 		"project_weight", o.cfg.Project.Weight,
 		"project_priority", o.cfg.Project.Priority,
 		"project_state_capacity", projectStats.capacity,
 		"project_state_used", projectStats.used,
 		"project_state_available", projectStats.available,
-		"global_capacity", globalCapacity,
-		"global_used", globalUsed,
-		"global_available", globalAvailable,
+		"global_capacity", pool.Capacity,
+		"global_used", pool.Used,
+		"global_available", pool.Available,
 	)
 	all = append(all, snapshotAgeAttrs(issue, now)...)
 	all = append(all, pullRequestDiagnosticAttrs(issue, now)...)
