@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 )
 
 func TestDispatchRecoveryRampBoundsDispatchUntilProgress(t *testing.T) {
@@ -62,6 +63,43 @@ func TestDispatchRecoveryRampBoundsDispatchUntilProgress(t *testing.T) {
 	}
 	if recoveries, ok := capacity["dispatch_recoveries"].([]any); !ok || len(recoveries) != 1 {
 		t.Fatalf("dispatch_recoveries = %#v, want one durable recovery record", capacity["dispatch_recoveries"])
+	}
+}
+
+func TestDispatchRecoveryTelemetryUsesAgentPoolCapacity(t *testing.T) {
+	t.Parallel()
+
+	project := scheduler.ProjectCandidate{ID: "detent", Pool: "video"}
+	gate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{
+		{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "weighted", Capacity: 1}},
+		{Name: "video", Scheduler: scheduler.Config{Kind: "weighted", Capacity: 5}},
+	}, []scheduler.ProjectCandidate{project})
+	if err != nil {
+		t.Fatalf("NewPoolRegistry() error = %v", err)
+	}
+	cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, Project: project})
+	orch := &Orchestrator{cfg: cfg, globalDispatchGate: gate}
+	state := newState(cfg)
+	pool := orch.dispatchPoolSnapshot()
+	state.PoolName = pool.Name
+	state.PoolCapacity = pool.Capacity
+	orch.activateDispatchRecovery(&state, dispatchRecoveryGitHubREST, "REST quota recovered", time.Now(), "")
+
+	snapshot := state.Snapshot(time.Now())
+	if len(snapshot.DispatchRecoveries) != 1 {
+		t.Fatalf("DispatchRecoveries = %#v, want one", snapshot.DispatchRecoveries)
+	}
+	recovery := snapshot.DispatchRecoveries[0]
+	if recovery.Pool != "video" || recovery.MaxConcurrent != 5 {
+		t.Fatalf("DispatchRecoveries[0] = %#v, want video pool capacity 5", recovery)
+	}
+
+	var capacity map[string]any
+	if err := json.Unmarshal([]byte(orch.capacitySnapshotJSON(&state, connector.Issue{State: "Todo"})), &capacity); err != nil {
+		t.Fatalf("capacitySnapshotJSON() error = %v", err)
+	}
+	if capacity["pool"] != "video" || capacity["pool_capacity"] != float64(5) {
+		t.Fatalf("capacity snapshot = %#v, want video pool capacity 5", capacity)
 	}
 }
 

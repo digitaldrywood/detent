@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/project"
-	"github.com/digitaldrywood/detent/internal/scheduler"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -111,7 +110,11 @@ func runtimeUpdateIdle(ctx context.Context, registry *project.Registry) bool {
 	return true
 }
 
-func runtimeUpdateIdleReservation(ctx context.Context, registry *project.Registry, gate *scheduler.GlobalDispatchGate) (func(), bool) {
+type dispatchPauser interface {
+	PauseDispatch() func()
+}
+
+func runtimeUpdateIdleReservation(ctx context.Context, registry *project.Registry, gate dispatchPauser) (func(), bool) {
 	if gate == nil {
 		return nil, false
 	}

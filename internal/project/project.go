@@ -1279,6 +1279,7 @@ func projectOrchestratorConfig(project globalconfig.Project, workflow workflowco
 	cfg := orchestrator.ConfigFromWorkflow(workflow)
 	cfg.Project = scheduler.ProjectCandidate{
 		ID:       project.ID,
+		Pool:     project.Pool,
 		Weight:   project.Weight,
 		Priority: project.Priority,
 		Paused:   project.Paused,

@@ -23,6 +23,8 @@ import (
 type State struct {
 	PollInterval             time.Duration
 	MaxConcurrentAgents      int
+	PoolName                 string
+	PoolCapacity             int
 	AutoPromoteQuietDuration time.Duration
 	AutoPromote              AutoPromoteConfig
 	ActiveStates             []string
@@ -287,6 +289,8 @@ func (s State) clone() State {
 	cloned := State{
 		PollInterval:             s.PollInterval,
 		MaxConcurrentAgents:      s.MaxConcurrentAgents,
+		PoolName:                 s.PoolName,
+		PoolCapacity:             s.PoolCapacity,
 		AutoPromoteQuietDuration: s.AutoPromoteQuietDuration,
 		AutoPromote:              cloneAutoPromoteConfig(s.AutoPromote),
 		ActiveStates:             append([]string(nil), s.ActiveStates...),

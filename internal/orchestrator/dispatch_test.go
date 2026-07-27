@@ -2086,6 +2086,7 @@ func TestDispatchReadyIssuesLogsMergeSlotDecisionAndStopsAfterGlobalWait(t *test
 	}
 	for _, fragment := range []string{
 		"reason=global_capacity_full",
+		"pool=default",
 		"global_capacity=1",
 		"global_used=1",
 		"global_available=0",

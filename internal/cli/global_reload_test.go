@@ -241,8 +241,12 @@ func TestChangedGlobalConfigFieldsReloadClassification(t *testing.T) {
 		{name: "port", field: "port", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { value := 4101; cfg.Port = &value }},
 		{name: "instance name", field: "instance_name", mutate: func(cfg *globalconfig.Config) { cfg.InstanceName = "buildbox" }},
 		{name: "projects", field: "projects", mutate: func(cfg *globalconfig.Config) { cfg.Projects = []globalconfig.Project{{ID: "bravo", Weight: 2}} }},
+		{name: "project pool", field: "projects", mutate: func(cfg *globalconfig.Config) { cfg.Projects[0].Pool = "video" }},
 		{name: "maximum concurrent agents", field: "global.max_concurrent_agents", mutate: func(cfg *globalconfig.Config) { cfg.Global.MaxConcurrentAgents = 4 }},
 		{name: "scheduling", field: "global.scheduling", mutate: func(cfg *globalconfig.Config) { cfg.Global.Scheduling = globalconfig.SchedulingRoundRobin }},
+		{name: "agent pools", field: "global.agent_pools", mutate: func(cfg *globalconfig.Config) {
+			cfg.Global.AgentPools = []globalconfig.AgentPool{{Name: "video", MaxConcurrentAgents: 4}}
+		}},
 		{name: "identity", field: "global.identity", mutate: func(cfg *globalconfig.Config) {
 			cfg.Global.Identity = globalconfig.Identity{Name: "new-worker", GitHubLogin: "new-bot"}
 		}},
@@ -273,11 +277,21 @@ func TestGlobalConfigReloaderHotAppliesSchedulerCapacityWithoutInterruptingWorke
 	t.Parallel()
 
 	ctx := context.Background()
-	global := scheduler.NewStrictPriority(scheduler.Config{Capacity: 2})
-	gate := scheduler.NewGlobalDispatchGate(global)
 	alpha := scheduler.ProjectCandidate{ID: "alpha", Weight: 1, Priority: 3}
 	bravo := scheduler.ProjectCandidate{ID: "bravo", Weight: 1, Priority: 2}
 	charlie := scheduler.ProjectCandidate{ID: "charlie", Weight: 1, Priority: 0}
+	initial := reloadTestConfig("global.yaml", 2, []globalconfig.Project{
+		{ID: alpha.ID, Weight: alpha.Weight, Priority: alpha.Priority},
+		{ID: bravo.ID, Weight: bravo.Weight, Priority: bravo.Priority},
+		{ID: charlie.ID, Weight: charlie.Weight, Priority: charlie.Priority},
+	})
+	initial.Global.Scheduling = globalconfig.SchedulingStrict
+	gate, err := buildGlobalDispatchPools(initial, nil)
+	if err != nil {
+		t.Fatalf("buildGlobalDispatchPools() error = %v", err)
+	}
+	gate.MarkIdle(bravo.ID)
+	gate.MarkIdle(charlie.ID)
 	alphaSlot, ok, err := gate.TryAcquire(ctx, alpha, scheduler.SlotRequest{State: "Todo"}, time.Time{})
 	if err != nil || !ok {
 		t.Fatalf("alpha TryAcquire() = ok %t error %v, want granted", ok, err)
@@ -344,17 +358,69 @@ func TestGlobalConfigReloaderHotAppliesSchedulingAndFairShare(t *testing.T) {
 	t.Parallel()
 
 	store := &globalReloadFairShareStore{}
-	global := scheduler.NewWeightedFair(scheduler.Config{Capacity: 2})
-	gate := scheduler.NewGlobalDispatchGate(global)
 	next := reloadTestConfig("global.yaml", 2, nil)
+	gate, err := buildGlobalDispatchPools(next, store)
+	if err != nil {
+		t.Fatalf("buildGlobalDispatchPools() error = %v", err)
+	}
 	next.Global.Scheduling = globalconfig.SchedulingFairShare
 	next.Global.FairShare = map[string]any{"half_life": "2h"}
 
 	if err := applyGlobalRuntimeConfig(gate, store, nil, next); err != nil {
 		t.Fatalf("applyGlobalRuntimeConfig() error = %v", err)
 	}
-	if global.Mode() != scheduler.ModeFairShare {
-		t.Fatalf("Mode() = %q, want %q", global.Mode(), scheduler.ModeFairShare)
+	if mode := gate.PoolSnapshotFor("").Mode; mode != scheduler.ModeFairShare {
+		t.Fatalf("Mode() = %q, want %q", mode, scheduler.ModeFairShare)
+	}
+}
+
+func TestGlobalConfigReloaderHotReconfiguresAgentPools(t *testing.T) {
+	t.Parallel()
+
+	initial := reloadTestConfig("global.yaml", 1, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	initial.Global.Scheduling = globalconfig.SchedulingStrict
+	gate, err := buildGlobalDispatchPools(initial, nil)
+	if err != nil {
+		t.Fatalf("buildGlobalDispatchPools() error = %v", err)
+	}
+
+	added := initial
+	added.Global.AgentPools = []globalconfig.AgentPool{{
+		Name:                "video",
+		MaxConcurrentAgents: 2,
+		Scheduling:          globalconfig.SchedulingRoundRobin,
+	}}
+	added.Projects = []globalconfig.Project{{ID: "alpha", Pool: "video", Weight: 1}}
+	if err := applyGlobalRuntimeConfig(gate, nil, nil, added); err != nil {
+		t.Fatalf("add applyGlobalRuntimeConfig() error = %v", err)
+	}
+	if snapshot := gate.PoolSnapshotFor("alpha"); snapshot.Name != "video" ||
+		snapshot.Capacity != 2 || snapshot.Mode != scheduler.ModeRoundRobin {
+		t.Fatalf("PoolSnapshotFor(alpha) after add = %#v", snapshot)
+	}
+
+	changed := added
+	changed.Global.AgentPools = []globalconfig.AgentPool{{
+		Name:                "video",
+		MaxConcurrentAgents: 3,
+		Scheduling:          globalconfig.SchedulingStrict,
+	}}
+	if err := applyGlobalRuntimeConfig(gate, nil, nil, changed); err != nil {
+		t.Fatalf("change applyGlobalRuntimeConfig() error = %v", err)
+	}
+	if snapshot := gate.PoolSnapshotFor("alpha"); snapshot.Capacity != 3 || snapshot.Mode != scheduler.ModeStrictPriority {
+		t.Fatalf("PoolSnapshotFor(alpha) after change = %#v", snapshot)
+	}
+
+	removed := initial
+	if err := applyGlobalRuntimeConfig(gate, nil, nil, removed); err != nil {
+		t.Fatalf("remove applyGlobalRuntimeConfig() error = %v", err)
+	}
+	if snapshot := gate.PoolSnapshotFor("alpha"); snapshot.Name != scheduler.DefaultPoolName || snapshot.Capacity != 1 {
+		t.Fatalf("PoolSnapshotFor(alpha) after removal = %#v", snapshot)
+	}
+	if snapshots := gate.PoolSnapshots(); len(snapshots) != 1 {
+		t.Fatalf("PoolSnapshots() after removal = %#v, want default only", snapshots)
 	}
 }
 
@@ -367,9 +433,11 @@ func TestGlobalConfigReloaderHotAppliesLogLevel(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: level}))
 	logger.Debug("before reload")
 
-	global := scheduler.NewWeightedFair(scheduler.Config{Capacity: 2})
-	gate := scheduler.NewGlobalDispatchGate(global)
 	next := reloadTestConfig("global.yaml", 2, nil)
+	gate, err := buildGlobalDispatchPools(next, nil)
+	if err != nil {
+		t.Fatalf("buildGlobalDispatchPools() error = %v", err)
+	}
 	next.LogLevel = "debug"
 	if err := applyGlobalRuntimeConfig(gate, nil, level, next); err != nil {
 		t.Fatalf("applyGlobalRuntimeConfig() error = %v", err)

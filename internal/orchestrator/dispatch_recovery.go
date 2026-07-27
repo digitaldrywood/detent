@@ -27,7 +27,11 @@ type DispatchRecovery struct {
 	Admissions map[string]bool
 }
 
-func dispatchRecoverySnapshots(recoveries map[string]DispatchRecovery, maxConcurrent int) []telemetry.DispatchRecovery {
+func dispatchRecoverySnapshots(
+	recoveries map[string]DispatchRecovery,
+	pool string,
+	maxConcurrent int,
+) []telemetry.DispatchRecovery {
 	rows := make([]telemetry.DispatchRecovery, 0, len(recoveries))
 	for _, key := range sortedKeys(recoveries) {
 		recovery := recoveries[key]
@@ -38,6 +42,7 @@ func dispatchRecoverySnapshots(recoveries map[string]DispatchRecovery, maxConcur
 			}
 		}
 		rows = append(rows, telemetry.DispatchRecovery{
+			Pool:          strings.TrimSpace(pool),
 			Kind:          recovery.Kind,
 			Reason:        recovery.Reason,
 			Status:        recovery.Status,
@@ -52,10 +57,15 @@ func dispatchRecoverySnapshots(recoveries map[string]DispatchRecovery, maxConcur
 	return rows
 }
 
-func dispatchRecoveriesCapacitySnapshot(recoveries map[string]DispatchRecovery, maxConcurrent int) []map[string]any {
+func dispatchRecoveriesCapacitySnapshot(
+	recoveries map[string]DispatchRecovery,
+	pool string,
+	maxConcurrent int,
+) []map[string]any {
 	rows := make([]map[string]any, 0, len(recoveries))
-	for _, recovery := range dispatchRecoverySnapshots(recoveries, maxConcurrent) {
+	for _, recovery := range dispatchRecoverySnapshots(recoveries, pool, maxConcurrent) {
 		rows = append(rows, map[string]any{
+			"pool":           recovery.Pool,
 			"kind":           recovery.Kind,
 			"reason":         recovery.Reason,
 			"status":         recovery.Status,

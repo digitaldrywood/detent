@@ -1023,6 +1023,55 @@ func TestUpdateConfigAppliesBeforeNextTick(t *testing.T) {
 	close(runner.release)
 }
 
+func TestStateReportsLiveAgentPoolCapacity(t *testing.T) {
+	t.Parallel()
+
+	project := scheduler.ProjectCandidate{ID: "detent", Pool: "video"}
+	pools := []scheduler.PoolConfig{
+		{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "weighted", Capacity: 1}},
+		{Name: "video", Scheduler: scheduler.Config{Kind: "weighted", Capacity: 5}},
+	}
+	dispatch, err := scheduler.NewPoolRegistry(pools, []scheduler.ProjectCandidate{project})
+	if err != nil {
+		t.Fatalf("NewPoolRegistry() error = %v", err)
+	}
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:        time.Hour,
+		MaxConcurrentAgents: 2,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+		Project:             project,
+	}, orchestrator.Dependencies{
+		Connector:          newFakeConnector(),
+		GlobalDispatchGate: dispatch,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	state, err := orch.State(context.Background())
+	if err != nil {
+		t.Fatalf("State() error = %v", err)
+	}
+	if state.PoolName != "video" || state.PoolCapacity != 5 {
+		t.Fatalf("State() pool = %q/%d, want video/5", state.PoolName, state.PoolCapacity)
+	}
+
+	pools[1].Scheduler.Capacity = 7
+	if err := dispatch.Reconfigure(pools, []scheduler.ProjectCandidate{project}); err != nil {
+		t.Fatalf("Reconfigure() error = %v", err)
+	}
+	state, err = orch.State(context.Background())
+	if err != nil {
+		t.Fatalf("State() after reconfigure error = %v", err)
+	}
+	if state.PoolCapacity != 7 {
+		t.Fatalf("State().PoolCapacity after reconfigure = %d, want 7", state.PoolCapacity)
+	}
+}
+
 func TestUpdateRuntimeSwapsConnectorBeforeNextTick(t *testing.T) {
 	t.Parallel()
 

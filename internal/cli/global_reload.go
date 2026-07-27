@@ -293,6 +293,9 @@ func changedGlobalSettings(previous globalconfig.Settings, next globalconfig.Set
 	if previous.Scheduling != next.Scheduling {
 		fields = append(fields, globalConfigChange{Field: "global.scheduling", Old: previous.Scheduling, New: next.Scheduling})
 	}
+	if !reflect.DeepEqual(previous.AgentPools, next.AgentPools) {
+		fields = append(fields, globalConfigChange{Field: "global.agent_pools", Old: previous.AgentPools, New: next.AgentPools})
+	}
 	if !reflect.DeepEqual(previous.Identity, next.Identity) {
 		fields = append(fields, globalConfigChange{Field: "global.identity", Old: previous.Identity, New: next.Identity})
 	}

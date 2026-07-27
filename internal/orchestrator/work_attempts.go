@@ -740,21 +740,15 @@ func telemetrySchedulerDecision(decision store.SchedulerDecision) telemetry.Sche
 
 func (o *Orchestrator) capacitySnapshotJSON(state *State, issue connector.Issue) string {
 	projectStats := o.projectStateSlotStats(issue, state)
-	globalCapacity := o.cfg.MaxConcurrentAgents
-	globalUsed := 0
-	if state != nil {
-		globalUsed = len(state.Running)
-	}
-	globalAvailable := globalCapacity - globalUsed
-	if globalAvailable < 0 {
-		globalAvailable = 0
-	}
+	pool := o.dispatchPoolSnapshot()
 	snapshot := map[string]any{
 		"project_id":              strings.TrimSpace(o.cfg.Project.ID),
+		"pool":                    pool.Name,
+		"pool_capacity":           pool.Capacity,
 		"lane":                    normalizeState(issue.State),
-		"global_capacity":         globalCapacity,
-		"global_used":             globalUsed,
-		"global_available":        globalAvailable,
+		"global_capacity":         pool.Capacity,
+		"global_used":             pool.Used,
+		"global_available":        pool.Available,
 		"project_state_capacity":  projectStats.capacity,
 		"project_state_used":      projectStats.used,
 		"project_state_available": projectStats.available,
@@ -763,7 +757,7 @@ func (o *Orchestrator) capacitySnapshotJSON(state *State, issue connector.Issue)
 		snapshot["backend_outages"] = backendOutagesCapacitySnapshot(state.BackendOutages)
 	}
 	if state != nil && len(state.DispatchRecoveries) > 0 {
-		snapshot["dispatch_recoveries"] = dispatchRecoveriesCapacitySnapshot(state.DispatchRecoveries, o.cfg.MaxConcurrentAgents)
+		snapshot["dispatch_recoveries"] = dispatchRecoveriesCapacitySnapshot(state.DispatchRecoveries, pool.Name, pool.Capacity)
 	}
 	if state != nil && state.FailureBreaker.Active() {
 		snapshot["project_failure_breaker"] = map[string]any{

@@ -614,7 +614,10 @@ func (o *Orchestrator) acquireGlobalDispatchSlot(
 	now time.Time,
 ) (scheduler.Slot, bool, scheduler.DispatchGateDecision) {
 	if o.globalDispatchGate == nil {
-		return scheduler.Slot{}, true, scheduler.DispatchGateDecision{Reason: scheduler.DispatchGateReasonGranted}
+		return scheduler.Slot{}, true, scheduler.DispatchGateDecision{
+			PoolName: scheduler.DefaultPoolName,
+			Reason:   scheduler.DispatchGateReasonGranted,
+		}
 	}
 
 	req := scheduler.SlotRequest{
@@ -643,6 +646,33 @@ func (o *Orchestrator) acquireGlobalDispatchSlot(
 		return scheduler.Slot{}, false, decision
 	}
 	return slot, ok, decision
+}
+
+func (o *Orchestrator) dispatchPoolSnapshot() scheduler.PoolSnapshot {
+	if o == nil {
+		return scheduler.PoolSnapshot{Name: scheduler.DefaultPoolName}
+	}
+	fallback := scheduler.PoolSnapshot{
+		Name:      scheduler.DefaultPoolName,
+		Capacity:  o.cfg.MaxConcurrentAgents,
+		Available: o.cfg.MaxConcurrentAgents,
+	}
+	if o.globalDispatchGate == nil {
+		return fallback
+	}
+	if snapshotter, ok := o.globalDispatchGate.(scheduler.ProjectPoolSnapshotter); ok {
+		snapshot := snapshotter.PoolSnapshotFor(o.cfg.Project.ID)
+		if snapshot.Capacity > 0 {
+			return snapshot
+		}
+	}
+	if snapshotter, ok := o.globalDispatchGate.(scheduler.PoolSnapshotter); ok {
+		snapshot := snapshotter.PoolSnapshot()
+		if snapshot.Capacity > 0 {
+			return snapshot
+		}
+	}
+	return fallback
 }
 
 func (o *Orchestrator) dispatchStatePriority(state string) int {
