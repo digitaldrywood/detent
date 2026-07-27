@@ -472,6 +472,30 @@ func TestDashboardShellRendersSharedAppChrome(t *testing.T) {
 	}
 }
 
+func TestDashboardShellRendersPausedProjectStatus(t *testing.T) {
+	t.Parallel()
+
+	html := renderDashboardShell(t, templates.DashboardShellData{
+		Title: "Detent",
+		Projects: []templates.ProjectSmallMultiple{
+			{ID: "video-studio", Name: "Video Studio", Paused: true},
+		},
+	})
+
+	for _, want := range []string{
+		`data-project-id="video-studio"`,
+		`bg-warn`,
+		`data-dashboard-project-status="paused"`,
+		`aria-label="paused"`,
+		`title="paused"`,
+		`>paused</span>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard shell missing paused project marker %q:\n%s", want, html)
+		}
+	}
+}
+
 func workflowDiagnosticTestLane(lane string, average int64, active int64, wait int64) telemetry.WorkflowPhaseMetric {
 	return telemetry.WorkflowPhaseMetric{
 		ProjectID:      "detent",

@@ -1183,14 +1183,14 @@ func sortProjectSmallMultiples(projects []ProjectSmallMultiple) {
 
 func projectSmallMultipleStatus(project ProjectSmallMultiple) projectStatusView {
 	switch {
+	case project.Paused:
+		return projectStatusView{Rank: 4, Label: "paused", DotClass: "bg-warn", BadgeClass: "bg-warn/15 text-warn"}
 	case project.BoardBlocked > 0:
 		dotClass := "bg-dim"
 		if project.Running > 0 {
 			dotClass = "bg-ok dt-pulse"
 		}
 		return projectStatusView{Rank: 0, Label: "blocked", DotClass: dotClass, BadgeClass: "bg-err/15 text-err"}
-	case project.Paused:
-		return projectStatusView{Rank: 4, Label: "paused", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
 	case project.Running > 0:
 		return projectStatusView{Rank: 1, Label: "active", DotClass: "bg-ok dt-pulse", BadgeClass: "bg-elev text-sec"}
 	case project.BoardLoad > 0:
@@ -1198,6 +1198,13 @@ func projectSmallMultipleStatus(project ProjectSmallMultiple) projectStatusView 
 	default:
 		return projectStatusView{Rank: 3, Label: "idle", DotClass: "bg-dim", BadgeClass: "bg-elev text-sec"}
 	}
+}
+
+func sidebarProjectBadgeLabel(item sidebarProjectItem) string {
+	if item.StatusLabel == "paused" {
+		return item.StatusLabel
+	}
+	return item.RunningLabel
 }
 
 func projectWorkloadBreakdown(project ProjectSmallMultiple) string {

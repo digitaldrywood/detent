@@ -136,6 +136,7 @@ templ AppSidebarContent(data DashboardShellData) {
 					data-help-term={ "sidebar-project-" + project.ID }
 					data-help-title={ project.Name }
 					data-help-description={ appProjectBreakdown(project) }
+					data-sidebar-project-status={ appProjectStatus(project) }
 					aria-label={ project.Name }
 					{ sidebarAriaCurrent(project.Selected)... }
 				>
@@ -145,7 +146,7 @@ templ AppSidebarContent(data DashboardShellData) {
 					<span class="hidden size-7 place-items-center rounded-card border border-line bg-elev font-mono text-2xs font-semibold text-text group-data-[rail=true]/rail:grid" aria-hidden="true" data-sidebar-project-identity>{ project.Initials }</span>
 					<span class="min-w-0 flex-1 truncate group-data-[rail=true]/rail:hidden" data-sidebar-project-label>{ project.Name }</span>
 					if project.Count != "" {
-						<span class={ appProjectCountClass(project) } data-sidebar-project-badge data-sidebar-project-blocked={ boardBoolAttr(project.Blocked > 0) } aria-label={ project.Count + " board load" }>{ project.Count }</span>
+						<span class={ appProjectCountClass(project) } data-sidebar-project-badge data-sidebar-project-blocked={ boardBoolAttr(project.Blocked > 0) } aria-label={ appProjectBadgeLabel(project) }>{ project.Count }</span>
 					}
 				</a>
 			}

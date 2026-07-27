@@ -367,9 +367,15 @@ func republishSnapshotsOnProjectEvents(
 		select {
 		case <-ctx.Done():
 			return
-		case _, ok := <-sub.C():
+		case event, ok := <-sub.C():
 			if !ok {
 				return
+			}
+			switch event.Kind {
+			case project.EventPaused:
+				logger.Info("project paused", "project_id", event.ProjectID)
+			case project.EventUnpaused:
+				logger.Info("project unpaused", "project_id", event.ProjectID)
 			}
 			republishLatestSnapshot(snapshotHub, logger)
 		}

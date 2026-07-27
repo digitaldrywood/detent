@@ -32,6 +32,7 @@ func TestManagerStartsProjectsWithStartupLimits(t *testing.T) {
 	}
 
 	var slept []time.Duration
+	var logs bytes.Buffer
 	manager, err := project.NewManager(project.ManagerConfig{
 		Projects: []globalconfig.Project{
 			{ID: "alpha", Weight: 1},
@@ -44,6 +45,7 @@ func TestManagerStartsProjectsWithStartupLimits(t *testing.T) {
 		},
 	}, project.ManagerDependencies{
 		Events: events,
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 			return newManagerTestProject(t, cfg, events)
 		},
@@ -78,6 +80,9 @@ func TestManagerStartsProjectsWithStartupLimits(t *testing.T) {
 	}
 	if manager.Registry().Len() != 3 {
 		t.Fatalf("Registry().Len() = %d, want 3", manager.Registry().Len())
+	}
+	if got := logs.String(); !strings.Contains(got, "level=INFO msg=\"project startup skipped\" project_id=charlie reason=paused") {
+		t.Fatalf("startup logs missing paused project skip: %s", got)
 	}
 }
 

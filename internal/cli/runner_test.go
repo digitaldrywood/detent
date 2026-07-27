@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1010,6 +1012,63 @@ func TestRepublishSnapshotsOnProjectEventsPublishesLatestSnapshot(t *testing.T) 
 	republished := receiveSnapshot(t, sub.C())
 	if !republished.GeneratedAt.Equal(now) || republished.Counts.Running != 1 {
 		t.Fatalf("republished snapshot = %#v, want latest snapshot", republished)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for project event republisher to stop")
+	}
+}
+
+func TestRepublishSnapshotsOnProjectEventsLogsPauseTransitions(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[projectpkg.Event]()
+	snapshotHub := hub.New[telemetry.Snapshot](hub.WithBuffer(3))
+	if err := snapshotHub.Publish(telemetry.Snapshot{}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sub, err := snapshotHub.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	defer sub.Close()
+	receiveSnapshot(t, sub.C())
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		republishSnapshotsOnProjectEvents(ctx, events, snapshotHub, logger)
+	}()
+
+	tests := []struct {
+		name    string
+		kind    projectpkg.EventKind
+		wantLog string
+	}{
+		{name: "paused", kind: projectpkg.EventPaused, wantLog: "level=INFO msg=\"project paused\" project_id=alpha"},
+		{name: "unpaused", kind: projectpkg.EventUnpaused, wantLog: "level=INFO msg=\"project unpaused\" project_id=alpha"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := events.Publish(projectpkg.Event{
+				ProjectID: "alpha",
+				Kind:      tt.kind,
+			}); err != nil {
+				t.Fatalf("events.Publish() error = %v", err)
+			}
+			receiveSnapshot(t, sub.C())
+			if got := logs.String(); !strings.Contains(got, tt.wantLog) {
+				t.Fatalf("logs missing %q: %s", tt.wantLog, got)
+			}
+		})
 	}
 
 	cancel()
