@@ -619,12 +619,28 @@ func runAgentBackendTurnWithTools(
 	onUpdate AgentUpdateHandler,
 ) (AgentTurnResult, error, error) {
 	run := func(ctx context.Context, request AgentTurnRequest) (AgentTurnResult, error) {
+		turnCtx, cancel := withAgentDurationLimit(
+			ctx,
+			shortestPositiveDuration(request.TurnTimeout, request.MaxDuration),
+			ErrTurnDurationExceeded,
+		)
+		defer cancel()
+
+		var result AgentTurnResult
+		var err error
 		if len(tools) > 0 {
 			if toolBackend, ok := backend.(AgentToolBackend); ok {
-				return toolBackend.RunTurnWithTools(ctx, request, tools, toolHandler, onUpdate)
+				result, err = toolBackend.RunTurnWithTools(turnCtx, request, tools, toolHandler, onUpdate)
+			} else {
+				result, err = backend.RunTurn(turnCtx, request, onUpdate)
 			}
+		} else {
+			result, err = backend.RunTurn(turnCtx, request, onUpdate)
 		}
-		return backend.RunTurn(ctx, request, onUpdate)
+		if cause := context.Cause(turnCtx); errors.Is(cause, ErrTurnDurationExceeded) {
+			return result, errors.Join(cause, err)
+		}
+		return result, err
 	}
 	workspacePath := strings.TrimSpace(request.Workspace)
 	if workspacePath == "" {
@@ -651,6 +667,33 @@ func runAgentBackendTurnWithTools(
 		cleanupErr = fmt.Errorf("cleanup worker scratch: %w", cleanupErr)
 	}
 	return result, runErr, cleanupErr
+}
+
+func withAgentDurationLimit(ctx context.Context, duration time.Duration, limit error) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if duration <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeoutCause(ctx, duration, &agentDurationLimitError{
+		limit:    limit,
+		duration: duration,
+	})
+}
+
+func shortestPositiveDuration(durations ...time.Duration) time.Duration {
+	var shortest time.Duration
+	for _, duration := range durations {
+		if duration > 0 && (shortest == 0 || duration < shortest) {
+			shortest = duration
+		}
+	}
+	return shortest
+}
+
+func durationLimitError(err error) bool {
+	return errors.Is(err, ErrTurnDurationExceeded) || errors.Is(err, ErrSessionDurationExceeded)
 }
 
 func (r *Runner) runAgentTurn(
@@ -721,7 +764,7 @@ func (r *Runner) runAgentTurn(
 		}
 		return nil
 	})
-	if cause := context.Cause(ctx); cooperativeStopError(cause) {
+	if cause := context.Cause(ctx); cooperativeStopError(cause) || errors.Is(cause, ErrSessionDurationExceeded) {
 		turnErr = cause
 	}
 	result.Output = progress.outputText()
@@ -1023,6 +1066,12 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
+	sessionCtx, cancelSession := withAgentDurationLimit(
+		ctx,
+		durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS),
+		ErrSessionDurationExceeded,
+	)
+	defer cancelSession()
 
 	commandStartedAttrs := []any{
 		"workspace_path", info.Path,
@@ -1045,18 +1094,19 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		ServiceTier:        serviceTier,
 		ReasoningEffort:    effort,
 		Resume:             agentResumeFromState(resumeState),
-		ExtraWritableRoots: extraWritableRootsForWorkspace(ctx, info.Path, r.logger),
+		MaxDuration:        durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
+		ExtraWritableRoots: extraWritableRootsForWorkspace(sessionCtx, info.Path, r.logger),
 		cacheStrategy:      workflow.Config.Workspace.CacheStrategy,
 		projectID:          r.projectID,
 	}
 	if mode == RunModeRoutine {
 		turnRequest.ToolInstructions = routineToolInstructions
 	}
-	execution := r.runAgentTurn(ctx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity)
+	execution := r.runAgentTurn(sessionCtx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity)
 	if execution.err != nil {
 		execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 	}
-	if execution.err != nil && !IsCapacityError(execution.err) && !agentResumeEmpty(turnRequest.Resume) && !execution.turnStarted {
+	if execution.err != nil && !IsCapacityError(execution.err) && !durationLimitError(execution.err) && !agentResumeEmpty(turnRequest.Resume) && !execution.turnStarted {
 		r.logWorkerEvent(req.Issue, "worker_resume_failed_fallback",
 			"workspace_path", info.Path,
 			"backend_id", selection.BackendID,
@@ -1072,11 +1122,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		if orphanRecovery {
 			fallbackOutcome = store.OrphanRecoveryFresh
 		}
-		if updateErr := r.updateSessionResumeState(ctx, sessionID, 0, fallbackOutcome, errorString(execution.err)); updateErr != nil {
+		if updateErr := r.updateSessionResumeState(sessionCtx, sessionID, 0, fallbackOutcome, errorString(execution.err)); updateErr != nil {
 			r.logger.Warn("clear agent session resume state failed", "detent_session_id", sessionID, "issue_id", req.Issue.ID, "error", updateErr)
 		}
 		resumeState = store.AgentResumeState{}
-		execution = r.runAgentTurn(ctx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity)
+		execution = r.runAgentTurn(sessionCtx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity)
 		if execution.err != nil {
 			execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 		}
@@ -1320,6 +1370,12 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if err != nil {
 		return gate.ValidatorResult{}, err
 	}
+	sessionCtx, cancelSession := withAgentDurationLimit(
+		ctx,
+		durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS),
+		ErrSessionDurationExceeded,
+	)
+	defer cancelSession()
 
 	checkStartedAttrs := []any{
 		"workspace_path", info.Path,
@@ -1336,7 +1392,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}
 	var output strings.Builder
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
-	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurn(ctx, backend, AgentTurnRequest{
+	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurn(sessionCtx, backend, AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             prompt,
 		Model:              selectedModel,
@@ -1344,7 +1400,8 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		ServiceTier:        serviceTier,
 		ReasoningEffort:    effort,
 		TurnTimeout:        durationFromMillis(validator.TurnTimeoutMS),
-		ExtraWritableRoots: extraWritableRootsForWorkspace(ctx, info.Path, r.logger),
+		MaxDuration:        durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
+		ExtraWritableRoots: extraWritableRootsForWorkspace(sessionCtx, info.Path, r.logger),
 		cacheStrategy:      workflow.Config.Workspace.CacheStrategy,
 		projectID:          r.projectID,
 	}, func(update AgentUpdate) error {
@@ -1384,6 +1441,9 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		}
 		return nil
 	})
+	if cause := context.Cause(sessionCtx); errors.Is(cause, ErrSessionDurationExceeded) {
+		turnErr = cause
+	}
 	turnErr = errors.Join(turnErr, scratchCleanupErr)
 	if turnErr != nil {
 		turnErr = classifyAgentCapacityError(backend, selection, backendConfig, runResult.RuntimeIdentity, turnErr, runResult.RateLimits, runStartedAt)

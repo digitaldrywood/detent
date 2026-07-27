@@ -688,6 +688,8 @@ workspace:
 agent:
   max_concurrent_agents: 5
   max_turns: 20
+  max_turn_duration_ms: 0
+  max_session_duration_ms: 0
   max_retry_backoff_ms: 300000
   overload_retry_delay_ms: 45000
   no_progress_spend_limit_usd: 3
@@ -731,6 +733,9 @@ codex:
   turn_sandbox_policy:
     type: workspaceWrite
     networkAccess: true
+  turn_timeout_ms: 3600000
+  read_timeout_ms: 5000
+  stall_timeout_ms: 300000
 gate:
   kind: command
   run: make check
@@ -2476,7 +2481,9 @@ ids. Supported backend kinds are `codex` with `protocol: app-server` and
 `claude_code` with `protocol: headless`. Codex backend `options` use the same
 runtime fields as the top-level `codex` block, including `shell`,
 `approval_policy`, `thread_sandbox`, `turn_sandbox_policy`, `turn_timeout_ms`,
-`read_timeout_ms`, and `stall_timeout_ms`. Claude Code backend `options`
+`read_timeout_ms`, and `stall_timeout_ms`. `agent.max_turn_duration_ms` and
+`agent.max_session_duration_ms` apply across backends rather than belonging to
+an individual backend profile. Claude Code backend `options`
 include `permission_mode`, `allowed_tools`, `disallowed_tools`,
 `include_partial_messages`, `turn_timeout_ms`, `stall_timeout_ms`, `shell`, and
 `extra_args`. When a Codex backend needs different configuration, launch
@@ -2591,6 +2598,22 @@ same value as a compact percent. Thresholds are `normal` below 70%, `watch` at
 derived fields instead of reporting a misleading zero.
 
 Context pressure is a model-window signal, not a Detent stop threshold.
+For Codex, `codex.turn_timeout_ms` is an inter-message liveness bound, despite
+its name. Each stream message starts a new timer. Omitting the key still uses
+the one-hour (`3600000` ms) default, and continuous messages can keep one turn
+alive indefinitely. Lowering this value therefore detects silence sooner but
+does not cap total turn duration. `codex.stall_timeout_ms` is also reset by
+stream activity; when both liveness bounds are enabled, the shorter deadline
+wins for each receive.
+
+`agent.max_turn_duration_ms` is the total wall-clock bound for each provider
+turn attempt. `agent.max_session_duration_ms` spans the full persisted Detent
+session, including a failed resume attempt and its fresh fallback. When both
+are configured, the shorter applicable deadline wins. Both values default to
+`0`, which disables that total-duration bound. These deadlines cancel the
+worker through Detent's normal owned process context, so process-tree reaping,
+scratch cleanup, and session completion still run.
+
 `agent.max_session_tokens` is an absolute configured ceiling for a session.
 `total_tokens` counts input, output, cache-created, and cache-read tokens,
 accumulated across every turn of the session — cached context is re-counted on
@@ -2621,6 +2644,12 @@ max/ultracode `8x`. These multipliers assume one retry at the observed cost
 profile should fit before the breaker fires; `detent doctor` warns when an
 effort tier's effective limit is below its observed p50 per-session cost and
 recommends a base limit with `1.5x` retry-cost headroom.
+
+Duration limits stop a single overlong turn or session regardless of message
+volume. The no-progress spend limit is a separate runaway control that can stop
+repeated or expensive work even when each individual session stays below its
+duration cap; it is enforced in metered billing mode and advisory in
+subscription mode.
 
 Detent sums persisted session cost for each issue after its latest accepted
 lane or PR advancement. PR creation, a new head commit, a dirty-to-clean

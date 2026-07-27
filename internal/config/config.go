@@ -254,6 +254,8 @@ type Worker struct {
 type Agent struct {
 	MaxConcurrentAgents          int                          `yaml:"max_concurrent_agents"`
 	MaxTurns                     int                          `yaml:"max_turns"`
+	MaxTurnDurationMS            int                          `yaml:"max_turn_duration_ms"`
+	MaxSessionDurationMS         int                          `yaml:"max_session_duration_ms"`
 	MaxRetryBackoffMS            int                          `yaml:"max_retry_backoff_ms"`
 	OverloadRetryDelayMS         int                          `yaml:"overload_retry_delay_ms"`
 	NoProgressSpendLimitUSD      float64                      `yaml:"no_progress_spend_limit_usd"`
@@ -1826,6 +1828,12 @@ func normalizeDeliverableKind(kind string) string {
 func (a *Agent) validate(prefix string, problems *[]string) {
 	validatePositive(prefix+".max_concurrent_agents", a.MaxConcurrentAgents, problems)
 	validatePositive(prefix+".max_turns", a.MaxTurns, problems)
+	if a.MaxTurnDurationMS < 0 {
+		*problems = append(*problems, prefix+".max_turn_duration_ms must be greater than or equal to 0")
+	}
+	if a.MaxSessionDurationMS < 0 {
+		*problems = append(*problems, prefix+".max_session_duration_ms must be greater than or equal to 0")
+	}
 	validatePositive(prefix+".max_retry_backoff_ms", a.MaxRetryBackoffMS, problems)
 	validatePositive(prefix+".overload_retry_delay_ms", a.OverloadRetryDelayMS, problems)
 	if a.MaxSessionTokens < 0 {

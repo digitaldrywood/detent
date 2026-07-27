@@ -810,6 +810,36 @@ func TestAppServerStreamTurnResetsStallTimeoutAfterActivity(t *testing.T) {
 	}
 }
 
+func TestAppServerStreamTurnResetsTurnTimeoutAfterActivity(t *testing.T) {
+	t.Parallel()
+
+	transport := &deadlineRecordingAppServerTransport{
+		fakeAppServerTransport: newFakeAppServerTransport([]Message{
+			notificationMessage(t, "item/agentMessage/delta", `{
+				"threadId":"thread-1",
+				"turnId":"turn-1",
+				"itemId":"item-1",
+				"delta":"still working"
+			}`),
+			notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+		}),
+	}
+	server, err := NewAppServer(staticTransportFactory{transport: transport})
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	if err := server.streamTurn(context.Background(), transport, time.Second, 0, nil, nil); err != nil {
+		t.Fatalf("streamTurn() error = %v", err)
+	}
+	if len(transport.deadlines) != 2 {
+		t.Fatalf("Receive() deadlines = %v, want two turn timeout deadlines", transport.deadlines)
+	}
+	if !transport.deadlines[1].After(transport.deadlines[0]) {
+		t.Fatalf("Receive() deadlines = %v, want activity to reset turn timeout deadline", transport.deadlines)
+	}
+}
+
 func TestReceiveTurnMessageTimeoutSelection(t *testing.T) {
 	t.Parallel()
 
