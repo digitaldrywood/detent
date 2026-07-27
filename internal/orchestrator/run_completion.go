@@ -347,7 +347,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		}
 		o.scheduleCITriggerLabel(ctx, running.Issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, forceReapply)
 	}
-	o.commentObservedLaneTransition(ctx, dispatchedIssue, running.Issue)
+	o.commentObservedLaneTransition(ctx, dispatchedIssue, running.Issue, event.CompletedAt)
 	accepted, acceptedReason := implementAcceptedStateChange(running, progress)
 	spendProgress := o.evaluateSpendProgress(ctx, running, event.CompletedAt, accepted, acceptedReason)
 	if progress.Warning != "" && strings.HasPrefix(progress.Reason, "pull_request_hydrat") {
@@ -1510,8 +1510,13 @@ func (o *Orchestrator) scheduleCITriggerLabel(ctx context.Context, issue connect
 	return true
 }
 
-func (o *Orchestrator) commentObservedLaneTransition(ctx context.Context, before connector.Issue, after connector.Issue) {
-	if o == nil || o.connector == nil || strings.TrimSpace(after.ID) == "" {
+func (o *Orchestrator) commentObservedLaneTransition(
+	ctx context.Context,
+	before connector.Issue,
+	after connector.Issue,
+	at time.Time,
+) {
+	if o == nil || strings.TrimSpace(after.ID) == "" {
 		return
 	}
 	fromState := displayStateName(before.State)
@@ -1526,6 +1531,13 @@ func (o *Orchestrator) commentObservedLaneTransition(ctx context.Context, before
 		reason = "workpad_blocked"
 		humanAction = strings.TrimSpace(signal.HumanAction)
 		blockers = signal.Blockers
+	}
+	if _, reasonCode, ok := evaluateStructuredBlockedRecovery(after, o.cfg.BlockedRecovery); ok {
+		reason = reasonCode
+		o.recordLaneTransition(ctx, before, toState, at, reasonCode, workflowLaneMetadata{})
+	}
+	if o.connector == nil {
+		return
 	}
 	var body strings.Builder
 	body.WriteString("Observed this issue move from ")

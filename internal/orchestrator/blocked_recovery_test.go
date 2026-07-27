@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestRecoverBlockedIssuesSkipsPersistedStickyBlockedIssue(t *testing.T) {
@@ -299,6 +300,43 @@ func TestRecoverBlockedIssuesRequiresConfiguredBlockedReasonAndCurrentCondition(
 	}
 }
 
+func TestObservedStructuredBlockedRecoveryReasonAuthorizesRecovery(t *testing.T) {
+	t.Parallel()
+
+	after := blockedRecoverySignatureIssue("issue-structured-park", "head", "diff", "base", "dirty")
+	after.WorkpadSignal = &workpad.Signal{
+		Source:     workpad.SourceStructured,
+		Status:     workpad.StatusBlocked,
+		ReasonCode: blockedRecoveryReasonMergeConflict,
+	}
+	before := cloneIssue(after)
+	before.State = "In Progress"
+	tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{after}}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{})
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	orch.workflowMetrics = metrics
+	state := newState(orch.cfg)
+	now := time.Date(2026, 7, 8, 16, 30, 0, 0, time.UTC)
+
+	orch.commentObservedLaneTransition(context.Background(), before, after, now.Add(-time.Minute))
+	transitioned := orch.recoverBlockedIssues(context.Background(), &state, []connector.Issue{after}, now)
+
+	if len(tracker.updates) != 1 || tracker.updates[0].state != autoPromoteReworkState {
+		t.Fatalf("updates = %#v, want one Rework transition", tracker.updates)
+	}
+	if _, ok := transitioned[after.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing", after.ID)
+	}
+	timeline, err := metrics.IssueWorkflowTimeline(context.Background(), store.IssueIdentity{IssueID: after.ID})
+	if err != nil {
+		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
+	}
+	reason, ok := latestEnteredLaneReason(timeline.Events, blockedStatusState)
+	if !ok || reason != blockedRecoveryReasonMergeConflict {
+		t.Fatalf("latest Blocked reason = %q, %v, want %q", reason, ok, blockedRecoveryReasonMergeConflict)
+	}
+}
+
 func TestBlockedRecoverySignatureUsesDiffFingerprintAndBaseOID(t *testing.T) {
 	t.Parallel()
 
@@ -313,6 +351,18 @@ func TestBlockedRecoverySignatureUsesDiffFingerprintAndBaseOID(t *testing.T) {
 			t.Fatalf("blockedRecoverySignature() = %q, must not include %q", got, excluded)
 		}
 	}
+}
+
+func latestEnteredLaneReason(events []store.WorkflowPhaseEvent, lane string) (string, bool) {
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.PhaseType == store.WorkflowPhaseTypeLane &&
+			strings.EqualFold(event.PhaseName, lane) &&
+			strings.EqualFold(event.Status, "entered") {
+			return event.Reason, true
+		}
+	}
+	return "", false
 }
 
 func TestRecoverBlockedIssuesReworkBreakerGuards(t *testing.T) {

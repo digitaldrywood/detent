@@ -1312,7 +1312,7 @@ func TestTickAutoPromoteCommentsOnceForInvalidStructuredWorkpad(t *testing.T) {
 	}
 	for _, fragment := range []string{
 		"<!-- detent-workpad-status-invalid:",
-		"status blocked requires at least one blocker ref or human_action",
+		"status blocked requires at least one blocker ref, human_action, or reason_code",
 		"https://github.test/comment/invalid-workpad",
 	} {
 		if !strings.Contains(tracker.comments[0].body, fragment) {

@@ -3290,6 +3290,12 @@ func TestParseBlockerReasonUsesStructuredWorkpadFirst(t *testing.T) {
 			wantSource: "structured",
 		},
 		{
+			name:       "structured reason code authorizes recovery park",
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```",
+			wantReason: "merge_conflict",
+			wantSource: "structured",
+		},
+		{
 			name:        "invalid structured block suppresses prose",
 			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```\n\n### Human Action Needed\n- Blocked by: #999",
 			wantSource:  "structured",

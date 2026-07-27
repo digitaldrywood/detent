@@ -650,6 +650,9 @@ func appendBlockedHandoffBlock(prompt string) string {
 		"    reason: \"waiting for the dependency to merge\"\n" +
 		"human_action: null\n" +
 		"```\n\n" +
+		"When `tracker.blocked_recovery` is enabled and the workflow intentionally parks agent-recoverable PR maintenance in a configured source lane, " +
+		"set `reason_code` to `merge_conflict`, `stale_base`, or `missing_current_head_ci` in the blocked status block. " +
+		"Do not set a recovery reason code for manual or human-only parking.\n\n" +
 		"On successful completion, declare completion with the same structured block:\n\n" +
 		"```detent-status\n" +
 		"schema: 1\n" +

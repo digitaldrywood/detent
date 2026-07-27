@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const reworkBreakerStageUpdateSkew = time.Second
@@ -72,7 +73,11 @@ func EvaluateBlockedRecovery(issue connector.Issue) BlockedRecoveryDecision {
 }
 
 func EvaluateBlockedRecoveryWithConfig(issue connector.Issue, cfg BlockedRecoveryConfig) BlockedRecoveryDecision {
-	return evaluateBlockedRecovery(issue, cfg)
+	decision, _, ok := evaluateStructuredBlockedRecovery(issue, cfg)
+	if !ok {
+		return blockedRecoveryDecision(BlockedRecoveryActionNone, BlockedRecoveryReasonNoRecoverableSignal, "")
+	}
+	return decision
 }
 
 func evaluateBlockedRecovery(issue connector.Issue, cfg BlockedRecoveryConfig) BlockedRecoveryDecision {
@@ -256,6 +261,30 @@ func blockedRecoveryConditionMatches(reasonCode string, reason BlockedRecoveryRe
 	default:
 		return false
 	}
+}
+
+func evaluateStructuredBlockedRecovery(
+	issue connector.Issue,
+	cfg BlockedRecoveryConfig,
+) (BlockedRecoveryDecision, string, bool) {
+	cfg = normalizeBlockedRecoveryConfig(cfg)
+	signal := issue.WorkpadSignal
+	if signal == nil ||
+		signal.Invalid != nil ||
+		signal.Source != workpad.SourceStructured ||
+		strings.TrimSpace(signal.Status) != workpad.StatusBlocked {
+		return BlockedRecoveryDecision{}, "", false
+	}
+	reasonCode := normalizeBlockedRecoveryReasonCode(signal.ReasonCode)
+	if !blockedRecoveryReasonAllowed(cfg, reasonCode) {
+		return BlockedRecoveryDecision{}, "", false
+	}
+	decision := evaluateBlockedRecovery(issue, cfg)
+	if decision.Action != BlockedRecoveryActionRework ||
+		!blockedRecoveryConditionMatches(reasonCode, decision.Reason) {
+		return BlockedRecoveryDecision{}, "", false
+	}
+	return decision, reasonCode, true
 }
 
 func (o *Orchestrator) hydrateBlockedRecoveryDiffFingerprint(

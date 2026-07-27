@@ -54,6 +54,18 @@ Apply this prompt-body diff to existing `WORKFLOW.md` files:
 +3. Legacy fallback during the deprecation window: if native dependencies are
 +   unavailable and the project has not migrated, keep a machine-readable
 +   issue-body line such as `Blocked by: #123` or `Depends on: owner/repo#123`.
++
++When `tracker.blocked_recovery` is enabled and the workflow intentionally
++parks recoverable PR maintenance in a configured source lane, use a structured
++reason code instead of prose:
++
++```detent-status
++schema: 1
++status: blocked
++reason_code: merge_conflict
++blockers: []
++human_action: null
++```
 ````
 
 Also update the state-specific instructions:

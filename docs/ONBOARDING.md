@@ -2313,8 +2313,10 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
          - missing_current_head_ci
    ```
 
-   Enable it only when Detent-authored Blocked-entry reason codes should
-   authorize PR repair. A matching current PR condition and a new diff/base
+   Enable it only when structured Blocked-entry reason codes should authorize
+   PR repair. An intentional recovery park records `reason_code:
+   merge_conflict`, `stale_base`, or `missing_current_head_ci` in its blocked
+   `detent-status` block. A matching current PR condition and a new diff/base
    fingerprint are also required; issue descriptions and manual parking events
    never authorize recovery.
 

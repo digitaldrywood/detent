@@ -165,7 +165,7 @@ func checkDoctorBlockedRecoveryLive(
 		return doctorCheck{
 			Name:   name,
 			Status: doctorOK,
-			Detail: detail + "; no agent-recoverable blocked candidates found",
+			Detail: detail + "; no structured blocked-recovery condition matches found",
 		}
 	}
 	if len(candidates) > 0 {
@@ -182,7 +182,7 @@ func checkDoctorBlockedRecoveryLive(
 		Name:                      name,
 		Status:                    doctorWarn,
 		Detail:                    detail,
-		Hint:                      fmt.Sprintf("Detent automatically recovers quota-parked issues after provider capacity returns; authorized PR-maintenance candidates recover to %s.", targetState),
+		Hint:                      fmt.Sprintf("PR-condition matches are diagnostic only; runtime still requires the latest durable source-lane entry reason before recovery to %s. Detent separately recovers quota-parked issues after provider capacity returns.", targetState),
 		BlockedRecoveryCandidates: candidates,
 		BackendCapacity:           capacity,
 	}
@@ -335,7 +335,7 @@ func doctorBlockedRecoveryCandidateDiagnosticFromIssue(
 func doctorBlockedRecoveryCandidateSummaries(candidates []doctorBlockedRecoveryCandidateDiagnostic) string {
 	parts := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
-		summary := "pr_recoverable_blocked: " + doctorBlockedRecoveryIssueLabel(candidate)
+		summary := "pr_condition_match_pending_timeline_authorization: " + doctorBlockedRecoveryIssueLabel(candidate)
 		if candidate.PRNumber > 0 {
 			summary += fmt.Sprintf(" PR #%d", candidate.PRNumber)
 		}
