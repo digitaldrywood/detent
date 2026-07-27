@@ -374,6 +374,7 @@ type ProjectSmallMultiple struct {
 	Name                      string
 	URL                       string
 	Color                     string
+	Pool                      string
 	Paused                    bool
 	PauseReason               string
 	PauseIssue                string

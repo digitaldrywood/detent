@@ -362,7 +362,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		resourceWorkers.Wait()
 	}()
 	resourceWorkers.Go(func() {
-		publishSnapshots(runCtx, manager.Registry(), snapshotHub, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, defaultSnapshotInterval, time.Now, updateScheduler)
+		publishSnapshots(runCtx, manager.Registry(), globalDispatchGate, snapshotHub, snapshotSeq, cfg.Shutdown, runtimeStore, displayURL, defaultSnapshotInterval, time.Now, updateScheduler)
 	})
 	go republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger) // #nosec G118 -- runCtx is the service-lifetime context canceled during shutdown.
 	resourceWorkers.Go(func() {

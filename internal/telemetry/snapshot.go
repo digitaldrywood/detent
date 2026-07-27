@@ -17,6 +17,7 @@ type Snapshot struct {
 	Project                 Project             `json:"project"`
 	Instance                Instance            `json:"instance"`
 	Projects                []ProjectSnapshot   `json:"projects,omitempty"`
+	AgentPools              []AgentPool         `json:"agent_pools,omitempty"`
 	DashboardURL            string              `json:"dashboard_url,omitempty"`
 	Auth                    AuthHealth          `json:"auth,omitzero"`
 	Shutdown                Shutdown            `json:"shutdown"`
@@ -105,6 +106,15 @@ type Project struct {
 	DisplayName string `json:"display_name,omitempty"`
 	URL         string `json:"url,omitempty"`
 	Color       string `json:"color,omitempty"`
+	Pool        string `json:"pool,omitempty"`
+}
+
+type AgentPool struct {
+	Name       string `json:"name"`
+	Used       int    `json:"used"`
+	Capacity   int    `json:"capacity"`
+	Draining   bool   `json:"draining,omitempty"`
+	Generation uint64 `json:"generation,omitempty"`
 }
 
 type Instance struct {

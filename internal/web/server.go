@@ -836,6 +836,7 @@ func (s *Server) projectDashboardDataFromProjects(
 		DisplayName: project.Name,
 		URL:         project.URL,
 		Color:       project.Color,
+		Pool:        project.Pool,
 	})
 	scopedSnapshot = applyProjectBudgetSnapshot(scopedSnapshot, project)
 	if target, _, _ := s.kanbanActionTarget(project.ID); target.key != "" {

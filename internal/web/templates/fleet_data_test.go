@@ -96,6 +96,123 @@ func TestFleetAgentRows(t *testing.T) {
 	}
 }
 
+func TestFleetAgentPools(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		projectID       string
+		projectPool     string
+		pools           []telemetry.AgentPool
+		wantCount       string
+		wantPools       int
+		wantPool        string
+		wantSaturated   bool
+		wantStrip       bool
+		wantStatusLabel string
+	}{
+		{
+			name:      "default fleet stays inline",
+			pools:     []telemetry.AgentPool{{Name: "default", Used: 1, Capacity: 5, Generation: 1}},
+			wantCount: "1 running · 1 / 5 capacity",
+			wantPools: 1,
+		},
+		{
+			name:            "saturated default fleet becomes visible",
+			pools:           []telemetry.AgentPool{{Name: "default", Used: 5, Capacity: 5, Generation: 1}},
+			wantCount:       "1 running · 5 / 5 capacity",
+			wantPools:       1,
+			wantPool:        "default",
+			wantSaturated:   true,
+			wantStrip:       true,
+			wantStatusLabel: "At capacity",
+		},
+		{
+			name:            "draining takes precedence over saturation",
+			pools:           []telemetry.AgentPool{{Name: "retired", Used: 1, Capacity: 1, Draining: true, Generation: 4}},
+			wantCount:       "1 running",
+			wantPools:       1,
+			wantPool:        "retired",
+			wantSaturated:   true,
+			wantStrip:       true,
+			wantStatusLabel: "Draining",
+		},
+		{
+			name: "multi-pool fleet shows saturated pool",
+			pools: []telemetry.AgentPool{
+				{Name: "video", Used: 2, Capacity: 10, Generation: 3},
+				{Name: "code", Used: 5, Capacity: 5, Generation: 2},
+				{Name: "default", Capacity: 2, Generation: 1},
+			},
+			wantCount:       "1 running",
+			wantPools:       3,
+			wantPool:        "code",
+			wantSaturated:   true,
+			wantStrip:       true,
+			wantStatusLabel: "At capacity",
+		},
+		{
+			name:          "project sees assigned custom pool",
+			projectID:     "detent",
+			projectPool:   "video",
+			pools:         []telemetry.AgentPool{{Name: "code", Used: 5, Capacity: 5}, {Name: "video", Used: 2, Capacity: 10}},
+			wantCount:     "1 running",
+			wantPools:     1,
+			wantPool:      "video",
+			wantStrip:     true,
+			wantSaturated: false,
+		},
+		{
+			name:        "project identifies implicit default pool",
+			projectID:   "detent",
+			pools:       []telemetry.AgentPool{{Name: "default", Used: 1, Capacity: 5}},
+			wantCount:   "1 running · default 1 / 5",
+			wantPools:   1,
+			wantPool:    "default",
+			wantStrip:   false,
+			projectPool: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			data := fleetTestData()
+			data.ProjectID = tt.projectID
+			data.Snapshot.Project.Pool = tt.projectPool
+			data.Snapshot.AgentPools = tt.pools
+			view := fleetViewFromDashboard(data)
+			if view.AgentCount != tt.wantCount {
+				t.Fatalf("AgentCount = %q, want %q", view.AgentCount, tt.wantCount)
+			}
+			if len(view.AgentPools) != tt.wantPools {
+				t.Fatalf("AgentPools = %#v, want %d entries", view.AgentPools, tt.wantPools)
+			}
+			if tt.wantPool != "" {
+				var found *fleetAgentPool
+				for i := range view.AgentPools {
+					if view.AgentPools[i].Name == tt.wantPool {
+						found = &view.AgentPools[i]
+					}
+				}
+				if found == nil || found.Saturated != tt.wantSaturated {
+					t.Fatalf("pool %q = %#v, want saturated=%t", tt.wantPool, found, tt.wantSaturated)
+				}
+			}
+			html := renderBoardComponent(t, AgentActivityPanel(view.Agents, view.AgentCount, view.AgentPools))
+			if got := strings.Contains(html, `id="agent-pool-capacity"`); got != tt.wantStrip {
+				t.Fatalf("capacity strip present = %t, want %t:\n%s", got, tt.wantStrip, html)
+			}
+			if tt.wantStatusLabel != "" && !strings.Contains(html, tt.wantStatusLabel) {
+				t.Fatalf("capacity strip missing %q:\n%s", tt.wantStatusLabel, html)
+			}
+			if tt.wantStatusLabel == "Draining" && strings.Contains(html, "At capacity") {
+				t.Fatalf("draining pool must not render active saturation status:\n%s", html)
+			}
+		})
+	}
+}
+
 func TestFleetAgentRowClass(t *testing.T) {
 	tests := []struct {
 		name       string

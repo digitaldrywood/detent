@@ -24,6 +24,11 @@ func TestSnapshotJSONShape(t *testing.T) {
 		Project: telemetry.Project{
 			DisplayName: "Detent",
 			URL:         "https://github.com/digitaldrywood/detent",
+			Pool:        "code",
+		},
+		AgentPools: []telemetry.AgentPool{
+			{Name: "code", Used: 5, Capacity: 5, Generation: 2},
+			{Name: "video", Used: 2, Capacity: 10, Generation: 3},
 		},
 		Instance: telemetry.Instance{
 			Name:                    "release-captain",
@@ -203,6 +208,7 @@ func TestSnapshotJSONShape(t *testing.T) {
 		"seq",
 		"generated_at",
 		"project",
+		"agent_pools",
 		"instance",
 		"dashboard_url",
 		"auth",
@@ -226,8 +232,16 @@ func TestSnapshotJSONShape(t *testing.T) {
 	}
 
 	project := got["project"].(map[string]any)
-	if project["display_name"] != "Detent" || project["url"] != "https://github.com/digitaldrywood/detent" {
+	if project["display_name"] != "Detent" || project["url"] != "https://github.com/digitaldrywood/detent" || project["pool"] != "code" {
 		t.Fatalf("project = %#v", project)
+	}
+	pools := got["agent_pools"].([]any)
+	if len(pools) != 2 {
+		t.Fatalf("agent_pools len = %d, want 2", len(pools))
+	}
+	codePool := pools[0].(map[string]any)
+	if codePool["name"] != "code" || codePool["used"] != float64(5) || codePool["capacity"] != float64(5) || codePool["generation"] != float64(2) {
+		t.Fatalf("agent_pools[0] = %#v", codePool)
 	}
 	instance := got["instance"].(map[string]any)
 	if instance["name"] != "release-captain" || instance["github_login"] != "detent-bot" {

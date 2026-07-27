@@ -46,6 +46,10 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot = demoDrainingSnapshot()
 	case "degraded":
 		snapshot = demoDegradedSnapshot()
+	case "agent-pools":
+		snapshot = demoAgentPoolsSnapshot()
+	case "agent-pool-default":
+		snapshot = demoHealthySnapshot()
 	case "pending-update":
 		snapshot.Update = telemetry.Update{
 			Enabled:            true,
@@ -120,6 +124,7 @@ func demoHealthySnapshot() telemetry.Snapshot {
 		Project:      telemetry.Project{DisplayName: "multiple projects"},
 		Instance:     telemetry.Instance{Name: "detent-demo-screenshots", GitHubLogin: "detent-bot", AuthorizationScope: "repo, read:project", AuthorizationConfigured: true},
 		Projects:     demoProjectSnapshots(ProjectsForVariant("healthy")),
+		AgentPools:   []telemetry.AgentPool{{Name: "default", Used: 3, Capacity: 6, Generation: 1}},
 		DashboardURL: "http://localhost:0",
 		Shutdown:     telemetry.Shutdown{Status: "running"},
 		Refresh:      telemetry.Refresh{PollIntervalSeconds: 60, LastRefreshAt: &lastRefresh, NextRefreshAt: &nextRefresh},
@@ -261,6 +266,17 @@ func demoHealthySnapshot() telemetry.Snapshot {
 	for i := range snapshot.Running {
 		snapshot.Running[i].LeaseRenewedAt = &leaseRenewed
 		snapshot.Running[i].LeaseExpiresAt = &leaseExpires
+	}
+	return snapshot
+}
+
+func demoAgentPoolsSnapshot() telemetry.Snapshot {
+	snapshot := demoHealthySnapshot()
+	snapshot.Projects = demoProjectSnapshots(ProjectsForVariant("agent-pools"))
+	snapshot.AgentPools = []telemetry.AgentPool{
+		{Name: "default", Capacity: 2, Generation: 1},
+		{Name: "code", Used: 5, Capacity: 5, Generation: 2},
+		{Name: "video", Used: 2, Capacity: 10, Generation: 3},
 	}
 	return snapshot
 }
@@ -808,6 +824,15 @@ func ProjectsForVariant(variant string) []templates.ProjectSmallMultiple {
 		"agent-lab":          {Load: 1, Todo: 1},
 	}
 	for i := range projects {
+		projects[i].Pool = "default"
+		if variant == "agent-pools" {
+			switch projects[i].ID {
+			case demoPrimaryProjectID, "docs-site", "infra-platform":
+				projects[i].Pool = "code"
+			case "billing-api", "mobile-client":
+				projects[i].Pool = "video"
+			}
+		}
 		workload := workloads[projects[i].ID]
 		projects[i].BoardLoad = workload.Load
 		projects[i].BoardTodo = workload.Todo
@@ -923,7 +948,7 @@ func demoProjectSnapshots(projects []templates.ProjectSmallMultiple) []telemetry
 	out := make([]telemetry.ProjectSnapshot, 0, len(projects))
 	for _, project := range projects {
 		out = append(out, telemetry.ProjectSnapshot{
-			Project: telemetry.Project{ID: project.ID, DisplayName: project.Name, URL: project.URL, Color: project.Color},
+			Project: telemetry.Project{ID: project.ID, DisplayName: project.Name, URL: project.URL, Color: project.Color, Pool: project.Pool},
 			Counts:  telemetry.Counts{Running: project.Running, Queue: project.QueueCount, Blocked: project.Blocked, Completed: project.Completed},
 			Tokens:  telemetry.Tokens{Total: project.TotalTokens},
 			Throughput: telemetry.TokenThroughput{

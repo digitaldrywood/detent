@@ -360,6 +360,11 @@
   -webkit-line-clamp: 1;
 }
 
+[data-density="compact"] [data-pool-capacity-label],
+[data-density="compact"] [data-pool-capacity-status] {
+  display: none;
+}
+
 [data-density="comfy"] [data-board-card-content="comfy"] {
   display: grid;
 }

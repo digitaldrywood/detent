@@ -112,7 +112,7 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 		if !ok {
 			return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
 		}
-		scoped := projectScopedSnapshotForProject(snapshot, telemetry.Project{ID: project.ID, DisplayName: project.Name, URL: project.URL})
+		scoped := projectScopedSnapshotForProject(snapshot, telemetry.Project{ID: project.ID, DisplayName: project.Name, URL: project.URL, Pool: project.Pool})
 		return c.JSON(http.StatusOK, stateResponse(scoped, generatedAt(scoped, demoBaseTime), s.instanceName()))
 	}
 	now := apiNow()
@@ -130,6 +130,7 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 		ID:          project.ID,
 		DisplayName: project.Name,
 		URL:         project.URL,
+		Pool:        project.Pool,
 	})
 	scopedSnapshot.WorkflowMetrics = s.snapshotWorkflowMetrics(c.Request().Context(), scopedSnapshot)
 	scopedSnapshot = s.withManualRefresh(scopedSnapshot)

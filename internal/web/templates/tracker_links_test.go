@@ -41,7 +41,7 @@ func TestKnownTrackerReferencesRenderLinks(t *testing.T) {
 		},
 		{
 			name:      "fleet agent",
-			component: AgentActivityPanel([]fleetAgentRow{{ID: "agent-1132", Repo: "digitaldrywood/detent", Number: "#1132", URL: issueURL}}, "1 running"),
+			component: AgentActivityPanel([]fleetAgentRow{{ID: "agent-1132", Repo: "digitaldrywood/detent", Number: "#1132", URL: issueURL}}, "1 running", nil),
 			want:      []string{`href="` + issueURL + `"`, ">#1132</a>"},
 		},
 		{
