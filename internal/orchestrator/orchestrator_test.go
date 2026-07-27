@@ -2069,7 +2069,7 @@ func TestRunFetchesCandidatesBeforeObservedStates(t *testing.T) {
 	t.Parallel()
 
 	tracker := newParallelFetchConnector()
-	orch := newTestOrchestrator(t, tracker, &staticRunner{})
+	orch := newTestOrchestratorWithPollInterval(t, tracker, &staticRunner{}, time.Hour)
 	stop := runOrchestrator(t, orch)
 	defer stop()
 
@@ -2438,8 +2438,19 @@ func TestFakeRunnerCompletes(t *testing.T) {
 func newTestOrchestrator(t *testing.T, tracker connector.Connector, runner orchestrator.Runner) *orchestrator.Orchestrator {
 	t.Helper()
 
+	return newTestOrchestratorWithPollInterval(t, tracker, runner, 5*time.Millisecond)
+}
+
+func newTestOrchestratorWithPollInterval(
+	t *testing.T,
+	tracker connector.Connector,
+	runner orchestrator.Runner,
+	pollInterval time.Duration,
+) *orchestrator.Orchestrator {
+	t.Helper()
+
 	orch, err := orchestrator.New(orchestrator.Config{
-		PollInterval:           5 * time.Millisecond,
+		PollInterval:           pollInterval,
 		MaxConcurrentAgents:    1,
 		MaxRetryBackoff:        time.Hour,
 		FailureRetryBaseDelay:  time.Hour,
