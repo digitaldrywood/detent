@@ -70,6 +70,7 @@ var _ connector.IssueParentResolver = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
 var _ connector.ProjectRemover = (*Connector)(nil)
 var _ connector.PullRequestCommenter = (*Connector)(nil)
+var _ connector.PullRequestDiffFingerprintReader = (*Connector)(nil)
 var _ connector.PullRequestHydrator = (*Connector)(nil)
 var _ connector.PullRequestMerger = (*Connector)(nil)
 
@@ -338,6 +339,17 @@ func (c *Connector) HydratePullRequest(_ context.Context, issue connector.Issue)
 		}
 	}
 	return cloneIssue(issue), nil
+}
+
+func (c *Connector) PullRequestDiffFingerprint(ctx context.Context, issue connector.Issue) (string, error) {
+	hydrated, err := c.HydratePullRequest(ctx, issue)
+	if err != nil {
+		return "", err
+	}
+	if hydrated.PullRequest == nil {
+		return "", connector.ErrNotImplemented
+	}
+	return strings.TrimSpace(hydrated.PullRequest.DiffFingerprint), nil
 }
 
 func (c *Connector) MergePullRequest(_ context.Context, repository string, number int, headSHA string, _ string) error {

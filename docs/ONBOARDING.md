@@ -2200,7 +2200,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    policy, and dependency policy selected by the human. Verify:
 
    ```sh
-   rg -n 'max_concurrent_agents: <max>|Merging: 1|dispatch_priority_by_label:|auto_promote:|dependency_auto_unblock:|enabled: <true|false>|quiet_seconds: <seconds>|optout_label: <label>|allowed_issue_labels:|gate_wait_state:|gate_wait_timeout_seconds:|rework_limit:|source_states:|target_state:|readiness:' \
+   rg -n 'max_concurrent_agents: <max>|Merging: 1|dispatch_priority_by_label:|auto_promote:|dependency_auto_unblock:|blocked_recovery:|enabled: <true|false>|quiet_seconds: <seconds>|optout_label: <label>|allowed_issue_labels:|gate_wait_state:|gate_wait_timeout_seconds:|rework_limit:|source_states:|target_state:|reason_codes:|readiness:' \
      <source-root>/detent.yaml
    ```
 
@@ -2297,6 +2297,28 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    with explicit machine-readable dependency references. Without this enabled,
    `Blocked` is an observed/display state and dependency completion will not
    move issues back to `Todo`.
+
+   Blocked recovery default:
+
+   ```yaml
+   tracker:
+     blocked_recovery:
+       enabled: false
+       source_states:
+         - Blocked
+       target_state: Rework
+       reason_codes:
+         - merge_conflict
+         - stale_base
+         - missing_current_head_ci
+   ```
+
+   Enable it only when structured Blocked-entry reason codes should authorize
+   PR repair. An intentional recovery park records `reason_code:
+   merge_conflict`, `stale_base`, or `missing_current_head_ci` in its blocked
+   `detent-status` block. A matching current PR condition and a new diff/base
+   fingerprint are also required; issue descriptions and manual parking events
+   never authorize recovery.
 
 8. **Write the prompt body.** Keep the `## Codex Workpad` instruction, include
    the `detent-status` schema examples, include the native `blocked_by`

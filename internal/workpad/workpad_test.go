@@ -10,17 +10,18 @@ func TestSignalFromComment(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		body          string
-		wantOK        bool
-		wantInvalid   string
-		wantStatus    string
-		wantReason    string
-		wantBlockers  []string
-		wantHuman     string
-		wantComment   string
-		wantFields    map[string]string
-		wantLastBlock bool
+		name           string
+		body           string
+		wantOK         bool
+		wantInvalid    string
+		wantStatus     string
+		wantReasonCode string
+		wantReason     string
+		wantBlockers   []string
+		wantHuman      string
+		wantComment    string
+		wantFields     map[string]string
+		wantLastBlock  bool
 	}{
 		{
 			name:         "valid block",
@@ -32,12 +33,27 @@ func TestSignalFromComment(t *testing.T) {
 			wantComment:  "https://github.test/comment/1",
 		},
 		{
+			name:           "valid blocked recovery reason",
+			body:           "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge-conflict\nblockers: []\nhuman_action: null\n```",
+			wantOK:         true,
+			wantStatus:     StatusBlocked,
+			wantReasonCode: "merge_conflict",
+			wantReason:     "merge_conflict",
+			wantComment:    "https://github.test/comment/1",
+		},
+		{
 			name:        "valid gate field",
 			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nfields:\n  render_status: pending_review\nblockers: []\nhuman_action: null\n```",
 			wantOK:      true,
 			wantStatus:  StatusComplete,
 			wantFields:  map[string]string{"render_status": "pending_review"},
 			wantComment: "https://github.test/comment/1",
+		},
+		{
+			name:        "reason code requires blocked status",
+			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```",
+			wantOK:      true,
+			wantInvalid: "reason_code is only valid when status is blocked",
 		},
 		{
 			name:        "malformed yaml",
@@ -121,6 +137,9 @@ func TestSignalFromComment(t *testing.T) {
 			}
 			if got.Status != tt.wantStatus {
 				t.Fatalf("Status = %q, want %q", got.Status, tt.wantStatus)
+			}
+			if got.ReasonCode != tt.wantReasonCode {
+				t.Fatalf("ReasonCode = %q, want %q", got.ReasonCode, tt.wantReasonCode)
 			}
 			if got.HumanAction != tt.wantHuman {
 				t.Fatalf("HumanAction = %q, want %q", got.HumanAction, tt.wantHuman)

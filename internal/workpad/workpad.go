@@ -30,6 +30,7 @@ type Signal struct {
 	Source      string            `json:"source,omitempty" yaml:"source,omitempty"`
 	CommentURL  string            `json:"comment_url,omitempty" yaml:"comment_url,omitempty"`
 	Status      string            `json:"status,omitempty" yaml:"status,omitempty"`
+	ReasonCode  string            `json:"reason_code,omitempty" yaml:"reason_code,omitempty"`
 	Blockers    []Blocker         `json:"blockers,omitempty" yaml:"blockers,omitempty"`
 	HumanAction string            `json:"human_action,omitempty" yaml:"human_action,omitempty"`
 	Fields      map[string]string `json:"fields,omitempty" yaml:"fields,omitempty"`
@@ -51,6 +52,7 @@ type Invalid struct {
 type statusBlockYAML struct {
 	Schema      int               `yaml:"schema"`
 	Status      string            `yaml:"status"`
+	ReasonCode  string            `yaml:"reason_code"`
 	Blockers    []blockerYAML     `yaml:"blockers"`
 	HumanAction *string           `yaml:"human_action"`
 	Fields      map[string]string `yaml:"fields"`
@@ -149,6 +151,7 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	if raw.HumanAction != nil {
 		humanAction = strings.TrimSpace(*raw.HumanAction)
 	}
+	reasonCode := normalizeReasonCode(raw.ReasonCode)
 	blockers := make([]Blocker, 0, len(raw.Blockers))
 	for index, blocker := range raw.Blockers {
 		ref := strings.TrimSpace(blocker.Ref)
@@ -163,8 +166,11 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 			Reason:     strings.TrimSpace(blocker.Reason),
 		})
 	}
-	if raw.Status == StatusBlocked && len(blockers) == 0 && humanAction == "" {
-		problems = append(problems, "status blocked requires at least one blocker ref or human_action")
+	if raw.Status == StatusBlocked && len(blockers) == 0 && humanAction == "" && reasonCode == "" {
+		problems = append(problems, "status blocked requires at least one blocker ref, human_action, or reason_code")
+	}
+	if raw.Status != StatusBlocked && reasonCode != "" {
+		problems = append(problems, "reason_code is only valid when status is blocked")
 	}
 	fields := make(map[string]string, len(raw.Fields))
 	fieldNames := make([]string, 0, len(raw.Fields))
@@ -195,6 +201,7 @@ func ParseStatusBlock(content string, repo string) (*Signal, error) {
 	return &Signal{
 		Source:      SourceStructured,
 		Status:      raw.Status,
+		ReasonCode:  reasonCode,
 		Blockers:    blockers,
 		HumanAction: humanAction,
 		Fields:      fields,
@@ -222,6 +229,9 @@ func Reason(signal *Signal) string {
 		return ""
 	}
 	parts := make([]string, 0, len(signal.Blockers)+1)
+	if reasonCode := normalizeReasonCode(signal.ReasonCode); reasonCode != "" {
+		parts = append(parts, reasonCode)
+	}
 	if humanAction := strings.TrimSpace(signal.HumanAction); humanAction != "" {
 		parts = append(parts, humanAction)
 	}
@@ -240,6 +250,12 @@ func Reason(signal *Signal) string {
 		parts = append(parts, ref)
 	}
 	return strings.Join(parts, "; ")
+}
+
+func normalizeReasonCode(reasonCode string) string {
+	reasonCode = strings.ToLower(strings.TrimSpace(reasonCode))
+	reasonCode = strings.ReplaceAll(reasonCode, "-", "_")
+	return strings.Join(strings.Fields(reasonCode), "_")
 }
 
 func CloneSignal(signal *Signal) *Signal {

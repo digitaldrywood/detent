@@ -2,6 +2,8 @@ package github
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -27,6 +29,13 @@ type issuePullRequestCandidate struct {
 type pullRequestKey struct {
 	Repo   pullRequestRepo
 	Number int
+}
+
+type pullRequestDiffFingerprintCacheKey struct {
+	Repository string
+	Number     int
+	HeadSHA    string
+	BaseSHA    string
 }
 
 type pullRequestRepo struct {
@@ -322,6 +331,80 @@ func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issu
 	}
 	attachPullRequestToIssue(&issue, repo, pullRequest)
 	return issue, nil
+}
+
+func (c *Connector) PullRequestDiffFingerprint(ctx context.Context, issue connector.Issue) (string, error) {
+	repo, number, ok := hydratedPullRequestRef(issue)
+	if !ok || issue.PullRequest == nil {
+		return "", errors.New("pull request diff fingerprint requires a linked pull request")
+	}
+	key := pullRequestDiffFingerprintCacheKey{
+		Repository: pullRequestRepoName(repo),
+		Number:     number,
+		HeadSHA:    strings.TrimSpace(issue.PullRequest.HeadSHA),
+		BaseSHA:    strings.TrimSpace(issue.PullRequest.BaseSHA),
+	}
+	if key.Repository == "" || key.Number <= 0 || key.HeadSHA == "" || key.BaseSHA == "" {
+		return "", errors.New("pull request diff fingerprint requires current head and base OIDs")
+	}
+	if fingerprint := c.cachedPullRequestDiffFingerprint(key); fingerprint != "" {
+		return fingerprint, nil
+	}
+	files, err := fetchRESTList[restPullRequestFile](ctx, c.client, restPullRequestFilesPath(repo, number))
+	if err != nil {
+		return "", fmt.Errorf("fetch github pull request files: %w", err)
+	}
+	fingerprint := pullRequestDiffFingerprint(files)
+	c.cachePullRequestDiffFingerprint(key, fingerprint)
+	return fingerprint, nil
+}
+
+func pullRequestDiffFingerprint(files []restPullRequestFile) string {
+	files = append([]restPullRequestFile(nil), files...)
+	sort.Slice(files, func(i, j int) bool {
+		left := files[i]
+		right := files[j]
+		if left.Filename != right.Filename {
+			return left.Filename < right.Filename
+		}
+		if left.PreviousFilename != right.PreviousFilename {
+			return left.PreviousFilename < right.PreviousFilename
+		}
+		if left.Status != right.Status {
+			return left.Status < right.Status
+		}
+		return left.SHA < right.SHA
+	})
+	hash := sha256.New()
+	for _, file := range files {
+		for _, value := range []string{file.Filename, file.PreviousFilename, file.Status, file.SHA} {
+			_, _ = hash.Write([]byte(value))
+			_, _ = hash.Write([]byte{0})
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func (c *Connector) cachedPullRequestDiffFingerprint(key pullRequestDiffFingerprintCacheKey) string {
+	if c == nil {
+		return ""
+	}
+	c.mu.RLock()
+	fingerprint := c.prDiffFingerprints[key]
+	c.mu.RUnlock()
+	return fingerprint
+}
+
+func (c *Connector) cachePullRequestDiffFingerprint(key pullRequestDiffFingerprintCacheKey, fingerprint string) {
+	if c == nil || strings.TrimSpace(fingerprint) == "" {
+		return
+	}
+	c.mu.Lock()
+	if c.prDiffFingerprints == nil {
+		c.prDiffFingerprints = map[pullRequestDiffFingerprintCacheKey]string{}
+	}
+	c.prDiffFingerprints[key] = strings.TrimSpace(fingerprint)
+	c.mu.Unlock()
 }
 
 func (c *Connector) MergePullRequest(ctx context.Context, repository string, number int, headSHA string, mergeMethod string) error {

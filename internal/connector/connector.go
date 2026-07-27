@@ -163,6 +163,10 @@ type PullRequestHydrator interface {
 	HydratePullRequest(context.Context, Issue) (Issue, error)
 }
 
+type PullRequestDiffFingerprintReader interface {
+	PullRequestDiffFingerprint(context.Context, Issue) (string, error)
+}
+
 type PullRequestCheckRerunner interface {
 	RerunPullRequestChecks(context.Context, Issue, []PullRequestCheck) error
 }

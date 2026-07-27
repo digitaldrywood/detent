@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestRecoverBlockedIssuesSkipsPersistedStickyBlockedIssue(t *testing.T) {
@@ -75,30 +76,52 @@ func TestRecoverBlockedIssuesUsesPersistedSignatureGuard(t *testing.T) {
 	}{
 		{
 			name:             "first recovery writes signature",
-			issue:            blockedRecoverySignatureIssue("issue-first-recovery", "same-head"),
+			issue:            blockedRecoverySignatureIssue("issue-first-recovery", "same-head", "same-diff", "same-base", "behind"),
 			wantUpdates:      1,
 			wantComments:     1,
 			wantTransitioned: true,
 		},
 		{
 			name:           "same signature skips and escalates",
-			issue:          blockedRecoverySignatureIssue("issue-same-signature", "same-head"),
-			persistedIssue: blockedRecoverySignatureIssue("issue-same-signature", "same-head"),
+			issue:          blockedRecoverySignatureIssue("issue-same-signature", "same-head", "same-diff", "same-base", "behind"),
+			persistedIssue: blockedRecoverySignatureIssue("issue-same-signature", "same-head", "same-diff", "same-base", "behind"),
 			wantComments:   1,
 			wantExhausted:  true,
 		},
 		{
-			name:             "changed head sha re-arms recovery",
-			issue:            blockedRecoverySignatureIssue("issue-head-reset", "new-head"),
-			persistedIssue:   blockedRecoverySignatureIssue("issue-head-reset", "old-head"),
+			name:           "changed head sha does not re-arm recovery",
+			issue:          blockedRecoverySignatureIssue("issue-head-stable", "new-head", "same-diff", "same-base", "behind"),
+			persistedIssue: blockedRecoverySignatureIssue("issue-head-stable", "old-head", "same-diff", "same-base", "behind"),
+			wantComments:   1,
+			wantExhausted:  true,
+		},
+		{
+			name:             "changed diff fingerprint re-arms recovery",
+			issue:            blockedRecoverySignatureIssue("issue-diff-reset", "new-head", "new-diff", "same-base", "behind"),
+			persistedIssue:   blockedRecoverySignatureIssue("issue-diff-reset", "old-head", "old-diff", "same-base", "behind"),
 			wantUpdates:      1,
 			wantComments:     1,
 			wantTransitioned: true,
 		},
 		{
+			name:             "changed base oid re-arms recovery",
+			issue:            blockedRecoverySignatureIssue("issue-base-reset", "same-head", "same-diff", "new-base", "behind"),
+			persistedIssue:   blockedRecoverySignatureIssue("issue-base-reset", "same-head", "same-diff", "old-base", "behind"),
+			wantUpdates:      1,
+			wantComments:     1,
+			wantTransitioned: true,
+		},
+		{
+			name:           "changed recovery condition does not re-arm recovery",
+			issue:          blockedRecoverySignatureIssue("issue-kind-stable", "same-head", "same-diff", "same-base", "behind"),
+			persistedIssue: blockedRecoverySignatureIssue("issue-kind-stable", "same-head", "same-diff", "same-base", "dirty"),
+			wantComments:   1,
+			wantExhausted:  true,
+		},
+		{
 			name:           "exhausted comment is deduped by signature",
-			issue:          blockedRecoverySignatureIssue("issue-exhausted-dedupe", "same-head"),
-			persistedIssue: blockedRecoverySignatureIssue("issue-exhausted-dedupe", "same-head"),
+			issue:          blockedRecoverySignatureIssue("issue-exhausted-dedupe", "same-head", "same-diff", "same-base", "behind"),
+			persistedIssue: blockedRecoverySignatureIssue("issue-exhausted-dedupe", "same-head", "same-diff", "same-base", "behind"),
 			runTwice:       true,
 			wantComments:   1,
 			wantExhausted:  true,
@@ -118,6 +141,7 @@ func TestRecoverBlockedIssuesUsesPersistedSignatureGuard(t *testing.T) {
 			}
 			state := newState(orch.cfg)
 			now := time.Date(2026, 7, 8, 15, 1, 0, 0, time.UTC)
+			recordBlockedRecoveryReasonEvent(t, metrics, tt.issue, now.Add(-time.Minute), blockedRecoveryReasonCodeForIssue(tt.issue))
 
 			transitioned := orch.recoverBlockedIssues(context.Background(), &state, []connector.Issue{tt.issue}, now)
 			if tt.runTwice {
@@ -141,10 +165,204 @@ func TestRecoverBlockedIssuesUsesPersistedSignatureGuard(t *testing.T) {
 				if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[0].body, "Blocked recovery already moved this issue") {
 					t.Fatalf("comments = %#v, want exhausted escalation comment", tracker.comments)
 				}
-				assertWorkflowActionSignature(t, metrics, tt.issue, workflowActionBlockedRecoveryExhausted, blockedRecoverySignature(tt.issue, EvaluateBlockedRecovery(tt.issue)))
+				assertWorkflowActionSignature(t, metrics, tt.issue, workflowActionBlockedRecoveryExhausted, mustBlockedRecoverySignature(t, tt.issue))
 			}
 		})
 	}
+}
+
+func TestRecoverBlockedIssuesRequiresConfiguredBlockedReasonAndCurrentCondition(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		reasonCode   string
+		mutateIssue  func(*connector.Issue)
+		mutateConfig func(*BlockedRecoveryConfig)
+		wantTarget   string
+	}{
+		{
+			name:       "merge conflict reason still conflicting",
+			reasonCode: blockedRecoveryReasonMergeConflict,
+			wantTarget: autoPromoteReworkState,
+		},
+		{
+			name:       "stale base reason still behind",
+			reasonCode: blockedRecoveryReasonStaleBase,
+			mutateIssue: func(issue *connector.Issue) {
+				issue.PullRequest.MergeableState = "behind"
+			},
+			wantTarget: autoPromoteReworkState,
+		},
+		{
+			name:       "missing ci reason still missing current head ci",
+			reasonCode: blockedRecoveryReasonMissingCurrentHeadCI,
+			mutateIssue: func(issue *connector.Issue) {
+				issue.PullRequest.MergeableState = "clean"
+				issue.PullRequest.CIStatus = ""
+				issue.PullRequest.CheckRunCount = 0
+				issue.PullRequest.StatusContextCount = 0
+			},
+			wantTarget: autoPromoteReworkState,
+		},
+		{
+			name:       "manual parking reason cannot authorize conflict repair",
+			reasonCode: "tracker_state_observed",
+		},
+		{
+			name:       "issue description cannot authorize conflict repair",
+			reasonCode: "tracker_state_observed",
+			mutateIssue: func(issue *connector.Issue) {
+				issue.Description = "This issue explains how to rebase after a merge conflict."
+			},
+		},
+		{
+			name:       "reason must match current condition",
+			reasonCode: blockedRecoveryReasonStaleBase,
+		},
+		{
+			name:       "cleared condition stays blocked",
+			reasonCode: blockedRecoveryReasonMergeConflict,
+			mutateIssue: func(issue *connector.Issue) {
+				issue.PullRequest.MergeableState = "clean"
+				issue.PullRequest.CIStatus = "success"
+				issue.PullRequest.CheckRunCount = 1
+			},
+		},
+		{
+			name:       "disabled recovery stays blocked",
+			reasonCode: blockedRecoveryReasonMergeConflict,
+			mutateConfig: func(cfg *BlockedRecoveryConfig) {
+				cfg.Enabled = false
+			},
+		},
+		{
+			name:       "reason outside configured allowlist stays blocked",
+			reasonCode: blockedRecoveryReasonMergeConflict,
+			mutateConfig: func(cfg *BlockedRecoveryConfig) {
+				cfg.ReasonCodes = []string{blockedRecoveryReasonStaleBase}
+			},
+		},
+		{
+			name:       "missing diff fingerprint stays blocked",
+			reasonCode: blockedRecoveryReasonMergeConflict,
+			mutateIssue: func(issue *connector.Issue) {
+				issue.PullRequest.DiffFingerprint = ""
+			},
+		},
+		{
+			name:       "configured target state is used",
+			reasonCode: blockedRecoveryReasonMergeConflict,
+			mutateConfig: func(cfg *BlockedRecoveryConfig) {
+				cfg.TargetState = "Repair"
+			},
+			wantTarget: "Repair",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := blockedRecoverySignatureIssue("issue-"+strings.ReplaceAll(tt.name, " ", "-"), "head", "diff", "base", "dirty")
+			if tt.mutateIssue != nil {
+				tt.mutateIssue(&issue)
+			}
+			tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{issue}}
+			orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{})
+			if tt.mutateConfig != nil {
+				tt.mutateConfig(&orch.cfg.BlockedRecovery)
+			}
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			orch.workflowMetrics = metrics
+			now := time.Date(2026, 7, 8, 16, 0, 0, 0, time.UTC)
+			recordBlockedRecoveryReasonEvent(t, metrics, issue, now.Add(-time.Minute), tt.reasonCode)
+			state := newState(orch.cfg)
+
+			transitioned := orch.recoverBlockedIssues(context.Background(), &state, []connector.Issue{issue}, now)
+
+			if tt.wantTarget == "" {
+				if len(tracker.updates) != 0 || len(tracker.comments) != 0 {
+					t.Fatalf("updates = %#v, comments = %#v, want no recovery", tracker.updates, tracker.comments)
+				}
+				if _, ok := transitioned[issue.ID]; ok {
+					t.Fatalf("transitioned[%q] present, want no recovery", issue.ID)
+				}
+				return
+			}
+			if len(tracker.updates) != 1 || tracker.updates[0].state != tt.wantTarget {
+				t.Fatalf("updates = %#v, want target %q", tracker.updates, tt.wantTarget)
+			}
+			if _, ok := transitioned[issue.ID]; !ok {
+				t.Fatalf("transitioned[%q] missing", issue.ID)
+			}
+		})
+	}
+}
+
+func TestObservedStructuredBlockedRecoveryReasonAuthorizesRecovery(t *testing.T) {
+	t.Parallel()
+
+	after := blockedRecoverySignatureIssue("issue-structured-park", "head", "diff", "base", "dirty")
+	after.WorkpadSignal = &workpad.Signal{
+		Source:     workpad.SourceStructured,
+		Status:     workpad.StatusBlocked,
+		ReasonCode: blockedRecoveryReasonMergeConflict,
+	}
+	before := cloneIssue(after)
+	before.State = "In Progress"
+	tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{after}}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{})
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	orch.workflowMetrics = metrics
+	state := newState(orch.cfg)
+	now := time.Date(2026, 7, 8, 16, 30, 0, 0, time.UTC)
+
+	orch.commentObservedLaneTransition(context.Background(), before, after, now.Add(-time.Minute))
+	transitioned := orch.recoverBlockedIssues(context.Background(), &state, []connector.Issue{after}, now)
+
+	if len(tracker.updates) != 1 || tracker.updates[0].state != autoPromoteReworkState {
+		t.Fatalf("updates = %#v, want one Rework transition", tracker.updates)
+	}
+	if _, ok := transitioned[after.ID]; !ok {
+		t.Fatalf("transitioned[%q] missing", after.ID)
+	}
+	timeline, err := metrics.IssueWorkflowTimeline(context.Background(), store.IssueIdentity{IssueID: after.ID})
+	if err != nil {
+		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
+	}
+	reason, ok := latestEnteredLaneReason(timeline.Events, blockedStatusState)
+	if !ok || reason != blockedRecoveryReasonMergeConflict {
+		t.Fatalf("latest Blocked reason = %q, %v, want %q", reason, ok, blockedRecoveryReasonMergeConflict)
+	}
+}
+
+func TestBlockedRecoverySignatureUsesDiffFingerprintAndBaseOID(t *testing.T) {
+	t.Parallel()
+
+	issue := blockedRecoverySignatureIssue("issue-signature-shape", "agent-controlled-head", "stable-diff", "base-oid", "dirty")
+	got := mustBlockedRecoverySignature(t, issue)
+	want := "pr=418;fingerprint=stable-diff;base=base-oid"
+	if got != want {
+		t.Fatalf("blockedRecoverySignature() = %q, want %q", got, want)
+	}
+	for _, excluded := range []string{"kind=", "head="} {
+		if strings.Contains(got, excluded) {
+			t.Fatalf("blockedRecoverySignature() = %q, must not include %q", got, excluded)
+		}
+	}
+}
+
+func latestEnteredLaneReason(events []store.WorkflowPhaseEvent, lane string) (string, bool) {
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.PhaseType == store.WorkflowPhaseTypeLane &&
+			strings.EqualFold(event.PhaseName, lane) &&
+			strings.EqualFold(event.Status, "entered") {
+			return event.Reason, true
+		}
+	}
+	return "", false
 }
 
 func TestRecoverBlockedIssuesReworkBreakerGuards(t *testing.T) {
@@ -552,16 +770,24 @@ func boolInt(value bool) int {
 	return 0
 }
 
-func blockedRecoverySignatureIssue(id string, headSHA string) connector.Issue {
+func blockedRecoverySignatureIssue(
+	id string,
+	headSHA string,
+	diffFingerprint string,
+	baseSHA string,
+	mergeableState string,
+) connector.Issue {
 	issue := dependencyAutoUnblockIssue(id, "Blocked")
 	prNumber := 418
 	issue.PRNumber = &prNumber
 	issue.PullRequest = &connector.PullRequest{
-		Number:         prNumber,
-		State:          "OPEN",
-		URL:            "https://github.test/digitaldrywood/detent/pull/418",
-		MergeableState: "behind",
-		HeadSHA:        headSHA,
+		Number:          prNumber,
+		State:           "OPEN",
+		URL:             "https://github.test/digitaldrywood/detent/pull/418",
+		MergeableState:  mergeableState,
+		HeadSHA:         headSHA,
+		BaseSHA:         baseSHA,
+		DiffFingerprint: diffFingerprint,
 	}
 	return issue
 }
@@ -574,8 +800,7 @@ func recordBlockedRecoverySignatureEvent(
 ) {
 	t.Helper()
 
-	decision := EvaluateBlockedRecovery(issue)
-	signature := blockedRecoverySignature(issue, decision)
+	signature := mustBlockedRecoverySignature(t, issue)
 	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionBlockedRecovery, signature)
 	if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), store.WorkflowPhaseEvent{
 		ProjectID:    defaultWorkflowMetricsProjectID,
@@ -593,11 +818,52 @@ func recordBlockedRecoverySignatureEvent(
 	}
 }
 
+func recordBlockedRecoveryReasonEvent(
+	t *testing.T,
+	metrics *autoPromoteWorkflowMetricsRecorder,
+	issue connector.Issue,
+	at time.Time,
+	reasonCode string,
+) {
+	t.Helper()
+
+	if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), store.WorkflowPhaseEvent{
+		ProjectID:    defaultWorkflowMetricsProjectID,
+		IssueID:      issue.ID,
+		Identifier:   issue.Identifier,
+		IssueURL:     issue.URL,
+		PhaseType:    store.WorkflowPhaseTypeLane,
+		PhaseName:    issue.State,
+		Reason:       reasonCode,
+		Status:       "entered",
+		StartedAt:    at,
+		MetadataJSON: workflowLaneMetadataJSON(issue, workflowLaneMetadata{}),
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+}
+
+func blockedRecoveryReasonCodeForIssue(issue connector.Issue) string {
+	if issue.PullRequest != nil && autoPromoteMergeConflicts(issue.PullRequest.MergeableState) {
+		return blockedRecoveryReasonMergeConflict
+	}
+	return blockedRecoveryReasonStaleBase
+}
+
+func mustBlockedRecoverySignature(t *testing.T, issue connector.Issue) string {
+	t.Helper()
+
+	signature, ok := blockedRecoverySignature(issue)
+	if !ok {
+		t.Fatalf("blockedRecoverySignature() unavailable for %#v", issue.PullRequest)
+	}
+	return signature
+}
+
 func assertBlockedRecoverySignatureMetadata(t *testing.T, metrics *autoPromoteWorkflowMetricsRecorder, issue connector.Issue) {
 	t.Helper()
 
-	signature := blockedRecoverySignature(issue, EvaluateBlockedRecovery(issue))
-	assertWorkflowActionSignature(t, metrics, issue, workflowActionBlockedRecovery, signature)
+	assertWorkflowActionSignature(t, metrics, issue, workflowActionBlockedRecovery, mustBlockedRecoverySignature(t, issue))
 }
 
 func assertWorkflowActionSignature(

@@ -62,6 +62,13 @@ type doctorDependencyDiagnostic struct {
 
 func checkDoctorBlockedRecovery(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {
 	name := "Project " + id + " blocked recovery"
+	if !cfg.Tracker.BlockedRecovery.Enabled {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: "tracker.blocked_recovery.enabled=false",
+		}
+	}
 	if !doctorTrackerUsesGitHubReads(cfg.Tracker.Kind) {
 		return doctorCheck{
 			Name:   name,
@@ -107,18 +114,33 @@ func checkDoctorBlockedRecoveryLive(
 	cfg workflowconfig.Config,
 	now time.Time,
 ) doctorCheck {
+	recoveryConfig := orchestrator.BlockedRecoveryConfig{
+		Enabled:      cfg.Tracker.BlockedRecovery.Enabled,
+		SourceStates: append([]string(nil), cfg.Tracker.BlockedRecovery.SourceStates...),
+		TargetState:  cfg.Tracker.BlockedRecovery.TargetState,
+		ReasonCodes:  append([]string(nil), cfg.Tracker.BlockedRecovery.ReasonCodes...),
+	}
+	sourceStates := recoveryConfig.SourceStates
+	if len(sourceStates) == 0 {
+		sourceStates = []string{"Blocked"}
+	}
+	targetState := strings.TrimSpace(recoveryConfig.TargetState)
+	if targetState == "" {
+		targetState = "Rework"
+	}
+	statusStates := append(append([]string(nil), sourceStates...), targetState)
 	if verifier, ok := projectConnector.(doctorStatusOptionVerifier); ok {
-		if err := verifier.VerifyStatusOptions(ctx, []string{"Blocked", "Rework"}); err != nil {
+		if err := verifier.VerifyStatusOptions(ctx, statusStates); err != nil {
 			return doctorCheck{
 				Name:   name,
 				Status: doctorFail,
 				Detail: fmt.Sprintf("status option verification failed: %v", err),
-				Hint:   "Ensure Blocked and Rework resolve through tracker.state_map to existing GitHub Project Status options.",
+				Hint:   fmt.Sprintf("Ensure %s resolve through tracker.state_map to existing GitHub Project Status options.", strings.Join(statusStates, " and ")),
 			}
 		}
 	}
 
-	issues, err := fetchDoctorBlockedRecoveryIssues(ctx, projectConnector)
+	issues, err := fetchDoctorBlockedRecoveryIssues(ctx, projectConnector, sourceStates)
 	if err != nil {
 		return doctorCheck{
 			Name:   name,
@@ -130,7 +152,7 @@ func checkDoctorBlockedRecoveryLive(
 
 	candidates := []doctorBlockedRecoveryCandidateDiagnostic{}
 	for _, issue := range issues {
-		decision := orchestrator.EvaluateBlockedRecovery(issue)
+		decision := orchestrator.EvaluateBlockedRecoveryWithConfig(issue, recoveryConfig)
 		if decision.Action != orchestrator.BlockedRecoveryActionRework {
 			continue
 		}
@@ -138,12 +160,12 @@ func checkDoctorBlockedRecoveryLive(
 	}
 	capacity := doctorBlockedCapacityDiagnostics(ctx, projectConnector, cfg, issues, now)
 
-	detail := fmt.Sprintf("sampled %d Blocked candidate(s)", len(issues))
+	detail := fmt.Sprintf("sampled %d blocked-recovery source candidate(s)", len(issues))
 	if len(candidates) == 0 && len(capacity) == 0 {
 		return doctorCheck{
 			Name:   name,
 			Status: doctorOK,
-			Detail: detail + "; no agent-recoverable blocked candidates found",
+			Detail: detail + "; no structured blocked-recovery condition matches found",
 		}
 	}
 	if len(candidates) > 0 {
@@ -160,7 +182,7 @@ func checkDoctorBlockedRecoveryLive(
 		Name:                      name,
 		Status:                    doctorWarn,
 		Detail:                    detail,
-		Hint:                      "Detent automatically recovers quota-parked issues after provider capacity returns; PR-maintenance candidates recover to Rework.",
+		Hint:                      fmt.Sprintf("PR-condition matches are diagnostic only; runtime still requires the latest durable source-lane entry reason before recovery to %s. Detent separately recovers quota-parked issues after provider capacity returns.", targetState),
 		BlockedRecoveryCandidates: candidates,
 		BackendCapacity:           capacity,
 	}
@@ -273,11 +295,12 @@ func doctorBackendProvider(backend workflowconfig.AgentBackend) string {
 func fetchDoctorBlockedRecoveryIssues(
 	ctx context.Context,
 	projectConnector doctorAutoPromoteConnector,
+	sourceStates []string,
 ) ([]connector.Issue, error) {
 	if limited, ok := projectConnector.(doctorAutoPromoteLimitedConnector); ok {
-		return limited.FetchIssuesByStatesLimit(ctx, []string{"Blocked"}, doctorBlockedRecoverySampleLimit)
+		return limited.FetchIssuesByStatesLimit(ctx, sourceStates, doctorBlockedRecoverySampleLimit)
 	}
-	issues, err := projectConnector.FetchIssuesByStates(ctx, []string{"Blocked"})
+	issues, err := projectConnector.FetchIssuesByStates(ctx, sourceStates)
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +335,7 @@ func doctorBlockedRecoveryCandidateDiagnosticFromIssue(
 func doctorBlockedRecoveryCandidateSummaries(candidates []doctorBlockedRecoveryCandidateDiagnostic) string {
 	parts := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
-		summary := "pr_recoverable_blocked: " + doctorBlockedRecoveryIssueLabel(candidate)
+		summary := "pr_condition_match_pending_timeline_authorization: " + doctorBlockedRecoveryIssueLabel(candidate)
 		if candidate.PRNumber > 0 {
 			summary += fmt.Sprintf(" PR #%d", candidate.PRNumber)
 		}

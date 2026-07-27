@@ -3290,6 +3290,12 @@ func TestParseBlockerReasonUsesStructuredWorkpadFirst(t *testing.T) {
 			wantSource: "structured",
 		},
 		{
+			name:       "structured reason code authorizes recovery park",
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```",
+			wantReason: "merge_conflict",
+			wantSource: "structured",
+		},
+		{
 			name:        "invalid structured block suppresses prose",
 			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```\n\n### Human Action Needed\n- Blocked by: #999",
 			wantSource:  "structured",
@@ -4441,6 +4447,55 @@ func TestConnectorHydratePullRequestRefreshesCurrentStatus(t *testing.T) {
 	}
 	if got.PRRepository != "example/repo" {
 		t.Fatalf("PRRepository = %q, want example/repo", got.PRRepository)
+	}
+}
+
+func TestConnectorPullRequestDiffFingerprintIsContentStableAndCached(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodGet,
+		path:   "/repos/example/repo/pulls/42/files?per_page=100",
+		body:   `[{"filename":"z.go","status":"modified","sha":"blob-z"},{"filename":"a.go","previous_filename":"old.go","status":"renamed","sha":"blob-a"}]`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{})
+	prNumber := 42
+	issue := connector.Issue{
+		Identifier:   "example/repo#1",
+		PRNumber:     &prNumber,
+		PRRepository: "example/repo",
+		PullRequest: &connector.PullRequest{
+			Number:  prNumber,
+			HeadSHA: "head-sha",
+			BaseSHA: "base-sha",
+		},
+	}
+
+	first, err := c.PullRequestDiffFingerprint(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("PullRequestDiffFingerprint() error = %v", err)
+	}
+	second, err := c.PullRequestDiffFingerprint(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("cached PullRequestDiffFingerprint() error = %v", err)
+	}
+	if first == "" || second != first {
+		t.Fatalf("fingerprints = %q and %q, want identical non-empty values", first, second)
+	}
+
+	reordered := pullRequestDiffFingerprint([]restPullRequestFile{
+		{Filename: "a.go", PreviousFilename: "old.go", Status: "renamed", SHA: "blob-a"},
+		{Filename: "z.go", Status: "modified", SHA: "blob-z"},
+	})
+	if reordered != first {
+		t.Fatalf("reordered fingerprint = %q, want %q", reordered, first)
+	}
+	changed := pullRequestDiffFingerprint([]restPullRequestFile{
+		{Filename: "a.go", PreviousFilename: "old.go", Status: "renamed", SHA: "blob-a-changed"},
+		{Filename: "z.go", Status: "modified", SHA: "blob-z"},
+	})
+	if changed == first {
+		t.Fatalf("changed fingerprint = %q, want a new value", changed)
 	}
 }
 

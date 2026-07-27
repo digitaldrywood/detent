@@ -171,6 +171,7 @@ type Tracker struct {
 	StateMap                    StringOrMap           `yaml:"state_map"`
 	PriorityMap                 StringOrMap           `yaml:"priority_map"`
 	DependencyAutoUnblock       DependencyAutoUnblock `yaml:"dependency_auto_unblock"`
+	BlockedRecovery             BlockedRecovery       `yaml:"blocked_recovery"`
 	BlockerAutoPromote          BlockerAutoPromote    `yaml:"blocker_auto_promote"`
 	AutoProvision               bool                  `yaml:"auto_provision"`
 	Claims                      Claims                `yaml:"claims,omitempty"`
@@ -191,6 +192,13 @@ type DependencyAutoUnblock struct {
 	SourceStates []string `yaml:"source_states"`
 	TargetState  string   `yaml:"target_state"`
 	Readiness    string   `yaml:"readiness"`
+}
+
+type BlockedRecovery struct {
+	Enabled      bool     `yaml:"enabled"`
+	SourceStates []string `yaml:"source_states"`
+	TargetState  string   `yaml:"target_state"`
+	ReasonCodes  []string `yaml:"reason_codes"`
 }
 
 type Dependencies struct {
@@ -907,6 +915,60 @@ func (d DependencyAutoUnblock) Validate(prefix string) []string {
 	return problems
 }
 
+func (b *BlockedRecovery) Normalize() {
+	if b == nil {
+		return
+	}
+	b.SourceStates = normalizeStateList(b.SourceStates)
+	b.TargetState = strings.TrimSpace(b.TargetState)
+	for index := range b.ReasonCodes {
+		b.ReasonCodes[index] = normalizeBlockedRecoveryReasonCode(b.ReasonCodes[index])
+	}
+}
+
+func (b BlockedRecovery) Validate(prefix string) []string {
+	b.Normalize()
+
+	var problems []string
+	validateStateList(prefix+".source_states", b.SourceStates, &problems)
+	if b.Enabled {
+		if len(b.SourceStates) == 0 {
+			problems = append(problems, prefix+".source_states must not be empty when "+prefix+".enabled is true")
+		}
+		if strings.TrimSpace(b.TargetState) == "" {
+			problems = append(problems, prefix+".target_state is required when "+prefix+".enabled is true")
+		}
+		if len(b.ReasonCodes) == 0 {
+			problems = append(problems, prefix+".reason_codes must not be empty when "+prefix+".enabled is true")
+		}
+	}
+	seen := map[string]struct{}{}
+	for _, reason := range b.ReasonCodes {
+		switch reason {
+		case "merge_conflict", "stale_base", "missing_current_head_ci":
+		default:
+			problems = append(problems, prefix+".reason_codes must contain only merge_conflict, stale_base, missing_current_head_ci")
+			continue
+		}
+		if _, ok := seen[reason]; ok {
+			problems = append(problems, prefix+".reason_codes must be unique")
+			continue
+		}
+		seen[reason] = struct{}{}
+	}
+	return problems
+}
+
+func normalizeBlockedRecoveryReasonCode(reason string) string {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	reason = strings.ReplaceAll(reason, "-", "_")
+	reason = strings.ReplaceAll(reason, " ", "_")
+	if reason == "merge_conflicts" {
+		return "merge_conflict"
+	}
+	return reason
+}
+
 func (b *BlockerAutoPromote) Normalize() {
 	if b == nil {
 		return
@@ -1147,6 +1209,11 @@ func Default() Config {
 				SourceStates: []string{"Blocked"},
 				TargetState:  "Todo",
 				Readiness:    DependencyReadinessTerminalOrMerged,
+			},
+			BlockedRecovery: BlockedRecovery{
+				SourceStates: []string{"Blocked"},
+				TargetState:  "Rework",
+				ReasonCodes:  []string{"merge_conflict", "stale_base", "missing_current_head_ci"},
 			},
 			BlockerAutoPromote: BlockerAutoPromote{
 				BlockerStates: []string{"Backlog", "Blocked", "Human Review"},
@@ -1451,6 +1518,7 @@ func (c *Config) normalize() {
 	c.Tracker.LocalSQLite.Normalize()
 	c.Tracker.Claims.Normalize()
 	c.Tracker.DependencyAutoUnblock.Normalize()
+	c.Tracker.BlockedRecovery.Normalize()
 	c.Tracker.BlockerAutoPromote.Normalize()
 	c.Tracker.Authorization.Normalize()
 	c.Dependencies.Normalize()
@@ -1545,6 +1613,10 @@ func (c *Config) validateTracker(problems *[]string) {
 	*problems = append(*problems, c.Tracker.DependencyAutoUnblock.Validate("tracker.dependency_auto_unblock")...)
 	if c.Tracker.DependencyAutoUnblock.Enabled && !stateListContains(c.Tracker.ActiveStates, "Rework") {
 		*problems = append(*problems, "tracker.active_states must include Rework when tracker.dependency_auto_unblock.enabled is true")
+	}
+	*problems = append(*problems, c.Tracker.BlockedRecovery.Validate("tracker.blocked_recovery")...)
+	if c.Tracker.BlockedRecovery.Enabled && !stateListContains(c.Tracker.ActiveStates, c.Tracker.BlockedRecovery.TargetState) {
+		*problems = append(*problems, "tracker.active_states must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true")
 	}
 	*problems = append(*problems, c.Tracker.BlockerAutoPromote.Validate("tracker.blocker_auto_promote")...)
 	validatePositive("tracker.http_max_idle_conns", c.Tracker.HTTPMaxIdleConns, problems)

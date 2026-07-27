@@ -21,6 +21,10 @@ func (o *Orchestrator) observedStatusFetchStates() []string {
 	if cfg.Enabled {
 		states = append(states, cfg.SourceStates...)
 	}
+	recoveryCfg := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery)
+	if recoveryCfg.Enabled {
+		states = append(states, recoveryCfg.SourceStates...)
+	}
 	blockerCfg := normalizeBlockerAutoPromoteConfig(o.cfg.BlockerAutoPromote, o.cfg.ActiveStates, o.cfg.DependencyAutoUnblock)
 	if blockerCfg.Enabled {
 		states = append(states, blockerCfg.SourceStates...)

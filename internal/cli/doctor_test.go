@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestCheckDoctorUpdate(t *testing.T) {
@@ -2310,6 +2311,11 @@ func TestCheckDoctorBlockedRecovery(t *testing.T) {
 		MergeableState: "dirty",
 	}
 	recoverable.BlockerReason = "PR #426 conflicts with main and needs agent maintenance."
+	recoverable.WorkpadSignal = &workpad.Signal{
+		Source:     workpad.SourceStructured,
+		Status:     workpad.StatusBlocked,
+		ReasonCode: "merge_conflict",
+	}
 	humanOnly := doctorDependencyIssue("issue-human", nil)
 	humanOnly.PRNumber = &humanPRNumber
 	humanOnly.PullRequest = &connector.PullRequest{
@@ -2319,11 +2325,22 @@ func TestCheckDoctorBlockedRecovery(t *testing.T) {
 		MergeableState: "dirty",
 	}
 	humanOnly.BlockerReason = "Waiting on explicit human approval."
-	fake := &fakeDoctorAutoPromoteConnector{
-		issues: []connector.Issue{recoverable, humanOnly},
+	manualPRNumber := 429
+	manual := doctorDependencyIssue("issue-manual", nil)
+	manual.PRNumber = &manualPRNumber
+	manual.PullRequest = &connector.PullRequest{
+		Number:         manualPRNumber,
+		State:          "OPEN",
+		HeadSHA:        "head-current",
+		MergeableState: "dirty",
 	}
+	fake := &fakeDoctorAutoPromoteConnector{
+		issues: []connector.Issue{recoverable, humanOnly, manual},
+	}
+	cfg := validDoctorDependencyWorkflow(true)
+	cfg.Tracker.BlockedRecovery.Enabled = true
 
-	got := checkDoctorBlockedRecovery(context.Background(), "alpha", validDoctorDependencyWorkflow(true), doctorDeps{
+	got := checkDoctorBlockedRecovery(context.Background(), "alpha", cfg, doctorDeps{
 		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
 			return fake, nil
 		},
@@ -2333,7 +2350,7 @@ func TestCheckDoctorBlockedRecovery(t *testing.T) {
 		t.Fatalf("Status = %s, want %s: %#v", got.Status, doctorWarn, got)
 	}
 	for _, want := range []string{
-		"pr_recoverable_blocked",
+		"pr_condition_match_pending_timeline_authorization",
 		"issue-recoverable",
 		"merge_conflicts",
 		"Rework",
@@ -2342,11 +2359,58 @@ func TestCheckDoctorBlockedRecovery(t *testing.T) {
 			t.Fatalf("check missing %q:\nDetail: %s\nHint: %s", want, got.Detail, got.Hint)
 		}
 	}
-	if strings.Contains(got.Detail, "issue-human") {
-		t.Fatalf("Detail = %q, want human blocker omitted from recoverable diagnostics", got.Detail)
+	for _, excluded := range []string{"issue-human", "issue-manual"} {
+		if strings.Contains(got.Detail, excluded) {
+			t.Fatalf("Detail = %q, want %q omitted from condition diagnostics", got.Detail, excluded)
+		}
 	}
 	if !stringSliceContains(fake.verifyStates, "Blocked") || !stringSliceContains(fake.verifyStates, "Rework") {
 		t.Fatalf("VerifyStatusOptions states = %#v, want Blocked and Rework", fake.verifyStates)
+	}
+}
+
+func TestCheckDoctorBlockedRecoveryUsesConfiguredStates(t *testing.T) {
+	t.Parallel()
+
+	prNumber := 428
+	recoverable := doctorDependencyIssue("issue-configured", nil)
+	recoverable.State = "Parked"
+	recoverable.PRNumber = &prNumber
+	recoverable.PullRequest = &connector.PullRequest{
+		Number:         prNumber,
+		State:          "OPEN",
+		HeadSHA:        "head-current",
+		MergeableState: "dirty",
+	}
+	recoverable.WorkpadSignal = &workpad.Signal{
+		Source:     workpad.SourceStructured,
+		Status:     workpad.StatusBlocked,
+		ReasonCode: "merge_conflict",
+	}
+	fake := &fakeDoctorAutoPromoteConnector{
+		issues: []connector.Issue{recoverable},
+	}
+	cfg := validDoctorDependencyWorkflow(true)
+	cfg.Tracker.BlockedRecovery.Enabled = true
+	cfg.Tracker.BlockedRecovery.SourceStates = []string{"Parked"}
+	cfg.Tracker.BlockedRecovery.TargetState = "Repair"
+
+	got := checkDoctorBlockedRecovery(context.Background(), "alpha", cfg, doctorDeps{
+		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+			return fake, nil
+		},
+	})
+
+	if got.Status != doctorWarn {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, doctorWarn, got)
+	}
+	for _, want := range []string{"issue-configured", "Repair"} {
+		if !strings.Contains(got.Detail, want) && !strings.Contains(got.Hint, want) {
+			t.Fatalf("check missing %q:\nDetail: %s\nHint: %s", want, got.Detail, got.Hint)
+		}
+	}
+	if !stringSliceContains(fake.verifyStates, "Parked") || !stringSliceContains(fake.verifyStates, "Repair") {
+		t.Fatalf("VerifyStatusOptions states = %#v, want Parked and Repair", fake.verifyStates)
 	}
 }
 
