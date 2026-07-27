@@ -775,7 +775,7 @@ func runInstalledSubcommands(t *testing.T, binary string, root string, env []str
 		}
 	})
 
-	runDetentCommand(t, binary, workdir, env, "--config", configPath, "pause", "detent")
+	runDetentCommand(t, binary, workdir, env, "--config", configPath, "pause", "detent", "--reason", "integration test")
 	assertInstalledProject(t, configPath, func(project globalconfig.Project) {
 		if !project.Paused {
 			t.Fatal("project Paused = false, want true")

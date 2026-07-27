@@ -74,6 +74,9 @@ type DashboardData struct {
 	ProjectID          string
 	ProjectName        string
 	ProjectPaused      bool
+	ProjectPauseReason string
+	ProjectPauseIssue  string
+	ProjectPauseUntil  string
 	SidebarCollapsed   bool
 	Theme              string
 	Density            string
@@ -372,6 +375,9 @@ type ProjectSmallMultiple struct {
 	URL                       string
 	Color                     string
 	Paused                    bool
+	PauseReason               string
+	PauseIssue                string
+	PauseUntil                string
 	Running                   int
 	QueueCount                int
 	Blocked                   int
@@ -411,6 +417,7 @@ type projectSmallMultipleCard struct {
 	ExternalURL     string
 	ProjectColor    string
 	ActivityLabel   string
+	PauseDetail     string
 	RunningLabel    string
 	QueueLabel      string
 	BlockedLabel    string
@@ -1104,6 +1111,7 @@ func projectSmallMultipleCards(data DashboardData) []projectSmallMultipleCard {
 			ExternalURL:     strings.TrimSpace(project.URL),
 			ProjectColor:    projectColorForProject(project),
 			ActivityLabel:   projectSmallMultipleActivityLabel(project),
+			PauseDetail:     projectPauseDetail(project.PauseReason, project.PauseIssue, project.PauseUntil),
 			RunningLabel:    formatCount(project.Running) + " running",
 			QueueLabel:      formatCount(project.QueueCount) + " queued",
 			BlockedLabel:    formatCount(project.Blocked) + " blocked",
@@ -1122,6 +1130,20 @@ func projectSmallMultipleCards(data DashboardData) []projectSmallMultipleCard {
 		})
 	}
 	return cards
+}
+
+func projectPauseDetail(reason string, issue string, until string) string {
+	parts := make([]string, 0, 3)
+	if reason = strings.TrimSpace(reason); reason != "" {
+		parts = append(parts, "Reason: "+reason)
+	}
+	if issue = strings.TrimSpace(issue); issue != "" {
+		parts = append(parts, "Until issue closes: "+issue)
+	}
+	if until = strings.TrimSpace(until); until != "" {
+		parts = append(parts, "Until: "+until)
+	}
+	return strings.Join(parts, " · ")
 }
 
 func sidebarProjectItems(data DashboardShellData) []sidebarProjectItem {

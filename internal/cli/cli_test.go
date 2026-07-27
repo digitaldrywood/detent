@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -849,14 +850,15 @@ func TestProjectCommandsWriteJSONResults(t *testing.T) {
 				"--weight", "5",
 				"--priority", "50",
 				"--paused",
+				"--reason", "maintenance",
 				"--credential-ref", "github-default",
 			},
-			want: fmt.Sprintf(`{"id":"detent","workflow":%q,"workdir":%q,"weight":5,"priority":50,"paused":true,"credential_ref":"github-default"}`, paths.workflowPath, paths.workdirPath),
+			want: fmt.Sprintf(`{"id":"detent","workflow":%q,"workdir":%q,"weight":5,"priority":50,"paused":true,"paused_reason":"maintenance","credential_ref":"github-default"}`, paths.workflowPath, paths.workdirPath),
 		},
 		{
 			name: "pause",
-			args: []string{"pause", "detent"},
-			want: `{"status":"ok","project":"detent","paused":true}`,
+			args: []string{"pause", "detent", "--reason", "release hold", "--until-issue", "digitaldrywood/detent#1499"},
+			want: `{"status":"ok","project":"detent","paused":true,"paused_reason":"release hold","paused_until_issue":"digitaldrywood/detent#1499"}`,
 		},
 		{
 			name: "unpause",
@@ -959,6 +961,13 @@ func TestCLIValidationErrorsCarryHints(t *testing.T) {
 			wantMessage:  "--weight must be positive",
 			wantHint:     "e.g. detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api --weight 1",
 			wantCommands: []string{"detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api --weight 1"},
+		},
+		{
+			name:         "paused project requires reason",
+			args:         []string{"--config", configPath, "add-project", "--id", "api", "--workflow", "./WORKFLOW.md", "--workdir", "~/code/api", "--paused"},
+			wantMessage:  "--reason is required with --paused",
+			wantHint:     `e.g. detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api --paused --reason "maintenance"`,
+			wantCommands: []string{`detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api --paused --reason "maintenance"`},
 		},
 		{
 			name:         "invalid promote priority",
@@ -1087,6 +1096,7 @@ func TestAddProjectWritesConfigAndSignalsManager(t *testing.T) {
 		"--weight", "5",
 		"--priority", "50",
 		"--paused",
+		"--reason", "release hold",
 		"--credential-ref", " github-default ",
 	})
 
@@ -1110,7 +1120,12 @@ func TestAddProjectWritesConfigAndSignalsManager(t *testing.T) {
 		Weight:        5,
 		Priority:      50,
 		Paused:        true,
+		PausedReason:  "release hold",
+		PausedAt:      got.PausedAt,
 		CredentialRef: "github-default",
+	}
+	if _, err := time.Parse(time.RFC3339, got.PausedAt); err != nil {
+		t.Fatalf("PausedAt = %q, want RFC 3339 timestamp", got.PausedAt)
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("project = %#v, want %#v", got, want)
@@ -1140,6 +1155,7 @@ func TestAddProjectCommandEmitsJSONResult(t *testing.T) {
 		"--workdir", paths.workdirPath,
 		"--weight", "5",
 		"--paused",
+		"--reason", "release hold",
 	})
 
 	if err := cmd.Execute(); err != nil {
@@ -1370,10 +1386,13 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 		}
 	}
 
-	runCommand("pause", "detent")
+	runCommand("pause", "detent", "--reason", "release hold", "--until-issue", "digitaldrywood/detent#1499")
 	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
 		if !project.Paused {
 			t.Fatal("Paused = false, want true")
+		}
+		if project.PausedReason != "release hold" || project.PausedUntilIssue != "digitaldrywood/detent#1499" || project.PausedAt == "" {
+			t.Fatalf("pause metadata = %#v", project)
 		}
 	})
 	assertSignal(t, signals, cli.OperationPauseProject, "detent")
@@ -1382,6 +1401,9 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
 		if project.Paused {
 			t.Fatal("Paused = true, want false")
+		}
+		if project.PausedReason != "" || project.PausedUntilIssue != "" || project.PausedUntil != "" || project.PausedAt != "" {
+			t.Fatalf("pause metadata not cleared: %#v", project)
 		}
 	})
 	assertSignal(t, signals, cli.OperationUnpauseProject, "detent")
@@ -1437,7 +1459,7 @@ projects:
 	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return true }))
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--config", configPath, "pause", "detent"})
+	cmd.SetArgs([]string{"--config", configPath, "pause", "detent", "--reason", "maintenance"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -1478,6 +1500,115 @@ projects:
 	}
 }
 
+func TestPauseCommandExitConditionFlags(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		args          []string
+		wantIssue     string
+		wantTimestamp string
+	}{
+		{
+			name:      "issue exit condition",
+			args:      []string{"--until-issue", "digitaldrywood/detent#1499"},
+			wantIssue: "digitaldrywood/detent#1499",
+		},
+		{
+			name:          "timestamp exit condition",
+			args:          []string{"--until", "2026-08-01T12:00:00-05:00"},
+			wantTimestamp: "2026-08-01T12:00:00-05:00",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			paths := createProjectFiles(t)
+			configPath := filepath.Join(paths.root, "global.yaml")
+			writeGlobalConfig(t, configPath, []globalconfig.Project{{
+				ID:       "detent",
+				Workflow: paths.workflowPath,
+				Workdir:  paths.workdirPath,
+				Weight:   1,
+			}})
+
+			cmd := cli.NewRootCommand(context.Background())
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			args := []string{"--config", configPath, "pause", "detent", "--reason", "release hold"}
+			cmd.SetArgs(append(args, tt.args...))
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+
+			assertProject(t, configPath, "detent", func(project globalconfig.Project) {
+				if !project.Paused {
+					t.Fatal("Paused = false, want true")
+				}
+				if project.PausedReason != "release hold" {
+					t.Fatalf("PausedReason = %q, want release hold", project.PausedReason)
+				}
+				if project.PausedUntilIssue != tt.wantIssue {
+					t.Fatalf("PausedUntilIssue = %q, want %q", project.PausedUntilIssue, tt.wantIssue)
+				}
+				if project.PausedUntil != tt.wantTimestamp {
+					t.Fatalf("PausedUntil = %q, want %q", project.PausedUntil, tt.wantTimestamp)
+				}
+			})
+		})
+	}
+}
+
+func TestPauseCommandRejectsInvalidFlags(t *testing.T) {
+	t.Parallel()
+
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+	writeGlobalConfig(t, configPath, []globalconfig.Project{{
+		ID:       "detent",
+		Workflow: paths.workflowPath,
+		Workdir:  paths.workdirPath,
+		Weight:   1,
+	}})
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "missing reason",
+			args: []string{"pause", "detent"},
+			want: "--reason is required",
+		},
+		{
+			name: "mutually exclusive exits",
+			args: []string{"pause", "detent", "--reason", "hold", "--until-issue", "digitaldrywood/detent#1499", "--until", "2026-08-01T12:00:00Z"},
+			want: "--until-issue and --until are mutually exclusive",
+		},
+		{
+			name: "invalid timestamp",
+			args: []string{"pause", "detent", "--reason", "hold", "--until", "tomorrow"},
+			want: "--until must be an RFC 3339 timestamp",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := cli.NewRootCommand(context.Background())
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(append([]string{"--config", configPath}, tt.args...))
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Execute() error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestProjectAdminCommandsRejectMissingProject(t *testing.T) {
 	t.Parallel()
 
@@ -1496,7 +1627,7 @@ func TestProjectAdminCommandsRejectMissingProject(t *testing.T) {
 	}))
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"--config", configPath, "pause", "ap"})
+	cmd.SetArgs([]string{"--config", configPath, "pause", "ap", "--reason", "maintenance"})
 
 	err := cmd.Execute()
 	if err == nil {

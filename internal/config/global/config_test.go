@@ -460,14 +460,17 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 		},
 		Projects: []Project{
 			{
-				ID:            "detent",
-				Workflow:      paths.workflowPath,
-				Workdir:       paths.workdirPath,
-				Color:         "#1192e8",
-				Weight:        5,
-				Priority:      2,
-				Paused:        true,
-				CredentialRef: "github-default",
+				ID:               "detent",
+				Workflow:         paths.workflowPath,
+				Workdir:          paths.workdirPath,
+				Color:            "#1192e8",
+				Weight:           5,
+				Priority:         2,
+				Paused:           true,
+				PausedReason:     "release hold",
+				PausedAt:         "2026-07-20T12:00:00Z",
+				PausedUntilIssue: "digitaldrywood/detent#1499",
+				CredentialRef:    "github-default",
 				Authorization: selector.Selector{
 					Labels: selector.Labels{Include: []string{"release"}},
 					Fields: []selector.FieldEquals{{Name: "Track", Value: "multi-instance"}},
@@ -511,6 +514,102 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Projects, cfg.Projects) {
 		t.Fatalf("Projects = %#v, want %#v", got.Projects, cfg.Projects)
+	}
+}
+
+func TestWritePreservesCommentsAndKeyOrder(t *testing.T) {
+	paths := createProjectFiles(t)
+	path := filepath.Join(paths.root, "global.yaml")
+	raw := `apiVersion: detent/v1
+kind: GlobalConfig
+instance_name: prometheus
+global:
+  max_concurrent_agents: 8
+  scheduling: weighted
+projects:
+  - id: detent
+    workflow: ` + paths.workflow + `
+    workdir: ` + paths.workdir + `
+    # Keep this project note.
+    weight: 1
+    priority: 0
+# Keep this update note.
+update:
+  auto_check_enabled: true
+`
+	writeFile(t, path, raw)
+
+	cfg, err := Read(path, WithHome(paths.home))
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	cfg.Projects[0].Paused = true
+	cfg.Projects[0].PausedReason = "release hold"
+	cfg.Projects[0].PausedAt = "2026-07-20T12:00:00Z"
+	cfg.Projects[0].PausedUntil = "2026-08-01T12:00:00Z"
+	if err := Write(path, cfg, WithHome(paths.home)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	text := string(written)
+	for _, want := range []string{
+		"# Keep this project note.",
+		"# Keep this update note.",
+		"paused_reason: release hold",
+		`paused_at: "2026-07-20T12:00:00Z"`,
+		`paused_until: "2026-08-01T12:00:00Z"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("written config missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Index(text, "update:") < strings.Index(text, "projects:") {
+		t.Fatalf("update block moved before projects:\n%s", text)
+	}
+}
+
+func TestParsePauseMetadataValidatesExitConditions(t *testing.T) {
+	paths := createProjectFiles(t)
+	base := minimalYAML(paths, "  max_concurrent_agents: 8\n  scheduling: weighted\n")
+	raw := strings.Replace(
+		base,
+		"    priority: 50\n",
+		"    priority: 50\n    paused: true\n    paused_reason: release hold\n    paused_at: 2026-07-20T12:00:00Z\n    paused_until_issue: digitaldrywood/detent#1499\n    paused_until: 2026-08-01T12:00:00Z\n",
+		1,
+	)
+
+	_, err := Parse([]byte(raw), filepath.Join(paths.root, "global.yaml"), WithHome(paths.home))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want mutually exclusive exit condition error")
+	}
+	want := "projects[0].paused_until_issue and projects[0].paused_until: must not both be set"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("Parse() error = %q, want substring %q", err, want)
+	}
+}
+
+func TestParsePauseMetadataAcceptsUnquotedRFC3339Timestamp(t *testing.T) {
+	paths := createProjectFiles(t)
+	raw := strings.Replace(
+		minimalYAML(paths, "  max_concurrent_agents: 8\n  scheduling: weighted\n"),
+		"    priority: 50\n",
+		"    priority: 50\n    paused: true\n    paused_reason: release hold\n    paused_at: 2026-07-20T12:00:00Z\n    paused_until: 2026-08-01T12:00:00Z\n",
+		1,
+	)
+
+	cfg, err := Parse([]byte(raw), filepath.Join(paths.root, "global.yaml"), WithHome(paths.home))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	project := cfg.Projects[0]
+	if project.PausedReason != "release hold" ||
+		project.PausedAt != "2026-07-20T12:00:00Z" ||
+		project.PausedUntil != "2026-08-01T12:00:00Z" {
+		t.Fatalf("pause metadata = %#v", project)
 	}
 }
 
