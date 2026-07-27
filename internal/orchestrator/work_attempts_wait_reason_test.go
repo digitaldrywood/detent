@@ -15,9 +15,9 @@ func TestSchedulerDecisionWaitReason(t *testing.T) {
 		want   string
 	}{
 		{
-			name:   "planner pool capacity wait",
+			name:   "planner project capacity wait",
 			reason: dispatchSkipGlobalCapacityFull,
-			want:   scheduler.DispatchGateReasonGlobalCapacityFull,
+			want:   "project_capacity_full",
 		},
 		{
 			name:   "slot acquisition pool capacity wait",

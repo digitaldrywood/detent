@@ -328,6 +328,13 @@ func applyAgentPoolsFix(plan agentPoolsFixPlan) error {
 	if plan.Noop || len(plan.After) == 0 {
 		return nil
 	}
+	current, err := os.ReadFile(plan.Path)
+	if err != nil {
+		return fmt.Errorf("read global config %s before applying agent-pool fix: %w", plan.Path, err)
+	}
+	if !bytes.Equal(current, plan.Before) {
+		return errors.New("global config changed since the agent-pool recommendation was prepared; rerun detent fix agent-pools")
+	}
 	if err := os.WriteFile(plan.Path, plan.After, configFileMode); err != nil {
 		return fmt.Errorf("write global config %s: %w", plan.Path, err)
 	}

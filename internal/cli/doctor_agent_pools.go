@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -219,12 +222,25 @@ func (r doctorAgentPoolRecommendation) SuggestedYAML() string {
 	fmt.Fprintf(&builder, "      max_concurrent_agents: %d # tune to your provider limits\n", r.CloudCap)
 	builder.WriteString("projects:\n")
 	for _, project := range r.LocalProjects {
-		fmt.Fprintf(&builder, "  - id: %s\n    pool: code\n", project.ID)
+		fmt.Fprintf(&builder, "  - id: %s\n    pool: code\n", doctorAgentPoolYAMLString(project.ID))
 	}
 	for _, project := range r.CloudProjects {
-		fmt.Fprintf(&builder, "  - id: %s\n    pool: cloud\n", project.ID)
+		fmt.Fprintf(&builder, "  - id: %s\n    pool: cloud\n", doctorAgentPoolYAMLString(project.ID))
 	}
 	return builder.String()
+}
+
+func doctorAgentPoolYAMLString(value string) string {
+	encoded, err := yaml.Marshal(&yaml.Node{
+		Kind:  yaml.ScalarNode,
+		Tag:   "!!str",
+		Value: value,
+		Style: yaml.DoubleQuotedStyle,
+	})
+	if err != nil {
+		return strconv.Quote(value)
+	}
+	return strings.TrimSpace(string(encoded))
 }
 
 func doctorWorkloadProjectIDs(projects []doctorWorkloadProject) []string {

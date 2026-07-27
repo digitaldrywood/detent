@@ -149,6 +149,30 @@ func TestAgentPoolsFixDeclinesExistingPools(t *testing.T) {
 	}
 }
 
+func TestApplyAgentPoolsFixDeclinesStalePlan(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	before := []byte("global:\n  max_concurrent_agents: 5\n")
+	after := []byte("global:\n  max_concurrent_agents: 5\n  agent_pools: []\n")
+	changed := []byte("global:\n  max_concurrent_agents: 7\n")
+	if err := os.WriteFile(path, changed, configFileMode); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	err := applyAgentPoolsFix(agentPoolsFixPlan{Path: path, Before: before, After: after})
+	if err == nil || !strings.Contains(err.Error(), "global config changed") {
+		t.Fatalf("applyAgentPoolsFix() error = %v, want stale-plan error", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("ReadFile() error = %v", readErr)
+	}
+	if !bytes.Equal(got, changed) {
+		t.Fatalf("global config = %q, want concurrent change preserved", got)
+	}
+}
+
 func TestAgentPoolsFixHotReloadsScheduler(t *testing.T) {
 	fixture := newAgentPoolsFixFixture(t, true)
 	initial, err := globalconfig.Read(fixture.configPath)

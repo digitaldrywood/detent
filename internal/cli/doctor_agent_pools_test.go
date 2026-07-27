@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -189,6 +191,47 @@ func TestDoctorWorkflowCacheReusesResolvedWorkflow(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("loadWorkflow calls = %d, want 1", calls)
+	}
+}
+
+func TestDoctorAgentPoolRecommendationSuggestedYAMLQuotesProjectIDs(t *testing.T) {
+	t.Parallel()
+
+	recommendation := doctorAgentPoolRecommendation{
+		CurrentCap: 5,
+		CloudCap:   10,
+		LocalProjects: []doctorWorkloadProject{
+			{ID: "123"},
+			{ID: "null"},
+		},
+		CloudProjects: []doctorWorkloadProject{
+			{ID: "team: api"},
+		},
+	}
+	var parsed struct {
+		Projects []struct {
+			ID   string `yaml:"id"`
+			Pool string `yaml:"pool"`
+		} `yaml:"projects"`
+	}
+	if err := yaml.Unmarshal([]byte(recommendation.SuggestedYAML()), &parsed); err != nil {
+		t.Fatalf("yaml.Unmarshal() error = %v\n%s", err, recommendation.SuggestedYAML())
+	}
+	want := []struct {
+		ID   string
+		Pool string
+	}{
+		{ID: "123", Pool: "code"},
+		{ID: "null", Pool: "code"},
+		{ID: "team: api", Pool: "cloud"},
+	}
+	if len(parsed.Projects) != len(want) {
+		t.Fatalf("projects = %#v, want %#v", parsed.Projects, want)
+	}
+	for index := range want {
+		if parsed.Projects[index].ID != want[index].ID || parsed.Projects[index].Pool != want[index].Pool {
+			t.Fatalf("projects[%d] = %#v, want %#v", index, parsed.Projects[index], want[index])
+		}
 	}
 }
 
