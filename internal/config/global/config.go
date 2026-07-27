@@ -403,18 +403,27 @@ func mergeYAMLMapping(existing *yaml.Node, desired *yaml.Node) {
 }
 
 func mergeYAMLSequence(existing *yaml.Node, desired *yaml.Node) {
-	existingByID := make(map[string]*yaml.Node, len(existing.Content))
+	existingByKey := make(map[string]*yaml.Node, len(existing.Content))
+	existingKeyCounts := make(map[string]int, len(existing.Content))
 	for _, item := range existing.Content {
 		if key := yamlSequenceMappingKey(item); key != "" {
-			existingByID[key] = item
+			existingByKey[key] = item
+			existingKeyCounts[key]++
+		}
+	}
+	desiredKeyCounts := make(map[string]int, len(desired.Content))
+	for _, item := range desired.Content {
+		if key := yamlSequenceMappingKey(item); key != "" {
+			desiredKeyCounts[key]++
 		}
 	}
 
 	merged := make([]*yaml.Node, 0, len(desired.Content))
 	for index, desiredItem := range desired.Content {
 		var existingItem *yaml.Node
-		if key := yamlSequenceMappingKey(desiredItem); key != "" {
-			existingItem = existingByID[key]
+		key := yamlSequenceMappingKey(desiredItem)
+		if key != "" && existingKeyCounts[key] == 1 && desiredKeyCounts[key] == 1 {
+			existingItem = existingByKey[key]
 		} else if index < len(existing.Content) {
 			existingItem = existing.Content[index]
 		}

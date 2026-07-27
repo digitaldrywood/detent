@@ -577,6 +577,93 @@ update:
 	}
 }
 
+func TestWritePreservesDuplicateKnowledgeSourceNames(t *testing.T) {
+	paths := createProjectFiles(t)
+	path := filepath.Join(paths.root, "global.yaml")
+	writeFile(t, path, `apiVersion: detent/v1
+kind: GlobalConfig
+global:
+  max_concurrent_agents: 8
+  scheduling: weighted
+  knowledge:
+    sources:
+      - name: Standards
+        path: `+filepath.Join(paths.root, "first.md")+`
+      - name: Standards
+        path: `+filepath.Join(paths.root, "second.md")+`
+projects:
+  - id: detent
+    workflow: `+paths.workflow+`
+    workdir: `+paths.workdir+`
+    weight: 1
+    priority: 0
+`)
+
+	cfg, err := Read(path, WithHome(paths.home))
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if err := Write(path, cfg, WithHome(paths.home)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	roundTripped, err := Read(path, WithHome(paths.home))
+	if err != nil {
+		t.Fatalf("second Read() error = %v", err)
+	}
+	sources := roundTripped.Global.Knowledge.Sources
+	if len(sources) != 2 || sources[0].Path != filepath.Join(paths.root, "first.md") ||
+		sources[1].Path != filepath.Join(paths.root, "second.md") {
+		t.Fatalf("knowledge sources = %#v, want distinct duplicate-name entries", sources)
+	}
+}
+
+func TestWriteMatchesAgentPoolsByName(t *testing.T) {
+	paths := createProjectFiles(t)
+	path := filepath.Join(paths.root, "global.yaml")
+	writeFile(t, path, `apiVersion: detent/v1
+kind: GlobalConfig
+global:
+  max_concurrent_agents: 8
+  scheduling: weighted
+  agent_pools:
+    - name: code
+      # Code pool.
+      max_concurrent_agents: 1
+    - name: video
+      # Video pool.
+      max_concurrent_agents: 2
+projects:
+  - id: detent
+    pool: code
+    workflow: `+paths.workflow+`
+    workdir: `+paths.workdir+`
+    weight: 1
+    priority: 0
+`)
+
+	cfg, err := Read(path, WithHome(paths.home))
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	cfg.Global.AgentPools[0], cfg.Global.AgentPools[1] = cfg.Global.AgentPools[1], cfg.Global.AgentPools[0]
+	if err := Write(path, cfg, WithHome(paths.home)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	text := string(written)
+	videoIndex := strings.Index(text, "- name: video")
+	codeIndex := strings.Index(text, "- name: code")
+	videoComment := strings.Index(text, "# Video pool.")
+	codeComment := strings.Index(text, "# Code pool.")
+	if videoIndex < 0 || codeIndex < 0 || videoComment < videoIndex || videoComment > codeIndex ||
+		codeIndex < videoIndex || codeComment < codeIndex {
+		t.Fatalf("agent pool comments did not follow names:\n%s", text)
+	}
+}
+
 func TestParsePauseMetadataValidatesExitConditions(t *testing.T) {
 	paths := createProjectFiles(t)
 	base := minimalYAML(paths, "  max_concurrent_agents: 8\n  scheduling: weighted\n")
