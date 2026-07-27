@@ -204,6 +204,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	if err != nil {
 		return fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
+	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
 	headerRateLimit := c.recordRateLimitFromHeaders(resp.Header, receivedAt)
 
@@ -311,6 +312,7 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 	if err != nil {
 		return restProbeResult{}, fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
+	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
 	c.recordRESTRateLimitFromHeaders(backoffKey, method, path, resp.StatusCode, resp.Header, receivedAt, false)
 	c.logRESTResponse(ctx, "github rest probe response", method, path, family, resp.StatusCode)
@@ -415,6 +417,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	if err != nil {
 		return nil, fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
+	connector.ReportProgress(ctx)
 	receivedAt := time.Now()
 	c.recordRESTRateLimitFromHeaders(backoffKey, method, path, resp.StatusCode, resp.Header, receivedAt, conditional)
 	if resp.StatusCode == http.StatusNotModified {

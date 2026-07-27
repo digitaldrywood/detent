@@ -4819,16 +4819,86 @@ func TestRunDoctorCheckFreezesProgressBeforeCancellation(t *testing.T) {
 	}
 }
 
+func TestDoctorProjectCheckJobRenewsTimeoutForConnectorProgress(t *testing.T) {
+	t.Parallel()
+
+	const (
+		timeout      = 100 * time.Millisecond
+		responseTime = 60 * time.Millisecond
+		responses    = 3
+	)
+	projectConnector := &fakeDoctorAutoPromoteConnector{
+		fetchIssuesByStatesLimit: func(ctx context.Context, _ []string, _ int) ([]connector.Issue, error) {
+			for range responses {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(responseTime):
+					connector.ReportProgress(ctx)
+				}
+			}
+			return nil, nil
+		},
+	}
+	jobs := doctorProjectCheckJobs(globalconfig.Config{
+		Projects: []globalconfig.Project{{ID: "alpha", Workflow: "WORKFLOW.md"}},
+	}, doctorDeps{
+		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+			return workflowconfig.Workflow{Config: validDoctorDependencyWorkflow(false)}, nil
+		},
+		gitWorkTree: func(context.Context, string) error {
+			return nil
+		},
+		gitRemoteURL: func(context.Context, string) (string, error) {
+			return "https://github.com/digitaldrywood/detent", nil
+		},
+		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+			return projectConnector, nil
+		},
+		githubReadiness: func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
+			return nil, nil
+		},
+		githubMergeSettings: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryMergeSettings, error) {
+			return ghconnector.RepositoryMergeSettings{AllowSquashMerge: true}, nil
+		},
+	}, RuntimeSecret{Value: "token", Source: "github_token"}, false, doctorWorkflowDefaultTokenThreshold)
+	if len(jobs) != 1 {
+		t.Fatalf("jobs len = %d, want 1", len(jobs))
+	}
+
+	checks := runDoctorCheck(context.Background(), jobs[0], timeout)
+
+	for _, name := range []string{"Project alpha dependency auto-unblock", "Project alpha blocked recovery"} {
+		var found bool
+		for _, check := range checks {
+			if check.Name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("checks = %#v, want completed %s check", checks, name)
+		}
+	}
+	for _, check := range checks {
+		if check.Status == doctorFail && strings.Contains(check.Detail, "timed out") {
+			t.Fatalf("checks = %#v, want connector progress to renew timeout", checks)
+		}
+	}
+}
+
 func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		current      string
-		blockOverlay bool
+		name            string
+		current         string
+		blockOverlay    bool
+		blockDependency bool
 	}{
 		{name: "GitHub readiness", current: "GitHub readiness"},
 		{name: "local workflow overlay", current: "local workflow overlay", blockOverlay: true},
+		{name: "dependency auto-unblock", current: "dependency auto-unblock", blockDependency: true},
 	}
 
 	for _, tt := range tests {
@@ -4863,7 +4933,14 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 					return "https://github.com/digitaldrywood/detent", nil
 				},
 				autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
-					return &fakeDoctorAutoPromoteConnector{}, nil
+					projectConnector := &fakeDoctorAutoPromoteConnector{}
+					if tt.blockDependency {
+						projectConnector.fetchIssuesByStatesLimit = func(context.Context, []string, int) ([]connector.Issue, error) {
+							<-releaseBlockedCheck
+							return nil, nil
+						}
+					}
+					return projectConnector, nil
 				},
 				githubReadiness: func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
 					if !tt.blockOverlay {
@@ -5046,25 +5123,29 @@ func doctorDependencyResolvedIssue(id string, identifier string, state string, c
 }
 
 type fakeDoctorAutoPromoteConnector struct {
-	issues         []connector.Issue
-	mergedIssues   []connector.Issue
-	hydratedIssues []connector.Issue
-	resolvedIssues []connector.Issue
-	capabilities   []connector.DependencyCapability
-	drift          connector.StatusDrift
-	driftErr       error
-	verifyErr      error
-	verifyStates   []string
-	limit          int
-	scan           *connector.IssueStateScan
+	issues                   []connector.Issue
+	mergedIssues             []connector.Issue
+	hydratedIssues           []connector.Issue
+	resolvedIssues           []connector.Issue
+	capabilities             []connector.DependencyCapability
+	drift                    connector.StatusDrift
+	driftErr                 error
+	verifyErr                error
+	verifyStates             []string
+	limit                    int
+	scan                     *connector.IssueStateScan
+	fetchIssuesByStatesLimit func(context.Context, []string, int) ([]connector.Issue, error)
 }
 
 func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStates(_ context.Context, states []string) ([]connector.Issue, error) {
 	return c.issuesForStates(states), nil
 }
 
-func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStatesLimit(_ context.Context, states []string, limit int) ([]connector.Issue, error) {
+func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStatesLimit(ctx context.Context, states []string, limit int) ([]connector.Issue, error) {
 	c.limit = limit
+	if c.fetchIssuesByStatesLimit != nil {
+		return c.fetchIssuesByStatesLimit(ctx, states, limit)
+	}
 	return c.issuesForStates(states), nil
 }
 
