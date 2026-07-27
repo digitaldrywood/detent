@@ -52,3 +52,20 @@ func TestProjectSmallMultipleCardDisplaysPauseDetails(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectSmallMultipleCardHidesInactivePauseMetadata(t *testing.T) {
+	t.Parallel()
+
+	cards := projectSmallMultipleCards(DashboardData{Projects: []ProjectSmallMultiple{{
+		ID:          "detent",
+		Name:        "Detent",
+		PauseReason: "stale reason",
+		PauseUntil:  "2026-08-01T12:00:00Z",
+	}}})
+	if len(cards) != 1 {
+		t.Fatalf("projectSmallMultipleCards() len = %d, want 1", len(cards))
+	}
+	if cards[0].PauseDetail != "" {
+		t.Fatalf("active project pause detail = %q, want empty", cards[0].PauseDetail)
+	}
+}

@@ -1111,7 +1111,7 @@ func projectSmallMultipleCards(data DashboardData) []projectSmallMultipleCard {
 			ExternalURL:     strings.TrimSpace(project.URL),
 			ProjectColor:    projectColorForProject(project),
 			ActivityLabel:   projectSmallMultipleActivityLabel(project),
-			PauseDetail:     projectPauseDetail(project.PauseReason, project.PauseIssue, project.PauseUntil),
+			PauseDetail:     projectSmallMultiplePauseDetail(project),
 			RunningLabel:    formatCount(project.Running) + " running",
 			QueueLabel:      formatCount(project.QueueCount) + " queued",
 			BlockedLabel:    formatCount(project.Blocked) + " blocked",
@@ -1130,6 +1130,13 @@ func projectSmallMultipleCards(data DashboardData) []projectSmallMultipleCard {
 		})
 	}
 	return cards
+}
+
+func projectSmallMultiplePauseDetail(project ProjectSmallMultiple) string {
+	if !project.Paused {
+		return ""
+	}
+	return projectPauseDetail(project.PauseReason, project.PauseIssue, project.PauseUntil)
 }
 
 func projectPauseDetail(reason string, issue string, until string) string {

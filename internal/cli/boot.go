@@ -432,6 +432,12 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 				write: func(updated globalconfig.Config) error {
 					return globalconfig.Write(cfg.Global.Path, updated, globalconfig.WithProjectPathLiterals())
 				},
+				unpause: func(ctx context.Context, projectID string) error {
+					return manager.Unpause(ctx, project.ID(projectID))
+				},
+				pause: func(ctx context.Context, projectID string) error {
+					return manager.Pause(ctx, project.ID(projectID))
+				},
 				connectorFor: func(projectID string) connector.Connector {
 					trackedProject, ok := manager.Registry().Get(project.ID(projectID))
 					if !ok || trackedProject == nil {
