@@ -2322,8 +2322,10 @@ func TestCheckDoctorBlockedRecovery(t *testing.T) {
 	fake := &fakeDoctorAutoPromoteConnector{
 		issues: []connector.Issue{recoverable, humanOnly},
 	}
+	cfg := validDoctorDependencyWorkflow(true)
+	cfg.Tracker.BlockedRecovery.Enabled = true
 
-	got := checkDoctorBlockedRecovery(context.Background(), "alpha", validDoctorDependencyWorkflow(true), doctorDeps{
+	got := checkDoctorBlockedRecovery(context.Background(), "alpha", cfg, doctorDeps{
 		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
 			return fake, nil
 		},
@@ -2347,6 +2349,46 @@ func TestCheckDoctorBlockedRecovery(t *testing.T) {
 	}
 	if !stringSliceContains(fake.verifyStates, "Blocked") || !stringSliceContains(fake.verifyStates, "Rework") {
 		t.Fatalf("VerifyStatusOptions states = %#v, want Blocked and Rework", fake.verifyStates)
+	}
+}
+
+func TestCheckDoctorBlockedRecoveryUsesConfiguredStates(t *testing.T) {
+	t.Parallel()
+
+	prNumber := 428
+	recoverable := doctorDependencyIssue("issue-configured", nil)
+	recoverable.State = "Parked"
+	recoverable.PRNumber = &prNumber
+	recoverable.PullRequest = &connector.PullRequest{
+		Number:         prNumber,
+		State:          "OPEN",
+		HeadSHA:        "head-current",
+		MergeableState: "dirty",
+	}
+	fake := &fakeDoctorAutoPromoteConnector{
+		issues: []connector.Issue{recoverable},
+	}
+	cfg := validDoctorDependencyWorkflow(true)
+	cfg.Tracker.BlockedRecovery.Enabled = true
+	cfg.Tracker.BlockedRecovery.SourceStates = []string{"Parked"}
+	cfg.Tracker.BlockedRecovery.TargetState = "Repair"
+
+	got := checkDoctorBlockedRecovery(context.Background(), "alpha", cfg, doctorDeps{
+		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+			return fake, nil
+		},
+	})
+
+	if got.Status != doctorWarn {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, doctorWarn, got)
+	}
+	for _, want := range []string{"issue-configured", "Repair"} {
+		if !strings.Contains(got.Detail, want) && !strings.Contains(got.Hint, want) {
+			t.Fatalf("check missing %q:\nDetail: %s\nHint: %s", want, got.Detail, got.Hint)
+		}
+	}
+	if !stringSliceContains(fake.verifyStates, "Parked") || !stringSliceContains(fake.verifyStates, "Repair") {
+		t.Fatalf("VerifyStatusOptions states = %#v, want Parked and Repair", fake.verifyStates)
 	}
 }
 

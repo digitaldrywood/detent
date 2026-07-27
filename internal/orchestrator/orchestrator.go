@@ -86,6 +86,7 @@ type Config struct {
 	Plan                          gate.PlanConfig
 	DependencySource              string
 	DependencyAutoUnblock         DependencyAutoUnblockConfig
+	BlockedRecovery               BlockedRecoveryConfig
 	BlockerAutoPromote            BlockerAutoPromoteConfig
 	ActiveStates                  []string
 	ObservedStates                []string

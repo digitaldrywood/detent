@@ -42,6 +42,15 @@ tracker:
       - Blocked
     target_state: Todo
     readiness: terminal_or_merged
+  blocked_recovery:
+    enabled: false
+    source_states:
+      - Blocked
+    target_state: Rework
+    reason_codes:
+      - merge_conflict
+      - stale_base
+      - missing_current_head_ci
   blocker_auto_promote:
     enabled: false
     blocker_states:

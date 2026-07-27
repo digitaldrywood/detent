@@ -115,6 +115,7 @@ var _ connector.IssuesByStatesLimiter = (*Connector)(nil)
 var _ connector.ProjectRemover = (*Connector)(nil)
 var _ connector.PullRequestCommenter = (*Connector)(nil)
 var _ connector.PullRequestCommentReader = (*Connector)(nil)
+var _ connector.PullRequestDiffFingerprintReader = (*Connector)(nil)
 var _ connector.PullRequestHydrator = (*Connector)(nil)
 var _ connector.PullRequestLabelReapplier = (*Connector)(nil)
 var _ connector.PullRequestMergeQueue = (*Connector)(nil)
@@ -509,6 +510,14 @@ func (c *Connector) EnqueuePullRequest(ctx context.Context, issue connector.Issu
 
 func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
 	return c.github.HydratePullRequest(ctx, issue)
+}
+
+func (c *Connector) PullRequestDiffFingerprint(ctx context.Context, issue connector.Issue) (string, error) {
+	reader, ok := c.github.(connector.PullRequestDiffFingerprintReader)
+	if !ok {
+		return "", connector.ErrNotImplemented
+	}
+	return reader.PullRequestDiffFingerprint(ctx, issue)
 }
 
 func (c *Connector) ReapplyPullRequestLabel(ctx context.Context, repository string, number int, label string, stagger time.Duration) error {

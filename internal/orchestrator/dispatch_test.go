@@ -254,6 +254,12 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Tracker.Claims.LeaseField = "Detent Lease"
 	cfg.Tracker.Claims.TTLSeconds = 300
 	cfg.Tracker.Claims.HeartbeatSeconds = 45
+	cfg.Tracker.BlockedRecovery = workflowconfig.BlockedRecovery{
+		Enabled:      true,
+		SourceStates: []string{"Blocked", "Parked"},
+		TargetState:  "Repair",
+		ReasonCodes:  []string{"merge_conflict", "stale_base"},
+	}
 	cfg.Tracker.PriorityMap = workflowconfig.StringOrMap{IsMap: true, Map: map[string]any{"Critical": 1, "Normal": 3, "No priority": nil}}
 	staggerSeconds := 20
 	cfg.Gate = gate.Config{
@@ -282,6 +288,12 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if got.BillingMode != workflowconfig.BillingModeSubscription {
 		t.Fatalf("BillingMode = %q, want subscription", got.BillingMode)
+	}
+	if !got.BlockedRecovery.Enabled ||
+		!slices.Equal(got.BlockedRecovery.SourceStates, []string{"blocked", "parked"}) ||
+		got.BlockedRecovery.TargetState != "Repair" ||
+		!slices.Equal(got.BlockedRecovery.ReasonCodes, []string{"merge_conflict", "stale_base"}) {
+		t.Fatalf("BlockedRecovery = %#v, want configured recovery policy", got.BlockedRecovery)
 	}
 	if got.WorkspaceCleanupIdleTTL != 2*time.Hour {
 		t.Fatalf("WorkspaceCleanupIdleTTL = %s, want 2h0m0s", got.WorkspaceCleanupIdleTTL)

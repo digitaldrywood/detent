@@ -310,11 +310,13 @@ func TestTickRecoversPRBackedBlockedIssueToRework(t *testing.T) {
 	waiting := dependencyAutoUnblockIssue("issue-pr-blocked", "Blocked")
 	waiting.PRNumber = &prNumber
 	waiting.PullRequest = &connector.PullRequest{
-		Number:         prNumber,
-		URL:            "https://github.com/digitaldrywood/detent/pull/426",
-		State:          "OPEN",
-		HeadSHA:        "sha-current",
-		MergeableState: "dirty",
+		Number:          prNumber,
+		URL:             "https://github.com/digitaldrywood/detent/pull/426",
+		State:           "OPEN",
+		HeadSHA:         "sha-current",
+		BaseSHA:         "base-current",
+		DiffFingerprint: "diff-current",
+		MergeableState:  "dirty",
 	}
 	waiting.BlockerReason = "PR #426 conflicts with main and needs a rebase."
 	tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{waiting}}
@@ -324,6 +326,9 @@ func TestTickRecoversPRBackedBlockedIssueToRework(t *testing.T) {
 		TargetState:  "Todo",
 		Readiness:    DependencyReadinessTerminalOrMerged,
 	})
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	orch.workflowMetrics = metrics
+	recordBlockedRecoveryReasonEvent(t, metrics, waiting, time.Date(2026, 6, 12, 16, 5, 0, 0, time.UTC), blockedRecoveryReasonMergeConflict)
 	state := newState(orch.cfg)
 
 	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 6, 0, 0, time.UTC))
@@ -827,11 +832,17 @@ func dependencyAutoUnblockOrchestrator(
 	autoUnblock DependencyAutoUnblockConfig,
 ) *Orchestrator {
 	cfg := normalizeConfig(Config{
-		PollInterval:               time.Minute,
-		MaxConcurrentAgents:        1,
-		ActiveStates:               []string{"Todo", "In Progress"},
-		TerminalStates:             []string{"Done", "Cancelled"},
-		DependencyAutoUnblock:      autoUnblock,
+		PollInterval:          time.Minute,
+		MaxConcurrentAgents:   1,
+		ActiveStates:          []string{"Todo", "In Progress"},
+		TerminalStates:        []string{"Done", "Cancelled"},
+		DependencyAutoUnblock: autoUnblock,
+		BlockedRecovery: BlockedRecoveryConfig{
+			Enabled:      true,
+			SourceStates: []string{blockedStatusState},
+			TargetState:  autoPromoteReworkState,
+			ReasonCodes:  []string{blockedRecoveryReasonMergeConflict, blockedRecoveryReasonStaleBase, blockedRecoveryReasonMissingCurrentHeadCI},
+		},
 		ContinuationRetryDelay:     time.Second,
 		FailureRetryBaseDelay:      time.Second,
 		GitHubGraphQLWarnRemaining: 500,

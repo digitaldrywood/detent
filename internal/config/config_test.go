@@ -635,6 +635,15 @@ tracker:
       - Waiting
     target_state: Todo
     readiness: terminal_or_merged
+  blocked_recovery:
+    enabled: true
+    source_states:
+      - Blocked
+    target_state: Rework
+    reason_codes:
+      - merge-conflicts
+      - stale base
+      - missing_current_head_ci
   blocker_auto_promote:
     enabled: true
     source_states:
@@ -880,6 +889,18 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Tracker.DependencyAutoUnblock.Readiness != DependencyReadinessTerminalOrMerged {
 		t.Fatalf("Tracker.DependencyAutoUnblock.Readiness = %q, want %q", cfg.Tracker.DependencyAutoUnblock.Readiness, DependencyReadinessTerminalOrMerged)
+	}
+	if !cfg.Tracker.BlockedRecovery.Enabled {
+		t.Fatal("Tracker.BlockedRecovery.Enabled = false, want true")
+	}
+	if got := cfg.Tracker.BlockedRecovery.SourceStates; !reflect.DeepEqual(got, []string{"blocked"}) {
+		t.Fatalf("Tracker.BlockedRecovery.SourceStates = %#v, want blocked", got)
+	}
+	if cfg.Tracker.BlockedRecovery.TargetState != "Rework" {
+		t.Fatalf("Tracker.BlockedRecovery.TargetState = %q, want Rework", cfg.Tracker.BlockedRecovery.TargetState)
+	}
+	if got := cfg.Tracker.BlockedRecovery.ReasonCodes; !reflect.DeepEqual(got, []string{"merge_conflict", "stale_base", "missing_current_head_ci"}) {
+		t.Fatalf("Tracker.BlockedRecovery.ReasonCodes = %#v, want canonical reason codes", got)
 	}
 	if !cfg.Tracker.BlockerAutoPromote.Enabled {
 		t.Fatal("Tracker.BlockerAutoPromote.Enabled = false, want true")
@@ -1206,6 +1227,18 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Tracker.DependencyAutoUnblock.Readiness != DependencyReadinessTerminalOrMerged {
 		t.Fatalf("Tracker.DependencyAutoUnblock.Readiness = %q, want %q", cfg.Tracker.DependencyAutoUnblock.Readiness, DependencyReadinessTerminalOrMerged)
+	}
+	if cfg.Tracker.BlockedRecovery.Enabled {
+		t.Fatal("Tracker.BlockedRecovery.Enabled = true, want disabled by default")
+	}
+	if got := cfg.Tracker.BlockedRecovery.SourceStates; !reflect.DeepEqual(got, []string{"blocked"}) {
+		t.Fatalf("Tracker.BlockedRecovery.SourceStates = %#v, want blocked", got)
+	}
+	if cfg.Tracker.BlockedRecovery.TargetState != "Rework" {
+		t.Fatalf("Tracker.BlockedRecovery.TargetState = %q, want Rework", cfg.Tracker.BlockedRecovery.TargetState)
+	}
+	if got := cfg.Tracker.BlockedRecovery.ReasonCodes; !reflect.DeepEqual(got, []string{"merge_conflict", "stale_base", "missing_current_head_ci"}) {
+		t.Fatalf("Tracker.BlockedRecovery.ReasonCodes = %#v, want default allowlist", got)
 	}
 	if cfg.Tracker.BlockerAutoPromote.Enabled {
 		t.Fatal("Tracker.BlockerAutoPromote.Enabled = true, want disabled by default")
@@ -2975,6 +3008,54 @@ Prompt
 `,
 			want: []string{
 				"tracker.active_states must include Rework when tracker.dependency_auto_unblock.enabled is true",
+			},
+		},
+		{
+			name: "invalid blocked recovery config",
+			raw: `---
+tracker:
+  kind: memory
+  active_states:
+    - Todo
+    - Rework
+  blocked_recovery:
+    enabled: true
+    source_states: [""]
+    target_state: ""
+    reason_codes:
+      - sometimes
+      - merge_conflict
+      - merge-conflicts
+---
+Prompt
+`,
+			want: []string{
+				"tracker.blocked_recovery.source_states state names must not be blank",
+				"tracker.blocked_recovery.target_state is required when tracker.blocked_recovery.enabled is true",
+				"tracker.blocked_recovery.reason_codes must contain only merge_conflict, stale_base, missing_current_head_ci",
+				"tracker.blocked_recovery.reason_codes must be unique",
+			},
+		},
+		{
+			name: "blocked recovery requires active target state",
+			raw: `---
+tracker:
+  kind: memory
+  active_states:
+    - Todo
+    - In Progress
+  blocked_recovery:
+    enabled: true
+    source_states:
+      - Blocked
+    target_state: Rework
+    reason_codes:
+      - merge_conflict
+---
+Prompt
+`,
+			want: []string{
+				"tracker.active_states must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true",
 			},
 		},
 		{

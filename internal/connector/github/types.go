@@ -251,6 +251,13 @@ type restPullRequest struct {
 	MergedAt       *string    `json:"merged_at"`
 }
 
+type restPullRequestFile struct {
+	Filename         string `json:"filename"`
+	PreviousFilename string `json:"previous_filename"`
+	Status           string `json:"status"`
+	SHA              string `json:"sha"`
+}
+
 type restPullRequestMergeResponse struct {
 	SHA     string `json:"sha"`
 	Merged  bool   `json:"merged"`

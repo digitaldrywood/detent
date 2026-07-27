@@ -73,6 +73,12 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			TargetState:  cfg.Tracker.DependencyAutoUnblock.TargetState,
 			Readiness:    cfg.Tracker.DependencyAutoUnblock.Readiness,
 		}),
+		BlockedRecovery: normalizeBlockedRecoveryConfig(BlockedRecoveryConfig{
+			Enabled:      cfg.Tracker.BlockedRecovery.Enabled,
+			SourceStates: append([]string(nil), cfg.Tracker.BlockedRecovery.SourceStates...),
+			TargetState:  cfg.Tracker.BlockedRecovery.TargetState,
+			ReasonCodes:  append([]string(nil), cfg.Tracker.BlockedRecovery.ReasonCodes...),
+		}),
 		BlockerAutoPromote: BlockerAutoPromoteConfig{
 			Enabled:       cfg.Tracker.BlockerAutoPromote.Enabled,
 			SourceStates:  append([]string(nil), cfg.Tracker.BlockerAutoPromote.SourceStates...),
@@ -185,6 +191,7 @@ func normalizeConfig(cfg Config) Config {
 	cfg.Plan = gate.EffectivePlan(cfg.Plan)
 	cfg.DependencySource = normalizeDependencySource(cfg.DependencySource)
 	cfg.DependencyAutoUnblock = normalizeDependencyAutoUnblockConfig(cfg.DependencyAutoUnblock)
+	cfg.BlockedRecovery = normalizeBlockedRecoveryConfig(cfg.BlockedRecovery)
 	cfg.BlockerAutoPromote = normalizeBlockerAutoPromoteConfig(cfg.BlockerAutoPromote, cfg.ActiveStates, cfg.DependencyAutoUnblock)
 	cfg.Authorization.Normalize()
 	cfg.SelectorContext.InstanceLogin = strings.TrimSpace(cfg.SelectorContext.InstanceLogin)

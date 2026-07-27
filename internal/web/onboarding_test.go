@@ -368,6 +368,7 @@ func TestOnboardingWriteGitHubWorkflows(t *testing.T) {
 			for _, want := range append(tt.want,
 				"api_key: $GITHUB_TOKEN",
 				"dependency_auto_unblock:\n    enabled: false\n    source_states:\n      - Blocked\n    target_state: Todo\n    readiness: terminal_or_merged",
+				"blocked_recovery:\n    enabled: false\n    source_states:\n      - Blocked\n    target_state: Rework\n    reason_codes:\n      - merge_conflict\n      - stale_base\n      - missing_current_head_ci",
 				"source_root: "+sourceRoot,
 				"codex:\n  command: codex app-server",
 				"# Optional explicit backend routing. Leave commented to use the generated Codex default above.",

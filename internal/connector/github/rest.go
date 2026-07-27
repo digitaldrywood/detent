@@ -72,6 +72,12 @@ func restPullRequestReviewsPath(repo pullRequestRepo, number int) string {
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/pulls/" + strconv.Itoa(number) + "/reviews?per_page=100"
 }
 
+func restPullRequestFilesPath(repo pullRequestRepo, number int) string {
+	values := url.Values{}
+	values.Set("per_page", "100")
+	return restPullRequestPath(repo, number) + "/files?" + values.Encode()
+}
+
 func restCommitCheckRunsPath(repo pullRequestRepo, sha string) string {
 	values := url.Values{}
 	values.Set("per_page", "100")

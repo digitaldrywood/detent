@@ -96,32 +96,33 @@ type Config struct {
 }
 
 type Connector struct {
-	client            *Client
-	statusSource      string
-	projectID         string
-	repository        pullRequestRepo
-	statusField       string
-	statusLabelPrefix string
-	activeStates      []string
-	observedStates    []string
-	terminalStates    []string
-	stateMap          map[string]string
-	priorityMap       map[string]*int
-	requiredChecks    []string
-	dependencySource  string
-	dependencyCaps    map[string]nativeDependencyCapability
-	statusCache       *statusCache
-	issueFields       *issueFieldCache
-	projectCache      *projectCache
-	pullRequests      *pullRequestStatusCache
-	prHydration       *pullRequestHydrationCircuitBreaker
-	prHydrationCursor map[string]string
-	triggerLabelDir   string
-	logger            *slog.Logger
-	mu                sync.RWMutex
-	writeMu           sync.Mutex
-	instanceLogin     string
-	projectURL        string
+	client             *Client
+	statusSource       string
+	projectID          string
+	repository         pullRequestRepo
+	statusField        string
+	statusLabelPrefix  string
+	activeStates       []string
+	observedStates     []string
+	terminalStates     []string
+	stateMap           map[string]string
+	priorityMap        map[string]*int
+	requiredChecks     []string
+	dependencySource   string
+	dependencyCaps     map[string]nativeDependencyCapability
+	statusCache        *statusCache
+	issueFields        *issueFieldCache
+	projectCache       *projectCache
+	pullRequests       *pullRequestStatusCache
+	prHydration        *pullRequestHydrationCircuitBreaker
+	prHydrationCursor  map[string]string
+	prDiffFingerprints map[pullRequestDiffFingerprintCacheKey]string
+	triggerLabelDir    string
+	logger             *slog.Logger
+	mu                 sync.RWMutex
+	writeMu            sync.Mutex
+	instanceLogin      string
+	projectURL         string
 }
 
 type RepositoryMergeSettings struct {
@@ -196,27 +197,28 @@ func NewConnector(cfg Config) (*Connector, error) {
 	repository, _ := pullRequestRepoFromName(cfg.Repository)
 
 	return &Connector{
-		client:            client,
-		statusSource:      normalizeGitHubStatusSource(cfg.GitHubStatusSource),
-		projectID:         strings.TrimSpace(cfg.ProjectSlug),
-		repository:        repository,
-		statusField:       statusField,
-		statusLabelPrefix: statusLabelPrefix,
-		activeStates:      normalizeStateList(cfg.ActiveStates, []string{"Todo", "In Progress"}),
-		observedStates:    normalizeStateList(cfg.ObservedStates, nil),
-		terminalStates:    normalizeStateList(cfg.TerminalStates, []string{"Done", "Cancelled", "Canceled", "Closed"}),
-		stateMap:          cloneStateMap(cfg.StateMap),
-		priorityMap:       clonePriorityMapWithDefault(cfg.PriorityMap),
-		requiredChecks:    normalizeRequiredStatusChecks(cfg.RequiredStatusChecks),
-		dependencySource:  normalizeDependencySource(cfg.DependencySource),
-		dependencyCaps:    map[string]nativeDependencyCapability{},
-		statusCache:       newStatusCache(githubCacheTTL, cfg.Now),
-		issueFields:       newIssueFieldCache(githubCacheTTL, cfg.Now),
-		projectCache:      newProjectCache(githubCacheTTL, cfg.Now),
-		pullRequests:      newPullRequestStatusCache(githubCacheTTL, cfg.Now),
-		prHydration:       newPullRequestHydrationCircuitBreaker(cfg.Now),
-		prHydrationCursor: map[string]string{},
-		logger:            logger,
+		client:             client,
+		statusSource:       normalizeGitHubStatusSource(cfg.GitHubStatusSource),
+		projectID:          strings.TrimSpace(cfg.ProjectSlug),
+		repository:         repository,
+		statusField:        statusField,
+		statusLabelPrefix:  statusLabelPrefix,
+		activeStates:       normalizeStateList(cfg.ActiveStates, []string{"Todo", "In Progress"}),
+		observedStates:     normalizeStateList(cfg.ObservedStates, nil),
+		terminalStates:     normalizeStateList(cfg.TerminalStates, []string{"Done", "Cancelled", "Canceled", "Closed"}),
+		stateMap:           cloneStateMap(cfg.StateMap),
+		priorityMap:        clonePriorityMapWithDefault(cfg.PriorityMap),
+		requiredChecks:     normalizeRequiredStatusChecks(cfg.RequiredStatusChecks),
+		dependencySource:   normalizeDependencySource(cfg.DependencySource),
+		dependencyCaps:     map[string]nativeDependencyCapability{},
+		statusCache:        newStatusCache(githubCacheTTL, cfg.Now),
+		issueFields:        newIssueFieldCache(githubCacheTTL, cfg.Now),
+		projectCache:       newProjectCache(githubCacheTTL, cfg.Now),
+		pullRequests:       newPullRequestStatusCache(githubCacheTTL, cfg.Now),
+		prHydration:        newPullRequestHydrationCircuitBreaker(cfg.Now),
+		prHydrationCursor:  map[string]string{},
+		prDiffFingerprints: map[pullRequestDiffFingerprintCacheKey]string{},
+		logger:             logger,
 	}, nil
 }
 
@@ -382,6 +384,7 @@ var _ connector.IssueStateScanner = (*Connector)(nil)
 var _ connector.FreshIssuesByStatesFetcher = (*Connector)(nil)
 var _ connector.PullRequestCommenter = (*Connector)(nil)
 var _ connector.PullRequestCommentReader = (*Connector)(nil)
+var _ connector.PullRequestDiffFingerprintReader = (*Connector)(nil)
 var _ connector.PullRequestHydrator = (*Connector)(nil)
 var _ connector.PullRequestMerger = (*Connector)(nil)
 var _ connector.Provisioner = (*Connector)(nil)

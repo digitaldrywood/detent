@@ -669,6 +669,15 @@ tracker:
       - Blocked
     target_state: Todo
     readiness: terminal_or_merged
+  blocked_recovery:
+    enabled: false
+    source_states:
+      - Blocked
+    target_state: Rework
+    reason_codes:
+      - merge_conflict
+      - stale_base
+      - missing_current_head_ci
   blocker_auto_promote:
     enabled: false
     blocker_states:
@@ -2081,6 +2090,13 @@ the wait should be visible on the board.
   or pull request must ensure the issue body contains a machine-readable
   `Blocked by:` or `Depends on:` line; Workpad mentions alone are not a durable
   dependency contract.
+- **Recover explicit PR-maintenance parks.** Enable `tracker.blocked_recovery`
+  only when Detent-authored Blocked-entry reasons should move work to the
+  configured repair lane. Recovery requires the latest source-lane entry reason
+  to match `reason_codes`, the corresponding PR condition to still hold, and a
+  new diff-fingerprint/base-OID pair. Issue descriptions and other prose do not
+  authorize recovery. Keep this disabled on boards where `Blocked` is also used
+  for deliberate operator parking.
 
 Before you dispatch anything, run **`detent doctor --allow-write-probes`** after
 mutation authorization — it checks config

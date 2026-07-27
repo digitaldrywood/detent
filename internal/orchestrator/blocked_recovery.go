@@ -13,6 +13,19 @@ import (
 
 const reworkBreakerStageUpdateSkew = time.Second
 
+const (
+	blockedRecoveryReasonMergeConflict        = "merge_conflict"
+	blockedRecoveryReasonStaleBase            = "stale_base"
+	blockedRecoveryReasonMissingCurrentHeadCI = "missing_current_head_ci"
+)
+
+type BlockedRecoveryConfig struct {
+	Enabled      bool
+	SourceStates []string
+	TargetState  string
+	ReasonCodes  []string
+}
+
 type BlockedRecoveryAction string
 
 const (
@@ -23,31 +36,20 @@ const (
 type BlockedRecoveryReason string
 
 const (
-	BlockedRecoveryReasonNotBlocked             BlockedRecoveryReason = "not_blocked"
-	BlockedRecoveryReasonHumanBlocker           BlockedRecoveryReason = "human_blocker"
-	BlockedRecoveryReasonDependencyBlocker      BlockedRecoveryReason = "dependency_blocker"
-	BlockedRecoveryReasonMissingPullRequest     BlockedRecoveryReason = "missing_pull_request"
-	BlockedRecoveryReasonPullRequestNotOpen     BlockedRecoveryReason = "pull_request_not_open"
-	BlockedRecoveryReasonNoRecoverableSignal    BlockedRecoveryReason = "no_recoverable_signal"
-	BlockedRecoveryReasonMergeConflicts         BlockedRecoveryReason = "merge_conflicts"
-	BlockedRecoveryReasonStaleBase              BlockedRecoveryReason = "stale_base"
-	BlockedRecoveryReasonMissingCurrentHeadCI   BlockedRecoveryReason = "missing_current_head_ci"
-	BlockedRecoveryReasonPullRequestMaintenance BlockedRecoveryReason = "pull_request_maintenance"
-)
-
-type BlockedRecoveryKind string
-
-const (
-	BlockedRecoveryKindConflict    BlockedRecoveryKind = "conflict"
-	BlockedRecoveryKindNoCI        BlockedRecoveryKind = "no-ci"
-	BlockedRecoveryKindRerun       BlockedRecoveryKind = "rerun"
-	BlockedRecoveryKindPriorSignal BlockedRecoveryKind = "prior-signal"
+	BlockedRecoveryReasonNotBlocked           BlockedRecoveryReason = "not_blocked"
+	BlockedRecoveryReasonHumanBlocker         BlockedRecoveryReason = "human_blocker"
+	BlockedRecoveryReasonDependencyBlocker    BlockedRecoveryReason = "dependency_blocker"
+	BlockedRecoveryReasonMissingPullRequest   BlockedRecoveryReason = "missing_pull_request"
+	BlockedRecoveryReasonPullRequestNotOpen   BlockedRecoveryReason = "pull_request_not_open"
+	BlockedRecoveryReasonNoRecoverableSignal  BlockedRecoveryReason = "no_recoverable_signal"
+	BlockedRecoveryReasonMergeConflicts       BlockedRecoveryReason = "merge_conflicts"
+	BlockedRecoveryReasonStaleBase            BlockedRecoveryReason = "stale_base"
+	BlockedRecoveryReasonMissingCurrentHeadCI BlockedRecoveryReason = "missing_current_head_ci"
 )
 
 type BlockedRecoveryDecision struct {
 	Action      BlockedRecoveryAction
 	Reason      BlockedRecoveryReason
-	Kind        BlockedRecoveryKind
 	TargetState string
 	Detail      string
 }
@@ -62,8 +64,21 @@ type reworkBreakerPark struct {
 }
 
 func EvaluateBlockedRecovery(issue connector.Issue) BlockedRecoveryDecision {
+	return evaluateBlockedRecovery(issue, normalizeBlockedRecoveryConfig(BlockedRecoveryConfig{
+		Enabled:      true,
+		SourceStates: []string{blockedStatusState},
+		TargetState:  autoPromoteReworkState,
+	}))
+}
+
+func EvaluateBlockedRecoveryWithConfig(issue connector.Issue, cfg BlockedRecoveryConfig) BlockedRecoveryDecision {
+	return evaluateBlockedRecovery(issue, cfg)
+}
+
+func evaluateBlockedRecovery(issue connector.Issue, cfg BlockedRecoveryConfig) BlockedRecoveryDecision {
 	issue = issueWithTextDependencyRefs(issue)
-	if normalizeState(issue.State) != "blocked" {
+	cfg = normalizeBlockedRecoveryConfig(cfg)
+	if !stateIn(issue.State, cfg.SourceStates) {
 		return blockedRecoveryDecision(BlockedRecoveryActionNone, BlockedRecoveryReasonNotBlocked, "")
 	}
 	if blockedRecoveryHumanOnly(issue) {
@@ -81,44 +96,76 @@ func EvaluateBlockedRecovery(issue connector.Issue) BlockedRecoveryDecision {
 	}
 
 	if autoPromoteMergeConflicts(pr.MergeableState) {
-		return blockedRecoveryDecision(BlockedRecoveryActionRework, BlockedRecoveryReasonMergeConflicts, "linked PR has merge conflicts")
+		return blockedRecoveryDecisionWithTarget(BlockedRecoveryActionRework, BlockedRecoveryReasonMergeConflicts, cfg.TargetState, "linked PR has merge conflicts")
 	}
 	switch strings.ToLower(strings.TrimSpace(pr.MergeableState)) {
 	case "behind":
-		return blockedRecoveryDecision(BlockedRecoveryActionRework, BlockedRecoveryReasonStaleBase, "linked PR branch is behind the base branch")
+		return blockedRecoveryDecisionWithTarget(BlockedRecoveryActionRework, BlockedRecoveryReasonStaleBase, cfg.TargetState, "linked PR branch is behind the base branch")
 	}
 
-	text := blockedRecoveryText(issue)
-	agentText := blockedRecoveryAgentText(text)
-	priorSignal := blockedRecoveryHasPriorSignal(pr)
-	if blockedRecoveryNoCurrentHeadCI(pr) && (agentText || priorSignal) {
-		kind := BlockedRecoveryKindNoCI
-		if !agentText && priorSignal {
-			kind = BlockedRecoveryKindPriorSignal
-		}
-		return blockedRecoveryDecisionWithKind(BlockedRecoveryActionRework, BlockedRecoveryReasonMissingCurrentHeadCI, kind, "latest PR head has no CI signal")
-	}
-	if agentText {
-		return blockedRecoveryDecisionWithKind(BlockedRecoveryActionRework, BlockedRecoveryReasonPullRequestMaintenance, BlockedRecoveryKindRerun, "blocked reason describes agent-recoverable PR maintenance")
+	if blockedRecoveryNoCurrentHeadCI(pr) {
+		return blockedRecoveryDecisionWithTarget(BlockedRecoveryActionRework, BlockedRecoveryReasonMissingCurrentHeadCI, cfg.TargetState, "latest PR head has no CI signal")
 	}
 	return blockedRecoveryDecision(BlockedRecoveryActionNone, BlockedRecoveryReasonNoRecoverableSignal, "")
 }
 
 func blockedRecoveryDecision(action BlockedRecoveryAction, reason BlockedRecoveryReason, detail string) BlockedRecoveryDecision {
-	return blockedRecoveryDecisionWithKind(action, reason, blockedRecoveryKindForReason(reason), detail)
+	return blockedRecoveryDecisionWithTarget(action, reason, autoPromoteReworkState, detail)
 }
 
-func blockedRecoveryDecisionWithKind(action BlockedRecoveryAction, reason BlockedRecoveryReason, kind BlockedRecoveryKind, detail string) BlockedRecoveryDecision {
+func blockedRecoveryDecisionWithTarget(
+	action BlockedRecoveryAction,
+	reason BlockedRecoveryReason,
+	targetState string,
+	detail string,
+) BlockedRecoveryDecision {
 	decision := BlockedRecoveryDecision{
 		Action: action,
 		Reason: reason,
-		Kind:   kind,
 		Detail: strings.TrimSpace(detail),
 	}
 	if action == BlockedRecoveryActionRework {
-		decision.TargetState = autoPromoteReworkState
+		decision.TargetState = strings.TrimSpace(defaultString(targetState, autoPromoteReworkState))
 	}
 	return decision
+}
+
+func normalizeBlockedRecoveryConfig(cfg BlockedRecoveryConfig) BlockedRecoveryConfig {
+	cfg.SourceStates = normalizedStates(defaultStringSlice(cfg.SourceStates, []string{blockedStatusState}))
+	cfg.TargetState = strings.TrimSpace(defaultString(cfg.TargetState, autoPromoteReworkState))
+	cfg.ReasonCodes = normalizeBlockedRecoveryReasonCodes(defaultStringSlice(cfg.ReasonCodes, []string{
+		blockedRecoveryReasonMergeConflict,
+		blockedRecoveryReasonStaleBase,
+		blockedRecoveryReasonMissingCurrentHeadCI,
+	}))
+	return cfg
+}
+
+func normalizeBlockedRecoveryReasonCodes(reasonCodes []string) []string {
+	normalized := make([]string, 0, len(reasonCodes))
+	seen := map[string]struct{}{}
+	for _, reasonCode := range reasonCodes {
+		reasonCode = normalizeBlockedRecoveryReasonCode(reasonCode)
+		if reasonCode == "" {
+			continue
+		}
+		if _, ok := seen[reasonCode]; ok {
+			continue
+		}
+		seen[reasonCode] = struct{}{}
+		normalized = append(normalized, reasonCode)
+	}
+	return normalized
+}
+
+func normalizeBlockedRecoveryReasonCode(reasonCode string) string {
+	reasonCode = strings.ToLower(strings.TrimSpace(reasonCode))
+	reasonCode = strings.ReplaceAll(reasonCode, "-", "_")
+	reasonCode = strings.ReplaceAll(reasonCode, " ", "_")
+	if reasonCode == "merge_conflicts" {
+		return blockedRecoveryReasonMergeConflict
+	}
+	return reasonCode
 }
 
 func (o *Orchestrator) recoverBlockedIssues(
@@ -129,12 +176,14 @@ func (o *Orchestrator) recoverBlockedIssues(
 ) map[string]struct{} {
 	transitioned := map[string]struct{}{}
 	autoPromoteCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
-	for _, issue := range issuesInStates(issues, []string{blockedStatusState}) {
+	recoveryCfg := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery)
+	sourceStates := mergeStateLists([]string{blockedStatusState}, recoveryCfg.SourceStates)
+	for _, issue := range issuesInStates(issues, sourceStates) {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
 			continue
 		}
-		if park, ok := o.latestReworkBreakerPark(ctx, issue); autoPromoteCfg.Enabled && ok {
+		if park, ok := o.latestReworkBreakerPark(ctx, issue); normalizeState(issue.State) == normalizeState(blockedStatusState) && autoPromoteCfg.Enabled && ok {
 			if reworkBreakerAutoUnparkConsumed(park.Timeline, park.Signature) ||
 				!reworkBreakerAutoUnparkReady(issue, park) ||
 				!o.reworkBreakerAutoPromoteGateReady(ctx, state, issue, autoPromoteCfg, now) {
@@ -146,14 +195,31 @@ func (o *Orchestrator) recoverBlockedIssues(
 			transitioned[issueID] = struct{}{}
 			continue
 		}
+		if !recoveryCfg.Enabled || !stateIn(issue.State, recoveryCfg.SourceStates) {
+			continue
+		}
 		if o.issueHasStickyBlockReason(ctx, state, issue) {
 			continue
 		}
-		decision := EvaluateBlockedRecovery(issue)
+		reasonCode, ok := o.latestWorkflowLaneReason(ctx, issue, issue.State)
+		if !ok || !blockedRecoveryReasonAllowed(recoveryCfg, reasonCode) {
+			continue
+		}
+		decision := evaluateBlockedRecovery(issue, recoveryCfg)
 		if decision.Action != BlockedRecoveryActionRework {
 			continue
 		}
-		signature := blockedRecoverySignature(issue, decision)
+		if !blockedRecoveryConditionMatches(reasonCode, decision.Reason) {
+			continue
+		}
+		issue, ok = o.hydrateBlockedRecoveryDiffFingerprint(ctx, issue)
+		if !ok {
+			continue
+		}
+		signature, ok := blockedRecoverySignature(issue)
+		if !ok {
+			continue
+		}
 		if match, ok := o.workflowTimelineLaneActionSignature(ctx, issue, "blocked_recovery", workflowActionBlockedRecovery, signature); ok {
 			o.handleBlockedRecoveryExhausted(ctx, state, issue, decision, signature, match, now)
 			continue
@@ -167,6 +233,60 @@ func (o *Orchestrator) recoverBlockedIssues(
 		return nil
 	}
 	return transitioned
+}
+
+func blockedRecoveryReasonAllowed(cfg BlockedRecoveryConfig, reasonCode string) bool {
+	reasonCode = normalizeBlockedRecoveryReasonCode(reasonCode)
+	for _, allowed := range cfg.ReasonCodes {
+		if normalizeBlockedRecoveryReasonCode(allowed) == reasonCode {
+			return true
+		}
+	}
+	return false
+}
+
+func blockedRecoveryConditionMatches(reasonCode string, reason BlockedRecoveryReason) bool {
+	switch normalizeBlockedRecoveryReasonCode(reasonCode) {
+	case blockedRecoveryReasonMergeConflict:
+		return reason == BlockedRecoveryReasonMergeConflicts
+	case blockedRecoveryReasonStaleBase:
+		return reason == BlockedRecoveryReasonStaleBase
+	case blockedRecoveryReasonMissingCurrentHeadCI:
+		return reason == BlockedRecoveryReasonMissingCurrentHeadCI
+	default:
+		return false
+	}
+}
+
+func (o *Orchestrator) hydrateBlockedRecoveryDiffFingerprint(
+	ctx context.Context,
+	issue connector.Issue,
+) (connector.Issue, bool) {
+	pr := issue.PullRequest
+	if pr == nil || strings.TrimSpace(pr.BaseSHA) == "" {
+		return issue, false
+	}
+	if strings.TrimSpace(pr.DiffFingerprint) != "" {
+		return issue, true
+	}
+	reader, ok := o.connector.(connector.PullRequestDiffFingerprintReader)
+	if !ok {
+		return issue, false
+	}
+	fingerprint, err := reader.PullRequestDiffFingerprint(ctx, issue)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("blocked recovery diff fingerprint failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+		return issue, false
+	}
+	fingerprint = strings.TrimSpace(fingerprint)
+	if fingerprint == "" {
+		return issue, false
+	}
+	issue = cloneIssue(issue)
+	issue.PullRequest.DiffFingerprint = fingerprint
+	return issue, true
 }
 
 func (o *Orchestrator) latestReworkBreakerPark(ctx context.Context, issue connector.Issue) (reworkBreakerPark, bool) {
@@ -568,33 +688,15 @@ func blockedRecoveryReasonLabel(reason BlockedRecoveryReason) string {
 		return "stale base"
 	case BlockedRecoveryReasonMissingCurrentHeadCI:
 		return "missing current-head CI"
-	case BlockedRecoveryReasonPullRequestMaintenance:
-		return "PR maintenance"
 	default:
 		return strings.ReplaceAll(string(reason), "_", " ")
 	}
 }
 
-func blockedRecoveryKindForReason(reason BlockedRecoveryReason) BlockedRecoveryKind {
-	switch reason {
-	case BlockedRecoveryReasonMergeConflicts, BlockedRecoveryReasonStaleBase:
-		return BlockedRecoveryKindConflict
-	case BlockedRecoveryReasonMissingCurrentHeadCI:
-		return BlockedRecoveryKindNoCI
-	case BlockedRecoveryReasonPullRequestMaintenance:
-		return BlockedRecoveryKindRerun
-	default:
-		return ""
-	}
-}
-
-func blockedRecoverySignature(issue connector.Issue, decision BlockedRecoveryDecision) string {
-	kind := decision.Kind
-	if kind == "" {
-		kind = blockedRecoveryKindForReason(decision.Reason)
-	}
+func blockedRecoverySignature(issue connector.Issue) (string, bool) {
 	prNumber := 0
-	headSHA := ""
+	fingerprint := ""
+	baseSHA := ""
 	if issue.PRNumber != nil {
 		prNumber = *issue.PRNumber
 	}
@@ -602,9 +704,13 @@ func blockedRecoverySignature(issue connector.Issue, decision BlockedRecoveryDec
 		if pr.Number > 0 {
 			prNumber = pr.Number
 		}
-		headSHA = strings.TrimSpace(pr.HeadSHA)
+		fingerprint = strings.TrimSpace(pr.DiffFingerprint)
+		baseSHA = strings.TrimSpace(pr.BaseSHA)
 	}
-	return fmt.Sprintf("kind=%s;pr=%d;head=%s", strings.TrimSpace(string(kind)), prNumber, headSHA)
+	if prNumber <= 0 || fingerprint == "" || baseSHA == "" {
+		return "", false
+	}
+	return fmt.Sprintf("pr=%d;fingerprint=%s;base=%s", prNumber, fingerprint, baseSHA), true
 }
 
 func blockedRecoveryHumanOnly(issue connector.Issue) bool {
@@ -642,55 +748,11 @@ func blockedRecoveryHumanOnly(issue connector.Issue) bool {
 	return false
 }
 
-func blockedRecoveryAgentText(text string) bool {
-	for _, phrase := range []string{
-		"merge conflict",
-		"conflict with main",
-		"conflicts with main",
-		"stale base",
-		"behind main",
-		"rebase",
-		"retrigger",
-		"rerun check",
-		"rerun ci",
-		"no check-run",
-		"no check run",
-		"no check-runs",
-		"no check runs",
-		"missing check",
-		"latest head has no",
-		"push an empty commit",
-		"agent maintenance",
-		"pr maintenance",
-	} {
-		if strings.Contains(text, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
 func blockedRecoveryNoCurrentHeadCI(pr *connector.PullRequest) bool {
 	if pr == nil || strings.TrimSpace(pr.HeadSHA) == "" || strings.TrimSpace(pr.CIStatus) != "" {
 		return false
 	}
 	return pr.CheckRunCount == 0 && pr.StatusContextCount == 0
-}
-
-func blockedRecoveryHasPriorSignal(pr *connector.PullRequest) bool {
-	if pr == nil {
-		return false
-	}
-	headSHA := strings.TrimSpace(pr.HeadSHA)
-	latestReviewSHA := strings.TrimSpace(pr.LatestCodexReviewCommitSHA)
-	if headSHA == "" || latestReviewSHA == "" || strings.EqualFold(headSHA, latestReviewSHA) {
-		return false
-	}
-	return strings.TrimSpace(pr.LatestCodexReviewState) != "" || pr.LatestCodexReviewSubmittedAt != nil
-}
-
-func blockedRecoveryText(issue connector.Issue) string {
-	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(issue.BlockerReason+" "+issue.Description)), " "))
 }
 
 func blockedRecoveryReasonText(issue connector.Issue) string {
