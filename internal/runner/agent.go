@@ -90,6 +90,8 @@ func (f AgentBackendFactoryFunc) NewAgentBackend(cfg config.AgentBackend) (Agent
 	return f(cfg)
 }
 
+type durationLimitContextFactory func(context.Context, time.Duration, error) (context.Context, context.CancelFunc)
+
 type Dependencies struct {
 	ProjectID           string
 	Workflow            config.Workflow
@@ -105,6 +107,7 @@ type Dependencies struct {
 	Now                 func() time.Time
 	Logger              *slog.Logger
 	AfterRunTimeout     time.Duration
+	sessionLimit        durationLimitContextFactory
 }
 
 type Runner struct {
@@ -124,6 +127,7 @@ type Runner struct {
 	now                 func() time.Time
 	logger              *slog.Logger
 	afterRunTimeout     time.Duration
+	sessionLimit        durationLimitContextFactory
 }
 
 func NewRunner(deps Dependencies) (*Runner, error) {
@@ -138,6 +142,9 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	}
 	if deps.AfterRunTimeout <= 0 {
 		deps.AfterRunTimeout = defaultAfterRunTimeout
+	}
+	if deps.sessionLimit == nil {
+		deps.sessionLimit = withAgentDurationLimit
 	}
 	projectID := strings.TrimSpace(deps.ProjectID)
 	if projectID == "" {
@@ -181,6 +188,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		now:                 deps.Now,
 		logger:              deps.Logger,
 		afterRunTimeout:     deps.AfterRunTimeout,
+		sessionLimit:        deps.sessionLimit,
 	}, nil
 }
 
@@ -1070,7 +1078,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, err
 	}
-	sessionCtx, cancelSession := withAgentDurationLimit(
+	sessionCtx, cancelSession := r.sessionLimit(
 		ctx,
 		durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS),
 		ErrSessionDurationExceeded,
@@ -1374,7 +1382,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if err != nil {
 		return gate.ValidatorResult{}, err
 	}
-	sessionCtx, cancelSession := withAgentDurationLimit(
+	sessionCtx, cancelSession := r.sessionLimit(
 		ctx,
 		durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS),
 		ErrSessionDurationExceeded,

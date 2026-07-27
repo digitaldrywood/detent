@@ -108,7 +108,10 @@ func TestRunnerEnforcesConfiguredDurationLimits(t *testing.T) {
 func TestRunnerSessionDurationSpansResumeFallback(t *testing.T) {
 	t.Parallel()
 
-	agentBackend := &durationResumeFallbackAgentBackend{}
+	sessionDurationLimit := &controlledDurationLimit{}
+	agentBackend := &durationResumeFallbackAgentBackend{
+		expireSession: sessionDurationLimit.Expire,
+	}
 	sessionStore := &fakeSessionStore{
 		sessionID: 1496,
 		resumeState: store.AgentResumeState{
@@ -137,6 +140,7 @@ func TestRunnerSessionDurationSpansResumeFallback(t *testing.T) {
 		},
 		AgentBackend: agentBackend,
 		Store:        sessionStore,
+		sessionLimit: sessionDurationLimit.Context,
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
@@ -159,6 +163,12 @@ func TestRunnerSessionDurationSpansResumeFallback(t *testing.T) {
 	}
 	if !agentResumeEmpty(agentBackend.requests[1].Resume) {
 		t.Fatalf("second RunTurn() resume state = %#v, want fresh fallback", agentBackend.requests[1].Resume)
+	}
+	if sessionDurationLimit.duration != 25*time.Millisecond {
+		t.Fatalf("session duration = %v, want 25ms", sessionDurationLimit.duration)
+	}
+	if !errors.Is(sessionDurationLimit.limit, ErrSessionDurationExceeded) {
+		t.Fatalf("session duration limit = %v, want ErrSessionDurationExceeded", sessionDurationLimit.limit)
 	}
 }
 
@@ -365,8 +375,9 @@ func (b *durationUpdateAgentBackend) RunTurn(_ context.Context, _ AgentTurnReque
 }
 
 type durationResumeFallbackAgentBackend struct {
-	calls    int
-	requests []AgentTurnRequest
+	calls         int
+	requests      []AgentTurnRequest
+	expireSession func()
 }
 
 func (b *durationResumeFallbackAgentBackend) RunTurn(ctx context.Context, request AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
@@ -375,8 +386,31 @@ func (b *durationResumeFallbackAgentBackend) RunTurn(ctx context.Context, reques
 	if !agentResumeEmpty(request.Resume) {
 		return AgentTurnResult{}, errors.New("resume failed")
 	}
+	b.expireSession()
 	<-ctx.Done()
 	return AgentTurnResult{}, ctx.Err()
+}
+
+type controlledDurationLimit struct {
+	cancel   context.CancelCauseFunc
+	duration time.Duration
+	limit    error
+}
+
+func (l *controlledDurationLimit) Context(ctx context.Context, duration time.Duration, limit error) (context.Context, context.CancelFunc) {
+	ctx, l.cancel = context.WithCancelCause(ctx)
+	l.duration = duration
+	l.limit = limit
+	return ctx, func() {
+		l.cancel(context.Canceled)
+	}
+}
+
+func (l *controlledDurationLimit) Expire() {
+	l.cancel(&agentDurationLimitError{
+		limit:    l.limit,
+		duration: l.duration,
+	})
 }
 
 type deadlineObservingAgentBackend struct {
