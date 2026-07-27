@@ -149,6 +149,7 @@ type appShellProject struct {
 	Active   int
 	Waiting  int
 	Blocked  int
+	Paused   bool
 	Selected bool
 }
 
@@ -170,10 +171,13 @@ func appShellProjects(data DashboardShellData) []appShellProject {
 			Active:   project.BoardActive,
 			Waiting:  project.BoardWaiting,
 			Blocked:  project.BoardBlocked,
+			Paused:   project.Paused,
 			Selected: strings.TrimSpace(data.ProjectID) == id,
 		}
 		item.Initials = appProjectInitials(item.Name, item.ID)
-		if project.BoardLoad > 0 || project.BoardBlocked > 0 {
+		if project.Paused {
+			item.Count = "paused"
+		} else if project.BoardLoad > 0 || project.BoardBlocked > 0 {
 			item.Count = strconv.Itoa(project.BoardLoad)
 		}
 		items = append(items, item)
@@ -248,6 +252,9 @@ func appProjectLinkClass(project appShellProject) string {
 
 func appProjectCountClass(project appShellProject) string {
 	base := "rounded-chip px-1.5 py-0.5 font-mono text-2xs font-medium tabular-nums group-data-[rail=true]/rail:absolute group-data-[rail=true]/rail:-bottom-0.5 group-data-[rail=true]/rail:-right-0.5 group-data-[rail=true]/rail:min-w-3 group-data-[rail=true]/rail:px-0.5 group-data-[rail=true]/rail:py-0 group-data-[rail=true]/rail:text-center group-data-[rail=true]/rail:text-[9px] group-data-[rail=true]/rail:ring-1 group-data-[rail=true]/rail:ring-page "
+	if project.Paused {
+		return base + "bg-warn/15 text-warn"
+	}
 	if project.Blocked > 0 {
 		return base + "bg-err/15 text-err"
 	}
@@ -285,6 +292,9 @@ func appProjectInitials(name string, id string) string {
 }
 
 func appProjectDotKind(project appShellProject) primitives.Kind {
+	if project.Paused {
+		return primitives.KindWarn
+	}
 	if project.Live {
 		return primitives.KindOK
 	}
@@ -298,6 +308,23 @@ func appProjectBreakdown(project appShellProject) string {
 		strconv.Itoa(project.Waiting) + " waiting",
 		strconv.Itoa(project.Blocked) + " blocked",
 	}, " · ")
+}
+
+func appProjectStatus(project appShellProject) string {
+	if project.Paused {
+		return "paused"
+	}
+	if project.Live {
+		return "active"
+	}
+	return "idle"
+}
+
+func appProjectBadgeLabel(project appShellProject) string {
+	if project.Paused {
+		return "paused"
+	}
+	return project.Count + " board load"
 }
 
 func appDensityButtonClass(data DashboardShellData, choice string) string {

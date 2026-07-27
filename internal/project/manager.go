@@ -727,6 +727,7 @@ func (m *Manager) startInitialProjects(
 	for _, project := range projects {
 		trackedProject := project
 		if trackedProject.Paused() {
+			m.logger.Info("project startup skipped", "project_id", trackedProject.ID(), "reason", "paused")
 			continue
 		}
 		group.Go(func() error {

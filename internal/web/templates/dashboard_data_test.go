@@ -862,7 +862,7 @@ func TestSidebarProjectItemsUseAttentionFirstDefaultOrder(t *testing.T) {
 	t.Parallel()
 
 	got := sidebarProjectItems(DashboardShellData{Projects: []ProjectSmallMultiple{
-		{ID: "paused", Name: "Paused", Paused: true},
+		{ID: "paused", Name: "Paused", Paused: true, BoardLoad: 2, BoardBlocked: 1},
 		{ID: "idle", Name: "Idle"},
 		{ID: "queued", Name: "Queued", QueueCount: 1, BoardLoad: 1, BoardTodo: 1},
 		{ID: "active", Name: "Active", Running: 1, BoardLoad: 1, BoardActive: 1},
@@ -883,6 +883,14 @@ func TestSidebarProjectItemsUseAttentionFirstDefaultOrder(t *testing.T) {
 		if got[i].Href != "/projects/"+wantID+"/kanban" {
 			t.Fatalf("sidebarProjectItems()[%d].Href = %q, want kanban project opener; got %#v", i, got[i].Href, got)
 		}
+	}
+	idle := got[3]
+	paused := got[4]
+	if paused.StatusLabel != "paused" {
+		t.Fatalf("paused StatusLabel = %q, want paused", paused.StatusLabel)
+	}
+	if paused.DotClass == idle.DotClass {
+		t.Fatalf("paused DotClass = idle DotClass = %q, want distinct classes", paused.DotClass)
 	}
 }
 

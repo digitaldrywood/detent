@@ -1820,11 +1820,16 @@ templ DashboardSidebarContent(data DashboardShellData) {
 						@sidebar.MenuBadge(sidebar.MenuBadgeProps{
 							Class: "font-mono " + item.BadgeClass,
 							Attributes: templ.Attributes{
-								"aria-label": item.RunningLabel,
-								"title":      item.RunningLabel,
+								"aria-label":                    sidebarProjectBadgeLabel(item),
+								"title":                         sidebarProjectBadgeLabel(item),
+								"data-dashboard-project-status": item.StatusLabel,
 							},
 						}) {
-							{ item.CountLabel }
+							if item.StatusLabel == "paused" {
+								{ item.StatusLabel }
+							} else {
+								{ item.CountLabel }
+							}
 						}
 					}
 					if sidebarProjectOrderAvailable(data) {

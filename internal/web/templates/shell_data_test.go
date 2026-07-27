@@ -270,6 +270,7 @@ func TestAppShellProjects(t *testing.T) {
 		wantCount     string
 		wantBreakdown string
 		wantBlocked   bool
+		wantPaused    bool
 	}{
 		{
 			name:          "blocked tints board load while activity stays live",
@@ -300,6 +301,13 @@ func TestAppShellProjects(t *testing.T) {
 			wantBlocked:   true,
 		},
 		{
+			name:          "paused replaces load with status",
+			project:       ProjectSmallMultiple{ID: "paused", Paused: true, BoardLoad: 4, BoardTodo: 4},
+			wantCount:     "paused",
+			wantBreakdown: "4 todo · 0 active · 0 waiting · 0 blocked",
+			wantPaused:    true,
+		},
+		{
 			name:          "idle shows no badge",
 			project:       ProjectSmallMultiple{ID: "idle"},
 			wantBreakdown: "0 todo · 0 active · 0 waiting · 0 blocked",
@@ -323,6 +331,9 @@ func TestAppShellProjects(t *testing.T) {
 			}
 			if got := item.Blocked > 0; got != tt.wantBlocked {
 				t.Fatalf("blocked tint = %v, want %v", got, tt.wantBlocked)
+			}
+			if item.Paused != tt.wantPaused {
+				t.Fatalf("paused = %v, want %v", item.Paused, tt.wantPaused)
 			}
 			if item.Href != projectKanbanPath(tt.project.ID) {
 				t.Fatalf("href = %q, want kanban project opener", item.Href)
@@ -365,6 +376,30 @@ func TestAppSidebarContentRendersLoadActivityTintAndTooltip(t *testing.T) {
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("sidebar missing %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestAppSidebarContentRendersPausedProjectStatus(t *testing.T) {
+	t.Parallel()
+
+	data := DashboardShellData{Projects: []ProjectSmallMultiple{
+		{ID: "detent", Name: "Detent"},
+		{ID: "video-studio", Name: "Video Studio", Paused: true, BoardLoad: 3},
+	}}
+	var buf bytes.Buffer
+	if err := AppSidebarContent(data).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	html := buf.String()
+	for _, want := range []string{
+		`data-sidebar-project="video-studio"`,
+		`data-sidebar-project-status="paused"`,
+		`text-warn`,
+		`aria-label="paused">paused</span>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("sidebar missing paused project marker %q:\n%s", want, html)
 		}
 	}
 }
