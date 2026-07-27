@@ -3,9 +3,11 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
@@ -123,6 +125,38 @@ func TestToolTurnInstructions(t *testing.T) {
 				t.Fatalf("toolTurnInstructions() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestAgentBackendEnforcesConfiguredStallTimeout(t *testing.T) {
+	t.Parallel()
+
+	transport := newBlockingAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
+		responseMessage(t, 2, `{"thread":{"id":"thread-stall"}}`),
+		responseMessage(t, 5, `{"config":{"model":"gpt-5.6"}}`),
+		responseMessage(t, 3, `{"turn":{"id":"turn-stall"}}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport},
+		WithReadTimeout(time.Second),
+		WithTurnTimeout(time.Hour),
+	)
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+	backend, err := NewAgentBackend(server, OptionsFromConfig(config.CodexOptions{
+		StallTimeoutMS: 10,
+	}))
+	if err != nil {
+		t.Fatalf("NewAgentBackend() error = %v", err)
+	}
+
+	_, err = backend.RunTurn(context.Background(), runner.AgentTurnRequest{
+		Workspace: "/tmp/detent-workspace",
+		Prompt:    "stall",
+	}, nil)
+	if !errors.Is(err, ErrStreamStalled) {
+		t.Fatalf("RunTurn() error = %v, want configured ErrStreamStalled", err)
 	}
 }
 

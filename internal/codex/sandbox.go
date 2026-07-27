@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"maps"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
 )
@@ -12,6 +13,7 @@ type Options struct {
 	ApprovalPolicy    any
 	ThreadSandbox     string
 	TurnSandboxPolicy any
+	StallTimeout      time.Duration
 }
 
 func OptionsFromConfig(cfg config.CodexOptions) Options {
@@ -19,6 +21,7 @@ func OptionsFromConfig(cfg config.CodexOptions) Options {
 		ApprovalPolicy:    stringOrMapValue(cfg.ApprovalPolicy),
 		ThreadSandbox:     cfg.ThreadSandbox,
 		TurnSandboxPolicy: cfg.TurnSandboxPolicy,
+		StallTimeout:      time.Duration(cfg.StallTimeoutMS) * time.Millisecond,
 	}
 }
 

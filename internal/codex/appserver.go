@@ -35,6 +35,7 @@ const (
 var (
 	ErrResponseError   = errors.New("codex response error")
 	ErrInvalidResponse = errors.New("invalid codex response")
+	ErrStreamStalled   = errors.New("codex stream stalled")
 	ErrTurnFailed      = errors.New("codex turn failed")
 	ErrTransportClose  = errors.New("close codex app-server transport")
 )
@@ -168,6 +169,7 @@ type RunTurnRequest struct {
 	ServiceTier           string
 	ReasoningEffort       string
 	TurnTimeout           time.Duration
+	StallTimeout          time.Duration
 	DynamicTools          []DynamicTool
 	ToolHandler           DynamicToolHandler
 }
@@ -428,7 +430,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		}
 	}
 
-	if err := s.streamTurn(ctx, transport, req.turnTimeout(s.turnTimeout), req.ToolHandler, onUpdate); err != nil {
+	if err := s.streamTurn(ctx, transport, req.turnTimeout(s.turnTimeout), req.StallTimeout, req.ToolHandler, onUpdate); err != nil {
 		return RunTurnResult{}, err
 	}
 
@@ -949,9 +951,16 @@ func (r RunTurnRequest) turnTimeout(fallback time.Duration) time.Duration {
 	return fallback
 }
 
-func (s *AppServer) streamTurn(ctx context.Context, transport Transport, turnTimeout time.Duration, toolHandler DynamicToolHandler, onUpdate UpdateHandler) error {
+func (s *AppServer) streamTurn(
+	ctx context.Context,
+	transport Transport,
+	turnTimeout time.Duration,
+	stallTimeout time.Duration,
+	toolHandler DynamicToolHandler,
+	onUpdate UpdateHandler,
+) error {
 	for {
-		msg, err := receiveWithTimeout(ctx, transport, turnTimeout)
+		msg, err := receiveTurnMessage(ctx, transport, turnTimeout, stallTimeout)
 		if err != nil {
 			return fmt.Errorf("stream turn: %w", err)
 		}
@@ -986,6 +995,27 @@ func (s *AppServer) streamTurn(ctx context.Context, transport Transport, turnTim
 			Body:    update.BackendErrorBody,
 		}
 	}
+}
+
+func receiveTurnMessage(
+	ctx context.Context,
+	transport Transport,
+	turnTimeout time.Duration,
+	stallTimeout time.Duration,
+) (Message, error) {
+	if stallTimeout <= 0 || turnTimeout > 0 && turnTimeout < stallTimeout {
+		return receiveWithTimeout(ctx, transport, turnTimeout)
+	}
+
+	stallErr := fmt.Errorf("%w after %s", ErrStreamStalled, stallTimeout)
+	receiveCtx, cancel := context.WithTimeoutCause(contextOrBackground(ctx), stallTimeout, stallErr)
+	defer cancel()
+
+	msg, err := transport.Receive(receiveCtx)
+	if err != nil && errors.Is(context.Cause(receiveCtx), ErrStreamStalled) {
+		return Message{}, context.Cause(receiveCtx)
+	}
+	return msg, err
 }
 
 func sendRequest(ctx context.Context, transport Transport, id int, method string, params any) error {
