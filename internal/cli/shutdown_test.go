@@ -1137,7 +1137,7 @@ func TestPublishShutdownSnapshotSharesSnapshotSeq(t *testing.T) {
 		t.Fatal("shutdown snapshot Draining = false, want true")
 	}
 
-	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, &seq, controller, now.Add(time.Second), nil, nil, ""); err != nil {
+	if err := publishSnapshotOnce(context.Background(), registry, nil, snapshotHub, &seq, controller, now.Add(time.Second), nil, nil, ""); err != nil {
 		t.Fatalf("publishSnapshotOnce() error = %v", err)
 	}
 	nextSnapshot, ok := snapshotHub.Latest()

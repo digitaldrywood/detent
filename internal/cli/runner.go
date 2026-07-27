@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -41,6 +42,10 @@ type lifetimeTotalsSource interface {
 
 type autoUpdateStatusSource interface {
 	Status() detentupdate.AutoStatus
+}
+
+type agentPoolSnapshotSource interface {
+	PoolSnapshots() []scheduler.PoolSnapshot
 }
 
 // withRunnerFactory returns a project.Factory that constructs a
@@ -301,6 +306,7 @@ func buildClaudeCommandFromConfig(ctx context.Context, command string, shell str
 func publishSnapshots(
 	ctx context.Context,
 	registry *project.Registry,
+	poolSource agentPoolSnapshotSource,
 	snapshotHub *hub.Hub[telemetry.Snapshot],
 	seq *atomic.Uint64,
 	shutdown *ShutdownController,
@@ -328,7 +334,7 @@ func publishSnapshots(
 	defer ticker.Stop()
 
 	for {
-		if err := publishSnapshotOnce(ctx, registry, snapshotHub, seq, shutdown, now(), trend, lifetimeSource, dashboardURL, updateSources...); err != nil {
+		if err := publishSnapshotOnce(ctx, registry, poolSource, snapshotHub, seq, shutdown, now(), trend, lifetimeSource, dashboardURL, updateSources...); err != nil {
 			slog.Default().Warn("publish telemetry snapshot failed", "error", err)
 		}
 		select {
@@ -516,11 +522,7 @@ func startupProjectSnapshots(projects []globalconfig.Project, refresh telemetry.
 			continue
 		}
 		out = append(out, telemetry.ProjectSnapshot{
-			Project: telemetry.Project{
-				ID:          id,
-				DisplayName: id,
-				Color:       projectcolor.ColorFor(id, cfg.Color),
-			},
+			Project: projectSnapshotMetadataFromConfig(cfg),
 			Refresh: refresh,
 		})
 	}
@@ -530,6 +532,7 @@ func startupProjectSnapshots(projects []globalconfig.Project, refresh telemetry.
 func publishSnapshotOnce(
 	ctx context.Context,
 	registry *project.Registry,
+	poolSource agentPoolSnapshotSource,
 	snapshotHub *hub.Hub[telemetry.Snapshot],
 	seq *atomic.Uint64,
 	shutdown *ShutdownController,
@@ -624,6 +627,7 @@ func publishSnapshotOnce(
 		})
 	}
 	merged = dedupeSnapshotIssues(merged)
+	merged.AgentPools = telemetryAgentPools(poolSource)
 	if trend != nil {
 		merged = trend.apply(merged)
 	}
@@ -674,11 +678,41 @@ func projectSnapshotMetadata(trackedProject *project.Project) telemetry.Project 
 
 func projectSnapshotMetadataFromConfig(cfg globalconfig.Project) telemetry.Project {
 	id := strings.TrimSpace(cfg.ID)
+	pool := strings.TrimSpace(cfg.Pool)
+	if pool == "" {
+		pool = scheduler.DefaultPoolName
+	}
 	return telemetry.Project{
 		ID:          id,
 		DisplayName: id,
 		Color:       projectcolor.ColorFor(id, cfg.Color),
+		Pool:        pool,
 	}
+}
+
+func telemetryAgentPools(source agentPoolSnapshotSource) []telemetry.AgentPool {
+	if source == nil {
+		return nil
+	}
+	snapshots := source.PoolSnapshots()
+	pools := make([]telemetry.AgentPool, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		name := strings.TrimSpace(snapshot.Name)
+		if name == "" || snapshot.Capacity <= 0 {
+			continue
+		}
+		pools = append(pools, telemetry.AgentPool{
+			Name:       name,
+			Used:       snapshot.Used,
+			Capacity:   snapshot.Capacity,
+			Draining:   snapshot.Draining,
+			Generation: snapshot.Generation,
+		})
+	}
+	if len(pools) == 0 {
+		return nil
+	}
+	return pools
 }
 
 func runtimeErrorRefresh(runtimeErr project.RuntimeError) telemetry.Refresh {
@@ -850,6 +884,7 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.BackendOutages = append(current.BackendOutages, next.BackendOutages...)
 	current.FailureBreakers = append(current.FailureBreakers, next.FailureBreakers...)
 	current.DispatchRecoveries = append(current.DispatchRecoveries, next.DispatchRecoveries...)
+	current.AgentPools = append(current.AgentPools, next.AgentPools...)
 	current.OverloadRetriesLastHour += next.OverloadRetriesLastHour
 
 	current.Counts.Running += next.Counts.Running

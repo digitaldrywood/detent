@@ -16,9 +16,13 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 	got, ok := projectScopedSnapshot(telemetry.Snapshot{
 		GeneratedAt: now,
 		Project:     telemetry.Project{DisplayName: "multiple projects"},
+		AgentPools: []telemetry.AgentPool{
+			{Name: "default", Used: 1, Capacity: 2},
+			{Name: "code", Used: 5, Capacity: 5},
+		},
 		Projects: []telemetry.ProjectSnapshot{
 			{
-				Project:    telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Project:    telemetry.Project{ID: "detent", DisplayName: "Detent", Pool: "code"},
 				Counts:     telemetry.Counts{Running: 1, Queue: 1, Blocked: 1, Completed: 1},
 				Tokens:     telemetry.Tokens{Input: 10, Output: 20, Total: 30},
 				Throughput: telemetry.TokenThroughput{TokensPerSecond: 2.5, WindowSeconds: 60, Tokens: 150},
@@ -76,8 +80,14 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 	if !ok {
 		t.Fatal("projectScopedSnapshot() ok = false, want true")
 	}
-	if got.Project.ID != "detent" || got.Project.DisplayName != "Detent" {
+	if got.Project.ID != "detent" || got.Project.DisplayName != "Detent" || got.Project.Pool != "code" {
 		t.Fatalf("Project = %#v, want detent metadata", got.Project)
+	}
+	if !reflect.DeepEqual(got.AgentPools, []telemetry.AgentPool{
+		{Name: "default", Used: 1, Capacity: 2},
+		{Name: "code", Used: 5, Capacity: 5},
+	}) {
+		t.Fatalf("AgentPools = %#v, want fleet pool telemetry retained", got.AgentPools)
 	}
 	if got.Counts != (telemetry.Counts{Running: 1, Queue: 1, Blocked: 1, Completed: 1}) {
 		t.Fatalf("Counts = %#v, want detent counts", got.Counts)

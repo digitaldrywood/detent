@@ -20,6 +20,8 @@ func TestSnapshotForScenarioVariants(t *testing.T) {
 		{name: "draining", projectID: "dogfood", variant: "draining"},
 		{name: "dense", projectID: "dogfood", variant: "dense"},
 		{name: "degraded", projectID: "dogfood", variant: "degraded"},
+		{name: "agent pools", projectID: "dogfood", variant: "agent-pools"},
+		{name: "default agent pool", projectID: "dogfood", variant: "agent-pool-default"},
 		{name: "pending update", projectID: "dogfood", variant: "pending-update"},
 		{name: "github api healthy", variant: "github-api-healthy"},
 		{name: "github api warning", variant: "github-api-warning"},

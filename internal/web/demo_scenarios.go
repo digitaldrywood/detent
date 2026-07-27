@@ -132,6 +132,8 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "fleet-draining-shutdown", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "draining"},
 		{ID: "fleet-dense-multiproject", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "dense"},
 		{ID: "fleet-degraded-telemetry", Route: "/fleet", WaitSelector: "#snapshot", Page: "fleet", Variant: "degraded"},
+		{ID: "fleet-agent-pools", Route: "/fleet", WaitSelector: "#agent-pool-capacity", Page: "fleet", Variant: "agent-pools", HideFromManifest: true},
+		{ID: "fleet-agent-pool-default", Route: "/fleet", WaitSelector: "#agent-activity", Page: "fleet", Variant: "agent-pool-default", HideFromManifest: true},
 		{ID: "fleet-update-pending", Route: "/fleet", WaitSelector: "#update-pending", Page: "fleet", Variant: "pending-update"},
 		{ID: "github-api-healthy", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-healthy"},
 		{ID: "github-api-warning", Route: "/health/ui", WaitSelector: "#health-verdict", Page: "health", Variant: "github-api-warning"},
@@ -155,6 +157,7 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "project-paused-overview", Route: "/projects/mobile-client", WaitSelector: "#snapshot", Page: "project", Variant: "paused", ProjectID: "mobile-client"},
 		{ID: "project-empty-overview", Route: "/projects/agent-lab", WaitSelector: "#snapshot", Page: "project", Variant: "project-empty", ProjectID: "agent-lab"},
 		{ID: "project-hot-path", Route: "/projects/billing-api", WaitSelector: "#snapshot", Page: "project", Variant: "hot-path", ProjectID: "billing-api"},
+		{ID: "project-agent-pool", Route: "/projects/dogfood", WaitSelector: "#agent-pool-capacity", Page: "project", Variant: "agent-pools", ProjectID: demoPrimaryProjectID, HideFromManifest: true},
 		{ID: "project-not-found", Route: "/projects/missing-project", WaitSelector: "body", Page: "project", Variant: "not-found", ProjectID: "missing-project", Status: http.StatusNotFound},
 		{ID: "kanban-full-integration", Route: "/projects/dogfood/kanban", WaitSelector: "#board-lanes", Page: "kanban", Variant: "healthy", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
 		{ID: "kanban-startup-loading", Route: "/projects/dogfood/kanban", WaitSelector: "#snapshot", Page: "kanban", Variant: "startup-loading", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
@@ -431,6 +434,7 @@ func (s *Server) demoProjectDashboardData(ctx context.Context, scenario demoScen
 		DisplayName: project.Name,
 		URL:         project.URL,
 		Color:       project.Color,
+		Pool:        project.Pool,
 	})
 	scoped = applyProjectBudgetSnapshot(scoped, project)
 	instanceName := s.instanceName()

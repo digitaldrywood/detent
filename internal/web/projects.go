@@ -89,6 +89,7 @@ func projectSmallMultiplesFromSnapshot(snapshot telemetry.Snapshot) []templates.
 			Name:         strings.TrimSpace(snapshot.Project.DisplayName),
 			URL:          strings.TrimSpace(snapshot.Project.URL),
 			Color:        snapshotProjectColor(snapshot.Project.Color),
+			Pool:         strings.TrimSpace(snapshot.Project.Pool),
 			Running:      snapshot.Counts.Running,
 			QueueCount:   snapshot.Counts.Queue,
 			Blocked:      snapshot.Counts.Blocked,
@@ -109,6 +110,7 @@ func projectSmallMultipleFromSnapshot(project telemetry.ProjectSnapshot, workloa
 		Name:                      strings.TrimSpace(project.Project.DisplayName),
 		URL:                       strings.TrimSpace(project.Project.URL),
 		Color:                     snapshotProjectColor(project.Project.Color),
+		Pool:                      strings.TrimSpace(project.Project.Pool),
 		Running:                   project.Counts.Running,
 		QueueCount:                project.Counts.Queue,
 		Blocked:                   project.Counts.Blocked,
@@ -153,6 +155,7 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 			Name:           id,
 			URL:            trackerProjectURL(trackedProject),
 			Color:          configuredProjectColor(projectConfig.Color),
+			Pool:           strings.TrimSpace(projectConfig.Pool),
 			Paused:         trackedProject.Paused(),
 			PauseReason:    projectConfig.PausedReason,
 			PauseIssue:     projectConfig.PausedUntilIssue,
@@ -172,6 +175,7 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 	for i := range projects {
 		id := strings.TrimSpace(projects[i].ID)
 		if configuredProject, ok := configured[id]; ok {
+			projects[i].Pool = configuredProject.Pool
 			projects[i].Paused = configuredProject.Paused
 			projects[i].PauseReason = configuredProject.PauseReason
 			projects[i].PauseIssue = configuredProject.PauseIssue

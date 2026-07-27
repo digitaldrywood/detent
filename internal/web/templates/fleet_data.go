@@ -2,6 +2,7 @@ package templates
 
 import (
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -16,6 +17,7 @@ type fleetView struct {
 	AllClear   string
 	Agents     []fleetAgentRow
 	AgentCount string
+	AgentPools []fleetAgentPool
 	Figures    []primitives.Figure
 	TPS        string
 	Spend      string
@@ -40,6 +42,15 @@ type fleetAgentRow struct {
 	ProgressTitle string
 	Telemetry     string
 	StopPath      string
+}
+
+type fleetAgentPool struct {
+	ID         string
+	Name       string
+	Usage      string
+	Saturated  bool
+	Draining   bool
+	StatusKind primitives.Kind
 }
 
 type fleetPRLane struct {
@@ -87,12 +98,14 @@ type fleetMetrics struct {
 
 func fleetViewFromDashboard(data DashboardData) fleetView {
 	snapshot := data.Snapshot
+	agentPools := fleetAgentPools(data)
 	// Fleet and project Overview render agent/PR content into #snapshot, not
 	// a board, so their Review sheets omit inline board actions.
 	view := fleetView{
 		Exceptions: boardExceptions(data, false),
 		Agents:     fleetAgentRows(snapshot),
-		AgentCount: formatCount(runningCount(snapshot)) + " running",
+		AgentCount: fleetAgentCount(data, agentPools),
+		AgentPools: agentPools,
 		Figures:    boardFigures(snapshot),
 		TPS:        throughputRate(snapshot),
 		Spend:      formatUSD(snapshot.Budget.CurrentSpendUSD) + " today",
@@ -121,6 +134,77 @@ func fleetViewFromDashboard(data DashboardData) fleetView {
 		}
 	}
 	return view
+}
+
+func fleetAgentPools(data DashboardData) []fleetAgentPool {
+	projectPool := ""
+	if strings.TrimSpace(data.ProjectID) != "" {
+		projectPool = strings.TrimSpace(data.Snapshot.Project.Pool)
+		if projectPool == "" {
+			projectPool = "default"
+		}
+	}
+
+	pools := make([]fleetAgentPool, 0, len(data.Snapshot.AgentPools))
+	for _, pool := range data.Snapshot.AgentPools {
+		name := strings.TrimSpace(pool.Name)
+		if name == "" || pool.Capacity <= 0 || projectPool != "" && name != projectPool {
+			continue
+		}
+		saturated := pool.Used >= pool.Capacity
+		kind := primitives.KindOK
+		if saturated {
+			kind = primitives.KindErr
+		}
+		id := "agent-pool-" + boardCardSlug(name)
+		if pool.Generation > 0 {
+			id += "-" + strconv.FormatUint(pool.Generation, 10)
+		}
+		pools = append(pools, fleetAgentPool{
+			ID:         id,
+			Name:       name,
+			Usage:      formatCount(pool.Used) + " / " + formatCount(pool.Capacity),
+			Saturated:  saturated,
+			Draining:   pool.Draining,
+			StatusKind: kind,
+		})
+	}
+	sort.SliceStable(pools, func(i, j int) bool {
+		if pools[i].Name == "default" {
+			return pools[j].Name != "default"
+		}
+		if pools[j].Name == "default" {
+			return false
+		}
+		return pools[i].Name < pools[j].Name
+	})
+	return pools
+}
+
+func fleetAgentCount(data DashboardData, pools []fleetAgentPool) string {
+	running := formatCount(runningCount(data.Snapshot)) + " running"
+	if len(pools) != 1 {
+		return running
+	}
+	pool := pools[0]
+	if strings.TrimSpace(data.ProjectID) == "" && pool.Name == "default" && !pool.Draining {
+		return running + " · " + pool.Usage + " capacity"
+	}
+	if strings.TrimSpace(data.ProjectID) != "" && pool.Name == "default" && !pool.Draining {
+		return running + " · default " + pool.Usage
+	}
+	return running
+}
+
+func fleetAgentPoolClass(pool fleetAgentPool) string {
+	base := "flex min-w-0 items-center gap-1.5 rounded-chip border px-2 py-1 font-mono text-2xs font-medium tabular-nums "
+	if pool.Saturated {
+		return base + "border-err/40 bg-err/10 text-err"
+	}
+	if pool.Draining {
+		return base + "border-warn/40 bg-warn/10 text-warn"
+	}
+	return base + "border-line bg-elev text-sec"
 }
 
 func budgetEnrichmentPending(data DashboardData) bool {
