@@ -21,6 +21,7 @@ templ BoardPage(data DashboardData) {
 				@BoardSnapshot(data)
 			</div>
 		</main>
+		@boardAlertScript()
 		@boardLaneScript()
 		@boardKanbanDragScript()
 	}
@@ -34,7 +35,8 @@ templ BoardPage(data DashboardData) {
 // prior tracker data keeps the last-known lanes visible (via
 // projectKanbanBoardLoaded) rather than flashing skeletons.
 templ BoardSnapshot(data DashboardData) {
-	@updatePendingBanner(data.Snapshot, "mx-5 mt-3.5")
+	{{ alerts := boardAlerts(data.Snapshot) }}
+	@boardAlertsBar(alerts)
 	if boardFirstRun(data) {
 		@primitives.FirstRun("Connect a repository to start orchestrating.", "Add project", "/settings", "projects are defined in the global config")
 	} else if !projectKanbanBoardLoaded(data) {
@@ -52,35 +54,6 @@ templ BoardSnapshot(data DashboardData) {
 
 templ boardSnapshotBody(data DashboardData) {
 	{{ view := boardViewFromDashboard(data) }}
-	if data.Snapshot.LastKnown {
-		<section id="board-last-known" class="mx-5 mt-3.5 flex-none rounded-md border border-warn/20 bg-warn/10 px-3 py-2 text-sm text-warn" role="status" aria-live="polite" data-board-snapshot-stale="true">
-			<span>Showing last state from </span>@LocalTime(data.Snapshot.GeneratedAt, LocalTimeOptions{Style: LocalDateTime, Relative: true, Fallback: "recently"})<span> — refreshing…</span>
-		</section>
-	}
-	if refreshFreshnessKind(data.Snapshot) == primitives.KindWarn {
-		<section id="board-stale-data" class="mx-5 mt-3.5 flex flex-none items-start gap-3 rounded-md border border-warn/40 bg-warn/10 px-4 py-2.5 text-sm text-warn shadow-sm" role="alert" aria-live="polite" data-board-data-stale="true">
-			@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0"})
-			<p class="min-w-0 break-words">{ refreshStaleBannerDetail(data.Snapshot) }</p>
-		</section>
-	}
-	{{ failureSummary, hasFailureSummary := boardFailureBreakerSummary(data.Snapshot.FailureBreakers) }}
-	if hasFailureSummary {
-		<div class="flex-none px-5 pt-3.5">
-			@boardFailureBreakerBanner(failureSummary)
-		</div>
-	}
-	{{ recoverySummaries := boardDispatchRecoverySummaries(data.Snapshot.DispatchRecoveries, data.Snapshot.GeneratedAt) }}
-	if len(recoverySummaries) > 0 {
-		<div class="flex-none px-5 pt-3.5">
-			@boardDispatchRecoveryBanner(recoverySummaries)
-		</div>
-	}
-	{{ capacitySummaries := boardBackendCapacitySummaries(data.Snapshot.BackendOutages, data.Snapshot.GeneratedAt) }}
-	if len(capacitySummaries) > 0 {
-		<div class="flex-none px-5 pt-3.5">
-			@boardBackendCapacityBanner(capacitySummaries)
-		</div>
-	}
 	if len(view.Exceptions) > 0 {
 		<div id="board-exceptions" class="flex-none px-5 pt-3.5">
 			@primitives.ExceptionStrip(view.Exceptions)
@@ -123,33 +96,283 @@ templ boardSnapshotBody(data DashboardData) {
 	</div>
 }
 
-templ boardFailureBreakerBanner(summary boardBannerSummary) {
-	<section id="project-failure-breaker" class="flex min-w-0 items-center gap-3 rounded-md border border-warn/40 bg-warn/10 px-4 py-2.5 text-sm shadow-sm" role="status" aria-live="polite">
-		@icon.CircleAlert(icon.Props{Class: "size-4 shrink-0 text-warn"})
-		<p id={ summary.ID } class="min-w-0 break-words font-medium text-text">{ summary.Title }</p>
-	</section>
+templ boardAlertsBar(alerts []boardAlert) {
+	if len(alerts) > 0 {
+		<section
+			id="board-alerts"
+			class={ boardAlertsClass(alerts) }
+			role="alert"
+			aria-live="polite"
+			data-board-alert-count={ strconv.Itoa(len(alerts)) }
+			if boardAlertKindActive(alerts, boardAlertKindLastKnown) {
+				data-board-snapshot-stale="true"
+			}
+			if boardAlertKindActive(alerts, boardAlertKindTrackerStale) {
+				data-board-data-stale="true"
+			}
+		>
+			<button
+				id="board-alerts-toggle"
+				type="button"
+				class="flex h-10 w-full min-w-0 items-center gap-2 px-3 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current"
+				data-board-alerts-toggle
+				aria-expanded="false"
+				aria-controls="board-alerts-overlay"
+				aria-label={ boardAlertButtonLabel(alerts) }
+			>
+				@boardAlertGlyph(alerts[0], "size-4 shrink-0")
+				<span class="shrink-0 font-medium">{ boardCountLabel(len(alerts), "issue", "issues") }</span>
+				<span class="shrink-0 text-current/60" aria-hidden="true">·</span>
+				<span class="min-w-0 flex-1 truncate text-text">{ alerts[0].TerseSummary }</span>
+				if len(alerts) > 1 {
+					<span class="shrink-0 font-medium">{ "+" + strconv.Itoa(len(alerts)-1) }</span>
+				}
+				<span class="shrink-0 transition-transform duration-150 data-[open=true]:rotate-180" data-board-alerts-chevron data-open="false" aria-hidden="true">
+					@icon.ChevronDown(icon.Props{Class: "size-4"})
+				</span>
+			</button>
+			<template data-board-alerts-overlay-template>
+				@boardAlertsOverlayContents(alerts)
+			</template>
+		</section>
+	}
 }
 
-templ boardDispatchRecoveryBanner(summaries []boardBannerSummary) {
-	<section id="dispatch-recovery-status" class="flex min-w-0 items-start gap-3 rounded-md border border-warn/40 bg-warn/10 px-4 py-2.5 text-sm shadow-sm" role="status" aria-live="polite">
-		@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-warn"})
-		<div class="grid min-w-0 gap-1.5">
-			for _, summary := range summaries {
-				<p id={ summary.ID } class="min-w-0 break-words font-medium text-text">{ summary.Title }</p>
+templ boardAlertsOverlayContents(alerts []boardAlert) {
+	<div class="divide-y divide-line" data-board-alerts-overlay-content>
+		<header class="sticky top-0 z-10 flex h-10 items-center gap-2 border-b border-line bg-page px-3 text-sm">
+			@boardAlertGlyph(alerts[0], "size-4 shrink-0")
+			<p class="min-w-0 flex-1 truncate font-medium text-text">{ boardCountLabel(len(alerts), "issue", "issues") }</p>
+			<button
+				type="button"
+				class="inline-flex shrink-0 items-center gap-1 rounded-chip px-2 py-1 text-xs font-medium text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+				data-board-alerts-close
+				aria-label="Collapse board alerts"
+			>
+				@icon.ChevronUp(icon.Props{Class: "size-3.5"})
+				Close
+			</button>
+		</header>
+		<div class="grid divide-y divide-line">
+			for _, alert := range alerts {
+				<section id={ alert.ID } class="grid min-w-0 gap-2 px-4 py-3" data-board-alert={ string(alert.Kind) }>
+					<div class="flex min-w-0 items-start gap-3">
+						<div class="min-w-0 flex-1">
+							<p class="font-medium text-text">{ alert.TerseSummary }</p>
+							if alert.DetailSummary != "" {
+								<p class="mt-0.5 text-xs text-sec">{ alert.DetailSummary }</p>
+							}
+						</div>
+						if alert.DeepLink != "" {
+							<a class="shrink-0 text-xs font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ templ.SafeURL(alert.DeepLink) }>
+								if alert.Overflow > 0 {
+									{ "+" + strconv.Itoa(alert.Overflow) + " more · Health" }
+								} else {
+									Health
+								}
+							</a>
+						}
+					</div>
+					if len(alert.DetailRows) > 0 {
+						<div class="grid gap-2 pl-3">
+							for _, row := range alert.DetailRows {
+								<div id={ row.ID } class="min-w-0 border-l border-line pl-3 text-xs">
+									<p class="flex min-w-0 flex-wrap items-baseline gap-x-2 text-text">
+										<span class="font-mono font-medium">{ row.Label }</span>
+										if row.Summary != "" {
+											<span class="text-sec">{ row.Summary }</span>
+										}
+									</p>
+									if row.Detail != "" {
+										<p class="mt-0.5 break-words text-sec">{ row.Detail }</p>
+									}
+								</div>
+							}
+						</div>
+					}
+					if alert.Action != nil {
+						<form
+							class="pl-3"
+							hx-post={ alert.Action.Path }
+							hx-target={ alert.Action.Target }
+							hx-swap="innerHTML"
+							hx-confirm={ alert.Action.Confirm }
+						>
+							<input type="hidden" name="confirm" value="true"/>
+							<button type="submit" class="inline-flex min-h-8 items-center justify-center rounded-card border border-current/40 bg-surface px-3 py-1.5 text-xs font-medium text-text hover:bg-current/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current/50">{ alert.Action.Label }</button>
+						</form>
+					}
+				</section>
 			}
 		</div>
-	</section>
+	</div>
 }
 
-templ boardBackendCapacityBanner(summaries []boardBannerSummary) {
-	<section id="backend-capacity-outage" class="flex min-w-0 items-start gap-3 rounded-md border border-warn/40 bg-warn/10 px-4 py-2.5 text-sm shadow-sm" role="status" aria-live="polite">
-		@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-warn"})
-		<div class="grid min-w-0 gap-1.5">
-			for _, summary := range summaries {
-				<p id={ summary.ID } class="min-w-0 break-words font-medium text-text">{ summary.Title }</p>
+templ boardAlertGlyph(alert boardAlert, class string) {
+	if alert.Tone == primitives.KindErr {
+		@icon.TriangleAlert(icon.Props{Class: class})
+	} else if alert.Tone == primitives.KindInfo {
+		@icon.Info(icon.Props{Class: class})
+	} else {
+		@icon.CircleAlert(icon.Props{Class: class})
+	}
+}
+
+templ boardAlertsOverlayHost() {
+	<div
+		id="board-alerts-overlay"
+		class="fixed z-40 hidden max-h-[40vh] overflow-y-auto rounded-card border border-line bg-page shadow-lg"
+		data-board-alerts-overlay-host
+		aria-hidden="true"
+		hidden
+	></div>
+}
+
+templ boardAlertScript() {
+	<script>
+		(function () {
+			var open = false;
+			var positionFrame = 0;
+
+			function alertsBar() {
+				return document.getElementById("board-alerts");
 			}
-		</div>
-	</section>
+
+			function alertsToggle() {
+				return document.querySelector("[data-board-alerts-toggle]");
+			}
+
+			function overlayHost() {
+				return document.querySelector("[data-board-alerts-overlay-host]");
+			}
+
+			function overlayTemplate() {
+				var bar = alertsBar();
+				return bar ? bar.querySelector("template[data-board-alerts-overlay-template]") : null;
+			}
+
+			function setToggleState(expanded) {
+				var toggle = alertsToggle();
+				if (!toggle) return;
+				toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+				var chevron = toggle.querySelector("[data-board-alerts-chevron]");
+				if (chevron) chevron.setAttribute("data-open", expanded ? "true" : "false");
+			}
+
+			function renderOverlay() {
+				var host = overlayHost();
+				var template = overlayTemplate();
+				if (!host || !(template instanceof HTMLTemplateElement)) return false;
+				host.replaceChildren(template.content.cloneNode(true));
+				if (window.htmx) window.htmx.process(host);
+				return true;
+			}
+
+			function positionOverlay() {
+				positionFrame = 0;
+				if (!open) return;
+				var bar = alertsBar();
+				var host = overlayHost();
+				if (!bar || !host) return;
+				var rect = bar.getBoundingClientRect();
+				var margin = 8;
+				var width = Math.min(rect.width, Math.max(0, window.innerWidth - margin * 2));
+				var left = Math.min(Math.max(margin, rect.left), Math.max(margin, window.innerWidth - width - margin));
+				host.style.left = Math.round(left) + "px";
+				host.style.top = Math.round(rect.bottom + 4) + "px";
+				host.style.width = Math.round(width) + "px";
+			}
+
+			function requestOverlayPosition() {
+				if (positionFrame) return;
+				positionFrame = requestAnimationFrame(positionOverlay);
+			}
+
+			function closeOverlay(restoreFocus) {
+				open = false;
+				var host = overlayHost();
+				if (host) {
+					host.hidden = true;
+					host.classList.add("hidden");
+					host.setAttribute("aria-hidden", "true");
+				}
+				setToggleState(false);
+				if (restoreFocus) {
+					var toggle = alertsToggle();
+					if (toggle) toggle.focus();
+				}
+			}
+
+			function openOverlay() {
+				if (!renderOverlay()) return;
+				open = true;
+				var host = overlayHost();
+				if (!host) return;
+				host.hidden = false;
+				host.classList.remove("hidden");
+				host.setAttribute("aria-hidden", "false");
+				setToggleState(true);
+				positionOverlay();
+			}
+
+			function syncOverlayAfterMorph() {
+				if (!open) {
+					setToggleState(false);
+					return;
+				}
+				if (!alertsBar()) {
+					closeOverlay(false);
+					return;
+				}
+				var host = overlayHost();
+				var scrollTop = host ? host.scrollTop : 0;
+				if (!renderOverlay()) {
+					closeOverlay(false);
+					return;
+				}
+				host = overlayHost();
+				if (!host) return;
+				host.hidden = false;
+				host.classList.remove("hidden");
+				host.setAttribute("aria-hidden", "false");
+				host.scrollTop = scrollTop;
+				setToggleState(true);
+				positionOverlay();
+			}
+
+			function settledSnapshot(event) {
+				var detailTarget = event.detail && event.detail.target;
+				var target = detailTarget instanceof Element ? detailTarget : event.target;
+				if (!(target instanceof Element)) return false;
+				return target.id === "snapshot" || Boolean(target.closest("#snapshot"));
+			}
+
+			document.addEventListener("click", function (event) {
+				var target = event.target instanceof Element ? event.target : null;
+				if (!target) return;
+				if (target.closest("[data-board-alerts-close]")) {
+					closeOverlay(true);
+					return;
+				}
+				if (!target.closest("[data-board-alerts-toggle]")) return;
+				if (open) {
+					closeOverlay(false);
+				} else {
+					openOverlay();
+				}
+			});
+
+			document.addEventListener("keydown", function (event) {
+				if (event.key === "Escape" && open) closeOverlay(true);
+			});
+
+			document.addEventListener("htmx:afterSettle", function (event) {
+				if (settledSnapshot(event)) syncOverlayAfterMorph();
+			});
+
+			window.addEventListener("resize", requestOverlayPosition);
+		})();
+	</script>
 }
 
 templ boardLaneView2(lane boardLaneView) {

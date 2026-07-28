@@ -79,10 +79,13 @@ test("boot renders a seeded last-known board before the live morph", async ({ pa
     const tooltip = page.locator("#help-tooltip");
     const originalTooltip = await tooltip.elementHandle();
 
-    const staleBanner = page.locator("#board-last-known");
+    const staleBanner = page.locator("#board-alerts");
     await expect(staleBanner).toBeVisible();
-    await expect(staleBanner).toContainText("Showing last state from");
-    await expect(staleBanner).toContainText("refreshing…");
+    await expect(staleBanner).toHaveAttribute(
+      "data-board-snapshot-stale",
+      "true",
+    );
+    await expect(staleBanner).toContainText("Board showing last-known state");
     await expect(snapshot).toContainText("Cached board card before hydration");
     await expect(page.locator("#board-lanes")).toHaveClass(/grayscale/);
 

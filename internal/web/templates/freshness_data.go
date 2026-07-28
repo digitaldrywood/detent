@@ -53,7 +53,112 @@ func refreshFreshnessSummary(snapshot telemetry.Snapshot) string {
 	return label + " · " + prPipelineAge(oldest, snapshot.GeneratedAt) + " ago"
 }
 
-func refreshStaleBannerDetail(snapshot telemetry.Snapshot) string {
+type refreshStaleDetailRow struct {
+	ProjectID string
+	Sources   string
+	Detail    string
+}
+
+func refreshStaleSummary(snapshot telemetry.Snapshot) string {
+	stale := refreshStaleSources(snapshot.Refresh, snapshot.GeneratedAt)
+	if len(stale) == 0 {
+		if strings.TrimSpace(snapshot.Refresh.LastError) != "" {
+			return "The latest tracker refresh failed."
+		}
+		return "Live snapshots do not contain current tracker data."
+	}
+	summary := "Tracker sources"
+	if projectCount := refreshStaleProjectCount(snapshot); projectCount > 0 {
+		summary = boardCountLabel(projectCount, "project", "projects")
+	}
+	if oldest := refreshOldestSuccess(stale); !oldest.IsZero() {
+		summary += ", oldest " + prPipelineAge(oldest, snapshot.GeneratedAt) + " ago"
+	}
+	return summary
+}
+
+func refreshStaleProjectCount(snapshot telemetry.Snapshot) int {
+	projects := make(map[string]struct{})
+	for _, source := range refreshStaleSources(snapshot.Refresh, snapshot.GeneratedAt) {
+		projectID := strings.TrimSpace(source.ProjectID)
+		if projectID == "" {
+			projectID = strings.TrimSpace(snapshot.Project.ID)
+		}
+		if projectID != "" {
+			projects[projectID] = struct{}{}
+		}
+	}
+	return len(projects)
+}
+
+func refreshStaleDetailRows(snapshot telemetry.Snapshot) []refreshStaleDetailRow {
+	stale := refreshStaleSources(snapshot.Refresh, snapshot.GeneratedAt)
+	if len(stale) == 0 {
+		detail := strings.TrimSpace(snapshot.Refresh.LastError)
+		if detail == "" {
+			detail = "The live connection is still receiving snapshots without current tracker data."
+		}
+		projectID := strings.TrimSpace(snapshot.Project.ID)
+		if projectID == "" {
+			projectID = "Tracker"
+		}
+		return []refreshStaleDetailRow{{
+			ProjectID: projectID,
+			Sources:   "tracker refresh",
+			Detail:    detail,
+		}}
+	}
+	groups := make(map[string][]telemetry.RefreshSource)
+	for _, source := range stale {
+		projectID := strings.TrimSpace(source.ProjectID)
+		if projectID == "" {
+			projectID = strings.TrimSpace(snapshot.Project.ID)
+		}
+		if projectID == "" {
+			projectID = "Tracker"
+		}
+		groups[projectID] = append(groups[projectID], source)
+	}
+	projectIDs := make([]string, 0, len(groups))
+	for projectID := range groups {
+		projectIDs = append(projectIDs, projectID)
+	}
+	sort.Strings(projectIDs)
+	rows := make([]refreshStaleDetailRow, 0, len(projectIDs))
+	for _, projectID := range projectIDs {
+		sources := groups[projectID]
+		sort.SliceStable(sources, func(i, j int) bool {
+			return refreshAlertSourceOrder(sources[i].Name) < refreshAlertSourceOrder(sources[j].Name)
+		})
+		names := make([]string, 0, len(sources))
+		details := make([]string, 0, len(sources))
+		for _, source := range sources {
+			name := refreshAlertSourceName(source.Name)
+			names = append(names, name)
+			detail := name
+			if source.LastSuccessAt != nil {
+				detail += " last succeeded " + prPipelineAge(*source.LastSuccessAt, snapshot.GeneratedAt) + " ago"
+			} else {
+				detail += " has not succeeded"
+			}
+			if source.FailureStreak > 0 {
+				detail += " · " + formatCount(source.FailureStreak) + " consecutive failures"
+			}
+			if lastError := strings.TrimSpace(source.LastError); lastError != "" {
+				detail += " · " + lastError
+			}
+			details = append(details, detail)
+		}
+		rows = append(rows, refreshStaleDetailRow{
+			ProjectID: projectID,
+			Sources:   strings.Join(names, "/"),
+			Detail:    strings.Join(details, "; "),
+		})
+	}
+	return rows
+}
+
+func refreshStaleHealthDetail(snapshot telemetry.Snapshot) string {
 	stale := refreshStaleSources(snapshot.Refresh, snapshot.GeneratedAt)
 	if len(stale) == 0 {
 		if detail := strings.TrimSpace(snapshot.Refresh.LastError); detail != "" {
@@ -81,6 +186,40 @@ func refreshStaleBannerDetail(snapshot telemetry.Snapshot) string {
 		parts = append(parts, part)
 	}
 	return "Tracker data is stale: " + strings.Join(parts, "; ")
+}
+
+func refreshAlertSourceName(name telemetry.RefreshSourceName) string {
+	switch name {
+	case telemetry.RefreshSourceCandidates:
+		return "candidate"
+	case telemetry.RefreshSourceDrift:
+		return "drift"
+	case telemetry.RefreshSourceStatuses:
+		return "status"
+	case telemetry.RefreshSourceProject:
+		return "project"
+	default:
+		value := strings.TrimSpace(string(name))
+		if value == "" {
+			return "tracker"
+		}
+		return value
+	}
+}
+
+func refreshAlertSourceOrder(name telemetry.RefreshSourceName) int {
+	switch name {
+	case telemetry.RefreshSourceCandidates:
+		return 0
+	case telemetry.RefreshSourceDrift:
+		return 1
+	case telemetry.RefreshSourceStatuses:
+		return 2
+	case telemetry.RefreshSourceProject:
+		return 3
+	default:
+		return 4
+	}
 }
 
 func refreshStaleSources(refresh telemetry.Refresh, now time.Time) []telemetry.RefreshSource {

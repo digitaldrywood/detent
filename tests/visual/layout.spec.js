@@ -399,6 +399,7 @@ test("board hides scheduled pacing while health retains its signal", async ({
 
   await expect(page.locator("#dispatch-recovery-status")).toHaveCount(0);
   await expect(page.locator("#backend-capacity-outage")).toHaveCount(0);
+  await expect(page.locator("#board-alerts")).toHaveCount(0);
   await expect(page.locator("#snapshot > :visible").first()).toHaveAttribute(
     "id",
     "board-figures",
@@ -408,7 +409,9 @@ test("board hides scheduled pacing while health retains its signal", async ({
   ).toBeVisible();
 });
 
-test("board shows only health states needing attention", async ({ page }) => {
+test("board shows only health states needing attention", async ({
+  page,
+}, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
     scenario: "board-degraded-health-banners",
@@ -417,24 +420,28 @@ test("board shows only health states needing attention", async ({ page }) => {
     viewport: desktopViewport,
   });
 
-  const failure = page.locator("#project-failure-breaker");
-  const recovery = page.locator("#dispatch-recovery-status");
-  const capacity = page.locator("#backend-capacity-outage");
-  await expect(failure).toHaveCount(1);
-  await expect(recovery).toHaveCount(1);
-  await expect(capacity).toHaveCount(0);
-  await expect(failure).toHaveClass(/border-warn/);
-  await expect(recovery).toHaveClass(/border-warn/);
-  await expect(failure.locator("p")).toHaveCount(1);
-  await expect(recovery.locator("p")).toHaveCount(1);
-  await expect(failure).toContainText("2 projects");
-  await expect(recovery).toContainText(
+  const bar = page.locator("#board-alerts");
+  const overlay = page.locator("body > #board-alerts-overlay");
+  await expect(bar).toHaveCount(1);
+  await expect(bar).toHaveAttribute("data-board-alert-count", "2");
+  await expect(bar).toHaveClass(/border-err/);
+  await expect(bar).toContainText("Dispatch halted (2 projects)");
+  await expect(page.locator("#project-failure-breaker")).toHaveCount(0);
+  await expect(page.locator("#dispatch-recovery-status")).toHaveCount(0);
+  await expect(page.locator("#backend-capacity-outage")).toHaveCount(0);
+  await page.locator("#board-alerts-toggle").click();
+  await expect(overlay.locator("#board-alert-failure-breaker")).toContainText(
+    "2 projects",
+  );
+  await expect(overlay.locator("#board-alert-dispatch-recovery")).toContainText(
     "Dispatch retry overdue for GitHub REST capacity — 1 project",
   );
+  await expect(overlay.locator("#board-alert-backend-capacity")).toHaveCount(0);
   await expect(page.locator("#backend-overload-retries")).toHaveCount(0);
   await expect(page.locator("#snapshot")).not.toContainText(
     "Dispatch recovery ramp active",
   );
+  await capturePageAndAttach(page, "board-alerts-expanded.png", testInfo);
 });
 
 test("board lane picker hides and restores lanes", async ({ page }) => {

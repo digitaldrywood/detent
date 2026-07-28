@@ -2,6 +2,7 @@ package templates
 
 import (
 	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +27,356 @@ type boardView struct {
 	Visible     int
 	Total       int
 	HiddenCards int
+}
+
+type boardAlertKind string
+
+const (
+	boardAlertKindLastKnown            boardAlertKind = "board-last-known"
+	boardAlertKindFailureBreaker       boardAlertKind = "project-failure-breaker"
+	boardAlertKindTrackerStale         boardAlertKind = "board-stale-data"
+	boardAlertKindBackendCapacity      boardAlertKind = "backend-capacity-outage"
+	boardAlertKindDispatchRecovery     boardAlertKind = "dispatch-recovery-status"
+	boardAlertKindUpdatePending        boardAlertKind = "update-pending"
+	boardAlertDetailLimit                             = 5
+	boardAlertSeverityUpdatePending                   = 100
+	boardAlertSeverityDispatchRecovery                = 200
+	boardAlertSeverityBackendCapacity                 = 300
+	boardAlertSeverityTrackerStale                    = 400
+	boardAlertSeverityFailureBreaker                  = 500
+	boardAlertSeverityLastKnown                       = 600
+)
+
+type boardAlert struct {
+	ID            string
+	Kind          boardAlertKind
+	Severity      int
+	Tone          primitives.Kind
+	TerseSummary  string
+	DetailSummary string
+	DetailRows    []boardAlertDetailRow
+	Overflow      int
+	DeepLink      string
+	Action        *boardAlertAction
+}
+
+type boardAlertDetailRow struct {
+	ID      string
+	Label   string
+	Summary string
+	Detail  string
+}
+
+type boardAlertAction struct {
+	Label   string
+	Path    string
+	Target  string
+	Confirm string
+}
+
+func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
+	alerts := make([]boardAlert, 0, 6)
+	if alert, ok := boardLastKnownAlert(snapshot); ok {
+		alerts = append(alerts, alert)
+	}
+	if alert, ok := boardFailureBreakerAlert(snapshot); ok {
+		alerts = append(alerts, alert)
+	}
+	if alert, ok := boardTrackerStaleAlert(snapshot); ok {
+		alerts = append(alerts, alert)
+	}
+	if alert, ok := boardBackendCapacityAlert(snapshot); ok {
+		alerts = append(alerts, alert)
+	}
+	if alert, ok := boardDispatchRecoveryAlert(snapshot); ok {
+		alerts = append(alerts, alert)
+	}
+	if alert, ok := boardUpdatePendingAlert(snapshot); ok {
+		alerts = append(alerts, alert)
+	}
+	sort.SliceStable(alerts, func(i, j int) bool {
+		return alerts[i].Severity > alerts[j].Severity
+	})
+	return alerts
+}
+
+func boardLastKnownAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
+	if !snapshot.LastKnown {
+		return boardAlert{}, false
+	}
+	return boardAlert{
+		ID:            "board-alert-last-known",
+		Kind:          boardAlertKindLastKnown,
+		Severity:      boardAlertSeverityLastKnown,
+		Tone:          primitives.KindErr,
+		TerseSummary:  "Board showing last-known state",
+		DetailSummary: "The live board snapshot is unavailable.",
+		DetailRows: []boardAlertDetailRow{{
+			ID:      "board-alert-last-known-snapshot",
+			Label:   "Snapshot",
+			Summary: "Cached board state",
+			Detail:  "The board is showing cached state while tracker refresh continues.",
+		}},
+		DeepLink: "/health/ui",
+	}, true
+}
+
+func boardFailureBreakerAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
+	summary, ok := boardFailureBreakerSummary(snapshot.FailureBreakers)
+	if !ok {
+		return boardAlert{}, false
+	}
+	rows := make([]boardAlertDetailRow, 0, len(snapshot.FailureBreakers))
+	for index, breaker := range snapshot.FailureBreakers {
+		projectID := strings.TrimSpace(breaker.ProjectID)
+		label := projectID
+		if label == "" {
+			label = "Project"
+		}
+		detail, detailAt, showDetailAt := failureBreakerDetailParts(breaker, snapshot.GeneratedAt)
+		detail = boardAlertDetailWithTime(detail, detailAt, snapshot.GeneratedAt, showDetailAt)
+		rows = append(rows, boardAlertDetailRow{
+			ID:      "board-alert-failure-breaker-" + boardAlertRowSlug(projectID+"-"+breaker.Class, index),
+			Label:   label,
+			Summary: strings.ReplaceAll(strings.TrimSpace(breaker.Class), "_", " "),
+			Detail:  detail,
+		})
+	}
+	rows, overflow := capBoardAlertRows(rows)
+	count := boardAffectedProjectCount(len(snapshot.FailureBreakers), func(yield func(string)) {
+		for _, breaker := range snapshot.FailureBreakers {
+			yield(breaker.ProjectID)
+		}
+	})
+	return boardAlert{
+		ID:            "board-alert-failure-breaker",
+		Kind:          boardAlertKindFailureBreaker,
+		Severity:      boardAlertSeverityFailureBreaker,
+		Tone:          primitives.KindErr,
+		TerseSummary:  "Dispatch halted (" + boardCountLabel(count, "project", "projects") + ")",
+		DetailSummary: summary.Title,
+		DetailRows:    rows,
+		Overflow:      overflow,
+		DeepLink:      "/health/ui",
+	}, true
+}
+
+func boardTrackerStaleAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
+	if refreshFreshnessKind(snapshot) != primitives.KindWarn {
+		return boardAlert{}, false
+	}
+	details := refreshStaleDetailRows(snapshot)
+	rows := make([]boardAlertDetailRow, 0, len(details))
+	for index, detail := range details {
+		rows = append(rows, boardAlertDetailRow{
+			ID:      "board-alert-tracker-" + boardAlertRowSlug(detail.ProjectID, index),
+			Label:   detail.ProjectID,
+			Summary: detail.Sources,
+			Detail:  detail.Detail,
+		})
+	}
+	rows, overflow := capBoardAlertRows(rows)
+	summary := refreshStaleSummary(snapshot)
+	terse := "Tracker stale"
+	if projectCount := refreshStaleProjectCount(snapshot); projectCount > 0 {
+		terse += " (" + boardCountLabel(projectCount, "project", "projects") + ")"
+	}
+	return boardAlert{
+		ID:            "board-alert-tracker-stale",
+		Kind:          boardAlertKindTrackerStale,
+		Severity:      boardAlertSeverityTrackerStale,
+		Tone:          primitives.KindWarn,
+		TerseSummary:  terse,
+		DetailSummary: summary,
+		DetailRows:    rows,
+		Overflow:      overflow,
+		DeepLink:      "/health/ui",
+	}, true
+}
+
+func boardBackendCapacityAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
+	summaries := boardBackendCapacitySummaries(snapshot.BackendOutages, snapshot.GeneratedAt)
+	if len(summaries) == 0 {
+		return boardAlert{}, false
+	}
+	rows := make([]boardAlertDetailRow, 0, len(snapshot.BackendOutages))
+	for index, outage := range backendCapacityOutageDetails(snapshot.BackendOutages) {
+		title, selected := boardBackendCapacityTitle(outage, snapshot.GeneratedAt)
+		if !selected {
+			continue
+		}
+		label := strings.TrimSpace(outage.ProjectID)
+		if label == "" {
+			label = backendCapacityBackendID(outage)
+		}
+		detail, detailAt, showDetailAt := backendCapacityOutageDetailParts(outage, snapshot.GeneratedAt)
+		rows = append(rows, boardAlertDetailRow{
+			ID:      "board-alert-backend-capacity-" + boardAlertRowSlug(boardAlertBackendCapacityRowKey(outage), index),
+			Label:   label,
+			Summary: title,
+			Detail:  boardAlertDetailWithTime(detail, detailAt, snapshot.GeneratedAt, showDetailAt),
+		})
+	}
+	rows, overflow := capBoardAlertRows(rows)
+	return boardAlert{
+		ID:            "board-alert-backend-capacity",
+		Kind:          boardAlertKindBackendCapacity,
+		Severity:      boardAlertSeverityBackendCapacity,
+		Tone:          primitives.KindWarn,
+		TerseSummary:  summaries[0].Title,
+		DetailSummary: boardCountLabel(len(summaries), "capacity issue", "capacity issues"),
+		DetailRows:    rows,
+		Overflow:      overflow,
+		DeepLink:      "/health/ui",
+	}, true
+}
+
+func boardDispatchRecoveryAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
+	summaries := boardDispatchRecoverySummaries(snapshot.DispatchRecoveries, snapshot.GeneratedAt)
+	if len(summaries) == 0 {
+		return boardAlert{}, false
+	}
+	rows := make([]boardAlertDetailRow, 0, len(snapshot.DispatchRecoveries))
+	for index, recovery := range snapshot.DispatchRecoveries {
+		title, selected := boardDispatchRecoveryAlertTitle(recovery, snapshot.GeneratedAt)
+		if !selected {
+			continue
+		}
+		label := strings.TrimSpace(recovery.ProjectID)
+		if label == "" {
+			label = "Dispatch"
+		}
+		detail, detailAt, showDetailAt := dispatchRecoveryDetailParts(recovery, snapshot.GeneratedAt)
+		rows = append(rows, boardAlertDetailRow{
+			ID:      "board-alert-dispatch-recovery-" + boardAlertRowSlug(label+"-"+recovery.Kind+"-"+recovery.Status, index),
+			Label:   label,
+			Summary: title,
+			Detail:  boardAlertDetailWithTime(detail, detailAt, snapshot.GeneratedAt, showDetailAt),
+		})
+	}
+	rows, overflow := capBoardAlertRows(rows)
+	return boardAlert{
+		ID:            "board-alert-dispatch-recovery",
+		Kind:          boardAlertKindDispatchRecovery,
+		Severity:      boardAlertSeverityDispatchRecovery,
+		Tone:          primitives.KindWarn,
+		TerseSummary:  summaries[0].Title,
+		DetailSummary: boardCountLabel(len(summaries), "recovery issue", "recovery issues"),
+		DetailRows:    rows,
+		Overflow:      overflow,
+		DeepLink:      "/health/ui",
+	}, true
+}
+
+func boardUpdatePendingAlert(snapshot telemetry.Snapshot) (boardAlert, bool) {
+	if !detentUpdatePending(snapshot.Update) {
+		return boardAlert{}, false
+	}
+	version := detentPendingUpdateVersion(snapshot.Update)
+	target := "board-alert-update-pending-status"
+	return boardAlert{
+		ID:            "board-alert-update-pending",
+		Kind:          boardAlertKindUpdatePending,
+		Severity:      boardAlertSeverityUpdatePending,
+		Tone:          primitives.KindInfo,
+		TerseSummary:  "Detent " + version + " pending",
+		DetailSummary: "A Detent update is ready to apply.",
+		DetailRows: []boardAlertDetailRow{{
+			ID:      target,
+			Label:   "Update",
+			Summary: version,
+			Detail:  "Automatic apply is waiting for all active work attempts across every project to finish.",
+		}},
+		Action: &boardAlertAction{
+			Label:   "Apply now",
+			Path:    "/api/v1/update/apply",
+			Target:  "#" + target,
+			Confirm: "Apply the update now? Detent will drain active attempts and restart.",
+		},
+	}, true
+}
+
+func boardDispatchRecoveryAlertTitle(recovery telemetry.DispatchRecovery, now time.Time) (string, bool) {
+	status := strings.TrimSpace(recovery.Status)
+	switch status {
+	case "ramping":
+		return "", false
+	case "waiting":
+		if automaticRecoveryPending(recovery.ResumeAt, now) {
+			return "", false
+		}
+		kind := dispatchRecoveryKindLabel(recovery.Kind)
+		if automaticRecoveryOverdue(recovery.ResumeAt, now) {
+			return "Dispatch retry overdue for " + kind, true
+		}
+		return "Dispatch waiting on " + kind, true
+	default:
+		return "Dispatch recovery requires attention for " + dispatchRecoveryKindLabel(recovery.Kind), true
+	}
+}
+
+func boardAlertDetailWithTime(detail string, detailAt time.Time, now time.Time, include bool) string {
+	if !include || detailAt.IsZero() || now.IsZero() {
+		return detail
+	}
+	if detailAt.After(now) {
+		return detail + " in " + formatDuration(detailAt.Sub(now).Seconds()) + "."
+	}
+	return detail + " now."
+}
+
+func capBoardAlertRows(rows []boardAlertDetailRow) ([]boardAlertDetailRow, int) {
+	if len(rows) <= boardAlertDetailLimit {
+		return rows, 0
+	}
+	return rows[:boardAlertDetailLimit], len(rows) - boardAlertDetailLimit
+}
+
+func boardAlertRowSlug(value string, index int) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = "row-" + strconv.Itoa(index+1)
+	}
+	return boardCardSlug(value)
+}
+
+func boardAlertBackendCapacityRowKey(outage telemetry.BackendOutage) string {
+	resetAt := outage.ResumeAt
+	if outage.ResetAt != nil && !outage.ResetAt.IsZero() {
+		resetAt = *outage.ResetAt
+	}
+	return strings.TrimSpace(outage.ProjectID) + "-" + backendCapacityBackendID(outage) + "-" + strings.TrimSpace(outage.Kind) + "-" + localTimeISOString(resetAt)
+}
+
+func boardAlertKindActive(alerts []boardAlert, kind boardAlertKind) bool {
+	for _, alert := range alerts {
+		if alert.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func boardAlertButtonLabel(alerts []boardAlert) string {
+	if len(alerts) == 0 {
+		return "No board issues"
+	}
+	return boardCountLabel(len(alerts), "board issue", "board issues") + ". Highest severity: " + alerts[0].TerseSummary + ". Expand details."
+}
+
+func boardAlertsClass(alerts []boardAlert) string {
+	class := "mx-5 mt-3.5 h-10 flex-none overflow-hidden rounded-card border shadow-sm"
+	if len(alerts) == 0 {
+		return class
+	}
+	switch alerts[0].Tone {
+	case primitives.KindErr:
+		return class + " border-err/40 bg-err/10 text-err"
+	case primitives.KindInfo:
+		return class + " border-info/40 bg-info/10 text-info"
+	default:
+		return class + " border-warn/40 bg-warn/10 text-warn"
+	}
 }
 
 type boardLaneView struct {
