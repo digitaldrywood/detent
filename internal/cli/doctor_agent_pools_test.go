@@ -123,17 +123,15 @@ func TestCheckDoctorAgentPools(t *testing.T) {
 				t.Fatalf("store.Open() error = %v", err)
 			}
 			if tt.waiting != "" {
-				if _, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{
-					ProjectID:              tt.waiting,
-					WorkerType:             "implement",
-					StartedAt:              now.Add(-time.Hour),
-					WaitReason:             "global_capacity_full",
-					CapacitySnapshotJSON:   `{"pool":"default","holders":` + tt.holders + `}`,
-					GitHubRateSnapshotJSON: "{}",
-					WorkerMetadataJSON:     "{}",
-					MetricsJSON:            "{}",
+				if _, err := backend.RecordSchedulerDecision(t.Context(), store.SchedulerDecision{
+					ProjectID:            tt.waiting,
+					Result:               store.SchedulerDecisionResultSkipped,
+					Reason:               "reserved_for_higher_priority_project",
+					DecisionAt:           now.Add(-time.Hour),
+					WaitReason:           "reserved_for_higher_priority_project",
+					CapacitySnapshotJSON: `{"pool":"default","global_available":0,"holders":` + tt.holders + `}`,
 				}); err != nil {
-					t.Fatalf("StartWorkAttempt() error = %v", err)
+					t.Fatalf("RecordSchedulerDecision() error = %v", err)
 				}
 			}
 			if err := backend.Close(); err != nil {
