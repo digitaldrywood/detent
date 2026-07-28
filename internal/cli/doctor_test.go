@@ -194,7 +194,7 @@ func TestDoctorBinaryResolutionUsesSelectedEnvironment(t *testing.T) {
 			wantSource:           doctorBinaryPathSourceOrchestrator,
 			wantCheckedPath:      "/orchestrator/bin",
 			wantDiffer:           true,
-			wantDetail:           []string{"/orchestrator/bin/claude is runnable", "doctor PATH: /doctor/bin", "doctor PATH differs from orchestrator PATH"},
+			wantDetail:           []string{filepath.Join("/orchestrator/bin", "claude") + " is runnable", "doctor PATH: /doctor/bin", "doctor PATH differs from orchestrator PATH"},
 			wantOrchestratorPath: "/orchestrator/bin",
 		},
 		{
