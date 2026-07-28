@@ -32,6 +32,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
+// This deadline only detects broken test synchronization and is deliberately
+// generous enough for loaded hosted runners; timeout behavior uses controlled timers.
+const doctorTestSafetyTimeout = 30 * time.Second
+
 func TestCheckDoctorUpdate(t *testing.T) {
 	t.Parallel()
 
@@ -4715,7 +4719,7 @@ func TestDoctorCommandStreamsProgressBeforeSlowCheckCompletes(t *testing.T) {
 
 	select {
 	case <-codexStarted:
-	case <-time.After(time.Second):
+	case <-time.After(doctorTestSafetyTimeout):
 		t.Fatal("codex check did not start")
 	}
 	if got := stdout.String(); !strings.Contains(got, "RUN    codex binary") {
@@ -4728,7 +4732,7 @@ func TestDoctorCommandStreamsProgressBeforeSlowCheckCompletes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Execute() error = %v, want nil", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(doctorTestSafetyTimeout):
 		t.Fatal("timed out waiting for doctor command")
 	}
 }
@@ -4908,12 +4912,18 @@ func TestDoctorReportKeepsStableOrderAfterParallelChecks(t *testing.T) {
 func TestRunDoctorCheckTimesOutUnresponsiveJob(t *testing.T) {
 	t.Parallel()
 
-	checks := runDoctorCheck(context.Background(), doctorCheckJob{
-		Name: "slow check",
-		Run: func(context.Context) []doctorCheck {
-			select {}
-		},
-	}, 20*time.Millisecond)
+	timer := &controlledDoctorCheckTimer{deadline: make(chan time.Time)}
+	checksDone := make(chan []doctorCheck, 1)
+	go func() {
+		checksDone <- runDoctorCheckWithTimer(context.Background(), doctorCheckJob{
+			Name: "slow check",
+			Run: func(context.Context) []doctorCheck {
+				select {}
+			},
+		}, 20*time.Millisecond, timer)
+	}()
+	timer.Expire()
+	checks := <-checksDone
 
 	if len(checks) != 1 {
 		t.Fatalf("checks len = %d, want 1", len(checks))
@@ -4932,13 +4942,19 @@ func TestRunDoctorCheckTimesOutUnresponsiveJob(t *testing.T) {
 func TestRunDoctorCheckTimeoutReportsCurrentInnerCheck(t *testing.T) {
 	t.Parallel()
 
-	checks := runDoctorCheck(context.Background(), doctorCheckJob{
-		Name:    "Project alpha checks",
-		Current: func() string { return "Project alpha GitHub readiness" },
-		Run: func(context.Context) []doctorCheck {
-			select {}
-		},
-	}, 20*time.Millisecond)
+	timer := &controlledDoctorCheckTimer{deadline: make(chan time.Time)}
+	checksDone := make(chan []doctorCheck, 1)
+	go func() {
+		checksDone <- runDoctorCheckWithTimer(context.Background(), doctorCheckJob{
+			Name:    "Project alpha checks",
+			Current: func() string { return "Project alpha GitHub readiness" },
+			Run: func(context.Context) []doctorCheck {
+				select {}
+			},
+		}, 20*time.Millisecond, timer)
+	}()
+	timer.Expire()
+	checks := <-checksDone
 
 	if len(checks) != 1 {
 		t.Fatalf("checks len = %d, want 1", len(checks))
@@ -4961,7 +4977,7 @@ func TestRunDoctorCheckRenewsTimeoutForReportedProgress(t *testing.T) {
 	}
 	advance := make(chan struct{})
 	checksDone := make(chan []doctorCheck, 1)
-	stuck := time.NewTimer(10 * time.Second)
+	stuck := time.NewTimer(doctorTestSafetyTimeout)
 	defer stuck.Stop()
 	go func() {
 		checksDone <- runDoctorCheckWithTimer(context.Background(), doctorCheckJob{
@@ -5015,12 +5031,18 @@ func (t *controlledDoctorCheckTimer) C() <-chan time.Time {
 }
 
 func (t *controlledDoctorCheckTimer) Reset(timeout time.Duration) bool {
-	t.resets <- timeout
+	if t.resets != nil {
+		t.resets <- timeout
+	}
 	return true
 }
 
 func (t *controlledDoctorCheckTimer) Stop() bool {
 	return true
+}
+
+func (t *controlledDoctorCheckTimer) Expire() {
+	t.deadline <- time.Time{}
 }
 
 func TestRunDoctorCheckFreezesProgressBeforeCancellation(t *testing.T) {
@@ -5055,17 +5077,23 @@ func TestRunDoctorCheckFreezesProgressBeforeCancellation(t *testing.T) {
 			workerStarted := make(chan struct{})
 			parentCtx, cancelParent := context.WithCancel(context.Background())
 			defer cancelParent()
+			timer := &controlledDoctorCheckTimer{deadline: make(chan time.Time)}
 			if tt.cancelParent {
 				go func() {
 					<-workerStarted
 					cancelParent()
+				}()
+			} else {
+				go func() {
+					<-workerStarted
+					timer.Expire()
 				}()
 			}
 
 			var freezeSawCanceledWorker bool
 			completed := doctorCheck{Name: "Project alpha workflow", Status: doctorOK, Detail: "loaded"}
 			canceled := doctorCheck{Name: "Project alpha route models", Status: doctorFail, Detail: "context canceled"}
-			checks := runDoctorCheck(parentCtx, doctorCheckJob{
+			checks := runDoctorCheckWithTimer(parentCtx, doctorCheckJob{
 				Name: "Project alpha checks",
 				Freeze: func() doctorCheckSnapshot {
 					ctx := <-workerContext
@@ -5086,14 +5114,14 @@ func TestRunDoctorCheckFreezesProgressBeforeCancellation(t *testing.T) {
 					close(postCancelPublication)
 					return []doctorCheck{completed, canceled}
 				},
-			}, tt.timeout)
+			}, tt.timeout, timer)
 
 			if freezeSawCanceledWorker {
 				t.Fatal("worker context was canceled before progress was frozen")
 			}
 			select {
 			case <-postCancelPublication:
-			case <-time.After(time.Second):
+			case <-time.After(doctorTestSafetyTimeout):
 				t.Fatal("job did not attempt to publish after cancellation")
 			}
 			postPublicationSnapshot := progress.Freeze()
@@ -5125,22 +5153,35 @@ func TestRunDoctorCheckFreezesProgressBeforeCancellation(t *testing.T) {
 func TestDoctorProjectCheckJobRenewsTimeoutForConnectorProgress(t *testing.T) {
 	t.Parallel()
 
-	const (
-		timeout      = 100 * time.Millisecond
-		responseTime = 60 * time.Millisecond
-		responses    = 3
-	)
+	const responses = 3
+	connectorStarted := make(chan struct{})
+	requestProgress := make(chan struct{})
+	progressReported := make(chan struct{})
+	advance := make(chan struct{})
+	var reportProgress sync.Once
 	projectConnector := &fakeDoctorAutoPromoteConnector{
 		fetchIssuesByStatesLimit: func(ctx context.Context, _ []string, _ int) ([]connector.Issue, error) {
-			for range responses {
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(responseTime):
+			var progressErr error
+			reportProgress.Do(func() {
+				close(connectorStarted)
+				for range responses {
+					select {
+					case <-ctx.Done():
+						progressErr = ctx.Err()
+						return
+					case <-requestProgress:
+					}
 					connector.ReportProgress(ctx)
+					progressReported <- struct{}{}
+					select {
+					case <-ctx.Done():
+						progressErr = ctx.Err()
+						return
+					case <-advance:
+					}
 				}
-			}
-			return nil, nil
+			})
+			return nil, progressErr
 		},
 	}
 	jobs := doctorProjectCheckJobs(globalconfig.Config{
@@ -5169,7 +5210,47 @@ func TestDoctorProjectCheckJobRenewsTimeoutForConnectorProgress(t *testing.T) {
 		t.Fatalf("jobs len = %d, want 1", len(jobs))
 	}
 
-	checks := runDoctorCheck(context.Background(), jobs[0], timeout)
+	checksDone := make(chan []doctorCheck, 1)
+	go func() {
+		checksDone <- jobs[0].Run(context.Background())
+	}()
+	stuck := time.NewTimer(doctorTestSafetyTimeout)
+	defer stuck.Stop()
+	select {
+	case <-connectorStarted:
+	case <-stuck.C:
+		t.Fatal("timed out waiting for connector check")
+	}
+	for {
+		select {
+		case <-jobs[0].Progress:
+		default:
+			goto progressDrained
+		}
+	}
+
+progressDrained:
+	for range responses {
+		requestProgress <- struct{}{}
+		select {
+		case <-progressReported:
+		case <-stuck.C:
+			t.Fatal("timed out waiting for connector progress report")
+		}
+		select {
+		case <-jobs[0].Progress:
+		case <-stuck.C:
+			t.Fatal("timed out waiting for connector progress signal")
+		}
+		advance <- struct{}{}
+	}
+
+	var checks []doctorCheck
+	select {
+	case checks = <-checksDone:
+	case <-stuck.C:
+		t.Fatal("timed out waiting for completed project checks")
+	}
 
 	for _, name := range []string{"Project alpha dependency auto-unblock", "Project alpha blocked recovery"} {
 		var found bool
@@ -5210,6 +5291,13 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 
 			workflow := validDoctorDependencyWorkflow(false)
 			releaseBlockedCheck := make(chan struct{})
+			blockedCheckStarted := make(chan struct{})
+			var blockedCheckOnce sync.Once
+			markBlockedCheckStarted := func() {
+				blockedCheckOnce.Do(func() {
+					close(blockedCheckStarted)
+				})
+			}
 			t.Cleanup(func() {
 				close(releaseBlockedCheck)
 			})
@@ -5225,6 +5313,7 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 				},
 				gitTracked: func(context.Context, string) (bool, error) {
 					if tt.blockOverlay {
+						markBlockedCheckStarted()
 						<-releaseBlockedCheck
 					}
 					return false, nil
@@ -5239,6 +5328,7 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 					projectConnector := &fakeDoctorAutoPromoteConnector{}
 					if tt.blockDependency {
 						projectConnector.fetchIssuesByStatesLimit = func(context.Context, []string, int) ([]connector.Issue, error) {
+							markBlockedCheckStarted()
 							<-releaseBlockedCheck
 							return nil, nil
 						}
@@ -5247,6 +5337,9 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 				},
 				githubReadiness: func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
 					if !tt.blockOverlay {
+						if !tt.blockDependency {
+							markBlockedCheckStarted()
+						}
 						<-releaseBlockedCheck
 					}
 					return nil, nil
@@ -5259,7 +5352,26 @@ func TestDoctorProjectCheckJobTimeoutPreservesCompletedChecks(t *testing.T) {
 				t.Fatalf("jobs len = %d, want 1", len(jobs))
 			}
 
-			checks := runDoctorCheck(context.Background(), jobs[0], 20*time.Millisecond)
+			timer := &controlledDoctorCheckTimer{deadline: make(chan time.Time)}
+			checksDone := make(chan []doctorCheck, 1)
+			go func() {
+				checksDone <- runDoctorCheckWithTimer(context.Background(), jobs[0], 20*time.Millisecond, timer)
+			}()
+			stuck := time.NewTimer(doctorTestSafetyTimeout)
+			defer stuck.Stop()
+			select {
+			case <-blockedCheckStarted:
+			case <-stuck.C:
+				t.Fatalf("timed out waiting for blocked %s check", tt.current)
+			}
+			timer.Expire()
+
+			var checks []doctorCheck
+			select {
+			case checks = <-checksDone:
+			case <-stuck.C:
+				t.Fatal("timed out waiting for controlled doctor timeout")
+			}
 
 			if len(checks) < 2 {
 				t.Fatalf("checks = %#v, want completed checks followed by timeout", checks)

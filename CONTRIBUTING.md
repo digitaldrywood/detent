@@ -136,6 +136,23 @@ New or changed observable behavior needs tests.
 - Keep tests close to the package they cover.
 - Use ephemeral ports in tests that start servers.
 - Do not rely on process state from a running Detent orchestrator.
+- Assert timeout, renewal, debounce, and duration-limit behavior with injected
+  clocks, timers, or context factories instead of elapsed wall-clock margins.
+- Use real time only as a generous deadlock guard around explicit
+  synchronization or an OS integration boundary, and document why the bound is
+  necessary.
+
+The timing-sensitive test inventory is triaged by purpose:
+
+- `internal/cli/doctor_test.go` and `internal/runner/duration_limit_test.go`
+  drive behavioral deadlines through controlled timers and context factories.
+- `internal/cli/boot_test.go`, `internal/cli/dev_runtime_e2e_test.go`,
+  `internal/cli/fix_agent_pools_test.go`, `internal/cli/runner_test.go`,
+  `internal/cli/shutdown_test.go`, `internal/runner/supervisor_test.go`, and
+  `tools/checklock/main_test.go` retain real-time bounds only for liveness
+  around goroutines, HTTP servers, subprocesses, file locks, or production
+  ticker integration; their success conditions use channels, observable
+  state, or process completion rather than elapsed-time margins.
 
 ## Commits
 

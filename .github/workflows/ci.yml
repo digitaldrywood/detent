@@ -228,6 +228,9 @@ jobs:
         if: runner.os == 'Windows'
         run: go test ./internal/orchestrator -run '^TestLocalSQLiteArtifactLifecycleEndToEnd$' -count=20
 
+      - name: Stress timing-sensitive packages
+        run: go test -race ./internal/cli ./internal/runner ./tools/checklock -count=10
+
       - name: Race test
         run: go test -race ./...
 
