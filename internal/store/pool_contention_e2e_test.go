@@ -164,6 +164,24 @@ func TestPoolContentionTelemetryEndToEnd(t *testing.T) {
 		contention[0].HoldingClass != "local-heavy" {
 		t.Fatalf("contention = %#v, want one production-recorded cross-class wait", contention)
 	}
+
+	constraints, err := store.QueryCapacityConstraintWaits(ctx, db, store.CapacityConstraintQuery{
+		Since: time.Now().Add(-time.Hour),
+		ProjectClasses: map[string]string{
+			localProject.ID: "local-heavy",
+			cloudProject.ID: "cloud-only",
+		},
+	})
+	if err != nil {
+		t.Fatalf("QueryCapacityConstraintWaits() error = %v", err)
+	}
+	if len(constraints) != 1 ||
+		constraints[0].ProjectID != cloudProject.ID ||
+		constraints[0].WorkloadClass != "cloud-only" ||
+		constraints[0].Reason != store.CapacityConstraintPool ||
+		constraints[0].WaitCount != 1 {
+		t.Fatalf("constraints = %#v, want one production-recorded cloud-only pool wait", constraints)
+	}
 }
 
 func waitForSchedulerDecision(

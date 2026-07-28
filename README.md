@@ -2303,15 +2303,31 @@ admission at a time. Project selection, scheduling history, and strict-mode
 preemption remain local to each pool. A configuration without `agent_pools` or
 project `pool` fields retains the previous single-pool behavior.
 
-`detent doctor` recommends an initial `code` / `cloud` split only when both
-signals are present: the resolved workflows contain both local-heavy projects
-(local command/validator gates or CI triggers) and cloud-only projects, and
-the last seven days of runtime telemetry contain capacity waits where the
-waiting project and a recorded slot holder have different workload classes.
-Fresh installs, single-class fleets, and same-class starvation stay quiet.
-The finding keeps the code pool at the current default-pool cap, proposes a
-starting cloud cap labeled for provider-limit tuning, and prints the affected
-projects as valid YAML.
+`detent doctor` reports the last seven days of capacity waits for each project,
+annotated with its local-heavy or cloud-only workload class. It identifies the
+largest observed constraint across pool capacity, the project's
+`agent.max_concurrent_agents`, lane-specific
+`agent.max_concurrent_agents_by_state`, worker-host capacity, and subscription
+provider rate-window backpressure. Each finding names the matching lever.
+Rate-window backpressure recommends no configuration change because raising a
+configured cap cannot increase the effective provider-paced limit.
+Because pool refusals are sampled, all constraint reasons are normalized to
+one observation per five-minute interval before doctor selects the binding
+constraint. Telemetry from a project's previous pool assignment is ignored.
+
+A pool-bound project in a single-class pool is told to raise that pool's
+capacity, never to split it. For an elastic pool this names `burst_to`, the
+reachable ceiling; rigid pools name `max_concurrent_agents`. When mixed
+workload classes share the implicit default pool and pool waits bind, doctor
+preserves the initial `code` / `cloud` split recommendation: the code pool
+keeps the current cap, the cloud pool gets a provider-tuned starting cap, and
+the affected projects are printed as valid YAML. Configured pools are reported
+but are never repartitioned automatically.
+
+Doctor also checks capacity coherence without requiring telemetry. It warns
+when member project caps cannot add up to a pool's declared capacity, when a
+project cap exceeds its pool, or when an active work lane other than the
+intentionally serialized `Merging` lane is capped below the project.
 
 Preview or apply that exact recommendation with:
 
@@ -2324,11 +2340,11 @@ detent fix agent-pools --yes
 
 The fixer prints an additions-only diff, requires confirmation unless `--yes`
 is supplied, preserves unrelated YAML keys, comments, and project ordering,
-and writes `global.yaml` with mode `0600`. It is a no-op when doctor lacks
-either signal. It also declines any config that already declares
-`global.agent_pools`; changing an existing partition is an operator decision.
-The accepted change is picked up by global-config hot reload without a
-process restart.
+and writes `global.yaml` with mode `0600`. It is a no-op unless mixed workload
+classes have binding default-pool waits. It also declines any config that
+already declares `global.agent_pools`; changing an existing partition is an
+operator decision. The accepted change is picked up by global-config hot
+reload without a process restart.
 
 Set optional `projects[].color` to an opaque CSS hex color in `#RGB` or
 `#RRGGBB` form when a project needs a fixed visual marker. The sidebar,

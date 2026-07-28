@@ -1535,6 +1535,94 @@ func TestDispatchableChecksSlots(t *testing.T) {
 	}
 }
 
+func TestDispatchableIssueDecisionCapacityReason(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		cfg   Config
+		state func(*State)
+		want  string
+	}{
+		{
+			name: "project cap",
+			cfg: Config{
+				MaxConcurrentAgents: 1,
+				ActiveStates:        []string{"Todo"},
+				TerminalStates:      []string{"Done"},
+			},
+			state: func(state *State) {
+				running := dispatchTestIssue("running", "Todo")
+				state.Running[running.ID] = Running{Issue: running}
+			},
+			want: dispatchSkipGlobalCapacityFull,
+		},
+		{
+			name: "lane cap",
+			cfg: Config{
+				MaxConcurrentAgents:        2,
+				MaxConcurrentAgentsByState: map[string]int{"Todo": 1},
+				ActiveStates:               []string{"Todo"},
+				TerminalStates:             []string{"Done"},
+			},
+			state: func(state *State) {
+				running := dispatchTestIssue("running", "Todo")
+				state.Running[running.ID] = Running{Issue: running}
+			},
+			want: dispatchSkipLocalSlotUnavailable,
+		},
+		{
+			name: "worker host cap",
+			cfg: Config{
+				MaxConcurrentAgents:        2,
+				ActiveStates:               []string{"Todo"},
+				TerminalStates:             []string{"Done"},
+				WorkerHosts:                []string{"worker-a"},
+				MaxConcurrentAgentsPerHost: 1,
+			},
+			state: func(state *State) {
+				running := dispatchTestIssue("running", "Todo")
+				state.Running[running.ID] = Running{Issue: running, WorkerHost: "worker-a"}
+			},
+			want: dispatchSkipWorkerHostUnavailable,
+		},
+		{
+			name: "provider rate window",
+			cfg: Config{
+				MaxConcurrentAgents: 10,
+				ActiveStates:        []string{"Todo"},
+				TerminalStates:      []string{"Done"},
+				BillingMode:         workflowconfig.BillingModeSubscription,
+			},
+			state: func(state *State) {
+				state.RateLimits = &telemetry.RateLimits{
+					Primary: &telemetry.RateLimitBucket{Remaining: 50, Limit: 100},
+				}
+				for index := range 5 {
+					running := dispatchTestIssue(fmt.Sprintf("running-%d", index), "Todo")
+					state.Running[running.ID] = Running{Issue: running}
+				}
+			},
+			want: dispatchSkipRateWindowBackpressure,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(tt.cfg)
+			state := newState(cfg)
+			tt.state(&state)
+			issue := dispatchTestIssue("candidate", "Todo")
+			decision := newDispatchPlanner(cfg).dispatchableIssueDecision(issue, &state, false, time.Now(), "")
+			if decision.dispatchable || decision.reason != tt.want {
+				t.Fatalf("dispatchable decision = %#v, want skipped for %q", decision, tt.want)
+			}
+		})
+	}
+}
+
 func TestDispatchableSkipsDuplicatePullRequestWork(t *testing.T) {
 	t.Parallel()
 

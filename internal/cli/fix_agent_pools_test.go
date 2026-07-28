@@ -149,6 +149,18 @@ func TestAgentPoolsFixDeclinesExistingPools(t *testing.T) {
 	}
 }
 
+func TestAgentPoolsFixPreservesSplitPathForMixedClassPoolBinding(t *testing.T) {
+	t.Parallel()
+
+	fixture := newAgentPoolsFixFixtureWithHolder(t, "video")
+	output := runAgentPoolsFixTestCommand(t, fixture, "--dry-run")
+	if !strings.Contains(output, "agent_pools:") ||
+		!strings.Contains(output, "Dry run; no files changed.") ||
+		strings.Contains(output, "no cross-class pool contention") {
+		t.Fatalf("output = %q, want mixed-class binding split preview", output)
+	}
+}
+
 func TestApplyAgentPoolsFixDeclinesStalePlan(t *testing.T) {
 	t.Parallel()
 
@@ -232,6 +244,16 @@ type agentPoolsFixFixture struct {
 func newAgentPoolsFixFixture(t *testing.T, contention bool) agentPoolsFixFixture {
 	t.Helper()
 
+	holder := ""
+	if contention {
+		holder = "detent"
+	}
+	return newAgentPoolsFixFixtureWithHolder(t, holder)
+}
+
+func newAgentPoolsFixFixtureWithHolder(t *testing.T, holder string) agentPoolsFixFixture {
+	t.Helper()
+
 	dir := t.TempDir()
 	localWorkflowPath := filepath.Join(dir, "detent-WORKFLOW.md")
 	cloudWorkflowPath := filepath.Join(dir, "video-WORKFLOW.md")
@@ -271,14 +293,14 @@ func newAgentPoolsFixFixture(t *testing.T, contention bool) agentPoolsFixFixture
 		t.Fatalf("store.Open() error = %v", err)
 	}
 	now := time.Date(2026, 7, 27, 20, 0, 0, 0, time.UTC)
-	if contention {
+	if holder != "" {
 		if _, err := backend.RecordSchedulerDecision(t.Context(), store.SchedulerDecision{
 			ProjectID:            "video",
 			Result:               store.SchedulerDecisionResultSkipped,
 			Reason:               "reserved_for_higher_priority_project",
 			DecisionAt:           now.Add(-time.Hour),
 			WaitReason:           "reserved_for_higher_priority_project",
-			CapacitySnapshotJSON: `{"pool":"default","global_available":0,"holders":["detent"]}`,
+			CapacitySnapshotJSON: `{"pool":"default","global_available":0,"holders":["` + holder + `"]}`,
 		}); err != nil {
 			t.Fatalf("RecordSchedulerDecision() error = %v", err)
 		}

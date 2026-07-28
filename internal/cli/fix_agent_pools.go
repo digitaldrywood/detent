@@ -163,18 +163,32 @@ func planAgentPoolsFix(
 		}
 		return agentPoolsFixPlan{}, err
 	}
+	waits, waitsErr := store.QueryCapacityConstraintWaits(ctx, db, store.CapacityConstraintQuery{
+		Since:          deps.now().UTC().Add(-doctorAgentPoolsWindow),
+		ProjectClasses: classes,
+	})
 	contention, queryErr := store.QueryCrossClassPoolContention(ctx, db, store.PoolContentionQuery{
 		Since:          deps.now().UTC().Add(-doctorAgentPoolsWindow),
 		ProjectClasses: classes,
 	})
 	closeErr := db.Close()
+	if waitsErr != nil {
+		return agentPoolsFixPlan{}, waitsErr
+	}
 	if queryErr != nil {
 		return agentPoolsFixPlan{}, queryErr
 	}
 	if closeErr != nil {
 		return agentPoolsFixPlan{}, closeErr
 	}
-	recommendation, ok := newDoctorAgentPoolRecommendation(cfg, projects, contention)
+	poolWaits := 0
+	for _, finding := range newDoctorCapacityFindings(projects, waits) {
+		if finding.Pool == globalconfig.DefaultAgentPoolName &&
+			finding.Binding.Reason == store.CapacityConstraintPool {
+			poolWaits += finding.Binding.Count
+		}
+	}
+	recommendation, ok := newDoctorAgentPoolRecommendationForWaits(cfg, projects, contention, poolWaits)
 	if !ok {
 		plan.Noop = true
 		plan.Message = "No changes needed: doctor found no cross-class pool contention in 7d."

@@ -954,6 +954,8 @@ func schedulerDecisionWaitReason(reason string) string {
 		return "project_capacity_full"
 	case dispatchSkipLocalSlotUnavailable:
 		return "lane_capacity_full"
+	case dispatchSkipWorkerHostUnavailable:
+		return "worker_host_capacity_full"
 	case dispatchIssueFailureGlobalSlotUnavailable:
 		return scheduler.DispatchGateReasonGlobalCapacityFull
 	default:

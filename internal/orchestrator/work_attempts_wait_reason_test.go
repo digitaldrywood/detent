@@ -30,6 +30,11 @@ func TestSchedulerDecisionWaitReason(t *testing.T) {
 			want:   "lane_capacity_full",
 		},
 		{
+			name:   "worker host capacity wait",
+			reason: dispatchSkipWorkerHostUnavailable,
+			want:   "worker_host_capacity_full",
+		},
+		{
 			name:   "other reason",
 			reason: "provider_backoff",
 			want:   "provider_backoff",
