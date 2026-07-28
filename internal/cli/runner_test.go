@@ -61,12 +61,12 @@ func TestTelemetryAgentPools(t *testing.T) {
 		{
 			name: "copies valid scheduler snapshots",
 			source: agentPoolSnapshotSourceStub{
-				{Name: "code", Used: 5, Capacity: 5, Generation: 2},
-				{Name: "video", Used: 2, Capacity: 10, Draining: true, Generation: 3},
+				{Name: "code", Used: 5, Capacity: 5, Guaranteed: 5, BurstTo: 5, Generation: 2},
+				{Name: "video", Used: 12, Capacity: 15, Guaranteed: 10, BurstTo: 15, Borrowed: 2, Available: 3, Reclaiming: true, Generation: 3},
 			},
 			want: []telemetry.AgentPool{
-				{Name: "code", Used: 5, Capacity: 5, Generation: 2},
-				{Name: "video", Used: 2, Capacity: 10, Draining: true, Generation: 3},
+				{Name: "code", Used: 5, Capacity: 5, Guaranteed: 5, BurstTo: 5, Generation: 2},
+				{Name: "video", Used: 12, Capacity: 15, Guaranteed: 10, BurstTo: 15, Borrowed: 2, Available: 3, Reclaiming: true, Generation: 3},
 			},
 		},
 		{

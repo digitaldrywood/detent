@@ -654,9 +654,11 @@ func (o *Orchestrator) dispatchPoolSnapshot() scheduler.PoolSnapshot {
 		return scheduler.PoolSnapshot{Name: scheduler.DefaultPoolName}
 	}
 	fallback := scheduler.PoolSnapshot{
-		Name:      scheduler.DefaultPoolName,
-		Capacity:  o.cfg.MaxConcurrentAgents,
-		Available: o.cfg.MaxConcurrentAgents,
+		Name:       scheduler.DefaultPoolName,
+		Capacity:   o.cfg.MaxConcurrentAgents,
+		Guaranteed: o.cfg.MaxConcurrentAgents,
+		BurstTo:    o.cfg.MaxConcurrentAgents,
+		Available:  o.cfg.MaxConcurrentAgents,
 	}
 	if o.globalDispatchGate == nil {
 		return fallback

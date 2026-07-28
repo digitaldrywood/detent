@@ -140,7 +140,7 @@ func TestGlobalPoolConfigsApplySchedulingInheritanceAndOverrides(t *testing.T) {
 		Scheduling:          globalconfig.SchedulingStrict,
 		AgentPools: []globalconfig.AgentPool{
 			{Name: "code", MaxConcurrentAgents: 5},
-			{Name: "video", MaxConcurrentAgents: 10, Scheduling: globalconfig.SchedulingRoundRobin},
+			{Name: "video", MaxConcurrentAgents: 10, BurstTo: 15, Scheduling: globalconfig.SchedulingRoundRobin},
 		},
 		FairShare: map[string]any{"half_life": "30m"},
 	}, nil)
@@ -165,6 +165,9 @@ func TestGlobalPoolConfigsApplySchedulingInheritanceAndOverrides(t *testing.T) {
 		if pool.Name != tt.name || pool.Scheduler.Capacity != tt.capacity || pool.Scheduler.Kind != tt.kind {
 			t.Fatalf("pools[%d] = %#v, want name/capacity/kind %s/%d/%s", tt.index, pool, tt.name, tt.capacity, tt.kind)
 		}
+	}
+	if pools[2].BurstTo != 15 {
+		t.Fatalf("pools[2].BurstTo = %d, want 15", pools[2].BurstTo)
 	}
 }
 

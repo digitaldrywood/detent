@@ -50,6 +50,7 @@ type fleetAgentPool struct {
 	Usage      string
 	Saturated  bool
 	Draining   bool
+	Reclaiming bool
 	StatusKind primitives.Kind
 }
 
@@ -151,9 +152,21 @@ func fleetAgentPools(data DashboardData) []fleetAgentPool {
 		if name == "" || pool.Capacity <= 0 || projectPool != "" && name != projectPool {
 			continue
 		}
-		saturated := pool.Used >= pool.Capacity
+		guaranteed := pool.Guaranteed
+		if guaranteed <= 0 {
+			guaranteed = pool.Capacity
+		}
+		burstTo := pool.BurstTo
+		if burstTo <= 0 {
+			burstTo = pool.Capacity
+		}
+		available := pool.Available
+		if pool.Guaranteed <= 0 {
+			available = max(0, pool.Capacity-pool.Used)
+		}
+		saturated := available == 0
 		kind := primitives.KindOK
-		if pool.Draining {
+		if pool.Draining || pool.Reclaiming {
 			kind = primitives.KindWarn
 		} else if saturated {
 			kind = primitives.KindErr
@@ -165,9 +178,10 @@ func fleetAgentPools(data DashboardData) []fleetAgentPool {
 		pools = append(pools, fleetAgentPool{
 			ID:         id,
 			Name:       name,
-			Usage:      formatCount(pool.Used) + " / " + formatCount(pool.Capacity),
+			Usage:      fleetAgentPoolUsage(pool.Used, guaranteed, burstTo, pool.Borrowed),
 			Saturated:  saturated,
 			Draining:   pool.Draining,
+			Reclaiming: pool.Reclaiming,
 			StatusKind: kind,
 		})
 	}
@@ -181,6 +195,18 @@ func fleetAgentPools(data DashboardData) []fleetAgentPool {
 		return pools[i].Name < pools[j].Name
 	})
 	return pools
+}
+
+func fleetAgentPoolUsage(used int, guaranteed int, burstTo int, borrowed int) string {
+	usage := formatCount(used) + " / " + formatCount(burstTo)
+	if burstTo == guaranteed {
+		return usage
+	}
+	usage += " · floor " + formatCount(guaranteed)
+	if borrowed > 0 {
+		usage += " · " + formatCount(borrowed) + " borrowed"
+	}
+	return usage
 }
 
 func fleetAgentCount(data DashboardData, pools []fleetAgentPool) string {
@@ -201,6 +227,9 @@ func fleetAgentCount(data DashboardData, pools []fleetAgentPool) string {
 func fleetAgentPoolClass(pool fleetAgentPool) string {
 	base := "flex min-w-0 items-center gap-1.5 rounded-chip border px-2 py-1 font-mono text-2xs font-medium tabular-nums "
 	if pool.Draining {
+		return base + "border-warn/40 bg-warn/10 text-warn"
+	}
+	if pool.Reclaiming {
 		return base + "border-warn/40 bg-warn/10 text-warn"
 	}
 	if pool.Saturated {

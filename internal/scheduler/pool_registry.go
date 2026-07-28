@@ -13,16 +13,21 @@ const DefaultPoolName = "default"
 
 type PoolConfig struct {
 	Name      string
+	BurstTo   int
 	Scheduler Config
 }
 
 type PoolSnapshot struct {
 	Name       string
 	Capacity   int
+	Guaranteed int
+	BurstTo    int
 	Used       int
+	Borrowed   int
 	Available  int
 	Mode       Mode
 	Draining   bool
+	Reclaiming bool
 	Generation uint64
 	Holders    []string
 }
@@ -39,6 +44,8 @@ type poolRuntime struct {
 	name       string
 	generation uint64
 	gate       *GlobalDispatchGate
+	guaranteed int
+	burstTo    int
 	retired    bool
 }
 
@@ -56,6 +63,7 @@ type PoolRegistry struct {
 	pauses         map[uint64]poolPause
 	nextGeneration uint64
 	nextPause      uint64
+	elastic        elasticPoolState
 }
 
 var _ ProjectDispatchGate = (*PoolRegistry)(nil)
@@ -66,6 +74,7 @@ func NewPoolRegistry(pools []PoolConfig, projects []ProjectCandidate) (*PoolRegi
 		byGeneration: map[uint64]*poolRuntime{},
 		projectPools: map[string]string{},
 		pauses:       map[uint64]poolPause{},
+		elastic:      newElasticPoolState(),
 	}
 	if err := registry.Reconfigure(pools, projects); err != nil {
 		return nil, err
@@ -88,8 +97,9 @@ func (r *PoolRegistry) SetProjects(projects []ProjectCandidate) {
 	defer r.reconfigureMu.Unlock()
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.setProjectsLocked(projects)
+	r.mu.Unlock()
+	r.cleanupElasticWaiters()
 }
 
 func (r *PoolRegistry) Reconfigure(pools []PoolConfig, projects []ProjectCandidate) error {
@@ -114,7 +124,7 @@ func (r *PoolRegistry) Reconfigure(pools []PoolConfig, projects []ProjectCandida
 	next := make(map[string]*poolRuntime, len(configs))
 	for name, cfg := range configs {
 		if runtime, ok := current[name]; ok {
-			if err := runtime.gate.Reconfigure(cfg.Scheduler); err != nil {
+			if err := reconfigurePoolRuntime(runtime, cfg); err != nil {
 				return fmt.Errorf("reconfigure agent pool %q: %w", name, err)
 			}
 			next[name] = runtime
@@ -124,6 +134,7 @@ func (r *PoolRegistry) Reconfigure(pools []PoolConfig, projects []ProjectCandida
 		if err != nil {
 			return err
 		}
+		r.setCapacityAdmission(runtime)
 		next[name] = runtime
 	}
 
@@ -135,6 +146,7 @@ func (r *PoolRegistry) Reconfigure(pools []PoolConfig, projects []ProjectCandida
 		runtime.retired = true
 		runtime.gate.SetProjects(nil)
 		_ = runtime.gate.PauseDispatch()
+		r.elastic.remove(runtime.generation)
 	}
 	for _, runtime := range next {
 		if runtime.generation != 0 {
@@ -155,6 +167,7 @@ func (r *PoolRegistry) Reconfigure(pools []PoolConfig, projects []ProjectCandida
 	r.setProjectsLocked(projects)
 	r.cleanupRetiredLocked()
 	r.mu.Unlock()
+	r.cleanupElasticWaiters()
 	return nil
 }
 
@@ -163,6 +176,7 @@ func (r *PoolRegistry) PauseDispatch() func() {
 		return func() {}
 	}
 
+	r.reconfigureMu.Lock()
 	r.mu.Lock()
 	r.nextPause++
 	if r.nextPause == 0 {
@@ -175,6 +189,7 @@ func (r *PoolRegistry) PauseDispatch() func() {
 	}
 	r.pauses[pauseID] = pause
 	r.mu.Unlock()
+	r.reconfigureMu.Unlock()
 
 	var once sync.Once
 	return func() {
@@ -197,31 +212,33 @@ func (r *PoolRegistry) PauseDispatch() func() {
 }
 
 func (r *PoolRegistry) PoolSnapshotFor(projectID string) PoolSnapshot {
+	r.reconfigureMu.Lock()
+	defer r.reconfigureMu.Unlock()
+
 	runtime := r.runtimeForProject(projectID)
 	if runtime == nil {
 		return PoolSnapshot{Name: DefaultPoolName}
 	}
-	snapshot := runtime.gate.PoolSnapshot()
-	r.mu.RLock()
-	snapshot.Draining = runtime.retired
-	snapshot.Generation = runtime.generation
-	r.mu.RUnlock()
-	return snapshot
+	return r.elasticPoolSnapshot(runtime)
 }
 
 func (r *PoolRegistry) PoolSnapshots() []PoolSnapshot {
 	if r == nil {
 		return nil
 	}
+	r.reconfigureMu.Lock()
+	defer r.reconfigureMu.Unlock()
+
 	r.mu.RLock()
-	snapshots := make([]PoolSnapshot, 0, len(r.byGeneration))
+	runtimes := make([]*poolRuntime, 0, len(r.byGeneration))
 	for _, runtime := range r.byGeneration {
-		snapshot := runtime.gate.PoolSnapshot()
-		snapshot.Draining = runtime.retired
-		snapshot.Generation = runtime.generation
-		snapshots = append(snapshots, snapshot)
+		runtimes = append(runtimes, runtime)
 	}
 	r.mu.RUnlock()
+	snapshots := make([]PoolSnapshot, 0, len(runtimes))
+	for _, runtime := range runtimes {
+		snapshots = append(snapshots, r.elasticPoolSnapshot(runtime))
+	}
 	slices.SortFunc(snapshots, func(left PoolSnapshot, right PoolSnapshot) int {
 		if compared := strings.Compare(left.Name, right.Name); compared != 0 {
 			return compared
@@ -255,6 +272,9 @@ func (r *PoolRegistry) MarkIdle(projectID string) {
 	runtime := r.runtimeForProject(projectID)
 	if runtime != nil {
 		runtime.gate.MarkIdle(projectID)
+		if !runtime.gate.hasReadyProjects() {
+			r.elastic.remove(runtime.generation)
+		}
 	}
 }
 
@@ -302,6 +322,7 @@ func (r *PoolRegistry) TryAcquireWithDecision(
 		return Slot{}, false, DispatchGateDecision{}, ErrNoCandidates
 	}
 	slot, ok, decision, err := runtime.gate.TryAcquireWithDecision(ctx, project, req, now)
+	decision = r.elasticDecision(runtime, decision)
 	if !ok || err != nil {
 		return slot, ok, decision, err
 	}
@@ -318,6 +339,9 @@ func (r *PoolRegistry) SetPreempt(slot Slot, preempt func()) {
 }
 
 func (r *PoolRegistry) Release(slot Slot) error {
+	r.reconfigureMu.Lock()
+	defer r.reconfigureMu.Unlock()
+
 	runtime := r.runtimeForSlot(slot)
 	if runtime == nil {
 		return ErrSlotNotHeld
@@ -325,7 +349,10 @@ func (r *PoolRegistry) Release(slot Slot) error {
 	if err := runtime.gate.Release(slot); err != nil {
 		return err
 	}
-	r.cleanupRetired()
+	r.cleanupElasticWaiters()
+	r.mu.Lock()
+	r.cleanupRetiredLocked()
+	r.mu.Unlock()
 	return nil
 }
 
@@ -395,6 +422,9 @@ func (r *PoolRegistry) cleanupRetired() {
 	if r == nil {
 		return
 	}
+	r.reconfigureMu.Lock()
+	defer r.reconfigureMu.Unlock()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cleanupRetiredLocked()
@@ -422,6 +452,9 @@ func normalizePoolConfigs(pools []PoolConfig) (map[string]PoolConfig, error) {
 		if pool.Scheduler.Capacity <= 0 {
 			return nil, fmt.Errorf("agent pool %q capacity must be positive", name)
 		}
+		if pool.BurstTo != 0 && pool.BurstTo < pool.Scheduler.Capacity {
+			return nil, fmt.Errorf("agent pool %q burst capacity must be greater than or equal to capacity", name)
+		}
 		if _, err := globalModeFromConfig(pool.Scheduler); err != nil {
 			return nil, fmt.Errorf("configure agent pool %q: %w", name, err)
 		}
@@ -435,7 +468,9 @@ func normalizePoolConfigs(pools []PoolConfig) (map[string]PoolConfig, error) {
 }
 
 func newPoolRuntime(cfg PoolConfig) (*poolRuntime, error) {
-	sched, err := NewFromConfig(cfg.Scheduler)
+	schedulerConfig := cfg.Scheduler
+	schedulerConfig.Capacity = effectivePoolBurst(cfg)
+	sched, err := NewFromConfig(schedulerConfig)
 	if err != nil {
 		return nil, fmt.Errorf("create agent pool %q: %w", cfg.Name, err)
 	}
@@ -444,8 +479,10 @@ func newPoolRuntime(cfg PoolConfig) (*poolRuntime, error) {
 		return nil, fmt.Errorf("create agent pool %q: %w", cfg.Name, ErrUnsupportedBackend)
 	}
 	return &poolRuntime{
-		name: cfg.Name,
-		gate: newGlobalDispatchGate(cfg.Name, global),
+		name:       cfg.Name,
+		gate:       newGlobalDispatchGate(cfg.Name, global),
+		guaranteed: cfg.Scheduler.Capacity,
+		burstTo:    effectivePoolBurst(cfg),
 	}, nil
 }
 

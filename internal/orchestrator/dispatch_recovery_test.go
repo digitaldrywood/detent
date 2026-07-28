@@ -73,27 +73,33 @@ func TestDispatchRecoveryTelemetryUsesAgentPoolCapacity(t *testing.T) {
 	project := scheduler.ProjectCandidate{ID: "detent", Pool: "video"}
 	gate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{
 		{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "weighted", Capacity: 1}},
-		{Name: "video", Scheduler: scheduler.Config{Kind: "weighted", Capacity: 5}},
+		{Name: "video", BurstTo: 8, Scheduler: scheduler.Config{Kind: "weighted", Capacity: 5}},
 	}, []scheduler.ProjectCandidate{project})
 	if err != nil {
 		t.Fatalf("NewPoolRegistry() error = %v", err)
 	}
 	projectGate := gate.GateFor(project.ID)
-	slot, acquired, err := projectGate.TryAcquire(
-		context.Background(),
-		project,
-		scheduler.SlotRequest{State: "Todo"},
-		time.Now(),
-	)
-	if err != nil {
-		t.Fatalf("TryAcquire() error = %v", err)
-	}
-	if !acquired {
-		t.Fatal("TryAcquire() acquired = false, want true")
+	slots := make([]scheduler.Slot, 0, 6)
+	for range 6 {
+		slot, acquired, err := projectGate.TryAcquire(
+			context.Background(),
+			project,
+			scheduler.SlotRequest{State: "Todo"},
+			time.Now(),
+		)
+		if err != nil {
+			t.Fatalf("TryAcquire() error = %v", err)
+		}
+		if !acquired {
+			t.Fatal("TryAcquire() acquired = false, want true")
+		}
+		slots = append(slots, slot)
 	}
 	t.Cleanup(func() {
-		if err := projectGate.Release(slot); err != nil {
-			t.Fatalf("Release() error = %v", err)
+		for _, slot := range slots {
+			if err := projectGate.Release(slot); err != nil {
+				t.Fatalf("Release() error = %v", err)
+			}
 		}
 	})
 	cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, Project: project})
@@ -109,16 +115,19 @@ func TestDispatchRecoveryTelemetryUsesAgentPoolCapacity(t *testing.T) {
 		t.Fatalf("DispatchRecoveries = %#v, want one", snapshot.DispatchRecoveries)
 	}
 	recovery := snapshot.DispatchRecoveries[0]
-	if recovery.Pool != "video" || recovery.MaxConcurrent != 5 {
-		t.Fatalf("DispatchRecoveries[0] = %#v, want video pool capacity 5", recovery)
+	if recovery.Pool != "video" || recovery.MaxConcurrent != 8 {
+		t.Fatalf("DispatchRecoveries[0] = %#v, want video pool burst capacity 8", recovery)
 	}
 
 	var capacity map[string]any
 	if err := json.Unmarshal([]byte(orch.capacitySnapshotJSON(&state, connector.Issue{State: "Todo"})), &capacity); err != nil {
 		t.Fatalf("capacitySnapshotJSON() error = %v", err)
 	}
-	if capacity["pool"] != "video" || capacity["pool_capacity"] != float64(5) {
-		t.Fatalf("capacity snapshot = %#v, want video pool capacity 5", capacity)
+	if capacity["pool"] != "video" || capacity["pool_capacity"] != float64(8) ||
+		capacity["pool_guaranteed"] != float64(5) ||
+		capacity["pool_burst_to"] != float64(8) ||
+		capacity["pool_borrowed"] != float64(1) {
+		t.Fatalf("capacity snapshot = %#v, want video guarantee 5, burst 8, borrowed 1", capacity)
 	}
 	holders, ok := capacity["holders"].([]any)
 	if !ok || len(holders) != 1 || holders[0] != "detent" {

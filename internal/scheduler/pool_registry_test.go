@@ -39,6 +39,241 @@ func TestPoolRegistryGrantsIndependentCapacity(t *testing.T) {
 	releasePoolSlots(t, registry, slots)
 }
 
+func TestPoolRegistryWithoutBurstRemainsRigid(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name    string
+		burstTo int
+	}{
+		{name: "omitted"},
+		{name: "equal to guarantee", burstTo: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			videoPool := poolConfig("video", "round_robin", 1, nil)
+			videoPool.BurstTo = test.burstTo
+			registry := newPoolRegistry(t,
+				[]scheduler.PoolConfig{
+					poolConfig(scheduler.DefaultPoolName, "round_robin", 1, nil),
+					videoPool,
+				},
+				[]scheduler.ProjectCandidate{
+					{ID: "video-a", Pool: "video"},
+					{ID: "video-b", Pool: "video"},
+				},
+			)
+			slot := acquirePoolSlots(t, registry, time.Time{}, scheduler.ProjectCandidate{ID: "video-a", Pool: "video"})[0]
+			assertPoolUnavailable(t, registry, scheduler.ProjectCandidate{ID: "video-b", Pool: "video"})
+			snapshot := registry.PoolSnapshotFor("video-a")
+			if snapshot.Capacity != 1 || snapshot.Guaranteed != 1 || snapshot.BurstTo != 1 ||
+				snapshot.Borrowed != 0 || snapshot.Used != 1 {
+				t.Fatalf("PoolSnapshotFor(video-a) = %#v, want rigid 1-slot pool", snapshot)
+			}
+			releasePoolSlots(t, registry, []scheduler.Slot{slot})
+		})
+	}
+}
+
+func TestPoolRegistryBorrowsIdleGuaranteesAndReclaimsByAttrition(t *testing.T) {
+	t.Parallel()
+
+	projects := []scheduler.ProjectCandidate{
+		{ID: "code-a"},
+		{ID: "code-b"},
+		{ID: "video-a", Pool: "video"},
+		{ID: "video-b", Pool: "video"},
+		{ID: "video-c", Pool: "video"},
+		{ID: "video-d", Pool: "video"},
+	}
+	registry := newPoolRegistry(t,
+		[]scheduler.PoolConfig{
+			poolConfig(scheduler.DefaultPoolName, "round_robin", 2, nil),
+			elasticPoolConfig("video", "round_robin", 1, 3, nil),
+		},
+		projects,
+	)
+	videoSlots := acquirePoolSlots(t, registry, time.Time{}, projects[2], projects[3], projects[4])
+	snapshot := registry.PoolSnapshotFor("video-a")
+	if snapshot.Capacity != 3 || snapshot.Guaranteed != 1 || snapshot.BurstTo != 3 ||
+		snapshot.Used != 3 || snapshot.Borrowed != 2 || snapshot.Available != 0 {
+		t.Fatalf("PoolSnapshotFor(video-a) = %#v, want 1 guaranteed and 2 borrowed", snapshot)
+	}
+	_, acquired, decision, err := registry.TryAcquireWithDecision(
+		context.Background(),
+		projects[5],
+		scheduler.SlotRequest{State: "Todo"},
+		time.Time{},
+	)
+	if err != nil {
+		t.Fatalf("TryAcquireWithDecision(video-d) error = %v", err)
+	}
+	if acquired || decision.GuaranteedCapacity != 1 || decision.BurstCapacity != 3 ||
+		decision.BorrowedSlots != 2 || decision.SharedCapacity != 3 ||
+		decision.SharedUsed != 3 || decision.SharedAvailable != 0 {
+		t.Fatalf("TryAcquireWithDecision(video-d) decision = %#v, want elastic capacity telemetry", decision)
+	}
+	assertPoolUnavailable(t, registry, projects[0])
+	if snapshot := registry.PoolSnapshotFor("video-a"); !snapshot.Reclaiming {
+		t.Fatalf("PoolSnapshotFor(video-a) = %#v, want reclaiming", snapshot)
+	}
+
+	if err := registry.Release(videoSlots[0]); err != nil {
+		t.Fatalf("Release(video-a) error = %v", err)
+	}
+	assertPoolUnavailable(t, registry, projects[5])
+	codeSlots := acquirePoolSlots(t, registry, time.Time{}, projects[0])
+	assertPoolUnavailable(t, registry, projects[1])
+	if err := registry.Release(videoSlots[1]); err != nil {
+		t.Fatalf("Release(video-b) error = %v", err)
+	}
+	codeSlots = append(codeSlots, acquirePoolSlots(t, registry, time.Time{}, projects[1])...)
+	snapshot = registry.PoolSnapshotFor("code-a")
+	if snapshot.Used != 2 || snapshot.Guaranteed != 2 || snapshot.Borrowed != 0 {
+		t.Fatalf("PoolSnapshotFor(code-a) = %#v, want full guarantee", snapshot)
+	}
+	releasePoolSlots(t, registry, append(codeSlots, videoSlots[2]))
+}
+
+func TestPoolRegistryReservesGuaranteeForReadyLender(t *testing.T) {
+	t.Parallel()
+
+	code := scheduler.ProjectCandidate{ID: "code"}
+	videoA := scheduler.ProjectCandidate{ID: "video-a", Pool: "video"}
+	videoB := scheduler.ProjectCandidate{ID: "video-b", Pool: "video"}
+	registry := newPoolRegistry(t,
+		[]scheduler.PoolConfig{
+			poolConfig(scheduler.DefaultPoolName, "round_robin", 1, nil),
+			elasticPoolConfig("video", "round_robin", 1, 2, nil),
+		},
+		[]scheduler.ProjectCandidate{code, videoA, videoB},
+	)
+	videoSlot := acquirePoolSlots(t, registry, time.Time{}, videoA)[0]
+	registry.MarkReady(code)
+	assertPoolUnavailable(t, registry, videoB)
+	codeSlot := acquirePoolSlots(t, registry, time.Time{}, code)[0]
+	if snapshot := registry.PoolSnapshotFor("video-a"); snapshot.Borrowed != 0 {
+		t.Fatalf("PoolSnapshotFor(video-a) = %#v, want no borrowed slot", snapshot)
+	}
+	releasePoolSlots(t, registry, []scheduler.Slot{videoSlot, codeSlot})
+}
+
+func TestPoolRegistryBorrowerContentionIsFirstCome(t *testing.T) {
+	t.Parallel()
+
+	projects := []scheduler.ProjectCandidate{
+		{ID: "lender"},
+		{ID: "alpha-a", Pool: "alpha"},
+		{ID: "alpha-b", Pool: "alpha"},
+		{ID: "beta-a", Pool: "beta"},
+		{ID: "beta-b", Pool: "beta"},
+	}
+	registry := newPoolRegistry(t,
+		[]scheduler.PoolConfig{
+			poolConfig(scheduler.DefaultPoolName, "round_robin", 1, nil),
+			elasticPoolConfig("alpha", "round_robin", 1, 2, nil),
+			elasticPoolConfig("beta", "round_robin", 1, 2, nil),
+		},
+		projects,
+	)
+	slots := acquirePoolSlots(t, registry, time.Time{}, projects[0], projects[1], projects[3])
+	assertPoolUnavailable(t, registry, projects[2])
+	assertPoolUnavailable(t, registry, projects[4])
+	if err := registry.Release(slots[0]); err != nil {
+		t.Fatalf("Release(lender) error = %v", err)
+	}
+	assertPoolUnavailable(t, registry, projects[4])
+	alphaBorrowed := acquirePoolSlots(t, registry, time.Time{}, projects[2])[0]
+	if err := registry.Release(alphaBorrowed); err != nil {
+		t.Fatalf("Release(alpha borrowed) error = %v", err)
+	}
+	betaBorrowed := acquirePoolSlots(t, registry, time.Time{}, projects[4])[0]
+	releasePoolSlots(t, registry, []scheduler.Slot{slots[1], slots[2], betaBorrowed})
+}
+
+func TestPoolRegistryElasticStrictPreemptionDoesNotCrossPools(t *testing.T) {
+	t.Parallel()
+
+	projects := []scheduler.ProjectCandidate{
+		{ID: "code-urgent", Priority: 0},
+		{ID: "video-a", Pool: "video", Priority: 4},
+		{ID: "video-b", Pool: "video", Priority: 4},
+	}
+	registry := newPoolRegistry(t,
+		[]scheduler.PoolConfig{
+			poolConfig(scheduler.DefaultPoolName, "strict", 1, nil),
+			elasticPoolConfig("video", "strict", 1, 2, nil),
+		},
+		projects,
+	)
+	registry.MarkIdle("code-urgent")
+	videoSlots := acquirePoolSlots(t, registry, time.Time{}, projects[1], projects[2])
+	videoPreemptions := 0
+	for _, slot := range videoSlots {
+		registry.SetPreempt(slot, func() { videoPreemptions++ })
+	}
+	assertPoolUnavailable(t, registry, projects[0])
+	if videoPreemptions != 0 {
+		t.Fatalf("video preemptions = %d, want 0", videoPreemptions)
+	}
+	if err := registry.Release(videoSlots[0]); err != nil {
+		t.Fatalf("Release(video-a) error = %v", err)
+	}
+	codeSlot := acquirePoolSlots(t, registry, time.Time{}, projects[0])[0]
+	if videoPreemptions != 0 {
+		t.Fatalf("video preemptions after code grant = %d, want 0", videoPreemptions)
+	}
+	releasePoolSlots(t, registry, []scheduler.Slot{videoSlots[1], codeSlot})
+}
+
+func TestPoolRegistryReconfiguresBurstWhileRunning(t *testing.T) {
+	t.Parallel()
+
+	projects := []scheduler.ProjectCandidate{
+		{ID: "video-a", Pool: "video"},
+		{ID: "video-b", Pool: "video"},
+		{ID: "video-c", Pool: "video"},
+		{ID: "video-d", Pool: "video"},
+	}
+	defaultPool := poolConfig(scheduler.DefaultPoolName, "weighted", 2, nil)
+	rigidVideo := poolConfig("video", "weighted", 1, nil)
+	registry := newPoolRegistry(t, []scheduler.PoolConfig{defaultPool, rigidVideo}, projects)
+	slots := acquirePoolSlots(t, registry, time.Time{}, projects[0])
+
+	elasticVideo := elasticPoolConfig("video", "weighted", 1, 3, nil)
+	if err := registry.Reconfigure([]scheduler.PoolConfig{defaultPool, elasticVideo}, projects); err != nil {
+		t.Fatalf("add burst Reconfigure() error = %v", err)
+	}
+	slots = append(slots, acquirePoolSlots(t, registry, time.Time{}, projects[1], projects[2])...)
+
+	elasticVideo.BurstTo = 2
+	if err := registry.Reconfigure([]scheduler.PoolConfig{defaultPool, elasticVideo}, projects); err != nil {
+		t.Fatalf("change burst Reconfigure() error = %v", err)
+	}
+	assertPoolUnavailable(t, registry, projects[3])
+	if err := registry.Release(slots[0]); err != nil {
+		t.Fatalf("Release(first) error = %v", err)
+	}
+	assertPoolUnavailable(t, registry, projects[3])
+
+	if err := registry.Reconfigure([]scheduler.PoolConfig{defaultPool, rigidVideo}, projects); err != nil {
+		t.Fatalf("remove burst Reconfigure() error = %v", err)
+	}
+	if snapshot := registry.PoolSnapshotFor("video-b"); snapshot.Capacity != 1 ||
+		snapshot.Guaranteed != 1 || snapshot.Used != 2 {
+		t.Fatalf("PoolSnapshotFor(video-b) = %#v, want rigid pool draining two slots", snapshot)
+	}
+	if err := registry.Release(slots[1]); err != nil {
+		t.Fatalf("Release(second) error = %v", err)
+	}
+	assertPoolUnavailable(t, registry, projects[3])
+	if err := registry.Release(slots[2]); err != nil {
+		t.Fatalf("Release(third) error = %v", err)
+	}
+	replacement := acquirePoolSlots(t, registry, time.Time{}, projects[3])[0]
+	releasePoolSlots(t, registry, []scheduler.Slot{replacement})
+}
+
 func TestPoolRegistryScopesSchedulingState(t *testing.T) {
 	t.Parallel()
 
@@ -364,6 +599,9 @@ func TestPoolRegistryRejectsInvalidConfigurations(t *testing.T) {
 			poolConfig(scheduler.DefaultPoolName, "weighted", 1, nil),
 		}, want: `"default" is duplicated`},
 		{name: "nonpositive capacity", pools: []scheduler.PoolConfig{{Name: scheduler.DefaultPoolName}}, want: "capacity must be positive"},
+		{name: "burst below guarantee", pools: []scheduler.PoolConfig{{
+			Name: scheduler.DefaultPoolName, BurstTo: 1, Scheduler: scheduler.Config{Kind: "weighted", Capacity: 2},
+		}}, want: "burst capacity must be greater than or equal to capacity"},
 		{name: "unsupported scheduling", pools: []scheduler.PoolConfig{
 			poolConfig(scheduler.DefaultPoolName, "unknown", 1, nil),
 		}, want: "unsupported scheduler backend"},
@@ -420,6 +658,18 @@ func poolConfig(name string, kind string, capacity int, fairShare scheduler.Fair
 			FairShareStore: fairShare,
 		},
 	}
+}
+
+func elasticPoolConfig(
+	name string,
+	kind string,
+	capacity int,
+	burstTo int,
+	fairShare scheduler.FairShareStore,
+) scheduler.PoolConfig {
+	config := poolConfig(name, kind, capacity, fairShare)
+	config.BurstTo = burstTo
+	return config
 }
 
 func acquirePoolSlots(

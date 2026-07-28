@@ -48,7 +48,7 @@ func checkDoctorAgentPools(
 		return doctorCheck{
 			Name:   doctorAgentPoolsCheckName,
 			Status: doctorOK,
-			Detail: "agent pools are already configured; automatic repartitioning is intentionally disabled",
+			Detail: configuredAgentPoolsDetail(cfg.Global.AgentPools),
 		}
 	}
 	deps = deps.withDefaults()
@@ -119,6 +119,25 @@ func checkDoctorAgentPools(
 		Detail: recommendation.Detail(),
 		Hint:   "Review the proposed split, tune the cloud cap to provider limits, then run detent fix agent-pools.",
 	}
+}
+
+func configuredAgentPoolsDetail(pools []globalconfig.AgentPool) string {
+	elastic := make([]string, 0, len(pools))
+	for _, pool := range pools {
+		if pool.BurstTo <= pool.MaxConcurrentAgents {
+			continue
+		}
+		elastic = append(elastic, fmt.Sprintf(
+			"%s (guaranteed %d, burst ceiling %d)",
+			strings.TrimSpace(pool.Name),
+			pool.MaxConcurrentAgents,
+			pool.BurstTo,
+		))
+	}
+	if len(elastic) == 0 {
+		return "agent pools are already configured with rigid capacity; automatic repartitioning is intentionally disabled"
+	}
+	return "agent pools are already configured; elastic capacity: " + strings.Join(elastic, ", ")
 }
 
 func doctorClassifyWorkloadProjects(

@@ -109,6 +109,20 @@ func TestCheckDoctorAgentPools(t *testing.T) {
 			wantStatus:    doctorOK,
 			wantSubstring: "already configured",
 		},
+		{
+			name: "elastic pools",
+			cfg: func() globalconfig.Config {
+				cfg := doctorAgentPoolsTestConfig([]globalconfig.Project{
+					{ID: "detent", Workflow: "detent", Pool: "code", Weight: 1},
+				})
+				cfg.Global.AgentPools = []globalconfig.AgentPool{
+					{Name: "code", MaxConcurrentAgents: 5, BurstTo: 8},
+				}
+				return cfg
+			}(),
+			wantStatus:    doctorOK,
+			wantSubstring: "code (guaranteed 5, burst ceiling 8)",
+		},
 	}
 
 	for _, tt := range tests {

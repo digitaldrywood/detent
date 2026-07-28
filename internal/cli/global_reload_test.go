@@ -388,6 +388,7 @@ func TestGlobalConfigReloaderHotReconfiguresAgentPools(t *testing.T) {
 	added.Global.AgentPools = []globalconfig.AgentPool{{
 		Name:                "video",
 		MaxConcurrentAgents: 2,
+		BurstTo:             4,
 		Scheduling:          globalconfig.SchedulingRoundRobin,
 	}}
 	added.Projects = []globalconfig.Project{{ID: "alpha", Pool: "video", Weight: 1}}
@@ -395,7 +396,8 @@ func TestGlobalConfigReloaderHotReconfiguresAgentPools(t *testing.T) {
 		t.Fatalf("add applyGlobalRuntimeConfig() error = %v", err)
 	}
 	if snapshot := gate.PoolSnapshotFor("alpha"); snapshot.Name != "video" ||
-		snapshot.Capacity != 2 || snapshot.Mode != scheduler.ModeRoundRobin {
+		snapshot.Capacity != 4 || snapshot.Guaranteed != 2 ||
+		snapshot.BurstTo != 4 || snapshot.Mode != scheduler.ModeRoundRobin {
 		t.Fatalf("PoolSnapshotFor(alpha) after add = %#v", snapshot)
 	}
 
@@ -403,12 +405,15 @@ func TestGlobalConfigReloaderHotReconfiguresAgentPools(t *testing.T) {
 	changed.Global.AgentPools = []globalconfig.AgentPool{{
 		Name:                "video",
 		MaxConcurrentAgents: 3,
+		BurstTo:             5,
 		Scheduling:          globalconfig.SchedulingStrict,
 	}}
 	if err := applyGlobalRuntimeConfig(gate, nil, nil, changed); err != nil {
 		t.Fatalf("change applyGlobalRuntimeConfig() error = %v", err)
 	}
-	if snapshot := gate.PoolSnapshotFor("alpha"); snapshot.Capacity != 3 || snapshot.Mode != scheduler.ModeStrictPriority {
+	if snapshot := gate.PoolSnapshotFor("alpha"); snapshot.Capacity != 5 ||
+		snapshot.Guaranteed != 3 || snapshot.BurstTo != 5 ||
+		snapshot.Mode != scheduler.ModeStrictPriority {
 		t.Fatalf("PoolSnapshotFor(alpha) after change = %#v", snapshot)
 	}
 
