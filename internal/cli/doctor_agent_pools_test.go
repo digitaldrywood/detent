@@ -129,18 +129,24 @@ func TestDoctorCapacityConstraintBindingRecommendations(t *testing.T) {
 			want:       []string{"no binding capacity constraint detected"},
 		},
 		{
-			name: "elastic pools",
+			name: "elastic pool contention raises burst ceiling",
 			cfg: func() globalconfig.Config {
 				cfg := doctorAgentPoolsTestConfig([]globalconfig.Project{
-					{ID: "detent", Workflow: "detent", Pool: "code", Weight: 1},
+					{ID: "video", Pool: "cloud"},
 				})
 				cfg.Global.AgentPools = []globalconfig.AgentPool{
-					{Name: "code", MaxConcurrentAgents: 5, BurstTo: 8},
+					{Name: "cloud", MaxConcurrentAgents: 5, BurstTo: 8},
 				}
 				return cfg
 			}(),
-			wantStatus:    doctorOK,
-			wantSubstring: "code (guaranteed 5, burst ceiling 8)",
+			projects: []doctorWorkloadProject{
+				doctorCapacityTestProject("video", "cloud", workload.ClassCloudOnly, 10),
+			},
+			waits: []store.CapacityConstraintWait{
+				{ProjectID: "video", WorkloadClass: "cloud-only", Pool: "cloud", Reason: store.CapacityConstraintPool, WaitCount: 9},
+			},
+			wantStatus: doctorWarn,
+			want:       []string{`raise global.agent_pools["cloud"].burst_to`},
 		},
 	}
 
@@ -204,6 +210,22 @@ func TestDoctorPoolCoherenceFindings(t *testing.T) {
 				doctorCapacityTestProject("video", "cloud", workload.ClassCloudOnly, 8),
 			},
 			want: `project "video" agent.max_concurrent_agents=8 exceeds pool "cloud" capacity 5`,
+		},
+		{
+			name: "elastic pool uses burst ceiling",
+			cfg: globalconfig.Config{
+				Global: globalconfig.Settings{
+					MaxConcurrentAgents: 5,
+					AgentPools: []globalconfig.AgentPool{{
+						Name:                "cloud",
+						MaxConcurrentAgents: 5,
+						BurstTo:             8,
+					}},
+				},
+			},
+			projects: []doctorWorkloadProject{
+				doctorCapacityTestProject("video", "cloud", workload.ClassCloudOnly, 8),
+			},
 		},
 		{
 			name: "active lane binds below project",

@@ -121,25 +121,6 @@ func checkDoctorAgentPools(
 	return newDoctorCapacityCheck(cfg, projects, waits, contention, coherence)
 }
 
-func configuredAgentPoolsDetail(pools []globalconfig.AgentPool) string {
-	elastic := make([]string, 0, len(pools))
-	for _, pool := range pools {
-		if pool.BurstTo <= pool.MaxConcurrentAgents {
-			continue
-		}
-		elastic = append(elastic, fmt.Sprintf(
-			"%s (guaranteed %d, burst ceiling %d)",
-			strings.TrimSpace(pool.Name),
-			pool.MaxConcurrentAgents,
-			pool.BurstTo,
-		))
-	}
-	if len(elastic) == 0 {
-		return "agent pools are already configured with rigid capacity; automatic repartitioning is intentionally disabled"
-	}
-	return "agent pools are already configured; elastic capacity: " + strings.Join(elastic, ", ")
-}
-
 func doctorClassifyWorkloadProjects(
 	ctx context.Context,
 	cfg globalconfig.Config,
@@ -430,7 +411,7 @@ func doctorPoolCoherenceFindings(
 		globalconfig.DefaultAgentPoolName: cfg.Global.MaxConcurrentAgents,
 	}
 	for _, pool := range cfg.Global.AgentPools {
-		poolCaps[strings.TrimSpace(pool.Name)] = pool.MaxConcurrentAgents
+		poolCaps[strings.TrimSpace(pool.Name)] = doctorConfiguredPoolCapacity(pool)
 	}
 	memberCapSums := map[string]int{}
 	memberCounts := map[string]int{}
@@ -521,10 +502,20 @@ func doctorPoolCapacityPath(cfg globalconfig.Config, pool string) string {
 	}
 	for _, configured := range cfg.Global.AgentPools {
 		if strings.TrimSpace(configured.Name) == pool {
+			if configured.BurstTo > configured.MaxConcurrentAgents {
+				return fmt.Sprintf("global.agent_pools[%q].burst_to", pool)
+			}
 			return fmt.Sprintf("global.agent_pools[%q].max_concurrent_agents", pool)
 		}
 	}
 	return fmt.Sprintf("pool %q capacity", pool)
+}
+
+func doctorConfiguredPoolCapacity(pool globalconfig.AgentPool) int {
+	if pool.BurstTo > pool.MaxConcurrentAgents {
+		return pool.BurstTo
+	}
+	return pool.MaxConcurrentAgents
 }
 
 func doctorProjectPool(project globalconfig.Project) string {

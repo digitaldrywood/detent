@@ -2316,11 +2316,13 @@ one observation per five-minute interval before doctor selects the binding
 constraint. Telemetry from a project's previous pool assignment is ignored.
 
 A pool-bound project in a single-class pool is told to raise that pool's
-capacity, never to split it. When mixed workload classes share the implicit
-default pool and pool waits bind, doctor preserves the initial `code` / `cloud`
-split recommendation: the code pool keeps the current cap, the cloud pool gets
-a provider-tuned starting cap, and the affected projects are printed as valid
-YAML. Configured pools are reported but are never repartitioned automatically.
+capacity, never to split it. For an elastic pool this names `burst_to`, the
+reachable ceiling; rigid pools name `max_concurrent_agents`. When mixed
+workload classes share the implicit default pool and pool waits bind, doctor
+preserves the initial `code` / `cloud` split recommendation: the code pool
+keeps the current cap, the cloud pool gets a provider-tuned starting cap, and
+the affected projects are printed as valid YAML. Configured pools are reported
+but are never repartitioned automatically.
 
 Doctor also checks capacity coherence without requiring telemetry. It warns
 when member project caps cannot add up to a pool's declared capacity, when a
