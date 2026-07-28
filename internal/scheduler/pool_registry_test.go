@@ -191,6 +191,52 @@ func TestPoolRegistryBorrowerContentionIsFirstCome(t *testing.T) {
 	releasePoolSlots(t, registry, []scheduler.Slot{slots[1], slots[2], betaBorrowed})
 }
 
+func TestPoolRegistryReloadDropsBorrowerAtBurstCeiling(t *testing.T) {
+	t.Parallel()
+
+	projects := []scheduler.ProjectCandidate{
+		{ID: "lender"},
+		{ID: "alpha-a", Pool: "alpha"},
+		{ID: "alpha-b", Pool: "alpha"},
+		{ID: "alpha-c", Pool: "alpha"},
+		{ID: "beta-a", Pool: "beta"},
+		{ID: "beta-b", Pool: "beta"},
+	}
+	defaultPool := poolConfig(scheduler.DefaultPoolName, "round_robin", 2, nil)
+	alphaPool := elasticPoolConfig("alpha", "round_robin", 1, 3, nil)
+	betaPool := elasticPoolConfig("beta", "round_robin", 1, 2, nil)
+	registry := newPoolRegistry(
+		t,
+		[]scheduler.PoolConfig{defaultPool, alphaPool, betaPool},
+		projects,
+	)
+	slots := acquirePoolSlots(
+		t,
+		registry,
+		time.Time{},
+		projects[1],
+		projects[4],
+		projects[2],
+		projects[0],
+	)
+	assertPoolUnavailable(t, registry, projects[3])
+	assertPoolUnavailable(t, registry, projects[5])
+
+	alphaPool.BurstTo = 2
+	if err := registry.Reconfigure(
+		[]scheduler.PoolConfig{defaultPool, alphaPool, betaPool},
+		projects,
+	); err != nil {
+		t.Fatalf("Reconfigure() error = %v", err)
+	}
+	if err := registry.Release(slots[3]); err != nil {
+		t.Fatalf("Release(lender) error = %v", err)
+	}
+	betaBorrowed := acquirePoolSlots(t, registry, time.Time{}, projects[5])[0]
+	assertPoolUnavailable(t, registry, projects[3])
+	releasePoolSlots(t, registry, append(slots[:3], betaBorrowed))
+}
+
 func TestPoolRegistryElasticStrictPreemptionDoesNotCrossPools(t *testing.T) {
 	t.Parallel()
 

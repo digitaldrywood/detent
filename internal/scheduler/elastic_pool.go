@@ -205,7 +205,8 @@ func (r *PoolRegistry) cleanupElasticWaiters() {
 		if runtime == nil || runtime.burstTo == runtime.guaranteed || !runtime.gate.hasReadyProjects() {
 			continue
 		}
-		if runtime.gate.PoolSnapshot().Used < runtime.guaranteed {
+		used := runtime.gate.PoolSnapshot().Used
+		if used < runtime.guaranteed || used >= runtime.burstTo {
 			continue
 		}
 		filtered = append(filtered, generation)
