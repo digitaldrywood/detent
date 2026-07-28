@@ -3,6 +3,7 @@ package scheduler_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -114,6 +115,8 @@ func TestGlobalDispatchGateReservesFreedSlotForPendingMergeLane(t *testing.T) {
 		t.Fatal("merge waiting TryAcquireWithDecision() ok = true while the global slot is held, want false")
 	} else if decision.SelectedProjectID != mergeProject.ID || decision.Reason != scheduler.DispatchGateReasonGlobalCapacityFull {
 		t.Fatalf("merge waiting decision = %#v, want selected merge with global capacity full", decision)
+	} else if !slices.Equal(decision.Holders, []string{todoProject.ID}) {
+		t.Fatalf("merge waiting holders = %#v, want refusal-time holder %q", decision.Holders, todoProject.ID)
 	}
 
 	if err := gate.Release(todoSlot); err != nil {

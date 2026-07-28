@@ -127,6 +127,10 @@ func TestPoolContentionTelemetryEndToEnd(t *testing.T) {
 			t.Fatalf("capacity[%q] = %#v, want %#v; snapshot = %s", key, got, want, refusal.CapacitySnapshotJSON)
 		}
 	}
+	holders, ok := capacity["holders"].([]any)
+	if !ok || len(holders) != 1 || holders[0] != localProject.ID {
+		t.Fatalf("capacity holders = %#v, want refusal-time holder %q", capacity["holders"], localProject.ID)
+	}
 
 	attempts, err := runtimeStore.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: cloudProject.ID})
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +29,7 @@ type dispatchGateSampleKey struct {
 	reason            string
 	globalCapacity    int
 	capacityExhausted bool
+	holders           string
 }
 
 func (o *Orchestrator) logDispatchPlanDecision(ctx context.Context, state *State, now time.Time, decision dispatchPlanDecision) {
@@ -124,11 +126,13 @@ func (o *Orchestrator) recordDispatchGateRefusal(
 	if pool == "" {
 		pool = scheduler.DefaultPoolName
 	}
+	decision.Holders = normalizeDispatchGateHolders(decision.Holders)
 	key := dispatchGateSampleKey{
 		pool:              pool,
 		reason:            reason,
 		globalCapacity:    decision.GlobalCapacity,
 		capacityExhausted: decision.GlobalAvailable == 0,
+		holders:           strings.Join(decision.Holders, "\x00"),
 	}
 	if !o.reserveDispatchGateSample(key, now) {
 		return
@@ -197,11 +201,7 @@ func (o *Orchestrator) dispatchGateCapacitySnapshotJSON(
 	decision scheduler.DispatchGateDecision,
 	projectStats projectStateSlotStats,
 ) string {
-	pool := o.dispatchPoolSnapshot()
 	poolName := strings.TrimSpace(decision.PoolName)
-	if poolName == "" {
-		poolName = strings.TrimSpace(pool.Name)
-	}
 	if poolName == "" {
 		poolName = scheduler.DefaultPoolName
 	}
@@ -209,7 +209,7 @@ func (o *Orchestrator) dispatchGateCapacitySnapshotJSON(
 		"project_id":              strings.TrimSpace(o.cfg.Project.ID),
 		"pool":                    poolName,
 		"pool_capacity":           decision.GlobalCapacity,
-		"holders":                 pool.Holders,
+		"holders":                 decision.Holders,
 		"lane":                    normalizeState(issue.State),
 		"global_capacity":         decision.GlobalCapacity,
 		"global_used":             decision.GlobalUsed,
@@ -223,6 +223,24 @@ func (o *Orchestrator) dispatchGateCapacitySnapshotJSON(
 		"ready_projects":          decision.ReadyProjects,
 		"running_projects":        decision.RunningProjects,
 	})
+}
+
+func normalizeDispatchGateHolders(holders []string) []string {
+	normalized := make([]string, 0, len(holders))
+	seen := make(map[string]struct{}, len(holders))
+	for _, holder := range holders {
+		holder = strings.TrimSpace(holder)
+		if holder == "" {
+			continue
+		}
+		if _, ok := seen[holder]; ok {
+			continue
+		}
+		seen[holder] = struct{}{}
+		normalized = append(normalized, holder)
+	}
+	sort.Strings(normalized)
+	return normalized
 }
 
 func (o *Orchestrator) logWorkerLifecycle(issue connector.Issue, event string, attrs ...any) {
