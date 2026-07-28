@@ -107,6 +107,7 @@ func TestFleetAgentPools(t *testing.T) {
 		wantCount       string
 		wantPools       int
 		wantPool        string
+		wantUsage       string
 		wantSaturated   bool
 		wantStrip       bool
 		wantStatusLabel string
@@ -172,6 +173,27 @@ func TestFleetAgentPools(t *testing.T) {
 			wantStrip:   false,
 			projectPool: "",
 		},
+		{
+			name:          "elastic pool identifies borrowed capacity",
+			pools:         []telemetry.AgentPool{{Name: "video", Used: 6, Capacity: 8, Guaranteed: 5, BurstTo: 8, Borrowed: 1, Available: 2}},
+			wantCount:     "1 running",
+			wantPools:     1,
+			wantPool:      "video",
+			wantUsage:     "6 / 8 · floor 5 · 1 borrowed",
+			wantStrip:     true,
+			wantSaturated: false,
+		},
+		{
+			name:            "elastic borrower yields for reclaim",
+			pools:           []telemetry.AgentPool{{Name: "video", Used: 6, Capacity: 8, Guaranteed: 5, BurstTo: 8, Borrowed: 1, Reclaiming: true}},
+			wantCount:       "1 running",
+			wantPools:       1,
+			wantPool:        "video",
+			wantUsage:       "6 / 8 · floor 5 · 1 borrowed",
+			wantStrip:       true,
+			wantSaturated:   true,
+			wantStatusLabel: "Yielding borrowed capacity",
+		},
 	}
 
 	for _, tt := range tests {
@@ -197,6 +219,9 @@ func TestFleetAgentPools(t *testing.T) {
 				}
 				if found == nil || found.Saturated != tt.wantSaturated {
 					t.Fatalf("pool %q = %#v, want saturated=%t", tt.wantPool, found, tt.wantSaturated)
+				}
+				if tt.wantUsage != "" && found.Usage != tt.wantUsage {
+					t.Fatalf("pool %q usage = %q, want %q", tt.wantPool, found.Usage, tt.wantUsage)
 				}
 			}
 			html := renderBoardComponent(t, AgentActivityPanel(view.Agents, view.AgentCount, view.AgentPools))

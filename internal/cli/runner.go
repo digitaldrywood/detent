@@ -705,7 +705,12 @@ func telemetryAgentPools(source agentPoolSnapshotSource) []telemetry.AgentPool {
 			Name:       name,
 			Used:       snapshot.Used,
 			Capacity:   snapshot.Capacity,
+			Guaranteed: snapshot.Guaranteed,
+			BurstTo:    snapshot.BurstTo,
+			Borrowed:   snapshot.Borrowed,
+			Available:  snapshot.Available,
 			Draining:   snapshot.Draining,
+			Reclaiming: snapshot.Reclaiming,
 			Generation: snapshot.Generation,
 		})
 	}

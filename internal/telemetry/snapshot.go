@@ -113,7 +113,12 @@ type AgentPool struct {
 	Name       string `json:"name"`
 	Used       int    `json:"used"`
 	Capacity   int    `json:"capacity"`
+	Guaranteed int    `json:"guaranteed"`
+	BurstTo    int    `json:"burst_to"`
+	Borrowed   int    `json:"borrowed"`
+	Available  int    `json:"available"`
 	Draining   bool   `json:"draining,omitempty"`
+	Reclaiming bool   `json:"reclaiming,omitempty"`
 	Generation uint64 `json:"generation,omitempty"`
 }
 

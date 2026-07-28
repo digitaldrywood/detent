@@ -1221,6 +1221,7 @@ func globalPoolConfigs(
 		}
 		pools = append(pools, scheduler.PoolConfig{
 			Name:      pool.Name,
+			BurstTo:   pool.BurstTo,
 			Scheduler: poolConfig,
 		})
 	}

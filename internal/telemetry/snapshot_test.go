@@ -27,8 +27,8 @@ func TestSnapshotJSONShape(t *testing.T) {
 			Pool:        "code",
 		},
 		AgentPools: []telemetry.AgentPool{
-			{Name: "code", Used: 5, Capacity: 5, Generation: 2},
-			{Name: "video", Used: 2, Capacity: 10, Generation: 3},
+			{Name: "code", Used: 5, Capacity: 5, Guaranteed: 5, BurstTo: 5, Generation: 2},
+			{Name: "video", Used: 12, Capacity: 15, Guaranteed: 10, BurstTo: 15, Borrowed: 2, Available: 3, Generation: 3},
 		},
 		Instance: telemetry.Instance{
 			Name:                    "release-captain",
@@ -240,7 +240,10 @@ func TestSnapshotJSONShape(t *testing.T) {
 		t.Fatalf("agent_pools len = %d, want 2", len(pools))
 	}
 	codePool := pools[0].(map[string]any)
-	if codePool["name"] != "code" || codePool["used"] != float64(5) || codePool["capacity"] != float64(5) || codePool["generation"] != float64(2) {
+	if codePool["name"] != "code" || codePool["used"] != float64(5) ||
+		codePool["capacity"] != float64(5) || codePool["guaranteed"] != float64(5) ||
+		codePool["burst_to"] != float64(5) || codePool["borrowed"] != float64(0) ||
+		codePool["generation"] != float64(2) {
 		t.Fatalf("agent_pools[0] = %#v", codePool)
 	}
 	instance := got["instance"].(map[string]any)

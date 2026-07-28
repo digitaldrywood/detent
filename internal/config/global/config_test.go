@@ -451,7 +451,7 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 			Scheduling:          SchedulingStrict,
 			AgentPools: []AgentPool{
 				{Name: "code", MaxConcurrentAgents: 5},
-				{Name: "video", MaxConcurrentAgents: 10, Scheduling: SchedulingRoundRobin},
+				{Name: "video", MaxConcurrentAgents: 10, BurstTo: 15, Scheduling: SchedulingRoundRobin},
 			},
 			FairShare: map[string]any{"half_life": "30m"},
 			Startup:   map[string]any{"jitter_seconds": 0, "max_spawn_per_second": 1},
@@ -1056,6 +1056,7 @@ func TestReadParsesAgentPools(t *testing.T) {
       max_concurrent_agents: 5
     - name: video
       max_concurrent_agents: 10
+      burst_to: 15
       scheduling: round_robin
 `,
 		1,
@@ -1071,7 +1072,7 @@ func TestReadParsesAgentPools(t *testing.T) {
 	}
 	wantPools := []AgentPool{
 		{Name: "code", MaxConcurrentAgents: 5},
-		{Name: "video", MaxConcurrentAgents: 10, Scheduling: SchedulingRoundRobin},
+		{Name: "video", MaxConcurrentAgents: 10, BurstTo: 15, Scheduling: SchedulingRoundRobin},
 	}
 	if !reflect.DeepEqual(cfg.Global.AgentPools, wantPools) {
 		t.Fatalf("Global.AgentPools = %#v, want %#v", cfg.Global.AgentPools, wantPools)
@@ -1138,6 +1139,24 @@ func TestReadReportsAgentPoolValidationErrors(t *testing.T) {
       max_concurrent_agents: 0
 `),
 			want: "global.agent_pools[0].max_concurrent_agents: must be a positive integer",
+		},
+		{
+			name: "nonpositive burst",
+			raw: withPools(`  agent_pools:
+    - name: code
+      max_concurrent_agents: 1
+      burst_to: 0
+`),
+			want: "global.agent_pools[0].burst_to: must be a positive integer",
+		},
+		{
+			name: "burst below guarantee",
+			raw: withPools(`  agent_pools:
+    - name: code
+      max_concurrent_agents: 2
+      burst_to: 1
+`),
+			want: "global.agent_pools[0].burst_to: must be greater than or equal to max_concurrent_agents",
 		},
 		{
 			name: "invalid scheduling",

@@ -43,6 +43,17 @@ type DispatchGateDecision struct {
 	LowerPriorityRunning int
 	ReadyProjects        int
 	RunningProjects      int
+	GuaranteedCapacity   int
+	BurstCapacity        int
+	BorrowedSlots        int
+	SharedCapacity       int
+	SharedUsed           int
+	SharedAvailable      int
+}
+
+type poolCapacityAdmission struct {
+	allow    func(int, int) bool
+	complete func(int)
 }
 
 type readyProjectSlot struct {
@@ -70,6 +81,7 @@ type projectCycleState struct {
 type GlobalDispatchGate struct {
 	poolName string
 	global   GlobalScheduler
+	admit    *poolCapacityAdmission
 
 	mu             sync.Mutex
 	ready          map[string]readyProjectSlot
@@ -110,12 +122,15 @@ func (g *GlobalDispatchGate) PoolSnapshot() PoolSnapshot {
 	stats := g.capacitySnapshotLocked("")
 	holders := g.holderProjectIDsLocked()
 	return PoolSnapshot{
-		Name:      g.poolName,
-		Capacity:  stats.globalCapacity,
-		Used:      stats.globalUsed,
-		Available: nonNegativeInt(stats.globalCapacity - stats.globalUsed),
-		Mode:      g.global.Mode(),
-		Holders:   holders,
+		Name:       g.poolName,
+		Capacity:   stats.globalCapacity,
+		Guaranteed: stats.globalCapacity,
+		BurstTo:    stats.globalCapacity,
+		Used:       stats.globalUsed,
+		Available:  nonNegativeInt(stats.globalCapacity - stats.globalUsed),
+		Mode:       g.global.Mode(),
+		Draining:   stats.draining,
+		Holders:    holders,
 	}
 }
 
@@ -354,6 +369,11 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 		reason := g.waitReasonLocked(req)
 		return Slot{}, false, g.decisionLocked(project.ID, req, reason), nil
 	}
+	currentUsed := g.capacitySnapshotLocked("").globalUsed
+	projectedUsed := currentUsed - g.preemptionWeightLocked(selected.preemptions) + req.Weight
+	if g.admit != nil && !g.admit.allow(currentUsed, projectedUsed) {
+		return Slot{}, false, g.decisionLocked(project.ID, req, DispatchGateReasonGlobalCapacityFull), nil
+	}
 	if err := g.preemptProjectsLocked(selected.preemptions); err != nil {
 		delete(g.selected, project.ID)
 		return Slot{}, false, DispatchGateDecision{}, err
@@ -380,6 +400,9 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 		delete(g.selected, project.ID)
 		return Slot{}, false, DispatchGateDecision{}, errors.Join(err, g.global.ReleaseSlot(slot))
 	}
+	if g.admit != nil {
+		g.admit.complete(g.capacitySnapshotLocked("").globalUsed)
+	}
 
 	decision := g.decisionLocked(project.ID, req, DispatchGateReasonGranted)
 	delete(g.ready, project.ID)
@@ -394,6 +417,36 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 		slot: slot,
 	}
 	return slot, true, decision, nil
+}
+
+func (g *GlobalDispatchGate) preemptionWeightLocked(preemptions []RunningProject) int {
+	used := make(map[uint64]struct{}, len(preemptions))
+	weight := 0
+	for _, preemption := range preemptions {
+		for token, running := range g.running {
+			if running.ProjectID != preemption.ProjectID ||
+				running.Priority != preemption.Priority ||
+				running.preempt == nil {
+				continue
+			}
+			if _, ok := used[token]; ok {
+				continue
+			}
+			used[token] = struct{}{}
+			weight += running.slot.Weight
+			break
+		}
+	}
+	return weight
+}
+
+func (g *GlobalDispatchGate) hasReadyProjects() bool {
+	if g == nil {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.ready) > 0
 }
 
 func (g *GlobalDispatchGate) SetPreempt(slot Slot, preempt func()) {

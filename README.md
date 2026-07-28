@@ -2245,8 +2245,10 @@ global:
   agent_pools:
     - name: code
       max_concurrent_agents: 5
+      burst_to: 8
     - name: video
       max_concurrent_agents: 10
+      burst_to: 15
       scheduling: round_robin
   fair_share:
     half_life: 1h
@@ -2286,10 +2288,20 @@ no `pool` uses the implicit `default` pool, whose capacity is
 Every named pool requires a unique non-empty `name` and a positive
 `max_concurrent_agents`. Its optional `scheduling` accepts `weighted`,
 `strict`, `round_robin`, or `fair_share`; when omitted it inherits
-`global.scheduling`. Pool capacities are independent, with no additional
-fleet-wide ceiling. For example, `code: 5` plus `video: 10` permits up to 15
-agents concurrently. A configuration without `agent_pools` or project `pool`
-fields retains the previous single-pool behavior.
+`global.scheduling`. `max_concurrent_agents` is the pool's guaranteed
+capacity. Optional `burst_to` must be greater than or equal to that guarantee
+and lets the pool borrow unused guaranteed capacity from sibling pools up to
+the configured ceiling. Omitting `burst_to`, or setting it equal to
+`max_concurrent_agents`, keeps the pool rigid.
+
+The sum of active pool guarantees is the shared capacity available for
+borrowing. A borrower never displaces a running agent. When a lender has ready
+work below its guarantee, new borrowed dispatches stop until natural
+completion returns enough capacity; dispatch is not preempted across pool
+boundaries. Contending borrowers are served in first-request order, one
+admission at a time. Project selection, scheduling history, and strict-mode
+preemption remain local to each pool. A configuration without `agent_pools` or
+project `pool` fields retains the previous single-pool behavior.
 
 `detent doctor` recommends an initial `code` / `cloud` split only when both
 signals are present: the resolved workflows contain both local-heavy projects
@@ -2389,7 +2401,7 @@ can include `--workflow-ref origin/main` during registration or add
 | `global.startup` | Live reload |
 | `instance_name` | Live reload |
 | `global.identity` | Live reload; project runtimes restart in-process and `/api/v1/state.instance.name` updates after the next telemetry snapshot |
-| `global.max_concurrent_agents`, `global.scheduling`, `global.agent_pools`, `global.fair_share`, and project pool assignments | Live reload at the next dispatch decision; lowering capacity drains to the new limit without interrupting active workers, and removed pools drain their active workers before retirement |
+| `global.max_concurrent_agents`, `global.scheduling`, `global.agent_pools`, `global.fair_share`, and project pool assignments | Live reload at the next dispatch decision; adding, removing, or lowering `burst_to` preserves active workers and drains to the new ceiling, and removed pools drain their active workers before retirement |
 | `log_level` | Live reload |
 | `port`, `env`, `log_max_size_bytes`, `log_max_backups` | Restart required |
 

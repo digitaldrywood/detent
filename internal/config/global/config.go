@@ -119,6 +119,7 @@ type Settings struct {
 type AgentPool struct {
 	Name                string `yaml:"name"`
 	MaxConcurrentAgents int    `yaml:"max_concurrent_agents"`
+	BurstTo             int    `yaml:"burst_to,omitempty"`
 	Scheduling          string `yaml:"scheduling,omitempty"`
 }
 
@@ -1055,6 +1056,12 @@ func agentPoolsErrors(value any) []string {
 		problems = append(problems, prefixErrors(requiredErrors(pool, []string{"name", "max_concurrent_agents"}), prefix)...)
 		problems = append(problems, stringErrors(pool, "name", prefix)...)
 		problems = append(problems, positiveIntegerError(pool["max_concurrent_agents"], prefix+".max_concurrent_agents")...)
+		problems = append(problems, positiveIntegerError(pool["burst_to"], prefix+".burst_to")...)
+		capacity, capacityOK := pool["max_concurrent_agents"].(int)
+		burstTo, burstOK := pool["burst_to"].(int)
+		if capacityOK && burstOK && burstTo < capacity {
+			problems = append(problems, prefix+".burst_to: must be greater than or equal to max_concurrent_agents")
+		}
 		if scheduling, configured := pool["scheduling"]; configured {
 			problems = append(problems, schedulingErrors(scheduling, prefix+".scheduling")...)
 		}
@@ -1096,6 +1103,11 @@ func agentPoolProblems(pools []AgentPool) []string {
 		}
 		if pool.MaxConcurrentAgents <= 0 {
 			problems = append(problems, prefix+".max_concurrent_agents: must be a positive integer")
+		}
+		if pool.BurstTo < 0 {
+			problems = append(problems, prefix+".burst_to: must be a positive integer")
+		} else if pool.BurstTo > 0 && pool.BurstTo < pool.MaxConcurrentAgents {
+			problems = append(problems, prefix+".burst_to: must be greater than or equal to max_concurrent_agents")
 		}
 		if pool.Scheduling != "" && !validSchedulingMode(pool.Scheduling) {
 			problems = append(problems, prefix+".scheduling: must be one of "+strings.Join(schedulingModes, ", "))
@@ -1867,6 +1879,13 @@ func buildAgentPools(value any) ([]AgentPool, error) {
 		if err != nil {
 			return nil, err
 		}
+		burstTo := 0
+		if value, ok := pool["burst_to"]; ok {
+			burstTo, err = intValue(value, prefix+".burst_to")
+			if err != nil {
+				return nil, err
+			}
+		}
 		scheduling, err := optionalString(pool["scheduling"], prefix+".scheduling")
 		if err != nil {
 			return nil, err
@@ -1874,6 +1893,7 @@ func buildAgentPools(value any) ([]AgentPool, error) {
 		pools = append(pools, AgentPool{
 			Name:                strings.TrimSpace(name),
 			MaxConcurrentAgents: capacity,
+			BurstTo:             burstTo,
 			Scheduling:          scheduling,
 		})
 	}

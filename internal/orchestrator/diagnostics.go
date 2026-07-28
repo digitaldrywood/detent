@@ -87,6 +87,12 @@ func (o *Orchestrator) logSchedulerSlotDecision(issue connector.Issue, outcome s
 		"global_capacity", decision.GlobalCapacity,
 		"global_used", decision.GlobalUsed,
 		"global_available", decision.GlobalAvailable,
+		"guaranteed_capacity", decision.GuaranteedCapacity,
+		"burst_capacity", decision.BurstCapacity,
+		"borrowed_slots", decision.BorrowedSlots,
+		"shared_capacity", decision.SharedCapacity,
+		"shared_used", decision.SharedUsed,
+		"shared_available", decision.SharedAvailable,
 		"project_state_capacity", projectStats.capacity,
 		"project_state_used", projectStats.used,
 		"project_state_available", projectStats.available,
@@ -267,6 +273,9 @@ func (o *Orchestrator) schedulerDecisionAttrs(state *State, now time.Time, issue
 		"global_capacity", pool.Capacity,
 		"global_used", pool.Used,
 		"global_available", pool.Available,
+		"guaranteed_capacity", pool.Guaranteed,
+		"burst_capacity", pool.BurstTo,
+		"borrowed_slots", pool.Borrowed,
 	)
 	all = append(all, snapshotAgeAttrs(issue, now)...)
 	all = append(all, pullRequestDiagnosticAttrs(issue, now)...)

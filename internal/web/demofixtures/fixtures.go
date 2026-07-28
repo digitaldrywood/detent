@@ -274,9 +274,9 @@ func demoAgentPoolsSnapshot() telemetry.Snapshot {
 	snapshot := demoHealthySnapshot()
 	snapshot.Projects = demoProjectSnapshots(ProjectsForVariant("agent-pools"))
 	snapshot.AgentPools = []telemetry.AgentPool{
-		{Name: "default", Capacity: 2, Generation: 1},
-		{Name: "code", Used: 5, Capacity: 5, Generation: 2},
-		{Name: "video", Used: 2, Capacity: 10, Generation: 3},
+		{Name: "default", Capacity: 2, Guaranteed: 2, BurstTo: 2, Available: 2, Generation: 1},
+		{Name: "code", Used: 5, Capacity: 5, Guaranteed: 5, BurstTo: 5, Generation: 2},
+		{Name: "video", Used: 12, Capacity: 15, Guaranteed: 10, BurstTo: 15, Borrowed: 2, Available: 3, Generation: 3},
 	}
 	return snapshot
 }
