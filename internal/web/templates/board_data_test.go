@@ -1779,16 +1779,168 @@ func TestBoardSnapshotRendersLastKnownState(t *testing.T) {
 	html := renderBoardComponent(t, BoardSnapshot(data))
 
 	for _, want := range []string{
-		`id="board-last-known"`,
+		`id="board-alerts"`,
+		`id="board-alert-last-known"`,
 		`data-board-snapshot-stale="true"`,
-		"Showing last state from",
-		"refreshing…",
-		`data-local-time-relative="true"`,
+		"Board showing last-known state",
+		"The live board snapshot is unavailable.",
 		"grayscale",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("last-known board snapshot missing %q:\n%s", want, html)
 		}
+	}
+}
+
+func TestBoardAlertsBuildSeverityAndGroupedTrackerRows(t *testing.T) {
+	t.Parallel()
+
+	snapshot := boardAlertsHeavyTestSnapshot()
+	alerts := boardAlerts(snapshot)
+	wantKinds := []boardAlertKind{
+		boardAlertKindLastKnown,
+		boardAlertKindFailureBreaker,
+		boardAlertKindTrackerStale,
+		boardAlertKindBackendCapacity,
+		boardAlertKindDispatchRecovery,
+		boardAlertKindUpdatePending,
+	}
+	if len(alerts) != len(wantKinds) {
+		t.Fatalf("boardAlerts() count = %d, want %d: %#v", len(alerts), len(wantKinds), alerts)
+	}
+	for index, want := range wantKinds {
+		if alerts[index].Kind != want {
+			t.Fatalf("boardAlerts()[%d].Kind = %q, want %q", index, alerts[index].Kind, want)
+		}
+	}
+	if alerts[0].Tone != primitives.KindErr {
+		t.Fatalf("highest-severity tone = %q, want err", alerts[0].Tone)
+	}
+
+	var tracker boardAlert
+	for _, alert := range alerts {
+		if alert.Kind == boardAlertKindTrackerStale {
+			tracker = alert
+			break
+		}
+	}
+	if tracker.DetailSummary != "7 projects, oldest 4m 28s ago" {
+		t.Fatalf("tracker detail summary = %q", tracker.DetailSummary)
+	}
+	if len(tracker.DetailRows) != boardAlertDetailLimit || tracker.Overflow != 2 {
+		t.Fatalf("tracker rows = %d with overflow %d, want %d with overflow 2", len(tracker.DetailRows), tracker.Overflow, boardAlertDetailLimit)
+	}
+	first := tracker.DetailRows[0]
+	if first.Summary != "candidate/drift/status" {
+		t.Fatalf("grouped tracker sources = %q", first.Summary)
+	}
+	for _, want := range []string{"3 consecutive failures", "status 503"} {
+		if !strings.Contains(first.Detail, want) {
+			t.Fatalf("tracker detail missing %q: %q", want, first.Detail)
+		}
+	}
+}
+
+func TestBoardAlertsRenderOneLineOverlayContract(t *testing.T) {
+	t.Parallel()
+
+	data := boardTestData()
+	data.Snapshot = boardAlertsHeavyTestSnapshot()
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	for _, want := range []string{
+		`id="board-alerts"`,
+		`class="mx-5 mt-3.5 h-10`,
+		`data-board-alert-count="6"`,
+		`role="alert"`,
+		`aria-live="polite"`,
+		`type="button"`,
+		`aria-expanded="false"`,
+		`aria-controls="board-alerts-overlay"`,
+		`class="min-w-0 flex-1 truncate text-text"`,
+		`href="/health/ui"`,
+		`+2 more · Health`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("unified board alerts missing %q:\n%s", want, html)
+		}
+	}
+	for _, oldID := range []string{
+		`id="board-last-known"`,
+		`id="board-stale-data"`,
+		`id="project-failure-breaker"`,
+		`id="dispatch-recovery-status"`,
+		`id="backend-capacity-outage"`,
+		`id="update-pending"`,
+	} {
+		if strings.Contains(html, oldID) {
+			t.Fatalf("unified board alerts rendered legacy section %q:\n%s", oldID, html)
+		}
+	}
+
+	empty := renderBoardComponent(t, boardAlertsBar(nil))
+	if empty != "" {
+		t.Fatalf("empty board alerts rendered reserved markup: %q", empty)
+	}
+
+	page := renderBoardComponent(t, BoardPage(data))
+	if strings.Count(page, `id="board-alerts-overlay"`) != 1 {
+		t.Fatalf("body-level alert overlay hosts = %d, want 1", strings.Count(page, `id="board-alerts-overlay"`))
+	}
+	for _, want := range []string{"max-h-[40vh]", "overflow-y-auto", "syncOverlayAfterMorph", `document.addEventListener("htmx:afterSettle"`, "window.htmx.process(host)"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("board page missing morph-safe alert behavior %q", want)
+		}
+	}
+}
+
+func boardAlertsHeavyTestSnapshot() telemetry.Snapshot {
+	now := time.Date(2026, 7, 28, 16, 0, 0, 0, time.UTC)
+	lastSuccess := now.Add(-4*time.Minute - 28*time.Second)
+	projectIDs := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"}
+	sources := make([]telemetry.RefreshSource, 0, len(projectIDs)*3)
+	for _, projectID := range projectIDs {
+		for _, name := range []telemetry.RefreshSourceName{
+			telemetry.RefreshSourceCandidates,
+			telemetry.RefreshSourceDrift,
+			telemetry.RefreshSourceStatuses,
+		} {
+			source := telemetry.RefreshSource{
+				ProjectID:     projectID,
+				Name:          name,
+				LastSuccessAt: &lastSuccess,
+				FailureStreak: 3,
+			}
+			if name == telemetry.RefreshSourceStatuses {
+				source.LastError = "GitHub status query returned status 503"
+			}
+			sources = append(sources, source)
+		}
+	}
+	return telemetry.Snapshot{
+		LastKnown:   true,
+		GeneratedAt: now,
+		Refresh: telemetry.Refresh{
+			StaleAfterSeconds: 120,
+			FailureThreshold:  3,
+			Status:            telemetry.RefreshStatusDegraded,
+			Sources:           sources,
+		},
+		FailureBreakers: []telemetry.FailureBreaker{{ProjectID: "alpha", Class: "backend_startup_timeout", Count: 4, WindowSeconds: 3600}},
+		DispatchRecoveries: []telemetry.DispatchRecovery{{
+			ProjectID: "bravo",
+			Kind:      "github_rest",
+			Status:    "waiting",
+		}},
+		BackendOutages: []telemetry.BackendOutage{{
+			ProjectID: "charlie",
+			BackendID: "claude-opus-5",
+			Provider:  "anthropic",
+			Reason:    "provider usage limit reached",
+		}},
+		Update: telemetry.Update{
+			State:            "pending_idle",
+			AvailableVersion: "0.50.0",
+		},
 	}
 }
 
@@ -1898,14 +2050,21 @@ func TestBoardSnapshotRendersBackendCapacityBanner(t *testing.T) {
 	}}
 	html := renderBoardComponent(t, BoardSnapshot(data))
 	for _, want := range []string{
-		`id="backend-capacity-outage"`,
+		`id="board-alerts"`,
+		`id="board-alert-backend-capacity"`,
+		`data-board-alert="backend-capacity-outage"`,
 		"Backend codex at usage limit — 1 project",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("capacity banner missing %q:\n%s", want, html)
 		}
 	}
-	for _, unwanted := range []string{"Dispatch is paused for openai", "Last probe", "Clear outage"} {
+	for _, want := range []string{"Dispatch is paused for openai", `href="/health/ui"`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("capacity overlay missing detail %q:\n%s", want, html)
+		}
+	}
+	for _, unwanted := range []string{"Last probe", "Clear outage"} {
 		if strings.Contains(html, unwanted) {
 			t.Fatalf("capacity summary contains detail %q:\n%s", unwanted, html)
 		}
@@ -1956,7 +2115,7 @@ func TestBoardSnapshotEscalatesStuckAutomaticRecovery(t *testing.T) {
 					ResumeAt:  data.Snapshot.GeneratedAt.Add(-2 * time.Minute),
 				}}
 			},
-			wantID:   `id="dispatch-recovery-status"`,
+			wantID:   `id="board-alert-dispatch-recovery"`,
 			wantText: "Dispatch retry overdue for GitHub REST capacity",
 		},
 		{
@@ -1970,7 +2129,7 @@ func TestBoardSnapshotEscalatesStuckAutomaticRecovery(t *testing.T) {
 					NextProbeAt: &nextProbeAt,
 				}}
 			},
-			wantID:   `id="backend-capacity-outage"`,
+			wantID:   `id="board-alert-backend-capacity"`,
 			wantText: "Backend codex recovery overdue",
 		},
 		{
@@ -1986,7 +2145,7 @@ func TestBoardSnapshotEscalatesStuckAutomaticRecovery(t *testing.T) {
 					ProbeAttempts:   3,
 				}}
 			},
-			wantID:   `id="backend-capacity-outage"`,
+			wantID:   `id="board-alert-backend-capacity"`,
 			wantText: "Backend codex recovery failed repeatedly",
 		},
 	}
@@ -2019,14 +2178,21 @@ func TestBoardSnapshotRendersProjectFailureBreakerBanner(t *testing.T) {
 	}}
 	html := renderBoardComponent(t, BoardSnapshot(data))
 	for _, want := range []string{
-		`id="project-failure-breaker"`,
+		`id="board-alerts"`,
+		`id="board-alert-failure-breaker"`,
+		`data-board-alert="project-failure-breaker"`,
 		"Project dispatch paused by correlated failures — 1 project",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("failure breaker banner missing %q:\n%s", want, html)
 		}
 	}
-	for _, unwanted := range []string{"5 failures with class", "One canary attempt", "Run canary now"} {
+	for _, want := range []string{"5 failures with class", "One canary attempt"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("failure breaker overlay missing detail %q:\n%s", want, html)
+		}
+	}
+	for _, unwanted := range []string{"Run canary now"} {
 		if strings.Contains(html, unwanted) {
 			t.Fatalf("failure breaker summary contains detail %q:\n%s", unwanted, html)
 		}
@@ -2064,13 +2230,14 @@ func TestBoardSnapshotCollapsesWaitingDispatchRecoveries(t *testing.T) {
 		{ProjectID: "billing", Kind: "backend_capacity", Status: "ramping", Limit: 1, MaxConcurrent: 6},
 	}
 	html := renderBoardComponent(t, BoardSnapshot(data))
-	if got := strings.Count(html, "Dispatch waiting on GitHub REST capacity"); got != 1 {
-		t.Fatalf("waiting recovery summaries = %d, want 1:\n%s", got, html)
-	}
-	for _, want := range []string{`id="dispatch-recovery-status"`, "Dispatch waiting on GitHub REST capacity — 2 projects"} {
+	for _, want := range []string{`id="board-alert-dispatch-recovery"`, `data-board-alert="dispatch-recovery-status"`, "Dispatch waiting on GitHub REST capacity — 2 projects"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("waiting recovery summary missing %q:\n%s", want, html)
 		}
+	}
+	alerts := boardAlerts(data.Snapshot)
+	if len(alerts) != 1 || len(alerts[0].DetailRows) != 2 || alerts[0].DetailSummary != "1 recovery issue" {
+		t.Fatalf("waiting recovery alert = %#v", alerts)
 	}
 	if strings.Contains(html, "Dispatch recovery ramp active") {
 		t.Fatalf("waiting recovery summary included ramp detail:\n%s", html)
@@ -2145,15 +2312,19 @@ func TestBoardSnapshotRendersGitHubRESTCapacityBanner(t *testing.T) {
 	}}
 	html := renderBoardComponent(t, BoardSnapshot(data))
 	for _, want := range []string{
-		`id="backend-capacity-outage"`,
+		`id="board-alert-backend-capacity"`,
+		`data-board-alert="backend-capacity-outage"`,
 		"GitHub REST dispatch paused — 1 project",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("GitHub REST capacity banner missing %q:\n%s", want, html)
 		}
 	}
-	if strings.Contains(html, "remaining 0") || strings.Contains(html, `data-local-time`) {
-		t.Fatalf("GitHub REST Board summary rendered Health detail:\n%s", html)
+	if !strings.Contains(html, "remaining 0") || !strings.Contains(html, `href="/health/ui"`) {
+		t.Fatalf("GitHub REST Board overlay missing reachable Health detail:\n%s", html)
+	}
+	if strings.Contains(html, `data-local-time`) {
+		t.Fatalf("GitHub REST Board overlay rendered unnecessary time markup:\n%s", html)
 	}
 }
 
@@ -2662,14 +2833,19 @@ func TestBoardKanbanDragScriptSubmitsAllowedDrop(t *testing.T) {
 	}
 }
 
-func TestProjectBoardPageIncludesKanbanDragScript(t *testing.T) {
+func TestProjectBoardPageIncludesBoardScripts(t *testing.T) {
 	data := boardTestData()
 	data.ProjectID = "detent"
 	data.ProjectName = "Detent"
 	data.Kanban.Mode = "integration"
 	html := renderBoardComponent(t, ProjectBoardPage(data))
-	if !strings.Contains(html, `window.__detentBoardKanbanDragHandlersRegistered`) {
-		t.Fatalf("project board page must include drag script:\n%s", html)
+	for _, want := range []string{
+		`syncOverlayAfterMorph`,
+		`window.__detentBoardKanbanDragHandlersRegistered`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("project board page must include %q:\n%s", want, html)
+		}
 	}
 }
 

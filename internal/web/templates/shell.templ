@@ -39,6 +39,7 @@ templ AppShell(data DashboardShellData, scope templ.Component) {
 		</head>
 		<body class="h-screen overflow-hidden bg-page font-sans text-text antialiased" hx-ext="sse, morph">
 			@helpTooltipHost()
+			@boardAlertsOverlayHost()
 			@kanbanDialogHost()
 			@DetailSheetHost()
 			@ChatPanelHost()

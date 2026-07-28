@@ -6683,22 +6683,7 @@ func boardFailureBreakerSummary(breakers []telemetry.FailureBreaker) (boardBanne
 
 func boardDispatchRecoverySummaries(recoveries []telemetry.DispatchRecovery, now time.Time) []boardBannerSummary {
 	return dispatchRecoverySummaries(recoveries, func(recovery telemetry.DispatchRecovery) (string, bool) {
-		status := strings.TrimSpace(recovery.Status)
-		switch status {
-		case "ramping":
-			return "", false
-		case "waiting":
-			if automaticRecoveryPending(recovery.ResumeAt, now) {
-				return "", false
-			}
-			kind := dispatchRecoveryKindLabel(recovery.Kind)
-			if automaticRecoveryOverdue(recovery.ResumeAt, now) {
-				return "Dispatch retry overdue for " + kind, true
-			}
-			return "Dispatch waiting on " + kind, true
-		default:
-			return "Dispatch recovery requires attention for " + dispatchRecoveryKindLabel(recovery.Kind), true
-		}
+		return boardDispatchRecoveryAlertTitle(recovery, now)
 	})
 }
 

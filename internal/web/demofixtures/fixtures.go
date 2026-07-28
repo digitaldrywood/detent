@@ -92,6 +92,8 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot = demoBoardScheduledPacingSnapshot()
 	case "board-degraded-health-banners":
 		snapshot = demoBoardDegradedHealthBannersSnapshot()
+	case "board-alerts-heavy":
+		snapshot = demoBoardAlertsHeavySnapshot()
 	case "tracker-stale":
 		snapshot = demoTrackerStaleSnapshot()
 	case "recent-completions":
@@ -328,6 +330,72 @@ func demoTrackerStaleSnapshot() telemetry.Snapshot {
 		if snapshot.Projects[i].Project.ID == demoPrimaryProjectID {
 			snapshot.Projects[i].Refresh = refresh
 		}
+	}
+	return snapshot
+}
+
+func demoBoardAlertsHeavySnapshot() telemetry.Snapshot {
+	snapshot := demoHealthySnapshot()
+	now := snapshot.GeneratedAt
+	lastSuccess := now.Add(-4*time.Minute - 28*time.Second)
+	lastErrorAt := now.Add(-15 * time.Second)
+	projectIDs := []string{demoPrimaryProjectID, "docs-site", "billing-api", "mobile-client", "infra-platform", "release-train", "observability-console"}
+	sources := make([]telemetry.RefreshSource, 0, len(projectIDs)*3)
+	for _, projectID := range projectIDs {
+		for _, name := range []telemetry.RefreshSourceName{
+			telemetry.RefreshSourceCandidates,
+			telemetry.RefreshSourceDrift,
+			telemetry.RefreshSourceStatuses,
+		} {
+			source := telemetry.RefreshSource{
+				ProjectID:     projectID,
+				Name:          name,
+				LastSuccessAt: &lastSuccess,
+				FailureStreak: 3,
+			}
+			if name == telemetry.RefreshSourceStatuses {
+				source.LastError = "GitHub status query returned status 503"
+				source.LastErrorAt = &lastErrorAt
+			}
+			sources = append(sources, source)
+		}
+	}
+	snapshot.LastKnown = true
+	snapshot.Refresh = telemetry.Refresh{
+		PollIntervalSeconds: 60,
+		StaleAfterSeconds:   120,
+		FailureThreshold:    3,
+		Status:              telemetry.RefreshStatusDegraded,
+		LastRefreshAt:       &lastSuccess,
+		LastError:           "GitHub status query returned status 503",
+		LastErrorAt:         &lastErrorAt,
+		Sources:             sources,
+	}
+	snapshot.FailureBreakers = []telemetry.FailureBreaker{
+		{ProjectID: demoPrimaryProjectID, Class: "backend_startup_timeout", Count: 4, WindowSeconds: 3600},
+		{ProjectID: "docs-site", Class: "session_token_ceiling", Count: 3, WindowSeconds: 3600},
+	}
+	snapshot.DispatchRecoveries = []telemetry.DispatchRecovery{{
+		ProjectID: "billing-api",
+		Kind:      "github_rest",
+		Reason:    "automatic retry did not recover",
+		Status:    "waiting",
+		StartedAt: now.Add(-12 * time.Minute),
+		ResumeAt:  now.Add(-2 * time.Minute),
+	}}
+	snapshot.BackendOutages = []telemetry.BackendOutage{{
+		ProjectID:   "mobile-client",
+		BackendID:   "claude-opus-5",
+		BackendKind: "claude",
+		Provider:    "anthropic",
+		Reason:      "provider usage limit reached",
+	}}
+	snapshot.Update = telemetry.Update{
+		Enabled:            true,
+		AutoApplyEnabled:   true,
+		CheckIntervalHours: 6,
+		State:              "pending_idle",
+		AvailableVersion:   "0.50.0",
 	}
 	return snapshot
 }

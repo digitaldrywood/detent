@@ -53,7 +53,7 @@ func healthViewFromDashboard(data DashboardData) healthView {
 	if refreshFreshnessKind(snapshot) == primitives.KindWarn {
 		view.Kind = primitives.KindWarn
 		view.Verdict = "Tracker data is stale."
-		view.Detail = refreshStaleBannerDetail(snapshot)
+		view.Detail = refreshStaleHealthDetail(snapshot)
 		return view
 	}
 	switch api.State {
