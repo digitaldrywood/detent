@@ -2833,14 +2833,19 @@ func TestBoardKanbanDragScriptSubmitsAllowedDrop(t *testing.T) {
 	}
 }
 
-func TestProjectBoardPageIncludesKanbanDragScript(t *testing.T) {
+func TestProjectBoardPageIncludesBoardScripts(t *testing.T) {
 	data := boardTestData()
 	data.ProjectID = "detent"
 	data.ProjectName = "Detent"
 	data.Kanban.Mode = "integration"
 	html := renderBoardComponent(t, ProjectBoardPage(data))
-	if !strings.Contains(html, `window.__detentBoardKanbanDragHandlersRegistered`) {
-		t.Fatalf("project board page must include drag script:\n%s", html)
+	for _, want := range []string{
+		`syncOverlayAfterMorph`,
+		`window.__detentBoardKanbanDragHandlersRegistered`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("project board page must include %q:\n%s", want, html)
+		}
 	}
 }
 

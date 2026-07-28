@@ -183,6 +183,26 @@ test("collapsed alert height is independent of alert count", async ({ page }) =>
   expect(sixAlertHeight).toBe(oneAlertHeight);
 });
 
+test("project board installs alert disclosure behavior", async ({ page }) => {
+  await page.setExtraHTTPHeaders({
+    "X-Detent-Demo-Scenario": "board-alerts-heavy",
+  });
+  await page.goto(`${runtime.url}/projects/dogfood/kanban`, {
+    waitUntil: "domcontentloaded",
+  });
+
+  const toggle = page.locator("#board-alerts-toggle");
+  const overlay = page.locator("body > #board-alerts-overlay");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(overlay).toBeVisible();
+  await expect(overlay.locator("#board-alert-update-pending")).toContainText(
+    "A Detent update is ready to apply.",
+  );
+  await expect(overlay.getByRole("button", { name: "Apply now" })).toBeVisible();
+});
+
 async function boardLaneGeometry(page) {
   return page.locator("#board-lanes").evaluate((root) => ({
     rect: root.getBoundingClientRect().toJSON(),
