@@ -263,7 +263,7 @@ func newDoctorCapacityFindings(
 			continue
 		}
 		project, ok := projectsByID[wait.ProjectID]
-		if !ok {
+		if !ok || wait.Pool != project.Pool {
 			continue
 		}
 		builder := builders[wait.ProjectID]

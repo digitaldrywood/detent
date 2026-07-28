@@ -258,6 +258,35 @@ func TestDoctorPoolCoherenceFindings(t *testing.T) {
 	}
 }
 
+func TestDoctorCapacityFindingsIgnorePreviousPoolAssignments(t *testing.T) {
+	t.Parallel()
+
+	project := doctorCapacityTestProject("video", "cloud", workload.ClassCloudOnly, 5)
+	findings := newDoctorCapacityFindings(
+		[]doctorWorkloadProject{project},
+		[]store.CapacityConstraintWait{
+			{
+				ProjectID: "video",
+				Pool:      "default",
+				Reason:    store.CapacityConstraintPool,
+				WaitCount: 100,
+			},
+			{
+				ProjectID: "video",
+				Pool:      "cloud",
+				Reason:    store.CapacityConstraintProject,
+				WaitCount: 2,
+			},
+		},
+	)
+	if len(findings) != 1 ||
+		findings[0].Pool != "cloud" ||
+		findings[0].Total != 2 ||
+		findings[0].Binding.Reason != store.CapacityConstraintProject {
+		t.Fatalf("findings = %#v, want only current cloud-pool telemetry", findings)
+	}
+}
+
 func TestCheckDoctorAgentPoolsReportsStaticFindingsWithoutTelemetry(t *testing.T) {
 	t.Parallel()
 

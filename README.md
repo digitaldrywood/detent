@@ -2311,6 +2311,9 @@ largest observed constraint across pool capacity, the project's
 provider rate-window backpressure. Each finding names the matching lever.
 Rate-window backpressure recommends no configuration change because raising a
 configured cap cannot increase the effective provider-paced limit.
+Because pool refusals are sampled, all constraint reasons are normalized to
+one observation per five-minute interval before doctor selects the binding
+constraint. Telemetry from a project's previous pool assignment is ignored.
 
 A pool-bound project in a single-class pool is told to raise that pool's
 capacity, never to split it. When mixed workload classes share the implicit

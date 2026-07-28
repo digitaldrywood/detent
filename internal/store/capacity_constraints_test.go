@@ -1,6 +1,11 @@
 package store
 
-import "testing"
+import (
+	"context"
+	"path/filepath"
+	"testing"
+	"time"
+)
 
 func TestCapacityConstraintReason(t *testing.T) {
 	t.Parallel()
@@ -84,5 +89,92 @@ func TestCapacityConstraintReason(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestQueryCapacityConstraintWaitsNormalizesFiveMinuteSamples(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend, err := Open(ctx, Config{
+		Backend: BackendSQLite,
+		Path:    filepath.Join(t.TempDir(), "detent.db"),
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	rows := []struct {
+		reason     string
+		lane       string
+		decisionAt time.Time
+		snapshot   string
+	}{
+		{
+			reason:     poolCapacityWaitReason,
+			decisionAt: now,
+			snapshot:   `{"pool":"default","global_available":0}`,
+		},
+		{
+			reason:     poolHigherPriorityProjectWaitReason,
+			decisionAt: now.Add(4 * time.Minute),
+			snapshot:   `{"pool":"default","global_available":0}`,
+		},
+		{
+			reason:     poolCapacityWaitReason,
+			decisionAt: now.Add(5 * time.Minute),
+			snapshot:   `{"pool":"default","global_available":0}`,
+		},
+		{
+			reason:     string(CapacityConstraintLane),
+			lane:       "In Progress",
+			decisionAt: now.Add(time.Minute),
+			snapshot:   `{"pool":"default"}`,
+		},
+		{
+			reason:     string(CapacityConstraintLane),
+			lane:       "In Progress",
+			decisionAt: now.Add(3 * time.Minute),
+			snapshot:   `{"pool":"default"}`,
+		},
+		{
+			reason:     string(CapacityConstraintLane),
+			lane:       "In Progress",
+			decisionAt: now.Add(6 * time.Minute),
+			snapshot:   `{"pool":"default"}`,
+		},
+	}
+	for _, row := range rows {
+		if _, err := backend.RecordSchedulerDecision(ctx, SchedulerDecision{
+			ProjectID:            "video",
+			Lane:                 row.lane,
+			Result:               SchedulerDecisionResultSkipped,
+			Reason:               row.reason,
+			DecisionAt:           row.decisionAt,
+			WaitReason:           row.reason,
+			CapacitySnapshotJSON: row.snapshot,
+		}); err != nil {
+			t.Fatalf("RecordSchedulerDecision() error = %v", err)
+		}
+	}
+
+	waits, err := QueryCapacityConstraintWaits(ctx, backend.(*sqliteStore).db, CapacityConstraintQuery{
+		Since:          now.Add(-time.Hour),
+		ProjectClasses: map[string]string{"video": "cloud-only"},
+	})
+	if err != nil {
+		t.Fatalf("QueryCapacityConstraintWaits() error = %v", err)
+	}
+	counts := map[CapacityConstraintReason]int{}
+	for _, wait := range waits {
+		counts[wait.Reason] += wait.WaitCount
+	}
+	if counts[CapacityConstraintPool] != 2 || counts[CapacityConstraintLane] != 2 {
+		t.Fatalf("normalized counts = %#v, want two five-minute samples for pool and lane", counts)
 	}
 }
