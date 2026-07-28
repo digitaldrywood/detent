@@ -108,6 +108,7 @@ type Dependencies struct {
 	Logger              *slog.Logger
 	AfterRunTimeout     time.Duration
 	sessionLimit        durationLimitContextFactory
+	turnLimit           durationLimitContextFactory
 }
 
 type Runner struct {
@@ -128,6 +129,7 @@ type Runner struct {
 	logger              *slog.Logger
 	afterRunTimeout     time.Duration
 	sessionLimit        durationLimitContextFactory
+	turnLimit           durationLimitContextFactory
 }
 
 func NewRunner(deps Dependencies) (*Runner, error) {
@@ -145,6 +147,9 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	}
 	if deps.sessionLimit == nil {
 		deps.sessionLimit = withAgentDurationLimit
+	}
+	if deps.turnLimit == nil {
+		deps.turnLimit = withAgentDurationLimit
 	}
 	projectID := strings.TrimSpace(deps.ProjectID)
 	if projectID == "" {
@@ -189,6 +194,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		logger:              deps.Logger,
 		afterRunTimeout:     deps.AfterRunTimeout,
 		sessionLimit:        deps.sessionLimit,
+		turnLimit:           deps.turnLimit,
 	}, nil
 }
 
@@ -634,8 +640,31 @@ func runAgentBackendTurnWithTools(
 	toolHandler AgentToolHandler,
 	onUpdate agentContextUpdateHandler,
 ) (AgentTurnResult, error, error) {
+	return runAgentBackendTurnWithToolsUsingLimit(
+		ctx,
+		backend,
+		request,
+		tools,
+		toolHandler,
+		onUpdate,
+		withAgentDurationLimit,
+	)
+}
+
+func runAgentBackendTurnWithToolsUsingLimit(
+	ctx context.Context,
+	backend AgentBackend,
+	request AgentTurnRequest,
+	tools []AgentTool,
+	toolHandler AgentToolHandler,
+	onUpdate agentContextUpdateHandler,
+	turnLimit durationLimitContextFactory,
+) (AgentTurnResult, error, error) {
+	if turnLimit == nil {
+		turnLimit = withAgentDurationLimit
+	}
 	run := func(ctx context.Context, request AgentTurnRequest) (AgentTurnResult, error) {
-		turnCtx, cancel := withAgentDurationLimit(
+		turnCtx, cancel := turnLimit(
 			ctx,
 			request.MaxDuration,
 			ErrTurnDurationExceeded,
@@ -739,7 +768,7 @@ func (r *Runner) runAgentTurn(
 		}
 	}
 	turnStarted := false
-	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurnWithTools(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, func(updateCtx context.Context, update AgentUpdate) error {
+	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurnWithToolsUsingLimit(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		if !update.RuntimeIdentity.IsZero() {
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
@@ -775,7 +804,7 @@ func (r *Runner) runAgentTurn(
 			return err
 		}
 		return nil
-	})
+	}, r.turnLimit)
 	if cause := context.Cause(ctx); cooperativeStopError(cause) || errors.Is(cause, ErrSessionDurationExceeded) {
 		turnErr = cause
 	}
@@ -1404,7 +1433,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}
 	var output strings.Builder
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
-	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurnWithTools(sessionCtx, backend, AgentTurnRequest{
+	turnResult, turnErr, scratchCleanupErr := runAgentBackendTurnWithToolsUsingLimit(sessionCtx, backend, AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             prompt,
 		Model:              selectedModel,
@@ -1452,7 +1481,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			return err
 		}
 		return nil
-	})
+	}, r.turnLimit)
 	if cause := context.Cause(sessionCtx); errors.Is(cause, ErrSessionDurationExceeded) {
 		turnErr = cause
 	}

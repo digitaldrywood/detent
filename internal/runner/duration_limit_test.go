@@ -44,7 +44,8 @@ func TestRunnerEnforcesConfiguredDurationLimits(t *testing.T) {
 			workspaceBackend := &fakeWorkspaceBackend{
 				info: workspace.Info{Path: t.TempDir(), Key: "issue-duration"},
 			}
-			agentBackend := &durationBlockingAgentBackend{}
+			durationLimit := &controlledDurationLimit{}
+			agentBackend := &durationBlockingAgentBackend{expireDuration: durationLimit.Expire}
 			sessionStore := &fakeSessionStore{sessionID: 1496}
 			runner, err := NewRunner(Dependencies{
 				Workflow: config.Workflow{
@@ -54,12 +55,13 @@ func TestRunnerEnforcesConfiguredDurationLimits(t *testing.T) {
 				Workspace:    workspaceBackend,
 				AgentBackend: agentBackend,
 				Store:        sessionStore,
+				sessionLimit: durationLimit.Context,
+				turnLimit:    durationLimit.Context,
 			})
 			if err != nil {
 				t.Fatalf("NewRunner() error = %v", err)
 			}
 
-			startedAt := time.Now()
 			_, err = runner.Run(context.Background(), RunRequest{
 				Issue: connector.Issue{
 					ID:         "issue-duration",
@@ -72,11 +74,14 @@ func TestRunnerEnforcesConfiguredDurationLimits(t *testing.T) {
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("Run() error = %v, want context deadline exceeded", err)
 			}
-			if elapsed := time.Since(startedAt); elapsed > time.Second {
-				t.Fatalf("Run() elapsed = %v, want configured duration limit", elapsed)
-			}
 			if !strings.Contains(err.Error(), "after 25ms") {
 				t.Fatalf("Run() error = %v, want configured duration", err)
+			}
+			if durationLimit.duration != 25*time.Millisecond {
+				t.Fatalf("duration limit = %v, want 25ms", durationLimit.duration)
+			}
+			if !errors.Is(durationLimit.limit, tt.want) {
+				t.Fatalf("duration limit error = %v, want %v", durationLimit.limit, tt.want)
 			}
 			if agentBackend.request.TurnTimeout != 0 {
 				t.Fatalf("AgentTurnRequest.TurnTimeout = %v, want backend liveness timeout unchanged", agentBackend.request.TurnTimeout)
@@ -195,11 +200,20 @@ func TestRunAgentBackendTurnPreservesParentCancellation(t *testing.T) {
 func TestRunAgentBackendTurnKeepsLivenessTimeoutSeparateFromMaxDuration(t *testing.T) {
 	t.Parallel()
 
-	backend := &durationBlockingAgentBackend{}
-	_, err, cleanupErr := runAgentBackendTurn(context.Background(), backend, AgentTurnRequest{
-		TurnTimeout: time.Hour,
-		MaxDuration: 25 * time.Millisecond,
-	}, nil)
+	durationLimit := &controlledDurationLimit{}
+	backend := &durationBlockingAgentBackend{expireDuration: durationLimit.Expire}
+	_, err, cleanupErr := runAgentBackendTurnWithToolsUsingLimit(
+		context.Background(),
+		backend,
+		AgentTurnRequest{
+			TurnTimeout: time.Hour,
+			MaxDuration: 25 * time.Millisecond,
+		},
+		nil,
+		nil,
+		nil,
+		durationLimit.Context,
+	)
 	if !errors.Is(err, ErrTurnDurationExceeded) {
 		t.Fatalf("runAgentBackendTurn() error = %v, want ErrTurnDurationExceeded", err)
 	}
@@ -211,6 +225,9 @@ func TestRunAgentBackendTurnKeepsLivenessTimeoutSeparateFromMaxDuration(t *testi
 	}
 	if backend.request.MaxDuration != 25*time.Millisecond {
 		t.Fatalf("backend MaxDuration = %v, want total duration preserved", backend.request.MaxDuration)
+	}
+	if durationLimit.duration != 25*time.Millisecond {
+		t.Fatalf("duration limit = %v, want 25ms", durationLimit.duration)
 	}
 }
 
@@ -254,8 +271,9 @@ func TestRunAgentBackendTurnLeavesDurationDisabledWithoutDeadline(t *testing.T) 
 func TestRunAgentBackendTurnPropagatesDurationContextToUpdates(t *testing.T) {
 	t.Parallel()
 
+	durationLimit := &controlledDurationLimit{}
 	hasDeadline := false
-	_, err, cleanupErr := runAgentBackendTurnWithTools(
+	_, err, cleanupErr := runAgentBackendTurnWithToolsUsingLimit(
 		context.Background(),
 		&durationUpdateAgentBackend{},
 		AgentTurnRequest{MaxDuration: 25 * time.Millisecond},
@@ -263,9 +281,11 @@ func TestRunAgentBackendTurnPropagatesDurationContextToUpdates(t *testing.T) {
 		nil,
 		func(ctx context.Context, _ AgentUpdate) error {
 			_, hasDeadline = ctx.Deadline()
+			durationLimit.Expire()
 			<-ctx.Done()
 			return ctx.Err()
 		},
+		durationLimit.Context,
 	)
 	if !errors.Is(err, ErrTurnDurationExceeded) {
 		t.Fatalf("runAgentBackendTurnWithTools() error = %v, want ErrTurnDurationExceeded", err)
@@ -284,8 +304,10 @@ func TestRunAgentBackendTurnPropagatesDurationContextToUpdates(t *testing.T) {
 func TestRunnerValidatorUpdatePersistenceUsesSessionDurationContext(t *testing.T) {
 	t.Parallel()
 
+	sessionDurationLimit := &controlledDurationLimit{}
 	sessionStore := &durationBlockingSessionStore{
 		fakeSessionStore: &fakeSessionStore{sessionID: 1496},
+		expireSession:    sessionDurationLimit.Expire,
 	}
 	runner, err := NewRunner(Dependencies{
 		Workflow: config.Workflow{
@@ -300,15 +322,13 @@ func TestRunnerValidatorUpdatePersistenceUsesSessionDurationContext(t *testing.T
 		},
 		AgentBackend: &durationUpdateAgentBackend{},
 		Store:        sessionStore,
+		sessionLimit: sessionDurationLimit.Context,
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	startedAt := time.Now()
-	_, err = runner.Validate(ctx, ValidatorRequest{
+	_, err = runner.Validate(context.Background(), ValidatorRequest{
 		Issue: connector.Issue{
 			ID:         "issue-validator-duration",
 			Identifier: "digitaldrywood/detent#1496",
@@ -320,17 +340,18 @@ func TestRunnerValidatorUpdatePersistenceUsesSessionDurationContext(t *testing.T
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Validate() error = %v, want context deadline exceeded", err)
 	}
-	if elapsed := time.Since(startedAt); elapsed > time.Second {
-		t.Fatalf("Validate() elapsed = %v, want configured session duration", elapsed)
-	}
 	if !sessionStore.hasDeadline {
 		t.Fatal("UpdateSessionWorkerProcess() context has no session deadline")
+	}
+	if sessionDurationLimit.duration != 25*time.Millisecond {
+		t.Fatalf("session duration = %v, want 25ms", sessionDurationLimit.duration)
 	}
 }
 
 type durationBlockingAgentBackend struct {
-	request   AgentTurnRequest
-	deadlines []time.Time
+	request        AgentTurnRequest
+	deadlines      []time.Time
+	expireDuration func()
 }
 
 func (b *durationBlockingAgentBackend) RunTurn(ctx context.Context, request AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
@@ -347,6 +368,9 @@ func (b *durationBlockingAgentBackend) RunTurn(ctx context.Context, request Agen
 			}
 		}
 		b.recordDeadline(ctx)
+	}
+	if b.expireDuration != nil {
+		b.expireDuration()
 	}
 	<-ctx.Done()
 	return AgentTurnResult{}, ctx.Err()
@@ -398,10 +422,16 @@ type controlledDurationLimit struct {
 }
 
 func (l *controlledDurationLimit) Context(ctx context.Context, duration time.Duration, limit error) (context.Context, context.CancelFunc) {
-	ctx, l.cancel = context.WithCancelCause(ctx)
+	if duration <= 0 {
+		return ctx, func() {}
+	}
+	cancelCtx, cancel := context.WithCancelCause(ctx)
+	l.cancel = cancel
 	l.duration = duration
 	l.limit = limit
-	return ctx, func() {
+	deadlineCtx, cancelDeadline := context.WithDeadline(cancelCtx, time.Date(2100, time.January, 1, 0, 0, 0, 0, time.UTC).Add(duration))
+	return deadlineCtx, func() {
+		cancelDeadline()
 		l.cancel(context.Canceled)
 	}
 }
@@ -426,11 +456,13 @@ func (b *deadlineObservingAgentBackend) RunTurn(ctx context.Context, request Age
 
 type durationBlockingSessionStore struct {
 	*fakeSessionStore
-	hasDeadline bool
+	hasDeadline   bool
+	expireSession func()
 }
 
 func (s *durationBlockingSessionStore) UpdateSessionWorkerProcess(ctx context.Context, _ int64, _ store.WorkerProcessIdentity) error {
 	_, s.hasDeadline = ctx.Deadline()
+	s.expireSession()
 	<-ctx.Done()
 	return ctx.Err()
 }

@@ -17,6 +17,13 @@ import (
 
 const validationSubprocessHelper = "DETENT_CHECKLOCK_HELPER"
 
+// These deadlines only detect deadlocked OS subprocess and file-lock handshakes.
+// They are deliberately generous enough for loaded Windows and macOS runners.
+const (
+	validationIntegrationTimeout = 60 * time.Second
+	validationLockWaitTimeout    = 45 * time.Second
+)
+
 func TestRunValidatesArguments(t *testing.T) {
 	t.Parallel()
 
@@ -60,11 +67,11 @@ func TestRunSerializesConcurrentSubprocesses(t *testing.T) {
 		_ = os.WriteFile(releasePath, nil, 0o600)
 	})
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), validationIntegrationTimeout)
 	defer cancel()
 	args := []string{
 		"-lock", validationLock,
-		"-wait-timeout", "5s",
+		"-wait-timeout", validationLockWaitTimeout.String(),
 		"--", os.Args[0], "-test.run=^TestValidationSubprocessHelper$",
 	}
 
@@ -134,7 +141,7 @@ func TestValidationSubprocessHelper(t *testing.T) {
 		t.Fatalf("close trace: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), validationLockWaitTimeout)
 	defer cancel()
 	waitForPath(t, ctx, os.Getenv("DETENT_CHECKLOCK_RELEASE"))
 }
