@@ -20,7 +20,12 @@ test("fleet renders every pool and distinguishes saturation", async ({ page }) =
   const pools = page.locator("[data-agent-pool]");
   await expect(pools).toHaveCount(3);
   await expect(page.locator('[data-agent-pool="default"] [data-pool-usage]')).toHaveText("0 / 2");
-  await expect(page.locator('[data-agent-pool="video"] [data-pool-usage]')).toHaveText("2 / 10");
+
+  const borrowing = page.locator('[data-agent-pool="video"]');
+  await expect(borrowing.locator("[data-pool-usage]")).toHaveText(
+    "12 / 15 · floor 10 · 2 borrowed",
+  );
+  await expect(borrowing).toHaveAttribute("data-pool-saturated", "false");
 
   const saturated = page.locator('[data-agent-pool="code"]');
   await expect(saturated.locator("[data-pool-usage]")).toHaveText("5 / 5");
