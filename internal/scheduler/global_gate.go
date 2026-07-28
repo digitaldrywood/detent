@@ -29,6 +29,7 @@ type ProjectDispatchGate interface {
 type DispatchGateDecision struct {
 	ProjectID            string
 	PoolName             string
+	Holders              []string
 	State                string
 	SelectedProjectID    string
 	SelectedState        string
@@ -107,6 +108,18 @@ func (g *GlobalDispatchGate) PoolSnapshot() PoolSnapshot {
 	defer g.mu.Unlock()
 
 	stats := g.capacitySnapshotLocked("")
+	holders := g.holderProjectIDsLocked()
+	return PoolSnapshot{
+		Name:      g.poolName,
+		Capacity:  stats.globalCapacity,
+		Used:      stats.globalUsed,
+		Available: nonNegativeInt(stats.globalCapacity - stats.globalUsed),
+		Mode:      g.global.Mode(),
+		Holders:   holders,
+	}
+}
+
+func (g *GlobalDispatchGate) holderProjectIDsLocked() []string {
 	holders := make([]string, 0, len(g.running))
 	seen := make(map[string]struct{}, len(g.running))
 	for _, running := range g.running {
@@ -121,14 +134,7 @@ func (g *GlobalDispatchGate) PoolSnapshot() PoolSnapshot {
 		holders = append(holders, projectID)
 	}
 	sort.Strings(holders)
-	return PoolSnapshot{
-		Name:      g.poolName,
-		Capacity:  stats.globalCapacity,
-		Used:      stats.globalUsed,
-		Available: nonNegativeInt(stats.globalCapacity - stats.globalUsed),
-		Mode:      g.global.Mode(),
-		Holders:   holders,
-	}
+	return holders
 }
 
 func (g *GlobalDispatchGate) SetProjects(projects []ProjectCandidate) {
@@ -601,6 +607,7 @@ func (g *GlobalDispatchGate) decisionLocked(projectID string, req SlotRequest, r
 	return DispatchGateDecision{
 		ProjectID:            projectID,
 		PoolName:             g.poolName,
+		Holders:              g.holderProjectIDsLocked(),
 		State:                req.State,
 		SelectedProjectID:    selectedProjectID,
 		SelectedState:        selectedState,

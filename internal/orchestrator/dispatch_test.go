@@ -2200,6 +2200,127 @@ func TestDispatchReadyIssuesRecordsNonMergeSlotWaitTelemetry(t *testing.T) {
 	}
 }
 
+func TestRecordDispatchGateRefusalPersistsPoolArbitrationReasons(t *testing.T) {
+	t.Parallel()
+
+	reasons := []string{
+		scheduler.DispatchGateReasonGlobalCapacityFull,
+		scheduler.DispatchGateReasonReservedForHigherPriorityProject,
+		scheduler.DispatchGateReasonReservedForHigherPriority,
+		scheduler.DispatchGateReasonSelectedProjectWaiting,
+	}
+	for _, reason := range reasons {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents: 1,
+				ActiveStates:        []string{"Todo"},
+				TerminalStates:      []string{"Done"},
+				Project:             scheduler.ProjectCandidate{ID: "cloud"},
+			})
+			attempts := &recordingWorkAttemptStore{}
+			orch := Orchestrator{cfg: cfg, workAttempts: attempts}
+			state := newState(cfg)
+			issue := dispatchTestIssue("issue-cloud", "Todo")
+			now := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
+
+			orch.recordDispatchGateRefusal(
+				t.Context(),
+				&state,
+				issue,
+				2,
+				"worker-a",
+				now,
+				scheduler.DispatchGateDecision{
+					PoolName:          "shared",
+					Holders:           []string{"local"},
+					Reason:            reason,
+					GlobalCapacity:    5,
+					GlobalUsed:        5,
+					GlobalAvailable:   0,
+					SelectedProjectID: "local",
+					SelectedState:     "Merging",
+				},
+				projectStateSlotStats{capacity: 2, used: 1, available: 1},
+			)
+
+			if len(attempts.decisions) != 1 {
+				t.Fatalf("scheduler decisions = %#v, want one gate refusal", attempts.decisions)
+			}
+			got := attempts.decisions[0]
+			if got.Result != store.SchedulerDecisionResultSkipped ||
+				got.Reason != reason ||
+				got.WaitReason != reason ||
+				got.ProjectID != "cloud" ||
+				got.AttemptNumber != 2 ||
+				got.WorkerHost != "worker-a" {
+				t.Fatalf("scheduler decision = %#v, want durable %q refusal", got, reason)
+			}
+			for _, fragment := range []string{
+				`"pool":"shared"`,
+				`"holders":["local"]`,
+				`"global_capacity":5`,
+				`"global_used":5`,
+				`"global_available":0`,
+				`"selected_project_id":"local"`,
+			} {
+				if !strings.Contains(got.CapacitySnapshotJSON, fragment) {
+					t.Fatalf("capacity snapshot %q missing %q", got.CapacitySnapshotJSON, fragment)
+				}
+			}
+			if !strings.Contains(got.MetadataJSON, `"sample_interval_seconds":300`) {
+				t.Fatalf("metadata = %q, want documented sampling interval", got.MetadataJSON)
+			}
+		})
+	}
+}
+
+func TestRecordDispatchGateRefusalSamplesEquivalentCandidates(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+		Project:             scheduler.ProjectCandidate{ID: "cloud"},
+	})
+	attempts := &recordingWorkAttemptStore{}
+	orch := Orchestrator{cfg: cfg, workAttempts: attempts}
+	state := newState(cfg)
+	now := time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
+	decision := scheduler.DispatchGateDecision{
+		PoolName:        "shared",
+		Reason:          scheduler.DispatchGateReasonGlobalCapacityFull,
+		GlobalCapacity:  5,
+		GlobalUsed:      5,
+		GlobalAvailable: 0,
+		Holders:         []string{"detent"},
+	}
+	projectStats := projectStateSlotStats{capacity: 2, used: 1, available: 1}
+
+	orch.recordDispatchGateRefusal(t.Context(), &state, dispatchTestIssue("issue-a", "Todo"), 0, "", now, decision, projectStats)
+	orch.recordDispatchGateRefusal(t.Context(), &state, dispatchTestIssue("issue-b", "Todo"), 0, "", now.Add(time.Minute), decision, projectStats)
+	changedHolders := decision
+	changedHolders.Holders = []string{"podcast"}
+	orch.recordDispatchGateRefusal(t.Context(), &state, dispatchTestIssue("issue-c", "Todo"), 0, "", now.Add(2*time.Minute), changedHolders, projectStats)
+	orch.recordDispatchGateRefusal(t.Context(), &state, dispatchTestIssue("issue-b", "Todo"), 0, "", now.Add(dispatchGateSampleInterval), decision, projectStats)
+
+	if len(attempts.decisions) != 3 {
+		t.Fatalf("scheduler decisions = %#v, want one sample per holder set and five-minute condition window", attempts.decisions)
+	}
+	if attempts.decisions[0].IssueID != "issue-a" ||
+		attempts.decisions[1].IssueID != "issue-c" ||
+		attempts.decisions[2].IssueID != "issue-b" {
+		t.Fatalf(
+			"sampled issues = %q/%q/%q, want holder change and representative candidate across windows",
+			attempts.decisions[0].IssueID,
+			attempts.decisions[1].IssueID,
+			attempts.decisions[2].IssueID,
+		)
+	}
+}
+
 func TestDispatchReadyIssuesHydratesLightweightCandidateBeforeDependencyGate(t *testing.T) {
 	t.Parallel()
 

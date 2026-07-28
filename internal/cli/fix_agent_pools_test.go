@@ -272,17 +272,15 @@ func newAgentPoolsFixFixture(t *testing.T, contention bool) agentPoolsFixFixture
 	}
 	now := time.Date(2026, 7, 27, 20, 0, 0, 0, time.UTC)
 	if contention {
-		if _, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{
-			ProjectID:              "video",
-			WorkerType:             "implement",
-			StartedAt:              now.Add(-time.Hour),
-			WaitReason:             "global_capacity_full",
-			CapacitySnapshotJSON:   `{"pool":"default","holders":["detent"]}`,
-			GitHubRateSnapshotJSON: "{}",
-			WorkerMetadataJSON:     "{}",
-			MetricsJSON:            "{}",
+		if _, err := backend.RecordSchedulerDecision(t.Context(), store.SchedulerDecision{
+			ProjectID:            "video",
+			Result:               store.SchedulerDecisionResultSkipped,
+			Reason:               "reserved_for_higher_priority_project",
+			DecisionAt:           now.Add(-time.Hour),
+			WaitReason:           "reserved_for_higher_priority_project",
+			CapacitySnapshotJSON: `{"pool":"default","global_available":0,"holders":["detent"]}`,
 		}); err != nil {
-			t.Fatalf("StartWorkAttempt() error = %v", err)
+			t.Fatalf("RecordSchedulerDecision() error = %v", err)
 		}
 	}
 	if err := backend.Close(); err != nil {

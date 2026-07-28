@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 const (
@@ -18,7 +20,17 @@ const (
 	workerOutcomeFailed    = "failed"
 	workerOutcomeCancelled = "cancelled"
 	workerOutcomeTimedOut  = "timed_out"
+
+	dispatchGateSampleInterval = 5 * time.Minute
 )
+
+type dispatchGateSampleKey struct {
+	pool              string
+	reason            string
+	globalCapacity    int
+	capacityExhausted bool
+	holders           string
+}
 
 func (o *Orchestrator) logDispatchPlanDecision(ctx context.Context, state *State, now time.Time, decision dispatchPlanDecision) {
 	result := "skipped"
@@ -85,6 +97,150 @@ func (o *Orchestrator) logSchedulerSlotDecision(issue connector.Issue, outcome s
 		"running_projects", decision.RunningProjects,
 	)
 	o.logger.Debug("scheduler_dispatch_slot_decision", attrs...)
+}
+
+func (o *Orchestrator) recordDispatchGateRefusal(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	workerHost string,
+	now time.Time,
+	decision scheduler.DispatchGateDecision,
+	projectStats projectStateSlotStats,
+) {
+	if o == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	reason := strings.TrimSpace(decision.Reason)
+	if reason == "" {
+		reason = dispatchIssueFailureGlobalSlotUnavailable
+	}
+	pool := strings.TrimSpace(decision.PoolName)
+	if pool == "" {
+		pool = scheduler.DefaultPoolName
+	}
+	decision.Holders = normalizeDispatchGateHolders(decision.Holders)
+	key := dispatchGateSampleKey{
+		pool:              pool,
+		reason:            reason,
+		globalCapacity:    decision.GlobalCapacity,
+		capacityExhausted: decision.GlobalAvailable == 0,
+		holders:           strings.Join(decision.Holders, "\x00"),
+	}
+	if !o.reserveDispatchGateSample(key, now) {
+		return
+	}
+
+	record := store.SchedulerDecision{
+		ProjectID:            strings.TrimSpace(o.cfg.Project.ID),
+		IssueID:              strings.TrimSpace(issue.ID),
+		Identifier:           strings.TrimSpace(issue.Identifier),
+		IssueURL:             strings.TrimSpace(issue.URL),
+		PRNumber:             workAttemptPRNumber(issue),
+		Repo:                 workAttemptRepository(issue),
+		Lane:                 strings.TrimSpace(issue.State),
+		Result:               store.SchedulerDecisionResultSkipped,
+		Reason:               reason,
+		AttemptNumber:        attempt,
+		WorkerHost:           strings.TrimSpace(workerHost),
+		DecisionAt:           now,
+		WaitReason:           reason,
+		CapacitySnapshotJSON: o.dispatchGateCapacitySnapshotJSON(issue, decision, projectStats),
+		MetadataJSON: marshalWorkAttemptJSON(map[string]any{
+			"decision_kind":           "dispatch_gate_refusal",
+			"sample_interval_seconds": int64(dispatchGateSampleInterval / time.Second),
+		}),
+	}
+	snapshot := telemetrySchedulerDecision(record)
+	if o.workAttempts != nil {
+		id, err := o.workAttempts.RecordSchedulerDecision(ctx, record)
+		if err != nil {
+			o.releaseDispatchGateSample(key, now)
+			if o.logger != nil {
+				o.logger.Warn("record dispatch gate refusal failed", "issue_id", issue.ID, "reason", reason, "error", err)
+			}
+		} else {
+			snapshot.ID = id
+		}
+	}
+	appendSchedulerDecisionSnapshot(state, snapshot)
+}
+
+func (o *Orchestrator) reserveDispatchGateSample(key dispatchGateSampleKey, now time.Time) bool {
+	o.dispatchGateSampleMu.Lock()
+	defer o.dispatchGateSampleMu.Unlock()
+
+	if o.dispatchGateSamples == nil {
+		o.dispatchGateSamples = map[dispatchGateSampleKey]time.Time{}
+	}
+	if last, ok := o.dispatchGateSamples[key]; ok && now.Before(last.Add(dispatchGateSampleInterval)) {
+		return false
+	}
+	o.dispatchGateSamples[key] = now
+	return true
+}
+
+func (o *Orchestrator) releaseDispatchGateSample(key dispatchGateSampleKey, sampledAt time.Time) {
+	o.dispatchGateSampleMu.Lock()
+	defer o.dispatchGateSampleMu.Unlock()
+
+	if current, ok := o.dispatchGateSamples[key]; ok && current.Equal(sampledAt) {
+		delete(o.dispatchGateSamples, key)
+	}
+}
+
+func (o *Orchestrator) dispatchGateCapacitySnapshotJSON(
+	issue connector.Issue,
+	decision scheduler.DispatchGateDecision,
+	projectStats projectStateSlotStats,
+) string {
+	poolName := strings.TrimSpace(decision.PoolName)
+	if poolName == "" {
+		poolName = scheduler.DefaultPoolName
+	}
+	return marshalWorkAttemptJSON(map[string]any{
+		"project_id":              strings.TrimSpace(o.cfg.Project.ID),
+		"pool":                    poolName,
+		"pool_capacity":           decision.GlobalCapacity,
+		"holders":                 decision.Holders,
+		"lane":                    normalizeState(issue.State),
+		"global_capacity":         decision.GlobalCapacity,
+		"global_used":             decision.GlobalUsed,
+		"global_available":        decision.GlobalAvailable,
+		"project_state_capacity":  projectStats.capacity,
+		"project_state_used":      projectStats.used,
+		"project_state_available": projectStats.available,
+		"selected_project_id":     strings.TrimSpace(decision.SelectedProjectID),
+		"selected_state":          strings.TrimSpace(decision.SelectedState),
+		"lower_priority_running":  decision.LowerPriorityRunning,
+		"ready_projects":          decision.ReadyProjects,
+		"running_projects":        decision.RunningProjects,
+	})
+}
+
+func normalizeDispatchGateHolders(holders []string) []string {
+	normalized := make([]string, 0, len(holders))
+	seen := make(map[string]struct{}, len(holders))
+	for _, holder := range holders {
+		holder = strings.TrimSpace(holder)
+		if holder == "" {
+			continue
+		}
+		if _, ok := seen[holder]; ok {
+			continue
+		}
+		seen[holder] = struct{}{}
+		normalized = append(normalized, holder)
+	}
+	sort.Strings(normalized)
+	return normalized
 }
 
 func (o *Orchestrator) logWorkerLifecycle(issue connector.Issue, event string, attrs ...any) {

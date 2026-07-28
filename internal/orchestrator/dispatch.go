@@ -305,6 +305,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 
 	globalSlot, ok, decision := o.acquireGlobalDispatchSlot(ctx, slotIssue, workerHost, now)
 	if !ok {
+		o.recordDispatchGateRefusal(ctx, state, issue, attempt, workerHost, now, decision, projectStats)
 		o.logSchedulerSlotDecision(issue, "waiting", decision, projectStats)
 		if mergeWorkerIssue(issue) {
 			o.logMergeWorkerSlotWait(issue, decision, projectStats)

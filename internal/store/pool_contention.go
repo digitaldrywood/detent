@@ -11,7 +11,12 @@ import (
 	"time"
 )
 
-const poolCapacityWaitReason = "global_capacity_full"
+const (
+	poolCapacityWaitReason              = "global_capacity_full"
+	poolHigherPriorityProjectWaitReason = "reserved_for_higher_priority_project"
+	poolHigherPriorityStateWaitReason   = "reserved_for_higher_priority_state"
+	poolSelectedProjectWaitReason       = "selected_project_waiting"
+)
 
 type PoolContentionQuery struct {
 	Since          time.Time
@@ -49,15 +54,15 @@ func QueryCrossClassPoolContention(
 	since := query.Since.UTC().Truncate(time.Second).Format(time.RFC3339)
 	rows, err := db.QueryContext(ctx, `
 SELECT project_id, capacity_snapshot_json
-FROM work_attempts
-WHERE wait_reason = ?
-  AND COALESCE(NULLIF(heartbeat_at, ''), NULLIF(completed_at, ''), started_at) >= ?
-UNION ALL
-SELECT project_id, capacity_snapshot_json
 FROM scheduler_decisions
-WHERE wait_reason = ?
-  AND decision_at >= ?`,
-		poolCapacityWaitReason, since, poolCapacityWaitReason, since,
+WHERE wait_reason IN (?, ?, ?, ?)
+  AND decision_at >= ?
+  AND COALESCE(CAST(json_extract(capacity_snapshot_json, '$.global_available') AS INTEGER), -1) = 0`,
+		poolCapacityWaitReason,
+		poolHigherPriorityProjectWaitReason,
+		poolHigherPriorityStateWaitReason,
+		poolSelectedProjectWaitReason,
+		since,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying pool capacity waits: %w", err)

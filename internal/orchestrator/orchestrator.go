@@ -213,6 +213,8 @@ type Orchestrator struct {
 	heartbeats              *heartbeatManager
 	hydrationSkipStreaks    map[string]int
 	hydrationWarned         bool
+	dispatchGateSampleMu    sync.Mutex
+	dispatchGateSamples     map[dispatchGateSampleKey]time.Time
 	ciTriggerLabelMu        sync.Mutex
 	ciTriggerLabelHeads     map[string]ciTriggerLabelHead
 	stateRequests           chan stateRequest
@@ -442,6 +444,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		dailyBudgetStatus:       dailyBudgetStatus,
 		issueBudgetStatus:       issueBudgetStatus,
 		now:                     now,
+		dispatchGateSamples:     map[dispatchGateSampleKey]time.Time{},
 		ciTriggerLabelHeads:     map[string]ciTriggerLabelHead{},
 		stateRequests:           make(chan stateRequest),
 		drainRequests:           make(chan drainRequest),
