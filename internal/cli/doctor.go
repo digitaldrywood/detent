@@ -50,6 +50,7 @@ type doctorCheck struct {
 	Status                    doctorStatus                               `json:"status"`
 	Detail                    string                                     `json:"detail"`
 	Hint                      string                                     `json:"hint,omitempty"`
+	BinaryResolution          *doctorBinaryResolution                    `json:"binary_resolution,omitempty"`
 	WorkflowSkillSuggestions  []doctorWorkflowSkillSuggestion            `json:"workflow_skill_suggestions,omitempty"`
 	AutoPromoteCandidates     []doctorAutoPromoteCandidateDiagnostic     `json:"auto_promote_candidates,omitempty"`
 	BlockedRecoveryCandidates []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_recovery_candidates,omitempty"`
@@ -224,11 +225,10 @@ type doctorTelemetryStore interface {
 type doctorDeps struct {
 	loadWorkflow         func(string) (workflowconfig.Workflow, error)
 	lookupEnv            func(string) string
-	lookPath             func(string) (string, error)
-	runCommand           func(context.Context, string, ...string) error
+	resolveCommandOnPath func(string, string) (string, error)
 	resolveCommandInDir  func(context.Context, string, []string, string) (string, error)
 	runCommandInDir      func(context.Context, string, []string, string, ...string) error
-	codexInitialize      func(context.Context, string) error
+	codexInitialize      func(context.Context, string, []string) error
 	httpDo               func(*http.Request) (*http.Response, error)
 	githubScopes         func(context.Context, string) ([]string, error)
 	githubReadiness      doctorGitHubReadinessFunc
@@ -430,17 +430,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		report.Add(check)
 	}
 
+	liveBoot := doctorLiveBoot(boot, global)
+	binaryEnvironment := resolveDoctorBinaryEnvironment(ctx, resolution, liveBoot, deps)
 	jobs := []doctorCheckJob{}
 	if global != nil {
 		globalConfig := *global
-		workflowDriftBoot := boot
-		if doctorServerPort(workflowDriftBoot) == 0 {
-			livePort := defaultWebPort
-			if globalConfig.Port != nil {
-				livePort = *globalConfig.Port
-			}
-			workflowDriftBoot.Port = &livePort
-		}
+		workflowDriftBoot := liveBoot
 		githubToken := runtime.GitHubToken
 		jobs = append(jobs, doctorCheckJob{
 			Name: "Update checking",
@@ -518,7 +513,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			},
 		},
 	)
-	jobs = append(jobs, doctorAgentBinaryCheckJobs(ctx, global, deps)...)
+	jobs = append(jobs, doctorAgentBinaryCheckJobs(ctx, global, deps, binaryEnvironment)...)
 	jobs = append(jobs,
 		doctorCheckJob{
 			Name: "GitHub token",
@@ -535,7 +530,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		doctorCheckJob{
 			Name: "git binary",
 			Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorGit(jobCtx, deps)}
+				return []doctorCheck{checkDoctorGit(jobCtx, deps, binaryEnvironment)}
 			},
 		},
 	)
@@ -549,6 +544,18 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	}
 
 	return report
+}
+
+func doctorLiveBoot(boot BootConfig, cfg *globalconfig.Config) BootConfig {
+	if doctorServerPort(boot) != 0 {
+		return boot
+	}
+	port := defaultWebPort
+	if cfg != nil && cfg.Port != nil {
+		port = *cfg.Port
+	}
+	boot.Port = &port
+	return boot
 }
 
 func checkDoctorUpdateRuntime(ctx context.Context, cfg globalconfig.Update, boot BootConfig, deps doctorDeps) doctorCheck {
@@ -1049,11 +1056,8 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.lookupEnv == nil {
 		d.lookupEnv = defaults.lookupEnv
 	}
-	if d.lookPath == nil {
-		d.lookPath = defaults.lookPath
-	}
-	if d.runCommand == nil {
-		d.runCommand = defaults.runCommand
+	if d.resolveCommandOnPath == nil {
+		d.resolveCommandOnPath = defaults.resolveCommandOnPath
 	}
 	if d.resolveCommandInDir == nil {
 		d.resolveCommandInDir = defaults.resolveCommandInDir
@@ -1125,8 +1129,7 @@ func defaultDoctorDeps() doctorDeps {
 	return doctorDeps{
 		loadWorkflow:         workflowconfig.LoadWorkflow,
 		lookupEnv:            os.Getenv,
-		lookPath:             exec.LookPath,
-		runCommand:           runDoctorCommand,
+		resolveCommandOnPath: resolveDoctorCommandOnPath,
 		resolveCommandInDir:  resolveDoctorCommandInDir,
 		runCommandInDir:      runDoctorCommandInDir,
 		codexInitialize:      probeDoctorCodexInitialize,
@@ -1182,22 +1185,38 @@ func doctorSQLitePingError(err, closeErr error) error {
 	return fmt.Errorf("ping sqlite database: %w", err)
 }
 
-func runDoctorCommand(ctx context.Context, path string, args ...string) error {
-	commandCtx, cancel := context.WithTimeout(ctx, doctorCommandTimeout)
-	defer cancel()
+func resolveDoctorCommandOnPath(pathValue string, executable string) (string, error) {
+	if runtime.GOOS == "windows" {
+		dir, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		return resolveDoctorWindowsCommand(dir, doctorCommandEnvironment(os.Environ(), []string{"PATH=" + pathValue}), executable)
+	}
+	if strings.ContainsRune(executable, os.PathSeparator) {
+		if doctorExecutablePath(executable) {
+			return executable, nil
+		}
+		return "", fmt.Errorf("executable %q not found", executable)
+	}
+	for _, dir := range filepath.SplitList(pathValue) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, executable)
+		if doctorExecutablePath(candidate) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("executable %q not found on configured PATH", executable)
+}
 
-	cmd := exec.CommandContext(commandCtx, path, args...) // #nosec G204 -- doctor runs fixed PATH-resolved preflight binaries.
-	output, err := cmd.CombinedOutput()
-	if commandCtx.Err() != nil {
-		return commandCtx.Err()
+func doctorExecutablePath(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
 	}
-	if err == nil {
-		return nil
-	}
-	if detail := strings.TrimSpace(string(output)); detail != "" {
-		return fmt.Errorf("%w: %s", err, detail)
-	}
-	return err
+	return info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }
 
 func resolveDoctorCommandInDir(ctx context.Context, dir string, environment []string, executable string) (string, error) {

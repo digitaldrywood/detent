@@ -23,6 +23,60 @@ import (
 
 var doctorHealthCheckKeys = []string{"hub", "store", "registry", "connector"}
 
+const (
+	doctorBinaryPathSourceDoctor       = "doctor"
+	doctorBinaryPathSourceOrchestrator = "orchestrator"
+)
+
+type doctorBinaryEnvironment struct {
+	Source           string
+	CheckedPath      string
+	DoctorPath       string
+	OrchestratorPath string
+	FallbackReason   string
+}
+
+type doctorBinaryResolution struct {
+	Source             string `json:"source"`
+	CheckedPath        string `json:"checked_path"`
+	DoctorPath         string `json:"doctor_path"`
+	OrchestratorPath   string `json:"orchestrator_path,omitempty"`
+	EnvironmentsDiffer bool   `json:"environments_differ"`
+	FallbackReason     string `json:"fallback_reason,omitempty"`
+}
+
+func resolveDoctorBinaryEnvironment(ctx context.Context, resolution globalconfig.PathResolution, boot BootConfig, deps doctorDeps) doctorBinaryEnvironment {
+	doctorPath := deps.lookupEnv("PATH")
+	fallback := func(reason string) doctorBinaryEnvironment {
+		return doctorBinaryEnvironment{
+			Source:         doctorBinaryPathSourceDoctor,
+			CheckedPath:    doctorPath,
+			DoctorPath:     doctorPath,
+			FallbackReason: reason,
+		}
+	}
+	if strings.TrimSpace(resolution.Path) == "" {
+		return fallback("orchestrator PATH is unavailable because the global config path is unavailable")
+	}
+	probe, err := probeDoctorHealth(ctx, boot, deps)
+	orchestratorPath := probe.Health.Environment.Path
+	if probe.Health.Mode != "" && doctorHealthHasDetentChecks(probe.Health.Checks) {
+		if orchestratorPath != "" {
+			return doctorBinaryEnvironment{
+				Source:           doctorBinaryPathSourceOrchestrator,
+				CheckedPath:      orchestratorPath,
+				DoctorPath:       doctorPath,
+				OrchestratorPath: orchestratorPath,
+			}
+		}
+		return fallback("orchestrator PATH is unavailable because the running instance did not report it")
+	}
+	if err != nil {
+		return fallback(fmt.Sprintf("orchestrator PATH is unavailable because no running instance was reachable at %s: %v", probe.URL, err))
+	}
+	return fallback("orchestrator PATH is unavailable because the running instance did not report it")
+}
+
 func checkDoctorConfigReload(cfg globalconfig.Config) doctorCheck {
 	path := strings.TrimSpace(cfg.Path)
 	if path == "" {
@@ -364,47 +418,50 @@ func inspectDoctorDailyBudgetAccuracy(ctx context.Context, db doctorTelemetrySto
 	return doctorCheck{Name: name, Status: doctorOK, Detail: "all completed sessions today have project attribution"}
 }
 
-func checkDoctorCodex(ctx context.Context, deps doctorDeps) doctorCheck {
+func checkDoctorCodex(ctx context.Context, deps doctorDeps, environment doctorBinaryEnvironment) doctorCheck {
 	const hint = "Install Codex and ensure codex --version and the app-server initialize handshake succeed."
-	path, err := deps.lookPath("codex")
+	path, err := resolveDoctorBinary(ctx, deps, environment, "codex")
 	if err != nil {
-		return doctorCheck{
+		return doctorBinaryCheck(environment, doctorCheck{
 			Name:   "codex binary",
 			Status: doctorFail,
 			Detail: "codex was not found on PATH",
 			Hint:   hint,
-		}
+		})
 	}
-	if err := deps.runCommand(ctx, path, "--version"); err != nil {
-		return doctorCheck{
+	commandEnvironment := doctorBinaryCommandEnvironment(environment)
+	if err := deps.runCommandInDir(ctx, ".", commandEnvironment, path, "--version"); err != nil {
+		return doctorBinaryCheck(environment, doctorCheck{
 			Name:   "codex binary",
 			Status: doctorFail,
 			Detail: fmt.Sprintf("%s --version failed: %v", path, err),
 			Hint:   hint,
-		}
+		})
 	}
 	initialize := deps.codexInitialize
 	if initialize == nil {
 		initialize = probeDoctorCodexInitialize
 	}
-	if err := initialize(ctx, path); err != nil {
-		return doctorCheck{
+	if err := initialize(ctx, path, commandEnvironment); err != nil {
+		return doctorBinaryCheck(environment, doctorCheck{
 			Name:   "codex binary",
 			Status: doctorFail,
 			Detail: fmt.Sprintf("%s app-server initialize failed: %v", path, err),
 			Hint:   hint,
-		}
+		})
 	}
-	return doctorCheck{
+	return doctorBinaryCheck(environment, doctorCheck{
 		Name:   "codex binary",
 		Status: doctorOK,
 		Detail: path + " is runnable and completed an app-server initialize handshake",
-	}
+	})
 }
 
-func probeDoctorCodexInitialize(ctx context.Context, path string) error {
+func probeDoctorCodexInitialize(ctx context.Context, path string, environment []string) error {
 	factory, err := codex.NewLocalTransportFactory(func(commandCtx context.Context) *exec.Cmd {
-		return exec.CommandContext(commandCtx, path, "app-server")
+		cmd := exec.CommandContext(commandCtx, path, "app-server")
+		cmd.Env = doctorCommandEnvironment(os.Environ(), environment)
+		return cmd
 	})
 	if err != nil {
 		return err
@@ -416,23 +473,23 @@ func probeDoctorCodexInitialize(ctx context.Context, path string) error {
 	return server.CheckHealth(ctx)
 }
 
-func checkDoctorClaudeCode(ctx context.Context, deps doctorDeps) doctorCheck {
-	return checkDoctorBinary(ctx, deps, "claude", "claude binary", "--version", "Install Claude Code and run `claude` once to log in (or set ANTHROPIC_API_KEY).")
+func checkDoctorClaudeCode(ctx context.Context, deps doctorDeps, environment doctorBinaryEnvironment) doctorCheck {
+	return checkDoctorBinary(ctx, deps, environment, "claude", "claude binary", "--version", "Install Claude Code and run `claude` once to log in (or set ANTHROPIC_API_KEY).")
 }
 
-func doctorAgentBinaryCheckJobs(ctx context.Context, cfg *globalconfig.Config, deps doctorDeps) []doctorCheckJob {
+func doctorAgentBinaryCheckJobs(ctx context.Context, cfg *globalconfig.Config, deps doctorDeps, environment doctorBinaryEnvironment) []doctorCheckJob {
 	kinds := doctorAgentBackendKinds(ctx, cfg, deps)
 	jobs := make([]doctorCheckJob, 0, len(kinds))
 	for _, kind := range kinds {
 		switch kind {
 		case workflowconfig.AgentBackendCodex:
-			jobs = append(jobs, doctorCodexBinaryCheckJob(deps))
+			jobs = append(jobs, doctorCodexBinaryCheckJob(deps, environment))
 		case workflowconfig.AgentBackendClaudeCode:
-			jobs = append(jobs, doctorClaudeCodeBinaryCheckJob(deps))
+			jobs = append(jobs, doctorClaudeCodeBinaryCheckJob(deps, environment))
 		}
 	}
 	if len(jobs) == 0 {
-		return []doctorCheckJob{doctorCodexBinaryCheckJob(deps)}
+		return []doctorCheckJob{doctorCodexBinaryCheckJob(deps, environment)}
 	}
 	return jobs
 }
@@ -466,52 +523,100 @@ func doctorAgentBackendKinds(ctx context.Context, cfg *globalconfig.Config, deps
 	return kinds
 }
 
-func doctorCodexBinaryCheckJob(deps doctorDeps) doctorCheckJob {
+func doctorCodexBinaryCheckJob(deps doctorDeps, environment doctorBinaryEnvironment) doctorCheckJob {
 	return doctorCheckJob{
 		Name: "codex binary",
 		Run: func(jobCtx context.Context) []doctorCheck {
-			return []doctorCheck{checkDoctorCodex(jobCtx, deps)}
+			return []doctorCheck{checkDoctorCodex(jobCtx, deps, environment)}
 		},
 	}
 }
 
-func doctorClaudeCodeBinaryCheckJob(deps doctorDeps) doctorCheckJob {
+func doctorClaudeCodeBinaryCheckJob(deps doctorDeps, environment doctorBinaryEnvironment) doctorCheckJob {
 	return doctorCheckJob{
 		Name: "claude binary",
 		Run: func(jobCtx context.Context) []doctorCheck {
-			return []doctorCheck{checkDoctorClaudeCode(jobCtx, deps)}
+			return []doctorCheck{checkDoctorClaudeCode(jobCtx, deps, environment)}
 		},
 	}
 }
 
-func checkDoctorGit(ctx context.Context, deps doctorDeps) doctorCheck {
-	return checkDoctorBinary(ctx, deps, "git", "git binary", "--version", "Install git and ensure git --version succeeds.")
+func checkDoctorGit(ctx context.Context, deps doctorDeps, environment doctorBinaryEnvironment) doctorCheck {
+	return checkDoctorBinary(ctx, deps, environment, "git", "git binary", "--version", "Install git and ensure git --version succeeds.")
 }
 
-func checkDoctorBinary(ctx context.Context, deps doctorDeps, binary string, name string, arg string, hint string) doctorCheck {
-	path, err := deps.lookPath(binary)
+func checkDoctorBinary(ctx context.Context, deps doctorDeps, environment doctorBinaryEnvironment, binary string, name string, arg string, hint string) doctorCheck {
+	path, err := resolveDoctorBinary(ctx, deps, environment, binary)
 	if err != nil {
-		return doctorCheck{
+		return doctorBinaryCheck(environment, doctorCheck{
 			Name:   name,
 			Status: doctorFail,
 			Detail: binary + " was not found on PATH",
 			Hint:   hint,
-		}
+		})
 	}
-	if err := deps.runCommand(ctx, path, arg); err != nil {
-		return doctorCheck{
+	if err := deps.runCommandInDir(ctx, ".", doctorBinaryCommandEnvironment(environment), path, arg); err != nil {
+		return doctorBinaryCheck(environment, doctorCheck{
 			Name:   name,
 			Status: doctorFail,
 			Detail: fmt.Sprintf("%s %s failed: %v", path, arg, err),
 			Hint:   hint,
-		}
+		})
 	}
 
-	return doctorCheck{
+	return doctorBinaryCheck(environment, doctorCheck{
 		Name:   name,
 		Status: doctorOK,
 		Detail: path + " is runnable",
+	})
+}
+
+func resolveDoctorBinary(ctx context.Context, deps doctorDeps, environment doctorBinaryEnvironment, binary string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
+	return deps.resolveCommandOnPath(environment.CheckedPath, binary)
+}
+
+func doctorBinaryCommandEnvironment(environment doctorBinaryEnvironment) []string {
+	return []string{"PATH=" + environment.CheckedPath}
+}
+
+func doctorBinaryCheck(environment doctorBinaryEnvironment, check doctorCheck) doctorCheck {
+	resolution := doctorBinaryResolution{
+		Source:             environment.Source,
+		CheckedPath:        environment.CheckedPath,
+		DoctorPath:         environment.DoctorPath,
+		OrchestratorPath:   environment.OrchestratorPath,
+		EnvironmentsDiffer: environment.OrchestratorPath != "" && environment.DoctorPath != environment.OrchestratorPath,
+		FallbackReason:     environment.FallbackReason,
+	}
+	check.BinaryResolution = &resolution
+	check.Detail += "; " + doctorBinaryEnvironmentDetail(resolution)
+	return check
+}
+
+func doctorBinaryEnvironmentDetail(resolution doctorBinaryResolution) string {
+	checkedPath := resolution.CheckedPath
+	if checkedPath == "" {
+		checkedPath = "<empty>"
+	}
+	source := "doctor fallback"
+	if resolution.Source == doctorBinaryPathSourceOrchestrator {
+		source = "orchestrator"
+	}
+	detail := fmt.Sprintf("checked PATH: %s (%s)", checkedPath, source)
+	if resolution.FallbackReason != "" {
+		detail += "; " + resolution.FallbackReason
+	}
+	if resolution.EnvironmentsDiffer {
+		doctorPath := resolution.DoctorPath
+		if doctorPath == "" {
+			doctorPath = "<empty>"
+		}
+		detail += fmt.Sprintf("; doctor PATH: %s; doctor PATH differs from orchestrator PATH", doctorPath)
+	}
+	return detail
 }
 
 func checkDoctorServerPort(ctx context.Context, cfg BootConfig, deps doctorDeps) doctorCheck {
@@ -580,11 +685,16 @@ type doctorHealthProbe struct {
 }
 
 type doctorHealthResponse struct {
-	Status    string                 `json:"status"`
-	Mode      string                 `json:"mode"`
-	Checks    map[string]string      `json:"checks"`
-	Budgets   []doctorHealthBudget   `json:"budgets"`
-	Workflows []doctorHealthWorkflow `json:"workflows"`
+	Status      string                  `json:"status"`
+	Mode        string                  `json:"mode"`
+	Checks      map[string]string       `json:"checks"`
+	Environment doctorHealthEnvironment `json:"environment"`
+	Budgets     []doctorHealthBudget    `json:"budgets"`
+	Workflows   []doctorHealthWorkflow  `json:"workflows"`
+}
+
+type doctorHealthEnvironment struct {
+	Path string `json:"path"`
 }
 
 type doctorHealthWorkflow struct {

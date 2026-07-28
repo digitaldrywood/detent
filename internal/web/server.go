@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -1068,6 +1069,7 @@ func (s *Server) health(c echo.Context) error {
 		SessionsRemaining: sessionsRemaining,
 		Update:            updateStatus,
 		Checks:            checks,
+		Environment:       healthEnvironment{Path: os.Getenv("PATH")},
 		Budgets:           budgets,
 		Workflows:         workflows,
 		BackendOutages:    backendOutages,
@@ -1314,10 +1316,15 @@ type healthResponse struct {
 	SessionsRemaining int                       `json:"sessions_remaining,omitempty"`
 	Update            telemetry.Update          `json:"update,omitzero"`
 	Checks            map[string]string         `json:"checks"`
+	Environment       healthEnvironment         `json:"environment"`
 	Budgets           []healthBudget            `json:"budgets,omitempty"`
 	Workflows         []healthWorkflowSource    `json:"workflows,omitempty"`
 	BackendOutages    []telemetry.BackendOutage `json:"backend_outages,omitempty"`
 	Projects          []healthProject           `json:"projects,omitempty"`
+}
+
+type healthEnvironment struct {
+	Path string `json:"path"`
 }
 
 type healthProject struct {
