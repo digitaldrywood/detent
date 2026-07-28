@@ -6734,6 +6734,23 @@ func TestHealthReportsUpdateCheckStatus(t *testing.T) {
 	}
 }
 
+func TestHealthReportsEnvironmentPath(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	payload := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+	environment, ok := payload["environment"].(map[string]any)
+	if !ok {
+		t.Fatalf("environment payload = %#v, want object", payload["environment"])
+	}
+	if environment["path"] != os.Getenv("PATH") {
+		t.Fatalf("environment path = %#v, want %q", environment["path"], os.Getenv("PATH"))
+	}
+}
+
 func TestHealthReportsEnforcedProjectBudgets(t *testing.T) {
 	t.Parallel()
 

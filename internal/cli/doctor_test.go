@@ -98,25 +98,25 @@ func TestCheckDoctorBinary(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		lookPath   func(string) (string, error)
+		resolve    func(context.Context, string, []string, string) (string, error)
 		runCommand func(context.Context, string, ...string) error
 		want       doctorStatus
 		wantDetail string
 	}{
 		{
 			name: "missing from path",
-			lookPath: func(string) (string, error) {
+			resolve: func(context.Context, string, []string, string) (string, error) {
 				return "", errors.New("missing")
 			},
 			runCommand: func(context.Context, string, ...string) error {
 				return nil
 			},
 			want:       doctorFail,
-			wantDetail: "not found on PATH",
+			wantDetail: "checked PATH:",
 		},
 		{
 			name: "not runnable",
-			lookPath: func(string) (string, error) {
+			resolve: func(context.Context, string, []string, string) (string, error) {
 				return "/usr/bin/codex", nil
 			},
 			runCommand: func(context.Context, string, ...string) error {
@@ -127,7 +127,7 @@ func TestCheckDoctorBinary(t *testing.T) {
 		},
 		{
 			name: "runnable",
-			lookPath: func(string) (string, error) {
+			resolve: func(context.Context, string, []string, string) (string, error) {
 				return "/usr/bin/codex", nil
 			},
 			runCommand: func(context.Context, string, ...string) error {
@@ -143,8 +143,13 @@ func TestCheckDoctorBinary(t *testing.T) {
 			t.Parallel()
 
 			got := checkDoctorBinary(context.Background(), doctorDeps{
-				lookPath:   tt.lookPath,
-				runCommand: tt.runCommand,
+				resolveCommandInDir: tt.resolve,
+				runCommand:          tt.runCommand,
+			}, doctorBinaryEnvironment{
+				Source:         doctorBinaryPathSourceDoctor,
+				CheckedPath:    "/doctor/bin",
+				DoctorPath:     "/doctor/bin",
+				FallbackReason: "orchestrator PATH is unavailable because no running instance was reachable",
 			}, "codex", "codex binary", "--version", "install codex")
 			if got.Status != tt.want {
 				t.Fatalf("Status = %s, want %s", got.Status, tt.want)
@@ -156,14 +161,167 @@ func TestCheckDoctorBinary(t *testing.T) {
 	}
 }
 
+func TestDoctorBinaryResolutionUsesSelectedEnvironment(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		binary               string
+		doctorPath           string
+		orchestratorPath     string
+		reachableErr         error
+		wantSource           string
+		wantCheckedPath      string
+		wantDiffer           bool
+		wantDetail           []string
+		wantOrchestratorPath string
+	}{
+		{
+			name:                 "agreeing environments use orchestrator",
+			binary:               "codex",
+			doctorPath:           "/shared/bin",
+			orchestratorPath:     "/shared/bin",
+			wantSource:           doctorBinaryPathSourceOrchestrator,
+			wantCheckedPath:      "/shared/bin",
+			wantDetail:           []string{"checked PATH: /shared/bin (orchestrator)"},
+			wantOrchestratorPath: "/shared/bin",
+		},
+		{
+			name:                 "binary present only in differing orchestrator environment",
+			binary:               "claude",
+			doctorPath:           "/doctor/bin",
+			orchestratorPath:     "/orchestrator/bin",
+			wantSource:           doctorBinaryPathSourceOrchestrator,
+			wantCheckedPath:      "/orchestrator/bin",
+			wantDiffer:           true,
+			wantDetail:           []string{"/orchestrator/bin/claude is runnable", "doctor PATH: /doctor/bin", "doctor PATH differs from orchestrator PATH"},
+			wantOrchestratorPath: "/orchestrator/bin",
+		},
+		{
+			name:            "no reachable instance falls back to doctor",
+			binary:          "git",
+			doctorPath:      "/doctor/bin",
+			reachableErr:    errors.New("connection refused"),
+			wantSource:      doctorBinaryPathSourceDoctor,
+			wantCheckedPath: "/doctor/bin",
+			wantDetail:      []string{"checked PATH: /doctor/bin (doctor fallback)", "no running instance was reachable"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := doctorDeps{
+				lookupEnv: func(key string) string {
+					if key != "PATH" {
+						t.Fatalf("lookupEnv(%q), want PATH", key)
+					}
+					return tt.doctorPath
+				},
+				httpDo: func(*http.Request) (*http.Response, error) {
+					if tt.reachableErr != nil {
+						return nil, tt.reachableErr
+					}
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Body: io.NopCloser(strings.NewReader(
+							`{"status":"ok","mode":"running","checks":{"hub":"configured","store":"configured","registry":"configured","connector":"configured"},"environment":{"path":"` + tt.orchestratorPath + `"}}`,
+						)),
+					}, nil
+				},
+				resolveCommandInDir: func(_ context.Context, _ string, environment []string, binary string) (string, error) {
+					if binary != tt.binary {
+						t.Fatalf("binary = %q, want %q", binary, tt.binary)
+					}
+					wantEnvironment := []string{"PATH=" + tt.wantCheckedPath}
+					if !slices.Equal(environment, wantEnvironment) {
+						t.Fatalf("environment = %#v, want %#v", environment, wantEnvironment)
+					}
+					return filepath.Join(tt.wantCheckedPath, binary), nil
+				},
+				runCommand: func(context.Context, string, ...string) error {
+					return nil
+				},
+			}
+			port := 4100
+			environment := resolveDoctorBinaryEnvironment(context.Background(), globalconfig.PathResolution{Path: "/config/global.yaml"}, BootConfig{Host: "127.0.0.1", Port: &port}, deps)
+			check := checkDoctorBinary(context.Background(), deps, environment, tt.binary, tt.binary+" binary", "--version", "install "+tt.binary)
+
+			if check.Status != doctorOK {
+				t.Fatalf("Status = %s, want %s", check.Status, doctorOK)
+			}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(check.Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", check.Detail, want)
+				}
+			}
+			if check.BinaryResolution == nil {
+				t.Fatal("BinaryResolution = nil")
+			}
+			if check.BinaryResolution.Source != tt.wantSource ||
+				check.BinaryResolution.CheckedPath != tt.wantCheckedPath ||
+				check.BinaryResolution.OrchestratorPath != tt.wantOrchestratorPath ||
+				check.BinaryResolution.EnvironmentsDiffer != tt.wantDiffer {
+				t.Fatalf("BinaryResolution = %#v", check.BinaryResolution)
+			}
+
+			raw, err := json.Marshal(check)
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+			var output struct {
+				BinaryResolution doctorBinaryResolution `json:"binary_resolution"`
+			}
+			if err := json.Unmarshal(raw, &output); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			if output.BinaryResolution.Source != tt.wantSource ||
+				output.BinaryResolution.CheckedPath != tt.wantCheckedPath ||
+				output.BinaryResolution.EnvironmentsDiffer != tt.wantDiffer {
+				t.Fatalf("JSON binary_resolution = %#v", output.BinaryResolution)
+			}
+		})
+	}
+}
+
+func TestDoctorLiveBootUsesConfiguredPortForZero(t *testing.T) {
+	t.Parallel()
+
+	configuredPort := 4100
+	zero := 0
+	explicit := 4200
+	tests := []struct {
+		name string
+		boot BootConfig
+		cfg  *globalconfig.Config
+		want int
+	}{
+		{name: "explicit doctor port", boot: BootConfig{Port: &explicit}, cfg: &globalconfig.Config{Port: &configuredPort}, want: explicit},
+		{name: "zero doctor port uses configured live port", boot: BootConfig{Port: &zero}, cfg: &globalconfig.Config{Port: &configuredPort}, want: configuredPort},
+		{name: "zero doctor port uses default live port", boot: BootConfig{Port: &zero}, cfg: &globalconfig.Config{}, want: defaultWebPort},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := doctorLiveBoot(tt.boot, tt.cfg)
+			if doctorServerPort(got) != tt.want {
+				t.Fatalf("doctorServerPort() = %d, want %d", doctorServerPort(got), tt.want)
+			}
+		})
+	}
+}
+
 func TestCheckDoctorClaudeCodeUsesVersionAndHint(t *testing.T) {
 	t.Parallel()
 
 	var gotArgs []string
 	got := checkDoctorClaudeCode(context.Background(), doctorDeps{
-		lookPath: func(binary string) (string, error) {
+		resolveCommandInDir: func(_ context.Context, _ string, _ []string, binary string) (string, error) {
 			if binary != "claude" {
-				t.Fatalf("lookPath(%q), want claude", binary)
+				t.Fatalf("resolveCommandInDir(%q), want claude", binary)
 			}
 			return "/usr/bin/claude", nil
 		},
@@ -174,7 +332,7 @@ func TestCheckDoctorClaudeCodeUsesVersionAndHint(t *testing.T) {
 			gotArgs = append([]string{}, args...)
 			return errors.New("not logged in")
 		},
-	})
+	}, doctorBinaryEnvironment{Source: doctorBinaryPathSourceDoctor, CheckedPath: "/usr/bin", DoctorPath: "/usr/bin"})
 
 	if got.Status != doctorFail {
 		t.Fatalf("Status = %s, want %s", got.Status, doctorFail)
@@ -225,9 +383,9 @@ func TestCheckDoctorCodexRequiresInitializeHandshake(t *testing.T) {
 
 			probes := 0
 			check := checkDoctorCodex(context.Background(), doctorDeps{
-				lookPath: func(binary string) (string, error) {
+				resolveCommandInDir: func(_ context.Context, _ string, _ []string, binary string) (string, error) {
 					if binary != "codex" {
-						t.Fatalf("lookPath(%q), want codex", binary)
+						t.Fatalf("resolveCommandInDir(%q), want codex", binary)
 					}
 					return "/usr/bin/codex", nil
 				},
@@ -244,7 +402,7 @@ func TestCheckDoctorCodexRequiresInitializeHandshake(t *testing.T) {
 					}
 					return tt.initializeErr
 				},
-			})
+			}, doctorBinaryEnvironment{Source: doctorBinaryPathSourceDoctor, CheckedPath: "/usr/bin", DoctorPath: "/usr/bin"})
 			if check.Status != tt.wantStatus || !strings.Contains(check.Detail, tt.wantDetail) {
 				t.Fatalf("check = %#v, want %s containing %q", check, tt.wantStatus, tt.wantDetail)
 			}
@@ -4463,10 +4621,6 @@ func TestDoctorCommandExitStatus(t *testing.T) {
 			if tt.deps.runCommand != nil {
 				deps.runCommand = tt.deps.runCommand
 			}
-			if tt.deps.lookPath != nil {
-				deps.lookPath = tt.deps.lookPath
-			}
-
 			cmd := newDoctorCommandWithDeps(&configPath, &env, &logLevel, &host, &port, opts, deps)
 			cmd.SetArgs(tt.args)
 			var stdout bytes.Buffer
@@ -5401,10 +5555,10 @@ func successfulDoctorDeps() doctorDeps {
 			if key == "GITHUB_TOKEN" {
 				return "token"
 			}
+			if key == "PATH" {
+				return "/usr/bin"
+			}
 			return ""
-		},
-		lookPath: func(binary string) (string, error) {
-			return "/usr/bin/" + binary, nil
 		},
 		runCommand: func(context.Context, string, ...string) error {
 			return nil

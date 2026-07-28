@@ -50,6 +50,7 @@ type doctorCheck struct {
 	Status                    doctorStatus                               `json:"status"`
 	Detail                    string                                     `json:"detail"`
 	Hint                      string                                     `json:"hint,omitempty"`
+	BinaryResolution          *doctorBinaryResolution                    `json:"binary_resolution,omitempty"`
 	WorkflowSkillSuggestions  []doctorWorkflowSkillSuggestion            `json:"workflow_skill_suggestions,omitempty"`
 	AutoPromoteCandidates     []doctorAutoPromoteCandidateDiagnostic     `json:"auto_promote_candidates,omitempty"`
 	BlockedRecoveryCandidates []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_recovery_candidates,omitempty"`
@@ -224,7 +225,6 @@ type doctorTelemetryStore interface {
 type doctorDeps struct {
 	loadWorkflow         func(string) (workflowconfig.Workflow, error)
 	lookupEnv            func(string) string
-	lookPath             func(string) (string, error)
 	runCommand           func(context.Context, string, ...string) error
 	resolveCommandInDir  func(context.Context, string, []string, string) (string, error)
 	runCommandInDir      func(context.Context, string, []string, string, ...string) error
@@ -430,17 +430,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		report.Add(check)
 	}
 
+	liveBoot := doctorLiveBoot(boot, global)
+	binaryEnvironment := resolveDoctorBinaryEnvironment(ctx, resolution, liveBoot, deps)
 	jobs := []doctorCheckJob{}
 	if global != nil {
 		globalConfig := *global
-		workflowDriftBoot := boot
-		if doctorServerPort(workflowDriftBoot) == 0 {
-			livePort := defaultWebPort
-			if globalConfig.Port != nil {
-				livePort = *globalConfig.Port
-			}
-			workflowDriftBoot.Port = &livePort
-		}
+		workflowDriftBoot := liveBoot
 		githubToken := runtime.GitHubToken
 		jobs = append(jobs, doctorCheckJob{
 			Name: "Update checking",
@@ -518,7 +513,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			},
 		},
 	)
-	jobs = append(jobs, doctorAgentBinaryCheckJobs(ctx, global, deps)...)
+	jobs = append(jobs, doctorAgentBinaryCheckJobs(ctx, global, deps, binaryEnvironment)...)
 	jobs = append(jobs,
 		doctorCheckJob{
 			Name: "GitHub token",
@@ -535,7 +530,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		doctorCheckJob{
 			Name: "git binary",
 			Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorGit(jobCtx, deps)}
+				return []doctorCheck{checkDoctorGit(jobCtx, deps, binaryEnvironment)}
 			},
 		},
 	)
@@ -549,6 +544,18 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	}
 
 	return report
+}
+
+func doctorLiveBoot(boot BootConfig, cfg *globalconfig.Config) BootConfig {
+	if doctorServerPort(boot) != 0 {
+		return boot
+	}
+	port := defaultWebPort
+	if cfg != nil && cfg.Port != nil {
+		port = *cfg.Port
+	}
+	boot.Port = &port
+	return boot
 }
 
 func checkDoctorUpdateRuntime(ctx context.Context, cfg globalconfig.Update, boot BootConfig, deps doctorDeps) doctorCheck {
@@ -1049,9 +1056,6 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.lookupEnv == nil {
 		d.lookupEnv = defaults.lookupEnv
 	}
-	if d.lookPath == nil {
-		d.lookPath = defaults.lookPath
-	}
 	if d.runCommand == nil {
 		d.runCommand = defaults.runCommand
 	}
@@ -1125,7 +1129,6 @@ func defaultDoctorDeps() doctorDeps {
 	return doctorDeps{
 		loadWorkflow:         workflowconfig.LoadWorkflow,
 		lookupEnv:            os.Getenv,
-		lookPath:             exec.LookPath,
 		runCommand:           runDoctorCommand,
 		resolveCommandInDir:  resolveDoctorCommandInDir,
 		runCommandInDir:      runDoctorCommandInDir,
