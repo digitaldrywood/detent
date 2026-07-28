@@ -35,8 +35,9 @@ type poolContentionQueryer interface {
 }
 
 type poolCapacitySnapshot struct {
-	Pool    string   `json:"pool"`
-	Holders []string `json:"holders"`
+	Pool            string   `json:"pool"`
+	Holders         []string `json:"holders"`
+	GlobalAvailable *int     `json:"global_available"`
 }
 
 func QueryCrossClassPoolContention(

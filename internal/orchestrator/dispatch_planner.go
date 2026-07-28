@@ -574,8 +574,17 @@ func (p dispatchPlanner) dispatchableIssueDecision(
 	if p.budgetCooldownActive(state, issue.ID, now) {
 		return dispatchableDecision{reason: dispatchSkipBudgetCooldown}
 	}
-	if !p.slotsAvailable(issue, state, preferredWorkerHost) {
+	if p.availableSlots(state) == 0 {
+		if p.rateWindowBackpressureActive(state) {
+			return dispatchableDecision{reason: dispatchSkipRateWindowBackpressure}
+		}
+		return dispatchableDecision{reason: dispatchSkipGlobalCapacityFull}
+	}
+	if !p.stateSlotsAvailable(issue, state) {
 		return dispatchableDecision{reason: dispatchSkipLocalSlotUnavailable}
+	}
+	if !p.workerSlotsAvailable(state, preferredWorkerHost) {
+		return dispatchableDecision{reason: dispatchSkipWorkerHostUnavailable}
 	}
 	return dispatchableDecision{dispatchable: true}
 }

@@ -2,10 +2,8 @@ package cli
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -13,101 +11,122 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workload"
 )
 
-func TestCheckDoctorAgentPools(t *testing.T) {
+func TestDoctorCapacityConstraintBindingRecommendations(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, 7, 27, 20, 0, 0, 0, time.UTC)
-	localWorkflow := workflowconfig.Workflow{Config: workflowconfig.Config{
-		Gate: gate.Config{Kind: gate.KindCommand, Run: "make check"},
-	}}
-	cloudWorkflow := workflowconfig.Workflow{Config: workflowconfig.Config{
-		Gate: gate.Config{Kind: gate.KindArtifact},
-	}}
-
 	tests := []struct {
-		name          string
-		cfg           globalconfig.Config
-		workflows     map[string]workflowconfig.Workflow
-		waiting       string
-		holders       string
-		wantStatus    doctorStatus
-		wantSubstring string
+		name       string
+		cfg        globalconfig.Config
+		projects   []doctorWorkloadProject
+		waits      []store.CapacityConstraintWait
+		contention []store.CrossClassPoolContention
+		wantStatus doctorStatus
+		want       []string
+		notWant    []string
+		wantHint   string
 	}{
 		{
-			name: "one workload class",
+			name: "mixed class pool contention preserves split",
 			cfg: doctorAgentPoolsTestConfig([]globalconfig.Project{
-				{ID: "detent", Workflow: "detent", Weight: 1},
-				{ID: "gopher-ai", Workflow: "gopher-ai", Weight: 1},
+				{ID: "detent"},
+				{ID: "video"},
 			}),
-			workflows: map[string]workflowconfig.Workflow{
-				"detent":    localWorkflow,
-				"gopher-ai": localWorkflow,
+			projects: []doctorWorkloadProject{
+				doctorCapacityTestProject("detent", "default", workload.ClassLocalHeavy, 5),
+				doctorCapacityTestProject("video", "default", workload.ClassCloudOnly, 5),
 			},
-			wantStatus:    doctorOK,
-			wantSubstring: "one workload class",
+			waits: []store.CapacityConstraintWait{
+				{ProjectID: "video", WorkloadClass: "cloud-only", Pool: "default", Reason: store.CapacityConstraintPool, WaitCount: 12},
+				{ProjectID: "video", WorkloadClass: "cloud-only", Pool: "default", Reason: store.CapacityConstraintProject, WaitCount: 2},
+			},
+			contention: []store.CrossClassPoolContention{
+				{Pool: "default", WaitingClass: "cloud-only", HoldingClass: "local-heavy", WaitCount: 12},
+			},
+			wantStatus: doctorWarn,
+			want: []string{
+				"video (cloud-only) blocked 14x in 7d",
+				"pool waits",
+				"<- binding",
+				`2 workload classes share pool "default"`,
+				"suggested:",
+			},
+			wantHint: "detent fix agent-pools",
 		},
 		{
-			name: "mixed classes without contention",
-			cfg: doctorAgentPoolsTestConfig([]globalconfig.Project{
-				{ID: "detent", Workflow: "detent", Weight: 1},
-				{ID: "video", Workflow: "video", Weight: 1},
-			}),
-			workflows: map[string]workflowconfig.Workflow{
-				"detent": localWorkflow,
-				"video":  cloudWorkflow,
-			},
-			wantStatus:    doctorOK,
-			wantSubstring: "no cross-class pool contention",
-		},
-		{
-			name: "same class contention",
-			cfg: doctorAgentPoolsTestConfig([]globalconfig.Project{
-				{ID: "detent", Workflow: "detent", Weight: 1},
-				{ID: "video", Workflow: "video", Weight: 1},
-				{ID: "podcast", Workflow: "podcast", Weight: 1},
-			}),
-			workflows: map[string]workflowconfig.Workflow{
-				"detent":  localWorkflow,
-				"video":   cloudWorkflow,
-				"podcast": cloudWorkflow,
-			},
-			waiting:       "video",
-			holders:       `["podcast"]`,
-			wantStatus:    doctorOK,
-			wantSubstring: "no cross-class pool contention",
-		},
-		{
-			name: "cross class contention",
-			cfg: doctorAgentPoolsTestConfig([]globalconfig.Project{
-				{ID: "detent", Workflow: "detent", Weight: 1},
-				{ID: "video", Workflow: "video", Weight: 1},
-			}),
-			workflows: map[string]workflowconfig.Workflow{
-				"detent": localWorkflow,
-				"video":  cloudWorkflow,
-			},
-			waiting:       "video",
-			holders:       `["detent"]`,
-			wantStatus:    doctorWarn,
-			wantSubstring: "cloud-only waited 1 time(s); local-heavy held a slot",
-		},
-		{
-			name: "existing pools",
+			name: "single class pool contention raises capacity",
 			cfg: func() globalconfig.Config {
-				cfg := doctorAgentPoolsTestConfig([]globalconfig.Project{
-					{ID: "detent", Workflow: "detent", Pool: "code", Weight: 1},
-					{ID: "video", Workflow: "video", Pool: "cloud", Weight: 1},
-				})
-				cfg.Global.AgentPools = []globalconfig.AgentPool{
-					{Name: "code", MaxConcurrentAgents: 5},
-					{Name: "cloud", MaxConcurrentAgents: 10},
-				}
+				cfg := doctorAgentPoolsTestConfig([]globalconfig.Project{{ID: "video", Pool: "cloud"}})
+				cfg.Global.AgentPools = []globalconfig.AgentPool{{Name: "cloud", MaxConcurrentAgents: 5}}
 				return cfg
 			}(),
-			wantStatus:    doctorOK,
-			wantSubstring: "already configured",
+			projects: []doctorWorkloadProject{
+				doctorCapacityTestProject("video", "cloud", workload.ClassCloudOnly, 5),
+			},
+			waits: []store.CapacityConstraintWait{
+				{ProjectID: "video", WorkloadClass: "cloud-only", Pool: "cloud", Reason: store.CapacityConstraintPool, WaitCount: 9},
+			},
+			wantStatus: doctorWarn,
+			want: []string{
+				`raise global.agent_pools["cloud"].max_concurrent_agents`,
+				"one workload class",
+			},
+			notWant: []string{"split pool", "suggested:"},
+		},
+		{
+			name:     "project cap",
+			cfg:      doctorAgentPoolsTestConfig([]globalconfig.Project{{ID: "video"}}),
+			projects: []doctorWorkloadProject{doctorCapacityTestProject("video", "default", workload.ClassCloudOnly, 5)},
+			waits: []store.CapacityConstraintWait{
+				{ProjectID: "video", WorkloadClass: "cloud-only", Pool: "default", Reason: store.CapacityConstraintProject, WaitCount: 8},
+				{ProjectID: "video", WorkloadClass: "cloud-only", Pool: "default", Reason: store.CapacityConstraintPool, WaitCount: 1},
+			},
+			wantStatus: doctorWarn,
+			want:       []string{`raise project "video" agent.max_concurrent_agents`, "pool cap is not throttling"},
+		},
+		{
+			name:     "lane cap names lane",
+			cfg:      doctorAgentPoolsTestConfig([]globalconfig.Project{{ID: "video"}}),
+			projects: []doctorWorkloadProject{doctorCapacityTestProject("video", "default", workload.ClassCloudOnly, 5)},
+			waits: []store.CapacityConstraintWait{
+				{ProjectID: "video", WorkloadClass: "cloud-only", Pool: "default", Lane: "In Progress", Reason: store.CapacityConstraintLane, WaitCount: 11},
+				{ProjectID: "video", WorkloadClass: "cloud-only", Pool: "default", Reason: store.CapacityConstraintProject, WaitCount: 2},
+			},
+			wantStatus: doctorWarn,
+			want: []string{
+				"lane_capacity_full (In Progress)",
+				`raise project "video" agent.max_concurrent_agents_by_state.In Progress`,
+			},
+		},
+		{
+			name:     "worker host cap",
+			cfg:      doctorAgentPoolsTestConfig([]globalconfig.Project{{ID: "video"}}),
+			projects: []doctorWorkloadProject{doctorCapacityTestProject("video", "default", workload.ClassCloudOnly, 5)},
+			waits: []store.CapacityConstraintWait{
+				{ProjectID: "video", WorkloadClass: "cloud-only", Pool: "default", Reason: store.CapacityConstraintWorkerHost, WaitCount: 7},
+			},
+			wantStatus: doctorWarn,
+			want:       []string{`raise project "video" worker.max_concurrent_agents_per_host`},
+		},
+		{
+			name:     "rate window recommends no config change",
+			cfg:      doctorAgentPoolsTestConfig([]globalconfig.Project{{ID: "video"}}),
+			projects: []doctorWorkloadProject{doctorCapacityTestProject("video", "default", workload.ClassCloudOnly, 5)},
+			waits: []store.CapacityConstraintWait{
+				{ProjectID: "video", WorkloadClass: "cloud-only", Pool: "default", Reason: store.CapacityConstraintRateWindow, WaitCount: 6},
+			},
+			wantStatus: doctorWarn,
+			want:       []string{"provider rate-window backpressure is binding", "no config change is recommended"},
+			notWant:    []string{"raise ", "split "},
+		},
+		{
+			name:       "nothing binding stays silent",
+			cfg:        doctorAgentPoolsTestConfig([]globalconfig.Project{{ID: "video"}}),
+			projects:   []doctorWorkloadProject{doctorCapacityTestProject("video", "default", workload.ClassCloudOnly, 5)},
+			wantStatus: doctorOK,
+			want:       []string{"no binding capacity constraint detected"},
 		},
 		{
 			name: "elastic pools",
@@ -129,59 +148,139 @@ func TestCheckDoctorAgentPools(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			dir := t.TempDir()
-			configPath := filepath.Join(dir, "global.yaml")
-			dbPath := filepath.Join(dir, "detent.db")
-			backend, err := store.Open(t.Context(), store.Config{Path: dbPath})
-			if err != nil {
-				t.Fatalf("store.Open() error = %v", err)
+			check := newDoctorCapacityCheck(tt.cfg, tt.projects, tt.waits, tt.contention, nil)
+			if check.Status != tt.wantStatus {
+				t.Fatalf("check status = %s, want %s; detail:\n%s", check.Status, tt.wantStatus, check.Detail)
 			}
-			if tt.waiting != "" {
-				if _, err := backend.RecordSchedulerDecision(t.Context(), store.SchedulerDecision{
-					ProjectID:            tt.waiting,
-					Result:               store.SchedulerDecisionResultSkipped,
-					Reason:               "reserved_for_higher_priority_project",
-					DecisionAt:           now.Add(-time.Hour),
-					WaitReason:           "reserved_for_higher_priority_project",
-					CapacitySnapshotJSON: `{"pool":"default","global_available":0,"holders":` + tt.holders + `}`,
-				}); err != nil {
-					t.Fatalf("RecordSchedulerDecision() error = %v", err)
+			for _, want := range tt.want {
+				if !strings.Contains(check.Detail, want) {
+					t.Fatalf("detail missing %q:\n%s", want, check.Detail)
 				}
 			}
-			if err := backend.Close(); err != nil {
-				t.Fatalf("Close() error = %v", err)
-			}
-
-			deps := doctorDeps{
-				loadWorkflow: func(path string) (workflowconfig.Workflow, error) {
-					return tt.workflows[path], nil
-				},
-				openSQLiteReadOnly: openDoctorSQLiteReadOnly,
-				now:                func() time.Time { return now },
-			}.withDefaults()
-			check := checkDoctorAgentPools(
-				context.Background(),
-				globalconfig.PathResolution{Path: configPath},
-				tt.cfg,
-				deps,
-			)
-			if check.Status != tt.wantStatus || !strings.Contains(check.Detail, tt.wantSubstring) {
-				t.Fatalf("check = %#v, want status %s containing %q", check, tt.wantStatus, tt.wantSubstring)
-			}
-			if tt.wantStatus == doctorWarn {
-				for _, want := range []string{
-					"local-heavy: detent",
-					"cloud-only:  video",
-					"pool capacity 1 times in 7d",
-					"max_concurrent_agents: 5",
-					"max_concurrent_agents: 10 # tune to your provider limits",
-				} {
-					if !strings.Contains(check.Detail, want) {
-						t.Fatalf("detail missing %q:\n%s", want, check.Detail)
-					}
+			for _, notWant := range tt.notWant {
+				if strings.Contains(check.Detail, notWant) {
+					t.Fatalf("detail unexpectedly contains %q:\n%s", notWant, check.Detail)
 				}
+			}
+			if tt.wantHint != "" && !strings.Contains(check.Hint, tt.wantHint) {
+				t.Fatalf("hint = %q, want containing %q", check.Hint, tt.wantHint)
 			}
 		})
+	}
+}
+
+func TestDoctorPoolCoherenceFindings(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		cfg      globalconfig.Config
+		projects []doctorWorkloadProject
+		want     string
+	}{
+		{
+			name: "pool cannot fill",
+			cfg: globalconfig.Config{
+				Global: globalconfig.Settings{
+					MaxConcurrentAgents: 5,
+					AgentPools:          []globalconfig.AgentPool{{Name: "cloud", MaxConcurrentAgents: 10}},
+				},
+			},
+			projects: []doctorWorkloadProject{
+				doctorCapacityTestProject("video", "cloud", workload.ClassCloudOnly, 2),
+				doctorCapacityTestProject("podcast", "cloud", workload.ClassCloudOnly, 3),
+			},
+			want: `pool "cloud" capacity 10 exceeds its 2 member project cap total 5`,
+		},
+		{
+			name: "project cap is dead",
+			cfg: globalconfig.Config{
+				Global: globalconfig.Settings{
+					MaxConcurrentAgents: 5,
+					AgentPools:          []globalconfig.AgentPool{{Name: "cloud", MaxConcurrentAgents: 5}},
+				},
+			},
+			projects: []doctorWorkloadProject{
+				doctorCapacityTestProject("video", "cloud", workload.ClassCloudOnly, 8),
+			},
+			want: `project "video" agent.max_concurrent_agents=8 exceeds pool "cloud" capacity 5`,
+		},
+		{
+			name: "active lane binds below project",
+			cfg: globalconfig.Config{
+				Global: globalconfig.Settings{MaxConcurrentAgents: 5},
+			},
+			projects: []doctorWorkloadProject{
+				func() doctorWorkloadProject {
+					project := doctorCapacityTestProject("video", "default", workload.ClassCloudOnly, 5)
+					project.Workflow.Tracker.ActiveStates = []string{"In Progress", "Merging"}
+					project.Workflow.Agent.MaxConcurrentAgentsByState = map[string]int{
+						"In Progress": 2,
+						"Merging":     1,
+					}
+					return project
+				}(),
+			},
+			want: `project "video" active lane "In Progress" cap 2 binds below agent.max_concurrent_agents=5`,
+		},
+		{
+			name: "serialized merging lane is coherent",
+			cfg: globalconfig.Config{
+				Global: globalconfig.Settings{MaxConcurrentAgents: 5},
+			},
+			projects: []doctorWorkloadProject{
+				func() doctorWorkloadProject {
+					project := doctorCapacityTestProject("detent", "default", workload.ClassLocalHeavy, 5)
+					project.Workflow.Tracker.ActiveStates = []string{"Merging"}
+					project.Workflow.Agent.MaxConcurrentAgentsByState = map[string]int{"Merging": 1}
+					return project
+				}(),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			findings := doctorPoolCoherenceFindings(tt.cfg, tt.projects)
+			detail := strings.Join(findings, "\n")
+			if tt.want == "" {
+				if len(findings) != 0 {
+					t.Fatalf("findings = %#v, want none", findings)
+				}
+				return
+			}
+			if !strings.Contains(detail, tt.want) {
+				t.Fatalf("findings missing %q:\n%s", tt.want, detail)
+			}
+		})
+	}
+}
+
+func TestCheckDoctorAgentPoolsReportsStaticFindingsWithoutTelemetry(t *testing.T) {
+	t.Parallel()
+
+	cfg := doctorAgentPoolsTestConfig([]globalconfig.Project{{ID: "video", Workflow: "video"}})
+	deps := doctorDeps{
+		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+			return workflowconfig.Workflow{Config: workflowconfig.Config{
+				Agent: workflowconfig.Agent{MaxConcurrentAgents: 2},
+				Gate:  gate.Config{Kind: gate.KindArtifact},
+			}}, nil
+		},
+		openSQLiteReadOnly: func(context.Context, string) (doctorTelemetryStore, error) {
+			return nil, errDoctorTelemetryStoreUnavailable
+		},
+	}
+	check := checkDoctorAgentPools(
+		t.Context(),
+		globalconfig.PathResolution{Path: "/config/global.yaml"},
+		cfg,
+		deps,
+	)
+	if check.Status != doctorWarn || !strings.Contains(check.Detail, "pool can never fill") {
+		t.Fatalf("check = %#v, want static warning without telemetry", check)
 	}
 }
 
@@ -254,5 +353,21 @@ func doctorAgentPoolsTestConfig(projects []globalconfig.Project) globalconfig.Co
 			Scheduling:          globalconfig.SchedulingWeighted,
 		},
 		Projects: projects,
+	}
+}
+
+func doctorCapacityTestProject(
+	id string,
+	pool string,
+	class workload.Class,
+	maxConcurrentAgents int,
+) doctorWorkloadProject {
+	return doctorWorkloadProject{
+		ID:    id,
+		Pool:  pool,
+		Class: class,
+		Workflow: workflowconfig.Config{
+			Agent: workflowconfig.Agent{MaxConcurrentAgents: maxConcurrentAgents},
+		},
 	}
 }
