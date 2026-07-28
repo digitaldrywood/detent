@@ -429,7 +429,8 @@ func checkDoctorCodex(ctx context.Context, deps doctorDeps, environment doctorBi
 			Hint:   hint,
 		})
 	}
-	if err := deps.runCommand(ctx, path, "--version"); err != nil {
+	commandEnvironment := doctorBinaryCommandEnvironment(environment)
+	if err := deps.runCommandInDir(ctx, ".", commandEnvironment, path, "--version"); err != nil {
 		return doctorBinaryCheck(environment, doctorCheck{
 			Name:   "codex binary",
 			Status: doctorFail,
@@ -441,7 +442,7 @@ func checkDoctorCodex(ctx context.Context, deps doctorDeps, environment doctorBi
 	if initialize == nil {
 		initialize = probeDoctorCodexInitialize
 	}
-	if err := initialize(ctx, path); err != nil {
+	if err := initialize(ctx, path, commandEnvironment); err != nil {
 		return doctorBinaryCheck(environment, doctorCheck{
 			Name:   "codex binary",
 			Status: doctorFail,
@@ -456,9 +457,11 @@ func checkDoctorCodex(ctx context.Context, deps doctorDeps, environment doctorBi
 	})
 }
 
-func probeDoctorCodexInitialize(ctx context.Context, path string) error {
+func probeDoctorCodexInitialize(ctx context.Context, path string, environment []string) error {
 	factory, err := codex.NewLocalTransportFactory(func(commandCtx context.Context) *exec.Cmd {
-		return exec.CommandContext(commandCtx, path, "app-server")
+		cmd := exec.CommandContext(commandCtx, path, "app-server")
+		cmd.Env = doctorCommandEnvironment(os.Environ(), environment)
+		return cmd
 	})
 	if err != nil {
 		return err
@@ -552,7 +555,7 @@ func checkDoctorBinary(ctx context.Context, deps doctorDeps, environment doctorB
 			Hint:   hint,
 		})
 	}
-	if err := deps.runCommand(ctx, path, arg); err != nil {
+	if err := deps.runCommandInDir(ctx, ".", doctorBinaryCommandEnvironment(environment), path, arg); err != nil {
 		return doctorBinaryCheck(environment, doctorCheck{
 			Name:   name,
 			Status: doctorFail,
@@ -569,7 +572,14 @@ func checkDoctorBinary(ctx context.Context, deps doctorDeps, environment doctorB
 }
 
 func resolveDoctorBinary(ctx context.Context, deps doctorDeps, environment doctorBinaryEnvironment, binary string) (string, error) {
-	return deps.resolveCommandInDir(ctx, ".", []string{"PATH=" + environment.CheckedPath}, binary)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return deps.resolveCommandOnPath(environment.CheckedPath, binary)
+}
+
+func doctorBinaryCommandEnvironment(environment doctorBinaryEnvironment) []string {
+	return []string{"PATH=" + environment.CheckedPath}
 }
 
 func doctorBinaryCheck(environment doctorBinaryEnvironment, check doctorCheck) doctorCheck {

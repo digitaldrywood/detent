@@ -225,10 +225,10 @@ type doctorTelemetryStore interface {
 type doctorDeps struct {
 	loadWorkflow         func(string) (workflowconfig.Workflow, error)
 	lookupEnv            func(string) string
-	runCommand           func(context.Context, string, ...string) error
+	resolveCommandOnPath func(string, string) (string, error)
 	resolveCommandInDir  func(context.Context, string, []string, string) (string, error)
 	runCommandInDir      func(context.Context, string, []string, string, ...string) error
-	codexInitialize      func(context.Context, string) error
+	codexInitialize      func(context.Context, string, []string) error
 	httpDo               func(*http.Request) (*http.Response, error)
 	githubScopes         func(context.Context, string) ([]string, error)
 	githubReadiness      doctorGitHubReadinessFunc
@@ -1056,8 +1056,8 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.lookupEnv == nil {
 		d.lookupEnv = defaults.lookupEnv
 	}
-	if d.runCommand == nil {
-		d.runCommand = defaults.runCommand
+	if d.resolveCommandOnPath == nil {
+		d.resolveCommandOnPath = defaults.resolveCommandOnPath
 	}
 	if d.resolveCommandInDir == nil {
 		d.resolveCommandInDir = defaults.resolveCommandInDir
@@ -1129,7 +1129,7 @@ func defaultDoctorDeps() doctorDeps {
 	return doctorDeps{
 		loadWorkflow:         workflowconfig.LoadWorkflow,
 		lookupEnv:            os.Getenv,
-		runCommand:           runDoctorCommand,
+		resolveCommandOnPath: resolveDoctorCommandOnPath,
 		resolveCommandInDir:  resolveDoctorCommandInDir,
 		runCommandInDir:      runDoctorCommandInDir,
 		codexInitialize:      probeDoctorCodexInitialize,
@@ -1185,22 +1185,38 @@ func doctorSQLitePingError(err, closeErr error) error {
 	return fmt.Errorf("ping sqlite database: %w", err)
 }
 
-func runDoctorCommand(ctx context.Context, path string, args ...string) error {
-	commandCtx, cancel := context.WithTimeout(ctx, doctorCommandTimeout)
-	defer cancel()
+func resolveDoctorCommandOnPath(pathValue string, executable string) (string, error) {
+	if runtime.GOOS == "windows" {
+		dir, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		return resolveDoctorWindowsCommand(dir, doctorCommandEnvironment(os.Environ(), []string{"PATH=" + pathValue}), executable)
+	}
+	if strings.ContainsRune(executable, os.PathSeparator) {
+		if doctorExecutablePath(executable) {
+			return executable, nil
+		}
+		return "", fmt.Errorf("executable %q not found", executable)
+	}
+	for _, dir := range filepath.SplitList(pathValue) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, executable)
+		if doctorExecutablePath(candidate) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("executable %q not found on configured PATH", executable)
+}
 
-	cmd := exec.CommandContext(commandCtx, path, args...) // #nosec G204 -- doctor runs fixed PATH-resolved preflight binaries.
-	output, err := cmd.CombinedOutput()
-	if commandCtx.Err() != nil {
-		return commandCtx.Err()
+func doctorExecutablePath(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
 	}
-	if err == nil {
-		return nil
-	}
-	if detail := strings.TrimSpace(string(output)); detail != "" {
-		return fmt.Errorf("%w: %s", err, detail)
-	}
-	return err
+	return info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }
 
 func resolveDoctorCommandInDir(ctx context.Context, dir string, environment []string, executable string) (string, error) {
