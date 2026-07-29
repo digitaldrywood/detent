@@ -405,7 +405,6 @@ func (o *Orchestrator) consecutiveMergeRevocations(
 			IssueID:    strings.TrimSpace(issue.ID),
 			Identifier: strings.TrimSpace(issue.Identifier),
 			IssueURL:   strings.TrimSpace(issue.URL),
-			WorkerType: "merge",
 			Limit:      maxIdenticalMergeRevocations + 1,
 		})
 		if err != nil {

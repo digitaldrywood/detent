@@ -490,9 +490,9 @@ func TestAutoPromoteParksIssueAfterRepeatedIdenticalMergeRevocations(t *testing.
 		}
 	}
 	if len(attempts.historyQueries) != 1 ||
-		attempts.historyQueries[0].WorkerType != "merge" ||
+		attempts.historyQueries[0].WorkerType != "" ||
 		attempts.historyQueries[0].Limit != maxIdenticalMergeRevocations+1 {
-		t.Fatalf("history queries = %#v, want bounded revocation lookup", attempts.historyQueries)
+		t.Fatalf("history queries = %#v, want bounded all-worker lookup", attempts.historyQueries)
 	}
 }
 
