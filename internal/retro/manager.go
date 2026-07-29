@@ -12,7 +12,10 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/provenance"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 const (
@@ -49,6 +52,7 @@ type Settings struct {
 	Config        Config
 	ProjectIssues intake.IssueStore
 	ProductIssues intake.IssueStore
+	Metrics       workflowmetrics.Recorder
 }
 
 type Result struct {
@@ -286,6 +290,9 @@ func (m *Manager) upsertFinding(ctx context.Context, issueStore intake.IssueStor
 			if err := issueStore.SetIntakeIssueState(ctx, issue.ID, settings.Config.TargetState); err != nil {
 				return upsertOutcome{}, err
 			}
+			if err := m.recordTransition(ctx, settings, issue, settings.Config.TargetState); err != nil {
+				return upsertOutcome{}, err
+			}
 		}
 		draft.Body = preserveFindingOutcome(draft.Body, issue.Body)
 		if strings.TrimSpace(issue.Body) == strings.TrimSpace(draft.Body) {
@@ -310,12 +317,30 @@ func (m *Manager) upsertFinding(ctx context.Context, issueStore intake.IssueStor
 	if err := issueStore.SetIntakeIssueState(ctx, issue.ID, settings.Config.TargetState); err != nil {
 		return upsertOutcome{created: true}, err
 	}
+	if err := m.recordTransition(ctx, settings, issue, settings.Config.TargetState); err != nil {
+		return upsertOutcome{created: true}, err
+	}
 	updated, err := issueStore.UpdateIntakeIssue(ctx, issue.ID, draft)
 	if err != nil {
 		return upsertOutcome{created: true}, err
 	}
 	m.issues[cacheKey] = updated
 	return upsertOutcome{created: true}, nil
+}
+
+func (m *Manager) recordTransition(ctx context.Context, settings Settings, issue intake.Issue, targetState string) error {
+	return workflowmetrics.RecordLaneTransition(ctx, settings.Metrics, workflowmetrics.LaneTransition{
+		ProjectID: settings.ProjectID,
+		Issue: connector.Issue{
+			ID:         issue.ID,
+			Identifier: issue.Identifier,
+			URL:        issue.URL,
+		},
+		TargetState:  targetState,
+		At:           m.now().UTC(),
+		Reason:       "retro",
+		MetadataJSON: provenance.Apply("{}", provenance.Attribution{Origin: provenance.OriginRetro}, nil),
+	})
 }
 
 func preserveFindingOutcome(draft string, existing string) string {

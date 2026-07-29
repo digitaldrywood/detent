@@ -11,7 +11,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 func TestDue(t *testing.T) {
@@ -204,6 +206,35 @@ func TestManagerRunOnceFilesAndDeduplicatesOpenIssue(t *testing.T) {
 	}
 }
 
+func TestManagerRunOnceRecordsRoutineOrigin(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.July, 17, 10, 0, 0, 0, time.UTC)
+	metrics := &routineMetricsRecorder{}
+	manager, err := New(Settings{
+		ProjectID:    "detent",
+		Definitions:  []config.Routine{{Name: "maintenance", Schedule: "0 * * * *", Prompt: "Inspect."}},
+		SearchStates: []string{"Backlog", "Todo"},
+		Runner:       fakeRunner{proposals: []Proposal{{DedupKey: "lint/deadcode", Title: "Remove dead code", Body: "Reproducible."}}},
+		Issues:       &fakeIssueStore{},
+		Metrics:      metrics,
+	}, &fakeStore{}, nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if _, err := manager.RunOnce(context.Background(), "maintenance"); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if len(metrics.events) != 1 {
+		t.Fatalf("events = %#v, want one lane entry", metrics.events)
+	}
+	metadata, ok := provenance.Parse(metrics.events[0].MetadataJSON)
+	if metrics.events[0].PhaseName != IssueState || metrics.events[0].Status != "entered" ||
+		!ok || metadata.Provenance.Origin != provenance.OriginRoutine {
+		t.Fatalf("event = %#v, metadata = %#v", metrics.events[0], metadata)
+	}
+}
+
 func TestManagerRunOnceRefilesClosedIssue(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.July, 17, 10, 0, 0, 0, time.UTC)
@@ -350,6 +381,15 @@ type fakeIssueStore struct {
 	fetchErr  error
 	createErr error
 	stateErr  error
+}
+
+type routineMetricsRecorder struct {
+	events []workflowmetrics.PhaseEvent
+}
+
+func (r *routineMetricsRecorder) RecordWorkflowPhaseEvent(_ context.Context, event workflowmetrics.PhaseEvent) (int64, error) {
+	r.events = append(r.events, event)
+	return int64(len(r.events)), nil
 }
 
 func (s *fakeIssueStore) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {

@@ -39,6 +39,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
@@ -2449,6 +2450,8 @@ func TestKanbanMoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 	t.Parallel()
 
 	deps := testDeps(t)
+	metrics := &workflowPhaseEventStoreProbe{}
+	deps.Store = metrics
 	actionConnector := &kanbanActionConnector{name: "github"}
 	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
 		Mode: workflowconfig.KanbanModeIntegration,
@@ -2512,6 +2515,14 @@ func TestKanbanMoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 	}
 	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_kw559", state: "Todo"}}; !equalStateUpdates(got, want) {
 		t.Fatalf("state updates = %#v, want %#v", got, want)
+	}
+	events := metrics.workflowPhaseEvents()
+	if len(events) != 2 || events[0].Status != "exited" || events[1].Status != "entered" {
+		t.Fatalf("workflow phase events = %#v, want lane exit and entry", events)
+	}
+	metadata, ok := provenance.Parse(events[1].MetadataJSON)
+	if !ok || metadata.Provenance.Origin != provenance.OriginUnknown {
+		t.Fatalf("lane entry metadata = %#v, want unknown origin without tracker actor", metadata)
 	}
 }
 
@@ -11407,6 +11418,13 @@ func (p *workflowPhaseEventStoreProbe) workflowPhaseEventCount() int {
 	defer p.mu.Unlock()
 
 	return len(p.events)
+}
+
+func (p *workflowPhaseEventStoreProbe) workflowPhaseEvents() []store.WorkflowPhaseEvent {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return append([]store.WorkflowPhaseEvent(nil), p.events...)
 }
 
 func (storeProbe) WorkflowMetricsReport(context.Context, store.WorkflowMetricsQuery) (store.WorkflowMetricsReport, error) {

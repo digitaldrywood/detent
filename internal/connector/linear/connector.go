@@ -361,6 +361,7 @@ func connectorIssueComment(comment linearComment) connector.IssueComment {
 		Body:              comment.Body,
 		URL:               strings.TrimSpace(comment.URL),
 		AuthorLogin:       linearAuthorLogin(comment),
+		AuthorKind:        linearAuthorKind(comment),
 		AuthorDisplayName: linearAuthorDisplayName(comment),
 		CreatedAt:         linearTimePtr(comment.CreatedAt),
 		UpdatedAt:         linearTimePtr(comment.UpdatedAt),
@@ -377,6 +378,16 @@ func linearAuthorLogin(comment linearComment) string {
 	}
 	if comment.BotActor != nil {
 		return firstNonBlank(comment.BotActor.UserDisplayName, comment.BotActor.Name, comment.BotActor.ID)
+	}
+	return ""
+}
+
+func linearAuthorKind(comment linearComment) string {
+	if comment.BotActor != nil {
+		return "Bot"
+	}
+	if comment.User != nil || comment.ExternalUser != nil {
+		return "User"
 	}
 	return ""
 }

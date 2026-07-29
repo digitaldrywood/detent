@@ -8,6 +8,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/provenance"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 func TestManagerRoutesAndDeduplicatesRecurringFindings(t *testing.T) {
@@ -17,6 +19,7 @@ func TestManagerRoutesAndDeduplicatesRecurringFindings(t *testing.T) {
 	telemetry := &recordingTelemetryStore{snapshot: routingSnapshot(now)}
 	projectIssues := memory.New(memory.Config{Stateful: true})
 	productIssues := memory.New(memory.Config{Stateful: true})
+	metrics := &retroMetricsRecorder{}
 	manager, err := New(Settings{
 		ProjectID: "example",
 		Config: Config{
@@ -24,6 +27,7 @@ func TestManagerRoutesAndDeduplicatesRecurringFindings(t *testing.T) {
 		},
 		ProjectIssues: projectIssues,
 		ProductIssues: productIssues,
+		Metrics:       metrics,
 	}, telemetry, nil, func() time.Time { return now })
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -38,6 +42,15 @@ func TestManagerRoutesAndDeduplicatesRecurringFindings(t *testing.T) {
 	}
 	assertSingleRetroIssue(t, projectIssues, PatternInvalidWorkpadStatus, "Proposed WORKFLOW.md change")
 	assertSingleRetroIssue(t, productIssues, PatternCompletedRedispatch, "classification: product")
+	if len(metrics.events) != 2 {
+		t.Fatalf("workflow events = %#v, want two retro lane entries", metrics.events)
+	}
+	for _, event := range metrics.events {
+		metadata, ok := provenance.Parse(event.MetadataJSON)
+		if event.Status != "entered" || !ok || metadata.Provenance.Origin != provenance.OriginRetro {
+			t.Fatalf("workflow event = %#v, metadata = %#v", event, metadata)
+		}
+	}
 
 	telemetry.snapshot.PhaseEvents = append(telemetry.snapshot.PhaseEvents, PhaseEvent{Identifier: "issue-status-c", Reason: "workpad_status_invalid", StartedAt: now.Add(time.Minute)})
 	second, err := manager.RunOnce(context.Background(), TriggerCompletion)
@@ -176,6 +189,15 @@ type recordingTelemetryStore struct {
 	snapshot Snapshot
 	loads    int
 	records  []RunRecord
+}
+
+type retroMetricsRecorder struct {
+	events []workflowmetrics.PhaseEvent
+}
+
+func (r *retroMetricsRecorder) RecordWorkflowPhaseEvent(_ context.Context, event workflowmetrics.PhaseEvent) (int64, error) {
+	r.events = append(r.events, event)
+	return int64(len(r.events)), nil
 }
 
 func (s *recordingTelemetryStore) LoadRetroSnapshot(context.Context, string, time.Time) (Snapshot, error) {

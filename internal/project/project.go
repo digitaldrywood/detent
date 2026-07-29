@@ -236,6 +236,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		Config:        workflow.Config.Retro,
 		ProjectIssues: projectRetroStore,
 		ProductIssues: productRetroStore,
+		Metrics:       deps.WorkflowMetrics,
 	}, deps.RetroStore, logger, nil)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("create project retro: %w", err), closeConnector(retroProductConnector))
@@ -246,6 +247,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		SearchStates: workflow.Config.KanbanStateNames(),
 		Runner:       deps.Runner,
 		Issues:       routineIssueStore(projectConnector),
+		Metrics:      deps.WorkflowMetrics,
 	}, deps.RoutineStore, logger, nil)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("create project routine: %w", err), closeConnector(retroProductConnector))
@@ -272,6 +274,8 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		Scheduler:          projectScheduler,
 		GlobalDispatchGate: deps.GlobalDispatchGate,
 		ProjectCandidate:   projectSchedulerCandidate(cfg.Project),
+		TerminalStates:     workflow.Config.Tracker.TerminalStates,
+		ReworkState:        workflow.Config.Agent.AutoPromote.ReworkState,
 	}, deps.AdmissionStore, logger, nil)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("create project backlog admission: %w", err), closeConnector(retroProductConnector))
@@ -1274,6 +1278,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			Config:        workflow.Config.Retro,
 			ProjectIssues: projectRetroStore,
 			ProductIssues: productRetroStore,
+			Metrics:       p.orchDeps.WorkflowMetrics,
 		}); err != nil {
 			return p.workflowReloadError("apply workflow retro reload failed", update.Path, err)
 		}
@@ -1285,6 +1290,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			SearchStates: workflow.Config.KanbanStateNames(),
 			Runner:       runner,
 			Issues:       routineIssueStore(projectConnector),
+			Metrics:      p.orchDeps.WorkflowMetrics,
 		}); err != nil {
 			return p.workflowReloadError("apply workflow routine reload failed", update.Path, err)
 		}
@@ -1302,6 +1308,8 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			Scheduler:          projectScheduler,
 			GlobalDispatchGate: globalDispatchGate,
 			ProjectCandidate:   projectSchedulerCandidate(projectConfig),
+			TerminalStates:     workflow.Config.Tracker.TerminalStates,
+			ReworkState:        workflow.Config.Agent.AutoPromote.ReworkState,
 		}); err != nil {
 			return p.workflowReloadError("apply workflow backlog admission reload failed", update.Path, err)
 		}

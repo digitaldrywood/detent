@@ -19,9 +19,10 @@ import (
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
-	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 type kanbanActionTarget struct {
@@ -195,14 +196,32 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 			if err := setter.SetIssueField(c.Request().Context(), req.issueID, target.kanban.IssueStateFieldID, kanbanstate.MappedState(target.workflow, req.targetState)); err != nil {
 				return err
 			}
-			s.recordKanbanLaneTransition(c.Request().Context(), req.projectID, snapshotIssue, currentState, req.targetState, "kanban_move_field")
+			s.recordKanbanLaneTransition(
+				c.Request().Context(),
+				req.projectID,
+				snapshotIssue,
+				currentState,
+				req.targetState,
+				"kanban_move_field",
+				target.connector,
+				kanbanAdmissionTargetState(target.workflow),
+			)
 			s.kanbanMutations.NoteCardState(target.key, req.projectID, snapshotIssue, snapshotState, req.targetState, dataSeqAtWrite)
 			return nil
 		}
 		if err := target.connector.UpdateIssueState(c.Request().Context(), req.issueID, req.targetState); err != nil {
 			return err
 		}
-		s.recordKanbanLaneTransition(c.Request().Context(), req.projectID, snapshotIssue, currentState, req.targetState, "kanban_move")
+		s.recordKanbanLaneTransition(
+			c.Request().Context(),
+			req.projectID,
+			snapshotIssue,
+			currentState,
+			req.targetState,
+			"kanban_move",
+			target.connector,
+			kanbanAdmissionTargetState(target.workflow),
+		)
 		s.kanbanMutations.NoteCardState(target.key, req.projectID, snapshotIssue, snapshotState, req.targetState, dataSeqAtWrite)
 		return nil
 	})
@@ -1008,6 +1027,7 @@ func telemetryCommentsFromConnector(comments []connector.IssueComment) []telemet
 			Body:              comment.Body,
 			URL:               comment.URL,
 			AuthorLogin:       comment.AuthorLogin,
+			AuthorKind:        comment.AuthorKind,
 			AuthorDisplayName: comment.AuthorDisplayName,
 			CreatedAt:         cloneCommentTime(comment.CreatedAt),
 			UpdatedAt:         cloneCommentTime(comment.UpdatedAt),
@@ -1386,6 +1406,8 @@ func (s *Server) recordKanbanLaneTransition(
 	currentState string,
 	targetState string,
 	reason string,
+	tracker connector.Connector,
+	admissionTargetState string,
 ) {
 	if s.store == nil {
 		return
@@ -1395,7 +1417,6 @@ func (s *Server) recordKanbanLaneTransition(
 	if targetState == "" || kanbanstate.NormalizeState(currentState) == kanbanstate.NormalizeState(targetState) {
 		return
 	}
-	now := time.Now()
 	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {
 		projectID = strings.TrimSpace(issue.ProjectID)
@@ -1403,65 +1424,62 @@ func (s *Server) recordKanbanLaneTransition(
 	if projectID == "" {
 		projectID = "default"
 	}
-	base := store.WorkflowPhaseEvent{
-		ProjectID:      projectID,
-		IssueID:        issue.ID,
+	now := time.Now().UTC()
+	connectorIssue := connector.Issue{
+		ID:             issue.ID,
 		Identifier:     issue.Identifier,
-		IssueURL:       issue.URL,
-		PRNumber:       kanbanWorkflowPRNumber(issue),
-		PhaseType:      store.WorkflowPhaseTypeLane,
-		Reason:         strings.TrimSpace(reason),
-		StartedAt:      now,
-		EndpointFamily: "tracker",
-		MetadataJSON:   "{}",
+		URL:            issue.URL,
+		State:          currentState,
+		CreatedAt:      issue.CreatedAt,
+		UpdatedAt:      issue.UpdatedAt,
+		StageUpdatedAt: issue.StageUpdatedAt,
 	}
-	if base.Reason == "" {
-		base.Reason = "kanban_move"
+	if issue.PullRequest != nil && issue.PullRequest.Number > 0 {
+		number := issue.PullRequest.Number
+		connectorIssue.PRNumber = &number
 	}
-	if currentState != "" {
-		startedAt := kanbanLaneStartedAt(issue, now)
-		exitEvent := base
-		exitEvent.PhaseName = currentState
-		exitEvent.Status = "exited"
-		exitEvent.StartedAt = startedAt
-		exitEvent.FinishedAt = now
-		exitEvent.DurationSeconds = kanbanWorkflowDurationSeconds(startedAt, now)
-		if _, err := s.store.RecordWorkflowPhaseEvent(ctx, exitEvent); err != nil && s.logger != nil {
-			s.logger.WarnContext(ctx, "record kanban lane exit metric failed", "project", projectID, "issue_id", issue.ID, "identifier", issue.Identifier, "from_state", currentState, "target_state", targetState, "error", err)
+	actor := provenance.Actor{}
+	if reader, ok := tracker.(connector.IssueStateTransitionReader); ok {
+		observed := connectorIssue
+		observed.State = targetState
+		transition, found, err := reader.IssueStateTransition(ctx, observed)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.WarnContext(ctx, "read kanban lane transition actor failed", "project", projectID, "issue_id", issue.ID, "identifier", issue.Identifier, "target_state", targetState, "error", err)
+			}
+		} else if found {
+			if !transition.EnteredAt.IsZero() {
+				now = transition.EnteredAt.UTC()
+			}
+			actor = provenance.Actor{Login: transition.Actor.Login, Kind: transition.Actor.Kind}
 		}
 	}
-	enterEvent := base
-	enterEvent.PhaseName = targetState
-	enterEvent.PreviousPhaseName = currentState
-	enterEvent.Status = "entered"
-	if _, err := s.store.RecordWorkflowPhaseEvent(ctx, enterEvent); err != nil && s.logger != nil {
-		s.logger.WarnContext(ctx, "record kanban lane enter metric failed", "project", projectID, "issue_id", issue.ID, "identifier", issue.Identifier, "from_state", currentState, "target_state", targetState, "error", err)
+	attribution := provenance.Attribution{Origin: provenance.OriginFromActor(actor)}
+	if actor.Login != "" || actor.Kind != "" {
+		attribution.Actor = &actor
+	}
+	var admission *provenance.Admission
+	if strings.EqualFold(strings.TrimSpace(targetState), strings.TrimSpace(admissionTargetState)) &&
+		strings.TrimSpace(admissionTargetState) != "" {
+		admission = &provenance.Admission{Attributed: false}
+	}
+	if err := workflowmetrics.RecordLaneTransition(ctx, s.store, workflowmetrics.LaneTransition{
+		ProjectID:    projectID,
+		Issue:        connectorIssue,
+		TargetState:  targetState,
+		At:           now,
+		Reason:       strings.TrimSpace(reason),
+		MetadataJSON: provenance.Apply("{}", attribution, admission),
+	}); err != nil && s.logger != nil {
+		s.logger.WarnContext(ctx, "record kanban lane transition metric failed", "project", projectID, "issue_id", issue.ID, "identifier", issue.Identifier, "from_state", currentState, "target_state", targetState, "error", err)
 	}
 }
 
-func kanbanLaneStartedAt(issue telemetry.Issue, fallback time.Time) time.Time {
-	for _, candidate := range []*time.Time{issue.StageUpdatedAt, issue.UpdatedAt, issue.CreatedAt} {
-		if candidate == nil || candidate.IsZero() || candidate.After(fallback) {
-			continue
-		}
-		return *candidate
+func kanbanAdmissionTargetState(cfg workflowconfig.Config) string {
+	if !cfg.BacklogAdmission.Enabled {
+		return ""
 	}
-	return fallback
-}
-
-func kanbanWorkflowDurationSeconds(startedAt time.Time, finishedAt time.Time) int64 {
-	if startedAt.IsZero() || finishedAt.IsZero() || finishedAt.Before(startedAt) {
-		return 0
-	}
-	return int64(finishedAt.Sub(startedAt) / time.Second)
-}
-
-func kanbanWorkflowPRNumber(issue telemetry.Issue) *int64 {
-	if issue.PullRequest == nil || issue.PullRequest.Number <= 0 {
-		return nil
-	}
-	value := int64(issue.PullRequest.Number)
-	return &value
+	return cfg.BacklogAdmission.TargetState
 }
 
 func (s *Server) kanbanCommentTargetKnown(req kanbanCommentRequest) bool {
@@ -1560,6 +1578,7 @@ func telemetryIssueComments(comments []connector.IssueComment) []telemetry.Issue
 			Body:              comment.Body,
 			URL:               comment.URL,
 			AuthorLogin:       comment.AuthorLogin,
+			AuthorKind:        comment.AuthorKind,
 			AuthorDisplayName: comment.AuthorDisplayName,
 			CreatedAt:         kanbanstate.CloneTimePointer(comment.CreatedAt),
 			UpdatedAt:         kanbanstate.CloneTimePointer(comment.UpdatedAt),

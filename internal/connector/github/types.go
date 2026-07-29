@@ -184,6 +184,7 @@ type pullRequestCodexReviews struct {
 
 type actor struct {
 	Login string `json:"login"`
+	Type  string `json:"type"`
 }
 
 type restIssue struct {
@@ -347,6 +348,7 @@ type restIssueTimelineEvent struct {
 	Event     string     `json:"event"`
 	CreatedAt *time.Time `json:"created_at"`
 	Label     *label     `json:"label"`
+	Actor     *actor     `json:"actor"`
 }
 
 type repository struct {

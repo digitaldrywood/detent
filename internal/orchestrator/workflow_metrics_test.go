@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/lessons"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 )
@@ -290,6 +291,10 @@ func TestRefreshCurrentLaneEntriesPersistsPollObservationAcrossRestart(t *testin
 	if event := timeline.Events[0]; event.PhaseType != store.WorkflowPhaseTypeLane || event.PhaseName != "Blocked" || event.Status != "entered" || !event.StartedAt.Equal(enteredAt) {
 		t.Fatalf("workflow event = %#v, want Blocked entered at %v", event, enteredAt)
 	}
+	metadata, ok := provenance.Parse(timeline.Events[0].MetadataJSON)
+	if !ok || metadata.Provenance.Origin != provenance.OriginUnknown || metadata.Provenance.Actor != nil {
+		t.Fatalf("workflow metadata = %#v, want unknown origin without actor", metadata)
+	}
 	if err := backend.Close(); err != nil {
 		t.Fatalf("backend.Close() error = %v", err)
 	}
@@ -335,11 +340,26 @@ func TestRefreshCurrentLaneEntriesUsesTrackerTransitionAcrossPollsAndRestart(t *
 		State:      "Blocked",
 		UpdatedAt:  &updatedAt,
 	}}
-	orch := &Orchestrator{cfg: normalizeConfig(Config{}), connector: tracker, workflowMetrics: backend}
+	orch := &Orchestrator{
+		cfg:             normalizeConfig(Config{AdmissionTargetState: "Blocked"}),
+		connector:       tracker,
+		workflowMetrics: backend,
+	}
 	orch.refreshCurrentLaneEntries(ctx, &state, firstPollAt)
 	first := state.Snapshot(firstPollAt)
 	if got := first.BoardIssues[0].CurrentLaneEnteredAt; got == nil || !got.Equal(enteredAt) {
 		t.Fatalf("first CurrentLaneEnteredAt = %v, want %v", got, enteredAt)
+	}
+	if got := first.BoardIssues[0].Origin; got != string(provenance.OriginHuman) {
+		t.Fatalf("first Origin = %q, want %q", got, provenance.OriginHuman)
+	}
+	timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{IssueID: "issue-1162"})
+	if err != nil {
+		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
+	}
+	metadata, ok := provenance.Parse(timeline.Events[0].MetadataJSON)
+	if !ok || metadata.Admission == nil || metadata.Admission.Attributed {
+		t.Fatalf("observed transition metadata = %#v, want unattributed admission", metadata)
 	}
 
 	updatedAt = secondPollAt
@@ -620,9 +640,15 @@ func (c *workflowMetricsConnector) Name() string {
 	return c.name
 }
 
-func (c *workflowMetricsConnector) IssueStateEnteredAt(context.Context, connector.Issue) (time.Time, bool, error) {
+func (c *workflowMetricsConnector) IssueStateTransition(context.Context, connector.Issue) (connector.IssueStateTransition, bool, error) {
 	c.stateEnteredAtCalls++
-	return c.stateEnteredAt, c.stateEnteredAtFound, c.stateEnteredAtErr
+	return connector.IssueStateTransition{
+		EnteredAt: c.stateEnteredAt,
+		Actor: connector.IssueActor{
+			Login: "ada",
+			Kind:  "User",
+		},
+	}, c.stateEnteredAtFound, c.stateEnteredAtErr
 }
 
 func (c *workflowMetricsConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {

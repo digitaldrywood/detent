@@ -8,6 +8,7 @@ import (
 	"time"
 
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
+	"github.com/digitaldrywood/detent/internal/provenance"
 )
 
 func TestAdmissionProposalLifecycleAndIdempotency(t *testing.T) {
@@ -126,6 +127,159 @@ func TestAdmissionProposalExpiryAndRunLedger(t *testing.T) {
 	runs, err := backend.RecentAdmissionRuns(ctx, "detent", 3)
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("RecentAdmissionRuns() = %#v, %v", runs, err)
+	}
+}
+
+func TestAdmissionAcceptanceAttributionAndDownstreamOutcomes(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openAdmissionTestStore(t, ctx)
+	createdAt := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	decisionAt := createdAt.Add(time.Minute)
+	transitionAt := createdAt.Add(2 * time.Minute)
+	recordedTransitionAt := transitionAt.Add(-30 * time.Second)
+	proposal := admissionTestProposal("proposal-accepted", "fingerprint-accepted", createdAt)
+	if created, err := backend.CreateAdmissionProposal(ctx, proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	transitionEventID, err := backend.RecordWorkflowPhaseEvent(ctx, WorkflowPhaseEvent{
+		ProjectID:    "detent",
+		IssueID:      proposal.IssueID,
+		Identifier:   proposal.IssueIdentifier,
+		IssueURL:     proposal.IssueURL,
+		PhaseType:    WorkflowPhaseTypeLane,
+		PhaseName:    proposal.TargetState,
+		Reason:       "tracker_state_observed",
+		Status:       "entered",
+		StartedAt:    recordedTransitionAt,
+		MetadataJSON: provenance.Apply("{}", provenance.Attribution{Origin: provenance.OriginHuman}, &provenance.Admission{Attributed: false}),
+	})
+	if err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent(transition) error = %v", err)
+	}
+	if err := backend.ResolveAdmissionProposal(ctx, admissionmodel.Decision{
+		ProposalID:        proposal.ID,
+		Outcome:           admissionmodel.ProposalAccepted,
+		DecidedAt:         decisionAt,
+		CommentID:         "decision-1",
+		ActorLogin:        "ada",
+		ActorKind:         "User",
+		TransitionAt:      transitionAt,
+		TransitionEventID: transitionEventID,
+	}); err != nil {
+		t.Fatalf("ResolveAdmissionProposal() error = %v", err)
+	}
+	history, err := backend.AdmissionProposalHistory(ctx, proposal.ProjectID, proposal.IssueID)
+	if err != nil || len(history) != 1 {
+		t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
+	}
+	if got := history[0]; got.Status != admissionmodel.ProposalAccepted ||
+		got.DecisionSeconds != 60 ||
+		got.DecisionCommentID != "decision-1" ||
+		got.DecisionActorLogin != "ada" ||
+		!got.TransitionAt.Equal(transitionAt) {
+		t.Fatalf("accepted proposal = %#v", got)
+	}
+	timeline, err := backend.IssueWorkflowTimeline(ctx, IssueIdentity{IssueID: proposal.IssueID})
+	if err != nil {
+		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
+	}
+	if len(timeline.Events) != 1 || !timeline.Events[0].StartedAt.Equal(recordedTransitionAt) {
+		t.Fatalf("workflow events = %#v, want one recorded transition", timeline.Events)
+	}
+	metadata, ok := provenance.Parse(timeline.Events[0].MetadataJSON)
+	if !ok || timeline.Events[0].Reason != "admission_proposal_accepted" ||
+		metadata.Provenance.Origin != provenance.OriginAdmission ||
+		metadata.Admission == nil ||
+		!metadata.Admission.Attributed ||
+		metadata.Admission.ProposalID != proposal.ID {
+		t.Fatalf("attributed workflow event = %#v, metadata = %#v", timeline.Events[0], metadata)
+	}
+
+	reworkAt := transitionAt.Add(time.Minute)
+	reviewAt := reworkAt.Add(time.Minute)
+	completedAt := reviewAt.Add(time.Minute)
+	for _, event := range []WorkflowPhaseEvent{
+		{
+			ProjectID: "detent", IssueID: proposal.IssueID, PhaseType: WorkflowPhaseTypeLane,
+			PhaseName: "Rework", Reason: "review_feedback", Status: "entered", StartedAt: reworkAt,
+		},
+		{
+			ProjectID: "detent", IssueID: proposal.IssueID, PhaseType: WorkflowPhaseTypeReview,
+			PhaseName: "automated_review", Reason: "p1_findings", Status: "completed", StartedAt: reviewAt, FinishedAt: reviewAt,
+		},
+		{
+			ProjectID: "detent", IssueID: proposal.IssueID, PhaseType: WorkflowPhaseTypeLane,
+			PhaseName: "Done", Reason: "merged", Status: "entered", StartedAt: completedAt,
+		},
+	} {
+		if _, err := backend.RecordWorkflowPhaseEvent(ctx, event); err != nil {
+			t.Fatalf("RecordWorkflowPhaseEvent(%s) error = %v", event.PhaseName, err)
+		}
+	}
+	if _, err := backend.RecordUsageEvent(ctx, UsageEvent{
+		ProjectID:  "detent",
+		IssueID:    proposal.IssueID,
+		CostUSD:    1.25,
+		StartedAt:  reworkAt,
+		FinishedAt: reviewAt,
+		Outcome:    "completed",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent() error = %v", err)
+	}
+	observedAt := completedAt.Add(time.Minute)
+	if err := backend.RefreshAdmissionOutcomes(ctx, admissionmodel.OutcomeRefresh{
+		ProjectID:      "detent",
+		TerminalStates: []string{"Done"},
+		ReworkState:    "Rework",
+		ObservedAt:     observedAt,
+	}); err != nil {
+		t.Fatalf("RefreshAdmissionOutcomes() error = %v", err)
+	}
+	outcomes, err := backend.AdmissionDownstreamOutcomes(ctx, "detent")
+	if err != nil || len(outcomes) != 1 {
+		t.Fatalf("AdmissionDownstreamOutcomes() = %#v, %v", outcomes, err)
+	}
+	if got := outcomes[0]; !got.CompletedAt.Equal(completedAt) ||
+		got.ReworkCount != 1 ||
+		got.ReviewChurnCount != 1 ||
+		got.SpendUSD != 1.25 ||
+		!got.UpdatedAt.Equal(observedAt) {
+		t.Fatalf("downstream outcome = %#v", got)
+	}
+}
+
+func TestAdmissionRejectionIsDistinctFromAcceptance(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openAdmissionTestStore(t, ctx)
+	createdAt := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	proposal := admissionTestProposal("proposal-rejected", "fingerprint-rejected", createdAt)
+	if created, err := backend.CreateAdmissionProposal(ctx, proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	if err := backend.ResolveAdmissionProposal(ctx, admissionmodel.Decision{
+		ProposalID: proposal.ID,
+		Outcome:    admissionmodel.ProposalRejected,
+		DecidedAt:  createdAt.Add(3 * time.Minute),
+		CommentID:  "decision-rejected",
+		ActorLogin: "grace",
+		ActorKind:  "User",
+	}); err != nil {
+		t.Fatalf("ResolveAdmissionProposal() error = %v", err)
+	}
+	history, err := backend.AdmissionProposalHistory(ctx, proposal.ProjectID, proposal.IssueID)
+	if err != nil || len(history) != 1 ||
+		history[0].Status != admissionmodel.ProposalRejected ||
+		history[0].DecisionSeconds != 180 ||
+		!history[0].TransitionAt.IsZero() {
+		t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
+	}
+	outcomes, err := backend.AdmissionDownstreamOutcomes(ctx, proposal.ProjectID)
+	if err != nil || len(outcomes) != 0 {
+		t.Fatalf("AdmissionDownstreamOutcomes() = %#v, %v, want none", outcomes, err)
 	}
 }
 

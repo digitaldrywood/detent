@@ -143,6 +143,7 @@ type IssueComment struct {
 	Body              string     `json:"body,omitempty" yaml:"body,omitempty"`
 	URL               string     `json:"url,omitempty" yaml:"url,omitempty"`
 	AuthorLogin       string     `json:"author_login,omitempty" yaml:"author_login,omitempty"`
+	AuthorKind        string     `json:"author_kind,omitempty" yaml:"author_kind,omitempty"`
 	AuthorDisplayName string     `json:"author_display_name,omitempty" yaml:"author_display_name,omitempty"`
 	CreatedAt         *time.Time `json:"created_at,omitempty" yaml:"created_at,omitempty"`
 	UpdatedAt         *time.Time `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
@@ -157,6 +158,7 @@ type IssueEvent struct {
 	Kind      string            `json:"kind,omitempty" yaml:"kind,omitempty"`
 	State     string            `json:"state,omitempty" yaml:"state,omitempty"`
 	Body      string            `json:"body,omitempty" yaml:"body,omitempty"`
+	Actor     IssueActor        `json:"actor,omitzero" yaml:"actor,omitempty"`
 	Fields    map[string]string `json:"fields,omitempty" yaml:"fields,omitempty"`
 	CreatedAt *time.Time        `json:"created_at,omitempty" yaml:"created_at,omitempty"`
 }

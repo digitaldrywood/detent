@@ -1411,6 +1411,7 @@ func connectorIssueComment(comment issueComment, targetType string) connector.Is
 		Body:        comment.Body,
 		URL:         comment.URL,
 		AuthorLogin: actorLogin(comment.Author),
+		AuthorKind:  actorType(comment.Author),
 		CreatedAt:   parseGitHubTime(comment.CreatedAt),
 		UpdatedAt:   parseGitHubTime(comment.UpdatedAt),
 		TargetType:  targetType,

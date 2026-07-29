@@ -52,6 +52,49 @@ func TestBoardDetailSheetRendersEfficiencyReceipt(t *testing.T) {
 	}
 }
 
+func TestBoardCardAndDetailSheetRenderOrigin(t *testing.T) {
+	t.Parallel()
+
+	card := projectKanbanCard{
+		IssueID:     "issue-1537",
+		IssueNumber: "#1537",
+		Identifier:  "digitaldrywood/detent#1537",
+		ProjectID:   "detent",
+		Title:       "Track admission provenance",
+		Stage:       "Todo",
+		Origin:      "admission",
+		OriginActor: "ada",
+	}
+	view := boardCardViewFromCard(
+		DashboardData{},
+		projectKanbanLane{Title: "Todo"},
+		card,
+		false,
+		"project",
+		"detent",
+	)
+	cardHTML := renderBoardComponent(t, boardCardView2(view))
+	for _, want := range []string{`data-board-card-origin`, "via admission", "@ada"} {
+		if !strings.Contains(cardHTML, want) {
+			t.Fatalf("board card missing %q:\n%s", want, cardHTML)
+		}
+	}
+	sheetHTML := renderBoardComponent(t, BoardCardSheet(
+		DashboardData{},
+		card,
+		false,
+		false,
+		KanbanConversationData{},
+		BoardActivityData{},
+		BoardSessionData{},
+	))
+	for _, want := range []string{"Origin", "via admission", "@ada"} {
+		if !strings.Contains(sheetHTML, want) {
+			t.Fatalf("detail sheet missing %q:\n%s", want, sheetHTML)
+		}
+	}
+}
+
 func TestBoardDetailSheetUsesTrackerSpecificIssueAction(t *testing.T) {
 	t.Parallel()
 

@@ -599,6 +599,8 @@ type projectKanbanCard struct {
 	MergeLaneClass        string
 	Stage                 string
 	StageAt               time.Time
+	Origin                string
+	OriginActor           string
 	PriorityRank          int
 	PriorityName          string
 	DispatchPriorityLabel string
@@ -2986,6 +2988,8 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		AttentionDetail:       projectKanbanAttentionDetail(issue),
 		Stage:                 chartText(state, "n/a"),
 		StageAt:               stageAt.UTC(),
+		Origin:                strings.TrimSpace(issue.Origin),
+		OriginActor:           strings.TrimSpace(issue.OriginActor),
 		PriorityRank:          projectKanbanPriorityRank(issue.Priority),
 		PriorityName:          strings.TrimSpace(issue.PriorityName),
 		UnblockerCount:        issue.UnblockerCount,

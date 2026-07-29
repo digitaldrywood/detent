@@ -97,6 +97,36 @@ func TestConnectorImportPersistsAndDetectsClosedUpstreamDivergence(t *testing.T)
 	}
 }
 
+func TestConnectorIssueStateTransitionPrefersGitHubActor(t *testing.T) {
+	t.Parallel()
+
+	localAt := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	githubAt := localAt.Add(time.Minute)
+	backend := &transitionGitHubBackend{
+		recordingGitHubBackend: &recordingGitHubBackend{calls: &recordingCallLog{}},
+		transition: connector.IssueStateTransition{
+			EnteredAt: githubAt,
+			Actor: connector.IssueActor{
+				Login: "ada",
+				Kind:  "User",
+			},
+		},
+		found: true,
+	}
+	conn := &Connector{github: backend}
+	got, found, err := conn.IssueStateTransition(context.Background(), connector.Issue{
+		Identifier:     "digitaldrywood/detent#1537",
+		State:          "Todo",
+		StageUpdatedAt: &localAt,
+	})
+	if err != nil {
+		t.Fatalf("IssueStateTransition() error = %v", err)
+	}
+	if !found || !got.EnteredAt.Equal(githubAt) || got.Actor.Login != "ada" || got.Actor.Kind != "User" {
+		t.Fatalf("IssueStateTransition() = %#v, %t", got, found)
+	}
+}
+
 func TestConnectorLocalAnnotationsStayLocalAndPRLifecycleWritesPassThrough(t *testing.T) {
 	t.Parallel()
 
@@ -650,6 +680,17 @@ func (l *recordingCallLog) snapshot() []string {
 type recordingGitHubBackend struct {
 	calls *recordingCallLog
 	errs  map[string]error
+}
+
+type transitionGitHubBackend struct {
+	*recordingGitHubBackend
+	transition connector.IssueStateTransition
+	found      bool
+	err        error
+}
+
+func (b *transitionGitHubBackend) IssueStateTransition(context.Context, connector.Issue) (connector.IssueStateTransition, bool, error) {
+	return b.transition, b.found, b.err
 }
 
 func (b *recordingGitHubBackend) Close() error {

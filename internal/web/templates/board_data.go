@@ -447,6 +447,8 @@ type boardCardView struct {
 	AgeFooterTitle    string
 	Title             string
 	State             string
+	Origin            string
+	OriginDetail      string
 	CompactSignal     string
 	ExtraKind         primitives.Kind
 	ExtraText         string
@@ -827,6 +829,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		Terminal: terminal,
 		Title:    card.Title,
 		State:    card.Stage,
+		Origin:   card.Origin,
 		Labels:   append([]string(nil), card.Labels...),
 		Effort:   strings.TrimSpace(card.RuntimeIdentity.ReasoningEffort.Value),
 	}
@@ -848,6 +851,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 		view.AgeFooterTitle = strings.TrimSpace(card.TimeInStageTitle)
 	}
 	view.ExtraKind, view.ExtraText, view.ExtraChip = boardCardExtra(card, view)
+	view.OriginDetail = boardCardOriginDetail(card.Origin, card.OriginActor)
 	view.Activity = boardCardActivity(data.Snapshot, card)
 	view.PRStatus, view.PRStatusClass = boardCardPRStatus(card)
 	if view.Running {
@@ -867,6 +871,19 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	view.PriorityBadge, view.PriorityTitle, view.PriorityDetail, view.PriorityTop = boardCardPriority(card)
 	view.CompactSignal = boardCardCompactSignal(view)
 	return view
+}
+
+func boardCardOriginDetail(origin string, actor string) string {
+	origin = strings.ToLower(strings.TrimSpace(origin))
+	actor = strings.TrimSpace(actor)
+	if origin == "" {
+		return ""
+	}
+	detail := "via " + origin
+	if actor != "" {
+		detail += " · @" + strings.TrimPrefix(actor, "@")
+	}
+	return detail
 }
 
 func boardCardCompactSignal(card boardCardView) string {

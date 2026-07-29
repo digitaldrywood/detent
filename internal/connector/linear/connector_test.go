@@ -67,6 +67,7 @@ func TestConnectorFetchIssueCommentsMapsLinearMetadata(t *testing.T) {
 		Body:              "Root cause found.",
 		URL:               "https://linear.app/acme/issue/LIN-123#comment-1",
 		AuthorLogin:       "ada",
+		AuthorKind:        "User",
 		AuthorDisplayName: "Ada Lovelace",
 		CreatedAt:         &createdAt,
 		UpdatedAt:         &updatedAt,

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -131,6 +132,10 @@ func TestManagerExpiresProposalAndReproposesUnchangedIssue(t *testing.T) {
 	if len(history) != 2 || history[0].Status != admissionmodel.ProposalOpen || history[1].Status != admissionmodel.ProposalExpired {
 		t.Fatalf("history = %#v", history)
 	}
+	outcomes, err := backend.AdmissionDownstreamOutcomes(context.Background(), "detent")
+	if err != nil || len(outcomes) != 0 {
+		t.Fatalf("AdmissionDownstreamOutcomes() = %#v, %v, want expiry not counted as acceptance", outcomes, err)
+	}
 }
 
 func TestManagerAuditCommentDoesNotDuplicateProposal(t *testing.T) {
@@ -167,6 +172,16 @@ func TestManagerReconcilesAgainstStoredProposalTarget(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
 	issue.State = "Todo"
+	transitionAt := now.Add(2 * time.Minute)
+	decisionAt := now.Add(time.Minute)
+	issue.StageUpdatedAt = &transitionAt
+	issue.Comments = []connector.IssueComment{{
+		ID:          "decision-1",
+		Body:        admissionAcceptCommand("proposal-1"),
+		AuthorLogin: "ada",
+		AuthorKind:  "User",
+		CreatedAt:   &decisionAt,
+	}}
 	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	backend := openManagerTestStore(t)
 	proposal := admissionTestProposalForIssue("proposal-1", issue, now)
@@ -176,7 +191,7 @@ func TestManagerReconcilesAgainstStoredProposalTarget(t *testing.T) {
 	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
 	settings := admissionTestSettings(tracker, agent)
 	settings.Config.TargetState = "Ready"
-	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return transitionAt })
 
 	if _, err := manager.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
@@ -185,8 +200,118 @@ func TestManagerReconcilesAgainstStoredProposalTarget(t *testing.T) {
 	if err != nil || len(history) != 1 || history[0].Status != admissionmodel.ProposalAccepted {
 		t.Fatalf("history = %#v, %v", history, err)
 	}
+	if history[0].DecisionSeconds != 60 || !history[0].TransitionAt.Equal(transitionAt) ||
+		history[0].DecisionCommentID != "decision-1" {
+		t.Fatalf("decision evidence = %#v", history[0])
+	}
 	if agent.calls != 0 {
 		t.Fatalf("runner calls = %d, want 0", agent.calls)
+	}
+}
+
+func TestManagerReconcilesAcceptanceAfterIssueLeavesTargetState(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	current := now
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	tracker := memory.New(memory.Config{
+		Issues:   []connector.Issue{issue},
+		Stateful: true,
+		Now:      func() time.Time { return current },
+	})
+	backend := openManagerTestStore(t)
+	proposal := admissionTestProposalForIssue("proposal-1", issue, now)
+	if created, err := backend.CreateAdmissionProposal(ctx, proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	decisionAt := now.Add(time.Minute)
+	current = decisionAt
+	if err := tracker.CreateComment(ctx, issue.ID, admissionAcceptCommand(proposal.ID)); err != nil {
+		t.Fatalf("CreateComment() error = %v", err)
+	}
+	targetAt := now.Add(2 * time.Minute)
+	current = targetAt
+	if err := tracker.UpdateIssueState(ctx, issue.ID, proposal.TargetState); err != nil {
+		t.Fatalf("UpdateIssueState(%s) error = %v", proposal.TargetState, err)
+	}
+	if _, err := backend.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
+		ProjectID:  proposal.ProjectID,
+		IssueID:    proposal.IssueID,
+		Identifier: proposal.IssueIdentifier,
+		IssueURL:   proposal.IssueURL,
+		PhaseType:  store.WorkflowPhaseTypeLane,
+		PhaseName:  proposal.TargetState,
+		Reason:     "tracker_state_observed",
+		Status:     "entered",
+		StartedAt:  targetAt,
+		MetadataJSON: provenance.Apply(
+			"{}",
+			provenance.Attribution{Origin: provenance.OriginUnknown},
+			&provenance.Admission{Attributed: false},
+		),
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+	current = now.Add(3 * time.Minute)
+	if err := tracker.UpdateIssueState(ctx, issue.ID, "In Progress"); err != nil {
+		t.Fatalf("UpdateIssueState(In Progress) error = %v", err)
+	}
+	manager := newAdmissionTestManager(
+		t,
+		admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate}),
+		backend,
+		func() time.Time { return current },
+	)
+
+	if _, err := manager.RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	history, err := backend.AdmissionProposalHistory(ctx, proposal.ProjectID, proposal.IssueID)
+	if err != nil || len(history) != 1 {
+		t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
+	}
+	if history[0].Status != admissionmodel.ProposalAccepted || !history[0].TransitionAt.Equal(targetAt) {
+		t.Fatalf("accepted proposal = %#v", history[0])
+	}
+	timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{IssueID: proposal.IssueID})
+	if err != nil || len(timeline.Events) != 1 ||
+		timeline.Events[0].Reason != "admission_proposal_accepted" {
+		t.Fatalf("IssueWorkflowTimeline() = %#v, %v", timeline, err)
+	}
+}
+
+func TestManagerTargetTransitionWithoutDecisionRemainsOpen(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	issue.State = "Todo"
+	transitionAt := now.Add(time.Minute)
+	issue.StageUpdatedAt = &transitionAt
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	backend := openManagerTestStore(t)
+	proposal := admissionTestProposalForIssue("proposal-1", issue, now)
+	if created, err := backend.CreateAdmissionProposal(context.Background(), proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	manager := newAdmissionTestManager(
+		t,
+		admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate}),
+		backend,
+		func() time.Time { return transitionAt },
+	)
+	if _, err := manager.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	open, err := backend.OpenAdmissionProposals(context.Background(), "detent", 0)
+	if err != nil || len(open) != 1 || open[0].ID != proposal.ID {
+		t.Fatalf("OpenAdmissionProposals() = %#v, %v, want proposal open", open, err)
+	}
+	outcomes, err := backend.AdmissionDownstreamOutcomes(context.Background(), "detent")
+	if err != nil || len(outcomes) != 0 {
+		t.Fatalf("AdmissionDownstreamOutcomes() = %#v, %v, want none", outcomes, err)
 	}
 }
 
@@ -236,15 +361,25 @@ func TestManagerAcceptedDemotionIsSticky(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	current := now
 	tracker := memory.New(memory.Config{
 		Issues:   []connector.Issue{admissionIssueFixture("issue-1", "DD-1", 1, now)},
 		Stateful: true,
+		Now:      func() time.Time { return current },
 	})
 	backend := openManagerTestStore(t)
 	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
-	manager := newAdmissionTestManager(t, admissionTestSettings(tracker, agent), backend, func() time.Time { return now })
+	manager := newAdmissionTestManager(t, admissionTestSettings(tracker, agent), backend, func() time.Time { return current })
 	if result, err := manager.RunOnce(context.Background()); err != nil || len(result.Proposals) != 1 {
 		t.Fatalf("initial RunOnce() = %#v, %v", result, err)
+	}
+	open, err := backend.OpenAdmissionProposals(context.Background(), "detent", 0)
+	if err != nil || len(open) != 1 {
+		t.Fatalf("OpenAdmissionProposals() = %#v, %v", open, err)
+	}
+	current = now.Add(time.Minute)
+	if err := tracker.CreateComment(context.Background(), "issue-1", admissionAcceptCommand(open[0].ID)); err != nil {
+		t.Fatalf("CreateComment() error = %v", err)
 	}
 	if err := tracker.UpdateIssueState(context.Background(), "issue-1", "Todo"); err != nil {
 		t.Fatalf("UpdateIssueState(Todo) error = %v", err)
