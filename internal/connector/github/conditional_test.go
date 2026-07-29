@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestClientRESTConditionalRequestUsesCachedResponseBelowReserve(t *testing.T) {
@@ -237,5 +238,61 @@ func TestClientRESTConditionalCacheIsBounded(t *testing.T) {
 	}
 	if got := len(client.restCache); got != restConditionalCacheMaxEntries {
 		t.Fatalf("conditional cache size = %d, want %d", got, restConditionalCacheMaxEntries)
+	}
+}
+
+func TestClientRESTConditionalCacheExpiresStaleResponse(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			w.Header().Set("ETag", `"draft"`)
+			_, _ = w.Write([]byte(`{"draft":true}`))
+		case 2:
+			if r.Header.Get("If-None-Match") != "" {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+			w.Header().Set("ETag", `"ready"`)
+			_, _ = w.Write([]byte(`{"draft":false}`))
+		default:
+			t.Fatalf("unexpected request %d", calls.Load())
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	const path = "/repos/digitaldrywood/detent/pulls/1541"
+	var draft restPullRequest
+	if err := client.REST(context.Background(), http.MethodGet, path, nil, &draft); err != nil {
+		t.Fatalf("first REST() error = %v", err)
+	}
+	if !draft.Draft {
+		t.Fatalf("first REST() Draft = false, want true")
+	}
+
+	key := restCacheKey(http.MethodGet, path)
+	client.mu.Lock()
+	entry := client.restCache[key]
+	entry.cachedAt = time.Now().Add(-time.Hour)
+	client.restCache[key] = entry
+	client.mu.Unlock()
+
+	var ready restPullRequest
+	if err := client.REST(context.Background(), http.MethodGet, path, nil, &ready); err != nil {
+		t.Fatalf("second REST() error = %v", err)
+	}
+	if ready.Draft {
+		t.Fatal("second REST() Draft = true, want refreshed ready state")
 	}
 }

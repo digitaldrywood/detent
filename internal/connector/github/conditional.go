@@ -6,7 +6,10 @@ import (
 	"time"
 )
 
-const restConditionalCacheMaxEntries = 1024
+const (
+	restConditionalCacheMaxAge     = time.Minute
+	restConditionalCacheMaxEntries = 1024
+)
 
 type restCacheEntry struct {
 	etag     string
@@ -20,10 +23,15 @@ func (c *Client) restConditionalEntry(method string, path string) (restCacheEntr
 		return restCacheEntry{}, false
 	}
 	key := restCacheKey(method, path)
-	c.mu.RLock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	entry, ok := c.restCache[key]
-	c.mu.RUnlock()
 	if !ok || strings.TrimSpace(entry.etag) == "" {
+		return restCacheEntry{}, false
+	}
+	if time.Since(entry.cachedAt) >= restConditionalCacheMaxAge {
+		delete(c.restCache, key)
 		return restCacheEntry{}, false
 	}
 	return cloneRESTCacheEntry(entry), true

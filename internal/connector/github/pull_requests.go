@@ -301,9 +301,16 @@ func (c *Connector) fetchRepositoryPullRequests(ctx context.Context, repo pullRe
 	return pullRequests, nil
 }
 
-func (c *Connector) fetchRepositoryPullRequest(ctx context.Context, repo pullRequestRepo, number int) (pullRequestNode, error) {
+func (c *Connector) fetchRepositoryPullRequest(ctx context.Context, repo pullRequestRepo, number int, fresh bool) (pullRequestNode, error) {
 	var response restPullRequest
-	if err := c.client.REST(ctx, http.MethodGet, restPullRequestPath(repo, number), nil, &response); err != nil {
+	path := restPullRequestPath(repo, number)
+	var err error
+	if fresh {
+		_, err = c.client.restFresh(ctx, http.MethodGet, path, nil, &response)
+	} else {
+		err = c.client.REST(ctx, http.MethodGet, path, nil, &response)
+	}
+	if err != nil {
 		return pullRequestNode{}, fmt.Errorf("fetch github pull request: %w", err)
 	}
 	return pullRequestNodeFromREST(response), nil
@@ -314,7 +321,7 @@ func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issu
 	if !ok {
 		return issue, nil
 	}
-	pullRequest, err := c.fetchRepositoryPullRequest(ctx, repo, number)
+	pullRequest, err := c.fetchRepositoryPullRequest(ctx, repo, number, true)
 	if err != nil {
 		if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
 			attachPullRequestHydrationUnavailableToIssue(&issue, repo, number, state)
@@ -622,7 +629,7 @@ func (c *Connector) attachLinkedPullRequests(
 }
 
 func (c *Connector) hydrateLinkedPullRequest(ctx context.Context, hydration *linkedPullRequestHydration, useStatusCache bool) error {
-	pullRequest, err := c.fetchRepositoryPullRequest(ctx, hydration.repo, hydration.number)
+	pullRequest, err := c.fetchRepositoryPullRequest(ctx, hydration.repo, hydration.number, !useStatusCache)
 	if err != nil {
 		state := c.pullRequestHydrationStateForError(hydration.repo, err)
 		if state.Reason == "" {
@@ -689,7 +696,7 @@ func (c *Connector) attachMatchingPullRequests(
 			hydratedPullRequest, ok := hydrated[pullRequest.Number]
 			if !ok {
 				var err error
-				hydratedPullRequest, err = c.fetchRepositoryPullRequest(ctx, repo, pullRequest.Number)
+				hydratedPullRequest, err = c.fetchRepositoryPullRequest(ctx, repo, pullRequest.Number, !useStatusCache)
 				if err != nil {
 					if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
 						applyPullRequestHydrationUnavailableState(&pullRequest, state)

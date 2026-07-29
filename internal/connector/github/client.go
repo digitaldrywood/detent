@@ -332,10 +332,22 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 }
 
 func (c *Client) rest(ctx context.Context, method string, path string, body any, out any) (http.Header, error) {
-	return c.restWithTokenRefresh(ctx, method, path, body, out, true)
+	return c.restWithTokenRefresh(ctx, method, path, body, out, true, true)
 }
 
-func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path string, body any, out any, allowTokenRefresh bool) (http.Header, error) {
+func (c *Client) restFresh(ctx context.Context, method string, path string, body any, out any) (http.Header, error) {
+	return c.restWithTokenRefresh(ctx, method, path, body, out, true, false)
+}
+
+func (c *Client) restWithTokenRefresh(
+	ctx context.Context,
+	method string,
+	path string,
+	body any,
+	out any,
+	allowTokenRefresh bool,
+	allowConditional bool,
+) (http.Header, error) {
 	token, err := c.tokenSource.Token(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("resolve github token: %w", err)
@@ -346,7 +358,11 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	}
 	backoffKey := c.restSharedBackoffKey(token)
 	c.rememberRESTBackoffKey(backoffKey)
-	cached, conditional := c.restConditionalEntry(method, path)
+	cached := restCacheEntry{}
+	conditional := false
+	if allowConditional {
+		cached, conditional = c.restConditionalEntry(method, path)
+	}
 	now := time.Now()
 	if err := c.restBackoffError(backoffKey, now); err != nil {
 		c.logger.DebugContext(ctx, "github rest backoff active",
@@ -441,7 +457,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		err := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
 		c.logRESTStatusError(ctx, method, path, family, resp.StatusCode, err)
 		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
-			return c.restWithTokenRefresh(ctx, method, path, body, out, false)
+			return c.restWithTokenRefresh(ctx, method, path, body, out, false, allowConditional)
 		}
 		return nil, err
 	}

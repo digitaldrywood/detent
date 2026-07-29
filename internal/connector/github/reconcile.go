@@ -61,7 +61,7 @@ func (c *Connector) reconcilePullRequest(ctx context.Context, repo pullRequestRe
 	if target.ChangeNumber <= 0 {
 		return pullRequestNode{}, false, nil
 	}
-	pullRequest, err := c.fetchRepositoryPullRequest(ctx, repo, target.ChangeNumber)
+	pullRequest, err := c.fetchRepositoryPullRequest(ctx, repo, target.ChangeNumber, true)
 	if err != nil {
 		return pullRequestNode{}, false, err
 	}

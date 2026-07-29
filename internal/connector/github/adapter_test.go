@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -4447,6 +4448,73 @@ func TestConnectorHydratePullRequestRefreshesCurrentStatus(t *testing.T) {
 	}
 	if got.PRRepository != "example/repo" {
 		t.Fatalf("PRRepository = %q, want example/repo", got.PRRepository)
+	}
+}
+
+func TestConnectorHydratePullRequestRefreshesDraftMetadataAfterNotModified(t *testing.T) {
+	t.Parallel()
+
+	var pullRequestCalls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.RequestURI() {
+		case "/repos/example/repo/pulls/42":
+			call := pullRequestCalls.Add(1)
+			if call == 1 {
+				w.Header().Set("ETag", `"draft"`)
+				_, _ = w.Write([]byte(`{"number":42,"state":"open","draft":true,"head":{"sha":"head-sha"},"base":{"sha":"base-sha"}}`))
+				return
+			}
+			if r.Header.Get("If-None-Match") != "" {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+			w.Header().Set("ETag", `"ready"`)
+			_, _ = w.Write([]byte(`{"number":42,"state":"open","draft":false,"head":{"sha":"head-sha"},"base":{"sha":"base-sha"}}`))
+		case "/repos/example/repo/commits/head-sha/check-runs?per_page=100":
+			_, _ = w.Write([]byte(`{"check_runs":[]}`))
+		case "/repos/example/repo/commits/head-sha/statuses?per_page=100",
+			"/repos/example/repo/pulls/42/reviews?per_page=100":
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			t.Errorf("unexpected request path %q", r.URL.RequestURI())
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewConnector(Config{
+		Endpoint:   server.URL,
+		APIKey:     "test-token",
+		HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewConnector() error = %v", err)
+	}
+	prNumber := 42
+	issue := connector.Issue{
+		Identifier:   "example/repo#1",
+		PRNumber:     &prNumber,
+		PRRepository: "example/repo",
+	}
+
+	draft, err := c.HydratePullRequest(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("HydratePullRequest() draft error = %v", err)
+	}
+	if draft.PullRequest == nil || !draft.PullRequest.Draft {
+		t.Fatalf("first PullRequest = %#v, want draft", draft.PullRequest)
+	}
+
+	ready, err := c.HydratePullRequest(context.Background(), draft)
+	if err != nil {
+		t.Fatalf("HydratePullRequest() ready error = %v", err)
+	}
+	if ready.PullRequest == nil || ready.PullRequest.Draft {
+		t.Fatalf("second PullRequest = %#v, want ready with unchanged head SHA", ready.PullRequest)
+	}
+	if ready.PullRequest.HeadSHA != "head-sha" {
+		t.Fatalf("HeadSHA = %q, want unchanged head-sha", ready.PullRequest.HeadSHA)
 	}
 }
 
