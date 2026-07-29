@@ -1,4 +1,5 @@
 # Package exceptions and exact-file coverage ratchets. Floors only move up.
+github.com/digitaldrywood/detent/internal/config/cmd/configdoc 0 # Config documentation command wiring delegates to the tested generator package.
 github.com/digitaldrywood/detent/internal/orchestrator/backend_capacity.go 90 # Safety-critical backend capacity brake.
 github.com/digitaldrywood/detent/internal/orchestrator/implement_progress.go 90 # Safety-critical no-progress brake.
 github.com/digitaldrywood/detent/internal/orchestrator/ranking.go 90 # Safety-critical dispatch ranking.

@@ -35,7 +35,7 @@ GOSEC ?= go run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
 GOSEC_EXCLUDES ?= G115,G301,G304,G306
 CHECK_LOCK_WAIT ?= 15m
 
-.PHONY: dev generate css css-watch build test test-race test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate check-generated css css-watch build test test-race test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet security check check-unlocked modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -54,6 +54,9 @@ generate:
 	fi
 	@$(MAKE) sqlc
 	@$(MAKE) css
+
+check-generated:
+	go run ./internal/config/cmd/configdoc -root . -check
 
 css:
 	@if [ -f "$(TAILWIND_INPUT)" ]; then \
@@ -127,7 +130,7 @@ check:
 	@common_dir="$$(git rev-parse --path-format=absolute --git-common-dir)" && \
 	go run ./tools/checklock -lock "$$common_dir/detent-validation.lock" -wait-timeout "$(CHECK_LOCK_WAIT)" -- $(MAKE) check-unlocked
 
-check-unlocked: build lint vet nilaway-audit test-race test-cover test-cover-packages
+check-unlocked: check-generated build lint vet nilaway-audit test-race test-cover test-cover-packages
 	@echo "All checks passed."
 
 modernize-check:
