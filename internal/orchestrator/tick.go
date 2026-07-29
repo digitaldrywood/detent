@@ -101,7 +101,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	o.evaluateRelease(ctx, state, now)
 	timing.next("active_runs")
 	o.refreshActiveRuns(ctx, state, now, reserve)
-	if state.Draining {
+	if state.Draining || o.dispatchQuiesced() {
 		return
 	}
 	timing.next("tracker_fetch")

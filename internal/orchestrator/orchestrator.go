@@ -213,6 +213,11 @@ type Orchestrator struct {
 	heartbeats              *heartbeatManager
 	hydrationSkipStreaks    map[string]int
 	hydrationWarned         bool
+	dispatchStartMu         sync.Mutex
+	dispatchStarts          int
+	dispatchStartsDone      chan struct{}
+	dispatchClosed          atomic.Bool
+	projectID               string
 	dispatchGateSampleMu    sync.Mutex
 	dispatchGateSamples     map[dispatchGateSampleKey]time.Time
 	ciTriggerLabelMu        sync.Mutex
@@ -439,6 +444,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		workerProcesses:         workerProcesses,
 		reapWorkerProcess:       reapWorkerProcess,
 		workerReapGrace:         workerReapGrace,
+		projectID:               cfg.Project.ID,
 		capacityController:      capacityController,
 		capacityStatus:          capacityStatus,
 		validatorCapacity:       validatorCapacity,
@@ -678,6 +684,10 @@ func (o *Orchestrator) Drain(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	o.BeginDrain()
+	if err := o.WaitForDispatchQuiesced(ctx); err != nil {
+		return err
+	}
 
 	request := drainRequest{
 		at:    time.Now().UTC(),
@@ -705,6 +715,10 @@ func (o *Orchestrator) ForceQuit(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	o.BeginDrain()
+	if err := o.WaitForDispatchQuiesced(ctx); err != nil {
+		return err
+	}
 
 	request := forceRequest{
 		ctx:   ctx,
@@ -727,6 +741,75 @@ func (o *Orchestrator) ForceQuit(ctx context.Context) error {
 	case err := <-request.reply:
 		return err
 	}
+}
+
+func (o *Orchestrator) BeginDrain() {
+	if o == nil {
+		return
+	}
+
+	o.dispatchStartMu.Lock()
+	if o.dispatchClosed.Swap(true) {
+		o.dispatchStartMu.Unlock()
+		return
+	}
+	o.dispatchStartMu.Unlock()
+	if gate, ok := o.globalDispatchGate.(interface{ PauseDispatch() func() }); ok {
+		gate.PauseDispatch()
+	}
+	if o.globalDispatchGate != nil {
+		o.globalDispatchGate.MarkIdle(o.projectID)
+	}
+}
+
+func (o *Orchestrator) WaitForDispatchQuiesced(ctx context.Context) error {
+	if o == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	o.dispatchStartMu.Lock()
+	done := o.dispatchStartsDone
+	o.dispatchStartMu.Unlock()
+	if done == nil {
+		return nil
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
+}
+
+func (o *Orchestrator) beginDispatchStart() bool {
+	o.dispatchStartMu.Lock()
+	defer o.dispatchStartMu.Unlock()
+	if o.dispatchQuiesced() {
+		return false
+	}
+	if o.dispatchStarts == 0 {
+		o.dispatchStartsDone = make(chan struct{})
+	}
+	o.dispatchStarts++
+	return true
+}
+
+func (o *Orchestrator) finishDispatchStart() {
+	o.dispatchStartMu.Lock()
+	defer o.dispatchStartMu.Unlock()
+	o.dispatchStarts--
+	if o.dispatchStarts == 0 {
+		close(o.dispatchStartsDone)
+		o.dispatchStartsDone = nil
+	}
+}
+
+func (o *Orchestrator) dispatchQuiesced() bool {
+	return o == nil || o.dispatchClosed.Load()
 }
 
 func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ticker *time.Ticker) {

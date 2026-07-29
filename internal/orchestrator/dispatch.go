@@ -127,7 +127,7 @@ func normalizeWorkerHosts(hosts []string) []string {
 func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
 	o.beginGlobalProjectCycle()
 	defer o.endGlobalProjectCycle()
-	if state.Draining {
+	if state.Draining || o.dispatchQuiesced() {
 		return
 	}
 	o.observePullRequestHydrationRecovery(state, issues, now)
@@ -200,7 +200,7 @@ func (o *Orchestrator) hydrateDispatchIssue(ctx context.Context, issue connector
 func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
 	o.beginGlobalProjectCycle()
 	defer o.endGlobalProjectCycle()
-	if state.Draining {
+	if state.Draining || o.dispatchQuiesced() {
 		return
 	}
 	for _, issue := range issues {
@@ -234,6 +234,7 @@ func (o *Orchestrator) dispatchable(issue connector.Issue, state *State, now tim
 }
 
 const (
+	dispatchIssueFailureDraining              = "dispatch_draining"
 	dispatchIssueFailureLocalSlotUnavailable  = "local_slot_unavailable"
 	dispatchIssueFailureWorkerHostUnavailable = "worker_host_unavailable"
 	dispatchIssueFailureGlobalSlotUnavailable = "global_slot_unavailable"
@@ -269,6 +270,13 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	now time.Time,
 	preferredWorkerHost string,
 ) dispatchIssueOutcome {
+	if !o.beginDispatchStart() {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}
+	}
+	defer o.finishDispatchStart()
+	if state.Draining {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}
+	}
 	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubRESTPaused}
 	}
