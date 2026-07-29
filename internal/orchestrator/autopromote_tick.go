@@ -1216,11 +1216,11 @@ func mergeWorkerRepositoryKey(issue connector.Issue) string {
 	return strings.ToLower(strings.TrimSpace(pullRequestRepository(issue)))
 }
 
-func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []connector.Issue) []connector.Issue {
+func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []connector.Issue, now time.Time) []connector.Issue {
 	if o.dispatchQuiesced() {
 		return nil
 	}
-	o.logMergeWorkerQueueCycle(issues)
+	o.logMergeWorkerQueueCycle(state, issues, now)
 	candidates := o.staleMergingQueueDispatchCandidates(state, issues)
 	if len(candidates) == 0 {
 		return nil
@@ -1264,26 +1264,74 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 	return out
 }
 
-func (o *Orchestrator) logMergeWorkerQueueCycle(issues []connector.Issue) {
+func (o *Orchestrator) logMergeWorkerQueueCycle(state *State, issues []connector.Issue, now time.Time) {
 	if o.logger == nil {
 		return
 	}
 	queueDepth := 0
 	readyCount := 0
+	queueIssueIDs := map[string]struct{}{}
 	for _, issue := range issues {
 		if !mergeWorkerIssue(issue) {
 			continue
 		}
 		queueDepth++
+		queueIssueIDs[strings.TrimSpace(issue.ID)] = struct{}{}
 		if mergeWorkerHeadReady(issue) {
 			readyCount++
 		}
 	}
-	o.logger.Info(
-		"merge_worker_queue_cycle",
+	projectStats := o.projectStateSlotStats(connector.Issue{State: autoPromoteMergingState}, state)
+	occupant, occupantCount := mergeWorkerLaneOccupant(state)
+	queuedBehind := queueDepth
+	for issueID := range queueIssueIDs {
+		if staleMergingPullRequestDispatchActive(state, issueID) {
+			queuedBehind--
+		}
+	}
+	if queuedBehind < 0 {
+		queuedBehind = 0
+	}
+	attrs := []any{
 		"queue_depth", queueDepth,
 		"ready_count", readyCount,
-	)
+		"lane_occupied", occupantCount > 0,
+		"lane_saturated", projectStats.available <= 0,
+		"lane_occupant_count", occupantCount,
+		"queued_behind", queuedBehind,
+	}
+	if occupantCount > 0 {
+		occupancySeconds := int64(0)
+		if !occupant.StartedAt.IsZero() && !now.Before(occupant.StartedAt) {
+			occupancySeconds = int64(now.Sub(occupant.StartedAt) / time.Second)
+		}
+		attrs = append(attrs,
+			"occupying_issue_id", strings.TrimSpace(occupant.Issue.ID),
+			"occupying_issue_identifier", strings.TrimSpace(occupant.Issue.Identifier),
+			"occupying_issue_number", issueNumberFromIdentifier(occupant.Issue.Identifier),
+			"occupancy_seconds", occupancySeconds,
+		)
+	}
+	o.logger.Info("merge_worker_queue_cycle", attrs...)
+}
+
+func mergeWorkerLaneOccupant(state *State) (Running, int) {
+	if state == nil {
+		return Running{}, 0
+	}
+	var occupant Running
+	count := 0
+	for _, running := range state.Running {
+		if !mergeWorkerIssue(running.Issue) {
+			continue
+		}
+		count++
+		if occupant.Issue.ID == "" ||
+			(!running.StartedAt.IsZero() && (occupant.StartedAt.IsZero() || running.StartedAt.Before(occupant.StartedAt))) {
+			occupant = running
+		}
+	}
+	return occupant, count
 }
 
 func prioritizeReadyMergingIssues(issues []connector.Issue) {

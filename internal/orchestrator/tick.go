@@ -179,7 +179,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		state.Pipeline = overlayNativeMergeQueueIssues(state.Pipeline, mergeQueueIssues)
 		fetched.candidates = mergeIssueSlices(
 			fetched.candidates,
-			o.mergeWorkerDispatchCandidates(state, mergeQueueIssues),
+			o.mergeWorkerDispatchCandidates(state, mergeQueueIssues, now),
 		)
 	}
 	fetched = filterReconciledTickIssues(

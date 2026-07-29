@@ -33,12 +33,8 @@ func (o *Orchestrator) observedStatusFetchStates() []string {
 	return displayStateNames(states)
 }
 
-func (o *Orchestrator) observedStatusFetchStatesForTick(state *State) []string {
-	states := o.observedStatusFetchStates()
-	if !autoPromoteUsesMergePassState(o.cfg.AutoPromote) || o.mergeWorkerLocalSlotsAvailable(state) {
-		return states
-	}
-	return statesWithoutState(states, autoPromoteMergingState)
+func (o *Orchestrator) observedStatusFetchStatesForTick(_ *State) []string {
+	return o.observedStatusFetchStates()
 }
 
 func (o *Orchestrator) mergeWorkerLocalSlotsAvailable(state *State) bool {

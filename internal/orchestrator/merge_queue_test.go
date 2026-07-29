@@ -67,7 +67,7 @@ func TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch(t
 			t.Fatalf("issue %q merge queue entry missing", issue.ID)
 		}
 	}
-	if candidates := orch.mergeWorkerDispatchCandidates(&state, queued); len(candidates) != 0 {
+	if candidates := orch.mergeWorkerDispatchCandidates(&state, queued, now); len(candidates) != 0 {
 		t.Fatalf("merge worker candidates = %#v, want native queue entries excluded", candidates)
 	}
 }
@@ -225,7 +225,7 @@ func TestDelegateNativeMergeQueueIssuesFallsBackWhenCachedQueueDisappears(t *tes
 	if second[0].PullRequest == nil || second[0].PullRequest.MergeQueueEntry != nil {
 		t.Fatalf("pull request = %#v, want stale queue entry cleared", second[0].PullRequest)
 	}
-	candidates := orch.mergeWorkerDispatchCandidates(&state, second)
+	candidates := orch.mergeWorkerDispatchCandidates(&state, second, now.Add(nativeMergeQueueEntryRefresh))
 	if len(candidates) != 1 || candidates[0].ID != issue.ID {
 		t.Fatalf("merge worker candidates = %#v, want fallback issue %q", candidates, issue.ID)
 	}
@@ -260,7 +260,7 @@ func TestDelegateNativeMergeQueueIssuesRecoversExistingEntriesAfterRestart(t *te
 	if len(tracker.enqueued) != 0 {
 		t.Fatalf("enqueued = %#v, want existing entries observed without mutation", tracker.enqueued)
 	}
-	if candidates := orch.mergeWorkerDispatchCandidates(&state, queued); len(candidates) != 0 {
+	if candidates := orch.mergeWorkerDispatchCandidates(&state, queued, time.Now()); len(candidates) != 0 {
 		t.Fatalf("merge worker candidates = %#v, want recovered queue entries excluded", candidates)
 	}
 }
@@ -292,7 +292,7 @@ func TestDelegateNativeMergeQueueIssuesFallsBackWithoutNativeQueue(t *testing.T)
 	if len(tracker.enqueued) != 0 {
 		t.Fatalf("enqueued = %#v, want no native enqueue", tracker.enqueued)
 	}
-	candidates := orch.mergeWorkerDispatchCandidates(&state, queued)
+	candidates := orch.mergeWorkerDispatchCandidates(&state, queued, time.Now())
 	if len(candidates) != 1 || candidates[0].ID != issue.ID {
 		t.Fatalf("merge worker candidates = %#v, want fallback issue %q", candidates, issue.ID)
 	}
