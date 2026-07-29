@@ -90,6 +90,7 @@ type Connector struct {
 }
 
 var _ connector.Connector = (*Connector)(nil)
+var _ connector.CandidateReader = (*Connector)(nil)
 var _ connector.CapabilityReporter = (*Connector)(nil)
 var _ connector.IssueCommentReader = (*Connector)(nil)
 
@@ -109,6 +110,17 @@ func NewConnector(cfg Config) (*Connector, error) {
 
 func (c *Connector) Name() string {
 	return connector.BackendLinear.String()
+}
+
+func (*Connector) CandidateCapabilities() connector.CandidateCapabilities {
+	return connector.CandidateCapabilitiesFor(connector.BackendLinear, "")
+}
+
+func (c *Connector) ReadCandidates(_ context.Context, request connector.CandidateRequest) (connector.CandidateResult, error) {
+	if err := request.Validate(c.CandidateCapabilities()); err != nil {
+		return connector.CandidateResult{}, err
+	}
+	return connector.CandidateResult{}, connector.ErrNotImplemented
 }
 
 func (*Connector) Capabilities() connector.Capabilities {

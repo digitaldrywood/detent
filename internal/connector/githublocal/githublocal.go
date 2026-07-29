@@ -92,6 +92,7 @@ type Connector struct {
 var _ githubBackend = (*githubconnector.Connector)(nil)
 var _ localBackend = (*local.Connector)(nil)
 var _ connector.Connector = (*Connector)(nil)
+var _ connector.CandidateReader = (*Connector)(nil)
 var _ connector.Authenticator = (*Connector)(nil)
 var _ connector.AuthHealthReporter = (*Connector)(nil)
 var _ connector.CandidateIssuesByStatesFetcher = (*Connector)(nil)
@@ -279,6 +280,29 @@ func (c *Connector) ConditionalPollingEnabled() bool {
 	}
 	poller, ok := c.github.(connector.ConditionalPoller)
 	return ok && poller.ConditionalPollingEnabled()
+}
+
+func (*Connector) CandidateCapabilities() connector.CandidateCapabilities {
+	return connector.CandidateCapabilitiesFor(connector.BackendGitHubLocal, "")
+}
+
+func (c *Connector) ReadCandidates(ctx context.Context, request connector.CandidateRequest) (connector.CandidateResult, error) {
+	if err := request.Validate(c.CandidateCapabilities()); err != nil {
+		return connector.CandidateResult{}, err
+	}
+	reader, ok := c.local.(connector.CandidateReader)
+	if !ok {
+		return connector.CandidateResult{}, connector.ErrCandidateSelectorUnsupported
+	}
+	result, err := reader.ReadCandidates(ctx, request)
+	if err != nil {
+		return connector.CandidateResult{}, err
+	}
+	issues, err := c.hydrateLocalIssues(ctx, result.Issues)
+	if err != nil {
+		return connector.CandidateResult{}, err
+	}
+	return connector.NewCandidateResult(issues, request, result.PagesRead, result.Truncated), nil
 }
 
 func (c *Connector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {

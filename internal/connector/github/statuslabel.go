@@ -553,10 +553,18 @@ func restRepositoryLabelsListPath(repo pullRequestRepo) string {
 }
 
 func restRepositoryIssuesByLabelPath(repo pullRequestRepo, labelName string, page int) string {
+	return restRepositoryIssuesByLabelPagePath(repo, labelName, page, repositoryIssuesPageSize, false)
+}
+
+func restRepositoryIssuesByLabelPagePath(repo pullRequestRepo, labelName string, page int, pageSize int, deterministic bool) string {
 	values := url.Values{}
 	values.Set("state", "all")
 	values.Set("labels", labelName)
-	values.Set("per_page", strconv.Itoa(repositoryIssuesPageSize))
+	if deterministic {
+		values.Set("sort", "created")
+		values.Set("direction", "asc")
+	}
+	values.Set("per_page", strconv.Itoa(pageSize))
 	values.Set("page", strconv.Itoa(page))
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/issues?" + values.Encode()
 }

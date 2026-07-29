@@ -60,6 +60,7 @@ type Connector struct {
 }
 
 var _ connector.Connector = (*Connector)(nil)
+var _ connector.CandidateReader = (*Connector)(nil)
 var _ connector.InstanceIdentifier = (*Connector)(nil)
 var _ connector.IssueChildrenResolver = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
@@ -89,6 +90,35 @@ func New(cfg Config) *Connector {
 
 func (c *Connector) Name() string {
 	return connector.BackendMemory.String()
+}
+
+func (*Connector) CandidateCapabilities() connector.CandidateCapabilities {
+	return connector.CandidateCapabilitiesFor(connector.BackendMemory, "")
+}
+
+func (c *Connector) ReadCandidates(_ context.Context, request connector.CandidateRequest) (connector.CandidateResult, error) {
+	capabilities := c.CandidateCapabilities()
+	if err := request.Validate(capabilities); err != nil {
+		return connector.CandidateResult{}, err
+	}
+
+	wantedStates := make(map[string]struct{}, len(request.States))
+	for _, stateName := range request.States {
+		if stateName = normalizeState(stateName); stateName != "" {
+			wantedStates[stateName] = struct{}{}
+		}
+	}
+
+	c.mu.RLock()
+	issues := make([]connector.Issue, 0, min(len(c.issues), request.ProbeLimit()))
+	for _, issue := range c.issues {
+		if _, ok := wantedStates[normalizeState(issue.State)]; ok {
+			issues = append(issues, cloneIssue(issue))
+		}
+	}
+	c.mu.RUnlock()
+
+	return connector.NewCandidateResult(issues, request, 1, false), nil
 }
 
 func (c *Connector) InstanceLogin() string {

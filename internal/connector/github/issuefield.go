@@ -756,6 +756,18 @@ func restIssueFieldValueString(value restIssueFieldValue) string {
 }
 
 func restIssueFieldSearchPath(repo pullRequestRepo, fieldName string, values []string, hint connector.IssueFilterHint, page int) string {
+	return restIssueFieldSearchPagePath(repo, fieldName, values, hint, page, issueSearchPageSize, false)
+}
+
+func restIssueFieldSearchPagePath(
+	repo pullRequestRepo,
+	fieldName string,
+	values []string,
+	hint connector.IssueFilterHint,
+	page int,
+	pageSize int,
+	deterministic bool,
+) string {
 	params := url.Values{}
 	terms := []string{
 		"repo:" + repo.Owner + "/" + repo.Name,
@@ -769,7 +781,11 @@ func restIssueFieldSearchPath(repo pullRequestRepo, fieldName string, values []s
 	if githubSearchNeedsAdvanced(filterQualifiers) {
 		params.Set("advanced_search", "true")
 	}
-	params.Set("per_page", strconv.Itoa(issueSearchPageSize))
+	if deterministic {
+		params.Set("sort", "created")
+		params.Set("order", "asc")
+	}
+	params.Set("per_page", strconv.Itoa(pageSize))
 	params.Set("page", strconv.Itoa(page))
 	return "/search/issues?" + params.Encode()
 }

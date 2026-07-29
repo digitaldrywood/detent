@@ -64,6 +64,7 @@ type Connector struct {
 }
 
 var _ connector.Connector = (*Connector)(nil)
+var _ connector.CandidateReader = (*Connector)(nil)
 var _ connector.CandidateIssuesByStatesFetcher = (*Connector)(nil)
 var _ connector.IssuesByStatesLimiter = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
@@ -168,6 +169,21 @@ func escapeSQLiteURIPath(path string) string {
 
 func (c *Connector) Name() string {
 	return connector.BackendLocalSQLite.String()
+}
+
+func (*Connector) CandidateCapabilities() connector.CandidateCapabilities {
+	return connector.CandidateCapabilitiesFor(connector.BackendLocalSQLite, "")
+}
+
+func (c *Connector) ReadCandidates(ctx context.Context, request connector.CandidateRequest) (connector.CandidateResult, error) {
+	if err := request.Validate(c.CandidateCapabilities()); err != nil {
+		return connector.CandidateResult{}, err
+	}
+	issues, err := c.fetchIssuesWithOrder(ctx, request.States, request.ProbeLimit(), true)
+	if err != nil {
+		return connector.CandidateResult{}, err
+	}
+	return connector.NewCandidateResult(issues, request, 1, false), nil
 }
 
 func (c *Connector) Close() error {
@@ -963,6 +979,10 @@ on conflict(project_id, id) do nothing`,
 }
 
 func (c *Connector) fetchIssues(ctx context.Context, states []string, limit int) ([]connector.Issue, error) {
+	return c.fetchIssuesWithOrder(ctx, states, limit, false)
+}
+
+func (c *Connector) fetchIssuesWithOrder(ctx context.Context, states []string, limit int, candidateOrder bool) ([]connector.Issue, error) {
 	query := `select project_id, id, identifier, number, title, description, priority, state, url,
 author_id, assignee_id, assignees_json, labels_json, fields_json, metadata_json,
 deliverable_kind, deliverable_path, deliverable_review_url, deliverable_validation_status,
@@ -987,7 +1007,11 @@ where project_id = ?`
 		// case-insensitively so items stay visible either way.
 		query += " and state collate nocase in (" + strings.Join(placeholders, ",") + ")" // #nosec G202 -- only generated question-mark placeholders are concatenated; values remain bound parameters.
 	}
-	query += " order by updated_at desc, id asc"
+	if candidateOrder {
+		query += " order by created_at is null asc, created_at asc, lower(identifier) asc, identifier asc, id asc"
+	} else {
+		query += " order by updated_at desc, id asc"
+	}
 	if limit > 0 {
 		query += " limit ?"
 		args = append(args, limit)

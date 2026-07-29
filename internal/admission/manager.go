@@ -56,7 +56,7 @@ type Store interface {
 }
 
 type IssueStore interface {
-	FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error)
+	connector.CandidateReader
 	FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error)
 	CreateComment(context.Context, string, string) error
 }
@@ -318,10 +318,19 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		runErr = errors.Join(runErr, release())
 	}()
 
-	candidates, err := settings.Issues.FetchIssuesByStates(ctx, settings.Config.Sources.States)
+	candidateResult, err := settings.Issues.ReadCandidates(ctx, connector.CandidateRequest{
+		Selector: connector.CandidateSelectorStates,
+		States:   settings.Config.Sources.States,
+		Limit:    candidateReadLimit(settings.Config.MaxCandidatesPerRun),
+		PageSize: connector.DefaultCandidatePageSize,
+	})
 	if err != nil {
 		return result, fmt.Errorf("fetch backlog admission candidates: %w", err)
 	}
+	if candidateResult.Truncated {
+		result.Truncated["candidate_reader"]++
+	}
+	candidates := candidateResult.Issues
 	result.CandidatesFound = len(candidates)
 	candidates = filterCandidates(candidates, settings.Config, result.Skipped)
 	sortCandidates(candidates, settings)
@@ -394,6 +403,10 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		proposals = proposals[:available]
 	}
 	return m.executeProposals(ctx, settings, candidates, proposals, result, commentsRemaining, startedAt)
+}
+
+func candidateReadLimit(maxCandidates int) int {
+	return max(maxCandidates, connector.DefaultCandidatePageSize)
 }
 
 func (m *Manager) reconcileOpenProposals(

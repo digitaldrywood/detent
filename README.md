@@ -1201,9 +1201,15 @@ backlog_admission:
   proposal_expiry_days: 7
 ```
 
-State names come from the project's workflow. Candidate ordering is stable and
-the candidate cap is applied before agent evaluation. Author and excluded-label
-filters are applied locally after fetching source-state issues. A run defers
+State names come from the project's workflow. Admission reads them through the
+candidate-reader contract: the tracker declares selector support, reads pages
+inside a hard per-run bound, filters the requested states exactly, sorts by
+creation time and stable issue identity before applying the result limit, and
+reports whether the source was truncated. Admission keeps a finite over-read
+window of at least 100 issues so its existing priority ordering, author filter,
+excluded-label filter, and `max_candidates_per_run` cap still apply after the
+connector read. A reader truncation is recorded as `candidate_reader` in the
+run ledger instead of making the bounded result look complete. A run defers
 instead of queueing when project or fleet capacity is unavailable or its agent
 would exceed the configured daily budget.
 
@@ -1242,9 +1248,22 @@ without that correlation remains an unattributed transition and does not accept
 the proposal. Rejection, expiry, and supersession are separate outcomes:
 silence can expire a proposal but never accepts or rejects one.
 
-GitHub, `github_local`, `local_sqlite`, and `memory` trackers support
-state-based admission. Linear configurations fail validation because their
-state readers are not implemented. `authors.allow` on `local_sqlite` or
+The only admission selector currently defined is `sources.states`. Capability
+is declared per tracker and per GitHub status source:
+
+| Tracker | Status source | `sources.states` |
+| --- | --- | --- |
+| `github` | `project_v2` | Supported |
+| `github` | `issue_field` | Supported |
+| `github` | `label` | Supported |
+| `github_local` | local SQLite status | Supported |
+| `local_sqlite` | local SQLite status | Supported |
+| `memory` | process-local status | Supported |
+| `linear` | Linear workflow state | Unsupported |
+
+An enabled admission configuration fails validation when its tracker/status
+source does not declare the selector, so Linear never validates cleanly and
+then fails on its first scheduled read. `authors.allow` on `local_sqlite` or
 `memory` produces a doctor warning because those trackers do not discover
 authors. ProjectV2 configurations using `exclude_labels` warn that only the
 first 20 issue labels are fetched. The memory tracker is evaluation-only across

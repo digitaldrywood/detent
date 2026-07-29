@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/robfig/cron/v3"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 const (
@@ -106,12 +108,18 @@ func (a BacklogAdmission) Validate(prefix string, states []string, tracker Track
 	validatePositive(prefix+".max_proposals_per_run", a.MaxProposalsPerRun, &problems)
 	validatePositive(prefix+".max_open_proposals", a.MaxOpenProposals, &problems)
 	validatePositive(prefix+".proposal_expiry_days", a.ProposalExpiryDays, &problems)
-	switch tracker.Kind {
-	case TrackerGitHub, TrackerGitHubLocal, TrackerLocalSQLite, TrackerMemory:
-	case TrackerLinear:
-		problems = append(problems, prefix+".enabled does not support tracker.kind linear because FetchIssuesByStates is not implemented")
-	default:
-		problems = append(problems, prefix+".enabled requires tracker.kind github, github_local, local_sqlite, or memory")
+	capabilities := connector.CandidateCapabilitiesFor(connector.Backend(tracker.Kind), tracker.GitHubStatusSource)
+	if !capabilities.Supports(connector.CandidateSelectorStates) {
+		gap := prefix + ".sources.states requires candidate selector states, but tracker.kind " + tracker.Kind
+		if tracker.Kind == TrackerGitHub {
+			gap += " with github_status_source " + tracker.GitHubStatusSource
+		}
+		if tracker.Kind == TrackerLinear {
+			gap += " cannot serve it because FetchIssuesByStates is not implemented"
+		} else {
+			gap += " does not declare it"
+		}
+		problems = append(problems, gap)
 	}
 	return problems
 }
