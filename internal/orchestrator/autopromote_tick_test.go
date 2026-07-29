@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -289,8 +290,8 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 			if len(tracker.fetchByStatesRequests) != 1 {
 				t.Fatalf("FetchIssuesByStates() calls = %d, want 1", len(tracker.fetchByStatesRequests))
 			}
-			if !autoPromoteTickStatesEqual(tracker.fetchByStatesRequests[0], []string{"Blocked", "Human Review"}) {
-				t.Fatalf("FetchIssuesByStates() states = %#v, want Blocked/Human Review", tracker.fetchByStatesRequests[0])
+			if !autoPromoteTickStatesEqual(tracker.fetchByStatesRequests[0], []string{"Blocked", "Human Review", "Merging"}) {
+				t.Fatalf("FetchIssuesByStates() states = %#v, want Blocked/Human Review/Merging", tracker.fetchByStatesRequests[0])
 			}
 			if len(tt.wantCommentFragments) == 0 {
 				if len(tracker.comments) != 0 {
@@ -4311,7 +4312,7 @@ func TestMergeWorkerDispatchCandidatesPreservesScheduledRetry(t *testing.T) {
 	}
 	orch := &Orchestrator{cfg: cfg}
 
-	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{issue})
+	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{issue}, now)
 	if len(got) != 0 {
 		t.Fatalf("mergeWorkerDispatchCandidates() = %#v, want none while retry is scheduled", got)
 	}
@@ -4357,7 +4358,7 @@ func TestMergeWorkerDispatchCandidatesPrefersReadyHead(t *testing.T) {
 		logger: slog.New(slog.NewTextHandler(&logs, nil)),
 	}
 
-	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{waiting, ready})
+	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{waiting, ready}, now)
 	if len(got) != 1 || got[0].ID != ready.ID {
 		t.Fatalf("mergeWorkerDispatchCandidates() = %#v, want ready issue %q", got, ready.ID)
 	}
@@ -4369,6 +4370,108 @@ func TestMergeWorkerDispatchCandidatesPrefersReadyHead(t *testing.T) {
 		if !strings.Contains(logs.String(), fragment) {
 			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
 		}
+	}
+}
+
+func TestLogMergeWorkerQueueCycle(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 3,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		ActiveStates:   []string{"Merging"},
+		TerminalStates: []string{"Done"},
+	})
+	readyIssue := func(id, identifier string, number int) connector.Issue {
+		issue := autoPromoteTickIssue(id, []string{"bug"}, &connector.PullRequest{
+			Number:         number,
+			URL:            fmt.Sprintf("https://github.test/digitaldrywood/detent/pull/%d", number),
+			State:          "OPEN",
+			MergeableState: "clean",
+			CIStatus:       "success",
+			HeadSHA:        fmt.Sprintf("head-%d", number),
+		})
+		issue.State = autoPromoteMergingState
+		issue.Identifier = identifier
+		return issue
+	}
+	occupant := readyIssue("issue-occupant", "digitaldrywood/detent#1540", 1550)
+	firstWaiting := readyIssue("issue-first-waiting", "digitaldrywood/detent#1541", 1551)
+	secondWaiting := readyIssue("issue-second-waiting", "digitaldrywood/detent#1542", 1552)
+
+	tests := []struct {
+		name        string
+		state       State
+		issues      []connector.Issue
+		want        []string
+		doesNotWant []string
+	}{
+		{
+			name: "saturated lane with backlog",
+			state: func() State {
+				state := newState(cfg)
+				state.Running[occupant.ID] = Running{
+					Issue:     cloneIssue(occupant),
+					StartedAt: now.Add(-5 * time.Minute),
+				}
+				return state
+			}(),
+			issues: []connector.Issue{occupant, firstWaiting, secondWaiting},
+			want: []string{
+				"queue_depth=3",
+				"ready_count=3",
+				"lane_occupied=true",
+				"lane_saturated=true",
+				"lane_occupant_count=1",
+				"queued_behind=2",
+				"occupying_issue_id=issue-occupant",
+				"occupying_issue_identifier=digitaldrywood/detent#1540",
+				"occupying_issue_number=1540",
+				"occupancy_seconds=300",
+			},
+		},
+		{
+			name:   "free lane with empty queue",
+			state:  newState(cfg),
+			issues: nil,
+			want: []string{
+				"queue_depth=0",
+				"ready_count=0",
+				"lane_occupied=false",
+				"lane_saturated=false",
+				"lane_occupant_count=0",
+				"queued_behind=0",
+			},
+			doesNotWant: []string{"occupying_issue_id", "occupancy_seconds"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var logs strings.Builder
+			orch := &Orchestrator{
+				cfg:    cfg,
+				logger: slog.New(slog.NewTextHandler(&logs, nil)),
+			}
+
+			orch.logMergeWorkerQueueCycle(&tt.state, tt.issues, now)
+
+			for _, fragment := range tt.want {
+				if !strings.Contains(logs.String(), fragment) {
+					t.Errorf("logs %q missing fragment %q", logs.String(), fragment)
+				}
+			}
+			for _, fragment := range tt.doesNotWant {
+				if strings.Contains(logs.String(), fragment) {
+					t.Errorf("logs %q contain fragment %q", logs.String(), fragment)
+				}
+			}
+		})
 	}
 }
 
@@ -4454,7 +4557,7 @@ func TestMergeWorkerDispatchCandidatesSelectsOneQueueHeadPerRepository(t *testin
 	state := newState(cfg)
 	orch := &Orchestrator{cfg: cfg}
 
-	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{phoneSibling, outlet, phoneHead})
+	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{phoneSibling, outlet, phoneHead}, now)
 	gotIDs := make([]string, 0, len(got))
 	for _, issue := range got {
 		gotIDs = append(gotIDs, issue.ID)
@@ -4517,7 +4620,7 @@ func TestMergeWorkerDispatchCandidatesConsumesNotReadyQueueHeadRepository(t *tes
 	state := newState(cfg)
 	orch := &Orchestrator{cfg: cfg}
 
-	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{phoneSibling, outlet, phoneHead})
+	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{phoneSibling, outlet, phoneHead}, now)
 	gotIDs := make([]string, 0, len(got))
 	for _, issue := range got {
 		gotIDs = append(gotIDs, issue.ID)
@@ -4569,7 +4672,7 @@ func TestMergeWorkerDispatchCandidatesWaitsWhenMergingLaneFull(t *testing.T) {
 		logger: slog.New(slog.NewTextHandler(&logs, nil)),
 	}
 
-	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{waiting})
+	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{waiting}, now)
 	if len(got) != 0 {
 		t.Fatalf("mergeWorkerDispatchCandidates() = %#v, want none while Merging lane is full", got)
 	}
@@ -4591,7 +4694,7 @@ func TestMergeWorkerDispatchCandidatesWaitsWhenMergingLaneFull(t *testing.T) {
 	}
 }
 
-func TestFetchTickIssuesSkipsMergingStatusHydrationWhenMergingLaneFull(t *testing.T) {
+func TestFetchTickIssuesIncludesMergingStatusHydrationWhenMergingLaneFull(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 25, 21, 5, 0, 0, time.UTC)
@@ -4654,14 +4757,21 @@ func TestFetchTickIssuesSkipsMergingStatusHydrationWhenMergingLaneFull(t *testin
 	if len(tracker.fetchByStatesRequests) != 1 {
 		t.Fatalf("FetchIssuesByStates requests = %#v, want one observed status fetch", tracker.fetchByStatesRequests)
 	}
+	mergingFetched := false
 	for _, stateName := range tracker.fetchByStatesRequests[0] {
 		if normalizeState(stateName) == normalizeState(autoPromoteMergingState) {
-			t.Fatalf("FetchIssuesByStates states = %#v, want Merging omitted while lane is full", tracker.fetchByStatesRequests[0])
+			mergingFetched = true
 		}
+	}
+	if !mergingFetched {
+		t.Fatalf("FetchIssuesByStates states = %#v, want Merging included while lane is full", tracker.fetchByStatesRequests[0])
+	}
+	if got := len(issuesInStates(fetched.status, []string{autoPromoteMergingState})); got != 2 {
+		t.Fatalf("Merging status issue count = %d, want 2", got)
 	}
 }
 
-func TestTickPreservesDueMergingRetryWhenLaneFullAndMergingFetchOmitted(t *testing.T) {
+func TestTickPreservesDueMergingRetryWhenLaneFullAndCandidateFetchOmitted(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 25, 21, 7, 0, 0, time.UTC)
