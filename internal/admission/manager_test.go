@@ -542,6 +542,57 @@ func TestManagerFiltersLocallyAndRejectsFabricatedCriteria(t *testing.T) {
 	}
 }
 
+func TestManagerUnionsLabelCandidatesAndSkipsIneligibleStates(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	stateAndLabel := admissionIssueFixture("both", "DD-1", 1, now)
+	stateAndLabel.Labels = []string{"sentry"}
+	labelOnly := admissionIssueFixture("label", "DD-2", 2, now.Add(time.Minute))
+	labelOnly.State = "Needs Triage"
+	labelOnly.Labels = []string{"needs-decision"}
+	target := admissionIssueFixture("target", "DD-6", 6, now.Add(5*time.Minute))
+	target.State = "Todo"
+	target.Labels = []string{"sentry"}
+	blocked := admissionIssueFixture("blocked", "DD-3", 3, now.Add(2*time.Minute))
+	blocked.State = "Blocked"
+	blocked.Labels = []string{"sentry"}
+	terminal := admissionIssueFixture("terminal", "DD-4", 4, now.Add(3*time.Minute))
+	terminal.State = "Done"
+	terminal.Labels = []string{"sentry"}
+	excluded := admissionIssueFixture("excluded", "DD-5", 5, now.Add(4*time.Minute))
+	excluded.Labels = []string{"sentry", "skip"}
+	tracker := memory.New(memory.Config{
+		Issues:   []connector.Issue{stateAndLabel, labelOnly, target, blocked, terminal, excluded},
+		Stateful: true,
+	})
+	backend := openManagerTestStore(t)
+	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	settings := admissionTestSettings(tracker, agent)
+	settings.Config.Sources.Labels = []string{"sentry", "needs-decision"}
+	settings.Config.ExcludeLabels = []string{"skip"}
+	settings.Config.MaxProposalsPerRun = 10
+	settings.TerminalStates = []string{"Done"}
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+
+	result, err := manager.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if result.CandidatesFound != 6 || result.Candidates != 2 || len(result.Proposals) != 2 {
+		t.Fatalf("result = %#v, want deduplicated union with two eligible candidates", result)
+	}
+	if result.Skipped["label_target_state"] != 1 ||
+		result.Skipped["label_blocked_state"] != 1 ||
+		result.Skipped["label_terminal_state"] != 1 ||
+		result.Skipped["excluded_label"] != 1 {
+		t.Fatalf("skipped = %#v", result.Skipped)
+	}
+	if got, want := agent.candidateIDs[0], []string{"both", "label"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("candidate ids = %#v, want %#v", got, want)
+	}
+}
+
 func TestManagerLocalSQLiteStatesOnlyEndToEnd(t *testing.T) {
 	t.Parallel()
 

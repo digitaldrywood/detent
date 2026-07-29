@@ -1194,6 +1194,7 @@ backlog_admission:
   schedule: "0 6 * * 1-5"
   sources:
     states: [Backlog]
+    labels: []
   target_state: Todo
   criteria_section: "Admission criteria"
   exclude_labels: []
@@ -1205,17 +1206,28 @@ backlog_admission:
   proposal_expiry_days: 7
 ```
 
-State names come from the project's workflow. Admission reads them through the
-candidate-reader contract: the tracker declares selector support, reads pages
-inside a hard per-run bound, filters the requested states exactly, sorts by
-creation time and stable issue identity before applying the result limit, and
-reports whether the source was truncated. Admission keeps a finite over-read
-window of at least 100 issues so its existing priority ordering, author filter,
-excluded-label filter, and `max_candidates_per_run` cap still apply after the
-connector read. A reader truncation is recorded as `candidate_reader` in the
-run ledger instead of making the bounded result look complete. A run defers
-instead of queueing when project or fleet capacity is unavailable or its agent
-would exceed the configured daily budget.
+State names come from the project's workflow. `sources.labels` selects issues
+carrying any configured non-status label, independent of workflow state. It
+defaults to empty and does nothing until configured. Labels beginning with
+`tracker.status_label_prefix` are rejected; workflow state selection belongs in
+`sources.states`.
+
+Admission reads each enabled selector through the candidate-reader contract.
+The tracker declares selector support, reads pages inside a hard per-run bound,
+filters the request exactly, sorts by creation time and stable issue identity
+before applying the result limit, and reports whether the source was truncated.
+Selector results form a deduplicated union. Issues already in `target_state`,
+and terminal or blocked issues reached only through `sources.labels`, are
+skipped and counted because label selection does not override the workflow
+state machine. `exclude_labels` is applied after the union.
+
+Admission keeps a finite over-read window of at least 100 issues so its existing
+priority ordering, author filter, excluded-label filter, and
+`max_candidates_per_run` cap still apply after the connector read. A reader
+truncation is recorded as `candidate_reader` in the run ledger instead of making
+the bounded result look complete. A run defers instead of queueing when project
+or fleet capacity is unavailable or its agent would exceed the configured daily
+budget.
 
 Criteria live in one named section of the shared `WORKFLOW.md`, never
 `WORKFLOW.local.md`. Heading matching is case-insensitive, accepts ATX headings
@@ -1252,27 +1264,27 @@ without that correlation remains an unattributed transition and does not accept
 the proposal. Rejection, expiry, and supersession are separate outcomes:
 silence can expire a proposal but never accepts or rejects one.
 
-The only admission selector currently defined is `sources.states`. Capability
-is declared per tracker and per GitHub status source:
+Capability is declared per tracker and per GitHub status source:
 
-| Tracker | Status source | `sources.states` |
-| --- | --- | --- |
-| `github` | `project_v2` | Supported |
-| `github` | `issue_field` | Supported |
-| `github` | `label` | Supported |
-| `github_local` | local SQLite status | Supported |
-| `local_sqlite` | local SQLite status | Supported |
-| `memory` | process-local status | Supported |
-| `linear` | Linear workflow state | Unsupported |
+| Tracker | Status source | `sources.states` | `sources.labels` |
+| --- | --- | --- | --- |
+| `github` | `project_v2` | Supported | Unsupported |
+| `github` | `issue_field` | Supported | Supported |
+| `github` | `label` | Supported | Supported |
+| `github_local` | local SQLite status | Supported | Supported |
+| `local_sqlite` | local SQLite status | Supported | Supported |
+| `memory` | process-local status | Supported | Supported |
+| `linear` | Linear workflow state | Unsupported | Unsupported |
 
 An enabled admission configuration fails validation when its tracker/status
 source does not declare the selector, so Linear never validates cleanly and
-then fails on its first scheduled read. `authors.allow` on `local_sqlite` or
-`memory` produces a doctor warning because those trackers do not discover
-authors. ProjectV2 configurations using `exclude_labels` warn that only the
-first 20 issue labels are fetched. The memory tracker is evaluation-only across
-restarts: durable proposal records can survive while its process-local comments
-and mutations do not.
+then fails on its first scheduled read. ProjectV2 label selection is unsupported
+because its issue query fetches only the first 20 labels; configuring either
+`sources.labels` or `exclude_labels` with ProjectV2 fails validation rather than
+risking a silent miss. `authors.allow` on `local_sqlite` or `memory` produces a
+doctor warning because those trackers do not discover authors. The memory
+tracker is evaluation-only across restarts: durable proposal records can
+survive while its process-local comments and mutations do not.
 
 Every lane-entry event records how the issue reached the state:
 

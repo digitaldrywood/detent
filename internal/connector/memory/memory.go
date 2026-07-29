@@ -102,17 +102,32 @@ func (c *Connector) ReadCandidates(_ context.Context, request connector.Candidat
 		return connector.CandidateResult{}, err
 	}
 
-	wantedStates := make(map[string]struct{}, len(request.States))
-	for _, stateName := range request.States {
-		if stateName = normalizeState(stateName); stateName != "" {
-			wantedStates[stateName] = struct{}{}
+	wanted := map[string]struct{}{}
+	values := request.States
+	if request.Selector == connector.CandidateSelectorLabels {
+		values = request.Labels
+	}
+	for _, value := range values {
+		if value = normalizeState(value); value != "" {
+			wanted[value] = struct{}{}
 		}
 	}
 
 	c.mu.RLock()
 	issues := make([]connector.Issue, 0, min(len(c.issues), request.ProbeLimit()))
 	for _, issue := range c.issues {
-		if _, ok := wantedStates[normalizeState(issue.State)]; ok {
+		matches := false
+		switch request.Selector {
+		case connector.CandidateSelectorStates:
+			_, matches = wanted[normalizeState(issue.State)]
+		case connector.CandidateSelectorLabels:
+			for _, label := range issue.Labels {
+				if _, matches = wanted[normalizeState(label)]; matches {
+					break
+				}
+			}
+		}
+		if matches {
 			issues = append(issues, cloneIssue(issue))
 		}
 	}

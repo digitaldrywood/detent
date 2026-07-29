@@ -318,21 +318,44 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		runErr = errors.Join(runErr, release())
 	}()
 
-	candidateResult, err := settings.Issues.ReadCandidates(ctx, connector.CandidateRequest{
-		Selector: connector.CandidateSelectorStates,
-		States:   settings.Config.Sources.States,
-		Limit:    candidateReadLimit(settings.Config.MaxCandidatesPerRun),
-		PageSize: connector.DefaultCandidatePageSize,
-	})
-	if err != nil {
-		return result, fmt.Errorf("fetch backlog admission candidates: %w", err)
+	requests := make([]connector.CandidateRequest, 0, 2)
+	if len(settings.Config.Sources.States) > 0 {
+		requests = append(requests, connector.CandidateRequest{
+			Selector: connector.CandidateSelectorStates,
+			States:   settings.Config.Sources.States,
+			Limit:    candidateReadLimit(settings.Config.MaxCandidatesPerRun),
+			PageSize: connector.DefaultCandidatePageSize,
+		})
 	}
-	if candidateResult.Truncated {
-		result.Truncated["candidate_reader"]++
+	if len(settings.Config.Sources.Labels) > 0 {
+		requests = append(requests, connector.CandidateRequest{
+			Selector: connector.CandidateSelectorLabels,
+			Labels:   settings.Config.Sources.Labels,
+			Limit:    candidateReadLimit(settings.Config.MaxCandidatesPerRun),
+			PageSize: connector.DefaultCandidatePageSize,
+		})
 	}
-	candidates := candidateResult.Issues
+	candidates := []connector.Issue{}
+	seenCandidates := map[string]struct{}{}
+	for _, request := range requests {
+		candidateResult, err := settings.Issues.ReadCandidates(ctx, request)
+		if err != nil {
+			return result, fmt.Errorf("fetch backlog admission %s candidates: %w", request.Selector, err)
+		}
+		if candidateResult.Truncated {
+			result.Truncated["candidate_reader"]++
+		}
+		for _, candidate := range candidateResult.Issues {
+			key := admissionCandidateKey(candidate)
+			if _, ok := seenCandidates[key]; ok {
+				continue
+			}
+			seenCandidates[key] = struct{}{}
+			candidates = append(candidates, candidate)
+		}
+	}
 	result.CandidatesFound = len(candidates)
-	candidates = filterCandidates(candidates, settings.Config, result.Skipped)
+	candidates = filterCandidates(candidates, settings.Config, settings.TerminalStates, result.Skipped)
 	sortCandidates(candidates, settings)
 	candidates, err = m.unproposedCandidates(ctx, settings, candidates, result.Skipped)
 	if err != nil {
@@ -582,8 +605,7 @@ func (m *Manager) executeProposals(
 		original, supplied := candidateByID[issueID]
 		current, currentFound := freshByID[issueID]
 		if !supplied || !currentFound || issueFingerprint(original) != issueFingerprint(current) ||
-			current.Closed || !containsFold(settings.Config.Sources.States, current.State) ||
-			excludedCandidate(current, settings.Config) {
+			!eligibleCandidate(current, settings.Config, settings.TerminalStates) {
 			result.Skipped["stale_or_ineligible"]++
 			continue
 		}
@@ -791,12 +813,23 @@ func admissionBudgetDeferred(ctx context.Context, backend runner.Backend, now ti
 	return false, "", nil
 }
 
-func filterCandidates(issues []connector.Issue, cfg config.BacklogAdmission, skipped map[string]int) []connector.Issue {
+func filterCandidates(
+	issues []connector.Issue,
+	cfg config.BacklogAdmission,
+	terminalStates []string,
+	skipped map[string]int,
+) []connector.Issue {
 	out := make([]connector.Issue, 0, len(issues))
 	for _, issue := range issues {
 		switch {
 		case issue.Closed:
 			skipped["closed"]++
+		case labelCandidateInTargetState(issue, cfg):
+			skipped["label_target_state"]++
+		case labelCandidateStateBlocked(issue, cfg):
+			skipped["label_blocked_state"]++
+		case labelCandidateStateTerminal(issue, cfg, terminalStates):
+			skipped["label_terminal_state"]++
 		case excludedByLabel(issue, cfg.ExcludeLabels):
 			skipped["excluded_label"]++
 		case !allowedAuthor(issue.AuthorID, cfg.Authors.Allow):
@@ -808,8 +841,49 @@ func filterCandidates(issues []connector.Issue, cfg config.BacklogAdmission, ski
 	return out
 }
 
+func eligibleCandidate(issue connector.Issue, cfg config.BacklogAdmission, terminalStates []string) bool {
+	if issue.Closed || excludedCandidate(issue, cfg) {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(cfg.TargetState)) {
+		return false
+	}
+	if containsFold(cfg.Sources.States, issue.State) {
+		return true
+	}
+	return matchesAnyLabel(issue.Labels, cfg.Sources.Labels) &&
+		!strings.EqualFold(strings.TrimSpace(issue.State), "Blocked") &&
+		!containsFold(terminalStates, issue.State)
+}
+
+func labelCandidateInTargetState(issue connector.Issue, cfg config.BacklogAdmission) bool {
+	return matchesAnyLabel(issue.Labels, cfg.Sources.Labels) &&
+		strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(cfg.TargetState))
+}
+
+func labelCandidateStateBlocked(issue connector.Issue, cfg config.BacklogAdmission) bool {
+	return !containsFold(cfg.Sources.States, issue.State) &&
+		matchesAnyLabel(issue.Labels, cfg.Sources.Labels) &&
+		strings.EqualFold(strings.TrimSpace(issue.State), "Blocked")
+}
+
+func labelCandidateStateTerminal(issue connector.Issue, cfg config.BacklogAdmission, terminalStates []string) bool {
+	return !containsFold(cfg.Sources.States, issue.State) &&
+		matchesAnyLabel(issue.Labels, cfg.Sources.Labels) &&
+		containsFold(terminalStates, issue.State)
+}
+
 func excludedCandidate(issue connector.Issue, cfg config.BacklogAdmission) bool {
 	return excludedByLabel(issue, cfg.ExcludeLabels) || !allowedAuthor(issue.AuthorID, cfg.Authors.Allow)
+}
+
+func matchesAnyLabel(issueLabels []string, labels []string) bool {
+	for _, issueLabel := range issueLabels {
+		if containsFold(labels, issueLabel) {
+			return true
+		}
+	}
+	return false
 }
 
 func excludedByLabel(issue connector.Issue, labels []string) bool {
@@ -1061,6 +1135,19 @@ func issueMap(issues []connector.Issue) map[string]connector.Issue {
 	return out
 }
 
+func admissionCandidateKey(issue connector.Issue) string {
+	if value := strings.TrimSpace(issue.ID); value != "" {
+		return "id:" + value
+	}
+	if value := strings.TrimSpace(issue.Identifier); value != "" {
+		return "identifier:" + strings.ToLower(value)
+	}
+	if value := strings.TrimSpace(issue.URL); value != "" {
+		return "url:" + strings.ToLower(value)
+	}
+	return issueFingerprint(issue)
+}
+
 func normalizeSettings(settings Settings) Settings {
 	settings.ProjectID = strings.TrimSpace(settings.ProjectID)
 	settings.Config.Normalize()
@@ -1080,6 +1167,7 @@ func normalizeSettings(settings Settings) Settings {
 
 func cloneSettings(settings Settings) Settings {
 	settings.Config.Sources.States = append([]string(nil), settings.Config.Sources.States...)
+	settings.Config.Sources.Labels = append([]string(nil), settings.Config.Sources.Labels...)
 	settings.Config.ExcludeLabels = append([]string(nil), settings.Config.ExcludeLabels...)
 	settings.Config.Authors.Allow = append([]string(nil), settings.Config.Authors.Allow...)
 	settings.Criteria.Dimensions = append([]config.AdmissionDimension(nil), settings.Criteria.Dimensions...)

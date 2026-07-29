@@ -37,6 +37,7 @@ type BacklogAdmission struct {
 
 type BacklogAdmissionSources struct {
 	States []string `yaml:"states"`
+	Labels []string `yaml:"labels,omitempty"`
 }
 
 type BacklogAdmissionAuthors struct {
@@ -63,6 +64,7 @@ func (a *BacklogAdmission) Normalize() {
 		a.Schedule = DefaultBacklogAdmissionSchedule
 	}
 	a.Sources.States = normalizeStateList(a.Sources.States)
+	a.Sources.Labels = normalizeAdmissionSourceLabels(a.Sources.Labels)
 	a.TargetState = strings.TrimSpace(a.TargetState)
 	a.CriteriaSection = strings.TrimSpace(a.CriteriaSection)
 	a.ExcludeLabels = normalizeLabels(a.ExcludeLabels)
@@ -81,8 +83,8 @@ func (a BacklogAdmission) Validate(prefix string, states []string, tracker Track
 	if _, err := cron.ParseStandard(a.Schedule); err != nil {
 		problems = append(problems, prefix+".schedule must be a valid five-field cron expression")
 	}
-	if len(a.Sources.States) == 0 {
-		problems = append(problems, prefix+".sources.states must contain at least one state")
+	if len(a.Sources.States) == 0 && len(a.Sources.Labels) == 0 {
+		problems = append(problems, prefix+".sources must configure at least one selector")
 	}
 	known := make(map[string]string, len(states))
 	for _, state := range states {
@@ -109,7 +111,7 @@ func (a BacklogAdmission) Validate(prefix string, states []string, tracker Track
 	validatePositive(prefix+".max_open_proposals", a.MaxOpenProposals, &problems)
 	validatePositive(prefix+".proposal_expiry_days", a.ProposalExpiryDays, &problems)
 	capabilities := connector.CandidateCapabilitiesFor(connector.Backend(tracker.Kind), tracker.GitHubStatusSource)
-	if !capabilities.Supports(connector.CandidateSelectorStates) {
+	if len(a.Sources.States) > 0 && !capabilities.Supports(connector.CandidateSelectorStates) {
 		gap := prefix + ".sources.states requires candidate selector states, but tracker.kind " + tracker.Kind
 		if tracker.Kind == TrackerGitHub {
 			gap += " with github_status_source " + tracker.GitHubStatusSource
@@ -120,6 +122,31 @@ func (a BacklogAdmission) Validate(prefix string, states []string, tracker Track
 			gap += " does not declare it"
 		}
 		problems = append(problems, gap)
+	}
+	statusLabelPrefix := strings.TrimSpace(tracker.StatusLabelPrefix)
+	if statusLabelPrefix == "" {
+		statusLabelPrefix = "detent:"
+	}
+	for index, label := range a.Sources.Labels {
+		if strings.HasPrefix(strings.ToLower(label), strings.ToLower(statusLabelPrefix)) {
+			problems = append(problems, fmt.Sprintf(
+				"%s.sources.labels[%d] must not use status label prefix %q; use sources.states instead",
+				prefix,
+				index,
+				statusLabelPrefix,
+			))
+		}
+	}
+	if len(a.Sources.Labels) > 0 && !capabilities.Supports(connector.CandidateSelectorLabels) {
+		gap := prefix + ".sources.labels requires candidate selector labels, but tracker.kind " + tracker.Kind
+		if tracker.Kind == TrackerGitHub {
+			gap += " with github_status_source " + tracker.GitHubStatusSource
+		}
+		gap += " does not declare complete label reads"
+		problems = append(problems, gap)
+	}
+	if len(a.ExcludeLabels) > 0 && tracker.Kind == TrackerGitHub && tracker.GitHubStatusSource == GitHubStatusSourceProjectV2 {
+		problems = append(problems, prefix+".exclude_labels requires complete issue labels, but tracker.kind github with github_status_source project_v2 fetches only the first 20 labels")
 	}
 	return problems
 }
@@ -133,13 +160,21 @@ func BacklogAdmissionWarnings(admission BacklogAdmission, tracker Tracker) []str
 	if len(admission.Authors.Allow) > 0 && (tracker.Kind == TrackerLocalSQLite || tracker.Kind == TrackerMemory) {
 		warnings = append(warnings, "backlog_admission.authors.allow uses AuthorID, but tracker.kind "+tracker.Kind+" does not discover authors")
 	}
-	if len(admission.ExcludeLabels) > 0 && tracker.Kind == TrackerGitHub && tracker.GitHubStatusSource == GitHubStatusSourceProjectV2 {
-		warnings = append(warnings, "backlog_admission.exclude_labels may miss labels under project_v2 because only the first 20 labels per issue are fetched")
-	}
 	if tracker.Kind == TrackerMemory {
 		warnings = append(warnings, "backlog_admission with tracker.kind memory is evaluation-only across restarts because tracker comments and mutations are process-local")
 	}
 	return warnings
+}
+
+func normalizeAdmissionSourceLabels(labels []string) []string {
+	normalized := normalizeLabels(labels)
+	out := make([]string, 0, len(normalized))
+	for _, label := range normalized {
+		if label != "" {
+			out = append(out, label)
+		}
+	}
+	return out
 }
 
 func ResolveAdmissionCriteria(prompt string, section string) (AdmissionCriteria, error) {

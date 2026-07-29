@@ -14,16 +14,17 @@ func TestCandidateCapabilitiesFor(t *testing.T) {
 		name         string
 		backend      Backend
 		statusSource string
-		supports     bool
+		states       bool
+		labels       bool
 	}{
-		{name: "github project v2", backend: BackendGitHub, statusSource: "project_v2", supports: true},
-		{name: "github issue field", backend: BackendGitHub, statusSource: "issue_field", supports: true},
-		{name: "github label", backend: BackendGitHub, statusSource: "label", supports: true},
-		{name: "github default", backend: BackendGitHub, supports: true},
+		{name: "github project v2", backend: BackendGitHub, statusSource: "project_v2", states: true},
+		{name: "github issue field", backend: BackendGitHub, statusSource: "issue_field", states: true, labels: true},
+		{name: "github label", backend: BackendGitHub, statusSource: "label", states: true, labels: true},
+		{name: "github default", backend: BackendGitHub, states: true},
 		{name: "github invalid source", backend: BackendGitHub, statusSource: "milestone"},
-		{name: "github local", backend: BackendGitHubLocal, supports: true},
-		{name: "local sqlite", backend: BackendLocalSQLite, supports: true},
-		{name: "memory", backend: BackendMemory, supports: true},
+		{name: "github local", backend: BackendGitHubLocal, states: true, labels: true},
+		{name: "local sqlite", backend: BackendLocalSQLite, states: true, labels: true},
+		{name: "memory", backend: BackendMemory, states: true, labels: true},
 		{name: "linear", backend: BackendLinear},
 		{name: "gitlab", backend: BackendGitLab},
 		{name: "jira", backend: BackendJira},
@@ -31,9 +32,12 @@ func TestCandidateCapabilitiesFor(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			got := CandidateCapabilitiesFor(test.backend, test.statusSource).Supports(CandidateSelectorStates)
-			if got != test.supports {
-				t.Fatalf("Supports(states) = %t, want %t", got, test.supports)
+			capabilities := CandidateCapabilitiesFor(test.backend, test.statusSource)
+			if got := capabilities.Supports(CandidateSelectorStates); got != test.states {
+				t.Fatalf("Supports(states) = %t, want %t", got, test.states)
+			}
+			if got := capabilities.Supports(CandidateSelectorLabels); got != test.labels {
+				t.Fatalf("Supports(labels) = %t, want %t", got, test.labels)
 			}
 		})
 	}
@@ -57,9 +61,17 @@ func TestCandidateRequestValidate(t *testing.T) {
 			},
 		},
 		{
+			name: "valid labels selector",
+			request: CandidateRequest{
+				Selector: CandidateSelectorLabels,
+				Labels:   []string{" Sentry ", "sentry"},
+				Limit:    10,
+			},
+		},
+		{
 			name: "unsupported selector",
 			request: CandidateRequest{
-				Selector: CandidateSelector("labels"),
+				Selector: CandidateSelector("authors"),
 				Limit:    10,
 			},
 			want: ErrCandidateSelectorUnsupported,
@@ -87,6 +99,15 @@ func TestCandidateRequestValidate(t *testing.T) {
 			request: CandidateRequest{
 				Selector: CandidateSelectorStates,
 				States:   []string{"  "},
+				Limit:    10,
+			},
+			want: ErrInvalidCandidateRequest,
+		},
+		{
+			name: "empty labels",
+			request: CandidateRequest{
+				Selector: CandidateSelectorLabels,
+				Labels:   []string{"  "},
 				Limit:    10,
 			},
 			want: ErrInvalidCandidateRequest,

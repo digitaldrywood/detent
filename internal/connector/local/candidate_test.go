@@ -52,6 +52,41 @@ func TestConnectorReadCandidatesUsesDeterministicBoundedOrder(t *testing.T) {
 	}
 }
 
+func TestConnectorReadCandidatesSelectsAnyLabel(t *testing.T) {
+	t.Parallel()
+
+	c, err := New(Config{
+		Path:      filepath.Join(t.TempDir(), "candidate-label.db"),
+		ProjectID: "detent",
+		Issues: []connector.Issue{
+			{ID: "1", Identifier: "DD-1", State: "Backlog", Labels: []string{"needs-decision"}},
+			{ID: "2", Identifier: "DD-2", State: "Todo", Labels: []string{"SENTRY"}},
+			{ID: "3", Identifier: "DD-3", State: "Done", Labels: []string{"unrelated"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := c.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	got, err := c.ReadCandidates(context.Background(), connector.CandidateRequest{
+		Selector: connector.CandidateSelectorLabels,
+		Labels:   []string{"sentry", "needs-decision"},
+		Limit:    10,
+	})
+	if err != nil {
+		t.Fatalf("ReadCandidates() error = %v", err)
+	}
+	ids := []string{got.Issues[0].ID, got.Issues[1].ID}
+	if !reflect.DeepEqual(ids, []string{"1", "2"}) {
+		t.Fatalf("candidate IDs = %#v, want [1 2]", ids)
+	}
+}
+
 func localCandidateTime(value time.Time) *time.Time {
 	return &value
 }
