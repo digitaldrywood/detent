@@ -48,6 +48,7 @@ type Store interface {
 	ExpireAdmissionProposals(context.Context, string, time.Time) (int, error)
 	TransitionAdmissionProposal(context.Context, string, admissionmodel.ProposalStatus, admissionmodel.ProposalStatus, time.Time) error
 	ResolveAdmissionProposal(context.Context, admissionmodel.Decision) error
+	AdmissionTargetTransitions(context.Context, admissionmodel.TargetTransitionQuery) ([]admissionmodel.TargetTransition, error)
 	MarkAdmissionProposalCommented(context.Context, string, time.Time) error
 	RefreshAdmissionOutcomes(context.Context, admissionmodel.OutcomeRefresh) error
 	RecordAdmissionRun(context.Context, admissionmodel.RunRecord) error
@@ -441,6 +442,37 @@ func (m *Manager) reconcileOpenProposals(
 				return commentsRemaining, err
 			}
 			continue
+		}
+		if decided && decision.Outcome == admissionmodel.ProposalAccepted {
+			transitions, err := m.store.AdmissionTargetTransitions(ctx, admissionmodel.TargetTransitionQuery{
+				ProjectID:   proposal.ProjectID,
+				IssueID:     proposal.IssueID,
+				TargetState: proposal.TargetState,
+				NotBefore:   decision.DecidedAt,
+			})
+			if err != nil {
+				return commentsRemaining, err
+			}
+			resolved := false
+			for _, transition := range transitions {
+				if !admissionActorsCorrelate(decision.ActorLogin, transition.ActorLogin) {
+					continue
+				}
+				decision.TransitionAt = transition.EnteredAt
+				decision.TransitionEventID = transition.EventID
+				if strings.TrimSpace(transition.ActorLogin) != "" {
+					decision.ActorLogin = transition.ActorLogin
+					decision.ActorKind = transition.ActorKind
+				}
+				if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
+					return commentsRemaining, err
+				}
+				resolved = true
+				break
+			}
+			if resolved {
+				continue
+			}
 		}
 		if decided && decision.Outcome == admissionmodel.ProposalAccepted &&
 			strings.EqualFold(strings.TrimSpace(issue.State), proposal.TargetState) {

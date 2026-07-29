@@ -67,13 +67,28 @@ type IssueRecord struct {
 }
 
 type Decision struct {
-	ProposalID   string
-	Outcome      ProposalStatus
-	DecidedAt    time.Time
-	CommentID    string
-	ActorLogin   string
-	ActorKind    string
-	TransitionAt time.Time
+	ProposalID        string
+	Outcome           ProposalStatus
+	DecidedAt         time.Time
+	CommentID         string
+	ActorLogin        string
+	ActorKind         string
+	TransitionAt      time.Time
+	TransitionEventID int64
+}
+
+type TargetTransitionQuery struct {
+	ProjectID   string
+	IssueID     string
+	TargetState string
+	NotBefore   time.Time
+}
+
+type TargetTransition struct {
+	EventID    int64
+	EnteredAt  time.Time
+	ActorLogin string
+	ActorKind  string
 }
 
 type OutcomeRefresh struct {

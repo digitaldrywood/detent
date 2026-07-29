@@ -138,11 +138,12 @@ func TestAdmissionAcceptanceAttributionAndDownstreamOutcomes(t *testing.T) {
 	createdAt := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	decisionAt := createdAt.Add(time.Minute)
 	transitionAt := createdAt.Add(2 * time.Minute)
+	recordedTransitionAt := transitionAt.Add(-30 * time.Second)
 	proposal := admissionTestProposal("proposal-accepted", "fingerprint-accepted", createdAt)
 	if created, err := backend.CreateAdmissionProposal(ctx, proposal); err != nil || !created {
 		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
 	}
-	if _, err := backend.RecordWorkflowPhaseEvent(ctx, WorkflowPhaseEvent{
+	transitionEventID, err := backend.RecordWorkflowPhaseEvent(ctx, WorkflowPhaseEvent{
 		ProjectID:    "detent",
 		IssueID:      proposal.IssueID,
 		Identifier:   proposal.IssueIdentifier,
@@ -151,19 +152,21 @@ func TestAdmissionAcceptanceAttributionAndDownstreamOutcomes(t *testing.T) {
 		PhaseName:    proposal.TargetState,
 		Reason:       "tracker_state_observed",
 		Status:       "entered",
-		StartedAt:    transitionAt,
+		StartedAt:    recordedTransitionAt,
 		MetadataJSON: provenance.Apply("{}", provenance.Attribution{Origin: provenance.OriginHuman}, &provenance.Admission{Attributed: false}),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("RecordWorkflowPhaseEvent(transition) error = %v", err)
 	}
 	if err := backend.ResolveAdmissionProposal(ctx, admissionmodel.Decision{
-		ProposalID:   proposal.ID,
-		Outcome:      admissionmodel.ProposalAccepted,
-		DecidedAt:    decisionAt,
-		CommentID:    "decision-1",
-		ActorLogin:   "ada",
-		ActorKind:    "User",
-		TransitionAt: transitionAt,
+		ProposalID:        proposal.ID,
+		Outcome:           admissionmodel.ProposalAccepted,
+		DecidedAt:         decisionAt,
+		CommentID:         "decision-1",
+		ActorLogin:        "ada",
+		ActorKind:         "User",
+		TransitionAt:      transitionAt,
+		TransitionEventID: transitionEventID,
 	}); err != nil {
 		t.Fatalf("ResolveAdmissionProposal() error = %v", err)
 	}
@@ -181,6 +184,9 @@ func TestAdmissionAcceptanceAttributionAndDownstreamOutcomes(t *testing.T) {
 	timeline, err := backend.IssueWorkflowTimeline(ctx, IssueIdentity{IssueID: proposal.IssueID})
 	if err != nil {
 		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
+	}
+	if len(timeline.Events) != 1 || !timeline.Events[0].StartedAt.Equal(recordedTransitionAt) {
+		t.Fatalf("workflow events = %#v, want one recorded transition", timeline.Events)
 	}
 	metadata, ok := provenance.Parse(timeline.Events[0].MetadataJSON)
 	if !ok || timeline.Events[0].Reason != "admission_proposal_accepted" ||

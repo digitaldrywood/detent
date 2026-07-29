@@ -142,6 +142,53 @@ ORDER BY created_at DESC, id DESC`,
 	return scanAdmissionProposals(rows)
 }
 
+func (s *sqliteStore) AdmissionTargetTransitions(
+	ctx context.Context,
+	query admissionmodel.TargetTransitionQuery,
+) ([]admissionmodel.TargetTransition, error) {
+	notBefore, err := requiredTimestamp("not_before", query.NotBefore)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, started_at, metadata_json
+FROM workflow_phase_events
+WHERE project_id = ? AND issue_id = ? AND phase_type = 'lane' AND status = 'entered'
+  AND lower(phase_name) = lower(?) AND started_at >= ?
+ORDER BY started_at, id`,
+		strings.TrimSpace(query.ProjectID),
+		strings.TrimSpace(query.IssueID),
+		strings.TrimSpace(query.TargetState),
+		notBefore,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("read backlog admission target transitions: %w", err)
+	}
+	defer rows.Close()
+	transitions := []admissionmodel.TargetTransition{}
+	for rows.Next() {
+		var transition admissionmodel.TargetTransition
+		var enteredAt string
+		var metadataJSON string
+		if err := rows.Scan(&transition.EventID, &enteredAt, &metadataJSON); err != nil {
+			return nil, err
+		}
+		transition.EnteredAt, err = parseTimestamp("started_at", enteredAt)
+		if err != nil {
+			return nil, err
+		}
+		if metadata, ok := provenance.Parse(metadataJSON); ok && metadata.Provenance.Actor != nil {
+			transition.ActorLogin = metadata.Provenance.Actor.Login
+			transition.ActorKind = metadata.Provenance.Actor.Kind
+		}
+		transitions = append(transitions, transition)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return transitions, nil
+}
+
 func (s *sqliteStore) CountOpenAdmissionProposals(ctx context.Context, projectID string) (int, error) {
 	var count int
 	if err := s.db.QueryRowContext(ctx, `
@@ -336,18 +383,35 @@ func attributeAdmissionTransition(
 	}
 	var eventID int64
 	var metadataJSON string
-	err = tx.QueryRowContext(ctx, `
+	if decision.TransitionEventID > 0 {
+		err = tx.QueryRowContext(ctx, `
+SELECT id, metadata_json
+FROM workflow_phase_events
+WHERE id = ? AND project_id = ? AND issue_id = ? AND phase_type = 'lane'
+  AND status = 'entered' AND lower(phase_name) = lower(?)
+LIMIT 1`,
+			decision.TransitionEventID,
+			strings.TrimSpace(proposal.ProjectID),
+			strings.TrimSpace(proposal.IssueID),
+			strings.TrimSpace(proposal.TargetState),
+		).Scan(&eventID, &metadataJSON)
+		if err != nil {
+			return fmt.Errorf("find correlated backlog admission transition: %w", err)
+		}
+	} else {
+		err = tx.QueryRowContext(ctx, `
 SELECT id, metadata_json
 FROM workflow_phase_events
 WHERE project_id = ? AND issue_id = ? AND phase_type = 'lane' AND status = 'entered'
   AND lower(phase_name) = lower(?) AND started_at = ?
 ORDER BY id DESC
 LIMIT 1`,
-		strings.TrimSpace(proposal.ProjectID),
-		strings.TrimSpace(proposal.IssueID),
-		strings.TrimSpace(proposal.TargetState),
-		transitionAt,
-	).Scan(&eventID, &metadataJSON)
+			strings.TrimSpace(proposal.ProjectID),
+			strings.TrimSpace(proposal.IssueID),
+			strings.TrimSpace(proposal.TargetState),
+			transitionAt,
+		).Scan(&eventID, &metadataJSON)
+	}
 	actor := provenance.Actor{
 		Login: strings.TrimSpace(decision.ActorLogin),
 		Kind:  strings.TrimSpace(decision.ActorKind),

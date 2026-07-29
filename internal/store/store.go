@@ -197,6 +197,7 @@ type AdmissionStore interface {
 	ExpireAdmissionProposals(context.Context, string, time.Time) (int, error)
 	TransitionAdmissionProposal(context.Context, string, admissionmodel.ProposalStatus, admissionmodel.ProposalStatus, time.Time) error
 	ResolveAdmissionProposal(context.Context, admissionmodel.Decision) error
+	AdmissionTargetTransitions(context.Context, admissionmodel.TargetTransitionQuery) ([]admissionmodel.TargetTransition, error)
 	MarkAdmissionProposalCommented(context.Context, string, time.Time) error
 	RefreshAdmissionOutcomes(context.Context, admissionmodel.OutcomeRefresh) error
 	AdmissionDownstreamOutcomes(context.Context, string) ([]admissionmodel.DownstreamOutcome, error)

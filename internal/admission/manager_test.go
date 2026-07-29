@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -205,6 +206,79 @@ func TestManagerReconcilesAgainstStoredProposalTarget(t *testing.T) {
 	}
 	if agent.calls != 0 {
 		t.Fatalf("runner calls = %d, want 0", agent.calls)
+	}
+}
+
+func TestManagerReconcilesAcceptanceAfterIssueLeavesTargetState(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	current := now
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	tracker := memory.New(memory.Config{
+		Issues:   []connector.Issue{issue},
+		Stateful: true,
+		Now:      func() time.Time { return current },
+	})
+	backend := openManagerTestStore(t)
+	proposal := admissionTestProposalForIssue("proposal-1", issue, now)
+	if created, err := backend.CreateAdmissionProposal(ctx, proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	decisionAt := now.Add(time.Minute)
+	current = decisionAt
+	if err := tracker.CreateComment(ctx, issue.ID, admissionAcceptCommand(proposal.ID)); err != nil {
+		t.Fatalf("CreateComment() error = %v", err)
+	}
+	targetAt := now.Add(2 * time.Minute)
+	current = targetAt
+	if err := tracker.UpdateIssueState(ctx, issue.ID, proposal.TargetState); err != nil {
+		t.Fatalf("UpdateIssueState(%s) error = %v", proposal.TargetState, err)
+	}
+	if _, err := backend.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
+		ProjectID:  proposal.ProjectID,
+		IssueID:    proposal.IssueID,
+		Identifier: proposal.IssueIdentifier,
+		IssueURL:   proposal.IssueURL,
+		PhaseType:  store.WorkflowPhaseTypeLane,
+		PhaseName:  proposal.TargetState,
+		Reason:     "tracker_state_observed",
+		Status:     "entered",
+		StartedAt:  targetAt,
+		MetadataJSON: provenance.Apply(
+			"{}",
+			provenance.Attribution{Origin: provenance.OriginUnknown},
+			&provenance.Admission{Attributed: false},
+		),
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+	current = now.Add(3 * time.Minute)
+	if err := tracker.UpdateIssueState(ctx, issue.ID, "In Progress"); err != nil {
+		t.Fatalf("UpdateIssueState(In Progress) error = %v", err)
+	}
+	manager := newAdmissionTestManager(
+		t,
+		admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate}),
+		backend,
+		func() time.Time { return current },
+	)
+
+	if _, err := manager.RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	history, err := backend.AdmissionProposalHistory(ctx, proposal.ProjectID, proposal.IssueID)
+	if err != nil || len(history) != 1 {
+		t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
+	}
+	if history[0].Status != admissionmodel.ProposalAccepted || !history[0].TransitionAt.Equal(targetAt) {
+		t.Fatalf("accepted proposal = %#v", history[0])
+	}
+	timeline, err := backend.IssueWorkflowTimeline(ctx, store.IssueIdentity{IssueID: proposal.IssueID})
+	if err != nil || len(timeline.Events) != 1 ||
+		timeline.Events[0].Reason != "admission_proposal_accepted" {
+		t.Fatalf("IssueWorkflowTimeline() = %#v, %v", timeline, err)
 	}
 }
 
