@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ const (
 	mergeRevocationMissingPullRequest    = "missing_pull_request"
 	mergeRevocationDraftPullRequest      = "draft_pull_request"
 	mergeRevocationPullRequestNotOpen    = "pull_request_not_open"
+	maxIdenticalMergeRevocations         = 3
 )
 
 const (
@@ -47,6 +49,11 @@ type mergeRevocationCommentState struct {
 type mergeRevocationCommentWrite struct {
 	signature string
 	at        time.Time
+}
+
+type mergeRevocationStreak struct {
+	reason string
+	count  int
 }
 
 func (o *Orchestrator) revokeRunningMergeIfIneligible(
@@ -309,6 +316,173 @@ func (o *Orchestrator) finishMergeRevocation(
 		Event:   "merge_worker_revoked",
 		Message: "stopped merge worker for " + issueLabel(revocation.issue) + ": " + revocation.reason,
 	})
+}
+
+func (o *Orchestrator) parkRepeatedMergeRevocations(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	now time.Time,
+) (bool, bool) {
+	streak, err := o.consecutiveMergeRevocations(ctx, state, issue)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"merge revocation backoff check failed",
+				"issue_id", strings.TrimSpace(issue.ID),
+				"identifier", issue.Identifier,
+				"error", err,
+			)
+		}
+		return false, false
+	}
+	if streak.count < maxIdenticalMergeRevocations {
+		return false, false
+	}
+
+	decision := autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonMergeRevocationLimit)
+	if err := o.updateIssueStateByIDStrictWithMetadata(
+		ctx,
+		state,
+		issue.ID,
+		issue,
+		blockedStatusState,
+		now,
+		string(AutoPromoteReasonMergeRevocationLimit),
+		workflowLaneMetadata{},
+	); err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"merge revocation backoff park failed",
+				"issue_id", strings.TrimSpace(issue.ID),
+				"identifier", issue.Identifier,
+				"revocation_reason", streak.reason,
+				"consecutive_revocations", streak.count,
+				"limit", maxIdenticalMergeRevocations,
+				"error", err,
+			)
+		}
+		o.logAutoPromoteDecision(issue, decision, "")
+		return true, false
+	}
+
+	if err := o.connector.CreateComment(ctx, issue.ID, mergeRevocationLimitComment(issue, streak)); err != nil && o.logger != nil {
+		o.logger.Warn(
+			"merge revocation backoff comment failed",
+			"issue_id", strings.TrimSpace(issue.ID),
+			"identifier", issue.Identifier,
+			"error", err,
+		)
+	}
+	o.logAutoPromoteDecision(issue, decision, blockedStatusState)
+	if o.logger != nil {
+		o.logger.Warn(
+			"merge_worker_revocation_limit",
+			mergeWorkerLogAttrs(issue,
+				"revocation_reason", streak.reason,
+				"consecutive_revocations", streak.count,
+				"limit", maxIdenticalMergeRevocations,
+				"target_state", blockedStatusState,
+			)...,
+		)
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "merge_worker_revocation_limit",
+		Message: fmt.Sprintf("parked %s after %d consecutive %s merge revocations", issueLabel(issue), streak.count, streak.reason),
+	})
+	return true, true
+}
+
+func (o *Orchestrator) consecutiveMergeRevocations(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+) (mergeRevocationStreak, error) {
+	if o != nil && o.workAttempts != nil {
+		attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
+			ProjectID:  strings.TrimSpace(o.cfg.Project.ID),
+			IssueID:    strings.TrimSpace(issue.ID),
+			Identifier: strings.TrimSpace(issue.Identifier),
+			IssueURL:   strings.TrimSpace(issue.URL),
+			Limit:      maxIdenticalMergeRevocations + 1,
+		})
+		if err != nil {
+			return mergeRevocationStreak{}, err
+		}
+		return mergeRevocationStreakFromAttempts(attempts, pullRequestNumber(issue)), nil
+	}
+	return mergeRevocationStreakFromSnapshots(state, issue), nil
+}
+
+func mergeRevocationStreakFromAttempts(attempts []store.WorkAttempt, currentPRNumber int) mergeRevocationStreak {
+	streak := mergeRevocationStreak{}
+	for _, attempt := range attempts {
+		if attempt.TerminalState != store.WorkAttemptTerminalMergeRevoked {
+			break
+		}
+		reason := strings.TrimSpace(attempt.ErrorMessage)
+		if reason == "" || streak.reason != "" && reason != streak.reason {
+			break
+		}
+		if currentPRNumber > 0 && attempt.PRNumber != nil && *attempt.PRNumber > 0 && int(*attempt.PRNumber) != currentPRNumber {
+			break
+		}
+		if streak.reason == "" {
+			streak.reason = reason
+		}
+		streak.count++
+	}
+	return streak
+}
+
+func mergeRevocationStreakFromSnapshots(state *State, issue connector.Issue) mergeRevocationStreak {
+	if state == nil {
+		return mergeRevocationStreak{}
+	}
+	streak := mergeRevocationStreak{}
+	currentPRNumber := pullRequestNumber(issue)
+	for _, attempt := range state.WorkAttempts {
+		if strings.TrimSpace(attempt.IssueID) != strings.TrimSpace(issue.ID) {
+			continue
+		}
+		if attempt.TerminalState != string(store.WorkAttemptTerminalMergeRevoked) {
+			break
+		}
+		reason := strings.TrimSpace(attempt.ErrorMessage)
+		if reason == "" || streak.reason != "" && reason != streak.reason {
+			break
+		}
+		if currentPRNumber > 0 && attempt.PRNumber != nil && *attempt.PRNumber > 0 && int(*attempt.PRNumber) != currentPRNumber {
+			break
+		}
+		if streak.reason == "" {
+			streak.reason = reason
+		}
+		streak.count++
+	}
+	return streak
+}
+
+func mergeRevocationLimitComment(issue connector.Issue, streak mergeRevocationStreak) string {
+	var body strings.Builder
+	body.WriteString("Detent parked this issue in Blocked after repeated identical merge eligibility revocations.")
+	body.WriteString("\n\n- reason: ")
+	body.WriteString(string(AutoPromoteReasonMergeRevocationLimit))
+	body.WriteString("\n- revocation_reason: ")
+	body.WriteString(streak.reason)
+	body.WriteString("\n- consecutive_revocations: ")
+	body.WriteString(strconv.Itoa(streak.count))
+	body.WriteString("\n- limit: ")
+	body.WriteString(strconv.Itoa(maxIdenticalMergeRevocations))
+	if issue.PullRequest != nil {
+		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
+			body.WriteString("\n- pull_request: ")
+			body.WriteString(url)
+		}
+	}
+	body.WriteString("\n- human_action: correct the repeated merge eligibility failure, then move the issue to Rework")
+	return body.String()
 }
 
 func (o *Orchestrator) routeMergeRevocation(ctx context.Context, state *State, revocation *mergeRevocation, at time.Time) {

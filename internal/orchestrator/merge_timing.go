@@ -6,7 +6,19 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
+
+const (
+	mergeSlotConcentrationWindow       = 15 * time.Minute
+	mergeSlotConcentrationMinimumCount = 5
+	mergeSlotConcentrationPercent      = 80
+)
+
+type mergeSlotAcquisition struct {
+	issueID string
+	at      time.Time
+}
 
 func (o *Orchestrator) recordMergeQueueEntries(state *State, issues []connector.Issue, now time.Time, source string) {
 	for _, issue := range issuesInStates(issues, []string{autoPromoteMergingState}) {
@@ -44,13 +56,81 @@ func (o *Orchestrator) markMergeWorkerSlotAcquired(state *State, issue connector
 		return MergeTiming{}
 	}
 	timing := o.recordMergeQueueEntered(state, issue, now, "dispatch")
+	slotAlreadyAcquired := !timing.MergeWorkerSlotAcquiredAt.IsZero() &&
+		timing.MergedAt.IsZero() &&
+		timing.MergeFailedAt.IsZero()
 	timing.MergeWorkerSlotAcquiredAt = now.UTC()
 	timing.MergedAt = time.Time{}
 	timing.MergeFailedAt = time.Time{}
 	timing.MergeFailureReason = ""
 	timing = timing.withDurations(now)
 	state.MergeTimings[strings.TrimSpace(issue.ID)] = timing
+	if !slotAlreadyAcquired {
+		o.observeMergeSlotConcentration(state, issue, now)
+	}
 	return timing
+}
+
+func (o *Orchestrator) observeMergeSlotConcentration(state *State, issue connector.Issue, now time.Time) {
+	if state == nil {
+		return
+	}
+	issueID := strings.TrimSpace(issue.ID)
+	if issueID == "" {
+		return
+	}
+	cutoff := now.Add(-mergeSlotConcentrationWindow)
+	recent := state.mergeSlotAcquisitions[:0]
+	for _, acquisition := range state.mergeSlotAcquisitions {
+		if acquisition.at.Before(cutoff) {
+			continue
+		}
+		recent = append(recent, acquisition)
+	}
+	recent = append(recent, mergeSlotAcquisition{issueID: issueID, at: now.UTC()})
+	state.mergeSlotAcquisitions = recent
+	if len(recent) < mergeSlotConcentrationMinimumCount {
+		return
+	}
+
+	issueCount := 0
+	for _, acquisition := range recent {
+		if acquisition.issueID == issueID {
+			issueCount++
+		}
+	}
+	if issueCount*100 < len(recent)*mergeSlotConcentrationPercent {
+		return
+	}
+	if state.mergeSlotWarnings == nil {
+		state.mergeSlotWarnings = map[string]time.Time{}
+	}
+	for warnedIssueID, warnedAt := range state.mergeSlotWarnings {
+		if warnedAt.Before(cutoff) {
+			delete(state.mergeSlotWarnings, warnedIssueID)
+		}
+	}
+	if warnedAt := state.mergeSlotWarnings[issueID]; !warnedAt.IsZero() && now.Before(warnedAt.Add(mergeSlotConcentrationWindow)) {
+		return
+	}
+	state.mergeSlotWarnings[issueID] = now.UTC()
+	if o.logger != nil {
+		o.logger.Warn(
+			"merge_worker_slot_concentration",
+			mergeWorkerLogAttrs(issue,
+				"project_id", strings.TrimSpace(o.cfg.Project.ID),
+				"window", mergeSlotConcentrationWindow,
+				"issue_acquisitions", issueCount,
+				"total_acquisitions", len(recent),
+				"share_percent", issueCount*100/len(recent),
+			)...,
+		)
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "merge_worker_slot_concentration",
+		Message: "one issue acquired a disproportionate share of merge slots: " + issueLabel(issue),
+	})
 }
 
 func (o *Orchestrator) markMergeStarted(state *State, issue connector.Issue, now time.Time) MergeTiming {

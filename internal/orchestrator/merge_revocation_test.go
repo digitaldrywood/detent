@@ -408,3 +408,146 @@ func (c *mergeRevocationCommentConnector) SetAssignee(context.Context, string, s
 func (c *mergeRevocationCommentConnector) SetField(context.Context, string, string, string) error {
 	return nil
 }
+
+func TestAutoPromoteParksIssueAfterRepeatedIdenticalMergeRevocations(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 14, 0, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("issue-repeated-draft-revocation", []string{"bug"}, &connector.PullRequest{
+		Number:         45,
+		URL:            "https://github.test/digitaldrywood/video-studio/pull/45",
+		State:          "OPEN",
+		Draft:          true,
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	issue.Identifier = "digitaldrywood/video-studio#41"
+	prNumber := int64(45)
+	attempts := &recordingWorkAttemptStore{}
+	for index := range maxIdenticalMergeRevocations {
+		attempts.history = append(attempts.history, store.WorkAttempt{
+			ID:            int64(maxIdenticalMergeRevocations - index),
+			IssueID:       issue.ID,
+			Identifier:    issue.Identifier,
+			PRNumber:      &prNumber,
+			WorkerType:    "agent",
+			TerminalState: store.WorkAttemptTerminalMergeRevoked,
+			ErrorMessage:  mergeRevocationDraftPullRequest,
+			CompletedAt:   now.Add(-time.Duration(index+1) * time.Minute),
+		})
+	}
+	cfg := normalizeConfig(Config{
+		Project: scheduler.ProjectCandidate{ID: "video-studio"},
+		AutoPromote: AutoPromoteConfig{
+			Enabled: true,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:          cfg,
+		connector:    tracker,
+		workAttempts: attempts,
+		logger:       slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+
+	result := orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
+
+	if _, ok := result.transitioned[issue.ID]; !ok {
+		t.Fatalf("transitioned = %#v, want %q parked", result.transitioned, issue.ID)
+	}
+	if len(result.dispatchCandidates) != 0 {
+		t.Fatalf("dispatch candidates = %#v, want none", result.dispatchCandidates)
+	}
+	if len(tracker.updates) != 1 || tracker.updates[0] != (autoPromoteTickUpdate{issueID: issue.ID, state: blockedStatusState}) {
+		t.Fatalf("updates = %#v, want Blocked transition", tracker.updates)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one parking comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"reason: merge_revocation_limit",
+		"revocation_reason: draft_pull_request",
+		"consecutive_revocations: 3",
+		"human_action:",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment = %q, missing %q", tracker.comments[0].body, fragment)
+		}
+	}
+	for _, fragment := range []string{
+		"auto promote decision",
+		"action=skip",
+		"reason=merge_revocation_limit",
+		"merge_worker_revocation_limit",
+		"revocation_reason=draft_pull_request",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs = %q, missing %q", logs.String(), fragment)
+		}
+	}
+	if len(attempts.historyQueries) != 1 ||
+		attempts.historyQueries[0].WorkerType != "" ||
+		attempts.historyQueries[0].Limit != maxIdenticalMergeRevocations+1 {
+		t.Fatalf("history queries = %#v, want bounded all-worker lookup", attempts.historyQueries)
+	}
+}
+
+func TestMergeRevocationStreakStopsAtDifferentOutcomeOrReason(t *testing.T) {
+	t.Parallel()
+
+	prNumber := int64(45)
+	revoked := func(reason string) store.WorkAttempt {
+		return store.WorkAttempt{
+			PRNumber:      &prNumber,
+			TerminalState: store.WorkAttemptTerminalMergeRevoked,
+			ErrorMessage:  reason,
+		}
+	}
+	tests := []struct {
+		name     string
+		attempts []store.WorkAttempt
+		want     mergeRevocationStreak
+	}{
+		{
+			name: "identical revocations count consecutively",
+			attempts: []store.WorkAttempt{
+				revoked(mergeRevocationDraftPullRequest),
+				revoked(mergeRevocationDraftPullRequest),
+			},
+			want: mergeRevocationStreak{reason: mergeRevocationDraftPullRequest, count: 2},
+		},
+		{
+			name: "different reason ends streak",
+			attempts: []store.WorkAttempt{
+				revoked(mergeRevocationDraftPullRequest),
+				revoked(mergeRevocationCITriggerLabelRemoved),
+				revoked(mergeRevocationDraftPullRequest),
+			},
+			want: mergeRevocationStreak{reason: mergeRevocationDraftPullRequest, count: 1},
+		},
+		{
+			name: "successful attempt ends streak",
+			attempts: []store.WorkAttempt{
+				revoked(mergeRevocationDraftPullRequest),
+				{PRNumber: &prNumber, TerminalState: store.WorkAttemptTerminalSuccess},
+				revoked(mergeRevocationDraftPullRequest),
+			},
+			want: mergeRevocationStreak{reason: mergeRevocationDraftPullRequest, count: 1},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := mergeRevocationStreakFromAttempts(tt.attempts, int(prNumber))
+			if got != tt.want {
+				t.Fatalf("mergeRevocationStreakFromAttempts() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}

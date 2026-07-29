@@ -857,7 +857,7 @@ func stickyBlockReason(reason string) bool {
 		return true
 	}
 	switch reason {
-	case "rework_limit", "no_progress_limit", "workpad_blocked_unactioned", "circuit_breaker", "token_ceiling_circuit_breaker", artifactGateConvergenceReason:
+	case "rework_limit", string(AutoPromoteReasonMergeRevocationLimit), "no_progress_limit", "workpad_blocked_unactioned", "circuit_breaker", "token_ceiling_circuit_breaker", artifactGateConvergenceReason:
 		return true
 	default:
 		return false
