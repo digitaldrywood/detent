@@ -281,6 +281,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		ValidatorMemo:      runtimeStore,
 		RetroStore:         runtimeStore,
 		RoutineStore:       runtimeStore,
+		AdmissionStore:     runtimeStore,
 		Activity:           activityBroker,
 		GitHubToken:        runtimeGitHubToken.get(),
 		RefreshGitHubToken: refreshGitHubToken,

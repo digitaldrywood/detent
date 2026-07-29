@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/activity"
+	"github.com/digitaldrywood/detent/internal/admission"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
@@ -128,6 +129,7 @@ type Dependencies struct {
 	IntakeDependencies        intake.Dependencies
 	RetroStore                store.RetroStore
 	RoutineStore              store.RoutineStore
+	AdmissionStore            store.AdmissionStore
 }
 
 type Project struct {
@@ -147,6 +149,7 @@ type Project struct {
 	intake                    *intake.Manager
 	retro                     *retro.Manager
 	routine                   *routine.Manager
+	admission                 *admission.Manager
 	retroProduct              connector.Connector
 	events                    *hub.Hub[Event]
 	logger                    *slog.Logger
@@ -183,6 +186,9 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	workflow.Config = workflowConfigWithProjectIdentity(cfg.Project, workflow.Config)
 	workflow.Config = workflowConfigWithGitHubToken(workflow.Config, deps.GitHubToken)
 	if err := workflow.Config.Validate(); err != nil {
+		return nil, fmt.Errorf("validate project workflow: %w", err)
+	}
+	if err := workflowconfig.ValidateWorkflowAdmission(workflow); err != nil {
 		return nil, fmt.Errorf("validate project workflow: %w", err)
 	}
 
@@ -243,6 +249,32 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	}, deps.RoutineStore, logger, nil)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("create project routine: %w", err), closeConnector(retroProductConnector))
+	}
+	admissionCriteria := workflowconfig.AdmissionCriteria{}
+	if workflow.Config.BacklogAdmission.Enabled {
+		admissionCriteria, err = workflowconfig.ResolveAdmissionCriteria(
+			workflow.SharedPrompt,
+			workflow.Config.BacklogAdmission.CriteriaSection,
+		)
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("create project backlog admission: %w", err), closeConnector(retroProductConnector))
+		}
+	}
+	projectAdmission, err := admission.New(admission.Settings{
+		ProjectID:          string(id),
+		Config:             workflow.Config.BacklogAdmission,
+		Criteria:           admissionCriteria,
+		DispatchStates:     workflow.Config.Agent.DispatchPriorityByState,
+		DispatchLabels:     workflow.Config.Agent.DispatchPriorityByLabel,
+		PrioritizeBlockers: workflow.Config.Agent.PrioritizeUnblockers,
+		Runner:             deps.Runner,
+		Issues:             admissionIssueStore(projectConnector),
+		Scheduler:          projectScheduler,
+		GlobalDispatchGate: deps.GlobalDispatchGate,
+		ProjectCandidate:   projectSchedulerCandidate(cfg.Project),
+	}, deps.AdmissionStore, logger, nil)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("create project backlog admission: %w", err), closeConnector(retroProductConnector))
 	}
 
 	orchestratorFactory := deps.OrchestratorFactory
@@ -311,6 +343,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		intake:                    projectIntake,
 		retro:                     projectRetro,
 		routine:                   projectRoutine,
+		admission:                 projectAdmission,
 		retroProduct:              retroProductConnector,
 		events:                    projectEvents,
 		logger:                    logger,
@@ -402,6 +435,13 @@ func (p *Project) Routines() *routine.Manager {
 	defer p.mu.Unlock()
 
 	return p.routine
+}
+
+func (p *Project) Admission() *admission.Manager {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.admission
 }
 
 func (p *Project) Events() *hub.Hub[Event] {
@@ -762,6 +802,8 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 	retroDone := p.startRetro(retroCtx)
 	routineCtx, stopRoutine := context.WithCancel(ctx)
 	routineDone := p.startRoutine(routineCtx)
+	admissionCtx, stopAdmission := context.WithCancel(ctx)
+	admissionDone := p.startAdmission(admissionCtx)
 
 	runStarted := logProjectShutdownBoundaryBegin(p.logger, "orchestrator_run", "component", "orchestrator", "project_id", p.id)
 	err := orch.Run(ctx)
@@ -801,6 +843,14 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 		logProjectShutdownBoundaryEnd(p.logger, "routine_stop", routineStarted, nil, "component", "routine", "project_id", p.id)
 	} else {
 		logProjectShutdownBoundaryEndResult(p.logger, "routine_stop", routineStarted, "skipped", nil, "component", "routine", "project_id", p.id)
+	}
+	admissionStarted := logProjectShutdownBoundaryBegin(p.logger, "backlog_admission_stop", "component", "backlog_admission", "project_id", p.id)
+	stopAdmission()
+	if admissionDone != nil {
+		<-admissionDone
+		logProjectShutdownBoundaryEnd(p.logger, "backlog_admission_stop", admissionStarted, nil, "component", "backlog_admission", "project_id", p.id)
+	} else {
+		logProjectShutdownBoundaryEndResult(p.logger, "backlog_admission_stop", admissionStarted, "skipped", nil, "component", "backlog_admission", "project_id", p.id)
 	}
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 		err = nil
@@ -876,6 +926,23 @@ func (p *Project) startRoutine(ctx context.Context) <-chan struct{} {
 		defer close(done)
 		if err := manager.Run(ctx); err != nil && ctx.Err() == nil {
 			p.logger.Error("project routine stopped", "project_id", p.id, "error", err)
+		}
+	}()
+	return done
+}
+
+func (p *Project) startAdmission(ctx context.Context) <-chan struct{} {
+	p.mu.Lock()
+	manager := p.admission
+	p.mu.Unlock()
+	if manager == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := manager.Run(ctx); err != nil && ctx.Err() == nil {
+			p.logger.Error("project backlog admission stopped", "project_id", p.id, "error", err)
 		}
 	}()
 	return done
@@ -1116,12 +1183,28 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	projectIntake := p.intake
 	projectRetro := p.retro
 	projectRoutine := p.routine
+	projectAdmission := p.admission
+	globalDispatchGate := p.orchDeps.GlobalDispatchGate
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)
 	workflow.Config = workflowConfigWithProjectIdentity(projectConfig, workflow.Config)
 	workflow.Config = workflowConfigWithGitHubToken(workflow.Config, githubToken)
 	if err := workflow.Config.Validate(); err != nil {
 		return p.workflowReloadError("workflow reload validation failed", update.Path, err)
+	}
+	if err := workflowconfig.ValidateWorkflowAdmission(workflow); err != nil {
+		return p.workflowReloadError("workflow reload validation failed", update.Path, err)
+	}
+	admissionCriteria := workflowconfig.AdmissionCriteria{}
+	if workflow.Config.BacklogAdmission.Enabled {
+		resolvedCriteria, criteriaErr := workflowconfig.ResolveAdmissionCriteria(
+			workflow.SharedPrompt,
+			workflow.Config.BacklogAdmission.CriteriaSection,
+		)
+		if criteriaErr != nil {
+			return p.workflowReloadError("workflow reload backlog admission criteria failed", update.Path, criteriaErr)
+		}
+		admissionCriteria = resolvedCriteria
 	}
 
 	projectConnector, err := buildConnector(workflow.Config, connectorFactory)
@@ -1204,6 +1287,23 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			Issues:       routineIssueStore(projectConnector),
 		}); err != nil {
 			return p.workflowReloadError("apply workflow routine reload failed", update.Path, err)
+		}
+	}
+	if projectAdmission != nil {
+		if err := projectAdmission.Update(admission.Settings{
+			ProjectID:          string(p.id),
+			Config:             workflow.Config.BacklogAdmission,
+			Criteria:           admissionCriteria,
+			DispatchStates:     workflow.Config.Agent.DispatchPriorityByState,
+			DispatchLabels:     workflow.Config.Agent.DispatchPriorityByLabel,
+			PrioritizeBlockers: workflow.Config.Agent.PrioritizeUnblockers,
+			Runner:             runner,
+			Issues:             admissionIssueStore(projectConnector),
+			Scheduler:          projectScheduler,
+			GlobalDispatchGate: globalDispatchGate,
+			ProjectCandidate:   projectSchedulerCandidate(projectConfig),
+		}); err != nil {
+			return p.workflowReloadError("apply workflow backlog admission reload failed", update.Path, err)
 		}
 	}
 
@@ -1345,6 +1445,23 @@ func routineIssueStore(projectConnector connector.Connector) routine.IssueStore 
 		return nil
 	}
 	return issueStore
+}
+
+func admissionIssueStore(projectConnector connector.Connector) admission.IssueStore {
+	if projectConnector == nil {
+		return nil
+	}
+	return projectConnector
+}
+
+func projectSchedulerCandidate(project globalconfig.Project) scheduler.ProjectCandidate {
+	return scheduler.ProjectCandidate{
+		ID:       project.ID,
+		Pool:     project.Pool,
+		Weight:   project.Weight,
+		Priority: project.Priority,
+		Paused:   project.Paused,
+	}
 }
 
 func buildRetroIssueStores(
@@ -1692,6 +1809,9 @@ func resolveWorkflowWatcherFactory(
 }
 
 func normalizeWorkflow(workflow workflowconfig.Workflow) workflowconfig.Workflow {
+	if workflow.SharedPrompt == "" && workflow.Overlay.Path == "" {
+		workflow.SharedPrompt = workflow.Prompt
+	}
 	if !emptyWorkflowConfig(workflow.Config) {
 		return workflow
 	}

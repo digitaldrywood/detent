@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/efficiency"
@@ -54,6 +55,7 @@ type Store interface {
 	OrphanSessionStore
 	RetroStore
 	RoutineStore
+	AdmissionStore
 	efficiency.Recorder
 	efficiency.Reader
 	APIKeyStore
@@ -184,6 +186,19 @@ type RetroStore interface {
 type RoutineStore interface {
 	LatestRoutineRun(context.Context, string, string) (routinemodel.RunRecord, bool, error)
 	RecordRoutineRun(context.Context, routinemodel.RunRecord) error
+}
+
+type AdmissionStore interface {
+	CreateAdmissionProposal(context.Context, admissionmodel.Proposal) (bool, error)
+	OpenAdmissionProposals(context.Context, string, int) ([]admissionmodel.Proposal, error)
+	AdmissionProposalHistory(context.Context, string, string) ([]admissionmodel.Proposal, error)
+	CountOpenAdmissionProposals(context.Context, string) (int, error)
+	ExpireAdmissionProposals(context.Context, string, time.Time) (int, error)
+	TransitionAdmissionProposal(context.Context, string, admissionmodel.ProposalStatus, admissionmodel.ProposalStatus, time.Time) error
+	MarkAdmissionProposalCommented(context.Context, string, time.Time) error
+	RecordAdmissionRun(context.Context, admissionmodel.RunRecord) error
+	LatestAdmissionRun(context.Context, string) (admissionmodel.RunRecord, bool, error)
+	RecentAdmissionRuns(context.Context, string, int) ([]admissionmodel.RunRecord, error)
 }
 
 type APIKeyStore interface {

@@ -58,6 +58,7 @@ type doctorCheck struct {
 	ArtifactGateConvergence   []doctorArtifactGateConvergenceDiagnostic  `json:"artifact_gate_convergence,omitempty"`
 	ValidatorFailures         []doctorValidatorFailureDiagnostic         `json:"validator_failures,omitempty"`
 	Routines                  []doctorRoutineDiagnostic                  `json:"routines,omitempty"`
+	BacklogAdmission          *doctorAdmissionDiagnostic                 `json:"backlog_admission,omitempty"`
 	OverloadRetriesLastHour   int                                        `json:"overload_retries_last_hour,omitempty"`
 	DependencyCapabilities    []connector.DependencyCapability           `json:"dependency_capabilities,omitempty"`
 	UntrackedIssues           []doctorStatusDriftIssueDiagnostic         `json:"untracked_issues,omitempty"`

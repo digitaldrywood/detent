@@ -26,6 +26,7 @@ import (
 	routinemodel "github.com/digitaldrywood/detent/internal/routine/model"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
@@ -143,6 +144,68 @@ func TestNewConfiguresScheduledRoutines(t *testing.T) {
 	t.Cleanup(func() { _ = got.Close() })
 	if got.Routines() == nil || !got.Routines().Enabled() {
 		t.Fatalf("Routines() = %#v, want enabled manager", got.Routines())
+	}
+}
+
+func TestNewConfiguresBacklogAdmissionFromSharedWorkflow(t *testing.T) {
+	t.Parallel()
+
+	runtimeStore, err := store.Open(context.Background(), store.Config{
+		Backend: store.BackendSQLite,
+		Path:    filepath.Join(t.TempDir(), "detent.db"),
+	})
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := runtimeStore.Close(); err != nil {
+			t.Fatalf("runtimeStore.Close() error = %v", err)
+		}
+	})
+
+	workflowCfg := workflowConfigWithMemoryIssue("issue-1535")
+	workflowCfg.Tracker.Issues[0].State = "Backlog"
+	workflowCfg.BacklogAdmission.Enabled = true
+	workflowCfg.BacklogAdmission.Sources.States = []string{"Backlog"}
+	workflowCfg.BacklogAdmission.TargetState = "Todo"
+	workflowCfg.BacklogAdmission.CriteriaSection = "Admission criteria"
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{ID: "detent", Workdir: "/workspace/detent"},
+		Workflow: workflowconfig.Workflow{
+			Config: workflowCfg,
+			SharedPrompt: `# Workflow
+
+## Admission criteria
+
+- **Evidence** — requires a reproducible signal.
+`,
+		},
+	}, project.Dependencies{
+		Runner:         orchestrator.FakeRunner{},
+		AdmissionStore: runtimeStore,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = got.Close() })
+	if got.Admission() == nil || !got.Admission().Enabled() {
+		t.Fatalf("Admission() = %#v, want enabled manager", got.Admission())
+	}
+}
+
+func TestNewLeavesBacklogAdmissionDisabledByDefault(t *testing.T) {
+	t.Parallel()
+
+	got, err := project.New(project.Config{
+		Project:  globalconfig.Project{ID: "detent", Workdir: "/workspace/detent"},
+		Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
+	}, project.Dependencies{Runner: orchestrator.FakeRunner{}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = got.Close() })
+	if got.Admission() == nil || got.Admission().Enabled() {
+		t.Fatalf("Admission() = %#v, want disabled manager", got.Admission())
 	}
 }
 

@@ -1076,6 +1076,69 @@ func TestRunnerRunRoutineRequestsReadOnlyBackendTurn(t *testing.T) {
 	}
 }
 
+func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 7, 29, 9, 0, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "admission-detent", Branch: "detent/admission-detent"},
+	}
+	agentBackend := &fakeCodexClient{
+		result: AgentTurnResult{ThreadID: "thread-admission", TurnID: "turn-1", SessionID: "thread-admission-turn-1"},
+	}
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Machine-local text must not appear."},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		Store:        &fakeSessionStore{sessionID: 1535},
+		Now:          newFakeClock(startedAt, startedAt.Add(time.Second), startedAt.Add(2*time.Second)).Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{ID: "admission-detent", Identifier: "detent/admission", State: "Admission"},
+		Mode:  RunModeRoutine,
+		Admission: &AdmissionRequest{
+			TargetState:     "Todo",
+			CriteriaSection: "Admission criteria",
+			CriteriaText:    "- **Evidence** — Require reproducible evidence.",
+			Dimensions: []AdmissionDimension{{
+				Name: "Evidence",
+				Text: "Require reproducible evidence.",
+			}},
+			Candidates: []AdmissionCandidate{{
+				ID:          "issue-1535",
+				Identifier:  "digitaldrywood/detent#1535",
+				Title:       "Admission core",
+				Description: "Implement typed proposals.",
+			}},
+		},
+		StartedAt: startedAt,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !agentBackend.request.ReadOnly {
+		t.Fatal("AgentTurnRequest.ReadOnly = false, want true for admission")
+	}
+	if agentBackend.request.ToolInstructions != admissionToolInstructions {
+		t.Fatalf("AgentTurnRequest.ToolInstructions = %q, want admission instructions", agentBackend.request.ToolInstructions)
+	}
+	for _, want := range []string{"propose_backlog_admission", "Require reproducible evidence.", "digitaldrywood/detent#1535"} {
+		if !strings.Contains(agentBackend.request.Prompt, want) {
+			t.Fatalf("AgentTurnRequest.Prompt = %q, want %q", agentBackend.request.Prompt, want)
+		}
+	}
+	if strings.Contains(agentBackend.request.Prompt, "Machine-local text must not appear.") {
+		t.Fatalf("AgentTurnRequest.Prompt includes merged workflow prompt: %q", agentBackend.request.Prompt)
+	}
+	if !agentResumeEmpty(agentBackend.request.Resume) {
+		t.Fatalf("AgentTurnRequest.Resume = %#v, want fresh admission session", agentBackend.request.Resume)
+	}
+}
+
 func TestRunnerRunRetryFreshSuppressesThreadResume(t *testing.T) {
 	t.Parallel()
 

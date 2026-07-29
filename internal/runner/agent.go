@@ -1014,7 +1014,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		RecoveryState:        recoveryState,
 	}
 	var prompt string
-	if mode == RunModeRoutine && req.Routine != nil {
+	if mode == RunModeRoutine && req.Admission != nil {
+		prompt, err = BuildAdmissionPrompt(req.Issue, *req.Admission, promptOptions)
+	} else if mode == RunModeRoutine && req.Routine != nil {
 		prompt, err = BuildRoutinePrompt(workflow, req.Issue, *req.Routine, promptOptions)
 	} else {
 		prompt, err = BuildPrompt(workflow, req.Issue, promptOptions)
@@ -1142,6 +1144,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	if mode == RunModeRoutine {
 		turnRequest.ToolInstructions = routineToolInstructions
+		if req.Admission != nil {
+			turnRequest.ToolInstructions = admissionToolInstructions
+		}
 	}
 	execution := r.runAgentTurn(sessionCtx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity)
 	if execution.err != nil {

@@ -1170,6 +1170,81 @@ a routine has never run, and flags three consecutive failures. ProjectV2
 trackers must set `tracker.repository` so Detent can create the repository issue
 before adding it to the board.
 
+### Scheduled backlog admission
+
+Backlog admission evaluates existing issues and proposes which ones should
+become eligible for dispatch. It does not create work like routines, classify
+incoming work like intake, rank eligible work like the scheduler, or change
+issue status. Every proposal is a durable record with an expiry and one audit
+comment; a human accepts it by moving the issue to the configured target state.
+
+Admission is disabled unless a project opts in:
+
+```yaml
+backlog_admission:
+  enabled: true
+  schedule: "0 6 * * 1-5"
+  sources:
+    states: [Backlog]
+  target_state: Todo
+  criteria_section: "Admission criteria"
+  exclude_labels: []
+  authors:
+    allow: []
+  max_candidates_per_run: 50
+  max_proposals_per_run: 3
+  max_open_proposals: 10
+  proposal_expiry_days: 7
+```
+
+State names come from the project's workflow. Candidate ordering is stable and
+the candidate cap is applied before agent evaluation. Author and excluded-label
+filters are applied locally after fetching source-state issues. A run defers
+instead of queueing when project or fleet capacity is unavailable or its agent
+would exceed the configured daily budget.
+
+Criteria live in one named section of the shared `WORKFLOW.md`, never
+`WORKFLOW.local.md`. Heading matching is case-insensitive, accepts ATX headings
+at any level and Setext headings, and includes nested subsections until the next
+heading of the same or higher level. Headings and bold list items inside fenced
+code blocks are examples, not criteria. Missing, empty, unresolved, or
+duplicate matching headings fail closed. Dimensions are project-owned: define
+them as nested headings or bold list items, and replace the example rubric
+wholesale when another project needs different judgments.
+
+```markdown
+## Admission criteria
+
+- **Alignment** — Does this serve a stated current priority? Do not propose a
+  candidate that maps to no stated priority.
+- **Readiness** — Is the problem actionable, with the acceptance conditions
+  needed by the agent that will implement it?
+- **Size** — Is the work bounded enough for one agent to complete?
+```
+
+The agent receives only the resolved criteria and bounded candidate data in a
+fresh read-only session. It emits typed proposals. Detent re-fetches each issue,
+validates every field and verbatim criteria quote, rejects proposals matching no
+dimension, and persists valid records before posting comments. Confidence is
+stored as telemetry and never authorizes a transition. Repeated runs use a
+title/body fingerprint, so the proposal's own comment cannot create a
+duplicate. Unanswered proposals expire; an issue demoted after acceptance is
+not proposed again.
+
+GitHub, `github_local`, `local_sqlite`, and `memory` trackers support
+state-based admission. Linear configurations fail validation because their
+state readers are not implemented. `authors.allow` on `local_sqlite` or
+`memory` produces a doctor warning because those trackers do not discover
+authors. ProjectV2 configurations using `exclude_labels` warn that only the
+first 20 issue labels are fetched. The memory tracker is evaluation-only across
+restarts: durable proposal records can survive while its process-local comments
+and mutations do not.
+
+The admission ledger records timing, candidate, proposal, skip, truncation,
+deferral, failure, and issue-reference details. `detent doctor` warns when
+criteria cannot be resolved, admission has never run, tracker limitations
+apply, or three consecutive runs fail, and shows the latest result otherwise.
+
 ### Efficiency retrospection
 
 Each project can opt into an evidence-based reflection loop over its runtime
