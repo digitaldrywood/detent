@@ -390,6 +390,8 @@
 #           author_kind: null
 #           # tracker.issues[].comments[].author_display_name | type: string | default: none | required: No | validation: None
 #           author_display_name: null
+#           # tracker.issues[].comments[].author_authorized | type: boolean | default: false when configured | required: No | validation: None
+#           author_authorized: false
 #           # tracker.issues[].comments[].created_at | type: mapping | default: none | required: No | validation: None
 #           created_at: null
 #           # tracker.issues[].comments[].updated_at | type: mapping | default: none | required: No | validation: None
@@ -992,3 +994,7 @@
 #   max_open_proposals: 10
 #   # backlog_admission.proposal_expiry_days | type: integer | default: 7 | required: No | validation: must be greater than 0
 #   proposal_expiry_days: 7
+#   # backlog_admission.auto_admit | type: boolean | default: false | required: No | validation: None
+#   auto_admit: false
+#   # backlog_admission.auto_admit_min_confidence | type: number | default: 0.9 | required: No | validation: None
+#   auto_admit_min_confidence: 0.9
