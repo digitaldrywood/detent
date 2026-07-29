@@ -274,8 +274,11 @@ func TestMergeRevocationCommentBudgetWarnsAndEscalatesOnce(t *testing.T) {
 	var logs bytes.Buffer
 	orch := &Orchestrator{
 		connector: tracker,
-		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
-		now:       func() time.Time { return now },
+		cfg: Config{
+			AutoPromote: AutoPromoteConfig{SourceState: "Review"},
+		},
+		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		now:    func() time.Time { return now },
 	}
 	revocation := mergeRevocation{
 		issue: connector.Issue{
@@ -294,7 +297,7 @@ func TestMergeRevocationCommentBudgetWarnsAndEscalatesOnce(t *testing.T) {
 	if got := len(tracker.comments); got != mergeRevocationCommentLimit {
 		t.Fatalf("comments = %d, want budget limit %d", got, mergeRevocationCommentLimit)
 	}
-	if got, want := tracker.updates, []string{autoPromoteSourceState}; fmt.Sprint(got) != fmt.Sprint(want) {
+	if got, want := tracker.updates, []string{"Review"}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("updates = %#v, want %#v", got, want)
 	}
 	if got := strings.Count(logs.String(), "merge revocation comment budget exhausted"); got != 1 {
@@ -307,8 +310,9 @@ func TestMergeRevocationCommentResourceExhaustionEscalates(t *testing.T) {
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	tracker := &mergeRevocationCommentConnector{
-		now:        now,
-		commentErr: fmt.Errorf("create github comment: %w", connector.ErrResourceExhausted),
+		now:            now,
+		commentErr:     fmt.Errorf("create github comment: %w", connector.ErrResourceExhausted),
+		updateFailures: 1,
 	}
 	var logs bytes.Buffer
 	orch := &Orchestrator{
@@ -333,6 +337,9 @@ func TestMergeRevocationCommentResourceExhaustionEscalates(t *testing.T) {
 	if tracker.commentAttempts != 1 {
 		t.Fatalf("comment attempts = %d, want 1", tracker.commentAttempts)
 	}
+	if tracker.updateAttempts != 2 {
+		t.Fatalf("update attempts = %d, want 2", tracker.updateAttempts)
+	}
 	if got, want := tracker.updates, []string{autoPromoteSourceState}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("updates = %#v, want %#v", got, want)
 	}
@@ -347,6 +354,8 @@ type mergeRevocationCommentConnector struct {
 	updates         []string
 	commentErr      error
 	commentAttempts int
+	updateFailures  int
+	updateAttempts  int
 }
 
 func (c *mergeRevocationCommentConnector) Name() string {
@@ -383,6 +392,11 @@ func (c *mergeRevocationCommentConnector) CreateComment(_ context.Context, _ str
 }
 
 func (c *mergeRevocationCommentConnector) UpdateIssueState(_ context.Context, _ string, state string) error {
+	c.updateAttempts++
+	if c.updateFailures > 0 {
+		c.updateFailures--
+		return connector.NewRetryableError("transient state update")
+	}
 	c.updates = append(c.updates, state)
 	return nil
 }

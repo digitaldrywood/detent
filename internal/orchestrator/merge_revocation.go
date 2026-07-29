@@ -36,10 +36,12 @@ type mergeRevocation struct {
 }
 
 type mergeRevocationCommentState struct {
-	localWrites       []mergeRevocationCommentWrite
-	lastSignature     string
-	warnedUntil       time.Time
-	resourceExhausted bool
+	localWrites                 []mergeRevocationCommentWrite
+	lastSignature               string
+	warnedUntil                 time.Time
+	budgetEscalated             bool
+	resourceExhausted           bool
+	resourceExhaustionEscalated bool
 }
 
 type mergeRevocationCommentWrite struct {
@@ -373,6 +375,15 @@ func (o *Orchestrator) commentMergeRevocation(
 	}
 	commentState := o.mergeRevocationCommentState(issueID)
 	if commentState.resourceExhausted {
+		if !commentState.resourceExhaustionEscalated {
+			commentState.resourceExhaustionEscalated = o.escalateMergeRevocationCommentLoss(
+				ctx,
+				state,
+				revocation.issue,
+				at,
+				"merge_revocation_comment_resource_exhausted",
+			)
+		}
 		return
 	}
 	signature := mergeRevocationCommentSignature(revocation)
@@ -391,7 +402,9 @@ func (o *Orchestrator) commentMergeRevocation(
 					"window", mergeRevocationCommentWindow,
 				)
 			}
-			o.escalateMergeRevocationCommentLoss(
+		}
+		if !commentState.budgetEscalated {
+			commentState.budgetEscalated = o.escalateMergeRevocationCommentLoss(
 				ctx,
 				state,
 				revocation.issue,
@@ -433,7 +446,7 @@ func (o *Orchestrator) commentMergeRevocation(
 					"error", err,
 				)
 			}
-			o.escalateMergeRevocationCommentLoss(
+			commentState.resourceExhaustionEscalated = o.escalateMergeRevocationCommentLoss(
 				ctx,
 				state,
 				revocation.issue,
@@ -559,24 +572,29 @@ func (o *Orchestrator) escalateMergeRevocationCommentLoss(
 	issue connector.Issue,
 	at time.Time,
 	reason string,
-) {
+) bool {
+	targetState := normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState
 	if err := o.updateIssueStateByID(
 		ctx,
 		state,
 		issue.ID,
 		issue,
-		autoPromoteSourceState,
+		targetState,
 		at,
 		reason,
-	); err != nil && o.logger != nil {
-		o.logger.Warn(
-			"merge revocation comment loss escalation failed",
-			"issue_id", issue.ID,
-			"target_state", autoPromoteSourceState,
-			"reason", reason,
-			"error", err,
-		)
+	); err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"merge revocation comment loss escalation failed",
+				"issue_id", issue.ID,
+				"target_state", targetState,
+				"reason", reason,
+				"error", err,
+			)
+		}
+		return false
 	}
+	return true
 }
 
 func mergeRevocationError(revocation mergeRevocation) error {
