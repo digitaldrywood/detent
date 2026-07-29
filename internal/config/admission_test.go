@@ -89,6 +89,12 @@ func TestBacklogAdmissionValidate(t *testing.T) {
 		want    string
 	}{
 		{name: "valid", tracker: Tracker{Kind: TrackerGitHub}},
+		{name: "github project v2", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceProjectV2}},
+		{name: "github issue field", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceIssueField}},
+		{name: "github label", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceLabel}},
+		{name: "github local", tracker: Tracker{Kind: TrackerGitHubLocal}},
+		{name: "local sqlite", tracker: Tracker{Kind: TrackerLocalSQLite}},
+		{name: "memory", tracker: Tracker{Kind: TrackerMemory}},
 		{name: "bad cron", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.Schedule = "not cron" }, want: "valid five-field cron"},
 		{name: "empty sources", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.Sources.States = nil }, want: "must contain at least one state"},
 		{name: "unknown source", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.Sources.States = []string{"Icebox"} }, want: "sources.states[0] must name"},
@@ -100,6 +106,8 @@ func TestBacklogAdmissionValidate(t *testing.T) {
 		{name: "zero open cap", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.MaxOpenProposals = 0 }, want: "max_open_proposals must be greater than 0"},
 		{name: "zero expiry", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.ProposalExpiryDays = 0 }, want: "proposal_expiry_days must be greater than 0"},
 		{name: "linear", tracker: Tracker{Kind: TrackerLinear}, want: "FetchIssuesByStates is not implemented"},
+		{name: "unsupported github source", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: "milestone"}, want: "tracker.kind github with github_status_source milestone does not declare it"},
+		{name: "unsupported tracker", tracker: Tracker{Kind: "gitlab"}, want: "tracker.kind gitlab does not declare it"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

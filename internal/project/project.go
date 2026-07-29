@@ -1459,7 +1459,11 @@ func admissionIssueStore(projectConnector connector.Connector) admission.IssueSt
 	if projectConnector == nil {
 		return nil
 	}
-	return projectConnector
+	issueStore, ok := projectConnector.(admission.IssueStore)
+	if !ok {
+		return nil
+	}
+	return issueStore
 }
 
 func projectSchedulerCandidate(project globalconfig.Project) scheduler.ProjectCandidate {

@@ -365,6 +365,7 @@ func (c *Connector) ProjectURL(ctx context.Context) (string, error) {
 }
 
 var _ connector.Connector = (*Connector)(nil)
+var _ connector.CandidateReader = (*Connector)(nil)
 var _ connector.Authenticator = (*Connector)(nil)
 var _ intake.IssueStore = (*Connector)(nil)
 var _ connector.Closer = (*Connector)(nil)

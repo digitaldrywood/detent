@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -98,6 +99,47 @@ func TestManagerEnforcesOrderingAndAllCapsBeforeWritingComments(t *testing.T) {
 	}
 	if agent.calls != 1 || second.Skipped["open_proposal_cap"] == 0 {
 		t.Fatalf("second result = %#v, runner calls = %d, want pre-agent open cap", second, agent.calls)
+	}
+}
+
+func TestManagerRecordsCandidateReaderTruncation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	issues := make([]connector.Issue, connector.DefaultCandidatePageSize+2)
+	for index := range issues {
+		issues[index] = admissionIssueFixture(
+			"issue-"+strconv.Itoa(index),
+			"DD-"+strconv.Itoa(index),
+			1,
+			now.Add(time.Duration(index)*time.Minute),
+		)
+		issues[index].Labels = []string{"skip"}
+	}
+	tracker := memory.New(memory.Config{Issues: issues, Stateful: true, Now: func() time.Time { return now }})
+	backend := openManagerTestStore(t)
+	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	settings := admissionTestSettings(tracker, agent)
+	settings.Config.ExcludeLabels = []string{"skip"}
+	settings.Config.MaxCandidatesPerRun = 2
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+
+	result, err := manager.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if result.Truncated["candidate_reader"] != 1 || result.CandidatesFound != connector.DefaultCandidatePageSize {
+		t.Fatalf("result = %#v, want reader truncation at %d candidates", result, connector.DefaultCandidatePageSize)
+	}
+	if agent.calls != 0 {
+		t.Fatalf("runner calls = %d, want no eligible candidates", agent.calls)
+	}
+	record, ok, err := backend.LatestAdmissionRun(context.Background(), "detent")
+	if err != nil || !ok {
+		t.Fatalf("LatestAdmissionRun() = %#v, %t, %v", record, ok, err)
+	}
+	if record.Truncated["candidate_reader"] != 1 {
+		t.Fatalf("run ledger truncation = %#v, want candidate_reader=1", record.Truncated)
 	}
 }
 
