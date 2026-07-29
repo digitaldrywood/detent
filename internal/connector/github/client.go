@@ -1286,6 +1286,8 @@ func classifyStatusAt(status int, headers http.Header, body []byte, now time.Tim
 	switch {
 	case status == http.StatusUnauthorized:
 		base = ErrAuthenticationFailed
+	case status == http.StatusForbidden && githubCommentingDisabled(body):
+		base = ErrResourceExhausted
 	case status == http.StatusForbidden:
 		if strings.TrimSpace(headers.Get("Retry-After")) != "" || headers.Get("X-RateLimit-Remaining") == "0" {
 			base = ErrRateLimited
@@ -1313,6 +1315,13 @@ func classifyStatusAt(status int, headers http.Header, body []byte, now time.Tim
 		}
 	}
 	return statusErr
+}
+
+func githubCommentingDisabled(body []byte) bool {
+	return strings.Contains(
+		strings.ToLower(string(body)),
+		"commenting is disabled on issues with more than 2500 comments",
+	)
 }
 
 func restStatusRateLimited(status int, headers http.Header) bool {

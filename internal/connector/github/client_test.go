@@ -181,6 +181,12 @@ func TestClientGraphQLClassifiesFailures(t *testing.T) {
 			want:       ErrRateLimited,
 		},
 		{
+			name:       "issue comment cap",
+			statusCode: http.StatusForbidden,
+			body:       `{"message":"Commenting is disabled on issues with more than 2500 comments"}`,
+			want:       ErrResourceExhausted,
+		},
+		{
 			name:       "not found",
 			statusCode: http.StatusNotFound,
 			body:       `{"message":"not found"}`,
@@ -233,6 +239,26 @@ func TestClientGraphQLClassifiesFailures(t *testing.T) {
 				t.Fatalf("GraphQL() error = %v, want %v", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestClassifyStatusMapsCommentCapToResourceExhaustion(t *testing.T) {
+	t.Parallel()
+
+	err := classifyStatus(
+		http.StatusForbidden,
+		nil,
+		[]byte(`{"message":"Commenting is disabled on issues with more than 2500 comments"}`),
+	)
+
+	if !errors.Is(err, ErrResourceExhausted) {
+		t.Fatalf("classifyStatus() error = %v, want ErrResourceExhausted", err)
+	}
+	if errors.Is(err, ErrAuthenticationFailed) {
+		t.Fatalf("classifyStatus() error = %v, do not want ErrAuthenticationFailed", err)
+	}
+	if !strings.Contains(err.Error(), "github resource exhausted") {
+		t.Fatalf("classifyStatus() error = %v, want resource exhaustion message", err)
 	}
 }
 

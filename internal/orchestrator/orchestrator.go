@@ -234,6 +234,7 @@ type Orchestrator struct {
 	done                    chan struct{}
 	pendingStops            map[string]*pendingStopRun
 	pendingMergeRevocations map[string]mergeRevocation
+	mergeRevocationComments map[string]*mergeRevocationCommentState
 	completedStops          map[string]StopRunResult
 	refreshSeq              atomic.Uint64
 }
@@ -463,6 +464,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		done:                    make(chan struct{}),
 		pendingStops:            map[string]*pendingStopRun{},
 		pendingMergeRevocations: map[string]mergeRevocation{},
+		mergeRevocationComments: map[string]*mergeRevocationCommentState{},
 		completedStops:          map[string]StopRunResult{},
 	}
 	orchestrator.heartbeats = newHeartbeatManager(cfg, deps.Connector, deps.WorkAttempts, now, logger)

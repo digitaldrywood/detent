@@ -1,10 +1,13 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -198,4 +201,196 @@ func TestDraftMergeRevocationUsesConfiguredSourceState(t *testing.T) {
 	if revocation.targetState != "Review" {
 		t.Fatalf("target state = %q, want configured source state Review", revocation.targetState)
 	}
+}
+
+func TestMergeRevocationCommentsDeduplicateReasonAndHeadSHA(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	tracker := &mergeRevocationCommentConnector{now: now}
+	orch := &Orchestrator{
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		now:       func() time.Time { return now },
+	}
+	revocation := mergeRevocation{
+		issue: connector.Issue{
+			ID:    "issue-comment-dedup",
+			State: "Merging",
+			PullRequest: &connector.PullRequest{
+				HeadSHA: "same-head",
+			},
+		},
+		reason:      mergeRevocationDraftPullRequest,
+		targetState: "In Progress",
+	}
+
+	orch.commentMergeRevocation(t.Context(), &State{}, revocation, now)
+	orch = &Orchestrator{
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		now:       func() time.Time { return now },
+	}
+	for range 19 {
+		orch.commentMergeRevocation(t.Context(), &State{}, revocation, now)
+	}
+
+	if got := len(tracker.comments); got != 1 {
+		t.Fatalf("comments = %d, want 1", got)
+	}
+	body := tracker.comments[0].Body
+	for _, want := range []string{
+		"- reason: " + mergeRevocationDraftPullRequest,
+		"- head_sha: same-head",
+		mergeRevocationCommentSignature(revocation),
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("comment body = %q, want %q", body, want)
+		}
+	}
+}
+
+func TestMergeRevocationCommentBudgetWarnsAndEscalatesOnce(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	tracker := &mergeRevocationCommentConnector{now: now}
+	for index := range mergeRevocationCommentLimit {
+		createdAt := now.Add(-time.Duration(index) * time.Minute)
+		revocation := mergeRevocation{
+			issue: connector.Issue{
+				ID: "issue-comment-budget",
+				PullRequest: &connector.PullRequest{
+					HeadSHA: fmt.Sprintf("prior-head-%d", index),
+				},
+			},
+			reason: mergeRevocationDraftPullRequest,
+		}
+		tracker.comments = append(tracker.comments, connector.IssueComment{
+			Body:      mergeRevocationCommentSignature(revocation),
+			CreatedAt: &createdAt,
+		})
+	}
+	var logs bytes.Buffer
+	orch := &Orchestrator{
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+		now:       func() time.Time { return now },
+	}
+	revocation := mergeRevocation{
+		issue: connector.Issue{
+			ID:    "issue-comment-budget",
+			State: "Merging",
+			PullRequest: &connector.PullRequest{
+				HeadSHA: "new-head",
+			},
+		},
+		reason: mergeRevocationDraftPullRequest,
+	}
+
+	orch.commentMergeRevocation(t.Context(), &State{}, revocation, now)
+	orch.commentMergeRevocation(t.Context(), &State{}, revocation, now.Add(time.Minute))
+
+	if got := len(tracker.comments); got != mergeRevocationCommentLimit {
+		t.Fatalf("comments = %d, want budget limit %d", got, mergeRevocationCommentLimit)
+	}
+	if got, want := tracker.updates, []string{autoPromoteSourceState}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if got := strings.Count(logs.String(), "merge revocation comment budget exhausted"); got != 1 {
+		t.Fatalf("budget warnings = %d, want 1: %s", got, logs.String())
+	}
+}
+
+func TestMergeRevocationCommentResourceExhaustionEscalates(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	tracker := &mergeRevocationCommentConnector{
+		now:        now,
+		commentErr: fmt.Errorf("create github comment: %w", connector.ErrResourceExhausted),
+	}
+	var logs bytes.Buffer
+	orch := &Orchestrator{
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+		now:       func() time.Time { return now },
+	}
+	revocation := mergeRevocation{
+		issue: connector.Issue{
+			ID:    "issue-comment-cap",
+			State: "Merging",
+			PullRequest: &connector.PullRequest{
+				HeadSHA: "capped-head",
+			},
+		},
+		reason: mergeRevocationDraftPullRequest,
+	}
+
+	orch.commentMergeRevocation(t.Context(), &State{}, revocation, now)
+	orch.commentMergeRevocation(t.Context(), &State{}, revocation, now.Add(time.Minute))
+
+	if tracker.commentAttempts != 1 {
+		t.Fatalf("comment attempts = %d, want 1", tracker.commentAttempts)
+	}
+	if got, want := tracker.updates, []string{autoPromoteSourceState}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if !strings.Contains(logs.String(), "comment resource exhausted") {
+		t.Fatalf("logs = %q, want resource exhaustion", logs.String())
+	}
+}
+
+type mergeRevocationCommentConnector struct {
+	now             time.Time
+	comments        []connector.IssueComment
+	updates         []string
+	commentErr      error
+	commentAttempts int
+}
+
+func (c *mergeRevocationCommentConnector) Name() string {
+	return "merge-revocation-comment"
+}
+
+func (c *mergeRevocationCommentConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (c *mergeRevocationCommentConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (c *mergeRevocationCommentConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (c *mergeRevocationCommentConnector) FetchIssueComments(context.Context, connector.Issue) ([]connector.IssueComment, error) {
+	return append([]connector.IssueComment(nil), c.comments...), nil
+}
+
+func (c *mergeRevocationCommentConnector) CreateComment(_ context.Context, _ string, body string) error {
+	c.commentAttempts++
+	if c.commentErr != nil {
+		return c.commentErr
+	}
+	createdAt := c.now
+	c.comments = append(c.comments, connector.IssueComment{
+		Body:      body,
+		CreatedAt: &createdAt,
+	})
+	return nil
+}
+
+func (c *mergeRevocationCommentConnector) UpdateIssueState(_ context.Context, _ string, state string) error {
+	c.updates = append(c.updates, state)
+	return nil
+}
+
+func (c *mergeRevocationCommentConnector) SetAssignee(context.Context, string, string) error {
+	return nil
+}
+
+func (c *mergeRevocationCommentConnector) SetField(context.Context, string, string, string) error {
+	return nil
 }
