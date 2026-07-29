@@ -674,6 +674,7 @@ agent:
   max_concurrent_agents: 5
   max_turn_duration_ms: 900000
   max_session_duration_ms: 3600000
+  merge_worker_max_duration_ms: 7200000
   max_session_tokens: 10000000
   max_session_context_multiplier: 3.5
   max_session_token_override_label: Allow-Large-Session
@@ -924,6 +925,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Agent.MaxSessionDurationMS != 3600000 {
 		t.Fatalf("Agent.MaxSessionDurationMS = %d, want 3600000", cfg.Agent.MaxSessionDurationMS)
+	}
+	if cfg.Agent.MergeWorkerMaxDurationMS != 7200000 {
+		t.Fatalf("Agent.MergeWorkerMaxDurationMS = %d, want 7200000", cfg.Agent.MergeWorkerMaxDurationMS)
 	}
 	if cfg.Agent.MaxSessionTokens != 10000000 {
 		t.Fatalf("Agent.MaxSessionTokens = %d, want 10000000", cfg.Agent.MaxSessionTokens)
@@ -1301,6 +1305,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Agent.MaxConcurrentAgents != 10 {
 		t.Fatalf("Agent.MaxConcurrentAgents = %d, want 10", cfg.Agent.MaxConcurrentAgents)
+	}
+	if cfg.Agent.MergeWorkerMaxDurationMS != DefaultMergeWorkerMaxDurationMS {
+		t.Fatalf("Agent.MergeWorkerMaxDurationMS = %d, want %d", cfg.Agent.MergeWorkerMaxDurationMS, DefaultMergeWorkerMaxDurationMS)
 	}
 	if cfg.Agent.MaxSessionTokens != 0 {
 		t.Fatalf("Agent.MaxSessionTokens = %d, want disabled default", cfg.Agent.MaxSessionTokens)
@@ -2869,6 +2876,7 @@ agent:
   max_concurrent_agents: 0
   max_turn_duration_ms: -1
   max_session_duration_ms: -1
+  merge_worker_max_duration_ms: -1
   max_session_tokens: -1
   max_session_context_multiplier: -0.5
   output_truncation:
@@ -2908,6 +2916,7 @@ Prompt
 				"agent.max_concurrent_agents must be greater than 0",
 				"agent.max_turn_duration_ms must be greater than or equal to 0",
 				"agent.max_session_duration_ms must be greater than or equal to 0",
+				"agent.merge_worker_max_duration_ms must be greater than 0",
 				"agent.max_session_tokens must be greater than or equal to 0",
 				"agent.max_session_context_multiplier must be greater than or equal to 0",
 				"agent.output_truncation.max_bytes must be greater than or equal to 0",

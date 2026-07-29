@@ -138,6 +138,14 @@ func TestSupervisorDoesNotRetryMergeRevokedRun(t *testing.T) {
 	}
 }
 
+func TestMergeWorkerDurationExceededFinalState(t *testing.T) {
+	t.Parallel()
+
+	if got := finalStateForTurnError(ErrMergeWorkerDurationExceeded); got != FinalStateMergeDurationExceeded {
+		t.Fatalf("finalStateForTurnError() = %q, want %q", got, FinalStateMergeDurationExceeded)
+	}
+}
+
 func TestSupervisorUsesFlatSameAttemptRetryForTransientOverload(t *testing.T) {
 	t.Parallel()
 

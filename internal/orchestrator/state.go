@@ -134,6 +134,7 @@ type BlockedSource = telemetry.BlockedSource
 
 const (
 	BlockedSourceDependency    = telemetry.BlockedSourceDependency
+	BlockedSourceMergeDuration = telemetry.BlockedSourceMergeDuration
 	BlockedSourceProjectStatus = telemetry.BlockedSourceProjectStatus
 	BlockedSourceOperatorStop  = telemetry.BlockedSourceOperatorStop
 )

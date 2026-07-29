@@ -187,6 +187,10 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 	}()
 
 	result, err := s.backend.Run(ctx, request)
+	if cause := context.Cause(ctx); errors.Is(cause, ErrMergeWorkerDurationExceeded) {
+		err = errors.Join(cause, err)
+		result.FinalState = FinalStateMergeDurationExceeded
+	}
 	completion.CompletedAt = s.now()
 	completion.Result = result
 	completion.Err = err
@@ -194,7 +198,9 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 }
 
 func cooperativeStopError(err error) bool {
-	return errors.Is(err, ErrOperatorStopped) || errors.Is(err, ErrMergeRevoked)
+	return errors.Is(err, ErrOperatorStopped) ||
+		errors.Is(err, ErrMergeRevoked) ||
+		errors.Is(err, ErrMergeWorkerDurationExceeded)
 }
 
 func (s *Supervisor) OverloadRetryDelay() time.Duration {

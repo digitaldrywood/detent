@@ -68,6 +68,7 @@ const (
 	DefaultFailureBreakerCooldownSeconds     = 3600
 	DefaultAutoPromoteGateWaitTimeoutSeconds = 3600
 	DefaultOverloadRetryDelayMS              = 45000
+	DefaultMergeWorkerMaxDurationMS          = 6 * 60 * 60 * 1000
 
 	DefaultPollingIntervalMS              = 120000
 	MinPollingIntervalMS                  = 60000
@@ -266,6 +267,7 @@ type Agent struct {
 	MaxTurns                     int                          `yaml:"max_turns"`
 	MaxTurnDurationMS            int                          `yaml:"max_turn_duration_ms"`
 	MaxSessionDurationMS         int                          `yaml:"max_session_duration_ms"`
+	MergeWorkerMaxDurationMS     int                          `yaml:"merge_worker_max_duration_ms"`
 	MaxRetryBackoffMS            int                          `yaml:"max_retry_backoff_ms"`
 	OverloadRetryDelayMS         int                          `yaml:"overload_retry_delay_ms"`
 	NoProgressSpendLimitUSD      float64                      `yaml:"no_progress_spend_limit_usd"`
@@ -1250,13 +1252,14 @@ func Default() Config {
 			SSHHosts: []string{},
 		},
 		Agent: Agent{
-			MaxConcurrentAgents:     10,
-			MaxTurns:                20,
-			MaxRetryBackoffMS:       300000,
-			OverloadRetryDelayMS:    DefaultOverloadRetryDelayMS,
-			NoProgressSpendLimitUSD: DefaultNoProgressSpendLimitUSD,
-			StopRun:                 StopRun{TargetState: "Blocked"},
-			MergeFastPath:           MergeFastPath{Enabled: true},
+			MaxConcurrentAgents:      10,
+			MaxTurns:                 20,
+			MergeWorkerMaxDurationMS: DefaultMergeWorkerMaxDurationMS,
+			MaxRetryBackoffMS:        300000,
+			OverloadRetryDelayMS:     DefaultOverloadRetryDelayMS,
+			NoProgressSpendLimitUSD:  DefaultNoProgressSpendLimitUSD,
+			StopRun:                  StopRun{TargetState: "Blocked"},
+			MergeFastPath:            MergeFastPath{Enabled: true},
 			FailureBreaker: FailureBreaker{
 				SameClassLimit:  DefaultFailureBreakerSameClassLimit,
 				WindowSeconds:   DefaultFailureBreakerWindowSeconds,
@@ -1548,6 +1551,9 @@ func (c *Config) normalize() {
 	}
 
 	c.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(c.Agent.MaxConcurrentAgentsByState)
+	if c.Agent.MergeWorkerMaxDurationMS == 0 {
+		c.Agent.MergeWorkerMaxDurationMS = DefaultMergeWorkerMaxDurationMS
+	}
 	if c.Agent.FailureBreaker.SameClassLimit == 0 {
 		c.Agent.FailureBreaker.SameClassLimit = DefaultFailureBreakerSameClassLimit
 	}
@@ -1920,6 +1926,7 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	if a.MaxSessionDurationMS < 0 {
 		*problems = append(*problems, prefix+".max_session_duration_ms must be greater than or equal to 0")
 	}
+	validatePositive(prefix+".merge_worker_max_duration_ms", a.MergeWorkerMaxDurationMS, problems)
 	validatePositive(prefix+".max_retry_backoff_ms", a.MaxRetryBackoffMS, problems)
 	validatePositive(prefix+".overload_retry_delay_ms", a.OverloadRetryDelayMS, problems)
 	if a.MaxSessionTokens < 0 {

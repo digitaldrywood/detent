@@ -55,6 +55,7 @@ const (
 	blockedReasonProjectStatus          = "blocked by project status"
 	mergeWorkerTerminalStateMissing     = "merge worker completed without reaching a terminal issue or pull request state"
 	mergeWorkerRetryExhaustedReason     = "merge_worker_retry_exhausted"
+	mergeWorkerDurationExceededReason   = "merge_worker_duration_exceeded"
 )
 
 var (
@@ -71,6 +72,7 @@ type Config struct {
 	PrioritizeUnblockers          bool
 	MergeFastPathEnabled          bool
 	MergeMethod                   string
+	MergeWorkerMaxDuration        time.Duration
 	ResumeOrphanedSessions        bool
 	StopRunTargetState            string
 	StopRunPriorityNames          map[int]string
@@ -165,6 +167,8 @@ type Retrospector interface {
 	Trigger(string)
 }
 
+type runDurationLimitFactory func(context.Context, time.Duration, error) (context.Context, context.CancelFunc)
+
 type WorkspaceReapResult = runpkg.WorkspaceReapResult
 
 type WorkspaceReaper = runpkg.WorkspaceReaper
@@ -210,6 +214,7 @@ type Orchestrator struct {
 	workerProcesses         WorkerProcessStore
 	reapWorkerProcess       WorkerProcessReapFunc
 	workerReapGrace         time.Duration
+	mergeWorkerLimit        runDurationLimitFactory
 	heartbeats              *heartbeatManager
 	hydrationSkipStreaks    map[string]int
 	hydrationWarned         bool

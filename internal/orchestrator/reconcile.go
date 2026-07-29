@@ -510,7 +510,8 @@ func (o *Orchestrator) setBlockedStatusIssue(state *State, issue connector.Issue
 			strings.HasPrefix(existing.Reason, repeatedFailureBlockedReasonPrefix) ||
 			strings.HasPrefix(existing.Reason, tokenCeilingBlockedReasonPrefix) ||
 			strings.HasPrefix(existing.Reason, artifactGateConvergenceBlockedReasonPrefix) ||
-			strings.HasPrefix(existing.Reason, mergeWorkerRetryExhaustedReason)) &&
+			strings.HasPrefix(existing.Reason, mergeWorkerRetryExhaustedReason) ||
+			strings.HasPrefix(existing.Reason, mergeWorkerDurationExceededReason)) &&
 		strings.TrimSpace(issue.BlockerReason) == "" {
 		existing.Issue = cloneIssue(issue)
 		state.Blocked[issue.ID] = existing
