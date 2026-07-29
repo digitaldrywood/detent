@@ -372,7 +372,7 @@
 #       # agents.backends[].options | type: mapping | default: see child fields | required: No | validation: None
 #       options:
 #         # agents.backends[].options.shell | type: string | default: Codex: platform default shell; Claude Code: none | required: No | validation: None
-#         shell: "sh"
+#         shell: null
 #         # agents.backends[].options.model_provider | type: string | default: none for Codex | required: No | validation: must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens
 #         model_provider: null
 #         # agents.backends[].options.service_tier | type: string | default: none for Codex | required: No | validation: None

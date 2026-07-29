@@ -66,7 +66,8 @@ func Generate(root string, check bool) error {
 	if err != nil {
 		return fmt.Errorf("read %s: %w", docsPath, err)
 	}
-	renderedDocs, err := renderDocs(currentDocs, renderMarkdown(fields))
+	normalizedDocs := normalizeLineEndings(currentDocs)
+	renderedDocs, err := renderDocs(normalizedDocs, renderMarkdown(fields))
 	if err != nil {
 		return fmt.Errorf("render %s: %w", docsPath, err)
 	}
@@ -74,14 +75,14 @@ func Generate(root string, check bool) error {
 
 	if check {
 		var stale []string
-		if !bytes.Equal(currentDocs, renderedDocs) {
+		if !bytes.Equal(normalizedDocs, renderedDocs) {
 			stale = append(stale, filepath.ToSlash(filepath.Join("docs", "config.md")))
 		}
 		currentReference, readErr := os.ReadFile(referencePath)
 		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 			return fmt.Errorf("read %s: %w", referencePath, readErr)
 		}
-		if !bytes.Equal(currentReference, renderedReference) {
+		if !bytes.Equal(normalizeLineEndings(currentReference), renderedReference) {
 			stale = append(stale, filepath.Base(referencePath))
 		}
 		if len(stale) > 0 {
@@ -405,6 +406,7 @@ func optionDefault(path string) (string, string) {
 		claudeDescription, _ := describeValue(claudeValue)
 		if key == "shell" {
 			codexDescription = "platform default shell"
+			codexLiteral = "null"
 		}
 		if codexDescription == claudeDescription {
 			return codexDescription, codexLiteral
@@ -980,6 +982,11 @@ func renderDocs(current []byte, table string) ([]byte, error) {
 	out.WriteString("\n\n")
 	out.Write(current[end:])
 	return out.Bytes(), nil
+}
+
+func normalizeLineEndings(content []byte) []byte {
+	content = bytes.ReplaceAll(content, []byte("\r\n"), []byte("\n"))
+	return bytes.ReplaceAll(content, []byte("\r"), []byte("\n"))
 }
 
 func renderReferenceYAML(fields []fieldDetails, nodes []*schemaNode) []byte {

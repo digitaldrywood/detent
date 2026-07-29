@@ -88,6 +88,20 @@ func TestConfigDocumentation(t *testing.T) {
 				}
 			})
 		}
+		if shell := byPath["agents.backends[].options.shell"]; shell.literal != "null" {
+			t.Errorf("backend shell literal = %q, want symbolic null", shell.literal)
+		}
+	})
+
+	t.Run("normalizes generated documentation line endings", func(t *testing.T) {
+		content := []byte("before\r\n" + beginMarker + "\r\nold\r\n" + endMarker + "\r\n")
+		rendered, err := renderDocs(normalizeLineEndings(content), "new")
+		if err != nil {
+			t.Fatalf("renderDocs() error = %v", err)
+		}
+		if strings.Contains(string(rendered), "\r") {
+			t.Fatalf("renderDocs() retained carriage returns: %q", rendered)
+		}
 	})
 
 	t.Run("generated artifacts are current", func(t *testing.T) {
