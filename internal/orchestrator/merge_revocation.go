@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -22,10 +23,30 @@ const (
 	mergeRevocationPullRequestNotOpen    = "pull_request_not_open"
 )
 
+const (
+	mergeRevocationCommentLimit  = 10
+	mergeRevocationCommentWindow = 24 * time.Hour
+	mergeRevocationCommentPrefix = "<!-- detent:merge-revocation "
+)
+
 type mergeRevocation struct {
 	issue       connector.Issue
 	reason      string
 	targetState string
+}
+
+type mergeRevocationCommentState struct {
+	localWrites                 []mergeRevocationCommentWrite
+	lastSignature               string
+	warnedUntil                 time.Time
+	budgetEscalated             bool
+	resourceExhausted           bool
+	resourceExhaustionEscalated bool
+}
+
+type mergeRevocationCommentWrite struct {
+	signature string
+	at        time.Time
 }
 
 func (o *Orchestrator) revokeRunningMergeIfIneligible(
@@ -268,7 +289,7 @@ func (o *Orchestrator) finishMergeRevocation(
 	)
 	o.recordMergeFailed(state, running.Issue, completedAt, revocation.reason, nil)
 	o.routeMergeRevocation(ctx, state, &revocation, completedAt)
-	o.commentMergeRevocation(ctx, revocation)
+	o.commentMergeRevocation(ctx, state, revocation, completedAt)
 	o.logWorkerLifecycle(running.Issue, "worker_merge_revoked",
 		"attempt", running.Attempt,
 		"worker_host", strings.TrimSpace(running.WorkerHost),
@@ -335,14 +356,70 @@ func (o *Orchestrator) routeMergeRevocation(ctx context.Context, state *State, r
 	revocation.issue.State = revocation.targetState
 }
 
-func (o *Orchestrator) commentMergeRevocation(ctx context.Context, revocation mergeRevocation) {
+func (o *Orchestrator) commentMergeRevocation(
+	ctx context.Context,
+	state *State,
+	revocation mergeRevocation,
+	at time.Time,
+) {
 	if o.connector == nil {
+		return
+	}
+	issueID := strings.TrimSpace(revocation.issue.ID)
+	if issueID == "" {
+		return
+	}
+	at = at.UTC()
+	if at.IsZero() {
+		at = o.clockNow().UTC()
+	}
+	commentState := o.mergeRevocationCommentState(issueID)
+	if commentState.resourceExhausted {
+		if !commentState.resourceExhaustionEscalated {
+			commentState.resourceExhaustionEscalated = o.escalateMergeRevocationCommentLoss(
+				ctx,
+				state,
+				revocation.issue,
+				at,
+				"merge_revocation_comment_resource_exhausted",
+			)
+		}
+		return
+	}
+	signature := mergeRevocationCommentSignature(revocation)
+	comments := o.mergeRevocationIssueComments(ctx, revocation.issue)
+	if commentState.lastSignature == signature || latestMergeRevocationCommentSignature(comments) == signature {
+		return
+	}
+	if mergeRevocationCommentCount(comments, commentState.localWrites, at) >= mergeRevocationCommentLimit {
+		if !at.Before(commentState.warnedUntil) {
+			commentState.warnedUntil = at.Add(mergeRevocationCommentWindow)
+			if o.logger != nil {
+				o.logger.Warn(
+					"merge revocation comment budget exhausted; issue needs human attention",
+					"issue_id", issueID,
+					"limit", mergeRevocationCommentLimit,
+					"window", mergeRevocationCommentWindow,
+				)
+			}
+		}
+		if !commentState.budgetEscalated {
+			commentState.budgetEscalated = o.escalateMergeRevocationCommentLoss(
+				ctx,
+				state,
+				revocation.issue,
+				at,
+				"merge_revocation_comment_budget_exhausted",
+			)
+		}
 		return
 	}
 	var body strings.Builder
 	body.WriteString("Detent stopped the active merge because merge eligibility was revoked.")
 	body.WriteString("\n\n- reason: ")
 	body.WriteString(revocation.reason)
+	body.WriteString("\n- head_sha: ")
+	body.WriteString(mergeRevocationHeadSHA(revocation))
 	if stateName := strings.TrimSpace(revocation.issue.State); stateName != "" {
 		body.WriteString("\n- observed_state: ")
 		body.WriteString(stateName)
@@ -357,9 +434,167 @@ func (o *Orchestrator) commentMergeRevocation(ctx context.Context, revocation me
 			body.WriteString(url)
 		}
 	}
-	if err := o.connector.CreateComment(ctx, revocation.issue.ID, body.String()); err != nil && o.logger != nil {
-		o.logger.Warn("merge revocation comment failed", "issue_id", revocation.issue.ID, "error", err)
+	body.WriteString("\n\n")
+	body.WriteString(signature)
+	if err := o.connector.CreateComment(ctx, issueID, body.String()); err != nil {
+		if errors.Is(err, connector.ErrResourceExhausted) {
+			commentState.resourceExhausted = true
+			if o.logger != nil {
+				o.logger.Warn(
+					"merge revocation comment resource exhausted; issue needs human attention",
+					"issue_id", issueID,
+					"error", err,
+				)
+			}
+			commentState.resourceExhaustionEscalated = o.escalateMergeRevocationCommentLoss(
+				ctx,
+				state,
+				revocation.issue,
+				at,
+				"merge_revocation_comment_resource_exhausted",
+			)
+			return
+		}
+		if o.logger != nil {
+			o.logger.Warn("merge revocation comment failed", "issue_id", issueID, "error", err)
+		}
+		return
 	}
+	commentState.lastSignature = signature
+	commentState.localWrites = append(commentState.localWrites, mergeRevocationCommentWrite{
+		signature: signature,
+		at:        at,
+	})
+}
+
+func (o *Orchestrator) mergeRevocationCommentState(issueID string) *mergeRevocationCommentState {
+	if o.mergeRevocationComments == nil {
+		o.mergeRevocationComments = map[string]*mergeRevocationCommentState{}
+	}
+	state := o.mergeRevocationComments[issueID]
+	if state == nil {
+		state = &mergeRevocationCommentState{}
+		o.mergeRevocationComments[issueID] = state
+	}
+	return state
+}
+
+func (o *Orchestrator) mergeRevocationIssueComments(
+	ctx context.Context,
+	issue connector.Issue,
+) []connector.IssueComment {
+	reader, ok := o.connector.(connector.IssueCommentReader)
+	if !ok {
+		return issue.Comments
+	}
+	comments, err := reader.FetchIssueComments(ctx, issue)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"merge revocation comment history failed",
+				"issue_id", issue.ID,
+				"error", err,
+			)
+		}
+		return issue.Comments
+	}
+	return comments
+}
+
+func mergeRevocationCommentSignature(revocation mergeRevocation) string {
+	return fmt.Sprintf(
+		"%sreason=%s head_sha=%s -->",
+		mergeRevocationCommentPrefix,
+		strings.TrimSpace(revocation.reason),
+		mergeRevocationHeadSHA(revocation),
+	)
+}
+
+func mergeRevocationHeadSHA(revocation mergeRevocation) string {
+	if revocation.issue.PullRequest == nil {
+		return ""
+	}
+	return strings.TrimSpace(revocation.issue.PullRequest.HeadSHA)
+}
+
+func latestMergeRevocationCommentSignature(comments []connector.IssueComment) string {
+	for index := len(comments) - 1; index >= 0; index-- {
+		if signature := mergeRevocationCommentMarker(comments[index].Body); signature != "" {
+			return signature
+		}
+	}
+	return ""
+}
+
+func mergeRevocationCommentCount(
+	comments []connector.IssueComment,
+	localWrites []mergeRevocationCommentWrite,
+	at time.Time,
+) int {
+	cutoff := at.Add(-mergeRevocationCommentWindow)
+	persisted := map[string]struct{}{}
+	count := 0
+	for _, comment := range comments {
+		signature := mergeRevocationCommentMarker(comment.Body)
+		if signature == "" {
+			continue
+		}
+		persisted[signature] = struct{}{}
+		if comment.CreatedAt == nil || !comment.CreatedAt.Before(cutoff) {
+			count++
+		}
+	}
+	for _, write := range localWrites {
+		if write.at.Before(cutoff) {
+			continue
+		}
+		if _, ok := persisted[write.signature]; ok {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func mergeRevocationCommentMarker(body string) string {
+	for line := range strings.SplitSeq(body, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, mergeRevocationCommentPrefix) && strings.HasSuffix(line, " -->") {
+			return line
+		}
+	}
+	return ""
+}
+
+func (o *Orchestrator) escalateMergeRevocationCommentLoss(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	at time.Time,
+	reason string,
+) bool {
+	targetState := normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState
+	if err := o.updateIssueStateByID(
+		ctx,
+		state,
+		issue.ID,
+		issue,
+		targetState,
+		at,
+		reason,
+	); err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"merge revocation comment loss escalation failed",
+				"issue_id", issue.ID,
+				"target_state", targetState,
+				"reason", reason,
+				"error", err,
+			)
+		}
+		return false
+	}
+	return true
 }
 
 func mergeRevocationError(revocation mergeRevocation) error {

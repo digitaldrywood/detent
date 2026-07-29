@@ -34,6 +34,7 @@ var (
 	ErrProjectFieldUpdateFailed    = errors.New("github project field update failed")
 	ErrProjectNotFound             = errors.New("github project not found")
 	ErrRateLimited                 = connector.NewRetryableError("github rate limited")
+	ErrResourceExhausted           = fmt.Errorf("github resource exhausted: %w", connector.ErrResourceExhausted)
 	ErrRESTBudgetReserved          = connector.NewRetryableError("github rest budget reserved")
 	ErrStatusFieldNotFound         = errors.New("github status field not found")
 	ErrStatusOptionNotFound        = errors.New("github status option not found")
