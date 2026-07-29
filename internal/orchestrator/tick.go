@@ -118,6 +118,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	o.observePullRequestHydrationSkips(mergeIssueSlices(fetched.candidates, fetched.status))
 	o.restoreDurableGateWaitCompletions(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status))
 	fetched = filterReconciledTickIssues(state, fetched, o.reconcileOperatorStopHolds(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now))
+	fetched = filterReconciledTickIssues(state, fetched, o.reconcileMergeDurationHolds(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now))
 
 	transitions := o.refreshTransitionSets(ctx, state, fetched, previous)
 	completedEpics := o.resolveCompletedEpics(ctx, state, transitions, previous)

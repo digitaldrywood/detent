@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -21,6 +22,9 @@ func (o *Orchestrator) handleMergeWorkerDurationExceeded(
 ) bool {
 	if !errors.Is(event.Err, runpkg.ErrMergeWorkerDurationExceeded) {
 		return false
+	}
+	if o.completeLatestTerminalMergeWorkerResult(ctx, state, event, running) {
+		return true
 	}
 
 	completedAt := event.CompletedAt.UTC()
@@ -81,7 +85,7 @@ func (o *Orchestrator) parkMergeWorkerDurationExceeded(
 ) {
 	issueID := strings.TrimSpace(running.Issue.ID)
 	issue := cloneIssue(running.Issue)
-	if err := o.updateIssueStateByID(
+	transitionErr := o.updateIssueStateByIDStrictWithMetadata(
 		ctx,
 		state,
 		issueID,
@@ -89,20 +93,26 @@ func (o *Orchestrator) parkMergeWorkerDurationExceeded(
 		blockedStatusState,
 		completedAt,
 		mergeWorkerDurationExceededReason,
-	); err != nil && o.logger != nil {
+		workflowLaneMetadata{},
+	)
+	if transitionErr != nil && o.logger != nil {
 		o.logger.Error(
 			"merge worker duration state transition failed",
 			"issue_id", issueID,
 			"identifier", issue.Identifier,
 			"target_state", blockedStatusState,
-			"error", err,
+			"error", transitionErr,
 		)
 	}
 
-	issue.State = blockedStatusState
 	issue.BlockerReason = mergeWorkerDurationExceededReason
 	blockedAt := completedAt.UTC()
 	issue.StageUpdatedAt = &blockedAt
+	source := BlockedSourceMergeDuration
+	if transitionErr == nil {
+		issue.State = blockedStatusState
+		source = BlockedSourceProjectStatus
+	}
 	if o.connector != nil {
 		comment := mergeWorkerDurationExceededComment(
 			running,
@@ -135,13 +145,81 @@ func (o *Orchestrator) parkMergeWorkerDurationExceeded(
 		RecoveryReason: string(BlockedRecoveryReasonHumanBlocker),
 		RecoveryTarget: autoPromoteMergingState,
 		BlockedAt:      completedAt,
-		Source:         BlockedSourceProjectStatus,
+		Source:         source,
 	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      completedAt,
 		Event:   mergeWorkerDurationExceededReason,
 		Message: "parked " + issueLabel(issue) + " after its merge worker exceeded the wall-clock ceiling",
 	})
+}
+
+func (o *Orchestrator) reconcileMergeDurationHolds(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+	now time.Time,
+) map[string]struct{} {
+	byID := make(map[string]connector.Issue, len(issues))
+	for _, issue := range issues {
+		byID[strings.TrimSpace(issue.ID)] = issue
+	}
+	transitioned := map[string]struct{}{}
+	for issueID, blocked := range state.Blocked {
+		if blocked.Source != BlockedSourceMergeDuration {
+			continue
+		}
+		issue, ok := byID[issueID]
+		if !ok {
+			continue
+		}
+		if workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
+			delete(state.Blocked, issueID)
+			continue
+		}
+		if normalizeState(issue.State) != normalizeState(autoPromoteMergingState) {
+			if normalizeState(issue.State) == normalizeState(blockedStatusState) {
+				blocked.Issue = cloneIssue(issue)
+				blocked.Issue.BlockerReason = mergeWorkerDurationExceededReason
+				blocked.Source = BlockedSourceProjectStatus
+				state.Blocked[issueID] = blocked
+				transitioned[issueID] = struct{}{}
+			} else {
+				delete(state.Blocked, issueID)
+			}
+			continue
+		}
+		blocked.Issue = mergeIssueTrackerFields(blocked.Issue, issue)
+		state.Blocked[issueID] = blocked
+		if err := o.updateIssueStateByIDStrictWithMetadata(
+			ctx,
+			state,
+			issueID,
+			issue,
+			blockedStatusState,
+			now,
+			mergeWorkerDurationExceededReason,
+			workflowLaneMetadata{},
+		); err != nil {
+			if o.logger != nil {
+				o.logger.Warn(
+					"merge worker duration state transition retry failed",
+					"issue_id", issueID,
+					"identifier", issue.Identifier,
+					"target_state", blockedStatusState,
+					"error", err,
+				)
+			}
+			continue
+		}
+		blocked.Issue = cloneIssue(issue)
+		blocked.Issue.State = blockedStatusState
+		blocked.Issue.BlockerReason = mergeWorkerDurationExceededReason
+		blocked.Source = BlockedSourceProjectStatus
+		state.Blocked[issueID] = blocked
+		transitioned[issueID] = struct{}{}
+	}
+	return transitioned
 }
 
 func mergeWorkerDurationExceededComment(

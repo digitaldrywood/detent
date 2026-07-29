@@ -323,6 +323,25 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		}
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGlobalSlotUnavailable}
 	}
+	runCtx := ctx
+	cancelDurationLimit := func() {}
+	if mergeWorkerIssue(slotIssue) {
+		limit := o.mergeWorkerLimit
+		if limit == nil {
+			limit = context.WithTimeoutCause
+		}
+		runCtx, cancelDurationLimit = limit(
+			ctx,
+			o.cfg.MergeWorkerMaxDuration,
+			runpkg.ErrMergeWorkerDurationExceeded,
+		)
+	}
+	durationLimitTransferred := false
+	defer func() {
+		if !durationLimitTransferred {
+			cancelDurationLimit()
+		}
+	}()
 	mergeTiming := o.markMergeWorkerSlotAcquired(state, issue, now)
 	o.logSchedulerSlotDecision(issue, "acquired", decision, projectStats)
 	o.logMergeWorkerSlotAcquired(issue, decision, projectStats, mergeTiming)
@@ -347,7 +366,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
 	}
 
-	claimedIssue, claim, ok := o.claimIssue(ctx, issue, now)
+	claimedIssue, claim, ok := o.claimIssue(runCtx, issue, now)
 	if !ok {
 		if recovery {
 			releaseDispatchRecoveryAdmission(state, issue.ID)
@@ -369,11 +388,11 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	issue = cloneIssue(claimedIssue)
 	priorAttempt := state.PriorAttempts[issue.ID]
 	if !priorAttemptPresent(priorAttempt) {
-		if breakerAttempt, ok := o.spendProgressPriorAttempt(ctx, issue); ok {
+		if breakerAttempt, ok := o.spendProgressPriorAttempt(runCtx, issue); ok {
 			priorAttempt = breakerAttempt
 		}
 	}
-	workAttemptID, ok := o.startDurableWorkAttempt(ctx, state, issue, attempt, now, workerHost, runMode)
+	workAttemptID, ok := o.startDurableWorkAttempt(runCtx, state, issue, attempt, now, workerHost, runMode)
 	if !ok {
 		if recovery {
 			releaseDispatchRecoveryAdmission(state, issue.ID)
@@ -400,7 +419,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	dispatchStartTargetState := ""
 	if targetState != "" {
 		sourceState := issue.State
-		if err := o.updateIssueState(ctx, state, issue, targetState, now, "dispatch_start"); err != nil {
+		if err := o.updateIssueState(runCtx, state, issue, targetState, now, "dispatch_start"); err != nil {
 			if recovery {
 				releaseDispatchRecoveryAdmission(state, issue.ID)
 			}
@@ -438,30 +457,17 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		dispatchStartTargetState = targetState
 	}
 	if dispatchSourceState == "" || dispatchTargetState == "" {
-		dispatchSourceState, dispatchTargetState = o.dispatchTimelineTransitionContext(ctx, issue)
+		dispatchSourceState, dispatchTargetState = o.dispatchTimelineTransitionContext(runCtx, issue)
 	}
 	o.markMergeStarted(state, issue, now)
 	claim.Issue = issue
-	runCtx := ctx
-	cancelDurationLimit := func() {}
-	if mergeWorkerIssue(issue) {
-		limit := o.mergeWorkerLimit
-		if limit == nil {
-			limit = context.WithTimeoutCause
-		}
-		runCtx, cancelDurationLimit = limit(
-			ctx,
-			o.cfg.MergeWorkerMaxDuration,
-			runpkg.ErrMergeWorkerDurationExceeded,
-		)
-	}
 	runCtx, stop := context.WithCancelCause(runCtx)
 	cancel := func() {
 		stop(nil)
 		cancelDurationLimit()
 	}
 	o.markBackendCapacityProbe(state, capacityProbeKey, issue.ID, now)
-	dispatchWorkpadHash, dispatchWorkpadRead := o.artifactGateDispatchWorkpadSnapshot(ctx, issue)
+	dispatchWorkpadHash, dispatchWorkpadRead := o.artifactGateDispatchWorkpadSnapshot(runCtx, issue)
 	state.Running[issue.ID] = Running{
 		Issue:               issue,
 		Attempt:             attempt,
@@ -520,6 +526,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	running := state.Running[issue.ID]
 	running.done = o.supervisor.Dispatch(runCtx, request, o.runResults)
 	state.Running[issue.ID] = running
+	durationLimitTransferred = true
 	o.trackRunningHeartbeat(state, running, claim, now)
 	return dispatchIssueOutcome{dispatched: true}
 }

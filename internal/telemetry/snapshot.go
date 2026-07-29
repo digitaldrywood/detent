@@ -573,6 +573,7 @@ type BlockedSource string
 
 const (
 	BlockedSourceDependency    BlockedSource = "dependency"
+	BlockedSourceMergeDuration BlockedSource = "merge_duration_reconciliation"
 	BlockedSourceProjectStatus BlockedSource = "project_status"
 	BlockedSourceOperatorStop  BlockedSource = "operator_stop_reconciliation"
 )
