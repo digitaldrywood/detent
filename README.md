@@ -159,6 +159,10 @@ itself. Copy it as a template, and use
 to go from a bare machine to a running board. To onboard a repository, verify an
 existing install, or add a new project to an existing Detent host, use the
 agent-executable [Project Onboarding](docs/ONBOARDING.md) runbook.
+For project settings, start with the
+[complete configuration reference](docs/config.md), the
+[minimal example](config.example.yaml), or the
+[annotated example](config.annotated.yaml).
 
 ## How it works
 
@@ -3298,6 +3302,14 @@ Structured command objects:
 | `detent doctor` | `{"checks":[{"name":"Config resolution","status":"OK","detail":"...","hint":"..."}],"summary":{"ok":8,"warn":0,"fail":0},"result":"PASS"}` |
 
 ## Configuration
+
+Project behavior is configured in `detent.yaml` or legacy `WORKFLOW.md`
+frontmatter. The [complete project configuration reference](docs/config.md)
+documents every key, default, required status, and validation rule. Start from
+the [minimal example](config.example.yaml), read the
+[annotated example](config.annotated.yaml), or search the generated
+[fully commented reference](config.reference.yaml) when you need a capability
+you have not configured before.
 
 At startup, Detent resolves `global.yaml` in this order. The first matching rule wins.
 
