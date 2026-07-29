@@ -18,8 +18,9 @@ var (
 type CandidateSelector string
 
 const (
-	CandidateSelectorStates CandidateSelector = "states"
-	CandidateSelectorLabels CandidateSelector = "labels"
+	CandidateSelectorStates    CandidateSelector = "states"
+	CandidateSelectorLabels    CandidateSelector = "labels"
+	CandidateSelectorUntracked CandidateSelector = "untracked"
 )
 
 type CandidateCapabilities struct {
@@ -41,7 +42,13 @@ func CandidateCapabilitiesFor(backend Backend, statusSource string) CandidateCap
 		switch strings.ToLower(strings.TrimSpace(statusSource)) {
 		case "", "project_v2":
 			return statesCandidateCapabilities()
-		case "issue_field", "label":
+		case "label":
+			return CandidateCapabilities{Selectors: []CandidateSelector{
+				CandidateSelectorStates,
+				CandidateSelectorLabels,
+				CandidateSelectorUntracked,
+			}}
+		case "issue_field":
 			return statesAndLabelsCandidateCapabilities()
 		default:
 			return CandidateCapabilities{}
@@ -80,6 +87,7 @@ func (r CandidateRequest) Validate(capabilities CandidateCapabilities) error {
 		if len(normalizedCandidateLabels(r.Labels)) == 0 {
 			return fmt.Errorf("%w: labels selector requires at least one label", ErrInvalidCandidateRequest)
 		}
+	case CandidateSelectorUntracked:
 	default:
 		return fmt.Errorf("%w: %s", ErrCandidateSelectorUnsupported, r.Selector)
 	}

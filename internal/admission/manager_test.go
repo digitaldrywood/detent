@@ -1026,6 +1026,74 @@ func TestManagerUnionsLabelCandidatesAndSkipsIneligibleStates(t *testing.T) {
 	}
 }
 
+func TestManagerUnionsUntrackedCandidatesBeforeDeduplicationAndExclusions(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	tracked := admissionIssueFixture("tracked", "DD-1", 1, now)
+	duplicate := tracked
+	duplicate.State = ""
+	untracked := admissionIssueFixture("untracked", "DD-2", 2, now.Add(time.Minute))
+	untracked.State = ""
+	excluded := admissionIssueFixture("excluded", "DD-3", 3, now.Add(2*time.Minute))
+	excluded.State = ""
+	excluded.Labels = []string{"do-not-admit"}
+	tracker := memory.New(memory.Config{
+		Issues:   []connector.Issue{tracked, untracked, excluded},
+		Stateful: true,
+		Now:      func() time.Time { return now },
+	})
+	issues := &selectorAdmissionIssueStore{
+		IssueStore: tracker,
+		results: map[connector.CandidateSelector]connector.CandidateResult{
+			connector.CandidateSelectorStates: {
+				Issues: []connector.Issue{tracked},
+			},
+			connector.CandidateSelectorUntracked: {
+				Issues:    []connector.Issue{duplicate, untracked, excluded},
+				Truncated: true,
+			},
+		},
+	}
+	backend := openManagerTestStore(t)
+	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	settings := admissionTestSettings(issues, agent)
+	settings.Config.Sources.Untracked = true
+	settings.Config.ExcludeLabels = []string{"do-not-admit"}
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+
+	result, err := manager.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if result.CandidatesFound != 3 || result.Candidates != 2 || len(result.Proposals) != 2 {
+		t.Fatalf("result = %#v, want three union candidates and two proposals", result)
+	}
+	if result.Skipped["excluded_label"] != 1 || result.Truncated["candidate_reader"] != 1 {
+		t.Fatalf("result filters and truncation = %#v", result)
+	}
+	if len(issues.requests) != 2 ||
+		issues.requests[0].Selector != connector.CandidateSelectorStates ||
+		issues.requests[1].Selector != connector.CandidateSelectorUntracked {
+		t.Fatalf("candidate requests = %#v, want states then untracked", issues.requests)
+	}
+
+	comments := map[string]string{}
+	for _, event := range tracker.Events() {
+		if event.Kind == memory.EventKindComment {
+			comments[event.IssueID] = event.Body
+		}
+	}
+	if strings.Contains(comments["tracked"], "Acceptance is a two-part change") {
+		t.Fatalf("tracked proposal used untracked wording: %s", comments["tracked"])
+	}
+	for _, want := range []string{"no configured status label", "Acceptance is a two-part change", "admitting the work for dispatch"} {
+		if !strings.Contains(comments["untracked"], want) {
+			t.Fatalf("untracked proposal missing %q: %s", want, comments["untracked"])
+		}
+	}
+}
+
 func TestManagerLocalSQLiteStatesOnlyEndToEnd(t *testing.T) {
 	t.Parallel()
 
@@ -1157,6 +1225,20 @@ type scriptedAdmissionRunner struct {
 	propose      func(runner.RunRequest) []AgentProposal
 	calls        int
 	candidateIDs [][]string
+}
+
+type selectorAdmissionIssueStore struct {
+	IssueStore
+	results  map[connector.CandidateSelector]connector.CandidateResult
+	requests []connector.CandidateRequest
+}
+
+func (s *selectorAdmissionIssueStore) ReadCandidates(
+	_ context.Context,
+	request connector.CandidateRequest,
+) (connector.CandidateResult, error) {
+	s.requests = append(s.requests, request)
+	return s.results[request.Selector], nil
 }
 
 func (r *scriptedAdmissionRunner) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
@@ -1396,7 +1478,7 @@ func TestProposalCommentQuotesCriteriaAndDoesNotUseStatusLabel(t *testing.T) {
 		Confidence: 0.8,
 		ExpiresAt:  time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC),
 	}
-	comment := proposalComment(proposal, false)
+	comment := proposalComment(proposal, false, false)
 	for _, want := range []string{"serves a stated current priority", "have Detent move the issue", "admission-1"} {
 		if !strings.Contains(comment, want) {
 			t.Fatalf("proposalComment() missing %q: %s", want, comment)
@@ -1407,5 +1489,11 @@ func TestProposalCommentQuotesCriteriaAndDoesNotUseStatusLabel(t *testing.T) {
 	}
 	if strings.Contains(comment, "detent:admission") {
 		t.Fatalf("proposalComment() introduced a status-prefixed label: %s", comment)
+	}
+	untrackedComment := proposalComment(proposal, false, true)
+	for _, want := range []string{"no configured status label", "Acceptance is a two-part change", "assigning **Todo** status", "admitting the work for dispatch"} {
+		if !strings.Contains(untrackedComment, want) {
+			t.Fatalf("proposalComment(untracked) missing %q: %s", want, untrackedComment)
+		}
 	}
 }
