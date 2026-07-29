@@ -118,12 +118,13 @@ type label struct {
 }
 
 type issueComment struct {
-	ID        string  `json:"id"`
-	Body      string  `json:"body"`
-	URL       string  `json:"url"`
-	Author    *actor  `json:"author"`
-	CreatedAt *string `json:"createdAt"`
-	UpdatedAt *string `json:"updatedAt"`
+	ID                string  `json:"id"`
+	Body              string  `json:"body"`
+	URL               string  `json:"url"`
+	Author            *actor  `json:"author"`
+	AuthorAssociation string  `json:"authorAssociation"`
+	CreatedAt         *string `json:"createdAt"`
+	UpdatedAt         *string `json:"updatedAt"`
 }
 
 type pullRequest struct {
@@ -335,13 +336,18 @@ type pullRequestCI struct {
 }
 
 type restComment struct {
-	ID        int64      `json:"id"`
-	NodeID    string     `json:"node_id"`
-	Body      string     `json:"body"`
-	HTMLURL   string     `json:"html_url"`
-	User      *actor     `json:"user"`
-	CreatedAt *time.Time `json:"created_at"`
-	UpdatedAt *time.Time `json:"updated_at"`
+	ID                int64      `json:"id"`
+	NodeID            string     `json:"node_id"`
+	Body              string     `json:"body"`
+	HTMLURL           string     `json:"html_url"`
+	User              *actor     `json:"user"`
+	AuthorAssociation string     `json:"author_association"`
+	CreatedAt         *time.Time `json:"created_at"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+}
+
+type restCollaboratorPermission struct {
+	Permission string `json:"permission"`
 }
 
 type restIssueTimelineEvent struct {

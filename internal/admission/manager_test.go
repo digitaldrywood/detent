@@ -3,6 +3,7 @@ package admission
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -218,11 +219,12 @@ func TestManagerReconcilesAgainstStoredProposalTarget(t *testing.T) {
 	decisionAt := now.Add(time.Minute)
 	issue.StageUpdatedAt = &transitionAt
 	issue.Comments = []connector.IssueComment{{
-		ID:          "decision-1",
-		Body:        admissionAcceptCommand("proposal-1"),
-		AuthorLogin: "ada",
-		AuthorKind:  "User",
-		CreatedAt:   &decisionAt,
+		ID:               "decision-1",
+		Body:             admissionAcceptCommand("proposal-1"),
+		AuthorLogin:      "ada",
+		AuthorKind:       "User",
+		AuthorAuthorized: true,
+		CreatedAt:        &decisionAt,
 	}}
 	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	backend := openManagerTestStore(t)
@@ -448,6 +450,51 @@ func TestManagerAcceptanceTransitionsOrSupersedes(t *testing.T) {
 	}
 }
 
+func TestManagerIgnoresUnauthorizedAdmissionDecision(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	decisionAt := now.Add(time.Minute)
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	issue.Comments = []connector.IssueComment{{
+		ID:               "decision-1",
+		Backend:          connector.BackendGitHub.String(),
+		Body:             admissionAcceptCommand("proposal-1"),
+		AuthorLogin:      "outsider",
+		AuthorKind:       "User",
+		AuthorAuthorized: true,
+		CreatedAt:        &decisionAt,
+	}}
+	tracker := &authorizingAdmissionIssueStore{
+		Connector:  memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true}),
+		authorized: false,
+	}
+	backend := openManagerTestStore(t)
+	proposal := admissionTestProposalForIssue("proposal-1", issue, now)
+	proposal.CommentedAt = now
+	if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	manager := newAdmissionTestManager(
+		t,
+		admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate}),
+		backend,
+		func() time.Time { return decisionAt },
+	)
+
+	if _, err := manager.RunOnce(t.Context()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+	if err != nil || len(issues) != 1 || issues[0].State != "Backlog" {
+		t.Fatalf("issue = %#v, %v", issues, err)
+	}
+	history, err := backend.AdmissionProposalHistory(t.Context(), proposal.ProjectID, proposal.IssueID)
+	if err != nil || len(history) != 1 || history[0].Status != admissionmodel.ProposalOpen {
+		t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
+	}
+}
+
 func TestManagerAcceptanceRevalidatesImmediatelyBeforeMutation(t *testing.T) {
 	t.Parallel()
 
@@ -560,6 +607,53 @@ func TestManagerAutoAdmissionModes(t *testing.T) {
 				t.Fatalf("auto-admitted proposal = %#v", history[0])
 			}
 		})
+	}
+}
+
+func TestManagerRecoversAutoAdmissionAfterResolutionFailure(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	tracker := memory.New(memory.Config{
+		Issues:   []connector.Issue{issue},
+		Stateful: true,
+		Now:      func() time.Time { return now },
+	})
+	backend := openManagerTestStore(t)
+	failingStore := &failingAdmissionResolutionStore{Store: backend, fail: true}
+	settings := admissionTestSettings(
+		tracker,
+		&scriptedAdmissionRunner{propose: proposeEveryCandidateAtConfidence(1)},
+	)
+	settings.Config.AutoAdmit = true
+	settings.Config.AutoAdmitMinConfidence = 0.9
+	manager := newAdmissionTestManager(t, settings, failingStore, func() time.Time { return now })
+
+	if _, err := manager.RunOnce(t.Context()); !errors.Is(err, errAdmissionResolutionFailure) {
+		t.Fatalf("first RunOnce() error = %v, want %v", err, errAdmissionResolutionFailure)
+	}
+	issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+	if err != nil || len(issues) != 1 || issues[0].State != "Todo" {
+		t.Fatalf("issue after failed resolution = %#v, %v", issues, err)
+	}
+	if _, err := manager.RunOnce(t.Context()); err != nil {
+		t.Fatalf("second RunOnce() error = %v", err)
+	}
+	history, err := backend.AdmissionProposalHistory(t.Context(), "detent", issue.ID)
+	if err != nil || len(history) != 1 ||
+		history[0].Status != admissionmodel.ProposalAccepted ||
+		history[0].ResolutionReason != admissionResolutionAutoAdmit {
+		t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
+	}
+	stateUpdates := 0
+	for _, event := range tracker.Events() {
+		if event.Kind == memory.EventKindStateUpdate {
+			stateUpdates++
+		}
+	}
+	if stateUpdates != 1 {
+		t.Fatalf("state update events = %d, want 1", stateUpdates)
 	}
 }
 
@@ -1098,6 +1192,37 @@ type stateChangingAdmissionStore struct {
 	fetches int
 	issueID string
 	state   string
+}
+
+type authorizingAdmissionIssueStore struct {
+	*memory.Connector
+	authorized bool
+}
+
+func (s *authorizingAdmissionIssueStore) IsIssueCommentAuthorAuthorized(
+	context.Context,
+	connector.Issue,
+	connector.IssueComment,
+) (bool, error) {
+	return s.authorized, nil
+}
+
+var errAdmissionResolutionFailure = errors.New("admission resolution failed")
+
+type failingAdmissionResolutionStore struct {
+	Store
+	fail bool
+}
+
+func (s *failingAdmissionResolutionStore) ResolveAdmissionProposal(
+	ctx context.Context,
+	decision admissionmodel.Decision,
+) error {
+	if s.fail && decision.Automatic && decision.Outcome == admissionmodel.ProposalAccepted {
+		s.fail = false
+		return errAdmissionResolutionFailure
+	}
+	return s.Store.ResolveAdmissionProposal(ctx, decision)
 }
 
 func (s *stateChangingAdmissionStore) FetchIssueStatesByIDs(

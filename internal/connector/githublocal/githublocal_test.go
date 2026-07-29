@@ -735,6 +735,14 @@ func (b *recordingGitHubBackend) FetchIssueComments(context.Context, connector.I
 	panic("unexpected github FetchIssueComments")
 }
 
+func (b *recordingGitHubBackend) IsIssueCommentAuthorAuthorized(
+	context.Context,
+	connector.Issue,
+	connector.IssueComment,
+) (bool, error) {
+	return true, nil
+}
+
 func (b *recordingGitHubBackend) CreatePullRequestComment(context.Context, string, int, string) error {
 	panic("unexpected github CreatePullRequestComment")
 }

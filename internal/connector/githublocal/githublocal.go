@@ -44,6 +44,7 @@ type githubBackend interface {
 	connector.InstanceIdentifier
 	connector.IssueChildrenResolver
 	connector.IssueCloser
+	connector.IssueCommentAuthorizer
 	connector.IssueCommentReader
 	connector.IssueFieldClearer
 	connector.IssueFieldSetter
@@ -105,6 +106,7 @@ var _ connector.ProjectURLResolver = (*Connector)(nil)
 var _ connector.IssueChildrenResolver = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
 var _ connector.IssueCommentDeleter = (*Connector)(nil)
+var _ connector.IssueCommentAuthorizer = (*Connector)(nil)
 var _ connector.IssueCommentReader = (*Connector)(nil)
 var _ connector.IssueCommentUpdater = (*Connector)(nil)
 var _ connector.IssueFieldClearer = (*Connector)(nil)
@@ -423,6 +425,17 @@ func (c *Connector) FetchIssueComments(ctx context.Context, issue connector.Issu
 		return nil, err
 	}
 	return mergeIssueComments(githubComments, localComments), nil
+}
+
+func (c *Connector) IsIssueCommentAuthorAuthorized(
+	ctx context.Context,
+	issue connector.Issue,
+	comment connector.IssueComment,
+) (bool, error) {
+	if comment.Local || strings.EqualFold(comment.Backend, connector.BackendLocalSQLite.String()) {
+		return comment.AuthorAuthorized, nil
+	}
+	return c.github.IsIssueCommentAuthorAuthorized(ctx, issue, comment)
 }
 
 func (c *Connector) CreateComment(ctx context.Context, issueID string, body string) error {

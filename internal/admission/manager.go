@@ -486,7 +486,10 @@ func (m *Manager) reconcileOpenProposals(
 			}
 			commentsByIssue[proposal.IssueID] = comments
 		}
-		decision, decided := proposalDecision(proposal, comments)
+		decision, decided, err := proposalDecision(ctx, settings.Issues, issue, proposal, comments)
+		if err != nil {
+			return commentsRemaining, autoAdmitsRemaining, err
+		}
 		if decided && decision.Outcome == admissionmodel.ProposalRejected {
 			decision.Reason = admissionResolutionExplicitReject
 			if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
@@ -548,6 +551,13 @@ func (m *Manager) reconcileOpenProposals(
 			continue
 		}
 		if !decided && autoAdmitProposal(settings.Config, proposal) {
+			recovered, err := m.recoverAutomaticAdmission(ctx, settings, issue, proposal)
+			if err != nil {
+				return commentsRemaining, autoAdmitsRemaining, err
+			}
+			if recovered {
+				continue
+			}
 			if !autoAdmitCandidateEligible(issue, settings.Config) {
 				decision := automaticAdmissionDecision(settings.Issues, proposal, at)
 				decision.Outcome = admissionmodel.ProposalSuperseded
@@ -792,7 +802,37 @@ func (m *Manager) admitProposal(
 	return nil
 }
 
-func proposalDecision(proposal admissionmodel.Proposal, comments []connector.IssueComment) (admissionmodel.Decision, bool) {
+func (m *Manager) recoverAutomaticAdmission(
+	ctx context.Context,
+	settings Settings,
+	issue connector.Issue,
+	proposal admissionmodel.Proposal,
+) (bool, error) {
+	if !strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(proposal.TargetState)) {
+		return false, nil
+	}
+	transition, found, err := admissionIssueTransition(ctx, settings.Issues, issue)
+	if err != nil {
+		return false, fmt.Errorf("read automatic backlog admission transition %s: %w", proposal.ID, err)
+	}
+	if !found || transition.EnteredAt.Before(proposal.CreatedAt) {
+		return false, nil
+	}
+	decision := automaticAdmissionDecision(settings.Issues, proposal, transition.EnteredAt)
+	decision.TransitionAt = transition.EnteredAt
+	if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
+		return false, fmt.Errorf("recover automatic backlog admission %s: %w", proposal.ID, err)
+	}
+	return true, nil
+}
+
+func proposalDecision(
+	ctx context.Context,
+	issues IssueStore,
+	issue connector.Issue,
+	proposal admissionmodel.Proposal,
+	comments []connector.IssueComment,
+) (admissionmodel.Decision, bool, error) {
 	notBefore := proposal.CreatedAt
 	if proposal.CommentedAt.After(notBefore) {
 		notBefore = proposal.CommentedAt
@@ -813,6 +853,17 @@ func proposalDecision(proposal admissionmodel.Proposal, comments []connector.Iss
 		default:
 			continue
 		}
+		authorized := comment.AuthorAuthorized
+		if authorizer, ok := issues.(connector.IssueCommentAuthorizer); ok {
+			var err error
+			authorized, err = authorizer.IsIssueCommentAuthorAuthorized(ctx, issue, comment)
+			if err != nil {
+				return admissionmodel.Decision{}, false, err
+			}
+		}
+		if !authorized {
+			continue
+		}
 		if !decision.DecidedAt.IsZero() && !comment.CreatedAt.After(decision.DecidedAt) {
 			continue
 		}
@@ -825,7 +876,7 @@ func proposalDecision(proposal admissionmodel.Proposal, comments []connector.Iss
 			ActorKind:  comment.AuthorKind,
 		}
 	}
-	return decision, !decision.DecidedAt.IsZero()
+	return decision, !decision.DecidedAt.IsZero(), nil
 }
 
 func admissionIssueTransition(ctx context.Context, issues IssueStore, issue connector.Issue) (connector.IssueStateTransition, bool, error) {

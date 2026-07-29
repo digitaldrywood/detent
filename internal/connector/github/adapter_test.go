@@ -4140,7 +4140,7 @@ func TestConnectorFetchIssueCommentsMapsRESTMetadata(t *testing.T) {
 	server := newGraphQLTestServer(t, []graphqlTestResponse{{
 		method: http.MethodGet,
 		path:   "/repos/example/repo/issues/1/comments?per_page=100",
-		body:   `[{"id":101,"node_id":"IC_kw1","body":"First note","html_url":"https://github.com/example/repo/issues/1#issuecomment-101","user":{"login":"alice"},"created_at":"2026-07-06T12:00:00Z","updated_at":"2026-07-06T12:05:00Z"}]`,
+		body:   `[{"id":101,"node_id":"IC_kw1","body":"First note","html_url":"https://github.com/example/repo/issues/1#issuecomment-101","user":{"login":"alice"},"author_association":"MEMBER","created_at":"2026-07-06T12:00:00Z","updated_at":"2026-07-06T12:05:00Z"}]`,
 	}})
 	c := newGitHubTestConnector(t, server, Config{})
 
@@ -4158,6 +4158,7 @@ func TestConnectorFetchIssueCommentsMapsRESTMetadata(t *testing.T) {
 		comment.Body != "First note" ||
 		comment.URL != "https://github.com/example/repo/issues/1#issuecomment-101" ||
 		comment.AuthorLogin != "alice" ||
+		!comment.AuthorAuthorized ||
 		comment.Local ||
 		comment.TargetType != connector.IssueCommentTargetIssue {
 		t.Fatalf("FetchIssueComments()[0] = %#v, want normalized GitHub metadata", comment)
@@ -4169,6 +4170,42 @@ func TestConnectorFetchIssueCommentsMapsRESTMetadata(t *testing.T) {
 	}
 	if comment.UpdatedAt == nil || !comment.UpdatedAt.Equal(updatedAt) {
 		t.Fatalf("UpdatedAt = %v, want %v", comment.UpdatedAt, updatedAt)
+	}
+}
+
+func TestConnectorAuthorizesIssueCommentByRepositoryPermission(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		permission string
+		want       bool
+	}{
+		{permission: "admin", want: true},
+		{permission: "maintain", want: true},
+		{permission: "write", want: true},
+		{permission: "read", want: false},
+		{permission: "triage", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.permission, func(t *testing.T) {
+			t.Parallel()
+
+			server := newGraphQLTestServer(t, []graphqlTestResponse{{
+				method: http.MethodGet,
+				path:   "/repos/example/repo/collaborators/alice/permission",
+				body:   `{"permission":"` + tt.permission + `"}`,
+			}})
+			c := newGitHubTestConnector(t, server, Config{})
+
+			got, err := c.IsIssueCommentAuthorAuthorized(
+				t.Context(),
+				connector.Issue{Identifier: "example/repo#1"},
+				connector.IssueComment{AuthorLogin: "alice"},
+			)
+			if err != nil || got != tt.want {
+				t.Fatalf("IsIssueCommentAuthorAuthorized() = %t, %v, want %t", got, err, tt.want)
+			}
+		})
 	}
 }
 

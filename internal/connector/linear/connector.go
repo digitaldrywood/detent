@@ -375,6 +375,7 @@ func connectorIssueComment(comment linearComment) connector.IssueComment {
 		AuthorLogin:       linearAuthorLogin(comment),
 		AuthorKind:        linearAuthorKind(comment),
 		AuthorDisplayName: linearAuthorDisplayName(comment),
+		AuthorAuthorized:  true,
 		CreatedAt:         linearTimePtr(comment.CreatedAt),
 		UpdatedAt:         linearTimePtr(comment.UpdatedAt),
 		TargetType:        connector.IssueCommentTargetIssue,

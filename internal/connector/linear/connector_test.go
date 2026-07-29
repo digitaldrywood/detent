@@ -69,6 +69,7 @@ func TestConnectorFetchIssueCommentsMapsLinearMetadata(t *testing.T) {
 		AuthorLogin:       "ada",
 		AuthorKind:        "User",
 		AuthorDisplayName: "Ada Lovelace",
+		AuthorAuthorized:  true,
 		CreatedAt:         &createdAt,
 		UpdatedAt:         &updatedAt,
 		TargetType:        connector.IssueCommentTargetIssue,

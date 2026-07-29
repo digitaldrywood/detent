@@ -1184,7 +1184,8 @@ proposal is a durable record with an expiry and one audit comment. To accept a
 proposal, an operator posts the exact proposal-specific
 `/detent admission accept <proposal-id>` command; Detent then moves the issue to
 the configured target state. To reject it, the operator posts
-`/detent admission reject <proposal-id>`.
+`/detent admission reject <proposal-id>`. GitHub command authors must have
+write, maintain, or admin permission on the repository.
 
 Admission is disabled unless a project opts in:
 

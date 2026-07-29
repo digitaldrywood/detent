@@ -180,6 +180,10 @@ type IssueCommentReader interface {
 	FetchIssueComments(context.Context, Issue) ([]IssueComment, error)
 }
 
+type IssueCommentAuthorizer interface {
+	IsIssueCommentAuthorAuthorized(context.Context, Issue, IssueComment) (bool, error)
+}
+
 type IssueEventReader interface {
 	FetchIssueEvents(context.Context, Issue) ([]IssueEvent, error)
 }
