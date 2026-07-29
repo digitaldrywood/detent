@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -107,7 +108,8 @@ func TestTickAutoUnblocksDependencyOnlyOnceForSameResolvedBlockerSet(t *testing.
 		}
 	}
 	metadata, ok := workflowLaneMetadataFromJSON(rework.MetadataJSON)
-	if !ok || metadata.DependencyAutoUnblock == nil || metadata.DependencyAutoUnblock.BlockerSet == "" {
+	if !ok || metadata.DependencyAutoUnblock == nil || metadata.DependencyAutoUnblock.BlockerSet == "" ||
+		metadata.Provenance.Origin != provenance.OriginDependency {
 		t.Fatalf("latest Rework metadata = %q, want dependency_auto_unblock blocker_set", rework.MetadataJSON)
 	}
 }

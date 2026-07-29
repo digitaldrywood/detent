@@ -15,6 +15,10 @@ import (
 func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 	identity := cfg.Identity
 	identity.Normalize()
+	admissionTargetState := ""
+	if cfg.BacklogAdmission.Enabled {
+		admissionTargetState = cfg.BacklogAdmission.TargetState
+	}
 
 	return Config{
 		PollInterval:               durationFromMillis(cfg.Polling.IntervalMS),
@@ -86,6 +90,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			BlockerStates: append([]string(nil), cfg.Tracker.BlockerAutoPromote.BlockerStates...),
 			TargetState:   cfg.Tracker.BlockerAutoPromote.TargetState,
 		},
+		AdmissionTargetState:          admissionTargetState,
 		ActiveStates:                  append([]string(nil), cfg.Tracker.ActiveStates...),
 		ObservedStates:                append([]string(nil), cfg.Tracker.ObservedStates...),
 		TerminalStates:                append([]string(nil), cfg.Tracker.TerminalStates...),

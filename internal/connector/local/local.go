@@ -290,6 +290,7 @@ order by id asc`, c.projectID, strings.TrimSpace(issue.ID), eventKindComment, ev
 				Backend:           connector.BackendLocalSQLite.String(),
 				Body:              body,
 				AuthorLogin:       "detent",
+				AuthorKind:        "Bot",
 				AuthorDisplayName: "Detent",
 				CreatedAt:         eventTime,
 				Local:             true,
@@ -348,6 +349,9 @@ order by id asc`, c.projectID, strings.TrimSpace(issue.ID))
 		}
 		event.ID = strconv.FormatInt(id, 10)
 		event.Fields = unmarshalStringMap(payloadJSON)
+		event.Actor = connector.IssueActor{
+			Login: strings.TrimSpace(event.Fields[commentPayloadActor]),
+		}
 		event.CreatedAt = parseTimePointer(createdAt)
 		events = append(events, event)
 	}

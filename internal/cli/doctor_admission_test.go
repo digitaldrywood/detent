@@ -43,6 +43,35 @@ INSERT INTO backlog_admission_runs (
   ('detent', '2026-07-29T10:03:00Z', 'failed', NULL, 12, 4, 1, '{"excluded_label":2}', '{"candidate_cap":8}', '[{"identifier":"digitaldrywood/detent#1535"}]', 'third failure'),
   ('detent', '2026-07-29T10:02:00Z', 'failed', NULL, 10, 4, 0, '{}', '{"candidate_cap":6}', '[]', 'second failure'),
   ('detent', '2026-07-29T10:01:00Z', 'failed', NULL, 8, 4, 0, '{}', '{"candidate_cap":4}', '[]', 'first failure');
+CREATE TABLE backlog_admission_proposals (
+  project_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  decision_seconds INTEGER
+);
+INSERT INTO backlog_admission_proposals (project_id, status, decision_seconds) VALUES
+  ('detent', 'accepted', 60),
+  ('detent', 'expired', 604800);
+CREATE TABLE backlog_admission_downstream_outcomes (
+  project_id TEXT NOT NULL,
+  completed_at TEXT,
+  rework_count INTEGER NOT NULL,
+  review_churn_count INTEGER NOT NULL,
+  spend_usd REAL NOT NULL
+);
+INSERT INTO backlog_admission_downstream_outcomes (
+  project_id, completed_at, rework_count, review_churn_count, spend_usd
+) VALUES ('detent', '2026-07-29T11:00:00Z', 2, 3, 4.5);
+CREATE TABLE workflow_phase_events (
+  id INTEGER PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  phase_type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  metadata_json TEXT NOT NULL
+);
+INSERT INTO workflow_phase_events (project_id, phase_type, status, metadata_json) VALUES
+  ('detent', 'lane', 'entered', '{"provenance":{"origin":"admission"}}'),
+  ('detent', 'lane', 'entered', '{"provenance":{"origin":"routine"}}'),
+  ('detent', 'lane', 'entered', '{}');
 `); err != nil {
 		t.Fatalf("seed backlog_admission_runs error = %v", err)
 	}
@@ -68,6 +97,10 @@ INSERT INTO backlog_admission_runs (
 		"skipped=excluded_label:2",
 		"truncated=candidate_cap:8",
 		"issues=digitaldrywood/detent#1535",
+		"origins=admission:1,routine:1,unknown:1",
+		"proposal_outcomes=accepted:1,expired:1",
+		"average_decision_seconds=accepted:60,expired:604800",
+		"accepted_downstream=completed:1,rework:2,review_churn:3,spend:$4.50",
 	} {
 		if !strings.Contains(check.Detail, want) {
 			t.Fatalf("Detail = %q, want %q", check.Detail, want)
@@ -78,6 +111,15 @@ INSERT INTO backlog_admission_runs (
 	}
 	if diagnostic.Skipped["excluded_label"] != 2 || diagnostic.Truncated["candidate_cap"] != 8 {
 		t.Fatalf("diagnostic counts = skipped %#v truncated %#v", diagnostic.Skipped, diagnostic.Truncated)
+	}
+	if diagnostic.Origins["admission"] != 1 || diagnostic.Origins["unknown"] != 1 ||
+		diagnostic.ProposalOutcomes["expired"] != 1 ||
+		diagnostic.DecisionSeconds["accepted"] != 60 ||
+		diagnostic.AcceptedCompleted != 1 ||
+		diagnostic.ReworkCount != 2 ||
+		diagnostic.ReviewChurnCount != 3 ||
+		diagnostic.SpendUSD != 4.5 {
+		t.Fatalf("evidence diagnostic = %#v", diagnostic)
 	}
 }
 

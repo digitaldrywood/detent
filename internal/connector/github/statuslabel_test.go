@@ -11,7 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 )
 
-func TestConnectorIssueStateEnteredAtUsesLatestMatchingLabelEvent(t *testing.T) {
+func TestConnectorIssueStateTransitionUsesLatestMatchingLabelEvent(t *testing.T) {
 	t.Parallel()
 
 	first := time.Date(2026, 7, 10, 14, 36, 55, 0, time.UTC)
@@ -19,13 +19,19 @@ func TestConnectorIssueStateEnteredAtUsesLatestMatchingLabelEvent(t *testing.T) 
 	tests := []struct {
 		name  string
 		body  string
-		want  time.Time
+		want  connector.IssueStateTransition
 		found bool
 	}{
 		{
-			name:  "latest matching event",
-			body:  `[{"event":"labeled","created_at":"2026-07-10T14:34:38Z","label":{"name":"detent:in-progress"}},{"event":"labeled","created_at":"2026-07-10T14:36:55Z","label":{"name":"DETENT:BLOCKED"}},{"event":"labeled","created_at":"2026-07-10T14:40:00Z","label":{"name":"detent:blocked"}},{"event":"unlabeled","created_at":"2026-07-10T15:30:00Z","label":{"name":"detent:blocked"}},{"event":"labeled","created_at":"2026-07-10T15:36:55Z","label":{"name":"detent:blocked"}}]`,
-			want:  latest,
+			name: "latest matching event",
+			body: `[{"event":"labeled","created_at":"2026-07-10T14:34:38Z","label":{"name":"detent:in-progress"}},{"event":"labeled","created_at":"2026-07-10T14:36:55Z","label":{"name":"DETENT:BLOCKED"},"actor":{"login":"first","type":"User"}},{"event":"labeled","created_at":"2026-07-10T14:40:00Z","label":{"name":"detent:blocked"}},{"event":"unlabeled","created_at":"2026-07-10T15:30:00Z","label":{"name":"detent:blocked"}},{"event":"labeled","created_at":"2026-07-10T15:36:55Z","label":{"name":"detent:blocked"},"actor":{"login":"dependabot[bot]","type":"Bot"}}]`,
+			want: connector.IssueStateTransition{
+				EnteredAt: latest,
+				Actor: connector.IssueActor{
+					Login: "dependabot[bot]",
+					Kind:  "Bot",
+				},
+			},
 			found: true,
 		},
 		{
@@ -49,15 +55,15 @@ func TestConnectorIssueStateEnteredAtUsesLatestMatchingLabelEvent(t *testing.T) 
 				ObservedStates:     []string{"Blocked"},
 			})
 
-			got, found, err := c.IssueStateEnteredAt(t.Context(), connector.Issue{
+			got, found, err := c.IssueStateTransition(t.Context(), connector.Issue{
 				Identifier: "digitaldrywood/detent#1162",
 				State:      "Blocked",
 			})
 			if err != nil {
-				t.Fatalf("IssueStateEnteredAt() error = %v", err)
+				t.Fatalf("IssueStateTransition() error = %v", err)
 			}
-			if found != tt.found || !got.Equal(tt.want) {
-				t.Fatalf("IssueStateEnteredAt() = (%v, %v), want (%v, %v)", got, found, tt.want, tt.found)
+			if found != tt.found || !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("IssueStateTransition() = (%#v, %v), want (%#v, %v)", got, found, tt.want, tt.found)
 			}
 		})
 	}

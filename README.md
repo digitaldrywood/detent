@@ -1177,7 +1177,10 @@ Backlog admission evaluates existing issues and proposes which ones should
 become eligible for dispatch. It does not create work like routines, classify
 incoming work like intake, rank eligible work like the scheduler, or change
 issue status. Every proposal is a durable record with an expiry and one audit
-comment; a human accepts it by moving the issue to the configured target state.
+comment. To accept a proposal, an operator posts the exact proposal-specific
+`/detent admission accept <proposal-id>` command and then moves the issue to the
+configured target state. To reject it, the operator posts
+`/detent admission reject <proposal-id>`.
 
 Admission is disabled unless a project opts in:
 
@@ -1232,6 +1235,13 @@ title/body fingerprint, so the proposal's own comment cannot create a
 duplicate. Unanswered proposals expire; an issue demoted after acceptance is
 not proposed again.
 
+Acceptance is attributed only when the command names an open proposal and a
+subsequent transition enters that proposal's target state. When both events
+include actors, they must identify the same actor. A target-state transition
+without that correlation remains an unattributed transition and does not accept
+the proposal. Rejection, expiry, and supersession are separate outcomes:
+silence can expire a proposal but never accepts or rejects one.
+
 GitHub, `github_local`, `local_sqlite`, and `memory` trackers support
 state-based admission. Linear configurations fail validation because their
 state readers are not implemented. `authors.allow` on `local_sqlite` or
@@ -1241,10 +1251,29 @@ first 20 issue labels are fetched. The memory tracker is evaluation-only across
 restarts: durable proposal records can survive while its process-local comments
 and mutations do not.
 
-The admission ledger records timing, candidate, proposal, skip, truncation,
-deferral, failure, and issue-reference details. `detent doctor` warns when
-criteria cannot be resolved, admission has never run, tracker limitations
-apply, or three consecutive runs fail, and shows the latest result otherwise.
+Every lane-entry event records how the issue reached the state:
+
+- `human` means the tracker explicitly identified a `User` actor for the
+  transition. It confirms a person moved the issue, but does not imply that the
+  person endorsed any admission proposal.
+- `routine` and `retro` are unattended Detent-created transitions and imply no
+  human vetting.
+- `dependency` is a deterministic dependency auto-unblock or blocker promotion
+  and implies no human vetting at transition time.
+- `admission` means an explicit accept command was correlated with an open
+  proposal and its later target-state transition. This is proposal-specific
+  operator approval.
+- `unknown` means the tracker did not provide enough actor or mechanism data.
+  Detent never guesses that an unknown transition was human.
+
+The board card and detail sheet show the current lane origin and actor when one
+is available. The admission ledger records accepted, rejected, expired, and
+superseded proposal counts with average decision time. Accepted proposals also
+accumulate completion, rework entries, review events, and metered spend after
+the decision. `detent doctor` reports that labeled history alongside the origin
+distribution; it does not reduce calibration to a single acceptance
+percentage. It also warns when criteria cannot be resolved, admission has never
+run, tracker limitations apply, or three consecutive runs fail.
 
 ### Efficiency retrospection
 

@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -115,7 +116,69 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Blocked:   len(snapshot.Blocked),
 		Completed: len(snapshot.Completed),
 	}
+	applySnapshotLaneProvenance(&snapshot, s.laneProvenance)
 	return snapshot
+}
+
+func applySnapshotLaneProvenance(snapshot *telemetry.Snapshot, laneProvenance map[string]provenance.Attribution) {
+	if snapshot == nil {
+		return
+	}
+	apply := func(issue *telemetry.Issue) {
+		if issue == nil {
+			return
+		}
+		attribution, ok := laneProvenance[telemetryIssueLaneKey(*issue)]
+		if !ok {
+			return
+		}
+		issue.Origin = string(provenance.NormalizeOrigin(attribution.Origin))
+		if attribution.Actor != nil {
+			issue.OriginActor = attribution.Actor.Login
+			issue.OriginActorKind = attribution.Actor.Kind
+		}
+	}
+	for index := range snapshot.BoardIssues {
+		apply(&snapshot.BoardIssues[index])
+	}
+	for index := range snapshot.Pipeline {
+		apply(&snapshot.Pipeline[index])
+	}
+	for index := range snapshot.TrackerDrift.UntrackedOpen {
+		apply(&snapshot.TrackerDrift.UntrackedOpen[index])
+	}
+	for index := range snapshot.TrackerDrift.OpenTerminal {
+		apply(&snapshot.TrackerDrift.OpenTerminal[index])
+	}
+	for index := range snapshot.Running {
+		apply(&snapshot.Running[index].Issue)
+	}
+	for index := range snapshot.Queue {
+		apply(&snapshot.Queue[index].Issue)
+	}
+	for index := range snapshot.Blocked {
+		apply(&snapshot.Blocked[index].Issue)
+	}
+	for index := range snapshot.Completed {
+		apply(&snapshot.Completed[index].Issue)
+	}
+}
+
+func telemetryIssueLaneKey(issue telemetry.Issue) string {
+	identity := ""
+	switch {
+	case strings.TrimSpace(issue.ID) != "":
+		identity = "id:" + strings.TrimSpace(issue.ID)
+	case strings.TrimSpace(issue.Identifier) != "":
+		identity = "identifier:" + strings.TrimSpace(issue.Identifier)
+	case strings.TrimSpace(issue.URL) != "":
+		identity = "url:" + strings.TrimSpace(issue.URL)
+	}
+	state := normalizeState(issue.State)
+	if identity == "" || state == "" {
+		return ""
+	}
+	return identity + "\x00" + state
 }
 
 func projectFailureBreakerSnapshots(breaker ProjectFailureBreaker) []telemetry.FailureBreaker {
@@ -701,6 +764,7 @@ func telemetryIssueComments(comments []connector.IssueComment) []telemetry.Issue
 			Body:              comment.Body,
 			URL:               comment.URL,
 			AuthorLogin:       comment.AuthorLogin,
+			AuthorKind:        comment.AuthorKind,
 			AuthorDisplayName: comment.AuthorDisplayName,
 			CreatedAt:         cloneTime(comment.CreatedAt),
 			UpdatedAt:         cloneTime(comment.UpdatedAt),

@@ -90,6 +90,7 @@ type Config struct {
 	DependencyAutoUnblock         DependencyAutoUnblockConfig
 	BlockedRecovery               BlockedRecoveryConfig
 	BlockerAutoPromote            BlockerAutoPromoteConfig
+	AdmissionTargetState          string
 	ActiveStates                  []string
 	ObservedStates                []string
 	TerminalStates                []string

@@ -346,6 +346,9 @@ type Issue struct {
 	PriorityName          string                 `json:"priority_name,omitempty"`
 	UnblockerCount        int                    `json:"unblocker_count,omitempty"`
 	State                 string                 `json:"state,omitempty"`
+	Origin                string                 `json:"origin,omitempty"`
+	OriginActor           string                 `json:"origin_actor,omitempty"`
+	OriginActorKind       string                 `json:"origin_actor_kind,omitempty"`
 	Labels                []string               `json:"labels,omitempty"`
 	Assignees             []string               `json:"assignees,omitempty"`
 	Comments              []IssueComment         `json:"comments,omitempty"`
@@ -373,6 +376,7 @@ type IssueComment struct {
 	Body              string     `json:"body,omitempty"`
 	URL               string     `json:"url,omitempty"`
 	AuthorLogin       string     `json:"author_login,omitempty"`
+	AuthorKind        string     `json:"author_kind,omitempty"`
 	AuthorDisplayName string     `json:"author_display_name,omitempty"`
 	CreatedAt         *time.Time `json:"created_at,omitempty"`
 	UpdatedAt         *time.Time `json:"updated_at,omitempty"`

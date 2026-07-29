@@ -51,23 +51,39 @@ type AuthSession struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type BacklogAdmissionDownstreamOutcome struct {
+	ProposalID       string         `json:"proposal_id"`
+	ProjectID        string         `json:"project_id"`
+	IssueID          string         `json:"issue_id"`
+	CompletedAt      sql.NullString `json:"completed_at"`
+	ReworkCount      int64          `json:"rework_count"`
+	ReviewChurnCount int64          `json:"review_churn_count"`
+	SpendUsd         float64        `json:"spend_usd"`
+	UpdatedAt        string         `json:"updated_at"`
+}
+
 type BacklogAdmissionProposal struct {
-	ID              string         `json:"id"`
-	ProjectID       string         `json:"project_id"`
-	IssueID         string         `json:"issue_id"`
-	IssueIdentifier string         `json:"issue_identifier"`
-	IssueURL        string         `json:"issue_url"`
-	TargetState     string         `json:"target_state"`
-	Fingerprint     string         `json:"fingerprint"`
-	CriteriaSection string         `json:"criteria_section"`
-	CriteriaText    string         `json:"criteria_text"`
-	FindingsJson    string         `json:"findings_json"`
-	Confidence      float64        `json:"confidence"`
-	Status          string         `json:"status"`
-	CreatedAt       string         `json:"created_at"`
-	ExpiresAt       string         `json:"expires_at"`
-	ResolvedAt      sql.NullString `json:"resolved_at"`
-	CommentedAt     sql.NullString `json:"commented_at"`
+	ID                 string         `json:"id"`
+	ProjectID          string         `json:"project_id"`
+	IssueID            string         `json:"issue_id"`
+	IssueIdentifier    string         `json:"issue_identifier"`
+	IssueURL           string         `json:"issue_url"`
+	TargetState        string         `json:"target_state"`
+	Fingerprint        string         `json:"fingerprint"`
+	CriteriaSection    string         `json:"criteria_section"`
+	CriteriaText       string         `json:"criteria_text"`
+	FindingsJson       string         `json:"findings_json"`
+	Confidence         float64        `json:"confidence"`
+	Status             string         `json:"status"`
+	CreatedAt          string         `json:"created_at"`
+	ExpiresAt          string         `json:"expires_at"`
+	ResolvedAt         sql.NullString `json:"resolved_at"`
+	CommentedAt        sql.NullString `json:"commented_at"`
+	DecisionCommentID  sql.NullString `json:"decision_comment_id"`
+	DecisionActorLogin sql.NullString `json:"decision_actor_login"`
+	DecisionActorKind  sql.NullString `json:"decision_actor_kind"`
+	TransitionAt       sql.NullString `json:"transition_at"`
+	DecisionSeconds    sql.NullInt64  `json:"decision_seconds"`
 }
 
 type BacklogAdmissionRun struct {

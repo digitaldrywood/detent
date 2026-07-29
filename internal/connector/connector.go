@@ -247,7 +247,17 @@ type IssueReferenceResolver interface {
 }
 
 type IssueStateTransitionReader interface {
-	IssueStateEnteredAt(context.Context, Issue) (time.Time, bool, error)
+	IssueStateTransition(context.Context, Issue) (IssueStateTransition, bool, error)
+}
+
+type IssueStateTransition struct {
+	EnteredAt time.Time  `json:"entered_at" yaml:"entered_at"`
+	Actor     IssueActor `json:"actor,omitzero" yaml:"actor,omitempty"`
+}
+
+type IssueActor struct {
+	Login string `json:"login,omitempty" yaml:"login,omitempty"`
+	Kind  string `json:"kind,omitempty" yaml:"kind,omitempty"`
 }
 
 type IssueDependencyWriter interface {

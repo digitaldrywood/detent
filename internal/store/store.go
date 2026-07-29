@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/retro"
 	routinemodel "github.com/digitaldrywood/detent/internal/routine/model"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 type Backend string
@@ -195,7 +196,10 @@ type AdmissionStore interface {
 	CountOpenAdmissionProposals(context.Context, string) (int, error)
 	ExpireAdmissionProposals(context.Context, string, time.Time) (int, error)
 	TransitionAdmissionProposal(context.Context, string, admissionmodel.ProposalStatus, admissionmodel.ProposalStatus, time.Time) error
+	ResolveAdmissionProposal(context.Context, admissionmodel.Decision) error
 	MarkAdmissionProposalCommented(context.Context, string, time.Time) error
+	RefreshAdmissionOutcomes(context.Context, admissionmodel.OutcomeRefresh) error
+	AdmissionDownstreamOutcomes(context.Context, string) ([]admissionmodel.DownstreamOutcome, error)
 	RecordAdmissionRun(context.Context, admissionmodel.RunRecord) error
 	LatestAdmissionRun(context.Context, string) (admissionmodel.RunRecord, bool, error)
 	RecentAdmissionRuns(context.Context, string, int) ([]admissionmodel.RunRecord, error)
@@ -240,18 +244,18 @@ type RuntimeWorkflowPhaseEventEvidence struct {
 	NewestFinishedAt *time.Time
 }
 
-type WorkflowPhaseType string
+type WorkflowPhaseType = workflowmetrics.PhaseType
 
 const (
-	WorkflowPhaseTypeLane           WorkflowPhaseType = "lane"
-	WorkflowPhaseTypeAgentSession   WorkflowPhaseType = "agent_session"
-	WorkflowPhaseTypeLocalCheck     WorkflowPhaseType = "local_check"
-	WorkflowPhaseTypeCI             WorkflowPhaseType = "ci"
-	WorkflowPhaseTypeGitHubBackoff  WorkflowPhaseType = "github_backoff"
-	WorkflowPhaseTypeReview         WorkflowPhaseType = "review"
-	WorkflowPhaseTypeMergeQueue     WorkflowPhaseType = "merge_queue"
-	WorkflowPhaseTypeRecovery       WorkflowPhaseType = "recovery"
-	WorkflowPhaseTypeOperatorAction WorkflowPhaseType = "operator_action"
+	WorkflowPhaseTypeLane           = workflowmetrics.PhaseTypeLane
+	WorkflowPhaseTypeAgentSession   = workflowmetrics.PhaseTypeAgentSession
+	WorkflowPhaseTypeLocalCheck     = workflowmetrics.PhaseTypeLocalCheck
+	WorkflowPhaseTypeCI             = workflowmetrics.PhaseTypeCI
+	WorkflowPhaseTypeGitHubBackoff  = workflowmetrics.PhaseTypeGitHubBackoff
+	WorkflowPhaseTypeReview         = workflowmetrics.PhaseTypeReview
+	WorkflowPhaseTypeMergeQueue     = workflowmetrics.PhaseTypeMergeQueue
+	WorkflowPhaseTypeRecovery       = workflowmetrics.PhaseTypeRecovery
+	WorkflowPhaseTypeOperatorAction = workflowmetrics.PhaseTypeOperatorAction
 )
 
 type WorkAttemptStatus string
@@ -481,35 +485,7 @@ type UsageEvent struct {
 	Outcome               string
 }
 
-type WorkflowPhaseEvent struct {
-	ID                    int64
-	ProjectID             string
-	RunID                 int64
-	SessionID             int64
-	IssueID               string
-	Identifier            string
-	IssueURL              string
-	PRNumber              *int64
-	PhaseType             WorkflowPhaseType
-	PhaseName             string
-	PreviousPhaseName     string
-	Reason                string
-	Status                string
-	StartedAt             time.Time
-	FinishedAt            time.Time
-	DurationSeconds       int64
-	CommandName           string
-	ExitCode              *int64
-	Turns                 int64
-	InputTokens           int64
-	CachedInputTokens     int64
-	OutputTokens          int64
-	ReasoningOutputTokens int64
-	TotalTokens           int64
-	ModelContextWindow    *int64
-	EndpointFamily        string
-	MetadataJSON          string
-}
+type WorkflowPhaseEvent = workflowmetrics.PhaseEvent
 
 type ValidatorVerdictKey struct {
 	ProjectID string

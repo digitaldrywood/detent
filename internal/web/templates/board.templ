@@ -486,6 +486,12 @@ templ boardCardView2(card boardCardView) {
 		if card.RuntimeBadge {
 			@boardRuntimeBadge(card)
 		}
+		if card.OriginDetail != "" {
+			<div class="flex items-center gap-1.5 text-2xs text-info" data-board-card-origin data-board-card-expanded>
+				@primitives.StatusDot(primitives.KindInfo, false)
+				<span class="min-w-0 truncate font-mono">{ card.OriginDetail }</span>
+			</div>
+		}
 		if card.ExtraText != "" && (!card.RuntimeBadge || card.ExtraText != "agent working") {
 			if card.ExtraChip {
 				<div class="flex" data-board-card-expanded>

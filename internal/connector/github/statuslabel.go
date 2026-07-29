@@ -141,27 +141,28 @@ func (c *Connector) fetchLabelIssueByRef(ctx context.Context, ref issueRef) (con
 	return c.buildLabelIssue(issue, c.githubIssueStateToDetentState(issue.State)), true, nil
 }
 
-func (c *Connector) IssueStateEnteredAt(ctx context.Context, issue connector.Issue) (time.Time, bool, error) {
+func (c *Connector) IssueStateTransition(ctx context.Context, issue connector.Issue) (connector.IssueStateTransition, bool, error) {
 	if !c.usesLabelStatus() {
-		return time.Time{}, false, nil
+		return connector.IssueStateTransition{}, false, nil
 	}
 	ref, ok := issueRefFromIdentifier(issue.Identifier)
 	if !ok {
 		ref, ok = issueRefFromURL(issue.URL)
 	}
 	if !ok {
-		return time.Time{}, false, nil
+		return connector.IssueStateTransition{}, false, nil
 	}
 	targetLabel := normalizeLabelName(c.statusLabelForState(issue.State))
 	if targetLabel == "" {
-		return time.Time{}, false, nil
+		return connector.IssueStateTransition{}, false, nil
 	}
 
 	events, err := fetchRESTList[restIssueTimelineEvent](ctx, c.client, restIssueTimelinePath(ref))
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("fetch github issue timeline: %w", err)
+		return connector.IssueStateTransition{}, false, fmt.Errorf("fetch github issue timeline: %w", err)
 	}
 	var enteredAt time.Time
+	var transitionActor connector.IssueActor
 	present := false
 	for _, event := range events {
 		if event.Label == nil || normalizeLabelName(event.Label.Name) != targetLabel {
@@ -171,16 +172,31 @@ func (c *Connector) IssueStateEnteredAt(ctx context.Context, issue connector.Iss
 		case strings.EqualFold(strings.TrimSpace(event.Event), "labeled"):
 			if !present && event.CreatedAt != nil && !event.CreatedAt.IsZero() {
 				enteredAt = event.CreatedAt.UTC()
+				transitionActor = connector.IssueActor{
+					Login: actorLogin(event.Actor),
+					Kind:  actorType(event.Actor),
+				}
 			}
 			present = true
 		case strings.EqualFold(strings.TrimSpace(event.Event), "unlabeled"):
 			present = false
+			transitionActor = connector.IssueActor{}
 		}
 	}
 	if !present {
-		return time.Time{}, false, nil
+		return connector.IssueStateTransition{}, false, nil
 	}
-	return enteredAt, !enteredAt.IsZero(), nil
+	return connector.IssueStateTransition{
+		EnteredAt: enteredAt,
+		Actor:     transitionActor,
+	}, !enteredAt.IsZero(), nil
+}
+
+func actorType(value *actor) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(value.Type)
 }
 
 func (c *Connector) updateIssueStatusLabel(ctx context.Context, ref issueRef, issue githubIssueNode, targetState string) error {

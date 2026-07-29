@@ -150,6 +150,9 @@ templ BoardCardSheetCore(data DashboardData, card projectKanbanCard, boardAction
 			if card.TimeInStage != "" && card.TimeInStage != "n/a" {
 				@sheetRowValue("Time in stage", card.TimeInStage, card.TimeInStageTitle)
 			}
+			if card.Origin != "" {
+				@sheetRowValue("Origin", boardCardOriginDetail(card.Origin, card.OriginActor), "Mechanism that placed this issue in its current state")
+			}
 			if card.WaitDetail != "" {
 				@sheetRowValue("Waiting on", card.WaitDetail, card.WaitDetail)
 			}

@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 const defaultWorkflowMetricsProjectID = "default"
@@ -33,6 +35,8 @@ type workflowLaneMetadata struct {
 	DependencyAutoUnblock *workflowLaneDependencyAutoUnblockMetadata `json:"dependency_auto_unblock,omitempty"`
 	ReworkBreaker         *workflowLaneReworkBreakerMetadata         `json:"rework_breaker,omitempty"`
 	ActionSignatures      []workflowLaneActionSignatureMetadata      `json:"action_signatures,omitempty"`
+	Provenance            provenance.Attribution                     `json:"provenance"`
+	Admission             *provenance.Admission                      `json:"admission,omitempty"`
 }
 
 type workflowLanePullRequestMetadata struct {
@@ -242,8 +246,7 @@ func (o *Orchestrator) recordLaneTransition(
 	reason string,
 	metadata workflowLaneMetadata,
 ) {
-	recorder := o.workflowMetrics
-	if recorder == nil {
+	if o.workflowMetrics == nil {
 		return
 	}
 
@@ -259,38 +262,18 @@ func (o *Orchestrator) recordLaneTransition(
 	if reason == "" {
 		reason = "state_transition"
 	}
-
-	base := store.WorkflowPhaseEvent{
-		ProjectID:      o.workflowMetricsProjectID(),
-		IssueID:        issue.ID,
-		Identifier:     issue.Identifier,
-		IssueURL:       issue.URL,
-		PRNumber:       workflowMetricsPRNumber(issue),
-		PhaseType:      store.WorkflowPhaseTypeLane,
-		Reason:         reason,
-		StartedAt:      at,
-		MetadataJSON:   workflowLaneMetadataJSON(issue, metadata),
-		EndpointFamily: "tracker",
+	if metadata.Provenance.Origin == "" {
+		metadata.Provenance.Origin = workflowOriginForReason(reason)
 	}
-	if sourceState != "" {
-		startedAt := workflowLaneStartedAt(issue, at)
-		exitEvent := base
-		exitEvent.PhaseName = sourceState
-		exitEvent.Status = "exited"
-		exitEvent.StartedAt = startedAt
-		exitEvent.FinishedAt = at
-		exitEvent.DurationSeconds = workflowDurationSeconds(startedAt, at)
-		if _, err := recorder.RecordWorkflowPhaseEvent(ctx, exitEvent); err != nil && o.logger != nil {
-			o.logger.Warn("record lane exit metric failed", "issue_id", issue.ID, "identifier", issue.Identifier, "from_state", sourceState, "target_state", targetState, "error", err)
-		}
-	}
-
-	enterEvent := base
-	enterEvent.PhaseName = targetState
-	enterEvent.PreviousPhaseName = sourceState
-	enterEvent.Status = "entered"
-	if _, err := recorder.RecordWorkflowPhaseEvent(ctx, enterEvent); err != nil && o.logger != nil {
-		o.logger.Warn("record lane enter metric failed", "issue_id", issue.ID, "identifier", issue.Identifier, "from_state", sourceState, "target_state", targetState, "error", err)
+	if err := workflowmetrics.RecordLaneTransition(ctx, o.workflowMetrics, workflowmetrics.LaneTransition{
+		ProjectID:    o.workflowMetricsProjectID(),
+		Issue:        issue,
+		TargetState:  targetState,
+		At:           at,
+		Reason:       reason,
+		MetadataJSON: workflowLaneMetadataJSON(issue, metadata),
+	}); err != nil && o.logger != nil {
+		o.logger.Warn("record lane transition metric failed", "issue_id", issue.ID, "identifier", issue.Identifier, "from_state", sourceState, "target_state", targetState, "error", err)
 	}
 }
 
@@ -344,16 +327,6 @@ func (o *Orchestrator) workflowMetricsProjectID() string {
 	return projectID
 }
 
-func workflowLaneStartedAt(issue connector.Issue, fallback time.Time) time.Time {
-	for _, candidate := range []*time.Time{issue.StageUpdatedAt, issue.UpdatedAt, issue.CreatedAt} {
-		if candidate == nil || candidate.IsZero() || candidate.After(fallback) {
-			continue
-		}
-		return *candidate
-	}
-	return fallback
-}
-
 func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *State, observedAt time.Time) {
 	if state == nil {
 		return
@@ -365,6 +338,7 @@ func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *Sta
 
 	previous := state.laneEntries
 	next := make(map[string]time.Time)
+	nextProvenance := make(map[string]provenance.Attribution)
 	timelines := make(map[string]timelineResult)
 	for _, issue := range stateLaneEntryIssues(state) {
 		laneKey := workflowLaneEntryKey(issue)
@@ -382,51 +356,75 @@ func (o *Orchestrator) refreshCurrentLaneEntries(ctx context.Context, state *Sta
 			timelines[identityKey] = result
 		}
 
-		_, eventBacked := latestCurrentLaneEnteredAt(result.timeline.Events, issue.State)
-		trackerEnteredAt := time.Time{}
+		latestEvent, eventBacked := latestCurrentLaneEntry(result.timeline.Events, issue.State)
+		trackerTransition := connector.IssueStateTransition{}
 		if !eventBacked {
-			trackerEnteredAt = o.trackerIssueStateEnteredAt(ctx, issue)
+			trackerTransition = o.trackerIssueStateTransition(ctx, issue)
 		}
-		enteredAt := resolveCurrentLaneEnteredAt(issue, previous[laneKey], trackerEnteredAt, observedAt, result.timeline.Events)
+		enteredAt := resolveCurrentLaneEnteredAt(issue, previous[laneKey], trackerTransition.EnteredAt, observedAt, result.timeline.Events)
 		if !enteredAt.IsZero() {
 			next[laneKey] = enteredAt
 		}
 		if !eventBacked {
-			o.recordObservedLaneEntry(ctx, issue, enteredAt)
+			o.recordObservedLaneEntry(ctx, issue, enteredAt, trackerTransition.Actor)
 			if normalizeState(issue.State) == normalizeState(autoPromoteReworkState) {
 				observed := cloneIssue(issue)
 				observed.State = ""
 				o.captureReworkLesson(observed, enteredAt, "tracker_state_observed")
 			}
+			latestEvent, eventBacked = latestCurrentLaneEntryForAt(result.timeline.Events, issue.State, enteredAt)
+		}
+		if eventBacked {
+			if metadata, ok := provenance.Parse(latestEvent.MetadataJSON); ok {
+				nextProvenance[laneKey] = metadata.Provenance
+			} else {
+				nextProvenance[laneKey] = provenance.Attribution{Origin: provenance.OriginUnknown}
+			}
+		} else {
+			actor := provenance.Actor{Login: trackerTransition.Actor.Login, Kind: trackerTransition.Actor.Kind}
+			nextProvenance[laneKey] = provenance.Attribution{
+				Origin: provenance.OriginFromActor(actor),
+				Actor:  provenanceActorPointer(actor),
+			}
 		}
 	}
 	state.laneEntries = next
+	state.laneProvenance = nextProvenance
 }
 
-func (o *Orchestrator) trackerIssueStateEnteredAt(ctx context.Context, issue connector.Issue) time.Time {
-	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
-		return issue.StageUpdatedAt.UTC()
-	}
+func (o *Orchestrator) trackerIssueStateTransition(ctx context.Context, issue connector.Issue) connector.IssueStateTransition {
 	reader, ok := o.connector.(connector.IssueStateTransitionReader)
-	if !ok || reader == nil {
-		return time.Time{}
-	}
-	enteredAt, found, err := reader.IssueStateEnteredAt(ctx, issue)
-	if err != nil {
-		if o.logger != nil {
-			o.logger.Warn("tracker lane transition read failed", "issue_id", issue.ID, "identifier", issue.Identifier, "state", issue.State, "error", err)
+	if ok && reader != nil {
+		transition, found, err := reader.IssueStateTransition(ctx, issue)
+		if err != nil {
+			if o.logger != nil {
+				o.logger.Warn("tracker lane transition read failed", "issue_id", issue.ID, "identifier", issue.Identifier, "state", issue.State, "error", err)
+			}
+		} else if found {
+			transition.EnteredAt = transition.EnteredAt.UTC()
+			return transition
 		}
-		return time.Time{}
 	}
-	if !found {
-		return time.Time{}
+	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
+		return connector.IssueStateTransition{EnteredAt: issue.StageUpdatedAt.UTC()}
 	}
-	return enteredAt.UTC()
+	return connector.IssueStateTransition{}
 }
 
-func (o *Orchestrator) recordObservedLaneEntry(ctx context.Context, issue connector.Issue, enteredAt time.Time) {
+func (o *Orchestrator) recordObservedLaneEntry(ctx context.Context, issue connector.Issue, enteredAt time.Time, transitionActor connector.IssueActor) {
 	if o.workflowMetrics == nil || enteredAt.IsZero() || strings.TrimSpace(issue.State) == "" {
 		return
+	}
+	actor := provenance.Actor{Login: transitionActor.Login, Kind: transitionActor.Kind}
+	metadata := workflowLaneMetadata{
+		Provenance: provenance.Attribution{
+			Origin: provenance.OriginFromActor(actor),
+			Actor:  provenanceActorPointer(actor),
+		},
+	}
+	if strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(o.cfg.AdmissionTargetState)) &&
+		strings.TrimSpace(o.cfg.AdmissionTargetState) != "" {
+		metadata.Admission = &provenance.Admission{Attributed: false}
 	}
 	if _, err := o.workflowMetrics.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
 		ProjectID:      o.workflowMetricsProjectID(),
@@ -439,7 +437,7 @@ func (o *Orchestrator) recordObservedLaneEntry(ctx context.Context, issue connec
 		Reason:         "tracker_state_observed",
 		Status:         "entered",
 		StartedAt:      enteredAt,
-		MetadataJSON:   workflowLaneMetadataJSON(issue, workflowLaneMetadata{}),
+		MetadataJSON:   workflowLaneMetadataJSON(issue, metadata),
 		EndpointFamily: "tracker",
 	}); err != nil && o.logger != nil {
 		o.logger.Warn("record observed lane enter metric failed", "issue_id", issue.ID, "identifier", issue.Identifier, "state", issue.State, "error", err)
@@ -510,9 +508,14 @@ func laneOccupancyChangedSince(events []store.WorkflowPhaseEvent, state string, 
 }
 
 func latestCurrentLaneEnteredAt(events []store.WorkflowPhaseEvent, state string) (time.Time, bool) {
+	event, ok := latestCurrentLaneEntry(events, state)
+	return event.StartedAt, ok
+}
+
+func latestCurrentLaneEntry(events []store.WorkflowPhaseEvent, state string) (store.WorkflowPhaseEvent, bool) {
 	state = normalizeState(state)
 	if state == "" {
-		return time.Time{}, false
+		return store.WorkflowPhaseEvent{}, false
 	}
 
 	var latest store.WorkflowPhaseEvent
@@ -529,9 +532,17 @@ func latestCurrentLaneEnteredAt(events []store.WorkflowPhaseEvent, state string)
 		}
 	}
 	if latest.StartedAt.IsZero() {
-		return time.Time{}, false
+		return store.WorkflowPhaseEvent{}, false
 	}
-	return latest.StartedAt, true
+	return latest, true
+}
+
+func latestCurrentLaneEntryForAt(events []store.WorkflowPhaseEvent, state string, enteredAt time.Time) (store.WorkflowPhaseEvent, bool) {
+	event, ok := latestCurrentLaneEntry(events, state)
+	if !ok || !event.StartedAt.Equal(enteredAt) {
+		return store.WorkflowPhaseEvent{}, false
+	}
+	return event, true
 }
 
 func workflowLaneFallbackAt(issue connector.Issue) time.Time {
@@ -574,13 +585,6 @@ func workflowIssueIdentityKey(issue connector.Issue) string {
 	return ""
 }
 
-func workflowDurationSeconds(startedAt time.Time, finishedAt time.Time) int64 {
-	if startedAt.IsZero() || finishedAt.IsZero() || finishedAt.Before(startedAt) {
-		return 0
-	}
-	return int64(finishedAt.Sub(startedAt) / time.Second)
-}
-
 func workflowMetricsPRNumber(issue connector.Issue) *int64 {
 	switch {
 	case issue.PRNumber != nil:
@@ -598,14 +602,32 @@ func workflowLaneMetadataJSON(issue connector.Issue, metadata workflowLaneMetada
 	if metadata.PullRequest == nil {
 		metadata.PullRequest = workflowLanePullRequestMetadataFromIssue(issue)
 	}
-	if metadata.PullRequest == nil && metadata.DependencyAutoUnblock == nil && metadata.ReworkBreaker == nil && len(metadata.ActionSignatures) == 0 {
-		return "{}"
+	if metadata.Provenance.Origin == "" {
+		metadata.Provenance.Origin = provenance.OriginUnknown
 	}
 	data, err := json.Marshal(metadata)
 	if err != nil {
 		return "{}"
 	}
 	return string(data)
+}
+
+func workflowOriginForReason(reason string) provenance.Origin {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "dependency_auto_unblock", "blocker_auto_promote":
+		return provenance.OriginDependency
+	default:
+		return provenance.OriginUnknown
+	}
+}
+
+func provenanceActorPointer(actor provenance.Actor) *provenance.Actor {
+	actor.Login = strings.TrimSpace(actor.Login)
+	actor.Kind = strings.TrimSpace(actor.Kind)
+	if actor.Login == "" && actor.Kind == "" {
+		return nil
+	}
+	return &actor
 }
 
 func workflowLaneMetadataFromJSON(raw string) (workflowLaneMetadata, bool) {

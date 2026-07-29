@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
@@ -80,6 +81,7 @@ type State struct {
 	TokenTotals              TokenTotals
 	RateLimits               *telemetry.RateLimits
 	laneEntries              map[string]time.Time
+	laneProvenance           map[string]provenance.Attribution
 	planRework               map[string]struct{}
 	epicTransitionWatch      []connector.Issue
 	pendingEpicParentLookups map[string]connector.Issue
@@ -284,6 +286,7 @@ func newState(cfg Config) State {
 		DiffStats:                map[string]DiffStats{},
 		ReapedWorkspaces:         map[string]time.Time{},
 		laneEntries:              map[string]time.Time{},
+		laneProvenance:           map[string]provenance.Attribution{},
 		planRework:               map[string]struct{}{},
 		pendingEpicParentLookups: map[string]connector.Issue{},
 	}
@@ -350,6 +353,7 @@ func (s State) clone() State {
 		TokenTotals:              s.TokenTotals,
 		RateLimits:               cloneRateLimits(s.RateLimits),
 		laneEntries:              maps.Clone(s.laneEntries),
+		laneProvenance:           maps.Clone(s.laneProvenance),
 		planRework:               make(map[string]struct{}, len(s.planRework)),
 		epicTransitionWatch:      cloneIssues(s.epicTransitionWatch),
 		pendingEpicParentLookups: cloneIssueMap(s.pendingEpicParentLookups),

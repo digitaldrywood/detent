@@ -47,7 +47,9 @@ type Store interface {
 	CountOpenAdmissionProposals(context.Context, string) (int, error)
 	ExpireAdmissionProposals(context.Context, string, time.Time) (int, error)
 	TransitionAdmissionProposal(context.Context, string, admissionmodel.ProposalStatus, admissionmodel.ProposalStatus, time.Time) error
+	ResolveAdmissionProposal(context.Context, admissionmodel.Decision) error
 	MarkAdmissionProposalCommented(context.Context, string, time.Time) error
+	RefreshAdmissionOutcomes(context.Context, admissionmodel.OutcomeRefresh) error
 	RecordAdmissionRun(context.Context, admissionmodel.RunRecord) error
 	LatestAdmissionRun(context.Context, string) (admissionmodel.RunRecord, bool, error)
 }
@@ -70,6 +72,8 @@ type Settings struct {
 	Scheduler          scheduler.Scheduler
 	GlobalDispatchGate scheduler.ProjectDispatchGate
 	ProjectCandidate   scheduler.ProjectCandidate
+	TerminalStates     []string
+	ReworkState        string
 }
 
 type Result struct {
@@ -287,6 +291,14 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 	if err != nil {
 		return result, err
 	}
+	if err := m.store.RefreshAdmissionOutcomes(ctx, admissionmodel.OutcomeRefresh{
+		ProjectID:      settings.ProjectID,
+		TerminalStates: settings.TerminalStates,
+		ReworkState:    settings.ReworkState,
+		ObservedAt:     startedAt,
+	}); err != nil {
+		return result, err
+	}
 	if deferred, reason, err := admissionBudgetDeferred(ctx, settings.Runner, startedAt); err != nil {
 		return result, err
 	} else if deferred {
@@ -405,24 +417,49 @@ func (m *Manager) reconcileOpenProposals(
 		return commentsRemaining, fmt.Errorf("reconcile backlog admission proposals: %w", err)
 	}
 	byID := issueMap(issues)
+	commentReader, ok := settings.Issues.(connector.IssueCommentReader)
+	if !ok {
+		return commentsRemaining, errors.New("backlog admission issue comment reader is required")
+	}
+	commentsByIssue := map[string][]connector.IssueComment{}
 	for _, proposal := range proposals {
 		issue, ok := byID[proposal.IssueID]
-		switch {
-		case !ok:
-			if err := m.store.TransitionAdmissionProposal(ctx, proposal.ID, admissionmodel.ProposalOpen, admissionmodel.ProposalRejected, at); err != nil {
+		if !ok {
+			continue
+		}
+		comments, loaded := commentsByIssue[proposal.IssueID]
+		if !loaded {
+			comments, err = commentReader.FetchIssueComments(ctx, issue)
+			if err != nil {
+				return commentsRemaining, fmt.Errorf("read backlog admission decision comments: %w", err)
+			}
+			commentsByIssue[proposal.IssueID] = comments
+		}
+		decision, decided := proposalDecision(proposal, comments)
+		if decided && decision.Outcome == admissionmodel.ProposalRejected {
+			if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
 				return commentsRemaining, err
 			}
 			continue
-		case ok && strings.EqualFold(strings.TrimSpace(issue.State), proposal.TargetState):
-			if err := m.store.TransitionAdmissionProposal(ctx, proposal.ID, admissionmodel.ProposalOpen, admissionmodel.ProposalAccepted, at); err != nil {
+		}
+		if decided && decision.Outcome == admissionmodel.ProposalAccepted &&
+			strings.EqualFold(strings.TrimSpace(issue.State), proposal.TargetState) {
+			transition, found, err := admissionIssueTransition(ctx, settings.Issues, issue)
+			if err != nil {
 				return commentsRemaining, err
 			}
-			continue
-		case ok && (issue.Closed || !containsFold(settings.Config.Sources.States, issue.State)):
-			if err := m.store.TransitionAdmissionProposal(ctx, proposal.ID, admissionmodel.ProposalOpen, admissionmodel.ProposalRejected, at); err != nil {
-				return commentsRemaining, err
+			if found && !transition.EnteredAt.Before(decision.DecidedAt) &&
+				admissionActorsCorrelate(decision.ActorLogin, transition.Actor.Login) {
+				decision.TransitionAt = transition.EnteredAt
+				if strings.TrimSpace(transition.Actor.Login) != "" {
+					decision.ActorLogin = transition.Actor.Login
+					decision.ActorKind = transition.Actor.Kind
+				}
+				if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
+					return commentsRemaining, err
+				}
+				continue
 			}
-			continue
 		}
 		if proposal.CommentedAt.IsZero() && commentsRemaining > 0 {
 			if err := m.commentProposal(ctx, settings, proposal); err != nil {
@@ -567,6 +604,69 @@ func (m *Manager) commentProposal(ctx context.Context, settings Settings, propos
 		return fmt.Errorf("mark backlog admission audit comment: %w", err)
 	}
 	return nil
+}
+
+func proposalDecision(proposal admissionmodel.Proposal, comments []connector.IssueComment) (admissionmodel.Decision, bool) {
+	notBefore := proposal.CreatedAt
+	if proposal.CommentedAt.After(notBefore) {
+		notBefore = proposal.CommentedAt
+	}
+	accept := admissionAcceptCommand(proposal.ID)
+	reject := admissionRejectCommand(proposal.ID)
+	var decision admissionmodel.Decision
+	for _, comment := range comments {
+		if comment.CreatedAt == nil || comment.CreatedAt.IsZero() || comment.CreatedAt.Before(notBefore) {
+			continue
+		}
+		var outcome admissionmodel.ProposalStatus
+		switch strings.TrimSpace(comment.Body) {
+		case accept:
+			outcome = admissionmodel.ProposalAccepted
+		case reject:
+			outcome = admissionmodel.ProposalRejected
+		default:
+			continue
+		}
+		if !decision.DecidedAt.IsZero() && !comment.CreatedAt.After(decision.DecidedAt) {
+			continue
+		}
+		decision = admissionmodel.Decision{
+			ProposalID: proposal.ID,
+			Outcome:    outcome,
+			DecidedAt:  comment.CreatedAt.UTC(),
+			CommentID:  comment.ID,
+			ActorLogin: comment.AuthorLogin,
+			ActorKind:  comment.AuthorKind,
+		}
+	}
+	return decision, !decision.DecidedAt.IsZero()
+}
+
+func admissionIssueTransition(ctx context.Context, issues IssueStore, issue connector.Issue) (connector.IssueStateTransition, bool, error) {
+	if reader, ok := issues.(connector.IssueStateTransitionReader); ok {
+		transition, found, err := reader.IssueStateTransition(ctx, issue)
+		if err != nil || found {
+			return transition, found, err
+		}
+	}
+	if issue.StageUpdatedAt == nil || issue.StageUpdatedAt.IsZero() {
+		return connector.IssueStateTransition{}, false, nil
+	}
+	return connector.IssueStateTransition{EnteredAt: issue.StageUpdatedAt.UTC()}, true, nil
+}
+
+func admissionActorsCorrelate(decisionActor string, transitionActor string) bool {
+	decisionActor = strings.TrimSpace(decisionActor)
+	transitionActor = strings.TrimSpace(transitionActor)
+	return decisionActor == "" || transitionActor == "" || strings.EqualFold(decisionActor, transitionActor)
+}
+
+func admissionAcceptCommand(proposalID string) string {
+	return "/detent admission accept " + strings.TrimSpace(proposalID)
+}
+
+func admissionRejectCommand(proposalID string) string {
+	return "/detent admission reject " + strings.TrimSpace(proposalID)
 }
 
 func (m *Manager) nextScheduled(ctx context.Context) (time.Time, bool, error) {
@@ -772,7 +872,11 @@ func proposalComment(proposal admissionmodel.Proposal) string {
 	b.WriteString(proposal.ID)
 	b.WriteString("` recommends moving this issue to **")
 	b.WriteString(proposal.TargetState)
-	b.WriteString("**. Detent has not changed the issue status. Move it to that state to accept; leaving it unactioned will expire the proposal.\n\n")
+	b.WriteString("**. Detent has not changed the issue status. To accept, reply with `")
+	b.WriteString(admissionAcceptCommand(proposal.ID))
+	b.WriteString("` and then move the issue to that state. To reject, reply with `")
+	b.WriteString(admissionRejectCommand(proposal.ID))
+	b.WriteString("`. Leaving it unactioned will expire the proposal without counting as rejection.\n\n")
 	b.WriteString("Criteria section: **")
 	b.WriteString(proposal.CriteriaSection)
 	b.WriteString("**\n\n")
@@ -917,6 +1021,11 @@ func normalizeSettings(settings Settings) Settings {
 	settings.Config.Normalize()
 	settings.DispatchStates = normalizeStrings(settings.DispatchStates)
 	settings.DispatchLabels = normalizeStrings(settings.DispatchLabels)
+	settings.TerminalStates = normalizeStrings(settings.TerminalStates)
+	settings.ReworkState = strings.TrimSpace(settings.ReworkState)
+	if settings.ReworkState == "" {
+		settings.ReworkState = "Rework"
+	}
 	settings.ProjectCandidate.ID = strings.TrimSpace(settings.ProjectCandidate.ID)
 	if settings.ProjectCandidate.ID == "" {
 		settings.ProjectCandidate.ID = settings.ProjectID
@@ -931,6 +1040,7 @@ func cloneSettings(settings Settings) Settings {
 	settings.Criteria.Dimensions = append([]config.AdmissionDimension(nil), settings.Criteria.Dimensions...)
 	settings.DispatchStates = append([]string(nil), settings.DispatchStates...)
 	settings.DispatchLabels = append([]string(nil), settings.DispatchLabels...)
+	settings.TerminalStates = append([]string(nil), settings.TerminalStates...)
 	return settings
 }
 

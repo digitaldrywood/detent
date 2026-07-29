@@ -10,6 +10,7 @@ import (
 	"time"
 
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
+	"github.com/digitaldrywood/detent/internal/provenance"
 )
 
 func (s *sqliteStore) CreateAdmissionProposal(ctx context.Context, proposal admissionmodel.Proposal) (bool, error) {
@@ -57,8 +58,10 @@ LIMIT 1`,
 	}
 	if _, err = tx.ExecContext(ctx, `
 UPDATE backlog_admission_proposals
-SET status = 'superseded', resolved_at = ?
+SET status = 'superseded', resolved_at = ?,
+    decision_seconds = CAST(MAX(0, (julianday(?) - julianday(created_at)) * 86400) AS INTEGER)
 WHERE project_id = ? AND issue_id = ? AND target_state = ? AND status = 'open'`,
+		createdAt,
 		createdAt,
 		strings.TrimSpace(proposal.ProjectID),
 		strings.TrimSpace(proposal.IssueID),
@@ -98,7 +101,10 @@ func (s *sqliteStore) OpenAdmissionProposals(ctx context.Context, projectID stri
 	query := `
 SELECT id, project_id, issue_id, issue_identifier, issue_url, target_state, fingerprint,
        criteria_section, criteria_text, findings_json, confidence, status, created_at,
-       expires_at, COALESCE(resolved_at, ''), COALESCE(commented_at, '')
+       expires_at, COALESCE(resolved_at, ''), COALESCE(commented_at, ''),
+       COALESCE(decision_comment_id, ''), COALESCE(decision_actor_login, ''),
+       COALESCE(decision_actor_kind, ''), COALESCE(transition_at, ''),
+       COALESCE(decision_seconds, 0)
 FROM backlog_admission_proposals
 WHERE project_id = ? AND status = 'open'
 ORDER BY created_at, id`
@@ -119,7 +125,10 @@ func (s *sqliteStore) AdmissionProposalHistory(ctx context.Context, projectID st
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, project_id, issue_id, issue_identifier, issue_url, target_state, fingerprint,
        criteria_section, criteria_text, findings_json, confidence, status, created_at,
-       expires_at, COALESCE(resolved_at, ''), COALESCE(commented_at, '')
+       expires_at, COALESCE(resolved_at, ''), COALESCE(commented_at, ''),
+       COALESCE(decision_comment_id, ''), COALESCE(decision_actor_login, ''),
+       COALESCE(decision_actor_kind, ''), COALESCE(transition_at, ''),
+       COALESCE(decision_seconds, 0)
 FROM backlog_admission_proposals
 WHERE project_id = ? AND issue_id = ?
 ORDER BY created_at DESC, id DESC`,
@@ -151,8 +160,10 @@ func (s *sqliteStore) ExpireAdmissionProposals(ctx context.Context, projectID st
 	}
 	result, err := s.db.ExecContext(ctx, `
 UPDATE backlog_admission_proposals
-SET status = 'expired', resolved_at = ?
+SET status = 'expired', resolved_at = ?,
+    decision_seconds = CAST(MAX(0, (julianday(?) - julianday(created_at)) * 86400) AS INTEGER)
 WHERE project_id = ? AND status = 'open' AND expires_at <= ?`,
+		resolvedAt,
 		resolvedAt,
 		strings.TrimSpace(projectID),
 		resolvedAt,
@@ -201,6 +212,415 @@ WHERE id = ? AND status = ?`,
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *sqliteStore) ResolveAdmissionProposal(ctx context.Context, decision admissionmodel.Decision) error {
+	if strings.TrimSpace(decision.ProposalID) == "" {
+		return errors.New("backlog admission proposal id is required")
+	}
+	if decision.Outcome != admissionmodel.ProposalAccepted && decision.Outcome != admissionmodel.ProposalRejected {
+		return errors.New("backlog admission decision outcome must be accepted or rejected")
+	}
+	if decision.DecidedAt.IsZero() {
+		return errors.New("backlog admission decision time is required")
+	}
+	if strings.TrimSpace(decision.CommentID) == "" {
+		return errors.New("backlog admission decision comment is required")
+	}
+	if decision.Outcome == admissionmodel.ProposalAccepted && decision.TransitionAt.IsZero() {
+		return errors.New("backlog admission acceptance transition is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin backlog admission decision: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	var proposal admissionmodel.Proposal
+	var createdAt string
+	if err := tx.QueryRowContext(ctx, `
+SELECT project_id, issue_id, issue_identifier, issue_url, target_state, created_at
+FROM backlog_admission_proposals
+WHERE id = ? AND status = 'open'`,
+		strings.TrimSpace(decision.ProposalID),
+	).Scan(
+		&proposal.ProjectID,
+		&proposal.IssueID,
+		&proposal.IssueIdentifier,
+		&proposal.IssueURL,
+		&proposal.TargetState,
+		&createdAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("read backlog admission proposal for decision: %w", err)
+	}
+	proposal.CreatedAt, err = parseTimestamp("created_at", createdAt)
+	if err != nil {
+		return err
+	}
+	decidedAt, err := requiredTimestamp("resolved_at", decision.DecidedAt)
+	if err != nil {
+		return err
+	}
+	transitionAt, err := optionalTimestamp("transition_at", decision.TransitionAt)
+	if err != nil {
+		return err
+	}
+	decisionSeconds := int64(decision.DecidedAt.Sub(proposal.CreatedAt) / time.Second)
+	if decisionSeconds < 0 {
+		decisionSeconds = 0
+	}
+	result, err := tx.ExecContext(ctx, `
+UPDATE backlog_admission_proposals
+SET status = ?, resolved_at = ?, decision_comment_id = ?, decision_actor_login = ?,
+    decision_actor_kind = ?, transition_at = ?, decision_seconds = ?
+WHERE id = ? AND status = 'open'`,
+		string(decision.Outcome),
+		decidedAt,
+		strings.TrimSpace(decision.CommentID),
+		nullString(decision.ActorLogin),
+		nullString(decision.ActorKind),
+		transitionAt,
+		decisionSeconds,
+		strings.TrimSpace(decision.ProposalID),
+	)
+	if err != nil {
+		return fmt.Errorf("resolve backlog admission proposal: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read backlog admission decision count: %w", err)
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	if decision.Outcome == admissionmodel.ProposalAccepted {
+		if err := attributeAdmissionTransition(ctx, tx, proposal, decision); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO backlog_admission_downstream_outcomes (
+  proposal_id, project_id, issue_id, updated_at
+) VALUES (?, ?, ?, ?)
+ON CONFLICT(proposal_id) DO UPDATE SET updated_at = excluded.updated_at`,
+			strings.TrimSpace(decision.ProposalID),
+			strings.TrimSpace(proposal.ProjectID),
+			strings.TrimSpace(proposal.IssueID),
+			decidedAt,
+		); err != nil {
+			return fmt.Errorf("initialize backlog admission downstream outcome: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit backlog admission decision: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func attributeAdmissionTransition(
+	ctx context.Context,
+	tx *sql.Tx,
+	proposal admissionmodel.Proposal,
+	decision admissionmodel.Decision,
+) error {
+	transitionAt, err := requiredTimestamp("transition_at", decision.TransitionAt)
+	if err != nil {
+		return err
+	}
+	var eventID int64
+	var metadataJSON string
+	err = tx.QueryRowContext(ctx, `
+SELECT id, metadata_json
+FROM workflow_phase_events
+WHERE project_id = ? AND issue_id = ? AND phase_type = 'lane' AND status = 'entered'
+  AND lower(phase_name) = lower(?) AND started_at = ?
+ORDER BY id DESC
+LIMIT 1`,
+		strings.TrimSpace(proposal.ProjectID),
+		strings.TrimSpace(proposal.IssueID),
+		strings.TrimSpace(proposal.TargetState),
+		transitionAt,
+	).Scan(&eventID, &metadataJSON)
+	actor := provenance.Actor{
+		Login: strings.TrimSpace(decision.ActorLogin),
+		Kind:  strings.TrimSpace(decision.ActorKind),
+	}
+	attribution := provenance.Attribution{
+		Origin: provenance.OriginAdmission,
+		Actor:  admissionActorPointer(actor),
+	}
+	metadataJSON = provenance.Apply(metadataJSON, attribution, &provenance.Admission{
+		ProposalID: strings.TrimSpace(decision.ProposalID),
+		Attributed: true,
+	})
+	if err == nil {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE workflow_phase_events
+SET reason = 'admission_proposal_accepted', metadata_json = ?
+WHERE id = ?`, metadataJSON, eventID); err != nil {
+			return fmt.Errorf("attribute backlog admission transition: %w", err)
+		}
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("find backlog admission transition: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO workflow_phase_events (
+  project_id, issue_id, identifier, issue_url, phase_type, phase_name, reason,
+  status, started_at, event_day, endpoint_family, metadata_json
+) VALUES (?, ?, ?, ?, 'lane', ?, 'admission_proposal_accepted', 'entered', ?, ?, 'tracker', ?)`,
+		strings.TrimSpace(proposal.ProjectID),
+		nullString(proposal.IssueID),
+		nullString(proposal.IssueIdentifier),
+		nullString(proposal.IssueURL),
+		strings.TrimSpace(proposal.TargetState),
+		transitionAt,
+		decision.TransitionAt.UTC().Format("2006-01-02"),
+		metadataJSON,
+	); err != nil {
+		return fmt.Errorf("record backlog admission transition: %w", err)
+	}
+	return nil
+}
+
+func admissionActorPointer(actor provenance.Actor) *provenance.Actor {
+	if actor.Login == "" && actor.Kind == "" {
+		return nil
+	}
+	return &actor
+}
+
+func (s *sqliteStore) RefreshAdmissionOutcomes(ctx context.Context, refresh admissionmodel.OutcomeRefresh) error {
+	projectID := strings.TrimSpace(refresh.ProjectID)
+	if projectID == "" {
+		return errors.New("backlog admission outcome project id is required")
+	}
+	if refresh.ObservedAt.IsZero() {
+		return errors.New("backlog admission outcome observation time is required")
+	}
+	proposals, err := s.acceptedAdmissionProposals(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	for _, proposal := range proposals {
+		if err := s.refreshAdmissionOutcome(ctx, projectID, proposal.id, proposal.issueID, proposal.resolvedAt, refresh); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type acceptedAdmissionProposal struct {
+	id         string
+	issueID    string
+	resolvedAt time.Time
+}
+
+func (s *sqliteStore) acceptedAdmissionProposals(ctx context.Context, projectID string) (_ []acceptedAdmissionProposal, resultErr error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, issue_id, resolved_at
+FROM backlog_admission_proposals
+WHERE project_id = ? AND status = 'accepted'
+ORDER BY resolved_at, id`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("read accepted backlog admission proposals: %w", err)
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, rows.Close())
+	}()
+	proposals := []acceptedAdmissionProposal{}
+	for rows.Next() {
+		var proposal acceptedAdmissionProposal
+		var resolvedAt string
+		if err := rows.Scan(&proposal.id, &proposal.issueID, &resolvedAt); err != nil {
+			return nil, err
+		}
+		proposal.resolvedAt, err = parseTimestamp("resolved_at", resolvedAt)
+		if err != nil {
+			return nil, err
+		}
+		proposals = append(proposals, proposal)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return proposals, nil
+}
+
+func (s *sqliteStore) refreshAdmissionOutcome(
+	ctx context.Context,
+	projectID string,
+	proposalID string,
+	issueID string,
+	resolvedAt time.Time,
+	refresh admissionmodel.OutcomeRefresh,
+) error {
+	resolvedAtRaw, err := requiredTimestamp("resolved_at", resolvedAt)
+	if err != nil {
+		return err
+	}
+	workflowOutcome, err := s.admissionWorkflowOutcome(ctx, projectID, issueID, resolvedAtRaw, refresh)
+	if err != nil {
+		return err
+	}
+	var spendUSD float64
+	if err := s.db.QueryRowContext(ctx, `
+SELECT COALESCE(SUM(cost_usd), 0.0)
+FROM usage_events
+WHERE project_id = ? AND issue_id = ? AND finished_at >= ?`,
+		projectID,
+		strings.TrimSpace(issueID),
+		resolvedAtRaw,
+	).Scan(&spendUSD); err != nil {
+		return fmt.Errorf("read backlog admission downstream spend: %w", err)
+	}
+	observedAt, err := requiredTimestamp("updated_at", refresh.ObservedAt)
+	if err != nil {
+		return err
+	}
+	completedAtRaw, err := optionalTimestamp("completed_at", workflowOutcome.completedAt)
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO backlog_admission_downstream_outcomes (
+  proposal_id, project_id, issue_id, completed_at, rework_count,
+  review_churn_count, spend_usd, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(proposal_id) DO UPDATE SET
+  completed_at = excluded.completed_at,
+  rework_count = excluded.rework_count,
+  review_churn_count = excluded.review_churn_count,
+  spend_usd = excluded.spend_usd,
+  updated_at = excluded.updated_at`,
+		strings.TrimSpace(proposalID),
+		projectID,
+		strings.TrimSpace(issueID),
+		completedAtRaw,
+		workflowOutcome.reworkCount,
+		workflowOutcome.reviewChurnCount,
+		spendUSD,
+		observedAt,
+	); err != nil {
+		return fmt.Errorf("record backlog admission downstream outcome: %w", err)
+	}
+	return nil
+}
+
+type admissionWorkflowOutcome struct {
+	completedAt      time.Time
+	reworkCount      int
+	reviewChurnCount int
+}
+
+func (s *sqliteStore) admissionWorkflowOutcome(
+	ctx context.Context,
+	projectID string,
+	issueID string,
+	resolvedAtRaw string,
+	refresh admissionmodel.OutcomeRefresh,
+) (_ admissionWorkflowOutcome, resultErr error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT phase_type, phase_name, status, started_at
+FROM workflow_phase_events
+WHERE project_id = ? AND issue_id = ? AND started_at >= ?
+ORDER BY started_at, id`, projectID, strings.TrimSpace(issueID), resolvedAtRaw)
+	if err != nil {
+		return admissionWorkflowOutcome{}, fmt.Errorf("read backlog admission downstream workflow: %w", err)
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, rows.Close())
+	}()
+	outcome := admissionWorkflowOutcome{}
+	for rows.Next() {
+		var phaseType string
+		var phaseName string
+		var status string
+		var startedAtRaw string
+		if err := rows.Scan(&phaseType, &phaseName, &status, &startedAtRaw); err != nil {
+			return admissionWorkflowOutcome{}, err
+		}
+		startedAt, err := parseTimestamp("started_at", startedAtRaw)
+		if err != nil {
+			return admissionWorkflowOutcome{}, err
+		}
+		if strings.EqualFold(strings.TrimSpace(phaseType), "review") {
+			outcome.reviewChurnCount++
+		}
+		if !strings.EqualFold(strings.TrimSpace(phaseType), "lane") ||
+			!strings.EqualFold(strings.TrimSpace(status), "entered") {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(phaseName), strings.TrimSpace(refresh.ReworkState)) {
+			outcome.reworkCount++
+		}
+		if outcome.completedAt.IsZero() && containsAdmissionState(refresh.TerminalStates, phaseName) {
+			outcome.completedAt = startedAt
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return admissionWorkflowOutcome{}, err
+	}
+	return outcome, nil
+}
+
+func (s *sqliteStore) AdmissionDownstreamOutcomes(ctx context.Context, projectID string) ([]admissionmodel.DownstreamOutcome, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT proposal_id, project_id, issue_id, COALESCE(completed_at, ''), rework_count,
+       review_churn_count, spend_usd, updated_at
+FROM backlog_admission_downstream_outcomes
+WHERE project_id = ?
+ORDER BY updated_at DESC, proposal_id`, strings.TrimSpace(projectID))
+	if err != nil {
+		return nil, fmt.Errorf("read backlog admission downstream outcomes: %w", err)
+	}
+	defer rows.Close()
+	outcomes := []admissionmodel.DownstreamOutcome{}
+	for rows.Next() {
+		var outcome admissionmodel.DownstreamOutcome
+		var completedAt string
+		var updatedAt string
+		if err := rows.Scan(
+			&outcome.ProposalID,
+			&outcome.ProjectID,
+			&outcome.IssueID,
+			&completedAt,
+			&outcome.ReworkCount,
+			&outcome.ReviewChurnCount,
+			&outcome.SpendUSD,
+			&updatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if outcome.CompletedAt, err = parseAdmissionOptionalTimestamp("completed_at", completedAt); err != nil {
+			return nil, err
+		}
+		if outcome.UpdatedAt, err = parseTimestamp("updated_at", updatedAt); err != nil {
+			return nil, err
+		}
+		outcomes = append(outcomes, outcome)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return outcomes, nil
+}
+
+func containsAdmissionState(states []string, state string) bool {
+	for _, candidate := range states {
+		if strings.EqualFold(strings.TrimSpace(candidate), strings.TrimSpace(state)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *sqliteStore) MarkAdmissionProposalCommented(ctx context.Context, id string, at time.Time) error {
@@ -400,6 +820,7 @@ func scanAdmissionProposal(scan admissionScan) (admissionmodel.Proposal, error) 
 	var expiresAt string
 	var resolvedAt string
 	var commentedAt string
+	var transitionAt string
 	if err := scan(
 		&proposal.ID,
 		&proposal.ProjectID,
@@ -417,6 +838,11 @@ func scanAdmissionProposal(scan admissionScan) (admissionmodel.Proposal, error) 
 		&expiresAt,
 		&resolvedAt,
 		&commentedAt,
+		&proposal.DecisionCommentID,
+		&proposal.DecisionActorLogin,
+		&proposal.DecisionActorKind,
+		&transitionAt,
+		&proposal.DecisionSeconds,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return admissionmodel.Proposal{}, ErrNotFound
@@ -438,6 +864,9 @@ func scanAdmissionProposal(scan admissionScan) (admissionmodel.Proposal, error) 
 		return admissionmodel.Proposal{}, err
 	}
 	if proposal.CommentedAt, err = parseAdmissionOptionalTimestamp("commented_at", commentedAt); err != nil {
+		return admissionmodel.Proposal{}, err
+	}
+	if proposal.TransitionAt, err = parseAdmissionOptionalTimestamp("transition_at", transitionAt); err != nil {
 		return admissionmodel.Proposal{}, err
 	}
 	return proposal, nil
