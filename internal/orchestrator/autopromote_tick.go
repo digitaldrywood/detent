@@ -888,6 +888,10 @@ func (o *Orchestrator) logStaleMergingPullRequestDeferred(issue connector.Issue,
 }
 
 func (o *Orchestrator) logMergeWorkerPickup(issue connector.Issue, source string) {
+	if !o.beginDispatchStart() {
+		return
+	}
+	defer o.finishDispatchStart()
 	if o.logger == nil || !mergeWorkerIssue(issue) {
 		return
 	}
@@ -1213,6 +1217,9 @@ func mergeWorkerRepositoryKey(issue connector.Issue) string {
 }
 
 func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []connector.Issue) []connector.Issue {
+	if o.dispatchQuiesced() {
+		return nil
+	}
 	o.logMergeWorkerQueueCycle(issues)
 	candidates := o.staleMergingQueueDispatchCandidates(state, issues)
 	if len(candidates) == 0 {

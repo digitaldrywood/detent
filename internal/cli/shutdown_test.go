@@ -577,6 +577,66 @@ func TestRunWithShutdownActiveChildProcessReportsDrainBlockersAndTimesOut(t *tes
 	}
 }
 
+func TestShutdownRunningSessionsIncludesActiveMergeWorker(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	runner := &shutdownBlockingRunner{
+		started: make(chan struct{}, 1),
+		release: release,
+	}
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.ActiveStates = []string{"Merging"}
+	cfg.Tracker.Issues = []connector.Issue{{
+		ID:               "issue-1546-merge",
+		Identifier:       "digitaldrywood/detent#1546",
+		Title:            "quiesce merge dispatch during shutdown",
+		State:            "Merging",
+		AssignedToWorker: true,
+		PullRequest: &connector.PullRequest{
+			Number:         1546,
+			State:          "OPEN",
+			MergeableState: "clean",
+			CIStatus:       "success",
+		},
+	}}
+	cfg.Polling.IntervalMS = 60000
+	cfg.Agent.MaxConcurrentAgents = 1
+	cfg.Agent.MergeFastPath.Enabled = true
+	project := newShutdownRuntimeProjectWithConfig(t, "detent", cfg, runner)
+	registry := projectpkg.NewRegistry()
+	if err := registry.Set(project); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+	if err := project.Start(context.Background()); err != nil {
+		t.Fatalf("Project.Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		close(release)
+		if err := project.Close(); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
+			t.Fatalf("Project.Close() error = %v", err)
+		}
+	})
+
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("merge worker did not start")
+	}
+
+	sessions := shutdownRunningSessions(context.Background(), registry, time.Now())
+	if len(sessions) != 1 {
+		t.Fatalf("shutdownRunningSessions() = %#v, want one active merge worker", sessions)
+	}
+	if sessions[0].ID != "issue-1546-merge" || sessions[0].State != "Merging" {
+		t.Fatalf("active merge blocker = %#v, want issue-1546-merge in Merging", sessions[0])
+	}
+	if summary := shutdownSessionSummary(sessions[0]); !strings.Contains(summary, "digitaldrywood/detent#1546") {
+		t.Fatalf("shutdownSessionSummary() = %q, want named merge blocker", summary)
+	}
+}
+
 func TestRunWithShutdownDoesNotTrustStaleEmptySnapshotOverLiveSession(t *testing.T) {
 	t.Parallel()
 

@@ -740,6 +740,159 @@ func TestDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T) {
 	}
 }
 
+func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-pending-shutdown", "digitaldrywood/detent#1546", "Merging")
+	issue.PullRequest = &connector.PullRequest{
+		Number:         1546,
+		URL:            "https://github.test/digitaldrywood/detent/pull/1546",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	}
+	issue.PRRepository = "digitaldrywood/detent"
+	tracker := &pendingDispatchConnector{
+		fakeConnector: newFakeConnector(issue),
+		started:       make(chan struct{}),
+		release:       make(chan struct{}),
+	}
+	tracker.stateIssues = []connector.Issue{issue}
+	runner := newBlockingRunner()
+	var logs bytes.Buffer
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:         time.Hour,
+		MergeFastPathEnabled: true,
+		MaxConcurrentAgents:  1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		ActiveStates:           []string{"Merging"},
+		ObservedStates:         []string{"Merging"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		ContinuationRetryDelay: time.Second,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+		Logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	select {
+	case <-tracker.started:
+	case <-time.After(time.Second):
+		t.Fatal("dispatch tick did not reach pending tracker fetch")
+	}
+
+	orch.BeginDrain()
+	close(tracker.release)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := orch.Drain(ctx); err != nil {
+		t.Fatalf("Drain() error = %v", err)
+	}
+
+	state, err := orch.State(ctx)
+	if err != nil {
+		t.Fatalf("State() error = %v", err)
+	}
+	if !state.Draining {
+		t.Fatal("State().Draining = false, want true")
+	}
+	if len(state.Running) != 0 {
+		t.Fatalf("State().Running = %#v, want no work started", state.Running)
+	}
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected dispatch after drain began = %#v", request)
+	default:
+	}
+	for _, event := range []string{"merge_worker_pickup", "merge_worker_slot_acquired"} {
+		if strings.Contains(logs.String(), event) {
+			t.Fatalf("logs contain %q after drain began:\n%s", event, logs.String())
+		}
+	}
+}
+
+func TestWaitForDispatchQuiescedHonorsContext(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-starting-shutdown", "digitaldrywood/detent#1546", "Todo")
+	tracker := &dispatchStartBlockingConnector{
+		fakeConnector: newFakeConnector(issue),
+		started:       make(chan struct{}),
+		release:       make(chan struct{}),
+	}
+	runner := newBlockingRunner()
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:        time.Hour,
+		MaxConcurrentAgents: 1,
+		Claiming: orchestrator.ClaimingConfig{
+			Enabled:           true,
+			OwnershipMode:     workflowconfig.IdentityOwnershipField,
+			Owner:             "detent-test",
+			OwnerField:        "Owner",
+			LeaseField:        "Lease",
+			LeaseTTL:          time.Minute,
+			HeartbeatInterval: time.Hour,
+		},
+		ActiveStates:   []string{"Todo"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	select {
+	case <-tracker.started:
+	case <-time.After(time.Second):
+		t.Fatal("dispatch startup did not reach blocking connector")
+	}
+
+	beginDone := make(chan struct{})
+	go func() {
+		orch.BeginDrain()
+		close(beginDone)
+	}()
+	select {
+	case <-beginDone:
+	case <-time.After(time.Second):
+		close(tracker.release)
+		t.Fatal("BeginDrain blocked on active dispatch startup")
+	}
+
+	waitCtx, cancelWait := context.WithCancel(context.Background())
+	cancelWait()
+	if err := orch.WaitForDispatchQuiesced(waitCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitForDispatchQuiesced() error = %v, want context canceled", err)
+	}
+
+	close(tracker.release)
+	settleCtx, cancelSettle := context.WithTimeout(context.Background(), time.Second)
+	defer cancelSettle()
+	if err := orch.WaitForDispatchQuiesced(settleCtx); err != nil {
+		t.Fatalf("WaitForDispatchQuiesced() after release error = %v", err)
+	}
+
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("admitted dispatch did not become visible after startup resumed")
+	}
+	close(runner.release)
+}
+
 func TestForceQuitInterruptsRunningSessionAndAbandonsClaim(t *testing.T) {
 	t.Parallel()
 
@@ -2686,6 +2839,44 @@ type fakeConnector struct {
 	fetchCandidateErrAt int
 	fetchByStatesErr    error
 	statusLabelPrefix   string
+}
+
+type pendingDispatchConnector struct {
+	*fakeConnector
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+type dispatchStartBlockingConnector struct {
+	*fakeConnector
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *dispatchStartBlockingConnector) SetField(ctx context.Context, issueID string, field string, value string) error {
+	c.once.Do(func() {
+		close(c.started)
+	})
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.release:
+		return c.fakeConnector.SetField(ctx, issueID, field, value)
+	}
+}
+
+func (c *pendingDispatchConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	c.once.Do(func() {
+		close(c.started)
+	})
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.release:
+		return c.fakeConnector.FetchCandidateIssues(ctx)
+	}
 }
 
 type operatorMoveConnector struct {

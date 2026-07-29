@@ -258,6 +258,20 @@ func runDrainShutdown(
 ) error {
 	startedAt := shutdownNow(cfg)
 	drainTimeout := shutdownDrainTimeoutForConfig(cfg)
+	hardTimeout := cfg.HardTimeout
+	if hardTimeout <= 0 {
+		hardTimeout = defaultShutdownHardTimeout
+	}
+	quiesceCtx, cancelQuiesce := context.WithTimeout(ctx, hardTimeout)
+	err := quiesceProjects(quiesceCtx, cfg.Registry)
+	cancelQuiesce()
+	if err != nil {
+		sessions, _ := cachedShutdownRunningSessions(cfg)
+		machine = machine.Apply(shutdownstate.EventDrainTimedOut)
+		shutdownLogger(cfg).Warn("quiesce projects during shutdown failed", "error", err)
+		logShutdownDrainTimeout(cfg, sessions, drainTimeout)
+		return runForceShutdownWithDeadline(ctx, cfg, cancelServe, serveErrs, machine, "drain timeout", ErrShutdownTimeout, hardTimeout, sessions)
+	}
 	inventoryStarted := logShutdownBoundaryBegin(shutdownLogger(cfg), "initial_running_session_inventory")
 	sessions, inventoryKnown := initialShutdownRunningSessions(ctx, cfg, startedAt)
 	logShutdownBoundaryEndResult(shutdownLogger(cfg), "initial_running_session_inventory", inventoryStarted, shutdownInventoryResult(inventoryKnown), nil, "sessions", len(sessions))
@@ -266,10 +280,6 @@ func runDrainShutdown(
 	writeShutdownBanner(shutdownOutput(cfg), sessions, drainTimeout)
 	shutdownLogger(cfg).Info("shutdown requested", "sessions", len(sessions))
 
-	hardTimeout := cfg.HardTimeout
-	if hardTimeout <= 0 {
-		hardTimeout = defaultShutdownHardTimeout
-	}
 	drainCtx, cancelDrain := context.WithTimeout(ctx, hardTimeout)
 	defer cancelDrain()
 	drainErrs := make(chan error, 1)
@@ -529,6 +539,30 @@ func drainProjects(ctx context.Context, registry *project.Registry, logger *slog
 		}
 		logShutdownBoundaryEnd(logger, "orchestrator_drain", operationStarted, err, "component", "orchestrator", "project_id", trackedProject.ID())
 		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func quiesceProjects(ctx context.Context, registry *project.Registry) error {
+	if registry == nil {
+		return nil
+	}
+	orchestrators := make([]*orchestrator.Orchestrator, 0)
+	for _, trackedProject := range registry.List() {
+		if !trackedProject.Running() {
+			continue
+		}
+		orch := trackedProject.Orchestrator()
+		if orch == nil {
+			continue
+		}
+		orch.BeginDrain()
+		orchestrators = append(orchestrators, orch)
+	}
+	for _, orch := range orchestrators {
+		if err := orch.WaitForDispatchQuiesced(ctx); err != nil {
 			return err
 		}
 	}
