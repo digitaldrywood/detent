@@ -357,6 +357,344 @@ func TestManagerTargetTransitionWithoutDecisionRemainsOpen(t *testing.T) {
 	}
 }
 
+func TestManagerAcceptanceTransitionsOrSupersedes(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		current    string
+		wantState  string
+		wantStatus admissionmodel.ProposalStatus
+		wantReason string
+	}{
+		{
+			name:       "source issue is admitted",
+			current:    "Backlog",
+			wantState:  "Todo",
+			wantStatus: admissionmodel.ProposalAccepted,
+			wantReason: admissionResolutionExplicitAccept,
+		},
+		{
+			name:       "issue that left source is superseded",
+			current:    "In Progress",
+			wantState:  "In Progress",
+			wantStatus: admissionmodel.ProposalSuperseded,
+			wantReason: admissionResolutionSourceStateChanged,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			currentTime := now
+			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+			tracker := memory.New(memory.Config{
+				Issues:   []connector.Issue{issue},
+				Stateful: true,
+				Now:      func() time.Time { return currentTime },
+			})
+			backend := openManagerTestStore(t)
+			proposal := admissionTestProposalForIssue("proposal-1", issue, now)
+			if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
+				t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+			}
+			currentTime = now.Add(time.Minute)
+			if err := tracker.CreateComment(t.Context(), issue.ID, admissionAcceptCommand(proposal.ID)); err != nil {
+				t.Fatalf("CreateComment() error = %v", err)
+			}
+			if tt.current != issue.State {
+				if err := tracker.UpdateIssueState(t.Context(), issue.ID, tt.current); err != nil {
+					t.Fatalf("UpdateIssueState(%s) error = %v", tt.current, err)
+				}
+			}
+			manager := newAdmissionTestManager(
+				t,
+				admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate}),
+				backend,
+				func() time.Time { return currentTime },
+			)
+
+			if _, err := manager.RunOnce(t.Context()); err != nil {
+				t.Fatalf("RunOnce() error = %v", err)
+			}
+			issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+			if err != nil || len(issues) != 1 || issues[0].State != tt.wantState {
+				t.Fatalf("issue state = %#v, %v, want %s", issues, err, tt.wantState)
+			}
+			history, err := backend.AdmissionProposalHistory(t.Context(), proposal.ProjectID, issue.ID)
+			if err != nil || len(history) != 1 {
+				t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
+			}
+			if history[0].Status != tt.wantStatus || history[0].ResolutionReason != tt.wantReason {
+				t.Fatalf("resolved proposal = %#v", history[0])
+			}
+			if tt.wantStatus != admissionmodel.ProposalAccepted {
+				return
+			}
+			timeline, err := backend.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{IssueID: issue.ID})
+			if err != nil || len(timeline.Events) != 1 {
+				t.Fatalf("IssueWorkflowTimeline() = %#v, %v", timeline, err)
+			}
+			metadata, ok := provenance.Parse(timeline.Events[0].MetadataJSON)
+			if !ok || metadata.Provenance.Actor == nil ||
+				metadata.Provenance.Actor.Login != "memory" ||
+				metadata.Admission == nil ||
+				!metadata.Admission.Attributed ||
+				metadata.Admission.ProposalID != proposal.ID {
+				t.Fatalf("admission provenance = %#v", metadata)
+			}
+		})
+	}
+}
+
+func TestManagerAcceptanceRevalidatesImmediatelyBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	currentTime := now
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	tracker := &stateChangingAdmissionStore{
+		Connector: memory.New(memory.Config{
+			Issues:   []connector.Issue{issue},
+			Stateful: true,
+			Now:      func() time.Time { return currentTime },
+		}),
+		issueID: issue.ID,
+		state:   "In Progress",
+	}
+	backend := openManagerTestStore(t)
+	proposal := admissionTestProposalForIssue("proposal-1", issue, now)
+	if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	currentTime = now.Add(time.Minute)
+	if err := tracker.CreateComment(t.Context(), issue.ID, admissionAcceptCommand(proposal.ID)); err != nil {
+		t.Fatalf("CreateComment() error = %v", err)
+	}
+	manager := newAdmissionTestManager(
+		t,
+		admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate}),
+		backend,
+		func() time.Time { return currentTime },
+	)
+
+	if _, err := manager.RunOnce(t.Context()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	issues, err := tracker.Connector.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+	if err != nil || len(issues) != 1 || issues[0].State != "In Progress" {
+		t.Fatalf("issue = %#v, %v", issues, err)
+	}
+	history, err := backend.AdmissionProposalHistory(t.Context(), proposal.ProjectID, issue.ID)
+	if err != nil || len(history) != 1 ||
+		history[0].Status != admissionmodel.ProposalSuperseded ||
+		history[0].ResolutionReason != admissionResolutionSourceStateChanged {
+		t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
+	}
+}
+
+func TestManagerAutoAdmissionModes(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		enabled    bool
+		confidence float64
+		wantState  string
+		wantStatus admissionmodel.ProposalStatus
+	}{
+		{
+			name:       "disabled requires explicit acceptance",
+			confidence: 1,
+			wantState:  "Backlog",
+			wantStatus: admissionmodel.ProposalOpen,
+		},
+		{
+			name:       "below threshold remains proposed",
+			enabled:    true,
+			confidence: 0.89,
+			wantState:  "Backlog",
+			wantStatus: admissionmodel.ProposalOpen,
+		},
+		{
+			name:       "threshold match is admitted",
+			enabled:    true,
+			confidence: 0.9,
+			wantState:  "Todo",
+			wantStatus: admissionmodel.ProposalAccepted,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+			tracker := memory.New(memory.Config{
+				Issues:   []connector.Issue{issue},
+				Stateful: true,
+				Now:      func() time.Time { return now },
+			})
+			backend := openManagerTestStore(t)
+			agent := &scriptedAdmissionRunner{propose: proposeEveryCandidateAtConfidence(tt.confidence)}
+			settings := admissionTestSettings(tracker, agent)
+			settings.Config.AutoAdmit = tt.enabled
+			settings.Config.AutoAdmitMinConfidence = 0.9
+			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+
+			result, err := manager.RunOnce(t.Context())
+			if err != nil || len(result.Proposals) != 1 {
+				t.Fatalf("RunOnce() = %#v, %v", result, err)
+			}
+			issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+			if err != nil || len(issues) != 1 || issues[0].State != tt.wantState {
+				t.Fatalf("issue state = %#v, %v, want %s", issues, err, tt.wantState)
+			}
+			history, err := backend.AdmissionProposalHistory(t.Context(), "detent", issue.ID)
+			if err != nil || len(history) != 1 || history[0].Status != tt.wantStatus {
+				t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
+			}
+			if tt.wantStatus == admissionmodel.ProposalAccepted &&
+				history[0].ResolutionReason != admissionResolutionAutoAdmit {
+				t.Fatalf("auto-admitted proposal = %#v", history[0])
+			}
+		})
+	}
+}
+
+func TestManagerAutoAdmissionRespectsEligibilityAndCaps(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	first := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	first.AuthorID = "octocat"
+	second := admissionIssueFixture("issue-2", "DD-2", 2, now)
+	second.AuthorID = "octocat"
+	excluded := admissionIssueFixture("issue-3", "DD-3", 3, now)
+	excluded.AuthorID = "octocat"
+	excluded.Labels = []string{"do-not-admit"}
+	otherAuthor := admissionIssueFixture("issue-4", "DD-4", 4, now)
+	otherAuthor.AuthorID = "hubot"
+	tracker := memory.New(memory.Config{
+		Issues:   []connector.Issue{first, second, excluded, otherAuthor},
+		Stateful: true,
+		Now:      func() time.Time { return now },
+	})
+	backend := openManagerTestStore(t)
+	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	settings := admissionTestSettings(tracker, agent)
+	settings.Config.AutoAdmit = true
+	settings.Config.AutoAdmitMinConfidence = 0.8
+	settings.Config.MaxProposalsPerRun = 1
+	settings.Config.MaxOpenProposals = 1
+	settings.Config.ExcludeLabels = []string{"do-not-admit"}
+	settings.Config.Authors.Allow = []string{"octocat"}
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+
+	result, err := manager.RunOnce(t.Context())
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if result.Skipped["excluded_label"] != 1 || result.Skipped["author"] != 1 ||
+		result.Truncated["proposals"] != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	issues, err := tracker.FetchIssueStatesByIDs(
+		t.Context(),
+		[]string{first.ID, second.ID, excluded.ID, otherAuthor.ID},
+	)
+	if err != nil || len(issues) != 4 {
+		t.Fatalf("FetchIssueStatesByIDs() = %#v, %v", issues, err)
+	}
+	states := map[string]string{}
+	for _, issue := range issues {
+		states[issue.ID] = issue.State
+	}
+	if states[first.ID] != "Todo" ||
+		states[second.ID] != "Backlog" ||
+		states[excluded.ID] != "Backlog" ||
+		states[otherAuthor.ID] != "Backlog" {
+		t.Fatalf("states = %#v", states)
+	}
+}
+
+func TestManagerAutoAdmissionRespectsOpenProposalCap(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	first := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	second := admissionIssueFixture("issue-2", "DD-2", 2, now)
+	tracker := memory.New(memory.Config{
+		Issues:   []connector.Issue{first, second},
+		Stateful: true,
+		Now:      func() time.Time { return now },
+	})
+	backend := openManagerTestStore(t)
+	proposal := admissionTestProposalForIssue("proposal-open", first, now)
+	proposal.Confidence = 0.5
+	if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	settings := admissionTestSettings(tracker, agent)
+	settings.Config.AutoAdmit = true
+	settings.Config.AutoAdmitMinConfidence = 0.9
+	settings.Config.MaxOpenProposals = 1
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+
+	result, err := manager.RunOnce(t.Context())
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if agent.calls != 0 || result.Skipped["open_proposal_cap"] != 1 {
+		t.Fatalf("result = %#v, runner calls = %d", result, agent.calls)
+	}
+	issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{first.ID, second.ID})
+	if err != nil || len(issues) != 2 || issues[0].State != "Backlog" || issues[1].State != "Backlog" {
+		t.Fatalf("issues = %#v, %v", issues, err)
+	}
+}
+
+func TestManagerAutoAdmissionSupersedesIneligibleOpenProposal(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	original := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	current := original
+	current.Labels = []string{"do-not-admit"}
+	tracker := memory.New(memory.Config{
+		Issues:   []connector.Issue{current},
+		Stateful: true,
+		Now:      func() time.Time { return now },
+	})
+	backend := openManagerTestStore(t)
+	proposal := admissionTestProposalForIssue("proposal-open", original, now)
+	proposal.Confidence = 1
+	if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate})
+	settings.Config.AutoAdmit = true
+	settings.Config.AutoAdmitMinConfidence = 0.9
+	settings.Config.ExcludeLabels = []string{"do-not-admit"}
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+
+	if _, err := manager.RunOnce(t.Context()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	history, err := backend.AdmissionProposalHistory(t.Context(), proposal.ProjectID, proposal.IssueID)
+	if err != nil || len(history) != 1 ||
+		history[0].Status != admissionmodel.ProposalSuperseded ||
+		history[0].ResolutionReason != admissionResolutionAutoAdmitIneligible {
+		t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
+	}
+	issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{proposal.IssueID})
+	if err != nil || len(issues) != 1 || issues[0].State != "Backlog" {
+		t.Fatalf("issue = %#v, %v", issues, err)
+	}
+}
+
 func TestManagerFiltersProposalHistoryBeforeCandidateCap(t *testing.T) {
 	t.Parallel()
 
@@ -423,11 +761,12 @@ func TestManagerAcceptedDemotionIsSticky(t *testing.T) {
 	if err := tracker.CreateComment(context.Background(), "issue-1", admissionAcceptCommand(open[0].ID)); err != nil {
 		t.Fatalf("CreateComment() error = %v", err)
 	}
-	if err := tracker.UpdateIssueState(context.Background(), "issue-1", "Todo"); err != nil {
-		t.Fatalf("UpdateIssueState(Todo) error = %v", err)
-	}
 	if _, err := manager.RunOnce(context.Background()); err != nil {
 		t.Fatalf("acceptance reconciliation error = %v", err)
+	}
+	admitted, err := tracker.FetchIssueStatesByIDs(context.Background(), []string{"issue-1"})
+	if err != nil || len(admitted) != 1 || admitted[0].State != "Todo" {
+		t.Fatalf("admitted issue = %#v, %v, want Todo", admitted, err)
 	}
 	if err := tracker.UpdateIssueState(context.Background(), "issue-1", "Backlog"); err != nil {
 		t.Fatalf("UpdateIssueState(Backlog) error = %v", err)
@@ -754,25 +1093,51 @@ type budgetAdmissionRunner struct {
 	status runner.DailyBudgetStatus
 }
 
+type stateChangingAdmissionStore struct {
+	*memory.Connector
+	fetches int
+	issueID string
+	state   string
+}
+
+func (s *stateChangingAdmissionStore) FetchIssueStatesByIDs(
+	ctx context.Context,
+	issueIDs []string,
+) ([]connector.Issue, error) {
+	s.fetches++
+	if s.fetches == 2 {
+		if err := s.UpdateIssueState(ctx, s.issueID, s.state); err != nil {
+			return nil, err
+		}
+	}
+	return s.Connector.FetchIssueStatesByIDs(ctx, issueIDs)
+}
+
 func (r *budgetAdmissionRunner) DailyBudgetStatus(context.Context, time.Time) (runner.DailyBudgetStatus, bool, error) {
 	return r.status, true, nil
 }
 
 func proposeEveryCandidate(request runner.RunRequest) []AgentProposal {
-	proposals := make([]AgentProposal, 0, len(request.Admission.Candidates))
-	for _, candidate := range request.Admission.Candidates {
-		proposals = append(proposals, AgentProposal{
-			IssueID: candidate.ID,
-			Findings: []admissionmodel.Finding{{
-				Dimension:      "Alignment",
-				CriterionQuote: "serves a stated current priority",
-				Matched:        true,
-				Rationale:      "The issue directly supports the stated priority.",
-			}},
-			Confidence: float64Pointer(0.8),
-		})
+	return proposeEveryCandidateAtConfidence(0.8)(request)
+}
+
+func proposeEveryCandidateAtConfidence(confidence float64) func(runner.RunRequest) []AgentProposal {
+	return func(request runner.RunRequest) []AgentProposal {
+		proposals := make([]AgentProposal, 0, len(request.Admission.Candidates))
+		for _, candidate := range request.Admission.Candidates {
+			proposals = append(proposals, AgentProposal{
+				IssueID: candidate.ID,
+				Findings: []admissionmodel.Finding{{
+					Dimension:      "Alignment",
+					CriterionQuote: "serves a stated current priority",
+					Matched:        true,
+					Rationale:      "The issue directly supports the stated priority.",
+				}},
+				Confidence: float64Pointer(confidence),
+			})
+		}
+		return proposals
 	}
-	return proposals
 }
 
 func admissionTestSettings(tracker IssueStore, backend runner.Backend) Settings {
@@ -906,11 +1271,14 @@ func TestProposalCommentQuotesCriteriaAndDoesNotUseStatusLabel(t *testing.T) {
 		Confidence: 0.8,
 		ExpiresAt:  time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC),
 	}
-	comment := proposalComment(proposal)
-	for _, want := range []string{"serves a stated current priority", "Detent has not changed the issue status", "admission-1"} {
+	comment := proposalComment(proposal, false)
+	for _, want := range []string{"serves a stated current priority", "have Detent move the issue", "admission-1"} {
 		if !strings.Contains(comment, want) {
 			t.Fatalf("proposalComment() missing %q: %s", want, comment)
 		}
+	}
+	if strings.Contains(comment, "then move the issue") {
+		t.Fatalf("proposalComment() still requires a manual move: %s", comment)
 	}
 	if strings.Contains(comment, "detent:admission") {
 		t.Fatalf("proposalComment() introduced a status-prefixed label: %s", comment)

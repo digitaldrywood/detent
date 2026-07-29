@@ -27,9 +27,14 @@ import (
 )
 
 const (
-	ProposalToolName = "propose_backlog_admission"
-	admissionState   = "Admission"
-	maxRationaleSize = 16 * 1024
+	ProposalToolName                       = "propose_backlog_admission"
+	admissionState                         = "Admission"
+	admissionResolutionExplicitAccept      = "explicit_accept"
+	admissionResolutionExplicitReject      = "explicit_reject"
+	admissionResolutionAutoAdmit           = "auto_admit"
+	admissionResolutionSourceStateChanged  = "source_state_changed_before_acceptance"
+	admissionResolutionAutoAdmitIneligible = "candidate_became_ineligible_before_auto_admit"
+	maxRationaleSize                       = 16 * 1024
 )
 
 var (
@@ -59,6 +64,7 @@ type IssueStore interface {
 	connector.CandidateReader
 	FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error)
 	CreateComment(context.Context, string, string) error
+	UpdateIssueState(context.Context, string, string) error
 }
 
 type Settings struct {
@@ -288,7 +294,14 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		result.Skipped["expired"] = expired
 	}
 	commentsRemaining := settings.Config.MaxProposalsPerRun
-	commentsRemaining, err = m.reconcileOpenProposals(ctx, settings, commentsRemaining, startedAt)
+	autoAdmitsRemaining := settings.Config.MaxProposalsPerRun
+	commentsRemaining, autoAdmitsRemaining, err = m.reconcileOpenProposals(
+		ctx,
+		settings,
+		commentsRemaining,
+		autoAdmitsRemaining,
+		startedAt,
+	)
 	if err != nil {
 		return result, err
 	}
@@ -425,7 +438,7 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		result.Truncated["open_proposals"] += len(proposals) - available
 		proposals = proposals[:available]
 	}
-	return m.executeProposals(ctx, settings, candidates, proposals, result, commentsRemaining, startedAt)
+	return m.executeProposals(ctx, settings, candidates, proposals, result, commentsRemaining, autoAdmitsRemaining, startedAt)
 }
 
 func candidateReadLimit(maxCandidates int) int {
@@ -436,14 +449,15 @@ func (m *Manager) reconcileOpenProposals(
 	ctx context.Context,
 	settings Settings,
 	commentsRemaining int,
+	autoAdmitsRemaining int,
 	at time.Time,
-) (int, error) {
+) (int, int, error) {
 	proposals, err := m.store.OpenAdmissionProposals(ctx, settings.ProjectID, 0)
 	if err != nil {
-		return commentsRemaining, err
+		return commentsRemaining, autoAdmitsRemaining, err
 	}
 	if len(proposals) == 0 {
-		return commentsRemaining, nil
+		return commentsRemaining, autoAdmitsRemaining, nil
 	}
 	ids := make([]string, 0, len(proposals))
 	for _, proposal := range proposals {
@@ -451,12 +465,12 @@ func (m *Manager) reconcileOpenProposals(
 	}
 	issues, err := settings.Issues.FetchIssueStatesByIDs(ctx, ids)
 	if err != nil {
-		return commentsRemaining, fmt.Errorf("reconcile backlog admission proposals: %w", err)
+		return commentsRemaining, autoAdmitsRemaining, fmt.Errorf("reconcile backlog admission proposals: %w", err)
 	}
 	byID := issueMap(issues)
 	commentReader, ok := settings.Issues.(connector.IssueCommentReader)
 	if !ok {
-		return commentsRemaining, errors.New("backlog admission issue comment reader is required")
+		return commentsRemaining, autoAdmitsRemaining, errors.New("backlog admission issue comment reader is required")
 	}
 	commentsByIssue := map[string][]connector.IssueComment{}
 	for _, proposal := range proposals {
@@ -468,18 +482,20 @@ func (m *Manager) reconcileOpenProposals(
 		if !loaded {
 			comments, err = commentReader.FetchIssueComments(ctx, issue)
 			if err != nil {
-				return commentsRemaining, fmt.Errorf("read backlog admission decision comments: %w", err)
+				return commentsRemaining, autoAdmitsRemaining, fmt.Errorf("read backlog admission decision comments: %w", err)
 			}
 			commentsByIssue[proposal.IssueID] = comments
 		}
 		decision, decided := proposalDecision(proposal, comments)
 		if decided && decision.Outcome == admissionmodel.ProposalRejected {
+			decision.Reason = admissionResolutionExplicitReject
 			if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
-				return commentsRemaining, err
+				return commentsRemaining, autoAdmitsRemaining, err
 			}
 			continue
 		}
 		if decided && decision.Outcome == admissionmodel.ProposalAccepted {
+			decision.Reason = admissionResolutionExplicitAccept
 			transitions, err := m.store.AdmissionTargetTransitions(ctx, admissionmodel.TargetTransitionQuery{
 				ProjectID:   proposal.ProjectID,
 				IssueID:     proposal.IssueID,
@@ -487,21 +503,14 @@ func (m *Manager) reconcileOpenProposals(
 				NotBefore:   decision.DecidedAt,
 			})
 			if err != nil {
-				return commentsRemaining, err
+				return commentsRemaining, autoAdmitsRemaining, err
 			}
 			resolved := false
 			for _, transition := range transitions {
-				if !admissionActorsCorrelate(decision.ActorLogin, transition.ActorLogin) {
-					continue
-				}
 				decision.TransitionAt = transition.EnteredAt
 				decision.TransitionEventID = transition.EventID
-				if strings.TrimSpace(transition.ActorLogin) != "" {
-					decision.ActorLogin = transition.ActorLogin
-					decision.ActorKind = transition.ActorKind
-				}
 				if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
-					return commentsRemaining, err
+					return commentsRemaining, autoAdmitsRemaining, err
 				}
 				resolved = true
 				break
@@ -514,29 +523,72 @@ func (m *Manager) reconcileOpenProposals(
 			strings.EqualFold(strings.TrimSpace(issue.State), proposal.TargetState) {
 			transition, found, err := admissionIssueTransition(ctx, settings.Issues, issue)
 			if err != nil {
-				return commentsRemaining, err
+				return commentsRemaining, autoAdmitsRemaining, err
 			}
-			if found && !transition.EnteredAt.Before(decision.DecidedAt) &&
-				admissionActorsCorrelate(decision.ActorLogin, transition.Actor.Login) {
+			if found && !transition.EnteredAt.Before(decision.DecidedAt) {
 				decision.TransitionAt = transition.EnteredAt
-				if strings.TrimSpace(transition.Actor.Login) != "" {
-					decision.ActorLogin = transition.Actor.Login
-					decision.ActorKind = transition.Actor.Kind
-				}
 				if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
-					return commentsRemaining, err
+					return commentsRemaining, autoAdmitsRemaining, err
 				}
 				continue
 			}
 		}
+		if decided && decision.Outcome == admissionmodel.ProposalAccepted {
+			if !admissionSourceEligible(issue, settings.Config) {
+				decision.Outcome = admissionmodel.ProposalSuperseded
+				decision.Reason = admissionResolutionSourceStateChanged
+				if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
+					return commentsRemaining, autoAdmitsRemaining, err
+				}
+				continue
+			}
+			if err := m.admitProposal(ctx, settings, issue, proposal, decision); err != nil {
+				return commentsRemaining, autoAdmitsRemaining, err
+			}
+			continue
+		}
+		if !decided && autoAdmitProposal(settings.Config, proposal) {
+			if !autoAdmitCandidateEligible(issue, settings.Config) {
+				decision := automaticAdmissionDecision(settings.Issues, proposal, at)
+				decision.Outcome = admissionmodel.ProposalSuperseded
+				decision.Reason = admissionResolutionAutoAdmitIneligible
+				if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
+					return commentsRemaining, autoAdmitsRemaining, err
+				}
+				continue
+			}
+			if proposal.CommentedAt.IsZero() {
+				if commentsRemaining == 0 {
+					continue
+				}
+				if err := m.commentProposal(ctx, settings, proposal); err != nil {
+					return commentsRemaining, autoAdmitsRemaining, err
+				}
+				commentsRemaining--
+			}
+			if autoAdmitsRemaining == 0 {
+				continue
+			}
+			if err := m.admitProposal(
+				ctx,
+				settings,
+				issue,
+				proposal,
+				automaticAdmissionDecision(settings.Issues, proposal, at),
+			); err != nil {
+				return commentsRemaining, autoAdmitsRemaining, err
+			}
+			autoAdmitsRemaining--
+			continue
+		}
 		if proposal.CommentedAt.IsZero() && commentsRemaining > 0 {
 			if err := m.commentProposal(ctx, settings, proposal); err != nil {
-				return commentsRemaining, err
+				return commentsRemaining, autoAdmitsRemaining, err
 			}
 			commentsRemaining--
 		}
 	}
-	return commentsRemaining, nil
+	return commentsRemaining, autoAdmitsRemaining, nil
 }
 
 func (m *Manager) unproposedCandidates(
@@ -579,6 +631,7 @@ func (m *Manager) executeProposals(
 	agentProposals []AgentProposal,
 	result Result,
 	commentsRemaining int,
+	autoAdmitsRemaining int,
 	at time.Time,
 ) (Result, error) {
 	if len(agentProposals) == 0 {
@@ -659,17 +712,83 @@ func (m *Manager) executeProposals(
 			}
 			commentsRemaining--
 		}
+		if autoAdmitsRemaining > 0 && autoAdmitProposal(settings.Config, proposal) {
+			if err := m.admitProposal(
+				ctx,
+				settings,
+				current,
+				proposal,
+				automaticAdmissionDecision(settings.Issues, proposal, at),
+			); err != nil {
+				return result, err
+			}
+			autoAdmitsRemaining--
+		}
 	}
 	return result, nil
 }
 
 func (m *Manager) commentProposal(ctx context.Context, settings Settings, proposal admissionmodel.Proposal) error {
-	if err := settings.Issues.CreateComment(ctx, proposal.IssueID, proposalComment(proposal)); err != nil {
+	if err := settings.Issues.CreateComment(
+		ctx,
+		proposal.IssueID,
+		proposalComment(proposal, autoAdmitProposal(settings.Config, proposal)),
+	); err != nil {
 		return fmt.Errorf("create backlog admission audit comment: %w", err)
 	}
 	if err := m.store.MarkAdmissionProposalCommented(ctx, proposal.ID, m.now().UTC()); err != nil {
 		return fmt.Errorf("mark backlog admission audit comment: %w", err)
 	}
+	return nil
+}
+
+func (m *Manager) admitProposal(
+	ctx context.Context,
+	settings Settings,
+	issue connector.Issue,
+	proposal admissionmodel.Proposal,
+	decision admissionmodel.Decision,
+) error {
+	issues, err := settings.Issues.FetchIssueStatesByIDs(ctx, []string{proposal.IssueID})
+	if err != nil {
+		return fmt.Errorf("revalidate admitted backlog issue %s: %w", proposal.IssueIdentifier, err)
+	}
+	current, found := issueMap(issues)[proposal.IssueID]
+	eligible := found && admissionSourceEligible(current, settings.Config)
+	if decision.Automatic {
+		eligible = found && autoAdmitCandidateEligible(current, settings.Config)
+	}
+	if !eligible {
+		decision.Outcome = admissionmodel.ProposalSuperseded
+		decision.Reason = admissionResolutionSourceStateChanged
+		if decision.Automatic {
+			decision.Reason = admissionResolutionAutoAdmitIneligible
+		}
+		if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
+			return fmt.Errorf("resolve stale backlog proposal %s: %w", proposal.ID, err)
+		}
+		return nil
+	}
+	issue = current
+	if err := settings.Issues.UpdateIssueState(ctx, proposal.IssueID, proposal.TargetState); err != nil {
+		return fmt.Errorf("admit backlog issue %s to %s: %w", proposal.IssueIdentifier, proposal.TargetState, err)
+	}
+	decision.TransitionAt = m.now().UTC()
+	if err := m.store.ResolveAdmissionProposal(ctx, decision); err != nil {
+		return fmt.Errorf("resolve admitted backlog proposal %s: %w", proposal.ID, err)
+	}
+	m.logger.InfoContext(
+		ctx,
+		"backlog admission proposal admitted",
+		"project", proposal.ProjectID,
+		"issue_id", proposal.IssueID,
+		"identifier", proposal.IssueIdentifier,
+		"from_state", issue.State,
+		"target_state", proposal.TargetState,
+		"proposal_id", proposal.ID,
+		"decision_actor", decision.ActorLogin,
+		"resolution_reason", decision.Reason,
+	)
 	return nil
 }
 
@@ -722,10 +841,38 @@ func admissionIssueTransition(ctx context.Context, issues IssueStore, issue conn
 	return connector.IssueStateTransition{EnteredAt: issue.StageUpdatedAt.UTC()}, true, nil
 }
 
-func admissionActorsCorrelate(decisionActor string, transitionActor string) bool {
-	decisionActor = strings.TrimSpace(decisionActor)
-	transitionActor = strings.TrimSpace(transitionActor)
-	return decisionActor == "" || transitionActor == "" || strings.EqualFold(decisionActor, transitionActor)
+func admissionSourceEligible(issue connector.Issue, cfg config.BacklogAdmission) bool {
+	return !issue.Closed && containsFold(cfg.Sources.States, issue.State)
+}
+
+func autoAdmitCandidateEligible(issue connector.Issue, cfg config.BacklogAdmission) bool {
+	return admissionSourceEligible(issue, cfg) && !excludedCandidate(issue, cfg)
+}
+
+func autoAdmitProposal(cfg config.BacklogAdmission, proposal admissionmodel.Proposal) bool {
+	return cfg.AutoAdmit && proposal.Confidence >= cfg.AutoAdmitMinConfidence
+}
+
+func automaticAdmissionDecision(
+	issues IssueStore,
+	proposal admissionmodel.Proposal,
+	at time.Time,
+) admissionmodel.Decision {
+	actorLogin := "detent"
+	if identity, ok := issues.(connector.InstanceIdentifier); ok {
+		if login := strings.TrimSpace(identity.InstanceLogin()); login != "" {
+			actorLogin = login
+		}
+	}
+	return admissionmodel.Decision{
+		ProposalID: proposal.ID,
+		Outcome:    admissionmodel.ProposalAccepted,
+		DecidedAt:  at.UTC(),
+		ActorLogin: actorLogin,
+		ActorKind:  "Bot",
+		Reason:     admissionResolutionAutoAdmit,
+		Automatic:  true,
+	}
 }
 
 func admissionAcceptCommand(proposalID string) string {
@@ -984,18 +1131,22 @@ func proposalID(projectID string, issueID string, fingerprint string, at time.Ti
 	return "admission-" + hex.EncodeToString(sum[:12])
 }
 
-func proposalComment(proposal admissionmodel.Proposal) string {
+func proposalComment(proposal admissionmodel.Proposal, autoAdmit bool) string {
 	var b strings.Builder
 	b.WriteString("## Detent backlog admission proposal\n\n")
 	b.WriteString("Proposal `")
 	b.WriteString(proposal.ID)
 	b.WriteString("` recommends moving this issue to **")
 	b.WriteString(proposal.TargetState)
-	b.WriteString("**. Detent has not changed the issue status. To accept, reply with `")
-	b.WriteString(admissionAcceptCommand(proposal.ID))
-	b.WriteString("` and then move the issue to that state. To reject, reply with `")
-	b.WriteString(admissionRejectCommand(proposal.ID))
-	b.WriteString("`. Leaving it unactioned will expire the proposal without counting as rejection.\n\n")
+	if autoAdmit {
+		b.WriteString("** and meets the configured automatic-admission threshold. Detent will move the issue to that state and record this proposal as the provenance.\n\n")
+	} else {
+		b.WriteString("**. To accept and have Detent move the issue, reply with `")
+		b.WriteString(admissionAcceptCommand(proposal.ID))
+		b.WriteString("`. To reject, reply with `")
+		b.WriteString(admissionRejectCommand(proposal.ID))
+		b.WriteString("`. Leaving it unactioned will expire the proposal without counting as rejection.\n\n")
+	}
 	b.WriteString("Criteria section: **")
 	b.WriteString(proposal.CriteriaSection)
 	b.WriteString("**\n\n")

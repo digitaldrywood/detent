@@ -1179,11 +1179,11 @@ before adding it to the board.
 
 Backlog admission evaluates existing issues and proposes which ones should
 become eligible for dispatch. It does not create work like routines, classify
-incoming work like intake, rank eligible work like the scheduler, or change
-issue status. Every proposal is a durable record with an expiry and one audit
-comment. To accept a proposal, an operator posts the exact proposal-specific
-`/detent admission accept <proposal-id>` command and then moves the issue to the
-configured target state. To reject it, the operator posts
+incoming work like intake, or rank eligible work like the scheduler. Every
+proposal is a durable record with an expiry and one audit comment. To accept a
+proposal, an operator posts the exact proposal-specific
+`/detent admission accept <proposal-id>` command; Detent then moves the issue to
+the configured target state. To reject it, the operator posts
 `/detent admission reject <proposal-id>`.
 
 Admission is disabled unless a project opts in:
@@ -1204,6 +1204,8 @@ backlog_admission:
   max_proposals_per_run: 3
   max_open_proposals: 10
   proposal_expiry_days: 7
+  auto_admit: false
+  auto_admit_min_confidence: 0.90
 ```
 
 State names come from the project's workflow. `sources.labels` selects issues
@@ -1251,18 +1253,23 @@ wholesale when another project needs different judgments.
 The agent receives only the resolved criteria and bounded candidate data in a
 fresh read-only session. It emits typed proposals. Detent re-fetches each issue,
 validates every field and verbatim criteria quote, rejects proposals matching no
-dimension, and persists valid records before posting comments. Confidence is
-stored as telemetry and never authorizes a transition. Repeated runs use a
-title/body fingerprint, so the proposal's own comment cannot create a
+dimension, and persists valid records before posting comments. Repeated runs use
+a title/body fingerprint, so the proposal's own comment cannot create a
 duplicate. Unanswered proposals expire; an issue demoted after acceptance is
 not proposed again.
 
-Acceptance is attributed only when the command names an open proposal and a
-subsequent transition enters that proposal's target state. When both events
-include actors, they must identify the same actor. A target-state transition
-without that correlation remains an unattributed transition and does not accept
-the proposal. Rejection, expiry, and supersession are separate outcomes:
-silence can expire a proposal but never accepts or rejects one.
+`auto_admit` is off by default. When enabled, Detent admits proposals whose
+confidence is at least `auto_admit_min_confidence`, after revalidating the source
+state, author allowlist, and excluded labels. Automatic admissions remain
+bounded by `max_proposals_per_run` and `max_open_proposals`. Lower-confidence
+proposals still require an explicit accept command.
+
+Acceptance is attributed to the actor who posted the command. Detent records
+the proposal ID and operator actor on the resulting target-state transition. An
+accept for an issue that has left the configured source states resolves the
+proposal as superseded with a recorded reason and does not move the issue.
+Rejection, expiry, and supersession are separate outcomes: silence can expire a
+proposal but never accepts or rejects one.
 
 Capability is declared per tracker and per GitHub status source:
 

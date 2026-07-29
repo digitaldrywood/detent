@@ -28,6 +28,8 @@ backlog_admission:
   max_proposals_per_run: 2
   max_open_proposals: 8
   proposal_expiry_days: 5
+  auto_admit: true
+  auto_admit_min_confidence: 0.95
 ---
 ## Admission criteria
 
@@ -45,7 +47,8 @@ backlog_admission:
 	got := workflow.Config.BacklogAdmission
 	if !got.Enabled || got.Schedule != "15 4 * * 1" || got.TargetState != "Todo" ||
 		got.MaxCandidatesPerRun != 20 || got.MaxProposalsPerRun != 2 ||
-		got.MaxOpenProposals != 8 || got.ProposalExpiryDays != 5 {
+		got.MaxOpenProposals != 8 || got.ProposalExpiryDays != 5 ||
+		!got.AutoAdmit || got.AutoAdmitMinConfidence != 0.95 {
 		t.Fatalf("BacklogAdmission = %#v", got)
 	}
 	if len(got.Sources.Labels) != 1 || got.Sources.Labels[0] != "sentry" ||
@@ -107,6 +110,14 @@ func TestBacklogAdmissionValidate(t *testing.T) {
 		{name: "negative proposal cap", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.MaxProposalsPerRun = -1 }, want: "max_proposals_per_run must be greater than 0"},
 		{name: "zero open cap", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.MaxOpenProposals = 0 }, want: "max_open_proposals must be greater than 0"},
 		{name: "zero expiry", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.ProposalExpiryDays = 0 }, want: "proposal_expiry_days must be greater than 0"},
+		{name: "auto admit confidence below range", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) {
+			cfg.AutoAdmit = true
+			cfg.AutoAdmitMinConfidence = -0.1
+		}, want: "auto_admit_min_confidence must be between 0 and 1"},
+		{name: "auto admit confidence above range", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) {
+			cfg.AutoAdmit = true
+			cfg.AutoAdmitMinConfidence = 1.1
+		}, want: "auto_admit_min_confidence must be between 0 and 1"},
 		{name: "linear", tracker: Tracker{Kind: TrackerLinear}, want: "FetchIssuesByStates is not implemented"},
 		{name: "unsupported github source", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: "milestone"}, want: "tracker.kind github with github_status_source milestone does not declare it"},
 		{name: "unsupported tracker", tracker: Tracker{Kind: "gitlab"}, want: "tracker.kind gitlab does not declare it"},
@@ -191,6 +202,22 @@ func TestBacklogAdmissionLabelSelectorValidation(t *testing.T) {
 				t.Fatalf("Validate() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestBacklogAdmissionAutoAdmitDefaultsOff(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default().BacklogAdmission
+	if cfg.AutoAdmit {
+		t.Fatal("BacklogAdmission.AutoAdmit = true, want false")
+	}
+	if cfg.AutoAdmitMinConfidence != DefaultBacklogAdmissionAutoAdmitMinConfidence {
+		t.Fatalf(
+			"BacklogAdmission.AutoAdmitMinConfidence = %v, want %v",
+			cfg.AutoAdmitMinConfidence,
+			DefaultBacklogAdmissionAutoAdmitMinConfidence,
+		)
 	}
 }
 

@@ -1330,11 +1330,12 @@ func Default() Config {
 		},
 		Budget: budget,
 		BacklogAdmission: BacklogAdmission{
-			Schedule:            DefaultBacklogAdmissionSchedule,
-			MaxCandidatesPerRun: DefaultBacklogAdmissionMaxCandidatesPerRun,
-			MaxProposalsPerRun:  DefaultBacklogAdmissionMaxProposalsPerRun,
-			MaxOpenProposals:    DefaultBacklogAdmissionMaxOpenProposals,
-			ProposalExpiryDays:  DefaultBacklogAdmissionProposalExpiryDays,
+			Schedule:               DefaultBacklogAdmissionSchedule,
+			MaxCandidatesPerRun:    DefaultBacklogAdmissionMaxCandidatesPerRun,
+			MaxProposalsPerRun:     DefaultBacklogAdmissionMaxProposalsPerRun,
+			MaxOpenProposals:       DefaultBacklogAdmissionMaxOpenProposals,
+			ProposalExpiryDays:     DefaultBacklogAdmissionProposalExpiryDays,
+			AutoAdmitMinConfidence: DefaultBacklogAdmissionAutoAdmitMinConfidence,
 		},
 		Hooks: Hooks{
 			Shell:     commandshell.Default(),

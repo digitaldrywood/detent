@@ -104,7 +104,7 @@ SELECT id, project_id, issue_id, issue_identifier, issue_url, target_state, fing
        expires_at, COALESCE(resolved_at, ''), COALESCE(commented_at, ''),
        COALESCE(decision_comment_id, ''), COALESCE(decision_actor_login, ''),
        COALESCE(decision_actor_kind, ''), COALESCE(transition_at, ''),
-       COALESCE(decision_seconds, 0)
+       COALESCE(decision_seconds, 0), COALESCE(resolution_reason, '')
 FROM backlog_admission_proposals
 WHERE project_id = ? AND status = 'open'
 ORDER BY created_at, id`
@@ -128,7 +128,7 @@ SELECT id, project_id, issue_id, issue_identifier, issue_url, target_state, fing
        expires_at, COALESCE(resolved_at, ''), COALESCE(commented_at, ''),
        COALESCE(decision_comment_id, ''), COALESCE(decision_actor_login, ''),
        COALESCE(decision_actor_kind, ''), COALESCE(transition_at, ''),
-       COALESCE(decision_seconds, 0)
+       COALESCE(decision_seconds, 0), COALESCE(resolution_reason, '')
 FROM backlog_admission_proposals
 WHERE project_id = ? AND issue_id = ?
 ORDER BY created_at DESC, id DESC`,
@@ -265,13 +265,15 @@ func (s *sqliteStore) ResolveAdmissionProposal(ctx context.Context, decision adm
 	if strings.TrimSpace(decision.ProposalID) == "" {
 		return errors.New("backlog admission proposal id is required")
 	}
-	if decision.Outcome != admissionmodel.ProposalAccepted && decision.Outcome != admissionmodel.ProposalRejected {
-		return errors.New("backlog admission decision outcome must be accepted or rejected")
+	if decision.Outcome != admissionmodel.ProposalAccepted &&
+		decision.Outcome != admissionmodel.ProposalRejected &&
+		decision.Outcome != admissionmodel.ProposalSuperseded {
+		return errors.New("backlog admission decision outcome must be accepted, rejected, or superseded")
 	}
 	if decision.DecidedAt.IsZero() {
 		return errors.New("backlog admission decision time is required")
 	}
-	if strings.TrimSpace(decision.CommentID) == "" {
+	if strings.TrimSpace(decision.CommentID) == "" && !decision.Automatic {
 		return errors.New("backlog admission decision comment is required")
 	}
 	if decision.Outcome == admissionmodel.ProposalAccepted && decision.TransitionAt.IsZero() {
@@ -326,7 +328,7 @@ WHERE id = ? AND status = 'open'`,
 	result, err := tx.ExecContext(ctx, `
 UPDATE backlog_admission_proposals
 SET status = ?, resolved_at = ?, decision_comment_id = ?, decision_actor_login = ?,
-    decision_actor_kind = ?, transition_at = ?, decision_seconds = ?
+    decision_actor_kind = ?, transition_at = ?, decision_seconds = ?, resolution_reason = ?
 WHERE id = ? AND status = 'open'`,
 		string(decision.Outcome),
 		decidedAt,
@@ -335,6 +337,7 @@ WHERE id = ? AND status = 'open'`,
 		nullString(decision.ActorKind),
 		transitionAt,
 		decisionSeconds,
+		nullString(decision.Reason),
 		strings.TrimSpace(decision.ProposalID),
 	)
 	if err != nil {
@@ -907,6 +910,7 @@ func scanAdmissionProposal(scan admissionScan) (admissionmodel.Proposal, error) 
 		&proposal.DecisionActorKind,
 		&transitionAt,
 		&proposal.DecisionSeconds,
+		&proposal.ResolutionReason,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return admissionmodel.Proposal{}, ErrNotFound

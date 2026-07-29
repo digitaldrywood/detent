@@ -34,6 +34,7 @@ type Proposal struct {
 	DecisionActorKind  string
 	TransitionAt       time.Time
 	DecisionSeconds    int64
+	ResolutionReason   string
 }
 
 type Finding struct {
@@ -75,6 +76,8 @@ type Decision struct {
 	ActorKind         string
 	TransitionAt      time.Time
 	TransitionEventID int64
+	Reason            string
+	Automatic         bool
 }
 
 type TargetTransitionQuery struct {
