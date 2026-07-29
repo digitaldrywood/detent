@@ -80,6 +80,13 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		if issueID == "" {
 			continue
 		}
+		if handled, transitioned := o.parkRepeatedMergeRevocations(ctx, state, issue, now); handled {
+			if transitioned {
+				result.transitioned[issueID] = struct{}{}
+				o.clearAutoPromotedIssueDispatchMemory(state, issueID)
+			}
+			continue
+		}
 
 		summary := AutoPromoteSummaryFromIssue(issue)
 		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issueID)

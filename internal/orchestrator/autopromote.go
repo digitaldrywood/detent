@@ -69,6 +69,8 @@ const (
 	AutoPromoteReasonLabelNotAllowed                 AutoPromoteReason = "label_not_allowed"
 	AutoPromoteReasonMissingPullRequest              AutoPromoteReason = "missing_pull_request"
 	AutoPromoteReasonPullRequestMerged               AutoPromoteReason = "pull_request_merged"
+	AutoPromoteReasonDraftPullRequest                AutoPromoteReason = "draft_pull_request"
+	AutoPromoteReasonMergeRevocationLimit            AutoPromoteReason = "merge_revocation_limit"
 	AutoPromoteReasonPullRequestHydrationUnavailable AutoPromoteReason = "pull_request_hydration_unavailable"
 	AutoPromoteReasonMergeConflicts                  AutoPromoteReason = "merge_conflicts"
 	AutoPromoteReasonCINotGreen                      AutoPromoteReason = "ci_not_green"
@@ -144,6 +146,11 @@ func EvaluateAutoPromote(
 		return decision
 	}
 	if gateRequiresPullRequest(cfg.Gate) {
+		if issue.PullRequest != nil &&
+			normalizePullRequestState(issue.PullRequest.State) == "open" &&
+			issue.PullRequest.Draft {
+			return autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonDraftPullRequest)
+		}
 		if autoPromoteMergeConflicts(summary.MergeableState) {
 			return autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonMergeConflicts)
 		}

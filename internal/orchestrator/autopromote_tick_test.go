@@ -3608,6 +3608,113 @@ func TestTickDispatchesFreshAutoPromotedMergingIssue(t *testing.T) {
 	}
 }
 
+func TestTickDraftPullRequestDoesNotBlockReadyPeerMerge(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 16, 0, 0, 0, time.UTC)
+	draft := autoPromoteTickIssue("issue-draft-peer", []string{"bug"}, &connector.PullRequest{
+		Number:         45,
+		URL:            "https://github.test/digitaldrywood/video-studio/pull/45",
+		State:          "OPEN",
+		Draft:          true,
+		MergeableState: "clean",
+		CIStatus:       "success",
+		HeadSHA:        "draft-head",
+	})
+	draft.Identifier = "digitaldrywood/video-studio#41"
+	ready := autoPromoteTickIssue("issue-ready-peer", []string{"bug"}, &connector.PullRequest{
+		Number:         55,
+		URL:            "https://github.test/digitaldrywood/video-studio/pull/55",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+		HeadSHA:        "ready-head",
+	})
+	ready.Identifier = "digitaldrywood/video-studio#50"
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		MergeMethod: "squash",
+		AutoPromote: AutoPromoteConfig{
+			Enabled: true,
+			Gate: gate.Config{
+				Kind:                   gate.KindCommand,
+				RequireAutomatedReview: new(false),
+			},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	baseConnector := &autoPromoteTickConnector{stateIssues: []connector.Issue{draft, ready}}
+	tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: baseConnector}
+	runner := newWorkerHostRunner()
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:        cfg,
+		connector:  tracker,
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion, 1),
+		logger:     slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+
+	orch.tick(t.Context(), &state, now)
+
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.Issue.ID != ready.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want ready peer %q", request.Issue.ID, ready.ID)
+	}
+	if _, ok := state.Running[draft.ID]; ok {
+		t.Fatalf("Running[%q] present, want draft peer to acquire no slot", draft.ID)
+	}
+	if running := state.Running[ready.ID]; running.cancel != nil {
+		running.cancel()
+	}
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+		IssueID:     ready.ID,
+		CompletedAt: now.Add(time.Minute),
+		Result: runpkg.RunResult{
+			FinalState: runpkg.FinalStateCompleted,
+			Output:     "validated current-head CI and updated the Workpad",
+		},
+	})
+
+	if len(tracker.merges) != 1 || tracker.merges[0].number != 55 {
+		t.Fatalf("merges = %#v, want ready PR #55 merged", tracker.merges)
+	}
+	wantUpdates := []autoPromoteTickUpdate{
+		{issueID: ready.ID, state: "Merging"},
+		{issueID: ready.ID, state: "Done"},
+	}
+	if !reflect.DeepEqual(baseConnector.updates, wantUpdates) {
+		t.Fatalf("updates = %#v, want %#v", baseConnector.updates, wantUpdates)
+	}
+	logLines := strings.Split(logs.String(), "\n")
+	draftSlotAcquisition := false
+	for _, line := range logLines {
+		if strings.Contains(line, "merge_worker_slot_acquired") && strings.Contains(line, "identifier="+draft.Identifier) {
+			draftSlotAcquisition = true
+			break
+		}
+	}
+	if draftSlotAcquisition {
+		t.Fatalf("logs = %q, want draft peer to acquire zero merge slots", logs.String())
+	}
+	for _, fragment := range []string{
+		"identifier=" + draft.Identifier + " action=skip reason=draft_pull_request",
+		"merge_worker_slot_acquired",
+		"identifier=" + ready.Identifier,
+		"merge_worker_success",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs = %q, missing %q", logs.String(), fragment)
+		}
+	}
+}
+
 func TestTickReconcilesStaleMergingPullRequestStates(t *testing.T) {
 	t.Parallel()
 

@@ -1,6 +1,8 @@
 package orchestrator
 
 import (
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,5 +48,49 @@ func TestRecordMergeQueueEnteredResetsTerminalAttempt(t *testing.T) {
 	}
 	if got.QueueWaitSeconds != int64((2*time.Minute)/time.Second) || got.ActiveMergeDurationSeconds != 0 || got.TotalMergingSeconds != int64((2*time.Minute)/time.Second) {
 		t.Fatalf("durations = queue %d active %d total %d, want 120/0/120", got.QueueWaitSeconds, got.ActiveMergeDurationSeconds, got.TotalMergingSeconds)
+	}
+}
+
+func TestObserveMergeSlotConcentrationWarnsOncePerWindow(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 15, 0, 0, 0, time.UTC)
+	issue := connector.Issue{
+		ID:         "issue-slot-monopoly",
+		Identifier: "digitaldrywood/video-studio#41",
+		State:      "Merging",
+		PullRequest: &connector.PullRequest{
+			Number: 45,
+			State:  "OPEN",
+		},
+	}
+	cfg := normalizeConfig(Config{})
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:    cfg,
+		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+
+	for index := range mergeSlotConcentrationMinimumCount + 1 {
+		orch.observeMergeSlotConcentration(&state, issue, now.Add(time.Duration(index)*time.Minute))
+	}
+
+	logText := logs.String()
+	if count := strings.Count(logText, "merge_worker_slot_concentration"); count != 1 {
+		t.Fatalf("merge_worker_slot_concentration count = %d, want 1; logs = %q", count, logText)
+	}
+	for _, fragment := range []string{
+		"issue_acquisitions=5",
+		"total_acquisitions=5",
+		"share_percent=100",
+		"pull_request_number=45",
+	} {
+		if !strings.Contains(logText, fragment) {
+			t.Fatalf("logs = %q, missing %q", logText, fragment)
+		}
+	}
+	if len(state.RecentEvents) != 1 || state.RecentEvents[0].Event != "merge_worker_slot_concentration" {
+		t.Fatalf("recent events = %#v, want one concentration warning", state.RecentEvents)
 	}
 }

@@ -92,6 +92,23 @@ func TestEvaluateAutoPromote(t *testing.T) {
 			},
 		},
 		{
+			name: "draft pull request skips",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-draft-pr", nil)
+				issue.PullRequest = &connector.PullRequest{
+					State: "OPEN",
+					Draft: true,
+				}
+				return issue
+			}(),
+			cfg:   enabled,
+			input: ready,
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionSkip,
+				Reason: AutoPromoteReasonDraftPullRequest,
+			},
+		},
+		{
 			name:  "red ci reworks by default",
 			issue: autoPromoteTestIssue("issue-red-ci", nil),
 			cfg:   enabled,

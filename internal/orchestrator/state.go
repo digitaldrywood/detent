@@ -60,6 +60,8 @@ type State struct {
 	Completed                map[string]Completed
 	Retry                    map[string]Retry
 	MergeTimings             map[string]MergeTiming
+	mergeSlotAcquisitions    []mergeSlotAcquisition
+	mergeSlotWarnings        map[string]time.Time
 	nativeMergeQueueEntries  map[string]nativeMergeQueueEntry
 	nativeMergeQueueRepos    map[string]nativeMergeQueueRepository
 	nativeMergeQueueDeferred map[string]struct{}
@@ -264,6 +266,7 @@ func newState(cfg Config) State {
 		Completed:                map[string]Completed{},
 		Retry:                    map[string]Retry{},
 		MergeTimings:             map[string]MergeTiming{},
+		mergeSlotWarnings:        map[string]time.Time{},
 		nativeMergeQueueEntries:  map[string]nativeMergeQueueEntry{},
 		nativeMergeQueueRepos:    map[string]nativeMergeQueueRepository{},
 		nativeMergeQueueDeferred: map[string]struct{}{},
@@ -326,6 +329,8 @@ func (s State) clone() State {
 		Completed:                make(map[string]Completed, len(s.Completed)),
 		Retry:                    make(map[string]Retry, len(s.Retry)),
 		MergeTimings:             maps.Clone(s.MergeTimings),
+		mergeSlotAcquisitions:    append([]mergeSlotAcquisition(nil), s.mergeSlotAcquisitions...),
+		mergeSlotWarnings:        maps.Clone(s.mergeSlotWarnings),
 		nativeMergeQueueEntries:  cloneNativeMergeQueueEntries(s.nativeMergeQueueEntries),
 		nativeMergeQueueRepos:    maps.Clone(s.nativeMergeQueueRepos),
 		nativeMergeQueueDeferred: maps.Clone(s.nativeMergeQueueDeferred),
