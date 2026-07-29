@@ -699,6 +699,7 @@ agent:
   max_turns: 20
   max_turn_duration_ms: 0
   max_session_duration_ms: 0
+  merge_worker_max_duration_ms: 21600000
   max_retry_backoff_ms: 300000
   overload_retry_delay_ms: 45000
   no_progress_spend_limit_usd: 3
@@ -2794,6 +2795,13 @@ are configured, the shorter applicable deadline wins. Both values default to
 `0`, which disables that total-duration bound. These deadlines cancel the
 worker through Detent's normal owned process context, so process-tree reaping,
 scratch cleanup, and session completion still run.
+
+`agent.merge_worker_max_duration_ms` is a separate hard wall-clock ceiling for
+the full lifetime of a worker dispatched in `Merging`, starting when Detent
+acquires its slot. It defaults to six hours (`21600000` ms), is not renewed by
+progress, and overrides the disabled general duration defaults for merge work.
+On breach, Detent cancels the owned worker, releases its slot, logs the elapsed
+time and last progress marker at WARN, and parks the issue in `Blocked`.
 
 `agent.max_session_tokens` is an absolute configured ceiling for a session.
 `total_tokens` counts input, output, cache-created, and cache-read tokens,

@@ -24,6 +24,7 @@ const (
 	workAttemptErrorRunner          = "runner_error"
 	workAttemptErrorStartTransition = "start_state_transition_failed"
 	workAttemptErrorMergeIncomplete = "merge_worker_terminal_state_missing"
+	workAttemptErrorMergeDuration   = "merge_worker_duration_exceeded"
 )
 
 func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *State, now time.Time) {

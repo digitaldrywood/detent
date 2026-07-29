@@ -2136,6 +2136,9 @@ func finalStateForTurnError(err error) string {
 	if errors.Is(err, ErrMergeRevoked) {
 		return FinalStateMergeRevoked
 	}
+	if errors.Is(err, ErrMergeWorkerDurationExceeded) {
+		return FinalStateMergeDurationExceeded
+	}
 	if errors.Is(err, ErrSessionTokenCeilingExceeded) {
 		return FinalStateTokenCeilingExceeded
 	}

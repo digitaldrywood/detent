@@ -150,6 +150,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if o.handleMergeRevocationCompletion(ctx, state, event, running) {
 		return
 	}
+	if o.handleMergeWorkerDurationExceeded(ctx, state, event, running) {
+		return
+	}
 	if o.handleGitHubRESTCapacityCompletion(ctx, state, event, running) {
 		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalFailure, event.Err, "github_rest_capacity", errorString(event.Err))
 		return

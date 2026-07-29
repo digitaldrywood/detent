@@ -442,8 +442,24 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	}
 	o.markMergeStarted(state, issue, now)
 	claim.Issue = issue
-	runCtx, stop := context.WithCancelCause(ctx)
-	cancel := func() { stop(nil) }
+	runCtx := ctx
+	cancelDurationLimit := func() {}
+	if mergeWorkerIssue(issue) {
+		limit := o.mergeWorkerLimit
+		if limit == nil {
+			limit = context.WithTimeoutCause
+		}
+		runCtx, cancelDurationLimit = limit(
+			ctx,
+			o.cfg.MergeWorkerMaxDuration,
+			runpkg.ErrMergeWorkerDurationExceeded,
+		)
+	}
+	runCtx, stop := context.WithCancelCause(runCtx)
+	cancel := func() {
+		stop(nil)
+		cancelDurationLimit()
+	}
 	o.markBackendCapacityProbe(state, capacityProbeKey, issue.ID, now)
 	dispatchWorkpadHash, dispatchWorkpadRead := o.artifactGateDispatchWorkpadSnapshot(ctx, issue)
 	state.Running[issue.ID] = Running{
