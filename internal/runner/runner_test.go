@@ -1080,8 +1080,9 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 	t.Parallel()
 
 	startedAt := time.Date(2026, 7, 29, 9, 0, 0, 0, time.UTC)
+	projectWorkspacePath := t.TempDir()
 	workspaceBackend := &fakeWorkspaceBackend{
-		info: workspace.Info{Path: t.TempDir(), Key: "admission-detent", Branch: "detent/admission-detent"},
+		info: workspace.Info{Path: projectWorkspacePath, Key: "admission-detent", Branch: "detent/admission-detent"},
 	}
 	agentBackend := &fakeCodexClient{
 		result: AgentTurnResult{ThreadID: "thread-admission", TurnID: "turn-1", SessionID: "thread-admission-turn-1"},
@@ -1122,6 +1123,31 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 	}
 	if !agentBackend.request.ReadOnly {
 		t.Fatal("AgentTurnRequest.ReadOnly = false, want true for admission")
+	}
+	if workspaceBackend.created || workspaceBackend.beforeRun || workspaceBackend.afterRun || workspaceBackend.diffed {
+		t.Fatalf(
+			"project workspace calls = created:%t before:%t after:%t diff:%t, want none",
+			workspaceBackend.created,
+			workspaceBackend.beforeRun,
+			workspaceBackend.afterRun,
+			workspaceBackend.diffed,
+		)
+	}
+	if agentBackend.request.Workspace == "" || agentBackend.request.Workspace == projectWorkspacePath {
+		t.Fatalf("AgentTurnRequest.Workspace = %q, want isolated non-project workspace", agentBackend.request.Workspace)
+	}
+	relativeWorkspace, err := filepath.Rel(os.TempDir(), agentBackend.request.Workspace)
+	if err != nil || relativeWorkspace == ".." || strings.HasPrefix(relativeWorkspace, ".."+string(filepath.Separator)) {
+		t.Fatalf("isolated workspace = %q, temp root = %q, error = %v", agentBackend.request.Workspace, os.TempDir(), err)
+	}
+	if _, err := os.Stat(agentBackend.request.Workspace); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("isolated workspace cleanup stat error = %v, want os.ErrNotExist", err)
+	}
+	if strings.Contains(agentBackend.request.Prompt, projectWorkspacePath) {
+		t.Fatalf("AgentTurnRequest.Prompt includes project workspace path: %q", agentBackend.request.Prompt)
+	}
+	if len(agentBackend.request.ExtraWritableRoots) != 0 {
+		t.Fatalf("AgentTurnRequest.ExtraWritableRoots = %#v, want none", agentBackend.request.ExtraWritableRoots)
 	}
 	if agentBackend.request.ToolInstructions != admissionToolInstructions {
 		t.Fatalf("AgentTurnRequest.ToolInstructions = %q, want admission instructions", agentBackend.request.ToolInstructions)

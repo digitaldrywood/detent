@@ -161,6 +161,77 @@ func TestManagerAuditCommentDoesNotDuplicateProposal(t *testing.T) {
 	}
 }
 
+func TestManagerReconcilesAgainstStoredProposalTarget(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+	issue.State = "Todo"
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	backend := openManagerTestStore(t)
+	proposal := admissionTestProposalForIssue("proposal-1", issue, now)
+	if created, err := backend.CreateAdmissionProposal(context.Background(), proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	settings := admissionTestSettings(tracker, agent)
+	settings.Config.TargetState = "Ready"
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+
+	if _, err := manager.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	history, err := backend.AdmissionProposalHistory(context.Background(), "detent", issue.ID)
+	if err != nil || len(history) != 1 || history[0].Status != admissionmodel.ProposalAccepted {
+		t.Fatalf("history = %#v, %v", history, err)
+	}
+	if agent.calls != 0 {
+		t.Fatalf("runner calls = %d, want 0", agent.calls)
+	}
+}
+
+func TestManagerFiltersProposalHistoryBeforeCandidateCap(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	issues := []connector.Issue{
+		admissionIssueFixture("issue-1", "DD-1", 1, now),
+		admissionIssueFixture("issue-2", "DD-2", 2, now),
+		admissionIssueFixture("issue-3", "DD-3", 3, now),
+	}
+	tracker := memory.New(memory.Config{Issues: issues, Stateful: true})
+	backend := openManagerTestStore(t)
+	proposal := admissionTestProposalForIssue("proposal-accepted", issues[0], now.Add(-time.Hour))
+	if created, err := backend.CreateAdmissionProposal(context.Background(), proposal); err != nil || !created {
+		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+	}
+	if err := backend.TransitionAdmissionProposal(
+		context.Background(),
+		proposal.ID,
+		admissionmodel.ProposalOpen,
+		admissionmodel.ProposalAccepted,
+		now,
+	); err != nil {
+		t.Fatalf("TransitionAdmissionProposal() error = %v", err)
+	}
+	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	settings := admissionTestSettings(tracker, agent)
+	settings.Config.MaxCandidatesPerRun = 1
+	settings.Config.MaxProposalsPerRun = 1
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+
+	result, err := manager.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if got, want := agent.candidateIDs[0], []string{"issue-2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("candidate ids = %#v, want %#v", got, want)
+	}
+	if result.Skipped["accepted_demotion"] != 1 || result.Truncated["candidates"] != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestManagerAcceptedDemotionIsSticky(t *testing.T) {
 	t.Parallel()
 
@@ -510,6 +581,29 @@ func admissionTestCriteria() config.AdmissionCriteria {
 			{Name: "Alignment", Text: "- **Alignment** — serves a stated current priority."},
 			{Name: "Readiness", Text: "- **Readiness** — has an actionable problem statement."},
 		},
+	}
+}
+
+func admissionTestProposalForIssue(id string, issue connector.Issue, now time.Time) admissionmodel.Proposal {
+	return admissionmodel.Proposal{
+		ID:              id,
+		ProjectID:       "detent",
+		IssueID:         issue.ID,
+		IssueIdentifier: issue.Identifier,
+		TargetState:     "Todo",
+		Fingerprint:     issueFingerprint(issue),
+		CriteriaSection: "Admission criteria",
+		CriteriaText:    admissionTestCriteria().Text,
+		Findings: []admissionmodel.Finding{{
+			Dimension:      "Alignment",
+			CriterionQuote: "serves a stated current priority",
+			Matched:        true,
+			Rationale:      "Supports the priority.",
+		}},
+		Confidence: 0.8,
+		Status:     admissionmodel.ProposalOpen,
+		CreatedAt:  now,
+		ExpiresAt:  now.AddDate(0, 0, 7),
 	}
 }
 

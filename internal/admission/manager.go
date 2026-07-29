@@ -312,13 +312,13 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 	result.CandidatesFound = len(candidates)
 	candidates = filterCandidates(candidates, settings.Config, result.Skipped)
 	sortCandidates(candidates, settings)
-	if len(candidates) > settings.Config.MaxCandidatesPerRun {
-		result.Truncated["candidates"] = len(candidates) - settings.Config.MaxCandidatesPerRun
-		candidates = candidates[:settings.Config.MaxCandidatesPerRun]
-	}
 	candidates, err = m.unproposedCandidates(ctx, settings, candidates, result.Skipped)
 	if err != nil {
 		return result, err
+	}
+	if len(candidates) > settings.Config.MaxCandidatesPerRun {
+		result.Truncated["candidates"] = len(candidates) - settings.Config.MaxCandidatesPerRun
+		candidates = candidates[:settings.Config.MaxCandidatesPerRun]
 	}
 	result.Candidates = len(candidates)
 	if len(candidates) == 0 {
@@ -413,7 +413,7 @@ func (m *Manager) reconcileOpenProposals(
 				return commentsRemaining, err
 			}
 			continue
-		case ok && strings.EqualFold(strings.TrimSpace(issue.State), settings.Config.TargetState):
+		case ok && strings.EqualFold(strings.TrimSpace(issue.State), proposal.TargetState):
 			if err := m.store.TransitionAdmissionProposal(ctx, proposal.ID, admissionmodel.ProposalOpen, admissionmodel.ProposalAccepted, at); err != nil {
 				return commentsRemaining, err
 			}
