@@ -62,19 +62,27 @@ func (c *Connector) readLabelCandidates(
 	scanLimit := request.ProbeLimit()
 	issues := []connector.Issue{}
 	seen := map[string]struct{}{}
-	itemsRead := 0
+	queriedLabels := map[string]struct{}{}
 	pagesRead := 0
 	pageSize := min(request.EffectivePageSize(), repositoryIssuesPageSize, scanLimit)
+	incomplete := false
 
-	for stateIndex, stateName := range stateNames {
+	for _, stateName := range stateNames {
 		labelName := c.statusLabelForState(stateName)
-		externalState, ok := stateLabels[normalizeLabelName(labelName)]
+		labelKey := normalizeLabelName(labelName)
+		externalState, ok := stateLabels[labelKey]
 		if !ok {
 			continue
 		}
+		if _, ok := queriedLabels[labelKey]; ok {
+			continue
+		}
+		queriedLabels[labelKey] = struct{}{}
+		itemsRead := 0
 		for page := 1; ; page++ {
 			if itemsRead >= scanLimit {
-				return issues, pagesRead, true, nil
+				incomplete = true
+				break
 			}
 			var response []restIssue
 			path := restRepositoryIssuesByLabelPagePath(c.repository, labelName, page, pageSize, true)
@@ -111,20 +119,19 @@ func (c *Connector) readLabelCandidates(
 				issues = append(issues, built)
 			}
 			if len(pageItems) < len(response) {
-				return issues, pagesRead, true, nil
+				incomplete = true
+				break
 			}
 			if len(response) < pageSize {
 				break
 			}
 			if itemsRead >= scanLimit {
-				return issues, pagesRead, true, nil
+				incomplete = true
+				break
 			}
 		}
-		if stateIndex < len(stateNames)-1 && itemsRead >= scanLimit {
-			return issues, pagesRead, true, nil
-		}
 	}
-	return issues, pagesRead, false, nil
+	return issues, pagesRead, incomplete, nil
 }
 
 func (c *Connector) readIssueFieldCandidates(
