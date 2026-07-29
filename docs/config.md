@@ -236,7 +236,7 @@ rendering and fails on drift.
 | `agents.routes[].selector.labels.exclude` | `list<string>` | `[]` | No | None |
 | `agents.routes[].selector.labels.include` | `list<string>` | `[]` | No | None |
 | `agents.routes[].selector.or` | `list<mapping>` | `[]` | No | None |
-| `agents.routes[].selector.priority_in` | `list<integer>` | `[]` | No | None |
+| `agents.routes[].selector.priority_in` | `list<integer>` | `[]` | No | values must be integers 1 through 4 |
 | `backlog_admission` | `object` | `see child fields` | No | None |
 | `backlog_admission.authors` | `object` | `see child fields` | No | None |
 | `backlog_admission.authors.allow` | `list<string>` | `[]` | No | None |
@@ -397,7 +397,7 @@ rendering and fails on drift.
 | `tracker.authorization.labels.exclude` | `list<string>` | `[]` | No | None |
 | `tracker.authorization.labels.include` | `list<string>` | `[]` | No | None |
 | `tracker.authorization.or` | `list<mapping>` | `[]` | No | None |
-| `tracker.authorization.priority_in` | `list<integer>` | `[]` | No | None |
+| `tracker.authorization.priority_in` | `list<integer>` | `[]` | No | values must be integers 1 through 4 |
 | `tracker.auto_provision` | `boolean` | `true` | No | None |
 | `tracker.blocked_recovery` | `object` | `see child fields` | No | None |
 | `tracker.blocked_recovery.enabled` | `boolean` | `false` | Conditional | tracker.active_states must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true<br>tracker.blocked_recovery.reason_codes must not be empty when tracker.blocked_recovery.enabled is true<br>tracker.blocked_recovery.source_states must not be empty when tracker.blocked_recovery.enabled is true<br>tracker.blocked_recovery.target_state is required when tracker.blocked_recovery.enabled is true |
@@ -419,7 +419,7 @@ rendering and fails on drift.
 | `tracker.dependency_auto_unblock.readiness` | `string` | `"terminal_or_merged"` | No | must be one of terminal, terminal_or_merged |
 | `tracker.dependency_auto_unblock.source_states` | `list<string>` | `["blocked"]` | No | must not be empty when tracker.dependency_auto_unblock.enabled is true<br>state names must be unique<br>state names must not be blank |
 | `tracker.dependency_auto_unblock.target_state` | `string` | `"Todo"` | Conditional | is required when tracker.dependency_auto_unblock.enabled is true |
-| `tracker.endpoint` | `string` | `"https://api.linear.app/graphql"` | No | None |
+| `tracker.endpoint` | `string` | `"https://api.linear.app/graphql" for linear; "https://api.github.com/graphql" for github or github_local; unused otherwise` | No | None |
 | `tracker.github_app_id` | `string` | `none` | Conditional | is required for github app |
 | `tracker.github_app_installation_id` | `string` | `none` | Conditional | is required for github app |
 | `tracker.github_app_private_key` | `string` | `none` | Conditional | or tracker.github_app_private_key_path is required for github app |
@@ -434,7 +434,146 @@ rendering and fails on drift.
 | `tracker.http_idle_conn_timeout_ms` | `integer` | `90000` | No | must be greater than 0 |
 | `tracker.http_max_idle_conns` | `integer` | `100` | No | must be greater than 0 |
 | `tracker.http_max_idle_conns_per_host` | `integer` | `32` | No | must be greater than 0 |
-| `tracker.issues` | `list<mapping>` | `[]` | No | None |
+| `tracker.issues` | `list<object>` | `[]` | No | None |
+| `tracker.issues[].assigned_to_worker` | `boolean` | `false when configured` | No | None |
+| `tracker.issues[].assignee_id` | `string` | `none` | No | None |
+| `tracker.issues[].assignees` | `list<string>` | `[]` | No | None |
+| `tracker.issues[].author_id` | `string` | `none` | No | None |
+| `tracker.issues[].blocked_by` | `list<object>` | `[]` | No | None |
+| `tracker.issues[].blocked_by[].id` | `string` | `none` | No | None |
+| `tracker.issues[].blocked_by[].identifier` | `string` | `none` | No | None |
+| `tracker.issues[].blocked_by[].source` | `string` | `none` | No | None |
+| `tracker.issues[].blocked_by[].state` | `string` | `none` | No | None |
+| `tracker.issues[].blocker_reason` | `string` | `none` | No | None |
+| `tracker.issues[].branch_name` | `string` | `none` | No | None |
+| `tracker.issues[].child_issues` | `list<object>` | `[]` | No | None |
+| `tracker.issues[].child_issues[].id` | `string` | `none` | No | None |
+| `tracker.issues[].child_issues[].identifier` | `string` | `none` | No | None |
+| `tracker.issues[].child_issues[].source` | `string` | `none` | No | None |
+| `tracker.issues[].child_issues[].state` | `string` | `none` | No | None |
+| `tracker.issues[].closed` | `boolean` | `false when configured` | No | None |
+| `tracker.issues[].closed_reason` | `string` | `none` | No | None |
+| `tracker.issues[].comments` | `list<object>` | `[]` | No | None |
+| `tracker.issues[].comments[].author_display_name` | `string` | `none` | No | None |
+| `tracker.issues[].comments[].author_kind` | `string` | `none` | No | None |
+| `tracker.issues[].comments[].author_login` | `string` | `none` | No | None |
+| `tracker.issues[].comments[].backend` | `string` | `none` | No | None |
+| `tracker.issues[].comments[].body` | `string` | `none` | No | None |
+| `tracker.issues[].comments[].can_delete` | `boolean` | `false when configured` | No | None |
+| `tracker.issues[].comments[].can_edit` | `boolean` | `false when configured` | No | None |
+| `tracker.issues[].comments[].created_at` | `mapping` | `none` | No | None |
+| `tracker.issues[].comments[].id` | `string` | `none` | No | None |
+| `tracker.issues[].comments[].local` | `boolean` | `false when configured` | No | None |
+| `tracker.issues[].comments[].target_type` | `string` | `none` | No | None |
+| `tracker.issues[].comments[].updated_at` | `mapping` | `none` | No | None |
+| `tracker.issues[].comments[].url` | `string` | `none` | No | None |
+| `tracker.issues[].created_at` | `mapping` | `none` | No | None |
+| `tracker.issues[].deliverable` | `object` | `none` | No | None |
+| `tracker.issues[].deliverable.external_id` | `string` | `none` | No | None |
+| `tracker.issues[].deliverable.kind` | `string` | `none` | No | None |
+| `tracker.issues[].deliverable.metadata` | `mapping<string, string>` | `{}` | No | None |
+| `tracker.issues[].deliverable.path` | `string` | `none` | No | None |
+| `tracker.issues[].deliverable.review_url` | `string` | `none` | No | None |
+| `tracker.issues[].deliverable.validation_status` | `string` | `none` | No | None |
+| `tracker.issues[].description` | `string` | `none` | No | None |
+| `tracker.issues[].field_updated_at` | `mapping<string, mapping>` | `{}` | No | None |
+| `tracker.issues[].fields` | `mapping<string, string>` | `{}` | No | None |
+| `tracker.issues[].id` | `string` | `none` | No | None |
+| `tracker.issues[].identifier` | `string` | `none` | No | None |
+| `tracker.issues[].labels` | `list<string>` | `[]` | No | None |
+| `tracker.issues[].metadata` | `mapping<string, string>` | `{}` | No | None |
+| `tracker.issues[].model_override` | `string` | `none` | No | None |
+| `tracker.issues[].number` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pr_number` | `integer` | `none` | No | None |
+| `tracker.issues[].pr_repository` | `string` | `none` | No | None |
+| `tracker.issues[].priority` | `integer` | `none` | No | None |
+| `tracker.issues[].priority_name` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request` | `object` | `none` | No | None |
+| `tracker.issues[].pull_request.activity_at` | `mapping` | `none` | No | None |
+| `tracker.issues[].pull_request.base_ref` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.base_sha` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.branch_name` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.check_run_count` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.ci_duration_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.ci_queue_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.ci_status` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.codex_review_api_state` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.codex_review_body_severity` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.codex_review_findings` | `list<object>` | `[]` | No | None |
+| `tracker.issues[].pull_request.codex_review_findings[].body` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.codex_review_findings[].line` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.codex_review_findings[].path` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.codex_review_findings[].url` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.codex_review_state` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.codex_review_submitted_at` | `mapping` | `none` | No | None |
+| `tracker.issues[].pull_request.diff_fingerprint` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.draft` | `boolean` | `false when configured` | No | None |
+| `tracker.issues[].pull_request.head_sha` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.hydration_degraded_reason` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.hydration_next_retry_at` | `mapping` | `none` | No | None |
+| `tracker.issues[].pull_request.hydration_unavailable_reason` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.labels` | `list<string>` | `[]` | No | None |
+| `tracker.issues[].pull_request.latest_codex_review_commit_sha` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.latest_codex_review_state` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.latest_codex_review_submitted_at` | `mapping` | `none` | No | None |
+| `tracker.issues[].pull_request.merge_queue_entry` | `object` | `none` | No | None |
+| `tracker.issues[].pull_request.merge_queue_entry.depth` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.merge_queue_entry.enqueued_at` | `mapping` | `none` | No | None |
+| `tracker.issues[].pull_request.merge_queue_entry.estimated_time_to_merge_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.merge_queue_entry.id` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.merge_queue_entry.position` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.merge_queue_entry.state` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.merge_queue_entry.url` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.mergeable_state` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.node_id` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.number` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.required_check_failures` | `list<object>` | `[]` | No | None |
+| `tracker.issues[].pull_request.required_check_failures[].conclusion` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.required_check_failures[].details_url` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.required_check_failures[].duration_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.required_check_failures[].id` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.required_check_failures[].name` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.required_check_failures[].queue_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.required_check_failures[].status` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.required_check_failures[].workflow_run_id` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.running_checks` | `list<string>` | `[]` | No | None |
+| `tracker.issues[].pull_request.slow_checks` | `list<object>` | `[]` | No | None |
+| `tracker.issues[].pull_request.slow_checks[].conclusion` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.slow_checks[].details_url` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.slow_checks[].duration_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.slow_checks[].id` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.slow_checks[].name` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.slow_checks[].queue_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.slow_checks[].status` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.slow_checks[].workflow_run_id` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.stale_successful_checks` | `list<object>` | `[]` | No | None |
+| `tracker.issues[].pull_request.stale_successful_checks[].conclusion` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.stale_successful_checks[].details_url` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.stale_successful_checks[].duration_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.stale_successful_checks[].id` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.stale_successful_checks[].name` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.stale_successful_checks[].queue_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.stale_successful_checks[].status` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.stale_successful_checks[].workflow_run_id` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.state` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.status_context_count` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.transient_failed_checks` | `list<object>` | `[]` | No | None |
+| `tracker.issues[].pull_request.transient_failed_checks[].conclusion` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.transient_failed_checks[].details_url` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.transient_failed_checks[].duration_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.transient_failed_checks[].id` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.transient_failed_checks[].name` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.transient_failed_checks[].queue_seconds` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.transient_failed_checks[].status` | `string` | `none` | No | None |
+| `tracker.issues[].pull_request.transient_failed_checks[].workflow_run_id` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].pull_request.url` | `string` | `none` | No | None |
+| `tracker.issues[].stage_updated_at` | `mapping` | `none` | No | None |
+| `tracker.issues[].state` | `string` | `none` | No | None |
+| `tracker.issues[].title` | `string` | `none` | No | None |
+| `tracker.issues[].unblocker_count` | `integer` | `0 when configured` | No | None |
+| `tracker.issues[].updated_at` | `mapping` | `none` | No | None |
+| `tracker.issues[].url` | `string` | `none` | No | None |
+| `tracker.issues[].workpad_signal` | `mapping` | `none` | No | None |
 | `tracker.kind` | `string` | `none` | Yes | intake.sources requires tracker.kind github<br>is required<br>must be one of github, github_local, linear, memory, local_sqlite<br>release.enabled requires tracker.kind github or github_local<br>tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
 | `tracker.local_sqlite` | `object` | `see child fields` | No | tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
 | `tracker.local_sqlite.path` | `string` | `none` | Conditional | is required for local_sqlite |

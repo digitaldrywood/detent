@@ -70,6 +70,8 @@ func TestConfigDocumentation(t *testing.T) {
 			{path: "identity.name", required: "Conditional", ruleDetail: "must not be blank"},
 			{path: "agents.backends[].provider", required: "No", ruleDetail: "sanitized label"},
 			{path: "agents.backends[].protocol", required: "No", ruleDetail: "must be app-server"},
+			{path: "tracker.authorization.priority_in", required: "No", ruleDetail: "integers 1 through 4"},
+			{path: "agents.routes[].selector.priority_in", required: "No", ruleDetail: "integers 1 through 4"},
 			{path: "tracker.github_app_id", required: "Conditional", ruleDetail: "required for github app"},
 			{path: "backlog_admission.target_state", required: "Conditional", ruleDetail: "configured workflow state"},
 		}
@@ -90,6 +92,26 @@ func TestConfigDocumentation(t *testing.T) {
 		}
 		if shell := byPath["agents.backends[].options.shell"]; shell.literal != "null" {
 			t.Errorf("backend shell literal = %q, want symbolic null", shell.literal)
+		}
+		endpoint := byPath["tracker.endpoint"]
+		for _, expected := range []string{"https://api.linear.app/graphql", "https://api.github.com/graphql"} {
+			if !strings.Contains(endpoint.Default, expected) {
+				t.Errorf("tracker endpoint default = %q, want containing %q", endpoint.Default, expected)
+			}
+		}
+		if endpoint.literal != "null" {
+			t.Errorf("tracker endpoint literal = %q, want symbolic null", endpoint.literal)
+		}
+		for _, path := range []string{
+			"tracker.issues[].id",
+			"tracker.issues[].title",
+			"tracker.issues[].state",
+			"tracker.issues[].labels",
+			"tracker.issues[].fields",
+		} {
+			if _, ok := byPath[path]; !ok {
+				t.Errorf("connector issue field %q is missing", path)
+			}
 		}
 	})
 

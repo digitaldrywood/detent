@@ -239,6 +239,7 @@ func backendOptionNodes(prefix string) []*schemaNode {
 func expandable(typ reflect.Type) bool {
 	path := typ.PkgPath()
 	return path == "github.com/digitaldrywood/detent/internal/config" ||
+		path == "github.com/digitaldrywood/detent/internal/connector" ||
 		path == "github.com/digitaldrywood/detent/internal/gate" ||
 		path == "github.com/digitaldrywood/detent/internal/intake" ||
 		path == "github.com/digitaldrywood/detent/internal/retro" ||
@@ -341,6 +342,9 @@ func fieldDefault(defaultConfig config.Config, node *schemaNode) (string, string
 	if node.path == "workspace.root" {
 		return "OS temporary directory + /detent_workspaces", "null"
 	}
+	if node.path == "tracker.endpoint" {
+		return trackerEndpointDefault()
+	}
 	if node.path == "codex.shell" || node.path == "hooks.shell" {
 		return "platform default shell", "null"
 	}
@@ -377,6 +381,25 @@ func fieldDefault(defaultConfig config.Config, node *schemaNode) (string, string
 		description += " when configured"
 	}
 	return description, literal
+}
+
+func trackerEndpointDefault() (string, string) {
+	endpointFor := func(kind string) string {
+		cfg := config.Default()
+		cfg.Tracker.Kind = kind
+		cfg, err := normalized(cfg)
+		if err != nil {
+			return ""
+		}
+		return cfg.Tracker.Endpoint
+	}
+	linearEndpoint := endpointFor(config.TrackerLinear)
+	githubEndpoint := endpointFor(config.TrackerGitHub)
+	return fmt.Sprintf(
+		"%s for linear; %s for github or github_local; unused otherwise",
+		strconv.Quote(linearEndpoint),
+		strconv.Quote(githubEndpoint),
+	), "null"
 }
 
 func optionDefault(path string) (string, string) {
@@ -510,7 +533,7 @@ func describeValue(value reflect.Value) (string, string) {
 func validationRules(fields []fieldDetails) (map[string][]string, error) {
 	problems := make([]string, 0)
 	for _, field := range fields {
-		if field.node.synthetic {
+		if field.node.synthetic || strings.HasPrefix(field.Path, "tracker.issues") {
 			continue
 		}
 		context := probeBase()
@@ -800,12 +823,19 @@ func candidates(typ reflect.Type) []reflect.Value {
 	case reflect.Slice:
 		out := []reflect.Value{reflect.Zero(typ), reflect.MakeSlice(typ, 0, 0)}
 		elementType := typ.Elem()
-		if elementType.Kind() == reflect.String {
+		switch elementType.Kind() {
+		case reflect.String:
 			for _, values := range [][]string{{""}, {"\n"}, {"__invalid__"}, {"Todo"}, {"Todo", "Todo"}} {
 				candidate := reflect.MakeSlice(typ, len(values), len(values))
 				for index, value := range values {
 					candidate.Index(index).SetString(value)
 				}
+				out = append(out, candidate)
+			}
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			for _, value := range []int64{-1, 0, 1, 4, 5} {
+				candidate := reflect.MakeSlice(typ, 1, 1)
+				candidate.Index(0).SetInt(value)
 				out = append(out, candidate)
 			}
 		}

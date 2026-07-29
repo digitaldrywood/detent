@@ -16,8 +16,8 @@
 # tracker:
 #   # tracker.kind | type: string | default: none | required: Yes | validation: intake.sources requires tracker.kind github; is required; must be one of github, github_local, linear, memory, local_sqlite; release.enabled requires tracker.kind github or github_local; tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite
 #   kind: null
-#   # tracker.endpoint | type: string | default: "https://api.linear.app/graphql" | required: No | validation: None
-#   endpoint: "https://api.linear.app/graphql"
+#   # tracker.endpoint | type: string | default: "https://api.linear.app/graphql" for linear; "https://api.github.com/graphql" for github or github_local; unused otherwise | required: No | validation: None
+#   endpoint: null
 #   # tracker.api_key | type: string | default: none | required: Conditional | validation: is required for linear; or GitHub App credentials are required for github; or GitHub App credentials are required for github_local
 #   api_key: null
 #   # tracker.http_max_idle_conns | type: integer | default: 100 | required: No | validation: must be greater than 0
@@ -118,7 +118,7 @@
 #     assignee_in: []
 #     # tracker.authorization.author_in | type: list<string> | default: [] | required: No | validation: None
 #     author_in: []
-#     # tracker.authorization.priority_in | type: list<integer> | default: [] | required: No | validation: None
+#     # tracker.authorization.priority_in | type: list<integer> | default: [] | required: No | validation: values must be integers 1 through 4
 #     priority_in: []
 #     # tracker.authorization.labels | type: object | default: see child fields | required: No | validation: None
 #     labels:
@@ -143,8 +143,295 @@
 #     path: null
 #     # tracker.local_sqlite.project_id | type: string | default: none | required: No | validation: None
 #     project_id: null
-#   # tracker.issues | type: list<mapping> | default: [] | required: No | validation: None
-#   issues: []
+#   # tracker.issues | type: list<object> | default: [] | required: No | validation: None
+#   issues:
+#     -
+#       # tracker.issues[].id | type: string | default: none | required: No | validation: None
+#       id: null
+#       # tracker.issues[].identifier | type: string | default: none | required: No | validation: None
+#       identifier: null
+#       # tracker.issues[].number | type: integer | default: 0 when configured | required: No | validation: None
+#       number: 0
+#       # tracker.issues[].title | type: string | default: none | required: No | validation: None
+#       title: null
+#       # tracker.issues[].description | type: string | default: none | required: No | validation: None
+#       description: null
+#       # tracker.issues[].priority | type: integer | default: none | required: No | validation: None
+#       priority: null
+#       # tracker.issues[].priority_name | type: string | default: none | required: No | validation: None
+#       priority_name: null
+#       # tracker.issues[].unblocker_count | type: integer | default: 0 when configured | required: No | validation: None
+#       unblocker_count: 0
+#       # tracker.issues[].state | type: string | default: none | required: No | validation: None
+#       state: null
+#       # tracker.issues[].branch_name | type: string | default: none | required: No | validation: None
+#       branch_name: null
+#       # tracker.issues[].url | type: string | default: none | required: No | validation: None
+#       url: null
+#       # tracker.issues[].closed | type: boolean | default: false when configured | required: No | validation: None
+#       closed: false
+#       # tracker.issues[].closed_reason | type: string | default: none | required: No | validation: None
+#       closed_reason: null
+#       # tracker.issues[].pr_number | type: integer | default: none | required: No | validation: None
+#       pr_number: null
+#       # tracker.issues[].pr_repository | type: string | default: none | required: No | validation: None
+#       pr_repository: null
+#       # tracker.issues[].pull_request | type: object | default: none | required: No | validation: None
+#       pull_request:
+#         # tracker.issues[].pull_request.node_id | type: string | default: none | required: No | validation: None
+#         node_id: null
+#         # tracker.issues[].pull_request.number | type: integer | default: 0 when configured | required: No | validation: None
+#         number: 0
+#         # tracker.issues[].pull_request.url | type: string | default: none | required: No | validation: None
+#         url: null
+#         # tracker.issues[].pull_request.branch_name | type: string | default: none | required: No | validation: None
+#         branch_name: null
+#         # tracker.issues[].pull_request.base_ref | type: string | default: none | required: No | validation: None
+#         base_ref: null
+#         # tracker.issues[].pull_request.state | type: string | default: none | required: No | validation: None
+#         state: null
+#         # tracker.issues[].pull_request.mergeable_state | type: string | default: none | required: No | validation: None
+#         mergeable_state: null
+#         # tracker.issues[].pull_request.draft | type: boolean | default: false when configured | required: No | validation: None
+#         draft: false
+#         # tracker.issues[].pull_request.labels | type: list<string> | default: [] | required: No | validation: None
+#         labels: []
+#         # tracker.issues[].pull_request.activity_at | type: mapping | default: none | required: No | validation: None
+#         activity_at: null
+#         # tracker.issues[].pull_request.head_sha | type: string | default: none | required: No | validation: None
+#         head_sha: null
+#         # tracker.issues[].pull_request.base_sha | type: string | default: none | required: No | validation: None
+#         base_sha: null
+#         # tracker.issues[].pull_request.diff_fingerprint | type: string | default: none | required: No | validation: None
+#         diff_fingerprint: null
+#         # tracker.issues[].pull_request.hydration_unavailable_reason | type: string | default: none | required: No | validation: None
+#         hydration_unavailable_reason: null
+#         # tracker.issues[].pull_request.hydration_degraded_reason | type: string | default: none | required: No | validation: None
+#         hydration_degraded_reason: null
+#         # tracker.issues[].pull_request.hydration_next_retry_at | type: mapping | default: none | required: No | validation: None
+#         hydration_next_retry_at: null
+#         # tracker.issues[].pull_request.ci_status | type: string | default: none | required: No | validation: None
+#         ci_status: null
+#         # tracker.issues[].pull_request.check_run_count | type: integer | default: 0 when configured | required: No | validation: None
+#         check_run_count: 0
+#         # tracker.issues[].pull_request.status_context_count | type: integer | default: 0 when configured | required: No | validation: None
+#         status_context_count: 0
+#         # tracker.issues[].pull_request.ci_queue_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#         ci_queue_seconds: 0
+#         # tracker.issues[].pull_request.ci_duration_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#         ci_duration_seconds: 0
+#         # tracker.issues[].pull_request.slow_checks | type: list<object> | default: [] | required: No | validation: None
+#         slow_checks:
+#           -
+#             # tracker.issues[].pull_request.slow_checks[].id | type: integer | default: 0 when configured | required: No | validation: None
+#             id: 0
+#             # tracker.issues[].pull_request.slow_checks[].workflow_run_id | type: integer | default: 0 when configured | required: No | validation: None
+#             workflow_run_id: 0
+#             # tracker.issues[].pull_request.slow_checks[].name | type: string | default: none | required: No | validation: None
+#             name: null
+#             # tracker.issues[].pull_request.slow_checks[].status | type: string | default: none | required: No | validation: None
+#             status: null
+#             # tracker.issues[].pull_request.slow_checks[].conclusion | type: string | default: none | required: No | validation: None
+#             conclusion: null
+#             # tracker.issues[].pull_request.slow_checks[].details_url | type: string | default: none | required: No | validation: None
+#             details_url: null
+#             # tracker.issues[].pull_request.slow_checks[].queue_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#             queue_seconds: 0
+#             # tracker.issues[].pull_request.slow_checks[].duration_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#             duration_seconds: 0
+#         # tracker.issues[].pull_request.running_checks | type: list<string> | default: [] | required: No | validation: None
+#         running_checks: []
+#         # tracker.issues[].pull_request.stale_successful_checks | type: list<object> | default: [] | required: No | validation: None
+#         stale_successful_checks:
+#           -
+#             # tracker.issues[].pull_request.stale_successful_checks[].id | type: integer | default: 0 when configured | required: No | validation: None
+#             id: 0
+#             # tracker.issues[].pull_request.stale_successful_checks[].workflow_run_id | type: integer | default: 0 when configured | required: No | validation: None
+#             workflow_run_id: 0
+#             # tracker.issues[].pull_request.stale_successful_checks[].name | type: string | default: none | required: No | validation: None
+#             name: null
+#             # tracker.issues[].pull_request.stale_successful_checks[].status | type: string | default: none | required: No | validation: None
+#             status: null
+#             # tracker.issues[].pull_request.stale_successful_checks[].conclusion | type: string | default: none | required: No | validation: None
+#             conclusion: null
+#             # tracker.issues[].pull_request.stale_successful_checks[].details_url | type: string | default: none | required: No | validation: None
+#             details_url: null
+#             # tracker.issues[].pull_request.stale_successful_checks[].queue_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#             queue_seconds: 0
+#             # tracker.issues[].pull_request.stale_successful_checks[].duration_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#             duration_seconds: 0
+#         # tracker.issues[].pull_request.required_check_failures | type: list<object> | default: [] | required: No | validation: None
+#         required_check_failures:
+#           -
+#             # tracker.issues[].pull_request.required_check_failures[].id | type: integer | default: 0 when configured | required: No | validation: None
+#             id: 0
+#             # tracker.issues[].pull_request.required_check_failures[].workflow_run_id | type: integer | default: 0 when configured | required: No | validation: None
+#             workflow_run_id: 0
+#             # tracker.issues[].pull_request.required_check_failures[].name | type: string | default: none | required: No | validation: None
+#             name: null
+#             # tracker.issues[].pull_request.required_check_failures[].status | type: string | default: none | required: No | validation: None
+#             status: null
+#             # tracker.issues[].pull_request.required_check_failures[].conclusion | type: string | default: none | required: No | validation: None
+#             conclusion: null
+#             # tracker.issues[].pull_request.required_check_failures[].details_url | type: string | default: none | required: No | validation: None
+#             details_url: null
+#             # tracker.issues[].pull_request.required_check_failures[].queue_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#             queue_seconds: 0
+#             # tracker.issues[].pull_request.required_check_failures[].duration_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#             duration_seconds: 0
+#         # tracker.issues[].pull_request.transient_failed_checks | type: list<object> | default: [] | required: No | validation: None
+#         transient_failed_checks:
+#           -
+#             # tracker.issues[].pull_request.transient_failed_checks[].id | type: integer | default: 0 when configured | required: No | validation: None
+#             id: 0
+#             # tracker.issues[].pull_request.transient_failed_checks[].workflow_run_id | type: integer | default: 0 when configured | required: No | validation: None
+#             workflow_run_id: 0
+#             # tracker.issues[].pull_request.transient_failed_checks[].name | type: string | default: none | required: No | validation: None
+#             name: null
+#             # tracker.issues[].pull_request.transient_failed_checks[].status | type: string | default: none | required: No | validation: None
+#             status: null
+#             # tracker.issues[].pull_request.transient_failed_checks[].conclusion | type: string | default: none | required: No | validation: None
+#             conclusion: null
+#             # tracker.issues[].pull_request.transient_failed_checks[].details_url | type: string | default: none | required: No | validation: None
+#             details_url: null
+#             # tracker.issues[].pull_request.transient_failed_checks[].queue_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#             queue_seconds: 0
+#             # tracker.issues[].pull_request.transient_failed_checks[].duration_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#             duration_seconds: 0
+#         # tracker.issues[].pull_request.codex_review_state | type: string | default: none | required: No | validation: None
+#         codex_review_state: null
+#         # tracker.issues[].pull_request.codex_review_api_state | type: string | default: none | required: No | validation: None
+#         codex_review_api_state: null
+#         # tracker.issues[].pull_request.codex_review_body_severity | type: string | default: none | required: No | validation: None
+#         codex_review_body_severity: null
+#         # tracker.issues[].pull_request.codex_review_submitted_at | type: mapping | default: none | required: No | validation: None
+#         codex_review_submitted_at: null
+#         # tracker.issues[].pull_request.codex_review_findings | type: list<object> | default: [] | required: No | validation: None
+#         codex_review_findings:
+#           -
+#             # tracker.issues[].pull_request.codex_review_findings[].body | type: string | default: none | required: No | validation: None
+#             body: null
+#             # tracker.issues[].pull_request.codex_review_findings[].url | type: string | default: none | required: No | validation: None
+#             url: null
+#             # tracker.issues[].pull_request.codex_review_findings[].path | type: string | default: none | required: No | validation: None
+#             path: null
+#             # tracker.issues[].pull_request.codex_review_findings[].line | type: integer | default: 0 when configured | required: No | validation: None
+#             line: 0
+#         # tracker.issues[].pull_request.latest_codex_review_state | type: string | default: none | required: No | validation: None
+#         latest_codex_review_state: null
+#         # tracker.issues[].pull_request.latest_codex_review_commit_sha | type: string | default: none | required: No | validation: None
+#         latest_codex_review_commit_sha: null
+#         # tracker.issues[].pull_request.latest_codex_review_submitted_at | type: mapping | default: none | required: No | validation: None
+#         latest_codex_review_submitted_at: null
+#         # tracker.issues[].pull_request.merge_queue_entry | type: object | default: none | required: No | validation: None
+#         merge_queue_entry:
+#           # tracker.issues[].pull_request.merge_queue_entry.id | type: string | default: none | required: No | validation: None
+#           id: null
+#           # tracker.issues[].pull_request.merge_queue_entry.state | type: string | default: none | required: No | validation: None
+#           state: null
+#           # tracker.issues[].pull_request.merge_queue_entry.position | type: integer | default: 0 when configured | required: No | validation: None
+#           position: 0
+#           # tracker.issues[].pull_request.merge_queue_entry.depth | type: integer | default: 0 when configured | required: No | validation: None
+#           depth: 0
+#           # tracker.issues[].pull_request.merge_queue_entry.estimated_time_to_merge_seconds | type: integer | default: 0 when configured | required: No | validation: None
+#           estimated_time_to_merge_seconds: 0
+#           # tracker.issues[].pull_request.merge_queue_entry.enqueued_at | type: mapping | default: none | required: No | validation: None
+#           enqueued_at: null
+#           # tracker.issues[].pull_request.merge_queue_entry.url | type: string | default: none | required: No | validation: None
+#           url: null
+#       # tracker.issues[].author_id | type: string | default: none | required: No | validation: None
+#       author_id: null
+#       # tracker.issues[].assignee_id | type: string | default: none | required: No | validation: None
+#       assignee_id: null
+#       # tracker.issues[].assignees | type: list<string> | default: [] | required: No | validation: None
+#       assignees: []
+#       # tracker.issues[].blocked_by | type: list<object> | default: [] | required: No | validation: None
+#       blocked_by:
+#         -
+#           # tracker.issues[].blocked_by[].id | type: string | default: none | required: No | validation: None
+#           id: null
+#           # tracker.issues[].blocked_by[].identifier | type: string | default: none | required: No | validation: None
+#           identifier: null
+#           # tracker.issues[].blocked_by[].state | type: string | default: none | required: No | validation: None
+#           state: null
+#           # tracker.issues[].blocked_by[].source | type: string | default: none | required: No | validation: None
+#           source: null
+#       # tracker.issues[].child_issues | type: list<object> | default: [] | required: No | validation: None
+#       child_issues:
+#         -
+#           # tracker.issues[].child_issues[].id | type: string | default: none | required: No | validation: None
+#           id: null
+#           # tracker.issues[].child_issues[].identifier | type: string | default: none | required: No | validation: None
+#           identifier: null
+#           # tracker.issues[].child_issues[].state | type: string | default: none | required: No | validation: None
+#           state: null
+#           # tracker.issues[].child_issues[].source | type: string | default: none | required: No | validation: None
+#           source: null
+#       # tracker.issues[].blocker_reason | type: string | default: none | required: No | validation: None
+#       blocker_reason: null
+#       # tracker.issues[].workpad_signal | type: mapping | default: none | required: No | validation: None
+#       workpad_signal: null
+#       # tracker.issues[].labels | type: list<string> | default: [] | required: No | validation: None
+#       labels: []
+#       # tracker.issues[].comments | type: list<object> | default: [] | required: No | validation: None
+#       comments:
+#         -
+#           # tracker.issues[].comments[].id | type: string | default: none | required: No | validation: None
+#           id: null
+#           # tracker.issues[].comments[].backend | type: string | default: none | required: No | validation: None
+#           backend: null
+#           # tracker.issues[].comments[].body | type: string | default: none | required: No | validation: None
+#           body: null
+#           # tracker.issues[].comments[].url | type: string | default: none | required: No | validation: None
+#           url: null
+#           # tracker.issues[].comments[].author_login | type: string | default: none | required: No | validation: None
+#           author_login: null
+#           # tracker.issues[].comments[].author_kind | type: string | default: none | required: No | validation: None
+#           author_kind: null
+#           # tracker.issues[].comments[].author_display_name | type: string | default: none | required: No | validation: None
+#           author_display_name: null
+#           # tracker.issues[].comments[].created_at | type: mapping | default: none | required: No | validation: None
+#           created_at: null
+#           # tracker.issues[].comments[].updated_at | type: mapping | default: none | required: No | validation: None
+#           updated_at: null
+#           # tracker.issues[].comments[].local | type: boolean | default: false when configured | required: No | validation: None
+#           local: false
+#           # tracker.issues[].comments[].can_edit | type: boolean | default: false when configured | required: No | validation: None
+#           can_edit: false
+#           # tracker.issues[].comments[].can_delete | type: boolean | default: false when configured | required: No | validation: None
+#           can_delete: false
+#           # tracker.issues[].comments[].target_type | type: string | default: none | required: No | validation: None
+#           target_type: null
+#       # tracker.issues[].fields | type: mapping<string, string> | default: {} | required: No | validation: None
+#       fields: {}
+#       # tracker.issues[].field_updated_at | type: mapping<string, mapping> | default: {} | required: No | validation: None
+#       field_updated_at: {}
+#       # tracker.issues[].metadata | type: mapping<string, string> | default: {} | required: No | validation: None
+#       metadata: {}
+#       # tracker.issues[].deliverable | type: object | default: none | required: No | validation: None
+#       deliverable:
+#         # tracker.issues[].deliverable.kind | type: string | default: none | required: No | validation: None
+#         kind: null
+#         # tracker.issues[].deliverable.path | type: string | default: none | required: No | validation: None
+#         path: null
+#         # tracker.issues[].deliverable.review_url | type: string | default: none | required: No | validation: None
+#         review_url: null
+#         # tracker.issues[].deliverable.validation_status | type: string | default: none | required: No | validation: None
+#         validation_status: null
+#         # tracker.issues[].deliverable.external_id | type: string | default: none | required: No | validation: None
+#         external_id: null
+#         # tracker.issues[].deliverable.metadata | type: mapping<string, string> | default: {} | required: No | validation: None
+#         metadata: {}
+#       # tracker.issues[].assigned_to_worker | type: boolean | default: false when configured | required: No | validation: None
+#       assigned_to_worker: false
+#       # tracker.issues[].created_at | type: mapping | default: none | required: No | validation: None
+#       created_at: null
+#       # tracker.issues[].updated_at | type: mapping | default: none | required: No | validation: None
+#       updated_at: null
+#       # tracker.issues[].stage_updated_at | type: mapping | default: none | required: No | validation: None
+#       stage_updated_at: null
+#       # tracker.issues[].model_override | type: string | default: none | required: No | validation: None
+#       model_override: null
 # # polling | type: object | default: see child fields | required: No | validation: None
 # polling:
 #   # polling.interval_ms | type: integer | default: 120000 | required: No | validation: must be at least 60000; must be greater than 0
@@ -422,7 +709,7 @@
 #         assignee_in: []
 #         # agents.routes[].selector.author_in | type: list<string> | default: [] | required: No | validation: None
 #         author_in: []
-#         # agents.routes[].selector.priority_in | type: list<integer> | default: [] | required: No | validation: None
+#         # agents.routes[].selector.priority_in | type: list<integer> | default: [] | required: No | validation: values must be integers 1 through 4
 #         priority_in: []
 #         # agents.routes[].selector.labels | type: object | default: see child fields | required: No | validation: None
 #         labels:
