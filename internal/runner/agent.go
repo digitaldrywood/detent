@@ -945,9 +945,13 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	workflow, agentRuntime, budgetChecker, dispatchEstimator := r.runtimeSnapshot()
 
+	runWorkspace := r.workspace
+	if req.Admission != nil {
+		runWorkspace = &admissionWorkspace{logger: r.logger}
+	}
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
 	r.logWorkerEvent(req.Issue, "worker_workspace_create_started")
-	info, err := r.workspace.Create(ctx, workspaceIssue)
+	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("create workspace: %w", err)
 	}
@@ -956,7 +960,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		"workspace_branch", info.Branch,
 	)
 
-	if err := r.workspace.BeforeRun(ctx, info, workspaceIssue); err != nil {
+	if err := runWorkspace.BeforeRun(ctx, info, workspaceIssue); err != nil {
 		return RunResult{}, fmt.Errorf("workspace before_run: %w", err)
 	}
 	r.logWorkerEvent(req.Issue, "worker_before_run_finished",
@@ -966,7 +970,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	afterRunPending := true
 	defer func() {
 		if afterRunPending {
-			r.afterRun(info, workspaceIssue)
+			r.afterRun(runWorkspace, info, workspaceIssue)
 		}
 	}()
 
@@ -980,7 +984,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 		mergePrecheck = precheck
 		if handled {
-			r.afterRun(info, workspaceIssue)
+			r.afterRun(runWorkspace, info, workspaceIssue)
 			afterRunPending = false
 			r.logWorkerEvent(req.Issue, "worker_after_run_finished",
 				"workspace_path", info.Path,
@@ -991,13 +995,16 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 
 	attempt := req.Attempt
-	availableSkills, err := r.availableSkills(workflow, info.Path)
-	if err != nil {
-		return RunResult{}, err
+	var availableSkills []skills.Skill
+	if req.Admission == nil {
+		availableSkills, err = r.availableSkills(workflow, info.Path)
+		if err != nil {
+			return RunResult{}, err
+		}
 	}
 	var recoveryState *workspace.RecoveryState
 	if mode == RunModeImplement {
-		recoveryState = r.workspaceRecoveryState(ctx, info, workspaceIssue, "initial")
+		recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "initial")
 	}
 	promptOptions := PromptOptions{
 		Attempt:              &attempt,
@@ -1014,7 +1021,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		RecoveryState:        recoveryState,
 	}
 	var prompt string
-	if mode == RunModeRoutine && req.Routine != nil {
+	if mode == RunModeRoutine && req.Admission != nil {
+		prompt, err = BuildAdmissionPrompt(req.Issue, *req.Admission, promptOptions)
+	} else if mode == RunModeRoutine && req.Routine != nil {
 		prompt, err = BuildRoutinePrompt(workflow, req.Issue, *req.Routine, promptOptions)
 	} else {
 		prompt, err = BuildPrompt(workflow, req.Issue, promptOptions)
@@ -1126,6 +1135,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if orphanRecovery && !agentResumeStateEmpty(resumeState) {
 		turnPrompt = orphanResumePrompt
 	}
+	var extraWritableRoots []string
+	if req.Admission == nil {
+		extraWritableRoots = extraWritableRootsForWorkspace(sessionCtx, info.Path, r.logger)
+	}
 	turnRequest := AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             turnPrompt,
@@ -1136,12 +1149,15 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		ReasoningEffort:    effort,
 		Resume:             agentResumeFromState(resumeState),
 		MaxDuration:        durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
-		ExtraWritableRoots: extraWritableRootsForWorkspace(sessionCtx, info.Path, r.logger),
+		ExtraWritableRoots: extraWritableRoots,
 		cacheStrategy:      workflow.Config.Workspace.CacheStrategy,
 		projectID:          r.projectID,
 	}
 	if mode == RunModeRoutine {
 		turnRequest.ToolInstructions = routineToolInstructions
+		if req.Admission != nil {
+			turnRequest.ToolInstructions = admissionToolInstructions
+		}
 	}
 	execution := r.runAgentTurn(sessionCtx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity)
 	if execution.err != nil {
@@ -1204,7 +1220,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		failureNoteRecorded = true
 	}
 
-	r.afterRun(info, workspaceIssue)
+	r.afterRun(runWorkspace, info, workspaceIssue)
 	afterRunPending = false
 	r.logWorkerEvent(req.Issue, "worker_after_run_finished",
 		"workspace_path", info.Path,
@@ -1223,7 +1239,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		)
 	}
 
-	diffStat, err := r.workspace.DiffStat(ctx, info, workspaceIssue)
+	diffStat, err := runWorkspace.DiffStat(ctx, info, workspaceIssue)
 	if err != nil {
 		if workspace.IsMissingWorkspaceError(err) {
 			r.logger.Info(
@@ -1255,7 +1271,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	result.DiffStats = diffStatsFromWorkspace(diffStat)
 	if mode == RunModeImplement {
-		if recoveryState := r.workspaceRecoveryState(ctx, info, workspaceIssue, "final"); recoveryState != nil {
+		if recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "final"); recoveryState != nil {
 			result.DiffStats.UnpushedCommits = recoveryState.UnpushedCommits
 		}
 	}
@@ -1268,12 +1284,13 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 }
 
 func (r *Runner) workspaceRecoveryState(
+	backend workspace.Backend,
 	ctx context.Context,
 	info workspace.Info,
 	issue workspace.Issue,
 	phase string,
 ) *workspace.RecoveryState {
-	provider, ok := r.workspace.(workspace.RecoveryStateProvider)
+	provider, ok := backend.(workspace.RecoveryStateProvider)
 	if !ok {
 		return nil
 	}
@@ -1376,7 +1393,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	afterRunPending := true
 	defer func() {
 		if afterRunPending {
-			r.afterRun(info, workspaceIssue)
+			r.afterRun(r.workspace, info, workspaceIssue)
 		}
 	}()
 
@@ -1505,7 +1522,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		r.logWorkerEvent(req.Issue, "worker_check_finished", checkFinishedAttrs...)
 	}
 
-	r.afterRun(info, workspaceIssue)
+	r.afterRun(r.workspace, info, workspaceIssue)
 	afterRunPending = false
 	r.logWorkerEvent(req.Issue, "worker_check_after_run_finished",
 		"workspace_path", info.Path,
@@ -1710,11 +1727,11 @@ func (r *Runner) availableSkills(workflow config.Workflow, workspacePath string)
 	return result.Skills, nil
 }
 
-func (r *Runner) afterRun(info workspace.Info, issue workspace.Issue) {
+func (r *Runner) afterRun(backend workspace.Backend, info workspace.Info, issue workspace.Issue) {
 	ctx, cancel := context.WithTimeout(context.Background(), r.afterRunTimeout)
 	defer cancel()
 
-	r.workspace.AfterRun(ctx, info, issue)
+	backend.AfterRun(ctx, info, issue)
 }
 
 func (r *Runner) recordFailedRunNote(workspacePath string, issue connector.Issue, result RunResult, runErr error, at time.Time) {
@@ -2732,9 +2749,11 @@ func (r *Runner) publishRunUpdate(
 		Tokens:                result.Tokens,
 		RateLimits:            result.RateLimits,
 	}
-	diffStats, ok := r.liveDiffStats(ctx, info, issue, progress, eventAt)
-	if ok {
-		usage.DiffStats = diffStats
+	if req.Admission == nil {
+		diffStats, ok := r.liveDiffStats(ctx, info, issue, progress, eventAt)
+		if ok {
+			usage.DiffStats = diffStats
+		}
 	}
 	return req.OnUsageUpdate(usage)
 }

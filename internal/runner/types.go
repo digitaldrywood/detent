@@ -293,6 +293,7 @@ type RunRequest struct {
 	OnActivityUpdate    AgentActivityUpdateHandler
 	OnOverrideRejected  AgentOverrideRejectionHandler
 	Routine             *RoutineRequest
+	Admission           *AdmissionRequest
 	AgentTools          []AgentTool
 	AgentToolHandler    AgentToolHandler
 }
@@ -301,6 +302,30 @@ type RoutineRequest struct {
 	Name     string
 	Schedule string
 	Prompt   string
+}
+
+type AdmissionRequest struct {
+	Schedule        string
+	TargetState     string
+	CriteriaSection string
+	CriteriaText    string
+	Dimensions      []AdmissionDimension
+	Candidates      []AdmissionCandidate
+}
+
+type AdmissionDimension struct {
+	Name string `json:"name"`
+	Text string `json:"text"`
+}
+
+type AdmissionCandidate struct {
+	ID          string   `json:"id"`
+	Identifier  string   `json:"identifier"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	State       string   `json:"state"`
+	AuthorID    string   `json:"author_id,omitempty"`
+	Labels      []string `json:"labels,omitempty"`
 }
 
 type AgentOverrideRejectionHandler func([]AgentOverrideRejection) error

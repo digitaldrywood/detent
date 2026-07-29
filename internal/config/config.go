@@ -103,11 +103,12 @@ const (
 )
 
 type Workflow struct {
-	Config     Config
-	Prompt     string
-	SourceHash string
-	Overlay    WorkflowOverlay
-	Definition ProjectDefinition
+	Config       Config
+	Prompt       string
+	SharedPrompt string
+	SourceHash   string
+	Overlay      WorkflowOverlay
+	Definition   ProjectDefinition
 }
 
 type WorkflowOverlay struct {
@@ -116,27 +117,28 @@ type WorkflowOverlay struct {
 }
 
 type Config struct {
-	Identity      Identity        `yaml:"identity,omitempty"`
-	Tracker       Tracker         `yaml:"tracker"`
-	Polling       Polling         `yaml:"polling"`
-	Workspace     Workspace       `yaml:"workspace"`
-	Workpad       Workpad         `yaml:"workpad,omitempty"`
-	Deliverable   Deliverable     `yaml:"deliverable,omitempty"`
-	Dependencies  Dependencies    `yaml:"dependencies,omitempty"`
-	Worker        Worker          `yaml:"worker"`
-	Agent         Agent           `yaml:"agent"`
-	Agents        Agents          `yaml:"agents"`
-	Codex         Codex           `yaml:"codex"`
-	Gate          gate.Config     `yaml:"gate"`
-	Plan          gate.PlanConfig `yaml:"plan"`
-	Server        Server          `yaml:"server"`
-	Observability Observability   `yaml:"observability"`
-	Budget        Budget          `yaml:"budget"`
-	Release       Release         `yaml:"release,omitempty"`
-	Hooks         Hooks           `yaml:"hooks"`
-	Intake        intake.Config   `yaml:"intake,omitempty"`
-	Retro         retro.Config    `yaml:"retro,omitempty"`
-	Routines      []Routine       `yaml:"routines,omitempty"`
+	Identity         Identity         `yaml:"identity,omitempty"`
+	Tracker          Tracker          `yaml:"tracker"`
+	Polling          Polling          `yaml:"polling"`
+	Workspace        Workspace        `yaml:"workspace"`
+	Workpad          Workpad          `yaml:"workpad,omitempty"`
+	Deliverable      Deliverable      `yaml:"deliverable,omitempty"`
+	Dependencies     Dependencies     `yaml:"dependencies,omitempty"`
+	Worker           Worker           `yaml:"worker"`
+	Agent            Agent            `yaml:"agent"`
+	Agents           Agents           `yaml:"agents"`
+	Codex            Codex            `yaml:"codex"`
+	Gate             gate.Config      `yaml:"gate"`
+	Plan             gate.PlanConfig  `yaml:"plan"`
+	Server           Server           `yaml:"server"`
+	Observability    Observability    `yaml:"observability"`
+	Budget           Budget           `yaml:"budget"`
+	Release          Release          `yaml:"release,omitempty"`
+	Hooks            Hooks            `yaml:"hooks"`
+	Intake           intake.Config    `yaml:"intake,omitempty"`
+	Retro            retro.Config     `yaml:"retro,omitempty"`
+	Routines         []Routine        `yaml:"routines,omitempty"`
+	BacklogAdmission BacklogAdmission `yaml:"backlog_admission,omitempty"`
 
 	configuredFields map[string]struct{}
 }
@@ -1019,9 +1021,10 @@ func ParseWorkflow(raw []byte) (Workflow, error) {
 
 	sum := sha256.Sum256(raw)
 	return Workflow{
-		Config:     cfg,
-		Prompt:     string(prompt),
-		SourceHash: hex.EncodeToString(sum[:]),
+		Config:       cfg,
+		Prompt:       string(prompt),
+		SharedPrompt: string(prompt),
+		SourceHash:   hex.EncodeToString(sum[:]),
 	}, nil
 }
 
@@ -1061,9 +1064,10 @@ func ParseWorkflowOverlay(sharedRaw []byte, localRaw []byte, localPath string) (
 	combined = append(combined, localRaw...)
 	sum := sha256.Sum256(combined)
 	return Workflow{
-		Config:     cfg,
-		Prompt:     mergeWorkflowPrompts(sharedPrompt, localPrompt),
-		SourceHash: hex.EncodeToString(sum[:]),
+		Config:       cfg,
+		Prompt:       mergeWorkflowPrompts(sharedPrompt, localPrompt),
+		SharedPrompt: string(sharedPrompt),
+		SourceHash:   hex.EncodeToString(sum[:]),
 		Overlay: WorkflowOverlay{
 			Path:           strings.TrimSpace(localPath),
 			OverriddenKeys: overridden,
@@ -1322,6 +1326,13 @@ func Default() Config {
 			VersionBump:     "auto",
 		},
 		Budget: budget,
+		BacklogAdmission: BacklogAdmission{
+			Schedule:            DefaultBacklogAdmissionSchedule,
+			MaxCandidatesPerRun: DefaultBacklogAdmissionMaxCandidatesPerRun,
+			MaxProposalsPerRun:  DefaultBacklogAdmissionMaxProposalsPerRun,
+			MaxOpenProposals:    DefaultBacklogAdmissionMaxOpenProposals,
+			ProposalExpiryDays:  DefaultBacklogAdmissionProposalExpiryDays,
+		},
 		Hooks: Hooks{
 			Shell:     commandshell.Default(),
 			TimeoutMS: 60000,
@@ -1401,6 +1412,8 @@ func (c *Config) Validate() error {
 	if len(c.Routines) > 0 && c.Tracker.Kind == TrackerGitHub && !validRepositoryName(c.Tracker.Repository) {
 		problems = append(problems, "tracker.repository is required for routines")
 	}
+	c.BacklogAdmission.Normalize()
+	problems = append(problems, c.BacklogAdmission.Validate("backlog_admission", states, c.Tracker)...)
 
 	if len(problems) > 0 {
 		return ValidationError{Problems: problems}
@@ -1586,6 +1599,7 @@ func (c *Config) normalize() {
 	c.Intake.Normalize()
 	c.Retro.Normalize()
 	c.Routines = NormalizeRoutines(c.Routines)
+	c.BacklogAdmission.Normalize()
 }
 
 func (c *Config) validateTracker(problems *[]string) {

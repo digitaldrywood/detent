@@ -51,6 +51,42 @@ type AuthSession struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type BacklogAdmissionProposal struct {
+	ID              string         `json:"id"`
+	ProjectID       string         `json:"project_id"`
+	IssueID         string         `json:"issue_id"`
+	IssueIdentifier string         `json:"issue_identifier"`
+	IssueURL        string         `json:"issue_url"`
+	TargetState     string         `json:"target_state"`
+	Fingerprint     string         `json:"fingerprint"`
+	CriteriaSection string         `json:"criteria_section"`
+	CriteriaText    string         `json:"criteria_text"`
+	FindingsJson    string         `json:"findings_json"`
+	Confidence      float64        `json:"confidence"`
+	Status          string         `json:"status"`
+	CreatedAt       string         `json:"created_at"`
+	ExpiresAt       string         `json:"expires_at"`
+	ResolvedAt      sql.NullString `json:"resolved_at"`
+	CommentedAt     sql.NullString `json:"commented_at"`
+}
+
+type BacklogAdmissionRun struct {
+	ID                   int64          `json:"id"`
+	ProjectID            string         `json:"project_id"`
+	ScheduledFor         string         `json:"scheduled_for"`
+	StartedAt            string         `json:"started_at"`
+	CompletedAt          string         `json:"completed_at"`
+	Outcome              string         `json:"outcome"`
+	DeferredReason       sql.NullString `json:"deferred_reason"`
+	CandidatesFoundCount int64          `json:"candidates_found_count"`
+	CandidatesCount      int64          `json:"candidates_count"`
+	ProposedCount        int64          `json:"proposed_count"`
+	SkippedJson          string         `json:"skipped_json"`
+	TruncatedJson        string         `json:"truncated_json"`
+	IssuesJson           string         `json:"issues_json"`
+	Error                sql.NullString `json:"error"`
+}
+
 type BudgetOverride struct {
 	ProjectID      string          `json:"project_id"`
 	PerDayMaxUsd   sql.NullFloat64 `json:"per_day_max_usd"`

@@ -316,6 +316,10 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " scheduled routines")
 		checks = append(checks, checkDoctorRoutines(ctx, id, workflow.Config.Routines, storePath, deps))
 	}
+	if workflow.Config.BacklogAdmission.Enabled {
+		setDoctorCurrentCheck("Project " + id + " backlog admission")
+		checks = append(checks, checkDoctorAdmission(ctx, id, workflow, storePath, deps))
+	}
 	setDoctorCurrentCheck("Project " + id + " out-of-scope follow-up guidance")
 	checks = append(checks, checkDoctorFollowupGuidance(id, workflow.Config.Agent.Followups, workflow.Prompt))
 	setDoctorCurrentCheck("Project " + id + " pinned route models")

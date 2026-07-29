@@ -147,6 +147,9 @@ func ParseProjectDefinition(sources ProjectDefinitionSources) (Workflow, error) 
 		}
 		workflow.Definition = definition
 		workflow.Definition.Revision = workflow.SourceHash
+		if validationErr := ValidateWorkflowAdmission(workflow); validationErr != nil {
+			return Workflow{}, definitionError(definition, validationErr)
+		}
 		return workflow, nil
 	case ProjectDefinitionSplit:
 		workflow, parseErr := parseSplitProjectDefinition(sources, shared, local)
@@ -155,6 +158,9 @@ func ParseProjectDefinition(sources ProjectDefinitionSources) (Workflow, error) 
 		}
 		workflow.Definition = definition
 		workflow.Definition.Revision = workflow.SourceHash
+		if validationErr := ValidateWorkflowAdmission(workflow); validationErr != nil {
+			return Workflow{}, definitionError(definition, validationErr)
+		}
 		return workflow, nil
 	case ProjectDefinitionMixed:
 		return Workflow{}, definitionError(definition, mixedProjectDefinitionError(sources, shared, local))
@@ -376,9 +382,10 @@ func parseSplitProjectDefinition(
 	}
 	hash := projectDefinitionHash(sources)
 	workflow := Workflow{
-		Config:     cfg,
-		Prompt:     prompt,
-		SourceHash: hash,
+		Config:       cfg,
+		Prompt:       prompt,
+		SharedPrompt: string(sharedPrompt),
+		SourceHash:   hash,
 	}
 	if sources.HasLocalWorkflow || sources.HasLocalConfig {
 		path := sources.LocalConfigPath
