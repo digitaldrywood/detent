@@ -65,6 +65,7 @@ type githubIssueNode struct {
 	CreatedAt                      *string                      `json:"createdAt"`
 	UpdatedAt                      *string                      `json:"updatedAt"`
 	Author                         *actor                       `json:"author"`
+	AuthorAssociation              string                       `json:"authorAssociation"`
 	Assignees                      nodeConnection[assignee]     `json:"assignees"`
 	Labels                         nodeConnection[label]        `json:"labels"`
 	Comments                       nodeConnection[issueComment] `json:"comments"`
@@ -189,20 +190,21 @@ type actor struct {
 }
 
 type restIssue struct {
-	ID          int            `json:"id"`
-	NodeID      string         `json:"node_id"`
-	Number      int            `json:"number"`
-	Title       string         `json:"title"`
-	Body        *string        `json:"body"`
-	State       string         `json:"state"`
-	StateReason string         `json:"state_reason"`
-	HTMLURL     string         `json:"html_url"`
-	CreatedAt   *time.Time     `json:"created_at"`
-	UpdatedAt   *time.Time     `json:"updated_at"`
-	User        *actor         `json:"user"`
-	Assignees   []restAssignee `json:"assignees"`
-	Labels      []label        `json:"labels"`
-	PullRequest *struct{}      `json:"pull_request"`
+	ID                int            `json:"id"`
+	NodeID            string         `json:"node_id"`
+	Number            int            `json:"number"`
+	Title             string         `json:"title"`
+	Body              *string        `json:"body"`
+	State             string         `json:"state"`
+	StateReason       string         `json:"state_reason"`
+	HTMLURL           string         `json:"html_url"`
+	CreatedAt         *time.Time     `json:"created_at"`
+	UpdatedAt         *time.Time     `json:"updated_at"`
+	User              *actor         `json:"user"`
+	AuthorAssociation string         `json:"author_association"`
+	Assignees         []restAssignee `json:"assignees"`
+	Labels            []label        `json:"labels"`
+	PullRequest       *struct{}      `json:"pull_request"`
 }
 
 type restIssueSearchResponse struct {

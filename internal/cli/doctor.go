@@ -234,6 +234,7 @@ type doctorDeps struct {
 	githubScopes         func(context.Context, string) ([]string, error)
 	githubReadiness      doctorGitHubReadinessFunc
 	githubMergeSettings  func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryMergeSettings, error)
+	githubRepositoryInfo func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryInfo, error)
 	ghAuthToken          func(context.Context) (string, error)
 	listen               func(string, string) (net.Listener, error)
 	openSQLite           func(context.Context, string) (doctorStore, error)
@@ -1081,6 +1082,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.githubMergeSettings == nil {
 		d.githubMergeSettings = defaults.githubMergeSettings
 	}
+	if d.githubRepositoryInfo == nil {
+		d.githubRepositoryInfo = defaults.githubRepositoryInfo
+	}
 	if d.ghAuthToken == nil {
 		d.ghAuthToken = defaults.ghAuthToken
 	}
@@ -1138,6 +1142,7 @@ func defaultDoctorDeps() doctorDeps {
 		githubScopes:         defaultGitHubScopes,
 		githubReadiness:      ghconnector.CheckReadiness,
 		githubMergeSettings:  defaultDoctorGitHubMergeSettings,
+		githubRepositoryInfo: defaultDoctorGitHubRepositoryInfo,
 		ghAuthToken:          defaultGHAuthToken,
 		listen:               net.Listen,
 		openSQLite:           openDoctorSQLite,

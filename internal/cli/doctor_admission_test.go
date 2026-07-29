@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
 )
 
 func TestDoctorAdmissionDiagnostics(t *testing.T) {
@@ -120,6 +121,33 @@ INSERT INTO workflow_phase_events (project_id, phase_type, status, metadata_json
 		diagnostic.ReviewChurnCount != 3 ||
 		diagnostic.SpendUSD != 4.5 {
 		t.Fatalf("evidence diagnostic = %#v", diagnostic)
+	}
+}
+
+func TestDoctorAdmissionWarnsForStatesOnlyPublicExposure(t *testing.T) {
+	t.Parallel()
+
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	cfg.Tracker.Repository = "digitaldrywood/detent"
+	cfg.BacklogAdmission.Enabled = true
+	cfg.BacklogAdmission.CriteriaSection = "Admission criteria"
+	cfg.BacklogAdmission.Sources.States = []string{"Backlog"}
+	check := checkDoctorAdmission(context.Background(), "detent", workflowconfig.Workflow{
+		Config: cfg,
+		SharedPrompt: `## Admission criteria
+
+- **Risk** — requires a bounded recovery path.
+`,
+	}, "", doctorDeps{
+		githubRepositoryInfo: func(context.Context, workflowconfig.Config, string) (ghconnector.RepositoryInfo, error) {
+			return ghconnector.RepositoryInfo{Visibility: "public"}, nil
+		},
+	})
+	if check.BacklogAdmission == nil ||
+		check.BacklogAdmission.RepositoryVisibility != "public" ||
+		!strings.Contains(strings.Join(check.BacklogAdmission.Warnings, "; "), "untrusted issue authors") {
+		t.Fatalf("check = %#v", check)
 	}
 }
 

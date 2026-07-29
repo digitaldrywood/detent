@@ -37,6 +37,7 @@ query DetentGitHubProjectItems(
               stateReason
               url
               author { login }
+              authorAssociation
               assignees(first: 10) { nodes { login } }
               repository { nameWithOwner }
               labels(first: 20) { nodes { name } }
@@ -79,6 +80,7 @@ query DetentGitHubObservedStatusProjectItems(
               url
               createdAt
               author { login }
+              authorAssociation
               assignees(first: 10) { nodes { login } }
               repository { nameWithOwner }
               labels(first: 20) { nodes { name } }

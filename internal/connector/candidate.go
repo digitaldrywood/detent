@@ -12,6 +12,7 @@ const DefaultCandidatePageSize = 100
 
 var (
 	ErrCandidateSelectorUnsupported = errors.New("candidate selector is not supported")
+	ErrCandidateFilterUnsupported   = errors.New("candidate filter is not supported")
 	ErrInvalidCandidateRequest      = errors.New("candidate request is invalid")
 )
 
@@ -23,8 +24,14 @@ const (
 	CandidateSelectorUntracked CandidateSelector = "untracked"
 )
 
+type CandidateFilter string
+
+const CandidateFilterAuthorHandle CandidateFilter = "author_handle"
+
 type CandidateCapabilities struct {
-	Selectors []CandidateSelector `json:"selectors" yaml:"selectors"`
+	Selectors         []CandidateSelector `json:"selectors" yaml:"selectors"`
+	PushdownFilters   []CandidateFilter   `json:"pushdown_filters,omitempty" yaml:"pushdown_filters,omitempty"`
+	AuthorAssociation bool                `json:"author_association,omitempty" yaml:"author_association,omitempty"`
 }
 
 func (c CandidateCapabilities) Supports(selector CandidateSelector) bool {
@@ -36,24 +43,37 @@ func (c CandidateCapabilities) Supports(selector CandidateSelector) bool {
 	return false
 }
 
+func (c CandidateCapabilities) SupportsPushdown(filter CandidateFilter) bool {
+	for _, candidate := range c.PushdownFilters {
+		if candidate == filter {
+			return true
+		}
+	}
+	return false
+}
+
 func CandidateCapabilitiesFor(backend Backend, statusSource string) CandidateCapabilities {
 	switch backend {
 	case BackendGitHub:
 		switch strings.ToLower(strings.TrimSpace(statusSource)) {
 		case "", "project_v2":
-			return statesCandidateCapabilities()
+			return githubCandidateCapabilities(CandidateSelectorStates)
 		case "label":
-			return CandidateCapabilities{Selectors: []CandidateSelector{
+			return githubCandidateCapabilities(
 				CandidateSelectorStates,
 				CandidateSelectorLabels,
 				CandidateSelectorUntracked,
-			}}
+			)
 		case "issue_field":
-			return statesAndLabelsCandidateCapabilities()
+			capabilities := githubCandidateCapabilities(CandidateSelectorStates, CandidateSelectorLabels)
+			capabilities.PushdownFilters = []CandidateFilter{CandidateFilterAuthorHandle}
+			return capabilities
 		default:
 			return CandidateCapabilities{}
 		}
-	case BackendGitHubLocal, BackendLocalSQLite, BackendMemory:
+	case BackendGitHubLocal:
+		return githubCandidateCapabilities(CandidateSelectorStates, CandidateSelectorLabels)
+	case BackendLocalSQLite, BackendMemory:
 		return statesAndLabelsCandidateCapabilities()
 	default:
 		return CandidateCapabilities{}
@@ -64,6 +84,7 @@ type CandidateRequest struct {
 	Selector CandidateSelector `json:"selector" yaml:"selector"`
 	States   []string          `json:"states,omitempty" yaml:"states,omitempty"`
 	Labels   []string          `json:"labels,omitempty" yaml:"labels,omitempty"`
+	Authors  []string          `json:"authors,omitempty" yaml:"authors,omitempty"`
 	Limit    int               `json:"limit" yaml:"limit"`
 	PageSize int               `json:"page_size,omitempty" yaml:"page_size,omitempty"`
 }
@@ -77,6 +98,12 @@ func (r CandidateRequest) Validate(capabilities CandidateCapabilities) error {
 	}
 	if r.PageSize < 0 {
 		return fmt.Errorf("%w: page size must not be negative", ErrInvalidCandidateRequest)
+	}
+	if len(NormalizeAuthorHandles(r.Authors)) > 0 && !capabilities.SupportsPushdown(CandidateFilterAuthorHandle) {
+		return fmt.Errorf("%w: %s", ErrCandidateFilterUnsupported, CandidateFilterAuthorHandle)
+	}
+	if len(NormalizeAuthorHandles(r.Authors)) > 0 && r.Selector != CandidateSelectorStates {
+		return fmt.Errorf("%w: %s is not supported for %s", ErrCandidateFilterUnsupported, CandidateFilterAuthorHandle, r.Selector)
 	}
 	switch r.Selector {
 	case CandidateSelectorStates:
@@ -109,9 +136,10 @@ func (r CandidateRequest) ProbeLimit() int {
 }
 
 type CandidateResult struct {
-	Issues    []Issue `json:"issues" yaml:"issues"`
-	PagesRead int     `json:"pages_read" yaml:"pages_read"`
-	Truncated bool    `json:"truncated" yaml:"truncated"`
+	Issues    []Issue        `json:"issues" yaml:"issues"`
+	PagesRead int            `json:"pages_read" yaml:"pages_read"`
+	Truncated bool           `json:"truncated" yaml:"truncated"`
+	Filtered  map[string]int `json:"filtered,omitempty" yaml:"filtered,omitempty"`
 }
 
 type CandidateReader interface {
@@ -130,6 +158,7 @@ func NewCandidateResult(issues []Issue, request CandidateRequest, pagesRead int,
 		Issues:    issues,
 		PagesRead: pagesRead,
 		Truncated: truncated,
+		Filtered:  map[string]int{},
 	}
 }
 
@@ -171,12 +200,33 @@ func SortCandidateIssues(issues []Issue) {
 	})
 }
 
-func statesCandidateCapabilities() CandidateCapabilities {
-	return CandidateCapabilities{Selectors: []CandidateSelector{CandidateSelectorStates}}
-}
-
 func statesAndLabelsCandidateCapabilities() CandidateCapabilities {
 	return CandidateCapabilities{Selectors: []CandidateSelector{CandidateSelectorStates, CandidateSelectorLabels}}
+}
+
+func githubCandidateCapabilities(selectors ...CandidateSelector) CandidateCapabilities {
+	return CandidateCapabilities{
+		Selectors:         append([]CandidateSelector(nil), selectors...),
+		AuthorAssociation: true,
+	}
+}
+
+func NormalizeAuthorHandles(values []string) []string {
+	normalized := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimPrefix(strings.TrimSpace(value), "@")
+		key := strings.ToLower(value)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	return normalized
 }
 
 func normalizedCandidateStates(states []string) []string {

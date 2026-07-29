@@ -45,7 +45,8 @@ type BacklogAdmissionSources struct {
 }
 
 type BacklogAdmissionAuthors struct {
-	Allow []string `yaml:"allow,omitempty"`
+	Allow            []string `yaml:"allow,omitempty"`
+	AllowAssociation []string `yaml:"allow_association,omitempty"`
 }
 
 type AdmissionCriteria struct {
@@ -73,6 +74,7 @@ func (a *BacklogAdmission) Normalize() {
 	a.CriteriaSection = strings.TrimSpace(a.CriteriaSection)
 	a.ExcludeLabels = normalizeLabels(a.ExcludeLabels)
 	a.Authors.Allow = normalizeAdmissionAuthors(a.Authors.Allow)
+	a.Authors.AllowAssociation = normalizeAdmissionAssociations(a.Authors.AllowAssociation)
 }
 
 func (a BacklogAdmission) Validate(prefix string, states []string, tracker Tracker) []string {
@@ -118,6 +120,19 @@ func (a BacklogAdmission) Validate(prefix string, states []string, tracker Track
 		problems = append(problems, prefix+".auto_admit_min_confidence must be between 0 and 1")
 	}
 	capabilities := connector.CandidateCapabilitiesFor(connector.Backend(tracker.Kind), tracker.GitHubStatusSource)
+	for index, association := range a.Authors.AllowAssociation {
+		if !connector.NormalizeAuthorAssociation(association).Valid() {
+			problems = append(problems, fmt.Sprintf("%s.authors.allow_association[%d] must be one of OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, NONE", prefix, index))
+		}
+	}
+	if len(a.Authors.AllowAssociation) > 0 && !capabilities.AuthorAssociation {
+		gap := prefix + ".authors.allow_association requires author association, but tracker.kind " + tracker.Kind
+		if tracker.Kind == TrackerGitHub {
+			gap += " with github_status_source " + tracker.GitHubStatusSource
+		}
+		gap += " cannot supply it"
+		problems = append(problems, gap)
+	}
 	if len(a.Sources.States) > 0 && !capabilities.Supports(connector.CandidateSelectorStates) {
 		gap := prefix + ".sources.states requires candidate selector states, but tracker.kind " + tracker.Kind
 		if tracker.Kind == TrackerGitHub {
@@ -180,6 +195,9 @@ func BacklogAdmissionWarnings(admission BacklogAdmission, tracker Tracker) []str
 	if len(admission.Authors.Allow) > 0 && (tracker.Kind == TrackerLocalSQLite || tracker.Kind == TrackerMemory) {
 		warnings = append(warnings, "backlog_admission.authors.allow uses AuthorID, but tracker.kind "+tracker.Kind+" does not discover authors")
 	}
+	if warning := BacklogAdmissionBotExclusionWarning(admission.Authors, admission.Sources.Untracked); warning != "" {
+		warnings = append(warnings, warning)
+	}
 	if tracker.Kind == TrackerMemory {
 		warnings = append(warnings, "backlog_admission with tracker.kind memory is evaluation-only across restarts because tracker comments and mutations are process-local")
 	}
@@ -195,6 +213,39 @@ func normalizeAdmissionSourceLabels(labels []string) []string {
 		}
 	}
 	return out
+}
+
+func BacklogAdmissionPublicExposureWarning(admission BacklogAdmission, visibility string) string {
+	if !admission.Enabled || !strings.EqualFold(strings.TrimSpace(visibility), "public") {
+		return ""
+	}
+	admission.Normalize()
+	if !admissionAllowsUntrustedAuthors(admission.Authors) {
+		return ""
+	}
+	return "backlog_admission on a public repository allows untrusted issue authors to reach the candidate set; configure authors.allow and/or trusted authors.allow_association values"
+}
+
+func BacklogAdmissionBotExclusionWarning(authors BacklogAdmissionAuthors, untracked bool) string {
+	if !untracked || len(authors.AllowAssociation) == 0 || len(authors.Allow) > 0 {
+		return ""
+	}
+	return "backlog_admission untracked selection with authors.allow_association and an empty authors.allow excludes integration accounts unless each bot handle is allowlisted"
+}
+
+func admissionAllowsUntrustedAuthors(authors BacklogAdmissionAuthors) bool {
+	if len(authors.Allow) == 0 && len(authors.AllowAssociation) == 0 {
+		return true
+	}
+	for _, value := range authors.AllowAssociation {
+		switch connector.NormalizeAuthorAssociation(value) {
+		case connector.AuthorAssociationContributor,
+			connector.AuthorAssociationFirstTimeContributor,
+			connector.AuthorAssociationNone:
+			return true
+		}
+	}
+	return false
 }
 
 func ResolveAdmissionCriteria(prompt string, section string) (AdmissionCriteria, error) {
@@ -475,4 +526,21 @@ func normalizeAdmissionAuthors(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func normalizeAdmissionAssociations(values []string) []string {
+	normalized := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = string(connector.NormalizeAuthorAssociation(value))
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	return normalized
 }

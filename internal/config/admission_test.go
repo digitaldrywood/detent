@@ -12,7 +12,10 @@ func TestParseWorkflowBacklogAdmission(t *testing.T) {
 
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: github
+  api_key: token
+  github_status_source: issue_field
+  repository: digitaldrywood/detent
 backlog_admission:
   enabled: true
   schedule: "15 4 * * 1"
@@ -25,6 +28,7 @@ backlog_admission:
   exclude_labels: [Skip, skip]
   authors:
     allow: ["@octocat"]
+    allow_association: [member, MEMBER, collaborator]
   max_candidates_per_run: 20
   max_proposals_per_run: 2
   max_open_proposals: 8
@@ -54,8 +58,11 @@ backlog_admission:
 	}
 	if len(got.Sources.Labels) != 1 || got.Sources.Labels[0] != "sentry" ||
 		len(got.ExcludeLabels) != 1 || got.ExcludeLabels[0] != "skip" ||
-		len(got.Authors.Allow) != 1 || got.Authors.Allow[0] != "octocat" {
-		t.Fatalf("normalized filters = sources %#v exclude %#v authors %#v", got.Sources.Labels, got.ExcludeLabels, got.Authors.Allow)
+		len(got.Authors.Allow) != 1 || got.Authors.Allow[0] != "octocat" ||
+		len(got.Authors.AllowAssociation) != 2 ||
+		got.Authors.AllowAssociation[0] != "MEMBER" ||
+		got.Authors.AllowAssociation[1] != "COLLABORATOR" {
+		t.Fatalf("normalized filters = sources %#v exclude %#v authors %#v", got.Sources, got.ExcludeLabels, got.Authors)
 	}
 }
 
@@ -122,6 +129,15 @@ func TestBacklogAdmissionValidate(t *testing.T) {
 		{name: "linear", tracker: Tracker{Kind: TrackerLinear}, want: "FetchIssuesByStates is not implemented"},
 		{name: "unsupported github source", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: "milestone"}, want: "tracker.kind github with github_status_source milestone does not declare it"},
 		{name: "unsupported tracker", tracker: Tracker{Kind: "gitlab"}, want: "tracker.kind gitlab does not declare it"},
+		{name: "invalid association", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) {
+			cfg.Authors.AllowAssociation = []string{"maintainer"}
+		}, want: "must be one of OWNER"},
+		{name: "association local sqlite", tracker: Tracker{Kind: TrackerLocalSQLite}, mutate: func(cfg *BacklogAdmission) {
+			cfg.Authors.AllowAssociation = []string{"member"}
+		}, want: "tracker.kind local_sqlite cannot supply it"},
+		{name: "association memory", tracker: Tracker{Kind: TrackerMemory}, mutate: func(cfg *BacklogAdmission) {
+			cfg.Authors.AllowAssociation = []string{"member"}
+		}, want: "tracker.kind memory cannot supply it"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -288,6 +304,45 @@ func TestBacklogAdmissionValidateUntrackedSelector(t *testing.T) {
 				t.Fatalf("Validate() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBacklogAdmissionAuthorWarnings(t *testing.T) {
+	t.Parallel()
+
+	statesOnly := BacklogAdmission{
+		Enabled: true,
+		Sources: BacklogAdmissionSources{States: []string{"Backlog"}},
+	}
+	if warning := BacklogAdmissionPublicExposureWarning(statesOnly, "public"); !strings.Contains(warning, "untrusted issue authors") {
+		t.Fatalf("states-only public warning = %q", warning)
+	}
+	restricted := statesOnly
+	restricted.Authors = BacklogAdmissionAuthors{AllowAssociation: []string{"OWNER", "MEMBER", "COLLABORATOR"}}
+	if warning := BacklogAdmissionPublicExposureWarning(restricted, "public"); warning != "" {
+		t.Fatalf("trusted association warning = %q", warning)
+	}
+	restricted.Authors.AllowAssociation = append(restricted.Authors.AllowAssociation, "CONTRIBUTOR")
+	if warning := BacklogAdmissionPublicExposureWarning(restricted, "public"); warning == "" {
+		t.Fatal("contributor association warning is empty")
+	}
+	if warning := BacklogAdmissionPublicExposureWarning(statesOnly, "private"); warning != "" {
+		t.Fatalf("private warning = %q", warning)
+	}
+
+	authors := BacklogAdmissionAuthors{AllowAssociation: []string{"MEMBER"}}
+	if warning := BacklogAdmissionBotExclusionWarning(authors, true); !strings.Contains(warning, "integration accounts") {
+		t.Fatalf("bot exclusion warning = %q", warning)
+	}
+	untracked := statesOnly
+	untracked.Sources.Untracked = true
+	untracked.Authors = authors
+	if warnings := strings.Join(BacklogAdmissionWarnings(untracked, Tracker{Kind: TrackerGitHub}), "; "); !strings.Contains(warnings, "integration accounts") {
+		t.Fatalf("BacklogAdmissionWarnings() = %q", warnings)
+	}
+	authors.Allow = []string{"dependabot[bot]"}
+	if warning := BacklogAdmissionBotExclusionWarning(authors, true); warning != "" {
+		t.Fatalf("allowlisted bot warning = %q", warning)
 	}
 }
 

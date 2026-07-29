@@ -1026,6 +1026,180 @@ func TestManagerUnionsLabelCandidatesAndSkipsIneligibleStates(t *testing.T) {
 	}
 }
 
+func TestAllowedAuthorUnion(t *testing.T) {
+	t.Parallel()
+
+	authors := config.BacklogAdmissionAuthors{
+		Allow:            []string{"octocat"},
+		AllowAssociation: []string{"MEMBER"},
+	}
+	tests := []struct {
+		name  string
+		issue connector.Issue
+		want  bool
+	}{
+		{name: "matching handle", issue: connector.Issue{AuthorID: "@octocat", AuthorAssociation: connector.AuthorAssociationNone}, want: true},
+		{name: "matching association", issue: connector.Issue{AuthorID: "hubot", AuthorAssociation: connector.AuthorAssociationMember}, want: true},
+		{name: "missing association", issue: connector.Issue{AuthorID: "hubot"}},
+		{name: "no match", issue: connector.Issue{AuthorID: "hubot", AuthorAssociation: connector.AuthorAssociationContributor}},
+		{name: "unrestricted default", issue: connector.Issue{}, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			configured := authors
+			if test.name == "unrestricted default" {
+				configured = config.BacklogAdmissionAuthors{}
+			}
+			if got := allowedAuthor(test.issue, configured); got != test.want {
+				t.Fatalf("allowedAuthor() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestManagerAuthorRejectionIsAggregateOnly(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	outsider := admissionIssueFixture("outsider", "DD-1", 1, now)
+	outsider.AuthorID = "stranger"
+	outsider.AuthorAssociation = connector.AuthorAssociationNone
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{outsider}, Stateful: true})
+	backend := openManagerTestStore(t)
+	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	settings := admissionTestSettings(tracker, agent)
+	settings.Config.Authors.AllowAssociation = []string{"MEMBER"}
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+
+	result, err := manager.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if result.Skipped["author"] != 1 || agent.calls != 0 {
+		t.Fatalf("result = %#v, runner calls = %d", result, agent.calls)
+	}
+	record, ok, err := backend.LatestAdmissionRun(context.Background(), "detent")
+	if err != nil || !ok || record.Skipped["author"] != 1 {
+		t.Fatalf("LatestAdmissionRun() = %#v, %t, %v", record, ok, err)
+	}
+	for _, event := range tracker.Events() {
+		if event.Kind == memory.EventKindComment {
+			t.Fatalf("author rejection created a comment: %#v", event)
+		}
+	}
+}
+
+func TestManagerUsesAuthorPushdownOnlyWhenUnionSafe(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name              string
+		allowAssociation  []string
+		wantPushedAuthors []string
+		filtered          map[string]int
+	}{
+		{name: "handle only", wantPushedAuthors: []string{"octocat"}, filtered: map[string]int{"author": 2}},
+		{name: "association union", allowAssociation: []string{"MEMBER"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			issue := admissionIssueFixture("candidate", "DD-1", 1, now)
+			issue.AuthorID = "octocat"
+			issue.AuthorAssociation = connector.AuthorAssociationMember
+			memoryStore := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			tracker := &recordingCandidateIssueStore{
+				IssueStore:   memoryStore,
+				capabilities: connector.CandidateCapabilitiesFor(connector.BackendGitHub, "issue_field"),
+				filtered:     test.filtered,
+			}
+			settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate})
+			settings.Config.Authors.Allow = []string{"octocat"}
+			settings.Config.Authors.AllowAssociation = test.allowAssociation
+			manager := newAdmissionTestManager(t, settings, openManagerTestStore(t), func() time.Time { return now })
+
+			result, err := manager.RunOnce(context.Background())
+			if err != nil {
+				t.Fatalf("RunOnce() error = %v", err)
+			}
+			if len(tracker.requests) != 1 || !reflect.DeepEqual(tracker.requests[0].Authors, test.wantPushedAuthors) {
+				t.Fatalf("candidate requests = %#v, want authors %#v", tracker.requests, test.wantPushedAuthors)
+			}
+			if result.Skipped["author"] != test.filtered["author"] {
+				t.Fatalf("skipped authors = %d, want %d", result.Skipped["author"], test.filtered["author"])
+			}
+		})
+	}
+}
+
+func TestReadAdmissionCandidatesPushesAuthorsOnlyToStates(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("candidate", "DD-1", 1, now)
+	issue.AuthorID = "octocat"
+	issue.Labels = []string{"sentry"}
+	memoryStore := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	tracker := &recordingCandidateIssueStore{
+		IssueStore:   memoryStore,
+		capabilities: connector.CandidateCapabilitiesFor(connector.BackendGitHub, "issue_field"),
+	}
+	cfg := admissionTestSettings(memoryStore, &scriptedAdmissionRunner{}).Config
+	cfg.Sources.Labels = []string{"sentry"}
+	cfg.Authors.Allow = []string{"octocat"}
+
+	_, _, _, err := readAdmissionCandidates(context.Background(), tracker, cfg)
+	if err != nil {
+		t.Fatalf("readAdmissionCandidates() error = %v", err)
+	}
+	if len(tracker.requests) != 2 {
+		t.Fatalf("candidate requests = %#v, want states and labels", tracker.requests)
+	}
+	if got := tracker.requests[0].Authors; !reflect.DeepEqual(got, []string{"octocat"}) {
+		t.Fatalf("states authors = %#v, want octocat", got)
+	}
+	if got := tracker.requests[1].Authors; len(got) != 0 {
+		t.Fatalf("labels authors = %#v, want local filtering", got)
+	}
+}
+
+func TestManagerDeduplicatesPushedAuthorRejectionsAcrossSelectors(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	rejected := admissionIssueFixture("candidate", "DD-1", 1, now)
+	rejected.AuthorID = "outsider"
+	rejected.Labels = []string{"candidate"}
+	memoryStore := memory.New(memory.Config{Issues: []connector.Issue{rejected}, Stateful: true})
+	issues := &selectorAdmissionIssueStore{
+		IssueStore:   memoryStore,
+		capabilities: connector.CandidateCapabilitiesFor(connector.BackendGitHub, "issue_field"),
+		results: map[connector.CandidateSelector]connector.CandidateResult{
+			connector.CandidateSelectorStates: {
+				Filtered: map[string]int{"author": 1},
+			},
+			connector.CandidateSelectorLabels: {
+				Issues: []connector.Issue{rejected},
+			},
+		},
+	}
+	settings := admissionTestSettings(issues, &scriptedAdmissionRunner{propose: proposeEveryCandidate})
+	settings.Config.Sources.Labels = []string{"candidate"}
+	settings.Config.Authors.Allow = []string{"trusted"}
+	manager := newAdmissionTestManager(t, settings, openManagerTestStore(t), func() time.Time { return now })
+
+	result, err := manager.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if result.Skipped["author"] != 1 {
+		t.Fatalf("skipped authors = %d, want one deduplicated rejection", result.Skipped["author"])
+	}
+	if result.Candidates != 0 || len(result.Proposals) != 0 {
+		t.Fatalf("result = %#v, want no eligible candidates", result)
+	}
+}
+
 func TestManagerUnionsUntrackedCandidatesBeforeDeduplicationAndExclusions(t *testing.T) {
 	t.Parallel()
 
@@ -1229,8 +1403,16 @@ type scriptedAdmissionRunner struct {
 
 type selectorAdmissionIssueStore struct {
 	IssueStore
-	results  map[connector.CandidateSelector]connector.CandidateResult
-	requests []connector.CandidateRequest
+	capabilities connector.CandidateCapabilities
+	results      map[connector.CandidateSelector]connector.CandidateResult
+	requests     []connector.CandidateRequest
+}
+
+func (s *selectorAdmissionIssueStore) CandidateCapabilities() connector.CandidateCapabilities {
+	if len(s.capabilities.Selectors) > 0 {
+		return s.capabilities
+	}
+	return s.IssueStore.CandidateCapabilities()
 }
 
 func (s *selectorAdmissionIssueStore) ReadCandidates(
@@ -1318,6 +1500,28 @@ func (s *stateChangingAdmissionStore) FetchIssueStatesByIDs(
 		}
 	}
 	return s.Connector.FetchIssueStatesByIDs(ctx, issueIDs)
+}
+
+type recordingCandidateIssueStore struct {
+	IssueStore
+	capabilities connector.CandidateCapabilities
+	requests     []connector.CandidateRequest
+	filtered     map[string]int
+}
+
+func (s *recordingCandidateIssueStore) CandidateCapabilities() connector.CandidateCapabilities {
+	return s.capabilities
+}
+
+func (s *recordingCandidateIssueStore) ReadCandidates(
+	ctx context.Context,
+	request connector.CandidateRequest,
+) (connector.CandidateResult, error) {
+	s.requests = append(s.requests, request)
+	request.Authors = nil
+	result, err := s.IssueStore.ReadCandidates(ctx, request)
+	result.Filtered = s.filtered
+	return result, err
 }
 
 func (r *budgetAdmissionRunner) DailyBudgetStatus(context.Context, time.Time) (runner.DailyBudgetStatus, bool, error) {

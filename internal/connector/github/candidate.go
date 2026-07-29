@@ -22,10 +22,11 @@ func (c *Connector) ReadCandidates(ctx context.Context, request connector.Candid
 	}
 
 	var (
-		issues     []connector.Issue
-		pagesRead  int
-		incomplete bool
-		err        error
+		issues         []connector.Issue
+		pagesRead      int
+		incomplete     bool
+		authorRejected int
+		err            error
 	)
 	switch request.Selector {
 	case connector.CandidateSelectorLabels:
@@ -43,7 +44,7 @@ func (c *Connector) ReadCandidates(ctx context.Context, request connector.Candid
 		case c.usesLabelStatus():
 			issues, pagesRead, incomplete, err = c.readLabelCandidates(ctx, request)
 		case c.usesIssueFieldStatus():
-			issues, pagesRead, incomplete, err = c.readIssueFieldCandidates(ctx, request)
+			issues, pagesRead, incomplete, authorRejected, err = c.readIssueFieldCandidates(ctx, request)
 		default:
 			issues, pagesRead, incomplete, err = c.readProjectCandidates(ctx, request)
 		}
@@ -53,6 +54,9 @@ func (c *Connector) ReadCandidates(ctx context.Context, request connector.Candid
 	}
 
 	result := connector.NewCandidateResult(issues, request, pagesRead, incomplete)
+	if authorRejected > 0 {
+		result.Filtered["author"] = authorRejected
+	}
 	if err := c.hydrateCandidateIssues(ctx, result.Issues, request.States); err != nil {
 		return connector.CandidateResult{}, err
 	}
@@ -238,42 +242,44 @@ func (c *Connector) readLabelCandidates(
 func (c *Connector) readIssueFieldCandidates(
 	ctx context.Context,
 	request connector.CandidateRequest,
-) ([]connector.Issue, int, bool, error) {
+) ([]connector.Issue, int, bool, int, error) {
 	if !validPullRequestRepo(c.repository) {
-		return nil, 0, false, ErrMissingRepository
+		return nil, 0, false, 0, ErrMissingRepository
 	}
 	wantedStates := normalizedStateSet(request.States)
 	githubStates := c.detentToGitHubStates(request.States)
 	if len(wantedStates) == 0 || len(githubStates) == 0 {
-		return []connector.Issue{}, 0, false, nil
+		return []connector.Issue{}, 0, false, 0, nil
 	}
 	if err := c.verifyIssueFieldStatusOptions(ctx, request.States); err != nil {
-		return nil, 0, false, err
+		return nil, 0, false, 0, err
 	}
 
 	scanLimit := request.ProbeLimit()
 	issues := []connector.Issue{}
 	itemsRead := 0
 	pagesRead := 0
+	filteredTotal := 0
 	pageSize := min(request.EffectivePageSize(), issueSearchPageSize, scanLimit)
 	for page := 1; ; page++ {
 		if itemsRead >= scanLimit {
-			return issues, pagesRead, true, nil
+			return issues, pagesRead, true, c.bestEffortIssueFieldAuthorRejections(ctx, request, filteredTotal), nil
 		}
 		var response restIssueSearchResponse
 		path := restIssueFieldSearchPagePath(
 			c.repository,
 			c.statusField,
 			githubStates,
-			connector.IssueFilterHint{},
+			connector.IssueFilterHint{Authors: connector.NormalizeAuthorHandles(request.Authors)},
 			page,
 			pageSize,
 			true,
 		)
 		if err := c.client.REST(ctx, http.MethodGet, path, nil, &response); err != nil {
-			return nil, 0, false, fmt.Errorf("search github issue field candidates: %w", err)
+			return nil, 0, false, 0, fmt.Errorf("search github issue field candidates: %w", err)
 		}
 		pagesRead++
+		filteredTotal = max(filteredTotal, response.TotalCount)
 		pageItems := response.Items
 		if remaining := scanLimit - itemsRead; len(pageItems) > remaining {
 			pageItems = pageItems[:remaining]
@@ -286,7 +292,7 @@ func (c *Connector) readIssueFieldCandidates(
 			}
 			issue, ok, err := c.fetchIssueFieldIssueFromREST(ctx, ref, item)
 			if err != nil {
-				return nil, 0, false, err
+				return nil, 0, false, 0, err
 			}
 			if !ok {
 				continue
@@ -296,17 +302,54 @@ func (c *Connector) readIssueFieldCandidates(
 			}
 		}
 		if len(pageItems) < len(response.Items) {
-			return issues, pagesRead, true, nil
+			return issues, pagesRead, true, c.bestEffortIssueFieldAuthorRejections(ctx, request, filteredTotal), nil
 		}
 		exhausted := len(response.Items) < pageSize ||
 			(response.TotalCount > 0 && itemsRead >= response.TotalCount)
 		if exhausted {
-			return issues, pagesRead, false, nil
+			return issues, pagesRead, false, c.bestEffortIssueFieldAuthorRejections(ctx, request, filteredTotal), nil
 		}
 		if itemsRead >= scanLimit {
-			return issues, pagesRead, true, nil
+			return issues, pagesRead, true, c.bestEffortIssueFieldAuthorRejections(ctx, request, filteredTotal), nil
 		}
 	}
+}
+
+func (c *Connector) bestEffortIssueFieldAuthorRejections(
+	ctx context.Context,
+	request connector.CandidateRequest,
+	filteredTotal int,
+) int {
+	rejected, err := c.issueFieldAuthorRejections(ctx, request, filteredTotal)
+	if err != nil {
+		c.logger.WarnContext(ctx, "count github issue field author rejections failed", "error", err)
+		return 0
+	}
+	return rejected
+}
+
+func (c *Connector) issueFieldAuthorRejections(
+	ctx context.Context,
+	request connector.CandidateRequest,
+	filteredTotal int,
+) (int, error) {
+	if len(connector.NormalizeAuthorHandles(request.Authors)) == 0 {
+		return 0, nil
+	}
+	var response restIssueSearchResponse
+	path := restIssueFieldSearchPagePath(
+		c.repository,
+		c.statusField,
+		c.detentToGitHubStates(request.States),
+		connector.IssueFilterHint{},
+		1,
+		1,
+		true,
+	)
+	if err := c.client.REST(ctx, http.MethodGet, path, nil, &response); err != nil {
+		return 0, fmt.Errorf("count github issue field author rejections: %w", err)
+	}
+	return max(0, response.TotalCount-filteredTotal), nil
 }
 
 func (c *Connector) readProjectCandidates(

@@ -11,6 +11,8 @@ type RepositoryInfo struct {
 	ID            int64
 	NameWithOwner string
 	HTMLURL       string
+	Private       bool
+	Visibility    string
 }
 
 func (c *Connector) FetchRepositoryInfo(ctx context.Context, repository string) (RepositoryInfo, error) {
@@ -19,9 +21,11 @@ func (c *Connector) FetchRepositoryInfo(ctx context.Context, repository string) 
 		return RepositoryInfo{}, ErrMissingRepository
 	}
 	var response struct {
-		ID       int64  `json:"id"`
-		FullName string `json:"full_name"`
-		HTMLURL  string `json:"html_url"`
+		ID         int64  `json:"id"`
+		FullName   string `json:"full_name"`
+		HTMLURL    string `json:"html_url"`
+		Private    bool   `json:"private"`
+		Visibility string `json:"visibility"`
 	}
 	if err := c.client.REST(ctx, http.MethodGet, restRepositoryPath(repository), nil, &response); err != nil {
 		return RepositoryInfo{}, fmt.Errorf("fetch github repository info: %w", err)
@@ -33,6 +37,15 @@ func (c *Connector) FetchRepositoryInfo(ctx context.Context, repository string) 
 		ID:            response.ID,
 		NameWithOwner: strings.TrimSpace(response.FullName),
 		HTMLURL:       strings.TrimSpace(response.HTMLURL),
+		Private:       response.Private,
+		Visibility:    strings.ToLower(strings.TrimSpace(response.Visibility)),
+	}
+	if info.Visibility == "" {
+		if info.Private {
+			info.Visibility = "private"
+		} else {
+			info.Visibility = "public"
+		}
 	}
 	if info.NameWithOwner == "" {
 		info.NameWithOwner = repository

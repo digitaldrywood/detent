@@ -11,19 +11,21 @@ func TestCandidateCapabilitiesFor(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		backend      Backend
-		statusSource string
-		states       bool
-		labels       bool
-		untracked    bool
+		name              string
+		backend           Backend
+		statusSource      string
+		states            bool
+		labels            bool
+		untracked         bool
+		authorAssociation bool
+		authorPushdown    bool
 	}{
-		{name: "github project v2", backend: BackendGitHub, statusSource: "project_v2", states: true},
-		{name: "github issue field", backend: BackendGitHub, statusSource: "issue_field", states: true, labels: true},
-		{name: "github label", backend: BackendGitHub, statusSource: "label", states: true, labels: true, untracked: true},
-		{name: "github default", backend: BackendGitHub, states: true},
+		{name: "github project v2", backend: BackendGitHub, statusSource: "project_v2", states: true, authorAssociation: true},
+		{name: "github issue field", backend: BackendGitHub, statusSource: "issue_field", states: true, labels: true, authorAssociation: true, authorPushdown: true},
+		{name: "github label", backend: BackendGitHub, statusSource: "label", states: true, labels: true, untracked: true, authorAssociation: true},
+		{name: "github default", backend: BackendGitHub, states: true, authorAssociation: true},
 		{name: "github invalid source", backend: BackendGitHub, statusSource: "milestone"},
-		{name: "github local", backend: BackendGitHubLocal, states: true, labels: true},
+		{name: "github local", backend: BackendGitHubLocal, states: true, labels: true, authorAssociation: true},
 		{name: "local sqlite", backend: BackendLocalSQLite, states: true, labels: true},
 		{name: "memory", backend: BackendMemory, states: true, labels: true},
 		{name: "linear", backend: BackendLinear},
@@ -43,6 +45,12 @@ func TestCandidateCapabilitiesFor(t *testing.T) {
 			if got := capabilities.Supports(CandidateSelectorUntracked); got != test.untracked {
 				t.Fatalf("Supports(untracked) = %t, want %t", got, test.untracked)
 			}
+			if capabilities.AuthorAssociation != test.authorAssociation {
+				t.Fatalf("AuthorAssociation = %t, want %t", capabilities.AuthorAssociation, test.authorAssociation)
+			}
+			if got := capabilities.SupportsPushdown(CandidateFilterAuthorHandle); got != test.authorPushdown {
+				t.Fatalf("SupportsPushdown(author_handle) = %t, want %t", got, test.authorPushdown)
+			}
 		})
 	}
 }
@@ -56,6 +64,16 @@ func TestCandidateRequestValidate(t *testing.T) {
 		request CandidateRequest
 		want    error
 	}{
+		{
+			name: "unsupported author pushdown",
+			request: CandidateRequest{
+				Selector: CandidateSelectorStates,
+				States:   []string{"Backlog"},
+				Authors:  []string{"octocat"},
+				Limit:    10,
+			},
+			want: ErrCandidateFilterUnsupported,
+		},
 		{
 			name: "valid states selector",
 			request: CandidateRequest{
@@ -130,6 +148,47 @@ func TestCandidateRequestValidate(t *testing.T) {
 			err := test.request.Validate(capabilities)
 			if !errors.Is(err, test.want) {
 				t.Fatalf("Validate() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestCandidateRequestRejectsAuthorPushdownForNonStateSelector(t *testing.T) {
+	t.Parallel()
+
+	request := CandidateRequest{
+		Selector: CandidateSelectorLabels,
+		Labels:   []string{"sentry"},
+		Authors:  []string{"octocat"},
+		Limit:    10,
+	}
+	err := request.Validate(CandidateCapabilitiesFor(BackendGitHub, "issue_field"))
+	if !errors.Is(err, ErrCandidateFilterUnsupported) {
+		t.Fatalf("Validate() error = %v, want %v", err, ErrCandidateFilterUnsupported)
+	}
+}
+
+func TestAuthorAssociationValues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		value string
+		want  AuthorAssociation
+		valid bool
+	}{
+		{value: " owner ", want: AuthorAssociationOwner, valid: true},
+		{value: "MEMBER", want: AuthorAssociationMember, valid: true},
+		{value: "collaborator", want: AuthorAssociationCollaborator, valid: true},
+		{value: "contributor", want: AuthorAssociationContributor, valid: true},
+		{value: "first_time_contributor", want: AuthorAssociationFirstTimeContributor, valid: true},
+		{value: "none", want: AuthorAssociationNone, valid: true},
+		{value: "maintainer", want: AuthorAssociation("MAINTAINER")},
+	}
+	for _, test := range tests {
+		t.Run(test.value, func(t *testing.T) {
+			got := NormalizeAuthorAssociation(test.value)
+			if got != test.want || got.Valid() != test.valid {
+				t.Fatalf("NormalizeAuthorAssociation(%q) = %q, valid %t", test.value, got, got.Valid())
 			}
 		})
 	}

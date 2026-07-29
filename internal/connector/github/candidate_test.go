@@ -22,7 +22,7 @@ func TestConnectorReadProjectCandidatesStopsAtBoundAndSorts(t *testing.T) {
 		},
 		{
 			body: projectItemsPageResponseWithTotal(3, true, "cursor-2", []string{
-				`{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_2","number":2,"title":"Second","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/2","createdAt":"2026-01-01T00:00:00Z","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Backlog"}}`,
+				`{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_2","number":2,"title":"Second","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/2","createdAt":"2026-01-01T00:00:00Z","authorAssociation":"COLLABORATOR","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Backlog"}}`,
 			}),
 		},
 	})
@@ -43,6 +43,9 @@ func TestConnectorReadProjectCandidatesStopsAtBoundAndSorts(t *testing.T) {
 	if ids := githubIssueIDs(got.Issues); !reflect.DeepEqual(ids, []string{"I_2"}) {
 		t.Fatalf("candidate IDs = %#v, want [I_2]", ids)
 	}
+	if got.Issues[0].AuthorAssociation != connector.AuthorAssociationCollaborator {
+		t.Fatalf("AuthorAssociation = %q, want COLLABORATOR", got.Issues[0].AuthorAssociation)
+	}
 	if !got.Truncated || got.PagesRead != 2 {
 		t.Fatalf("result = %#v, want bounded two-page truncation", got)
 	}
@@ -57,7 +60,7 @@ func TestConnectorReadProjectCandidatesStopsAtBoundAndSorts(t *testing.T) {
 		t.Fatalf("second page cursor = %#v, want cursor-1", after)
 	}
 	query := requests[0]["query"].(string)
-	for _, want := range []string{"createdAt", "orderBy: {field: POSITION, direction: ASC}"} {
+	for _, want := range []string{"createdAt", "authorAssociation", "orderBy: {field: POSITION, direction: ASC}"} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("candidate query missing %q", want)
 		}
@@ -206,7 +209,7 @@ func TestConnectorReadLabelCandidatesKeepsNumericPageSizeAtBound(t *testing.T) {
 		{
 			method: http.MethodGet,
 			body: `[
-				{"node_id":"I_1","number":1,"title":"First","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1","labels":[{"name":"detent:todo"}]},
+				{"node_id":"I_1","number":1,"title":"First","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1","author_association":"OWNER","labels":[{"name":"detent:todo"}]},
 				{"node_id":"I_4","number":4,"title":"Fourth","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/4","labels":[{"name":"detent:todo"}]}
 			]`,
 		},
@@ -228,6 +231,9 @@ func TestConnectorReadLabelCandidatesKeepsNumericPageSizeAtBound(t *testing.T) {
 	}
 	if ids := githubIssueIDs(got.Issues); !reflect.DeepEqual(ids, []string{"I_1", "I_2"}) {
 		t.Fatalf("candidate IDs = %#v, want [I_1 I_2]", ids)
+	}
+	if got.Issues[0].AuthorAssociation != connector.AuthorAssociationOwner {
+		t.Fatalf("AuthorAssociation = %q, want OWNER", got.Issues[0].AuthorAssociation)
 	}
 	if !got.Truncated || got.PagesRead != 2 {
 		t.Fatalf("result = %#v, want bounded two-page truncation", got)
@@ -370,12 +376,16 @@ func TestConnectorReadIssueFieldCandidatesFiltersAndOrdersSearch(t *testing.T) {
 		},
 		{
 			method: http.MethodGet,
-			body:   `{"total_count":1,"items":[{"node_id":"I_1","number":1,"title":"Ready issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1","labels":[]}]}`,
+			body:   `{"total_count":1,"items":[{"node_id":"I_1","number":1,"title":"Ready issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1","author_association":"MEMBER","labels":[]}]}`,
 		},
 		{
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/issues/1/issue-field-values?per_page=100",
 			body:   `[{"issue_field_id":10,"node_id":"IFV_1","data_type":"single_select","value":1,"single_select_option":{"id":1,"name":"Ready","color":"green"}}]`,
+		},
+		{
+			method: http.MethodGet,
+			body:   `{"total_count":3,"items":[]}`,
 		},
 	})
 	c := newGitHubTestConnector(t, server, Config{
@@ -388,6 +398,7 @@ func TestConnectorReadIssueFieldCandidatesFiltersAndOrdersSearch(t *testing.T) {
 	got, err := c.ReadCandidates(context.Background(), connector.CandidateRequest{
 		Selector: connector.CandidateSelectorStates,
 		States:   []string{"Todo"},
+		Authors:  []string{"@alice", "alice"},
 		Limit:    10,
 		PageSize: 5,
 	})
@@ -397,10 +408,68 @@ func TestConnectorReadIssueFieldCandidatesFiltersAndOrdersSearch(t *testing.T) {
 	if ids := githubIssueIDs(got.Issues); !reflect.DeepEqual(ids, []string{"I_1"}) {
 		t.Fatalf("candidate IDs = %#v, want [I_1]", ids)
 	}
+	if got.Issues[0].AuthorAssociation != connector.AuthorAssociationMember {
+		t.Fatalf("AuthorAssociation = %q, want MEMBER", got.Issues[0].AuthorAssociation)
+	}
+	if got.Filtered["author"] != 2 {
+		t.Fatalf("Filtered = %#v, want two author rejections", got.Filtered)
+	}
 	searchPath := server.requests()[1]["path"].(string)
-	for _, want := range []string{"order=asc", "sort=created", "per_page=5"} {
+	for _, want := range []string{"order=asc", "sort=created", "per_page=5", "author%3Aalice"} {
 		if !strings.Contains(searchPath, want) {
 			t.Fatalf("search path = %q, missing %q", searchPath, want)
 		}
+	}
+	if countPath := server.requests()[3]["path"].(string); strings.Contains(countPath, "author%3A") {
+		t.Fatalf("unfiltered count path = %q", countPath)
+	}
+}
+
+func TestConnectorReadIssueFieldCandidatesPreservesCandidatesWhenRejectionCountFails(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/orgs/digitaldrywood/issue-fields?per_page=100",
+			body:   `[{"id":10,"node_id":"IFSS_status","name":"Status","data_type":"single_select","options":[{"id":1,"name":"Ready","color":"green"}]}]`,
+		},
+		{
+			method: http.MethodGet,
+			body:   `{"total_count":1,"items":[{"node_id":"I_1","number":1,"title":"Ready issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1","author_association":"MEMBER","labels":[]}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/1/issue-field-values?per_page=100",
+			body:   `[{"issue_field_id":10,"node_id":"IFV_1","data_type":"single_select","value":1,"single_select_option":{"id":1,"name":"Ready","color":"green"}}]`,
+		},
+		{
+			status: http.StatusUnprocessableEntity,
+			method: http.MethodGet,
+			body:   `{"message":"rejection count unavailable"}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceIssueField,
+		Repository:         "digitaldrywood/detent",
+		StatusField:        "Status",
+		StateMap:           map[string]string{"Todo": "Ready"},
+	})
+
+	got, err := c.ReadCandidates(context.Background(), connector.CandidateRequest{
+		Selector: connector.CandidateSelectorStates,
+		States:   []string{"Todo"},
+		Authors:  []string{"alice"},
+		Limit:    10,
+		PageSize: 5,
+	})
+	if err != nil {
+		t.Fatalf("ReadCandidates() error = %v", err)
+	}
+	if ids := githubIssueIDs(got.Issues); !reflect.DeepEqual(ids, []string{"I_1"}) {
+		t.Fatalf("candidate IDs = %#v, want [I_1]", ids)
+	}
+	if got.Filtered["author"] != 0 {
+		t.Fatalf("Filtered = %#v, want best-effort count omitted", got.Filtered)
 	}
 }

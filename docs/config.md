@@ -240,6 +240,7 @@ rendering and fails on drift.
 | `backlog_admission` | `object` | `see child fields` | No | None |
 | `backlog_admission.authors` | `object` | `see child fields` | No | None |
 | `backlog_admission.authors.allow` | `list<string>` | `[]` | No | None |
+| `backlog_admission.authors.allow_association` | `list<string>` | `[]` | No | requires author association, but tracker.kind memory cannot supply it<br>values must be one of OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, NONE |
 | `backlog_admission.auto_admit` | `boolean` | `false` | No | None |
 | `backlog_admission.auto_admit_min_confidence` | `number` | `0.9` | No | None |
 | `backlog_admission.criteria_section` | `string` | `none` | Conditional | is required |
@@ -442,6 +443,7 @@ rendering and fails on drift.
 | `tracker.issues[].assigned_to_worker` | `boolean` | `false when configured` | No | None |
 | `tracker.issues[].assignee_id` | `string` | `none` | No | None |
 | `tracker.issues[].assignees` | `list<string>` | `[]` | No | None |
+| `tracker.issues[].author_association` | `string` | `none` | No | None |
 | `tracker.issues[].author_id` | `string` | `none` | No | None |
 | `tracker.issues[].blocked_by` | `list<object>` | `[]` | No | None |
 | `tracker.issues[].blocked_by[].id` | `string` | `none` | No | None |
@@ -579,7 +581,7 @@ rendering and fails on drift.
 | `tracker.issues[].updated_at` | `mapping` | `none` | No | None |
 | `tracker.issues[].url` | `string` | `none` | No | None |
 | `tracker.issues[].workpad_signal` | `mapping` | `none` | No | None |
-| `tracker.kind` | `string` | `none` | Yes | backlog_admission.sources.untracked requires candidate selector untracked, but tracker.kind memory does not provide github label status drift<br>intake.sources requires tracker.kind github<br>is required<br>must be one of github, github_local, linear, memory, local_sqlite<br>release.enabled requires tracker.kind github or github_local<br>tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
+| `tracker.kind` | `string` | `none` | Yes | backlog_admission.authors.allow_association requires author association, but tracker.kind memory cannot supply it<br>backlog_admission.sources.untracked requires candidate selector untracked, but tracker.kind memory does not provide github label status drift<br>intake.sources requires tracker.kind github<br>is required<br>must be one of github, github_local, linear, memory, local_sqlite<br>release.enabled requires tracker.kind github or github_local<br>tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
 | `tracker.local_sqlite` | `object` | `see child fields` | No | tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
 | `tracker.local_sqlite.path` | `string` | `none` | Conditional | is required for local_sqlite |
 | `tracker.local_sqlite.project_id` | `string` | `none` | No | None |
