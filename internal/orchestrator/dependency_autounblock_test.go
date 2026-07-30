@@ -252,6 +252,44 @@ func TestDependencyAutoUnblockLoudlySuppressesUnchangedReadyLoop(t *testing.T) {
 	}
 }
 
+func TestDependencyAutoUnblockRearmsAfterBlockerReopens(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 30, 16, 0, 0, 0, time.UTC)
+	waiting := dependencyAutoUnblockIssue("issue-reopened-blocker", "Blocked")
+	waiting.StageUpdatedAt = timePointer(now.Add(-time.Hour))
+	waiting.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415"}}
+	blocker := dependencyAutoUnblockIssue("issue-415", "Done")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	orch.workflowMetrics = metrics
+	state := newState(orch.cfg)
+
+	orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now)
+	tracker.stateIssues[0].StageUpdatedAt = timePointer(now.Add(time.Minute))
+	tracker.blockers[0].State = "In Progress"
+	orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now.Add(2*time.Minute))
+	tracker.blockers[0].State = "Done"
+	orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now.Add(3*time.Minute))
+
+	if got, want := tracker.updates, []dependencyAutoUnblockUpdate{
+		{issueID: waiting.ID, state: "Todo"},
+		{issueID: waiting.ID, state: "Todo"},
+	}; !slices.Equal(got, want) {
+		t.Fatalf("updates = %#v, want unblock before and after blocker reopening", got)
+	}
+}
+
 func TestTickAutoUnblockSkipsPersistedReworkLimitBlockedIssue(t *testing.T) {
 	t.Parallel()
 
@@ -976,18 +1014,25 @@ func TestDependencyAutoUnblockBlockerSignatureIncludesReadinessAndState(t *testi
 	}
 	terminal := open
 	terminal.Issue.State = "Done"
+	terminal.Issue.StageUpdatedAt = timePointer(time.Date(2026, 7, 30, 16, 0, 0, 0, time.UTC))
 	cancelled := terminal
 	cancelled.Issue.State = "Cancelled"
+	refreshedTerminal := terminal
+	refreshedTerminal.Issue.StageUpdatedAt = timePointer(time.Date(2026, 7, 30, 17, 0, 0, 0, time.UTC))
 
 	openSignature := dependencyAutoUnblockBlockerSignature([]dependencyBlocker{open}, cfg, terminalStates)
 	terminalSignature := dependencyAutoUnblockBlockerSignature([]dependencyBlocker{terminal}, cfg, terminalStates)
 	cancelledSignature := dependencyAutoUnblockBlockerSignature([]dependencyBlocker{cancelled}, cfg, terminalStates)
+	refreshedTerminalSignature := dependencyAutoUnblockBlockerSignature([]dependencyBlocker{refreshedTerminal}, cfg, terminalStates)
 
 	if openSignature == terminalSignature {
 		t.Fatalf("open signature = terminal signature = %q, want readiness change to re-arm", openSignature)
 	}
 	if terminalSignature == cancelledSignature {
 		t.Fatalf("Done signature = Cancelled signature = %q, want state change to re-arm", terminalSignature)
+	}
+	if terminalSignature == refreshedTerminalSignature {
+		t.Fatalf("Done signatures match across state timestamps = %q, want same-state cycle to re-arm", terminalSignature)
 	}
 	for signature, readiness := range map[string]string{
 		openSignature:     "ready=false",

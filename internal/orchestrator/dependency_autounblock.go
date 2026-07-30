@@ -915,7 +915,9 @@ func (o *Orchestrator) dependencyAutoUnblockAlreadyConsumed(
 	}
 	issueID := strings.TrimSpace(issue.ID)
 	if state != nil && issueID != "" {
-		if record, ok := state.DependencyAutoUnblocks[issueID]; ok && record.BlockerSet == blockerSet {
+		if record, ok := state.DependencyAutoUnblocks[issueID]; ok &&
+			record.BlockerSet == blockerSet &&
+			dependencyAutoUnblockConsumptionCurrent(issue, record.UnblockedAt) {
 			return true
 		}
 	}
@@ -927,13 +929,33 @@ func (o *Orchestrator) workflowTimelineHasDependencyAutoUnblock(
 	issue connector.Issue,
 	blockerSet string,
 ) bool {
-	_, ok := o.workflowTimelineLaneMetadataMatch(ctx, issue, "dependency_auto_unblock", func(metadata workflowLaneMetadata) bool {
-		if metadata.DependencyAutoUnblock == nil {
-			return false
+	timeline, ok := o.issueWorkflowTimeline(ctx, issue)
+	if !ok {
+		return false
+	}
+	for _, event := range timeline.Events {
+		if event.PhaseType != store.WorkflowPhaseTypeLane ||
+			!strings.EqualFold(strings.TrimSpace(event.Status), "entered") ||
+			!strings.EqualFold(strings.TrimSpace(event.Reason), "dependency_auto_unblock") ||
+			!dependencyAutoUnblockConsumptionCurrent(issue, event.StartedAt) {
+			continue
 		}
-		return strings.TrimSpace(metadata.DependencyAutoUnblock.BlockerSet) == blockerSet
-	})
-	return ok
+		metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON)
+		if !ok || metadata.DependencyAutoUnblock == nil {
+			continue
+		}
+		if strings.TrimSpace(metadata.DependencyAutoUnblock.BlockerSet) == blockerSet {
+			return true
+		}
+	}
+	return false
+}
+
+func dependencyAutoUnblockConsumptionCurrent(issue connector.Issue, unblockedAt time.Time) bool {
+	if issue.StageUpdatedAt == nil || issue.StageUpdatedAt.IsZero() || unblockedAt.IsZero() {
+		return true
+	}
+	return !unblockedAt.Before(issue.StageUpdatedAt.UTC())
 }
 
 type workflowTimelineMetadataMatch struct {
@@ -1097,20 +1119,25 @@ func dependencyAutoUnblockBlockerSignature(
 		state := blocker.Ref.State
 		closed := false
 		pullRequestState := ""
+		stateUpdatedAt := ""
 		if blocker.Resolved {
 			state = firstNonBlank(blocker.Issue.State, state)
 			closed = blocker.Issue.Closed
+			if blocker.Issue.StageUpdatedAt != nil && !blocker.Issue.StageUpdatedAt.IsZero() {
+				stateUpdatedAt = blocker.Issue.StageUpdatedAt.UTC().Format(time.RFC3339Nano)
+			}
 			if blocker.Issue.PullRequest != nil {
 				pullRequestState = blocker.Issue.PullRequest.State
 			}
 		}
 		keys = append(keys, fmt.Sprintf(
-			"%s|resolved=%t|ready=%t|closed=%t|state=%s|pull_request=%s",
+			"%s|resolved=%t|ready=%t|closed=%t|state=%s|state_updated_at=%s|pull_request=%s",
 			key,
 			blocker.Resolved,
 			dependencyBlockerReady(blocker, cfg, terminalStates),
 			closed,
 			normalizeState(state),
+			stateUpdatedAt,
 			normalizePullRequestState(pullRequestState),
 		))
 	}
