@@ -120,13 +120,19 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 			o.logDependencyAutoUnblockDecision(hydrated, "skip", "blockers_not_ready", blockers, "")
 			continue
 		}
-		blockerSet := dependencyAutoUnblockBlockerSet(blockers)
-		if o.dependencyAutoUnblockAlreadyConsumed(ctx, state, hydrated, blockerSet) {
-			o.logDependencyAutoUnblockDecision(hydrated, "skip", "blocker_set_already_consumed", blockers, "")
+		blockerSignature := dependencyAutoUnblockBlockerSignature(blockers, cfg, o.cfg.TerminalStates)
+		if o.dependencyAutoUnblockAlreadyConsumed(ctx, state, hydrated, blockerSignature) {
+			action := "skip"
+			reason := "blocker_set_already_consumed"
+			if dependencyBlockersTerminal(blockers, o.cfg.TerminalStates) {
+				action = "error"
+				reason = "terminal_blocker_set_already_consumed"
+			}
+			o.logDependencyAutoUnblockDecision(hydrated, action, reason, blockers, "")
 			continue
 		}
 		targetState := dependencyAutoUnblockTargetState(state, hydrated, cfg.TargetState)
-		if !o.applyDependencyAutoUnblock(ctx, state, hydrated, blockers, blockerSet, targetState, now) {
+		if !o.applyDependencyAutoUnblock(ctx, state, hydrated, blockers, blockerSignature, targetState, now) {
 			o.logDependencyAutoUnblockDecision(hydrated, "skip", "transition_failed", blockers, targetState)
 			continue
 		}
@@ -652,6 +658,24 @@ func dependencyBlockersReady(blockers []dependencyBlocker, cfg DependencyAutoUnb
 	return true
 }
 
+func dependencyBlockersTerminal(blockers []dependencyBlocker, terminalStates []string) bool {
+	if len(blockers) == 0 {
+		return false
+	}
+	for _, blocker := range blockers {
+		if blocker.Resolved {
+			if !blocker.Issue.Closed && !stateIn(blocker.Issue.State, terminalStates) {
+				return false
+			}
+			continue
+		}
+		if !stateIn(blocker.Ref.State, terminalStates) {
+			return false
+		}
+	}
+	return true
+}
+
 func dependencyBlockerReady(blocker dependencyBlocker, cfg DependencyAutoUnblockConfig, terminalStates []string) bool {
 	if blocker.Resolved {
 		if blocker.Issue.Closed || stateIn(blocker.Issue.State, terminalStates) {
@@ -743,7 +767,7 @@ func (o *Orchestrator) applyDependencyAutoUnblock(
 			Blockers:   dependencyAutoUnblockBlockerLabels(blockers),
 		},
 	}
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, targetState, now, "dependency_auto_unblock", metadata); err != nil {
+	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, targetState, now, "dependency_auto_unblock", metadata); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("dependency auto-unblock transition failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
 		}
@@ -794,6 +818,10 @@ func (o *Orchestrator) logDependencyAutoUnblockDecision(
 	}
 	if targetState != "" {
 		attrs = append(attrs, "target_state", targetState)
+	}
+	if action == "error" {
+		o.logger.Warn("dependency auto-unblock decision", attrs...)
+		return
 	}
 	o.logger.Info("dependency auto-unblock decision", attrs...)
 }
@@ -887,7 +915,9 @@ func (o *Orchestrator) dependencyAutoUnblockAlreadyConsumed(
 	}
 	issueID := strings.TrimSpace(issue.ID)
 	if state != nil && issueID != "" {
-		if record, ok := state.DependencyAutoUnblocks[issueID]; ok && record.BlockerSet == blockerSet {
+		if record, ok := state.DependencyAutoUnblocks[issueID]; ok &&
+			record.BlockerSet == blockerSet &&
+			dependencyAutoUnblockConsumptionCurrent(issue, record.UnblockedAt) {
 			return true
 		}
 	}
@@ -899,13 +929,33 @@ func (o *Orchestrator) workflowTimelineHasDependencyAutoUnblock(
 	issue connector.Issue,
 	blockerSet string,
 ) bool {
-	_, ok := o.workflowTimelineLaneMetadataMatch(ctx, issue, "dependency_auto_unblock", func(metadata workflowLaneMetadata) bool {
-		if metadata.DependencyAutoUnblock == nil {
-			return false
+	timeline, ok := o.issueWorkflowTimeline(ctx, issue)
+	if !ok {
+		return false
+	}
+	for _, event := range timeline.Events {
+		if event.PhaseType != store.WorkflowPhaseTypeLane ||
+			!strings.EqualFold(strings.TrimSpace(event.Status), "entered") ||
+			!strings.EqualFold(strings.TrimSpace(event.Reason), "dependency_auto_unblock") ||
+			!dependencyAutoUnblockConsumptionCurrent(issue, event.StartedAt) {
+			continue
 		}
-		return strings.TrimSpace(metadata.DependencyAutoUnblock.BlockerSet) == blockerSet
-	})
-	return ok
+		metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON)
+		if !ok || metadata.DependencyAutoUnblock == nil {
+			continue
+		}
+		if strings.TrimSpace(metadata.DependencyAutoUnblock.BlockerSet) == blockerSet {
+			return true
+		}
+	}
+	return false
+}
+
+func dependencyAutoUnblockConsumptionCurrent(issue connector.Issue, unblockedAt time.Time) bool {
+	if issue.StageUpdatedAt == nil || issue.StageUpdatedAt.IsZero() || unblockedAt.IsZero() {
+		return true
+	}
+	return !unblockedAt.Before(issue.StageUpdatedAt.UTC())
 }
 
 type workflowTimelineMetadataMatch struct {
@@ -1049,6 +1099,47 @@ func dependencyAutoUnblockBlockerSet(blockers []dependencyBlocker) string {
 		if key != "" {
 			keys = append(keys, key)
 		}
+	}
+	keys = uniqueStrings(keys)
+	slices.Sort(keys)
+	return strings.Join(keys, "\n")
+}
+
+func dependencyAutoUnblockBlockerSignature(
+	blockers []dependencyBlocker,
+	cfg DependencyAutoUnblockConfig,
+	terminalStates []string,
+) string {
+	keys := make([]string, 0, len(blockers))
+	for _, blocker := range blockers {
+		key := dependencyAutoUnblockBlockerKey(blocker)
+		if key == "" {
+			continue
+		}
+		state := blocker.Ref.State
+		closed := false
+		pullRequestState := ""
+		stateUpdatedAt := ""
+		if blocker.Resolved {
+			state = firstNonBlank(blocker.Issue.State, state)
+			closed = blocker.Issue.Closed
+			if blocker.Issue.StageUpdatedAt != nil && !blocker.Issue.StageUpdatedAt.IsZero() {
+				stateUpdatedAt = blocker.Issue.StageUpdatedAt.UTC().Format(time.RFC3339Nano)
+			}
+			if blocker.Issue.PullRequest != nil {
+				pullRequestState = blocker.Issue.PullRequest.State
+			}
+		}
+		keys = append(keys, fmt.Sprintf(
+			"%s|resolved=%t|ready=%t|closed=%t|state=%s|state_updated_at=%s|pull_request=%s",
+			key,
+			blocker.Resolved,
+			dependencyBlockerReady(blocker, cfg, terminalStates),
+			closed,
+			normalizeState(state),
+			stateUpdatedAt,
+			normalizePullRequestState(pullRequestState),
+		))
 	}
 	keys = uniqueStrings(keys)
 	slices.Sort(keys)

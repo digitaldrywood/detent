@@ -114,6 +114,182 @@ func TestTickAutoUnblocksDependencyOnlyOnceForSameResolvedBlockerSet(t *testing.
 	}
 }
 
+func TestDependencyAutoUnblockDoesNotConsumeRejectedTransition(t *testing.T) {
+	t.Parallel()
+
+	waiting := dependencyAutoUnblockIssue("issue-rejected-transition", "Blocked")
+	waiting.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415"}}
+	blocker := dependencyAutoUnblockIssue("issue-done", "Done")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	rejecting := &dependencyAutoUnblockRejectOnceConnector{dependencyAutoUnblockConnector: tracker, reject: true}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	orch.connector = rejecting
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	orch.workflowMetrics = metrics
+	state := newState(orch.cfg)
+	now := time.Date(2026, 7, 30, 16, 0, 0, 0, time.UTC)
+
+	if transitioned := orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now); len(transitioned) != 0 {
+		t.Fatalf("first transitioned = %#v, want rejected transition held", transitioned)
+	}
+	if len(tracker.comments) != 0 {
+		t.Fatalf("first comments = %#v, want no success audit", tracker.comments)
+	}
+	if _, ok := state.DependencyAutoUnblocks[waiting.ID]; ok {
+		t.Fatalf("DependencyAutoUnblocks[%q] recorded after rejected transition", waiting.ID)
+	}
+	if orch.workflowTimelineHasDependencyAutoUnblock(t.Context(), waiting, dependencyAutoUnblockBlockerSet([]dependencyBlocker{{
+		Ref:      waiting.BlockedBy[0],
+		Issue:    blocker,
+		Resolved: true,
+	}})) {
+		t.Fatal("rejected transition recorded a consumed blocker set")
+	}
+
+	rejecting.reject = false
+	if transitioned := orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now.Add(time.Minute)); len(transitioned) != 1 {
+		t.Fatalf("second transitioned = %#v, want successful retry", transitioned)
+	}
+	if len(tracker.updates) != 2 {
+		t.Fatalf("updates = %#v, want rejected attempt and successful retry", tracker.updates)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one success audit", tracker.comments)
+	}
+}
+
+func TestDependencyAutoUnblockRearmsWhenBlockerReadinessChanges(t *testing.T) {
+	t.Parallel()
+
+	waiting := dependencyAutoUnblockIssue("issue-readiness-change", "Blocked")
+	waiting.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415"}}
+	blocker := dependencyAutoUnblockIssue("issue-open", "In Progress")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	orch.workflowMetrics = metrics
+	now := time.Date(2026, 7, 30, 16, 0, 0, 0, time.UTC)
+	orch.recordLaneTransition(t.Context(), waiting, "Todo", now.Add(-time.Hour), "dependency_auto_unblock", workflowLaneMetadata{
+		DependencyAutoUnblock: &workflowLaneDependencyAutoUnblockMetadata{
+			BlockerSet: dependencyAutoUnblockBlockerSet([]dependencyBlocker{{
+				Ref:      waiting.BlockedBy[0],
+				Issue:    blocker,
+				Resolved: true,
+			}}),
+			Blockers: []string{blocker.Identifier},
+		},
+	})
+	state := newState(orch.cfg)
+
+	if transitioned := orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now); len(transitioned) != 0 {
+		t.Fatalf("open blocker transitioned = %#v, want blockers_not_ready", transitioned)
+	}
+	tracker.blockers[0].State = "Done"
+	if transitioned := orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now.Add(time.Minute)); len(transitioned) != 1 {
+		t.Fatalf("closed blocker transitioned = %#v, want readiness change to re-arm", transitioned)
+	}
+}
+
+func TestDependencyAutoUnblockLoudlySuppressesUnchangedReadyLoop(t *testing.T) {
+	t.Parallel()
+
+	waiting := dependencyAutoUnblockIssue("issue-unchanged-loop", "Blocked")
+	waiting.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415"}}
+	blocker := dependencyAutoUnblockIssue("issue-done", "Done")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	var logs bytes.Buffer
+	orch.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	state := newState(orch.cfg)
+	now := time.Date(2026, 7, 30, 16, 0, 0, 0, time.UTC)
+
+	orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now)
+	orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now.Add(time.Minute))
+
+	if len(tracker.updates) != 1 {
+		t.Fatalf("updates = %#v, want unchanged ready loop suppressed", tracker.updates)
+	}
+	for _, want := range []string{
+		"level=WARN",
+		"action=error",
+		"reason=terminal_blocker_set_already_consumed",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("log missing %q:\n%s", want, logs.String())
+		}
+	}
+	tracker.blockers[0].State = "Cancelled"
+	orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now.Add(2*time.Minute))
+	if len(tracker.updates) != 2 {
+		t.Fatalf("updates after blocker state change = %#v, want latch re-armed", tracker.updates)
+	}
+}
+
+func TestDependencyAutoUnblockRearmsAfterBlockerReopens(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 30, 16, 0, 0, 0, time.UTC)
+	waiting := dependencyAutoUnblockIssue("issue-reopened-blocker", "Blocked")
+	waiting.StageUpdatedAt = timePointer(now.Add(-time.Hour))
+	waiting.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415"}}
+	blocker := dependencyAutoUnblockIssue("issue-415", "Done")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	orch.workflowMetrics = metrics
+	state := newState(orch.cfg)
+
+	orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now)
+	tracker.stateIssues[0].StageUpdatedAt = timePointer(now.Add(time.Minute))
+	tracker.blockers[0].State = "In Progress"
+	orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now.Add(2*time.Minute))
+	tracker.blockers[0].State = "Done"
+	orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now.Add(3*time.Minute))
+
+	if got, want := tracker.updates, []dependencyAutoUnblockUpdate{
+		{issueID: waiting.ID, state: "Todo"},
+		{issueID: waiting.ID, state: "Todo"},
+	}; !slices.Equal(got, want) {
+		t.Fatalf("updates = %#v, want unblock before and after blocker reopening", got)
+	}
+}
+
 func TestTickAutoUnblockSkipsPersistedReworkLimitBlockedIssue(t *testing.T) {
 	t.Parallel()
 
@@ -823,6 +999,51 @@ func TestDependencyAutoUnblockBlockerSetIgnoresRefSource(t *testing.T) {
 	}
 }
 
+func TestDependencyAutoUnblockBlockerSignatureIncludesReadinessAndState(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeDependencyAutoUnblockConfig(DependencyAutoUnblockConfig{
+		Readiness: DependencyReadinessTerminalOrMerged,
+	})
+	terminalStates := normalizedStates([]string{"Done", "Cancelled"})
+	ref := connector.BlockedRef{Identifier: "digitaldrywood/detent#415"}
+	open := dependencyBlocker{
+		Ref:      ref,
+		Issue:    dependencyAutoUnblockIssue("issue-415", "In Progress"),
+		Resolved: true,
+	}
+	terminal := open
+	terminal.Issue.State = "Done"
+	terminal.Issue.StageUpdatedAt = timePointer(time.Date(2026, 7, 30, 16, 0, 0, 0, time.UTC))
+	cancelled := terminal
+	cancelled.Issue.State = "Cancelled"
+	refreshedTerminal := terminal
+	refreshedTerminal.Issue.StageUpdatedAt = timePointer(time.Date(2026, 7, 30, 17, 0, 0, 0, time.UTC))
+
+	openSignature := dependencyAutoUnblockBlockerSignature([]dependencyBlocker{open}, cfg, terminalStates)
+	terminalSignature := dependencyAutoUnblockBlockerSignature([]dependencyBlocker{terminal}, cfg, terminalStates)
+	cancelledSignature := dependencyAutoUnblockBlockerSignature([]dependencyBlocker{cancelled}, cfg, terminalStates)
+	refreshedTerminalSignature := dependencyAutoUnblockBlockerSignature([]dependencyBlocker{refreshedTerminal}, cfg, terminalStates)
+
+	if openSignature == terminalSignature {
+		t.Fatalf("open signature = terminal signature = %q, want readiness change to re-arm", openSignature)
+	}
+	if terminalSignature == cancelledSignature {
+		t.Fatalf("Done signature = Cancelled signature = %q, want state change to re-arm", terminalSignature)
+	}
+	if terminalSignature == refreshedTerminalSignature {
+		t.Fatalf("Done signatures match across state timestamps = %q, want same-state cycle to re-arm", terminalSignature)
+	}
+	for signature, readiness := range map[string]string{
+		openSignature:     "ready=false",
+		terminalSignature: "ready=true",
+	} {
+		if !strings.Contains(signature, readiness) {
+			t.Fatalf("signature %q missing %q", signature, readiness)
+		}
+	}
+}
+
 func TestDependencyAutoUnblockDecisionLogIncludesBlockerSources(t *testing.T) {
 	t.Parallel()
 
@@ -931,6 +1152,19 @@ type dependencyAutoUnblockConnector struct {
 	updates         []dependencyAutoUnblockUpdate
 	comments        []dependencyAutoUnblockAudit
 	identifierCalls []string
+}
+
+type dependencyAutoUnblockRejectOnceConnector struct {
+	*dependencyAutoUnblockConnector
+	reject bool
+}
+
+func (c *dependencyAutoUnblockRejectOnceConnector) UpdateIssueState(ctx context.Context, issueID string, state string) error {
+	if c.reject {
+		c.updates = append(c.updates, dependencyAutoUnblockUpdate{issueID: issueID, state: state})
+		return connector.ErrStateUpdateBlocked
+	}
+	return c.dependencyAutoUnblockConnector.UpdateIssueState(ctx, issueID, state)
 }
 
 func (c *dependencyAutoUnblockConnector) Name() string {

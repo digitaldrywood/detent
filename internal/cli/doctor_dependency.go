@@ -767,8 +767,12 @@ func doctorDependencyDiagnostics(
 			continue
 		}
 		if doctorDependencyBlockersReady(blockers, cfg, terminalStates) {
+			code := "dependency_ready_but_still_blocked"
+			if doctorDependencyBlockersTerminal(blockers, terminalStates) {
+				code = "dependency_terminal_but_still_blocked"
+			}
 			diagnostics = append(diagnostics, doctorDependencyDiagnostic{
-				Code:       "dependency_ready_but_still_blocked",
+				Code:       code,
 				Issue:      hydrated,
 				References: doctorDependencyBlockerLabels(blockers),
 			})
@@ -891,6 +895,24 @@ func doctorDependencyBlockersReady(
 	return true
 }
 
+func doctorDependencyBlockersTerminal(blockers []doctorDependencyBlocker, terminalStates []string) bool {
+	if len(blockers) == 0 {
+		return false
+	}
+	for _, blocker := range blockers {
+		if blocker.Resolved {
+			if !blocker.Issue.Closed && !doctorStateInList(blocker.Issue.State, terminalStates) {
+				return false
+			}
+			continue
+		}
+		if !doctorStateInList(blocker.Ref.State, terminalStates) {
+			return false
+		}
+	}
+	return true
+}
+
 func doctorDependencyBlockerReady(
 	blocker doctorDependencyBlocker,
 	cfg doctorDependencyAutoUnblockSettings,
@@ -971,6 +993,9 @@ func doctorDependencyAutoUnblockHint(diagnostics []doctorDependencyDiagnostic) s
 	}
 	if _, ok := codes["dependency_ready_but_still_blocked"]; ok {
 		hints = append(hints, "Check tracker.dependency_auto_unblock source_states, target_state, readiness, and GitHub Project Status mappings.")
+	}
+	if _, ok := codes["dependency_terminal_but_still_blocked"]; ok {
+		hints = append(hints, "All dependency blockers are terminal but the issue has not transitioned; inspect dependency auto-unblock decision logs for a consumed-signature latch.")
 	}
 	return strings.Join(hints, " ")
 }
