@@ -510,8 +510,14 @@ templ boardCardView2(card boardCardView) {
 				<span class="flex-none whitespace-nowrap tabular-nums">{ card.AgeFooter }</span>
 			</div>
 		}
-		if len(card.Labels) > 0 || card.Effort != "" || card.Activity != "" || card.PRStatus != "" {
+		if card.AuthorDetail != "" || len(card.Labels) > 0 || card.Effort != "" || card.Activity != "" || card.PRStatus != "" {
 			<div class="gap-1.5 border-t border-line/70 pt-1.5 text-2xs text-sec" data-board-card-content="comfy">
+				if card.AuthorDetail != "" {
+					<div class="flex min-w-0 items-center gap-1.5" data-board-card-author>
+						<span class="flex-none text-dim">Filed by</span>
+						<span class="min-w-0 truncate font-mono text-text">{ card.AuthorDetail }</span>
+					</div>
+				}
 				if len(card.Labels) > 0 {
 					<div class="flex min-w-0 flex-wrap gap-1" data-board-card-labels>
 						for _, label := range card.Labels {

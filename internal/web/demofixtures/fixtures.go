@@ -269,6 +269,12 @@ func demoHealthySnapshot() telemetry.Snapshot {
 		snapshot.Running[i].LeaseRenewedAt = &leaseRenewed
 		snapshot.Running[i].LeaseExpiresAt = &leaseExpires
 	}
+	snapshot.Running[0].AuthorID = "corylanou"
+	snapshot.Running[0].Origin = "unknown"
+	snapshot.BoardIssues[0].Origin = "unknown"
+	snapshot.BoardIssues[1].AuthorID = "corylanou"
+	snapshot.BoardIssues[1].Origin = "human"
+	snapshot.BoardIssues[1].OriginActor = "corylanou"
 	return snapshot
 }
 
