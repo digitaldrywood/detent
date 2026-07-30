@@ -252,6 +252,31 @@ func TestBacklogAdmissionAutoAdmitDefaultsOff(t *testing.T) {
 	}
 }
 
+func TestBacklogAdmissionScheduleNormalization(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		schedule string
+		want     string
+	}{
+		{name: "default", want: DefaultBacklogAdmissionSchedule},
+		{name: "explicit", schedule: "0 6 * * 1-5", want: "0 6 * * 1-5"},
+		{name: "trim explicit", schedule: "  0 * * * *  ", want: "0 * * * *"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := BacklogAdmission{Schedule: tt.schedule}
+			cfg.Normalize()
+			if cfg.Schedule != tt.want {
+				t.Fatalf("Schedule = %q, want %q", cfg.Schedule, tt.want)
+			}
+		})
+	}
+}
+
 func TestBacklogAdmissionValidateUntrackedSelector(t *testing.T) {
 	t.Parallel()
 
