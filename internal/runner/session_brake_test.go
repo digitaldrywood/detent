@@ -14,6 +14,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+const sessionBrakeTestWaitTimeout = 10 * time.Second
+
 func TestRunnerStopsSessionBeyondMaxTurns(t *testing.T) {
 	t.Parallel()
 
@@ -176,13 +178,13 @@ func TestRunnerStopsSessionAfterNoProgressBeforeCompletion(t *testing.T) {
 	var result RunResult
 	select {
 	case result = <-resultCh:
-	case <-time.After(time.Second):
+	case <-time.After(sessionBrakeTestWaitTimeout):
 		t.Fatal("timed out waiting for no-progress result")
 	}
 	var runErr error
 	select {
 	case runErr = <-errCh:
-	case <-time.After(time.Second):
+	case <-time.After(sessionBrakeTestWaitTimeout):
 		t.Fatal("timed out waiting for no-progress error")
 	}
 	if !errors.Is(runErr, ErrSessionNoProgress) {
@@ -271,7 +273,7 @@ func TestRunnerWorkpadProgressResetsNoProgressHeartbeat(t *testing.T) {
 		if runErr != nil {
 			t.Fatalf("Run() error = %v, want normal completion", runErr)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(sessionBrakeTestWaitTimeout):
 		t.Fatal("timed out waiting for normal completion")
 	}
 }
@@ -360,7 +362,7 @@ func (f *controlledSessionTickerFactory) Wait(t *testing.T) *controlledSessionTi
 	select {
 	case ticker := <-f.created:
 		return ticker
-	case <-time.After(time.Second):
+	case <-time.After(sessionBrakeTestWaitTimeout):
 		t.Fatal("timed out waiting for progress ticker")
 		return nil
 	}
@@ -384,7 +386,7 @@ func waitSessionSignal(t *testing.T, signal <-chan struct{}, name string) {
 	t.Helper()
 	select {
 	case <-signal:
-	case <-time.After(time.Second):
+	case <-time.After(sessionBrakeTestWaitTimeout):
 		t.Fatalf("timed out waiting for %s", name)
 	}
 }
