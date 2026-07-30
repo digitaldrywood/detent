@@ -3,13 +3,18 @@ package runner
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 func TestBlockedRecoveryToolFingerprintTracksExecutable(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), "agent-tool")
+	name := "agent-tool"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(t.TempDir(), name)
 	if err := os.WriteFile(path, []byte("first"), 0o700); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
