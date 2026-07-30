@@ -42,6 +42,8 @@ func TestSnapshotForScenarioVariants(t *testing.T) {
 		{name: "long content", projectID: "dogfood", variant: "long-content"},
 		{name: "budget refusals", projectID: "dogfood", variant: "budget-refusals"},
 		{name: "no history", projectID: "agent-lab", variant: "no-history"},
+		{name: "one board staleness warning", variant: "board-staleness-one"},
+		{name: "twenty board staleness warnings", variant: "board-staleness-twenty"},
 		{name: "settings empty", variant: "settings-empty"},
 		{name: "settings long paths", variant: "settings-long-paths"},
 		{name: "settings missing", variant: "settings-missing"},
@@ -83,6 +85,32 @@ func TestSnapshotForScenarioVariants(t *testing.T) {
 			}
 			assertSnapshotProjectIDs(t, snapshot)
 			assertSnapshotIssueIDs(t, snapshot)
+		})
+	}
+}
+
+func TestBoardStalenessWarningScenarios(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		variant string
+		want    int
+	}{
+		{variant: "board-staleness-one", want: 1},
+		{variant: "board-staleness-twenty", want: 20},
+	}
+	for _, tt := range tests {
+		t.Run(tt.variant, func(t *testing.T) {
+			t.Parallel()
+			snapshot := SnapshotForScenario("", tt.variant)
+			if len(snapshot.StalenessWarnings) != tt.want {
+				t.Fatalf("staleness warnings = %d, want %d", len(snapshot.StalenessWarnings), tt.want)
+			}
+			for _, warning := range snapshot.StalenessWarnings {
+				if warning.Kind != "repeated_decision" || warning.IssueURL == "" {
+					t.Fatalf("warning = %#v, want linked repeated decision", warning)
+				}
+			}
 		})
 	}
 }

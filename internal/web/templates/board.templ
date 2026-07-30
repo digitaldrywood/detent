@@ -36,10 +36,19 @@ templ BoardPage(data DashboardData) {
 // projectKanbanBoardLoaded) rather than flashing skeletons.
 templ BoardSnapshot(data DashboardData) {
 	{{ alerts := boardAlerts(data.Snapshot) }}
-	@boardAlertsBar(alerts)
 	if boardFirstRun(data) {
+		if len(alerts) > 0 {
+			<div class="flex-none px-5 pt-3.5">
+				@boardAlertsBar(alerts)
+			</div>
+		}
 		@primitives.FirstRun("Connect a repository to start orchestrating.", "Add project", "/settings", "projects are defined in the global config")
 	} else if !projectKanbanBoardLoaded(data) {
+		if len(alerts) > 0 {
+			<div class="flex-none px-5 pt-3.5">
+				@boardAlertsBar(alerts)
+			</div>
+		}
 		if snapshotDegraded(data.Snapshot) {
 			<div class="flex-none px-5 pt-4">
 				@snapshotReadiness(data.Snapshot)
@@ -48,11 +57,11 @@ templ BoardSnapshot(data DashboardData) {
 			@primitives.SkeletonLanes(4)
 		}
 	} else {
-		@boardSnapshotBody(data)
+		@boardSnapshotBody(data, alerts)
 	}
 }
 
-templ boardSnapshotBody(data DashboardData) {
+templ boardSnapshotBody(data DashboardData, alerts []boardAlert) {
 	{{ view := boardViewFromDashboard(data) }}
 	if len(view.Exceptions) > 0 {
 		<div id="board-exceptions" class="flex-none px-5 pt-3.5">
@@ -67,7 +76,11 @@ templ boardSnapshotBody(data DashboardData) {
 	</p>
 	<div id="board-figures" class="flex-none px-5 pb-3 pt-4">
 		@primitives.FigureRow(view.Figures) {
-			<span id="board-freshness" class={ "min-w-0 truncate font-mono text-xs tabular-nums " + boardExtraTextClass(refreshFreshnessKind(data.Snapshot)) }>{ refreshFreshnessSummary(data.Snapshot) }</span>
+			if len(alerts) > 0 {
+				@boardAlertsBar(alerts)
+			} else {
+				<span id="board-freshness" class={ "min-w-0 truncate font-mono text-xs tabular-nums " + boardExtraTextClass(refreshFreshnessKind(data.Snapshot)) }>{ refreshFreshnessSummary(data.Snapshot) }</span>
+			}
 			@primitives.MonoFigure("fig-tps", view.TPS)
 			@primitives.MonoFigure("fig-spend", view.Spend)
 			@boardLanePicker(view)
@@ -114,21 +127,21 @@ templ boardAlertsBar(alerts []boardAlert) {
 			<button
 				id="board-alerts-toggle"
 				type="button"
-				class="flex h-10 w-full min-w-0 items-center gap-2 px-3 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current"
+				class="flex h-5 min-w-0 max-w-full items-center gap-1.5 px-2 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current"
 				data-board-alerts-toggle
 				aria-expanded="false"
 				aria-controls="board-alerts-overlay"
 				aria-label={ boardAlertButtonLabel(alerts) }
 			>
-				@boardAlertGlyph(alerts[0], "size-4 shrink-0")
-				<span class="shrink-0 font-medium">{ boardCountLabel(len(alerts), "issue", "issues") }</span>
-				<span class="shrink-0 text-current/60" aria-hidden="true">·</span>
-				<span class="min-w-0 flex-1 truncate text-text">{ alerts[0].TerseSummary }</span>
+				@boardAlertGlyph(alerts[0], "size-3.5 shrink-0")
+				<span class="shrink-0 font-medium">{ boardCountLabel(len(alerts), "warning", "warnings") }</span>
+				<span class="hidden shrink-0 text-current/60 md:inline" aria-hidden="true">·</span>
+				<span class="hidden min-w-0 flex-1 truncate text-text md:inline">{ alerts[0].TerseSummary }</span>
 				if len(alerts) > 1 {
 					<span class="shrink-0 font-medium">{ "+" + strconv.Itoa(len(alerts)-1) }</span>
 				}
 				<span class="shrink-0 transition-transform duration-150 data-[open=true]:rotate-180" data-board-alerts-chevron data-open="false" aria-hidden="true">
-					@icon.ChevronDown(icon.Props{Class: "size-4"})
+					@icon.ChevronDown(icon.Props{Class: "size-3.5"})
 				</span>
 			</button>
 			<template data-board-alerts-overlay-template>
@@ -142,7 +155,7 @@ templ boardAlertsOverlayContents(alerts []boardAlert) {
 	<div class="divide-y divide-line" data-board-alerts-overlay-content>
 		<header class="sticky top-0 z-10 flex h-10 items-center gap-2 border-b border-line bg-page px-3 text-sm">
 			@boardAlertGlyph(alerts[0], "size-4 shrink-0")
-			<p class="min-w-0 flex-1 truncate font-medium text-text">{ boardCountLabel(len(alerts), "issue", "issues") }</p>
+			<p class="min-w-0 flex-1 truncate font-medium text-text">{ boardCountLabel(len(alerts), "warning", "warnings") }</p>
 			<button
 				type="button"
 				class="inline-flex shrink-0 items-center gap-1 rounded-chip px-2 py-1 text-xs font-medium text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
@@ -165,7 +178,9 @@ templ boardAlertsOverlayContents(alerts []boardAlert) {
 						</div>
 						if alert.DeepLink != "" {
 							<a class="shrink-0 text-xs font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ templ.SafeURL(alert.DeepLink) }>
-								if alert.Overflow > 0 {
+								if alert.DeepLinkLabel != "" {
+									{ alert.DeepLinkLabel }
+								} else if alert.Overflow > 0 {
 									{ "+" + strconv.Itoa(alert.Overflow) + " more · Health" }
 								} else {
 									Health
@@ -276,7 +291,7 @@ templ boardAlertScript() {
 				if (!bar || !host) return;
 				var rect = bar.getBoundingClientRect();
 				var margin = 8;
-				var width = Math.min(rect.width, Math.max(0, window.innerWidth - margin * 2));
+				var width = Math.min(640, Math.max(0, window.innerWidth - margin * 2));
 				var left = Math.min(Math.max(margin, rect.left), Math.max(margin, window.innerWidth - width - margin));
 				host.style.left = Math.round(left) + "px";
 				host.style.top = Math.round(rect.bottom + 4) + "px";

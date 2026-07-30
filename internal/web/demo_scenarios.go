@@ -147,6 +147,8 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "health-scheduled-pacing", Route: "/health/ui", WaitSelector: "#dispatch-recovery-status", Page: "health", Variant: "board-scheduled-pacing"},
 		{ID: "board-degraded-health-banners", Route: "/", WaitSelector: "#board-lanes", Page: "fleet-kanban", Variant: "board-degraded-health-banners", KanbanMode: workflowconfig.KanbanModeReadOnly},
 		{ID: "board-alerts-heavy", Route: "/", WaitSelector: "#board-alerts", Page: "fleet-kanban", Variant: "board-alerts-heavy", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},
+		{ID: "board-staleness-one", Route: "/", WaitSelector: "#board-alerts", Page: "fleet-kanban", Variant: "board-staleness-one", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},
+		{ID: "board-staleness-twenty", Route: "/", WaitSelector: "#board-alerts", Page: "fleet-kanban", Variant: "board-staleness-twenty", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},
 		{ID: "health-dispatch-recoveries", Route: "/health/ui", WaitSelector: "#dispatch-recovery-status", Page: "health", Variant: "board-degraded-health-banners"},
 		{ID: "board-tracker-stale", Route: "/", WaitSelector: "#board-alerts", Page: "fleet-kanban", Variant: "tracker-stale", KanbanMode: workflowconfig.KanbanModeReadOnly, HideFromManifest: true},
 		{ID: "health-tracker-stale", Route: "/health/ui", WaitSelector: "#health-tracker-dogfood", Page: "health", Variant: "tracker-stale", HideFromManifest: true},
