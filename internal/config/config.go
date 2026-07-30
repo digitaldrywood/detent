@@ -69,6 +69,8 @@ const (
 	DefaultAutoPromoteGateWaitTimeoutSeconds = 3600
 	DefaultOverloadRetryDelayMS              = 45000
 	DefaultMergeWorkerMaxDurationMS          = 6 * 60 * 60 * 1000
+	DefaultMaxSessionDurationMS              = 2 * 60 * 60 * 1000
+	DefaultNoProgressTimeoutMS               = 90 * 60 * 1000
 
 	DefaultPollingIntervalMS              = 120000
 	MinPollingIntervalMS                  = 60000
@@ -267,6 +269,7 @@ type Agent struct {
 	MaxTurns                     int                          `yaml:"max_turns"`
 	MaxTurnDurationMS            int                          `yaml:"max_turn_duration_ms"`
 	MaxSessionDurationMS         int                          `yaml:"max_session_duration_ms"`
+	NoProgressTimeoutMS          int                          `yaml:"no_progress_timeout_ms"`
 	MergeWorkerMaxDurationMS     int                          `yaml:"merge_worker_max_duration_ms"`
 	MaxRetryBackoffMS            int                          `yaml:"max_retry_backoff_ms"`
 	OverloadRetryDelayMS         int                          `yaml:"overload_retry_delay_ms"`
@@ -1254,6 +1257,8 @@ func Default() Config {
 		Agent: Agent{
 			MaxConcurrentAgents:      10,
 			MaxTurns:                 20,
+			MaxSessionDurationMS:     DefaultMaxSessionDurationMS,
+			NoProgressTimeoutMS:      DefaultNoProgressTimeoutMS,
 			MergeWorkerMaxDurationMS: DefaultMergeWorkerMaxDurationMS,
 			MaxRetryBackoffMS:        300000,
 			OverloadRetryDelayMS:     DefaultOverloadRetryDelayMS,
@@ -1926,6 +1931,9 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	}
 	if a.MaxSessionDurationMS < 0 {
 		*problems = append(*problems, prefix+".max_session_duration_ms must be greater than or equal to 0")
+	}
+	if a.NoProgressTimeoutMS < 0 {
+		*problems = append(*problems, prefix+".no_progress_timeout_ms must be greater than or equal to 0")
 	}
 	validatePositive(prefix+".merge_worker_max_duration_ms", a.MergeWorkerMaxDurationMS, problems)
 	validatePositive(prefix+".max_retry_backoff_ms", a.MaxRetryBackoffMS, problems)

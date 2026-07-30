@@ -509,6 +509,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		OnUsageUpdate:       o.usageUpdateHandler(runCtx, issue.ID),
 		OnActivityUpdate:    o.activityUpdateHandler(runCtx, issue),
 		OnOverrideRejected:  o.agentOverrideRejectionHandler(runCtx, issue),
+		ProgressProbe:       o.sessionProgressProbe(issue),
 	}
 	if retryQueued {
 		request.RetryMode = queuedRetry.RetryMode

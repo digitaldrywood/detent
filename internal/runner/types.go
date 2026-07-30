@@ -158,6 +158,7 @@ type AgentTurnRequest struct {
 	ServiceTier        string
 	ReasoningEffort    string
 	Resume             AgentResume
+	MaxTurns           int
 	TurnTimeout        time.Duration
 	MaxDuration        time.Duration
 	ExtraWritableRoots []string
@@ -310,11 +311,15 @@ type RunRequest struct {
 	OnUsageUpdate       UsageUpdateHandler
 	OnActivityUpdate    AgentActivityUpdateHandler
 	OnOverrideRejected  AgentOverrideRejectionHandler
+	ProgressProbe       SessionProgressProbe
 	Routine             *RoutineRequest
 	Admission           *AdmissionRequest
 	AgentTools          []AgentTool
 	AgentToolHandler    AgentToolHandler
+	sessionBrake        *sessionBrakeController
 }
+
+type SessionProgressProbe func(context.Context) (string, error)
 
 type RoutineRequest struct {
 	Name     string

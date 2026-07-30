@@ -169,7 +169,7 @@ rendering and fails on drift.
 | `agent.max_concurrent_agents_by_state` | `mapping<string, integer>` | `{}` | No | limits must be positive integers |
 | `agent.max_retry_backoff_ms` | `integer` | `300000` | No | must be greater than 0 |
 | `agent.max_session_context_multiplier` | `number` | `0` | No | must be greater than or equal to 0 |
-| `agent.max_session_duration_ms` | `integer` | `0` | No | must be greater than or equal to 0 |
+| `agent.max_session_duration_ms` | `integer` | `7200000` | No | must be greater than or equal to 0 |
 | `agent.max_session_token_override_field` | `string` | `none` | No | None |
 | `agent.max_session_token_override_label` | `string` | `none` | No | None |
 | `agent.max_session_tokens` | `integer` | `0` | No | must be greater than or equal to 0 |
@@ -179,6 +179,7 @@ rendering and fails on drift.
 | `agent.merge_fast_path.enabled` | `boolean` | `true` | No | None |
 | `agent.merge_worker_max_duration_ms` | `integer` | `21600000` | No | must be greater than 0 |
 | `agent.no_progress_spend_limit_usd` | `number` | `3` | No | must be greater than or equal to 0 |
+| `agent.no_progress_timeout_ms` | `integer` | `5400000` | No | must be greater than or equal to 0 |
 | `agent.output_truncation` | `object` | `see child fields` | No | None |
 | `agent.output_truncation.max_bytes` | `integer` | `0` | No | must be greater than or equal to 0 |
 | `agent.overload_retry_delay_ms` | `integer` | `45000` | No | must be greater than 0 |

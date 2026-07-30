@@ -702,7 +702,8 @@ agent:
   max_concurrent_agents: 5
   max_turns: 20
   max_turn_duration_ms: 0
-  max_session_duration_ms: 0
+  max_session_duration_ms: 7200000
+  no_progress_timeout_ms: 5400000
   merge_worker_max_duration_ms: 21600000
   max_retry_backoff_ms: 300000
   overload_retry_delay_ms: 45000
@@ -2791,8 +2792,9 @@ ids. Supported backend kinds are `codex` with `protocol: app-server` and
 `claude_code` with `protocol: headless`. Codex backend `options` use the same
 runtime fields as the top-level `codex` block, including `shell`,
 `approval_policy`, `thread_sandbox`, `turn_sandbox_policy`, `turn_timeout_ms`,
-`read_timeout_ms`, and `stall_timeout_ms`. `agent.max_turn_duration_ms` and
-`agent.max_session_duration_ms` apply across backends rather than belonging to
+`read_timeout_ms`, and `stall_timeout_ms`. `agent.max_turns`,
+`agent.max_turn_duration_ms`, `agent.max_session_duration_ms`, and
+`agent.no_progress_timeout_ms` apply across backends rather than belonging to
 an individual backend profile. Claude Code backend `options`
 include `permission_mode`, `allowed_tools`, `disallowed_tools`,
 `include_partial_messages`, `turn_timeout_ms`, `stall_timeout_ms`, `shell`, and
@@ -2916,13 +2918,23 @@ does not cap total turn duration. `codex.stall_timeout_ms` is also reset by
 stream activity; when both liveness bounds are enabled, the shorter deadline
 wins for each receive.
 
+`agent.max_turns` bounds the provider turns reported during one Detent session
+and is also passed to Claude Code's native turn limiter.
 `agent.max_turn_duration_ms` is the total wall-clock bound for each provider
 turn attempt. `agent.max_session_duration_ms` spans the full persisted Detent
-session, including a failed resume attempt and its fresh fallback. When both
-are configured, the shorter applicable deadline wins. Both values default to
-`0`, which disables that total-duration bound. These deadlines cancel the
-worker through Detent's normal owned process context, so process-tree reaping,
-scratch cleanup, and session completion still run.
+session, including a failed resume attempt and its fresh fallback. The session
+bound defaults to two hours (`7200000` ms); `0` disables it. The per-turn bound
+defaults to `0`. When both are configured, the shorter applicable deadline
+wins.
+
+`agent.no_progress_timeout_ms` defaults to 90 minutes (`5400000` ms). While an
+agent is running, Detent checks the workspace fingerprint, diff, unpushed
+commits, and Codex Workpad content. Any change resets the heartbeat; an
+unchanged session is cancelled when the timeout expires. Turn, duration, and
+no-progress breaches cancel the worker through Detent's normal owned process
+context, so process-tree reaping, scratch cleanup, session completion, and slot
+release still run. Detent records a cause fingerprint and parks resumable work
+in `Rework`, or returns an empty attempt to `Todo`.
 
 `agent.merge_worker_max_duration_ms` is a separate hard wall-clock ceiling for
 the full lifetime of a worker dispatched in `Merging`, starting when Detent
@@ -2935,8 +2947,8 @@ time and last progress marker at WARN, and parks the issue in `Blocked`.
 `total_tokens` counts input, output, cache-created, and cache-read tokens,
 accumulated across every turn of the session — cached context is re-counted on
 each turn, so a healthy session accrues millions of tokens within minutes.
-Size `max_session_tokens` as a runaway-session guard; a value near one turn's
-worth of context terminates every session at its ceiling.
+Use `max_session_tokens` as an additional token-consumption backstop; a value
+near one turn's worth of context terminates every session at its ceiling.
 `agent.max_session_context_multiplier` derives a ceiling from the reported
 context window when that window is known. A session can show high context
 pressure before either ceiling is exceeded, and a low-pressure session can

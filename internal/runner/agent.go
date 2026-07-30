@@ -109,6 +109,7 @@ type Dependencies struct {
 	AfterRunTimeout     time.Duration
 	sessionLimit        durationLimitContextFactory
 	turnLimit           durationLimitContextFactory
+	progressTicker      sessionProgressTickerFactory
 }
 
 type Runner struct {
@@ -130,6 +131,7 @@ type Runner struct {
 	afterRunTimeout     time.Duration
 	sessionLimit        durationLimitContextFactory
 	turnLimit           durationLimitContextFactory
+	progressTicker      sessionProgressTickerFactory
 }
 
 func NewRunner(deps Dependencies) (*Runner, error) {
@@ -150,6 +152,9 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	}
 	if deps.turnLimit == nil {
 		deps.turnLimit = withAgentDurationLimit
+	}
+	if deps.progressTicker == nil {
+		deps.progressTicker = newSessionProgressTicker
 	}
 	projectID := strings.TrimSpace(deps.ProjectID)
 	if projectID == "" {
@@ -195,6 +200,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		afterRunTimeout:     deps.AfterRunTimeout,
 		sessionLimit:        deps.sessionLimit,
 		turnLimit:           deps.turnLimit,
+		progressTicker:      deps.progressTicker,
 	}, nil
 }
 
@@ -734,7 +740,10 @@ func withAgentDurationLimit(ctx context.Context, duration time.Duration, limit e
 }
 
 func durationLimitError(err error) bool {
-	return errors.Is(err, ErrTurnDurationExceeded) || errors.Is(err, ErrSessionDurationExceeded)
+	return errors.Is(err, ErrTurnDurationExceeded) ||
+		errors.Is(err, ErrSessionDurationExceeded) ||
+		errors.Is(err, ErrSessionTurnLimitExceeded) ||
+		errors.Is(err, ErrSessionNoProgress)
 }
 
 func (r *Runner) runAgentTurn(
@@ -803,9 +812,12 @@ func (r *Runner) runAgentTurn(
 		if err := r.enforceSessionTokenCeiling(agentConfig, runRequest.Issue, info.Path, update, eventAt); err != nil {
 			return err
 		}
+		if err := runRequest.sessionBrake.observe(updateCtx, progress.turnCount(), result.Tokens.TotalTokens); err != nil {
+			return err
+		}
 		return nil
 	}, r.turnLimit)
-	if cause := context.Cause(ctx); cooperativeStopError(cause) || errors.Is(cause, ErrSessionDurationExceeded) {
+	if cause := context.Cause(ctx); cooperativeStopError(cause) || durationLimitError(cause) {
 		turnErr = cause
 	}
 	result.Output = progress.outputText()
@@ -1122,6 +1134,25 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		ErrSessionDurationExceeded,
 	)
 	defer cancelSession()
+	sessionCtx, cancelSessionBrake := context.WithCancelCause(sessionCtx)
+	defer cancelSessionBrake(context.Canceled)
+	sessionBrake := newSessionBrakeController(
+		sessionCtx,
+		runStartedAt,
+		durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS),
+		workflow.Config.Agent.MaxTurns,
+		durationFromMillis(workflow.Config.Agent.NoProgressTimeoutMS),
+		cancelSessionBrake,
+		func(probeCtx context.Context) (sessionProgressSnapshot, error) {
+			return r.sessionProgressSnapshot(probeCtx, runWorkspace, info, workspaceIssue, req.ProgressProbe)
+		},
+		r.now,
+		r.progressTicker,
+		r.logger,
+		req.Issue,
+	)
+	defer sessionBrake.Stop()
+	req.sessionBrake = sessionBrake
 
 	commandStartedAttrs := []any{
 		"workspace_path", info.Path,
@@ -1148,6 +1179,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		ServiceTier:        serviceTier,
 		ReasoningEffort:    effort,
 		Resume:             agentResumeFromState(resumeState),
+		MaxTurns:           workflow.Config.Agent.MaxTurns,
 		MaxDuration:        durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
 		ExtraWritableRoots: extraWritableRoots,
 		cacheStrategy:      workflow.Config.Workspace.CacheStrategy,
@@ -1160,6 +1192,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	execution := r.runAgentTurn(sessionCtx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity)
+	execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
+	execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
 	if execution.err != nil {
 		execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 	}
@@ -1184,14 +1218,20 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 		resumeState = store.AgentResumeState{}
 		execution = r.runAgentTurn(sessionCtx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, workflow.Config.Gate.CITriggerLabel, runStartedAt, sessionID, runtimeIdentity)
+		execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
+		execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
 		if execution.err != nil {
 			execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 		}
 	}
+	sessionBrake.Stop()
 	turnResult := execution.turnResult
 	turnErr := execution.err
 	cleanupErr := execution.cleanupErr
 	result := execution.result
+	if brakeDiff := sessionBrake.resultDiffStats(); brakeDiff != (DiffStats{}) {
+		result.DiffStats = brakeDiff
+	}
 	commandFinishedAttrs := []any{
 		"workspace_path", info.Path,
 		"work_attempt_id", req.WorkAttemptID,
@@ -1434,6 +1474,25 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		ErrSessionDurationExceeded,
 	)
 	defer cancelSession()
+	sessionCtx, cancelSessionBrake := context.WithCancelCause(sessionCtx)
+	defer cancelSessionBrake(context.Canceled)
+	sessionBrake := newSessionBrakeController(
+		sessionCtx,
+		runStartedAt,
+		durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS),
+		workflow.Config.Agent.MaxTurns,
+		durationFromMillis(workflow.Config.Agent.NoProgressTimeoutMS),
+		cancelSessionBrake,
+		func(probeCtx context.Context) (sessionProgressSnapshot, error) {
+			return r.sessionProgressSnapshot(probeCtx, r.workspace, info, workspaceIssue, nil)
+		},
+		r.now,
+		r.progressTicker,
+		r.logger,
+		req.Issue,
+	)
+	defer sessionBrake.Stop()
+	runReq.sessionBrake = sessionBrake
 
 	checkStartedAttrs := []any{
 		"workspace_path", info.Path,
@@ -1457,6 +1516,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		ModelProvider:      modelProvider,
 		ServiceTier:        serviceTier,
 		ReasoningEffort:    effort,
+		MaxTurns:           workflow.Config.Agent.MaxTurns,
 		TurnTimeout:        durationFromMillis(validator.TurnTimeoutMS),
 		MaxDuration:        durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
 		ExtraWritableRoots: extraWritableRootsForWorkspace(sessionCtx, info.Path, r.logger),
@@ -1497,10 +1557,19 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, info.Path, update, eventAt); err != nil {
 			return err
 		}
+		if err := sessionBrake.observe(updateCtx, progress.turnCount(), runResult.Tokens.TotalTokens); err != nil {
+			return err
+		}
 		return nil
 	}, r.turnLimit)
-	if cause := context.Cause(sessionCtx); errors.Is(cause, ErrSessionDurationExceeded) {
+	if cause := context.Cause(sessionCtx); cooperativeStopError(cause) || durationLimitError(cause) {
 		turnErr = cause
+	}
+	turnErr = sessionBrake.wrapTurnLimit(ctx, turnErr)
+	turnErr = sessionBrake.wrapDuration(ctx, turnErr, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
+	sessionBrake.Stop()
+	if brakeDiff := sessionBrake.resultDiffStats(); brakeDiff != (DiffStats{}) {
+		runResult.DiffStats = brakeDiff
 	}
 	turnErr = errors.Join(turnErr, scratchCleanupErr)
 	if turnErr != nil {
@@ -2142,6 +2211,15 @@ func finalStateForTurnError(err error) string {
 	if errors.Is(err, ErrSessionTokenCeilingExceeded) {
 		return FinalStateTokenCeilingExceeded
 	}
+	if errors.Is(err, ErrSessionDurationExceeded) {
+		return FinalStateSessionDurationExceeded
+	}
+	if errors.Is(err, ErrSessionTurnLimitExceeded) {
+		return FinalStateTurnLimitExceeded
+	}
+	if errors.Is(err, ErrSessionNoProgress) {
+		return FinalStateNoProgress
+	}
 	return FinalStateFailed
 }
 
@@ -2259,9 +2337,11 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 	if update.WorkerProcess.PID > 0 && !update.WorkerProcess.StartedAt.IsZero() {
 		p.workerProcess = update.WorkerProcess
 	}
-	if update.ThreadID != "" && update.TurnID != "" {
-		p.sessionID = update.ThreadID + "-" + update.TurnID
+	if update.TurnID != "" {
 		p.turnIDs[update.TurnID] = struct{}{}
+		if update.ThreadID != "" {
+			p.sessionID = update.ThreadID + "-" + update.TurnID
+		}
 	}
 	if update.Type != "" {
 		p.lastEvent = string(update.Type)
