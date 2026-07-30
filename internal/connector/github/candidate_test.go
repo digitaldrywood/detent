@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -112,6 +113,82 @@ func TestConnectorReadLabelCandidatesFiltersConflictedStateLocally(t *testing.T)
 	}
 	if len(got.Issues) != 0 || got.Truncated {
 		t.Fatalf("result = %#v, want honestly filtered complete result", got)
+	}
+}
+
+func TestConnectorReadUntrackedCandidatesSelectsLabelStatusDrift(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodGet,
+		body: `[
+			{"node_id":"I_1","number":1,"title":"External alert","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1","labels":[{"name":"sentry"}]},
+			{"node_id":"I_2","number":2,"title":"Tracked work","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/2","labels":[{"name":"detent:backlog"}]}
+		]`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+		ObservedStates:     []string{"Backlog"},
+		ActiveStates:       []string{"Todo"},
+	})
+
+	got, err := c.ReadCandidates(context.Background(), connector.CandidateRequest{
+		Selector: connector.CandidateSelectorUntracked,
+		Limit:    10,
+		PageSize: 10,
+	})
+	if err != nil {
+		t.Fatalf("ReadCandidates() error = %v", err)
+	}
+	if ids := githubIssueIDs(got.Issues); !reflect.DeepEqual(ids, []string{"I_1"}) {
+		t.Fatalf("candidate IDs = %#v, want [I_1]", ids)
+	}
+	if got.Truncated || got.PagesRead != 1 || got.Issues[0].State != "" {
+		t.Fatalf("result = %#v, want one complete untracked candidate", got)
+	}
+}
+
+func TestConnectorReadUntrackedCandidatesBoundsDeterministicPaging(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			body:   `[{"node_id":"I_2","number":2,"title":"Second","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/2","created_at":"2026-01-02T00:00:00Z","labels":[]}]`,
+		},
+		{
+			method: http.MethodGet,
+			body:   `[{"node_id":"I_1","number":1,"title":"First","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/1","created_at":"2026-01-01T00:00:00Z","labels":[]}]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+		ObservedStates:     []string{"Backlog"},
+	})
+
+	got, err := c.ReadCandidates(context.Background(), connector.CandidateRequest{
+		Selector: connector.CandidateSelectorUntracked,
+		Limit:    1,
+		PageSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("ReadCandidates() error = %v", err)
+	}
+	if ids := githubIssueIDs(got.Issues); !reflect.DeepEqual(ids, []string{"I_1"}) {
+		t.Fatalf("candidate IDs = %#v, want [I_1]", ids)
+	}
+	if !got.Truncated || got.PagesRead != 2 {
+		t.Fatalf("result = %#v, want bounded two-page truncation", got)
+	}
+	for index, request := range server.requests() {
+		path := request["path"].(string)
+		for _, want := range []string{"direction=asc", "sort=created", "page=" + strconv.Itoa(index+1), "per_page=1"} {
+			if !strings.Contains(path, want) {
+				t.Fatalf("request %d path = %q, missing %q", index, path, want)
+			}
+		}
 	}
 }
 

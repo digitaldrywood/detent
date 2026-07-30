@@ -23,6 +23,12 @@ type labelStatusResolution struct {
 	ConflictLabels []string
 }
 
+type labelStatusDriftReadOptions struct {
+	PageSize      int
+	Limit         int
+	Deterministic bool
+}
+
 func (r labelStatusResolution) conflicted() bool {
 	return len(r.ConflictLabels) > 1
 }
@@ -89,23 +95,48 @@ func (c *Connector) fetchLabelIssuesByStates(ctx context.Context, stateNames []s
 }
 
 func (c *Connector) FetchStatusDrift(ctx context.Context) (connector.StatusDrift, error) {
+	drift, _, _, err := c.readLabelStatusDrift(ctx, labelStatusDriftReadOptions{
+		PageSize: repositoryIssuesPageSize,
+	})
+	return drift, err
+}
+
+func (c *Connector) readLabelStatusDrift(
+	ctx context.Context,
+	options labelStatusDriftReadOptions,
+) (connector.StatusDrift, int, bool, error) {
 	if !c.usesLabelStatus() {
-		return connector.StatusDrift{}, nil
+		return connector.StatusDrift{}, 0, false, nil
 	}
 	if !validPullRequestRepo(c.repository) {
-		return connector.StatusDrift{}, ErrMissingRepository
+		return connector.StatusDrift{}, 0, false, ErrMissingRepository
 	}
 
+	pageSize := min(max(options.PageSize, 1), repositoryIssuesPageSize)
+	if options.Limit > 0 {
+		pageSize = min(pageSize, options.Limit)
+	}
 	drift := connector.StatusDrift{}
+	pagesRead := 0
+	itemsRead := 0
 	for page := 1; ; page++ {
+		if options.Limit > 0 && itemsRead >= options.Limit {
+			return drift, pagesRead, true, nil
+		}
 		var response []restIssue
-		if err := c.client.REST(ctx, http.MethodGet, restRepositoryOpenIssuesPath(c.repository, page), nil, &response); err != nil {
-			return connector.StatusDrift{}, fmt.Errorf("fetch github label status drift: %w", err)
+		path := restRepositoryOpenIssuesPagePath(c.repository, page, pageSize, options.Deterministic)
+		if err := c.client.REST(ctx, http.MethodGet, path, nil, &response); err != nil {
+			return connector.StatusDrift{}, 0, false, fmt.Errorf("fetch github label status drift: %w", err)
 		}
-		if len(response) == 0 {
-			break
+		pagesRead++
+		pageItems := response
+		if options.Limit > 0 {
+			if remaining := options.Limit - itemsRead; len(pageItems) > remaining {
+				pageItems = pageItems[:remaining]
+			}
 		}
-		for _, item := range response {
+		itemsRead += len(pageItems)
+		for _, item := range pageItems {
 			if item.PullRequest != nil {
 				continue
 			}
@@ -122,11 +153,16 @@ func (c *Connector) FetchStatusDrift(ctx context.Context) (connector.StatusDrift
 				drift.OpenTerminal = append(drift.OpenTerminal, c.buildLabelIssue(issue, terminalStatus))
 			}
 		}
-		if len(response) < repositoryIssuesPageSize {
-			break
+		if len(pageItems) < len(response) {
+			return drift, pagesRead, true, nil
+		}
+		if len(response) < pageSize {
+			return drift, pagesRead, false, nil
+		}
+		if options.Limit > 0 && itemsRead >= options.Limit {
+			return drift, pagesRead, true, nil
 		}
 	}
-	return drift, nil
 }
 
 func (c *Connector) fetchLabelIssueByRef(ctx context.Context, ref issueRef) (connector.Issue, bool, error) {
@@ -139,6 +175,17 @@ func (c *Connector) fetchLabelIssueByRef(ctx context.Context, ref issueRef) (con
 	}
 	c.cacheIssueRef(issue)
 	return c.buildLabelIssue(issue, c.githubIssueStateToDetentState(issue.State)), true, nil
+}
+
+func (c *Connector) normalizeLabelIssueStateRead(issue connector.Issue) connector.Issue {
+	if issue.Closed || c.hasConfiguredStatusLabelNames(issue.Labels) {
+		return issue
+	}
+	issue.State = ""
+	if issue.Fields != nil {
+		issue.Fields[c.statusField] = ""
+	}
+	return issue
 }
 
 func (c *Connector) IssueStateTransition(ctx context.Context, issue connector.Issue) (connector.IssueStateTransition, bool, error) {
@@ -379,6 +426,11 @@ func (c *Connector) hasConfiguredStatusLabel(labels nodeConnection[label]) bool 
 	return resolution.Status != "" || len(resolution.ConflictLabels) > 0
 }
 
+func (c *Connector) hasConfiguredStatusLabelNames(labels []string) bool {
+	resolution := c.labelStatusResolutionFromNames(labels)
+	return resolution.Status != "" || len(resolution.ConflictLabels) > 0
+}
+
 func (c *Connector) terminalStatusFromLabels(labels nodeConnection[label]) string {
 	statesByLabel := c.statusLabelStates(c.terminalStates)
 	for _, labelName := range labelNames(labels) {
@@ -569,10 +621,14 @@ func restRepositoryIssuesByLabelPagePath(repo pullRequestRepo, labelName string,
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/issues?" + values.Encode()
 }
 
-func restRepositoryOpenIssuesPath(repo pullRequestRepo, page int) string {
+func restRepositoryOpenIssuesPagePath(repo pullRequestRepo, page int, pageSize int, deterministic bool) string {
 	values := url.Values{}
 	values.Set("state", "open")
-	values.Set("per_page", strconv.Itoa(repositoryIssuesPageSize))
+	if deterministic {
+		values.Set("sort", "created")
+		values.Set("direction", "asc")
+	}
+	values.Set("per_page", strconv.Itoa(pageSize))
 	values.Set("page", strconv.Itoa(page))
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/issues?" + values.Encode()
 }

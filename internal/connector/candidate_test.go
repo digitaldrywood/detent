@@ -16,10 +16,11 @@ func TestCandidateCapabilitiesFor(t *testing.T) {
 		statusSource string
 		states       bool
 		labels       bool
+		untracked    bool
 	}{
 		{name: "github project v2", backend: BackendGitHub, statusSource: "project_v2", states: true},
 		{name: "github issue field", backend: BackendGitHub, statusSource: "issue_field", states: true, labels: true},
-		{name: "github label", backend: BackendGitHub, statusSource: "label", states: true, labels: true},
+		{name: "github label", backend: BackendGitHub, statusSource: "label", states: true, labels: true, untracked: true},
 		{name: "github default", backend: BackendGitHub, states: true},
 		{name: "github invalid source", backend: BackendGitHub, statusSource: "milestone"},
 		{name: "github local", backend: BackendGitHubLocal, states: true, labels: true},
@@ -39,6 +40,9 @@ func TestCandidateCapabilitiesFor(t *testing.T) {
 			if got := capabilities.Supports(CandidateSelectorLabels); got != test.labels {
 				t.Fatalf("Supports(labels) = %t, want %t", got, test.labels)
 			}
+			if got := capabilities.Supports(CandidateSelectorUntracked); got != test.untracked {
+				t.Fatalf("Supports(untracked) = %t, want %t", got, test.untracked)
+			}
 		})
 	}
 }
@@ -46,7 +50,7 @@ func TestCandidateCapabilitiesFor(t *testing.T) {
 func TestCandidateRequestValidate(t *testing.T) {
 	t.Parallel()
 
-	capabilities := CandidateCapabilitiesFor(BackendMemory, "")
+	capabilities := CandidateCapabilitiesFor(BackendGitHub, "label")
 	tests := []struct {
 		name    string
 		request CandidateRequest
@@ -65,6 +69,13 @@ func TestCandidateRequestValidate(t *testing.T) {
 			request: CandidateRequest{
 				Selector: CandidateSelectorLabels,
 				Labels:   []string{" Sentry ", "sentry"},
+				Limit:    10,
+			},
+		},
+		{
+			name: "valid untracked selector",
+			request: CandidateRequest{
+				Selector: CandidateSelectorUntracked,
 				Limit:    10,
 			},
 		},

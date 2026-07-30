@@ -39,8 +39,9 @@ type BacklogAdmission struct {
 }
 
 type BacklogAdmissionSources struct {
-	States []string `yaml:"states"`
-	Labels []string `yaml:"labels,omitempty"`
+	States    []string `yaml:"states"`
+	Labels    []string `yaml:"labels,omitempty"`
+	Untracked bool     `yaml:"untracked,omitempty"`
 }
 
 type BacklogAdmissionAuthors struct {
@@ -86,7 +87,7 @@ func (a BacklogAdmission) Validate(prefix string, states []string, tracker Track
 	if _, err := cron.ParseStandard(a.Schedule); err != nil {
 		problems = append(problems, prefix+".schedule must be a valid five-field cron expression")
 	}
-	if len(a.Sources.States) == 0 && len(a.Sources.Labels) == 0 {
+	if len(a.Sources.States) == 0 && len(a.Sources.Labels) == 0 && !a.Sources.Untracked {
 		problems = append(problems, prefix+".sources must configure at least one selector")
 	}
 	known := make(map[string]string, len(states))
@@ -153,6 +154,19 @@ func (a BacklogAdmission) Validate(prefix string, states []string, tracker Track
 	}
 	if len(a.ExcludeLabels) > 0 && tracker.Kind == TrackerGitHub && tracker.GitHubStatusSource == GitHubStatusSourceProjectV2 {
 		problems = append(problems, prefix+".exclude_labels requires complete issue labels, but tracker.kind github with github_status_source project_v2 fetches only the first 20 labels")
+	}
+	if a.Sources.Untracked && !capabilities.Supports(connector.CandidateSelectorUntracked) {
+		gap := prefix + ".sources.untracked requires candidate selector untracked, but tracker.kind " + tracker.Kind
+		switch tracker.Kind {
+		case TrackerGitHub:
+			gap += " with github_status_source " + tracker.GitHubStatusSource +
+				" cannot serve it because untracked issues are only defined for github label status"
+		case TrackerGitHubLocal:
+			gap += " cannot serve it because github_local status drift does not populate UntrackedOpen"
+		default:
+			gap += " does not provide github label status drift"
+		}
+		problems = append(problems, gap)
 	}
 	return problems
 }

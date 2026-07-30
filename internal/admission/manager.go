@@ -331,41 +331,12 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 		runErr = errors.Join(runErr, release())
 	}()
 
-	requests := make([]connector.CandidateRequest, 0, 2)
-	if len(settings.Config.Sources.States) > 0 {
-		requests = append(requests, connector.CandidateRequest{
-			Selector: connector.CandidateSelectorStates,
-			States:   settings.Config.Sources.States,
-			Limit:    candidateReadLimit(settings.Config.MaxCandidatesPerRun),
-			PageSize: connector.DefaultCandidatePageSize,
-		})
+	candidates, readerTruncations, err := readAdmissionCandidates(ctx, settings.Issues, settings.Config)
+	if err != nil {
+		return result, fmt.Errorf("fetch backlog admission candidates: %w", err)
 	}
-	if len(settings.Config.Sources.Labels) > 0 {
-		requests = append(requests, connector.CandidateRequest{
-			Selector: connector.CandidateSelectorLabels,
-			Labels:   settings.Config.Sources.Labels,
-			Limit:    candidateReadLimit(settings.Config.MaxCandidatesPerRun),
-			PageSize: connector.DefaultCandidatePageSize,
-		})
-	}
-	candidates := []connector.Issue{}
-	seenCandidates := map[string]struct{}{}
-	for _, request := range requests {
-		candidateResult, err := settings.Issues.ReadCandidates(ctx, request)
-		if err != nil {
-			return result, fmt.Errorf("fetch backlog admission %s candidates: %w", request.Selector, err)
-		}
-		if candidateResult.Truncated {
-			result.Truncated["candidate_reader"]++
-		}
-		for _, candidate := range candidateResult.Issues {
-			key := admissionCandidateKey(candidate)
-			if _, ok := seenCandidates[key]; ok {
-				continue
-			}
-			seenCandidates[key] = struct{}{}
-			candidates = append(candidates, candidate)
-		}
+	if readerTruncations > 0 {
+		result.Truncated["candidate_reader"] += readerTruncations
 	}
 	result.CandidatesFound = len(candidates)
 	candidates = filterCandidates(candidates, settings.Config, settings.TerminalStates, result.Skipped)
@@ -443,6 +414,56 @@ func (m *Manager) runOnce(ctx context.Context, settings Settings, scheduledFor t
 
 func candidateReadLimit(maxCandidates int) int {
 	return max(maxCandidates, connector.DefaultCandidatePageSize)
+}
+
+func readAdmissionCandidates(
+	ctx context.Context,
+	issues IssueStore,
+	cfg config.BacklogAdmission,
+) ([]connector.Issue, int, error) {
+	requests := make([]connector.CandidateRequest, 0, 3)
+	if len(cfg.Sources.States) > 0 {
+		requests = append(requests, connector.CandidateRequest{
+			Selector: connector.CandidateSelectorStates,
+			States:   cfg.Sources.States,
+		})
+	}
+	if len(cfg.Sources.Labels) > 0 {
+		requests = append(requests, connector.CandidateRequest{
+			Selector: connector.CandidateSelectorLabels,
+			Labels:   cfg.Sources.Labels,
+		})
+	}
+	if cfg.Sources.Untracked {
+		requests = append(requests, connector.CandidateRequest{
+			Selector: connector.CandidateSelectorUntracked,
+		})
+	}
+
+	limit := candidateReadLimit(cfg.MaxCandidatesPerRun)
+	candidates := []connector.Issue{}
+	seen := map[string]struct{}{}
+	truncations := 0
+	for _, request := range requests {
+		request.Limit = limit
+		request.PageSize = connector.DefaultCandidatePageSize
+		result, err := issues.ReadCandidates(ctx, request)
+		if err != nil {
+			return nil, 0, fmt.Errorf("read %s selector: %w", request.Selector, err)
+		}
+		if result.Truncated {
+			truncations++
+		}
+		for _, issue := range result.Issues {
+			key := admissionCandidateKey(issue)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			candidates = append(candidates, issue)
+		}
+	}
+	return candidates, truncations, nil
 }
 
 func (m *Manager) reconcileOpenProposals(
@@ -571,7 +592,7 @@ func (m *Manager) reconcileOpenProposals(
 				if commentsRemaining == 0 {
 					continue
 				}
-				if err := m.commentProposal(ctx, settings, proposal); err != nil {
+				if err := m.commentProposal(ctx, settings, proposal, issue); err != nil {
 					return commentsRemaining, autoAdmitsRemaining, err
 				}
 				commentsRemaining--
@@ -592,7 +613,7 @@ func (m *Manager) reconcileOpenProposals(
 			continue
 		}
 		if proposal.CommentedAt.IsZero() && commentsRemaining > 0 {
-			if err := m.commentProposal(ctx, settings, proposal); err != nil {
+			if err := m.commentProposal(ctx, settings, proposal, issue); err != nil {
 				return commentsRemaining, autoAdmitsRemaining, err
 			}
 			commentsRemaining--
@@ -717,7 +738,7 @@ func (m *Manager) executeProposals(
 		}
 		result.Proposals = append(result.Proposals, proposal)
 		if commentsRemaining > 0 {
-			if err := m.commentProposal(ctx, settings, proposal); err != nil {
+			if err := m.commentProposal(ctx, settings, proposal, current); err != nil {
 				return result, err
 			}
 			commentsRemaining--
@@ -738,11 +759,17 @@ func (m *Manager) executeProposals(
 	return result, nil
 }
 
-func (m *Manager) commentProposal(ctx context.Context, settings Settings, proposal admissionmodel.Proposal) error {
+func (m *Manager) commentProposal(
+	ctx context.Context,
+	settings Settings,
+	proposal admissionmodel.Proposal,
+	issue connector.Issue,
+) error {
+	untracked := settings.Config.Sources.Untracked && strings.TrimSpace(issue.State) == ""
 	if err := settings.Issues.CreateComment(
 		ctx,
 		proposal.IssueID,
-		proposalComment(proposal, autoAdmitProposal(settings.Config, proposal)),
+		proposalComment(proposal, autoAdmitProposal(settings.Config, proposal), untracked),
 	); err != nil {
 		return fmt.Errorf("create backlog admission audit comment: %w", err)
 	}
@@ -1046,6 +1073,9 @@ func eligibleCandidate(issue connector.Issue, cfg config.BacklogAdmission, termi
 	if strings.EqualFold(strings.TrimSpace(issue.State), strings.TrimSpace(cfg.TargetState)) {
 		return false
 	}
+	if cfg.Sources.Untracked && strings.TrimSpace(issue.State) == "" {
+		return true
+	}
 	if containsFold(cfg.Sources.States, issue.State) {
 		return true
 	}
@@ -1182,7 +1212,7 @@ func proposalID(projectID string, issueID string, fingerprint string, at time.Ti
 	return "admission-" + hex.EncodeToString(sum[:12])
 }
 
-func proposalComment(proposal admissionmodel.Proposal, autoAdmit bool) string {
+func proposalComment(proposal admissionmodel.Proposal, autoAdmit bool, untracked bool) string {
 	var b strings.Builder
 	b.WriteString("## Detent backlog admission proposal\n\n")
 	b.WriteString("Proposal `")
@@ -1197,6 +1227,16 @@ func proposalComment(proposal admissionmodel.Proposal, autoAdmit bool) string {
 		b.WriteString("`. To reject, reply with `")
 		b.WriteString(admissionRejectCommand(proposal.ID))
 		b.WriteString("`. Leaving it unactioned will expire the proposal without counting as rejection.\n\n")
+	}
+	if untracked {
+		b.WriteString("This issue has no configured status label. ")
+		if autoAdmit {
+			b.WriteString("Automatic admission is a two-part change: assigning **")
+		} else {
+			b.WriteString("Acceptance is a two-part change: assigning **")
+		}
+		b.WriteString(proposal.TargetState)
+		b.WriteString("** status and admitting the work for dispatch.\n\n")
 	}
 	b.WriteString("Criteria section: **")
 	b.WriteString(proposal.CriteriaSection)

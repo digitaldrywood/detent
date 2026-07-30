@@ -461,6 +461,44 @@ func TestConnectorFetchLabelIssueStateByIDMapsClosedCompletedToDone(t *testing.T
 	}
 }
 
+func TestConnectorFetchLabelIssueStateByIDPreservesUntrackedOpenState(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_771","number":771,"repository":{"nameWithOwner":"digitaldrywood/detent"}}]}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/771",
+			body:   `{"node_id":"I_771","number":771,"title":"External alert","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/771","assignees":[],"labels":[{"name":"sentry"}]}`,
+		},
+		{
+			status: http.StatusNotFound,
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/771/dependencies/blocked_by?per_page=100",
+			body:   `{"message":"not found"}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+		ObservedStates:     []string{"Backlog"},
+		ActiveStates:       []string{"Todo"},
+	})
+
+	got, err := c.FetchIssueStatesByIDs(context.Background(), []string{"I_771"})
+	if err != nil {
+		t.Fatalf("FetchIssueStatesByIDs() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssueStatesByIDs() len = %d, want 1", len(got))
+	}
+	if got[0].State != "" || got[0].Closed {
+		t.Fatalf("issue = %#v, want open issue with blank state", got[0])
+	}
+}
+
 func TestConnectorUpdateIssueStateReplacesStatusLabels(t *testing.T) {
 	t.Parallel()
 

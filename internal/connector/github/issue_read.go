@@ -769,7 +769,7 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 				return nil, fmt.Errorf("fetch github issue states by ids: %w", err)
 			}
 			if ok {
-				issues = append(issues, issue)
+				issues = append(issues, c.normalizeLabelIssueStateRead(issue))
 			}
 		}
 		sortIssuesByRequestedIDs(issues, ids)

@@ -1196,6 +1196,7 @@ backlog_admission:
   sources:
     states: [Backlog]
     labels: []
+    untracked: false
   target_state: Todo
   criteria_section: "Admission criteria"
   exclude_labels: []
@@ -1213,9 +1214,15 @@ State names come from the project's workflow. `sources.labels` selects issues
 carrying any configured non-status label, independent of workflow state. It
 defaults to empty and does nothing until configured. Labels beginning with
 `tracker.status_label_prefix` are rejected; workflow state selection belongs in
-`sources.states`.
+`sources.states`. `sources.untracked` defaults to `false`. In GitHub label mode,
+enabling it includes open repository issues that carry none of the configured
+status labels. This surfaces work filed directly by external automation such as
+Sentry or Dependabot even when no repository labeling action runs. It is
+unsupported for `project_v2`, `issue_field`, `github_local`, and non-GitHub
+trackers because those status models do not define the same missing-label
+condition.
 
-Admission reads each enabled selector through the candidate-reader contract.
+Admission reads every enabled selector through the candidate-reader contract.
 The tracker declares selector support, reads pages inside a hard per-run bound,
 filters the request exactly, sorts by creation time and stable issue identity
 before applying the result limit, and reports whether the source was truncated.
@@ -1272,26 +1279,31 @@ proposal as superseded with a recorded reason and does not move the issue.
 Rejection, expiry, and supersession are separate outcomes: silence can expire a
 proposal but never accepts or rejects one.
 
+An untracked issue has no status to move from. Its proposal explicitly states
+that acceptance is a two-part change: assigning the target status and admitting
+the work for dispatch.
+
 Capability is declared per tracker and per GitHub status source:
 
-| Tracker | Status source | `sources.states` | `sources.labels` |
-| --- | --- | --- | --- |
-| `github` | `project_v2` | Supported | Unsupported |
-| `github` | `issue_field` | Supported | Supported |
-| `github` | `label` | Supported | Supported |
-| `github_local` | local SQLite status | Supported | Supported |
-| `local_sqlite` | local SQLite status | Supported | Supported |
-| `memory` | process-local status | Supported | Supported |
-| `linear` | Linear workflow state | Unsupported | Unsupported |
+| Tracker | Status source | `sources.states` | `sources.labels` | `sources.untracked` |
+| --- | --- | --- | --- | --- |
+| `github` | `project_v2` | Supported | Unsupported | Unsupported |
+| `github` | `issue_field` | Supported | Supported | Unsupported |
+| `github` | `label` | Supported | Supported | Supported |
+| `github_local` | local SQLite status | Supported | Supported | Unsupported |
+| `local_sqlite` | local SQLite status | Supported | Supported | Unsupported |
+| `memory` | process-local status | Supported | Supported | Unsupported |
+| `linear` | Linear workflow state | Unsupported | Unsupported | Unsupported |
 
 An enabled admission configuration fails validation when its tracker/status
-source does not declare the selector, so Linear never validates cleanly and
-then fails on its first scheduled read. ProjectV2 label selection is unsupported
-because its issue query fetches only the first 20 labels; configuring either
-`sources.labels` or `exclude_labels` with ProjectV2 fails validation rather than
-risking a silent miss. `authors.allow` on `local_sqlite` or `memory` produces a
-doctor warning because those trackers do not discover authors. The memory
-tracker is evaluation-only across restarts: durable proposal records can
+source does not declare every enabled selector, so unsupported combinations
+never validate cleanly and then degrade to an empty first scheduled read.
+ProjectV2 label selection is unsupported because its issue query fetches only
+the first 20 labels; configuring either `sources.labels` or `exclude_labels`
+with ProjectV2 fails validation rather than risking a silent miss.
+`authors.allow` on `local_sqlite` or `memory` produces a doctor warning because
+those trackers do not discover authors. The memory tracker is evaluation-only
+across restarts: durable proposal records can
 survive while its process-local comments and mutations do not.
 
 Every lane-entry event records how the issue reached the state:

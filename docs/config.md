@@ -253,6 +253,7 @@ rendering and fails on drift.
 | `backlog_admission.sources` | `object` | `see child fields` | No | must configure at least one selector |
 | `backlog_admission.sources.labels` | `list<string>` | `[]` | No | None |
 | `backlog_admission.sources.states` | `list<string>` | `[]` | No | values must differ from target_state<br>values must name a configured workflow state |
+| `backlog_admission.sources.untracked` | `boolean` | `false` | No | requires candidate selector untracked, but tracker.kind memory does not provide github label status drift |
 | `backlog_admission.target_state` | `string` | `none` | Conditional | is required<br>must name a configured workflow state |
 | `budget` | `object` | `see child fields` | No | None |
 | `budget.billing_mode` | `string` | `none` | No | must be one of metered, subscription |
@@ -578,7 +579,7 @@ rendering and fails on drift.
 | `tracker.issues[].updated_at` | `mapping` | `none` | No | None |
 | `tracker.issues[].url` | `string` | `none` | No | None |
 | `tracker.issues[].workpad_signal` | `mapping` | `none` | No | None |
-| `tracker.kind` | `string` | `none` | Yes | intake.sources requires tracker.kind github<br>is required<br>must be one of github, github_local, linear, memory, local_sqlite<br>release.enabled requires tracker.kind github or github_local<br>tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
+| `tracker.kind` | `string` | `none` | Yes | backlog_admission.sources.untracked requires candidate selector untracked, but tracker.kind memory does not provide github label status drift<br>intake.sources requires tracker.kind github<br>is required<br>must be one of github, github_local, linear, memory, local_sqlite<br>release.enabled requires tracker.kind github or github_local<br>tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
 | `tracker.local_sqlite` | `object` | `see child fields` | No | tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
 | `tracker.local_sqlite.path` | `string` | `none` | Conditional | is required for local_sqlite |
 | `tracker.local_sqlite.project_id` | `string` | `none` | No | None |

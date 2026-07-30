@@ -19,6 +19,7 @@ backlog_admission:
   sources:
     states: [Backlog]
     labels: [Sentry, sentry]
+    untracked: false
   target_state: Todo
   criteria_section: Admission criteria
   exclude_labels: [Skip, skip]
@@ -48,7 +49,7 @@ backlog_admission:
 	if !got.Enabled || got.Schedule != "15 4 * * 1" || got.TargetState != "Todo" ||
 		got.MaxCandidatesPerRun != 20 || got.MaxProposalsPerRun != 2 ||
 		got.MaxOpenProposals != 8 || got.ProposalExpiryDays != 5 ||
-		!got.AutoAdmit || got.AutoAdmitMinConfidence != 0.95 {
+		!got.AutoAdmit || got.AutoAdmitMinConfidence != 0.95 || got.Sources.Untracked {
 		t.Fatalf("BacklogAdmission = %#v", got)
 	}
 	if len(got.Sources.Labels) != 1 || got.Sources.Labels[0] != "sentry" ||
@@ -218,6 +219,75 @@ func TestBacklogAdmissionAutoAdmitDefaultsOff(t *testing.T) {
 			cfg.AutoAdmitMinConfidence,
 			DefaultBacklogAdmissionAutoAdmitMinConfidence,
 		)
+	}
+}
+
+func TestBacklogAdmissionValidateUntrackedSelector(t *testing.T) {
+	t.Parallel()
+
+	valid := BacklogAdmission{
+		Enabled:             true,
+		Schedule:            "0 6 * * 1-5",
+		Sources:             BacklogAdmissionSources{Untracked: true},
+		TargetState:         "Todo",
+		CriteriaSection:     "Admission criteria",
+		MaxCandidatesPerRun: 50,
+		MaxProposalsPerRun:  3,
+		MaxOpenProposals:    10,
+		ProposalExpiryDays:  7,
+	}
+	states := []string{"Backlog", "Todo", "Done"}
+	tests := []struct {
+		name    string
+		tracker Tracker
+		want    string
+	}{
+		{
+			name:    "github label",
+			tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceLabel},
+		},
+		{
+			name:    "github issue field",
+			tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceIssueField},
+			want:    "untracked issues are only defined for github label status",
+		},
+		{
+			name:    "github project v2",
+			tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceProjectV2},
+			want:    "untracked issues are only defined for github label status",
+		},
+		{
+			name:    "github local",
+			tracker: Tracker{Kind: TrackerGitHubLocal},
+			want:    "github_local status drift does not populate UntrackedOpen",
+		},
+		{
+			name:    "linear",
+			tracker: Tracker{Kind: TrackerLinear},
+			want:    "does not provide github label status drift",
+		},
+		{
+			name:    "memory",
+			tracker: Tracker{Kind: TrackerMemory},
+			want:    "does not provide github label status drift",
+		},
+		{
+			name:    "local sqlite",
+			tracker: Tracker{Kind: TrackerLocalSQLite},
+			want:    "does not provide github label status drift",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := strings.Join(valid.Validate("backlog_admission", states, tt.tracker), "; ")
+			if tt.want == "" && got != "" {
+				t.Fatalf("Validate() = %q, want no problems", got)
+			}
+			if tt.want != "" && !strings.Contains(got, tt.want) {
+				t.Fatalf("Validate() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

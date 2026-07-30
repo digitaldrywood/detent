@@ -30,6 +30,14 @@ func (c *Connector) ReadCandidates(ctx context.Context, request connector.Candid
 	switch request.Selector {
 	case connector.CandidateSelectorLabels:
 		issues, pagesRead, incomplete, err = c.readRepositoryLabelCandidates(ctx, request)
+	case connector.CandidateSelectorUntracked:
+		var drift connector.StatusDrift
+		drift, pagesRead, incomplete, err = c.readLabelStatusDrift(ctx, labelStatusDriftReadOptions{
+			PageSize:      request.EffectivePageSize(),
+			Limit:         request.ProbeLimit(),
+			Deterministic: true,
+		})
+		issues = drift.UntrackedOpen
 	case connector.CandidateSelectorStates:
 		switch {
 		case c.usesLabelStatus():
