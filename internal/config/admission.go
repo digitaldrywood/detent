@@ -23,6 +23,7 @@ const (
 var (
 	admissionDimensionPattern = regexp.MustCompile(`^\s*[-*+]\s+\*\*([^*]+)\*\*\s*(?:[—–:-]\s*)?(.+?)\s*$`)
 	admissionEffortPattern    = regexp.MustCompile(`^\s*[-*+]\s+(?:\*\*([^*]+)\*\*|` + "`([^`]+)`" + `)\s*(?:[—–:-]\s*)?(.+?)\s*$`)
+	admissionEffortValue      = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 )
 
 type BacklogAdmission struct {
@@ -69,6 +70,10 @@ type AdmissionEffortRubric struct {
 	Section string
 	Text    string
 	Efforts []string
+}
+
+func ValidAdmissionEffortValue(value string) bool {
+	return admissionEffortValue.MatchString(strings.TrimSpace(value))
 }
 
 func (a *BacklogAdmission) Normalize() {
@@ -521,6 +526,9 @@ func admissionEfforts(text string) ([]string, error) {
 		key := strings.ToLower(effort)
 		if key == "" {
 			continue
+		}
+		if !ValidAdmissionEffortValue(effort) {
+			return nil, fmt.Errorf("backlog admission effort %q contains unsupported characters", effort)
 		}
 		if _, ok := seen[key]; ok {
 			return nil, fmt.Errorf("backlog admission effort %q is duplicated", effort)

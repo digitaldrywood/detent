@@ -480,6 +480,12 @@ func TestResolveAdmissionEffortRubric(t *testing.T) {
 			section: "Effort",
 			wantErr: "must define at least one effort",
 		},
+		{
+			name:    "rejects unsupported value characters",
+			prompt:  "## Effort\n\n- `very high` — not safe for an override block.",
+			section: "Effort",
+			wantErr: "contains unsupported characters",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

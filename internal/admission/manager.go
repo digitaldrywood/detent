@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"math"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,7 +46,6 @@ var (
 	ErrMissingRunner     = errors.New("backlog admission runner is required")
 	ErrInvalidProposal   = errors.New("backlog admission proposal is invalid")
 	ErrInvalidOutput     = errors.New("backlog admission agent output is invalid")
-	admissionEffortValue = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 )
 
 type Store interface {
@@ -891,7 +889,10 @@ func (m *Manager) writeRecommendedEffort(
 	decision *admissionmodel.Decision,
 ) error {
 	_, found, parseErr := agentoverride.FromIssueBody(issue.Description)
-	if found || parseErr != nil {
+	if parseErr != nil {
+		return m.supersedeProposalWithoutEffort(ctx, proposal, decision)
+	}
+	if found {
 		return nil
 	}
 	effort, _, err := validateRecommendedEffort(
@@ -901,12 +902,7 @@ func (m *Manager) writeRecommendedEffort(
 		true,
 	)
 	if err != nil {
-		decision.Outcome = admissionmodel.ProposalSuperseded
-		decision.Reason = admissionResolutionEffortUnavailable
-		if err := m.store.ResolveAdmissionProposal(ctx, *decision); err != nil {
-			return fmt.Errorf("resolve backlog proposal without required effort %s: %w", proposal.ID, err)
-		}
-		return nil
+		return m.supersedeProposalWithoutEffort(ctx, proposal, decision)
 	}
 	updater, ok := settings.Issues.(connector.IssueBodyUpdater)
 	if !ok {
@@ -915,6 +911,19 @@ func (m *Manager) writeRecommendedEffort(
 	body := appendRecommendedEffortBlock(issue.Description, effort)
 	if err := updater.UpdateIssueBody(ctx, proposal.IssueID, body); err != nil {
 		return fmt.Errorf("write recommended effort for backlog issue %s: %w", proposal.IssueIdentifier, err)
+	}
+	return nil
+}
+
+func (m *Manager) supersedeProposalWithoutEffort(
+	ctx context.Context,
+	proposal admissionmodel.Proposal,
+	decision *admissionmodel.Decision,
+) error {
+	decision.Outcome = admissionmodel.ProposalSuperseded
+	decision.Reason = admissionResolutionEffortUnavailable
+	if err := m.store.ResolveAdmissionProposal(ctx, *decision); err != nil {
+		return fmt.Errorf("resolve backlog proposal without required effort %s: %w", proposal.ID, err)
 	}
 	return nil
 }
@@ -1306,7 +1315,7 @@ func validateRecommendedEffort(
 	if effort == "" && rationale == "" && !required {
 		return "", "", nil
 	}
-	if effort == "" || rationale == "" || len(rationale) > maxEffortRationaleSize || !admissionEffortValue.MatchString(effort) {
+	if effort == "" || rationale == "" || len(rationale) > maxEffortRationaleSize || !config.ValidAdmissionEffortValue(effort) {
 		return "", "", ErrInvalidProposal
 	}
 	if len(rubric.Efforts) == 0 {

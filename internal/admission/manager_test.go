@@ -625,6 +625,7 @@ func TestManagerRequiredEffortAdmissionModes(t *testing.T) {
 		wantBody            string
 		wantBodyUpdates     int
 		wantInvalidProposal int
+		wantResolution      string
 	}{
 		{
 			name:      "disabled preserves admission behavior",
@@ -658,6 +659,16 @@ func TestManagerRequiredEffortAdmissionModes(t *testing.T) {
 			effortRationale:   "The agent recommends the standard effort.",
 			wantState:         "Todo",
 			wantBody:          "Actionable problem.\n\n```detent-agent\nschema: 1\neffort: xhigh\n```\n",
+		},
+		{
+			name:              "malformed existing block prevents admission",
+			requireEffort:     true,
+			body:              "Actionable problem.\n\n```detent-agent\nschema: 2\neffort: xhigh\n```\n",
+			recommendedEffort: "high",
+			effortRationale:   "The agent recommends the standard effort.",
+			wantState:         "Backlog",
+			wantBody:          "Actionable problem.\n\n```detent-agent\nschema: 2\neffort: xhigh\n```\n",
+			wantResolution:    admissionResolutionEffortUnavailable,
 		},
 	}
 	for _, tt := range tests {
@@ -700,6 +711,14 @@ func TestManagerRequiredEffortAdmissionModes(t *testing.T) {
 			if bodyUpdates != tt.wantBodyUpdates ||
 				result.Skipped["invalid_agent_proposal"] != tt.wantInvalidProposal {
 				t.Fatalf("result = %#v, body updates = %d", result, bodyUpdates)
+			}
+			if tt.wantResolution != "" {
+				history, err := manager.store.AdmissionProposalHistory(t.Context(), "detent", issue.ID)
+				if err != nil || len(history) != 1 ||
+					history[0].Status != admissionmodel.ProposalSuperseded ||
+					history[0].ResolutionReason != tt.wantResolution {
+					t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
+				}
 			}
 		})
 	}
