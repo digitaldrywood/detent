@@ -449,6 +449,7 @@ type boardCardView struct {
 	State             string
 	Origin            string
 	OriginDetail      string
+	AuthorDetail      string
 	CompactSignal     string
 	ExtraKind         primitives.Kind
 	ExtraText         string
@@ -897,6 +898,7 @@ func boardCardViewFromCard(data DashboardData, lane projectKanbanLane, card proj
 	}
 	view.ExtraKind, view.ExtraText, view.ExtraChip = boardCardExtra(card, view)
 	view.OriginDetail = boardCardOriginDetail(card.Origin, card.OriginActor)
+	view.AuthorDetail = boardCardAuthorDetail(card.AuthorID, card.OriginActor)
 	view.Activity = boardCardActivity(data.Snapshot, card)
 	view.PRStatus, view.PRStatusClass = boardCardPRStatus(card)
 	if view.Running {
@@ -929,6 +931,15 @@ func boardCardOriginDetail(origin string, actor string) string {
 		detail += " · @" + strings.TrimPrefix(actor, "@")
 	}
 	return detail
+}
+
+func boardCardAuthorDetail(author string, originActor string) string {
+	author = strings.TrimPrefix(strings.TrimSpace(author), "@")
+	originActor = strings.TrimPrefix(strings.TrimSpace(originActor), "@")
+	if author == "" || strings.EqualFold(author, originActor) {
+		return ""
+	}
+	return "@" + author
 }
 
 func boardCardCompactSignal(card boardCardView) string {

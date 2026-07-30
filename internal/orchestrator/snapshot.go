@@ -706,6 +706,7 @@ func telemetryIssue(issue connector.Issue, quietDuration time.Duration, pollInte
 		PriorityName:          telemetryIssuePriorityName(issue),
 		UnblockerCount:        issue.UnblockerCount,
 		State:                 issue.State,
+		AuthorID:              issue.AuthorID,
 		Labels:                append([]string(nil), issue.Labels...),
 		Assignees:             append([]string(nil), issue.Assignees...),
 		Comments:              telemetryIssueComments(issue.Comments),

@@ -45,6 +45,21 @@ func TestStateSnapshotEmpty(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotCarriesIssueAuthor(t *testing.T) {
+	t.Parallel()
+
+	state := newState(normalizeConfig(Config{}))
+	state.BoardIssues = []connector.Issue{{
+		ID:       "issue-1581",
+		AuthorID: "corylanou",
+	}}
+
+	snapshot := state.Snapshot(time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC))
+	if got := snapshot.BoardIssues[0].AuthorID; got != "corylanou" {
+		t.Fatalf("BoardIssues[0].AuthorID = %q, want corylanou", got)
+	}
+}
+
 func TestStateSnapshotCarriesOperatorStopRecovery(t *testing.T) {
 	t.Parallel()
 

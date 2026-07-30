@@ -781,6 +781,34 @@ func TestRunningBoardCardKeepsRuntimeBadgeWithOperationalStatus(t *testing.T) {
 	}
 }
 
+func TestBoardCardAuthorDetail(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		author      string
+		originActor string
+		want        string
+	}{
+		{name: "author shown", author: " corylanou ", want: "@corylanou"},
+		{name: "leading at normalized", author: "@corylanou", want: "@corylanou"},
+		{name: "author absent"},
+		{name: "author blank", author: " \t "},
+		{name: "same as origin actor", author: "corylanou", originActor: "corylanou"},
+		{name: "same as normalized origin actor", author: "@CoryLanou", originActor: " @corylanou "},
+		{name: "different from origin actor", author: "loganlanou", originActor: "corylanou", want: "@loganlanou"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := boardCardAuthorDetail(test.author, test.originActor); got != test.want {
+				t.Fatalf("boardCardAuthorDetail(%q, %q) = %q, want %q", test.author, test.originActor, got, test.want)
+			}
+		})
+	}
+}
+
 func TestRunningBoardCardRuntimeBadgeFallsBackUntilIdentityKnown(t *testing.T) {
 	t.Parallel()
 
@@ -827,6 +855,7 @@ func TestBoardCardViewBuildsDensitySpecificContent(t *testing.T) {
 		ProjectID:       "detent",
 		Title:           "Make density informational",
 		Stage:           "In Progress",
+		AuthorID:        "corylanou",
 		Labels:          []string{"detent:todo", "ux"},
 		PRNumber:        1400,
 		CIStatus:        "pass",
@@ -848,6 +877,9 @@ func TestBoardCardViewBuildsDensitySpecificContent(t *testing.T) {
 	if view.Activity != "Rendered the richer card fields." {
 		t.Fatalf("Activity = %q", view.Activity)
 	}
+	if view.AuthorDetail != "@corylanou" {
+		t.Fatalf("AuthorDetail = %q, want @corylanou", view.AuthorDetail)
+	}
 	if view.PRStatus != "PR #1400 · CI pass" || view.PRStatusClass != card.CIClass {
 		t.Fatalf("PR status = %q / %q", view.PRStatus, view.PRStatusClass)
 	}
@@ -858,6 +890,9 @@ func TestBoardCardViewBuildsDensitySpecificContent(t *testing.T) {
 		`data-board-card-content="cozy"`,
 		`data-board-card-content="comfy"`,
 		`data-board-card-labels`,
+		`data-board-card-author`,
+		`Filed by`,
+		`@corylanou`,
 		`data-board-card-effort`,
 		`data-board-card-activity`,
 		`data-board-card-pr-status`,

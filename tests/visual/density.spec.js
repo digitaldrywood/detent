@@ -29,6 +29,12 @@ test("card density changes rendered information and persists", async ({
   const reviewCard = page.locator("article", {
     hasText: "Review deterministic chart colors",
   });
+  const absentAuthorCard = page.locator("article", {
+    hasText: "Backlog observability fixture intake",
+  });
+  const matchingOriginActorCard = page.locator("article", {
+    hasText: "Add screenshot manifest smoke test",
+  });
 
   await expect(page.locator("html")).toHaveAttribute("data-density", "cozy");
   await expect(runningCard.locator('[data-board-card-content="compact"]')).toBeHidden();
@@ -54,8 +60,65 @@ test("card density changes rendered information and persists", async ({
   await expect(reviewCard.locator("[data-board-card-pr-status]")).toContainText(
     "PR #5290",
   );
+  await expect(runningCard.locator("[data-board-card-author]")).toHaveText(
+    "Filed by @corylanou",
+  );
+  await expect(absentAuthorCard.locator("[data-board-card-author]")).toHaveCount(0);
+  await expect(matchingOriginActorCard.locator("[data-board-card-author]")).toHaveCount(0);
+  await expect(matchingOriginActorCard.locator("[data-board-card-origin]")).toContainText(
+    "via human · @corylanou",
+  );
+
+  const originalAuthor = await runningCard
+    .locator("[data-board-card-author]")
+    .elementHandle();
+  const snapshotHTML = await page.locator("#snapshot").evaluate(
+    (snapshot) => snapshot.innerHTML,
+  );
+  await morphSnapshot(page, snapshotHTML);
+  await expect(runningCard.locator("[data-board-card-author]")).toHaveCount(1);
+  expect(
+    await runningCard.locator("[data-board-card-author]").evaluate(
+      (author, original) => author === original,
+      originalAuthor,
+    ),
+  ).toBe(true);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    ),
+  ).toBe(true);
+  await page.setViewportSize(desktopViewport);
+  await expect(page).toHaveScreenshot("board-comfy.png");
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.locator("#board-lanes").waitFor({ state: "visible" });
   await expect(page.locator("html")).toHaveAttribute("data-density", "comfy");
 });
+
+async function morphSnapshot(page, incoming) {
+  await page.evaluate(
+    (snapshotHTML) =>
+      new Promise((resolve) => {
+        document.addEventListener("htmx:afterSettle", resolve, { once: true });
+        const target = document.querySelector("#snapshot");
+        const event = new CustomEvent("htmx:sseBeforeMessage", {
+          bubbles: true,
+          cancelable: true,
+          detail: { elt: target, data: snapshotHTML },
+        });
+        target.dispatchEvent(event);
+        if (!event.defaultPrevented) {
+          window.htmx.swap(
+            target,
+            snapshotHTML,
+            { swapStyle: target.getAttribute("hx-swap") || "innerHTML" },
+            { contextElement: target },
+          );
+        }
+      }),
+    incoming,
+  );
+}
