@@ -1,4 +1,4 @@
-# Project Configuration
+# Configuration
 
 Detent has two configuration layers:
 
@@ -7,9 +7,79 @@ Detent has two configuration layers:
   machine-local overrides in `detent.local.yaml`. The project contract can also
   live in legacy `WORKFLOW.md` YAML frontmatter.
 
-This page documents the project contract. See the
-[README configuration section](../README.md#configuration) for `global.yaml`
-resolution and host-wide settings.
+This page is the single reference for both configuration layers. Project
+configuration is documented below after the host-wide settings.
+
+## Host configuration
+
+At startup, Detent resolves `global.yaml` in this order. The first matching rule wins.
+
+| Order | Rule | Path |
+| --- | --- | --- |
+| 1 | `--config <path>` | Direct file path from the CLI flag |
+| 2 | `CONFIG=<file>` | Direct file path from the environment |
+| 3 | `CONFIG_HOME=<dir>` | `<dir>/global.yaml` |
+| 4 | `os.UserConfigDir()` | `<config-dir>/detent/global.yaml` |
+| 5 | Legacy home config | `~/.detent/global.yaml` |
+
+`os.UserConfigDir()` maps to `%AppData%\detent\global.yaml` on Windows, `~/Library/Application Support/detent/global.yaml` on macOS, and `~/.config/detent/global.yaml` on Linux while honoring `XDG_CONFIG_HOME`.
+
+`DETENT_CONFIG` and `DETENT_HOME` remain deprecated fallbacks for one release. Detent uses `CONFIG_HOME` instead of `HOME` because `HOME` is standard process state, not Detent configuration.
+
+If no global config is found, Detent keeps the single-project fallback and looks for `WORKFLOW.md` in the current working directory. Use `detent config path` to print the resolved config path and the rule that selected it.
+
+Runtime settings resolve in this order: explicit flag, environment variable,
+`global.yaml`, then built-in default.
+
+| Setting | Flag | Environment | `global.yaml` key | Default |
+| --- | --- | --- | --- | --- |
+| Environment | `--env` | `ENV`, then `DETENT_ENV` | `env` | `prod` |
+| Log level | `--log-level` | `LOG_LEVEL`, then `DETENT_LOG_LEVEL` | `log_level` | `info` |
+| Log max size | | `LOG_MAX_SIZE_BYTES`, then `DETENT_LOG_MAX_SIZE_BYTES` | `log_max_size_bytes` | `52428800` |
+| Log backups | | `LOG_MAX_BACKUPS`, then `DETENT_LOG_MAX_BACKUPS` | `log_max_backups` | `5` |
+| GitHub token | | `GITHUB_TOKEN` | `github_token` | required for GitHub projects |
+| API token | | `DETENT_API_TOKEN` | `api_token` | open on loopback, fail closed on non-loopback |
+| Private dashboard URL | | | `dashboard_access` | disabled |
+| Web port | `--port` | `PORT` | `port` | `4000` |
+| Instance name | | | `instance_name` | short hostname |
+| Automatic update checks | | | `update.auto_check_enabled` | `false` |
+| Update check interval | | | `update.check_interval_hours` | `24` |
+| Automatic update apply when idle | | | `update.auto_apply_enabled` | `false` |
+
+The web host resolves from `--host`, then the first registered workflow's
+`server.host`, then the built-in `127.0.0.1` default. It is not a top-level
+`global.yaml` key.
+
+Use `github_token: gh` in `global.yaml` to resolve the token from
+`gh auth token` at startup. Literal token values also work but should not be
+committed. `github_token: gh-auth`, `${gh auth token}`, and
+`$(gh auth token)` are accepted aliases. If neither `GITHUB_TOKEN` nor
+`github_token` is set, Detent falls back to existing per-workflow
+`tracker.api_key` handling.
+
+Use `instance_name` to distinguish browser tabs and the dashboard navbar when
+several Detent instances are open at once. Detent resolves the display name
+from the first non-empty value in this order: top-level `instance_name` in
+`global.yaml`, `global.identity.name`, the short hostname, then empty. In
+single-project fallback mode without `global.yaml`, workflow top-level
+`identity.name` is used before the short hostname. Names are trimmed, must be a
+single line, and are capped at 40 characters in the web UI.
+
+Automatic update checks are host-specific and disabled by default. When
+enabled, Detent checks on a jittered in-process schedule and reports the last
+check, available or applied version, and next check on `/health` and the Health
+dashboard. `detent doctor` reports whether the host is opted in and suggests
+enabling checks when it is not. Automatic apply remains off unless explicitly
+enabled and only replaces release-installer binaries; other install sources
+remain notification-only. When work attempts are active, Detent shows the
+pending version in the web and terminal dashboards and waits for the next
+fleet-wide idle window before applying it. An operator can instead confirm
+immediate apply from the web notification. A successful apply uses the normal
+graceful drain path, then re-executes the replaced binary on POSIX systems or
+exits cleanly for an external supervisor to restart it on other platforms.
+
+`detent doctor` prints the resolved runtime values and their sources, with the
+GitHub token redacted.
 
 ## Choose a starting point
 
