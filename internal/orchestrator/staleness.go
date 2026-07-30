@@ -193,9 +193,6 @@ func stalenessDecisionIssueIndex(state *State, candidates []connector.Issue) map
 	if state == nil {
 		return issues
 	}
-	for _, completed := range state.Completed {
-		indexStalenessDecisionIssue(issues, completed.Issue)
-	}
 	for _, blocked := range state.Blocked {
 		indexStalenessDecisionIssue(issues, blocked.Issue)
 	}

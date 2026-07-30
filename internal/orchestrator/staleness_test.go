@@ -164,21 +164,25 @@ func TestStalenessDecisionsCarryCurrentIssueState(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 30, 15, 0, 0, 0, time.UTC)
 	state := State{
-		Completed: map[string]Completed{
-			"issue-closed": {
-				Issue: connector.Issue{
-					ID:     "issue-closed",
-					State:  "Done",
-					Closed: true,
+		BoardIssues: []connector.Issue{
+			{
+				ID:     "issue-closed",
+				State:  "Done",
+				Closed: true,
+			},
+			{
+				ID:    "issue-merged",
+				State: "Merging",
+				PullRequest: &connector.PullRequest{
+					State: "MERGED",
 				},
 			},
-			"issue-merged": {
+		},
+		Completed: map[string]Completed{
+			"issue-stale-completed": {
 				Issue: connector.Issue{
-					ID:    "issue-merged",
-					State: "Merging",
-					PullRequest: &connector.PullRequest{
-						State: "MERGED",
-					},
+					ID:    "issue-stale-completed",
+					State: "Human Review",
 				},
 			},
 		},
@@ -186,6 +190,7 @@ func TestStalenessDecisionsCarryCurrentIssueState(t *testing.T) {
 	decisions := []telemetry.SchedulerDecision{
 		{IssueID: "issue-closed", Reason: "merge_slot_revoked", DecisionAt: now},
 		{IssueID: "issue-merged", Reason: "merge_slot_revoked", DecisionAt: now},
+		{IssueID: "issue-stale-completed", Reason: "merge_slot_revoked", DecisionAt: now},
 		{IssueID: "issue-gone", Reason: "merge_slot_revoked", DecisionAt: now},
 	}
 
@@ -199,8 +204,10 @@ func TestStalenessDecisionsCarryCurrentIssueState(t *testing.T) {
 	if got[1].CurrentState != "Merging" || !got[1].Merged {
 		t.Fatalf("merged decision = %#v, want current Merging and merged", got[1])
 	}
-	if got[2].CurrentState != "" || got[2].Closed || got[2].Merged {
-		t.Fatalf("absent decision = %#v, want no current item state", got[2])
+	for _, index := range []int{2, 3} {
+		if got[index].CurrentState != "" || got[index].Closed || got[index].Merged {
+			t.Fatalf("historical decision = %#v, want no current item state", got[index])
+		}
 	}
 }
 
