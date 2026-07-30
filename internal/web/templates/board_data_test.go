@@ -3,6 +3,7 @@ package templates
 import (
 	"bytes"
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -74,6 +75,9 @@ func TestBoardExceptionsIncludeFleetStalenessWarning(t *testing.T) {
 	}
 	if exceptions[0].Title != "Work item is stale" || exceptions[0].Ref != "#1574" || exceptions[0].ActionLabel != "Open" {
 		t.Fatalf("exception = %#v", exceptions[0])
+	}
+	if exceptions := boardExceptions(data, true); len(exceptions) != 0 {
+		t.Fatalf("board staleness exceptions = %#v, want compact alerts instead", exceptions)
 	}
 }
 
@@ -1944,6 +1948,59 @@ func TestBoardAlertsBuildSeverityAndGroupedTrackerRows(t *testing.T) {
 	}
 }
 
+func TestBoardAlertsCollapseStalenessWarnings(t *testing.T) {
+	t.Parallel()
+
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 7, 30, 20, 0, 0, 0, time.UTC),
+	}
+	for index := range 20 {
+		number := 1600 + index
+		snapshot.StalenessWarnings = append(snapshot.StalenessWarnings, telemetry.StalenessWarning{
+			ID:         "warning-" + strconv.Itoa(index+1),
+			ProjectID:  "detent",
+			Kind:       "repeated_decision",
+			Identifier: "digitaldrywood/detent#" + strconv.Itoa(number),
+			IssueURL:   "https://github.com/digitaldrywood/detent/issues/" + strconv.Itoa(number),
+			Detail:     "scheduler returned already_running repeatedly",
+			AgeSeconds: int64((index + 1) * 60),
+		})
+	}
+
+	alerts := boardAlerts(snapshot)
+	if len(alerts) != 20 {
+		t.Fatalf("boardAlerts() count = %d, want 20", len(alerts))
+	}
+	if alerts[0].Tone != primitives.KindWarn || alerts[0].Kind != boardAlertKindStaleness {
+		t.Fatalf("highest alert = %#v, want staleness warning", alerts[0])
+	}
+	for index, alert := range alerts {
+		if alert.DeepLinkLabel != "Open" || alert.DeepLink == "" {
+			t.Fatalf("alert %d link = %q %q, want preserved issue link", index, alert.DeepLinkLabel, alert.DeepLink)
+		}
+		want := "digitaldrywood/detent#" + strconv.Itoa(1600+index)
+		if !strings.Contains(alert.TerseSummary, want) {
+			t.Fatalf("alert %d summary = %q, want %q", index, alert.TerseSummary, want)
+		}
+	}
+
+	data := boardTestData()
+	data.Snapshot.StalenessWarnings = snapshot.StalenessWarnings
+	html := renderBoardComponent(t, BoardSnapshot(data))
+	if strings.Count(html, `id="board-alerts"`) != 1 {
+		t.Fatalf("board alert indicators = %d, want 1", strings.Count(html, `id="board-alerts"`))
+	}
+	if !strings.Contains(html, `data-board-alert-count="20"`) || !strings.Contains(html, ">20 warnings<") {
+		t.Fatalf("board indicator missing accurate warning count:\n%s", html)
+	}
+	if strings.Count(html, `data-board-alert="staleness-warning"`) != 20 {
+		t.Fatalf("expanded staleness alerts = %d, want 20", strings.Count(html, `data-board-alert="staleness-warning"`))
+	}
+	if strings.Contains(html, `id="board-exceptions"`) || strings.Contains(html, `id="exception-staleness-`) {
+		t.Fatalf("board rendered staleness banner stack:\n%s", html)
+	}
+}
+
 func TestBoardAlertsRenderOneLineOverlayContract(t *testing.T) {
 	t.Parallel()
 
@@ -1952,14 +2009,14 @@ func TestBoardAlertsRenderOneLineOverlayContract(t *testing.T) {
 	html := renderBoardComponent(t, BoardSnapshot(data))
 	for _, want := range []string{
 		`id="board-alerts"`,
-		`class="mx-5 mt-3.5 h-10`,
+		`class="min-w-0 max-w-full self-center overflow-hidden`,
 		`data-board-alert-count="6"`,
 		`role="alert"`,
 		`aria-live="polite"`,
 		`type="button"`,
 		`aria-expanded="false"`,
 		`aria-controls="board-alerts-overlay"`,
-		`class="min-w-0 flex-1 truncate text-text"`,
+		`class="hidden min-w-0 flex-1 truncate text-text md:inline"`,
 		`href="/health/ui"`,
 		`+2 more · Health`,
 	} {
@@ -1982,7 +2039,7 @@ func TestBoardAlertsRenderOneLineOverlayContract(t *testing.T) {
 
 	empty := renderBoardComponent(t, boardAlertsBar(nil))
 	if empty != "" {
-		t.Fatalf("empty board alerts rendered reserved markup: %q", empty)
+		t.Fatalf("empty board alerts rendered markup: %q", empty)
 	}
 
 	page := renderBoardComponent(t, BoardPage(data))

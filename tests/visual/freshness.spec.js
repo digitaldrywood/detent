@@ -128,8 +128,8 @@ test("heavy alerts stay one line and never reflow lanes", async ({ page }) => {
     await expect(bar).toContainText("Board showing last-known state");
     await expect(bar).toContainText("+5");
     const heavyHeight = await bar.evaluate((element) => element.getBoundingClientRect().height);
-    expect(heavyHeight).toBe(40);
-    expect(await bar.evaluate((element) => element.scrollHeight)).toBe(40);
+    expect(heavyHeight).toBe(22);
+    expect(await bar.evaluate((element) => element.scrollHeight)).toBe(20);
     const laneViewport = await lanes.boundingBox();
     expect(laneViewport?.y).toBeLessThan(viewport.height);
 
@@ -179,8 +179,140 @@ test("collapsed alert height is independent of alert count", async ({ page }) =>
   const sixAlertHeight = await page
     .locator("#board-alerts")
     .evaluate((element) => element.getBoundingClientRect().height);
-  expect(oneAlertHeight).toBe(40);
+  expect(oneAlertHeight).toBe(22);
   expect(sixAlertHeight).toBe(oneAlertHeight);
+});
+
+test("zero, one, and twenty warnings keep one indicator slot and fixed lanes", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+
+  await openBoardScenario(page, "fleet-healthy-parallel-work");
+  await expect(page.locator("#board-alerts")).toHaveCount(0);
+  const zeroWarningLaneY = await page
+    .locator("#board-lanes")
+    .evaluate((element) => element.getBoundingClientRect().y);
+
+  await openBoardScenario(page, "board-staleness-one");
+  const oneIndicator = page.locator("#board-alerts");
+  await expect(oneIndicator).toHaveCount(1);
+  await expect(oneIndicator).toHaveAttribute("data-board-alert-count", "1");
+  await expect(oneIndicator).toContainText("1 warning");
+  await expect(oneIndicator).toHaveClass(/border-warn/);
+  await expect(page.locator("[id^='exception-staleness-']")).toHaveCount(0);
+  expect(
+    await page
+      .locator("#board-lanes")
+      .evaluate((element) => element.getBoundingClientRect().y),
+  ).toBe(zeroWarningLaneY);
+
+  await openBoardScenario(page, "board-staleness-twenty");
+  const twentyIndicator = page.locator("#board-alerts");
+  await expect(twentyIndicator).toHaveCount(1);
+  await expect(twentyIndicator).toHaveAttribute(
+    "data-board-alert-count",
+    "20",
+  );
+  await expect(twentyIndicator).toContainText("20 warnings");
+  await expect(twentyIndicator).toContainText("+19");
+  expect(
+    await page
+      .locator("#board-lanes")
+      .evaluate((element) => element.getBoundingClientRect().y),
+  ).toBe(zeroWarningLaneY);
+
+  await page.locator("#board-alerts-toggle").click();
+  const overlay = page.locator("body > #board-alerts-overlay");
+  const warnings = overlay.locator('[data-board-alert="staleness-warning"]');
+  await expect(warnings).toHaveCount(20);
+  await expect(warnings.first()).toContainText("digitaldrywood/detent#1573");
+  await expect(warnings.last()).toContainText("digitaldrywood/detent#1554");
+  await expect(overlay.getByRole("link", { name: "Open" })).toHaveCount(20);
+});
+
+test("warning disclosure state survives morphs without auto-expanding", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await openBoardScenario(page, "board-staleness-one");
+
+  const toggle = page.locator("#board-alerts-toggle");
+  const overlay = page.locator("body > #board-alerts-overlay");
+  const twentyWarnings = await scenarioSnapshotHTML(
+    page,
+    "board-staleness-twenty",
+  );
+  await morphSnapshot(page, twentyWarnings);
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(overlay).toBeHidden();
+  await expect(page.locator("#board-alerts")).toHaveAttribute(
+    "data-board-alert-count",
+    "20",
+  );
+
+  await toggle.click();
+  await expect(overlay).toBeVisible();
+  await page.evaluate(() => {
+    const host = document.querySelector("[data-board-alerts-overlay-host]");
+    window.__detentAlertVisibility = [];
+    const record = () => {
+      window.__detentAlertVisibility.push({
+        hidden: host.hidden,
+        classHidden: host.classList.contains("hidden"),
+        ariaHidden: host.getAttribute("aria-hidden"),
+      });
+    };
+    record();
+    window.__detentAlertObserver = new MutationObserver(record);
+    window.__detentAlertObserver.observe(host, {
+      attributes: true,
+      attributeFilter: ["hidden", "class", "aria-hidden"],
+    });
+  });
+  await morphSnapshot(page, twentyWarnings);
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(overlay).toBeVisible();
+  expect(
+    await page.evaluate(() => {
+      window.__detentAlertObserver?.disconnect();
+      return window.__detentAlertVisibility.every(
+        (state) =>
+          !state.hidden &&
+          !state.classHidden &&
+          state.ariaHidden === "false",
+      );
+    }),
+  ).toBe(true);
+});
+
+test("twenty-warning panel scrolls internally at narrow width", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openBoardScenario(page, "board-staleness-twenty");
+  await page.locator("#board-alerts-toggle").click();
+
+  const overlay = page.locator("body > #board-alerts-overlay");
+  await expect(overlay).toBeVisible();
+  const geometry = await overlay.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      left: rect.left,
+      right: rect.right,
+      width: rect.width,
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      documentHeight: document.documentElement.scrollHeight,
+      viewportHeight: window.innerHeight,
+    };
+  });
+  expect(geometry.left).toBeGreaterThanOrEqual(0);
+  expect(geometry.right).toBeLessThanOrEqual(390);
+  expect(geometry.width).toBeGreaterThanOrEqual(370);
+  expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
+  expect(geometry.clientHeight).toBeLessThanOrEqual(844 * 0.4);
+  expect(geometry.documentHeight).toBe(geometry.viewportHeight);
 });
 
 test("project board installs alert disclosure behavior", async ({ page }) => {
@@ -219,8 +351,44 @@ async function boardLaneGeometry(page) {
 }
 
 async function morphCurrentSnapshot(page) {
+  const incoming = await page
+    .locator("#snapshot")
+    .evaluate((snapshot) => snapshot.innerHTML);
+  await morphSnapshot(page, incoming);
+}
+
+async function openBoardScenario(page, scenario) {
+  await page.setExtraHTTPHeaders({
+    "X-Detent-Demo-Scenario": scenario,
+  });
+  await page.goto(`${runtime.url}/`, { waitUntil: "domcontentloaded" });
+  await page.locator("#board-lanes").waitFor({ state: "visible" });
+}
+
+async function scenarioSnapshotHTML(page, scenario) {
+  const response = await fetch(`${runtime.url}/`, {
+    headers: { "X-Detent-Demo-Scenario": scenario },
+  });
+  if (!response.ok) {
+    throw new Error(`scenario response failed: ${response.status}`);
+  }
+  const html = await response.text();
+  return page.evaluate((markup) => {
+    const document = new DOMParser().parseFromString(
+      markup,
+      "text/html",
+    );
+    const snapshot = document.getElementById("snapshot");
+    if (!snapshot) {
+      throw new Error("scenario snapshot missing");
+    }
+    return snapshot.innerHTML;
+  }, html);
+}
+
+async function morphSnapshot(page, incoming) {
   await page.evaluate(
-    () =>
+    (snapshotHTML) =>
       new Promise((resolve) => {
         const snapshot = document.getElementById("snapshot");
         if (!snapshot || !window.htmx) {
@@ -230,17 +398,18 @@ async function morphCurrentSnapshot(page) {
         const event = new CustomEvent("htmx:sseBeforeMessage", {
           bubbles: true,
           cancelable: true,
-          detail: { elt: snapshot, data: snapshot.innerHTML },
+          detail: { elt: snapshot, data: snapshotHTML },
         });
         snapshot.dispatchEvent(event);
         if (!event.defaultPrevented) {
           window.htmx.swap(
             snapshot,
-            snapshot.innerHTML,
+            snapshotHTML,
             { swapStyle: snapshot.getAttribute("hx-swap") || "innerHTML" },
             { contextElement: snapshot },
           );
         }
       }),
+    incoming,
   );
 }

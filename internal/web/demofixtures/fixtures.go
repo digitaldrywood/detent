@@ -94,6 +94,10 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		snapshot = demoBoardDegradedHealthBannersSnapshot()
 	case "board-alerts-heavy":
 		snapshot = demoBoardAlertsHeavySnapshot()
+	case "board-staleness-one":
+		snapshot = demoBoardStalenessWarningsSnapshot(1)
+	case "board-staleness-twenty":
+		snapshot = demoBoardStalenessWarningsSnapshot(20)
 	case "tracker-stale":
 		snapshot = demoTrackerStaleSnapshot()
 	case "recent-completions":
@@ -402,6 +406,30 @@ func demoBoardAlertsHeavySnapshot() telemetry.Snapshot {
 		CheckIntervalHours: 6,
 		State:              "pending_idle",
 		AvailableVersion:   "0.50.0",
+	}
+	return snapshot
+}
+
+func demoBoardStalenessWarningsSnapshot(count int) telemetry.Snapshot {
+	snapshot := demoHealthySnapshot()
+	snapshot.StalenessWarnings = make([]telemetry.StalenessWarning, 0, count)
+	reasons := []string{"already_running", "blocked_by_dependency", "global_capacity_full"}
+	for index := range count {
+		number := 1573 - index
+		identifier := "digitaldrywood/detent#" + strconv.Itoa(number)
+		reason := reasons[index%len(reasons)]
+		snapshot.StalenessWarnings = append(snapshot.StalenessWarnings, telemetry.StalenessWarning{
+			ID:         "demo-repeated-decision-" + strconv.Itoa(index+1),
+			ProjectID:  demoPrimaryProjectID,
+			Kind:       "repeated_decision",
+			IssueID:    "demo-warning-" + strconv.Itoa(index+1),
+			Identifier: identifier,
+			IssueURL:   "https://github.com/digitaldrywood/detent/issues/" + strconv.Itoa(number),
+			Reason:     reason,
+			Detail:     "scheduler returned " + reason + " repeatedly",
+			AgeSeconds: int64((index + 1) * 120),
+			Count:      20 + index,
+		})
 	}
 	return snapshot
 }

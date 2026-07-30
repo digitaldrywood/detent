@@ -34,6 +34,7 @@ type boardAlertKind string
 const (
 	boardAlertKindLastKnown            boardAlertKind = "board-last-known"
 	boardAlertKindFailureBreaker       boardAlertKind = "project-failure-breaker"
+	boardAlertKindStaleness            boardAlertKind = "staleness-warning"
 	boardAlertKindTrackerStale         boardAlertKind = "board-stale-data"
 	boardAlertKindBackendCapacity      boardAlertKind = "backend-capacity-outage"
 	boardAlertKindDispatchRecovery     boardAlertKind = "dispatch-recovery-status"
@@ -43,6 +44,7 @@ const (
 	boardAlertSeverityDispatchRecovery                = 200
 	boardAlertSeverityBackendCapacity                 = 300
 	boardAlertSeverityTrackerStale                    = 400
+	boardAlertSeverityStaleness                       = 450
 	boardAlertSeverityFailureBreaker                  = 500
 	boardAlertSeverityLastKnown                       = 600
 )
@@ -57,6 +59,7 @@ type boardAlert struct {
 	DetailRows    []boardAlertDetailRow
 	Overflow      int
 	DeepLink      string
+	DeepLinkLabel string
 	Action        *boardAlertAction
 }
 
@@ -75,13 +78,14 @@ type boardAlertAction struct {
 }
 
 func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
-	alerts := make([]boardAlert, 0, 6)
+	alerts := make([]boardAlert, 0, len(snapshot.StalenessWarnings)+6)
 	if alert, ok := boardLastKnownAlert(snapshot); ok {
 		alerts = append(alerts, alert)
 	}
 	if alert, ok := boardFailureBreakerAlert(snapshot); ok {
 		alerts = append(alerts, alert)
 	}
+	alerts = append(alerts, boardStalenessAlerts(snapshot.StalenessWarnings)...)
 	if alert, ok := boardTrackerStaleAlert(snapshot); ok {
 		alerts = append(alerts, alert)
 	}
@@ -97,6 +101,35 @@ func boardAlerts(snapshot telemetry.Snapshot) []boardAlert {
 	sort.SliceStable(alerts, func(i, j int) bool {
 		return alerts[i].Severity > alerts[j].Severity
 	})
+	return alerts
+}
+
+func boardStalenessAlerts(warnings []telemetry.StalenessWarning) []boardAlert {
+	alerts := make([]boardAlert, 0, len(warnings))
+	for index, warning := range warnings {
+		target := strings.TrimSpace(warning.Identifier)
+		if target == "" {
+			target = strings.TrimSpace(warning.ProjectID)
+		}
+		summary := stalenessExceptionTitle(warning)
+		if target != "" {
+			summary += " · " + target
+		}
+		detail := strings.TrimSpace(warning.Detail)
+		if warning.AgeSeconds > 0 {
+			detail += " · " + formatDuration(float64(warning.AgeSeconds))
+		}
+		alerts = append(alerts, boardAlert{
+			ID:            "board-alert-staleness-" + boardAlertRowSlug(warning.ID, index),
+			Kind:          boardAlertKindStaleness,
+			Severity:      boardAlertSeverityStaleness,
+			Tone:          primitives.KindWarn,
+			TerseSummary:  summary,
+			DetailSummary: detail,
+			DeepLink:      strings.TrimSpace(warning.IssueURL),
+			DeepLinkLabel: "Open",
+		})
+	}
 	return alerts
 }
 
@@ -359,13 +392,13 @@ func boardAlertKindActive(alerts []boardAlert, kind boardAlertKind) bool {
 
 func boardAlertButtonLabel(alerts []boardAlert) string {
 	if len(alerts) == 0 {
-		return "No board issues"
+		return "No board warnings"
 	}
-	return boardCountLabel(len(alerts), "board issue", "board issues") + ". Highest severity: " + alerts[0].TerseSummary + ". Expand details."
+	return boardCountLabel(len(alerts), "board warning", "board warnings") + ". Highest severity: " + alerts[0].TerseSummary + ". Expand details."
 }
 
 func boardAlertsClass(alerts []boardAlert) string {
-	class := "mx-5 mt-3.5 h-10 flex-none overflow-hidden rounded-card border shadow-sm"
+	class := "min-w-0 max-w-full self-center overflow-hidden rounded-chip border"
 	if len(alerts) == 0 {
 		return class
 	}
@@ -677,7 +710,10 @@ func boardFiguresFromDashboard(data DashboardData) []primitives.Figure {
 // Kanban), so the Review sheet may offer inline Move/Remove; the Fleet and
 // Overview pages pass false so their Review sheets stay read-only.
 func boardExceptions(data DashboardData, boardActions bool) []primitives.Exception {
-	exceptions := stalenessExceptions(data.Snapshot)
+	var exceptions []primitives.Exception
+	if !boardActions {
+		exceptions = stalenessExceptions(data.Snapshot)
+	}
 	if boardActions && !data.Kanban.ShowBlockedAlerts {
 		return exceptions
 	}
